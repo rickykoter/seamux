@@ -1,0 +1,456 @@
+#!/usr/bin/env python3
+"""crew-listen — reconcile the board when cmux says a workspace changed.
+
+The third and last trigger for `crew-sync`, alongside the `Stop` hook and the
+launchd timer. It exists because those two have complementary blind spots: the
+hook only fires when an agent finishes a turn, and the timer is up to five
+minutes late. Opening a worktree makes the board wrong *immediately*, and waiting
+five minutes to notice is the one case you actually watch happen.
+
+WHAT IT DOES NOT DO, and cannot
+-------------------------------
+It cannot make CI, review state or Jira any fresher. There is no git event and no
+PR event in cmux's catalog — `docs/events.md` documents snapshot-then-diff for
+branch and PR data, and CI/review/Jira are not on this machine at all. Nothing
+local can announce "CI went red"; only the poll learns that. So this closes the
+*structural* gap (a workspace appeared, vanished, got renamed, or you looked at
+it) and the timer closes the external one. See FINDINGS.md.
+
+WHY THIS EVENT SET AND NO MORE
+------------------------------
+The stream is far hotter than a reconcile, and two of its busiest events are
+crew's own writes:
+
+    workspace.action           187/day   crew-sync's set_description — a LOOP
+    sidebar.metadata.updated  1465/day   crew's own set_status, ~12/min
+    agent.hook.PreToolUse     2838/day   the hot path the hooks deliberately avoid
+
+Subscribing to any of those would either feed crew its own output or spawn a full
+board reconcile — which shells out to gh, acli and sbx — on a hair trigger. The
+four names below are structural, rare (127/day combined), and none of them is
+something crew emits, so a loop is impossible by construction rather than by
+filtering.
+
+THROTTLE
+--------
+Shares one stamp file with the `Stop` hook's crew_sync_maybe (hooks/lib.sh), so
+the three triggers cannot pile up: whoever gets there first sets the stamp and the
+others stand down for CREW_SYNC_INTERVAL. That file is the contract — if you
+change the interval semantics here, change them there too.
+
+Usage:
+  crew-listen            follow forever (what launchd runs)
+  crew-listen --once     drain what is retained, reconcile if due, exit
+"""
+
+import atexit
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+
+STATE = os.path.join(os.environ.get("XDG_CACHE_HOME") or
+                     os.path.expanduser("~/.cache"), "cmux-crew")
+STAMP = os.path.join(STATE, "sync-stamp")
+CURSOR = os.path.join(STATE, "events.seq")
+PIDFILE = os.path.join(STATE, "listen.pid")
+INTERVAL = int(os.environ.get("CREW_SYNC_INTERVAL", "120"))
+
+# The periodic tick, which is what replaces the launchd timer. Aligned with the
+# shared throttle on purpose: ticking faster than INTERVAL cannot reconcile more
+# often, it just burns a stamp check. Measured, a converged crew-sync costs ~4.5s,
+# almost all of it subprocess spawns rather than network.
+TICK = int(os.environ.get("CREW_TICK_SECONDS", str(INTERVAL)))
+
+# The BOARD's own cadence, which is a different question from the reconcile's.
+#
+# A reconcile asks gh, acli and sbx and costs ~4.5s, so it is rightly throttled to
+# INTERVAL. A board push only re-reads local state and re-renders, and the fast
+# path costs ~140ms (measured: 2104ms full, 136ms fast -- see SIDEBAR_CACHE in
+# board/crew-board). Tying the glass to the reconcile meant a plan gate you had
+# just opened, or a turn that had just finished, could sit unrendered for two
+# minutes even though the board could have known instantly.
+#
+# 10s is ~1.4% duty cycle at 140ms a pass. Set CREW_BOARD_TICK to change it; 0
+# disables the fast tick and the board falls back to the reconcile's cadence.
+BOARD_TICK = int(os.environ.get("CREW_BOARD_TICK", "10"))
+
+# Repaints the focused pane's frame with the selected workspace's colour. cmux
+# has no per-workspace border setting -- both border keys in its schema are
+# global -- so following the selection means rewriting one value and reloading,
+# which crew-frame does only when the colour actually changed. CREW_FRAME=0
+# turns it off.
+FRAME = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crew-frame")
+
+# One reconcile at a time. The ticker thread and the event loop both claim the
+# stamp, and without the lock a tick landing on the same second as an event could
+# both pass `due()` before either wrote it.
+CLAIM = threading.Lock()
+
+HOME = os.path.expanduser("~")
+# One definition of "which cmux": bin/crew-cmux-bin. PATH is consulted here first so
+# the common case costs no subprocess; the resolver is only reached when PATH has no
+# cmux. A hardcoded bundle path silently drove the old cli against the nightly app.
+_CMUX_RESOLVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crew-cmux-bin")
+CMUX = (os.environ.get("CREW_CMUX")
+        or next((os.path.join(d, "cmux")
+                 for d in os.environ.get("PATH", "").split(os.pathsep)
+                 if os.access(os.path.join(d, "cmux"), os.X_OK)), None)
+        or (subprocess.run([_CMUX_RESOLVER], capture_output=True, text=True).stdout.strip()
+            if os.access(_CMUX_RESOLVER, os.X_OK) else "")
+        or "cmux")
+SYNC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crew-sync")
+# The Dock board renders nothing until something pushes state into it: board.html is
+# inert on purpose (the renderer is pushed with each update, because a page-resident
+# entry point proved unreachable from a pushed script). So a surface that cmux restores
+# after a restart comes back BLANK, and the daemon is the only thing already running at
+# that moment -- which makes the push its job, not the user's. Nobody should have to run
+# `crew-board watch` to make a restored board show anything.
+BOARD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "board", "crew-board")
+INTENT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                      "board", "crew-board-intent")
+
+# Structural only. Deliberately excludes every event crew itself emits — see the
+# module docstring.
+NAMES = [
+    "workspace.created",    # a worktree just opened; the board has no row yet
+    "workspace.closed",     # a row is about to be stale
+    "workspace.renamed",    # title/branch drift
+    "workspace.selected",   # you are looking at it, so make it right
+]
+
+
+def log(msg):
+    """stderr, because launchd captures it to $STATE/listen.log."""
+    print(f"{time.strftime('%H:%M:%S')} {msg}", file=sys.stderr, flush=True)
+
+
+def disabled():
+    """`crew off` silences this the same way it silences the hooks."""
+    return (os.path.exists(os.path.join(STATE, "disabled"))
+            or bool(os.environ.get("CREW_DISABLED")))
+
+
+def due():
+    """True when the shared throttle allows another reconcile."""
+    try:
+        with open(STAMP) as fh:
+            last = int((fh.read() or "0").strip() or 0)
+    except Exception:
+        return True
+    return (int(time.time()) - last) >= INTERVAL
+
+
+def start_intent():
+    """Bring up the board's click server if it is not already answering.
+
+    The daemon owns this for the same reason it owns the push: a click channel
+    that only exists while some other command happens to be running is a channel
+    that is down exactly when you reach for it. `crew-board push` also starts it,
+    so whichever arrives first wins and the loser is a no-op -- the server reuses
+    a live port rather than binding a second one.
+
+    Detached and never waited on: the listener must not block startup on it, and
+    a board with no click server still renders read-only.
+    """
+    if not os.access(INTENT, os.R_OK):
+        return False
+    try:
+        st = subprocess.run(["python3", INTENT, "--status"], capture_output=True,
+                            text=True, timeout=8)
+        if '"running": true' in (st.stdout or ""):
+            return True
+        subprocess.Popen(["python3", INTENT], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+        log("intent server started")
+        return True
+    except Exception as exc:
+        log(f"intent server failed to start: {exc}")
+        return False
+
+
+# The last push we spawned, so a tick can decline to stack another one on top.
+# Only the ticker consults it: event- and selection-driven pushes always go,
+# because they carry information (the id of the workspace you just switched to)
+# that the in-flight push does not have.
+_LAST_PUSH = None
+
+
+def push_board(reason, fast=False, selected=None, skip_if_busy=False):
+    """Push one board update. Fire-and-forget, and never creates a surface.
+
+    Not gated by crew-sync's throttle: that throttle exists because a reconcile shells
+    out to gh, acli and sbx, whereas this is one addscript. More importantly a restored
+    surface is blank no matter how recently sync ran, so `due()` would be answering the
+    wrong question.
+
+    `crew-board push` exits non-zero when no surface is recorded, which is the correct
+    behaviour for a board nobody has opened -- so this stays unconditional and silent.
+
+    `skip_if_busy` is the ticker's pileup guard: at a 10s cadence a push that
+    stalls (cmux busy, a slow gh call in a full build) must not have the next
+    tick land a second one behind it -- N stalled ticks used to mean N queued
+    pushes all painting the same state. Skipping is safe there because the next
+    tick re-reads everything anyway.
+    """
+    global _LAST_PUSH
+    if not os.access(BOARD, os.X_OK):
+        return False
+    if skip_if_busy and _LAST_PUSH is not None and _LAST_PUSH.poll() is None:
+        return False
+    try:
+        argv = ([BOARD, "push"] + (["--fast"] if fast else [])
+                + (["--selected", selected] if selected else []))
+        _LAST_PUSH = subprocess.Popen(argv, stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL, start_new_session=True)
+        return True
+    except Exception as exc:
+        log(f"board push failed to start: {exc}")
+        return False
+
+
+def reconcile(reason):
+    """Claim the stamp, then reconcile in the background.
+
+    Stamp first: the run takes seconds (gh, acli, sbx), and a burst of events
+    arriving meanwhile must not each start their own.
+    """
+    with CLAIM:
+        if disabled():
+            return False
+        if not due():
+            return False
+        os.makedirs(STATE, exist_ok=True)
+        try:
+            with open(STAMP, "w") as fh:
+                fh.write(str(int(time.time())))
+        except Exception:
+            pass
+    if not os.access(SYNC, os.X_OK):
+        log(f"no executable crew-sync at {SYNC}")
+        return False
+    try:
+        subprocess.Popen([SYNC], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+        push_board(reason)
+        log(f"reconcile <- {reason}")
+        return True
+    except Exception as exc:
+        log(f"reconcile failed to start: {exc}")
+        return False
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def running_pid():
+    """The live daemon's pid, or 0. Also clears a stale pidfile."""
+    try:
+        with open(PIDFILE) as fh:
+            pid = int((fh.read() or "0").strip() or 0)
+    except Exception:
+        return 0
+    if pid and pid != os.getpid() and pid_alive(pid):
+        return pid
+    try:
+        os.remove(PIDFILE)
+    except Exception:
+        pass
+    return 0
+
+
+def follow_selection(wsid=None):
+    """React to a workspace switch immediately, on two surfaces.
+
+    Both of these are wrong to leave to the throttled reconcile. The board's
+    "you are here" ring would sit on the workspace you just left for up to a
+    tick, and the pane frame would still be wearing the old worktree's colour --
+    and those are the two things whose entire job is to answer "where am I".
+
+    `wsid` comes from the event payload and is not optional in practice.
+    Measured: `workspace.selected` fires ~151ms before `workspace list --json`
+    reports the new selection, so both of these, asked to work it out for
+    themselves, land one switch behind -- permanently, since each switch shows
+    the previous one's answer. Passing the id makes it exact. Omitted (startup),
+    they fall back to asking, which is correct because nothing is racing then.
+
+    Fire-and-forget, both of them: a switch is a UI event and nothing here is
+    allowed to make the next one wait.
+    """
+    push_board("selected", fast=True, selected=wsid)
+    if os.environ.get("CREW_FRAME") == "0" or not os.access(FRAME, os.X_OK):
+        return
+    try:
+        argv = ["python3", FRAME] + (["--workspace", wsid] if wsid else [])
+        subprocess.Popen(argv, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except Exception as exc:
+        log(f"frame follow failed to start: {exc}")
+
+
+def board_ticker():
+    """Keep the glass current between reconciles.
+
+    Its own thread, and its own clock, because the two cadences answer different
+    questions: this one is "does the board still show what is true locally", which
+    is cheap to answer and worth answering often. Fast pushes only -- the full
+    build runs on the reconcile tick and on every workspace event, so branch and
+    PR are never more than one reconcile behind.
+
+    Nothing here is throttled or gated: `crew-board push` never creates a surface
+    and exits immediately when none is recorded, so a board nobody has opened
+    costs one short-lived process per tick and nothing else.
+    """
+    while True:
+        time.sleep(BOARD_TICK)
+        push_board("board tick", fast=True, skip_if_busy=True)
+
+
+def ticker():
+    """The periodic reconcile, deliberately independent of the event stream.
+
+    This is what replaces the launchd timer, and keeping it on its own thread is
+    the point: if `cmux events` dies, or cmux is restarted, or the socket refuses
+    us, the board still gets reconciled on a clock instead of silently freezing.
+    Events make structural changes instant; this covers everything crew can only
+    learn by asking (CI, review, Jira), which no local event announces.
+    """
+    while True:
+        time.sleep(TICK)
+        reconcile("tick")   # throttled + disabled-checked internally
+
+
+def argv_for():
+    a = [CMUX, "events", "--cursor-file", CURSOR, "--no-ack", "--no-heartbeat"]
+    for n in NAMES:
+        a += ["--name", n]
+    # --reconnect resumes from the cursor after a cmux restart, which is the
+    # whole reason this can be a dumb always-on process instead of something
+    # that needs supervising. `--once` never reaches here — it decides whether a
+    # reconcile is owed and returns without touching the stream.
+    a += ["--reconnect"]
+    return a
+
+
+def main():
+    once = "--once" in sys.argv[1:]
+    os.makedirs(STATE, exist_ok=True)
+
+    if once:
+        # No stream to follow: just decide whether a reconcile is owed. Used by
+        # `crew doctor` and by hand, and safe to run anywhere.
+        print("reconciled" if reconcile("--once") else
+              ("disabled" if disabled() else "not due"))
+        return 0
+
+    if not os.access(CMUX, os.X_OK):
+        log(f"no cmux binary at {CMUX}")
+        return 1
+
+    # Singleton. Spawned from the SessionStart hook, so every new Claude session
+    # would otherwise start another one.
+    other = running_pid()
+    if other:
+        log(f"already running as pid {other}")
+        return 0
+    os.makedirs(STATE, exist_ok=True)
+    try:
+        with open(PIDFILE, "w") as fh:
+            fh.write(str(os.getpid()))
+    except Exception:
+        pass
+
+    atexit.register(lambda: os.path.exists(PIDFILE) and os.remove(PIDFILE))
+
+    # The boot case, and the reason `watch` should never be needed: the ticker sleeps
+    # TICK first, so without this a board restored by cmux stays blank for up to two
+    # minutes after a restart. Unthrottled and before any thread starts.
+    start_intent()
+    push_board("startup")
+    follow_selection()
+
+    threading.Thread(target=ticker, daemon=True).start()
+    # Only worth a thread when it is actually faster than the reconcile it is
+    # covering for.
+    if 0 < BOARD_TICK < TICK:
+        threading.Thread(target=board_ticker, daemon=True).start()
+    log(f"listening for {', '.join(NAMES)} (throttle {INTERVAL}s, tick {TICK}s, "
+        f"board {BOARD_TICK if 0 < BOARD_TICK < TICK else TICK}s)")
+    # The stream is retried forever with backoff rather than being allowed to end
+    # the process. cmux restarting, or the socket briefly refusing, used to be
+    # fatal -- under launchd's KeepAlive that produced a respawn loop every 10s,
+    # and without it the daemon simply vanished. The ticker keeps reconciling
+    # throughout, so a stream outage degrades to timer-only, not to nothing.
+    backoff = 2
+    while True:
+        started = time.time()
+        rc = follow()
+        if rc == "disabled":
+            return 0
+        # A stream that ran for a while and then ended is a fresh outage, not an
+        # escalating one -- otherwise a few brief cmux restarts over a day leave
+        # the retry pinned at five minutes.
+        if time.time() - started > 60:
+            backoff = 2
+        log(f"event stream ended; retrying in {backoff}s")
+        time.sleep(backoff)
+        backoff = min(backoff * 2, 300)
+
+
+def follow():
+    """One run of the event stream. Returns when it ends."""
+    # bufsize=1 (line buffered) is not optional here. Events are small and
+    # arrive minutes apart, so anything block-buffered would sit on a reconcile
+    # until enough unrelated bytes turned up to flush the buffer — which is the
+    # exact latency this process exists to remove.
+    proc = subprocess.Popen(argv_for(), stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True, bufsize=1)
+    try:
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            # --name filters server-side and --no-ack/--no-heartbeat drop the
+            # frames that are not events, so anything arriving here is already
+            # one of NAMES. Parse anyway: an unparseable line means the protocol
+            # moved, and reconciling on garbage is worse than ignoring it.
+            try:
+                ev = json.loads(line) or {}
+                name = ev.get("name") or ""
+            except Exception:
+                continue
+            if name not in NAMES:
+                continue
+            # Before the reconcile, and deliberately outside its throttle: a
+            # switch has to move the highlight and the frame now, not in two
+            # minutes, and neither of them needs anything a reconcile fetches.
+            if name == "workspace.selected":
+                # workspace_id is on the frame and again inside payload; the
+                # payload is the one the lifecycle source fills in.
+                follow_selection((ev.get("payload") or {}).get("workspace_id")
+                                 or ev.get("workspace_id"))
+            if not reconcile(name):
+                # Log the skip too. At ~127 of these a day the cost is nothing,
+                # and without it a throttled event leaves no trace at all — which
+                # makes "is this thing even receiving?" unanswerable from the log.
+                log(f"{name} (no reconcile: "
+                    f"{'crew off' if disabled() else 'throttled'})")
+    except KeyboardInterrupt:
+        return "disabled"
+    finally:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    return "ended"
+
+
+if __name__ == "__main__":
+    sys.exit(main())

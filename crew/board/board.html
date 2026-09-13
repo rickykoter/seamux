@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>crew · who needs you</title>
+<!--
+  Inert by design. There is deliberately no script tag in this file: render.js is pushed
+  with every update via `cmux browser addscript`, because a resident window.render was
+  found to be unreachable from a pushed script (isolated world), while the DOM is shared.
+  board_probe.mjs asserts both that absence and the five ids below.
+
+  The contract with render.js, and nothing more:
+    #rows    innerHTML target; also carries data-prev for cross-push ripple memory
+    #need    "N need you" / "all clear"
+    #quiet   the collapsed tail
+    #src     where the snapshot came from
+    #stamp   when
+    #cat     the whimsy sprite; render.js sets its mood class, nothing else
+    #tally   how many rows are in each state
+    #says    what the cat has to say about that mood
+
+  The cat's geometry lives HERE rather than in render.js on purpose: it is static art
+  that never varies with the data, and render.js is re-sent on every single push. Only
+  the mood class crosses the wire. The sprite itself is GENERATED -- run
+  board/cat_from_swift.py to re-read the poses out of sidebars/crew.swift.
+
+  Moods render.js sets on #cat, matching crew.swift's catMood():
+    swat  a human is being waited on      nap  nothing is happening
+    pace  anything working or broken
+
+  Classes render.js emits: .row + .attend/.running/.wilt/.done/.quiet + .ripple,
+  .enter (a row that was not on the previous push), .up/.down (a row that changed
+  position, animated with the Web Animations API rather than CSS),
+  svg.dial, .main, .hd, .nm, .badge, .said (may contain <b> and <code>), .chips,
+  .chip + .lead, .meta, .empty, .facts > .branch/.dirty/.pr, .sigs > .sig + .act,
+  .feed > .feedbar, and .owned (which reads --own, the worktree's Peacock colour).
+  Palette is Everforest, matching render.js's COL map; the signals strip carries
+  the Swift sidebar's palette instead, which the collector supplies per entry.
+-->
+<style>
+:root{
+  --bg:#2d353b; --bg1:#343f44; --bg2:#3d484d; --line:#2f3639;
+  --fg:#d3c6aa; --grey:#859289; --grey2:#5c6a72;
+  --attend:#dfa000; --running:#7fbbb3; --wilt:#e67e80; --done:#a7c080; --quiet:#5c6a72;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg)}
+/* No padding on top: the sticky header owns the top edge. With padding here the
+   header started 11px down and a sliver of page background sat above the cat's
+   shelf -- the negative side margins below cancel the LEFT and RIGHT padding, and
+   nothing was cancelling this one. */
+body{padding:0 11px 11px;font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased}
+
+/* Parked at the top: the board is a list you scroll, and the one thing you always
+   want in view is what is waiting on you. Negative side margins cancel the body's
+   padding so the bar -- and the cat's shelf inside it -- reach both edges. */
+header{position:sticky;top:0;z-index:5;background:var(--bg);
+  margin:0 -11px 10px;padding:0 11px 7px;border-bottom:1px solid var(--line)}
+
+/* Wraps rather than collides. The count and the timestamp are both nowrap and
+   neither can usefully shrink, so in a narrow Dock the timestamp drops to its own
+   line instead of printing on top of the count -- which is what it did before,
+   and it was unreadable. */
+.hud{display:flex;justify-content:space-between;align-items:center;gap:4px 8px;
+  flex-wrap:wrap;min-width:0}
+#need{font:600 11px/1 system-ui;letter-spacing:.1em;text-transform:uppercase;color:var(--fg);
+  white-space:nowrap;flex:none}
+.right{display:flex;gap:8px;align-items:baseline;font:500 10px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+  color:var(--grey2);white-space:nowrap;margin-left:auto}
+#src{opacity:.85}
+
+/* --- the cat ----------------------------------------------------------- */
+/* The crew sidebar's tuxedo cat, ported pixel-for-pixel by cat_from_swift.py --
+   the poses are read out of crew.swift, not redrawn. Its three moods and every
+   timing below come from that file too:
+
+     catMood()   2 swat (a human is waited on) / 1 pace (anything working) / 0 nap
+     frames      A and B alternate at 1Hz; nap breathes on a 6s cycle instead
+     catX()      a triangle wave, 5px a second, 16s for the round trip
+     catFlip()   turns around at the halfway point, mirroring about x=8.5 cells
+     catLunge()  swat jerks 3px forward on alternate seconds
+     catBob()    pace bobs 1px; nap rises 0,1,2,1 over 8s
+
+   All of it is CSS, because the page is inert and pushes are two minutes apart:
+   a 1Hz sprite cannot be driven by the renderer. render.js sets ONE class.
+   Whimsy's rule still holds -- nap is the resting state and its only motion is a
+   slow breath and the z's, which is what "nothing is happening" should look like. */
+/* The shelf it paces along -- and the reason the palette survives the port.
+   catColor()'s charcoal body was chosen against the sidebar's near-black
+   background ("a true-black cat is a hole in the screen"). The board's ground is
+   #2d353b, which is LIGHTER than charcoal, so on it the body disappeared and only
+   the white bib and paws read -- the cat looked like four floating dashes. A dark
+   plinth restores the contrast the art was drawn for without touching a pixel of
+   it, and crew.swift's own comments call this thing a shelf. */
+/* The shelf spans the bar edge to edge; the cat is positioned along it, so the
+   walk covers the whole width instead of a 35px stub. It also keeps the palette
+   honest -- catColor()'s charcoal body was chosen against a near-black ground and
+   is LIGHTER than this board's, so without the plinth only the white bib reads. */
+#shelf{position:relative;height:30px;margin:0 -11px 7px;overflow:hidden;
+  background:#1e2326;box-shadow:inset 0 -1px 0 0 #171c1f}
+#cat{position:absolute;left:0;bottom:0;height:30px;width:auto;overflow:visible}
+#cat .pose{visibility:hidden}
+
+/* A and B, one second each. steps(1) makes it a cut, not a crossfade: this is
+   pixel art and a tween would blur it. */
+@keyframes fa{0%,49.99%{visibility:visible}50%,100%{visibility:hidden}}
+@keyframes fb{0%,49.99%{visibility:hidden}50%,100%{visibility:visible}}
+#cat.swat .swat-a,#cat.pace .walk-a{animation:fa 2s steps(1,end) infinite}
+#cat.swat .swat-b,#cat.pace .walk-b{animation:fb 2s steps(1,end) infinite}
+/* A sleeping cat breathes slower than a walking one strides. */
+#cat.nap .nap-a{animation:fa 6s steps(1,end) infinite}
+#cat.nap .nap-b{animation:fb 6s steps(1,end) infinite}
+
+/* The walk: out along the shelf and back, stepping rather than gliding, because
+   a pixel cat that slides looks like a decal. */
+/* left, not transform: the distance is "the width of the shelf minus the cat",
+   which only exists as a percentage. A transform percentage is relative to the
+   element's own box and would always be the same few pixels. */
+@keyframes pace{from{left:0}to{left:calc(100% - 70px)}}
+@keyframes bobwalk{0%,49.99%{transform:translateY(0)}50%,100%{transform:translateY(1px)}}
+@keyframes bobnap{0%,24.9%{transform:translateY(0)}25%,49.9%{transform:translateY(1px)}
+  50%,74.9%{transform:translateY(2px)}75%,100%{transform:translateY(1px)}}
+@keyframes lunge{0%,49.99%{transform:translateX(0)}50%,100%{transform:translateX(3px)}}
+#cat.pace{animation:pace 8s steps(9,end) infinite alternate}
+#cat.pace .walker{animation:bobwalk 2s steps(1,end) infinite}
+#cat.nap .walker{animation:bobnap 8s steps(1,end) infinite}
+#cat.swat .walker{animation:lunge 2s steps(1,end) infinite}
+
+/* Turning around. Mirrored about x=8.5 cells (25.5px), which is what
+   `flip ? 17 - p[0] : p[0]` does in crew.swift. */
+@keyframes face{0%,49.99%{transform:scaleX(1)}50%,100%{transform:scaleX(-1)}}
+#cat .facing{transform-box:view-box;transform-origin:25.5px 0}
+#cat.pace .facing{animation:face 16s steps(1,end) infinite}
+
+/* Three z's, drifting up and fading on staggered phases. */
+#cat .zz{fill:#8BA3C7;font:italic 700 8px/1 system-ui;opacity:0}
+#cat .z1{font-size:10px} #cat .z2{font-size:12px}
+@keyframes drift{0%{opacity:.75;transform:translateY(0)}
+  100%{opacity:0;transform:translateY(-12px)}}
+#cat.nap .zz{animation:drift 6s linear infinite}
+#cat.nap .z1{animation-delay:2s} #cat.nap .z2{animation-delay:4s}
+
+/* What the cat has to say about it. */
+/* First thing to give up its space when the Dock is narrow: the count and the
+   timestamp both matter more than the cat's commentary. */
+/* How many things are in each state, which is the question the ranking answers
+   one row at a time. Only non-zero states appear: a row of zeroes is noise, and
+   the absence of "broken" is easier to read than "0 broken". */
+#tally{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:5px;
+  font:500 10px/1.4 system-ui;color:var(--grey2)}
+#tally:empty{display:none}
+.tl{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+.tl::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+.tl b{font-weight:700;font-variant-numeric:tabular-nums;color:var(--fg)}
+.tl.attend{color:var(--attend)} .tl.wilt{color:var(--wilt)}
+.tl.running{color:var(--running)} .tl.done{color:var(--done)}
+.tl.quiet{color:var(--quiet)}
+
+#says{font:9px/1 system-ui;color:var(--grey2);opacity:.55;white-space:nowrap;
+  min-width:0;overflow:hidden;text-overflow:ellipsis}
+
+/* --- a row ------------------------------------------------------------ */
+.row{display:flex;gap:9px;align-items:flex-start;background:var(--bg1);
+  border:1px solid var(--line);border-left:3px solid var(--quiet);
+  border-radius:8px;padding:9px 10px;margin-bottom:6px}
+.row.attend{border-left-color:var(--attend);background:#39403c}
+.row.running{border-left-color:var(--running)}
+.row.wilt{border-left-color:var(--wilt)}
+.row.done{border-left-color:var(--done)}
+/* The worktree's own colour -- the same hex Peacock paints its VS Code window --
+   as an inner stripe, so the outer rail is still free to say which tier the row
+   is in. An inset shadow rather than another element: it spans the full height
+   without a height constant that every new strip would invalidate. */
+.row.owned{box-shadow:inset 3px 0 0 0 var(--own)}
+.row.quiet.owned{box-shadow:inset 2px 0 0 0 var(--own)}
+/* Where you are standing. The Swift row said this with a stronger background
+   (0.18 vs 0.05) and a semibold title; here it is a full ring in the worktree's
+   OWN colour, so the card, the VS Code title bar and the pane frame are all
+   wearing the same hex and "this one is mine" needs no reading.
+   Falls back to the tier rail's grey when a workspace has no colour set. */
+.row.here{background:#3f4a4f}
+.row.here .nm{color:#fff}
+.row.here.owned{box-shadow:inset 3px 0 0 0 var(--own),0 0 0 1.5px var(--own)}
+.row.here:not(.owned){box-shadow:0 0 0 1.5px var(--quiet)}
+/* A selected quiet row is not quiet any more -- it is the one you are in. */
+.row.quiet.here{opacity:1}
+.row.quiet{border-left-color:var(--quiet);opacity:.62;padding:5px 8px}
+.row.quiet:hover{opacity:1}
+/* A quiet row is one line. Names here are often a full shell prompt, so the name
+   clamps and the row carries title= for the rest. */
+.row.quiet .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:15em}
+.row.quiet .dial{width:20px;height:20px}
+.sect{color:var(--quiet);font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;
+  margin:12px 0 4px;padding-top:7px;border-top:1px solid var(--line)}
+
+/* Fires once, on the transition into done -- render.js gates it with data-prev. */
+@keyframes ripple{0%{box-shadow:0 0 0 0 rgba(167,192,128,.5)}100%{box-shadow:0 0 0 14px rgba(167,192,128,0)}}
+.row.ripple{animation:ripple 900ms ease-out 1}
+
+.dial{flex:none;margin-top:1px}
+.main{min-width:0;flex:1}
+.hd{display:flex;gap:6px;align-items:baseline;flex-wrap:wrap}
+.nm{font-weight:600;font-size:12.5px;color:var(--fg);min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.badge{font:600 9px/1.6 system-ui;letter-spacing:.06em;text-transform:uppercase;
+  padding:0 6px;border-radius:20px;border:1px solid currentColor;flex:none;color:var(--grey)}
+.attend .badge{color:var(--attend)} .running .badge{color:var(--running)}
+.wilt .badge{color:var(--wilt)} .done .badge{color:var(--done)}
+
+.said{margin:4px 0 0;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;
+  color:var(--grey);overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;
+  -webkit-box-orient:vertical;word-break:break-word}
+.said b{color:var(--fg);font-weight:600}
+.said code{color:var(--running);font-size:11.5px}
+
+/* --- the facts line: branch, dirty, PR --------------------------------- */
+/* These were folded into the grey .meta string, where they were both
+   unclickable and, as reported, hard to even see. They are their own targets
+   now, and they are underlined because that is what says "this opens
+   something" -- the same signal the Swift row used. */
+.facts{display:flex;gap:7px;align-items:baseline;margin-top:6px;min-width:0}
+.branch{font:10.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;
+  color:var(--grey);text-decoration:underline;text-decoration-color:var(--grey2);
+  text-underline-offset:2px;cursor:pointer;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.branch:hover{color:var(--fg);text-decoration-color:var(--fg)}
+.dirty{font-size:8px;color:#F5A524;flex:none;line-height:1.9}
+.pr{font:10.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;
+  color:var(--grey2);text-decoration:underline;text-decoration-color:currentColor;
+  text-underline-offset:2px;cursor:pointer;flex:none;font-variant-numeric:tabular-nums}
+.pr.open{color:#4ADE80}
+.pr:hover{filter:brightness(1.3)}
+
+/* --- the signals strip ------------------------------------------------- */
+/* Colour comes from the collector, which took the palette verbatim from the
+   Swift sidebar. Entries with an action get a pointer; the rest are status and
+   are deliberately unreactive. */
+.sigs{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;align-items:baseline}
+.sig{font:500 10px/1.5 system-ui;white-space:nowrap;opacity:.92}
+.sig.act{cursor:pointer;padding:1px 5px;border-radius:4px;
+  background:color-mix(in srgb,currentColor 13%,transparent)}
+.sig.act:hover{background:color-mix(in srgb,currentColor 24%,transparent);
+  text-decoration:underline}
+
+/* --- the reply window -------------------------------------------------- */
+/* The animation's DURATION is the time remaining, set inline per row, so the
+   bar drains in real time and empties exactly when the window closes. No
+   resident timer, and nothing to go stale between pushes. */
+@keyframes drain{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+.feed{margin-top:6px;height:3px;border-radius:2px;background:var(--bg2);overflow:hidden}
+.feedbar{display:block;height:100%;border-radius:2px;background:#F5A524;
+  transform-origin:left center;animation:drain linear 1 forwards}
+
+.chips{display:flex;gap:4px;margin-top:7px;flex-wrap:wrap}
+.chip{font:500 11px system-ui;padding:2px 7px;border-radius:5px;
+  border:1px solid var(--line);background:var(--bg2);color:var(--grey);white-space:nowrap}
+.chip.lead{border-color:var(--attend);color:var(--attend)}
+
+.meta{margin-top:5px;font:10.5px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;
+  color:var(--grey2);font-variant-numeric:tabular-nums;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* --- motion ------------------------------------------------------------- */
+/* Reordering is animated from render.js with the Web Animations API, not from
+   here: a FLIP needs the OLD offsetTop, which only exists before innerHTML is
+   replaced, and .animate() runs from that measurement without the
+   set-transform / force-reflow / clear-transform dance. What CSS owns is the
+   accent that says WHY a row moved. */
+
+/* A row that climbed the ranking earned a look. One pass of its own rail
+   colour, brightest at the moment it arrives. Rows that sank get nothing:
+   losing urgency is not news. */
+@keyframes rail{0%{box-shadow:inset 3px 0 0 0 currentColor}100%{box-shadow:inset 3px 0 0 0 transparent}}
+.row.up{animation:rail 900ms ease-out 1}
+.row.up.attend{color:var(--attend)} .row.up.wilt{color:var(--wilt)}
+.row.up.running{color:var(--running)} .row.up.done{color:var(--done)}
+
+/* Pending. A gate nobody has opened, a question nobody has answered: the one
+   chip that would resolve it breathes. Exactly one element per row moves, and
+   only on rows that are actually waiting on a human. */
+@keyframes breathe{0%,100%{opacity:.55;box-shadow:0 0 0 0 rgba(223,160,0,0)}
+  50%{opacity:1;box-shadow:0 0 0 3px rgba(223,160,0,.13)}}
+.row.attend .chip.lead{animation:breathe 2.2s ease-in-out infinite}
+
+/* Mid-turn with no measurable progress: an indeterminate sweep on the dial,
+   which is the honest shape for "working, cannot say how far". A dial WITH a
+   percentage does not spin -- it already answers the question. */
+@keyframes sweep{to{transform:rotate(360deg)}}
+.row.running .dial.pending .arc{transform-origin:16px 16px;animation:sweep 1.9s linear infinite}
+.row.wilt .dial.pending .arc{animation:none}
+
+/* Everything above is decoration. If the reader has asked the OS for less
+   motion, none of it is worth overriding that. */
+@media (prefers-reduced-motion:reduce){
+  #cat .tail,#cat .ear,#cat .eye,.row.up,.row.attend .chip.lead,
+  .row.running .dial.pending .arc,.row.ripple{animation:none}
+  #cat .eye{transform:none}
+}
+
+.empty{color:var(--grey2);font-size:12.5px;line-height:1.6;padding:18px 4px;text-align:center}
+#quiet{margin-top:10px;padding-top:8px;border-top:1px solid var(--line);
+  color:var(--grey2);font-size:11.5px}
+#quiet:empty{display:none}
+</style></head>
+<body>
+<header>
+  <!-- The shelf is the full width of the board and the cat walks the length of it.
+       fa-cat / md-cat exist in cmux's icon set as font glyphs, but a glyph cannot
+       flick its tail, so the cat is drawn here instead. -->
+  <div id="shelf">
+<!-- CAT:BEGIN generated by cat_from_swift.py -->
+    <svg id="cat" class="nap" viewBox="0 0 90 39" aria-hidden="true">
+      <g class="walker"><g class="facing">
+        <g class="pose nap-a">
+          <path fill="#36363F" d="M15 3h3v3h-3zM18 3h3v3h-3zM36 3h3v3h-3zM39 3h3v3h-3zM12 6h3v3h-3zM18 6h3v3h-3zM21 6h3v3h-3zM24 6h3v3h-3zM27 6h3v3h-3zM30 6h3v3h-3zM33 6h3v3h-3zM39 6h3v3h-3zM9 9h3v3h-3zM12 9h3v3h-3zM15 9h3v3h-3zM18 9h3v3h-3zM21 9h3v3h-3zM24 9h3v3h-3zM27 9h3v3h-3zM30 9h3v3h-3zM33 9h3v3h-3zM36 9h3v3h-3zM39 9h3v3h-3zM42 9h3v3h-3zM9 12h3v3h-3zM12 12h3v3h-3zM21 12h3v3h-3zM24 12h3v3h-3zM27 12h3v3h-3zM30 12h3v3h-3zM39 12h3v3h-3zM42 12h3v3h-3zM45 12h3v3h-3zM6 15h3v3h-3zM9 15h3v3h-3zM12 15h3v3h-3zM15 15h3v3h-3zM18 15h3v3h-3zM33 15h3v3h-3zM36 15h3v3h-3zM39 15h3v3h-3zM42 15h3v3h-3zM45 15h3v3h-3zM6 18h3v3h-3zM9 18h3v3h-3zM12 18h3v3h-3zM15 18h3v3h-3zM18 18h3v3h-3zM30 18h3v3h-3zM33 18h3v3h-3zM36 18h3v3h-3zM39 18h3v3h-3zM42 18h3v3h-3zM45 18h3v3h-3zM48 18h3v3h-3zM3 21h3v3h-3zM6 21h3v3h-3zM9 21h3v3h-3zM36 21h3v3h-3zM39 21h3v3h-3zM42 21h3v3h-3zM45 21h3v3h-3zM48 21h3v3h-3zM3 24h3v3h-3zM6 24h3v3h-3zM39 24h3v3h-3zM42 24h3v3h-3zM45 24h3v3h-3zM6 27h3v3h-3zM39 27h3v3h-3zM42 27h3v3h-3zM45 27h3v3h-3zM9 30h3v3h-3zM12 30h3v3h-3zM15 30h3v3h-3zM18 30h3v3h-3zM21 30h3v3h-3zM24 30h3v3h-3zM27 30h3v3h-3zM30 30h3v3h-3zM33 30h3v3h-3zM36 30h3v3h-3zM39 30h3v3h-3zM42 30h3v3h-3z"/>
+          <path fill="#F5F5F7" d="M21 15h3v3h-3zM24 15h3v3h-3zM27 15h3v3h-3zM30 15h3v3h-3zM21 18h3v3h-3zM27 18h3v3h-3zM12 21h3v3h-3zM15 21h3v3h-3zM18 21h3v3h-3zM21 21h3v3h-3zM24 21h3v3h-3zM27 21h3v3h-3zM30 21h3v3h-3zM33 21h3v3h-3zM51 21h3v3h-3zM9 24h3v3h-3zM12 24h3v3h-3zM15 24h3v3h-3zM18 24h3v3h-3zM21 24h3v3h-3zM24 24h3v3h-3zM27 24h3v3h-3zM30 24h3v3h-3zM33 24h3v3h-3zM36 24h3v3h-3zM48 24h3v3h-3zM51 24h3v3h-3zM9 27h3v3h-3zM12 27h3v3h-3zM15 27h3v3h-3zM18 27h3v3h-3zM21 27h3v3h-3zM24 27h3v3h-3zM27 27h3v3h-3zM30 27h3v3h-3zM33 27h3v3h-3zM36 27h3v3h-3zM48 27h3v3h-3z"/>
+          <path fill="#F4A6B8" d="M24 18h3v3h-3z"/>
+          <path fill="#5A5A62" d="M15 12h3v3h-3zM18 12h3v3h-3zM33 12h3v3h-3zM36 12h3v3h-3z"/>
+          <path fill="#22222A" d="M15 6h3v3h-3zM36 6h3v3h-3z"/>
+        </g>
+        <g class="pose nap-b">
+          <path fill="#36363F" d="M15 3h3v3h-3zM18 3h3v3h-3zM36 3h3v3h-3zM39 3h3v3h-3zM12 6h3v3h-3zM18 6h3v3h-3zM21 6h3v3h-3zM24 6h3v3h-3zM27 6h3v3h-3zM30 6h3v3h-3zM33 6h3v3h-3zM39 6h3v3h-3zM6 9h3v3h-3zM9 9h3v3h-3zM12 9h3v3h-3zM15 9h3v3h-3zM18 9h3v3h-3zM21 9h3v3h-3zM24 9h3v3h-3zM27 9h3v3h-3zM30 9h3v3h-3zM33 9h3v3h-3zM36 9h3v3h-3zM39 9h3v3h-3zM42 9h3v3h-3zM45 9h3v3h-3zM6 12h3v3h-3zM9 12h3v3h-3zM12 12h3v3h-3zM21 12h3v3h-3zM24 12h3v3h-3zM27 12h3v3h-3zM30 12h3v3h-3zM39 12h3v3h-3zM42 12h3v3h-3zM45 12h3v3h-3zM48 12h3v3h-3zM6 15h3v3h-3zM9 15h3v3h-3zM12 15h3v3h-3zM15 15h3v3h-3zM18 15h3v3h-3zM33 15h3v3h-3zM36 15h3v3h-3zM39 15h3v3h-3zM42 15h3v3h-3zM45 15h3v3h-3zM48 15h3v3h-3zM3 18h3v3h-3zM6 18h3v3h-3zM9 18h3v3h-3zM12 18h3v3h-3zM15 18h3v3h-3zM18 18h3v3h-3zM30 18h3v3h-3zM33 18h3v3h-3zM36 18h3v3h-3zM39 18h3v3h-3zM42 18h3v3h-3zM45 18h3v3h-3zM48 18h3v3h-3zM51 18h3v3h-3zM3 21h3v3h-3zM6 21h3v3h-3zM9 21h3v3h-3zM36 21h3v3h-3zM39 21h3v3h-3zM42 21h3v3h-3zM45 21h3v3h-3zM48 21h3v3h-3zM3 24h3v3h-3zM6 24h3v3h-3zM39 24h3v3h-3zM42 24h3v3h-3zM45 24h3v3h-3zM6 27h3v3h-3zM39 27h3v3h-3zM42 27h3v3h-3zM45 27h3v3h-3zM9 30h3v3h-3zM12 30h3v3h-3zM15 30h3v3h-3zM18 30h3v3h-3zM21 30h3v3h-3zM24 30h3v3h-3zM27 30h3v3h-3zM30 30h3v3h-3zM33 30h3v3h-3zM36 30h3v3h-3zM39 30h3v3h-3zM42 30h3v3h-3z"/>
+          <path fill="#F5F5F7" d="M21 15h3v3h-3zM24 15h3v3h-3zM27 15h3v3h-3zM30 15h3v3h-3zM21 18h3v3h-3zM27 18h3v3h-3zM12 21h3v3h-3zM15 21h3v3h-3zM18 21h3v3h-3zM21 21h3v3h-3zM24 21h3v3h-3zM27 21h3v3h-3zM30 21h3v3h-3zM33 21h3v3h-3zM51 21h3v3h-3zM9 24h3v3h-3zM12 24h3v3h-3zM15 24h3v3h-3zM18 24h3v3h-3zM21 24h3v3h-3zM24 24h3v3h-3zM27 24h3v3h-3zM30 24h3v3h-3zM33 24h3v3h-3zM36 24h3v3h-3zM48 24h3v3h-3zM51 24h3v3h-3zM9 27h3v3h-3zM12 27h3v3h-3zM15 27h3v3h-3zM18 27h3v3h-3zM21 27h3v3h-3zM24 27h3v3h-3zM27 27h3v3h-3zM30 27h3v3h-3zM33 27h3v3h-3zM36 27h3v3h-3zM48 27h3v3h-3z"/>
+          <path fill="#F4A6B8" d="M24 18h3v3h-3z"/>
+          <path fill="#5A5A62" d="M15 12h3v3h-3zM18 12h3v3h-3zM33 12h3v3h-3zM36 12h3v3h-3z"/>
+          <path fill="#22222A" d="M15 6h3v3h-3zM36 6h3v3h-3z"/>
+        </g>
+        <g class="pose walk-a">
+          <path fill="#36363F" d="M30 0h3v3h-3zM42 0h3v3h-3zM27 3h3v3h-3zM30 3h3v3h-3zM33 3h3v3h-3zM36 3h3v3h-3zM39 3h3v3h-3zM42 3h3v3h-3zM45 3h3v3h-3zM3 6h3v3h-3zM27 6h3v3h-3zM30 6h3v3h-3zM36 6h3v3h-3zM39 6h3v3h-3zM42 6h3v3h-3zM45 6h3v3h-3zM48 6h3v3h-3zM3 9h3v3h-3zM6 9h3v3h-3zM24 9h3v3h-3zM27 9h3v3h-3zM30 9h3v3h-3zM33 9h3v3h-3zM36 9h3v3h-3zM39 9h3v3h-3zM3 12h3v3h-3zM6 12h3v3h-3zM9 12h3v3h-3zM12 12h3v3h-3zM15 12h3v3h-3zM18 12h3v3h-3zM21 12h3v3h-3zM24 12h3v3h-3zM27 12h3v3h-3zM30 12h3v3h-3zM33 12h3v3h-3zM36 12h3v3h-3zM39 12h3v3h-3zM42 12h3v3h-3zM6 15h3v3h-3zM9 15h3v3h-3zM12 15h3v3h-3zM15 15h3v3h-3zM18 15h3v3h-3zM21 15h3v3h-3zM24 15h3v3h-3zM27 15h3v3h-3zM30 15h3v3h-3zM33 15h3v3h-3zM36 15h3v3h-3zM39 15h3v3h-3zM42 15h3v3h-3zM6 18h3v3h-3zM9 18h3v3h-3zM12 18h3v3h-3zM15 18h3v3h-3zM18 18h3v3h-3zM21 18h3v3h-3zM24 18h3v3h-3zM27 18h3v3h-3zM30 18h3v3h-3zM33 18h3v3h-3zM36 18h3v3h-3zM39 18h3v3h-3zM42 18h3v3h-3zM6 21h3v3h-3zM9 21h3v3h-3zM12 21h3v3h-3zM15 21h3v3h-3zM18 21h3v3h-3zM21 21h3v3h-3zM24 21h3v3h-3zM27 21h3v3h-3zM30 21h3v3h-3zM33 21h3v3h-3zM36 21h3v3h-3zM39 21h3v3h-3zM42 21h3v3h-3zM6 24h3v3h-3zM9 24h3v3h-3zM21 24h3v3h-3zM24 24h3v3h-3zM33 24h3v3h-3zM36 24h3v3h-3zM48 24h3v3h-3zM51 24h3v3h-3zM6 27h3v3h-3zM9 27h3v3h-3zM21 27h3v3h-3zM24 27h3v3h-3zM33 27h3v3h-3zM36 27h3v3h-3zM48 27h3v3h-3zM51 27h3v3h-3z"/>
+          <path fill="#F5F5F7" d="M0 3h3v3h-3zM0 6h3v3h-3zM42 9h3v3h-3zM45 9h3v3h-3zM45 12h3v3h-3zM48 12h3v3h-3zM45 15h3v3h-3zM6 30h3v3h-3zM9 30h3v3h-3zM21 30h3v3h-3zM24 30h3v3h-3zM33 30h3v3h-3zM36 30h3v3h-3zM48 30h3v3h-3zM51 30h3v3h-3z"/>
+          <path fill="#8BE07C" d="M33 6h3v3h-3z"/>
+          <path fill="#F4A6B8" d="M48 9h3v3h-3z"/>
+        </g>
+        <g class="pose walk-b">
+          <path fill="#36363F" d="M30 3h3v3h-3zM42 3h3v3h-3zM3 6h3v3h-3zM27 6h3v3h-3zM30 6h3v3h-3zM33 6h3v3h-3zM36 6h3v3h-3zM39 6h3v3h-3zM42 6h3v3h-3zM45 6h3v3h-3zM3 9h3v3h-3zM6 9h3v3h-3zM27 9h3v3h-3zM30 9h3v3h-3zM36 9h3v3h-3zM39 9h3v3h-3zM42 9h3v3h-3zM45 9h3v3h-3zM48 9h3v3h-3zM3 12h3v3h-3zM6 12h3v3h-3zM9 12h3v3h-3zM12 12h3v3h-3zM15 12h3v3h-3zM18 12h3v3h-3zM21 12h3v3h-3zM24 12h3v3h-3zM27 12h3v3h-3zM30 12h3v3h-3zM33 12h3v3h-3zM36 12h3v3h-3zM39 12h3v3h-3zM6 15h3v3h-3zM9 15h3v3h-3zM12 15h3v3h-3zM15 15h3v3h-3zM18 15h3v3h-3zM21 15h3v3h-3zM24 15h3v3h-3zM27 15h3v3h-3zM30 15h3v3h-3zM33 15h3v3h-3zM36 15h3v3h-3zM39 15h3v3h-3zM42 15h3v3h-3zM6 18h3v3h-3zM9 18h3v3h-3zM12 18h3v3h-3zM15 18h3v3h-3zM18 18h3v3h-3zM21 18h3v3h-3zM24 18h3v3h-3zM27 18h3v3h-3zM30 18h3v3h-3zM33 18h3v3h-3zM36 18h3v3h-3zM39 18h3v3h-3zM42 18h3v3h-3zM6 21h3v3h-3zM9 21h3v3h-3zM12 21h3v3h-3zM15 21h3v3h-3zM18 21h3v3h-3zM21 21h3v3h-3zM24 21h3v3h-3zM27 21h3v3h-3zM30 21h3v3h-3zM33 21h3v3h-3zM36 21h3v3h-3zM39 21h3v3h-3zM42 21h3v3h-3zM12 24h3v3h-3zM15 24h3v3h-3zM18 24h3v3h-3zM21 24h3v3h-3zM36 24h3v3h-3zM39 24h3v3h-3zM42 24h3v3h-3zM45 24h3v3h-3zM12 27h3v3h-3zM15 27h3v3h-3zM18 27h3v3h-3zM21 27h3v3h-3zM36 27h3v3h-3zM39 27h3v3h-3zM42 27h3v3h-3zM45 27h3v3h-3z"/>
+          <path fill="#F5F5F7" d="M0 3h3v3h-3zM0 6h3v3h-3zM42 12h3v3h-3zM45 12h3v3h-3zM45 15h3v3h-3zM48 15h3v3h-3zM45 18h3v3h-3zM12 30h3v3h-3zM15 30h3v3h-3zM21 30h3v3h-3zM36 30h3v3h-3zM39 30h3v3h-3zM45 30h3v3h-3z"/>
+          <path fill="#8BE07C" d="M33 9h3v3h-3z"/>
+          <path fill="#F4A6B8" d="M48 12h3v3h-3z"/>
+        </g>
+        <g class="pose swat-a">
+          <path fill="#36363F" d="M12 3h3v3h-3zM15 3h3v3h-3zM36 3h3v3h-3zM39 3h3v3h-3zM12 6h3v3h-3zM18 6h3v3h-3zM33 6h3v3h-3zM39 6h3v3h-3zM9 9h3v3h-3zM12 9h3v3h-3zM15 9h3v3h-3zM18 9h3v3h-3zM21 9h3v3h-3zM24 9h3v3h-3zM27 9h3v3h-3zM30 9h3v3h-3zM33 9h3v3h-3zM36 9h3v3h-3zM39 9h3v3h-3zM42 9h3v3h-3zM9 12h3v3h-3zM12 12h3v3h-3zM18 12h3v3h-3zM21 12h3v3h-3zM24 12h3v3h-3zM27 12h3v3h-3zM30 12h3v3h-3zM33 12h3v3h-3zM39 12h3v3h-3zM42 12h3v3h-3zM9 15h3v3h-3zM12 15h3v3h-3zM15 15h3v3h-3zM18 15h3v3h-3zM21 15h3v3h-3zM30 15h3v3h-3zM33 15h3v3h-3zM36 15h3v3h-3zM39 15h3v3h-3zM42 15h3v3h-3zM6 18h3v3h-3zM9 18h3v3h-3zM12 18h3v3h-3zM15 18h3v3h-3zM18 18h3v3h-3zM33 18h3v3h-3zM36 18h3v3h-3zM39 18h3v3h-3zM42 18h3v3h-3zM45 18h3v3h-3zM6 21h3v3h-3zM9 21h3v3h-3zM12 21h3v3h-3zM39 21h3v3h-3zM42 21h3v3h-3zM45 21h3v3h-3zM3 24h3v3h-3zM6 24h3v3h-3zM9 24h3v3h-3zM42 24h3v3h-3zM45 24h3v3h-3zM48 24h3v3h-3zM3 27h3v3h-3zM6 27h3v3h-3zM45 27h3v3h-3zM48 27h3v3h-3zM6 30h3v3h-3zM9 30h3v3h-3zM42 30h3v3h-3zM45 30h3v3h-3z"/>
+          <path fill="#F5F5F7" d="M24 15h3v3h-3zM27 15h3v3h-3zM21 18h3v3h-3zM27 18h3v3h-3zM30 18h3v3h-3zM15 21h3v3h-3zM18 21h3v3h-3zM21 21h3v3h-3zM24 21h3v3h-3zM27 21h3v3h-3zM30 21h3v3h-3zM33 21h3v3h-3zM36 21h3v3h-3zM12 24h3v3h-3zM15 24h3v3h-3zM18 24h3v3h-3zM21 24h3v3h-3zM24 24h3v3h-3zM27 24h3v3h-3zM30 24h3v3h-3zM33 24h3v3h-3zM36 24h3v3h-3zM39 24h3v3h-3zM9 27h3v3h-3zM12 27h3v3h-3zM15 27h3v3h-3zM18 27h3v3h-3zM21 27h3v3h-3zM24 27h3v3h-3zM27 27h3v3h-3zM30 27h3v3h-3zM33 27h3v3h-3zM36 27h3v3h-3zM39 27h3v3h-3zM42 27h3v3h-3zM12 30h3v3h-3zM15 30h3v3h-3zM18 30h3v3h-3zM21 30h3v3h-3zM24 30h3v3h-3zM27 30h3v3h-3zM30 30h3v3h-3zM33 30h3v3h-3zM36 30h3v3h-3zM39 30h3v3h-3zM9 33h3v3h-3zM12 33h3v3h-3zM39 33h3v3h-3zM42 33h3v3h-3z"/>
+          <path fill="#8BE07C" d="M15 12h3v3h-3zM36 12h3v3h-3z"/>
+          <path fill="#F4A6B8" d="M24 18h3v3h-3z"/>
+          <path fill="#22222A" d="M15 6h3v3h-3zM36 6h3v3h-3z"/>
+        </g>
+        <g class="pose swat-b">
+          <path fill="#36363F" d="M12 3h3v3h-3zM15 3h3v3h-3zM36 3h3v3h-3zM39 3h3v3h-3zM12 6h3v3h-3zM18 6h3v3h-3zM33 6h3v3h-3zM39 6h3v3h-3zM9 9h3v3h-3zM12 9h3v3h-3zM15 9h3v3h-3zM18 9h3v3h-3zM21 9h3v3h-3zM24 9h3v3h-3zM27 9h3v3h-3zM30 9h3v3h-3zM33 9h3v3h-3zM36 9h3v3h-3zM39 9h3v3h-3zM42 9h3v3h-3zM9 12h3v3h-3zM12 12h3v3h-3zM18 12h3v3h-3zM21 12h3v3h-3zM24 12h3v3h-3zM27 12h3v3h-3zM30 12h3v3h-3zM33 12h3v3h-3zM39 12h3v3h-3zM42 12h3v3h-3zM9 15h3v3h-3zM12 15h3v3h-3zM15 15h3v3h-3zM18 15h3v3h-3zM21 15h3v3h-3zM30 15h3v3h-3zM33 15h3v3h-3zM36 15h3v3h-3zM39 15h3v3h-3zM42 15h3v3h-3zM6 18h3v3h-3zM9 18h3v3h-3zM12 18h3v3h-3zM15 18h3v3h-3zM18 18h3v3h-3zM33 18h3v3h-3zM36 18h3v3h-3zM39 18h3v3h-3zM42 18h3v3h-3zM45 18h3v3h-3zM6 21h3v3h-3zM9 21h3v3h-3zM12 21h3v3h-3zM39 21h3v3h-3zM42 21h3v3h-3zM45 21h3v3h-3zM3 24h3v3h-3zM6 24h3v3h-3zM9 24h3v3h-3zM42 24h3v3h-3zM45 24h3v3h-3zM48 24h3v3h-3zM51 24h3v3h-3zM3 27h3v3h-3zM6 27h3v3h-3zM45 27h3v3h-3zM6 30h3v3h-3zM9 30h3v3h-3zM42 30h3v3h-3zM45 30h3v3h-3z"/>
+          <path fill="#F5F5F7" d="M24 15h3v3h-3zM27 15h3v3h-3zM21 18h3v3h-3zM27 18h3v3h-3zM30 18h3v3h-3zM15 21h3v3h-3zM18 21h3v3h-3zM21 21h3v3h-3zM24 21h3v3h-3zM27 21h3v3h-3zM30 21h3v3h-3zM33 21h3v3h-3zM36 21h3v3h-3zM12 24h3v3h-3zM15 24h3v3h-3zM18 24h3v3h-3zM21 24h3v3h-3zM24 24h3v3h-3zM27 24h3v3h-3zM30 24h3v3h-3zM33 24h3v3h-3zM36 24h3v3h-3zM39 24h3v3h-3zM9 27h3v3h-3zM12 27h3v3h-3zM15 27h3v3h-3zM18 27h3v3h-3zM21 27h3v3h-3zM24 27h3v3h-3zM27 27h3v3h-3zM30 27h3v3h-3zM33 27h3v3h-3zM36 27h3v3h-3zM39 27h3v3h-3zM42 27h3v3h-3zM48 27h3v3h-3zM51 27h3v3h-3zM12 30h3v3h-3zM15 30h3v3h-3zM18 30h3v3h-3zM21 30h3v3h-3zM24 30h3v3h-3zM27 30h3v3h-3zM30 30h3v3h-3zM33 30h3v3h-3zM36 30h3v3h-3zM39 30h3v3h-3zM9 33h3v3h-3zM12 33h3v3h-3z"/>
+          <path fill="#8BE07C" d="M15 12h3v3h-3zM36 12h3v3h-3z"/>
+          <path fill="#F4A6B8" d="M24 18h3v3h-3z"/>
+          <path fill="#22222A" d="M15 6h3v3h-3zM36 6h3v3h-3z"/>
+        </g>
+      </g></g>
+      <text class="zz z0" x="44" y="14">z</text>
+      <text class="zz z1" x="49" y="12">z</text>
+      <text class="zz z2" x="54" y="10">z</text>
+    </svg>
+    <!-- CAT:END -->
+  </div>
+  <div class="hud">
+    <span id="need">…</span>
+    <span id="says"></span>
+    <span class="right"><span id="src"></span><span id="stamp"></span></span>
+  </div>
+  <div id="tally"></div>
+</header>
+<div id="rows" data-prev="{}">
+  <!-- Overwritten by the first push. Present so a restored-but-unpushed surface
+       explains itself instead of looking broken. -->
+  <div class="empty">Waiting for the first push.<br>The listener pushes on startup, on workspace events and every 120s — <code>crew listen status</code></div>
+</div>
+<div id="quiet"></div>
+</body></html>

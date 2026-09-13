@@ -1,0 +1,976 @@
+#!/usr/bin/env python3
+"""The board's click channel: a loopback HTTP server that turns a click in the
+Dock browser surface into a cmux command.
+
+Why a server at all. The board is a webview, and a webview click cannot reach
+cmux on its own. Everything else was tried and ruled out first:
+
+  a JS bridge          window.webkit.messageHandlers is EMPTY and there is no
+                       window.cmux, so the page has no host to call.
+  a custom scheme      clicking <a href="cmuxintent:..."> neither navigates nor
+                       emits anything -- the click is simply swallowed.
+  browser.interaction  a real event, but it fires with source "socket.v2" only
+                       for CLI-driven clicks. It is an echo of automation, not a
+                       report of what the human did.
+  polling `browser get value`
+                       works (this is the "intent channel" the board README
+                       calls proven) but costs a subprocess per poll and adds
+                       up to a whole poll interval of latency to every click.
+
+A loopback server has none of those problems: the click is a plain GET, it
+arrives instantly, and the page needs no privileges. cmux's own Dock docs use
+exactly this shape -- their browser-control example is
+`"url": "http://127.0.0.1:8877/sidebar"`.
+
+Dispatch reuses what already exists rather than reimplementing it. Simple
+actions shell out to cmux directly; anything that touches a worktree or deletes
+goes through the SAME `crew:*` notification RPC the Swift sidebar used, so
+hooks/triage.py stays the single place that decides what those verbs do --
+including its "ask before deleting anything" gate on reclaim.
+
+Security. Bound to 127.0.0.1 only, so nothing off-box can reach it. That is not
+sufficient on its own: any page in any browser can issue a cross-origin GET to
+localhost, so a request must also carry the token from board-intent.token (mode
+0600, regenerated per server start). Actions are a fixed allowlist, row ids are
+looked up in a snapshot the collector writes rather than taken from the URL, and
+no argument is ever passed through a shell.
+"""
+
+import http.server
+import json
+import os
+import re
+import secrets
+import shutil
+import socket
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+STATE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "cmux-crew")
+TOKEN_FILE = os.path.join(STATE_DIR, "board-intent.token")
+PORT_FILE = os.path.join(STATE_DIR, "board-intent.port")
+TARGETS = os.path.join(STATE_DIR, "board-targets.json")
+LOG = os.path.join(STATE_DIR, "board-intent.log")
+
+_RESOLVER = os.path.join(HERE, "..", "bin", "crew-cmux-bin")
+DEEP_PLAN = os.path.join(os.path.expanduser("~"), ".claude", "skills",
+                         "deep-plan", "deep_plan.mjs")
+CREW_DIFF = os.path.join(HERE, "..", "bin", "crew-diff")
+USAGE_TMPL = os.path.join(HERE, "usage.tmpl.html")
+CODE_OPEN = os.path.join(HERE, "..", "bin", "crew-code-open")
+DP_STATE = os.path.join(os.path.expanduser("~"), ".claude", "deep-plan", "state")
+PLANS = os.path.join(os.path.expanduser("~"), ".claude", "plans")
+SKILL = os.path.join(os.path.expanduser("~"), ".claude", "skills", "deep-plan")
+MERMAID = os.path.join(SKILL, "vendor", "mermaid.min.js")
+# A slug reaches us from a URL, and it is about to be joined onto a path. Anchored
+# and character-limited so it can only ever name a file inside PLANS.
+SLUG_OK = re.compile(r"^[a-z0-9][a-z0-9._-]{0,120}$")
+MERMAID_DATA = re.compile(r'src="data:text/javascript;base64,[A-Za-z0-9+/=]+"')
+
+
+def cmux_bin():
+    env = os.environ.get("CREW_CMUX")
+    if env and os.path.exists(env):
+        return env
+    try:
+        out = subprocess.run([_RESOLVER], capture_output=True, text=True,
+                             timeout=10).stdout.strip()
+        if out:
+            return out
+    except Exception:
+        pass
+    return shutil.which("cmux") or "cmux"
+
+
+CMUX = cmux_bin()
+
+
+def log(msg):
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(LOG, "a") as fh:
+            fh.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+    except OSError:
+        pass
+
+
+def run(argv, cwd=None):
+    """Fire a command. Never through a shell, never blocking the response."""
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=20,
+                           cwd=cwd or None)
+        if p.returncode != 0:
+            log(f"FAIL {argv[1:4]} rc={p.returncode} {p.stderr.strip()[:160]}")
+            return False
+        return True
+    except Exception as exc:
+        log(f"FAIL {argv[1:4]} {exc}")
+        return False
+
+
+def notify(subtitle, body, workspace_id=None):
+    """Post a marked notification: the RPC channel hooks/triage.py dispatches."""
+    argv = [CMUX, "rpc", "notification.create", json.dumps({
+        "title": "crew", "subtitle": subtitle, "body": body,
+        **({"workspace_id": workspace_id} if workspace_id else {}),
+    })]
+    return run(argv)
+
+
+def targets():
+    try:
+        with open(TARGETS) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def plan_surface_file(slug):
+    return os.path.join(STATE_DIR, "plan-surface-" + slug)
+
+
+def open_plan(slug, port):
+    """Show a plan in the Dock, reusing its own surface.
+
+    Served over this server's origin rather than opened as a file://, for three
+    reasons that all point the same way: the page can then reference ONE cached
+    mermaid instead of embedding 3.4MB of it, its increment buttons are
+    same-origin with /inc so they need no injected token, and it gets a stable
+    URL the Dock can restore. The Swift sidebar had to use openURL because a
+    sidebar can only call cmux dispatcher methods; this is an ordinary process
+    and has no such limit.
+    """
+    url = "http://127.0.0.1:%d/plan/%s" % (port, slug)
+    keep = plan_surface_file(slug)
+    sid = ""
+    try:
+        with open(keep) as fh:
+            sid = fh.read().strip()
+    except OSError:
+        pass
+
+    if sid:
+        # Still there? Then this is a focus, not an open -- clicking `plan` twice
+        # must not stack Dock tabs.
+        p = subprocess.run([CMUX, "browser", "--surface", sid, "get", "url"],
+                           capture_output=True, text=True, timeout=10)
+        if p.returncode == 0:
+            run([CMUX, "browser", "--surface", sid, "goto", url])
+            run([CMUX, "focus", "--surface", sid])
+            return True, "focused " + sid
+
+    p = subprocess.run([CMUX, "new-surface", "--type", "browser", "--placement",
+                        "dock", "--url", url], capture_output=True, text=True, timeout=20)
+    out = (p.stdout or "") + (p.stderr or "")
+    if p.returncode != 0:
+        return False, "could not open a Dock surface: " + out.strip()[:160]
+    new = next((t for t in out.split() if len(t) == 36 and t.count("-") == 4), "")
+    if new:
+        try:
+            os.makedirs(STATE_DIR, exist_ok=True)
+            with open(keep, "w") as fh:
+                fh.write(new + "\n")
+        except OSError:
+            pass
+    return True, url
+
+
+def plan_page(slug):
+    """Prefer the live working surface; fall back to the frozen review."""
+    if not SLUG_OK.match(slug or ""):
+        return None
+    for suffix in (".working.html", ".review.html"):
+        p = os.path.join(PLANS, slug + suffix)
+        if os.path.exists(p):
+            return p
+    return None
+
+
+# What a plan page links to, and therefore what has to resolve under /plan/.
+# Nothing else does: the directory also holds .json and .txt artifacts, and
+# widening this to "any file" would publish them to anything that can reach the
+# port. (The answer keys and archived specs are not at risk either way -- they
+# live in ~/.claude/deep-plan/keys, a separate tree, deliberately.)
+SERVABLE = (".html", ".md")
+
+
+def plan_asset(rel):
+    """Resolve a /plan/ URL segment to a real file, or None.
+
+    Two shapes reach this. A bare slug is the entry point the board links to and
+    resolves to that plan's live surface. Anything ending in a servable extension
+    is an internal link FROM one of those pages -- `<slug>.review.html`,
+    `<slug>.md`, `<slug>.cutover/<slug>.epic.html` -- which resolve relative to
+    /plan/ and used to 404, breaking the way back to the review of record.
+    """
+    rel = urllib.parse.unquote(rel or "").strip()
+    if not rel or rel.startswith("/"):
+        return None
+    if not rel.endswith(SERVABLE):
+        return plan_page(rel)                    # a bare slug
+    # A relative path now, so containment is checked on the resolved path rather
+    # than trusted to a pattern: symlinks and any ".." that survives unquoting
+    # both have to land inside PLANS or this returns nothing.
+    base = os.path.realpath(PLANS)
+    target = os.path.realpath(os.path.join(PLANS, rel))
+    if target != base and not target.startswith(base + os.sep):
+        return None
+    return target if os.path.isfile(target) else None
+
+
+# ---------------------------------------------------------------------------
+# Actions. Keys are the chip labels the collector already emits, so the board's
+# vocabulary and this table cannot drift apart silently.
+# ---------------------------------------------------------------------------
+
+# Injected into a served plan surface. Same-origin, so it needs no port -- only
+# the token, which is why this is injected rather than shipped in the file.
+PLAN_JS = """
+<script>
+(function(){
+  var T = "__TOKEN__", SLUG = "__SLUG__";
+
+  // The generator renders every control disabled because on disk it cannot act.
+  // Being served is exactly what changes that, so enabling them is the first
+  // thing this does -- and the tooltip has to stop saying "when open in the Dock".
+  var acts = document.querySelectorAll(".dp-act[data-a][data-n]");
+  for (var i = 0; i < acts.length; i++) {
+    var b = acts[i];
+    b.disabled = false;
+    b.title = (b.title || "").replace(/ \u2014 available when.*$/, "");
+  }
+
+  // Turns on the affordance the stylesheet keeps behind .dp-live: a path is only
+  // underlined once there is something that can open it.
+  document.body.classList.add("dp-live");
+
+  function openPath(el) {
+    if (el.classList.contains("dp-busy")) return;
+    el.classList.add("dp-busy");
+    fetch("/open?t=" + encodeURIComponent(T) + "&slug=" + encodeURIComponent(SLUG) +
+          "&path=" + encodeURIComponent(el.getAttribute("data-file")))
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        el.classList.remove("dp-busy");
+        if (j && j.ok) return;
+        el.classList.add("dp-bad");
+        el.title = (j && j.detail) || "could not open it";
+        setTimeout(function(){ el.classList.remove("dp-bad"); }, 2500);
+      })
+      .catch(function(){
+        el.classList.remove("dp-busy");
+        el.classList.add("dp-bad");
+        el.title = "the crew intent server did not answer";
+      });
+  }
+
+  function fire(b) {
+    var a = b.getAttribute("data-a"), n = b.getAttribute("data-n"), why = "";
+    if (a === "block") {
+      why = window.prompt("Why is increment " + n + " blocked?") || "";
+      if (!why) return;                      // cancelled: park nothing
+    }
+    // One at a time. A double-click on `go` used to be two authorizations.
+    if (b.classList.contains("dp-busy")) return;
+    b.classList.add("dp-busy");
+    var q = "/inc?t=" + encodeURIComponent(T) + "&slug=" + encodeURIComponent(SLUG) +
+            "&n=" + encodeURIComponent(n) + "&a=" + encodeURIComponent(a) +
+            "&why=" + encodeURIComponent(why);
+    fetch(q).then(function(r){ return r.json(); }).then(function(j){
+      b.classList.remove("dp-busy");
+      b.classList.add(j && j.ok ? "dp-ok" : "dp-bad");
+      if (!j || !j.ok) { b.title = (j && j.detail) || "refused"; return; }
+      // The transition rewrote this file. Reload rather than patch the DOM: the
+      // page is a pure function of tracker state and guessing at the new state
+      // here is how the two drift.
+      setTimeout(function(){ location.reload(); }, 350);
+    }).catch(function(){
+      b.classList.remove("dp-busy");
+      b.classList.add("dp-bad");
+      b.title = "the crew intent server did not answer";
+    });
+  }
+
+  document.addEventListener("click", function(ev){
+    if (!ev.target.closest) return;
+    var f = ev.target.closest(".dp-path[data-file]");
+    if (f) { ev.preventDefault(); return openPath(f); }
+    var b = ev.target.closest(".dp-act[data-a][data-n]");
+    if (!b || b.disabled) return;
+    ev.preventDefault();
+    fire(b);
+  });
+
+  // Answer "has the tracker written anything?" for the page's own auto-refresh,
+  // rather than running a second reload loop beside it. Two timers reloading the
+  // same document is how you get a page that reloads twice and loses your scroll
+  // position on the second one.
+  //
+  // This is also what makes auto-refresh defensible as a DEFAULT: with a probe,
+  // "live" costs a 20-byte JSON every few seconds and the page only reloads when
+  // the file actually moved. Without one it would be a blind reload under the
+  // reader, which is what kept it opt-in before.
+  var seen = null;
+  window.__dpChanged = function(cb){
+    fetch("/plan-stamp?slug=" + encodeURIComponent(SLUG))
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        if (!j || !j.mtime) return cb(false);
+        if (seen === null) { seen = j.mtime; return cb(false); }
+        var moved = j.mtime !== seen;
+        seen = j.mtime;
+        cb(moved);
+      }).catch(function(){ cb(false); });
+  };
+
+  // The page armed its timer before this script ran, so it captured no probe.
+  // Re-arm it now that one exists -- a change event is the only handle the page
+  // exposes, and toggling twice lands back on whatever the reader chose.
+  var box = document.getElementById("dp-auto");
+  if (box) {
+    var want = box.checked;
+    box.checked = !want;
+    box.dispatchEvent(new Event("change"));
+    box.checked = want;
+    box.dispatchEvent(new Event("change"));
+  }
+})();
+</script>
+"""
+
+def act(action, row, extra):
+    ref = row.get("ref") or ""
+    wsid = row.get("id") or ""
+    cwd = row.get("cwd") or ""
+    pr_url = row.get("pr_url") or ""
+    slug = row.get("slug") or ""
+    title = row.get("name") or ""
+
+    if action in ("jump", "row"):
+        if not ref:
+            return False, "no workspace ref"
+        return run([CMUX, "workspace", "select", ref]), "select " + ref
+
+    if action == "diff":
+        # `cmux diff --workspace` defaults to the UNSTAGED source, which is empty
+        # for the common board row: a branch whose work is committed and under
+        # review. It failed with "diff input is empty" and read as a dead chip.
+        # crew-diff's `branch` is the diff a board row actually means -- this
+        # branch against its merge base -- and it must run inside the worktree
+        # because it resolves the repo from cwd.
+        if not cwd or not os.path.isdir(cwd):
+            return False, "no worktree for this row"
+        ok = run(["bash", CREW_DIFF, "branch"], cwd=cwd)
+        if ok:
+            return True, "diff branch in " + cwd
+        # A brand-new branch with no merge base still has uncommitted work.
+        if ref:
+            return run([CMUX, "diff", "--workspace", ref]), "diff --workspace " + ref
+        return False, "no diff available"
+
+    if action == "pr":
+        if not pr_url:
+            return False, "no PR on this row"
+        return run(["open", pr_url]), pr_url
+
+    if action == "checks":
+        if not pr_url:
+            return False, "no PR on this row"
+        return run(["open", pr_url + "/checks"]), pr_url + "/checks"
+
+    if action in ("plan", "take the check", "review"):
+        if not slug:
+            return False, "no plan on this row"
+        if not plan_page(slug):
+            return False, "no plan page for " + slug
+        # In the Dock, beside the board, rather than in the system browser. The
+        # plan is the other half of what the board is telling you, and the two
+        # being in different applications was the seam.
+        port = (current() or (None,))[0]
+        if not port:
+            return False, "intent server not answering"
+        return open_plan(slug, port)
+
+    if action == "code":
+        return notify("crew:code", cwd or title, wsid), "code " + (cwd or title)
+
+    if action == "reclaim":
+        # triage.py opens a terminal and asks before deleting anything.
+        return notify("crew:reclaim", title, wsid), "reclaim " + title
+
+    if action in ("sandbox-up", "sandbox-down"):
+        # triage.py resolves the worktree and runs crew-sandbox; the board only
+        # asks. Same channel as the Swift sidebar's sandbox chip.
+        return (notify("crew:" + action, cwd or title, wsid),
+                action + " " + (cwd or title))
+
+    if action in ("feed-allow", "feed-deny"):
+        # Approving what an agent asked for is consequential, so it goes through
+        # the RPC and hooks/triage.py decides -- exactly as the sidebar did. The
+        # board never approves anything itself.
+        return notify("crew:" + action, title, wsid), action + " " + title
+
+    if action == "sync":
+        return notify("crew:sync-now", "refresh"), "sync"
+
+    if action == "go":
+        if not slug:
+            return False, "no plan on this row"
+        n = "".join(ch for ch in str(extra) if ch.isdigit())
+        if not n:
+            return False, "no increment number"
+        # Through the RPC so the go-ahead is granted the same way everywhere.
+        return notify("crew:plan-go", f"{slug} {n}", wsid), f"go {slug} {n}"
+
+    if action == "close plan":
+        if not slug:
+            return False, "no plan on this row"
+        return run(["node", DEEP_PLAN, "close", slug]), "close " + slug
+
+    return False, "unknown action: " + action
+
+
+# The transitions the plan surface may ask for. `go` is the consequential one and
+# is the same verb the board's chip fires; the rest only move a card that is
+# already authorized. deep_plan.mjs is the authority either way -- it refuses an
+# illegal transition, so this list is about not OFFERING nonsense, not about
+# enforcement.
+INC_ACTIONS = ("go", "start", "done", "block", "reset")
+
+
+def increment(slug, n, action, why):
+    """Run one tracker transition. Returns (ok, detail)."""
+    if not SLUG_OK.match(slug or ""):
+        return False, "bad slug"
+    if not str(n).isdigit():
+        return False, "bad increment"
+    if action not in INC_ACTIONS:
+        return False, "bad transition"
+    argv = ["node", DEEP_PLAN, action, slug, str(n)]
+    if action == "block":
+        argv.append(why or "blocked from the plan surface")
+    p = subprocess.run(argv, capture_output=True, text=True, timeout=90)
+    detail = ((p.stdout or "") + (p.stderr or "")).strip().split("\n")[-1][:160]
+    if p.returncode != 0:
+        log("FAIL inc %s %s %s: %s" % (action, slug, n, detail))
+        return False, detail or "deep-plan refused it"
+    return True, "%s %s %s" % (action, slug, n)
+
+
+ACTIONS = ("jump", "row", "diff", "pr", "checks", "plan", "take the check",
+           "review", "code", "reclaim", "sync", "go", "close plan",
+           "sandbox-up", "sandbox-down", "feed-allow", "feed-deny")
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    server_version = "crew-board-intent"
+    token = ""
+
+    def log_message(self, *_args):
+        pass                      # our own log() is the record; stderr is noise
+
+    def _reply(self, code, body=b""):
+        self.send_response(code)
+        # The page is served from file://, so its origin is "null" and even a
+        # simple GET is cross-origin. Without this the fetch is blocked before
+        # it is sent. A GET with no custom headers needs no preflight.
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+
+    def _plan(self, slug):
+        """Serve a plan's live surface, with its buttons wired.
+
+        The HTML on disk renders every control `disabled`, because as a file it
+        genuinely cannot act -- it has no origin and no token. Serving is what
+        makes it live, so the transport is injected here rather than written into
+        the file: the generator emits meaning (data-a, data-n) and the server
+        supplies the ability.
+        """
+        page = plan_asset(slug)
+        if not page:
+            return self._reply(404, b'{"error":"no such plan page"}')
+        try:
+            html = open(page, encoding="utf-8", errors="replace").read()
+        except OSError as exc:
+            return self._reply(500, json.dumps({"error": str(exc)}).encode())
+        # The markdown source is linked from the pages too. Served as text, which
+        # is what opening it as a file did.
+        if page.endswith(".md"):
+            body = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            return self.wfile.write(body)
+        # A review page inlines mermaid as 3.4MB of base64, because as a lone
+        # shareable file it has to. Served from an origin that already hosts
+        # mermaid, that copy is pure weight -- so it is swapped for the shared URL
+        # on the way out. The file on disk is untouched, which matters: the review
+        # page is what `--rehydrate` must reproduce byte for byte.
+        html, swapped = MERMAID_DATA.subn('src="/mermaid.min.js"', html, count=1)
+        boot = PLAN_JS.replace("__TOKEN__", self.token).replace("__SLUG__", slug)
+        if "</body>" in html:
+            html = html.replace("</body>", boot + "</body>", 1)
+        else:
+            html += boot
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        # Never cached: the tracker rewrites this file on every transition, and a
+        # cached plan surface is a plan surface that lies.
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        return self.wfile.write(body)
+
+    def do_GET(self):
+        u = urllib.parse.urlparse(self.path)
+        q = urllib.parse.parse_qs(u.query)
+        one = lambda k: (q.get(k) or [""])[0]
+
+        if u.path == "/health":
+            return self._reply(200, b'{"ok":true}')
+
+        # One cached copy for every plan page, instead of 3.4MB of base64 in each.
+        # Unauthenticated on purpose: it is a public library file, the token is for
+        # things that DO something, and requiring it here would mean putting the
+        # token in a <script src> and therefore in the page's URL bar.
+        if u.path == "/mermaid.min.js":
+            try:
+                body = open(MERMAID, "rb").read()
+            except OSError:
+                return self._reply(404, b'{"error":"no vendored mermaid"}')
+            self.send_response(200)
+            self.send_header("Content-Type", "text/javascript; charset=utf-8")
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            return self.wfile.write(body)
+
+        if u.path == "/usage":
+            try:
+                tmpl = open(USAGE_TMPL, encoding="utf-8").read()
+            except OSError as exc:
+                return self._reply(500, json.dumps({"error": str(exc)}).encode())
+            # The template is read per request on purpose: editing the dashboard
+            # should not need a server restart.
+            body = tmpl.replace("__DATA__", json.dumps(usage_data())).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            return self.wfile.write(body)
+
+        if u.path.startswith("/plan/"):
+            return self._plan(u.path[len("/plan/"):])
+
+        if u.path == "/plan-stamp":
+            page = plan_asset(one("slug"))
+            try:
+                mt = int(os.path.getmtime(page)) if page else 0
+            except OSError:
+                mt = 0
+            return self._reply(200, json.dumps({"mtime": mt}).encode())
+
+        if u.path == "/open":
+            if not secrets.compare_digest(one("t"), self.token):
+                log("DENY bad token on /open from %s" % self.client_address[0])
+                return self._reply(403, b'{"error":"bad token"}')
+            ok, detail = open_file(one("slug"), one("path"))
+            log("%s open %s" % ("OK  " if ok else "FAIL", detail))
+            return self._reply(200 if ok else 500,
+                               json.dumps({"ok": ok, "detail": detail}).encode())
+
+        if u.path == "/inc":
+            if not secrets.compare_digest(one("t"), self.token):
+                log("DENY bad token on /inc from %s" % self.client_address[0])
+                return self._reply(403, b'{"error":"bad token"}')
+            ok, detail = increment(one("slug"), one("n"), one("a"), one("why"))
+            log("%s inc %s" % ("OK  " if ok else "FAIL", detail))
+            return self._reply(200 if ok else 500,
+                               json.dumps({"ok": ok, "detail": detail}).encode())
+
+        if u.path != "/do":
+            return self._reply(404, b'{"error":"no such path"}')
+
+        # Constant-time compare: this is a secret, and a timing oracle on a
+        # local port is still an oracle.
+        if not secrets.compare_digest(one("t"), self.token):
+            log(f"DENY bad token from {self.client_address[0]}")
+            return self._reply(403, b'{"error":"bad token"}')
+
+        action, rid, extra = one("a"), one("r"), one("x")
+        if action not in ACTIONS:
+            return self._reply(400, b'{"error":"unknown action"}')
+
+        row = targets().get(rid) or {}
+        if not row and action != "sync":
+            return self._reply(404, b'{"error":"unknown row"}')
+
+        ok, detail = act(action, row, extra)
+        log(f"{'OK  ' if ok else 'FAIL'} {action} {detail}")
+        return self._reply(200 if ok else 500,
+                           json.dumps({"ok": ok, "detail": detail}).encode())
+
+
+def free_port():
+    """Prefer the pinned port, then last time's, so a restart does not orphan the page.
+
+    The pin (`CREW_INTENT_PORT`, default 7345) exists for the web Dock: a
+    dock.json browser control carries a literal URL, so the /usage tab is only
+    as durable as this port. The pin is first preference, not a guarantee --
+    if something else holds it, the fallbacks below still bring the server up
+    and the next push re-injects whatever port we landed on.
+
+    The page holds whatever port it was last pushed with. A new port means every
+    click is a silent no-op until the next push re-injects it -- up to a full
+    listener tick of a board that looks fine and does nothing. Rebinding the same
+    port makes the common case (server restarts, page stays open) seamless, and a
+    push still corrects the page if the old port has been taken by something else.
+    """
+    candidates = []
+    try:
+        candidates.append(int(os.environ.get("CREW_INTENT_PORT", "") or 7345))
+    except ValueError:
+        candidates.append(7345)
+    try:
+        with open(PORT_FILE) as fh:
+            candidates.append(int(fh.read().strip()))
+    except (OSError, ValueError):
+        pass
+    for want in candidates:
+        try:
+            probe = socket.socket()
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind(("127.0.0.1", want))
+            probe.close()
+            return want
+        except OSError:
+            continue
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def serve(background=False):
+    """Start the server. Returns (port, token). Idempotent-ish: a live server on
+    the recorded port is left alone and its token reused."""
+    os.makedirs(STATE_DIR, exist_ok=True)
+
+    existing = current()
+    if existing:
+        return existing
+
+    # Reuse the existing token for the same reason the port is reused: the page
+    # holds both, and rotating either one turns every click into a 403 until the
+    # next push. The file is mode 0600, so persisting it concedes nothing to
+    # anything that could not already read it. Delete it to force a fresh one.
+    token = ""
+    try:
+        if os.stat(TOKEN_FILE).st_mode & 0o077 == 0:
+            with open(TOKEN_FILE) as fh:
+                token = fh.read().strip()
+    except OSError:
+        pass
+    token = token or secrets.token_urlsafe(24)
+    port = free_port()
+    Handler.token = token
+    http.server.ThreadingHTTPServer.allow_reuse_address = True
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+
+    # Write the token first and tightly. The port file is public knowledge; the
+    # token is the actual credential.
+    fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(token)
+    with open(PORT_FILE, "w") as fh:
+        fh.write(str(port))
+
+    log(f"listening on 127.0.0.1:{port}")
+    if background:
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        return port, token
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return port, token
+
+
+def current():
+    """(port, token) of a server that is actually answering, else None."""
+    try:
+        with open(PORT_FILE) as fh:
+            port = int(fh.read().strip())
+        with open(TOKEN_FILE) as fh:
+            token = fh.read().strip()
+    except (OSError, ValueError):
+        return None
+    try:
+        s = socket.create_connection(("127.0.0.1", port), timeout=0.4)
+        s.close()
+        return port, token
+    except OSError:
+        return None
+
+
+def plan_root(slug):
+    """The worktree a plan guards, straight from its state file.
+
+    Read rather than asked of deep_plan.mjs: this runs on a click, and a node
+    process per click to learn one string is a tax on the only interaction here
+    that has to feel instant.
+    """
+    if not SLUG_OK.match(slug or ""):
+        return None
+    try:
+        with open(os.path.join(DP_STATE, slug + ".json")) as fh:
+            return (json.load(fh) or {}).get("root") or None
+    except (OSError, ValueError):
+        return None
+
+
+def open_file(slug, rel):
+    """Open one file from a plan in VS Code, in that plan's worktree.
+
+    Hands off to bin/crew-code-open, which is the same thing cmux's own Cmd-click
+    uses (it is wired as app.preferredEditor) -- so a path clicked on the plan
+    surface lands in exactly the window a path clicked in a terminal would, with
+    the right branch's Source Control beside it.
+
+    The page proposes a RELATIVE path and the root comes from the tracker, so a
+    page cannot name a file outside the worktree it belongs to. Containment is
+    checked on the resolved path, which also settles symlinks.
+    """
+    root = plan_root(slug)
+    if not root:
+        return False, "no worktree recorded for " + (slug or "?")
+    rel = urllib.parse.unquote(rel or "").strip()
+    if not rel or os.path.isabs(rel):
+        return False, "not a relative path"
+    base = os.path.realpath(root)
+    target = os.path.realpath(os.path.join(base, rel))
+    if target != base and not target.startswith(base + os.sep):
+        return False, "outside the worktree"
+    if not os.path.exists(target):
+        # Common and worth saying plainly: half the declared files are "(new)".
+        return False, "not created yet: " + rel
+    ok = run(["bash", CODE_OPEN, target])
+    return ok, ("opened " + rel) if ok else ("crew-code-open refused " + rel)
+
+
+def _env_budget(name):
+    try:
+        return int(os.environ.get(name, "") or 0)
+    except ValueError:
+        return 0
+
+
+def usage_data(days=21):
+    """Everything the usage dashboard shows, from ccusage. Never computed here.
+
+    Windows and budgets, not dollars: on a subscription the constraint is the
+    5h usage window (and the week), so everything is tokens against a BUDGET.
+    Budgets are `CREW_BLOCK_BUDGET` / `CREW_WEEK_BUDGET` when set, else the
+    largest window/week on record — ccusage's own `--token-limit max` idea.
+    Token basis is ccusage's totalTokens (cache reads included) on BOTH sides
+    of every ratio, so the percentage is at least honest about its own unit.
+    """
+    exe = shutil.which("ccusage")
+    if not exe:
+        return {"error": "ccusage is not installed — npm i -g ccusage"}
+
+    def ask(args):
+        try:
+            p = subprocess.run([exe] + args + ["--json"], capture_output=True,
+                               text=True, timeout=45)
+            return json.loads(p.stdout) if p.returncode == 0 and p.stdout.strip() else None
+        except Exception:
+            return None
+
+    out = {}
+    # One blocks call carries both the active window and the history the
+    # default budget derives from, so the two cannot disagree.
+    blocks = [b for b in ((ask(["blocks"]) or {}).get("blocks") or [])
+              if not b.get("isGap")]
+    block_budget = _env_budget("CREW_BLOCK_BUDGET") or max(
+        (b.get("totalTokens") or 0 for b in blocks), default=0)
+    b = next((x for x in blocks if x.get("isActive")), None)
+    if b:
+        proj = b.get("projection") or {}
+        out["block"] = {
+            "tokens": b.get("totalTokens") or 0,
+            "budget": block_budget,
+            "projected": proj.get("totalTokens") or 0,
+            "remainingMinutes": proj.get("remainingMinutes") or 0,
+            "burnPerMinute": (b.get("burnRate") or {}).get("tokensPerMinute") or 0,
+            "entries": b.get("entries") or 0,
+            "models": b.get("models") or [],
+            "active": True,
+        }
+    out["blockBudget"] = block_budget
+    out["budgetSource"] = ("env" if _env_budget("CREW_BLOCK_BUDGET")
+                           else "largest 5h window on record")
+
+    daily = ask(["daily"]) or {}
+    rows = [r for r in (daily.get("daily") or []) if r.get("period")]
+    rows.sort(key=lambda r: r["period"])
+    out["daily"] = [{"period": r["period"], "tokens": r.get("totalTokens") or 0}
+                    for r in rows[-days:]]
+
+    weekly = ask(["weekly"]) or {}
+    wrows = [r for r in (weekly.get("weekly") or []) if r.get("week") or r.get("period")]
+    for r in wrows:
+        r["_p"] = r.get("week") or r.get("period")
+    wrows.sort(key=lambda r: r["_p"])
+    if wrows:
+        week_budget = _env_budget("CREW_WEEK_BUDGET") or max(
+            (r.get("totalTokens") or 0 for r in wrows), default=0)
+        cur = wrows[-1]
+        models = {}
+        for m in cur.get("modelBreakdowns") or []:
+            name = (m.get("modelName") or m.get("model") or "?").replace("claude-", "")
+            # Same basis as the week total (cache included), or the models list
+            # reads as a rounding error under the hero figure.
+            models[name] = models.get(name, 0) + (m.get("totalTokens") or sum(
+                m.get(k) or 0 for k in ("inputTokens", "outputTokens",
+                                        "cacheCreationTokens", "cacheReadTokens")))
+        out["week"] = {
+            "label": "week of " + str(cur["_p"]),
+            "tokens": cur.get("totalTokens") or 0,
+            "budget": week_budget,
+            "models": [{"name": k, "tokens": v}
+                       for k, v in sorted(models.items(), key=lambda kv: -kv[1])],
+        }
+    return out
+
+
+def selftest():
+    """Offline checks on the two things that break silently.
+
+        python3 crew-board-intent --selftest
+
+    Route resolution and the mermaid swap have both regressed once. Neither
+    announces itself: a broken internal link is a 404 nobody clicks until they
+    want the review of record, and a swap that stops matching just makes pages
+    4.8MB again. No server or cmux needed -- this reads the real plans directory.
+    """
+    import glob
+    ok = bad = 0
+
+    def check(name, cond, detail=""):
+        nonlocal ok, bad
+        if cond:
+            ok += 1
+            print("  ok   %s" % name)
+        else:
+            bad += 1
+            print("  FAIL %s%s" % (name, (" — " + detail) if detail else ""))
+
+    working = sorted(glob.glob(os.path.join(PLANS, "*.working.html")))
+    review = sorted(glob.glob(os.path.join(PLANS, "*.review.html")))
+    if not review:
+        print("  --   no plans on this machine; route checks skipped")
+    else:
+        slug = os.path.basename(review[0])[: -len(".review.html")]
+        check("a bare slug resolves to a page", bool(plan_asset(slug)))
+        check("<slug>.review.html resolves — the way back to the review of record",
+              plan_asset(slug + ".review.html") == os.path.realpath(
+                  os.path.join(PLANS, slug + ".review.html")))
+        md = os.path.join(PLANS, slug + ".md")
+        if os.path.exists(md):
+            check("<slug>.md resolves", bool(plan_asset(slug + ".md")))
+        sub = glob.glob(os.path.join(PLANS, "*.cutover", "*.epic.html"))
+        if sub:
+            rel = os.path.relpath(sub[0], PLANS)
+            check("a link into a .cutover subdirectory resolves", bool(plan_asset(rel)))
+
+    # Nothing outside the plans directory, and nothing in it that pages do not link to.
+    for probe in ("../deep-plan/keys/x.key.json", "../../.ssh/id_rsa",
+                  "%2e%2e%2fetc%2fpasswd", "/etc/passwd",
+                  "a.cutover/../../deep-plan/keys/x.key.json"):
+        check("refused: %s" % probe, plan_asset(probe) is None)
+    js = sorted(glob.glob(os.path.join(PLANS, "*.json")))
+    if js:
+        check("refused: a .json artifact in the plans directory",
+              plan_asset(os.path.basename(js[0])) is None)
+
+    # The swap is what keeps a served plan at ~100KB instead of ~4.8MB.
+    # Whole file, not a prefix: the boot script is emitted AFTER the page body, so
+    # a truncated read finds nothing and reports a broken swap that works fine.
+    # (This check failed on its first run for exactly that reason.)
+    inlined = None
+    for f in review + working:
+        if MERMAID_DATA.search(open(f, encoding="utf-8", errors="replace").read()):
+            inlined = f
+            break
+    if inlined:
+        check("the mermaid swap still matches a real page", True,
+              "inline <script src=data:...> format changed; served pages would be ~4.8MB")
+    else:
+        print("  --   no inlined page found; swap check skipped")
+
+    # /open hands a path to VS Code, so its refusals matter more than its successes.
+    # Only the refusal paths are exercised: the success path launches an editor,
+    # which a selftest has no business doing.
+    slugs = [os.path.basename(f)[: -len(".json")]
+             for f in glob.glob(os.path.join(DP_STATE, "*.json"))
+             if not f.endswith(".pre-repair.json")]
+    tracked = next((sl for sl in slugs if plan_root(sl)), None)
+    if tracked:
+        for probe, why in ((("../../../etc/passwd"), "traversal"),
+                           ("/etc/passwd", "absolute"),
+                           ("a/../../../../etc/passwd", "traversal through a subdir"),
+                           ("does/not/exist-" + secrets.token_hex(4) + ".rb", "missing file")):
+            ok_, detail = open_file(tracked, probe)
+            check("/open refuses %s" % why, ok_ is False, detail)
+        check("/open refuses an unknown plan", open_file("no-such-plan-xyz", "a.rb")[0] is False)
+    else:
+        print("  --   no tracked plan with a root; /open checks skipped")
+
+    # The spend dashboard is a template plus injected JSON; both halves can rot
+    # independently. ccusage itself is not run here -- it takes a second and this
+    # is a lint, not a smoke test.
+    try:
+        tmpl = open(USAGE_TMPL, encoding="utf-8").read()
+        check("the usage template has its data placeholder", "__DATA__" in tmpl)
+        check("...and a table twin for the chart", 'id="tbl"' in tmpl)
+        check("...and does not reuse a board status colour for the series",
+              "#e69875" in tmpl and "#dfa000" not in tmpl and "#e67e80" not in tmpl,
+              "gold and red are 'needs you' and 'broken' on the board")
+    except OSError as exc:
+        check("the usage template is readable", False, str(exc))
+    check("ccusage is installed", bool(shutil.which("ccusage")),
+          "npm i -g ccusage — the status line and /usage both need it")
+
+    check("the injected script leaves no placeholders",
+          "__TOKEN__" not in PLAN_JS.replace("__TOKEN__", "x").replace("__SLUG__", "y")
+          and "__SLUG__" not in PLAN_JS.replace("__TOKEN__", "x").replace("__SLUG__", "y"))
+
+    print("\n%s intent selftest: %d passed, %d failed%s"
+          % ("\033[31m" if bad else "\033[32m", ok, bad, "\033[0m"))
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        sys.exit(selftest())
+    if "--status" in sys.argv:
+        cur = current()
+        print(json.dumps({"running": bool(cur),
+                          "port": cur[0] if cur else None,
+                          "cmux": CMUX}, indent=2))
+    else:
+        serve(background=False)

@@ -1,0 +1,729 @@
+#!/usr/bin/env bash
+# crew — install, inspect, and remove the cmux crew layer.
+#
+#   crew status     what is installed and live right now
+#   crew adopt      back-fill a session that started before crew was applied
+#   crew sync       reconcile every workspace against what is actually true
+#   crew timer      on|off|status — periodic reconcile via launchd (opt-in)
+#   crew listen     on|off|status|log — reconcile on cmux workspace events (opt-in)
+#   crew color      list|show|assign|apply|free|prune — per-worktree identity color
+#   crew doctor     check the install, exit non-zero if something is wrong
+#   crew apply      render config, install sidebar + Dock, wire Claude hooks
+#   crew on|off     enable / disable at runtime (hooks stay wired, become no-ops)
+#   crew uninstall  restore the pre-crew cmux.json, unwire the Claude hooks
+#   crew demo       fire each hook with a synthetic payload and show the effect
+#
+# Design notes:
+#   - cmux has no config include mechanism, so `apply` renders the whole of
+#     ~/.config/cmux/cmux.json from config/cmux.jsonc. The live file is copied
+#     to a timestamped .bak first; `uninstall` restores the newest one.
+#   - ~/.claude/hooks/cmux/guard_bash.sh is deliberately NOT part of crew. It
+#     enforces the never-force-push / no---no-verify rules, and disabling crew
+#     must never disable it.
+
+set -uo pipefail
+
+# Resolve through symlinks: `crew` is normally invoked via ~/.local/bin/crew, so
+# a naive dirname would make CREW_HOME ~/.local and every package path miss.
+_src="${BASH_SOURCE[0]}"
+while [ -L "$_src" ]; do
+  _dir="$(cd -P -- "$(dirname -- "$_src")" && pwd)"
+  _src="$(readlink -- "$_src")"
+  case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
+done
+CREW_HOME="$(cd -P -- "$(dirname -- "$_src")/.." && pwd)"
+CMUX_JSON="$HOME/.config/cmux/cmux.json"
+SETTINGS="$HOME/.claude/settings.json"
+SIDEBAR_DIR="$HOME/.config/cmux/sidebars"
+STATE="${XDG_CACHE_HOME:-$HOME/.cache}/cmux-crew"
+LOCALBIN="$HOME/.local/bin"
+MONOLITH="${CREW_MONOLITH:-__MAIN_REPO__}"
+HOOK="$CREW_HOME/hooks/crew-hook.sh"
+
+CMUX="$(command -v cmux || true)"
+# One definition of "which cmux": bin/crew-cmux-bin. A hardcoded bundle path kept
+# driving the OLD cli against the NEW app after the switch to the nightly build --
+# version skew that fails silently, because the old bundle is still on disk.
+[ -n "$CMUX" ] || CMUX="$("$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/crew-cmux-bin" 2>/dev/null || true)"
+[ -n "$CMUX" ] || CMUX=cmux
+
+ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+bad()  { printf '  \033[31m✗\033[0m %s\n' "$*"; FAIL=1; }
+warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
+head_() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+
+# __INTENT_PORT__ feeds the web Dock's /usage browser control; it must match
+# the intent server's pin (crew-board-intent free_port, same default).
+render() { sed -e "s|__HOME__|$HOME|g" -e "s|__INTENT_PORT__|${CREW_INTENT_PORT:-7345}|g" "$1"; }
+
+# ---------------------------------------------------------------- apply -----
+cmd_apply() {
+  head_ "crew apply"
+
+  mkdir -p "$HOME/.config/cmux" "$SIDEBAR_DIR" "$STATE"
+
+  # 1. back up whatever cmux.json is there now — but only if it is not already
+  #    crew's own output. Re-applying must never overwrite the pre-crew backup
+  #    with a crew-rendered one, or `crew uninstall` can no longer get you home.
+  if [ -f "$CMUX_JSON" ]; then
+    if grep -q "crew-triage" "$CMUX_JSON" 2>/dev/null; then
+      ok "cmux.json is already crew-rendered — keeping the existing backup"
+    else
+      local bak="$CMUX_JSON.$(date +%Y%m%d-%H%M%S).bak"
+      cp "$CMUX_JSON" "$bak"
+      ok "backed up cmux.json -> $(basename "$bak")"
+    fi
+  fi
+
+  # 2. render config
+  render "$CREW_HOME/config/cmux.jsonc" > "$CMUX_JSON"
+  ok "rendered cmux.json from config/cmux.jsonc"
+
+  # 3. put the commands on PATH. ~/.local/bin is already there, so this needs
+  #    no shell-config edit. crew-code-open is deliberately excluded: cmux
+  #    invokes it by absolute path, nobody types it.
+  if [ -d "$LOCALBIN" ] || mkdir -p "$LOCALBIN" 2>/dev/null; then
+    local linked=0
+    for f in crew crew-color crew-diff crew-code crew-digest crew-feed crew-reclaim crew-resume crew-sandbox crew-spec crew-sync crew-worktree crew-watch crew-listen; do
+      ln -sf "$CREW_HOME/bin/$f" "$LOCALBIN/$f" && linked=$((linked + 1))
+    done
+    # The board lives in board/, not bin/: it is a surface with an HTML shell beside it.
+    for f in crew-board crew-board-diag; do
+      ln -sf "$CREW_HOME/board/$f" "$LOCALBIN/$f" && linked=$((linked + 1))
+    done
+    ok "linked $linked commands into $LOCALBIN"
+  fi
+
+  # 4. sidebar
+  cp "$CREW_HOME/sidebars/crew.swift" "$SIDEBAR_DIR/crew.swift"
+  ok "installed sidebar -> $SIDEBAR_DIR/crew.swift"
+
+  # 4. project Dock, untracked
+  if [ -d "$MONOLITH/.git" ]; then
+    mkdir -p "$MONOLITH/.cmux"
+    render "$CREW_HOME/config/dock.json" > "$MONOLITH/.cmux/dock.json"
+    local ex="$MONOLITH/.git/info/exclude"
+    if ! grep -qx '.cmux/' "$ex" 2>/dev/null; then
+      printf '\n# crew (local cmux Dock config)\n.cmux/\n' >> "$ex"
+    fi
+    ok "installed Dock -> $MONOLITH/.cmux/dock.json (untracked)"
+  else
+    warn "no monolith checkout at $MONOLITH — skipped Dock"
+  fi
+
+  # 4b. global Dock (web Dock beta). Many hobby repos, one board: the global
+  #     config seeds every workspace's Dock; a repo's own .cmux/dock.json still
+  #     wins wholesale in that repo (precedence, not merge — which is why the
+  #     project copy above carries the same board/usage controls).
+  if [ -f "$HOME/.config/cmux/dock.json" ] && ! grep -q '"id": *"board"' "$HOME/.config/cmux/dock.json" 2>/dev/null; then
+    cp "$HOME/.config/cmux/dock.json" "$HOME/.config/cmux/dock.json.pre-crew.bak"
+    ok "backed up dock.json -> dock.json.pre-crew.bak"
+  fi
+  render "$CREW_HOME/config/dock.global.json" > "$HOME/.config/cmux/dock.json"
+  ok "installed global Dock -> ~/.config/cmux/dock.json (board + usage)"
+
+  # 5. Claude hooks. Back up settings.json the same way, and for the same
+  #    reason: apply supersedes the v1 bridge hooks, and `uninstall` strips
+  #    crew surgically rather than restoring wholesale (settings.json also
+  #    accumulates permissions over time). This backup is the way back to the
+  #    exact pre-crew wiring if you ever want it.
+  if [ -f "$SETTINGS" ] && ! grep -q "crew-hook.sh" "$SETTINGS" 2>/dev/null; then
+    cp "$SETTINGS" "$SETTINGS.pre-crew.$(date +%Y%m%d-%H%M%S).bak"
+    ok "backed up settings.json (pre-crew hook wiring)"
+  fi
+  # Not `&& ok`: a silent wiring failure is the one failure mode that leaves an
+  # install looking complete and doing nothing.
+  if wire_hooks; then
+    ok "wired Claude hooks in settings.json"
+  else
+    bad "could not wire Claude hooks — the board will show no agent state"
+  fi
+
+  chmod +x "$CREW_HOME"/bin/* "$CREW_HOME"/hooks/*.sh "$CREW_HOME"/hooks/*.py 2>/dev/null
+  rm -f "$STATE/disabled"
+
+  # 6. validate + reload
+  "$CMUX" config validate >/dev/null 2>&1 && ok "cmux config validates" \
+    || bad "cmux config validate failed — run: cmux config doctor"
+  "$CMUX" reload-config >/dev/null 2>&1 && ok "reloaded cmux + ghostty config" \
+    || warn "reload-config failed (is cmux running?)"
+
+  # The template carries activePaneBorderColor as null, so an apply resets the
+  # pane frame. Repaint it now rather than leaving it blank until the next
+  # workspace switch.
+  if [ -x "$CREW_HOME/bin/crew-frame" ]; then
+    python3 "$CREW_HOME/bin/crew-frame" >/dev/null 2>&1 \
+      && ok "pane frame follows the selected workspace" \
+      || warn "crew-frame did not run"
+  fi
+
+  printf '\nNew Claude sessions pick up the hooks. Open the board with:\n  cmux sidebar open crew\n'
+}
+
+# Rewrites only crew's own hook entries. Every other hook — whimsy, gitnexus,
+# guard_bash — is preserved exactly as found.
+wire_hooks() {
+  python3 - "$SETTINGS" "$HOOK" <<'PY'
+import json, os, sys
+
+settings_path, hook = sys.argv[1], sys.argv[2]
+# A machine where Claude Code has never run has no settings.json, which is
+# exactly the case a fresh install is. Opening it blind crashed here, and
+# `apply` carried on reporting success -- a green install with no hooks wired.
+if os.path.exists(settings_path):
+    with open(settings_path) as fh:
+        s = json.load(fh)
+else:
+    s = {}
+    os.makedirs(os.path.dirname(settings_path) or ".", exist_ok=True)
+
+hooks = s.setdefault("hooks", {})
+
+def entry(arg, timeout=5, msg=None):
+    h = {"type": "command", "command": f'bash "{hook}" {arg}', "timeout": timeout}
+    if msg:
+        h["statusMessage"] = msg
+    return h
+
+# Anything that runs crew-hook.sh, or the v1 bridge crew replaces.
+SUPERSEDED = ("crew-hook.sh", "on_stop_notify.sh", "on_session_start.sh",
+              "on_notification.sh", "set_status_running.sh", "clear_status.sh",
+              "flash_on_edit.sh")
+
+def strip(event):
+    for matcher in hooks.get(event, []):
+        matcher["hooks"] = [
+            h for h in matcher.get("hooks", [])
+            if not any(m in (h.get("command") or "") for m in SUPERSEDED)
+        ]
+    hooks[event] = [m for m in hooks.get(event, []) if m.get("hooks")]
+
+def add(event, matcher, hook_entry):
+    strip_target = [m for m in hooks.setdefault(event, [])
+                    if m.get("matcher", "") == matcher]
+    if strip_target:
+        strip_target[0].setdefault("hooks", []).insert(0, hook_entry)
+    else:
+        hooks[event].insert(0, {"matcher": matcher, "hooks": [hook_entry]})
+
+for ev in ("SessionStart", "SessionEnd", "Stop", "Notification",
+           "PreToolUse", "PostToolUse"):
+    strip(ev)
+
+add("SessionStart", "", entry("session"))
+add("SessionEnd", "", entry("end", 3))
+add("Stop", "", entry("stop"))
+add("Notification", "", entry("notification"))
+add("PreToolUse", "", entry("pretool", 3))
+add("PostToolUse", "TaskCreate|TaskUpdate|TodoWrite",
+    entry("task", 5, "Publishing plan to cmux..."))
+
+with open(settings_path, "w") as fh:
+    json.dump(s, fh, indent=2)
+    fh.write("\n")
+PY
+}
+
+# ------------------------------------------------------------ uninstall -----
+cmd_uninstall() {
+  head_ "crew uninstall"
+
+  local bak
+  bak="$(ls -t "$CMUX_JSON".*.bak 2>/dev/null | head -1)"
+  if [ -n "$bak" ]; then
+    cp "$bak" "$CMUX_JSON"
+    ok "restored cmux.json from $(basename "$bak")"
+  else
+    warn "no backup found — leaving cmux.json as is"
+  fi
+
+  python3 - "$SETTINGS" <<'PY'
+import json, sys
+p = sys.argv[1]
+with open(p) as fh:
+    s = json.load(fh)
+hooks = s.get("hooks", {})
+for event, matchers in list(hooks.items()):
+    for m in matchers:
+        m["hooks"] = [h for h in m.get("hooks", [])
+                      if "crew-hook.sh" not in (h.get("command") or "")]
+    hooks[event] = [m for m in matchers if m.get("hooks")]
+    if not hooks[event]:
+        del hooks[event]
+with open(p, "w") as fh:
+    json.dump(s, fh, indent=2)
+    fh.write("\n")
+PY
+  ok "unwired Claude hooks (whimsy, gitnexus, guard_bash untouched)"
+
+  # Only remove links that actually point back into the package.
+  local unlinked=0
+  for f in crew crew-color crew-diff crew-code crew-digest crew-feed crew-reclaim crew-resume crew-sandbox crew-spec crew-sync crew-worktree crew-watch crew-listen; do
+    if [ -L "$LOCALBIN/$f" ] && [ "$(readlink "$LOCALBIN/$f")" = "$CREW_HOME/bin/$f" ]; then
+      rm -f "$LOCALBIN/$f"; unlinked=$((unlinked + 1))
+    fi
+  done
+  [ "$unlinked" -gt 0 ] && ok "unlinked $unlinked commands from $LOCALBIN"
+
+  launchctl unload "$PLIST" 2>/dev/null; rm -f "$PLIST" 2>/dev/null && ok "removed sync timer"
+  # Both launchd jobs are opt-in, so neither may survive an uninstall — a
+  # KeepAlive listener left behind would keep respawning against a crew that is
+  # no longer installed.
+  launchctl unload "$PLIST_LISTEN" 2>/dev/null; rm -f "$PLIST_LISTEN" 2>/dev/null && ok "removed event listener"
+  # The daemon is a plain detached process now, so uninstall has to stop it.
+  if [ -f "$STATE/listen.pid" ]; then
+    _p="$(cat "$STATE/listen.pid" 2>/dev/null || true)"
+    [ -n "$_p" ] && kill "$_p" 2>/dev/null && ok "stopped the reconciler (pid $_p)"
+    rm -f "$STATE/listen.pid"
+  fi
+  rm -f "$SIDEBAR_DIR/crew.swift" && ok "removed sidebar"
+  rm -f "$MONOLITH/.cmux/dock.json" 2>/dev/null && ok "removed Dock config"
+  rm -rf "$STATE" && ok "cleared crew state"
+
+  "$CMUX" reload-config >/dev/null 2>&1 && ok "reloaded cmux config"
+
+  printf '\nguard_bash.sh is still wired — crew never owned it.\n'
+  printf 'The v1 cmux bridge hooks crew superseded are NOT re-wired. Their\n'
+  printf 'scripts are untouched at ~/.claude/hooks/cmux/ if you want them back:\n'
+  printf '  on_session_start.sh  on_stop_notify.sh  on_notification.sh\n'
+  printf '  set_status_running.sh  clear_status.sh  flash_on_edit.sh\n'
+  local sbak
+  sbak="$(ls -t "$SETTINGS".pre-crew.*.bak 2>/dev/null | head -1)"
+  [ -n "$sbak" ] && printf 'settings.json as it was just before crew: %s\n' "$sbak"
+}
+
+# ------------------------------------------------------------- on / off -----
+cmd_on()  { mkdir -p "$STATE"; rm -f "$STATE/disabled"; echo "crew on"; }
+cmd_off() { mkdir -p "$STATE"; : > "$STATE/disabled"; echo "crew off (hooks stay wired, now no-ops)"; }
+
+# --------------------------------------------------------------- adopt ------
+# Claude Code binds hooks at session start, so a session already running when
+# `crew apply` ran will never publish anything — no name, no progress, no lane.
+# `crew adopt` back-fills that session's workspace once, without a restart.
+#
+# It cannot make future turns publish. For that the session has to be restarted,
+# which `--resume` makes cheap (crew-resume does it in one keystroke).
+crew_session_id() {
+  python3 - "$HOME/.cmuxterm/claude-hook-sessions.json" "${CMUX_WORKSPACE_ID:-}" <<'PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        d = json.load(fh)
+    print(((d.get("activeSessionsByWorkspace") or {}).get(sys.argv[2]) or {}).get("sessionId") or "")
+except Exception:
+    pass
+PY
+}
+
+cmd_adopt() {
+  head_ "crew adopt"
+  [ -n "${CMUX_WORKSPACE_ID:-}" ] || { bad "not inside a cmux terminal"; return 1; }
+
+  local sid; sid="$(crew_session_id)"
+  [ -n "$sid" ] || { bad "no Claude session registered for this workspace"; return 1; }
+  ok "session $sid"
+
+  local payload
+  payload="$(python3 -c 'import json,os,sys; print(json.dumps({"cwd": os.getcwd(), "session_id": sys.argv[1]}))' "$sid")"
+
+  # Naming + colour, then plan/progress. Deliberately not the notification or
+  # lane events: back-filling should not fire a banner or claim the workspace
+  # is blocked on you.
+   printf '%s' "$payload" | CREW_ADOPT=1 bash "$HOOK" session
+  ok "renamed workspace and tab"
+  printf '%s' "$payload" | bash "$HOOK" task
+  if [ -d "$HOME/.claude/tasks/$sid" ]; then
+    ok "published plan ($(ls "$HOME/.claude/tasks/$sid"/[0-9]*.json 2>/dev/null | wc -l | tr -d ' ') tasks)"
+  else
+    warn "no task list for this session yet — progress stays empty until it has one"
+  fi
+
+  mkdir -p "$STATE"
+  : > "$STATE/session-$sid.adopted"
+
+  printf '\nBack-filled once. Future turns in this session still will not publish —\n'
+  printf 'hooks bind at session start. To get live updates, restart it:\n'
+  printf '  crew-resume        (pick this session, ^T to resume in place)\n'
+}
+
+# --------------------------------------------------------------- timer ------
+# The Stop hook already reconciles every workspace after any turn, so the only
+# gap is "everything is idle and something is stuck" — where nothing changes
+# anyway until you touch it. This closes that gap for people who would rather
+# not think about it. Opt-in, because it is a persistent background job.
+PLIST="$HOME/Library/LaunchAgents/com.crew.sync.plist"
+
+cmd_timer() {
+  # Retired. `com.crew.sync` could never work: a launchd job holds no
+  # CMUX_SOCKET_CAPABILITY, so every cmux call inside crew-sync was refused and
+  # swallowed. It was loaded and reconciling nothing -- proven with the `synced:`
+  # stamp, which stayed 140s old across a launchd run and moved to 3s when the
+  # same binary ran from a cmux terminal.
+  #
+  # The periodic reconcile now lives in crew-listen's ticker, which the
+  # SessionStart hook starts and which therefore inherits the token.
+  case "${1:-status}" in
+    off)
+      launchctl unload "$PLIST" 2>/dev/null
+      rm -f "$PLIST" && ok "removed the retired com.crew.sync job"
+      ;;
+    *)
+      printf '  timer is retired — a launchd job cannot reach the cmux socket.\n'
+      printf '  the periodic reconcile is crew-listen'"'"'s tick: crew listen status\n'
+      if launchctl list 2>/dev/null | grep -c com.crew.sync >/dev/null; then
+        warn "com.crew.sync is still loaded and doing nothing — remove it: crew timer off"
+      fi
+      ;;
+  esac
+}
+
+# -------------------------------------------------------------- listen ------
+# The third trigger. The Stop hook covers "an agent just finished", the timer
+# covers "nothing is happening but something drifted", and this covers the gap
+# neither can: a worktree opening or closing makes the board wrong *now*, and
+# waiting up to five minutes to notice is the one case you watch happen.
+#
+# It cannot help with CI, review or Jira. There is no git event and no PR event
+# in cmux's catalog, and those services are not on this machine — only the poll
+# learns them. See crew-listen's own header and FINDINGS.md.
+#
+# KeepAlive, not StartInterval: this one is a long-lived subscription rather
+# than a periodic job.
+PLIST_LISTEN="$HOME/Library/LaunchAgents/com.crew.listen.plist"
+
+cmd_listen() {
+  # No launchd. A launchd job cannot open the cmux socket -- it holds no
+  # CMUX_SOCKET_CAPABILITY -- so `com.crew.listen` respawned every 10s doing
+  # nothing, and `com.crew.sync` reconciled nothing at all. The daemon is started
+  # by the SessionStart hook instead, which runs inside a cmux terminal and so
+  # passes the token on to its detached child. See FINDINGS.md.
+  local pidf="$STATE/listen.pid" pid=""
+  [ -f "$pidf" ] && pid="$(cat "$pidf" 2>/dev/null || true)"
+  local live=""
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && live=1
+
+  case "${1:-status}" in
+    on)
+      rm -f "$STATE/listen.off"
+      if [ -n "$live" ]; then
+        ok "listener already running (pid $pid)"
+      else
+        mkdir -p "$STATE"
+        ( nohup "$CREW_HOME/bin/crew-listen" >>"$STATE/listen.log" 2>&1 & ) >/dev/null 2>&1
+        sleep 1
+        pid="$(cat "$pidf" 2>/dev/null || true)"
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+          ok "listener on (pid $pid) — events + a ${CREW_TICK_SECONDS:-120}s reconcile, board every ${CREW_BOARD_TICK:-10}s"
+        else
+          bad "listener failed to start; see: crew listen log"
+        fi
+      fi
+      ;;
+    off)
+      : > "$STATE/listen.off"
+      if [ -n "$live" ]; then
+        kill "$pid" 2>/dev/null && ok "listener off (was pid $pid)"
+      else
+        ok "listener off"
+      fi
+      rm -f "$pidf"
+      ;;
+    log)
+      [ -f "$STATE/listen.log" ] && tail -n "${2:-20}" "$STATE/listen.log" \
+        || printf '  no listener log yet (%s)\n' "$STATE/listen.log"
+      ;;
+    *)
+      if [ -n "$live" ]; then
+        ok "listener running (pid $pid) — events + a ${CREW_TICK_SECONDS:-120}s reconcile, board every ${CREW_BOARD_TICK:-10}s"
+      elif [ -f "$STATE/listen.off" ]; then
+        printf '  listener off by choice — turn on with: crew listen on\n'
+      else
+        printf '  listener not running — starts on the next Claude session, or: crew listen on\n'
+      fi
+      ;;
+  esac
+}
+
+# -------------------------------------------------------------- status ------
+cmd_status() {
+  head_ "crew status"
+  [ -f "$STATE/disabled" ] && printf '  runtime: \033[33mdisabled\033[0m (crew on)\n' \
+                           || printf '  runtime: \033[32menabled\033[0m\n'
+  printf '  package: %s\n' "$CREW_HOME"
+  printf '  cmux:    %s\n' "$("$CMUX" version 2>/dev/null || echo 'not found')"
+
+  # All three reconcile triggers in one place, because "why is the board stale"
+  # is almost always one of them being off. grep -c, not -q — see crew-sandbox.
+  local jobs; jobs="$(launchctl list 2>/dev/null || true)"
+  printf '  reconcile: Stop hook (<=%ss)' "${CREW_SYNC_INTERVAL:-120}"
+  local lpid=""
+  [ -f "$STATE/listen.pid" ] && lpid="$(cat "$STATE/listen.pid" 2>/dev/null || true)"
+  if [ -n "$lpid" ] && kill -0 "$lpid" 2>/dev/null; then
+    printf ' + daemon (events + %ss tick, pid %s)\n' "${CREW_TICK_SECONDS:-120}" "$lpid"
+  else
+    printf ' + \033[33mno daemon\033[0m (starts on the next Claude session)\n'
+  fi
+  case "$jobs" in
+    *com.crew.sync*|*com.crew.listen*)
+      printf '  \033[33m!\033[0m a retired launchd job is still loaded — remove it: crew timer off\n' ;;
+  esac
+  if [ -f "$STATE/sync-stamp" ]; then
+    local last age; last="$(cat "$STATE/sync-stamp" 2>/dev/null || echo 0)"
+    age=$(( $(date +%s) - last ))
+    printf '  last sync: %ss ago\n' "$age"
+  else
+    printf '  last sync: \033[33mnever\033[0m\n'
+  fi
+
+  head_ "this session"
+  if [ -n "${CMUX_WORKSPACE_ID:-}" ]; then
+    local sid; sid="$(crew_session_id)"
+    if [ -z "$sid" ]; then
+      printf '  no Claude session registered for this workspace\n'
+    elif [ -f "$STATE/session-$sid" ]; then
+      printf '  hooks: \033[32mlive\033[0m (started after crew was applied)\n'
+    elif [ -f "$STATE/session-$sid.adopted" ]; then
+      printf '  hooks: \033[33mnot live, back-filled once\033[0m — restart for live updates\n'
+    else
+      printf '  hooks: \033[33mnot live\033[0m — this session predates crew apply.\n'
+      printf '         run \033[1mcrew adopt\033[0m to back-fill it now, or restart it\n'
+    fi
+    [ -n "$sid" ] && printf '  session: %s\n' "$sid"
+  else
+    printf '  not running inside a cmux terminal\n'
+  fi
+
+  head_ "this workspace"
+  if [ -n "${CMUX_WORKSPACE_ID:-}" ]; then
+    "$CMUX" sidebar-state 2>/dev/null | sed 's/^/  /'
+  else
+    printf '  not running inside a cmux terminal\n'
+  fi
+}
+
+# -------------------------------------------------------------- doctor ------
+cmd_doctor() {
+  FAIL=0
+  head_ "binaries"
+  [ -x "$CMUX" ] && ok "cmux: $CMUX" || bad "cmux not found"
+  command -v python3 >/dev/null && ok "python3" || bad "python3 missing (hooks need it)"
+  command -v git >/dev/null && ok "git" || bad "git missing"
+  command -v gh >/dev/null && ok "gh (Dock checks, crew-diff pr)" || warn "gh missing — Dock 'Checks' and 'crew-diff pr' will fail"
+  command -v docker >/dev/null && ok "docker (Dock db)" || warn "docker missing — Dock 'DB' will fail"
+  # Sandboxing is opt-in, so none of this is fatal — warn only. This is `sbx`,
+  # the standalone CLI; the `docker sandbox` Desktop plugin is deprecated and
+  # goes away at Docker Desktop 4.80.0.
+  local sbxbin; sbxbin="${CREW_SBX:-$(command -v sbx || true)}"
+  if [ -n "$sbxbin" ] && [ -x "$sbxbin" ]; then
+    ok "sbx ($("$sbxbin" version 2>/dev/null | sed -n 's/.*version: *//p' | head -1))"
+    # The daemon has its own lifecycle and everything 401s or hangs without it.
+    if "$sbxbin" daemon status 2>/dev/null | grep -c running >/dev/null; then
+      ok "sandboxd running"
+      case "$("$sbxbin" ls 2>&1)" in
+        *"not authenticated"*|*"not signed in"*|*"no valid user session"*)
+          warn "sbx not signed in — run: sbx login" ;;
+        *)
+          ok "sbx authenticated"
+          local tmpl="${CREW_SBX_TEMPLATE:-crew/monolith-base:latest}"
+          "$sbxbin" template ls 2>/dev/null | grep -c "${tmpl%%:*}" >/dev/null \
+            && ok "sandbox template $tmpl" \
+            || warn "no $tmpl image — every sandbox pays a full bundle install; run: crew-sandbox base" ;;
+      esac
+    else
+      warn "sandboxd not running — run: sbx daemon start -d --policy balanced"
+    fi
+  else
+    warn "sbx missing — crew-worktree --sandbox will fail (brew install --cask docker/tap/sbx)"
+  fi
+  if command -v acli >/dev/null; then
+    acli jira auth status >/dev/null 2>&1 && ok "acli authenticated (Jira status)" \
+      || warn "acli present but not authenticated — Jira badges will be blank"
+  else
+    warn "acli missing — no Jira status"
+  fi
+  local codebin="${CREW_CODE_BIN:-/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code}"
+  [ -x "$codebin" ] || codebin="$(command -v code || true)"
+  if [ -n "$codebin" ] && [ -x "$codebin" ]; then
+    ok "VS Code CLI ($("$codebin" --version 2>/dev/null | head -1))"
+    # Every worktree is a path VS Code has never seen, so an untrusted ~/code
+    # means a trust modal on every single one — and declining leaves the window
+    # in Restricted Mode with the extensions disabled, which is exactly what
+    # moving off serve-web was meant to fix. Trusting the parent once covers
+    # every worktree ever created under it.
+    local _tdb="$HOME/Library/Application Support/Code/User/globalStorage/state.vscdb"
+    if command -v sqlite3 >/dev/null && [ -f "$_tdb" ]; then
+      if sqlite3 "$_tdb" \
+           "select cast(value as text) from ItemTable where key like '%trust%';" 2>/dev/null \
+           | grep -c "file://$HOME/code" >/dev/null; then
+        ok "~/code trusted in VS Code (new worktrees open trusted)"
+      else
+        warn "~/code is not a trusted folder — every new worktree will prompt; trust the parent folder once (README: Editor)"
+      fi
+    fi
+  else
+    warn "VS Code CLI not found — crew-code and Cmd-click-to-editor will not work"
+  fi
+
+  head_ "package"
+  for f in hooks/lib.sh hooks/crew-hook.sh hooks/progress.sh hooks/triage.py \
+           bin/crew-watch bin/crew-spec bin/crew-worktree bin/crew-diff bin/crew-code \
+           bin/crew-code-open bin/crew-color bin/crew-digest bin/crew-feed bin/crew-listen bin/crew-reclaim bin/crew-resume bin/crew-sandbox bin/crew-sync sidebars/crew.swift config/cmux.jsonc config/dock.json \
+           board/crew-board board/board.html board/render.js board/board_probe.mjs bin/crew-cmux-bin \
+           tools/render_probe.py; do
+    [ -f "$CREW_HOME/$f" ] && ok "$f" || bad "missing $f"
+  done
+  for f in hooks/crew-hook.sh hooks/triage.py bin/crew-watch bin/crew-spec \
+           bin/crew-worktree bin/crew-diff bin/crew-code bin/crew-code-open bin/crew-color bin/crew-listen bin/crew-reclaim bin/crew-resume bin/crew-sandbox \
+           bin/crew-cmux-bin board/crew-board; do
+    [ -x "$CREW_HOME/$f" ] || bad "$f is not executable"
+  done
+  for f in crew-diff crew-code crew-code-open crew-sandbox crew-worktree crew-cmux-bin; do
+    bash -n "$CREW_HOME/bin/$f" 2>/dev/null && ok "$f parses" || bad "$f syntax error"
+  done
+  for f in crew-resume crew-sync crew-digest crew-feed crew-listen crew-color; do
+    python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$CREW_HOME/bin/$f" \
+      2>/dev/null && ok "$f parses" || bad "$f syntax error"
+  done
+  python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$CREW_HOME/board/crew-board" \
+    2>/dev/null && ok "crew-board parses" || bad "crew-board syntax error"
+  # The board's renderer is pushed with each update, not resident in the page -- so the
+  # entry point lives in render.js and board.html must stay inert. Both directions are
+  # checked: a page that regains a <script> has regained a dependency that already broke.
+  grep -q "__boardRender" "$CREW_HOME/board/render.js" \
+    2>/dev/null && ok "render.js defines __boardRender" || bad "render.js has no entry point"
+  grep -q "<script" "$CREW_HOME/board/board.html" \
+    2>/dev/null && bad "board.html has a <script> — the renderer is pushed, not resident" \
+    || ok "board.html is inert"
+  # Inert is not the same as correct. A page with no script can still be the WRONG page:
+  # one was installed with #list where render.js writes into #rows, and it passed the check
+  # above while the board threw "null is not an object" on every push. So the targets are
+  # extracted from render.js itself -- hardcoding them here would drift the moment the
+  # renderer grows a field.
+  local _want _miss=""
+  _want="$(grep -oE '\$\("[a-z]+"\)' "$CREW_HOME/board/render.js" 2>/dev/null \
+           | grep -oE '"[a-z]+"' | tr -d '"' | sort -u)"
+  if [ -z "$_want" ]; then
+    warn "could not read render targets out of render.js"
+  else
+    for _id in $_want; do
+      grep -q "id=\"$_id\"" "$CREW_HOME/board/board.html" 2>/dev/null || _miss="$_miss $_id"
+    done
+    if [ -n "$_miss" ]; then
+      bad "board.html is missing render targets:$_miss — the board will throw on push"
+    else
+      ok "board.html satisfies render.js ($(printf '%s' "$_want" | wc -w | tr -d ' ') targets)"
+    fi
+  fi
+  # Not a command — a dev tool. It renders sidebars/crew.swift through cmux's own
+  # interpreter worker so a render bug can be caught before it reaches the board,
+  # which `cmux sidebar validate` cannot do. See TESTING.md.
+  python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" \
+    "$CREW_HOME/tools/render_probe.py" 2>/dev/null \
+    && ok "render_probe.py parses" || bad "render_probe.py syntax error"
+  # preferredEditor is only consulted when cmux is not previewing the file
+  # itself, so these two settings have to agree or Cmd-click never reaches
+  # VS Code.
+  if grep -q "crew-code-open" "$CMUX_JSON" 2>/dev/null; then
+    ok "Cmd-click wired to VS Code (app.preferredEditor)"
+    grep -q '"openSupportedFilesInCmux" *: *false' "$CMUX_JSON" 2>/dev/null \
+      && ok "openSupportedFilesInCmux false — Cmd-click reaches preferredEditor" \
+      || warn "openSupportedFilesInCmux is true — cmux previews win, VS Code only sees unsupported files"
+  fi
+  bash -n "$CREW_HOME/hooks/lib.sh" 2>/dev/null && ok "lib.sh parses" || bad "lib.sh syntax error"
+  bash -n "$CREW_HOME/hooks/crew-hook.sh" 2>/dev/null && ok "crew-hook.sh parses" || bad "crew-hook.sh syntax error"
+  python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$CREW_HOME/hooks/triage.py" \
+    2>/dev/null && ok "triage.py parses" || bad "triage.py syntax error"
+
+  head_ "reconciler"
+  local dpid=""
+  [ -f "$STATE/listen.pid" ] && dpid="$(cat "$STATE/listen.pid" 2>/dev/null || true)"
+  if [ -n "$dpid" ] && kill -0 "$dpid" 2>/dev/null; then
+    ok "daemon running (pid $dpid) — events + ${CREW_TICK_SECONDS:-120}s tick"
+  elif [ -f "$STATE/listen.off" ]; then
+    warn "daemon off by choice — only the Stop hook reconciles; crew listen on"
+  else
+    warn "daemon not running — starts on the next Claude session, or: crew listen on"
+  fi
+  if [ -f "$STATE/sync-stamp" ]; then
+    local sage; sage=$(( $(date +%s) - $(cat "$STATE/sync-stamp" 2>/dev/null || echo 0) ))
+    if [ "$sage" -lt 900 ]; then ok "last reconcile ${sage}s ago"
+    else bad "last reconcile ${sage}s ago — the board is stale"; fi
+  else
+    warn "never reconciled (no sync-stamp)"
+  fi
+  case "$(launchctl list 2>/dev/null | grep -c 'com.crew' || true)" in
+    0) ok "no retired launchd jobs loaded" ;;
+    *) bad "a retired launchd job is loaded and cannot reach the socket — crew timer off" ;;
+  esac
+
+  head_ "installed"
+  grep -q "crew-hook.sh" "$SETTINGS" 2>/dev/null && ok "Claude hooks wired" \
+    || bad "Claude hooks not wired — run: crew apply"
+  grep -q "guard_bash.sh" "$SETTINGS" 2>/dev/null && ok "guard_bash.sh still wired" \
+    || bad "guard_bash.sh is NOT wired — the destructive-command guard is off"
+  [ -f "$SIDEBAR_DIR/crew.swift" ] && ok "sidebar installed" || bad "sidebar not installed"
+  if python3 "$CREW_HOME/board/crew-board-intent" --selftest >/dev/null 2>&1; then
+    ok "intent server routes + mermaid swap"
+  else
+    bad "intent selftest failed — python3 board/crew-board-intent --selftest"
+  fi
+  grep -q "crew-triage" "$CMUX_JSON" 2>/dev/null && ok "notification triage in cmux.json" \
+    || bad "cmux.json is not crew-rendered — run: crew apply"
+  ls "$CMUX_JSON".*.bak >/dev/null 2>&1 && ok "a cmux.json backup exists (crew uninstall can revert)" \
+    || warn "no cmux.json backup — crew uninstall cannot restore"
+
+  head_ "cmux"
+  "$CMUX" config validate >/dev/null 2>&1 && ok "config validates" || bad "cmux config doctor reports a problem"
+  if "$CMUX" ping >/dev/null 2>&1; then
+    ok "socket reachable"
+    "$CMUX" sidebar validate crew >/dev/null 2>&1 && ok "sidebar validates" || bad "sidebar has errors: cmux sidebar validate crew"
+  else
+    warn "cmux socket unreachable (app not running?) — skipped live checks"
+  fi
+
+  head_ "context"
+  [ -n "${CMUX_WORKSPACE_ID:-}" ] && ok "CMUX_WORKSPACE_ID set (hooks will fire)" \
+    || warn "no CMUX_WORKSPACE_ID — hooks no-op outside cmux terminals"
+
+  printf '\n'
+  [ "${FAIL:-0}" -eq 0 ] && { printf '\033[32mall good\033[0m\n'; return 0; }
+  printf '\033[31mproblems found\033[0m\n'; return 1
+}
+
+# ---------------------------------------------------------------- demo ------
+# Fires each hook with a synthetic payload against the *current* workspace and
+# shows the resulting sidebar state, so you can see what crew actually changes
+# without waiting for a real turn.
+cmd_demo() {
+  [ -n "${CMUX_WORKSPACE_ID:-}" ] || { echo "crew demo must run inside a cmux terminal" >&2; exit 1; }
+  local sid="${1:-}"
+  local payload
+  payload="$(python3 -c 'import json,os,sys; print(json.dumps({"cwd": os.getcwd(), "session_id": sys.argv[1], "message": "crew demo: Claude would be asking you something here"}))' "$sid")"
+
+  for ev in session task notification stop pretool; do
+    head_ "$ev"
+    printf '%s' "$payload" | bash "$HOOK" "$ev"
+    "$CMUX" sidebar-state 2>/dev/null \
+      | grep -E '^(status_count|progress|color|tab)|^  ' | sed 's/^/  /'
+    "$CMUX" workspace status 2>/dev/null | sed 's/^/  lane: /'
+    sleep 1
+  done
+  printf '\nTodo list now:\n'; "$CMUX" todo list 2>/dev/null | sed 's/^/  /'
+  printf '\nRestore with: cmux workspace status set auto && cmux clear-progress && cmux todo clear\n'
+}
+
+case "${1:-status}" in
+  apply)     cmd_apply ;;
+  uninstall) cmd_uninstall ;;
+  on)        cmd_on ;;
+  off)       cmd_off ;;
+  status)    cmd_status ;;
+  doctor)    cmd_doctor ;;
+  adopt)     cmd_adopt ;;
+  sync)      shift; exec "$CREW_HOME/bin/crew-sync" "$@" ;;
+  timer)     shift; cmd_timer "${1:-status}" ;;
+  listen)    shift; cmd_listen "${1:-status}" "${2:-}" ;;
+  color)     shift; exec "$CREW_HOME/bin/crew-color" "$@" ;;
+  demo)      shift; cmd_demo "${1:-}" ;;
+  *) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ; exit 2 ;;
+esac

@@ -1,0 +1,418 @@
+{
+  "$schema": "https://raw.githubusercontent.com/manaflow-ai/cmux/main/web/data/cmux.schema.json",
+  "schemaVersion": 1,
+
+  // ---------------------------------------------------------------------
+  // crew — rendered into ~/.config/cmux/cmux.json by `crew apply`.
+  //
+  // EDIT THIS FILE, NOT cmux.json. `crew apply` backs up the live file to a
+  // timestamped .bak, then rewrites it from here. `crew off` restores the
+  // newest backup.
+  //
+  // __HOME__ is substituted at render time.
+  //
+  // Every setting below is justified by measured usage in
+  // ~/.claude/usage-data (67 sessions). See README.md for the numbers.
+  // ---------------------------------------------------------------------
+
+  "app": {
+    // Cmd-clicking a path in a terminal opens it in the VS Code desktop app,
+    // in the window that owns that path's worktree — so the file arrives beside
+    // the right branch's Source Control. cmux runs this as
+    // `/bin/sh -c "<command> '<path>'"`, and falls back to the macOS default
+    // app on a nonzero exit — which crew-code-open uses deliberately for paths
+    // outside any repo.
+    "preferredEditor": "__HOME__/.config/cmux/crew/bin/crew-code-open",
+
+    // Required for the above to actually fire. When this is true, cmux handles
+    // Cmd-click on every file type it can preview (text, code, PDF, image,
+    // audio, video) and preferredEditor is only consulted for the leftovers —
+    // so a .rb click would never reach VS Code.
+    //
+    // The trade-off: PDFs, images, and video now go to VS Code too. It renders
+    // images fine and PDFs poorly. Flip this back to true if you miss the
+    // built-in previews more than you want code in VS Code.
+    "openSupportedFilesInCmux": false
+  },
+
+  "browser": {
+    // The board's PR and CI taps no longer come through here at all: they call
+    // openURL, which the host runs as NSWorkspace.open, so they land in the
+    // default browser that already holds the GitHub session.
+    //
+    // These three still govern links reached any OTHER way — clicking a URL in a
+    // terminal, `open https://…` from a shell, cmux's own sidebar PR row.
+    "openTerminalLinksInCmuxBrowser": false,
+    "interceptTerminalOpenCommandInCmuxBrowser": false,
+    // An ALLOWLIST: with the two switches above on, a non-empty list means only
+    // these hosts stay inside the embedded browser and everything else goes out
+    // to the default browser. Emptying it does NOT send everything out — []
+    // means "no restriction", i.e. every link stays inside. To send everything
+    // out, turn the two switches off instead.
+    //
+    // github.com, cloud.rwx.com and buildkite.com used to be here and are
+    // deliberately gone: they are the logins worth keeping in one browser, so a
+    // PR or a checks page should leave cmux no matter how you reached it. What
+    // stays is what you only ever read.
+    "hostsToOpenInEmbeddedBrowser": []
+  },
+
+  "fileExplorer": {
+    // Double-click in the file tree goes to the same place as Cmd-click.
+    "doubleClickAction": "preferredEditor"
+  },
+
+  "notifications": {
+    // Median time to answer Claude is 203s; 40% of answers take >5min and 76
+    // took >20min. So: ping once work truly drains, then remind.
+    "agentTurnComplete": "whenIdle",
+    "agentIdleReminder": true,
+    "agentPermissionPrompt": true,
+
+    // Several agents often share one visible workspace. Without this, showing
+    // that workspace retracts a banner belonging to a surface you never looked
+    // at.
+    "suppressOnlyFocusedSurface": true,
+
+    // Routine turn-complete goes to the sidebar only; anything actually
+    // blocked still raises a banner. See hooks/triage.py for the rule.
+    "hooks": [
+      {
+        "id": "crew-triage",
+        "command": "__HOME__/.config/cmux/crew/hooks/triage.py",
+        "timeoutSeconds": 10
+      }
+    ]
+  },
+
+  "automation": {
+    // 73 Agent calls across the sample. Nested subagents finishing is not news.
+    "suppressSubagentNotifications": true,
+    "claudeCodeIntegration": true,
+
+    // Deliberately OFF. crew names workspaces deterministically from the
+    // branch's ticket (PROJ-961 · graphql-db-schema-updates), which beats an AI
+    // prose summary when a dozen worktrees of one repo are open at once.
+    // Turning this on would fight hooks/crew-hook.sh on every turn end.
+    "workspaceAutoNaming": false
+  },
+
+  "terminal": {
+    // 12+ live worktrees is normal here. Nothing hibernates at or under the
+    // limit, and a ~60s settle window protects an agent that resumes on its own.
+    "agentHibernation": {
+      "enabled": true,
+      "idleSeconds": 5,
+      "maxLiveTerminals": 12
+    },
+    "autoResumeAgentSessions": true
+  },
+
+  "sidebar": {
+    // Surface everything the crew hooks now publish.
+    "showProgress": true,
+    "showAgentActivity": true,
+    // OFF deliberately. crew uses `description` as the side channel for the
+    // agent phase ("working" / "waiting on you") because the custom-sidebar
+    // interpreter has no agentLifecycle binding. The board reads the field
+    // whether or not cmux displays it, and displaying it would print "working"
+    // under every row — duplicating what the board's grouping already says.
+    "showWorkspaceDescription": false,
+    "showNotificationMessage": true,
+    "watchGitStatus": true,
+    "showPullRequests": true,
+    "makePullRequestsClickable": true,
+    "showBranchDirectory": true,
+    "branchLayout": "vertical",
+    "loadingSpinnerPosition": "leading",
+    "notificationBadgePosition": "leading",
+    "beta": {
+      "workspaceTodos": {
+        "checklistStyle": "popover"
+      }
+    }
+  },
+
+  // The frame drawn around the focused pane, repainted by bin/crew-frame to the
+  // SELECTED workspace's own colour -- the same hex Peacock gives its VS Code
+  // window and the crew board paints on its card.
+  //
+  // The value here is only the resting default: cmux has no per-workspace border
+  // colour (the schema has exactly two border keys, both global), so following
+  // the selection means rewriting this one value and reloading. crew-frame edits
+  // it in place so `crew apply` and the runtime writer do not fight.
+  //
+  // Note the schema's wording: the border is drawn "around the focused cmux pane
+  // in split workspaces". An unsplit workspace may show nothing.
+  "activePaneBorderColor": null,
+
+  "workspaceColors": {
+    "indicatorStyle": "leftRail"
+  },
+
+  // Per-repo identity in the sidebar. Longest match wins; `*` is an fnmatch
+  // glob. The worktree fleet gets its own icon so it reads as one unit.
+  "workspaceGroups": {
+    "newWorkspacePlacement": "afterCurrent",
+    "byCwd": {
+      "~/code/main-repo.worktrees/*": {
+        "color": "#6A1B9A",
+        "icon": "arrow.triangle.branch",
+        "newWorkspacePlacement": "end",
+        "contextMenu": [
+          { "action": "crew.worktree", "title": "New worktree + Claude" },
+          { "action": "crew.worktree.sandbox", "title": "New worktree + Claude (sandboxed)" },
+          { "type": "separator" },
+          "cmux.newTerminal"
+        ]
+      },
+      "~/code/main-repo": {
+        "color": "#1A5276",
+        "icon": "building.columns.fill",
+        "contextMenu": [
+          { "action": "crew.worktree", "title": "New worktree + Claude" },
+          { "action": "crew.worktree.sandbox", "title": "New worktree + Claude (sandboxed)" },
+          { "type": "separator" },
+          "cmux.newTerminal"
+        ]
+      },
+      "~/code/gamma-infrastructure.worktrees/*": {
+        "color": "#6A1B9A",
+        "icon": "arrow.triangle.branch",
+        "newWorkspacePlacement": "end",
+        "contextMenu": [
+          { "action": "crew.worktree", "title": "New worktree + Claude" },
+          { "action": "crew.worktree.sandbox", "title": "New worktree + Claude (sandboxed)" },
+          { "type": "separator" },
+          "cmux.newTerminal"
+        ]
+      },
+
+      // The menu repeats per entry because longest match WINS rather than
+      // merges: a "~/code/*" catch-all is shadowed entirely by any named repo
+      // below it, so a named repo with no contextMenu would silently lose the
+      // worktree items. The catch-all is still worth having -- it covers every
+      // repo nobody has given a colour yet.
+      "~/code/*": {
+        "contextMenu": [
+          { "action": "crew.worktree", "title": "New worktree + Claude" },
+          { "action": "crew.worktree.sandbox", "title": "New worktree + Claude (sandboxed)" },
+          { "type": "separator" },
+          "cmux.newTerminal"
+        ]
+      },
+
+      "~/code/snowflake-schemachange": {
+        "color": "#006B6B", "icon": "chart.bar.fill",
+        "contextMenu": [
+          { "action": "crew.worktree", "title": "New worktree + Claude" },
+          { "action": "crew.worktree.sandbox", "title": "New worktree + Claude (sandboxed)" },
+          { "type": "separator" },
+          "cmux.newTerminal"
+        ]
+      },
+      "~/code/lh-data-workflow": {
+        "color": "#0E6B8C", "icon": "chart.bar.fill",
+        "contextMenu": [
+          { "action": "crew.worktree", "title": "New worktree + Claude" },
+          { "action": "crew.worktree.sandbox", "title": "New worktree + Claude (sandboxed)" },
+          { "type": "separator" },
+          "cmux.newTerminal"
+        ]
+      },
+      "~/code/rikipedia": {
+        "color": "#4A5C18", "icon": "book.fill",
+        "contextMenu": [
+          { "action": "crew.worktree", "title": "New worktree + Claude" },
+          { "action": "crew.worktree.sandbox", "title": "New worktree + Claude (sandboxed)" },
+          { "type": "separator" },
+          "cmux.newTerminal"
+        ]
+      },
+      "~/code/gamma-infrastructure": {
+        "color": "#3E4B5E", "icon": "server.rack",
+        "contextMenu": [
+          { "action": "crew.worktree", "title": "New worktree + Claude" },
+          { "action": "crew.worktree.sandbox", "title": "New worktree + Claude (sandboxed)" },
+          { "type": "separator" },
+          "cmux.newTerminal"
+        ]
+      }
+    }
+  },
+
+  "actions": {
+    // Asks which repo (or takes the one you right-clicked, via the tab's cwd),
+    // prompts for a ticket/branch, creates the worktree, applies the local
+    // commit-hook fixups a fresh worktree needs, then opens it as a workspace
+    // with Claude already running.
+    "crew.worktree": {
+      "type": "command",
+      "title": "New worktree + Claude",
+      "subtitle": "git worktree add, hook fixups, launch claude",
+      "keywords": ["worktree", "claude", "repo", "crew"],
+      "command": "__HOME__/.config/cmux/crew/bin/crew-worktree",
+      "target": "newTabInCurrentPane",
+      "icon": { "type": "symbol", "name": "arrow.triangle.branch" },
+      "newWorkspaceMenu": true
+    },
+
+    // Same worktree, but the agent and its service stack run in a Docker
+    // Sandboxes microVM. --cwd still points at the host path, so the sidebar's
+    // git/PR bindings and the byCwd groups above are unaffected. Needs `sbx`
+    // signed in; `crew doctor` reports on it.
+    "crew.worktree.sandbox": {
+      "type": "command",
+      "title": "New worktree + Claude (sandboxed)",
+      "subtitle": "git worktree add, then run the agent in a Docker sandbox",
+      "keywords": ["worktree", "claude", "repo", "crew", "sandbox", "sbx", "docker"],
+      "command": "__HOME__/.config/cmux/crew/bin/crew-worktree --sandbox",
+      "target": "newTabInCurrentPane",
+      "icon": { "type": "symbol", "name": "shippingbox" },
+      "newWorkspaceMenu": true
+    },
+
+    // The board's home is the web Dock (beta): dock.json seeds it as a
+    // chromeless browser control and crew-board adopts that surface. This
+    // command re-opens/repushes it if the tab was closed. The old SwiftUI
+    // sidebar (crew.swift) still installs and `cmux sidebar select crew`
+    // still mounts it, as the fallback for a build with the Dock beta off.
+    "crew.board": {
+      "type": "command",
+      "title": "Crew board",
+      "subtitle": "open the who-needs-me board in the Dock",
+      "keywords": ["crew", "board", "dock", "agents", "who"],
+      "command": "B=__HOME__/.config/cmux/crew; python3 \"$B/board/crew-board\" open; \"$(\"$B/bin/crew-cmux-bin\")\" close-surface --surface \"$CMUX_SURFACE_ID\"",
+      "target": "newTabInCurrentPane",
+      "shortcut": ["cmd+k", "c"],
+      "icon": { "type": "symbol", "name": "person.2.badge.gearshape" },
+      "newWorkspaceMenu": false
+    },
+
+    "crew.board.sidebar": {
+      "type": "command",
+      "title": "Crew board (legacy sidebar)",
+      "subtitle": "mount the SwiftUI board as the left sidebar",
+      "keywords": ["crew", "board", "sidebar", "legacy"],
+      "command": "C=/Applications/cmux.app/Contents/Resources/bin/cmux; $C sidebar select crew && $C close-surface --surface \"$CMUX_SURFACE_ID\"",
+      "target": "newTabInCurrentPane",
+      "icon": { "type": "symbol", "name": "rectangle.split.2x1" },
+      "newWorkspaceMenu": false
+    },
+
+    // --- diffs -------------------------------------------------------------
+    // cmux diff has unstaged/staged/branch/last-turn built in but no
+    // per-commit source; crew-diff adds that by piping `git show` into it.
+    // cmd+k is the prefix — free in both cmux's bindings and Ghostty's.
+    "crew.diff": {
+      "type": "command",
+      "title": "Diffs…",
+      "subtitle": "turn, branch, PR, or any commit",
+      "keywords": ["diff", "commit", "turn", "branch", "crew"],
+      "command": "CREW_EPHEMERAL=1 __HOME__/.config/cmux/crew/bin/crew-diff",
+      "target": "newTabInCurrentPane",
+      "shortcut": ["cmd+k", "d"],
+      "icon": { "type": "symbol", "name": "plusminus" }
+    },
+    "crew.diff.turn": {
+      "type": "command",
+      "title": "Diff: last turn",
+      "keywords": ["diff", "turn", "agent", "crew"],
+      "command": "CREW_EPHEMERAL=1 __HOME__/.config/cmux/crew/bin/crew-diff turn",
+      "target": "newTabInCurrentPane",
+      "shortcut": ["cmd+k", "t"],
+      "icon": { "type": "symbol", "name": "clock.arrow.circlepath" }
+    },
+    "crew.diff.branch": {
+      "type": "command",
+      "title": "Diff: branch",
+      "keywords": ["diff", "branch", "crew"],
+      "command": "CREW_EPHEMERAL=1 __HOME__/.config/cmux/crew/bin/crew-diff branch",
+      "target": "newTabInCurrentPane",
+      "shortcut": ["cmd+k", "b"],
+      "icon": { "type": "symbol", "name": "arrow.triangle.branch" }
+    },
+    "crew.diff.unstaged": {
+      "type": "command",
+      "title": "Diff: unstaged",
+      "keywords": ["diff", "unstaged", "working", "crew"],
+      "command": "CREW_EPHEMERAL=1 __HOME__/.config/cmux/crew/bin/crew-diff unstaged",
+      "target": "newTabInCurrentPane",
+      "shortcut": ["cmd+k", "u"],
+      "icon": { "type": "symbol", "name": "pencil.line" }
+    },
+    "crew.diff.pr": {
+      "type": "command",
+      "title": "Diff: pull request",
+      "keywords": ["diff", "pr", "pull request", "crew"],
+      "command": "CREW_EPHEMERAL=1 __HOME__/.config/cmux/crew/bin/crew-diff pr",
+      "target": "newTabInCurrentPane",
+      "shortcut": ["cmd+k", "p"],
+      "icon": { "type": "symbol", "name": "arrow.triangle.pull" }
+    },
+
+    // --- sessions ----------------------------------------------------------
+    // 324 transcripts across 46 projects is well past what /resume's own list
+    // is comfortable for. Searchable picker; ⏎ resumes into a new workspace.
+    "crew.resume": {
+      "type": "command",
+      "title": "Resume a session…",
+      "subtitle": "search every Claude session and hop back in",
+      "keywords": ["resume", "session", "history", "claude", "crew"],
+      "command": "CREW_EPHEMERAL=1 __HOME__/.config/cmux/crew/bin/crew-resume",
+      "target": "newTabInCurrentPane",
+      "shortcut": ["cmd+k", "r"],
+      "icon": { "type": "symbol", "name": "clock.arrow.2.circlepath" }
+    },
+
+    "crew.digest": {
+      "type": "command",
+      "title": "Digest — what happened overnight",
+      "subtitle": "commits, PRs, red CI, waiting sessions, reclaimable worktrees",
+      "keywords": ["digest", "overnight", "standup", "morning", "crew"],
+      "command": "__HOME__/.config/cmux/crew/bin/crew-digest",
+      "target": "newTabInCurrentPane",
+      "shortcut": ["cmd+k", "m"],
+      "icon": { "type": "symbol", "name": "sun.horizon.fill" }
+    },
+
+    // --- VS Code -----------------------------------------------------------
+    // The desktop app, one window per worktree. Opens a window on this
+    // worktree, or focuses the one that already has it. There is no server and
+    // nothing to stop — closing the window is the whole teardown.
+    "crew.code": {
+      "type": "command",
+      "title": "VS Code here",
+      "subtitle": "open this worktree in the VS Code app",
+      "keywords": ["vscode", "code", "editor", "crew"],
+      "command": "CREW_EPHEMERAL=1 __HOME__/.config/cmux/crew/bin/crew-code",
+      "target": "newTabInCurrentPane",
+      "shortcut": ["cmd+k", "e"],
+      "icon": { "type": "symbol", "name": "chevron.left.forwardslash.chevron.right" }
+    },
+
+    "crew.doctor": {
+      "type": "command",
+      "title": "crew doctor",
+      "subtitle": "check the crew install",
+      "keywords": ["crew", "doctor", "diagnose"],
+      "command": "__HOME__/.config/cmux/crew/bin/crew doctor",
+      "target": "newTabInCurrentPane",
+      "icon": { "type": "symbol", "name": "stethoscope" },
+      "newWorkspaceMenu": false
+    }
+  },
+
+  "ui": {
+    "newWorkspace": {
+      "menuSectionOrder": "customFirst",
+      "contextMenu": [
+        { "action": "crew.worktree", "title": "New worktree + Claude" },
+        { "action": "crew.worktree.sandbox", "title": "New worktree + Claude (sandboxed)" },
+        { "type": "separator" },
+        "cmux.newTerminal",
+        "cmux.newBrowser"
+      ]
+    }
+  }
+}

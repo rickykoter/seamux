@@ -1,0 +1,621 @@
+#!/usr/bin/env python3
+"""crew-color — one color per worktree, worn by cmux, the board, and VS Code.
+
+The point is recognition. With twenty worktrees open, "which window is this?" is
+a question you should be able to answer from across the room instead of reading a
+title bar. So every worktree gets a color and then wears it in all three places
+you look at it:
+
+    cmux workspace   custom_color, set by crew-sync via `workspace-action`
+    crew board       a vertical sliver on the row, read from `w.color`
+    VS Code window   Peacock, via <root>/.vscode/settings.json
+
+WHY cmux's custom_color IS THE SOURCE OF TRUTH
+----------------------------------------------
+The board could have carried the color in a `description` token like every other
+crew signal — and that was the plan until `cmux workspace list --json` turned out
+to expose a first-class `custom_color` field, writable through
+`workspace-action set-color`, and the sidebar DSL turned out to bind it as
+`w.color` already. So the board needs no token, no crew-sync round trip, and no
+parsing: it reads the same field cmux itself paints the workspace strip with.
+That also means the color is right in cmux's *native* sidebar for free.
+
+Verified, because none of it is documented together:
+  - `--color '#1565C0'` is stored verbatim. Nothing snaps it to a named color.
+  - `--color Amber` resolves to `#7D6608` — and cmux's sixteen names resolve to
+    exactly the sixteen hexes already hard-coded in `crew_ticket_color`
+    (hooks/lib.sh), which is why PALETTE below is that same list with the names
+    attached rather than a new invention.
+  - it reads back on both `sidebar-state` (`color=`) and `workspace list --json`
+    (`custom_color`), and `clear-color` returns it to none.
+
+WHY .vscode/settings.json IS SAFE TO WRITE
+------------------------------------------
+`.vscode/` is gitignored by the monolith itself (.gitignore:67), inside worktrees
+too — checked with `git check-ignore`. So Peacock's settings never dirty the tree
+and never show up as a stray file on the board's dirty dot. This is the whole
+reason the Peacock half is even reasonable; if that directory were tracked, every
+colored worktree would read as modified.
+
+TWENTY WORKTREES, SIXTEEN COLORS
+--------------------------------
+There is no free-slot guarantee to be had, so allocation degrades on purpose
+rather than pretending. `pick()` prefers the hash-preferred color when it is
+free — so a given worktree tends to keep its color across a prune-and-return —
+and otherwise takes the *least-used* one. Past sixteen, colors are shared as
+evenly as possible instead of piling onto whatever the hash happened to like.
+
+Usage:
+  crew-color assign [path]     idempotent; allocate if needed, print the hex
+  crew-color peek   [path]     print the hex only if already allocated
+  crew-color show   [path]     hex and name for this worktree, if any
+  crew-color list              the map: every color and what holds it
+  crew-color apply  [path]     write Peacock settings into <root>/.vscode
+  crew-color free   [path]     release the color and remove Peacock settings
+  crew-color prune             drop entries whose worktree is gone
+"""
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+STATE = os.path.join(os.environ.get("XDG_CACHE_HOME") or
+                     os.path.expanduser("~/.cache"), "cmux-crew")
+REG = os.path.join(STATE, "colors")
+
+# cmux's own sixteen workspace colors, name and hex, harvested from
+# `workspace-action set-color` itself rather than guessed. Order is cmux's
+# documented order, which is not the order in crew_ticket_color — same set.
+PALETTE = [
+    ("Red", "#C0392B"), ("Crimson", "#922B21"), ("Orange", "#A04000"),
+    ("Amber", "#7D6608"), ("Olive", "#4A5C18"), ("Green", "#196F3D"),
+    ("Teal", "#006B6B"), ("Aqua", "#0E6B8C"), ("Blue", "#1565C0"),
+    ("Navy", "#1A5276"), ("Indigo", "#283593"), ("Purple", "#6A1B9A"),
+    ("Magenta", "#AD1457"), ("Rose", "#880E4F"), ("Brown", "#7B3F00"),
+    ("Charcoal", "#3E4B5E"),
+]
+BY_HEX = {h.upper(): n for n, h in PALETTE}
+
+
+def die(msg):
+    sys.stderr.write(f"\033[31m✗\033[0m {msg}\n")
+    sys.exit(1)
+
+
+# --- registry ----------------------------------------------------------------
+# Shell-sourceable KEY=value, keyed by md5 of the worktree root — the same shape
+# and the same key as ~/.cache/cmux-crew/code/roots/<md5>, so a worktree's color
+# entry and its VS Code entry sit under the same filename and can be eyeballed
+# side by side.
+
+def key_for(root):
+    return hashlib.md5(root.encode()).hexdigest()
+
+
+def entry_path(root):
+    return os.path.join(REG, key_for(root))
+
+
+def read_entry(path):
+    out = {}
+    try:
+        with open(path) as fh:
+            for line in fh:
+                if "=" in line:
+                    k, _, v = line.partition("=")
+                    out[k.strip()] = v.strip()
+    except Exception:
+        return None
+    return out or None
+
+
+def all_entries():
+    """Every registry entry, newest last. Dead roots are reported, not hidden."""
+    out = []
+    try:
+        names = sorted(os.listdir(REG))
+    except Exception:
+        return out
+    for n in names:
+        e = read_entry(os.path.join(REG, n))
+        if e and e.get("ROOT") and e.get("COLOR"):
+            e["_file"] = os.path.join(REG, n)
+            e["_live"] = os.path.isdir(e["ROOT"])
+            out.append(e)
+    out.sort(key=lambda e: int(e.get("CREATED") or 0))
+    return out
+
+
+def write_entry(root, name, hexv):
+    os.makedirs(REG, exist_ok=True)
+    tmp = entry_path(root) + ".tmp"
+    with open(tmp, "w") as fh:
+        fh.write(f"ROOT={root}\nCOLOR={hexv}\nNAME={name}\n"
+                 f"CREATED={int(time.time())}\n")
+    os.replace(tmp, entry_path(root))
+
+
+# --- allocation --------------------------------------------------------------
+
+def hash_index(root):
+    """The same rolling hash crew_ticket_color uses, so the flavour matches."""
+    s = 0
+    for ch in root:
+        s = (s * 31 + ord(ch)) % 100003
+    return s % len(PALETTE)
+
+
+# One definition of "which cmux": bin/crew-cmux-bin. PATH is consulted here first so
+# the common case costs no subprocess; the resolver is only reached when PATH has no
+# cmux. A hardcoded bundle path silently drove the old cli against the nightly app.
+_CMUX_RESOLVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crew-cmux-bin")
+CMUX = (os.environ.get("CREW_CMUX")
+        or next((os.path.join(d, "cmux")
+                 for d in os.environ.get("PATH", "").split(os.pathsep)
+                 if os.access(os.path.join(d, "cmux"), os.X_OK)), None)
+        or (subprocess.run([_CMUX_RESOLVER], capture_output=True, text=True).stdout.strip()
+            if os.access(_CMUX_RESOLVER, os.X_OK) else "")
+        or "cmux")
+
+
+def cmux_colors(root):
+    """Colors other cmux workspaces are already wearing, by any means.
+
+    The registry is not the whole truth. A color set by hand in cmux's own picker
+    has no registry entry, so counting only crew's entries let allocation hand
+    out a color a workspace was already using — observed the first time this ran,
+    when a hand-colored worktree and a fresh assignment both came out Purple.
+
+    Best effort on purpose: if cmux is not reachable (this also runs from hooks
+    and from launchd, which cannot open the socket at all), fall back to the
+    registry alone rather than refusing to allocate.
+    """
+    try:
+        r = subprocess.run([CMUX, "workspace", "list", "--json"],
+                           capture_output=True, text=True, timeout=10)
+        rows = (json.loads(r.stdout) or {}).get("workspaces") or []
+    except Exception:
+        return []
+    out = []
+    for w in rows:
+        c = w.get("custom_color") or ""
+        # Skip this worktree's own workspaces, or re-running assign for a root
+        # would treat its current color as a rival and move it.
+        if c and (w.get("current_directory") or "") != root:
+            out.append(c.upper())
+    return out
+
+
+def pick(root):
+    """Preferred color if free, else the least-used one.
+
+    "Free" means unheld by a live registry entry AND unworn by another cmux
+    workspace, so crew never duplicates a color you chose yourself.
+    """
+    used = {}
+    for e in all_entries():
+        if e["_live"] and e["ROOT"] != root:
+            used[e["COLOR"].upper()] = used.get(e["COLOR"].upper(), 0) + 1
+    for c in cmux_colors(root):
+        used[c] = used.get(c, 0) + 1
+    pref = PALETTE[hash_index(root)]
+    if used.get(pref[1].upper(), 0) == 0:
+        return pref
+    # Least-used, ties broken by palette order — deterministic given the
+    # registry, and it spreads the overflow instead of stacking it.
+    return min(PALETTE, key=lambda p: (used.get(p[1].upper(), 0),
+                                       PALETTE.index(p)))
+
+
+def resolve_root(argv_path):
+    start = argv_path or os.getcwd()
+    if not os.path.isdir(start):
+        die(f"no such directory: {start}")
+    try:
+        top = subprocess.run(["git", "-C", start, "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=10)
+        if top.returncode == 0 and top.stdout.strip():
+            return top.stdout.strip()
+    except Exception:
+        pass
+    return os.path.abspath(start)
+
+
+def worn_color(root):
+    """The color a cmux workspace on this exact root is already wearing."""
+    try:
+        r = subprocess.run([CMUX, "workspace", "list", "--json"],
+                           capture_output=True, text=True, timeout=10)
+        rows = (json.loads(r.stdout) or {}).get("workspaces") or []
+    except Exception:
+        return ""
+    for w in rows:
+        if (w.get("current_directory") or "") == root and w.get("custom_color"):
+            return w["custom_color"]
+    return ""
+
+
+def assign(root):
+    """Idempotent. An existing entry wins, so a color never moves on its own.
+
+    With no entry, a color already worn in cmux is *adopted* rather than
+    overruled. cmux's custom_color is the source of truth, and allocating a rival
+    hex for a workspace that plainly already has one is how the Peacock window and
+    the cmux strip ended up different colors on the first backfill — which defeats
+    the entire point of the feature. It also means a color you pick by hand
+    propagates out to VS Code instead of being fought over.
+    """
+    e = read_entry(entry_path(root))
+    if e and e.get("COLOR"):
+        return e.get("NAME") or BY_HEX.get(e["COLOR"].upper(), "?"), e["COLOR"]
+    worn = worn_color(root)
+    if worn:
+        name = BY_HEX.get(worn.upper(), "custom")
+        write_entry(root, name, worn)
+        return name, worn
+    name, hexv = pick(root)
+    write_entry(root, name, hexv)
+    return name, hexv
+
+
+# --- color math (Peacock's, reimplemented) -----------------------------------
+# Peacock computes its colorCustomizations from peacock.color, and activates on
+# "*" — every window — so it will recompute and overwrite these on first open.
+# We write them anyway for two reasons: the window is colored the instant it
+# appears rather than after the extension host wakes up, and the coloring still
+# works if Peacock is disabled or uninstalled. Any small divergence from
+# Peacock's own arithmetic self-heals the moment Peacock runs.
+
+def to_rgb(h):
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def to_hex(rgb):
+    return "#" + "".join(f"{max(0, min(255, int(round(c)))):02X}" for c in rgb)
+
+
+def is_light(h):
+    """tinycolor's YIQ brightness test, which is the one Peacock uses."""
+    r, g, b = to_rgb(h)
+    return (r * 299 + g * 587 + b * 114) / 1000 > 127.5
+
+
+def adjust(h, pct):
+    """Lighten (pct > 0) or darken (pct < 0) by HSL lightness, like tinycolor."""
+    r, g, b = (c / 255 for c in to_rgb(h))
+    mx, mn = max(r, g, b), min(r, g, b)
+    l = (mx + mn) / 2
+    if mx == mn:
+        hue = sat = 0.0
+    else:
+        d = mx - mn
+        sat = d / (2 - mx - mn) if l > 0.5 else d / (mx + mn)
+        if mx == r:
+            hue = ((g - b) / d + (6 if g < b else 0)) / 6
+        elif mx == g:
+            hue = ((b - r) / d + 2) / 6
+        else:
+            hue = ((r - g) / d + 4) / 6
+    l = max(0.0, min(1.0, l + pct / 100.0))
+
+    def chan(p, q, t):
+        t = t % 1
+        if t < 1 / 6:
+            return p + (q - p) * 6 * t
+        if t < 1 / 2:
+            return q
+        if t < 2 / 3:
+            return p + (q - p) * (2 / 3 - t) * 6
+        return p
+    if sat == 0:
+        rgb = (l, l, l)
+    else:
+        q = l * (1 + sat) if l < 0.5 else l + sat - l * sat
+        p = 2 * l - q
+        rgb = (chan(p, q, hue + 1 / 3), chan(p, q, hue), chan(p, q, hue - 1 / 3))
+    return to_hex(tuple(c * 255 for c in rgb))
+
+
+DARK_FG = "#15202b"
+LIGHT_FG = "#e7e7e7"
+
+
+def fg_for(bg):
+    return DARK_FG if is_light(bg) else LIGHT_FG
+
+
+def customizations(hexv):
+    """Peacock's default affected elements: activityBar, titleBar, statusBar.
+
+    activityBar carries the "lighten" elementAdjustment at the default 5%; the
+    other two are "none". Inactive variants get an alpha suffix, which is what
+    Peacock does rather than blending toward the theme background.
+    """
+    ab = adjust(hexv, 5)
+    ab_fg, sb_fg, tb_fg = fg_for(ab), fg_for(hexv), fg_for(hexv)
+    return {
+        "activityBar.activeBackground": adjust(ab, 10),
+        "activityBar.background": ab,
+        "activityBar.foreground": ab_fg,
+        "activityBar.inactiveForeground": ab_fg + "99",
+        "activityBarBadge.background": adjust(ab, 25),
+        "activityBarBadge.foreground": fg_for(adjust(ab, 25)),
+        "statusBar.background": hexv,
+        "statusBar.foreground": sb_fg,
+        "statusBarItem.hoverBackground": adjust(hexv, 10),
+        "statusBarItem.remoteBackground": hexv,
+        "statusBarItem.remoteForeground": sb_fg,
+        "titleBar.activeBackground": hexv,
+        "titleBar.activeForeground": tb_fg,
+        "titleBar.inactiveBackground": hexv + "99",
+        "titleBar.inactiveForeground": tb_fg + "99",
+    }
+
+
+# --- the Peacock settings file -----------------------------------------------
+
+def strip_jsonc(text):
+    """Comments and trailing commas out, so a hand-edited settings.json parses.
+
+    VS Code accepts both in settings.json and python's json does not. The string
+    guard matters: a "//" inside a value is not a comment, and dropping it would
+    quietly corrupt a path or a URL.
+    """
+    out, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = i + 1
+            while j < n:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    break
+                j += 1
+            out.append(text[i:j + 1])
+            i = j + 1
+            continue
+        if text.startswith("//", i):
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if text.startswith("/*", i):
+            e = text.find("*/", i + 2)
+            i = n if e < 0 else e + 2
+            continue
+        out.append(c)
+        i += 1
+    return re.sub(r",(\s*[}\]])", r"\1", "".join(out))
+
+
+def load_settings(path):
+    """(dict, had_comments). Returns None for a file we could not understand."""
+    if not os.path.exists(path):
+        return {}, False
+    raw = open(path).read()
+    if not raw.strip():
+        return {}, False
+    try:
+        return json.loads(raw), False
+    except Exception:
+        pass
+    try:
+        return json.loads(strip_jsonc(raw)), True
+    except Exception:
+        return None, False
+
+
+def apply(root, hexv, name):
+    """Merge Peacock's keys into <root>/.vscode/settings.json, keep the rest."""
+    vsdir = os.path.join(root, ".vscode")
+    path = os.path.join(vsdir, "settings.json")
+    cur, had_comments = load_settings(path)
+    if cur is None:
+        die(f"{path} is not parseable as JSON — refusing to overwrite it")
+
+    want = customizations(hexv)
+    merged = dict(cur)
+    merged["peacock.color"] = hexv
+    cc = dict(merged.get("workbench.colorCustomizations") or {})
+    # Key-level merge. Anything in there that Peacock does not own — a custom
+    # editor background, say — survives.
+    cc.update(want)
+    merged["workbench.colorCustomizations"] = cc
+
+    if merged == cur:
+        return False
+    os.makedirs(vsdir, exist_ok=True)
+    tmp = path + ".crew-tmp"
+    with open(tmp, "w") as fh:
+        json.dump(merged, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    os.replace(tmp, path)
+    if had_comments:
+        sys.stderr.write(
+            f"\033[33m!\033[0m {path} had comments; they were dropped when "
+            f"the file was rewritten\n")
+    return True
+
+
+def unapply(root):
+    path = os.path.join(root, ".vscode", "settings.json")
+    cur, _ = load_settings(path)
+    if not cur:
+        return False
+    merged = dict(cur)
+    merged.pop("peacock.color", None)
+    cc = dict(merged.get("workbench.colorCustomizations") or {})
+    for k in customizations("#000000"):
+        cc.pop(k, None)
+    if cc:
+        merged["workbench.colorCustomizations"] = cc
+    else:
+        merged.pop("workbench.colorCustomizations", None)
+    if merged == cur:
+        return False
+    if merged:
+        tmp = path + ".crew-tmp"
+        with open(tmp, "w") as fh:
+            json.dump(merged, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+        os.replace(tmp, path)
+    else:
+        # Nothing of ours and nothing of anyone else's: leave no empty file
+        # behind, so `crew-color free` really does undo `apply`.
+        os.remove(path)
+    return True
+
+
+# --- commands ----------------------------------------------------------------
+
+def cmd_assign(path):
+    root = resolve_root(path)
+    name, hexv = assign(root)
+    print(hexv)
+    return 0
+
+
+def cmd_peek(path):
+    """Print the color only if one is already allocated. Allocates nothing.
+
+    Exists for `crew-sync --dry-run`, which must not have side effects — and
+    `assign` writes a registry entry by design.
+    """
+    e = read_entry(entry_path(resolve_root(path)))
+    if e and e.get("COLOR"):
+        print(e["COLOR"])
+    return 0
+
+
+def cmd_show(path):
+    root = resolve_root(path)
+    e = read_entry(entry_path(root))
+    print(f"  root       {root.replace(os.path.expanduser('~'), '~')}")
+    if not e:
+        print("  color      none (crew-color assign gives it one)")
+        return 0
+    print(f"  color      {e['COLOR']}  {e.get('NAME') or ''}")
+    vs = os.path.join(root, ".vscode", "settings.json")
+    cur, _ = load_settings(vs)
+    live = bool(cur) and (cur or {}).get("peacock.color", "").upper() == \
+        e["COLOR"].upper()
+    print(f"  peacock    {'applied' if live else 'not applied'}  "
+          f"{vs.replace(os.path.expanduser('~'), '~')}")
+    return 0
+
+
+def cmd_list():
+    """The map. Shows crew's assignments and hand-set colors side by side.
+
+    Both, because a color worn by hand is just as taken as one crew allocated,
+    and a map that only listed crew's own entries would show a slot as free
+    while a workspace was plainly sitting on it.
+    """
+    entries = all_entries()
+    by_hex = {}
+    for e in entries:
+        by_hex.setdefault(e["COLOR"].upper(), []).append(e)
+
+    # cmux workspaces wearing a color crew has no entry for: set by hand.
+    manual = {}
+    try:
+        r = subprocess.run([CMUX, "workspace", "list", "--json"],
+                           capture_output=True, text=True, timeout=10)
+        for w in (json.loads(r.stdout) or {}).get("workspaces") or []:
+            c = (w.get("custom_color") or "").upper()
+            cwd = w.get("current_directory") or ""
+            if not c:
+                continue
+            if any(e["ROOT"] == cwd for e in by_hex.get(c, [])):
+                continue
+            manual.setdefault(c, []).append(
+                w.get("custom_title") or w.get("title") or cwd)
+    except Exception:
+        pass
+
+    held = sum(1 for e in entries if e["_live"])
+    print(f"  {held} live of {len(entries)} entries, "
+          f"{len(manual)} hand-set, {len(PALETTE)} colors\n")
+    for name, hexv in PALETTE:
+        rows = by_hex.get(hexv.upper(), [])
+        live = [r for r in rows if r["_live"]]
+        hands = manual.get(hexv.upper(), [])
+        mark = "●" if (live or hands) else "○"
+        extra = "  \033[31m(shared)\033[0m" if len(live) + len(hands) > 1 else ""
+        print(f"  {mark} {hexv}  {name:<9}{extra}")
+        for r in rows:
+            tag = "" if r["_live"] else "  \033[2m(gone)\033[0m"
+            print(f"        {os.path.basename(r['ROOT'])}{tag}")
+        for t in hands:
+            print(f"        {t}  \033[2m(hand-set)\033[0m")
+    dead = [e for e in entries if not e["_live"]]
+    if dead:
+        print(f"\n  {len(dead)} dead entr{'y' if len(dead) == 1 else 'ies'} — "
+              f"crew-color prune frees those colors")
+    return 0
+
+
+def cmd_apply(path):
+    root = resolve_root(path)
+    name, hexv = assign(root)
+    changed = apply(root, hexv, name)
+    print(f"\033[32m✓\033[0m {name} {hexv} "
+          f"{'written to' if changed else 'already in'} "
+          f"{root.replace(os.path.expanduser('~'), '~')}/.vscode/settings.json")
+    return 0
+
+
+def cmd_free(path):
+    root = resolve_root(path)
+    unapply(root)
+    p = entry_path(root)
+    if os.path.exists(p):
+        os.remove(p)
+    print(f"\033[32m✓\033[0m released {root.replace(os.path.expanduser('~'), '~')}")
+    return 0
+
+
+def cmd_prune():
+    n = 0
+    for e in all_entries():
+        if not e["_live"]:
+            os.remove(e["_file"])
+            n += 1
+    print(f"\033[32m✓\033[0m pruned {n}")
+    return 0
+
+
+def main():
+    argv = sys.argv[1:]
+    cmd = argv[0] if argv else "show"
+    arg = argv[1] if len(argv) > 1 else None
+    if cmd in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    if cmd == "assign":
+        return cmd_assign(arg)
+    if cmd == "peek":
+        return cmd_peek(arg)
+    if cmd == "show":
+        return cmd_show(arg)
+    if cmd == "list":
+        return cmd_list()
+    if cmd == "apply":
+        return cmd_apply(arg)
+    if cmd == "free":
+        return cmd_free(arg)
+    if cmd == "prune":
+        return cmd_prune()
+    if os.path.isdir(cmd):
+        return cmd_show(cmd)
+    die(f"unknown '{cmd}' (try --help)")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
