@@ -19,6 +19,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { validateDiagrams, validateSurface } from "./lib/validate.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR,
   readState, writeState, allStates, log1, progress, gateView,
@@ -454,9 +455,23 @@ ${MERMAID_BOOT}
 </script></body></html>`;
 }
 
-function render(specPath, opts) {
+async function render(specPath, opts) {
   const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
   const violations = validate(spec, opts.force);
+  // Refuse-first extends to the diagrams: parse each with the vendored
+  // mermaid before any surface is written — a plan page with a parse error
+  // where a drawing should be fails the reader exactly where it matters.
+  const diagResults = await validateDiagrams(spec.diagrams || []);
+  const badDiagrams = diagResults.filter(b => b.error !== null);
+  if (diagResults.some(b => b.error === null))
+    console.error("deep-plan: mermaid validation skipped for some/all diagrams (environment-limited here)");
+  if (badDiagrams.length && !opts.force) {
+    console.error("deep-plan: spec refused — mermaid will not parse:");
+    for (const b of badDiagrams) console.error(`  ✗ ${b.label}: ${b.error}`);
+    process.exit(1);
+  } else if (badDiagrams.length) {
+    console.error(`deep-plan: --force past ${badDiagrams.length} broken diagram(s) — logged`);
+  }
   fs.mkdirSync(PLANS_DIR, { recursive: true });
   fs.mkdirSync(KEYS_DIR, { recursive: true });
 
@@ -854,9 +869,27 @@ for (let i = 0; i < rest.length; i++) {
 switch (cmd) {
   case "render": {
     if (!args[0]) die("render <spec.json> [--root DIR] [--force]");
-    render(args[0], flags); break;
+    await render(args[0], flags); break;
   }
   case "rehydrate": rehydrate(args[0] || die("rehydrate <slug>")); break;
+  case "validate": {
+    // Re-check surfaces already on disk: `validate <slug>` for a plan's
+    // md/review/working set, or `validate <file.html|file.md>` for any one file.
+    const target = args[0] || die("validate <slug|file>");
+    const files = fs.existsSync(target) && fs.statSync(target).isFile()
+      ? [target]
+      : ["md", "review.html", "working.html"]
+          .map(sfx => path.join(PLANS_DIR, `${target}.${sfx}`))
+          .filter(p => fs.existsSync(p));
+    if (!files.length) die(`nothing to validate for "${target}"`);
+    let bad = 0;
+    for (const f of files) {
+      const problems = await validateSurface(f);
+      for (const p of problems) { console.error(`  ✗ ${p.label}: ${p.error}`); bad++; }
+    }
+    if (bad) { console.error(`deep-plan validate: ${bad} problem(s)`); process.exit(1); }
+    say(`validate: ${files.length} surface(s) clean`); break;
+  }
   case "export-artifact": exportArtifact(args[0] || die("export-artifact <slug> [--json]"), flags.json); break;
   case "attach-artifact": attachArtifact(args[0], args[1] || die("attach-artifact <slug> <url>")); break;
   case "grade": await grade(args[0] || die("grade <slug> [q1=a …]"), args.slice(1)); break;
@@ -899,6 +932,7 @@ switch (cmd) {
     say(`deep-plan — plan as artifact, gate per increment
   render <spec.json> [--root DIR] [--force]   spec -> md + review + working surfaces
   rehydrate <slug>                            re-render from the archived spec
+  validate <slug|file>                        mermaid + formatting lint of rendered surfaces
   export-artifact <slug> [--json]             shareable annotate-able page (agent publishes it)
   attach-artifact <slug> <url>                record the published artifact in state
   grade <slug> [q1=a q2=c ...]                the alignment check; pass -> implementing
