@@ -4,6 +4,7 @@
 #   ./install.sh [--main-repo PATH] [--dry-run] [--check] [--force]
 #                [--no-apply] [--no-claude-settings] [--no-crew]
 #                [--no-deep-plan] [--no-mermaid] [--force-mermaid]
+#                [--uninstall]
 #
 # The repo is the source of truth: running this syncs repo -> machine
 # (~/.config/cmux/crew, ~/.claude/skills/deep-plan, statusline, hooks) and then
@@ -20,7 +21,7 @@ SHIM="$HOME/.local/bin/deep-plan"
 MERMAID_VERSION="11.17.2"
 MERMAID_SHA256="581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8"
 
-DRY=0 APPLY=1 SETTINGS=1 CREW=1 DEEPPLAN=1 MERMAID=1 FORCE_MERMAID=0 CHECK=0 FORCE=0 MAIN=""
+DRY=0 APPLY=1 SETTINGS=1 CREW=1 DEEPPLAN=1 MERMAID=1 FORCE_MERMAID=0 CHECK=0 FORCE=0 UNINSTALL=0 MAIN=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -34,6 +35,7 @@ while [ $# -gt 0 ]; do
     --no-deep-plan) DEEPPLAN=0; shift ;;
     --no-mermaid) MERMAID=0; shift ;;
     --force-mermaid) FORCE_MERMAID=1; shift ;;
+    --uninstall) UNINSTALL=1; shift ;;
     -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
     *) echo "install.sh: unknown option $1" >&2; exit 2 ;;
   esac
@@ -136,6 +138,28 @@ drift_check() {
 printf '\n\033[1mseamux install\033[0m  %s\n\n' "$([ "$DRY" = 1 ] && echo '(dry run)')"
 
 if [ "$CHECK" = 1 ]; then drift_check; exit $?; fi
+
+# ---------------------------------------------------------------- uninstall
+# The exit door, in dependency order: unwire cmux first (crew uninstall
+# restores the pre-crew cmux.json and Claude hooks), then remove what this
+# script placed. Deliberately left behind: guard_bash.sh (a safety rail
+# outlives its installer), plan state/keys under ~/.claude/deep-plan and
+# ~/.claude/plans (user work), and the crew backups.
+if [ "$UNINSTALL" = 1 ]; then
+  if [ -x "$DEST/bin/crew" ]; then
+    run "'$DEST/bin/crew' uninstall" || warn "crew uninstall failed — continuing"
+  fi
+  if [ -d "$DEST" ]; then
+    BAK="$HOME/.config/cmux/crew-backups/crew.uninstalled.$(date +%Y%m%d-%H%M%S)"
+    run "mkdir -p '$(dirname "$BAK")' && mv '$DEST' '$BAK'"
+    ok "crew tree moved aside -> ${BAK/#$HOME/~} (delete it when sure)"
+  fi
+  [ -d "$SKILL" ] && { run "rm -rf '$SKILL'"; ok "removed the deep-plan skill"; }
+  [ -f "$SHIM" ]  && { run "rm -f '$SHIM'";   ok "removed the deep-plan shim"; }
+  run "python3 '$HERE/claude/merge_settings.py' --remove$([ "$DRY" = 1 ] && echo ' --dry-run')"
+  say "kept: guard_bash.sh, ~/.claude/deep-plan (state/keys), ~/.claude/plans, statusline backups"
+  exit 0
+fi
 
 # ---------------------------------------------------------------- preflight
 [ "$(uname -s)" = "Darwin" ] || warn "not macOS — cmux, the sidebar and the VS Code hand-off are mac-only"

@@ -134,6 +134,9 @@ ok("a heredoc write denied", bash("cat <<EOF > f.txt\nhi\nEOF").status === 2);
 ok("the plan's own tooling allowed", bash("deep-plan status").status === 0);
 
 // -------------------------------------------------- grade -> implementing
+r = cli("grade", spec.slug);
+ok("no answers without a TTY refuses (interactive form needs one)",
+  r.status !== 0 && /TTY/.test(r.stderr));
 r = cli("grade", spec.slug, "q1=a");
 ok("wrong/missing answers fail and name the decision", r.status !== 0 && /reopen the decision/.test(r.stderr));
 const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, spec.slug + ".key.json"), "utf8"));
