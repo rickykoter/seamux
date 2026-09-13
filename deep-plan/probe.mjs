@@ -87,6 +87,9 @@ ok("copy-back button builds the paste blob (slug + grade line + comments)",
   review.includes('"deep-plan grade " + slug') &&
   review.includes('"comments:'));
 ok("copy-back has a file:// clipboard fallback", review.includes("execCommand"));
+ok("highlight-to-comment: selection chip and pinned-quote rows",
+  review.includes("dp-hl-add") && review.includes("getSelection") &&
+  review.includes('"dp-quote"') && review.includes("dp-quotes"));
 const working = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
 ok("working surface renders controls disabled on disk",
   working.includes('class="dp-act"') && working.includes("disabled"));
