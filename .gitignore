@@ -3,3 +3,4 @@ __pycache__/
 deep-plan/vendor/mermaid.min.js
 *.bak
 .DS_Store
+.vscode/

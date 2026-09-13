@@ -179,6 +179,43 @@ ok("a parked plan in another repo does not gate this one",
 ok("close retires a plan from status", cli("close", "parked-plan").status === 0 &&
   !JSON.parse(cli("status", "--json").stdout).some(p => p.slug === "parked-plan"));
 
+// -------------------------------------------------- bashMutates: /dev/null redirects are reads
+// The lib reads its dirs from process.env at import time; mirror ENV first.
+Object.assign(process.env, ENV);
+const lib = await import(new URL("lib/state.mjs", import.meta.url));
+ok("2>/dev/null does not read as a write (lsof)",
+  !lib.bashMutates("lsof -a -p 1 -iTCP 2>/dev/null"));
+ok("2>/dev/null does not read as a write (json.tool + pipe)",
+  !lib.bashMutates("python3 -m json.tool t.json 2>/dev/null | head -40"));
+ok(">/dev/null does not read as a write",
+  !lib.bashMutates("curl -s http://127.0.0.1:1/x >/dev/null 2>&1"));
+ok("a real file redirect still mutates", lib.bashMutates("echo hi > out.txt"));
+ok("a heredoc still mutates", lib.bashMutates("cat <<EOF > f\nx\nEOF"));
+ok("scrubbing cannot hide a real mutator",
+  lib.bashMutates("sed -i s/a/b/ f 2>/dev/null"));
+
+// -------------------------------------------------- broken root: fail open, loudly
+const GONE = path.join(TMP, "gone-root");
+fs.writeFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "ghost.json"), JSON.stringify(
+  { slug: "ghost", root: GONE, phase: "implementing", increments: [] }));
+ok("brokenRoots reports a vanished root",
+  lib.brokenRoots().some(b => b.slug === "ghost" && b.root === GONE));
+ok("status prints BROKEN ROOT", (cli("status").stdout || "").includes("BROKEN ROOT"));
+const bg = gate("Edit", { file_path: path.join(REPO, "a.txt") });
+ok("gate still allows but warns FAILING OPEN",
+  bg.status === 0 && (bg.stdout || "").includes("FAILING OPEN"));
+fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "ghost.json"));
+
+// -------------------------------------------------- single-writer state lock
+const staleLock = path.join(ENV.DEEP_PLAN_STATE_DIR, ".lock-lockee");
+fs.mkdirSync(staleLock, { recursive: true });
+fs.utimesSync(staleLock, new Date(Date.now() - 60000), new Date(Date.now() - 60000));
+lib.writeState({ slug: "lockee", root: REPO, phase: "review", increments: [] });
+ok("writeState reclaims a stale lock and releases its own",
+  fs.existsSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json")) &&
+  !fs.readdirSync(ENV.DEEP_PLAN_STATE_DIR).some(n => n.startsWith(".lock-")));
+fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
+
 // -------------------------------------------------- hot-path cost
 const t0 = process.hrtime.bigint();
 for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);

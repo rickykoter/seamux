@@ -282,6 +282,6 @@ fi
 printf '\n\033[1mnext\033[0m\n'
 say "crew doctor                              # must be green"
 say "node $DEST/board/board_probe.mjs"
-say "node $SKILL/probe.mjs                    # 52 assertions"
+say "node $SKILL/probe.mjs                    # must be all green"
 say "./install.sh --check                     # should report no drift"
 printf '\n'
