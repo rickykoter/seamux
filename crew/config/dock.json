@@ -1,0 +1,75 @@
+{
+  "_comment": [
+    "crew — Dock controls, personal-projects edition.",
+    "Installed by `crew apply` to <repo>/.cmux/dock.json and added to",
+    ".git/info/exclude so it stays untracked.",
+    "",
+    "Trimmed for a laptop of hobby repos: no CI beyond GitHub checks, no",
+    "shared database. `spec` runs crew-spec, which detects the repo's test",
+    "runner (npm/pytest/cargo/go) instead of assuming one stack.",
+    "",
+    "The web Dock (beta) seeds the board and the usage dashboard as chromeless",
+    "browser controls. The board page is inert until crew-listen pushes the",
+    "renderer into it; crew-board adopts the seeded surface instead of creating",
+    "its own. __INTENT_PORT__ is substituted by `crew apply` and must match the",
+    "intent server's pin (CREW_INTENT_PORT, default 7345)."
+  ],
+  "controls": [
+    {
+      "id": "board",
+      "title": "Crew",
+      "type": "browser",
+      "chrome": false,
+      "url": "file://__HOME__/.config/cmux/crew/board/board.html"
+    },
+    {
+      "id": "usage",
+      "title": "Usage",
+      "type": "browser",
+      "chrome": false,
+      "url": "http://127.0.0.1:__INTENT_PORT__/usage",
+      "height": 320
+    },
+    {
+      "id": "checks",
+      "title": "Checks",
+      "command": "__HOME__/.config/cmux/crew/bin/crew-watch 30 gh pr checks",
+      "cwd": ".",
+      "height": 240
+    },
+    {
+      "id": "diffs",
+      "title": "Diffs",
+      "command": "__HOME__/.config/cmux/crew/bin/crew-diff",
+      "cwd": ".",
+      "height": 320
+    },
+    {
+      "id": "sessions",
+      "title": "Sessions",
+      "command": "__HOME__/.config/cmux/crew/bin/crew-resume",
+      "cwd": ".",
+      "height": 360
+    },
+    {
+      "id": "git",
+      "title": "Git",
+      "command": "__HOME__/.config/cmux/crew/bin/crew-watch 3 git status -sb",
+      "cwd": ".",
+      "height": 220
+    },
+    {
+      "id": "spec",
+      "title": "Spec",
+      "command": "__HOME__/.config/cmux/crew/bin/crew-spec --help",
+      "cwd": "."
+    },
+    {
+      "id": "sandbox",
+      "title": "Sandbox",
+      "command": "__HOME__/.config/cmux/crew/bin/crew-watch 10 __HOME__/.config/cmux/crew/bin/crew-sandbox status",
+      "cwd": ".",
+      "height": 220
+    }
+  ]
+}

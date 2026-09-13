@@ -1,0 +1,2 @@
+#!/bin/sh
+exec node "$HOME/.claude/skills/deep-plan/deep_plan.mjs" "$@"

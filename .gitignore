@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+deep-plan/vendor/mermaid.min.js
+*.bak
+.DS_Store

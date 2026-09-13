@@ -1,0 +1,432 @@
+#!/usr/bin/env bash
+# crew-reclaim [-n|--dry-run] [-y|--yes] [<workspace-id>|<path>]
+#
+# The board's Merged bucket knows a worktree can go; this is the tap that
+# actually removes it. Invoked from the sidebar through the notification-hook
+# RPC channel (see hooks/triage.py), or by hand.
+#
+# Deliberately conservative — this deletes work, so every one of these must
+# hold or it refuses:
+#
+#   * the path is a git worktree, and NOT the primary checkout
+#   * HEAD is an ancestor of origin/master, i.e. the work really did land
+#   * the tree is clean and there are no unpushed commits
+#   * nothing live is standing in it — not this shell, not another workspace
+#   * no Docker sandbox is still running for it
+#
+# Every guard is evaluated and reported before anything is touched, so the
+# answer to "why did it refuse?" is on screen in full rather than one reason at
+# a time. Nothing is ever forced.
+#
+# Interactive by default: with a tty on stdin it prints the report and waits for
+# a yes. --yes skips the prompt, --dry-run stops after the report. Without a tty
+# there is nobody to ask, so it behaves as it always did and just proceeds —
+# that is the path a detached `fire()` from the hook still takes.
+
+set -uo pipefail
+
+CMUX="$(command -v cmux || true)"
+# One definition of "which cmux": bin/crew-cmux-bin. A hardcoded bundle path kept
+# driving the OLD cli against the NEW app after the switch to the nightly build --
+# version skew that fails silently, because the old bundle is still on disk.
+[ -n "$CMUX" ] || CMUX="$("$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/crew-cmux-bin" 2>/dev/null || true)"
+[ -n "$CMUX" ] || CMUX=cmux
+MAIN="${CREW_MONOLITH:-__MAIN_REPO__}"
+
+die()  { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
+ok()   { printf '\033[32m✓\033[0m %s\n' "$*"; }
+say()  { printf '\033[2m→\033[0m %s\n' "$*"; }
+pass() { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+fail() { printf '  \033[31m✗\033[0m %s\n' "$*"; blockers=$((blockers + 1)); }
+skip() { printf '  \033[2m·\033[0m %s\n' "$*"; }
+note() { printf '    \033[2m%s\033[0m\n' "$*"; }
+TAB="$(printf '\t')"
+head2(){ printf '\n\033[1m%s\033[0m\n' "$*"; }
+kv()   { printf '  \033[2m%-9s\033[0m %s\n' "$1" "$2"; }
+
+dry=""
+assume_yes=""
+arg=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -n|--dry-run) dry=1 ;;
+    -y|--yes)     assume_yes=1 ;;
+    -h|--help)    sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --)           shift; arg="${1:-}"; break ;;
+    -*)           die "unknown option: $1" ;;
+    *)            arg="$1" ;;
+  esac
+  shift
+done
+
+ws=""
+path=""
+if [ -n "$arg" ] && [ -d "$arg" ]; then
+  path="$arg"
+elif [ -n "$arg" ]; then
+  ws="$arg"
+  path="$("$CMUX" sidebar-state --workspace "$ws" 2>/dev/null | sed -n 's/^cwd=//p')"
+else
+  path="$PWD"
+fi
+[ -n "$path" ] && [ -d "$path" ] || die "no directory for '${arg:-$PWD}'"
+
+top="$(git -C "$path" rev-parse --show-toplevel 2>/dev/null)" || die "not a git repo: $path"
+
+# ---------------------------------------------------------------------------
+# Evaluate every guard. Nothing below this line changes anything on disk; the
+# report is built first and printed whole, because a wall of context is what
+# makes a delete prompt answerable.
+# ---------------------------------------------------------------------------
+blockers=0
+
+common="$(git -C "$path" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+gitdir="$(git -C "$path" rev-parse --path-format=absolute --git-dir 2>/dev/null)"
+branch="$(git -C "$top" branch --show-current 2>/dev/null)"
+
+say "checking $top"
+if [ -n "$branch" ]; then
+  say "fetching origin"
+  git -C "$top" fetch --quiet origin 2>/dev/null
+fi
+
+ahead=""
+if [ -n "$branch" ]; then
+  ahead="$(git -C "$top" rev-list --count origin/master..HEAD 2>/dev/null)"
+fi
+dirty_n="$(git -C "$top" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+caller_top="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)"
+
+others=0
+others_desc=""
+ws_title=""
+planmode_desc=""
+if [ -x "$CMUX" ]; then
+  # One call answers three questions: who else is standing in this worktree,
+  # what the workspace we are about to close is actually called, and whether any
+  # session in here is in plan mode. `plan:mode` is crew-sync's token, read off
+  # the description — the same thing the board draws ◇ from.
+  probe="$(CMUX_QUIET=1 "$CMUX" workspace list --json 2>/dev/null \
+    | python3 -c '
+import json,sys
+try:
+    ws = json.load(sys.stdin).get("workspaces") or []
+except Exception:
+    sys.exit(0)
+top, keep = sys.argv[1], sys.argv[2]
+
+def inside(w):
+    # Path-boundary compare, not a bare prefix: sibling worktrees live under
+    # <repo>.worktrees/ and their names nest (PROJ-1013-Isolated is a prefix of
+    # PROJ-1013-Isolated-CLI-Page), so startswith alone reports the neighbour.
+    d = w.get("current_directory") or "\0"
+    return d == top or d.startswith(top.rstrip("/") + "/")
+
+# The id from a notification is a UUID; a hand-typed one is a ref like
+# workspace:4. Match either, or the workspace being reclaimed counts itself
+# as a reason not to reclaim it.
+def is_keep(w):
+    return keep in (w.get("id"), w.get("ref"))
+
+def label(w):
+    # Always paired with the ref. Two workspaces on the same worktree usually
+    # carry the same title — that is the case this guard exists to catch — so a
+    # bare title names the blocker without saying which one to close.
+    name = (w.get("title") or "").strip()
+    if name.startswith("/") or name.startswith("\u2026/"):
+        name = name.rstrip("/").rsplit("/", 1)[-1]
+    ref = w.get("ref") or w.get("id") or "?"
+    return "%s (%s)" % (name, ref) if name else ref
+
+here = [w for w in ws if inside(w)]
+hits = [w for w in here if not is_keep(w)]
+print("COUNT %d" % len(hits))
+print("KEEP %s" % next((label(w) for w in ws if is_keep(w)), ""))
+for w in hits:
+    print("HIT %s" % label(w))
+for w in here:
+    if "plan:mode" in (w.get("description") or "").split():
+        print("MODE %s" % label(w))' "$top" "${ws:-none}" 2>/dev/null)"
+  others="$(printf '%s\n' "$probe" | sed -n 's/^COUNT //p')"
+  others="${others:-0}"
+  ws_title="$(printf '%s\n' "$probe" | sed -n 's/^KEEP //p')"
+  others_desc="$(printf '%s\n' "$probe" | sed -n 's/^HIT //p' | paste -sd, -)"
+  planmode_desc="$(printf '%s\n' "$probe" | sed -n 's/^MODE //p' | paste -sd, -)"
+fi
+
+# --- deep-plan ---------------------------------------------------------------
+# A plan that has been rendered but not signed off, or locked and not finished,
+# is unfinished work living outside the worktree — deleting the tree strands it.
+# Two sources because each covers the other's blind spot: the `active` marker is
+# written at render time and its CWD is wherever the renderer ran (which for a
+# spec rendered from the keys directory is not the worktree at all), while the
+# state file carries the plan's real `root`.
+plan_rows="$(python3 - "$top" 2>/dev/null <<'PLANPROBE'
+import json, os, sys
+
+top = sys.argv[1]
+DP = os.path.join(os.path.expanduser("~"), ".claude", "deep-plan")
+
+PHASES = {
+    "review": "is awaiting its alignment check",
+    "implementing": "is mid-implementation",
+}
+
+
+def same(a, b):
+    if not a or not b:
+        return False
+    try:
+        return os.path.realpath(a) == os.path.realpath(b)
+    except Exception:
+        return False
+
+
+# One entry per plan, not per file: a plan in review has both an active marker
+# and a state file, and reporting it twice makes two blockers out of one fact.
+plans = {}
+
+
+def touch(slug):
+    return plans.setdefault(slug, {"phase": "", "incs": "", "files": []})
+
+
+active = os.path.join(DP, "active")
+for n in sorted(os.listdir(active)) if os.path.isdir(active) else []:
+    path = os.path.join(active, n)
+    d = {}
+    try:
+        for line in open(path):
+            k, _, v = line.partition("=")
+            d[k.strip()] = v.strip()
+    except Exception:
+        continue
+    if not same(d.get("CWD"), top):
+        continue
+    e = touch(d.get("SLUG") or n)
+    e["phase"] = e["phase"] or "review"
+    e["files"].append(path)
+
+state = os.path.join(DP, "state")
+for n in sorted(os.listdir(state)) if os.path.isdir(state) else []:
+    if not n.endswith(".json"):
+        continue
+    path = os.path.join(state, n)
+    try:
+        st = json.load(open(path)) or {}
+    except Exception:
+        continue
+    phase = (st.get("phase") or "").strip()
+    if phase == "done" or not same(st.get("root"), top):
+        continue
+    e = touch(st.get("slug") or n[:-5])
+    e["phase"] = phase or e["phase"]
+    incs = st.get("increments") or []
+    if incs:
+        done = len([i for i in incs if i.get("status") == "done"])
+        e["incs"] = " (%d/%d increments done)" % (done, len(incs))
+    e["files"].append(path)
+
+for slug in sorted(plans):
+    e = plans[slug]
+    phase = e["phase"] or "open"
+    said = PHASES.get(phase, "is open (%s)" % phase)
+    print("\t".join([
+        "a deep-plan %s — %s%s" % (said, slug, e["incs"]),
+        "finish it, or if it is abandoned remove: %s" % " ".join(e["files"]),
+        "%s (%s)" % (slug, phase),
+    ]))
+PLANPROBE
+)"
+plan_names="$(printf '%s\n' "$plan_rows" | cut -f3 | sed '/^$/d' | paste -sd, -)"
+
+# Registry presence is the cheap host-side answer to "was this sandboxed?", so
+# the common non-sandboxed case never touches sbx and never wakes its daemon.
+CREW_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/cmux-crew"
+md5_of() { printf '%s' "$1" | md5 -q 2>/dev/null || printf '%s' "$1" | md5sum | cut -d' ' -f1; }
+SANDBOX_BIN="$(dirname "$0")/crew-sandbox"
+sb_reg="$CREW_CACHE/sandbox/roots/$(md5_of "$top")"
+sandboxed=""
+[ -f "$sb_reg" ] && sandboxed=1
+
+# A running microVM holds the mount open and is still executing an agent. Same
+# reasoning as the "another workspace is open here" guard: refuse rather than
+# pull the ground out from under something live. `status` is side-effect free —
+# it never starts the daemon — so this stays cheap and safe when sbx is absent,
+# signed out, or stopped.
+#
+# Bounded, because `sbx ls --json` can wedge for minutes when the daemon is
+# unwell and crew-sandbox's own reader has no timeout — a delete prompt frozen
+# with nothing on screen is worse than a slow one. A probe that never answers
+# counts as a blocker rather than a pass: "I could not tell" and "it is not
+# running" are different sentences when the next step unmounts it.
+sb_state=""
+if [ -n "$sandboxed" ] && [ -x "$SANDBOX_BIN" ]; then
+  say "asking sbx about the sandbox"
+  sb_state="$(python3 - "$SANDBOX_BIN" "$top" 2>/dev/null <<'SBXPROBE'
+import json, subprocess, sys
+try:
+    r = subprocess.run([sys.argv[1], "status", sys.argv[2], "--json"],
+                       capture_output=True, text=True, timeout=20)
+    print(json.loads(r.stdout).get("state", ""))
+except subprocess.TimeoutExpired:
+    print("unreachable")
+except Exception:
+    pass
+SBXPROBE
+)"
+fi
+
+size="$(du -sh "$top" 2>/dev/null | cut -f1)"
+
+head2 "reclaim ${branch:-<detached>}"
+kv worktree "$top"
+kv branch   "${branch:-<detached HEAD>}"
+kv size     "${size:-?}"
+[ -n "$ws" ] && kv workspace "${ws_title:-$ws}"
+[ -n "$plan_names" ] && kv plan "$plan_names"
+[ -n "$sandboxed" ] && kv sandbox "registered${sb_state:+ ($sb_state)}"
+
+printf '\n'
+if [ "$gitdir" != "$common" ]; then
+  pass "linked worktree, not the primary checkout"
+else
+  fail "$top is the primary checkout, not a worktree"
+fi
+
+if [ -z "$branch" ]; then
+  fail "detached HEAD — resolve it by hand"
+  skip "merge check skipped: no branch"
+elif [ "${ahead:-1}" = "0" ]; then
+  pass "merged: HEAD is an ancestor of origin/master"
+else
+  fail "${ahead:-?} commit(s) not in origin/master — not merged"
+fi
+
+if [ "${dirty_n:-0}" = "0" ]; then
+  pass "clean tree, nothing uncommitted"
+else
+  fail "$dirty_n uncommitted change(s)"
+fi
+
+# Planning is unfinished work that does not show up in `git status`. A deep-plan
+# lives in ~/.claude/deep-plan and points back at this root; plan mode means a
+# session here is still deciding what to do. Deleting the tree under either one
+# strands it — and in the deep-plan case the plan outlives the worktree, so what
+# you lose is the thing you were about to build, not the build.
+if [ -n "$plan_rows" ] || [ -n "$planmode_desc" ]; then
+  while IFS="$TAB" read -r msg hint _rest; do
+    [ -n "$msg" ] || continue
+    fail "$msg"
+    [ -n "$hint" ] && note "$hint"
+  done <<< "$plan_rows"
+  if [ -n "$planmode_desc" ]; then
+    fail "a session here is in plan mode: $planmode_desc"
+    note "leave plan mode there, or close it — crew-sync drops the token within 120s"
+  fi
+else
+  pass "no plan is open on this worktree"
+fi
+
+# Never delete the ground you are standing on. Removing the caller's own
+# worktree yanks the cwd out from under the shell (and any agent) running in it.
+# Learned the hard way: every other guard passed and it deleted the live
+# worktree mid-session.
+if [ "$caller_top" != "$top" ]; then
+  pass "this shell is not inside it"
+else
+  fail "this shell is inside $top — run it from elsewhere"
+fi
+
+if [ "${others:-0}" -eq 0 ]; then
+  pass "no other cmux workspace is open here"
+else
+  fail "$others other workspace(s) still open here${others_desc:+: $others_desc}"
+fi
+
+case "$sb_state" in
+  *running*)   fail "a sandbox is still running — run: crew-sandbox down $top" ;;
+  unreachable) fail "sbx did not answer in 20s — check: crew-sandbox status $top" ;;
+  "")          [ -n "$sandboxed" ] && pass "sandbox is not running" || skip "never sandboxed" ;;
+  *)           pass "sandbox is not running ($sb_state)" ;;
+esac
+
+printf '\n'
+if [ "$blockers" -gt 0 ]; then
+  printf '\033[31m%s blocker(s) — nothing was changed.\033[0m\n' "$blockers"
+  exit 1
+fi
+
+printf '\033[1mWould remove\033[0m\n'
+printf '  \033[2m·\033[0m worktree   %s \033[2m(%s)\033[0m\n' "$top" "${size:-?}"
+printf '  \033[2m·\033[0m branch     %s \033[2m(safe delete; kept if git declines)\033[0m\n' "$branch"
+[ -n "$ws" ] && printf '  \033[2m·\033[0m workspace  %s \033[2m(closed first)\033[0m\n' "${ws_title:-$ws}"
+[ -n "$sandboxed" ] && printf '  \033[2m·\033[0m sandbox    the microVM and its image cache\n'
+
+if [ -n "$dry" ]; then
+  printf '\n\033[2mDry run — nothing was changed.\033[0m\n'
+  exit 0
+fi
+
+# A tty means there is somebody to ask. Without one — a detached fire() from the
+# notification hook, or a script — asking would hang forever, so it proceeds.
+if [ -z "$assume_yes" ] && [ -t 0 ]; then
+  printf '\n\033[1mProceed?\033[0m \033[2m[y/N]\033[0m '
+  reply=""
+  read -r reply || reply=""
+  case "$reply" in
+    y|Y|yes|YES) printf '\n' ;;
+    *) printf '\033[2maborted — nothing was changed.\033[0m\n'; exit 130 ;;
+  esac
+fi
+
+# ---------------------------------------------------------------------------
+# Past this line it deletes. Re-check the guards that a human could have
+# invalidated while the prompt sat there; the fetch is not repeated, since a
+# branch cannot become unmerged.
+# ---------------------------------------------------------------------------
+[ -z "$(git -C "$top" status --porcelain 2>/dev/null | head -1)" ] \
+  || die "$top picked up uncommitted changes while you were deciding — refusing"
+
+say "reclaiming $top ($branch, ${size:-?})"
+
+# Close the workspace first so cmux is not left pointing at a deleted path.
+[ -n "$ws" ] && "$CMUX" close-workspace --workspace "$ws" >/dev/null 2>&1
+
+# Destroy the microVM before the directory goes: it has the worktree mounted, and
+# an orphaned sandbox keeps a whole private image cache on disk. Host files are
+# never copied in, so nothing of yours lives inside it.
+if [ -n "$sandboxed" ] && [ -x "$SANDBOX_BIN" ]; then
+  if "$SANDBOX_BIN" rm "$top" >/dev/null 2>&1; then
+    ok "removed sandbox"
+  else
+    say "could not remove the sandbox — check: crew-sandbox status $top"
+  fi
+  rm -f "$sb_reg"
+fi
+
+git -C "$MAIN" worktree remove "$top" 2>/dev/null \
+  || git -C "$MAIN" worktree remove --force "$top" 2>/dev/null \
+  || die "git worktree remove failed for $top"
+ok "removed worktree $top"
+
+# The branch is merged, so -d (safe delete) is enough; never -D.
+if git -C "$MAIN" branch -d "$branch" >/dev/null 2>&1; then
+  ok "deleted branch $branch"
+else
+  say "kept branch $branch (git declined a safe delete)"
+fi
+
+# A VS Code window pinned to this worktree outlives the directory: it stays open
+# on a tree that reports zero files until you close it. Nothing here can close
+# it for you — VS Code ships no `code --close`, and the osascript route needs
+# accessibility access this machine does not grant — so say so once, at the end,
+# where it is the last thing on screen.
+CODE_HELPER="$(dirname "$0")/crew-code"
+if [ -x "$CODE_HELPER" ] && "$CODE_HELPER" windows 2>/dev/null | grep -Fxq "$top"; then
+  say "VS Code still has a window open on $top — close it by hand"
+fi
+
+"$CMUX" notify --title "crew" --subtitle "crew:reclaimed" \
+  --body "$branch — ${size:-?} reclaimed" >/dev/null 2>&1 || true
+ok "reclaimed ${size:-?}"

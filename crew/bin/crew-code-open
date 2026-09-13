@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# crew-code-open <path> — open a file in the VS Code window for its worktree.
+#
+# Wired from cmux.json as app.preferredEditor, so Cmd-clicking a path in a
+# terminal (and double-clicking in the file explorer) lands in the VS Code
+# desktop app, in the window that owns that worktree.
+#
+# cmux's contract, from PreferredEditorService:
+#   /bin/sh -c "<command> '<path>'"
+#   - the path is single-quoted and appended as the last argument
+#   - stdout and stderr are discarded
+#   - a NONZERO EXIT makes cmux fall back to the macOS default app
+#
+# That last point is the design constraint. Exit 0 means "handled"; exit 1 is a
+# deliberate, useful fallback (no VS Code installed, path outside any repo).
+#
+# The whole mechanism is one call:
+#
+#   code <worktree-root> --goto <file>
+#
+# VS Code routes a file to the window whose folder contains it, and passing the
+# root guarantees such a window exists. Naming the root is not optional:
+# `code --goto <file>` alone, for a worktree with no window yet, silently drops
+# the file into whatever window was last active — so you get the right file with
+# some other branch's Source Control beside it. Verified that routing is
+# path-exact, not basename-guessy: the primary checkout's Rakefile and a
+# worktree's Rakefile each land in their own window.
+#
+# ~1.2s per click, cold or warm. That replaces the serve-web era's VSCODE_IPC
+# socket fan-out and its lsof-based attribution, none of which the desktop app
+# needs — VS Code does the routing itself.
+
+set -uo pipefail
+
+CODE_BIN="${CREW_CODE_BIN:-/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code}"
+[ -x "$CODE_BIN" ] || CODE_BIN="$(command -v code || true)"
+
+target="${1:-}"
+[ -n "$target" ] || exit 1
+# No VS Code at all: let cmux do its normal thing.
+[ -n "$CODE_BIN" ] && [ -x "$CODE_BIN" ] || exit 1
+
+# cmux appends the bare path with no line number, but this is also a usable
+# hand command, and `file.rb:42` is how every stack trace and grep hit is
+# written. Keep the suffix for --goto when stripping it is what makes the path
+# resolve — which also means a genuinely missing file still exits 1.
+path="$target"
+suffix=""
+if [ ! -e "$path" ]; then
+  stripped="${target%%:*}"
+  [ -n "$stripped" ] && [ -e "$stripped" ] || exit 1
+  path="$stripped"
+  suffix="${target#"$path"}"
+fi
+
+dir="$(cd -- "$(dirname -- "$path")" 2>/dev/null && pwd -P)" || exit 1
+abs="$dir/$(basename -- "$path")"
+
+root="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)"
+# Outside a repo there is no worktree window to target, and guessing one would
+# put the file in front of an unrelated branch. Hand it back to macOS.
+[ -n "$root" ] || exit 1
+
+# A directory has no --goto form, and passing it alongside the root would add it
+# to the window as a second workspace folder. Just surface the worktree.
+if [ -d "$abs" ]; then
+  exec "$CODE_BIN" "$root"
+fi
+
+exec "$CODE_BIN" "$root" --goto "$abs$suffix"

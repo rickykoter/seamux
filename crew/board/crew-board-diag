@@ -1,0 +1,414 @@
+#!/usr/bin/env python3
+"""crew-board-diag — why is the board blank, stale, or wrong?
+
+    crew-board-diag              full chain, ending in a live push test
+    crew-board-diag --no-push    read-only; changes nothing on screen
+    crew-board-diag --json       machine-readable, for a probe or a hook
+
+Written to be the first thing to run when the board misbehaves, and to be useful to
+someone (or some agent) with no memory of how it was built. It walks the chain in
+DEPENDENCY ORDER, so the first FAIL is the root cause and everything after it is noise:
+
+    cmux binary -> socket -> dock enabled -> sidebar showing -> surface alive
+      -> surface URL -> page contract -> renderer -> state build -> push lands
+      -> who is driving -> how stale is the glass
+
+Each real failure mode below has already happened once:
+
+  surface URL wrong      a surface pointed at a scratchpad copy of board.html; pushes
+                         "succeeded" and nothing changed on screen
+  page contract broken   board.html was replaced with one using #list where render.js
+                         writes #rows; every push threw "null is not an object"
+  dock disabled          --placement dock returns "Dock placement is disabled" until
+                         rightSidebar.beta.dock.enabled is set, per app bundle
+  nothing driving        board.html is inert by design, so a surface cmux restores after
+                         a restart stays blank until something pushes. crew-listen owns
+                         that push (startup + events + tick)
+  stale glass            a push that never landed looks identical to one that did, unless
+                         you compare #stamp before and after
+"""
+
+import json
+import os
+import plistlib
+import re
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+CREW = os.path.dirname(HERE)
+BOARD = os.path.join(HERE, "crew-board")
+BOARD_HTML = os.path.join(HERE, "board.html")
+RENDER_JS = os.path.join(HERE, "render.js")
+STATE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "cmux-crew")
+SURFACE_FILE = os.path.join(STATE_DIR, "board-surface")
+LISTEN_PID = os.path.join(STATE_DIR, "listen.pid")
+LISTEN_LOG = os.path.join(STATE_DIR, "listen.log")
+
+JSON_OUT = "--json" in sys.argv
+NO_PUSH = "--no-push" in sys.argv
+C = {"ok": "\033[32m", "warn": "\033[33m", "fail": "\033[31m", "dim": "\033[2m", "off": "\033[0m"}
+results = []
+
+
+def say(level, name, detail="", fix=""):
+    results.append({"level": level, "check": name, "detail": detail, "fix": fix})
+    if JSON_OUT:
+        return
+    mark = {"ok": "✓", "warn": "!", "fail": "✗", "info": "·"}[level]
+    col = C.get(level, C["dim"])
+    print(f"  {col}{mark}{C['off']} {name}" + (f"  {C['dim']}{detail}{C['off']}" if detail else ""))
+    if fix:
+        print(f"      {C['dim']}→ {fix}{C['off']}")
+
+
+def head(t):
+    if not JSON_OUT:
+        print(f"\n{t}")
+
+
+def run(args, timeout=20):
+    """(rc, stdout+stderr). Never raises: this tool must work when things are broken."""
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
+                           env={**os.environ, "CMUX_QUIET": "1"})
+        return r.returncode, (r.stdout or "") + (r.stderr or "")
+    except Exception as exc:
+        return 127, str(exc)
+
+
+def cmux_bin():
+    resolver = os.path.join(CREW, "bin", "crew-cmux-bin")
+    if os.access(resolver, os.X_OK):
+        rc, out = run([resolver])
+        if rc == 0 and out.strip():
+            return out.strip()
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        c = os.path.join(d, "cmux")
+        if os.access(c, os.X_OK):
+            return c
+    return ""
+
+
+CMUX = cmux_bin()
+fatal = False
+
+
+def cmux_run(*args, timeout=20):
+    return run([CMUX, *args], timeout=timeout)
+
+
+# ---------------------------------------------------------------- 1. cmux
+head("cmux")
+if not CMUX:
+    say("fail", "no cmux binary", fix="check PATH, or bin/crew-cmux-bin")
+    fatal = True
+else:
+    rc, ver = cmux_run("version")
+    say("ok" if rc == 0 else "fail", "cmux binary", CMUX.replace(os.path.expanduser("~"), "~"))
+    say("ok" if rc == 0 else "fail", "version", ver.strip().splitlines()[0] if rc == 0 else ver.strip()[:70])
+    rc, out = cmux_run("ping")
+    if rc == 0:
+        say("ok", "socket reachable")
+    else:
+        say("fail", "socket unreachable", out.strip()[:70], "is cmux running?")
+        fatal = True
+
+# ---------------------------------------------------------------- 2. dock
+head("dock")
+# The beta flag is per app bundle, and nightly/release have SEPARATE preference domains --
+# switching builds silently loses it. Read the domain of the app that is actually running.
+domain = ""
+rc, ps = run(["ps", "-Ao", "command="])
+m = re.search(r"(/Applications/[^\n]*?\.app)/Contents/MacOS/cmux", ps)
+if m:
+    try:
+        with open(os.path.join(m.group(1), "Contents", "Info.plist"), "rb") as fh:
+            domain = plistlib.load(fh).get("CFBundleIdentifier", "")
+    except Exception:
+        pass
+if domain:
+    rc, out = run(["defaults", "read", domain, "rightSidebar.beta.dock.enabled"])
+    on = rc == 0 and out.strip() in ("1", "true")
+    say("ok" if on else "fail", f"dock beta flag ({domain})", out.strip() or "unset",
+        "" if on else "Settings → beta features → Dock, or: "
+                      f"defaults write {domain} rightSidebar.beta.dock.enabled -bool true")
+else:
+    say("warn", "could not identify the running app bundle", fix="is the GUI app running?")
+
+if not fatal:
+    rc, out = cmux_run("right-sidebar", "mode")
+    try:
+        mode = json.loads(out)
+        vis, md = mode.get("visible"), mode.get("mode")
+        say("ok" if (vis and md == "dock") else "warn", "right sidebar", f"visible={vis} mode={md}",
+            "" if (vis and md == "dock") else "cmux right-sidebar dock && cmux right-sidebar show")
+    except Exception:
+        say("warn", "right sidebar state unreadable", out.strip()[:60])
+
+# ---------------------------------------------------------------- 3. surface
+head("surface")
+sid = ""
+try:
+    sid = open(SURFACE_FILE).read().strip()
+except Exception:
+    pass
+if not sid:
+    say("fail", "no surface recorded", SURFACE_FILE.replace(os.path.expanduser("~"), "~"),
+        "crew-board open")
+    fatal = True
+else:
+    say("ok", "surface recorded", sid)
+    rc, url = cmux_run("browser", "--surface", sid, "get", "url")
+    url = url.strip()
+    if rc != 0:
+        say("fail", "surface is gone", url[:70], "crew-board open")
+        fatal = True
+    else:
+        # The bug this catches: a surface pointing at a *copy* of board.html. Pushes then
+        # appear to succeed while the visible page never changes.
+        want = "file://" + BOARD_HTML
+        if url == want:
+            say("ok", "surface URL is the installed page")
+        elif "board.html" in url:
+            say("fail", "surface shows a DIFFERENT board.html", url[:90],
+                f"crew-board close && crew-board open   (expected {want})")
+        else:
+            say("fail", "surface is not the board", url[:90], "crew-board close && crew-board open")
+
+    rc, dupes = cmux_run("tree")
+    n = dupes.count("board.html") if rc == 0 else 0
+    if n > 1:
+        say("warn", f"{n} surfaces show board.html", fix="crew-board tidy")
+    elif n == 1:
+        say("ok", "exactly one board surface")
+
+# ---------------------------------------------------------------- 4. page contract
+head("page")
+targets = []
+try:
+    js = open(RENDER_JS).read()
+    targets = sorted(set(re.findall(r'\$\("([a-z]+)"\)', js)))
+    say("ok" if "__boardRender" in js else "fail", "render.js entry point",
+        "__boardRender" if "__boardRender" in js else "missing",
+        "" if "__boardRender" in js else "render.js must define __boardRender")
+except Exception as exc:
+    say("fail", "render.js unreadable", str(exc)[:60])
+    targets = []
+try:
+    html = open(BOARD_HTML).read()
+    # A page-resident script is the dependency that broke: addscript may evaluate in an
+    # isolated world that does not share `window`, while the DOM is shared.
+    say("fail" if "<script" in html else "ok",
+        "board.html is inert" if "<script" not in html else "board.html has a script tag",
+        fix="" if "<script" not in html else "move the renderer into render.js")
+    missing = [t for t in targets if f'id="{t}"' not in html]
+    if targets and not missing:
+        say("ok", "board.html satisfies render.js", f"{len(targets)} targets: {' '.join(targets)}")
+    elif missing:
+        say("fail", "board.html is missing render targets", " ".join(missing),
+            "every $(\"id\") in render.js needs a matching id in board.html")
+except Exception as exc:
+    say("fail", "board.html unreadable", str(exc)[:60])
+
+# ---------------------------------------------------------------- 5. state build
+head("state")
+t0 = time.time()
+rc, out = run([BOARD, "state", "--json"], timeout=60)
+ms = int((time.time() - t0) * 1000)
+if rc != 0:
+    say("fail", "crew-board state failed", out.strip()[:80])
+else:
+    try:
+        st = json.loads(out)
+        rows = st.get("rows") or []
+        tiers = {}
+        for r in rows:
+            tiers[r.get("kind", "?")] = tiers.get(r.get("kind", "?"), 0) + 1
+        say("ok", "state builds", f"{len(rows)} row(s) in {ms}ms · " +
+            (", ".join(f"{k}:{v}" for k, v in sorted(tiers.items())) or "no rows"))
+        if ms > 8000:
+            say("warn", "state build is slow", f"{ms}ms",
+                "read-screen per row is the usual cost; see --screens")
+        blank = [r.get("id") for r in rows if not r.get("name")]
+        if blank:
+            say("warn", "rows with no name", " ".join(map(str, blank)))
+    except Exception as exc:
+        say("fail", "state is not valid json", str(exc)[:60])
+
+# ---------------------------------------------------------------- 6. does a push land
+head("push")
+if fatal:
+    say("info", "skipped — fix the failures above first")
+elif NO_PUSH:
+    say("info", "skipped (--no-push)")
+else:
+    before = ""
+    rc, before = cmux_run("browser", "--surface", sid, "get", "text", "#stamp")
+    before = before.strip()
+    rc, out = run([BOARD, "push"], timeout=60)
+    if rc != 0:
+        say("fail", "crew-board push failed", out.strip()[:80])
+    else:
+        landed = False
+        for _ in range(10):
+            time.sleep(0.4)
+            _, after = cmux_run("browser", "--surface", sid, "get", "text", "#stamp")
+            if after.strip() and after.strip() != before:
+                say("ok", "push lands on the page", f"#stamp {before or '(blank)'} → {after.strip()}")
+                landed = True
+                break
+        if not landed:
+            # The failure that looks like success: the CLI says OK, the glass does not move.
+            say("fail", "push reported success but the page did not change",
+                f"#stamp stuck at {before or '(blank)'}",
+                "check the surface URL above, then: cmux browser --surface "
+                f"{sid} errors list")
+    rc, errs = cmux_run("browser", "--surface", sid, "errors", "list")
+    # cmux answers "No browser errors" when clean, so match the shape rather than an
+    # exact phrase -- a substring test for "no errors" misses it and cries wolf.
+    clean = (not errs.strip()) or re.match(r"\s*no\b.*\berrors?\b", errs, re.I)
+    if rc == 0 and not clean:
+        say("fail", "the page reported javascript errors", errs.strip().splitlines()[0][:90],
+            "usually a render.js / board.html contract mismatch")
+    else:
+        say("ok", "no javascript errors on the page")
+
+# ---------------------------------------------------------------- 7. who drives it
+head("freshness")
+pid = ""
+try:
+    pid = open(LISTEN_PID).read().strip()
+except Exception:
+    pass
+alive = False
+if pid:
+    try:
+        os.kill(int(pid), 0)
+        alive = True
+    except Exception:
+        alive = False
+say("ok" if alive else "fail", "listener", f"pid {pid}" if alive else "not running",
+    "" if alive else "crew listen on   (it pushes on startup, on events, and every tick)")
+if os.path.exists(LISTEN_LOG):
+    try:
+        tail = [l for l in open(LISTEN_LOG).read().splitlines() if l.strip()][-1:]
+        if tail:
+            say("info", "last listener line", tail[0][:88])
+    except Exception:
+        pass
+
+if sid and not fatal:
+    _, stamp = cmux_run("browser", "--surface", sid, "get", "text", "#stamp")
+    stamp = stamp.strip()
+    if stamp:
+        try:
+            h, m, s = (int(x) for x in stamp.split(":"))
+            now = time.localtime()
+            age = (now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec) - (h * 3600 + m * 60 + s)
+            if age < 0:
+                age += 86400
+            # The threshold tracks the board's own cadence. It was a flat 300s,
+            # set when the board only refreshed with the 120s reconcile; against a
+            # 15s tick that is twenty missed pushes before anyone is told.
+            tick = int(os.environ.get("CREW_BOARD_TICK", "15") or 15)
+            limit = max(60, tick * 4)
+            say("ok" if age < limit else "warn", "glass age",
+                f"{age}s (stamp {stamp}, board ticks every {tick}s)",
+                "" if age < limit else "nothing has pushed recently — check the listener")
+        except Exception:
+            say("info", "stamp", stamp)
+    else:
+        say("warn", "page has never been pushed", fix="crew-board push, or crew listen on")
+
+# ------------------------------------------------------- the click channel
+# Last, because a board that renders but cannot be clicked is a milder failure
+# than a board that does not render -- and because this reuses the surface the
+# checks above have already proven.
+head("clicks")
+INTENT_BIN = os.path.join(HERE, "crew-board-intent")
+# run() returns (rc, output) -- rc 0 is success, so this is `== 0`, not truthiness.
+_rc, _out = run(["python3", INTENT_BIN, "--status"], timeout=8)
+try:
+    _st = json.loads(_out) if _rc == 0 else {}
+except Exception:
+    _st = {}
+if not _st.get("running"):
+    say("fail", "intent server", "not answering",
+        fix="crew listen on (it starts the server), or: python3 " + INTENT_BIN)
+else:
+    say("ok", "intent server", f"127.0.0.1:{_st['port']}")
+    if sid and not fatal:
+        # The page holds the port it was LAST pushed with. The server claims a
+        # fresh port on every restart, so a page wired to a dead port is the
+        # failure mode here -- and it is invisible: the click just does nothing.
+        _, cfg = cmux_run("browser", "--surface", sid, "eval", "--script",
+                          "document.getElementById('rows').getAttribute('data-intent-cfg')")
+        try:
+            page_port = json.loads(cfg.strip().strip('"').replace('\\"', '"')).get("port")
+        except Exception:
+            page_port = None
+        if page_port is None:
+            say("warn", "page not wired for clicks",
+                fix="crew-board push")
+        elif int(page_port) != int(_st["port"]):
+            say("fail", "page wired to a stale port",
+                f"page {page_port}, server {_st['port']}",
+                fix="crew-board push (re-injects the live port)")
+        else:
+            say("ok", "page wired to the live port", str(page_port))
+    if not os.path.exists(TARGETS := os.path.join(
+            os.path.expanduser("~"), ".cache", "cmux-crew", "board-targets.json")):
+        say("warn", "no click targets recorded", fix="crew-board push")
+    else:
+        try:
+            t = json.load(open(TARGETS))
+            say("ok", "click targets", f"{len(t)} row(s), "
+                f"{sum(1 for v in t.values() if v.get('ref'))} with a workspace ref")
+        except Exception as e:
+            say("fail", "click targets unreadable", str(e))
+
+# The fast tick reads branch/PR/live-turn from this cache instead of paying
+# ~156ms per workspace for sidebar-state. If it stops being refreshed, the board
+# keeps rendering plausible but ageing branch names, which is exactly the kind of
+# wrongness that does not look wrong.
+_sc = os.path.join(os.path.expanduser("~"), ".cache", "cmux-crew", "board-sidebar.json")
+if os.path.exists(_sc):
+    try:
+        _c = json.load(open(_sc))
+        _ages = [int(time.time()) - v.get("at", 0) for v in _c.values() if isinstance(v, dict)]
+        _oldest = max(_ages) if _ages else 0
+        say("ok" if _oldest < 600 else "warn", "sidebar cache",
+            f"{len(_c)} workspace(s), oldest entry {_oldest}s",
+            "" if _oldest < 600 else "full pushes have stopped — branch/PR may be stale")
+    except Exception as _e:
+        say("warn", "sidebar cache unreadable", str(_e))
+
+# Plan surfaces carry the server's port in their URL, and cmux restores those
+# surfaces across launches. If the server ever comes up on a different port, those
+# tabs fail with a connection error and nothing says why -- so name it here.
+if _st.get("running"):
+    _rc2, _tree = run([cmux_bin(), "tree"], timeout=15)
+    _urls = re.findall(r"http://127\.0\.0\.1:(\d+)/plan/([a-z0-9._-]+)", _tree or "")
+    if _urls:
+        _stale = sorted({(pt, sl) for pt, sl in _urls if int(pt) != int(_st["port"])})
+        if _stale:
+            say("warn", "plan surfaces on a stale port",
+                ", ".join("%s (:%s)" % (sl, pt) for pt, sl in _stale)[:110],
+                "reopen them from the board's plan chip")
+        else:
+            say("ok", "plan surfaces", "%d on the live port" % len(_urls))
+
+# ---------------------------------------------------------------- verdict
+bad = [r for r in results if r["level"] == "fail"]
+warn = [r for r in results if r["level"] == "warn"]
+if JSON_OUT:
+    print(json.dumps({"ok": not bad, "failures": len(bad), "warnings": len(warn),
+                      "checks": results}, indent=2))
+else:
+    col = C["fail"] if bad else (C["warn"] if warn else C["ok"])
+    print(f"\n{col}board-diag: {len(bad)} failure(s), {len(warn)} warning(s){C['off']}")
+    if bad:
+        print(f"  {C['dim']}root cause is the FIRST failure; the rest usually follow from it{C['off']}")
+sys.exit(1 if bad else 0)

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# crew-watch <seconds> <command...>
+#
+# macOS ships no `watch`, and Dock controls want a command that redraws in
+# place rather than scrolling. Uses the alternate screen so exiting restores
+# whatever was there before, and prints the command + timestamp as a header so
+# a Dock pane is self-describing at a glance.
+#
+# Ctrl-C exits; the Dock then drops into an interactive shell in the same pane.
+
+set -u
+
+interval="${1:-5}"
+shift || true
+[ "$#" -gt 0 ] || { echo "usage: crew-watch <seconds> <command...>" >&2; exit 2; }
+
+cleanup() { printf '\033[?1049l'; exit 0; }
+trap cleanup INT TERM
+
+printf '\033[?1049h'   # alternate screen
+while :; do
+  out="$("$@" 2>&1)"
+  status=$?
+  printf '\033[H\033[2J'                                   # home + clear
+  if [ "$status" -eq 0 ]; then dot=$'\033[32m●\033[0m'; else dot=$'\033[31m●\033[0m'; fi
+  printf '%s \033[1m%s\033[0m  \033[2m%s · every %ss\033[0m\n\n' \
+    "$dot" "$*" "$(date '+%H:%M:%S')" "$interval"
+  printf '%s\n' "$out"
+  sleep "$interval" || cleanup
+done
