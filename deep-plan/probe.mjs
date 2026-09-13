@@ -21,7 +21,10 @@ const ENV = {
 };
 const REPO = path.join(TMP, "repo");
 fs.mkdirSync(REPO, { recursive: true });
-execSync("git init -q && git commit -q --allow-empty -m init", { cwd: REPO });
+// -c identity: CI runners have no git user, and the probe's throwaway repo
+// must not depend on (or touch) the machine's config.
+execSync("git init -q && git -c user.email=probe@deep-plan -c user.name=probe " +
+  "commit -q --allow-empty -m init", { cwd: REPO });
 
 let pass = 0, fail = 0;
 function ok(name, cond) {
