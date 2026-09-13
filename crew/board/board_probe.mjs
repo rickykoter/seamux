@@ -83,9 +83,13 @@ if (typeof render !== "function") {
 const FIXTURE = {
   rows: [
     { id: "a", name: "fixture-attend", kind: "attend", badge: "gate shut",
-      said: "{{Inc 2}} needs your go-ahead.", chips: ["go 2", "plan"], frac: 0.25, meta: "1/4" },
+      said: "{{Inc 2}} needs your go-ahead.", chips: ["go 2", "plan"], frac: 0.25, meta: "1/4",
+      cost: 4.2 },
     { id: "b", name: "fixture-run", kind: "running", badge: "working",
-      said: "{{Inc 3}} in progress.", chips: ["diff"], frac: 0.5, meta: "2/4" },
+      said: "{{Inc 3}} in progress.", chips: ["diff"], frac: 0.5, meta: "2/4",
+      cost: 0.31 },
+    { id: "c", name: "fixture-done", kind: "done", badge: "merged",
+      said: "Merged.", chips: [], frac: 1, meta: "4/4" },
   ], quiet: "3 quiet", stamp: "00:00:00", src: "fixture",
 };
 const state = FIXTURE;
@@ -107,6 +111,13 @@ const checks = [
 render({ rows: [{ id: "n", name: "no-increments", kind: "attend", badge: "review",
   said: "x", chips: [], frac: null, meta: "" }], quiet: "" });
 checks.push(["null progress renders a dot, not 0%", !/<text/.test(els.rows.innerHTML)]);
+
+// Today's-$ fact: rendered with dollars, dimmed when small, absent when the
+// field is missing (the CI/no-ccusage path sends rows without it).
+checks.push(["cost fact rendered with dollars", out.includes(">$4.20<")]);
+checks.push(["a small cost is dimmed", /class="cost small"[^>]*>\$0\.31</.test(out)]);
+checks.push(["a row without cost shows no dollar fact",
+  (out.match(/class="cost/g) || []).length === 2]);
 
 // The one that matters: agent output must not become markup.
 render({ rows: [{ id: "x", name: "<img src=x onerror=1>", kind: "attend",
