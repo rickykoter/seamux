@@ -236,23 +236,75 @@ function reviewHtml(spec, b64) {
   // key file, never in this page.
   const qs = (spec.quiz || []).map((q, qi) => {
     const sh = shuffled(q.options, spec.slug + ":" + q.id);
-    const opts = sh.map((o, i) =>
-      `<span class="opt">${String.fromCharCode(97 + i)}) ${esc(o.v)}</span>`).join("");
-    return `<div class="q"><b>${qi + 1}. ${esc(q.prompt)}</b>${opts}
+    const opts = sh.map((o, i) => {
+      const L = String.fromCharCode(97 + i);
+      return `<label class="opt"><input type="radio" name="dp-q-${esc(q.id)}" value="${L}"> ${L}) ${esc(o.v)}</label>`;
+    }).join("");
+    return `<div class="q" data-qid="${esc(q.id)}"><b>${qi + 1}. ${esc(q.prompt)}</b>${opts}
 <div class="dim">id: <code>${esc(q.id)}</code></div></div>`;
   }).join("\n");
   const verif = (spec.verification || []).map(v => `<li><code>${esc(v)}</code></li>`).join("");
   const incs = (spec.deliverables || []).map((d, i) =>
     `<div class="inc"><b>${i + 1}. ${esc(d.title)}</b><p>${esc(d.body || "")}</p>
-${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${esc(f)}</code>`).join(" ")}</p>` : ""}</div>`).join("\n");
-  return htmlHead(spec.title + " — review", b64) + commonBody(spec) + `
+${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${esc(f)}</code>`).join(" ")}</p>` : ""}
+<textarea class="dp-note" data-section="increment ${i + 1}" rows="1" placeholder="comment on this increment (optional)"></textarea></div>`).join("\n");
+  // Everything below is client-side only: selections and comments live in the
+  // DOM, nothing is stored or sent anywhere, and the page keeps working over
+  // file:// (clipboard falls back to select+execCommand there).
+  const COPYBACK = `
+<h2>Send it back</h2>
+<textarea class="dp-note" data-section="general" rows="2" placeholder="general comments (optional)"></textarea>
+<p><button id="dp-copyback">Copy for session</button>
+<span id="dp-copied" class="dim"></span></p>
+<script>
+(function () {
+  var slug = ${JSON.stringify(spec.slug)};
+  document.getElementById("dp-copyback").addEventListener("click", function () {
+    var parts = ["deep-plan review \\u2014 " + slug];
+    var answers = [];
+    document.querySelectorAll(".q[data-qid]").forEach(function (q) {
+      var picked = q.querySelector("input:checked");
+      if (picked) answers.push(q.getAttribute("data-qid") + "=" + picked.value);
+    });
+    if (answers.length) parts.push("deep-plan grade " + slug + " " + answers.join(" "));
+    var notes = [];
+    document.querySelectorAll(".dp-note").forEach(function (t) {
+      if (t.value.trim()) notes.push("- [" + t.getAttribute("data-section") + "] " + t.value.trim());
+    });
+    if (notes.length) parts.push("comments:\\n" + notes.join("\\n"));
+    var blob = parts.join("\\n");
+    var done = function () {
+      document.getElementById("dp-copied").textContent = "copied \\u2713 \\u2014 paste it into the session";
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(blob).then(done, function () { fallback(blob, done); });
+    } else fallback(blob, done);
+  });
+  function fallback(text, done) {
+    var ta = document.createElement("textarea");
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); done(); }
+    catch (e) { document.getElementById("dp-copied").textContent = "copy failed \\u2014 select and copy by hand:"; ta.remove(); alert(text); return; }
+    ta.remove();
+  }
+})();
+</script>`;
+  return htmlHead(spec.title + " — review", b64) + `<style>
+label.opt{cursor:pointer}
+.dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
+  color:inherit;border:1px solid var(--dim,#888);border-radius:4px;padding:6px;font:inherit}
+#dp-copyback{background:var(--accent,#46f);color:#fff;border:0;border-radius:4px;
+  padding:8px 14px;font:inherit;cursor:pointer}
+</style>` + commonBody(spec) + `
 <h2>Increments</h2>${incs}
 ${verif ? `<h2>Verification</h2><ul>${verif}</ul>` : ""}
 <h2>Alignment check</h2>
-<p class="dim">Answer these to the session, then it runs
-<code>deep-plan grade ${esc(spec.slug)} q1=a q2=c …</code>. A wrong answer means the plan
+<p class="dim">Pick an answer per question, add comments where you have them, then
+<b>Copy for session</b> below puts one paste-back on your clipboard — the slug, a ready
+<code>deep-plan grade</code> line, and your comments. A wrong answer means the plan
 and your model of it disagree — and either one may be the broken one.</p>
 ${qs}
+${COPYBACK}
 ${MERMAID_BOOT}</body></html>`;
 }
 
