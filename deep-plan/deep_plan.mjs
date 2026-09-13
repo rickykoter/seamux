@@ -575,11 +575,30 @@ function attachArtifact(slug, url) {
   say("recorded artifact for " + slug + ": " + url);
 }
 
-function grade(slug, answers) {
+// No answers on a TTY -> prompt per question, so the letters never touch
+// shell history (q1=a on the command line is grep-able forever). The argv
+// form stays: the board and the probes are not TTYs.
+async function promptAnswers(key) {
+  if (!process.stdin.isTTY)
+    die("grade <slug> q1=a q2=c …  (no TTY here, so no interactive prompt)");
+  const readline = await import("node:readline/promises");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  say("answers stay off the command line — type the letter for each:");
+  const given = [];
+  for (const qid of Object.keys(key.answers)) {
+    const a = (await rl.question(`  ${qid} = `)).trim().toLowerCase();
+    given.push(`${qid}=${a}`);
+  }
+  rl.close();
+  return given;
+}
+
+async function grade(slug, answers) {
   const keyPath = path.join(KEYS_DIR, slug + ".key.json");
   if (!fs.existsSync(keyPath)) die("no answer key for " + slug);
   const key = JSON.parse(fs.readFileSync(keyPath, "utf8"));
   const st = readState(slug) || die("no state for " + slug);
+  if (!answers.length) answers = await promptAnswers(key);
   const given = {};
   for (const a of answers) {
     const m = a.match(/^([\w-]+)=([a-z])$/i);
@@ -732,7 +751,7 @@ switch (cmd) {
   case "rehydrate": rehydrate(args[0] || die("rehydrate <slug>")); break;
   case "export-artifact": exportArtifact(args[0] || die("export-artifact <slug> [--json]"), flags.json); break;
   case "attach-artifact": attachArtifact(args[0], args[1] || die("attach-artifact <slug> <url>")); break;
-  case "grade": grade(args[0] || die("grade <slug> q1=a …"), args.slice(1)); break;
+  case "grade": await grade(args[0] || die("grade <slug> [q1=a …]"), args.slice(1)); break;
   case "status": status(flags.json); break;
   case "go": {
     let slug = args[0], n = args[1];
@@ -774,7 +793,8 @@ switch (cmd) {
   rehydrate <slug>                            re-render from the archived spec
   export-artifact <slug> [--json]             shareable annotate-able page (agent publishes it)
   attach-artifact <slug> <url>                record the published artifact in state
-  grade <slug> q1=a q2=c ...                  the alignment check; pass -> implementing
+  grade <slug> [q1=a q2=c ...]                the alignment check; pass -> implementing
+                                              (no answers on a TTY: prompts, keeps them out of history)
   status [--json]                             tracked plans (the board reads --json)
   go <slug> <n|next> | go --at DIR next       authorize an increment
   start|done|block|reset <slug> <n> [why]     move an increment
