@@ -212,6 +212,14 @@ function __boardRender(d) {
         '" data-a="pr" title="Open the pull request in your default browser">' +
         esc(a.pr) + "</span>";
     }
+    // Today's spend, when known and non-zero. Dim under a dollar: the point
+    // is spotting the row that is quietly burning, not pricing every row.
+    if (typeof a.cost === "number" && a.cost > 0) {
+      var amt = a.cost >= 100 ? Math.round(a.cost) : a.cost.toFixed(2);
+      out += '<span class="cost' + (a.cost < 1 ? " small" : "") +
+        '" title="Claude spend in this worktree today (ccusage, ~5min cache)">$' +
+        amt + "</span>";
+    }
     return out ? '<div class="facts">' + out + "</div>" : "";
   }
 
