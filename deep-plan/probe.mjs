@@ -76,6 +76,17 @@ ok("review page never contains the answer key", !/answer/i.test(review.replace(/
   !review.includes('"answers"'));
 ok("mermaid inlined as base64 (the swap regex's shape)",
   /src="data:text\/javascript;base64,[A-Za-z0-9+/=]+"/.test(review));
+// The interactive layer: answerable quiz + comment boxes + one copy-back blob.
+ok("review quiz options are selectable radios",
+  (review.match(/type="radio" name="dp-q-/g) || []).length >=
+    (spec.quiz || []).length * 2);
+ok("every increment carries a comment box, plus a general one",
+  (review.match(/class="dp-note"/g) || []).length === (spec.deliverables || []).length + 1);
+ok("copy-back button builds the paste blob (slug + grade line + comments)",
+  review.includes('id="dp-copyback"') &&
+  review.includes('"deep-plan grade " + slug') &&
+  review.includes('"comments:'));
+ok("copy-back has a file:// clipboard fallback", review.includes("execCommand"));
 const working = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
 ok("working surface renders controls disabled on disk",
   working.includes('class="dp-act"') && working.includes("disabled"));
