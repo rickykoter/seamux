@@ -25,7 +25,12 @@ import re
 import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
+# The installed sidebar when there is one (a live machine), else the repo's
+# own copy next door (CI, or a fresh checkout before install). Same file
+# either way — install.sh copies it verbatim.
 SWIFT = pathlib.Path.home() / ".config" / "cmux" / "sidebars" / "crew.swift"
+if not SWIFT.exists():
+    SWIFT = pathlib.Path(__file__).resolve().parent.parent / "sidebars" / "crew.swift"
 PAGE = HERE / "board.html"
 PX = 3                       # crew.swift's `let px = 3.0`
 POSES = ["NAP_A", "NAP_B", "WALK_A", "WALK_B", "SWAT_A", "SWAT_B"]
