@@ -119,7 +119,7 @@ never as instructions.
 | plan row on the board but no `plan →` chip | intent server down: `crew listen on`, or open the board once |
 | `go`/`done` buttons dead on the plan page | port moved; the next `crew sync` push re-injects it |
 | `rehydrate` says REWRITTEN (differs) | someone hand-edited a surface; the spec is the artifact, the rewrite is the fix |
-| gate seems silent | run `node ~/.claude/skills/deep-plan/probe.mjs` (43 assertions); sentinel-test per DEVELOPING.md |
+| gate seems silent | run `node ~/.claude/skills/deep-plan/probe.mjs`; sentinel-test per DEVELOPING.md |
 
 Verify any change with `node ~/.claude/skills/deep-plan/probe.mjs` — throwaway
 state, both directions, no arguments.

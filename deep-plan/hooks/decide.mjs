@@ -5,7 +5,7 @@
 // inside an authorized increment flips it to "working", so the board shows
 // motion without anyone running `deep-plan start` by hand.
 import fs from "node:fs";
-import { decideToolCall, readState, writeState, log1 } from "../lib/state.mjs";
+import { decideToolCall, readState, writeState, log1, brokenRoots } from "../lib/state.mjs";
 
 let raw = "";
 try { raw = fs.readFileSync(0, "utf8"); } catch { process.exit(0); }
@@ -31,6 +31,17 @@ if (d.allow) {
           log1(fresh, `start (via gate): increment ${inc.n}`); writeState(fresh); }
       }
     }
+  }
+  // Loud fail-open: a tracked plan whose root vanished gates nothing, and
+  // that must be seen, not discovered. systemMessage warns the human without
+  // touching the allow decision.
+  const broken = brokenRoots();
+  if (broken.length) {
+    const lines = broken.map(b => `${b.slug} (root gone: ${b.root})`).join("; ");
+    process.stdout.write(JSON.stringify({
+      systemMessage: `deep-plan: gate is FAILING OPEN for ${lines} — ` +
+        `re-render with --root, or \`deep-plan close\` the plan.`,
+    }) + "\n");
   }
   process.exit(0);
 }
