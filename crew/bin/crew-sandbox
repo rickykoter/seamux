@@ -1,0 +1,640 @@
+#!/usr/bin/env bash
+# crew-sandbox — run a worktree's agent and its service stack in a Docker
+# Sandboxes microVM, while the host keeps owning the directory and the board.
+#
+#   crew-sandbox up      [path]      create if absent, start, register
+#   crew-sandbox attach  [path]      run the agent inside it (the workspace command)
+#   crew-sandbox exec    [path] -- … run a command inside it
+#   crew-sandbox status  [path]      one line per field, or --json
+#   crew-sandbox down    [path]      stop, leave the sandbox and its state
+#   crew-sandbox rm      [path]      destroy it and clear the registry
+#   crew-sandbox base                build/refresh the template image
+#   crew-sandbox prune               drop registry entries whose worktree is gone
+#
+#   --claude=link       carry your Claude setup in (default; see CLAUDE SETUP)
+#   --claude=isolated   a clean Claude with nothing of yours in it
+#
+# The host stays the source of truth. cmux points the workspace at the *host*
+# path, so watchGitStatus, showPullRequests and the byCwd group glob all keep
+# working; only the command changes. Files are virtiofs passthrough, not a copy,
+# so edits made inside are already on disk outside.
+#
+# This is `sbx` (the standalone CLI), NOT the `docker sandbox` Desktop plugin.
+# The plugin is deprecated and disappears at Docker Desktop 4.80.0; it also
+# lacks policy/secret/publish/template. Install: brew install --cask docker/tap/sbx
+
+set -uo pipefail
+
+SBX="${CREW_SBX:-$(command -v sbx || true)}"
+[ -n "$SBX" ] || SBX=/opt/homebrew/bin/sbx
+
+CMUX="$(command -v cmux || true)"
+# One definition of "which cmux": bin/crew-cmux-bin. A hardcoded bundle path kept
+# driving the OLD cli against the NEW app after the switch to the nightly build --
+# version skew that fails silently, because the old bundle is still on disk.
+[ -n "$CMUX" ] || CMUX="$("$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/crew-cmux-bin" 2>/dev/null || true)"
+[ -n "$CMUX" ] || CMUX=cmux
+
+STATE="${XDG_CACHE_HOME:-$HOME/.cache}/cmux-crew/sandbox"
+REG="$STATE/roots"
+
+# The template `up` prefers when it exists. Built by `crew-sandbox base`, because
+# each sandbox has its own image cache with no layer sharing between sandboxes —
+# without a pre-baked image every worktree pays a full bundle install and
+# re-pulls the compose services.
+TEMPLATE="${CREW_SBX_TEMPLATE:-crew/monolith-base:latest}"
+POLICY="${CREW_SBX_POLICY:-balanced}"
+AGENT="${CREW_SBX_AGENT:-claude}"
+
+# CLAUDE SETUP -----------------------------------------------------------------
+# `link` carries your setup in without giving the sandbox anything to write:
+#
+#   * ~/.claude goes in as a workspace at :ro. Verified genuinely read-only from
+#     inside — `touch` there fails with "Read-only file system" — which is what
+#     makes this safe where an rw mount was not. An rw ~/.claude would let a
+#     sandboxed agent rewrite the settings.json hooks the HOST Claude executes.
+#   * The per-sandbox config dir is seeded with SYMLINKS into that ro mount for
+#     the read-only parts (CLAUDE.md, commands, skills, agents, plugins), so
+#     edits you make on the host show up inside immediately with no re-seed.
+#     Writable state — projects, history, todos — stays in the per-sandbox dir.
+#   * settings.json is COPIED, not linked, and filtered: `hooks` and `statusLine`
+#     point at host paths that do not exist inside, and Claude reports an error
+#     on every event when they dangle. `mcpServers` is dropped too — those are
+#     host processes.
+#   * Your login is copied in as .credentials.json, extracted from the macOS
+#     Keychain. Nothing else can carry it: there is no credential file on disk to
+#     mount. See the CAVEAT on seed_credentials.
+#
+# `isolated` is the original behaviour: an empty config dir and a Claude that
+# knows nothing about you and has to /login on first use.
+CLAUDE_MODE="${CREW_SANDBOX_CLAUDE:-link}"
+HOST_CLAUDE="${CREW_CLAUDE_HOME:-$HOME/.claude}"
+
+die() { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
+say() { printf '\033[2m→\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m!\033[0m %s\n' "$*" >&2; }
+
+# `--claude=…` may sit anywhere among the leading options. Only scan as far as a
+# bare `--`, so `exec <path> -- cmd --claude=x` passes the flag to the command.
+_argv=()
+_past_sep=""
+for _a in "$@"; do
+  if [ -z "$_past_sep" ]; then
+    case "$_a" in
+      --) _past_sep=1 ;;
+      --claude=*) CLAUDE_MODE="${_a#--claude=}"; continue ;;
+    esac
+  fi
+  _argv+=("$_a")
+done
+set -- ${_argv[@]+"${_argv[@]}"}
+case "$CLAUDE_MODE" in
+  link|isolated) ;;
+  *) die "--claude must be 'link' or 'isolated' (got '$CLAUDE_MODE')" ;;
+esac
+
+# --- target resolution -------------------------------------------------------
+# `--workspace <id>` lets this run outside a cmux terminal — the board's buttons
+# reach it through the notification hook, which is a child of the cmux app and
+# so has no CMUX_WORKSPACE_ID in its environment. Same contract as crew-code.
+WS_CWD=""
+ws_given=""
+if [ "${1:-}" = "--workspace" ]; then
+  ws_given="${2:-}"
+  [ -n "$ws_given" ] || die "--workspace needs a workspace id"
+  CMUX_WORKSPACE_ID="$ws_given"
+  WS_CWD="$("$CMUX" sidebar-state --workspace "$ws_given" 2>/dev/null | sed -n 's/^cwd=//p')"
+  shift 2
+  # Never fall through to $PWD for a named workspace. This runs as a child of the
+  # cmux app, whose cwd is ~/.config/cmux, so the fallback would build a sandbox
+  # around crew's own config directory. A closed or stale row id is exactly how
+  # that happens — sidebar-state answers "ERROR: Tab not found" and prints no cwd.
+  [ -n "$WS_CWD" ] || die "cmux has no cwd for workspace $ws_given (closed or stale?)"
+fi
+
+cmd="${1:-status}"
+[ $# -gt 0 ] && shift
+
+# A bare path argument selects the target; anything else is left for the command.
+target=""
+case "${1:-}" in
+  ""|-*) ;;
+  *) [ -d "$1" ] && { target="$1"; shift; } ;;
+esac
+
+ROOT="$(git -C "${target:-${WS_CWD:-$PWD}}" rev-parse --show-toplevel 2>/dev/null \
+  || printf '%s' "${target:-${WS_CWD:-$PWD}}")"
+BRANCH="$(git -C "$ROOT" branch --show-current 2>/dev/null || true)"
+WS="${CMUX_WORKSPACE_ID:-}"
+
+# sbx names allow letters, numbers, hyphens, periods, plus and minus only —
+# no underscores, so a branch like foo_bar cannot be passed through verbatim.
+NAME="crew-$(printf '%s' "${ROOT##*/}" | tr -c 'A-Za-z0-9.+-' '-' | sed 's/-\{2,\}/-/g; s/^-//; s/-$//')"
+
+reg_file() { printf '%s/%s' "$REG" "$(printf '%s' "$1" | md5 -q 2>/dev/null || printf '%s' "$1" | md5sum | cut -d' ' -f1)"; }
+
+reg_write() {
+  mkdir -p "$REG"
+  { printf 'NAME=%s\n' "$NAME"
+    printf 'ROOT=%q\n' "$ROOT"
+    printf 'WS=%s\n' "$WS"
+    printf 'TEMPLATE=%s\n' "${1:-}"
+    printf 'CLAUDE_MODE=%s\n' "$CLAUDE_MODE"
+    printf 'CREATED=%s\n' "$(date +%s)"
+  } > "$(reg_file "$ROOT")"
+}
+
+# --- preflight ---------------------------------------------------------------
+# The daemon is a real dependency with its own lifecycle, and `sbx daemon start`
+# without -d runs in the foreground. Everything else 401s or hangs without it.
+ensure_daemon() {
+  [ -x "$SBX" ] || die "sbx not found. Install: brew install --cask docker/tap/sbx"
+  # grep -c, never grep -q, on the reading end of a pipe: -q exits on the first
+  # match and SIGPIPEs the producer, and under `set -o pipefail` that turns a
+  # match into a failed pipeline — the test then reports the opposite of the
+  # truth. -c reads to EOF so the producer finishes normally.
+  "$SBX" daemon status 2>/dev/null | grep -c 'running' >/dev/null && return 0
+  say "starting sandboxd (policy: $POLICY)"
+  "$SBX" daemon start -d --policy "$POLICY" >/dev/null 2>&1
+  "$SBX" daemon status 2>/dev/null | grep -c 'running' >/dev/null \
+    || die "sandboxd did not start — try: sbx diagnose"
+}
+
+# sbx prints its auth error on stdout and does not always exit nonzero, so match
+# the message rather than trusting $?.
+ensure_auth() {
+  local out; out="$("$SBX" ls 2>&1)"
+  case "$out" in
+    *"not authenticated"*|*"not signed in"*|*"no valid user session"*)
+      die "not signed in to Docker — run: sbx login" ;;
+  esac
+}
+
+# --- the mount set -----------------------------------------------------------
+# Settled by the Stage 0 spike on 2026-08-11. Measurements in FINDINGS.md; the
+# reasoning that is load-bearing for the mounts is here.
+#
+# A worktree cannot be mounted alone. Its .git is a *pointer file*:
+#   gitdir: /Users/…/main-repo/.git/worktrees/<dir>
+# so with only the worktree mounted, git inside has no repository at all.
+# node_modules has the same problem — crew-worktree symlinks it to the primary
+# checkout by absolute path. sbx exposes every workspace at its host path, so
+# mounting the primary checkout makes both resolve unchanged. Verified inside:
+# git status/log/branch and a real commit all work, and the commit lands on the
+# host immediately.
+#
+# The primary checkout goes in READ-WRITE, not :ro — sbx v0.38.0 rejects
+# "<monolith>:ro" outright ("The selected workspace does not exist"),
+# deterministically and with no sandboxes present, while subdirectories and other
+# repos accept :ro fine. So rw is the only option that keeps git working. The
+# cost is real and accepted: the agent can write the primary checkout and its
+# .git, which carries every worktree's history. What still holds is the outer
+# boundary — unmounted paths (other repos, ~/.ssh, ~/.aws) are invisible.
+#
+# ~/.claude is deliberately NOT mounted. It comes back writable, which would let
+# a sandboxed agent rewrite the settings.json hooks the HOST Claude executes —
+# an escape path, not a convenience. Instead each sandbox gets its own config
+# directory on the host, surfaced via CLAUDE_CONFIG_DIR (which is needed
+# regardless: $HOME inside is /home/agent, so ~/.claude was never being found).
+# That keeps transcripts and tasks host-visible for crew-sync while leaving the
+# real config untouchable.
+sbx_config_dir() { printf '%s/claude/%s' "$STATE" "$1"; }
+
+sbx_workspaces() {
+  local root="$1"
+  printf '%s\n' "$root"
+
+  # Primary checkout = parent of the common git dir. Same derivation crew-reclaim
+  # uses to tell a worktree from the real checkout.
+  local common primary
+  common="$(git -C "$root" rev-parse --git-common-dir 2>/dev/null || true)"
+  if [ -n "$common" ]; then
+    case "$common" in /*) ;; *) common="$root/$common" ;; esac
+    primary="$(dirname "$common")"
+    [ "$primary" != "$root" ] && [ -d "$primary" ] && printf '%s\n' "$primary"
+  fi
+
+  local cfg; cfg="$(sbx_config_dir "$NAME")"
+  mkdir -p "$cfg" 2>/dev/null
+  printf '%s\n' "$cfg"
+
+  # Read-only, and verified so from inside — this is the whole reason `link` is
+  # safe. sbx accepts :ro here even though it rejects it for the monolith.
+  [ "$CLAUDE_MODE" = "link" ] && [ -d "$HOST_CLAUDE" ] && printf '%s:ro\n' "$HOST_CLAUDE"
+  return 0
+}
+
+# Seed the per-sandbox config dir. Runs on the HOST: the config dir is a host
+# directory that happens to be mounted, so no sbx exec is needed and this works
+# before the sandbox has ever been started.
+#
+# Symlinks point at the host path, which is also the path the :ro mount appears
+# at inside — so one link is correct on both sides.
+seed_claude_config() {
+  local cfg; cfg="$(sbx_config_dir "$NAME")"
+  mkdir -p "$cfg" || return 0
+  [ "$CLAUDE_MODE" = "link" ] || return 0
+  [ -d "$HOST_CLAUDE" ] || { warn "no $HOST_CLAUDE to link from"; return 0; }
+
+  # Read-only parts: linked, so host edits land inside with no re-seed. Anything
+  # Claude writes (projects, history, todos, .claude.json) stays unlinked and
+  # therefore local to this sandbox.
+  local e
+  for e in CLAUDE.md commands skills agents plugins output-styles; do
+    [ -e "$HOST_CLAUDE/$e" ] || continue
+    ln -sfn "$HOST_CLAUDE/$e" "$cfg/$e" 2>/dev/null
+  done
+
+  # settings.json is copied and filtered rather than linked. `hooks` and
+  # `statusLine` name host paths that do not exist inside — crew's hook scripts
+  # and statusline.py are not mounted — and a dangling hook makes Claude report
+  # an error on every single event. `mcpServers` would point at host processes.
+  if [ -f "$HOST_CLAUDE/settings.json" ]; then
+    python3 - "$HOST_CLAUDE/settings.json" "$cfg/settings.json" <<'PY' 2>/dev/null \
+      || warn "could not seed settings.json"
+import json, sys
+src, dst = sys.argv[1], sys.argv[2]
+try:
+    d = json.load(open(src))
+except Exception:
+    sys.exit(1)
+for k in ("hooks", "statusLine", "mcpServers"):
+    d.pop(k, None)
+json.dump(d, open(dst, "w"), indent=2)
+PY
+  fi
+}
+
+# CAVEAT, and it is a real one: this writes a working OAuth token to the host
+# filesystem in plaintext, outside the Keychain, where any process running as you
+# can read it — and hands it to an agent that could send it anywhere. `rm` and
+# `prune` delete it, and it is mode 600, but that is the trade you accepted by
+# choosing `link`. `--claude=isolated` never creates it.
+#
+# Second caveat: Claude refreshes this token in place when it expires, and the
+# host Keychain does not learn about the rotation. A long-lived sandbox can
+# therefore invalidate the host's refresh token and log you out on the host.
+seed_credentials() {
+  [ "$CLAUDE_MODE" = "link" ] || return 0
+  local cfg; cfg="$(sbx_config_dir "$NAME")"
+  [ -f "$cfg/.credentials.json" ] && return 0
+  command -v security >/dev/null 2>&1 || return 0
+
+  # Two items share this service name; the account-scoped one holds
+  # claudeAiOauth, the other only MCP connector tokens. Take just the account
+  # credential — the connector tokens are unrelated and none of the sandbox's
+  # business.
+  local tmp; tmp="$cfg/.credentials.json.tmp"
+  ( umask 077
+    security find-generic-password -s "Claude Code-credentials" -a "$USER" -w 2>/dev/null \
+      | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    oauth = d["claudeAiOauth"]
+except Exception:
+    sys.exit(1)
+json.dump({"claudeAiOauth": oauth}, sys.stdout)
+' > "$tmp" 2>/dev/null )
+  if [ -s "$tmp" ]; then
+    chmod 600 "$tmp" 2>/dev/null
+    mv "$tmp" "$cfg/.credentials.json"
+    say "carried your Claude login in (mode 600, removed on rm)"
+  else
+    rm -f "$tmp"
+    warn "could not read your Claude login from the Keychain — /login inside the sandbox"
+  fi
+}
+
+# --- state readers -----------------------------------------------------------
+# sbx ls --json emits invalid JSON when the daemon is stopped (sbx-releases
+# #201), so a parse failure must read as "no sandboxes", never as a traceback.
+sbx_state() {
+  "$SBX" ls --json 2>/dev/null | python3 -c '
+import json, sys
+want = sys.argv[1]
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+rows = d.get("sandboxes", d) if isinstance(d, dict) else d
+if not isinstance(rows, list):
+    sys.exit(0)
+for r in rows:
+    if isinstance(r, dict) and r.get("name") == want:
+        print((r.get("status") or r.get("state") or "unknown").lower())
+        break
+' "$NAME" 2>/dev/null
+}
+
+exists() { [ -n "$(sbx_state)" ]; }
+is_running() { case "$(sbx_state)" in *running*) return 0 ;; esac; return 1; }
+
+template_available() {
+  "$SBX" template ls 2>/dev/null | grep -c "${TEMPLATE%%:*}" >/dev/null
+}
+
+# $HOME inside the sandbox is /home/agent, so the config directory mounted from
+# the host is not where Claude would look. `sbx run` has no -e, so the env has to
+# be planted inside; /etc/sandbox-persistent.sh is the documented hook and is
+# sourced for both login and non-login shells (verified). Idempotent.
+seed_env() {
+  local cfg; cfg="$(sbx_config_dir "$NAME")"
+  "$SBX" exec "$NAME" bash -lc '
+    grep -q CLAUDE_CONFIG_DIR /etc/sandbox-persistent.sh 2>/dev/null && exit 0
+    printf "export CLAUDE_CONFIG_DIR=%s\n" "$1" >> /etc/sandbox-persistent.sh
+  ' crew-seed "$cfg" >/dev/null 2>&1 \
+    || warn "could not set CLAUDE_CONFIG_DIR inside $NAME"
+}
+
+# --- commands ----------------------------------------------------------------
+cmd_up() {
+  ensure_daemon; ensure_auth
+  [ -d "$ROOT" ] || die "no directory at $ROOT"
+
+  if exists; then
+    # There is no `sbx start`; attaching is what resumes a stopped sandbox, so
+    # re-registering and re-seeding the env is all there is to do. Re-seeding
+    # self-heals a sandbox created before the env was wired.
+    is_running || say "sandbox $NAME exists (stopped)"
+    # Mounts are fixed at create time, so the mode cannot change under an
+    # existing sandbox. Honour what it was built with and say so rather than
+    # half-applying a mode whose :ro mount is not there.
+    # An empty mode means the sandbox predates this flag, so it was built without
+    # the :ro mount. Seeding symlinks into a mount that is not there would leave
+    # every one of them dangling inside — worse than not linking at all.
+    local had; had="$(reg_claude_mode)"
+    [ -n "$had" ] || had="isolated"
+    if [ "$had" != "$CLAUDE_MODE" ]; then
+      warn "$NAME was created as --claude=$had; keeping that (to change: crew-sandbox rm, then up)"
+      CLAUDE_MODE="$had"
+    fi
+    reg_write "$(reg_template)"
+    seed_env
+    seed_claude_config
+    seed_credentials
+    say "sandbox $NAME ready"
+    return 0
+  fi
+
+  local -a ws_args=()
+  while IFS= read -r w; do [ -n "$w" ] && ws_args+=("$w"); done < <(sbx_workspaces "$ROOT")
+
+  local -a tmpl_args=() used_template=""
+  if template_available; then
+    tmpl_args=(-t "$TEMPLATE"); used_template="$TEMPLATE"
+  else
+    warn "no $TEMPLATE image — using the default $AGENT image."
+    warn "first run pays a full bundle install; build the template with: crew-sandbox base"
+  fi
+
+  say "creating sandbox $NAME"
+  for w in "${ws_args[@]}"; do say "  mount $w"; done
+  # macOS ships bash 3.2, where "${arr[@]}" on an empty array trips `set -u`.
+  # The ${arr[@]+…} guard expands to nothing at all when the array is empty.
+  "$SBX" create --name "$NAME" ${tmpl_args[@]+"${tmpl_args[@]}"} "$AGENT" \
+    ${ws_args[@]+"${ws_args[@]}"} \
+    || die "sbx create failed"
+
+  reg_write "$used_template"
+  seed_env
+  seed_claude_config
+  seed_credentials
+  printf '\033[32m✓\033[0m %s ready%s (claude: %s)\n' "$NAME" "${BRANCH:+ ($BRANCH)}" "$CLAUDE_MODE"
+}
+
+# `unset` before sourcing is load-bearing. Both of these names are also globals
+# in this script, so a registry file that predates the field would otherwise fall
+# back to the *current* value and report it as though it had been recorded — an
+# old sandbox confidently claiming a mode it was never built with.
+reg_template() {
+  local f; f="$(reg_file "$ROOT")"
+  [ -f "$f" ] || return 0
+  # shellcheck disable=SC1090
+  ( unset TEMPLATE; . "$f" 2>/dev/null; printf '%s' "${TEMPLATE:-}" )
+}
+
+reg_claude_mode() {
+  local f; f="$(reg_file "$ROOT")"
+  [ -f "$f" ] || return 0
+  # shellcheck disable=SC1090
+  ( unset CLAUDE_MODE; . "$f" 2>/dev/null; printf '%s' "${CLAUDE_MODE:-}" )
+}
+
+# The cmux workspace command. Must stay in the foreground: cmux is running this
+# as the workspace's process, and the terminal is the agent's UI.
+cmd_attach() {
+  ensure_daemon; ensure_auth
+  exists || cmd_up || die "could not create the sandbox"
+  exec "$SBX" run --name "$NAME" "$@"
+}
+
+cmd_exec() {
+  ensure_daemon; ensure_auth
+  exists || die "no sandbox for $ROOT — run: crew-sandbox up"
+  # Drop a leading -- so `crew-sandbox exec <path> -- cmd` and
+  # `crew-sandbox exec <path> cmd` both work.
+  [ "${1:-}" = "--" ] && shift
+  [ $# -gt 0 ] || die "nothing to run"
+  # -t only when there really is a terminal. `sbx exec -it` from a non-TTY
+  # caller — a hook, a script, crew-spec run off the board — allocates a pty
+  # nothing is reading and the command's output is lost, silently and with
+  # exit 0. Interactive callers still get a tty, which rspec and claude need.
+  local tty=()
+  [ -t 0 ] && [ -t 1 ] && tty=(-t)
+  "$SBX" exec -i ${tty[@]+"${tty[@]}"} "$NAME" "$@"
+}
+
+cmd_down() {
+  ensure_daemon
+  exists || { say "no sandbox for $ROOT"; return 0; }
+  "$SBX" stop "$NAME" >/dev/null 2>&1 || die "sbx stop failed for $NAME"
+  printf '\033[32m✓\033[0m stopped %s\n' "$NAME"
+}
+
+# Destroys the sandbox and everything installed inside it. Host files are
+# untouched — they were never copied in.
+#
+# The per-sandbox config directory is deliberately KEPT: it holds the agent's
+# transcripts and task state, which are host-side history and cheap. `prune`
+# collects them once the worktree itself is gone.
+cmd_rm() {
+  ensure_daemon
+  if exists; then
+    "$SBX" rm --force "$NAME" >/dev/null 2>&1 || die "sbx rm failed for $NAME"
+    printf '\033[32m✓\033[0m removed %s\n' "$NAME"
+  else
+    say "no sandbox for $ROOT"
+  fi
+  # The config dir survives on purpose (transcripts, task state), but the login
+  # inside it must not: it is a live token, and the sandbox that justified it is
+  # gone. Same for the symlinks, which would otherwise dangle once ~/.claude is
+  # no longer mounted anywhere.
+  local cfg; cfg="$(sbx_config_dir "$NAME")"
+  [ -f "$cfg/.credentials.json" ] && { rm -f "$cfg/.credentials.json"; say "removed the carried login"; }
+  rm -f "$(reg_file "$ROOT")"
+}
+
+cmd_status() {
+  local st; st="$(sbx_state)"
+
+  # Report what this sandbox *is*, not what the flag currently says. An existing
+  # sandbox's mounts were fixed at create time, so aligning CLAUDE_MODE with the
+  # record also keeps the mount list below honest — otherwise a default of `link`
+  # would print a :ro mount an isolated sandbox does not have.
+  local mode note; mode="$(reg_claude_mode)"; note=""
+  if [ -n "$mode" ]; then
+    CLAUDE_MODE="$mode"
+  elif [ -n "$st" ]; then
+    CLAUDE_MODE="isolated"; mode="isolated"; note=" (predates --claude)"
+  else
+    mode="$CLAUDE_MODE"; note=" (not created yet)"
+  fi
+
+  if [ "${1:-}" = "--json" ]; then
+    python3 -c '
+import json, sys
+print(json.dumps({
+  "name": sys.argv[1], "root": sys.argv[2], "branch": sys.argv[3],
+  "state": sys.argv[4] or "absent", "registered": sys.argv[5] == "1",
+  "claude": sys.argv[6], "login_carried": sys.argv[7] == "1",
+}))
+' "$NAME" "$ROOT" "$BRANCH" "$st" "$([ -f "$(reg_file "$ROOT")" ] && echo 1 || echo 0)" \
+      "$mode" \
+      "$([ -f "$(sbx_config_dir "$NAME")/.credentials.json" ] && echo 1 || echo 0)"
+    return 0
+  fi
+  printf '  sandbox    %s\n' "$NAME"
+  printf '  root       %s%s\n' "$ROOT" "${BRANCH:+  ($BRANCH)}"
+  printf '  template   %s\n' "$(template_available && printf '%s' "$TEMPLATE" || printf '%s (not built)' "$TEMPLATE")"
+  printf '  claude     %s%s\n' "$mode" "$note"
+  [ -f "$(sbx_config_dir "$NAME")/.credentials.json" ] && printf '  login      carried in (removed on rm)\n'
+  case "$st" in
+    *running*) printf '  state      \033[32mrunning\033[0m\n' ;;
+    "")        printf '  state      absent\n' ;;
+    *)         printf '  state      %s\n' "$st" ;;
+  esac
+  printf '  registry   %s\n' "$([ -f "$(reg_file "$ROOT")" ] && printf '%s' "$(reg_file "$ROOT")" || printf 'none')"
+  printf '  mounts\n'
+  while IFS= read -r w; do [ -n "$w" ] && printf '    %s\n' "$w"; done < <(sbx_workspaces "$ROOT")
+  return 0
+}
+
+# Registry entries outlive their worktrees: crew-reclaim removes the directory,
+# and a stale entry then points at nothing. Same orphan class crew-code has.
+cmd_prune() {
+  local pruned=0 f root name cfg live=""
+  # Pass 1: registry entries whose worktree is gone.
+  if [ -d "$REG" ]; then
+    for f in "$REG"/*; do
+      [ -f "$f" ] || continue
+      # shellcheck disable=SC1090
+      root="$( . "$f" 2>/dev/null; printf '%s' "${ROOT:-}" )"
+      if [ -z "$root" ] || [ ! -d "$root" ]; then
+        rm -f "$f"; pruned=$((pruned + 1))
+        printf '  \033[32m✓\033[0m dropped entry for %s\n' "${root:-<unreadable>}"
+      fi
+    done
+  fi
+
+  # Pass 2: orphaned config directories. This cannot be folded into pass 1 —
+  # crew-reclaim removes the registry entry itself, so by the time prune runs the
+  # normal way there is nothing left pointing at the config dir. Iterate the
+  # directories themselves and keep only those still referenced by a registry
+  # entry or by a sandbox that really exists.
+  [ -d "$STATE/claude" ] || { [ "$pruned" -eq 0 ] && printf '  nothing to prune\n'; return 0; }
+  if [ -x "$SBX" ]; then
+    live="$("$SBX" ls --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+rows = d.get("sandboxes", d) if isinstance(d, dict) else d
+if isinstance(rows, list):
+    for r in rows:
+        if isinstance(r, dict) and r.get("name"):
+            print(r["name"])
+' 2>/dev/null)"
+  fi
+  for cfg in "$STATE/claude"/*; do
+    [ -d "$cfg" ] || continue
+    name="${cfg##*/}"
+    # Still referenced by a registry entry?
+    if [ -d "$REG" ] && grep -qxF "NAME=$name" "$REG"/* 2>/dev/null; then continue; fi
+    # Still a real sandbox?
+    if printf '%s\n' "$live" | grep -cxF "$name" >/dev/null 2>&1; then continue; fi
+    rm -rf "$cfg" && pruned=$((pruned + 1)) \
+      && printf '  \033[32m✓\033[0m dropped orphaned config dir %s\n' "$name"
+  done
+  [ "$pruned" -eq 0 ] && printf '  nothing to prune\n'
+  return 0
+}
+
+# Builds the image every worktree sandbox starts from. Without it each sandbox
+# re-installs Ruby and every gem and re-pulls postgres/redis/wiremock/moto,
+# because sandboxes share no image layers.
+cmd_base() {
+  ensure_daemon; ensure_auth
+  local main scratch
+  main="${CREW_MONOLITH:-__MAIN_REPO__}"
+  [ -d "$main/.git" ] || die "no monolith checkout at $main"
+  scratch="crew-base-build"
+
+  say "applying network policy"
+  "$SBX" policy init "$POLICY" >/dev/null 2>&1 || true
+  # /login hangs in a locked-down policy without these two; the root domain and
+  # its subdomains are separate rules — *.example.com does not match example.com.
+  "$SBX" policy allow network "anthropic.com,*.anthropic.com,claude.com,*.claude.com" >/dev/null 2>&1 || true
+  "$SBX" policy allow network "rubygems.org,*.rubygems.org,registry.npmjs.org,*.npmjs.org" >/dev/null 2>&1 || true
+  "$SBX" policy allow network "github.com,*.github.com,objects.githubusercontent.com" >/dev/null 2>&1 || true
+
+  # The proxy injects this after egress, so a compromised agent cannot read it.
+  if command -v gh >/dev/null 2>&1 && gh auth token >/dev/null 2>&1; then
+    say "storing the gh token as a sandbox secret"
+    gh auth token | "$SBX" secret set github >/dev/null 2>&1 || warn "could not store the gh secret"
+  fi
+
+  "$SBX" rm --force "$scratch" >/dev/null 2>&1 || true
+  say "creating scratch sandbox on the primary checkout"
+  "$SBX" create --name "$scratch" shell "$main" || die "sbx create failed"
+
+  say "provisioning (Ruby, gems, compose images) — this is the slow part"
+  # The checkout path arrives as $1 rather than being interpolated into the
+  # script body, so a path with spaces or quotes cannot break the quoting.
+  "$SBX" exec -t "$scratch" bash -lc '
+    set -e
+    cd "$1"
+    command -v asdf >/dev/null 2>&1 && asdf install || true
+    bundle install --jobs 4 || true
+    docker compose -f docker-compose-dev.yml pull postgres redis || true
+  ' crew-base "$main" \
+    || warn "provisioning reported errors — inspect with: sbx exec -it $scratch bash"
+
+  say "saving as $TEMPLATE"
+  "$SBX" save "$scratch" "$TEMPLATE" || die "sbx save failed"
+  "$SBX" rm --force "$scratch" >/dev/null 2>&1 || true
+  printf '\033[32m✓\033[0m built %s\n' "$TEMPLATE"
+}
+
+# A cmux action always spawns a host tab; for fire-and-forget commands that tab
+# is litter. Gated on the env var so running this by hand never closes your own
+# terminal, and on the success path only so failures stay on screen.
+ephemeral_close() {
+  [ "${CREW_EPHEMERAL:-}" = "1" ] || return 0
+  [ -n "${CMUX_SURFACE_ID:-}" ] || return 0
+  "$CMUX" close-surface --surface "$CMUX_SURFACE_ID" >/dev/null 2>&1 || true
+}
+
+case "$cmd" in
+  up)      cmd_up && ephemeral_close ;;
+  attach)  cmd_attach "$@" ;;
+  exec)    cmd_exec "$@" ;;
+  down)    cmd_down && ephemeral_close ;;
+  rm)      cmd_rm && ephemeral_close ;;
+  status)  cmd_status "${1:-}" ;;
+  base)    cmd_base ;;
+  prune)   cmd_prune ;;
+  -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *)       die "unknown '$cmd' (try --help)" ;;
+esac

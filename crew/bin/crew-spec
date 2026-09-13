@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# crew-spec [args...] — run the current repo's test suite, whatever it is.
+#
+# Personal-projects edition: instead of one hardwired harness, detect the
+# repo's stack and hand any extra args to its runner.
+#
+#   package.json with a test script   -> npm test -- [args]
+#   pyproject.toml / pytest.ini       -> pytest [args]
+#   Cargo.toml                        -> cargo test [args]
+#   go.mod                            -> go test ./... [args]
+#
+# Works from anywhere inside a repo or its worktrees.
+
+set -euo pipefail
+
+usage() {
+  cat <<'HELP'
+crew-spec [test-runner args...]
+
+Detects the current repo's test runner and runs it:
+  package.json (with "test" script) -> npm test -- [args]
+  pyproject.toml / pytest.ini       -> pytest [args]
+  Cargo.toml                        -> cargo test [args]
+  go.mod                            -> go test ./... [args]
+
+Examples:
+  crew-spec
+  crew-spec e2e/checkout.spec.ts
+  crew-spec -k "test_invite"        # pytest
+HELP
+}
+
+[ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ] && { usage; exit 0; }
+
+root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$root" ]; then
+  echo "crew-spec: not inside a git repository" >&2
+  exit 1
+fi
+cd "$root"
+
+if [ -f package.json ] && python3 -c 'import json,sys;sys.exit(0 if "test" in json.load(open("package.json")).get("scripts",{}) else 1)'; then
+  exec npm test -- "$@"
+elif [ -f pyproject.toml ] || [ -f pytest.ini ] || [ -f setup.cfg ]; then
+  exec pytest "$@"
+elif [ -f Cargo.toml ]; then
+  exec cargo test "$@"
+elif [ -f go.mod ]; then
+  exec go test ./... "$@"
+else
+  echo "crew-spec: no recognised test setup in $root (package.json test script, pyproject.toml, Cargo.toml, go.mod)" >&2
+  exit 1
+fi

@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""Paint the focused pane's frame with the selected workspace's own colour.
+
+    crew-frame            follow the selection (idempotent; reloads only on change)
+    crew-frame --workspace <uuid>
+                          use THAT workspace's colour -- what the listener passes,
+                          straight from the event payload, to dodge the 151ms lag
+                          before `workspace list` reports a new selection
+    crew-frame --color X  force a hex
+    crew-frame --off      back to no border
+    crew-frame --status    what is set now, and what would be set
+
+Why it works this way. cmux has exactly two border settings in its schema,
+`activePaneBorderColor` and `paneBorderColor`, and both are GLOBAL
+(`colorHexOrNull`) -- there is no per-workspace override to bind. So "the frame
+follows the workspace" has to mean: rewrite the one global value whenever the
+selection changes, and reload. That is cheap enough to do on every switch --
+`cmux reload-config` measured at 39ms and refreshes terminals in place -- but
+only if it is skipped when nothing changed, which is what most switches are once
+you are bouncing between two worktrees of the same colour.
+
+The edit is a targeted regex on that single value, never a parse-and-reserialize:
+cmux.json is JSONC, it is full of the comments `crew apply` renders into it, and
+`json.dump` would silently delete every one of them.
+
+Caveat, straight from the schema: the border is drawn "around the focused cmux
+pane in split workspaces". An unsplit workspace may show no frame at all, and
+that is cmux's behaviour, not this script's.
+"""
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+CMUX_JSON = os.path.expanduser("~/.config/cmux/cmux.json")
+KEY = "activePaneBorderColor"
+PAT = re.compile(r'("%s"\s*:\s*)(null|"#[0-9A-Fa-f]{6}")' % KEY)
+HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+def cmux_bin():
+    env = os.environ.get("CREW_CMUX")
+    if env and os.path.exists(env):
+        return env
+    r = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crew-cmux-bin")
+    try:
+        out = subprocess.run([r], capture_output=True, text=True, timeout=10).stdout.strip()
+        if out:
+            return out
+    except Exception:
+        pass
+    return shutil.which("cmux") or "cmux"
+
+
+def current():
+    """The hex in cmux.json, "null", or None when the key is missing."""
+    try:
+        m = PAT.search(open(CMUX_JSON).read())
+    except OSError:
+        return None
+    if not m:
+        return None
+    return m.group(2).strip('"')
+
+
+def selected_color(wsid=None):
+    """custom_color for `wsid`, or for whichever workspace reports itself selected.
+
+    `wsid` exists because of a measured race: `workspace.selected` fires ~151ms
+    BEFORE `workspace list --json` starts reporting the new selection, so a
+    listener that reacts to the event and then asks who is selected gets the
+    previous answer -- and the frame ends up permanently one switch behind. The
+    event payload names the workspace outright, so when it is passed there is
+    nothing to race. The COLOUR does not race; only `selected` does.
+    """
+    try:
+        out = subprocess.run([cmux_bin(), "workspace", "list", "--json"],
+                             capture_output=True, text=True, timeout=8).stdout
+        for w in json.loads(out).get("workspaces") or []:
+            if (w.get("id") == wsid) if wsid else w.get("selected"):
+                return (w.get("custom_color") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def write(value):
+    """Replace the one value. Returns True when the file changed."""
+    try:
+        src = open(CMUX_JSON).read()
+    except OSError:
+        return False
+    repl = "null" if value in (None, "", "null") else '"%s"' % value
+    new, n = PAT.subn(lambda m: m.group(1) + repl, src, count=1)
+    if not n:
+        print("crew-frame: %s is not in cmux.json — run: crew apply" % KEY,
+              file=sys.stderr)
+        return False
+    if new == src:
+        return False
+    # Same-inode rewrite, not temp-and-rename: cmux watches this path, and a
+    # replaced inode is a deleted file to a watcher holding the old one.
+    with open(CMUX_JSON, "w") as fh:
+        fh.write(new)
+    return True
+
+
+def reload():
+    try:
+        subprocess.run([cmux_bin(), "reload-config"], capture_output=True,
+                       text=True, timeout=15)
+        return True
+    except Exception:
+        return False
+
+
+def main(argv):
+    wsid = argv[argv.index("--workspace") + 1] if "--workspace" in argv else None
+    if "--status" in argv:
+        print(json.dumps({"set": current(),
+                          "selected_workspace_color": selected_color(wsid),
+                          "config": CMUX_JSON}, indent=2))
+        return 0
+    if os.environ.get("CREW_FRAME") == "0":
+        return 0                      # kill switch, for a machine that hates it
+    if "--off" in argv:
+        want = "null"
+    elif "--color" in argv:
+        want = argv[argv.index("--color") + 1]
+        if not HEX.match(want):
+            print("crew-frame: --color needs #RRGGBB", file=sys.stderr)
+            return 2
+    else:
+        want = selected_color(wsid) or "null"
+
+    if current() is None:
+        print("crew-frame: %s is not in cmux.json — run: crew apply" % KEY,
+              file=sys.stderr)
+        return 1
+    # The whole point of the comparison: switching between two worktrees that
+    # share a colour should not touch the file or reload anything.
+    if (current() or "null") == want:
+        return 0
+    if write(want):
+        reload()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

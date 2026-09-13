@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>crew · usage</title>
+<!--
+  Served by crew-board-intent at /usage. Data is injected as __DATA__ by the
+  server, which shells out to `ccusage`. Windows and budgets, not dollars:
+  every ratio is ccusage totalTokens (cache reads included) on both sides,
+  against CREW_BLOCK_BUDGET / CREW_WEEK_BUDGET or the largest window/week on
+  record. Nothing here computes a price.
+
+  One data hue, #e69875. It is the only Everforest colour that clears the
+  dataviz validator's chroma floor (teal, aqua, green and pink all read as grey
+  against this surface at 0.06-0.09) AND is not already a status token on the
+  crew board -- gold is "needs you", red is "broken", green is "done", teal is
+  "working". A status colour reused for a series is the first entry in the
+  anti-pattern list.
+-->
+<style>
+:root{
+  --bg:#2d353b; --card:#343f44; --line:#2f3639; --line2:#3d484d;
+  --ink:#d3c6aa; --muted:#859289; --faint:#5c6a72;
+  --data:#e69875;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink)}
+body{padding:11px;font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+  padding:12px 13px;margin-bottom:9px}
+.hd{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:9px}
+h2{font:600 10px/1 system-ui;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:0}
+.when{font:500 10px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--faint);white-space:nowrap}
+
+/* Hero: same sans as everything else, and proportional figures -- tabular digits
+   make a large number look loose. */
+.hero{font:600 30px/1 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+  letter-spacing:-.02em;color:var(--ink);font-variant-numeric:proportional-nums}
+.hero small{font-size:14px;font-weight:500;color:var(--muted);margin-left:5px}
+
+/* Bullet bar: the track is the PROJECTED total, the fill is spent so far. One
+   measure at two confidences, so one hue -- not two series, and no legend. */
+.bullet{height:9px;border-radius:5px;background:var(--bg);border:1px solid var(--line2);
+  margin:11px 0 7px;overflow:hidden}
+.bullet i{display:block;height:100%;border-radius:5px;background:var(--data)}
+.foot{display:flex;justify-content:space-between;gap:8px;
+  font:500 11px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);
+  font-variant-numeric:tabular-nums}
+
+/* Bars. Rounded data-ends anchored to the baseline, a 2px surface gap between
+   neighbours instead of a border, and a hit area that spans the full column
+   height so a 200k-token day is as easy to hover as a 30M one. */
+/* margin-top is the label gutter. Tags are positioned above the plot, so with no
+   room they climb into the header -- the tag for today landed under the table
+   button. */
+.plot{position:relative;height:74px;margin-top:15px;display:flex;align-items:flex-end;gap:2px;
+  border-bottom:1px solid var(--line2)}
+.col{flex:1 1 0;height:100%;display:flex;align-items:flex-end;position:relative;cursor:default}
+.col i{display:block;width:100%;background:var(--data);border-radius:3px 3px 0 0;min-height:1px}
+.col:hover i,.col:focus-visible i{filter:brightness(1.25)}
+.col:focus-visible{outline:1px solid var(--data);outline-offset:1px}
+.grid{position:absolute;left:0;right:0;border-top:1px solid var(--line);pointer-events:none}
+.axis{display:flex;justify-content:space-between;margin-top:5px;
+  font:500 9.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--faint);
+  font-variant-numeric:tabular-nums}
+
+/* Selective direct labels: the peak and today, never every bar. */
+.tag{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:2px;
+  font:600 9px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);white-space:nowrap}
+
+#tip{position:fixed;z-index:9;pointer-events:none;opacity:0;transition:opacity 90ms;
+  background:#232a2e;border:1px solid var(--line2);border-radius:6px;padding:5px 8px;
+  font:500 11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--ink);
+  box-shadow:0 4px 14px rgba(0,0,0,.4);font-variant-numeric:tabular-nums}
+#tip b{color:var(--data);font-weight:700}
+
+/* The table twin. Every value the bars carry is reachable without hovering. */
+.tbtn{font:600 9.5px/1 system-ui;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--faint);background:none;border:1px solid var(--line2);border-radius:5px;
+  padding:3px 7px;cursor:pointer}
+.tbtn:hover{color:var(--ink);border-color:var(--muted)}
+table{width:100%;border-collapse:collapse;margin-top:9px;
+  font:500 11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
+th{text-align:left;color:var(--faint);font-weight:600;font-size:9.5px;letter-spacing:.06em;
+  text-transform:uppercase;padding:0 0 4px}
+td{padding:2px 0;color:var(--muted);border-top:1px solid var(--line)}
+td:last-child,th:last-child{text-align:right;color:var(--ink)}
+[hidden]{display:none!important}
+
+.models{margin:0;padding:0;list-style:none;
+  font:500 11px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);
+  font-variant-numeric:tabular-nums}
+.models li{display:flex;justify-content:space-between;gap:10px}
+.models b{color:var(--ink);font-weight:600}
+.empty{color:var(--faint);font-size:12px;padding:10px 2px}
+</style></head>
+<body>
+<div id="app"></div>
+<div id="tip" role="status" aria-live="polite"></div>
+<script id="data" type="application/json">__DATA__</script>
+<script>
+(function(){
+  var D = JSON.parse(document.getElementById("data").textContent);
+  var app = document.getElementById("app"), tip = document.getElementById("tip");
+  var esc = function(s){ return String(s==null?"":s).replace(/[&<>]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c];}); };
+  var tok = function(n){
+    n = n||0;
+    if (n >= 1e9) return (n/1e9).toFixed(2) + "B";
+    if (n >= 1e6) return (n/1e6).toFixed(1) + "M";
+    if (n >= 1e3) return Math.round(n/1e3) + "k";
+    return String(n);
+  };
+  var pctOf = function(n, budget){ return budget > 0 ? n / budget * 100 : 0; };
+
+  if (D.error) { app.innerHTML = '<div class="card"><div class="empty">' + esc(D.error) + "</div></div>"; return; }
+
+  function dur(min){
+    min = Math.max(0, Math.round(min||0));
+    var h = Math.floor(min/60), m = min%60;
+    return h ? h+"h "+m+"m" : m+"m";
+  }
+
+  // --- the active window ------------------------------------------------------
+  // The track is the WINDOW BUDGET (largest 5h window on record, or
+  // CREW_BLOCK_BUDGET); the fill is tokens spent this window. One measure, one
+  // hue. Projection rides the foot, not the bar — a second fill would need a
+  // legend.
+  var b = D.block, out = "";
+  if (b) {
+    var pct = pctOf(b.tokens, b.budget);
+    var projPct = pctOf(b.projected, b.budget);
+    out += '<div class="card">' +
+      '<div class="hd"><h2>5h window</h2><span class="when">' +
+        dur(b.remainingMinutes) + " to reset</span></div>" +
+      '<div class="hero">' + pct.toFixed(0) + "%<small>of window budget</small></div>" +
+      '<div class="bullet"><i style="width:' + Math.min(100, pct).toFixed(1) + '%"></i></div>' +
+      '<div class="foot"><span>' + tok(b.tokens) + " / " + tok(b.budget) + "</span>" +
+      "<span>" + (b.entries||0) + " msgs</span>" +
+      "<span>" + (projPct > pct ? "↗ " + projPct.toFixed(0) + "% by reset" : esc((b.models||[]).join(", "))) + "</span></div>" +
+      "</div>";
+  } else {
+    out += '<div class="card"><div class="hd"><h2>5h window</h2></div>' +
+      '<div class="empty">quiet — no active window. Budget ' + tok(D.blockBudget) +
+      " (" + esc(D.budgetSource||"") + ")</div></div>";
+  }
+
+  // --- daily -----------------------------------------------------------------
+  var days = D.daily || [];
+  if (days.length) {
+    var max = Math.max.apply(null, days.map(function(d){ return d.tokens; })) || 1;
+    var peak = days.reduce(function(a,c){ return c.tokens > a.tokens ? c : a; }, days[0]);
+    var bars = days.map(function(d, i){
+      var h = Math.max(1, d.tokens / max * 100);
+      // Only two labels, ever: the peak and the most recent day.
+      var tagged = (d === peak) || (i === days.length - 1 && d !== peak);
+      var tag = tagged ? '<span class="tag">' + tok(d.tokens) + "</span>" : "";
+      return '<div class="col" tabindex="0" data-i="' + i + '" role="img" aria-label="' +
+        esc(d.period) + ": " + tok(d.tokens) + ' tokens">' + tag +
+        '<i style="height:' + h.toFixed(1) + '%"></i></div>';
+    }).join("");
+    out += '<div class="card">' +
+      '<div class="hd"><h2>Daily · last ' + days.length + "</h2>" +
+      '<button class="tbtn" id="toggle" aria-expanded="false">table</button></div>' +
+      '<div class="plot" id="plot">' +
+        '<div class="grid" style="top:0"></div><div class="grid" style="top:50%"></div>' +
+        bars +
+      "</div>" +
+      '<div class="axis"><span>' + esc(days[0].period.slice(5)) + "</span>" +
+      "<span>peak " + tok(max) + "</span>" +
+      "<span>" + esc(days[days.length-1].period.slice(5)) + "</span></div>" +
+      '<table id="tbl" hidden><thead><tr><th>Day</th><th>Tokens</th></tr></thead><tbody>' +
+        days.slice().reverse().map(function(d){
+          return "<tr><td>" + esc(d.period) + "</td><td>" +
+            (d.tokens||0).toLocaleString() + "</td></tr>";
+        }).join("") +
+      "</tbody></table></div>";
+  }
+
+  // --- the week -----------------------------------------------------------------
+  // Same bullet grammar as the window card: track = weekly budget (largest week
+  // on record, or CREW_WEEK_BUDGET), fill = this week so far.
+  if (D.week) {
+    var wp = pctOf(D.week.tokens, D.week.budget);
+    out += '<div class="card">' +
+      '<div class="hd"><h2>' + esc(D.week.label) + '</h2><span class="when">' +
+        tok(D.week.budget) + " budget</span></div>" +
+      '<div class="hero">' + wp.toFixed(0) + "%<small>" + tok(D.week.tokens) + " tokens</small></div>" +
+      '<div class="bullet"><i style="width:' + Math.min(100, wp).toFixed(1) + '%"></i></div>' +
+      // One model means the list would just repeat the hero figure underneath it.
+      // Name the model instead; show the split only when there is a split.
+      ((D.week.models||[]).length === 1
+        ? '<ul class="models"><li><span>' + esc(D.week.models[0].name) + "</span></li></ul>"
+        : '<ul class="models">' + (D.week.models||[]).map(function(m){
+            return "<li><span>" + esc(m.name) + "</span><b>" + tok(m.tokens) + "</b></li>";
+          }).join("") + "</ul>") + "</div>";
+  }
+
+  app.innerHTML = out;
+
+  // --- hover / focus ----------------------------------------------------------
+  // Enhances; it never gates. Every value is in the table twin and on the
+  // element's aria-label, and focus shows exactly what hover shows.
+  var plot = document.getElementById("plot");
+  if (plot) {
+    var show = function(el){
+      var d = days[+el.getAttribute("data-i")];
+      tip.innerHTML = esc(d.period) + " &nbsp; <b>" + tok(d.tokens) + "</b><br>" +
+        (d.tokens||0).toLocaleString() + " tokens";
+      tip.style.opacity = 1;
+      var r = el.getBoundingClientRect(), t = tip.getBoundingClientRect();
+      var left = Math.min(window.innerWidth - t.width - 6, Math.max(6, r.left + r.width/2 - t.width/2));
+      tip.style.left = left + "px";
+      tip.style.top = Math.max(6, r.top - t.height - 6) + "px";
+    };
+    var hide = function(){ tip.style.opacity = 0; };
+    plot.addEventListener("mouseover", function(e){ var c = e.target.closest(".col"); if (c) show(c); });
+    plot.addEventListener("mouseleave", hide);
+    plot.addEventListener("focusin", function(e){ var c = e.target.closest(".col"); if (c) show(c); });
+    plot.addEventListener("focusout", hide);
+  }
+  var t = document.getElementById("toggle"), tbl = document.getElementById("tbl");
+  if (t) t.addEventListener("click", function(){
+    var open = tbl.hidden;
+    tbl.hidden = !open;
+    t.setAttribute("aria-expanded", String(open));
+    t.textContent = open ? "chart" : "table";
+    document.getElementById("plot").hidden = open;
+    document.querySelector(".axis").hidden = open;
+  });
+
+  // The server holds no cache; a reload is a fresh ccusage read.
+  setInterval(function(){ location.reload(); }, 60000);
+})();
+</script>
+</body></html>

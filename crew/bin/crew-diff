@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# crew-diff — every diff worth looking at, one keystroke away.
+#
+#   crew-diff                  interactive picker (turn / branch / commits / …)
+#   crew-diff turn             changes since Claude's last turn
+#   crew-diff branch [base]    branch vs merge base (default origin/HEAD)
+#   crew-diff unstaged
+#   crew-diff staged
+#   crew-diff pr               the open PR's full diff, vs its own base
+#   crew-diff commit <ref>     one commit  (git show)
+#   crew-diff range <a> <b>    a..b inclusive of b, exclusive of a
+#   crew-diff <n>              the nth commit in the picker list
+#
+# cmux diff renders a unified patch in a browser split, so anything git can
+# emit as a patch can be piped straight in. That is what makes per-commit work:
+# cmux has --unstaged/--staged/--branch/--last-turn built in, but no per-commit
+# source, and `git show <sha> | cmux diff -` covers it exactly.
+
+set -uo pipefail
+
+CMUX="$(command -v cmux || true)"
+# One definition of "which cmux": bin/crew-cmux-bin. A hardcoded bundle path kept
+# driving the OLD cli against the NEW app after the switch to the nightly build --
+# version skew that fails silently, because the old bundle is still on disk.
+[ -n "$CMUX" ] || CMUX="$("$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/crew-cmux-bin" 2>/dev/null || true)"
+[ -n "$CMUX" ] || CMUX=cmux
+[ -x "$CMUX" ] || { echo "crew-diff: cmux not found" >&2; exit 1; }
+
+REPO="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$REPO" ] || { echo "crew-diff: not inside a git repository" >&2; exit 1; }
+
+BRANCH="$(git branch --show-current 2>/dev/null || echo HEAD)"
+
+base_ref() {
+  if [ -n "${1:-}" ]; then printf '%s' "$1"; return; fi
+  local head
+  head="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  if [ -n "$head" ]; then printf '%s' "$head"; return; fi
+  for c in origin/master origin/main master main; do
+    git rev-parse --verify --quiet "$c" >/dev/null 2>&1 && { printf '%s' "$c"; return; }
+  done
+  printf 'HEAD~1'
+}
+
+# `cmux diff --last-turn` is scoped to the *calling surface's* turn baseline. Run
+# from a Dock pane or a second split, that surface has no baseline. Resolve the
+# workspace's Claude session from the hook store and scope explicitly.
+turn_session() {
+  [ -n "${CMUX_WORKSPACE_ID:-}" ] || return 0
+  local store="$HOME/.cmuxterm/claude-hook-sessions.json"
+  [ -f "$store" ] || return 0
+  python3 - "$store" "$CMUX_WORKSPACE_ID" <<'PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        d = json.load(fh)
+    e = (d.get("activeSessionsByWorkspace") or {}).get(sys.argv[2]) or {}
+    print(e.get("sessionId") or "")
+except Exception:
+    pass
+PY
+}
+
+show_turn() {
+  local sid; sid="$(turn_session)"
+  if [ -n "$sid" ]; then
+    "$CMUX" diff --last-turn --session "$sid" --repo "$REPO" \
+      --title "last turn · $BRANCH" --focus true
+  else
+    "$CMUX" diff --last-turn --repo "$REPO" --title "last turn · $BRANCH" --focus true
+  fi
+}
+
+show_patch() {  # <title> — patch on stdin
+  local title="$1" tmp
+  tmp="$(mktemp -t crew-diff)"
+  cat > "$tmp"
+  if [ ! -s "$tmp" ]; then
+    rm -f "$tmp"
+    echo "crew-diff: no changes for '$title'" >&2
+    return 1
+  fi
+  "$CMUX" diff "$tmp" --title "$title" --focus true
+  # cmux reads the file when the split opens; give it a moment before cleanup.
+  ( sleep 30; rm -f "$tmp" ) >/dev/null 2>&1 &
+}
+
+# cmux's built-in git sources happily open an empty viewer when there is
+# nothing to show. Check first so a clean tree says so instead of opening a
+# blank split you then have to close.
+guard_nonempty() {  # <description> <git-diff-args...>
+  local what="$1"; shift
+  if [ -z "$(git diff --name-only "$@" 2>/dev/null | head -1)" ]; then
+    echo "crew-diff: nothing $what" >&2
+    exit 1
+  fi
+}
+
+need_ref() {
+  git rev-parse --verify --quiet "$1^{commit}" >/dev/null 2>&1 && return 0
+  echo "crew-diff: '$1' is not a commit" >&2
+  exit 1
+}
+
+commit_list() { git log --oneline --no-decorate "$(base_ref)..HEAD" 2>/dev/null; }
+
+commit_at() {  # <n> -> sha
+  commit_list | sed -n "${1}p" | cut -d' ' -f1
+}
+
+subject_of() { git log -1 --format='%h %s' "$1" 2>/dev/null; }
+
+# ------------------------------------------------------------------ picker ---
+picker() {
+  local base n line sha subj count
+  base="$(base_ref)"
+  count="$(commit_list | wc -l | tr -d ' ')"
+
+  printf '\n\033[1mDiffs\033[0m  \033[2m%s\033[0m\n\n' "$BRANCH"
+  printf '  \033[36mt\033[0m  turn      \033[2mchanges since Claude'"'"'s last turn\033[0m\n'
+  printf '  \033[36mb\033[0m  branch    \033[2mvs %s (%s commits)\033[0m\n' "$base" "$count"
+  printf '  \033[36mu\033[0m  unstaged\n'
+  printf '  \033[36ms\033[0m  staged\n'
+  if command -v gh >/dev/null 2>&1; then
+    printf '  \033[36mp\033[0m  pr        \033[2mthe open pull request\033[0m\n'
+  fi
+  printf '\n'
+
+  n=0
+  while IFS= read -r line; do
+    n=$((n + 1))
+    sha="${line%% *}"; subj="${line#* }"
+    printf '  \033[36m%2d\033[0m  \033[33m%s\033[0m  %s\n' "$n" "$sha" "$subj"
+    [ "$n" -ge 25 ] && { printf '      \033[2m… %s more\033[0m\n' "$((count - 25))"; break; }
+  done < <(commit_list)
+
+  printf '\n  \033[2mnumber, or a-b for a range, or a letter. Enter to cancel.\033[0m\n'
+  printf '  pick: '
+  read -r choice
+  [ -n "${choice:-}" ] || exit 0
+
+  case "$choice" in
+    t) show_turn ;;
+    b) dispatch branch ;;
+    u) dispatch unstaged ;;
+    s) dispatch staged ;;
+    p) dispatch pr ;;
+    *-*)
+      local a b sa sb
+      a="${choice%%-*}"; b="${choice##*-}"
+      sa="$(commit_at "$a")"; sb="$(commit_at "$b")"
+      # The list is newest-first, so a higher index is an older commit.
+      [ -n "$sa" ] && [ -n "$sb" ] || { echo "crew-diff: bad range '$choice'" >&2; exit 1; }
+      git diff "$sb~..$sa" | show_patch "$(subject_of "$sb") … $(subject_of "$sa")"
+      ;;
+    ''|*[!0-9]*) echo "crew-diff: '$choice' is not a choice" >&2; exit 1 ;;
+    *)
+      sha="$(commit_at "$choice")"
+      [ -n "$sha" ] || { echo "crew-diff: no commit $choice" >&2; exit 1; }
+      git show "$sha" | show_patch "$(subject_of "$sha")"
+      ;;
+  esac
+}
+
+# ---------------------------------------------------------------- dispatch ---
+dispatch() {
+  case "${1:-}" in
+    turn|t)      show_turn ;;
+    branch|b)
+      local b; b="$(base_ref "${2:-}")"
+      guard_nonempty "on $BRANCH that $b does not have" "$b...HEAD"
+      "$CMUX" diff --branch --base "$b" --repo "$REPO" \
+        --title "$BRANCH vs $b" --focus true ;;
+    unstaged|u)
+      guard_nonempty "unstaged"
+      "$CMUX" diff --unstaged --repo "$REPO" --title "unstaged · $BRANCH" --focus true ;;
+    staged|s)
+      guard_nonempty "staged" --cached
+      "$CMUX" diff --staged --repo "$REPO" --title "staged · $BRANCH" --focus true ;;
+    pr)
+      command -v gh >/dev/null 2>&1 || { echo "crew-diff: gh not installed" >&2; exit 1; }
+      local num; num="$(gh pr view --json number --jq .number 2>/dev/null || true)"
+      [ -n "$num" ] || { echo "crew-diff: no open PR for $BRANCH" >&2; exit 1; }
+      gh pr diff "$num" | show_patch "PR #$num · $BRANCH"
+      ;;
+    commit|c)
+      [ -n "${2:-}" ] || { echo "crew-diff commit <ref>" >&2; exit 1; }
+      need_ref "$2"
+      git show "$2" | show_patch "$(subject_of "$2")"
+      ;;
+    range|r)
+      [ -n "${3:-}" ] || { echo "crew-diff range <from> <to>" >&2; exit 1; }
+      need_ref "$2"; need_ref "$3"
+      git diff "$2..$3" | show_patch "$(subject_of "$2") … $(subject_of "$3")"
+      ;;
+    ''|pick)     picker ;;
+    -h|--help)   sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *[!0-9]*)    echo "crew-diff: unknown '$1' (try --help)" >&2; exit 1 ;;
+    *)
+      local sha; sha="$(commit_at "$1")"
+      [ -n "$sha" ] || { echo "crew-diff: no commit $1" >&2; exit 1; }
+      git show "$sha" | show_patch "$(subject_of "$sha")"
+      ;;
+  esac
+}
+
+# cmux actions can only run a command in `currentTerminal` (which would type it
+# into whatever is running there — Claude's prompt) or `newTabInCurrentPane`.
+# There is no headless target, so an action always spawns a host tab. For
+# fire-and-forget commands that tab is litter, so the action sets
+# CREW_EPHEMERAL=1 and we close it once the work is done.
+#
+# Gated on the env var, never unconditional: run by hand from your own terminal,
+# CREW_EPHEMERAL is unset and this does nothing. Placed after dispatch so it is
+# only reached on success — a failure leaves the tab up with the error in it.
+ephemeral_close() {
+  [ "${CREW_EPHEMERAL:-}" = "1" ] || return 0
+  [ -n "${CMUX_SURFACE_ID:-}" ] || return 0
+  "$CMUX" close-surface --surface "$CMUX_SURFACE_ID" >/dev/null 2>&1 || true
+}
+
+dispatch "$@"
+ephemeral_close

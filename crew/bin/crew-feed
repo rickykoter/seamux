@@ -1,0 +1,323 @@
+#!/usr/bin/env python3
+"""crew-feed — publish the pending Feed ask for a workspace onto the board.
+
+    crew-feed publish [<workspace-id>]   write feed:* tokens (called from hooks)
+    crew-feed clear   [<workspace-id>]   remove them
+    crew-feed show    [<workspace-id>]   what it would publish, and why
+    crew-feed reply   <once|deny> [ws]   answer it (re-validated + audited)
+
+Feed blocks the agent on a semaphore for at most **120 seconds**, then gives up
+and the agent falls back to its own TUI prompt. Two measured facts shape this:
+
+  * The median reply here is 203s — longer than the window. So most of the time
+    the honest answer is "jump", not "answer from the board".
+
+  * `status: pending` from feed.list cannot be trusted. Of 1721 items, the two
+    marked pending were 61 and 33 days old — cmux died before their timeout
+    fired and they were never marked expired. A board that renders Allow for
+    those offers a button whose reply lands on a semaphore nobody is waiting
+    on: a silent no-op that looks like success. That is worse than no button.
+
+So an ask is only "live" when ALL of these hold, checked here rather than
+trusted from Feed:
+
+    status == pending
+    updated_at within the window (default 120s)
+    the workspace's agent is needsInput, with a pid that is actually alive
+
+Anything else publishes `feed:stale`, and the board offers jump only.
+
+Allow is gated further — see gate() — because a sidebar row is a bad place to
+read something you are about to authorise.
+"""
+
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+
+HOME = os.path.expanduser("~")
+# One definition of "which cmux": bin/crew-cmux-bin. PATH is consulted here first so
+# the common case costs no subprocess; the resolver is only reached when PATH has no
+# cmux. A hardcoded bundle path silently drove the old cli against the nightly app.
+_CMUX_RESOLVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crew-cmux-bin")
+CMUX = (os.environ.get("CREW_CMUX")
+        or next((os.path.join(d, "cmux")
+                 for d in os.environ.get("PATH", "").split(os.pathsep)
+                 if os.access(os.path.join(d, "cmux"), os.X_OK)), None)
+        or (subprocess.run([_CMUX_RESOLVER], capture_output=True, text=True).stdout.strip()
+            if os.access(_CMUX_RESOLVER, os.X_OK) else "")
+        or "cmux")
+STORE = os.path.join(HOME, ".cmuxterm", "claude-hook-sessions.json")
+GUARD = os.path.join(HOME, ".claude", "hooks", "cmux", "guard_bash.sh")
+AUDIT = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")),
+                     "cmux-crew", "feed-audit.jsonl")
+WINDOW = int(os.environ.get("CREW_FEED_WINDOW", "120"))
+
+# A row shows roughly this much before truncating. If the ask does not fit, we
+# do not offer Allow — a 40-character preview of a shell command looks identical
+# whether or not something hostile is appended after it.
+FITS = int(os.environ.get("CREW_FEED_FITS", "72"))
+
+
+def rpc(method, params=None):
+    try:
+        r = subprocess.run([CMUX, "rpc", method, json.dumps(params or {})],
+                           capture_output=True, text=True, timeout=20)
+        return json.loads(r.stdout) if r.stdout.strip() else {}
+    except Exception:
+        return {}
+
+
+def workspace_cwd(ws):
+    try:
+        r = subprocess.run([CMUX, "workspace", "list", "--json"],
+                           capture_output=True, text=True, timeout=15,
+                           env={**os.environ, "CMUX_QUIET": "1"})
+        for w in json.loads(r.stdout).get("workspaces") or []:
+            if w.get("id") == ws:
+                return w.get("current_directory") or ""
+    except Exception:
+        pass
+    return ""
+
+
+def agent_waiting(ws):
+    """Is a live agent in this workspace actually blocked right now?"""
+    try:
+        with open(STORE) as fh:
+            d = json.load(fh)
+        sid = ((d.get("activeSessionsByWorkspace") or {}).get(ws) or {}).get("sessionId")
+        rec = (d.get("sessions") or {}).get(sid or "") or {}
+        if rec.get("agentLifecycle") != "needsInput":
+            return False
+        pid = rec.get("pid")
+        os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+
+def age_of(item):
+    try:
+        t = datetime.fromisoformat((item.get("updated_at") or "").replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - t).total_seconds()
+    except Exception:
+        return 1e9
+
+
+def newest_ask(cwd):
+    items = rpc("feed.list").get("items") or []
+    asks = [i for i in items
+            if i.get("kind") in ("permissionRequest", "question", "exitPlan")
+            and (i.get("cwd") or "") == cwd]
+    return max(asks, key=lambda i: i.get("updated_at") or "", default=None)
+
+
+def summarise(item):
+    """One line describing the ask, and whether it was truncated to get there."""
+    kind = item.get("kind")
+    if kind == "question":
+        text = item.get("question_prompt") or "AskUserQuestion"
+    elif kind == "exitPlan":
+        text = "Plan ready to execute"
+    else:
+        tool = item.get("tool_name") or item.get("title") or "tool"
+        raw = item.get("tool_input") or ""
+        try:
+            ti = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except Exception:
+            ti = {}
+        detail = ti.get("command") or ti.get("file_path") or ti.get("pattern") or ""
+        text = f"{tool}: {detail}".strip().rstrip(":")
+    text = " ".join(text.split())
+    return text, len(text) > FITS
+
+
+def guard_would_block(item):
+    """Reuse the destructive-command guard rather than inventing a second policy.
+
+    guard_bash.sh already encodes what must never happen without a human
+    reading it — force-push, rm -rf, --no-verify, destructive SQL, curl|sh.
+    Exit 2 means it would block.
+    """
+    if item.get("kind") != "permissionRequest":
+        return False
+    if (item.get("tool_name") or item.get("title")) != "Bash":
+        return False
+    if not os.path.exists(GUARD):
+        return True                      # no guard available -> assume unsafe
+    try:
+        ti = json.loads(item.get("tool_input") or "{}")
+    except Exception:
+        return True
+    payload = json.dumps({"tool_input": {"command": ti.get("command", "")}})
+    try:
+        r = subprocess.run(["bash", GUARD], input=payload, capture_output=True,
+                           text=True, timeout=10)
+        return r.returncode != 0
+    except Exception:
+        return True
+
+
+def gate(item, truncated):
+    """May the board offer one-tap Allow? Returns (allowed, reason)."""
+    if item.get("kind") == "exitPlan":
+        return False, "a plan is too long to approve from a row"
+    if truncated:
+        return False, "does not fit without truncation"
+    if guard_would_block(item):
+        return False, "guard_bash would block this command"
+    return True, ""
+
+
+def evaluate(ws):
+    cwd = workspace_cwd(ws)
+    if not cwd:
+        return None
+    item = newest_ask(cwd)
+    if not item:
+        return None
+
+    age = age_of(item)
+    live = (item.get("status") == "pending"
+            and age <= WINDOW
+            and agent_waiting(ws))
+    text, truncated = summarise(item)
+    allowed, why = gate(item, truncated) if live else (False, "window closed")
+    return {
+        "item": item, "age": age, "live": live, "text": text,
+        "allowed": allowed, "why": why,
+        "deadline": int(time.time() + max(0, WINDOW - age)),
+    }
+
+
+def publish(ws):
+    ev = evaluate(ws)
+    toks = []
+    if ev:
+        kind = {"permissionRequest": "perm", "question": "quest",
+                "exitPlan": "plan"}.get(ev["item"].get("kind"), "ask")
+        if ev["live"]:
+            toks.append(f"feed:{kind}")
+            toks.append(f"feedby:{ev['deadline']}")
+            toks.append("feedgate:allow" if ev["allowed"] else "feedgate:read")
+            rid = ev["item"].get("request_id") or ""
+            if rid:
+                toks.append("feedreq:" + rid)
+        else:
+            toks.append("feed:stale")
+        wsid = ev["item"].get("workstream_id") or ""
+        if wsid:
+            toks.append("feedws:" + wsid)
+    set_tokens(ws, toks)
+    return ev
+
+
+def set_tokens(ws, toks):
+    """Merge feed:* tokens into the description, leaving the others alone."""
+    keys = ("feed", "feedby", "feedgate", "feedreq", "feedws")
+    try:
+        r = subprocess.run([CMUX, "workspace", "list", "--json"],
+                           capture_output=True, text=True, timeout=15,
+                           env={**os.environ, "CMUX_QUIET": "1"})
+        cur = ""
+        for w in json.loads(r.stdout).get("workspaces") or []:
+            if w.get("id") == ws:
+                cur = w.get("description") or ""
+                break
+    except Exception:
+        cur = ""
+    kept = [t for t in cur.split() if t.split(":", 1)[0] not in keys]
+    new = " ".join(kept + toks)
+    args = (["workspace-action", "--action", "set-description", "--description", new]
+            if new else ["workspace-action", "--action", "clear-description"])
+    subprocess.run([CMUX, *args, "--workspace", ws],
+                   capture_output=True, timeout=15)
+
+
+def audit(entry):
+    try:
+        os.makedirs(os.path.dirname(AUDIT), exist_ok=True)
+        entry["at"] = datetime.now().isoformat(timespec="seconds")
+        with open(AUDIT, "a") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
+
+
+def reply(ws, mode):
+    """Answer the pending ask. Re-validated here, not trusted from the render.
+
+    The board drew its buttons up to a second ago and the window is 120s wide,
+    so liveness is checked again at the moment of the tap. Replies route through
+    this script rather than the sidebar calling feed.permission.reply directly,
+    because that is the only way there is anywhere to write the audit line.
+    """
+    ev = evaluate(ws)
+    if not ev or not ev["live"]:
+        audit({"ws": ws, "mode": mode, "result": "refused", "why": "window closed"})
+        set_tokens(ws, ["feed:stale"])
+        return 1
+    if mode != "deny" and not ev["allowed"]:
+        audit({"ws": ws, "mode": mode, "result": "refused", "why": ev["why"],
+               "text": ev["text"]})
+        return 1
+
+    rid = ev["item"].get("request_id") or ""
+    if not rid:
+        audit({"ws": ws, "mode": mode, "result": "refused", "why": "no request_id"})
+        return 1
+
+    kind = ev["item"].get("kind")
+    if kind != "permissionRequest":
+        # Questions carry their options, and a plan is prose; neither survives a
+        # sidebar row without truncation, which is the one thing the gate exists
+        # to prevent. Those stay jump-only.
+        audit({"ws": ws, "mode": mode, "result": "refused",
+               "why": f"{kind} is jump-only", "text": ev["text"]})
+        return 1
+
+    out = rpc("feed.permission.reply", {"request_id": rid, "mode": mode})
+    audit({"ws": ws, "mode": mode, "result": "sent", "kind": kind,
+           "text": ev["text"], "request_id": rid, "response": out})
+    set_tokens(ws, [])
+    return 0
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "show"
+    # `reply` takes a mode first: crew-feed reply <once|deny> [workspace]
+    argpos = 3 if cmd == "reply" else 2
+    ws = (sys.argv[argpos] if len(sys.argv) > argpos
+          else os.environ.get("CMUX_WORKSPACE_ID", ""))
+    if not ws:
+        print("crew-feed: no workspace", file=sys.stderr)
+        return 1
+
+    if cmd == "clear":
+        set_tokens(ws, [])
+        return 0
+    if cmd == "reply":
+        return reply(ws, sys.argv[2] if len(sys.argv) > 2 else "deny")
+    if cmd == "publish":
+        publish(ws)
+        return 0
+
+    ev = evaluate(ws)
+    if not ev:
+        print("  no Feed ask for this workspace")
+        return 0
+    print(f"  kind      {ev['item'].get('kind')}")
+    print(f"  age       {ev['age']:.0f}s   (window {WINDOW}s)")
+    print(f"  status    {ev['item'].get('status')}")
+    print(f"  live      {ev['live']}")
+    print(f"  text      {ev['text'][:100]}")
+    print(f"  allow     {ev['allowed']}" + (f"   ({ev['why']})" if not ev["allowed"] else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

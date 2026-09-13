@@ -1,0 +1,33 @@
+{
+  "slug": "example-outbox-retry",
+  "title": "Retry failed outbox deliveries with backoff",
+  "context": "Deliveries that fail once are currently dropped. The outbox table already records status per row, so a retry sweep can key on it without schema change.\n\nOut of frame: dead-lettering and operator alerts. This plan only makes a failed delivery try again.",
+  "decisions": [
+    { "decision": "Sweep on a timer, not on write", "why": "a write-triggered retry retries into the same outage that just failed" }
+  ],
+  "verifiedFacts": [
+    { "claim": "outbox rows carry a status column", "evidence": "db/schema.rb:42" },
+    { "claim": "the delivery worker is the single consumer", "evidence": "app/workers/deliver.rb:10" }
+  ],
+  "risks": ["backoff cap has not been agreed; starting at 5 tries"],
+  "diagrams": [
+    { "question": "How does a failed write get retried?",
+      "mermaid": "flowchart LR\n  W[write] --> O[(outbox)] --> D[deliver]\n  D -- fail --> O\n  T[timer sweep] --> O" }
+  ],
+  "deliverables": [
+    { "title": "Retry sweep", "body": "A timer job that re-queues failed rows under the backoff cap.", "files": ["app/workers/retry_sweep.rb"] },
+    { "title": "Backoff bookkeeping", "body": "Attempt count and next-try-at on the outbox row.", "files": ["db/migrate/add_retry_columns.rb"] }
+  ],
+  "verification": ["bundle exec rspec spec/workers/retry_sweep_spec.rb"],
+  "quiz": [
+    { "id": "q1", "prompt": "A delivery fails while the downstream is mid-outage. What happens next?",
+      "options": ["the writer blocks until delivery succeeds", "the row waits for the next timer sweep", "the row is dropped after one try", "the worker retries inline three times"],
+      "answer": 1, "why": "retry rides the sweep so it lands after the outage, not during it", "decisionRef": "Sweep on a timer, not on write" },
+    { "id": "q2", "prompt": "Which table changes shape under this plan?",
+      "options": ["the outbox table", "the deliveries audit log", "no table at all", "a new retries table"],
+      "answer": 0, "why": "increment 2 adds attempt count and next-try-at to the outbox row", "decisionRef": "Backoff bookkeeping" },
+    { "id": "q3", "prompt": "What does this plan do with a row that exhausts its 5 tries?",
+      "options": ["dead-letters it", "pages the operator", "leaves it failed", "deletes it"],
+      "answer": 2, "why": "dead-lettering is explicitly out of frame; exhausted rows stay failed", "decisionRef": "context: out of frame" }
+  ]
+}
