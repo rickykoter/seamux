@@ -116,6 +116,16 @@ ok("validate: a freshly rendered plan is clean",
     /double-escaped/.test(rv.stderr) && /placeholder/.test(rv.stderr));
   ok("validate: an unknown slug dies plainly", cli("validate", "no-such-plan").status !== 0);
 }
+{
+  // Quoted labels route through DOMPurify; a shim regression turns every real
+  // diagram into a silent "skip" (error:null). Empty means truly validated.
+  const vlib = await import(new URL("lib/validate.mjs", import.meta.url));
+  const good = await vlib.validateDiagrams([
+    { mermaid: 'flowchart LR\n  K --> R["label: $4.20"]\n  M --> C[("cache")]', question: "g" }]);
+  ok("validateDiagrams: quoted-label flowchart truly validates (no env skip)", good.length === 0);
+  const bad2 = await vlib.validateDiagrams([{ mermaid: "flowchart LR\n  A --> [broken", question: "b" }]);
+  ok("validateDiagrams: a parse error survives as a real error", bad2.length === 1 && !!bad2[0].error);
+}
 const working = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
 ok("working surface renders controls disabled on disk",
   working.includes('class="dp-act"') && working.includes("disabled"));
