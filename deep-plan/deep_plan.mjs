@@ -253,6 +253,8 @@ ${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${es
   // file:// (clipboard falls back to select+execCommand there).
   const COPYBACK = `
 <h2>Send it back</h2>
+<p class="dim">Highlight any text above to pin a comment to it.</p>
+<div id="dp-quotes"></div>
 <textarea class="dp-note" data-section="general" rows="2" placeholder="general comments (optional)"></textarea>
 <p><button id="dp-copyback">Copy for session</button>
 <span id="dp-copied" class="dim"></span></p>
@@ -287,6 +289,54 @@ ${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${es
     catch (e) { document.getElementById("dp-copied").textContent = "copy failed \\u2014 select and copy by hand:"; ta.remove(); alert(text); return; }
     ta.remove();
   }
+
+  // Highlight-to-comment: select any text, a chip appears, clicking it pins
+  // the excerpt with its own comment box. The blob labels the comment with
+  // the nearest heading and the quote, so the session can find the spot.
+  var chip = document.createElement("button");
+  chip.id = "dp-hl-add"; chip.textContent = "\\uFF0B comment"; chip.style.display = "none";
+  document.body.appendChild(chip);
+  document.addEventListener("mouseup", function () {
+    setTimeout(function () {
+      var sel = window.getSelection();
+      var txt = sel ? String(sel).trim() : "";
+      if (!txt || sel.rangeCount === 0 || chip.contains(sel.anchorNode)) { chip.style.display = "none"; return; }
+      var r = sel.getRangeAt(0).getBoundingClientRect();
+      chip.style.left = (window.scrollX + r.right + 6) + "px";
+      chip.style.top = (window.scrollY + r.top - 4) + "px";
+      chip.style.display = "block";
+    }, 0);
+  });
+  chip.addEventListener("mousedown", function (e) {
+    e.preventDefault();
+    var sel = window.getSelection();
+    var txt = String(sel).trim();
+    if (!txt) return;
+    var excerpt = txt.length > 120 ? txt.slice(0, 117) + "\\u2026" : txt;
+    var section = "";
+    var hs = document.querySelectorAll("h2");
+    for (var i = 0; i < hs.length; i++) {
+      if (hs[i].compareDocumentPosition(sel.anchorNode) & Node.DOCUMENT_POSITION_FOLLOWING)
+        section = hs[i].textContent;
+    }
+    var row = document.createElement("div");
+    row.className = "dp-quote";
+    var bq = document.createElement("blockquote");
+    bq.textContent = excerpt;
+    var note = document.createElement("textarea");
+    note.className = "dp-note"; note.rows = 1;
+    note.placeholder = "comment on the highlighted text";
+    note.setAttribute("data-section", (section ? section + " \\u00B7 " : "") + 'on "' + excerpt + '"');
+    var rm = document.createElement("button");
+    rm.className = "dp-x"; rm.textContent = "\\u00D7";
+    rm.addEventListener("click", function () { row.remove(); });
+    row.appendChild(bq); row.appendChild(note); row.appendChild(rm);
+    document.getElementById("dp-quotes").appendChild(row);
+    chip.style.display = "none";
+    sel.removeAllRanges();
+    note.focus();
+    note.scrollIntoView({ block: "center" });
+  });
 })();
 </script>`;
   return htmlHead(spec.title + " — review", b64) + `<style>
@@ -295,6 +345,12 @@ label.opt{cursor:pointer}
   color:inherit;border:1px solid var(--dim,#888);border-radius:4px;padding:6px;font:inherit}
 #dp-copyback{background:var(--accent,#46f);color:#fff;border:0;border-radius:4px;
   padding:8px 14px;font:inherit;cursor:pointer}
+#dp-hl-add{position:absolute;z-index:9;background:var(--accent,#46f);color:#fff;border:0;
+  border-radius:12px;padding:2px 10px;font:inherit;font-size:.85em;cursor:pointer}
+.dp-quote{position:relative;margin:10px 0;padding-left:10px;border-left:3px solid var(--accent,#46f)}
+.dp-quote blockquote{margin:0 0 4px;font-style:italic;opacity:.8}
+.dp-x{position:absolute;top:0;right:0;background:transparent;border:0;color:inherit;
+  opacity:.5;cursor:pointer;font:inherit}
 </style>` + commonBody(spec) + `
 <h2>Increments</h2>${incs}
 ${verif ? `<h2>Verification</h2><ul>${verif}</ul>` : ""}
