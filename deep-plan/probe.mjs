@@ -21,7 +21,10 @@ const ENV = {
 };
 const REPO = path.join(TMP, "repo");
 fs.mkdirSync(REPO, { recursive: true });
-execSync("git init -q && git commit -q --allow-empty -m init", { cwd: REPO });
+// -c identity: CI runners have no git user, and the probe's throwaway repo
+// must not depend on (or touch) the machine's config.
+execSync("git init -q && git -c user.email=probe@deep-plan -c user.name=probe " +
+  "commit -q --allow-empty -m init", { cwd: REPO });
 
 let pass = 0, fail = 0;
 function ok(name, cond) {
@@ -76,6 +79,20 @@ ok("review page never contains the answer key", !/answer/i.test(review.replace(/
   !review.includes('"answers"'));
 ok("mermaid inlined as base64 (the swap regex's shape)",
   /src="data:text\/javascript;base64,[A-Za-z0-9+/=]+"/.test(review));
+// The interactive layer: answerable quiz + comment boxes + one copy-back blob.
+ok("review quiz options are selectable radios",
+  (review.match(/type="radio" name="dp-q-/g) || []).length >=
+    (spec.quiz || []).length * 2);
+ok("every increment carries a comment box, plus a general one",
+  (review.match(/class="dp-note"/g) || []).length === (spec.deliverables || []).length + 1);
+ok("copy-back button builds the paste blob (slug + grade line + comments)",
+  review.includes('id="dp-copyback"') &&
+  review.includes('"deep-plan grade " + slug') &&
+  review.includes('"comments:'));
+ok("copy-back has a file:// clipboard fallback", review.includes("execCommand"));
+ok("highlight-to-comment: selection chip and pinned-quote rows",
+  review.includes("dp-hl-add") && review.includes("getSelection") &&
+  review.includes('"dp-quote"') && review.includes("dp-quotes"));
 const working = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
 ok("working surface renders controls disabled on disk",
   working.includes('class="dp-act"') && working.includes("disabled"));
@@ -134,6 +151,9 @@ ok("a heredoc write denied", bash("cat <<EOF > f.txt\nhi\nEOF").status === 2);
 ok("the plan's own tooling allowed", bash("deep-plan status").status === 0);
 
 // -------------------------------------------------- grade -> implementing
+r = cli("grade", spec.slug);
+ok("no answers without a TTY refuses (interactive form needs one)",
+  r.status !== 0 && /TTY/.test(r.stderr));
 r = cli("grade", spec.slug, "q1=a");
 ok("wrong/missing answers fail and name the decision", r.status !== 0 && /reopen the decision/.test(r.stderr));
 const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, spec.slug + ".key.json"), "utf8"));
@@ -178,6 +198,43 @@ ok("a parked plan in another repo does not gate this one",
   edit(path.join(REPO, "a.txt")).status === 0);
 ok("close retires a plan from status", cli("close", "parked-plan").status === 0 &&
   !JSON.parse(cli("status", "--json").stdout).some(p => p.slug === "parked-plan"));
+
+// -------------------------------------------------- bashMutates: /dev/null redirects are reads
+// The lib reads its dirs from process.env at import time; mirror ENV first.
+Object.assign(process.env, ENV);
+const lib = await import(new URL("lib/state.mjs", import.meta.url));
+ok("2>/dev/null does not read as a write (lsof)",
+  !lib.bashMutates("lsof -a -p 1 -iTCP 2>/dev/null"));
+ok("2>/dev/null does not read as a write (json.tool + pipe)",
+  !lib.bashMutates("python3 -m json.tool t.json 2>/dev/null | head -40"));
+ok(">/dev/null does not read as a write",
+  !lib.bashMutates("curl -s http://127.0.0.1:1/x >/dev/null 2>&1"));
+ok("a real file redirect still mutates", lib.bashMutates("echo hi > out.txt"));
+ok("a heredoc still mutates", lib.bashMutates("cat <<EOF > f\nx\nEOF"));
+ok("scrubbing cannot hide a real mutator",
+  lib.bashMutates("sed -i s/a/b/ f 2>/dev/null"));
+
+// -------------------------------------------------- broken root: fail open, loudly
+const GONE = path.join(TMP, "gone-root");
+fs.writeFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "ghost.json"), JSON.stringify(
+  { slug: "ghost", root: GONE, phase: "implementing", increments: [] }));
+ok("brokenRoots reports a vanished root",
+  lib.brokenRoots().some(b => b.slug === "ghost" && b.root === GONE));
+ok("status prints BROKEN ROOT", (cli("status").stdout || "").includes("BROKEN ROOT"));
+const bg = gate("Edit", { file_path: path.join(REPO, "a.txt") });
+ok("gate still allows but warns FAILING OPEN",
+  bg.status === 0 && (bg.stdout || "").includes("FAILING OPEN"));
+fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "ghost.json"));
+
+// -------------------------------------------------- single-writer state lock
+const staleLock = path.join(ENV.DEEP_PLAN_STATE_DIR, ".lock-lockee");
+fs.mkdirSync(staleLock, { recursive: true });
+fs.utimesSync(staleLock, new Date(Date.now() - 60000), new Date(Date.now() - 60000));
+lib.writeState({ slug: "lockee", root: REPO, phase: "review", increments: [] });
+ok("writeState reclaims a stale lock and releases its own",
+  fs.existsSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json")) &&
+  !fs.readdirSync(ENV.DEEP_PLAN_STATE_DIR).some(n => n.startsWith(".lock-")));
+fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
 
 // -------------------------------------------------- hot-path cost
 const t0 = process.hrtime.bigint();

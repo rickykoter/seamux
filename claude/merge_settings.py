@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Add the status line and the deep-plan gate to ~/.claude/settings.json.
 
-    python3 merge_settings.py [--dry-run] [--settings PATH]
+    python3 merge_settings.py [--dry-run] [--settings PATH] [--remove]
+
+`--remove` undoes exactly what this script adds — the status line (only if it
+points at our statusline.py) and the deep-plan gate hook. It never touches
+guard_bash.sh (a safety rail outlives the tool that installed it) or the
+notification flags (the user may have come to rely on them).
 
 `crew apply` wires the crew hooks itself. These two are not crew's, so they are
 here instead: the status line is a display choice, and the gate belongs to the
@@ -32,6 +37,32 @@ if os.path.exists(path):
         s = json.load(fh)
 
 changes = []
+
+if "--remove" in args:
+    if STATUSLINE in json.dumps(s.get("statusLine") or {}):
+        del s["statusLine"]
+        changes.append("removed: statusLine")
+    pre = (s.get("hooks") or {}).get("PreToolUse") or []
+    for m in pre:
+        kept = [h for h in m.get("hooks", []) if GATE not in (h.get("command") or "")]
+        if len(kept) != len(m.get("hooks", [])):
+            m["hooks"] = kept
+            changes.append("removed: deep-plan gate hook")
+    # Drop matcher entries the removal emptied; leave everything else alone.
+    if pre:
+        s["hooks"]["PreToolUse"] = [m for m in pre if m.get("hooks")]
+    for c in changes or ["nothing of ours found in " + path]:
+        print("  " + c)
+    if dry:
+        print("\n--dry-run: nothing written")
+    elif changes:
+        bak = f"{path}.pre-uninstall.{time.strftime('%Y%m%d-%H%M%S')}.bak"
+        shutil.copy2(path, bak)
+        with open(path, "w") as fh:
+            json.dump(s, fh, indent=2)
+            fh.write("\n")
+        print(f"\nbacked up -> {os.path.basename(bak)}, wrote {path}")
+    sys.exit(0)
 
 if not os.path.exists(STATUSLINE):
     changes.append("SKIPPED: no ~/.claude/statusline.py (run install.sh first)")

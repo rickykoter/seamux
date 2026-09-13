@@ -681,6 +681,29 @@ cmd_doctor() {
     warn "cmux socket unreachable (app not running?) — skipped live checks"
   fi
 
+  head_ "source of truth"
+  # The repo is the source of truth: install.sh writes .seamux-source at
+  # install time, and drift between repo and live install is a red, not a
+  # habit. A missing marker means the install predates the marker — reinstall.
+  local _src=""
+  [ -f "$CREW_HOME/.seamux-source" ] && _src="$(cat "$CREW_HOME/.seamux-source" 2>/dev/null)"
+  if [ -z "$_src" ]; then
+    warn "no .seamux-source marker — reinstall from the seamux repo to enable the drift check"
+  elif [ ! -x "$_src/install.sh" ]; then
+    bad "seamux repo missing or has no install.sh: $_src"
+  elif "$_src/install.sh" --check >/dev/null 2>&1; then
+    ok "no drift vs $_src"
+  else
+    bad "live install has drifted from $_src — see: $_src/install.sh --check"
+  fi
+  # Computer Use is optional (crew works without it) — report, never fail.
+  local _cua="$HOME/Library/Application Support/cmux/cmux-cua"
+  if [ -d "$_cua" ] && find "$_cua" -name "cmux-cua" -type f 2>/dev/null | grep -c . >/dev/null; then
+    ok "Computer Use helper installed (agents can drive the browser/UI)"
+  else
+    warn "Computer Use not set up — optional; finish the onboarding in cmux (README: Computer Use)"
+  fi
+
   head_ "context"
   [ -n "${CMUX_WORKSPACE_ID:-}" ] && ok "CMUX_WORKSPACE_ID set (hooks will fire)" \
     || warn "no CMUX_WORKSPACE_ID — hooks no-op outside cmux terminals"
