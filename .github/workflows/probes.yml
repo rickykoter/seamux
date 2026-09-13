@@ -1,0 +1,40 @@
+# Draft — not enabled until the repo is pushed to GitHub (see docs/ADOPTION.md).
+# Runs both probes with no cmux present; the mermaid fetch mirrors install.sh's
+# pin + sha256 and fails closed on a mismatch.
+name: probes
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  MERMAID_VERSION: "11.17.2"
+  MERMAID_SHA256: "581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8"
+
+jobs:
+  probes:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch pinned mermaid (probes need it in vendor/)
+        run: |
+          curl -fsSL "https://cdn.jsdelivr.net/npm/mermaid@${MERMAID_VERSION}/dist/mermaid.min.js" -o deep-plan/vendor/mermaid.min.js
+          echo "${MERMAID_SHA256}  deep-plan/vendor/mermaid.min.js" | shasum -a 256 -c - \
+            || { echo "sha256 mismatch — refusing"; exit 1; }
+
+      - name: deep-plan probe
+        run: node deep-plan/probe.mjs
+
+      - name: board probe
+        run: node crew/board/board_probe.mjs

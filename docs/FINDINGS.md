@@ -1782,3 +1782,14 @@ have kept its colour and icon and silently lost the menu.
 The catch-all is still worth having for repos nobody has coloured yet, but every
 named entry needs its own copy of the menu. JSONC has no anchors, so the
 repetition is the price.
+
+## crew-dock retired; nothing unique was lost (2026-09-13)
+
+The seamux cutover's first increment diffed ~/code/crew-dock (not under git)
+against this repo before deprecating it. Result: `crew/FINDINGS.md` and
+`crew/TESTING.md` were byte-identical to the `docs/` copies here, and the one
+genuinely unique file — `deep-plan/TIE-INS.md`, the six crew↔deep-plan
+integration points — was preserved as `docs/TIE-INS.md`. Everything else in the
+bundle was a stale snapshot of what this repo already versions. Its README is
+now a deprecation pointer at seamux; the tree stays as a historical reference
+until deletion feels safe.

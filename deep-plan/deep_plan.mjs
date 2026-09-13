@@ -236,23 +236,131 @@ function reviewHtml(spec, b64) {
   // key file, never in this page.
   const qs = (spec.quiz || []).map((q, qi) => {
     const sh = shuffled(q.options, spec.slug + ":" + q.id);
-    const opts = sh.map((o, i) =>
-      `<span class="opt">${String.fromCharCode(97 + i)}) ${esc(o.v)}</span>`).join("");
-    return `<div class="q"><b>${qi + 1}. ${esc(q.prompt)}</b>${opts}
+    const opts = sh.map((o, i) => {
+      const L = String.fromCharCode(97 + i);
+      return `<label class="opt"><input type="radio" name="dp-q-${esc(q.id)}" value="${L}"> ${L}) ${esc(o.v)}</label>`;
+    }).join("");
+    return `<div class="q" data-qid="${esc(q.id)}"><b>${qi + 1}. ${esc(q.prompt)}</b>${opts}
 <div class="dim">id: <code>${esc(q.id)}</code></div></div>`;
   }).join("\n");
   const verif = (spec.verification || []).map(v => `<li><code>${esc(v)}</code></li>`).join("");
   const incs = (spec.deliverables || []).map((d, i) =>
     `<div class="inc"><b>${i + 1}. ${esc(d.title)}</b><p>${esc(d.body || "")}</p>
-${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${esc(f)}</code>`).join(" ")}</p>` : ""}</div>`).join("\n");
-  return htmlHead(spec.title + " — review", b64) + commonBody(spec) + `
+${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${esc(f)}</code>`).join(" ")}</p>` : ""}
+<textarea class="dp-note" data-section="increment ${i + 1}" rows="1" placeholder="comment on this increment (optional)"></textarea></div>`).join("\n");
+  // Everything below is client-side only: selections and comments live in the
+  // DOM, nothing is stored or sent anywhere, and the page keeps working over
+  // file:// (clipboard falls back to select+execCommand there).
+  const COPYBACK = `
+<h2>Send it back</h2>
+<p class="dim">Highlight any text above to pin a comment to it.</p>
+<div id="dp-quotes"></div>
+<textarea class="dp-note" data-section="general" rows="2" placeholder="general comments (optional)"></textarea>
+<p><button id="dp-copyback">Copy for session</button>
+<span id="dp-copied" class="dim"></span></p>
+<script>
+(function () {
+  var slug = ${JSON.stringify(spec.slug)};
+  document.getElementById("dp-copyback").addEventListener("click", function () {
+    var parts = ["deep-plan review \\u2014 " + slug];
+    var answers = [];
+    document.querySelectorAll(".q[data-qid]").forEach(function (q) {
+      var picked = q.querySelector("input:checked");
+      if (picked) answers.push(q.getAttribute("data-qid") + "=" + picked.value);
+    });
+    if (answers.length) parts.push("deep-plan grade " + slug + " " + answers.join(" "));
+    var notes = [];
+    document.querySelectorAll(".dp-note").forEach(function (t) {
+      if (t.value.trim()) notes.push("- [" + t.getAttribute("data-section") + "] " + t.value.trim());
+    });
+    if (notes.length) parts.push("comments:\\n" + notes.join("\\n"));
+    var blob = parts.join("\\n");
+    var done = function () {
+      document.getElementById("dp-copied").textContent = "copied \\u2713 \\u2014 paste it into the session";
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(blob).then(done, function () { fallback(blob, done); });
+    } else fallback(blob, done);
+  });
+  function fallback(text, done) {
+    var ta = document.createElement("textarea");
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); done(); }
+    catch (e) { document.getElementById("dp-copied").textContent = "copy failed \\u2014 select and copy by hand:"; ta.remove(); alert(text); return; }
+    ta.remove();
+  }
+
+  // Highlight-to-comment: select any text, a chip appears, clicking it pins
+  // the excerpt with its own comment box. The blob labels the comment with
+  // the nearest heading and the quote, so the session can find the spot.
+  var chip = document.createElement("button");
+  chip.id = "dp-hl-add"; chip.textContent = "\\uFF0B comment"; chip.style.display = "none";
+  document.body.appendChild(chip);
+  document.addEventListener("mouseup", function () {
+    setTimeout(function () {
+      var sel = window.getSelection();
+      var txt = sel ? String(sel).trim() : "";
+      if (!txt || sel.rangeCount === 0 || chip.contains(sel.anchorNode)) { chip.style.display = "none"; return; }
+      var r = sel.getRangeAt(0).getBoundingClientRect();
+      chip.style.left = (window.scrollX + r.right + 6) + "px";
+      chip.style.top = (window.scrollY + r.top - 4) + "px";
+      chip.style.display = "block";
+    }, 0);
+  });
+  chip.addEventListener("mousedown", function (e) {
+    e.preventDefault();
+    var sel = window.getSelection();
+    var txt = String(sel).trim();
+    if (!txt) return;
+    var excerpt = txt.length > 120 ? txt.slice(0, 117) + "\\u2026" : txt;
+    var section = "";
+    var hs = document.querySelectorAll("h2");
+    for (var i = 0; i < hs.length; i++) {
+      if (hs[i].compareDocumentPosition(sel.anchorNode) & Node.DOCUMENT_POSITION_FOLLOWING)
+        section = hs[i].textContent;
+    }
+    var row = document.createElement("div");
+    row.className = "dp-quote";
+    var bq = document.createElement("blockquote");
+    bq.textContent = excerpt;
+    var note = document.createElement("textarea");
+    note.className = "dp-note"; note.rows = 1;
+    note.placeholder = "comment on the highlighted text";
+    note.setAttribute("data-section", (section ? section + " \\u00B7 " : "") + 'on "' + excerpt + '"');
+    var rm = document.createElement("button");
+    rm.className = "dp-x"; rm.textContent = "\\u00D7";
+    rm.addEventListener("click", function () { row.remove(); });
+    row.appendChild(bq); row.appendChild(note); row.appendChild(rm);
+    document.getElementById("dp-quotes").appendChild(row);
+    chip.style.display = "none";
+    sel.removeAllRanges();
+    note.focus();
+    note.scrollIntoView({ block: "center" });
+  });
+})();
+</script>`;
+  return htmlHead(spec.title + " — review", b64) + `<style>
+label.opt{cursor:pointer}
+.dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
+  color:inherit;border:1px solid var(--dim,#888);border-radius:4px;padding:6px;font:inherit}
+#dp-copyback{background:var(--accent,#46f);color:#fff;border:0;border-radius:4px;
+  padding:8px 14px;font:inherit;cursor:pointer}
+#dp-hl-add{position:absolute;z-index:9;background:var(--accent,#46f);color:#fff;border:0;
+  border-radius:12px;padding:2px 10px;font:inherit;font-size:.85em;cursor:pointer}
+.dp-quote{position:relative;margin:10px 0;padding-left:10px;border-left:3px solid var(--accent,#46f)}
+.dp-quote blockquote{margin:0 0 4px;font-style:italic;opacity:.8}
+.dp-x{position:absolute;top:0;right:0;background:transparent;border:0;color:inherit;
+  opacity:.5;cursor:pointer;font:inherit}
+</style>` + commonBody(spec) + `
 <h2>Increments</h2>${incs}
 ${verif ? `<h2>Verification</h2><ul>${verif}</ul>` : ""}
 <h2>Alignment check</h2>
-<p class="dim">Answer these to the session, then it runs
-<code>deep-plan grade ${esc(spec.slug)} q1=a q2=c …</code>. A wrong answer means the plan
+<p class="dim">Pick an answer per question, add comments where you have them, then
+<b>Copy for session</b> below puts one paste-back on your clipboard — the slug, a ready
+<code>deep-plan grade</code> line, and your comments. A wrong answer means the plan
 and your model of it disagree — and either one may be the broken one.</p>
 ${qs}
+${COPYBACK}
 ${MERMAID_BOOT}</body></html>`;
 }
 
@@ -575,11 +683,30 @@ function attachArtifact(slug, url) {
   say("recorded artifact for " + slug + ": " + url);
 }
 
-function grade(slug, answers) {
+// No answers on a TTY -> prompt per question, so the letters never touch
+// shell history (q1=a on the command line is grep-able forever). The argv
+// form stays: the board and the probes are not TTYs.
+async function promptAnswers(key) {
+  if (!process.stdin.isTTY)
+    die("grade <slug> q1=a q2=c …  (no TTY here, so no interactive prompt)");
+  const readline = await import("node:readline/promises");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  say("answers stay off the command line — type the letter for each:");
+  const given = [];
+  for (const qid of Object.keys(key.answers)) {
+    const a = (await rl.question(`  ${qid} = `)).trim().toLowerCase();
+    given.push(`${qid}=${a}`);
+  }
+  rl.close();
+  return given;
+}
+
+async function grade(slug, answers) {
   const keyPath = path.join(KEYS_DIR, slug + ".key.json");
   if (!fs.existsSync(keyPath)) die("no answer key for " + slug);
   const key = JSON.parse(fs.readFileSync(keyPath, "utf8"));
   const st = readState(slug) || die("no state for " + slug);
+  if (!answers.length) answers = await promptAnswers(key);
   const given = {};
   for (const a of answers) {
     const m = a.match(/^([\w-]+)=([a-z])$/i);
@@ -693,6 +820,7 @@ function incrementDiff(st, inc) {
 function statusRows() {
   return allStates().filter(st => st.phase !== "closed").map(st => ({
     slug: st.slug, root: st.root || "", phase: st.phase,
+    rootBroken: !!(st.root && !fs.existsSync(st.root)),
     gate: gateView(st), progress: progress(st), session: st.session || "",
   }));
 }
@@ -703,7 +831,7 @@ function status(json) {
   if (!rows.length) { say("no tracked plans"); return; }
   for (const r of rows) {
     say(`${r.slug}  [${r.phase}]  ${r.gate.allow ? "gate open" : "GATE SHUT"} — ${r.gate.why}`);
-    say(`  root ${r.root}`);
+    say(`  root ${r.root}${r.rootBroken ? "  ⚠ BROKEN ROOT — gone; the gate FAILS OPEN here" : ""}`);
     say(`  ${r.progress.done}/${r.progress.total} increments` +
       (r.progress.next ? ` · next: ${r.progress.next.n}. ${r.progress.next.title}` : "") +
       (r.progress.blocked.length ? ` · blocked: ${r.progress.blocked.map(b => b.title).join(", ")}` : ""));
@@ -731,7 +859,7 @@ switch (cmd) {
   case "rehydrate": rehydrate(args[0] || die("rehydrate <slug>")); break;
   case "export-artifact": exportArtifact(args[0] || die("export-artifact <slug> [--json]"), flags.json); break;
   case "attach-artifact": attachArtifact(args[0], args[1] || die("attach-artifact <slug> <url>")); break;
-  case "grade": grade(args[0] || die("grade <slug> q1=a …"), args.slice(1)); break;
+  case "grade": await grade(args[0] || die("grade <slug> [q1=a …]"), args.slice(1)); break;
   case "status": status(flags.json); break;
   case "go": {
     let slug = args[0], n = args[1];
@@ -773,7 +901,8 @@ switch (cmd) {
   rehydrate <slug>                            re-render from the archived spec
   export-artifact <slug> [--json]             shareable annotate-able page (agent publishes it)
   attach-artifact <slug> <url>                record the published artifact in state
-  grade <slug> q1=a q2=c ...                  the alignment check; pass -> implementing
+  grade <slug> [q1=a q2=c ...]                the alignment check; pass -> implementing
+                                              (no answers on a TTY: prompts, keeps them out of history)
   status [--json]                             tracked plans (the board reads --json)
   go <slug> <n|next> | go --at DIR next       authorize an increment
   start|done|block|reset <slug> <n> [why]     move an increment
