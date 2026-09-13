@@ -693,6 +693,7 @@ function incrementDiff(st, inc) {
 function statusRows() {
   return allStates().filter(st => st.phase !== "closed").map(st => ({
     slug: st.slug, root: st.root || "", phase: st.phase,
+    rootBroken: !!(st.root && !fs.existsSync(st.root)),
     gate: gateView(st), progress: progress(st), session: st.session || "",
   }));
 }
@@ -703,7 +704,7 @@ function status(json) {
   if (!rows.length) { say("no tracked plans"); return; }
   for (const r of rows) {
     say(`${r.slug}  [${r.phase}]  ${r.gate.allow ? "gate open" : "GATE SHUT"} — ${r.gate.why}`);
-    say(`  root ${r.root}`);
+    say(`  root ${r.root}${r.rootBroken ? "  ⚠ BROKEN ROOT — gone; the gate FAILS OPEN here" : ""}`);
     say(`  ${r.progress.done}/${r.progress.total} increments` +
       (r.progress.next ? ` · next: ${r.progress.next.n}. ${r.progress.next.title}` : "") +
       (r.progress.blocked.length ? ` · blocked: ${r.progress.blocked.map(b => b.title).join(", ")}` : ""));
