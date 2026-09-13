@@ -857,6 +857,25 @@ def usage_data(days=21):
             "models": [{"name": k, "tokens": v}
                        for k, v in sorted(models.items(), key=lambda kv: -kv[1])],
         }
+
+    # Per-workspace dollars — the page's one deliberate exception to
+    # tokens-only, read from the same costs cache the board rows use
+    # (~5min TTL) so the two surfaces cannot disagree. Workspace names come
+    # from the collector's targets snapshot; anything unattributable is
+    # simply absent, and any failure just omits the section.
+    try:
+        sys.path.insert(0, HERE)
+        import costs as _costs
+        by_cwd = {v["cwd"]: v.get("name") or os.path.basename(v["cwd"])
+                  for v in targets().values() if v.get("cwd")}
+        cm = _costs.costs_for(list(by_cwd))
+        rows_c = [{"name": by_cwd[c], "today": round(v["today"], 2),
+                   "week": round(v["week"], 2)}
+                  for c, v in cm.items() if v.get("week") or v.get("today")]
+        if rows_c:
+            out["costs"] = sorted(rows_c, key=lambda r: -r["week"])
+    except Exception:
+        pass
     return out
 
 
