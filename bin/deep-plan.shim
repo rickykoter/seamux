@@ -1,2 +1,14 @@
 #!/bin/sh
-exec node "$HOME/.claude/skills/deep-plan/deep_plan.mjs" "$@"
+# Resolve node without trusting PATH: callers include detached processes fired
+# from the cmux app (the board's go chip), whose environment has no version
+# manager loaded. A bare `exec node` there fails silently — the worst possible
+# failure for a go-ahead.
+if command -v node >/dev/null 2>&1; then
+  NODE=node
+else
+  for c in "$HOME/.asdf/shims/node" /opt/homebrew/bin/node /usr/local/bin/node; do
+    [ -x "$c" ] && NODE="$c" && break
+  done
+fi
+[ -n "${NODE:-}" ] || { echo "deep-plan: node not found" >&2; exit 127; }
+exec "$NODE" "$HOME/.claude/skills/deep-plan/deep_plan.mjs" "$@"
