@@ -122,6 +122,7 @@ drift_check() {
   if [ -d "$DEST" ]; then
     while IFS= read -r f; do
       rel="${f#$DEST/}"
+      case "$rel" in .seamux-source) continue ;; esac  # install-time provenance, never in the repo
       [ -e "$HERE/crew/$rel" ] || [ -e "$HERE/docs/$(basename "$rel")" ] || say "live-only: crew/$rel"
     done < <(find "$DEST" -type f ! -path '*__pycache__*' ! -name '*.pyc' ! -name '.DS_Store')
   fi
@@ -172,6 +173,11 @@ if [ "$CREW" = 1 ]; then
   run "mkdir -p '$DEST'"
   run "cp -R '$HERE/crew/.' '$DEST/'"
   ok "copied crew -> ${DEST/#$HOME/~}"
+
+  # Provenance marker: `crew doctor` reads this to find the repo and run the
+  # drift check automatically. Not a repo file — written at install time.
+  run "printf '%s\n' '$HERE' > '$DEST/.seamux-source'"
+  ok "recorded the source repo -> $DEST/.seamux-source"
 
   # Substitute in the installed copy only: the repo stays a clean template.
   if [ "$DRY" = 0 ]; then
