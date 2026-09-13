@@ -18,8 +18,9 @@ truth and every entry lands on the machine via `./install.sh`.
   stay out of shell history.
 - `install.sh --uninstall`: crew unwired and moved aside, skill and shim
   removed, settings entries removed; guard_bash.sh and plan state kept.
-- Review surface is interactive: answerable quiz, per-increment comments, and
-  a "Copy for session" paste-back blob.
+- Review surface is interactive: answerable quiz, per-increment comments,
+  highlight-to-comment (select text to pin a quoted comment), and a "Copy for
+  session" paste-back blob.
 - Adoption prep: `docs/ADOPTION.md` (portability + security audit), draft CI
   workflow (not yet enabled).
 
