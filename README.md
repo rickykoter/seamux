@@ -51,6 +51,28 @@ file, `./install.sh --check` finds it — copy it back into the repo (for the fi
 `__MAIN_REPO__`), commit, reinstall. Placeholders: `__MAIN_REPO__` is baked at
 install; `__HOME__` and `__INTENT_PORT__` are rendered by `crew apply`.
 
+`crew doctor` enforces this automatically: the installer records the repo path
+in `~/.config/cmux/crew/.seamux-source`, and doctor runs `install.sh --check`
+against it — drift is a red check, not a discipline.
+
+## Computer Use (optional)
+
+cmux ships a Computer Use driver (`cmux-cua`) that lets agents drive the
+browser and other apps in the background — crew works fine without it, and
+`crew doctor` only notes whether it is set up. To enable it:
+
+1. Open the cmux **desktop app** and find the Computer Use setup — an
+   onboarding banner, or **Settings → Computer Use**. The wizard resumes if it
+   was left partway (the symptom is agents seeing "Computer Use onboarding is
+   still in progress").
+2. Approve the two macOS permission dialogs it raises for the cmux helper —
+   **Accessibility** and **Screen Recording** (System Settings → Privacy &
+   Security if a dialog was dismissed earlier). macOS attributes grants to the
+   app that asks, so approve them from cmux's own prompts. Quit and reopen
+   cmux if Screen Recording doesn't register.
+3. Finish the wizard's self-test. Verify from an agent with the cmux-cua
+   `health_report` tool (all checks pass), or re-run `crew doctor`.
+
 ## Layout
 
 | path | what |

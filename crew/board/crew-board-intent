@@ -116,7 +116,10 @@ def notify(subtitle, body, workspace_id=None):
     """Post a marked notification: the RPC channel hooks/triage.py dispatches."""
     argv = [CMUX, "rpc", "notification.create", json.dumps({
         "title": "crew", "subtitle": subtitle, "body": body,
-        **({"workspace_id": workspace_id} if workspace_id else {}),
+        # Both spellings on purpose: triage.py reads workspaceId off the policy
+        # JSON, and a snake_case-only payload arrived there with no workspace at
+        # all — the go chip authorized nothing, silently (FINDINGS 2026-09-13).
+        **({"workspace_id": workspace_id, "workspaceId": workspace_id} if workspace_id else {}),
     })]
     return run(argv)
 
