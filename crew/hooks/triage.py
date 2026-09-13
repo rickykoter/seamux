@@ -29,6 +29,7 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 
 BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin")
 CREW_SYNC = os.path.join(BIN, "crew-sync")
@@ -56,7 +57,8 @@ CMUX = (os.environ.get("CMUX_CLAUDE_HOOK_CMUX_BIN")
 # crew-sync runs straight after, because increment status lives in `description` and
 # that only moves when sync does -- without it the chip you just tapped sits there
 # looking untapped for up to two minutes.
-PLAN_GO = ('if command -v deep-plan >/dev/null 2>&1; then deep-plan go --at %s next; '
+PLAN_GO = ('PATH="$HOME/.local/bin:$PATH"; '  # sh -lc never has the shim's dir
+           'if command -v deep-plan >/dev/null 2>&1; then deep-plan go --at %s next; '
            'else node "$HOME/.claude/skills/deep-plan/deep_plan.mjs" go --at %s next; fi; '
            'exec %s')
 
@@ -159,13 +161,27 @@ def open_terminal(ws: str, argv) -> bool:
         return False
 
 
+def tlog(msg: str) -> None:
+    """Append one line to the triage log. The fire chain is detached and
+    otherwise silent — a dead board button used to be undebuggable (the go
+    chip no-op'd for a whole session before anyone could see where)."""
+    try:
+        path = os.path.join(os.path.expanduser("~"), ".cache", "cmux-crew", "triage.log")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as fh:
+            fh.write("%s %s\n" % (time.strftime("%H:%M:%S"), msg))
+    except Exception:
+        pass
+
+
 def fire(*argv) -> None:
     """Run a crew command in the background, detached from this hook."""
     try:
         subprocess.Popen(list(argv), start_new_session=True,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
+        tlog("fire: %s" % " ".join(str(a) for a in argv[:4]))
+    except Exception as e:
+        tlog("fire FAILED: %s: %s" % (" ".join(str(a) for a in argv[:4]), e))
 
 
 def main() -> int:
@@ -187,7 +203,9 @@ def main() -> int:
                         "crew:feed-allow", "crew:feed-deny",
                         "crew:plan-go"):
             note = policy.get("notification") or {}
-            ws = note.get("workspaceId") or ""
+            # Either spelling: cmux policy JSON uses workspaceId, but the intent
+            # server's create payload historically sent workspace_id only.
+            ws = note.get("workspaceId") or note.get("workspace_id") or ""
             if subtitle == "crew:sync-now":
                 fire(CREW_SYNC)
             elif subtitle == "crew:reclaim":
@@ -237,6 +255,8 @@ def main() -> int:
                 if cwd:
                     q = shlex.quote(cwd)
                     fire("/bin/sh", "-lc", PLAN_GO % (q, q, shlex.quote(CREW_SYNC)))
+                else:
+                    tlog("plan-go DROPPED: no cwd (ws=%r)" % ws)
             elif subtitle in ("crew:sandbox-up", "crew:sandbox-down"):
                 # The sandbox badge, both directions. Same resolved-path handoff
                 # as crew:code, and it matters more here: the old cwd fallback
