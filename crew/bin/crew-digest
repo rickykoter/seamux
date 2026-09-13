@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""crew-digest — what happened while you were away.
+
+    crew-digest              since 17:00 yesterday (the overnight window)
+    crew-digest --hours 4    an arbitrary lookback
+    crew-digest --week       since Monday
+    crew-digest --notify     also post a one-line summary as a notification
+
+Answers the question you actually have at 9am: where does the fleet stand.
+Measured peak here is 9am-1pm with a 20:00 tail, so "overnight" defaults to
+everything since 17:00 the previous day.
+
+Every source is local or already-authenticated, and each section degrades to
+silence rather than failing the run:
+
+  git         commits landed, across the primary checkout and every worktree
+  gh          PRs merged / opened / still red
+  cmux        sessions still sitting waiting for you
+  git         worktrees that shipped and can be reclaimed
+"""
+
+import json
+import os
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
+
+HOME = os.path.expanduser("~")
+# One definition of "which cmux": bin/crew-cmux-bin. PATH is consulted here first so
+# the common case costs no subprocess; the resolver is only reached when PATH has no
+# cmux. A hardcoded bundle path silently drove the old cli against the nightly app.
+_CMUX_RESOLVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crew-cmux-bin")
+CMUX = (os.environ.get("CREW_CMUX")
+        or next((os.path.join(d, "cmux")
+                 for d in os.environ.get("PATH", "").split(os.pathsep)
+                 if os.access(os.path.join(d, "cmux"), os.X_OK)), None)
+        or (subprocess.run([_CMUX_RESOLVER], capture_output=True, text=True).stdout.strip()
+            if os.access(_CMUX_RESOLVER, os.X_OK) else "")
+        or "cmux")
+STORE = os.path.join(HOME, ".cmuxterm", "claude-hook-sessions.json")
+MAIN = os.environ.get("CREW_MONOLITH", "__MAIN_REPO__")
+
+BOLD, DIM, RESET = "\033[1m", "\033[2m", "\033[0m"
+GREEN, RED, AMBER, VIOLET = "\033[32m", "\033[31m", "\033[33m", "\033[35m"
+
+
+def sh(args, cwd=None, timeout=30):
+    try:
+        r = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        return r.stdout if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def window():
+    if "--week" in sys.argv:
+        now = datetime.now()
+        start = (now - timedelta(days=now.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0)
+        return start, "this week"
+    if "--hours" in sys.argv:
+        try:
+            h = float(sys.argv[sys.argv.index("--hours") + 1])
+            return datetime.now() - timedelta(hours=h), f"the last {h:g}h"
+        except Exception:
+            pass
+    # Overnight: since 17:00 yesterday, or 17:00 today if it is already evening.
+    now = datetime.now()
+    cut = now.replace(hour=17, minute=0, second=0, microsecond=0)
+    if now.hour < 17:
+        cut -= timedelta(days=1)
+    return cut, "since " + cut.strftime("%a %H:%M")
+
+
+def worktrees():
+    """The primary checkout plus every worktree git knows about."""
+    out = [MAIN]
+    for line in sh(["git", "-C", MAIN, "worktree", "list", "--porcelain"]).splitlines():
+        if line.startswith("worktree "):
+            p = line.split(" ", 1)[1]
+            if p not in out and os.path.isdir(p):
+                out.append(p)
+    return out
+
+
+def commits_by_branch(since_iso, me):
+    """One `git log --all` for the whole repository.
+
+    Worktrees share an object store and a ref namespace, so `--all` from the
+    primary checkout already sees every branch — running it per worktree was
+    22 scans of the same history (~8s) for the same answer (~0.4s).
+    Grouping comes from %D, the ref names on each commit.
+    """
+    log = sh(["git", "-C", MAIN, "log", "--all", "--no-merges",
+              f"--since={since_iso}", f"--author={me}",
+              "--pretty=%h\t%D\t%s"], timeout=60)
+    groups, order = {}, []
+    for line in log.splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) < 3:
+            continue
+        h, refs, subj = parts
+        names = [r.strip().replace("HEAD -> ", "") for r in refs.split(",") if r.strip()]
+        names = [n for n in names if n and not n.startswith("tag:") and n != "HEAD"]
+        local = [n for n in names if not n.startswith("origin/")]
+        branch = (local or names or ["(no ref)"])[0]
+        if branch not in groups:
+            groups[branch] = []
+            order.append(branch)
+        groups[branch].append((h, subj))
+    # A commit only carries refs at its branch tip, so anything in between lands
+    # under the tip it was reached from — walk order preserves that grouping.
+    return [(b, groups[b]) for b in order]
+
+
+def main():
+    start, label = window()
+    since_iso = start.isoformat()
+    notify = "--notify" in sys.argv
+
+    me = (sh(["git", "-C", MAIN, "config", "user.email"]).strip()
+          or sh(["git", "config", "user.email"]).strip())
+
+    print(f"\n{BOLD}crew digest{RESET}  {DIM}{label}{RESET}\n")
+
+    # --- commits ------------------------------------------------------------
+    trees = worktrees()
+    per_tree = commits_by_branch(since_iso, me)
+
+    total = sum(len(r) for _, r in per_tree)
+    if total:
+        print(f"{BOLD}{GREEN}✓ {total} commit(s){RESET}")
+        for br, rows in sorted(per_tree, key=lambda x: -len(x[1])):
+            print(f"  {DIM}{br}{RESET}")
+            for h, subj in rows[:6]:
+                print(f"    {AMBER}{h}{RESET}  {subj[:76]}")
+            if len(rows) > 6:
+                print(f"    {DIM}… {len(rows) - 6} more{RESET}")
+        print()
+    else:
+        print(f"{DIM}no commits {label}{RESET}\n")
+
+    # --- pull requests ------------------------------------------------------
+    day = start.strftime("%Y-%m-%d")
+    merged = sh(["gh", "pr", "list", "--author", "@me", "--state", "merged",
+                 "--search", f"merged:>={day}", "--limit", "30",
+                 "--json", "number,title,headRefName"], cwd=MAIN, timeout=45)
+    opened = sh(["gh", "pr", "list", "--author", "@me", "--state", "open",
+                 "--limit", "40",
+                 "--json", "number,title,isDraft,reviewDecision,statusCheckRollup"],
+                cwd=MAIN, timeout=45)
+
+    try:
+        for pr in json.loads(merged or "[]"):
+            print(f"{GREEN}⇢ merged{RESET}  #{pr['number']}  {pr['title'][:66]}")
+        if json.loads(merged or "[]"):
+            print()
+    except Exception:
+        pass
+
+    try:
+        prs = json.loads(opened or "[]")
+        red, approved, waiting = [], [], []
+        for pr in prs:
+            roll = pr.get("statusCheckRollup") or []
+            bad = [c for c in roll
+                   if (c.get("conclusion") or c.get("state") or "").upper()
+                   in ("FAILURE", "TIMED_OUT", "CANCELLED", "ERROR")]
+            if bad:
+                red.append((pr, bad))
+            elif pr.get("reviewDecision") == "APPROVED":
+                approved.append(pr)
+            elif not pr.get("isDraft"):
+                waiting.append(pr)
+        if red:
+            print(f"{BOLD}{RED}✗ {len(red)} PR(s) red{RESET}")
+            for pr, bad in red[:6]:
+                names = ", ".join((c.get("name") or c.get("context") or "?") for c in bad[:2])
+                print(f"  #{pr['number']}  {pr['title'][:52]}  {DIM}{names}{RESET}")
+            print()
+        if approved:
+            print(f"{GREEN}✓ {len(approved)} approved, ready to merge{RESET}")
+            for pr in approved[:6]:
+                print(f"  #{pr['number']}  {pr['title'][:66]}")
+            print()
+        if waiting:
+            print(f"{DIM}{len(waiting)} open PR(s) awaiting review{RESET}\n")
+    except Exception:
+        pass
+
+    # --- sessions still waiting --------------------------------------------
+    try:
+        with open(STORE) as fh:
+            store = json.load(fh)
+        stuck = []
+        for sid, rec in (store.get("sessions") or {}).items():
+            if rec.get("agentLifecycle") != "needsInput":
+                continue
+            cwd = rec.get("cwd") or ""
+            aged = time.time() - (rec.get("updatedAt") or 0)
+            stuck.append((aged, os.path.basename(cwd) or sid[:8], cwd))
+        if stuck:
+            print(f"{BOLD}{AMBER}⏳ {len(stuck)} session(s) waiting on you{RESET}")
+            for aged, name, _ in sorted(stuck, reverse=True):
+                h = int(aged // 3600)
+                m = int((aged % 3600) // 60)
+                ago = f"{h}h {m}m" if h else f"{m}m"
+                print(f"  {name[:44]:44} {DIM}{ago}{RESET}")
+            print()
+    except Exception:
+        pass
+
+    # --- reclaimable worktrees ---------------------------------------------
+    # merge-base is ~45ms and status ~137ms with -uno (vs 613ms with untracked
+    # scanning), so check the cheap condition first and run both in parallel.
+    # -uno is deliberately looser than crew-reclaim, which does the strict check
+    # and refuses — these are candidates, not promises.
+    def ripe_check(p):
+        if subprocess.run(["git", "-C", p, "merge-base", "--is-ancestor",
+                           "HEAD", "origin/master"],
+                          capture_output=True).returncode != 0:
+            return None
+        if sh(["git", "-C", p, "status", "--porcelain", "--untracked-files=no"]).strip():
+            return None
+        return p
+
+    cand = [p for p in trees if p != MAIN]
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        ripe = [p for p in pool.map(ripe_check, cand) if p]
+
+    if ripe:
+        # du walks 20GB of monolith checkouts — ~0.6s each, so opt-in only.
+        tot = ""
+        if "--size" in sys.argv:
+            lines = sh(["du", "-shc"] + ripe, timeout=120).strip().splitlines()
+            tot = f" ({lines[-1].split()[0]})" if lines else ""
+        print(f"{VIOLET}♻ {len(ripe)} worktree(s) shipped and reclaimable{RESET}{DIM}{tot}{RESET}")
+        for p in ripe[:8]:
+            br = sh(["git", "-C", p, "branch", "--show-current"]).strip()
+            print(f"  {os.path.basename(p)[:44]:44} {DIM}{br}{RESET}")
+        print(f"  {DIM}crew-reclaim <path>   (refuses unless clean + merged){RESET}\n")
+
+    if notify:
+        bits = []
+        if total:
+            bits.append(f"{total} commits")
+        try:
+            m = len(json.loads(merged or "[]"))
+            if m:
+                bits.append(f"{m} merged")
+        except Exception:
+            pass
+        if ripe:
+            bits.append(f"{len(ripe)} reclaimable")
+        if bits:
+            sh([CMUX, "notify", "--title", "crew digest",
+                "--subtitle", "crew:digest", "--body", " · ".join(bits)])
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

@@ -1,0 +1,378 @@
+#!/usr/bin/env python3
+"""crew-resume — find an old Claude session and hop back into it.
+
+    crew-resume              picker, this repo first
+    crew-resume --all        picker, every project
+    crew-resume <query>      picker, pre-filtered
+    crew-resume --reindex    force a full rebuild of the cache
+
+Claude Code keeps one JSONL transcript per session under
+~/.claude/projects/<encoded-cwd>/<session-id>.jsonl, and `claude --resume <id>`
+picks one back up. There are 324 of them here across 46 projects, which is well
+past what `/resume`'s own list is comfortable for — hence search.
+
+This is a TUI rather than part of the crew board because the custom-sidebar
+interpreter has no @State and therefore no TextField, and it can only bind to
+cmux's own workspace data, not arbitrary files. A search box is not expressible
+there. See FINDINGS.md.
+"""
+
+import curses
+import json
+import os
+import subprocess
+import sys
+import time
+
+HOME = os.path.expanduser("~")
+PROJECTS = os.path.join(HOME, ".claude", "projects")
+CACHE = os.path.join(
+    os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")),
+    "cmux-crew", "resume-index.json",
+)
+# One definition of "which cmux": bin/crew-cmux-bin. PATH is consulted here first so
+# the common case costs no subprocess; the resolver is only reached when PATH has no
+# cmux. A hardcoded bundle path silently drove the old cli against the nightly app.
+_CMUX_RESOLVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crew-cmux-bin")
+CMUX = (os.environ.get("CREW_CMUX")
+        or next((os.path.join(d, "cmux")
+                 for d in os.environ.get("PATH", "").split(os.pathsep)
+                 if os.access(os.path.join(d, "cmux"), os.X_OK)), None)
+        or (subprocess.run([_CMUX_RESOLVER], capture_output=True, text=True).stdout.strip()
+            if os.access(_CMUX_RESOLVER, os.X_OK) else "")
+        or "cmux")
+
+# Transcripts run to tens of megabytes. The fields we want sit at the two ends:
+# cwd/branch/first-prompt in the opening records, ai-title/last-prompt near the
+# close. So read a slice from each end rather than the whole file.
+HEAD_BYTES = 64 * 1024
+TAIL_BYTES = 256 * 1024
+
+
+def _records(chunk):
+    for line in chunk.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue          # a slice can clip a line at either edge
+        if isinstance(rec, dict):
+            yield rec
+
+
+def scan(path):
+    """Pull a session summary out of one transcript."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            head = fh.read(HEAD_BYTES)
+            if size > HEAD_BYTES + TAIL_BYTES:
+                fh.seek(-TAIL_BYTES, os.SEEK_END)
+                tail = fh.read()
+            else:
+                tail = b""
+    except OSError:
+        return None
+
+    info = {
+        "id": os.path.basename(path)[:-6],
+        "path": path,
+        "cwd": "",
+        "branch": "",
+        "title": "",
+        "prompt": "",
+        "started": "",
+        "turns": 0,
+    }
+
+    for rec in _records(head.decode("utf-8", "replace")):
+        if not info["cwd"] and rec.get("cwd"):
+            info["cwd"] = rec["cwd"]
+            info["branch"] = rec.get("gitBranch") or ""
+            info["started"] = rec.get("timestamp") or ""
+        if not info["prompt"] and rec.get("type") == "user":
+            content = (rec.get("message") or {}).get("content")
+            if isinstance(content, str):
+                info["prompt"] = content
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        info["prompt"] = block.get("text", "")
+                        break
+        if info["cwd"] and info["prompt"]:
+            break
+
+    # ai-title is a recent addition — most older sessions have none, so the
+    # first prompt stays the fallback.
+    for chunk in (tail.decode("utf-8", "replace"), head.decode("utf-8", "replace")):
+        for rec in _records(chunk):
+            if rec.get("type") == "ai-title" and rec.get("aiTitle"):
+                info["title"] = rec["aiTitle"]
+            elif rec.get("type") == "last-prompt" and rec.get("lastPrompt"):
+                info["last"] = rec["lastPrompt"]
+        if info["title"]:
+            break
+
+    info["mtime"] = os.path.getmtime(path)
+    info["size"] = size
+    return info
+
+
+def build_index(force=False):
+    cache = {}
+    if not force and os.path.exists(CACHE):
+        try:
+            with open(CACHE) as fh:
+                cache = json.load(fh)
+        except Exception:
+            cache = {}
+
+    out, seen = {}, 0
+    for root, _dirs, files in os.walk(PROJECTS):
+        for name in files:
+            if not name.endswith(".jsonl"):
+                continue
+            path = os.path.join(root, name)
+            seen += 1
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            key = path
+            prev = cache.get(key)
+            # Re-scan only what changed; an unchanged transcript cannot have
+            # grown a new title.
+            if prev and prev.get("mtime") == st.st_mtime and prev.get("size") == st.st_size:
+                out[key] = prev
+                continue
+            info = scan(path)
+            if info:
+                out[key] = info
+
+    os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+    tmp = CACHE + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(out, fh)
+    os.replace(tmp, CACHE)
+    return list(out.values()), seen
+
+
+def ago(ts):
+    d = time.time() - ts
+    if d < 3600:
+        return f"{int(d // 60)}m"
+    if d < 86400:
+        return f"{int(d // 3600)}h"
+    if d < 86400 * 14:
+        return f"{int(d // 86400)}d"
+    return time.strftime("%b %-d", time.localtime(ts))
+
+
+def label(s):
+    t = s.get("title") or s.get("prompt") or "(no prompt)"
+    return " ".join(t.split())
+
+
+def repo_of(cwd):
+    return os.path.basename(cwd) if cwd else "?"
+
+
+def short_branch(b):
+    """Drop the owner prefix — every branch here starts dev/ or claude/."""
+    if not b or b == "HEAD":
+        return ""
+    return b.split("/", 1)[1] if "/" in b else b
+
+
+def matches(s, terms):
+    if not terms:
+        return True
+    hay = " ".join([
+        label(s).lower(), (s.get("cwd") or "").lower(),
+        (s.get("branch") or "").lower(), s["id"][:8],
+    ])
+    return all(t in hay for t in terms)
+
+
+def picker(stdscr, sessions, query, scope_root):
+    curses.use_default_colors()
+    for i in range(1, 8):
+        curses.init_pair(i, i, -1)
+    curses.curs_set(0)
+    stdscr.keypad(True)
+
+    scoped, sel, top = True, 0, 0
+
+    while True:
+        pool = [s for s in sessions if s.get("cwd", "").startswith(scope_root)] \
+            if (scoped and scope_root) else sessions
+        terms = [t for t in query.lower().split() if t]
+        rows = [s for s in pool if matches(s, terms)]
+        sel = max(0, min(sel, len(rows) - 1))
+
+        h, w = stdscr.getmaxyx()
+        body = h - 4
+        if sel < top:
+            top = sel
+        elif sel >= top + body:
+            top = sel - body + 1
+
+        stdscr.erase()
+        scope_txt = f"this repo ({repo_of(scope_root)})" if (scoped and scope_root) else "all projects"
+        stdscr.addnstr(0, 0, "  crew resume", w - 1, curses.A_BOLD)
+        stdscr.addnstr(0, 15, f"{len(rows)}/{len(sessions)} sessions · {scope_txt}", w - 16, curses.color_pair(7))
+        stdscr.addnstr(1, 0, "  search: " + query, w - 1, curses.A_BOLD)
+        stdscr.addnstr(1, 10 + len(query), "▏", w - 1, curses.color_pair(6))
+
+        for i, s in enumerate(rows[top:top + body]):
+            y = i + 3
+            cur = (top + i) == sel
+            attr = curses.A_REVERSE if cur else 0
+            gone = not os.path.isdir(s.get("cwd") or "")
+            stdscr.addnstr(y, 0, " " * (w - 1), w - 1, attr)
+            stdscr.addnstr(y, 2, ago(s["mtime"]).rjust(6), 6,
+                           attr | curses.color_pair(7))
+            # A worktree's directory name and its branch are usually the same
+            # string, so showing both wastes the row. Inside one repo the
+            # branch is the useful half; across repos the directory is.
+            if scoped and scope_root:
+                loc = short_branch(s.get("branch")) or repo_of(s.get("cwd"))
+            else:
+                loc = repo_of(s.get("cwd"))
+            stdscr.addnstr(y, 10, loc[:30].ljust(30), 30,
+                           attr | curses.color_pair(1 if gone else 4))
+            # Reserve the badge's columns, or the title runs underneath it.
+            badge = gone and w > 60
+            twidth = max(0, w - 44 - (10 if badge else 0))
+            stdscr.addnstr(y, 42, label(s)[:twidth], twidth, attr)
+            if badge:
+                stdscr.addnstr(y, w - 10, "no cwd", 8, attr | curses.color_pair(1))
+
+        hint = "  ↑↓ move · ⏎ resume in new workspace · ^T resume here · ⇥ scope · ^R reindex · esc"
+        stdscr.addnstr(h - 1, 0, hint[: w - 1], w - 1, curses.color_pair(7))
+        stdscr.refresh()
+
+        try:
+            ch = stdscr.get_wch()
+        except (curses.error, KeyboardInterrupt):
+            return None
+
+        if ch in ("\x1b",):
+            return None
+        if ch in (curses.KEY_UP, "\x10"):
+            sel -= 1
+        elif ch in (curses.KEY_DOWN, "\x0e"):
+            sel += 1
+        elif ch == curses.KEY_NPAGE:
+            sel += body
+        elif ch == curses.KEY_PPAGE:
+            sel -= body
+        elif ch == "\t":
+            scoped, sel, top = not scoped, 0, 0
+        elif ch == "\x12":                       # ^R
+            return ("reindex", None)
+        elif ch in ("\n", "\r", curses.KEY_ENTER):
+            if rows:
+                return ("workspace", rows[sel])
+        elif ch == "\x14":                       # ^T
+            if rows:
+                return ("here", rows[sel])
+        elif ch in ("\x7f", curses.KEY_BACKSPACE, "\b"):
+            query = query[:-1]
+            sel = 0
+        elif isinstance(ch, str) and ch.isprintable():
+            query += ch
+            sel = 0
+        sel = max(0, sel)
+
+
+def resume(mode, s):
+    cwd = s.get("cwd") or ""
+    if not os.path.isdir(cwd):
+        # Worktrees get removed and the session outlives them — 29% of sessions
+        # here are in this state. Don't guess at a substitute cwd: Claude keys
+        # sessions by project directory, so resuming from elsewhere is not
+        # reliably the same session. Report and let the caller decide.
+        #
+        # The project directory name cannot be decoded back to a path either —
+        # the encoding replaces "/" with "-" and real directory names contain
+        # hyphens, so it is lossy. Print it verbatim rather than inventing one.
+        print(f"crew-resume: {cwd or '(unknown cwd)'} no longer exists —"
+              " that worktree was removed.", file=sys.stderr)
+        print(f"  transcript: {s['path']}", file=sys.stderr)
+        print(f"  to read it anyway:  claude --resume {s['id']}"
+              "   (from a checkout of the same repo)", file=sys.stderr)
+        return 1
+
+    cmd = f"claude --resume {s['id']}"
+    if mode == "here":
+        print(f"→ {cwd}")
+        print(f"→ {cmd}")
+        os.chdir(cwd)
+        return subprocess.call(["claude", "--resume", s["id"]])
+
+    rc = subprocess.call([
+        CMUX, "new-workspace", "--cwd", cwd, "--command", cmd, "--focus", "true"
+    ], stdout=subprocess.DEVNULL)
+    if rc == 0:
+        print(f"✓ resumed {s['id'][:8]} in a new workspace — {label(s)[:60]}")
+        # A cmux action has no headless target, so it spawned a tab to host this
+        # picker. The session now lives in its own workspace, so that tab is
+        # litter. Only when the action set the flag — run by hand, this would
+        # be closing the terminal you typed in. ("here" never closes: Claude
+        # has taken over this very tab.)
+        surface = os.environ.get("CMUX_SURFACE_ID")
+        if os.environ.get("CREW_EPHEMERAL") == "1" and surface:
+            subprocess.call([CMUX, "close-surface", "--surface", surface],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return rc
+
+
+def main():
+    args = [a for a in sys.argv[1:]]
+    force = "--reindex" in args
+    show_all = "--all" in args
+    query = " ".join(a for a in args if not a.startswith("--"))
+
+    if not os.path.isdir(PROJECTS):
+        print("crew-resume: no ~/.claude/projects", file=sys.stderr)
+        return 1
+
+    scope_root = ""
+    if not show_all:
+        try:
+            scope_root = subprocess.check_output(
+                ["git", "rev-parse", "--show-toplevel"],
+                stderr=subprocess.DEVNULL, text=True).strip()
+        except Exception:
+            scope_root = ""
+        # Scope to the whole repo family, so a worktree also surfaces sessions
+        # from its siblings and the primary checkout.
+        if scope_root:
+            scope_root = scope_root.split(".worktrees")[0].split("/.claude/worktrees")[0]
+
+    while True:
+        t0 = time.time()
+        sessions, seen = build_index(force)
+        sessions.sort(key=lambda s: s["mtime"], reverse=True)
+        if force:
+            print(f"indexed {seen} transcripts in {time.time() - t0:.1f}s")
+        force = False
+
+        result = curses.wrapper(picker, sessions, query, scope_root)
+        if result is None:
+            return 0
+        mode, s = result
+        if mode == "reindex":
+            force = True
+            continue
+        return resume(mode, s)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

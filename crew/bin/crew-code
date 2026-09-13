@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# crew-code — open this worktree in the VS Code desktop app.
+#
+#   crew-code            open or focus the window for this worktree
+#   crew-code <path>     the same, for a specific worktree
+#   crew-code status     whether this worktree has a window, and what else is open
+#   crew-code windows    one open window folder per line (machine readable)
+#
+# The desktop app, not `code serve-web`. serve-web runs out of its own
+# extension directory carrying only VS Code's built-ins — no marketplace
+# extensions, and a workspace-trust store that shares nothing with the app you
+# actually use. Both of those show up as "my editor is wrong". See FINDINGS.md.
+#
+# One call does the whole job:
+#
+#   code <worktree-root> --goto <file>
+#
+# No window on that root and a new one opens there; a window already has it and
+# that window is focused with the file added as a tab — no duplicate window, no
+# reload. ~1.2s either way.
+#
+# A git worktree carries its own HEAD, so the folder is what selects the branch:
+# open the PROJ-961 worktree and VS Code's Source Control is on dev/…-proj-961, with
+# no extra wiring.
+
+set -uo pipefail
+
+CODE_BIN="${CREW_CODE_BIN:-/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code}"
+[ -x "$CODE_BIN" ] || CODE_BIN="$(command -v code || true)"
+
+# Resolve through symlinks to find sibling crew commands: this normally runs as
+# ~/.local/bin/crew-code, so a naive dirname would look for crew-color in
+# ~/.local/bin and miss. Same dance as bin/crew.
+_src="${BASH_SOURCE[0]}"
+while [ -L "$_src" ]; do
+  _dir="$(cd -P -- "$(dirname -- "$_src")" && pwd)"
+  _src="$(readlink -- "$_src")"
+  case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
+done
+CREW_BIN="$(cd -P -- "$(dirname -- "$_src")" && pwd)"
+
+CMUX="$(command -v cmux || true)"
+# One definition of "which cmux": bin/crew-cmux-bin. A hardcoded bundle path kept
+# driving the OLD cli against the NEW app after the switch to the nightly build --
+# version skew that fails silently, because the old bundle is still on disk.
+[ -n "$CMUX" ] || CMUX="$("$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/crew-cmux-bin" 2>/dev/null || true)"
+[ -n "$CMUX" ] || CMUX=cmux
+
+WS_STORE="$HOME/Library/Application Support/Code/User/workspaceStorage"
+
+die() { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
+say() { printf '\033[2m→\033[0m %s\n' "$*"; }
+
+# `--workspace <id>` lets this run outside a cmux terminal — the board's branch
+# button reaches it through the notification hook, which is a child of the cmux
+# app and therefore has no CMUX_WORKSPACE_ID in its environment.
+WS_CWD=""
+ws_given=""
+if [ "${1:-}" = "--workspace" ]; then
+  ws_given="${2:-}"
+  [ -n "$ws_given" ] || die "--workspace needs a workspace id"
+  WS_CWD="$("$CMUX" sidebar-state --workspace "$ws_given" 2>/dev/null | sed -n 's/^cwd=//p')"
+  shift 2
+  # Never fall through to $PWD for a named workspace. This runs as a child of the
+  # cmux app, whose cwd is ~/.config/cmux, so the fallback opened crew's own
+  # config directory in VS Code instead of the worktree. A closed or stale row id
+  # is how that happens: sidebar-state answers "ERROR: Tab not found" on stderr
+  # and prints no cwd at all, which the sed silently turns into "".
+  [ -n "$WS_CWD" ] || die "cmux has no cwd for workspace $ws_given (closed or stale?)"
+fi
+
+cmd="up"
+case "${1:-}" in
+  ""|up|open)  [ $# -gt 0 ] && shift ;;
+  status)      cmd="status"; shift ;;
+  windows)     cmd="windows"; shift ;;
+  -h|--help)   sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  *)           [ -d "$1" ] || die "unknown '$1' (try --help)" ;;
+esac
+# A path may follow the verb, or stand alone as the only argument.
+[ -n "${1:-}" ] && [ -d "$1" ] && WS_CWD="$1"
+
+# Open the worktree ROOT, not wherever this was invoked from — running it in
+# gems/core should still give you the whole repo.
+ROOT="$(git -C "${WS_CWD:-$PWD}" rev-parse --show-toplevel 2>/dev/null || printf '%s' "${WS_CWD:-$PWD}")"
+BRANCH="$(git -C "$ROOT" branch --show-current 2>/dev/null || true)"
+
+# The bare app process. The `$` anchor matters: `pgrep -x Code` also matches
+# every `code`-launched CLI subprocess, which would report the app as running
+# when it is not.
+code_running() { pgrep -f "Visual Studio Code.app/Contents/MacOS/Code\$" >/dev/null 2>&1; }
+
+# Open window folders, one absolute path per line.
+#
+# Two sources, because neither answers alone:
+#
+#   `lsof` on the app's main process lists the per-window storage directories it
+#   holds open, and each of those has a `workspace.json` naming that window's
+#   exact folder. Live, and ~40ms. But it over-reports: a storage handle can
+#   outlive its window, and `.code-workspace` windows show up too.
+#
+#   `code --status` is the authoritative list of live windows, but it names
+#   folders by basename only, and costs ~1.2s.
+#
+# Intersecting them gives exact paths for exactly the live windows.
+#
+# storage.json's `windowsState` looks like the obvious source and is a trap: it
+# is a periodically-persisted snapshot, so a window opened seconds ago is simply
+# absent. That made `status` report "no window" for a window plainly on screen,
+# and made crew-reclaim's warning silently never fire.
+#
+# Skipped entirely when the app is down: `code --status` would launch VS Code
+# just to answer, and "no windows" is the correct answer anyway.
+cmd_windows() {
+  code_running || return 0
+  [ -n "$CODE_BIN" ] && [ -x "$CODE_BIN" ] || return 0
+  local main live
+  main="$(pgrep -f "Visual Studio Code.app/Contents/MacOS/Code\$" | head -1)"
+  [ -n "$main" ] || return 0
+  live="$("$CODE_BIN" --status 2>/dev/null | sed -n 's/^| *Folder (\(.*\)): .*/\1/p')"
+  [ -n "$live" ] || return 0
+  lsof -p "$main" 2>/dev/null \
+    | grep -o "workspaceStorage/[A-Za-z0-9]\{8,\}" \
+    | sed 's|.*/||' | sort -u \
+    | CREW_LIVE="$live" python3 -c '
+import json, os, sys, urllib.parse
+live = {l.strip() for l in os.environ.get("CREW_LIVE", "").splitlines() if l.strip()}
+store = sys.argv[1]
+seen = set()
+for h in sys.stdin:
+    h = h.strip()
+    if not h:
+        continue
+    try:
+        d = json.load(open(os.path.join(store, h, "workspace.json")))
+    except Exception:
+        continue
+    # Only single-folder windows. A .code-workspace carries "workspace" instead,
+    # and has no one worktree root to compare against.
+    u = d.get("folder") or ""
+    if not u.startswith("file://"):
+        continue
+    p = urllib.parse.unquote(u[len("file://"):]).rstrip("/")
+    if os.path.basename(p) in live and p not in seen:
+        seen.add(p)
+        print(p)
+' "$WS_STORE" 2>/dev/null
+  return 0
+}
+
+cmd_up() {
+  [ -n "$CODE_BIN" ] && [ -x "$CODE_BIN" ] || die "VS Code CLI not found. Set CREW_CODE_BIN to its path."
+  [ -d "$ROOT" ] || die "no such directory: $ROOT"
+  # Paint the window the same color the cmux workspace and the board sliver wear,
+  # via Peacock. Done *before* launching so a new window comes up already colored
+  # instead of flashing default chrome first; on a window that is already open,
+  # VS Code notices the settings write and recolors live.
+  #
+  # Never fatal. A worktree with no color, no Peacock, or an unparseable
+  # settings.json is still a worktree you asked to open.
+  if [ -x "$CREW_BIN/crew-color" ]; then
+    "$CREW_BIN/crew-color" apply "$ROOT" >/dev/null 2>&1 || true
+  fi
+  say "opening $ROOT${BRANCH:+ ($BRANCH)} in VS Code"
+  "$CODE_BIN" "$ROOT" || die "code exited nonzero"
+  printf '\033[32m✓\033[0m %s\n' "${ROOT/#$HOME/~}"
+}
+
+cmd_status() {
+  printf '  folder     %s%s\n' "${ROOT/#$HOME/~}" "${BRANCH:+  ($BRANCH)}"
+  printf '  code       %s\n' "${CODE_BIN:-not found}"
+  if ! code_running; then
+    printf '  state      VS Code is not running\n'
+    return 0
+  fi
+  local wins n
+  wins="$(cmd_windows)"
+  if printf '%s\n' "$wins" | grep -Fxq "$ROOT"; then
+    printf '  state      \033[32mwindow open\033[0m\n'
+  else
+    printf '  state      no window (crew-code opens one)\n'
+  fi
+  n="$(printf '%s' "$wins" | grep -c . 2>/dev/null || printf 0)"
+  printf '  windows    %s open\n' "$n"
+  [ "$n" -gt 0 ] && printf '%s\n' "$wins" | sed "s|^$HOME|~|; s|^|             |"
+  return 0
+}
+
+# A cmux action has no headless target — it always spawns a host tab to run the
+# command in. For fire-and-forget commands that tab is litter, so the action
+# sets CREW_EPHEMERAL=1 and we close it once the work is done. Gated on the env
+# var so running this by hand never closes your own terminal, and placed on the
+# success path only so a failure leaves the error on screen.
+ephemeral_close() {
+  [ "${CREW_EPHEMERAL:-}" = "1" ] || return 0
+  [ -n "${CMUX_SURFACE_ID:-}" ] || return 0
+  "$CMUX" close-surface --surface "$CMUX_SURFACE_ID" >/dev/null 2>&1 || true
+}
+
+case "$cmd" in
+  up)      cmd_up && ephemeral_close ;;
+  status)  cmd_status ;;
+  windows) cmd_windows ;;
+esac

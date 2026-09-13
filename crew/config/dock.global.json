@@ -1,0 +1,33 @@
+{
+  "_comment": [
+    "crew — GLOBAL web-Dock config (~/.config/cmux/dock.json), rendered by",
+    "`crew apply`. Browser controls only: the board and the usage dashboard",
+    "are workspace-agnostic, but a terminal control's relative cwd resolves",
+    "from the config base — $HOME for the global config — so the git/checks/",
+    "spec loops live in each repo's .cmux/dock.json, where cwd '.' means the",
+    "repo. A repo config replaces this one wholesale (precedence, not merge),",
+    "which is why the project template carries these two controls as well.",
+    "",
+    "The board page is inert until crew-listen pushes the renderer into it;",
+    "crew-board adopts the seeded surface instead of creating its own.",
+    "__INTENT_PORT__ must match the intent server's pin (CREW_INTENT_PORT,",
+    "default 7345)."
+  ],
+  "controls": [
+    {
+      "id": "board",
+      "title": "Crew",
+      "type": "browser",
+      "chrome": false,
+      "url": "file://__HOME__/.config/cmux/crew/board/board.html"
+    },
+    {
+      "id": "usage",
+      "title": "Usage",
+      "type": "browser",
+      "chrome": false,
+      "url": "http://127.0.0.1:__INTENT_PORT__/usage",
+      "height": 320
+    }
+  ]
+}

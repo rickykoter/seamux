@@ -1,0 +1,1138 @@
+#!/usr/bin/env python3
+"""crew-sync — reconcile every workspace against what is actually true.
+
+    crew-sync            reconcile once
+    crew-sync --dry-run  say what would change, change nothing
+    crew-sync --prune    also drop stale crew state files
+
+crew publishes on Claude Code hook events, so anything that stops the events
+arriving leaves published state pinned:
+
+  - the agent is killed, hibernated, or crashes -> Stop never fires, so the
+    status pill and the `review`/`needs-attention` lane stay forever
+  - a plan is abandoned mid-way -> the progress bar sits at 3/7 indefinitely
+  - a session predates `crew apply` -> nothing was ever published
+  - you `git checkout` a different branch -> the workspace name is now a lie
+
+None of those are recoverable from events, because the event that would fix
+them is exactly the one that never comes. So this reconciles from state that is
+true regardless of hooks:
+
+  ~/.cmuxterm/claude-hook-sessions.json   agentLifecycle + pid, written by
+                                          cmux's own Claude wrapper
+  ~/.claude/tasks/<session>/              the live plan
+  git                                     the actual branch
+
+Safe to run at any time: every write is conditional on the current value being
+wrong, so a converged system produces no calls at all.
+"""
+
+import glob
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+HOME = os.path.expanduser("~")
+# One definition of "which cmux": bin/crew-cmux-bin. PATH is consulted here first so
+# the common case costs no subprocess; the resolver is only reached when PATH has no
+# cmux. A hardcoded bundle path silently drove the old cli against the nightly app.
+_CMUX_RESOLVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crew-cmux-bin")
+CMUX = (os.environ.get("CREW_CMUX")
+        or next((os.path.join(d, "cmux")
+                 for d in os.environ.get("PATH", "").split(os.pathsep)
+                 if os.access(os.path.join(d, "cmux"), os.X_OK)), None)
+        or (subprocess.run([_CMUX_RESOLVER], capture_output=True, text=True).stdout.strip()
+            if os.access(_CMUX_RESOLVER, os.X_OK) else "")
+        or "cmux")
+STORE = os.path.join(HOME, ".cmuxterm", "claude-hook-sessions.json")
+TASKS = os.path.join(HOME, ".claude", "tasks")
+STATE = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")),
+                     "cmux-crew")
+SBX = os.environ.get("CREW_SBX") or "/opt/homebrew/bin/sbx"
+SANDBOX_REG = os.path.join(STATE, "sandbox", "roots")
+COLOR_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crew-color")
+
+DRY = "--dry-run" in sys.argv
+PRUNE = "--prune" in sys.argv
+VERBOSE = DRY or "-v" in sys.argv or "--verbose" in sys.argv
+
+changes = []
+
+
+def cmux(*args):
+    if DRY:
+        return ""
+    try:
+        return subprocess.run([CMUX, *args], capture_output=True, text=True,
+                              timeout=15).stdout
+    except Exception:
+        return ""
+
+
+def note(ws, what):
+    changes.append((ws[:8], what))
+
+
+def without_stamp(desc):
+    """`desc` minus the freshness stamp, for comparing real signal content.
+
+    The `synced:` token exists to move on every run, so it must not count as a
+    change — see the stamp block in main().
+    """
+    return " ".join(t for t in (desc or "").split()
+                    if not t.startswith("synced:"))
+
+
+def workspaces():
+    """One JSON call for the whole list.
+
+    `--json` carries description, has_custom_title and current_directory, none
+    of which `sidebar-state` reports — and it replaces an N+1 of per-workspace
+    calls with one.
+    """
+    try:
+        out = subprocess.run([CMUX, "workspace", "list", "--json"],
+                             capture_output=True, text=True, timeout=15,
+                             env={**os.environ, "CMUX_QUIET": "1"}).stdout
+        return json.loads(out).get("workspaces") or []
+    except Exception:
+        return []
+
+
+def state_of(ws):
+    out = cmux("sidebar-state", "--workspace", ws) if not DRY else \
+        subprocess.run([CMUX, "sidebar-state", "--workspace", ws],
+                       capture_output=True, text=True).stdout
+    d = {}
+    for line in out.splitlines():
+        if line.startswith("  ") and "=" in line:      # nested status pills
+            k, _, v = line.strip().partition("=")
+            d.setdefault("pills", {})[k] = v
+        elif "=" in line:
+            k, _, v = line.partition("=")
+            d[k.strip()] = v.strip()
+    return d
+
+
+def lane_of(ws):
+    out = subprocess.run([CMUX, "workspace", "status", "--workspace", ws],
+                         capture_output=True, text=True).stdout
+    m = re.search(r"override:\s*(\S+)", out)
+    return "" if not m or m.group(1) == "none" else m.group(1)
+
+
+def sessions():
+    try:
+        with open(STORE) as fh:
+            d = json.load(fh)
+    except Exception:
+        return {}, {}
+    return d.get("activeSessionsByWorkspace") or {}, d.get("sessions") or {}
+
+
+def alive(pid):
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+
+def branch(cwd):
+    try:
+        return subprocess.run(["git", "-C", cwd, "branch", "--show-current"],
+                              capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        return ""
+
+
+def ticket_label(b):
+    if not b or b == "HEAD":
+        return ""
+    rest = b.split("/", 1)[1] if "/" in b else b
+    m = re.match(r"^(.+)-([A-Za-z]+-\d+)$", rest)
+    if m:
+        tick, body = m.group(2), m.group(1)
+    else:
+        m = re.match(r"^([A-Za-z]+-\d+)-(.+)$", rest)
+        if m:
+            tick, body = m.group(1), m.group(2)
+        else:
+            m = re.match(r"^([A-Za-z]+-\d+)$", rest)
+            if not m:
+                return ""
+            tick, body = m.group(1), ""
+    return f"{tick.upper()}" + (f" · {body}" if body else "")
+
+
+def toplevel(cwd):
+    try:
+        return subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+                              capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        return ""
+
+
+def color_for(root):
+    """The worktree's assigned hex, allocating one the first time it is seen.
+
+    Shelling out to crew-color rather than reimplementing the lookup keeps the
+    palette, the registry and the sixteen-colors-for-twenty-worktrees rule in
+    exactly one place. It is pure local file work — no network, no cmux — so it
+    is cheap enough to call once per workspace on the Stop-hook path.
+    """
+    try:
+        # peek under --dry-run: `assign` writes a registry entry, and a dry run
+        # has to stay side-effect free.
+        r = subprocess.run([COLOR_BIN, "peek" if DRY else "assign", root],
+                           capture_output=True, text=True, timeout=10)
+        out = (r.stdout or "").strip()
+        return out if out.startswith("#") else ""
+    except Exception:
+        return ""
+
+
+def desired_name(cwd):
+    """Ticket label, plus the subdirectory when the cwd is below the repo root.
+
+    Without the suffix a workspace sitting in <worktree>/playwright renames to
+    the same thing as one at the worktree root, and the sidebar shows two rows
+    with identical names and no way to tell them apart.
+    """
+    label = ticket_label(branch(cwd))
+    if not label:
+        return ""
+    top = toplevel(cwd)
+    if top and os.path.realpath(cwd) != os.path.realpath(top):
+        rel = os.path.relpath(cwd, top)
+        label += f" / {rel}"
+    return label
+
+
+CREW_NAMED = re.compile(r"^[A-Z]+-\d+( · |$)")
+
+
+def may_rename(w):
+    """Rename only what crew owns, or what was never named at all.
+
+    `has_custom_title` is false while cmux is showing its own fallback (the path
+    or the shell prompt), so that case is always safe. Beyond that, only titles
+    crew itself generated — ticket-prefixed — are eligible, so a branch change
+    updates crew's name but a hand-set title is never clobbered.
+    """
+    if not w.get("has_custom_title"):
+        return True
+    return bool(CREW_NAMED.match(w.get("custom_title") or w.get("title") or ""))
+
+
+# --- GitHub + hygiene ---------------------------------------------------------
+# One `gh pr view --json` call yields checks, review decision, draft and
+# mergeable together — no need for a second `gh pr checks`. It costs ~1.6s, so
+# it runs only for workspaces that actually have an open PR, on its own slower
+# clock, and in parallel across workspaces.
+GH_TTL = int(os.environ.get("CREW_GH_INTERVAL", "300"))
+
+# The token families this script is the sole author of. Needed by name because a
+# failed probe has to carry the previous ones forward rather than publish silence
+# -- see the probe-failure branch in main().
+SIGNAL_PREFIXES = ("ci:", "review:", "pr:", "stack:", "gone:")
+GH_FIELDS = ("number,state,isDraft,reviewDecision,mergeable,mergeStateStatus,"
+             "statusCheckRollup,baseRefName,url")
+
+
+# --- Jira ---------------------------------------------------------------------
+# The ticket is already in every branch name, and `acli` is authenticated. One
+# batched JQL search covers every workspace in ~1.5s regardless of count, versus
+# ~0.9s each one at a time — so this is a single call on a slow clock. Jira
+# statuses move on human timescales; polling them often is waste.
+JIRA_TTL = int(os.environ.get("CREW_JIRA_INTERVAL", "900"))
+JIRA_CACHE = os.path.join(STATE, "jira.json")
+
+
+def ticket_key(b):
+    """PROJ-961 out of dev/graphql-db-schema-updates-proj-961."""
+    label = ticket_label(b)
+    return label.split(" ")[0] if label else ""
+
+
+def jira_status(keys):
+    """{KEY: (name, category)} for every ticket, batched and cached."""
+    keys = sorted({k for k in keys if k})
+    if not keys:
+        return {}
+    now = time.time()
+    try:
+        with open(JIRA_CACHE) as fh:
+            c = json.load(fh)
+        if now - c.get("at", 0) < JIRA_TTL and set(c.get("keys") or []) >= set(keys):
+            return {k: tuple(v) for k, v in (c.get("status") or {}).items()}
+    except Exception:
+        c = {}
+
+    out = {}
+    try:
+        r = subprocess.run(
+            ["acli", "jira", "workitem", "search",
+             "--jql", "key in (" + ",".join(keys) + ")",
+             "--fields", "status", "--json"],
+            capture_output=True, text=True, timeout=60)
+        if r.returncode == 0 and r.stdout.strip():
+            for item in json.loads(r.stdout) or []:
+                k = item.get("key") or ""
+                st = ((item.get("fields") or {}).get("status") or {})
+                if k and st.get("name"):
+                    out[k] = (st["name"], (st.get("statusCategory") or {}).get("key") or "")
+    except Exception:
+        pass
+    if not out:
+        # A failed poll must not read as "the ticket has no status".
+        try:
+            with open(JIRA_CACHE) as fh:
+                return {k: tuple(v) for k, v in (json.load(fh).get("status") or {}).items()}
+        except Exception:
+            return {}
+    try:
+        os.makedirs(STATE, exist_ok=True)
+        with open(JIRA_CACHE, "w") as fh:
+            json.dump({"at": now, "keys": keys, "status": out}, fh)
+    except Exception:
+        pass
+    return out
+
+
+def jira_token(entry):
+    """`jira:<slug>` — slugged so the board can match it with .contains()."""
+    if not entry:
+        return ""
+    name = (entry[0] or "").lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", name).strip("-")
+    return "jira:" + slug if slug else ""
+
+
+def gh_cache_path(cwd):
+    import hashlib
+    return os.path.join(STATE, "gh-" + hashlib.md5(cwd.encode()).hexdigest() + ".json")
+
+
+def gh_state(cwd, force=False):
+    """Cached PR state for a worktree. Returns {} when there is no PR."""
+    path = gh_cache_path(cwd)
+    now = time.time()
+    if not force and os.path.exists(path):
+        try:
+            with open(path) as fh:
+                c = json.load(fh)
+            if now - c.get("at", 0) < GH_TTL:
+                return c
+        except Exception:
+            pass
+    out = {}
+    # `answered` means gh told us something definitive -- either PR data, or that
+    # this branch has none. Anything else (auth, network, not a repo) is silence,
+    # and silence must never be published as fact.
+    answered = False
+    try:
+        r = subprocess.run(["gh", "pr", "view", "--json", GH_FIELDS],
+                           cwd=cwd, capture_output=True, text=True, timeout=30)
+        # gh exits 1 for "no PR on this branch" exactly as it does for auth and
+        # network errors, so the exit code alone cannot tell an answer from a
+        # failure. The message can.
+        no_pr = "no pull requests found" in (r.stderr or "").lower()
+        answered = r.returncode == 0 or no_pr
+        if no_pr:
+            # Deliberately does NOT fall back to the previous cache below: a branch
+            # whose PR was merged, closed or deleted would otherwise wear it
+            # forever. That is how `master` kept a `gone:merged` badge from a PR
+            # closed days earlier.
+            out = {}
+        elif r.returncode == 0 and r.stdout.strip():
+            d = json.loads(r.stdout)
+            roll = d.get("statusCheckRollup") or []
+            bad, pending = [], 0
+            for c in roll:
+                verdict = (c.get("conclusion") or c.get("state") or "").upper()
+                if verdict in ("FAILURE", "TIMED_OUT", "CANCELLED", "ERROR"):
+                    bad.append(c.get("name") or c.get("context") or "check")
+                elif verdict in ("", "PENDING", "IN_PROGRESS", "QUEUED", "EXPECTED"):
+                    pending += 1
+            out = {
+                "pr": d.get("number"),
+                "url": d.get("url") or "",
+                "base": d.get("baseRefName") or "",
+                "prState": (d.get("state") or "").upper(),
+                "draft": bool(d.get("isDraft")),
+                "review": (d.get("reviewDecision") or "").upper(),
+                "mergeable": (d.get("mergeable") or "").upper(),
+                "mergeState": (d.get("mergeStateStatus") or "").upper(),
+                "ciFail": bad,
+                "ciPending": pending,
+                "ciTotal": len(roll),
+            }
+    except Exception:
+        pass
+    # Keep the previous signals around so transition detection survives a
+    # refresh that failed (a network blip must not read as "CI went green").
+    prev = {}
+    try:
+        with open(path) as fh:
+            prev = json.load(fh)
+    except Exception:
+        pass
+    if not answered and prev:
+        out = {k: v for k, v in prev.items()
+               if k not in ("at", "notified", "fresh")}
+    # Only a real fetch earns a fresh timestamp. Bumping `at` after a failure was
+    # the bug that made staleness permanent: a single blip pinned the old answer
+    # for another full TTL, and since the next run then read the cache as fresh it
+    # never retried. Observed in the wild at 5 days old.
+    #
+    # On failure, never let the cache look staler than it already is: keep the
+    # previous timestamp when it is newer than a 60s-from-now expiry, so a blip
+    # against a fresh cache does not trigger an immediate re-probe. With no usable
+    # previous answer this floors at a 60s retry.
+    #
+    # `max`, emphatically not `min`. `min` resolves to 0 whenever there is no prior
+    # cache, which reads as infinitely stale -- so every repo that cannot answer
+    # paid a full gh call (up to its 30s timeout) on every single sync.
+    # `max`, not `min`: a stale prev["at"] (or a missing one, i.e. 0) is always the
+    # older of the two, so taking the minimum kept the entry permanently expired
+    # and re-probed gh on every single sync -- the exact cost this backoff exists
+    # to avoid.
+    out["at"] = now if answered else max(prev.get("at", 0), now - GH_TTL + 60)
+    out["fresh"] = answered
+    out["notified"] = prev.get("notified", {})
+    try:
+        os.makedirs(STATE, exist_ok=True)
+        with open(path, "w") as fh:
+            json.dump(out, fh)
+    except Exception:
+        pass
+    return out
+
+
+CHIME = os.path.join(HOME, ".config", "ghostty", "whimsy", "sounds", "chime.wav")
+
+
+def chime():
+    """Borrow the Ghostty whimsy engine's chime for board-level good news."""
+    if DRY or not os.path.exists(CHIME):
+        return
+    try:
+        subprocess.Popen(["afplay", CHIME],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+def merged_already(cwd):
+    """True when this branch is fully contained in origin/master.
+
+    The cleanup signal for a worktree fleet: the branch shipped, so the
+    worktree is safe to remove. 94 of the sessions on this machine already
+    point at directories that were removed without anything noticing.
+    """
+    try:
+        b = branch(cwd)
+        if not b:
+            return False
+        # The primary checkout is trivially contained in origin/master, so without
+        # this it permanently reads as "shipped, reclaim me".
+        if b in ("master", "main"):
+            return False
+        base = subprocess.run(["git", "-C", cwd, "rev-parse", "--verify", "-q", "origin/master"],
+                              capture_output=True, text=True, timeout=5)
+        if base.returncode != 0:
+            return False
+        r = subprocess.run(["git", "-C", cwd, "merge-base", "--is-ancestor", "HEAD", "origin/master"],
+                           capture_output=True, timeout=10)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def sandbox_registry():
+    """{worktree root: sandbox name} from crew-sandbox's registry.
+
+    Registry presence is the host-side answer to "is this workspace sandboxed?",
+    so a board with no sandboxes never shells out to sbx at all.
+    """
+    roots = {}
+    try:
+        names = os.listdir(SANDBOX_REG)
+    except Exception:
+        return roots
+    for fn in names:
+        try:
+            txt = open(os.path.join(SANDBOX_REG, fn)).read()
+        except Exception:
+            continue
+        name = root = ""
+        for line in txt.splitlines():
+            if line.startswith("NAME="):
+                name = line[5:].strip()
+            elif line.startswith("ROOT="):
+                # written with printf %q, so a plain path arrives bare
+                root = line[5:].strip().strip("'\"")
+        if name and root:
+            roots[root] = name
+    return roots
+
+
+def sandbox_states():
+    """{sandbox name: status} from one `sbx ls --json` for the whole board.
+
+    `sbx ls --json` emits invalid JSON when the daemon is stopped
+    (sbx-releases #201), so a parse failure has to read as "cannot tell",
+    never as an exception that takes the sync down.
+    """
+    try:
+        out = subprocess.run([SBX, "ls", "--json"], capture_output=True,
+                             text=True, timeout=15).stdout
+        d = json.loads(out)
+    except Exception:
+        return {}
+    rows = d.get("sandboxes", d) if isinstance(d, dict) else d
+    if not isinstance(rows, list):
+        return {}
+    states = {}
+    for r in rows:
+        if isinstance(r, dict) and r.get("name"):
+            states[r["name"]] = (r.get("status") or r.get("state") or "").lower()
+    return states
+
+
+def sandbox_for(cwd, roots):
+    """The sandbox name covering this cwd, longest root wins, or ''."""
+    best, name = "", ""
+    for root, nm in roots.items():
+        r = root.rstrip("/")
+        if (cwd == r or cwd.startswith(r + "/")) and len(r) > len(best):
+            best, name = r, nm
+    return name
+
+
+def sandbox_token(name, states):
+    """['sandbox:running'|'sandbox:stopped'] for a sandbox, or []."""
+    if not name:
+        return []
+    st = states.get(name)
+    return ["sandbox:running"] if st and "running" in st else ["sandbox:stopped"]
+
+
+def sandbox_phase(name, window=90):
+    """'working' if this sandbox's agent wrote a transcript very recently.
+
+    Hooks cannot publish from inside a microVM (no CMUX_WORKSPACE_ID, and the
+    cmux socket does not cross the VM boundary), and cmux's own session store
+    only ever sees the `sbx run` wrapper — so for a sandboxed workspace the
+    transcript mtime under CLAUDE_CONFIG_DIR is the only liveness signal there
+    is. Deliberately coarse, and only ever used to *add* phase:working where
+    there was none; it can never contradict a real lifecycle.
+    """
+    proj = os.path.join(STATE, "sandbox", "claude", name, "projects")
+    newest = 0
+    for dirpath, _dirs, files in os.walk(proj):
+        for fn in files:
+            if not fn.endswith(".jsonl"):
+                continue
+            try:
+                m = os.path.getmtime(os.path.join(dirpath, fn))
+            except Exception:
+                continue
+            newest = max(newest, m)
+    return "working" if newest and (time.time() - newest) < window else ""
+
+
+def signals(cwd, is_repo):
+    """Compact tokens the board decodes with .contains().
+
+    Gated on this being a git checkout, NOT on cmux already believing there is a
+    PR. That gate was the flakiness: cmux's own `pr` field comes from its
+    snapshot-then-diff PR watch, and when it blipped to `none` crew skipped the gh
+    probe entirely, published a description with every ci:/review:/pr: token
+    missing, and -- because the skip also stopped the cache being refreshed --
+    stayed wrong until the field happened to come back. Measured: 11
+    lost-then-restored cycles across two days, one gap of 17 minutes.
+    """
+    tok, human = [], []
+    gh = gh_state(cwd) if is_repo else {}
+
+    if gh.get("ciFail"):
+        tok.append("ci:fail")
+        human.append(f"{len(gh['ciFail'])} check(s) failing: " + ", ".join(gh["ciFail"][:3]))
+    elif gh.get("ciPending"):
+        tok.append("ci:run")
+    elif gh.get("ciTotal"):
+        tok.append("ci:pass")
+
+    rev = gh.get("review") or ""
+    if rev == "APPROVED":
+        tok.append("review:approved"); human.append("approved")
+    elif rev == "CHANGES_REQUESTED":
+        tok.append("review:changes"); human.append("changes requested")
+    if gh.get("draft"):
+        tok.append("pr:draft")
+    if gh.get("mergeable") == "CONFLICTING":
+        tok.append("pr:conflict"); human.append("merge conflicts")
+
+    # Stacked PRs: a base that is not the default branch means this sits on top
+    # of someone else's unlanded work. Knowing the parent has not merged is the
+    # difference between "ready" and "ready, but do not rebase yet".
+    base = gh.get("base") or ""
+    if base and base not in ("master", "main"):
+        parent_in = False
+        try:
+            parent_in = subprocess.run(
+                ["git", "-C", cwd, "merge-base", "--is-ancestor",
+                 f"origin/{base}", "origin/master"],
+                capture_output=True, timeout=10).returncode == 0
+        except Exception:
+            pass
+        tok.append("stack:ready" if parent_in else "stack:blocked")
+        human.append(f"stacked on {base}" + ("" if parent_in else " — parent not merged"))
+
+    if gh.get("prState") in ("MERGED", "CLOSED") or merged_already(cwd):
+        tok.append("gone:merged")
+        human.append("branch is merged — worktree can go")
+
+    return tok, human, gh
+
+
+# --- planning state ----------------------------------------------------------
+# Two ways a workspace can be planning rather than doing. The board should say so
+# either way, because "thinking" and "typing code" are the two states you most
+# want to tell apart at a glance, and cmux binds nothing that distinguishes them.
+
+PROJECTS = os.path.join(HOME, ".claude", "projects")
+DEEP_ACTIVE = os.path.join(HOME, ".claude", "deep-plan", "active")
+DEEP_STATE = os.path.join(HOME, ".claude", "deep-plan", "state")
+DEEP_PLANS = os.path.join(HOME, ".claude", "plans")
+
+
+def transcript_for(sid):
+    """The session's transcript, wherever its project directory happens to be.
+
+    Globbing beats reconstructing the munged-cwd directory name: the munging rule
+    is Claude Code's, not ours, and a workspace whose cwd moved would silently
+    miss.
+    """
+    if not sid:
+        return ""
+    hits = glob.glob(os.path.join(PROJECTS, "*", f"{sid}.jsonl"))
+    return hits[0] if hits else ""
+
+
+def permission_mode(sid, tail=262144):
+    """The session's current permission mode, or "".
+
+    Claude Code appends {"type":"permission-mode","permissionMode":...} on every
+    turn rather than only on change, and the entry carries NO timestamp -- so the
+    last occurrence in the file is the current mode, and byte position is the only
+    ordering available.
+
+    Tail-read on purpose. These transcripts reach 8MB+ and this runs on the Stop
+    hook path once per workspace. Measured: the last entry sat 15KB from EOF in an
+    8.7MB file, so 256KB is a wide margin. A miss returns "" rather than falling
+    back to a full scan -- being wrong about a badge is much cheaper than making
+    every turn-end slow.
+    """
+    p = transcript_for(sid)
+    if not p:
+        return ""
+    try:
+        with open(p, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - tail))
+            chunk = fh.read()
+    except Exception:
+        return ""
+    i = chunk.rfind(b'"type":"permission-mode"')
+    if i < 0:
+        return ""
+    line = chunk[chunk.rfind(b"\n", 0, i) + 1:]
+    nl = line.find(b"\n")
+    if nl >= 0:
+        line = line[:nl]
+    try:
+        return (json.loads(line) or {}).get("permissionMode") or ""
+    except Exception:
+        return ""
+
+
+def deep_plan_markers():
+    """(roots, sessions) with a deep-plan still awaiting its alignment check.
+
+    render_plan.mjs writes one marker per rendered plan and grade_quiz.mjs removes
+    it when the check passes, so this covers exactly the interval where a plan is
+    on the table and nobody has signed off on it.
+
+    Two keys, because each covers the other's blind spot. The session id is exact
+    and is already how crew maps workspaces, but it changes on restart; the git
+    root survives /compact and a resume, but is wrong if the renderer ran from
+    somewhere other than the worktree. Match on either.
+    """
+    roots, sids = set(), set()
+    try:
+        names = os.listdir(DEEP_ACTIVE)
+    except Exception:
+        return roots, sids
+    for n in names:
+        try:
+            with open(os.path.join(DEEP_ACTIVE, n)) as fh:
+                for line in fh:
+                    k, _, v = line.partition("=")
+                    k, v = k.strip(), v.strip()
+                    if k == "CWD" and v:
+                        roots.add(v)
+                    elif k == "SESSION" and v:
+                        sids.add(v)
+        except Exception:
+            continue
+    return roots, sids
+
+
+def deep_plan_states():
+    """Locked deep-plans, keyed by git root and by session id.
+
+    The `active` marker above covers one interval: rendered, not yet signed off.
+    This covers what happens next -- which increment is live, how many are done,
+    and whether anything at all is authorized. deep-plan's own gate reads the same
+    files, so the board and the gate can never disagree about whether work is
+    allowed to be happening.
+
+    Value is the token bundle for a row, already shaped, because the caller has
+    fifteen other signals to assemble and no business knowing this schema.
+    """
+    by_root, by_sid = {}, {}
+    try:
+        names = [n for n in os.listdir(DEEP_STATE) if n.endswith(".json")]
+    except Exception:
+        return by_root, by_sid
+    for n in names:
+        try:
+            with open(os.path.join(DEEP_STATE, n)) as fh:
+                st = json.load(fh) or {}
+        except Exception:
+            continue
+        if (st.get("phase") or "") == "done":
+            continue          # a finished plan is not a signal
+        incs = st.get("increments") or []
+        done = len([i for i in incs if i.get("status") == "done"])
+        open_ = [i for i in incs if i.get("status") in ("authorized", "working")]
+        nxt = next((i for i in incs if i.get("status") == "pending"), None)
+        review = (st.get("phase") or "") == "review"
+        # `planpath` is "the page for this plan right now": the review surface until
+        # the check passes, the working surface after. One token, and the board's
+        # chip is right in both phases without knowing which it is.
+        page = os.path.join(DEEP_PLANS, "%s.%s.html" % (st.get("slug"), "review" if review else "working"))
+        toks = []
+        if review:
+            toks.append("plan:deep")
+        elif st.get("gate") == "open":
+            toks.append("plan:work")
+        elif open_:
+            toks.append("plan:work")
+        else:
+            toks.append("plan:gate")
+        if incs:
+            toks.append("planinc:%d/%d" % (done, len(incs)))
+        if not review and not open_ and nxt:
+            toks.append("plannext:%d" % nxt.get("n", 0))
+        if os.path.isfile(page) and " " not in page:
+            toks.append("planpath:%s" % page)
+        bundle = {"slug": st.get("slug") or "", "tokens": toks}
+        root = (st.get("root") or "").strip()
+        sid = (st.get("session") or "").strip()
+        if root:
+            by_root[root] = bundle
+        if sid:
+            by_sid[sid] = bundle
+    return by_root, by_sid
+
+
+def plan(sid):
+    """(fraction, label, todo-list) for a session, or None."""
+    d = os.path.join(TASKS, sid or "")
+    if not os.path.isdir(d):
+        return None
+    done = total = 0
+    active = ""
+    items = []
+    STATE_MAP = {"completed": "completed", "in_progress": "in-progress"}
+    for name in sorted(os.listdir(d), key=lambda n: int(n[:-5]) if n[:-5].isdigit() else 1 << 30):
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(d, name)) as fh:
+                t = json.load(fh)
+        except Exception:
+            continue
+        if not isinstance(t, dict) or "subject" not in t:
+            continue
+        st = t.get("status") or "pending"
+        total += 1
+        if st == "completed":
+            done += 1
+        elif st == "in_progress" and not active:
+            active = t.get("activeForm") or t.get("subject") or ""
+        items.append({"text": (t.get("subject") or "")[:200],
+                      "state": STATE_MAP.get(st, "pending")})
+    if not total:
+        return None
+    label = f"{done}/{total}" + (f" · {active}" if active else "")
+    return (done / total, label[:120], items, active)
+
+
+def main():
+    by_ws, sess = sessions()
+    rows = workspaces()
+    taken = {w.get("custom_title") or w.get("title") for w in rows}
+
+    # sidebar-state per workspace: the only place progress and the status pills
+    # are readable. cmux's own `pr` field used to gate the gh probe from here too;
+    # that gate is gone (see signals()), so only the state itself is kept.
+    state_by_ws = {w.get("id"): state_of(w.get("id") or "") for w in rows}
+
+    # One batched Jira call for every ticket on the board.
+    jira = jira_status([ticket_key(branch(w.get("current_directory") or ""))
+                        for w in rows])
+
+    # Two cheap reads for the whole board, not per workspace: the registry is
+    # local files, and one `sbx ls` covers every sandbox at once.
+    sb_roots = sandbox_registry()
+    sb_states = sandbox_states() if sb_roots else {}
+    deep_roots, deep_sids = deep_plan_markers()
+    plan_roots, plan_sids = deep_plan_states()
+
+    # --- the freshness stamp --------------------------------------------------
+    # The board has no way to know when it was last reconciled: the sidebar
+    # re-renders about once a second off live cmux state, but everything crew
+    # derives — CI, review, Jira, sandbox, phase — only moves when this runs, and
+    # with `crew timer off` that is turn-end only. A board that is genuinely calm
+    # and a board that has not been reconciled in an hour look identical.
+    #
+    # So publish the time. `description` is the only writable bound field, which
+    # forces a choice: a timestamp changes every run, so whichever workspace
+    # carries it gets written every run, against the conditional-write rule that
+    # keeps this script quiet. Stamping ONE workspace costs one write per sync
+    # instead of one per workspace per sync, and the board reads the newest stamp
+    # it can see — so a leftover on a former carrier is outvoted, not believed.
+    #
+    # Lowest id wins, so the carrier is stable across runs rather than depending
+    # on cmux's ordering. Hooks cannot clobber it: crew_token_set strips only its
+    # own key and re-appends everything else.
+    stamp_ws = min((w.get("id") or "" for w in rows), default="")
+    stamp_now = int(time.time())
+
+    # One git-root lookup per workspace for the whole run, shared by the signal
+    # probe, the planning badge and the colour assignment. A non-repo cwd (the
+    # plain ~/code rows) resolves to "" and is never probed -- gh cannot answer
+    # there, and the caches those rows accumulated were pure noise: one held a
+    # 5.7-day-old CLOSED PR that kept resurrecting a `gone:merged` badge.
+    roots = {}
+    for w in rows:
+        cwd = w.get("current_directory") or ""
+        roots[w.get("id")] = toplevel(cwd) if cwd else ""
+
+    gh_tokens, gh_human, gh_raw, gh_ok = {}, {}, {}, {}
+    targets = [(w.get("id"), w.get("current_directory") or "") for w in rows
+               if (w.get("current_directory") or "")]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futs = {wsid: pool.submit(signals, cwd, bool(roots.get(wsid)))
+                for wsid, cwd in targets}
+        for wsid, f in futs.items():
+            try:
+                # Comfortably above gh_state's own 30s subprocess timeout, so a
+                # slow gh is reported by the inner timeout rather than surfacing
+                # here as an indistinguishable failure.
+                t, h, raw = f.result(timeout=90)
+                ok = True
+            except Exception:
+                t, h, raw, ok = [], [], {}, False
+            gh_tokens[wsid], gh_human[wsid], gh_raw[wsid] = t, h, raw
+            gh_ok[wsid] = ok
+
+    for w in rows:
+        ws = w.get("id") or ""
+        title = w.get("custom_title") or w.get("title") or ""
+        cwd = w.get("current_directory") or ""
+        st = state_by_ws.get(ws) or {}   # progress + pills only live here
+
+        sid = (by_ws.get(ws) or {}).get("sessionId") or ""
+        rec = sess.get(sid) or {}
+        lifecycle = rec.get("agentLifecycle") or ""
+        live = bool(sid) and alive(rec.get("pid"))
+
+        # --- name -----------------------------------------------------------
+        want = desired_name(cwd) if cwd else ""
+        if want and want != title and may_rename(w):
+            # Two workspaces can legitimately sit at the same path on the same
+            # branch. Renaming both to the same string helps nobody, so leave
+            # the later one as it is rather than create a duplicate.
+            if want in taken:
+                if VERBOSE:
+                    note(ws, f"skipped name '{want}' (already used by another workspace)")
+            else:
+                cmux("rename-workspace", "--workspace", ws, want)
+                taken.add(want)
+                note(ws, f"name -> {want}")
+
+        # --- plan / progress / pill -----------------------------------------
+        # Progress is a function of the PLAN, not of liveness. A live agent can
+        # sit on a stale bar indefinitely — its task list gets cleared while the
+        # session keeps running, and no hook fires to retract the bar. So the
+        # rule is simply: plan present -> publish it, plan absent -> no bar.
+        p = plan(sid) if sid else None
+        has_progress = st.get("progress", "none") != "none"
+        if p:
+            frac, label, items, active = p
+            if st.get("progress", "") != f"{frac:.2f} {label}":
+                cmux("set-progress", f"{frac:.4f}", "--label", label, "--workspace", ws)
+                cmux("todo", "set", json.dumps(items, separators=(",", ":")),
+                     "--workspace", ws)
+                note(ws, f"progress -> {label[:48]}")
+        elif has_progress:
+            cmux("clear-progress", "--workspace", ws)
+            note(ws, "cleared stale progress (no plan)")
+
+        # The pill names the task in flight, so it is only truthful while the
+        # agent is actually mid-turn on a task. `needsInput` and `idle` both
+        # mean it is not, and neither reliably fires a Stop that would clear it.
+        pills = st.get("pills") or {}
+        working = live and lifecycle == "running" and p and p[3]
+        if "claude" in pills and not working:
+            cmux("clear-status", "claude", "--workspace", ws)
+            note(ws, f"cleared stale task pill ({lifecycle or 'no session'})")
+
+        # --- phase ------------------------------------------------------------
+        # The board reads this out of `description` because it has no
+        # agentLifecycle binding. Hooks publish it, but a missed Stop or a
+        # pre-crew session leaves it wrong, so reconcile it from the store.
+        #
+        # Reconcile only in the direction cmux can actually vouch for.
+        # `running` is unambiguous: the agent is mid-turn. `needsInput` is not —
+        # it means "Claude is sitting at its prompt", which is equally true of an
+        # agent blocked on a question and one that finished its turn an hour ago
+        # and is just left open. Minting phase:waiting from it re-added exactly
+        # what the Stop hook had cleared, so every idle Claude session parked
+        # itself in "Needs you" for as long as the terminal stayed open.
+        #
+        # So for needsInput: keep a phase:waiting the hooks published (the
+        # Notification event, which really does mean blocked), never invent one.
+        tok = []
+        have_desc = w.get("description") or ""
+        root = roots.get(ws, "")
+        if live and lifecycle == "running":
+            tok.append("phase:working")
+        elif live and lifecycle == "needsInput" and "phase:waiting" in have_desc:
+            tok.append("phase:waiting")
+        # "I could not find out" must never be published as "there is nothing".
+        #
+        # Two ways to not find out: the future raised or timed out (gh_ok False),
+        # or gh ran but answered nothing definitive (fresh False -- auth, network,
+        # a missing binary). Either way, union what we do have with the signal
+        # tokens already on the board, so a probe failure degrades to "unchanged"
+        # rather than wiping every badge.
+        #
+        # A union rather than a replacement because `gone:merged` comes from a
+        # local git check that still works when gh is down, so it can be genuinely
+        # new information in the same run that lost everything else.
+        probed = gh_tokens.get(ws, [])
+        blind = (not gh_ok.get(ws, True)) or (
+            bool(root) and gh_raw.get(ws, {}).get("fresh") is False)
+        if blind:
+            carried = [t for t in have_desc.split()
+                       if t.startswith(SIGNAL_PREFIXES) and t not in probed]
+            if carried:
+                note(ws, f"probe blind; kept {' '.join(carried)}")
+            probed = probed + carried
+        tok += probed
+        sb_name = sandbox_for(cwd, sb_roots) if sb_roots else ""
+        sb_tok = sandbox_token(sb_name, sb_states)
+        tok += sb_tok
+        # A sandboxed workspace publishes no phase of its own, so fill it in from
+        # the transcript when the sandbox is up and nothing else claimed a phase.
+        if "sandbox:running" in sb_tok \
+           and not any(t.startswith("phase:") for t in tok):
+            ph = sandbox_phase(sb_name)
+            if ph:
+                tok.append("phase:" + ph)
+        # --- planning -----------------------------------------------------------
+        # deep-plan outranks plain plan mode: it is the stronger claim, and a
+        # deep-plan session usually sits in plan mode anyway, so reporting both
+        # would just be noise.
+        #
+        # Plain plan mode is gated on `live`. It is read from the transcript, which
+        # keeps its last value forever -- so without the gate every session that
+        # ever planned would look like it still was.
+        # The tracker outranks the marker: it knows the same "awaiting its check"
+        # fact AND what came after it, so where both exist the marker is redundant.
+        # The marker still wins for plans rendered before the tracker existed, which
+        # is why both are read.
+        tracked = plan_roots.get(root) or plan_sids.get(sid)
+        if tracked:
+            tok.extend(tracked["tokens"])
+        elif (root and root in deep_roots) or (sid and sid in deep_sids):
+            tok.append("plan:deep")
+        elif live and permission_mode(sid) == "plan":
+            tok.append("plan:mode")
+
+        jt = jira_token(jira.get(ticket_key(branch(cwd))))
+        if jt:
+            tok.append(jt)
+        if ws and ws == stamp_ws:
+            tok.append(f"synced:{stamp_now}")
+        # Canonical order for the signal tokens, in place. Without this a blind
+        # run emits the same set in a different order -- the local `gone:merged`
+        # check runs before the carried-forward gh tokens -- and every blackout
+        # costs one pointless description write per workspace. The board reads with
+        # .contains(), so order is invisible to it; it matters only for the
+        # conditional-write rule that keeps this script quiet.
+        idx = [i for i, t in enumerate(tok) if t.startswith(SIGNAL_PREFIXES)]
+        if idx:
+            rank = {p: n for n, p in enumerate(SIGNAL_PREFIXES)}
+            ordered = sorted(
+                (tok[i] for i in idx),
+                key=lambda t: (rank[next(p for p in SIGNAL_PREFIXES if t.startswith(p))], t))
+            for slot, t in zip(idx, ordered):
+                tok[slot] = t
+
+        want_desc = " ".join(tok)
+        if want_desc != have_desc:
+            if want_desc:
+                cmux("workspace-action", "--action", "set-description",
+                     "--description", want_desc, "--workspace", ws)
+            else:
+                cmux("workspace-action", "--action", "clear-description",
+                     "--workspace", ws)
+            # Report only real signal changes. The stamp moves on every run by
+            # definition, and letting it into the change log would mean `crew
+            # sync` never printed an empty diff again — which is exactly the
+            # signal that tells you the board is already correct.
+            if without_stamp(want_desc) != without_stamp(have_desc):
+                note(ws, f"signals -> {without_stamp(want_desc) or '(cleared)'}")
+
+        # --- identity color ---------------------------------------------------
+        # One color per worktree, worn in all three places you look at it: cmux's
+        # workspace strip, the board's leading sliver, and the VS Code window via
+        # Peacock. cmux's `custom_color` is the single source of truth — the
+        # sidebar DSL already binds it as `w.color` — so unlike every other crew
+        # signal this one needs no `description` token at all.
+        #
+        # Gated on toplevel(): a workspace that is not a git checkout (the plain
+        # ~/code rows) has no worktree to identify and correctly stays colorless.
+        #
+        # Only ever fills a blank. cmux's own color picker offers exactly the
+        # sixteen colors in crew-color's palette, so "is this one of ours?" cannot
+        # tell a crew assignment from a hand-picked one — and guessing wrong means
+        # silently overwriting a choice made on purpose. Recoloring is therefore
+        # deliberate: clear it in cmux (or `crew color free`) and sync again.
+        if root and not (w.get("custom_color") or ""):
+            hexv = color_for(root)
+            if hexv:
+                cmux("workspace-action", "--action", "set-color",
+                     "--color", hexv, "--workspace", ws)
+                note(ws, f"color -> {hexv}")
+
+        # --- lane -------------------------------------------------------------
+        override = lane_of(ws)
+        if override and not live:
+            cmux("workspace", "status", "set", "auto", "--workspace", ws)
+            note(ws, f"released stuck lane '{override}' (session gone)")
+        elif override == "needs-attention" and "phase:waiting" not in want_desc:
+            # The Notification hook pins this lane, and only a Stop releases it —
+            # so an agent that was blocked, got answered, and then went quiet at
+            # its prompt kept the lane forever. Tie it to the same truth the
+            # board uses: no phase:waiting, no needs-attention. That covers the
+            # mid-turn case (which used to be the only one handled here) and the
+            # idle-at-prompt case that made a merely-open session look urgent.
+            cmux("workspace", "status", "set", "auto", "--workspace", ws)
+            note(ws, f"released 'needs-attention' ({lifecycle or 'no session'}, not blocked)")
+
+    # --- transition notifications --------------------------------------------
+    # Only on change. Steady state is silent, which is the whole point: with a
+    # dozen worktrees, "notify while bad" would fire constantly and get muted.
+    # The last-notified signature lives in the same gh cache file the poll
+    # already writes, so a failed refresh cannot read as "it went green".
+    for w in rows:
+        ws = w.get("id") or ""
+        cwd = w.get("current_directory") or ""
+        raw = gh_raw.get(ws) or {}
+        if not raw.get("pr") or DRY:
+            continue
+        sig = {
+            "jira": jira_token(jira.get(ticket_key(branch(cwd)))),
+            "ci": "fail" if raw.get("ciFail") else ("run" if raw.get("ciPending") else "pass"),
+            "review": raw.get("review") or "",
+            "conflict": raw.get("mergeable") == "CONFLICTING",
+            "state": raw.get("prState") or "",
+        }
+        prev = raw.get("notified") or {}
+        if prev == sig:
+            continue
+
+        label = w.get("custom_title") or w.get("title") or os.path.basename(cwd)
+        msgs = []
+        if sig["ci"] != prev.get("ci"):
+            if sig["ci"] == "fail":
+                msgs.append("CI red: " + ", ".join((raw.get("ciFail") or [])[:3]))
+            elif sig["ci"] == "pass" and prev.get("ci") == "fail":
+                msgs.append("CI green again")
+        if sig["review"] != prev.get("review"):
+            if sig["review"] == "APPROVED":
+                msgs.append("approved")
+            elif sig["review"] == "CHANGES_REQUESTED":
+                msgs.append("changes requested")
+        if sig["jira"] != prev.get("jira") and prev.get("jira"):
+            entry = jira.get(ticket_key(branch(cwd)))
+            if entry:
+                msgs.append(f"Jira → {entry[0]}")
+        if sig["conflict"] and not prev.get("conflict"):
+            msgs.append("merge conflicts")
+        if sig["state"] in ("MERGED", "CLOSED") and sig["state"] != prev.get("state"):
+            msgs.append(f"PR {sig['state'].lower()} — worktree can go")
+
+        # First observation seeds the baseline without shouting about it.
+        if msgs and prev:
+            cmux("notify", "--title", label, "--subtitle", "crew:pr",
+                 "--body", f"#{raw['pr']} " + " · ".join(msgs), "--workspace", ws)
+            note(ws, "notified: " + " · ".join(msgs))
+            # Chime on good news only. Bad news already arrives as a banner, and
+            # a pleasant sound attached to a failure trains you to dread it.
+            good = (sig["ci"] == "pass" and prev.get("ci") == "fail") \
+                or sig["review"] == "APPROVED" and prev.get("review") != "APPROVED" \
+                or sig["state"] == "MERGED" and prev.get("state") != "MERGED"
+            if good:
+                chime()
+        raw["notified"] = sig
+        try:
+            with open(gh_cache_path(cwd), "w") as fh:
+                json.dump(raw, fh)
+        except Exception:
+            pass
+
+    if PRUNE:
+        live_ws = {x.get("id") for x in rows}
+        for name in os.listdir(STATE) if os.path.isdir(STATE) else []:
+            if name.startswith("lane-") and name[5:] not in live_ws:
+                if not DRY:
+                    os.remove(os.path.join(STATE, name))
+                changes.append((name[5:13], "pruned stale lane marker"))
+
+    if changes:
+        for ws, what in changes:
+            print(f"  {ws}  {what}")
+    elif VERBOSE:
+        print("  already in sync")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

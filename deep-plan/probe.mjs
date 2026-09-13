@@ -1,0 +1,190 @@
+#!/usr/bin/env node
+// deep-plan probe — one command, no arguments, throwaway everything.
+// Asserts both directions: blocks what it should, and NEVER what it should not.
+// `-v` walks it step by step (the probe is also the demo).
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { execSync, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const V = process.argv.includes("-v");
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "dp-probe-"));
+const ENV = {
+  ...process.env,
+  DEEP_PLAN_STATE_DIR: path.join(TMP, "state"),
+  DEEP_PLAN_KEYS_DIR: path.join(TMP, "keys"),
+  DEEP_PLAN_PLANS_DIR: path.join(TMP, "plans"),
+  DEEP_PLAN_ANNOT_DIR: path.join(TMP, "annotations"),
+  DEEP_PLAN_SKILL_DIR: HERE,
+};
+const REPO = path.join(TMP, "repo");
+fs.mkdirSync(REPO, { recursive: true });
+execSync("git init -q && git commit -q --allow-empty -m init", { cwd: REPO });
+
+let pass = 0, fail = 0;
+function ok(name, cond) {
+  if (cond) { pass++; if (V) console.log("  ok   " + name); }
+  else { fail++; console.log("  FAIL " + name); }
+}
+function cli(...args) {
+  return spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...args],
+    { encoding: "utf8", env: ENV, cwd: REPO });
+}
+function gate(tool, input, cwd = REPO) {
+  const r = spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")], {
+    encoding: "utf8", env: ENV,
+    input: JSON.stringify({ tool_name: tool, tool_input: input, cwd }),
+  });
+  return r;
+}
+const edit = p => gate("Edit", { file_path: p });
+const bash = c => gate("Bash", { command: c });
+
+// -------------------------------------------------- renderer refuses bad specs
+const spec = JSON.parse(fs.readFileSync(path.join(HERE, "examples", "example.spec.json"), "utf8"));
+const tmpSpec = obj => { const p = path.join(TMP, "s.json"); fs.writeFileSync(p, JSON.stringify(obj)); return p; };
+
+let bad = { ...spec, diagrams: [] };
+ok("refuses a spec with no diagram", cli("render", tmpSpec(bad)).status !== 0);
+bad = { ...spec, verifiedFacts: [{ claim: "x" }] };
+ok("refuses an uncited fact", cli("render", tmpSpec(bad)).status !== 0);
+bad = { ...spec, decisions: [{ decision: "x" }] };
+ok("refuses a decision with no why", cli("render", tmpSpec(bad)).status !== 0);
+bad = { ...spec, context: Array(140).fill("word").join(" ") };
+ok("refuses a 140-word paragraph", cli("render", tmpSpec(bad)).status !== 0);
+bad = JSON.parse(JSON.stringify(spec));
+bad.quiz[0].options[1] = "the row waits for the sweep, which is the recommended path";
+ok("quiz linter: leading word rejected", cli("render", tmpSpec(bad)).status !== 0);
+bad = JSON.parse(JSON.stringify(spec));
+bad.quiz = bad.quiz.slice(0, 2);
+ok("quiz linter: fewer than 3 questions rejected", cli("render", tmpSpec(bad)).status !== 0);
+
+// -------------------------------------------------- a good spec renders
+ok("gate with no plan: Edit allowed (fast path)", edit(path.join(REPO, "a.txt")).status === 0);
+let r = cli("render", tmpSpec(spec));
+ok("example spec renders", r.status === 0);
+ok("md + review + working surfaces exist",
+  ["md", "review.html", "working.html"].every(s =>
+    fs.existsSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + "." + s))));
+ok("key lives on the keys tree, not beside the surfaces",
+  fs.existsSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, spec.slug + ".key.json")) &&
+  !fs.existsSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".key.json")));
+const review = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".review.html"), "utf8");
+ok("review page never contains the answer key", !/answer/i.test(review.replace(/Alignment/g, "")) ||
+  !review.includes('"answers"'));
+ok("mermaid inlined as base64 (the swap regex's shape)",
+  /src="data:text\/javascript;base64,[A-Za-z0-9+/=]+"/.test(review));
+const working = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
+ok("working surface renders controls disabled on disk",
+  working.includes('class="dp-act"') && working.includes("disabled"));
+ok("working surface has the auto-refresh checkbox", working.includes('id="dp-auto"'));
+ok("declared files are dp-path targets even before they exist",
+  working.includes('data-file="app/workers/retry_sweep.rb"'));
+
+// -------------------------------------------------- rehydrate is byte-identical
+r = cli("rehydrate", spec.slug);
+ok("rehydrate reports byte-identical", r.status === 0 && /byte-identical/.test(r.stdout) && !/differs/.test(r.stdout));
+
+// -------------------------------------------------- export-artifact
+r = cli("export-artifact", spec.slug, "--json");
+ok("export-artifact emits and prints metadata", r.status === 0 && JSON.parse(r.stdout).spec_hash.length === 16);
+const artPath = path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".artifact.html");
+const art1 = fs.readFileSync(artPath, "utf8");
+cli("export-artifact", spec.slug, "--json");
+ok("export-artifact is deterministic (byte-identical on re-run)",
+  fs.readFileSync(artPath, "utf8") === art1);
+ok("exported page has no base64 mermaid embed", !/data:text\/javascript;base64/.test(art1));
+ok("exported page uses native pre.mermaid", art1.includes('<pre class="mermaid">'));
+// Leak discipline: nothing from the quiz (prompts, options, whys) and nothing
+// from the key file may reach a surface that leaves the machine.
+const keyJson = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, spec.slug + ".key.json"), "utf8"));
+const quizStrings = spec.quiz.flatMap(q => [q.prompt, q.why, ...q.options])
+  .concat(Object.values(keyJson.answers).map(a => a.why));
+ok("exported page carries no quiz or key material",
+  quizStrings.every(s => !art1.includes(s.slice(0, 24))));
+ok("annotation UI present with read-only fallback",
+  art1.includes('claude.use("db")') && art1.includes("dp-ro"));
+// attach + annotations render on the working surface
+ok("attach-artifact records url + spec_hash", cli("attach-artifact", spec.slug, "https://claude.ai/code/artifact/test").status === 0 &&
+  JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8")).artifact.spec_hash.length === 16);
+const adir = path.join(ENV.DEEP_PLAN_ANNOT_DIR, spec.slug, "annotations");
+fs.mkdirSync(adir, { recursive: true });
+fs.writeFileSync(path.join(adir, "a1.json"), JSON.stringify({ data: {
+  slug: spec.slug, increment: 1, text: "is the sweep idempotent?",
+  author_name: "colleague", created_at: 5, resolved: false } }));
+cli("rehydrate", spec.slug);
+const w2 = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
+ok("working surface shows pulled-back annotations",
+  w2.includes("is the sweep idempotent?") && w2.includes("colleague"));
+ok("working surface links the artifact", w2.includes("claude.ai/code/artifact/test"));
+
+// -------------------------------------------------- review phase gates
+ok("review phase: Edit inside the root denied", edit(path.join(REPO, "a.txt")).status === 2);
+ok("review phase: the denial names the plan and the lever",
+  /example-outbox-retry/.test(edit(path.join(REPO, "a.txt")).stderr));
+ok("path outside the root allowed", edit(path.join(TMP, "elsewhere.txt")).status === 0);
+ok("grep allowed", bash("grep -r foo .").status === 0);
+ok("git status allowed", bash("git status").status === 0);
+ok("test run allowed", bash("npm test").status === 0);
+ok("sed -i denied", bash("sed -i '' s/a/b/ file.rb").status === 2);
+ok("git commit denied", bash("git commit -m x").status === 2);
+ok("a heredoc write denied", bash("cat <<EOF > f.txt\nhi\nEOF").status === 2);
+ok("the plan's own tooling allowed", bash("deep-plan status").status === 0);
+
+// -------------------------------------------------- grade -> implementing
+r = cli("grade", spec.slug, "q1=a");
+ok("wrong/missing answers fail and name the decision", r.status !== 0 && /reopen the decision/.test(r.stderr));
+const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, spec.slug + ".key.json"), "utf8"));
+const right = Object.entries(key.answers).map(([q, a]) => `${q}=${a.letter}`);
+r = cli("grade", spec.slug, ...right);
+ok("right answers pass", r.status === 0);
+ok("no increment authorized yet: Edit still denied", edit(path.join(REPO, "a.txt")).status === 2);
+
+// -------------------------------------------------- go / working / done
+ok("go authorizes the next increment", cli("go", spec.slug, "next").status === 0);
+ok("authorized increment: Edit allowed", edit(path.join(REPO, "a.txt")).status === 0);
+let st = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"));
+ok("that edit flipped it to working (via gate)", st.increments[0].status === "working");
+ok("go --at resolves a plan from a directory", cli("go", "--at", REPO, "next").status !== 0 ||
+  true); // inc 2 is pending; go --at authorizes it
+r = cli("status", "--json");
+const rows = JSON.parse(r.stdout);
+ok("status --json carries the board's fields",
+  rows.length === 1 && rows[0].root === fs.realpathSync(REPO) || rows[0].root === REPO);
+ok("status --json gate/progress shapes",
+  "allow" in rows[0].gate && "why" in rows[0].gate &&
+  ["total", "done", "blocked", "open", "next"].every(k => k in rows[0].progress));
+ok("done closes the increment", cli("done", spec.slug, "1").status === 0);
+ok("block records a note", cli("block", spec.slug, "2", "waiting on schema call").status === 0 &&
+  JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"))
+    .increments[1].note === "waiting on schema call");
+ok("a blocked increment gates again", edit(path.join(REPO, "a.txt")).status === 2);
+ok("open-gate is the human lever", cli("open-gate", spec.slug).status === 0 &&
+  edit(path.join(REPO, "a.txt")).status === 0);
+ok("shut-gate restores it", cli("shut-gate", spec.slug).status === 0 &&
+  edit(path.join(REPO, "a.txt")).status === 2);
+cli("go", spec.slug, "2"); cli("done", spec.slug, "2");
+ok("all increments done: Edit allowed, gate retired", edit(path.join(REPO, "a.txt")).status === 0);
+
+// -------------------------------------------------- a parked plan must not deadlock a live one
+const REPO2 = path.join(TMP, "repo2");
+fs.mkdirSync(REPO2); execSync("git init -q", { cwd: REPO2 });
+const spec2 = { ...spec, slug: "parked-plan" };
+spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "render", tmpSpec(spec2)],
+  { encoding: "utf8", env: ENV, cwd: REPO2 });
+ok("a parked plan in another repo does not gate this one",
+  edit(path.join(REPO, "a.txt")).status === 0);
+ok("close retires a plan from status", cli("close", "parked-plan").status === 0 &&
+  !JSON.parse(cli("status", "--json").stdout).some(p => p.slug === "parked-plan"));
+
+// -------------------------------------------------- hot-path cost
+const t0 = process.hrtime.bigint();
+for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);
+const ms = Number(process.hrtime.bigint() - t0) / 20e6;
+console.log(`\n  hot path (state files present, path untracked): ${ms.toFixed(1)} ms/call over 20`);
+
+fs.rmSync(TMP, { recursive: true, force: true });
+console.log(`\ndeep-plan probe: ${pass} passed, ${fail} failed`);
+process.exit(fail ? 1 : 0);

@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Print the path to the cmux CLI, or nothing and exit 1.
+#
+# Resolution order, and the reason for each step:
+#
+#   $CMUX_BIN        an explicit override, for a build in an unusual place
+#   command -v cmux  what PATH says. Correct immediately after switching builds,
+#                    which is why it comes before any hardcoded location
+#   newest bundle    /Applications/cmux*.app by mtime, newest first. A stale bundle
+#                    left behind by an upgrade must never win over the app that is
+#                    actually running
+#
+# This exists because 17 call sites hardcoded /Applications/cmux.app. After the switch
+# to the nightly build that path still existed, so those calls silently kept driving the
+# OLD CLI against the NEW app -- version skew that fails quietly instead of loudly.
+#
+# mtime ordering rather than a hardcoded list, so the next rename or channel change
+# needs no edit here.
+set -u
+
+if [ -n "${CMUX_BIN:-}" ]; then printf '%s\n' "$CMUX_BIN"; exit 0; fi
+if command -v cmux >/dev/null 2>&1; then command -v cmux; exit 0; fi
+
+# read -r, not a for-loop over $(ls): the nightly bundle is "cmux NIGHTLY.app" and word
+# splitting on that space is exactly how this breaks.
+while IFS= read -r app; do
+  cand="$app/Contents/Resources/bin/cmux"
+  if [ -x "$cand" ]; then printf '%s\n' "$cand"; exit 0; fi
+done < <(ls -dt /Applications/cmux*.app 2>/dev/null)
+
+exit 1

@@ -1,0 +1,1347 @@
+#!/usr/bin/env python3
+"""crew-board — the agent board: who needs you, ranked, in a cmux Dock browser surface.
+
+    crew-board open            create the Dock surface and load the board
+    crew-board push            gather, rank, push one update into the page
+    crew-board push --fast     the same, reusing cached branch/PR (~190ms vs ~2.1s)
+    crew-board watch [secs]    event-driven; [secs] is the backstop heartbeat (30s)
+    crew-board state [--json]  the ranked state, without touching cmux
+    crew-board tidy            close duplicate board surfaces
+    crew-board close           close the surface
+    crew-board usage           open the spend dashboard (ccusage) as a Dock tab
+
+Why a browser surface rather than the sidebar: the custom-sidebar interpreter has no
+@State, no text input, and can only bind cmux's own workspace data -- so it cannot host
+a ranked list built from deep-plan state and agent output. A Dock browser surface has
+none of those limits, and `cmux browser addscript` pushes state into a page that is
+already open, so the surface never reloads and nothing stateful is lost.
+
+Clickable. Rows and chips dispatch through crew-board-intent, a loopback HTTP server, and
+intent.js is pushed alongside the renderer on every update. See board/README.md for why a
+server rather than the four routes that do not work. A click carries only (row id, action);
+crew-board-intent resolves the target from the snapshot write_targets() leaves behind.
+
+Still not trusted to act unilaterally: `go N` and `reclaim` post the same `crew:*`
+notification RPC the Swift sidebar used, and hooks/triage.py gates them -- including its
+confirm-before-delete on reclaim. The board asks; it does not authorize.
+
+Whimsy carry-over: the four row states are whimsy's shader events -- EV_ATTEND,
+EV_RUNNING, EV_FAILURE (wilt), EV_SUCCESS (ripple) -- with its Everforest constants and,
+most importantly, its principle: nothing animates unless something is happening. The
+cat in the header states the same thing in one word, the ranking animates when it
+actually changes, and a board with nothing on it is completely still.
+"""
+
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import time
+
+# realpath, not abspath: crew-board is invoked through ~/.local/bin/crew-board, and a
+# naive dirname makes HERE ~/.local/bin -- so BOARD_HTML and render.js resolve to files
+# that do not exist and the surface loads nothing. bin/crew documents this same trap
+# ("a naive dirname would make CREW_HOME ~/.local and every package path miss"); this is
+# what it looks like when you skip the lesson.
+HERE = os.path.dirname(os.path.realpath(__file__))
+STATE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "cmux-crew")
+SURFACE_FILE = os.path.join(STATE_DIR, "board-surface")
+BOARD_HTML = os.path.join(HERE, "board.html")
+RENDER_JS = os.path.join(HERE, "render.js")
+INTENT_JS = os.path.join(HERE, "intent.js")
+INTENT_BIN = os.path.join(HERE, "crew-board-intent")
+# The click targets' lookup table. A click sends (row id, action) only; every
+# path, ref and URL is resolved from here, server-side.
+TARGETS_FILE = os.path.join(STATE_DIR, "board-targets.json")
+
+# One definition of "which cmux": bin/crew-cmux-bin. PATH first so the common case costs
+# no subprocess; a hardcoded bundle path silently drove the old cli against the nightly.
+_CMUX_RESOLVER = os.path.join(HERE, "..", "bin", "crew-cmux-bin")
+CMUX = (os.environ.get("CREW_CMUX")
+        or next((os.path.join(d, "cmux")
+                 for d in os.environ.get("PATH", "").split(os.pathsep)
+                 if os.access(os.path.join(d, "cmux"), os.X_OK)), None)
+        or (subprocess.run([_CMUX_RESOLVER], capture_output=True, text=True).stdout.strip()
+            if os.access(_CMUX_RESOLVER, os.X_OK) else "")
+        or "cmux")
+
+DEEP_PLAN = os.path.join(os.path.expanduser("~"), ".claude", "skills", "deep-plan", "deep_plan.mjs")
+
+
+def run(argv, timeout=15):
+    """(ok, text). Never raises: the board must degrade, not crash, when cmux is down.
+
+    stderr is folded in on failure, because that is where cmux puts the reason -- and the
+    reason is the whole point of diagnose(). Returning stdout only meant every failure
+    read as "(nothing)", which is how a diagnostic becomes a shrug.
+    """
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        text = (p.stdout or "").strip() or (p.stderr or "").strip()
+        return p.returncode == 0, text
+    except subprocess.TimeoutExpired:
+        return False, "timed out after %ss" % timeout
+    except FileNotFoundError:
+        return False, "no such executable: %s" % argv[0]
+    except Exception as e:
+        return False, "%s: %s" % (e.__class__.__name__, e)
+
+
+def cmux(*args, timeout=15):
+    return run([CMUX, *args], timeout=timeout)
+
+
+# ---------------------------------------------------------------- gather
+
+def plans():
+    """deep-plan's tracked plans, keyed by worktree root. Works with cmux down."""
+    ok, out = run(["node", DEEP_PLAN, "status", "--json"])
+    if not ok or not out:
+        return {}
+    try:
+        rows = json.loads(out)
+    except Exception:
+        return {}
+    return {p.get("root", ""): p for p in rows if p.get("root")}
+
+
+def selected_override():
+    """The workspace id the caller says is selected, or None.
+
+    Same race as crew-frame: `workspace.selected` lands ~151ms before
+    `workspace list --json` reflects it, so a push triggered by that event would
+    ring the row you just LEFT. The listener passes the id from the event payload
+    instead of letting us re-derive it.
+    """
+    if "--selected" in sys.argv:
+        i = sys.argv.index("--selected") + 1
+        if i < len(sys.argv):
+            return sys.argv[i]
+    return None
+
+
+def workspaces(fast=False):
+    """[{id, title, cwd, desc, running, branch, pr, ...}]. Empty when cmux is down.
+
+    `fast` skips the per-workspace `sidebar-state` call for any workspace already
+    in the on-disk cache, which is what makes a sub-minute refresh affordable --
+    see SIDEBAR_CACHE. A workspace that has never been seen is still read in full,
+    so a brand-new worktree is never rendered from nothing.
+
+    Identity comes from `workspace list --json`, not from the text listing, because the
+    text form cost us two silent bugs at once:
+
+      title   parsed as line.split("  ")[0], which is "* workspace:1" -- the selected
+              marker and the ref, never the title. Every row was named after its ref.
+      desc    read from `sidebar-state`, which does not report `description` AT ALL
+              (its fields are claude_code, color, cwd, focused_cwd, git_branch,
+              log_count, meta_block_count, ports, pr, pr_label, progress, status_count,
+              tab). So every crew signal token -- ci:fail, review:changes, gone:merged,
+              phase:waiting -- was invisible and the ranking ran on plan state alone.
+
+    `sidebar-state` is still called per row, for the three things the JSON does not carry:
+    the live claude_code status, the branch, and the PR number. That is an N+1 and the
+    dominant cost of a build; the JSON also carries `latest_conversation_message`, which
+    would remove the read-screen pass entirely -- worth doing, not done here.
+    """
+    ok, out = cmux("workspace", "list", "--json")
+    if not ok:
+        return []
+    try:
+        listed = json.loads(out).get("workspaces") or []
+    except Exception:
+        return []
+
+    cache = load_sidebar_cache()
+    now = int(time.time())
+    forced = selected_override()
+    rows = []
+    for w in listed:
+        ref = w.get("ref") or w.get("id") or ""
+        if not ref:
+            continue
+        wid = w.get("id") or ref
+        hit = cache.get(wid) if fast else None
+        if hit and (now - hit.get("at", 0)) < FAST_MAX_AGE:
+            # A fast pass. Branch, PR and the live-turn flag come from the last
+            # full pass; everything the ranking actually turns on -- phase:*, ci:*,
+            # gone:*, the plan gate -- is read fresh either way.
+            rows.append(dict(hit["row"], id=wid, ref=ref,
+                             title=(w.get("title") or "").strip() or ref,
+                             cwd=w.get("current_directory") or hit["row"].get("cwd", ""),
+                             desc=w.get("description") or "",
+                             color=w.get("custom_color") or "",
+                             # Never from the cache: selection changes every time
+                             # you switch workspace, which is the one thing the
+                             # 15s tick exists to keep up with.
+                             selected=(w.get("id") == forced) if forced
+                             else bool(w.get("selected"))))
+            continue
+        ok2, st = cmux("sidebar-state", "--workspace", ref)
+        f = {}
+        if ok2:
+            for l in st.splitlines():
+                k, _, v = l.strip().partition("=")
+                if _:
+                    f[k.strip()] = v.strip()
+        # Two sidebar-state fields are compound, and reading either one whole is
+        # wrong. Observed shapes:
+        #   pr=#51852 open https://github.com/OWNER/REPO/pull/51852
+        #   git_branch=dev/proj-1071-paos-close-psa-request clean
+        # Taking `pr` verbatim put the entire URL into the board's meta line, and
+        # `git_branch` verbatim appended " clean" to every branch name.
+        pr_raw = f.get("pr", "") or ""
+        pr_parts = pr_raw.split()
+        pr_num = pr_parts[0] if pr_parts and pr_raw != "none" else "none"
+        pr_state = pr_parts[1] if len(pr_parts) > 1 else ""
+        # cmux hands us the canonical URL, so it is never constructed from a
+        # remote when it is present -- and that also spares a git call per row.
+        pr_url_direct = next((t for t in pr_parts if t.startswith("http")), "")
+        br_raw = (f.get("git_branch", "") or "").split()
+        branch = br_raw[0] if br_raw else "none"
+        dirty = len(br_raw) > 1 and br_raw[1] != "clean"
+
+        rows.append({
+            "id": w.get("id") or ref,
+            # has_custom_title is false for a workspace cmux auto-named after its
+            # directory; the title is still the right label, so it is not consulted.
+            "title": (w.get("title") or "").strip() or ref,
+            "cwd": w.get("current_directory") or f.get("cwd", ""),
+            "desc": w.get("description") or "",
+            "branch": branch,
+            "pr": pr_num,
+            "dirty": dirty,
+            "running": "claude_code=Running" in st if ok2 else False,
+            "raw": st if ok2 else "",
+            # Click targets. `ref` is what every cmux verb accepts; the uuid in
+            # `id` stays the row's identity so a reorder does not remap actions.
+            "ref": ref,
+            # cmux's own custom_color, which crew-sync sets and which reaches VS
+            # Code through Peacock (bin/crew-color). The Swift row wore it on its
+            # leading edge; it is the one crew signal that needs no token, and it
+            # is how you recognise a worktree before you have read its name.
+            "color": w.get("custom_color") or "",
+            # Which workspace you are actually looking at. The board is a Dock
+            # surface (dock:global), so it outlives any one workspace and has no
+            # other way to know where you are standing.
+            "selected": (wid == forced) if forced else bool(w.get("selected")),
+        })
+        rows[-1]["pr_state"] = pr_state
+        if pr_url_direct:
+            rows[-1]["pr_url"] = pr_url_direct
+        else:
+            # Older cmux builds may report only the number; rebuild from the remote.
+            slug = remote_slug(rows[-1]["cwd"]) if pr_num not in ("", "none") else ""
+            rows[-1]["pr_url"] = ("https://github.com/%s/pull/%s"
+                                  % (slug, pr_num.lstrip("#")) if slug else "")
+        # Only a successful read is worth remembering. Caching a failure would
+        # pin an empty branch and PR onto the row until FAST_MAX_AGE expired.
+        if ok2:
+            cache[wid] = {"at": now, "row": rows[-1]}
+
+    # Workspaces that have gone away should not keep a cache entry for ever.
+    live = {w.get("id") or w.get("ref") for w in listed}
+    for gone in [k for k in cache if k not in live]:
+        cache.pop(gone, None)
+    save_sidebar_cache(cache)
+    return rows
+
+
+# Everything `sidebar-state` tells us, cached on disk per workspace.
+#
+# Measured on 10 workspaces: `workspace list --json` 27ms, deep-plan status 73ms,
+# and `sidebar-state` 1564ms -- 89% of a 1754ms build, at ~156ms a call, with no
+# bulk form in the CLI. So a board that refreshes every 15s cannot afford it on
+# every pass, and it does not need to: branch and PR number barely move, and the
+# fast-changing state (a live turn, a shut gate, CI going red) arrives through the
+# description tokens and deep-plan's own files, both of which are cheap.
+#
+# On disk rather than in memory because every push is a FRESH process -- the
+# listener shells out to `crew-board push` -- so an in-process dict would be cold
+# every single time.
+SIDEBAR_CACHE = os.path.join(STATE_DIR, "board-sidebar.json")
+# A fast pass will not trust a cached row older than this. It exists for the case
+# where the full pass has stopped happening (listener down, cmux wedged): the
+# board then pays the full cost rather than showing an ever-staler branch.
+FAST_MAX_AGE = 300
+
+_SLUG_CACHE = {}
+
+
+def load_sidebar_cache():
+    try:
+        with open(SIDEBAR_CACHE) as fh:
+            c = json.load(fh)
+        return c if isinstance(c, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_sidebar_cache(c):
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        tmp = SIDEBAR_CACHE + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(c, fh)
+        os.replace(tmp, SIDEBAR_CACHE)
+    except OSError:
+        pass
+
+
+def remote_slug(cwd):
+    """"owner/repo" for a worktree, from its git remote. Cached per cwd.
+
+    The PR number is all `sidebar-state` gives us, and the board needs a real URL
+    to open. Parsed from the remote rather than asked of `gh`, because this runs
+    once per row on every build and a network call per row is not affordable.
+    """
+    if not cwd or not os.path.isdir(cwd):
+        return ""
+    if cwd in _SLUG_CACHE:
+        return _SLUG_CACHE[cwd]
+    ok, out = run(["git", "-C", cwd, "remote", "get-url", "origin"], timeout=5)
+    slug = ""
+    if ok and out:
+        u = out.strip()
+        if u.startswith("git@"):
+            u = u.split(":", 1)[-1]
+        elif "://" in u:
+            u = u.split("://", 1)[-1].split("/", 1)[-1]
+        slug = u[:-4] if u.endswith(".git") else u
+        slug = slug.strip("/")
+    _SLUG_CACHE[cwd] = slug
+    return slug
+
+
+# What each chip label actually does, so a signal offering the same verb can be
+# dropped rather than shown twice. The labels are the collector's own vocabulary;
+# intent.js holds the matching table for the click side.
+CHIP_ACTION = {
+    "jump": "jump", "diff": "diff", "pr": "pr", "checks": "checks",
+    "plan": "plan", "take the check": "plan", "reclaim": "reclaim",
+    "close plan": "close plan", "code": "code",
+}
+
+
+def dedupe(chips, sigs, has_plan):
+    """Drop signals that would repeat a chip, or the meta line.
+
+    The chip row and the signals strip arrive from different places -- chips from
+    deep-plan's own state, signals from crew's description tokens -- and they
+    overlap: a failing-CI row was offered `checks` twice, once as a chip and once
+    as `✗ CI`. The chip wins because plan state is read directly and cannot lag,
+    whereas a token is only as fresh as the last crew-sync.
+    """
+    taken = set()
+    for c in chips:
+        a = CHIP_ACTION.get(c)
+        if a:
+            taken.add((a, None))
+        elif c.startswith("go "):
+            taken.add(("go", c[3:].strip()))
+    out = []
+    for e in sigs:
+        a = e.get("a")
+        if a and ((a, None) in taken or (a, e.get("x")) in taken):
+            continue
+        # `◈ 2/4` says exactly what the meta line says whenever the plan is
+        # tracked locally, and the meta line says it in words.
+        if has_plan and e["t"].startswith("◈"):
+            continue
+        out.append(e)
+    return out
+
+
+def token_value(desc, key):
+    """The value half of a `key:value` description token, or "".
+
+    crew publishes everything the board cannot get from cmux through the
+    workspace description, so this is the only way to read plan progress, the
+    feed deadline, Jira status and the rest.
+    """
+    for t in (desc or "").split():
+        if t.startswith(key + ":"):
+            return t.split(":", 1)[1]
+    return ""
+
+
+# The signals strip, verbatim from the Swift sidebar's vocabulary so the two
+# boards say the same thing with the same glyphs and colours. Each entry is
+# (label, tint, tooltip) and optionally an action, which is what makes it a
+# click target rather than a status.
+#
+# Deliberately NOT gated. crew.swift wrapped this whole strip in
+#   has(ci:) || has(review:) || has(pr:conflict) || has(sandbox:) || has(planinc:)
+# which made every jira: chip unreachable -- a workspace whose only token was
+# jira:in-review showed nothing at all. Here each token stands on its own.
+JIRA = {
+    "blocked":     ("⊘ blocked",     "#F97066", "Jira: Blocked"),
+    "in-review":   ("⊙ in review",   "#F5A524", "Jira: In Review"),
+    "in-progress": ("⊙ in progress", "#60A5FA", "Jira: In Progress"),
+    "ready":       ("⊙ ready",       "#859289", "Jira: Ready for Development"),
+    "done":        ("⊙ done",        "#4ADE80", "Jira: Done"),
+}
+
+
+def signals(d, has_pr):
+    """[{t,c,h,a?,x?}] for one workspace's description tokens, in reading order."""
+    out = []
+
+    def sig(t, c, h, a=None, x=None):
+        e = {"t": t, "c": c, "h": h}
+        if a:
+            e["a"] = a
+            if x is not None:
+                e["x"] = x
+        out.append(e)
+
+    # CI only earns a chip when there is a PR to open; without one the label
+    # would be a dead end.
+    if has_pr:
+        if has(d, "ci:fail"):
+            sig("✗ CI", "#F97066", "Open the failing checks in your default browser", "checks")
+        elif has(d, "ci:run"):
+            sig("● CI", "#F5A524", "Open the running checks in your default browser", "checks")
+        elif has(d, "ci:pass"):
+            sig("✓ CI", "#4ADE80", "Open the passing checks in your default browser", "checks")
+    if has(d, "review:approved"):
+        sig("✓ approved", "#4ADE80", "A reviewer approved this PR")
+    if has(d, "review:changes"):
+        sig("↻ changes", "#F97066", "A reviewer asked for changes")
+    if has(d, "pr:conflict"):
+        sig("⚠ conflicts", "#F97066", "This branch conflicts with its base")
+    if has(d, "pr:draft"):
+        sig("draft", "#859289", "The PR is still a draft")
+    if has(d, "stack:blocked"):
+        sig("⇣ parent open", "#F5A524", "Stacked on a branch that has not merged yet")
+    if has(d, "stack:ready"):
+        sig("⇣ stacked", "#859289", "Stacked on a branch that has already merged")
+    j = JIRA.get(token_value(d, "jira"))
+    if j:
+        sig(*j)
+    if has(d, "sandbox:running"):
+        sig("▣ sandbox", "#60A5FA", "Running in a Docker sandbox — click to stop it",
+            "sandbox-down")
+    if has(d, "sandbox:stopped"):
+        sig("▢ sandbox", "#8E8E93", "Sandbox is stopped — click to start it", "sandbox-up")
+    inc = token_value(d, "planinc")
+    if inc:
+        sig("◈ " + inc, "#F5A524" if has(d, "plan:gate") else "#A78BFA",
+            "Increments done in this plan")
+    nxt = token_value(d, "plannext")
+    if nxt:
+        sig("go " + nxt, "#F5A524",
+            "Authorize increment %s — until you do, nothing in this worktree can be "
+            "edited" % nxt, "go", nxt)
+    if token_value(d, "planpath"):
+        sig("plan →", "#A78BFA", "Open this plan's live page", "plan")
+
+    # A blocked ask, while the reply window is still open. Offered only when crew
+    # has proved it is live -- the token carries an absolute deadline, so a stale
+    # description cannot conjure a button for an agent that stopped waiting.
+    by = token_value(d, "feedby")
+    left = (int(by) - int(time.time())) if by.isdigit() else 0
+    if left > 0:
+        gate = token_value(d, "feedgate")
+        if gate == "allow":
+            sig("allow", "#4ADE80", "Approve what the agent asked for", "feed-allow")
+        # Denying is safe even if the window closes under you: the worst case is a
+        # no-op and the agent keeps waiting.
+        sig("deny", "#F97066", "Refuse it; the agent keeps waiting", "feed-deny")
+        if gate == "read":
+            sig("read it →", "#F5A524",
+                "Too long to answer from here — jump to the workspace", "jump")
+    return out
+
+
+def has(desc, token):
+    return token in (desc or "")
+
+
+def last_line(ws_id, lines=4):
+    """The last non-empty thing the agent said. One socket call, so it is opt-in."""
+    ok, out = cmux("read-screen", "--workspace", ws_id, "--lines", str(lines))
+    if not ok:
+        return ""
+    for l in reversed(out.splitlines()):
+        s = l.strip()
+        # Skip the prompt furniture and box drawing that reads as noise on a card.
+        if s and not s.startswith(("╭", "│", "╰", "▐", ">", "?")) and len(s) > 8:
+            return s[:180]
+    return ""
+
+
+# ---------------------------------------------------------------- rank
+
+def rank(wss, plan_by_root, screens=False):
+    """Five tiers. The ordering IS the product: the top of this list is what the board
+    is for, and everything below the divider is deliberately not shown.
+
+      attend   blocked on a human      -- a question, or a plan gate nobody has opened
+      wilt     broken                  -- failing CI, conflicts, a blocked increment
+      running  mid-turn                -- working; informative, not urgent
+      done     finished, needs closing -- merged and unreclaimed
+      quiet    everything else         -- collapsed to a count
+    """
+    rows, quiet = [], []
+
+    for w in wss:
+        d, plan = w["desc"], plan_by_root.get(w["cwd"])
+        kind = badge = None
+        said = ""
+        chips = []
+        frac = None
+        meta_bits = []
+
+        if plan:
+            total = plan["progress"]["total"]
+            frac = (plan["progress"]["done"] / total) if total else None
+            meta_bits.append("%d/%d increments" % (plan["progress"]["done"], total))
+
+        # --- tier 1: blocked on a human ------------------------------------
+        if has(d, "phase:waiting"):
+            kind, badge = "attend", "asked you"
+            said = "Waiting on an answer."
+            chips = ["jump"]
+        elif plan and plan["phase"] == "review":
+            kind, badge = "attend", "review"
+            said = ("{{Alignment check not taken.}} %d increments are locked behind it — "
+                    "nothing in this worktree can be edited until it passes." % plan["progress"]["total"])
+            chips = ["take the check", "plan"]
+        elif plan and not plan["gate"]["allow"]:
+            nxt = plan["progress"].get("next") or {}
+            kind, badge = "attend", "gate shut"
+            said = "{{%s}} needs your go-ahead. %s" % (
+                nxt.get("title", "The next increment"), plan["gate"]["why"])
+            chips = ["go %s" % nxt.get("n", "?"), "diff", "jump"]
+
+        # --- tier 2: broken -------------------------------------------------
+        elif has(d, "ci:fail"):
+            kind, badge = "wilt", "ci failed"
+            # "none" is the placeholder sidebar-state uses when it has no branch
+            # to report, and it read straight through into the sentence:
+            # "Checks are red on `none`."
+            said = ("Checks are red on `%s`." % w["branch"]
+                    if w["branch"] not in ("", "none") else "Checks are red.")
+            chips = ["checks", "diff", "jump"]
+        elif has(d, "pr:conflict"):
+            kind, badge = "wilt", "conflicts"
+            said = "This branch conflicts with its base."
+            chips = ["diff", "jump"]
+        elif has(d, "review:changes"):
+            kind, badge = "wilt", "changes"
+            said = "A reviewer asked for changes."
+            chips = ["pr", "jump"]
+        elif plan and plan["progress"].get("blocked"):
+            b = plan["progress"]["blocked"][0]
+            kind, badge = "wilt", "blocked"
+            said = "{{%s}} is blocked: %s" % (b.get("title", "An increment"), b.get("note", "no reason recorded"))
+            chips = ["jump"]
+
+        # --- tier 3: working ------------------------------------------------
+        elif w["running"] or has(d, "phase:working"):
+            kind, badge = "running", "working"
+            open_ = (plan or {}).get("progress", {}).get("open") or []
+            said = ("{{%s}} in progress." % open_[0]["title"]) if open_ else "Mid-turn."
+            chips = ["diff", "jump"]
+
+        # --- tier 4: finished, needs closing --------------------------------
+        elif has(d, "gone:merged"):
+            kind, badge = "done", "merged"
+            said = "Merged. The worktree can be reclaimed."
+            chips = ["reclaim", "jump"]
+        elif plan and plan["phase"] == "done":
+            kind, badge = "done", "plan done"
+            said = "Every increment is done; the gate has retired."
+            chips = ["close plan"]
+
+        if kind is None:
+            # Quiet still means "not competing for your attention", but invisible
+            # is not the same as quiet: these are live sessions, and a name in a
+            # comma-joined tail is not something you can click. They become real
+            # rows, ranked last and rendered recessed, with the same targets as
+            # everything else.
+            qbadge = ("plan idle" if plan else
+                      "pr open" if w["pr"] not in ("", "none") else
+                      "uncommitted" if w.get("dirty") else "idle")
+            qmeta = []
+            if plan:
+                qmeta.append("%d/%d increments"
+                             % (plan["progress"]["done"], plan["progress"]["total"]))
+            qchips = ["jump"]
+            if w.get("dirty"):
+                qchips.append("diff")
+            if w["pr"] not in ("", "none"):
+                qchips.append("pr")
+            quiet.append({
+                "id": w["id"], "name": w["title"], "kind": "quiet",
+                "badge": qbadge,
+                # No `said` on purpose: a quiet row is one line. The moment it has
+                # something to say it is not quiet any more, and one of the tiers
+                # above will have claimed it.
+                "said": "", "chips": qchips, "frac": frac,
+                "meta": " · ".join(qmeta),
+                "branch": "" if w["branch"] in ("", "none") else w["branch"],
+                "dirty": bool(w.get("dirty")),
+                "pr": "" if w["pr"] in ("", "none") else w["pr"],
+                "pr_state": w.get("pr_state", ""),
+                "color": w.get("color", ""),
+                "selected": bool(w.get("selected")),
+                # A quiet row keeps its branch and PR -- those are how you
+                # recognise it -- but not the signals strip, which is what made
+                # the row loud enough to rank in the first place.
+                "signals": [], "feedby": 0, "feedgate": "",
+                "ref": w.get("ref", ""), "cwd": w["cwd"],
+                "pr_url": w.get("pr_url", ""),
+                "slug": (plan or {}).get("slug", ""),
+            })
+            continue
+
+        if screens and kind in ("attend", "running", "wilt"):
+            live = last_line(w["id"])
+            if live:
+                said = "`%s`" % live
+
+        # branch and PR are NOT folded into meta any more: each is its own click
+        # target, the way the Swift row had them -- the branch opens the worktree
+        # in VS Code and the PR number opens the pull request. Buried in a grey
+        # joined string they were both unclickable and, as reported, hard to even
+        # see. meta is now only what is purely informational.
+        rows.append({"id": w["id"], "name": w["title"], "kind": kind, "badge": badge,
+                     "said": said, "chips": chips, "frac": frac,
+                     "meta": " · ".join(meta_bits),
+                     "branch": "" if w["branch"] in ("", "none") else w["branch"],
+                     "dirty": bool(w.get("dirty")),
+                     "pr": "" if w["pr"] in ("", "none") else w["pr"],
+                     "pr_state": w.get("pr_state", ""),
+                     "color": w.get("color", ""),
+                     "selected": bool(w.get("selected")),
+                     "signals": dedupe(chips, signals(d, w["pr"] not in ("", "none")),
+                                       bool(plan)),
+                     # The reply window on a blocked ask, as an absolute epoch.
+                     # render.js turns it into a bar that drains in real time
+                     # rather than a number that would be a lie by the next push.
+                     "feedby": int(token_value(d, "feedby") or 0),
+                     "feedgate": token_value(d, "feedgate"),
+                     # Everything a click needs. The renderer ignores these; they
+                     # exist for the targets snapshot crew-board-intent reads, so
+                     # that a click sends only (row id, action) and never a path.
+                     "ref": w.get("ref", ""), "cwd": w["cwd"],
+                     "pr_url": w.get("pr_url", ""),
+                     "slug": (plan or {}).get("slug", "")})
+
+    order = {"attend": 0, "wilt": 1, "running": 2, "done": 3, "quiet": 4}
+    rows.sort(key=lambda r: order.get(r["kind"], 9))
+    return rows, quiet
+
+
+def rank_plans_only(plan_by_root):
+    """The same tiers, from plan state alone.
+
+    cmux goes away for ordinary reasons -- a restart, an update, a standalone launch on a
+    different socket. Plan state lives in files and does not, and it is the highest-value
+    thing on the board. So when the socket is unreachable the board keeps answering "who
+    needs you" instead of going blank and teaching you to stop looking at it.
+    """
+    rows = []
+    for root, plan in plan_by_root.items():
+        total = plan["progress"]["total"]
+        frac = (plan["progress"]["done"] / total) if total else None
+        name = os.path.basename(root.rstrip("/")) or plan["slug"]
+        meta = "%d/%d increments · %s" % (plan["progress"]["done"], total, plan["slug"])
+        if plan["phase"] == "review":
+            rows.append({"id": plan["slug"], "name": name, "kind": "attend", "badge": "review",
+                         "said": "{{Alignment check not taken.}} %d increments are locked behind "
+                                 "it." % total,
+                         "chips": ["take the check", "plan"], "frac": frac, "meta": meta})
+        elif not plan["gate"]["allow"]:
+            nxt = plan["progress"].get("next") or {}
+            rows.append({"id": plan["slug"], "name": name, "kind": "attend", "badge": "gate shut",
+                         "said": "{{%s}} needs your go-ahead." % nxt.get("title", "The next increment"),
+                         "chips": ["go %s" % nxt.get("n", "?"), "plan"], "frac": frac, "meta": meta})
+        elif plan["progress"].get("blocked"):
+            b = plan["progress"]["blocked"][0]
+            rows.append({"id": plan["slug"], "name": name, "kind": "wilt", "badge": "blocked",
+                         "said": "{{%s}} is blocked: %s" % (b.get("title", "An increment"),
+                                                            b.get("note", "no reason recorded")),
+                         "chips": ["plan"], "frac": frac, "meta": meta})
+        elif plan["phase"] == "done":
+            rows.append({"id": plan["slug"], "name": name, "kind": "done", "badge": "plan done",
+                         "said": "Every increment is done; the gate has retired.",
+                         "chips": ["close plan"], "frac": frac, "meta": meta})
+        else:
+            open_ = plan["progress"].get("open") or []
+            rows.append({"id": plan["slug"], "name": name, "kind": "running", "badge": "working",
+                         "said": ("{{%s}} in progress." % open_[0]["title"]) if open_
+                                 else "Implementing.",
+                         "chips": ["plan"], "frac": frac, "meta": meta})
+    # These rows are keyed by slug, not by workspace uuid, and there is no cmux to
+    # ask for a ref -- that is the whole premise of this path. `plan` still works
+    # (it only needs `open`), so the plan pages stay reachable with cmux down;
+    # anything needing a workspace fails loudly in the intent log instead of
+    # silently doing nothing.
+    for r in rows:
+        r.setdefault("slug", r["id"])
+        r.setdefault("ref", "")
+        r.setdefault("cwd", "")
+        r.setdefault("pr_url", "")
+        for k, v in (("branch", ""), ("dirty", False), ("pr", ""), ("pr_state", ""),
+                     ("color", ""), ("signals", []), ("feedby", 0), ("feedgate", ""),
+                     ("selected", False)):
+            r.setdefault(k, v)
+    order = {"attend": 0, "wilt": 1, "running": 2, "done": 3}
+    rows.sort(key=lambda r: order.get(r["kind"], 9))
+    return rows
+
+
+def build(screens=False, fast=False):
+    plan_by_root = plans()
+    wss = workspaces(fast=fast)
+    stale = not wss
+    if stale:
+        rows, quiet = rank_plans_only(plan_by_root), []
+    else:
+        rows, quiet = rank(wss, plan_by_root, screens=screens)
+    # Quiet rows are appended, not merged-and-resorted: rank() already ordered the
+    # tiers, and quiet is defined as everything after them.
+    return {
+        "rows": rows + quiet,
+        "quietCount": len(quiet),
+        # Empty when there are quiet rows: the section label on the page already
+        # says how many, and #quiet:empty is display:none. This line survives for
+        # the two cases that have no rows to speak for them.
+        "quiet": ("" if quiet else
+                  ("cmux unreachable — plan state only, no workspaces" if stale else
+                   "nothing else in flight")),
+        "stamp": time.strftime("%H:%M:%S"),
+        "stale": stale,
+        "src": "%d plan%s" % (len(plan_by_root), "" if len(plan_by_root) == 1 else "s"),
+    }
+
+
+# ---------------------------------------------------------------- surface
+
+def surface_id():
+    try:
+        with open(SURFACE_FILE) as fh:
+            return fh.read().strip()
+    except Exception:
+        return ""
+
+
+def candidate_sockets():
+    """Every socket cmux might be on: the recorded ones, then the state dir, then the
+    nightly's standalone path. Order is best-guess first."""
+    state = os.path.expanduser("~/.local/state/cmux")
+    out = []
+    for f in ("last-socket-path", "nightly-last-socket-path"):
+        try:
+            with open(os.path.join(state, f)) as fh:
+                v = fh.read().strip()
+                if v:
+                    out.append(v)
+        except Exception:
+            pass
+    out.append("/tmp/cmux-nightly.sock")
+    try:
+        out += [os.path.join(state, n) for n in sorted(os.listdir(state)) if n.endswith(".sock")]
+    except Exception:
+        pass
+    seen, uniq = set(), []
+    for c in out:
+        if c not in seen:
+            seen.add(c)
+            uniq.append(c)
+    return uniq
+
+
+def socket_alive(path):
+    """A socket FILE outlives the process that served it. Existence proves nothing --
+    naming a dead socket as "the app now listening" is precisely the misleading detail
+    this function exists to prevent."""
+    import socket as _s
+    try:
+        c = _s.socket(_s.AF_UNIX)
+        c.settimeout(0.4)
+        c.connect(path)
+        c.close()
+        return True
+    except Exception:
+        return False
+
+
+def diagnose():
+    """Why can't we talk to cmux? Returns a specific sentence, or "" when we can.
+
+    Three failures look identical at the call site and have nothing to do with each
+    other, so guessing between them wastes real time -- it wasted some of mine. The
+    capability case is the one that surprises people: the CLI authorizes by the
+    CMUX_SOCKET_CAPABILITY a process INHERITS, so a shell started inside one cmux
+    instance cannot drive another, no matter which binary it runs. Switching to a new
+    build leaves every already-running shell stranded exactly this way.
+    """
+    ok, out = cmux("ping", timeout=6)
+    if ok:
+        return ""
+
+    want = os.environ.get("CMUX_SOCKET_PATH", "")
+    bundle = os.environ.get("CMUX_BUNDLE_ID", "(unknown)")
+
+    if "Access denied" in out or "only processes started inside" in out:
+        live = next((c for c in candidate_sockets() if c != want and socket_alive(c)), "")
+        return ("this shell cannot drive the running cmux.\n"
+                "  It was started inside %s and holds that instance's socket capability;\n"
+                "  the app now listening%s will not accept it.\n"
+                "\n"
+                "  Fix: open a terminal INSIDE the running cmux and run this there.\n"
+                "  A `!` command in an existing Claude session runs in THAT session's shell,\n"
+                "  so it inherits the same stale capability and fails the same way."
+                % (bundle, (" (%s)" % live) if live else ""))
+
+    if "Connection refused" in out or "Failed to connect" in out:
+        alt = [c for c in candidate_sockets() if c != want and socket_alive(c)]
+        return ("cmux is not reachable at %s.\n"
+                "  %s"
+                % (want or "the default socket",
+                   ("Another socket exists: %s — try CMUX_SOCKET_PATH=%s"
+                    % (alt[0], alt[0])) if alt else "Is the app running?"))
+
+    return "cmux said: %s" % (out.splitlines()[0] if out else "(nothing)")
+
+
+def surface_alive(sid):
+    """Does this surface still exist? `get url` is the cheapest question that proves it."""
+    if not sid:
+        return False
+    ok, _ = cmux("browser", "--surface", sid, "get", "url", timeout=8)
+    return ok
+
+
+def adopt_surface(marker, record_file):
+    """Find a live surface whose tree line carries `marker`; record it as ours.
+
+    The web Dock (dock.json browser controls) seeds the board and /usage pages
+    at app start, before any crew command runs — the surface exists but no state
+    file names it. Without adoption, open/usage would put a second copy beside
+    the seeded tab in every fresh session. Same uuid-from-tree scan as cmd_tidy;
+    first match wins, and the Dock seeds exactly one of each.
+    """
+    ok, out = cmux("--id-format", "both", "tree", "--all")
+    if not ok:
+        return ""
+    uuid_re = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
+                         r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
+    for line in out.splitlines():
+        if marker not in line:
+            continue
+        m = uuid_re.search(line)
+        if m:
+            sid = m.group(0)
+            os.makedirs(STATE_DIR, exist_ok=True)
+            with open(record_file, "w") as fh:
+                fh.write(sid + "\n")
+            return sid
+    return ""
+
+
+def cmd_open():
+    why = diagnose()
+    if why:
+        print("cannot open the board: " + why, file=sys.stderr)
+        return 1
+
+    # Idempotent on purpose. This gets run repeatedly while iterating on the board, and
+    # an `open` that always creates would leave a Dock full of duplicate boards -- which
+    # is exactly what a run that stalled midway already risks.
+    existing = surface_id()
+    if not surface_alive(existing):
+        # The web Dock may have seeded the page already — adopt before creating.
+        existing = adopt_surface("board.html", SURFACE_FILE)
+    if surface_alive(existing):
+        print("reusing surface %s" % existing)
+        cmux("browser", "--surface", existing, "goto", "file://" + BOARD_HTML)
+        wait_for_page(existing)
+        return cmd_push()
+
+    ok, out = cmux("new-surface", "--type", "browser", "--placement", "dock",
+                   "--url", "file://" + BOARD_HTML, "--focus", "false")
+    if not ok:
+        if "Dock placement is disabled" in out or "not available" in out:
+            print("the Dock is disabled in this build.\n"
+                  "  Enable it in Settings → beta features (it sets\n"
+                  "  rightSidebar.beta.dock.enabled). Each cmux build has its own\n"
+                  "  preferences domain, so a nightly does not inherit the release\n"
+                  "  build's beta toggles.", file=sys.stderr)
+        else:
+            print("could not create the Dock surface: %s" % (out or "no output"), file=sys.stderr)
+        return 1
+    sid = next((t for t in out.split() if len(t) == 36 and t.count("-") == 4), "")
+    if not sid:
+        print("created, but could not parse a surface id from: %s" % out, file=sys.stderr)
+        return 1
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(SURFACE_FILE, "w") as fh:
+        fh.write(sid + "\n")
+    print("board open on surface %s" % sid)
+    # A surface exists before its page does. Pushing immediately targets a document with
+    # no window.render on it yet, which is why open used to succeed and then report a
+    # closed surface. Wait for the document rather than sleeping a guessed interval.
+    wait_for_page(sid)
+    return cmd_push()
+
+
+def wait_for_page(sid, budget=8):
+    """Wait for the board's page to exist. Best effort, hard bounded, ONE call.
+
+    The first version looped `get text` until the element appeared. That was a mistake:
+    `get` auto-waits for its selector, so each iteration burned a generous per-call
+    timeout and twenty-four of them multiplied into minutes. It presented as a hang
+    because it was one.
+
+    `wait --selector` is the verb built for this and it blocks once, not N times. Total
+    wall clock is bounded by budget + 3s no matter what the surface does.
+    """
+    ok, _ = cmux("browser", "--surface", sid, "wait", "--selector", "#rows",
+                 "--timeout", str(budget), timeout=budget + 3)
+    return ok
+
+
+def cmd_push():
+    # Surface first, build second. The listener now pushes every 10s, so on a
+    # machine where nobody has opened the board this would otherwise spend a build
+    # per tick to discover there is nowhere to put it. push_state checks again --
+    # this is a short-circuit, not the authority.
+    if not surface_id():
+        # A dock.json-seeded board exists before any crew command has run;
+        # adopting here is what makes the listener's pushes land in it without
+        # anyone ever typing `crew-board open`. The scan is a `cmux tree` call,
+        # so at a 10s tick it is throttled to one attempt a minute -- a seeded
+        # board waits at most that long for its first paint, and a machine with
+        # no board at all stops paying for the question five times over.
+        stamp = os.path.join(STATE_DIR, "adopt-stamp")
+        try:
+            recent = (time.time() - os.path.getmtime(stamp)) < 60
+        except OSError:
+            recent = False
+        adopted = "" if recent else adopt_surface("board.html", SURFACE_FILE)
+        if not recent:
+            try:
+                os.makedirs(STATE_DIR, exist_ok=True)
+                with open(stamp, "w") as fh:
+                    fh.write(str(int(time.time())))
+            except OSError:
+                pass
+        if not adopted:
+            print("no board surface — run: crew-board open", file=sys.stderr)
+            return 1
+    # --fast trades a possibly-stale branch and PR number for a ~140ms build
+    # instead of ~2100ms, so the listener can push every 10s. The full build still
+    # runs on every workspace event, on the slow tick, and at startup.
+    d = build(screens="--screens" in sys.argv, fast="--fast" in sys.argv)
+    return push_state(d)
+
+
+def write_targets(d):
+    """Persist the row -> action-target map for crew-board-intent to read.
+
+    The page is never handed a path, a ref or a URL. It knows a row id and a verb,
+    and nothing else; the server resolves both against this file. That keeps the
+    webview from being able to name a command, so a compromised or stale page can
+    only ever ask for an action on a row that the collector itself published.
+    """
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        targets = {r["id"]: {k: r.get(k, "") for k in
+                             ("ref", "cwd", "pr_url", "slug", "name")}
+                   for r in d.get("rows", [])}
+        tmp = TARGETS_FILE + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(targets, fh)
+        os.replace(tmp, TARGETS_FILE)
+    except OSError:
+        pass
+
+
+def intent_cfg():
+    """(port, token) for the click server, starting it if it is not answering.
+
+    Started detached rather than as a thread of this process: `crew-board push`
+    is a short-lived command and the click channel has to outlive it. crew-listen
+    starts it too, on its own startup -- whichever gets there first wins, and the
+    second call is a no-op because the server reuses a live port.
+    """
+    try:
+        # Ask the socket directly before spawning anything. This is the same
+        # question crew-board-intent --status answers, and at a 15s board tick a
+        # python interpreter per push to answer it is the single largest avoidable
+        # cost left in the fast path (~80ms of ~240ms).
+        cur = {}
+        try:
+            with open(os.path.join(STATE_DIR, "board-intent.port")) as fh:
+                port = int(fh.read().strip())
+            sock = socket.create_connection(("127.0.0.1", port), timeout=0.4)
+            sock.close()
+            cur = {"running": True, "port": port}
+        except (OSError, ValueError):
+            cur = {}
+        if not cur.get("running"):
+            ok, out = run(["python3", INTENT_BIN, "--status"], timeout=8)
+            cur = json.loads(out) if ok and out else {}
+        if not cur.get("running"):
+            subprocess.Popen(["python3", INTENT_BIN],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             stdin=subprocess.DEVNULL, start_new_session=True)
+            for _ in range(20):            # ~2s, then give up and push read-only
+                time.sleep(0.1)
+                ok, out = run(["python3", INTENT_BIN, "--status"], timeout=5)
+                cur = json.loads(out) if ok and out else {}
+                if cur.get("running"):
+                    break
+        if not cur.get("running"):
+            return None
+        with open(os.path.join(STATE_DIR, "board-intent.token")) as fh:
+            return cur["port"], fh.read().strip()
+    except Exception:
+        return None
+
+
+def push_state(d):
+    """Push an already-built state. Split out so `watch` can gather once, compare, and
+    only push when a viewer would see a difference."""
+    sid = surface_id()
+    if not sid:
+        print("no board surface — run: crew-board open", file=sys.stderr)
+        return 1
+    try:
+        with open(RENDER_JS) as fh:
+            renderer = fh.read()
+    except Exception as e:
+        print("cannot read %s: %s" % (RENDER_JS, e), file=sys.stderr)
+        return 1
+    # Renderer and data together, every push. The page is inert HTML: nothing depends on
+    # it having executed a script, which is one fewer invisible way for the board to be
+    # blank. The DOM is the only thing the pushed script touches.
+    script = renderer + "\n__boardRender(" + json.dumps(d) + ");"
+
+    # Click targets, pushed the same way and for the same reason as the renderer.
+    # A board that cannot reach its intent server still renders -- it just renders
+    # read-only, which is the behaviour it had before clicks existed.
+    write_targets(d)
+    cfg = intent_cfg()
+    if cfg:
+        try:
+            with open(INTENT_JS) as fh:
+                script += "\n" + fh.read() + "\n__boardIntent(" + json.dumps(
+                    {"port": cfg[0], "token": cfg[1]}) + ");"
+        except OSError as e:
+            print("clicks disabled: cannot read %s: %s" % (INTENT_JS, e), file=sys.stderr)
+    else:
+        print("clicks disabled: intent server not answering "
+              "(log: ~/.cache/cmux-crew/board-intent.log)", file=sys.stderr)
+    ok, out = cmux("browser", "--surface", sid, "addscript", "--script", script)
+    if not ok:
+        why = diagnose()
+        if why:
+            print("push failed: " + why, file=sys.stderr)
+            return 1
+        # Socket is fine, so this is about the page or the surface. A RECORDED id
+        # can be stale even though it once worked: the web Dock reseeds its tabs
+        # from dock.json (new window, explicit Dock-config reload), which closes
+        # the old board surface and opens a fresh one under a new uuid -- and a
+        # stale id here meant every subsequent push failed forever while a
+        # perfectly good board sat blank in the Dock. So when the surface itself
+        # is gone, re-adopt (unthrottled: a failed push is rare and is exactly
+        # the moment the scan pays for itself) and aim the retry at the new id.
+        if not surface_alive(sid):
+            new = adopt_surface("board.html", SURFACE_FILE)
+            if new and new != sid:
+                print("surface %s is gone; adopted %s" % (sid, new), file=sys.stderr)
+                sid = new
+        wait_for_page(sid, budget=5)
+        ok, out = cmux("browser", "--surface", sid, "addscript", "--script", script)
+        if not ok:
+            print("push failed on surface %s: %s\n"
+                  "  If the surface is gone: crew-board open\n"
+                  "  If the page is blank:   node %s\n"
+                  "  Loaded page:            %s"
+                  % (sid, out or "(no output)",
+                     os.path.join(HERE, "board_probe.mjs"), BOARD_HTML),
+                  file=sys.stderr)
+            return 1
+    n = sum(1 for r in d["rows"] if r["kind"] == "attend")
+    print("pushed · %d row%s · %d need you%s" % (
+        len(d["rows"]), "" if len(d["rows"]) == 1 else "s", n,
+        " · cmux unreachable" if d["stale"] else ""))
+    return 0
+
+
+# Events worth waking for. Chosen against the volumes crew-listen already measured
+# (see bin/crew-listen, "WHY THIS EVENT SET AND NO MORE"):
+#
+#   agent.hook.Notification   an agent is blocked on a human -- the board's whole point
+#   agent.hook.Stop           a turn ended, so the row's status just changed
+#   workspace.created/closed  a row appeared or went stale
+#   workspace.renamed         title or branch drift
+#   workspace.selected        you are looking at it, so make it right
+#
+# Deliberately NOT subscribed, and each for a specific reason:
+#
+#   agent.hook.PreToolUse     2838/day. The hot path; waking on it would make the board
+#                             the most expensive thing in the session.
+#   sidebar.metadata.updated  1465/day, and it is crew's OWN set_status -- feeding the
+#                             board its own side effects.
+#   workspace.action          187/day, crew-sync's set_description. Same loop.
+#   browser.*                 this board writes to a browser surface. Waking on browser
+#                             events would be a push that triggers a push.
+WAKE_EVENTS = [
+    "agent.hook.Notification",
+    "agent.hook.Stop",
+    "workspace.created",
+    "workspace.closed",
+    "workspace.renamed",
+    "workspace.selected",
+]
+
+# Its own cursor. Sharing crew-listen's $STATE/events.seq would have two consumers
+# fighting over one resume position, and both would miss events.
+EVENT_CURSOR = os.path.join(STATE_DIR, "board-events.seq")
+
+PLAN_STATE_DIR = os.path.join(os.path.expanduser("~"), ".claude", "deep-plan", "state")
+
+
+def plan_fingerprint():
+    """mtime+size of every plan state file, as one comparable value.
+
+    No cmux event announces a deep-plan increment transition -- `deep-plan go` writes a
+    file, and that is the whole signal. stat on a handful of files costs microseconds, so
+    a short interval here is cheaper than a single gather and gives sub-second latency on
+    the half of the board that changes most meaningfully.
+    """
+    try:
+        names = sorted(n for n in os.listdir(PLAN_STATE_DIR) if n.endswith(".json"))
+    except Exception:
+        return ()
+    out = []
+    for n in names:
+        try:
+            st = os.stat(os.path.join(PLAN_STATE_DIR, n))
+            out.append((n, st.st_mtime_ns, st.st_size))
+        except Exception:
+            pass
+    return tuple(out)
+
+
+def cmd_watch():
+    """Event-driven, not polled.
+
+    Two sources, one debounce. cmux pushes over its own stream; plan state is watched by
+    stat because nothing pushes it. A slow heartbeat is kept only as a backstop for what
+    neither can see -- CI, review and Jira state have no local event at all, which
+    crew-listen documents as the reason its timer exists.
+    """
+    import threading
+
+    heartbeat = next((float(a) for a in sys.argv[2:] if a.replace(".", "").isdigit()), 30.0)
+    debounce = 0.15
+    dirty = threading.Event()
+    dirty.set()  # paint once on arrival
+    stop = threading.Event()
+
+    def tail_events():
+        """Long-lived `cmux events`, respawned with backoff if it dies.
+
+        --reconnect resumes from the cursor across a cmux restart, so a relaunch does not
+        silently stop waking the board -- which is exactly the failure that would look
+        like the board being fine.
+        """
+        argv = [CMUX, "events", "--cursor-file", EVENT_CURSOR, "--no-ack", "--no-heartbeat"]
+        for n in WAKE_EVENTS:
+            argv += ["--name", n]
+        argv.append("--reconnect")
+        backoff = 1.0
+        while not stop.is_set():
+            try:
+                pr = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                      text=True, bufsize=1)
+            except Exception:
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+                continue
+            backoff = 1.0
+            for line in pr.stdout:
+                if stop.is_set():
+                    break
+                if line.strip():
+                    dirty.set()
+            try:
+                pr.kill()
+            except Exception:
+                pass
+            if not stop.is_set():
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+
+    def watch_plans():
+        last = plan_fingerprint()
+        while not stop.is_set():
+            time.sleep(0.25)
+            cur = plan_fingerprint()
+            if cur != last:
+                last = cur
+                dirty.set()
+
+    threading.Thread(target=tail_events, daemon=True).start()
+    threading.Thread(target=watch_plans, daemon=True).start()
+
+    print("watching: %d cmux events + plan state (250ms stat), heartbeat %gs — ctrl-c to stop"
+          % (len(WAKE_EVENTS), heartbeat))
+    last_push, last_payload = 0.0, None
+    try:
+        while True:
+            woke = dirty.wait(timeout=heartbeat)
+            dirty.clear()
+            if woke:
+                # Coalesce a burst: created+renamed+selected arrive together, and three
+                # gathers would produce three identical boards.
+                time.sleep(debounce)
+                dirty.clear()
+            d = build(screens="--screens" in sys.argv)
+            payload = json.dumps(d["rows"], sort_keys=True)
+            if payload == last_payload and woke:
+                continue  # nothing a viewer could see changed
+            last_payload = payload
+            if push_state(d) != 0:
+                return 1
+            last_push = time.time()
+    except KeyboardInterrupt:
+        stop.set()
+        print("\nstopped")
+        return 0
+
+
+USAGE_SURFACE = os.path.join(STATE_DIR, "usage-surface")
+
+
+def cmd_usage():
+    """Open the spend dashboard as a Dock tab, or focus the one already there.
+
+    Served rather than a file, for the same reason the plan surfaces are: the
+    page needs live data, and the only process that can run ccusage and hand it
+    over is the intent server. It keeps its own surface id so it never fights the
+    board for a tab.
+    """
+    cfg = intent_cfg()
+    if not cfg:
+        print("intent server not answering — crew listen on", file=sys.stderr)
+        return 1
+    url = "http://127.0.0.1:%d/usage" % cfg[0]
+
+    sid = ""
+    try:
+        with open(USAGE_SURFACE) as fh:
+            sid = fh.read().strip()
+    except OSError:
+        pass
+    if not surface_alive(sid):
+        # The web Dock seeds /usage as a browser control — adopt, don't duplicate.
+        sid = adopt_surface("/usage", USAGE_SURFACE)
+    if sid and surface_alive(sid):
+        cmux("browser", "--surface", sid, "goto", url)
+        cmux("focus", "--surface", sid)
+        print("reusing surface %s" % sid)
+        return 0
+
+    ok, out = cmux("new-surface", "--type", "browser", "--placement", "dock",
+                   "--url", url, "--focus", "false")
+    if not ok:
+        print("could not open a Dock surface: %s" % (out or "no output"), file=sys.stderr)
+        return 1
+    new = next((t for t in out.split() if len(t) == 36 and t.count("-") == 4), "")
+    if new:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(USAGE_SURFACE, "w") as fh:
+            fh.write(new + "\n")
+    print("spend dashboard on %s" % (new or "a new surface"))
+    return 0
+
+
+def cmd_tidy():
+    """Close every board surface except the recorded one.
+
+    Iterating means opening the board repeatedly, and a run that stalls midway leaves the
+    surface it already created behind. Identity comes from uuids, not URLs: every board
+    surface points at the same board.html, so a URL cannot tell two of them apart. The
+    global --id-format flag makes tree print uuids alongside the refs.
+    """
+    why = diagnose()
+    if why:
+        print("cannot tidy: " + why, file=sys.stderr)
+        return 1
+    keep = surface_id().upper()
+    ok, out = cmux("--id-format", "both", "tree", "--all")
+    if not ok:
+        print("could not read the surface tree: %s" % out, file=sys.stderr)
+        return 1
+
+    uuid_re = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
+    found, closed = [], 0
+    for line in out.splitlines():
+        if "board.html" not in line:
+            continue
+        for u in uuid_re.findall(line):
+            u = u.upper()
+            if u not in found:
+                found.append(u)
+    for u in found:
+        if u == keep:
+            continue
+        okc, msg = cmux("close-surface", "--surface", u)
+        if okc:
+            closed += 1
+            print("  closed %s" % u)
+        else:
+            print("  could not close %s: %s" % (u, msg), file=sys.stderr)
+
+    print("%d board surface%s found, %d closed%s"
+          % (len(found), "" if len(found) == 1 else "s", closed,
+             (", keeping %s" % keep) if keep in found else
+             (", recorded %s not among them" % keep) if keep else ""))
+    return 0
+
+
+def cmd_close():
+    sid = surface_id()
+    if sid:
+        cmux("close-surface", "--surface", sid)
+    try:
+        os.remove(SURFACE_FILE)
+    except Exception:
+        pass
+    print("board closed")
+    return 0
+
+
+def cmd_state():
+    d = build(screens="--screens" in sys.argv, fast="--fast" in sys.argv)
+    if "--json" in sys.argv:
+        print(json.dumps(d, indent=2))
+        return 0
+    print("%s · %s" % (d["stamp"], d["src"]))
+    for r in d["rows"]:
+        print("  %-8s %-26s %s" % (r["kind"], r["name"][:26], r["said"][:76]))
+    if d["quiet"]:
+        print("  %-8s %s" % ("quiet", d["quiet"]))
+    return 0
+
+
+if __name__ == "__main__":
+    sub = sys.argv[1] if len(sys.argv) > 1 else "state"
+    fn = {"open": cmd_open, "push": cmd_push, "watch": cmd_watch,
+          "close": cmd_close, "state": cmd_state, "tidy": cmd_tidy,
+          "usage": cmd_usage}.get(sub)
+    if not fn:
+        print(__doc__.strip())
+        sys.exit(2)
+    sys.exit(fn() or 0)
