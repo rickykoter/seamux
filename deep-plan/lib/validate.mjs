@@ -30,17 +30,45 @@ function loadMermaid() {
       classList: { add: noop, remove: noop },
     });
     // The bundle assumes browser globals and that top-level `var` is global —
-    // vm.runInThisContext gives it both. Shims are the minimum it touches at
-    // load time; parse() needs no real DOM.
+    // vm.runInThisContext gives it both. The DOM shims below are exactly what
+    // DOMPurify's support probe reads: document.nodeType === 9, a window
+    // Element class with a real parentNode getter on its prototype, and
+    // implementation.createHTMLDocument. Short of any one of these it exports
+    // a stub with no addHook, and every diagram with a quoted label
+    // "env-fails" — which silently skipped ALL realistic flowcharts on the
+    // validator's first live run.
+    class FakeNode {
+      get parentNode() { return null; } get childNodes() { return []; }
+      get nextSibling() { return null; } get nodeType() { return 1; }
+      cloneNode() { return this; }
+      appendChild(c) { return c; } removeChild(c) { return c; } insertBefore(c) { return c; }
+    }
+    class FakeElement extends FakeNode {
+      get attributes() { return []; }
+      setAttribute() {} getAttribute() { return null; }
+      hasAttribute() { return false; } removeAttribute() {}
+    }
+    const fakeDoc = () => ({
+      nodeType: 9, currentScript: null,
+      createElement: el, createTextNode: el, body: el(), head: el(),
+      documentElement: el(), getElementsByTagName: () => [], importNode: x => x,
+      querySelectorAll: () => [], querySelector: () => null,
+      addEventListener: noop, removeEventListener: noop,
+      implementation: { createHTMLDocument: () => fakeDoc() },
+    });
     globalThis.window = globalThis;
     globalThis.addEventListener ||= noop;
     globalThis.removeEventListener ||= noop;
-    globalThis.document ||= {
-      createElement: el, createTextNode: el, body: el(), head: el(),
-      documentElement: el(), querySelectorAll: () => [], querySelector: () => null,
-      addEventListener: noop, removeEventListener: noop,
+    globalThis.Node ||= FakeNode;
+    globalThis.Element ||= FakeElement;
+    globalThis.HTMLTemplateElement ||= class extends FakeElement {
+      get content() { return { ownerDocument: fakeDoc() }; }
     };
-    globalThis.navigator ||= { userAgent: "node" };
+    globalThis.DocumentFragment ||= class extends FakeNode {};
+    globalThis.HTMLFormElement ||= class extends FakeElement {};
+    globalThis.NamedNodeMap ||= class {};
+    globalThis.NodeFilter ||= { SHOW_ELEMENT: 1, SHOW_COMMENT: 128, SHOW_TEXT: 4 };
+    globalThis.document ||= fakeDoc();
     globalThis.location ||= { href: "http://localhost/" };
     vm.runInThisContext(fs.readFileSync(file, "utf8"), { filename: path.basename(file) });
     _mermaid = globalThis.mermaid && typeof globalThis.mermaid.parse === "function"
