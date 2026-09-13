@@ -63,6 +63,15 @@ ok("quiz linter: leading word rejected", cli("render", tmpSpec(bad)).status !== 
 bad = JSON.parse(JSON.stringify(spec));
 bad.quiz = bad.quiz.slice(0, 2);
 ok("quiz linter: fewer than 3 questions rejected", cli("render", tmpSpec(bad)).status !== 0);
+bad = JSON.parse(JSON.stringify(spec));
+bad.diagrams[0].mermaid = 'flowchart LR\n  A --> B[\\"broken label]';
+{
+  const rr = cli("render", tmpSpec(bad));
+  // Refused where mermaid is loadable; explicitly announced as skipped where
+  // it is not (no vendor anywhere) — silence is the only failure.
+  ok("refuses a diagram mermaid cannot parse (or says it skipped)",
+    (rr.status !== 0 && /mermaid/.test(rr.stderr)) || /validation skipped/.test(rr.stderr));
+}
 
 // -------------------------------------------------- a good spec renders
 ok("gate with no plan: Edit allowed (fast path)", edit(path.join(REPO, "a.txt")).status === 0);
@@ -93,6 +102,20 @@ ok("copy-back has a file:// clipboard fallback", review.includes("execCommand"))
 ok("highlight-to-comment: selection chip and pinned-quote rows",
   review.includes("dp-hl-add") && review.includes("getSelection") &&
   review.includes('"dp-quote"') && review.includes("dp-quotes"));
+
+// -------------------------------------------------- validate: surfaces re-checked on disk
+ok("validate: a freshly rendered plan is clean",
+  cli("validate", spec.slug).status === 0);
+{
+  const dirty = path.join(TMP, "dirty.html");
+  fs.writeFileSync(dirty, '<pre class="mermaid">flowchart LR\n  A --> B[\\"broken]</pre>' +
+    "<p>&amp;lt;double&amp;gt;</p><code>x</code><span>__TOKEN__</span>");
+  const rv = cli("validate", dirty);
+  ok("validate: broken mermaid, double-escapes and placeholders all caught",
+    rv.status !== 0 && /Parse error|skipped/i.test(rv.stderr) &&
+    /double-escaped/.test(rv.stderr) && /placeholder/.test(rv.stderr));
+  ok("validate: an unknown slug dies plainly", cli("validate", "no-such-plan").status !== 0);
+}
 const working = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
 ok("working surface renders controls disabled on disk",
   working.includes('class="dp-act"') && working.includes("disabled"));
