@@ -385,8 +385,13 @@ JIRA = {
 }
 
 
-def signals(d, has_pr):
-    """[{t,c,h,a?,x?}] for one workspace's description tokens, in reading order."""
+def signals(d, has_pr, jira_link=None):
+    """[{t,c,h,a?,x?}] for one workspace's description tokens, in reading order.
+
+    jira_link is (KEY, site) when the Jira integration is enabled and both
+    halves of a browse URL exist — the state badge then becomes a chip that
+    carries the ticket key and opens it. Without it the badge renders as it
+    always has: colored, unlinked."""
     out = []
 
     def sig(t, c, h, a=None, x=None):
@@ -420,7 +425,12 @@ def signals(d, has_pr):
         sig("⇣ stacked", "#859289", "Stacked on a branch that has already merged")
     j = JIRA.get(token_value(d, "jira"))
     if j:
-        sig(*j)
+        if jira_link:
+            key = jira_link[0]
+            icon = j[0].split(" ")[0]
+            sig(f"{icon} {key}", j[1], f"{j[2]} — open {key} in Jira", "jira", key)
+        else:
+            sig(*j)
     if has(d, "sandbox:running"):
         sig("▣ sandbox", "#60A5FA", "Running in a Docker sandbox — click to stop it",
             "sandbox-down")
@@ -496,6 +506,41 @@ def rank(wss, plan_by_root, screens=False):
         cost_map = _costs.costs_for([w["cwd"] for w in wss if w.get("cwd")])
     except Exception:
         cost_map = {}
+
+    # Issue chips only render when the integration was enabled at setup; the
+    # issue: token may be published either way (the collector does not gate),
+    # so display is decided here, in one place.
+    try:
+        with open(os.path.join(HERE, "..", "integrations.json")) as fh:
+            ghi_on = bool((json.load(fh).get("github_issues") or {}).get("enabled"))
+    except Exception:
+        ghi_on = False
+
+    try:
+        with open(os.path.join(HERE, "..", "integrations.json")) as fh:
+            _j = json.load(fh).get("jira") or {}
+        jira_site = (_j.get("site") or "") if _j.get("enabled") else ""
+    except Exception:
+        jira_site = ""
+
+    _KEY = re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b")
+
+    def jira_link_for(w):
+        """(KEY, site) when a browse URL is buildable for this row, else None."""
+        if not jira_site:
+            return None
+        m = _KEY.search(w.get("title") or "") or _KEY.search((w.get("branch") or "").upper())
+        return (m.group(1), jira_site) if m else None
+
+    def issue_fields(w):
+        if not ghi_on:
+            return {}
+        n = token_value(w["desc"], "issue")
+        if not n or not n.isdigit():
+            return {}
+        slug = remote_slug(w["cwd"]) if w.get("cwd") else ""
+        return {"issue": "#" + n,
+                "issue_url": f"https://github.com/{slug}/issues/{n}" if slug else ""}
 
     for w in wss:
         d, plan = w["desc"], plan_by_root.get(w["cwd"])
@@ -594,6 +639,7 @@ def rank(wss, plan_by_root, screens=False):
                 "said": "", "chips": qchips, "frac": frac,
                 "meta": " · ".join(qmeta),
                 "cost": (cost_map.get(w["cwd"]) or {}).get("today") or 0,
+                **issue_fields(w),
                 "branch": "" if w["branch"] in ("", "none") else w["branch"],
                 "dirty": bool(w.get("dirty")),
                 "pr": "" if w["pr"] in ("", "none") else w["pr"],
@@ -624,13 +670,15 @@ def rank(wss, plan_by_root, screens=False):
                      "said": said, "chips": chips, "frac": frac,
                      "meta": " · ".join(meta_bits),
                      "cost": (cost_map.get(w["cwd"]) or {}).get("today") or 0,
+                     **issue_fields(w),
                      "branch": "" if w["branch"] in ("", "none") else w["branch"],
                      "dirty": bool(w.get("dirty")),
                      "pr": "" if w["pr"] in ("", "none") else w["pr"],
                      "pr_state": w.get("pr_state", ""),
                      "color": w.get("color", ""),
                      "selected": bool(w.get("selected")),
-                     "signals": dedupe(chips, signals(d, w["pr"] not in ("", "none")),
+                     "signals": dedupe(chips, signals(d, w["pr"] not in ("", "none"),
+                                                      jira_link_for(w)),
                                        bool(plan)),
                      # The reply window on a blocked ask, as an absolute epoch.
                      # render.js turns it into a bar that drains in real time
@@ -701,7 +749,7 @@ def rank_plans_only(plan_by_root):
         r.setdefault("pr_url", "")
         for k, v in (("branch", ""), ("dirty", False), ("pr", ""), ("pr_state", ""),
                      ("color", ""), ("signals", []), ("feedby", 0), ("feedgate", ""),
-                     ("selected", False), ("cost", 0)):
+                     ("selected", False), ("cost", 0), ("issue", ""), ("issue_url", "")):
             r.setdefault(k, v)
     order = {"attend": 0, "wilt": 1, "running": 2, "done": 3}
     rows.sort(key=lambda r: order.get(r["kind"], 9))
@@ -966,7 +1014,7 @@ def write_targets(d):
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
         targets = {r["id"]: {k: r.get(k, "") for k in
-                             ("ref", "cwd", "pr_url", "slug", "name")}
+                             ("ref", "cwd", "pr_url", "slug", "name", "issue_url")}
                    for r in d.get("rows", [])}
         tmp = TARGETS_FILE + ".tmp"
         with open(tmp, "w") as fh:

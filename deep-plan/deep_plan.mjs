@@ -156,6 +156,17 @@ function mdPlan(spec) {
     for (const r of spec.risks) L.push(`- ${typeof r === "string" ? r : r.risk || JSON.stringify(r)}`);
     L.push("");
   }
+  const _ob = spec.observability || {};
+  if ((_ob.existing || []).length || (_ob.gaps || []).length) {
+    L.push("## Observability", "");
+    for (const e of _ob.existing || [])
+      L.push(`- [${e.kind || "?"}] ${e.name || ""}` + (e.ref ? `  \n  ref: \`${e.ref}\`` : ""));
+    if ((_ob.gaps || []).length) {
+      L.push("", "Gaps this plan fills:", "");
+      for (const g of _ob.gaps || []) L.push(`- ${typeof g === "string" ? g : g.gap || ""}`);
+    }
+    L.push("");
+  }
   for (const dg of spec.diagrams || []) {
     L.push(`## ${dg.question}`, "", "```mermaid", dg.mermaid.trim(), "```", "");
   }
@@ -263,12 +274,27 @@ function commonBody(spec) {
     `<li><b>${esc(d.decision)}</b> — ${esc(d.why)}</li>`).join("");
   const risks = (spec.risks || []).map(r =>
     `<li>${esc(typeof r === "string" ? r : r.risk)}</li>`).join("");
+  // Observability block — advisory by design: rendered when present, never
+  // required. `existing` cites what the read-only sweep found (monitors,
+  // dashboards, runbooks); `gaps` is what the plan fills, each via a
+  // deliverable that emits an importable definition or manual steps — never
+  // a live API write (SKILL.md carries the discipline).
+  const ob = spec.observability || {};
+  const obExisting = (ob.existing || []).map(e =>
+    `<li><span class="dim">[${esc(e.kind || "?")}]</span> ${esc(e.name || "")}` +
+    (e.ref ? ` <span class="dim">— <code>${esc(e.ref)}</code></span>` : "") + "</li>").join("");
+  const obGaps = (ob.gaps || []).map(g =>
+    `<li>${esc(typeof g === "string" ? g : g.gap || "")}</li>`).join("");
+  const obSection = (obExisting || obGaps) ? `<h2>Observability</h2>
+${obExisting ? `<p class="dim">exists today (read-only sweep):</p><ul>${obExisting}</ul>` : ""}
+${obGaps ? `<p class="dim">gaps this plan fills:</p><ul>${obGaps}</ul>` : ""}` : "";
   return `<h1>${esc(spec.title)}</h1>
 <p class="dim">plan <code>${esc(spec.slug)}</code></p>
 <h2>Context</h2><p>${esc(spec.context).replace(/\n\s*\n/g, "</p><p>")}</p>
 ${decs ? `<h2>Decisions</h2><ul>${decs}</ul>` : ""}
 ${facts ? `<h2>Verified facts</h2><ul>${facts}</ul>` : ""}
 ${risks ? `<h2>Risks</h2><ul>${risks}</ul>` : ""}
+${obSection}
 ${diagramsHtml(spec)}`;
 }
 
@@ -529,6 +555,38 @@ ${MERMAID_BOOT}
 async function render(specPath, opts) {
   const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
   const violations = validate(spec, opts.force);
+  // Read-before-plan floor: a deliverable that names an EXISTING file must
+  // have a verifiedFact citing it — you cannot plan to edit a file you have
+  // not read. Born of the crew-integrations retro: a spec planned "deepen
+  // the Jira badges" without anyone opening crew-sync, which already carried
+  // batched JQL, key parsing and a status cache. Files that do not exist yet
+  // are exempt (they are the plan's output, not its input), and --force
+  // remains the say-so-out-loud override.
+  {
+    const prior = readState(spec.slug);
+    const root = (prior && prior.root) || opts.root ||
+      gitRoot(process.cwd()) || process.cwd();
+    const cited = f => (spec.verifiedFacts || []).some(v => {
+      const ev = String(v.evidence || "");
+      return ev === f || ev.startsWith(f + ":");
+    });
+    const unread = [];
+    (spec.deliverables || []).forEach((d, i) => {
+      for (const f of d.files || [])
+        if (fs.existsSync(path.join(root, f)) && !cited(f))
+          unread.push(`deliverable ${i + 1} ("${d.title}") edits ${f} — no verifiedFact cites it`);
+    });
+    if (unread.length && !opts.force) {
+      console.error("deep-plan: spec refused — files planned but not read:");
+      for (const u of unread) console.error("  ✗ " + u);
+      console.error("Read each file, cite it (path:line), then re-render. " +
+        "A file you have not read is a file you cannot plan.");
+      process.exit(1);
+    } else if (unread.length) {
+      console.error(`deep-plan: --force past ${unread.length} unread file(s) — logged`);
+      violations.push(...unread);
+    }
+  }
   // Refuse-first extends to the diagrams: parse each with the vendored
   // mermaid before any surface is written — a plan page with a parse error
   // where a drawing should be fails the reader exactly where it matters.
@@ -909,8 +967,10 @@ function openWorkingSurface(st) {
         (st.root && t.cwd && path.resolve(t.cwd) === path.resolve(st.root));
     });
     if (!rid) return;
+    // x carries the slug we just authorized: the row's own slug field lags a
+    // sync behind and the first go on a fresh plan hit exactly that gap.
     const url = `http://127.0.0.1:${port}/do?a=plan&r=${encodeURIComponent(rid)}` +
-      `&t=${encodeURIComponent(token)}`;
+      `&t=${encodeURIComponent(token)}&x=${encodeURIComponent(st.slug)}`;
     spawnSync("curl", ["-fsS", "-m", "5", "-o", "/dev/null", url]);
   } catch { /* board offline or never installed — the go already succeeded */ }
 }
