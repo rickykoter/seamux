@@ -380,6 +380,12 @@ def act(action, row, extra):
             return False, "no PR on this row"
         return run(["open", pr_url]), pr_url
 
+    if action == "issue":
+        issue_url = row.get("issue_url") or ""
+        if not issue_url:
+            return False, "no linked issue on this row"
+        return run(["open", issue_url]), issue_url
+
     if action == "checks":
         if not pr_url:
             return False, "no PR on this row"
@@ -470,7 +476,7 @@ def increment(slug, n, action, why):
     return True, "%s %s %s" % (action, slug, n)
 
 
-ACTIONS = ("jump", "row", "diff", "pr", "checks", "plan", "take the check",
+ACTIONS = ("jump", "row", "diff", "pr", "issue", "checks", "plan", "take the check",
            "review", "code", "reclaim", "sync", "go", "close plan",
            "sandbox-up", "sandbox-down", "feed-allow", "feed-deny")
 
