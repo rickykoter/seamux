@@ -29,10 +29,13 @@ plan surfaces at `/plan/<slug>`.
    reopen. A wrong answer means the plan and their model disagree — **either one
    may be the broken one.** Fix whichever is wrong, re-render, re-check.
 5. **Implement increment by increment.** `deep-plan go <slug> next` is the
-   human's go-ahead (also the board's `go` chip). The first edit inside the root
-   flips the increment to `working` automatically; `deep-plan done <slug> <n>`
-   closes it and writes the increment's patch
-   (`~/.claude/plans/<slug>.inc<n>.patch`, opened with `cmux diff` when possible).
+   human's go-ahead (also the board's `go` chip). Every `go` also opens (or
+   refocuses — the intent server dedups the Dock tab) the plan's working
+   surface in the cmux Dock, best-effort: no board running means no tab and
+   no error. The first edit inside the root flips the increment to `working`
+   automatically; `deep-plan done <slug> <n>` closes it and writes the
+   increment's patch (`~/.claude/plans/<slug>.inc<n>.patch`, opened with
+   `cmux diff` when possible).
 
 ## Spec shape
 
