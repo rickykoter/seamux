@@ -167,6 +167,8 @@ render({ rows: [{
   ref: "workspace:9", cwd: "/tmp/wt", slug: "",
   signals: [{ t: "✗ CI", c: "#F97066", h: "Open the failing checks", a: "checks" },
             { t: "draft", c: "#859289", h: "The PR is still a draft" },
+            { t: "⊙ PROJ-1039", c: "#F5A524", h: "Jira: In Review — open PROJ-1039 in Jira",
+              a: "jira", x: "PROJ-1039" },
             { t: "go 5", c: "#F5A524", h: "Authorize increment 5", a: "go", x: "5" }],
   feedby: 0, feedgate: "",
 }], quiet: "" });
@@ -186,6 +188,10 @@ checks.push(["an actionable signal is a target, a status signal is not",
   /class="sig act" style="color:#F97066" data-a="checks"/.test(f) &&
   /class="sig" style="color:#859289"/.test(f)]);
 checks.push(["a signal can carry an argument", /data-a="go" data-x="5"/.test(f)]);
+// A linked Jira chip is just a signal wearing the ticket key: actionable,
+// state-colored, carrying the key as its argument for the server to resolve.
+checks.push(["a jira ticket chip is an actionable, state-colored signal",
+  /data-a="jira" data-x="PROJ-1039"/.test(f) && f.includes("⊙ PROJ-1039")]);
 // Where you are standing, marked but not reordered.
 render({ rows: [
   { id: "h", name: "here", kind: "running", badge: "b", said: "", chips: [], frac: null,
