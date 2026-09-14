@@ -135,6 +135,27 @@ ok("mermaid theme follows the page theme",
     }));
 }
 
+// -------------------------------------------------- observability block: advisory
+{
+  const obSpec = { ...spec, slug: "ob-plan", observability: {
+    existing: [{ kind: "monitor", name: "checkout p95", ref: "https://dd.example/mon/1" }],
+    gaps: ["no monitor on the DLQ depth"] } };
+  ok("a spec with an observability block renders", cli("render", tmpSpec(obSpec)).status === 0);
+  const obHtml = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "ob-plan.review.html"), "utf8");
+  ok("the block renders on the surface: existing + gaps",
+    obHtml.includes("Observability") && obHtml.includes("checkout p95") &&
+    obHtml.includes("no monitor on the DLQ depth"));
+  ok("…and in the md plan",
+    fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "ob-plan.md"), "utf8")
+      .includes("## Observability"));
+  // Advisory by construction: the example spec above rendered WITHOUT the
+  // block — asserted by name so its absence can never quietly become a floor.
+  ok("absence of the block never refuses (advisory)",
+    !JSON.parse(fs.readFileSync(path.join(HERE, "examples", "example.spec.json"), "utf8")).observability);
+  cli("close", "ob-plan");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "ob-plan.json"), { force: true });
+}
+
 // -------------------------------------------------- validate: surfaces re-checked on disk
 ok("validate: a freshly rendered plan is clean",
   cli("validate", spec.slug).status === 0);

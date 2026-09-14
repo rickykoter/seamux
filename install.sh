@@ -5,7 +5,7 @@
 #                [--no-apply] [--no-claude-settings] [--no-crew]
 #                [--no-deep-plan] [--no-mermaid] [--force-mermaid]
 #                [--uninstall] [--with-jira[=SITE]] [--with-github-issues]
-#                [--no-integrations]
+#                [--with-observability=STACK] [--no-integrations]
 #
 # The repo is the source of truth: running this syncs repo -> machine
 # (~/.config/cmux/crew, ~/.claude/skills/deep-plan, statusline, hooks) and then
@@ -23,7 +23,7 @@ MERMAID_VERSION="11.17.2"
 MERMAID_SHA256="581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8"
 
 DRY=0 APPLY=1 SETTINGS=1 CREW=1 DEEPPLAN=1 MERMAID=1 FORCE_MERMAID=0 CHECK=0 FORCE=0 UNINSTALL=0 MAIN=""
-WITH_JIRA="" JIRA_SITE="" WITH_GHI="" NO_INTEG=0
+WITH_JIRA="" JIRA_SITE="" WITH_GHI="" WITH_OBS="" OBS_STACK="" NO_INTEG=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -41,6 +41,7 @@ while [ $# -gt 0 ]; do
     --with-jira) WITH_JIRA=1; shift ;;
     --with-jira=*) WITH_JIRA=1; JIRA_SITE="${1#--with-jira=}"; shift ;;
     --with-github-issues) WITH_GHI=1; shift ;;
+    --with-observability=*) WITH_OBS=1; OBS_STACK="${1#--with-observability=}"; shift ;;
     --no-integrations) NO_INTEG=1; shift ;;
     -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
     *) echo "install.sh: unknown option $1" >&2; exit 2 ;;
@@ -220,15 +221,17 @@ if [ "$CREW" = 1 ]; then
     if [ "$NO_INTEG" = 1 ]; then
       printf '{}\n' > "$DEST/integrations.json"
       ok "integrations: all off (--no-integrations)"
-    elif [ -n "$WITH_JIRA" ] || [ -n "$WITH_GHI" ]; then
-      python3 - "$DEST/integrations.json" "$WITH_JIRA" "$JIRA_SITE" "$WITH_GHI" "$PREV_INTEG" <<'PY'
+    elif [ -n "$WITH_JIRA" ] || [ -n "$WITH_GHI" ] || [ -n "$WITH_OBS" ]; then
+      python3 - "$DEST/integrations.json" "$WITH_JIRA" "$JIRA_SITE" "$WITH_GHI" "$PREV_INTEG" "$WITH_OBS" "$OBS_STACK" <<'PY'
 import json, sys
-path, jira, site, ghi, prev = sys.argv[1:6]
+path, jira, site, ghi, prev, obs, stack = sys.argv[1:8]
 try: cfg = json.loads(prev) if prev.strip() else {}
 except ValueError: cfg = {}
 if jira: cfg["jira"] = {"enabled": True, **({"site": site} if site else
                         {k: v for k, v in (cfg.get("jira") or {}).items() if k == "site"})}
 if ghi: cfg["github_issues"] = {"enabled": True}
+if obs: cfg["observability"] = {"enabled": True, "stack": stack,
+                                "note": "read-only for planning; keys come from env at read time"}
 json.dump(cfg, open(path, "w"), indent=2)
 PY
       ok "integrations recorded -> $DEST/integrations.json"
