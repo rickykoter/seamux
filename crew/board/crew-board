@@ -497,6 +497,25 @@ def rank(wss, plan_by_root, screens=False):
     except Exception:
         cost_map = {}
 
+    # Issue chips only render when the integration was enabled at setup; the
+    # issue: token may be published either way (the collector does not gate),
+    # so display is decided here, in one place.
+    try:
+        with open(os.path.join(HERE, "..", "integrations.json")) as fh:
+            ghi_on = bool((json.load(fh).get("github_issues") or {}).get("enabled"))
+    except Exception:
+        ghi_on = False
+
+    def issue_fields(w):
+        if not ghi_on:
+            return {}
+        n = token_value(w["desc"], "issue")
+        if not n or not n.isdigit():
+            return {}
+        slug = remote_slug(w["cwd"]) if w.get("cwd") else ""
+        return {"issue": "#" + n,
+                "issue_url": f"https://github.com/{slug}/issues/{n}" if slug else ""}
+
     for w in wss:
         d, plan = w["desc"], plan_by_root.get(w["cwd"])
         kind = badge = None
@@ -594,6 +613,7 @@ def rank(wss, plan_by_root, screens=False):
                 "said": "", "chips": qchips, "frac": frac,
                 "meta": " · ".join(qmeta),
                 "cost": (cost_map.get(w["cwd"]) or {}).get("today") or 0,
+                **issue_fields(w),
                 "branch": "" if w["branch"] in ("", "none") else w["branch"],
                 "dirty": bool(w.get("dirty")),
                 "pr": "" if w["pr"] in ("", "none") else w["pr"],
@@ -624,6 +644,7 @@ def rank(wss, plan_by_root, screens=False):
                      "said": said, "chips": chips, "frac": frac,
                      "meta": " · ".join(meta_bits),
                      "cost": (cost_map.get(w["cwd"]) or {}).get("today") or 0,
+                     **issue_fields(w),
                      "branch": "" if w["branch"] in ("", "none") else w["branch"],
                      "dirty": bool(w.get("dirty")),
                      "pr": "" if w["pr"] in ("", "none") else w["pr"],
@@ -701,7 +722,7 @@ def rank_plans_only(plan_by_root):
         r.setdefault("pr_url", "")
         for k, v in (("branch", ""), ("dirty", False), ("pr", ""), ("pr_state", ""),
                      ("color", ""), ("signals", []), ("feedby", 0), ("feedgate", ""),
-                     ("selected", False), ("cost", 0)):
+                     ("selected", False), ("cost", 0), ("issue", ""), ("issue_url", "")):
             r.setdefault(k, v)
     order = {"attend": 0, "wilt": 1, "running": 2, "done": 3}
     rows.sort(key=lambda r: order.get(r["kind"], 9))
@@ -966,7 +987,7 @@ def write_targets(d):
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
         targets = {r["id"]: {k: r.get(k, "") for k in
-                             ("ref", "cwd", "pr_url", "slug", "name")}
+                             ("ref", "cwd", "pr_url", "slug", "name", "issue_url")}
                    for r in d.get("rows", [])}
         tmp = TARGETS_FILE + ".tmp"
         with open(tmp, "w") as fh:
