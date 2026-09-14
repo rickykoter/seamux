@@ -51,6 +51,24 @@ ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$*"; FAIL=1; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
 head_() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+# For what is neither healthy nor sick: a declined integration is a choice,
+# not a symptom, and must never read as one.
+note() { printf '  \033[2m· %s\033[0m\n' "$*"; }
+
+# integrations.json: written by install.sh, absent means all disabled.
+# integ <name> <key> prints the key's value ("" when disabled/absent).
+integ() {
+  python3 - "$CREW_HOME/integrations.json" "$1" "${2:-enabled}" 2>/dev/null <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1])).get(sys.argv[2]) or {}
+    v = d.get(sys.argv[3])
+    if v is True: print("yes")
+    elif v: print(v)
+except Exception:
+    pass
+PY
+}
 
 # __INTENT_PORT__ feeds the web Dock's /usage browser control; it must match
 # the intent server's pin (crew-board-intent free_port, same default).
@@ -535,11 +553,26 @@ cmd_doctor() {
   else
     warn "sbx missing — crew-worktree --sandbox will fail (brew install --cask docker/tap/sbx)"
   fi
-  if command -v acli >/dev/null; then
-    acli jira auth status >/dev/null 2>&1 && ok "acli authenticated (Jira status)" \
-      || warn "acli present but not authenticated — Jira badges will be blank"
+  # Integration checks run only for what the human enabled at setup; a
+  # declined integration is one quiet line, never a warn (the old
+  # unconditional acli nag was exactly the noise this replaces).
+  if [ -n "$(integ jira)" ]; then
+    if command -v acli >/dev/null; then
+      acli jira auth status >/dev/null 2>&1 && ok "acli authenticated (Jira status)" \
+        || warn "acli present but not authenticated — Jira badges will be blank"
+    else
+      warn "acli missing — Jira is enabled but has no status source"
+    fi
+    [ -n "$(integ jira site)" ] && ok "Jira site: $(integ jira site) (ticket chips link)" \
+      || note "no Jira site recorded — ticket chips stay unlinked (./install.sh --with-jira=SITE)"
   else
-    warn "acli missing — no Jira status"
+    note "Jira integration off — enable with ./install.sh --with-jira[=SITE]"
+  fi
+  if [ -n "$(integ github_issues)" ]; then
+    command -v gh >/dev/null && ok "GitHub issue chips (via gh)" \
+      || warn "GitHub Issues enabled but gh is missing"
+  else
+    note "GitHub Issues integration off — enable with ./install.sh --with-github-issues"
   fi
   local codebin="${CREW_CODE_BIN:-/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code}"
   [ -x "$codebin" ] || codebin="$(command -v code || true)"
