@@ -183,21 +183,33 @@ function mermaidB64() {
 function htmlHead(title, b64) {
   return `<!doctype html><html><head><meta charset="utf-8">
 <title>${esc(title)}</title>
+<script>
+// Theme, resolved before first paint so neither mode flashes the other:
+// the saved choice wins, else the OS preference.
+(function () {
+  var t = "";
+  try { t = localStorage.getItem("dp-theme") || ""; } catch (e) {}
+  if (!t) t = (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", t);
+})();
+</script>
 <script src="data:text/javascript;base64,${b64}"></script>
 <style>
 :root{--bg:#0e1116;--fg:#d5dbe3;--dim:#859289;--line:#232a33;--accent:#7aa2f7;
---good:#4ADE80;--warn:#F5A524;--bad:#F97066}
+--good:#4ADE80;--warn:#F5A524;--bad:#F97066;--card:#161b22;--card2:#12161d;--card3:#1a212b}
+:root[data-theme="light"]{--bg:#f6f8fa;--fg:#1f2328;--dim:#57606a;--line:#d0d7de;--accent:#0969da;
+--good:#1a7f37;--warn:#9a6700;--bad:#cf222e;--card:#eaeef2;--card2:#f0f3f6;--card3:#e6ebf1}
 body{background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,system-ui,sans-serif;
 max-width:860px;margin:0 auto;padding:28px 20px 80px}
 h1{font-size:22px}h2{font-size:17px;margin-top:2em;border-bottom:1px solid var(--line);padding-bottom:4px}
 h3{font-size:15px}
-code{background:#161b22;border-radius:4px;padding:1px 5px;font-size:13px}
-.dim{color:var(--dim)}.mermaid{background:#12161d;border:1px solid var(--line);border-radius:8px;padding:12px;margin:12px 0}
+code{background:var(--card);border-radius:4px;padding:1px 5px;font-size:13px}
+.dim{color:var(--dim)}.mermaid{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:12px;margin:12px 0}
 .inc{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:10px 0}
 .inc .st{float:right;font-size:12px;padding:2px 8px;border-radius:10px;border:1px solid var(--line)}
 .st-done{color:var(--good)}.st-working{color:var(--accent)}.st-authorized{color:var(--warn)}
 .st-blocked{color:var(--bad)}.st-pending{color:var(--dim)}
-.dp-act{margin-right:6px;background:#1a212b;color:var(--fg);border:1px solid var(--line);
+.dp-act{margin-right:6px;background:var(--card3);color:var(--fg);border:1px solid var(--line);
 border-radius:6px;padding:3px 12px;cursor:pointer}
 .dp-act[disabled]{opacity:.45;cursor:default}
 .dp-path{color:var(--fg);cursor:default}
@@ -205,11 +217,28 @@ border-radius:6px;padding:3px 12px;cursor:pointer}
 .dp-path.dp-bad{color:var(--bad)}
 .q{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:10px 0}
 .q .opt{display:block;margin:4px 0 4px 12px}
-label.auto{position:fixed;top:10px;right:14px;font-size:12px;color:var(--dim)}
-</style></head><body>`;
+label.auto{position:fixed;top:10px;right:64px;font-size:12px;color:var(--dim)}
+#dp-mode{position:fixed;top:8px;right:14px;background:var(--card3);color:var(--fg);
+border:1px solid var(--line);border-radius:6px;padding:4px 10px;font:inherit;font-size:13px;
+cursor:pointer;min-height:32px}
+#dp-mode:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+</style></head><body>
+<button id="dp-mode" type="button" aria-label="switch between light and dark mode">◐</button>
+<script>
+document.getElementById("dp-mode").addEventListener("click", function () {
+  var next = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+  try { localStorage.setItem("dp-theme", next); } catch (e) {}
+  // Reload rather than restyle in place: mermaid bakes its theme into the
+  // rendered SVGs at boot, and a reload of a static page is instant.
+  location.reload();
+});
+</script>`;
 }
 
-const MERMAID_BOOT = `<script>mermaid.initialize({startOnLoad:true,theme:"dark"});</script>`;
+// Theme chosen at boot to match the page (see the head script) — mermaid
+// bakes colors into its SVGs, so this is decided before startOnLoad runs.
+const MERMAID_BOOT = `<script>mermaid.initialize({startOnLoad:true,
+theme:document.documentElement.getAttribute("data-theme")==="light"?"default":"dark"});</script>`;
 
 function diagramsHtml(spec) {
   return (spec.diagrams || []).map(dg =>
@@ -217,8 +246,19 @@ function diagramsHtml(spec) {
 }
 
 function commonBody(spec) {
+  // Evidence that reads as a repo path becomes a click target: the served
+  // working surface opens it in VS Code at that line (same handler and same
+  // crew-code-open hand-off as the increments' file lists and the Dock's
+  // Cmd-click). A line RANGE goes to its first line — that is all --goto
+  // takes. Prose evidence ("ccusage output inspected…") stays plain text.
+  const evRef = ev => {
+    const m = /^([A-Za-z0-9_][\w./-]*?)(?::(\d+)(?:-\d+)?)?$/.exec(ev);
+    if (!m || !/[/.]/.test(m[1])) return `<code>${esc(ev)}</code>`;
+    const target = m[2] ? `${m[1]}:${m[2]}` : m[1];
+    return `<code class="dp-path" data-file="${esc(target)}">${esc(ev)}</code>`;
+  };
   const facts = (spec.verifiedFacts || []).map(f =>
-    `<li>${esc(f.claim)} <span class="dim">— <code>${esc(f.evidence)}</code></span></li>`).join("");
+    `<li>${esc(f.claim)} <span class="dim">— ${evRef(f.evidence)}</span></li>`).join("");
   const decs = (spec.decisions || []).map(d =>
     `<li><b>${esc(d.decision)}</b> — ${esc(d.why)}</li>`).join("");
   const risks = (spec.risks || []).map(r =>
