@@ -156,6 +156,17 @@ function mdPlan(spec) {
     for (const r of spec.risks) L.push(`- ${typeof r === "string" ? r : r.risk || JSON.stringify(r)}`);
     L.push("");
   }
+  const _ob = spec.observability || {};
+  if ((_ob.existing || []).length || (_ob.gaps || []).length) {
+    L.push("## Observability", "");
+    for (const e of _ob.existing || [])
+      L.push(`- [${e.kind || "?"}] ${e.name || ""}` + (e.ref ? `  \n  ref: \`${e.ref}\`` : ""));
+    if ((_ob.gaps || []).length) {
+      L.push("", "Gaps this plan fills:", "");
+      for (const g of _ob.gaps || []) L.push(`- ${typeof g === "string" ? g : g.gap || ""}`);
+    }
+    L.push("");
+  }
   for (const dg of spec.diagrams || []) {
     L.push(`## ${dg.question}`, "", "```mermaid", dg.mermaid.trim(), "```", "");
   }
@@ -263,12 +274,27 @@ function commonBody(spec) {
     `<li><b>${esc(d.decision)}</b> — ${esc(d.why)}</li>`).join("");
   const risks = (spec.risks || []).map(r =>
     `<li>${esc(typeof r === "string" ? r : r.risk)}</li>`).join("");
+  // Observability block — advisory by design: rendered when present, never
+  // required. `existing` cites what the read-only sweep found (monitors,
+  // dashboards, runbooks); `gaps` is what the plan fills, each via a
+  // deliverable that emits an importable definition or manual steps — never
+  // a live API write (SKILL.md carries the discipline).
+  const ob = spec.observability || {};
+  const obExisting = (ob.existing || []).map(e =>
+    `<li><span class="dim">[${esc(e.kind || "?")}]</span> ${esc(e.name || "")}` +
+    (e.ref ? ` <span class="dim">— <code>${esc(e.ref)}</code></span>` : "") + "</li>").join("");
+  const obGaps = (ob.gaps || []).map(g =>
+    `<li>${esc(typeof g === "string" ? g : g.gap || "")}</li>`).join("");
+  const obSection = (obExisting || obGaps) ? `<h2>Observability</h2>
+${obExisting ? `<p class="dim">exists today (read-only sweep):</p><ul>${obExisting}</ul>` : ""}
+${obGaps ? `<p class="dim">gaps this plan fills:</p><ul>${obGaps}</ul>` : ""}` : "";
   return `<h1>${esc(spec.title)}</h1>
 <p class="dim">plan <code>${esc(spec.slug)}</code></p>
 <h2>Context</h2><p>${esc(spec.context).replace(/\n\s*\n/g, "</p><p>")}</p>
 ${decs ? `<h2>Decisions</h2><ul>${decs}</ul>` : ""}
 ${facts ? `<h2>Verified facts</h2><ul>${facts}</ul>` : ""}
 ${risks ? `<h2>Risks</h2><ul>${risks}</ul>` : ""}
+${obSection}
 ${diagramsHtml(spec)}`;
 }
 
