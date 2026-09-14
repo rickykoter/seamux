@@ -102,6 +102,17 @@ ok("copy-back has a file:// clipboard fallback", review.includes("execCommand"))
 ok("highlight-to-comment: selection chip and pinned-quote rows",
   review.includes("dp-hl-add") && review.includes("getSelection") &&
   review.includes('"dp-quote"') && review.includes("dp-quotes"));
+// UX/a11y pass: the chip clamps inside the viewport (it used to fall off the
+// right edge), the quiz is labelled radiogroups, copied-state is announced,
+// and pinning has a keyboard path.
+ok("comment chip clamps inside the viewport",
+  review.includes("clientWidth - w - 8") && review.includes("Math.max(8"));
+ok("quiz questions are labelled radiogroups",
+  (review.match(/role="radiogroup"/g) || []).length === (spec.quiz || []).length);
+ok("copy feedback is a live region",
+  review.includes('role="status"') && review.includes('aria-live="polite"'));
+ok("pinning a comment has a keyboard path (Cmd/Ctrl+M)",
+  review.includes("metaKey") && review.includes("pinComment"));
 
 // -------------------------------------------------- validate: surfaces re-checked on disk
 ok("validate: a freshly rendered plan is clean",
