@@ -7,7 +7,10 @@
   server, which shells out to `ccusage`. Windows and budgets, not dollars:
   every ratio is ccusage totalTokens (cache reads included) on both sides,
   against CREW_BLOCK_BUDGET / CREW_WEEK_BUDGET or the largest window/week on
-  record. Nothing here computes a price.
+  record. Nothing here computes a price — with one deliberate exception: the
+  per-workspace card at the bottom speaks dollars (ccusage totalCost via the
+  shared costs cache), because "which worktree is burning money" is a question
+  tokens cannot answer.
 
   One data hue, #e69875. It is the only Everforest colour that clears the
   dataviz validator's chroma floor (teal, aqua, green and pink all read as grey
@@ -93,6 +96,14 @@ td:last-child,th:last-child{text-align:right;color:var(--ink)}
   font-variant-numeric:tabular-nums}
 .models li{display:flex;justify-content:space-between;gap:10px}
 .models b{color:var(--ink);font-weight:600}
+.wcosts{margin:0;padding:0;list-style:none;
+  font:500 11px/2 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);
+  font-variant-numeric:tabular-nums}
+.wcosts li{display:flex;align-items:center;gap:10px}
+.wcosts .nm{flex:0 0 34%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wcosts .bar{flex:1;height:6px;background:var(--line2);border-radius:3px;overflow:hidden}
+.wcosts .bar i{display:block;height:100%;background:var(--data);border-radius:3px}
+.wcosts b{color:var(--ink);font-weight:600;flex:none}
 .empty{color:var(--faint);font-size:12px;padding:10px 2px}
 </style></head>
 <body>
@@ -194,6 +205,24 @@ td:last-child,th:last-child{text-align:right;color:var(--ink)}
         : '<ul class="models">' + (D.week.models||[]).map(function(m){
             return "<li><span>" + esc(m.name) + "</span><b>" + tok(m.tokens) + "</b></li>";
           }).join("") + "</ul>") + "</div>";
+  }
+
+  // --- per-workspace dollars ---------------------------------------------------
+  // The page's one deliberate exception to tokens-only (see the header note):
+  // this section is explicitly about money. Bars share one scale — the biggest
+  // 7-day spender — in the page's single data hue.
+  if ((D.costs||[]).length) {
+    var cmax = Math.max.apply(null, D.costs.map(function(c){ return c.week; })) || 1;
+    var usd = function(n){ return "$" + (n >= 100 ? Math.round(n) : (n||0).toFixed(2)); };
+    out += '<div class="card">' +
+      '<div class="hd"><h2>Per workspace · $</h2><span class="when">7 days</span></div>' +
+      '<ul class="wcosts">' + D.costs.map(function(c){
+        return '<li><span class="nm">' + esc(c.name) + "</span>" +
+          '<span class="bar"><i style="width:' + Math.min(100, c.week / cmax * 100).toFixed(1) + '%"></i></span>' +
+          '<b>' + usd(c.today) + ' today · ' + usd(c.week) + '</b></li>';
+      }).join("") + "</ul>" +
+      '<div class="foot"><span>ccusage dollars, ~5min cache · subagent/cloud sessions may be missing</span></div>' +
+      "</div>";
   }
 
   app.innerHTML = out;
