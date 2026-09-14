@@ -113,6 +113,27 @@ ok("copy feedback is a live region",
   review.includes('role="status"') && review.includes('aria-live="polite"'));
 ok("pinning a comment has a keyboard path (Cmd/Ctrl+M)",
   review.includes("metaKey") && review.includes("pinComment"));
+// Light/dark: resolved pre-paint (saved choice, else OS), toggleable, and
+// mermaid's baked-in theme follows it.
+ok("theme resolves before first paint and has a light palette",
+  review.includes('localStorage.getItem("dp-theme")') &&
+  review.includes("prefers-color-scheme") &&
+  review.includes('[data-theme="light"]'));
+ok("theme toggle exists on every surface", review.includes('id="dp-mode"') &&
+  fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8")
+    .includes('id="dp-mode"'));
+ok("mermaid theme follows the page theme",
+  review.includes('"data-theme")==="light"?"default":"dark"'));
+// Evidence refs that read as repo paths are click targets carrying file:line
+// (a range collapses to its first line); prose evidence stays plain.
+{
+  const pathy = (spec.verifiedFacts || []).filter(f => /^[\w./-]+:\d+/.test(f.evidence));
+  ok("path-shaped evidence renders as dp-path targets",
+    pathy.length > 0 && pathy.every(f => {
+      const first = f.evidence.replace(/^([^:]+:\d+).*$/, "$1");
+      return review.includes(`data-file="${first}"`);
+    }));
+}
 
 // -------------------------------------------------- validate: surfaces re-checked on disk
 ok("validate: a freshly rendered plan is clean",
