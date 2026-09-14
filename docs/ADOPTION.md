@@ -100,3 +100,13 @@ crew-sandbox:
    credentials warning, the gate-is-not-a-boundary note.
 5. LICENSE file (none exists yet).
 6. Tag v0.1.0, push `main` only — worktree branches stay local.
+
+## Telemetry emission — deferred, shaped (2026-09-13)
+
+seamux now READS observability stacks for planning (the `observability` entry
+in integrations.json / `.seamux/observability.json`). Emitting seamux's own
+events — session phases, gate go/done, per-workspace cost — to Datadog,
+Splunk or Grafana is deferred, not rejected. The shaped slot: a canonical
+`events.jsonl` stream first (every vendor's agent tails files natively), an
+optional OTLP/HEC push second, configured beside the read block so the two
+never tangle. Nothing should claim that block's name in the meantime.
