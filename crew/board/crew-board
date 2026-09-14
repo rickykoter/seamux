@@ -487,6 +487,16 @@ def rank(wss, plan_by_root, screens=False):
     """
     rows, quiet = [], []
 
+    # Today's dollars per worktree, from the shared costs cache (~5min TTL).
+    # {} on any failure: a board without dollars beats a broken board, and CI
+    # has no ccusage at all.
+    try:
+        sys.path.insert(0, HERE)
+        import costs as _costs
+        cost_map = _costs.costs_for([w["cwd"] for w in wss if w.get("cwd")])
+    except Exception:
+        cost_map = {}
+
     for w in wss:
         d, plan = w["desc"], plan_by_root.get(w["cwd"])
         kind = badge = None
@@ -583,6 +593,7 @@ def rank(wss, plan_by_root, screens=False):
                 # above will have claimed it.
                 "said": "", "chips": qchips, "frac": frac,
                 "meta": " · ".join(qmeta),
+                "cost": (cost_map.get(w["cwd"]) or {}).get("today") or 0,
                 "branch": "" if w["branch"] in ("", "none") else w["branch"],
                 "dirty": bool(w.get("dirty")),
                 "pr": "" if w["pr"] in ("", "none") else w["pr"],
@@ -612,6 +623,7 @@ def rank(wss, plan_by_root, screens=False):
         rows.append({"id": w["id"], "name": w["title"], "kind": kind, "badge": badge,
                      "said": said, "chips": chips, "frac": frac,
                      "meta": " · ".join(meta_bits),
+                     "cost": (cost_map.get(w["cwd"]) or {}).get("today") or 0,
                      "branch": "" if w["branch"] in ("", "none") else w["branch"],
                      "dirty": bool(w.get("dirty")),
                      "pr": "" if w["pr"] in ("", "none") else w["pr"],
@@ -689,7 +701,7 @@ def rank_plans_only(plan_by_root):
         r.setdefault("pr_url", "")
         for k, v in (("branch", ""), ("dirty", False), ("pr", ""), ("pr_state", ""),
                      ("color", ""), ("signals", []), ("feedby", 0), ("feedgate", ""),
-                     ("selected", False)):
+                     ("selected", False), ("cost", 0)):
             r.setdefault(k, v)
     order = {"attend": 0, "wilt": 1, "running": 2, "done": 3}
     rows.sort(key=lambda r: order.get(r["kind"], 9))
