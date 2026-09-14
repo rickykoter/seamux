@@ -83,9 +83,13 @@ if (typeof render !== "function") {
 const FIXTURE = {
   rows: [
     { id: "a", name: "fixture-attend", kind: "attend", badge: "gate shut",
-      said: "{{Inc 2}} needs your go-ahead.", chips: ["go 2", "plan"], frac: 0.25, meta: "1/4" },
+      said: "{{Inc 2}} needs your go-ahead.", chips: ["go 2", "plan"], frac: 0.25, meta: "1/4",
+      cost: 4.2 },
     { id: "b", name: "fixture-run", kind: "running", badge: "working",
-      said: "{{Inc 3}} in progress.", chips: ["diff"], frac: 0.5, meta: "2/4" },
+      said: "{{Inc 3}} in progress.", chips: ["diff"], frac: 0.5, meta: "2/4",
+      cost: 0.31 },
+    { id: "c", name: "fixture-done", kind: "done", badge: "merged",
+      said: "Merged.", chips: [], frac: 1, meta: "4/4" },
   ], quiet: "3 quiet", stamp: "00:00:00", src: "fixture",
 };
 const state = FIXTURE;
@@ -107,6 +111,13 @@ const checks = [
 render({ rows: [{ id: "n", name: "no-increments", kind: "attend", badge: "review",
   said: "x", chips: [], frac: null, meta: "" }], quiet: "" });
 checks.push(["null progress renders a dot, not 0%", !/<text/.test(els.rows.innerHTML)]);
+
+// Today's-$ fact: rendered with dollars, dimmed when small, absent when the
+// field is missing (the CI/no-ccusage path sends rows without it).
+checks.push(["cost fact rendered with dollars", out.includes(">$4.20<")]);
+checks.push(["a small cost is dimmed", /class="cost small"[^>]*>\$0\.31</.test(out)]);
+checks.push(["a row without cost shows no dollar fact",
+  (out.match(/class="cost/g) || []).length === 2]);
 
 // The one that matters: agent output must not become markup.
 render({ rows: [{ id: "x", name: "<img src=x onerror=1>", kind: "attend",
@@ -352,6 +363,41 @@ if (live && Array.isArray(live.rows)) {
   }
 } else {
   console.log("  --   live state unavailable (cmux down?) — fixture checks only");
+}
+
+// ---- costs.py attribution: pure, fixture-driven, no ccusage needed --------
+{
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), "costs-probe-"));
+  const fixture = join(tmp, "fx.json");
+  // Two real-shaped cwds that collide after munging: dots and slashes both
+  // become dashes. First claim wins; the point is a stable, non-crashing pick.
+  const A = "/code/app.worktrees/x", B = "/code/app-worktrees/x", C = "/code/other";
+  fs.writeFileSync(fixture, JSON.stringify({
+    today: "2026-09-13",
+    projects: {
+      "-code-app-worktrees-x": [
+        { date: "2026-09-13", totalCost: 1.5 }, { date: "2026-09-12", totalCost: 2.0 }],
+      "-code-other": [{ date: "2026-09-12", totalCost: 0.25 }],
+      "-code-unknown": [{ date: "2026-09-13", totalCost: 99 }],
+    },
+  }));
+  const runAttr = (...cwds) => JSON.parse(execFileSync("python3",
+    [join(HERE, "costs.py"), "--attribute", fixture, ...cwds], { encoding: "utf8" }));
+  const r1 = runAttr(A, B, C);
+  checks.push(["costs: today/week split by date", r1[A]?.today === 1.5 && r1[A]?.week === 3.5]);
+  checks.push(["costs: munge collision resolves to the first claim, once",
+    r1[A] !== undefined && r1[B] === undefined]);
+  checks.push(["costs: a dir matching no known cwd is dropped, not guessed",
+    !JSON.stringify(r1).includes("99")]);
+  checks.push(["costs: week-only workspace has a zero today", r1[C]?.today === 0 && r1[C]?.week === 0.25]);
+  // The CI path: no ccusage on PATH -> {} and exit 0, never a traceback.
+  const r2 = execFileSync("python3", [join(HERE, "costs.py"), A],
+    { encoding: "utf8", env: { ...process.env, PATH: "/usr/bin:/bin", CREW_COSTS_TTL: "0",
+      HOME: tmp } });
+  checks.push(["costs: missing ccusage degrades to {}", r2.trim() === "{}"]);
+  fs.rmSync(tmp, { recursive: true, force: true });
 }
 
 let bad = 0;
