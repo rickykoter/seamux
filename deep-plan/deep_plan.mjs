@@ -183,21 +183,33 @@ function mermaidB64() {
 function htmlHead(title, b64) {
   return `<!doctype html><html><head><meta charset="utf-8">
 <title>${esc(title)}</title>
+<script>
+// Theme, resolved before first paint so neither mode flashes the other:
+// the saved choice wins, else the OS preference.
+(function () {
+  var t = "";
+  try { t = localStorage.getItem("dp-theme") || ""; } catch (e) {}
+  if (!t) t = (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", t);
+})();
+</script>
 <script src="data:text/javascript;base64,${b64}"></script>
 <style>
 :root{--bg:#0e1116;--fg:#d5dbe3;--dim:#859289;--line:#232a33;--accent:#7aa2f7;
---good:#4ADE80;--warn:#F5A524;--bad:#F97066}
+--good:#4ADE80;--warn:#F5A524;--bad:#F97066;--card:#161b22;--card2:#12161d;--card3:#1a212b}
+:root[data-theme="light"]{--bg:#f6f8fa;--fg:#1f2328;--dim:#57606a;--line:#d0d7de;--accent:#0969da;
+--good:#1a7f37;--warn:#9a6700;--bad:#cf222e;--card:#eaeef2;--card2:#f0f3f6;--card3:#e6ebf1}
 body{background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,system-ui,sans-serif;
 max-width:860px;margin:0 auto;padding:28px 20px 80px}
 h1{font-size:22px}h2{font-size:17px;margin-top:2em;border-bottom:1px solid var(--line);padding-bottom:4px}
 h3{font-size:15px}
-code{background:#161b22;border-radius:4px;padding:1px 5px;font-size:13px}
-.dim{color:var(--dim)}.mermaid{background:#12161d;border:1px solid var(--line);border-radius:8px;padding:12px;margin:12px 0}
+code{background:var(--card);border-radius:4px;padding:1px 5px;font-size:13px}
+.dim{color:var(--dim)}.mermaid{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:12px;margin:12px 0}
 .inc{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:10px 0}
 .inc .st{float:right;font-size:12px;padding:2px 8px;border-radius:10px;border:1px solid var(--line)}
 .st-done{color:var(--good)}.st-working{color:var(--accent)}.st-authorized{color:var(--warn)}
 .st-blocked{color:var(--bad)}.st-pending{color:var(--dim)}
-.dp-act{margin-right:6px;background:#1a212b;color:var(--fg);border:1px solid var(--line);
+.dp-act{margin-right:6px;background:var(--card3);color:var(--fg);border:1px solid var(--line);
 border-radius:6px;padding:3px 12px;cursor:pointer}
 .dp-act[disabled]{opacity:.45;cursor:default}
 .dp-path{color:var(--fg);cursor:default}
@@ -205,11 +217,28 @@ border-radius:6px;padding:3px 12px;cursor:pointer}
 .dp-path.dp-bad{color:var(--bad)}
 .q{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:10px 0}
 .q .opt{display:block;margin:4px 0 4px 12px}
-label.auto{position:fixed;top:10px;right:14px;font-size:12px;color:var(--dim)}
-</style></head><body>`;
+label.auto{position:fixed;top:10px;right:64px;font-size:12px;color:var(--dim)}
+#dp-mode{position:fixed;top:8px;right:14px;background:var(--card3);color:var(--fg);
+border:1px solid var(--line);border-radius:6px;padding:4px 10px;font:inherit;font-size:13px;
+cursor:pointer;min-height:32px}
+#dp-mode:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+</style></head><body>
+<button id="dp-mode" type="button" aria-label="switch between light and dark mode">◐</button>
+<script>
+document.getElementById("dp-mode").addEventListener("click", function () {
+  var next = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+  try { localStorage.setItem("dp-theme", next); } catch (e) {}
+  // Reload rather than restyle in place: mermaid bakes its theme into the
+  // rendered SVGs at boot, and a reload of a static page is instant.
+  location.reload();
+});
+</script>`;
 }
 
-const MERMAID_BOOT = `<script>mermaid.initialize({startOnLoad:true,theme:"dark"});</script>`;
+// Theme chosen at boot to match the page (see the head script) — mermaid
+// bakes colors into its SVGs, so this is decided before startOnLoad runs.
+const MERMAID_BOOT = `<script>mermaid.initialize({startOnLoad:true,
+theme:document.documentElement.getAttribute("data-theme")==="light"?"default":"dark"});</script>`;
 
 function diagramsHtml(spec) {
   return (spec.diagrams || []).map(dg =>
@@ -217,8 +246,19 @@ function diagramsHtml(spec) {
 }
 
 function commonBody(spec) {
+  // Evidence that reads as a repo path becomes a click target: the served
+  // working surface opens it in VS Code at that line (same handler and same
+  // crew-code-open hand-off as the increments' file lists and the Dock's
+  // Cmd-click). A line RANGE goes to its first line — that is all --goto
+  // takes. Prose evidence ("ccusage output inspected…") stays plain text.
+  const evRef = ev => {
+    const m = /^([A-Za-z0-9_][\w./-]*?)(?::(\d+)(?:-\d+)?)?$/.exec(ev);
+    if (!m || !/[/.]/.test(m[1])) return `<code>${esc(ev)}</code>`;
+    const target = m[2] ? `${m[1]}:${m[2]}` : m[1];
+    return `<code class="dp-path" data-file="${esc(target)}">${esc(ev)}</code>`;
+  };
   const facts = (spec.verifiedFacts || []).map(f =>
-    `<li>${esc(f.claim)} <span class="dim">— <code>${esc(f.evidence)}</code></span></li>`).join("");
+    `<li>${esc(f.claim)} <span class="dim">— ${evRef(f.evidence)}</span></li>`).join("");
   const decs = (spec.decisions || []).map(d =>
     `<li><b>${esc(d.decision)}</b> — ${esc(d.why)}</li>`).join("");
   const risks = (spec.risks || []).map(r =>
@@ -241,24 +281,26 @@ function reviewHtml(spec, b64) {
       const L = String.fromCharCode(97 + i);
       return `<label class="opt"><input type="radio" name="dp-q-${esc(q.id)}" value="${L}"> ${L}) ${esc(o.v)}</label>`;
     }).join("");
-    return `<div class="q" data-qid="${esc(q.id)}"><b>${qi + 1}. ${esc(q.prompt)}</b>${opts}
+    return `<div class="q" data-qid="${esc(q.id)}" role="radiogroup" aria-labelledby="dp-p-${esc(q.id)}">
+<b id="dp-p-${esc(q.id)}">${qi + 1}. ${esc(q.prompt)}</b>${opts}
 <div class="dim">id: <code>${esc(q.id)}</code></div></div>`;
   }).join("\n");
   const verif = (spec.verification || []).map(v => `<li><code>${esc(v)}</code></li>`).join("");
   const incs = (spec.deliverables || []).map((d, i) =>
     `<div class="inc"><b>${i + 1}. ${esc(d.title)}</b><p>${esc(d.body || "")}</p>
 ${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${esc(f)}</code>`).join(" ")}</p>` : ""}
-<textarea class="dp-note" data-section="increment ${i + 1}" rows="1" placeholder="comment on this increment (optional)"></textarea></div>`).join("\n");
+<textarea class="dp-note" data-section="increment ${i + 1}" rows="1" placeholder="comment on this increment (optional)" aria-label="comment on increment ${i + 1}"></textarea></div>`).join("\n");
   // Everything below is client-side only: selections and comments live in the
   // DOM, nothing is stored or sent anywhere, and the page keeps working over
   // file:// (clipboard falls back to select+execCommand there).
   const COPYBACK = `
 <h2>Send it back</h2>
-<p class="dim">Highlight any text above to pin a comment to it.</p>
+<p class="dim">Highlight any text above — mouse or keyboard — then click the
+＋&nbsp;comment chip, or press <kbd>⌘M</kbd> / <kbd>Ctrl+M</kbd>, to pin a comment to it.</p>
 <div id="dp-quotes"></div>
-<textarea class="dp-note" data-section="general" rows="2" placeholder="general comments (optional)"></textarea>
-<p><button id="dp-copyback">Copy for session</button>
-<span id="dp-copied" class="dim"></span></p>
+<textarea class="dp-note" data-section="general" rows="2" placeholder="general comments (optional)" aria-label="general comments"></textarea>
+<p><button id="dp-copyback" type="button">Copy for session</button>
+<span id="dp-copied" class="dim" role="status" aria-live="polite"></span></p>
 <script>
 (function () {
   var slug = ${JSON.stringify(spec.slug)};
@@ -291,27 +333,40 @@ ${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${es
     ta.remove();
   }
 
-  // Highlight-to-comment: select any text, a chip appears, clicking it pins
-  // the excerpt with its own comment box. The blob labels the comment with
-  // the nearest heading and the quote, so the session can find the spot.
+  // Highlight-to-comment: select any text (mouse or keyboard), a chip appears,
+  // and clicking it — or ⌘M/Ctrl+M, the keyboard path — pins the excerpt with
+  // its own comment box. The blob labels the comment with the nearest heading
+  // and the quote, so the session can find the spot.
   var chip = document.createElement("button");
-  chip.id = "dp-hl-add"; chip.textContent = "\\uFF0B comment"; chip.style.display = "none";
+  chip.id = "dp-hl-add"; chip.type = "button";
+  chip.textContent = "\\uFF0B comment";
+  chip.setAttribute("aria-label", "pin a comment to the highlighted text (or press Cmd/Ctrl+M)");
+  chip.style.display = "none";
   document.body.appendChild(chip);
-  document.addEventListener("mouseup", function () {
-    setTimeout(function () {
-      var sel = window.getSelection();
-      var txt = sel ? String(sel).trim() : "";
-      if (!txt || sel.rangeCount === 0 || chip.contains(sel.anchorNode)) { chip.style.display = "none"; return; }
-      var r = sel.getRangeAt(0).getBoundingClientRect();
-      chip.style.left = (window.scrollX + r.right + 6) + "px";
-      chip.style.top = (window.scrollY + r.top - 4) + "px";
-      chip.style.display = "block";
-    }, 0);
-  });
-  chip.addEventListener("mousedown", function (e) {
-    e.preventDefault();
+  function placeChip() {
     var sel = window.getSelection();
-    var txt = String(sel).trim();
+    var txt = sel ? String(sel).trim() : "";
+    if (!txt || sel.rangeCount === 0 || chip.contains(sel.anchorNode)) { chip.style.display = "none"; return; }
+    var r = sel.getRangeAt(0).getBoundingClientRect();
+    // Measure first, then clamp inside the viewport: a selection ending near
+    // the right margin used to push the chip clean off the page.
+    chip.style.visibility = "hidden"; chip.style.display = "block";
+    var w = chip.offsetWidth, h = chip.offsetHeight;
+    var x = Math.max(8, Math.min(r.right + 6, document.documentElement.clientWidth - w - 8));
+    var y = r.top - h - 6;
+    if (y < 8) y = r.bottom + 6;
+    chip.style.left = (window.scrollX + x) + "px";
+    chip.style.top = (window.scrollY + y) + "px";
+    chip.style.visibility = "visible";
+  }
+  document.addEventListener("mouseup", function () { setTimeout(placeChip, 0); });
+  document.addEventListener("keyup", function (e) {
+    // Keyboard selection (Shift+arrows / Shift+Cmd+arrows) surfaces the chip too.
+    if (e.key === "Shift" || e.shiftKey) setTimeout(placeChip, 0);
+  });
+  function pinComment() {
+    var sel = window.getSelection();
+    var txt = sel ? String(sel).trim() : "";
     if (!txt) return;
     var excerpt = txt.length > 120 ? txt.slice(0, 117) + "\\u2026" : txt;
     var section = "";
@@ -327,9 +382,11 @@ ${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${es
     var note = document.createElement("textarea");
     note.className = "dp-note"; note.rows = 1;
     note.placeholder = "comment on the highlighted text";
+    note.setAttribute("aria-label", 'comment on "' + excerpt + '"');
     note.setAttribute("data-section", (section ? section + " \\u00B7 " : "") + 'on "' + excerpt + '"');
     var rm = document.createElement("button");
-    rm.className = "dp-x"; rm.textContent = "\\u00D7";
+    rm.className = "dp-x"; rm.type = "button"; rm.textContent = "\\u00D7";
+    rm.setAttribute("aria-label", "remove this pinned comment");
     rm.addEventListener("click", function () { row.remove(); });
     row.appendChild(bq); row.appendChild(note); row.appendChild(rm);
     document.getElementById("dp-quotes").appendChild(row);
@@ -337,21 +394,35 @@ ${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${es
     sel.removeAllRanges();
     note.focus();
     note.scrollIntoView({ block: "center" });
+  }
+  chip.addEventListener("mousedown", function (e) { e.preventDefault(); pinComment(); });
+  chip.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pinComment(); }
+  });
+  document.addEventListener("keydown", function (e) {
+    if ((e.metaKey || e.ctrlKey) && (e.key === "m" || e.key === "M")) {
+      e.preventDefault(); pinComment();
+    }
   });
 })();
 </script>`;
   return htmlHead(spec.title + " — review", b64) + `<style>
-label.opt{cursor:pointer}
+label.opt{cursor:pointer;padding:3px 0}
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
   color:inherit;border:1px solid var(--dim,#888);border-radius:4px;padding:6px;font:inherit}
 #dp-copyback{background:var(--accent,#46f);color:#fff;border:0;border-radius:4px;
-  padding:8px 14px;font:inherit;cursor:pointer}
+  padding:10px 16px;font:inherit;cursor:pointer;min-height:44px}
 #dp-hl-add{position:absolute;z-index:9;background:var(--accent,#46f);color:#fff;border:0;
-  border-radius:12px;padding:2px 10px;font:inherit;font-size:.85em;cursor:pointer}
-.dp-quote{position:relative;margin:10px 0;padding-left:10px;border-left:3px solid var(--accent,#46f)}
+  border-radius:14px;padding:6px 14px;font:inherit;font-size:.85em;cursor:pointer;
+  white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.35)}
+.dp-quote{position:relative;margin:10px 0;padding:2px 34px 2px 10px;border-left:3px solid var(--accent,#46f)}
 .dp-quote blockquote{margin:0 0 4px;font-style:italic;opacity:.8}
+kbd{font:inherit;font-size:.85em;border:1px solid var(--dim,#888);border-radius:3px;padding:0 4px}
+.opt input:focus-visible,#dp-copyback:focus-visible,#dp-hl-add:focus-visible,
+.dp-note:focus-visible,.dp-x:focus-visible{outline:2px solid var(--accent,#46f);outline-offset:2px}
 .dp-x{position:absolute;top:0;right:0;background:transparent;border:0;color:inherit;
-  opacity:.5;cursor:pointer;font:inherit}
+  opacity:.6;cursor:pointer;font:inherit;padding:6px 10px;min-width:32px;min-height:32px}
+.dp-x:hover{opacity:1}
 </style>` + commonBody(spec) + `
 <h2>Increments</h2>${incs}
 ${verif ? `<h2>Verification</h2><ul>${verif}</ul>` : ""}
