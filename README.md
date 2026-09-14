@@ -17,6 +17,12 @@ the Claude phone app.
 
 ## What it looks like
 
+
+
+https://github.com/user-attachments/assets/1a1c7475-5868-41f7-84d0-bbb6499a4459
+
+
+
 **The board.** One row per worktree, ordered by urgency: waiting on you,
 broken, working, done, quiet. Each row shows its plan's gate, a progress
 dial, the branch and PR (both clickable), today's spend, and one-tap chips —
