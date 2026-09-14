@@ -386,6 +386,12 @@ def act(action, row, extra):
         return run(["open", pr_url + "/checks"]), pr_url + "/checks"
 
     if action in ("plan", "take the check", "review"):
+        # The row's slug comes from the targets snapshot, which lags a sync
+        # behind reality — deep-plan's go-time auto-open knows the slug it
+        # just authorized, so it rides in as `extra` and wins when the
+        # snapshot has not caught up. Same validation either way: plan_page
+        # anchors the slug to a real rendered surface.
+        slug = slug or (extra or "").strip()
         if not slug:
             return False, "no plan on this row"
         if not plan_page(slug):
