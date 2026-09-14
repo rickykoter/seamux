@@ -67,31 +67,30 @@ fetches a pinned, checksum-verified `mermaid.min.js`, and wires the cmux
 config and Claude settings. The settings merge is additive — it never
 rewrites anything it didn't add, and backs up `settings.json` first.
 
-On an interactive first run it also asks which integrations this machine
-uses; answers stick across re-installs, and everything stays off until you
-say otherwise. Scripted installs use flags: `--with-jira=your.atlassian.net`,
-`--with-github-issues`, `--with-observability=datadog`, `--no-integrations`.
-
-Useful flags: `--dry-run`, `--check`, `--uninstall`, `--force`, and
-`--no-<piece>` to skip parts (`--no-crew`, `--no-deep-plan`, …).
+First interactive run, it also asks which integrations this machine uses.
+Answers stick across re-installs; everything stays off until you say
+otherwise. Other flags: `--dry-run`, `--check`, `--uninstall`, `--force`,
+`--no-<piece>` to skip parts, and `--with-jira=SITE` /
+`--with-github-issues` / `--with-observability=STACK` /
+`--no-integrations` for scripted installs.
 
 ### Integrations (all optional)
 
-- **Jira** — rows already badge `jira:<state>` from ticket-keyed branches;
-  with a site configured the badge becomes a chip that opens `PROJ-123` in
-  Jira. `crew doctor` checks `acli` only if you enabled this.
-- **GitHub Issues** — rows link the PR's closing issue (or a `123-…` branch)
-  as its own chip, riding the `gh` poll crew already makes.
-- **Observability-aware planning** — point seamux at your Datadog/Splunk
-  (`.seamux/observability.json` in a repo, or the machine-wide answer), and
-  deep-plan reads your monitors, dashboards and runbooks before drafting:
-  what exists gets cited, what's missing becomes plan deliverables — new
-  instrumentation, an importable monitor definition, a runbook section.
-  Reads only: changes ship as reviewable artifacts you import, never direct
-  API writes.
+- **Jira** — a ticket key in your branch name becomes a state-colored chip
+  on the row; click it to open `PROJ-123` in your Jira. `crew doctor` only
+  checks `acli` if you turned this on.
+- **GitHub Issues** — the issue a PR closes (or a `123-…` branch names)
+  gets its own chip, riding the `gh` poll crew already makes.
+- **Observability-aware planning** — tell seamux about your Datadog or
+  Splunk (per-repo `.seamux/observability.json`, or the machine-wide
+  answer), and deep-plan reads your monitors, dashboards and runbooks
+  before it drafts a plan. What exists gets cited; what's missing becomes
+  plan work — new instrumentation, a monitor definition you import, a
+  runbook section. It only ever reads: changes arrive as artifacts you
+  review and apply, never as API writes.
 
-Declined integrations cost nothing: no nags in doctor, no dead chips, no
-config to maintain.
+Declining costs nothing: no doctor nags, no dead chips, no config to
+maintain.
 
 ### Check it worked
 
@@ -144,7 +143,7 @@ it's set up.
    Privacy & Security. Restart cmux if Screen Recording doesn't register.
 3. Finish the wizard's self-test, then re-run `crew doctor`.
 
-## Security notes — read before relying on either
+## Security notes — worth reading before you rely on them
 
 - **The deep-plan gate is a discipline tool, not a security boundary.** It
   blocks the ordinary edit paths so an agent can't wander ahead of your
