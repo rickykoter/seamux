@@ -9,9 +9,11 @@ Run a fleet of Claude Code agents from one screen. seamux adds two things to
   reviewable page with a quiz, then blocks the agent from editing until you
   approve each increment.
 
-It's built for a personal laptop full of hobby repos: git and GitHub only, no
-issue trackers, no dashboards to babysit. With Remote Control on, the same
-fleet shows up in the Claude phone app.
+It scales with you. Out of the box it needs nothing but git and GitHub — a
+laptop of hobby repos is fully served. When your projects have more — Jira,
+GitHub Issues, a Datadog or Splunk stack — setup asks, and the board and the
+planner put them to work. With Remote Control on, the same fleet shows up in
+the Claude phone app.
 
 ## What it looks like
 
@@ -65,8 +67,31 @@ fetches a pinned, checksum-verified `mermaid.min.js`, and wires the cmux
 config and Claude settings. The settings merge is additive — it never
 rewrites anything it didn't add, and backs up `settings.json` first.
 
+On an interactive first run it also asks which integrations this machine
+uses; answers stick across re-installs, and everything stays off until you
+say otherwise. Scripted installs use flags: `--with-jira=your.atlassian.net`,
+`--with-github-issues`, `--with-observability=datadog`, `--no-integrations`.
+
 Useful flags: `--dry-run`, `--check`, `--uninstall`, `--force`, and
 `--no-<piece>` to skip parts (`--no-crew`, `--no-deep-plan`, …).
+
+### Integrations (all optional)
+
+- **Jira** — rows already badge `jira:<state>` from ticket-keyed branches;
+  with a site configured the badge becomes a chip that opens `PROJ-123` in
+  Jira. `crew doctor` checks `acli` only if you enabled this.
+- **GitHub Issues** — rows link the PR's closing issue (or a `123-…` branch)
+  as its own chip, riding the `gh` poll crew already makes.
+- **Observability-aware planning** — point seamux at your Datadog/Splunk
+  (`.seamux/observability.json` in a repo, or the machine-wide answer), and
+  deep-plan reads your monitors, dashboards and runbooks before drafting:
+  what exists gets cited, what's missing becomes plan deliverables — new
+  instrumentation, an importable monitor definition, a runbook section.
+  Reads only: changes ship as reviewable artifacts you import, never direct
+  API writes.
+
+Declined integrations cost nothing: no nags in doctor, no dead chips, no
+config to maintain.
 
 ### Check it worked
 
