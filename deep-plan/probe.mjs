@@ -135,6 +135,28 @@ ok("mermaid theme follows the page theme",
     }));
 }
 
+// -------------------------------------------------- read-before-plan floor
+{
+  fs.writeFileSync(path.join(REPO, "existing.sh"), "#!/bin/sh\n");
+  const base = JSON.parse(JSON.stringify(spec));
+  base.slug = "floor-plan";
+  base.deliverables[0].files = ["existing.sh"];
+  let rr = cli("render", tmpSpec(base));
+  ok("refuses a deliverable naming an existing file no fact cites",
+    rr.status !== 0 && /not read/.test(rr.stderr) && /existing\.sh/.test(rr.stderr));
+  base.verifiedFacts.push({ claim: "existing.sh is a stub", evidence: "existing.sh:1" });
+  ok("citing the file satisfies the floor", cli("render", tmpSpec(base)).status === 0);
+  const fresh = JSON.parse(JSON.stringify(spec));
+  fresh.slug = "floor-new";
+  fresh.deliverables[0].files = ["not-created-yet.sh"];
+  ok("a file the plan will CREATE is exempt (output, not input)",
+    cli("render", tmpSpec(fresh)).status === 0);
+  for (const s of ["floor-plan", "floor-new"]) {
+    cli("close", s);
+    fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, s + ".json"), { force: true });
+  }
+}
+
 // -------------------------------------------------- observability block: advisory
 {
   const obSpec = { ...spec, slug: "ob-plan", observability: {
