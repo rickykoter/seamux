@@ -812,6 +812,36 @@ function transition(action, slug, n, why) {
   } else die("unknown transition " + action);
   writeState(st); rerenderWorking(slug);
   say(`${action} ${slug} ${n}`);
+  if (action === "go") openWorkingSurface(st);
+}
+
+// The go-ahead opens the plan's working surface in the Dock, so the page you
+// steer from appears the moment there is something to steer. Same coupling
+// budget as `done` opening `cmux diff`: strictly best-effort against the
+// board's intent server (whose open_plan reuses the existing Dock tab instead
+// of stacking a new one per go) — no server, no row, no cmux means silence,
+// never a failed go.
+function openWorkingSurface(st) {
+  try {
+    // Probe/test runs override the state dir; they must never reach the
+    // machine's real board, whatever this machine happens to be running.
+    if (process.env.DEEP_PLAN_STATE_DIR) return;
+    const cache = path.join(os.homedir(), ".cache", "cmux-crew");
+    const rd = f => fs.readFileSync(path.join(cache, f), "utf8").trim();
+    const port = parseInt(rd("board-intent.port"), 10);
+    const token = rd("board-intent.token");
+    if (!port || !token) return;
+    const targets = JSON.parse(fs.readFileSync(path.join(cache, "board-targets.json"), "utf8"));
+    const rid = Object.keys(targets).find(k => {
+      const t = targets[k] || {};
+      return t.slug === st.slug ||
+        (st.root && t.cwd && path.resolve(t.cwd) === path.resolve(st.root));
+    });
+    if (!rid) return;
+    const url = `http://127.0.0.1:${port}/do?a=plan&r=${encodeURIComponent(rid)}` +
+      `&t=${encodeURIComponent(token)}`;
+    spawnSync("curl", ["-fsS", "-m", "5", "-o", "/dev/null", url]);
+  } catch { /* board offline or never installed — the go already succeeded */ }
 }
 
 // A patch of everything since the increment started — committed, uncommitted
