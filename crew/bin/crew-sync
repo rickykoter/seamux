@@ -241,9 +241,12 @@ GH_TTL = int(os.environ.get("CREW_GH_INTERVAL", "300"))
 # The token families this script is the sole author of. Needed by name because a
 # failed probe has to carry the previous ones forward rather than publish silence
 # -- see the probe-failure branch in main().
-SIGNAL_PREFIXES = ("ci:", "review:", "pr:", "stack:", "gone:")
+SIGNAL_PREFIXES = ("ci:", "review:", "pr:", "stack:", "gone:", "issue:")
 GH_FIELDS = ("number,state,isDraft,reviewDecision,mergeable,mergeStateStatus,"
-             "statusCheckRollup,baseRefName,url")
+             "statusCheckRollup,baseRefName,url,closingIssuesReferences")
+# Older gh may not know closingIssuesReferences; one retry without it keeps
+# the whole probe alive rather than trading checks for an issue number.
+GH_FIELDS_OLD = GH_FIELDS.replace(",closingIssuesReferences", "")
 
 
 # --- Jira ---------------------------------------------------------------------
@@ -340,6 +343,9 @@ def gh_state(cwd, force=False):
     try:
         r = subprocess.run(["gh", "pr", "view", "--json", GH_FIELDS],
                            cwd=cwd, capture_output=True, text=True, timeout=30)
+        if r.returncode != 0 and "closingIssuesReferences" in (r.stderr or ""):
+            r = subprocess.run(["gh", "pr", "view", "--json", GH_FIELDS_OLD],
+                               cwd=cwd, capture_output=True, text=True, timeout=30)
         # gh exits 1 for "no PR on this branch" exactly as it does for auth and
         # network errors, so the exit code alone cannot tell an answer from a
         # failure. The message can.
@@ -373,6 +379,10 @@ def gh_state(cwd, force=False):
                 "ciFail": bad,
                 "ciPending": pending,
                 "ciTotal": len(roll),
+                # First closing-issue reference: the issue chip's source of
+                # truth when a PR exists (branch-name pattern covers pre-PR).
+                "issue": ((d.get("closingIssuesReferences") or [{}])[0].get("number")
+                          if d.get("closingIssuesReferences") else None),
             }
     except Exception:
         pass
@@ -600,6 +610,20 @@ def signals(cwd, is_repo):
     if gh.get("prState") in ("MERGED", "CLOSED") or merged_already(cwd):
         tok.append("gone:merged")
         human.append("branch is merged — worktree can go")
+
+    # Linked GitHub issue: the PR's closing reference first, else a
+    # conservative branch-name pattern (issue-123 / 123-something — a bare
+    # leading number is too easy to false-positive on). Display is gated by
+    # the board on integrations.json; publishing the token costs nothing.
+    n = gh.get("issue")
+    if not n:
+        b = branch(cwd)
+        rest = b.split("/", 1)[1] if "/" in b else b
+        m = re.match(r"^(?:issue-)?(\d{1,6})-", rest)
+        if m:
+            n = m.group(1)
+    if n:
+        tok.append(f"issue:{n}")
 
     return tok, human, gh
 
