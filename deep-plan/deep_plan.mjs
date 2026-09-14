@@ -241,24 +241,26 @@ function reviewHtml(spec, b64) {
       const L = String.fromCharCode(97 + i);
       return `<label class="opt"><input type="radio" name="dp-q-${esc(q.id)}" value="${L}"> ${L}) ${esc(o.v)}</label>`;
     }).join("");
-    return `<div class="q" data-qid="${esc(q.id)}"><b>${qi + 1}. ${esc(q.prompt)}</b>${opts}
+    return `<div class="q" data-qid="${esc(q.id)}" role="radiogroup" aria-labelledby="dp-p-${esc(q.id)}">
+<b id="dp-p-${esc(q.id)}">${qi + 1}. ${esc(q.prompt)}</b>${opts}
 <div class="dim">id: <code>${esc(q.id)}</code></div></div>`;
   }).join("\n");
   const verif = (spec.verification || []).map(v => `<li><code>${esc(v)}</code></li>`).join("");
   const incs = (spec.deliverables || []).map((d, i) =>
     `<div class="inc"><b>${i + 1}. ${esc(d.title)}</b><p>${esc(d.body || "")}</p>
 ${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${esc(f)}</code>`).join(" ")}</p>` : ""}
-<textarea class="dp-note" data-section="increment ${i + 1}" rows="1" placeholder="comment on this increment (optional)"></textarea></div>`).join("\n");
+<textarea class="dp-note" data-section="increment ${i + 1}" rows="1" placeholder="comment on this increment (optional)" aria-label="comment on increment ${i + 1}"></textarea></div>`).join("\n");
   // Everything below is client-side only: selections and comments live in the
   // DOM, nothing is stored or sent anywhere, and the page keeps working over
   // file:// (clipboard falls back to select+execCommand there).
   const COPYBACK = `
 <h2>Send it back</h2>
-<p class="dim">Highlight any text above to pin a comment to it.</p>
+<p class="dim">Highlight any text above — mouse or keyboard — then click the
+＋&nbsp;comment chip, or press <kbd>⌘M</kbd> / <kbd>Ctrl+M</kbd>, to pin a comment to it.</p>
 <div id="dp-quotes"></div>
-<textarea class="dp-note" data-section="general" rows="2" placeholder="general comments (optional)"></textarea>
-<p><button id="dp-copyback">Copy for session</button>
-<span id="dp-copied" class="dim"></span></p>
+<textarea class="dp-note" data-section="general" rows="2" placeholder="general comments (optional)" aria-label="general comments"></textarea>
+<p><button id="dp-copyback" type="button">Copy for session</button>
+<span id="dp-copied" class="dim" role="status" aria-live="polite"></span></p>
 <script>
 (function () {
   var slug = ${JSON.stringify(spec.slug)};
@@ -291,27 +293,40 @@ ${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${es
     ta.remove();
   }
 
-  // Highlight-to-comment: select any text, a chip appears, clicking it pins
-  // the excerpt with its own comment box. The blob labels the comment with
-  // the nearest heading and the quote, so the session can find the spot.
+  // Highlight-to-comment: select any text (mouse or keyboard), a chip appears,
+  // and clicking it — or ⌘M/Ctrl+M, the keyboard path — pins the excerpt with
+  // its own comment box. The blob labels the comment with the nearest heading
+  // and the quote, so the session can find the spot.
   var chip = document.createElement("button");
-  chip.id = "dp-hl-add"; chip.textContent = "\\uFF0B comment"; chip.style.display = "none";
+  chip.id = "dp-hl-add"; chip.type = "button";
+  chip.textContent = "\\uFF0B comment";
+  chip.setAttribute("aria-label", "pin a comment to the highlighted text (or press Cmd/Ctrl+M)");
+  chip.style.display = "none";
   document.body.appendChild(chip);
-  document.addEventListener("mouseup", function () {
-    setTimeout(function () {
-      var sel = window.getSelection();
-      var txt = sel ? String(sel).trim() : "";
-      if (!txt || sel.rangeCount === 0 || chip.contains(sel.anchorNode)) { chip.style.display = "none"; return; }
-      var r = sel.getRangeAt(0).getBoundingClientRect();
-      chip.style.left = (window.scrollX + r.right + 6) + "px";
-      chip.style.top = (window.scrollY + r.top - 4) + "px";
-      chip.style.display = "block";
-    }, 0);
-  });
-  chip.addEventListener("mousedown", function (e) {
-    e.preventDefault();
+  function placeChip() {
     var sel = window.getSelection();
-    var txt = String(sel).trim();
+    var txt = sel ? String(sel).trim() : "";
+    if (!txt || sel.rangeCount === 0 || chip.contains(sel.anchorNode)) { chip.style.display = "none"; return; }
+    var r = sel.getRangeAt(0).getBoundingClientRect();
+    // Measure first, then clamp inside the viewport: a selection ending near
+    // the right margin used to push the chip clean off the page.
+    chip.style.visibility = "hidden"; chip.style.display = "block";
+    var w = chip.offsetWidth, h = chip.offsetHeight;
+    var x = Math.max(8, Math.min(r.right + 6, document.documentElement.clientWidth - w - 8));
+    var y = r.top - h - 6;
+    if (y < 8) y = r.bottom + 6;
+    chip.style.left = (window.scrollX + x) + "px";
+    chip.style.top = (window.scrollY + y) + "px";
+    chip.style.visibility = "visible";
+  }
+  document.addEventListener("mouseup", function () { setTimeout(placeChip, 0); });
+  document.addEventListener("keyup", function (e) {
+    // Keyboard selection (Shift+arrows / Shift+Cmd+arrows) surfaces the chip too.
+    if (e.key === "Shift" || e.shiftKey) setTimeout(placeChip, 0);
+  });
+  function pinComment() {
+    var sel = window.getSelection();
+    var txt = sel ? String(sel).trim() : "";
     if (!txt) return;
     var excerpt = txt.length > 120 ? txt.slice(0, 117) + "\\u2026" : txt;
     var section = "";
@@ -327,9 +342,11 @@ ${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${es
     var note = document.createElement("textarea");
     note.className = "dp-note"; note.rows = 1;
     note.placeholder = "comment on the highlighted text";
+    note.setAttribute("aria-label", 'comment on "' + excerpt + '"');
     note.setAttribute("data-section", (section ? section + " \\u00B7 " : "") + 'on "' + excerpt + '"');
     var rm = document.createElement("button");
-    rm.className = "dp-x"; rm.textContent = "\\u00D7";
+    rm.className = "dp-x"; rm.type = "button"; rm.textContent = "\\u00D7";
+    rm.setAttribute("aria-label", "remove this pinned comment");
     rm.addEventListener("click", function () { row.remove(); });
     row.appendChild(bq); row.appendChild(note); row.appendChild(rm);
     document.getElementById("dp-quotes").appendChild(row);
@@ -337,21 +354,35 @@ ${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${es
     sel.removeAllRanges();
     note.focus();
     note.scrollIntoView({ block: "center" });
+  }
+  chip.addEventListener("mousedown", function (e) { e.preventDefault(); pinComment(); });
+  chip.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pinComment(); }
+  });
+  document.addEventListener("keydown", function (e) {
+    if ((e.metaKey || e.ctrlKey) && (e.key === "m" || e.key === "M")) {
+      e.preventDefault(); pinComment();
+    }
   });
 })();
 </script>`;
   return htmlHead(spec.title + " — review", b64) + `<style>
-label.opt{cursor:pointer}
+label.opt{cursor:pointer;padding:3px 0}
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
   color:inherit;border:1px solid var(--dim,#888);border-radius:4px;padding:6px;font:inherit}
 #dp-copyback{background:var(--accent,#46f);color:#fff;border:0;border-radius:4px;
-  padding:8px 14px;font:inherit;cursor:pointer}
+  padding:10px 16px;font:inherit;cursor:pointer;min-height:44px}
 #dp-hl-add{position:absolute;z-index:9;background:var(--accent,#46f);color:#fff;border:0;
-  border-radius:12px;padding:2px 10px;font:inherit;font-size:.85em;cursor:pointer}
-.dp-quote{position:relative;margin:10px 0;padding-left:10px;border-left:3px solid var(--accent,#46f)}
+  border-radius:14px;padding:6px 14px;font:inherit;font-size:.85em;cursor:pointer;
+  white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.35)}
+.dp-quote{position:relative;margin:10px 0;padding:2px 34px 2px 10px;border-left:3px solid var(--accent,#46f)}
 .dp-quote blockquote{margin:0 0 4px;font-style:italic;opacity:.8}
+kbd{font:inherit;font-size:.85em;border:1px solid var(--dim,#888);border-radius:3px;padding:0 4px}
+.opt input:focus-visible,#dp-copyback:focus-visible,#dp-hl-add:focus-visible,
+.dp-note:focus-visible,.dp-x:focus-visible{outline:2px solid var(--accent,#46f);outline-offset:2px}
 .dp-x{position:absolute;top:0;right:0;background:transparent;border:0;color:inherit;
-  opacity:.5;cursor:pointer;font:inherit}
+  opacity:.6;cursor:pointer;font:inherit;padding:6px 10px;min-width:32px;min-height:32px}
+.dp-x:hover{opacity:1}
 </style>` + commonBody(spec) + `
 <h2>Increments</h2>${incs}
 ${verif ? `<h2>Verification</h2><ul>${verif}</ul>` : ""}
