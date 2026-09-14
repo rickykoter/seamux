@@ -763,14 +763,18 @@ def open_file(slug, rel):
     rel = urllib.parse.unquote(rel or "").strip()
     if not rel or os.path.isabs(rel):
         return False, "not a relative path"
+    # `file.rb:42` (evidence refs, stack traces) rides through to VS Code's
+    # --goto; containment and existence are checked on the bare path.
+    m = re.match(r"^(.*?)((?::\d+){1,2})$", rel)
+    bare, line_suffix = (m.group(1), m.group(2)) if m else (rel, "")
     base = os.path.realpath(root)
-    target = os.path.realpath(os.path.join(base, rel))
+    target = os.path.realpath(os.path.join(base, bare))
     if target != base and not target.startswith(base + os.sep):
         return False, "outside the worktree"
     if not os.path.exists(target):
         # Common and worth saying plainly: half the declared files are "(new)".
-        return False, "not created yet: " + rel
-    ok = run(["bash", CODE_OPEN, target])
+        return False, "not created yet: " + bare
+    ok = run(["bash", CODE_OPEN, target + line_suffix])
     return ok, ("opened " + rel) if ok else ("crew-code-open refused " + rel)
 
 

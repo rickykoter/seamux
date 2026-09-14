@@ -102,6 +102,38 @@ ok("copy-back has a file:// clipboard fallback", review.includes("execCommand"))
 ok("highlight-to-comment: selection chip and pinned-quote rows",
   review.includes("dp-hl-add") && review.includes("getSelection") &&
   review.includes('"dp-quote"') && review.includes("dp-quotes"));
+// UX/a11y pass: the chip clamps inside the viewport (it used to fall off the
+// right edge), the quiz is labelled radiogroups, copied-state is announced,
+// and pinning has a keyboard path.
+ok("comment chip clamps inside the viewport",
+  review.includes("clientWidth - w - 8") && review.includes("Math.max(8"));
+ok("quiz questions are labelled radiogroups",
+  (review.match(/role="radiogroup"/g) || []).length === (spec.quiz || []).length);
+ok("copy feedback is a live region",
+  review.includes('role="status"') && review.includes('aria-live="polite"'));
+ok("pinning a comment has a keyboard path (Cmd/Ctrl+M)",
+  review.includes("metaKey") && review.includes("pinComment"));
+// Light/dark: resolved pre-paint (saved choice, else OS), toggleable, and
+// mermaid's baked-in theme follows it.
+ok("theme resolves before first paint and has a light palette",
+  review.includes('localStorage.getItem("dp-theme")') &&
+  review.includes("prefers-color-scheme") &&
+  review.includes('[data-theme="light"]'));
+ok("theme toggle exists on every surface", review.includes('id="dp-mode"') &&
+  fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8")
+    .includes('id="dp-mode"'));
+ok("mermaid theme follows the page theme",
+  review.includes('"data-theme")==="light"?"default":"dark"'));
+// Evidence refs that read as repo paths are click targets carrying file:line
+// (a range collapses to its first line); prose evidence stays plain.
+{
+  const pathy = (spec.verifiedFacts || []).filter(f => /^[\w./-]+:\d+/.test(f.evidence));
+  ok("path-shaped evidence renders as dp-path targets",
+    pathy.length > 0 && pathy.every(f => {
+      const first = f.evidence.replace(/^([^:]+:\d+).*$/, "$1");
+      return review.includes(`data-file="${first}"`);
+    }));
+}
 
 // -------------------------------------------------- validate: surfaces re-checked on disk
 ok("validate: a freshly rendered plan is clean",
@@ -115,6 +147,16 @@ ok("validate: a freshly rendered plan is clean",
     rv.status !== 0 && /Parse error|skipped/i.test(rv.stderr) &&
     /double-escaped/.test(rv.stderr) && /placeholder/.test(rv.stderr));
   ok("validate: an unknown slug dies plainly", cli("validate", "no-such-plan").status !== 0);
+}
+{
+  // Quoted labels route through DOMPurify; a shim regression turns every real
+  // diagram into a silent "skip" (error:null). Empty means truly validated.
+  const vlib = await import(new URL("lib/validate.mjs", import.meta.url));
+  const good = await vlib.validateDiagrams([
+    { mermaid: 'flowchart LR\n  K --> R["label: $4.20"]\n  M --> C[("cache")]', question: "g" }]);
+  ok("validateDiagrams: quoted-label flowchart truly validates (no env skip)", good.length === 0);
+  const bad2 = await vlib.validateDiagrams([{ mermaid: "flowchart LR\n  A --> [broken", question: "b" }]);
+  ok("validateDiagrams: a parse error survives as a real error", bad2.length === 1 && !!bad2[0].error);
 }
 const working = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
 ok("working surface renders controls disabled on disk",
