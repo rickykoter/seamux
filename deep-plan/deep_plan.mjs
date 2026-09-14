@@ -909,8 +909,10 @@ function openWorkingSurface(st) {
         (st.root && t.cwd && path.resolve(t.cwd) === path.resolve(st.root));
     });
     if (!rid) return;
+    // x carries the slug we just authorized: the row's own slug field lags a
+    // sync behind and the first go on a fresh plan hit exactly that gap.
     const url = `http://127.0.0.1:${port}/do?a=plan&r=${encodeURIComponent(rid)}` +
-      `&t=${encodeURIComponent(token)}`;
+      `&t=${encodeURIComponent(token)}&x=${encodeURIComponent(st.slug)}`;
     spawnSync("curl", ["-fsS", "-m", "5", "-o", "/dev/null", url]);
   } catch { /* board offline or never installed — the go already succeeded */ }
 }

@@ -4,7 +4,8 @@
 #   ./install.sh [--main-repo PATH] [--dry-run] [--check] [--force]
 #                [--no-apply] [--no-claude-settings] [--no-crew]
 #                [--no-deep-plan] [--no-mermaid] [--force-mermaid]
-#                [--uninstall]
+#                [--uninstall] [--with-jira[=SITE]] [--with-github-issues]
+#                [--no-integrations]
 #
 # The repo is the source of truth: running this syncs repo -> machine
 # (~/.config/cmux/crew, ~/.claude/skills/deep-plan, statusline, hooks) and then
@@ -22,6 +23,7 @@ MERMAID_VERSION="11.17.2"
 MERMAID_SHA256="581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8"
 
 DRY=0 APPLY=1 SETTINGS=1 CREW=1 DEEPPLAN=1 MERMAID=1 FORCE_MERMAID=0 CHECK=0 FORCE=0 UNINSTALL=0 MAIN=""
+WITH_JIRA="" JIRA_SITE="" WITH_GHI="" NO_INTEG=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -36,6 +38,10 @@ while [ $# -gt 0 ]; do
     --no-mermaid) MERMAID=0; shift ;;
     --force-mermaid) FORCE_MERMAID=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
+    --with-jira) WITH_JIRA=1; shift ;;
+    --with-jira=*) WITH_JIRA=1; JIRA_SITE="${1#--with-jira=}"; shift ;;
+    --with-github-issues) WITH_GHI=1; shift ;;
+    --no-integrations) NO_INTEG=1; shift ;;
     -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
     *) echo "install.sh: unknown option $1" >&2; exit 2 ;;
   esac
@@ -124,7 +130,7 @@ drift_check() {
   if [ -d "$DEST" ]; then
     while IFS= read -r f; do
       rel="${f#$DEST/}"
-      case "$rel" in .seamux-source) continue ;; esac  # install-time provenance, never in the repo
+      case "$rel" in .seamux-source|integrations.json) continue ;; esac  # install-time state, never in the repo
       [ -e "$HERE/crew/$rel" ] || [ -e "$HERE/docs/$(basename "$rel")" ] || say "live-only: crew/$rel"
     done < <(find "$DEST" -type f ! -path '*__pycache__*' ! -name '*.pyc' ! -name '.DS_Store')
   fi
@@ -189,6 +195,9 @@ fi
 
 # ---------------------------------------------------------------- crew layer
 if [ "$CREW" = 1 ]; then
+  # Integration answers survive the move-aside below: captured here, decided
+  # (flags > prompts > prior answers > absent) and rewritten after the copy.
+  PREV_INTEG="$(cat "$DEST/integrations.json" 2>/dev/null || true)"
   if [ -d "$DEST" ]; then
     BAK="$HOME/.config/cmux/crew-backups/crew.$(date +%Y%m%d-%H%M%S)"
     run "mkdir -p '$(dirname "$BAK")' && mv '$DEST' '$BAK'"
@@ -202,6 +211,55 @@ if [ "$CREW" = 1 ]; then
   # drift check automatically. Not a repo file — written at install time.
   run "printf '%s\n' '$HERE' > '$DEST/.seamux-source'"
   ok "recorded the source repo -> $DEST/.seamux-source"
+
+  # ------------------------------------------------------------ integrations
+  # Which trackers does this machine use? Flags win; else an interactive first
+  # run asks; else prior answers carry over; else absent (= all disabled —
+  # doctor prints one quiet line per integration instead of nagging).
+  if [ "$DRY" = 0 ]; then
+    if [ "$NO_INTEG" = 1 ]; then
+      printf '{}\n' > "$DEST/integrations.json"
+      ok "integrations: all off (--no-integrations)"
+    elif [ -n "$WITH_JIRA" ] || [ -n "$WITH_GHI" ]; then
+      python3 - "$DEST/integrations.json" "$WITH_JIRA" "$JIRA_SITE" "$WITH_GHI" "$PREV_INTEG" <<'PY'
+import json, sys
+path, jira, site, ghi, prev = sys.argv[1:6]
+try: cfg = json.loads(prev) if prev.strip() else {}
+except ValueError: cfg = {}
+if jira: cfg["jira"] = {"enabled": True, **({"site": site} if site else
+                        {k: v for k, v in (cfg.get("jira") or {}).items() if k == "site"})}
+if ghi: cfg["github_issues"] = {"enabled": True}
+json.dump(cfg, open(path, "w"), indent=2)
+PY
+      ok "integrations recorded -> $DEST/integrations.json"
+    elif [ -n "$PREV_INTEG" ]; then
+      printf '%s\n' "$PREV_INTEG" > "$DEST/integrations.json"
+      ok "integrations: kept prior answers"
+    elif [ -t 0 ]; then
+      say "which integrations does this machine use? (Enter skips; rerun"
+      say "./install.sh --with-jira=SITE / --with-github-issues to change later)"
+      printf '  Jira via acli? [y/N] '; read -r a
+      case "$a" in y|Y)
+        printf '  Jira site (e.g. yourco.atlassian.net, blank to skip links): '; read -r JIRA_SITE
+        WITH_JIRA=1 ;;
+      esac
+      printf '  Link GitHub issues on board rows? [y/N] '; read -r a
+      case "$a" in y|Y) WITH_GHI=1 ;; esac
+      if [ -n "$WITH_JIRA" ] || [ -n "$WITH_GHI" ]; then
+        python3 - "$DEST/integrations.json" "$WITH_JIRA" "$JIRA_SITE" "$WITH_GHI" "" <<'PY'
+import json, sys
+path, jira, site, ghi, _ = sys.argv[1:6]
+cfg = {}
+if jira: cfg["jira"] = {"enabled": True, **({"site": site} if site else {})}
+if ghi: cfg["github_issues"] = {"enabled": True}
+json.dump(cfg, open(path, "w"), indent=2)
+PY
+        ok "integrations recorded -> $DEST/integrations.json"
+      else
+        say "integrations: none — doctor stays quiet about them"
+      fi
+    fi
+  fi
 
   # Substitute in the installed copy only: the repo stays a clean template.
   if [ "$DRY" = 0 ]; then
