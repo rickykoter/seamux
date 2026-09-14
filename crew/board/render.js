@@ -212,6 +212,12 @@ function __boardRender(d) {
         '" data-a="pr" title="Open the pull request in your default browser">' +
         esc(a.pr) + "</span>";
     }
+    // The linked issue (closing reference or branch pattern) — present only
+    // when the GitHub Issues integration is enabled; the collector gates it.
+    if (a.issue) {
+      out += '<span class="issue" data-a="issue" title="Open the linked issue in your default browser">' +
+        esc(a.issue) + "</span>";
+    }
     // Today's spend, when known and non-zero. Dim under a dollar: the point
     // is spotting the row that is quietly burning, not pricing every row.
     if (typeof a.cost === "number" && a.cost > 0) {

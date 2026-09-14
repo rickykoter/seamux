@@ -380,12 +380,42 @@ def act(action, row, extra):
             return False, "no PR on this row"
         return run(["open", pr_url]), pr_url
 
+    if action == "issue":
+        issue_url = row.get("issue_url") or ""
+        if not issue_url:
+            return False, "no linked issue on this row"
+        return run(["open", issue_url]), issue_url
+
+    if action == "jira":
+        # The chip sends only the ticket key; the site comes from the
+        # integrations file server-side, so a page can never name a host.
+        key = (extra or "").strip()
+        if not re.fullmatch(r"[A-Z][A-Z0-9]+-\d+", key):
+            return False, "not a ticket key"
+        try:
+            with open(os.path.join(HERE, "..", "integrations.json")) as fh:
+                j = json.load(fh).get("jira") or {}
+            site = (j.get("site") or "") if j.get("enabled") else ""
+        except Exception:
+            site = ""
+        if not site:
+            return False, "no Jira site configured"
+        base = site if site.startswith("http") else "https://" + site
+        url = base.rstrip("/") + "/browse/" + key
+        return run(["open", url]), url
+
     if action == "checks":
         if not pr_url:
             return False, "no PR on this row"
         return run(["open", pr_url + "/checks"]), pr_url + "/checks"
 
     if action in ("plan", "take the check", "review"):
+        # The row's slug comes from the targets snapshot, which lags a sync
+        # behind reality — deep-plan's go-time auto-open knows the slug it
+        # just authorized, so it rides in as `extra` and wins when the
+        # snapshot has not caught up. Same validation either way: plan_page
+        # anchors the slug to a real rendered surface.
+        slug = slug or (extra or "").strip()
         if not slug:
             return False, "no plan on this row"
         if not plan_page(slug):
@@ -464,7 +494,7 @@ def increment(slug, n, action, why):
     return True, "%s %s %s" % (action, slug, n)
 
 
-ACTIONS = ("jump", "row", "diff", "pr", "checks", "plan", "take the check",
+ACTIONS = ("jump", "row", "diff", "pr", "issue", "jira", "checks", "plan", "take the check",
            "review", "code", "reclaim", "sync", "go", "close plan",
            "sandbox-up", "sandbox-down", "feed-allow", "feed-deny")
 

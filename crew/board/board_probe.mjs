@@ -84,7 +84,7 @@ const FIXTURE = {
   rows: [
     { id: "a", name: "fixture-attend", kind: "attend", badge: "gate shut",
       said: "{{Inc 2}} needs your go-ahead.", chips: ["go 2", "plan"], frac: 0.25, meta: "1/4",
-      cost: 4.2 },
+      cost: 4.2, issue: "#87", issue_url: "https://github.com/x/y/issues/87" },
     { id: "b", name: "fixture-run", kind: "running", badge: "working",
       said: "{{Inc 3}} in progress.", chips: ["diff"], frac: 0.5, meta: "2/4",
       cost: 0.31 },
@@ -116,6 +116,12 @@ checks.push(["null progress renders a dot, not 0%", !/<text/.test(els.rows.inner
 // field is missing (the CI/no-ccusage path sends rows without it).
 checks.push(["cost fact rendered with dollars", out.includes(">$4.20<")]);
 checks.push(["a small cost is dimmed", /class="cost small"[^>]*>\$0\.31</.test(out)]);
+// Linked-issue chip: rendered when the collector supplied it (integration
+// enabled), absent otherwise — the un-enabled row must show none.
+checks.push(["issue chip renders as its own target",
+  /class="issue" data-a="issue"[^>]*>#87</.test(out)]);
+checks.push(["rows without an issue field show no issue chip",
+  (out.match(/class="issue"/g) || []).length === 1]);
 checks.push(["a row without cost shows no dollar fact",
   (out.match(/class="cost/g) || []).length === 2]);
 
@@ -161,6 +167,8 @@ render({ rows: [{
   ref: "workspace:9", cwd: "/tmp/wt", slug: "",
   signals: [{ t: "✗ CI", c: "#F97066", h: "Open the failing checks", a: "checks" },
             { t: "draft", c: "#859289", h: "The PR is still a draft" },
+            { t: "⊙ PROJ-1039", c: "#F5A524", h: "Jira: In Review — open PROJ-1039 in Jira",
+              a: "jira", x: "PROJ-1039" },
             { t: "go 5", c: "#F5A524", h: "Authorize increment 5", a: "go", x: "5" }],
   feedby: 0, feedgate: "",
 }], quiet: "" });
@@ -180,6 +188,10 @@ checks.push(["an actionable signal is a target, a status signal is not",
   /class="sig act" style="color:#F97066" data-a="checks"/.test(f) &&
   /class="sig" style="color:#859289"/.test(f)]);
 checks.push(["a signal can carry an argument", /data-a="go" data-x="5"/.test(f)]);
+// A linked Jira chip is just a signal wearing the ticket key: actionable,
+// state-colored, carrying the key as its argument for the server to resolve.
+checks.push(["a jira ticket chip is an actionable, state-colored signal",
+  /data-a="jira" data-x="PROJ-1039"/.test(f) && f.includes("⊙ PROJ-1039")]);
 // Where you are standing, marked but not reordered.
 render({ rows: [
   { id: "h", name: "here", kind: "running", badge: "b", said: "", chips: [], frac: null,
