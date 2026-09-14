@@ -144,6 +144,24 @@ it's set up.
    Privacy & Security. Restart cmux if Screen Recording doesn't register.
 3. Finish the wizard's self-test, then re-run `crew doctor`.
 
+## Security notes — read before relying on either
+
+- **The deep-plan gate is a discipline tool, not a security boundary.** It
+  blocks the ordinary edit paths so an agent can't wander ahead of your
+  go-ahead; a determined process (or a determined agent) can route around a
+  PreToolUse hook. Use it to keep honest work honest — not to contain
+  something you don't trust.
+- **`crew-sandbox` copies your Claude login out of the macOS Keychain into
+  the sandbox as a plaintext `.credentials.json`.** That's the only way a
+  sandboxed session can be signed in, it's deliberate, and it's a real
+  trade-off: anything with access to that sandbox's filesystem can read the
+  token, and a token rotated inside the sandbox doesn't rotate the Keychain
+  copy. Skip the sandbox feature if that trade bothers you.
+- The board's intent server binds to `127.0.0.1` and requires a per-boot
+  token (0600) on every mutating route — but any local process running as
+  you can read that token. It controls cmux, which such a process could
+  drive anyway; just don't extend it beyond loopback.
+
 ## Layout
 
 | path | what |
