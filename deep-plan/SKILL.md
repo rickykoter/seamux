@@ -16,19 +16,28 @@ plan surfaces at `/plan/<slug>`.
 1. **Interrogate before drafting.** Every hard-to-reverse fork goes to the human
    as a concrete `AskUserQuestion` choice *before* the spec exists. A plan that
    silently resolved a fork is a plan the human never agreed to.
-2. **Write the spec** — a single JSON file (shape below, reference:
+2. **Survey the terrain before drafting.** The interrogation covers the
+   human's unknowns; this covers the code's. Grep the codebase for the
+   feature's own vocabulary (planning issue chips? search `issue`, `ticket`,
+   `jira`) and READ every file a deliverable will touch — the renderer
+   refuses a spec naming an existing file no verifiedFact cites. "Nothing
+   like this exists yet" is itself a claim: cite the search that came up
+   empty. (Retro origin: a plan to "deepen the Jira badges" was drafted
+   without opening crew-sync, which already carried batched JQL polling,
+   ticket-key parsing and a status cache.)
+3. **Write the spec** — a single JSON file (shape below, reference:
    `examples/example.spec.json`). Write it in the scratchpad; `render` archives it.
-3. **`deep-plan render <spec.json> --root <worktree>`** — refuse-first renderer.
+4. **`deep-plan render <spec.json> --root <worktree>`** — refuse-first renderer.
    Always pass `--root` explicitly when working outside the target worktree:
    an inferred root that lands outside the worktree does not gate the wrong
    thing, it *disarms the gate*.
-4. **The alignment check.** The review surface (board `plan →` chip, or
+5. **The alignment check.** The review surface (board `plan →` chip, or
    `~/.claude/plans/<slug>.review.html`) shows 3+ consequence questions with
    per-slug shuffled options. The human answers; you run
    `deep-plan grade <slug> q1=a q2=c q3=b`. Non-zero exit names the decision to
    reopen. A wrong answer means the plan and their model disagree — **either one
    may be the broken one.** Fix whichever is wrong, re-render, re-check.
-5. **Implement increment by increment.** `deep-plan go <slug> next` is the
+6. **Implement increment by increment.** `deep-plan go <slug> next` is the
    human's go-ahead (also the board's `go` chip). Every `go` also opens (or
    refocuses — the intent server dedups the Dock tab) the plan's working
    surface in the cmux Dock, best-effort: no board running means no tab and
@@ -91,6 +100,14 @@ key stores the shuffled letter — the two cannot drift.
   plans: 4 of 7 had zero diagrams; the worst walls ran 178/140/130 words.
 - **Evidence or it is a risk.** Every verifiedFact carries `path:line` you
   actually read this session.
+- **Read before you plan.** Every EXISTING file a deliverable names must be
+  cited by a verifiedFact; the renderer refuses otherwise. Files the plan
+  will create are exempt — they are output, not input.
+- **Discovery amends the spec, not just the code.** When implementation finds
+  the terrain differs from the plan (better data source, plumbing that
+  already exists), edit the spec and re-render mid-increment — phase and
+  increment statuses survive, and quiz letters are stable while option text
+  is unchanged. The plan of record must be the plan that was built.
 - **Quiz is non-leading by construction** — the linter rejects leading words,
   all/none-of-the-above, the longest-option tell, >2.2× length spread, and
   prompt-echo. Draw distractors from real vocabulary in the codebase.

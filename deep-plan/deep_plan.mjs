@@ -555,6 +555,38 @@ ${MERMAID_BOOT}
 async function render(specPath, opts) {
   const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
   const violations = validate(spec, opts.force);
+  // Read-before-plan floor: a deliverable that names an EXISTING file must
+  // have a verifiedFact citing it — you cannot plan to edit a file you have
+  // not read. Born of the crew-integrations retro: a spec planned "deepen
+  // the Jira badges" without anyone opening crew-sync, which already carried
+  // batched JQL, key parsing and a status cache. Files that do not exist yet
+  // are exempt (they are the plan's output, not its input), and --force
+  // remains the say-so-out-loud override.
+  {
+    const prior = readState(spec.slug);
+    const root = (prior && prior.root) || opts.root ||
+      gitRoot(process.cwd()) || process.cwd();
+    const cited = f => (spec.verifiedFacts || []).some(v => {
+      const ev = String(v.evidence || "");
+      return ev === f || ev.startsWith(f + ":");
+    });
+    const unread = [];
+    (spec.deliverables || []).forEach((d, i) => {
+      for (const f of d.files || [])
+        if (fs.existsSync(path.join(root, f)) && !cited(f))
+          unread.push(`deliverable ${i + 1} ("${d.title}") edits ${f} — no verifiedFact cites it`);
+    });
+    if (unread.length && !opts.force) {
+      console.error("deep-plan: spec refused — files planned but not read:");
+      for (const u of unread) console.error("  ✗ " + u);
+      console.error("Read each file, cite it (path:line), then re-render. " +
+        "A file you have not read is a file you cannot plan.");
+      process.exit(1);
+    } else if (unread.length) {
+      console.error(`deep-plan: --force past ${unread.length} unread file(s) — logged`);
+      violations.push(...unread);
+    }
+  }
   // Refuse-first extends to the diagrams: parse each with the vendored
   // mermaid before any surface is written — a plan page with a parse error
   // where a drawing should be fails the reader exactly where it matters.
