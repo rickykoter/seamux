@@ -1,9 +1,9 @@
-# Build your own deep-plan — Ricky's edition
+# Build your own deep-plan — this machine's edition
 
 This is the crew-dock recipe with this machine's decisions written in, so the
 next adaptation starts from how *we* work, not the original author's stack.
 
-**Decisions made here (2026-09-12), all confirmed by Ricky:**
+**Decisions made here (2026-09-12), all confirmed by the adopter:**
 
 - **Scope:** everything except tickets (Stage 7) and observability signals
   (Stage 8) — personal laptop, hobby projects, git/GitHub only.
@@ -32,7 +32,7 @@ exactly this boundary. If your adaptation kept tenet 1, steal this step; if it
 didn't, compacting here loses real state.
 
 **Added later (2026-09-15): ADRs for the decisions that outlive the plan.**
-Ricky wanted the larger forks to survive as Architecture Decision Records in
+The adopter wanted the larger forks to survive as Architecture Decision Records in
 the repo, co-authored with the human. Shape it took here, and the choices the
 next adopter gets to remake: promotion is an explicit `adr` flag on a
 `decisions[]` entry (never a heuristic — the human agrees a fork is
@@ -50,7 +50,7 @@ tenet 8, do not copy this split blindly — but then your ADRs can change the
 repo before the plan is agreed, and you should sit with that sentence first.
 
 **Added later (2026-09-14): challenge the goal, scout the uncertainty, enforce
-contracts.** Three disciplines in one pass, all confirmed by Ricky, whose ask
+contracts.** Three disciplines in one pass, all confirmed by the adopter, whose ask
 was explicit: "challenge the human's initial assumptions and not blindly accept
 their goals", and slow down wherever contracts form or change. Shape here, and
 what the next adopter gets to remake: (1) a mandatory **step 0 goal-challenge**
