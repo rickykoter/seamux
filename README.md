@@ -46,46 +46,48 @@ passes and you say `go`, the agent cannot edit anything in that worktree.
 
 ![a deep-plan review surface: the alignment quiz with selectable options](docs/img/plan-review.png)
 
-**Contracts — shape changes, signed by you.** Any schema, API, method
-signature, event, or config surface the plan creates or changes must be
-declared in the spec's `contracts` block: its kind and scope, the decision
-that owns it (the renderer refuses an orphan), and its `reach` — who consumes
-the surface, written from scouted evidence, never from memory. A contract
-that crosses a service boundary must be ADR-flagged or carry a written
-waiver, and `deep-plan grade` fails structurally when a contract's decision
-has no quiz question — the review cannot pass around a shape change.
+**Contracts.** If the plan changes the shape of anything — a schema, an API,
+a method signature, an event, a config surface — it has to say so in the
+spec's `contracts` block. Every entry names the decision that owns it (the
+renderer refuses an orphan) and its reach: who consumes the surface, found by
+actually looking rather than recalled from memory. Crossing a service
+boundary raises the bar — the owning decision must be an ADR, or the entry
+carries a written waiver. Grading checks coverage too: a contract whose
+decision has no quiz question fails `deep-plan grade` before it reads a
+single answer.
 
 ![the review surface's Decisions and Contracts sections: a declared db-schema change with scouted reach, and an "add an ADR" chip](docs/img/contracts.png)
 
-**ADRs — decisions that outlive the plan.** Flag a decision `adr` during
-interrogation (with its consequences and the alternatives you rejected) and
-it becomes an Architecture Decision Record bound for the repo, not just the
-plan. `render` discovers where ADRs live — `.seamux/adr.json`, else the
-existing tree nearest the deliverables, else `docs/adr` — and preseeds the
-next number, so the draft already shows its real destination. Every ADR card
-has an in-page **Edit**: all fields with a live markdown preview, staged into
-the same **Copy for session** paste-back as your quiz answers. Decisions that
-weren't flagged carry an **add an ADR** chip. Nothing touches the repo until
-the check passes and you run `deep-plan adr apply <slug>` — the only repo
-write, Accepted-and-dated on the way in, idempotent. Template styles:
-`nygard` (default), `madr`, or point `.seamux/adr.json` at your own.
+**ADRs.** Some decisions outlive the plan that made them. Flag one as `adr`
+during planning and it becomes an Architecture Decision Record headed for
+the repo, not just the plan page. The renderer works out where it belongs —
+your `.seamux/adr.json` if you have one, otherwise the ADR tree nearest the
+files being changed, otherwise `docs/adr` — and reserves the next number, so
+the draft shows its real destination up front. Each card has an **Edit**
+button: change any field right on the page, watch the markdown preview, and
+the edits ride the same **Copy for session** paste-back as your quiz
+answers. A decision that wasn't flagged gets an **add an ADR** chip. The
+repo itself is only touched after the check passes, by `deep-plan adr apply
+<slug>` — marked Accepted and dated on the way in, and safe to run twice.
+Prefer MADR over the default Nygard style, or have your own template? Point
+`.seamux/adr.json` at it.
 
 ![an ADR card with the in-page editor open: destination, fields, and live preview](docs/img/adr-editing.png)
 
-**The challenge step.** Before the plan interrogates anything else, it
-challenges the goal itself — the stated goal is a claim too. The agent
-restates it, lists the assumptions inside it, and puts the strongest
-counter-position to you as a concrete question: "the simpler fix is X",
-"this symptom usually means Y", "is this worth doing at all?". A confirmed
-goal plans faster and better than an assumed one. It's mandatory; only you
-saying "skip the challenge" skips it.
+**The challenge step.** The first thing the planner questions is the goal.
+It restates it in its own words, spells out the assumptions riding along,
+and puts the strongest counter-argument to you directly: maybe the simpler
+fix is X, maybe that symptom usually means Y, maybe this isn't worth doing
+at all. A goal you've confirmed plans faster and better than one the agent
+assumed. The step is mandatory — the only way past it is telling the agent
+to skip the challenge.
 
-**Scouted fan-out.** Between surveying the code and writing the spec, the
-planner fans out cheap sub-agents — one per low-confidence claim, one per
-contract surface — to map callers, consumers, and schema reach. What a scout
-confirms lands in `verifiedFacts` with the evidence it cites; what stays
-unconfirmed stays in `risks`. Uncertainty is never silently promoted to
-fact, and every contract's `reach` is written from these scouts.
+**Scouted fan-out.** Between reading the code and writing the spec, the
+planner sends out cheap sub-agents: one for each claim it isn't sure of,
+one for each contract surface the plan will touch. They come back with the
+callers, consumers, and schema reach. What a scout confirms goes into the
+plan's verified facts with a citation; what it can't stays listed as a
+risk. Nothing is quietly promoted from hunch to fact.
 
 *(Real renders of the shipped pages, loaded with demo data.)*
 
