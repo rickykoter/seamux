@@ -17,7 +17,9 @@ the Claude phone app.
 
 ## What it looks like
 
-
+**The one-minute tour.** A scripted replay of a working afternoon — the board
+re-ranking as agents finish and questions arrive, the `/usage` dashboard, and
+a deep-plan review with its alignment quiz:
 
 https://github.com/user-attachments/assets/ba0c9f94-0f5a-4eb7-ae2c-e924a60e817c
 
@@ -43,6 +45,47 @@ text to pin comments, hit **Copy for session**, paste it back. Until the quiz
 passes and you say `go`, the agent cannot edit anything in that worktree.
 
 ![a deep-plan review surface: the alignment quiz with selectable options](docs/img/plan-review.png)
+
+**Contracts — shape changes, signed by you.** Any schema, API, method
+signature, event, or config surface the plan creates or changes must be
+declared in the spec's `contracts` block: its kind and scope, the decision
+that owns it (the renderer refuses an orphan), and its `reach` — who consumes
+the surface, written from scouted evidence, never from memory. A contract
+that crosses a service boundary must be ADR-flagged or carry a written
+waiver, and `deep-plan grade` fails structurally when a contract's decision
+has no quiz question — the review cannot pass around a shape change.
+
+![the review surface's Decisions and Contracts sections: a declared db-schema change with scouted reach, and an "add an ADR" chip](docs/img/contracts.png)
+
+**ADRs — decisions that outlive the plan.** Flag a decision `adr` during
+interrogation (with its consequences and the alternatives you rejected) and
+it becomes an Architecture Decision Record bound for the repo, not just the
+plan. `render` discovers where ADRs live — `.seamux/adr.json`, else the
+existing tree nearest the deliverables, else `docs/adr` — and preseeds the
+next number, so the draft already shows its real destination. Every ADR card
+has an in-page **Edit**: all fields with a live markdown preview, staged into
+the same **Copy for session** paste-back as your quiz answers. Decisions that
+weren't flagged carry an **add an ADR** chip. Nothing touches the repo until
+the check passes and you run `deep-plan adr apply <slug>` — the only repo
+write, Accepted-and-dated on the way in, idempotent. Template styles:
+`nygard` (default), `madr`, or point `.seamux/adr.json` at your own.
+
+![an ADR card with the in-page editor open: destination, fields, and live preview](docs/img/adr-editing.png)
+
+**The challenge step.** Before the plan interrogates anything else, it
+challenges the goal itself — the stated goal is a claim too. The agent
+restates it, lists the assumptions inside it, and puts the strongest
+counter-position to you as a concrete question: "the simpler fix is X",
+"this symptom usually means Y", "is this worth doing at all?". A confirmed
+goal plans faster and better than an assumed one. It's mandatory; only you
+saying "skip the challenge" skips it.
+
+**Scouted fan-out.** Between surveying the code and writing the spec, the
+planner fans out cheap sub-agents — one per low-confidence claim, one per
+contract surface — to map callers, consumers, and schema reach. What a scout
+confirms lands in `verifiedFacts` with the evidence it cites; what stays
+unconfirmed stays in `risks`. Uncertainty is never silently promoted to
+fact, and every contract's `reach` is written from these scouts.
 
 *(Real renders of the shipped pages, loaded with demo data.)*
 
