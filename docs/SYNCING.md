@@ -36,6 +36,12 @@ crew-digest`) — then commit and reinstall.
   plans. `--uninstall` preserves these deliberately.
 - `~/.config/cmux/cmux.json` — owned by `crew apply`, which renders it whole
   because cmux has no config include mechanism (`docs/FINDINGS.md`).
+- `activePaneBorderColor` inside it — **runtime state, not a preference.** It is
+  global in cmux, and `crew-frame` rewrites it on every workspace switch to
+  follow the selected workspace's identity colour. Do not put it in an overlay:
+  the merge lands, and the next switch overwrites it. Diffing a rendered
+  `cmux.json` before and after a change will also show this key moving for
+  reasons unrelated to what you changed.
 
 **Hand-tuned, never rebuild from the script:** the deep-plan gate entry in
 `~/.claude/settings.json` may carry a `timeout` and `statusMessage` that
