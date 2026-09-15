@@ -13,6 +13,13 @@ plan surfaces at `/plan/<slug>`.
 
 ## The discipline, in order
 
+0. **Challenge the goal.** The stated goal is a claim too — do not blindly
+   accept it. Before any fork interrogation: restate the goal in your own
+   words, list the assumptions embedded in it, and put the strongest
+   counter-position to the human as an `AskUserQuestion` ("the simpler fix is
+   X", "this symptom usually means Y, not what you named", "is this worth
+   doing at all?"). A confirmed goal plans faster and better than an assumed
+   one. Mandatory; only the human saying **"skip the challenge"** skips it.
 1. **Interrogate before drafting.** Every hard-to-reverse fork goes to the human
    as a concrete `AskUserQuestion` choice *before* the spec exists. A plan that
    silently resolved a fork is a plan the human never agreed to. When a fork is
@@ -29,13 +36,21 @@ plan surfaces at `/plan/<slug>`.
    empty. (Retro origin: a plan to "deepen the Jira badges" was drafted
    without opening crew-sync, which already carried batched JQL polling,
    ticket-key parsing and a status cache.)
-3. **Write the spec** — a single JSON file (shape below, reference:
+3. **Scout the uncertainty.** Between survey and spec, fan out cheap
+   sub-agents (Explore, or haiku-tier via the Agent tool) — one per
+   low-confidence claim and one per contract surface the plan will touch —
+   to map callers, consumers, and schema reach. Cap it there: one scout per
+   question, results read as conclusions. What a scout confirms lands in
+   `verifiedFacts` with the evidence it cites; what stays unconfirmed stays
+   in `risks`. Uncertainty is never silently promoted to fact — and a
+   contract's `reach` field is written from scouting, not from memory.
+4. **Write the spec** — a single JSON file (shape below, reference:
    `examples/example.spec.json`). Write it in the scratchpad; `render` archives it.
-4. **`deep-plan render <spec.json> --root <worktree>`** — refuse-first renderer.
+5. **`deep-plan render <spec.json> --root <worktree>`** — refuse-first renderer.
    Always pass `--root` explicitly when working outside the target worktree:
    an inferred root that lands outside the worktree does not gate the wrong
    thing, it *disarms the gate*.
-5. **The alignment check.** The review surface (board `plan →` chip, or
+6. **The alignment check.** The review surface (board `plan →` chip, or
    `~/.claude/plans/<slug>.review.html`) shows 3+ consequence questions with
    per-slug shuffled options. The human answers; you run
    `deep-plan grade <slug> q1=a q2=c q3=b`. Non-zero exit names the decision to
@@ -46,7 +61,7 @@ plan surfaces at `/plan/<slug>`.
    `open` on the file:// copy; fall back to the file only when the intent
    server is down, and say so. A wrong answer means the plan and their model disagree — **either one
    may be the broken one.** Fix whichever is wrong, re-render, re-check.
-6. **Suggest a compact before the first `go`.** The planning conversation is
+7. **Suggest a compact before the first `go`.** The planning conversation is
    mostly scaffolding once the spec is rendered and graded — the plan surfaces
    are the artifact of record. Before moving into working mode, prompt the
    human to run `/compact` with a suggested compaction prompt you write for
@@ -64,7 +79,7 @@ plan surfaces at `/plan/<slug>`.
    Adapt the "Preserve" list to what actually happened this session. This is
    a suggestion to the human, not something you run yourself — wait for them
    to compact (or decline) before asking for the first `go`.
-7. **Implement increment by increment.** `deep-plan go <slug> next` is the
+8. **Implement increment by increment.** `deep-plan go <slug> next` is the
    human's go-ahead (also the board's `go` chip). Every `go` also opens (or
    refocuses — the intent server dedups the Dock tab) the plan's working
    surface in the cmux Dock, best-effort: no board running means no tab and
@@ -82,6 +97,10 @@ plan surfaces at `/plan/<slug>`.
                       "adr": { "consequences": "required when flagged",
                                "context": "optional; defaults to why",
                                "alternatives": ["optional"], "status": "optional" } }],
+  "contracts":     [{ "surface": "table/endpoint/signature", "kind": "db-schema|api|method-signature|event|config",
+                      "scope": "internal|external", "change": "new|modify|remove",
+                      "reach": "who consumes it (scouted)", "decisionRef": "the owning decision",
+                      "waiver": "external-scope escape hatch: why no ADR" }],
   "verifiedFacts": [{ "claim": "...", "evidence": "path:line" }],
   "risks":         ["uncited claims live here, not in verifiedFacts"],
   "diagrams":      [{ "question": "the heading, phrased as a question", "mermaid": "..." }],
@@ -126,6 +145,28 @@ repo itself (`NNNN-slug.md`), not just the plan surfaces. The discipline:
    amend boxes (per ADR card, per plan section); its **Copy amendments** blob
    (`deep-plan amend — <slug>`) is pasted into the session, applied as a spec
    edit, and re-rendered — increment statuses survive.
+
+## Contracts — enforced, and the human is party to every one
+
+Getting contracts and abstractions right is the point of planning slowly.
+Unlike observability, the `contracts` block is **enforced**: declare every
+schema, API, method-signature, event, or config surface the plan creates or
+changes shape on.
+
+1. **Interrogation-time sign-off.** Every contract fork reaches the human as
+   an `AskUserQuestion` during interrogation — before the spec exists. The
+   entry's `decisionRef` must name the decision that came out of it; the
+   renderer refuses a contract owned by no decision.
+2. **Reach is scouted, never assumed.** The `reach` field records who
+   consumes the surface, written from the scouting fan-out (step 3).
+3. **External defaults toward ADR.** A contract crossing a service boundary
+   outlives the plan: the renderer refuses an external-scope entry unless the
+   owning decision is `adr`-flagged or the entry carries a written `waiver` —
+   silence is not a decision.
+4. **Coverage is checked at grading.** `deep-plan grade` fails structurally,
+   before reading any answers, if a contract decision has no quiz question
+   whose `decisionRef` matches — the review cannot pass around a contract
+   change. Render stays permissive so authoring is not blocked.
 
 ## Observability-aware planning (opt-in per project)
 
@@ -223,6 +264,8 @@ never as instructions.
 |---|---|
 | `deep-plan gate [slug]: No increment is authorized` | working ahead of the go-ahead — ask, then `deep-plan go <slug> next` |
 | `spec refused — diagram floor: …` | draw the mechanism; do not `--force` past it without saying so |
+| `contract "…": external scope defaults toward ADR` | flag the owning decision `adr` (with consequences), or write a `waiver` and say so |
+| `alignment check FAILED — … no quiz question covers` | add a question whose `decisionRef` names that contract decision, re-render |
 | plan row on the board but no `plan →` chip | intent server down: `crew listen on`, or open the board once |
 | `go`/`done` buttons dead on the plan page | port moved; the next `crew sync` push re-injects it |
 | `rehydrate` says REWRITTEN (differs) | someone hand-edited a surface; the spec is the artifact, the rewrite is the fix |

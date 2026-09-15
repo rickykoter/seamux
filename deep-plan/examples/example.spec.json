@@ -5,7 +5,13 @@
   "decisions": [
     { "decision": "Sweep on a timer, not on write", "why": "a write-triggered retry retries into the same outage that just failed",
       "adr": { "consequences": "retries lag by up to one sweep period; delivery load is bounded by the sweep, not by write bursts",
-               "alternatives": ["retry inline on write", "per-row scheduled jobs"] } }
+               "alternatives": ["retry inline on write", "per-row scheduled jobs"] } },
+    { "decision": "Track retries on the outbox row", "why": "a separate retries table doubles the writes and the sweep would have to join it on every pass" }
+  ],
+  "contracts": [
+    { "surface": "outbox table (attempt_count, next_try_at)", "kind": "db-schema", "scope": "internal", "change": "modify",
+      "reach": "the delivery worker is the single consumer; the timer sweep reads both new columns",
+      "decisionRef": "Track retries on the outbox row" }
   ],
   "verifiedFacts": [
     { "claim": "outbox rows carry a status column", "evidence": "db/schema.rb:42" },
@@ -27,7 +33,7 @@
       "answer": 1, "why": "retry rides the sweep so it lands after the outage, not during it", "decisionRef": "Sweep on a timer, not on write" },
     { "id": "q2", "prompt": "Which table changes shape under this plan?",
       "options": ["the outbox table", "the deliveries audit log", "no table at all", "a new retries table"],
-      "answer": 0, "why": "increment 2 adds attempt count and next-try-at to the outbox row", "decisionRef": "Backoff bookkeeping" },
+      "answer": 0, "why": "increment 2 adds attempt count and next-try-at to the outbox row", "decisionRef": "Track retries on the outbox row" },
     { "id": "q3", "prompt": "What does this plan do with a row that exhausts its 5 tries?",
       "options": ["dead-letters it", "pages the operator", "leaves it failed", "deletes it"],
       "answer": 2, "why": "dead-lettering is explicitly out of frame; exhausted rows stay failed", "decisionRef": "context: out of frame" }

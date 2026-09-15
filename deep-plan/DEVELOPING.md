@@ -7,11 +7,11 @@ For whoever changes this next. Built 2026-09-12 on this machine, from
 
 | file | lines | what |
 |---|---|---|
-| `deep_plan.mjs` | 578 | CLI: render/rehydrate/grade/status/transitions/diff |
+| `deep_plan.mjs` | 1352 | CLI: render/rehydrate/grade/status/transitions/diff; validate() enforces the contracts block, grade() enforces contract quiz coverage |
 | `lib/state.mjs` | 160 | state IO + THE decision function (`decideToolCall`) — one definition of "may I edit", shared by CLI and gate |
 | `hooks/gate.sh` | 13 | PreToolUse fast path: glob test, exec node only when state files exist |
 | `hooks/decide.mjs` | 43 | slow half: parse payload, decide, exit 2; flips authorized→working on first edit |
-| `probe.mjs` | 156 | 43 assertions, throwaway everything, `-v` walks it |
+| `probe.mjs` | 494 | 114 assertions, throwaway everything, `-v` walks it |
 | `examples/example.spec.json` | — | reference spec; the probe's fixture, so a broken example breaks the build |
 | `vendor/mermaid.min.js` | 3.4MB | inlined base64 into surfaces; the intent server swaps it for `/mermaid.min.js` |
 
@@ -66,6 +66,18 @@ surfaces `~/.claude/plans/`. Probe overrides: `DEEP_PLAN_STATE_DIR`,
   working surface. The CLI never touches the network — the agent does the
   fetching, per SKILL.md.
 
+## Contracts seam (added 2026-09-14)
+
+- Spec gains an optional top-level `contracts` key (see SKILL.md shape).
+  Enforced in `validate()`: fields, decisionRef→decision, external scope
+  needs adr-flag or `waiver`. Coverage lives in the KEY file
+  (`uncoveredContracts`, computed at render) and is refused by `grade()`
+  before answers are read — a human decision (reopened at review): render
+  stays permissive, grading is the wall.
+- `contractsHtml()` renders the section on review/working (via commonBody),
+  the md plan, and the exported artifact page. Board `status --json` is
+  untouched.
+
 ## Known debts (honest list)
 
 - The gate **fails open on a bad root** and nothing detects it beyond `status`
@@ -86,6 +98,11 @@ surfaces `~/.claude/plans/`. Probe overrides: `DEEP_PLAN_STATE_DIR`,
   Acceptable for invited colleagues; revisit if the contract grows identity.
 - The stale-artifact warning fires on spec-hash mismatch but nothing renders it
   on the BOARD row — only on the working surface.
+- The contracts floor can over-fire on plans that mention contract files
+  without changing their shape; `waiver` and `--force` are the valves. Watch
+  the first few real plans.
+- The scouting cap (one sub-agent per uncertain claim / contract surface) is
+  SKILL.md prose, not code — nothing meters it.
 
 ## Verifying a change
 
