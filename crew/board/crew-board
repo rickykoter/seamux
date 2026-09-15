@@ -1067,9 +1067,36 @@ def intent_cfg():
         return None
 
 
+# While this file exists, pushes of REAL state stand down so a demo push
+# (marked by CREW_DEMO_PUSH=1 in its environment) owns the board. Set and
+# cleared by docs/demo/board-demo.py in the repo; a crash can strand it, so
+# it expires on its own after an hour rather than silently freezing the
+# board forever.
+DEMO_HOLD = os.path.join(STATE_DIR, "demo-hold")
+
+
+def demo_held():
+    if os.environ.get("CREW_DEMO_PUSH") == "1":
+        return False
+    try:
+        age = time.time() - os.path.getmtime(DEMO_HOLD)
+    except OSError:
+        return False
+    if age > 3600:
+        try:
+            os.unlink(DEMO_HOLD)
+        except OSError:
+            pass
+        return False
+    return True
+
+
 def push_state(d):
     """Push an already-built state. Split out so `watch` can gather once, compare, and
     only push when a viewer would see a difference."""
+    if demo_held():
+        print("push skipped: demo hold is on (%s)" % DEMO_HOLD, file=sys.stderr)
+        return 0
     sid = surface_id()
     if not sid:
         print("no board surface — run: crew-board open", file=sys.stderr)
