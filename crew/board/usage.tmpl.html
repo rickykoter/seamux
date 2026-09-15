@@ -7,7 +7,19 @@
   server, which shells out to `ccusage`. Windows and budgets, not dollars:
   every ratio is ccusage totalTokens (cache reads included) on both sides,
   against CREW_BLOCK_BUDGET / CREW_WEEK_BUDGET or the largest window/week on
-  record. Nothing here computes a price — with one deliberate exception: the
+  record.
+
+  The window card carries BOTH framings and the viewer picks: tokens against
+  the budget, or time against the reset. They answer different questions and
+  neither is always the constraint -- and when no budget is set the derived one
+  is the largest window you have ever had, which is a guess, while the clock is
+  a fact. The choice persists in localStorage because the page reloads every
+  60s. Time is computed from the block's own endTime, never from the served
+  remainingMinutes, which is stale the moment the snapshot is written; the
+  window's length comes from the block's bounds, so `ccusage blocks
+  --session-length` is honoured rather than a hardcoded 5h.
+
+  Nothing here computes a price — with one deliberate exception: the
   per-workspace card at the bottom speaks dollars (ccusage totalCost via the
   shared costs cache), because "which worktree is burning money" is a question
   tokens cannot answer.
@@ -133,25 +145,76 @@ td:last-child,th:last-child{text-align:right;color:var(--ink)}
   }
 
   // --- the active window ------------------------------------------------------
-  // The track is the WINDOW BUDGET (largest 5h window on record, or
-  // CREW_BLOCK_BUDGET); the fill is tokens spent this window. One measure, one
-  // hue. Projection rides the foot, not the bar — a second fill would need a
-  // legend.
+  // Two framings of one block, because which one is the constraint depends on
+  // the day: TOKENS is spend against a budget (and the budget may be a guess --
+  // see budgetSource), WINDOW is time against the reset, which is a fact. The
+  // choice is the viewer's and survives the 60s reload.
+  var VIEWS = ["tokens", "window"];
+  var view = "tokens";
+  try { var s = localStorage.getItem("crew.usage.blockView");
+        if (VIEWS.indexOf(s) >= 0) view = s; } catch (e) {}
+
+  var winLabel = function(min){
+    min = min || 300;
+    var h = Math.floor(min/60), m = min%60;
+    return (h ? h + "h" : "") + (m ? (h ? " " : "") + m + "m" : "") + " window";
+  };
+  // Minutes left computed from the block's own end time, not the server's
+  // remainingMinutes: the snapshot is written once and the tab can sit open.
+  var leftMin = function(bk){
+    if (bk && bk.endTime) {
+      var ms = new Date(bk.endTime).getTime() - Date.now();
+      if (!isNaN(ms)) return Math.max(0, ms / 60000);
+    }
+    return (bk && bk.remainingMinutes) || 0;
+  };
+
   var b = D.block, out = "";
-  if (b) {
+  var wlab = winLabel((b && b.windowMinutes) || D.windowMinutes);
+
+  function blockBody(mode){
+    if (!b) return "";
+    if (mode === "window") {
+      var total = (b.windowMinutes || D.windowMinutes || 300);
+      var left = leftMin(b);
+      var elapsed = Math.max(0, total - left);
+      var ePct = total > 0 ? elapsed / total * 100 : 0;
+      var burn = Math.round(b.burnPerMinute || 0);
+      return '<div class="hero">' + dur(left) + "<small>to reset</small></div>" +
+        '<div class="bullet"><i style="width:' + Math.min(100, ePct).toFixed(1) + '%"></i></div>' +
+        '<div class="foot"><span>' + dur(elapsed) + " of " + wlab.replace(" window", "") + " elapsed</span>" +
+        "<span>" + tok(b.tokens) + " so far</span>" +
+        "<span>" + (burn ? tok(burn) + "/min" : esc((b.models||[]).join(", "))) + "</span></div>";
+    }
+    // With no budget env var and nothing on record there is no denominator, and
+    // a confident "0%" reads as "you have used nothing" rather than "nobody
+    // knows". Say so, and let the time view carry the card.
+    if (!(b.budget > 0)) {
+      return '<div class="hero">' + tok(b.tokens) + "<small>this window</small></div>" +
+        '<div class="bullet"><i style="width:0%"></i></div>' +
+        '<div class="foot"><span>no budget on record</span>' +
+        "<span>" + (b.entries||0) + " msgs</span>" +
+        '<span>set CREW_BLOCK_BUDGET, or switch to time</span></div>';
+    }
     var pct = pctOf(b.tokens, b.budget);
     var projPct = pctOf(b.projected, b.budget);
-    out += '<div class="card">' +
-      '<div class="hd"><h2>5h window</h2><span class="when">' +
-        dur(b.remainingMinutes) + " to reset</span></div>" +
-      '<div class="hero">' + pct.toFixed(0) + "%<small>of window budget</small></div>" +
+    return '<div class="hero">' + pct.toFixed(0) + "%<small>of window budget</small></div>" +
       '<div class="bullet"><i style="width:' + Math.min(100, pct).toFixed(1) + '%"></i></div>' +
       '<div class="foot"><span>' + tok(b.tokens) + " / " + tok(b.budget) + "</span>" +
       "<span>" + (b.entries||0) + " msgs</span>" +
-      "<span>" + (projPct > pct ? "↗ " + projPct.toFixed(0) + "% by reset" : esc((b.models||[]).join(", "))) + "</span></div>" +
+      "<span>" + (projPct > pct ? "↗ " + projPct.toFixed(0) + "% by reset" : esc((b.models||[]).join(", "))) + "</span>" +
+      "</div>";
+  }
+
+  if (b) {
+    out += '<div class="card">' +
+      '<div class="hd"><h2>' + esc(wlab) + "</h2>" +
+      '<button class="tbtn" id="vtoggle" aria-label="switch the window card between tokens and time"></button>' +
+      '<span class="when" id="vwhen"></span></div>' +
+      '<div id="blockbody">' + blockBody(view) + "</div>" +
       "</div>";
   } else {
-    out += '<div class="card"><div class="hd"><h2>5h window</h2></div>' +
+    out += '<div class="card"><div class="hd"><h2>' + esc(wlab) + "</h2></div>" +
       '<div class="empty">quiet — no active window. Budget ' + tok(D.blockBudget) +
       " (" + esc(D.budgetSource||"") + ")</div></div>";
   }
@@ -248,6 +311,32 @@ td:last-child,th:last-child{text-align:right;color:var(--ink)}
     plot.addEventListener("focusin", function(e){ var c = e.target.closest(".col"); if (c) show(c); });
     plot.addEventListener("focusout", hide);
   }
+  // --- window card: tokens <-> time -------------------------------------------
+  // The button names the view you would switch TO, matching the table toggle
+  // below. The "when" line always shows the other measure, so neither view
+  // hides the number the other one leads with.
+  var vt = document.getElementById("vtoggle"), vbody = document.getElementById("blockbody");
+  if (vt && vbody) {
+    var paint = function(){
+      vt.textContent = view === "tokens" ? "time" : "tokens";
+      var when = document.getElementById("vwhen");
+      if (when) when.textContent = view === "tokens"
+        ? dur(leftMin(b)) + " to reset"
+        : (b.budget > 0 ? pctOf(b.tokens, b.budget).toFixed(0) + "% of budget"
+                        : tok(b.tokens) + " this window");
+      vbody.innerHTML = blockBody(view);
+    };
+    paint();
+    vt.addEventListener("click", function(){
+      view = view === "tokens" ? "window" : "tokens";
+      try { localStorage.setItem("crew.usage.blockView", view); } catch (e) {}
+      paint();
+    });
+    // The clock moves even when nothing else does; the 60s reload would cover
+    // it, but a countdown that only updates on reload reads as frozen.
+    setInterval(paint, 15000);
+  }
+
   var t = document.getElementById("toggle"), tbl = document.getElementById("tbl");
   if (t) t.addEventListener("click", function(){
     var open = tbl.hidden;

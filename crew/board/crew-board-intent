@@ -36,6 +36,7 @@ looked up in a snapshot the collector writes rather than taken from the URL, and
 no argument is ever passed through a shell.
 """
 
+import datetime
 import http.server
 import json
 import os
@@ -844,6 +845,20 @@ def usage_data(days=21):
               if not b.get("isGap")]
     block_budget = _env_budget("CREW_BLOCK_BUDGET") or max(
         (b.get("totalTokens") or 0 for b in blocks), default=0)
+    # Window length comes from the block's own bounds, not a hardcoded 5 --
+    # `ccusage blocks --session-length` is a real option, and a page that says
+    # "5h window" over a 3h block is lying in the one place you would look.
+    def _window_minutes(x):
+        try:
+            iso = datetime.datetime.fromisoformat
+            s = iso((x.get("startTime") or "").replace("Z", "+00:00"))
+            e = iso((x.get("endTime") or "").replace("Z", "+00:00"))
+            return max(0, round((e - s).total_seconds() / 60))
+        except Exception:
+            return 0
+
+    out["windowMinutes"] = next((m for m in (_window_minutes(x) for x in reversed(blocks)) if m), 300)
+
     b = next((x for x in blocks if x.get("isActive")), None)
     if b:
         proj = b.get("projection") or {}
@@ -856,6 +871,12 @@ def usage_data(days=21):
             "entries": b.get("entries") or 0,
             "models": b.get("models") or [],
             "active": True,
+            # ISO bounds so the page can compute the countdown itself. The
+            # snapshot is rendered once and the tab can sit open for hours, so a
+            # server-side remainingMinutes is stale the moment it is written.
+            "startTime": b.get("startTime") or "",
+            "endTime": b.get("endTime") or "",
+            "windowMinutes": _window_minutes(b) or out["windowMinutes"],
         }
     out["blockBudget"] = block_budget
     out["budgetSource"] = ("env" if _env_budget("CREW_BLOCK_BUDGET")
@@ -1006,6 +1027,18 @@ def selftest():
         check("...and does not reuse a board status colour for the series",
               "#e69875" in tmpl and "#dfa000" not in tmpl and "#e67e80" not in tmpl,
               "gold and red are 'needs you' and 'broken' on the board")
+        # The window card has two views and a 60s reload, so the choice has to
+        # round-trip through storage or it resets under the viewer every minute.
+        check("...and the window card offers both views",
+              'id="vtoggle"' in tmpl and 'id="blockbody"' in tmpl)
+        check("...and remembers which one, across the 60s reload",
+              "crew.usage.blockView" in tmpl and "localStorage" in tmpl)
+        check("...and counts down from the block's end time, not a served number",
+              "endTime" in tmpl and "leftMin" in tmpl,
+              "a snapshot's remainingMinutes is stale the moment it is written")
+        check("...and reads its window length from the data, not a hardcoded 5h",
+              "windowMinutes" in tmpl and "winLabel" in tmpl,
+              "ccusage blocks --session-length is a real option")
     except OSError as exc:
         check("the usage template is readable", False, str(exc))
     check("ccusage is installed", bool(shutil.which("ccusage")),

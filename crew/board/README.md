@@ -284,12 +284,32 @@ have regressed once and neither announces itself. `crew doctor` runs it.
 ## The spend dashboard
 
 `crew-board usage` opens it as a Dock tab, served at `/usage` and reusing its own
-surface so it never fights the board for one. Three cards: the active 5h block,
-daily cost, and the month.
+surface so it never fights the board for one. Four cards: the active window, the
+daily series, the current week against its budget, and per-workspace dollars.
 
 Nothing here computes a price. It shells out to `ccusage` — the hand-rolled
 pricing table this replaced was reading about **2.5× high**, because it guessed a
 rate for a model whose real price it had no way to know.
+
+### The window card holds two views
+
+Tokens against the budget, or time against the reset; the button switches and
+the choice sticks in `localStorage`, because the page reloads itself every 60s.
+
+They are not the same question, and neither is always the one that binds. Tokens
+answer "how much of my allowance is gone", but only if there *is* an allowance:
+without `CREW_BLOCK_BUDGET` the denominator is the largest window you have ever
+had, which is a high-water mark rather than a limit. Time answers "how long until
+this resets", which is a fact either way. So whichever view is not showing, its
+headline number sits in the card header — neither view hides what the other
+leads with. With no budget on record at all the tokens view says so outright
+rather than rendering a confident `0%`.
+
+Two things it deliberately does not take from the server: the countdown is
+computed from the block's own `endTime`, since a snapshot's `remainingMinutes`
+is stale the moment it is written and a Dock tab can sit open for hours; and the
+window's length comes from the block's own bounds, so a non-default `ccusage
+blocks --session-length` is labelled honestly instead of being called "5h".
 
 Form was chosen before colour, per the dataviz method. The block's cost, burn
 rate and time remaining are **stat tiles, not charts** — a one-bar bar chart is an
