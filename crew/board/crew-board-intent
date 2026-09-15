@@ -1041,6 +1041,26 @@ def selftest():
               "ccusage blocks --session-length is a real option")
     except OSError as exc:
         check("the usage template is readable", False, str(exc))
+
+    # `crew apply` now bounces this server whenever it is behind the installed
+    # code, so token and port reuse across a restart stopped being a nicety: an
+    # already-pushed board holds both, and rotating either turns every chip into
+    # a 403 until the next push. Lint the two lines that guarantee it.
+    try:
+        me = open(__file__, encoding="utf-8").read()
+        # Built from fragments so the needle is not itself in this file -- a
+        # literal would match its own source and pass no matter what serve()
+        # does. (The first version of this check did exactly that.)
+        reuse = "token = token " + "or secrets.token_urlsafe"
+        mode = "st_mode & " + "0o077"
+        check("a restart reuses the persisted token",
+              reuse in me and mode in me,
+              "crew apply restarts this server; a fresh token 403s every chip")
+        check("...and the port, via the pin",
+              "__INTENT_PORT__" in me or "CREW_INTENT_PORT" in me,
+              "a moved port orphans the URLs already in the pushed page")
+    except OSError as exc:
+        check("crew-board-intent is readable", False, str(exc))
     check("ccusage is installed", bool(shutil.which("ccusage")),
           "npm i -g ccusage — the status line and /usage both need it")
 

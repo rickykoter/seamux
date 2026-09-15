@@ -197,6 +197,57 @@ cmd_apply() {
       || warn "crew-frame did not run"
   fi
 
+  # A running intent server keeps executing whatever code it started with, and
+  # nothing else restarts it: crew-listen only spawns one when it is DOWN, so an
+  # apply could land new code and change nothing observable. Restarting here is
+  # safe because serve() persists BOTH the port (the __INTENT_PORT__ pin) and the
+  # token across a restart, precisely so a bounce does not turn every chip on an
+  # already-pushed board into a 403.
+  #
+  # Only when it is actually behind: an apply with no new code should not bounce
+  # a healthy server for nothing. Same test `crew doctor` reports.
+  if [ -f "$STATE/board-intent.port" ] && [ "$CREW_HOME/board/crew-board-intent" -nt "$STATE/board-intent.port" ]; then
+    # One python call does the whole bounce: kill, respawn detached, wait on the
+    # socket. Spawned with start_new_session so it outlives this shell -- the
+    # same reason crew-board does it that way, and there is no setsid on BSD.
+    # It is started here rather than left to crew-listen, which is not running
+    # when the daemon is off, in which case nothing would restart it at all.
+    if python3 - "$CREW_HOME/board/crew-board-intent" "$STATE/board-intent.port" <<'PY'
+import os, signal, socket, subprocess, sys, time
+
+intent, portfile = sys.argv[1], sys.argv[2]
+
+# Match any generation, including one started with a relative path.
+subprocess.run(["pkill", "-f", "crew-board-intent"], capture_output=True)
+for _ in range(20):                       # let the port come free
+    time.sleep(0.05)
+    if subprocess.run(["pgrep", "-f", "crew-board-intent"],
+                      capture_output=True).returncode != 0:
+        break
+
+subprocess.Popen([sys.executable, intent], stdout=subprocess.DEVNULL,
+                 stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                 start_new_session=True)
+
+for _ in range(40):                       # ~4s
+    time.sleep(0.1)
+    try:
+        with open(portfile) as fh:
+            port = int(fh.read().strip())
+        s = socket.create_connection(("127.0.0.1", port), timeout=0.4)
+        s.close()
+        sys.exit(0)
+    except (OSError, ValueError):
+        continue
+sys.exit(1)
+PY
+    then
+      ok "restarted the intent server on the new code"
+    else
+      warn "intent server did not come back — it starts again on the next board push"
+    fi
+  fi
+
   printf '\nNew Claude sessions pick up the hooks. Open the board with:\n  cmux sidebar open crew\n'
 }
 
