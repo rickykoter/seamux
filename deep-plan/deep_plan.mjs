@@ -300,6 +300,16 @@ border-radius:6px;padding:3px 12px;cursor:pointer}
 .dp-path{color:var(--fg);cursor:default}
 .dp-live .dp-path{color:var(--accent);text-decoration:underline;cursor:pointer}
 .dp-path.dp-bad{color:var(--bad)}
+.dp-adr-edit,.dp-adr-promote{background:var(--card3);color:var(--fg);border:1px solid var(--line);
+border-radius:6px;padding:2px 10px;cursor:pointer;font:inherit;font-size:12px}
+.dp-adr-promote[data-staged="1"]{color:var(--good);border-color:var(--good)}
+.dp-adr-editor{border:1px dashed var(--line);border-radius:8px;padding:10px;margin:8px 0}
+.dp-adr-editor label{display:block;font-size:12px;color:var(--dim);margin:6px 0}
+.dp-adr-editor input,.dp-adr-editor textarea{display:block;width:100%;box-sizing:border-box;
+background:transparent;color:inherit;border:1px solid var(--dim);border-radius:4px;padding:6px;font:inherit}
+.dp-adr-preview{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:2px 12px;margin-top:8px}
+.dp-adr-edit:focus-visible,.dp-adr-promote:focus-visible,.dp-adr-editor input:focus-visible,
+.dp-adr-editor textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .q{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:10px 0}
 .q .opt{display:block;margin:4px 0 4px 12px}
 label.auto{position:fixed;top:10px;right:64px;font-size:12px;color:var(--dim)}
@@ -345,10 +355,19 @@ function adrsHtml(spec, adrs, withNotes) {
 <span class="st st-${a.applied ? "done" : "pending"}">${a.applied ? "applied" : "draft"}</span>
 <b>ADR ${a.n}: ${esc(e.decision)}</b>
 <p class="dim">destination: <span class="dp-path" data-file="${esc(a.dir + "/" + a.file)}"><code>${esc(a.dir + "/" + a.file)}</code></span> (${esc(a.source)})</p>
-<p>${esc(adr.context || e.why)}</p>
-<p><b>Consequences:</b> ${esc(adr.consequences || "")}</p>
+<p><span class="dp-md">${esc(adr.context || e.why)}</span></p>
+<p><b>Consequences:</b> <span class="dp-md">${esc(adr.consequences || "")}</span></p>
 ${alts ? `<p class="dim">alternatives considered:</p><ul>${alts}</ul>` : ""}
-${withNotes ? `<textarea class="dp-note" data-section="adr ${a.n}" rows="1" placeholder="comment on this ADR — text, consequences, or destination (optional)" aria-label="comment on ADR ${a.n}"></textarea>` : ""}
+${withNotes ? `<p><button type="button" class="dp-adr-edit" data-n="${a.n}" aria-expanded="false" aria-controls="dp-adr-ed-${a.n}">Edit</button></p>
+<div class="dp-adr-editor" id="dp-adr-ed-${a.n}" hidden>
+<label>decision<input class="dp-adr-field" data-n="${a.n}" data-field="decision" value="${esc(e.decision || "")}"></label>
+<label>context<textarea class="dp-adr-field" data-n="${a.n}" data-field="context" rows="3">${esc(adr.context || e.why || "")}</textarea></label>
+<label>consequences<textarea class="dp-adr-field" data-n="${a.n}" data-field="consequences" rows="3">${esc(adr.consequences || "")}</textarea></label>
+<label>alternatives (one per line)<textarea class="dp-adr-field" data-n="${a.n}" data-field="alternatives" rows="2">${esc((adr.alternatives || []).join("\n"))}</textarea></label>
+<p class="dim">preview — markdown subset: # ## ###, **bold**, *italic*, \`code\`, \`\`\`fences\`\`\`, lists, [links](https://…). Edits are staged; <b>Copy</b> below puts them in the paste-back.</p>
+<div class="dp-adr-preview" data-n="${a.n}"></div>
+</div>
+<textarea class="dp-note" data-section="adr ${a.n}" rows="1" placeholder="comment on this ADR — text, consequences, or destination (optional)" aria-label="comment on ADR ${a.n}"></textarea>` : ""}
 </div>`;
   }).join("\n");
   return `<h2>ADRs</h2>
@@ -369,6 +388,98 @@ function contractsHtml(spec) {
 <ul>${items}</ul>` : "";
 }
 
+// The in-page markdown subset + ADR editor. No library, by explicit decision:
+// dpMd is escape-first (~40 lines) covering headings, bold, italic, inline
+// code, fences, lists and http(s) links — everything else stays literal text.
+// It runs client-side only (display upgrade at load + live preview), so the
+// bytes on disk never change and rehydrate stays byte-identical. Edits are
+// STAGED: window.dpAdrLines() serializes changed fields and staged promotions
+// as blob lines (newlines \n-escaped — the versioned line protocol, ADR 0002),
+// and both surfaces' copy buttons append them to their paste-back.
+const DP_EDITOR_JS = `
+<script>
+function dpMd(src) {
+  var escf = function (s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); };
+  var inline = function (s) {
+    s = s.replace(/\\x60([^\\x60]+)\\x60/g, "<code>$1</code>");
+    s = s.replace(/\\[([^\\]]+)\\]\\((https?:[^)\\s]+)\\)/g, '<a href="$2">$1</a>');
+    s = s.replace(/\\*\\*([^*]+)\\*\\*/g, "<b>$1</b>");
+    s = s.replace(/\\*([^*]+)\\*/g, "<i>$1</i>");
+    return s;
+  };
+  var lines = escf(src).split("\\n"), out = [], para = [], list = null, fence = null;
+  var closePara = function () { if (para.length) { out.push("<p>" + inline(para.join(" ")) + "</p>"); para = []; } };
+  var closeList = function () { if (list) { out.push("</" + list + ">"); list = null; } };
+  for (var i = 0; i < lines.length; i++) {
+    var L = lines[i];
+    if (fence !== null) {
+      if (/^\\x60\\x60\\x60/.test(L)) { out.push("<pre><code>" + fence.join("\\n") + "</code></pre>"); fence = null; }
+      else fence.push(L);
+      continue;
+    }
+    if (/^\\x60\\x60\\x60/.test(L)) { closePara(); closeList(); fence = []; continue; }
+    var h = L.match(/^(#{1,3})\\s+(.*)/);
+    if (h) { closePara(); closeList(); var n = h[1].length + 1; out.push("<h" + n + ">" + inline(h[2]) + "</h" + n + ">"); continue; }
+    var ul = L.match(/^[-*]\\s+(.*)/), ol = L.match(/^\\d+[.)]\\s+(.*)/);
+    if (ul || ol) {
+      closePara();
+      var want = ul ? "ul" : "ol";
+      if (list !== want) { closeList(); out.push("<" + want + ">"); list = want; }
+      out.push("<li>" + inline((ul || ol)[1]) + "</li>");
+      continue;
+    }
+    if (!L.trim()) { closePara(); closeList(); continue; }
+    para.push(L);
+  }
+  if (fence !== null) out.push("<pre><code>" + fence.join("\\n") + "</code></pre>");
+  closePara(); closeList();
+  return out.join("\\n");
+}
+(function () {
+  // Display upgrade: ADR prose renders as markdown at load; disk bytes untouched.
+  document.querySelectorAll(".dp-md").forEach(function (el) { el.innerHTML = dpMd(el.textContent); });
+  var preview = function (n) {
+    var parts = [];
+    document.querySelectorAll('.dp-adr-field[data-n="' + n + '"]').forEach(function (f) {
+      var v = f.value.trim();
+      if (v) parts.push("### " + f.getAttribute("data-field") + "\\n\\n" + v);
+    });
+    var pv = document.querySelector('.dp-adr-preview[data-n="' + n + '"]');
+    if (pv) pv.innerHTML = dpMd(parts.join("\\n\\n"));
+  };
+  document.querySelectorAll(".dp-adr-edit").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var ed = document.getElementById("dp-adr-ed-" + b.getAttribute("data-n"));
+      ed.hidden = !ed.hidden;
+      b.setAttribute("aria-expanded", ed.hidden ? "false" : "true");
+      if (!ed.hidden) preview(b.getAttribute("data-n"));
+    });
+  });
+  document.querySelectorAll(".dp-adr-field").forEach(function (f) {
+    f.addEventListener("input", function () { preview(f.getAttribute("data-n")); });
+  });
+  document.querySelectorAll(".dp-adr-promote").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var on = b.getAttribute("data-staged") === "1";
+      b.setAttribute("data-staged", on ? "" : "1");
+      b.textContent = on ? "add an ADR" : "ADR staged \\u2713 (copy below)";
+    });
+  });
+  window.dpAdrLines = function () {
+    var lines = [];
+    document.querySelectorAll(".dp-adr-field").forEach(function (f) {
+      if (f.value !== f.defaultValue)
+        lines.push("- [adr " + f.getAttribute("data-n") + " \\u00B7 " + f.getAttribute("data-field") + "] " +
+          f.value.replace(/\\\\/g, "\\\\\\\\").replace(/\\n/g, "\\\\n"));
+    });
+    document.querySelectorAll('.dp-adr-promote[data-staged="1"]').forEach(function (b) {
+      lines.push("- [decision: " + b.getAttribute("data-decision") + "] promote to ADR \\u2014 seed the adr block from its why");
+    });
+    return lines;
+  };
+})();
+</script>`;
+
 function commonBody(spec, adrs = [], withNotes = false) {
   // Evidence that reads as a repo path becomes a click target: the served
   // working surface opens it in VS Code at that line (same handler and same
@@ -383,8 +494,13 @@ function commonBody(spec, adrs = [], withNotes = false) {
   };
   const facts = (spec.verifiedFacts || []).map(f =>
     `<li>${esc(f.claim)} <span class="dim">— ${evRef(f.evidence)}</span></li>`).join("");
+  // Un-flagged decisions carry a promote button on editing surfaces: it
+  // stages a "- [decision: <name>] promote to ADR" line into the same blob,
+  // and the session seeds the adr block from the decision's why.
   const decs = (spec.decisions || []).map(d =>
-    `<li><b>${esc(d.decision)}</b> — ${esc(d.why)}</li>`).join("");
+    `<li><b>${esc(d.decision)}</b> — ${esc(d.why)}` +
+    (withNotes && !d.adr ? ` <button type="button" class="dp-adr-promote" data-decision="${esc(d.decision)}">add an ADR</button>` : "") +
+    `</li>`).join("");
   const risks = (spec.risks || []).map(r =>
     `<li>${esc(typeof r === "string" ? r : r.risk)}</li>`).join("");
   // Contracts sit right after Decisions: shape changes are the review's
@@ -413,7 +529,8 @@ ${facts ? `<h2>Verified facts</h2><ul>${facts}</ul>` : ""}
 ${risks ? `<h2>Risks</h2><ul>${risks}</ul>` : ""}
 ${obSection}
 ${adrsHtml(spec, adrs, withNotes)}
-${diagramsHtml(spec)}`;
+${diagramsHtml(spec)}
+${withNotes ? DP_EDITOR_JS : ""}`;
 }
 
 function reviewHtml(spec, b64, adrs = []) {
@@ -460,6 +577,7 @@ ${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${es
     document.querySelectorAll(".dp-note").forEach(function (t) {
       if (t.value.trim()) notes.push("- [" + t.getAttribute("data-section") + "] " + t.value.trim());
     });
+    if (window.dpAdrLines) notes = notes.concat(window.dpAdrLines());
     if (notes.length) parts.push("comments:\\n" + notes.join("\\n"));
     var blob = parts.join("\\n");
     var done = function () {
@@ -653,6 +771,8 @@ ${files ? `<p class="dim">${files}</p>` : ""}
 #dp-amend-copy:focus-visible,.dp-note:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </style>` +
     commonBody(spec, st.adrs || [], true) + `
+${st.approved ? `<p class="dim">approved snapshot: <span class="dp-path" data-file="${esc(st.approved.path)}"><code>${esc(st.approved.path)}</code></span>${
+      st.approved.spec_hash !== specHash(spec) ? ' · <span style="color:var(--warn)">the live plan has DRIFTED from the approved snapshot (spec amended since grade-pass)</span>' : ""}</p>` : ""}
 <h2>Gate</h2><p>${g.allow ? "🟢 open" : "🔴 shut"} <span class="dim">— ${esc(g.why)}</span>
 <span class="dim">· root <code>${esc(st.root || "?")}</code> · phase ${esc(st.phase)}</span></p>
 <h2>Increments</h2>${rows}
@@ -675,6 +795,7 @@ ${["context", "decisions", "risks"].map(s =>
     document.querySelectorAll(".dp-note").forEach(function (t) {
       if (t.value.trim()) notes.push("- [" + t.getAttribute("data-section") + "] " + t.value.trim());
     });
+    if (window.dpAdrLines) notes = notes.concat(window.dpAdrLines());
     var blob = "deep-plan amend \\u2014 " + slug + (notes.length ? "\\n" + notes.join("\\n") : "\\n(no notes)");
     var done = function () {
       document.getElementById("dp-amend-done").textContent = "copied \\u2713 \\u2014 paste it into the session";
@@ -1112,6 +1233,19 @@ async function grade(slug, answers) {
   }
   st.phase = "implementing";
   log1(st, "alignment check passed");
+  // The approved snapshot: the plan AS AGREED, cut once at the plan→working
+  // boundary and never overwritten — paste-anywhere context (Jira, PRs).
+  // Amends keep changing the live surfaces; the working page notes drift.
+  if (!st.approved) {
+    const spec = JSON.parse(fs.readFileSync(path.join(KEYS_DIR, slug + ".spec.json"), "utf8"));
+    const apPath = path.join(PLANS_DIR, slug + ".approved.md");
+    fs.writeFileSync(apPath,
+      `> approved snapshot of plan \`${slug}\` — cut when the alignment check passed; immutable. The live plan may have moved on.\n\n` +
+      mdPlan(spec, st.adrs || []));
+    st.approved = { spec_hash: specHash(spec), path: apPath };
+    log1(st, "approved snapshot cut: " + apPath);
+    say("approved snapshot: " + apPath + " (immutable — paste it into tickets/PRs as context)");
+  }
   writeState(st); rerenderWorking(slug);
   say("alignment check passed — phase: implementing. `deep-plan go " + slug + " 1` opens the first increment.");
 }
@@ -1237,6 +1371,7 @@ function statusRows() {
     slug: st.slug, root: st.root || "", phase: st.phase,
     rootBroken: !!(st.root && !fs.existsSync(st.root)),
     gate: gateView(st), progress: progress(st), session: st.session || "",
+    approved: (st.approved && st.approved.path) || "",
   }));
 }
 
@@ -1247,6 +1382,7 @@ function status(json) {
   for (const r of rows) {
     say(`${r.slug}  [${r.phase}]  ${r.gate.allow ? "gate open" : "GATE SHUT"} — ${r.gate.why}`);
     say(`  root ${r.root}${r.rootBroken ? "  ⚠ BROKEN ROOT — gone; the gate FAILS OPEN here" : ""}`);
+    if (r.approved) say(`  approved snapshot ${r.approved}`);
     say(`  ${r.progress.done}/${r.progress.total} increments` +
       (r.progress.next ? ` · next: ${r.progress.next.n}. ${r.progress.next.title}` : "") +
       (r.progress.blocked.length ? ` · blocked: ${r.progress.blocked.map(b => b.title).join(", ")}` : ""));
