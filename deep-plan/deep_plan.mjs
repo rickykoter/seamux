@@ -84,6 +84,30 @@ function validate(spec, force) {
     if (!f.claim || !f.evidence)
       errs.push("a verifiedFacts entry is missing claim or evidence (path:line). Uncited claims belong in risks.");
 
+  // Contracts: declared shape changes (schemas, APIs, signatures) are the
+  // expensive, hard-to-reverse kind, so this block is enforced — unlike
+  // observability, which stays advisory. Quiz coverage of contract decisions
+  // is grade's job, not render's: authoring stays permissive, review cannot
+  // pass around a contract change.
+  const CONTRACT_KINDS = ["db-schema", "api", "method-signature", "event", "config"];
+  for (const c of spec.contracts || []) {
+    const name = c.surface || "(unnamed surface)";
+    if (!c.surface) errs.push("a contracts entry has no surface");
+    if (!CONTRACT_KINDS.includes(c.kind))
+      errs.push(`contract "${name}": kind must be one of ${CONTRACT_KINDS.join("|")}`);
+    if (!["internal", "external"].includes(c.scope))
+      errs.push(`contract "${name}": scope must be internal or external`);
+    if (!["new", "modify", "remove"].includes(c.change))
+      errs.push(`contract "${name}": change must be new, modify or remove`);
+    if (!c.reach)
+      errs.push(`contract "${name}": reach is required — who consumes this surface (scout it)`);
+    const dec = (spec.decisions || []).find(d => d.decision === c.decisionRef);
+    if (!c.decisionRef || !dec)
+      errs.push(`contract "${name}": decisionRef must name a decision in the spec`);
+    else if (c.scope === "external" && !dec.adr && !(c.waiver && String(c.waiver).trim()))
+      errs.push(`contract "${name}": external scope defaults toward ADR — flag the decision, or write a waiver`);
+  }
+
   // Floors, derived from this house's own plans. The fix for a wall is to
   // draw it, not to trim it to just under the limit.
   const prose = [spec.context, ...(spec.deliverables || []).map(d => d.body)];
@@ -175,6 +199,15 @@ function mdPlan(spec, adrs = []) {
   if ((spec.decisions || []).length) {
     L.push("## Decisions", "");
     for (const d of spec.decisions) L.push(`- **${d.decision}** — ${d.why}`);
+    L.push("");
+  }
+  if ((spec.contracts || []).length) {
+    L.push("## Contracts", "");
+    for (const c of spec.contracts) {
+      L.push(`- **${c.surface}** — ${c.kind}, ${c.scope}, ${c.change}` +
+        (c.waiver ? ` (waiver: ${c.waiver})` : ""));
+      L.push(`  reach: ${c.reach}  \n  decision: ${c.decisionRef}`);
+    }
     L.push("");
   }
   if (adrs.length) {
@@ -324,6 +357,18 @@ only after the alignment check passes.</p>
 ${cards}`;
 }
 
+// Contracts card list, shared by the review/working body and the shareable
+// artifact page — declared shape changes stay visible wherever the plan goes.
+function contractsHtml(spec) {
+  const items = (spec.contracts || []).map(c =>
+    `<li><b>${esc(c.surface || "")}</b> <span class="dim">[${esc(c.kind || "?")} · ${esc(c.scope || "?")} · ${esc(c.change || "?")}]</span><br>` +
+    `reach: ${esc(c.reach || "")} <span class="dim">— decision: ${esc(c.decisionRef || "")}` +
+    (c.waiver ? ` · waiver: ${esc(c.waiver)}` : "") + `</span></li>`).join("");
+  return items ? `<h2>Contracts</h2>
+<p class="dim">declared shape changes — schemas, APIs, signatures. Reach is scouted; the decision is the human's.</p>
+<ul>${items}</ul>` : "";
+}
+
 function commonBody(spec, adrs = [], withNotes = false) {
   // Evidence that reads as a repo path becomes a click target: the served
   // working surface opens it in VS Code at that line (same handler and same
@@ -342,6 +387,9 @@ function commonBody(spec, adrs = [], withNotes = false) {
     `<li><b>${esc(d.decision)}</b> — ${esc(d.why)}</li>`).join("");
   const risks = (spec.risks || []).map(r =>
     `<li>${esc(typeof r === "string" ? r : r.risk)}</li>`).join("");
+  // Contracts sit right after Decisions: shape changes are the review's
+  // front-and-center item, with scouted reach and the owning decision.
+  const contractsSection = contractsHtml(spec);
   // Observability block — advisory by design: rendered when present, never
   // required. `existing` cites what the read-only sweep found (monitors,
   // dashboards, runbooks); `gaps` is what the plan fills, each via a
@@ -360,6 +408,7 @@ ${obGaps ? `<p class="dim">gaps this plan fills:</p><ul>${obGaps}</ul>` : ""}` :
 <p class="dim">plan <code>${esc(spec.slug)}</code></p>
 <h2>Context</h2><p>${esc(spec.context).replace(/\n\s*\n/g, "</p><p>")}</p>
 ${decs ? `<h2>Decisions</h2><ul>${decs}</ul>` : ""}
+${contractsSection}
 ${facts ? `<h2>Verified facts</h2><ul>${facts}</ul>` : ""}
 ${risks ? `<h2>Risks</h2><ul>${risks}</ul>` : ""}
 ${obSection}
@@ -724,6 +773,10 @@ async function render(specPath, opts) {
       return [q.id, { letter: String.fromCharCode(97 + pos), why: q.why, decisionRef: q.decisionRef }];
     })),
     violationsForced: violations,
+    // Contract decisions no quiz question covers — grade fails on these.
+    uncoveredContracts: [...new Set((spec.contracts || [])
+      .map(c => c.decisionRef)
+      .filter(ref => !(spec.quiz || []).some(q => q.decisionRef === ref)))],
   };
   fs.writeFileSync(path.join(KEYS_DIR, spec.slug + ".spec.json"), JSON.stringify(spec, null, 2) + "\n");
   fs.writeFileSync(path.join(KEYS_DIR, spec.slug + ".key.json"), JSON.stringify(key, null, 2) + "\n");
@@ -868,6 +921,7 @@ ul.alist li b{color:var(--accent)}
 is read-only here and changes only by the author re-rendering.</p>
 <h2>Context</h2><p>${esc(spec.context).replace(/\n\s*\n/g, "</p><p>")}</p>
 ${decs ? `<h2>Decisions</h2><ul>${decs}</ul>` : ""}
+${contractsHtml(spec)}
 ${facts ? `<h2>Verified facts</h2><ul>${facts}</ul>` : ""}
 ${risks ? `<h2>Risks</h2><ul>${risks}</ul>` : ""}
 ${diagrams}
@@ -1024,6 +1078,17 @@ async function grade(slug, answers) {
   if (!fs.existsSync(keyPath)) die("no answer key for " + slug);
   const key = JSON.parse(fs.readFileSync(keyPath, "utf8"));
   const st = readState(slug) || die("no state for " + slug);
+  // Contract coverage is structural: no set of answers can pass a quiz that
+  // never asked about a contract decision, so refuse before prompting.
+  const uncovered = key.uncoveredContracts || [];
+  if (uncovered.length) {
+    console.error(`alignment check FAILED — ${uncovered.length} contract decision(s) no quiz question covers:`);
+    for (const ref of uncovered) console.error(`  ✗ reopen the decision: ${ref}`);
+    console.error("Add a question whose decisionRef matches each, re-render, re-check.");
+    log1(st, `alignment check failed (uncovered contract decisions: ${uncovered.length})`);
+    writeState(st); rerenderWorking(slug);
+    process.exit(1);
+  }
   if (!answers.length) answers = await promptAnswers(key);
   const given = {};
   for (const a of answers) {
