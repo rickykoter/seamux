@@ -15,7 +15,11 @@ plan surfaces at `/plan/<slug>`.
 
 1. **Interrogate before drafting.** Every hard-to-reverse fork goes to the human
    as a concrete `AskUserQuestion` choice *before* the spec exists. A plan that
-   silently resolved a fork is a plan the human never agreed to.
+   silently resolved a fork is a plan the human never agreed to. When a fork is
+   *architectural* — it will outlive this plan and constrain later ones — say so
+   in the question, and carry the answer into the spec as a decision flagged
+   `adr`: the answer's why becomes the context, the rejected options become the
+   alternatives, and the human's own words seed the consequences.
 2. **Survey the terrain before drafting.** The interrogation covers the
    human's unknowns; this covers the code's. Grep the codebase for the
    feature's own vocabulary (planning issue chips? search `issue`, `ticket`,
@@ -35,9 +39,32 @@ plan surfaces at `/plan/<slug>`.
    `~/.claude/plans/<slug>.review.html`) shows 3+ consequence questions with
    per-slug shuffled options. The human answers; you run
    `deep-plan grade <slug> q1=a q2=c q3=b`. Non-zero exit names the decision to
-   reopen. A wrong answer means the plan and their model disagree — **either one
+   reopen. Present the review by opening it IN the cmux workspace —
+   `cmux open "http://127.0.0.1:$(cat ~/.cache/cmux-crew/board-intent.port)/plan/<slug>.review.html" --workspace <ref>`
+   (`/plan/<slug>` without the suffix is the WORKING tracker, no quiz)
+   (ref from `~/.cache/cmux-crew/board-targets.json`, matched by cwd) — never
+   `open` on the file:// copy; fall back to the file only when the intent
+   server is down, and say so. A wrong answer means the plan and their model disagree — **either one
    may be the broken one.** Fix whichever is wrong, re-render, re-check.
-6. **Implement increment by increment.** `deep-plan go <slug> next` is the
+6. **Suggest a compact before the first `go`.** The planning conversation is
+   mostly scaffolding once the spec is rendered and graded — the plan surfaces
+   are the artifact of record. Before moving into working mode, prompt the
+   human to run `/compact` with a suggested compaction prompt you write for
+   them, tailored to this plan. It must name the slug and point at the
+   durable state so nothing load-bearing lives only in chat history, e.g.:
+
+   > /compact Keep only what implementation of plan `<slug>` needs: the spec
+   > at `~/.claude/plans/<slug>.spec.json` is the plan of record (re-read it,
+   > don't trust summarized prose); increment status comes from
+   > `deep-plan status <slug> --json`; the gate requires `deep-plan go <slug>
+   > next` before each increment. Preserve: open questions the human raised,
+   > decisions made mid-session that amended the spec, and any verifiedFact
+   > evidence paths still unread. Drop the planning back-and-forth.
+
+   Adapt the "Preserve" list to what actually happened this session. This is
+   a suggestion to the human, not something you run yourself — wait for them
+   to compact (or decline) before asking for the first `go`.
+7. **Implement increment by increment.** `deep-plan go <slug> next` is the
    human's go-ahead (also the board's `go` chip). Every `go` also opens (or
    refocuses — the intent server dedups the Dock tab) the plan's working
    surface in the cmux Dock, best-effort: no board running means no tab and
@@ -51,7 +78,10 @@ plan surfaces at `/plan/<slug>`.
 ```json
 { "slug": "kebab-case", "title": "imperative",
   "context": "why now, what exists, what is out of frame",
-  "decisions":     [{ "decision": "...", "why": "..." }],
+  "decisions":     [{ "decision": "...", "why": "...",
+                      "adr": { "consequences": "required when flagged",
+                               "context": "optional; defaults to why",
+                               "alternatives": ["optional"], "status": "optional" } }],
   "verifiedFacts": [{ "claim": "...", "evidence": "path:line" }],
   "risks":         ["uncited claims live here, not in verifiedFacts"],
   "diagrams":      [{ "question": "the heading, phrased as a question", "mermaid": "..." }],
@@ -67,6 +97,35 @@ plan surfaces at `/plan/<slug>`.
 The `observability` block is optional and **advisory** — the renderer shows it
 but never refuses a spec for lacking it. See the observability discipline
 below for when it is expected.
+
+## ADRs — decisions that outlive the plan
+
+A decision flagged `adr` becomes an Architecture Decision Record bound for the
+repo itself (`NNNN-slug.md`), not just the plan surfaces. The discipline:
+
+1. **Flagging is explicit and shared.** Only the human and agent together, at
+   interrogation time, decide a fork is architectural. Flagged entries must
+   carry `consequences` — the renderer refuses otherwise.
+2. **The destination is reviewed, not assumed.** `render` resolves each ADR's
+   home — explicit `.seamux/adr.json` `dir` first, else the existing ADR tree
+   nearest the deliverables' files (multi-project repos keep per-project trees
+   like `docs/adr/payments-service/`), else `docs/adr` — preseeds the next
+   number, and shows `destination (source)` on every surface. A wrong home is
+   review feedback like any other.
+3. **Drafts at render, repo write at apply.** Drafts live beside the surfaces
+   (`<slug>.adrN.md`, status Proposed, date pending). `deep-plan adr apply
+   <slug>` is the only repo write — refused while phase is `review`, Accepted
+   + dated on the way in, loudly reallocating a number that went stale, and
+   idempotent on re-apply.
+4. **Style is the adopter's.** `.seamux/adr.json`: `template` is `nygard`
+   (default), `madr`, or a repo-relative path to their own template
+   (`{{number}} {{title}} {{status}} {{date}} {{context}} {{decision}}
+   {{consequences}} {{alternatives}}`); unknown names are treated as paths so
+   a typo fails loudly instead of silently restyle-ing.
+5. **In-flight edits ride the amend channel.** The working surface carries
+   amend boxes (per ADR card, per plan section); its **Copy amendments** blob
+   (`deep-plan amend — <slug>`) is pasted into the session, applied as a spec
+   edit, and re-rendered — increment statuses survive.
 
 ## Observability-aware planning (opt-in per project)
 

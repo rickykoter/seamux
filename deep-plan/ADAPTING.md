@@ -18,6 +18,37 @@ next adaptation starts from how *we* work, not the original author's stack.
   archived specs on `~/.claude/deep-plan/keys`, a separate tree.
 - Tenet 9 (verify the signal) dropped by its own drop-rule: no external signals.
 
+**Added later (2026-09-14): compact at the plan→work boundary.** Once the spec
+is rendered and the alignment check passes, the planning conversation is mostly
+scaffolding — the spec, state file and surfaces are the durable record. So the
+skill's discipline gained a step between grading and the first `go`: suggest the
+human run `/compact` with a compaction prompt written for them, one that names
+the slug, points at the spec (`~/.claude/plans/<slug>.spec.json`) and
+`deep-plan status --json` as the sources of truth to re-read rather than trust
+summarized prose, and preserves only what lives nowhere else — open questions,
+mid-session spec amendments, unread evidence paths. Portable because tenet 1
+makes it safe: when the spec is the artifact, chat history is disposable at
+exactly this boundary. If your adaptation kept tenet 1, steal this step; if it
+didn't, compacting here loses real state.
+
+**Added later (2026-09-15): ADRs for the decisions that outlive the plan.**
+Ricky wanted the larger forks to survive as Architecture Decision Records in
+the repo, co-authored with the human. Shape it took here, and the choices the
+next adopter gets to remake: promotion is an explicit `adr` flag on a
+`decisions[]` entry (never a heuristic — the human agrees a fork is
+architectural at interrogation time, and flagged entries must carry
+consequences); records land in-repo as `NNNN-slug.md`, with the home
+*discovered* — the existing ADR tree nearest the deliverables' files, so
+multi-project repos with `docs/adr/<project>/` trees resolve per project —
+and `.seamux/adr.json` overriding (`dir`, plus `template`: `nygard`, `madr`,
+or a repo-relative path to the team's own template file). Tenet 8 decides the
+lifecycle: render drafts (Proposed, deterministic), a separate `deep-plan adr
+apply` writes the repo (Accepted, dated), refused until the alignment check
+passes. Mid-flight edits ride an amend paste-back on the working surface, so
+the spec stays the single artifact with one writer. If your adoption dropped
+tenet 8, do not copy this split blindly — but then your ADRs can change the
+repo before the plan is agreed, and you should sit with that sentence first.
+
 The original recipe follows, unedited — work it the same way for the next person.
 
 ---
