@@ -164,7 +164,8 @@ if [ "$UNINSTALL" = 1 ]; then
   [ -d "$SKILL" ] && { run "rm -rf '$SKILL'"; ok "removed the deep-plan skill"; }
   [ -f "$SHIM" ]  && { run "rm -f '$SHIM'";   ok "removed the deep-plan shim"; }
   run "python3 '$HERE/claude/merge_settings.py' --remove$([ "$DRY" = 1 ] && echo ' --dry-run')"
-  say "kept: guard_bash.sh, ~/.claude/deep-plan (state/keys), ~/.claude/plans, statusline backups"
+  say "kept: guard_bash.sh, ~/.claude/deep-plan (state/keys), ~/.claude/plans,"
+  say "      statusline backups, ~/.config/cmux/crew-local (your overlay)"
   exit 0
 fi
 
@@ -212,6 +213,13 @@ if [ "$CREW" = 1 ]; then
   # drift check automatically. Not a repo file — written at install time.
   run "printf '%s\n' '$HERE' > '$DEST/.seamux-source'"
   ok "recorded the source repo -> $DEST/.seamux-source"
+
+  # The machine-local overlay lives outside $DEST so the move-aside above cannot
+  # reach it and drift_check cannot see it; crew reads it at apply time. Saying
+  # so here turns "my overlay is being ignored" into a visible install-log line.
+  if [ -d "$HOME/.config/cmux/crew-local" ]; then
+    ok "machine-local overlay kept -> ~/.config/cmux/crew-local (never synced)"
+  fi
 
   # ------------------------------------------------------------ integrations
   # Which trackers does this machine use? Flags win; else an interactive first

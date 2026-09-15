@@ -13,6 +13,24 @@
 
 set -euo pipefail
 
+# Machine-local override. A repo with a project-specific harness -- a monorepo
+# with a database to bring up, a pinned toolchain, a sandbox to run inside --
+# drops an executable here and it wins outright.
+#
+# The overlay lives OUTSIDE this package on purpose: install.sh moves the whole
+# crew tree aside on upgrade, so anything inside it would not survive one. It is
+# also outside every `find` root in install.sh's drift_check, so it stays silent
+# there rather than reporting as a live-only file forever.
+#
+# Written as an `if` rather than `[ -x ... ] && exec ...`: this file runs under
+# `set -e`, and a bare test as the last command of an && list would exit
+# non-zero on every machine WITHOUT an overlay -- which is exactly the
+# install-wide silent breakage this mechanism exists to avoid.
+CREW_LOCAL="${CREW_LOCAL:-$HOME/.config/cmux/crew-local}"
+if [ -x "$CREW_LOCAL/crew-spec" ]; then
+  exec "$CREW_LOCAL/crew-spec" "$@"
+fi
+
 usage() {
   cat <<'HELP'
 crew-spec [test-runner args...]
@@ -27,6 +45,10 @@ Examples:
   crew-spec
   crew-spec e2e/checkout.spec.ts
   crew-spec -k "test_invite"        # pytest
+
+An executable at $CREW_LOCAL/crew-spec (default
+~/.config/cmux/crew-local/crew-spec) replaces all of the above, and survives
+every reinstall. See docs/ADOPTION.md, "Machine-local overlay".
 HELP
 }
 

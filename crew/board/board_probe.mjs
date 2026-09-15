@@ -412,6 +412,85 @@ if (live && Array.isArray(live.rows)) {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
+// ---- crew-overlay: the machine-local config merge -------------------------
+// The overlay is how a real install keeps its company-shaped answers out of the
+// public repo. Two properties are load-bearing and both fail silently if broken:
+// a machine WITHOUT an overlay must get byte-identical output, and a BROKEN
+// overlay must refuse rather than ship an unmerged config.
+{
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const OV = join(HERE, "..", "bin", "crew-overlay");
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), "overlay-probe-"));
+  // Returns null instead of throwing: a crew-overlay that dies should fail the
+  // assertion that cares, not abort the probe and hide every check after it.
+  const run = (tmplText, ovText) => {
+    const ov = join(tmp, "ov.json");
+    fs.writeFileSync(ov, ovText);
+    try {
+      return execFileSync("python3", [OV, ov],
+        { encoding: "utf8", input: tmplText, stdio: ["pipe", "pipe", "pipe"] });
+    } catch { return null; }
+  };
+  const runJson = (tmplText, ovText) => {
+    const out = run(tmplText, ovText);
+    try { return out === null ? null : JSON.parse(out); } catch { return null; }
+  };
+
+  // Comments, and a "https://" inside a string value: every regex-based comment
+  // stripper that looked right also ate the // in the URL.
+  const tmpl = `{
+  // a leading comment
+  "a": 1,
+  "url": "https://example.com/x", // trailing comment
+  "nest": { "keep": true, "over": "base" },
+  "list": [1, 2],
+  "controls": [ { "id": "one", "h": 1 }, { "id": "two", "h": 2 } ]
+}`;
+  const merged = runJson(tmpl, JSON.stringify({
+    nest: { over: "winner" },
+    list: [9],
+    controls: [{ id: "two", h: 22 }, { id: "three", h: 3 }],
+  })) ?? {};
+  checks.push(["overlay: a // inside a string value survives comment stripping",
+    merged.url === "https://example.com/x"]);
+  checks.push(["overlay: untouched keys survive", merged.a === 1 && merged.nest?.keep === true]);
+  checks.push(["overlay: scalars replace", merged.nest?.over === "winner"]);
+  checks.push(["overlay: plain lists replace wholesale",
+    Array.isArray(merged.list) && merged.list.length === 1 && merged.list[0] === 9]);
+  checks.push(["overlay: controls merge by id, order kept, extras appended",
+    (merged.controls ?? []).map(c => c.id).join(",") === "one,two,three"]);
+  checks.push(["overlay: an amended control keeps its other fields and takes the new one",
+    merged.controls?.[1]?.h === 22 && merged.controls?.[0]?.h === 1]);
+
+  // A broken overlay must produce nothing on stdout and a non-zero exit, and
+  // must name the file. Shipping a half-merged config would be worse than
+  // failing, because it looks like the overlay was simply ignored.
+  let refused = false, named = false, wrote = "x";
+  try {
+    const ov = join(tmp, "broken.json");
+    fs.writeFileSync(ov, "{ not json");
+    wrote = execFileSync("python3", [OV, ov, "/my/real/path.json"],
+      { encoding: "utf8", input: tmpl, stdio: ["pipe", "pipe", "pipe"] });
+  } catch (e) {
+    refused = e.status !== 0;
+    wrote = e.stdout ?? "";
+    named = /\/my\/real\/path\.json/.test(String(e.stderr ?? ""));
+  }
+  checks.push(["overlay: invalid JSON refuses and writes nothing", refused && wrote === ""]);
+  checks.push(["overlay: the error names the real overlay path, not /dev/fd/N", named]);
+
+  // The three real templates must still parse after stripping, or `crew apply`
+  // would fail on a machine that has an overlay.
+  for (const f of ["cmux.jsonc", "dock.json", "dock.global.json"]) {
+    const text = fs.readFileSync(join(HERE, "..", "config", f), "utf8")
+      .replaceAll("__HOME__", "/h").replaceAll("__INTENT_PORT__", "7345");
+    checks.push([`overlay: config/${f} survives the merge path`,
+      runJson(text, "{}") !== null]);
+  }
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
 let bad = 0;
 for (const [n, ok] of checks) { if (!ok) bad++; console.log(`  ${ok ? "ok  " : "FAIL"} ${n}`); }
 console.log(`\n${bad ? "\x1b[31m" : "\x1b[32m"}board probe: ${checks.length - bad} passed, ${bad} failed\x1b[0m`);

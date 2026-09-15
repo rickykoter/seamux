@@ -39,9 +39,10 @@ Real portability bugs to fix before claiming Linux support:
 
 ## CI
 
-Draft workflow at `.github/workflows/probes.yml` — intentionally not yet
-enabled by a push. Shape: ubuntu + macos matrix, node 22, python 3.12, fetch
-mermaid with the same pin + sha256 the installer uses, run both probes.
+Workflow at `.github/workflows/probes.yml`, live since the repo was pushed
+(the "draft" header was stale and is gone). Shape: ubuntu + macos matrix, node
+22, python 3.12, the scrub check first, then fetch mermaid with the same pin +
+sha256 the installer uses, then both probes.
 
 Honest caveats baked into it:
 
@@ -50,6 +51,67 @@ Honest caveats baked into it:
   never true-tested on Linux; the first CI run is the test.
 - The mermaid fetch is the only network step; it fails closed on a sha
   mismatch, same as `install.sh:250-253`.
+
+## Machine-local overlay
+
+The package genericizes everything company-shaped: `crew-spec` is a stack
+detector rather than one repo's test harness, `cmux.jsonc` names
+`~/code/main-repo` rather than your monorepo, and there is no database control in
+the Dock. That is correct for a public package and wrong for the machine it came
+off. The overlay is how a real install keeps its own answers without either
+carrying them in the repo or losing them on the next `./install.sh`.
+
+It lives at `~/.config/cmux/crew-local/` — overridable with `$CREW_LOCAL`, and
+deliberately a **sibling** of `~/.config/cmux/crew/`, not a child. `install.sh`
+moves the whole crew tree aside on upgrade (`mv "$DEST"`), and `drift_check`
+only walks `$HERE/crew`, `$HERE/deep-plan` and `$DEST`. A sibling therefore
+survives the move *and* stays silent in the check — no entry to whitelist, no
+`live-only:` line to learn to ignore. Nothing in it is ever in the repo.
+
+Three hook shapes, one per kind of thing you need to override:
+
+| File | Shape | What it does |
+|---|---|---|
+| `crew-spec` | executable | `crew/bin/crew-spec` `exec`s it and never runs its own detection |
+| `cmux.json` | JSON(C) | deep-merged over the rendered `config/cmux.jsonc` |
+| `dock.json`, `dock.global.json` | JSON(C) | same, over their templates |
+
+Merge rules (`crew/bin/crew-overlay`): dicts recurse, scalars and lists replace
+wholesale, and **`controls` lists merge by `id`** — so an overlay can add one
+Dock control, or amend one field of an existing control, without restating the
+other eight. Both sides go through `render` first, so overlay content may use
+`__HOME__` and `__INTENT_PORT__` exactly like a template.
+
+Two properties worth relying on:
+
+- **A machine with no overlay is byte-identical to before.** `render_local`
+  falls straight through to `render`, comments and all — the merge path only
+  runs when a file is actually there. Verified against all three configs.
+- **A broken overlay fails loudly.** Invalid JSON exits non-zero with the
+  overlay's real path and writes nothing to stdout, rather than quietly shipping
+  an unmerged config. "My overlay is being ignored" is the bug class this whole
+  mechanism exists to remove, so it is never the failure mode.
+
+`crew doctor` reports the overlay and its file count, `note`s its absence (a
+machine without one is the normal case, not a symptom), and hard-fails on two
+things that would otherwise be silent: a `crew-spec` that is present but not
+executable — `[ -x ]` makes that a no-op, the same shape as the go chip that
+sent `workspace_id` to a reader expecting `workspaceId` — and an overlay JSON
+file that will not parse.
+
+**The trap:** `chmod +x` your `crew-spec`. A copy made with `cp` from a
+non-executable source is silently skipped, which is why doctor checks for it.
+
+For a second machine, make the directory a symlink into a private repo:
+
+```sh
+ln -s ~/code/dotfiles-private/cmux/crew-local ~/.config/cmux/crew-local
+```
+
+No extra code — crew resolves the path through `${CREW_LOCAL:-...}`, so a
+symlink is indistinguishable from a directory. There are deliberately no example
+overlay files in this repo: anything tracked under `crew/` gets copied into
+`$DEST` and compared by `drift_check`, which is noise for nothing.
 
 ## Releases
 

@@ -74,6 +74,28 @@ PY
 # the intent server's pin (crew-board-intent free_port, same default).
 render() { sed -e "s|__HOME__|$HOME|g" -e "s|__INTENT_PORT__|${CREW_INTENT_PORT:-7345}|g" "$1"; }
 
+# Machine-local overlay, deliberately a SIBLING of this package rather than a
+# child: install.sh moves the whole crew tree aside on upgrade, and drift_check
+# only walks $HERE/crew, $HERE/deep-plan and $DEST -- so a sibling survives the
+# move and stays silent in the check. Nothing here is ever in the repo.
+CREW_LOCAL="${CREW_LOCAL:-$HOME/.config/cmux/crew-local}"
+
+# render_local <template> <overlay-name>
+# With no overlay this is render, comments and all -- byte-identical output on a
+# machine that has none. With one, the rendered JSONC is parsed, deep-merged and
+# re-emitted as strict JSON. A broken overlay fails loudly rather than shipping
+# an unmerged config, because "my overlay is being ignored" is the exact bug
+# class this exists to remove.
+# The overlay goes through `render` too, not just the template. Overlay content
+# is usually lifted straight out of a config template, so it arrives carrying
+# __HOME__ and __INTENT_PORT__ -- and a merge that substituted only one side
+# shipped a `db` control whose command began with a literal "__HOME__/".
+render_local() {
+  local ov="$CREW_LOCAL/$2"
+  if [ ! -f "$ov" ]; then render "$1"; return; fi
+  render "$1" | python3 "$CREW_HOME/bin/crew-overlay" <(render "$ov") "$ov"
+}
+
 # ---------------------------------------------------------------- apply -----
 cmd_apply() {
   head_ "crew apply"
@@ -94,7 +116,7 @@ cmd_apply() {
   fi
 
   # 2. render config
-  render "$CREW_HOME/config/cmux.jsonc" > "$CMUX_JSON"
+  render_local "$CREW_HOME/config/cmux.jsonc" cmux.json > "$CMUX_JSON"
   ok "rendered cmux.json from config/cmux.jsonc"
 
   # 3. put the commands on PATH. ~/.local/bin is already there, so this needs
@@ -119,7 +141,7 @@ cmd_apply() {
   # 4. project Dock, untracked
   if [ -d "$MONOLITH/.git" ]; then
     mkdir -p "$MONOLITH/.cmux"
-    render "$CREW_HOME/config/dock.json" > "$MONOLITH/.cmux/dock.json"
+    render_local "$CREW_HOME/config/dock.json" dock.json > "$MONOLITH/.cmux/dock.json"
     local ex="$MONOLITH/.git/info/exclude"
     if ! grep -qx '.cmux/' "$ex" 2>/dev/null; then
       printf '\n# crew (local cmux Dock config)\n.cmux/\n' >> "$ex"
@@ -137,7 +159,7 @@ cmd_apply() {
     cp "$HOME/.config/cmux/dock.json" "$HOME/.config/cmux/dock.json.pre-crew.bak"
     ok "backed up dock.json -> dock.json.pre-crew.bak"
   fi
-  render "$CREW_HOME/config/dock.global.json" > "$HOME/.config/cmux/dock.json"
+  render_local "$CREW_HOME/config/dock.global.json" dock.global.json > "$HOME/.config/cmux/dock.json"
   ok "installed global Dock -> ~/.config/cmux/dock.json (board + usage)"
 
   # 5. Claude hooks. Back up settings.json the same way, and for the same
@@ -728,6 +750,28 @@ cmd_doctor() {
     ok "no drift vs $_src"
   else
     bad "live install has drifted from $_src — see: $_src/install.sh --check"
+  fi
+  # The machine-local overlay: not drift, and not a symptom. A machine without
+  # one is the normal case, so it gets a `note`, the same level a declined
+  # integration gets. The one hard failure is an override that is present but
+  # not executable, because `[ -x ]` makes that a silent no-op -- the same bug
+  # class as the go chip that sent workspace_id to a reader expecting
+  # workspaceId, and silence is what made that one survive so long.
+  if [ -d "$CREW_LOCAL" ]; then
+    local _n
+    _n="$(find "$CREW_LOCAL" -maxdepth 1 -type f ! -name '.*' 2>/dev/null | wc -l | tr -d ' ')"
+    ok "machine-local overlay: ${CREW_LOCAL/#$HOME/~} ($_n file(s), never synced)"
+    if [ -f "$CREW_LOCAL/crew-spec" ] && [ ! -x "$CREW_LOCAL/crew-spec" ]; then
+      bad "crew-local/crew-spec is not executable — the override is being silently ignored (chmod +x it)"
+    fi
+    local _f
+    for _f in cmux.json dock.json dock.global.json; do
+      if [ -f "$CREW_LOCAL/$_f" ] && ! python3 -c "import json,sys;json.load(open(sys.argv[1]))" "$CREW_LOCAL/$_f" 2>/dev/null; then
+        bad "crew-local/$_f is not valid JSON — crew apply will refuse to render"
+      fi
+    done
+  else
+    note "no machine-local overlay — the package's own defaults are in use"
   fi
   # Computer Use is optional (crew works without it) — report, never fail.
   local _cua="$HOME/Library/Application Support/cmux/cmux-cua"
