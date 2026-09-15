@@ -620,16 +620,26 @@ cmd_doctor() {
   fi
 
   head_ "package"
+  # Every shipped file, not a subset. The list had drifted behind the package:
+  # costs.py, crew-overlay, dock.global.json, crew-frame, intent.js and the
+  # usage template were all absent from it, and every one of them fails QUIETLY
+  # when missing -- costs.py behind a bare `except` that simply drops the cost
+  # facts, crew-overlay only for machines that have an overlay, crew-frame
+  # behind an `[ -x ]` that skips it without a word.
   for f in hooks/lib.sh hooks/crew-hook.sh hooks/progress.sh hooks/triage.py \
            bin/crew-watch bin/crew-spec bin/crew-worktree bin/crew-diff bin/crew-code \
            bin/crew-code-open bin/crew-color bin/crew-digest bin/crew-feed bin/crew-listen bin/crew-reclaim bin/crew-resume bin/crew-sandbox bin/crew-sync sidebars/crew.swift config/cmux.jsonc config/dock.json \
+           bin/crew-frame bin/crew-overlay config/dock.global.json \
            board/crew-board board/board.html board/render.js board/board_probe.mjs bin/crew-cmux-bin \
+           board/crew-board-intent board/crew-board-diag board/costs.py board/intent.js board/cat_from_swift.py board/usage.tmpl.html \
            tools/render_probe.py; do
     [ -f "$CREW_HOME/$f" ] && ok "$f" || bad "missing $f"
   done
+  # crew-frame is here because `crew apply` gates it on [ -x ] and skips it in
+  # silence; the pane frame then just never follows the workspace.
   for f in hooks/crew-hook.sh hooks/triage.py bin/crew-watch bin/crew-spec \
            bin/crew-worktree bin/crew-diff bin/crew-code bin/crew-code-open bin/crew-color bin/crew-listen bin/crew-reclaim bin/crew-resume bin/crew-sandbox \
-           bin/crew-cmux-bin board/crew-board; do
+           bin/crew-frame bin/crew-cmux-bin board/crew-board; do
     [ -x "$CREW_HOME/$f" ] || bad "$f is not executable"
   done
   for f in crew-diff crew-code crew-code-open crew-sandbox crew-worktree crew-cmux-bin; do
