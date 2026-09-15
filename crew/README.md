@@ -815,8 +815,8 @@ working, and is deliberately ignored for every other repo — otherwise choosing
 different repo would drop its worktrees into the monolith's directory.
 
 The base branch comes from `origin/HEAD` rather than a hardcoded `master`, then
-falls back to `origin/main` and `origin/master`. `the-app` is `main`; most of the
-rest are `master`.
+falls back to `origin/main` and `origin/master`. Some repos here default to
+`main`, most to `master`.
 
 The commit-hook fixups stay guarded, so they no-op for repos that do not use
 husky or node_modules — and the "run npm install" warning now fires only when a

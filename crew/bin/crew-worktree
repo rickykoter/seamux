@@ -102,7 +102,7 @@ resolve_repo() {
 }
 
 # origin/HEAD names the default branch; not every repo has it set, and not every
-# repo is master (the-app is main). Asking git beats guessing.
+# repo is master (some default to main). Asking git beats guessing.
 default_base() {
   local head
   head="$(git -C "$1" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
@@ -141,7 +141,7 @@ NAME="$(basename "$MAIN")"
 
 # CREW_WORKTREES stays honoured for the monolith so an existing setup keeps
 # working; every other repo derives its own sibling, which is the convention
-# already on disk (infrastructure.worktrees was made by hand).
+# already on disk (a sibling `<repo>.worktrees` dir, made by hand).
 if [ "$MAIN" = "$MONOLITH" ] && [ -n "${CREW_WORKTREES:-}" ]; then
   TREES="$CREW_WORKTREES"
 else

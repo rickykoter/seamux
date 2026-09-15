@@ -50,10 +50,10 @@
     // means "no restriction", i.e. every link stays inside. To send everything
     // out, turn the two switches off instead.
     //
-    // github.com, cloud.rwx.com and buildkite.com used to be here and are
-    // deliberately gone: they are the logins worth keeping in one browser, so a
-    // PR or a checks page should leave cmux no matter how you reached it. What
-    // stays is what you only ever read.
+    // Your forge and CI hosts (github.com, and whatever runs your builds) used
+    // to be here and are deliberately gone: they are the logins worth keeping in
+    // one browser, so a PR or a checks page should leave cmux no matter how you
+    // reached it. What stays is what you only ever read.
     "hostsToOpenInEmbeddedBrowser": []
   },
 
@@ -176,7 +176,7 @@
           "cmux.newTerminal"
         ]
       },
-      "~/code/infrastructure.worktrees/*": {
+      "~/code/second-repo.worktrees/*": {
         "color": "#6A1B9A",
         "icon": "arrow.triangle.branch",
         "newWorkspacePlacement": "end",
