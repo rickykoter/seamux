@@ -282,6 +282,46 @@ ok("mermaid theme follows the page theme",
   fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "contract-free-plan.json"), { force: true });
 }
 
+// -------------------------------------------------- ADR inline editor + markdown subset
+{
+  const workingNow = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
+  ok("ADR editor present on review and working (toggle + fields + preview)",
+    [review, workingNow].every(h => h.includes('class="dp-adr-edit"') &&
+      h.includes('id="dp-adr-ed-1"') && h.includes('class="dp-adr-field"') &&
+      h.includes('class="dp-adr-preview"')));
+  ok("promote button on the un-flagged decision only",
+    (review.match(/dp-adr-promote" data-decision/g) || []).length === 1 &&
+    review.includes('data-decision="Track retries on the outbox row"'));
+  ok("both blob builders append staged ADR lines",
+    review.includes("window.dpAdrLines") && workingNow.includes("window.dpAdrLines") &&
+    review.includes("promote to ADR") && review.includes("- [adr "));
+  // dpMd, executed for real: escape-first, subset only, no js: links.
+  const mdSrc = (review.match(/function dpMd\(src\) \{[\s\S]*?\n\}/) || [])[0];
+  ok("dpMd ships in the page", !!mdSrc);
+  if (mdSrc) {
+    const dpMd = new Function(mdSrc + "; return dpMd;")();
+    const out = dpMd("# H\n\n**b** *i* `c` [l](https://x.dev)\n\n- a\n\n```\n<script>\n```\n\n<b>raw</b>");
+    ok("dpMd renders the subset and escapes everything else",
+      out.includes("<h2>H</h2>") && out.includes("<b>b</b>") && out.includes("<i>i</i>") &&
+      out.includes("<code>c</code>") && out.includes('<a href="https://x.dev">l</a>') &&
+      out.includes("<ul>") && out.includes("&lt;script&gt;") && out.includes("&lt;b&gt;raw&lt;/b&gt;"));
+    ok("dpMd never links javascript: URLs", !dpMd("[x](javascript:alert(1))").includes("<a"));
+  }
+  // A spec with no flagged decision: no editor cards, but promotion offered.
+  const plainHtml = (() => {
+    const p = JSON.parse(JSON.stringify(spec));
+    p.slug = "no-editor-plan"; delete p.decisions[0].adr;
+    cli("render", tmpSpec(p));
+    const h = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "no-editor-plan.review.html"), "utf8");
+    cli("close", "no-editor-plan");
+    fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "no-editor-plan.json"), { force: true });
+    return h;
+  })();
+  ok("unflagged plan: no editor card, every decision promotable",
+    !plainHtml.includes('class="dp-adr-edit"') &&
+    (plainHtml.match(/dp-adr-promote" data-decision/g) || []).length === 2);
+}
+
 // -------------------------------------------------- validate: surfaces re-checked on disk
 ok("validate: a freshly rendered plan is clean",
   cli("validate", spec.slug).status === 0);
@@ -337,6 +377,8 @@ ok("exported page has no base64 mermaid embed", !/data:text\/javascript;base64/.
 ok("exported page uses native pre.mermaid", art1.includes('<pre class="mermaid">'));
 ok("exported page carries the Contracts section",
   art1.includes("<h2>Contracts</h2>") && art1.includes("outbox table (attempt_count"));
+ok("exported page has no ADR editor (share is read-only)",
+  !art1.includes("dp-adr-edit") && !art1.includes("dpAdrLines"));
 // Leak discipline: nothing from the quiz (prompts, options, whys) and nothing
 // from the key file may reach a surface that leaves the machine.
 const keyJson = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, spec.slug + ".key.json"), "utf8"));
@@ -384,6 +426,33 @@ const right = Object.entries(key.answers).map(([q, a]) => `${q}=${a.letter}`);
 r = cli("grade", spec.slug, ...right);
 ok("right answers pass", r.status === 0);
 ok("no increment authorized yet: Edit still denied", edit(path.join(REPO, "a.txt")).status === 2);
+
+// -------------------------------------------------- approved snapshot: cut once, immutable
+{
+  const apPath = path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".approved.md");
+  ok("grade-pass cut the approved snapshot", fs.existsSync(apPath) &&
+    fs.readFileSync(apPath, "utf8").includes("approved snapshot"));
+  const ap1 = fs.readFileSync(apPath, "utf8");
+  const stAp = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"));
+  ok("state records the snapshot path and spec hash",
+    stAp.approved && stAp.approved.path === apPath && stAp.approved.spec_hash.length === 16);
+  ok("status carries the snapshot", JSON.parse(cli("status", "--json").stdout)[0].approved === apPath);
+  // Amend the spec (a context tweak) and re-render: live surfaces move,
+  // the snapshot does not, and the working page notes the drift.
+  const amended = JSON.parse(JSON.stringify(spec));
+  amended.context += " Amended mid-implementation.";
+  cli("render", tmpSpec(amended));
+  ok("re-render after grade leaves the snapshot byte-identical",
+    fs.readFileSync(apPath, "utf8") === ap1);
+  ok("working surface notes the drift",
+    fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8")
+      .includes("DRIFTED from the approved snapshot"));
+  // Restore the original spec so later assertions see the canonical plan.
+  cli("render", tmpSpec(spec));
+  ok("no drift note once the spec matches again",
+    !fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8")
+      .includes("DRIFTED from the approved snapshot"));
+}
 
 // -------------------------------------------------- adr apply, post-grade
 {

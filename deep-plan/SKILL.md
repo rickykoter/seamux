@@ -65,6 +65,10 @@ plan surfaces at `/plan/<slug>`.
    only the suffix-less `/plan/<slug>` (the working tracker) — the Dock
    dedups the tab, so re-opening `.review.html` (say, after an amend
    re-render) pins the quiz in front and hides increment progress.
+   Grade-pass also cuts `~/.claude/plans/<slug>.approved.md` — the plan AS
+   AGREED, immutable; paste it into tickets/PRs as context. Amends change
+   only the live surfaces, and the working page notes when the plan has
+   drifted from the snapshot.
 7. **Suggest a compact before the first `go`.** The planning conversation is
    mostly scaffolding once the spec is rendered and graded — the plan surfaces
    are the artifact of record. Before moving into working mode, prompt the
@@ -145,7 +149,19 @@ repo itself (`NNNN-slug.md`), not just the plan surfaces. The discipline:
    (`{{number}} {{title}} {{status}} {{date}} {{context}} {{decision}}
    {{consequences}} {{alternatives}}`); unknown names are treated as paths so
    a typo fails loudly instead of silently restyle-ing.
-5. **In-flight edits ride the amend channel.** The working surface carries
+5. **ADRs are edited in the page, applied through the spec.** Every ADR card
+   on the review and working surfaces has an **Edit** toggle: all fields
+   (decision, context, consequences, alternatives) with a live preview in a
+   markdown subset (`# ## ###`, bold, italic, code, fences, lists, http links
+   — a small inlined renderer, no library; the display upgrade is client-side
+   so surfaces on disk stay byte-identical). Saves are STAGED, not written:
+   they ride the copy-back blob as one line per changed field,
+   `- [adr N · field] <payload>` with real newlines escaped as `\n`
+   (unescape before applying — the payload is markdown). Un-flagged decisions
+   carry an **add an ADR** button that stages
+   `- [decision: <name>] promote to ADR` — seed the `adr` block from the
+   decision's why, then re-render; the new card is editable like any other.
+6. **In-flight edits ride the amend channel.** The working surface carries
    amend boxes (per ADR card, per plan section); its **Copy amendments** blob
    (`deep-plan amend — <slug>`) is pasted into the session, applied as a spec
    edit, and re-rendered — increment statuses survive.
