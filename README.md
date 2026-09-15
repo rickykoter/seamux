@@ -179,6 +179,17 @@ You don't have to remember this: the installer records the repo path, and
 `crew doctor` runs the drift check every time — drift is a red check, not a
 discipline.
 
+Two things are yours and are never synced: `integrations.json`, and the
+machine-local overlay at `~/.config/cmux/crew-local` — an executable
+`crew-spec`, plus `cmux.json` / `dock.json` fragments that deep-merge over the
+package's templates. That is where a company-shaped test harness or a private
+repo's colour belongs, and it survives every reinstall.
+
+`docs/SYNCING.md` has the rest: which path belongs to whom, the traps that have
+actually bitten (`--main-repo` must be shell-expanded; a dry run cannot prove
+the substitution; `crew apply` takes no backup once it has run here), and what
+to check before installing over a live tree that has files the repo never had.
+
 ## Computer Use (optional)
 
 cmux's Computer Use driver lets agents drive the browser and other apps in
@@ -221,6 +232,8 @@ it's set up.
 | `claude/` | statusline, guard hook, settings merger |
 | `bin/deep-plan.shim` | installed to `~/.local/bin/deep-plan` |
 | `docs/` | dev history, test notes, adoption audit, README images — not installed |
+| `docs/SYNCING.md` | who owns which path, and how a change travels between repo and machine |
+| `tools/scrub_check.py` | refuses internal identifiers in tracked files; first step in CI |
 
 Never committed: rendered cmux configs, deep-plan state and keys, the mermaid
 blob, your `~/.claude/settings.json`.

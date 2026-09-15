@@ -969,10 +969,19 @@ published. See FINDINGS.md.
 **`flash_on_edit` is gone.** At 1130 Edits per sample it fired constantly, which
 trains you to ignore the flash — the opposite of the point.
 
-## Not tracked in git
+## Where this lives
 
-Neither this nor `~/.config/ghostty/whimsy` is under version control yet. If you
-ever make a dotfiles repo, take both at once.
+This layer is tracked — it comes from the seamux repo, and `install.sh` puts it
+here. The repo is the source of truth: edit there and reinstall, never edit this
+tree in place. `crew doctor` runs the drift check every time, so an in-place
+edit shows up as a red check rather than a thing you have to remember.
+
+Two exceptions that are yours and are never synced: `integrations.json` beside
+this file, and the machine-local overlay at `~/.config/cmux/crew-local`
+(`crew-spec`, `cmux.json`, `dock.json` — see `docs/SYNCING.md`).
+
+`~/.config/ghostty/whimsy` is still not under version control. If you make a
+dotfiles repo, take it then.
 
 ## Remote Control — the crew from your phone
 

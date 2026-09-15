@@ -237,7 +237,7 @@ key stores the shuffled letter — the two cannot drift.
 ## The gate
 
 `hooks/gate.sh` is a PreToolUse hook on `Edit|Write|MultiEdit|NotebookEdit|Bash`
-(wired by `crew-dock/claude/merge_settings.py`). Hard deny: exit 2 with the
+(wired by `claude/merge_settings.py`). Hard deny: exit 2 with the
 reason; one `go` authorizes a whole increment. Scope:
 
 - Only paths **inside a tracked plan's root** are ever gated.
