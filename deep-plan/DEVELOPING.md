@@ -11,7 +11,7 @@ For whoever changes this next. Built 2026-09-12 on this machine, from
 | `lib/state.mjs` | 160 | state IO + THE decision function (`decideToolCall`) — one definition of "may I edit", shared by CLI and gate |
 | `hooks/gate.sh` | 13 | PreToolUse fast path: glob test, exec node only when state files exist |
 | `hooks/decide.mjs` | 43 | slow half: parse payload, decide, exit 2; flips authorized→working on first edit |
-| `probe.mjs` | 563 | 128 assertions, throwaway everything, `-v` walks it |
+| `probe.mjs` | 563 | throwaway everything, `-v` walks it; prints its own count |
 | `examples/example.spec.json` | — | reference spec; the probe's fixture, so a broken example breaks the build |
 | `vendor/mermaid.min.js` | 3.4MB | inlined base64 into surfaces; the intent server swaps it for `/mermaid.min.js` |
 
@@ -123,7 +123,12 @@ surfaces `~/.claude/plans/`. Probe overrides: `DEEP_PLAN_STATE_DIR`,
 ## Verifying a change
 
 ```bash
-node ~/.claude/skills/deep-plan/probe.mjs        # 43 assertions, must be green
-node ~/.config/cmux/crew/board/board_probe.mjs   # the board still renders plan rows
+node deep-plan/probe.mjs                         # from the repo; must print 0 failed
+node crew/board/board_probe.mjs                  # the board still renders plan rows
 crew doctor                                      # intent routes + mermaid swap
 ```
+
+The probes need `deep-plan/vendor/mermaid.min.js`, which is gitignored — run
+`./install.sh` (or the fetch step in `.github/workflows/probes.yml`) first. The
+assertion count is deliberately not written down here: it changed three times in
+two days and the three places recording it disagreed. The run prints it.

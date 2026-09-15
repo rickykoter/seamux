@@ -19,6 +19,7 @@ const ENV = {
   DEEP_PLAN_ANNOT_DIR: path.join(TMP, "annotations"),
   DEEP_PLAN_SKILL_DIR: HERE,
 };
+const MERMAID_VENDOR = path.join(HERE, "vendor", "mermaid.min.js");
 const REPO = path.join(TMP, "repo");
 fs.mkdirSync(REPO, { recursive: true });
 // -c identity: CI runners have no git user, and the probe's throwaway repo
@@ -88,6 +89,19 @@ ok("review page never contains the answer key", !/answer/i.test(review.replace(/
   !review.includes('"answers"'));
 ok("mermaid inlined as base64 (the swap regex's shape)",
   /src="data:text\/javascript;base64,[A-Za-z0-9+/=]+"/.test(review));
+// A fresh clone has no vendor/mermaid.min.js (it is gitignored; install.sh and
+// CI fetch it). The validator degrades to a "skipped" sentinel, but render used
+// to hand that case an ENOENT stack trace straight out of node:fs, which reads
+// as a broken tool rather than a missing file. It must refuse legibly instead.
+{
+  const stash = MERMAID_VENDOR + ".probe-stash";
+  fs.renameSync(MERMAID_VENDOR, stash);
+  const r = cli("render", tmpSpec(spec));
+  fs.renameSync(stash, MERMAID_VENDOR);
+  ok("render without the vendored mermaid refuses legibly, not with a stack trace",
+    r.status !== 0 && /vendor\/mermaid\.min\.js is missing/.test(r.stderr) &&
+    !/node:fs|readFileSync|ENOENT/.test(r.stderr));
+}
 // The interactive layer: answerable quiz + comment boxes + one copy-back blob.
 ok("review quiz options are selectable radios",
   (review.match(/type="radio" name="dp-q-/g) || []).length >=

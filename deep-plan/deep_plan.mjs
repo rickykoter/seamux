@@ -259,6 +259,16 @@ function mdPlan(spec, adrs = []) {
 }
 
 function mermaidB64() {
+  // The validator degrades to a documented "skipped" sentinel when the vendored
+  // bundle is missing; render cannot, because a surface with no diagram engine
+  // is not a surface. So fail, but say what to do -- a bare readFileSync here
+  // handed a fresh clone an ENOENT stack trace out of node:fs, which reads as a
+  // broken tool rather than a missing 3 MB file that install.sh normally fetches.
+  if (!fs.existsSync(MERMAID)) {
+    die("vendor/mermaid.min.js is missing, so no diagram can be inlined.\n" +
+        "  Run ./install.sh (it fetches the pinned build and verifies its sha256),\n" +
+        "  or fetch it yourself into " + MERMAID);
+  }
   return fs.readFileSync(MERMAID).toString("base64");
 }
 
