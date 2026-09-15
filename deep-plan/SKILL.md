@@ -61,6 +61,10 @@ plan surfaces at `/plan/<slug>`.
    `open` on the file:// copy; fall back to the file only when the intent
    server is down, and say so. A wrong answer means the plan and their model disagree — **either one
    may be the broken one.** Fix whichever is wrong, re-render, re-check.
+   Once the grade passes, the review page's job is over: from then on open
+   only the suffix-less `/plan/<slug>` (the working tracker) — the Dock
+   dedups the tab, so re-opening `.review.html` (say, after an amend
+   re-render) pins the quiz in front and hides increment progress.
 7. **Suggest a compact before the first `go`.** The planning conversation is
    mostly scaffolding once the spec is rendered and graded — the plan surfaces
    are the artifact of record. Before moving into working mode, prompt the
