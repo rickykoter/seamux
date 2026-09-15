@@ -722,6 +722,24 @@ cmd_doctor() {
   else
     bad "intent selftest failed — python3 board/crew-board-intent --selftest"
   fi
+  # A running server keeps executing whatever code it started with. install.sh
+  # and `crew apply` both report success without touching it, and crew-listen
+  # only respawns it when it is DOWN, never when it is merely behind -- so an
+  # upgrade can land, say so, and change nothing you can see. It has already
+  # happened once: a server old enough to still emit the dollars-era /usage
+  # shape was serving the current template, which rendered "no budget on record"
+  # over perfectly good data.
+  #
+  # The port file is written once, in serve(), so its mtime is the server's
+  # start time without parsing `ps`. Newer code than that means stale.
+  if [ ! -f "$STATE/board-intent.port" ]; then
+    note "no intent server has started yet — the next board push starts one"
+  elif [ "$CREW_HOME/board/crew-board-intent" -nt "$STATE/board-intent.port" ]; then
+    bad "intent server is running older code than is installed — restart it:"
+    bad "  pkill -f crew-board-intent   (crew-listen respawns it within ~10s)"
+  else
+    ok "intent server is running the installed code"
+  fi
   grep -q "crew-triage" "$CMUX_JSON" 2>/dev/null && ok "notification triage in cmux.json" \
     || bad "cmux.json is not crew-rendered — run: crew apply"
   ls "$CMUX_JSON".*.bak >/dev/null 2>&1 && ok "a cmux.json backup exists (crew uninstall can revert)" \

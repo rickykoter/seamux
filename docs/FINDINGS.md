@@ -1793,3 +1793,33 @@ integration points — was preserved as `docs/TIE-INS.md`. Everything else in th
 bundle was a stale snapshot of what this repo already versions. Its README is
 now a deprecation pointer at seamux; the tree stays as a historical reference
 until deletion feels safe.
+
+## Installing new code does not restart the intent server (2026-09-15)
+
+`./install.sh` and `crew apply` both print success without touching the running
+`crew-board-intent`. The server keeps executing whatever it started with, so an
+upgrade can land, report cleanly, and change nothing you can observe.
+
+`crew-listen` is not the safety net: it probes `--status` and spawns a server
+only when one is **down** (`crew/bin/crew-listen:158-165`). A server that is up
+but behind is exactly what it leaves alone.
+
+Measured, and worse than a missing feature. The server running here on
+2026-09-15 predated the /usage tokens rewrite entirely — its block payload still
+carried `cost` and `burnPerHour`, the dollars-era shape. The freshly installed
+template read those as absent and rendered "no budget on record" over data that
+was fine. Nothing errored; the page was simply wrong, and the install had said
+`ok` four times.
+
+Two things make it easy to miss. The template *is* re-read per request
+(`crew-board-intent:594`, deliberately, so editing the dashboard needs no
+restart), which trains you to expect edits to appear. And a stale server holds
+its old port: this one was on a free port from before the `__INTENT_PORT__` pin
+existed, so the pin looked broken too until the restart moved it to 7345.
+
+`crew doctor` now compares the installed `crew-board-intent`'s mtime against
+`board-intent.port`'s. The port file is written once, in `serve()`, so its mtime
+is the server's start time without parsing `ps` — and the comparison works
+against any server generation, including ones predating the check. Newer code
+than that is a red check, not a habit. The fix is `pkill -f crew-board-intent`;
+`crew-listen` respawns it within ~10s.
