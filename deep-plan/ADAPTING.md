@@ -71,6 +71,23 @@ permissive; review still cannot pass around a contract change). If your
 adoption dropped tenet 5 (the graded check), coverage-at-grading has nowhere
 to live — move it to render or drop the rule knowingly.
 
+**Added later (2026-09-15): in-page ADR editing, promotion, and the approved
+snapshot.** The adopter wanted ADRs fully editable in the plan pages with
+markdown preview, without new libraries. The forks, and where they landed:
+edits **stage into the existing amend paste-back** (chosen over an
+intent-server POST and over direct file writes — the spec stays the single
+writer, so the blob became a versioned line protocol: multi-line payloads
+travel `\n`-escaped on one `- [adr N · field]` line; that contract change is
+itself ADR 0002). Markdown is a **hand-rolled escape-first subset** inlined in
+the page (~40 lines; the 3.4MB vendored mermaid is the cautionary tale),
+running client-side only so rehydrate stays byte-identical. Un-flagged
+decisions carry an **add an ADR** button staging a promote line the session
+seeds from the decision's why. And crossing the plan→working boundary cuts
+`<slug>.approved.md` — immutable, paste-anywhere (Jira, PRs); amends move only
+the live surfaces and the working page notes drift. If your adoption took the
+intent-server write path instead, you have two writers — meter that before
+copying anything else from this entry.
+
 The original recipe follows, unedited — work it the same way for the next person.
 
 ---

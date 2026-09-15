@@ -7,11 +7,11 @@ For whoever changes this next. Built 2026-09-12 on this machine, from
 
 | file | lines | what |
 |---|---|---|
-| `deep_plan.mjs` | 1352 | CLI: render/rehydrate/grade/status/transitions/diff; validate() enforces the contracts block, grade() enforces contract quiz coverage |
+| `deep_plan.mjs` | 1488 | CLI: render/rehydrate/grade/status/transitions/diff; validate() enforces the contracts block, grade() enforces contract quiz coverage + cuts the approved snapshot; DP_EDITOR_JS carries dpMd + the ADR editor |
 | `lib/state.mjs` | 160 | state IO + THE decision function (`decideToolCall`) — one definition of "may I edit", shared by CLI and gate |
 | `hooks/gate.sh` | 13 | PreToolUse fast path: glob test, exec node only when state files exist |
 | `hooks/decide.mjs` | 43 | slow half: parse payload, decide, exit 2; flips authorized→working on first edit |
-| `probe.mjs` | 494 | 114 assertions, throwaway everything, `-v` walks it |
+| `probe.mjs` | 563 | 128 assertions, throwaway everything, `-v` walks it |
 | `examples/example.spec.json` | — | reference spec; the probe's fixture, so a broken example breaks the build |
 | `vendor/mermaid.min.js` | 3.4MB | inlined base64 into surfaces; the intent server swaps it for `/mermaid.min.js` |
 
@@ -78,6 +78,18 @@ surfaces `~/.claude/plans/`. Probe overrides: `DEEP_PLAN_STATE_DIR`,
   the md plan, and the exported artifact page. Board `status --json` is
   untouched.
 
+## ADR editor + snapshot seam (added 2026-09-15)
+
+- `DP_EDITOR_JS` (emitted by commonBody when withNotes): dpMd markdown subset
+  + per-card ADR editor + promote buttons. Both surfaces' copy buttons call
+  `window.dpAdrLines()` — changed fields serialize as
+  `- [adr N · field] <\n-escaped payload>`, staged promotions as
+  `- [decision: <name>] promote to ADR`. The line grammar is ADR 0002:
+  extend the section vocabulary, never the grammar.
+- `grade()` success writes `<slug>.approved.md` once (immutable) and records
+  `{spec_hash, path}` in `st.approved`; workingHtml renders a drift note on
+  hash mismatch; `status --json` rows gained an additive `approved` field.
+
 ## Known debts (honest list)
 
 - The gate **fails open on a bad root** and nothing detects it beyond `status`
@@ -103,6 +115,10 @@ surfaces `~/.claude/plans/`. Probe overrides: `DEEP_PLAN_STATE_DIR`,
   the first few real plans.
 - The scouting cap (one sub-agent per uncertain claim / contract surface) is
   SKILL.md prose, not code — nothing meters it.
+- dpMd is a deliberate subset: nested lists, tables and mixed emphasis
+  mis-render as flat text. Fallback is escaped literal text, never broken HTML.
+- No size guard on staged ADR fields — a very large edit makes one very long
+  blob line.
 
 ## Verifying a change
 
