@@ -9,6 +9,8 @@ a product name and two CI hosts rode in with the 0.1.0 commit and sat in a
 public tree for two days. A check that lives beside the thing being exported
 cannot protect a tree that is no longer produced by that export.
 
+This file is covered by its own check -- see the note on the patterns below.
+
 So: tracked files only, every push, fails closed. Patterns are specific rather
 than clever -- a false positive here costs a minute, a false negative costs a
 force-push.
@@ -20,29 +22,32 @@ import sys
 # Each entry is (regex, what it is). Keep them anchored to the actual
 # identifier: a broad pattern like `atlassian\.net` would flag install.sh's
 # `yourco.atlassian.net`, which is the placeholder we *want* people to see.
+# Every pattern hides one character in a class -- `lending[h]ome` matches
+# the real string but is not itself that string. Without this, the file could
+# not be scanned by its own check, and worse: a `git filter-repo --replace-text`
+# pass over the history would rewrite these patterns into the very placeholders
+# they are meant to permit, leaving a checker that rejects the clean tree. The
+# brackets cost one character of legibility and buy both.
 FORBIDDEN = [
-    (r"lendinghome",                 "company repo/org/database name"),
-    (r"\bkiavi\b",                   "company name"),
-    (r"rickykotermanski",            "the author's username"),
+    (r"lending[h]ome",               "company repo/org/database name"),
+    (r"\bkia[v]i\b",                 "company name"),
+    (r"rickyk[o]termanski",          "the author's username"),
     (r"/Users/[a-z]",                "an absolute home path (use ~ or __HOME__)"),
-    (r"\bAO-\d",                     "internal Jira key"),
-    (r"\bDATA-\d",                   "internal Jira key"),
-    (r"\bBOX-\d",                    "internal Jira key"),
-    (r"\brek/",                       "the author's branch prefix (use dev/)"),
-    (r"\bthe-app\b",                   "internal product name"),
-    (r"infrastructure",        "internal repo name"),
-    (r"data-warehouse",      "internal repo name"),
-    (r"data-pipelines",            "internal repo name"),
-    (r"notes",                   "internal repo name"),
+    (r"\bA[O]-\d",                    "internal Jira key"),
+    (r"\bDAT[A]-\d",                  "internal Jira key"),
+    (r"\bBO[X]-\d",                   "internal Jira key"),
+    (r"\bre[k]/",                     "the author's branch prefix (use dev/)"),
+    (r"\be[D]SCR\b",                 "internal product name"),
+    (r"gamma[-]infrastructure",      "internal repo name"),
+    (r"snowflake[-]schemachange",    "internal repo name"),
+    (r"lh[-]data-workflow",          "internal repo name"),
+    (r"rik[i]pedia",                 "internal repo name"),
 ]
-
-# This file necessarily contains every string it exists to forbid.
-SELF = "tools/scrub_check.py"
 
 
 def tracked_files():
     out = subprocess.run(["git", "ls-files", "-z"], capture_output=True, check=True).stdout
-    return [f for f in out.decode("utf-8").split("\0") if f and f != SELF]
+    return [f for f in out.decode("utf-8").split("\0") if f]
 
 
 def is_text(path):
