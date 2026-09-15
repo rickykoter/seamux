@@ -233,6 +233,55 @@ ok("mermaid theme follows the page theme",
   fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "ob-plan.json"), { force: true });
 }
 
+// -------------------------------------------------- contracts: enforced at render, covered at grade
+{
+  // The fixture itself declares a contract — assert it reaches both surfaces.
+  ok("fixture's contracts entry renders on review + md",
+    review.includes("<h2>Contracts</h2>") && review.includes("outbox table (attempt_count") &&
+    fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".md"), "utf8").includes("## Contracts"));
+  // Refusals, one per floor.
+  let cbad = JSON.parse(JSON.stringify(spec));
+  cbad.contracts[0].decisionRef = "no such decision";
+  ok("refuses a contract whose decisionRef names no decision",
+    /decisionRef must name a decision/.test(cli("render", tmpSpec(cbad)).stderr));
+  cbad = JSON.parse(JSON.stringify(spec));
+  cbad.contracts[0].scope = "external";
+  ok("refuses an external contract with no ADR flag and no waiver",
+    /external scope defaults toward ADR/.test(cli("render", tmpSpec(cbad)).stderr));
+  cbad.contracts[0].waiver = "single invited consumer, endpoint is versioned";
+  cbad.slug = "waived-plan";
+  ok("a written waiver passes, and renders on the surface",
+    cli("render", tmpSpec(cbad)).status === 0 &&
+    fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "waived-plan.review.html"), "utf8")
+      .includes("waiver: single invited consumer"));
+  cli("close", "waived-plan");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "waived-plan.json"), { force: true });
+  // Coverage is grade's job: render passes an uncovered contract decision,
+  // grade then fails structurally, naming it, before any answers are read.
+  const unc = JSON.parse(JSON.stringify(spec));
+  unc.slug = "uncovered-plan";
+  unc.decisions.push({ decision: "Widen the status enum", why: "x" });
+  unc.contracts.push({ surface: "outbox.status", kind: "db-schema", scope: "internal",
+    change: "modify", reach: "worker only", decisionRef: "Widen the status enum" });
+  ok("render passes an uncovered contract decision", cli("render", tmpSpec(unc)).status === 0);
+  const gu = cli("grade", "uncovered-plan", "q1=a", "q2=a", "q3=a");
+  ok("grade fails on it, naming the decision",
+    gu.status !== 0 && /no quiz question covers/.test(gu.stderr) &&
+    /Widen the status enum/.test(gu.stderr));
+  cli("close", "uncovered-plan");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "uncovered-plan.json"), { force: true });
+  // Absence stays free: a contract-free spec renders with no Contracts section.
+  const cfree = JSON.parse(JSON.stringify(spec));
+  cfree.slug = "contract-free-plan";
+  delete cfree.contracts;
+  ok("a spec with no contracts block renders",
+    cli("render", tmpSpec(cfree)).status === 0 &&
+    !fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "contract-free-plan.review.html"), "utf8")
+      .includes("<h2>Contracts</h2>"));
+  cli("close", "contract-free-plan");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "contract-free-plan.json"), { force: true });
+}
+
 // -------------------------------------------------- validate: surfaces re-checked on disk
 ok("validate: a freshly rendered plan is clean",
   cli("validate", spec.slug).status === 0);
@@ -286,6 +335,8 @@ ok("export-artifact is deterministic (byte-identical on re-run)",
   fs.readFileSync(artPath, "utf8") === art1);
 ok("exported page has no base64 mermaid embed", !/data:text\/javascript;base64/.test(art1));
 ok("exported page uses native pre.mermaid", art1.includes('<pre class="mermaid">'));
+ok("exported page carries the Contracts section",
+  art1.includes("<h2>Contracts</h2>") && art1.includes("outbox table (attempt_count"));
 // Leak discipline: nothing from the quiz (prompts, options, whys) and nothing
 // from the key file may reach a surface that leaves the machine.
 const keyJson = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, spec.slug + ".key.json"), "utf8"));
