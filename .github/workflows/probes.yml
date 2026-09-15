@@ -1,6 +1,5 @@
-# Draft — not enabled until the repo is pushed to GitHub (see docs/ADOPTION.md).
-# Runs both probes with no cmux present; the mermaid fetch mirrors install.sh's
-# pin + sha256 and fails closed on a mismatch.
+# Runs the scrub check and both probes with no cmux present; the mermaid fetch
+# mirrors install.sh's pin + sha256 and fails closed on a mismatch.
 name: probes
 
 on:
@@ -26,6 +25,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      # First, and before the network: an internal identifier in a tracked file
+      # is the one failure that cannot be fixed by a follow-up commit.
+      - name: scrub check
+        run: python3 tools/scrub_check.py
 
       - name: Fetch pinned mermaid (probes need it in vendor/)
         run: |
