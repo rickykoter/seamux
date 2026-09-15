@@ -49,6 +49,28 @@ the spec stays the single artifact with one writer. If your adoption dropped
 tenet 8, do not copy this split blindly — but then your ADRs can change the
 repo before the plan is agreed, and you should sit with that sentence first.
 
+**Added later (2026-09-14): challenge the goal, scout the uncertainty, enforce
+contracts.** Three disciplines in one pass, all confirmed by Ricky, whose ask
+was explicit: "challenge the human's initial assumptions and not blindly accept
+their goals", and slow down wherever contracts form or change. Shape here, and
+what the next adopter gets to remake: (1) a mandatory **step 0 goal-challenge**
+— restate the goal, list its embedded assumptions, put the strongest
+counter-position as an `AskUserQuestion`; only a literal "skip the challenge"
+skips it. (2) A codified **scouting fan-out** between survey and spec: one
+cheap sub-agent (Explore/haiku-tier) per low-confidence claim and per contract
+surface, mapping callers/consumers/schema reach; confirmed → cited
+verifiedFacts, unconfirmed → risks, never silently promoted. (3) An
+**enforced `contracts` spec block** (surface, kind, scope, change, scouted
+reach, decisionRef, waiver) — unlike observability, the renderer refuses a
+contract owned by no decision, and an external-scope one whose decision is
+neither `adr`-flagged nor waived in writing. Quiz coverage of contract
+decisions is enforced at **grading**, not render — that placement was itself a
+reopened decision: the plan first said render-time, the alignment check
+caught the disagreement, and the human chose grading (authoring stays
+permissive; review still cannot pass around a contract change). If your
+adoption dropped tenet 5 (the graded check), coverage-at-grading has nowhere
+to live — move it to render or drop the rule knowingly.
+
 The original recipe follows, unedited — work it the same way for the next person.
 
 ---
