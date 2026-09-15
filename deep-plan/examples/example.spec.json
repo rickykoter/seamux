@@ -3,7 +3,9 @@
   "title": "Retry failed outbox deliveries with backoff",
   "context": "Deliveries that fail once are currently dropped. The outbox table already records status per row, so a retry sweep can key on it without schema change.\n\nOut of frame: dead-lettering and operator alerts. This plan only makes a failed delivery try again.",
   "decisions": [
-    { "decision": "Sweep on a timer, not on write", "why": "a write-triggered retry retries into the same outage that just failed" }
+    { "decision": "Sweep on a timer, not on write", "why": "a write-triggered retry retries into the same outage that just failed",
+      "adr": { "consequences": "retries lag by up to one sweep period; delivery load is bounded by the sweep, not by write bursts",
+               "alternatives": ["retry inline on write", "per-row scheduled jobs"] } }
   ],
   "verifiedFacts": [
     { "claim": "outbox rows carry a status column", "evidence": "db/schema.rb:42" },

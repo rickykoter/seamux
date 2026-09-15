@@ -92,8 +92,9 @@ ok("mermaid inlined as base64 (the swap regex's shape)",
 ok("review quiz options are selectable radios",
   (review.match(/type="radio" name="dp-q-/g) || []).length >=
     (spec.quiz || []).length * 2);
-ok("every increment carries a comment box, plus a general one",
-  (review.match(/class="dp-note"/g) || []).length === (spec.deliverables || []).length + 1);
+ok("every increment and ADR carries a comment box, plus a general one",
+  (review.match(/class="dp-note"/g) || []).length ===
+    (spec.deliverables || []).length + spec.decisions.filter(d => d.adr).length + 1);
 ok("copy-back button builds the paste blob (slug + grade line + comments)",
   review.includes('id="dp-copyback"') &&
   review.includes('"deep-plan grade " + slug') &&
@@ -157,6 +158,60 @@ ok("mermaid theme follows the page theme",
   }
 }
 
+// -------------------------------------------------- ADRs: draft at render, apply post-grade
+{
+  // Flagged without consequences: refused.
+  const noCons = JSON.parse(JSON.stringify(spec));
+  noCons.decisions[0].adr = { alternatives: ["x"] };
+  ok("refuses a flagged decision with no consequences",
+    cli("render", tmpSpec(noCons)).status !== 0);
+  // The example spec is flagged: draft + surfaces + state, all from render.
+  ok("render drafts the ADR beside the surfaces",
+    fs.existsSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".adr1.md")));
+  const draft = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".adr1.md"), "utf8");
+  ok("draft is Proposed with a deterministic date placeholder",
+    draft.includes("Proposed") && draft.includes("(pending apply)"));
+  ok("review carries the ADR card and its comment box",
+    review.includes("ADR 1: Sweep on a timer") && review.includes('data-section="adr 1"'));
+  ok("md plan carries the ADRs section",
+    fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".md"), "utf8").includes("## ADRs"));
+  const stAdr = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"));
+  ok("state records the resolved destination (default here) and preseeded number",
+    stAdr.adrs.length === 1 && stAdr.adrs[0].dir === "docs/adr" &&
+    stAdr.adrs[0].source === "default" && stAdr.adrs[0].number === 1);
+  ok("apply refused while phase is review",
+    cli("adr", "apply", spec.slug).status !== 0 &&
+    /review/.test(cli("adr", "apply", spec.slug).stderr));
+  // Unflagged spec: zero ADR machinery — advisory by name, like observability.
+  const plain = JSON.parse(JSON.stringify(spec));
+  plain.slug = "no-adr-plan";
+  delete plain.decisions[0].adr;
+  ok("an unflagged spec renders", cli("render", tmpSpec(plain)).status === 0);
+  ok("…with no ADR section and no draft",
+    !fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "no-adr-plan.review.html"), "utf8").includes("<h2>ADRs</h2>") &&
+    !fs.existsSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "no-adr-plan.adr1.md")));
+  cli("close", "no-adr-plan");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "no-adr-plan.json"), { force: true });
+  // Config: custom template + explicit dir, honored end to end.
+  const REPO3 = path.join(TMP, "repo3");
+  fs.mkdirSync(path.join(REPO3, ".seamux"), { recursive: true });
+  execSync("git init -q", { cwd: REPO3 });
+  fs.writeFileSync(path.join(REPO3, "tpl.md"), "!! {{title}} [{{status}}]\n{{consequences}}\n");
+  fs.writeFileSync(path.join(REPO3, ".seamux", "adr.json"),
+    JSON.stringify({ template: "tpl.md", dir: "notes/decisions" }));
+  const cSpec = JSON.parse(JSON.stringify(spec));
+  cSpec.slug = "custom-tpl-plan";
+  spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "render", tmpSpec(cSpec)],
+    { encoding: "utf8", env: ENV, cwd: REPO3 });
+  const cDraft = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "custom-tpl-plan.adr1.md"), "utf8");
+  ok("custom template and config dir are honored",
+    cDraft.startsWith("!! Sweep on a timer") &&
+    JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "custom-tpl-plan.json"), "utf8"))
+      .adrs[0].dir === "notes/decisions");
+  cli("close", "custom-tpl-plan");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "custom-tpl-plan.json"), { force: true });
+}
+
 // -------------------------------------------------- observability block: advisory
 {
   const obSpec = { ...spec, slug: "ob-plan", observability: {
@@ -207,6 +262,15 @@ ok("working surface renders controls disabled on disk",
 ok("working surface has the auto-refresh checkbox", working.includes('id="dp-auto"'));
 ok("declared files are dp-path targets even before they exist",
   working.includes('data-file="app/workers/retry_sweep.rb"'));
+// The amend channel: a box per plan section and per ADR card, one copy
+// button, and a blob headed for the session — mid-increment spec edits ride
+// this, the same way review comments ride the review blob.
+ok("working surface has amend boxes per section, per ADR, plus general",
+  ["context", "decisions", "risks", "general", "adr 1"].every(s =>
+    working.includes(`data-section="${s}"`)));
+ok("amend copy button builds the paste blob",
+  working.includes('id="dp-amend-copy"') &&
+  working.includes('"deep-plan amend \\u2014 " + slug'));
 
 // -------------------------------------------------- rehydrate is byte-identical
 r = cli("rehydrate", spec.slug);
@@ -269,6 +333,30 @@ const right = Object.entries(key.answers).map(([q, a]) => `${q}=${a.letter}`);
 r = cli("grade", spec.slug, ...right);
 ok("right answers pass", r.status === 0);
 ok("no increment authorized yet: Edit still denied", edit(path.join(REPO, "a.txt")).status === 2);
+
+// -------------------------------------------------- adr apply, post-grade
+{
+  // Land an interloper so the preseeded number (1) is stale: drift must
+  // reallocate and say so, not silently overwrite.
+  fs.mkdirSync(path.join(REPO, "docs", "adr"), { recursive: true });
+  fs.writeFileSync(path.join(REPO, "docs", "adr", "0001-interloper.md"), "x\n");
+  const ap = cli("adr", "apply", spec.slug);
+  ok("apply lands the ADR after the grade", ap.status === 0 &&
+    fs.existsSync(path.join(REPO, "docs", "adr", "0002-sweep-on-a-timer-not-on-write.md")));
+  ok("stale preseeded number reallocates loudly", /drifted 1 -> 2/.test(ap.stdout));
+  const applied = fs.readFileSync(
+    path.join(REPO, "docs", "adr", "0002-sweep-on-a-timer-not-on-write.md"), "utf8");
+  ok("applied file is Accepted with a real date",
+    applied.includes("Accepted") && !applied.includes("(pending apply)") &&
+    /Date: \d{4}-\d{2}-\d{2}/.test(applied));
+  const ap2 = cli("adr", "apply", spec.slug);
+  ok("re-apply rewrites the same file, no fresh number", ap2.status === 0 &&
+    /0002-.*\(rewritten\)/.test(ap2.stdout) &&
+    !fs.existsSync(path.join(REPO, "docs", "adr", "0003-sweep-on-a-timer-not-on-write.md")));
+  ok("working surface flips the ADR chip to applied",
+    fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8")
+      .includes(">applied</span>"));
+}
 
 // -------------------------------------------------- go / working / done
 ok("go authorizes the next increment", cli("go", spec.slug, "next").status === 0);
