@@ -843,8 +843,24 @@ cmd_doctor() {
     if [ -f "$CREW_LOCAL/crew-spec" ] && [ ! -x "$CREW_LOCAL/crew-spec" ]; then
       bad "crew-local/crew-spec is not executable — the override is being silently ignored (chmod +x it)"
     fi
+    # Billing mode decides what the status line and /usage lead with, and
+    # getting it wrong is silent -- the page just answers a question this
+    # account does not have. Say which one is in force and where it came from.
+    if [ -f "$CREW_LOCAL/config.json" ]; then
+      local _bill
+      _bill="$(python3 -c 'import json,sys;print((json.load(open(sys.argv[1])).get("billing") or "subscription"))' "$CREW_LOCAL/config.json" 2>/dev/null)"
+      if [ "$_bill" = "usage" ]; then
+        local _budget
+        _budget="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("monthBudget") or "")' "$CREW_LOCAL/config.json" 2>/dev/null)"
+        ok "billing: usage-based${_budget:+ — budget \$$_budget/month} (crew-local/config.json)"
+      else
+        ok "billing: subscription — the 5h window is the constraint"
+      fi
+    else
+      note "billing: subscription (default) — set crew-local/config.json for usage-based"
+    fi
     local _f
-    for _f in cmux.json dock.json dock.global.json; do
+    for _f in cmux.json dock.json dock.global.json config.json; do
       if [ -f "$CREW_LOCAL/$_f" ] && ! python3 -c "import json,sys;json.load(open(sys.argv[1]))" "$CREW_LOCAL/$_f" 2>/dev/null; then
         bad "crew-local/$_f is not valid JSON — crew apply will refuse to render"
       fi

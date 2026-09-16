@@ -186,14 +186,19 @@ the constraint is the 5h window, and money is not the question. If you pay per
 token that is the wrong framing — there is no window limit, and the month is
 what binds. Set:
 
-```sh
-export CREW_BILLING=usage
-export CREW_MONTH_BUDGET=3000      # dollars; optional
+```json
+// ~/.config/cmux/crew-local/config.json
+{ "billing": "usage", "monthBudget": 3500 }
 ```
 
 The status line becomes month-to-date spend against that budget with a pace
 figure, and `/usage` leads with the month and speaks dollars throughout rather
-than tokens. Unset, nothing changes. See `crew/board/README.md`.
+than tokens. Absent, nothing changes.
+
+A file rather than an env var because the status line and the intent server are
+spawned by parents that never source a shell rc — the full story is in
+`crew/board/README.md`. `CREW_BILLING` / `CREW_MONTH_BUDGET` still override for
+a one-off, and `crew doctor` reports which mode is in force.
 
 Two things are yours and are never synced: `integrations.json`, and the
 machine-local overlay at `~/.config/cmux/crew-local` — an executable

@@ -810,6 +810,47 @@ def open_file(slug, rel):
     return ok, ("opened " + rel) if ok else ("crew-code-open refused " + rel)
 
 
+def _crew_local():
+    """Machine-local settings, from the overlay dir rather than the environment.
+
+    An env var is not a durable home for "which billing model is this account".
+    The status line is spawned by Claude Code and the intent server by three
+    different parents (`crew apply`, `crew-listen`, `crew-board`); none of them
+    source a shell rc, so a value exported in a terminal reaches some of them,
+    sometimes. It was worse than that in practice: the server inherited the
+    variable from the apply that spawned it and looked correct, until the next
+    respawn silently reverted the page to a framing this account does not have.
+
+    The overlay dir is durable -- outside $DEST, so install.sh cannot replace it
+    -- and is where the rest of this machine's own answers already live.
+    Environment still wins, for a one-off.
+    """
+    base = os.environ.get("CREW_LOCAL") or os.path.join(
+        os.path.expanduser("~"), ".config", "cmux", "crew-local")
+    try:
+        with open(os.path.join(base, "config.json"), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        return cfg if isinstance(cfg, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _billing_mode():
+    cfg = _crew_local()
+    raw = os.environ.get("CREW_BILLING") or cfg.get("billing") or ""
+    return str(raw).strip().lower()
+
+
+def _month_budget():
+    raw = os.environ.get("CREW_MONTH_BUDGET", "")
+    if not raw:
+        raw = _crew_local().get("monthBudget", "")
+    try:
+        return float(raw or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _env_budget(name):
     try:
         return int(os.environ.get(name, "") or 0)
@@ -920,7 +961,7 @@ def usage_data(days=21):
     # window is not a limit -- you are billed, not throttled -- so the month is
     # the thing to lead with. Anything but CREW_BILLING=usage keeps the
     # subscription framing, so an install that sets nothing is unchanged.
-    usage_billing = (os.environ.get("CREW_BILLING", "") or "").strip().lower() == "usage"
+    usage_billing = _billing_mode() == "usage"
     out["billing"] = "usage" if usage_billing else "subscription"
 
     if usage_billing:
@@ -931,10 +972,7 @@ def usage_data(days=21):
         period = now.strftime("%Y-%m")
         cur_m = next((r for r in (monthly.get("monthly") or [])
                       if r.get("period") == period), None)
-        try:
-            mbudget = float(os.environ.get("CREW_MONTH_BUDGET", "") or 0)
-        except ValueError:
-            mbudget = 0
+        mbudget = _month_budget()
         days_in = calendar.monthrange(now.year, now.month)[1]
         spent = (cur_m or {}).get("totalCost") or 0
         out["month"] = {
@@ -1084,6 +1122,25 @@ def selftest():
               "daily bars, the axis, the table twin and the tooltip all follow it")
     except OSError as exc:
         check("the usage template is readable", False, str(exc))
+
+    # Billing mode has to survive a respawn. This server is started by three
+    # different parents and none of them source a shell rc, so reading it only
+    # from the environment meant it inherited the value from whichever process
+    # happened to spawn it -- correct until the next restart, then silently not.
+    try:
+        cfgdir = os.environ.get("CREW_LOCAL") or os.path.join(
+            os.path.expanduser("~"), ".config", "cmux", "crew-local")
+        check("billing mode is read from a file, not just the environment",
+              "_crew_local" in open(__file__, encoding="utf-8").read(),
+              "an inherited env var reverts on the next respawn")
+        cfgp = os.path.join(cfgdir, "config.json")
+        if os.path.exists(cfgp):
+            json.load(open(cfgp, encoding="utf-8"))
+            check("...and this machine's crew-local/config.json parses", True)
+        else:
+            check("...and no config.json here, so the default applies", True)
+    except (OSError, ValueError) as exc:
+        check("crew-local/config.json is readable JSON", False, str(exc))
 
     # `crew apply` now bounces this server whenever it is behind the installed
     # code, so token and port reuse across a restart stopped being a nicety: an

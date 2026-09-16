@@ -298,7 +298,25 @@ window and money is not the question. On **usage-based billing that is simply
 false**: there is no window limit, you are billed rather than throttled, and the
 constraint is the month.
 
-`CREW_BILLING=usage` says so, and it changes what the page leads with:
+Say so in `~/.config/cmux/crew-local/config.json`:
+
+```json
+{ "billing": "usage", "monthBudget": 3500 }
+```
+
+**A file rather than an env var, and that was learned the hard way.** Both
+surfaces originally read only `CREW_BILLING`. The status line is spawned by
+Claude Code and this server by three different parents (`crew apply`,
+`crew-listen`, `crew-board`), none of which source a shell rc — so a value
+exported in a terminal reaches some of them, sometimes. In practice the server
+inherited it from the `crew apply` that spawned it and looked perfectly correct,
+while the status line never saw it at all and the next respawn would have
+reverted the page in silence. The overlay dir is durable: outside `$DEST`, so
+`install.sh` cannot replace it. `CREW_BILLING` and `CREW_MONTH_BUDGET` still
+override it for a one-off, and `crew doctor` prints which mode is in force and
+where it came from.
+
+It changes what the page leads with:
 
 | | subscription (default) | `CREW_BILLING=usage` |
 |---|---|---|

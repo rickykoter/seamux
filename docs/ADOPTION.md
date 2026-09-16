@@ -73,6 +73,7 @@ Three hook shapes, one per kind of thing you need to override:
 | File | Shape | What it does |
 |---|---|---|
 | `crew-spec` | executable | `crew/bin/crew-spec` `exec`s it and never runs its own detection |
+| `config.json` | JSON | crew's own machine-local settings (`billing`, `monthBudget`) read by the status line and the intent server |
 | `cmux.json` | JSON(C) | deep-merged over the rendered `config/cmux.jsonc` |
 | `dock.json`, `dock.global.json` | JSON(C) | same, over their templates |
 

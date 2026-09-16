@@ -191,6 +191,47 @@ def window_line(payload):
     return " · ".join(bits)
 
 
+def _crew_local():
+    """Machine-local settings, from the overlay dir rather than the environment.
+
+    An env var is not a durable home for "which billing model is this account".
+    The status line is spawned by Claude Code and the intent server by three
+    different parents (`crew apply`, `crew-listen`, `crew-board`); none of them
+    source a shell rc, so a value exported in a terminal reaches some of them,
+    sometimes. It was worse than that in practice: the server inherited the
+    variable from the apply that spawned it and looked correct, until the next
+    respawn silently reverted the page to a framing this account does not have.
+
+    The overlay dir is durable -- outside $DEST, so install.sh cannot replace it
+    -- and is where the rest of this machine's own answers already live.
+    Environment still wins, for a one-off.
+    """
+    base = os.environ.get("CREW_LOCAL") or os.path.join(
+        os.path.expanduser("~"), ".config", "cmux", "crew-local")
+    try:
+        with open(os.path.join(base, "config.json"), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        return cfg if isinstance(cfg, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _billing_mode():
+    cfg = _crew_local()
+    raw = os.environ.get("CREW_BILLING") or cfg.get("billing") or ""
+    return str(raw).strip().lower()
+
+
+def _month_budget():
+    raw = os.environ.get("CREW_MONTH_BUDGET", "")
+    if not raw:
+        raw = _crew_local().get("monthBudget", "")
+    try:
+        return float(raw or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _fmt_usd(n):
     n = n or 0
     if n >= 1000:
@@ -229,10 +270,7 @@ def month_line():
         return "💰 nothing billed this month yet"
 
     spent = cur.get("totalCost") or 0
-    try:
-        budget = float(os.environ.get("CREW_MONTH_BUDGET", "") or 0)
-    except ValueError:
-        budget = 0
+    budget = _month_budget()
 
     days_in = calendar.monthrange(now.year, now.month)[1]
     elapsed = now.day
@@ -257,7 +295,7 @@ def usage_line(payload):
     the 5h window is not a limit at all. Anything else keeps the subscription
     framing, so an install that sets nothing is unchanged.
     """
-    if (os.environ.get("CREW_BILLING", "") or "").strip().lower() == "usage":
+    if _billing_mode() == "usage":
         return month_line()
     return window_line(payload)
 
