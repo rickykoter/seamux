@@ -198,6 +198,49 @@ nothing reads it: every surface renders `files` from the spec. Do not start
 reading the state copy — it is a fossil, and on any plan whose spec was amended
 after migration it is the stale of the two.
 
+## The three spec-only artifacts (added 2026-09-16)
+
+`writeSpecArtifacts()` emits all three, and is called from **both** `render` and
+`rehydrate`. One writer on purpose: two call sites emitting different subsets is
+the bug shape this engine keeps finding in itself, and `rehydrate` is the only
+re-render available for a plan whose spec cannot pass the floors (every real
+pre-seamux spec is in that position).
+
+| file | for | why it is not the review page |
+|---|---|---|
+| `<slug>.quiz.txt` | a terminal session | the review page is HTML, and `grade`'s TTY prompt asks `q1 = ` without showing the question |
+| `<slug>.widget.html` | a rich client's inline widget | a fragment styled from the HOST's CSS variables, answered by `sendPrompt` rather than a clipboard blob |
+| `<slug>.cutover/` | parking the plan in a tracker | self-contained epic + one standalone brief per increment, quiz stripped |
+
+**All three quiz surfaces must letter the options identically.** quiz.txt, the
+widget and the review page each call `shuffled(q.options, slug + ":" + q.id)`,
+and the key records that shuffled position. Any surface that ordered them
+differently would grade correct answers as wrong. A probe assertion recomputes
+the expected order independently of the engine rather than restating it.
+
+Letters, not the older engine's numbers: this engine's `grade` takes `q1=a`, so
+quiz.txt prints the exact command and the widget sends a runnable one, instead
+of a payload something has to translate.
+
+**The widget inlines the vendored mermaid as a data URI**, like every other
+surface here — not a CDN import. A widget that needs the network to draw its
+diagrams renders blank on a train. Assert this on script *sources*, never as a
+substring of the file: a 3 MB base64 blob contains "cdn", and most other short
+strings, by coincidence.
+
+**The cutover bundle excludes the quiz and the key, and that is asserted.** The
+bundle is built from the same spec that holds the quiz, so the exclusion is a
+choice rather than a side effect. The assertion is about the quiz *structure* —
+no prompt, no option set rendered together, no key material. A lone option that
+happens to name a method the plan discusses will appear in the plan body and
+must: the bundle IS the plan, and the quiz only ever tested whether you read it.
+
+Context, decisions, verified facts and non-goals are repeated in **every**
+increment brief, deliberately. A child task is read on its own by someone who
+will not open the epic first, and deduplicating the context is precisely what
+makes handoff docs useless. Increment files are numbered by **array position**,
+never a parse of the title — real plans have an "Inc 2b".
+
 ## Verifying a change
 
 ```bash

@@ -21,6 +21,7 @@ import { execSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { validateDiagrams, validateSurface } from "./lib/validate.mjs";
 import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries } from "./lib/adr.mjs";
+import { epicHtml, incrementMd, bundleReadme, incrementFileNames } from "./lib/cutover.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR,
   readState, writeState, allStates, log1, progress, gateView,
@@ -584,6 +585,126 @@ ${diagramsHtml(spec)}
 ${withNotes ? DP_EDITOR_JS : ""}`;
 }
 
+// ---------------------------------------------------------------- quiz.txt
+//
+// The review page is the quiz's home, but it is an HTML file: a terminal
+// session cannot read it, and `grade`'s interactive prompt asks for "q1 = "
+// without showing the question. So the same quiz goes out as plain text, in the
+// SAME shuffled order as the page and the key — it reads `shuffled` for that
+// reason, and any other order would grade correct answers as wrong.
+//
+// Letters, not the older engine's numbers: this engine's `grade` takes q1=a, so
+// the file ends with the exact command to run rather than a format to translate.
+function quizTxt(spec) {
+  const qs = spec.quiz || [];
+  const L = [`Alignment check — ${spec.title}`, `plan: ${spec.slug}`, ""];
+  if (!qs.length) {
+    L.push("This plan carries no quiz.", "");
+    return L.join("\n");
+  }
+  qs.forEach((q, qi) => {
+    L.push(`Q${qi + 1}. [${q.id}] ${q.prompt}`);
+    shuffled(q.options, spec.slug + ":" + q.id)
+      .forEach((o, i) => L.push(`   ${String.fromCharCode(97 + i)}) ${o.v}`));
+    L.push("");
+  });
+  L.push("Answer every question, then run:", "",
+    `  deep-plan grade ${spec.slug} ` + qs.map(q => `${q.id}=<letter>`).join(" "), "",
+    "A wrong answer names the decision to reopen — it is the plan that is being",
+    "checked, not you. On a TTY, `deep-plan grade " + spec.slug + "` prompts instead,",
+    "so the letters stay out of your shell history.", "");
+  return L.join("\n");
+}
+
+// ---------------------------------------------------------------- widget
+//
+// An HTML FRAGMENT for a rich client's inline-widget surface (the desktop and
+// web clients inject `sendPrompt`). Deliberately different from review.html on
+// three counts: it is a fragment with no <head>, it styles itself from the
+// host's CSS variables rather than this engine's palette, and answering it
+// sends a prompt back to the session instead of copying a blob to the clipboard.
+//
+// Mermaid is the vendored copy inlined as a data URI, exactly as every other
+// surface here does it — not a CDN import. A widget that needs the network to
+// draw its diagrams is a widget that renders blank on a train.
+function widgetHtml(spec, b64) {
+  const qs = spec.quiz || [];
+  const diagrams = spec.diagrams || [];
+  // Screen-reader summary first, before any visual content: the host renders
+  // this inline in a conversation, so it needs to announce what it is.
+  const summary = `Plan review for ${esc(spec.title)}: ${diagrams.length} diagram` +
+    `${diagrams.length === 1 ? "" : "s"}` +
+    (qs.length ? ` and a ${qs.length}-question alignment check.` : ".");
+  const diagBlocks = diagrams.map((dg, i) =>
+    `<figure class="dpfig"><figcaption class="dpcap">${esc(dg.question)}</figcaption>
+<pre class="mermaid" id="dpd-${i}">${esc(dg.mermaid.trim())}</pre></figure>`).join("\n");
+  const quizBlocks = qs.map((q, qi) => {
+    const opts = shuffled(q.options, spec.slug + ":" + q.id).map((o, i) => {
+      const letter = String.fromCharCode(97 + i);
+      return `<label class="dpo"><input type="radio" name="${esc(q.id)}" value="${letter}">` +
+        `<span>${letter}) ${esc(o.v)}</span></label>`;
+    }).join("");
+    return `<fieldset class="dpq"><legend>Question ${qi + 1} of ${qs.length}</legend>
+<p class="dps">${esc(q.prompt)}</p>${opts}</fieldset>`;
+  }).join("\n");
+  return `<h2 class="dpsr">${summary}</h2>
+<style>
+.dpsr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.dpwrap{padding:1rem 0}
+.dpfig{margin:0 0 var(--gap-md,16px)}
+.dpcap{font-size:13px;color:var(--text-muted,#666);margin-bottom:6px}
+.mermaid{background:var(--surface-1,#f6f6f6);border:1px solid var(--border,#ddd);
+  border-radius:var(--radius,8px);padding:12px;overflow-x:auto}
+.dpq{border:1px solid var(--border,#ddd);border-radius:12px;padding:var(--pad-md,14px);
+  margin:0 0 var(--gap-md,16px);background:var(--surface-1,#fafafa)}
+.dpq legend{font-size:13px;color:var(--text-muted,#666);padding:0 6px}
+.dps{font-size:15px;line-height:1.6;margin:0 0 12px;color:var(--text-primary,#111)}
+.dpo{display:flex;gap:10px;align-items:flex-start;padding:9px 11px;
+  border:1px solid var(--border,#ddd);border-radius:var(--radius,8px);margin-bottom:7px;
+  cursor:pointer;background:var(--surface-2,#fff)}
+.dpo:hover{border-color:var(--border-strong,#999)}
+.dpo input{margin-top:3px;flex:none}
+.dpo span{font-size:14px;line-height:1.5;color:var(--text-primary,#111)}
+.dpbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding-top:4px}
+.dpgo{font:500 14px var(--font-sans,system-ui);padding:8px 16px;
+  border-radius:var(--radius,8px);border:1px solid var(--border-strong,#999);
+  background:var(--surface-2,#fff);color:var(--text-primary,#111);cursor:pointer}
+.dpgo[disabled]{cursor:default;opacity:.6}
+</style>
+<div class="dpwrap">
+${diagBlocks}
+${quizBlocks}
+${qs.length ? `<div class="dpbar">
+<button class="dpgo" id="dpgo" type="button">Send answers for grading</button>
+<span id="dpmeta" style="font-size:13px;color:var(--text-secondary,#555)">0 of ${qs.length} answered</span>
+<span id="dperr" style="font-size:13px;color:var(--text-danger,#b00)" role="status"></span>
+</div>` : ""}
+</div>
+${diagrams.length ? `<script src="data:text/javascript;base64,${b64}"></script>
+<script>mermaid.initialize({startOnLoad:true,theme:
+  window.matchMedia&&matchMedia("(prefers-color-scheme: dark)").matches?"dark":"default"});</script>` : ""}
+${qs.length ? `<script>
+(function(){
+var ids=${JSON.stringify(qs.map(q => q.id))};
+var meta=document.getElementById("dpmeta"),err=document.getElementById("dperr"),go=document.getElementById("dpgo");
+function picked(){return ids.filter(function(id){
+  return document.querySelector('input[name="'+id+'"]:checked');});}
+document.addEventListener("change",function(){
+  meta.textContent=picked().length+" of "+ids.length+" answered";err.textContent="";});
+go.addEventListener("click",function(){
+  if(picked().length<ids.length){err.textContent="Answer all "+ids.length+" first";return;}
+  // Letters, and the command spelled out: the session runs \`grade\`, so the
+  // prompt carries something runnable rather than a payload to interpret.
+  var parts=ids.map(function(id){
+    return id+"="+document.querySelector('input[name="'+id+'"]:checked').value;});
+  sendPrompt("Run: deep-plan grade ${esc(spec.slug)} "+parts.join(" "));
+  go.textContent="Sent";go.disabled=true;
+});
+})();
+</script>` : ""}
+`;
+}
+
 function reviewHtml(spec, b64, adrs = []) {
   // Quiz options shuffled per-slug; the shuffled correct position lives in the
   // key file, never in this page.
@@ -1001,6 +1122,7 @@ async function render(specPath, opts) {
   const b64 = mermaidB64();
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".md"), mdPlan(spec, adrs));
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".review.html"), reviewHtml(spec, b64, adrs));
+  const extras = writeSpecArtifacts(spec, b64);
   adrs.forEach(a => fs.writeFileSync(
     path.join(PLANS_DIR, `${spec.slug}.adr${a.n}.md`), adrDraftText(spec, planRoot, a)));
 
@@ -1047,6 +1169,7 @@ async function render(specPath, opts) {
   writeState(st);
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".working.html"), workingHtml(spec, st, b64));
   say(`rendered ${spec.slug}: ${PLANS_DIR}/${spec.slug}.md, .review.html, .working.html`);
+  say(`  also: ${extras.join(", ")}`);
   say(`spec + key archived under ${KEYS_DIR} (separate tree, on purpose)`);
   if (st.phase === "review") say("phase: review — the alignment check gates everything.");
 }
@@ -1058,6 +1181,38 @@ function rerenderWorking(slug) {
   fs.writeFileSync(path.join(PLANS_DIR, slug + ".working.html"), workingHtml(spec, st, mermaidB64()));
 }
 
+// The three artifacts that are pure functions of the spec: the widget, the
+// text quiz, and the cutover bundle. One writer, called by BOTH `render` and
+// `rehydrate`, because two call sites emitting different subsets is the exact
+// shape of bug this engine keeps finding in itself — and `rehydrate` is the
+// only re-render available for a plan whose spec cannot pass the floors.
+function writeSpecArtifacts(spec, b64) {
+  const out = [];
+  // `render` creates this; `rehydrate` did not, and only ever worked because
+  // ~/.claude/plans already exists on a machine that has run the skill once.
+  // The writer is shared, so it makes its own directory rather than inheriting
+  // one caller's assumption.
+  fs.mkdirSync(PLANS_DIR, { recursive: true });
+  fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".widget.html"), widgetHtml(spec, b64));
+  out.push("widget");
+  fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".quiz.txt"), quizTxt(spec));
+  out.push("quiz.txt");
+
+  const dir = path.join(PLANS_DIR, spec.slug + ".cutover");
+  fs.mkdirSync(dir, { recursive: true });
+  const names = incrementFileNames(spec);
+  // Written from the SAME body the other surfaces use, so the epic cannot
+  // drift into being a second, staler spelling of the plan.
+  fs.writeFileSync(path.join(dir, spec.slug + ".epic.html"),
+    epicHtml({ spec, body: commonBody(spec, [], false), b64,
+      hasDiagrams: (spec.diagrams || []).length > 0 }));
+  names.forEach((name, i) => fs.writeFileSync(path.join(dir, name),
+    incrementMd({ spec, index: i, total: names.length })));
+  fs.writeFileSync(path.join(dir, "README.md"), bundleReadme({ spec, files: names }));
+  out.push(`cutover/ (epic + ${names.length} increment${names.length === 1 ? "" : "s"}, no quiz)`);
+  return out;
+}
+
 function rehydrate(slug) {
   const specPath = path.join(KEYS_DIR, slug + ".spec.json");
   if (!fs.existsSync(specPath)) die("no archived spec for " + slug);
@@ -1065,6 +1220,7 @@ function rehydrate(slug) {
   const b64 = mermaidB64();
   const st0 = readState(slug);
   const adrs = (st0 && st0.adrs) || [];
+  fs.mkdirSync(PLANS_DIR, { recursive: true });
   const md = mdPlan(spec, adrs), rv = reviewHtml(spec, b64, adrs);
   const mdP = path.join(PLANS_DIR, slug + ".md"), rvP = path.join(PLANS_DIR, slug + ".review.html");
   const same = (p, s) => fs.existsSync(p) && fs.readFileSync(p, "utf8") === s;
@@ -1072,8 +1228,10 @@ function rehydrate(slug) {
   fs.writeFileSync(mdP, md); fs.writeFileSync(rvP, rv);
   if (st0 && st0.root) adrs.forEach(a => fs.writeFileSync(
     path.join(PLANS_DIR, `${slug}.adr${a.n}.md`), adrDraftText(spec, st0.root, a)));
+  const extras = writeSpecArtifacts(spec, b64);
   rerenderWorking(slug);
   say(`rehydrated ${slug} — md ${okMd ? "byte-identical" : "REWRITTEN (differs)"}, review ${okRv ? "byte-identical" : "REWRITTEN (differs)"}`);
+  say(`  also rewritten: ${extras.join(", ")}`);
 }
 
 // ---------------------------------------------------------------- grade

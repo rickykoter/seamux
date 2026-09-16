@@ -6,8 +6,10 @@ description: Plan a change as a reviewable artifact — spec → markdown plan +
 # deep-plan
 
 Plan as artifact, gate per increment. Built for this machine 2026-09-12 from
-`crew-dock/deep-plan/ADAPTING.md`; personal-projects edition — no tickets, no
-observability tiers. The board integration is the crew Dock
+`crew-dock/deep-plan/ADAPTING.md`. No ticket system is wired in — the cutover
+bundle is how a plan reaches one — and observability is a per-increment gate
+you opt into by declaring checks, not a tiering scheme. The board integration
+is the crew Dock
 (`~/.config/cmux/crew`), which reads `deep-plan status --json` and serves the
 plan surfaces at `/plan/<slug>`.
 
@@ -59,7 +61,17 @@ plan surfaces at `/plan/<slug>`.
    (`/plan/<slug>` without the suffix is the WORKING tracker, no quiz)
    (ref from `~/.cache/cmux-crew/board-targets.json`, matched by cwd) — never
    `open` on the file:// copy; fall back to the file only when the intent
-   server is down, and say so. A wrong answer means the plan and their model disagree — **either one
+   server is down, and say so.
+
+   **Two fallbacks when a browser is not the right surface**, both rendered for
+   every plan and both lettered identically to the review page:
+   `<slug>.widget.html` is a fragment for a rich client's inline widget (it
+   sends a runnable `grade` command back when answered), and
+   `<slug>.quiz.txt` is the plain-text quiz for a terminal session — `cat` it,
+   let the human answer, then run the command it prints. Reach for the text
+   quiz rather than reading questions out of the HTML.
+
+   A wrong answer means the plan and their model disagree — **either one
    may be the broken one.** Fix whichever is wrong, re-render, re-check.
    Once the grade passes, the review page's job is over: from then on open
    only the suffix-less `/plan/<slug>` (the working tracker) — the Dock
@@ -69,6 +81,14 @@ plan surfaces at `/plan/<slug>`.
    AGREED, immutable; paste it into tickets/PRs as context. Amends change
    only the live surfaces, and the working page notes when the plan has
    drifted from the snapshot.
+
+   **To park the work in a tracker**, use `~/.claude/plans/<slug>.cutover/`,
+   written on every render: one self-contained `.epic.html` for the parent
+   (diagrams render offline) and one `NN-*.md` per increment, each written to
+   be read alone by someone who will not open the epic first. Its `README.md`
+   says what goes where. The quiz and the answer key are deliberately not in
+   it — both carry the answers, and a directory attached to a ticket is the
+   worst place for them.
 7. **Suggest a compact before the first `go`.** The planning conversation is
    mostly scaffolding once the spec is rendered and graded — the plan surfaces
    are the artifact of record. Before moving into working mode, prompt the

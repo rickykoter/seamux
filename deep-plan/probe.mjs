@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { execSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -793,6 +794,199 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     cli("close", n);
     fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), { force: true });
   }
+}
+
+// -------------------------------------------------- quiz.txt, widget, cutover bundle
+//
+// All three are pure functions of the spec, and all three were on 13/13 real
+// plans. They are written by ONE function called from both `render` and
+// `rehydrate`, because two call sites emitting different subsets is the bug
+// shape this engine keeps finding in itself — and `rehydrate` is the only
+// re-render available for a plan whose spec cannot pass the floors.
+{
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "art-plan";
+  s.nonGoals = ["Rewriting the scheduler"];
+  s.commits = [{ sha: "abc123def4567890", subject: "seed the outbox" }, "deadbeefcafe bare string"];
+  s.deliverables[0].verification = ["bundle exec rspec spec/outbox"];
+  s.deliverables[0].commits = [{ sha: "1111111111111111", subject: "publisher retry" }];
+  s.deliverables[0].observability = { checks: [{ system: "datadog", name: "retry counter climbs",
+    query: "sum:outbox.retry{env:qa}", expect: "non-zero within 15m" }] };
+  ok("a plan renders for the artifact tests", cli("render", tmpSpec(s)).status === 0);
+  const P = n => path.join(ENV.DEEP_PLAN_PLANS_DIR, n);
+  // Tolerant: an artifact the engine was supposed to write but did not must
+  // fail the assertion about it, not end the run on an ENOENT.
+  const read = n => { try { return fs.readFileSync(P(n), "utf8"); } catch { return ""; } };
+  const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "art-plan.key.json"), "utf8"));
+  const qlibShuffle = (opts, seed) => {
+    // Recompute the expected display order independently of the engine, so the
+    // assertion is a check rather than a restatement.
+    const h = (str) => crypto.createHash("sha256").update(str).digest().readUInt32BE(0);
+    return opts.map((v, i) => ({ v, i, k: h(seed + ":" + i) })).sort((a, b) => a.k - b.k);
+  };
+
+  // ---- quiz.txt
+  const txt = read("art-plan.quiz.txt");
+  ok("quiz.txt is written", txt.length > 0);
+  ok("quiz.txt lists every question with its id",
+    s.quiz.every((q, i) => txt.includes(`Q${i + 1}. [${q.id}]`) && txt.includes(q.prompt)));
+  // THE property: a terminal reader answering from this file must be answering
+  // the same lettering the key grades and the review page displays.
+  ok("quiz.txt letters the options in the same order as the key and the page",
+    s.quiz.every(q => {
+      const order = qlibShuffle(q.options, "art-plan:" + q.id);
+      const lines = order.map((o, i) => `   ${String.fromCharCode(97 + i)}) ${o.v}`);
+      if (!lines.every(l => txt.includes(l))) return false;
+      // and the letter the key calls correct must sit on the correct option
+      const idx = key.answers[q.id].letter.charCodeAt(0) - 97;
+      return order[idx].i === q.answer;
+    }));
+  ok("quiz.txt ends with the command that actually grades it",
+    txt.includes("deep-plan grade art-plan ") &&
+    s.quiz.every(q => txt.includes(`${q.id}=<letter>`)));
+  ok("quiz.txt never prints which option is correct",
+    !/correct|answer:|\(✓\)/i.test(txt));
+
+  // ---- widget.html
+  const w = read("art-plan.widget.html");
+  ok("widget.html is written", w.length > 0);
+  // A fragment: the host injects it into its own document, so a doctype or a
+  // <head> would either be ignored or break the surrounding page.
+  ok("the widget is a fragment, not a document",
+    !/<!doctype/i.test(w) && !/<html[\s>]/i.test(w) && !/<head[\s>]/i.test(w));
+  ok("the widget opens with a screen-reader summary",
+    w.trimStart().startsWith('<h2 class="dpsr">') && w.includes("alignment check"));
+  ok("the widget renders one radio group per question, valued by letter",
+    s.quiz.every(q => w.includes(`name="${q.id}" value="a"`)));
+  ok("the widget's option order matches the key",
+    s.quiz.every(q => {
+      const order = qlibShuffle(q.options, "art-plan:" + q.id);
+      return order.every((o, i) =>
+        w.includes(`value="${String.fromCharCode(97 + i)}"><span>${String.fromCharCode(97 + i)}) ${o.v}`));
+    }));
+  ok("the widget sends a runnable grade command, in letters",
+    w.includes('sendPrompt("Run: deep-plan grade art-plan "') && w.includes('+"="+'));
+  // Every other surface here inlines the vendored mermaid; a widget that needs
+  // the network to draw is a widget that renders blank on a train. Matched on
+  // script SOURCES, not on substrings of the whole file — a 3 MB base64 blob
+  // contains "cdn" (and most other short strings) by coincidence.
+  ok("the widget inlines mermaid rather than fetching it over the network",
+    w.includes('<script src="data:text/javascript;base64,') &&
+    !/<script[^>]+src=["']https?:/i.test(w));
+  // `checked` as an ATTRIBUTE would pre-select an answer. The string also
+  // appears in the ':checked' selectors the script uses to count answers, so
+  // the naive substring test fails on correct code.
+  ok("the widget pre-selects nothing and embeds no key material",
+    !/<input[^>]*\schecked/i.test(w) && !w.includes('"letter"') &&
+    !w.includes('"answers"'));
+  // The widget is injected into the HOST's document, so unescaped spec text
+  // would execute in the client's page rather than merely break this file.
+  {
+    const hostile = JSON.parse(JSON.stringify(s));
+    hostile.slug = "esc-plan";
+    hostile.diagrams[0].mermaid = 'flowchart LR\n  A["a <b> & tag"] --> B[ok]';
+    hostile.quiz[0].options[0] = 'an option with <script>alert(1)</script> & "quotes"';
+    cli("render", tmpSpec(hostile), "--force");
+    const hw = read("esc-plan.widget.html");
+    ok("spec text is escaped in the widget's options and diagram source",
+      hw.length > 0 && !hw.includes("<script>alert(1)</script>") &&
+      hw.includes("&lt;script&gt;alert(1)&lt;/script&gt;") &&
+      !hw.includes('"a <b> &') && hw.includes("a &lt;b&gt; &amp;"));
+    ok("the widget's script tags balance",
+      (hw.match(/<script/g) || []).length === (hw.match(/<\/script>/g) || []).length);
+    cli("close", "esc-plan");
+    fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "esc-plan.json"), { force: true });
+  }
+
+  // ---- cutover bundle
+  const dir = P("art-plan.cutover");
+  // Same tolerance for the bundle: a missing directory is an assertion
+  // failure about the bundle, not a reason to stop testing everything after it.
+  const lsDir = d => { try { return fs.readdirSync(d).sort(); } catch { return []; } };
+  const readIn = (d, n) => { try { return fs.readFileSync(path.join(d, n), "utf8"); } catch { return ""; } };
+  const names = lsDir(dir);
+  ok("the cutover bundle has an epic, a README and one file per increment",
+    names.includes("art-plan.epic.html") && names.includes("README.md") &&
+    names.filter(n => /^\d\d-/.test(n)).length === s.deliverables.length);
+  // Position, never a parse of the title: real plans have "Inc 2b".
+  ok("increment files are numbered by array position",
+    (names.filter(n => /^\d\d-/.test(n))[0] || "").startsWith("01-"));
+  const inc1 = readIn(dir, names.find(n => n.startsWith("01-")) || "");
+  ok("an increment file repeats the plan's context and decisions",
+    inc1.includes("Why this exists") && inc1.includes("| Decision | Why |") &&
+    inc1.includes(spec.context.slice(0, 40)));
+  ok("an increment file carries its own files, commits and verification",
+    inc1.includes("publisher retry") && inc1.includes("bundle exec rspec spec/outbox") &&
+    (s.deliverables[0].files || []).every(f => inc1.includes(f)));
+  ok("an increment file carries its observability gate",
+    inc1.includes("not done until these pass") && inc1.includes("sum:outbox.retry{env:qa}"));
+  // An unqualified whole-change checklist read as this task's definition of
+  // done is how an increment gets called finished early.
+  const inc2 = readIn(dir, names.filter(n => /^\d\d-/.test(n))[1] || "");
+  ok("an increment with no verification of its own says the list is whole-change",
+    inc2.includes("Whole-change verification"));
+  ok("increment files point at rehydrate, not at an engine path",
+    inc1.includes("deep-plan rehydrate art-plan") && !inc1.includes(".mjs"));
+  ok("the README names every increment file",
+    names.filter(n => /^\d\d-/.test(n))
+      .every(n => readIn(dir, "README.md").includes(n)));
+
+  // THE exclusion. The bundle is built from the same spec that holds the quiz,
+  // so keeping it out is a choice that has to be asserted. Note this is about
+  // the quiz STRUCTURE — a lone option that happens to name a method the plan
+  // discusses will appear in the plan body, and must: the bundle is the plan.
+  const bundle = lsDir(dir).map(n => readIn(dir, n)).join("\n");
+  ok("no quiz prompt appears anywhere in the bundle",
+    !s.quiz.some(q => bundle.includes(q.prompt)));
+  ok("no question's option set is rendered together anywhere in the bundle",
+    !s.quiz.some(q => q.options.filter(o => bundle.includes(o)).length > 1));
+  ok("no answer key material appears in the bundle",
+    !bundle.includes('"answers"') && !bundle.includes('"letter"') &&
+    !bundle.includes("violationsForced"));
+  ok("the epic carries the plan body and renders diagrams offline",
+    read("art-plan.cutover/art-plan.epic.html").includes("Decisions") &&
+    read("art-plan.cutover/art-plan.epic.html").includes("data:text/javascript;base64,"));
+
+  // ---- one writer, both callers
+  // force: teardown must not throw when the thing it is clearing was never
+  // written — that turns four honest assertion failures into a stack trace.
+  for (const n of ["art-plan.quiz.txt", "art-plan.widget.html"]) fs.rmSync(P(n), { force: true });
+  fs.rmSync(dir, { recursive: true, force: true });
+  ok("rehydrate rewrites all three artifacts too",
+    cli("rehydrate", "art-plan").status === 0 &&
+    fs.existsSync(P("art-plan.quiz.txt")) && fs.existsSync(P("art-plan.widget.html")) &&
+    fs.existsSync(path.join(dir, "art-plan.epic.html")));
+  // rehydrate used to assume PLANS_DIR existed, because render creates it and
+  // ~/.claude/plans is always there in practice.
+  ok("rehydrate creates the plans directory if it is missing",
+    (() => {
+      const stash = ENV.DEEP_PLAN_PLANS_DIR + ".stash";
+      fs.renameSync(ENV.DEEP_PLAN_PLANS_DIR, stash);
+      const r = cli("rehydrate", "art-plan");
+      const made = fs.existsSync(P("art-plan.md"));
+      fs.rmSync(ENV.DEEP_PLAN_PLANS_DIR, { recursive: true, force: true });
+      fs.renameSync(stash, ENV.DEEP_PLAN_PLANS_DIR);
+      return r.status === 0 && made;
+    })());
+
+  // The quiz-less branch is unreachable through `render` — the linter refuses
+  // fewer than three questions. It is reachable through `rehydrate`, which
+  // re-renders the ARCHIVED spec without re-validating it, so a hand-edited
+  // archive is exactly the case that hits it.
+  {
+    const arch = path.join(ENV.DEEP_PLAN_KEYS_DIR, "art-plan.spec.json");
+    const keep = fs.readFileSync(arch, "utf8");
+    fs.writeFileSync(arch, JSON.stringify({ ...JSON.parse(keep), quiz: [] }, null, 2));
+    const r = cli("rehydrate", "art-plan");
+    const txtNow = read("art-plan.quiz.txt");
+    fs.writeFileSync(arch, keep);
+    cli("rehydrate", "art-plan");
+    ok("an archived spec with no quiz rehydrates instead of crashing",
+      r.status === 0 && txtNow.includes("carries no quiz"));
+  }
+
+  cli("close", "art-plan");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "art-plan.json"), { force: true });
 }
 
 // -------------------------------------------------- hot-path cost
