@@ -36,6 +36,7 @@ looked up in a snapshot the collector writes rather than taken from the URL, and
 no argument is ever passed through a shell.
 """
 
+import calendar
 import datetime
 import http.server
 import json
@@ -885,7 +886,8 @@ def usage_data(days=21):
     daily = ask(["daily"]) or {}
     rows = [r for r in (daily.get("daily") or []) if r.get("period")]
     rows.sort(key=lambda r: r["period"])
-    out["daily"] = [{"period": r["period"], "tokens": r.get("totalTokens") or 0}
+    out["daily"] = [{"period": r["period"], "tokens": r.get("totalTokens") or 0,
+                     "cost": r.get("totalCost") or 0}
                     for r in rows[-days:]]
 
     weekly = ask(["weekly"]) or {}
@@ -908,9 +910,42 @@ def usage_data(days=21):
         out["week"] = {
             "label": "week of " + str(cur["_p"]),
             "tokens": cur.get("totalTokens") or 0,
+            "cost": cur.get("totalCost") or 0,
             "budget": week_budget,
             "models": [{"name": k, "tokens": v}
                        for k, v in sorted(models.items(), key=lambda kv: -kv[1])],
+        }
+
+    # Which constraint this account actually has. On usage-based billing the 5h
+    # window is not a limit -- you are billed, not throttled -- so the month is
+    # the thing to lead with. Anything but CREW_BILLING=usage keeps the
+    # subscription framing, so an install that sets nothing is unchanged.
+    usage_billing = (os.environ.get("CREW_BILLING", "") or "").strip().lower() == "usage"
+    out["billing"] = "usage" if usage_billing else "subscription"
+
+    if usage_billing:
+        # Only fetched in this mode: it is another ~1s ccusage call, and the
+        # subscription framing has no use for it.
+        monthly = ask(["monthly"]) or {}
+        now = datetime.datetime.now()
+        period = now.strftime("%Y-%m")
+        cur_m = next((r for r in (monthly.get("monthly") or [])
+                      if r.get("period") == period), None)
+        try:
+            mbudget = float(os.environ.get("CREW_MONTH_BUDGET", "") or 0)
+        except ValueError:
+            mbudget = 0
+        days_in = calendar.monthrange(now.year, now.month)[1]
+        spent = (cur_m or {}).get("totalCost") or 0
+        out["month"] = {
+            "label": now.strftime("%B %Y"),
+            "spent": spent,
+            "budget": mbudget,
+            "daysElapsed": now.day,
+            "daysInMonth": days_in,
+            # Spend-per-elapsed-day across the whole month. Suppressed on day 1:
+            # one day extended over a month is noise wearing a number's clothes.
+            "projected": (spent / now.day * days_in) if now.day > 1 else 0,
         }
 
     # Per-workspace dollars — the page's one deliberate exception to
@@ -1039,6 +1074,14 @@ def selftest():
         check("...and reads its window length from the data, not a hardcoded 5h",
               "windowMinutes" in tmpl and "winLabel" in tmpl,
               "ccusage blocks --session-length is a real option")
+        # Usage-based billing has no window limit to be a share of, so the page
+        # has to be able to lead with the month and speak dollars throughout.
+        # A page that mixes units invites comparing two different measures.
+        check("...and leads with the month on usage-based billing",
+              'D.billing === "usage"' in tmpl and "D.month" in tmpl)
+        check("...and carries one unit per mode, not tokens beside dollars",
+              "var money = " in tmpl and "fmtVal" in tmpl,
+              "daily bars, the axis, the table twin and the tooltip all follow it")
     except OSError as exc:
         check("the usage template is readable", False, str(exc))
 

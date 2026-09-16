@@ -179,6 +179,22 @@ You don't have to remember this: the installer records the repo path, and
 `crew doctor` runs the drift check every time — drift is a red check, not a
 discipline.
 
+### If you are on usage-based billing
+
+The board, `/usage` and the status line all assume a subscription by default:
+the constraint is the 5h window, and money is not the question. If you pay per
+token that is the wrong framing — there is no window limit, and the month is
+what binds. Set:
+
+```sh
+export CREW_BILLING=usage
+export CREW_MONTH_BUDGET=3000      # dollars; optional
+```
+
+The status line becomes month-to-date spend against that budget with a pace
+figure, and `/usage` leads with the month and speaks dollars throughout rather
+than tokens. Unset, nothing changes. See `crew/board/README.md`.
+
 Two things are yours and are never synced: `integrations.json`, and the
 machine-local overlay at `~/.config/cmux/crew-local` — an executable
 `crew-spec`, plus `cmux.json` / `dock.json` fragments that deep-merge over the

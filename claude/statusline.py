@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
-"""Claude Code status line: the worktree's colour, then the usage window.
+"""Claude Code status line: the worktree's colour, then whatever constrains you.
 
     ▊ my-project  ⏱ 42% of 5h window · 2h 10m left · ↗ 78% by reset
+    ▊ my-project  💰 $1,288 of $3,000 (43%) · → $2,576 by Sep 30   (CREW_BILLING=usage)
+
+Two billing models want different lines. On a subscription the constraint is the
+5h window, so the line is tokens against a per-window budget. On usage-based
+billing there is no window limit at all -- you are billed, not throttled -- and
+the constraint is the month, so the line is month-to-date spend against
+`CREW_MONTH_BUDGET` with a pace figure. `CREW_BILLING=usage` selects the second;
+anything else keeps the first, so an install that sets nothing is unchanged.
 
 Dollar figures are gone on purpose: on a subscription the real constraint is
 the 5h usage window, so the line shows tokens spent as a share of a per-window
@@ -22,6 +30,8 @@ To drop the colour and run ccusage bare, point settings.json straight at it:
     "statusLine": { "type": "command", "command": "ccusage statusline" }
 """
 
+import calendar
+import datetime
 import json
 import os
 import shutil
@@ -181,6 +191,77 @@ def window_line(payload):
     return " · ".join(bits)
 
 
+def _fmt_usd(n):
+    n = n or 0
+    if n >= 1000:
+        return f"${n:,.0f}"
+    if n >= 100:
+        return f"${n:.0f}"
+    return f"${n:.2f}"
+
+
+def month_line():
+    """Month-to-date spend against a monthly budget, and whether it is on pace.
+
+    For usage-based billing, where the 5h window is not a limit at all -- you
+    are not throttled at the end of one, you are billed. The constraint is the
+    month, so that is what the line shows.
+
+    Pace is spend-per-elapsed-day extended to the whole month, which answers
+    "am I on track" rather than only "what have I spent". It is deliberately
+    absent on the first day: one day of history projected across a month is
+    noise wearing a number's clothes.
+    """
+    exe = shutil.which("ccusage")
+    if not exe:
+        return "ccusage not installed — npm i -g ccusage"
+    try:
+        p = subprocess.run([exe, "monthly", "--json"], capture_output=True,
+                           text=True, timeout=15)
+        rows = json.loads(p.stdout).get("monthly") or []
+    except Exception as exc:
+        return f"ccusage: {exc.__class__.__name__}"
+
+    now = datetime.datetime.now()
+    period = now.strftime("%Y-%m")
+    cur = next((r for r in rows if r.get("period") == period), None)
+    if not cur:
+        return "💰 nothing billed this month yet"
+
+    spent = cur.get("totalCost") or 0
+    try:
+        budget = float(os.environ.get("CREW_MONTH_BUDGET", "") or 0)
+    except ValueError:
+        budget = 0
+
+    days_in = calendar.monthrange(now.year, now.month)[1]
+    elapsed = now.day
+    projected = spent / elapsed * days_in if elapsed else 0
+
+    if budget > 0:
+        bits = [f"💰 {_fmt_usd(spent)} of {_fmt_usd(budget)} ({spent / budget * 100:.0f}%)"]
+    else:
+        # No budget set is a legitimate way to run: show the figure, and do not
+        # invent a denominator the way the window line does.
+        bits = [f"💰 {_fmt_usd(spent)} this month"]
+    if elapsed > 1 and projected > spent:
+        arrow = "↗" if not budget or projected > budget else "→"
+        bits.append(f"{arrow} {_fmt_usd(projected)} by {now.strftime('%b')} {days_in}")
+    return " · ".join(bits)
+
+
+def usage_line(payload):
+    """Which constraint this account actually has.
+
+    `CREW_BILLING=usage` means pay-as-you-go: the month is the constraint and
+    the 5h window is not a limit at all. Anything else keeps the subscription
+    framing, so an install that sets nothing is unchanged.
+    """
+    if (os.environ.get("CREW_BILLING", "") or "").strip().lower() == "usage":
+        return month_line()
+    return window_line(payload)
+
+
 def main():
     payload = sys.stdin.read()
 
@@ -191,7 +272,7 @@ def main():
         if title:
             lead += tint(color, title) + "  "
 
-    print(lead + window_line(payload))
+    print(lead + usage_line(payload))
 
 
 if __name__ == "__main__":

@@ -150,7 +150,10 @@ td:last-child,th:last-child{text-align:right;color:var(--ink)}
   // see budgetSource), WINDOW is time against the reset, which is a fact. The
   // choice is the viewer's and survives the 60s reload.
   var VIEWS = ["tokens", "window"];
-  var view = "tokens";
+  // Default follows the billing model: with no window limit to be a share of,
+  // the useful thing in this card is the clock and the burn rate. An explicit
+  // choice still wins.
+  var view = D.billing === "usage" ? "window" : "tokens";
   try { var s = localStorage.getItem("crew.usage.blockView");
         if (VIEWS.indexOf(s) >= 0) view = s; } catch (e) {}
 
@@ -169,8 +172,37 @@ td:last-child,th:last-child{text-align:right;color:var(--ink)}
     return (bk && bk.remainingMinutes) || 0;
   };
 
+  var usd = function(n){
+    n = n || 0;
+    if (n >= 1000) return "$" + Math.round(n).toLocaleString();
+    if (n >= 100) return "$" + n.toFixed(0);
+    return "$" + n.toFixed(2);
+  };
+
   var b = D.block, out = "";
   var wlab = winLabel((b && b.windowMinutes) || D.windowMinutes);
+
+  // --- the month, when the month is the constraint --------------------------
+  // On usage-based billing there is no window limit to be a share of: you are
+  // billed, not throttled. So this leads, and the window card below it drops to
+  // burn-rate duty. The track is elapsed days, the fill is spend -- putting the
+  // two on one bar is the whole question ("am I ahead of the month or behind").
+  var M = D.month;
+  if (D.billing === "usage" && M) {
+    var mpct = M.budget > 0 ? M.spent / M.budget * 100 : 0;
+    var dayPct = M.daysInMonth > 0 ? M.daysElapsed / M.daysInMonth * 100 : 0;
+    var over = M.budget > 0 && M.projected > M.budget;
+    out += '<div class="card">' +
+      '<div class="hd"><h2>' + esc(M.label) + "</h2><span class=\"when\">day " +
+        M.daysElapsed + " of " + M.daysInMonth + "</span></div>" +
+      '<div class="hero">' + (M.budget > 0 ? mpct.toFixed(0) + "%" : usd(M.spent)) +
+        "<small>" + (M.budget > 0 ? "of " + usd(M.budget) : "this month") + "</small></div>" +
+      '<div class="bullet"><i style="width:' + Math.min(100, M.budget > 0 ? mpct : dayPct).toFixed(1) + '%"></i></div>' +
+      '<div class="foot"><span>' + usd(M.spent) + " spent</span>" +
+      "<span>" + dayPct.toFixed(0) + "% of the month gone</span>" +
+      "<span>" + (M.projected ? (over ? "↗ " : "→ ") + usd(M.projected) + " by month end" : "") + "</span>" +
+      "</div></div>";
+  }
 
   function blockBody(mode){
     if (!b) return "";
@@ -221,16 +253,23 @@ td:last-child,th:last-child{text-align:right;color:var(--ink)}
 
   // --- daily -----------------------------------------------------------------
   var days = D.daily || [];
+  // One unit per page: if the month above is money, these bars are money too.
+  // Mixing "tokens here, dollars there" makes the eye compare two shapes that
+  // are not the same measure.
+  var money = D.billing === "usage";
+  var val = function(d){ return money ? (d.cost || 0) : (d.tokens || 0); };
+  var fmtVal = function(n){ return money ? usd(n) : tok(n); };
+  var unit = money ? "" : " tokens";
   if (days.length) {
-    var max = Math.max.apply(null, days.map(function(d){ return d.tokens; })) || 1;
-    var peak = days.reduce(function(a,c){ return c.tokens > a.tokens ? c : a; }, days[0]);
+    var max = Math.max.apply(null, days.map(val)) || 1;
+    var peak = days.reduce(function(a,c){ return val(c) > val(a) ? c : a; }, days[0]);
     var bars = days.map(function(d, i){
-      var h = Math.max(1, d.tokens / max * 100);
+      var h = Math.max(1, val(d) / max * 100);
       // Only two labels, ever: the peak and the most recent day.
       var tagged = (d === peak) || (i === days.length - 1 && d !== peak);
-      var tag = tagged ? '<span class="tag">' + tok(d.tokens) + "</span>" : "";
+      var tag = tagged ? '<span class="tag">' + fmtVal(val(d)) + "</span>" : "";
       return '<div class="col" tabindex="0" data-i="' + i + '" role="img" aria-label="' +
-        esc(d.period) + ": " + tok(d.tokens) + ' tokens">' + tag +
+        esc(d.period) + ": " + fmtVal(val(d)) + unit + '">' + tag +
         '<i style="height:' + h.toFixed(1) + '%"></i></div>';
     }).join("");
     out += '<div class="card">' +
@@ -241,12 +280,12 @@ td:last-child,th:last-child{text-align:right;color:var(--ink)}
         bars +
       "</div>" +
       '<div class="axis"><span>' + esc(days[0].period.slice(5)) + "</span>" +
-      "<span>peak " + tok(max) + "</span>" +
+      "<span>peak " + fmtVal(max) + "</span>" +
       "<span>" + esc(days[days.length-1].period.slice(5)) + "</span></div>" +
-      '<table id="tbl" hidden><thead><tr><th>Day</th><th>Tokens</th></tr></thead><tbody>' +
+      '<table id="tbl" hidden><thead><tr><th>Day</th><th>' + (money ? "Cost" : "Tokens") + "</th></tr></thead><tbody>" +
         days.slice().reverse().map(function(d){
           return "<tr><td>" + esc(d.period) + "</td><td>" +
-            (d.tokens||0).toLocaleString() + "</td></tr>";
+            (money ? usd(d.cost) : (d.tokens||0).toLocaleString()) + "</td></tr>";
         }).join("") +
       "</tbody></table></div>";
   }
@@ -257,10 +296,14 @@ td:last-child,th:last-child{text-align:right;color:var(--ink)}
   if (D.week) {
     var wp = pctOf(D.week.tokens, D.week.budget);
     out += '<div class="card">' +
+      // On usage billing there is no weekly allowance to be a share of, so the
+      // week is simply what it cost. The bar would have no track, so it goes.
       '<div class="hd"><h2>' + esc(D.week.label) + '</h2><span class="when">' +
-        tok(D.week.budget) + " budget</span></div>" +
-      '<div class="hero">' + wp.toFixed(0) + "%<small>" + tok(D.week.tokens) + " tokens</small></div>" +
-      '<div class="bullet"><i style="width:' + Math.min(100, wp).toFixed(1) + '%"></i></div>' +
+        (money ? tok(D.week.tokens) + " tokens" : tok(D.week.budget) + " budget") + "</span></div>" +
+      (money
+        ? '<div class="hero">' + usd(D.week.cost) + "<small>this week</small></div>"
+        : '<div class="hero">' + wp.toFixed(0) + "%<small>" + tok(D.week.tokens) + " tokens</small></div>" +
+          '<div class="bullet"><i style="width:' + Math.min(100, wp).toFixed(1) + '%"></i></div>') +
       // One model means the list would just repeat the hero figure underneath it.
       // Name the model instead; show the split only when there is a split.
       ((D.week.models||[]).length === 1
@@ -297,8 +340,9 @@ td:last-child,th:last-child{text-align:right;color:var(--ink)}
   if (plot) {
     var show = function(el){
       var d = days[+el.getAttribute("data-i")];
-      tip.innerHTML = esc(d.period) + " &nbsp; <b>" + tok(d.tokens) + "</b><br>" +
-        (d.tokens||0).toLocaleString() + " tokens";
+      tip.innerHTML = esc(d.period) + " &nbsp; <b>" + fmtVal(val(d)) + "</b><br>" +
+        (money ? usd(d.cost) + " · " + tok(d.tokens) + " tokens"
+               : (d.tokens||0).toLocaleString() + " tokens");
       tip.style.opacity = 1;
       var r = el.getBoundingClientRect(), t = tip.getBoundingClientRect();
       var left = Math.min(window.innerWidth - t.width - 6, Math.max(6, r.left + r.width/2 - t.width/2));

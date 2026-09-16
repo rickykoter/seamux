@@ -291,6 +291,37 @@ Nothing here computes a price. It shells out to `ccusage` — the hand-rolled
 pricing table this replaced was reading about **2.5× high**, because it guessed a
 rate for a model whose real price it had no way to know.
 
+### Two billing models, and they want different pages
+
+Everything above assumes a subscription, where the binding constraint is the 5h
+window and money is not the question. On **usage-based billing that is simply
+false**: there is no window limit, you are billed rather than throttled, and the
+constraint is the month.
+
+`CREW_BILLING=usage` says so, and it changes what the page leads with:
+
+| | subscription (default) | `CREW_BILLING=usage` |
+|---|---|---|
+| leads with | the 5h window, tokens vs budget | the month, spend vs `CREW_MONTH_BUDGET` |
+| window card | tokens view by default | time view — the clock and burn rate, since a token budget means nothing here |
+| daily bars, axis, table, tooltip | tokens | dollars |
+| week card | tokens vs a weekly budget | what the week cost, no bar (there is no weekly allowance to be a share of) |
+
+The month card puts spend and elapsed days on one bar on purpose: "43% of budget,
+50% of the month gone" is the whole question, and two numbers side by side answer
+it faster than a projection does. The projection is there too, and it is
+suppressed on day 1 — one day extended across a month is noise wearing a
+number's clothes.
+
+`CREW_MONTH_BUDGET` is optional. Without it the card shows what you have spent
+and does **not** invent a denominator — deliberately unlike the window card,
+whose "largest on record" fallback is a high-water mark rather than a limit.
+
+An explicit switch rather than a guess: the local transcripts show tokens and
+computed costs either way and state nothing about your plan, so any detection
+would be a heuristic that silently picks the wrong framing. The status line
+(`claude/statusline.py`) reads the same variable and follows the same rule.
+
 ### The window card holds two views
 
 Tokens against the budget, or time against the reset; the button switches and
