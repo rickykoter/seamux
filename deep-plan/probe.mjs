@@ -570,6 +570,231 @@ ok("writeState reclaims a stale lock and releases its own",
   !fs.readdirSync(ENV.DEEP_PLAN_STATE_DIR).some(n => n.startsWith(".lock-")));
 fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
 
+// -------------------------------------------------- render preserves state it does not own
+//
+// The increment reconcile used to be a field WHITELIST. That is complete for a
+// plan this engine created, because it writes nothing else — which is exactly
+// why the gap was invisible. On a plan from anywhere else (an older generation,
+// or a future field) everything unlisted was dropped on the next render, with
+// no error and no log line.
+{
+  const s = { ...spec, slug: "keep-plan" };
+  ok("a plan renders for the preserve test", cli("render", tmpSpec(s)).status === 0);
+  const sp = path.join(ENV.DEEP_PLAN_STATE_DIR, "keep-plan.json");
+  const st = JSON.parse(fs.readFileSync(sp, "utf8"));
+  // Fields this engine does not write: four the older generation used, plus one
+  // nobody has invented yet. The last one is the point — the fix has to be
+  // about not dropping the unknown, not about knowing these four names.
+  Object.assign(st.increments[0], {
+    pr: "4121", branch: "dev/keep", head: "abc1234", jira: "ABC-1",
+    somethingLater: { nested: true },
+  });
+  st.increments[0].title = "a title the spec disagrees with";
+  fs.writeFileSync(sp, JSON.stringify(st, null, 2));
+  ok("re-render succeeds", cli("render", tmpSpec(s)).status === 0);
+  const after = JSON.parse(fs.readFileSync(sp, "utf8")).increments[0];
+  ok("render preserves per-increment fields it does not own",
+    after.pr === "4121" && after.branch === "dev/keep" &&
+    after.head === "abc1234" && after.jira === "ABC-1");
+  ok("render preserves a field this engine has never heard of",
+    after.somethingLater && after.somethingLater.nested === true);
+  // The spread must not let stale state beat the spec on a field the spec owns.
+  ok("the spec still wins on title", after.title === spec.deliverables[0].title);
+  cli("close", "keep-plan");
+  fs.rmSync(sp, { force: true });
+}
+
+// -------------------------------------------------- observability verdicts gate `done`
+//
+// Per-DELIVERABLE observability, which is a different thing from the top-level
+// advisory spec.observability block asserted further up: declaring checks on a
+// deliverable means its `done` is refused until a verdict is recorded.
+{
+  const CHECK = { checks: [{ system: "datadog", name: "retry counter climbs",
+    query: "sum:outbox.retry{env:qa}", expect: "non-zero within 15m" }] };
+  const withObs = n => {
+    const s = JSON.parse(JSON.stringify(spec));
+    s.slug = n;
+    s.deliverables[0].observability = CHECK;
+    return s;
+  };
+  const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
+  // Take a plan to the point where increment 1 can be done.
+  const arm = n => {
+    cli("render", tmpSpec(withObs(n)));
+    const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, n + ".key.json"), "utf8"));
+    cli("grade", n, ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+    cli("go", n, "1"); cli("start", n, "1");
+  };
+
+  arm("obs-1");
+  ok("a deliverable that declares observability starts pending",
+    stOf("obs-1").increments[0].obs.status === "pending");
+  ok("a deliverable that declares nothing is n/a",
+    stOf("obs-1").increments[1].obs.status === "n/a");
+  let r = cli("done", "obs-1", "1");
+  ok("done is refused while the verdict is pending",
+    r.status === 1 && /observability check and it is pending/.test(r.stderr));
+  ok("the refusal names how to see the checks and how to record one",
+    /obs check obs-1 1/.test(r.stderr) && /obs pass obs-1 1/.test(r.stderr));
+  ok("the refusal names the override", /--force/.test(r.stderr));
+  ok("the increment did not move", stOf("obs-1").increments[0].status === "working");
+
+  ok("obs fail refuses without a reason", cli("obs", "fail", "obs-1", "1").status === 1);
+  ok("obs fail records one", cli("obs", "fail", "obs-1", "1", "counter flat").status === 0 &&
+    stOf("obs-1").increments[0].obs.status === "fail");
+  r = cli("done", "obs-1", "1");
+  ok("done is refused while the verdict is fail, and shows the note",
+    r.status === 1 && /it is fail/.test(r.stderr) && /counter flat/.test(r.stderr));
+
+  ok("obs pass records a verdict and a note",
+    cli("obs", "pass", "obs-1", "1", "412 over 20m").status === 0 &&
+    stOf("obs-1").increments[0].obs.status === "pass" &&
+    stOf("obs-1").increments[0].obs.note === "412 over 20m");
+  ok("done is allowed once the verdict passes",
+    cli("done", "obs-1", "1").status === 0 && stOf("obs-1").increments[0].status === "done");
+
+  // A recorded verdict must survive a re-render, or amending the spec would
+  // quietly clear evidence.
+  cli("render", tmpSpec(withObs("obs-1")));
+  ok("a recorded pass survives a re-render", stOf("obs-1").increments[0].obs.status === "pass");
+  // …and must survive the declaration being dropped: it was true when recorded.
+  const dropped = JSON.parse(JSON.stringify(spec)); dropped.slug = "obs-1";
+  cli("render", tmpSpec(dropped));
+  ok("a pass survives the declaration being dropped", stOf("obs-1").increments[0].obs.status === "pass");
+
+  ok("recording against an undeclared increment is refused",
+    cli("obs", "pass", "obs-1", "2", "x").status === 1);
+
+  // A verdict proves something about the code that was there when it was
+  // recorded. Redoing the increment invalidates it, and leaving a `pass` in
+  // place would let the gate pass on stale evidence — silently, which is the
+  // one failure this mechanism exists to prevent. Deliberate divergence from
+  // the older engine, which kept it and relied on the human remembering.
+  arm("obs-5");
+  cli("obs", "pass", "obs-5", "1", "seen once");
+  ok("done is allowed with a pass", cli("done", "obs-5", "1").status === 0);
+  cli("reset", "obs-5", "1");
+  ok("resetting an increment re-gates its verdict",
+    stOf("obs-5").increments[0].obs.status === "pending");
+  ok("…keeping what the verdict was, rather than deleting the evidence",
+    /was pass: seen once/.test(stOf("obs-5").increments[0].obs.note));
+  ok("…and saying so in the log",
+    stOf("obs-5").log.some(l => /returned to pending/.test(l.what)));
+  cli("go", "obs-5", "1"); cli("start", "obs-5", "1");
+  ok("done is refused again after the reset", cli("done", "obs-5", "1").status === 1);
+  // An increment with nothing to re-gate must not gain a spurious verdict.
+  cli("reset", "obs-5", "2");
+  ok("resetting an undeclared increment leaves it n/a",
+    stOf("obs-5").increments[1].obs.status === "n/a");
+
+  // The explicit hatch, for when the work stands but the evidence does not.
+  cli("obs", "pass", "obs-5", "1", "seen twice");
+  ok("obs reset returns a recorded verdict to pending",
+    cli("obs", "reset", "obs-5", "1").status === 0 &&
+    stOf("obs-5").increments[0].obs.status === "pending" &&
+    /was pass: seen twice/.test(stOf("obs-5").increments[0].obs.note));
+  ok("obs reset refuses where there is no verdict",
+    cli("obs", "reset", "obs-5", "2").status === 1);
+
+  // Adding the field to a spec whose state already exists must gate it, not
+  // leave it silently un-gated at n/a.
+  arm("obs-2");
+  const p2 = path.join(ENV.DEEP_PLAN_STATE_DIR, "obs-2.json");
+  const s2 = JSON.parse(fs.readFileSync(p2, "utf8"));
+  s2.increments[1].obs = { status: "n/a", at: 0, note: "", version: "" };
+  fs.writeFileSync(p2, JSON.stringify(s2, null, 2));
+  const both = withObs("obs-2"); both.deliverables[1].observability = CHECK;
+  cli("render", tmpSpec(both));
+  ok("declaring observability on an existing plan flips n/a to pending",
+    stOf("obs-2").increments[1].obs.status === "pending");
+
+  // --force, and the log saying so.
+  arm("obs-3");
+  ok("done --force overrides a pending verdict",
+    cli("done", "obs-3", "1", "--force").status === 0 &&
+    stOf("obs-3").increments[0].status === "done");
+  ok("the override is written to the log",
+    stOf("obs-3").log.some(l => /overridden with --force/.test(l.what) && /observability/.test(l.what)));
+
+  // `obs check` reads the SPEC. The older engine generated these blocks per
+  // vendor; none of that comes across, so the check output is only ever a
+  // readback of what the plan already committed to.
+  const chk = cli("obs", "check", "obs-3", "1");
+  ok("obs check prints the declared checks from the spec",
+    chk.status === 0 && chk.stdout.includes("retry counter climbs") &&
+    chk.stdout.includes("sum:outbox.retry{env:qa}") && chk.stdout.includes("non-zero within 15m"));
+  ok("obs check on an undeclared increment says so, and does not fail",
+    cli("obs", "check", "obs-3", "2").status === 0 &&
+    /declares no observability check/.test(cli("obs", "check", "obs-3", "2").stdout));
+
+  arm("obs-4");
+  const rows = JSON.parse(cli("status", "--json").stdout);
+  const row4 = rows.find(x => x.slug === "obs-4");
+  ok("status --json carries the outstanding verdicts for the board",
+    row4 && row4.obsOutstanding.length === 1 && row4.obsOutstanding[0].n === 1 &&
+    row4.obsOutstanding[0].status === "pending");
+  ok("status names them in the text form too",
+    /observability outstanding: 1 \(pending\)/.test(cli("status").stdout));
+  const wp = n => fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, n + ".working.html"), "utf8");
+  ok("the working page lists the checks while a verdict is outstanding",
+    wp("obs-4").includes("retry counter climbs") && wp("obs-4").includes("pending"));
+  cli("obs", "pass", "obs-4", "1", "seen");
+  ok("…and shows the verdict instead once it passes",
+    wp("obs-4").includes("pass") && wp("obs-4").includes("seen") &&
+    !wp("obs-4").includes("sum:outbox.retry{env:qa}"));
+
+  for (const n of ["obs-1", "obs-2", "obs-3", "obs-4"]) {
+    cli("close", n);
+    fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), { force: true });
+  }
+}
+
+// -------------------------------------------------- spec fields that used to be dropped
+//
+// nonGoals, commits (top-level and per-deliverable) and per-deliverable
+// verification were present on real specs and had ZERO references in this
+// engine: authored, archived, and silently never shown.
+{
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "fields-plan";
+  s.nonGoals = ["Rewriting the scheduler", "Touching the billing path"];
+  // Both shapes occur on real specs, so both are accepted rather than one
+  // being made a floor nobody asked for.
+  s.commits = [{ sha: "abc123def4567890", subject: "seed the outbox table" }, "deadbeefcafe manual entry"];
+  s.deliverables[0].verification = ["bundle exec rspec spec/outbox"];
+  s.deliverables[0].commits = [{ sha: "1111111111111111", subject: "publisher retry" }];
+  ok("a spec carrying all of them renders", cli("render", tmpSpec(s)).status === 0);
+  const md = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "fields-plan.md"), "utf8");
+  const rv = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "fields-plan.review.html"), "utf8");
+  const wk = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "fields-plan.working.html"), "utf8");
+  const onAll = (label, needle) => ok(label,
+    md.includes(needle) && rv.includes(needle) && wk.includes(needle));
+  onAll("nonGoals reach all three surfaces", "Rewriting the scheduler");
+  onAll("top-level commits reach all three (object form)", "seed the outbox table");
+  onAll("top-level commits reach all three (string form)", "deadbeefcafe manual entry");
+  onAll("per-deliverable verification reaches all three", "bundle exec rspec spec/outbox");
+  onAll("per-deliverable commits reach all three", "publisher retry");
+  ok("a long sha is shortened for display, not printed whole",
+    md.includes("abc123def456") && !md.includes("abc123def4567890"));
+  // Both indexes checked for >= 0 first: indexOf returns -1 when absent, so a
+  // bare `<` comparison passes when the section vanishes entirely.
+  ok("non-goals are placed before the decisions",
+    md.includes("## Non-goals") && md.includes("## Decisions") &&
+    md.indexOf("## Non-goals") < md.indexOf("## Decisions"));
+  // Advisory by construction, asserted by name: the example spec carries none
+  // of these, so their absence can never quietly become a floor.
+  const bare = JSON.parse(fs.readFileSync(path.join(HERE, "examples", "example.spec.json"), "utf8"));
+  ok("absence of every one of them never refuses",
+    !bare.nonGoals && !bare.commits &&
+    !(bare.deliverables || []).some(d => d.verification || d.commits) &&
+    cli("render", tmpSpec({ ...bare, slug: "bare-plan" })).status === 0);
+  for (const n of ["fields-plan", "bare-plan"]) {
+    cli("close", n);
+    fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), { force: true });
+  }
+}
+
 // -------------------------------------------------- hot-path cost
 const t0 = process.hrtime.bigint();
 for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);

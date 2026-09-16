@@ -75,6 +75,39 @@ export function log1(st, what) {
   if (st.log.length > 200) st.log = st.log.slice(-200);
 }
 
+// --------------------------------------------------------- observability verdict
+//
+// A deliverable may declare `observability.checks`: the signals that prove the
+// increment did what it claimed. Declaring one means `done` is refused until a
+// verdict is recorded, because a plan that promises a signal and ships without
+// looking at it has promised nothing.
+//
+// Most increments do not change what the system reports about itself, so an
+// increment that declares nothing is "n/a" and gates nothing — demanding a
+// verdict from every increment would make the whole mechanism noise.
+export const OBS_NONE = { status: "n/a", at: 0, note: "", version: "" };
+
+// Re-declaring observability on a revised spec must not clear a verdict that
+// was already recorded, and adding the field to a spec whose state file already
+// exists must not leave the increment un-gated.
+export function reconcileObs(prev, deliverable) {
+  const declared = !!(deliverable && deliverable.observability);
+  const old = prev && prev.obs;
+  if (!declared) {
+    // A pass survives the declaration being dropped: it was true when recorded,
+    // and silently deleting evidence is worse than keeping an unused verdict.
+    return old && old.status === "pass" ? old : { ...OBS_NONE };
+  }
+  if (!old || old.status === "n/a") return { status: "pending", at: 0, note: "", version: "" };
+  return old;
+}
+
+// Does this increment's verdict stand in the way of `done`?
+export function obsBlocks(inc) {
+  const s = (inc && inc.obs && inc.obs.status) || "n/a";
+  return s === "pending" || s === "fail";
+}
+
 // progress summary in exactly the shape crew-board consumes.
 export function progress(st) {
   const incs = st.increments || [];

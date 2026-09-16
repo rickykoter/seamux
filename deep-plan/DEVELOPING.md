@@ -129,6 +129,75 @@ surfaces `~/.claude/plans/`. Probe overrides: `DEEP_PLAN_STATE_DIR`,
   broke. Found by mutation-testing: deliberately breaking a guard is how you
   learn whether its assertion can actually fail.
 
+## Observability seam (added 2026-09-16)
+
+Two different things share the word, and conflating them is the trap:
+
+- **`spec.observability`** (top level) — advisory. What exists today, what gaps
+  this plan fills. Rendered when present, never required.
+- **`spec.deliverables[i].observability.checks`** — a **gate**. Declaring checks
+  on a deliverable means that increment's `done` is refused until a verdict is
+  recorded. Most increments do not change what the system reports about itself,
+  so an increment that declares nothing is `n/a` and gates nothing — demanding a
+  verdict from every increment would make the mechanism noise.
+
+`obs check` prints what the spec declared; `obs pass|fail <slug> <n> "<what you
+saw>"` records it; `done --force` overrides and the log says the verdict was
+overridden. There are deliberately **no check generators**: the older engine
+generated these blocks per vendor, and that is where all of its org-specific
+knowledge lived. The engine only ever needed to display a declaration and record
+a verdict, so the declaration is authored in the spec like every other
+commitment the plan makes.
+
+`reconcileObs` in `lib/state.mjs` carries two rules that both come from a way
+this can silently go wrong:
+
+- A recorded **pass survives** the declaration being dropped from the spec. It
+  was true when it was recorded, and deleting evidence is worse than keeping a
+  verdict nothing reads.
+- Adding the field to a spec whose state file already exists flips `n/a` to
+  `pending`, rather than leaving the increment un-gated because the field
+  arrived second.
+
+`status --json` carries `obsOutstanding` so the board can show that a plan which
+looks one increment from finished is not.
+
+**Resetting an increment re-gates its verdict.** A verdict proves something
+about the code that was there when it was recorded; redoing the increment
+invalidates it, and a `pass` left in place would let the gate through on stale
+evidence — silently, which is the single failure this mechanism exists to
+prevent. The prior verdict is folded into the note (`was pass: … (reset —
+re-verify)`) rather than deleted, so re-gating costs no evidence. `obs reset`
+is the explicit hatch for the other case: the work stands but the evidence does
+not.
+
+This is a **deliberate divergence** from the older engine, which kept the
+verdict across a reset and relied on the human remembering to clear it.
+
+## The increment reconcile preserves what it does not own
+
+`render` rebuilds `st.increments` from the spec's deliverables. That used to be
+a field **whitelist**, which is complete for a plan this engine created — it
+writes nothing else — and therefore looked correct for as long as no plan came
+from anywhere else. On one that did, every unlisted field was dropped on the
+next render with no error and no log line. `prev` is now spread first and the
+owned keys listed after, so the spec still wins on `title` and unknown fields
+survive. A probe assertion plants a field no version of this engine has ever
+written, because the property is "does not drop the unknown", not "knows these
+four names".
+
+**This engine deliberately does not WRITE a per-increment `files` field.** The
+older one did, but measured across 68 real increments it was a verbatim copy of
+`spec.deliverables[i].files` in 68 of 68 cases — a denormalization of a field
+the spec already owns and this engine already renders from. Adding it here would
+mean maintaining a second copy that can disagree with the spec.
+
+A plan migrated from that engine still carries the copy, and the reconcile above
+preserves it rather than deleting data. That is harmless precisely because
+nothing reads it: every surface renders `files` from the spec. Do not start
+reading the state copy — it is a fossil, and on any plan whose spec was amended
+after migration it is the stale of the two.
+
 ## Verifying a change
 
 ```bash

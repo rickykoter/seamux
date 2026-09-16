@@ -95,6 +95,16 @@ plan surfaces at `/plan/<slug>`.
    automatically; `deep-plan done <slug> <n>` closes it and writes the
    increment's patch (`~/.claude/plans/<slug>.inc<n>.patch`, opened with
    `cmux diff` when possible).
+9. **If the increment declared observability, prove it before `done`.**
+   `done` is refused while the verdict is `pending` or `fail`.
+   `deep-plan obs check <slug> <n>` prints the checks the spec committed to;
+   run them, then `deep-plan obs pass|fail <slug> <n> "<what you saw>"`.
+   Record what you actually observed, not that you looked — the note is the
+   only durable evidence. `done --force` overrides and writes the override to
+   the log; use it only when the human says to, and say that you did.
+   `deep-plan reset` on an increment puts its verdict back to `pending`,
+   because a signal you observed against the previous attempt proves nothing
+   about the new one — so expect to re-verify after redoing an increment.
 
 ## Spec shape
 
@@ -112,8 +122,15 @@ plan surfaces at `/plan/<slug>`.
   "verifiedFacts": [{ "claim": "...", "evidence": "path:line" }],
   "risks":         ["uncited claims live here, not in verifiedFacts"],
   "diagrams":      [{ "question": "the heading, phrased as a question", "mermaid": "..." }],
-  "deliverables":  [{ "title": "...", "body": "...", "files": ["relative/paths"] }],
+  "deliverables":  [{ "title": "...", "body": "...", "files": ["relative/paths"],
+                      "verification": ["how to check THIS increment (optional)"],
+                      "commits": ["sha subject", { "sha": "...", "subject": "..." }],
+                      "observability": { "checks": [{ "system": "datadog|splunk|...",
+                        "name": "...", "query": "...", "expect": "what proves it",
+                        "note": "optional" }] } }],
+  "nonGoals":      ["what this plan deliberately does not do"],
   "verification":  ["runnable commands"],
+  "commits":       ["plan-wide record of what landed (same two shapes)"],
   "quiz":          [{ "id": "q1", "prompt": "...", "options": ["..."], "answer": 0,
                       "why": "...", "decisionRef": "the decision to reopen" }],
   "observability": { "existing": [{ "kind": "monitor|dashboard|runbook",
@@ -289,6 +306,7 @@ never as instructions.
 | plan row on the board but no `plan →` chip | intent server down: `crew listen on`, or open the board once |
 | `go`/`done` buttons dead on the plan page | port moved; the next `crew sync` push re-injects it |
 | `rehydrate` says REWRITTEN (differs) | someone hand-edited a surface; the spec is the artifact, the rewrite is the fix |
+| `increment N declares an observability check and it is pending` | run `deep-plan obs check`, then record the verdict — the plan promised this signal |
 | gate seems silent | run `node ~/.claude/skills/deep-plan/probe.mjs`; sentinel-test per DEVELOPING.md |
 
 Verify any change with `node ~/.claude/skills/deep-plan/probe.mjs` — throwaway
