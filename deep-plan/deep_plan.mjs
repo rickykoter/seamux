@@ -23,6 +23,7 @@ import { validateDiagrams, validateSurface } from "./lib/validate.mjs";
 import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries } from "./lib/adr.mjs";
 import { epicHtml, incrementMd, bundleReadme, incrementFileNames } from "./lib/cutover.mjs";
 import { checkEvidence } from "./lib/evidence.mjs";
+import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR,
   readState, writeState, allStates, log1, progress, gateView,
@@ -1768,6 +1769,16 @@ function obsRecord(slug, n, verdict, note) {
 
 // ---------------------------------------------------------------- main
 
+// Every verb the switch below handles. Kept beside it so the usage listing can
+// say that an extension file is SHADOWED rather than advertise a verb that can
+// never dispatch — a user who writes ext/status.mjs and sees it listed as
+// available has been told the opposite of the truth.
+const BUILTIN_VERBS = new Set([
+  "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
+  "grade", "status", "go", "start", "done", "reset", "block", "obs",
+  "open-gate", "shut-gate", "close", "diff", "help",
+]);
+
 const [, , cmd, ...rest] = process.argv;
 const flags = {};
 const args = [];
@@ -1855,7 +1866,16 @@ switch (cmd) {
     if (!inc || !inc.startSha) die("no started increment with a recorded sha");
     incrementDiff(st, inc); break;
   }
-  default:
+  default: {
+    // Fall through to an extension verb. This is AFTER every built-in case, so
+    // an extension cannot shadow `grade`, `go`, or anything the gate reads —
+    // a private file silently redefining the gate's own vocabulary is the one
+    // failure this seam must not allow.
+    if (cmd && extPath(cmd) !== null) {
+      process.exit(runExt(cmd, rest, {
+        state: STATE_DIR, keys: KEYS_DIR, plans: PLANS_DIR, skill: HERE,
+      }));
+    }
     say(`deep-plan — plan as artifact, gate per increment
   render <spec.json> [--root DIR] [--force]   spec -> md + review + working surfaces
   rehydrate <slug>                            re-render from the archived spec
@@ -1880,5 +1900,16 @@ switch (cmd) {
   open-gate|shut-gate <slug>                  the human lever, logged
   diff <slug> [n]                             the increment's patch since start
   close <slug>                                retire a finished plan`);
+    // State which extensions are in force even when nothing is wrong: "my
+    // extension is being ignored" is the failure this listing exists to remove.
+    const ext = listExt();
+    say(ext.length
+      ? `\nextension verbs (${EXT_DIR}):\n` +
+        ext.map(v => BUILTIN_VERBS.has(v)
+          ? `  ${v.padEnd(42)}SHADOWED by the built-in ${v} — never runs`
+          : `  ${v.padEnd(42)}from ${v}.mjs`).join("\n")
+      : `\nno extension verbs installed (${EXT_DIR})`);
     if (cmd && cmd !== "help" && cmd !== "--help") process.exit(1);
+    break;
+  }
 }

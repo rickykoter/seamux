@@ -241,6 +241,50 @@ will not open the epic first, and deduplicating the context is precisely what
 makes handoff docs useless. Increment files are numbered by **array position**,
 never a parse of the title — real plans have an "Inc 2b".
 
+## Extension verbs (added 2026-09-16)
+
+`~/.claude/deep-plan/ext/<verb>.mjs`, overridable with `$DEEP_PLAN_EXT`.
+`deep-plan <verb>` runs it as a subprocess when no built-in verb matches.
+
+**Why under the data tree and not in the skill.** Three things destroy an
+in-skill `ext/`: `install.sh --uninstall` does `rm -rf "$SKILL"` (and its
+"kept" list names `~/.claude/deep-plan` explicitly), installing with
+`rsync --delete` removes anything the repo does not have, and a plain rsync
+leaves it but then drift reporting has to learn about it. This is the same
+placement `~/.config/cmux/crew-local/` made for crew: a **sibling** of the
+synced tree, not a child.
+
+**Why a subprocess and not an import.** The gate runs through this same engine,
+so an extension that throws or hangs must not be able to take it down. And a
+static `import` of an optional module fails at load time on every machine that
+lacks it — which is exactly how the older engine wired its private modules, and
+why they could not simply be deleted from it. The contract is argv, env and an
+exit code, which is small enough to keep stable.
+
+**A built-in always wins.** Dispatch lives in the `default` branch, after every
+`case`, so no private file can redefine `grade`, `go`, or anything the gate
+reads. The usage listing marks such a file `SHADOWED … never runs` rather than
+advertising a verb that can never dispatch — telling someone their extension is
+available when it is unreachable is worse than not listing it.
+
+**Both env spellings are passed** (`DEEP_PLAN_STATE_DIR` and `DEEP_PLAN_STATE`,
+and so on). An extension that ignores an override does not error; it writes to
+the default tree. Not hypothetical: the first module ported into this seam
+hardcoded its paths and wrote into the real `~/.claude/plans` from a throwaway
+test tree.
+
+**What it does NOT cover: transition hooks.** The older engine pushed to a
+tracker on `done` behind `state.jira.autoSync`. Measured here: that flag is set
+on **1 of 12** real plans. Real, but not enough to justify a second mechanism
+running inside every `done` — and a hook there can hang the CLI. Doing it by
+hand is one command.
+
+**A verb cannot become a path**, guarded twice: the name must match
+`^[a-z][a-z0-9-]*$`, and the joined path's dirname must still be the extension
+directory. Either alone is sufficient, so **neither line can be killed by a
+mutation on its own** — removing both together lets `../outside` escape, and the
+probe catches that. If you simplify one away, check the pair, not the line.
+
 ## Verifying a change
 
 ```bash

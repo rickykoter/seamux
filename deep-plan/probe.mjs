@@ -1054,6 +1054,113 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "art-plan.json"), { force: true });
 }
 
+// -------------------------------------------------- extension verbs
+//
+// The seam for work that cannot go in a public repo. A subprocess, not an
+// import: the gate runs through this same engine, so an extension that throws
+// or hangs must not be able to take it down — and a static import of an
+// optional module fails at load time on every machine that lacks it, which is
+// how the older engine wired its private modules and why they could not be
+// deleted from it.
+{
+  const EXT = path.join(TMP, "ext");
+  fs.mkdirSync(EXT, { recursive: true });
+  // SKILL_DIR and the older spellings are deliberately STRIPPED from the parent
+  // env here. runExt spreads process.env, so anything the probe already exports
+  // would satisfy an assertion about what runExt passes — the test would hold
+  // whether or not the code did its job.
+  const extEnv = { ...ENV, DEEP_PLAN_EXT: EXT };
+  delete extEnv.DEEP_PLAN_SKILL_DIR;
+  delete extEnv.DEEP_PLAN_STATE;
+  delete extEnv.DEEP_PLAN_KEYS;
+  delete extEnv.DEEP_PLAN_PLANS;
+  const ecli = (...args) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...args],
+    { encoding: "utf8", env: extEnv, cwd: REPO });
+  const write = (n, body) => fs.writeFileSync(path.join(EXT, n), body);
+
+  write("hello.mjs", 'console.log("EXTRAN:" + process.argv.slice(2).join(","));\n' +
+    'console.log("STATE:" + process.env.DEEP_PLAN_STATE_DIR);\n' +
+    'console.log("OLDSTATE:" + process.env.DEEP_PLAN_STATE);\n' +
+    'console.log("SKILL:" + process.env.DEEP_PLAN_SKILL_DIR);\n' +
+    'console.log("VERB:" + process.env.DEEP_PLAN_VERB);\n' +
+    'process.exit(Number(process.env.RC || 0));\n');
+
+  let e = ecli("hello", "one", "two");
+  ok("an extension verb runs and receives its arguments",
+    e.status === 0 && e.stdout.includes("EXTRAN:one,two"));
+  ok("an extension is told where the state, keys and skill trees are",
+    e.stdout.includes("STATE:" + ENV.DEEP_PLAN_STATE_DIR) &&
+    e.stdout.includes("SKILL:" + HERE) && e.stdout.includes("VERB:hello"));
+  // An override the extension ignores does not error — it writes to the
+  // default tree. The first module ported into this seam hardcoded its paths
+  // and wrote into the real ~/.claude/plans from a throwaway test tree.
+  ok("the older env spellings are passed too, so a ported module is redirected",
+    e.stdout.includes("OLDSTATE:" + ENV.DEEP_PLAN_STATE_DIR));
+
+  e = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "hello"],
+    { encoding: "utf8", env: { ...extEnv, RC: "7" }, cwd: REPO });
+  ok("an extension's exit code is the CLI's exit code", e.status === 7);
+
+  // A built-in must always win. A private file silently redefining the gate's
+  // own vocabulary is the one thing this seam must never allow.
+  write("status.mjs", 'console.log("SHADOW RAN");\n');
+  e = ecli("status");
+  ok("a built-in verb always beats an extension of the same name",
+    e.status === 0 && !e.stdout.includes("SHADOW RAN"));
+  ok("…and the usage says that file is shadowed rather than advertising it",
+    /status\s+SHADOWED by the built-in/.test(ecli("--help").stdout));
+  fs.rmSync(path.join(EXT, "status.mjs"));
+
+  ok("usage lists the installed extension verbs and where they come from",
+    ecli("--help").stdout.includes("extension verbs (" + EXT) &&
+    /hello\s+from hello\.mjs/.test(ecli("--help").stdout));
+  // A real extension directory holds helper modules beside the verbs — the
+  // ported private ones here are `_compat.mjs`, `_obs_scaffold.mjs` and
+  // `_metric_matrix.mjs`. Listing those as verbs would advertise commands that
+  // cannot dispatch, since a leading underscore is not a legal verb name.
+  write("_helper.mjs", "export const x = 1;\n");
+  write("notes.txt", "not a module\n");
+  ok("helper modules and non-modules are not listed as verbs",
+    !/_helper/.test(ecli("--help").stdout) && !/notes/.test(ecli("--help").stdout) &&
+    /hello\s+from hello\.mjs/.test(ecli("--help").stdout));
+  ok("…and a helper module cannot be invoked as a verb",
+    ecli("_helper").status === 1 && ecli("_helper").stdout.includes("plan as artifact"));
+
+  // A verb becomes a filename, so it must not be able to become a path.
+  fs.writeFileSync(path.join(TMP, "outside.mjs"), 'console.log("ESCAPED");\n');
+  for (const bad of ["../outside", "../../etc/hosts", "/etc/hosts", "Hello", "hello/../hello", ".hidden"]) {
+    const r = ecli(bad);
+    ok(`the verb "${bad}" cannot reach a file outside the extension directory`,
+      r.status === 1 && !r.stdout.includes("ESCAPED") &&
+      r.stdout.includes("plan as artifact"));
+  }
+
+  // An extension that blows up must fail loudly and locally, never take the
+  // engine (and therefore the gate) with it.
+  write("boom.mjs", 'throw new Error("extension exploded");\n');
+  e = ecli("boom");
+  ok("an extension that throws fails without breaking the engine",
+    e.status !== 0 && /extension exploded/.test(e.stderr) &&
+    ecli("status").status === 0);
+  // Killed rather than exited: spawnSync reports status null and a signal, and
+  // a null status must not read as success.
+  write("suicide.mjs", 'process.kill(process.pid, "SIGTERM");\n');
+  e = ecli("suicide");
+  ok("an extension killed by a signal exits non-zero and says which signal",
+    e.status === 1 && /killed by SIGTERM/.test(e.stderr));
+
+  // The whole point of the default: a machine with no extensions behaves
+  // exactly as it did before the seam existed.
+  const noExt = { ...ENV, DEEP_PLAN_EXT: path.join(TMP, "no-such-ext") };
+  const ncli = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a],
+    { encoding: "utf8", env: noExt, cwd: REPO });
+  ok("with no extension directory an unknown verb still exits 1 with usage",
+    ncli("bogus-verb").status === 1 && ncli("bogus-verb").stdout.includes("plan as artifact"));
+  ok("…and says so, rather than leaving the seam invisible",
+    ncli("--help").stdout.includes("no extension verbs installed"));
+  ok("help still exits 0 with no extensions", ncli("--help").status === 0);
+}
+
 // -------------------------------------------------- hot-path cost
 const t0 = process.hrtime.bigint();
 for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);

@@ -334,6 +334,7 @@ never as instructions.
 | `go`/`done` buttons dead on the plan page | port moved; the next `crew sync` push re-injects it |
 | `rehydrate` says REWRITTEN (differs) | someone hand-edited a surface; the spec is the artifact, the rewrite is the fix |
 | `increment N declares an observability check and it is pending` | run `deep-plan obs check`, then record the verdict — the plan promised this signal |
+| an extension verb you added does nothing | a built-in of the same name wins; `deep-plan --help` marks it SHADOWED |
 | gate seems silent | run `node ~/.claude/skills/deep-plan/probe.mjs`; sentinel-test per DEVELOPING.md |
 
 Verify any change with `node ~/.claude/skills/deep-plan/probe.mjs` — throwaway

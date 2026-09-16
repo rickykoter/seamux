@@ -34,6 +34,16 @@ crew-digest`) — then commit and reinstall.
   `find` root, so it is invisible to the check. See `docs/ADOPTION.md`.
 - `~/.claude/deep-plan/{state,keys,active}` and `~/.claude/plans/` — your actual
   plans. `--uninstall` preserves these deliberately.
+- `~/.claude/deep-plan/ext/` — extension verbs (`$DEEP_PLAN_EXT`).
+  `deep-plan <verb>` falls through to `ext/<verb>.mjs` when no built-in matches,
+  so work that cannot be public lives here and the repo ships only the contract.
+  Under the **data** tree rather than inside the skill on purpose: `--uninstall`
+  does `rm -rf` on the skill, and installing with `rsync --delete` removes
+  anything the repo does not have. Same reasoning as `crew-local/` being a
+  sibling. A built-in verb always wins, and `deep-plan --help` lists what is
+  installed — including marking a file that a built-in shadows.
+- `~/.claude/deep-plan/tools/` — one-shot scripts (the data migrator lives
+  here), kept out of the skill for the same two reasons.
 - `~/.config/cmux/cmux.json` — owned by `crew apply`, which renders it whole
   because cmux has no config include mechanism (`docs/FINDINGS.md`).
 - `activePaneBorderColor` inside it — **runtime state, not a preference.** It is
