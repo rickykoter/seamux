@@ -446,7 +446,11 @@ ok("no increment authorized yet: Edit still denied", edit(path.join(REPO, "a.txt
   const apPath = path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".approved.md");
   ok("grade-pass cut the approved snapshot", fs.existsSync(apPath) &&
     fs.readFileSync(apPath, "utf8").includes("approved snapshot"));
-  const ap1 = fs.readFileSync(apPath, "utf8");
+  // Read defensively. Anything that stops `grade` from passing leaves no
+  // snapshot, and this section then ended the whole run on an ENOENT — hiding
+  // every assertion below it, and the dozen that had already failed above,
+  // behind a stack trace. An assertion should fail; only the suite should stop.
+  const ap1 = fs.existsSync(apPath) ? fs.readFileSync(apPath, "utf8") : "";
   const stAp = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"));
   ok("state records the snapshot path and spec hash",
     stAp.approved && stAp.approved.path === apPath && stAp.approved.spec_hash.length === 16);
@@ -457,7 +461,7 @@ ok("no increment authorized yet: Edit still denied", edit(path.join(REPO, "a.txt
   amended.context += " Amended mid-implementation.";
   cli("render", tmpSpec(amended));
   ok("re-render after grade leaves the snapshot byte-identical",
-    fs.readFileSync(apPath, "utf8") === ap1);
+    fs.existsSync(apPath) && fs.readFileSync(apPath, "utf8") === ap1);
   ok("working surface notes the drift",
     fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8")
       .includes("DRIFTED from the approved snapshot"));

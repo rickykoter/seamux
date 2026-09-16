@@ -119,6 +119,15 @@ surfaces `~/.claude/plans/`. Probe overrides: `DEEP_PLAN_STATE_DIR`,
   mis-render as flat text. Fallback is escaped literal text, never broken HTML.
 - No size guard on staged ADR fields — a very large edit makes one very long
   blob line.
+- **The probe aborts rather than fails when `grade` cannot pass.** Everything
+  after the "grade -> implementing" section reads a file that grading produced —
+  the approved snapshot, then the applied ADRs — so a change that breaks grading
+  outright ends the run on an ENOENT partway down, instead of printing the
+  failures already collected above it. The two snapshot reads are now guarded;
+  the ADR section still has several. The suite still exits non-zero, so CI stays
+  honest, but the first screenful is a stack trace rather than the list of what
+  broke. Found by mutation-testing: deliberately breaking a guard is how you
+  learn whether its assertion can actually fail.
 
 ## Verifying a change
 
