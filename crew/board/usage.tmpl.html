@@ -331,6 +331,30 @@ td:last-child,th:last-child{text-align:right;color:var(--ink)}
       "</div>";
   }
 
+  // --- cache re-writes ---------------------------------------------------------
+  // Every break re-caches the context at a write premium; the tokens here are
+  // that bill. Facts come from the Stop hook's per-session files, so sessions
+  // that never reached a Stop with the new hook are absent, not zero.
+  if (D.cache && D.cache.week && D.cache.week.breaks) {
+    var cw = D.cache, smax = Math.max.apply(null,
+      (cw.sessions||[]).map(function(s){ return s.tokens; })) || 1;
+    out += '<div class="card">' +
+      '<div class="hd"><h2>Cache re-writes</h2><span class="when">7 days</span></div>' +
+      '<div class="hero">' + tok(cw.week.tokens) + '<small>re-cached over ' +
+        cw.week.breaks + ' breaks' + (cw.today.breaks ? ' · today ' +
+        tok(cw.today.tokens) + ' / ' + cw.today.breaks : '') + '</small></div>' +
+      '<ul class="models">' + Object.keys(cw.causes||{}).map(function(c){
+        return '<li><span>' + esc(c) + '</span><b>' + cw.causes[c] + '</b></li>';
+      }).join('') + '</ul>' +
+      ((cw.sessions||[]).length ? '<ul class="wcosts">' + cw.sessions.map(function(s){
+        return '<li><span class="nm">' + esc(s.name) + '</span>' +
+          '<span class="bar"><i style="width:' + Math.min(100, s.tokens / smax * 100).toFixed(1) + '%"></i></span>' +
+          '<b>' + tok(s.tokens) + ' · ' + s.breaks + '</b></li>';
+      }).join('') + '</ul>' : '') +
+      '<div class="foot"><span>from cache-facts written at turn end · a break re-caches at 1.25–2× the base input price</span></div>' +
+      '</div>';
+  }
+
   app.innerHTML = out;
 
   // --- hover / focus ----------------------------------------------------------
