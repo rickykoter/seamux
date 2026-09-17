@@ -38,6 +38,18 @@ and per-workspace dollars — so the worktree quietly burning money stands out.
 
 ![the /usage dashboard: window budget, daily bars, weekly budget by model, per-workspace dollars](docs/img/usage.png)
 
+**Cache.** Every prompt rides a serverside cache; break it and the next
+prompt re-caches your whole context at a write premium. Most breaks are
+just a session left idle past the cache's lifetime — five minutes or an
+hour, depending on billing — invisible until the bill. So the
+status line shows a small freshness clock (`🧊 42m`), a desktop
+notification fires a minute before an idle session goes stale, and when a
+turn does break the cache you're told at once — how many tokens re-cached
+and why (compaction, a model switch, an idle gap). `/usage` keeps the
+running tally: re-cached tokens this week, causes, and the sessions that
+cost the most. Detection is local — transcripts, not API calls — and the
+TTL is read from your billing mode and settings, never guessed.
+
 **A plan under review.** deep-plan renders the agent's plan as a page:
 context, decisions, cited evidence, diagrams, increments — and a short quiz
 that checks you and the plan actually agree. Answer on the page, highlight
