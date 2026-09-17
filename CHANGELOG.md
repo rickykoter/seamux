@@ -5,6 +5,43 @@ truth and every entry lands on the machine via `./install.sh`.
 
 ## Unreleased
 
+- **Optional TypeSafe check for questions at turn end.** A turn that ends on
+  a question used to file as finished, because only Notification opened
+  "Needs you". With a TypeSafe key present, Stop asks Jev in the background
+  whether the last message leaves the agent blocked on you, and if so publishes
+  `phase:waiting` with the question as the banner. With no key, disabled in
+  `integrations.json`, or on any error, behavior is unchanged. `crew doctor`
+  reports the state.
+- **One TypeSafe client, under CI.** Config, key resolution and the 429/529
+  retry moved from `asked.py` into `crew/hooks/typesafe.py`; question text
+  stays with each feature. The client grew an `ask` CLI mode (JSON on
+  stdin/stdout) so node callers reuse it. `typesafe_probe.py` runs a local
+  mock of `/v1/systemone` in CI — happy path, retry, 4xx/5xx, unreachable,
+  no-key and `enabled:false` all asserted, the failure paths as "no
+  judgment, old behavior". The doctor's package list also learned about
+  `asked.py`/`asked.sh`, which increment 0 forgot to add.
+- **Board ranking from turn-end judgments.** The Stop-time TypeSafe request
+  grew two questions over the same last message: "did the agent stop on an
+  error it couldn't get past" and a 4-level urgency score. `asked.sh` caches
+  all three answers per worktree in `~/.cache/cmux-crew/judgments.json`; the
+  board reads only the cache (`board/judgments.py`, costs.py-shaped, pure and
+  probed). Policy in code: stuck ≥ `typesafe.stuck_threshold` (0.8,
+  provisional) files an idle row as wilt/`stuck` — hard signals like red CI
+  still outrank it — and urgency orders rows within a tier; tiers never move.
+  Mid-turn rows, stale entries (6h TTL), and machines without a key rank
+  byte-identically to before. Scores land in `asked.log` for tuning; the
+  doctor line now prints both thresholds.
+- **deep-plan now checks the citations back.** `verifiedFacts` evidence was
+  printed verbatim and verified by nothing — the read-before-plan floor only
+  ran the other way. `deep-plan/lib/evidence.mjs` warns at render when a
+  cited path is missing or its line is out of range (always on, pure code),
+  and with a TypeSafe key asks Jev per fact whether the cited lines support
+  the claim — the citation-check pattern; `contradicts`/`says_nothing` warn,
+  low confidence is silence. Warn-only by decision: never a refusal, never
+  the gate. The probe covers both halves with a scripted client stand-in,
+  and a probe render can never reach the real client
+  (`DEEP_PLAN_TYPESAFE_CLIENT` is authoritative, empty means none).
+
 ## 0.2.0 — 2026-09-15
 
 - **Scrubbed internal identifiers from the tree and from all history.** Five

@@ -19,6 +19,9 @@ const ENV = {
   DEEP_PLAN_PLANS_DIR: path.join(TMP, "plans"),
   DEEP_PLAN_ANNOT_DIR: path.join(TMP, "annotations"),
   DEEP_PLAN_SKILL_DIR: HERE,
+  // Authoritative override (empty = no client): a probe render on a machine
+  // with a real TypeSafe key must never judge evidence over the network.
+  DEEP_PLAN_TYPESAFE_CLIENT: "",
 };
 const MERMAID_VENDOR = path.join(HERE, "vendor", "mermaid.min.js");
 const REPO = path.join(TMP, "repo");
@@ -103,6 +106,68 @@ ok("mermaid inlined as base64 (the swap regex's shape)",
     r.status !== 0 && /vendor\/mermaid\.min\.js is missing/.test(r.stderr) &&
     !/node:fs|readFileSync|ENOENT/.test(r.stderr));
 }
+// -------------------------------------------------- evidence citation check
+// Warn-only in both halves: code checks the cited path and line resolve, a
+// (mocked) TypeSafe client judges whether the lines back the claim. Neither
+// may ever fail a render — the assertions pin exit 0 with warnings present.
+{
+  // Its own root, and its state cleaned after: an evidence-probe plan left
+  // rooted at REPO would gate the very edits the later gate tests assert.
+  const EVREPO = path.join(TMP, "evrepo");
+  fs.mkdirSync(path.join(EVREPO, "src"), { recursive: true });
+  fs.writeFileSync(path.join(EVREPO, "src", "real.txt"),
+    Array.from({ length: 10 }, (_, i) => "line " + (i + 1)).join("\n"));
+  const ev = JSON.parse(JSON.stringify(spec));
+  ev.slug = "evidence-probe";
+  ev.verifiedFacts = [
+    { claim: "a fine citation", evidence: "src/real.txt:3-5" },
+    { claim: "line out of range", evidence: "src/real.txt:99" },
+    { claim: "file is gone", evidence: "gone.txt:1" },
+    { claim: "free prose evidence stays legal", evidence: "the search came up empty" },
+  ];
+  const r1 = cli("render", tmpSpec(ev), "--root", EVREPO);
+  ok("evidence: warnings never refuse the render", r1.status === 0);
+  ok("evidence: out-of-range line is warned with the file's real length",
+    /src\/real\.txt:99 — the file ends at line 10/.test(r1.stderr));
+  ok("evidence: missing file is warned", /gone\.txt:1 — no such file/.test(r1.stderr));
+  ok("evidence: a resolvable citation and free prose stay silent",
+    !/real\.txt:3/.test(r1.stderr) && !(/prose/.test(r1.stderr)));
+
+  // The judged half, against a scripted stand-in for typesafe.py: fact 1
+  // contradicted at high confidence (warns), fact 2 says_nothing below the
+  // confidence floor (silent), fact 3 supported (silent).
+  const fake = path.join(TMP, "fake_typesafe.py");
+  fs.writeFileSync(fake, `#!/usr/bin/env python3
+import json, sys
+if (sys.argv[1:] or [""])[0] == "available": sys.exit(0)
+req = json.loads(sys.stdin.read())
+verdicts = [{"choice": "contradicts", "confidence": 0.9},
+            {"choice": "says_nothing", "confidence": 0.3},
+            {"choice": "supports", "confidence": 0.95}]
+qs = sorted(req["questions"], key=lambda k: int(k[1:]))
+print(json.dumps({q: verdicts[i % 3] for i, q in enumerate(qs)}))
+`);
+  ev.slug = "evidence-probe-judged";
+  ev.verifiedFacts = [
+    { claim: "one", evidence: "src/real.txt:2" },
+    { claim: "two", evidence: "src/real.txt:4" },
+    { claim: "three", evidence: "src/real.txt:6" },
+  ];
+  const r2 = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "render",
+    tmpSpec(ev), "--root", EVREPO],
+    { encoding: "utf8", cwd: REPO, env: { ...ENV, DEEP_PLAN_TYPESAFE_CLIENT: fake } });
+  ok("evidence: a contradicted fact warns, naming its citation",
+    r2.status === 0 && /fact 1 — .*src\/real\.txt:2.*contradicting/.test(r2.stderr));
+  ok("evidence: below the confidence floor is silence, support is silence",
+    !/fact 2/.test(r2.stderr) && !/fact 3/.test(r2.stderr));
+  ok("evidence: no client configured means no judged warnings at all",
+    !/contradicting|do not appear/.test(r1.stderr));
+  for (const s of ["evidence-probe", "evidence-probe-judged"]) {
+    fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, s + ".json"), { force: true });
+    fs.rmSync(path.join(os.homedir(), ".claude", "deep-plan", "active", s), { force: true });
+  }
+}
+
 // The interactive layer: answerable quiz + comment boxes + one copy-back blob.
 ok("review quiz options are selectable radios",
   (review.match(/type="radio" name="dp-q-/g) || []).length >=

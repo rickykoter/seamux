@@ -103,6 +103,7 @@ risk. Nothing is quietly promoted from hunch to fact.
 | Claude Code | the agents this is all for | not much point |
 | `gh` *(optional)* | PR and checks chips on rows | those chips stay blank |
 | `ccusage` *(optional)* | spend on rows and `/usage` | cost surfaces are absent |
+| [TypeSafe](https://typesafe.ai) key *(optional)* | judgment calls: turn-end questions, board ranking, plan citation checks | those judgments simply don't happen |
 
 ### Install
 
@@ -139,6 +140,28 @@ otherwise. Other flags: `--dry-run`, `--check`, `--uninstall`, `--force`,
   plan work — new instrumentation, a monitor definition you import, a
   runbook section. It only ever reads: changes arrive as artifacts you
   review and apply, never as API writes.
+
+- **TypeSafe** — unlike the others, this one isn't asked at setup: putting
+  a key on the machine (`$TYPESAFE_API_KEY`, or the first line of
+  `~/.config/typesafe/api-key`) turns it on, and removing it turns it off.
+  It buys three judgment calls that plain code can't make. When a turn ends
+  on "should I do A or B?", crew notices and files the row under "Needs
+  you" instead of letting it pass as finished. The board learns which rows
+  matter most: a session that stopped on an error it couldn't get past
+  wilts, and rows within a tier are ordered by how urgently the last
+  message needs you. And when deep-plan renders a plan, each cited
+  `path:line` is checked against the file it names — a citation that
+  contradicts its claim gets a warning on the spot.
+
+  The rules stay in code; TypeSafe only answers narrow questions, and the
+  answers arrive in the background — no Claude turn and no board refresh
+  ever waits on the network. What leaves the machine is small and spelled
+  out: the last 4,000 characters of a finished turn's closing message, or
+  a plan claim with the few lines it cites. On any failure — no key, no
+  network, an odd answer — everything behaves exactly as it does without
+  TypeSafe. Thresholds live in `integrations.json` and scores log to
+  `~/.cache/cmux-crew/asked.log` so you can tune them; `{"typesafe":
+  {"enabled": false}}` switches it off with the key still in place.
 
 Declining costs nothing: no doctor nags, no dead chips, no config to
 maintain.

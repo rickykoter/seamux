@@ -507,6 +507,17 @@ def rank(wss, plan_by_root, screens=False):
     except Exception:
         cost_map = {}
 
+    # Turn-end TypeSafe judgments, same contract as costs: a cache file written
+    # elsewhere (the detached Stop flow), read here, {} on any failure. The
+    # board never talks to the network; a machine without TypeSafe renders
+    # byte-identically because jmap is empty and every policy check is False/0.
+    try:
+        import judgments as _judg
+        jmap = _judg.fresh_map()
+        stuck_t = _judg.stuck_threshold()
+    except Exception:
+        _judg, jmap, stuck_t = None, {}, 1.0
+
     # Issue chips only render when the integration was enabled at setup; the
     # issue: token may be published either way (the collector does not gate),
     # so display is decided here, in one place.
@@ -594,6 +605,15 @@ def rank(wss, plan_by_root, screens=False):
             kind, badge = "wilt", "blocked"
             said = "{{%s}} is blocked: %s" % (b.get("title", "An increment"), b.get("note", "no reason recorded"))
             chips = ["jump"]
+        # Judged, not observed: TypeSafe read the last turn's closing message
+        # and called it an unrecoverable failure. Last in the wilt chain on
+        # purpose — a hard signal (red CI, conflicts, a blocked increment)
+        # always outranks a judgment. Never fires mid-turn (stuck_for checks
+        # `running`), so a retrying agent falls through to the working tier.
+        elif _judg and _judg.stuck_for(w, jmap, stuck_t):
+            kind, badge = "wilt", "stuck"
+            said = "Last turn ended on an error the agent could not get past."
+            chips = ["jump", "diff"]
 
         # --- tier 3: working ------------------------------------------------
         elif w["running"] or has(d, "phase:working"):
@@ -669,6 +689,9 @@ def rank(wss, plan_by_root, screens=False):
         rows.append({"id": w["id"], "name": w["title"], "kind": kind, "badge": badge,
                      "said": said, "chips": chips, "frac": frac,
                      "meta": " · ".join(meta_bits),
+                     # The within-tier sort key. render.js reads rows by
+                     # explicit property, so the extra field is invisible to it.
+                     "urgency": _judg.urgency_for(w, jmap) if _judg else 0.0,
                      "cost": (cost_map.get(w["cwd"]) or {}).get("today") or 0,
                      **issue_fields(w),
                      "branch": "" if w["branch"] in ("", "none") else w["branch"],
@@ -693,7 +716,11 @@ def rank(wss, plan_by_root, screens=False):
                      "slug": (plan or {}).get("slug", "")})
 
     order = {"attend": 0, "wilt": 1, "running": 2, "done": 3, "quiet": 4}
-    rows.sort(key=lambda r: order.get(r["kind"], 9))
+    # Within a tier, the cached urgency score decides who reads first; tiers
+    # themselves never move, and rows without a judgment keep gather order
+    # among themselves (sort stability + urgency 0). Quiet rows are exempt —
+    # they are defined as not competing for attention.
+    rows.sort(key=lambda r: (order.get(r["kind"], 9), -r.get("urgency", 0.0)))
     return rows, quiet
 
 

@@ -412,6 +412,60 @@ if (live && Array.isArray(live.rows)) {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
+// ---- judgments.py: turn-end TypeSafe policy, pure, no network -------------
+// The policy the board actually applies: stuck>=threshold flags wilt, urgency
+// is the within-tier sort key, and anything missing or stale answers exactly
+// like a machine that never heard of TypeSafe (false / 0).
+{
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), "judg-probe-"));
+  const NOW = 1_800_000_000;
+  const fixture = join(tmp, "fx.json");
+  fs.writeFileSync(fixture, JSON.stringify({
+    now: NOW, threshold: 0.8,
+    workspaces: [
+      { cwd: "/w/stuck", running: false },
+      { cwd: "/w/typing", running: true },     // same judgment, but mid-turn
+      { cwd: "/w/old", running: false },
+      { cwd: "/w/mild", running: false },
+      { cwd: "/w/unjudged", running: false },
+    ],
+    cache: {
+      "/w/stuck":  { at: NOW - 60,     stuck: 0.93, urgency: 2.8 },
+      "/w/typing": { at: NOW - 60,     stuck: 0.93, urgency: 2.8 },
+      "/w/old":    { at: NOW - 100000, stuck: 0.99, urgency: 3.0 }, // > TTL
+      "/w/mild":   { at: NOW - 60,     stuck: 0.42, urgency: 1.2 },
+    },
+  }));
+  const env = { ...process.env, CREW_JUDGMENTS_FILE: join(tmp, "j.json") };
+  const r = JSON.parse(execFileSync("python3",
+    [join(HERE, "judgments.py"), "--apply", fixture], { encoding: "utf8", env }));
+  checks.push(["judgments: fresh + over threshold reads stuck",
+    r["/w/stuck"]?.stuck === true && r["/w/stuck"]?.urgency === 2.8]);
+  checks.push(["judgments: a mid-turn row is never stuck — the turn it judged is over",
+    r["/w/typing"]?.stuck === false]);
+  checks.push(["judgments: past TTL answers like no judgment at all",
+    r["/w/old"]?.stuck === false && r["/w/old"]?.urgency === 0]);
+  checks.push(["judgments: under threshold stays un-flagged but keeps its order key",
+    r["/w/mild"]?.stuck === false && r["/w/mild"]?.urgency === 1.2]);
+  checks.push(["judgments: no cache entry means false/0, not an error",
+    r["/w/unjudged"]?.stuck === false && r["/w/unjudged"]?.urgency === 0]);
+
+  // The writer half: --record merges one cwd without blanking the others and
+  // folds the blocked arg in beside the stdin values.
+  execFileSync("python3", [join(HERE, "judgments.py"), "--record", "/w/a", "111", "0.9"],
+    { encoding: "utf8", env, input: JSON.stringify({ stuck: 0.7, urgency: 2.0 }) });
+  execFileSync("python3", [join(HERE, "judgments.py"), "--record", "/w/b", "222"],
+    { encoding: "utf8", env, input: JSON.stringify({ stuck: 0.1, urgency: 0.5 }) });
+  const cache = JSON.parse(fs.readFileSync(join(tmp, "j.json"), "utf8"));
+  checks.push(["judgments: record keeps other worktrees' entries",
+    cache["/w/a"]?.stuck === 0.7 && cache["/w/b"]?.urgency === 0.5]);
+  checks.push(["judgments: blocked rides as an arg, size as an int",
+    cache["/w/a"]?.blocked === 0.9 && cache["/w/a"]?.transcript_size === 111]);
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
 // ---- crew-overlay: the machine-local config merge -------------------------
 // The overlay is how a real install keeps its company-shaped answers out of the
 // public repo. Two properties are load-bearing and both fail silently if broken:
