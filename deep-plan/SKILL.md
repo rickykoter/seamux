@@ -256,7 +256,14 @@ key stores the shuffled letter — the two cannot drift.
 - **ceil(prose words / 900) diagrams, minimum 1.** Derived from this house's own
   plans: 4 of 7 had zero diagrams; the worst walls ran 178/140/130 words.
 - **Evidence or it is a risk.** Every verifiedFact carries `path:line` you
-  actually read this session.
+  actually read this session. Render checks the citations back, warn-only
+  (`lib/evidence.mjs`): a cited path that is missing or a line past the end
+  of its file always warns, and with a TypeSafe key on the machine one
+  batched request also judges whether the cited lines support each claim —
+  `contradicts` or `says_nothing` warns, low confidence stays silent. What
+  leaves the machine per fact is the claim sentence plus the cited lines ±3;
+  warnings never refuse a render and the edit gate never hears of them. No
+  key, no client, or any error: only the deterministic half runs.
 - **Read before you plan.** Every EXISTING file a deliverable names must be
   cited by a verifiedFact; the renderer refuses otherwise. Files the plan
   will create are exempt — they are output, not input.

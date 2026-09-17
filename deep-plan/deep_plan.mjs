@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { validateDiagrams, validateSurface } from "./lib/validate.mjs";
 import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries } from "./lib/adr.mjs";
 import { epicHtml, incrementMd, bundleReadme, incrementFileNames } from "./lib/cutover.mjs";
+import { checkEvidence } from "./lib/evidence.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR,
   readState, writeState, allStates, log1, progress, gateView,
@@ -1081,6 +1082,16 @@ async function render(specPath, opts) {
       violations.push(...unread);
     }
   }
+  // The citations themselves, warn-only — the other direction of the floor
+  // above. Code checks that each path:line resolves; with a TypeSafe key one
+  // batched request judges whether the cited lines back each claim
+  // (lib/evidence.mjs). Warnings never refuse and the gate never hears of
+  // them: a TypeSafe result can only add warnings, and a bad citation is
+  // review feedback, not a lockout.
+  try {
+    for (const w of checkEvidence(spec, planRoot))
+      console.error("  ⚠ evidence: " + w);
+  } catch { /* the check must never break a render */ }
   // Refuse-first extends to the diagrams: parse each with the vendored
   // mermaid before any surface is written — a plan page with a parse error
   // where a drawing should be fails the reader exactly where it matters.
