@@ -300,6 +300,79 @@ def usage_line(payload):
     return window_line(payload)
 
 
+FACTS_DIR = os.path.join(os.path.expanduser("~"), ".cache", "cmux-crew", "cache-facts")
+CREW_HOOKS = os.path.join(os.path.expanduser("~"), ".config", "cmux", "crew", "hooks")
+
+
+def _cache_facts(session_id, transcript_path):
+    """This session's cache facts: the Stop-hook-written file when it exists,
+    else a one-shot tail-read via cachefacts.py. None when neither answers --
+    the line's no-fallback-numbers rule extends to the cache segment."""
+    if session_id:
+        try:
+            with open(os.path.join(FACTS_DIR, session_id + ".json"),
+                      encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            pass
+    if transcript_path and os.path.exists(transcript_path):
+        try:
+            sys.path.insert(0, CREW_HOOKS)
+            import cachefacts
+            return cachefacts.read_facts(transcript_path)
+        except Exception:
+            pass
+    return None
+
+
+def cache_line(payload):
+    """Cache freshness: a countdown while warm, a warning when nearly stale,
+    the re-cache bill right after a break. Nothing when nothing is knowable.
+
+    The clock is transcript mtime + TTL, not the facts file's staleAt: the
+    facts are only as fresh as the last Stop, while the mtime moves on every
+    request. The break figure prefers the live payload (current_usage), which
+    knows about THIS turn before any hook has run.
+    """
+    try:
+        p = json.loads(payload or "{}")
+    except ValueError:
+        return ""
+    if not isinstance(p, dict):
+        return ""
+
+    facts = _cache_facts(p.get("session_id"), p.get("transcript_path"))
+
+    # A break visible in the live payload beats everything: creation re-wrote
+    # the context while the read collapsed, on figures big enough to matter.
+    cur = ((p.get("context_window") or {}).get("current_usage") or {})
+    creation = cur.get("cache_creation_input_tokens") or 0
+    read = cur.get("cache_read_input_tokens") or 0
+    if creation > 20_000 and read < creation * 0.5:
+        return f"🧊 broke: {_fmt_tokens(creation)} re-cached"
+
+    if not facts:
+        return ""
+    ttl = facts.get("ttl") or 0
+    last = 0.0
+    tp = p.get("transcript_path")
+    if tp:
+        try:
+            last = os.path.getmtime(tp)
+        except OSError:
+            pass
+    last = max(last, facts.get("lastRequestAt") or 0)
+    if not ttl or not last:
+        return ""
+
+    remaining = int(last + ttl - time.time())
+    if remaining <= 0:
+        return "🧊 cache cold"
+    if remaining < 120:
+        return f"🧊 stale in {remaining}s"
+    return f"🧊 {remaining // 60}m"
+
+
 def main():
     payload = sys.stdin.read()
 
@@ -310,7 +383,11 @@ def main():
         if title:
             lead += tint(color, title) + "  "
 
-    print(lead + usage_line(payload))
+    line = usage_line(payload)
+    cache = cache_line(payload)
+    if cache:
+        line += " · " + cache
+    print(lead + line)
 
 
 if __name__ == "__main__":

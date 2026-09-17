@@ -166,6 +166,21 @@ case "$event" in
         ( nohup "$CREW_DIR/asked.sh" "$size" <"$pl" >/dev/null 2>&1 & ) >/dev/null 2>&1
       fi
     fi
+
+    # Cache facts: did the turn that just ended break the serverside cache,
+    # and when does the now-idle session go stale? The detector writes both
+    # to ~/.cache/cmux-crew/cache-facts/, prints a systemMessage JSON only on
+    # a fresh break (stdout is the hook protocol — nothing else may land
+    # there), and the detached sleeper fires cmux notify shortly before TTL
+    # expiry. Same detach shape as asked.sh above; failures stay silent.
+    transcript="${transcript:-$(crew_json transcript_path)}"
+    sid="$(crew_json session_id)"
+    if [ -n "$transcript" ] && [ -n "$sid" ]; then
+      python3 "$CREW_DIR/cachefacts.py" --stop "$transcript" "$sid" \
+        "$(crew_label)" 2>/dev/null
+      ( nohup python3 "$CREW_DIR/cachefacts.py" --sleep "$sid" "$transcript" \
+          "$(crew_label)" >/dev/null 2>&1 & ) >/dev/null 2>&1
+    fi
     ;;
 
   end)

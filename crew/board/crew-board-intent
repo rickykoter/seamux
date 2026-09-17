@@ -1004,6 +1004,57 @@ def usage_data(days=21):
             out["costs"] = sorted(rows_c, key=lambda r: -r["week"])
     except Exception:
         pass
+
+    # Cache re-writes — aggregated from the per-session facts files the Stop
+    # hook writes (cache-facts contract; nothing here reads a transcript).
+    # Tokens-only, like the rest of the page. Any failure omits the section.
+    try:
+        import glob as _glob
+        import time as _time
+        now_s = _time.time()
+        day_ago, week_ago = now_s - 86400, now_s - 7 * 86400
+        facts_dir = os.path.join(os.path.expanduser("~"), ".cache",
+                                 "cmux-crew", "cache-facts")
+        t_day = t_week = n_day = n_week = 0
+        causes, sessions = {}, []
+        for fp in _glob.glob(os.path.join(facts_dir, "*.json")):
+            try:
+                with open(fp, encoding="utf-8") as fh:
+                    f = json.load(fh)
+            except (OSError, ValueError):
+                continue
+            s_tok = s_n = 0
+            for b in f.get("breaks") or []:
+                try:
+                    at = datetime.datetime.fromisoformat(
+                        str(b.get("ts")).replace("Z", "+00:00")).timestamp()
+                except (TypeError, ValueError):
+                    continue
+                tok = b.get("recachedTokens") or 0
+                if at > week_ago:
+                    t_week += tok
+                    n_week += 1
+                    s_tok += tok
+                    s_n += 1
+                    c = b.get("cause") or "unknown"
+                    causes[c] = causes.get(c, 0) + 1
+                if at > day_ago:
+                    t_day += tok
+                    n_day += 1
+            if s_tok:
+                sid = os.path.basename(fp)[:-len(".json")]
+                sessions.append({"name": f.get("label") or sid[:8],
+                                 "tokens": s_tok, "breaks": s_n})
+        if n_week:
+            sessions.sort(key=lambda s: -s["tokens"])
+            out["cache"] = {
+                "today": {"breaks": n_day, "tokens": t_day},
+                "week": {"breaks": n_week, "tokens": t_week},
+                "causes": dict(sorted(causes.items(), key=lambda kv: -kv[1])),
+                "sessions": sessions[:5],
+            }
+    except Exception:
+        pass
     return out
 
 
@@ -1117,6 +1168,10 @@ def selftest():
         # A page that mixes units invites comparing two different measures.
         check("...and leads with the month on usage-based billing",
               'D.billing === "usage"' in tmpl and "D.month" in tmpl)
+        # The cache card is presence-guarded: no facts files, no card — the
+        # guard string is the contract with usage_data()'s "cache" key.
+        check("...and renders cache re-writes only when facts exist",
+              "D.cache" in tmpl and "cache-facts" in tmpl)
         check("...and carries one unit per mode, not tokens beside dollars",
               "var money = " in tmpl and "fmtVal" in tmpl,
               "daily bars, the axis, the table twin and the tooltip all follow it")
