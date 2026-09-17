@@ -60,10 +60,14 @@ These are in `deep_plan.mjs`, which this bundle does not ship. If the machine's
 deep-plan predates them, they are simply absent — nothing here depends on them.
 
 - **The increment diff.** `deep-plan done` writes a patch of everything that happened
-  since the increment started — committed, uncommitted and untracked — and opens it with
-  `cmux diff`, titled with the increment and the sha it starts from. Degrades to printing
-  the patch path and a `git diff` command when cmux is not installed.
-- **`deep-plan diff [slug] [n]`** reopens that view.
+  since the increment started — committed, uncommitted and untracked — and prints its
+  path. It does not open a viewer: `done` is a state transition, and opening a browser
+  split from one stole focus on every increment and, because `cmux diff` targets
+  `$CMUX_WORKSPACE_ID` by default, landed somewhere unrelated whenever `done` arrived
+  from the board chip or a detached process.
+- **`deep-plan diff [slug] [n]`** is what opens it — in `cmux diff`, titled with the
+  increment and the sha it starts from, degrading to printing the patch path and a
+  `git diff` command when cmux is missing or fails.
 
 ## Checking the tie-ins
 

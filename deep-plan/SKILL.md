@@ -113,8 +113,10 @@ plan surfaces at `/plan/<slug>`.
    surface in the cmux Dock, best-effort: no board running means no tab and
    no error. The first edit inside the root flips the increment to `working`
    automatically; `deep-plan done <slug> <n>` closes it and writes the
-   increment's patch (`~/.claude/plans/<slug>.inc<n>.patch`, opened with
-   `cmux diff` when possible).
+   increment's patch to `~/.claude/plans/<slug>.inc<n>.patch`, printing the
+   path. It does **not** open a diff viewer — a state transition should not
+   seize a browser split. `deep-plan diff <slug> [n]` opens it when someone
+   actually wants to look.
 9. **If the increment declared observability, prove it before `done`.**
    `done` is refused while the verdict is `pending` or `fail`.
    `deep-plan obs check <slug> <n>` prints the checks the spec committed to;

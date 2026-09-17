@@ -1634,7 +1634,7 @@ function transition(action, slug, n, why, force = false) {
 
 // The go-ahead opens the plan's working surface in the Dock, so the page you
 // steer from appears the moment there is something to steer. Same coupling
-// budget as `done` opening `cmux diff`: strictly best-effort against the
+// budget as the board ping on `go`: strictly best-effort against the
 // board's intent server (whose open_plan reuses the existing Dock tab instead
 // of stacking a new one per go) — no server, no row, no cmux means silence,
 // never a failed go.
@@ -1664,8 +1664,16 @@ function openWorkingSurface(st) {
 }
 
 // A patch of everything since the increment started — committed, uncommitted
-// and untracked. Opens in `cmux diff` when available; prints the path either way.
-function incrementDiff(st, inc) {
+// and untracked. Always written; only OPENED when the human asked for a diff.
+//
+// `done` used to open it in `cmux diff` automatically. That is removed: a state
+// transition should not seize a browser split. It stole focus on every `done`,
+// and `cmux diff` defaults its target to $CMUX_WORKSPACE_ID — which is unset
+// when `done` arrives from the board's chip or any detached process, so the
+// split landed somewhere unrelated or not at all. The patch file is the durable
+// part and it still gets written; `deep-plan diff <slug> [n]` opens it, which
+// is the point at which someone has actually asked to look.
+function incrementDiff(st, inc, { open = false } = {}) {
   if (!inc.startSha || !st.root) return;
   try {
     execSync("git add -AN", { cwd: st.root });
@@ -1673,10 +1681,13 @@ function incrementDiff(st, inc) {
     if (!patch.trim()) return;
     const p = path.join(PLANS_DIR, `${st.slug}.inc${inc.n}.patch`);
     fs.writeFileSync(p, patch);
+    const how = `  view: git -C ${st.root} diff ${inc.startSha.slice(0, 8)}` +
+      `\n  or:   deep-plan diff ${st.slug} ${inc.n}`;
+    if (!open) { say(`patch: ${p}\n${how}`); return; }
     const title = `${st.slug} · increment ${inc.n} since ${inc.startSha.slice(0, 8)}`;
     const r = spawnSync("cmux", ["diff", "--title", title, p], { stdio: "ignore" });
-    if (r.error || r.status !== 0) say(`patch: ${p}\n  view: git -C ${st.root} diff ${inc.startSha.slice(0, 8)}`);
-  } catch { /* diff is a courtesy, never a failure */ }
+    if (r.error || r.status !== 0) say(`patch: ${p}\n${how}`);
+  } catch { /* the patch is a courtesy, never a failure */ }
 }
 
 // ---------------------------------------------------------------- status
@@ -1878,7 +1889,7 @@ switch (cmd) {
     const inc = args[1] ? findInc(st, args[1])
       : (st.increments || []).filter(i => i.startSha).pop();
     if (!inc || !inc.startSha) die("no started increment with a recorded sha");
-    incrementDiff(st, inc); break;
+    incrementDiff(st, inc, { open: true }); break;
   }
   default: {
     // Fall through to an extension verb. This is AFTER every built-in case, so
@@ -1912,7 +1923,8 @@ switch (cmd) {
   obs reset <slug> <n>                        verdict back to pending, keeping
                                               what it was in the note
   open-gate|shut-gate <slug>                  the human lever, logged
-  diff <slug> [n]                             the increment's patch since start
+  diff <slug> [n]                             open the increment's patch since start
+                                              (`done` writes it; only this opens it)
   close <slug>                                retire a finished plan`);
     // State which extensions are in force even when nothing is wrong: "my
     // extension is being ignored" is the failure this listing exists to remove.

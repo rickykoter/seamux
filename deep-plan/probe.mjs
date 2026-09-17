@@ -1264,6 +1264,64 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   ok("help still exits 0 with no extensions", ncli("--help").status === 0);
 }
 
+// -------------------------------------------------- `done` writes the patch, never opens it
+//
+// A state transition must not seize a browser split. `done` used to spawn
+// `cmux diff`, which stole focus on every increment and — because cmux diff
+// targets $CMUX_WORKSPACE_ID by default — landed somewhere unrelated whenever
+// `done` came from the board chip or any detached process.
+//
+// Tested by putting a fake `cmux` first on PATH that records its arguments, so
+// "does not open" is observed rather than assumed.
+{
+  const BIN = path.join(TMP, "fakebin");
+  fs.mkdirSync(BIN, { recursive: true });
+  const LOG = path.join(TMP, "cmux-calls.log");
+  fs.writeFileSync(path.join(BIN, "cmux"),
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(LOG)}\nexit 0\n`);
+  fs.chmodSync(path.join(BIN, "cmux"), 0o755);
+  const spyEnv = { ...ENV, PATH: BIN + path.delimiter + process.env.PATH };
+  const scli = (...args) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...args],
+    { encoding: "utf8", env: spyEnv, cwd: REPO });
+  const calls = () => { try { return fs.readFileSync(LOG, "utf8").trim().split("\n").filter(Boolean); } catch { return []; } };
+
+  const s = { ...spec, slug: "diff-plan" };
+  scli("render", tmpSpec(s));
+  const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "diff-plan.key.json"), "utf8"));
+  scli("grade", "diff-plan", ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+  scli("go", "diff-plan", "1");
+  scli("start", "diff-plan", "1");
+  // Real work, so the patch is non-empty — an empty patch returns early.
+  fs.writeFileSync(path.join(REPO, "worked.txt"), "a change worth reviewing\n");
+
+  fs.writeFileSync(LOG, "");
+  const doneOut = scli("done", "diff-plan", "1");
+  const patch = path.join(ENV.DEEP_PLAN_PLANS_DIR, "diff-plan.inc1.patch");
+  ok("done still writes the increment patch", doneOut.status === 0 && fs.existsSync(patch) &&
+    fs.readFileSync(patch, "utf8").includes("worked.txt"));
+  ok("done does NOT open cmux diff", calls().length === 0);
+  ok("…and says where the patch is instead",
+    doneOut.stdout.includes(patch) && /deep-plan diff diff-plan 1/.test(doneOut.stdout));
+
+  // The explicit request is the one thing that should open a split.
+  fs.writeFileSync(LOG, "");
+  const diffOut = scli("diff", "diff-plan", "1");
+  ok("deep-plan diff DOES open cmux diff", diffOut.status === 0 && calls().length === 1 &&
+    /^diff --title .* since /.test(calls()[0]) && calls()[0].includes(patch));
+
+  // A broken or absent cmux must degrade to the path, not fail the command.
+  fs.writeFileSync(path.join(BIN, "cmux"), "#!/bin/sh\nexit 3\n");
+  fs.chmodSync(path.join(BIN, "cmux"), 0o755);
+  const brokeOut = scli("diff", "diff-plan", "1");
+  ok("a failing cmux degrades to printing the patch path",
+    brokeOut.status === 0 && brokeOut.stdout.includes(patch));
+
+  fs.rmSync(path.join(REPO, "worked.txt"), { force: true });
+  execSync("git add -A && git -c user.email=p@p -c user.name=p commit -q -m cleanup --allow-empty", { cwd: REPO });
+  scli("close", "diff-plan");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "diff-plan.json"), { force: true });
+}
+
 // -------------------------------------------------- hot-path cost
 const t0 = process.hrtime.bigint();
 for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);
