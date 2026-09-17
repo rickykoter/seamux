@@ -647,6 +647,18 @@ cmd_doctor() {
   else
     note "GitHub Issues integration off — enable with ./install.sh --with-github-issues"
   fi
+  # Optional and keyed, not chosen at setup: a key on this machine turns it on.
+  if python3 "$CREW_HOME/hooks/asked.py" available 2>/dev/null; then
+    # Both knobs live in integrations.json typesafe; the client owns the
+    # defaults, so read them through it rather than restating 0.7/0.8 here.
+    local _ts_t
+    _ts_t="$(python3 -c "import sys; sys.path.insert(0, '$CREW_HOME/hooks'); \
+import typesafe; print('asked>=%.2f stuck>=%.2f' % (typesafe.threshold(), \
+typesafe.threshold('stuck_threshold', 0.8)))" 2>/dev/null)"
+    ok "TypeSafe: turn-end ask + board ranking (${_ts_t:-thresholds unreadable})"
+  else
+    note "TypeSafe off — set TYPESAFE_API_KEY or ~/.config/typesafe/api-key to catch questions at turn end"
+  fi
   local codebin="${CREW_CODE_BIN:-/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code}"
   [ -x "$codebin" ] || codebin="$(command -v code || true)"
   if [ -n "$codebin" ] && [ -x "$codebin" ]; then
@@ -678,11 +690,12 @@ cmd_doctor() {
   # facts, crew-overlay only for machines that have an overlay, crew-frame
   # behind an `[ -x ]` that skips it without a word.
   for f in hooks/lib.sh hooks/crew-hook.sh hooks/progress.sh hooks/triage.py \
+           hooks/asked.py hooks/asked.sh hooks/typesafe.py hooks/typesafe_probe.py \
            bin/crew-watch bin/crew-spec bin/crew-worktree bin/crew-diff bin/crew-code \
            bin/crew-code-open bin/crew-color bin/crew-digest bin/crew-feed bin/crew-listen bin/crew-reclaim bin/crew-resume bin/crew-sandbox bin/crew-sync sidebars/crew.swift config/cmux.jsonc config/dock.json \
            bin/crew-frame bin/crew-overlay config/dock.global.json \
            board/crew-board board/board.html board/render.js board/board_probe.mjs bin/crew-cmux-bin \
-           board/crew-board-intent board/crew-board-diag board/costs.py board/intent.js board/cat_from_swift.py board/usage.tmpl.html \
+           board/crew-board-intent board/crew-board-diag board/costs.py board/judgments.py board/intent.js board/cat_from_swift.py board/usage.tmpl.html \
            tools/render_probe.py; do
     [ -f "$CREW_HOME/$f" ] && ok "$f" || bad "missing $f"
   done

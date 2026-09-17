@@ -42,3 +42,8 @@ jobs:
 
       - name: board probe
         run: node crew/board/board_probe.mjs
+
+      # A local mock of /v1/systemone — asserts every failure path degrades to
+      # "no judgment", so the TypeSafe layer can never change CI-less behavior.
+      - name: typesafe probe
+        run: python3 crew/hooks/typesafe_probe.py

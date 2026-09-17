@@ -70,10 +70,10 @@ but the layout is tuned for sidebar width and reads very loose full-width.
 | Event | Effect |
 |---|---|
 | `SessionStart` | Workspace → `PROJ-961 · graphql-db-schema-updates`, tab → `dir · branch`, color hashed from the ticket |
-| `PreToolUse` | Release any lane override so cmux resumes inferring `working` |
+| `PreToolUse` | Release any lane override so cmux resumes inferring `working`; after a turn-end ask, also `phase:working` |
 | `PostToolUse` on `Task*` | `set-progress`, `todo set`, and a pill naming the task in flight |
 | `Notification` | `phase:waiting` — the *only* thing that opens "Needs you" — lane → `needs-attention`, banner |
-| `Stop` | Clear `phase`, so the row leaves "Needs you"; lane → `review` **only if** the tree is dirty or ahead of upstream; clear the pill; sidebar-only turn record |
+| `Stop` | Clear `phase`, so the row leaves "Needs you"; lane → `review` **only if** the tree is dirty or ahead of upstream; clear the pill; sidebar-only turn record. With TypeSafe on, a background check may then promote the turn to waiting (below) |
 | `SessionEnd` | Release the lane, clear the pill |
 
 ## Diffs
@@ -381,6 +381,38 @@ badges its worktree forever.
 Exactly one thing: `phase:waiting`, which `hooks/crew-hook.sh` publishes on
 Claude's own **Notification** event and clears on **Stop**. Nothing else opens
 that bucket.
+
+**Optional: questions at turn end.** Notification fires for permission prompts,
+not for a turn that ends "should I use A or B?" — that is a plain Stop, and the
+row files as finished. With a [TypeSafe](https://typesafe.ai) key on the machine
+(`$TYPESAFE_API_KEY`, or the first line of `~/.config/typesafe/api-key`), Stop
+also runs `hooks/asked.sh` in the background: `hooks/asked.py` asks TypeSafe's
+Jev model one yes/no question about Claude's last message, whether the agent is
+blocked on you or is just offering optional follow-ups. At or above the
+threshold (0.7) it publishes the same `phase:waiting`, lane and banner as
+Notification, with the question as the banner text. Your next tool use takes
+the phase back.
+
+It stays out of the way: the turn never waits on the network. A judgment is
+dropped if the transcript grew before it arrived, and any failure means no
+judgment, so behavior is exactly the pre-TypeSafe one. The message's last 4000
+characters go to TypeSafe; nothing else leaves the machine. Tune or turn it off in
+`integrations.json`: `{"typesafe": {"threshold": 0.8}}` or
+`{"typesafe": {"enabled": false}}`. Scores land in
+`~/.cache/cmux-crew/asked.log`; `crew doctor` says whether it is on.
+
+**The same request also ranks the board.** Two more questions ride along over
+the same text: whether the agent stopped on an error it could not get past,
+and a 0–3 urgency score. `asked.sh` caches the answers per worktree in
+`~/.cache/cmux-crew/judgments.json`; the board only ever reads that file — a
+push never touches the network. Policy stays in code: stuck at or above
+`typesafe.stuck_threshold` (default 0.8, provisional) files an *idle* row as
+wilt with a `stuck` badge — red CI, conflicts and blocked increments still
+outrank it, and a row mid-turn is never judged, because the judgment is about
+a turn that already ended. Urgency only orders rows *within* a tier; tier
+order never moves, and rows without a judgment keep their old order. Entries
+expire after 6h (`CREW_JUDGMENT_TTL`). No key, no cache, or any error: the
+board ranks exactly as it did before.
 
 Two things used to, and both were wrong:
 

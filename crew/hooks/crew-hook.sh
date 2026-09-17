@@ -40,6 +40,15 @@ if [ "$event" = "pretool" ]; then
     _c="$(ls -dt /Applications/cmux*.app/Contents/Resources/bin/cmux 2>/dev/null | head -1)"
     [ -x "$_c" ] && "$_c" workspace status set auto >/dev/null 2>&1
   fi
+  # A turn-end ask (asked.sh) also published phase:waiting, and a tool use means
+  # you answered it. Only ever reached right after such an ask, so the lib cost
+  # is paid once per answer, not per tool use.
+  _a="${XDG_CACHE_HOME:-$HOME/.cache}/cmux-crew/asked-${CMUX_WORKSPACE_ID:-none}"
+  if [ -f "$_a" ]; then
+    rm -f "$_a" 2>/dev/null
+    . "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+    crew_phase working
+  fi
   exit 0
 fi
 
@@ -142,6 +151,21 @@ case "$event" in
     crew_cmux notify --title "$(crew_label)" --subtitle "crew:turn" \
       --body "Turn complete${branch:+ — $branch}"
     crew_sync_maybe
+
+    # Optional: with TypeSafe configured, ask whether the turn really ended on a
+    # question, and if so promote it to waiting-on-you. Without it, the above
+    # is the whole story. Detached, so the turn never waits on the network.
+    rm -f "$CREW_STATE/asked-$CMUX_WORKSPACE_ID" 2>/dev/null
+    if python3 "$CREW_DIR/asked.py" available 2>/dev/null; then
+      transcript="$(crew_json transcript_path)"
+      size="$(wc -c <"$transcript" 2>/dev/null | tr -d ' ')"
+      # A file, not a pipe: bash gives a backgrounded job /dev/null for stdin.
+      pl="$CREW_STATE/asked-payload-$CMUX_WORKSPACE_ID"
+      mkdir -p "$CREW_STATE" 2>/dev/null
+      if printf '%s' "$CREW_PAYLOAD" >"$pl" 2>/dev/null; then
+        ( nohup "$CREW_DIR/asked.sh" "$size" <"$pl" >/dev/null 2>&1 & ) >/dev/null 2>&1
+      fi
+    fi
     ;;
 
   end)
