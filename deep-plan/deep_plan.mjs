@@ -1924,7 +1924,7 @@ switch (cmd) {
                                               what it was in the note
   open-gate|shut-gate <slug>                  the human lever, logged
   diff <slug> [n]                             open the increment's patch since start
-                                              (`done` writes it; only this opens it)
+                                              (done writes it; only this opens it)
   close <slug>                                retire a finished plan`);
     // State which extensions are in force even when nothing is wrong: "my
     // extension is being ignored" is the failure this listing exists to remove.
