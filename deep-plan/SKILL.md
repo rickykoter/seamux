@@ -183,9 +183,18 @@ repo itself (`NNNN-slug.md`), not just the plan surfaces. The discipline:
    idempotent on re-apply.
 4. **Style is the adopter's.** `.seamux/adr.json`: `template` is `nygard`
    (default), `madr`, or a repo-relative path to their own template
-   (`{{number}} {{title}} {{status}} {{date}} {{context}} {{decision}}
-   {{consequences}} {{alternatives}}`); unknown names are treated as paths so
-   a typo fails loudly instead of silently restyle-ing.
+   (`{{title}} {{status}} {{date}} {{context}} {{decision}} {{consequences}}
+   {{alternatives}}`, plus `{{n}} {{nn}} {{nnn}} {{nnnn}}` for the number at
+   the width the house style uses, or `{{number}}` for 4-padded); unknown
+   names are treated as paths so a typo fails loudly instead of silently
+   restyle-ing. **The file convention is theirs too:** `filePattern`
+   (default `{nnnn}-{kebab}.md`; `{n}/{nn}/{nnn}/{nnnn}` set the width,
+   `{kebab}`/`{snake}` the separator) and `numberScan` — the regex, with one
+   capture group, that finds the number in existing filenames (default
+   `^(\d{4})-.+\.md$`). Getting `numberScan` wrong is not cosmetic: a scan
+   that matches none of the existing files makes the next number 1 and writes
+   a second ADR 1 beside the real one, so `render` and `adr apply` both warn
+   when a folder holds `.md` files the scan cannot read.
 5. **ADRs are edited in the page, applied through the spec.** Every ADR card
    on the review and working surfaces has an **Edit** toggle: all fields
    (decision, context, consequences, alternatives) with a live preview in a

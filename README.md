@@ -93,7 +93,10 @@ answers. A decision that wasn't flagged gets an **add an ADR** chip. The
 repo itself is only touched after the check passes, by `deep-plan adr apply
 <slug>` — marked Accepted and dated on the way in, and safe to run twice.
 Prefer MADR over the default Nygard style, or have your own template? Point
-`.seamux/adr.json` at it.
+`.seamux/adr.json` at it — and if your repo names its ADRs
+`adr_013_snake_case.md` rather than `0013-kebab-case.md`, `filePattern` and
+`numberScan` take that too, so new records continue your existing numbering
+instead of restarting at one.
 
 ![an ADR card with the in-page editor open: destination, fields, and live preview](docs/img/adr-editing.png)
 

@@ -362,6 +362,109 @@ ok("mermaid theme follows the page theme",
   fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "contract-free-plan.json"), { force: true });
 }
 
+// -------------------------------------------------- ADR file convention is the adopter's
+//
+// "One ADR per file, numbered, in a folder" is the only part every adopter
+// shares; the spelling is house style. A repo with 348 ADRs named
+// `adr_001_snake_case.md` will not restyle them to suit a planning tool, and
+// the failure when it does not match is not cosmetic: a scan that recognises
+// none of the existing files reports "next number = 1" and writes a second
+// ADR 1 beside the real one.
+{
+  const alib = await import(new URL("lib/adr.mjs", import.meta.url));
+  const HOUSE = path.join(TMP, "house");
+  fs.mkdirSync(HOUSE, { recursive: true });
+  // Three real-world spellings, none of them the default.
+  for (const n of ["adr_001_first.md", "adr_002_second.md", "adr-003-third.md", "004_fourth.md"])
+    fs.writeFileSync(path.join(HOUSE, n), "x\n");
+
+  ok("the default scan recognises the default convention",
+    alib.nextNumber(path.dirname(path.join(HOUSE, "x")), alib.ADR_DEFAULT_SCAN) === 1);
+  // The bug this exists to prevent, asserted as a bug:
+  ok("the default scan does NOT recognise the house convention (so it would restart at 1)",
+    alib.nextNumber(HOUSE, alib.ADR_DEFAULT_SCAN) === 1);
+  ok("a configured scan continues the house numbering",
+    alib.nextNumber(HOUSE, "^(?:adr[-_])?(\\d+)[-_]") === 5);
+  // …and that mismatch is reported rather than left to be discovered later.
+  const rep = alib.adrScanReport(HOUSE, alib.ADR_DEFAULT_SCAN);
+  ok("a folder whose files the scan cannot read is reported",
+    rep && rep.total === 4 && rep.examples.length === 3);
+  ok("…and a folder it CAN read reports nothing",
+    alib.adrScanReport(HOUSE, "^(?:adr[-_])?(\\d+)[-_]") === null);
+  ok("an empty folder reports nothing (starting at 1 is correct there)",
+    alib.adrScanReport(path.join(TMP, "no-such-adr-dir"), alib.ADR_DEFAULT_SCAN) === null);
+
+  ok("filePattern chooses the number width and the word separator",
+    alib.adrFileName(13, "Stamp The Lender Entity", "adr_{nnn}_{snake}.md") ===
+      "adr_013_stamp_the_lender_entity.md" &&
+    alib.adrFileName(13, "Stamp The Lender Entity", "{nnnn}-{kebab}.md") ===
+      "0013-stamp-the-lender-entity.md" &&
+    alib.adrFileName(7, "X", "{n}_{snake}.md") === "7_x.md");
+  ok("the default pattern is unchanged for adopters with no config",
+    alib.adrFileName(13, "Stamp The Lender Entity") === "0013-stamp-the-lender-entity.md");
+
+  // A pattern produces a FILENAME. Without this it can produce a path, and the
+  // ADR lands outside the directory the config named.
+  const cfgDir = path.join(TMP, "cfgroot");
+  const writeCfg = o => {
+    fs.mkdirSync(path.join(cfgDir, ".seamux"), { recursive: true });
+    fs.writeFileSync(path.join(cfgDir, ".seamux", "adr.json"), JSON.stringify(o));
+  };
+  for (const bad of ["../{kebab}.md", "a/{kebab}.md", "..{nnn}.md"]) {
+    writeCfg({ filePattern: bad });
+    ok(`filePattern ${JSON.stringify(bad)} is refused, falling back to the default`,
+      alib.loadAdrConfig(cfgDir).filePattern === alib.ADR_DEFAULT_PATTERN);
+  }
+  // No number placeholder means every ADR overwrites the last.
+  writeCfg({ filePattern: "{kebab}.md" });
+  ok("a filePattern with no number placeholder is refused",
+    alib.loadAdrConfig(cfgDir).filePattern === alib.ADR_DEFAULT_PATTERN);
+  writeCfg({ numberScan: "^(unclosed" });
+  ok("an uncompilable numberScan is refused, not thrown",
+    alib.loadAdrConfig(cfgDir).numberScan === alib.ADR_DEFAULT_SCAN);
+  writeCfg({ numberScan: "^adr_\\d+" });
+  ok("a numberScan with no capture group is refused",
+    alib.loadAdrConfig(cfgDir).numberScan === alib.ADR_DEFAULT_SCAN);
+  writeCfg({ filePattern: "adr_{nnn}_{snake}.md", numberScan: "^(?:adr[-_])?(\\d+)[-_]" });
+  const good = alib.loadAdrConfig(cfgDir);
+  ok("a valid convention is accepted",
+    good.filePattern === "adr_{nnn}_{snake}.md" && good.numberScan === "^(?:adr[-_])?(\\d+)[-_]");
+  fs.rmSync(path.join(cfgDir, ".seamux"), { recursive: true, force: true });
+  ok("no config at all keeps every default",
+    JSON.stringify(alib.loadAdrConfig(cfgDir)) ===
+      JSON.stringify({ template: "nygard", dir: null,
+        filePattern: alib.ADR_DEFAULT_PATTERN, numberScan: alib.ADR_DEFAULT_SCAN }));
+
+  // Discovery runs BEFORE any config, so it has to be broader than one style.
+  // A folder NAMED adr/adrs is matched by name, which would pass this whatever
+  // the file pattern — so the folder here is deliberately called something
+  // else, leaving the filename test as the only thing that can find it.
+  const disco = path.join(TMP, "disco", "docs", "decisions");
+  fs.mkdirSync(disco, { recursive: true });
+  fs.writeFileSync(path.join(disco, "adr_001_house_style.md"), "x\n");
+  ok("discovery finds an ADR home that is not named adr/adrs, by its filenames",
+    alib.resolveAdrDir(path.join(TMP, "disco"), { dir: null }).dir === "docs/decisions");
+  // …and the name path still works on its own, with no recognisable files.
+  const named = path.join(TMP, "disco2", "docs", "adrs");
+  fs.mkdirSync(named, { recursive: true });
+  fs.writeFileSync(path.join(named, "README.md"), "x\n");
+  ok("a folder named adrs is found by name even with no ADR files in it",
+    alib.resolveAdrDir(path.join(TMP, "disco2"), { dir: null }).dir === "docs/adrs");
+
+  // The number widths a house template needs in its heading.
+  const rendered = alib.renderAdr(
+    { decision: "Do the thing", why: "because", adr: { consequences: "c" } },
+    { template: "nygard" }, { number: 13, root: TMP });
+  ok("the built-in template still renders a 4-padded number", rendered.includes("0013"));
+  const tplPath = path.join(TMP, "house.tmpl.md");
+  fs.writeFileSync(tplPath, "# ADR {{n}} / {{nnn}} / {{nnnn}}: {{title}}\n{{context}}\n");
+  const houseRendered = alib.renderAdr(
+    { decision: "Do the thing", why: "because" },
+    { template: { path: "house.tmpl.md" } }, { number: 13, root: TMP });
+  ok("a house template can choose the number width",
+    houseRendered.includes("# ADR 13 / 013 / 0013: Do the thing"));
+}
+
 // -------------------------------------------------- ADR inline editor + markdown subset
 {
   const workingNow = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");

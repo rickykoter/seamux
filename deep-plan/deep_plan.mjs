@@ -20,7 +20,7 @@ import crypto from "node:crypto";
 import { execSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { validateDiagrams, validateSurface } from "./lib/validate.mjs";
-import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries } from "./lib/adr.mjs";
+import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries, adrScanReport } from "./lib/adr.mjs";
 import { epicHtml, incrementMd, bundleReadme, incrementFileNames } from "./lib/cutover.mjs";
 import { checkEvidence } from "./lib/evidence.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
@@ -183,10 +183,20 @@ function planAdrs(spec, root) {
   const config = loadAdrConfig(root);
   const files = (spec.deliverables || []).flatMap(d => d.files || []);
   const { dir, source } = resolveAdrDir(root, config, files);
-  const base = nextNumber(path.join(root, dir));
+  const dirAbs = path.join(root, dir);
+  const base = nextNumber(dirAbs, config.numberScan);
+  // The one way this goes silently wrong: the folder is full of ADRs the scan
+  // does not recognise, so "next number" is 1 and apply writes a second ADR 1
+  // beside the real one. Say it at render, while the plan is still being read.
+  const miss = adrScanReport(dirAbs, config.numberScan);
+  if (miss) {
+    console.error(`  ⚠ adr: ${dir} holds ${miss.total} .md file(s) and the numbering scan matched none of them`);
+    console.error(`        e.g. ${miss.examples.join(", ")}`);
+    console.error(`        numbering therefore restarts at 1. Set numberScan in .seamux/adr.json to match.`);
+  }
   return entries.map((e, i) => ({
     n: i + 1, decision: e.decision, dir, source,
-    number: base + i, file: adrFileName(base + i, e.decision),
+    number: base + i, file: adrFileName(base + i, e.decision, config.filePattern),
     applied: "",
   }));
 }
@@ -1419,11 +1429,15 @@ function adrApply(slug) {
     if (!entry) continue;
     const dirAbs = path.join(st.root, a.dir);
     if (!a.applied) {
-      const fresh = nextNumber(dirAbs);
+      const miss = adrScanReport(dirAbs, config.numberScan);
+      if (miss)
+        say(`adr ${a.n}: WARNING — ${a.dir} holds ${miss.total} .md file(s) the numbering scan does not ` +
+            `recognise (e.g. ${miss.examples[0]}); numbering restarts at 1 and may duplicate an existing ADR`);
+      const fresh = nextNumber(dirAbs, config.numberScan);
       if (fresh !== a.number) {
         say(`adr ${a.n}: number drifted ${a.number} -> ${fresh} (something landed in ${a.dir} since render)`);
         a.number = fresh;
-        a.file = adrFileName(fresh, entry.decision);
+        a.file = adrFileName(fresh, entry.decision, config.filePattern);
       }
     }
     const rel = path.join(a.dir, a.file);
