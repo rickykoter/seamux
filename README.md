@@ -50,6 +50,17 @@ running tally: re-cached tokens this week, causes, and the sessions that
 cost the most. Detection is local — transcripts, not API calls — and the
 TTL is read from your billing mode and settings, never guessed.
 
+What to do with a warning: a break you already took is sunk — you only
+pay the re-cache if you prompt again, so a session that was nearly done
+can just be left to lapse. A cold cache is also the cheap moment for the
+disruptive stuff (switching model, toggling a plugin, upgrading), since
+each of those would have broken it anyway. And the stale warning is
+worth answering only with a prompt you meant to send — a cache read
+costs about a tenth of the normal input price, a re-write up to double
+it, so sending the next real
+step a minute early is near-free insurance, while prompting just to keep
+a cache warm is spending real tokens to protect hypothetical ones.
+
 **A plan under review.** deep-plan renders the agent's plan as a page:
 context, decisions, cited evidence, diagrams, increments — and a short quiz
 that checks you and the plan actually agree. Answer on the page, highlight
