@@ -1869,8 +1869,16 @@ function askShow(id) {
   say(`ask ${id}: ${ask.answer.n} — ${o.label || ""}${ask.answer.delivered ? "" : " (shown on the page, not typed)"}`);
 }
 
-// Best-effort, like openWorkingSurface: the intent server dedups the Dock tab
-// per workspace. Returns the served URL when the server answered.
+// Best-effort, like openWorkingSurface. Returns the served URL when the
+// intent server is up.
+//
+// The page goes into the WORKSPACE the ask came from, as a browser tab beside
+// the terminal (`cmux open --workspace`), not into the Dock: cmux has no verb
+// that brings a Dock tab to the front, so a Dock ask sat behind the board, and
+// the one-tab-per-workspace dedupe there meant a second ask replaced the
+// first's page while its prompt was still up. In the workspace every ask is
+// its own tab and stays visible. The Dock route remains the fallback for a
+// caller with no workspace in its environment (a detached process).
 function openAskSurface(ask) {
   try {
     if (process.env.DEEP_PLAN_STATE_DIR) return "";
@@ -1880,6 +1888,12 @@ function openAskSurface(ask) {
     const token = rd("board-intent.token");
     if (!port || !token) return "";
     const url = `http://127.0.0.1:${port}/ask/${ask.id}`;
+    if (ask.workspace) {
+      // --focus false: the human is mid-prompt in the terminal; do not steal it.
+      const r = spawnSync("cmux", ["open", url, "--workspace", ask.workspace, "--focus", "false"],
+        { encoding: "utf8", env: { ...process.env, CMUX_QUIET: "1" }, timeout: 10000 });
+      if (r.status === 0) return url;
+    }
     const targets = JSON.parse(fs.readFileSync(path.join(cache, "board-targets.json"), "utf8"));
     const rid = ask.workspace && targets[ask.workspace] ? ask.workspace :
       Object.keys(targets).find(k => (targets[k] || {}).cwd && path.resolve(targets[k].cwd) === path.resolve(ask.cwd));

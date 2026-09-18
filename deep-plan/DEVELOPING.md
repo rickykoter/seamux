@@ -36,8 +36,11 @@ surfaces `~/.claude/plans/`. Probe overrides: `DEEP_PLAN_STATE_DIR`,
   cwd, slug, answer:{n, at, delivered}|null}`) and `<id>.html` beside it, written
   by `deep-plan ask`; the page's `.dp-ask-pick[data-n]` buttons render disabled
   and `crew-board-intent` serves `/ask/<id>` with ASK_JS injected, `/answer`
-  records into the json and types into `surface` only. `deep-plan ask` calls
-  `/do?a=ask&r=<workspace>&x=<id>` best-effort to open the Dock tab.
+  records into the json and types into `surface` only, and only after
+  read-screen shows that ask's option label on the prompt. `deep-plan ask`
+  opens the page with `cmux open <url> --workspace $CMUX_WORKSPACE_ID
+  --focus false` (one tab per ask, beside the terminal) and falls back to
+  `/do?a=ask&r=<workspace>&x=<id>`, the Dock tab, when no workspace is known.
 - Risk cards on editing surfaces: `li.dp-risk[data-n][data-disposition][data-payload]`
   with radios `dp-risk-N`, `.dp-risk-deliv`, `.dp-risk-ticket`, `.dp-risk-note`;
   `window.dpRiskLines()` stages `- [risk N] <disposition>: <payload>` lines into

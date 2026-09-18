@@ -271,6 +271,13 @@ def cmux_run(argv, timeout=10):
         return 1, str(exc)
 
 
+def _on_screen(label, screen):
+    """Is the option label visible? Whitespace-insensitive: the prompt wraps
+    long labels across lines, and read-screen keeps the wrap."""
+    squash = lambda s: re.sub(r"\s+", "", s)
+    return squash(label) in squash(screen)
+
+
 def deliver(surface, n, label="", runner=None):
     """Type option n into `surface` and prove it landed before claiming so.
 
@@ -283,6 +290,12 @@ def deliver(surface, n, label="", runner=None):
     runner = runner or cmux_run
     if not surface:
         return False, "the ask recorded no terminal surface — press %d in the terminal" % n
+    # Look BEFORE typing: the number key submits whatever prompt is showing,
+    # and a multi-question prompt shows one question per tab. If this ask's
+    # option is not on screen, the keystroke would answer some other question.
+    rc, screen = runner(["read-screen", "--surface", surface, "--lines", "60"])
+    if label and (rc != 0 or not _on_screen(label, screen)):
+        return False, "the terminal is not showing this question — switch to it, then press %d" % n
     rc, out = runner(["send", "--surface", surface, str(n)])
     if rc != 0:
         return False, "cmux send failed (%s) — press %d in the terminal" % (out.strip()[:80], n)
@@ -1456,13 +1469,16 @@ def selftest():
         check("answer refuses an option out of range", answer(aid, "4", lambda a: (0, ""))[0] is False)
         check("answer refuses a non-number", answer(aid, "x", lambda a: (0, ""))[0] is False)
 
-        def fake(screen_after):
+        PROMPT = "  1. a\n❯ 2. b\n  3. c\n"
+
+        def fake(screen_after, screen_before=PROMPT):
+            # The first read-screen is the look-before-typing; later ones are after.
             calls = []
 
             def runner(argv):
                 calls.append(argv[0])
                 if argv[0] == "read-screen":
-                    return 0, screen_after
+                    return 0, screen_before if calls.count("read-screen") == 1 else screen_after
                 return 0, "OK"
             return runner, calls
 
@@ -1470,8 +1486,8 @@ def selftest():
         # to "… → <label>", and no Enter is needed.
         runner, calls = fake("  What should it do? → b\n❯ \n")
         ok_, delivered, detail = answer(aid, "2", runner)
-        check("resolved line proves delivery: send, read-screen, no Enter",
-              ok_ and delivered and calls == ["send", "read-screen"], detail)
+        check("resolved line proves delivery: look, send, read-screen, no Enter",
+              ok_ and delivered and calls == ["read-screen", "send", "read-screen"], detail)
         check("the answer is recorded as delivered",
               json.load(open(os.path.join(ASKS, aid + ".json")))["answer"]["delivered"] is True)
         check("a second answer is refused", answer(aid, "1", runner)[0] is False)
@@ -1481,15 +1497,35 @@ def selftest():
             json.dump(ask, fh)
         runner, calls = fake("  1. a\n❯ 2. b\n  3. c\n")
         ok_, delivered, detail = answer(aid, "2", runner)
-        check("pointer moved but unresolved: Enter is sent", ok_ and delivered and calls == ["send", "read-screen", "send-key"], detail)
-        # Neither seen: recorded, nothing more typed, the human is told.
+        check("pointer moved but unresolved: Enter is sent",
+              ok_ and delivered and calls == ["read-screen", "send", "read-screen", "send-key"], detail)
+        # Neither seen after typing: recorded, nothing more typed, the human is told.
         ask["answer"] = None
         with open(os.path.join(ASKS, aid + ".json"), "w") as fh:
             json.dump(ask, fh)
         runner, calls = fake("  1. a\n  2. b\n❯ 3. c\n")
         ok_, delivered, detail = answer(aid, "2", runner)
         check("unconfirmed: recorded, no Enter sent, the human is told",
-              ok_ and not delivered and calls == ["send", "read-screen"] and "check the terminal" in detail, detail)
+              ok_ and not delivered and calls == ["read-screen", "send", "read-screen"] and "check the terminal" in detail, detail)
+        # The terminal is showing some OTHER question (a different tab of a
+        # multi-question prompt, or no prompt at all): nothing is typed.
+        ask["answer"] = None
+        with open(os.path.join(ASKS, aid + ".json"), "w") as fh:
+            json.dump(ask, fh)
+        runner, calls = fake("", screen_before="  1. red\n❯ 2. green\n")
+        ok_, delivered, detail = answer(aid, "2", runner)
+        check("option not on screen: nothing typed, the human is told to switch",
+              ok_ and not delivered and calls == ["read-screen"] and "not showing this question" in detail, detail)
+        # A label the prompt wrapped across two lines still counts as on screen.
+        ask["answer"] = None
+        ask["options"][1]["label"] = "a much longer label that wraps"
+        with open(os.path.join(ASKS, aid + ".json"), "w") as fh:
+            json.dump(ask, fh)
+        runner, calls = fake("  ? → a much longer label that wraps\n",
+                             screen_before="  1. a\n❯ 2. a much longer label\n     that wraps\n  3. c\n")
+        ok_, delivered, detail = answer(aid, "2", runner)
+        check("a wrapped label is still found on screen", ok_ and delivered, detail)
+        ask["options"][1]["label"] = "b"
         ask["answer"] = None
         ask["surface"] = ""
         with open(os.path.join(ASKS, aid + ".json"), "w") as fh:
