@@ -1,0 +1,16 @@
+{
+  "header": "Share scope",
+  "question": "For temporary share links, what should a logged-out visitor see?",
+  "mermaid": "flowchart LR\n  V[visitor with link] --> G{link scope}\n  G -- whole site --> S[read-only site]\n  G -- day-of only --> D[day-of planner]",
+  "options": [
+    { "label": "Whole site, read-only",
+      "description": "Every page renders; edit controls and dollar amounts are hidden.",
+      "example": "GET /s/abc123 -> 200 (layout: read-only)\nGET /s/abc123/budget -> 200, amounts redacted" },
+    { "label": "Day-of planner only",
+      "description": "The link opens the day-of planner and nothing else resolves.",
+      "example": "GET /s/abc123 -> 302 /s/abc123/day-of\nGET /s/abc123/budget -> 404" },
+    { "label": "Configurable per link",
+      "description": "The link carries its own scope; the share dialog picks it.",
+      "mermaid": "flowchart LR\n  L[link] --> C{scope on link}\n  C --> A[site]\n  C --> B[day-of]" }
+  ]
+}

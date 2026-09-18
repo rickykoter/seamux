@@ -29,6 +29,16 @@ plan surfaces at `/plan/<slug>`.
    in the question, and carry the answer into the spec as a decision flagged
    `adr`: the answer's why becomes the context, the rejected options become the
    alternatives, and the human's own words seed the consequences.
+   **When a fork is about shape, placement, flow, or a payload, show it.**
+   Write the question as an ask file (`examples/example.ask.json`: one
+   question, 2+ options, per-option `mermaid` and `example`) and run
+   `deep-plan ask <file.json>` from the worktree — it renders the page,
+   prints the id and the `/ask/<id>` URL, and opens it in the Dock. Then
+   call `AskUserQuestion` as usual with the same options, each preview
+   carrying that URL plus a text sketch: the terminal prompt is the
+   answer of record, and a pick on the page types the option number into
+   it (verified by reading the screen back; if unverified the page says
+   which key to press). `deep-plan ask show <id>` prints what was picked.
 2. **Survey the terrain before drafting.** The interrogation covers the
    human's unknowns; this covers the code's. Grep the codebase for the
    feature's own vocabulary (planning issue chips? search `issue`, `ticket`,
@@ -142,7 +152,10 @@ plan surfaces at `/plan/<slug>`.
                       "reach": "who consumes it (scouted)", "decisionRef": "the owning decision",
                       "waiver": "external-scope escape hatch: why no ADR" }],
   "verifiedFacts": [{ "claim": "...", "evidence": "path:line" }],
-  "risks":         ["uncited claims live here, not in verifiedFacts"],
+  "risks":         ["uncited claims live here, not in verifiedFacts",
+                    { "risk": "…", "disposition": "accept|mitigate|spike|promote",
+                      "deliverableRef": "mitigate: a deliverable title", "ticketRef": "mitigate: or a filed ticket",
+                      "note": "spike: the check that settles it; ticket: its context" }],
   "diagrams":      [{ "question": "the heading, phrased as a question", "mermaid": "..." }],
   "deliverables":  [{ "title": "...", "body": "...", "files": ["relative/paths"],
                       "verification": ["how to check THIS increment (optional)"],
@@ -235,6 +248,33 @@ changes shape on.
    before reading any answers, if a contract decision has no quiz question
    whose `decisionRef` matches — the review cannot pass around a contract
    change. Render stays permissive so authoring is not blocked.
+
+## Risks — dispositioned at review, and the review cannot pass around one
+
+A risk is an uncited claim; the review's job is to decide what to do about
+each, not to score it. Every risk therefore carries a **disposition**, and
+`deep-plan grade` refuses structurally — before reading any answer — while
+any risk has none (`key.undispositionedRisks`, same shape as uncovered
+contracts). A plain string is an undispositioned risk.
+
+1. **Four dispositions, each with a payload the renderer checks.** `accept`
+   (nothing more); `mitigate` with `deliverableRef` naming a deliverable
+   title in this plan, **or** `ticketRef` (URL or key) plus a `note` — a
+   backlog item filed with context is a real commitment too; `spike` with a
+   `note` saying what check settles it; `promote`, matched by a quiz question
+   whose `riskRef` is the risk's text. A disposition that is set but broken
+   refuses at render.
+2. **The human picks on the page.** On the review and working surfaces each
+   risk is a card: radios for the disposition, a deliverable select and a
+   ticket box shown while mitigate is picked, and a note. Nothing is written
+   by the page: a changed card stages `- [risk N] <disposition>: <payload>`
+   into the copy-back blob (N is 1-based, in spec order; the payload is the
+   deliverable title, `ticket <ref> — <note>`, or the note). Apply it as a
+   spec edit — set `disposition` and the matching field on entry N — and
+   re-render. `promote` means you also write the quiz question with `riskRef`.
+3. **Old plans are not grandfathered.** Re-rendering a spec written before
+   dispositions existed refuses at grade until each risk has one; that is
+   the floor doing its job, not a bug.
 
 ## Observability-aware planning (opt-in per project)
 
