@@ -71,6 +71,8 @@ but the layout is tuned for sidebar width and reads very loose full-width.
 |---|---|
 | `SessionStart` | Workspace → `PROJ-961 · graphql-db-schema-updates`, tab → `dir · branch`, color hashed from the ticket |
 | `PreToolUse` | Release any lane override so cmux resumes inferring `working`; after a turn-end ask, also `phase:working` |
+| `PreToolUse` on `AskUserQuestion` | `phase:waiting` + `needs-attention` the moment a question goes up, with the question as the banner — no Notification fires for this, so without it the row sat in Idle under an open prompt. A `question-<ws>` marker tells crew-sync to keep the phase while cmux still says `running` |
+| `PostToolUse` on `AskUserQuestion` | Answered or dismissed: drop the marker, release the lane, `phase:working` |
 | `PostToolUse` on `Task*` | `set-progress`, `todo set`, and a pill naming the task in flight |
 | `Notification` | `phase:waiting` — the *only* thing that opens "Needs you" — lane → `needs-attention`, banner |
 | `Stop` | Clear `phase`, so the row leaves "Needs you"; lane → `review` **only if** the tree is dirty or ahead of upstream; clear the pill; sidebar-only turn record. With TypeSafe on, a background check may then promote the turn to waiting (below) |

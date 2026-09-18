@@ -108,6 +108,36 @@ case "$event" in
     crew_phase "working"
     ;;
 
+  ask)
+    # PreToolUse on AskUserQuestion: the agent is blocked on a human from this
+    # instant, but no Notification fires for it (that event covers permission
+    # prompts and the 60s idle nudge), so without this the row sat in "Idle"
+    # under an open question. The marker is what lets crew-sync keep
+    # phase:waiting while cmux still reports the agent as running, and
+    # `answered` (PostToolUse) is what clears both.
+    mkdir -p "$CREW_STATE" 2>/dev/null || true
+    : > "$CREW_STATE/question-$CMUX_WORKSPACE_ID" 2>/dev/null || true
+    crew_lane_set needs-attention
+    crew_phase "waiting on you"
+    q="$(printf '%s' "$CREW_PAYLOAD" | python3 -c '
+import json, sys
+try:
+    qs = (json.load(sys.stdin).get("tool_input") or {}).get("questions") or []
+    print((qs[0].get("question") or "")[:160] if qs else "")
+except Exception:
+    pass' 2>/dev/null)"
+    [ -n "$q" ] || q="Claude asked you a question"
+    crew_cmux notify --title "$(crew_label)" --subtitle "crew:blocked" --body "$q"
+    ;;
+
+  answered)
+    # PostToolUse on AskUserQuestion: answered or dismissed either way, the
+    # agent has its turn back.
+    rm -f "$CREW_STATE/question-$CMUX_WORKSPACE_ID" 2>/dev/null
+    crew_lane_release
+    crew_phase working
+    ;;
+
   notification)
     crew_lane_set needs-attention
     crew_phase "waiting on you"
