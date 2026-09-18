@@ -157,7 +157,12 @@ export function incrementMd({ spec, index, total }) {
   }
   if ((spec.risks || []).length) {
     out.push("## Risks and things to confirm", "");
-    for (const r of spec.risks) out.push(`- ${typeof r === "string" ? r : r.risk || ""}`);
+    for (const r of spec.risks) {
+      const o = typeof r === "string" ? { risk: r } : r;
+      const d = o.disposition ? ` — ${o.disposition}${o.deliverableRef ? ": " + o.deliverableRef :
+        o.ticketRef ? ": ticket " + o.ticketRef + (o.note ? " — " + o.note : "") : o.note ? ": " + o.note : ""}` : "";
+      out.push(`- ${o.risk || ""}${d}`);
+    }
     out.push("");
   }
 

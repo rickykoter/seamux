@@ -228,6 +228,192 @@ def plan_asset(rel):
 
 
 # ---------------------------------------------------------------------------
+# Asks. `deep-plan ask` writes asks/<id>.json + .html under PLANS; this server
+# serves the page at /ask/<id> and, on a pick, types the option number into the
+# ONE surface the ask recorded — never a surface the request names. Enter is
+# sent only after read-screen shows that number selected; otherwise the page
+# tells the human which key to press. (ADR: pages act on a session only through
+# this server, verify-then-commit.)
+# ---------------------------------------------------------------------------
+
+ASKS = os.path.join(PLANS, "asks")
+
+# What the screen shows after the number is typed, as two regexes. Measured on
+# 2026-09-17 against a real prompt: a number key SUBMITS the option outright,
+# and the prompt collapses to one line ending in "→ <option label>". So the
+# proof of delivery is that resolved line (ASK_RESOLVED_RE, %s = the label);
+# only a prompt that instead moved its pointer (ASK_SELECTED_RE, %d = the
+# number) still needs an Enter. Override either with CREW_ASK_*_RE if a
+# terminal renders differently. A pattern that never matches is safe: the
+# page then says "press N", and Enter is never sent blind.
+ASK_RESOLVED_RE = os.environ.get("CREW_ASK_RESOLVED_RE") or r"→\s*%s\s*$"
+ASK_SELECTED_RE = os.environ.get("CREW_ASK_SELECTED_RE") or r"^\s*[❯›>]\s*%d[.)]"
+
+
+def ask_path(ask_id, ext):
+    """Resolve an ask id to its .json or .html, or None. Anchored like plan_asset."""
+    if not SLUG_OK.match(ask_id or ""):
+        return None
+    base = os.path.realpath(ASKS)
+    target = os.path.realpath(os.path.join(ASKS, ask_id + ext))
+    if not target.startswith(base + os.sep):
+        return None
+    return target if os.path.isfile(target) else None
+
+
+def cmux_run(argv, timeout=10):
+    """The one seam through which delivery touches cmux (the selftest swaps it)."""
+    try:
+        p = subprocess.run([CMUX] + list(argv), capture_output=True, text=True,
+                           timeout=timeout, env=dict(os.environ, CMUX_QUIET="1"))
+        return p.returncode, (p.stdout or "") + (p.stderr or "")
+    except Exception as exc:
+        return 1, str(exc)
+
+
+def _on_screen(label, screen):
+    """Is the option label visible? Whitespace-insensitive: the prompt wraps
+    long labels across lines, and read-screen keeps the wrap."""
+    squash = lambda s: re.sub(r"\s+", "", s)
+    return squash(label) in squash(screen)
+
+
+def deliver(surface, n, label="", runner=None):
+    """Type option n into `surface` and prove it landed before claiming so.
+
+    Returns (delivered, detail). Verify-then-commit is the whole point: the
+    number key normally submits by itself, and the resolved line is the
+    proof. Enter is sent only when the screen shows the pointer moved to n
+    WITHOUT resolving — never blind, because a blind Enter would submit
+    whatever IS highlighted.
+    """
+    runner = runner or cmux_run
+    if not surface:
+        return False, "the ask recorded no terminal surface — press %d in the terminal" % n
+    # Look BEFORE typing: the number key submits whatever prompt is showing,
+    # and a multi-question prompt shows one question per tab. If this ask's
+    # option is not on screen, the keystroke would answer some other question.
+    rc, screen = runner(["read-screen", "--surface", surface, "--lines", "60"])
+    if label and (rc != 0 or not _on_screen(label, screen)):
+        return False, "the terminal is not showing this question — switch to it, then press %d" % n
+    rc, out = runner(["send", "--surface", surface, str(n)])
+    if rc != 0:
+        return False, "cmux send failed (%s) — press %d in the terminal" % (out.strip()[:80], n)
+    rc, screen = runner(["read-screen", "--surface", surface, "--lines", "60"])
+    lines = screen.splitlines() if rc == 0 else []
+    resolved = re.compile(ASK_RESOLVED_RE % re.escape(label)) if label else None
+    if resolved and any(resolved.search(line) for line in lines):
+        return True, "delivered %d — the prompt took it" % n
+    selected = re.compile(ASK_SELECTED_RE % n)
+    if any(selected.match(line) for line in lines):
+        rc, out = runner(["send-key", "--surface", surface, "enter"])
+        if rc != 0:
+            return False, "%d is selected; Enter did not send (%s) — press Enter" % (n, out.strip()[:80])
+        return True, "delivered %d — selected, then Enter" % n
+    return False, "typed %d but could not confirm it on screen — check the terminal" % n
+
+
+def answer(ask_id, n_raw, runner=None):
+    """Record and deliver one answer. Returns (ok, delivered, detail)."""
+    jp = ask_path(ask_id, ".json")
+    if not jp:
+        return False, False, "no such ask"
+    try:
+        with open(jp, encoding="utf-8") as fh:
+            ask = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return False, False, "unreadable ask: %s" % exc
+    if not str(n_raw).isdigit():
+        return False, False, "bad option"
+    n = int(n_raw)
+    if not 1 <= n <= len(ask.get("options") or []):
+        return False, False, "option %d is not one of %d" % (n, len(ask.get("options") or []))
+    if ask.get("answer"):
+        return False, False, "already answered: %d" % ask["answer"].get("n", 0)
+    label = ((ask.get("options") or [])[n - 1] or {}).get("label") or ""
+    delivered, detail = deliver(ask.get("surface") or "", n, label, runner)
+    ask["answer"] = {"n": n, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "delivered": delivered}
+    try:
+        with open(jp, "w", encoding="utf-8") as fh:
+            json.dump(ask, fh, indent=2)
+            fh.write("\n")
+    except OSError as exc:
+        return False, delivered, "recorded nothing: %s" % exc
+    log("ask %s answered %d (%s)" % (ask_id, n, "typed" if delivered else "shown"))
+    return True, delivered, detail
+
+
+def open_ask(ask_id, port, wsid):
+    """Show an ask in the Dock: one tab per workspace, navigated in place."""
+    url = "http://127.0.0.1:%d/ask/%s" % (port, ask_id)
+    keep = plan_surface_file("ask-" + (wsid or "any"))
+    sid = ""
+    try:
+        with open(keep) as fh:
+            sid = fh.read().strip()
+    except OSError:
+        pass
+    if sid:
+        p = subprocess.run([CMUX, "browser", "--surface", sid, "get", "url"],
+                           capture_output=True, text=True, timeout=10)
+        if p.returncode == 0:
+            run([CMUX, "browser", "--surface", sid, "goto", url])
+            run([CMUX, "focus", "--surface", sid])
+            return True, "focused " + sid
+    p = subprocess.run([CMUX, "new-surface", "--type", "browser", "--placement",
+                        "dock", "--url", url], capture_output=True, text=True, timeout=20)
+    out = (p.stdout or "") + (p.stderr or "")
+    if p.returncode != 0:
+        return False, "could not open a Dock surface: " + out.strip()[:160]
+    new = next((t for t in out.split() if len(t) == 36 and t.count("-") == 4), "")
+    if new:
+        try:
+            os.makedirs(STATE_DIR, exist_ok=True)
+            with open(keep, "w") as fh:
+                fh.write(new + "\n")
+        except OSError:
+            pass
+    return True, url
+
+
+# Injected into a served ask page: enables the pick buttons and wires them to
+# /answer. Same-origin, so only the token and id are needed.
+ASK_JS = """
+<script>
+(function(){
+  var T = "__TOKEN__", ID = "__ID__";
+  var picks = document.querySelectorAll(".dp-ask-pick[data-n]");
+  for (var i = 0; i < picks.length; i++) {
+    picks[i].disabled = false;
+    picks[i].title = (picks[i].title || "").replace(/ \\u2014 available when.*$/, "");
+  }
+  var status = document.getElementById("dp-ask-status");
+  function say(t, bad) { if (status) { status.textContent = t; status.style.color = bad ? "var(--warn)" : "var(--good)"; } }
+  document.addEventListener("click", function(ev){
+    if (!ev.target.closest) return;
+    var b = ev.target.closest(".dp-ask-pick[data-n]");
+    if (!b || b.disabled) return;
+    ev.preventDefault();
+    for (var i = 0; i < picks.length; i++) picks[i].disabled = true;
+    say("sending " + b.getAttribute("data-n") + "\\u2026");
+    fetch("/answer?t=" + encodeURIComponent(T) + "&id=" + encodeURIComponent(ID) +
+          "&n=" + encodeURIComponent(b.getAttribute("data-n")))
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        if (j && j.ok && j.delivered) { say("\\u2713 " + j.detail + " \\u2014 the terminal has your answer"); return; }
+        if (j && j.ok) { say("recorded, not typed: " + j.detail, true); return; }
+        say((j && j.detail) || "refused", true);
+        for (var i = 0; i < picks.length; i++) picks[i].disabled = false;
+      })
+      .catch(function(){ say("the crew intent server did not answer", true);
+        for (var i = 0; i < picks.length; i++) picks[i].disabled = false; });
+  });
+})();
+</script>
+"""
+
+
+# ---------------------------------------------------------------------------
 # Actions. Keys are the chip labels the collector already emits, so the board's
 # vocabulary and this table cannot drift apart silently.
 # ---------------------------------------------------------------------------
@@ -430,6 +616,18 @@ def act(action, row, extra):
             return False, "intent server not answering"
         return open_plan(slug, port)
 
+    if action == "ask":
+        # `deep-plan ask` opens its page here, best-effort, with the id as extra.
+        ask_id = (extra or "").strip()
+        if not ask_path(ask_id, ".html"):
+            return False, "no such ask"
+        port = (current() or (None,))[0]
+        if not port:
+            return False, "intent server not answering"
+        # Keyed by the workspace ref (targets rows carry ref + cwd, no id), so
+        # every ask from one workspace reuses that workspace's tab.
+        return open_ask(ask_id, port, re.sub(r"[^A-Za-z0-9_-]", "_", ref or cwd or ""))
+
     if action == "code":
         return notify("crew:code", cwd or title, wsid), "code " + (cwd or title)
 
@@ -497,7 +695,7 @@ def increment(slug, n, action, why):
 
 
 ACTIONS = ("jump", "row", "diff", "pr", "issue", "jira", "checks", "plan", "take the check",
-           "review", "code", "reclaim", "sync", "go", "close plan",
+           "review", "code", "reclaim", "sync", "go", "close plan", "ask",
            "sandbox-up", "sandbox-down", "feed-allow", "feed-deny")
 
 
@@ -625,6 +823,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
             log("%s open %s" % ("OK  " if ok else "FAIL", detail))
             return self._reply(200 if ok else 500,
                                json.dumps({"ok": ok, "detail": detail}).encode())
+
+        if u.path.startswith("/ask/"):
+            page = ask_path(u.path[len("/ask/"):], ".html")
+            if not page:
+                return self._reply(404, b'{"error":"no such ask"}')
+            try:
+                html = open(page, encoding="utf-8", errors="replace").read()
+            except OSError as exc:
+                return self._reply(500, json.dumps({"error": str(exc)}).encode())
+            html, _ = MERMAID_DATA.subn('src="/mermaid.min.js"', html, count=1)
+            boot = ASK_JS.replace("__TOKEN__", self.token).replace("__ID__", u.path[len("/ask/"):])
+            html = html.replace("</body>", boot + "</body>", 1) if "</body>" in html else html + boot
+            body = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            return self.wfile.write(body)
+
+        if u.path == "/answer":
+            if not secrets.compare_digest(one("t"), self.token):
+                log("DENY bad token on /answer from %s" % self.client_address[0])
+                return self._reply(403, b'{"error":"bad token"}')
+            ok, delivered, detail = answer(one("id"), one("n"))
+            log("%s answer %s: %s" % ("OK  " if ok else "FAIL", one("id"), detail))
+            return self._reply(200 if ok else 400,
+                               json.dumps({"ok": ok, "delivered": delivered, "detail": detail}).encode())
 
         if u.path == "/inc":
             if not secrets.compare_digest(one("t"), self.token):
@@ -1222,6 +1448,93 @@ def selftest():
     check("the injected script leaves no placeholders",
           "__TOKEN__" not in PLAN_JS.replace("__TOKEN__", "x").replace("__SLUG__", "y")
           and "__SLUG__" not in PLAN_JS.replace("__TOKEN__", "x").replace("__SLUG__", "y"))
+
+    # Asks: containment, then delivery through a fake cmux -- the real one would
+    # type into a terminal, which a selftest has no business doing.
+    import tempfile
+    global ASKS
+    saved_asks = ASKS
+    ASKS = tempfile.mkdtemp(prefix="crew-ask-selftest-")
+    try:
+        aid = "20260917-120000-abcd"
+        ask = {"id": aid, "options": [{"label": "a"}, {"label": "b"}, {"label": "c"}],
+               "surface": "SURF-1", "answer": None}
+        with open(os.path.join(ASKS, aid + ".json"), "w") as fh:
+            json.dump(ask, fh)
+        with open(os.path.join(ASKS, aid + ".html"), "w") as fh:
+            fh.write("<html><body>x</body></html>")
+        check("an ask id resolves to its page", ask_path(aid, ".html") is not None)
+        for probe in ("../x", "%2e%2e", "/etc/passwd", "a/../../b"):
+            check("ask refused: %s" % probe, ask_path(probe, ".html") is None)
+        check("answer refuses an option out of range", answer(aid, "4", lambda a: (0, ""))[0] is False)
+        check("answer refuses a non-number", answer(aid, "x", lambda a: (0, ""))[0] is False)
+
+        PROMPT = "  1. a\n❯ 2. b\n  3. c\n"
+
+        def fake(screen_after, screen_before=PROMPT):
+            # The first read-screen is the look-before-typing; later ones are after.
+            calls = []
+
+            def runner(argv):
+                calls.append(argv[0])
+                if argv[0] == "read-screen":
+                    return 0, screen_before if calls.count("read-screen") == 1 else screen_after
+                return 0, "OK"
+            return runner, calls
+
+        # The measured behaviour: the number key submits, the prompt resolves
+        # to "… → <label>", and no Enter is needed.
+        runner, calls = fake("  What should it do? → b\n❯ \n")
+        ok_, delivered, detail = answer(aid, "2", runner)
+        check("resolved line proves delivery: look, send, read-screen, no Enter",
+              ok_ and delivered and calls == ["read-screen", "send", "read-screen"], detail)
+        check("the answer is recorded as delivered",
+              json.load(open(os.path.join(ASKS, aid + ".json")))["answer"]["delivered"] is True)
+        check("a second answer is refused", answer(aid, "1", runner)[0] is False)
+        # A prompt that only moved its pointer gets the Enter.
+        ask["answer"] = None
+        with open(os.path.join(ASKS, aid + ".json"), "w") as fh:
+            json.dump(ask, fh)
+        runner, calls = fake("  1. a\n❯ 2. b\n  3. c\n")
+        ok_, delivered, detail = answer(aid, "2", runner)
+        check("pointer moved but unresolved: Enter is sent",
+              ok_ and delivered and calls == ["read-screen", "send", "read-screen", "send-key"], detail)
+        # Neither seen after typing: recorded, nothing more typed, the human is told.
+        ask["answer"] = None
+        with open(os.path.join(ASKS, aid + ".json"), "w") as fh:
+            json.dump(ask, fh)
+        runner, calls = fake("  1. a\n  2. b\n❯ 3. c\n")
+        ok_, delivered, detail = answer(aid, "2", runner)
+        check("unconfirmed: recorded, no Enter sent, the human is told",
+              ok_ and not delivered and calls == ["read-screen", "send", "read-screen"] and "check the terminal" in detail, detail)
+        # The terminal is showing some OTHER question (a different tab of a
+        # multi-question prompt, or no prompt at all): nothing is typed.
+        ask["answer"] = None
+        with open(os.path.join(ASKS, aid + ".json"), "w") as fh:
+            json.dump(ask, fh)
+        runner, calls = fake("", screen_before="  1. red\n❯ 2. green\n")
+        ok_, delivered, detail = answer(aid, "2", runner)
+        check("option not on screen: nothing typed, the human is told to switch",
+              ok_ and not delivered and calls == ["read-screen"] and "not showing this question" in detail, detail)
+        # A label the prompt wrapped across two lines still counts as on screen.
+        ask["answer"] = None
+        ask["options"][1]["label"] = "a much longer label that wraps"
+        with open(os.path.join(ASKS, aid + ".json"), "w") as fh:
+            json.dump(ask, fh)
+        runner, calls = fake("  ? → a much longer label that wraps\n",
+                             screen_before="  1. a\n❯ 2. a much longer label\n     that wraps\n  3. c\n")
+        ok_, delivered, detail = answer(aid, "2", runner)
+        check("a wrapped label is still found on screen", ok_ and delivered, detail)
+        ask["options"][1]["label"] = "b"
+        ask["answer"] = None
+        ask["surface"] = ""
+        with open(os.path.join(ASKS, aid + ".json"), "w") as fh:
+            json.dump(ask, fh)
+        runner, calls = fake("")
+        ok_, delivered, detail = answer(aid, "2", runner)
+        check("no recorded surface: nothing typed, recorded as shown", ok_ and not delivered and calls == [], detail)
+    finally:
+        ASKS = saved_asks
 
     print("\n%s intent selftest: %d passed, %d failed%s"
           % ("\033[31m" if bad else "\033[32m", ok, bad, "\033[0m"))

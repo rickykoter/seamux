@@ -27,7 +27,7 @@ import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR,
   readState, writeState, allStates, log1, progress, gateView,
-  reconcileObs, obsBlocks,
+  reconcileObs, obsBlocks, planFor,
 } from "./lib/state.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -35,6 +35,24 @@ const MERMAID = path.join(HERE, "vendor", "mermaid.min.js");
 
 const PARA_CEILING = 120;   // words; rejects the house's worst walls (178/140/130)
 const DIAGRAM_PER = 900;    // one diagram per this many prose words, min 1
+const RISK_DISPOSITIONS = ["accept", "mitigate", "spike", "promote"];
+
+// One reading of a risks entry for every renderer: the text, the disposition
+// (empty when none), and the payload that disposition carries — a deliverable
+// title or a ticket for mitigate, the note for spike, nothing for the rest.
+function riskView(r) {
+  if (typeof r === "string") return { risk: r, disposition: "", payload: "", undisposed: true };
+  const d = r.disposition || "";
+  let payload = "";
+  if (d === "mitigate") payload = r.deliverableRef || (r.ticketRef ? `ticket ${r.ticketRef}${r.note ? " — " + r.note : ""}` : "");
+  else if (r.note) payload = r.note;
+  return { risk: r.risk || "", disposition: d, payload, undisposed: !d };
+}
+// The text form, for the md plan and the cutover increments.
+function riskLine(r) {
+  const v = riskView(r);
+  return v.disposition ? `${v.risk}  \n  disposition: ${v.disposition}${v.payload ? " — " + v.payload : ""}` : v.risk;
+}
 
 // ---------------------------------------------------------------- helpers
 
@@ -87,6 +105,32 @@ function validate(spec, force) {
   for (const f of spec.verifiedFacts || [])
     if (!f.claim || !f.evidence)
       errs.push("a verifiedFacts entry is missing claim or evidence (path:line). Uncited claims belong in risks.");
+
+  // Risks: a disposition is what the review produces about each one — accept,
+  // mitigate (a deliverable here, or a filed ticket), spike (a named check),
+  // promote (a quiz question). Authoring stays permissive: a string or an
+  // undispositioned object renders. Grade is where an undispositioned risk
+  // refuses (key.undispositionedRisks), the same shape as uncovered contracts.
+  // A disposition that IS set must hold together, and that refuses here.
+  for (const r of spec.risks || []) {
+    if (typeof r === "string") continue;
+    const text = r.risk || "(unnamed risk)";
+    if (!r.risk) errs.push("a risks entry has no risk text");
+    if (r.disposition === undefined || r.disposition === null || r.disposition === "") continue;
+    if (!RISK_DISPOSITIONS.includes(r.disposition)) {
+      errs.push(`risk "${text}": disposition must be one of ${RISK_DISPOSITIONS.join("|")}`);
+      continue;
+    }
+    if (r.disposition === "mitigate") {
+      const named = (spec.deliverables || []).some(d => d.title === r.deliverableRef);
+      if (!named && !(r.ticketRef && r.note))
+        errs.push(`risk "${text}": mitigate needs deliverableRef naming a deliverable title, or ticketRef plus a note`);
+    }
+    if (r.disposition === "spike" && !r.note)
+      errs.push(`risk "${text}": spike needs a note saying what check settles it`);
+    if (r.disposition === "promote" && !(spec.quiz || []).some(q => q.riskRef === r.risk))
+      errs.push(`risk "${text}": promote needs a quiz question whose riskRef is this risk's text`);
+  }
 
   // Contracts: declared shape changes (schemas, APIs, signatures) are the
   // expensive, hard-to-reverse kind, so this block is enforced — unlike
@@ -249,7 +293,7 @@ function mdPlan(spec, adrs = []) {
   }
   if ((spec.risks || []).length) {
     L.push("## Risks (uncited claims live here)", "");
-    for (const r of spec.risks) L.push(`- ${typeof r === "string" ? r : r.risk || JSON.stringify(r)}`);
+    for (const r of spec.risks) L.push(`- ${riskLine(r)}`);
     L.push("");
   }
   const _ob = spec.observability || {};
@@ -432,6 +476,37 @@ only after the alignment check passes.</p>
 ${cards}`;
 }
 
+// Risk list items, shared by the review/working body and the shareable
+// artifact page. A dispositioned risk shows what was decided about it.
+//
+// On editing surfaces each risk is a card: the four dispositions as radios, a
+// deliverable select and a ticket box for mitigate, and a note. Nothing is
+// written by the page — a changed card stages one `- [risk N] <disposition>:
+// <payload>` line into the copy-back blob (dpRiskLines), and the session
+// applies it as a spec edit. Defaults ride as data attributes so only real
+// changes are staged, and the surface on disk stays byte-identical.
+function risksHtml(spec, withNotes = false) {
+  const titles = (spec.deliverables || []).map(d => d.title || "");
+  return (spec.risks || []).map((r, i) => {
+    const v = riskView(r);
+    const o = typeof r === "string" ? {} : r;
+    const shown = v.disposition
+      ? ` <span class="dim">— ${esc(v.disposition)}${v.payload ? ": " + esc(v.payload) : ""}</span>` : "";
+    if (!withNotes) return `<li>${esc(v.risk)}${shown}</li>`;
+    const n = i + 1;
+    const radios = RISK_DISPOSITIONS.map(d =>
+      `<label class="dp-risk-opt"><input type="radio" name="dp-risk-${n}" value="${d}"${v.disposition === d ? " checked" : ""}> ${d}</label>`).join(" ");
+    const opts = `<option value="">— a deliverable in this plan —</option>` + titles.map(t =>
+      `<option value="${esc(t)}"${o.deliverableRef === t ? " selected" : ""}>${esc(t)}</option>`).join("");
+    return `<li class="dp-risk" data-n="${n}" data-disposition="${esc(v.disposition)}" data-payload="${esc(v.payload)}">${esc(v.risk)}${shown}
+<div class="dp-risk-ctl">${radios}
+<select class="dp-risk-deliv" aria-label="deliverable that mitigates risk ${n}">${opts}</select>
+<input class="dp-risk-ticket" type="text" value="${esc(o.ticketRef || "")}" placeholder="or a filed ticket (URL or key)" aria-label="ticket that mitigates risk ${n}">
+<input class="dp-risk-note" type="text" value="${esc(o.note || "")}" placeholder="note (what settles a spike; context for a ticket)" aria-label="note on risk ${n}">
+</div></li>`;
+  }).join("");
+}
+
 // Contracts card list, shared by the review/working body and the shareable
 // artifact page — declared shape changes stay visible wherever the plan goes.
 function contractsHtml(spec) {
@@ -533,8 +608,49 @@ function dpMd(src) {
     });
     return lines;
   };
+
+  // Risk cards: the mitigate controls show only while mitigate is picked, and
+  // a card stages a line only when its disposition or payload actually moved.
+  function riskPayload(card) {
+    var picked = card.querySelector('input[type=radio]:checked');
+    var d = picked ? picked.value : "";
+    var deliv = card.querySelector(".dp-risk-deliv").value;
+    var ticket = card.querySelector(".dp-risk-ticket").value.trim();
+    var note = card.querySelector(".dp-risk-note").value.trim();
+    var payload = "";
+    if (d === "mitigate") payload = deliv || (ticket ? "ticket " + ticket + (note ? " \\u2014 " + note : "") : "");
+    else if (note) payload = note;
+    return { d: d, payload: payload };
+  }
+  function riskSync(card) {
+    var d = riskPayload(card).d;
+    card.classList.toggle("dp-risk-mitigate", d === "mitigate");
+  }
+  document.querySelectorAll(".dp-risk").forEach(function (card) {
+    riskSync(card);
+    card.addEventListener("change", function () { riskSync(card); });
+  });
+  window.dpRiskLines = function () {
+    var lines = [];
+    document.querySelectorAll(".dp-risk").forEach(function (card) {
+      var p = riskPayload(card);
+      if (!p.d) return;
+      if (p.d === card.getAttribute("data-disposition") && p.payload === card.getAttribute("data-payload")) return;
+      lines.push("- [risk " + card.getAttribute("data-n") + "] " + p.d + (p.payload ? ": " + p.payload : ""));
+    });
+    return lines;
+  };
 })();
 </script>`;
+
+// Risk card styling, shared by the review and working stylesheets.
+const DP_RISK_CSS = `.dp-risk-ctl{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;margin:6px 0 10px;font-size:.9em}
+.dp-risk-opt{cursor:pointer;white-space:nowrap}
+.dp-risk-deliv,.dp-risk-ticket,.dp-risk-note{background:transparent;color:inherit;border:1px solid var(--dim,#888);
+  border-radius:4px;padding:4px 6px;font:inherit;font-size:.95em;max-width:100%}
+.dp-risk-note{flex:1 1 240px}
+.dp-risk-deliv,.dp-risk-ticket{display:none}
+.dp-risk-mitigate .dp-risk-deliv,.dp-risk-mitigate .dp-risk-ticket{display:inline-block}`;
 
 function commonBody(spec, adrs = [], withNotes = false) {
   // Evidence that reads as a repo path becomes a click target: the served
@@ -557,8 +673,7 @@ function commonBody(spec, adrs = [], withNotes = false) {
     `<li><b>${esc(d.decision)}</b> — ${esc(d.why)}` +
     (withNotes && !d.adr ? ` <button type="button" class="dp-adr-promote" data-decision="${esc(d.decision)}">add an ADR</button>` : "") +
     `</li>`).join("");
-  const risks = (spec.risks || []).map(r =>
-    `<li>${esc(typeof r === "string" ? r : r.risk)}</li>`).join("");
+  const risks = risksHtml(spec, withNotes);
   // Contracts sit right after Decisions: shape changes are the review's
   // front-and-center item, with scouted reach and the owning decision.
   const contractsSection = contractsHtml(spec);
@@ -765,6 +880,7 @@ ${(d.observability && d.observability.checks || []).length ? `<p class="dim">obs
       if (t.value.trim()) notes.push("- [" + t.getAttribute("data-section") + "] " + t.value.trim());
     });
     if (window.dpAdrLines) notes = notes.concat(window.dpAdrLines());
+    if (window.dpRiskLines) notes = notes.concat(window.dpRiskLines());
     if (notes.length) parts.push("comments:\\n" + notes.join("\\n"));
     var blob = parts.join("\\n");
     var done = function () {
@@ -859,6 +975,7 @@ ${(d.observability && d.observability.checks || []).length ? `<p class="dim">obs
 label.opt{cursor:pointer;padding:3px 0}
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
   color:inherit;border:1px solid var(--dim,#888);border-radius:4px;padding:6px;font:inherit}
+${DP_RISK_CSS}
 #dp-copyback{background:var(--accent,#46f);color:#fff;border:0;border-radius:4px;
   padding:10px 16px;font:inherit;cursor:pointer;min-height:44px}
 #dp-hl-add{position:absolute;z-index:9;background:var(--accent,#46f);color:#fff;border:0;
@@ -991,6 +1108,7 @@ ${obs}
 <style>
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
   color:inherit;border:1px solid var(--dim,#888);border-radius:4px;padding:6px;font:inherit}
+${DP_RISK_CSS}
 #dp-amend-copy{background:var(--accent,#46f);color:#fff;border:0;border-radius:4px;
   padding:10px 16px;font:inherit;cursor:pointer;min-height:44px}
 #dp-amend-copy:focus-visible,.dp-note:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -1021,6 +1139,7 @@ ${["context", "decisions", "risks"].map(s =>
       if (t.value.trim()) notes.push("- [" + t.getAttribute("data-section") + "] " + t.value.trim());
     });
     if (window.dpAdrLines) notes = notes.concat(window.dpAdrLines());
+    if (window.dpRiskLines) notes = notes.concat(window.dpRiskLines());
     var blob = "deep-plan amend \\u2014 " + slug + (notes.length ? "\\n" + notes.join("\\n") : "\\n(no notes)");
     var done = function () {
       document.getElementById("dp-amend-done").textContent = "copied \\u2713 \\u2014 paste it into the session";
@@ -1133,6 +1252,8 @@ async function render(specPath, opts) {
     uncoveredContracts: [...new Set((spec.contracts || [])
       .map(c => c.decisionRef)
       .filter(ref => !(spec.quiz || []).some(q => q.decisionRef === ref)))],
+    // Risks nobody dispositioned — grade fails on these too.
+    undispositionedRisks: (spec.risks || []).map(riskView).filter(v => v.undisposed).map(v => v.risk),
   };
   fs.writeFileSync(path.join(KEYS_DIR, spec.slug + ".spec.json"), JSON.stringify(spec, null, 2) + "\n");
   fs.writeFileSync(path.join(KEYS_DIR, spec.slug + ".key.json"), JSON.stringify(key, null, 2) + "\n");
@@ -1285,8 +1406,7 @@ ${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${es
     `<li>${esc(f.claim)} <span class="dim">— <code>${esc(f.evidence)}</code></span></li>`).join("");
   const decs = (spec.decisions || []).map(d =>
     `<li><b>${esc(d.decision)}</b> — ${esc(d.why)}</li>`).join("");
-  const risks = (spec.risks || []).map(r =>
-    `<li>${esc(typeof r === "string" ? r : r.risk)}</li>`).join("");
+  const risks = risksHtml(spec);
   const incOpts = (spec.deliverables || []).map((d, i) =>
     `<option value="${i + 1}">${i + 1}. ${esc(d.title)}</option>`).join("");
 
@@ -1496,6 +1616,17 @@ async function grade(slug, answers) {
     writeState(st); rerenderWorking(slug);
     process.exit(1);
   }
+  // Same for risks: a risk the human never dispositioned is a risk the review
+  // never looked at, and no set of answers can stand in for that.
+  const undisposed = key.undispositionedRisks || [];
+  if (undisposed.length) {
+    console.error(`alignment check FAILED — ${undisposed.length} risk(s) carry no disposition:`);
+    for (const r of undisposed) console.error(`  ✗ disposition the risk: ${r}`);
+    console.error("Pick accept, mitigate, spike or promote on the review page (Copy for session), apply, re-render, re-check.");
+    log1(st, `alignment check failed (undispositioned risks: ${undisposed.length})`);
+    writeState(st); rerenderWorking(slug);
+    process.exit(1);
+  }
   if (!answers.length) answers = await promptAnswers(key);
   const given = {};
   for (const a of answers) {
@@ -1638,6 +1769,142 @@ function transition(action, slug, n, why, force = false) {
 // board's intent server (whose open_plan reuses the existing Dock tab instead
 // of stacking a new one per go) — no server, no row, no cmux means silence,
 // never a failed go.
+// ---------------------------------------------------------------- ask
+// A question the human answers from a page. The terminal question tool stays
+// the source of record: the agent calls both, the page shows what a terminal
+// cannot (mermaid, a payload, a before/after), and — when served by the crew
+// intent server — a click on the page types the option number into the
+// terminal surface this ask recorded. Standalone by design: most questions
+// happen outside any plan, so the file records a slug only when a plan is
+// tracked at the cwd. Asks live under the plans tree because that is the
+// tree the intent server already serves; ids are time-ordered and SLUG_OK-safe.
+const ASKS_DIR = path.join(PLANS_DIR, "asks");
+
+function askId() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}-` +
+    crypto.randomBytes(2).toString("hex");
+}
+
+function askValidate(a) {
+  const errs = [];
+  if (Array.isArray(a) || Array.isArray(a.questions))
+    errs.push("one question per ask — multi-question prompts are not supported; make one ask per question");
+  if (!a.question) errs.push("question is required");
+  const opts = Array.isArray(a.options) ? a.options : [];
+  if (opts.length < 2) errs.push("2+ options are required");
+  opts.forEach((o, i) => { if (!o || !o.label) errs.push(`option ${i + 1} has no label`); });
+  if (errs.length) die("ask refused —\n" + errs.map(e => "  ✗ " + e).join("\n"));
+}
+
+// The page. Buttons render disabled: as a file it cannot act. The intent
+// server injects the transport (token, id) when it serves /ask/<id>, the same
+// way PLAN_JS does for plan surfaces.
+function askHtml(ask, b64) {
+  const opts = ask.options.map((o, i) => {
+    const n = i + 1;
+    return `<div class="inc dp-ask-opt" data-n="${n}">
+<h3><button type="button" class="dp-act dp-ask-pick" data-n="${n}" disabled title="pick ${n} — available when served in the Dock">${n}</button> ${esc(o.label)}</h3>
+${o.description ? `<p>${esc(o.description)}</p>` : ""}
+${o.mermaid ? `<pre class="mermaid">${esc(String(o.mermaid).trim())}</pre>` : ""}
+${o.example ? `<pre class="dp-example"><code>${esc(String(o.example))}</code></pre>` : ""}
+</div>`;
+  }).join("\n");
+  return htmlHead((ask.header ? ask.header + " — " : "") + "question", b64) + `<style>
+.dp-example{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;overflow:auto;font-size:13px}
+.dp-ask-opt h3{margin:0 0 6px}
+#dp-ask-status{margin-top:16px}
+</style>
+<h1>${esc(ask.header || "A question for you")}</h1>
+<p class="dim">ask <code>${esc(ask.id)}</code>${ask.slug ? ` · plan <code>${esc(ask.slug)}</code>` : ""} · ${esc(ask.created)}</p>
+<p>${esc(ask.question).replace(/\n\s*\n/g, "</p><p>")}</p>
+${ask.mermaid ? `<pre class="mermaid">${esc(String(ask.mermaid).trim())}</pre>` : ""}
+<h2>Options</h2>
+${opts}
+<p id="dp-ask-status" class="dim" role="status" aria-live="polite">${ask.answer
+  ? `answered: ${esc(String(ask.answer.n))} — ${esc(ask.options[ask.answer.n - 1]?.label || "")}`
+  : "Pick an option here to send it to the terminal, or answer in the terminal prompt as usual."}</p>
+${MERMAID_BOOT}
+</body></html>`;
+}
+
+function askWrite(ask) {
+  fs.mkdirSync(ASKS_DIR, { recursive: true });
+  fs.writeFileSync(path.join(ASKS_DIR, ask.id + ".json"), JSON.stringify(ask, null, 2) + "\n");
+  fs.writeFileSync(path.join(ASKS_DIR, ask.id + ".html"), askHtml(ask, mermaidB64()));
+}
+
+function askCreate(file) {
+  let a;
+  try { a = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) { die("cannot read ask json: " + e.message); }
+  askValidate(a);
+  const cwd = process.cwd();
+  const plan = planFor(cwd);
+  const ask = {
+    id: askId(), created: new Date().toISOString(),
+    header: a.header || "", question: a.question, mermaid: a.mermaid || "",
+    options: a.options.map(o => ({ label: o.label, description: o.description || "",
+      mermaid: o.mermaid || "", example: o.example || "" })),
+    // The one legitimate delivery target: the terminal this verb ran in. The
+    // intent server types only here, never into a surface a request names.
+    surface: process.env.CMUX_SURFACE_ID || "", workspace: process.env.CMUX_WORKSPACE_ID || "",
+    cwd, slug: plan ? plan.slug : "", answer: null,
+  };
+  askWrite(ask);
+  say(`ask ${ask.id}: ${path.join(ASKS_DIR, ask.id + ".html")}`);
+  if (!ask.surface) say("  (no CMUX_SURFACE_ID in the environment — the page will show the answer, not type it)");
+  const url = openAskSurface(ask);
+  if (url) say(`  served at ${url}`);
+  else say("  intent server not reachable — open the file, or start the board (crew listen on)");
+  return ask;
+}
+
+function askShow(id) {
+  const p = path.join(ASKS_DIR, id + ".json");
+  if (!fs.existsSync(p)) die("no such ask: " + id);
+  const ask = JSON.parse(fs.readFileSync(p, "utf8"));
+  if (!ask.answer) { say(`ask ${id}: unanswered`); return; }
+  const o = ask.options[ask.answer.n - 1] || {};
+  say(`ask ${id}: ${ask.answer.n} — ${o.label || ""}${ask.answer.delivered ? "" : " (shown on the page, not typed)"}`);
+}
+
+// Best-effort, like openWorkingSurface. Returns the served URL when the
+// intent server is up.
+//
+// The page goes into the WORKSPACE the ask came from, as a browser tab beside
+// the terminal (`cmux open --workspace`), not into the Dock: cmux has no verb
+// that brings a Dock tab to the front, so a Dock ask sat behind the board, and
+// the one-tab-per-workspace dedupe there meant a second ask replaced the
+// first's page while its prompt was still up. In the workspace every ask is
+// its own tab and stays visible. The Dock route remains the fallback for a
+// caller with no workspace in its environment (a detached process).
+function openAskSurface(ask) {
+  try {
+    if (process.env.DEEP_PLAN_STATE_DIR) return "";
+    const cache = path.join(os.homedir(), ".cache", "cmux-crew");
+    const rd = f => fs.readFileSync(path.join(cache, f), "utf8").trim();
+    const port = parseInt(rd("board-intent.port"), 10);
+    const token = rd("board-intent.token");
+    if (!port || !token) return "";
+    const url = `http://127.0.0.1:${port}/ask/${ask.id}`;
+    if (ask.workspace) {
+      // --focus false: the human is mid-prompt in the terminal; do not steal it.
+      const r = spawnSync("cmux", ["open", url, "--workspace", ask.workspace, "--focus", "false"],
+        { encoding: "utf8", env: { ...process.env, CMUX_QUIET: "1" }, timeout: 10000 });
+      if (r.status === 0) return url;
+    }
+    const targets = JSON.parse(fs.readFileSync(path.join(cache, "board-targets.json"), "utf8"));
+    const rid = ask.workspace && targets[ask.workspace] ? ask.workspace :
+      Object.keys(targets).find(k => (targets[k] || {}).cwd && path.resolve(targets[k].cwd) === path.resolve(ask.cwd));
+    if (rid) {
+      spawnSync("curl", ["-fsS", "-m", "5", "-o", "/dev/null",
+        `http://127.0.0.1:${port}/do?a=ask&r=${encodeURIComponent(rid)}&t=${encodeURIComponent(token)}&x=${encodeURIComponent(ask.id)}`]);
+    }
+    return url;
+  } catch { return ""; }
+}
+
 function openWorkingSurface(st) {
   try {
     // Probe/test runs override the state dir; they must never reach the
@@ -1801,7 +2068,7 @@ function obsRecord(slug, n, verdict, note) {
 const BUILTIN_VERBS = new Set([
   "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
   "grade", "status", "go", "start", "done", "reset", "block", "obs",
-  "open-gate", "shut-gate", "close", "diff", "help",
+  "open-gate", "shut-gate", "close", "diff", "ask", "help",
 ]);
 
 const [, , cmd, ...rest] = process.argv;
@@ -1821,6 +2088,11 @@ switch (cmd) {
     await render(args[0], flags); break;
   }
   case "rehydrate": rehydrate(args[0] || die("rehydrate <slug>")); break;
+  case "ask": {
+    if (args[0] === "show") askShow(args[1] || die("ask show <id>"));
+    else askCreate(args[0] || die("ask <ask.json> | ask show <id>"));
+    break;
+  }
   case "validate": {
     // Re-check surfaces already on disk: `validate <slug>` for a plan's
     // md/review/working set, or `validate <file.html|file.md>` for any one file.
@@ -1925,7 +2197,11 @@ switch (cmd) {
   open-gate|shut-gate <slug>                  the human lever, logged
   diff <slug> [n]                             open the increment's patch since start
                                               (done writes it; only this opens it)
-  close <slug>                                retire a finished plan`);
+  close <slug>                                retire a finished plan
+  ask <ask.json>                              render a question with diagrams/examples
+                                              (served at /ask/<id>; a pick on the page
+                                              types the number into this terminal)
+  ask show <id>                               the recorded answer, if any`);
     // State which extensions are in force even when nothing is wrong: "my
     // extension is being ignored" is the failure this listing exists to remove.
     const ext = listExt();

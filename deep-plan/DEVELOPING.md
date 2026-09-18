@@ -31,6 +31,21 @@ surfaces `~/.claude/plans/`. Probe overrides: `DEEP_PLAN_STATE_DIR`,
   with a title ending "— available when served in the Dock" (the injected
   PLAN_JS strips exactly that suffix); `.dp-path[data-file]` spans; `#dp-auto`
   checkbox armed on its change event, polling `window.__dpChanged`.
+- Asks: `~/.claude/plans/asks/<id>.json` (`{id, created, header, question,
+  mermaid, options:[{label, description, mermaid, example}], surface, workspace,
+  cwd, slug, answer:{n, at, delivered}|null}`) and `<id>.html` beside it, written
+  by `deep-plan ask`; the page's `.dp-ask-pick[data-n]` buttons render disabled
+  and `crew-board-intent` serves `/ask/<id>` with ASK_JS injected, `/answer`
+  records into the json and types into `surface` only, and only after
+  read-screen shows that ask's option label on the prompt. `deep-plan ask`
+  opens the page with `cmux open <url> --workspace $CMUX_WORKSPACE_ID
+  --focus false` (one tab per ask, beside the terminal) and falls back to
+  `/do?a=ask&r=<workspace>&x=<id>`, the Dock tab, when no workspace is known.
+- Risk cards on editing surfaces: `li.dp-risk[data-n][data-disposition][data-payload]`
+  with radios `dp-risk-N`, `.dp-risk-deliv`, `.dp-risk-ticket`, `.dp-risk-note`;
+  `window.dpRiskLines()` stages `- [risk N] <disposition>: <payload>` lines into
+  both copy-back blobs. `riskView()` is the one reading of an entry every
+  renderer uses; `key.undispositionedRisks` is what grade refuses on.
 - Mermaid inlined as `src="data:text/javascript;base64,…"` — must match
   crew-board-intent's `MERMAID_DATA` regex or every page ships 3.4MB.
 - Transitions the intent server offers: `go start done block reset`, plus

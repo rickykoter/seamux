@@ -42,19 +42,25 @@
     //
     // These three still govern links reached any OTHER way — clicking a URL in a
     // terminal, `open https://…` from a shell, cmux's own sidebar PR row.
-    "openTerminalLinksInCmuxBrowser": false,
-    "interceptTerminalOpenCommandInCmuxBrowser": false,
+    //
+    // Both switches ON, with the allowlist below naming only loopback: a
+    // localhost link clicked in a terminal (an ask page, a plan page, a dev
+    // server) opens in the embedded browser of the workspace you are in, and
+    // every other host still leaves for the default browser. This is the
+    // hand-open for the pages seamux serves: if one did not appear on its own,
+    // clicking the URL the agent printed puts it beside the terminal.
+    "openTerminalLinksInCmuxBrowser": true,
+    "interceptTerminalOpenCommandInCmuxBrowser": true,
     // An ALLOWLIST: with the two switches above on, a non-empty list means only
     // these hosts stay inside the embedded browser and everything else goes out
     // to the default browser. Emptying it does NOT send everything out — []
     // means "no restriction", i.e. every link stays inside. To send everything
     // out, turn the two switches off instead.
     //
-    // Your forge and CI hosts (github.com, and whatever runs your builds) used
-    // to be here and are deliberately gone: they are the logins worth keeping in
-    // one browser, so a PR or a checks page should leave cmux no matter how you
-    // reached it. What stays is what you only ever read.
-    "hostsToOpenInEmbeddedBrowser": []
+    // Your forge and CI hosts (github.com, and whatever runs your builds) are
+    // deliberately absent: they are the logins worth keeping in one browser,
+    // so a PR or a checks page should leave cmux no matter how you reached it.
+    "hostsToOpenInEmbeddedBrowser": ["127.0.0.1", "localhost"]
   },
 
   "fileExplorer": {

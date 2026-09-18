@@ -362,6 +362,108 @@ ok("mermaid theme follows the page theme",
   fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "contract-free-plan.json"), { force: true });
 }
 
+// -------------------------------------------------- risks: dispositioned at review, enforced at grade
+{
+  const rm = (s) => { cli("close", s); fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, s + ".json"), { force: true }); };
+  // The fixture's risk is dispositioned — it shows on every surface.
+  ok("fixture's dispositioned risk renders on review + md",
+    review.includes("backoff cap has not been agreed") && review.includes("— accept") &&
+    fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".md"), "utf8").includes("disposition: accept"));
+  // Authoring is permissive: a plain string and an undispositioned object render…
+  const rs = JSON.parse(JSON.stringify(spec));
+  rs.slug = "risk-string-plan";
+  rs.risks = ["nobody looked at this one", { risk: "nor this one" }];
+  ok("render passes plain-string and undispositioned risks", cli("render", tmpSpec(rs)).status === 0);
+  // …and grade refuses, naming each, before reading any answer.
+  const gr = cli("grade", "risk-string-plan", "q1=a", "q2=a", "q3=a");
+  ok("grade fails on them, naming both",
+    gr.status !== 0 && /carry no disposition/.test(gr.stderr) &&
+    /nobody looked at this one/.test(gr.stderr) && /nor this one/.test(gr.stderr));
+  rm("risk-string-plan");
+  // A disposition that is set must hold together, at render.
+  let rb = JSON.parse(JSON.stringify(spec));
+  rb.risks = [{ risk: "x", disposition: "defer" }];
+  ok("refuses an unknown disposition", /disposition must be one of/.test(cli("render", tmpSpec(rb)).stderr));
+  rb.risks = [{ risk: "x", disposition: "mitigate", deliverableRef: "no such deliverable" }];
+  ok("refuses mitigate naming no deliverable and no ticket",
+    /mitigate needs deliverableRef/.test(cli("render", tmpSpec(rb)).stderr));
+  rb.risks = [{ risk: "x", disposition: "mitigate", ticketRef: "PROJ-12" }];
+  ok("refuses a ticketRef with no note", /mitigate needs deliverableRef/.test(cli("render", tmpSpec(rb)).stderr));
+  rb.risks = [{ risk: "x", disposition: "spike" }];
+  ok("refuses spike with no note", /spike needs a note/.test(cli("render", tmpSpec(rb)).stderr));
+  rb.risks = [{ risk: "x", disposition: "promote" }];
+  ok("refuses promote with no riskRef quiz question", /promote needs a quiz question/.test(cli("render", tmpSpec(rb)).stderr));
+  // The four good shapes render, show their payload, and pass grade's floor.
+  const rg = JSON.parse(JSON.stringify(spec));
+  rg.slug = "risk-good-plan";
+  rg.risks = [
+    { risk: "r-accept", disposition: "accept" },
+    { risk: "r-mitigate-deliverable", disposition: "mitigate", deliverableRef: rg.deliverables[0].title },
+    { risk: "r-mitigate-ticket", disposition: "mitigate", ticketRef: "PROJ-12", note: "filed with context" },
+    { risk: "r-spike", disposition: "spike", note: "run the sweep against a copy" },
+    { risk: "r-promote", disposition: "promote" },
+  ];
+  rg.quiz.push({ id: "q4", prompt: "What does the sweep do to a row past the cap?", options: ["leaves it", "drops it", "logs it twice"],
+    answer: 0, why: "x", decisionRef: rg.decisions[0].decision, riskRef: "r-promote" });
+  ok("every disposition shape renders", cli("render", tmpSpec(rg)).status === 0);
+  const rgh = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "risk-good-plan.review.html"), "utf8");
+  ok("payloads show on the surface: deliverable, ticket, note",
+    rgh.includes("mitigate: " + rg.deliverables[0].title) && rgh.includes("ticket PROJ-12") &&
+    rgh.includes("spike: run the sweep"));
+  const rgk = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "risk-good-plan.key.json"), "utf8"));
+  ok("the key lists no undispositioned risk", (rgk.undispositionedRisks || []).length === 0);
+  // Editing surfaces carry a card per risk with its defaults as data
+  // attributes; the shareable artifact and the cutover epic carry plain items.
+  ok("review carries one card per risk, defaults as data attributes",
+    (rgh.match(/class="dp-risk"/g) || []).length === 5 &&
+    rgh.includes('data-n="2" data-disposition="mitigate" data-payload="' + rg.deliverables[0].title + '"') &&
+    rgh.includes('name="dp-risk-3"') && rgh.includes('value="PROJ-12"') && rgh.includes("dpRiskLines"));
+  ok("the working surface carries the cards too",
+    fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "risk-good-plan.working.html"), "utf8").includes('class="dp-risk"'));
+  ok("the cutover epic carries plain items, no cards",
+    !fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "risk-good-plan.cutover", "risk-good-plan.epic.html"), "utf8").includes("dp-risk"));
+  ok("both copy-back blobs concatenate dpRiskLines",
+    (rgh.match(/dpRiskLines\(\)/g) || []).length >= 1 &&
+    fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "risk-good-plan.working.html"), "utf8").includes("dpRiskLines()"));
+  ok("the cutover increment carries the disposition",
+    fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "risk-good-plan.cutover", "01-retry-sweep.md"), "utf8")
+      .includes("r-mitigate-ticket — mitigate: ticket PROJ-12"));
+  rm("risk-good-plan");
+}
+
+// -------------------------------------------------- ask: a question as a page, standalone
+{
+  const askFile = path.join(HERE, "examples", "example.ask.json");
+  const asksDir = path.join(ENV.DEEP_PLAN_PLANS_DIR, "asks");
+  // Outside any plan root: renders, records no slug, never reaches the board.
+  const r = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "ask", askFile],
+    { encoding: "utf8", env: { ...ENV, CMUX_SURFACE_ID: "SURF-1", CMUX_WORKSPACE_ID: "WS-1" }, cwd: TMP });
+  const id = (r.stdout.match(/ask (\d{8}-\d{6}-[0-9a-f]{4}):/) || [])[1];
+  ok("ask renders standalone and prints a time-ordered id", r.status === 0 && !!id);
+  const ask = id ? JSON.parse(fs.readFileSync(path.join(asksDir, id + ".json"), "utf8")) : {};
+  ok("the ask records its target surface and workspace from the environment",
+    ask.surface === "SURF-1" && ask.workspace === "WS-1");
+  ok("no tracked plan at the cwd: no slug recorded", ask.slug === "" && ask.answer === null);
+  const html = id ? fs.readFileSync(path.join(asksDir, id + ".html"), "utf8") : "";
+  ok("the page carries the question, per-option mermaid, examples, and disabled pick buttons",
+    html.includes("logged-out visitor") && (html.match(/<pre class="mermaid">/g) || []).length === 2 &&
+    html.includes("amounts redacted") && html.includes('class="dp-act dp-ask-pick" data-n="3" disabled'));
+  ok("the id passes the intent server's slug pattern", /^[a-z0-9][a-z0-9._-]{0,120}$/.test(id || "!"));
+  ok("ask show reports unanswered", /unanswered/.test(cli("ask", "show", id || "x").stdout));
+  // Inside a tracked plan root: the slug is recorded.
+  const r2 = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "ask", askFile],
+    { encoding: "utf8", env: ENV, cwd: REPO });
+  const id2 = (r2.stdout.match(/ask (\S+):/) || [])[1];
+  ok("inside a plan root the ask records the slug",
+    id2 && JSON.parse(fs.readFileSync(path.join(asksDir, id2 + ".json"), "utf8")).slug === spec.slug);
+  // Refusals.
+  const multi = path.join(TMP, "multi.json");
+  fs.writeFileSync(multi, JSON.stringify({ questions: [{ question: "a", options: [{ label: "x" }, { label: "y" }] }] }));
+  ok("refuses a multi-question ask", /one question per ask/.test(cli("ask", multi).stderr));
+  fs.writeFileSync(multi, JSON.stringify({ question: "a", options: [{ label: "x" }] }));
+  ok("refuses fewer than two options", /2\+ options/.test(cli("ask", multi).stderr));
+}
+
 // -------------------------------------------------- ADR file convention is the adopter's
 //
 // "One ADR per file, numbered, in a folder" is the only part every adopter

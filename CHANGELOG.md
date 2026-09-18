@@ -5,6 +5,21 @@ truth and every entry lands on the machine via `./install.sh`.
 
 ## Unreleased
 
+- **Ask surfaces.** `deep-plan ask <file.json>` renders a question with
+  per-option mermaid and examples, served by the intent server at
+  `/ask/<id>` in a Dock tab. A pick on the page types the option number
+  into the terminal the ask was created in and reads the screen back to
+  prove the prompt took it (the number key submits on its own; Enter is
+  sent only if the pointer moved without resolving, never blind), and
+  otherwise tells you which key to press. The terminal question stays the answer of record; asks
+  work with or without a tracked plan. ADR 0003 records the channel.
+- **Risk triage.** Every spec risk carries a disposition — accept,
+  mitigate (a deliverable here or a filed ticket), spike (a named check),
+  promote (a quiz question) — chosen on the review page per card and
+  applied through the copy-back blob as `- [risk N] …` lines. `grade`
+  refuses while any risk has none, the same way it refuses an uncovered
+  contract decision. Plain-string risks in older specs are not
+  grandfathered.
 - **Optional TypeSafe check for questions at turn end.** A turn that ends on
   a question used to file as finished, because only Notification opened
   "Needs you". With a TypeSafe key present, Stop asks Jev in the background

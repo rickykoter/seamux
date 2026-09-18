@@ -17,7 +17,9 @@
     { "claim": "outbox rows carry a status column", "evidence": "db/schema.rb:42" },
     { "claim": "the delivery worker is the single consumer", "evidence": "app/workers/deliver.rb:10" }
   ],
-  "risks": ["backoff cap has not been agreed; starting at 5 tries"],
+  "risks": [
+    { "risk": "backoff cap has not been agreed; starting at 5 tries", "disposition": "accept" }
+  ],
   "diagrams": [
     { "question": "How does a failed write get retried?",
       "mermaid": "flowchart LR\n  W[write] --> O[(outbox)] --> D[deliver]\n  D -- fail --> O\n  T[timer sweep] --> O" }

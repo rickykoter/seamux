@@ -306,6 +306,11 @@ add("SessionEnd", "", entry("end", 3))
 add("Stop", "", entry("stop"))
 add("Notification", "", entry("notification"))
 add("PreToolUse", "", entry("pretool", 3))
+# A question to the human is a block on the human from the moment the tool is
+# called; no Notification fires for it. Own matchers so the hot path stays
+# payload-free.
+add("PreToolUse", "AskUserQuestion", entry("ask", 3))
+add("PostToolUse", "AskUserQuestion", entry("answered", 3))
 add("PostToolUse", "TaskCreate|TaskUpdate|TodoWrite",
     entry("task", 5, "Publishing plan to cmux..."))
 

@@ -953,7 +953,13 @@ def main():
         tok = []
         have_desc = w.get("description") or ""
         root = roots.get(ws, "")
-        if live and lifecycle == "running":
+        # An open AskUserQuestion is a block on the human that cmux reports as
+        # `running` (the agent is mid-turn, waiting on its tool). The ask hook
+        # leaves a marker for exactly this case; the answered hook removes it.
+        asking = os.path.exists(os.path.join(STATE, f"question-{ws}"))
+        if live and asking and "phase:waiting" in have_desc:
+            tok.append("phase:waiting")
+        elif live and lifecycle == "running":
             tok.append("phase:working")
         elif live and lifecycle == "needsInput" and "phase:waiting" in have_desc:
             tok.append("phase:waiting")
