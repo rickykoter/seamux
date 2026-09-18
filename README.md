@@ -108,12 +108,38 @@ at all. A goal you've confirmed plans faster and better than one the agent
 assumed. The step is mandatory — the only way past it is telling the agent
 to skip the challenge.
 
+**Questions with pictures.** Some forks are about shape: what a logged-out
+visitor sees behind a share link, or how a payload changes. Describing the
+options in a paragraph is the slow way to ask. So the planner can put the
+question on a page instead. `deep-plan ask` renders it with a diagram and
+a sample payload for each option, and opens it in the Dock next to the
+terminal. You still get the terminal prompt, and that prompt is still the
+answer of record. The page is there to give you something to look at. If
+you pick on the page, the intent server types your option into the
+terminal the question came from, then reads the screen back to make sure
+it landed. When it can't confirm, it tells you which key to press instead
+of guessing. Asks don't need a plan in flight.
+
+![an ask page: the question, a flow diagram, and three options each with a sample response](docs/img/ask.png)
+
 **Scouted fan-out.** Between reading the code and writing the spec, the
 planner sends out cheap sub-agents: one for each claim it isn't sure of,
 one for each contract surface the plan will touch. They come back with the
 callers, consumers, and schema reach. What a scout confirms goes into the
 plan's verified facts with a citation; what it can't stays listed as a
 risk. Nothing is quietly promoted from hunch to fact.
+
+**Risks you decide on.** A risk in a plan is a claim nobody could cite.
+Listing it used to be the end of the story. Now the review page asks what
+you want done about each one: accept it, mitigate it by naming the
+increment that handles it or the ticket you filed, spike it by saying what
+check would settle it, or promote it into the quiz so the review can't
+pass until you've been asked about it. Your choices ride the same **Copy
+for session** paste-back as your quiz answers, and `deep-plan grade`
+refuses while any risk is still undecided, the same way it refuses a
+contract change nobody was quizzed on.
+
+![risk cards on the review page: a disposition per risk, with a deliverable picker and a ticket box for mitigations](docs/img/risks.png)
 
 *(Real renders of the shipped pages, loaded with demo data.)*
 
