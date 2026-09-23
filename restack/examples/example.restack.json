@@ -1,0 +1,55 @@
+{
+  "$comment": "Reference config for a repo that checks in generated API surfaces. Copy to .seamux/restack.json and replace the commands with the ones CI actually runs — a paraphrase of a CI step is a check that passes locally and fails in the pipeline.",
+  "base": "origin/master",
+  "remote": "origin",
+  "rerere": true,
+  "timeout": 900,
+  "stack": { "tool": "auto" },
+
+  "artifacts": [
+    {
+      "name": "grpc-clients",
+      "paths": ["protobuf/**/*_pb.rb", "protobuf/**/*_services_pb.rb"],
+      "resolve": "regen",
+      "tier": "cheap",
+      "regen": "cd protobuf && buf generate",
+      "breaks": "CI regenerates and asserts no diff"
+    },
+    {
+      "name": "graphql-schema",
+      "paths": ["app/graphql/schema.graphql", "app/graphql/schema.json"],
+      "resolve": "regen",
+      "tier": "expensive",
+      "regen": "docker compose run --rm app bundle exec rake graphql:dump",
+      "note": "needs the app container; during a walk this is resolved to the base copy and recorded stale"
+    },
+    {
+      "name": "db-schema",
+      "paths": ["**/db/schema.rb"],
+      "resolve": "take-base",
+      "tier": "expensive",
+      "note": "not regenerable without a migrated database. take-base keeps the base copy; re-running your own migration re-adds your lines, and that is a commit you make deliberately."
+    },
+    {
+      "name": "js-lockfile",
+      "paths": ["yarn.lock", "package-lock.json"],
+      "resolve": "take-base",
+      "tier": "cheap",
+      "note": "then re-resolve dependencies; a hand-merged lockfile locks nothing"
+    }
+  ],
+
+  "checks": [
+    {
+      "name": "proto-breaking",
+      "tier": "cheap",
+      "run": "cd protobuf && buf breaking --against '../.git#branch=origin/master,subdir=protobuf'",
+      "note": "the same comparison the pipeline makes"
+    },
+    {
+      "name": "graphql-breaking",
+      "tier": "expensive",
+      "run": "git show origin/master:app/graphql/schema.graphql > /tmp/base-schema.graphql && docker compose run --rm app bundle exec schema_comparator verify /tmp/base-schema.graphql app/graphql/schema.graphql"
+    }
+  ]
+}

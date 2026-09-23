@@ -1,6 +1,6 @@
 # seamux
 
-Run a fleet of Claude Code agents from one screen. seamux adds two things to
+Run a fleet of Claude Code agents from one screen. seamux adds three things to
 [cmux](https://cmux.io):
 
 - **crew** — a Dock board that ranks your worktrees by who needs you right
@@ -8,6 +8,8 @@ Run a fleet of Claude Code agents from one screen. seamux adds two things to
 - **deep-plan** — a Claude Code skill that turns "make a plan" into a
   reviewable page with a quiz, then blocks the agent from editing until you
   approve each increment.
+- **restack** — its companion for the week after: rebase a stack onto a moved
+  base without hand-resolving a single generated file.
 
 It scales with you. Out of the box it needs nothing but git and GitHub — a
 laptop of hobby repos is fully served. When your projects have more — Jira,
@@ -143,6 +145,43 @@ contract change nobody was quizzed on.
 
 *(Real renders of the shipped pages, loaded with demo data.)*
 
+**Restacking, without the schema archaeology.** A stack that sits for a few
+days collects two kinds of conflict. The interesting kind is your code against
+someone else's. The other kind is a checked-in generated file — a GraphQL
+dump, a Rails schema, a generated client — conflicting on every branch,
+identically, because it is derived data that two branches both re-derived.
+Resolving that by hand is editing the output of a program, and CI will tell
+you so twenty minutes later anyway ("generated file is out of date", or a
+breaking-change comparison against master).
+
+`restack` takes that half. A per-repo `.seamux/restack.json` names each
+generated artifact, how to rebuild it, and whether rebuilding is cheap
+(a code generator) or expensive (a container, a migrated database). Then
+`restack run` walks the stack bottom-first, resolves every derived conflict by
+regenerating it, and **stops only for conflicts a human owns** — exit code 2,
+with the files and a hunk count each, rather than a wall of git output. What
+is too expensive to rebuild mid-walk is resolved to the base copy and recorded
+**stale**, with the command that fixes it; `restack check` and `restack push`
+both refuse while that list is non-empty, so nothing ships a half-merged
+schema quietly. `restack check --deep` runs the staleness and breaking-change
+comparisons locally, before the push, against a freshly fetched base.
+
+It stops before every push: `restack push` prints the lines and a human runs
+them. A restacked stack can only go up with a force push, and this machine's
+Bash guard blocks those from an agent on purpose.
+
+```sh
+restack plan --json      # what will be restacked, which artifacts will collide
+restack run              # the walk; exit 2 means something needs you
+restack continue         # after you resolved it
+restack check --deep     # the CI comparisons, locally
+restack push             # prints; never pushes
+```
+
+Graphite is detected and left in charge of its own rebase (`gt restack`, with
+the resolving done between its stops); without it the chain comes from your
+open PRs, or from branch topology.
+
 ## Setup
 
 ### What you need
@@ -224,6 +263,7 @@ maintain.
 crew doctor                                      # everything green
 node ~/.config/cmux/crew/board/board_probe.mjs
 node ~/.claude/skills/deep-plan/probe.mjs
+node ~/.claude/skills/restack/probe.mjs
 ```
 
 Open the board with `cmux sidebar open crew` or the Dock button. New Claude
@@ -325,8 +365,10 @@ it's set up.
 |---|---|
 | `crew/` | installed to `~/.config/cmux/crew` (see `crew/README.md`) |
 | `deep-plan/` | installed to `~/.claude/skills/deep-plan` (see its `SKILL.md`) |
+| `restack/` | installed to `~/.claude/skills/restack` (see its `SKILL.md`) |
 | `claude/` | statusline, guard hook, settings merger |
 | `bin/deep-plan.shim` | installed to `~/.local/bin/deep-plan` |
+| `bin/restack.shim` | installed to `~/.local/bin/restack` |
 | `docs/` | dev history, test notes, adoption audit, README images — not installed |
 | `docs/SYNCING.md` | who owns which path, and how a change travels between repo and machine |
 | `tools/scrub_check.py` | refuses internal identifiers in tracked files; first step in CI |
