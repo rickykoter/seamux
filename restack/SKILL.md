@@ -122,6 +122,10 @@ purpose** — a command nobody has run is worse than none.
 - **`checks`** — whatever CI runs that a laptop can run. `needsBase: true`
   (the default) is documentation for the reader; the base is fetched either way.
 
+Setting this up for a repo for the first time is its own job, and the best
+moment is right after a rebase that hurt — `examples/setup-prompt.md` is the
+prompt for it, built around the conflicts that session just resolved.
+
 `regen` and `check.run` are shell, read out of the working tree — running the
 tool in a repo trusts that repo's config the way you trust its Makefile.
 `--dry-run` prints every command without running it; `restack doctor` lists
