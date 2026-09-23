@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# install.sh — seamux: the crew Dock, its cmux tie-ins, and the deep-plan skill.
+# install.sh — seamux: the crew Dock, its cmux tie-ins, and the skills
+# (deep-plan, restack).
 #
 #   ./install.sh [--main-repo PATH] [--dry-run] [--check] [--force]
 #                [--no-apply] [--no-claude-settings] [--no-crew]
-#                [--no-deep-plan] [--no-mermaid] [--force-mermaid]
+#                [--no-deep-plan] [--no-restack] [--no-mermaid] [--force-mermaid]
 #                [--uninstall] [--with-jira[=SITE]] [--with-github-issues]
 #                [--with-observability=STACK] [--no-integrations]
 #
 # The repo is the source of truth: running this syncs repo -> machine
-# (~/.config/cmux/crew, ~/.claude/skills/deep-plan, statusline, hooks) and then
+# (~/.config/cmux/crew, ~/.claude/skills/{deep-plan,restack}, statusline, hooks) and then
 # hands over to `crew apply`. Safe to re-run; an existing crew install is moved
 # aside first. `--check` reports drift between the repo and the live install
 # without changing anything — run it before reinstalling if you edited live files.
@@ -19,10 +20,12 @@ HERE="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 DEST="$HOME/.config/cmux/crew"
 SKILL="$HOME/.claude/skills/deep-plan"
 SHIM="$HOME/.local/bin/deep-plan"
+RSKILL="$HOME/.claude/skills/restack"
+RSHIM="$HOME/.local/bin/restack"
 MERMAID_VERSION="11.17.2"
 MERMAID_SHA256="581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8"
 
-DRY=0 APPLY=1 SETTINGS=1 CREW=1 DEEPPLAN=1 MERMAID=1 FORCE_MERMAID=0 CHECK=0 FORCE=0 UNINSTALL=0 MAIN=""
+DRY=0 APPLY=1 SETTINGS=1 CREW=1 DEEPPLAN=1 RESTACK=1 MERMAID=1 FORCE_MERMAID=0 CHECK=0 FORCE=0 UNINSTALL=0 MAIN=""
 WITH_JIRA="" JIRA_SITE="" WITH_GHI="" WITH_OBS="" OBS_STACK="" NO_INTEG=0
 
 while [ $# -gt 0 ]; do
@@ -35,6 +38,7 @@ while [ $# -gt 0 ]; do
     --no-claude-settings) SETTINGS=0; shift ;;
     --no-crew) CREW=0; shift ;;
     --no-deep-plan) DEEPPLAN=0; shift ;;
+    --no-restack) RESTACK=0; shift ;;
     --no-mermaid) MERMAID=0; shift ;;
     --force-mermaid) FORCE_MERMAID=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
@@ -43,7 +47,7 @@ while [ $# -gt 0 ]; do
     --with-github-issues) WITH_GHI=1; shift ;;
     --with-observability=*) WITH_OBS=1; OBS_STACK="${1#--with-observability=}"; shift ;;
     --no-integrations) NO_INTEG=1; shift ;;
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
     *) echo "install.sh: unknown option $1" >&2; exit 2 ;;
   esac
 done
@@ -124,9 +128,14 @@ drift_check() {
     case "$rel" in vendor/*) continue ;; esac
     check_pair "$f" "$SKILL/$rel"
   done < <(find "$HERE/deep-plan" -type f ! -name '.gitkeep' ! -name '.DS_Store')
+  while IFS= read -r f; do
+    rel="${f#$HERE/restack/}"
+    check_pair "$f" "$RSKILL/$rel"
+  done < <(find "$HERE/restack" -type f ! -name '.gitkeep' ! -name '.DS_Store')
   check_pair "$HERE/claude/statusline.py" "$HOME/.claude/statusline.py"
   check_pair "$HERE/claude/hooks/guard_bash.sh" "$HOME/.claude/hooks/cmux/guard_bash.sh"
   check_pair "$HERE/bin/deep-plan.shim" "$SHIM"
+  check_pair "$HERE/bin/restack.shim" "$RSHIM"
   # live-only files under the crew tree (informational)
   if [ -d "$DEST" ]; then
     while IFS= read -r f; do
@@ -163,8 +172,11 @@ if [ "$UNINSTALL" = 1 ]; then
   fi
   [ -d "$SKILL" ] && { run "rm -rf '$SKILL'"; ok "removed the deep-plan skill"; }
   [ -f "$SHIM" ]  && { run "rm -f '$SHIM'";   ok "removed the deep-plan shim"; }
+  [ -d "$RSKILL" ] && { run "rm -rf '$RSKILL'"; ok "removed the restack skill"; }
+  [ -f "$RSHIM" ]  && { run "rm -f '$RSHIM'";   ok "removed the restack shim"; }
   run "python3 '$HERE/claude/merge_settings.py' --remove$([ "$DRY" = 1 ] && echo ' --dry-run')"
   say "kept: guard_bash.sh, ~/.claude/deep-plan (state/keys), ~/.claude/plans,"
+  say "      each repo's .seamux/restack.json and any in-flight restack state,"
   say "      statusline backups, ~/.config/cmux/crew-local (your overlay)"
   exit 0
 fi
@@ -359,6 +371,20 @@ if [ "$DEEPPLAN" = 1 ]; then
   fi
 fi
 
+# ---------------------------------------------------------------- restack
+if [ "$RESTACK" = 1 ]; then
+  printf '\n\033[1mrestack\033[0m\n'
+  run "mkdir -p '$RSKILL'"
+  # No --delete, same reasoning as deep-plan: anything the user added beside
+  # the skill survives. Nothing of theirs lives in here anyway — run state is
+  # in each repo's git dir and the config is in each repo's .seamux/.
+  run "rsync -a --exclude '.gitkeep' '$HERE/restack/' '$RSKILL/'"
+  ok "copied the skill -> ${RSKILL/#$HOME/~}"
+  run "mkdir -p '$HOME/.local/bin'"
+  run "cp '$HERE/bin/restack.shim' '$RSHIM' && chmod +x '$RSHIM'"
+  ok "installed the restack shim -> ${RSHIM/#$HOME/~}"
+fi
+
 # ---------------------------------------------------------------- hand over
 if [ "$CREW" = 1 ] && [ "$APPLY" = 1 ]; then
   printf '\n'
@@ -376,5 +402,6 @@ printf '\n\033[1mnext\033[0m\n'
 say "crew doctor                              # must be green"
 say "node $DEST/board/board_probe.mjs"
 say "node $SKILL/probe.mjs                    # must be all green"
+say "node $RSKILL/probe.mjs                      # same, for restack"
 say "./install.sh --check                     # should report no drift"
 printf '\n'

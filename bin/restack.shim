@@ -1,0 +1,13 @@
+#!/bin/sh
+# Resolve node without trusting PATH, for the same reason deep-plan's shim
+# does: callers include processes fired from the cmux app, whose environment
+# has no version manager loaded, and a bare `exec node` there fails silently.
+if command -v node >/dev/null 2>&1; then
+  NODE=node
+else
+  for c in "$HOME/.asdf/shims/node" /opt/homebrew/bin/node /usr/local/bin/node; do
+    [ -x "$c" ] && NODE="$c" && break
+  done
+fi
+[ -n "${NODE:-}" ] || { echo "restack: node not found" >&2; exit 127; }
+exec "$NODE" "$HOME/.claude/skills/restack/restack.mjs" "$@"

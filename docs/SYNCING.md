@@ -17,6 +17,8 @@ repo names in a public tree — is everything below.
 | `crew/` | `~/.config/cmux/crew/` (replace-with-backup) |
 | `deep-plan/` | `~/.claude/skills/deep-plan/` (additive rsync, **no `--delete`**) |
 | `bin/deep-plan.shim` | `~/.local/bin/deep-plan` |
+| `restack/` | `~/.claude/skills/restack/` (additive rsync, **no `--delete`**) |
+| `bin/restack.shim` | `~/.local/bin/restack` |
 | `claude/statusline.py` | `~/.claude/statusline.py` |
 | `claude/hooks/guard_bash.sh` | `~/.claude/hooks/cmux/guard_bash.sh` (never overwritten if present) |
 | `crew/config/*` | rendered by `crew apply` into `cmux.json` and the Dock files |
@@ -44,6 +46,12 @@ crew-digest`) — then commit and reinstall.
   installed — including marking a file that a built-in shadows.
 - `~/.claude/deep-plan/tools/` — one-shot scripts (the data migrator lives
   here), kept out of the skill for the same two reasons.
+- **restack keeps nothing under `~`.** Its config is `.seamux/restack.json` in
+  each work repo (committed, because "this repo checks in a generated client"
+  is a property of the repo), and its run state is
+  `$(git rev-parse --absolute-git-dir)/seamux-restack.json` — per worktree,
+  never in the work tree, gone when the clone is. So there is no restack data
+  for `--uninstall` to preserve and nothing of yours for the rsync to clobber.
 - `~/.config/cmux/cmux.json` — owned by `crew apply`, which renders it whole
   because cmux has no config include mechanism (`docs/FINDINGS.md`).
 - `activePaneBorderColor` inside it — **runtime state, not a preference.** It is

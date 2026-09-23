@@ -5,6 +5,26 @@ truth and every entry lands on the machine via `./install.sh`.
 
 ## Unreleased
 
+- **restack — a companion skill for landing a stack.** `~/.claude/skills/restack`
+  plus a `restack` shim. It walks a stack bottom-first with `git rebase --onto`
+  (tips recorded before anything moves, so nothing replays twice), resolves
+  every conflict in a *generated* artifact by rebuilding it rather than merging
+  it, and stops only for conflicts a human owns — exit code 2, with the files
+  and a hunk count each. Artifacts and their generators are declared per repo
+  in `.seamux/restack.json` and tiered: cheap generators run inside the walk,
+  expensive ones (a container, a migrated database) resolve to the base copy
+  and are recorded **stale** with the command that fixes them. `check` runs the
+  staleness and breaking-change comparisons CI would run, locally, against a
+  freshly fetched base, and both `check` and `push` refuse while anything is
+  stale. `push` prints the lines and never runs one. Graphite is detected and
+  keeps ownership of its own rebase; without it the chain comes from open PRs
+  or from topology, and which source answered is always reported. Two things
+  it refuses to do quietly: a commit that becomes empty once its generated
+  file is re-derived is reported as dropped, with its subject, and a
+  `take-base` resolution records the branch copy it discarded (cleared with
+  `restack clear-stale --only <name>`, which is logged). Probe:
+  `node restack/probe.mjs` — real repositories in a temp dir, wired into CI.
+
 - **Ask surfaces.** `deep-plan ask <file.json>` renders a question with
   per-option mermaid and examples, served by the intent server at
   `/ask/<id>` in a Dock tab. A pick on the page types the option number
