@@ -8,6 +8,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { verdict } from "./lib/evidence.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const V = process.argv.includes("-v");
@@ -162,7 +163,59 @@ print(json.dumps({q: verdicts[i % 3] for i, q in enumerate(qs)}))
     !/fact 2/.test(r2.stderr) && !/fact 3/.test(r2.stderr));
   ok("evidence: no client configured means no judged warnings at all",
     !/contradicting|do not appear/.test(r1.stderr));
-  for (const s of ["evidence-probe", "evidence-probe-judged"]) {
+
+  // The distribution path, which is what the local Kev this machine points at
+  // actually returns. Three shapes, two of which the previous `confidence`
+  // gate got wrong.
+  const fakeProbs = path.join(TMP, "fake_typesafe_probs.py");
+  fs.writeFileSync(fakeProbs, `#!/usr/bin/env python3
+import json, sys
+if (sys.argv[1:] or [""])[0] == "available": sys.exit(0)
+req = json.loads(sys.stdin.read())
+verdicts = [
+  # torn between contradicts and says_nothing: margin 0.10, mass off
+  # "supports" 0.86. The old rule read the margin and stayed silent.
+  {"choice": "contradicts", "confidence": 0.21,
+   "probabilities": {"supports": 0.14, "contradicts": 0.48, "says_nothing": 0.38}},
+  # mass split evenly between the two alarming options: margin ZERO, and 70%
+  # of the mass says the citation does not back the claim.
+  {"choice": "contradicts", "confidence": 0.0,
+   "probabilities": {"supports": 0.30, "contradicts": 0.35, "says_nothing": 0.35}},
+  # genuinely supported: must stay silent.
+  {"choice": "supports", "confidence": 0.87,
+   "probabilities": {"supports": 0.92, "contradicts": 0.03, "says_nothing": 0.05}},
+]
+qs = sorted(req["questions"], key=lambda k: int(k[1:]))
+print(json.dumps({q: verdicts[i % 3] for i, q in enumerate(qs)}))
+`);
+  ev.slug = "evidence-probe-probs";
+  const r3 = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "render",
+    tmpSpec(ev), "--root", EVREPO],
+    { encoding: "utf8", cwd: REPO, env: { ...ENV, DEEP_PLAN_TYPESAFE_CLIENT: fakeProbs } });
+  ok("evidence: a low top-two MARGIN no longer silences a contradicted fact",
+    r3.status === 0 && /fact 1 — .*real\.txt:2.*contradicting/.test(r3.stderr), r3.stderr);
+  ok("evidence: mass split across both alarming options still warns",
+    /fact 2 — .*real\.txt:4/.test(r3.stderr), r3.stderr);
+  ok("evidence: a genuinely supported fact stays silent", !/fact 3/.test(r3.stderr), r3.stderr);
+
+  // The reading itself, directly: the compat path must not move.
+  ok("verdict: reads mass off supports when a distribution is given",
+    verdict({ choice: "contradicts", confidence: 0.21,
+              probabilities: { supports: 0.14, contradicts: 0.48, says_nothing: 0.38 } }).warn === true);
+  ok("verdict: a confident supports is silence",
+    verdict({ choice: "supports", confidence: 0.9,
+              probabilities: { supports: 0.92, contradicts: 0.03, says_nothing: 0.05 } }).warn === false);
+  ok("verdict: wording follows whichever alarming option holds more mass",
+    verdict({ probabilities: { supports: 0.1, contradicts: 0.2, says_nothing: 0.7 } }).choice === "says_nothing");
+  ok("verdict: no distribution keeps the old confidence gate",
+    verdict({ choice: "contradicts", confidence: 0.9 }).warn === true &&
+    verdict({ choice: "contradicts", confidence: 0.3 }).warn === false);
+  ok("verdict: an unreadable answer warns about nothing",
+    verdict({}).warn === false && verdict(null).warn === false);
+  ok("verdict: a supports choice with no distribution stays silent",
+    verdict({ choice: "supports", confidence: 0.2 }).warn === false);
+
+  for (const s of ["evidence-probe", "evidence-probe-judged", "evidence-probe-probs"]) {
     fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, s + ".json"), { force: true });
     fs.rmSync(path.join(os.homedir(), ".claude", "deep-plan", "active", s), { force: true });
   }

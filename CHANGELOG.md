@@ -5,6 +5,20 @@ truth and every entry lands on the machine via `./install.sh`.
 
 ## Unreleased
 
+- **deep-plan's evidence check reads the answer's distribution, not its
+  `confidence`.** The gate was written against Jev; the local model this
+  machine now uses reports `confidence` as the margin between its top two
+  options, so a citation verdict torn between "contradicts" and
+  "says_nothing" arrives under the floor with almost all of its mass against
+  the claim — and a verdict splitting that mass evenly (0.35/0.35 against 0.30
+  supports) has a margin of zero, a shape no confidence number can express.
+  `verdict()` now warns on `1 - p(supports)` and takes its wording from
+  whichever alarming option holds more mass; an answer without probabilities
+  keeps the old path byte for byte. Measured: on clear-cut citations both
+  rules agree, so this removes a latent trap rather than rescuing a broken
+  check. Still warn-only, still a real floor — uncertainty does not warn here,
+  unlike restack's guard, because the two gate very different things.
+
 - **restack verify — did the rebase change anything of yours?** A rebase
   reports success when every commit applied, not when every commit still
   says what it said. `verify` range-diffs each branch against the tips the
