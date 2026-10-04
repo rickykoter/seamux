@@ -1,0 +1,21 @@
+#!/bin/sh
+# restack, as the plugin ships it. Claude puts a plugin's bin/ on the Bash
+# tool's PATH but does not export CLAUDE_PLUGIN_ROOT there, so the engine is
+# found relative to this file, through any symlinks to it.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in /*) self=$link ;; *) self=${self%/*}/$link ;; esac
+done
+ROOT=$(cd "${self%/*}/.." && pwd -P)
+# Node without trusting PATH, as the ~/.local/bin shim does: a caller fired from
+# the cmux app has no version manager loaded.
+if command -v node >/dev/null 2>&1; then
+  NODE=node
+else
+  for c in "$HOME/.asdf/shims/node" /opt/homebrew/bin/node /usr/local/bin/node; do
+    [ -x "$c" ] && NODE="$c" && break
+  done
+fi
+[ -n "${NODE:-}" ] || { echo "restack: node not found" >&2; exit 127; }
+exec "$NODE" "$ROOT/restack.mjs" "$@"

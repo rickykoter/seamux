@@ -19,7 +19,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { validateDiagrams, validateSurface } from "./lib/validate.mjs";
+import { validateDiagrams, validateSurface, mermaidPath, mermaidCandidates, VENDOR_DIR, MERMAID_HOME } from "./lib/validate.mjs";
 import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries, adrScanReport } from "./lib/adr.mjs";
 import { epicHtml, incrementMd, bundleReadme, incrementFileNames } from "./lib/cutover.mjs";
 import { checkEvidence } from "./lib/evidence.mjs";
@@ -31,7 +31,17 @@ import {
 } from "./lib/state.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const MERMAID = path.join(HERE, "vendor", "mermaid.min.js");
+// The pinned diagram engine. `setup` and the first render that finds no bundle
+// fetch exactly this build into the data tree, and refuse any other bytes.
+const MERMAID_VERSION = "11.17.2";
+const MERMAID_SHA256 = "581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8";
+const MERMAID_URL = `https://cdn.jsdelivr.net/npm/mermaid@${MERMAID_VERSION}/dist/mermaid.min.js`;
+// The engine pointer: where this engine lives, for callers outside Claude (the
+// board's go chip, triage, the intent server, the ~/.local/bin shim). The
+// overrides are for the probe, so a test run never repoints the real one.
+const ENGINE_FILE = process.env.DEEP_PLAN_ENGINE_FILE ||
+  path.join(os.homedir(), ".claude", "deep-plan", "engine.json");
+const SHIM_DIR = process.env.DEEP_PLAN_BIN_DIR || path.join(os.homedir(), ".local", "bin");
 
 const PARA_CEILING = 120;   // words; rejects the house's worst walls (178/140/130)
 const DIAGRAM_PER = 900;    // one diagram per this many prose words, min 1
@@ -348,18 +358,134 @@ function mdPlan(spec, adrs = []) {
   return L.join("\n");
 }
 
-function mermaidB64() {
-  // The validator degrades to a documented "skipped" sentinel when the vendored
-  // bundle is missing; render cannot, because a surface with no diagram engine
-  // is not a surface. So fail, but say what to do -- a bare readFileSync here
-  // handed a fresh clone an ENOENT stack trace out of node:fs, which reads as a
-  // broken tool rather than a missing 3 MB file that install.sh normally fetches.
-  if (!fs.existsSync(MERMAID)) {
-    die("vendor/mermaid.min.js is missing, so no diagram can be inlined.\n" +
-        "  Run ./install.sh (it fetches the pinned build and verifies its sha256),\n" +
-        "  or fetch it yourself into " + MERMAID);
+function sha256File(p) {
+  return crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex");
+}
+
+// Put the pinned bundle at MERMAID_HOME. Bytes come from a local copy that
+// already matches the pin (a checkout's vendor/, the old skills copy), else from
+// the CDN through curl, which keeps this synchronous for the renderers that call
+// it. DEEP_PLAN_MERMAID_SRC replaces the download with a local file, for the
+// probe. Anything that fails the sha256 check is deleted, never installed.
+// Returns { ok, how } or { ok: false, why }.
+function fetchMermaid() {
+  for (const c of mermaidCandidates()) {
+    if (c === MERMAID_HOME || !fs.existsSync(c)) continue;
+    try {
+      if (sha256File(c) === MERMAID_SHA256) {
+        fs.mkdirSync(VENDOR_DIR, { recursive: true });
+        fs.copyFileSync(c, MERMAID_HOME);
+        return { ok: true, how: "copied from " + c };
+      }
+    } catch { /* unreadable candidate: try the next */ }
   }
-  return fs.readFileSync(MERMAID).toString("base64");
+  fs.mkdirSync(VENDOR_DIR, { recursive: true });
+  const tmp = MERMAID_HOME + ".part-" + process.pid;
+  const src = process.env.DEEP_PLAN_MERMAID_SRC;
+  if (src) {
+    try { fs.copyFileSync(src, tmp); } catch (e) { return { ok: false, why: "could not read " + src }; }
+  } else {
+    const r = spawnSync("curl", ["-fsSL", MERMAID_URL, "-o", tmp], { encoding: "utf8" });
+    if (r.error || r.status !== 0) {
+      fs.rmSync(tmp, { force: true });
+      return { ok: false, why: "could not download " + MERMAID_URL + (r.stderr ? ": " + r.stderr.trim() : "") };
+    }
+  }
+  const got = sha256File(tmp);
+  if (got !== MERMAID_SHA256) {
+    fs.rmSync(tmp, { force: true });
+    return { ok: false, why: `the download failed the sha256 check (got ${got.slice(0, 12)}…, pinned ${MERMAID_SHA256.slice(0, 12)}…); nothing installed` };
+  }
+  fs.renameSync(tmp, MERMAID_HOME);
+  return { ok: true, how: "fetched mermaid " + MERMAID_VERSION };
+}
+
+function mermaidB64() {
+  // The validator degrades to a documented "skipped" sentinel when the bundle
+  // is missing; render cannot, because a surface with no diagram engine is not
+  // a surface. A plugin install starts without it, so the first render fetches
+  // it. If that fails too, refuse legibly: a bare readFileSync here once handed
+  // a fresh clone an ENOENT stack trace, which reads as a broken tool rather
+  // than a missing 3 MB file.
+  let file = mermaidPath();
+  if (!file) {
+    const f = fetchMermaid();
+    if (!f.ok) {
+      die("vendor/mermaid.min.js is missing, so no diagram can be inlined, and fetching it failed:\n" +
+          "  " + f.why + "\n" +
+          "  Run `deep-plan setup` (it fetches the pinned build and verifies its sha256),\n" +
+          "  or put mermaid " + MERMAID_VERSION + " at " + MERMAID_HOME);
+    }
+    file = MERMAID_HOME;
+    try { writeEnginePointer(); } catch { /* the pointer catches up on the next run */ }
+  }
+  return fs.readFileSync(file).toString("base64");
+}
+
+// ---------------------------------------------------------------- engine pointer
+
+function engineVersion() {
+  try { return JSON.parse(fs.readFileSync(path.join(HERE, ".claude-plugin", "plugin.json"), "utf8")).version || "dev"; }
+  catch { return "dev"; }
+}
+
+// One key per line (JSON.stringify's two-space form) is part of the contract:
+// the ~/.local/bin shim reads "root" with sed. Written only when the content
+// changes, so the hundreds of runs a session makes cost one read each.
+// The old ~/.claude/skills copy never writes it: that copy is the fallback the
+// pointer exists to supersede, and naming it would only hide the plugin.
+function writeEnginePointer() {
+  if (!process.env.DEEP_PLAN_ENGINE_FILE &&
+      HERE === path.join(os.homedir(), ".claude", "skills", "deep-plan")) return null;
+  const m = mermaidPath();
+  const body = JSON.stringify({ root: HERE, version: engineVersion(), ...(m ? { mermaid: m } : {}) }, null, 2) + "\n";
+  let cur = null;
+  try { cur = fs.readFileSync(ENGINE_FILE, "utf8"); } catch { /* first write */ }
+  if (cur === body) return body;
+  fs.mkdirSync(path.dirname(ENGINE_FILE), { recursive: true });
+  const tmp = ENGINE_FILE + ".tmp-" + process.pid;
+  fs.writeFileSync(tmp, body);
+  fs.renameSync(tmp, ENGINE_FILE);
+  return body;
+}
+
+// `deep-plan setup`: everything a plugin install cannot ship. The bundle (into
+// the data tree, pinned), the pointer, and the shim that gives a human shell
+// and the cmux app a `deep-plan` command. Safe to re-run; --force refetches a
+// bundle that does not match the pin.
+function setup(force) {
+  let bad = 0;
+  if (fs.existsSync(MERMAID_HOME) && !force) {
+    if (sha256File(MERMAID_HOME) === MERMAID_SHA256) say(`  ok    mermaid ${MERMAID_VERSION} in place (sha256 verified)`);
+    else say(`  warn  ${MERMAID_HOME} is not the pinned ${MERMAID_VERSION}; keeping it (setup --force refetches)`);
+  } else {
+    if (force) fs.rmSync(MERMAID_HOME, { force: true });
+    const f = fetchMermaid();
+    if (f.ok) say(`  ok    ${f.how} -> ${MERMAID_HOME} (sha256 verified)`);
+    else { console.error(`  FAIL  mermaid: ${f.why}`); bad++; }
+  }
+  const body = writeEnginePointer();
+  say(body ? `  ok    engine pointer -> ${ENGINE_FILE} (root ${HERE})`
+           : `  skip  engine pointer: this is the old ~/.claude/skills copy`);
+  const shimSrc = path.join(HERE, "lib", "deep-plan.shim");
+  const shim = path.join(SHIM_DIR, "deep-plan");
+  const want = fs.readFileSync(shimSrc, "utf8");
+  // A symlink here (an old install linked the name straight at an engine) is
+  // replaced, never written through: writing through it would overwrite the
+  // engine it points at with this shim.
+  try { if (fs.lstatSync(shim).isSymbolicLink()) fs.unlinkSync(shim); } catch { /* absent */ }
+  let have = null;
+  try { have = fs.readFileSync(shim, "utf8"); } catch { /* not installed */ }
+  if (have === want) say(`  ok    shim in place: ${shim}`);
+  else {
+    fs.mkdirSync(SHIM_DIR, { recursive: true });
+    fs.writeFileSync(shim, want, { mode: 0o755 });
+    fs.chmodSync(shim, 0o755);
+    say(`  ok    ${have === null ? "installed" : "updated"} the shim: ${shim}`);
+  }
+  if (!(process.env.PATH || "").split(":").includes(SHIM_DIR))
+    say(`  warn  ${SHIM_DIR} is not on PATH; add it to call \`deep-plan\` from your own shell`);
+  if (bad) process.exit(1);
 }
 
 // One <head> shared by both HTML surfaces. Mermaid is inlined as base64 so the
@@ -1970,6 +2096,11 @@ function statusRows() {
     // finished may not be — the board reads this from --json.
     obsOutstanding: (st.increments || []).filter(obsBlocks)
       .map(i => ({ n: i.n, status: i.obs.status })),
+    // Every increment's own row, for a reader that draws the whole plan (the
+    // seamux-mods pane) rather than the board's one-line summary.
+    increments: (st.increments || []).map(i => ({
+      n: i.n, title: i.title, status: i.status, obs: (i.obs && i.obs.status) || "n/a",
+    })),
   }));
 }
 
@@ -2068,7 +2199,7 @@ function obsRecord(slug, n, verdict, note) {
 const BUILTIN_VERBS = new Set([
   "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
   "grade", "status", "go", "start", "done", "reset", "block", "obs",
-  "open-gate", "shut-gate", "close", "diff", "ask", "help",
+  "open-gate", "shut-gate", "close", "diff", "ask", "help", "setup", "engine",
 ]);
 
 const [, , cmd, ...rest] = process.argv;
@@ -2082,7 +2213,19 @@ for (let i = 0; i < rest.length; i++) {
   else args.push(rest[i]);
 }
 
+// Every run refreshes the pointer, so whichever copy ran last is the one the
+// out-of-session callers find. Never at the cost of the command itself.
+let pointerBody = null;
+try { pointerBody = writeEnginePointer(); } catch { /* read-only home, full disk: the verb still runs */ }
+
 switch (cmd) {
+  case "setup": setup(flags.force); break;
+  case "engine": {
+    // What the pointer says, as written by this very run. The SessionStart hook
+    // calls this with stdout discarded; a human calls it to ask "which copy?".
+    process.stdout.write(pointerBody || JSON.stringify({ root: HERE, version: engineVersion(), pointer: "not written" }, null, 2) + "\n");
+    break;
+  }
   case "render": {
     if (!args[0]) die("render <spec.json> [--root DIR] [--force]");
     await render(args[0], flags); break;
@@ -2174,6 +2317,9 @@ switch (cmd) {
       }));
     }
     say(`deep-plan — plan as artifact, gate per increment
+  setup [--force]                             fetch the pinned mermaid, write the engine
+                                              pointer, install the ~/.local/bin shim
+  engine                                      print the engine pointer (which copy runs)
   render <spec.json> [--root DIR] [--force]   spec -> md + review + working surfaces
   rehydrate <slug>                            re-render from the archived spec
   validate <slug|file>                        mermaid + formatting lint of rendered surfaces

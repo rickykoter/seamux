@@ -1,0 +1,25 @@
+#!/bin/sh
+# ~/.local/bin/deep-plan, installed by `deep-plan setup` and `crew apply`.
+# It holds no path of its own: the engine is $DEEP_PLAN_ENGINE, else the root
+# the plugin last wrote to ~/.claude/deep-plan/engine.json, else the old
+# ~/.claude/skills copy. engine.json is written by the engine with one key per
+# line, which is what lets sed read it here without a JSON parser.
+ROOT=${DEEP_PLAN_ENGINE:-}
+if [ -z "$ROOT" ] && [ -f "$HOME/.claude/deep-plan/engine.json" ]; then
+  ROOT=$(sed -n 's/^  "root": "\(.*\)",\{0,1\}$/\1/p' "$HOME/.claude/deep-plan/engine.json")
+fi
+[ -n "$ROOT" ] && [ -f "$ROOT/deep_plan.mjs" ] || ROOT="$HOME/.claude/skills/deep-plan"
+# Resolve node without trusting PATH: callers include detached processes fired
+# from the cmux app (the board's go chip), whose environment has no version
+# manager loaded. A bare `exec node` there fails silently, the worst possible
+# failure for a go-ahead.
+if command -v node >/dev/null 2>&1; then
+  NODE=node
+else
+  for c in "$HOME/.asdf/shims/node" /opt/homebrew/bin/node /usr/local/bin/node; do
+    [ -x "$c" ] && NODE="$c" && break
+  done
+fi
+[ -n "${NODE:-}" ] || { echo "deep-plan: node not found" >&2; exit 127; }
+[ -f "$ROOT/deep_plan.mjs" ] || { echo "deep-plan: no engine found (install the deep-plan plugin, or set DEEP_PLAN_ENGINE)" >&2; exit 127; }
+exec "$NODE" "$ROOT/deep_plan.mjs" "$@"

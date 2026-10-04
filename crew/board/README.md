@@ -221,7 +221,7 @@ One colour per worktree, in four places. It is cmux's own `custom_color`, which
 | the VS Code title bar | Peacock, via `bin/crew-color` |
 | the board's card | a ring in that colour on `.row.here`, plus a brighter ground |
 | the focused pane's frame | `bin/crew-frame` rewrites `activePaneBorderColor` |
-| Claude Code's status line | `~/.claude/statusline.py` prints `▊ <title>` in it |
+| Claude Code's status line | `~/.config/cmux/crew/claude/statusline.py` prints `▊ <title>` in it |
 
 The current workspace's card is **marked, not moved** — promoting it would fight
 the ranking, which is the one thing this board is for.
@@ -338,7 +338,7 @@ whose "largest on record" fallback is a high-water mark rather than a limit.
 An explicit switch rather than a guess: the local transcripts show tokens and
 computed costs either way and state nothing about your plan, so any detection
 would be a heuristic that silently picks the wrong framing. The status line
-(`claude/statusline.py`) reads the same variable and follows the same rule.
+(`crew/claude/statusline.py`) reads the same variable and follows the same rule.
 
 ### The window card holds two views
 

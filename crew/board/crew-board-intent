@@ -59,15 +59,16 @@ TARGETS = os.path.join(STATE_DIR, "board-targets.json")
 LOG = os.path.join(STATE_DIR, "board-intent.log")
 
 _RESOLVER = os.path.join(HERE, "..", "bin", "crew-cmux-bin")
-DEEP_PLAN = os.path.join(os.path.expanduser("~"), ".claude", "skills",
-                         "deep-plan", "deep_plan.mjs")
 CREW_DIFF = os.path.join(HERE, "..", "bin", "crew-diff")
 USAGE_TMPL = os.path.join(HERE, "usage.tmpl.html")
 CODE_OPEN = os.path.join(HERE, "..", "bin", "crew-code-open")
 DP_STATE = os.path.join(os.path.expanduser("~"), ".claude", "deep-plan", "state")
 PLANS = os.path.join(os.path.expanduser("~"), ".claude", "plans")
-SKILL = os.path.join(os.path.expanduser("~"), ".claude", "skills", "deep-plan")
-MERMAID = os.path.join(SKILL, "vendor", "mermaid.min.js")
+# The deep-plan engine and its mermaid bundle are wherever the plugin's
+# engine.json says (dp_engine.py). Resolved per request: this server outlives
+# plugin updates, which move both.
+sys.path.insert(0, HERE)
+import dp_engine  # noqa: E402
 # A slug reaches us from a URL, and it is about to be joined onto a path. Anchored
 # and character-limited so it can only ever name a file inside PLANS.
 SLUG_OK = re.compile(r"^[a-z0-9][a-z0-9._-]{0,120}$")
@@ -662,7 +663,7 @@ def act(action, row, extra):
     if action == "close plan":
         if not slug:
             return False, "no plan on this row"
-        return run(["node", DEEP_PLAN, "close", slug]), "close " + slug
+        return run(["node", dp_engine.script(), "close", slug]), "close " + slug
 
     return False, "unknown action: " + action
 
@@ -683,7 +684,7 @@ def increment(slug, n, action, why):
         return False, "bad increment"
     if action not in INC_ACTIONS:
         return False, "bad transition"
-    argv = ["node", DEEP_PLAN, action, slug, str(n)]
+    argv = ["node", dp_engine.script(), action, slug, str(n)]
     if action == "block":
         argv.append(why or "blocked from the plan surface")
     p = subprocess.run(argv, capture_output=True, text=True, timeout=90)
@@ -779,7 +780,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # token in a <script src> and therefore in the page's URL bar.
         if u.path == "/mermaid.min.js":
             try:
-                body = open(MERMAID, "rb").read()
+                body = open(dp_engine.mermaid(), "rb").read()
             except OSError:
                 return self._reply(404, b'{"error":"no vendored mermaid"}')
             self.send_response(200)

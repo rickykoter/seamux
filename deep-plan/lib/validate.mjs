@@ -11,16 +11,36 @@ import path from "node:path";
 import os from "node:os";
 import vm from "node:vm";
 
+// Where the bundle lives. A plugin root is replaced on every update, so the
+// fetched 3.4MB file lives in the data tree, which survives that and uninstall.
+// The skill-local vendor/ is the second place, for a checkout that fetched its
+// own; the old ~/.claude/skills copy is the last, until migration removes it.
+// DEEP_PLAN_VENDOR_DIR is for the probe and CI, and when set it is the ONLY
+// place looked: a probe that hides the bundle to test the refusal must not find
+// one in the checkout, or rename the user's real copy to hide it.
+export const VENDOR_DIR = process.env.DEEP_PLAN_VENDOR_DIR ||
+  path.join(os.homedir(), ".claude", "deep-plan", "vendor");
+export const MERMAID_HOME = path.join(VENDOR_DIR, "mermaid.min.js");
 const VENDOR_CANDIDATES = [
-  process.env.DEEP_PLAN_MERMAID ||
+  process.env.DEEP_PLAN_MERMAID,
+  MERMAID_HOME,
+  ...(process.env.DEEP_PLAN_VENDOR_DIR ? [] : [
     path.join(path.dirname(new URL(import.meta.url).pathname), "..", "vendor", "mermaid.min.js"),
-  path.join(os.homedir(), ".claude", "skills", "deep-plan", "vendor", "mermaid.min.js"),
-];
+    path.join(os.homedir(), ".claude", "skills", "deep-plan", "vendor", "mermaid.min.js"),
+  ]),
+].filter(Boolean);
+
+// The first bundle that exists, or null. Render, the validator and the engine
+// pointer all read this one answer.
+export function mermaidPath() {
+  return VENDOR_CANDIDATES.find(p => { try { return fs.existsSync(p); } catch { return false; } }) || null;
+}
+export function mermaidCandidates() { return VENDOR_CANDIDATES.slice(); }
 
 let _mermaid; // undefined = not tried, null = unavailable
 function loadMermaid() {
   if (_mermaid !== undefined) return _mermaid;
-  const file = VENDOR_CANDIDATES.find(p => { try { return fs.existsSync(p); } catch { return false; } });
+  const file = mermaidPath();
   if (!file) return (_mermaid = null);
   try {
     const noop = () => {};

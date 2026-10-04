@@ -1,0 +1,13 @@
+{
+  "description": "bash-guard: refuse destructive shell commands before the Bash tool runs them",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard_bash.sh\"", "timeout": 5 }
+        ]
+      }
+    ]
+  }
+}

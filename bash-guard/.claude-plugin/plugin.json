@@ -1,0 +1,10 @@
+{
+  "name": "bash-guard",
+  "version": "0.3.0",
+  "description": "Blocks destructive shell commands before they run: force pushes, recursive deletes at dangerous paths, hook bypasses, destructive SQL, piping curl into a shell.",
+  "author": { "name": "Richard Kotermanski", "url": "https://github.com/rickykoter" },
+  "homepage": "https://github.com/rickykoter/seamux/tree/main/bash-guard",
+  "repository": "https://github.com/rickykoter/seamux",
+  "license": "MIT",
+  "keywords": ["safety", "guard", "bash", "hooks"]
+}

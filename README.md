@@ -11,10 +11,16 @@ Run a fleet of Claude Code agents from one screen. seamux adds three things to
 - **restack** — its companion for the week after: rebase a stack onto a moved
   base without hand-resolving a single generated file.
 
+Each one is a Claude Code plugin, so you can take just the one you came for:
+deep-plan and restack work anywhere Claude Code does, and only crew needs a Mac
+with cmux. An optional fourth, **seamux-mods**, draws deep-plan inside the
+terminal itself (a plan pane, a `go next` band when the gate refuses an edit,
+and the plan in the status line); it needs Claude Code 2.1.287 or later.
+
 It scales with you. Out of the box it needs nothing but git and GitHub — a
 laptop of hobby repos is fully served. When your projects have more — Jira,
-GitHub Issues, a Datadog or Splunk stack — setup asks, and the board and the
-planner put them to work. With Remote Control on, the same fleet shows up in
+GitHub Issues, a Datadog or Splunk stack — set the crew plugin's options, and
+the board and the planner put them to work. With Remote Control on, the same fleet shows up in
 the Claude phone app.
 
 ## What it looks like
@@ -204,18 +210,34 @@ cd ~/code/seamux
 ./install.sh
 ```
 
-It asks which repo your worktrees come from (or pass `--main-repo PATH`),
-copies everything into place (an existing install is backed up first),
-fetches a pinned, checksum-verified `mermaid.min.js`, and wires the cmux
-config and Claude settings. The settings merge is additive — it never
-rewrites anything it didn't add, and backs up `settings.json` first.
+`install.sh` is a thin bootstrap over `claude plugin`. It adds this checkout as
+the `seamux` marketplace and installs deep-plan, restack, bash-guard and crew
+(add `--mods` for seamux-mods). It then runs each engine's `setup`, which
+fetches a pinned, checksum-verified `mermaid.min.js` and puts `deep-plan` and
+`restack` on your shell's PATH, and finally `crew apply`. Because the
+marketplace is a folder, the plugins run from the checkout itself: edit a file,
+run `/reload-plugins` in a session, and the change is live, with no version to
+bump. `--github` installs the published copy from GitHub instead.
 
-First interactive run, it also asks which integrations this machine uses.
-Answers stick across re-installs; everything stays off until you say
-otherwise. Other flags: `--dry-run`, `--check`, `--uninstall`, `--force`,
-`--no-<piece>` to skip parts, and `--with-jira=SITE` /
-`--with-github-issues` / `--with-observability=STACK` /
-`--no-integrations` for scripted installs.
+Or without the script, from inside Claude Code:
+
+```text
+/plugin marketplace add rickykoter/seamux
+/plugin install deep-plan@seamux
+```
+
+and then `deep-plan setup` (and `crew apply`, if you installed crew).
+
+A machine set up by the old installer is migrated on the first run. The
+`~/.claude/skills` copies, their shims and the `settings.json` hook entries the
+plugins now carry are moved into `~/.claude/seamux-migrated/<time>/`, never
+deleted, and each one only once the plugin replacing it is installed and
+enabled. `--dry-run` prints every command and the migration list and changes
+nothing.
+
+Scripted installs: `--main-repo PATH`, `--with-jira=SITE`,
+`--with-github-issues` and `--with-observability=STACK` set the crew plugin's
+options; `--no-crew`, `--no-restack`, `--no-guard` skip plugins.
 
 ### Integrations (all optional)
 
@@ -225,8 +247,8 @@ otherwise. Other flags: `--dry-run`, `--check`, `--uninstall`, `--force`,
 - **GitHub Issues** — the issue a PR closes (or a `123-…` branch names)
   gets its own chip, riding the `gh` poll crew already makes.
 - **Observability-aware planning** — tell seamux about your Datadog or
-  Splunk (per-repo `.seamux/observability.json`, or the machine-wide
-  answer), and deep-plan reads your monitors, dashboards and runbooks
+  Splunk (per-repo `.seamux/observability.json`, or the crew plugin's
+  `observability_stack` option), and deep-plan reads your monitors, dashboards and runbooks
   before it drafts a plan. What exists gets cited; what's missing becomes
   plan work — new instrumentation, a monitor definition you import, a
   runbook section. It only ever reads: changes arrive as artifacts you
@@ -254,20 +276,22 @@ otherwise. Other flags: `--dry-run`, `--check`, `--uninstall`, `--force`,
   `~/.cache/cmux-crew/asked.log` so you can tune them; `{"typesafe":
   {"enabled": false}}` switches it off with the key still in place.
 
-Declining costs nothing: no doctor nags, no dead chips, no config to
-maintain.
+Jira, GitHub Issues and the observability stack are the crew plugin's
+options: `/plugin` inside Claude Code, or `claude plugin configure
+crew@seamux`. Declining costs nothing: no doctor nags, no dead chips, no
+config to maintain.
 
 ### Check it worked
 
 ```sh
+./install.sh --check                             # plugins, leftovers, crew drift
 crew doctor                                      # everything green
-node ~/.config/cmux/crew/board/board_probe.mjs
-node ~/.claude/skills/deep-plan/probe.mjs
-node ~/.claude/skills/restack/probe.mjs
+claude plugin list                               # each plugin, "Read from" this checkout
+node deep-plan/probe.mjs && node restack/probe.mjs && node crew/board/board_probe.mjs
 ```
 
 Open the board with `cmux sidebar open crew` or the Dock button. New Claude
-Code sessions pick up the hooks; already-running ones don't.
+Code sessions pick up the plugins' hooks; already-running ones don't.
 
 Then try it: ask Claude for a "deep plan" of any change. You'll get the
 review page, the quiz, and the per-increment gate.
@@ -278,21 +302,20 @@ review page, the quiz, and the per-increment gate.
 ./install.sh --uninstall
 ```
 
-Puts cmux's config back, moves the crew tree to a timestamped backup, removes
-the skill and shim, and unwires only the settings it added. It deliberately
-keeps `guard_bash.sh` (a safety rail should outlive its installer) and all
-your plan state.
+Puts cmux's config back, moves the crew tree to a timestamped backup,
+uninstalls the plugins and removes the marketplace and the shims. It keeps
+your plan state (`~/.claude/deep-plan`, `~/.claude/plans`), each repo's
+`.seamux/restack.json`, and `~/.config/cmux/crew-local`.
 
 ## The repo is the source of truth
 
-Edit here, then `./install.sh` to sync. If you edited a live file instead,
-`./install.sh --check` finds it — copy the change back into the repo, commit,
-reinstall. (The five `crew/bin` files that bake your main-repo path get it
-reverse-substituted to `__MAIN_REPO__`.)
-
-You don't have to remember this: the installer records the repo path, and
-`crew doctor` runs the drift check every time — drift is a red check, not a
-discipline.
+With the folder marketplace, Claude runs deep-plan, restack, bash-guard and
+seamux-mods straight from this checkout, so there is nothing to sync: edit,
+then `/reload-plugins`. crew is the one exception, because cmux, launchd and
+the board run it from `~/.config/cmux/crew`, a path that never moves. `crew
+apply` copies the plugin there, and `crew doctor` compares the two every time
+(the five `crew/bin` files that bake your main-repo path are compared with it
+put back to `__MAIN_REPO__`). Drift is a red check, not a discipline.
 
 ### If you are on usage-based billing
 
@@ -363,13 +386,14 @@ it's set up.
 
 | path | what |
 |---|---|
-| `crew/` | installed to `~/.config/cmux/crew` (see `crew/README.md`) |
-| `deep-plan/` | installed to `~/.claude/skills/deep-plan` (see its `SKILL.md`) |
-| `restack/` | installed to `~/.claude/skills/restack` (see its `SKILL.md`) |
-| `claude/` | statusline, guard hook, settings merger |
-| `bin/deep-plan.shim` | installed to `~/.local/bin/deep-plan` |
-| `bin/restack.shim` | installed to `~/.local/bin/restack` |
-| `docs/` | dev history, test notes, adoption audit, README images — not installed |
+| `.claude-plugin/marketplace.json` | the `seamux` marketplace: one entry per plugin below |
+| `deep-plan/` | plugin: the skill, its gate hook, `bin/deep-plan` (see its `SKILL.md`) |
+| `restack/` | plugin: the skill and `bin/restack` (see its `SKILL.md`) |
+| `bash-guard/` | plugin: the destructive-command guard on every Bash call |
+| `crew/` | plugin: Claude hooks and options; `crew apply` copies it to `~/.config/cmux/crew` (see `crew/README.md`) |
+| `crew/claude/` | the status line and the settings merge `crew apply` runs |
+| `seamux-mods/` | plugin, optional: deep-plan drawn in the terminal (see its `README.md`) |
+| `docs/` | dev history, test notes, adoption audit, ADRs, README images — not installed |
 | `docs/SYNCING.md` | who owns which path, and how a change travels between repo and machine |
 | `tools/scrub_check.py` | refuses internal identifiers in tracked files; first step in CI |
 

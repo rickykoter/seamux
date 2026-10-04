@@ -1,0 +1,42 @@
+{
+  "name": "seamux",
+  "owner": {
+    "name": "Richard Kotermanski",
+    "url": "https://github.com/rickykoter"
+  },
+  "metadata": {
+    "description": "Plan-as-artifact with a per-increment edit gate, safe stacked-branch rebases, and the cmux crew layer, one plugin per feature."
+  },
+  "plugins": [
+    {
+      "name": "deep-plan",
+      "source": "./deep-plan",
+      "description": "Plan a change as a reviewable artifact, then refuse edits until the human authorizes each increment.",
+      "category": "development"
+    },
+    {
+      "name": "restack",
+      "source": "./restack",
+      "description": "Rebase a stack of branches onto a moved base without hand-resolving generated files, then run CI's staleness and breaking-change checks locally.",
+      "category": "development"
+    },
+    {
+      "name": "bash-guard",
+      "source": "./bash-guard",
+      "description": "Blocks destructive shell commands before they run: force pushes, recursive deletes at dangerous paths, hook bypasses, destructive SQL.",
+      "category": "security"
+    },
+    {
+      "name": "crew",
+      "source": "./crew",
+      "description": "The cmux crew layer: every Claude session on a board, ranked by who needs you, with plan rows and go chips. macOS and cmux only; run `crew apply` after installing.",
+      "category": "productivity"
+    },
+    {
+      "name": "seamux-mods",
+      "source": "./seamux-mods",
+      "description": "deep-plan inside the terminal: a /plan-pane pane, a `go next` band when the gate refuses, and the plan and cache clock in the status line. Needs Claude Code 2.1.287 or later.",
+      "category": "development"
+    }
+  ]
+}

@@ -41,16 +41,19 @@ Real portability bugs to fix before claiming Linux support:
 
 Workflow at `.github/workflows/probes.yml`, live since the repo was pushed
 (the "draft" header was stale and is gone). Shape: ubuntu + macos matrix, node
-22, python 3.12, the scrub check first, then fetch mermaid with the same pin +
-sha256 the installer uses, then both probes.
+22, python 3.12, the scrub check first, then `deep-plan setup` for mermaid
+(the pin and sha256 live in the engine), then the Claude Code CLI from npm for
+`claude plugin validate` on the marketplace and every plugin and the
+seamux-mods tests, then the probes.
 
 Honest caveats baked into it:
 
 - No cmux in CI. `deep-plan/probe.mjs` is cmux-free. `board_probe.mjs` renders
   the board without a live cmux — that claim is tested on macOS runners but was
   never true-tested on Linux; the first CI run is the test.
-- The mermaid fetch is the only network step; it fails closed on a sha
-  mismatch, same as `install.sh:250-253`.
+- The network steps are the mermaid fetch, which fails closed on a sha
+  mismatch, and the npm install of the CLI. If that install proves flaky on
+  ubuntu, validate on macOS only rather than dropping the step.
 
 ## Machine-local overlay
 
@@ -59,14 +62,15 @@ detector rather than one repo's test harness, `cmux.jsonc` names
 `~/code/main-repo` rather than your monorepo, and there is no database control in
 the Dock. That is correct for a public package and wrong for the machine it came
 off. The overlay is how a real install keeps its own answers without either
-carrying them in the repo or losing them on the next `./install.sh`.
+carrying them in the repo or losing them on the next `crew apply`.
 
 It lives at `~/.config/cmux/crew-local/` — overridable with `$CREW_LOCAL`, and
-deliberately a **sibling** of `~/.config/cmux/crew/`, not a child. `install.sh`
-moves the whole crew tree aside on upgrade (`mv "$DEST"`), and `drift_check`
-only walks `$HERE/crew`, `$HERE/deep-plan` and `$DEST`. A sibling therefore
-survives the move *and* stays silent in the check — no entry to whitelist, no
-`live-only:` line to learn to ignore. Nothing in it is ever in the repo.
+deliberately a **sibling** of `~/.config/cmux/crew/`, not a child. `crew apply`
+moves the whole crew tree aside when it installs a new copy from the plugin, and
+the drift check (`crew drift`) only compares the plugin root with that tree. A
+sibling therefore survives the move *and* stays silent in the check — no entry
+to whitelist, no `live-only` line to learn to ignore. Nothing in it is ever in
+the repo.
 
 Three hook shapes, one per kind of thing you need to override:
 

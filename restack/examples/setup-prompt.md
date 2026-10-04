@@ -10,8 +10,8 @@ Replace nothing; the prompt asks for what it needs.
 ---
 
 ```
-Set up restack for this repo. The skill is at ~/.claude/skills/restack
-(`restack` on PATH, `restack --help`, and its SKILL.md explains the model).
+Set up restack for this repo. It is the restack plugin (`restack` on PATH,
+`restack --help`, `restack engine` names its root, and its SKILL.md explains the model).
 Read that SKILL.md first. The deliverable is a reviewed .seamux/restack.json
 plus a short report — not a committed file, and nothing pushed.
 

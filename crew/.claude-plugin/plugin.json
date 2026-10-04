@@ -1,0 +1,55 @@
+{
+  "name": "crew",
+  "version": "0.3.0",
+  "description": "The cmux crew layer: every Claude session's state on a board, ranked by who needs you, with plan rows, go chips and a sidebar. macOS and cmux only. Run `crew apply` once after installing.",
+  "author": {
+    "name": "Richard Kotermanski",
+    "url": "https://github.com/rickykoter"
+  },
+  "homepage": "https://github.com/rickykoter/seamux/tree/main/crew",
+  "repository": "https://github.com/rickykoter/seamux",
+  "license": "MIT",
+  "keywords": [
+    "cmux",
+    "board",
+    "sessions",
+    "macos"
+  ],
+  "dependencies": [
+    "deep-plan"
+  ],
+  "userConfig": {
+    "jira_site": {
+      "type": "string",
+      "title": "Jira site",
+      "description": "Your Jira host (yourco.atlassian.net). Set it to turn on Jira: board rows link ticket chips there, and crew doctor checks acli. Blank leaves Jira off.",
+      "required": false
+    },
+    "github_issues": {
+      "type": "boolean",
+      "title": "Link GitHub issues",
+      "description": "Link GitHub issue numbers on board rows.",
+      "default": false,
+      "required": false
+    },
+    "observability_stack": {
+      "type": "string",
+      "title": "Observability stack",
+      "description": "The stack plans read for observability checks (read-only; keys come from your environment). none turns it off.",
+      "options": [
+        "none",
+        "datadog",
+        "splunk",
+        "grafana"
+      ],
+      "required": false,
+      "default": "none"
+    },
+    "main_repo": {
+      "type": "directory",
+      "title": "Main repo",
+      "description": "The repo your worktrees come from. crew apply bakes it into crew-worktree and the other helpers as their default.",
+      "required": false
+    }
+  }
+}

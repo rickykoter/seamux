@@ -15,10 +15,15 @@ away and prints its own count.
 | `lib/run.mjs` | resolutions, regen recipes, checks; every command summarised to its last 20 lines |
 | `lib/state.mjs` | run state in the git dir; the stale list that outlives the run |
 | `probe.mjs` | real git repos in a temp dir; `-v` walks it, `--keep` leaves the fixtures |
+| `.claude-plugin/plugin.json` | the plugin manifest; its `version` is what `engine.json` reports |
+| `hooks/hooks.json` | one SessionStart entry: `restack.mjs engine`, which writes `~/.claude/restack/engine.json` |
+| `bin/restack` | on the Bash tool's PATH inside Claude; finds the engine relative to itself |
+| `lib/restack.shim` | what `restack setup` installs at `~/.local/bin/restack`: execs `$RESTACK_ENGINE`, else the root in `engine.json`, else the old skills copy |
 
 Trees: state `$(git rev-parse --absolute-git-dir)/seamux-restack.json`, command
 logs `$TMPDIR/seamux-restack-logs/`. Probe overrides: `RESTACK_STATE`,
-`RESTACK_CONFIG`, `RESTACK_LOG_DIR`.
+`RESTACK_CONFIG`, `RESTACK_LOG_DIR`, `RESTACK_ENGINE_FILE` (the pointer),
+`RESTACK_BIN_DIR` (where `setup` puts the shim).
 
 ## Decisions worth not re-litigating
 

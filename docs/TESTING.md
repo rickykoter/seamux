@@ -3,10 +3,10 @@
 A walkthrough on a fresh worktree. Roughly 15 minutes, and you end up with a
 real branch you can throw away.
 
-**The one thing that matters:** Claude Code binds hooks at session start. A
-session already running when crew was installed is still on the old wiring, and
-it fails silently — no name, no progress, no lane. Everything below assumes a
-**new** session.
+**The one thing that matters:** Claude Code binds hooks at session start, and
+crew's hooks come from the crew plugin. A session already running when the
+plugin was installed is still on the old wiring, and it fails silently — no
+name, no progress, no lane. Everything below assumes a **new** session.
 
 `crew status` says which case any session is in. For one that predates crew,
 `crew adopt` back-fills it once (name, colour, plan, progress) and

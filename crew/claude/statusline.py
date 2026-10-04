@@ -301,7 +301,12 @@ def usage_line(payload):
 
 
 FACTS_DIR = os.path.join(os.path.expanduser("~"), ".cache", "cmux-crew", "cache-facts")
-CREW_HOOKS = os.path.join(os.path.expanduser("~"), ".config", "cmux", "crew", "hooks")
+# cachefacts.py sits in the crew tree beside this file's directory (this runs
+# from ~/.config/cmux/crew/claude/); the old installer put this file in ~/.claude,
+# where only the absolute path finds it.
+_HERE_HOOKS = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "hooks")
+CREW_HOOKS = (_HERE_HOOKS if os.path.isfile(os.path.join(_HERE_HOOKS, "cachefacts.py"))
+              else os.path.join(os.path.expanduser("~"), ".config", "cmux", "crew", "hooks"))
 
 
 def _cache_facts(session_id, transcript_path):

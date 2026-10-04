@@ -53,6 +53,16 @@ if [ "$event" = "pretool" ]; then
 fi
 
 CREW_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+# The crew plugin's options (userConfig) reach its hooks as
+# CLAUDE_PLUGIN_OPTION_*; render them into integrations.json for the readers
+# that run outside Claude. Before the guard: the options are this machine's
+# whether or not this session is in cmux. Never stdin (the payload is read
+# below) and never stdout (a SessionStart hook's stdout reaches the model).
+if [ "$event" = "session" ] && [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+  python3 "$CREW_DIR/options.py" </dev/null >/dev/null 2>&1 || true
+fi
+
 # shellcheck source=lib.sh
 . "$CREW_DIR/lib.sh"
 crew_guard

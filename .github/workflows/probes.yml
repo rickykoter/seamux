@@ -1,5 +1,6 @@
-# Runs the scrub check and both probes with no cmux present; the mermaid fetch
-# mirrors install.sh's pin + sha256 and fails closed on a mismatch.
+# Runs the scrub check, the plugin validation and every probe with no cmux
+# present. Mermaid comes from `deep-plan setup`, which carries the pin and the
+# sha256 and fails closed on a mismatch.
 name: probes
 
 on:
@@ -8,8 +9,8 @@ on:
   pull_request:
 
 env:
-  MERMAID_VERSION: "11.17.2"
-  MERMAID_SHA256: "581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8"
+  # The probes and setup read the bundle from here, and look nowhere else.
+  DEEP_PLAN_VENDOR_DIR: ${{ github.workspace }}/deep-plan/vendor
 
 jobs:
   probes:
@@ -31,11 +32,26 @@ jobs:
       - name: scrub check
         run: python3 tools/scrub_check.py
 
-      - name: Fetch pinned mermaid (probes need it in vendor/)
+      # The pointer and the shim land in the runner's temp dir, never in a
+      # home the job does not own.
+      - name: Fetch pinned mermaid (deep-plan setup)
+        env:
+          DEEP_PLAN_ENGINE_FILE: ${{ runner.temp }}/engine.json
+          DEEP_PLAN_BIN_DIR: ${{ runner.temp }}/bin
+        run: node deep-plan/deep_plan.mjs setup
+
+      # The manifests, hooks and mods module as Claude Code reads them. The CLI
+      # comes from npm; validate and test need no login.
+      - name: Install the Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Validate the marketplace and every plugin
         run: |
-          curl -fsSL "https://cdn.jsdelivr.net/npm/mermaid@${MERMAID_VERSION}/dist/mermaid.min.js" -o deep-plan/vendor/mermaid.min.js
-          echo "${MERMAID_SHA256}  deep-plan/vendor/mermaid.min.js" | shasum -a 256 -c - \
-            || { echo "sha256 mismatch — refusing"; exit 1; }
+          claude plugin validate .
+          for p in deep-plan restack bash-guard crew seamux-mods; do claude plugin validate "$p"; done
+
+      - name: seamux-mods tests
+        run: claude plugin test seamux-mods
 
       - name: deep-plan probe
         run: node deep-plan/probe.mjs

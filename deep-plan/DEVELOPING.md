@@ -13,12 +13,21 @@ For whoever changes this next. Built 2026-09-12 on this machine, from
 | `hooks/decide.mjs` | 43 | slow half: parse payload, decide, exit 2; flips authorized→working on first edit |
 | `probe.mjs` | 563 | throwaway everything, `-v` walks it; prints its own count |
 | `examples/example.spec.json` | — | reference spec; the probe's fixture, so a broken example breaks the build |
-| `vendor/mermaid.min.js` | 3.4MB | inlined base64 into surfaces; the intent server swaps it for `/mermaid.min.js` |
+| `.claude-plugin/plugin.json` | — | the plugin manifest; its `version` is what `engine.json` reports |
+| `hooks/hooks.json` | — | the gate on `Edit\|Write\|MultiEdit\|NotebookEdit\|Bash`, and a SessionStart entry that runs `deep_plan.mjs engine` to write the pointer |
+| `bin/deep-plan` | — | on the Bash tool's PATH inside Claude; finds the engine relative to itself, because `CLAUDE_PLUGIN_ROOT` is not exported to that shell |
+| `lib/deep-plan.shim` | — | what `deep-plan setup` installs at `~/.local/bin/deep-plan`: execs `$DEEP_PLAN_ENGINE`, else the root in `engine.json`, else the old skills copy |
+| `~/.claude/deep-plan/vendor/mermaid.min.js` | 3.4MB | not in the plugin: fetched by `deep-plan setup` or the first render, pinned by sha256. Inlined base64 into surfaces; the intent server swaps it for `/mermaid.min.js` |
 
 Trees: state `~/.claude/deep-plan/state/`, keys+archived specs
 `~/.claude/deep-plan/keys/` (separate on purpose — never render from there),
-surfaces `~/.claude/plans/`. Probe overrides: `DEEP_PLAN_STATE_DIR`,
-`DEEP_PLAN_KEYS_DIR`, `DEEP_PLAN_PLANS_DIR`, `DEEP_PLAN_SKILL_DIR`.
+surfaces `~/.claude/plans/`, engine pointer `~/.claude/deep-plan/engine.json`,
+bundle `~/.claude/deep-plan/vendor/`. Probe overrides: `DEEP_PLAN_STATE_DIR`,
+`DEEP_PLAN_KEYS_DIR`, `DEEP_PLAN_PLANS_DIR`, `DEEP_PLAN_VENDOR_DIR` (the only
+place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_DIR`,
+`DEEP_PLAN_MERMAID_SRC` (a local file in place of the download). The probe leaves
+`DEEP_PLAN_SKILL_DIR` unset so every gate call proves `gate.sh` finds
+`decide.mjs` beside itself.
 
 ## Integration seams (change these and the board breaks)
 
@@ -51,6 +60,14 @@ surfaces `~/.claude/plans/`. Probe overrides: `DEEP_PLAN_STATE_DIR`,
 - Transitions the intent server offers: `go start done block reset`, plus
   `close`; triage.py's plan-go runs `deep-plan go --at <cwd> next` (shim at
   `~/.local/bin/deep-plan`).
+- `engine.json` is `{root, version, mermaid?}`, written by every run and by the
+  SessionStart hook, only when it changes. JSON.stringify's two-space form is
+  part of the contract: the shim reads `"root"` with sed. The old
+  `~/.claude/skills` copy never writes it.
+- The gate's refusal opens `deep-plan gate [<slug>]: ` (decide.mjs). The
+  seamux-mods band finds refusals by that opening in the tool result; the probe
+  asserts it. `status --json` rows carry `increments` (`n`, `title`, `status`,
+  `obs`) for the seamux-mods pane; the board ignores the field.
 
 ## Measured on this machine (2026-09-12)
 
@@ -297,7 +314,8 @@ never a parse of the title — real plans have an "Inc 2b".
 `deep-plan <verb>` runs it as a subprocess when no built-in verb matches.
 
 **Why under the data tree and not in the skill.** Three things destroy an
-in-skill `ext/`: `install.sh --uninstall` does `rm -rf "$SKILL"` (and its
+in-skill `ext/`: a plugin update replaces the plugin root, the old
+`install.sh --uninstall` did `rm -rf "$SKILL"` (and its
 "kept" list names `~/.claude/deep-plan` explicitly), installing with
 `rsync --delete` removes anything the repo does not have, and a plain rsync
 leaves it but then drift reporting has to learn about it. This is the same
@@ -343,7 +361,9 @@ node crew/board/board_probe.mjs                  # the board still renders plan 
 crew doctor                                      # intent routes + mermaid swap
 ```
 
-The probes need `deep-plan/vendor/mermaid.min.js`, which is gitignored — run
-`./install.sh` (or the fetch step in `.github/workflows/probes.yml`) first. The
+The probes need the pinned mermaid bundle. They copy it from
+`$DEEP_PLAN_VENDOR_DIR`, `~/.claude/deep-plan/vendor`, the checkout's gitignored
+`deep-plan/vendor`, or the old skills copy; run `deep-plan setup` (or the fetch
+step in `.github/workflows/probes.yml`) first. The
 assertion count is deliberately not written down here: it changed three times in
 two days and the three places recording it disagreed. The run prints it.

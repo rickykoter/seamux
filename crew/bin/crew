@@ -8,9 +8,11 @@
 #   crew listen     on|off|status|log — reconcile on cmux workspace events (opt-in)
 #   crew color      list|show|assign|apply|free|prune — per-worktree identity color
 #   crew doctor     check the install, exit non-zero if something is wrong
-#   crew apply      render config, install sidebar + Dock, wire Claude hooks
+#   crew drift      list what differs between the crew plugin and the live tree
+#   crew apply      install the live tree from the plugin, render config, sidebar + Dock
+#                   (--dry-run says what it would do and changes nothing)
 #   crew on|off     enable / disable at runtime (hooks stay wired, become no-ops)
-#   crew uninstall  restore the pre-crew cmux.json, unwire the Claude hooks
+#   crew uninstall  restore the pre-crew cmux.json, remove legacy Claude hook entries
 #   crew demo       fire each hook with a synthetic payload and show the effect
 #
 # Design notes:
@@ -32,6 +34,11 @@ while [ -L "$_src" ]; do
   case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
 done
 CREW_HOME="$(cd -P -- "$(dirname -- "$_src")/.." && pwd)"
+# The live tree: what cmux, launchd, the board and the intent server run, at a
+# path that never moves. When this script runs from anywhere else (the crew
+# plugin's root, which carries its version in the path), `crew apply` copies
+# that root here first. CREW_LIVE is for tests.
+LIVE="${CREW_LIVE:-$HOME/.config/cmux/crew}"
 CMUX_JSON="$HOME/.config/cmux/cmux.json"
 SETTINGS="$HOME/.claude/settings.json"
 SIDEBAR_DIR="$HOME/.config/cmux/sidebars"
@@ -55,7 +62,8 @@ head_() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 # not a symptom, and must never read as one.
 note() { printf '  \033[2m· %s\033[0m\n' "$*"; }
 
-# integrations.json: written by install.sh, absent means all disabled.
+# integrations.json: rendered from the crew plugin's options (hooks/options.py), or
+# written by the old installer; absent means all disabled.
 # integ <name> <key> prints the key's value ("" when disabled/absent).
 integ() {
   python3 - "$CREW_HOME/integrations.json" "$1" "${2:-enabled}" 2>/dev/null <<'PY'
@@ -68,6 +76,13 @@ try:
 except Exception:
     pass
 PY
+}
+
+# Whether integrations.json was rendered from the crew plugin's options
+# (hooks/options.py marks it) rather than written by the old installer.
+integ_from_options() {
+  python3 -c 'import json,sys;sys.exit(0 if (json.load(open(sys.argv[1])) or {}).get("managedBy") else 1)' \
+    "$CREW_HOME/integrations.json" 2>/dev/null
 }
 
 # __INTENT_PORT__ feeds the web Dock's /usage browser control; it must match
@@ -96,8 +111,234 @@ render_local() {
   render "$1" | python3 "$CREW_HOME/bin/crew-overlay" <(render "$ov") "$ov"
 }
 
+# --------------------------------------------------------- plugin plumbing --
+# Whether Claude has a plugin enabled, by name, in any marketplace.
+plugin_enabled() {
+  python3 - "$SETTINGS" "$1" <<'PY' 2>/dev/null
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+sys.exit(0 if any(k.split("@")[0] == sys.argv[2] and v
+                  for k, v in (d.get("enabledPlugins") or {}).items()) else 1)
+PY
+}
+
+# The directory Claude runs a plugin from; "" when it is not installed. Not
+# simply installPath: a folder marketplace's plugin runs from the folder, while
+# its installPath names a cache snapshot (bin/crew-plugin-root says more).
+plugin_install_path() {
+  python3 "$CREW_HOME/bin/crew-plugin-root" "$1" 2>/dev/null
+}
+
+# How many settings.json hook entries still run crew-hook.sh (the wiring the
+# old `crew apply` wrote; the crew plugin's hooks.json replaces it).
+legacy_hook_count() {
+  python3 - "$SETTINGS" <<'PY' 2>/dev/null || echo 0
+import json, sys
+try:
+    s = json.load(open(sys.argv[1]))
+except Exception:
+    print(0); sys.exit(0)
+print(sum("crew-hook.sh" in (h.get("command") or "")
+          for ms in (s.get("hooks") or {}).values() for m in ms for h in m.get("hooks", [])))
+PY
+}
+
+# The repo the worktree helpers default to, baked over __MAIN_REPO__:
+# $CREW_MONOLITH, else the crew plugin's main_repo option, else what the live
+# tree already has baked (a re-apply), else the one git repo under ~/code.
+# Empty when none of those answers.
+resolve_main() {
+  if [ -n "${CREW_MONOLITH:-}" ]; then printf '%s\n' "$CREW_MONOLITH"; return; fi
+  local opt
+  opt="$(python3 "$CREW_HOME/hooks/options.py" --from-settings --get main_repo 2>/dev/null)"
+  if [ -n "$opt" ]; then printf '%s\n' "$opt"; return; fi
+  local baked=""
+  [ -f "$LIVE/bin/crew" ] && baked="$(sed -n 's/^MONOLITH="\${CREW_MONOLITH:-\(.*\)}"$/\1/p' "$LIVE/bin/crew" | head -1)"
+  # Spelled in two halves wherever this file names the placeholder: the bake
+  # rewrites every whole occurrence in the live copy, these included.
+  if [ -n "$baked" ] && [ "$baked" != "__MAIN_""REPO__" ]; then printf '%s\n' "$baked"; return; fi
+  local cands
+  cands="$(find "$HOME/code" -maxdepth 2 -name .git -print 2>/dev/null | sed 's|/\.git$||' | grep -v '\.worktrees/' | sort)"
+  [ "$(printf '%s\n' "$cands" | grep -c .)" = 1 ] && printf '%s\n' "$cands"
+}
+
+# The plugin root the live tree should be a copy of: the one recorded at the
+# last apply, unless Claude has since installed another version (an update),
+# in which case that one. "" for a tree installed the old way, from a checkout.
+plugin_version() { sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "$1/.claude-plugin/plugin.json" 2>/dev/null | head -1; }
+plugin_source() {
+  local rec="" inst
+  rec="$(cat "$LIVE/.seamux-source" 2>/dev/null)"
+  [ -n "$rec" ] && [ -f "$rec/.claude-plugin/plugin.json" ] || rec=""
+  inst="$(plugin_install_path crew)"
+  [ -n "$inst" ] && [ -f "$inst/.claude-plugin/plugin.json" ] || inst=""
+  if [ -n "$rec" ] && [ -n "$inst" ] && [ "$(plugin_version "$rec")" != "$(plugin_version "$inst")" ]; then
+    printf '%s\n' "$inst"
+  else
+    printf '%s\n' "${rec:-$inst}"
+  fi
+}
+
+# Files that differ between a plugin root and the live tree, one per line, as
+# "differs|source-only|live-only <path>". The main repo baked into the live
+# tree is put back to __MAIN_REPO__ before comparing; install-time state
+# (.seamux-source, integrations.json) and caches are not compared.
+crew_drift() {
+  python3 - "$1" "$LIVE" "$(resolve_main)" <<'PY'
+import os, sys
+src, live, main = sys.argv[1], sys.argv[2], sys.argv[3]
+SKIP_DIRS = {"__pycache__", "types"}
+SKIP = {".seamux-source", "integrations.json", ".DS_Store"}
+def files(root):
+    out = set()
+    for d, dirs, fs in os.walk(root):
+        dirs[:] = [x for x in dirs if x not in SKIP_DIRS]
+        for f in fs:
+            if f in SKIP or f.endswith(".pyc"):
+                continue
+            out.add(os.path.relpath(os.path.join(d, f), root))
+    return out
+a, b = files(src), files(live)
+for rel in sorted(a | b):
+    if rel not in b: print("source-only", rel); continue
+    if rel not in a: print("live-only", rel); continue
+    x = open(os.path.join(src, rel), "rb").read()
+    y = open(os.path.join(live, rel), "rb").read()
+    if main:
+        y = y.replace(main.encode(), b"__MAIN_" + b"REPO__")
+    if x != y:
+        print("differs", rel)
+PY
+}
+
+# `crew apply` from the plugin root: make the live tree a copy of it, then let
+# the live copy's own apply do the rest, so every path it links, renders and
+# registers with launchd is the stable one.
+apply_from_source() {
+  local src="$CREW_HOME" dry="$1" main n_legacy
+  main="$(resolve_main)"
+  n_legacy="$(legacy_hook_count)"
+  head_ "crew apply  (source ${src/#$HOME/~})"
+  if [ "$dry" = 1 ]; then
+    printf '  would move %s aside to ~/.config/cmux/crew-backups/, keeping integrations.json\n' "${LIVE/#$HOME/~}"
+    printf '  would copy %s -> %s\n' "${src/#$HOME/~}" "${LIVE/#$HOME/~}"
+    printf '  would record the source in %s/.seamux-source\n' "${LIVE/#$HOME/~}"
+    if [ -n "$main" ]; then printf '  would bake the main repo: %s\n' "$main"
+    else printf '  no main repo found: __MAIN_REPO__ stays (set CREW_MONOLITH)\n'; fi
+    printf '  then run the live copy'"'"'s apply: render cmux.json, link commands, sidebar, Dock,\n'
+    printf '  install the deep-plan and restack shims through their engine pointers\n'
+    printf '  settings.json: no hook entries written (the crew plugin'"'"'s hooks.json wires them);\n'
+    printf '  statusLine and the push flags merged (claude/merge_settings.py)\n'
+    printf '  %s legacy crew-hook.sh entr%s to remove\n' "$n_legacy" "$([ "$n_legacy" = 1 ] && echo y || echo ies)"
+    return 0
+  fi
+  local prev_integ=""
+  [ -f "$LIVE/integrations.json" ] && prev_integ="$(cat "$LIVE/integrations.json")"
+  if [ -d "$LIVE" ]; then
+    local bak="$(dirname "$LIVE")/crew-backups/crew.$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$(dirname "$bak")" && mv "$LIVE" "$bak" || { bad "could not move $LIVE aside"; return 1; }
+    ok "moved the live tree aside -> ${bak/#$HOME/~}"
+  fi
+  mkdir -p "$LIVE" && cp -R "$src/." "$LIVE/" || { bad "could not copy $src -> $LIVE"; return 1; }
+  ok "copied ${src/#$HOME/~} -> ${LIVE/#$HOME/~}"
+  # Provenance: `crew doctor` compares the live tree against this root.
+  printf '%s\n' "$src" > "$LIVE/.seamux-source"
+  [ -n "$prev_integ" ] && printf '%s\n' "$prev_integ" > "$LIVE/integrations.json" && ok "kept integrations.json"
+  if [ -n "$main" ]; then
+    grep -rl '__MAIN_''REPO__' "$LIVE" 2>/dev/null | while read -r f; do
+      python3 - "$f" "$main" <<'PY'
+import io, sys
+p, main = sys.argv[1], sys.argv[2]
+t = io.open(p, encoding="utf-8").read()
+io.open(p, "w", encoding="utf-8").write(t.replace("__MAIN_" + "REPO__", main))
+PY
+    done
+    ok "main repo baked: $main"
+  else
+    warn "no main repo found: worktree helpers keep __MAIN_REPO__ (set CREW_MONOLITH and re-apply)"
+  fi
+  exec env CREW_APPLY_FROM="$src" CREW_MONOLITH="${main:-${CREW_MONOLITH:-}}" "$LIVE/bin/crew" apply
+}
+
+# deep-plan and restack each keep a pointer to their engine; this installs the
+# ~/.local/bin shims that exec through them, by running each engine's own
+# `setup`. Before the first Claude session after an install there is no
+# pointer yet, so the engine is found once through Claude's install record.
+install_engine_shims() {
+  local name script setup_out root node=""
+  if command -v node >/dev/null 2>&1; then node=node
+  else
+    for c in "$HOME/.asdf/shims/node" /opt/homebrew/bin/node /usr/local/bin/node; do
+      [ -x "$c" ] && node="$c" && break
+    done
+  fi
+  for pair in deep-plan:deep_plan.mjs restack:restack.mjs; do
+    name="${pair%%:*}"; script="${pair#*:}"
+    root="$(sed -n 's/^  "root": "\(.*\)",\{0,1\}$/\1/p' "$HOME/.claude/$name/engine.json" 2>/dev/null)"
+    [ -f "$root/$script" ] || root="$(plugin_install_path "$name")"
+    if [ -z "$root" ] || [ ! -f "$root/$script" ]; then
+      note "$name plugin not installed — no $name shim"
+      continue
+    fi
+    [ -n "$node" ] || { warn "node not found — could not install the $name shim"; continue; }
+    if setup_out="$("$node" "$root/$script" setup 2>&1)"; then
+      ok "$name shim and engine pointer (engine ${root/#$HOME/~})"
+    else
+      warn "$name setup failed: $(printf '%s' "$setup_out" | tail -1)"
+    fi
+  done
+}
+
+# Remove settings.json hook entries that run crew-hook.sh, backing the file up
+# first. Every other hook is left exactly as found.
+strip_legacy_hooks() {
+  cp "$SETTINGS" "$SETTINGS.pre-crew-plugin.$(date +%Y%m%d-%H%M%S).bak"
+  python3 - "$SETTINGS" <<'PY'
+import json, sys
+p = sys.argv[1]
+with open(p) as fh:
+    s = json.load(fh)
+hooks = s.get("hooks", {})
+for event, matchers in list(hooks.items()):
+    for m in matchers:
+        m["hooks"] = [h for h in m.get("hooks", [])
+                      if "crew-hook.sh" not in (h.get("command") or "")]
+    hooks[event] = [m for m in matchers if m.get("hooks")]
+    if not hooks[event]:
+        del hooks[event]
+with open(p, "w") as fh:
+    json.dump(s, fh, indent=2)
+    fh.write("\n")
+PY
+}
+
 # ---------------------------------------------------------------- apply -----
 cmd_apply() {
+  local dry=0
+  [ "${1:-}" = "--dry-run" ] && dry=1
+  # Not the live tree: this is the plugin's root (or a checkout). Install the
+  # live tree from it, then hand over to the live copy.
+  if [ "$CREW_HOME" != "$LIVE" ]; then
+    apply_from_source "$dry"; return $?
+  fi
+  # The live tree, run by hand (~/.local/bin/crew): when it was installed from
+  # a plugin, re-copy from that plugin first, so `crew apply` after a plugin
+  # update is what lands the update. The source's apply hands back here.
+  if [ -z "${CREW_APPLY_FROM:-}" ]; then
+    local src; src="$(plugin_source)"
+    if [ -n "$src" ] && [ -x "$src/bin/crew" ]; then
+      exec "$src/bin/crew" apply "$@"
+    fi
+  fi
+  if [ "$dry" = 1 ]; then
+    head_ "crew apply --dry-run  (live tree)"
+    printf '  would re-render cmux.json, relink commands, reinstall sidebar and Dock\n'
+    printf '  settings.json: %s\n' "$(plugin_enabled crew && echo "no hook entries written; $(legacy_hook_count) legacy crew-hook.sh entries to remove" || echo "legacy wiring rewritten (the crew plugin is not enabled)")"
+    return 0
+  fi
   head_ "crew apply"
 
   mkdir -p "$HOME/.config/cmux" "$SIDEBAR_DIR" "$STATE"
@@ -162,22 +403,49 @@ cmd_apply() {
   render_local "$CREW_HOME/config/dock.global.json" dock.global.json > "$HOME/.config/cmux/dock.json"
   ok "installed global Dock -> ~/.config/cmux/dock.json (board + usage)"
 
-  # 5. Claude hooks. Back up settings.json the same way, and for the same
-  #    reason: apply supersedes the v1 bridge hooks, and `uninstall` strips
-  #    crew surgically rather than restoring wholesale (settings.json also
-  #    accumulates permissions over time). This backup is the way back to the
-  #    exact pre-crew wiring if you ever want it.
-  if [ -f "$SETTINGS" ] && ! grep -q "crew-hook.sh" "$SETTINGS" 2>/dev/null; then
-    cp "$SETTINGS" "$SETTINGS.pre-crew.$(date +%Y%m%d-%H%M%S).bak"
-    ok "backed up settings.json (pre-crew hook wiring)"
-  fi
-  # Not `&& ok`: a silent wiring failure is the one failure mode that leaves an
-  # install looking complete and doing nothing.
-  if wire_hooks; then
-    ok "wired Claude hooks in settings.json"
+  # 5. Claude hooks. The crew plugin wires them from its own hooks.json, so
+  #    apply writes none, and removes the settings.json entries the old apply
+  #    wrote (they would fire every hook twice). A machine on the old install,
+  #    with no crew plugin, keeps the old wiring until the bootstrap migrates it.
+  if [ -n "${CREW_APPLY_FROM:-}" ] || plugin_enabled crew; then
+    local n_legacy; n_legacy="$(legacy_hook_count)"
+    if [ "$n_legacy" -gt 0 ] 2>/dev/null; then
+      if strip_legacy_hooks; then
+        ok "removed $n_legacy legacy crew-hook.sh entries from settings.json (backup kept)"
+      else
+        bad "could not remove the legacy crew-hook.sh entries — every hook fires twice"
+      fi
+    fi
+    ok "Claude hooks come from the crew plugin (settings.json carries none)"
   else
-    bad "could not wire Claude hooks — the board will show no agent state"
+    # Back up settings.json the same way, and for the same reason: apply
+    # supersedes the v1 bridge hooks, and `uninstall` strips crew surgically
+    # rather than restoring wholesale.
+    if [ -f "$SETTINGS" ] && ! grep -q "crew-hook.sh" "$SETTINGS" 2>/dev/null; then
+      cp "$SETTINGS" "$SETTINGS.pre-crew.$(date +%Y%m%d-%H%M%S).bak"
+      ok "backed up settings.json (pre-crew hook wiring)"
+    fi
+    # Not `&& ok`: a silent wiring failure is the one failure mode that leaves an
+    # install looking complete and doing nothing.
+    if wire_hooks; then
+      warn "wired Claude hooks in settings.json (legacy: claude plugin install crew@seamux replaces this)"
+    else
+      bad "could not wire Claude hooks — the board will show no agent state"
+    fi
   fi
+
+  # 5b. The deep-plan and restack commands for a human shell and the go chip.
+  install_engine_shims
+
+  # 5c. The crew plugin's options -> integrations.json, for a machine where no
+  #     session has run since they were set (the SessionStart hook does the same).
+  python3 "$CREW_HOME/hooks/options.py" --from-settings \
+    && ok "integrations.json follows the crew plugin's options$(grep -q managedBy "$CREW_HOME/integrations.json" 2>/dev/null || echo ' (none set; earlier answers kept)')" \
+    || warn "could not render the crew plugin's options into integrations.json"
+
+  # 5d. The status line and the phone-push flags: the two things a plugin
+  #     cannot set, merged into settings.json (additive, backed up).
+  python3 "$CREW_HOME/claude/merge_settings.py" | sed 's/^/  /'
 
   chmod +x "$CREW_HOME"/bin/* "$CREW_HOME"/hooks/*.sh "$CREW_HOME"/hooks/*.py 2>/dev/null
   rm -f "$STATE/disabled"
@@ -333,24 +601,13 @@ cmd_uninstall() {
     warn "no backup found — leaving cmux.json as is"
   fi
 
-  python3 - "$SETTINGS" <<'PY'
-import json, sys
-p = sys.argv[1]
-with open(p) as fh:
-    s = json.load(fh)
-hooks = s.get("hooks", {})
-for event, matchers in list(hooks.items()):
-    for m in matchers:
-        m["hooks"] = [h for h in m.get("hooks", [])
-                      if "crew-hook.sh" not in (h.get("command") or "")]
-    hooks[event] = [m for m in matchers if m.get("hooks")]
-    if not hooks[event]:
-        del hooks[event]
-with open(p, "w") as fh:
-    json.dump(s, fh, indent=2)
-    fh.write("\n")
-PY
-  ok "unwired Claude hooks (whimsy, gitnexus, guard_bash untouched)"
+  # The crew plugin's own hooks leave with the plugin (`claude plugin uninstall
+  # crew`); what is left to remove here is the wiring the old apply wrote.
+  if [ "$(legacy_hook_count)" -gt 0 ] 2>/dev/null; then
+    strip_legacy_hooks && ok "removed the legacy crew-hook.sh entries from settings.json (whimsy, gitnexus, guard_bash untouched)"
+  fi
+  plugin_enabled crew && warn "the crew plugin is still enabled: claude plugin uninstall crew (its hooks are no-ops once crew is off)"
+  python3 "$CREW_HOME/claude/merge_settings.py" --remove | sed 's/^/  /'
 
   # Only remove links that actually point back into the package.
   local unlinked=0
@@ -386,6 +643,26 @@ PY
   local sbak
   sbak="$(ls -t "$SETTINGS".pre-crew.*.bak 2>/dev/null | head -1)"
   [ -n "$sbak" ] && printf 'settings.json as it was just before crew: %s\n' "$sbak"
+  return 0   # not the status of the optional line above: no backup is not a failure
+}
+
+# --------------------------------------------------------------- drift ------
+# What install.sh --check runs: the plugin root against the live tree, nothing
+# else. Exit 1 on any difference, 2 when there is no plugin source to compare.
+cmd_drift() {
+  local src; src="$(plugin_source)"
+  if [ -z "$src" ]; then
+    echo "crew drift: no crew plugin source (installed the old way, or not applied from a plugin)" >&2
+    return 2
+  fi
+  if [ "$src" != "$(cat "$LIVE/.seamux-source" 2>/dev/null)" ]; then
+    echo "crew drift: the crew plugin is now ${src/#$HOME/~} ($(plugin_version "$src")); run crew apply"
+    return 1
+  fi
+  local d; d="$(crew_drift "$src")"
+  if [ -z "$d" ]; then echo "no drift: live tree matches ${src/#$HOME/~}"; return 0; fi
+  printf '%s\n' "$d"
+  return 1
 }
 
 # ------------------------------------------------------------- on / off -----
@@ -641,16 +918,16 @@ cmd_doctor() {
     else
       warn "acli missing — Jira is enabled but has no status source"
     fi
-    [ -n "$(integ jira site)" ] && ok "Jira site: $(integ jira site) (ticket chips link)" \
-      || note "no Jira site recorded — ticket chips stay unlinked (./install.sh --with-jira=SITE)"
+    [ -n "$(integ jira site)" ] && ok "Jira site: $(integ jira site) (ticket chips link)$(integ_from_options && echo ", from the crew plugin's options")" \
+      || note "no Jira site recorded — ticket chips stay unlinked (set jira_site: /plugin configure crew@seamux)"
   else
-    note "Jira integration off — enable with ./install.sh --with-jira[=SITE]"
+    note "Jira integration off — turn it on with the crew plugin's jira_site option (/plugin configure crew@seamux)"
   fi
   if [ -n "$(integ github_issues)" ]; then
     command -v gh >/dev/null && ok "GitHub issue chips (via gh)" \
       || warn "GitHub Issues enabled but gh is missing"
   else
-    note "GitHub Issues integration off — enable with ./install.sh --with-github-issues"
+    note "GitHub Issues integration off — turn it on with the crew plugin's github_issues option (/plugin configure crew@seamux)"
   fi
   # Optional and keyed, not chosen at setup: a key on this machine turns it on.
   if python3 "$CREW_HOME/hooks/asked.py" available 2>/dev/null; then
@@ -701,6 +978,7 @@ typesafe.threshold('stuck_threshold', 0.8)))" 2>/dev/null)"
            bin/crew-frame bin/crew-overlay config/dock.global.json \
            board/crew-board board/board.html board/render.js board/board_probe.mjs bin/crew-cmux-bin \
            board/crew-board-intent board/crew-board-diag board/costs.py board/judgments.py board/intent.js board/cat_from_swift.py board/usage.tmpl.html \
+           board/dp_engine.py hooks/hooks.json .claude-plugin/plugin.json bin/crew-plugin-root \
            tools/render_probe.py; do
     [ -f "$CREW_HOME/$f" ] && ok "$f" || bad "missing $f"
   done
@@ -791,10 +1069,37 @@ typesafe.threshold('stuck_threshold', 0.8)))" 2>/dev/null)"
   esac
 
   head_ "installed"
-  grep -q "crew-hook.sh" "$SETTINGS" 2>/dev/null && ok "Claude hooks wired" \
-    || bad "Claude hooks not wired — run: crew apply"
-  grep -q "guard_bash.sh" "$SETTINGS" 2>/dev/null && ok "guard_bash.sh still wired" \
-    || bad "guard_bash.sh is NOT wired — the destructive-command guard is off"
+  # The crew plugin wires the hooks from its hooks.json; settings.json should
+  # carry none of crew's. The old install wired them there instead.
+  local _legacy; _legacy="$(legacy_hook_count)"
+  if plugin_enabled crew; then
+    ok "crew plugin enabled (its hooks.json wires the Claude hooks)"
+    [ "$_legacy" -gt 0 ] 2>/dev/null \
+      && bad "settings.json still carries $_legacy crew-hook.sh entries — every hook fires twice; run: crew apply"
+  elif [ "$_legacy" -gt 0 ] 2>/dev/null; then
+    warn "Claude hooks wired in settings.json (legacy) — claude plugin install crew@seamux, then crew apply"
+  else
+    bad "Claude hooks not wired — claude plugin install crew@seamux"
+  fi
+  # The board's go chip and a human shell find deep-plan through its pointer.
+  if [ -f "$HOME/.claude/deep-plan/engine.json" ]; then
+    ok "deep-plan engine pointer: $(sed -n 's/^  "root": "\(.*\)",\{0,1\}$/\1/p' "$HOME/.claude/deep-plan/engine.json" | sed "s|^$HOME|~|")"
+  elif [ -f "$HOME/.claude/skills/deep-plan/deep_plan.mjs" ]; then
+    warn "deep-plan runs from the old ~/.claude/skills copy — claude plugin install deep-plan@seamux"
+  else
+    bad "no deep-plan engine — the go chip has nothing to run; install the deep-plan plugin and start a session"
+  fi
+  # The guard is wired one of two ways: the bash-guard plugin enabled, or the
+  # settings.json entry the old installer wrote (kept until migration removes it).
+  if python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+sys.exit(0 if any(k.startswith("bash-guard@") and v for k,v in (d.get("enabledPlugins") or {}).items()) else 1)' "$SETTINGS" 2>/dev/null; then
+    ok "bash-guard plugin enabled"
+  elif grep -q "guard_bash.sh" "$SETTINGS" 2>/dev/null; then
+    ok "guard_bash.sh wired in settings.json (legacy; the bash-guard plugin replaces it)"
+  else
+    bad "the destructive-command guard is off — claude plugin install bash-guard@seamux"
+  fi
   [ -f "$SIDEBAR_DIR/crew.swift" ] && ok "sidebar installed" || bad "sidebar not installed"
   if python3 "$CREW_HOME/board/crew-board-intent" --selftest >/dev/null 2>&1; then
     ok "intent server routes + mermaid swap"
@@ -834,12 +1139,25 @@ typesafe.threshold('stuck_threshold', 0.8)))" 2>/dev/null)"
   fi
 
   head_ "source of truth"
-  # The repo is the source of truth: install.sh writes .seamux-source at
-  # install time, and drift between repo and live install is a red, not a
-  # habit. A missing marker means the install predates the marker — reinstall.
-  local _src=""
+  # The plugin root (or, for the old install, the repo) is the source of truth:
+  # apply writes .seamux-source, and drift between it and the live tree is a
+  # red, not a habit. A missing marker means the install predates the marker.
+  local _src="" _plug
   [ -f "$CREW_HOME/.seamux-source" ] && _src="$(cat "$CREW_HOME/.seamux-source" 2>/dev/null)"
-  if [ -z "$_src" ]; then
+  _plug="$(plugin_source)"
+  if [ -n "$_plug" ]; then
+    if [ "$_plug" != "$_src" ]; then
+      bad "the crew plugin moved to ${_plug/#$HOME/~} ($(plugin_version "$_plug")) since the last apply — run: crew apply"
+    else
+      local _drift; _drift="$(crew_drift "$_plug")"
+      if [ -z "$_drift" ]; then
+        ok "no drift vs the crew plugin at ${_plug/#$HOME/~}"
+      else
+        bad "live tree differs from the crew plugin at ${_plug/#$HOME/~} — run: crew apply"
+        printf '%s\n' "$_drift" | head -8 | sed 's/^/      /'
+      fi
+    fi
+  elif [ -z "$_src" ]; then
     warn "no .seamux-source marker — reinstall from the seamux repo to enable the drift check"
   elif [ ! -x "$_src/install.sh" ]; then
     bad "seamux repo missing or has no install.sh: $_src"
@@ -925,18 +1243,29 @@ cmd_demo() {
   printf '\nRestore with: cmux workspace status set auto && cmux clear-progress && cmux todo clear\n'
 }
 
+# Run from the plugin root (inside Claude, the plugin's bin/ is first on the
+# Bash tool's PATH), every verb but `apply` belongs to the live tree: doctor
+# inspects it, timer and listen register its paths with launchd, and a plugin
+# root's path changes on every update.
+if [ "$CREW_HOME" != "$LIVE" ] && [ "${1:-status}" != "apply" ]; then
+  if [ -x "$LIVE/bin/crew" ]; then exec "$LIVE/bin/crew" "$@"; fi
+  printf 'crew is not applied yet: run `crew apply` to install the live tree at %s\n' "${LIVE/#$HOME/~}" >&2
+  exit 1
+fi
+
 case "${1:-status}" in
-  apply)     cmd_apply ;;
+  apply)     shift; cmd_apply "$@" ;;
   uninstall) cmd_uninstall ;;
   on)        cmd_on ;;
   off)       cmd_off ;;
   status)    cmd_status ;;
   doctor)    cmd_doctor ;;
+  drift)     cmd_drift ;;
   adopt)     cmd_adopt ;;
   sync)      shift; exec "$CREW_HOME/bin/crew-sync" "$@" ;;
   timer)     shift; cmd_timer "${1:-status}" ;;
   listen)    shift; cmd_listen "${1:-status}" "${2:-}" ;;
   color)     shift; exec "$CREW_HOME/bin/crew-color" "$@" ;;
   demo)      shift; cmd_demo "${1:-}" ;;
-  *) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ; exit 2 ;;
+  *) sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ; exit 2 ;;
 esac

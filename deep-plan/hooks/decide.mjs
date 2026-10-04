@@ -47,6 +47,9 @@ if (d.allow) {
 }
 
 const slug = d.plan ? d.plan.slug : "?";
+// The opening `deep-plan gate [<slug>]: ` is a contract: the seamux-mods band
+// finds a denial by it in the tool result, and probe.mjs asserts it. Change the
+// words after it freely; change the opening and update seamux-mods with it.
 process.stderr.write(
   `deep-plan gate [${slug}]: ${d.why}\n` +
   `Ask the human, then: deep-plan go ${slug} next   (or the board's "go" chip; ` +

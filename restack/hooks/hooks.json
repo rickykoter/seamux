@@ -1,0 +1,13 @@
+{
+  "description": "restack: the engine pointer out-of-session callers and the ~/.local/bin shim read",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/restack.mjs\" engine >/dev/null 2>&1 || true", "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}

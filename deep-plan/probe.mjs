@@ -19,12 +19,41 @@ const ENV = {
   DEEP_PLAN_KEYS_DIR: path.join(TMP, "keys"),
   DEEP_PLAN_PLANS_DIR: path.join(TMP, "plans"),
   DEEP_PLAN_ANNOT_DIR: path.join(TMP, "annotations"),
-  DEEP_PLAN_SKILL_DIR: HERE,
+  // No DEEP_PLAN_SKILL_DIR: every gate call below runs hooks/gate.sh by path
+  // and must find decide.mjs beside itself, as it does from a plugin root.
   // Authoritative override (empty = no client): a probe render on a machine
   // with a real TypeSafe key must never judge evidence over the network.
   DEEP_PLAN_TYPESAFE_CLIENT: "",
+  // The bundle, the engine pointer and the shim, all under TMP. With
+  // DEEP_PLAN_VENDOR_DIR set the engine looks nowhere else for mermaid, and
+  // MERMAID_SRC replaces the CDN download: the probe never touches the network
+  // or repoints the real ~/.claude/deep-plan/engine.json.
+  DEEP_PLAN_VENDOR_DIR: path.join(TMP, "vendor"),
+  DEEP_PLAN_ENGINE_FILE: path.join(TMP, "engine.json"),
+  DEEP_PLAN_BIN_DIR: path.join(TMP, "shim-bin"),
+  DEEP_PLAN_MERMAID_SRC: path.join(TMP, "no-download-in-the-probe"),
+  DEEP_PLAN_MERMAID: "",
 };
-const MERMAID_VENDOR = path.join(HERE, "vendor", "mermaid.min.js");
+delete ENV.DEEP_PLAN_SKILL_DIR;
+delete ENV.DEEP_PLAN_ENGINE;
+const MERMAID_VENDOR = path.join(ENV.DEEP_PLAN_VENDOR_DIR, "mermaid.min.js");
+// The real bundle to test with: where CI fetched it, where `deep-plan setup`
+// put it, a checkout's own vendor/, or the old skills copy. Copied, not moved.
+{
+  const src = [
+    process.env.DEEP_PLAN_VENDOR_DIR && path.join(process.env.DEEP_PLAN_VENDOR_DIR, "mermaid.min.js"),
+    path.join(os.homedir(), ".claude", "deep-plan", "vendor", "mermaid.min.js"),
+    path.join(HERE, "vendor", "mermaid.min.js"),
+    path.join(os.homedir(), ".claude", "skills", "deep-plan", "vendor", "mermaid.min.js"),
+  ].filter(Boolean).find(p => fs.existsSync(p));
+  if (!src) {
+    console.error("deep-plan probe: no mermaid.min.js to test with. Run `deep-plan setup`, " +
+      "or point DEEP_PLAN_VENDOR_DIR at a directory holding the pinned build.");
+    process.exit(1);
+  }
+  fs.mkdirSync(ENV.DEEP_PLAN_VENDOR_DIR, { recursive: true });
+  fs.copyFileSync(src, MERMAID_VENDOR);
+}
 const REPO = path.join(TMP, "repo");
 fs.mkdirSync(REPO, { recursive: true });
 // -c identity: CI runners have no git user, and the probe's throwaway repo
@@ -94,10 +123,11 @@ ok("review page never contains the answer key", !/answer/i.test(review.replace(/
   !review.includes('"answers"'));
 ok("mermaid inlined as base64 (the swap regex's shape)",
   /src="data:text\/javascript;base64,[A-Za-z0-9+/=]+"/.test(review));
-// A fresh clone has no vendor/mermaid.min.js (it is gitignored; install.sh and
-// CI fetch it). The validator degrades to a "skipped" sentinel, but render used
-// to hand that case an ENOENT stack trace straight out of node:fs, which reads
-// as a broken tool rather than a missing file. It must refuse legibly instead.
+// A fresh plugin install has no bundle until setup or the first render fetches
+// it. When that fetch fails too (offline; here, MERMAID_SRC names no file), the
+// validator degrades to a "skipped" sentinel, but render used to hand that case
+// an ENOENT stack trace straight out of node:fs, which reads as a broken tool
+// rather than a missing file. It must refuse legibly instead.
 {
   const stash = MERMAID_VENDOR + ".probe-stash";
   fs.renameSync(MERMAID_VENDOR, stash);
@@ -105,7 +135,73 @@ ok("mermaid inlined as base64 (the swap regex's shape)",
   fs.renameSync(stash, MERMAID_VENDOR);
   ok("render without the vendored mermaid refuses legibly, not with a stack trace",
     r.status !== 0 && /vendor\/mermaid\.min\.js is missing/.test(r.stderr) &&
-    !/node:fs|readFileSync|ENOENT/.test(r.stderr));
+    /deep-plan setup/.test(r.stderr) && !/node:fs|readFileSync|ENOENT/.test(r.stderr));
+}
+
+// -------------------------------------------------- plugin: pointer, setup, shim, bin
+//
+// Out-of-session callers (the go chip, triage, the intent server, the shim)
+// find the engine through engine.json, so every run must leave it naming this
+// copy, with the version and the bundle the intent server serves.
+{
+  // The refusal test above ran with the bundle hidden, so its pointer rightly
+  // has no mermaid. One ordinary run with the bundle back must restore it.
+  cli("status");
+  const ptr = JSON.parse(fs.readFileSync(ENV.DEEP_PLAN_ENGINE_FILE, "utf8"));
+  const manifest = JSON.parse(fs.readFileSync(path.join(HERE, ".claude-plugin", "plugin.json"), "utf8"));
+  ok("an ordinary run writes engine.json naming root, version and mermaid",
+    ptr.root === HERE && ptr.version === manifest.version && ptr.mermaid === MERMAID_VENDOR);
+  ok("engine.json keeps one key per line (the shim reads root with sed)",
+    /^  "root": ".*",$/m.test(fs.readFileSync(ENV.DEEP_PLAN_ENGINE_FILE, "utf8")));
+  const before = fs.statSync(ENV.DEEP_PLAN_ENGINE_FILE).mtimeMs;
+  cli("status");
+  ok("an unchanged pointer is not rewritten", fs.statSync(ENV.DEEP_PLAN_ENGINE_FILE).mtimeMs === before);
+
+  // setup: a fresh vendor dir, bytes that are not the pinned build.
+  const SV = path.join(TMP, "setup-vendor");
+  const bogus = path.join(TMP, "bogus-mermaid.js");
+  fs.writeFileSync(bogus, "window.mermaid = 'not the pinned build';\n");
+  const scfg = src => ({ ...ENV, DEEP_PLAN_VENDOR_DIR: SV, DEEP_PLAN_MERMAID_SRC: src });
+  const setupRun = src => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "setup"],
+    { encoding: "utf8", env: scfg(src), cwd: REPO });
+  let r = setupRun(bogus);
+  ok("setup refuses a bundle whose sha256 does not match the pin, and installs nothing",
+    r.status !== 0 && /sha256/.test(r.stderr) && !fs.existsSync(path.join(SV, "mermaid.min.js")) &&
+    !fs.readdirSync(SV).some(n => n.includes(".part-")));
+  r = setupRun(MERMAID_VENDOR);
+  const shim = path.join(ENV.DEEP_PLAN_BIN_DIR, "deep-plan");
+  ok("setup installs the pinned bundle and the shim",
+    r.status === 0 && fs.existsSync(path.join(SV, "mermaid.min.js")) &&
+    fs.existsSync(shim) && (fs.statSync(shim).mode & 0o111) !== 0);
+  r = setupRun(bogus);
+  ok("setup again is a no-op that says so",
+    r.status === 0 && /in place \(sha256 verified\)/.test(r.stdout) && /shim in place/.test(r.stdout));
+
+  // The shim holds no path: it reads engine.json from $HOME, then falls back.
+  const H = path.join(TMP, "home");
+  fs.mkdirSync(path.join(H, ".claude", "deep-plan"), { recursive: true });
+  fs.copyFileSync(ENV.DEEP_PLAN_ENGINE_FILE, path.join(H, ".claude", "deep-plan", "engine.json"));
+  const shimRun = (extra = {}) => spawnSync("sh", [shim, "engine"],
+    { encoding: "utf8", env: { ...ENV, HOME: H, ...extra }, cwd: REPO });
+  r = shimRun();
+  ok("the shim runs the engine engine.json names",
+    r.status === 0 && JSON.parse(r.stdout).root === HERE);
+  r = shimRun({ DEEP_PLAN_ENGINE: path.join(TMP, "nowhere") });
+  ok("a bad DEEP_PLAN_ENGINE and no old skills copy: the shim says what is missing",
+    r.status === 127 && /no engine found/.test(r.stderr));
+  fs.rmSync(path.join(H, ".claude", "deep-plan", "engine.json"));
+  r = shimRun({ DEEP_PLAN_ENGINE: HERE });
+  ok("DEEP_PLAN_ENGINE wins with no pointer at all",
+    r.status === 0 && JSON.parse(r.stdout).root === HERE);
+
+  // The plugin's own bin/: on the Bash tool's PATH, without CLAUDE_PLUGIN_ROOT,
+  // possibly reached through a symlink.
+  const LB = path.join(TMP, "linkbin");
+  fs.mkdirSync(LB, { recursive: true });
+  fs.symlinkSync(path.join(HERE, "bin", "deep-plan"), path.join(LB, "dp"));
+  r = spawnSync(path.join(LB, "dp"), ["engine"], { encoding: "utf8", env: ENV, cwd: TMP });
+  ok("bin/deep-plan finds its engine through a symlink, with no plugin env",
+    r.status === 0 && JSON.parse(r.stdout).root === HERE);
 }
 // -------------------------------------------------- evidence citation check
 // Warn-only in both halves: code checks the cited path and line resolve, a
@@ -764,6 +860,11 @@ const right = Object.entries(key.answers).map(([q, a]) => `${q}=${a.letter}`);
 r = cli("grade", spec.slug, ...right);
 ok("right answers pass", r.status === 0);
 ok("no increment authorized yet: Edit still denied", edit(path.join(REPO, "a.txt")).status === 2);
+// The seamux-mods band recognises a denial by this exact opening, read back
+// out of the tool result the model sees. Reword it and the band goes silent,
+// so the shape is held here, slug and all.
+ok("the denial opens with `deep-plan gate [<slug>]: ` (seamux-mods keys off it)",
+  edit(path.join(REPO, "a.txt")).stderr.startsWith(`deep-plan gate [${spec.slug}]: `));
 
 // -------------------------------------------------- approved snapshot: cut once, immutable
 {
