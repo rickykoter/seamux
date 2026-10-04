@@ -4,8 +4,9 @@
 // sibling of state/ and keys/, never inside the skill. Three things would
 // destroy an in-skill ext/:
 //
-//   * `install.sh --uninstall` does `rm -rf "$SKILL"`, and its "kept" list
-//     names ~/.claude/deep-plan explicitly.
+//   * a plugin update replaces the plugin root wholesale (and the old
+//     `install.sh --uninstall` did `rm -rf "$SKILL"`, keeping only
+//     ~/.claude/deep-plan).
 //   * installing with `rsync --delete` removes anything the repo does not have.
 //   * a plain rsync leaves it, but then drift reporting has to learn about it.
 //

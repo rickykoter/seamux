@@ -1,0 +1,21 @@
+{
+  "description": "deep-plan: the per-increment edit gate, and the engine pointer out-of-session callers read",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate.sh\"" }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/deep_plan.mjs\" engine >/dev/null 2>&1 || true", "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}

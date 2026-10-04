@@ -1,0 +1,15 @@
+{
+  "name": "seamux",
+  "owner": { "name": "Richard Kotermanski", "url": "https://github.com/rickykoter" },
+  "metadata": {
+    "description": "Plan-as-artifact with a per-increment edit gate, safe stacked-branch rebases, and the cmux crew layer, one plugin per feature."
+  },
+  "plugins": [
+    {
+      "name": "deep-plan",
+      "source": "./deep-plan",
+      "description": "Plan a change as a reviewable artifact, then refuse edits until the human authorizes each increment.",
+      "category": "development"
+    }
+  ]
+}

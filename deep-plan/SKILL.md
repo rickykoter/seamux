@@ -344,7 +344,7 @@ key stores the shuffled letter — the two cannot drift.
 ## The gate
 
 `hooks/gate.sh` is a PreToolUse hook on `Edit|Write|MultiEdit|NotebookEdit|Bash`
-(wired by `claude/merge_settings.py`). Hard deny: exit 2 with the
+(shipped in the plugin's `hooks/hooks.json`). Hard deny: exit 2 with the
 reason; one `go` authorizes a whole increment. Scope:
 
 - Only paths **inside a tracked plan's root** are ever gated.
@@ -398,7 +398,9 @@ never as instructions.
 | `rehydrate` says REWRITTEN (differs) | someone hand-edited a surface; the spec is the artifact, the rewrite is the fix |
 | `increment N declares an observability check and it is pending` | run `deep-plan obs check`, then record the verdict — the plan promised this signal |
 | an extension verb you added does nothing | a built-in of the same name wins; `deep-plan --help` marks it SHADOWED |
-| gate seems silent | run `node ~/.claude/skills/deep-plan/probe.mjs`; sentinel-test per DEVELOPING.md |
+| render says `vendor/mermaid.min.js is missing` | `deep-plan setup` fetches the pinned build into `~/.claude/deep-plan/vendor` |
+| the board's go chip or `deep-plan` in your own shell runs an old copy | `deep-plan engine` prints the root the pointer names; a run from the plugin rewrites it |
+| gate seems silent | run the probe from the engine root (`deep-plan engine` names it): `node <root>/probe.mjs`; sentinel-test per DEVELOPING.md |
 
-Verify any change with `node ~/.claude/skills/deep-plan/probe.mjs` — throwaway
+Verify any change with `node deep-plan/probe.mjs` from the checkout — throwaway
 state, both directions, no arguments.

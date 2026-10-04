@@ -1,0 +1,10 @@
+{
+  "name": "deep-plan",
+  "version": "0.3.0",
+  "description": "Plan a change as a reviewable artifact, then refuse edits until the human authorizes each increment.",
+  "author": { "name": "Richard Kotermanski", "url": "https://github.com/rickykoter" },
+  "homepage": "https://github.com/rickykoter/seamux/tree/main/deep-plan",
+  "repository": "https://github.com/rickykoter/seamux",
+  "license": "MIT",
+  "keywords": ["planning", "gate", "review", "adr"]
+}
