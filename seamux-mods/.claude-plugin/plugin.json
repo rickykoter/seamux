@@ -1,0 +1,12 @@
+{
+  "name": "seamux-mods",
+  "version": "0.3.0",
+  "description": "deep-plan in the terminal: a /plan-pane pane with go, done and obs, a band with `go next` when the gate refuses an edit, the plan and cache clock in the status line, and the ask page's link.",
+  "author": { "name": "Richard Kotermanski", "url": "https://github.com/rickykoter" },
+  "homepage": "https://github.com/rickykoter/seamux/tree/main/seamux-mods",
+  "repository": "https://github.com/rickykoter/seamux",
+  "license": "MIT",
+  "keywords": ["mods", "deep-plan", "pane", "status"],
+  "dependencies": ["deep-plan"],
+  "types": "./types/index.d.ts"
+}

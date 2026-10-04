@@ -64,6 +64,10 @@ place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_D
   SessionStart hook, only when it changes. JSON.stringify's two-space form is
   part of the contract: the shim reads `"root"` with sed. The old
   `~/.claude/skills` copy never writes it.
+- The gate's refusal opens `deep-plan gate [<slug>]: ` (decide.mjs). The
+  seamux-mods band finds refusals by that opening in the tool result; the probe
+  asserts it. `status --json` rows carry `increments` (`n`, `title`, `status`,
+  `obs`) for the seamux-mods pane; the board ignores the field.
 
 ## Measured on this machine (2026-09-12)
 

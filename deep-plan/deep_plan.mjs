@@ -2092,6 +2092,11 @@ function statusRows() {
     // finished may not be — the board reads this from --json.
     obsOutstanding: (st.increments || []).filter(obsBlocks)
       .map(i => ({ n: i.n, status: i.obs.status })),
+    // Every increment's own row, for a reader that draws the whole plan (the
+    // seamux-mods pane) rather than the board's one-line summary.
+    increments: (st.increments || []).map(i => ({
+      n: i.n, title: i.title, status: i.status, obs: (i.obs && i.obs.status) || "n/a",
+    })),
   }));
 }
 

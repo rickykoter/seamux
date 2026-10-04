@@ -860,6 +860,11 @@ const right = Object.entries(key.answers).map(([q, a]) => `${q}=${a.letter}`);
 r = cli("grade", spec.slug, ...right);
 ok("right answers pass", r.status === 0);
 ok("no increment authorized yet: Edit still denied", edit(path.join(REPO, "a.txt")).status === 2);
+// The seamux-mods band recognises a denial by this exact opening, read back
+// out of the tool result the model sees. Reword it and the band goes silent,
+// so the shape is held here, slug and all.
+ok("the denial opens with `deep-plan gate [<slug>]: ` (seamux-mods keys off it)",
+  edit(path.join(REPO, "a.txt")).stderr.startsWith(`deep-plan gate [${spec.slug}]: `));
 
 // -------------------------------------------------- approved snapshot: cut once, immutable
 {

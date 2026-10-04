@@ -1,6 +1,9 @@
 {
   "name": "seamux",
-  "owner": { "name": "Richard Kotermanski", "url": "https://github.com/rickykoter" },
+  "owner": {
+    "name": "Richard Kotermanski",
+    "url": "https://github.com/rickykoter"
+  },
   "metadata": {
     "description": "Plan-as-artifact with a per-increment edit gate, safe stacked-branch rebases, and the cmux crew layer, one plugin per feature."
   },
@@ -9,6 +12,12 @@
       "name": "deep-plan",
       "source": "./deep-plan",
       "description": "Plan a change as a reviewable artifact, then refuse edits until the human authorizes each increment.",
+      "category": "development"
+    },
+    {
+      "name": "seamux-mods",
+      "source": "./seamux-mods",
+      "description": "deep-plan inside the terminal: a /plan-pane pane, a `go next` band when the gate refuses, and the plan and cache clock in the status line. Needs Claude Code 2.1.287 or later.",
       "category": "development"
     }
   ]

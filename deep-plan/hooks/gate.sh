@@ -1,6 +1,8 @@
 #!/bin/bash
 # deep-plan gate — PreToolUse on Edit|Write|MultiEdit|NotebookEdit|Bash.
-# Exit 2 + stderr blocks the call; anything else allows.
+# Exit 2 + stderr blocks the call; anything else allows. The stderr of a
+# denial opens `deep-plan gate [<slug>]: ` (written by decide.mjs), which the
+# seamux-mods band matches on; probe.mjs holds that shape.
 #
 # The hot path: this fires on every tool call, almost always with no plan
 # tracked. The glob test answers that case before any interpreter starts
