@@ -15,6 +15,12 @@
       "category": "development"
     },
     {
+      "name": "restack",
+      "source": "./restack",
+      "description": "Rebase a stack of branches onto a moved base without hand-resolving generated files, then run CI's staleness and breaking-change checks locally.",
+      "category": "development"
+    },
+    {
       "name": "seamux-mods",
       "source": "./seamux-mods",
       "description": "deep-plan inside the terminal: a /plan-pane pane, a `go next` band when the gate refuses, and the plan and cache clock in the status line. Needs Claude Code 2.1.287 or later.",

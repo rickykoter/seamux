@@ -22,6 +22,7 @@
 //   1  refused or failed (the reason is the last line, and `error` in --json)
 //   2  stopped: a human has to resolve something (`needs-human`)
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -38,10 +39,19 @@ import { judgeState, guardArtifactPaths, judgeDropped, judgeResidue } from "./li
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const NEEDS_HUMAN = 2;
+// The engine pointer: where this engine lives, for callers outside Claude (the
+// ~/.local/bin shim, crew). restack's one file under ~ (docs/SYNCING.md). The
+// overrides are for the probe, so a test run never repoints the real one.
+const ENGINE_FILE = process.env.RESTACK_ENGINE_FILE ||
+  path.join(os.homedir(), ".claude", "restack", "engine.json");
+const SHIM_DIR = process.env.RESTACK_BIN_DIR || path.join(os.homedir(), ".local", "bin");
 
 // ---------------------------------------------------------------- argv
 const argv = process.argv.slice(2);
-const verb = argv.find(a => !a.startsWith("-")) || "status";
+// `--help` and `-h` are flags, so the first-non-flag rule alone read
+// `restack --help` as `restack status`.
+const verb = argv.includes("--help") || argv.includes("-h") ? "help"
+  : argv.find(a => !a.startsWith("-")) || "status";
 const rest = argv.filter(a => a !== verb);
 const flag = n => rest.includes("--" + n);
 const opt = (n, d = null) => {
@@ -893,6 +903,51 @@ function cmdInit(ctx) {
     });
 }
 
+// ---------------------------------------------------------------- engine pointer
+
+function engineVersion() {
+  try { return JSON.parse(fs.readFileSync(path.join(HERE, ".claude-plugin", "plugin.json"), "utf8")).version || "dev"; }
+  catch { return "dev"; }
+}
+
+// One key per line (JSON.stringify's two-space form) is part of the contract:
+// the shim reads "root" with sed. Written only when the content changes. The
+// old ~/.claude/skills copy never writes it: it is the fallback the pointer
+// exists to supersede.
+function writeEnginePointer() {
+  if (!process.env.RESTACK_ENGINE_FILE &&
+      HERE === path.join(os.homedir(), ".claude", "skills", "restack")) return null;
+  const body = JSON.stringify({ root: HERE, version: engineVersion() }, null, 2) + "\n";
+  let cur = null;
+  try { cur = fs.readFileSync(ENGINE_FILE, "utf8"); } catch { /* first write */ }
+  if (cur === body) return body;
+  fs.mkdirSync(path.dirname(ENGINE_FILE), { recursive: true });
+  const tmp = ENGINE_FILE + ".tmp-" + process.pid;
+  fs.writeFileSync(tmp, body);
+  fs.renameSync(tmp, ENGINE_FILE);
+  return body;
+}
+
+// `restack setup`: what a plugin install cannot ship, the pointer and the
+// ~/.local/bin shim that gives a human shell a `restack` command. Re-runnable.
+function cmdSetup(body) {
+  say(body ? `  ok    engine pointer -> ${ENGINE_FILE} (root ${HERE})`
+           : "  skip  engine pointer: this is the old ~/.claude/skills copy");
+  const want = fs.readFileSync(path.join(HERE, "lib", "restack.shim"), "utf8");
+  const shim = path.join(SHIM_DIR, "restack");
+  let have = null;
+  try { have = fs.readFileSync(shim, "utf8"); } catch { /* not installed */ }
+  if (have === want) say(`  ok    shim in place: ${shim}`);
+  else {
+    fs.mkdirSync(SHIM_DIR, { recursive: true });
+    fs.writeFileSync(shim, want, { mode: 0o755 });
+    fs.chmodSync(shim, 0o755);
+    say(`  ok    ${have === null ? "installed" : "updated"} the shim: ${shim}`);
+  }
+  if (!(process.env.PATH || "").split(":").includes(SHIM_DIR))
+    say(`  warn  ${SHIM_DIR} is not on PATH; add it to call \`restack\` from your own shell`);
+}
+
 function usage() {
   console.log(`restack — rebase a stack onto a moved base without hand-resolving generated files
 
@@ -908,6 +963,8 @@ function usage() {
   restack push                         PRINT the push lines (never runs them)
   restack doctor                       config, globs, tools
   restack init   [--force]             write a starting .seamux/restack.json
+  restack setup                        write the engine pointer, install the ~/.local/bin shim
+  restack engine                       print the engine pointer (which copy runs)
 
   --json      machine-readable; exit 2 means "a human has to resolve something"
   --deep      also run the expensive tier (containers, migrations)
@@ -920,7 +977,16 @@ function usage() {
 }
 
 // ---------------------------------------------------------------- dispatch
+// Every run refreshes the pointer, so whichever copy ran last is the one the
+// shim finds. Never at the cost of the command itself.
+let pointerBody = null;
+try { pointerBody = writeEnginePointer(); } catch { /* read-only home: the verb still runs */ }
+
 switch (verb) {
+  case "setup":    cmdSetup(pointerBody); break;
+  case "engine":
+    process.stdout.write(pointerBody || JSON.stringify({ root: HERE, version: engineVersion(), pointer: "not written" }, null, 2) + "\n");
+    break;
   case "status":   cmdStatus(context()); break;
   case "plan":     cmdPlan(context()); break;
   case "run":      cmdRun(context()); break;

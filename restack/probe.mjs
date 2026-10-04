@@ -36,7 +36,12 @@ const ENV = {
   // quietly consult a model — the same trap deep-plan's probe documents, and
   // the reason judgments are asserted here against a stand-in instead.
   RESTACK_TYPESAFE_CLIENT: "",
+  // The engine pointer and the shim, under TMP: no probe run repoints the
+  // real ~/.claude/restack/engine.json or touches ~/.local/bin.
+  RESTACK_ENGINE_FILE: path.join(TMP, "engine.json"),
+  RESTACK_BIN_DIR: path.join(TMP, "shim-bin"),
 };
+delete ENV.RESTACK_ENGINE;
 
 let pass = 0, fail = 0;
 function ok(name, cond, detail) {
@@ -681,6 +686,51 @@ step("the status payload the board and an agent read");
   ok("base reports how far behind", typeof s.json.base.behind === "number");
   ok("status never mutates: no state file appears",
     !fs.existsSync(path.join(r, ".git", "seamux-restack.json")));
+}
+
+// ---------------------------------------------------------------- plugin: pointer, setup, shim, bin
+// Callers outside Claude find the engine through engine.json, so a run must
+// leave it naming this copy. The one file restack keeps under ~.
+step("plugin: engine pointer, setup, shim, bin");
+{
+  const manifest = JSON.parse(fs.readFileSync(path.join(HERE, ".claude-plugin", "plugin.json"), "utf8"));
+  // Under a temp HOME with no override, as a plugin install runs it.
+  const H = path.join(TMP, "home");
+  fs.mkdirSync(H, { recursive: true });
+  const homeEnv = { ...ENV, HOME: H };
+  delete homeEnv.RESTACK_ENGINE_FILE;
+  let r = spawnSync("node", [path.join(HERE, "restack.mjs"), "help"], { cwd: TMP, encoding: "utf8", env: homeEnv });
+  const ptrFile = path.join(H, ".claude", "restack", "engine.json");
+  const ptr = fs.existsSync(ptrFile) ? JSON.parse(fs.readFileSync(ptrFile, "utf8")) : {};
+  ok("a run writes ~/.claude/restack/engine.json naming root and version",
+    r.status === 0 && ptr.root === HERE && ptr.version === manifest.version, r.stderr);
+  ok("engine.json keeps one key per line (the shim reads root with sed)",
+    /^  "root": ".*",$/m.test(fs.existsSync(ptrFile) ? fs.readFileSync(ptrFile, "utf8") : ""));
+
+  r = cli(TMP, "setup");
+  const shim = path.join(ENV.RESTACK_BIN_DIR, "restack");
+  ok("setup installs the shim, executable",
+    r.status === 0 && fs.existsSync(shim) && (fs.statSync(shim).mode & 0o111) !== 0, r.err);
+  ok("setup again says the shim is in place", /shim in place/.test(cli(TMP, "setup").out));
+
+  const shimRun = extra => spawnSync("sh", [shim, "engine"], { cwd: TMP, encoding: "utf8", env: { ...homeEnv, ...extra } });
+  r = shimRun({});
+  ok("the shim runs the engine engine.json names", r.status === 0 && JSON.parse(r.stdout || "{}").root === HERE, r.stderr);
+  r = shimRun({ RESTACK_ENGINE: path.join(TMP, "nowhere") });
+  ok("a bad RESTACK_ENGINE and no old skills copy: the shim says what is missing",
+    r.status === 127 && /no engine found/.test(r.stderr));
+
+  for (const f of ["--help", "-h"]) {
+    r = cli(TMP, f);
+    ok(`restack ${f} prints the usage, not the status`, r.status === 0 && /restack status \[--json\]/.test(r.out));
+  }
+
+  const LB = path.join(TMP, "linkbin");
+  fs.mkdirSync(LB, { recursive: true });
+  fs.symlinkSync(path.join(HERE, "bin", "restack"), path.join(LB, "rs"));
+  r = spawnSync(path.join(LB, "rs"), ["engine"], { cwd: TMP, encoding: "utf8", env: ENV });
+  ok("bin/restack finds its engine through a symlink, with no plugin env",
+    r.status === 0 && JSON.parse(r.stdout || "{}").root === HERE, r.stderr);
 }
 
 // ---------------------------------------------------------------- done

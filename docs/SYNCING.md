@@ -46,7 +46,11 @@ crew-digest`) — then commit and reinstall.
   installed — including marking a file that a built-in shadows.
 - `~/.claude/deep-plan/tools/` — one-shot scripts (the data migrator lives
   here), kept out of the skill for the same two reasons.
-- **restack keeps nothing under `~`.** Its config is `.seamux/restack.json` in
+- **restack keeps one file under `~`: its engine pointer,
+  `~/.claude/restack/engine.json`** (`{root, version}`), written by the plugin's
+  SessionStart hook and refreshed by every run, so the `~/.local/bin/restack` shim
+  can find the plugin's root. It is regenerable; losing it costs one run.
+  Everything else stays out of `~`. Its config is `.seamux/restack.json` in
   each work repo (committed, because "this repo checks in a generated client"
   is a property of the repo), and its run state is
   `$(git rev-parse --absolute-git-dir)/seamux-restack.json` — per worktree,

@@ -10,8 +10,10 @@ how it survives the week it takes to land. Same shape — a refuse-first CLI,
 state on disk, a compact JSON payload for the agent, and a stop wherever a
 human is actually needed.
 
-Run it from the worktree. `restack` is on PATH via the shim; the engine is
-`~/.claude/skills/restack/restack.mjs`.
+Run it from the worktree. While the restack plugin is enabled, `restack` is on
+the Bash tool's PATH from the plugin's `bin/`; the engine is `restack.mjs` at the
+plugin's root, wherever it is installed. `restack engine` prints that root, and
+`restack setup` installs a `~/.local/bin/restack` shim for your own shell.
 
 ## The two failures it exists for
 
@@ -250,5 +252,5 @@ does not know the schema moved underneath it; you do.
 is the right answer to any surprise before a push, because nothing has left the
 machine yet.
 
-Verify any change to this skill with `node ~/.claude/skills/restack/probe.mjs`
+Verify any change to this skill with `node restack/probe.mjs` from the checkout
 — real git repos in a temp dir, thrown away, no arguments.

@@ -1,0 +1,24 @@
+#!/bin/sh
+# ~/.local/bin/restack, installed by `restack setup` and `crew apply`.
+# It holds no path of its own: the engine is $RESTACK_ENGINE, else the root
+# the plugin last wrote to ~/.claude/restack/engine.json, else the old
+# ~/.claude/skills copy. engine.json is written by the engine with one key per
+# line, which is what lets sed read it here without a JSON parser.
+ROOT=${RESTACK_ENGINE:-}
+if [ -z "$ROOT" ] && [ -f "$HOME/.claude/restack/engine.json" ]; then
+  ROOT=$(sed -n 's/^  "root": "\(.*\)",\{0,1\}$/\1/p' "$HOME/.claude/restack/engine.json")
+fi
+[ -n "$ROOT" ] && [ -f "$ROOT/restack.mjs" ] || ROOT="$HOME/.claude/skills/restack"
+# Resolve node without trusting PATH, for the same reason deep-plan's shim
+# does: callers include processes fired from the cmux app, whose environment
+# has no version manager loaded, and a bare `exec node` there fails silently.
+if command -v node >/dev/null 2>&1; then
+  NODE=node
+else
+  for c in "$HOME/.asdf/shims/node" /opt/homebrew/bin/node /usr/local/bin/node; do
+    [ -x "$c" ] && NODE="$c" && break
+  done
+fi
+[ -n "${NODE:-}" ] || { echo "restack: node not found" >&2; exit 127; }
+[ -f "$ROOT/restack.mjs" ] || { echo "restack: no engine found (install the restack plugin, or set RESTACK_ENGINE)" >&2; exit 127; }
+exec "$NODE" "$ROOT/restack.mjs" "$@"

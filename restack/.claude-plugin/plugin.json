@@ -1,0 +1,10 @@
+{
+  "name": "restack",
+  "version": "0.3.0",
+  "description": "Rebase a stack of branches onto a moved base without hand-resolving generated files, run CI's staleness and breaking-change checks locally, and stop before the push.",
+  "author": { "name": "Richard Kotermanski", "url": "https://github.com/rickykoter" },
+  "homepage": "https://github.com/rickykoter/seamux/tree/main/restack",
+  "repository": "https://github.com/rickykoter/seamux",
+  "license": "MIT",
+  "keywords": ["git", "rebase", "stack", "generated-files"]
+}
