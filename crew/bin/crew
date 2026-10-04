@@ -61,7 +61,8 @@ head_() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 # not a symptom, and must never read as one.
 note() { printf '  \033[2m· %s\033[0m\n' "$*"; }
 
-# integrations.json: written by install.sh, absent means all disabled.
+# integrations.json: rendered from the crew plugin's options (hooks/options.py), or
+# written by the old installer; absent means all disabled.
 # integ <name> <key> prints the key's value ("" when disabled/absent).
 integ() {
   python3 - "$CREW_HOME/integrations.json" "$1" "${2:-enabled}" 2>/dev/null <<'PY'
@@ -74,6 +75,13 @@ try:
 except Exception:
     pass
 PY
+}
+
+# Whether integrations.json was rendered from the crew plugin's options
+# (hooks/options.py marks it) rather than written by the old installer.
+integ_from_options() {
+  python3 -c 'import json,sys;sys.exit(0 if (json.load(open(sys.argv[1])) or {}).get("managedBy") else 1)' \
+    "$CREW_HOME/integrations.json" 2>/dev/null
 }
 
 # __INTENT_PORT__ feeds the web Dock's /usage browser control; it must match
@@ -116,20 +124,11 @@ sys.exit(0 if any(k.split("@")[0] == sys.argv[2] and v
 PY
 }
 
-# Where Claude installed a plugin, from its own record; "" when it did not.
+# The directory Claude runs a plugin from; "" when it is not installed. Not
+# simply installPath: a folder marketplace's plugin runs from the folder, while
+# its installPath names a cache snapshot (bin/crew-plugin-root says more).
 plugin_install_path() {
-  python3 - "$HOME/.claude/plugins/installed_plugins.json" "$1" <<'PY' 2>/dev/null
-import json, sys
-try:
-    plugins = (json.load(open(sys.argv[1])) or {}).get("plugins") or {}
-except Exception:
-    sys.exit(0)
-for key, installs in plugins.items():
-    if key.split("@")[0] == sys.argv[2]:
-        for inst in installs or []:
-            if inst.get("installPath"):
-                print(inst["installPath"]); sys.exit(0)
-PY
+  python3 "$CREW_HOME/bin/crew-plugin-root" "$1" 2>/dev/null
 }
 
 # How many settings.json hook entries still run crew-hook.sh (the wiring the
@@ -147,10 +146,14 @@ PY
 }
 
 # The repo the worktree helpers default to, baked over __MAIN_REPO__:
-# $CREW_MONOLITH, else what the live tree already has baked (a re-apply), else
-# the one git repo under ~/code. Empty when none of those answers.
+# $CREW_MONOLITH, else the crew plugin's main_repo option, else what the live
+# tree already has baked (a re-apply), else the one git repo under ~/code.
+# Empty when none of those answers.
 resolve_main() {
   if [ -n "${CREW_MONOLITH:-}" ]; then printf '%s\n' "$CREW_MONOLITH"; return; fi
+  local opt
+  opt="$(python3 "$CREW_HOME/hooks/options.py" --from-settings --get main_repo 2>/dev/null)"
+  if [ -n "$opt" ]; then printf '%s\n' "$opt"; return; fi
   local baked=""
   [ -f "$LIVE/bin/crew" ] && baked="$(sed -n 's/^MONOLITH="\${CREW_MONOLITH:-\(.*\)}"$/\1/p' "$LIVE/bin/crew" | head -1)"
   # Spelled in two halves wherever this file names the placeholder: the bake
@@ -227,6 +230,7 @@ apply_from_source() {
     printf '  then run the live copy'"'"'s apply: render cmux.json, link commands, sidebar, Dock,\n'
     printf '  install the deep-plan and restack shims through their engine pointers\n'
     printf '  settings.json: no hook entries written (the crew plugin'"'"'s hooks.json wires them);\n'
+    printf '  statusLine and the push flags merged (claude/merge_settings.py)\n'
     printf '  %s legacy crew-hook.sh entr%s to remove\n' "$n_legacy" "$([ "$n_legacy" = 1 ] && echo y || echo ies)"
     return 0
   fi
@@ -432,6 +436,16 @@ cmd_apply() {
   # 5b. The deep-plan and restack commands for a human shell and the go chip.
   install_engine_shims
 
+  # 5c. The crew plugin's options -> integrations.json, for a machine where no
+  #     session has run since they were set (the SessionStart hook does the same).
+  python3 "$CREW_HOME/hooks/options.py" --from-settings \
+    && ok "integrations.json follows the crew plugin's options$(grep -q managedBy "$CREW_HOME/integrations.json" 2>/dev/null || echo ' (none set; earlier answers kept)')" \
+    || warn "could not render the crew plugin's options into integrations.json"
+
+  # 5d. The status line and the phone-push flags: the two things a plugin
+  #     cannot set, merged into settings.json (additive, backed up).
+  python3 "$CREW_HOME/claude/merge_settings.py" | sed 's/^/  /'
+
   chmod +x "$CREW_HOME"/bin/* "$CREW_HOME"/hooks/*.sh "$CREW_HOME"/hooks/*.py 2>/dev/null
   rm -f "$STATE/disabled"
 
@@ -592,6 +606,7 @@ cmd_uninstall() {
     strip_legacy_hooks && ok "removed the legacy crew-hook.sh entries from settings.json (whimsy, gitnexus, guard_bash untouched)"
   fi
   plugin_enabled crew && warn "the crew plugin is still enabled: claude plugin uninstall crew (its hooks are no-ops once crew is off)"
+  python3 "$CREW_HOME/claude/merge_settings.py" --remove | sed 's/^/  /'
 
   # Only remove links that actually point back into the package.
   local unlinked=0
@@ -882,16 +897,16 @@ cmd_doctor() {
     else
       warn "acli missing — Jira is enabled but has no status source"
     fi
-    [ -n "$(integ jira site)" ] && ok "Jira site: $(integ jira site) (ticket chips link)" \
-      || note "no Jira site recorded — ticket chips stay unlinked (./install.sh --with-jira=SITE)"
+    [ -n "$(integ jira site)" ] && ok "Jira site: $(integ jira site) (ticket chips link)$(integ_from_options && echo ", from the crew plugin's options")" \
+      || note "no Jira site recorded — ticket chips stay unlinked (set jira_site: /plugin configure crew@seamux)"
   else
-    note "Jira integration off — enable with ./install.sh --with-jira[=SITE]"
+    note "Jira integration off — turn it on with the crew plugin's jira_site option (/plugin configure crew@seamux)"
   fi
   if [ -n "$(integ github_issues)" ]; then
     command -v gh >/dev/null && ok "GitHub issue chips (via gh)" \
       || warn "GitHub Issues enabled but gh is missing"
   else
-    note "GitHub Issues integration off — enable with ./install.sh --with-github-issues"
+    note "GitHub Issues integration off — turn it on with the crew plugin's github_issues option (/plugin configure crew@seamux)"
   fi
   # Optional and keyed, not chosen at setup: a key on this machine turns it on.
   if python3 "$CREW_HOME/hooks/asked.py" available 2>/dev/null; then
@@ -942,7 +957,7 @@ typesafe.threshold('stuck_threshold', 0.8)))" 2>/dev/null)"
            bin/crew-frame bin/crew-overlay config/dock.global.json \
            board/crew-board board/board.html board/render.js board/board_probe.mjs bin/crew-cmux-bin \
            board/crew-board-intent board/crew-board-diag board/costs.py board/judgments.py board/intent.js board/cat_from_swift.py board/usage.tmpl.html \
-           board/dp_engine.py hooks/hooks.json .claude-plugin/plugin.json \
+           board/dp_engine.py hooks/hooks.json .claude-plugin/plugin.json bin/crew-plugin-root \
            tools/render_probe.py; do
     [ -f "$CREW_HOME/$f" ] && ok "$f" || bad "missing $f"
   done

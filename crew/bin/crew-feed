@@ -56,22 +56,18 @@ LEGACY_GUARD = os.path.join(HOME, ".claude", "hooks", "cmux", "guard_bash.sh")
 
 def guard_path():
     """The guard script: the copy the old installer placed, else the bash-guard
-    plugin's, from Claude's own install record. None when neither exists."""
+    plugin's, wherever Claude runs it from (crew-plugin-root). None when
+    neither exists."""
     if os.path.exists(LEGACY_GUARD):
         return LEGACY_GUARD
+    helper = os.path.join(os.path.dirname(os.path.realpath(__file__)), "crew-plugin-root")
     try:
-        with open(os.path.join(HOME, ".claude", "plugins", "installed_plugins.json")) as fh:
-            plugins = (json.load(fh) or {}).get("plugins") or {}
-    except (OSError, ValueError):
+        root = subprocess.run([sys.executable, helper, "bash-guard"], capture_output=True,
+                              text=True, timeout=10).stdout.strip()
+    except Exception:
         return None
-    for key, installs in plugins.items():
-        if not key.startswith("bash-guard@"):
-            continue
-        for inst in installs or []:
-            p = os.path.join(inst.get("installPath") or "", "hooks", "guard_bash.sh")
-            if os.path.exists(p):
-                return p
-    return None
+    p = os.path.join(root, "hooks", "guard_bash.sh") if root else ""
+    return p if p and os.path.exists(p) else None
 AUDIT = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")),
                      "cmux-crew", "feed-audit.jsonl")
 WINDOW = int(os.environ.get("CREW_FEED_WINDOW", "120"))

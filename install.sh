@@ -132,7 +132,6 @@ drift_check() {
     rel="${f#$HERE/restack/}"
     check_pair "$f" "$RSKILL/$rel"
   done < <(find "$HERE/restack" -type f ! -name '.gitkeep' ! -name '.DS_Store')
-  check_pair "$HERE/claude/statusline.py" "$HOME/.claude/statusline.py"
   check_pair "$HERE/bash-guard/hooks/guard_bash.sh" "$HOME/.claude/hooks/cmux/guard_bash.sh"
   check_pair "$HERE/bin/deep-plan.shim" "$SHIM"
   check_pair "$HERE/bin/restack.shim" "$RSHIM"
@@ -174,7 +173,7 @@ if [ "$UNINSTALL" = 1 ]; then
   [ -f "$SHIM" ]  && { run "rm -f '$SHIM'";   ok "removed the deep-plan shim"; }
   [ -d "$RSKILL" ] && { run "rm -rf '$RSKILL'"; ok "removed the restack skill"; }
   [ -f "$RSHIM" ]  && { run "rm -f '$RSHIM'";   ok "removed the restack shim"; }
-  run "python3 '$HERE/claude/merge_settings.py' --remove$([ "$DRY" = 1 ] && echo ' --dry-run')"
+  run "python3 '$HERE/crew/claude/merge_settings.py' --remove$([ "$DRY" = 1 ] && echo ' --dry-run')"
   say "kept: guard_bash.sh, ~/.claude/deep-plan (state/keys), ~/.claude/plans,"
   say "      each repo's .seamux/restack.json and any in-flight restack state,"
   say "      statusline backups, ~/.config/cmux/crew-local (your overlay)"
@@ -306,15 +305,8 @@ PY
 fi
 
 # ---------------------------------------------------------------- status line
-if [ -f "$HERE/claude/statusline.py" ]; then
-  if [ -f "$HOME/.claude/statusline.py" ] && ! diff -q "$HERE/claude/statusline.py" "$HOME/.claude/statusline.py" >/dev/null; then
-    run "cp '$HOME/.claude/statusline.py' '$HOME/.claude/statusline.py.pre-seamux.bak'"
-    warn "kept your statusline.py as statusline.py.pre-seamux.bak"
-  fi
-  run "mkdir -p '$HOME/.claude'"
-  run "cp '$HERE/claude/statusline.py' '$HOME/.claude/statusline.py'"
-  ok "installed statusline.py"
-fi
+# The status line lives in the crew tree now (crew/claude/statusline.py), and
+# `crew apply` points settings.json at the live copy; nothing to copy here.
 
 # ---------------------------------------------------------------- the guard
 # `crew doctor` requires it and crew deliberately does not own it (disabling
@@ -393,9 +385,11 @@ elif [ "$CREW" = 1 ]; then
   say "skipped \`crew apply\` — run it yourself: $DEST/bin/crew apply"
 fi
 
-if [ "$SETTINGS" = 1 ]; then
-  printf '\n\033[1mClaude settings\033[0m\n'
-  run "python3 '$HERE/claude/merge_settings.py'$([ "$DRY" = 1 ] && echo ' --dry-run')"
+# Claude settings: `crew apply` above merged the status line and push flags
+# (crew/claude/merge_settings.py). The gate and the guard are no longer merged
+# here: the deep-plan and bash-guard plugins carry them in their hooks.json.
+if [ "$SETTINGS" = 1 ] && [ "$CREW" = 1 ] && [ "$APPLY" = 0 ]; then
+  say "skipped the settings merge with \`crew apply\` — it runs there"
 fi
 
 printf '\n\033[1mnext\033[0m\n'

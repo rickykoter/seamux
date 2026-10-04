@@ -819,9 +819,11 @@ the links that still point back into the package.
 ```
 crew status      what is installed and live right now
 crew doctor      check the install; non-zero exit if something is wrong
-crew apply       render config, install sidebar + Dock, wire Claude hooks
+crew apply       install the live tree from the plugin, render config, sidebar + Dock,
+                 status line; --dry-run says what it would do
 crew on | off    runtime kill switch (hooks stay wired, become no-ops)
-crew uninstall   restore the pre-crew cmux.json, unwire the hooks
+crew uninstall   restore the pre-crew cmux.json, remove the status line and any
+                 legacy hook entries (the plugin itself: claude plugin uninstall crew)
 crew demo        fire each hook synthetically and show what changed
 crew color       list | show | assign | apply | free | prune — identity colors
 ```
@@ -1005,14 +1007,39 @@ trains you to ignore the flash — the opposite of the point.
 
 ## Where this lives
 
-This layer is tracked — it comes from the seamux repo, and `install.sh` puts it
-here. The repo is the source of truth: edit there and reinstall, never edit this
-tree in place. `crew doctor` runs the drift check every time, so an in-place
-edit shows up as a red check rather than a thing you have to remember.
+This layer is tracked: it ships as the `crew` plugin, and `crew apply` copies
+the plugin's root here, to a path that never moves, because cmux, launchd and
+the intent server address it by path. Claude's hooks run from the plugin root
+itself (its `hooks/hooks.json`); `settings.json` carries none of crew's. The
+plugin is the source of truth: edit it (with the folder marketplace, that is the
+checkout's `crew/`) and re-apply, never edit this tree in place. `crew doctor`
+compares this tree with the plugin root every time, and says when Claude has
+installed a newer crew that `crew apply` has not landed yet.
 
 Two exceptions that are yours and are never synced: `integrations.json` beside
 this file, and the machine-local overlay at `~/.config/cmux/crew-local`
 (`crew-spec`, `cmux.json`, `dock.json` — see `docs/SYNCING.md`).
+
+### Options
+
+The plugin's options are where integrations are chosen: `/plugin` in Claude, or
+
+```bash
+claude plugin configure crew@seamux
+```
+
+| Option | What it turns on |
+| --- | --- |
+| `jira_site` | Jira: ticket chips link to the site, and doctor checks `acli`. Blank is off. |
+| `github_issues` | GitHub issue links on board rows |
+| `observability_stack` | `datadog`, `splunk` or `grafana` for plans' observability checks; `none` is off |
+| `main_repo` | the repo your worktrees come from, baked into `crew-worktree` and the helpers by `crew apply` |
+
+`hooks/options.py` renders the first three into `integrations.json` at every
+session start, and `crew apply` does the same from `settings.json` for a
+machine where no session has run since. It writes only when the content
+changes, keeps every other key of the file, and leaves answers the old
+installer recorded alone until an option is set.
 
 `~/.config/ghostty/whimsy` is still not under version control. If you make a
 dotfiles repo, take it then.
