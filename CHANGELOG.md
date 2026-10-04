@@ -5,6 +5,51 @@ truth and every entry lands on the machine via `./install.sh`.
 
 ## Unreleased
 
+- **deep-plan's evidence check reads the answer's distribution, not its
+  `confidence`.** The gate was written against Jev; the local model this
+  machine now uses reports `confidence` as the margin between its top two
+  options, so a citation verdict torn between "contradicts" and
+  "says_nothing" arrives under the floor with almost all of its mass against
+  the claim — and a verdict splitting that mass evenly (0.35/0.35 against 0.30
+  supports) has a margin of zero, a shape no confidence number can express.
+  `verdict()` now warns on `1 - p(supports)` and takes its wording from
+  whichever alarming option holds more mass; an answer without probabilities
+  keeps the old path byte for byte. Measured: on clear-cut citations both
+  rules agree, so this removes a latent trap rather than rescuing a broken
+  check. Still warn-only, still a real floor — uncertainty does not warn here,
+  unlike restack's guard, because the two gate very different things.
+
+- **restack verify — did the rebase change anything of yours?** A rebase
+  reports success when every commit applied, not when every commit still
+  says what it said. `verify` range-diffs each branch against the tips the
+  walk recorded before it moved anything, and buckets every difference:
+  regenerated artifacts and files you resolved at a stop are expected,
+  everything else is residue worth reading. Two bugs found building it were
+  the check lying in the safe direction — `git range-diff` refuses an empty
+  range, which is exactly the "every commit was dropped" case, and an
+  unreadable range coerced to zero looked like "every commit is new". Both
+  are handled, and a branch that could not be checked now exits non-zero:
+  an unrunnable safety check is not a pass.
+- **An optional judgment layer over the same client crew uses**, which on
+  this machine is a local Kev. Three narrow questions — is this file the
+  tool is about to rebuild really generated, did a commit that became empty
+  claim more than a regeneration, is a leftover patch change benign — under
+  one rule enforced in code: **a judgment may escalate, never authorize.**
+  No answer can make restack resolve something it would not have resolved.
+  The bar is asymmetric on purpose: it asks whether the model is positively
+  confident the automatic action is SAFE, not whether it is confident in the
+  alarm. Measured reason — Kev reports confidence as the margin between its
+  top two options, so a file scored {generated 0.14, handwritten 0.48,
+  unclear 0.38} arrived with confidence 0.21 and sailed through the naive
+  rule, losing a branch's change and then dropping the commit as empty.
+  Content questions are sent only to a loopback endpoint; anything else
+  degrades to paths and subjects. No client, no key, a failed call or an
+  unreadable answer is silence and today's behaviour. `--no-judge` is
+  explicit, `judge.safeFloor` is the knob, and every answer lands in
+  `~/.cache/seamux-restack/judgments.log` with its probabilities, because
+  these numbers are untuned for this model and deserve to be tuned from real
+  runs.
+
 - **restack — a companion skill for landing a stack.** `~/.claude/skills/restack`
   plus a `restack` shim. It walks a stack bottom-first with `git rebase --onto`
   (tips recorded before anything moves, so nothing replays twice), resolves

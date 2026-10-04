@@ -318,8 +318,12 @@ key stores the shuffled letter — the two cannot drift.
   actually read this session. Render checks the citations back, warn-only
   (`lib/evidence.mjs`): a cited path that is missing or a line past the end
   of its file always warns, and with a TypeSafe key on the machine one
-  batched request also judges whether the cited lines support each claim —
-  `contradicts` or `says_nothing` warns, low confidence stays silent. What
+  batched request also judges whether the cited lines support each claim — a
+  warning when real probability mass sits off `supports`, silence otherwise.
+  It reads the distribution rather than the answer's `confidence` field, which
+  some models report as the margin between their top two options: a verdict
+  torn between `contradicts` and `says_nothing` has almost no margin and
+  almost all of its mass against the claim. What
   leaves the machine per fact is the claim sentence plus the cited lines ±3;
   warnings never refuse a render and the edit gate never hears of them. No
   key, no client, or any error: only the deterministic half runs.

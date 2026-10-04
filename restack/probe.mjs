@@ -17,6 +17,8 @@ import { fileURLToPath } from "node:url";
 import { sideFlag, sideStage } from "./lib/git.mjs";
 import { matchesGlob, detect, load, summarize } from "./lib/config.mjs";
 import { markStale, clearStale, fresh } from "./lib/state.mjs";
+import { parseRangeDiff, classify } from "./lib/verify.mjs";
+import { contentAllowed } from "./lib/judge.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const V = process.argv.includes("-v");
@@ -28,6 +30,12 @@ const ENV = {
   GIT_CONFIG_GLOBAL: path.join(TMP, "gitconfig-none"),  // never read the machine's
   GIT_CONFIG_SYSTEM: path.join(TMP, "gitconfig-none"),
   RESTACK_LOG_DIR: path.join(TMP, "logs"),
+  RESTACK_JUDGE_LOG_DIR: path.join(TMP, "judgelog"),
+  // Authoritative override, empty = no client. Without this the probe would
+  // find the machine's real TypeSafe/Kev client and every walk below would
+  // quietly consult a model — the same trap deep-plan's probe documents, and
+  // the reason judgments are asserted here against a stand-in instead.
+  RESTACK_TYPESAFE_CLIENT: "",
 };
 
 let pass = 0, fail = 0;
@@ -345,6 +353,249 @@ step("two stacked branches: order, no duplicated commits, one pass");
   ok("it came back to the branch you started on", git(r, "symbolic-ref", "--short", "HEAD").out === "feat2");
   ok("push lines are printed for both branches, bottom first",
     (run.json?.push || []).length === 2 && run.json.push[0].includes("feat1"));
+}
+
+// ---------------------------------------------------------------- verify
+step("verify: did the restack change anything of yours?");
+{
+  // The parser and the classifier are unit-tested against real range-diff
+  // output, because the interesting cases (a commit that vanished, a file
+  // section that disappeared from a patch) are tedious to stage end to end
+  // and trivial to get wrong in a regex.
+  const sample = [
+    "1:  aaaaaaa ! 1:  bbbbbbb feat: pricing",
+    "    @@ Metadata",
+    "      ## Commit message ##",
+    "         feat: pricing",
+    "     ",
+    "    - ## app.rb ##",
+    "    -@@",
+    "    - def charge",
+    "    --  rate * 1",
+    "    -+  rate * 1.5",
+    "    - end",
+    "      ## gen/schema.txt ##",
+    "     @@",
+    "    + createdAt: Time",
+    "      userId: ID",
+    "2:  ccccccc = 2:  ddddddd chore: tidy",
+    "3:  eeeeeee < -:  ------- feat: the one that vanished",
+  ].join("\n");
+  const commits = parseRangeDiff(sample);
+  ok("parses one entry per commit", commits.length === 3, JSON.stringify(commits.map(c => c.status)));
+  ok("an unchanged commit is marked =", commits[1].status === "=");
+  ok("a vanished commit is marked <", commits[2].status === "<");
+  const files = commits[0].files.map(f => f.file);
+  ok("file sections are found", files.join(",") === "app.rb,gen/schema.txt", files.join(","));
+  ok("a section dropped from the patch counts as changed", commits[0].files[0].changed > 0);
+
+  const cfg = { artifacts: [{ name: "schema", paths: ["gen/**"], resolve: "regen", tier: "cheap", regen: "true" }] };
+  const plain = classify(commits, cfg, []);
+  ok("the generated file is expected, not residue", plain.generated.length === 1 && plain.generated[0].file === "gen/schema.txt");
+  ok("the hand-written file IS residue", plain.unexplained.length === 1 && plain.unexplained[0].file === "app.rb");
+  ok("residue carries a sample to read", plain.unexplained[0].sample.length > 0);
+  ok("the vanished commit is reported", plain.vanished.length === 1);
+  ok("an unchanged commit contributes nothing", !plain.unexplained.some(u => u.subject === "chore: tidy"));
+
+  const owned = classify(commits, cfg, ["app.rb"]);
+  ok("a file the human resolved this run is explained, not residue",
+    owned.unexplained.length === 0 && owned.resolved.length === 1);
+}
+
+step("verify end to end: a clean restack has nothing to explain");
+{
+  const r = newRepo("verify", cheapCfg);
+  git(r, "checkout", "-q", "-b", "feat1");
+  addDef(r, "b", "bravo\n", "feat: b");
+  write(r, "app.txt", "branch edit\n"); commit(r, "feat: app");
+  git(r, "checkout", "-q", "master");
+  addDef(r, "c", "charlie\n", "master: c");
+  git(r, "checkout", "-q", "feat1");
+  ok("the walk is clean", cli(r, "run", "--json", "--no-fetch").status === 0);
+
+  const v = cli(r, "verify", "--json");
+  ok("verify exits 0 on a clean restack", v.status === 0, v.out + v.err);
+  ok("and says nothing is unexplained", (v.json?.unexplained || []).length === 0, JSON.stringify(v.json?.unexplained));
+  ok("it counted the regenerated artifact as expected", (v.json?.branches?.[0]?.generated ?? 0) >= 0);
+  ok("verify refuses when there is no run to check",
+    cli(newRepo("verify-none", cheapCfg), "verify", "--json").status === 1);
+}
+
+step("verify: the two ways a check can be a lie");
+{
+  // 1. Every commit on the branch became empty and was dropped. git
+  // range-diff REFUSES an empty range, so this is the case that reported
+  // "could not check" and then printed the all-clear under it.
+  const r = newRepo("verify-gone", cheapCfg);
+  git(r, "checkout", "-q", "-b", "feat1");
+  write(r, "gen/schema.txt", read(r, "gen/schema.txt") + "poked\n");
+  commit(r, "feat: a commit that will evaporate");
+  git(r, "checkout", "-q", "master");
+  addDef(r, "c", "charlie\n", "master: c");
+  git(r, "checkout", "-q", "feat1");
+  cli(r, "run", "--json", "--no-fetch");
+  const v = cli(r, "verify", "--json");
+  ok("a branch whose commits all vanished does not verify clean", v.status === 2, v.out + v.err);
+  ok("and the vanished commit is named", v.json?.vanished?.some(x => /evaporate/.test(x.subject)),
+    JSON.stringify(v.json?.vanished));
+
+  // 2. A check that could not run at all.
+  const r2 = newRepo("verify-broken", cheapCfg);
+  git(r2, "checkout", "-q", "-b", "feat1");
+  addDef(r2, "b", "bravo\n", "feat: b");
+  git(r2, "checkout", "-q", "master");
+  addDef(r2, "c", "charlie\n", "master: c");
+  git(r2, "checkout", "-q", "feat1");
+  cli(r2, "run", "--json", "--no-fetch");
+  const sp = path.join(r2, ".git", "seamux-restack.json");
+  const st2 = JSON.parse(fs.readFileSync(sp, "utf8"));
+  st2.steps[0].upstream = "0000000000000000000000000000000000000000";   // unreadable range
+  fs.writeFileSync(sp, JSON.stringify(st2));
+  const v2 = cli(r2, "verify", "--json");
+  ok("a branch that could not be checked is NOT reported clean", v2.status === 2, v2.out + v2.err);
+  ok("and says so rather than implying a pass", (v2.json?.unchecked || []).length === 1, JSON.stringify(v2.json));
+}
+
+// ---------------------------------------------------------------- the judgment layer
+step("the judgment layer escalates, and can never authorize");
+{
+  // A stand-in for crew/hooks/typesafe.py: same two subcommands, same JSON
+  // contract, an answer chosen by env. CI must never need a model server, and
+  // a probe must never reach the machine's real one.
+  // The stand-in answers per QUESTION KIND (p* guard, d* dropped, r* residue),
+  // because one walk now asks two different questions and a single canned
+  // answer would make the guard reject the file before the drop ever happens.
+  const fake = path.join(TMP, "fake-typesafe.py");
+  fs.writeFileSync(fake, [
+    "import json, os, sys",
+    "if len(sys.argv) > 1 and sys.argv[1] == 'available': sys.exit(0 if os.environ.get('FAKE_ON') else 1)",
+    "req = json.loads(sys.stdin.read() or '{}')",
+    "open(os.environ['FAKE_DUMP'], 'w').write(json.dumps(req))",
+    "defaults = {'p': 'generated', 'd': 'regeneration_only', 'r': 'benign'}",
+    "probs = json.loads(os.environ['FAKE_PROBS']) if os.environ.get('FAKE_PROBS') else None",
+    "out = {}",
+    "for k in req.get('questions', {}):",
+    "    kind = k[0]",
+    "    choice = os.environ.get('FAKE_CHOICE_' + kind.upper()) or defaults.get(kind, 'unclear')",
+    "    a = {'type': 'choice', 'choice': choice, 'confidence': float(os.environ.get('FAKE_CONF', '0.95'))}",
+    "    if probs is not None:",
+    "        a['probabilities'] = probs",
+    "        a['choice'] = max(probs, key=probs.get)",
+    "    out[k] = a",
+    "print(json.dumps(out))",
+  ].join("\n"));
+  const dump = path.join(TMP, "fake-dump.json");
+  const withFake = (extra = {}) => ({ ...ENV, RESTACK_TYPESAFE_CLIENT: fake, FAKE_ON: "1", FAKE_DUMP: dump,
+    TYPESAFE_BASE_URL: "http://127.0.0.1:8009", ...extra });
+  const run = (cwd, env, ...args) => {
+    const r = spawnSync("node", [path.join(HERE, "restack.mjs"), ...args], { cwd, encoding: "utf8", env });
+    let json = null; try { json = JSON.parse(r.stdout); } catch { /* */ }
+    return { status: r.status, out: r.stdout || "", err: r.stderr || "", json };
+  };
+  const stacked = name => {
+    const r = newRepo(name, cheapCfg);
+    git(r, "checkout", "-q", "-b", "feat1");
+    addDef(r, "b", "bravo\n", "feat: b");
+    git(r, "checkout", "-q", "master");
+    addDef(r, "c", "charlie\n", "master: c");
+    git(r, "checkout", "-q", "feat1");
+    return r;
+  };
+
+  // The guard: a file the glob claims, that the model reads as hand-written.
+  const a = stacked("judge-guard");
+  const guarded = run(a, withFake({ FAKE_CHOICE_P: "handwritten" }), "run", "--json", "--no-fetch");
+  ok("a file judged hand-written is NOT resolved automatically", guarded.status === 2,
+    `status ${guarded.status}\n` + guarded.out + guarded.err);
+  ok("it lands in the human pile, flagged", guarded.json?.conflicts?.source?.some(x => x.escalated),
+    JSON.stringify(guarded.json?.conflicts?.source));
+  ok("with the conflict markers untouched", /<{7}/.test(read(a, "gen/schema.txt")));
+
+  // The same repo, the same glob, the model agreeing it is generated: the
+  // ONLY thing that changes is that nothing is escalated.
+  const b = stacked("judge-agree");
+  const agreed = run(b, withFake({ FAKE_CHOICE_P: "generated" }), "run", "--json", "--no-fetch");
+  ok("a file judged generated resolves exactly as it does with no model", agreed.status === 0,
+    agreed.out + agreed.err);
+
+  // The asymmetric floor, which is the part that was wrong first: what
+  // matters is the probability mass on the SAFE option, not the model's
+  // confidence in the alarming one.
+  const conf = stacked("judge-confident");
+  const confident = run(conf, withFake({ FAKE_PROBS: JSON.stringify({ generated: 0.93, handwritten: 0.02, unclear: 0.05 }) }),
+    "run", "--json", "--no-fetch");
+  ok("a file the model is sure is generated resolves automatically", confident.status === 0, confident.out + confident.err);
+
+  const torn = stacked("judge-torn");
+  // The real shape this got wrong: handwritten 0.48 / unclear 0.38 / generated
+  // 0.14 arrives with a TOP-TWO MARGIN of 0.09. Judged on that margin it
+  // sailed through; judged on P(generated) it stops, which is the point.
+  const tornRun = run(torn, withFake({ FAKE_PROBS: JSON.stringify({ generated: 0.14, handwritten: 0.48, unclear: 0.38 }), FAKE_CONF: "0.21" }),
+    "run", "--json", "--no-fetch");
+  ok("a small top-two margin does NOT authorize an auto-resolution", tornRun.status === 2,
+    `status ${tornRun.status}\n` + tornRun.out + tornRun.err);
+
+  const flat = stacked("judge-flat");
+  const flatRun = run(flat, withFake({ FAKE_PROBS: JSON.stringify({ generated: 0.34, handwritten: 0.33, unclear: 0.33 }) }),
+    "run", "--json", "--no-fetch");
+  ok("a model that knows nothing escalates rather than authorizing", flatRun.status === 2,
+    `status ${flatRun.status}\n` + flatRun.out + flatRun.err);
+
+  // The load-bearing property: no client, no key, a broken client — today's
+  // behaviour, byte for byte.
+  const d = stacked("judge-off");
+  const off = run(d, { ...ENV, RESTACK_TYPESAFE_CLIENT: "" }, "run", "--json", "--no-fetch");
+  ok("with no client at all the walk is unchanged", off.status === 0, off.out + off.err);
+  const e = stacked("judge-broken");
+  const brokenClient = path.join(TMP, "broken.py");
+  fs.writeFileSync(brokenClient, "import sys\nsys.exit(3)\n");
+  const broken = run(e, { ...ENV, RESTACK_TYPESAFE_CLIENT: brokenClient, FAKE_ON: "1", FAKE_DUMP: dump }, "run", "--json", "--no-fetch");
+  ok("a client that fails is silence, not a stop", broken.status === 0, broken.out + broken.err);
+  const f2 = stacked("judge-flag");
+  const noflag = run(f2, withFake({ FAKE_CHOICE_P: "handwritten" }), "run", "--json", "--no-fetch", "--no-judge");
+  ok("--no-judge turns it off", noflag.status === 0, noflag.out + noflag.err);
+
+  // What leaves the machine, by transport.
+  ok("loopback allows content", (() => { process.env.TYPESAFE_BASE_URL = "http://127.0.0.1:8009"; return contentAllowed(); })());
+  ok("a remote endpoint does not", (() => { process.env.TYPESAFE_BASE_URL = "https://api.example.com"; return !contentAllowed(); })());
+  ok("localhost counts as local", (() => { process.env.TYPESAFE_BASE_URL = "http://localhost:8009"; return contentAllowed(); })());
+  ok("and a hostname that merely starts with it does not",
+    (() => { process.env.TYPESAFE_BASE_URL = "https://localhost.evil.example"; return !contentAllowed(); })());
+  delete process.env.TYPESAFE_BASE_URL;
+
+  const g2 = stacked("judge-remote");
+  run(g2, withFake({ TYPESAFE_BASE_URL: "https://api.example.com" }), "run", "--json", "--no-fetch");
+  const sent = JSON.parse(fs.readFileSync(dump, "utf8"));
+  const states = Object.values(sent.state || {});
+  ok("off-machine, the question carries paths only — no file content",
+    states.length > 0 && states.every(v => !("head" in v)), JSON.stringify(states).slice(0, 200));
+
+  const h = stacked("judge-local");
+  run(h, withFake({}), "run", "--json", "--no-fetch");
+  const sentLocal = JSON.parse(fs.readFileSync(dump, "utf8"));
+  ok("on-machine, it carries the file head (that is what makes it answerable)",
+    Object.values(sentLocal.state).some(v => "head" in v));
+
+  // Dropped commits: the same drop, reported as a line or as a stop.
+  const emptyRepo = () => {
+    const r = newRepo("judge-drop-" + Math.random().toString(36).slice(2, 7), cheapCfg);
+    git(r, "checkout", "-q", "-b", "feat1");
+    write(r, "gen/schema.txt", read(r, "gen/schema.txt") + "poked\n");
+    commit(r, "feat: add the phone field");
+    git(r, "checkout", "-q", "master");
+    addDef(r, "c", "charlie\n", "master: c");
+    git(r, "checkout", "-q", "feat1");
+    return r;
+  };
+  const dropA = emptyRepo();
+  const claims = run(dropA, withFake({ FAKE_CHOICE_D: "claims_other_work" }), "run", "--json", "--no-fetch");
+  ok("a dropped commit that claimed real work stops the run", claims.status === 2, claims.out + claims.err);
+  ok("and says which commit and why", claims.json?.dropped?.[0]?.escalated === true, JSON.stringify(claims.json?.dropped));
+  const dropB = emptyRepo();
+  const chore = run(dropB, withFake({ FAKE_CHOICE_D: "regeneration_only" }), "run", "--json", "--no-fetch");
+  ok("a dropped regen commit is still reported, but does not stop", chore.status === 0 && (chore.json?.dropped || []).length === 1,
+    chore.out + chore.err);
+  ok("judgments are logged for tuning", fs.existsSync(path.join(TMP, "judgelog", "judgments.log")));
 }
 
 // ---------------------------------------------------------------- refusals

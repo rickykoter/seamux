@@ -17,9 +17,51 @@ import { spawnSync } from "node:child_process";
 
 const CONTEXT = 3;
 const EXCERPT_CAP = 2000;
-// Below this Choice confidence the verdict is noise, not a warning. As
-// provisional as every other TypeSafe number here; tune against real plans.
-const CONFIDENCE_FLOOR = Number(process.env.DEEP_PLAN_EVIDENCE_CONFIDENCE || 0.6);
+
+// THE NUMBER THIS READS, AND WHY IT IS NOT `confidence`.
+//
+// This gate was written against Jev and read `answer.confidence`. Measured on
+// 2026-09-27 against the local Kev this machine now points at, `confidence`
+// is the MARGIN between the model's top two options, not the probability of
+// the one it chose: a verdict of
+// {supports 0.14, contradicts 0.48, says_nothing 0.38} arrives as
+// `choice: "contradicts", confidence: 0.21` and was silently dropped by a
+// 0.6 floor — while a clear-cut case arrives at 0.9. So the check was quiet
+// in exactly the cases worth a warning, which read as "the model is bad at
+// this" rather than "the threshold is reading the wrong field".
+//
+// What matters here is how much mass sits OFF "supports". Reading it that way
+// also catches a shape the old rule could never warn on: mass split evenly
+// between the two alarming options (0.35/0.35 against 0.3 supports) has a
+// margin of zero and 70% of the mass saying the citation does not back the
+// claim.
+//
+// Deliberately NOT the asymmetric rule restack uses. There, a judgment gates
+// an automatic, destructive action, so uncertainty must escalate. Here the
+// judgment only prints a line on a page a human reads, and a warning per
+// mushy fact would teach them to ignore all of them. So real mass is still
+// required — this fixes which number is read, not how loud the check is.
+const FLOOR = Number(process.env.DEEP_PLAN_EVIDENCE_FLOOR ||
+                     process.env.DEEP_PLAN_EVIDENCE_CONFIDENCE || 0.6);
+
+// {warn, choice} for one answer. `choice` is the wording to use, chosen by
+// whichever alarming option holds more mass; null means no warning.
+export function verdict(answer, floor = FLOOR) {
+  const a = answer || {};
+  const p = a.probabilities;
+  if (p && typeof p.supports === "number") {
+    const notSupported = 1 - p.supports;
+    if (notSupported < floor) return { warn: false, choice: null, mass: notSupported };
+    const contradicts = p.contradicts ?? 0, saysNothing = p.says_nothing ?? 0;
+    return { warn: true, mass: notSupported,
+             choice: contradicts >= saysNothing ? "contradicts" : "says_nothing" };
+  }
+  // No distribution — another model, an older endpoint. Today's behaviour
+  // exactly: believe the chosen option, gated on whatever it calls confidence.
+  if (a.choice === "contradicts" || a.choice === "says_nothing")
+    return { warn: (a.confidence ?? 0) >= floor, choice: a.choice, mass: a.confidence ?? null };
+  return { warn: false, choice: null, mass: null };
+}
 
 // path:line or path:line-line, repo-relative. Absolute paths, URLs and plain
 // prose carry no such token and produce no refs — free-text evidence is legal,
@@ -116,12 +158,12 @@ export function judgeFacts(resolvable, client) {
   try { answers = JSON.parse(r.stdout); } catch { return []; }
   const warnings = [];
   resolvable.forEach((item, n) => {
-    const a = answers["f" + n] || {};
-    if ((a.confidence ?? 0) < CONFIDENCE_FLOOR) return;
+    const v = verdict(answers["f" + n]);
+    if (!v.warn) return;
     const where = `${item.ref.file}:${item.ref.from}`;
-    if (a.choice === "contradicts")
+    if (v.choice === "contradicts")
       warnings.push(`fact ${item.i + 1} — the cited lines at ${where} read as contradicting the claim`);
-    else if (a.choice === "says_nothing")
+    else
       warnings.push(`fact ${item.i + 1} — the cited lines at ${where} do not appear to mention the claim`);
   });
   return warnings;

@@ -81,6 +81,41 @@ surfaces `~/.claude/plans/`. Probe overrides: `DEEP_PLAN_STATE_DIR`,
   working surface. The CLI never touches the network — the agent does the
   fetching, per SKILL.md.
 
+## The evidence gate reads a distribution, not `confidence` (2026-09-28)
+
+`lib/evidence.mjs` gated its warnings on `answer.confidence >= 0.6`. That was
+written against Jev. The local Kev this machine now points at reports
+`confidence` as the **margin between its top two options**, so:
+
+| verdict | margin | mass off `supports` |
+|---|---|---|
+| `{supports 0.14, contradicts 0.48, says_nothing 0.38}` | 0.21 | 0.86 |
+| `{supports 0.30, contradicts 0.35, says_nothing 0.35}` | 0.00 | 0.70 |
+| `{supports 0.92, contradicts 0.03, says_nothing 0.05}` | 0.89 | 0.08 |
+
+Row one is a citation the model plainly will not call supported, arriving
+under the floor. Row two is a shape **no** confidence number can express: two
+alarming options splitting the mass evenly. `verdict()` now reads
+`1 - p(supports)` and picks its wording from whichever alarming option holds
+more mass; an answer with no distribution keeps the old `choice` +
+`confidence` path exactly, because seamux is public and other endpoints
+return other things.
+
+**Measured honesty about how much this matters.** On clear-cut citations Kev
+is decisive and the old rule warned too (confidence 0.67–0.95 on four
+deliberately wrong or unrelated citations). This fix changes behaviour only on
+the torn and split shapes, which Kev produces on file-classification
+questions more than on citation ones. It is a latent trap removed, not a
+broken check rescued — and it is the same reading restack's `lib/judge.mjs`
+uses, where the stakes are higher because a judgment there gates an automatic
+resolution.
+
+**The floor is still a floor, deliberately.** restack escalates on
+uncertainty because uncertainty there precedes a destructive automatic action.
+Here a warning only prints a line on a page a human reads, and one per mushy
+fact would teach them to ignore all of them. `$DEEP_PLAN_EVIDENCE_FLOOR`
+(the old `$DEEP_PLAN_EVIDENCE_CONFIDENCE` still works) is the knob.
+
 ## Contracts seam (added 2026-09-14)
 
 - Spec gains an optional top-level `contracts` key (see SKILL.md shape).

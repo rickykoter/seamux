@@ -33,6 +33,8 @@ import * as cfgmod from "./lib/config.mjs";
 import { resolveBase, discover, planWalk, whichSync } from "./lib/stack.mjs";
 import * as S from "./lib/state.mjs";
 import { resolveArtifact, regen as regenArtifact, verifyClean, runCheck, tail } from "./lib/run.mjs";
+import { verifyBranch, CREATION_FACTOR } from "./lib/verify.mjs";
+import { judgeState, guardArtifactPaths, judgeDropped, judgeResidue } from "./lib/judge.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const NEEDS_HUMAN = 2;
@@ -52,7 +54,13 @@ const OPTS = {
   dryRun: flag("dry-run"),
   noFetch: flag("no-fetch"),
   verbose: flag("verbose"),
+  noJudge: flag("no-judge"),
 };
+
+// The judgment layer is resolved once per invocation and passed down. It can
+// only ever escalate (lib/judge.mjs), so "off" is never less safe than "on" —
+// which is why --no-judge exists and why nothing refuses when it is absent.
+let JUDGE = { on: false, content: false, client: "", safeFloor: 0 };
 
 function say(s) { if (!JSONOUT) console.log(s); }
 function emit(obj, humanFn) {
@@ -75,6 +83,7 @@ function context() {
   const cfg = cfgmod.load(root);
   if (cfg.errors.length) die(`config ${cfg.path}:\n  - ` + cfg.errors.join("\n  - "));
   const st = S.read(gd);
+  JUDGE = OPTS.noJudge ? { on: false, content: false, client: "", safeFloor: 0 } : judgeState(cfg);
   return { cwd: root, gitDirPath: gd, cfg, st, branch: currentBranch(root) };
 }
 
@@ -157,7 +166,22 @@ function conflictPass(ctx, branchName) {
     groups.get(a.name).paths.push(p);
   }
 
+  // The guard runs BEFORE any resolution: ask whether these files really are
+  // generated, and pull any that read as hand-written out of the automatic
+  // path entirely. One batched question for every artifact path in this stop.
+  const guarded = guardArtifactPaths(ctx.cwd, JUDGE, [...groups.values()].flatMap(g2 => g2.paths));
+  const guardedPaths = new Set(guarded.map(g2 => g2.path));
+  const escalated = [];
+  for (const g2 of guarded) {
+    escalated.push(g2);
+    source.push(g2.path);
+  }
+  for (const grp of groups.values()) {
+    grp.paths = grp.paths.filter(p => !guardedPaths.has(p));
+  }
+
   for (const { artifact, paths: ps } of groups.values()) {
+    if (!ps.length) continue;
     const res = resolveArtifact(ctx.cwd, op, artifact, ps, OPTS);
     const entry = {
       artifact: artifact.name, paths: ps, resolve: artifact.resolve,
@@ -205,7 +229,17 @@ function conflictPass(ctx, branchName) {
     }
     generated.push(entry);
   }
-  return { op, generated, source: [...new Set(source)].map(p => ({ path: p, hunks: conflictHunks(ctx, p) })) };
+  const sourceOut = [...new Set(source)].map(p => {
+    const g2 = guarded.find(x => x.path === p);
+    return { path: p, hunks: conflictHunks(ctx, p), ...(g2 ? { escalated: true, why: g2.why, pGenerated: g2.pGenerated ?? null } : {}) };
+  });
+  // Files a human has to resolve are recorded, because `verify` needs to tell
+  // "you changed this patch on purpose" from "this patch changed and nobody
+  // knows why".
+  if (sourceOut.length) {
+    ctx.st.humanResolved = [...new Set([...(ctx.st.humanResolved || []), ...sourceOut.map(x => x.path)])];
+  }
+  return { op, generated, source: sourceOut, escalated };
 }
 
 // A rebase can also stop with nothing conflicted: the commit became empty
@@ -509,6 +543,13 @@ function mergePasses(passes = [], last = null) {
 
 function finish(ctx) {
   const st = ctx.st;
+  // A dropped commit is always reported; this decides whether it is a line or
+  // a stop. Escalation only: an answer of "regeneration_only" changes nothing.
+  const alarming = judgeDropped(ctx.cwd, JUDGE, st.dropped || []);
+  for (const a of alarming) {
+    const d = (st.dropped || []).find(x => x.sha === a.sha);
+    if (d) { d.escalated = true; d.why = a.why; d.pRegenOnly = a.pRegenOnly ?? null; }
+  }
   st.phase = "done"; st.finishedAt = new Date().toISOString();
   S.write(ctx.gitDirPath, st);
   if (st.returnTo && currentBranch(ctx.cwd) !== st.returnTo && !OPTS.dryRun)
@@ -516,25 +557,28 @@ function finish(ctx) {
 
   const pushes = st.steps.filter(s => s.status === "done")
     .map(s => `${ctx.cfg.push.command} ${ctx.cfg.remote} ${s.branch}`);
+  const escalatedDrops = (st.dropped || []).filter(d => d.escalated);
   const out = {
-    verb, status: st.stale.length ? "stale" : "ok", repo: ctx.cwd,
+    verb, status: escalatedDrops.length ? "needs-human" : st.stale.length ? "stale" : "ok", repo: ctx.cwd,
     steps: st.steps.map(s => ({ branch: s.branch, status: s.status, tip: s.newTip && s.newTip.slice(0, 12) })),
     dropped: st.dropped || [],
     stale: st.stale,
     next: [
+      ...(escalatedDrops.length ? ["restack verify   # a dropped commit claimed real work"] : []),
       ...(st.stale.length ? st.stale.map(s => s.command).filter(Boolean) : []),
+      "restack verify",
       "restack check" + (st.stale.length ? " --deep" : ""),
       ...pushes,
     ],
     push: pushes,
-    exit: 0,
+    exit: escalatedDrops.length ? NEEDS_HUMAN : 0,
   };
   emit(out, o => {
     say("");
     for (const s of o.steps) say(`  ${s.status === "done" ? "\x1b[32mok\x1b[0m  " : s.status === "already-current" ? "—   " : "    "} ${s.branch} ${s.status === "done" ? s.tip : s.status}`);
     if (o.dropped.length) {
       say(`\n  \x1b[33m${o.dropped.length} commit(s) became empty and were dropped\x1b[0m — the base already carries the change:`);
-      for (const d of o.dropped) say(`    ${d.sha} ${d.subject} (${d.branch})`);
+      for (const d of o.dropped) say(`    ${d.sha} ${d.subject} (${d.branch})${d.escalated ? "  \x1b[31m← " + d.why + "\x1b[0m" : ""}`);
       say("  If that is a surprise: `git reflog <branch>` still has the pre-restack tip.");
     }
     if (o.stale.length) {
@@ -542,7 +586,8 @@ function finish(ctx) {
       for (const s of o.stale) say(`    ${s.artifact} (${s.branches?.join(", ") || "?"})\n${staleLines(s)}`);
       say("  `restack check` refuses while this list is non-empty.");
     }
-    say("\n  then: restack check");
+    say("\n  then: restack verify");
+    say("        restack check");
     for (const p of o.push) say(`        ${p}`);
     say("  (push lines are printed, never run — see PUSH in the skill)");
   });
@@ -718,6 +763,74 @@ function cmdClearStale(ctx) {
     });
 }
 
+
+// verify — the after-the-fact check: did the restack change anything of
+// yours? Deterministic (git range-diff against the tips the walk recorded
+// before it moved anything); the judgment layer only ranks what is left.
+function cmdVerify(ctx) {
+  const st = ctx.st;
+  const steps = (st.steps || []).filter(s => s.newTip && s.tip && s.upstream);
+  const only = opt("branch");
+  const wanted = only ? steps.filter(s => s.branch === only) : steps;
+  if (!wanted.length)
+    die(st.steps?.length
+      ? "no branch in the last run has a recorded before/after — verify only works on a walk this tool did"
+      : "no run to verify — `restack run` records the tips this check needs");
+
+  const factor = Number(ctx.cfg.verify?.creationFactor) || CREATION_FACTOR;
+  const results = [];
+  for (let i = 0; i < wanted.length; i++) {
+    const idx = st.steps.indexOf(wanted[i]);
+    const newParent = idx === 0 ? st.base.sha : st.steps[idx - 1].newTip;
+    results.push(verifyBranch(ctx.cwd, ctx.cfg, wanted[i], newParent, st.humanResolved || [], factor));
+  }
+  const unexplained = results.flatMap(r => (r.unexplained || []).map(u => ({ branch: r.branch, ...u })));
+  const vanished = results.flatMap(r => (r.vanished || []).map(v => ({ branch: r.branch, ...v })));
+  const flagged = judgeResidue(JUDGE, unexplained);
+  const flaggedFiles = new Set(flagged.map(f => f.file + "@" + f.commit));
+  for (const u of unexplained) {
+    const f = flagged.find(x => x.file === u.file && x.commit === u.commit);
+    if (f) { u.judged = "semantic"; u.pBenign = f.pBenign ?? null; }
+  }
+  const unchecked = results.filter(r => !r.checked);
+  // A check that could not run is not a pass. The first version returned 0
+  // here and printed the all-clear line under it.
+  const bad = unexplained.length || vanished.length || unchecked.length;
+  emit({
+    verb: "verify", status: bad ? "needs-review" : "ok",
+    judged: { on: JUDGE.on, content: JUDGE.content },
+    branches: results.map(r => ({
+      branch: r.branch, checked: r.checked, why: r.why || null, note: r.note || null,
+      generated: (r.generated || []).length,
+      resolved: (r.resolved || []).length,
+      unexplained: r.unexplained || [], vanished: r.vanished || [], added: r.added || [],
+    })),
+    unexplained, vanished,
+    unchecked: unchecked.map(r => ({ branch: r.branch, why: r.why })),
+    next: bad
+      ? [...unchecked.map(u => `${u.branch} could not be checked: ${u.why}`),
+         ...unexplained.map(u => `read ${u.file} in ${u.commit} (${u.branch}) — its patch changed and nothing explains it`),
+         ...vanished.map(v => `commit ${v.sha} "${v.subject}" is gone from ${v.branch}`),
+         "git reflog <branch>   # the pre-restack tips are still there"]
+      : ["restack check"],
+    exit: bad ? NEEDS_HUMAN : 0,
+  }, o => {
+    for (const b of o.branches) {
+      if (!b.checked) { say(`  \x1b[33m??\x1b[0m  ${b.branch} — NOT CHECKED: ${b.why}`); continue; }
+      const clean = !b.unexplained.length && !b.vanished.length;
+      if (b.note) say(`  \x1b[31m!!\x1b[0m  ${b.branch} — ${b.note}`);
+      say(`  ${clean ? "\x1b[32mok\x1b[0m  " : "\x1b[33m??\x1b[0m  "} ${b.branch} — ${b.generated} regenerated, ${b.resolved} you resolved, ${b.unexplained.length} unexplained`);
+      for (const v of b.vanished) say(`       \x1b[33mcommit gone\x1b[0m ${v.sha} ${v.subject}`);
+      for (const u of b.unexplained) {
+        say(`       \x1b[33m${u.file}\x1b[0m in ${u.commit} — ${u.subject}${u.judged === "semantic" ? "  \x1b[31m[reads as a real change]\x1b[0m" : ""}`);
+        for (const line of (u.sample || []).slice(0, 4)) say(`         ${line}`);
+      }
+    }
+    if (o.exit === 0) say("\n  nothing of yours moved that this run does not explain.");
+    else say("\n  read those before pushing — nothing has left the machine yet.");
+  });
+}
+
 function cmdDoctor(ctx) {
   const base = baseFacts(ctx);
   const tracked = git(ctx.cwd, ["ls-files", "-z"]).out.split("\0").filter(Boolean);
@@ -789,6 +902,7 @@ function usage() {
   restack continue                     after you resolved one, carry on
   restack abort                        put everything back
   restack regen  [--only NAME] [--deep] rebuild generated artifacts, clear their stale marks
+  restack verify [--branch B]          did the restack change anything of yours? (git range-diff)
   restack check  [--deep]              staleness + breaking-change checks, locally, before CI
   restack clear-stale --only NAME      assert an artifact is fine as committed (logged)
   restack push                         PRINT the push lines (never runs them)
@@ -800,6 +914,7 @@ function usage() {
   --dry-run   print commands, change nothing
   --no-fetch  trust the base ref already on disk
   --at DIR    operate on that worktree
+  --no-judge  skip the optional judgment layer (it can only ever escalate)
 
   config: .seamux/restack.json (see examples/example.restack.json)`);
 }
@@ -813,6 +928,7 @@ switch (verb) {
   case "abort":    cmdAbort(context()); break;
   case "regen":    cmdRegen(context()); break;
   case "check":    cmdCheck(context()); break;
+  case "verify":   cmdVerify(context()); break;
   case "clear-stale": cmdClearStale(context()); break;
   case "push":     cmdPush(context()); break;
   case "doctor":   cmdDoctor(context()); break;

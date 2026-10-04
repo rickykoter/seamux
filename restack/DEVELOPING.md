@@ -95,6 +95,44 @@ wrong to leave unsaid, so it records a stale entry like a deferred regen does.
 Those entries often have no command to run, which is why `clear-stale` exists:
 a refusal with no way out is a refusal people learn to route around.
 
+## The judgment layer, and the threshold that was wrong
+
+`lib/judge.mjs` is optional and escalation-only — see SKILL.md for the rule.
+Two things here are worth keeping:
+
+**The bar is asymmetric because a symmetric one silently authorizes.** The
+first version escalated when the model chose "handwritten" with confidence
+>= 0.7. Pointed at a real misconfigured glob, Kev answered `handwritten` at
+confidence 0.21 — because its `confidence` is the MARGIN between its top two
+options, and it was torn between "handwritten" (0.48) and "unclear" (0.38)
+while giving "generated" only 0.14. The file was auto-resolved, the branch's
+change was lost, and the commit was then dropped as empty. Three safety
+mechanisms in a row said nothing. `safeVerdict()` now asks for the probability
+mass on the SAFE option and escalates unless it clears the floor, so a flat
+distribution — a model that knows nothing — escalates too. The probe pins all
+three shapes, including the 0.14/0.48/0.38 one.
+
+**A judgment that cannot be read is silence, not escalation.** No client, a
+failed subprocess, unparsable JSON: `ask()` returns null and nothing is
+escalated, because "no answer" must mean "behave as if the layer is absent".
+Only a readable answer that fails to clear the bar escalates. Those two look
+similar and are opposite.
+
+## verify, and the two false greens
+
+`git range-diff` between the tips the walk recorded is the whole check. Both
+bugs found here were the check LYING in the safe direction:
+
+- **range-diff refuses an empty range** ("need two commit ranges"), and the
+  empty-new-range case is a branch whose every commit was dropped — the
+  loudest possible finding. It came back as "could not check", under a
+  printed "nothing of yours moved". Empty ranges are now handled before the
+  call, and every commit in the old range is reported as vanished.
+- **`countRange` returns null when a range is unreadable**, and coercing that
+  to 0 made a broken check look like "every commit is new". Null is now its
+  own case, and any unchecked branch makes `verify` exit non-zero. An
+  unrunnable safety check is not a pass.
+
 ## Known debts (honest list)
 
 - **Chain discovery from topology is a heuristic.** A stacked branch with no
@@ -118,6 +156,14 @@ a refusal with no way out is a refusal people learn to route around.
   supposed to prevent, and it cannot detect it.
 - **Expensive-tier staleness is only as good as the recorded command.** If the
   config's regen command is stale, the stale entry cheerfully prints it.
+- **`verify` cannot tell a deliberate amend from a lost hunk.** It reports
+  what changed; the judgment layer ranks it; neither knows your intent.
+- **`humanResolved` only records paths resolved at a restack stop.** Resolve
+  something with `git rebase --continue` by hand and verify will call it
+  unexplained — correct but noisy.
+- **The judgment layer is untuned for Kev.** `safeFloor` 0.5 is a starting
+  point chosen from a handful of real answers, not a calibration. The log has
+  the probabilities; tune it there.
 - **No board tie-in.** crew does not show a restack in progress; `status
   --json` is shaped so it could.
 

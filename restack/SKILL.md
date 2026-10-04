@@ -75,7 +75,15 @@ Run it from the worktree. `restack` is on PATH via the shim; the engine is
    subject). That is usually correct and occasionally the sign that a commit
    was only ever a regen someone else already did. If it is a surprise,
    `git reflog <branch>` still holds the pre-restack tip.
-8. **Re-target the PRs after the refs move.** Restacking rewrites every branch
+8. **`restack verify` before you push.** The walk reports that every commit
+   applied; verify answers the different question — *does your patch still say
+   what it said*. It range-diffs each branch against the tips recorded before
+   anything moved and buckets every difference: regenerated artifacts
+   (expected), files you resolved by hand during the run (expected), and
+   anything else. Residue is not automatically bad, but nothing else in the
+   toolchain will ever mention it. A branch it could not check is reported as
+   unchecked and exits non-zero — an unrunnable safety check is not a pass.
+9. **Re-target the PRs after the refs move.** Restacking rewrites every branch
    above the one that changed; the PR bases are unchanged but the diffs are
    not. Check the PR chain still reads correctly before asking for review.
 
@@ -169,6 +177,50 @@ conversation.
 how far behind the base, what is stale. Prefer it to `git status` plus three
 follow-ups.
 
+## The judgment layer (optional, local, escalation-only)
+
+When a TypeSafe-compatible client is on the machine — on this laptop that is a
+local Kev — restack asks it three narrow questions. The rule, enforced in
+`lib/judge.mjs` rather than trusted to callers:
+
+> **A judgment may escalate, never authorize.**
+
+There is no answer that makes restack resolve something it would not have
+resolved, clear a stale mark, or let a push through. The worst a wrong answer
+can do is cost you a look.
+
+1. **The glob guard.** Before auto-resolving a conflicted file because an
+   artifact glob claimed it, it asks whether the file reads as generated. A
+   `protobuf/**` that quietly covers a hand-written helper is invisible to
+   every deterministic check — the glob is narrow, the config is valid, the
+   file just is not generated — and it is how a branch loses a change silently.
+   A file that does not clear the bar goes to the human pile with its conflict
+   markers intact.
+2. **Dropped-commit triage.** A commit that became empty is always reported;
+   this decides whether it is a line or a stop. `chore: regenerate protos`
+   vanishing is housekeeping. `feat: add the phone field` vanishing is a stop.
+3. **Residue triage in `verify`.** Ranks leftover patch changes as benign
+   (context moved) or semantic (the commit does something different now).
+
+**The bar is asymmetric, and that is the whole design.** It does not ask
+"is the model confident in the alarming answer" — it asks "is the model
+positively confident this is SAFE", and escalates otherwise. Measured reason:
+Kev reports `confidence` as the *margin* between its top two options, so a
+file it scored `{generated 0.14, handwritten 0.48, unclear 0.38}` — one it
+plainly would not call generated — arrives with confidence 0.21 and sailed
+straight through the naive rule. Under the asymmetric bar, uncertainty
+escalates. `judge.safeFloor` (default 0.5) is the knob; raise it toward 1 for
+a more cautious tool. Every answer is logged to
+`~/.cache/seamux-restack/judgments.log` with its probabilities, because these
+numbers deserve tuning against real runs rather than trust.
+
+**What leaves the machine.** The content questions carry file heads and patch
+excerpts, which is what makes them answerable — and they are sent **only when
+the endpoint is loopback**. Point `TYPESAFE_BASE_URL` at anything else and the
+questions degrade to paths and commit subjects. No client, no key, a server
+that is down, an unparsable answer: silence, and restack behaves exactly as it
+does with no judgment layer at all. `--no-judge` turns it off explicitly.
+
 ## When a plan is in flight
 
 If the worktree has a `deep-plan` plan (`deep-plan status --json`), drift is
@@ -187,6 +239,9 @@ does not know the schema moved underneath it; you do.
 | `regen` rewrote nothing but CI still says stale | the command runs somewhere else than the checked-in copy, or only part of it; compare `git diff` after running it by hand |
 | `check` is green and CI is not | the check command is not the CI command — copy CI's, do not paraphrase it |
 | stale will not clear | only a successful regen clears it: `restack regen --only <name> --deep`, or `restack clear-stale --only <name>` when the artifact has no generator |
+| `verify` says a branch is NOT CHECKED | a recorded tip no longer resolves (gc, a manual reset) — treat it as unverified, not as clean |
+| `verify` flags a file you did resolve | it was resolved outside a restack stop, so nothing recorded it; read the hunk and move on |
+| the guard escalates constantly | the model cannot tell your generated files apart — narrow the globs, or lower `judge.safeFloor`, or `--no-judge` |
 | a commit disappeared | it became empty after its generated file was re-derived; `dropped[]` names it, `git reflog <branch>` has the old tip |
 | `gt restack did not converge` | graphite and the engine disagree about the stack; `restack abort`, then `gt restack` by hand once |
 | a branch came back with duplicated commits | it was rebased outside the walk mid-run — `restack abort` and start over from a clean tree |
