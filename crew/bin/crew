@@ -214,6 +214,40 @@ for rel in sorted(a | b):
 PY
 }
 
+# The live trees `crew apply` moved aside, oldest first, beyond the newest
+# $CREW_KEEP_BACKUPS (default 5; 0 keeps every one). Only names apply itself
+# writes, crew.YYYYMMDD-HHMMSS: install.sh --uninstall's crew.uninstalled.*
+# copies are the way back from an uninstall and are never pruned here.
+backups_to_prune() {
+  local dir keep="${CREW_KEEP_BACKUPS:-5}"
+  dir="$(dirname "$LIVE")/crew-backups"
+  [ "$keep" -gt 0 ] 2>/dev/null || return 0
+  [ -d "$dir" ] || return 0
+  find "$dir" -mindepth 1 -maxdepth 1 -type d -name 'crew.*' 2>/dev/null \
+    | grep -E '/crew\.[0-9]{8}-[0-9]{6}$' | sort -r | tail -n +"$((keep + 1))" | sort
+}
+
+prune_backups() {
+  local old n
+  old="$(backups_to_prune)"
+  [ -n "$old" ] || return 0
+  n="$(printf '%s\n' "$old" | grep -c .)"
+  printf '%s\n' "$old" | while IFS= read -r d; do rm -rf "$d"; done
+  ok "pruned $n old live-tree backup$([ "$n" = 1 ] || echo s), keeping the newest ${CREW_KEEP_BACKUPS:-5} (CREW_KEEP_BACKUPS)"
+}
+
+# Whether the live tree is already exactly what a copy of $1 would make it:
+# same source, no drift with the main repo put back, and nothing left to bake.
+# Then apply has nothing to copy, and so nothing to move aside.
+live_matches() {
+  local src="$1" main="$2"
+  [ -d "$LIVE" ] || return 1
+  [ "$(cat "$LIVE/.seamux-source" 2>/dev/null)" = "$src" ] || return 1
+  [ -z "$(crew_drift "$src")" ] || return 1
+  if [ -n "$main" ] && grep -rlq '__MAIN_''REPO__' "$LIVE" 2>/dev/null; then return 1; fi
+  return 0
+}
+
 # `crew apply` from the plugin root: make the live tree a copy of it, then let
 # the live copy's own apply do the rest, so every path it links, renders and
 # registers with launchd is the stable one.
@@ -223,11 +257,17 @@ apply_from_source() {
   n_legacy="$(legacy_hook_count)"
   head_ "crew apply  (source ${src/#$HOME/~})"
   if [ "$dry" = 1 ]; then
-    printf '  would move %s aside to ~/.config/cmux/crew-backups/, keeping integrations.json\n' "${LIVE/#$HOME/~}"
-    printf '  would copy %s -> %s\n' "${src/#$HOME/~}" "${LIVE/#$HOME/~}"
-    printf '  would record the source in %s/.seamux-source\n' "${LIVE/#$HOME/~}"
-    if [ -n "$main" ]; then printf '  would bake the main repo: %s\n' "$main"
-    else printf '  no main repo found: __MAIN_REPO__ stays (set CREW_MONOLITH)\n'; fi
+    if live_matches "$src" "$main"; then
+      printf '  the live tree already matches %s: nothing to copy, no backup taken\n' "${src/#$HOME/~}"
+    else
+      printf '  would move %s aside to ~/.config/cmux/crew-backups/, keeping integrations.json\n' "${LIVE/#$HOME/~}"
+      printf '  would copy %s -> %s\n' "${src/#$HOME/~}" "${LIVE/#$HOME/~}"
+      printf '  would record the source in %s/.seamux-source\n' "${LIVE/#$HOME/~}"
+      if [ -n "$main" ]; then printf '  would bake the main repo: %s\n' "$main"
+      else printf '  no main repo found: __MAIN_REPO__ stays (set CREW_MONOLITH)\n'; fi
+    fi
+    local _p; _p="$(backups_to_prune | grep -c .)"
+    [ "$_p" -gt 0 ] && printf '  would prune %s old live-tree backups, keeping the newest %s\n' "$_p" "${CREW_KEEP_BACKUPS:-5}"
     printf '  then run the live copy'"'"'s apply: render cmux.json, link commands, sidebar, Dock,\n'
     printf '  install the deep-plan and restack shims through their engine pointers\n'
     printf '  settings.json: no hook entries written (the crew plugin'"'"'s hooks.json wires them);\n'
@@ -235,12 +275,20 @@ apply_from_source() {
     printf '  %s legacy crew-hook.sh entr%s to remove\n' "$n_legacy" "$([ "$n_legacy" = 1 ] && echo y || echo ies)"
     return 0
   fi
+  # A re-apply with nothing new (the bootstrap run twice, `crew apply` by hand)
+  # used to move an identical tree aside every time; the backups piled up.
+  if live_matches "$src" "$main"; then
+    ok "live tree already matches ${src/#$HOME/~}: nothing to copy, no backup taken"
+    prune_backups
+    exec env CREW_APPLY_FROM="$src" CREW_MONOLITH="${main:-${CREW_MONOLITH:-}}" "$LIVE/bin/crew" apply
+  fi
   local prev_integ=""
   [ -f "$LIVE/integrations.json" ] && prev_integ="$(cat "$LIVE/integrations.json")"
   if [ -d "$LIVE" ]; then
     local bak="$(dirname "$LIVE")/crew-backups/crew.$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$(dirname "$bak")" && mv "$LIVE" "$bak" || { bad "could not move $LIVE aside"; return 1; }
     ok "moved the live tree aside -> ${bak/#$HOME/~}"
+    prune_backups
   fi
   mkdir -p "$LIVE" && cp -R "$src/." "$LIVE/" || { bad "could not copy $src -> $LIVE"; return 1; }
   ok "copied ${src/#$HOME/~} -> ${LIVE/#$HOME/~}"

@@ -4,6 +4,17 @@ Notable changes to seamux. Dates are release dates; the repo is the source of
 truth. Since 0.3.0 the plugins run from the checkout (a folder marketplace), so
 an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
+## Unreleased
+
+- **`crew apply` stops piling up backups.** Every apply from the plugin moved
+  the live tree into `~/.config/cmux/crew-backups/` first, even when nothing
+  had changed, so running the bootstrap twice left two identical copies (one
+  machine had 45). An apply now takes no backup and copies nothing when the
+  live tree already matches the plugin (same source, no drift, nothing left
+  to bake), and keeps only the newest 5 of its own `crew.<time>` backups:
+  `CREW_KEEP_BACKUPS` sets the number, `0` keeps every one. `install.sh
+  --uninstall`'s `crew.uninstalled.*` copies are never pruned.
+
 ## 0.3.0 — 2026-10-04
 
 - **Every feature is a Claude Code plugin, listed by one marketplace.**

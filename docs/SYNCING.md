@@ -27,6 +27,12 @@ plugin and run `crew apply`. The five baked files (`bin/crew crew-worktree
 crew-sandbox crew-reclaim crew-digest`) carry your main-repo path where the
 repo has `__MAIN_REPO__`; the drift check puts it back before comparing.
 
+An apply that would copy an identical tree does nothing to it: when the live
+tree already matches the plugin (same source, no drift, nothing left to bake)
+it takes no backup. When it does copy, the tree it replaces goes to
+`~/.config/cmux/crew-backups/crew.<time>`, and only the newest 5 of those are
+kept (`CREW_KEEP_BACKUPS`; `0` keeps all). `crew.uninstalled.*` is never pruned.
+
 `crew apply` takes its source from `.seamux-source` in the live tree, unless
 Claude has since installed a different version of crew, in which case that
 one. For a folder marketplace the source is the folder, never the cache
