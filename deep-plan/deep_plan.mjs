@@ -470,6 +470,10 @@ function setup(force) {
   const shimSrc = path.join(HERE, "lib", "deep-plan.shim");
   const shim = path.join(SHIM_DIR, "deep-plan");
   const want = fs.readFileSync(shimSrc, "utf8");
+  // A symlink here (an old install linked the name straight at an engine) is
+  // replaced, never written through: writing through it would overwrite the
+  // engine it points at with this shim.
+  try { if (fs.lstatSync(shim).isSymbolicLink()) fs.unlinkSync(shim); } catch { /* absent */ }
   let have = null;
   try { have = fs.readFileSync(shim, "utf8"); } catch { /* not installed */ }
   if (have === want) say(`  ok    shim in place: ${shim}`);

@@ -957,17 +957,19 @@ Claude restart. To go further back:
 crew uninstall     # restores the newest ~/.config/cmux/cmux.json.*.bak
 ```
 
-`~/.claude/hooks/cmux/guard_bash.sh` is **not** part of crew and neither command
-touches it. It blocks force-pushes, `--no-verify`, `rm -rf`, and destructive SQL,
-and `crew doctor` fails loudly if it ever stops being wired.
+The destructive-command guard is **not** part of crew and neither command
+touches it: it is the separate `bash-guard` plugin (or, on a machine the old
+installer set up, `~/.claude/hooks/cmux/guard_bash.sh`). It blocks force-pushes, `--no-verify`, `rm -rf`, and destructive SQL,
+and `crew doctor` fails loudly if neither is wired.
 
 `crew uninstall` does **not** re-wire the v1 cmux bridge crew superseded. Those
 scripts are untouched at `~/.claude/hooks/cmux/` — `on_session_start.sh`,
 `on_stop_notify.sh`, `on_notification.sh`, `set_status_running.sh`,
 `clear_status.sh`, `flash_on_edit.sh` — so restoring them is a matter of adding
 their entries back to `settings.json`. crew intentionally does not do it for
-you: it strips its own hooks surgically rather than restoring settings.json
-wholesale, because that file also accumulates permissions over time.
+you: it strips the legacy hook entries surgically rather than restoring
+settings.json wholesale, because that file also accumulates permissions over
+time. crew's own hooks leave with the plugin: `claude plugin uninstall crew`.
 
 ## Cost
 

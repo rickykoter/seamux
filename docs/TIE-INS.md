@@ -6,11 +6,16 @@ This bundle carries the **integration** between it and the cmux Dock, plus
 [ADAPTING.md](ADAPTING.md) — the recipe for building an equivalent skill if you do
 not have one.
 
-**The short version.** If this machine already has `~/.claude/skills/deep-plan`,
-running `install.sh` satisfied every tie-in below except the gate hook, which
-`claude/merge_settings.py` wires. If it does not have the skill, everything below is
-inert: the board has no plan rows and the plan chips are never rendered, and nothing
-errors. Neither state needs any code change.
+**The short version.** With the deep-plan plugin installed (`install.sh` does it, or
+`/plugin install deep-plan@seamux`), every tie-in below is satisfied, the gate
+included: the plugin carries it in its own `hooks/hooks.json`. Without it, everything
+below is inert: the board has no plan rows and the plan chips are never rendered, and
+nothing errors. Neither state needs any code change.
+
+crew finds the engine the way every caller outside Claude does: through
+`~/.claude/deep-plan/engine.json` (`{root, version, mermaid?}`), which the plugin writes
+at every session start and every run (`board/dp_engine.py` reads it). `$DEEP_PLAN_ENGINE`
+overrides it, and the old `~/.claude/skills/deep-plan` is the last fallback.
 
 ## The six integration points
 
@@ -29,8 +34,8 @@ same-origin with the endpoint that runs them, and the tab gets a URL the Dock re
 across launches. `/plan-stamp` is the change probe the page polls; `/mermaid.min.js` is
 the shared library.
 
-**3 · Increment controls.** The `/inc` route runs `node ~/.claude/skills/deep-plan/deep_plan.mjs
-<action> <slug> <n>`. The page renders `go` / `start` / `done` / `block` disabled on disk
+**3 · Increment controls.** The `/inc` route runs `node <engine root>/deep_plan.mjs
+<action> <slug> <n>`, the root read from the engine pointer on each request. The page renders `go` / `start` / `done` / `block` disabled on disk
 and enabled when served, because the transport is injected at serve time — the generator
 emits meaning, the server supplies the ability. `go` posts the same notification RPC the
 Swift sidebar used, so `hooks/triage.py` stays the single place that decides what those
@@ -42,15 +47,17 @@ Cmd-click in a terminal. Which paths are click targets is the actual design work
 lives in the skill: declared files are targets even before they exist, prose mentions only
 if they resolve to a real file, anything naming another repo stays plain text.
 
-**5 · The gate.** A `PreToolUse` hook on `Edit|Write|MultiEdit|NotebookEdit|Bash` pointing
-at `~/.claude/skills/deep-plan/hooks/gate.sh`. `crew apply` does **not** wire this —
-`claude/merge_settings.py` does, and only if the skill is present. A PreToolUse hook
-pointing at a missing script fails on every edit, which is far worse than no gate.
+**5 · The gate.** A `PreToolUse` hook on `Edit|Write|MultiEdit|NotebookEdit|Bash`, shipped
+in the deep-plan plugin's `hooks/hooks.json` and run from the plugin's root. Nothing in
+crew wires it, and nothing writes it into `settings.json` any more: it exists exactly
+when the plugin is installed, so it can never point at a missing script. The optional
+seamux-mods plugin adds a `go next` band in the terminal when it refuses, keyed off the
+refusal's opening `deep-plan gate [<slug>]: `.
 
 **6 · One identity colour.** cmux's per-workspace colour reaches the VS Code title bar
 through Peacock (`bin/crew-code-open`), rings the current card on the board, paints the
 focused pane's frame (`bin/crew-frame`), and tints the Claude Code status line
-(`claude/statusline.py`). Following the selection needs the workspace id out of the event
+(`crew/claude/statusline.py`). Following the selection needs the workspace id out of the event
 payload rather than a lookup: `workspace.selected` fires about 151ms before the selection
 is queryable, so asking lands everything one switch behind.
 
@@ -82,7 +89,7 @@ A plan row on the board and no `plan →` chip means the intent server is not ru
 the page holds whatever port it was pushed with, so a restarted server needs the next push
 to re-inject it.
 
-## If this machine has no deep-plan skill
+## If this machine has no deep-plan plugin
 
 Two honest options.
 
@@ -95,7 +102,6 @@ the code. Budget hours, not minutes, and read its "Repo conventions this bakes i
 first — a few choices (branch naming, the ticket-key shape, where plans live) are baked in
 and worth changing deliberately rather than inheriting.
 
-The skill itself is not in this bundle. If you would rather copy the real thing than
-rebuild it, ask the author for `~/.claude/skills/deep-plan` directly — but note that its
-`SKILL.md` and `DEVELOPING.md` carry real ticket keys and service names in their examples,
-so they need the same scrub this bundle got before they travel.
+**Install it.** It ships in this repo as the `deep-plan` plugin: `claude plugin install
+deep-plan@seamux` once the marketplace is added, then `deep-plan setup` for the shim and
+the pinned mermaid.

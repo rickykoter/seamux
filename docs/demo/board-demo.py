@@ -12,7 +12,7 @@ shipped. Claude Code activity also pushes real state on its hooks, so use
 --loop while recording — the demo re-pushes every few seconds and wins.
 
 The two attend rows carry the `example-outbox-retry` slug (render it first:
-`node ~/.claude/skills/deep-plan/deep_plan.mjs render deep-plan/examples/example.spec.json`)
+`deep-plan render deep-plan/examples/example.spec.json`)
 so their plan chips open a real review page. Rows without a workspace ref are
 inert to clicks — deliberately: these workspaces don't exist.
 

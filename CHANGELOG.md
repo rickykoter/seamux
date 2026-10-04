@@ -1,9 +1,58 @@
 # Changelog
 
 Notable changes to seamux. Dates are release dates; the repo is the source of
-truth and every entry lands on the machine via `./install.sh`.
+truth. Since 0.3.0 the plugins run from the checkout (a folder marketplace), so
+an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
-## Unreleased
+## 0.3.0 — 2026-10-04
+
+- **Every feature is a Claude Code plugin, listed by one marketplace.**
+  deep-plan, restack, bash-guard and crew each install on their own
+  (`claude plugin install deep-plan@seamux`), so restack can be adopted
+  without the mac-only crew layer and the skills keep their names. Each plugin
+  carries its own hooks in `hooks/hooks.json`; `settings.json` no longer holds
+  any of seamux's hook entries. Decision records: `docs/adr/0004` and `0005`.
+- **`install.sh` is a bootstrap over `claude plugin`.** It adds the checkout
+  as a folder marketplace, so the plugins run from the repo itself and an
+  edit plus `/reload-plugins` is live with no version bump (`--github`
+  installs the published copy instead). Then each engine's `setup`, then
+  `crew apply`. A machine set up by the old installer is migrated: the
+  `~/.claude/skills` copies, the old shims and the hook entries move into
+  `~/.claude/seamux-migrated/<time>/`, each only once the plugin replacing it
+  is installed and enabled, and a failed install stops before any of it.
+  `--check` reports the marketplace, each plugin and where it runs from,
+  leftovers, and crew drift.
+- **Engine pointers.** deep-plan and restack write
+  `~/.claude/{deep-plan,restack}/engine.json` at every session start and run.
+  The board, the intent server, triage's go chip and the `~/.local/bin`
+  shims find the engine through it, since none of them can see the plugin's
+  location. `deep-plan setup` and `restack setup` install the shims;
+  `deep-plan engine` and `restack engine` say which copy runs.
+- **mermaid lives in the data tree.** `deep-plan setup`, or the first render
+  that finds none, fetches the pinned build into `~/.claude/deep-plan/vendor`
+  and refuses any other bytes. A plugin root is replaced on every update; the
+  data tree is not. CI uses the same step.
+- **crew installs from its plugin.** `crew apply` copies the plugin root into
+  `~/.config/cmux/crew` (the path cmux and launchd need), bakes the main repo,
+  and records the source; run from the live tree it re-copies first, so a
+  plugin update lands. `crew doctor` compares the two and flags an update not
+  yet applied, and every verb but `apply` run from the plugin root goes to the
+  live tree.
+- **crew's integrations are plugin options.** `jira_site`, `github_issues`,
+  `observability_stack` and `main_repo`, set with `/plugin`. `hooks/options.py`
+  renders them into `integrations.json` at session start and at `crew apply`,
+  writing only on change and leaving the old installer's answers alone until
+  an option is set. The status line and the settings merge moved under
+  `crew/claude/`; the merge sets only `statusLine` and the push flags.
+- **seamux-mods (optional, Claude Code 2.1.287+).** deep-plan inside the
+  terminal: `/plan-pane` with go, done and obs buttons; a band with `go next`
+  when the gate refuses an edit; the plan and the prompt-cache clock in the
+  status line. The gate's refusal now opens with a pinned
+  `deep-plan gate [<slug>]: `, which the probe holds.
+- **Fixes found on the way.** `restack --help` printed the status. `crew
+  uninstall` exited 1 after succeeding when no settings backup existed. A
+  folder marketplace's `installPath` names a cache snapshot, not the folder
+  Claude reads; `crew/bin/crew-plugin-root` resolves the real one.
 
 - **deep-plan's evidence check reads the answer's distribution, not its
   `confidence`.** The gate was written against Jev; the local model this

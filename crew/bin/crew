@@ -8,6 +8,7 @@
 #   crew listen     on|off|status|log — reconcile on cmux workspace events (opt-in)
 #   crew color      list|show|assign|apply|free|prune — per-worktree identity color
 #   crew doctor     check the install, exit non-zero if something is wrong
+#   crew drift      list what differs between the crew plugin and the live tree
 #   crew apply      install the live tree from the plugin, render config, sidebar + Dock
 #                   (--dry-run says what it would do and changes nothing)
 #   crew on|off     enable / disable at runtime (hooks stay wired, become no-ops)
@@ -642,6 +643,26 @@ cmd_uninstall() {
   local sbak
   sbak="$(ls -t "$SETTINGS".pre-crew.*.bak 2>/dev/null | head -1)"
   [ -n "$sbak" ] && printf 'settings.json as it was just before crew: %s\n' "$sbak"
+  return 0   # not the status of the optional line above: no backup is not a failure
+}
+
+# --------------------------------------------------------------- drift ------
+# What install.sh --check runs: the plugin root against the live tree, nothing
+# else. Exit 1 on any difference, 2 when there is no plugin source to compare.
+cmd_drift() {
+  local src; src="$(plugin_source)"
+  if [ -z "$src" ]; then
+    echo "crew drift: no crew plugin source (installed the old way, or not applied from a plugin)" >&2
+    return 2
+  fi
+  if [ "$src" != "$(cat "$LIVE/.seamux-source" 2>/dev/null)" ]; then
+    echo "crew drift: the crew plugin is now ${src/#$HOME/~} ($(plugin_version "$src")); run crew apply"
+    return 1
+  fi
+  local d; d="$(crew_drift "$src")"
+  if [ -z "$d" ]; then echo "no drift: live tree matches ${src/#$HOME/~}"; return 0; fi
+  printf '%s\n' "$d"
+  return 1
 }
 
 # ------------------------------------------------------------- on / off -----
@@ -1239,11 +1260,12 @@ case "${1:-status}" in
   off)       cmd_off ;;
   status)    cmd_status ;;
   doctor)    cmd_doctor ;;
+  drift)     cmd_drift ;;
   adopt)     cmd_adopt ;;
   sync)      shift; exec "$CREW_HOME/bin/crew-sync" "$@" ;;
   timer)     shift; cmd_timer "${1:-status}" ;;
   listen)    shift; cmd_listen "${1:-status}" "${2:-}" ;;
   color)     shift; exec "$CREW_HOME/bin/crew-color" "$@" ;;
   demo)      shift; cmd_demo "${1:-}" ;;
-  *) sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ; exit 2 ;;
+  *) sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ; exit 2 ;;
 esac
