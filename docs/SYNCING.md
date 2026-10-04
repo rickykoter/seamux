@@ -20,7 +20,7 @@ repo names in a public tree — is everything below.
 | `restack/` | `~/.claude/skills/restack/` (additive rsync, **no `--delete`**) |
 | `bin/restack.shim` | `~/.local/bin/restack` |
 | `claude/statusline.py` | `~/.claude/statusline.py` |
-| `claude/hooks/guard_bash.sh` | `~/.claude/hooks/cmux/guard_bash.sh` (never overwritten if present) |
+| `bash-guard/` | the `bash-guard` plugin (its `hooks/hooks.json` wires the guard); the old installer copied `hooks/guard_bash.sh` to `~/.claude/hooks/cmux/guard_bash.sh`, never overwritten if present |
 | `crew/config/*` | rendered by `crew apply` into `cmux.json` and the Dock files |
 
 Never edit those in place. `--check` will find it, and the fix is to copy the

@@ -133,7 +133,7 @@ drift_check() {
     check_pair "$f" "$RSKILL/$rel"
   done < <(find "$HERE/restack" -type f ! -name '.gitkeep' ! -name '.DS_Store')
   check_pair "$HERE/claude/statusline.py" "$HOME/.claude/statusline.py"
-  check_pair "$HERE/claude/hooks/guard_bash.sh" "$HOME/.claude/hooks/cmux/guard_bash.sh"
+  check_pair "$HERE/bash-guard/hooks/guard_bash.sh" "$HOME/.claude/hooks/cmux/guard_bash.sh"
   check_pair "$HERE/bin/deep-plan.shim" "$SHIM"
   check_pair "$HERE/bin/restack.shim" "$RSHIM"
   # live-only files under the crew tree (informational)
@@ -321,12 +321,12 @@ fi
 # crew must never disable the destructive-command guard). An existing one is
 # never overwritten: it is a safety rail, and it may carry local rules.
 GUARD="$HOME/.claude/hooks/cmux/guard_bash.sh"
-if [ -f "$HERE/claude/hooks/guard_bash.sh" ]; then
+if [ -f "$HERE/bash-guard/hooks/guard_bash.sh" ]; then
   if [ -f "$GUARD" ]; then
     ok "keeping the guard_bash.sh already on this machine"
   else
     run "mkdir -p '$(dirname "$GUARD")'"
-    run "cp '$HERE/claude/hooks/guard_bash.sh' '$GUARD'"
+    run "cp '$HERE/bash-guard/hooks/guard_bash.sh' '$GUARD'"
     run "chmod +x '$GUARD'"
     ok "installed guard_bash.sh (blocks force pushes, recursive deletes, hook bypasses)"
   fi

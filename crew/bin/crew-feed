@@ -51,7 +51,27 @@ CMUX = (os.environ.get("CREW_CMUX")
             if os.access(_CMUX_RESOLVER, os.X_OK) else "")
         or "cmux")
 STORE = os.path.join(HOME, ".cmuxterm", "claude-hook-sessions.json")
-GUARD = os.path.join(HOME, ".claude", "hooks", "cmux", "guard_bash.sh")
+LEGACY_GUARD = os.path.join(HOME, ".claude", "hooks", "cmux", "guard_bash.sh")
+
+
+def guard_path():
+    """The guard script: the copy the old installer placed, else the bash-guard
+    plugin's, from Claude's own install record. None when neither exists."""
+    if os.path.exists(LEGACY_GUARD):
+        return LEGACY_GUARD
+    try:
+        with open(os.path.join(HOME, ".claude", "plugins", "installed_plugins.json")) as fh:
+            plugins = (json.load(fh) or {}).get("plugins") or {}
+    except (OSError, ValueError):
+        return None
+    for key, installs in plugins.items():
+        if not key.startswith("bash-guard@"):
+            continue
+        for inst in installs or []:
+            p = os.path.join(inst.get("installPath") or "", "hooks", "guard_bash.sh")
+            if os.path.exists(p):
+                return p
+    return None
 AUDIT = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.join(HOME, ".cache")),
                      "cmux-crew", "feed-audit.jsonl")
 WINDOW = int(os.environ.get("CREW_FEED_WINDOW", "120"))
@@ -147,7 +167,8 @@ def guard_would_block(item):
         return False
     if (item.get("tool_name") or item.get("title")) != "Bash":
         return False
-    if not os.path.exists(GUARD):
+    guard = guard_path()
+    if guard is None:
         return True                      # no guard available -> assume unsafe
     try:
         ti = json.loads(item.get("tool_input") or "{}")
@@ -155,7 +176,7 @@ def guard_would_block(item):
         return True
     payload = json.dumps({"tool_input": {"command": ti.get("command", "")}})
     try:
-        r = subprocess.run(["bash", GUARD], input=payload, capture_output=True,
+        r = subprocess.run(["bash", guard], input=payload, capture_output=True,
                            text=True, timeout=10)
         return r.returncode != 0
     except Exception:

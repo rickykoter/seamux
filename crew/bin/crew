@@ -793,8 +793,17 @@ typesafe.threshold('stuck_threshold', 0.8)))" 2>/dev/null)"
   head_ "installed"
   grep -q "crew-hook.sh" "$SETTINGS" 2>/dev/null && ok "Claude hooks wired" \
     || bad "Claude hooks not wired — run: crew apply"
-  grep -q "guard_bash.sh" "$SETTINGS" 2>/dev/null && ok "guard_bash.sh still wired" \
-    || bad "guard_bash.sh is NOT wired — the destructive-command guard is off"
+  # The guard is wired one of two ways: the bash-guard plugin enabled, or the
+  # settings.json entry the old installer wrote (kept until migration removes it).
+  if python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+sys.exit(0 if any(k.startswith("bash-guard@") and v for k,v in (d.get("enabledPlugins") or {}).items()) else 1)' "$SETTINGS" 2>/dev/null; then
+    ok "bash-guard plugin enabled"
+  elif grep -q "guard_bash.sh" "$SETTINGS" 2>/dev/null; then
+    ok "guard_bash.sh wired in settings.json (legacy; the bash-guard plugin replaces it)"
+  else
+    bad "the destructive-command guard is off — claude plugin install bash-guard@seamux"
+  fi
   [ -f "$SIDEBAR_DIR/crew.swift" ] && ok "sidebar installed" || bad "sidebar not installed"
   if python3 "$CREW_HOME/board/crew-board-intent" --selftest >/dev/null 2>&1; then
     ok "intent server routes + mermaid swap"
