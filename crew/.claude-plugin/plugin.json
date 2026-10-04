@@ -1,0 +1,11 @@
+{
+  "name": "crew",
+  "version": "0.3.0",
+  "description": "The cmux crew layer: every Claude session's state on a board, ranked by who needs you, with plan rows, go chips and a sidebar. macOS and cmux only. Run `crew apply` once after installing.",
+  "author": { "name": "Richard Kotermanski", "url": "https://github.com/rickykoter" },
+  "homepage": "https://github.com/rickykoter/seamux/tree/main/crew",
+  "repository": "https://github.com/rickykoter/seamux",
+  "license": "MIT",
+  "keywords": ["cmux", "board", "sessions", "macos"],
+  "dependencies": ["deep-plan"]
+}

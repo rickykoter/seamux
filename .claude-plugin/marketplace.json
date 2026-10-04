@@ -27,6 +27,12 @@
       "category": "security"
     },
     {
+      "name": "crew",
+      "source": "./crew",
+      "description": "The cmux crew layer: every Claude session on a board, ranked by who needs you, with plan rows and go chips. macOS and cmux only; run `crew apply` after installing.",
+      "category": "productivity"
+    },
+    {
       "name": "seamux-mods",
       "source": "./seamux-mods",
       "description": "deep-plan inside the terminal: a /plan-pane pane, a `go next` band when the gate refuses, and the plan and cache clock in the status line. Needs Claude Code 2.1.287 or later.",

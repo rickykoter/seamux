@@ -67,7 +67,10 @@ CMUX = (os.environ.get("CREW_CMUX")
             if os.access(_CMUX_RESOLVER, os.X_OK) else "")
         or "cmux")
 
-DEEP_PLAN = os.path.join(os.path.expanduser("~"), ".claude", "skills", "deep-plan", "deep_plan.mjs")
+# The deep-plan engine is wherever its plugin's engine.json says (dp_engine.py),
+# resolved per call rather than once: a plugin update moves it.
+sys.path.insert(0, HERE)
+import dp_engine  # noqa: E402
 
 
 def run(argv, timeout=15):
@@ -97,7 +100,7 @@ def cmux(*args, timeout=15):
 
 def plans():
     """deep-plan's tracked plans, keyed by worktree root. Works with cmux down."""
-    ok, out = run(["node", DEEP_PLAN, "status", "--json"])
+    ok, out = run(["node", dp_engine.script(), "status", "--json"])
     if not ok or not out:
         return {}
     try:

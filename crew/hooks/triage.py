@@ -57,9 +57,16 @@ CMUX = (os.environ.get("CMUX_CLAUDE_HOOK_CMUX_BIN")
 # crew-sync runs straight after, because increment status lives in `description` and
 # that only moves when sync does -- without it the chip you just tapped sits there
 # looking untapped for up to two minutes.
+#
+# Without the shim, the engine is the root the deep-plan plugin wrote to
+# engine.json, read with the same sed the shim uses (one key per line is that
+# file's contract), and only then the old ~/.claude/skills copy.
 PLAN_GO = ('PATH="$HOME/.local/bin:$PATH"; '  # sh -lc never has the shim's dir
            'if command -v deep-plan >/dev/null 2>&1; then deep-plan go --at %s next; '
-           'else node "$HOME/.claude/skills/deep-plan/deep_plan.mjs" go --at %s next; fi; '
+           'else R=$(sed -n \'s/^  "root": "\\(.*\\)",\\{0,1\\}$/\\1/p\' '
+           '"$HOME/.claude/deep-plan/engine.json" 2>/dev/null); '
+           '[ -f "$R/deep_plan.mjs" ] || R="$HOME/.claude/skills/deep-plan"; '
+           'node "$R/deep_plan.mjs" go --at %s next; fi; '
            'exec %s')
 
 

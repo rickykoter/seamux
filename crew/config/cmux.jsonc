@@ -82,6 +82,9 @@
 
     // Routine turn-complete goes to the sidebar only; anything actually
     // blocked still raises a banner. See hooks/triage.py for the rule.
+    // The path is the live tree, never the crew plugin's root: cmux runs this
+    // outside Claude, and a plugin root's path changes with every version.
+    // `crew apply` copies the plugin here, which is what keeps it current.
     "hooks": [
       {
         "id": "crew-triage",
