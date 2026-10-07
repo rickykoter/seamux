@@ -1035,14 +1035,17 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   fs.rmSync(sp, { force: true });
 }
 
-// -------------------------------------------------- observability verdicts gate `done`
+// -------------------------------------------------- observability checks gate `done`
 //
 // Per-DELIVERABLE observability, which is a different thing from the top-level
 // advisory spec.observability block asserted further up: declaring checks on a
-// deliverable means its `done` is refused until a verdict is recorded.
+// deliverable means its `done` is refused until they pass. The legacy
+// `observability.checks` field still reads, as observability-kind checks, and
+// the `obs` verb still drives them; this block holds both to their old meaning.
 {
   const CHECK = { checks: [{ system: "datadog", name: "retry counter climbs",
     query: "sum:outbox.retry{env:qa}", expect: "non-zero within 15m" }] };
+  const ID = "obs-retry-counter-climbs";
   const withObs = n => {
     const s = JSON.parse(JSON.stringify(spec));
     s.slug = n;
@@ -1050,6 +1053,8 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     return s;
   };
   const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
+  const chk = (n, i, id = ID) => (stOf(n).increments[i].checks || {})[id];
+  const nChecks = (n, i) => Object.keys(stOf(n).increments[i].checks || {}).length;
   // Take a plan to the point where increment 1 can be done.
   const arm = n => {
     cli("render", tmpSpec(withObs(n)));
@@ -1060,39 +1065,42 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
 
   arm("obs-1");
   ok("a deliverable that declares observability starts pending",
-    stOf("obs-1").increments[0].obs.status === "pending");
-  ok("a deliverable that declares nothing is n/a",
-    stOf("obs-1").increments[1].obs.status === "n/a");
+    chk("obs-1", 0).status === "pending" && chk("obs-1", 0).kind === "observability");
+  ok("the pre-checks verdict field is gone from state", !("obs" in stOf("obs-1").increments[0]));
+  ok("a deliverable that declares nothing has no checks", nChecks("obs-1", 1) === 0);
   let r = cli("done", "obs-1", "1");
-  ok("done is refused while the verdict is pending",
-    r.status === 1 && /observability check and it is pending/.test(r.stderr));
+  ok("done is refused while the check is pending",
+    r.status === 1 && new RegExp(`${ID} +\\[observability\\] pending`).test(r.stderr));
   ok("the refusal names how to see the checks and how to record one",
-    /obs check obs-1 1/.test(r.stderr) && /obs pass obs-1 1/.test(r.stderr));
+    /check list obs-1 1/.test(r.stderr) && /check pass\|fail obs-1 1/.test(r.stderr));
   ok("the refusal names the override", /--force/.test(r.stderr));
+  // crew's board shows only the last line of a refusal; it must be the reason.
+  ok("the refusal's last line is the reason, not a hint",
+    r.stderr.trim().split("\n").pop() === `done refused: ${ID} pending`);
   ok("the increment did not move", stOf("obs-1").increments[0].status === "working");
 
   ok("obs fail refuses without a reason", cli("obs", "fail", "obs-1", "1").status === 1);
   ok("obs fail records one", cli("obs", "fail", "obs-1", "1", "counter flat").status === 0 &&
-    stOf("obs-1").increments[0].obs.status === "fail");
+    chk("obs-1", 0).status === "fail");
   r = cli("done", "obs-1", "1");
-  ok("done is refused while the verdict is fail, and shows the note",
-    r.status === 1 && /it is fail/.test(r.stderr) && /counter flat/.test(r.stderr));
+  ok("done is refused while the check is fail, and shows the note",
+    r.status === 1 && /\] fail/.test(r.stderr) && /counter flat/.test(r.stderr));
 
   ok("obs pass records a verdict and a note",
     cli("obs", "pass", "obs-1", "1", "412 over 20m").status === 0 &&
-    stOf("obs-1").increments[0].obs.status === "pass" &&
-    stOf("obs-1").increments[0].obs.note === "412 over 20m");
-  ok("done is allowed once the verdict passes",
+    chk("obs-1", 0).status === "pass" && chk("obs-1", 0).note === "412 over 20m");
+  ok("done is allowed once the check passes",
     cli("done", "obs-1", "1").status === 0 && stOf("obs-1").increments[0].status === "done");
 
   // A recorded verdict must survive a re-render, or amending the spec would
   // quietly clear evidence.
   cli("render", tmpSpec(withObs("obs-1")));
-  ok("a recorded pass survives a re-render", stOf("obs-1").increments[0].obs.status === "pass");
+  ok("a recorded pass survives a re-render", chk("obs-1", 0).status === "pass");
   // …and must survive the declaration being dropped: it was true when recorded.
   const dropped = JSON.parse(JSON.stringify(spec)); dropped.slug = "obs-1";
   cli("render", tmpSpec(dropped));
-  ok("a pass survives the declaration being dropped", stOf("obs-1").increments[0].obs.status === "pass");
+  ok("a pass survives the declaration being dropped, retired",
+    chk("obs-1", 0).status === "pass" && chk("obs-1", 0).retired === true);
 
   ok("recording against an undeclared increment is refused",
     cli("obs", "pass", "obs-1", "2", "x").status === 1);
@@ -1106,76 +1114,210 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   cli("obs", "pass", "obs-5", "1", "seen once");
   ok("done is allowed with a pass", cli("done", "obs-5", "1").status === 0);
   cli("reset", "obs-5", "1");
-  ok("resetting an increment re-gates its verdict",
-    stOf("obs-5").increments[0].obs.status === "pending");
+  ok("resetting an increment re-gates its checks", chk("obs-5", 0).status === "pending");
   ok("…keeping what the verdict was, rather than deleting the evidence",
-    /was pass: seen once/.test(stOf("obs-5").increments[0].obs.note));
+    /was pass: seen once/.test(chk("obs-5", 0).note));
   ok("…and saying so in the log",
     stOf("obs-5").log.some(l => /returned to pending/.test(l.what)));
   cli("go", "obs-5", "1"); cli("start", "obs-5", "1");
   ok("done is refused again after the reset", cli("done", "obs-5", "1").status === 1);
-  // An increment with nothing to re-gate must not gain a spurious verdict.
+  // An increment with nothing to re-gate must not gain a spurious check.
   cli("reset", "obs-5", "2");
-  ok("resetting an undeclared increment leaves it n/a",
-    stOf("obs-5").increments[1].obs.status === "n/a");
+  ok("resetting an increment with no checks leaves it with none", nChecks("obs-5", 1) === 0);
 
   // The explicit hatch, for when the work stands but the evidence does not.
   cli("obs", "pass", "obs-5", "1", "seen twice");
   ok("obs reset returns a recorded verdict to pending",
     cli("obs", "reset", "obs-5", "1").status === 0 &&
-    stOf("obs-5").increments[0].obs.status === "pending" &&
-    /was pass: seen twice/.test(stOf("obs-5").increments[0].obs.note));
-  ok("obs reset refuses where there is no verdict",
+    chk("obs-5", 0).status === "pending" && /was pass: seen twice/.test(chk("obs-5", 0).note));
+  ok("obs reset refuses where there is no check",
     cli("obs", "reset", "obs-5", "2").status === 1);
 
   // Adding the field to a spec whose state already exists must gate it, not
-  // leave it silently un-gated at n/a.
+  // leave it silently un-gated.
   arm("obs-2");
-  const p2 = path.join(ENV.DEEP_PLAN_STATE_DIR, "obs-2.json");
-  const s2 = JSON.parse(fs.readFileSync(p2, "utf8"));
-  s2.increments[1].obs = { status: "n/a", at: 0, note: "", version: "" };
-  fs.writeFileSync(p2, JSON.stringify(s2, null, 2));
   const both = withObs("obs-2"); both.deliverables[1].observability = CHECK;
   cli("render", tmpSpec(both));
-  ok("declaring observability on an existing plan flips n/a to pending",
-    stOf("obs-2").increments[1].obs.status === "pending");
+  ok("declaring observability on an existing plan adds a pending check",
+    chk("obs-2", 1).status === "pending");
 
   // --force, and the log saying so.
   arm("obs-3");
-  ok("done --force overrides a pending verdict",
+  ok("done --force overrides a pending check",
     cli("done", "obs-3", "1", "--force").status === 0 &&
     stOf("obs-3").increments[0].status === "done");
   ok("the override is written to the log",
     stOf("obs-3").log.some(l => /overridden with --force/.test(l.what) && /observability/.test(l.what)));
 
-  // `obs check` reads the SPEC. The older engine generated these blocks per
-  // vendor; none of that comes across, so the check output is only ever a
-  // readback of what the plan already committed to.
-  const chk = cli("obs", "check", "obs-3", "1");
+  // `obs check` reads what render took from the SPEC. The older engine
+  // generated these blocks per vendor; none of that comes across, so the check
+  // output is only ever a readback of what the plan already committed to.
+  const ck = cli("obs", "check", "obs-3", "1");
   ok("obs check prints the declared checks from the spec",
-    chk.status === 0 && chk.stdout.includes("retry counter climbs") &&
-    chk.stdout.includes("sum:outbox.retry{env:qa}") && chk.stdout.includes("non-zero within 15m"));
-  ok("obs check on an undeclared increment says so, and does not fail",
+    ck.status === 0 && ck.stdout.includes("retry counter climbs") &&
+    ck.stdout.includes("sum:outbox.retry{env:qa}") && ck.stdout.includes("non-zero within 15m"));
+  ok("obs check on an increment with no checks says so, and does not fail",
     cli("obs", "check", "obs-3", "2").status === 0 &&
-    /declares no observability check/.test(cli("obs", "check", "obs-3", "2").stdout));
+    /declares no checks/.test(cli("obs", "check", "obs-3", "2").stdout));
 
   arm("obs-4");
   const rows = JSON.parse(cli("status", "--json").stdout);
   const row4 = rows.find(x => x.slug === "obs-4");
-  ok("status --json carries the outstanding verdicts for the board",
+  ok("status --json carries the outstanding verdicts for the board (the older shape)",
     row4 && row4.obsOutstanding.length === 1 && row4.obsOutstanding[0].n === 1 &&
     row4.obsOutstanding[0].status === "pending");
   ok("status names them in the text form too",
-    /observability outstanding: 1 \(pending\)/.test(cli("status").stdout));
+    /checks outstanding: 1 \(pending\)/.test(cli("status").stdout));
   const wp = n => fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, n + ".working.html"), "utf8");
-  ok("the working page lists the checks while a verdict is outstanding",
+  ok("the working page lists the checks while one is outstanding",
     wp("obs-4").includes("retry counter climbs") && wp("obs-4").includes("pending"));
   cli("obs", "pass", "obs-4", "1", "seen");
   ok("…and shows the verdict instead once it passes",
     wp("obs-4").includes("pass") && wp("obs-4").includes("seen") &&
     !wp("obs-4").includes("sum:outbox.retry{env:qa}"));
 
-  for (const n of ["obs-1", "obs-2", "obs-3", "obs-4"]) {
+  // A state file from before checks: one `obs` verdict per increment. It gates
+  // as it did until a render migrates it, and the render keeps the verdict.
+  arm("obs-6");
+  const p6 = path.join(ENV.DEEP_PLAN_STATE_DIR, "obs-6.json");
+  const s6 = stOf("obs-6");
+  delete s6.increments[0].checks; delete s6.increments[1].checks;
+  s6.increments[0].obs = { status: "pending", at: 0, note: "", version: "" };
+  s6.increments[1].obs = { status: "n/a", at: 0, note: "", version: "" };
+  fs.writeFileSync(p6, JSON.stringify(s6, null, 2));
+  ok("a legacy pending verdict still refuses done",
+    cli("done", "obs-6", "1").status === 1);
+  s6.increments[0].obs = { status: "pass", at: 1, note: "seen before checks", version: "" };
+  fs.writeFileSync(p6, JSON.stringify(s6, null, 2));
+  cli("render", tmpSpec(withObs("obs-6")));
+  ok("a render carries a legacy pass onto the observability check",
+    chk("obs-6", 0).status === "pass" && chk("obs-6", 0).note === "seen before checks" &&
+    !("obs" in stOf("obs-6").increments[0]));
+  ok("a legacy n/a becomes no checks", nChecks("obs-6", 1) === 0);
+
+  for (const n of ["obs-1", "obs-2", "obs-3", "obs-4", "obs-5", "obs-6"]) {
+    cli("close", n);
+    fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), { force: true });
+  }
+}
+
+// -------------------------------------------------- checks: one model, every kind
+//
+// Declared `checks`, legacy observability and legacy `verification` strings are
+// one list with stable ids. A pass records the tree it was seen against, and
+// `done` treats a pass against other content as stale. A check backed by a
+// recipe takes its verdict from running it, so passing one by hand needs
+// --force, which is logged.
+{
+  const ROOT = path.join(TMP, "checks-root");
+  fs.mkdirSync(ROOT, { recursive: true });
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: ROOT });
+  const mk = (slug, edit = s => s) => {
+    const s = JSON.parse(JSON.stringify(spec));
+    s.slug = slug;
+    s.deliverables[0].checks = [
+      { kind: "test", name: "unit suite", recipe: "unit" },
+      { kind: "manual", name: "Read the sweep log", id: "log" },
+    ];
+    s.deliverables[0].verification = ["bundle exec rspec spec/outbox"];
+    return edit(s);
+  };
+  const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
+  const arm = (n, s = mk(n)) => {
+    cli("render", tmpSpec(s), "--root", ROOT);
+    const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, n + ".key.json"), "utf8"));
+    cli("grade", n, ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+    cli("go", n, "1"); cli("start", n, "1");
+  };
+  const last = r => r.stderr.trim().split("\n").pop();
+
+  for (const [label, edit] of [
+    ["an unknown kind", s => { s.deliverables[0].checks = [{ kind: "smoke", name: "x" }]; return s; }],
+    ["a check with no name or recipe", s => { s.deliverables[0].checks = [{ kind: "test" }]; return s; }],
+    ["two checks with one id", s => { s.deliverables[0].checks = [
+      { kind: "test", name: "a", id: "same" }, { kind: "manual", name: "b", id: "same" }]; return s; }],
+    ["checks that are not an array", s => { s.deliverables[0].checks = { kind: "test" }; return s; }],
+  ]) ok(`render refuses ${label}`, cli("render", tmpSpec(mk("chk-bad", edit))).status === 1);
+
+  arm("chk-1");
+  const ids = Object.keys(stOf("chk-1").increments[0].checks);
+  ok("declared checks, then legacy verification, under stable ids",
+    JSON.stringify(ids) === JSON.stringify(["test-unit-suite", "log", "manual-bundle-exec-rspec-spec-outbox"]));
+  ok("a verification string becomes a pending manual check",
+    stOf("chk-1").increments[0].checks["manual-bundle-exec-rspec-spec-outbox"].kind === "manual");
+
+  const row = () => JSON.parse(cli("status", "--json").stdout).find(x => x.slug === "chk-1");
+  ok("status --json lists each check on its increment",
+    row().increments[0].checks.length === 3 &&
+    row().increments[0].checks[0].recipe === "unit" && row().increments[0].obs === "pending");
+  ok("status --json names every outstanding check",
+    row().checksOutstanding.length === 3 &&
+    row().checksOutstanding.every(c => c.n === 1 && c.status === "pending"));
+
+  ok("check pass refuses an id the increment does not have",
+    /its checks: test-unit-suite, log/.test(cli("check", "pass", "chk-1", "1", "nope", "x").stderr));
+  ok("check fail refuses without a reason", cli("check", "fail", "chk-1", "1", "log").status === 1);
+
+  let r = cli("check", "pass", "chk-1", "1", "test-unit-suite", "ran it myself");
+  ok("a hand pass on a recipe-backed check is refused without --force",
+    r.status === 1 && stOf("chk-1").increments[0].checks["test-unit-suite"].status === "pending");
+  ok("…and the refusal ends with the reason", /^refused: test-unit-suite recipe-backed/.test(last(r)));
+  ok("with --force it records the pass",
+    cli("check", "pass", "chk-1", "1", "test-unit-suite", "ran it myself", "--force").status === 0 &&
+    stOf("chk-1").increments[0].checks["test-unit-suite"].by === "hand, forced");
+  ok("…and the force is in the log",
+    stOf("chk-1").log.some(l => /test-unit-suite \(recipe-backed, passed by hand with --force\)/.test(l.what)));
+
+  ok("a manual check takes a hand pass", cli("check", "pass", "chk-1", "1", "log", "3 rows requeued").status === 0);
+  const tree = stOf("chk-1").increments[0].checks.log.tree;
+  ok("a pass records the tree it was seen against",
+    tree && /^[0-9a-f]{40}$/.test(tree.head) && /^[0-9a-f]{40}$/.test(tree.content));
+  r = cli("done", "chk-1", "1");
+  ok("done names only the checks still outstanding",
+    r.status === 1 && /manual-bundle-exec-rspec-spec-outbox pending$/.test(last(r)) && !/ log /.test(last(r)));
+  cli("check", "pass", "chk-1", "1", "manual-bundle-exec-rspec-spec-outbox", "green");
+
+  // Staleness is judged on content: an edit after the pass stales it, putting
+  // the content back un-stales it, and a commit of what was passed does not.
+  fs.writeFileSync(path.join(ROOT, "sweep.rb"), "edited after the pass\n");
+  r = cli("done", "chk-1", "1");
+  ok("an edit after a pass makes done refuse it as stale",
+    r.status === 1 && /log stale/.test(last(r)) && /test-unit-suite stale/.test(last(r)));
+  ok("check list says which passes went stale",
+    /log  \[manual\] stale/.test(cli("check", "list", "chk-1", "1").stdout));
+  ok("status takes a pass as recorded (it does not hash the tree)", row().checksOutstanding.length === 0);
+  fs.rmSync(path.join(ROOT, "sweep.rb"));
+  fs.writeFileSync(path.join(ROOT, "sweep.rb"), "the passed content\n");
+  cli("check", "pass", "chk-1", "1", "log", "again");
+  cli("check", "pass", "chk-1", "1", "test-unit-suite", "again", "--force");
+  cli("check", "pass", "chk-1", "1", "manual-bundle-exec-rspec-spec-outbox", "again");
+  execSync(`git add -A && ${G} commit -q -m sweep`, { cwd: ROOT });
+  ok("committing what was passed does not stale it",
+    cli("done", "chk-1", "1").status === 0 && stOf("chk-1").increments[0].status === "done");
+
+  // reset folds every verdict back to pending; check reset takes one id.
+  cli("reset", "chk-1", "1");
+  ok("reset returns every check to pending",
+    Object.values(stOf("chk-1").increments[0].checks).every(v => v.status === "pending" && !v.tree));
+  cli("go", "chk-1", "1");
+  cli("check", "pass", "chk-1", "1", "log", "x"); cli("check", "fail", "chk-1", "1", "manual-bundle-exec-rspec-spec-outbox", "red");
+  ok("check reset <id> resets only that check",
+    cli("check", "reset", "chk-1", "1", "log").status === 0 &&
+    stOf("chk-1").increments[0].checks.log.status === "pending" &&
+    stOf("chk-1").increments[0].checks["manual-bundle-exec-rspec-spec-outbox"].status === "fail");
+  ok("check reset refuses an unknown id", cli("check", "reset", "chk-1", "1", "nope").status === 1);
+
+  // A renamed check is a new one; the old verdict is kept, retired, and gates nothing.
+  cli("check", "pass", "chk-1", "1", "log", "kept");
+  cli("render", tmpSpec(mk("chk-1", s => { s.deliverables[0].checks[1].id = "sweep-log"; return s; })), "--root", ROOT);
+  const c1 = stOf("chk-1").increments[0].checks;
+  ok("a dropped check's pass is kept, retired",
+    c1.log.retired === true && c1.log.note === "kept" && c1["sweep-log"].status === "pending");
+  ok("a retired check is not listed in status --json",
+    !row().increments[0].checks.some(c => c.id === "log"));
+
+  for (const n of ["chk-1", "chk-bad"]) {
     cli("close", n);
     fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), { force: true });
   }

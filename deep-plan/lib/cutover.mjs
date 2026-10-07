@@ -16,6 +16,8 @@
 // A probe assertion holds that line, because the bundle is built from the same
 // spec that contains the quiz — the exclusion is a choice, not a side effect.
 
+import { specChecks } from "./state.mjs";
+
 const esc = s => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
   .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
@@ -133,26 +135,29 @@ export function incrementMd({ spec, index, total }) {
     d.commits.forEach((c, i) => out.push(`${i + 1}. \`${commitText(c)}\``));
     out.push("");
   }
-  if ((d.observability && d.observability.checks || []).length) {
-    out.push("## Observability — this increment is not done until these pass", "");
-    for (const c of d.observability.checks) {
-      out.push(`- **[${c.system || "?"}] ${c.name || ""}**`);
+  // Every check gates `done` alike, whatever its kind; the per-deliverable
+  // `verification` strings are among them, as manual checks.
+  const checks = specChecks(d);
+  if (checks.length) {
+    out.push("## Checks — this increment is not done until these pass", "");
+    for (const c of checks) {
+      out.push(`- **[${c.kind}${c.system ? " · " + c.system : ""}] ${c.name}** (\`${c.id}\`)`);
+      if (c.recipe) out.push(`  - recipe: \`${c.recipe}\``);
+      if (c.run) out.push(`  - run: \`${c.run}\``);
       if (c.query) out.push(`  - query: \`${c.query}\``);
       if (c.expect) out.push(`  - expect: ${c.expect}`);
-      if (c.note) out.push(`  - note: ${c.note}`);
+      if (c.hint) out.push(`  - note: ${c.hint}`);
     }
     out.push("");
   }
 
-  // Per-increment verification when the spec has it, else the plan-wide list
-  // with a warning — an unqualified whole-change checklist read as this task's
-  // definition of done is how an increment gets called finished early.
-  const own = (d.verification || []).length;
-  const ver = own ? d.verification : (spec.verification || []);
-  if (ver.length) {
+  // With no verification of its own, the plan-wide list follows with a warning
+  // — an unqualified whole-change checklist read as this task's definition of
+  // done is how an increment gets called finished early.
+  if (!(d.verification || []).length && (spec.verification || []).length) {
     out.push("## Verification", "");
-    if (!own) out.push("_Whole-change verification; not all of it applies to this increment alone._", "");
-    for (const v of ver) out.push(`- ${v}`);
+    out.push("_Whole-change verification; not all of it applies to this increment alone._", "");
+    for (const v of spec.verification) out.push(`- ${v}`);
     out.push("");
   }
   if ((spec.risks || []).length) {

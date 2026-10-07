@@ -6,6 +6,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 
 export const STATE_DIR = process.env.DEEP_PLAN_STATE_DIR ||
   path.join(os.homedir(), ".claude", "deep-plan", "state");
@@ -97,37 +98,166 @@ export function log1(st, what) {
   if (st.log.length > 200) st.log = st.log.slice(-200);
 }
 
-// --------------------------------------------------------- observability verdict
+// --------------------------------------------------------- checks
 //
-// A deliverable may declare `observability.checks`: the signals that prove the
-// increment did what it claimed. Declaring one means `done` is refused until a
-// verdict is recorded, because a plan that promises a signal and ships without
-// looking at it has promised nothing.
+// A deliverable's checks are what prove the increment works: a test suite, an
+// e2e run, an observability signal, or a step a human performs. `done` is
+// refused until every one has passed against the tree being closed, because a
+// plan that promises a proof and ships without it has promised nothing.
 //
-// Most increments do not change what the system reports about itself, so an
-// increment that declares nothing is "n/a" and gates nothing — demanding a
-// verdict from every increment would make the whole mechanism noise.
-export const OBS_NONE = { status: "n/a", at: 0, note: "", version: "" };
+// One model for all four kinds. Observability used to be its own verdict
+// (`inc.obs`); it is now one kind of check, and the legacy spec fields still
+// read: `observability.checks` become observability checks, and per-deliverable
+// `verification` strings become manual ones.
+export const CHECK_KINDS = ["test", "e2e", "observability", "manual"];
+export const CHECK_STATUSES = ["pending", "running", "needs-variant", "pass", "fail"];
+// What a verdict is, as opposed to what the spec says the check is. Only these
+// survive a re-render; the description is always the spec's current one.
+const VERDICT_FIELDS = ["status", "at", "note", "by", "ran", "tree"];
+const ID_PREFIX = { observability: "obs" };
 
-// Re-declaring observability on a revised spec must not clear a verdict that
-// was already recorded, and adding the field to a spec whose state file already
-// exists must not leave the increment un-gated.
-export function reconcileObs(prev, deliverable) {
-  const declared = !!(deliverable && deliverable.observability);
-  const old = prev && prev.obs;
-  if (!declared) {
-    // A pass survives the declaration being dropped: it was true when recorded,
-    // and silently deleting evidence is worse than keeping an unused verdict.
-    return old && old.status === "pass" ? old : { ...OBS_NONE };
-  }
-  if (!old || old.status === "n/a") return { status: "pending", at: 0, note: "", version: "" };
-  return old;
+function checkSlug(kind, name) {
+  const kebab = String(name).toLowerCase().replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+/, "").slice(0, 40).replace(/-+$/, "");
+  return `${ID_PREFIX[kind] || kind}-${kebab || "check"}`;
 }
 
-// Does this increment's verdict stand in the way of `done`?
-export function obsBlocks(inc) {
-  const s = (inc && inc.obs && inc.obs.status) || "n/a";
-  return s === "pending" || s === "fail";
+// The spec's checks for one deliverable, normalized: declared first, then the
+// legacy fields. An id is the author's when given, else derived from kind and
+// name — stable across re-renders, so a verdict follows its check, and a
+// renamed check is a new one that has to be proven again.
+export function specChecks(d) {
+  if (!d) return [];
+  const out = [], seen = new Set();
+  const add = (c, legacy) => {
+    const name = String(c.name || c.system || c.recipe || c.run || "").trim();
+    let id = c.id ? String(c.id) : checkSlug(c.kind, name);
+    if (!c.id) for (let k = 2, base = id; seen.has(id); k++) id = `${base}-${k}`;
+    seen.add(id);
+    const o = { id, kind: c.kind, name };
+    for (const f of ["recipe", "run", "system", "query", "expect"]) if (c[f]) o[f] = c[f];
+    // The spec's `note` describes the check; the verdict's `note` is what was
+    // seen. Kept apart so recording a verdict never overwrites the brief.
+    if (c.note) o.hint = c.note;
+    if (legacy) o.legacy = legacy;
+    out.push(o);
+  };
+  for (const c of d.checks || []) add(c);
+  for (const c of (d.observability && d.observability.checks) || [])
+    add({ ...c, kind: "observability" }, "observability");
+  for (const v of d.verification || []) add({ kind: "manual", name: String(v) }, "verification");
+  return out;
+}
+
+// A state file written before checks existed carries `inc.obs`, one verdict for
+// the whole increment. Read it as one observability check until a render
+// replaces it, so `done` gates an old plan exactly as it did before.
+function legacyObs(inc) {
+  const o = inc && inc.obs;
+  return o && o.status && o.status !== "n/a" ? o : null;
+}
+
+// The increment's checks map, migrating the legacy verdict in place. Writers
+// persist the migration; readers only see it.
+export function checksOf(inc) {
+  if (!inc) return {};
+  if (!inc.checks || typeof inc.checks !== "object") {
+    const o = legacyObs(inc);
+    inc.checks = o ? { obs: { kind: "observability", name: "observability",
+      status: o.status, at: o.at || 0, note: o.note || "" } } : {};
+  }
+  delete inc.obs;
+  return inc.checks;
+}
+
+const verdictOf = v =>
+  Object.fromEntries(VERDICT_FIELDS.filter(f => v[f] !== undefined).map(f => [f, v[f]]));
+
+// Re-render: each spec check keeps the verdict recorded under its id, a new one
+// starts pending, and adding checks to a plan whose state already exists gates
+// it rather than leaving it un-gated. A check dropped from the spec keeps a
+// pass or fail as a retired entry — it was true when recorded, and silently
+// deleting evidence is worse than keeping a verdict nothing gates on.
+export function reconcileChecks(prev, deliverable) {
+  const fromObs = prev && !prev.checks ? legacyObs(prev) : null;
+  const old = prev && prev.checks && typeof prev.checks === "object" ? prev.checks : {};
+  const out = {};
+  let obsUsed = false;
+  for (const c of specChecks(deliverable)) {
+    const { id, ...meta } = c;
+    let was = old[id];
+    if (!was && fromObs && c.legacy === "observability") {
+      was = { status: fromObs.status, at: fromObs.at || 0, note: fromObs.note || "" };
+      obsUsed = true;
+    }
+    out[id] = { ...meta, ...(was ? verdictOf(was) : { status: "pending", at: 0, note: "" }) };
+  }
+  for (const [id, v] of Object.entries(old))
+    if (!(id in out) && (v.status === "pass" || v.status === "fail")) out[id] = { ...v, retired: true };
+  if (fromObs && !obsUsed && (fromObs.status === "pass" || fromObs.status === "fail"))
+    out.obs = { kind: "observability", name: "observability", status: fromObs.status,
+      at: fromObs.at || 0, note: fromObs.note || "", retired: true };
+  return out;
+}
+
+// What the tree under `root` contains, independent of what is committed: HEAD,
+// and the tree hash of the working copy staged into a scratch index (`add -A`,
+// so untracked files count and ignored ones do not). A pass records this; a
+// commit after it leaves `content` unchanged, any edit changes it. Null outside
+// a git repository — there is then nothing to compare, and nothing goes stale.
+export function treeOf(root) {
+  if (!root) return null;
+  const git = (args, env) => spawnSync("git", ["-C", root, ...args],
+    { encoding: "utf8", env: { ...process.env, ...env } });
+  const head = git(["rev-parse", "HEAD"]);
+  if (head.status !== 0) return null;
+  const index = git(["rev-parse", "--path-format=absolute", "--git-path", "index"]).stdout.trim();
+  const tmp = path.join(os.tmpdir(), `deep-plan-index-${process.pid}-${Date.now()}`);
+  try {
+    // Seeded from the real index so `add` only rehashes what changed.
+    try { fs.copyFileSync(index, tmp); } catch { /* no index yet: add builds one */ }
+    const env = { GIT_INDEX_FILE: tmp };
+    const tree = git(["add", "-A"], env).status === 0 ? git(["write-tree"], env) : null;
+    return { head: head.stdout.trim(), content: tree && tree.status === 0 ? tree.stdout.trim() : "" };
+  } finally {
+    for (const f of [tmp, tmp + ".lock"]) try { fs.rmSync(f, { force: true }); } catch { /* gone */ }
+  }
+}
+
+// Does judging this increment's passes need the current tree? Only when a pass
+// recorded one to compare against.
+export function needsTree(inc) {
+  return Object.values(checksOf(inc))
+    .some(v => !v.retired && v.status === "pass" && v.tree && v.tree.content);
+}
+
+// The checks standing in the way of `done`: everything not passed, and a pass
+// recorded against other content than `tree` (reported as "stale"). Without a
+// tree a pass stands — status runs every few seconds and cannot afford to hash
+// the working copy; `done` passes one.
+export function checksBlock(inc, tree = null) {
+  const out = [];
+  for (const [id, v] of Object.entries(checksOf(inc))) {
+    if (v.retired) continue;
+    let status = CHECK_STATUSES.includes(v.status) ? v.status : "pending";
+    if (status === "pass") {
+      const was = v.tree && v.tree.content, now = tree && tree.content;
+      if (!(was && now && was !== now)) continue;
+      status = "stale";
+    }
+    out.push({ id, kind: v.kind || "", name: v.name || "", status, note: v.note || "" });
+  }
+  return out;
+}
+
+// One word for the whole increment, for readers that predate checks (the
+// pane's `obs`, the board's obsOutstanding): n/a with no checks, fail if any
+// failed, pending while any has not passed, else pass.
+export function checksAggregate(inc) {
+  const active = Object.values(checksOf(inc)).filter(v => !v.retired);
+  if (!active.length) return "n/a";
+  if (active.some(v => v.status === "fail")) return "fail";
+  return active.every(v => v.status === "pass") ? "pass" : "pending";
 }
 
 // progress summary in exactly the shape crew-board consumes.

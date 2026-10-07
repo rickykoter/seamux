@@ -27,7 +27,8 @@ import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, statePath, sessionId,
   readState, writeState, allStates, log1, progress, gateView,
-  reconcileObs, obsBlocks, planFor,
+  planFor, CHECK_KINDS, specChecks, reconcileChecks, checksOf, checksBlock,
+  checksAggregate, needsTree, treeOf,
 } from "./lib/state.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -165,6 +166,25 @@ function validate(spec, force) {
     else if (c.scope === "external" && !dec.adr && !(c.waiver && String(c.waiver).trim()))
       errs.push(`contract "${name}": external scope defaults toward ADR — flag the decision, or write a waiver`);
   }
+
+  // Checks: `done` is gated on them, so one the engine cannot read must refuse
+  // here rather than gate an increment on something nobody can satisfy.
+  (spec.deliverables || []).forEach((d, i) => {
+    if (d.checks !== undefined && !Array.isArray(d.checks)) {
+      errs.push(`deliverable ${i + 1}: checks must be an array`); return;
+    }
+    for (const c of d.checks || []) {
+      const label = `deliverable ${i + 1} check "${c.id || c.name || c.recipe || "?"}"`;
+      if (!CHECK_KINDS.includes(c.kind))
+        errs.push(`${label}: kind must be one of ${CHECK_KINDS.join("|")}`);
+      if (!(c.name || c.recipe)) errs.push(`${label}: needs a name, or the recipe it runs`);
+      if (c.id !== undefined && !/^[a-z0-9][a-z0-9._-]*$/i.test(String(c.id)))
+        errs.push(`${label}: id must be letters, digits, dot, dash or underscore`);
+    }
+    const ids = specChecks(d).map(c => c.id);
+    for (const id of new Set(ids.filter((x, k) => ids.indexOf(x) !== k)))
+      errs.push(`deliverable ${i + 1}: two checks share the id "${id}"`);
+  });
 
   // Floors, derived from this house's own plans. The fix for a wall is to
   // draw it, not to trim it to just under the limit.
@@ -1186,21 +1206,26 @@ const commitLine = c => typeof c === "string"
   ? `- \`${c}\``
   : `- ${c.sha ? "`" + String(c.sha).slice(0, 12) + "` " : ""}${c.subject || c.ref || ""}`;
 
-// The verdict, and — when it is still outstanding — what the spec says to run.
-// Showing the checks only while they matter keeps a finished increment short.
-function obsRow(d, inc) {
-  const checks = (d.observability && d.observability.checks) || [];
-  const st = (inc.obs && inc.obs.status) || "n/a";
-  if (!checks.length && st === "n/a") return "";
-  const mark = { pass: "✅", fail: "❌", pending: "⏳", "n/a": "" }[st] || "";
-  const head = `<p class="dim">observability: ${mark} ${esc(st)}` +
-    (inc.obs && inc.obs.note ? ` — ${esc(inc.obs.note)}` : "") + "</p>";
-  if (st === "pass" || !checks.length) return head;
-  const items = checks.map(c =>
-    `<li>[${esc(c.system || "?")}] ${esc(c.name || "")}` +
-    (c.query ? `<br><code>${esc(c.query)}</code>` : "") +
-    (c.expect ? `<br><span class="dim">expect: ${esc(c.expect)}</span>` : "") + "</li>").join("");
-  return head + `<ul class="dim">${items}</ul>`;
+const CHECK_MARK = { pass: "✅", fail: "❌", pending: "⏳", running: "🔄", "needs-variant": "✋", stale: "⚠️" };
+
+// Each check with its verdict, and — while it is outstanding — what it runs.
+// Showing the detail only while it matters keeps a finished increment short.
+function checksRow(inc) {
+  const all = Object.entries(checksOf(inc)).filter(([, v]) => !v.retired);
+  if (!all.length) return "";
+  const agg = checksAggregate(inc);
+  const items = all.map(([id, v]) => {
+    const st = v.status || "pending";
+    const detail = st === "pass" ? "" :
+      (v.recipe ? `<br>recipe <code>${esc(v.recipe)}</code>` : "") +
+      (v.run ? `<br><code>${esc(v.run)}</code>` : "") +
+      (v.query ? `<br><code>${esc(v.query)}</code>` : "") +
+      (v.expect ? `<br><span class="dim">expect: ${esc(v.expect)}</span>` : "");
+    return `<li>${CHECK_MARK[st] || ""} ${esc(st)} · [${esc(v.kind || "?")}${v.system ? " · " + esc(v.system) : ""}] ` +
+      `${esc(v.name || "")} <code>${esc(id)}</code>` +
+      (v.note ? ` — ${esc(v.note)}` : "") + detail + "</li>";
+  }).join("");
+  return `<p class="dim">checks: ${CHECK_MARK[agg] || ""} ${esc(agg)}</p><ul class="dim">${items}</ul>`;
 }
 
 function workingHtml(spec, st, b64) {
@@ -1214,16 +1239,15 @@ function workingHtml(spec, st, b64) {
     // The verdict belongs beside the status, not in a section of its own: it is
     // a precondition on THIS increment's `done`, and a reader deciding whether
     // the increment is finished needs both in one glance.
-    const obs = obsRow(d, inc);
+    const checks = checksRow(inc);
     // Per-deliverable commits: the record of what actually landed for this one.
     const dcommits = (d.commits || []).map(c => commitLi(c)).join("");
     return `<div class="inc"><span class="st st-${esc(inc.status)}">${esc(inc.status)}</span>
 <b>${inc.n}. ${esc(inc.title)}</b>
 <p>${esc(d.body || "")}</p>
 ${files ? `<p class="dim">${files}</p>` : ""}
-${(d.verification || []).length ? `<p class="dim">verify: ${d.verification.map(v => `<code>${esc(v)}</code>`).join(" · ")}</p>` : ""}
 ${dcommits ? `<ul class="dim">${dcommits}</ul>` : ""}
-${obs}
+${checks}
 <p>${acts}</p></div>`;
   }).join("\n");
   const g = gateView(st);
@@ -1425,7 +1449,8 @@ async function render(specPath, opts) {
       n: i + 1, title: d.title, status: prev.status || "pending",
       authorizedAt: prev.authorizedAt || 0, startedAt: prev.startedAt || 0,
       doneAt: prev.doneAt || 0, note: prev.note || "", startSha: prev.startSha || "",
-      obs: reconcileObs(prev, d) };
+      // `obs` is the pre-checks verdict; reconcileChecks carries it over.
+      checks: reconcileChecks(prev, d), obs: undefined };
   });
   // Keep what apply recorded (applied path) for unchanged entries; a spec
   // edit that reorders or reworded a flagged decision re-resolves fresh.
@@ -1811,6 +1836,38 @@ function resolveSlugAt(dir) {
   return null;
 }
 
+// The refusal reads top-down for a person and bottom-up for a machine: crew's
+// board shows only the LAST line of a refused command, so the reason goes
+// there, never a hint.
+function checksRefusal(slug, n, out) {
+  const short = s => s.length > 60 ? s.slice(0, 57) + "…" : s;
+  const lines = out.map(c => `  ${CHECK_MARK[c.status] || "·"} ${c.id}  [${c.kind}] ${c.status}` +
+    (c.status === "stale" ? " — passed against other content than the tree now" : "") +
+    (c.note ? ` — ${c.note}` : ""));
+  return `increment ${n} has ${out.length} check(s) outstanding:\n${lines.join("\n")}` +
+    `\n\n  what each one runs:  deep-plan check list ${slug} ${n}` +
+    `\n  record a verdict:    deep-plan check pass|fail ${slug} ${n} <id> "<what you saw>"` +
+    `\n  override, logged:    deep-plan done ${slug} ${n} --force` +
+    `\n\ndone refused: ${out.map(c => `${c.id} ${c.status}${c.note ? ` (${short(c.note)})` : ""}`).join("; ")}`;
+}
+
+// Back to pending, folding what the verdict was into its note rather than
+// deleting it: re-gate without destroying what was observed. `ids` null means
+// every check that has moved off pending. Returns the ids it moved.
+function repend(inc, ids, why) {
+  const checks = checksOf(inc), moved = [];
+  for (const [id, v] of Object.entries(checks)) {
+    if (v.retired) continue;
+    if (ids ? !ids.includes(id) : (v.status || "pending") === "pending") continue;
+    const was = v.status || "pending";
+    const { ran, tree, by, ...rest } = v;
+    checks[id] = { ...rest, status: "pending", at: 0,
+      note: `was ${was}${v.note ? `: ${v.note}` : ""} (${why})` };
+    moved.push(id);
+  }
+  return moved;
+}
+
 function transition(action, slug, n, why, force = false) {
   const st = readState(slug) || die("no plan " + slug);
   if (action === "go") {
@@ -1836,21 +1893,17 @@ function transition(action, slug, n, why, force = false) {
     const inc = findInc(st, n);
     if (inc.status !== "working" && inc.status !== "authorized")
       die(`increment ${n} is ${inc.status}`);
-    // An increment that declared an observability check cannot be done until
-    // the check has a verdict. Declaring one is the whole point: a plan that
-    // promises a signal and ships without looking at it has promised nothing.
-    if (obsBlocks(inc) && !force)
-      die(`increment ${n} declares an observability check and it is ${inc.obs.status}` +
-        (inc.obs.note ? `\n  last note: ${inc.obs.note}` : "") +
-        `\n\n  what to verify:    deep-plan obs check ${slug} ${n}` +
-        `\n  record the result: deep-plan obs pass ${slug} ${n} "<what you saw>"` +
-        `\n\n  or override, which is written to the log:` +
-        `\n    deep-plan done ${slug} ${n} --force`);
+    // An increment cannot be done until every check has passed against the
+    // tree being closed. Declaring one is the whole point: a plan that promises
+    // a proof and ships without looking at it has promised nothing.
+    const out = checksBlock(inc, needsTree(inc) ? treeOf(st.root) : null);
+    if (out.length && !force) die(checksRefusal(slug, n, out));
     inc.status = "done"; inc.doneAt = Date.now();
     // An override is logged for the same reason the verdict is recorded: someone
-    // reading the history has to be able to see that the signal was skipped.
-    log1(st, `done: increment ${n}` +
-      (obsBlocks(inc) ? ` (observability ${inc.obs.status}, overridden with --force)` : ""));
+    // reading the history has to be able to see that the proof was skipped.
+    log1(st, `done: increment ${n}` + (out.length
+      ? ` (checks outstanding: ${out.map(c => `${c.id} [${c.kind}] ${c.status}`).join(", ")}; overridden with --force)`
+      : ""));
     if ((st.increments || []).every(i => i.status === "done")) {
       st.phase = "done";
       log1(st, "every increment done; the gate retires");
@@ -1874,15 +1927,9 @@ function transition(action, slug, n, why, force = false) {
     //
     // This is a deliberate divergence from the older engine, which kept the
     // verdict across a reset and relied on the human remembering to clear it.
-    if (inc.obs && (inc.obs.status === "pass" || inc.obs.status === "fail")) {
-      const was = inc.obs.status, note = inc.obs.note || "";
-      inc.obs = { status: "pending", at: 0,
-        note: `was ${was}${note ? `: ${note}` : ""} (reset — re-verify)`,
-        version: inc.obs.version || "" };
-      log1(st, `reset: increment ${n} — observability verdict (${was}) returned to pending`);
-    } else {
-      log1(st, `reset: increment ${n}`);
-    }
+    const back = repend(inc, null, "reset — re-verify");
+    log1(st, `reset: increment ${n}` + (back.length
+      ? ` — ${back.length} check verdict(s) returned to pending (${back.join(", ")})` : ""));
   } else die("unknown transition " + action);
   writeState(st); rerenderWorking(slug);
   say(`${action} ${slug} ${n}`);
@@ -2100,15 +2147,24 @@ function statusRows() {
     // owners were stamped has no owner, only its state file's own time.
     owner: st.owner || null,
     touchedAt: (st.owner && st.owner.at) || stateMtime(st.slug),
-    // Increments whose declared observability check is still outstanding. These
-    // cannot go `done` without --force, so a plan that looks one step from
-    // finished may not be — the board reads this from --json.
-    obsOutstanding: (st.increments || []).filter(obsBlocks)
-      .map(i => ({ n: i.n, status: i.obs.status })),
+    // Checks still outstanding. Their increments cannot go `done` without
+    // --force, so a plan that looks one step from finished may not be — the
+    // board reads this from --json. A pass is taken as recorded here; whether
+    // it went stale is judged at `done`, which hashes the tree.
+    checksOutstanding: (st.increments || []).flatMap(i =>
+      checksBlock(i).map(c => ({ n: i.n, id: c.id, kind: c.kind, status: c.status }))),
+    // The pre-checks shape, one entry per increment, kept for older readers.
+    obsOutstanding: (st.increments || []).filter(i => checksBlock(i).length)
+      .map(i => ({ n: i.n, status: checksAggregate(i) })),
     // Every increment's own row, for a reader that draws the whole plan (the
-    // seamux-mods pane) rather than the board's one-line summary.
+    // seamux-mods pane) rather than the board's one-line summary. `obs` is the
+    // checks folded to one word, for a pane built before checks.
     increments: (st.increments || []).map(i => ({
-      n: i.n, title: i.title, status: i.status, obs: (i.obs && i.obs.status) || "n/a",
+      n: i.n, title: i.title, status: i.status, obs: checksAggregate(i),
+      checks: Object.entries(checksOf(i)).filter(([, v]) => !v.retired).map(([id, v]) => ({
+        id, kind: v.kind || "", name: v.name || "", status: v.status || "pending",
+        note: v.note || "", at: v.at || 0, ...(v.recipe ? { recipe: v.recipe } : {}),
+      })),
     })),
   }));
 }
@@ -2122,81 +2178,99 @@ function status(json) {
     say(`  root ${r.root}${r.rootBroken ? "  ⚠ BROKEN ROOT — gone; the gate FAILS OPEN here" : ""}`);
     if (r.approved) say(`  approved snapshot ${r.approved}`);
     if (r.obsOutstanding.length)
-      say("  observability outstanding: " +
+      say("  checks outstanding: " +
         r.obsOutstanding.map(o => `${o.n} (${o.status})`).join(", ") +
-        " — `deep-plan obs check` for what to run");
+        " — `deep-plan check list <slug> <n>` for what to run");
     say(`  ${r.progress.done}/${r.progress.total} increments` +
       (r.progress.next ? ` · next: ${r.progress.next.n}. ${r.progress.next.title}` : "") +
       (r.progress.blocked.length ? ` · blocked: ${r.progress.blocked.map(b => b.title).join(", ")}` : ""));
   }
 }
 
-// ---------------------------------------------------------------- observability
+// ---------------------------------------------------------------- checks
 
-// `obs check` prints what the SPEC already declared. The older engine generated
-// these check blocks per vendor, which is where all its org-specific knowledge
-// lived; the engine itself only ever needed to display them and record a
-// verdict. So the generators do not come across — the declaration is authored
-// in the spec like every other commitment the plan makes.
-function obsCheck(slug, n) {
+// `check list` prints the increment's checks from state, which render filled
+// from the spec: what each one is, what it runs, and where its verdict stands.
+// A pass is judged against the tree as it is now, the way `done` will judge it.
+function checkList(slug, n) {
   const st = readState(slug) || die("no plan " + slug);
   const inc = findInc(st, n);
-  const specPath = path.join(KEYS_DIR, slug + ".spec.json");
-  if (!fs.existsSync(specPath)) die("no archived spec for " + slug);
-  const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
-  const d = (spec.deliverables || [])[inc.n - 1] || {};
-  const checks = (d.observability && d.observability.checks) || [];
+  const all = Object.entries(checksOf(inc)).filter(([, v]) => !v.retired);
   say(`${slug} increment ${inc.n}: ${inc.title}`);
-  say(`verdict: ${inc.obs ? inc.obs.status : "n/a"}` +
-    (inc.obs && inc.obs.note ? ` — ${inc.obs.note}` : ""));
-  if (!checks.length) {
-    say("\nthis increment declares no observability check, so `done` is not gated on one.");
-    say(`to gate it, add an "observability" block to deliverables[${inc.n - 1}] and re-render.`);
+  if (!all.length) {
+    say("\nthis increment declares no checks, so `done` is not gated on one.");
+    say(`to gate it, add "checks" to deliverables[${inc.n - 1}] and re-render.`);
     return;
   }
-  say(`\n${checks.length} check(s) to run:`);
-  for (const c of checks) {
-    say(`\n  [${c.system || "?"}] ${c.name || ""}`);
-    if (c.query) say(`    query:  ${c.query}`);
-    if (c.expect) say(`    expect: ${c.expect}`);
-    if (c.note) say(`    note:   ${c.note}`);
+  const stale = new Set(checksBlock(inc, needsTree(inc) ? treeOf(st.root) : null)
+    .filter(c => c.status === "stale").map(c => c.id));
+  say(`\n${all.length} check(s):`);
+  for (const [id, v] of all) {
+    const s = stale.has(id) ? "stale — passed against other content than the tree now" : v.status || "pending";
+    say(`\n  ${CHECK_MARK[stale.has(id) ? "stale" : v.status] || "·"} ${id}  [${v.kind}${v.system ? " · " + v.system : ""}] ${s}`);
+    say(`    ${v.name}`);
+    if (v.recipe) say(`    recipe: ${v.recipe}  (its verdict comes from running it; a hand pass needs --force)`);
+    if (v.run) say(`    run:    ${v.run}`);
+    if (v.query) say(`    query:  ${v.query}`);
+    if (v.expect) say(`    expect: ${v.expect}`);
+    if (v.hint) say(`    about:  ${v.hint}`);
+    if (v.note) say(`    seen:   ${v.note}`);
   }
-  say(`\nrecord it:  deep-plan obs pass|fail ${slug} ${inc.n} "<what you saw>"`);
+  say(`\nrecord one:  deep-plan check pass|fail ${slug} ${inc.n} <id> "<what you saw>"`);
 }
 
-// `obs reset` is the explicit escape hatch: the checks changed, or the verdict
-// is stale for a reason the engine cannot see. Increment `reset` re-gates on its
-// own, so this is for the case where the work stands but the evidence does not.
-function obsReset(slug, n) {
+// A verdict recorded by hand. A pass records the tree it was seen against, so
+// an edit after it sends the increment's `done` back to "stale". A check backed
+// by a recipe gets its verdict from the recipe's exit code; passing one by hand
+// is refused unless forced, and the force is logged — the same bargain as
+// `done --force`.
+function checkRecord(slug, n, ids, verdict, note, force) {
   const st = readState(slug) || die("no plan " + slug);
   const inc = findInc(st, n);
-  if (!inc.obs || inc.obs.status === "n/a")
-    die(`increment ${n} has no observability verdict to reset`);
-  const was = inc.obs.status;
-  inc.obs = { status: "pending", at: 0,
-    note: `was ${was}${inc.obs.note ? `: ${inc.obs.note}` : ""} (reset by hand)`,
-    version: inc.obs.version || "" };
-  log1(st, `obs reset: increment ${inc.n} (was ${was})`);
-  writeState(st); rerenderWorking(slug);
-  say(`obs verdict for ${slug} ${inc.n} back to pending (was ${was}) — \`done\` is blocked again`);
-}
-
-function obsRecord(slug, n, verdict, note) {
-  const st = readState(slug) || die("no plan " + slug);
-  const inc = findInc(st, n);
-  // Recording against an increment that declared nothing is a sign the spec and
-  // the verdict disagree about what this increment is. Say so rather than
-  // storing a verdict nothing will ever read.
-  if (!inc.obs || inc.obs.status === "n/a")
-    die(`increment ${n} declares no observability check\n` +
-        `  add an "observability" block to the spec's deliverables[${inc.n - 1}] and re-render first`);
+  const checks = checksOf(inc);
+  const active = Object.keys(checks).filter(id => !checks[id].retired);
+  for (const id of ids)
+    if (!active.includes(id))
+      die(`increment ${n} has no check "${id}"\n` + (active.length
+        ? `  its checks: ${active.join(", ")}`
+        : `  it declares none — add "checks" to the spec's deliverables[${inc.n - 1}] and re-render first`));
   if (verdict === "fail" && !note)
-    die(`say what failed: deep-plan obs fail ${slug} ${n} "<what you saw>"`);
-  inc.obs = { status: verdict, at: Date.now(), note: note || "", version: inc.obs.version || "" };
-  log1(st, `obs ${verdict}: increment ${inc.n}${note ? ` — ${note}` : ""}`);
+    die(`say what failed: deep-plan check fail ${slug} ${n} ${ids.length === 1 ? ids[0] : "<id>"} "<what you saw>"`);
+  const recipes = ids.filter(id => checks[id].recipe);
+  if (verdict === "pass" && recipes.length && !force)
+    die(`${recipes.join(", ")} ${recipes.length === 1 ? "is" : "are"} backed by a recipe, so the verdict ` +
+      `comes from running it (\`deep-plan check run\`), not from a note.\n` +
+      `  pass by hand anyway, logged:  deep-plan check pass ${slug} ${n} ${recipes[0]} "<why>" --force\n\n` +
+      `refused: ${recipes.join(", ")} recipe-backed — a hand pass needs --force`);
+  const tree = verdict === "pass" ? treeOf(st.root) : null;
+  for (const id of ids) {
+    const { ran, tree: _t, ...rest } = checks[id];
+    const forced = verdict === "pass" && !!checks[id].recipe;
+    checks[id] = { ...rest, status: verdict, at: Date.now(), note: note || "",
+      by: forced ? "hand, forced" : "hand", ...(tree ? { tree } : {}) };
+    log1(st, `check ${verdict}: increment ${inc.n} ${id}` +
+      (forced ? " (recipe-backed, passed by hand with --force)" : "") + (note ? ` — ${note}` : ""));
+  }
   writeState(st); rerenderWorking(slug);
-  say(`recorded obs ${verdict} for ${slug} ${inc.n}` +
-    (verdict === "pass" ? "" : " — `done` stays blocked until this passes"));
+  say(`recorded ${verdict} for ${slug} ${inc.n}: ${ids.join(", ")}` +
+    (verdict === "pass" ? "" : " — `done` stays blocked until it passes"));
+}
+
+// The explicit hatch: the checks changed, or a verdict is stale for a reason
+// the engine cannot see. Increment `reset` re-gates on its own, so this is for
+// when the work stands but the evidence does not. No id means every verdict.
+function checkReset(slug, n, id, ids = null) {
+  const st = readState(slug) || die("no plan " + slug);
+  const inc = findInc(st, n);
+  const checks = checksOf(inc);
+  const want = ids || (id ? [id] : Object.keys(checks).filter(k => !checks[k].retired));
+  if (id && !(checks[id] && !checks[id].retired)) die(`increment ${n} has no check "${id}"`);
+  if (!want.length) die(`increment ${n} has no check verdict to reset`);
+  const was = want.map(k => `${k} (was ${checks[k].status || "pending"})`);
+  repend(inc, want, "reset by hand");
+  log1(st, `check reset: increment ${inc.n} — ${was.join(", ")}`);
+  writeState(st); rerenderWorking(slug);
+  say(`back to pending for ${slug} ${inc.n}: ${was.join(", ")} — \`done\` is blocked again`);
 }
 
 // ---------------------------------------------------------------- main
@@ -2207,7 +2281,7 @@ function obsRecord(slug, n, verdict, note) {
 // available has been told the opposite of the truth.
 const BUILTIN_VERBS = new Set([
   "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
-  "grade", "status", "go", "start", "done", "reset", "block", "obs",
+  "grade", "status", "go", "start", "done", "reset", "block", "check", "obs",
   "open-gate", "shut-gate", "close", "diff", "ask", "help", "setup", "engine",
 ]);
 
@@ -2280,14 +2354,35 @@ switch (cmd) {
   case "start": case "done": case "reset":
     transition(cmd, args[0], args[1] ?? die(cmd + " <slug> <n>"), undefined, flags.force); break;
   case "block": transition("block", args[0], args[1], args.slice(2).join(" ")); break;
+  case "check": {
+    const sub = args[0], slug = args[1], n = args[2];
+    const need = use => (slug && n !== undefined) || die(use);
+    if (sub === "list") { need("check list <slug> <n>"); checkList(slug, n); }
+    else if (sub === "pass" || sub === "fail") {
+      const use = `check ${sub} <slug> <n> <id> "<what you saw>" [--force]`;
+      need(use);
+      checkRecord(slug, n, [args[3] || die(use)], sub, args.slice(4).join(" "), flags.force);
+    } else if (sub === "reset") { need("check reset <slug> <n> [id]"); checkReset(slug, n, args[3]); }
+    else die('check list|pass|fail|reset <slug> <n> [<id>] ["<what you saw>"]');
+    break;
+  }
   case "obs": {
-    const sub = args[0];
-    if (sub === "check") obsCheck(args[1] || die("obs check <slug> <n>"), args[2] ?? die("obs check <slug> <n>"));
-    else if (sub === "reset") obsReset(args[1] || die("obs reset <slug> <n>"), args[2] ?? die("obs reset <slug> <n>"));
-    else if (sub === "pass" || sub === "fail")
-      obsRecord(args[1] || die(`obs ${sub} <slug> <n> "<what you saw>"`),
-        args[2] ?? die(`obs ${sub} <slug> <n> "<what you saw>"`), sub, args.slice(3).join(" "));
-    else die('obs check|pass|fail|reset <slug> <n> ["<what you saw>"]');
+    // The verb from before checks: `obs pass|fail|reset` act on the
+    // increment's observability checks, all of them at once, as the single
+    // verdict they used to be.
+    const sub = args[0], slug = args[1], n = args[2];
+    const use = 'obs check|pass|fail|reset <slug> <n> ["<what you saw>"]';
+    if (!["check", "pass", "fail", "reset"].includes(sub) || !slug || n === undefined) die(use);
+    if (sub === "check") checkList(slug, n);
+    else {
+      const st = readState(slug) || die("no plan " + slug);
+      const ids = Object.entries(checksOf(findInc(st, n)))
+        .filter(([, v]) => !v.retired && v.kind === "observability").map(([id]) => id);
+      if (!ids.length) die(`increment ${n} declares no observability check\n` +
+        `  add one to the spec's deliverables[${Number(n) - 1}].checks and re-render first`);
+      if (sub === "reset") checkReset(slug, n, null, ids);
+      else checkRecord(slug, n, ids, sub, args.slice(3).join(" "), flags.force);
+    }
     break;
   }
   case "open-gate": {
@@ -2340,15 +2435,19 @@ switch (cmd) {
   status [--json]                             tracked plans (the board reads --json)
   go <slug> <n|next> | go --at DIR next       authorize an increment
   start|done|block|reset <slug> <n> [why]     move an increment
-                                              (done --force overrides a pending
-                                              observability verdict, and logs it;
-                                              reset puts the verdict back to
+                                              (done is refused until every check
+                                              passed against the tree as it is;
+                                              done --force overrides, and logs it;
+                                              reset puts every verdict back to
                                               pending — the work is being redone)
-  obs check <slug> <n>                        the checks the spec declared for it
-  obs pass|fail <slug> <n> "<what you saw>"   record the verdict; done is blocked
-                                              until a declared check passes
-  obs reset <slug> <n>                        verdict back to pending, keeping
-                                              what it was in the note
+  check list <slug> <n>                       the increment's checks, verdicts and
+                                              what each one runs
+  check pass|fail <slug> <n> <id> "<seen>"    record a verdict by hand (a check
+                                              backed by a recipe needs --force)
+  check reset <slug> <n> [id]                 verdict(s) back to pending, keeping
+                                              what they were in the note
+  obs check|pass|fail|reset <slug> <n> ...    the same, on the observability
+                                              checks only (the older verb)
   open-gate|shut-gate <slug>                  the human lever, logged
   diff <slug> [n]                             open the increment's patch since start
                                               (done writes it; only this opens it)
