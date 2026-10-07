@@ -33,6 +33,7 @@ covers a first install and an update, and what to ask you along the way.
 [crew](#crew-the-board) ·
 [deep-plan](#deep-plan-plans-you-approve-one-step-at-a-time) ·
 [restack](#restack-rebase-without-merging-generated-files) ·
+[seamux-mods](#seamux-mods-deep-plan-in-the-terminal) ·
 [Setup](#setup) ·
 [Configuration](#configuration) ·
 [Security notes](#security-notes) ·
@@ -88,6 +89,8 @@ crew makes it visible:
 Detection reads your local transcripts, not the API, and the cache lifetime
 comes from your billing mode and settings.
 
+![the Cache re-writes panel on /usage: tokens re-cached this week, counts by cause, and the sessions that re-cached the most](docs/img/cache-usage.png)
+
 What to do with a warning:
 
 - A break you already took is a sunk cost. You only pay for the re-cache if
@@ -121,11 +124,15 @@ You ask for a plan. deep-plan makes the agent work through it in this order:
 ### The review page
 
 The page has the plan's context, decisions, cited evidence, diagrams and
-increments, plus a short quiz that checks that you and the plan agree. Answer
-on the page, highlight text to pin comments, then click **Copy for session**
-and paste the result back into the terminal.
+increments.
 
-![a deep-plan review surface: the alignment quiz with selectable options](docs/img/plan-review.png)
+![the top of a plan's review page: title, context, and the decisions with an "add an ADR" button](docs/img/plan-page.png)
+
+At the bottom is a short quiz that checks that you and the plan agree.
+Answer on the page, highlight text anywhere to pin comments, then click
+**Copy for session** and paste the result back into the terminal.
+
+![the quiz at the bottom of the review page: two questions answered](docs/img/plan-review.png)
 
 ### Questions with pictures
 
@@ -303,9 +310,69 @@ restack check --deep     # the CI comparisons, locally
 restack push             # prints; never pushes
 ```
 
+Here is a two-branch stack after `main` moved. Both sides added GraphQL
+types, so the generated `schema.graphql` conflicts, and both changed the tax
+rate in `app/billing.rb`. restack regenerates the schema and stops only for
+the tax rate:
+
+```text
+$ restack plan
+plan · git rebase --onto, bottom first · base origin/main (1 behind)
+  • feat/invoices — 1 commit(s) onto origin/main
+  • feat/invoice-emails — 1 commit(s) onto feat/invoices
+
+  generated artifacts both sides touched (conflicts expected, and handled):
+    graphql-schema — resolve regen, cheap
+
+$ restack run
+  rebasing feat/invoices onto origin/main
+
+stopped on feat/invoices at 1/1 — invoices: Invoice type, tax from the rate table
+  resolved for you (generated):
+    graphql-schema — regenerated (1 file)
+  yours to resolve:
+    app/billing.rb — 1 hunk
+
+  then: restack continue
+
+$ git add app/billing.rb && restack continue
+  rebasing feat/invoice-emails onto feat/invoices
+
+  ok   feat/invoices b5481eab7428
+  ok   feat/invoice-emails b355d0a6a178
+
+$ restack check
+  staleness: graphql-schema …
+  ok   graphql-schema
+
+$ restack push
+  run these yourself (the stack must go up bottom-first):
+    git push --force-with-lease origin feat/invoices
+    git push --force-with-lease origin feat/invoice-emails
+```
+
 If you use Graphite, restack leaves the rebase to `gt restack` and does its
 resolving between Graphite's stops. Without Graphite, it finds the chain from
 your open PRs or from branch topology.
+
+## seamux-mods: deep-plan in the terminal
+
+An optional plugin that draws deep-plan inside Claude Code, so you can steer
+a plan without leaving the session. It needs Claude Code 2.1.287 or later;
+install it with `./install.sh --mods`.
+
+`/plan-pane` opens a pane with the plan's increments and each one's checks,
+with buttons for `go next`, `done`, `run checks` and `variant ready`. The
+status line under the prompt shows the plan's progress, the open increment,
+and how many checks are running in the background.
+
+![the plan pane beside a Claude Code session: increment 1 with five checks (waiting on a preview, pending, passed, failed, running), and the plan in the status line](docs/img/plan-pane.png)
+
+When the gate blocks an edit, a band appears above the prompt with the
+reason and a `go next` button, so approving the next increment is one key
+away.
+
+![the gate band above the prompt after a blocked edit: the reason, go next, open plan and dismiss](docs/img/gate-band.png)
 
 ## Setup
 
