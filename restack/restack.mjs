@@ -237,7 +237,8 @@ function conflictPass(ctx, branchName) {
   // The guard runs BEFORE any resolution: ask whether these files really are
   // generated, and pull any that read as hand-written out of the automatic
   // path entirely. One batched question for every artifact path in this stop.
-  const guarded = guardArtifactPaths(ctx.cwd, JUDGE, [...groups.values()].flatMap(g2 => g2.paths));
+  const guarded = guardArtifactPaths(ctx.cwd, JUDGE,
+    [...groups.values()].flatMap(g2 => g2.paths.map(p => ({ path: p, regen: g2.artifact.regen || "" }))), op);
   const guardedPaths = new Set(guarded.map(g2 => g2.path));
   const escalated = [];
   for (const g2 of guarded) {

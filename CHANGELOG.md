@@ -61,6 +61,12 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
   `deep-plan status --json` now reports such a check as `lost` (judged on
   read; it still writes nothing), and the pane shows `⚠ lost` with its `run
   checks` button.
+- **restack's glob guard sees what makes a file look generated.** Against a
+  remote endpoint it was sent the path alone, and rated a file headed "THIS
+  FILE IS GENERATED. DO NOT EDIT." 30–42% likely to be generated. It now also
+  gets the artifact's regen command and, off-machine, only the head line that
+  declares the file generated; on loopback, the first lines from the base
+  side, with no conflict markers. The safe floor is unchanged.
 
 ## 0.3.0 — 2026-10-04
 

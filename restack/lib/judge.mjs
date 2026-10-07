@@ -22,13 +22,17 @@
 // so file content never leaves it, and these questions are written for that:
 // they carry conflict hunks and file heads, which is what makes them
 // answerable. If the endpoint is NOT loopback, the content questions are
-// dropped to paths and subjects only. That check is here and not in the
+// dropped to paths and subjects only, with two exceptions for the glob guard:
+// the artifact's regen command (the repo's config, not a file), and one line
+// from the top of the file that already SAYS it is generated ("DO NOT EDIT",
+// "@generated"), found here, so nothing else from the file goes with it. That check is here and not in the
 // caller because "is it safe to send this" is a property of the transport,
 // not of the feature that wants an answer.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { sideStage } from "./git.mjs";
 
 // THE THRESHOLD IS ASYMMETRIC, AND THAT IS THE WHOLE POINT.
 //
@@ -143,6 +147,22 @@ function head(cwd, p, lines = 24) {
   } catch { return ""; }
 }
 
+// The top of a conflicted file as the base has it: a generator's output with
+// no conflict markers in it, which mid-conflict make any file look hand-edited.
+// The working copy when the base has none (an add/add, or not mid-op).
+function baseHead(cwd, op, p, lines = 24) {
+  const r = op ? spawnSync("git", ["show", `:${sideStage(op, "base")}:${p}`], { cwd, encoding: "utf8", timeout: 10000 }) : null;
+  if (!r || r.status !== 0) return head(cwd, p, lines);
+  return r.stdout.split("\n").slice(0, lines).join("\n").slice(0, EXCERPT_CAP);
+}
+
+// The first line near the top that declares the file generated, or "".
+const GENERATED_MARK = /do not edit|@generated|auto-?generated|(code|file) (is )?generated|generated (by|from|with)\b/i;
+export function generatedBanner(text, lines = 12) {
+  const hit = String(text || "").split("\n").slice(0, lines).find(l => GENERATED_MARK.test(l));
+  return hit ? hit.trim().slice(0, 200) : "";
+}
+
 // ---------------------------------------------------------------- 1. the glob guard
 //
 // Before auto-resolving a conflicted file because a glob claimed it, ask
@@ -151,22 +171,33 @@ function head(cwd, p, lines = 24) {
 // invisible to every deterministic check: the glob is narrow, the config is
 // valid, the file just is not generated.
 //
+// `items` are `{ path, regen }`: the conflicted path and its artifact's regen
+// command. The command and a generated-file banner are evidence the question
+// was missing; they can make "generated" likelier, and the floor it has to
+// clear is the same, so they still cannot authorise anything.
+//
 // Returns the paths to ESCALATE. An answer of "generated" returns nothing —
 // it cannot authorise anything, because resolving was already the plan.
-export function guardArtifactPaths(cwd, j, paths) {
-  if (!j.on || !paths.length) return [];
+export function guardArtifactPaths(cwd, j, items, op = null) {
+  if (!j.on || !items.length) return [];
   const state = {}, questions = {}, index = [];
-  paths.forEach((p, n) => {
+  items.forEach(({ path: p, regen = "" }, n) => {
     const id = "p" + n;
     index.push({ id, path: p });
-    state[id] = j.content
-      ? { path: p, head: head(cwd, p) }
-      : { path: p };
+    const top = baseHead(cwd, op, p);
+    const banner = generatedBanner(top);
+    state[id] = {
+      path: p,
+      ...(regen ? { regen } : {}),
+      ...(j.content ? { head: top } : banner ? { banner } : {}),
+    };
     questions[id] = {
       type: "choice",
       instructions:
         "`" + id + ".path` is a file that conflicted during a rebase" +
-        (j.content ? ", and `" + id + ".head` is the top of it as it stands mid-conflict" : "") +
+        (j.content ? ", and `" + id + ".head` is the top of it as the base branch has it"
+          : banner ? ", and `" + id + ".banner` is a line from the top of it" : "") +
+        (regen ? ". `" + id + ".regen` is the command this repository's config says rebuilds it" : "") +
         ". A tool is about to resolve this conflict automatically by rebuilding the file from a generator " +
         "instead of merging it. Judge whether that is safe: is this file the output of a generator, or does a person edit it directly?",
       criteria: {
