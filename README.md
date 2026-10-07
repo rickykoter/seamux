@@ -7,7 +7,7 @@ Run a fleet of Claude Code agents from one screen. seamux adds three things to
   now, so a dozen parallel agents stay legible.
 - **deep-plan** — a Claude Code skill that turns "make a plan" into a
   reviewable page with a quiz, then blocks the agent from editing until you
-  approve each increment.
+  approve each increment, and from calling one done until its checks pass.
 - **restack** — its companion for the week after: rebase a stack onto a moved
   base without hand-resolving a single generated file.
 
@@ -148,6 +148,76 @@ refuses while any risk is still undecided, the same way it refuses a
 contract change nobody was quizzed on.
 
 ![risk cards on the review page: a disposition per risk, with a deliverable picker and a ticket box for mitigations](docs/img/risks.png)
+
+**Increments that prove themselves.** Every increment carries checks — a
+test suite, an e2e run, an observability signal, a step a person performs —
+and `done` is refused until each one has passed against the code being
+closed. Most of them write themselves. A project keeps its recipes in
+`.seamux/verify.json` beside its code (in a monorepo, each project keeps its
+own; the nearest file wins and the root's recipes are inherited), and a
+recipe marked `default` whose globs cover an increment's files becomes one of
+its checks when the plan renders. The review page shows exactly what will
+run, down to each recipe's hash, and an increment nothing covers is refused
+unless the plan says in writing why it can't be proven.
+
+![an increment on the review page: an e2e check whose acquire step is marked as a person's, a Datadog check with its query, and three checks inferred from the repo's recipes](docs/img/checks-review.png)
+
+`deep-plan check run` runs them and takes the verdict from the exit code:
+quick ones in the foreground, slow ones (a deploy wait plus an e2e suite can
+outlast any foreground command) in a background runner that records its own
+verdict, and is caught if it dies. Remote QA is three steps: acquire a
+variant, wait for it, test it. The first is always yours. The engine stops,
+prints the push or deploy to run, and picks up from the wait once you have.
+A pass is tied to the tree it ran against: edit a file afterwards and it goes
+stale, commit what passed and it doesn't. With seamux-mods, the plan pane
+lists the same checks under each increment, with `run checks` and `variant
+ready` buttons.
+
+![the same increment on the working page: one check passed, one failed with the step that failed, one running in the background, one waiting on a preview, one still to observe](docs/img/checks-working.png)
+
+```text
+$ deep-plan done outbox-retry 1
+deep-plan: increment 1 has 4 check(s) outstanding:
+  ✋ preview-retry  [e2e] needs-variant — a person runs: git push -u origin HEAD
+  ⏳ obs-retry-counter-climbs  [observability] pending
+  ❌ lint  [test] fail — exit 1 at step 1: bin/rubocop app
+  🔄 integration  [test] running — running since 02:50:45Z
+
+  what each one runs:  deep-plan check list outbox-retry 1
+  record a verdict:    deep-plan check pass|fail outbox-retry 1 <id> "<what you saw>"
+  override, logged:    deep-plan done outbox-retry 1 --force
+
+done refused: preview-retry needs-variant (a person runs: git push -u origin HEAD); obs-retry-counter-climbs pending; lint fail (exit 1 at step 1: bin/rubocop app); integration running (running since 02:50:45Z)
+```
+
+**No recipes yet?** `deep-plan verify init` reads what the repo already runs
+— package.json scripts, CI steps (cited by line), Playwright, Vitest,
+Cucumber and Hurl configs, the host it deploys to — and drafts a recipe file
+per project with a TODO on every gap. It never writes without `--write`, and
+never over a file that exists. Remote QA comes as templates for Vercel
+previews, Firebase channels, RWX runs and GitHub deployments, each shipped
+marked unverified until someone proves its wait step against a real preview.
+Then `deep-plan/verify/setup-prompt.md` walks the TODOs with you: confirm
+each command against CI, run it twice from a clean tree, and set its tier
+from the stopwatch.
+
+```text
+$ deep-plan verify init
+project . (package.json) — runners: playwright, vitest
+  draft .seamux/verify.json
+    lint           test · cheap · default  npm run lint
+      evidence: .github/workflows/ci.yml:9
+      TODO confirm it matches CI: .github/workflows/ci.yml:9
+      TODO run it twice from a clean tree; both must pass and leave git status clean
+      …
+    test-e2e       e2e · expensive  npm run test:e2e
+      TODO no CI step runs this — confirm it is the command a reviewer would trust
+      TODO its Playwright config starts its own webServer: a local e2e. For a deployed
+           preview, make it honour $BASE_URL and add a remote template
+      …
+    (check chains lint, type-check, test — its parts are recipes; it is not one)
+    host: vercel → remote QA template: deep-plan verify init --template vercel-preview
+```
 
 *(Real renders of the shipped pages, loaded with demo data.)*
 
@@ -294,7 +364,9 @@ Open the board with `cmux sidebar open crew` or the Dock button. New Claude
 Code sessions pick up the plugins' hooks; already-running ones don't.
 
 Then try it: ask Claude for a "deep plan" of any change. You'll get the
-review page, the quiz, and the per-increment gate.
+review page, the quiz, and the per-increment gate. In a repo with no
+`.seamux/verify.json` yet, `deep-plan verify init` shows the checks it
+would draft.
 
 ### Uninstall
 
@@ -387,7 +459,7 @@ it's set up.
 | path | what |
 |---|---|
 | `.claude-plugin/marketplace.json` | the `seamux` marketplace: one entry per plugin below |
-| `deep-plan/` | plugin: the skill, its gate hook, `bin/deep-plan` (see its `SKILL.md`) |
+| `deep-plan/` | plugin: the skill, its gate hook, `bin/deep-plan` (see its `SKILL.md`); `verify/` holds the remote QA templates and the setup prompt |
 | `restack/` | plugin: the skill and `bin/restack` (see its `SKILL.md`) |
 | `bash-guard/` | plugin: the destructive-command guard on every Bash call |
 | `crew/` | plugin: Claude hooks and options; `crew apply` copies it to `~/.config/cmux/crew` (see `crew/README.md`) |
