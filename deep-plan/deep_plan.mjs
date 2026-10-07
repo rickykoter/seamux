@@ -23,6 +23,7 @@ import { validateDiagrams, validateSurface, mermaidPath, mermaidCandidates, VEND
 import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries, adrScanReport } from "./lib/adr.mjs";
 import { epicHtml, incrementMd, bundleReadme, incrementFileNames } from "./lib/cutover.mjs";
 import { checkEvidence } from "./lib/evidence.mjs";
+import { resolveFiles } from "./lib/verify.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, statePath, sessionId,
@@ -2273,6 +2274,39 @@ function checkReset(slug, n, id, ids = null) {
   say(`back to pending for ${slug} ${inc.n}: ${was.join(", ")} — \`done\` is blocked again`);
 }
 
+// ---------------------------------------------------------------- verify
+
+// `verify resolve` answers "which recipes would check these files, and from
+// which config" without running anything — the question an author asks while
+// writing a deliverable's file list, and the one to ask when a check that
+// should have been inferred was not.
+function stepsLine(r) {
+  if (r.steps.length === 1 && r.steps[0].kind === "run") return r.steps[0].command;
+  return r.steps.map(s => s.kind === "acquire" ? "acquire (a person runs it)" : s.kind +
+    (s.export ? ` → $${s.export}` : "")).join(" → ");
+}
+
+function verifyResolve(files, root, json) {
+  if (!files.length) die("verify resolve <file>... [--root DIR] [--json]");
+  const res = resolveFiles(root, files);
+  if (json) process.stdout.write(JSON.stringify(res, null, 2) + "\n");
+  else {
+    say(`root ${res.root}`);
+    for (const f of res.files) {
+      if (f.outside) { say(`\n${f.file}  ✗ outside the root — nothing here verifies it`); continue; }
+      say(`\n${f.rel}  → ${f.config || "no .seamux/verify.json at or above it"}`);
+      if (f.config && !f.recipes.length) say("    no recipe's match covers it");
+      for (const r of f.recipes)
+        say(`    ${r.key.padEnd(18)} [${r.kind} · ${r.tier}]${r.default ? " default" : ""}` +
+          `${r.inherited ? " (inherited from the root)" : ""}  ${stepsLine(r)}  #${r.hash}`);
+    }
+  }
+  if (res.errors.length) {
+    for (const e of res.errors) console.error("  ✗ " + e);
+    die(`verify: ${res.errors.length} config error(s) — a broken recipe file is never read as "no recipes"`);
+  }
+}
+
 // ---------------------------------------------------------------- main
 
 // Every verb the switch below handles. Kept beside it so the usage listing can
@@ -2282,7 +2316,7 @@ function checkReset(slug, n, id, ids = null) {
 const BUILTIN_VERBS = new Set([
   "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
   "grade", "status", "go", "start", "done", "reset", "block", "check", "obs",
-  "open-gate", "shut-gate", "close", "diff", "ask", "help", "setup", "engine",
+  "open-gate", "shut-gate", "close", "diff", "ask", "help", "setup", "engine", "verify",
 ]);
 
 const [, , cmd, ...rest] = process.argv;
@@ -2385,6 +2419,12 @@ switch (cmd) {
     }
     break;
   }
+  case "verify": {
+    const root = flags.root || gitRoot(process.cwd()) || process.cwd();
+    if (args[0] === "resolve") verifyResolve(args.slice(1), root, flags.json);
+    else die("verify resolve <file>... [--root DIR] [--json]");
+    break;
+  }
   case "open-gate": {
     const st = readState(args[0]) || die("no plan " + args[0]);
     st.gate = "open"; log1(st, "gate opened by the human — the one lever, logged");
@@ -2455,7 +2495,9 @@ switch (cmd) {
   ask <ask.json>                              render a question with diagrams/examples
                                               (served at /ask/<id>; a pick on the page
                                               types the number into this terminal)
-  ask show <id>                               the recorded answer, if any`);
+  ask show <id>                               the recorded answer, if any
+  verify resolve <file>... [--root DIR]       which .seamux/verify.json each file
+                 [--json]                     lands on and the recipes that apply`);
     // State which extensions are in force even when nothing is wrong: "my
     // extension is being ignored" is the failure this listing exists to remove.
     const ext = listExt();

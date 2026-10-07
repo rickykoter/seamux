@@ -9,6 +9,7 @@ import crypto from "node:crypto";
 import { execSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { verdict } from "./lib/evidence.mjs";
+import { resolver, resolveFiles, matchesGlob, recipeHash, load as loadVerify } from "./lib/verify.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const V = process.argv.includes("-v");
@@ -1321,6 +1322,136 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     cli("close", n);
     fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), { force: true });
   }
+}
+
+// -------------------------------------------------- recipe files: load, inherit, resolve
+//
+// .seamux/verify.json lives beside the code it verifies. A file lands on its
+// nearest ancestor's config; the root's recipes are inherited unless that
+// config redefines the id, and configs in between are not. `match` and `cwd`
+// are relative to the project directory holding the config.
+{
+  const VR = path.join(TMP, "verify-root");
+  const put = (rel, obj) => {
+    const p = path.join(VR, rel, ".seamux", "verify.json");
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, typeof obj === "string" ? obj : JSON.stringify(obj, null, 2));
+  };
+  put("", { recipes: [
+    { id: "unit", kind: "test", run: "npm test", match: ["src/**"], default: true },
+    { id: "lint", kind: "test", run: "npm run lint", default: true },
+    { id: "e2e", kind: "e2e", steps: [
+      { acquire: "git push -u origin HEAD", note: "opens a preview" },
+      { wait: "scripts/preview-url.sh", export: "BASE_URL" },
+      { run: "npx playwright test" }] },
+  ] });
+  put("apps", { recipes: [{ id: "apps-only", run: "true" }] });
+  put("apps/web", { recipes: [
+    { id: "unit", kind: "test", run: "npm -w web test", match: ["src/**/*.tsx", "src/**/*.ts"], default: true },
+    { id: "web-a11y", kind: "e2e", run: "npm run test:a11y", tier: "expensive" },
+  ] });
+
+  const R = resolver(VR);
+  const web = R.file("apps/web/src/cart.tsx");
+  const keys = rs => rs.map(r => r.key).sort().join(",");
+  ok("a file lands on its nearest ancestor's config",
+    web.config === "apps/web/.seamux/verify.json");
+  ok("…with that project's recipes, plus the root's it does not redefine",
+    keys(web.recipes) === "e2e,lint,unit@apps/web,web-a11y@apps/web");
+  ok("a redefined id replaces the root's recipe for that project",
+    web.recipes.find(r => r.id === "unit").steps[0].command === "npm -w web test");
+  ok("a config between the project and the root is not inherited",
+    !web.recipes.some(r => r.id === "apps-only"));
+  ok("inherited recipes say so", web.recipes.find(r => r.id === "lint").inherited === true &&
+    web.recipes.find(r => r.id === "unit").inherited === false);
+  ok("match is relative to the project: apps/web's src/** does not cover its README",
+    !R.file("apps/web/README.md").recipes.some(r => r.id === "unit"));
+  ok("a file with no config of its own lands on the nearest one above (apps/)",
+    R.file("apps/api/server.ts").config === "apps/.seamux/verify.json" &&
+    keys(R.file("apps/api/server.ts").recipes) === "apps-only@apps,e2e,lint");
+  ok("…and the root's match globs are relative to the root",
+    R.file("src/index.ts").recipes.some(r => r.key === "unit") &&
+    !R.file("apps/api/src/index.ts").recipes.some(r => r.id === "unit") &&
+    keys(R.file("docs/guide.md").recipes) === "e2e,lint");
+  ok("the copied glob matcher keeps restack's semantics",
+    matchesGlob("a/b/c.ts", "**/*.ts") && matchesGlob("c.ts", "**/*.ts") && matchesGlob("proto/x/y", "proto") &&
+    !matchesGlob("src/a/b.ts", "src/*.ts") && matchesGlob("src/a.ts", "src/?.ts"));
+  ok("a file that does not exist yet still resolves (plans name files they create)",
+    R.file("apps/web/src/new/thing.ts").recipes.some(r => r.key === "unit@apps/web"));
+  ok("a file outside the root resolves to nothing", R.file(path.join(TMP, "elsewhere.ts")).outside === true);
+
+  const both = resolveFiles(VR, ["apps/web/src/cart.tsx", "src/index.ts"]);
+  ok("two projects' same-named recipes stay two checks",
+    both.recipes.some(r => r.key === "unit") && both.recipes.some(r => r.key === "unit@apps/web"));
+
+  const e2e = web.recipes.find(r => r.id === "e2e");
+  ok("a recipe with acquire or wait steps defaults to the expensive tier", e2e.tier === "expensive");
+  ok("a wait step gets a timeout and a poll interval",
+    e2e.steps[1].timeout === 1200 && e2e.steps[1].interval === 15 && e2e.steps[1].export === "BASE_URL");
+  ok("`run` is shorthand for one run step",
+    JSON.stringify(web.recipes.find(r => r.id === "lint").steps.map(s => s.kind)) === '["run"]');
+  ok("every recipe carries a 12-hex content hash", web.recipes.every(r => /^[0-9a-f]{12}$/.test(r.hash)));
+  ok("verify resolve labels an acquire step as a person's, and names what a wait exports",
+    /e2e .*acquire \(a person runs it\) → wait → \$BASE_URL → run/.test(
+      cli("verify", "resolve", "apps/web/src/cart.tsx", "--root", VR).stdout));
+  const unitHash = () => resolver(VR).file("src/a.ts").recipes.find(r => r.id === "unit").hash;
+  const h1 = unitHash();
+  ok("the hash is stable across loads", h1 === unitHash());
+  put("", { recipes: [{ id: "unit", kind: "test", run: "npm test -- --ci", match: ["src/**"], default: true },
+    { id: "lint", kind: "test", run: "npm run lint", default: true }] });
+  ok("…and changes when the recipe is edited", h1 !== unitHash());
+  ok("an inherited recipe is the root's recipe, hash and all",
+    resolver(VR).file("apps/web/x.ts").recipes.find(r => r.id === "lint").hash ===
+    resolveFiles(VR, ["src/a.ts"]).recipes.find(r => r.id === "lint").hash);
+  ok("one recipe body in two projects is two recipes (cwd differs)",
+    recipeHash(loadVerify(VR).recipes[0], "") !== recipeHash(loadVerify(VR).recipes[0], "apps/web"));
+
+  // A config is validated as it is loaded; nothing invalid reads as "no recipes".
+  const BAD = path.join(TMP, "verify-bad");
+  const errsOf = obj => {
+    const p = path.join(BAD, ".seamux", "verify.json");
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, typeof obj === "string" ? obj : JSON.stringify(obj));
+    return loadVerify(BAD).errors.join(" | ");
+  };
+  ok("a missing config is not an error", loadVerify(path.join(TMP, "nowhere")).present === false &&
+    loadVerify(path.join(TMP, "nowhere")).errors.length === 0);
+  ok("invalid JSON is an error", /not valid JSON/.test(errsOf("{ nope")));
+  ok("a file without a recipes array is an error", /expected \{ "recipes"/.test(errsOf({ checks: [] })));
+  for (const [label, recipe, re] of [
+    ["no id", { run: "x" }, /id is required/],
+    ["an unknown kind", { id: "a", kind: "manual", run: "x" }, /kind must be/],
+    ["run and steps both", { id: "a", run: "x", steps: [{ run: "y" }] }, /not both/],
+    ["nothing to run", { id: "a" }, /nothing to run/],
+    ["a step with two kinds", { id: "a", tier: "expensive", steps: [{ run: "x", wait: "y" }] }, /needs exactly one of acquire\|wait\|run \(has wait and run\)/],
+    ["a wait after a run", { id: "a", tier: "expensive", steps: [{ run: "x" }, { wait: "y" }] }, /wait after run/],
+    ["an export on an acquire step", { id: "a", steps: [{ acquire: "x", export: "V" }, { run: "y" }] }, /cannot export/],
+    ["an export that is not an env var name", { id: "a", steps: [{ run: "x", export: "base-url" }] }, /env var name/],
+    ["a remote recipe with no run step", { id: "a", steps: [{ wait: "x" }] }, /needs a run step/],
+    ["a wait in the cheap tier", { id: "a", tier: "cheap", steps: [{ wait: "x" }, { run: "y" }] }, /must be expensive/],
+    ["a cwd outside the project", { id: "a", run: "x", cwd: "../other" }, /cwd must be a path inside/],
+    ["a non-positive timeout", { id: "a", run: "x", timeout: 0 }, /timeout must be a positive/],
+  ]) ok(`a recipe with ${label} is refused`, re.test(errsOf({ recipes: [recipe] })));
+  ok("two recipes with one id are refused",
+    /share the id "a"/.test(errsOf({ recipes: [{ id: "a", run: "x" }, { id: "a", run: "y" }] })));
+
+  // The verb: text for a person, --json for the render that infers checks.
+  let r = cli("verify", "resolve", "apps/web/src/cart.tsx", "docs/guide.md", "--root", VR);
+  ok("verify resolve names the config each file lands on and what applies",
+    r.status === 0 && /apps\/web\/src\/cart\.tsx  → apps\/web\/\.seamux\/verify\.json/.test(r.stdout) &&
+    /unit@apps\/web/.test(r.stdout) && /lint .*\(inherited from the root\)/.test(r.stdout));
+  r = cli("verify", "resolve", "apps/web/src/cart.tsx", "--root", VR, "--json");
+  const js = JSON.parse(r.stdout);
+  ok("verify resolve --json carries files, recipes with hashes, and errors",
+    js.files[0].config === "apps/web/.seamux/verify.json" && js.recipes.every(x => x.hash && x.source) &&
+    Array.isArray(js.errors));
+  ok("a file under no config says so",
+    /no \.seamux\/verify\.json at or above it/.test(cli("verify", "resolve", "x.ts", "--root", REPO).stdout));
+  put("apps/web", "{ broken");
+  r = cli("verify", "resolve", "apps/web/src/cart.tsx", "--root", VR);
+  ok("a broken config fails verify resolve loudly",
+    r.status === 1 && /apps\/web\/\.seamux\/verify\.json: not valid JSON/.test(r.stderr));
+  ok("verify with no subcommand says how to use it", cli("verify").status === 1);
 }
 
 // -------------------------------------------------- spec fields that used to be dropped
