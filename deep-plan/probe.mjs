@@ -1625,6 +1625,189 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   }
 }
 
+// -------------------------------------------------- check run: inline, detached, from wait
+//
+// A recipe-backed check runs exactly as render stored it and the verdict is
+// the exit code. Cheap ones run in the foreground; expensive ones in a
+// detached runner that outlives the CLI and lands its own verdict. An acquire
+// step is never executed: the check waits for a person, then `--from wait`.
+// A runner that dies without a verdict is found and failed as lost.
+{
+  const RR = path.join(TMP, "run-root");
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  fs.mkdirSync(path.join(RR, ".seamux"), { recursive: true });
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: RR });
+  const RECIPES = { recipes: [
+    { id: "ok", run: "echo hello; echo world", default: true },
+    { id: "bad", run: "echo boom >&2; exit 3" },
+    { id: "slow", run: "sleep 5", timeout: 0.5 },
+    { id: "chain", steps: [
+      { run: "echo http://preview.local", export: "BASE_URL" },
+      { run: "test \"$BASE_URL\" = http://preview.local && echo got-$BASE_URL" }] },
+    { id: "remote", kind: "e2e", steps: [
+      { acquire: "scripts/open-preview.sh", note: "opens a preview" },
+      { wait: "test -f ready && cat ready", export: "BASE_URL", timeout: 1, interval: 0.1 },
+      { run: "echo against $BASE_URL" }] },
+    { id: "exp", tier: "expensive", run: "sleep 1; echo detached-done" },
+    { id: "hang", tier: "expensive", run: "sleep 30" },
+  ] };
+  const putCfg = obj => fs.writeFileSync(path.join(RR, ".seamux", "verify.json"), JSON.stringify(obj, null, 2));
+  putCfg(RECIPES);
+  const declared = ["bad", "slow", "chain", "remote", "exp", "hang"].map(id =>
+    ({ id, kind: id === "remote" ? "e2e" : "test", name: id, recipe: id }));
+  const mk = (slug, checks) => {
+    const s = JSON.parse(JSON.stringify(spec));
+    s.slug = slug;
+    s.deliverables[0] = { title: "Retry sweep", body: "A timer job.", files: ["src/a.ts"],
+      checks: [...checks, { id: "eyes", kind: "manual", name: "look at it" }] };
+    return s;
+  };
+  const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
+  const ck = (n, id) => stOf(n).increments[0].checks[id];
+  const arm = (n, checks) => {
+    cli("render", tmpSpec(mk(n, checks)), "--root", RR);
+    const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, n + ".key.json"), "utf8"));
+    cli("grade", n, ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+    cli("go", n, "1"); cli("start", n, "1");
+  };
+  const lastOut = r => r.stdout.trim().split("\n").pop();
+  const waitFor = (cond, ms = 8000) => {
+    const until = Date.now() + ms;
+    while (Date.now() < until) { if (cond()) return true; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); }
+    return cond();
+  };
+
+  arm("run-1", declared);
+  let r = cli("check", "run", "run-1", "1", "ok");
+  ok("a cheap recipe runs in the foreground and passes on exit 0",
+    r.status === 0 && /✅ ok pass — exit 0/.test(r.stdout) && ck("run-1", "ok").status === "pass" &&
+    ck("run-1", "ok").by === "runner" && ck("run-1", "ok").ran.code === 0);
+  ok("…keeping the full output in its log",
+    /hello\nworld/.test(fs.readFileSync(ck("run-1", "ok").ran.log, "utf8")));
+  ok("…and recording the tree it ran against", /^[0-9a-f]{40}$/.test(ck("run-1", "ok").tree.content));
+  ok("…and no runner left behind in the verdict", !("runner" in ck("run-1", "ok")));
+
+  r = cli("check", "run", "run-1", "1", "bad");
+  ok("a non-zero exit fails the check, naming the step and showing the tail",
+    r.status === 1 && ck("run-1", "bad").status === "fail" &&
+    ck("run-1", "bad").note === "exit 3 at step 1: echo boom >&2; exit 3" && /boom/.test(r.stdout));
+  r = cli("check", "run", "run-1", "1", "slow");
+  ok("a run past its timeout fails as timed out",
+    r.status === 1 && /timed out after 0.5s at step 1/.test(ck("run-1", "slow").note) && ck("run-1", "slow").ran.timedOut);
+  r = cli("check", "run", "run-1", "1", "chain");
+  ok("a step's export reaches the steps after it",
+    r.status === 0 && /got-http:\/\/preview\.local/.test(fs.readFileSync(ck("run-1", "chain").ran.log, "utf8")) &&
+    /\[BASE_URL=http:\/\/preview\.local\]/.test(fs.readFileSync(ck("run-1", "chain").ran.log, "utf8")));
+  r = cli("check", "run", "run-1", "1", "eyes");
+  ok("a check with no recipe is refused, and told to record by hand",
+    r.status === 1 && /^refused: eyes has no recipe to run$/.test(r.stderr.trim().split("\n").pop()) &&
+    /check pass\|fail run-1 1 eyes/.test(r.stderr));
+
+  // The acquire step: a person's. The engine stops, says what to run, and resumes from wait.
+  fs.mkdirSync(path.join(RR, "scripts"), { recursive: true });
+  fs.writeFileSync(path.join(RR, "scripts", "open-preview.sh"), `#!/bin/sh\ntouch ${JSON.stringify(path.join(TMP, "ACQUIRED"))}\n`);
+  fs.chmodSync(path.join(RR, "scripts", "open-preview.sh"), 0o755);
+  r = cli("check", "run", "run-1", "1", "remote");
+  ok("a recipe that starts with acquire stops at needs-variant",
+    r.status === 0 && ck("run-1", "remote").status === "needs-variant" &&
+    ck("run-1", "remote").acquire[0].command === "scripts/open-preview.sh");
+  ok("…prints the command for a person and how to resume",
+    /scripts\/open-preview\.sh/.test(r.stdout) && /check run run-1 1 remote --from wait/.test(r.stdout));
+  ok("…and never runs it", !fs.existsSync(path.join(TMP, "ACQUIRED")));
+  ok("done is refused while a check needs a variant",
+    /remote needs-variant/.test(cli("done", "run-1", "1").stderr.trim().split("\n").pop()));
+  ok("check status shows what a person runs",
+    /a person runs: scripts\/open-preview\.sh/.test(cli("check", "status", "run-1", "1", "remote").stdout));
+  r = cli("check", "run", "run-1", "1", "remote", "--from", "wait", "--inline");
+  ok("--from wait polls, and fails when the variant never shows",
+    r.status === 1 && /wait gave up after 1s/.test(ck("run-1", "remote").note) && !fs.existsSync(path.join(TMP, "ACQUIRED")));
+  fs.writeFileSync(path.join(RR, "ready"), "http://pr-7.preview.local\n");
+  r = cli("check", "run", "run-1", "1", "remote", "--from", "wait", "--inline");
+  ok("--from wait resumes once the variant exists, exporting what the wait printed",
+    r.status === 0 && ck("run-1", "remote").status === "pass" &&
+    /against http:\/\/pr-7\.preview\.local/.test(fs.readFileSync(ck("run-1", "remote").ran.log, "utf8")));
+  ok("--from takes only wait", cli("check", "run", "run-1", "1", "remote", "--from", "run").status === 1);
+
+  // Detached: the CLI returns at once, the runner outlives it and lands the verdict.
+  const t0 = Date.now();
+  r = cli("check", "run", "run-1", "1", "exp");
+  const took = Date.now() - t0;
+  const pid = ck("run-1", "exp").runner && ck("run-1", "exp").runner.pid;
+  ok("an expensive recipe starts detached and the CLI returns before it finishes",
+    r.status === 0 && took < 1000 && /started detached/.test(r.stdout) &&
+    ck("run-1", "exp").status === "running" && pid > 0);
+  ok("…with a pidfile and a log under the plans directory",
+    fs.existsSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "run-1.runs", "inc1-exp.pid")) &&
+    ck("run-1", "exp").runner.log.startsWith(path.join(ENV.DEEP_PLAN_PLANS_DIR, "run-1.runs")));
+  ok("check status reports it running", /exp {2}running/.test(cli("check", "status", "run-1", "1", "exp").stdout));
+  ok("running again while it runs does not start a second one",
+    /already running/.test(cli("check", "run", "run-1", "1", "exp").stdout));
+  r = cli("check", "wait", "run-1", "1", "exp", "--timeout", "20");
+  ok("check wait blocks until the runner lands its verdict",
+    r.status === 0 && ck("run-1", "exp").status === "pass" && ck("run-1", "exp").by === "runner" &&
+    /wait over: every check passed/.test(r.stdout));
+  ok("…from the detached run, whose log is kept and pidfile removed",
+    /detached-done/.test(fs.readFileSync(ck("run-1", "exp").ran.log, "utf8")) &&
+    !fs.existsSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "run-1.runs", "inc1-exp.pid")));
+
+  // A runner that dies without a verdict.
+  cli("check", "run", "run-1", "1", "hang");
+  const hpid = ck("run-1", "hang").runner.pid;
+  try { process.kill(-hpid, "SIGKILL"); } catch { try { process.kill(hpid, "SIGKILL"); } catch { /* gone */ } }
+  waitFor(() => { try { process.kill(hpid, 0); return false; } catch { return true; } });
+  r = cli("check", "status", "run-1", "1", "hang");
+  ok("a dead runner's check becomes fail: runner lost",
+    ck("run-1", "hang").status === "fail" && /^runner lost: pid \d+ exited without a verdict/.test(ck("run-1", "hang").note));
+  ok("check wait on a lost runner returns, not hangs", cli("check", "wait", "run-1", "1", "hang", "--timeout", "5").status === 1);
+
+  // A reset while a runner is in flight: its verdict belongs to an attempt
+  // nobody is waiting on, so it is discarded rather than landed.
+  cli("check", "run", "run-1", "1", "exp");
+  cli("check", "reset", "run-1", "1", "exp");
+  ok("a verdict from a run that was reset meanwhile is discarded",
+    waitFor(() => stOf("run-1").log.some(l => /exp finished pass, but the check was reset/.test(l.what))) &&
+    ck("run-1", "exp").status === "pending");
+
+  // No ids: every recipe-backed check not yet passed against this tree.
+  arm("run-2", []);
+  r = cli("check", "run", "run-2", "1");
+  ok("with no ids, check run runs the recipe checks still outstanding",
+    r.status === 0 && ck("run-2", "ok").status === "pass" && ck("run-2", "eyes").status === "pending");
+  ok("…and once they pass, there is nothing to run", /nothing to run/.test(cli("check", "run", "run-2", "1").stdout));
+  ok("check status --json carries each check's verdict",
+    JSON.parse(cli("check", "status", "run-2", "1", "--json").stdout).find(c => c.id === "ok").ran.code === 0);
+
+  // A recipe edited after render: the run uses what was reviewed, and says so.
+  putCfg({ recipes: RECIPES.recipes.map(x => x.id === "ok" ? { ...x, run: "echo edited" } : x) });
+  r = cli("check", "run", "run-2", "1", "ok");
+  ok("a run whose recipe changed since render warns, and runs the reviewed version",
+    /recipe ok changed in \.seamux\/verify\.json since render/.test(r.stderr) &&
+    /hello/.test(fs.readFileSync(ck("run-2", "ok").ran.log, "utf8")));
+  putCfg(RECIPES);
+
+  // Concurrent writers: a stale copy written back does not erase a verdict
+  // recorded after it was read, nor the log lines that came with it.
+  process.env.DEEP_PLAN_STATE_DIR = ENV.DEEP_PLAN_STATE_DIR;
+  for (const k of ["CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "CMUX_WORKSPACE_ID"]) delete process.env[k];
+  const S = await import("./lib/state.mjs");
+  const stale = S.readState("run-2");
+  cli("check", "pass", "run-2", "1", "eyes", "looked, fine");
+  stale.increments[0].note = "a writer that never saw the pass";
+  S.writeState(stale);
+  ok("a stale write keeps a verdict stamped after it read",
+    ck("run-2", "eyes").status === "pass" && stOf("run-2").increments[0].note === "a writer that never saw the pass");
+  ok("…and the log lines it never had", stOf("run-2").log.some(l => /check pass: increment 1 eyes/.test(l.what)));
+  const stale2 = S.readState("run-2");
+  cli("check", "reset", "run-2", "1", "eyes");
+  S.writeState(stale2);
+  ok("a reset is a verdict change too: a stale pass does not undo it", ck("run-2", "eyes").status === "pending");
+
+  for (const n of ["run-1", "run-2"]) {
+    cli("close", n);
+    fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), { force: true });
+  }
+}
+
 // -------------------------------------------------- spec fields that used to be dropped
 //
 // nonGoals, commits (top-level and per-deliverable) and per-deliverable

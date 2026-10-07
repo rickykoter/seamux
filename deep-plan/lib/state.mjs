@@ -66,17 +66,48 @@ export function stampOwner(st, now = Date.now()) {
 
 // Atomic: the gate reads this on every tool call, and a half-written JSON
 // reads as "no plan" — exactly the wrong default for a gate.
+//
+// And merged: every writer reads the file, changes it, and writes it back,
+// and a detached check runner records its verdict while the CLI, the gate or
+// the board may be mid-way through the same cycle. So the write re-reads what
+// is on disk under the lock and keeps what the writer never saw: a check
+// verdict stamped later than the writer's copy of it, and log lines it did
+// not have. Everything else is the writer's.
 export function writeState(st) {
   stampOwner(st);
   fs.mkdirSync(STATE_DIR, { recursive: true });
   const lock = acquireLock(st.slug);
   try {
     const p = statePath(st.slug);
+    mergeConcurrent(st, readState(st.slug));
     const tmp = p + ".tmp." + process.pid;
     fs.writeFileSync(tmp, JSON.stringify(st, null, 2) + "\n");
     fs.renameSync(tmp, p);
   } finally {
     if (lock) { try { fs.rmdirSync(lock); } catch { /* already reclaimed */ } }
+  }
+}
+
+function mergeConcurrent(st, disk) {
+  if (!disk) return;
+  const dincs = new Map((disk.increments || []).map(i => [i.n, i]));
+  for (const inc of st.increments || []) {
+    const d = dincs.get(inc.n);
+    if (!d || !d.checks || !inc.checks || typeof inc.checks !== "object") continue;
+    for (const [id, v] of Object.entries(inc.checks)) {
+      const dv = d.checks[id];
+      if (!dv || (dv.at || 0) <= (v.at || 0)) continue;
+      // The verdict is disk's; what the check IS stays the writer's, since a
+      // render re-resolving recipes is exactly such a writer.
+      const meta = Object.fromEntries(Object.entries(v).filter(([k]) => !VERDICT_FIELDS.includes(k)));
+      inc.checks[id] = { ...meta, ...verdictOf(dv) };
+    }
+  }
+  if ((disk.log || []).length) {
+    const key = l => `${l.at}\u0000${l.what}`;
+    const have = new Set((st.log || []).map(key));
+    const extra = disk.log.filter(l => !have.has(key(l)));
+    if (extra.length) st.log = [...(st.log || []), ...extra].sort((a, b) => a.at - b.at).slice(-200);
   }
 }
 
@@ -113,7 +144,10 @@ export const CHECK_KINDS = ["test", "e2e", "observability", "manual"];
 export const CHECK_STATUSES = ["pending", "running", "needs-variant", "pass", "fail"];
 // What a verdict is, as opposed to what the spec says the check is. Only these
 // survive a re-render; the description is always the spec's current one.
-const VERDICT_FIELDS = ["status", "at", "note", "by", "ran", "tree"];
+// `at` is when the verdict last changed — every change stamps it, a reset
+// included, because concurrent writes are merged by it (writeState).
+// `runner` is a run in flight (token, pid, log); `acquire` what a person must run.
+const VERDICT_FIELDS = ["status", "at", "note", "by", "ran", "tree", "runner", "acquire"];
 const ID_PREFIX = { observability: "obs" };
 
 function checkSlug(kind, name) {
@@ -206,8 +240,8 @@ export function reconcileChecks(prev, checks) {
     }
     let verdict = was ? verdictOf(was) : { status: "pending", at: 0, note: "" };
     if (was && was.hash && meta.hash && was.hash !== meta.hash && verdict.status !== "pending") {
-      const { ran, tree, by, ...rest } = verdict;
-      verdict = { ...rest, status: "pending", at: 0,
+      const { ran, tree, by, runner, acquire, ...rest } = verdict;
+      verdict = { ...rest, status: "pending", at: Date.now(),
         note: `was ${was.status}${was.note ? `: ${was.note}` : ""} (recipe changed since — re-run)` };
     }
     out[id] = { ...meta, ...verdict };

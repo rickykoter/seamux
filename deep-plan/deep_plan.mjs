@@ -17,13 +17,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { execSync, spawnSync } from "node:child_process";
+import { execSync, spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { validateDiagrams, validateSurface, mermaidPath, mermaidCandidates, VENDOR_DIR, MERMAID_HOME } from "./lib/validate.mjs";
 import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries, adrScanReport } from "./lib/adr.mjs";
 import { epicHtml, incrementMd, bundleReadme, incrementFileNames, checkLinesMd } from "./lib/cutover.mjs";
 import { checkEvidence } from "./lib/evidence.mjs";
 import { resolveFiles, resolver } from "./lib/verify.mjs";
+import { runExec, acquireSteps, alive, sleep, tail } from "./lib/runner.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, statePath, sessionId,
@@ -1963,8 +1964,8 @@ function repend(inc, ids, why) {
     if (v.retired) continue;
     if (ids ? !ids.includes(id) : (v.status || "pending") === "pending") continue;
     const was = v.status || "pending";
-    const { ran, tree, by, ...rest } = v;
-    checks[id] = { ...rest, status: "pending", at: 0,
+    const { ran, tree, by, runner, acquire, ...rest } = v;
+    checks[id] = { ...rest, status: "pending", at: Date.now(),
       note: `was ${was}${v.note ? `: ${v.note}` : ""} (${why})` };
     moved.push(id);
   }
@@ -2347,7 +2348,7 @@ function checkRecord(slug, n, ids, verdict, note, force) {
       `refused: ${recipes.join(", ")} recipe-backed — a hand pass needs --force`);
   const tree = verdict === "pass" ? treeOf(st.root) : null;
   for (const id of ids) {
-    const { ran, tree: _t, ...rest } = checks[id];
+    const { ran, tree: _t, runner, acquire, ...rest } = checks[id];
     const forced = verdict === "pass" && !!checks[id].recipe;
     checks[id] = { ...rest, status: verdict, at: Date.now(), note: note || "",
       by: forced ? "hand, forced" : "hand", ...(tree ? { tree } : {}) };
@@ -2374,6 +2375,245 @@ function checkReset(slug, n, id, ids = null) {
   log1(st, `check reset: increment ${inc.n} — ${was.join(", ")}`);
   writeState(st); rerenderWorking(slug);
   say(`back to pending for ${slug} ${inc.n}: ${was.join(", ")} — \`done\` is blocked again`);
+}
+
+// ---------------------------------------------------------------- check run
+
+// `check run` executes a recipe-backed check exactly as render stored it, and
+// records the verdict from the exit code. Cheap recipes run here, in the
+// foreground. Expensive ones — a deploy wait plus e2e can take longer than an
+// agent's foreground limit — run in a detached copy of this CLI (`--inline
+// --log --token <token>`), which writes the log and the verdict itself; `check
+// status` and `check wait` follow it. A runner that dies without a verdict is
+// found by its pid and recorded as `fail: runner lost`.
+
+function runsDir(slug) {
+  const d = path.join(PLANS_DIR, slug + ".runs");
+  fs.mkdirSync(d, { recursive: true });
+  return d;
+}
+const fileSafe = s => String(s).replace(/[^a-z0-9._-]+/gi, "_");
+const pidFile = (slug, n, id) => path.join(runsDir(slug), `inc${n}-${fileSafe(id)}.pid`);
+const secs = ms => ms >= 60000 ? `${Math.floor(ms / 60000)}m${Math.round(ms % 60000 / 1000)}s` : `${(ms / 1000).toFixed(1)}s`;
+
+// Running checks whose runner is gone. Judged on a FRESH read after the pid is
+// seen dead: a runner writes its verdict before it exits, so a check still
+// "running" once its pid is gone never got one. Writes and returns the state.
+function reapLost(slug) {
+  const st = readState(slug) || die("no plan " + slug);
+  let lost = 0;
+  for (const inc of st.increments || []) {
+    for (const [id, v] of Object.entries(checksOf(inc))) {
+      if (v.status !== "running" || !v.runner) continue;
+      // A runner is recorded before it is spawned, so a missing pid gets a
+      // grace period rather than an instant verdict.
+      const gone = v.runner.pid ? !alive(v.runner.pid) : Date.now() - (v.runner.startedAt || 0) > 30000;
+      if (!gone) continue;
+      const { runner, ...rest } = v;
+      inc.checks[id] = { ...rest, status: "fail", at: Date.now(), by: "runner",
+        note: `runner lost: pid ${runner.pid || "?"} exited without a verdict (log: ${runner.log})`,
+        ran: { log: runner.log, code: -1 } };
+      try { fs.rmSync(pidFile(slug, inc.n, id), { force: true }); } catch { /* gone */ }
+      log1(st, `check fail: increment ${inc.n} ${id} — runner lost (pid ${runner.pid || "?"})`);
+      lost++;
+    }
+  }
+  if (lost) { writeState(st); rerenderWorking(slug); }
+  return st;
+}
+
+// A recipe edited after render is not what was reviewed. The run uses the
+// stored version and says so; a re-render adopts the edit (and re-pends any
+// pass recorded against the old one).
+function recipeDrift(st, v) {
+  try {
+    const at = v.recipe.includes("@") ? v.recipe.slice(v.recipe.indexOf("@") + 1) : "";
+    const cur = resolver(st.root).available(path.join(st.root, at)).find(r => r.key === v.recipe);
+    if (!cur) return `recipe ${v.recipe} is no longer in ${v.source}; running the version that was reviewed`;
+    if (cur.hash !== v.hash)
+      return `recipe ${v.recipe} changed in ${v.source} since render (#${v.hash} → #${cur.hash}); ` +
+        "running the version that was reviewed — re-render to adopt the edit";
+  } catch { /* drift is advice; it never stops a run */ }
+  return "";
+}
+
+function checkRun(slug, n, ids, opts) {
+  let st = reapLost(slug);
+  const inc = findInc(st, n);
+  const checks = checksOf(inc);
+  const active = Object.keys(checks).filter(id => !checks[id].retired);
+  for (const id of ids) {
+    if (!active.includes(id)) die(`increment ${n} has no check "${id}"\n  its checks: ${active.join(", ") || "none"}`);
+    const v = checks[id];
+    if (!v.recipe) die(`${id} is a ${v.kind} check with no recipe — there is nothing to run.\n` +
+      `  record what you saw: deep-plan check pass|fail ${slug} ${n} ${id} "<what you saw>"\n\n` +
+      `refused: ${id} has no recipe to run`);
+    if (!v.exec) die(`${id} names recipe ${v.recipe}, but its steps were never stored — re-render the plan`);
+  }
+  let want = ids;
+  if (!ids.length) {
+    const tree = needsTree(inc) ? treeOf(st.root) : null;
+    const stale = new Set(checksBlock(inc, tree).filter(c => c.status === "stale").map(c => c.id));
+    want = active.filter(id => checks[id].recipe && checks[id].exec &&
+      checks[id].status !== "running" && (checks[id].status !== "pass" || stale.has(id)));
+    if (!want.length) {
+      say(`nothing to run for ${slug} ${inc.n}: every recipe-backed check has passed against this tree or is running`);
+      return 0;
+    }
+  }
+
+  const lines = [];
+  let failed = 0;
+  for (const id of want) {
+    st = readState(slug);
+    const cur = checksOf(findInc(st, n))[id];
+    const own = opts.token && cur.runner && cur.runner.token === opts.token;
+    if (cur.status === "running" && cur.runner && !own && alive(cur.runner.pid)) {
+      say(`🔄 ${id} is already running (pid ${cur.runner.pid}) — deep-plan check wait ${slug} ${n} ${id}`);
+      lines.push(`${id} already running`);
+      continue;
+    }
+    const drift = recipeDrift(st, cur);
+    if (drift && !opts.token) console.error("  ⚠ " + drift);
+
+    // An acquire step is a person's: stop before anything runs, and say what
+    // to run and how to resume. Never executed here, not even with a `go`.
+    const acquire = acquireSteps(cur.exec);
+    if (acquire.length && opts.from !== "wait") {
+      const { runner, ...rest } = cur;
+      checksOf(findInc(st, n))[id] = { ...rest, status: "needs-variant", at: Date.now(), by: "runner",
+        note: `a person runs: ${acquire.map(s => s.command).join(" && ")}`,
+        acquire: acquire.map(s => ({ command: s.command, note: s.note || "" })) };
+      log1(st, `check needs-variant: increment ${inc.n} ${id}`);
+      writeState(st); rerenderWorking(slug);
+      say(`✋ ${id} needs a variant. A person runs${acquire.length > 1 ? " these" : " this"} — the engine never does:`);
+      for (const s of acquire) say(`     ${s.command}${s.note ? `   (${s.note})` : ""}`);
+      say(`   then: deep-plan check run ${slug} ${n} ${id} --from wait`);
+      lines.push(`${id} needs a variant — run it, then check run ${slug} ${n} ${id} --from wait`);
+      continue;
+    }
+
+    const token = own ? opts.token : crypto.randomBytes(6).toString("hex");
+    const log = own && opts.log ? opts.log
+      : path.join(runsDir(slug), `inc${n}-${fileSafe(id)}-${Date.now()}.log`);
+
+    if (cur.exec.tier === "expensive" && !opts.inline) {
+      // Recorded before the spawn, so the runner finds its token on its first
+      // read; the pid follows once there is one.
+      const startedAt = Date.now();
+      const set = pid => {
+        const s2 = readState(slug), c2 = checksOf(findInc(s2, n));
+        const { ran, ...rest } = c2[id];
+        c2[id] = { ...rest, status: "running", at: startedAt, by: "runner",
+          note: `running since ${new Date(startedAt).toISOString().slice(11, 19)}Z`,
+          runner: { token, pid, log, startedAt, from: opts.from || "" } };
+        if (!pid) log1(s2, `check run: increment ${inc.n} ${id} started detached (log: ${log})`);
+        writeState(s2);
+      };
+      set(0);
+      const fd = fs.openSync(log, "a");
+      const child = spawn(process.execPath, [path.join(HERE, "deep_plan.mjs"), "check", "run", slug, String(n), id,
+        "--inline", "--log", log, "--token", token, ...(opts.from ? ["--from", opts.from] : [])],
+        { detached: true, stdio: ["ignore", fd, fd], cwd: st.root, env: { ...process.env } });
+      child.unref(); fs.closeSync(fd);
+      set(child.pid);
+      fs.writeFileSync(pidFile(slug, n, id), JSON.stringify({ pid: child.pid, token, log, startedAt }) + "\n");
+      rerenderWorking(slug);
+      say(`🔄 ${id} started detached (pid ${child.pid}) — log: ${log}`);
+      lines.push(`${id} running detached — deep-plan check wait ${slug} ${n}`);
+      continue;
+    }
+
+    // In the foreground (or this IS the detached runner): mark it running,
+    // run, then record — unless the check was reset or re-run meanwhile, in
+    // which case this verdict belongs to an attempt nobody is waiting on.
+    if (!own) {
+      const { ran, ...rest } = cur;
+      checksOf(findInc(st, n))[id] = { ...rest, status: "running", at: Date.now(), by: "runner",
+        note: "running in the foreground", runner: { token, pid: process.pid, log, startedAt: Date.now(), from: opts.from || "" } };
+      writeState(st);
+    }
+    const tree = treeOf(st.root);
+    const res = runExec(cur.exec, { root: st.root, from: opts.from || "", log,
+      env: { DEEP_PLAN_SLUG: slug, DEEP_PLAN_INCREMENT: String(n), DEEP_PLAN_CHECK: id } });
+    const fresh = readState(slug);
+    const now = checksOf(findInc(fresh, n))[id];
+    if (!now || !now.runner || now.runner.token !== token) {
+      log1(fresh, `check run: increment ${inc.n} ${id} finished ${res.status}, but the check was reset ` +
+        "or re-run meanwhile — this verdict was discarded");
+      writeState(fresh);
+      say(`${id}: finished ${res.status}, but the check changed while it ran — verdict discarded`);
+      continue;
+    }
+    const { runner, ...rest } = now;
+    checksOf(findInc(fresh, n))[id] = { ...rest, status: res.status, at: Date.now(), by: "runner",
+      note: res.note, ran: res.ran, ...(res.status === "pass" && tree ? { tree } : {}) };
+    log1(fresh, `check ${res.status}: increment ${inc.n} ${id} — ${res.note}`);
+    writeState(fresh); rerenderWorking(slug);
+    try { if (own) fs.rmSync(pidFile(slug, n, id), { force: true }); } catch { /* gone */ }
+    if (res.status === "pass") say(`✅ ${id} pass — ${res.note} (log: ${log})`);
+    else {
+      failed++;
+      say(`❌ ${id} fail — ${res.note} (log: ${log})`);
+      if (res.ran.tail) say(res.ran.tail.split("\n").map(l => "     " + l).join("\n"));
+    }
+    lines.push(`${id} ${res.status}`);
+  }
+  if (lines.length > 1 || failed) say(`\ncheck run ${slug} ${n}: ${lines.join("; ")}`);
+  return failed ? 1 : 0;
+}
+
+// Where each check stands; a running one with its elapsed time, pid and the
+// tail of its log, so "is it stuck?" has an answer without opening anything.
+function checkStatus(slug, n, ids, json) {
+  const st = reapLost(slug);
+  const inc = findInc(st, n);
+  const all = Object.entries(checksOf(inc)).filter(([id, v]) => !v.retired && (!ids.length || ids.includes(id)));
+  if (json) {
+    process.stdout.write(JSON.stringify(all.map(([id, v]) => ({ id, kind: v.kind, status: v.status, note: v.note || "",
+      at: v.at || 0, ...(v.runner ? { runner: v.runner } : {}), ...(v.ran ? { ran: v.ran } : {}),
+      ...(v.acquire ? { acquire: v.acquire } : {}) })), null, 2) + "\n");
+    return;
+  }
+  say(`${slug} increment ${inc.n}: ${inc.title}`);
+  for (const [id, v] of all) {
+    say(`  ${CHECK_MARK[v.status] || "·"} ${id}  ${v.status}${v.note ? ` — ${v.note}` : ""}`);
+    if (v.status === "running" && v.runner) {
+      say(`      ${secs(Date.now() - v.runner.startedAt)} so far · pid ${v.runner.pid || "starting"} · log ${v.runner.log}`);
+      try { say(tail(fs.readFileSync(v.runner.log, "utf8"), 5).split("\n").map(l => "      | " + l).join("\n")); } catch { /* not yet */ }
+    }
+    if (v.status === "needs-variant" && v.acquire) {
+      for (const a of v.acquire) say(`      a person runs: ${a.command}`);
+      say(`      then: deep-plan check run ${slug} ${n} ${id} --from wait`);
+    }
+    if (v.ran && v.ran.log && v.status !== "running") say(`      log ${v.ran.log}`);
+  }
+}
+
+// Block until the selected checks stop running, then report them. Exits 0
+// when every one passed, 1 when any did not, 2 when the timeout came first —
+// the default stays inside an agent's foreground limit, and waiting again is
+// always safe.
+function checkWait(slug, n, ids, timeoutSec) {
+  const until = Date.now() + timeoutSec * 1000;
+  for (;;) {
+    const st = reapLost(slug);
+    const inc = findInc(st, n);
+    const sel = Object.entries(checksOf(inc)).filter(([id, v]) => !v.retired && (!ids.length || ids.includes(id)));
+    const running = sel.filter(([, v]) => v.status === "running");
+    if (!running.length) {
+      checkStatus(slug, n, ids, false);
+      const bad = sel.filter(([, v]) => v.status !== "pass");
+      say(bad.length ? `\nwait over: ${bad.map(([id, v]) => `${id} ${v.status}`).join("; ")}` : "\nwait over: every check passed");
+      return bad.length ? 1 : 0;
+    }
+    if (Date.now() >= until) {
+      checkStatus(slug, n, ids, false);
+      say(`\nstill running after ${timeoutSec}s: ${running.map(([id]) => id).join(", ")} — wait again`);
+      return 2;
+    }
+    sleep(500);
+  }
 }
 
 // ---------------------------------------------------------------- verify
@@ -2429,6 +2669,11 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--root") flags.root = rest[++i];
   else if (rest[i] === "--at") flags.at = rest[++i];
   else if (rest[i] === "--json") flags.json = true;
+  else if (rest[i] === "--inline") flags.inline = true;
+  else if (rest[i] === "--from") flags.from = rest[++i];
+  else if (rest[i] === "--log") flags.log = rest[++i];
+  else if (rest[i] === "--token") flags.token = rest[++i];
+  else if (rest[i] === "--timeout") flags.timeout = Number(rest[++i]);
   else args.push(rest[i]);
 }
 
@@ -2499,7 +2744,17 @@ switch (cmd) {
       need(use);
       checkRecord(slug, n, [args[3] || die(use)], sub, args.slice(4).join(" "), flags.force);
     } else if (sub === "reset") { need("check reset <slug> <n> [id]"); checkReset(slug, n, args[3]); }
-    else die('check list|pass|fail|reset <slug> <n> [<id>] ["<what you saw>"]');
+    else if (sub === "run") {
+      need("check run <slug> <n> [id...] [--from wait] [--inline]");
+      if (flags.from && flags.from !== "wait") die("--from takes one value: wait");
+      process.exitCode = checkRun(slug, n, args.slice(3),
+        { from: flags.from, inline: flags.inline, log: flags.log, token: flags.token });
+    } else if (sub === "status") { need("check status <slug> <n> [id...] [--json]"); checkStatus(slug, n, args.slice(3), flags.json); }
+    else if (sub === "wait") {
+      need("check wait <slug> <n> [id...] [--timeout s]");
+      process.exitCode = checkWait(slug, n, args.slice(3), flags.timeout > 0 ? flags.timeout : 540);
+    }
+    else die('check list|run|status|wait|pass|fail|reset <slug> <n> [<id>] ["<what you saw>"]');
     break;
   }
   case "obs": {
@@ -2584,6 +2839,14 @@ switch (cmd) {
                                               pending — the work is being redone)
   check list <slug> <n>                       the increment's checks, verdicts and
                                               what each one runs
+  check run <slug> <n> [id...] [--from wait]  run recipe-backed checks: cheap ones here,
+                                              expensive ones detached; stops at an
+                                              acquire step (a person runs it), and
+                                              --from wait resumes after it
+                                              (--inline runs an expensive one here)
+  check status <slug> <n> [id...] [--json]    where each stands; a running one's log tail
+  check wait <slug> <n> [id...] [--timeout s] block until none is running (default 540s;
+                                              exit 0 all passed, 1 not, 2 still running)
   check pass|fail <slug> <n> <id> "<seen>"    record a verdict by hand (a check
                                               backed by a recipe needs --force)
   check reset <slug> <n> [id]                 verdict(s) back to pending, keeping
