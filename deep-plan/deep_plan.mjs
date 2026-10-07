@@ -2578,7 +2578,9 @@ function checkStatus(slug, n, ids, json) {
   }
   say(`${slug} increment ${inc.n}: ${inc.title}`);
   for (const [id, v] of all) {
-    say(`  ${CHECK_MARK[v.status] || "·"} ${id}  ${v.status}${v.note ? ` — ${v.note}` : ""}`);
+    // A needs-variant note IS the acquire command, listed on its own line below.
+    const said = v.note && !(v.status === "needs-variant" && v.acquire) ? ` — ${v.note}` : "";
+    say(`  ${CHECK_MARK[v.status] || "·"} ${id}  ${v.status}${said}`);
     if (v.status === "running" && v.runner) {
       say(`      ${secs(Date.now() - v.runner.startedAt)} so far · pid ${v.runner.pid || "starting"} · log ${v.runner.log}`);
       try { say(tail(fs.readFileSync(v.runner.log, "utf8"), 5).split("\n").map(l => "      | " + l).join("\n")); } catch { /* not yet */ }
