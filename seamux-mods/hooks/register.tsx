@@ -96,6 +96,10 @@ type Me = { cwd: string; session: string; workspace: string }
 const holds = (root: string, cwd: string) =>
   root !== '' && (cwd === root || cwd.startsWith(root.endsWith('/') ? root : root + '/'))
 
+// The root as written, or as the engine resolved it: on macOS a plan rooted at
+// /tmp/x is reached from /private/tmp/x, which is the cwd a process reports.
+const holdsCwd = (r: SeamuxPlan, cwd: string) => holds(r.root, cwd) || holds(r.realRoot ?? '', cwd)
+
 // deep-plan stamps the session and workspace on every write made from inside a
 // session. The workspace outlives /clear, so a plan rendered before it still
 // belongs to this pane.
@@ -109,7 +113,7 @@ const owns = (r: SeamuxPlan, me: Me) =>
 // rendered for another repo beats a finished one in this repo, and the newest
 // of back-to-back plans wins. A pin, while its plan is still tracked, beats all.
 function pick(rows: SeamuxPlan[], me: Me, pin: string): { plan: SeamuxPlan | null; others: SeamuxPlan[] } {
-  const ranked = rows.filter(r => owns(r, me) || holds(r.root, me.cwd)).sort((a, b) =>
+  const ranked = rows.filter(r => owns(r, me) || holdsCwd(r, me.cwd)).sort((a, b) =>
     Number(a.phase === 'done') - Number(b.phase === 'done') ||
     (b.touchedAt ?? 0) - (a.touchedAt ?? 0) ||
     b.root.length - a.root.length)

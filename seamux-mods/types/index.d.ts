@@ -33,6 +33,8 @@ export type SeamuxIncrement = {
 export type SeamuxPlan = {
   slug: string
   root: string
+  /** root with symlinks resolved; absent from an older engine */
+  realRoot?: string
   phase: string
   rootBroken: boolean
   gate: { allow: boolean; why: string }

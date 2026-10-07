@@ -51,6 +51,11 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
   judgment layer escalated was listed under "yours to resolve" with no reason
   outside `--json`; the line now reads e.g. `schema.graphql — 1 hunk (sent to
   you: only 42% likely to be generated; --no-judge skips this check)`.
+- **`/plan-pane` finds a plan rooted through a symlink.** It matched the cwd
+  against the root as written, so on macOS a plan rooted at `/tmp/x` was not
+  found from `/private/tmp/x`, though the gate resolved it. `deep-plan status
+  --json` now also reports `realRoot`, and the pane and status entry match
+  either.
 
 ## 0.3.0 — 2026-10-04
 

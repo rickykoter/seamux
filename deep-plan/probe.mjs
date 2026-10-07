@@ -947,6 +947,10 @@ r = cli("status", "--json");
 const rows = JSON.parse(r.stdout);
 ok("status --json carries the board's fields",
   rows.length === 1 && rows[0].root === fs.realpathSync(REPO) || rows[0].root === REPO);
+// The pane matches a session's cwd against the root, and a process reports
+// its cwd with symlinks resolved (/private/tmp, not /tmp, on macOS).
+ok("status --json carries the root resolved, beside the root as written",
+  rows[0].realRoot === fs.realpathSync(rows[0].root) && typeof rows[0].root === "string", JSON.stringify(rows[0].realRoot));
 ok("status --json gate/progress shapes",
   "allow" in rows[0].gate && "why" in rows[0].gate &&
   ["total", "done", "blocked", "open", "next"].every(k => k in rows[0].progress));

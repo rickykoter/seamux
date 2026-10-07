@@ -288,6 +288,17 @@ describe('seamux-mods', () => {
     await ui.unmount()
   })
 
+  test('a plan rooted through a symlink is found from the resolved cwd', async ($, on) => {
+    // macOS: /tmp is /private/tmp, the plan was rendered as /tmp/x, and the
+    // session reports the resolved cwd. The engine says what the root resolves to.
+    world(on, { cwd: '/private/tmp/x/src', demoOff: true,
+      extra: [{ ...plan('linked', '/tmp/x', 'implementing', 5), realRoot: '/private/tmp/x' }] })
+    await $.command.run({ command: 'plan-pane', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
+    expect((await ui.find({ key: 'plan' }))?.text).toMatch(/^linked · implementing/)
+    await ui.unmount()
+  })
+
   test('a plan this session owns shows even when its root is another repo', async ($, on) => {
     world(on, { cwd: '/elsewhere', extra: [plan('far', '/other/repo', 'review', 5, { session: 'sess-1', workspace: '' })] })
     await $.command.run({ command: 'plan-pane', args: '' } as never)

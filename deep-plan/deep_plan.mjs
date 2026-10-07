@@ -31,7 +31,7 @@ import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, statePath, sessionId,
   readState, writeState, allStates, log1, progress, gateView,
   planFor, CHECK_KINDS, specChecks, reconcileChecks, checksOf, checksBlock,
-  checksAggregate, needsTree, treeOf, checkMeta,
+  checksAggregate, needsTree, treeOf, checkMeta, canon,
 } from "./lib/state.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -2244,6 +2244,9 @@ function stateMtime(slug) {
 function statusRows() {
   return allStates().filter(st => st.phase !== "closed").map(st => ({
     slug: st.slug, root: st.root || "", phase: st.phase,
+    // The root with symlinks resolved, as the gate compares it: a session in
+    // /private/tmp/x is inside a plan rooted at /tmp/x on macOS.
+    realRoot: st.root ? canon(st.root) : "",
     rootBroken: !!(st.root && !fs.existsSync(st.root)),
     gate: gateView(st), progress: progress(st), session: st.session || "",
     approved: (st.approved && st.approved.path) || "",
