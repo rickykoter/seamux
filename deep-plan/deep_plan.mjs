@@ -25,6 +25,7 @@ import { epicHtml, incrementMd, bundleReadme, incrementFileNames, checkLinesMd }
 import { checkEvidence } from "./lib/evidence.mjs";
 import { resolveFiles, resolver } from "./lib/verify.mjs";
 import { runExec, acquireSteps, alive, sleep, tail } from "./lib/runner.mjs";
+import { detect, draftFile } from "./lib/detect.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, statePath, sessionId,
@@ -2649,6 +2650,112 @@ function verifyResolve(files, root, json) {
   }
 }
 
+// `verify init` reads what the repo already does to prove a change works
+// (lib/detect.mjs) and drafts a .seamux/verify.json per project, a TODO on
+// every gap. A dry run unless --write, and --write never overwrites a file —
+// a reviewed config is worth more than any draft. Remote templates are only
+// ever copied in by name; the setup prompt walks what is left with a person.
+const TEMPLATES_DIR = path.join(HERE, "verify", "templates");
+const SETUP_PROMPT = path.join(HERE, "verify", "setup-prompt.md");
+
+function listTemplates() {
+  try { return fs.readdirSync(TEMPLATES_DIR).filter(f => f.endsWith(".json")).map(f => f.slice(0, -5)).sort(); }
+  catch { return []; }
+}
+
+function loadTemplate(name) {
+  const p = path.join(TEMPLATES_DIR, name + ".json");
+  if (!/^[a-z0-9-]+$/.test(name) || !fs.existsSync(p))
+    die(`no template "${name}" — there are: ${listTemplates().join(", ")}`);
+  return JSON.parse(fs.readFileSync(p, "utf8"));
+}
+
+// A template copied into a project's draft. Its run step's {{e2e}} becomes
+// the project's own e2e script when one was found, else a command that fails
+// loudly — a placeholder that passes would be a proof of nothing.
+function applyTemplate(tpl, project) {
+  const e2e = project.recipes.find(r => r.kind === "e2e");
+  const fill = e2e ? e2e.run : "echo 'TODO: the e2e command, run against $BASE_URL' >&2; exit 1";
+  const r = JSON.parse(JSON.stringify(tpl.recipe));
+  r.steps = r.steps.map(s => Object.fromEntries(Object.entries(s).map(([k, v]) =>
+    [k, typeof v === "string" ? v.split("{{e2e}}").join(fill) : v])));
+  r.default = false;
+  r.todo = [
+    e2e ? `runs \`${e2e.run}\` against the preview — make the suite read $BASE_URL (and skip any local webServer when it is set)`
+      : "fill in the run step: the e2e command, reading $BASE_URL",
+    ...(tpl.verified ? [] : [`template ${tpl.template} is unverified: ${tpl.verify}`]),
+    ...(tpl.needs || []).map(n => `needs: ${n}`),
+  ];
+  r.evidence = [`deep-plan verify/templates/${tpl.template}.json`];
+  const ids = new Set(project.recipes.map(x => x.id));
+  for (let k = 2, base = r.id; ids.has(r.id); k++) r.id = `${base}-${k}`;
+  return r;
+}
+
+function verifyInit(root, opts) {
+  const det = detect(root);
+  const extra = new Map();
+  for (const t of opts.templates || []) {
+    const [name, at] = t.split("@");
+    const tpl = loadTemplate(name);
+    const dir = at !== undefined ? at.replace(/^\.\/?|\/$/g, "")
+      : (det.projects.find(p => p.hosts.some(h => h.template === name)) || { dir: "" }).dir;
+    const proj = det.projects.find(p => p.dir === dir) ||
+      die(`--template ${t}: no project at "${dir}" — projects: ${det.projects.map(p => p.dir || ".").join(", ")}`);
+    if (!extra.has(dir)) extra.set(dir, []);
+    extra.get(dir).push(applyTemplate(tpl, proj));
+  }
+  const drafts = det.projects.map(p => ({
+    dir: p.dir, path: path.posix.join(p.dir || ".", ".seamux", "verify.json"), exists: p.existing,
+    file: draftFile(p, extra.get(p.dir) || []),
+  })).filter(d => d.file.recipes.length);
+
+  const written = [];
+  if (opts.write) for (const d of drafts) {
+    if (d.exists) continue;
+    const abs = path.join(det.root, d.path);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, JSON.stringify(d.file, null, 2) + "\n");
+    written.push(d.path);
+  }
+  if (opts.json) {
+    process.stdout.write(JSON.stringify({ ...det, drafts, written, templatesAvailable: listTemplates(),
+      setupPrompt: SETUP_PROMPT }, null, 2) + "\n");
+    return;
+  }
+
+  say(`verify init — ${det.root} (${det.packageManager})`);
+  if (det.workspaces.length) say(`workspaces: ${det.workspaces.join(", ")}`);
+  for (const p of det.projects) {
+    const d = drafts.find(x => x.dir === p.dir);
+    say(`\nproject ${p.dir || "."}${p.manifests.length ? ` (${p.manifests.join(", ")})` : ""}` +
+      (p.runners.length ? ` — runners: ${p.runners.join(", ")}` : ""));
+    if (!d) { say("  nothing that reads as a check — the setup prompt starts this one from a blank page"); continue; }
+    say(`  draft ${d.path}` + (d.exists ? "  [exists — left alone; --write never overwrites]"
+      : written.includes(d.path) ? "  [written]" : ""));
+    for (const r of d.file.recipes) {
+      const cmd = r.run || stepsLine({ steps: r.steps.map(s => ({ kind: Object.keys(s).find(k => ["acquire", "wait", "run"].includes(k)), export: s.export, command: s.run || s.wait || s.acquire })) });
+      say(`    ${r.id.padEnd(14)} ${r.kind} · ${r.tier}${r.default ? " · default" : ""}  ${cmd}`);
+      for (const e of r.evidence || []) say(`      evidence: ${e}`);
+      for (const t of r.todo || []) say(`      TODO ${t}`);
+    }
+    for (const a of p.aggregates) say(`    (${a.name} chains ${a.runs.join(", ")} — its parts are recipes; it is not one)`);
+    for (const h of p.hosts)
+      if (!(extra.get(p.dir) || []).length) say(`    host: ${h.name} → remote QA template: deep-plan verify init --template ${h.template}`);
+  }
+  const steps = det.ci.filter(s => s.command), flags = det.ci.filter(s => !s.command || s.notes.length);
+  say(`\nCI: ${steps.length ? `${steps.length} run step(s) read` : "no .github/workflows or .rwx run steps found"}`);
+  for (const f of flags) say(`  ⚠ ${f.at}${f.job ? ` (${f.job})` : ""}: ${f.notes.join("; ")}`);
+  if (!det.projects.some(p => p.hosts.length))
+    say(`remote QA: no host config found (vercel.json, firebase.json, .rwx/, netlify.toml); ` +
+      `templates: ${listTemplates().join(", ")}`);
+  const todos = drafts.reduce((n, d) => n + d.file.recipes.reduce((m, r) => m + (r.todo || []).length, 0), 0);
+  say(opts.write
+    ? `\nwrote ${written.length ? written.join(", ") : "nothing (every draft's file exists)"}. ${todos} TODO(s) to walk: ${SETUP_PROMPT}`
+    : `\ndry run — nothing written. ${drafts.length} draft(s), ${todos} TODO(s). ` +
+      `\`deep-plan verify init --write\` writes the drafts whose file does not exist; then walk the TODOs: ${SETUP_PROMPT}`);
+}
+
 // ---------------------------------------------------------------- main
 
 // Every verb the switch below handles. Kept beside it so the usage listing can
@@ -2670,6 +2777,8 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--at") flags.at = rest[++i];
   else if (rest[i] === "--json") flags.json = true;
   else if (rest[i] === "--inline") flags.inline = true;
+  else if (rest[i] === "--write") flags.write = true;
+  else if (rest[i] === "--template") (flags.templates = flags.templates || []).push(rest[++i]);
   else if (rest[i] === "--from") flags.from = rest[++i];
   else if (rest[i] === "--log") flags.log = rest[++i];
   else if (rest[i] === "--token") flags.token = rest[++i];
@@ -2779,7 +2888,8 @@ switch (cmd) {
   case "verify": {
     const root = flags.root || gitRoot(process.cwd()) || process.cwd();
     if (args[0] === "resolve") verifyResolve(args.slice(1), root, flags.json);
-    else die("verify resolve <file>... [--root DIR] [--json]");
+    else if (args[0] === "init") verifyInit(root, { write: flags.write, templates: flags.templates, json: flags.json });
+    else die("verify resolve <file>... [--root DIR] [--json]  |  verify init [--root DIR] [--write] [--template name[@dir]]... [--json]");
     break;
   }
   case "open-gate": {
@@ -2862,7 +2972,13 @@ switch (cmd) {
                                               types the number into this terminal)
   ask show <id>                               the recorded answer, if any
   verify resolve <file>... [--root DIR]       which .seamux/verify.json each file
-                 [--json]                     lands on and the recipes that apply`);
+                 [--json]                     lands on and the recipes that apply
+  verify init [--root DIR] [--write]          draft .seamux/verify.json per project from
+              [--template name[@dir]]...      what the repo already runs (scripts, CI,
+              [--json]                        runner and host configs), a TODO on every
+                                              gap; dry run unless --write, which never
+                                              overwrites. Templates: verify/templates/;
+                                              then walk verify/setup-prompt.md`);
     // State which extensions are in force even when nothing is wrong: "my
     // extension is being ignored" is the failure this listing exists to remove.
     const ext = listExt();

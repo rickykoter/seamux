@@ -1,0 +1,25 @@
+{
+  "template": "firebase-channel",
+  "describes": "A Firebase Hosting preview channel named for HEAD. A person deploys the channel (it uploads a build, so it is theirs to run); the engine reads the channel's URL back and runs the e2e suite against it.",
+  "verified": false,
+  "verify": "After deploying the channel by hand, run the wait command once from the repo root: it must print the channel's https URL and exit 0, and print nothing for a commit with no channel. The JSON shape (result.channels[].name and .url) is written from memory of `firebase hosting:channel:list --json`; check it first. Then set \"verified\": true here, with the date and CLI version in \"verifiedAgainst\".",
+  "needs": [
+    "the firebase CLI, logged in (or a CI token in the environment), with the project selected (.firebaserc)",
+    "a build step before the deploy if the hosting directory is generated",
+    "the e2e suite reading its base URL from $BASE_URL"
+  ],
+  "recipe": {
+    "id": "preview-e2e",
+    "kind": "e2e",
+    "name": "e2e against the Firebase preview channel for HEAD",
+    "tier": "expensive",
+    "steps": [
+      { "acquire": "firebase hosting:channel:deploy \"dp-$(git rev-parse --short=10 HEAD)\" --expires 3d",
+        "note": "uploads the current build to a preview channel named for this commit" },
+      { "wait": "firebase hosting:channel:list --json 2>/dev/null | node -e 'let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{try{const c=((JSON.parse(s).result||{}).channels||[]).find(c=>String(c.name).endsWith(\"/channels/dp-\"+process.argv[1]));if(c&&c.url)console.log(c.url)}catch{}})' \"$(git rev-parse --short=10 HEAD)\"",
+        "export": "BASE_URL", "timeout": 600, "interval": 15,
+        "note": "prints the channel URL once the channel exists" },
+      { "run": "{{e2e}}" }
+    ]
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "template": "github-deployment",
+  "describes": "Any host that reports to GitHub Deployments (Vercel, Netlify, Render and others do, through their GitHub apps). A person pushes the branch; the engine waits for a successful deployment of HEAD and runs the e2e suite against its URL.",
+  "verified": false,
+  "verify": "With a deployment of HEAD finished, run the wait command once by hand from the repo root: it must print the deployment's URL and exit 0. While the deployment is still building it must print nothing. Then set \"verified\": true here, with the date and the host in \"verifiedAgainst\".",
+  "needs": [
+    "gh authenticated (gh auth status) with read access to the repo's deployments",
+    "the host's GitHub app posting deployment statuses with an environment_url",
+    "the e2e suite reading its base URL from $BASE_URL"
+  ],
+  "recipe": {
+    "id": "preview-e2e",
+    "kind": "e2e",
+    "name": "e2e against the GitHub deployment of HEAD",
+    "tier": "expensive",
+    "steps": [
+      { "acquire": "git push -u origin HEAD", "note": "the host's GitHub integration deploys the pushed branch" },
+      { "wait": "s=$(gh api \"repos/{owner}/{repo}/deployments?sha=$(git rev-parse HEAD)&per_page=1\" --jq '.[0].statuses_url // empty' 2>/dev/null) && [ -n \"$s\" ] && gh api \"$s\" --jq '[.[] | select(.state==\"success\")][0].environment_url // empty' 2>/dev/null",
+        "export": "BASE_URL", "timeout": 1200, "interval": 20,
+        "note": "prints nothing until a deployment of HEAD reports success; stderr is discarded so an auth error is never read as a URL" },
+      { "run": "{{e2e}}" }
+    ]
+  }
+}

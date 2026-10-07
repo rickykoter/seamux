@@ -10,6 +10,7 @@ import { execSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { verdict } from "./lib/evidence.mjs";
 import { resolver, resolveFiles, matchesGlob, recipeHash, load as loadVerify } from "./lib/verify.mjs";
+import { classifyScript } from "./lib/detect.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const V = process.argv.includes("-v");
@@ -1806,6 +1807,165 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     cli("close", n);
     fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), { force: true });
   }
+}
+
+// -------------------------------------------------- verify init: detector, templates, setup prompt
+//
+// verify init reads what a repo already runs — package.json scripts, CI run
+// steps cited as path:line, runner and host configs — and drafts a
+// .seamux/verify.json per project, a TODO on every gap. Dry run unless
+// --write, which never overwrites. Templates are copied in by name.
+{
+  const DR = path.join(TMP, "detect-root");
+  const put = (rel, body) => {
+    const p = path.join(DR, rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, typeof body === "string" ? body : JSON.stringify(body, null, 2));
+  };
+  put("package.json", { name: "mono", workspaces: ["apps/*"], scripts: {
+    lint: "eslint .", dev: "next dev", check: "npm run lint && npm test", "test:watch": "vitest" } });
+  put("package-lock.json", "{}");
+  put("apps/web/package.json", { name: "web", scripts: {
+    test: "vitest run", "test:e2e": "playwright test", build: "next build", "test:ui": "playwright test --ui" } });
+  put("apps/web/playwright.config.ts", "export default { webServer: { command: 'npm run dev' } };\n");
+  put("apps/web/vercel.json", "{}");
+  put("apps/api/go.mod", "module example.com/api\n");
+  const API_CFG = JSON.stringify({ recipes: [{ id: "mine", run: "make test" }] }, null, 2);
+  put("apps/api/.seamux/verify.json", API_CFG);
+  const CI = [
+    "name: ci",
+    "on: push",
+    "jobs:",
+    "  web:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - uses: actions/checkout@v4",
+    "      - run: npm ci",
+    "      - name: lint",
+    "        run: npm run lint",
+    "      - run: |",
+    "          cd apps/web",
+    "          npm test",
+    "  matrix-test:",
+    "    strategy:",
+    "      matrix:",
+    "        node: [20, 22]",
+    "    steps:",
+    "      - run: npm test -- --node ${{ matrix.node }}",
+    "  local:",
+    "    steps:",
+    "      - uses: ./.github/actions/setup",
+    "  reuse:",
+    "    uses: org/repo/.github/workflows/e2e.yml@main",
+    "",
+  ].join("\n");
+  put(".github/workflows/ci.yml", CI);
+  const lineOf = needle => CI.split("\n").findIndex(l => l.includes(needle)) + 1;
+  execSync("git init -q && git add -A", { cwd: DR });
+  const before = execSync("git status --porcelain", { cwd: DR, encoding: "utf8" });
+
+  let r = cli("verify", "init", "--root", DR, "--json");
+  const det = JSON.parse(r.stdout);
+  const proj = d => det.projects.find(p => p.dir === d);
+  const rec = (d, id) => (proj(d).recipes || []).find(x => x.id === id);
+  ok("verify init finds every project with a manifest, the root included",
+    det.projects.map(p => p.dir).join(",") === ",apps/api,apps/web" && det.workspaces.includes("apps/*"));
+  ok("package.json scripts become draft recipes, classified by role",
+    rec("", "lint").run === "npm run lint" && rec("", "lint").default === true && rec("", "lint").tier === "cheap" &&
+    rec("apps/web", "unit").run === "npm test" && rec("apps/web", "test-e2e").kind === "e2e");
+  ok("dev servers, builds, watchers and UIs are not checks",
+    !proj("").recipes.some(x => /dev|watch/.test(x.name)) &&
+    !proj("apps/web").recipes.some(x => /build|test:ui/.test(x.name)));
+  ok("a script that only chains others is an aggregate, not a recipe",
+    proj("").aggregates[0].name === "check" && proj("").aggregates[0].runs.join(",") === "lint,test");
+  ok("an e2e suite drafts expensive and not default, with TODOs for both",
+    rec("apps/web", "test-e2e").tier === "expensive" && rec("apps/web", "test-e2e").default === false &&
+    rec("apps/web", "test-e2e").todo.some(t => /decide default/.test(t)));
+  ok("…and a Playwright config that serves itself is called out as a local e2e",
+    rec("apps/web", "test-e2e").todo.some(t => /starts its own webServer/.test(t)) && proj("apps/web").runners.includes("playwright"));
+  ok("a CI step running the script is cited as path:line evidence",
+    rec("", "lint").evidence.includes(`.github/workflows/ci.yml:${lineOf("run: npm run lint")}`) &&
+    rec("", "lint").todo[0].startsWith("confirm it matches CI"));
+  ok("a script no CI step runs says so in its TODO",
+    rec("apps/web", "test-e2e").todo[0].startsWith("no CI step runs this"));
+  const step = needle => det.ci.find(s => s.command && s.command.includes(needle));
+  ok("a block run step is read whole, cited at its run: line",
+    step("cd apps/web && npm test") && step("cd apps/web && npm test").at === `.github/workflows/ci.yml:${lineOf("- run: |")}`);
+  ok("a matrix job's step is flagged, its expressions not expanded",
+    step("--node").notes.some(n => /matrix job/.test(n)) && step("--node").notes.some(n => /CI expressions/.test(n)));
+  ok("a composite action is flagged, not read",
+    det.ci.some(s => /composite action \.\/\.github\/actions\/setup/.test(s.notes.join(" "))));
+  ok("a reusable workflow is flagged, not read",
+    det.ci.some(s => /reusable workflow org\/repo/.test(s.notes.join(" "))));
+  ok("a Go project drafts the convention, labeled as one",
+    rec("apps/api", "go-test").run === "go test ./..." && rec("apps/api", "go-test").todo[0].includes("convention"));
+  ok("a host config suggests its remote template",
+    proj("apps/web").hosts[0].template === "vercel-preview" && det.templates.includes("vercel-preview"));
+  ok("an existing config is noticed", proj("apps/api").existing === true);
+  ok("a dry run writes nothing",
+    execSync("git status --porcelain", { cwd: DR, encoding: "utf8" }) === before && det.written.length === 0);
+  r = cli("verify", "init", "--root", DR);
+  ok("the text form lists drafts, TODOs and the setup prompt",
+    r.status === 0 && /draft apps\/web\/\.seamux\/verify\.json/.test(r.stdout) && /TODO /.test(r.stdout) &&
+    /setup-prompt\.md/.test(r.stdout) && /--template vercel-preview/.test(r.stdout));
+
+  // --write: only files that do not exist, and what it writes loads clean.
+  r = cli("verify", "init", "--root", DR, "--write");
+  ok("--write writes the drafts whose file does not exist",
+    r.status === 0 && fs.existsSync(path.join(DR, ".seamux", "verify.json")) &&
+    fs.existsSync(path.join(DR, "apps/web/.seamux/verify.json")));
+  ok("…and never overwrites one that does",
+    fs.readFileSync(path.join(DR, "apps/api/.seamux/verify.json"), "utf8") === API_CFG && /left alone/.test(r.stdout));
+  ok("a written draft is a valid recipe file (its TODOs ride along, unread by the engine)",
+    loadVerify(DR).errors.length === 0 && loadVerify(path.join(DR, "apps/web")).errors.length === 0 &&
+    loadVerify(DR).recipes.some(x => x.id === "lint"));
+  ok("the drafts resolve the way the configs nest",
+    /unit@apps\/web/.test(cli("verify", "resolve", "apps/web/src/x.ts", "--root", DR).stdout) &&
+    /lint .*inherited from the root/.test(cli("verify", "resolve", "apps/web/src/x.ts", "--root", DR).stdout));
+
+  // Templates: copied in by name, filled with the project's e2e command.
+  const T = JSON.parse(cli("verify", "init", "--root", DR, "--json", "--template", "vercel-preview").stdout);
+  const tr = T.drafts.find(d => d.dir === "apps/web").file.recipes.find(x => x.id === "preview-e2e");
+  ok("--template lands on the project whose host suggested it",
+    tr && tr.steps[0].acquire && tr.steps.at(-1).run === "npm run test:e2e" && tr.default === false);
+  ok("…with the template's unverified status and needs as TODOs",
+    tr.todo.some(t => /template vercel-preview is unverified/.test(t)) && tr.todo.some(t => /^needs: /.test(t)));
+  const T2 = JSON.parse(cli("verify", "init", "--root", DR, "--json", "--template", "github-deployment@apps/api").stdout);
+  const tr2 = T2.drafts.find(d => d.dir === "apps/api").file.recipes.find(x => x.id === "preview-e2e");
+  ok("a project with no e2e script gets a run step that fails loudly until filled in",
+    /TODO: the e2e command/.test(tr2.steps.at(-1).run) && /exit 1/.test(tr2.steps.at(-1).run));
+  ok("an unknown template is refused, naming the ones there are",
+    /no template "nope" — there are: firebase-channel, github-deployment, rwx-run, vercel-preview/.test(
+      cli("verify", "init", "--root", DR, "--template", "nope").stderr));
+
+  // Every shipped template: a valid recipe once filled, remote-shaped, honest
+  // about whether anyone proved it, and never reading an error as a value.
+  const TD = path.join(HERE, "verify", "templates");
+  for (const f of fs.readdirSync(TD)) {
+    const t = JSON.parse(fs.readFileSync(path.join(TD, f), "utf8"));
+    const dir = path.join(TMP, "tpl-" + t.template);
+    fs.mkdirSync(path.join(dir, ".seamux"), { recursive: true });
+    const recipe = JSON.parse(JSON.stringify(t.recipe).split("{{e2e}}").join("npx playwright test"));
+    fs.writeFileSync(path.join(dir, ".seamux", "verify.json"), JSON.stringify({ recipes: [recipe] }));
+    const L = loadVerify(dir);
+    const kinds = L.recipes[0] ? L.recipes[0].steps.map(s => s.kind).join(",") : "";
+    ok(`template ${t.template}: a valid recipe once filled`, L.errors.length === 0);
+    ok(`template ${t.template}: acquire, then a wait that exports, then run`,
+      kinds === "acquire,wait,run" && !!L.recipes[0].steps[1].export && L.recipes[0].tier === "expensive");
+    ok(`template ${t.template}: says whether it was proven, and how to prove it`,
+      typeof t.verified === "boolean" && typeof t.verify === "string" && t.verify.length > 40 && Array.isArray(t.needs));
+    ok(`template ${t.template}: its wait discards stderr, so an error is never read as a value`,
+      /2>\/dev\/null/.test(L.recipes[0].steps[1].command));
+  }
+  ok("the setup prompt walks confirm, run twice, measure, and the remote template",
+    (() => { const s = fs.readFileSync(path.join(HERE, "verify", "setup-prompt.md"), "utf8");
+      return /verify init/.test(s) && /twice/.test(s) && /Tier it on the measurement/.test(s) &&
+        /--template/.test(s) && /acquire step is mine to/.test(s); })());
+
+  ok("classifyScript: names and commands",
+    classifyScript("test", "vitest run").role === "test" && classifyScript("typecheck", "tsc --noEmit").role === "type-check" &&
+    classifyScript("e2e", "cypress run").role === "e2e" && classifyScript("verify", "hurl --test api.hurl").role === "e2e" &&
+    classifyScript("test:watch", "vitest") === null && classifyScript("storybook", "storybook dev") === null);
 }
 
 // -------------------------------------------------- spec fields that used to be dropped

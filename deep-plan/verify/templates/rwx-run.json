@@ -1,0 +1,23 @@
+{
+  "template": "rwx-run",
+  "describes": "A run on RWX, read back through the GitHub check run it reports for HEAD — so the engine needs gh, not the rwx CLI. A person starts the run (pushing the branch triggers the workflows .rwx/ declares); the engine waits for its check run to complete and passes only on success.",
+  "verified": false,
+  "verify": "With a run for HEAD finished, run the wait command once by hand from the repo root: it must print the conclusion (success, failure, ...) and exit 0, and print nothing while the run is in progress. The app-slug filter (rwx or mint) is a guess; read the real one from `gh api repos/{owner}/{repo}/commits/HEAD/check-runs --jq '.check_runs[].app.slug'` and narrow it. Then set \"verified\": true here, with the date in \"verifiedAgainst\".",
+  "needs": [
+    "gh authenticated (gh auth status) with read access to the repo's checks",
+    "RWX reporting check runs to GitHub for the repo"
+  ],
+  "recipe": {
+    "id": "rwx-run",
+    "kind": "e2e",
+    "name": "the RWX run for HEAD concludes success",
+    "tier": "expensive",
+    "steps": [
+      { "acquire": "git push -u origin HEAD", "note": "triggers the RWX workflows .rwx/ runs on push; a run started by hand with the rwx CLI works too" },
+      { "wait": "gh api \"repos/{owner}/{repo}/commits/$(git rev-parse HEAD)/check-runs\" --jq '[.check_runs[] | select((.app.slug // \"\") | test(\"rwx|mint\"; \"i\")) | select(.status==\"completed\")][0].conclusion // empty' 2>/dev/null",
+        "export": "RWX_CONCLUSION", "timeout": 3600, "interval": 30,
+        "note": "prints the run's conclusion once it has completed" },
+      { "run": "test \"$RWX_CONCLUSION\" = success", "note": "the remote run is the proof; this only reads its verdict" }
+    ]
+  }
+}
