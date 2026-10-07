@@ -25,8 +25,12 @@
       "mermaid": "flowchart LR\n  W[write] --> O[(outbox)] --> D[deliver]\n  D -- fail --> O\n  T[timer sweep] --> O" }
   ],
   "deliverables": [
-    { "title": "Retry sweep", "body": "A timer job that re-queues failed rows under the backoff cap.", "files": ["app/workers/retry_sweep.rb"] },
-    { "title": "Backoff bookkeeping", "body": "Attempt count and next-try-at on the outbox row.", "files": ["db/migrate/add_retry_columns.rb"] }
+    { "title": "Retry sweep", "body": "A timer job that re-queues failed rows under the backoff cap.", "files": ["app/workers/retry_sweep.rb"],
+      "checks": [
+        { "kind": "test", "name": "retry sweep spec", "run": "bundle exec rspec spec/workers/retry_sweep_spec.rb" },
+        { "kind": "manual", "name": "a failed row in a dev outbox is re-queued on the next sweep" } ] },
+    { "title": "Backoff bookkeeping", "body": "Attempt count and next-try-at on the outbox row.", "files": ["db/migrate/add_retry_columns.rb"],
+      "waiver": "the retry sweep spec in increment 1 exercises both new columns; a migration has nothing of its own to prove" }
   ],
   "verification": ["bundle exec rspec spec/workers/retry_sweep_spec.rb"],
   "quiz": [

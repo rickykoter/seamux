@@ -1,0 +1,24 @@
+{
+  "template": "vercel-preview",
+  "describes": "A Vercel preview deployment of HEAD, found with the Vercel CLI. A person pushes the branch (Vercel's Git integration builds the preview); the engine waits for a READY deployment of this commit and runs the e2e suite against it. If the project's previews post to GitHub Deployments, github-deployment needs no Vercel CLI.",
+  "verified": false,
+  "verify": "With a preview of HEAD ready, run the wait command once by hand from the repo root: it must print the preview's https URL and exit 0, and print nothing while the build is running. The --meta and --status filters are written from memory of the Vercel CLI; check them against `vercel ls --help` first. Then set \"verified\": true here, with the date and CLI version in \"verifiedAgainst\".",
+  "needs": [
+    "the vercel CLI, logged in (or VERCEL_TOKEN in the environment) and the project linked (vercel link)",
+    "previews behind Deployment Protection: VERCEL_AUTOMATION_BYPASS_SECRET in the environment, sent by the e2e suite as the x-vercel-protection-bypass header",
+    "the e2e suite reading its base URL from $BASE_URL"
+  ],
+  "recipe": {
+    "id": "preview-e2e",
+    "kind": "e2e",
+    "name": "e2e against the Vercel preview of HEAD",
+    "tier": "expensive",
+    "steps": [
+      { "acquire": "git push -u origin HEAD", "note": "Vercel's Git integration builds a preview of the pushed branch" },
+      { "wait": "vercel ls --meta githubCommitSha=$(git rev-parse HEAD) --status READY 2>/dev/null | grep -Eo 'https://[^ ]+' | head -1",
+        "export": "BASE_URL", "timeout": 1200, "interval": 20,
+        "note": "prints the URL of a READY deployment of this commit, nothing before" },
+      { "run": "{{e2e}}" }
+    ]
+  }
+}

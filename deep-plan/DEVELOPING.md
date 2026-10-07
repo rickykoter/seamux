@@ -67,7 +67,9 @@ place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_D
 - The gate's refusal opens `deep-plan gate [<slug>]: ` (decide.mjs). The
   seamux-mods band finds refusals by that opening in the tool result; the probe
   asserts it. `status --json` rows carry `increments` (`n`, `title`, `status`,
-  `obs`) for the seamux-mods pane; the board ignores the field.
+  `checks`, and `obs` — the checks folded to one word, for an older pane) and
+  `checksOutstanding` (plus `obsOutstanding`, its per-increment fold) for the
+  seamux-mods pane; the board ignores both.
 
 ## Measured on this machine (2026-09-12)
 
@@ -196,50 +198,62 @@ fact would teach them to ignore all of them. `$DEEP_PLAN_EVIDENCE_FLOOR`
   broke. Found by mutation-testing: deliberately breaking a guard is how you
   learn whether its assertion can actually fail.
 
-## Observability seam (added 2026-09-16)
+## Checks: one gate per increment (2026-10, replaced the observability seam)
 
-Two different things share the word, and conflating them is the trap:
+The observability verdict (`inc.obs`, one per increment, `n/a` unless the
+deliverable declared checks) became one kind of check. Every increment now
+carries `inc.checks`, a map of check id to verdict, and `done` is refused
+until each has passed against the tree being closed. An increment with no
+checks is refused at render unless its deliverable carries a `waiver` — the
+`n/a`-gates-nothing rule is gone on purpose: `verification` lists were
+display-only, and increments closed on the agent's word.
 
-- **`spec.observability`** (top level) — advisory. What exists today, what gaps
-  this plan fills. Rendered when present, never required.
-- **`spec.deliverables[i].observability.checks`** — a **gate**. Declaring checks
-  on a deliverable means that increment's `done` is refused until a verdict is
-  recorded. Most increments do not change what the system reports about itself,
-  so an increment that declares nothing is `n/a` and gates nothing — demanding a
-  verdict from every increment would make the mechanism noise.
+Where checks come from (`resolvePlanChecks` in deep_plan.mjs, at render): the
+deliverable's `checks`, a named `recipe` bound to the `.seamux/verify.json`
+its files land on (lib/verify.mjs: nearest ancestor wins, the root's recipes
+inherited unless redefined, keys `id@project`); every `default: true` recipe
+whose `match` covers its files; and the legacy `observability.checks` and
+`verification` strings. The resolved list — steps, cwd, tier, timeout, hash —
+lives in state, so `check run` executes what was reviewed and rehydrate stays
+byte-identical; `checkMeta` is the split between what a check IS and its
+verdict (`VERDICT_FIELDS` in lib/state.mjs). Two traps that split exists for:
+a spec check's `run` (a command) is not the verdict's `runner` (a run in
+flight), and the md/review surfaces must read only the meta, or recording a
+verdict would rewrite the plan as reviewed.
 
-`obs check` prints what the spec declared; `obs pass|fail <slug> <n> "<what you
-saw>"` records it; `done --force` overrides and the log says the verdict was
-overridden. There are deliberately **no check generators**: the older engine
-generated these blocks per vendor, and that is where all of its org-specific
-knowledge lived. The engine only ever needed to display a declaration and record
-a verdict, so the declaration is authored in the spec like every other
-commitment the plan makes.
+`reconcileChecks` keeps the old rules and adds one: a pass survives its check
+being dropped (as `retired`, gating nothing); adding checks to an existing
+plan gates it; a pass recorded against a recipe whose hash has since changed
+goes back to pending.
 
-`reconcileObs` in `lib/state.mjs` carries two rules that both come from a way
-this can silently go wrong:
+**A pass records the tree it ran against** — HEAD and the content hash of the
+working copy (`git add -A` into a scratch index, then `write-tree`; see
+`treeOf`). `done` re-hashes and treats a pass against other content as
+stale. Content, not `git diff HEAD`: a commit after a pass changes HEAD and
+empties the diff, and must not stale it; untracked files must count. `status`
+never hashes (it runs every few seconds), so it reports passes as recorded.
 
-- A recorded **pass survives** the declaration being dropped from the spec. It
-  was true when it was recorded, and deleting evidence is worse than keeping a
-  verdict nothing reads.
-- Adding the field to a spec whose state file already exists flips `n/a` to
-  `pending`, rather than leaving the increment un-gated because the field
-  arrived second.
+**Running** (lib/runner.mjs, copied from restack's runner): cheap recipes run in
+the foreground; expensive ones run in a detached copy of the CLI (`check run …
+--inline --log <path> --token <t>`), recorded as `running` with that token
+before the spawn. The runner lands its own verdict only if the check still
+carries its token — a reset meanwhile discards it. A running check whose pid is
+gone is judged on a fresh read (a runner writes before it exits) and becomes
+`fail: runner lost`. An acquire step is never executed; the check goes to
+`needs-variant`, and `--from wait` resumes.
 
-`status --json` carries `obsOutstanding` so the board can show that a plan which
-looks one increment from finished is not.
+**Concurrent writers** merge in `writeState`: under the lock it re-reads the
+file and keeps any check verdict stamped later than the writer's copy, plus log
+lines the writer never saw. So every verdict change stamps `at`, a reset
+included — a reset with `at: 0` would lose to the pass it was undoing.
 
-**Resetting an increment re-gates its verdict.** A verdict proves something
-about the code that was there when it was recorded; redoing the increment
-invalidates it, and a `pass` left in place would let the gate through on stale
-evidence — silently, which is the single failure this mechanism exists to
-prevent. The prior verdict is folded into the note (`was pass: … (reset —
-re-verify)`) rather than deleted, so re-gating costs no evidence. `obs reset`
-is the explicit hatch for the other case: the work stands but the evidence does
-not.
+**Resetting an increment re-gates every verdict**, folding the old one into the
+note (`was pass: … (reset — re-verify)`) rather than deleting it. `check reset`
+is the hatch for when the work stands but the evidence does not. `obs
+check|pass|fail|reset` survive as aliases over the observability-kind checks.
 
-This is a **deliberate divergence** from the older engine, which kept the
-verdict across a reset and relied on the human remembering to clear it.
+The top-level `spec.observability` block is unchanged: advisory, rendered when
+present, never required.
 
 ## The increment reconcile preserves what it does not own
 

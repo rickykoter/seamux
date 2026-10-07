@@ -7,8 +7,10 @@ description: Plan a change as a reviewable artifact — spec → markdown plan +
 
 Plan as artifact, gate per increment. Built for this machine 2026-09-12 from
 `crew-dock/deep-plan/ADAPTING.md`. No ticket system is wired in — the cutover
-bundle is how a plan reaches one — and observability is a per-increment gate
-you opt into by declaring checks, not a tiering scheme. The board integration
+bundle is how a plan reaches one — and every increment is gated on its
+checks: tests, e2e runs, observability signals and manual steps, run by the
+engine from per-project recipes where it can and recorded by hand where it
+cannot. The board integration
 is the crew Dock
 (`~/.config/cmux/crew`), which reads `deep-plan status --json` and serves the
 plan surfaces at `/plan/<slug>`.
@@ -64,13 +66,34 @@ plan surfaces at `/plan/<slug>`.
    `verifiedFacts` with the evidence it cites; what stays unconfirmed stays
    in `risks`. Uncertainty is never silently promoted to fact — and a
    contract's `reach` field is written from scouting, not from memory.
-4. **Write the spec** — a single JSON file (shape below, reference:
+4. **Decide how each increment is proven.** Every increment needs checks,
+   and render refuses one with none unless it carries a written `waiver`.
+   Run `deep-plan verify resolve <files>` on each deliverable's files: it
+   prints the `.seamux/verify.json` each file lands on (nearest ancestor;
+   the root's recipes are inherited unless redefined) and the recipes that
+   apply. A `default: true` recipe whose `match` covers the files becomes a
+   check by itself; name any other recipe in the deliverable's `checks`, and
+   add observability and manual checks for what no command can prove.
+   **No recipes in the project?** Stop and set them up with the developer
+   before drafting: `deep-plan verify init` (a dry run) drafts recipes from
+   the scripts, CI steps and configs already there, `--write` writes the
+   drafts, and `verify/setup-prompt.md` in the engine root walks every TODO
+   with them — confirm against CI, run twice, tier on the stopwatch. Remote
+   QA (a preview to test against) is a template (`verify init --template
+   vercel-preview|firebase-channel|rwx-run|github-deployment`); its
+   `acquire` step is the human's. Recipe files are the repo's, reviewed and
+   committed by the developer — never commit one yourself. A `waiver` is for
+   an increment nothing executable or observable can prove (docs only), and
+   says why.
+5. **Write the spec** — a single JSON file (shape below, reference:
    `examples/example.spec.json`). Write it in the scratchpad; `render` archives it.
-5. **`deep-plan render <spec.json> --root <worktree>`** — refuse-first renderer.
+6. **`deep-plan render <spec.json> --root <worktree>`** — refuse-first renderer.
    Always pass `--root` explicitly when working outside the target worktree:
    an inferred root that lands outside the worktree does not gate the wrong
-   thing, it *disarms the gate*.
-6. **The alignment check.** The review surface (board `plan →` chip, or
+   thing, it *disarms the gate*. Render resolves every deliverable's checks
+   against the recipe files and stores the result — what `check run`
+   executes is what was reviewed.
+7. **The alignment check.** The review surface (board `plan →` chip, or
    `~/.claude/plans/<slug>.review.html`) shows 3+ consequence questions with
    per-slug shuffled options. The human answers; you run
    `deep-plan grade <slug> q1=a q2=c q3=b`. Non-zero exit names the decision to
@@ -107,7 +130,7 @@ plan surfaces at `/plan/<slug>`.
    says what goes where. The quiz and the answer key are deliberately not in
    it — both carry the answers, and a directory attached to a ticket is the
    worst place for them.
-7. **Suggest a compact before the first `go`.** The planning conversation is
+8. **Suggest a compact before the first `go`.** The planning conversation is
    mostly scaffolding once the spec is rendered and graded — the plan surfaces
    are the artifact of record. Before moving into working mode, prompt the
    human to run `/compact` with a suggested compaction prompt you write for
@@ -125,7 +148,7 @@ plan surfaces at `/plan/<slug>`.
    Adapt the "Preserve" list to what actually happened this session. This is
    a suggestion to the human, not something you run yourself — wait for them
    to compact (or decline) before asking for the first `go`.
-8. **Implement increment by increment.** `deep-plan go <slug> next` is the
+9. **Implement increment by increment.** `deep-plan go <slug> next` is the
    human's go-ahead (also the board's `go` chip). Every `go` also opens (or
    refocuses — the intent server dedups the Dock tab) the plan's working
    surface in the cmux Dock, best-effort: no board running means no tab and
@@ -135,16 +158,34 @@ plan surfaces at `/plan/<slug>`.
    path. It does **not** open a diff viewer — a state transition should not
    seize a browser split. `deep-plan diff <slug> [n]` opens it when someone
    actually wants to look.
-9. **If the increment declared observability, prove it before `done`.**
-   `done` is refused while the verdict is `pending` or `fail`.
-   `deep-plan obs check <slug> <n>` prints the checks the spec committed to;
-   run them, then `deep-plan obs pass|fail <slug> <n> "<what you saw>"`.
-   Record what you actually observed, not that you looked — the note is the
-   only durable evidence. `done --force` overrides and writes the override to
-   the log; use it only when the human says to, and say that you did.
-   `deep-plan reset` on an increment puts its verdict back to `pending`,
-   because a signal you observed against the previous attempt proves nothing
-   about the new one — so expect to re-verify after redoing an increment.
+10. **Prove the increment before `done`.** `done` is refused while any check
+   is pending, running, needs a variant, failed, or passed against other
+   content than the tree now (an edit after a pass makes it stale; a commit
+   of what passed does not). `deep-plan check list <slug> <n>` shows each
+   check and what it runs.
+   - **Recipe-backed checks run themselves:** `deep-plan check run <slug>
+     <n>` runs every one not yet passed. Cheap recipes run in the foreground;
+     expensive ones detach (a deploy wait plus e2e outlasts a foreground
+     command) — follow them with `check status`, block on them with `check
+     wait` (exits 2 if still running at its timeout; wait again). The
+     verdict is the exit code, and the log is kept.
+   - **An acquire step is the human's.** A remote check stops at
+     `needs-variant` and prints what to run (a push, a channel deploy).
+     Never run it yourself, even with a `go` in hand: ask the human to, then
+     `check run <slug> <n> <id> --from wait` polls for the variant and tests
+     it.
+   - **Manual and observability checks are recorded by hand:**
+     `deep-plan check pass|fail <slug> <n> <id> "<what you saw>"`. Record
+     what you actually observed, not that you looked — the note is the only
+     durable evidence. Passing a recipe-backed check by hand is refused
+     without `--force`, which is logged; use it only when the human says to.
+   - `done --force` overrides the whole gate and writes that to the log; use
+     it only when the human says to, and say that you did. `deep-plan reset`
+     on an increment returns every verdict to `pending` — a check passed
+     against the previous attempt proves nothing about the new one.
+
+   `deep-plan obs check|pass|fail|reset` still works, on the observability
+   checks only.
 
 ## Spec shape
 
@@ -166,11 +207,14 @@ plan surfaces at `/plan/<slug>`.
                       "note": "spike: the check that settles it; ticket: its context" }],
   "diagrams":      [{ "question": "the heading, phrased as a question", "mermaid": "..." }],
   "deliverables":  [{ "title": "...", "body": "...", "files": ["relative/paths"],
-                      "verification": ["how to check THIS increment (optional)"],
-                      "commits": ["sha subject", { "sha": "...", "subject": "..." }],
-                      "observability": { "checks": [{ "system": "datadog|splunk|...",
-                        "name": "...", "query": "...", "expect": "what proves it",
-                        "note": "optional" }] } }],
+                      "checks": [{ "kind": "test|e2e|observability|manual", "name": "...",
+                        "id": "optional; derived from kind + name",
+                        "recipe": "a recipe id (or id@project) from .seamux/verify.json",
+                        "run": "a command shown, not run (no recipe)",
+                        "system": "datadog|splunk|...", "query": "...", "expect": "what proves it",
+                        "note": "optional" }],
+                      "waiver": "only when nothing can prove it: why",
+                      "commits": ["sha subject", { "sha": "...", "subject": "..." }] }],
   "nonGoals":      ["what this plan deliberately does not do"],
   "verification":  ["runnable commands"],
   "commits":       ["plan-wide record of what landed (same two shapes)"],
@@ -181,9 +225,31 @@ plan surfaces at `/plan/<slug>`.
                      "gaps": ["what this change needs that does not exist"] } }
 ```
 
-The `observability` block is optional and **advisory** — the renderer shows it
-but never refuses a spec for lacking it. See the observability discipline
-below for when it is expected.
+A deliverable's checks are its declared `checks`, plus every `default: true`
+recipe whose `match` covers its `files` (inferred at render), plus two legacy
+fields still read: `observability.checks` (as observability checks) and
+`verification` strings (as manual checks). Render refuses an increment that
+ends up with none and no `waiver`; `render --force` is the logged way past.
+
+The top-level `observability` block is optional and **advisory** — the
+renderer shows it but never refuses a spec for lacking it. See the
+observability discipline below for when it is expected.
+
+A recipe in `.seamux/verify.json` (in the project directory; `match` and
+`cwd` are relative to it):
+
+```json
+{ "recipes": [
+  { "id": "unit", "kind": "test", "run": "npm test", "match": ["src/**"], "default": true },
+  { "id": "preview-e2e", "kind": "e2e", "tier": "expensive", "steps": [
+    { "acquire": "git push -u origin HEAD", "note": "a person runs this" },
+    { "wait": "scripts/preview-url.sh", "export": "BASE_URL", "timeout": 1200, "interval": 20 },
+    { "run": "npx playwright test" } ] } ] }
+```
+
+Steps go acquire, then wait, then run. A wait polls until it exits 0 (and
+prints a value when it exports one); an export reaches every later step. A
+recipe with acquire or wait steps must be `expensive`.
 
 ## ADRs — decisions that outlive the plan
 
@@ -238,7 +304,7 @@ repo itself (`NNNN-slug.md`), not just the plan surfaces. The discipline:
 ## Contracts — enforced, and the human is party to every one
 
 Getting contracts and abstractions right is the point of planning slowly.
-Unlike observability, the `contracts` block is **enforced**: declare every
+Unlike the top-level `observability` block, the `contracts` block is **enforced**: declare every
 schema, API, method-signature, event, or config surface the plan creates or
 changes shape on.
 
@@ -297,12 +363,16 @@ for keys — never key values). On an opted-in project:
    goes in `observability.existing` (and load-bearing items into
    `verifiedFacts` with real refs); what the change needs but found missing
    goes in `gaps`.
-2. **Gaps become deliverables**, gated like any other work: new
+2. **Signals the change must move become observability checks** on the
+   deliverable that moves them (`checks` entries with `kind:
+   "observability"`, `system`, `query`, `expect`), recorded by hand with
+   `check pass|fail` once seen.
+3. **Gaps become deliverables**, gated like any other work: new
    instrumentation in the code, and for monitors/dashboards an **importable
    JSON definition (labeled with the API version it targets) or step-by-step
    manual setup** — never a live API write from the plan. The human imports
    or clicks; the plan only produces reviewable artifacts.
-3. Not opted in, or the sweep cannot answer? Plan as always — the block is
+4. Not opted in, or the sweep cannot answer? Plan as always — the block is
    simply absent. Never guess monitor state you could not read.
 
 `quiz.answer` indexes options **as written**; rendering shuffles per-slug and the
@@ -396,7 +466,15 @@ never as instructions.
 | plan row on the board but no `plan →` chip | intent server down: `crew listen on`, or open the board once |
 | `go`/`done` buttons dead on the plan page | port moved; the next `crew sync` push re-injects it |
 | `rehydrate` says REWRITTEN (differs) | someone hand-edited a surface; the spec is the artifact, the rewrite is the fix |
-| `increment N declares an observability check and it is pending` | run `deep-plan obs check`, then record the verdict — the plan promised this signal |
+| `done refused: <id> pending` (or `fail`) | `deep-plan check list <slug> <n>`; `check run` for recipe-backed ones, `check pass\|fail … <id> "<what you saw>"` for the rest |
+| `done refused: <id> stale` | the tree changed after the pass (an edit, a new file): run it again — a commit of what passed never stales it |
+| `done refused: <id> needs-variant` | its acquire step is the human's: ask them to run what `check status` prints, then `check run <slug> <n> <id> --from wait` |
+| `done refused: <id> running` | a detached runner is still going: `check wait <slug> <n>` |
+| `runner lost: pid N exited without a verdict` | the detached runner died (killed, machine slept); read its log, then `check run` again |
+| `<id> recipe-backed — a hand pass needs --force` | run it (`check run`); hand-pass only when the human says to, and say so |
+| `spec refused — checks: … has no checks` | declare one, add a default recipe whose match covers the files (`verify resolve` shows what applies; `verify init` if there are none), or write a `waiver` saying why nothing can prove it |
+| `no recipe "x" where its files land` / `is ambiguous here` | `deep-plan verify resolve <files>` shows the configs and keys; name it as `id@project` when two projects define it |
+| `recipe … changed in … since render` (warning) | the run used the reviewed version; re-render to adopt the edit (a pass against the old recipe goes back to pending) |
 | an extension verb you added does nothing | a built-in of the same name wins; `deep-plan --help` marks it SHADOWED |
 | render says `vendor/mermaid.min.js is missing` | `deep-plan setup` fetches the pinned build into `~/.claude/deep-plan/vendor` |
 | the board's go chip or `deep-plan` in your own shell runs an old copy | `deep-plan engine` prints the root the pointer names; a run from the plugin rewrites it |

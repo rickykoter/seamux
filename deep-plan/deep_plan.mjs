@@ -17,17 +17,21 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { execSync, spawnSync } from "node:child_process";
+import { execSync, spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { validateDiagrams, validateSurface, mermaidPath, mermaidCandidates, VENDOR_DIR, MERMAID_HOME } from "./lib/validate.mjs";
 import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries, adrScanReport } from "./lib/adr.mjs";
-import { epicHtml, incrementMd, bundleReadme, incrementFileNames } from "./lib/cutover.mjs";
+import { epicHtml, incrementMd, bundleReadme, incrementFileNames, checkLinesMd } from "./lib/cutover.mjs";
 import { checkEvidence } from "./lib/evidence.mjs";
+import { resolveFiles, resolver } from "./lib/verify.mjs";
+import { runExec, acquireSteps, alive, sleep, tail } from "./lib/runner.mjs";
+import { detect, draftFile } from "./lib/detect.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, statePath, sessionId,
   readState, writeState, allStates, log1, progress, gateView,
-  reconcileObs, obsBlocks, planFor,
+  planFor, CHECK_KINDS, specChecks, reconcileChecks, checksOf, checksBlock,
+  checksAggregate, needsTree, treeOf, checkMeta,
 } from "./lib/state.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -166,6 +170,27 @@ function validate(spec, force) {
       errs.push(`contract "${name}": external scope defaults toward ADR — flag the decision, or write a waiver`);
   }
 
+  // Checks: `done` is gated on them, so one the engine cannot read must refuse
+  // here rather than gate an increment on something nobody can satisfy.
+  (spec.deliverables || []).forEach((d, i) => {
+    if (d.checks !== undefined && !Array.isArray(d.checks)) {
+      errs.push(`deliverable ${i + 1}: checks must be an array`); return;
+    }
+    for (const c of d.checks || []) {
+      const label = `deliverable ${i + 1} check "${c.id || c.name || c.recipe || "?"}"`;
+      if (!CHECK_KINDS.includes(c.kind))
+        errs.push(`${label}: kind must be one of ${CHECK_KINDS.join("|")}`);
+      if (!(c.name || c.recipe)) errs.push(`${label}: needs a name, or the recipe it runs`);
+      if (c.id !== undefined && !/^[a-z0-9][a-z0-9._-]*$/i.test(String(c.id)))
+        errs.push(`${label}: id must be letters, digits, dot, dash or underscore`);
+    }
+    if (d.waiver !== undefined && !(typeof d.waiver === "string" && d.waiver.trim()))
+      errs.push(`deliverable ${i + 1}: a waiver is a sentence saying why nothing can prove it`);
+    const ids = specChecks(d).map(c => c.id);
+    for (const id of new Set(ids.filter((x, k) => ids.indexOf(x) !== k)))
+      errs.push(`deliverable ${i + 1}: two checks share the id "${id}"`);
+  });
+
   // Floors, derived from this house's own plans. The fix for a wall is to
   // draw it, not to trim it to just under the limit.
   const prose = [spec.context, ...(spec.deliverables || []).map(d => d.body)];
@@ -222,6 +247,97 @@ function validate(spec, force) {
   }
   if (errs.length) console.error(`deep-plan: --force past ${errs.length} floor violation(s) — logged`);
   return errs;
+}
+
+// ---------------------------------------------------------------- checks
+
+// Each deliverable's checks as render resolved them: declared checks, with a
+// named recipe bound to the config its files land on; then every default
+// recipe whose match covers its files, inferred; then the legacy fields. The
+// resolution reads the repo's recipe files, so it happens once, at render, and
+// lives in state — surfaces re-render from the stored list (rehydrate stays
+// byte-identical) and `check run` executes exactly what was reviewed.
+function resolvePlanChecks(spec, root) {
+  const R = resolver(root);
+  const errs = [];
+  const bind = (c, r) => ({ ...c, recipe: r.key, hash: r.hash, source: r.source,
+    exec: { tier: r.tier, cwd: path.posix.join(r.project || ".", r.cwd), timeout: r.timeout, steps: r.steps } });
+  const lists = (spec.deliverables || []).map((d, i) => {
+    const label = `deliverable ${i + 1} ("${d.title}")`;
+    const rows = (d.files || []).map(f => R.file(f)).filter(r => !r.outside);
+    // A check may name any recipe available where the deliverable's files
+    // land, match aside — naming one is the author choosing it. With no
+    // config under any of its files, the root's.
+    const dirs = [...new Set(rows.filter(r => r.config)
+      .map(r => path.dirname(path.dirname(path.join(R.root, r.config)))))];
+    const nameable = new Map();
+    for (const dir of dirs.length ? dirs : [R.root]) for (const r of R.available(dir)) nameable.set(r.key, r);
+    const out = [];
+    for (const c of specChecks(d)) {
+      if (!c.recipe) { out.push(c); continue; }
+      const hits = [...nameable.values()].filter(r => r.key === c.recipe || r.id === c.recipe);
+      if (hits.length === 1) out.push(bind(c, hits[0]));
+      else if (!hits.length)
+        errs.push(`${label} check "${c.id}": no recipe "${c.recipe}" where its files land — ` +
+          "`deep-plan verify resolve <file>` lists what is there");
+      else errs.push(`${label} check "${c.id}": recipe "${c.recipe}" is ambiguous here (` +
+        `${hits.map(h => h.key).join(", ")}) — name one by its key`);
+    }
+    const named = new Set(out.map(c => c.recipe).filter(Boolean));
+    const ids = new Set(out.map(c => c.id));
+    for (const row of rows) for (const r of row.recipes) {
+      if (!r.default || named.has(r.key)) continue;
+      named.add(r.key);
+      let id = r.key;
+      for (let k = 2; ids.has(id); k++) id = `${r.key}-${k}`;
+      ids.add(id);
+      out.push(bind({ id, kind: r.kind, name: r.name, inferred: true }, r));
+    }
+    // Old plans are not grandfathered: an increment nothing can prove is a
+    // finding, and the author either names the proof or says why there is none.
+    if (!out.length && !(typeof d.waiver === "string" && d.waiver.trim()))
+      errs.push(`${label} has no checks. Declare one in "checks", add a default recipe whose match ` +
+        "covers its files (`deep-plan verify resolve <file>` shows what applies), or write a " +
+        "\"waiver\" saying why nothing can prove it");
+    return out;
+  });
+  for (const e of R.errors()) errs.push(`recipe config ${e}`);
+  return { lists, errs };
+}
+
+// The resolved lists ride beside the spec object rather than inside it, so
+// the spec archived on the keys tree stays exactly what the author wrote.
+const RESOLVED = new WeakMap();
+function planChecks(spec, i) {
+  return ((RESOLVED.get(spec) || [])[i]) ?? specChecks((spec.deliverables || [])[i]);
+}
+// For every re-render that does not resolve (rehydrate, the approved
+// snapshot, export): the list as stored at the last render.
+function checksFromState(spec, st) {
+  RESOLVED.set(spec, (spec.deliverables || []).map((d, i) => {
+    const inc = ((st && st.increments) || []).find(x => x.n === i + 1);
+    if (!inc || !inc.checks || typeof inc.checks !== "object") return null;
+    return Object.entries(inc.checks).filter(([, v]) => !v.retired).map(([id, v]) => checkMeta(id, v));
+  }));
+  return spec;
+}
+
+// The markdown subset checkLinesMd writes — **bold** and `code` — as HTML,
+// escaped first. Bold is never read inside code: a glob's `**` stays literal.
+function mdInline(s) {
+  return esc(s).split(/(`[^`]+`)/).map(seg =>
+    seg.length > 1 && seg.startsWith("`") && seg.endsWith("`")
+      ? `<code>${seg.slice(1, -1)}</code>`
+      : seg.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")).join("");
+}
+
+function checksHtml(list, waiver) {
+  if (!list.length) return waiver ? `<p class="dim">checks: none — waived: ${esc(waiver)}</p>` : "";
+  return `<p class="dim">checks — <code>done</code> is gated on these:</p><ul class="dim">` +
+    list.map(c => {
+      const { head, lines } = checkLinesMd(c);
+      return `<li>${mdInline(head)}${lines.map(l => `<br>${mdInline(l)}`).join("")}</li>`;
+    }).join("") + "</ul>";
 }
 
 // ---------------------------------------------------------------- render
@@ -327,21 +443,19 @@ function mdPlan(spec, adrs = []) {
     // Per-deliverable verification is not a duplicate of the plan-wide list: it
     // is how you check THIS increment, which is what someone reviewing one
     // increment in isolation needs.
-    if ((d.verification || []).length) {
-      L.push("", "Verify this increment:", "");
-      for (const v of d.verification) L.push("- " + v);
-    }
+    // Every check gates `done`, whatever its kind; per-deliverable
+    // `verification` strings are among them, as manual checks.
+    const checks = planChecks(spec, i);
+    if (checks.length) {
+      L.push("", "Checks — `done` is gated on these:", "");
+      for (const c of checks) {
+        const { head, lines } = checkLinesMd(c);
+        L.push(`- ${head}`, ...lines.map(l => `  - ${l}`));
+      }
+    } else if (d.waiver) L.push("", `Checks: none — waived: ${d.waiver}`);
     if ((d.commits || []).length) {
       L.push("", "Commits:", "");
       for (const c of d.commits) L.push(commitLine(c));
-    }
-    if ((d.observability && d.observability.checks || []).length) {
-      L.push("", "Observability — `done` is gated on these:", "");
-      for (const c of d.observability.checks) {
-        L.push(`- [${c.system || "?"}] ${c.name || ""}`);
-        if (c.query) L.push(`  - query: \`${c.query}\``);
-        if (c.expect) L.push(`  - expect: ${c.expect}`);
-      }
     }
     L.push("");
   });
@@ -975,9 +1089,8 @@ function reviewHtml(spec, b64, adrs = []) {
   const incs = (spec.deliverables || []).map((d, i) =>
     `<div class="inc"><b>${i + 1}. ${esc(d.title)}</b><p>${esc(d.body || "")}</p>
 ${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${esc(f)}</code>`).join(" ")}</p>` : ""}
-${(d.verification || []).length ? `<p class="dim">verify: ${d.verification.map(v => `<code>${esc(v)}</code>`).join(" · ")}</p>` : ""}
+${checksHtml(planChecks(spec, i), d.waiver)}
 ${(d.commits || []).length ? `<ul class="dim">${d.commits.map(c => commitLi(c)).join("")}</ul>` : ""}
-${(d.observability && d.observability.checks || []).length ? `<p class="dim">observability gate: ${d.observability.checks.map(c => esc(c.name || c.system || "?")).join(" · ")}</p>` : ""}
 <textarea class="dp-note" data-section="increment ${i + 1}" rows="1" placeholder="comment on this increment (optional)" aria-label="comment on increment ${i + 1}"></textarea></div>`).join("\n");
   // Everything below is client-side only: selections and comments live in the
   // DOM, nothing is stored or sent anywhere, and the page keeps working over
@@ -1186,21 +1299,23 @@ const commitLine = c => typeof c === "string"
   ? `- \`${c}\``
   : `- ${c.sha ? "`" + String(c.sha).slice(0, 12) + "` " : ""}${c.subject || c.ref || ""}`;
 
-// The verdict, and — when it is still outstanding — what the spec says to run.
-// Showing the checks only while they matter keeps a finished increment short.
-function obsRow(d, inc) {
-  const checks = (d.observability && d.observability.checks) || [];
-  const st = (inc.obs && inc.obs.status) || "n/a";
-  if (!checks.length && st === "n/a") return "";
-  const mark = { pass: "✅", fail: "❌", pending: "⏳", "n/a": "" }[st] || "";
-  const head = `<p class="dim">observability: ${mark} ${esc(st)}` +
-    (inc.obs && inc.obs.note ? ` — ${esc(inc.obs.note)}` : "") + "</p>";
-  if (st === "pass" || !checks.length) return head;
-  const items = checks.map(c =>
-    `<li>[${esc(c.system || "?")}] ${esc(c.name || "")}` +
-    (c.query ? `<br><code>${esc(c.query)}</code>` : "") +
-    (c.expect ? `<br><span class="dim">expect: ${esc(c.expect)}</span>` : "") + "</li>").join("");
-  return head + `<ul class="dim">${items}</ul>`;
+const CHECK_MARK = { pass: "✅", fail: "❌", pending: "⏳", running: "🔄", "needs-variant": "✋", stale: "⚠️" };
+
+// Each check with its verdict, and — while it is outstanding — what it runs.
+// Showing the detail only while it matters keeps a finished increment short.
+function checksRow(inc) {
+  const all = Object.entries(checksOf(inc)).filter(([, v]) => !v.retired);
+  if (!all.length) return "";
+  const agg = checksAggregate(inc);
+  const items = all.map(([id, v]) => {
+    const st = v.status || "pending";
+    const detail = st === "pass" ? "" :
+      checkLinesMd({ id, ...v }).lines.map(l => `<br>${mdInline(l)}`).join("");
+    return `<li>${CHECK_MARK[st] || ""} ${esc(st)} · [${esc(v.kind || "?")}${v.system ? " · " + esc(v.system) : ""}] ` +
+      `${esc(v.name || "")} <code>${esc(id)}</code>` +
+      (v.note ? ` — ${esc(v.note)}` : "") + detail + "</li>";
+  }).join("");
+  return `<p class="dim">checks: ${CHECK_MARK[agg] || ""} ${esc(agg)}</p><ul class="dim">${items}</ul>`;
 }
 
 function workingHtml(spec, st, b64) {
@@ -1214,16 +1329,15 @@ function workingHtml(spec, st, b64) {
     // The verdict belongs beside the status, not in a section of its own: it is
     // a precondition on THIS increment's `done`, and a reader deciding whether
     // the increment is finished needs both in one glance.
-    const obs = obsRow(d, inc);
+    const checks = checksRow(inc) || (d.waiver ? `<p class="dim">checks: none — waived: ${esc(d.waiver)}</p>` : "");
     // Per-deliverable commits: the record of what actually landed for this one.
     const dcommits = (d.commits || []).map(c => commitLi(c)).join("");
     return `<div class="inc"><span class="st st-${esc(inc.status)}">${esc(inc.status)}</span>
 <b>${inc.n}. ${esc(inc.title)}</b>
 <p>${esc(d.body || "")}</p>
 ${files ? `<p class="dim">${files}</p>` : ""}
-${(d.verification || []).length ? `<p class="dim">verify: ${d.verification.map(v => `<code>${esc(v)}</code>`).join(" · ")}</p>` : ""}
 ${dcommits ? `<ul class="dim">${dcommits}</ul>` : ""}
-${obs}
+${checks}
 <p>${acts}</p></div>`;
   }).join("\n");
   const g = gateView(st);
@@ -1338,6 +1452,18 @@ async function render(specPath, opts) {
       violations.push(...unread);
     }
   }
+  // Checks: resolved against the repo's recipe files, and refused where an
+  // increment has none and no waiver, or names a recipe that is not there.
+  const { lists: checkLists, errs: checkErrs } = resolvePlanChecks(spec, planRoot);
+  if (checkErrs.length && !opts.force) {
+    console.error("deep-plan: spec refused — checks:");
+    for (const e of checkErrs) console.error("  ✗ " + e);
+    process.exit(1);
+  } else if (checkErrs.length) {
+    console.error(`deep-plan: --force past ${checkErrs.length} check problem(s) — logged`);
+    violations.push(...checkErrs);
+  }
+  RESOLVED.set(spec, checkLists);
   // The citations themselves, warn-only — the other direction of the floor
   // above. Code checks that each path:line resolves; with a TypeSafe key one
   // batched request judges whether the cited lines back each claim
@@ -1425,7 +1551,8 @@ async function render(specPath, opts) {
       n: i + 1, title: d.title, status: prev.status || "pending",
       authorizedAt: prev.authorizedAt || 0, startedAt: prev.startedAt || 0,
       doneAt: prev.doneAt || 0, note: prev.note || "", startSha: prev.startSha || "",
-      obs: reconcileObs(prev, d) };
+      // `obs` is the pre-checks verdict; reconcileChecks carries it over.
+      checks: reconcileChecks(prev, checkLists[i]), obs: undefined };
   });
   // Keep what apply recorded (applied path) for unchanged entries; a spec
   // edit that reorders or reworded a flagged decision re-resolves fresh.
@@ -1476,7 +1603,7 @@ function writeSpecArtifacts(spec, b64) {
     epicHtml({ spec, body: commonBody(spec, [], false), b64,
       hasDiagrams: (spec.diagrams || []).length > 0 }));
   names.forEach((name, i) => fs.writeFileSync(path.join(dir, name),
-    incrementMd({ spec, index: i, total: names.length })));
+    incrementMd({ spec, index: i, total: names.length, checks: planChecks(spec, i) })));
   fs.writeFileSync(path.join(dir, "README.md"), bundleReadme({ spec, files: names }));
   out.push(`cutover/ (epic + ${names.length} increment${names.length === 1 ? "" : "s"}, no quiz)`);
   return out;
@@ -1488,6 +1615,7 @@ function rehydrate(slug) {
   const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
   const b64 = mermaidB64();
   const st0 = readState(slug);
+  checksFromState(spec, st0);
   const adrs = (st0 && st0.adrs) || [];
   fs.mkdirSync(PLANS_DIR, { recursive: true });
   const md = mdPlan(spec, adrs), rv = reviewHtml(spec, b64, adrs);
@@ -1523,9 +1651,11 @@ function exportArtifact(slug, asJson) {
   if (!fs.existsSync(specPath)) die("no archived spec for " + slug);
   const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
   const st = readState(slug);
+  checksFromState(spec, st);
   const incs = (spec.deliverables || []).map((d, i) =>
     `<div class="inc" id="inc-${i + 1}"><b>${i + 1}. ${esc(d.title)}</b><p>${esc(d.body || "")}</p>
-${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${esc(f)}</code>`).join(" ")}</p>` : ""}</div>`).join("\n");
+${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${esc(f)}</code>`).join(" ")}</p>` : ""}
+${checksHtml(planChecks(spec, i), d.waiver)}</div>`).join("\n");
   const diagrams = (spec.diagrams || []).map(dg =>
     `<h2>${esc(dg.question)}</h2><pre class="mermaid">${esc(dg.mermaid.trim())}</pre>`).join("\n");
   const facts = (spec.verifiedFacts || []).map(f =>
@@ -1784,7 +1914,7 @@ async function grade(slug, answers) {
     const apPath = path.join(PLANS_DIR, slug + ".approved.md");
     fs.writeFileSync(apPath,
       `> approved snapshot of plan \`${slug}\` — cut when the alignment check passed; immutable. The live plan may have moved on.\n\n` +
-      mdPlan(spec, st.adrs || []));
+      mdPlan(checksFromState(spec, st), st.adrs || []));
     st.approved = { spec_hash: specHash(spec), path: apPath };
     log1(st, "approved snapshot cut: " + apPath);
     say("approved snapshot: " + apPath + " (immutable — paste it into tickets/PRs as context)");
@@ -1809,6 +1939,38 @@ function resolveSlugAt(dir) {
     if (target === r || target.startsWith(r + path.sep)) return st.slug;
   }
   return null;
+}
+
+// The refusal reads top-down for a person and bottom-up for a machine: crew's
+// board shows only the LAST line of a refused command, so the reason goes
+// there, never a hint.
+function checksRefusal(slug, n, out) {
+  const short = s => s.length > 60 ? s.slice(0, 57) + "…" : s;
+  const lines = out.map(c => `  ${CHECK_MARK[c.status] || "·"} ${c.id}  [${c.kind}] ${c.status}` +
+    (c.status === "stale" ? " — passed against other content than the tree now" : "") +
+    (c.note ? ` — ${c.note}` : ""));
+  return `increment ${n} has ${out.length} check(s) outstanding:\n${lines.join("\n")}` +
+    `\n\n  what each one runs:  deep-plan check list ${slug} ${n}` +
+    `\n  record a verdict:    deep-plan check pass|fail ${slug} ${n} <id> "<what you saw>"` +
+    `\n  override, logged:    deep-plan done ${slug} ${n} --force` +
+    `\n\ndone refused: ${out.map(c => `${c.id} ${c.status}${c.note ? ` (${short(c.note)})` : ""}`).join("; ")}`;
+}
+
+// Back to pending, folding what the verdict was into its note rather than
+// deleting it: re-gate without destroying what was observed. `ids` null means
+// every check that has moved off pending. Returns the ids it moved.
+function repend(inc, ids, why) {
+  const checks = checksOf(inc), moved = [];
+  for (const [id, v] of Object.entries(checks)) {
+    if (v.retired) continue;
+    if (ids ? !ids.includes(id) : (v.status || "pending") === "pending") continue;
+    const was = v.status || "pending";
+    const { ran, tree, by, runner, acquire, ...rest } = v;
+    checks[id] = { ...rest, status: "pending", at: Date.now(),
+      note: `was ${was}${v.note ? `: ${v.note}` : ""} (${why})` };
+    moved.push(id);
+  }
+  return moved;
 }
 
 function transition(action, slug, n, why, force = false) {
@@ -1836,21 +1998,17 @@ function transition(action, slug, n, why, force = false) {
     const inc = findInc(st, n);
     if (inc.status !== "working" && inc.status !== "authorized")
       die(`increment ${n} is ${inc.status}`);
-    // An increment that declared an observability check cannot be done until
-    // the check has a verdict. Declaring one is the whole point: a plan that
-    // promises a signal and ships without looking at it has promised nothing.
-    if (obsBlocks(inc) && !force)
-      die(`increment ${n} declares an observability check and it is ${inc.obs.status}` +
-        (inc.obs.note ? `\n  last note: ${inc.obs.note}` : "") +
-        `\n\n  what to verify:    deep-plan obs check ${slug} ${n}` +
-        `\n  record the result: deep-plan obs pass ${slug} ${n} "<what you saw>"` +
-        `\n\n  or override, which is written to the log:` +
-        `\n    deep-plan done ${slug} ${n} --force`);
+    // An increment cannot be done until every check has passed against the
+    // tree being closed. Declaring one is the whole point: a plan that promises
+    // a proof and ships without looking at it has promised nothing.
+    const out = checksBlock(inc, needsTree(inc) ? treeOf(st.root) : null);
+    if (out.length && !force) die(checksRefusal(slug, n, out));
     inc.status = "done"; inc.doneAt = Date.now();
     // An override is logged for the same reason the verdict is recorded: someone
-    // reading the history has to be able to see that the signal was skipped.
-    log1(st, `done: increment ${n}` +
-      (obsBlocks(inc) ? ` (observability ${inc.obs.status}, overridden with --force)` : ""));
+    // reading the history has to be able to see that the proof was skipped.
+    log1(st, `done: increment ${n}` + (out.length
+      ? ` (checks outstanding: ${out.map(c => `${c.id} [${c.kind}] ${c.status}`).join(", ")}; overridden with --force)`
+      : ""));
     if ((st.increments || []).every(i => i.status === "done")) {
       st.phase = "done";
       log1(st, "every increment done; the gate retires");
@@ -1874,15 +2032,9 @@ function transition(action, slug, n, why, force = false) {
     //
     // This is a deliberate divergence from the older engine, which kept the
     // verdict across a reset and relied on the human remembering to clear it.
-    if (inc.obs && (inc.obs.status === "pass" || inc.obs.status === "fail")) {
-      const was = inc.obs.status, note = inc.obs.note || "";
-      inc.obs = { status: "pending", at: 0,
-        note: `was ${was}${note ? `: ${note}` : ""} (reset — re-verify)`,
-        version: inc.obs.version || "" };
-      log1(st, `reset: increment ${n} — observability verdict (${was}) returned to pending`);
-    } else {
-      log1(st, `reset: increment ${n}`);
-    }
+    const back = repend(inc, null, "reset — re-verify");
+    log1(st, `reset: increment ${n}` + (back.length
+      ? ` — ${back.length} check verdict(s) returned to pending (${back.join(", ")})` : ""));
   } else die("unknown transition " + action);
   writeState(st); rerenderWorking(slug);
   say(`${action} ${slug} ${n}`);
@@ -2100,15 +2252,24 @@ function statusRows() {
     // owners were stamped has no owner, only its state file's own time.
     owner: st.owner || null,
     touchedAt: (st.owner && st.owner.at) || stateMtime(st.slug),
-    // Increments whose declared observability check is still outstanding. These
-    // cannot go `done` without --force, so a plan that looks one step from
-    // finished may not be — the board reads this from --json.
-    obsOutstanding: (st.increments || []).filter(obsBlocks)
-      .map(i => ({ n: i.n, status: i.obs.status })),
+    // Checks still outstanding. Their increments cannot go `done` without
+    // --force, so a plan that looks one step from finished may not be — the
+    // board reads this from --json. A pass is taken as recorded here; whether
+    // it went stale is judged at `done`, which hashes the tree.
+    checksOutstanding: (st.increments || []).flatMap(i =>
+      checksBlock(i).map(c => ({ n: i.n, id: c.id, kind: c.kind, status: c.status }))),
+    // The pre-checks shape, one entry per increment, kept for older readers.
+    obsOutstanding: (st.increments || []).filter(i => checksBlock(i).length)
+      .map(i => ({ n: i.n, status: checksAggregate(i) })),
     // Every increment's own row, for a reader that draws the whole plan (the
-    // seamux-mods pane) rather than the board's one-line summary.
+    // seamux-mods pane) rather than the board's one-line summary. `obs` is the
+    // checks folded to one word, for a pane built before checks.
     increments: (st.increments || []).map(i => ({
-      n: i.n, title: i.title, status: i.status, obs: (i.obs && i.obs.status) || "n/a",
+      n: i.n, title: i.title, status: i.status, obs: checksAggregate(i),
+      checks: Object.entries(checksOf(i)).filter(([, v]) => !v.retired).map(([id, v]) => ({
+        id, kind: v.kind || "", name: v.name || "", status: v.status || "pending",
+        note: v.note || "", at: v.at || 0, ...(v.recipe ? { recipe: v.recipe } : {}),
+      })),
     })),
   }));
 }
@@ -2122,81 +2283,477 @@ function status(json) {
     say(`  root ${r.root}${r.rootBroken ? "  ⚠ BROKEN ROOT — gone; the gate FAILS OPEN here" : ""}`);
     if (r.approved) say(`  approved snapshot ${r.approved}`);
     if (r.obsOutstanding.length)
-      say("  observability outstanding: " +
+      say("  checks outstanding: " +
         r.obsOutstanding.map(o => `${o.n} (${o.status})`).join(", ") +
-        " — `deep-plan obs check` for what to run");
+        " — `deep-plan check list <slug> <n>` for what to run");
     say(`  ${r.progress.done}/${r.progress.total} increments` +
       (r.progress.next ? ` · next: ${r.progress.next.n}. ${r.progress.next.title}` : "") +
       (r.progress.blocked.length ? ` · blocked: ${r.progress.blocked.map(b => b.title).join(", ")}` : ""));
   }
 }
 
-// ---------------------------------------------------------------- observability
+// ---------------------------------------------------------------- checks
 
-// `obs check` prints what the SPEC already declared. The older engine generated
-// these check blocks per vendor, which is where all its org-specific knowledge
-// lived; the engine itself only ever needed to display them and record a
-// verdict. So the generators do not come across — the declaration is authored
-// in the spec like every other commitment the plan makes.
-function obsCheck(slug, n) {
+// `check list` prints the increment's checks from state, which render filled
+// from the spec: what each one is, what it runs, and where its verdict stands.
+// A pass is judged against the tree as it is now, the way `done` will judge it.
+function checkList(slug, n) {
   const st = readState(slug) || die("no plan " + slug);
   const inc = findInc(st, n);
-  const specPath = path.join(KEYS_DIR, slug + ".spec.json");
-  if (!fs.existsSync(specPath)) die("no archived spec for " + slug);
-  const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
-  const d = (spec.deliverables || [])[inc.n - 1] || {};
-  const checks = (d.observability && d.observability.checks) || [];
+  const all = Object.entries(checksOf(inc)).filter(([, v]) => !v.retired);
   say(`${slug} increment ${inc.n}: ${inc.title}`);
-  say(`verdict: ${inc.obs ? inc.obs.status : "n/a"}` +
-    (inc.obs && inc.obs.note ? ` — ${inc.obs.note}` : ""));
-  if (!checks.length) {
-    say("\nthis increment declares no observability check, so `done` is not gated on one.");
-    say(`to gate it, add an "observability" block to deliverables[${inc.n - 1}] and re-render.`);
+  if (!all.length) {
+    say("\nthis increment declares no checks, so `done` is not gated on one.");
+    say(`to gate it, add "checks" to deliverables[${inc.n - 1}] and re-render.`);
     return;
   }
-  say(`\n${checks.length} check(s) to run:`);
-  for (const c of checks) {
-    say(`\n  [${c.system || "?"}] ${c.name || ""}`);
-    if (c.query) say(`    query:  ${c.query}`);
-    if (c.expect) say(`    expect: ${c.expect}`);
-    if (c.note) say(`    note:   ${c.note}`);
+  const stale = new Set(checksBlock(inc, needsTree(inc) ? treeOf(st.root) : null)
+    .filter(c => c.status === "stale").map(c => c.id));
+  say(`\n${all.length} check(s):`);
+  for (const [id, v] of all) {
+    const s = stale.has(id) ? "stale — passed against other content than the tree now" : v.status || "pending";
+    say(`\n  ${CHECK_MARK[stale.has(id) ? "stale" : v.status] || "·"} ${id}  [${v.kind}${v.system ? " · " + v.system : ""}] ${s}`);
+    say(`    ${v.name}`);
+    if (v.recipe) say(`    recipe: ${v.recipe}  (its verdict comes from running it; a hand pass needs --force)`);
+    if (v.run) say(`    run:    ${v.run}`);
+    if (v.query) say(`    query:  ${v.query}`);
+    if (v.expect) say(`    expect: ${v.expect}`);
+    if (v.hint) say(`    about:  ${v.hint}`);
+    if (v.note) say(`    seen:   ${v.note}`);
   }
-  say(`\nrecord it:  deep-plan obs pass|fail ${slug} ${inc.n} "<what you saw>"`);
+  say(`\nrecord one:  deep-plan check pass|fail ${slug} ${inc.n} <id> "<what you saw>"`);
 }
 
-// `obs reset` is the explicit escape hatch: the checks changed, or the verdict
-// is stale for a reason the engine cannot see. Increment `reset` re-gates on its
-// own, so this is for the case where the work stands but the evidence does not.
-function obsReset(slug, n) {
+// A verdict recorded by hand. A pass records the tree it was seen against, so
+// an edit after it sends the increment's `done` back to "stale". A check backed
+// by a recipe gets its verdict from the recipe's exit code; passing one by hand
+// is refused unless forced, and the force is logged — the same bargain as
+// `done --force`.
+function checkRecord(slug, n, ids, verdict, note, force) {
   const st = readState(slug) || die("no plan " + slug);
   const inc = findInc(st, n);
-  if (!inc.obs || inc.obs.status === "n/a")
-    die(`increment ${n} has no observability verdict to reset`);
-  const was = inc.obs.status;
-  inc.obs = { status: "pending", at: 0,
-    note: `was ${was}${inc.obs.note ? `: ${inc.obs.note}` : ""} (reset by hand)`,
-    version: inc.obs.version || "" };
-  log1(st, `obs reset: increment ${inc.n} (was ${was})`);
-  writeState(st); rerenderWorking(slug);
-  say(`obs verdict for ${slug} ${inc.n} back to pending (was ${was}) — \`done\` is blocked again`);
-}
-
-function obsRecord(slug, n, verdict, note) {
-  const st = readState(slug) || die("no plan " + slug);
-  const inc = findInc(st, n);
-  // Recording against an increment that declared nothing is a sign the spec and
-  // the verdict disagree about what this increment is. Say so rather than
-  // storing a verdict nothing will ever read.
-  if (!inc.obs || inc.obs.status === "n/a")
-    die(`increment ${n} declares no observability check\n` +
-        `  add an "observability" block to the spec's deliverables[${inc.n - 1}] and re-render first`);
+  const checks = checksOf(inc);
+  const active = Object.keys(checks).filter(id => !checks[id].retired);
+  for (const id of ids)
+    if (!active.includes(id))
+      die(`increment ${n} has no check "${id}"\n` + (active.length
+        ? `  its checks: ${active.join(", ")}`
+        : `  it declares none — add "checks" to the spec's deliverables[${inc.n - 1}] and re-render first`));
   if (verdict === "fail" && !note)
-    die(`say what failed: deep-plan obs fail ${slug} ${n} "<what you saw>"`);
-  inc.obs = { status: verdict, at: Date.now(), note: note || "", version: inc.obs.version || "" };
-  log1(st, `obs ${verdict}: increment ${inc.n}${note ? ` — ${note}` : ""}`);
+    die(`say what failed: deep-plan check fail ${slug} ${n} ${ids.length === 1 ? ids[0] : "<id>"} "<what you saw>"`);
+  const recipes = ids.filter(id => checks[id].recipe);
+  if (verdict === "pass" && recipes.length && !force)
+    die(`${recipes.join(", ")} ${recipes.length === 1 ? "is" : "are"} backed by a recipe, so the verdict ` +
+      `comes from running it (\`deep-plan check run\`), not from a note.\n` +
+      `  pass by hand anyway, logged:  deep-plan check pass ${slug} ${n} ${recipes[0]} "<why>" --force\n\n` +
+      `refused: ${recipes.join(", ")} recipe-backed — a hand pass needs --force`);
+  const tree = verdict === "pass" ? treeOf(st.root) : null;
+  for (const id of ids) {
+    const { ran, tree: _t, runner, acquire, ...rest } = checks[id];
+    const forced = verdict === "pass" && !!checks[id].recipe;
+    checks[id] = { ...rest, status: verdict, at: Date.now(), note: note || "",
+      by: forced ? "hand, forced" : "hand", ...(tree ? { tree } : {}) };
+    log1(st, `check ${verdict}: increment ${inc.n} ${id}` +
+      (forced ? " (recipe-backed, passed by hand with --force)" : "") + (note ? ` — ${note}` : ""));
+  }
   writeState(st); rerenderWorking(slug);
-  say(`recorded obs ${verdict} for ${slug} ${inc.n}` +
-    (verdict === "pass" ? "" : " — `done` stays blocked until this passes"));
+  say(`recorded ${verdict} for ${slug} ${inc.n}: ${ids.join(", ")}` +
+    (verdict === "pass" ? "" : " — `done` stays blocked until it passes"));
+}
+
+// The explicit hatch: the checks changed, or a verdict is stale for a reason
+// the engine cannot see. Increment `reset` re-gates on its own, so this is for
+// when the work stands but the evidence does not. No id means every verdict.
+function checkReset(slug, n, id, ids = null) {
+  const st = readState(slug) || die("no plan " + slug);
+  const inc = findInc(st, n);
+  const checks = checksOf(inc);
+  const want = ids || (id ? [id] : Object.keys(checks).filter(k => !checks[k].retired));
+  if (id && !(checks[id] && !checks[id].retired)) die(`increment ${n} has no check "${id}"`);
+  if (!want.length) die(`increment ${n} has no check verdict to reset`);
+  const was = want.map(k => `${k} (was ${checks[k].status || "pending"})`);
+  repend(inc, want, "reset by hand");
+  log1(st, `check reset: increment ${inc.n} — ${was.join(", ")}`);
+  writeState(st); rerenderWorking(slug);
+  say(`back to pending for ${slug} ${inc.n}: ${was.join(", ")} — \`done\` is blocked again`);
+}
+
+// ---------------------------------------------------------------- check run
+
+// `check run` executes a recipe-backed check exactly as render stored it, and
+// records the verdict from the exit code. Cheap recipes run here, in the
+// foreground. Expensive ones — a deploy wait plus e2e can take longer than an
+// agent's foreground limit — run in a detached copy of this CLI (`--inline
+// --log --token <token>`), which writes the log and the verdict itself; `check
+// status` and `check wait` follow it. A runner that dies without a verdict is
+// found by its pid and recorded as `fail: runner lost`.
+
+function runsDir(slug) {
+  const d = path.join(PLANS_DIR, slug + ".runs");
+  fs.mkdirSync(d, { recursive: true });
+  return d;
+}
+const fileSafe = s => String(s).replace(/[^a-z0-9._-]+/gi, "_");
+const pidFile = (slug, n, id) => path.join(runsDir(slug), `inc${n}-${fileSafe(id)}.pid`);
+const secs = ms => ms >= 60000 ? `${Math.floor(ms / 60000)}m${Math.round(ms % 60000 / 1000)}s` : `${(ms / 1000).toFixed(1)}s`;
+
+// Running checks whose runner is gone. Judged on a FRESH read after the pid is
+// seen dead: a runner writes its verdict before it exits, so a check still
+// "running" once its pid is gone never got one. Writes and returns the state.
+function reapLost(slug) {
+  const st = readState(slug) || die("no plan " + slug);
+  let lost = 0;
+  for (const inc of st.increments || []) {
+    for (const [id, v] of Object.entries(checksOf(inc))) {
+      if (v.status !== "running" || !v.runner) continue;
+      // A runner is recorded before it is spawned, so a missing pid gets a
+      // grace period rather than an instant verdict.
+      const gone = v.runner.pid ? !alive(v.runner.pid) : Date.now() - (v.runner.startedAt || 0) > 30000;
+      if (!gone) continue;
+      const { runner, ...rest } = v;
+      inc.checks[id] = { ...rest, status: "fail", at: Date.now(), by: "runner",
+        note: `runner lost: pid ${runner.pid || "?"} exited without a verdict (log: ${runner.log})`,
+        ran: { log: runner.log, code: -1 } };
+      try { fs.rmSync(pidFile(slug, inc.n, id), { force: true }); } catch { /* gone */ }
+      log1(st, `check fail: increment ${inc.n} ${id} — runner lost (pid ${runner.pid || "?"})`);
+      lost++;
+    }
+  }
+  if (lost) { writeState(st); rerenderWorking(slug); }
+  return st;
+}
+
+// A recipe edited after render is not what was reviewed. The run uses the
+// stored version and says so; a re-render adopts the edit (and re-pends any
+// pass recorded against the old one).
+function recipeDrift(st, v) {
+  try {
+    const at = v.recipe.includes("@") ? v.recipe.slice(v.recipe.indexOf("@") + 1) : "";
+    const cur = resolver(st.root).available(path.join(st.root, at)).find(r => r.key === v.recipe);
+    if (!cur) return `recipe ${v.recipe} is no longer in ${v.source}; running the version that was reviewed`;
+    if (cur.hash !== v.hash)
+      return `recipe ${v.recipe} changed in ${v.source} since render (#${v.hash} → #${cur.hash}); ` +
+        "running the version that was reviewed — re-render to adopt the edit";
+  } catch { /* drift is advice; it never stops a run */ }
+  return "";
+}
+
+function checkRun(slug, n, ids, opts) {
+  let st = reapLost(slug);
+  const inc = findInc(st, n);
+  const checks = checksOf(inc);
+  const active = Object.keys(checks).filter(id => !checks[id].retired);
+  for (const id of ids) {
+    if (!active.includes(id)) die(`increment ${n} has no check "${id}"\n  its checks: ${active.join(", ") || "none"}`);
+    const v = checks[id];
+    if (!v.recipe) die(`${id} is a ${v.kind} check with no recipe — there is nothing to run.\n` +
+      `  record what you saw: deep-plan check pass|fail ${slug} ${n} ${id} "<what you saw>"\n\n` +
+      `refused: ${id} has no recipe to run`);
+    if (!v.exec) die(`${id} names recipe ${v.recipe}, but its steps were never stored — re-render the plan`);
+  }
+  let want = ids;
+  if (!ids.length) {
+    const tree = needsTree(inc) ? treeOf(st.root) : null;
+    const stale = new Set(checksBlock(inc, tree).filter(c => c.status === "stale").map(c => c.id));
+    want = active.filter(id => checks[id].recipe && checks[id].exec &&
+      checks[id].status !== "running" && (checks[id].status !== "pass" || stale.has(id)));
+    if (!want.length) {
+      say(`nothing to run for ${slug} ${inc.n}: every recipe-backed check has passed against this tree or is running`);
+      return 0;
+    }
+  }
+
+  const lines = [];
+  let failed = 0;
+  for (const id of want) {
+    st = readState(slug);
+    const cur = checksOf(findInc(st, n))[id];
+    const own = opts.token && cur.runner && cur.runner.token === opts.token;
+    if (cur.status === "running" && cur.runner && !own && alive(cur.runner.pid)) {
+      say(`🔄 ${id} is already running (pid ${cur.runner.pid}) — deep-plan check wait ${slug} ${n} ${id}`);
+      lines.push(`${id} already running`);
+      continue;
+    }
+    const drift = recipeDrift(st, cur);
+    if (drift && !opts.token) console.error("  ⚠ " + drift);
+
+    // An acquire step is a person's: stop before anything runs, and say what
+    // to run and how to resume. Never executed here, not even with a `go`.
+    const acquire = acquireSteps(cur.exec);
+    if (acquire.length && opts.from !== "wait") {
+      const { runner, ...rest } = cur;
+      checksOf(findInc(st, n))[id] = { ...rest, status: "needs-variant", at: Date.now(), by: "runner",
+        note: `a person runs: ${acquire.map(s => s.command).join(" && ")}`,
+        acquire: acquire.map(s => ({ command: s.command, note: s.note || "" })) };
+      log1(st, `check needs-variant: increment ${inc.n} ${id}`);
+      writeState(st); rerenderWorking(slug);
+      say(`✋ ${id} needs a variant. A person runs${acquire.length > 1 ? " these" : " this"} — the engine never does:`);
+      for (const s of acquire) say(`     ${s.command}${s.note ? `   (${s.note})` : ""}`);
+      say(`   then: deep-plan check run ${slug} ${n} ${id} --from wait`);
+      lines.push(`${id} needs a variant — run it, then check run ${slug} ${n} ${id} --from wait`);
+      continue;
+    }
+
+    const token = own ? opts.token : crypto.randomBytes(6).toString("hex");
+    const log = own && opts.log ? opts.log
+      : path.join(runsDir(slug), `inc${n}-${fileSafe(id)}-${Date.now()}.log`);
+
+    if (cur.exec.tier === "expensive" && !opts.inline) {
+      // Recorded before the spawn, so the runner finds its token on its first
+      // read; the pid follows once there is one.
+      const startedAt = Date.now();
+      const set = pid => {
+        const s2 = readState(slug), c2 = checksOf(findInc(s2, n));
+        const { ran, ...rest } = c2[id];
+        c2[id] = { ...rest, status: "running", at: startedAt, by: "runner",
+          note: `running since ${new Date(startedAt).toISOString().slice(11, 19)}Z`,
+          runner: { token, pid, log, startedAt, from: opts.from || "" } };
+        if (!pid) log1(s2, `check run: increment ${inc.n} ${id} started detached (log: ${log})`);
+        writeState(s2);
+      };
+      set(0);
+      const fd = fs.openSync(log, "a");
+      const child = spawn(process.execPath, [path.join(HERE, "deep_plan.mjs"), "check", "run", slug, String(n), id,
+        "--inline", "--log", log, "--token", token, ...(opts.from ? ["--from", opts.from] : [])],
+        { detached: true, stdio: ["ignore", fd, fd], cwd: st.root, env: { ...process.env } });
+      child.unref(); fs.closeSync(fd);
+      set(child.pid);
+      fs.writeFileSync(pidFile(slug, n, id), JSON.stringify({ pid: child.pid, token, log, startedAt }) + "\n");
+      rerenderWorking(slug);
+      say(`🔄 ${id} started detached (pid ${child.pid}) — log: ${log}`);
+      lines.push(`${id} running detached — deep-plan check wait ${slug} ${n}`);
+      continue;
+    }
+
+    // In the foreground (or this IS the detached runner): mark it running,
+    // run, then record — unless the check was reset or re-run meanwhile, in
+    // which case this verdict belongs to an attempt nobody is waiting on.
+    if (!own) {
+      const { ran, ...rest } = cur;
+      checksOf(findInc(st, n))[id] = { ...rest, status: "running", at: Date.now(), by: "runner",
+        note: "running in the foreground", runner: { token, pid: process.pid, log, startedAt: Date.now(), from: opts.from || "" } };
+      writeState(st);
+    }
+    const tree = treeOf(st.root);
+    const res = runExec(cur.exec, { root: st.root, from: opts.from || "", log,
+      env: { DEEP_PLAN_SLUG: slug, DEEP_PLAN_INCREMENT: String(n), DEEP_PLAN_CHECK: id } });
+    const fresh = readState(slug);
+    const now = checksOf(findInc(fresh, n))[id];
+    if (!now || !now.runner || now.runner.token !== token) {
+      log1(fresh, `check run: increment ${inc.n} ${id} finished ${res.status}, but the check was reset ` +
+        "or re-run meanwhile — this verdict was discarded");
+      writeState(fresh);
+      say(`${id}: finished ${res.status}, but the check changed while it ran — verdict discarded`);
+      continue;
+    }
+    const { runner, ...rest } = now;
+    checksOf(findInc(fresh, n))[id] = { ...rest, status: res.status, at: Date.now(), by: "runner",
+      note: res.note, ran: res.ran, ...(res.status === "pass" && tree ? { tree } : {}) };
+    log1(fresh, `check ${res.status}: increment ${inc.n} ${id} — ${res.note}`);
+    writeState(fresh); rerenderWorking(slug);
+    try { if (own) fs.rmSync(pidFile(slug, n, id), { force: true }); } catch { /* gone */ }
+    if (res.status === "pass") say(`✅ ${id} pass — ${res.note} (log: ${log})`);
+    else {
+      failed++;
+      say(`❌ ${id} fail — ${res.note} (log: ${log})`);
+      if (res.ran.tail) say(res.ran.tail.split("\n").map(l => "     " + l).join("\n"));
+    }
+    lines.push(`${id} ${res.status}`);
+  }
+  if (lines.length > 1 || failed) say(`\ncheck run ${slug} ${n}: ${lines.join("; ")}`);
+  return failed ? 1 : 0;
+}
+
+// Where each check stands; a running one with its elapsed time, pid and the
+// tail of its log, so "is it stuck?" has an answer without opening anything.
+function checkStatus(slug, n, ids, json) {
+  const st = reapLost(slug);
+  const inc = findInc(st, n);
+  const all = Object.entries(checksOf(inc)).filter(([id, v]) => !v.retired && (!ids.length || ids.includes(id)));
+  if (json) {
+    process.stdout.write(JSON.stringify(all.map(([id, v]) => ({ id, kind: v.kind, status: v.status, note: v.note || "",
+      at: v.at || 0, ...(v.runner ? { runner: v.runner } : {}), ...(v.ran ? { ran: v.ran } : {}),
+      ...(v.acquire ? { acquire: v.acquire } : {}) })), null, 2) + "\n");
+    return;
+  }
+  say(`${slug} increment ${inc.n}: ${inc.title}`);
+  for (const [id, v] of all) {
+    say(`  ${CHECK_MARK[v.status] || "·"} ${id}  ${v.status}${v.note ? ` — ${v.note}` : ""}`);
+    if (v.status === "running" && v.runner) {
+      say(`      ${secs(Date.now() - v.runner.startedAt)} so far · pid ${v.runner.pid || "starting"} · log ${v.runner.log}`);
+      try { say(tail(fs.readFileSync(v.runner.log, "utf8"), 5).split("\n").map(l => "      | " + l).join("\n")); } catch { /* not yet */ }
+    }
+    if (v.status === "needs-variant" && v.acquire) {
+      for (const a of v.acquire) say(`      a person runs: ${a.command}`);
+      say(`      then: deep-plan check run ${slug} ${n} ${id} --from wait`);
+    }
+    if (v.ran && v.ran.log && v.status !== "running") say(`      log ${v.ran.log}`);
+  }
+}
+
+// Block until the selected checks stop running, then report them. Exits 0
+// when every one passed, 1 when any did not, 2 when the timeout came first —
+// the default stays inside an agent's foreground limit, and waiting again is
+// always safe.
+function checkWait(slug, n, ids, timeoutSec) {
+  const until = Date.now() + timeoutSec * 1000;
+  for (;;) {
+    const st = reapLost(slug);
+    const inc = findInc(st, n);
+    const sel = Object.entries(checksOf(inc)).filter(([id, v]) => !v.retired && (!ids.length || ids.includes(id)));
+    const running = sel.filter(([, v]) => v.status === "running");
+    if (!running.length) {
+      checkStatus(slug, n, ids, false);
+      const bad = sel.filter(([, v]) => v.status !== "pass");
+      say(bad.length ? `\nwait over: ${bad.map(([id, v]) => `${id} ${v.status}`).join("; ")}` : "\nwait over: every check passed");
+      return bad.length ? 1 : 0;
+    }
+    if (Date.now() >= until) {
+      checkStatus(slug, n, ids, false);
+      say(`\nstill running after ${timeoutSec}s: ${running.map(([id]) => id).join(", ")} — wait again`);
+      return 2;
+    }
+    sleep(500);
+  }
+}
+
+// ---------------------------------------------------------------- verify
+
+// `verify resolve` answers "which recipes would check these files, and from
+// which config" without running anything — the question an author asks while
+// writing a deliverable's file list, and the one to ask when a check that
+// should have been inferred was not.
+function stepsLine(r) {
+  if (r.steps.length === 1 && r.steps[0].kind === "run") return r.steps[0].command;
+  return r.steps.map(s => s.kind === "acquire" ? "acquire (a person runs it)" : s.kind +
+    (s.export ? ` → $${s.export}` : "")).join(" → ");
+}
+
+function verifyResolve(files, root, json) {
+  if (!files.length) die("verify resolve <file>... [--root DIR] [--json]");
+  const res = resolveFiles(root, files);
+  if (json) process.stdout.write(JSON.stringify(res, null, 2) + "\n");
+  else {
+    say(`root ${res.root}`);
+    for (const f of res.files) {
+      if (f.outside) { say(`\n${f.file}  ✗ outside the root — nothing here verifies it`); continue; }
+      say(`\n${f.rel}  → ${f.config || "no .seamux/verify.json at or above it"}`);
+      if (f.config && !f.recipes.length) say("    no recipe's match covers it");
+      for (const r of f.recipes)
+        say(`    ${r.key.padEnd(18)} [${r.kind} · ${r.tier}]${r.default ? " default" : ""}` +
+          `${r.inherited ? " (inherited from the root)" : ""}  ${stepsLine(r)}  #${r.hash}`);
+    }
+  }
+  if (res.errors.length) {
+    for (const e of res.errors) console.error("  ✗ " + e);
+    die(`verify: ${res.errors.length} config error(s) — a broken recipe file is never read as "no recipes"`);
+  }
+}
+
+// `verify init` reads what the repo already does to prove a change works
+// (lib/detect.mjs) and drafts a .seamux/verify.json per project, a TODO on
+// every gap. A dry run unless --write, and --write never overwrites a file —
+// a reviewed config is worth more than any draft. Remote templates are only
+// ever copied in by name; the setup prompt walks what is left with a person.
+const TEMPLATES_DIR = path.join(HERE, "verify", "templates");
+const SETUP_PROMPT = path.join(HERE, "verify", "setup-prompt.md");
+
+function listTemplates() {
+  try { return fs.readdirSync(TEMPLATES_DIR).filter(f => f.endsWith(".json")).map(f => f.slice(0, -5)).sort(); }
+  catch { return []; }
+}
+
+function loadTemplate(name) {
+  const p = path.join(TEMPLATES_DIR, name + ".json");
+  if (!/^[a-z0-9-]+$/.test(name) || !fs.existsSync(p))
+    die(`no template "${name}" — there are: ${listTemplates().join(", ")}`);
+  return JSON.parse(fs.readFileSync(p, "utf8"));
+}
+
+// A template copied into a project's draft. Its run step's {{e2e}} becomes
+// the project's own e2e script when one was found, else a command that fails
+// loudly — a placeholder that passes would be a proof of nothing.
+function applyTemplate(tpl, project) {
+  const e2e = project.recipes.find(r => r.kind === "e2e");
+  const fill = e2e ? e2e.run : "echo 'TODO: the e2e command, run against $BASE_URL' >&2; exit 1";
+  const r = JSON.parse(JSON.stringify(tpl.recipe));
+  r.steps = r.steps.map(s => Object.fromEntries(Object.entries(s).map(([k, v]) =>
+    [k, typeof v === "string" ? v.split("{{e2e}}").join(fill) : v])));
+  r.default = false;
+  r.todo = [
+    e2e ? `runs \`${e2e.run}\` against the preview — make the suite read $BASE_URL (and skip any local webServer when it is set)`
+      : "fill in the run step: the e2e command, reading $BASE_URL",
+    ...(tpl.verified ? [] : [`template ${tpl.template} is unverified: ${tpl.verify}`]),
+    ...(tpl.needs || []).map(n => `needs: ${n}`),
+  ];
+  r.evidence = [`deep-plan verify/templates/${tpl.template}.json`];
+  const ids = new Set(project.recipes.map(x => x.id));
+  for (let k = 2, base = r.id; ids.has(r.id); k++) r.id = `${base}-${k}`;
+  return r;
+}
+
+function verifyInit(root, opts) {
+  const det = detect(root);
+  const extra = new Map();
+  for (const t of opts.templates || []) {
+    const [name, at] = t.split("@");
+    const tpl = loadTemplate(name);
+    const dir = at !== undefined ? at.replace(/^\.\/?|\/$/g, "")
+      : (det.projects.find(p => p.hosts.some(h => h.template === name)) || { dir: "" }).dir;
+    const proj = det.projects.find(p => p.dir === dir) ||
+      die(`--template ${t}: no project at "${dir}" — projects: ${det.projects.map(p => p.dir || ".").join(", ")}`);
+    if (!extra.has(dir)) extra.set(dir, []);
+    extra.get(dir).push(applyTemplate(tpl, proj));
+  }
+  const drafts = det.projects.map(p => ({
+    dir: p.dir, path: path.posix.join(p.dir || ".", ".seamux", "verify.json"), exists: p.existing,
+    file: draftFile(p, extra.get(p.dir) || []),
+  })).filter(d => d.file.recipes.length);
+
+  const written = [];
+  if (opts.write) for (const d of drafts) {
+    if (d.exists) continue;
+    const abs = path.join(det.root, d.path);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, JSON.stringify(d.file, null, 2) + "\n");
+    written.push(d.path);
+  }
+  if (opts.json) {
+    process.stdout.write(JSON.stringify({ ...det, drafts, written, templatesAvailable: listTemplates(),
+      setupPrompt: SETUP_PROMPT }, null, 2) + "\n");
+    return;
+  }
+
+  say(`verify init — ${det.root} (${det.packageManager})`);
+  if (det.workspaces.length) say(`workspaces: ${det.workspaces.join(", ")}`);
+  for (const p of det.projects) {
+    const d = drafts.find(x => x.dir === p.dir);
+    say(`\nproject ${p.dir || "."}${p.manifests.length ? ` (${p.manifests.join(", ")})` : ""}` +
+      (p.runners.length ? ` — runners: ${p.runners.join(", ")}` : ""));
+    if (!d) { say("  nothing that reads as a check — the setup prompt starts this one from a blank page"); continue; }
+    say(`  draft ${d.path}` + (d.exists ? "  [exists — left alone; --write never overwrites]"
+      : written.includes(d.path) ? "  [written]" : ""));
+    for (const r of d.file.recipes) {
+      const cmd = r.run || stepsLine({ steps: r.steps.map(s => ({ kind: Object.keys(s).find(k => ["acquire", "wait", "run"].includes(k)), export: s.export, command: s.run || s.wait || s.acquire })) });
+      say(`    ${r.id.padEnd(14)} ${r.kind} · ${r.tier}${r.default ? " · default" : ""}  ${cmd}`);
+      for (const e of r.evidence || []) say(`      evidence: ${e}`);
+      for (const t of r.todo || []) say(`      TODO ${t}`);
+    }
+    for (const a of p.aggregates) say(`    (${a.name} chains ${a.runs.join(", ")} — its parts are recipes; it is not one)`);
+    for (const h of p.hosts)
+      if (!(extra.get(p.dir) || []).length) say(`    host: ${h.name} → remote QA template: deep-plan verify init --template ${h.template}`);
+  }
+  const steps = det.ci.filter(s => s.command), flags = det.ci.filter(s => !s.command || s.notes.length);
+  say(`\nCI: ${steps.length ? `${steps.length} run step(s) read` : "no .github/workflows or .rwx run steps found"}`);
+  for (const f of flags) say(`  ⚠ ${f.at}${f.job ? ` (${f.job})` : ""}: ${f.notes.join("; ")}`);
+  if (!det.projects.some(p => p.hosts.length))
+    say(`remote QA: no host config found (vercel.json, firebase.json, .rwx/, netlify.toml); ` +
+      `templates: ${listTemplates().join(", ")}`);
+  const todos = drafts.reduce((n, d) => n + d.file.recipes.reduce((m, r) => m + (r.todo || []).length, 0), 0);
+  say(opts.write
+    ? `\nwrote ${written.length ? written.join(", ") : "nothing (every draft's file exists)"}. ${todos} TODO(s) to walk: ${SETUP_PROMPT}`
+    : `\ndry run — nothing written. ${drafts.length} draft(s), ${todos} TODO(s). ` +
+      `\`deep-plan verify init --write\` writes the drafts whose file does not exist; then walk the TODOs: ${SETUP_PROMPT}`);
 }
 
 // ---------------------------------------------------------------- main
@@ -2207,8 +2764,8 @@ function obsRecord(slug, n, verdict, note) {
 // available has been told the opposite of the truth.
 const BUILTIN_VERBS = new Set([
   "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
-  "grade", "status", "go", "start", "done", "reset", "block", "obs",
-  "open-gate", "shut-gate", "close", "diff", "ask", "help", "setup", "engine",
+  "grade", "status", "go", "start", "done", "reset", "block", "check", "obs",
+  "open-gate", "shut-gate", "close", "diff", "ask", "help", "setup", "engine", "verify",
 ]);
 
 const [, , cmd, ...rest] = process.argv;
@@ -2219,6 +2776,13 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--root") flags.root = rest[++i];
   else if (rest[i] === "--at") flags.at = rest[++i];
   else if (rest[i] === "--json") flags.json = true;
+  else if (rest[i] === "--inline") flags.inline = true;
+  else if (rest[i] === "--write") flags.write = true;
+  else if (rest[i] === "--template") (flags.templates = flags.templates || []).push(rest[++i]);
+  else if (rest[i] === "--from") flags.from = rest[++i];
+  else if (rest[i] === "--log") flags.log = rest[++i];
+  else if (rest[i] === "--token") flags.token = rest[++i];
+  else if (rest[i] === "--timeout") flags.timeout = Number(rest[++i]);
   else args.push(rest[i]);
 }
 
@@ -2280,14 +2844,52 @@ switch (cmd) {
   case "start": case "done": case "reset":
     transition(cmd, args[0], args[1] ?? die(cmd + " <slug> <n>"), undefined, flags.force); break;
   case "block": transition("block", args[0], args[1], args.slice(2).join(" ")); break;
+  case "check": {
+    const sub = args[0], slug = args[1], n = args[2];
+    const need = use => (slug && n !== undefined) || die(use);
+    if (sub === "list") { need("check list <slug> <n>"); checkList(slug, n); }
+    else if (sub === "pass" || sub === "fail") {
+      const use = `check ${sub} <slug> <n> <id> "<what you saw>" [--force]`;
+      need(use);
+      checkRecord(slug, n, [args[3] || die(use)], sub, args.slice(4).join(" "), flags.force);
+    } else if (sub === "reset") { need("check reset <slug> <n> [id]"); checkReset(slug, n, args[3]); }
+    else if (sub === "run") {
+      need("check run <slug> <n> [id...] [--from wait] [--inline]");
+      if (flags.from && flags.from !== "wait") die("--from takes one value: wait");
+      process.exitCode = checkRun(slug, n, args.slice(3),
+        { from: flags.from, inline: flags.inline, log: flags.log, token: flags.token });
+    } else if (sub === "status") { need("check status <slug> <n> [id...] [--json]"); checkStatus(slug, n, args.slice(3), flags.json); }
+    else if (sub === "wait") {
+      need("check wait <slug> <n> [id...] [--timeout s]");
+      process.exitCode = checkWait(slug, n, args.slice(3), flags.timeout > 0 ? flags.timeout : 540);
+    }
+    else die('check list|run|status|wait|pass|fail|reset <slug> <n> [<id>] ["<what you saw>"]');
+    break;
+  }
   case "obs": {
-    const sub = args[0];
-    if (sub === "check") obsCheck(args[1] || die("obs check <slug> <n>"), args[2] ?? die("obs check <slug> <n>"));
-    else if (sub === "reset") obsReset(args[1] || die("obs reset <slug> <n>"), args[2] ?? die("obs reset <slug> <n>"));
-    else if (sub === "pass" || sub === "fail")
-      obsRecord(args[1] || die(`obs ${sub} <slug> <n> "<what you saw>"`),
-        args[2] ?? die(`obs ${sub} <slug> <n> "<what you saw>"`), sub, args.slice(3).join(" "));
-    else die('obs check|pass|fail|reset <slug> <n> ["<what you saw>"]');
+    // The verb from before checks: `obs pass|fail|reset` act on the
+    // increment's observability checks, all of them at once, as the single
+    // verdict they used to be.
+    const sub = args[0], slug = args[1], n = args[2];
+    const use = 'obs check|pass|fail|reset <slug> <n> ["<what you saw>"]';
+    if (!["check", "pass", "fail", "reset"].includes(sub) || !slug || n === undefined) die(use);
+    if (sub === "check") checkList(slug, n);
+    else {
+      const st = readState(slug) || die("no plan " + slug);
+      const ids = Object.entries(checksOf(findInc(st, n)))
+        .filter(([, v]) => !v.retired && v.kind === "observability").map(([id]) => id);
+      if (!ids.length) die(`increment ${n} declares no observability check\n` +
+        `  add one to the spec's deliverables[${Number(n) - 1}].checks and re-render first`);
+      if (sub === "reset") checkReset(slug, n, null, ids);
+      else checkRecord(slug, n, ids, sub, args.slice(3).join(" "), flags.force);
+    }
+    break;
+  }
+  case "verify": {
+    const root = flags.root || gitRoot(process.cwd()) || process.cwd();
+    if (args[0] === "resolve") verifyResolve(args.slice(1), root, flags.json);
+    else if (args[0] === "init") verifyInit(root, { write: flags.write, templates: flags.templates, json: flags.json });
+    else die("verify resolve <file>... [--root DIR] [--json]  |  verify init [--root DIR] [--write] [--template name[@dir]]... [--json]");
     break;
   }
   case "open-gate": {
@@ -2340,15 +2942,27 @@ switch (cmd) {
   status [--json]                             tracked plans (the board reads --json)
   go <slug> <n|next> | go --at DIR next       authorize an increment
   start|done|block|reset <slug> <n> [why]     move an increment
-                                              (done --force overrides a pending
-                                              observability verdict, and logs it;
-                                              reset puts the verdict back to
+                                              (done is refused until every check
+                                              passed against the tree as it is;
+                                              done --force overrides, and logs it;
+                                              reset puts every verdict back to
                                               pending — the work is being redone)
-  obs check <slug> <n>                        the checks the spec declared for it
-  obs pass|fail <slug> <n> "<what you saw>"   record the verdict; done is blocked
-                                              until a declared check passes
-  obs reset <slug> <n>                        verdict back to pending, keeping
-                                              what it was in the note
+  check list <slug> <n>                       the increment's checks, verdicts and
+                                              what each one runs
+  check run <slug> <n> [id...] [--from wait]  run recipe-backed checks: cheap ones here,
+                                              expensive ones detached; stops at an
+                                              acquire step (a person runs it), and
+                                              --from wait resumes after it
+                                              (--inline runs an expensive one here)
+  check status <slug> <n> [id...] [--json]    where each stands; a running one's log tail
+  check wait <slug> <n> [id...] [--timeout s] block until none is running (default 540s;
+                                              exit 0 all passed, 1 not, 2 still running)
+  check pass|fail <slug> <n> <id> "<seen>"    record a verdict by hand (a check
+                                              backed by a recipe needs --force)
+  check reset <slug> <n> [id]                 verdict(s) back to pending, keeping
+                                              what they were in the note
+  obs check|pass|fail|reset <slug> <n> ...    the same, on the observability
+                                              checks only (the older verb)
   open-gate|shut-gate <slug>                  the human lever, logged
   diff <slug> [n]                             open the increment's patch since start
                                               (done writes it; only this opens it)
@@ -2356,7 +2970,15 @@ switch (cmd) {
   ask <ask.json>                              render a question with diagrams/examples
                                               (served at /ask/<id>; a pick on the page
                                               types the number into this terminal)
-  ask show <id>                               the recorded answer, if any`);
+  ask show <id>                               the recorded answer, if any
+  verify resolve <file>... [--root DIR]       which .seamux/verify.json each file
+                 [--json]                     lands on and the recipes that apply
+  verify init [--root DIR] [--write]          draft .seamux/verify.json per project from
+              [--template name[@dir]]...      what the repo already runs (scripts, CI,
+              [--json]                        runner and host configs), a TODO on every
+                                              gap; dry run unless --write, which never
+                                              overwrites. Templates: verify/templates/;
+                                              then walk verify/setup-prompt.md`);
     // State which extensions are in force even when nothing is wrong: "my
     // extension is being ignored" is the failure this listing exists to remove.
     const ext = listExt();

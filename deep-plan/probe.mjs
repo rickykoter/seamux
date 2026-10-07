@@ -9,6 +9,8 @@ import crypto from "node:crypto";
 import { execSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { verdict } from "./lib/evidence.mjs";
+import { resolver, resolveFiles, matchesGlob, recipeHash, load as loadVerify } from "./lib/verify.mjs";
+import { classifyScript } from "./lib/detect.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const V = process.argv.includes("-v");
@@ -89,6 +91,13 @@ const bash = c => gate("Bash", { command: c });
 // -------------------------------------------------- renderer refuses bad specs
 const spec = JSON.parse(fs.readFileSync(path.join(HERE, "examples", "example.spec.json"), "utf8"));
 const tmpSpec = obj => { const p = path.join(TMP, "s.json"); fs.writeFileSync(p, JSON.stringify(obj)); return p; };
+// Record a pass on every check of increment n, the way a person who has seen
+// them would — for flows whose subject is something after the checks.
+const passAll = (slug, n, run = cli) => {
+  const st = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, slug + ".json"), "utf8"));
+  for (const id of Object.keys(st.increments[n - 1].checks || {}))
+    run("check", "pass", slug, String(n), id, "seen in the probe", "--force");
+};
 
 let bad = { ...spec, diagrams: [] };
 ok("refuses a spec with no diagram", cli("render", tmpSpec(bad)).status !== 0);
@@ -941,7 +950,9 @@ ok("status --json carries the board's fields",
 ok("status --json gate/progress shapes",
   "allow" in rows[0].gate && "why" in rows[0].gate &&
   ["total", "done", "blocked", "open", "next"].every(k => k in rows[0].progress));
-ok("done closes the increment", cli("done", spec.slug, "1").status === 0);
+ok("done is refused while the example's checks are pending", cli("done", spec.slug, "1").status === 1);
+passAll(spec.slug, 1);
+ok("done closes the increment once they pass", cli("done", spec.slug, "1").status === 0);
 ok("block records a note", cli("block", spec.slug, "2", "waiting on schema call").status === 0 &&
   JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"))
     .increments[1].note === "waiting on schema call");
@@ -1035,21 +1046,27 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   fs.rmSync(sp, { force: true });
 }
 
-// -------------------------------------------------- observability verdicts gate `done`
+// -------------------------------------------------- observability checks gate `done`
 //
 // Per-DELIVERABLE observability, which is a different thing from the top-level
 // advisory spec.observability block asserted further up: declaring checks on a
-// deliverable means its `done` is refused until a verdict is recorded.
+// deliverable means its `done` is refused until they pass. The legacy
+// `observability.checks` field still reads, as observability-kind checks, and
+// the `obs` verb still drives them; this block holds both to their old meaning.
 {
   const CHECK = { checks: [{ system: "datadog", name: "retry counter climbs",
     query: "sum:outbox.retry{env:qa}", expect: "non-zero within 15m" }] };
+  const ID = "obs-retry-counter-climbs";
   const withObs = n => {
     const s = JSON.parse(JSON.stringify(spec));
     s.slug = n;
+    delete s.deliverables[0].checks;
     s.deliverables[0].observability = CHECK;
     return s;
   };
   const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
+  const chk = (n, i, id = ID) => (stOf(n).increments[i].checks || {})[id];
+  const nChecks = (n, i) => Object.keys(stOf(n).increments[i].checks || {}).length;
   // Take a plan to the point where increment 1 can be done.
   const arm = n => {
     cli("render", tmpSpec(withObs(n)));
@@ -1060,39 +1077,42 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
 
   arm("obs-1");
   ok("a deliverable that declares observability starts pending",
-    stOf("obs-1").increments[0].obs.status === "pending");
-  ok("a deliverable that declares nothing is n/a",
-    stOf("obs-1").increments[1].obs.status === "n/a");
+    chk("obs-1", 0).status === "pending" && chk("obs-1", 0).kind === "observability");
+  ok("the pre-checks verdict field is gone from state", !("obs" in stOf("obs-1").increments[0]));
+  ok("a deliverable that declares nothing has no checks", nChecks("obs-1", 1) === 0);
   let r = cli("done", "obs-1", "1");
-  ok("done is refused while the verdict is pending",
-    r.status === 1 && /observability check and it is pending/.test(r.stderr));
+  ok("done is refused while the check is pending",
+    r.status === 1 && new RegExp(`${ID} +\\[observability\\] pending`).test(r.stderr));
   ok("the refusal names how to see the checks and how to record one",
-    /obs check obs-1 1/.test(r.stderr) && /obs pass obs-1 1/.test(r.stderr));
+    /check list obs-1 1/.test(r.stderr) && /check pass\|fail obs-1 1/.test(r.stderr));
   ok("the refusal names the override", /--force/.test(r.stderr));
+  // crew's board shows only the last line of a refusal; it must be the reason.
+  ok("the refusal's last line is the reason, not a hint",
+    r.stderr.trim().split("\n").pop() === `done refused: ${ID} pending`);
   ok("the increment did not move", stOf("obs-1").increments[0].status === "working");
 
   ok("obs fail refuses without a reason", cli("obs", "fail", "obs-1", "1").status === 1);
   ok("obs fail records one", cli("obs", "fail", "obs-1", "1", "counter flat").status === 0 &&
-    stOf("obs-1").increments[0].obs.status === "fail");
+    chk("obs-1", 0).status === "fail");
   r = cli("done", "obs-1", "1");
-  ok("done is refused while the verdict is fail, and shows the note",
-    r.status === 1 && /it is fail/.test(r.stderr) && /counter flat/.test(r.stderr));
+  ok("done is refused while the check is fail, and shows the note",
+    r.status === 1 && /\] fail/.test(r.stderr) && /counter flat/.test(r.stderr));
 
   ok("obs pass records a verdict and a note",
     cli("obs", "pass", "obs-1", "1", "412 over 20m").status === 0 &&
-    stOf("obs-1").increments[0].obs.status === "pass" &&
-    stOf("obs-1").increments[0].obs.note === "412 over 20m");
-  ok("done is allowed once the verdict passes",
+    chk("obs-1", 0).status === "pass" && chk("obs-1", 0).note === "412 over 20m");
+  ok("done is allowed once the check passes",
     cli("done", "obs-1", "1").status === 0 && stOf("obs-1").increments[0].status === "done");
 
   // A recorded verdict must survive a re-render, or amending the spec would
   // quietly clear evidence.
   cli("render", tmpSpec(withObs("obs-1")));
-  ok("a recorded pass survives a re-render", stOf("obs-1").increments[0].obs.status === "pass");
+  ok("a recorded pass survives a re-render", chk("obs-1", 0).status === "pass");
   // …and must survive the declaration being dropped: it was true when recorded.
   const dropped = JSON.parse(JSON.stringify(spec)); dropped.slug = "obs-1";
   cli("render", tmpSpec(dropped));
-  ok("a pass survives the declaration being dropped", stOf("obs-1").increments[0].obs.status === "pass");
+  ok("a pass survives the declaration being dropped, retired",
+    chk("obs-1", 0).status === "pass" && chk("obs-1", 0).retired === true);
 
   ok("recording against an undeclared increment is refused",
     cli("obs", "pass", "obs-1", "2", "x").status === 1);
@@ -1106,79 +1126,846 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   cli("obs", "pass", "obs-5", "1", "seen once");
   ok("done is allowed with a pass", cli("done", "obs-5", "1").status === 0);
   cli("reset", "obs-5", "1");
-  ok("resetting an increment re-gates its verdict",
-    stOf("obs-5").increments[0].obs.status === "pending");
+  ok("resetting an increment re-gates its checks", chk("obs-5", 0).status === "pending");
   ok("…keeping what the verdict was, rather than deleting the evidence",
-    /was pass: seen once/.test(stOf("obs-5").increments[0].obs.note));
+    /was pass: seen once/.test(chk("obs-5", 0).note));
   ok("…and saying so in the log",
     stOf("obs-5").log.some(l => /returned to pending/.test(l.what)));
   cli("go", "obs-5", "1"); cli("start", "obs-5", "1");
   ok("done is refused again after the reset", cli("done", "obs-5", "1").status === 1);
-  // An increment with nothing to re-gate must not gain a spurious verdict.
+  // An increment with nothing to re-gate must not gain a spurious check.
   cli("reset", "obs-5", "2");
-  ok("resetting an undeclared increment leaves it n/a",
-    stOf("obs-5").increments[1].obs.status === "n/a");
+  ok("resetting an increment with no checks leaves it with none", nChecks("obs-5", 1) === 0);
 
   // The explicit hatch, for when the work stands but the evidence does not.
   cli("obs", "pass", "obs-5", "1", "seen twice");
   ok("obs reset returns a recorded verdict to pending",
     cli("obs", "reset", "obs-5", "1").status === 0 &&
-    stOf("obs-5").increments[0].obs.status === "pending" &&
-    /was pass: seen twice/.test(stOf("obs-5").increments[0].obs.note));
-  ok("obs reset refuses where there is no verdict",
+    chk("obs-5", 0).status === "pending" && /was pass: seen twice/.test(chk("obs-5", 0).note));
+  ok("obs reset refuses where there is no check",
     cli("obs", "reset", "obs-5", "2").status === 1);
 
   // Adding the field to a spec whose state already exists must gate it, not
-  // leave it silently un-gated at n/a.
+  // leave it silently un-gated.
   arm("obs-2");
-  const p2 = path.join(ENV.DEEP_PLAN_STATE_DIR, "obs-2.json");
-  const s2 = JSON.parse(fs.readFileSync(p2, "utf8"));
-  s2.increments[1].obs = { status: "n/a", at: 0, note: "", version: "" };
-  fs.writeFileSync(p2, JSON.stringify(s2, null, 2));
   const both = withObs("obs-2"); both.deliverables[1].observability = CHECK;
   cli("render", tmpSpec(both));
-  ok("declaring observability on an existing plan flips n/a to pending",
-    stOf("obs-2").increments[1].obs.status === "pending");
+  ok("declaring observability on an existing plan adds a pending check",
+    chk("obs-2", 1).status === "pending");
 
   // --force, and the log saying so.
   arm("obs-3");
-  ok("done --force overrides a pending verdict",
+  ok("done --force overrides a pending check",
     cli("done", "obs-3", "1", "--force").status === 0 &&
     stOf("obs-3").increments[0].status === "done");
   ok("the override is written to the log",
     stOf("obs-3").log.some(l => /overridden with --force/.test(l.what) && /observability/.test(l.what)));
 
-  // `obs check` reads the SPEC. The older engine generated these blocks per
-  // vendor; none of that comes across, so the check output is only ever a
-  // readback of what the plan already committed to.
-  const chk = cli("obs", "check", "obs-3", "1");
+  // `obs check` reads what render took from the SPEC. The older engine
+  // generated these blocks per vendor; none of that comes across, so the check
+  // output is only ever a readback of what the plan already committed to.
+  const ck = cli("obs", "check", "obs-3", "1");
   ok("obs check prints the declared checks from the spec",
-    chk.status === 0 && chk.stdout.includes("retry counter climbs") &&
-    chk.stdout.includes("sum:outbox.retry{env:qa}") && chk.stdout.includes("non-zero within 15m"));
-  ok("obs check on an undeclared increment says so, and does not fail",
+    ck.status === 0 && ck.stdout.includes("retry counter climbs") &&
+    ck.stdout.includes("sum:outbox.retry{env:qa}") && ck.stdout.includes("non-zero within 15m"));
+  ok("obs check on an increment with no checks says so, and does not fail",
     cli("obs", "check", "obs-3", "2").status === 0 &&
-    /declares no observability check/.test(cli("obs", "check", "obs-3", "2").stdout));
+    /declares no checks/.test(cli("obs", "check", "obs-3", "2").stdout));
 
   arm("obs-4");
   const rows = JSON.parse(cli("status", "--json").stdout);
   const row4 = rows.find(x => x.slug === "obs-4");
-  ok("status --json carries the outstanding verdicts for the board",
+  ok("status --json carries the outstanding verdicts for the board (the older shape)",
     row4 && row4.obsOutstanding.length === 1 && row4.obsOutstanding[0].n === 1 &&
     row4.obsOutstanding[0].status === "pending");
   ok("status names them in the text form too",
-    /observability outstanding: 1 \(pending\)/.test(cli("status").stdout));
+    /checks outstanding: 1 \(pending\)/.test(cli("status").stdout));
   const wp = n => fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, n + ".working.html"), "utf8");
-  ok("the working page lists the checks while a verdict is outstanding",
+  ok("the working page lists the checks while one is outstanding",
     wp("obs-4").includes("retry counter climbs") && wp("obs-4").includes("pending"));
   cli("obs", "pass", "obs-4", "1", "seen");
   ok("…and shows the verdict instead once it passes",
     wp("obs-4").includes("pass") && wp("obs-4").includes("seen") &&
     !wp("obs-4").includes("sum:outbox.retry{env:qa}"));
 
-  for (const n of ["obs-1", "obs-2", "obs-3", "obs-4"]) {
+  // A state file from before checks: one `obs` verdict per increment. It gates
+  // as it did until a render migrates it, and the render keeps the verdict.
+  arm("obs-6");
+  const p6 = path.join(ENV.DEEP_PLAN_STATE_DIR, "obs-6.json");
+  const s6 = stOf("obs-6");
+  delete s6.increments[0].checks; delete s6.increments[1].checks;
+  s6.increments[0].obs = { status: "pending", at: 0, note: "", version: "" };
+  s6.increments[1].obs = { status: "n/a", at: 0, note: "", version: "" };
+  fs.writeFileSync(p6, JSON.stringify(s6, null, 2));
+  ok("a legacy pending verdict still refuses done",
+    cli("done", "obs-6", "1").status === 1);
+  s6.increments[0].obs = { status: "pass", at: 1, note: "seen before checks", version: "" };
+  fs.writeFileSync(p6, JSON.stringify(s6, null, 2));
+  cli("render", tmpSpec(withObs("obs-6")));
+  ok("a render carries a legacy pass onto the observability check",
+    chk("obs-6", 0).status === "pass" && chk("obs-6", 0).note === "seen before checks" &&
+    !("obs" in stOf("obs-6").increments[0]));
+  ok("a legacy n/a becomes no checks", nChecks("obs-6", 1) === 0);
+
+  for (const n of ["obs-1", "obs-2", "obs-3", "obs-4", "obs-5", "obs-6"]) {
     cli("close", n);
     fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), { force: true });
   }
+}
+
+// -------------------------------------------------- checks: one model, every kind
+//
+// Declared `checks`, legacy observability and legacy `verification` strings are
+// one list with stable ids. A pass records the tree it was seen against, and
+// `done` treats a pass against other content as stale. A check backed by a
+// recipe takes its verdict from running it, so passing one by hand needs
+// --force, which is logged.
+{
+  const ROOT = path.join(TMP, "checks-root");
+  fs.mkdirSync(ROOT, { recursive: true });
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: ROOT });
+  fs.mkdirSync(path.join(ROOT, ".seamux"));
+  fs.writeFileSync(path.join(ROOT, ".seamux", "verify.json"),
+    JSON.stringify({ recipes: [{ id: "unit", kind: "test", run: "true" }] }));
+  const mk = (slug, edit = s => s) => {
+    const s = JSON.parse(JSON.stringify(spec));
+    s.slug = slug;
+    s.deliverables[0].checks = [
+      { kind: "test", name: "unit suite", recipe: "unit" },
+      { kind: "manual", name: "Read the sweep log", id: "log" },
+    ];
+    s.deliverables[0].verification = ["bundle exec rspec spec/outbox"];
+    return edit(s);
+  };
+  const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
+  const arm = (n, s = mk(n)) => {
+    cli("render", tmpSpec(s), "--root", ROOT);
+    const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, n + ".key.json"), "utf8"));
+    cli("grade", n, ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+    cli("go", n, "1"); cli("start", n, "1");
+  };
+  const last = r => r.stderr.trim().split("\n").pop();
+
+  for (const [label, edit] of [
+    ["an unknown kind", s => { s.deliverables[0].checks = [{ kind: "smoke", name: "x" }]; return s; }],
+    ["a check with no name or recipe", s => { s.deliverables[0].checks = [{ kind: "test" }]; return s; }],
+    ["two checks with one id", s => { s.deliverables[0].checks = [
+      { kind: "test", name: "a", id: "same" }, { kind: "manual", name: "b", id: "same" }]; return s; }],
+    ["checks that are not an array", s => { s.deliverables[0].checks = { kind: "test" }; return s; }],
+  ]) ok(`render refuses ${label}`, cli("render", tmpSpec(mk("chk-bad", edit))).status === 1);
+
+  arm("chk-1");
+  const ids = Object.keys(stOf("chk-1").increments[0].checks);
+  ok("declared checks, then legacy verification, under stable ids",
+    JSON.stringify(ids) === JSON.stringify(["test-unit-suite", "log", "manual-bundle-exec-rspec-spec-outbox"]));
+  ok("a verification string becomes a pending manual check",
+    stOf("chk-1").increments[0].checks["manual-bundle-exec-rspec-spec-outbox"].kind === "manual");
+
+  const row = () => JSON.parse(cli("status", "--json").stdout).find(x => x.slug === "chk-1");
+  ok("status --json lists each check on its increment",
+    row().increments[0].checks.length === 3 &&
+    row().increments[0].checks[0].recipe === "unit" && row().increments[0].obs === "pending");
+  ok("status --json names every outstanding check",
+    row().checksOutstanding.length === 3 &&
+    row().checksOutstanding.every(c => c.n === 1 && c.status === "pending"));
+
+  ok("check pass refuses an id the increment does not have",
+    /its checks: test-unit-suite, log/.test(cli("check", "pass", "chk-1", "1", "nope", "x").stderr));
+  ok("check fail refuses without a reason", cli("check", "fail", "chk-1", "1", "log").status === 1);
+
+  let r = cli("check", "pass", "chk-1", "1", "test-unit-suite", "ran it myself");
+  ok("a hand pass on a recipe-backed check is refused without --force",
+    r.status === 1 && stOf("chk-1").increments[0].checks["test-unit-suite"].status === "pending");
+  ok("…and the refusal ends with the reason", /^refused: test-unit-suite recipe-backed/.test(last(r)));
+  ok("with --force it records the pass",
+    cli("check", "pass", "chk-1", "1", "test-unit-suite", "ran it myself", "--force").status === 0 &&
+    stOf("chk-1").increments[0].checks["test-unit-suite"].by === "hand, forced");
+  ok("…and the force is in the log",
+    stOf("chk-1").log.some(l => /test-unit-suite \(recipe-backed, passed by hand with --force\)/.test(l.what)));
+
+  ok("a manual check takes a hand pass", cli("check", "pass", "chk-1", "1", "log", "3 rows requeued").status === 0);
+  const tree = stOf("chk-1").increments[0].checks.log.tree;
+  ok("a pass records the tree it was seen against",
+    tree && /^[0-9a-f]{40}$/.test(tree.head) && /^[0-9a-f]{40}$/.test(tree.content));
+  r = cli("done", "chk-1", "1");
+  ok("done names only the checks still outstanding",
+    r.status === 1 && /manual-bundle-exec-rspec-spec-outbox pending$/.test(last(r)) && !/ log /.test(last(r)));
+  cli("check", "pass", "chk-1", "1", "manual-bundle-exec-rspec-spec-outbox", "green");
+
+  // Staleness is judged on content: an edit after the pass stales it, putting
+  // the content back un-stales it, and a commit of what was passed does not.
+  fs.writeFileSync(path.join(ROOT, "sweep.rb"), "edited after the pass\n");
+  r = cli("done", "chk-1", "1");
+  ok("an edit after a pass makes done refuse it as stale",
+    r.status === 1 && /log stale/.test(last(r)) && /test-unit-suite stale/.test(last(r)));
+  ok("check list says which passes went stale",
+    /log  \[manual\] stale/.test(cli("check", "list", "chk-1", "1").stdout));
+  ok("status takes a pass as recorded (it does not hash the tree)", row().checksOutstanding.length === 0);
+  fs.rmSync(path.join(ROOT, "sweep.rb"));
+  fs.writeFileSync(path.join(ROOT, "sweep.rb"), "the passed content\n");
+  cli("check", "pass", "chk-1", "1", "log", "again");
+  cli("check", "pass", "chk-1", "1", "test-unit-suite", "again", "--force");
+  cli("check", "pass", "chk-1", "1", "manual-bundle-exec-rspec-spec-outbox", "again");
+  execSync(`git add -A && ${G} commit -q -m sweep`, { cwd: ROOT });
+  ok("committing what was passed does not stale it",
+    cli("done", "chk-1", "1").status === 0 && stOf("chk-1").increments[0].status === "done");
+
+  // reset folds every verdict back to pending; check reset takes one id.
+  cli("reset", "chk-1", "1");
+  ok("reset returns every check to pending",
+    Object.values(stOf("chk-1").increments[0].checks).every(v => v.status === "pending" && !v.tree));
+  cli("go", "chk-1", "1");
+  cli("check", "pass", "chk-1", "1", "log", "x"); cli("check", "fail", "chk-1", "1", "manual-bundle-exec-rspec-spec-outbox", "red");
+  ok("check reset <id> resets only that check",
+    cli("check", "reset", "chk-1", "1", "log").status === 0 &&
+    stOf("chk-1").increments[0].checks.log.status === "pending" &&
+    stOf("chk-1").increments[0].checks["manual-bundle-exec-rspec-spec-outbox"].status === "fail");
+  ok("check reset refuses an unknown id", cli("check", "reset", "chk-1", "1", "nope").status === 1);
+
+  // A renamed check is a new one; the old verdict is kept, retired, and gates nothing.
+  cli("check", "pass", "chk-1", "1", "log", "kept");
+  cli("render", tmpSpec(mk("chk-1", s => { s.deliverables[0].checks[1].id = "sweep-log"; return s; })), "--root", ROOT);
+  const c1 = stOf("chk-1").increments[0].checks;
+  ok("a dropped check's pass is kept, retired",
+    c1.log.retired === true && c1.log.note === "kept" && c1["sweep-log"].status === "pending");
+  ok("a retired check is not listed in status --json",
+    !row().increments[0].checks.some(c => c.id === "log"));
+
+  for (const n of ["chk-1", "chk-bad"]) {
+    cli("close", n);
+    fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), { force: true });
+  }
+}
+
+// -------------------------------------------------- recipe files: load, inherit, resolve
+//
+// .seamux/verify.json lives beside the code it verifies. A file lands on its
+// nearest ancestor's config; the root's recipes are inherited unless that
+// config redefines the id, and configs in between are not. `match` and `cwd`
+// are relative to the project directory holding the config.
+{
+  const VR = path.join(TMP, "verify-root");
+  const put = (rel, obj) => {
+    const p = path.join(VR, rel, ".seamux", "verify.json");
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, typeof obj === "string" ? obj : JSON.stringify(obj, null, 2));
+  };
+  put("", { recipes: [
+    { id: "unit", kind: "test", run: "npm test", match: ["src/**"], default: true },
+    { id: "lint", kind: "test", run: "npm run lint", default: true },
+    { id: "e2e", kind: "e2e", steps: [
+      { acquire: "git push -u origin HEAD", note: "opens a preview" },
+      { wait: "scripts/preview-url.sh", export: "BASE_URL" },
+      { run: "npx playwright test" }] },
+  ] });
+  put("apps", { recipes: [{ id: "apps-only", run: "true" }] });
+  put("apps/web", { recipes: [
+    { id: "unit", kind: "test", run: "npm -w web test", match: ["src/**/*.tsx", "src/**/*.ts"], default: true },
+    { id: "web-a11y", kind: "e2e", run: "npm run test:a11y", tier: "expensive" },
+  ] });
+
+  const R = resolver(VR);
+  const web = R.file("apps/web/src/cart.tsx");
+  const keys = rs => rs.map(r => r.key).sort().join(",");
+  ok("a file lands on its nearest ancestor's config",
+    web.config === "apps/web/.seamux/verify.json");
+  ok("…with that project's recipes, plus the root's it does not redefine",
+    keys(web.recipes) === "e2e,lint,unit@apps/web,web-a11y@apps/web");
+  ok("a redefined id replaces the root's recipe for that project",
+    web.recipes.find(r => r.id === "unit").steps[0].command === "npm -w web test");
+  ok("a config between the project and the root is not inherited",
+    !web.recipes.some(r => r.id === "apps-only"));
+  ok("inherited recipes say so", web.recipes.find(r => r.id === "lint").inherited === true &&
+    web.recipes.find(r => r.id === "unit").inherited === false);
+  ok("match is relative to the project: apps/web's src/** does not cover its README",
+    !R.file("apps/web/README.md").recipes.some(r => r.id === "unit"));
+  ok("a file with no config of its own lands on the nearest one above (apps/)",
+    R.file("apps/api/server.ts").config === "apps/.seamux/verify.json" &&
+    keys(R.file("apps/api/server.ts").recipes) === "apps-only@apps,e2e,lint");
+  ok("…and the root's match globs are relative to the root",
+    R.file("src/index.ts").recipes.some(r => r.key === "unit") &&
+    !R.file("apps/api/src/index.ts").recipes.some(r => r.id === "unit") &&
+    keys(R.file("docs/guide.md").recipes) === "e2e,lint");
+  ok("the copied glob matcher keeps restack's semantics",
+    matchesGlob("a/b/c.ts", "**/*.ts") && matchesGlob("c.ts", "**/*.ts") && matchesGlob("proto/x/y", "proto") &&
+    !matchesGlob("src/a/b.ts", "src/*.ts") && matchesGlob("src/a.ts", "src/?.ts"));
+  ok("a file that does not exist yet still resolves (plans name files they create)",
+    R.file("apps/web/src/new/thing.ts").recipes.some(r => r.key === "unit@apps/web"));
+  ok("a file outside the root resolves to nothing", R.file(path.join(TMP, "elsewhere.ts")).outside === true);
+
+  const both = resolveFiles(VR, ["apps/web/src/cart.tsx", "src/index.ts"]);
+  ok("two projects' same-named recipes stay two checks",
+    both.recipes.some(r => r.key === "unit") && both.recipes.some(r => r.key === "unit@apps/web"));
+
+  const e2e = web.recipes.find(r => r.id === "e2e");
+  ok("a recipe with acquire or wait steps defaults to the expensive tier", e2e.tier === "expensive");
+  ok("a wait step gets a timeout and a poll interval",
+    e2e.steps[1].timeout === 1200 && e2e.steps[1].interval === 15 && e2e.steps[1].export === "BASE_URL");
+  ok("`run` is shorthand for one run step",
+    JSON.stringify(web.recipes.find(r => r.id === "lint").steps.map(s => s.kind)) === '["run"]');
+  ok("every recipe carries a 12-hex content hash", web.recipes.every(r => /^[0-9a-f]{12}$/.test(r.hash)));
+  ok("verify resolve labels an acquire step as a person's, and names what a wait exports",
+    /e2e .*acquire \(a person runs it\) → wait → \$BASE_URL → run/.test(
+      cli("verify", "resolve", "apps/web/src/cart.tsx", "--root", VR).stdout));
+  const unitHash = () => resolver(VR).file("src/a.ts").recipes.find(r => r.id === "unit").hash;
+  const h1 = unitHash();
+  ok("the hash is stable across loads", h1 === unitHash());
+  put("", { recipes: [{ id: "unit", kind: "test", run: "npm test -- --ci", match: ["src/**"], default: true },
+    { id: "lint", kind: "test", run: "npm run lint", default: true }] });
+  ok("…and changes when the recipe is edited", h1 !== unitHash());
+  ok("an inherited recipe is the root's recipe, hash and all",
+    resolver(VR).file("apps/web/x.ts").recipes.find(r => r.id === "lint").hash ===
+    resolveFiles(VR, ["src/a.ts"]).recipes.find(r => r.id === "lint").hash);
+  ok("one recipe body in two projects is two recipes (cwd differs)",
+    recipeHash(loadVerify(VR).recipes[0], "") !== recipeHash(loadVerify(VR).recipes[0], "apps/web"));
+
+  // A config is validated as it is loaded; nothing invalid reads as "no recipes".
+  const BAD = path.join(TMP, "verify-bad");
+  const errsOf = obj => {
+    const p = path.join(BAD, ".seamux", "verify.json");
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, typeof obj === "string" ? obj : JSON.stringify(obj));
+    return loadVerify(BAD).errors.join(" | ");
+  };
+  ok("a missing config is not an error", loadVerify(path.join(TMP, "nowhere")).present === false &&
+    loadVerify(path.join(TMP, "nowhere")).errors.length === 0);
+  ok("invalid JSON is an error", /not valid JSON/.test(errsOf("{ nope")));
+  ok("a file without a recipes array is an error", /expected \{ "recipes"/.test(errsOf({ checks: [] })));
+  for (const [label, recipe, re] of [
+    ["no id", { run: "x" }, /id is required/],
+    ["an unknown kind", { id: "a", kind: "manual", run: "x" }, /kind must be/],
+    ["run and steps both", { id: "a", run: "x", steps: [{ run: "y" }] }, /not both/],
+    ["nothing to run", { id: "a" }, /nothing to run/],
+    ["a step with two kinds", { id: "a", tier: "expensive", steps: [{ run: "x", wait: "y" }] }, /needs exactly one of acquire\|wait\|run \(has wait and run\)/],
+    ["a wait after a run", { id: "a", tier: "expensive", steps: [{ run: "x" }, { wait: "y" }] }, /wait after run/],
+    ["an export on an acquire step", { id: "a", steps: [{ acquire: "x", export: "V" }, { run: "y" }] }, /cannot export/],
+    ["an export that is not an env var name", { id: "a", steps: [{ run: "x", export: "base-url" }] }, /env var name/],
+    ["a remote recipe with no run step", { id: "a", steps: [{ wait: "x" }] }, /needs a run step/],
+    ["a wait in the cheap tier", { id: "a", tier: "cheap", steps: [{ wait: "x" }, { run: "y" }] }, /must be expensive/],
+    ["a cwd outside the project", { id: "a", run: "x", cwd: "../other" }, /cwd must be a path inside/],
+    ["a non-positive timeout", { id: "a", run: "x", timeout: 0 }, /timeout must be a positive/],
+  ]) ok(`a recipe with ${label} is refused`, re.test(errsOf({ recipes: [recipe] })));
+  ok("two recipes with one id are refused",
+    /share the id "a"/.test(errsOf({ recipes: [{ id: "a", run: "x" }, { id: "a", run: "y" }] })));
+
+  // The verb: text for a person, --json for the render that infers checks.
+  let r = cli("verify", "resolve", "apps/web/src/cart.tsx", "docs/guide.md", "--root", VR);
+  ok("verify resolve names the config each file lands on and what applies",
+    r.status === 0 && /apps\/web\/src\/cart\.tsx  → apps\/web\/\.seamux\/verify\.json/.test(r.stdout) &&
+    /unit@apps\/web/.test(r.stdout) && /lint .*\(inherited from the root\)/.test(r.stdout));
+  r = cli("verify", "resolve", "apps/web/src/cart.tsx", "--root", VR, "--json");
+  const js = JSON.parse(r.stdout);
+  ok("verify resolve --json carries files, recipes with hashes, and errors",
+    js.files[0].config === "apps/web/.seamux/verify.json" && js.recipes.every(x => x.hash && x.source) &&
+    Array.isArray(js.errors));
+  ok("a file under no config says so",
+    /no \.seamux\/verify\.json at or above it/.test(cli("verify", "resolve", "x.ts", "--root", REPO).stdout));
+  put("apps/web", "{ broken");
+  r = cli("verify", "resolve", "apps/web/src/cart.tsx", "--root", VR);
+  ok("a broken config fails verify resolve loudly",
+    r.status === 1 && /apps\/web\/\.seamux\/verify\.json: not valid JSON/.test(r.stderr));
+  ok("verify with no subcommand says how to use it", cli("verify").status === 1);
+}
+
+// -------------------------------------------------- render infers checks and refuses gaps
+//
+// At render each deliverable's checks are its declared ones (a named recipe
+// bound to the config its files land on), then every default recipe whose
+// match covers its files, then the legacy fields. An increment with none is
+// refused unless it carries a waiver. The resolved list lives in state, with
+// each recipe's steps and hash, and every surface shows it.
+{
+  // The example as shipped renders; stripped of its checks and waiver, it is
+  // refused, and the refusal says how to get past it.
+  const stripped = JSON.parse(JSON.stringify(spec));
+  stripped.slug = "inf-stripped";
+  delete stripped.deliverables[0].checks; delete stripped.deliverables[1].waiver;
+  let r = cli("render", tmpSpec(stripped));
+  ok("an increment with no checks and no waiver is refused",
+    r.status === 1 && /deliverable 1 \("Retry sweep"\) has no checks/.test(r.stderr) &&
+    /deliverable 2 \("Backoff bookkeeping"\) has no checks/.test(r.stderr));
+  ok("…and the refusal names the ways past it: a check, a default recipe, or a waiver",
+    /Declare one in "checks"/.test(r.stderr) && /verify resolve/.test(r.stderr) && /"waiver"/.test(r.stderr));
+  const blank = JSON.parse(JSON.stringify(stripped)); blank.deliverables[1].waiver = "  ";
+  ok("a blank waiver is not a waiver", /a waiver is a sentence/.test(cli("render", tmpSpec(blank)).stderr));
+  r = cli("render", tmpSpec(stripped), "--force");
+  ok("render --force is the logged way past",
+    r.status === 0 && JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "inf-stripped.key.json"), "utf8"))
+      .violationsForced.some(v => /has no checks/.test(v)));
+
+  // A repo with recipes: the root's and a nested project's.
+  const IR = path.join(TMP, "infer-root");
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  fs.mkdirSync(IR, { recursive: true });
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: IR });
+  const put = (rel, obj) => {
+    const p = path.join(IR, rel, ".seamux", "verify.json");
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, typeof obj === "string" ? obj : JSON.stringify(obj, null, 2));
+  };
+  const ROOT_RECIPES = { recipes: [
+    { id: "unit", kind: "test", name: "unit suite", run: "npm test", match: ["app/**"], default: true },
+    { id: "slow", kind: "test", run: "npm run slow", match: ["app/**"] },
+    { id: "docs", kind: "test", run: "npm run docs", match: ["docs/**"], default: true },
+  ] };
+  put("", ROOT_RECIPES);
+  put("web", { recipes: [
+    { id: "unit", kind: "test", run: "npm -w web test", default: true },
+    { id: "preview", kind: "e2e", steps: [
+      { acquire: "scripts/open-preview.sh", note: "opens a preview" },
+      { wait: "scripts/preview-url.sh", export: "BASE_URL", timeout: 600 },
+      { run: "npx playwright test" }] },
+  ] });
+  const mk = (slug, edit) => {
+    const s = JSON.parse(JSON.stringify(spec));
+    s.slug = slug;
+    s.deliverables[0] = { title: "Retry sweep", body: "A timer job.", files: ["app/workers/retry_sweep.rb"] };
+    s.deliverables[1] = { title: "Preview page", body: "A page in web.", files: ["web/src/page.tsx"],
+      checks: [{ kind: "e2e", name: "preview e2e", recipe: "preview" }] };
+    return edit ? edit(s) : s;
+  };
+  const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
+  const rend = (s, ...extra) => cli("render", tmpSpec(s), "--root", IR, ...extra);
+  const FORCE = "--" + "force";
+
+  r = rend(mk("inf-1"));
+  ok("a deliverable whose files a default recipe covers renders with no checks declared", r.status === 0);
+  const c1 = stOf("inf-1").increments[0].checks;
+  ok("the covering default recipe becomes an inferred check",
+    c1.unit && c1.unit.inferred === true && c1.unit.recipe === "unit" && c1.unit.status === "pending");
+  ok("a recipe that is not default, or does not match, is not inferred", !c1.slow && !c1.docs);
+  ok("an inferred check stores what will run: steps, cwd, tier, timeout, hash and source",
+    c1.unit.exec.steps[0].command === "npm test" && c1.unit.exec.cwd === "." && c1.unit.exec.tier === "cheap" &&
+    c1.unit.exec.timeout === 900 && /^[0-9a-f]{12}$/.test(c1.unit.hash) && c1.unit.source === ".seamux/verify.json");
+  const c2 = stOf("inf-1").increments[1].checks;
+  ok("a named recipe binds to the config its files land on (nearest wins)",
+    c2["e2e-preview-e2e"].recipe === "preview@web" && c2["e2e-preview-e2e"].exec.cwd === "web" &&
+    c2["e2e-preview-e2e"].exec.tier === "expensive");
+  ok("…and the project's default recipe is inferred beside it, keyed to the project",
+    c2["unit@web"] && c2["unit@web"].exec.steps[0].command === "npm -w web test" && !c2.unit);
+
+  // Surfaces show the resolved checks, label remote steps, and mark the
+  // acquire step as a person's.
+  const rd = n => sfx => fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, `${n}.${sfx}`), "utf8");
+  const s1 = rd("inf-1");
+  const cut = fs.readdirSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "inf-1.cutover")).filter(f => /^02-/.test(f))[0];
+  const cut2 = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "inf-1.cutover", cut), "utf8");
+  cli("export-artifact", "inf-1");
+  const surfaces = { md: s1("md"), review: s1("review.html"), working: s1("working.html"),
+    cutover: cut2, export: s1("artifact.html") };
+  for (const [name, text] of Object.entries(surfaces)) {
+    ok(`${name}: shows the inferred and the bound checks`, text.includes("unit@web") && text.includes("preview@web"));
+    ok(`${name}: marks the acquire step as a person's`, text.includes("a person runs this; the engine stops here"));
+    ok(`${name}: labels the wait step with what it polls and exports`,
+      text.includes("scripts/preview-url.sh") && text.includes("up to 600s") && text.includes("$BASE_URL"));
+  }
+  ok("an inferred check says where it came from",
+    surfaces.md.includes("inferred: a default recipe in `web/.seamux/verify.json` covers"));
+  ok("a waiver is shown where checks would be",
+    rd(spec.slug)("md").includes("Checks: none — waived: the retry sweep spec") &&
+    rd(spec.slug)("review.html").includes("waived: the retry sweep spec") &&
+    rd(spec.slug)("working.html").includes("waived: the retry sweep spec"));
+
+  // What was reviewed is what runs: rehydrate reads the stored resolution, so
+  // a config edited after render changes no surface until the next render —
+  // and recording a verdict changes neither the md nor the review page.
+  put("", { recipes: [...ROOT_RECIPES.recipes, { id: "lint", kind: "test", run: "npm run lint", default: true }] });
+  cli("check", "pass", "inf-1", "1", "unit", "green", FORCE);
+  ok("rehydrate stays byte-identical across a recipe edit and a recorded verdict",
+    /md byte-identical, review byte-identical/.test(cli("rehydrate", "inf-1").stdout));
+
+  // A recipe edited after a pass: the pass proves nothing about the recipe as it is now.
+  put("", { recipes: ROOT_RECIPES.recipes.map(x => x.id === "unit" ? { ...x, run: "npm test -- --ci" } : x) });
+  rend(mk("inf-1"));
+  const u = stOf("inf-1").increments[0].checks.unit;
+  ok("a re-render after the recipe changed returns its pass to pending",
+    u.status === "pending" && /was pass: green \(recipe changed since — re-run\)/.test(u.note) &&
+    u.exec.steps[0].command === "npm test -- --ci");
+  cli("check", "pass", "inf-1", "1", "unit", "green again", FORCE);
+  rend(mk("inf-1"));
+  ok("…while a re-render with the recipe unchanged keeps the verdict",
+    stOf("inf-1").increments[0].checks.unit.status === "pass");
+
+  // Refusals: a recipe that is not there, one that is ambiguous, a declared id
+  // an inferred one would collide with, and a broken config.
+  r = rend(mk("inf-bad", s => { s.deliverables[1].checks[0].recipe = "nope"; return s; }));
+  ok("a check naming a recipe that is not where its files land is refused",
+    r.status === 1 && /no recipe "nope" where its files land/.test(r.stderr));
+  r = rend(mk("inf-bad", s => {
+    s.deliverables[0].files.push("web/src/x.tsx");
+    s.deliverables[0].checks = [{ kind: "test", name: "unit", recipe: "unit" }];
+    return s;
+  }));
+  ok("a bare recipe id that two projects define is refused as ambiguous",
+    r.status === 1 && /recipe "unit" is ambiguous here \((unit, unit@web|unit@web, unit)\)/.test(r.stderr));
+  r = rend(mk("inf-key", s => {
+    s.deliverables[0].files.push("web/src/x.tsx");
+    s.deliverables[0].checks = [{ kind: "test", name: "web unit", recipe: "unit@web" }];
+    return s;
+  }));
+  ok("…and naming it by its key binds it, with the other default still inferred",
+    r.status === 0 && stOf("inf-key").increments[0].checks["test-web-unit"].recipe === "unit@web" &&
+    stOf("inf-key").increments[0].checks.unit.inferred === true &&
+    !stOf("inf-key").increments[0].checks["unit@web"]);
+  r = rend(mk("inf-id", s => {
+    s.deliverables[0].checks = [{ id: "unit", kind: "manual", name: "eyeball the sweep" }];
+    return s;
+  }));
+  ok("an inferred check never takes a declared check's id",
+    r.status === 0 && stOf("inf-id").increments[0].checks.unit.kind === "manual" &&
+    stOf("inf-id").increments[0].checks["unit-2"].recipe === "unit");
+  put("web", "{ broken");
+  r = rend(mk("inf-bad"));
+  ok("a broken recipe config refuses the render",
+    r.status === 1 && /recipe config web\/\.seamux\/verify\.json: not valid JSON/.test(r.stderr));
+
+  for (const n of ["inf-stripped", "inf-1", "inf-bad", "inf-key", "inf-id"]) {
+    cli("close", n);
+    fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), { force: true });
+  }
+}
+
+// -------------------------------------------------- check run: inline, detached, from wait
+//
+// A recipe-backed check runs exactly as render stored it and the verdict is
+// the exit code. Cheap ones run in the foreground; expensive ones in a
+// detached runner that outlives the CLI and lands its own verdict. An acquire
+// step is never executed: the check waits for a person, then `--from wait`.
+// A runner that dies without a verdict is found and failed as lost.
+{
+  const RR = path.join(TMP, "run-root");
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  fs.mkdirSync(path.join(RR, ".seamux"), { recursive: true });
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: RR });
+  const RECIPES = { recipes: [
+    { id: "ok", run: "echo hello; echo world", default: true },
+    { id: "bad", run: "echo boom >&2; exit 3" },
+    { id: "slow", run: "sleep 5", timeout: 0.5 },
+    { id: "chain", steps: [
+      { run: "echo http://preview.local", export: "BASE_URL" },
+      { run: "test \"$BASE_URL\" = http://preview.local && echo got-$BASE_URL" }] },
+    { id: "remote", kind: "e2e", steps: [
+      { acquire: "scripts/open-preview.sh", note: "opens a preview" },
+      { wait: "test -f ready && cat ready", export: "BASE_URL", timeout: 1, interval: 0.1 },
+      { run: "echo against $BASE_URL" }] },
+    { id: "exp", tier: "expensive", run: "sleep 1; echo detached-done" },
+    { id: "hang", tier: "expensive", run: "sleep 30" },
+  ] };
+  const putCfg = obj => fs.writeFileSync(path.join(RR, ".seamux", "verify.json"), JSON.stringify(obj, null, 2));
+  putCfg(RECIPES);
+  const declared = ["bad", "slow", "chain", "remote", "exp", "hang"].map(id =>
+    ({ id, kind: id === "remote" ? "e2e" : "test", name: id, recipe: id }));
+  const mk = (slug, checks) => {
+    const s = JSON.parse(JSON.stringify(spec));
+    s.slug = slug;
+    s.deliverables[0] = { title: "Retry sweep", body: "A timer job.", files: ["src/a.ts"],
+      checks: [...checks, { id: "eyes", kind: "manual", name: "look at it" }] };
+    return s;
+  };
+  const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
+  const ck = (n, id) => stOf(n).increments[0].checks[id];
+  const arm = (n, checks) => {
+    cli("render", tmpSpec(mk(n, checks)), "--root", RR);
+    const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, n + ".key.json"), "utf8"));
+    cli("grade", n, ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+    cli("go", n, "1"); cli("start", n, "1");
+  };
+  const lastOut = r => r.stdout.trim().split("\n").pop();
+  const waitFor = (cond, ms = 8000) => {
+    const until = Date.now() + ms;
+    while (Date.now() < until) { if (cond()) return true; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); }
+    return cond();
+  };
+
+  arm("run-1", declared);
+  let r = cli("check", "run", "run-1", "1", "ok");
+  ok("a cheap recipe runs in the foreground and passes on exit 0",
+    r.status === 0 && /✅ ok pass — exit 0/.test(r.stdout) && ck("run-1", "ok").status === "pass" &&
+    ck("run-1", "ok").by === "runner" && ck("run-1", "ok").ran.code === 0);
+  ok("…keeping the full output in its log",
+    /hello\nworld/.test(fs.readFileSync(ck("run-1", "ok").ran.log, "utf8")));
+  ok("…and recording the tree it ran against", /^[0-9a-f]{40}$/.test(ck("run-1", "ok").tree.content));
+  ok("…and no runner left behind in the verdict", !("runner" in ck("run-1", "ok")));
+
+  r = cli("check", "run", "run-1", "1", "bad");
+  ok("a non-zero exit fails the check, naming the step and showing the tail",
+    r.status === 1 && ck("run-1", "bad").status === "fail" &&
+    ck("run-1", "bad").note === "exit 3 at step 1: echo boom >&2; exit 3" && /boom/.test(r.stdout));
+  r = cli("check", "run", "run-1", "1", "slow");
+  ok("a run past its timeout fails as timed out",
+    r.status === 1 && /timed out after 0.5s at step 1/.test(ck("run-1", "slow").note) && ck("run-1", "slow").ran.timedOut);
+  r = cli("check", "run", "run-1", "1", "chain");
+  ok("a step's export reaches the steps after it",
+    r.status === 0 && /got-http:\/\/preview\.local/.test(fs.readFileSync(ck("run-1", "chain").ran.log, "utf8")) &&
+    /\[BASE_URL=http:\/\/preview\.local\]/.test(fs.readFileSync(ck("run-1", "chain").ran.log, "utf8")));
+  r = cli("check", "run", "run-1", "1", "eyes");
+  ok("a check with no recipe is refused, and told to record by hand",
+    r.status === 1 && /^refused: eyes has no recipe to run$/.test(r.stderr.trim().split("\n").pop()) &&
+    /check pass\|fail run-1 1 eyes/.test(r.stderr));
+
+  // The acquire step: a person's. The engine stops, says what to run, and resumes from wait.
+  fs.mkdirSync(path.join(RR, "scripts"), { recursive: true });
+  fs.writeFileSync(path.join(RR, "scripts", "open-preview.sh"), `#!/bin/sh\ntouch ${JSON.stringify(path.join(TMP, "ACQUIRED"))}\n`);
+  fs.chmodSync(path.join(RR, "scripts", "open-preview.sh"), 0o755);
+  r = cli("check", "run", "run-1", "1", "remote");
+  ok("a recipe that starts with acquire stops at needs-variant",
+    r.status === 0 && ck("run-1", "remote").status === "needs-variant" &&
+    ck("run-1", "remote").acquire[0].command === "scripts/open-preview.sh");
+  ok("…prints the command for a person and how to resume",
+    /scripts\/open-preview\.sh/.test(r.stdout) && /check run run-1 1 remote --from wait/.test(r.stdout));
+  ok("…and never runs it", !fs.existsSync(path.join(TMP, "ACQUIRED")));
+  ok("done is refused while a check needs a variant",
+    /remote needs-variant/.test(cli("done", "run-1", "1").stderr.trim().split("\n").pop()));
+  ok("check status shows what a person runs",
+    /a person runs: scripts\/open-preview\.sh/.test(cli("check", "status", "run-1", "1", "remote").stdout));
+  r = cli("check", "run", "run-1", "1", "remote", "--from", "wait", "--inline");
+  ok("--from wait polls, and fails when the variant never shows",
+    r.status === 1 && /wait gave up after 1s/.test(ck("run-1", "remote").note) && !fs.existsSync(path.join(TMP, "ACQUIRED")));
+  fs.writeFileSync(path.join(RR, "ready"), "http://pr-7.preview.local\n");
+  r = cli("check", "run", "run-1", "1", "remote", "--from", "wait", "--inline");
+  ok("--from wait resumes once the variant exists, exporting what the wait printed",
+    r.status === 0 && ck("run-1", "remote").status === "pass" &&
+    /against http:\/\/pr-7\.preview\.local/.test(fs.readFileSync(ck("run-1", "remote").ran.log, "utf8")));
+  ok("--from takes only wait", cli("check", "run", "run-1", "1", "remote", "--from", "run").status === 1);
+
+  // Detached: the CLI returns at once, the runner outlives it and lands the verdict.
+  const t0 = Date.now();
+  r = cli("check", "run", "run-1", "1", "exp");
+  const took = Date.now() - t0;
+  const pid = ck("run-1", "exp").runner && ck("run-1", "exp").runner.pid;
+  ok("an expensive recipe starts detached and the CLI returns before it finishes",
+    r.status === 0 && took < 1000 && /started detached/.test(r.stdout) &&
+    ck("run-1", "exp").status === "running" && pid > 0);
+  ok("…with a pidfile and a log under the plans directory",
+    fs.existsSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "run-1.runs", "inc1-exp.pid")) &&
+    ck("run-1", "exp").runner.log.startsWith(path.join(ENV.DEEP_PLAN_PLANS_DIR, "run-1.runs")));
+  ok("check status reports it running", /exp {2}running/.test(cli("check", "status", "run-1", "1", "exp").stdout));
+  ok("running again while it runs does not start a second one",
+    /already running/.test(cli("check", "run", "run-1", "1", "exp").stdout));
+  r = cli("check", "wait", "run-1", "1", "exp", "--timeout", "20");
+  ok("check wait blocks until the runner lands its verdict",
+    r.status === 0 && ck("run-1", "exp").status === "pass" && ck("run-1", "exp").by === "runner" &&
+    /wait over: every check passed/.test(r.stdout));
+  ok("…from the detached run, whose log is kept and pidfile removed",
+    /detached-done/.test(fs.readFileSync(ck("run-1", "exp").ran.log, "utf8")) &&
+    !fs.existsSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "run-1.runs", "inc1-exp.pid")));
+
+  // A runner that dies without a verdict.
+  cli("check", "run", "run-1", "1", "hang");
+  const hpid = ck("run-1", "hang").runner.pid;
+  try { process.kill(-hpid, "SIGKILL"); } catch { try { process.kill(hpid, "SIGKILL"); } catch { /* gone */ } }
+  waitFor(() => { try { process.kill(hpid, 0); return false; } catch { return true; } });
+  r = cli("check", "status", "run-1", "1", "hang");
+  ok("a dead runner's check becomes fail: runner lost",
+    ck("run-1", "hang").status === "fail" && /^runner lost: pid \d+ exited without a verdict/.test(ck("run-1", "hang").note));
+  ok("check wait on a lost runner returns, not hangs", cli("check", "wait", "run-1", "1", "hang", "--timeout", "5").status === 1);
+
+  // A reset while a runner is in flight: its verdict belongs to an attempt
+  // nobody is waiting on, so it is discarded rather than landed.
+  cli("check", "run", "run-1", "1", "exp");
+  cli("check", "reset", "run-1", "1", "exp");
+  ok("a verdict from a run that was reset meanwhile is discarded",
+    waitFor(() => stOf("run-1").log.some(l => /exp finished pass, but the check was reset/.test(l.what))) &&
+    ck("run-1", "exp").status === "pending");
+
+  // No ids: every recipe-backed check not yet passed against this tree.
+  arm("run-2", []);
+  r = cli("check", "run", "run-2", "1");
+  ok("with no ids, check run runs the recipe checks still outstanding",
+    r.status === 0 && ck("run-2", "ok").status === "pass" && ck("run-2", "eyes").status === "pending");
+  ok("…and once they pass, there is nothing to run", /nothing to run/.test(cli("check", "run", "run-2", "1").stdout));
+  ok("check status --json carries each check's verdict",
+    JSON.parse(cli("check", "status", "run-2", "1", "--json").stdout).find(c => c.id === "ok").ran.code === 0);
+
+  // A recipe edited after render: the run uses what was reviewed, and says so.
+  putCfg({ recipes: RECIPES.recipes.map(x => x.id === "ok" ? { ...x, run: "echo edited" } : x) });
+  r = cli("check", "run", "run-2", "1", "ok");
+  ok("a run whose recipe changed since render warns, and runs the reviewed version",
+    /recipe ok changed in \.seamux\/verify\.json since render/.test(r.stderr) &&
+    /hello/.test(fs.readFileSync(ck("run-2", "ok").ran.log, "utf8")));
+  putCfg(RECIPES);
+
+  // Concurrent writers: a stale copy written back does not erase a verdict
+  // recorded after it was read, nor the log lines that came with it.
+  process.env.DEEP_PLAN_STATE_DIR = ENV.DEEP_PLAN_STATE_DIR;
+  for (const k of ["CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "CMUX_WORKSPACE_ID"]) delete process.env[k];
+  const S = await import("./lib/state.mjs");
+  const stale = S.readState("run-2");
+  cli("check", "pass", "run-2", "1", "eyes", "looked, fine");
+  stale.increments[0].note = "a writer that never saw the pass";
+  S.writeState(stale);
+  ok("a stale write keeps a verdict stamped after it read",
+    ck("run-2", "eyes").status === "pass" && stOf("run-2").increments[0].note === "a writer that never saw the pass");
+  ok("…and the log lines it never had", stOf("run-2").log.some(l => /check pass: increment 1 eyes/.test(l.what)));
+  const stale2 = S.readState("run-2");
+  cli("check", "reset", "run-2", "1", "eyes");
+  S.writeState(stale2);
+  ok("a reset is a verdict change too: a stale pass does not undo it", ck("run-2", "eyes").status === "pending");
+
+  for (const n of ["run-1", "run-2"]) {
+    cli("close", n);
+    fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), { force: true });
+  }
+}
+
+// -------------------------------------------------- verify init: detector, templates, setup prompt
+//
+// verify init reads what a repo already runs — package.json scripts, CI run
+// steps cited as path:line, runner and host configs — and drafts a
+// .seamux/verify.json per project, a TODO on every gap. Dry run unless
+// --write, which never overwrites. Templates are copied in by name.
+{
+  const DR = path.join(TMP, "detect-root");
+  const put = (rel, body) => {
+    const p = path.join(DR, rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, typeof body === "string" ? body : JSON.stringify(body, null, 2));
+  };
+  put("package.json", { name: "mono", workspaces: ["apps/*"], scripts: {
+    lint: "eslint .", dev: "next dev", check: "npm run lint && npm test", "test:watch": "vitest" } });
+  put("package-lock.json", "{}");
+  put("apps/web/package.json", { name: "web", scripts: {
+    test: "vitest run", "test:e2e": "playwright test", build: "next build", "test:ui": "playwright test --ui" } });
+  put("apps/web/playwright.config.ts", "export default { webServer: { command: 'npm run dev' } };\n");
+  put("apps/web/vercel.json", "{}");
+  put("apps/api/go.mod", "module example.com/api\n");
+  const API_CFG = JSON.stringify({ recipes: [{ id: "mine", run: "make test" }] }, null, 2);
+  put("apps/api/.seamux/verify.json", API_CFG);
+  const CI = [
+    "name: ci",
+    "on: push",
+    "jobs:",
+    "  web:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - uses: actions/checkout@v4",
+    "      - run: npm ci",
+    "      - name: lint",
+    "        run: npm run lint",
+    "      - run: |",
+    "          cd apps/web",
+    "          npm test",
+    "  matrix-test:",
+    "    strategy:",
+    "      matrix:",
+    "        node: [20, 22]",
+    "    steps:",
+    "      - run: npm test -- --node ${{ matrix.node }}",
+    "  local:",
+    "    steps:",
+    "      - uses: ./.github/actions/setup",
+    "  reuse:",
+    "    uses: org/repo/.github/workflows/e2e.yml@main",
+    "",
+  ].join("\n");
+  put(".github/workflows/ci.yml", CI);
+  const lineOf = needle => CI.split("\n").findIndex(l => l.includes(needle)) + 1;
+  execSync("git init -q && git add -A", { cwd: DR });
+  const before = execSync("git status --porcelain", { cwd: DR, encoding: "utf8" });
+
+  let r = cli("verify", "init", "--root", DR, "--json");
+  const det = JSON.parse(r.stdout);
+  const proj = d => det.projects.find(p => p.dir === d);
+  const rec = (d, id) => (proj(d).recipes || []).find(x => x.id === id);
+  ok("verify init finds every project with a manifest, the root included",
+    det.projects.map(p => p.dir).join(",") === ",apps/api,apps/web" && det.workspaces.includes("apps/*"));
+  ok("package.json scripts become draft recipes, classified by role",
+    rec("", "lint").run === "npm run lint" && rec("", "lint").default === true && rec("", "lint").tier === "cheap" &&
+    rec("apps/web", "unit").run === "npm test" && rec("apps/web", "test-e2e").kind === "e2e");
+  ok("dev servers, builds, watchers and UIs are not checks",
+    !proj("").recipes.some(x => /dev|watch/.test(x.name)) &&
+    !proj("apps/web").recipes.some(x => /build|test:ui/.test(x.name)));
+  ok("a script that only chains others is an aggregate, not a recipe",
+    proj("").aggregates[0].name === "check" && proj("").aggregates[0].runs.join(",") === "lint,test");
+  ok("an e2e suite drafts expensive and not default, with TODOs for both",
+    rec("apps/web", "test-e2e").tier === "expensive" && rec("apps/web", "test-e2e").default === false &&
+    rec("apps/web", "test-e2e").todo.some(t => /decide default/.test(t)));
+  ok("…and a Playwright config that serves itself is called out as a local e2e",
+    rec("apps/web", "test-e2e").todo.some(t => /starts its own webServer/.test(t)) && proj("apps/web").runners.includes("playwright"));
+  ok("a CI step running the script is cited as path:line evidence",
+    rec("", "lint").evidence.includes(`.github/workflows/ci.yml:${lineOf("run: npm run lint")}`) &&
+    rec("", "lint").todo[0].startsWith("confirm it matches CI"));
+  ok("a script no CI step runs says so in its TODO",
+    rec("apps/web", "test-e2e").todo[0].startsWith("no CI step runs this"));
+  const step = needle => det.ci.find(s => s.command && s.command.includes(needle));
+  ok("a block run step is read whole, cited at its run: line",
+    step("cd apps/web && npm test") && step("cd apps/web && npm test").at === `.github/workflows/ci.yml:${lineOf("- run: |")}`);
+  ok("a matrix job's step is flagged, its expressions not expanded",
+    step("--node").notes.some(n => /matrix job/.test(n)) && step("--node").notes.some(n => /CI expressions/.test(n)));
+  ok("a composite action is flagged, not read",
+    det.ci.some(s => /composite action \.\/\.github\/actions\/setup/.test(s.notes.join(" "))));
+  ok("a reusable workflow is flagged, not read",
+    det.ci.some(s => /reusable workflow org\/repo/.test(s.notes.join(" "))));
+  ok("a Go project drafts the convention, labeled as one",
+    rec("apps/api", "go-test").run === "go test ./..." && rec("apps/api", "go-test").todo[0].includes("convention"));
+  ok("a host config suggests its remote template",
+    proj("apps/web").hosts[0].template === "vercel-preview" && det.templates.includes("vercel-preview"));
+  ok("an existing config is noticed", proj("apps/api").existing === true);
+  ok("a dry run writes nothing",
+    execSync("git status --porcelain", { cwd: DR, encoding: "utf8" }) === before && det.written.length === 0);
+  r = cli("verify", "init", "--root", DR);
+  ok("the text form lists drafts, TODOs and the setup prompt",
+    r.status === 0 && /draft apps\/web\/\.seamux\/verify\.json/.test(r.stdout) && /TODO /.test(r.stdout) &&
+    /setup-prompt\.md/.test(r.stdout) && /--template vercel-preview/.test(r.stdout));
+
+  // --write: only files that do not exist, and what it writes loads clean.
+  r = cli("verify", "init", "--root", DR, "--write");
+  ok("--write writes the drafts whose file does not exist",
+    r.status === 0 && fs.existsSync(path.join(DR, ".seamux", "verify.json")) &&
+    fs.existsSync(path.join(DR, "apps/web/.seamux/verify.json")));
+  ok("…and never overwrites one that does",
+    fs.readFileSync(path.join(DR, "apps/api/.seamux/verify.json"), "utf8") === API_CFG && /left alone/.test(r.stdout));
+  ok("a written draft is a valid recipe file (its TODOs ride along, unread by the engine)",
+    loadVerify(DR).errors.length === 0 && loadVerify(path.join(DR, "apps/web")).errors.length === 0 &&
+    loadVerify(DR).recipes.some(x => x.id === "lint"));
+  ok("the drafts resolve the way the configs nest",
+    /unit@apps\/web/.test(cli("verify", "resolve", "apps/web/src/x.ts", "--root", DR).stdout) &&
+    /lint .*inherited from the root/.test(cli("verify", "resolve", "apps/web/src/x.ts", "--root", DR).stdout));
+
+  // Templates: copied in by name, filled with the project's e2e command.
+  const T = JSON.parse(cli("verify", "init", "--root", DR, "--json", "--template", "vercel-preview").stdout);
+  const tr = T.drafts.find(d => d.dir === "apps/web").file.recipes.find(x => x.id === "preview-e2e");
+  ok("--template lands on the project whose host suggested it",
+    tr && tr.steps[0].acquire && tr.steps.at(-1).run === "npm run test:e2e" && tr.default === false);
+  ok("…with the template's unverified status and needs as TODOs",
+    tr.todo.some(t => /template vercel-preview is unverified/.test(t)) && tr.todo.some(t => /^needs: /.test(t)));
+  const T2 = JSON.parse(cli("verify", "init", "--root", DR, "--json", "--template", "github-deployment@apps/api").stdout);
+  const tr2 = T2.drafts.find(d => d.dir === "apps/api").file.recipes.find(x => x.id === "preview-e2e");
+  ok("a project with no e2e script gets a run step that fails loudly until filled in",
+    /TODO: the e2e command/.test(tr2.steps.at(-1).run) && /exit 1/.test(tr2.steps.at(-1).run));
+  ok("an unknown template is refused, naming the ones there are",
+    /no template "nope" — there are: firebase-channel, github-deployment, rwx-run, vercel-preview/.test(
+      cli("verify", "init", "--root", DR, "--template", "nope").stderr));
+
+  // Every shipped template: a valid recipe once filled, remote-shaped, honest
+  // about whether anyone proved it, and never reading an error as a value.
+  const TD = path.join(HERE, "verify", "templates");
+  for (const f of fs.readdirSync(TD)) {
+    const t = JSON.parse(fs.readFileSync(path.join(TD, f), "utf8"));
+    const dir = path.join(TMP, "tpl-" + t.template);
+    fs.mkdirSync(path.join(dir, ".seamux"), { recursive: true });
+    const recipe = JSON.parse(JSON.stringify(t.recipe).split("{{e2e}}").join("npx playwright test"));
+    fs.writeFileSync(path.join(dir, ".seamux", "verify.json"), JSON.stringify({ recipes: [recipe] }));
+    const L = loadVerify(dir);
+    const kinds = L.recipes[0] ? L.recipes[0].steps.map(s => s.kind).join(",") : "";
+    ok(`template ${t.template}: a valid recipe once filled`, L.errors.length === 0);
+    ok(`template ${t.template}: acquire, then a wait that exports, then run`,
+      kinds === "acquire,wait,run" && !!L.recipes[0].steps[1].export && L.recipes[0].tier === "expensive");
+    ok(`template ${t.template}: says whether it was proven, and how to prove it`,
+      typeof t.verified === "boolean" && typeof t.verify === "string" && t.verify.length > 40 && Array.isArray(t.needs));
+    ok(`template ${t.template}: its wait discards stderr, so an error is never read as a value`,
+      /2>\/dev\/null/.test(L.recipes[0].steps[1].command));
+  }
+  ok("the setup prompt walks confirm, run twice, measure, and the remote template",
+    (() => { const s = fs.readFileSync(path.join(HERE, "verify", "setup-prompt.md"), "utf8");
+      return /verify init/.test(s) && /twice/.test(s) && /Tier it on the measurement/.test(s) &&
+        /--template/.test(s) && /acquire step is mine to/.test(s); })());
+
+  ok("classifyScript: names and commands",
+    classifyScript("test", "vitest run").role === "test" && classifyScript("typecheck", "tsc --noEmit").role === "type-check" &&
+    classifyScript("e2e", "cypress run").role === "e2e" && classifyScript("verify", "hurl --test api.hurl").role === "e2e" &&
+    classifyScript("test:watch", "vitest") === null && classifyScript("storybook", "storybook dev") === null);
 }
 
 // -------------------------------------------------- spec fields that used to be dropped
@@ -1556,6 +2343,7 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   // Real work, so the patch is non-empty — an empty patch returns early.
   fs.writeFileSync(path.join(REPO, "worked.txt"), "a change worth reviewing\n");
 
+  passAll("diff-plan", 1, scli);
   fs.writeFileSync(LOG, "");
   const doneOut = scli("done", "diff-plan", "1");
   const patch = path.join(ENV.DEEP_PLAN_PLANS_DIR, "diff-plan.inc1.patch");
