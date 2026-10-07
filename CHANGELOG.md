@@ -56,6 +56,11 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
   found from `/private/tmp/x`, though the gate resolved it. `deep-plan status
   --json` now also reports `realRoot`, and the pane and status entry match
   either.
+- **A detached check whose runner died shows as lost, not running.** The pane
+  and status entry said `↻ N running` until a `check` verb reaped it.
+  `deep-plan status --json` now reports such a check as `lost` (judged on
+  read; it still writes nothing), and the pane shows `⚠ lost` with its `run
+  checks` button.
 
 ## 0.3.0 — 2026-10-04
 

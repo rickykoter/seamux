@@ -2241,6 +2241,13 @@ function stateMtime(slug) {
   try { return Math.round(fs.statSync(statePath(slug)).mtimeMs); } catch { return 0; }
 }
 
+// `status --json` stays a read (the pane polls it), so a running check whose
+// runner died is not reaped here, only reported as `lost`: the same judgment
+// reapLost makes, without the write. The next `check run|status|wait` records it.
+function shownStatus(v, status = v.status) {
+  return status === "running" && runnerGone(v) ? "lost" : status;
+}
+
 function statusRows() {
   return allStates().filter(st => st.phase !== "closed").map(st => ({
     slug: st.slug, root: st.root || "", phase: st.phase,
@@ -2260,7 +2267,7 @@ function statusRows() {
     // board reads this from --json. A pass is taken as recorded here; whether
     // it went stale is judged at `done`, which hashes the tree.
     checksOutstanding: (st.increments || []).flatMap(i =>
-      checksBlock(i).map(c => ({ n: i.n, id: c.id, kind: c.kind, status: c.status }))),
+      checksBlock(i).map(c => ({ n: i.n, id: c.id, kind: c.kind, status: shownStatus(checksOf(i)[c.id], c.status) }))),
     // The pre-checks shape, one entry per increment, kept for older readers.
     obsOutstanding: (st.increments || []).filter(i => checksBlock(i).length)
       .map(i => ({ n: i.n, status: checksAggregate(i) })),
@@ -2269,10 +2276,14 @@ function statusRows() {
     // checks folded to one word, for a pane built before checks.
     increments: (st.increments || []).map(i => ({
       n: i.n, title: i.title, status: i.status, obs: checksAggregate(i),
-      checks: Object.entries(checksOf(i)).filter(([, v]) => !v.retired).map(([id, v]) => ({
-        id, kind: v.kind || "", name: v.name || "", status: v.status || "pending",
-        note: v.note || "", at: v.at || 0, ...(v.recipe ? { recipe: v.recipe } : {}),
-      })),
+      checks: Object.entries(checksOf(i)).filter(([, v]) => !v.retired).map(([id, v]) => {
+        const status = shownStatus(v) || "pending";
+        return {
+          id, kind: v.kind || "", name: v.name || "", status,
+          note: status === "lost" ? `runner lost: pid ${v.runner.pid || "?"} exited without a verdict` : v.note || "",
+          at: v.at || 0, ...(v.recipe ? { recipe: v.recipe } : {}),
+        };
+      }),
     })),
   }));
 }
@@ -2400,6 +2411,13 @@ const fileSafe = s => String(s).replace(/[^a-z0-9._-]+/gi, "_");
 const pidFile = (slug, n, id) => path.join(runsDir(slug), `inc${n}-${fileSafe(id)}.pid`);
 const secs = ms => ms >= 60000 ? `${Math.floor(ms / 60000)}m${Math.round(ms % 60000 / 1000)}s` : `${(ms / 1000).toFixed(1)}s`;
 
+// A running check's runner is gone. A runner is recorded before it is
+// spawned, so a missing pid gets a grace period rather than an instant verdict.
+function runnerGone(v) {
+  if (!v.runner) return false;
+  return v.runner.pid ? !alive(v.runner.pid) : Date.now() - (v.runner.startedAt || 0) > 30000;
+}
+
 // Running checks whose runner is gone. Judged on a FRESH read after the pid is
 // seen dead: a runner writes its verdict before it exits, so a check still
 // "running" once its pid is gone never got one. Writes and returns the state.
@@ -2408,11 +2426,7 @@ function reapLost(slug) {
   let lost = 0;
   for (const inc of st.increments || []) {
     for (const [id, v] of Object.entries(checksOf(inc))) {
-      if (v.status !== "running" || !v.runner) continue;
-      // A runner is recorded before it is spawned, so a missing pid gets a
-      // grace period rather than an instant verdict.
-      const gone = v.runner.pid ? !alive(v.runner.pid) : Date.now() - (v.runner.startedAt || 0) > 30000;
-      if (!gone) continue;
+      if (v.status !== "running" || !runnerGone(v)) continue;
       const { runner, ...rest } = v;
       inc.checks[id] = { ...rest, status: "fail", at: Date.now(), by: "runner",
         note: `runner lost: pid ${runner.pid || "?"} exited without a verdict (log: ${runner.log})`,

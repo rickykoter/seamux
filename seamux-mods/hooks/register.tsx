@@ -40,7 +40,7 @@ const GLYPH: Record<string, string> = {
 }
 
 const CHECK_GLYPH: Record<string, string> = {
-  pass: '✓', fail: '✗', pending: '·', running: '↻', 'needs-variant': '✋',
+  pass: '✓', fail: '✗', pending: '·', running: '↻', 'needs-variant': '✋', lost: '⚠',
 }
 
 // `check run` runs cheap recipes in the foreground, so a button that presses
@@ -198,9 +198,13 @@ async function status($: EngineInterface, v: SeamuxView): Promise<void> {
     const open = (p.increments ?? []).find(i => i.status === 'working' || i.status === 'authorized')
     const gate = p.phase === 'review' ? 'in review' : open ? `${GLYPH[open.status]} ${open.n}` : p.gate.allow ? 'gate open' : 'gate shut'
     parts.push(`${p.slug} ${p.progress.done}/${p.progress.total} · ${gate}`)
-    // Detached checks run while the session does other things; say so.
-    const running = (p.increments ?? []).flatMap(i => i.checks ?? []).filter(c => c.status === 'running').length
+    // Detached checks run while the session does other things; say so, and
+    // say when one's runner died, which the engine reports as lost.
+    const checks = (p.increments ?? []).flatMap(i => i.checks ?? [])
+    const running = checks.filter(c => c.status === 'running').length
+    const lost = checks.filter(c => c.status === 'lost').length
     if (running) parts.push(`↻ ${running} running`)
+    if (lost) parts.push(`⚠ ${lost} lost`)
   }
   const clock = await cacheClock($)
   if (clock) parts.push(clock)
@@ -454,7 +458,7 @@ export const register: Register = on => {
             // waiting one's are what stands between it and done.
             ...(live ? i.checks ?? [] : []).map(c => (
               <Box key={`check-${i.n}-${c.id}`} flexDirection="row" gap={1} marginLeft={2}>
-                <Text color={c.status === 'pass' ? 'green' : c.status === 'fail' ? 'red' : c.status === 'needs-variant' ? 'yellow' : undefined}
+                <Text color={c.status === 'pass' ? 'green' : c.status === 'fail' || c.status === 'lost' ? 'red' : c.status === 'needs-variant' ? 'yellow' : undefined}
                   dimColor={c.status === 'pending'} wrap="truncate-end">
                   {CHECK_GLYPH[c.status] ?? '?'} {c.id} [{c.kind}] {c.status}{c.note ? ` — ${c.note}` : ''}
                 </Text>

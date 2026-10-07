@@ -256,6 +256,23 @@ describe('seamux-mods', () => {
     await ui.unmount()
   })
 
+  test('a check whose runner died shows as lost, not running, and `run checks` starts it again', async ($, on) => {
+    // The engine judges a dead runner on read and reports `lost`; it records
+    // nothing until a check verb runs.
+    const w = world(on, { checks2: [check('e2e', 'e2e', 'lost',
+      { recipe: 'preview-e2e', note: 'runner lost: pid 4242 exited without a verdict' })] })
+    await $.command.run({ command: 'plan-pane', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
+    await ui.press({ key: 'go' })
+    expect((await ui.find({ key: 'check-2-e2e' }))?.text).toMatch(/⚠ e2e \[e2e\] lost — runner lost: pid 4242/)
+    expect(w.statuses.at(-1)).toBe('demo 1/3 · ● 2 · ⚠ 1 lost')
+    await ui.press({ key: 'run-2' })
+    expect(w.calls).toContainEqual(['check', 'run', 'demo', '2'])
+    expect((await ui.find({ key: 'check-2-e2e' }))?.text).toMatch(/↻ e2e \[e2e\] running/)
+    expect(w.statuses.at(-1)).toBe('demo 1/3 · ● 2 · ↻ 1 running')
+    await ui.unmount()
+  })
+
   test('an engine older than checks: one obs button per increment, as before', async ($, on) => {
     const w = world(on, { legacy: true })
     await $.command.run({ command: 'plan-pane', args: '' } as never)
