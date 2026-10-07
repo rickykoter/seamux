@@ -7,7 +7,11 @@ const HOME = '/home/t'
 const ROOT = '/work/repo'
 const ENGINE = '/plugins/deep-plan'
 
-type Inc = { n: number; title: string; status: string; obs: string }
+type Check = { id: string; kind: string; name: string; status: string; note: string; at: number; recipe?: string }
+type Inc = { n: number; title: string; status: string; obs: string; checks?: Check[] }
+
+const check = (id: string, kind: string, status: string, extra: Partial<Check> = {}): Check =>
+  ({ id, kind, name: id, status, note: '', at: 0, ...extra })
 
 function row(incs: Inc[], allow: boolean) {
   return {
@@ -40,14 +44,28 @@ type WorldOpts = {
   extra?: object[]; demoOff?: boolean
   /** no intent-server port file; `cmux` absent from PATH */
   noPort?: boolean; noCmux?: boolean
+  /** an engine older than checks: one obs verdict per increment, no checks */
+  legacy?: boolean
+  /** increment 2's checks, replacing the default unit + observability pair */
+  checks2?: Check[]
 }
 
 function world(on: On, opts: WorldOpts = {}) {
-  const incs: Inc[] = [
-    { n: 1, title: 'first', status: 'done', obs: 'n/a' },
-    { n: 2, title: 'second', status: 'pending', obs: 'pending' },
-    { n: 3, title: 'third', status: 'pending', obs: 'n/a' },
-  ]
+  const incs: Inc[] = opts.legacy
+    ? [
+        { n: 1, title: 'first', status: 'done', obs: 'n/a' },
+        { n: 2, title: 'second', status: 'pending', obs: 'pending' },
+        { n: 3, title: 'third', status: 'pending', obs: 'n/a' },
+      ]
+    : [
+        { n: 1, title: 'first', status: 'done', obs: 'pass', checks: [check('unit', 'test', 'pass', { recipe: 'unit' })] },
+        { n: 2, title: 'second', status: 'pending', obs: 'pending',
+          checks: opts.checks2 ?? [check('unit', 'test', 'pending', { recipe: 'unit' }), check('obs-retries', 'observability', 'pending')] },
+        { n: 3, title: 'third', status: 'pending', obs: 'n/a', checks: [] },
+      ]
+  // The aggregate an engine with checks still reports, for older panes.
+  const fold = (i: Inc) => !i.checks ? i.obs : !i.checks.length ? 'n/a'
+    : i.checks.some(c => c.status === 'fail') ? 'fail' : i.checks.every(c => c.status === 'pass') ? 'pass' : 'pending'
   const calls: string[][] = []
   mock.env(on, { HOME, ...(opts.workspace ? { CMUX_WORKSPACE_ID: opts.workspace } : {}) })
   const clock = mock.clock(on, { now: 1_000_000 })
@@ -93,6 +111,7 @@ function world(on: On, opts: WorldOpts = {}) {
     const [, script, verb, ...rest] = argv
     calls.push(argv.slice(2) as string[])
     const okOut = (stdout: string) => ({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
+    for (const i of incs) i.obs = fold(i)
     if (script !== `${ENGINE}/deep_plan.mjs`) return { ...okOut(''), exitCode: 127, stderr: 'wrong engine' }
     const open = () => incs.find(i => i.status === 'authorized' || i.status === 'working')
     if (verb === 'status')
@@ -104,9 +123,33 @@ function world(on: On, opts: WorldOpts = {}) {
     }
     if (verb === 'done') {
       const i = incs.find(x => String(x.n) === rest[1])
-      if (i?.obs === 'pending') return { ...okOut(''), exitCode: 1, stderr: 'deep-plan: increment 2 declares an observability check and it is pending' }
+      if (i && !i.checks && i.obs === 'pending')
+        return { ...okOut(''), exitCode: 1, stderr: 'deep-plan: increment 2 declares an observability check and it is pending' }
+      const out = (i?.checks ?? []).filter(c => c.status !== 'pass')
+      if (out.length) return { ...okOut(''), exitCode: 1,
+        stderr: `deep-plan: increment ${rest[1]} has ${out.length} check(s) outstanding:\n` +
+          out.map(c => `  · ${c.id}  [${c.kind}] ${c.status}`).join('\n') +
+          `\n\ndone refused: ${out.map(c => `${c.id} ${c.status}`).join('; ')}` }
       if (i) i.status = 'done'
       return okOut(`done demo ${rest[1]}`)
+    }
+    // check run: a cheap recipe passes in the foreground; an expensive one
+    // (e2e) detaches and reports running; --from wait resumes past acquire.
+    if (verb === 'check' && rest[0] === 'run') {
+      const i = incs.find(x => String(x.n) === rest[2])
+      const ids = rest.slice(3).filter(a => !a.startsWith('--') && a !== 'wait')
+      const lines: string[] = []
+      for (const c of (i?.checks ?? []).filter(c => c.recipe && (ids.length ? ids.includes(c.id) : c.status !== 'pass'))) {
+        if (c.kind === 'e2e') {
+          if (c.status === 'needs-variant' && !rest.includes('--from')) continue
+          Object.assign(c, { status: 'running', note: 'running since 12:00:00Z' })
+          lines.push(`🔄 ${c.id} started detached (pid 4242)`)
+        } else {
+          Object.assign(c, { status: 'pass', note: 'exit 0 in 1.2s' })
+          lines.push(`✅ ${c.id} pass — exit 0 in 1.2s`)
+        }
+      }
+      return okOut(lines.join('\n') || 'nothing to run')
     }
     if (verb === 'obs') return okOut('check: dashboards show the new series')
     return { ...okOut(''), exitCode: 1, stderr: `unknown verb ${verb}` }
@@ -158,13 +201,25 @@ describe('seamux-mods', () => {
       expect((await ui.find({ key: 'gate' }))?.text).toMatch(/gate open/)
       expect(await ui.find({ key: 'go' })).toBeUndefined()
 
-      // done is refused while the declared observability check is pending,
-      // and the refusal is what the pane shows.
+      // Each check of an increment still to do is its own row; a finished
+      // increment's checks are not drawn.
+      expect((await ui.find({ key: 'check-2-unit' }))?.text).toMatch(/· unit \[test\] pending/)
+      expect((await ui.find({ key: 'check-2-obs-retries' }))?.text).toMatch(/obs-retries \[observability\] pending/)
+      expect(await ui.find({ key: 'check-1-unit' })).toBeUndefined()
+      expect(await ui.find({ key: 'obs-2' })).toBeUndefined()
+
+      // done is refused while checks are outstanding, and the refusal is what
+      // the pane shows.
       await ui.press({ key: 'done-2' })
-      expect((await ui.find({ key: 'note' }))?.text).toMatch(/observability check/)
-      await ui.press({ key: 'obs-2' })
-      expect(w.calls).toContainEqual(['obs', 'check', 'demo', '2'])
-      expect((await ui.find({ key: 'note' }))?.text).toMatch(/dashboards/)
+      expect((await ui.find({ key: 'note' }))?.text).toMatch(/2 check\(s\) outstanding/)
+
+      // run checks runs the recipe-backed ones; the observability check is
+      // recorded by hand, so it stays pending and the button stays.
+      await ui.press({ key: 'run-2' })
+      expect(w.calls).toContainEqual(['check', 'run', 'demo', '2'])
+      expect((await ui.find({ key: 'check-2-unit' }))?.text).toMatch(/✓ unit \[test\] pass — exit 0 in 1\.2s/)
+      expect((await ui.find({ key: 'note' }))?.text).toMatch(/✅ unit pass/)
+      expect(await ui.find({ key: 'run-2' })).toBeUndefined()
       await ui.unmount()
     }
   })
@@ -184,6 +239,35 @@ describe('seamux-mods', () => {
       expect(await band.find({ key: 'gate-band' })).toBeUndefined()
       await band.unmount()
     }
+  })
+
+  test('a check that needs a variant shows what a person runs, and `variant ready` resumes it from the wait', async ($, on) => {
+    const w = world(on, { checks2: [check('e2e', 'e2e', 'needs-variant',
+      { recipe: 'preview-e2e', note: 'a person runs: scripts/open-preview.sh' })] })
+    await $.command.run({ command: 'plan-pane', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
+    expect((await ui.find({ key: 'check-2-e2e' }))?.text).toMatch(/✋ e2e \[e2e\] needs-variant — a person runs: scripts\/open-preview\.sh/)
+    await ui.press({ key: 'resume-2-e2e' })
+    expect(w.calls).toContainEqual(['check', 'run', 'demo', '2', 'e2e', '--from', 'wait'])
+    expect((await ui.find({ key: 'check-2-e2e' }))?.text).toMatch(/↻ e2e \[e2e\] running/)
+    expect(await ui.find({ key: 'resume-2-e2e' })).toBeUndefined()
+    // A detached run shows in the status entry while it lasts.
+    expect(w.statuses.at(-1)).toMatch(/demo 1\/3 · gate shut · ↻ 1 running/)
+    await ui.unmount()
+  })
+
+  test('an engine older than checks: one obs button per increment, as before', async ($, on) => {
+    const w = world(on, { legacy: true })
+    await $.command.run({ command: 'plan-pane', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
+    await ui.press({ key: 'go' })
+    await ui.press({ key: 'done-2' })
+    expect((await ui.find({ key: 'note' }))?.text).toMatch(/observability check/)
+    expect(await ui.find({ key: 'run-2' })).toBeUndefined()
+    await ui.press({ key: 'obs-2' })
+    expect(w.calls).toContainEqual(['obs', 'check', 'demo', '2'])
+    expect((await ui.find({ key: 'note' }))?.text).toMatch(/dashboards/)
+    await ui.unmount()
   })
 
   test('an ordinary tool error raises no band', async ($, on) => {

@@ -1,7 +1,7 @@
 // seamux-mods: deep-plan, drawn inside the terminal.
 //
-//   /plan-pane        a pane with this session's plan: each increment, and
-//                     go / done / obs as buttons, a link and an `open` button
+//   /plan-pane        a pane with this session's plan: each increment with its
+//                     checks, go / done / run checks as buttons, a link and an `open` button
 //                     back to the plan's page, plus the other plans it could
 //                     be with a switch. `/plan-pane <slug>` pins one. Not /plan:
 //                     that is a built-in, and the engine refuses the name.
@@ -39,6 +39,14 @@ const GLYPH: Record<string, string> = {
   done: '✓', working: '▶', authorized: '●', blocked: '✗', pending: '·',
 }
 
+const CHECK_GLYPH: Record<string, string> = {
+  pass: '✓', fail: '✗', pending: '·', running: '↻', 'needs-variant': '✋',
+}
+
+// `check run` runs cheap recipes in the foreground, so a button that presses
+// it waits on a test suite; expensive ones detach and return at once.
+const CHECK_RUN_MS = 600000
+
 // ---------------------------------------------------------------- engine
 
 async function home($: EngineInterface): Promise<string> {
@@ -63,11 +71,11 @@ async function engineRoot($: EngineInterface): Promise<string> {
 
 type Ran = { ok: boolean; out: string }
 
-async function engine($: EngineInterface, args: string[]): Promise<Ran> {
+async function engine($: EngineInterface, args: string[], timeoutMs = 20000): Promise<Ran> {
   const root = await engineRoot($)
   if (!root) return { ok: false, out: 'no deep-plan engine: ~/.claude/deep-plan/engine.json is missing (start a session with the deep-plan plugin, or run `deep-plan setup`)' }
   try {
-    const r = await $.process.run(['node', `${root}/deep_plan.mjs`, ...args], { timeoutMs: 20000 })
+    const r = await $.process.run(['node', `${root}/deep_plan.mjs`, ...args], { timeoutMs })
     const out = (r.exitCode === 0 ? r.stdout : r.stderr || r.stdout).trim()
     return { ok: r.exitCode === 0, out }
   } catch (err) {
@@ -186,6 +194,9 @@ async function status($: EngineInterface, v: SeamuxView): Promise<void> {
     const open = (p.increments ?? []).find(i => i.status === 'working' || i.status === 'authorized')
     const gate = p.phase === 'review' ? 'in review' : open ? `${GLYPH[open.status]} ${open.n}` : p.gate.allow ? 'gate open' : 'gate shut'
     parts.push(`${p.slug} ${p.progress.done}/${p.progress.total} · ${gate}`)
+    // Detached checks run while the session does other things; say so.
+    const running = (p.increments ?? []).flatMap(i => i.checks ?? []).filter(c => c.status === 'running').length
+    if (running) parts.push(`↻ ${running} running`)
   }
   const clock = await cacheClock($)
   if (clock) parts.push(clock)
@@ -211,12 +222,20 @@ async function cacheClock($: EngineInterface): Promise<string> {
 
 // Runs one engine verb for a button, keeps its answer for the pane's foot, and
 // refreshes so every surface shows the new state.
-async function act($: EngineInterface, args: string[]): Promise<Ran> {
-  const ran = await engine($, args)
+async function act($: EngineInterface, args: string[], timeoutMs?: number): Promise<Ran> {
+  const ran = await engine($, args, timeoutMs)
   const said = ran.ok ? ran.out.split('\n')[0] : headline(ran.out)
   await update($, note, () => `deep-plan ${args.join(' ')}: ${said || (ran.ok ? 'ok' : 'failed')}`)
   await refresh($)
   return ran
+}
+
+// Checks run by the engine, as `check run` typed would: the recipe-backed ones
+// still outstanding, or one needs-variant check resumed past its acquire step
+// once a person has acquired the variant.
+async function runChecks($: EngineInterface, slug: string, n: number, resume?: string): Promise<void> {
+  await update($, note, () => resume ? `resuming ${resume} from its wait step…` : `running increment ${n}'s checks…`)
+  await act($, ['check', 'run', slug, String(n), ...(resume ? [resume, '--from', 'wait'] : [])], CHECK_RUN_MS)
 }
 
 async function goNext($: EngineInterface, slug: string): Promise<void> {
@@ -319,7 +338,7 @@ export const register: Register = on => {
     try {
       await $.command.register({
         name: COMMAND,
-        description: "Show this session's deep-plan plan, with go, done and obs (/plan-pane <slug> pins one)",
+        description: "Show this session's deep-plan plan, with its checks, go, done and run checks (/plan-pane <slug> pins one)",
       })
     } catch (err) {
       $.ui.log(`seamux-mods: /${COMMAND} not registered: ${String(err)}`)
@@ -406,19 +425,43 @@ export const register: Register = on => {
           </Text>
         </Box>
         {p.rootBroken && <Text color="red">root is gone: the gate fails open for this plan</Text>}
-        {incs.map(i => (
-          <Box key={`inc-${i.n}`} flexDirection="row" gap={1}>
-            <Text dimColor={i.status === 'done'} wrap="truncate-end">
-              {GLYPH[i.status] ?? '?'} {i.n}. {i.title}
-            </Text>
-            {(i.status === 'working' || i.status === 'authorized') && (
-              <Button key={`done-${i.n}`} label="done" hotkey="d" onPress={() => act($, ['done', p.slug, String(i.n)])} />
-            )}
-            {i.obs !== 'n/a' && i.status !== 'done' && (
-              <Button key={`obs-${i.n}`} label={`obs ${i.obs}`} dimColor onPress={() => act($, ['obs', 'check', p.slug, String(i.n)])} />
-            )}
-          </Box>
-        ))}
+        {incs.flatMap(i => {
+          const live = i.status !== 'done'
+          const isOpen = i.status === 'working' || i.status === 'authorized'
+          // A check deep-plan can run that has not passed (and is not already running).
+          const runnable = (i.checks ?? []).some(c => c.recipe && c.status !== 'pass' && c.status !== 'running')
+          return [
+            <Box key={`inc-${i.n}`} flexDirection="row" gap={1}>
+              <Text dimColor={i.status === 'done'} wrap="truncate-end">
+                {GLYPH[i.status] ?? '?'} {i.n}. {i.title}
+              </Text>
+              {isOpen && (
+                <Button key={`done-${i.n}`} label="done" hotkey="d" onPress={() => act($, ['done', p.slug, String(i.n)])} />
+              )}
+              {isOpen && runnable && (
+                <Button key={`run-${i.n}`} label="run checks" hotkey="c" onPress={() => runChecks($, p.slug, i.n)} />
+              )}
+              {/* An engine older than checks reports one observability verdict. */}
+              {i.checks === undefined && i.obs !== 'n/a' && live && (
+                <Button key={`obs-${i.n}`} label={`obs ${i.obs}`} dimColor onPress={() => act($, ['obs', 'check', p.slug, String(i.n)])} />
+              )}
+            </Box>,
+            // A finished increment's checks have done their job; an open or
+            // waiting one's are what stands between it and done.
+            ...(live ? i.checks ?? [] : []).map(c => (
+              <Box key={`check-${i.n}-${c.id}`} flexDirection="row" gap={1} marginLeft={2}>
+                <Text color={c.status === 'pass' ? 'green' : c.status === 'fail' ? 'red' : c.status === 'needs-variant' ? 'yellow' : undefined}
+                  dimColor={c.status === 'pending'} wrap="truncate-end">
+                  {CHECK_GLYPH[c.status] ?? '?'} {c.id} [{c.kind}] {c.status}{c.note ? ` — ${c.note}` : ''}
+                </Text>
+                {/* The acquire step is a person's; once they have run it, this resumes from the wait. */}
+                {c.status === 'needs-variant' && (
+                  <Button key={`resume-${i.n}-${c.id}`} label="variant ready" onPress={() => runChecks($, p.slug, i.n, c.id)} />
+                )}
+              </Box>
+            )),
+          ]
+        })}
         <Box key="actions" flexDirection="row" gap={1} marginTop={1}>
           {canGo && <Button key="go" label="go next" hotkey="g" variant="primary" onPress={() => act($, ['go', p.slug, 'next'])} />}
           {page !== '' && <Button key="open" label={pageLabel} hotkey="o" onPress={() => openPage($, page)} />}

@@ -2,14 +2,31 @@
 // entry draw from. A drawing reads these; only the module's handlers and timer
 // write them.
 
+/** One check on an increment, as `deep-plan status --json` reports it. */
+export type SeamuxCheck = {
+  id: string
+  /** test | e2e | observability | manual */
+  kind: string
+  name: string
+  /** pending | running | needs-variant | pass | fail */
+  status: string
+  /** what was seen; for needs-variant, what a person runs; for running, since when */
+  note: string
+  at: number
+  /** the recipe key, when deep-plan can run the check itself */
+  recipe?: string
+}
+
 /** One increment as `deep-plan status --json` reports it. */
 export type SeamuxIncrement = {
   n: number
   title: string
   /** pending | authorized | working | done | blocked */
   status: string
-  /** the observability verdict: n/a | pending | pass | fail */
+  /** the checks folded to one word: n/a | pending | pass | fail */
   obs: string
+  /** each check with its verdict; absent from an engine older than checks */
+  checks?: SeamuxCheck[]
 }
 
 /** One plan row of `deep-plan status --json`, the fields this plugin reads. */
