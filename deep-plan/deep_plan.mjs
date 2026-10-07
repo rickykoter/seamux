@@ -21,15 +21,15 @@ import { execSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { validateDiagrams, validateSurface, mermaidPath, mermaidCandidates, VENDOR_DIR, MERMAID_HOME } from "./lib/validate.mjs";
 import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries, adrScanReport } from "./lib/adr.mjs";
-import { epicHtml, incrementMd, bundleReadme, incrementFileNames } from "./lib/cutover.mjs";
+import { epicHtml, incrementMd, bundleReadme, incrementFileNames, checkLinesMd } from "./lib/cutover.mjs";
 import { checkEvidence } from "./lib/evidence.mjs";
-import { resolveFiles } from "./lib/verify.mjs";
+import { resolveFiles, resolver } from "./lib/verify.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, statePath, sessionId,
   readState, writeState, allStates, log1, progress, gateView,
   planFor, CHECK_KINDS, specChecks, reconcileChecks, checksOf, checksBlock,
-  checksAggregate, needsTree, treeOf,
+  checksAggregate, needsTree, treeOf, checkMeta,
 } from "./lib/state.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -182,6 +182,8 @@ function validate(spec, force) {
       if (c.id !== undefined && !/^[a-z0-9][a-z0-9._-]*$/i.test(String(c.id)))
         errs.push(`${label}: id must be letters, digits, dot, dash or underscore`);
     }
+    if (d.waiver !== undefined && !(typeof d.waiver === "string" && d.waiver.trim()))
+      errs.push(`deliverable ${i + 1}: a waiver is a sentence saying why nothing can prove it`);
     const ids = specChecks(d).map(c => c.id);
     for (const id of new Set(ids.filter((x, k) => ids.indexOf(x) !== k)))
       errs.push(`deliverable ${i + 1}: two checks share the id "${id}"`);
@@ -243,6 +245,97 @@ function validate(spec, force) {
   }
   if (errs.length) console.error(`deep-plan: --force past ${errs.length} floor violation(s) — logged`);
   return errs;
+}
+
+// ---------------------------------------------------------------- checks
+
+// Each deliverable's checks as render resolved them: declared checks, with a
+// named recipe bound to the config its files land on; then every default
+// recipe whose match covers its files, inferred; then the legacy fields. The
+// resolution reads the repo's recipe files, so it happens once, at render, and
+// lives in state — surfaces re-render from the stored list (rehydrate stays
+// byte-identical) and `check run` executes exactly what was reviewed.
+function resolvePlanChecks(spec, root) {
+  const R = resolver(root);
+  const errs = [];
+  const bind = (c, r) => ({ ...c, recipe: r.key, hash: r.hash, source: r.source,
+    exec: { tier: r.tier, cwd: path.posix.join(r.project || ".", r.cwd), timeout: r.timeout, steps: r.steps } });
+  const lists = (spec.deliverables || []).map((d, i) => {
+    const label = `deliverable ${i + 1} ("${d.title}")`;
+    const rows = (d.files || []).map(f => R.file(f)).filter(r => !r.outside);
+    // A check may name any recipe available where the deliverable's files
+    // land, match aside — naming one is the author choosing it. With no
+    // config under any of its files, the root's.
+    const dirs = [...new Set(rows.filter(r => r.config)
+      .map(r => path.dirname(path.dirname(path.join(R.root, r.config)))))];
+    const nameable = new Map();
+    for (const dir of dirs.length ? dirs : [R.root]) for (const r of R.available(dir)) nameable.set(r.key, r);
+    const out = [];
+    for (const c of specChecks(d)) {
+      if (!c.recipe) { out.push(c); continue; }
+      const hits = [...nameable.values()].filter(r => r.key === c.recipe || r.id === c.recipe);
+      if (hits.length === 1) out.push(bind(c, hits[0]));
+      else if (!hits.length)
+        errs.push(`${label} check "${c.id}": no recipe "${c.recipe}" where its files land — ` +
+          "`deep-plan verify resolve <file>` lists what is there");
+      else errs.push(`${label} check "${c.id}": recipe "${c.recipe}" is ambiguous here (` +
+        `${hits.map(h => h.key).join(", ")}) — name one by its key`);
+    }
+    const named = new Set(out.map(c => c.recipe).filter(Boolean));
+    const ids = new Set(out.map(c => c.id));
+    for (const row of rows) for (const r of row.recipes) {
+      if (!r.default || named.has(r.key)) continue;
+      named.add(r.key);
+      let id = r.key;
+      for (let k = 2; ids.has(id); k++) id = `${r.key}-${k}`;
+      ids.add(id);
+      out.push(bind({ id, kind: r.kind, name: r.name, inferred: true }, r));
+    }
+    // Old plans are not grandfathered: an increment nothing can prove is a
+    // finding, and the author either names the proof or says why there is none.
+    if (!out.length && !(typeof d.waiver === "string" && d.waiver.trim()))
+      errs.push(`${label} has no checks. Declare one in "checks", add a default recipe whose match ` +
+        "covers its files (`deep-plan verify resolve <file>` shows what applies), or write a " +
+        "\"waiver\" saying why nothing can prove it");
+    return out;
+  });
+  for (const e of R.errors()) errs.push(`recipe config ${e}`);
+  return { lists, errs };
+}
+
+// The resolved lists ride beside the spec object rather than inside it, so
+// the spec archived on the keys tree stays exactly what the author wrote.
+const RESOLVED = new WeakMap();
+function planChecks(spec, i) {
+  return ((RESOLVED.get(spec) || [])[i]) ?? specChecks((spec.deliverables || [])[i]);
+}
+// For every re-render that does not resolve (rehydrate, the approved
+// snapshot, export): the list as stored at the last render.
+function checksFromState(spec, st) {
+  RESOLVED.set(spec, (spec.deliverables || []).map((d, i) => {
+    const inc = ((st && st.increments) || []).find(x => x.n === i + 1);
+    if (!inc || !inc.checks || typeof inc.checks !== "object") return null;
+    return Object.entries(inc.checks).filter(([, v]) => !v.retired).map(([id, v]) => checkMeta(id, v));
+  }));
+  return spec;
+}
+
+// The markdown subset checkLinesMd writes — **bold** and `code` — as HTML,
+// escaped first. Bold is never read inside code: a glob's `**` stays literal.
+function mdInline(s) {
+  return esc(s).split(/(`[^`]+`)/).map(seg =>
+    seg.length > 1 && seg.startsWith("`") && seg.endsWith("`")
+      ? `<code>${seg.slice(1, -1)}</code>`
+      : seg.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")).join("");
+}
+
+function checksHtml(list, waiver) {
+  if (!list.length) return waiver ? `<p class="dim">checks: none — waived: ${esc(waiver)}</p>` : "";
+  return `<p class="dim">checks — <code>done</code> is gated on these:</p><ul class="dim">` +
+    list.map(c => {
+      const { head, lines } = checkLinesMd(c);
+      return `<li>${mdInline(head)}${lines.map(l => `<br>${mdInline(l)}`).join("")}</li>`;
+    }).join("") + "</ul>";
 }
 
 // ---------------------------------------------------------------- render
@@ -348,21 +441,19 @@ function mdPlan(spec, adrs = []) {
     // Per-deliverable verification is not a duplicate of the plan-wide list: it
     // is how you check THIS increment, which is what someone reviewing one
     // increment in isolation needs.
-    if ((d.verification || []).length) {
-      L.push("", "Verify this increment:", "");
-      for (const v of d.verification) L.push("- " + v);
-    }
+    // Every check gates `done`, whatever its kind; per-deliverable
+    // `verification` strings are among them, as manual checks.
+    const checks = planChecks(spec, i);
+    if (checks.length) {
+      L.push("", "Checks — `done` is gated on these:", "");
+      for (const c of checks) {
+        const { head, lines } = checkLinesMd(c);
+        L.push(`- ${head}`, ...lines.map(l => `  - ${l}`));
+      }
+    } else if (d.waiver) L.push("", `Checks: none — waived: ${d.waiver}`);
     if ((d.commits || []).length) {
       L.push("", "Commits:", "");
       for (const c of d.commits) L.push(commitLine(c));
-    }
-    if ((d.observability && d.observability.checks || []).length) {
-      L.push("", "Observability — `done` is gated on these:", "");
-      for (const c of d.observability.checks) {
-        L.push(`- [${c.system || "?"}] ${c.name || ""}`);
-        if (c.query) L.push(`  - query: \`${c.query}\``);
-        if (c.expect) L.push(`  - expect: ${c.expect}`);
-      }
     }
     L.push("");
   });
@@ -996,9 +1087,8 @@ function reviewHtml(spec, b64, adrs = []) {
   const incs = (spec.deliverables || []).map((d, i) =>
     `<div class="inc"><b>${i + 1}. ${esc(d.title)}</b><p>${esc(d.body || "")}</p>
 ${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${esc(f)}</code>`).join(" ")}</p>` : ""}
-${(d.verification || []).length ? `<p class="dim">verify: ${d.verification.map(v => `<code>${esc(v)}</code>`).join(" · ")}</p>` : ""}
+${checksHtml(planChecks(spec, i), d.waiver)}
 ${(d.commits || []).length ? `<ul class="dim">${d.commits.map(c => commitLi(c)).join("")}</ul>` : ""}
-${(d.observability && d.observability.checks || []).length ? `<p class="dim">observability gate: ${d.observability.checks.map(c => esc(c.name || c.system || "?")).join(" · ")}</p>` : ""}
 <textarea class="dp-note" data-section="increment ${i + 1}" rows="1" placeholder="comment on this increment (optional)" aria-label="comment on increment ${i + 1}"></textarea></div>`).join("\n");
   // Everything below is client-side only: selections and comments live in the
   // DOM, nothing is stored or sent anywhere, and the page keeps working over
@@ -1218,10 +1308,7 @@ function checksRow(inc) {
   const items = all.map(([id, v]) => {
     const st = v.status || "pending";
     const detail = st === "pass" ? "" :
-      (v.recipe ? `<br>recipe <code>${esc(v.recipe)}</code>` : "") +
-      (v.run ? `<br><code>${esc(v.run)}</code>` : "") +
-      (v.query ? `<br><code>${esc(v.query)}</code>` : "") +
-      (v.expect ? `<br><span class="dim">expect: ${esc(v.expect)}</span>` : "");
+      checkLinesMd({ id, ...v }).lines.map(l => `<br>${mdInline(l)}`).join("");
     return `<li>${CHECK_MARK[st] || ""} ${esc(st)} · [${esc(v.kind || "?")}${v.system ? " · " + esc(v.system) : ""}] ` +
       `${esc(v.name || "")} <code>${esc(id)}</code>` +
       (v.note ? ` — ${esc(v.note)}` : "") + detail + "</li>";
@@ -1240,7 +1327,7 @@ function workingHtml(spec, st, b64) {
     // The verdict belongs beside the status, not in a section of its own: it is
     // a precondition on THIS increment's `done`, and a reader deciding whether
     // the increment is finished needs both in one glance.
-    const checks = checksRow(inc);
+    const checks = checksRow(inc) || (d.waiver ? `<p class="dim">checks: none — waived: ${esc(d.waiver)}</p>` : "");
     // Per-deliverable commits: the record of what actually landed for this one.
     const dcommits = (d.commits || []).map(c => commitLi(c)).join("");
     return `<div class="inc"><span class="st st-${esc(inc.status)}">${esc(inc.status)}</span>
@@ -1363,6 +1450,18 @@ async function render(specPath, opts) {
       violations.push(...unread);
     }
   }
+  // Checks: resolved against the repo's recipe files, and refused where an
+  // increment has none and no waiver, or names a recipe that is not there.
+  const { lists: checkLists, errs: checkErrs } = resolvePlanChecks(spec, planRoot);
+  if (checkErrs.length && !opts.force) {
+    console.error("deep-plan: spec refused — checks:");
+    for (const e of checkErrs) console.error("  ✗ " + e);
+    process.exit(1);
+  } else if (checkErrs.length) {
+    console.error(`deep-plan: --force past ${checkErrs.length} check problem(s) — logged`);
+    violations.push(...checkErrs);
+  }
+  RESOLVED.set(spec, checkLists);
   // The citations themselves, warn-only — the other direction of the floor
   // above. Code checks that each path:line resolves; with a TypeSafe key one
   // batched request judges whether the cited lines back each claim
@@ -1451,7 +1550,7 @@ async function render(specPath, opts) {
       authorizedAt: prev.authorizedAt || 0, startedAt: prev.startedAt || 0,
       doneAt: prev.doneAt || 0, note: prev.note || "", startSha: prev.startSha || "",
       // `obs` is the pre-checks verdict; reconcileChecks carries it over.
-      checks: reconcileChecks(prev, d), obs: undefined };
+      checks: reconcileChecks(prev, checkLists[i]), obs: undefined };
   });
   // Keep what apply recorded (applied path) for unchanged entries; a spec
   // edit that reorders or reworded a flagged decision re-resolves fresh.
@@ -1502,7 +1601,7 @@ function writeSpecArtifacts(spec, b64) {
     epicHtml({ spec, body: commonBody(spec, [], false), b64,
       hasDiagrams: (spec.diagrams || []).length > 0 }));
   names.forEach((name, i) => fs.writeFileSync(path.join(dir, name),
-    incrementMd({ spec, index: i, total: names.length })));
+    incrementMd({ spec, index: i, total: names.length, checks: planChecks(spec, i) })));
   fs.writeFileSync(path.join(dir, "README.md"), bundleReadme({ spec, files: names }));
   out.push(`cutover/ (epic + ${names.length} increment${names.length === 1 ? "" : "s"}, no quiz)`);
   return out;
@@ -1514,6 +1613,7 @@ function rehydrate(slug) {
   const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
   const b64 = mermaidB64();
   const st0 = readState(slug);
+  checksFromState(spec, st0);
   const adrs = (st0 && st0.adrs) || [];
   fs.mkdirSync(PLANS_DIR, { recursive: true });
   const md = mdPlan(spec, adrs), rv = reviewHtml(spec, b64, adrs);
@@ -1549,9 +1649,11 @@ function exportArtifact(slug, asJson) {
   if (!fs.existsSync(specPath)) die("no archived spec for " + slug);
   const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
   const st = readState(slug);
+  checksFromState(spec, st);
   const incs = (spec.deliverables || []).map((d, i) =>
     `<div class="inc" id="inc-${i + 1}"><b>${i + 1}. ${esc(d.title)}</b><p>${esc(d.body || "")}</p>
-${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${esc(f)}</code>`).join(" ")}</p>` : ""}</div>`).join("\n");
+${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${esc(f)}</code>`).join(" ")}</p>` : ""}
+${checksHtml(planChecks(spec, i), d.waiver)}</div>`).join("\n");
   const diagrams = (spec.diagrams || []).map(dg =>
     `<h2>${esc(dg.question)}</h2><pre class="mermaid">${esc(dg.mermaid.trim())}</pre>`).join("\n");
   const facts = (spec.verifiedFacts || []).map(f =>
@@ -1810,7 +1912,7 @@ async function grade(slug, answers) {
     const apPath = path.join(PLANS_DIR, slug + ".approved.md");
     fs.writeFileSync(apPath,
       `> approved snapshot of plan \`${slug}\` — cut when the alignment check passed; immutable. The live plan may have moved on.\n\n` +
-      mdPlan(spec, st.adrs || []));
+      mdPlan(checksFromState(spec, st), st.adrs || []));
     st.approved = { spec_hash: specHash(spec), path: apPath };
     log1(st, "approved snapshot cut: " + apPath);
     say("approved snapshot: " + apPath + " (immutable — paste it into tickets/PRs as context)");

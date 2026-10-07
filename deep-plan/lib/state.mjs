@@ -173,24 +173,44 @@ export function checksOf(inc) {
 const verdictOf = v =>
   Object.fromEntries(VERDICT_FIELDS.filter(f => v[f] !== undefined).map(f => [f, v[f]]));
 
-// Re-render: each spec check keeps the verdict recorded under its id, a new one
+// What a check IS, without where its verdict stands: the shape render resolved
+// from the spec and the recipes. Surfaces that show the plan as reviewed read
+// this, so recording a verdict never changes the md or the review page.
+export function checkMeta(id, v) {
+  const out = { id };
+  for (const [k, x] of Object.entries(v)) if (!VERDICT_FIELDS.includes(k) && k !== "retired") out[k] = x;
+  return out;
+}
+
+// Re-render: each check keeps the verdict recorded under its id, a new one
 // starts pending, and adding checks to a plan whose state already exists gates
 // it rather than leaving it un-gated. A check dropped from the spec keeps a
 // pass or fail as a retired entry — it was true when recorded, and silently
-// deleting evidence is worse than keeping a verdict nothing gates on.
-export function reconcileChecks(prev, deliverable) {
+// deleting evidence is worse than keeping a verdict nothing gates on. A pass
+// recorded against a recipe that has since changed proves nothing about the
+// recipe as it now is, so it goes back to pending.
+//
+// `checks` is the resolved list render built (declared, recipe-backed and
+// inferred); a deliverable is accepted too and read with specChecks.
+export function reconcileChecks(prev, checks) {
   const fromObs = prev && !prev.checks ? legacyObs(prev) : null;
   const old = prev && prev.checks && typeof prev.checks === "object" ? prev.checks : {};
   const out = {};
   let obsUsed = false;
-  for (const c of specChecks(deliverable)) {
+  for (const c of Array.isArray(checks) ? checks : specChecks(checks)) {
     const { id, ...meta } = c;
     let was = old[id];
     if (!was && fromObs && c.legacy === "observability") {
       was = { status: fromObs.status, at: fromObs.at || 0, note: fromObs.note || "" };
       obsUsed = true;
     }
-    out[id] = { ...meta, ...(was ? verdictOf(was) : { status: "pending", at: 0, note: "" }) };
+    let verdict = was ? verdictOf(was) : { status: "pending", at: 0, note: "" };
+    if (was && was.hash && meta.hash && was.hash !== meta.hash && verdict.status !== "pending") {
+      const { ran, tree, by, ...rest } = verdict;
+      verdict = { ...rest, status: "pending", at: 0,
+        note: `was ${was.status}${was.note ? `: ${was.note}` : ""} (recipe changed since — re-run)` };
+    }
+    out[id] = { ...meta, ...verdict };
   }
   for (const [id, v] of Object.entries(old))
     if (!(id in out) && (v.status === "pass" || v.status === "fail")) out[id] = { ...v, retired: true };

@@ -90,6 +90,13 @@ const bash = c => gate("Bash", { command: c });
 // -------------------------------------------------- renderer refuses bad specs
 const spec = JSON.parse(fs.readFileSync(path.join(HERE, "examples", "example.spec.json"), "utf8"));
 const tmpSpec = obj => { const p = path.join(TMP, "s.json"); fs.writeFileSync(p, JSON.stringify(obj)); return p; };
+// Record a pass on every check of increment n, the way a person who has seen
+// them would — for flows whose subject is something after the checks.
+const passAll = (slug, n, run = cli) => {
+  const st = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, slug + ".json"), "utf8"));
+  for (const id of Object.keys(st.increments[n - 1].checks || {}))
+    run("check", "pass", slug, String(n), id, "seen in the probe", "--force");
+};
 
 let bad = { ...spec, diagrams: [] };
 ok("refuses a spec with no diagram", cli("render", tmpSpec(bad)).status !== 0);
@@ -942,7 +949,9 @@ ok("status --json carries the board's fields",
 ok("status --json gate/progress shapes",
   "allow" in rows[0].gate && "why" in rows[0].gate &&
   ["total", "done", "blocked", "open", "next"].every(k => k in rows[0].progress));
-ok("done closes the increment", cli("done", spec.slug, "1").status === 0);
+ok("done is refused while the example's checks are pending", cli("done", spec.slug, "1").status === 1);
+passAll(spec.slug, 1);
+ok("done closes the increment once they pass", cli("done", spec.slug, "1").status === 0);
 ok("block records a note", cli("block", spec.slug, "2", "waiting on schema call").status === 0 &&
   JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"))
     .increments[1].note === "waiting on schema call");
@@ -1050,6 +1059,7 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   const withObs = n => {
     const s = JSON.parse(JSON.stringify(spec));
     s.slug = n;
+    delete s.deliverables[0].checks;
     s.deliverables[0].observability = CHECK;
     return s;
   };
@@ -1214,6 +1224,9 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   fs.mkdirSync(ROOT, { recursive: true });
   const G = "git -c user.email=probe@deep-plan -c user.name=probe";
   execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: ROOT });
+  fs.mkdirSync(path.join(ROOT, ".seamux"));
+  fs.writeFileSync(path.join(ROOT, ".seamux", "verify.json"),
+    JSON.stringify({ recipes: [{ id: "unit", kind: "test", run: "true" }] }));
   const mk = (slug, edit = s => s) => {
     const s = JSON.parse(JSON.stringify(spec));
     s.slug = slug;
@@ -1452,6 +1465,164 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   ok("a broken config fails verify resolve loudly",
     r.status === 1 && /apps\/web\/\.seamux\/verify\.json: not valid JSON/.test(r.stderr));
   ok("verify with no subcommand says how to use it", cli("verify").status === 1);
+}
+
+// -------------------------------------------------- render infers checks and refuses gaps
+//
+// At render each deliverable's checks are its declared ones (a named recipe
+// bound to the config its files land on), then every default recipe whose
+// match covers its files, then the legacy fields. An increment with none is
+// refused unless it carries a waiver. The resolved list lives in state, with
+// each recipe's steps and hash, and every surface shows it.
+{
+  // The example as shipped renders; stripped of its checks and waiver, it is
+  // refused, and the refusal says how to get past it.
+  const stripped = JSON.parse(JSON.stringify(spec));
+  stripped.slug = "inf-stripped";
+  delete stripped.deliverables[0].checks; delete stripped.deliverables[1].waiver;
+  let r = cli("render", tmpSpec(stripped));
+  ok("an increment with no checks and no waiver is refused",
+    r.status === 1 && /deliverable 1 \("Retry sweep"\) has no checks/.test(r.stderr) &&
+    /deliverable 2 \("Backoff bookkeeping"\) has no checks/.test(r.stderr));
+  ok("…and the refusal names the ways past it: a check, a default recipe, or a waiver",
+    /Declare one in "checks"/.test(r.stderr) && /verify resolve/.test(r.stderr) && /"waiver"/.test(r.stderr));
+  const blank = JSON.parse(JSON.stringify(stripped)); blank.deliverables[1].waiver = "  ";
+  ok("a blank waiver is not a waiver", /a waiver is a sentence/.test(cli("render", tmpSpec(blank)).stderr));
+  r = cli("render", tmpSpec(stripped), "--force");
+  ok("render --force is the logged way past",
+    r.status === 0 && JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "inf-stripped.key.json"), "utf8"))
+      .violationsForced.some(v => /has no checks/.test(v)));
+
+  // A repo with recipes: the root's and a nested project's.
+  const IR = path.join(TMP, "infer-root");
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  fs.mkdirSync(IR, { recursive: true });
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: IR });
+  const put = (rel, obj) => {
+    const p = path.join(IR, rel, ".seamux", "verify.json");
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, typeof obj === "string" ? obj : JSON.stringify(obj, null, 2));
+  };
+  const ROOT_RECIPES = { recipes: [
+    { id: "unit", kind: "test", name: "unit suite", run: "npm test", match: ["app/**"], default: true },
+    { id: "slow", kind: "test", run: "npm run slow", match: ["app/**"] },
+    { id: "docs", kind: "test", run: "npm run docs", match: ["docs/**"], default: true },
+  ] };
+  put("", ROOT_RECIPES);
+  put("web", { recipes: [
+    { id: "unit", kind: "test", run: "npm -w web test", default: true },
+    { id: "preview", kind: "e2e", steps: [
+      { acquire: "scripts/open-preview.sh", note: "opens a preview" },
+      { wait: "scripts/preview-url.sh", export: "BASE_URL", timeout: 600 },
+      { run: "npx playwright test" }] },
+  ] });
+  const mk = (slug, edit) => {
+    const s = JSON.parse(JSON.stringify(spec));
+    s.slug = slug;
+    s.deliverables[0] = { title: "Retry sweep", body: "A timer job.", files: ["app/workers/retry_sweep.rb"] };
+    s.deliverables[1] = { title: "Preview page", body: "A page in web.", files: ["web/src/page.tsx"],
+      checks: [{ kind: "e2e", name: "preview e2e", recipe: "preview" }] };
+    return edit ? edit(s) : s;
+  };
+  const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
+  const rend = (s, ...extra) => cli("render", tmpSpec(s), "--root", IR, ...extra);
+  const FORCE = "--" + "force";
+
+  r = rend(mk("inf-1"));
+  ok("a deliverable whose files a default recipe covers renders with no checks declared", r.status === 0);
+  const c1 = stOf("inf-1").increments[0].checks;
+  ok("the covering default recipe becomes an inferred check",
+    c1.unit && c1.unit.inferred === true && c1.unit.recipe === "unit" && c1.unit.status === "pending");
+  ok("a recipe that is not default, or does not match, is not inferred", !c1.slow && !c1.docs);
+  ok("an inferred check stores what will run: steps, cwd, tier, timeout, hash and source",
+    c1.unit.exec.steps[0].command === "npm test" && c1.unit.exec.cwd === "." && c1.unit.exec.tier === "cheap" &&
+    c1.unit.exec.timeout === 900 && /^[0-9a-f]{12}$/.test(c1.unit.hash) && c1.unit.source === ".seamux/verify.json");
+  const c2 = stOf("inf-1").increments[1].checks;
+  ok("a named recipe binds to the config its files land on (nearest wins)",
+    c2["e2e-preview-e2e"].recipe === "preview@web" && c2["e2e-preview-e2e"].exec.cwd === "web" &&
+    c2["e2e-preview-e2e"].exec.tier === "expensive");
+  ok("…and the project's default recipe is inferred beside it, keyed to the project",
+    c2["unit@web"] && c2["unit@web"].exec.steps[0].command === "npm -w web test" && !c2.unit);
+
+  // Surfaces show the resolved checks, label remote steps, and mark the
+  // acquire step as a person's.
+  const rd = n => sfx => fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, `${n}.${sfx}`), "utf8");
+  const s1 = rd("inf-1");
+  const cut = fs.readdirSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "inf-1.cutover")).filter(f => /^02-/.test(f))[0];
+  const cut2 = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "inf-1.cutover", cut), "utf8");
+  cli("export-artifact", "inf-1");
+  const surfaces = { md: s1("md"), review: s1("review.html"), working: s1("working.html"),
+    cutover: cut2, export: s1("artifact.html") };
+  for (const [name, text] of Object.entries(surfaces)) {
+    ok(`${name}: shows the inferred and the bound checks`, text.includes("unit@web") && text.includes("preview@web"));
+    ok(`${name}: marks the acquire step as a person's`, text.includes("a person runs this; the engine stops here"));
+    ok(`${name}: labels the wait step with what it polls and exports`,
+      text.includes("scripts/preview-url.sh") && text.includes("up to 600s") && text.includes("$BASE_URL"));
+  }
+  ok("an inferred check says where it came from",
+    surfaces.md.includes("inferred: a default recipe in `web/.seamux/verify.json` covers"));
+  ok("a waiver is shown where checks would be",
+    rd(spec.slug)("md").includes("Checks: none — waived: the retry sweep spec") &&
+    rd(spec.slug)("review.html").includes("waived: the retry sweep spec") &&
+    rd(spec.slug)("working.html").includes("waived: the retry sweep spec"));
+
+  // What was reviewed is what runs: rehydrate reads the stored resolution, so
+  // a config edited after render changes no surface until the next render —
+  // and recording a verdict changes neither the md nor the review page.
+  put("", { recipes: [...ROOT_RECIPES.recipes, { id: "lint", kind: "test", run: "npm run lint", default: true }] });
+  cli("check", "pass", "inf-1", "1", "unit", "green", FORCE);
+  ok("rehydrate stays byte-identical across a recipe edit and a recorded verdict",
+    /md byte-identical, review byte-identical/.test(cli("rehydrate", "inf-1").stdout));
+
+  // A recipe edited after a pass: the pass proves nothing about the recipe as it is now.
+  put("", { recipes: ROOT_RECIPES.recipes.map(x => x.id === "unit" ? { ...x, run: "npm test -- --ci" } : x) });
+  rend(mk("inf-1"));
+  const u = stOf("inf-1").increments[0].checks.unit;
+  ok("a re-render after the recipe changed returns its pass to pending",
+    u.status === "pending" && /was pass: green \(recipe changed since — re-run\)/.test(u.note) &&
+    u.exec.steps[0].command === "npm test -- --ci");
+  cli("check", "pass", "inf-1", "1", "unit", "green again", FORCE);
+  rend(mk("inf-1"));
+  ok("…while a re-render with the recipe unchanged keeps the verdict",
+    stOf("inf-1").increments[0].checks.unit.status === "pass");
+
+  // Refusals: a recipe that is not there, one that is ambiguous, a declared id
+  // an inferred one would collide with, and a broken config.
+  r = rend(mk("inf-bad", s => { s.deliverables[1].checks[0].recipe = "nope"; return s; }));
+  ok("a check naming a recipe that is not where its files land is refused",
+    r.status === 1 && /no recipe "nope" where its files land/.test(r.stderr));
+  r = rend(mk("inf-bad", s => {
+    s.deliverables[0].files.push("web/src/x.tsx");
+    s.deliverables[0].checks = [{ kind: "test", name: "unit", recipe: "unit" }];
+    return s;
+  }));
+  ok("a bare recipe id that two projects define is refused as ambiguous",
+    r.status === 1 && /recipe "unit" is ambiguous here \((unit, unit@web|unit@web, unit)\)/.test(r.stderr));
+  r = rend(mk("inf-key", s => {
+    s.deliverables[0].files.push("web/src/x.tsx");
+    s.deliverables[0].checks = [{ kind: "test", name: "web unit", recipe: "unit@web" }];
+    return s;
+  }));
+  ok("…and naming it by its key binds it, with the other default still inferred",
+    r.status === 0 && stOf("inf-key").increments[0].checks["test-web-unit"].recipe === "unit@web" &&
+    stOf("inf-key").increments[0].checks.unit.inferred === true &&
+    !stOf("inf-key").increments[0].checks["unit@web"]);
+  r = rend(mk("inf-id", s => {
+    s.deliverables[0].checks = [{ id: "unit", kind: "manual", name: "eyeball the sweep" }];
+    return s;
+  }));
+  ok("an inferred check never takes a declared check's id",
+    r.status === 0 && stOf("inf-id").increments[0].checks.unit.kind === "manual" &&
+    stOf("inf-id").increments[0].checks["unit-2"].recipe === "unit");
+  put("web", "{ broken");
+  r = rend(mk("inf-bad"));
+  ok("a broken recipe config refuses the render",
+    r.status === 1 && /recipe config web\/\.seamux\/verify\.json: not valid JSON/.test(r.stderr));
+
+  for (const n of ["inf-stripped", "inf-1", "inf-bad", "inf-key", "inf-id"]) {
+    cli("close", n);
+    fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), { force: true });
+  }
 }
 
 // -------------------------------------------------- spec fields that used to be dropped
@@ -1829,6 +2000,7 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   // Real work, so the patch is non-empty — an empty patch returns early.
   fs.writeFileSync(path.join(REPO, "worked.txt"), "a change worth reviewing\n");
 
+  passAll("diff-plan", 1, scli);
   fs.writeFileSync(LOG, "");
   const doneOut = scli("done", "diff-plan", "1");
   const patch = path.join(ENV.DEEP_PLAN_PLANS_DIR, "diff-plan.inc1.patch");

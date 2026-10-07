@@ -33,6 +33,33 @@ const commitText = c => typeof c === "string"
   ? c
   : `${c.sha ? String(c.sha).slice(0, 12) + " " : ""}${c.subject || c.ref || ""}`.trim();
 
+// One check as markdown: a head line and its detail lines, shared by every
+// surface that shows a plan's checks (the HTML ones render the backticks as
+// code). A recipe's steps say what each one does, and an acquire step says
+// that a person runs it — the engine stops there, by design (ADR: the human
+// runs acquire steps).
+export function checkLinesMd(c) {
+  const head = `**[${c.kind || "?"}${c.system ? " · " + c.system : ""}] ${c.name || ""}** (\`${c.id}\`)` +
+    (c.inferred ? ` — inferred: a default recipe in \`${c.source}\` covers this increment's files` : "");
+  const lines = [];
+  if (c.recipe) lines.push(`recipe \`${c.recipe}\`` +
+    (c.exec ? ` · ${c.exec.tier} · in \`${c.exec.cwd}\` · #${c.hash}` : ""));
+  for (const s of (c.exec && c.exec.steps) || []) {
+    const out = s.export ? ` → \`$${s.export}\`` : "";
+    if (s.kind === "acquire")
+      lines.push(`acquire — a person runs this; the engine stops here: \`${s.command}\`` + (s.note ? ` (${s.note})` : ""));
+    else if (s.kind === "wait")
+      lines.push(`wait — polls \`${s.command}\` until it prints a value or exits 0, up to ${s.timeout}s${out}` +
+        (s.note ? ` (${s.note})` : ""));
+    else lines.push(`run — \`${s.command}\`${out}` + (s.note ? ` (${s.note})` : ""));
+  }
+  if (c.run) lines.push(`run: \`${c.run}\``);
+  if (c.query) lines.push(`query: \`${c.query}\``);
+  if (c.expect) lines.push(`expect: ${c.expect}`);
+  if (c.hint) lines.push(`note: ${c.hint}`);
+  return { head, lines };
+}
+
 export function kebab(s) {
   return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "").slice(0, 60) || "increment";
@@ -93,7 +120,7 @@ ${hasDiagrams ? `<script src="data:text/javascript;base64,${b64}"></script>
 // increment file, deliberately. A child task is read on its own, by someone who
 // will not open the epic first — deduplicating the context is precisely what
 // makes handoff docs useless.
-export function incrementMd({ spec, index, total }) {
+export function incrementMd({ spec, index, total, checks }) {
   const d = (spec.deliverables || [])[index] || {};
   const out = [];
   out.push(`# ${spec.title} — Increment ${index + 1} of ${total}: ${d.title || ""}`, "");
@@ -135,20 +162,19 @@ export function incrementMd({ spec, index, total }) {
     d.commits.forEach((c, i) => out.push(`${i + 1}. \`${commitText(c)}\``));
     out.push("");
   }
-  // Every check gates `done` alike, whatever its kind; the per-deliverable
-  // `verification` strings are among them, as manual checks.
-  const checks = specChecks(d);
-  if (checks.length) {
+  // Every check gates `done` alike, whatever its kind: declared, inferred from
+  // a default recipe, and the per-deliverable `verification` strings as manual
+  // checks. `checks` is what render resolved; without it, the spec's own.
+  const list = checks || specChecks(d);
+  if (list.length) {
     out.push("## Checks — this increment is not done until these pass", "");
-    for (const c of checks) {
-      out.push(`- **[${c.kind}${c.system ? " · " + c.system : ""}] ${c.name}** (\`${c.id}\`)`);
-      if (c.recipe) out.push(`  - recipe: \`${c.recipe}\``);
-      if (c.run) out.push(`  - run: \`${c.run}\``);
-      if (c.query) out.push(`  - query: \`${c.query}\``);
-      if (c.expect) out.push(`  - expect: ${c.expect}`);
-      if (c.hint) out.push(`  - note: ${c.hint}`);
+    for (const c of list) {
+      const { head, lines } = checkLinesMd(c);
+      out.push(`- ${head}`, ...lines.map(l => `  - ${l}`));
     }
     out.push("");
+  } else if (d.waiver) {
+    out.push("## Checks", "", `None — waived: ${d.waiver}`, "");
   }
 
   // With no verification of its own, the plan-wide list follows with a warning
