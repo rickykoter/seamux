@@ -18,5 +18,14 @@ guessing, preview with `./install.sh --dry-run`, verify with
   `~/.config/cmux/crew` (see `docs/SYNCING.md`).
 - Tests: `node deep-plan/probe.mjs`, `node restack/probe.mjs`,
   `node crew/board/board_probe.mjs`, `claude plugin test seamux-mods`.
+- Type-check seamux-mods after changing it: copy
+  `~/.claude/plugins/cache/seamux/seamux-mods/<version>/.claude-plugin/types`
+  to `seamux-mods/.claude-plugin/types` (git ignores the copy), then
+  `npx -y -p typescript@5 tsc -p seamux-mods`. The plugin tests do not
+  type-check.
+- bash-guard refuses any Bash command containing `--no-verify` or a signing
+  bypass, even inside a heredoc or script, and even a commit message that
+  only names the flag. Don't route around it: let a
+  commit's hooks run, including a commit the code itself makes.
 - `python3 tools/scrub_check.py` must pass before any push; CI runs it first.
 - Architecture decisions live in `docs/adr/`.
