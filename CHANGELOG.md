@@ -41,6 +41,12 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
   a graded plan never puts the quiz back in front. `open` runs `cmux open`,
   which lands as a tab in this workspace; without cmux the URL is toasted, and
   without the intent server the link is the page's file.
+- **restack re-derives a generated file git merged cleanly.** Only conflicted
+  artifacts were regenerated, so two sides adding types in different places
+  merged into a schema whose header undercounted them, and `restack check`
+  failed after the walk said ok. Every artifact both sides touched is now
+  regenerated in each replayed commit that changes it (the expensive tier is
+  recorded stale, as for a conflict). Graphite walks are not covered yet.
 
 ## 0.3.0 — 2026-10-04
 

@@ -66,6 +66,20 @@ and must not learn how — the machine's own Bash guard blocks force pushes from
 an agent, and a tool that shelled out to one would be routing around a rail
 its user installed.
 
+**A clean merge of a generated file is re-derived too.** Both sides adding a
+block in different places merges without a conflict, under a header that now
+counts one of them, and `check` fails on it after the walk said ok. So a step
+whose branch and new parent both touched an artifact with a regen command is
+rebased with `--exec false restack-regen-on-replay`: the walk stops after
+every pick, regenerates the colliding artifacts the commit changed, and amends
+them into it (a commit left with nothing is dropped and reported). The exec
+always fails on purpose so the regen runs in this process, with the state
+file, the stale list and the tier rules it already has; a stop at any OTHER
+exec is a human's and is handed back. `--exec` implies `--empty=keep`, so the
+walk passes `--empty=drop` to keep the old handling of empty commits, and
+`rebaseProgress` counts picks rather than todo lines so "3/4" still means
+commits.
+
 ## The loop that was wrong first
 
 `git rebase --continue` exits **non-zero when the next commit conflicts**. The
@@ -169,6 +183,9 @@ bugs found here were the check LYING in the safe direction:
 - **The judgment layer is untuned for Kev.** `safeFloor` 0.5 is a starting
   point chosen from a handful of real answers, not a calibration. The log has
   the probabilities; tune it there.
+- **Graphite walks do not regenerate on replay.** `gt restack` runs its own
+  rebase and takes no `--exec`, so under graphite a cleanly merged artifact is
+  left as git merged it and `restack check` is what catches it.
 - **No board tie-in.** crew does not show a restack in progress; `status
   --json` is shaped so it could.
 

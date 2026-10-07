@@ -31,8 +31,10 @@ plugin's root, wherever it is installed. `restack engine` prints that root, and
 
 0. **Read before you rebase.** `restack status` and `restack plan --json` are
    read-only and cheap. `plan` fetches the base, walks the chain, and names the
-   generated artifacts **both sides touched** — those are the conflicts that
-   are coming, and the ones you will not have to look at. If the chain it found
+   generated artifacts **both sides touched**. Each one is re-derived in every
+   replayed commit that changes it, whether git conflicts on it or merges it
+   cleanly (a clean merge of a generated file is still one no generator wrote),
+   and you will not have to look at any of them. If the chain it found
    is missing a branch, stop: fix `stack.branches` in the config before moving
    any refs, because a walk that does not know about a branch leaves it
    pointing at commits the rest of the stack no longer has.
