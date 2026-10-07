@@ -6,6 +6,25 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **Every deep-plan increment is gated on its checks, and the engine runs
+  them.** A deliverable's checks (test, e2e, observability, manual) gate
+  `done`: it is refused until each has passed against the tree being closed,
+  and an edit after a pass makes it stale (a commit of what passed does not).
+  Recipes live in `.seamux/verify.json` beside each project — the nearest
+  ancestor wins, the root's are inherited unless redefined — and a
+  `default: true` recipe whose `match` covers an increment's files becomes a
+  check without being written down. `deep-plan check run` runs them: cheap
+  ones in the foreground, expensive ones detached (`check status`, `check
+  wait`). Remote QA is acquire, wait and run steps: the acquire (a push, a
+  preview channel) is always the human's, then `--from wait` polls for the
+  variant and tests it. `deep-plan verify init` drafts recipes from the
+  scripts, CI steps and configs a repo already has, with templates for Vercel,
+  Firebase, RWX and GitHub deployments (all marked unverified until proven
+  against a real preview) and a guided setup prompt. The plan pane shows each
+  check, with `run checks` and `variant ready`. **Breaking:** re-rendering a
+  plan whose increments have no checks is refused until each gets one or a
+  written `waiver` (`render --force` is the logged way past); `deep-plan obs`
+  keeps working as an alias. ADRs 0006–0009.
 - **Plans record who owns them, and `/plan-pane` finds yours wherever it is.**
   deep-plan read the session id from `CLAUDE_SESSION_ID`, which Claude Code
   never sets (it exports `CLAUDE_CODE_SESSION_ID`), so every plan's `session`
