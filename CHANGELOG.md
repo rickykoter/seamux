@@ -4,6 +4,19 @@ Notable changes to seamux. Dates are release dates; the repo is the source of
 truth. Since 0.3.0 the plugins run from the checkout (a folder marketplace), so
 an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
+## Unreleased
+
+- **Plans record who owns them, and `/plan-pane` finds yours wherever it is.**
+  deep-plan read the session id from `CLAUDE_SESSION_ID`, which Claude Code
+  never sets (it exports `CLAUDE_CODE_SESSION_ID`), so every plan's `session`
+  was empty. Every state write made from inside a session now stamps
+  `owner {session, workspace, at}` from `CLAUDE_CODE_SESSION_ID` and
+  `CMUX_WORKSPACE_ID`, and `status --json` carries `owner` and `touchedAt`.
+  The pane no longer needs the cwd inside the plan's root: it shows the
+  newest active plan this session or workspace owns, lists the others with
+  `switch`, and `/plan-pane <slug>` pins one. Back-to-back plans in one
+  workspace resolve to the newest, across `/clear`.
+
 ## 0.3.0 — 2026-10-04
 
 - **Every feature is a Claude Code plugin, listed by one marketplace.**

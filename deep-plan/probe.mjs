@@ -36,6 +36,12 @@ const ENV = {
 };
 delete ENV.DEEP_PLAN_SKILL_DIR;
 delete ENV.DEEP_PLAN_ENGINE;
+// A probe run from inside a Claude session must not stamp that session (or its
+// cmux workspace) as the owner of every throwaway plan; the owner block below
+// sets them explicitly.
+delete ENV.CLAUDE_CODE_SESSION_ID;
+delete ENV.CLAUDE_SESSION_ID;
+delete ENV.CMUX_WORKSPACE_ID;
 const MERMAID_VENDOR = path.join(ENV.DEEP_PLAN_VENDOR_DIR, "mermaid.min.js");
 // The real bundle to test with: where CI fetched it, where `deep-plan setup`
 // put it, a checkout's own vendor/, or the old skills copy. Copied, not moved.
@@ -1576,6 +1582,56 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   execSync("git add -A && git -c user.email=p@p -c user.name=p commit -q -m cleanup --allow-empty", { cwd: REPO });
   scli("close", "diff-plan");
   fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "diff-plan.json"), { force: true });
+}
+
+// -------------------------------------------------- owner: session and workspace
+//
+// A plan records who last touched it from inside a session, so the seamux-mods
+// pane can find it when its root is another repo, and pick the newest of
+// back-to-back plans in one workspace. Claude Code exports
+// CLAUDE_CODE_SESSION_ID; the older CLAUDE_SESSION_ID name was read before and
+// never set, which left every plan's session empty.
+{
+  const as = (env, ...args) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...args],
+    { encoding: "utf8", env: { ...ENV, ...env }, cwd: REPO });
+  const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
+  const rowOf = n => JSON.parse(cli("status", "--json").stdout).find(r => r.slug === n);
+  const S1 = { CLAUDE_CODE_SESSION_ID: "sess-a", CMUX_WORKSPACE_ID: "ws-1" };
+
+  const s = JSON.parse(JSON.stringify(spec)); s.slug = "owner-1";
+  as(S1, "render", tmpSpec(s));
+  const st = stOf("owner-1");
+  ok("render stamps the session from CLAUDE_CODE_SESSION_ID",
+    st.session === "sess-a" && st.owner && st.owner.session === "sess-a");
+  ok("render stamps the cmux workspace", st.owner && st.owner.workspace === "ws-1");
+  const row = rowOf("owner-1");
+  ok("status --json carries the owner and a touchedAt",
+    row && row.session === "sess-a" && row.owner.workspace === "ws-1" &&
+    row.touchedAt === st.owner.at);
+
+  // A write with no session (the board's chip, a plain shell) keeps the owner.
+  const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "owner-1.key.json"), "utf8"));
+  cli("grade", "owner-1", ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+  cli("go", "owner-1", "1");
+  ok("a write with no session in its environment leaves the owner as it was",
+    stOf("owner-1").owner.session === "sess-a" && stOf("owner-1").increments[0].status === "authorized");
+
+  // The legacy name is still read, and a later session takes ownership.
+  as({ CLAUDE_SESSION_ID: "sess-old", CMUX_WORKSPACE_ID: "ws-1" }, "start", "owner-1", "1");
+  ok("the older CLAUDE_SESSION_ID is still read", stOf("owner-1").owner.session === "sess-old");
+  as({ CLAUDE_CODE_SESSION_ID: "sess-b", CMUX_WORKSPACE_ID: "ws-2" }, "block", "owner-1", "1", "probe");
+  ok("the newest session and workspace to write take ownership",
+    stOf("owner-1").owner.session === "sess-b" && stOf("owner-1").owner.workspace === "ws-2" &&
+    stOf("owner-1").session === "sess-b");
+
+  // A plan whose state predates owners still reports when it last moved.
+  const s2 = JSON.parse(JSON.stringify(spec)); s2.slug = "owner-2";
+  cli("render", tmpSpec(s2));
+  const row2 = rowOf("owner-2");
+  ok("a plan with no owner reports null and its state file's time",
+    row2 && row2.owner === null && row2.session === "" && row2.touchedAt > 0);
+
+  for (const n of ["owner-1", "owner-2"]) cli("close", n);
 }
 
 // -------------------------------------------------- hot-path cost

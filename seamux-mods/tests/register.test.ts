@@ -20,14 +20,34 @@ function row(incs: Inc[], allow: boolean) {
 
 // A deep-plan engine in memory: `status --json` answers the plan as it stands,
 // `go`, `done` and `obs check` move it the way the real engine would.
-function world(on: On, opts: { cwd?: string; pointer?: boolean; facts?: object; askAgeMs?: number } = {}) {
+// Another tracked plan beside `demo`, for the tests that pick between plans.
+function plan(slug: string, root: string, phase: string, touchedAt: number, owner?: { session: string; workspace: string }) {
+  return {
+    slug, root, phase, rootBroken: false,
+    gate: { allow: false, why: 'in review' },
+    progress: { total: 2, done: phase === 'done' ? 2 : 0 },
+    increments: [],
+    owner: owner ? { ...owner, at: touchedAt } : null,
+    touchedAt,
+  }
+}
+
+type WorldOpts = {
+  cwd?: string; pointer?: boolean; facts?: object; askAgeMs?: number
+  /** the session's cmux workspace */
+  workspace?: string
+  /** rows `status --json` answers after demo's; `demoOff` drops demo itself */
+  extra?: object[]; demoOff?: boolean
+}
+
+function world(on: On, opts: WorldOpts = {}) {
   const incs: Inc[] = [
     { n: 1, title: 'first', status: 'done', obs: 'n/a' },
     { n: 2, title: 'second', status: 'pending', obs: 'pending' },
     { n: 3, title: 'third', status: 'pending', obs: 'n/a' },
   ]
   const calls: string[][] = []
-  mock.env(on, { HOME })
+  mock.env(on, { HOME, ...(opts.workspace ? { CMUX_WORKSPACE_ID: opts.workspace } : {}) })
   const clock = mock.clock(on, { now: 1_000_000 })
   on('session.cwd', () => ({ value: opts.cwd ?? `${ROOT}/src` }))
   on('session.id', () => ({ value: 'sess-1' }))
@@ -65,7 +85,8 @@ function world(on: On, opts: { cwd?: string; pointer?: boolean; facts?: object; 
     const okOut = (stdout: string) => ({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
     if (script !== `${ENGINE}/deep_plan.mjs`) return { ...okOut(''), exitCode: 127, stderr: 'wrong engine' }
     const open = () => incs.find(i => i.status === 'authorized' || i.status === 'working')
-    if (verb === 'status') return okOut(JSON.stringify([row(incs, !!open())]))
+    if (verb === 'status')
+      return okOut(JSON.stringify([...(opts.demoOff ? [] : [row(incs, !!open())]), ...(opts.extra ?? [])]))
     if (verb === 'go') {
       const n = incs.find(i => i.status === 'pending')
       if (n) n.status = 'authorized'
@@ -171,6 +192,67 @@ describe('seamux-mods', () => {
     let ui = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
     expect((await ui.find({ key: 'empty' }))?.text).toMatch(/No deep-plan plan tracks \/elsewhere/)
     await ui.unmount()
+  })
+
+  test('a plan this session owns shows even when its root is another repo', async ($, on) => {
+    world(on, { cwd: '/elsewhere', extra: [plan('far', '/other/repo', 'review', 5, { session: 'sess-1', workspace: '' })] })
+    await $.command.run({ command: 'plan-pane', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
+    expect((await ui.find({ key: 'plan' }))?.text).toMatch(/^far · review/)
+    await ui.unmount()
+  })
+
+  test('back to back in one workspace: the new active plan beats the finished one in this repo, and switch moves between them', async ($, on) => {
+    // demo is off; `old` holds the cwd and is done; `new` is rooted elsewhere,
+    // owned by this workspace from an earlier session (before a /clear).
+    world(on, {
+      demoOff: true, workspace: 'ws-1',
+      extra: [
+        plan('old', ROOT, 'done', 100, { session: 'sess-0', workspace: 'ws-1' }),
+        plan('new', '/other/repo', 'review', 50, { session: 'sess-0', workspace: 'ws-1' }),
+        plan('someone-elses', '/third/repo', 'review', 900, { session: 'sess-9', workspace: 'ws-9' }),
+      ],
+    })
+    await $.command.run({ command: 'plan-pane', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
+    expect((await ui.find({ key: 'plan' }))?.text).toMatch(/^new · review/)
+    expect((await ui.find({ key: 'other-old' }))?.text).toMatch(/old · done/)
+    expect(await ui.find({ key: 'other-someone-elses' })).toBeUndefined()
+
+    await ui.press({ key: 'switch-old' })
+    expect((await ui.find({ key: 'plan' }))?.text).toMatch(/^old · done .* · pinned/)
+    await ui.press({ key: 'unpin' })
+    expect((await ui.find({ key: 'plan' }))?.text).toMatch(/^new · review/)
+    await ui.unmount()
+  })
+
+  test('between two active plans the most recently touched wins', async ($, on) => {
+    world(on, {
+      demoOff: true, cwd: '/elsewhere',
+      extra: [
+        plan('earlier', '/a', 'implementing', 10, { session: 'sess-1', workspace: '' }),
+        plan('later', '/b', 'review', 20, { session: 'sess-1', workspace: '' }),
+      ],
+    })
+    await $.command.run({ command: 'plan-pane', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
+    expect((await ui.find({ key: 'plan' }))?.text).toMatch(/^later/)
+    await ui.unmount()
+  })
+
+  test('/plan-pane <slug> pins that plan; an unknown slug falls back to the automatic pick', async ($, on) => {
+    world(on, { extra: [plan('far', '/other/repo', 'review', 5)] })
+    const r = await $.command.run({ command: 'plan-pane', args: ' far ' } as never)
+    expect(r.text).toBe('Plan pane opened, pinned to far.')
+    const ui = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
+    expect((await ui.find({ key: 'plan' }))?.text).toMatch(/^far · review .* · pinned/)
+    await ui.unmount()
+
+    const miss = await $.command.run({ command: 'plan-pane', args: 'nope' } as never)
+    expect(miss.text).toMatch(/No tracked deep-plan plan is named nope/)
+    const ui2 = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
+    expect((await ui2.find({ key: 'plan' }))?.text).toMatch(/^demo · implementing/)
+    await ui2.unmount()
   })
 
   test('no engine pointer: the pane names the missing file', async ($, on) => {
