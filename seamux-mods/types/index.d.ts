@@ -8,7 +8,7 @@ export type SeamuxCheck = {
   /** test | e2e | observability | manual */
   kind: string
   name: string
-  /** pending | running | needs-variant | pass | fail */
+  /** pending | running | needs-variant | pass | fail, or lost: running, but its runner died (judged on read) */
   status: string
   /** what was seen; for needs-variant, what a person runs; for running, since when */
   note: string
@@ -33,6 +33,8 @@ export type SeamuxIncrement = {
 export type SeamuxPlan = {
   slug: string
   root: string
+  /** root with symlinks resolved; absent from an older engine */
+  realRoot?: string
   phase: string
   rootBroken: boolean
   gate: { allow: boolean; why: string }

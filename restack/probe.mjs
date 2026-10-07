@@ -18,7 +18,7 @@ import { sideFlag, sideStage } from "./lib/git.mjs";
 import { matchesGlob, detect, load, summarize } from "./lib/config.mjs";
 import { markStale, clearStale, fresh } from "./lib/state.mjs";
 import { parseRangeDiff, classify } from "./lib/verify.mjs";
-import { contentAllowed } from "./lib/judge.mjs";
+import { contentAllowed, generatedBanner } from "./lib/judge.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const V = process.argv.includes("-v");
@@ -208,6 +208,70 @@ step("one branch, a generated conflict, a cheap generator");
   ok("history did not duplicate", Number(git(r, "rev-list", "--count", "master..feat1").out) === 1);
 }
 
+// ---------------------------------------------------------------- a clean merge is not a right one
+step("both sides touched the artifact, git merged it cleanly: regenerated anyway");
+{
+  // A header that counts the blocks under it, as real schema dumps do. Both
+  // sides add one block, far enough apart for git to merge them, and both
+  // headers move to the same count, so the merge is clean and wrong.
+  const COUNTED = `n=$(ls src/*.def | wc -l | tr -d ' '); { echo "# GENERATED ($n types)"; cat src/*.def | sort; } > gen/schema.txt`;
+  const cfg = { ...cheapCfg, artifacts: [{ ...cheapCfg.artifacts[0], regen: COUNTED }] };
+  const counted = (tier, name) => {
+    const c = JSON.parse(JSON.stringify(cfg));
+    c.artifacts[0].tier = tier;
+    const r = newRepo(name, c);
+    const gen = () => execFileSync("sh", ["-c", COUNTED], { cwd: r, env: ENV });
+    for (const [f, body] of [["m", "mike\n"], ["z", "zulu\n"]]) write(r, `src/${f}.def`, body);
+    gen(); commit(r, "three types");
+    git(r, "checkout", "-q", "-b", "feat1");
+    write(r, "src/b.def", "bravo\n"); gen(); commit(r, "feat: bravo");
+    write(r, "app.txt", "branch edit\n"); commit(r, "feat: app");
+    git(r, "checkout", "-q", "master");
+    write(r, "src/y.def", "yankee\n"); gen(); commit(r, "master: yankee");
+    git(r, "checkout", "-q", "feat1");
+    return r;
+  };
+
+  const r = counted("cheap", "clean-merge");
+  // The premise, checked rather than assumed: git really does merge it.
+  const probe = path.join(TMP, "clean-merge-premise");
+  git(r, "worktree", "add", "-q", "--detach", probe, "feat1");
+  ok("premise: git rebases this stack with no conflict at all", git(probe, "rebase", "-q", "master").ok);
+  ok("premise: and the merged header undercounts",
+    /\(4 types\)/.test(read(probe, "gen/schema.txt")) && /yankee/.test(read(probe, "gen/schema.txt")), read(probe, "gen/schema.txt"));
+  git(r, "worktree", "remove", "--force", probe);
+
+  const plan = cli(r, "plan", "--json", "--no-fetch");
+  ok("plan lists it as a collision", plan.json?.drift?.collisions?.some(c => c.artifact === "schema"), plan.out);
+  const run = cli(r, "run", "--json", "--no-fetch");
+  ok("run exits 0", run.status === 0, run.out + run.err);
+  ok("the committed artifact is what the generator writes",
+    /\(5 types\)/.test(git(r, "show", "feat1:gen/schema.txt").out), git(r, "show", "feat1:gen/schema.txt").out);
+  ok("in the commit that changed it, not a later one",
+    /\(5 types\)/.test(git(r, "show", "feat1~1:gen/schema.txt").out) &&
+    git(r, "show", "--format=%s", "-s", "feat1~1").out === "feat: bravo", git(r, "log", "--stat", "master..feat1").out);
+  ok("no commit was added or lost", Number(git(r, "rev-list", "--count", "master..feat1").out) === 2);
+  ok("the tree is clean and nothing is stale",
+    git(r, "status", "--porcelain").out === "" && (run.json?.stale || []).length === 0, JSON.stringify(run.json?.stale));
+  const check = cli(r, "check", "--json", "--no-fetch");
+  ok("check passes: regen rewrites nothing", check.status === 0, check.out + check.err);
+
+  const e = counted("expensive", "clean-merge-expensive");
+  const erun = cli(e, "run", "--json", "--no-fetch");
+  ok("expensive tier: the walk completes", erun.status === 0, erun.out + erun.err);
+  ok("and the cleanly merged artifact is recorded stale with its command",
+    erun.json?.stale?.some(s => s.artifact === "schema" && s.command === cfg.artifacts[0].regen), JSON.stringify(erun.json?.stale));
+
+  // A stop the engine did not put there is never continued past.
+  const own = counted("cheap", "clean-merge-own-exec");
+  git(own, "rebase", "-q", "--exec", "false", "master");
+  const before = git(own, "rev-parse", "HEAD").out;
+  const cont = cli(own, "continue", "--json", "--no-fetch");
+  ok("a human's own failing --exec is left for the human",
+    cont.status === 2 && /restack did not add/.test(cont.json?.error || "") &&
+    git(own, "rev-parse", "HEAD").out === before && !(cont.json?.dropped || []).length, cont.out + cont.err);
+}
+
 // ---------------------------------------------------------------- expensive tier
 step("the same conflict with an expensive generator: stale, not silent");
 {
@@ -310,6 +374,8 @@ step("a conflict in hand-written code: stops, and resolves nothing for you");
   ok("status says needs-human", run.json?.status === "needs-human");
   ok("the human conflict is named", run.json?.conflicts?.source?.some(s => s.path === "app.txt"));
   ok("with a hunk count to size the job", run.json?.conflicts?.source?.[0]?.hunks >= 1);
+  ok("the stop counts commits, not the regen-on-replay exec lines",
+    run.json?.stopped?.at === 2 && run.json?.stopped?.of === 2, JSON.stringify(run.json?.stopped));
   ok("app.txt still has its markers — nothing was resolved for the human",
     /<{7}/.test(read(r, "app.txt")), read(r, "app.txt"));
   ok("the next steps name the file and the continue", (run.json?.next || []).join(" ").includes("app.txt"));
@@ -516,6 +582,14 @@ step("the judgment layer escalates, and can never authorize");
     JSON.stringify(guarded.json?.conflicts?.source));
   ok("with the conflict markers untouched", /<{7}/.test(read(a, "gen/schema.txt")));
 
+  // The text output says why, not only --json.
+  const said = stacked("judge-guard-text");
+  const text = run(said, withFake({ FAKE_PROBS: JSON.stringify({ generated: 0.42, handwritten: 0.38, unclear: 0.2 }) }),
+    "run", "--no-fetch");
+  ok("the human output names the escalation and its reason",
+    /gen\/schema\.txt — 1 hunk \(sent to you: only 42% likely to be generated; --no-judge skips this check\)/.test(text.out),
+    text.out + text.err);
+
   // The same repo, the same glob, the model agreeing it is generated: the
   // ONLY thing that changes is that nothing is escalated.
   const b = stacked("judge-agree");
@@ -572,14 +646,40 @@ step("the judgment layer escalates, and can never authorize");
   run(g2, withFake({ TYPESAFE_BASE_URL: "https://api.example.com" }), "run", "--json", "--no-fetch");
   const sent = JSON.parse(fs.readFileSync(dump, "utf8"));
   const states = Object.values(sent.state || {});
-  ok("off-machine, the question carries paths only — no file content",
-    states.length > 0 && states.every(v => !("head" in v)), JSON.stringify(states).slice(0, 200));
+  ok("off-machine, the question carries the path and the regen command — no file content",
+    states.length > 0 && states.every(v => Object.keys(v).every(k => k === "path" || k === "regen")) &&
+    states[0].regen === GEN, JSON.stringify(states).slice(0, 200));
 
-  const h = stacked("judge-local");
+  // A generator that says so at the top of its output, as most do. Sent only
+  // the path, the guard rated a file like this 30–42% generated.
+  const BANNER = `{ echo "# THIS FILE IS GENERATED. DO NOT EDIT."; echo "# Rebuild: bin/gen-schema"; cat src/*.def | sort; } > gen/schema.txt`;
+  const bannered = name => {
+    const r = newRepo(name, { ...cheapCfg, artifacts: [{ ...cheapCfg.artifacts[0], regen: BANNER }] });
+    const gen = () => execFileSync("sh", ["-c", BANNER], { cwd: r, env: ENV });
+    gen(); commit(r, "banner");
+    git(r, "checkout", "-q", "-b", "feat1");
+    write(r, "src/b.def", "bravo\n"); gen(); commit(r, "feat: b");
+    git(r, "checkout", "-q", "master");
+    write(r, "src/c.def", "charlie\n"); gen(); commit(r, "master: c");
+    git(r, "checkout", "-q", "feat1");
+    return r;
+  };
+  run(bannered("judge-remote-banner"), withFake({ TYPESAFE_BASE_URL: "https://api.example.com" }), "run", "--json", "--no-fetch");
+  const sentBanner = Object.values(JSON.parse(fs.readFileSync(dump, "utf8")).state || {});
+  ok("off-machine, a generated-file banner goes too, and only that line of the file",
+    sentBanner.length === 1 && sentBanner[0].banner === "# THIS FILE IS GENERATED. DO NOT EDIT." &&
+    sentBanner[0].regen === BANNER && !("head" in sentBanner[0]), JSON.stringify(sentBanner));
+  ok("a banner is found by its words, and a plain file has none",
+    generatedBanner("package x\n// Code generated by protoc-gen-go. DO NOT EDIT.\n") === "// Code generated by protoc-gen-go. DO NOT EDIT." &&
+    generatedBanner("alpha\nbravo\n") === "");
+
+  const h = bannered("judge-local");
   run(h, withFake({}), "run", "--json", "--no-fetch");
-  const sentLocal = JSON.parse(fs.readFileSync(dump, "utf8"));
-  ok("on-machine, it carries the file head (that is what makes it answerable)",
-    Object.values(sentLocal.state).some(v => "head" in v));
+  const sentLocal = Object.values(JSON.parse(fs.readFileSync(dump, "utf8")).state || {});
+  ok("on-machine, it carries the file head (that is what makes it answerable) and the regen command",
+    sentLocal.some(v => "head" in v && v.regen === BANNER), JSON.stringify(sentLocal).slice(0, 300));
+  ok("the head is the base side's, banner first, with no conflict markers",
+    sentLocal.every(v => /^# THIS FILE IS GENERATED/.test(v.head) && !/<{7}|>{7}/.test(v.head)), JSON.stringify(sentLocal).slice(0, 300));
 
   // Dropped commits: the same drop, reported as a line or as a stop.
   const emptyRepo = () => {

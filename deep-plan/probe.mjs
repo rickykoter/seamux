@@ -947,6 +947,10 @@ r = cli("status", "--json");
 const rows = JSON.parse(r.stdout);
 ok("status --json carries the board's fields",
   rows.length === 1 && rows[0].root === fs.realpathSync(REPO) || rows[0].root === REPO);
+// The pane matches a session's cwd against the root, and a process reports
+// its cwd with symlinks resolved (/private/tmp, not /tmp, on macOS).
+ok("status --json carries the root resolved, beside the root as written",
+  rows[0].realRoot === fs.realpathSync(rows[0].root) && typeof rows[0].root === "string", JSON.stringify(rows[0].realRoot));
 ok("status --json gate/progress shapes",
   "allow" in rows[0].gate && "why" in rows[0].gate &&
   ["total", "done", "blocked", "open", "next"].every(k => k in rows[0].progress));
@@ -1756,6 +1760,14 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   const hpid = ck("run-1", "hang").runner.pid;
   try { process.kill(-hpid, "SIGKILL"); } catch { try { process.kill(hpid, "SIGKILL"); } catch { /* gone */ } }
   waitFor(() => { try { process.kill(hpid, 0); return false; } catch { return true; } });
+  // status --json is what the pane polls: it reports the dead runner, and
+  // leaves the recording of it to the check verbs.
+  const lostRow = JSON.parse(cli("status", "--json").stdout).find(x => x.slug === "run-1");
+  const lostCheck = lostRow.increments[0].checks.find(c => c.id === "hang");
+  ok("status --json shows a check whose runner died as lost",
+    lostCheck.status === "lost" && /^runner lost: pid \d+/.test(lostCheck.note) &&
+    lostRow.checksOutstanding.some(c => c.id === "hang" && c.status === "lost"), JSON.stringify(lostCheck));
+  ok("…without writing it: the state still says running", ck("run-1", "hang").status === "running");
   r = cli("check", "status", "run-1", "1", "hang");
   ok("a dead runner's check becomes fail: runner lost",
     ck("run-1", "hang").status === "fail" && /^runner lost: pid \d+ exited without a verdict/.test(ck("run-1", "hang").note));

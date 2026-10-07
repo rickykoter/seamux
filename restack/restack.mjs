@@ -28,7 +28,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import {
   git, repoRoot, gitDir, currentBranch, isDirty, operation, conflictedPaths,
-  rebaseProgress, revParse, mergeBase, countRange, changedPaths,
+  rebaseProgress, revParse, mergeBase, countRange, changedPaths, stoppedExec, isAncestor,
 } from "./lib/git.mjs";
 import * as cfgmod from "./lib/config.mjs";
 import { resolveBase, discover, planWalk, whichSync } from "./lib/stack.mjs";
@@ -135,21 +135,79 @@ function driftReport(ctx, base) {
   if (!b || !base.sha) return { ours: [], theirs: [], collisions: [] };
   const fork = mergeBase(ctx.cwd, base.ref, b);
   if (!fork) return { ours: [], theirs: [], collisions: [] };
-  const ours = changedPaths(ctx.cwd, fork, b);
-  const theirs = changedPaths(ctx.cwd, fork, base.ref);
-  const oursArt = cfgmod.artifactsTouching(ctx.cfg, ours);
-  const theirsArt = cfgmod.artifactsTouching(ctx.cfg, theirs);
-  const both = new Set(theirsArt.map(a => a.artifact.name));
+  const { oursArt, theirsArt, both } = touchedBy(ctx, fork, b, base.ref);
   return {
     ours: oursArt.map(a => ({ artifact: a.artifact.name, paths: a.paths })),
     theirs: theirsArt.map(a => ({ artifact: a.artifact.name, paths: a.paths })),
-    // Both sides touched the same generated artifact: a conflict is coming,
-    // and it is one this engine can resolve without a human reading a diff.
-    collisions: oursArt.filter(a => both.has(a.artifact.name)).map(a => ({
-      artifact: a.artifact.name, resolve: a.artifact.resolve, tier: a.artifact.tier,
-      regen: a.artifact.regen || null,
+    // Both sides touched the same generated artifact: git may conflict on it
+    // or merge it cleanly, and the walk re-derives it either way.
+    collisions: both.map(a => ({
+      artifact: a.name, resolve: a.resolve, tier: a.tier, regen: a.regen || null,
     })),
   };
+}
+
+// The artifacts each side changed since `from`, and the ones both did.
+function touchedBy(ctx, from, ours, theirs) {
+  const oursArt = cfgmod.artifactsTouching(ctx.cfg, changedPaths(ctx.cwd, from, ours));
+  const theirsArt = cfgmod.artifactsTouching(ctx.cfg, changedPaths(ctx.cwd, from, theirs));
+  const names = new Set(theirsArt.map(a => a.artifact.name));
+  return { oursArt, theirsArt, both: oursArt.filter(a => names.has(a.artifact.name)).map(a => a.artifact) };
+}
+
+// REGENERATE ON REPLAY. A collision is not always a conflict: when both sides
+// touched a generated file in places git can merge apart, git merges it
+// cleanly, and the result is a file no generator would write (two new types
+// under a header that counts one). Only a conflict reaches the conflict pass,
+// so for every artifact both sides touched, the walk stops after each replayed
+// commit (an exec line that always fails) and re-derives the artifact in any
+// commit that changed it. The marker names the exec, so a human's own
+// `rebase -x` stop is never mistaken for ours and continued past.
+const REGEN_EXEC = "false restack-regen-on-replay";
+
+function replayArtifacts(ctx, from, branch, onto) {
+  return touchedBy(ctx, from, branch, onto).both
+    .filter(a => a.regen && a.resolve !== "manual").map(a => a.name);
+}
+
+// Called at our exec stop: HEAD is the commit just replayed.
+function replayPass(ctx, step) {
+  const pass = { op: "rebase", generated: [], source: [], escalated: [] };
+  const names = new Set(step.collide || []);
+  const prog = rebaseProgress(ctx.cwd);
+  // HEAD is the onto commit itself when the pick before this exec was skipped
+  // as empty, and a base commit is never ours to rewrite.
+  if (!names.size || !prog || isAncestor(ctx.cwd, "HEAD", prog.onto)) return pass;
+  const touched = cfgmod.artifactsTouching(ctx.cfg, changedPaths(ctx.cwd, "HEAD~1", "HEAD"))
+    .filter(a => names.has(a.artifact.name));
+  for (const { artifact, paths: ps } of touched) {
+    const r = regenArtifact(ctx.cwd, artifact, OPTS);
+    pass.generated.push({ artifact: artifact.name, paths: ps, resolve: "regen", tier: artifact.tier,
+      ok: !r.ran || r.ok, actions: [], regen: r });
+    if (r.ran && r.ok) { S.clearStale(ctx.st, artifact.name); continue; }
+    S.markStale(ctx.st, {
+      artifact: artifact.name, paths: ps, branches: step.branch ? [step.branch] : [],
+      command: artifact.regen,
+      why: (r.deferred ? "expensive tier — not run during the walk" : (r.why || "the regen command failed"))
+        + "; git merged it without a conflict, but both sides changed it",
+    });
+  }
+  if (OPTS.dryRun || git(ctx.cwd, ["diff", "--cached", "--quiet"]).ok) return pass;
+  // Into the replayed commit, so each commit carries the artifact its own
+  // sources derive. A commit that held nothing else has nothing left: it is
+  // dropped and reported like any other commit that became empty.
+  const subject = git(ctx.cwd, ["log", "-1", "--format=%s"]).out;
+  const sha = revParse(ctx.cwd, "HEAD") || "";
+  if (git(ctx.cwd, ["diff", "--cached", "--quiet", "HEAD~1"]).ok) {
+    git(ctx.cwd, ["reset", "--soft", "HEAD~1"]);
+    ctx.st.dropped = ctx.st.dropped || [];
+    ctx.st.dropped.push({ branch: step.branch, sha: sha.slice(0, 12), subject });
+  } else {
+    const am = git(ctx.cwd, ["commit", "--amend", "--no-edit", "--quiet"]);
+    if (!am.ok) pass.error = `could not fold the regenerated artifact into "${subject}": ${am.err}`;
+  }
+  S.log(ctx.st, `regenerated on replay: ${touched.map(t => t.artifact.name).join(", ")} in "${subject}"`);
+  return pass;
 }
 
 function conflictHunks(ctx, p) {
@@ -179,7 +237,8 @@ function conflictPass(ctx, branchName) {
   // The guard runs BEFORE any resolution: ask whether these files really are
   // generated, and pull any that read as hand-written out of the automatic
   // path entirely. One batched question for every artifact path in this stop.
-  const guarded = guardArtifactPaths(ctx.cwd, JUDGE, [...groups.values()].flatMap(g2 => g2.paths));
+  const guarded = guardArtifactPaths(ctx.cwd, JUDGE,
+    [...groups.values()].flatMap(g2 => g2.paths.map(p => ({ path: p, regen: g2.artifact.regen || "" }))), op);
   const guardedPaths = new Set(guarded.map(g2 => g2.path));
   const escalated = [];
   for (const g2 of guarded) {
@@ -333,7 +392,7 @@ function cmdPlan(ctx) {
     for (const s of o.steps)
       say(`  ${s.error ? "\x1b[31m!\x1b[0m" : "•"} ${s.branch}${s.pr ? ` (#${s.pr.number})` : ""} — ${s.ahead ?? "?"} commit(s) onto ${s.onto}${s.error ? ` — ${s.error}` : ""}`);
     if (o.drift.collisions.length) {
-      say("\n  generated artifacts both sides touched (conflicts expected, and handled):");
+      say("\n  generated artifacts both sides touched (re-derived on replay, conflict or not):");
       for (const c of o.drift.collisions)
         say(`    ${c.artifact} — resolve ${c.resolve}, ${c.tier}${c.tier === "expensive" ? " (needs --deep, else recorded stale)" : ""}`);
     } else if (o.drift.theirs.length) {
@@ -393,7 +452,11 @@ function walkGit(ctx) {
 
     say(`  rebasing ${step.branch} onto ${st.index === 0 ? st.base.ref : st.steps[st.index - 1].branch}`);
     if (OPTS.dryRun) { step.status = "dry-run"; continue; }
-    const r = g(ctx, ["rebase", "--onto", onto, step.upstream, step.branch],
+    // `--exec` implies `--empty=keep`; `drop` keeps today's handling of a
+    // commit that becomes empty.
+    step.collide = replayArtifacts(ctx, step.upstream, step.branch, onto);
+    const replay = step.collide.length ? ["--empty=drop", "--exec", REGEN_EXEC] : [];
+    const r = g(ctx, ["rebase", ...replay, "--onto", onto, step.upstream, step.branch],
       { env: { ...process.env, GIT_EDITOR: "true" } });
     if (r.ok) { step.status = "done"; step.newTip = revParse(ctx.cwd, step.branch); continue; }
 
@@ -432,13 +495,23 @@ function settleConflicts(ctx, step, driver = "git") {
   const passes = [];
   let lastPass = null;
   for (let guard = 0; guard < 100; guard++) {
-    const pass = conflictPass(ctx, step.branch);
+    const exec = stoppedExec(ctx.cwd);
+    if (exec !== null && exec !== REGEN_EXEC)
+      return { done: false, passes, pass: lastPass || { generated: [], source: [] },
+        error: `stopped at \`exec ${exec}\`, which restack did not add — deal with what it checks, then \`git rebase --continue\`` };
+    const atReplay = driver === "git" && exec === REGEN_EXEC;
+    const pass = atReplay ? replayPass(ctx, step) : conflictPass(ctx, step.branch);
     passes.push(pass);
     lastPass = pass;
     S.write(ctx.gitDirPath, ctx.st);
     if (pass.source.length) return { done: false, passes, pass };
+    if (pass.error) return { done: false, passes, pass, error: pass.error };
 
-    const cont = driver === "gt" ? gtContinue(ctx) : continueRebase(ctx);
+    // At our exec stop the commit is already made, so it is always
+    // `--continue`: `--skip` there would record a drop that did not happen.
+    const cont = driver === "gt" ? gtContinue(ctx)
+      : atReplay ? g(ctx, ["rebase", "--continue"], { env: { ...process.env, GIT_EDITOR: "true" } })
+      : continueRebase(ctx);
 
     // The op ending is the only success. Everything else is "look again":
     // `rebase --continue` exits non-zero when the NEXT commit conflicts, which
@@ -447,6 +520,7 @@ function settleConflicts(ctx, step, driver = "git") {
     // this loop reported "no conflicts" while sitting on one.
     if (!operation(ctx.cwd)) return { done: true, passes };
     if (conflictedPaths(ctx.cwd).length) continue;
+    if (stoppedExec(ctx.cwd) === REGEN_EXEC) continue;
     if (!cont.ok) return { done: false, passes, pass: lastPass, error: cont.err || cont.why };
     // Mid-op, nothing conflicted, the continue reported success: the next
     // round's empty pass will `--skip` or `--continue` it.
@@ -512,7 +586,12 @@ function stopForHuman(ctx, step, settled) {
     }
     if (o.conflicts.source.length) {
       say("  yours to resolve:");
-      for (const s of o.conflicts.source) say(`    ${s.path}${s.hunks ? ` — ${s.hunks} hunk${s.hunks === 1 ? "" : "s"}` : ""}`);
+      for (const s of o.conflicts.source) {
+        // A generated path the guard pulled out of the automatic pile has to
+        // say so, or it reads as a config mistake nobody can see the cause of.
+        const why = s.escalated ? ` (sent to you: ${s.why}; --no-judge skips this check)` : "";
+        say(`    ${s.path}${s.hunks ? ` — ${s.hunks} hunk${s.hunks === 1 ? "" : "s"}` : ""}${why}`);
+      }
     }
     if (o.error) say(`  \x1b[31m${o.error}\x1b[0m`);
     say("\n  then: restack continue");

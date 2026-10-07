@@ -96,14 +96,32 @@ export function rebaseProgress(cwd) {
   if (!dir) return null;
   const read = n => { try { return fs.readFileSync(path.join(dir, n), "utf8").trim(); } catch { return ""; } };
   const sha = read("stopped-sha") || read("original-commit") || "";
+  // msgnum/end count `exec` lines too, and a walk that regenerates on replay
+  // adds one after every pick: count the commits, which is what "3/4" means.
+  const commits = n => read(n).split("\n").filter(l => l && !l.startsWith("#") && !/^(exec|x)\s/.test(l)).length;
+  const viaTodo = fs.existsSync(path.join(dir, "done"));
   return {
-    at: Number(read("msgnum")) || null,
-    of: Number(read("end")) || null,
+    at: (viaTodo ? commits("done") : Number(read("msgnum"))) || null,
+    of: (viaTodo ? commits("done") + commits("git-rebase-todo") : Number(read("end"))) || null,
     onto: read("onto") || "",
     branch: (read("head-name") || "").replace(/^refs\/heads\//, ""),
     sha,
     subject: sha ? git(cwd, ["log", "-1", "--format=%s", sha]).out : "",
   };
+}
+
+// The `exec` command a rebase just stopped on, or null when it stopped on
+// anything else (a conflicted pick, an empty commit). The last line of `done`
+// is the most recent todo command run, and a failing exec is the only way an
+// exec line is last while the rebase is still in progress.
+export function stoppedExec(cwd) {
+  const d = gitDir(cwd);
+  if (!d) return null;
+  let done = "";
+  try { done = fs.readFileSync(path.join(d, "rebase-merge", "done"), "utf8"); } catch { return null; }
+  const last = done.trim().split("\n").pop() || "";
+  const m = last.match(/^(?:exec|x) (.*)$/);
+  return m ? m[1] : null;
 }
 
 export function revParse(cwd, ref) {

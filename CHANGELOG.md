@@ -41,6 +41,32 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
   a graded plan never puts the quiz back in front. `open` runs `cmux open`,
   which lands as a tab in this workspace; without cmux the URL is toasted, and
   without the intent server the link is the page's file.
+- **restack re-derives a generated file git merged cleanly.** Only conflicted
+  artifacts were regenerated, so two sides adding types in different places
+  merged into a schema whose header undercounted them, and `restack check`
+  failed after the walk said ok. Every artifact both sides touched is now
+  regenerated in each replayed commit that changes it (the expensive tier is
+  recorded stale, as for a conflict). Graphite walks are not covered yet.
+- **restack says why the guard sent you a generated file.** A path the
+  judgment layer escalated was listed under "yours to resolve" with no reason
+  outside `--json`; the line now reads e.g. `schema.graphql — 1 hunk (sent to
+  you: only 42% likely to be generated; --no-judge skips this check)`.
+- **`/plan-pane` finds a plan rooted through a symlink.** It matched the cwd
+  against the root as written, so on macOS a plan rooted at `/tmp/x` was not
+  found from `/private/tmp/x`, though the gate resolved it. `deep-plan status
+  --json` now also reports `realRoot`, and the pane and status entry match
+  either.
+- **A detached check whose runner died shows as lost, not running.** The pane
+  and status entry said `↻ N running` until a `check` verb reaped it.
+  `deep-plan status --json` now reports such a check as `lost` (judged on
+  read; it still writes nothing), and the pane shows `⚠ lost` with its `run
+  checks` button.
+- **restack's glob guard sees what makes a file look generated.** Against a
+  remote endpoint it was sent the path alone, and rated a file headed "THIS
+  FILE IS GENERATED. DO NOT EDIT." 30–42% likely to be generated. It now also
+  gets the artifact's regen command and, off-machine, only the head line that
+  declares the file generated; on loopback, the first lines from the base
+  side, with no conflict markers. The safe floor is unchanged.
 
 ## 0.3.0 — 2026-10-04
 

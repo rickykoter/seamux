@@ -31,8 +31,10 @@ plugin's root, wherever it is installed. `restack engine` prints that root, and
 
 0. **Read before you rebase.** `restack status` and `restack plan --json` are
    read-only and cheap. `plan` fetches the base, walks the chain, and names the
-   generated artifacts **both sides touched** — those are the conflicts that
-   are coming, and the ones you will not have to look at. If the chain it found
+   generated artifacts **both sides touched**. Each one is re-derived in every
+   replayed commit that changes it, whether git conflicts on it or merges it
+   cleanly (a clean merge of a generated file is still one no generator wrote),
+   and you will not have to look at any of them. If the chain it found
    is missing a branch, stop: fix `stack.branches` in the config before moving
    any refs, because a walk that does not know about a branch leaves it
    pointing at commits the rest of the stack no longer has.
@@ -196,6 +198,8 @@ can do is cost you a look.
    `protobuf/**` that quietly covers a hand-written helper is invisible to
    every deterministic check — the glob is narrow, the config is valid, the
    file just is not generated — and it is how a branch loses a change silently.
+   The question carries the artifact's regen command and the top of the file
+   as the base has it (no conflict markers).
    A file that does not clear the bar goes to the human pile with its conflict
    markers intact.
 2. **Dropped-commit triage.** A commit that became empty is always reported;
@@ -219,7 +223,10 @@ numbers deserve tuning against real runs rather than trust.
 **What leaves the machine.** The content questions carry file heads and patch
 excerpts, which is what makes them answerable — and they are sent **only when
 the endpoint is loopback**. Point `TYPESAFE_BASE_URL` at anything else and the
-questions degrade to paths and commit subjects. No client, no key, a server
+questions degrade to paths and commit subjects, plus two things for the glob
+guard: the artifact's configured regen command, and the one line near the top
+of the file that declares it generated ("DO NOT EDIT", "@generated"), when
+there is one. Neither lowers the bar a file has to clear. No client, no key, a server
 that is down, an unparsable answer: silence, and restack behaves exactly as it
 does with no judgment layer at all. `--no-judge` turns it off explicitly.
 
@@ -237,7 +244,7 @@ does not know the schema moved underneath it; you do.
 |---|---|
 | `plan` lists fewer branches than your stack | no local ref, or no open PR — set `stack.branches` explicitly |
 | everything reports `already-current` | you are already on top of the base; check you fetched (`--no-fetch` trusts the ref on disk) |
-| the walk stops on a generated file anyway | its path matches no artifact glob — `restack doctor` shows what each glob actually matches |
+| the walk stops on a generated file anyway | if its line says "sent to you", the judgment layer doubted it was generated (the reason follows); otherwise its path matches no artifact glob — `restack doctor` shows what each glob actually matches |
 | `regen` rewrote nothing but CI still says stale | the command runs somewhere else than the checked-in copy, or only part of it; compare `git diff` after running it by hand |
 | `check` is green and CI is not | the check command is not the CI command — copy CI's, do not paraphrase it |
 | stale will not clear | only a successful regen clears it: `restack regen --only <name> --deep`, or `restack clear-stale --only <name>` when the artifact has no generator |

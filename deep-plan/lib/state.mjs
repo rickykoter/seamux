@@ -345,7 +345,7 @@ export function gateView(st) {
 
 // realpath both sides: on macOS /tmp and /var are symlinks into /private, and
 // a containment test on the spelled paths silently disarms the gate.
-function canon(p) {
+export function canon(p) {
   try { return fs.realpathSync(p); }
   catch {
     try { return path.join(fs.realpathSync(path.dirname(p)), path.basename(p)); }

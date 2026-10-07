@@ -239,7 +239,9 @@ the foreground; expensive ones run in a detached copy of the CLI (`check run …
 before the spawn. The runner lands its own verdict only if the check still
 carries its token — a reset meanwhile discards it. A running check whose pid is
 gone is judged on a fresh read (a runner writes before it exits) and becomes
-`fail: runner lost`. An acquire step is never executed; the check goes to
+`fail: runner lost` at the next `check run|status|wait`. `status --json` makes
+the same judgment without the write and reports it as `lost`, because the pane
+polls it and a poll must stay a cheap read. An acquire step is never executed; the check goes to
 `needs-variant`, and `--from wait` resumes.
 
 **Concurrent writers** merge in `writeState`: under the lock it re-reads the
