@@ -1,7 +1,8 @@
 // seamux-mods: deep-plan, drawn inside the terminal.
 //
-//   /plan-pane        a pane with the plan tracking this session's cwd: each
-//                     increment, and go / done / obs as buttons. Not /plan:
+//   /plan-pane        a pane with this session's plan: each increment, and
+//                     go / done / obs as buttons, plus the other plans it could
+//                     be with a switch. `/plan-pane <slug>` pins one. Not /plan:
 //                     that is a built-in, and the engine refuses the name.
 //   the gate band     when the classic gate (deep-plan's PreToolUse hook)
 //                     refuses an edit, a band above the prompt offers `go next`
@@ -23,6 +24,10 @@ const COMMAND = 'plan-pane'
 const view = atom({ plugin: 'seamux-mods', key: 'view' } as const, null)
 const denied = atom({ plugin: 'seamux-mods', key: 'denied' } as const, null)
 const note = atom({ plugin: 'seamux-mods', key: 'note' } as const, '')
+const pinned = atom({ plugin: 'seamux-mods', key: 'pinned' } as const, '')
+
+// How many other candidate plans the pane lists under the one it shows.
+const OTHERS_SHOWN = 5
 
 // The classic gate's refusal opens with exactly this (deep-plan/hooks/decide.mjs
 // pins it, deep-plan/probe.mjs asserts it). In a session the tool result reads
@@ -76,10 +81,31 @@ function headline(out: string): string {
   return lines.find(l => l.startsWith('deep-plan')) ?? lines.find(l => /^\w*Error\b/.test(l)) ?? lines[0] ?? ''
 }
 
-// The plan whose root holds `cwd`, the deepest when roots nest.
-function planFor(rows: SeamuxPlan[], cwd: string): SeamuxPlan | null {
-  const holds = (root: string) => root !== '' && (cwd === root || cwd.startsWith(root.endsWith('/') ? root : root + '/'))
-  return rows.filter(r => holds(r.root)).sort((a, b) => b.root.length - a.root.length)[0] ?? null
+// Which session is asking: its id, its cmux workspace, and where it stands.
+type Me = { cwd: string; session: string; workspace: string }
+
+const holds = (root: string, cwd: string) =>
+  root !== '' && (cwd === root || cwd.startsWith(root.endsWith('/') ? root : root + '/'))
+
+// deep-plan stamps the session and workspace on every write made from inside a
+// session. The workspace outlives /clear, so a plan rendered before it still
+// belongs to this pane.
+const owns = (r: SeamuxPlan, me: Me) =>
+  !!r.owner && ((me.session !== '' && r.owner.session === me.session) ||
+    (me.workspace !== '' && r.owner.workspace === me.workspace))
+
+// Candidates are the plans this session or workspace owns, wherever their root
+// is, and the plans whose root holds the cwd. Active plans come before done
+// ones, then the most recently touched, then the deepest root: so a plan just
+// rendered for another repo beats a finished one in this repo, and the newest
+// of back-to-back plans wins. A pin, while its plan is still tracked, beats all.
+function pick(rows: SeamuxPlan[], me: Me, pin: string): { plan: SeamuxPlan | null; others: SeamuxPlan[] } {
+  const ranked = rows.filter(r => owns(r, me) || holds(r.root, me.cwd)).sort((a, b) =>
+    Number(a.phase === 'done') - Number(b.phase === 'done') ||
+    (b.touchedAt ?? 0) - (a.touchedAt ?? 0) ||
+    b.root.length - a.root.length)
+  const plan = (pin ? rows.find(r => r.slug === pin) : undefined) ?? ranked[0] ?? null
+  return { plan, others: ranked.filter(r => r.slug !== plan?.slug) }
 }
 
 // ---------------------------------------------------------------- refresh
@@ -119,15 +145,26 @@ async function tick($: EngineInterface): Promise<void> {
 // Runs `deep-plan status --json`, keeps what it found, and redraws the status
 // entry. Called by the timer, after every button, and after a refusal.
 async function refresh($: EngineInterface): Promise<SeamuxView> {
-  const cwd = await $.session.cwd()
+  const me: Me = {
+    cwd: await $.session.cwd(),
+    session: await $.session.id(),
+    workspace: (await $.env.get('CMUX_WORKSPACE_ID')) ?? '',
+  }
   const ran = await engine($, ['status', '--json'])
-  let next: SeamuxView = { plan: null, problem: '', cwd }
+  let next: SeamuxView = { plan: null, others: [], problem: '', cwd: me.cwd }
   if (!ran.ok) next = { ...next, problem: ran.out }
   else {
+    let rows: SeamuxPlan[] | null = null
     try {
-      next = { ...next, plan: planFor(JSON.parse(ran.out) as SeamuxPlan[], cwd) }
+      rows = JSON.parse(ran.out) as SeamuxPlan[]
     } catch {
       next = { ...next, problem: 'deep-plan status --json did not answer JSON' }
+    }
+    if (rows) {
+      // A pin outlives its plan only until the plan is closed.
+      const pin = await read($, pinned)
+      if (pin && !rows.some(r => r.slug === pin)) await update($, pinned, () => '')
+      next = { ...next, ...pick(rows, me, await read($, pinned)) }
     }
   }
   await update($, view, () => next)
@@ -191,6 +228,13 @@ async function goNext($: EngineInterface, slug: string): Promise<void> {
   }
 }
 
+// A switch pins the pane to that plan; an empty slug goes back to the
+// automatic pick.
+async function switchTo($: EngineInterface, slug: string): Promise<void> {
+  await update($, pinned, () => slug)
+  await refresh($)
+}
+
 // Opened by a person (the command, the band's button), so it takes the keys:
 // its hotkeys work at once, and Esc hands them back to the prompt.
 async function openPane($: EngineInterface): Promise<void> {
@@ -237,7 +281,7 @@ export const register: Register = on => {
     try {
       await $.command.register({
         name: COMMAND,
-        description: 'Show the deep-plan plan tracking this directory, with go, done and obs',
+        description: "Show this session's deep-plan plan, with go, done and obs (/plan-pane <slug> pins one)",
       })
     } catch (err) {
       $.ui.log(`seamux-mods: /${COMMAND} not registered: ${String(err)}`)
@@ -245,10 +289,15 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'plan-pane' }, async $ => {
-    await refresh($)
+  // `/plan-pane` goes back to the automatic pick; `/plan-pane <slug>` pins.
+  on('command.run', { command: 'plan-pane' }, async ($, e) => {
+    const slug = e.args.trim()
+    await update($, pinned, () => slug)
+    const v = await refresh($)
     await openPane($)
-    return { text: 'Plan pane opened.' }
+    if (!slug) return { text: 'Plan pane opened.' }
+    if (v.plan?.slug === slug) return { text: `Plan pane opened, pinned to ${slug}.` }
+    return { text: `No tracked deep-plan plan is named ${slug}; the pane shows this session's latest.` }
   })
 
   // React to the classic gate's refusal; never refuse anything here.
@@ -292,12 +341,13 @@ export const register: Register = on => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const v = await read($, view)
     const last = await read($, note)
+    const pin = await read($, pinned)
     const width = e.props.bodyColumns
     const p = v?.plan ?? null
     if (!p) {
       return (
         <Box key="empty" flexDirection="column" width={width}>
-          <Text dimColor>{v?.problem || `No deep-plan plan tracks ${v?.cwd ?? 'this directory'}.`}</Text>
+          <Text dimColor>{v?.problem || `No deep-plan plan tracks ${v?.cwd ?? 'this directory'}, and none belongs to this session or workspace.`}</Text>
           <Button key="refresh" label="refresh" hotkey="r" onPress={() => refresh($)} />
         </Box>
       )
@@ -308,7 +358,7 @@ export const register: Register = on => {
     return (
       <Box key="plan" flexDirection="column" width={width}>
         <Text bold wrap="truncate-end">
-          {p.slug} · {p.phase} · {p.progress.done}/{p.progress.total} done
+          {p.slug} · {p.phase} · {p.progress.done}/{p.progress.total} done{pin === p.slug ? ' · pinned' : ''}
         </Text>
         <Box key="gate">
           <Text color={p.gate.allow ? 'green' : 'yellow'} wrap="wrap">
@@ -332,7 +382,21 @@ export const register: Register = on => {
         <Box key="actions" flexDirection="row" gap={1} marginTop={1}>
           {canGo && <Button key="go" label="go next" hotkey="g" variant="primary" onPress={() => act($, ['go', p.slug, 'next'])} />}
           <Button key="refresh" label="refresh" hotkey="r" onPress={() => refresh($)} />
+          {pin === p.slug && <Button key="unpin" label="unpin" onPress={() => switchTo($, '')} />}
         </Box>
+        {(v?.others ?? []).length > 0 && (
+          <Box key="others" flexDirection="column" marginTop={1}>
+            <Text dimColor>also for this session:</Text>
+            {(v?.others ?? []).slice(0, OTHERS_SHOWN).map(o => (
+              <Box key={`other-${o.slug}`} flexDirection="row" gap={1}>
+                <Text dimColor wrap="truncate-end">
+                  {o.slug} · {o.phase} · {o.progress.done}/{o.progress.total}
+                </Text>
+                <Button key={`switch-${o.slug}`} label="switch" dimColor onPress={() => switchTo($, o.slug)} />
+              </Box>
+            ))}
+          </Box>
+        )}
         {last !== '' && (
           <Box key="note">
             <Text dimColor wrap="wrap">{last}</Text>

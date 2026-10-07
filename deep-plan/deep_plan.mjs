@@ -25,7 +25,7 @@ import { epicHtml, incrementMd, bundleReadme, incrementFileNames } from "./lib/c
 import { checkEvidence } from "./lib/evidence.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
-  STATE_DIR, KEYS_DIR, PLANS_DIR,
+  STATE_DIR, KEYS_DIR, PLANS_DIR, statePath, sessionId,
   readState, writeState, allStates, log1, progress, gateView,
   reconcileObs, obsBlocks, planFor,
 } from "./lib/state.mjs";
@@ -1401,7 +1401,7 @@ async function render(specPath, opts) {
     st = {
       slug: spec.slug, phase: "review", gate: "increment",
       root: opts.root || gitRoot(process.cwd()) || process.cwd(),
-      session: process.env.CLAUDE_SESSION_ID || "",
+      session: sessionId(),
       increments: [], log: [],
     };
     log1(st, "rendered; alignment check pending");
@@ -2085,12 +2085,21 @@ function incrementDiff(st, inc, { open = false } = {}) {
 
 // ---------------------------------------------------------------- status
 
+function stateMtime(slug) {
+  try { return Math.round(fs.statSync(statePath(slug)).mtimeMs); } catch { return 0; }
+}
+
 function statusRows() {
   return allStates().filter(st => st.phase !== "closed").map(st => ({
     slug: st.slug, root: st.root || "", phase: st.phase,
     rootBroken: !!(st.root && !fs.existsSync(st.root)),
     gate: gateView(st), progress: progress(st), session: st.session || "",
     approved: (st.approved && st.approved.path) || "",
+    // Who touched the plan last from inside a session, and when. The pane ranks
+    // plans by these when several could be the session's. A plan from before
+    // owners were stamped has no owner, only its state file's own time.
+    owner: st.owner || null,
+    touchedAt: (st.owner && st.owner.at) || stateMtime(st.slug),
     // Increments whose declared observability check is still outstanding. These
     // cannot go `done` without --force, so a plan that looks one step from
     // finished may not be — the board reads this from --json.

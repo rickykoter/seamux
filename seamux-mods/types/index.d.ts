@@ -21,12 +21,25 @@ export type SeamuxPlan = {
   gate: { allow: boolean; why: string }
   progress: { total: number; done: number; next?: { n: number; title: string } | null }
   increments?: SeamuxIncrement[]
+  /** who last touched the plan from inside a session; null before owners were stamped */
+  owner?: SeamuxOwner | null
+  /** owner.at, else the state file's mtime (ms); absent from an older engine */
+  touchedAt?: number
 }
 
-/** What the last refresh found for the session's working directory. */
+/** The session and cmux workspace that last wrote a plan, and when (ms). */
+export type SeamuxOwner = { session: string; workspace: string; at: number }
+
+/** What the last refresh found for this session. */
 export type SeamuxView = {
-  /** the plan whose root holds the cwd, or null when none does */
+  /**
+   * the pinned plan, else the session's latest: among plans this session or
+   * workspace owns and plans whose root holds the cwd, active before done,
+   * then the most recently touched, then the deepest root. Null when none.
+   */
   plan: SeamuxPlan | null
+  /** the other candidates, in the same order, for the pane's switch list */
+  others: SeamuxPlan[]
   /** why there is no plan to show: no engine, a failed run; empty otherwise */
   problem: string
   /** the session's working directory at that refresh */
@@ -43,6 +56,8 @@ declare module 'claude-code' {
       denied: SeamuxDenial | null
       /** the last button's outcome, shown at the foot of the pane */
       note: string
+      /** the slug `/plan-pane <slug>` or a switch button pinned; empty means automatic */
+      pinned: string
     }
   }
 }

@@ -42,9 +42,31 @@ function acquireLock(slug) {
   return null;
 }
 
+// Who is working on a plan. Claude Code exports CLAUDE_CODE_SESSION_ID (the
+// older CLAUDE_SESSION_ID is still read); cmux exports CMUX_WORKSPACE_ID. The
+// session id changes on /clear, the workspace does not, so both are kept: a
+// pane can then find the plan its session or workspace touched last even when
+// that plan's root is another repo, and back-to-back plans in one workspace
+// resolve to the newest.
+export function sessionId() {
+  return process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || "";
+}
+
+// Stamped on every write made from inside a session. A write with no session
+// in its environment (a board chip, a shell outside Claude) leaves the owner
+// as it was rather than clearing it.
+export function stampOwner(st, now = Date.now()) {
+  const session = sessionId();
+  if (!session) return st;
+  st.owner = { session, workspace: process.env.CMUX_WORKSPACE_ID || "", at: now };
+  st.session = session;
+  return st;
+}
+
 // Atomic: the gate reads this on every tool call, and a half-written JSON
 // reads as "no plan" — exactly the wrong default for a gate.
 export function writeState(st) {
+  stampOwner(st);
   fs.mkdirSync(STATE_DIR, { recursive: true });
   const lock = acquireLock(st.slug);
   try {
