@@ -186,7 +186,7 @@ export function guardArtifactPaths(cwd, j, paths) {
     if (v.escalate)
       escalate.push({ path: p, pGenerated: v.p, choice: a.choice,
         why: v.p === null ? `reads as ${a.choice}, not generated`
-          : `only ${(v.p * 100).toFixed(0)}% likely to be a generated file` });
+          : `only ${(v.p * 100).toFixed(0)}% likely to be generated` });
   }
   logJudgments("artifact-guard", rows);
   return escalate;

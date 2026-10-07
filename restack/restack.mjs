@@ -585,7 +585,12 @@ function stopForHuman(ctx, step, settled) {
     }
     if (o.conflicts.source.length) {
       say("  yours to resolve:");
-      for (const s of o.conflicts.source) say(`    ${s.path}${s.hunks ? ` — ${s.hunks} hunk${s.hunks === 1 ? "" : "s"}` : ""}`);
+      for (const s of o.conflicts.source) {
+        // A generated path the guard pulled out of the automatic pile has to
+        // say so, or it reads as a config mistake nobody can see the cause of.
+        const why = s.escalated ? ` (sent to you: ${s.why}; --no-judge skips this check)` : "";
+        say(`    ${s.path}${s.hunks ? ` — ${s.hunks} hunk${s.hunks === 1 ? "" : "s"}` : ""}${why}`);
+      }
     }
     if (o.error) say(`  \x1b[31m${o.error}\x1b[0m`);
     say("\n  then: restack continue");

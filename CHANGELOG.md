@@ -47,6 +47,10 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
   failed after the walk said ok. Every artifact both sides touched is now
   regenerated in each replayed commit that changes it (the expensive tier is
   recorded stale, as for a conflict). Graphite walks are not covered yet.
+- **restack says why the guard sent you a generated file.** A path the
+  judgment layer escalated was listed under "yours to resolve" with no reason
+  outside `--json`; the line now reads e.g. `schema.graphql — 1 hunk (sent to
+  you: only 42% likely to be generated; --no-judge skips this check)`.
 
 ## 0.3.0 — 2026-10-04
 

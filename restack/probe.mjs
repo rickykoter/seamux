@@ -582,6 +582,14 @@ step("the judgment layer escalates, and can never authorize");
     JSON.stringify(guarded.json?.conflicts?.source));
   ok("with the conflict markers untouched", /<{7}/.test(read(a, "gen/schema.txt")));
 
+  // The text output says why, not only --json.
+  const said = stacked("judge-guard-text");
+  const text = run(said, withFake({ FAKE_PROBS: JSON.stringify({ generated: 0.42, handwritten: 0.38, unclear: 0.2 }) }),
+    "run", "--no-fetch");
+  ok("the human output names the escalation and its reason",
+    /gen\/schema\.txt — 1 hunk \(sent to you: only 42% likely to be generated; --no-judge skips this check\)/.test(text.out),
+    text.out + text.err);
+
   // The same repo, the same glob, the model agreeing it is generated: the
   // ONLY thing that changes is that nothing is escalated.
   const b = stacked("judge-agree");

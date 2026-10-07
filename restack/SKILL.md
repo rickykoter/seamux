@@ -239,7 +239,7 @@ does not know the schema moved underneath it; you do.
 |---|---|
 | `plan` lists fewer branches than your stack | no local ref, or no open PR — set `stack.branches` explicitly |
 | everything reports `already-current` | you are already on top of the base; check you fetched (`--no-fetch` trusts the ref on disk) |
-| the walk stops on a generated file anyway | its path matches no artifact glob — `restack doctor` shows what each glob actually matches |
+| the walk stops on a generated file anyway | if its line says "sent to you", the judgment layer doubted it was generated (the reason follows); otherwise its path matches no artifact glob — `restack doctor` shows what each glob actually matches |
 | `regen` rewrote nothing but CI still says stale | the command runs somewhere else than the checked-in copy, or only part of it; compare `git diff` after running it by hand |
 | `check` is green and CI is not | the check command is not the CI command — copy CI's, do not paraphrase it |
 | stale will not clear | only a successful regen clears it: `restack regen --only <name> --deep`, or `restack clear-stale --only <name>` when the artifact has no generator |
