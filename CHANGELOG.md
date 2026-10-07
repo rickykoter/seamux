@@ -16,6 +16,12 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
   newest active plan this session or workspace owns, lists the others with
   `switch`, and `/plan-pane <slug>` pins one. Back-to-back plans in one
   workspace resolve to the newest, across `/clear`.
+- **`/plan-pane` links back to the plan's page.** A clickable link and an
+  `open review` / `open plan` button (`o`) under the increments: the review
+  page while the alignment check is pending, the working tracker after it, so
+  a graded plan never puts the quiz back in front. `open` runs `cmux open`,
+  which lands as a tab in this workspace; without cmux the URL is toasted, and
+  without the intent server the link is the page's file.
 
 ## 0.3.0 — 2026-10-04
 

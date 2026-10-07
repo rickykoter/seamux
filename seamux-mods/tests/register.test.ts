@@ -38,6 +38,8 @@ type WorldOpts = {
   workspace?: string
   /** rows `status --json` answers after demo's; `demoOff` drops demo itself */
   extra?: object[]; demoOff?: boolean
+  /** no intent-server port file; `cmux` absent from PATH */
+  noPort?: boolean; noCmux?: boolean
 }
 
 function world(on: On, opts: WorldOpts = {}) {
@@ -58,7 +60,7 @@ function world(on: On, opts: WorldOpts = {}) {
       return { value: JSON.stringify(opts.facts) }
     if (e.path === `${HOME}/.claude/plans/asks/20261004-120000-ab12.json` && opts.askAgeMs !== undefined)
       return { value: JSON.stringify({ id: '20261004-120000-ab12', cwd: opts.cwd ?? `${ROOT}/src` }) }
-    if (e.path === `${HOME}/.cache/cmux-crew/board-intent.port`) return { value: '7345\n' }
+    if (e.path === `${HOME}/.cache/cmux-crew/board-intent.port` && !opts.noPort) return { value: '7345\n' }
     return { deny: `ENOENT ${e.path}` }
   })
   on('fs.list', (_$, e) => ({
@@ -78,7 +80,15 @@ function world(on: On, opts: WorldOpts = {}) {
   on('ui.status', (_$, e) => { statuses.push(e.text); return { value: undefined } })
   const toasts: string[] = []
   on('ui.toast', (_$, e) => { toasts.push(e.text); return { value: undefined } })
-  on('process.run', (_$, e) => ({ value: engineRun(e.argv) }))
+  const cmux: string[][] = []
+  on('process.run', (_$, e) => {
+    if (e.argv[0] === 'cmux') {
+      cmux.push(e.argv.slice(1) as string[])
+      if (opts.noCmux) return { deny: 'spawn cmux ENOENT' } as never
+      return { value: { exitCode: 0, stdout: 'OK urls=1', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    return { value: engineRun(e.argv) }
+  })
   function engineRun(argv: readonly string[]) {
     const [, script, verb, ...rest] = argv
     calls.push(argv.slice(2) as string[])
@@ -101,7 +111,7 @@ function world(on: On, opts: WorldOpts = {}) {
     if (verb === 'obs') return okOut('check: dashboards show the new series')
     return { ...okOut(''), exitCode: 1, stderr: `unknown verb ${verb}` }
   }
-  return { incs, calls, opened, statuses, clock, toasts }
+  return { incs, calls, opened, statuses, clock, toasts, cmux }
 }
 
 const DENY = 'deep-plan gate [demo]: No increment is authorized — `deep-plan go` opens the next one.\n' +
@@ -253,6 +263,29 @@ describe('seamux-mods', () => {
     const ui2 = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
     expect((await ui2.find({ key: 'plan' }))?.text).toMatch(/^demo · implementing/)
     await ui2.unmount()
+  })
+
+  test('the pane links back to the review while in review, and `open review` opens it in cmux', async ($, on) => {
+    const w = world(on, { demoOff: true, cwd: '/elsewhere', extra: [plan('far', '/other/repo', 'review', 5, { session: 'sess-1', workspace: '' })] })
+    await $.command.run({ command: 'plan-pane', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
+    expect((await ui.find({ key: 'link' }))?.text).toMatch(/http:\/\/127\.0\.0\.1:7345\/plan\/far\.review\.html/)
+    expect((await ui.find({ key: 'open' }))?.text).toMatch(/open review/)
+    await ui.press({ key: 'open' })
+    expect(w.cmux).toEqual([['open', 'http://127.0.0.1:7345/plan/far.review.html']])
+    expect((await ui.find({ key: 'note' }))?.text).toMatch(/opened http/)
+    await ui.unmount()
+  })
+
+  test('past review the link is the working tracker; with no server it is the file, and no cmux means a toast', async ($, on) => {
+    const w = world(on, { noPort: true, noCmux: true })
+    await $.command.run({ command: 'plan-pane', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
+    expect((await ui.find({ key: 'link' }))?.text).toMatch(/file:\/\/\/home\/t\/\.claude\/plans\/demo\.working\.html/)
+    expect((await ui.find({ key: 'open' }))?.text).toMatch(/open plan/)
+    await ui.press({ key: 'open' })
+    expect(w.toasts).toContain('Plan page: file:///home/t/.claude/plans/demo.working.html')
+    await ui.unmount()
   })
 
   test('no engine pointer: the pane names the missing file', async ($, on) => {

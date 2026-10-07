@@ -1,7 +1,8 @@
 // seamux-mods: deep-plan, drawn inside the terminal.
 //
 //   /plan-pane        a pane with this session's plan: each increment, and
-//                     go / done / obs as buttons, plus the other plans it could
+//                     go / done / obs as buttons, a link and an `open` button
+//                     back to the plan's page, plus the other plans it could
 //                     be with a switch. `/plan-pane <slug>` pins one. Not /plan:
 //                     that is a built-in, and the engine refuses the name.
 //   the gate band     when the classic gate (deep-plan's PreToolUse hook)
@@ -241,12 +242,27 @@ async function openPane($: EngineInterface): Promise<void> {
   await $.ui.open({ id: PANE, title: 'plan', focus: true })
 }
 
-// The page `deep-plan ask` opened for this cwd within the last minute, as a URL
-// the intent server serves, or the file when the server is not up.
+async function plansDir($: EngineInterface, h: string): Promise<string> {
+  return (await $.env.get('DEEP_PLAN_PLANS_DIR')) || `${h}/.claude/plans`
+}
+
+// A page as the intent server serves it at `served`, or as the file under the
+// plans directory when the server is not up: the file is still a page.
+async function pageUrl($: EngineInterface, h: string, served: string, file: string): Promise<string> {
+  try {
+    const port = String(await $.fs.read(`${h}/.cache/cmux-crew/board-intent.port`)).trim()
+    if (/^\d+$/.test(port)) return `http://127.0.0.1:${port}/${served}`
+  } catch {
+    // no intent server
+  }
+  return `file://${await plansDir($, h)}/${file}`
+}
+
+// The page `deep-plan ask` opened for this cwd within the last minute.
 async function askPage($: EngineInterface): Promise<string> {
   const h = await home($)
   if (!h) return ''
-  const dir = (await $.env.get('DEEP_PLAN_PLANS_DIR')) || `${h}/.claude/plans`
+  const dir = await plansDir($, h)
   try {
     const asks = (await $.fs.list(`${dir}/asks`)).filter(f => f.name.endsWith('.json'))
     const newest = asks.sort((a, b) => b.mtimeMs - a.mtimeMs)[0]
@@ -254,16 +270,38 @@ async function askPage($: EngineInterface): Promise<string> {
     const ask = JSON.parse(String(await $.fs.read(`${dir}/asks/${newest.name}`)))
     if (ask.cwd && ask.cwd !== (await $.session.cwd())) return ''
     const id = String(ask.id ?? newest.name.slice(0, -5))
-    try {
-      const port = String(await $.fs.read(`${h}/.cache/cmux-crew/board-intent.port`)).trim()
-      if (/^\d+$/.test(port)) return `http://127.0.0.1:${port}/ask/${id}`
-    } catch {
-      // no intent server: the file is still a page
-    }
-    return `file://${dir}/asks/${id}.html`
+    return await pageUrl($, h, `ask/${id}`, `asks/${id}.html`)
   } catch {
     return ''
   }
+}
+
+// The plan's page to jump back into: the review, with the alignment check,
+// while the plan is in review; the working tracker after that. Re-opening the
+// review once the check has passed would put the quiz back in front of the
+// increments' progress.
+async function planPage($: EngineInterface, p: SeamuxPlan): Promise<string> {
+  const h = await home($)
+  if (!h) return ''
+  return p.phase === 'review'
+    ? pageUrl($, h, `plan/${p.slug}.review.html`, `${p.slug}.review.html`)
+    : pageUrl($, h, `plan/${p.slug}`, `${p.slug}.working.html`)
+}
+
+// Opens the page as a tab in this cmux workspace (cmux targets the caller's
+// $CMUX_WORKSPACE_ID); without cmux the URL goes to a toast, and the pane's
+// link stays clickable either way.
+async function openPage($: EngineInterface, url: string): Promise<void> {
+  try {
+    const r = await $.process.run(['cmux', 'open', url], { timeoutMs: 10000 })
+    if (r.exitCode === 0) {
+      await update($, note, () => `opened ${url}`)
+      return
+    }
+  } catch {
+    // no cmux on PATH
+  }
+  $.ui.toast(`Plan page: ${url}`, { timeoutMs: 15000 })
 }
 
 // ---------------------------------------------------------------- register
@@ -338,7 +376,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
+    const { Box, Button, Link, Text } = $.ui.resolve(e)
     const v = await read($, view)
     const last = await read($, note)
     const pin = await read($, pinned)
@@ -355,6 +393,8 @@ export const register: Register = on => {
     const incs = p.increments ?? []
     const open = incs.find(i => i.status === 'working' || i.status === 'authorized')
     const canGo = p.phase === 'implementing' && !open && incs.some(i => i.status === 'pending')
+    const page = await planPage($, p)
+    const pageLabel = p.phase === 'review' ? 'open review' : 'open plan'
     return (
       <Box key="plan" flexDirection="column" width={width}>
         <Text bold wrap="truncate-end">
@@ -381,9 +421,17 @@ export const register: Register = on => {
         ))}
         <Box key="actions" flexDirection="row" gap={1} marginTop={1}>
           {canGo && <Button key="go" label="go next" hotkey="g" variant="primary" onPress={() => act($, ['go', p.slug, 'next'])} />}
+          {page !== '' && <Button key="open" label={pageLabel} hotkey="o" onPress={() => openPage($, page)} />}
           <Button key="refresh" label="refresh" hotkey="r" onPress={() => refresh($)} />
           {pin === p.slug && <Button key="unpin" label="unpin" onPress={() => switchTo($, '')} />}
         </Box>
+        {page !== '' && (
+          <Box key="link">
+            <Text dimColor wrap="truncate-end">
+              <Link href={page} />
+            </Text>
+          </Box>
+        )}
         {(v?.others ?? []).length > 0 && (
           <Box key="others" flexDirection="column" marginTop={1}>
             <Text dimColor>also for this session:</Text>
