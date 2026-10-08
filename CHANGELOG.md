@@ -6,6 +6,24 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **Plan families: parallel workstreams under one parent plan.** A parent
+  spec's `workstreams` block names existing child plans, each in its own
+  worktree, and what each owns as (repo, glob) claims; membership lives only
+  in the parent, so a plan mid-increment joins without a re-render, and
+  `deep-plan family init` drafts a parent from existing plans with an overlap
+  report. The gate's family guard never refuses: an edit into a sibling's
+  claim goes through, the agent gets a factual note, and the overlap is
+  recorded (`family check` catches shell writes from git). A workstream's
+  `after` holds its `go` until the parent lands what it waits on. Each
+  member's session gets family news at its next prompt (sibling progress,
+  base-ref commits touching its claims, contract changes), pulled through a
+  new UserPromptSubmit hook, never typed in. `status --json` rows and the plan
+  pane show the family; the crew board and sidebar group it under the parent,
+  at its most urgent member's tier, in shades of the parent's color, and a
+  member's old color comes back when the family closes. Also: the gate now
+  resolves a new file in a new directory under a symlinked root (it failed
+  open there). ADRs 0010–0012.
+
 - **Every deep-plan increment is gated on its checks, and the engine runs
   them.** A deliverable's checks (test, e2e, observability, manual) gate
   `done`: it is refused until each has passed against the tree being closed,

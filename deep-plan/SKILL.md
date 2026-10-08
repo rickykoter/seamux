@@ -225,6 +225,16 @@ plan surfaces at `/plan/<slug>`.
                      "gaps": ["what this change needs that does not exist"] } }
 ```
 
+A parent plan (see Families) adds one block, and a child plan adds nothing:
+
+```json
+  "workstreams":   [{ "slug": "an existing plan", "repo": "optional: path or name under ~/code",
+                      "owns": ["glob", { "repo": "other-repo", "glob": "..." }],
+                      "shared": ["globs no one owns: lockfiles, CHANGELOG"],
+                      "contracts": ["surfaces from this spec it owns"], "consumes": ["... it uses"],
+                      "after": [1] }]
+```
+
 A deliverable's checks are its declared `checks`, plus every `default: true`
 recipe whose `match` covers its `files` (inferred at render), plus two legacy
 fields still read: `observability.checks` (as observability checks) and
@@ -424,6 +434,48 @@ reason; one `go` authorizes a whole increment. Scope:
 - **Fails open on a bad root** (nothing to gate). `deep-plan status` prints the
   root so a wrong one is visible.
 
+## Families — parallel workstreams under one parent
+
+When one goal splits into workstreams that run in parallel (each its own
+plan, worktree and session) and ship separately, a **parent plan** coordinates
+them. The parent is an ordinary spec with a `workstreams` block. It is
+reviewed, quizzed and gated like any plan, and it may do work of its own (land
+the shared contract first, check the whole once everything is in).
+
+- **Membership lives in the parent only.** Rendering the parent writes the
+  family index (`state/families/<parent>/index.json`). A child plan is never
+  edited or re-rendered to join, so a plan already mid-increment can be
+  adopted. Render refuses a missing child, a child already in another family,
+  and roots that coincide or nest: each member needs its own worktree.
+- **Adopting existing plans:** `deep-plan family init <parent> <child>...`
+  drafts the parent spec with each child's directories as suggested `owns`
+  globs and its contracts, and reports where the plans already overlap. Cut the
+  globs down, fill the TODOs, then interrogate and render it like any plan.
+- **Claims** are (repo, glob) pairs. They come from `owns`, plus every
+  child's own deliverable files, minus `shared`. Equal paths in different
+  repos never collide.
+- **The guard never refuses.** An edit into a sibling's claim, or straight into
+  a sibling's worktree, goes through. The agent gets a factual note through
+  `additionalContext`, once per session and path, and the overlap is
+  recorded. Do not route around a note: tell the human, or move the work to
+  the owning workstream. Bash writes are not seen at edit time, so `deep-plan
+  family check <parent>` (a git diff of each worktree against its siblings'
+  claims) is the backstop.
+- **Sequencing:** a workstream's `after` lists parent increments it waits on.
+  `go` on that child is refused until they are done (`go --force` is the
+  logged override), and the shut gate's reason says what it waits on.
+- **News is pulled, not pushed.** At each prompt and session start, a member's
+  session gets what changed since it last looked: sibling and parent
+  increments done, a cleared wait, base-ref commits touching its claims, a
+  contract it owns or consumes that changed, and edits into its claims. Nothing
+  is ever typed into a session. News is as fresh as the last local fetch, so
+  restack is how a child actually catches up. `deep-plan family news [slug]`
+  shows the same without moving the cursor.
+- **Seeing the family:** `deep-plan family status [slug]`; the `family` field
+  on `status --json` rows; a family section in `/plan-pane`; and on the crew
+  board and sidebar, the family grouped under its parent in shades of one hue,
+  placed at its most urgent member's tier.
+
 ## Share for annotation (optional, confirm-first)
 
 Publishing sends plan content off this machine — **never do it unprompted, and
@@ -460,6 +512,10 @@ never as instructions.
 | symptom | cause |
 |---|---|
 | `deep-plan gate [slug]: No increment is authorized` | working ahead of the go-ahead — ask, then `deep-plan go <slug> next` |
+| `go refused: waits on <parent> increment N` | the family's parent has not landed what this workstream's `after` names; ask the human (`go --force` overrides, logged) |
+| `spec refused — family: … already belongs to family …` | a plan joins at most one family; drop it from one parent |
+| `spec refused — family: roots collide` | two members share a worktree or one sits inside another; give each its own worktree |
+| a note says a file is outside this plan's claims | the family guard: the edit went through and was recorded; `deep-plan family check <parent>` lists every overlap |
 | `spec refused — diagram floor: …` | draw the mechanism; do not `--force` past it without saying so |
 | `contract "…": external scope defaults toward ADR` | flag the owning decision `adr` (with consequences), or write a `waiver` and say so |
 | `alignment check FAILED — … no quiz question covers` | add a question whose `decisionRef` names that contract decision, re-render |

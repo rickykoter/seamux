@@ -10,7 +10,9 @@ For whoever changes this next. Built 2026-09-12 on this machine, from
 | `deep_plan.mjs` | 1488 | CLI: render/rehydrate/grade/status/transitions/diff; validate() enforces the contracts block, grade() enforces contract quiz coverage + cuts the approved snapshot; DP_EDITOR_JS carries dpMd + the ADR editor |
 | `lib/state.mjs` | 160 | state IO + THE decision function (`decideToolCall`) — one definition of "may I edit", shared by CLI and gate |
 | `hooks/gate.sh` | 13 | PreToolUse fast path: glob test, exec node only when state files exist |
-| `hooks/decide.mjs` | 43 | slow half: parse payload, decide, exit 2; flips authorized→working on first edit |
+| `hooks/decide.mjs` | 43 | slow half: parse payload, decide, exit 2; flips authorized→working on first edit; the family guard's note on an allowed edit |
+| `lib/family.mjs` | — | families: repo identity from `.git`, the index, claims, the guard (`trespass`), sequencing (`waitingOn`), news (`gatherNews`), the status field (`familyRow`) |
+| `hooks/news.sh`, `hooks/news.mjs` | — | UserPromptSubmit + SessionStart: family news as `additionalContext`; a bash glob keeps sessions outside a family off node |
 | `probe.mjs` | 563 | throwaway everything, `-v` walks it; prints its own count |
 | `examples/example.spec.json` | — | reference spec; the probe's fixture, so a broken example breaks the build |
 | `.claude-plugin/plugin.json` | — | the plugin manifest; its `version` is what `engine.json` reports |
@@ -70,6 +72,19 @@ place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_D
   `checks`, and `obs` — the checks folded to one word, for an older pane) and
   `checksOutstanding` (plus `obsOutstanding`, its per-increment fold) for the
   seamux-mods pane; the board ignores both.
+- Family members' rows carry `family` (`role`, `parent`, `members[]` with
+  phase and progress, `owns`, `after`, `waitingOn`, `trespasses {total,
+  pairs}`, `news`, `done`); rows outside a family have no such key. The
+  seamux-mods pane draws it, and crew-board copies `family.parent` and
+  `family.role` onto its rows to group them (`crew/board/families.py`).
+- The family index tree, `state/families/<parent>/`: `index.json` (written
+  by render), `trespass.jsonl` (the guard), `seen/<slug>.json` (news cursors).
+  crew-sync reads `index.json` raw to write `family:`/`famrole:` tokens and
+  colors. `allStates()` reads only top-level `*.json`, so it never sees it.
+- On an allowed edit the gate prints ONE JSON object: `systemMessage` (broken
+  roots) and/or `hookSpecificOutput.additionalContext` (the family note).
+  `permissionDecision` is never set: `allow` would skip the session's own
+  permission prompts.
 
 ## Measured on this machine (2026-09-12)
 
@@ -368,6 +383,30 @@ hand is one command.
 directory. Either alone is sufficient, so **neither line can be killed by a
 mutation on its own** — removing both together lets `../outside` escape, and the
 probe catches that. If you simplify one away, check the pair, not the line.
+
+## Families seam (added 2026-10-08)
+
+Membership is one-directional on purpose: the parent's `workstreams` names
+the children, and nothing in a child's spec or state says it belongs. That
+is what makes adoption free (a plan mid-increment joins without a re-render),
+and it means every reader goes through `familyOf()` / the index rather than
+the child's own state. A child re-render calls `refreshFamilyFor()` to move
+its derived claims; a parent re-render without `workstreams` renames the index
+to `index.dissolved.json` (history, governs nothing).
+
+Repo identity is the git common dir, read through the `.git` file and the
+worktree's `commondir` with no git process, because the guard runs on every
+Edit. Measured by the probe: the guard adds 0.3–4 ms per edit over the same
+edit with no family (budget 15).
+
+`canon()` resolves a path that does not exist yet through its nearest existing
+ancestor. Before families it resolved only the parent directory, so a new file
+in a new directory under a symlinked root (`/tmp`, `/var` on macOS) read as
+outside every plan and the gate let it through; the probe now holds that.
+
+News never fetches and runs one `git log` per prompt for a member; the status
+row's `news` count leaves git out entirely, because the pane polls status
+every few seconds.
 
 ## Verifying a change
 
