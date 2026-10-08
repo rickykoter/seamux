@@ -44,6 +44,29 @@ export type SeamuxPlan = {
   owner?: SeamuxOwner | null
   /** owner.at, else the state file's mtime (ms); absent from an older engine */
   touchedAt?: number
+  /** who the plan is to its deep-plan family; absent when it is in none, or from an older engine */
+  family?: SeamuxFamily
+}
+
+/** A plan's family, as `deep-plan status --json` reports it on each member's row. */
+export type SeamuxFamily = {
+  /** parent | child */
+  role: string
+  /** the parent plan's slug */
+  parent: string
+  /** every member, the parent first, with its phase and progress */
+  members: { slug: string; role: string; phase: string; done: number; total: number }[]
+  /** the globs this plan's workstream owns */
+  owns: string[]
+  /** parent increments this plan's go waits on, and those not done yet */
+  after: number[]
+  waitingOn: { n: number; title: string; status: string }[]
+  /** edits into another member's claims this plan took part in (every one, for the parent) */
+  trespasses: { total: number; pairs: { from: string; owner: string; count: number }[] }
+  /** news since this plan's session last looked, base-ref commits left out */
+  news: number
+  /** every member is done */
+  done: boolean
 }
 
 /** The session and cmux workspace that last wrote a plan, and when (ms). */

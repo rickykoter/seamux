@@ -30,7 +30,7 @@ import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
   FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
   familyOf, refreshFamilyFor, overlaps, checkFamily, draftParent, waitingOn, waitText,
-  memberAt, readSeen, gatherNews, newsText,
+  memberAt, readSeen, gatherNews, newsText, familyRow, familiesBySlug,
 } from "./lib/family.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, statePath, sessionId,
@@ -2340,6 +2340,7 @@ function shownStatus(v, status = v.status) {
 }
 
 function statusRows() {
+  const fams = familiesBySlug();
   return allStates().filter(st => st.phase !== "closed").map(st => ({
     slug: st.slug, root: st.root || "", phase: st.phase,
     // The root with symlinks resolved, as the gate compares it: a session in
@@ -2353,6 +2354,9 @@ function statusRows() {
     // owners were stamped has no owner, only its state file's own time.
     owner: st.owner || null,
     touchedAt: (st.owner && st.owner.at) || stateMtime(st.slug),
+    // Who this plan is to its family, when it is in one; absent otherwise, so
+    // a reader that predates families sees the row it always saw.
+    ...(fams.has(st.slug) ? { family: familyRow(fams.get(st.slug), st.slug) } : {}),
     // Checks still outstanding. Their increments cannot go `done` without
     // --force, so a plan that looks one step from finished may not be — the
     // board reads this from --json. A pass is taken as recorded here; whether
@@ -2400,6 +2404,13 @@ function status(json) {
       say("  checks outstanding: " +
         r.obsOutstanding.map(o => `${o.n} (${o.status})`).join(", ") +
         " — `deep-plan check list <slug> <n>` for what to run");
+    if (r.family) {
+      const f = r.family;
+      say(`  family ${f.parent} (${f.role})` +
+        (f.waitingOn.length ? ` · go waits on ${f.waitingOn.map(w => `${f.parent} ${w.n}`).join(", ")}` : "") +
+        (f.trespasses.total ? ` · ${f.trespasses.total} overlap(s) recorded` : "") +
+        (f.news ? ` · ${f.news} news` : "") + (f.done ? " · family done" : ""));
+    }
     say(`  ${r.progress.done}/${r.progress.total} increments` +
       (r.progress.next ? ` · next: ${r.progress.next.n}. ${r.progress.next.title}` : "") +
       (r.progress.blocked.length ? ` · blocked: ${r.progress.blocked.map(b => b.title).join(", ")}` : ""));
@@ -2926,7 +2937,24 @@ function familyCmd(args, flags) {
     say(lines.length ? newsText(hit.idx, lines) : `deep-plan family ${hit.idx.parent}: nothing new for ${hit.me.slug}`);
     return;
   }
-  die("family init <parent> <child>... [--out F] | family check <parent> [--json] | family news [slug]");
+  if (sub === "status") {
+    // One family at a glance: every member's progress, waits and overlaps.
+    const slug = more[0] || (memberAt(process.cwd()) || {}).idx?.parent || die("family status <slug> (no family member's root holds the cwd)");
+    const idx = familyOf(slug) || die(`${slug} is in no family`);
+    const f = familyRow(idx, idx.parent);
+    if (flags.json) { process.stdout.write(JSON.stringify(f) + "\n"); return; }
+    say(`family ${idx.parent}${f.done ? " — done" : ""}`);
+    for (const m of f.members) {
+      const mem = idx.members.find(x => x.slug === m.slug);
+      const waits = waitingOn(m.slug);
+      say(`  ${m.role === "parent" ? "◆" : "◇"} ${m.slug.padEnd(28)} ${m.phase.padEnd(12)} ${m.done}/${m.total}` +
+        ((mem.owns || []).length ? `  owns ${mem.owns.map(c => c.glob).join(", ")}` : "") +
+        (waits.length ? `  · waits on ${waits.map(w => w.n).join(", ")}` : ""));
+    }
+    for (const p of f.trespasses.pairs) say(`  ⚠ ${p.from} edited ${p.owner}'s claims ${p.count}×`);
+    return;
+  }
+  die("family init <parent> <child>... [--out F] | family check <parent> [--json] | family news [slug] | family status [slug] [--json]");
 }
 
 // ---------------------------------------------------------------- main
@@ -3152,6 +3180,8 @@ switch (cmd) {
                                               contracts, and the overlap report
   family check <parent> [--json]              what each member's worktree touched that
                                               a sibling claims (exit 1 when any)
+  family status [slug] [--json]               every member's phase and progress, what
+                                              waits, and recorded overlaps
   family news [slug]                          what the news hook would tell that member
                                               (default: the one at the cwd) now; does
                                               not move its cursor

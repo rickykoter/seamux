@@ -555,7 +555,7 @@ const MAX_NEWS = 12;
 // last fetch, and restack is how a member actually catches up.
 //
 // Returns {lines, seen}: the cursor to store if the lines are delivered.
-export function gatherNews(idx, me, seen) {
+export function gatherNews(idx, me, seen, { git = true } = {}) {
   const now = Date.now();
   const nextSeen = { at: now, contracts: idx.contracts || {} };
   const others = idx.members.filter(m => m.slug !== me.slug);
@@ -596,7 +596,7 @@ export function gatherNews(idx, me, seen) {
     else if (was && !is) lines.push(`The parent no longer declares contract "${surface}".`);
   }
   // Commits on the base ref since the last look that touch this member's claims.
-  if (me.base && me.root && fs.existsSync(me.root)) {
+  if (git && me.base && me.root && fs.existsSync(me.root)) {
     // Commit times are whole seconds; a second's slack keeps a commit made in
     // the same second as the last look from falling between two cursors.
     const r = spawnSync("git", ["-C", me.root, "log", `--since=${new Date(since - 1000).toISOString()}`,
@@ -623,4 +623,47 @@ export function gatherNews(idx, me, seen) {
 export function newsText(idx, lines) {
   return `deep-plan family ${idx.parent} — what changed since this session last looked:\n` +
     lines.map(l => "- " + l).join("\n");
+}
+
+// ---------------------------------------------------------------- status
+
+// The `family` field of a status row: who the plan is to its family and how
+// the family stands. Called for every row on every `status --json`, which the
+// pane polls every few seconds, so it reads state files only: the news count
+// leaves out base-ref commits (a git call per row per poll), and the hook and
+// `family news` still report them.
+export function familyRow(idx, slug) {
+  const me = idx.members.find(m => m.slug === slug);
+  if (!me) return null;
+  const members = idx.members.map(m => {
+    const st = readState(m.slug);
+    const incs = (st && st.increments) || [];
+    return { slug: m.slug, role: m.role, phase: st ? st.phase : "missing",
+      done: incs.filter(i => i.status === "done").length, total: incs.length };
+  });
+  const pairs = {};
+  const tres = readTrespasses(idx.parent).filter(t => me.role === "parent" || t.from === slug || t.owner === slug);
+  for (const t of tres) { const k = t.from + "\u0000" + t.owner; pairs[k] = (pairs[k] || 0) + 1; }
+  const seen = readSeen(idx.parent, slug);
+  return {
+    role: me.role,
+    parent: idx.parent,
+    members,
+    owns: (me.owns || []).map(c => c.glob),
+    after: me.after || [],
+    waitingOn: waitingOn(slug).map(({ n, title, status }) => ({ n, title, status })),
+    trespasses: {
+      total: tres.length,
+      pairs: Object.entries(pairs).map(([k, count]) => { const [from, owner] = k.split("\u0000"); return { from, owner, count }; }),
+    },
+    news: seen ? gatherNews(idx, me, seen, { git: false }).lines.length : 0,
+    done: familyDone(idx),
+  };
+}
+
+// Every live family keyed by member slug, read once per status call.
+export function familiesBySlug() {
+  const out = new Map();
+  for (const idx of allIndexes()) for (const m of idx.members) out.set(m.slug, idx);
+  return out;
 }

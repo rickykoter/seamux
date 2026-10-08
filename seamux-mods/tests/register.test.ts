@@ -48,6 +48,8 @@ type WorldOpts = {
   legacy?: boolean
   /** increment 2's checks, replacing the default unit + observability pair */
   checks2?: Check[]
+  /** the demo row's `family` field */
+  family?: object
 }
 
 function world(on: On, opts: WorldOpts = {}) {
@@ -115,7 +117,7 @@ function world(on: On, opts: WorldOpts = {}) {
     if (script !== `${ENGINE}/deep_plan.mjs`) return { ...okOut(''), exitCode: 127, stderr: 'wrong engine' }
     const open = () => incs.find(i => i.status === 'authorized' || i.status === 'working')
     if (verb === 'status')
-      return okOut(JSON.stringify([...(opts.demoOff ? [] : [row(incs, !!open())]), ...(opts.extra ?? [])]))
+      return okOut(JSON.stringify([...(opts.demoOff ? [] : [{ ...row(incs, !!open()), ...(opts.family ? { family: opts.family } : {}) }]), ...(opts.extra ?? [])]))
     if (verb === 'go') {
       const n = incs.find(i => i.status === 'pending')
       if (n) n.status = 'authorized'
@@ -284,6 +286,46 @@ describe('seamux-mods', () => {
     await ui.press({ key: 'obs-2' })
     expect(w.calls).toContainEqual(['obs', 'check', 'demo', '2'])
     expect((await ui.find({ key: 'note' }))?.text).toMatch(/dashboards/)
+    await ui.unmount()
+  })
+
+  test('a family child shows its family, what its go waits on, and overlaps; go is withheld while held', async ($, on) => {
+    const family = {
+      role: 'child', parent: 'auth-revamp',
+      members: [
+        { slug: 'auth-revamp', role: 'parent', phase: 'implementing', done: 0, total: 2 },
+        { slug: 'auth-api', role: 'child', phase: 'implementing', done: 2, total: 5 },
+        { slug: 'demo', role: 'child', phase: 'implementing', done: 1, total: 3 },
+      ],
+      owns: ['web/login/**'], after: [1],
+      waitingOn: [{ n: 1, title: 'Shared session type', status: 'working' }],
+      trespasses: { total: 2, pairs: [{ from: 'demo', owner: 'auth-api', count: 2 }] },
+      news: 3, done: false,
+    }
+    world(on, { family })
+    await $.command.run({ command: 'plan-pane', args: '' } as never)
+    let ui = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
+    expect((await ui.find({ key: 'family' }))?.text).toMatch(/^family auth-revamp · child · 3 new/)
+    expect((await ui.find({ key: 'fam-auth-revamp' }))?.text).toMatch(/◆ auth-revamp · implementing · 0\/2/)
+    expect((await ui.find({ key: 'fam-auth-api' }))?.text).toMatch(/◇ auth-api · implementing · 2\/5/)
+    expect(await ui.find({ key: 'fam-demo' })).toBeUndefined()
+    expect((await ui.find({ key: 'fam-wait' }))?.text).toMatch(/go waits on auth-revamp 1 \(Shared session type\): working/)
+    expect((await ui.find({ key: 'fam-overlaps' }))?.text).toMatch(/demo → auth-api's 2×/)
+    expect(await ui.find({ key: 'go' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('a family child with nothing to wait on keeps its go button', async ($, on) => {
+    world(on, { family: {
+      role: 'child', parent: 'auth-revamp', members: [], owns: [], after: [1], waitingOn: [],
+      trespasses: { total: 0, pairs: [] }, news: 0, done: false,
+    } })
+    await $.command.run({ command: 'plan-pane', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
+    expect((await ui.find({ key: 'family' }))?.text).toMatch(/^family auth-revamp · child$/)
+    expect(await ui.find({ key: 'fam-wait' })).toBeUndefined()
+    expect(await ui.find({ key: 'fam-overlaps' })).toBeUndefined()
+    expect(await ui.find({ key: 'go' })).toBeDefined()
     await ui.unmount()
   })
 

@@ -2643,6 +2643,29 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     ok("the cursor is stored per member", st.at > 0 && st.contracts["POST /session"]);
   }
 
+  // Status rows carry the family; rows outside one do not change.
+  {
+    const rows = JSON.parse(cli("status", "--json").stdout);
+    const ui = rows.find(x => x.slug === "example-auth-ui"), par = rows.find(x => x.slug === fam.slug);
+    const f = ui && ui.family;
+    ok("a child's row names its family and role", f && f.role === "child" && f.parent === fam.slug);
+    ok("…lists every member with progress",
+      f && f.members.length === 4 && f.members.some(m => m.slug === "example-auth-api" && m.done === 1 && m.total === 2));
+    ok("…its claims and its after", f && f.owns.join() === "web/login/**" && f.after.join() === "1" && f.waitingOn.length === 0);
+    ok("…and the overlaps it took part in",
+      f && f.trespasses.total >= 1 && f.trespasses.pairs.some(p => p.from === "example-auth-ui" && p.owner === "example-auth-api"));
+    ok("the parent's row counts every overlap in the family",
+      par && par.family.role === "parent" && par.family.trespasses.total >= f.trespasses.total && par.family.done === false);
+    ok("a plan in no family has no family field", rows.filter(x => !x.slug.startsWith("example-")).every(x => !("family" in x)));
+    ok("board-facing keys keep their shape", ui && typeof ui.gate.allow === "boolean" && typeof ui.progress.total === "number");
+    const t = cli("status").stdout;
+    ok("text status prints the family line", /family example-auth-revamp \(child\)/.test(t));
+    const fs2 = cli("family", "status", "example-auth-ui");
+    ok("family status shows every member",
+      fs2.status === 0 && /◆ example-auth-revamp/.test(fs2.stdout) && /◇ example-auth-ui/.test(fs2.stdout) &&
+      /example-auth-ui edited example-auth-api's claims/.test(fs2.stdout));
+  }
+
   // family check: what a worktree actually touched, Bash writes included.
   r = cli("family", "check", fam.slug);
   ok("family check is clean before anyone strays", r.status === 0 && /no member has touched/.test(r.stdout));
