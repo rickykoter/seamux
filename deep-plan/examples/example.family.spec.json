@@ -1,0 +1,142 @@
+{
+  "slug": "example-auth-revamp",
+  "title": "Move sign-in to server sessions across the API and the web app",
+  "context": "Sign-in is being rebuilt in two workstreams that ship separately: the API gains a session endpoint, and the web app's login form moves onto it. This parent lands the shared session type first, then checks the two together once both are in. Each workstream is its own plan in its own worktree; this spec only says who owns what and what waits on what.",
+  "workstreams": [
+    {
+      "slug": "example-auth-api",
+      "owns": [
+        "api/auth/**"
+      ],
+      "shared": [
+        "package-lock.json"
+      ],
+      "contracts": [
+        "POST /session"
+      ],
+      "after": [
+        1
+      ]
+    },
+    {
+      "slug": "example-auth-ui",
+      "owns": [
+        "web/login/**"
+      ],
+      "consumes": [
+        "POST /session"
+      ],
+      "after": [
+        1
+      ]
+    }
+  ],
+  "decisions": [
+    {
+      "decision": "The session type lands in the parent before either workstream starts",
+      "why": "both sides compile against it, so landing it once stops each from inventing its own"
+    }
+  ],
+  "contracts": [
+    {
+      "surface": "POST /session",
+      "kind": "api",
+      "scope": "internal",
+      "change": "new",
+      "reach": "the web login form is the only caller",
+      "decisionRef": "The session type lands in the parent before either workstream starts"
+    }
+  ],
+  "verifiedFacts": [
+    {
+      "claim": "the login form posts to the legacy cookie endpoint today",
+      "evidence": "web/login/form.tsx:12"
+    }
+  ],
+  "risks": [
+    {
+      "risk": "the session lifetime has not been agreed; starting at 12 hours",
+      "disposition": "accept"
+    }
+  ],
+  "diagrams": [
+    {
+      "question": "What waits on what?",
+      "mermaid": "flowchart LR\n  P1[parent 1: session type] --> A[example-auth-api]\n  P1 --> U[example-auth-ui]\n  A --> P2[parent 2: sign in end to end]\n  U --> P2"
+    }
+  ],
+  "deliverables": [
+    {
+      "title": "Shared session type",
+      "body": "The Session type both workstreams compile against.",
+      "files": [
+        "shared/session.ts"
+      ],
+      "checks": [
+        {
+          "kind": "test",
+          "name": "types compile",
+          "run": "npx tsc --noEmit"
+        }
+      ]
+    },
+    {
+      "title": "Sign in end to end",
+      "body": "Once both workstreams are done, sign in through the web app against the new endpoint.",
+      "files": [
+        "e2e/sign-in.spec.ts"
+      ],
+      "checks": [
+        {
+          "kind": "e2e",
+          "name": "sign in end to end",
+          "run": "npx playwright test e2e/sign-in.spec.ts"
+        }
+      ]
+    }
+  ],
+  "verification": [
+    "npx playwright test e2e/sign-in.spec.ts"
+  ],
+  "quiz": [
+    {
+      "id": "q1",
+      "prompt": "The UI workstream is ready before the session type has landed. What does `go` on it do?",
+      "options": [
+        "refuses, naming parent increment 1",
+        "authorizes it, adding a warning line",
+        "marks parent increment 1 as done",
+        "re-renders the parent plan first"
+      ],
+      "answer": 0,
+      "why": "`after: [1]` holds go until the parent's first increment is done",
+      "decisionRef": "The session type lands in the parent before either workstream starts"
+    },
+    {
+      "id": "q2",
+      "prompt": "Who defines the Session type the endpoint returns?",
+      "options": [
+        "the parent's first increment",
+        "the API workstream on its own",
+        "the UI workstream on its own",
+        "each side, for its own use"
+      ],
+      "answer": 0,
+      "why": "landing it once in the parent stops each side inventing one",
+      "decisionRef": "The session type lands in the parent before either workstream starts"
+    },
+    {
+      "id": "q3",
+      "prompt": "The UI agent edits api/auth/handler.ts. What happens to the edit?",
+      "options": [
+        "it lands, with a note naming the API",
+        "it is refused until the API is done",
+        "it waits for a human to approve that",
+        "it is reverted at the next render now"
+      ],
+      "answer": 0,
+      "why": "the family guard notes a trespass and never refuses",
+      "decisionRef": "The session type lands in the parent before either workstream starts"
+    }
+  ]
+}

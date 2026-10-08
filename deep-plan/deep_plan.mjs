@@ -28,6 +28,10 @@ import { runExec, acquireSteps, alive, sleep, tail } from "./lib/runner.mjs";
 import { detect, draftFile } from "./lib/detect.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
+  FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
+  familyOf, refreshFamilyFor, overlaps, checkFamily, draftParent,
+} from "./lib/family.mjs";
+import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, statePath, sessionId,
   readState, writeState, allStates, log1, progress, gateView,
   planFor, CHECK_KINDS, specChecks, reconcileChecks, checksOf, checksBlock,
@@ -104,6 +108,8 @@ function validate(spec, force) {
   if (!spec.slug || !/^[a-z0-9][a-z0-9-]*$/.test(spec.slug))
     errs.push("slug must be kebab-case: got " + JSON.stringify(spec.slug));
   if (!spec.title) errs.push("title is required");
+  // A parent's workstreams, shape only; membership is judged at render.
+  errs.push(...validateWorkstreams(spec));
   if (!spec.context) errs.push("context is required (why now, what exists, what is out of frame)");
   if (!Array.isArray(spec.deliverables) || spec.deliverables.length === 0)
     errs.push("at least one deliverable (increment) is required");
@@ -391,6 +397,11 @@ function mdPlan(spec, adrs = []) {
   if ((spec.decisions || []).length) {
     L.push("## Decisions", "");
     for (const d of spec.decisions) L.push(`- **${d.decision}** — ${d.why}`);
+    L.push("");
+  }
+  if ((spec.workstreams || []).length) {
+    L.push("## Workstreams", "");
+    for (const w of spec.workstreams) L.push(`- **${w.slug}** — ${workstreamLine(w)}`);
     L.push("");
   }
   if ((spec.contracts || []).length) {
@@ -747,6 +758,28 @@ function risksHtml(spec, withNotes = false) {
   }).join("");
 }
 
+// One workstream in words, for the md plan and the HTML surfaces alike. Drawn
+// from the spec only, so rehydrate stays byte-identical.
+function workstreamLine(w) {
+  const claim = c => typeof c === "string" ? c : `${c.repo}:${c.glob}`;
+  const parts = [];
+  if ((w.owns || []).length) parts.push("owns " + w.owns.map(claim).join(", "));
+  if ((w.shared || []).length) parts.push("shared " + w.shared.map(claim).join(", "));
+  if ((w.contracts || []).length) parts.push("contracts " + w.contracts.join("; "));
+  if ((w.consumes || []).length) parts.push("consumes " + w.consumes.join("; "));
+  if ((w.after || []).length) parts.push("after increment " + w.after.join(", "));
+  if (w.repo) parts.push("repo " + w.repo);
+  return parts.join(" · ") || "no claims declared";
+}
+
+function workstreamsHtml(spec) {
+  const items = (spec.workstreams || []).map(w =>
+    `<li><b>${esc(w.slug)}</b> <span class="dim">— ${esc(workstreamLine(w))}</span></li>`).join("");
+  return items ? `<h2>Workstreams</h2>
+<p class="dim">child plans this family coordinates. Their own deliverable files are claims too; an edit into a sibling's claim is allowed and noted, never refused.</p>
+<ul>${items}</ul>` : "";
+}
+
 // Contracts card list, shared by the review/working body and the shareable
 // artifact page — declared shape changes stay visible wherever the plan goes.
 function contractsHtml(spec) {
@@ -942,6 +975,7 @@ ${obGaps ? `<p class="dim">gaps this plan fills:</p><ul>${obGaps}</ul>` : ""}` :
 <h2>Context</h2><p>${esc(spec.context).replace(/\n\s*\n/g, "</p><p>")}</p>
 ${nonGoals ? `<h2>Non-goals</h2><ul>${nonGoals}</ul>` : ""}
 ${decs ? `<h2>Decisions</h2><ul>${decs}</ul>` : ""}
+${workstreamsHtml(spec)}
 ${contractsSection}
 ${facts ? `<h2>Verified facts</h2><ul>${facts}</ul>` : ""}
 ${risks ? `<h2>Risks</h2><ul>${risks}</ul>` : ""}
@@ -1416,6 +1450,35 @@ ${MERMAID_BOOT}
 </script></body></html>`;
 }
 
+// After a render: write a parent's index and report its overlaps, or refresh
+// the family a re-rendered child belongs to (its derived claims may have
+// moved). A parent that dropped its workstreams dissolves the family; the old
+// index is kept beside, as history, and governs nothing.
+function renderFamily(spec, family) {
+  if (family) {
+    writeIndex(family.index);
+    const kids = family.index.members.filter(m => m.role === "child").map(m => m.slug);
+    say(`family ${spec.slug}: ${kids.length} workstream(s) — ${kids.join(", ")}`);
+    for (const o of overlaps(family.index)) console.error("  ⚠ overlap: " + o);
+    return;
+  }
+  const own = readIndex(spec.slug);
+  if (own && !spec.workstreams) {
+    fs.renameSync(indexPath(spec.slug), indexPath(spec.slug).replace(/index\.json$/, "index.dissolved.json"));
+    say(`family ${spec.slug}: dissolved (the spec no longer lists workstreams)`);
+    return;
+  }
+  const r = refreshFamilyFor(spec.slug);
+  if (!r) return;
+  if (r.errors.length) {
+    console.error(`  ⚠ family ${r.parent}: not refreshed — re-render the parent to see why:`);
+    for (const e of r.errors) console.error("    " + e);
+    return;
+  }
+  say(`family ${r.parent}: claims refreshed`);
+  for (const o of overlaps(readIndex(r.parent))) if (o.includes(spec.slug)) console.error("  ⚠ overlap: " + o);
+}
+
 async function render(specPath, opts) {
   const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
   const violations = validate(spec, opts.force);
@@ -1464,6 +1527,22 @@ async function render(specPath, opts) {
     violations.push(...checkErrs);
   }
   RESOLVED.set(spec, checkLists);
+  // A parent's family resolves here, before anything is written: a missing
+  // child, a child already in another family, or roots that nest would leave
+  // the gate and the board unable to say which plan a path belongs to.
+  let family = null;
+  if (spec.workstreams) {
+    family = buildIndex(spec, planRoot);
+    if (family.errors.length && !opts.force) {
+      console.error("deep-plan: spec refused — family:");
+      for (const e of family.errors) console.error("  ✗ " + e);
+      process.exit(1);
+    } else if (family.errors.length) {
+      console.error(`deep-plan: --force past ${family.errors.length} family problem(s) — logged; the index is not written`);
+      violations.push(...family.errors);
+      family = null;
+    }
+  }
   // The citations themselves, warn-only — the other direction of the floor
   // above. Code checks that each path:line resolves; with a TypeSafe key one
   // batched request judges whether the cited lines back each claim
@@ -1565,6 +1644,7 @@ async function render(specPath, opts) {
   writeState(st);
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".working.html"), workingHtml(spec, st, b64));
   say(`rendered ${spec.slug}: ${PLANS_DIR}/${spec.slug}.md, .review.html, .working.html`);
+  renderFamily(spec, family);
   say(`  also: ${extras.join(", ")}`);
   say(`spec + key archived under ${KEYS_DIR} (separate tree, on purpose)`);
   if (st.phase === "review") say("phase: review — the alignment check gates everything.");
@@ -1700,6 +1780,7 @@ ul.alist li b{color:var(--accent)}
 is read-only here and changes only by the author re-rendering.</p>
 <h2>Context</h2><p>${esc(spec.context).replace(/\n\s*\n/g, "</p><p>")}</p>
 ${decs ? `<h2>Decisions</h2><ul>${decs}</ul>` : ""}
+${workstreamsHtml(spec)}
 ${contractsHtml(spec)}
 ${facts ? `<h2>Verified facts</h2><ul>${facts}</ul>` : ""}
 ${risks ? `<h2>Risks</h2><ul>${risks}</ul>` : ""}
@@ -2775,6 +2856,48 @@ function verifyInit(root, opts) {
       `\`deep-plan verify init --write\` writes the drafts whose file does not exist; then walk the TODOs: ${SETUP_PROMPT}`);
 }
 
+// ---------------------------------------------------------------- family
+
+function familyCmd(args, flags) {
+  const [sub, ...more] = args;
+  if (sub === "init") {
+    const [parent, ...children] = more;
+    if (!parent || !children.length) die("family init <parent-slug> <child-slug>...");
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(parent)) die("parent slug must be kebab-case: " + parent);
+    const { draft, problems, overlaps: over } = draftParent(parent, children);
+    for (const p of problems) console.error("  ✗ " + p);
+    if (problems.length) process.exit(1);
+    const text = JSON.stringify(draft, null, 2) + "\n";
+    if (flags.out) { fs.writeFileSync(flags.out, text); say(`drafted ${flags.out}`); }
+    else process.stdout.write(text);
+    // The report goes to stderr so stdout stays a spec a redirect can keep.
+    console.error(over.length
+      ? `overlap as the plans stand (${over.length}):\n` + over.map(o => "  ⚠ " + o).join("\n")
+      : "no overlap between the plans' deliverable files");
+    console.error("next: cut the suggested globs down, fill the TODOs, then `deep-plan render` it");
+    return;
+  }
+  if (sub === "check") {
+    const slug = more[0] || die("family check <parent-slug>");
+    const idx = readIndex(slug) || (familyOf(slug) && readIndex(familyOf(slug).parent)) ||
+      die(`no family: ${slug} is not a rendered parent (${FAMILIES_DIR})`);
+    const found = checkFamily(idx);
+    const hits = found.filter(f => f.path);
+    if (flags.json) process.stdout.write(JSON.stringify({ parent: idx.parent, overlaps: hits,
+      problems: found.filter(f => f.problem) }) + "\n");
+    else {
+      for (const f of found.filter(f => f.problem)) say(`  ✗ ${f.slug}: ${f.problem}`);
+      say(hits.length
+        ? `family ${idx.parent}: ${hits.length} path(s) touched inside a sibling's claim\n` +
+          hits.map(h => `  ⚠ ${h.slug} touched ${h.path} — ${h.how === "owns" ? `owned by ${h.owner} (${h.glob})`
+            : `${h.owner} plans to edit it`}`).join("\n")
+        : `family ${idx.parent}: no member has touched a sibling's claim`);
+    }
+    process.exit(hits.length ? 1 : 0);
+  }
+  die("family init <parent> <child>... [--out F] | family check <parent> [--json]");
+}
+
 // ---------------------------------------------------------------- main
 
 // Every verb the switch below handles. Kept beside it so the usage listing can
@@ -2785,6 +2908,7 @@ const BUILTIN_VERBS = new Set([
   "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
   "grade", "status", "go", "start", "done", "reset", "block", "check", "obs",
   "open-gate", "shut-gate", "close", "diff", "ask", "help", "setup", "engine", "verify",
+  "family",
 ]);
 
 const [, , cmd, ...rest] = process.argv;
@@ -2797,6 +2921,7 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--json") flags.json = true;
   else if (rest[i] === "--inline") flags.inline = true;
   else if (rest[i] === "--write") flags.write = true;
+  else if (rest[i] === "--out") flags.out = rest[++i];
   else if (rest[i] === "--template") (flags.templates = flags.templates || []).push(rest[++i]);
   else if (rest[i] === "--from") flags.from = rest[++i];
   else if (rest[i] === "--log") flags.log = rest[++i];
@@ -2904,6 +3029,7 @@ switch (cmd) {
     }
     break;
   }
+  case "family": familyCmd(args, flags); break;
   case "verify": {
     const root = flags.root || gitRoot(process.cwd()) || process.cwd();
     if (args[0] === "resolve") verifyResolve(args.slice(1), root, flags.json);
@@ -2990,6 +3116,11 @@ switch (cmd) {
                                               (served at /ask/<id>; a pick on the page
                                               types the number into this terminal)
   ask show <id>                               the recorded answer, if any
+  family init <parent> <child>... [--out F]   draft a parent spec from existing plans:
+                                              workstreams, suggested globs, their
+                                              contracts, and the overlap report
+  family check <parent> [--json]              what each member's worktree touched that
+                                              a sibling claims (exit 1 when any)
   verify resolve <file>... [--root DIR]       which .seamux/verify.json each file
                  [--json]                     lands on and the recipes that apply
   verify init [--root DIR] [--write]          draft .seamux/verify.json per project from
