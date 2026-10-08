@@ -239,6 +239,7 @@ def workspaces(fast=False):
             slug = remote_slug(rows[-1]["cwd"]) if pr_num not in ("", "none") else ""
             rows[-1]["pr_url"] = ("https://github.com/%s/pull/%s"
                                   % (slug, pr_num.lstrip("#")) if slug else "")
+        rows[-1]["commits"] = recent_commits(rows[-1]["cwd"])
         # Only a successful read is worth remembering. Caching a failure would
         # pin an empty branch and PR onto the row until FAST_MAX_AGE expired.
         if ok2:
@@ -271,6 +272,35 @@ SIDEBAR_CACHE = os.path.join(STATE_DIR, "board-sidebar.json")
 FAST_MAX_AGE = 300
 
 _SLUG_CACHE = {}
+
+
+def recent_commits(cwd):
+    """[{at, s}] for this worktree's own commits inside the news window, newest
+    first, at most 20 -- one git call, on the full pass only; the fast pass
+    reuses the cached row and news.py recounts against the sliding window.
+
+    `--not origin/HEAD` keeps a fresh worktree from claiming the main branch's
+    commits as its own. A clone where origin/HEAD does not resolve makes git
+    fail, and then the row says nothing about commits rather than guessing.
+    """
+    if not cwd or not os.path.isdir(cwd):
+        return []
+    try:
+        import news as _news
+        h = _news.hours()
+    except Exception:
+        h = 5.0
+    ok, out = run(["git", "-C", cwd, "log", "HEAD", "--not", "origin/HEAD",
+                   "--since=%d.minutes" % int(h * 60), "--no-merges", "-n", "20",
+                   "--format=%ct%x09%s"], timeout=5)
+    if not ok:
+        return []
+    got = []
+    for line in out.splitlines():
+        at, _, subj = line.partition("\t")
+        if at.isdigit():
+            got.append({"at": int(at), "s": subj[:120]})
+    return got
 
 
 def load_sidebar_cache():
@@ -507,6 +537,24 @@ def group_families(rows, quiet):
         return rows, quiet
 
 
+def failed_check(plan):
+    """The first outstanding check whose verdict is fail or lost, or None.
+
+    A plan in phase done has nothing outstanding to fail, and is skipped
+    explicitly anyway: a finished plan must not climb back to wilt.
+    """
+    if not plan or plan.get("phase") == "done":
+        return None
+    for c in plan.get("checksOutstanding") or []:
+        if c.get("status") in ("fail", "lost"):
+            return c
+    return None
+
+
+def failed_subject(c):
+    return "increment %s \u00b7 %s" % (c.get("n", "?"), c.get("id", "?"))
+
+
 def rank(wss, plan_by_root, screens=False):
     """Five tiers. The ordering IS the product: the top of this list is what the board
     is for, and everything below the divider is deliberately not shown.
@@ -582,6 +630,12 @@ def rank(wss, plan_by_root, screens=False):
         chips = []
         frac = None
         meta_bits = []
+        # What the row's sentence is about, for news.py: the increment a gate
+        # waits on, the one in progress, the one blocked, the check that failed.
+        # A field of its own because `said` is replaced by live screen text
+        # under --screens, and the news must not quote a terminal.
+        subject = ""
+        failed = failed_check(plan)
 
         if plan:
             total = plan["progress"]["total"]
@@ -601,6 +655,7 @@ def rank(wss, plan_by_root, screens=False):
         elif plan and not plan["gate"]["allow"]:
             nxt = plan["progress"].get("next") or {}
             kind, badge = "attend", "gate shut"
+            subject = nxt.get("title", "")
             said = "{{%s}} needs your go-ahead. %s" % (
                 nxt.get("title", "The next increment"), plan["gate"]["why"])
             chips = ["go %s" % nxt.get("n", "?"), "diff", "jump"]
@@ -614,6 +669,13 @@ def rank(wss, plan_by_root, screens=False):
             said = ("Checks are red on `%s`." % w["branch"]
                     if w["branch"] not in ("", "none") else "Checks are red.")
             chips = ["checks", "diff", "jump"]
+        elif failed:
+            kind, badge = "wilt", "check failed"
+            subject = failed_subject(failed)
+            said = ("{{Increment %s's check `%s` %s.}} It cannot close until the check passes."
+                    % (failed["n"], failed["id"], "lost its runner" if failed["status"] == "lost"
+                       else "failed"))
+            chips = ["plan", "jump"]
         elif has(d, "pr:conflict"):
             kind, badge = "wilt", "conflicts"
             said = "This branch conflicts with its base."
@@ -625,6 +687,7 @@ def rank(wss, plan_by_root, screens=False):
         elif plan and plan["progress"].get("blocked"):
             b = plan["progress"]["blocked"][0]
             kind, badge = "wilt", "blocked"
+            subject = b.get("title", "")
             said = "{{%s}} is blocked: %s" % (b.get("title", "An increment"), b.get("note", "no reason recorded"))
             chips = ["jump"]
         # Judged, not observed: TypeSafe read the last turn's closing message
@@ -641,6 +704,7 @@ def rank(wss, plan_by_root, screens=False):
         elif w["running"] or has(d, "phase:working"):
             kind, badge = "running", "working"
             open_ = (plan or {}).get("progress", {}).get("open") or []
+            subject = open_[0]["title"] if open_ else ""
             said = ("{{%s}} in progress." % open_[0]["title"]) if open_ else "Mid-turn."
             chips = ["diff", "jump"]
 
@@ -695,6 +759,7 @@ def rank(wss, plan_by_root, screens=False):
                 "ref": w.get("ref", ""), "cwd": w["cwd"],
                 "pr_url": w.get("pr_url", ""),
                 "slug": (plan or {}).get("slug", ""),
+                "subject": "", "commits": w.get("commits") or [],
                 **fam_fields(plan),
             })
             continue
@@ -737,6 +802,7 @@ def rank(wss, plan_by_root, screens=False):
                      "ref": w.get("ref", ""), "cwd": w["cwd"],
                      "pr_url": w.get("pr_url", ""),
                      "slug": (plan or {}).get("slug", ""),
+                     "subject": subject, "commits": w.get("commits") or [],
                      **fam_fields(plan)})
 
     order = {"attend": 0, "wilt": 1, "running": 2, "done": 3, "quiet": 4}
@@ -773,12 +839,20 @@ def rank_plans_only(plan_by_root):
             nxt = plan["progress"].get("next") or {}
             rows.append({"id": plan["slug"], "name": name, "kind": "attend", "badge": "gate shut",
                          "said": "{{%s}} needs your go-ahead." % nxt.get("title", "The next increment"),
+                         "subject": nxt.get("title", ""),
                          "chips": ["go %s" % nxt.get("n", "?"), "plan"], "frac": frac, "meta": meta})
+        elif failed_check(plan):
+            f = failed_check(plan)
+            rows.append({"id": plan["slug"], "name": name, "kind": "wilt", "badge": "check failed",
+                         "said": "{{Increment %s's check `%s` failed.}}" % (f["n"], f["id"]),
+                         "subject": failed_subject(f),
+                         "chips": ["plan"], "frac": frac, "meta": meta})
         elif plan["progress"].get("blocked"):
             b = plan["progress"]["blocked"][0]
             rows.append({"id": plan["slug"], "name": name, "kind": "wilt", "badge": "blocked",
                          "said": "{{%s}} is blocked: %s" % (b.get("title", "An increment"),
                                                             b.get("note", "no reason recorded")),
+                         "subject": b.get("title", ""),
                          "chips": ["plan"], "frac": frac, "meta": meta})
         elif plan["phase"] == "done":
             rows.append({"id": plan["slug"], "name": name, "kind": "done", "badge": "plan done",
@@ -789,6 +863,7 @@ def rank_plans_only(plan_by_root):
             rows.append({"id": plan["slug"], "name": name, "kind": "running", "badge": "working",
                          "said": ("{{%s}} in progress." % open_[0]["title"]) if open_
                                  else "Implementing.",
+                         "subject": open_[0]["title"] if open_ else "",
                          "chips": ["plan"], "frac": frac, "meta": meta})
     # These rows are keyed by slug, not by workspace uuid, and there is no cmux to
     # ask for a ref -- that is the whole premise of this path. `plan` still works
@@ -804,7 +879,8 @@ def rank_plans_only(plan_by_root):
         r.setdefault("pr_url", "")
         for k, v in (("branch", ""), ("dirty", False), ("pr", ""), ("pr_state", ""),
                      ("color", ""), ("signals", []), ("feedby", 0), ("feedgate", ""),
-                     ("selected", False), ("cost", 0), ("issue", ""), ("issue_url", "")):
+                     ("selected", False), ("cost", 0), ("issue", ""), ("issue_url", ""),
+                     ("subject", ""), ("commits", [])):
             r.setdefault(k, v)
     order = {"attend": 0, "wilt": 1, "running": 2, "done": 3}
     rows.sort(key=lambda r: order.get(r["kind"], 9))
@@ -819,6 +895,13 @@ def build(screens=False, fast=False):
         rows, quiet = rank_plans_only(plan_by_root), []
     else:
         rows, quiet = rank(wss, plan_by_root, screens=screens)
+    # The news is the same rows as sentences, in the same order (news.py). A
+    # composer that fails leaves an empty footer, never a board that fails.
+    try:
+        import news as _news
+        news = _news.compose(rows + quiet)
+    except Exception:
+        news = {"hours": 0, "lede": "", "items": []}
     # Quiet rows are appended, not merged-and-resorted: rank() already ordered the
     # tiers, and quiet is defined as everything after them.
     return {
@@ -833,6 +916,7 @@ def build(screens=False, fast=False):
         "stamp": time.strftime("%H:%M:%S"),
         "stale": stale,
         "src": "%d plan%s" % (len(plan_by_root), "" if len(plan_by_root) == 1 else "s"),
+        "news": news,
     }
 
 
@@ -1350,7 +1434,9 @@ def cmd_watch():
                 time.sleep(debounce)
                 dirty.clear()
             d = build(screens="--screens" in sys.argv)
-            payload = json.dumps(d["rows"], sort_keys=True)
+            # The news rides in the comparison: a commit landing changes the
+            # footer without changing any row, and must still be pushed.
+            payload = json.dumps([d["rows"], d.get("news")], sort_keys=True)
             if payload == last_payload and woke:
                 continue  # nothing a viewer could see changed
             last_payload = payload
@@ -1475,6 +1561,11 @@ def cmd_state():
         print("  %-8s %-26s %s" % (r["kind"], r["name"][:26], r["said"][:76]))
     if d["quiet"]:
         print("  %-8s %s" % ("quiet", d["quiet"]))
+    items = (d.get("news") or {}).get("items") or []
+    if items:
+        print("news · last %gh" % d["news"]["hours"])
+        for it in items:
+            print("  %-8s %s" % (it["tier"], re.sub(r"\{\{|\}\}|`", "", it["text"])))
     return 0
 
 

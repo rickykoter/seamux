@@ -370,6 +370,10 @@ if (live && Array.isArray(live.rows)) {
     const key = (d) => JSON.stringify((d.rows || []).map((r) =>
       [r.id, r.kind, r.branch, r.pr, r.pr_url, r.meta, r.chips]));
     checks.push(["a fast build agrees with a full build", key(fast) === key(live)]);
+    // Commits reach the news from the full pass's cache, so the two must tell
+    // the same story too.
+    checks.push(["a fast build carries the same news as a full build",
+      JSON.stringify(fast.news) === JSON.stringify(live.news)]);
   } catch {
     console.log("  --   fast build unavailable — skipped");
   }
@@ -680,6 +684,37 @@ print(json.dumps([[r["id"], r["kind"], r.get("famtier", "")] for r in m.rank_pla
     /1 commit in the last 0.5h/.test(compose([R("b", "running", "working",
       { commits: [{ at: NOW - 600, s: "a" }, { at: NOW - 3600, s: "b" }] })], 0.5).items[0].text)]);
   fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+// ---- failed validation ranks wilt, on both rank paths ----------------------
+{
+  const out = JSON.parse(execFileSync("python3", ["-c", `
+import importlib.machinery, importlib.util, json, sys
+l = importlib.machinery.SourceFileLoader("cb", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("cb", l)); l.exec_module(m)
+P = lambda s, ph, chk: {"slug": s, "root": "/w/" + s, "phase": ph, "gate": {"allow": True, "why": ""},
+  "progress": {"total": 3, "done": 1, "blocked": [], "open": [{"n": 2, "title": "t"}], "next": None},
+  "checksOutstanding": chk}
+pb = {"/w/f": P("f", "implementing", [{"n": 2, "id": "test-a", "kind": "test", "status": "fail"}]),
+      "/w/l": P("l", "implementing", [{"n": 2, "id": "e2e-b", "kind": "e2e", "status": "lost"}]),
+      "/w/p": P("p", "implementing", [{"n": 2, "id": "test-c", "kind": "test", "status": "pending"}]),
+      "/w/d": P("d", "done", [{"n": 3, "id": "test-d", "kind": "test", "status": "fail"}])}
+W = lambda s, running: {"id": s, "title": s, "cwd": "/w/" + s, "desc": "", "running": running,
+  "branch": "none", "pr": "none", "dirty": False, "commits": [{"at": 1, "s": "x"}]}
+rows, quiet = m.rank([W("f", True), W("l", False), W("p", True), W("d", False)], pb)
+po = m.rank_plans_only(pb)
+print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")] for r in rows + quiet},
+                  "plans": {r["id"]: [r["kind"], r["badge"]] for r in po},
+                  "commits": [r["commits"] for r in rows + quiet if r["id"] == "f"][0]}))
+`, join(HERE, "crew-board")], { encoding: "utf8" }));
+  checks.push(["checks: a failed check ranks wilt even mid-turn, naming it",
+    JSON.stringify(out.rank.f) === JSON.stringify(["wilt", "check failed", "increment 2 · test-a"])]);
+  checks.push(["checks: a lost runner ranks wilt too", out.rank.l[0] === "wilt" && out.rank.l[1] === "check failed"]);
+  checks.push(["checks: a pending check leaves the row working", out.rank.p[1] === "working"]);
+  checks.push(["checks: a done plan never climbs back to wilt", out.rank.d[0] === "done"]);
+  checks.push(["checks: the plans-only path agrees",
+    out.plans.f[1] === "check failed" && out.plans.l[1] === "check failed" && out.plans.p[1] === "working" && out.plans.d[0] === "done"]);
+  checks.push(["rank: a row carries its workspace's commits for the news", out.commits.length === 1 && out.commits[0].s === "x"]);
 }
 
 let bad = 0;
