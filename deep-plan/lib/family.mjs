@@ -24,23 +24,9 @@ const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 // ---------------------------------------------------------------- repos
 
-// canon() for a path that may not exist yet, however deep: resolve the
-// nearest existing ancestor and append the rest. state.mjs's canon gives up
-// one level up, so a new file in a new directory under a symlinked root
-// (/tmp on macOS) would not compare equal to that root.
-export function canonDeep(p) {
-  let head = path.resolve(p);
-  const tail = [];
-  for (;;) {
-    try { return path.join(fs.realpathSync(head), ...tail.reverse()); }
-    catch {
-      const up = path.dirname(head);
-      if (up === head) return path.resolve(p);
-      tail.push(path.basename(head));
-      head = up;
-    }
-  }
-}
+// Kept as its own name for readers of this module: canon() resolves a path
+// that does not exist yet through its nearest existing ancestor.
+export const canonDeep = canon;
 
 // The repository a path sits in: {id, top, name}. `id` is the git common dir
 // with symlinks resolved, equal for every worktree of one repo; `top` is the
@@ -491,4 +477,38 @@ export function trespass({ cwd, target, session, tool }) {
       `This session works on ${me.slug}. The edit was allowed and the overlap is recorded on the family; ` +
       `\`deep-plan family check ${idx.parent}\` lists every overlap.`,
   };
+}
+
+// ---------------------------------------------------------------- sequencing
+
+// The parent increments a child's workstream names in `after` that are not
+// done yet: [{parent, n, title, status}]. Empty for a plan in no family, a
+// parent, or a child with nothing outstanding. `go` refuses while this is
+// non-empty; the gate's reason names it so a shut gate explains itself.
+export function waitingOn(slug) {
+  const idx = familyOf(slug);
+  if (!idx) return [];
+  const me = idx.members.find(m => m.slug === slug);
+  if (!me || me.role !== "child" || !(me.after || []).length) return [];
+  const pst = readState(idx.parent);
+  if (!pst) return [];
+  return me.after.map(n => {
+    const inc = (pst.increments || []).find(i => i.n === n);
+    return { parent: idx.parent, n, title: inc ? inc.title : "", status: inc ? inc.status : "missing" };
+  }).filter(w => w.status !== "done");
+}
+
+export function waitText(waits) {
+  return waits.map(w => `${w.parent} increment ${w.n}${w.title ? ` (${w.title})` : ""} is ${w.status}`).join("; ");
+}
+
+// A family is done when every member is: the parent's own increments and each
+// child plan. The parent's phase is left as it is; this is the family's.
+export function familyDone(idx) {
+  return idx.members.every(m => {
+    const st = readState(m.slug);
+    if (!st) return false;
+    const incs = st.increments || [];
+    return st.phase === "done" || st.phase === "closed" || (incs.length > 0 && incs.every(i => i.status === "done"));
+  });
 }

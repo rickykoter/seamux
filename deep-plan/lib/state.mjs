@@ -345,11 +345,22 @@ export function gateView(st) {
 
 // realpath both sides: on macOS /tmp and /var are symlinks into /private, and
 // a containment test on the spelled paths silently disarms the gate.
+//
+// A path that does not exist yet resolves through its nearest existing
+// ancestor, however far up. Resolving only the parent left a new file in a new
+// directory spelled /var/…, outside a root recorded as /private/var/…, and the
+// gate let that write through as "no plan tracks this path".
 export function canon(p) {
-  try { return fs.realpathSync(p); }
-  catch {
-    try { return path.join(fs.realpathSync(path.dirname(p)), path.basename(p)); }
-    catch { return path.resolve(p); }
+  let head = path.resolve(p);
+  const tail = [];
+  for (;;) {
+    try { return path.join(fs.realpathSync(head), ...tail.reverse()); }
+    catch {
+      const up = path.dirname(head);
+      if (up === head) return path.resolve(p);
+      tail.push(path.basename(head));
+      head = up;
+    }
   }
 }
 

@@ -2564,6 +2564,40 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     ok("the family guard costs under 15 ms per edit", withFamily - famless < 15);
   }
 
+  // Sequencing: a child whose workstream names parent increments in `after`
+  // cannot go until they are done; --force is the logged way past.
+  {
+    const gradeRight = slug => {
+      const k = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8"));
+      return cli("grade", slug, ...Object.entries(k.answers).map(([q, a]) => `${q}=${a.letter}`));
+    };
+    const apiState = () => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "example-auth-api.json"), "utf8"));
+    ok("the child passes its own alignment check", gradeRight("example-auth-api").status === 0);
+    let g = cli("go", "example-auth-api", "next");
+    const lines = g.stderr.trim().split("\n");
+    ok("go on a child waiting on its parent is refused, the reason on the last line",
+      g.status !== 0 && /^go refused: waits on example-auth-revamp increment 1$/.test(lines[lines.length - 1]) &&
+      /Shared session type\) is pending/.test(g.stderr));
+    ok("…and nothing was authorized", apiState().increments.every(i => i.status === "pending"));
+    cli("shut-gate", "example-auth-api");
+    const row = JSON.parse(cli("status", "--json").stdout).find(x => x.slug === "example-auth-api");
+    ok("a waiting child's shut gate says what it waits on",
+      row && !row.gate.allow && /go waits on example-auth-revamp increment 1 \(Shared session type\) is pending/.test(row.gate.why));
+    const e = gateAs("s9", path.join(API, "api", "auth", "x.ts"), API);
+    ok("the edit refusal says it too", e.status === 2 && /go waits on example-auth-revamp increment 1/.test(e.stderr));
+    g = cli("go", "example-auth-api", "1", "--force");
+    ok("go --force passes the wait and logs it",
+      g.status === 0 && apiState().increments[0].status === "authorized" &&
+      apiState().log.some(l => /--force past the family wait: example-auth-revamp increment 1/.test(l.what)));
+    // The parent lands increment 1; the wait clears for the next go.
+    gradeRight(fam.slug);
+    cli("go", fam.slug, "1"); cli("done", fam.slug, "1", "--force");
+    g = cli("go", "example-auth-api", "2");
+    ok("once the parent increment is done, go goes", g.status === 0 && apiState().increments[1].status === "authorized");
+    ok("a workstream with no after never waits", cli("go", "example-docs", "next").stderr.indexOf("waits on") === -1);
+    cli("open-gate", "example-auth-api");
+  }
+
   // family check: what a worktree actually touched, Bash writes included.
   r = cli("family", "check", fam.slug);
   ok("family check is clean before anyone strays", r.status === 0 && /no member has touched/.test(r.stdout));
@@ -2597,6 +2631,21 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     !fs.existsSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "families", fam.slug, "index.json")) &&
     fs.existsSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "families", fam.slug, "index.dissolved.json")));
   for (const n of [fam.slug, "example-auth-api", "example-auth-ui", "example-docs"]) cli("close", n);
+}
+
+// -------------------------------------------------- a new directory under a symlinked root
+// macOS spells the temp tree /var/… and resolves it to /private/var/…. A file
+// in a directory that does not exist yet has to resolve through its nearest
+// existing ancestor, or the gate reads it as outside every root.
+{
+  const SR = fs.mkdtempSync(path.join(os.tmpdir(), "dp-symroot-"));
+  execSync("git init -q", { cwd: SR });
+  const sym = { ...JSON.parse(JSON.stringify(spec)), slug: "symlinked-root" };
+  cli("render", tmpSpec(sym), "--root", SR);
+  ok("a new file in a new directory under a gated root is refused",
+    edit(path.join(SR, "fresh", "deeper", "new.ts")).status === 2);
+  cli("close", "symlinked-root");
+  fs.rmSync(SR, { recursive: true, force: true });
 }
 
 // -------------------------------------------------- hot-path cost

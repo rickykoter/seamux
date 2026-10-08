@@ -6,7 +6,7 @@
 // motion without anyone running `deep-plan start` by hand.
 import fs from "node:fs";
 import { decideToolCall, readState, writeState, log1, brokenRoots } from "../lib/state.mjs";
-import { trespass } from "../lib/family.mjs";
+import { trespass, waitingOn, waitText } from "../lib/family.mjs";
 
 let raw = "";
 try { raw = fs.readFileSync(0, "utf8"); } catch { process.exit(0); }
@@ -62,6 +62,11 @@ if (d.allow) {
 }
 
 const slug = d.plan ? d.plan.slug : "?";
+// A family child whose next go is held by its parent: say so, or the agent
+// asks for a go-ahead that will only be refused.
+let waits = [];
+try { waits = d.plan ? waitingOn(slug) : []; } catch { /* the reason is enough */ }
+if (waits.length) d.why += ` go waits on ${waitText(waits)}.`;
 // The opening `deep-plan gate [<slug>]: ` is a contract: the seamux-mods band
 // finds a denial by it in the tool result, and probe.mjs asserts it. Change the
 // words after it freely; change the opening and update seamux-mods with it.

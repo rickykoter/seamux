@@ -29,7 +29,7 @@ import { detect, draftFile } from "./lib/detect.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
   FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
-  familyOf, refreshFamilyFor, overlaps, checkFamily, draftParent,
+  familyOf, refreshFamilyFor, overlaps, checkFamily, draftParent, waitingOn, waitText,
 } from "./lib/family.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, statePath, sessionId,
@@ -2066,8 +2066,17 @@ function transition(action, slug, n, why, force = false) {
     const inc = findInc(st, n);
     if (inc.status !== "pending" && inc.status !== "blocked")
       die(`increment ${n} is ${inc.status}, not pending/blocked`);
+    // A family child waits on the parent increments its workstream names in
+    // `after` (the shared contract lands first). The reason goes on the last
+    // line: the board's chip and the pane show only that.
+    const waits = waitingOn(slug);
+    if (waits.length && !force)
+      die(`${slug} waits on its family's parent: ${waitText(waits)}.\n` +
+        `  override, logged:  deep-plan go ${slug} ${n} --force\n` +
+        `go refused: waits on ${waits.map(w => `${w.parent} increment ${w.n}`).join(", ")}`);
     inc.status = "authorized"; inc.authorizedAt = Date.now(); inc.note = "";
-    log1(st, `go: increment ${n} (${inc.title}) authorized`);
+    log1(st, `go: increment ${n} (${inc.title}) authorized` +
+      (waits.length ? ` (--force past the family wait: ${waitText(waits)})` : ""));
   } else if (action === "start") {
     const inc = findInc(st, n);
     if (inc.status !== "authorized") die(`increment ${n} is ${inc.status}, not authorized`);
@@ -2336,7 +2345,7 @@ function statusRows() {
     // /private/tmp/x is inside a plan rooted at /tmp/x on macOS.
     realRoot: st.root ? canon(st.root) : "",
     rootBroken: !!(st.root && !fs.existsSync(st.root)),
-    gate: gateView(st), progress: progress(st), session: st.session || "",
+    gate: familyGate(st), progress: progress(st), session: st.session || "",
     approved: (st.approved && st.approved.path) || "",
     // Who touched the plan last from inside a session, and when. The pane ranks
     // plans by these when several could be the session's. A plan from before
@@ -2367,6 +2376,15 @@ function statusRows() {
       }),
     })),
   }));
+}
+
+// gateView, plus why a shut gate will stay shut: a family child waiting on
+// its parent. Only the reason grows; `allow` is gateView's.
+function familyGate(st) {
+  const g = gateView(st);
+  if (g.allow) return g;
+  const waits = waitingOn(st.slug);
+  return waits.length ? { ...g, why: `${g.why} go waits on ${waitText(waits)}.` } : g;
 }
 
 function status(json) {
@@ -2983,7 +3001,7 @@ switch (cmd) {
     let slug = args[0], n = args[1];
     if (flags.at) { slug = resolveSlugAt(flags.at) || die("no plan tracks " + flags.at); n = args[0] || "next"; }
     if (!slug) die("go <slug> <n|next>  |  go --at DIR next");
-    transition("go", slug, n || "next"); break;
+    transition("go", slug, n || "next", undefined, flags.force); break;
   }
   case "start": case "done": case "reset":
     transition(cmd, args[0], args[1] ?? die(cmd + " <slug> <n>"), undefined, flags.force); break;
