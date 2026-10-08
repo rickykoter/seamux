@@ -2598,6 +2598,51 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     cli("open-gate", "example-auth-api");
   }
 
+  // News: pulled at the next prompt, factual, cursor per member.
+  {
+    const newsAs = (cwd, event = "UserPromptSubmit") => {
+      const r = spawnSync("bash", [path.join(HERE, "hooks", "news.sh")], {
+        encoding: "utf8", env: ENV, input: JSON.stringify({ hook_event_name: event, cwd, session_id: "n1", prompt: "hi" }),
+      });
+      let h = null;
+      try { h = JSON.parse(r.stdout).hookSpecificOutput; } catch { /* none */ }
+      return { status: r.status, h, text: h ? h.additionalContext : "" };
+    };
+    let n = newsAs(UI, "SessionStart");
+    ok("a member's first look is an orientation",
+      n.status === 0 && n.h && n.h.hookEventName === "SessionStart" &&
+      /example-auth-ui\) is a workstream of deep-plan family example-auth-revamp/.test(n.text) && /claims web\/login\/\*\*/.test(n.text));
+    n = newsAs(UI);
+    ok("nothing new says nothing", n.status === 0 && n.h === null);
+    newsAs(API); newsAs(FR);                       // every member has looked once
+    cli("done", "example-auth-api", "2", "--force");
+    n = newsAs(UI);
+    ok("a sibling's finished increment is news", /example-auth-api finished increment 2 \(/.test(n.text));
+    n = newsAs(FR);
+    ok("…for the parent too", /example-auth-api finished increment 2/.test(n.text));
+    gateAs("s7", path.join(UI, "api", "auth", "z.ts"));
+    n = newsAs(API);
+    ok("an edit into a member's claim is news to its owner",
+      /example-auth-ui edited api\/auth\/z\.ts, which example-auth-api claims \(api\/auth\/\*\*\)/.test(n.text));
+    // A commit on the base branch that touches the member's claim.
+    fs.mkdirSync(path.join(FR, "web", "login"), { recursive: true });
+    fs.writeFileSync(path.join(FR, "web", "login", "banner.tsx"), "export {}\n");
+    execSync(`git add -A && ${G} commit -q -m "login banner"`, { cwd: FR });
+    const peek = cli("family", "news", "example-auth-ui");
+    ok("family news shows it without moving the cursor", /gained \w+ login banner touching web\/login\/banner\.tsx/.test(peek.stdout));
+    n = newsAs(UI);
+    ok("a base commit touching a member's claim is news", /gained \w+ login banner touching web\/login\/banner\.tsx/.test(n.text));
+    ok("…and only that member hears of it", !/banner/.test(newsAs(API).text));
+    // The parent changes a contract the ui workstream consumes.
+    const amended = { ...withDocs, contracts: withDocs.contracts.map(c => ({ ...c, reach: c.reach + "; also the mobile app" })) };
+    cli("render", tmpSpec(amended), "--root", FR);
+    n = newsAs(UI);
+    ok("a consumed contract that changed shape is news", /contract "POST \/session" changed/.test(n.text));
+    ok("a session outside every family hears nothing", newsAs(REPO).h === null);
+    const st = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "families", fam.slug, "seen", "example-auth-ui.json"), "utf8"));
+    ok("the cursor is stored per member", st.at > 0 && st.contracts["POST /session"]);
+  }
+
   // family check: what a worktree actually touched, Bash writes included.
   r = cli("family", "check", fam.slug);
   ok("family check is clean before anyone strays", r.status === 0 && /no member has touched/.test(r.stdout));

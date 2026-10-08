@@ -30,6 +30,7 @@ import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
   FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
   familyOf, refreshFamilyFor, overlaps, checkFamily, draftParent, waitingOn, waitText,
+  memberAt, readSeen, gatherNews, newsText,
 } from "./lib/family.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, statePath, sessionId,
@@ -2913,7 +2914,19 @@ function familyCmd(args, flags) {
     }
     process.exit(hits.length ? 1 : 0);
   }
-  die("family init <parent> <child>... [--out F] | family check <parent> [--json]");
+  if (sub === "news") {
+    // What the news hook would tell this member now, without moving its
+    // cursor: reading the news by hand must not swallow the session's copy.
+    let hit = null;
+    if (more[0]) {
+      const idx = familyOf(more[0]) || die(`${more[0]} is in no family`);
+      hit = { idx, me: idx.members.find(m => m.slug === more[0]) };
+    } else hit = memberAt(process.cwd()) || die("no family member's root holds " + process.cwd());
+    const { lines } = gatherNews(hit.idx, hit.me, readSeen(hit.idx.parent, hit.me.slug));
+    say(lines.length ? newsText(hit.idx, lines) : `deep-plan family ${hit.idx.parent}: nothing new for ${hit.me.slug}`);
+    return;
+  }
+  die("family init <parent> <child>... [--out F] | family check <parent> [--json] | family news [slug]");
 }
 
 // ---------------------------------------------------------------- main
@@ -3139,6 +3152,9 @@ switch (cmd) {
                                               contracts, and the overlap report
   family check <parent> [--json]              what each member's worktree touched that
                                               a sibling claims (exit 1 when any)
+  family news [slug]                          what the news hook would tell that member
+                                              (default: the one at the cwd) now; does
+                                              not move its cursor
   verify resolve <file>... [--root DIR]       which .seamux/verify.json each file
                  [--json]                     lands on and the recipes that apply
   verify init [--root DIR] [--write]          draft .seamux/verify.json per project from

@@ -216,6 +216,7 @@ export function buildIndex(spec, parentRoot) {
     slug: spec.slug, role: "parent", root: parentRoot, repo: parentRepo ? parentRepo.id : "",
     repoName: parentRepo ? parentRepo.name : "", owns: [], shared: [], contracts: [], consumes: [], after: [],
     derived: derivedOf(spec, parentRoot),
+    base: parentRepo ? baseRef(parentRoot) || "" : "",
   });
   for (const w of ws) {
     const st = readState(w.slug);
@@ -231,6 +232,9 @@ export function buildIndex(spec, parentRoot) {
       shared: normClaims(w.shared, home, errors, where + " shared"),
       contracts: w.contracts || [], consumes: w.consumes || [], after: w.after || [],
       derived: derivedOf(archivedSpec(w.slug), st.root),
+      // The ref news measures this member's base against, resolved once here
+      // so the per-prompt hook needs a single git call.
+      base: baseRef(st.root) || "",
     });
   }
   // One family per plan: a second parent claiming a child would make every
@@ -511,4 +515,112 @@ export function familyDone(idx) {
     const incs = st.increments || [];
     return st.phase === "done" || st.phase === "closed" || (incs.length > 0 && incs.every(i => i.status === "done"));
   });
+}
+
+// ---------------------------------------------------------------- news
+
+export function seenPath(parent, slug) { return path.join(FAMILIES_DIR, parent, "seen", slug + ".json"); }
+
+export function readSeen(parent, slug) {
+  try { return JSON.parse(fs.readFileSync(seenPath(parent, slug), "utf8")); } catch { return null; }
+}
+
+export function writeSeen(parent, slug, seen) {
+  const p = seenPath(parent, slug);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  const tmp = p + ".tmp." + process.pid;
+  fs.writeFileSync(tmp, JSON.stringify(seen) + "\n");
+  fs.renameSync(tmp, p);
+}
+
+// The member a working directory belongs to, with its family.
+export function memberAt(cwd) {
+  const here = canon(cwd);
+  for (const idx of allIndexes()) {
+    const me = idx.members.find(m => m.root && insideRoot(here, m.root));
+    if (me) return { idx, me };
+  }
+  return null;
+}
+
+const claimsMatch = (me, repo, rel) =>
+  (me.owns || []).some(c => c.repo === repo && matchesGlob(rel, c.glob)) ||
+  (me.derived || []).some(d => d.repo === repo && d.path === rel);
+
+const MAX_NEWS = 12;
+
+// What changed around a member since its cursor, as factual lines. A first
+// look (no cursor) is an orientation instead: who the family is and what
+// this member owns. Nothing here fetches: the base ref is as fresh as the
+// last fetch, and restack is how a member actually catches up.
+//
+// Returns {lines, seen}: the cursor to store if the lines are delivered.
+export function gatherNews(idx, me, seen) {
+  const now = Date.now();
+  const nextSeen = { at: now, contracts: idx.contracts || {} };
+  const others = idx.members.filter(m => m.slug !== me.slug);
+  if (!seen) {
+    const sib = others.map(m => `${m.slug}${m.role === "parent" ? " (parent)" : ""}` +
+      ((m.owns || []).length ? ` owns ${m.owns.map(c => c.glob).join(", ")}` : "")).join("; ");
+    const mine = (me.owns || []).map(c => c.glob).join(", ") || "only its own deliverable files";
+    const lines = [`This plan (${me.slug}) is ${me.role === "parent" ? "the parent" : "a workstream"} of deep-plan family ${idx.parent}. ` +
+      `Members: ${sib}. ${me.slug} claims ${mine}.`];
+    const waits = waitingOn(me.slug);
+    if (waits.length) lines.push(`Its next go waits on ${waitText(waits)}.`);
+    lines.push(`\`deep-plan family news ${me.slug}\` repeats what changed in the family; \`deep-plan family check ${idx.parent}\` lists overlaps.`);
+    return { lines, seen: nextSeen };
+  }
+  const since = seen.at || 0;
+  const lines = [];
+  // Increments finished anywhere else in the family.
+  for (const m of others) {
+    const st = readState(m.slug);
+    for (const i of (st && st.increments) || [])
+      if (i.status === "done" && (i.doneAt || 0) > since)
+        lines.push(`${m.slug}${m.role === "parent" ? " (parent)" : ""} finished increment ${i.n} (${i.title}).`);
+  }
+  // A wait that cleared: the parent landed what this member's go was held on.
+  if (me.role === "child" && (me.after || []).length) {
+    const pst = readState(idx.parent);
+    for (const n of me.after) {
+      const i = ((pst && pst.increments) || []).find(x => x.n === n);
+      if (i && i.status === "done" && (i.doneAt || 0) > since)
+        lines.push(`Parent increment ${n} is done, so go on ${me.slug} is no longer held by it.`);
+    }
+  }
+  // Contracts this member owns or consumes whose parent entry changed shape.
+  const mineC = new Set([...(me.contracts || []), ...(me.consumes || [])]);
+  for (const surface of mineC) {
+    const was = (seen.contracts || {})[surface], is = (idx.contracts || {})[surface];
+    if (was && is && was !== is) lines.push(`The parent's contract "${surface}" changed since this session last looked.`);
+    else if (was && !is) lines.push(`The parent no longer declares contract "${surface}".`);
+  }
+  // Commits on the base ref since the last look that touch this member's claims.
+  if (me.base && me.root && fs.existsSync(me.root)) {
+    // Commit times are whole seconds; a second's slack keeps a commit made in
+    // the same second as the last look from falling between two cursors.
+    const r = spawnSync("git", ["-C", me.root, "log", `--since=${new Date(since - 1000).toISOString()}`,
+      "--format=%x00%h %s", "--name-only", "-n", "50", me.base], { encoding: "utf8" });
+    const repo = repoOf(me.root);
+    if (r.status === 0 && repo) {
+      for (const chunk of r.stdout.split("\0").filter(Boolean)) {
+        const [head, ...files] = chunk.split("\n").filter(Boolean);
+        const hit = files.filter(f => claimsMatch(me, repo.id, f));
+        if (hit.length) lines.push(`${me.base} gained ${head} touching ${hit.slice(0, 3).join(", ")}${hit.length > 3 ? " …" : ""}.`);
+      }
+    }
+  }
+  // Other members' edits into this member's claims.
+  const tres = readTrespasses(idx.parent).filter(t => t.owner === me.slug && t.at > since);
+  for (const t of tres) lines.push(`${t.from} edited ${t.path}, which ${me.slug} claims (${t.glob || "its worktree"}).`);
+  if (lines.length > MAX_NEWS) {
+    const more = lines.length - MAX_NEWS + 1;
+    lines.splice(MAX_NEWS - 1, lines.length, `…and ${more} more: \`deep-plan family news ${me.slug}\`.`);
+  }
+  return { lines, seen: nextSeen };
+}
+
+export function newsText(idx, lines) {
+  return `deep-plan family ${idx.parent} — what changed since this session last looked:\n` +
+    lines.map(l => "- " + l).join("\n");
 }
