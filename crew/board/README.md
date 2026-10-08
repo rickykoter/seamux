@@ -430,14 +430,14 @@ Two clocks, because they answer different questions.
 | | every | costs | what it answers |
 |---|---|---|---|
 | reconcile (`crew-sync`) | `CREW_TICK_SECONDS`, 120s | ~4.5s (gh, acli, sbx) | CI, review, Jira — things only a remote knows |
-| board push, fast | `CREW_BOARD_TICK`, **15s** | ~190ms | does the glass still show what is true locally |
+| board push, fast | `CREW_BOARD_TICK`, **10s** | ~190ms | does the glass still show what is true locally |
 | board push, full | every event + every reconcile + startup | ~2.1s | everything, including branch and PR |
 
 The board used to refresh only on the reconcile's clock, so a gate you had just
 opened or a turn that had just finished could sit unrendered for two minutes even
 though every input was already on disk.
 
-Fifteen seconds is affordable only because of the split. Measured over 10
+Ten seconds is affordable only because of the split. Measured over 10
 workspaces: `workspace list --json` **27ms**, deep-plan status **73ms**, and
 `cmux sidebar-state` **1564ms** — 89% of a 1754ms build, ~156ms per workspace,
 one call each, with no bulk form in the CLI. A fast pass skips those calls and

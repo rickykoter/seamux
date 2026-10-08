@@ -178,7 +178,7 @@ def workspaces(fast=False):
                              color=w.get("custom_color") or "",
                              # Never from the cache: selection changes every time
                              # you switch workspace, which is the one thing the
-                             # 15s tick exists to keep up with.
+                             # 10s tick exists to keep up with.
                              selected=(w.get("id") == forced) if forced
                              else bool(w.get("selected"))))
             continue
@@ -257,7 +257,7 @@ def workspaces(fast=False):
 #
 # Measured on 10 workspaces: `workspace list --json` 27ms, deep-plan status 73ms,
 # and `sidebar-state` 1564ms -- 89% of a 1754ms build, at ~156ms a call, with no
-# bulk form in the CLI. So a board that refreshes every 15s cannot afford it on
+# bulk form in the CLI. So a board that refreshes every 10s cannot afford it on
 # every pass, and it does not need to: branch and PR number barely move, and the
 # fast-changing state (a live turn, a shut gate, CI going red) arrives through the
 # description tokens and deep-plan's own files, both of which are cheap.
@@ -1173,7 +1173,7 @@ def intent_cfg():
     """
     try:
         # Ask the socket directly before spawning anything. This is the same
-        # question crew-board-intent --status answers, and at a 15s board tick a
+        # question crew-board-intent --status answers, and at a 10s board tick a
         # python interpreter per push to answer it is the single largest avoidable
         # cost left in the fast path (~80ms of ~240ms).
         cur = {}
