@@ -424,9 +424,17 @@ note on an edit into a sibling's claim, and the news at the next prompt. Run it
 when a change touches hook output or hooks.json (it is the `family-live`
 recipe, non-default because it costs model calls). It strips the fixture's
 `DEEP_PLAN_*` overrides from the sessions' environment on purpose: exported,
-they reach the installed plugin's hooks too, which then read the fixture and
-can deliver the note themselves, so the test passed on the installed code.
-A no-hook control run showed exactly that before the isolation went in.
+they reach the installed plugin's hook entry points too (`DEEP_PLAN_SKILL_DIR`
+sends its gate.sh to this checkout's decide.mjs, the state overrides to the
+fixture), so the installed hook delivers the note and the test passes on a
+hook it was not meant to exercise. A no-hook control run showed exactly that
+before the isolation went in. The fixture also gives the engine its own
+pointer file: every engine run rewrites `~/.claude/deep-plan/engine.json` to
+its own root, and a fixture run must not repoint your board at a worktree.
+
+`live-family.sh --cmux` runs the same checks in visible cmux workspaces with
+an interactive claude, for recording (`docs/demo/reel/take.md`, Family clip);
+`--real-state` puts the family in your real plan state so the board shows it.
 
 `tools/family-fixture.sh DIR` stages the family both use (a repo, two
 worktrees, three rendered plans, private state) and prints the shell to drive
