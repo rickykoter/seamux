@@ -53,6 +53,24 @@ Usage:
   crew-color apply  [path]     write Peacock settings into <root>/.vscode
   crew-color free   [path]     release the color and remove Peacock settings
   crew-color prune             drop entries whose worktree is gone
+  crew-color family <parent-root> <child-root>...
+                               a deep-plan family: the parent keeps its color,
+                               each child takes a shade of it; a member's color
+                               from before is kept (PREV) and the family noted
+                               (FAMILY). Prints "root<TAB>hex" per member.
+  crew-color unfamily <root> | --stale [<live-parent-root>...]
+                               put a member's color from before back; --stale
+                               does it for every member of a family not named.
+                               Prints "root<TAB>hex" ("" when there was none).
+
+FAMILIES, THE ONE EXCEPTION TO "NEVER MOVES ON ITS OWN"
+-------------------------------------------------------
+A deep-plan family (a parent plan and the child plans it coordinates) reads as
+one thing when its worktrees wear one hue: the parent's color, and a lighter or
+darker shade of it on each child. Joining a family is an explicit act, so it is
+the one time crew recolors a worktree that already has a color -- and it keeps
+that color as PREV, so leaving the family (or the family closing) puts it back.
+Shades are not palette colors, so they never use up one of the sixteen.
 """
 
 import hashlib
@@ -130,12 +148,16 @@ def all_entries():
     return out
 
 
-def write_entry(root, name, hexv):
+def write_entry(root, name, hexv, extra=None):
+    """`extra` carries keys beyond the four every entry has (FAMILY, PREV);
+    an entry written without it has none, which is how a member leaves."""
     os.makedirs(REG, exist_ok=True)
     tmp = entry_path(root) + ".tmp"
     with open(tmp, "w") as fh:
         fh.write(f"ROOT={root}\nCOLOR={hexv}\nNAME={name}\n"
                  f"CREATED={int(time.time())}\n")
+        for k, v in (extra or {}).items():
+            fh.write(f"{k}={v}\n")
     os.replace(tmp, entry_path(root))
 
 
@@ -319,6 +341,24 @@ def adjust(h, pct):
         p = 2 * l - q
         rgb = (chan(p, q, hue + 1 / 3), chan(p, q, hue), chan(p, q, hue - 1 / 3))
     return to_hex(tuple(c * 255 for c in rgb))
+
+
+def lightness(h):
+    r, g, b = (c / 255 for c in to_rgb(h))
+    return (max(r, g, b) + min(r, g, b)) / 2
+
+
+# Children's shades, in the order children are given: alternately lighter and
+# darker, widening. A step that would push lightness off the ends (where every
+# shade looks white or black) is skipped, so a light parent's children come
+# out darker and a dark parent's lighter.
+SHADE_STEPS = (16, -16, 30, -30, 44, -44, 8, -8, 22, -22, 37, -37)
+
+
+def shades(hexv, n):
+    l = lightness(hexv)
+    ok = [s for s in SHADE_STEPS if 0.12 <= l + s / 100.0 <= 0.88] or [8, -8]
+    return [adjust(hexv, ok[i % len(ok)]) for i in range(n)]
 
 
 DARK_FG = "#15202b"
@@ -581,6 +621,76 @@ def cmd_free(path):
     return 0
 
 
+def peacock_follow(root, hexv, name):
+    """Recolor VS Code only where Peacock already colors this worktree: a
+    family must not create .vscode/ in a worktree that never had one."""
+    cur, _ = load_settings(os.path.join(root, ".vscode", "settings.json"))
+    if cur and cur.get("peacock.color"):
+        try:
+            apply(root, hexv, name)
+        except SystemExit:
+            pass
+
+
+def cmd_family(args):
+    if len(args) < 2:
+        die("family <parent-root> <child-root>...")
+    parent, kids = args[0], args[1:]
+    name, hexv = assign(parent)
+    out = [(parent, hexv)]
+    pe = read_entry(entry_path(parent)) or {}
+    if pe.get("FAMILY") != parent:
+        write_entry(parent, name, hexv, {"FAMILY": parent, "PREV": hexv})
+    for root, shade in zip(kids, shades(hexv, len(kids))):
+        e = read_entry(entry_path(root)) or {}
+        if e.get("FAMILY") == parent:
+            prev = e.get("PREV", "")
+        else:
+            # Joining: whatever it wore before -- crew's entry, or a color set
+            # by hand in cmux -- is what leaving gives back.
+            prev = e.get("COLOR") or worn_color(root)
+        if e.get("COLOR", "").upper() != shade.upper() or e.get("FAMILY") != parent:
+            write_entry(root, f"{name} shade", shade, {"FAMILY": parent, "PREV": prev})
+            peacock_follow(root, shade, f"{name} shade")
+        out.append((root, shade))
+    for root, h in out:
+        print(f"{root}\t{h}")
+    return 0
+
+
+def unfamily(root):
+    """Back to the color from before the family. None before means none now."""
+    e = read_entry(entry_path(root))
+    if not e or not e.get("FAMILY"):
+        return None
+    prev = e.get("PREV", "")
+    if prev:
+        name = BY_HEX.get(prev.upper(), "custom")
+        write_entry(root, name, prev)
+        peacock_follow(root, prev, name)
+    else:
+        os.remove(entry_path(root))
+    return prev
+
+
+def cmd_unfamily(args):
+    if args and args[0] == "--stale":
+        live = set(args[1:])
+        for e in all_entries():
+            fam = e.get("FAMILY")
+            if fam and fam not in live:
+                prev = unfamily(e["ROOT"])
+                if prev is not None:
+                    print(f"{e['ROOT']}\t{prev}")
+        return 0
+    if not args:
+        die("unfamily <root> | unfamily --stale [<live-parent-root>...]")
+    prev = unfamily(args[0])
+    if prev is not None:
+        print(f"{args[0]}\t{prev}")
+    return 0
+
+
 def cmd_prune():
     n = 0
     for e in all_entries():
@@ -612,6 +722,10 @@ def main():
         return cmd_free(arg)
     if cmd == "prune":
         return cmd_prune()
+    if cmd == "family":
+        return cmd_family(argv[1:])
+    if cmd == "unfamily":
+        return cmd_unfamily(argv[1:])
     if os.path.isdir(cmd):
         return cmd_show(cmd)
     die(f"unknown '{cmd}' (try --help)")

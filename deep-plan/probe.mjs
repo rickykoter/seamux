@@ -2434,6 +2434,288 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   for (const n of ["owner-1", "owner-2"]) cli("close", n);
 }
 
+// -------------------------------------------------- families
+// A parent plan names child plans that already exist; membership lives only in
+// the parent's index, claims compare as (repo, repo-relative path) across
+// worktrees, and render refuses what would leave a path with two owners plans.
+{
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const FR = path.join(TMP, "famrepo");
+  const FW = path.join(TMP, "famrepo.worktrees");
+  fs.mkdirSync(FR, { recursive: true });
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: FR });
+  const API = path.join(FW, "api"), UI = path.join(FW, "ui");
+  execSync(`git worktree add -q -b api ${API} && git worktree add -q -b ui ${UI}`, { cwd: FR });
+  // A second repository, for claims that must not collide across repos.
+  const OR = path.join(TMP, "otherrepo");
+  fs.mkdirSync(OR); execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: OR });
+
+  const child = (slug, files) => {
+    const c = JSON.parse(JSON.stringify(spec));
+    c.slug = slug;
+    c.deliverables = c.deliverables.map((d, i) => ({ ...d, files: i === 0 ? files : [] }));
+    return c;
+  };
+  const fam = JSON.parse(fs.readFileSync(path.join(HERE, "examples", "example.family.spec.json"), "utf8"));
+  const famIdx = () => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "families", fam.slug, "index.json"), "utf8"));
+
+  let r = cli("render", tmpSpec(fam), "--root", FR);
+  ok("a parent naming plans that do not exist is refused",
+    r.status !== 0 && /no tracked plan by that slug/.test(r.stderr));
+
+  // Children rendered on their own, before any family: adoption must not touch them.
+  r = cli("render", tmpSpec(child("example-auth-api", ["api/auth/session.ts", "package-lock.json", "README.md"])), "--root", API);
+  ok("child api renders", r.status === 0);
+  r = cli("render", tmpSpec(child("example-auth-ui", ["web/login/form.tsx", "api/auth/session.ts", "package-lock.json"])), "--root", UI);
+  ok("child ui renders", r.status === 0);
+  r = cli("render", tmpSpec(child("example-docs", ["README.md"])), "--root", OR);
+  ok("child docs (another repo) renders", r.status === 0);
+  // The guard's cost is measured against the same edit before any family exists.
+  cli("open-gate", "example-auth-ui");
+  const gateAs = (session, target, cwd = UI) => spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")], {
+    encoding: "utf8", env: ENV,
+    input: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: target }, cwd, session_id: session }),
+  });
+  const timeEdits = () => {
+    const t = process.hrtime.bigint();
+    for (let i = 0; i < 10; i++) gateAs("timing", path.join(UI, "web", "login", "form.tsx"));
+    return Number(process.hrtime.bigint() - t) / 10e6;
+  };
+  const famless = timeEdits();
+  const before = fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "example-auth-ui.json"), "utf8");
+
+  const withDocs = { ...fam, workstreams: [...fam.workstreams, { slug: "example-docs", owns: ["README.md"] }] };
+  r = cli("render", tmpSpec(withDocs), "--root", FR);
+  ok("the parent renders once its children exist", r.status === 0 && /family example-auth-revamp: 3 workstream/.test(r.stdout));
+  const idx = famIdx();
+  const m = s => idx.members.find(x => x.slug === s);
+  ok("the index holds the parent and every child",
+    idx.members.length === 4 && m("example-auth-revamp").role === "parent" && m("example-auth-ui").role === "child");
+  ok("worktrees of one repo share a repo id; another repo does not",
+    m("example-auth-api").repo === m("example-auth-ui").repo && m("example-auth-api").repo === m("example-auth-revamp").repo &&
+    m("example-docs").repo !== m("example-auth-api").repo && m("example-docs").repo !== "");
+  ok("adopting a child leaves its state untouched",
+    fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "example-auth-ui.json"), "utf8") === before);
+  ok("a child's deliverable inside a sibling's glob is reported",
+    /example-auth-ui deliverable 1 names api\/auth\/session\.ts — owned by example-auth-api \(api\/auth\/\*\*\)/.test(r.stderr));
+  ok("a shared path is not an overlap", !/package-lock/.test(r.stderr));
+  ok("the same path in two repos is not an overlap", !/README/.test(r.stderr));
+  ok("the parent's surfaces list the workstreams",
+    /## Workstreams/.test(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, fam.slug + ".md"), "utf8")) &&
+    /<h2>Workstreams<\/h2>/.test(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, fam.slug + ".review.html"), "utf8")));
+  r = cli("rehydrate", fam.slug);
+  ok("a parent rehydrates byte-identical", r.status === 0 && /byte-identical/.test(r.stdout));
+
+  // One family per plan, and roots that never nest or coincide.
+  r = cli("render", tmpSpec({ ...fam, slug: "example-rival", workstreams: [{ slug: "example-auth-api" }] }), "--root", OR);
+  ok("a second parent claiming a member is refused",
+    r.status !== 0 && /example-auth-api already belongs to family example-auth-revamp/.test(r.stderr));
+  r = cli("render", tmpSpec(child("example-squatter", [])), "--root", FR);
+  r = cli("render", tmpSpec({ ...withDocs, workstreams: [...withDocs.workstreams, { slug: "example-squatter" }] }), "--root", FR);
+  ok("a child sharing the parent's root is refused", r.status !== 0 && /roots collide/.test(r.stderr));
+  cli("close", "example-squatter");
+
+  // Shape is judged before anything else.
+  r = cli("render", tmpSpec({ ...fam, workstreams: [{ slug: "example-auth-api", after: [9] }] }), "--root", FR);
+  ok("after must name the parent's own increments", r.status !== 0 && /after must list this plan's increment numbers/.test(r.stderr));
+  r = cli("render", tmpSpec({ ...fam, workstreams: [{ slug: "example-auth-api", owns: [{ glob: "" }] }] }), "--root", FR);
+  ok("a claim must carry a glob", r.status !== 0 && /owns\[0\] must be a glob/.test(r.stderr));
+
+  // A child's re-render moves its derived claims in the index.
+  r = cli("render", tmpSpec(child("example-auth-ui", ["web/login/form.tsx", "package-lock.json"])), "--root", UI);
+  ok("a child's re-render refreshes the family", r.status === 0 && /family example-auth-revamp: claims refreshed/.test(r.stdout));
+  ok("…and its derived claims follow the spec",
+    !famIdx().members.find(x => x.slug === "example-auth-ui").derived.some(d => d.path === "api/auth/session.ts"));
+
+  // The soft guard: allowed, told once per session and path, recorded.
+  {
+    const note = r => { try { return JSON.parse(r.stdout).hookSpecificOutput || null; } catch { return null; } };
+    let g = gateAs("s1", path.join(UI, "api", "auth", "session.ts"));
+    const h = note(g);
+    ok("an edit into a sibling's claim is allowed", g.status === 0);
+    ok("…and the agent is told who owns it",
+      h && h.hookEventName === "PreToolUse" && /api\/auth\/session\.ts/.test(h.additionalContext) &&
+      /workstream example-auth-api owns it \(api\/auth\/\*\*\)/.test(h.additionalContext) && /example-auth-ui/.test(h.additionalContext));
+    ok("…and the guard never sets a permission decision", h && !("permissionDecision" in h) && !/"decision"/.test(g.stdout));
+    g = gateAs("s1", path.join(UI, "api", "auth", "session.ts"));
+    ok("the same session is told once per path", g.status === 0 && !note(g));
+    g = gateAs("s2", path.join(UI, "api", "auth", "session.ts"));
+    ok("another session is told again", note(g) !== null);
+    g = gateAs("s1", path.join(UI, "web", "login", "form.tsx"));
+    ok("an edit inside its own claim is silent", g.status === 0 && g.stdout.trim() === "");
+    g = gateAs("s1", path.join(UI, "package-lock.json"));
+    ok("an edit to a shared path is silent", g.status === 0 && g.stdout.trim() === "");
+    g = gateAs("s1", path.join(UI, "notes", "scratch.md"));
+    ok("an unclaimed path is silent", g.status === 0 && g.stdout.trim() === "");
+    cli("open-gate", "example-auth-api");
+    g = gateAs("s1", path.join(API, "web", "login", "form.tsx"));
+    ok("editing a sibling's worktree outright is named as such",
+      note(g) && /web\/login\/form\.tsx .*it sits in workstream example-auth-api's worktree/.test(note(g).additionalContext));
+    g = gateAs("s1", path.join(REPO, "x.txt"), REPO);
+    ok("a session outside every family is never told", g.stdout.trim() === "");
+    const log = fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "families", fam.slug, "trespass.jsonl"), "utf8")
+      .trim().split("\n").map(l => JSON.parse(l));
+    if (V) console.log("  trespass log: " + JSON.stringify(log.map(l => [l.session, l.path, l.how])));
+    ok("each told trespass is recorded once",
+      log.length === 3 && log[0].from === "example-auth-ui" && log[0].owner === "example-auth-api" &&
+      log[0].path === "api/auth/session.ts" && log[0].session === "s1" && log[1].session === "s2");
+    const withFamily = timeEdits();
+    console.log(`\n  family guard: ${(withFamily - famless).toFixed(1)} ms/edit over the same edit with no family (${famless.toFixed(1)} → ${withFamily.toFixed(1)})`);
+    ok("the family guard costs under 15 ms per edit", withFamily - famless < 15);
+  }
+
+  // Sequencing: a child whose workstream names parent increments in `after`
+  // cannot go until they are done; --force is the logged way past.
+  {
+    const gradeRight = slug => {
+      const k = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8"));
+      return cli("grade", slug, ...Object.entries(k.answers).map(([q, a]) => `${q}=${a.letter}`));
+    };
+    const apiState = () => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "example-auth-api.json"), "utf8"));
+    ok("the child passes its own alignment check", gradeRight("example-auth-api").status === 0);
+    let g = cli("go", "example-auth-api", "next");
+    const lines = g.stderr.trim().split("\n");
+    ok("go on a child waiting on its parent is refused, the reason on the last line",
+      g.status !== 0 && /^go refused: waits on example-auth-revamp increment 1$/.test(lines[lines.length - 1]) &&
+      /Shared session type\) is pending/.test(g.stderr));
+    ok("…and nothing was authorized", apiState().increments.every(i => i.status === "pending"));
+    cli("shut-gate", "example-auth-api");
+    const row = JSON.parse(cli("status", "--json").stdout).find(x => x.slug === "example-auth-api");
+    ok("a waiting child's shut gate says what it waits on",
+      row && !row.gate.allow && /go waits on example-auth-revamp increment 1 \(Shared session type\) is pending/.test(row.gate.why));
+    const e = gateAs("s9", path.join(API, "api", "auth", "x.ts"), API);
+    ok("the edit refusal says it too", e.status === 2 && /go waits on example-auth-revamp increment 1/.test(e.stderr));
+    g = cli("go", "example-auth-api", "1", "--force");
+    ok("go --force passes the wait and logs it",
+      g.status === 0 && apiState().increments[0].status === "authorized" &&
+      apiState().log.some(l => /--force past the family wait: example-auth-revamp increment 1/.test(l.what)));
+    // The parent lands increment 1; the wait clears for the next go.
+    gradeRight(fam.slug);
+    cli("go", fam.slug, "1"); cli("done", fam.slug, "1", "--force");
+    g = cli("go", "example-auth-api", "2");
+    ok("once the parent increment is done, go goes", g.status === 0 && apiState().increments[1].status === "authorized");
+    ok("a workstream with no after never waits", cli("go", "example-docs", "next").stderr.indexOf("waits on") === -1);
+    cli("open-gate", "example-auth-api");
+  }
+
+  // News: pulled at the next prompt, factual, cursor per member.
+  {
+    const newsAs = (cwd, event = "UserPromptSubmit") => {
+      const r = spawnSync("bash", [path.join(HERE, "hooks", "news.sh")], {
+        encoding: "utf8", env: ENV, input: JSON.stringify({ hook_event_name: event, cwd, session_id: "n1", prompt: "hi" }),
+      });
+      let h = null;
+      try { h = JSON.parse(r.stdout).hookSpecificOutput; } catch { /* none */ }
+      return { status: r.status, h, text: h ? h.additionalContext : "" };
+    };
+    let n = newsAs(UI, "SessionStart");
+    ok("a member's first look is an orientation",
+      n.status === 0 && n.h && n.h.hookEventName === "SessionStart" &&
+      /example-auth-ui\) is a workstream of deep-plan family example-auth-revamp/.test(n.text) && /claims web\/login\/\*\*/.test(n.text));
+    n = newsAs(UI);
+    ok("nothing new says nothing", n.status === 0 && n.h === null);
+    newsAs(API); newsAs(FR);                       // every member has looked once
+    cli("done", "example-auth-api", "2", "--force");
+    n = newsAs(UI);
+    ok("a sibling's finished increment is news", /example-auth-api finished increment 2 \(/.test(n.text));
+    n = newsAs(FR);
+    ok("…for the parent too", /example-auth-api finished increment 2/.test(n.text));
+    gateAs("s7", path.join(UI, "api", "auth", "z.ts"));
+    n = newsAs(API);
+    ok("an edit into a member's claim is news to its owner",
+      /example-auth-ui edited api\/auth\/z\.ts, which example-auth-api claims \(api\/auth\/\*\*\)/.test(n.text));
+    // A commit on the base branch that touches the member's claim.
+    fs.mkdirSync(path.join(FR, "web", "login"), { recursive: true });
+    fs.writeFileSync(path.join(FR, "web", "login", "banner.tsx"), "export {}\n");
+    execSync(`git add -A && ${G} commit -q -m "login banner"`, { cwd: FR });
+    const peek = cli("family", "news", "example-auth-ui");
+    ok("family news shows it without moving the cursor", /gained \w+ login banner touching web\/login\/banner\.tsx/.test(peek.stdout));
+    n = newsAs(UI);
+    ok("a base commit touching a member's claim is news", /gained \w+ login banner touching web\/login\/banner\.tsx/.test(n.text));
+    ok("…and only that member hears of it", !/banner/.test(newsAs(API).text));
+    // The parent changes a contract the ui workstream consumes.
+    const amended = { ...withDocs, contracts: withDocs.contracts.map(c => ({ ...c, reach: c.reach + "; also the mobile app" })) };
+    cli("render", tmpSpec(amended), "--root", FR);
+    n = newsAs(UI);
+    ok("a consumed contract that changed shape is news", /contract "POST \/session" changed/.test(n.text));
+    ok("a session outside every family hears nothing", newsAs(REPO).h === null);
+    const st = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "families", fam.slug, "seen", "example-auth-ui.json"), "utf8"));
+    ok("the cursor is stored per member", st.at > 0 && st.contracts["POST /session"]);
+  }
+
+  // Status rows carry the family; rows outside one do not change.
+  {
+    const rows = JSON.parse(cli("status", "--json").stdout);
+    const ui = rows.find(x => x.slug === "example-auth-ui"), par = rows.find(x => x.slug === fam.slug);
+    const f = ui && ui.family;
+    ok("a child's row names its family and role", f && f.role === "child" && f.parent === fam.slug);
+    ok("…lists every member with progress",
+      f && f.members.length === 4 && f.members.some(m => m.slug === "example-auth-api" && m.done === 1 && m.total === 2));
+    ok("…its claims and its after", f && f.owns.join() === "web/login/**" && f.after.join() === "1" && f.waitingOn.length === 0);
+    ok("…and the overlaps it took part in",
+      f && f.trespasses.total >= 1 && f.trespasses.pairs.some(p => p.from === "example-auth-ui" && p.owner === "example-auth-api"));
+    ok("the parent's row counts every overlap in the family",
+      par && par.family.role === "parent" && par.family.trespasses.total >= f.trespasses.total && par.family.done === false);
+    ok("a plan in no family has no family field", rows.filter(x => !x.slug.startsWith("example-")).every(x => !("family" in x)));
+    ok("board-facing keys keep their shape", ui && typeof ui.gate.allow === "boolean" && typeof ui.progress.total === "number");
+    const t = cli("status").stdout;
+    ok("text status prints the family line", /family example-auth-revamp \(child\)/.test(t));
+    const fs2 = cli("family", "status", "example-auth-ui");
+    ok("family status shows every member",
+      fs2.status === 0 && /◆ example-auth-revamp/.test(fs2.stdout) && /◇ example-auth-ui/.test(fs2.stdout) &&
+      /example-auth-ui edited example-auth-api's claims/.test(fs2.stdout));
+  }
+
+  // family check: what a worktree actually touched, Bash writes included.
+  r = cli("family", "check", fam.slug);
+  ok("family check is clean before anyone strays", r.status === 0 && /no member has touched/.test(r.stdout));
+  fs.mkdirSync(path.join(UI, "api", "auth"), { recursive: true });
+  fs.writeFileSync(path.join(UI, "api", "auth", "token.ts"), "export {}\n");
+  r = cli("family", "check", fam.slug, "--json");
+  const hits = r.status === 1 ? JSON.parse(r.stdout).overlaps : [];
+  ok("family check names a file written into a sibling's claim",
+    hits.some(h => h.slug === "example-auth-ui" && h.path === "api/auth/token.ts" && h.owner === "example-auth-api"));
+  r = cli("family", "check", "example-auth-ui");
+  ok("family check accepts a member's slug", r.status === 1 && /example-auth-ui touched api\/auth\/token\.ts/.test(r.stdout));
+  fs.rmSync(path.join(UI, "api"), { recursive: true, force: true });
+
+  // family init: a parent drafted from plans that already exist.
+  r = cli("family", "init", "example-draft", "example-auth-api", "example-auth-ui");
+  let draft = null;
+  try { draft = JSON.parse(r.stdout); } catch { /* asserted below */ }
+  ok("family init drafts workstreams with suggested globs",
+    r.status === 0 && draft && draft.workstreams.length === 2 &&
+    draft.workstreams[0].owns.includes("api/auth/**") && draft.workstreams[0].owns.includes("package-lock.json"));
+  ok("family init reports what the plans already share",
+    /example-auth-api deliverable 1 and example-auth-ui deliverable 1 both name package-lock\.json/.test(r.stderr));
+  r = cli("family", "init", "example-draft", "example-nope");
+  ok("family init refuses an unknown plan", r.status !== 0 && /example-nope: no tracked plan/.test(r.stderr));
+
+  // Dropping the workstreams dissolves the family; the index is kept as history.
+  const { workstreams, ...solo } = withDocs;
+  r = cli("render", tmpSpec(solo), "--root", FR);
+  ok("a parent without workstreams dissolves its family",
+    r.status === 0 && /dissolved/.test(r.stdout) &&
+    !fs.existsSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "families", fam.slug, "index.json")) &&
+    fs.existsSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "families", fam.slug, "index.dissolved.json")));
+  for (const n of [fam.slug, "example-auth-api", "example-auth-ui", "example-docs"]) cli("close", n);
+}
+
+// -------------------------------------------------- a new directory under a symlinked root
+// macOS spells the temp tree /var/… and resolves it to /private/var/…. A file
+// in a directory that does not exist yet has to resolve through its nearest
+// existing ancestor, or the gate reads it as outside every root.
+{
+  const SR = fs.mkdtempSync(path.join(os.tmpdir(), "dp-symroot-"));
+  execSync("git init -q", { cwd: SR });
+  const sym = { ...JSON.parse(JSON.stringify(spec)), slug: "symlinked-root" };
+  cli("render", tmpSpec(sym), "--root", SR);
+  ok("a new file in a new directory under a gated root is refused",
+    edit(path.join(SR, "fresh", "deeper", "new.ts")).status === 2);
+  cli("close", "symlinked-root");
+  fs.rmSync(SR, { recursive: true, force: true });
+}
+
 // -------------------------------------------------- hot-path cost
 const t0 = process.hrtime.bigint();
 for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);

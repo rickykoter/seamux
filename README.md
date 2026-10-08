@@ -275,6 +275,30 @@ project . (package.json) — runners: playwright, vitest
     host: vercel → remote QA template: deep-plan verify init --template vercel-preview
 ```
 
+### Families: parallel workstreams with one goal
+
+Some goals split into workstreams that run at the same time, each its own
+plan in its own worktree, and ship separately. A **parent plan** ties them
+together. It lists the child plans in a `workstreams` block, says what each
+one owns, and can land shared groundwork first. Existing plans can join after
+the fact: `deep-plan family init <parent> <child>...` drafts the parent from
+them and reports where they already overlap.
+
+Once the family exists:
+
+- **Overlap is noted, not blocked.** When an agent edits a file a sibling
+  owns, the edit goes through, the agent is told who owns it, and the overlap
+  is recorded. `deep-plan family check <parent>` lists every overlap,
+  including ones made from the shell.
+- **Order can be enforced.** A workstream can wait on the parent's increments
+  (`after`); its `go` is refused until they land.
+- **Each session hears what changed** at its next prompt: sibling increments
+  finished, commits on the base branch touching its files, a shared contract
+  that moved.
+- **The family reads as one** on the board and in the sidebar: grouped under
+  the parent, in shades of the parent's color, placed at the tier of its most
+  urgent member.
+
 ## restack: rebase without merging generated files
 
 A stack that sits for a few days picks up two kinds of conflict. One is your

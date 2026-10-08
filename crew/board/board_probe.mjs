@@ -545,6 +545,91 @@ if (live && Array.isArray(live.rows)) {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
+// ---- deep-plan families: grouped, ordered by the most urgent member --------
+{
+  const R = (id, kind, extra = {}) => ({ id, name: id, kind, badge: "b", said: "", chips: [], frac: null, meta: "", ...extra });
+  const grouped = (rows, quiet) => JSON.parse(execFileSync("python3", [join(HERE, "families.py")],
+    { encoding: "utf8", input: JSON.stringify({ rows, quiet }) }));
+  const plain = { rows: [R("a", "attend"), R("r", "running")], quiet: [R("q", "quiet")] };
+  const same = grouped(plain.rows, plain.quiet);
+  checks.push(["families: a board with no family comes back unchanged",
+    JSON.stringify(same) === JSON.stringify(plain)]);
+  const g = grouped([
+    R("a1", "attend"),
+    R("k2", "attend", { family: "F", famrole: "child", urgency: 1 }),
+    R("r1", "running"),
+    R("p", "done", { family: "F", famrole: "parent" }),
+  ], [
+    R("q1", "quiet"),
+    R("k3", "quiet", { family: "F", famrole: "child" }),
+    R("g1", "quiet", { family: "G", famrole: "child" }),
+    R("g2", "quiet", { family: "G", famrole: "child" }),
+  ]);
+  const ids = g.rows.map(r => r.id);
+  const fi = ids.indexOf("p");
+  checks.push(["families: members sit together, the parent first",
+    fi >= 0 && ids.slice(fi, fi + 3).join() === "p,k2,k3"]);
+  checks.push(["families: the family sorts at its most urgent member's tier",
+    fi < ids.indexOf("r1") && g.rows.find(r => r.id === "p").famtier === "attend"]);
+  checks.push(["families: a quiet member is pulled up into its family",
+    ids.includes("k3") && !g.quiet.some(r => r.id === "k3")]);
+  checks.push(["families: children are marked to indent; the parent is not",
+    g.rows.find(r => r.id === "k2").famkid === true && g.rows.find(r => r.id === "p").famkid === false]);
+  checks.push(["families: an all-quiet family stays quiet, grouped, under its label",
+    g.quiet.map(r => r.id).join() === "q1,g1,g2" && g.quiet[1].famlabel === "G" && !g.quiet[2].famlabel]);
+  checks.push(["families: other rows keep their order", ids.indexOf("a1") < ids.indexOf("r1")]);
+
+  // crew-board itself, on the path that needs no cmux: plan rows carry the
+  // family and come back grouped.
+  const po = JSON.parse(execFileSync("python3", ["-c", `
+import importlib.machinery, importlib.util, json, sys
+l = importlib.machinery.SourceFileLoader("cb", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("cb", l)); l.exec_module(m)
+P = lambda s, ph, allow, fam=None: {"slug": s, "root": "/w/" + s, "phase": ph, "gate": {"allow": allow, "why": ""},
+  "progress": {"total": 2, "done": 0, "blocked": [], "open": [], "next": {"n": 1, "title": "t"}}, **({"family": fam} if fam else {})}
+pb = {"/w/x": P("x", "implementing", True), "/w/par": P("par", "implementing", True, {"parent": "par", "role": "parent"}),
+  "/w/kid": P("kid", "review", False, {"parent": "par", "role": "child"})}
+print(json.dumps([[r["id"], r["kind"], r.get("famtier", "")] for r in m.rank_plans_only(pb)]))
+`, join(HERE, "crew-board")], { encoding: "utf8" }));
+  checks.push(["families: crew-board with cmux down groups plan rows at the family's tier",
+    JSON.stringify(po) === JSON.stringify([["par", "running", "attend"], ["kid", "attend", "attend"], ["x", "running", ""]])]);
+
+  render({ rows: [...g.rows, ...g.quiet], quietCount: g.quiet.length, quiet: "" });
+  const html = els.rows.innerHTML;
+  checks.push(["families: render indents children and leaves the parent flush",
+    /class="row attend[^"]* fam kid"[^>]*data-id="k2"/.test(html) && /class="row done[^"]* fam"[^>]*data-id="p"/.test(html)]);
+  checks.push(["families: the quiet divider counts only rows below it",
+    /<div class="sect">quiet · 3<\/div>/.test(html) && html.indexOf('class="sect"') > html.indexOf('data-id="k3"')]);
+  checks.push(["families: a family with no parent row is headed by its name",
+    /<div class="famhd">family · G<\/div><div class="row quiet[^"]* fam kid"[^>]*data-id="g1"/.test(html)]);
+}
+
+// ---- crew-color: a family's shades, and the colors from before ------------
+{
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), "crew-color-fam-"));
+  const env = { ...process.env, XDG_CACHE_HOME: join(tmp, "cache"), CREW_CMUX: "/usr/bin/false" };
+  const [P, A, B] = ["p", "a", "b"].map(n => { const d = join(tmp, n); fs.mkdirSync(d); return d; });
+  const cc = (...a) => execFileSync("python3", [join(HERE, "..", "bin", "crew-color"), ...a], { encoding: "utf8", env });
+  // Not trim(): a member restored to no color ends its line in a bare tab.
+  const lines = out => Object.fromEntries(out.split("\n").filter(Boolean).map(l => l.split("\t")));
+  cc("assign", A);
+  const before = cc("peek", A).trim();
+  const fam = lines(cc("family", P, A, B));
+  checks.push(["crew-color: a family's children take shades, distinct from the parent and each other",
+    /^#[0-9A-F]{6}$/.test(fam[A]) && /^#[0-9A-F]{6}$/.test(fam[B]) &&
+    new Set([fam[P], fam[A], fam[B]]).size === 3 && fam[A] !== before]);
+  checks.push(["crew-color: forming a family again changes nothing",
+    JSON.stringify(lines(cc("family", P, A, B))) === JSON.stringify(fam)]);
+  const back = lines(cc("unfamily", "--stale"));
+  checks.push(["crew-color: a closed family gives each member its color from before",
+    back[A] === before && back[B] === "" && cc("peek", A).trim() === before && cc("peek", B).trim() === ""]);
+  checks.push(["crew-color: --stale spares a family still named",
+    (cc("family", P, A, B), cc("unfamily", "--stale", P).trim() === "")]);
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
 let bad = 0;
 for (const [n, ok] of checks) { if (!ok) bad++; console.log(`  ${ok ? "ok  " : "FAIL"} ${n}`); }
 console.log(`\n${bad ? "\x1b[31m" : "\x1b[32m"}board probe: ${checks.length - bad} passed, ${bad} failed\x1b[0m`);

@@ -419,7 +419,11 @@ export const register: Register = on => {
     }
     const incs = p.increments ?? []
     const open = incs.find(i => i.status === 'working' || i.status === 'authorized')
-    const canGo = p.phase === 'implementing' && !open && incs.some(i => i.status === 'pending')
+    const fam = p.family
+    // A family child held by its parent: the engine would refuse go, so the
+    // pane offers none and says what it waits on instead.
+    const held = (fam?.waitingOn ?? []).length > 0
+    const canGo = p.phase === 'implementing' && !open && incs.some(i => i.status === 'pending') && !held
     const page = await planPage($, p)
     const pageLabel = p.phase === 'review' ? 'open review' : 'open plan'
     return (
@@ -433,6 +437,34 @@ export const register: Register = on => {
           </Text>
         </Box>
         {p.rootBroken && <Text color="red">root is gone: the gate fails open for this plan</Text>}
+        {fam && (
+          <Box key="family" flexDirection="column" marginTop={1}>
+            <Text wrap="truncate-end">
+              family {fam.parent} · {fam.role}{fam.news > 0 ? ` · ${fam.news} new` : ''}{fam.done ? ' · family done' : ''}
+            </Text>
+            {fam.members.filter(m => m.slug !== p.slug).map(m => (
+              <Box key={`fam-${m.slug}`} marginLeft={2}>
+                <Text dimColor={m.phase === 'done'} wrap="truncate-end">
+                  {m.role === 'parent' ? '◆' : '◇'} {m.slug} · {m.phase} · {m.done}/{m.total}
+                </Text>
+              </Box>
+            ))}
+            {held && (
+              <Box key="fam-wait" marginLeft={2}>
+                <Text color="yellow" wrap="wrap">
+                  go waits on {fam.waitingOn.map(w => `${fam.parent} ${w.n}${w.title ? ` (${w.title})` : ''}: ${w.status}`).join('; ')}
+                </Text>
+              </Box>
+            )}
+            {fam.trespasses.total > 0 && (
+              <Box key="fam-overlaps" marginLeft={2}>
+                <Text color="yellow" wrap="wrap">
+                  overlaps recorded: {fam.trespasses.pairs.map(t => `${t.from} → ${t.owner}'s ${t.count}×`).join(', ')}
+                </Text>
+              </Box>
+            )}
+          </Box>
+        )}
         {incs.flatMap(i => {
           const live = i.status !== 'done'
           const isOpen = i.status === 'working' || i.status === 'authorized'

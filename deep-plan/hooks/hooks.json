@@ -1,11 +1,14 @@
 {
-  "description": "deep-plan: the per-increment edit gate, and the engine pointer out-of-session callers read",
+  "description": "deep-plan: the per-increment edit gate, family news at the next prompt, and the engine pointer out-of-session callers read",
   "hooks": {
     "PreToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
         "hooks": [
-          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate.sh\"" }
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate.sh\""
+          }
         ]
       }
     ],
@@ -13,7 +16,28 @@
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/deep_plan.mjs\" engine >/dev/null 2>&1 || true", "timeout": 10 }
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/deep_plan.mjs\" engine >/dev/null 2>&1 || true",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/news.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/news.sh\"",
+            "timeout": 10
+          }
         ]
       }
     ]

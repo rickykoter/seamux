@@ -635,8 +635,10 @@ def signals(cwd, is_repo):
 
 PROJECTS = os.path.join(HOME, ".claude", "projects")
 DEEP_ACTIVE = os.path.join(HOME, ".claude", "deep-plan", "active")
-DEEP_STATE = os.path.join(HOME, ".claude", "deep-plan", "state")
-DEEP_PLANS = os.path.join(HOME, ".claude", "plans")
+# The same overrides the deep-plan engine reads, so a throwaway plan tree (a
+# test, a demo) is seen here exactly as the engine sees it.
+DEEP_STATE = os.environ.get("DEEP_PLAN_STATE_DIR") or os.path.join(HOME, ".claude", "deep-plan", "state")
+DEEP_PLANS = os.environ.get("DEEP_PLAN_PLANS_DIR") or os.path.join(HOME, ".claude", "plans")
 
 
 def transcript_for(sid):
@@ -781,6 +783,78 @@ def deep_plan_states():
     return by_root, by_sid
 
 
+def deep_plan_families():
+    """Live deep-plan families: [(parent slug, parent root, [(slug, role, root)])].
+
+    A family is a parent plan whose `workstreams` block names child plans;
+    deep-plan writes its resolved index to state/families/<parent>/index.json.
+    Live means the parent is still tracked and not closed -- a closed family's
+    index stays on disk as history and governs nothing, the same rule
+    deep-plan's own readers apply.
+    """
+    out = []
+    try:
+        names = sorted(os.listdir(os.path.join(DEEP_STATE, "families")))
+    except Exception:
+        return out
+    for n in names:
+        try:
+            with open(os.path.join(DEEP_STATE, "families", n, "index.json")) as fh:
+                idx = json.load(fh) or {}
+            with open(os.path.join(DEEP_STATE, idx.get("parent", "") + ".json")) as fh:
+                pst = json.load(fh) or {}
+        except Exception:
+            continue
+        if pst.get("phase") == "closed":
+            continue
+        members = [(m.get("slug", ""), m.get("role", ""), m.get("root", ""))
+                   for m in idx.get("members") or [] if m.get("root")]
+        proot = next((r for _, role, r in members if role == "parent"), "")
+        if proot:
+            out.append((idx["parent"], proot, members))
+    return out
+
+
+def family_signals():
+    """Tokens and colours for every workspace in a family, keyed by real root.
+
+    ({root: [tokens]}, {root: hex to wear}, {root: hex to restore, "" = none}).
+    Colours come from crew-color, which owns the registry: `family` gives the
+    parent's hue and each child a shade of it, remembering what each wore
+    before; `unfamily --stale` hands back the colours of members whose family
+    is gone. Under --dry-run no colour is computed, because both write the
+    registry.
+    """
+    toks, wear, restore = {}, {}, {}
+    fams = deep_plan_families()
+    for parent, proot, members in fams:
+        for slug, role, root in members:
+            toks[os.path.realpath(root)] = ["family:" + parent, "famrole:" + role]
+        if DRY:
+            continue
+        kids = [r for _, role, r in members if role == "child"]
+        try:
+            r = subprocess.run([COLOR_BIN, "family", proot, *kids],
+                               capture_output=True, text=True, timeout=20)
+            for line in (r.stdout or "").splitlines():
+                root, _, hexv = line.partition("\t")
+                if hexv.startswith("#"):
+                    wear[os.path.realpath(root)] = hexv
+        except Exception:
+            pass
+    if not DRY:
+        try:
+            r = subprocess.run([COLOR_BIN, "unfamily", "--stale", *[p for _, p, _ in fams]],
+                               capture_output=True, text=True, timeout=20)
+            for line in (r.stdout or "").splitlines():
+                root, _, hexv = line.partition("\t")
+                if root:
+                    restore[os.path.realpath(root)] = hexv
+        except Exception:
+            pass
+    return toks, wear, restore
+
+
 def plan(sid):
     """(fraction, label, todo-list) for a session, or None."""
     d = os.path.join(TASKS, sid or "")
@@ -834,6 +908,7 @@ def main():
     sb_states = sandbox_states() if sb_roots else {}
     deep_roots, deep_sids = deep_plan_markers()
     plan_roots, plan_sids = deep_plan_states()
+    fam_toks, fam_wear, fam_restore = family_signals()
 
     # --- the freshness stamp --------------------------------------------------
     # The board has no way to know when it was last reconciled: the sidebar
@@ -1013,6 +1088,10 @@ def main():
             tok.append("plan:deep")
         elif live and permission_mode(sid) == "plan":
             tok.append("plan:mode")
+        # A deep-plan family member: the sidebar groups the family under its
+        # parent and places it at its most urgent member's section.
+        if root:
+            tok.extend(fam_toks.get(os.path.realpath(root), []))
 
         jt = jira_token(jira.get(ticket_key(branch(cwd))))
         if jt:
@@ -1064,7 +1143,27 @@ def main():
         # tell a crew assignment from a hand-picked one — and guessing wrong means
         # silently overwriting a choice made on purpose. Recoloring is therefore
         # deliberate: clear it in cmux (or `crew color free`) and sync again.
-        if root and not (w.get("custom_color") or ""):
+        #
+        # The exception is a deep-plan family. Joining one is deliberate, so its
+        # members wear the parent's hue and its shades even over a colour they
+        # had; crew-color keeps that colour, and leaving the family gives it back.
+        real = os.path.realpath(root) if root else ""
+        have = (w.get("custom_color") or "").upper()
+        if real in fam_wear:
+            if have != fam_wear[real].upper():
+                cmux("workspace-action", "--action", "set-color",
+                     "--color", fam_wear[real], "--workspace", ws)
+                note(ws, f"color -> {fam_wear[real]} (family shade)")
+        elif real in fam_restore:
+            back = fam_restore[real]
+            if back and have != back.upper():
+                cmux("workspace-action", "--action", "set-color",
+                     "--color", back, "--workspace", ws)
+                note(ws, f"color -> {back} (restored after its family)")
+            elif not back and have:
+                cmux("workspace-action", "--action", "clear-color", "--workspace", ws)
+                note(ws, "color cleared (it had none before its family)")
+        elif root and not have:
             hexv = color_for(root)
             if hexv:
                 cmux("workspace-action", "--action", "set-color",

@@ -803,8 +803,43 @@ func row(_ w: Any) -> some View {
     .onTapGesture { cmux("workspace.select", workspace_id: w.id) }
 }
 
+// deep-plan families. crew-sync tags each member `family:<parent>` and
+// `famrole:parent|child`. A family is placed as one: in the section of its most
+// urgent member, so a child that needs you pulls its parent and siblings into
+// Needs you with it. Each row keeps its own styling (an idle member still
+// recedes); only its placement follows the family.
+//
+// Filter counts, not a loop or a min(): `return` inside a `for` does not escape
+// it here (FINDINGS.md), and the counts give the section order directly.
+func famBucket(_ w: Any) -> Int {
+    let f = tokenValue(w, "family")
+    if f == "" { return bucket(w) }
+    let mates = workspaces.filter { tokenValue($0, "family") == f }
+    if mates.filter { bucket($0) == 0 }.count > 0 { return 0 }
+    if mates.filter { bucket($0) == 5 }.count > 0 { return 5 }
+    if mates.filter { bucket($0) == 1 }.count > 0 { return 1 }
+    if mates.filter { bucket($0) == 2 }.count > 0 { return 2 }
+    if mates.filter { bucket($0) == 3 }.count > 0 { return 3 }
+    return 4
+}
+
+// A row the section lists at its top level: anything not a family child, and a
+// child whose parent has no workspace open (it would have nowhere to hang).
+func isTop(_ w: Any) -> Bool {
+    if tokenValue(w, "famrole") != "child" { return true }
+    let f = tokenValue(w, "family")
+    return workspaces.filter { tokenValue($0, "family") == f && tokenValue($0, "famrole") == "parent" }.count == 0
+}
+
+// A parent's children, drawn beneath it.
+func kidsOf(_ w: Any) -> [Any] {
+    if tokenValue(w, "famrole") != "parent" { return [] }
+    let f = tokenValue(w, "family")
+    return workspaces.filter { tokenValue($0, "family") == f && tokenValue($0, "famrole") == "child" }
+}
+
 func section(_ title: String, _ tint: String, _ b: Int) -> some View {
-    let items = workspaces.filter { bucket($0) == b }
+    let items = workspaces.filter { famBucket($0) == b }
     return VStack(alignment: .leading, spacing: 1) {
         if items.count > 0 {
             HStack(spacing: 5) {
@@ -822,8 +857,18 @@ func section(_ title: String, _ tint: String, _ b: Int) -> some View {
             .frame(height: 22)
             .padding(6)
 
-            ForEach(items.prefix(12)) { w in
-                row(w)
+            ForEach(items.filter { isTop($0) }.prefix(12)) { w in
+                VStack(alignment: .leading, spacing: 1) {
+                    row(w)
+                    // Children indented behind a fixed-width spacer: edge
+                    // padding is silently dropped by this interpreter.
+                    ForEach(kidsOf(w)) { k in
+                        HStack(spacing: 0) {
+                            Spacer().frame(width: 12)
+                            row(k)
+                        }
+                    }
+                }
             }
         }
     }

@@ -32,7 +32,9 @@
   position, animated with the Web Animations API rather than CSS),
   svg.dial, .main, .hd, .nm, .badge, .said (may contain <b> and <code>), .chips,
   .chip + .lead, .meta, .empty, .facts > .branch/.dirty/.pr, .sigs > .sig + .act,
-  .feed > .feedbar, and .owned (which reads --own, the worktree's Peacock colour).
+  .feed > .feedbar, .owned (which reads --own, the worktree's Peacock colour),
+  .fam + .kid on a deep-plan family's rows, and a .famhd label before a family
+  whose parent has no row.
   Palette is Everforest, matching render.js's COL map; the signals strip carries
   the Swift sidebar's palette instead, which the collector supplies per entry.
 -->
@@ -192,6 +194,12 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
 .row.quiet .dial{width:20px;height:20px}
 .sect{color:var(--quiet);font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;
   margin:12px 0 4px;padding-top:7px;border-top:1px solid var(--line)}
+/* A deep-plan family: the parent row leads, its children sit indented beneath
+   it behind a thin elbow, so the group reads as one thing at one tier. */
+.row.kid{margin-left:16px;position:relative}
+.row.kid::before{content:"";position:absolute;left:-11px;top:-7px;height:22px;width:8px;
+  border-left:1px solid var(--line);border-bottom:1px solid var(--line);border-bottom-left-radius:4px}
+.famhd{color:var(--quiet);font-size:9.5px;letter-spacing:.06em;margin:8px 0 3px 2px}
 
 /* Fires once, on the transition into done -- render.js gates it with data-prev. */
 @keyframes ripple{0%{box-shadow:0 0 0 0 rgba(167,192,128,.5)}100%{box-shadow:0 0 0 14px rgba(167,192,128,0)}}

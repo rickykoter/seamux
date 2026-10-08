@@ -267,13 +267,18 @@ function __boardRender(d) {
   // "does not" stays legible now that both are on the page. Emitted inline with
   // the rows rather than as separate markup, because #rows is replaced whole.
   var seenQuiet = false;
+  // A quiet member of a family that sorts above the divider sits with its
+  // family, not under it (families.py), so it neither opens the quiet section
+  // nor counts toward it.
+  var belowDivider = function (r) { return r.kind === "quiet" && (!r.famtier || r.famtier === "quiet"); };
   host.innerHTML = rows.length ? rows.map(function (a) {
     var sect = "";
-    if (a.kind === "quiet" && !seenQuiet) {
+    if (belowDivider(a) && !seenQuiet) {
       seenQuiet = true;
-      sect = '<div class="sect">quiet · ' +
-        rows.filter(function (r) { return r.kind === "quiet"; }).length + "</div>";
+      sect = '<div class="sect">quiet · ' + rows.filter(belowDivider).length + "</div>";
     }
+    // A family whose parent has no row on the board is headed by its name.
+    if (a.famlabel) sect += '<div class="famhd">family · ' + esc(a.famlabel) + "</div>";
     var ripple = prev[a.id] && prev[a.id] !== a.kind && a.kind === "done" ? " ripple" : "";
     next[a.id] = a.kind;
     // data-id is the delegation handle intent.js needs: #rows survives a push but
@@ -292,7 +297,9 @@ function __boardRender(d) {
     // The workspace you are standing in. Marked, not moved: promoting it to the
     // top would fight the ranking, which is the one thing this board is for.
     var here = a.selected ? " here" : "";
-    return sect + '<div class="row ' + a.kind + ripple + inert + here +
+    // Children sit indented under their family's parent (or its label).
+    var fam = a.family ? " fam" + (a.famkid ? " kid" : "") : "";
+    return sect + '<div class="row ' + a.kind + ripple + inert + here + fam +
       (a.color ? " owned" : "") +
       '" data-id="' + esc(a.id) + '" title="' + esc(a.name) + '"' + own + ">" +
       dial(a.frac, a.kind) +

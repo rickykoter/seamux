@@ -6,12 +6,20 @@ speaking 4-byte big-endian length-prefixed JSON on stdin/stdout. Encoding of
 `state` follows Swift's synthesized enum Codable for SwiftValue: a single-key
 container named for the case, payload under "_0" for unlabeled values.
 """
+import glob
 import json
+import os
 import struct
 import subprocess
 import sys
 
-CMUX = "/Applications/cmux.app/Contents/MacOS/cmux"
+# The newest cmux*.app, as bin/crew-cmux-bin picks it: a hardcoded cmux.app
+# went missing the day this machine moved to the nightly build. CMUX_APP_BIN
+# overrides it for a build somewhere else.
+CMUX = os.environ.get("CMUX_APP_BIN") or next(
+    (p for p in sorted(glob.glob("/Applications/cmux*.app/Contents/MacOS/cmux"),
+                       key=os.path.getmtime, reverse=True)),
+    "/Applications/cmux.app/Contents/MacOS/cmux")
 FLAG = "--cmux-sidebar-interpreter-worker"
 
 
@@ -96,6 +104,17 @@ WORKSPACES = [
        "phase:working plan:mode", 20, color="#0E6B8C"),
     ws("w-plandeep", "deep-plan-row", "dev/PROJ-10-deep",
        "phase:working plan:deep ci:pass", 45, pr=(31004, "open"), color="#880E4F"),
+    # a deep-plan family: the parent is idle and one child is waiting, so the
+    # whole family belongs in Needs you, the children drawn under the parent
+    ws("w-fam-p", "family-parent", "dev/FAM-1-parent",
+       "family:fam-goal famrole:parent", 99999, color="#1565C0"),
+    ws("w-fam-a", "family-child-a", "dev/FAM-2-a",
+       "phase:waiting family:fam-goal famrole:child", 30, color="#3A82D8"),
+    ws("w-fam-b", "family-child-b", "dev/FAM-3-b",
+       "phase:working family:fam-goal famrole:child", 5, color="#0E4A8F"),
+    # a child whose parent has no workspace: listed on its own
+    ws("w-fam-orphan", "family-orphan", "dev/FAM-4-o",
+       "family:fam-other famrole:child", 99999),
 ]
 
 STATE = {
