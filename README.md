@@ -41,16 +41,19 @@ covers a first install and an update, and what to ask you along the way.
 
 ## Tour
 
-A one-minute replay of a working afternoon: the board re-ranking as agents
-finish and questions arrive, the `/usage` dashboard, and a deep-plan review
-with its quiz.
+One change split across three Claude Code sessions: a parent plan and two
+workstreams, each in its own git worktree. The video opens with a tour of the
+screen, one feature at a time. Then it plays the whole run: each workstream
+plans its piece with deep-plan, the parent adopts both, and every plan passes
+its quiz before any code is written. The parent lands the shared type first.
+Both workstreams then build in parallel, and the parent merges them and
+proves sign-in end to end. Each increment opens with `go` and closes only
+when its checks pass, including an observability check recorded with what
+the agent saw.
 
-https://github.com/user-attachments/assets/ba0c9f94-0f5a-4eb7-ae2c-e924a60e817c
+https://github.com/user-attachments/assets/10a4d07c-de90-4825-a045-a42c662da4f2
 
-The demo uses mock data and shows each pane on its own. In real use you
-arrange these cmux panes next to your Claude Code sessions and other
-terminals. The screenshots below are real renders of the shipped pages,
-loaded with demo data.
+_Note: The demo video uses a mock scenario with an ephemeral code-base and live Claude Code (Sonnet 5.5)_
 
 ## crew: the board
 
