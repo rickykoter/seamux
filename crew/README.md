@@ -269,6 +269,15 @@ guessing wrong would mean silently overwriting a deliberate choice. So a color
 already set is *adopted*, never overruled, and it propagates out to VS Code like
 any other. To move one deliberately: `crew color free`, clear it in cmux, sync.
 
+**The exception is a deep-plan family.** A family is a parent plan and the
+child plans it coordinates, each in its own worktree. Its members wear one hue:
+the parent keeps its color, and each child takes a lighter or darker shade of it.
+Joining a family is deliberate, so it is the one time crew recolors a worktree
+that already had a color. The old color is kept in the registry (`PREV=`), and
+leaving the family, or the family closing, gives it back on the next sync. A
+worktree that had no color before goes back to none. Peacock follows only where it
+already colors that worktree.
+
 Peacock has no CLI and `code` cannot invoke an extension command, so the only way
 in is `<worktree>/.vscode/settings.json`. That is safe because `.vscode/` is
 gitignored by the monolith itself, inside worktrees too — the settings never dirty
@@ -281,7 +290,14 @@ crew color show [path]   this worktree's color and whether Peacock has it
 crew color apply [path]  write the Peacock settings
 crew color free [path]   release the color and remove the Peacock settings
 crew color prune         drop entries whose worktree is gone
+crew color family <parent-root> <child-root>...   shades for a family (crew-sync calls it)
+crew color unfamily <root> | --stale [<parent-root>...]   put the color from before back
 ```
+
+On the board and in the sidebar a family sits together: the parent row first,
+its children indented beneath it, and the whole family in the section of its most
+urgent member. A child that needs you brings its parent and siblings into Needs
+you with it.
 
 ## Whimsy
 

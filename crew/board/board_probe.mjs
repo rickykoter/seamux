@@ -604,6 +604,32 @@ print(json.dumps([[r["id"], r["kind"], r.get("famtier", "")] for r in m.rank_pla
     /<div class="famhd">family · G<\/div><div class="row quiet[^"]* fam kid"[^>]*data-id="g1"/.test(html)]);
 }
 
+// ---- crew-color: a family's shades, and the colors from before ------------
+{
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), "crew-color-fam-"));
+  const env = { ...process.env, XDG_CACHE_HOME: join(tmp, "cache"), CREW_CMUX: "/usr/bin/false" };
+  const [P, A, B] = ["p", "a", "b"].map(n => { const d = join(tmp, n); fs.mkdirSync(d); return d; });
+  const cc = (...a) => execFileSync("python3", [join(HERE, "..", "bin", "crew-color"), ...a], { encoding: "utf8", env });
+  // Not trim(): a member restored to no color ends its line in a bare tab.
+  const lines = out => Object.fromEntries(out.split("\n").filter(Boolean).map(l => l.split("\t")));
+  cc("assign", A);
+  const before = cc("peek", A).trim();
+  const fam = lines(cc("family", P, A, B));
+  checks.push(["crew-color: a family's children take shades, distinct from the parent and each other",
+    /^#[0-9A-F]{6}$/.test(fam[A]) && /^#[0-9A-F]{6}$/.test(fam[B]) &&
+    new Set([fam[P], fam[A], fam[B]]).size === 3 && fam[A] !== before]);
+  checks.push(["crew-color: forming a family again changes nothing",
+    JSON.stringify(lines(cc("family", P, A, B))) === JSON.stringify(fam)]);
+  const back = lines(cc("unfamily", "--stale"));
+  checks.push(["crew-color: a closed family gives each member its color from before",
+    back[A] === before && back[B] === "" && cc("peek", A).trim() === before && cc("peek", B).trim() === ""]);
+  checks.push(["crew-color: --stale spares a family still named",
+    (cc("family", P, A, B), cc("unfamily", "--stale", P).trim() === "")]);
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
 let bad = 0;
 for (const [n, ok] of checks) { if (!ok) bad++; console.log(`  ${ok ? "ok  " : "FAIL"} ${n}`); }
 console.log(`\n${bad ? "\x1b[31m" : "\x1b[32m"}board probe: ${checks.length - bad} passed, ${bad} failed\x1b[0m`);
