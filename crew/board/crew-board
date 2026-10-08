@@ -488,6 +488,25 @@ def last_line(ws_id, lines=4):
 
 # ---------------------------------------------------------------- rank
 
+def fam_fields(plan):
+    """The row's place in a deep-plan family: the parent's slug and this
+    member's role, from the `family` field status --json carries. Empty for a
+    plan in no family (or no plan), so those rows are exactly as before."""
+    f = (plan or {}).get("family") or {}
+    return {"family": f["parent"], "famrole": f.get("role", "")} if f.get("parent") else {}
+
+
+def group_families(rows, quiet):
+    """families.group, or the rows untouched if it cannot load: a board that
+    does not group beats a board that does not render."""
+    try:
+        sys.path.insert(0, HERE)
+        import families as _fam
+        return _fam.group(rows, quiet)
+    except Exception:
+        return rows, quiet
+
+
 def rank(wss, plan_by_root, screens=False):
     """Five tiers. The ordering IS the product: the top of this list is what the board
     is for, and everything below the divider is deliberately not shown.
@@ -676,6 +695,7 @@ def rank(wss, plan_by_root, screens=False):
                 "ref": w.get("ref", ""), "cwd": w["cwd"],
                 "pr_url": w.get("pr_url", ""),
                 "slug": (plan or {}).get("slug", ""),
+                **fam_fields(plan),
             })
             continue
 
@@ -716,7 +736,8 @@ def rank(wss, plan_by_root, screens=False):
                      # that a click sends only (row id, action) and never a path.
                      "ref": w.get("ref", ""), "cwd": w["cwd"],
                      "pr_url": w.get("pr_url", ""),
-                     "slug": (plan or {}).get("slug", "")})
+                     "slug": (plan or {}).get("slug", ""),
+                     **fam_fields(plan)})
 
     order = {"attend": 0, "wilt": 1, "running": 2, "done": 3, "quiet": 4}
     # Within a tier, the cached urgency score decides who reads first; tiers
@@ -724,7 +745,9 @@ def rank(wss, plan_by_root, screens=False):
     # among themselves (sort stability + urgency 0). Quiet rows are exempt —
     # they are defined as not competing for attention.
     rows.sort(key=lambda r: (order.get(r["kind"], 9), -r.get("urgency", 0.0)))
-    return rows, quiet
+    # A family moves as one unit, at its most urgent member's place, and takes
+    # its quiet members with it (families.py).
+    return group_families(rows, quiet)
 
 
 def rank_plans_only(plan_by_root):
@@ -772,7 +795,9 @@ def rank_plans_only(plan_by_root):
     # (it only needs `open`), so the plan pages stay reachable with cmux down;
     # anything needing a workspace fails loudly in the intent log instead of
     # silently doing nothing.
+    by_slug = {p.get("slug"): p for p in plan_by_root.values()}
     for r in rows:
+        r.update(fam_fields(by_slug.get(r["id"])))
         r.setdefault("slug", r["id"])
         r.setdefault("ref", "")
         r.setdefault("cwd", "")
@@ -783,7 +808,7 @@ def rank_plans_only(plan_by_root):
             r.setdefault(k, v)
     order = {"attend": 0, "wilt": 1, "running": 2, "done": 3}
     rows.sort(key=lambda r: order.get(r["kind"], 9))
-    return rows
+    return group_families(rows, [])[0]
 
 
 def build(screens=False, fast=False):
