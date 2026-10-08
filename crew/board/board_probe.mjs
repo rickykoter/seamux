@@ -717,6 +717,35 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
   checks.push(["rank: a row carries its workspace's commits for the news", out.commits.length === 1 && out.commits[0].s === "x"]);
 }
 
+// ---- the news footer: escaped, keeps its open state, hides when empty ------
+{
+  const NEWS = { hours: 5, lede: "{{gate}} needs your go-ahead on <img src=x onerror=1>.",
+    items: [{ id: "gate", tier: "attend", family: "", text: "{{gate}} needs your go-ahead on <img src=x onerror=1>." },
+            { id: "red", tier: "wilt", family: "", text: "{{red}} is red on CI on `dev/red`." },
+            { id: "x", tier: "\"><script>", family: "", text: "odd tier" }] };
+  els.news = mk("news");
+  els.news.setAttribute("open", "");
+  render({ rows: [{ id: "gate", name: "gate", kind: "attend", badge: "gate shut", said: "", chips: [], frac: null, meta: "" }],
+    quiet: "", news: NEWS });
+  const body = els["news-body"].innerHTML, lede = els["news-lede"].innerHTML;
+  checks.push(["news: footer shows when there is news", els.news.hidden === false]);
+  checks.push(["news: the window is in the title", els["news-ttl"].textContent === "news · 5h"]);
+  checks.push(["news: one paragraph per item, coloured by tier",
+    (body.match(/<p class="ni /g) || []).length === 3 && body.includes('class="ni attend"') && body.includes('class="ni wilt"')]);
+  checks.push(["news: text is escaped, affordances kept",
+    !body.includes("<img") && !lede.includes("<img") && lede.includes("<b>gate</b>") && body.includes("<code>dev/red</code>")]);
+  checks.push(["news: an unknown tier cannot reach the class attribute",
+    body.includes('class="ni quiet"') && !body.includes("<script")]);
+  render({ rows: [], quiet: "", news: NEWS });
+  checks.push(["news: the <details> keeps its open state across a push", els.news.getAttribute("open") === ""]);
+  render({ rows: [], quiet: "", news: { hours: 5, lede: "", items: [] } });
+  checks.push(["news: no items hides the footer", els.news.hidden === true]);
+  render({ rows: [], quiet: "" });
+  checks.push(["news: a push without news (an old collector) hides it too", els.news.hidden === true]);
+  checks.push(["board.html has the news targets inside a <details>",
+    /<details id="news"[^>]*>[\s\S]*id="news-ttl"[\s\S]*id="news-lede"[\s\S]*id="news-body"[\s\S]*<\/details>/.test(pageHtml)]);
+}
+
 let bad = 0;
 for (const [n, ok] of checks) { if (!ok) bad++; console.log(`  ${ok ? "ok  " : "FAIL"} ${n}`); }
 console.log(`\n${bad ? "\x1b[31m" : "\x1b[32m"}board probe: ${checks.length - bad} passed, ${bad} failed\x1b[0m`);

@@ -17,6 +17,10 @@
     #cat     the whimsy sprite; render.js sets its mood class, nothing else
     #tally   how many rows are in each state
     #says    what the cat has to say about that mood
+    #news    the news footer, a <details> render.js never replaces -- so its open
+             state survives every push; render.js sets .hidden and fills
+             #news-ttl (the window), #news-lede (the first sentence, shown
+             collapsed) and #news-body (every sentence, by tier: .ni + tier)
 
   The cat's geometry lives HERE rather than in render.js on purpose: it is static art
   that never varies with the data, and render.js is re-sent on every single push. Only
@@ -50,7 +54,10 @@ html,body{margin:0;background:var(--bg);color:var(--fg)}
    header started 11px down and a sliver of page background sat above the cat's
    shelf -- the negative side margins below cancel the LEFT and RIGHT padding, and
    nothing was cancelling this one. */
-body{padding:0 11px 11px;font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+/* A column at least the pane's height, so the news footer's margin-top:auto
+   lands it on the bottom edge even when the board is two rows long. */
+body{display:flex;flex-direction:column;min-height:100vh;
+  padding:0 11px 11px;font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
   -webkit-font-smoothing:antialiased}
 
 /* Parked at the top: the board is a list you scroll, and the one thing you always
@@ -316,6 +323,33 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
 #quiet{margin-top:10px;padding-top:8px;border-top:1px solid var(--line);
   color:var(--grey2);font-size:11.5px}
 #quiet:empty{display:none}
+
+/* The news: pinned to the pane's bottom edge, one line until opened. Sticky
+   rather than fixed, so it stays in the flow -- scrolled to the end, it sits
+   after the last row instead of over it. Negative margins reach the edges and
+   cancel the body's bottom padding, as the header does at the top. Nothing in
+   it moves: it is read, not watched. */
+#news{position:sticky;bottom:0;z-index:5;margin:auto -11px -11px;
+  padding:6px 11px 8px;background:var(--bg);border-top:1px solid var(--line);
+  max-height:45vh;overflow-y:auto}
+#news[hidden]{display:none}
+#news summary{display:flex;gap:8px;align-items:baseline;cursor:pointer;
+  list-style:none;white-space:nowrap;overflow:hidden;color:var(--grey);font-size:11.5px}
+#news summary::-webkit-details-marker{display:none}
+#news summary::before{content:"\25B8";color:var(--grey2)}
+#news[open] summary::before{content:"\25BE"}
+#news-ttl{flex:none;color:var(--grey2);text-transform:uppercase;letter-spacing:.06em;font-size:10px}
+#news-lede{overflow:hidden;text-overflow:ellipsis}
+#news[open] #news-lede{display:none}
+#news-lede b,#news-body b{color:var(--fg);font-weight:600}
+#news-lede code,#news-body code{color:var(--running);font-size:11px}
+#news-body{margin-top:5px}
+.ni{margin:0 0 4px;padding-left:7px;border-left:2px solid var(--quiet);
+  color:var(--grey);font-size:12px;line-height:1.45}
+.ni.attend{border-left-color:var(--attend)}
+.ni.wilt{border-left-color:var(--wilt)}
+.ni.running{border-left-color:var(--running)}
+.ni.done{border-left-color:var(--done)}
 </style></head>
 <body>
 <header>
@@ -386,4 +420,8 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
   <div class="empty">Waiting for the first push.<br>The listener pushes on startup, on workspace events and every 120s — <code>crew listen status</code></div>
 </div>
 <div id="quiet"></div>
+<details id="news" hidden>
+  <summary><span id="news-ttl">news</span><span id="news-lede"></span></summary>
+  <div id="news-body"></div>
+</details>
 </body></html>
