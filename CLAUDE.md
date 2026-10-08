@@ -17,7 +17,9 @@ guessing, preview with `./install.sh --dry-run`, verify with
   `/reload-plugins`. crew is the exception: `crew apply` copies it to
   `~/.config/cmux/crew` (see `docs/SYNCING.md`).
 - Tests: `node deep-plan/probe.mjs`, `node restack/probe.mjs`,
-  `node crew/board/board_probe.mjs`, `claude plugin test seamux-mods`.
+  `node crew/board/board_probe.mjs`, `python3 crew/tools/family_sync_probe.py`,
+  `claude plugin test seamux-mods`. `.seamux/verify.json` holds each as a
+  recipe matched to the files it tests, so `deep-plan check run` picks them.
 - Type-check seamux-mods after changing it: copy
   `~/.claude/plugins/cache/seamux/seamux-mods/<version>/.claude-plugin/types`
   to `seamux-mods/.claude-plugin/types` (git ignores the copy), then

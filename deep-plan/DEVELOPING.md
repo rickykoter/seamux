@@ -413,8 +413,25 @@ every few seconds.
 ```bash
 node deep-plan/probe.mjs                         # from the repo; must print 0 failed
 node crew/board/board_probe.mjs                  # the board still renders plan rows
+python3 crew/tools/family_sync_probe.py          # families through crew-sync, fake cmux
 crew doctor                                      # intent routes + mermaid swap
+bash deep-plan/tools/live-family.sh              # costs two haiku calls; see below
 ```
+
+The probe proves what the hooks print, not that Claude Code delivers it to the
+model. `tools/live-family.sh` does that with two headless sessions: the guard's
+note on an edit into a sibling's claim, and the news at the next prompt. Run it
+when a change touches hook output or hooks.json (it is the `family-live`
+recipe, non-default because it costs model calls). It strips the fixture's
+`DEEP_PLAN_*` overrides from the sessions' environment on purpose: exported,
+they reach the installed plugin's hooks too, which then read the fixture and
+can deliver the note themselves, so the test passed on the installed code.
+A no-hook control run showed exactly that before the isolation went in.
+
+`tools/family-fixture.sh DIR` stages the family both use (a repo, two
+worktrees, three rendered plans, private state) and prints the shell to drive
+it. A demo take can source the same fixture and start a visible session in a
+cmux pane, with the e2e's checks as proof the scene really happened.
 
 The probes need the pinned mermaid bundle. They copy it from
 `$DEEP_PLAN_VENDOR_DIR`, `~/.claude/deep-plan/vendor`, the checkout's gitignored
