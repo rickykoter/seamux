@@ -68,3 +68,9 @@ jobs:
       # "no judgment", so the TypeSafe layer can never change CI-less behavior.
       - name: typesafe probe
         run: python3 crew/hooks/typesafe_probe.py
+
+      # A deep-plan family through the real crew-sync and crew-color, against a
+      # fake cmux (crew/tools/fakecmux.py): tokens, shades, and the colors from
+      # before coming back when the family closes.
+      - name: family sync probe
+        run: python3 crew/tools/family_sync_probe.py
