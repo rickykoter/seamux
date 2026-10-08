@@ -661,9 +661,17 @@ crew-digest --hours 4
 crew-digest --week
 crew-digest --size       include the disk total (adds ~12s; du walks 20GB)
 crew-digest --notify     post a one-line summary as a notification
+crew-digest --paragraph  only where things stand, as one plain paragraph
 ```
 
-Sections, each degrading to silence rather than failing the run: commits grouped
+It opens with **where things stand**: the Dock board's news footer, read from
+`crew-board state --fast --json`. That is one sentence per workspace or family,
+in the board's priority order, covering every cmux workspace in any repo, not
+only the main checkout's worktrees. The wording lives in `board/news.py`, so the
+terminal and the Dock never disagree (see `board/README.md`, "The news
+footer").
+
+The rest are sections, each degrading to silence rather than failing the run: commits grouped
 by branch, PRs merged / red / approved / awaiting review, sessions still sitting
 waiting on you with how long, and worktrees that shipped and can be reclaimed.
 
