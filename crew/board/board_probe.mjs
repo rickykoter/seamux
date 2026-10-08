@@ -370,6 +370,10 @@ if (live && Array.isArray(live.rows)) {
     const key = (d) => JSON.stringify((d.rows || []).map((r) =>
       [r.id, r.kind, r.branch, r.pr, r.pr_url, r.meta, r.chips]));
     checks.push(["a fast build agrees with a full build", key(fast) === key(live)]);
+    // Commits reach the news from the full pass's cache, so the two must tell
+    // the same story too.
+    checks.push(["a fast build carries the same news as a full build",
+      JSON.stringify(fast.news) === JSON.stringify(live.news)]);
   } catch {
     console.log("  --   fast build unavailable — skipped");
   }
@@ -628,6 +632,118 @@ print(json.dumps([[r["id"], r["kind"], r.get("famtier", "")] for r in m.rank_pla
   checks.push(["crew-color: --stale spares a family still named",
     (cc("family", P, A, B), cc("unfamily", "--stale", P).trim() === "")]);
   fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+// ---- news: the board's rows as sentences, in the board's own order ----------
+{
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), "board-news-"));
+  const NOW = 1_800_000_000;
+  const R = (id, kind, badge, extra = {}) => ({ id, name: id, kind, badge, said: "", chips: [], frac: null, meta: "", ...extra });
+  const compose = (rows, hours = 5) => {
+    const f = join(tmp, "fx.json");
+    fs.writeFileSync(f, JSON.stringify({ rows, now: NOW, hours }));
+    return JSON.parse(execFileSync("python3", [join(HERE, "news.py"), "--compose", f], { encoding: "utf8" }));
+  };
+  const n = compose([
+    R("gate", "attend", "gate shut", { subject: "Wire the cache" }),
+    R("red", "wilt", "ci failed", { branch: "dev/red" }),
+    R("chk", "wilt", "check failed", { subject: "increment 3 · test-probe" }),
+    R("busy", "running", "working", { subject: "Footer", meta: "2/5 increments",
+      commits: [{ at: NOW - 600, s: "newest" }, { at: NOW - 3600, s: "older" }, { at: NOW - 6 * 3600, s: "outside" }] }),
+    R("par", "running", "working", { family: "F", famrole: "parent", famtier: "attend" }),
+    R("kid", "attend", "review", { family: "F", famrole: "child", famtier: "attend", meta: "0/8 increments" }),
+    R("kid2", "quiet", "plan idle", { family: "F", famrole: "child", famtier: "attend" }),
+    R("q1", "quiet", "idle", { commits: [{ at: NOW - 60, s: "tidy {{x}} `y`" }] }),
+    R("q2", "quiet", "idle"),
+    R("q3", "quiet", "idle", { commits: [{ at: NOW - 9 * 3600, s: "old" }] }),
+  ]);
+  const ids = n.items.map(i => i.id);
+  checks.push(["news: items follow the board's order, attend before wilt before running",
+    ids.join() === "gate,red,chk,busy,family:F,q1,quiet"]);
+  checks.push(["news: the lede is the first item",
+    n.lede === n.items[0].text && n.lede.includes("{{gate}}") && n.lede.includes("Wire the cache")]);
+  checks.push(["news: a family is one item at its lead tier, members joined",
+    n.items[4].tier === "attend" && n.items[4].family === "F" &&
+    /Family \{\{F\}\}: \{\{par\}\} is working; \{\{kid\}\} needs its alignment check taken; 8 increments are locked behind it; 1 more is quiet\./.test(n.items[4].text)]);
+  checks.push(["news: commits inside the window are counted, newest named",
+    /2 commits in the last 5h, latest “newest”/.test(n.items[3].text) && n.items[3].text.includes("(2/5 increments)")]);
+  checks.push(["news: a quiet row speaks only when it committed in the window",
+    n.items[5].text.startsWith("{{q1}} is quiet, with 1 commit") && !ids.includes("q2") && !ids.includes("q3")]);
+  checks.push(["news: quiet rows without commits collapse to one count",
+    n.items[6].text === "2 other workspaces are quiet."]);
+  checks.push(["news: a commit subject cannot open bold or code",
+    !/tidy \{\{|`y`/.test(n.items[5].text) && n.items[5].text.includes("tidy x y")]);
+  checks.push(["news: red CI names the branch, a failed check names it",
+    n.items[1].text === "{{red}} is red on CI on `dev/red`." && n.items[2].text.includes("(increment 3 · test-probe)")]);
+  const empty = compose([]);
+  checks.push(["news: no rows give no items and an empty lede",
+    empty.items.length === 0 && empty.lede === "" && empty.hours === 5]);
+  checks.push(["news: a narrower window drops older commits",
+    /1 commit in the last 0.5h/.test(compose([R("b", "running", "working",
+      { commits: [{ at: NOW - 600, s: "a" }, { at: NOW - 3600, s: "b" }] })], 0.5).items[0].text)]);
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+// ---- failed validation ranks wilt, on both rank paths ----------------------
+{
+  const out = JSON.parse(execFileSync("python3", ["-c", `
+import importlib.machinery, importlib.util, json, sys
+l = importlib.machinery.SourceFileLoader("cb", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("cb", l)); l.exec_module(m)
+P = lambda s, ph, chk: {"slug": s, "root": "/w/" + s, "phase": ph, "gate": {"allow": True, "why": ""},
+  "progress": {"total": 3, "done": 1, "blocked": [], "open": [{"n": 2, "title": "t"}], "next": None},
+  "checksOutstanding": chk}
+pb = {"/w/f": P("f", "implementing", [{"n": 2, "id": "test-a", "kind": "test", "status": "fail"}]),
+      "/w/l": P("l", "implementing", [{"n": 2, "id": "e2e-b", "kind": "e2e", "status": "lost"}]),
+      "/w/p": P("p", "implementing", [{"n": 2, "id": "test-c", "kind": "test", "status": "pending"}]),
+      "/w/d": P("d", "done", [{"n": 3, "id": "test-d", "kind": "test", "status": "fail"}])}
+W = lambda s, running: {"id": s, "title": s, "cwd": "/w/" + s, "desc": "", "running": running,
+  "branch": "none", "pr": "none", "dirty": False, "commits": [{"at": 1, "s": "x"}]}
+rows, quiet = m.rank([W("f", True), W("l", False), W("p", True), W("d", False)], pb)
+po = m.rank_plans_only(pb)
+print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")] for r in rows + quiet},
+                  "plans": {r["id"]: [r["kind"], r["badge"]] for r in po},
+                  "commits": [r["commits"] for r in rows + quiet if r["id"] == "f"][0]}))
+`, join(HERE, "crew-board")], { encoding: "utf8" }));
+  checks.push(["checks: a failed check ranks wilt even mid-turn, naming it",
+    JSON.stringify(out.rank.f) === JSON.stringify(["wilt", "check failed", "increment 2 · test-a"])]);
+  checks.push(["checks: a lost runner ranks wilt too", out.rank.l[0] === "wilt" && out.rank.l[1] === "check failed"]);
+  checks.push(["checks: a pending check leaves the row working", out.rank.p[1] === "working"]);
+  checks.push(["checks: a done plan never climbs back to wilt", out.rank.d[0] === "done"]);
+  checks.push(["checks: the plans-only path agrees",
+    out.plans.f[1] === "check failed" && out.plans.l[1] === "check failed" && out.plans.p[1] === "working" && out.plans.d[0] === "done"]);
+  checks.push(["rank: a row carries its workspace's commits for the news", out.commits.length === 1 && out.commits[0].s === "x"]);
+}
+
+// ---- the news footer: escaped, keeps its open state, hides when empty ------
+{
+  const NEWS = { hours: 5, lede: "{{gate}} needs your go-ahead on <img src=x onerror=1>.",
+    items: [{ id: "gate", tier: "attend", family: "", text: "{{gate}} needs your go-ahead on <img src=x onerror=1>." },
+            { id: "red", tier: "wilt", family: "", text: "{{red}} is red on CI on `dev/red`." },
+            { id: "x", tier: "\"><script>", family: "", text: "odd tier" }] };
+  els.news = mk("news");
+  els.news.setAttribute("open", "");
+  render({ rows: [{ id: "gate", name: "gate", kind: "attend", badge: "gate shut", said: "", chips: [], frac: null, meta: "" }],
+    quiet: "", news: NEWS });
+  const body = els["news-body"].innerHTML, lede = els["news-lede"].innerHTML;
+  checks.push(["news: footer shows when there is news", els.news.hidden === false]);
+  checks.push(["news: the window is in the title", els["news-ttl"].textContent === "news · 5h"]);
+  checks.push(["news: one paragraph per item, coloured by tier",
+    (body.match(/<p class="ni /g) || []).length === 3 && body.includes('class="ni attend"') && body.includes('class="ni wilt"')]);
+  checks.push(["news: text is escaped, affordances kept",
+    !body.includes("<img") && !lede.includes("<img") && lede.includes("<b>gate</b>") && body.includes("<code>dev/red</code>")]);
+  checks.push(["news: an unknown tier cannot reach the class attribute",
+    body.includes('class="ni quiet"') && !body.includes("<script")]);
+  render({ rows: [], quiet: "", news: NEWS });
+  checks.push(["news: the <details> keeps its open state across a push", els.news.getAttribute("open") === ""]);
+  render({ rows: [], quiet: "", news: { hours: 5, lede: "", items: [] } });
+  checks.push(["news: no items hides the footer", els.news.hidden === true]);
+  render({ rows: [], quiet: "" });
+  checks.push(["news: a push without news (an old collector) hides it too", els.news.hidden === true]);
+  checks.push(["board.html has the news targets inside a <details>",
+    /<details id="news"[^>]*>[\s\S]*id="news-ttl"[\s\S]*id="news-lede"[\s\S]*id="news-body"[\s\S]*<\/details>/.test(pageHtml)]);
 }
 
 let bad = 0;

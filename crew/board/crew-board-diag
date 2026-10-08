@@ -311,8 +311,9 @@ if sid and not fatal:
                 age += 86400
             # The threshold tracks the board's own cadence. It was a flat 300s,
             # set when the board only refreshed with the 120s reconcile; against a
-            # 15s tick that is twenty missed pushes before anyone is told.
-            tick = int(os.environ.get("CREW_BOARD_TICK", "15") or 15)
+            # 10s tick that is thirty missed pushes before anyone is told. The
+            # default must match crew-listen's BOARD_TICK, which is what runs.
+            tick = int(os.environ.get("CREW_BOARD_TICK", "10") or 10)
             limit = max(60, tick * 4)
             say("ok" if age < limit else "warn", "glass age",
                 f"{age}s (stamp {stamp}, board ticks every {tick}s)",

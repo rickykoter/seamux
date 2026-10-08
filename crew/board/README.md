@@ -32,7 +32,7 @@ Five tiers. The top of the list is the whole point; the bottom is deliberately n
 | Tier | Means | Sourced from |
 |---|---|---|
 | **attend** | blocked on a human | crew's `phase:waiting`; a plan whose check is untaken; a plan whose gate is shut |
-| **wilt** | broken | `ci:fail`, `pr:conflict`, `review:changes`, a blocked increment |
+| **wilt** | broken | `ci:fail`, a deep-plan check that failed or lost its runner, `pr:conflict`, `review:changes`, a blocked increment |
 | **running** | mid-turn | `claude_code=Running`, `phase:working` |
 | **done** | finished, needs closing | `gone:merged`, a plan whose every increment is done |
 | quiet | everything else | collapsed to a count |
@@ -386,6 +386,43 @@ one has its **transitions frozen**, so the tooltip's opacity reads 0 from the
 outside even though the inline style is 1. That is the same throttling that keeps
 a backgrounded plan page from finishing its load — not a bug in the page.
 
+## The news footer
+
+The ranking answers "who needs you", one row at a time. The footer says the same
+thing as a paragraph, plus what moved recently: one sentence per workspace, or
+one per family, in exactly the board's order. Shut gates and untaken alignment
+checks come first. Then red CI and failed checks, work in progress with its
+increment count, merged and finished plans, quiet workspaces that committed
+recently, and a count for the rest.
+
+```
+▸ NEWS · 5H  summary needs your go-ahead on Wire the cache.
+```
+
+It is a native `<details>` pinned to the pane's bottom edge. Collapsed, it shows
+the first sentence. Open, it grows upward and shows every sentence, each on its
+tier's rail. render.js writes only its contents and never replaces the element,
+so if you leave it open it stays open across pushes. It is sticky rather than
+fixed, so once you scroll to the end it sits after the last row instead of over
+it.
+
+**Rebuilt on every push, never generated on a timer.** `news.py` composes it
+from `rank()`'s rows, so it cannot disagree with the cards above it: the push
+that clears a `ci:fail` token also drops the "red on CI" sentence. The five
+hours bound only the commits it counts (`CREW_NEWS_HOURS`, default 5). No model
+writes it and nothing leaves the machine.
+
+**Commits are the one expensive input**, so only the full pass reads them: one
+`git log HEAD --not origin/HEAD` per worktree, onto the row in
+`board-sidebar.json`. The fast pass reuses them and recounts the timestamps
+against the sliding window. `--not origin/HEAD` stops a fresh worktree from
+claiming main's commits as its own. A clone where `origin/HEAD` does not
+resolve says nothing about commits rather than guessing (`git remote set-head
+origin --auto` fixes it).
+
+`crew-digest` opens with the same sentences, read from `crew-board state
+--json`, and `crew-digest --paragraph` prints them as one line to paste.
+
 ## Refresh cadence
 
 Two clocks, because they answer different questions.
@@ -393,14 +430,14 @@ Two clocks, because they answer different questions.
 | | every | costs | what it answers |
 |---|---|---|---|
 | reconcile (`crew-sync`) | `CREW_TICK_SECONDS`, 120s | ~4.5s (gh, acli, sbx) | CI, review, Jira — things only a remote knows |
-| board push, fast | `CREW_BOARD_TICK`, **15s** | ~190ms | does the glass still show what is true locally |
+| board push, fast | `CREW_BOARD_TICK`, **10s** | ~190ms | does the glass still show what is true locally |
 | board push, full | every event + every reconcile + startup | ~2.1s | everything, including branch and PR |
 
 The board used to refresh only on the reconcile's clock, so a gate you had just
 opened or a turn that had just finished could sit unrendered for two minutes even
 though every input was already on disk.
 
-Fifteen seconds is affordable only because of the split. Measured over 10
+Ten seconds is affordable only because of the split. Measured over 10
 workspaces: `workspace list --json` **27ms**, deep-plan status **73ms**, and
 `cmux sidebar-state` **1564ms** — 89% of a 1754ms build, ~156ms per workspace,
 one call each, with no bulk form in the CLI. A fast pass skips those calls and

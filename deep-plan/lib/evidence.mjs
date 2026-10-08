@@ -65,8 +65,11 @@ export function verdict(answer, floor = FLOOR) {
 
 // path:line or path:line-line, repo-relative. Absolute paths, URLs and plain
 // prose carry no such token and produce no refs — free-text evidence is legal,
-// it is just not checkable.
-const REF = /(?<![\w/])([A-Za-z0-9_][A-Za-z0-9_.\/-]*):(\d+)(?:-(\d+))?/g;
+// it is just not checkable. One leading dot is allowed, for dotfile trees like
+// .seamux/ and .github/: without it `.seamux/verify.json:15` was read as
+// `seamux/verify.json` and warned missing. The lookbehind also refuses a dot,
+// so a match never starts on the second dot of `..` or mid-word after one.
+const REF = /(?<![\w/.])(\.?[A-Za-z0-9_][A-Za-z0-9_.\/-]*):(\d+)(?:-(\d+))?/g;
 
 export function parseRefs(evidence) {
   const out = [];

@@ -342,6 +342,26 @@ function __boardRender(d) {
   $("need").textContent = n ? n + (n === 1 ? " needs you" : " need you")
                             : "nothing needs you";
   $("quiet").textContent = tail;
+  // The news footer. Only its contents are written: the <details> itself is
+  // never replaced, so whether you left it open survives every push without
+  // any state of ours. Below #rows and filled after slide(), it cannot move a
+  // row the FLIP has already measured. The text is news.py's and goes through
+  // the same escape-then-two-affordances path as `said`.
+  var nw = $("news");
+  if (nw) {
+    var news = d.news || {};
+    var items = news.items || [];
+    nw.hidden = !items.length;
+    var ttl = $("news-ttl");
+    if (ttl) ttl.textContent = "news" + (news.hours ? " · " + news.hours + "h" : "");
+    var lede = $("news-lede");
+    if (lede) lede.innerHTML = said(news.lede || "");
+    var body = $("news-body");
+    if (body) body.innerHTML = items.map(function (it) {
+      var tier = COL[it.tier] ? it.tier : "quiet";
+      return '<p class="ni ' + tier + '">' + said(it.text) + "</p>";
+    }).join("");
+  }
   $("src").textContent = d.src || "";
   var st = $("stamp");
   st.textContent = d.stamp || "";

@@ -229,6 +229,8 @@ ok("mermaid inlined as base64 (the swap regex's shape)",
   fs.mkdirSync(path.join(EVREPO, "src"), { recursive: true });
   fs.writeFileSync(path.join(EVREPO, "src", "real.txt"),
     Array.from({ length: 10 }, (_, i) => "line " + (i + 1)).join("\n"));
+  fs.mkdirSync(path.join(EVREPO, ".seamux"), { recursive: true });
+  fs.writeFileSync(path.join(EVREPO, ".seamux", "verify.json"), "{\n  \"recipes\": []\n}\n");
   const ev = JSON.parse(JSON.stringify(spec));
   ev.slug = "evidence-probe";
   ev.verifiedFacts = [
@@ -236,6 +238,7 @@ ok("mermaid inlined as base64 (the swap regex's shape)",
     { claim: "line out of range", evidence: "src/real.txt:99" },
     { claim: "file is gone", evidence: "gone.txt:1" },
     { claim: "free prose evidence stays legal", evidence: "the search came up empty" },
+    { claim: "a dotfile tree resolves", evidence: ".seamux/verify.json:2" },
   ];
   const r1 = cli("render", tmpSpec(ev), "--root", EVREPO);
   ok("evidence: warnings never refuse the render", r1.status === 0);
@@ -244,6 +247,8 @@ ok("mermaid inlined as base64 (the swap regex's shape)",
   ok("evidence: missing file is warned", /gone\.txt:1 — no such file/.test(r1.stderr));
   ok("evidence: a resolvable citation and free prose stay silent",
     !/real\.txt:3/.test(r1.stderr) && !(/prose/.test(r1.stderr)));
+  ok("evidence: a citation under a dotfile tree keeps its dot and resolves",
+    !/verify\.json/.test(r1.stderr));
 
   // The judged half, against a scripted stand-in for typesafe.py: fact 1
   // contradicted at high confidence (warns), fact 2 says_nothing below the

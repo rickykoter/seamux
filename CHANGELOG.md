@@ -6,6 +6,18 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **The crew board has a news footer.** A paragraph pinned to the bottom of
+  the Dock board: one sentence per workspace, or per family, in the board's
+  own priority order. It covers shut gates and untaken alignment checks, red
+  CI and failed checks, work in progress, merged and finished plans, and
+  commits from the last five hours (`CREW_NEWS_HOURS`). It is a native
+  `<details>`: collapsed to its first sentence, it stays open across pushes
+  once opened. Composed by `board/news.py` from the ranked rows on every
+  push, so it never contradicts them. No model writes it, and it adds no
+  network calls. `crew-digest` opens with the same sentences, and
+  `crew-digest --paragraph` prints them as one line. Also: a deep-plan check
+  that failed or lost its runner now ranks its row broken ("check failed").
+
 - **Plan families: parallel workstreams under one parent plan.** A parent
   spec's `workstreams` block names existing child plans, each in its own
   worktree, and what each owns as (repo, glob) claims; membership lives only

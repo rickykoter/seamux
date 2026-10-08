@@ -5,6 +5,7 @@
     crew-digest --hours 4    an arbitrary lookback
     crew-digest --week       since Monday
     crew-digest --notify     also post a one-line summary as a notification
+    crew-digest --paragraph  only where things stand, as one plain paragraph
 
 Answers the question you actually have at 9am: where does the fleet stand.
 Measured peak here is 9am-1pm with a 20:00 tail, so "overnight" defaults to
@@ -13,6 +14,7 @@ everything since 17:00 the previous day.
 Every source is local or already-authenticated, and each section degrades to
 silence rather than failing the run:
 
+  board       where things stand: the Dock board's news, the same sentences
   git         commits landed, across the primary checkout and every worktree
   gh          PRs merged / opened / still red
   cmux        sessions still sitting waiting for you
@@ -52,6 +54,31 @@ def sh(args, cwd=None, timeout=30):
         return r.stdout if r.returncode == 0 else ""
     except Exception:
         return ""
+
+
+# The board sits beside this script in the installed tree (bin/ and board/),
+# reached through the ~/.local/bin symlink, hence realpath.
+BOARD = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "board")
+
+
+def board_news():
+    """The Dock board's news ({hours, lede, items}), or None.
+
+    Read from `crew-board state --fast --json` rather than recomposed here:
+    the wording lives in board/news.py, and the board's rows -- every cmux
+    workspace in any repo, not only MAIN's worktrees -- are what it speaks
+    for. A fast build reuses the board's own cache, so this costs ~200ms.
+    """
+    out = sh([os.path.join(BOARD, "crew-board"), "state", "--fast", "--json"], timeout=30)
+    try:
+        news = json.loads(out).get("news") or {}
+        return news if news.get("items") else None
+    except Exception:
+        return None
+
+
+def plain(text):
+    return text.replace("{{", "").replace("}}", "").replace("`", "")
 
 
 def window():
@@ -116,6 +143,13 @@ def commits_by_branch(since_iso, me):
 
 
 def main():
+    if "--paragraph" in sys.argv:
+        news = board_news()
+        if not news:
+            return 1
+        print(" ".join(plain(it.get("text", "")) for it in news["items"]))
+        return 0
+
     start, label = window()
     since_iso = start.isoformat()
     notify = "--notify" in sys.argv
@@ -124,6 +158,16 @@ def main():
           or sh(["git", "config", "user.email"]).strip())
 
     print(f"\n{BOLD}crew digest{RESET}  {DIM}{label}{RESET}\n")
+
+    # --- where things stand: the board's news, in the board's order ---------
+    news = board_news()
+    if news:
+        ink = {"attend": AMBER, "wilt": RED, "running": "\033[36m", "done": GREEN}
+        print(f"{BOLD}where things stand{RESET}  {DIM}commits: last {news.get('hours', 5):g}h{RESET}")
+        for it in news["items"]:
+            text = it.get("text", "").replace("{{", BOLD).replace("}}", RESET).replace("`", "")
+            print(f"  {ink.get(it.get('tier'), DIM)}●{RESET} {text}")
+        print()
 
     # --- commits ------------------------------------------------------------
     trees = worktrees()
