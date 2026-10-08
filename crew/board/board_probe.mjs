@@ -630,6 +630,58 @@ print(json.dumps([[r["id"], r["kind"], r.get("famtier", "")] for r in m.rank_pla
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
+// ---- news: the board's rows as sentences, in the board's own order ----------
+{
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), "board-news-"));
+  const NOW = 1_800_000_000;
+  const R = (id, kind, badge, extra = {}) => ({ id, name: id, kind, badge, said: "", chips: [], frac: null, meta: "", ...extra });
+  const compose = (rows, hours = 5) => {
+    const f = join(tmp, "fx.json");
+    fs.writeFileSync(f, JSON.stringify({ rows, now: NOW, hours }));
+    return JSON.parse(execFileSync("python3", [join(HERE, "news.py"), "--compose", f], { encoding: "utf8" }));
+  };
+  const n = compose([
+    R("gate", "attend", "gate shut", { subject: "Wire the cache" }),
+    R("red", "wilt", "ci failed", { branch: "dev/red" }),
+    R("chk", "wilt", "check failed", { subject: "increment 3 · test-probe" }),
+    R("busy", "running", "working", { subject: "Footer", meta: "2/5 increments",
+      commits: [{ at: NOW - 600, s: "newest" }, { at: NOW - 3600, s: "older" }, { at: NOW - 6 * 3600, s: "outside" }] }),
+    R("par", "running", "working", { family: "F", famrole: "parent", famtier: "attend" }),
+    R("kid", "attend", "review", { family: "F", famrole: "child", famtier: "attend", meta: "0/8 increments" }),
+    R("kid2", "quiet", "plan idle", { family: "F", famrole: "child", famtier: "attend" }),
+    R("q1", "quiet", "idle", { commits: [{ at: NOW - 60, s: "tidy {{x}} `y`" }] }),
+    R("q2", "quiet", "idle"),
+    R("q3", "quiet", "idle", { commits: [{ at: NOW - 9 * 3600, s: "old" }] }),
+  ]);
+  const ids = n.items.map(i => i.id);
+  checks.push(["news: items follow the board's order, attend before wilt before running",
+    ids.join() === "gate,red,chk,busy,family:F,q1,quiet"]);
+  checks.push(["news: the lede is the first item",
+    n.lede === n.items[0].text && n.lede.includes("{{gate}}") && n.lede.includes("Wire the cache")]);
+  checks.push(["news: a family is one item at its lead tier, members joined",
+    n.items[4].tier === "attend" && n.items[4].family === "F" &&
+    /Family \{\{F\}\}: \{\{par\}\} is working; \{\{kid\}\} needs its alignment check taken; 8 increments are locked behind it; 1 more is quiet\./.test(n.items[4].text)]);
+  checks.push(["news: commits inside the window are counted, newest named",
+    /2 commits in the last 5h, latest “newest”/.test(n.items[3].text) && n.items[3].text.includes("(2/5 increments)")]);
+  checks.push(["news: a quiet row speaks only when it committed in the window",
+    n.items[5].text.startsWith("{{q1}} is quiet, with 1 commit") && !ids.includes("q2") && !ids.includes("q3")]);
+  checks.push(["news: quiet rows without commits collapse to one count",
+    n.items[6].text === "2 other workspaces are quiet."]);
+  checks.push(["news: a commit subject cannot open bold or code",
+    !/tidy \{\{|`y`/.test(n.items[5].text) && n.items[5].text.includes("tidy x y")]);
+  checks.push(["news: red CI names the branch, a failed check names it",
+    n.items[1].text === "{{red}} is red on CI on `dev/red`." && n.items[2].text.includes("(increment 3 · test-probe)")]);
+  const empty = compose([]);
+  checks.push(["news: no rows give no items and an empty lede",
+    empty.items.length === 0 && empty.lede === "" && empty.hours === 5]);
+  checks.push(["news: a narrower window drops older commits",
+    /1 commit in the last 0.5h/.test(compose([R("b", "running", "working",
+      { commits: [{ at: NOW - 600, s: "a" }, { at: NOW - 3600, s: "b" }] })], 0.5).items[0].text)]);
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
 let bad = 0;
 for (const [n, ok] of checks) { if (!ok) bad++; console.log(`  ${ok ? "ok  " : "FAIL"} ${n}`); }
 console.log(`\n${bad ? "\x1b[31m" : "\x1b[32m"}board probe: ${checks.length - bad} passed, ${bad} failed\x1b[0m`);
