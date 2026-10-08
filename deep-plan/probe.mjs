@@ -2470,6 +2470,18 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   ok("child ui renders", r.status === 0);
   r = cli("render", tmpSpec(child("example-docs", ["README.md"])), "--root", OR);
   ok("child docs (another repo) renders", r.status === 0);
+  // The guard's cost is measured against the same edit before any family exists.
+  cli("open-gate", "example-auth-ui");
+  const gateAs = (session, target, cwd = UI) => spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")], {
+    encoding: "utf8", env: ENV,
+    input: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: target }, cwd, session_id: session }),
+  });
+  const timeEdits = () => {
+    const t = process.hrtime.bigint();
+    for (let i = 0; i < 10; i++) gateAs("timing", path.join(UI, "web", "login", "form.tsx"));
+    return Number(process.hrtime.bigint() - t) / 10e6;
+  };
+  const famless = timeEdits();
   const before = fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "example-auth-ui.json"), "utf8");
 
   const withDocs = { ...fam, workstreams: [...fam.workstreams, { slug: "example-docs", owns: ["README.md"] }] };
@@ -2514,6 +2526,43 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   ok("a child's re-render refreshes the family", r.status === 0 && /family example-auth-revamp: claims refreshed/.test(r.stdout));
   ok("…and its derived claims follow the spec",
     !famIdx().members.find(x => x.slug === "example-auth-ui").derived.some(d => d.path === "api/auth/session.ts"));
+
+  // The soft guard: allowed, told once per session and path, recorded.
+  {
+    const note = r => { try { return JSON.parse(r.stdout).hookSpecificOutput || null; } catch { return null; } };
+    let g = gateAs("s1", path.join(UI, "api", "auth", "session.ts"));
+    const h = note(g);
+    ok("an edit into a sibling's claim is allowed", g.status === 0);
+    ok("…and the agent is told who owns it",
+      h && h.hookEventName === "PreToolUse" && /api\/auth\/session\.ts/.test(h.additionalContext) &&
+      /workstream example-auth-api owns it \(api\/auth\/\*\*\)/.test(h.additionalContext) && /example-auth-ui/.test(h.additionalContext));
+    ok("…and the guard never sets a permission decision", h && !("permissionDecision" in h) && !/"decision"/.test(g.stdout));
+    g = gateAs("s1", path.join(UI, "api", "auth", "session.ts"));
+    ok("the same session is told once per path", g.status === 0 && !note(g));
+    g = gateAs("s2", path.join(UI, "api", "auth", "session.ts"));
+    ok("another session is told again", note(g) !== null);
+    g = gateAs("s1", path.join(UI, "web", "login", "form.tsx"));
+    ok("an edit inside its own claim is silent", g.status === 0 && g.stdout.trim() === "");
+    g = gateAs("s1", path.join(UI, "package-lock.json"));
+    ok("an edit to a shared path is silent", g.status === 0 && g.stdout.trim() === "");
+    g = gateAs("s1", path.join(UI, "notes", "scratch.md"));
+    ok("an unclaimed path is silent", g.status === 0 && g.stdout.trim() === "");
+    cli("open-gate", "example-auth-api");
+    g = gateAs("s1", path.join(API, "web", "login", "form.tsx"));
+    ok("editing a sibling's worktree outright is named as such",
+      note(g) && /web\/login\/form\.tsx .*it sits in workstream example-auth-api's worktree/.test(note(g).additionalContext));
+    g = gateAs("s1", path.join(REPO, "x.txt"), REPO);
+    ok("a session outside every family is never told", g.stdout.trim() === "");
+    const log = fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "families", fam.slug, "trespass.jsonl"), "utf8")
+      .trim().split("\n").map(l => JSON.parse(l));
+    if (V) console.log("  trespass log: " + JSON.stringify(log.map(l => [l.session, l.path, l.how])));
+    ok("each told trespass is recorded once",
+      log.length === 3 && log[0].from === "example-auth-ui" && log[0].owner === "example-auth-api" &&
+      log[0].path === "api/auth/session.ts" && log[0].session === "s1" && log[1].session === "s2");
+    const withFamily = timeEdits();
+    console.log(`\n  family guard: ${(withFamily - famless).toFixed(1)} ms/edit over the same edit with no family (${famless.toFixed(1)} → ${withFamily.toFixed(1)})`);
+    ok("the family guard costs under 15 ms per edit", withFamily - famless < 15);
+  }
 
   // family check: what a worktree actually touched, Bash writes included.
   r = cli("family", "check", fam.slug);

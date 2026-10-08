@@ -24,6 +24,24 @@ const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 // ---------------------------------------------------------------- repos
 
+// canon() for a path that may not exist yet, however deep: resolve the
+// nearest existing ancestor and append the rest. state.mjs's canon gives up
+// one level up, so a new file in a new directory under a symlinked root
+// (/tmp on macOS) would not compare equal to that root.
+export function canonDeep(p) {
+  let head = path.resolve(p);
+  const tail = [];
+  for (;;) {
+    try { return path.join(fs.realpathSync(head), ...tail.reverse()); }
+    catch {
+      const up = path.dirname(head);
+      if (up === head) return path.resolve(p);
+      tail.push(path.basename(head));
+      head = up;
+    }
+  }
+}
+
 // The repository a path sits in: {id, top, name}. `id` is the git common dir
 // with symlinks resolved, equal for every worktree of one repo; `top` is the
 // working tree holding the path; `name` is for people. Null outside any repo.
@@ -33,7 +51,7 @@ const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 // does not exist yet (a file about to be written) is walked from its nearest
 // existing ancestor.
 export function repoOf(p) {
-  let dir = canon(path.resolve(p));
+  let dir = canonDeep(p);
   try { if (!fs.statSync(dir).isDirectory()) dir = path.dirname(dir); }
   catch { dir = path.dirname(dir); }
   for (;;) {
@@ -63,7 +81,7 @@ export function repoOf(p) {
 
 // Forward-slashed path of `file` relative to the repo's working tree, or null.
 export function relInRepo(repo, file) {
-  const rel = path.relative(repo.top, canon(path.resolve(repo.top, file)));
+  const rel = path.relative(repo.top, canonDeep(path.resolve(repo.top, file)));
   if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return null;
   return rel.split(path.sep).join("/");
 }
@@ -408,4 +426,69 @@ export function draftParent(parent, children) {
   // Overlap as it stands from deliverable files alone: the suggested globs are
   // each child's own directories, so judging by them would only restate this.
   return { draft, problems, overlaps: overlaps({ members }) };
+}
+
+// ---------------------------------------------------------------- the guard
+
+export function trespassPath(parent) { return path.join(FAMILIES_DIR, parent, "trespass.jsonl"); }
+
+export function readTrespasses(parent) {
+  let text = "";
+  try { text = fs.readFileSync(trespassPath(parent), "utf8"); } catch { return []; }
+  const out = [];
+  for (const l of text.split("\n")) {
+    if (!l.trim()) continue;
+    try { out.push(JSON.parse(l)); } catch { /* a torn line: skip it */ }
+  }
+  return out;
+}
+
+const insideRoot = (p, root) => { const r = canon(root); return p === r || p.startsWith(r + path.sep); };
+
+// The soft guard's whole decision, for an edit the increment gate already
+// allowed. Returns null when there is nothing to say: the session is not in a
+// family, the target is unclaimed, shared or its own, or this session was
+// already told about this path. Otherwise it records the trespass and returns
+// the note the agent is shown. It never refuses: that stays the increment
+// gate's alone.
+//
+// The editor is the member whose root holds the session's cwd. The target can
+// be in that member's own worktree (the usual case: the same repo-relative
+// path a sibling owns) or in a sibling's worktree outright.
+export function trespass({ cwd, target, session, tool }) {
+  let names;
+  try { names = fs.readdirSync(FAMILIES_DIR); } catch { return null; }
+  if (!names.length) return null;
+  const here = canonDeep(cwd);
+  const idx = allIndexes().find(i => i.members.some(m => m.root && insideRoot(here, m.root)));
+  if (!idx) return null;
+  const me = idx.members.find(m => m.root && insideRoot(here, m.root));
+  const abs = canonDeep(path.resolve(cwd, target));
+  const repo = repoOf(abs);
+  const rel = repo && relInRepo(repo, abs);
+  if (!rel) return null;
+  const owners = claimantsOf(idx, repo.id, rel, me.slug);
+  const foreign = idx.members.find(m => m.slug !== me.slug && m.root && insideRoot(abs, m.root));
+  if (!owners.length && !foreign) return null;
+  if (session && readTrespasses(idx.parent).some(t => t.session === session && t.repo === repo.id && t.path === rel))
+    return null;
+  const owner = owners[0] || { slug: foreign.slug, how: "worktree", glob: "" };
+  const rec = { at: Date.now(), session: session || "", from: me.slug, owner: owner.slug, how: owner.how,
+    glob: owner.glob || "", repo: repo.id, repoName: repo.name, path: rel, tool: tool || "" };
+  try {
+    fs.mkdirSync(path.dirname(trespassPath(idx.parent)), { recursive: true });
+    fs.appendFileSync(trespassPath(idx.parent), JSON.stringify(rec) + "\n");
+  } catch { /* the note still goes out; a lost record beats a broken gate */ }
+  // Facts, not instructions: hook context reaches the model as a system
+  // reminder, and imperative out-of-band text reads as an injection.
+  const why = owner.how === "owns" ? `workstream ${owner.slug} owns it (${owner.glob})`
+    : owner.how === "plans" ? `workstream ${owner.slug}'s plan names it (deliverable ${owner.deliverable})`
+    : `it sits in workstream ${owner.slug}'s worktree`;
+  const also = foreign && foreign.slug !== owner.slug ? `; the file is in workstream ${foreign.slug}'s worktree` : "";
+  return {
+    family: idx.parent,
+    note: `deep-plan family ${idx.parent}: ${rel} (${repo.name}) is outside this plan's claims — ${why}${also}. ` +
+      `This session works on ${me.slug}. The edit was allowed and the overlap is recorded on the family; ` +
+      `\`deep-plan family check ${idx.parent}\` lists every overlap.`,
+  };
 }
