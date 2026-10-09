@@ -203,7 +203,7 @@
   const when = iso => { try { return new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return ""; } };
   function message(m) {
     if (m.kind === "status")
-      return el("div", { class: "msg status" }, `${m.by} marked it ${m.to}`, m.text ? " — " + m.text : "",
+      return el("div", { class: "msg change" }, `${m.by} marked it ${m.to}`, m.text ? " — " + m.text : "",
         el("span", { class: "at" }, " · " + when(m.at)));
     return el("div", { class: "msg by-" + m.by }, el("div", { class: "who" }, m.by, el("span", { class: "at" }, " · " + when(m.at))),
       el("div", { class: "text" }, m.text));

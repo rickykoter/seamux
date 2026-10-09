@@ -393,38 +393,58 @@ your open PRs or from branch topology.
 
 `lookout open` puts a diff in a browser tab beside the terminal: this branch
 against its base by default, or `--worktree`, `--range A..B`, `--patch FILE`.
-The layout is VS Code's Source Control view, with the changed files on the
-left and one file's diff on the right, split or unified. Highlighting
-covers each side's whole file, so a change inside a block comment still
-reads as a comment, and changed words are marked. Lockfiles, generated and
-very large files start collapsed. Opening a review never touches your git
-index.
+Ask Claude to "review this branch" and it opens the page, briefs a reviewer,
+and talks the findings through with you there. Opening a review never
+touches your git index.
+
+### The page
+
+The layout is VS Code's Source Control view: the changed files on the left,
+one file's diff on the right, split or unified (`v`), with `j`/`k` to move
+between files. Highlighting covers each side's whole file, so a change
+inside a block comment still reads as a comment, and changed words are
+marked. Lockfiles, generated and very large files start collapsed.
 
 The file list has two orders. **Path** is a folder tree. **Risk** puts the
 riskiest files first, in high, medium and low bands, with related files
-grouped together and a line saying why (one imports the other, a test and
-its source, a finding that names both). Risk blends simple signals (how much
-changed, whether the path is a hook, a server, a schema or config, whether
-it is only tests) with one Jev score per file. By default only paths and
-line counts go to TypeSafe; `.seamux/lookout.json` `{"sendContent": true}`
-lets the changed lines go too. Without TypeSafe the page says it is ranking
-on the signals alone.
+grouped on a rail that says why they belong together: one imports the
+other, a test and its source, a finding that names both. Risk blends simple
+signals (how much changed, whether the path is auth, a schema, a server or
+config, whether it is only tests) with one Jev score per file. By default
+only paths and line counts go to TypeSafe; `.seamux/lookout.json`
+`{"sendContent": true}` lets the changed lines go too. Without TypeSafe the
+page says it is ranking on the signals alone.
+
+![a lookout review: files in risk bands with a related group on a rail, a split diff of a checkout route, and a comment thread under one of its lines](docs/img/lookout-risk.png)
+
+### Findings and threads
 
 Findings come from one fresh reviewer subagent, not from the agent that
-wrote the code: `lookout prompt <id>` prints its brief, and the subagent
-writes findings in `/code-review`'s shape plus a severity. Each finding sits
-under its line with a thread. When crew's intent server is running, the page
-is live: click a line number to comment, reply under a finding, resolve or
-dismiss it. Your words reach the agent at its next prompt, and its replies
-(`lookout reply`) appear on the page without a reload. Without crew the page
-opens as a read-only file.
+wrote the code. `lookout prompt <id>` prints its brief: the diff, the files
+riskiest first, a rubric across correctness, security, performance and
+maintainability, and the JSON to write. Each finding is `/code-review`'s
+shape plus a severity (blocker, major, minor, nit), and it sits under its
+line with a thread. `n`/`p` step through them.
+
+When crew's intent server is running the page is live. Click a line number
+to comment, reply under a finding, resolve or dismiss it. What you write
+reaches the agent at its next prompt, and its replies (`lookout reply`)
+appear on the page without a reload. Without crew the page opens as a
+read-only file.
+
+![a major finding under the line it names: the failure scenario, the agent's reply, its "addressed" note, your answer, and the reply box with Resolve and Dismiss](docs/img/lookout-findings.png)
 
 Only you close a finding. The agent can reply and mark one addressed; it
 can resolve or dismiss only when the review was opened with
 `--agent-may-close`, which a plan sets with `review.agentMayClose`.
-`lookout gate` answers 0 when no blocker or major is open, and deep-plan's
-review check runs it (see [Checks before done](#checks-before-done)). On a
-plain branch nothing gates on it: the review is a conversation.
+
+### Reviews in a plan
+
+`lookout gate` answers 0 when no blocker or major finding is open. A deep-plan
+deliverable that declares a review check runs it, so the increment can't be
+done until you have closed those findings (see
+[Checks before done](#checks-before-done)). On a plain branch nothing gates
+on it: the review is a conversation.
 
 ## seamux-mods: deep-plan in the terminal
 
@@ -457,8 +477,8 @@ Stop and ask the person wherever a step says to.
 1. Clone to the checkout the person will keep, such as `~/code/seamux`.
    Never install from a git worktree: the plugins run from the folder you
    install from, and break when that folder is removed.
-2. Ask the person which parts they want (all four plugins, or just
-   deep-plan, restack or crew), and whether they use Jira, GitHub Issues, or
+2. Ask the person which parts they want (all five plugins, or just
+   deep-plan, restack, lookout or crew), and whether they use Jira, GitHub Issues, or
    Datadog, Splunk or Grafana. For crew, also ask which repo their worktrees
    come from. Don't guess any of these; leaving them off is fine.
 3. Preview with `./install.sh --dry-run` plus the flags from step 2
@@ -512,10 +532,11 @@ cd ~/code/seamux
 `install.sh` is a thin wrapper around `claude plugin`. It:
 
 1. adds this checkout as the `seamux` marketplace,
-2. installs deep-plan, restack, bash-guard and crew (add `--mods` for
-   seamux-mods),
+2. installs deep-plan, restack, bash-guard, lookout and crew (add `--mods`
+   for seamux-mods),
 3. runs each engine's `setup`, which downloads a pinned, checksum-verified
-   `mermaid.min.js` and puts `deep-plan` and `restack` on your PATH,
+   `mermaid.min.js` and `highlight.min.js` and puts `deep-plan`, `restack`
+   and `lookout` on your PATH,
 4. runs `crew apply`.
 
 Because the marketplace is a folder, the plugins run straight from this
@@ -541,7 +562,8 @@ list without changing anything.
 
 For scripted installs, `--main-repo PATH`, `--with-jira=SITE`,
 `--with-github-issues` and `--with-observability=STACK` set the crew plugin's
-options, and `--no-crew`, `--no-restack` and `--no-guard` skip plugins.
+options, and `--no-crew`, `--no-restack`, `--no-guard` and `--no-lookout`
+skip plugins.
 
 ### Integrations
 
@@ -608,7 +630,7 @@ your plan state (`~/.claude/deep-plan`, `~/.claude/plans`), each repo's
 
 ### Edits go live from the checkout
 
-Claude runs deep-plan, restack, bash-guard and seamux-mods straight from this
+Claude runs deep-plan, restack, bash-guard, lookout and seamux-mods straight from this
 checkout, so there is nothing to sync: edit, then `/reload-plugins`.
 
 crew is the exception. cmux, launchd and the board run it from
