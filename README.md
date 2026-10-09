@@ -41,19 +41,17 @@ covers a first install and an update, and what to ask you along the way.
 
 ## Tour
 
-One change split across three Claude Code sessions: a parent plan and two
-workstreams, each in its own git worktree. The video opens with a tour of the
-screen, one feature at a time. Then it plays the whole run: each workstream
-plans its piece with deep-plan, the parent adopts both, and every plan passes
-its quiz before any code is written. The parent lands the shared type first.
-Both workstreams then build in parallel, and the parent merges them and
-proves sign-in end to end. Each increment opens with `go` and closes only
-when its checks pass, including an observability check recorded with what
-the agent saw.
+Three Claude Code sessions take one change from plan to checked code. The 
+video starts with a tour of the screen, one feature at a time: the plan page, 
+the alignment quiz, the gate, checks, the crew board and the plan pane. Then it 
+plays the run. Each session plans its part with deep-plan and passes the quiz 
+before writing any code. Every increment opens with `go` and closes only when 
+its checks pass, and the crew board keeps each session ranked by who needs you.
 
-https://github.com/user-attachments/assets/10a4d07c-de90-4825-a045-a42c662da4f2
+https://github.com/user-attachments/assets/07591958-3786-44df-86ce-254c4d0ee362
 
-_Note: The demo video uses a mock scenario with an ephemeral code-base and live Claude Code (Sonnet 5.5)_
+_Note: The sessions, plans, checks, and commits are real, on a throwaway repo. 
+Portions are sped up for convenience._
 
 ## crew: the board
 
