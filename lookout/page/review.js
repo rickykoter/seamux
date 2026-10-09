@@ -297,7 +297,8 @@
       canShow ? el("button", { type: "button", onclick: () => { opened.add(f.path); drawFile(); } }, "Show diff") : null);
   }
 
-  const lnCell = (n, cls) => el("td", { class: "ln" + (cls ? " " + cls : "") }, n == null ? "" : String(n));
+  const lnCell = (n, cls, side) => el("td", { class: "ln" + (cls ? " " + cls : ""),
+    "data-side": n == null ? null : side, "data-line": n == null ? null : n }, n == null ? "" : String(n));
   const codeCell = (html, cls, sign) => el("td", { class: "code" + (cls ? " " + cls : ""), "data-sign": sign, html });
   const KIND = { "+": "add", "-": "del", " ": "" };
 
@@ -317,7 +318,7 @@
       for (const [ty, o, n, html] of h.rows) {
         const k = KIND[ty];
         t.append(el("tr", { class: "line " + (k || "ctx"), "data-old": o ?? null, "data-new": n ?? null },
-          lnCell(o, k), lnCell(n, k), codeCell(html, k, ty === " " ? " " : ty)));
+          lnCell(o, k, "old"), lnCell(n, k, "new"), codeCell(html, k, ty === " " ? " " : ty)));
         const here = takeAt(anch, used, [n != null ? "new:" + n : null, o != null ? "old:" + o : null]);
         if (here.length) t.append(threadRow(here, 3));
       }
@@ -335,9 +336,9 @@
       return here.length ? [row, threadRow(here, 4)] : [row];
     };
     const pairRow = (l, r) => el("tr", { class: "line", "data-old": l ? l[1] : null, "data-new": r ? r[2] : null },
-      l ? lnCell(l[1], KIND[l[0]]) : el("td", { class: "ln empty" }),
+      l ? lnCell(l[1], KIND[l[0]], "old") : el("td", { class: "ln empty" }),
       l ? codeCell(l[3], KIND[l[0]], l[0] === " " ? " " : l[0]) : el("td", { class: "code empty" }),
-      r ? lnCell(r[2], KIND[r[0]]) : el("td", { class: "ln empty" }),
+      r ? lnCell(r[2], KIND[r[0]], "new") : el("td", { class: "ln empty" }),
       r ? codeCell(r[3], KIND[r[0]], r[0] === " " ? " " : r[0]) : el("td", { class: "code empty" }));
     for (const h of drawn.hunks) {
       t.append(el("tr", { class: "hunk" }, el("td", { colspan: 4 }, h.header)));
@@ -458,6 +459,10 @@
     $("label").textContent = [where !== R.title ? where : null,
       `${s.files || 0} files`, `+${s.adds || 0} −${s.dels || 0}`].filter(Boolean).join(" · ");
     const g = gateText();
+    $("mode").textContent = live ? "live" : "read-only";
+    $("mode").className = "mode " + (live ? "live" : "file");
+    $("mode").title = live ? "Comments and closes go to the agent at its next prompt."
+      : "Opened as a file: comments need crew's intent server (lookout open shows the served page when it is up).";
     $("gate").className = "gate " + g.cls;
     $("gate").textContent = g.text;
     $("gate").title = (R.policy && R.policy.agentMayClose) ? "The agent may also close findings on this review."
@@ -482,7 +487,96 @@
     drawFile();
     $("main").scrollTop = y;
   }
-  window.lookout = { get review() { return R; }, applyReview, setActions(fn) { actions = fn; drawFile(); }, el, current: () => current };
+  // ---------------------------------------------------------------- served
+
+  // Served by crew's intent server, the page takes comments and closes and
+  // polls for the agent's replies. From a file it stays read-only: there is
+  // nothing to send them to.
+  let live = null;
+  function serve({ token, id }) {
+    live = { token, id, pending: null };
+    document.body.classList.add("served");
+    drawHeader();
+    const post = body => fetch("/review/" + encodeURIComponent(id), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...body, t: token }),
+    }).then(r => r.json().then(j => { if (!r.ok) throw new Error(j.error || "refused"); return j; }));
+
+    // A composer with words in it is never redrawn away; a fresher review
+    // waits until it is sent or cancelled.
+    const busy = () => [...document.querySelectorAll("textarea")].some(t => t.value.trim());
+    const take = next => {
+      if (next.patchHash !== R.patchHash) { location.reload(); return; }
+      if (busy()) { live.pending = next; return; }
+      live.pending = null;
+      applyReview(next);
+    };
+    // Every 2.5s while visible; a background tab checks every 15s, so it is
+    // current by the time someone looks, and catches up at once when shown.
+    let ticks = 0;
+    const poll = (e) => {
+      if (document.hidden && !e && ++ticks % 6) return;
+      fetch(`/review/${encodeURIComponent(id)}.json?t=${encodeURIComponent(token)}`, { cache: "no-store" })
+        .then(r => r.ok ? r.json() : null)
+        .then(j => { if (j && j.updatedAt !== R.updatedAt) take(j); else if (live.pending && !busy()) take(live.pending); })
+        .catch(() => { /* the server restarted; the next poll will tell */ });
+    };
+    setInterval(() => poll(), 2500);
+    document.addEventListener("visibilitychange", e => { if (!document.hidden) poll(e); });
+
+    const send = (body, status) => {
+      status.textContent = "sending…";
+      return post(body).then(j => { live.pending = null; applyReview(j.review); })
+        .catch(e => { status.textContent = e.message; status.classList.add("bad"); throw e; });
+    };
+
+    // Reply, and close or reopen, under every card.
+    actions = x => {
+      const finding = x.id.startsWith("f");
+      const open = isOpen(x);
+      const ta = el("textarea", { rows: 2, placeholder: open ? "Reply, or a note for a close…" : "Reply…" });
+      const status = el("span", { class: "send-status" });
+      const go = (op, needText) => () => {
+        if (needText && !ta.value.trim()) { ta.focus(); return; }
+        send({ op, item: x.id, text: ta.value }, status).then(() => {}, () => {});
+      };
+      ta.addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) go("comment", true)(); });
+      return el("div", { class: "actions" }, ta, el("div", { class: "buttons" },
+        el("button", { type: "button", class: "primary", onclick: go("comment", true) }, "Reply"),
+        open ? el("button", { type: "button", onclick: go("resolve") }, "Resolve") : null,
+        open && finding ? el("button", { type: "button", onclick: go("dismiss") }, "Dismiss") : null,
+        !open ? el("button", { type: "button", onclick: go("reopen") }, "Reopen") : null,
+        status));
+    };
+
+    // A click on a line number opens a comment under that line.
+    $("diff").addEventListener("click", e => {
+      const cell = e.target.closest && e.target.closest("td.ln[data-line]");
+      if (!cell) return;
+      const tr = cell.closest("tr");
+      const next = tr.nextElementSibling;
+      if (next && next.classList.contains("composer")) { next.remove(); return; }
+      const side = cell.dataset.side, line = Number(cell.dataset.line);
+      const span = tr.children.length;
+      const ta = el("textarea", { rows: 3, placeholder: `Comment on ${side === "old" ? "old " : ""}line ${line}…` });
+      const status = el("span", { class: "send-status" });
+      const row = el("tr", { class: "composer" }, el("td", { colspan: span },
+        el("div", { class: "card comment" }, el("div", { class: "actions" }, ta, el("div", { class: "buttons" },
+          el("button", { type: "button", class: "primary", onclick: submit }, "Comment"),
+          el("button", { type: "button", onclick: () => { row.remove(); if (live.pending) take(live.pending); } }, "Cancel"),
+          status)))));
+      function submit() {
+        if (!ta.value.trim()) { ta.focus(); return; }
+        send({ op: "comment", file: current, line, side, text: ta.value }, status).then(() => {}, () => {});
+      }
+      ta.addEventListener("keydown", ev => { if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) submit(); });
+      tr.after(row);
+      ta.focus();
+    });
+    drawFile();
+  }
+
+  window.lookout = { get review() { return R; }, applyReview, serve, el, current: () => current };
 
   drawHeader();
   drawLayout();

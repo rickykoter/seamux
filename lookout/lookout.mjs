@@ -110,6 +110,22 @@ function workspaceFor(cwd) {
   } catch { return ""; }
 }
 
+// The review's served URL when crew's intent server is up AND knows the
+// /review route (an older crew answers 404), else "". Served, the page takes
+// comments and polls for replies; from a file it is read-only.
+function servedUrl(id) {
+  if (process.env.LOOKOUT_REVIEWS_DIR && !process.env.LOOKOUT_INTENT_DIR) return "";
+  const dir = process.env.LOOKOUT_INTENT_DIR || path.join(os.homedir(), ".cache", "cmux-crew");
+  try {
+    const port = parseInt(fs.readFileSync(path.join(dir, "board-intent.port"), "utf8").trim(), 10);
+    const token = fs.readFileSync(path.join(dir, "board-intent.token"), "utf8").trim();
+    if (!port || !token) return "";
+    const base = `http://127.0.0.1:${port}/review/${id}`;
+    const r = spawnSync("curl", ["-fsS", "-m", "2", "-o", "/dev/null", `${base}.json?t=${encodeURIComponent(token)}`]);
+    return r.status === 0 ? base : "";
+  } catch { return ""; }
+}
+
 // Best-effort, never a failure: a tab already showing this review is pointed
 // at the page again (a re-open refreshes, it does not stack tabs); otherwise a
 // new browser tab opens beside the terminal without taking focus.
@@ -117,20 +133,28 @@ function showPage(id, file, cwd, { onlyIfOpen = false } = {}) {
   if (process.env.LOOKOUT_REVIEWS_DIR || flag("no-open")) return "";
   const ws = workspaceFor(cwd);
   if (!ws) return "";
-  const url = "file://" + encodeURI(file);
+  const served = servedUrl(id);
+  const url = served || "file://" + encodeURI(file);
   const env = { ...process.env, CMUX_QUIET: "1" };
   try {
     const r = spawnSync("cmux", ["list-panels", "--workspace", ws, "--json"], { encoding: "utf8", env, timeout: 10000 });
     const tab = (JSON.parse(r.stdout || "{}").surfaces || [])
       .find(s => s.type === "browser" && s.title === pageTitle(id));
     if (tab) {
+      // A served tab polls for changes itself; only a file tab needs a reload.
+      // Asked by URL, not by whether a server answers now: a live tab must
+      // never be navigated back to the read-only file.
+      if (onlyIfOpen) {
+        const u = spawnSync("cmux", ["browser", "--surface", tab.ref, "url"], { encoding: "utf8", env, timeout: 10000 });
+        if (/^https?:/.test((u.stdout || "").trim())) return "live";
+      }
       const n = spawnSync("cmux", ["browser", "--surface", tab.ref, "navigate", url], { encoding: "utf8", env, timeout: 10000 });
-      if (n.status === 0) return "refreshed the open tab";
+      if (n.status === 0) return "refreshed the open tab" + (served ? "" : ", read-only: crew's intent server is not serving reviews");
     }
   } catch { /* fall through to a new tab */ }
   if (onlyIfOpen) return "";
-  const o = spawnSync("cmux", ["open", file, "--workspace", ws, "--focus", "false"], { encoding: "utf8", env, timeout: 10000 });
-  return o.status === 0 ? "opened beside the terminal" : "";
+  const o = spawnSync("cmux", ["open", served || file, "--workspace", ws, "--focus", "false"], { encoding: "utf8", env, timeout: 10000 });
+  return o.status === 0 ? "opened beside the terminal" + (served ? "" : ", read-only: crew's intent server is not serving reviews") : "";
 }
 
 function cmdOpen() {
@@ -404,6 +428,7 @@ function usage() {
   lookout reopen <id> <f#|t#> [note]
   lookout gate <id> | --plan SLUG --inc N   exit 0 pass, 1 blocker/major open, 3 no review
   lookout render <id>       redraw the page from the store
+  lookout sync <id>         re-rank and redraw (crew's intent server runs it after a page edit)
   lookout show <id> [--json]
   lookout list [--json]
   lookout setup             engine pointer, ~/.local/bin shim, pinned highlight.js
@@ -421,6 +446,13 @@ try { pointerBody = V.writeEnginePointer(HERE); } catch { /* read-only home */ }
 switch (verb) {
   case "open":   cmdOpen(); break;
   case "render": say(renderPage(reviewArg())); break;
+  case "sync": {
+    // After the intent server stores a comment or a close: re-rank and redraw.
+    const id = reviewArg();
+    S.update(id, cur => arrange(cur));
+    renderPage(id);
+    break;
+  }
   case "prompt": cmdPrompt(); break;
   case "findings": cmdFindings(); break;
   case "reply": case "address": case "resolve": case "dismiss": case "reopen": cmdThread(verb); break;

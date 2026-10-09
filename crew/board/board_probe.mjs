@@ -746,6 +746,108 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
     /<details id="news"[^>]*>[\s\S]*id="news-ttl"[\s\S]*id="news-lede"[\s\S]*id="news-body"[\s\S]*<\/details>/.test(pageHtml)]);
 }
 
+// ---------------------------------------------------------------------------
+// The intent server's review routes, against the real server booted under a
+// temp HOME (its PLANS and token files resolve from HOME at import), on a
+// port of its own so a running board is never touched.
+{
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const net = await import("node:net");
+  const http = await import("node:http");
+  const { spawn } = await import("node:child_process");
+  const HOME = fs.mkdtempSync(join(os.tmpdir(), "board-probe-intent-"));
+  const reviews = join(HOME, ".claude", "plans", "reviews");
+  fs.mkdirSync(reviews, { recursive: true });
+  const review = {
+    id: "demo", title: "demo", updatedAt: "2026-01-01T00:00:00.000Z",
+    files: [{ path: "a.js" }],
+    findings: [{ id: "f1", file: "a.js", line: 2, severity: "major", status: "open", thread: [] }],
+    threads: [],
+  };
+  fs.writeFileSync(join(reviews, "demo.json"), JSON.stringify(review));
+  fs.writeFileSync(join(reviews, "demo.html"), "<!doctype html><html><body><p>page</p></body></html>");
+  const port = await new Promise(res => { const s = net.createServer(); s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => res(p)); }); });
+  const srv = spawn("python3", [join(HERE, "crew-board-intent")],
+    { env: { ...process.env, HOME, CREW_INTENT_PORT: String(port) }, stdio: "ignore" });
+  const tokenFile = join(HOME, ".cache", "cmux-crew", "board-intent.token");
+  for (let i = 0; i < 100 && !fs.existsSync(join(HOME, ".cache", "cmux-crew", "board-intent.port")); i++)
+    await new Promise(r => setTimeout(r, 50));
+  await new Promise(r => setTimeout(r, 150));
+  const token = fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, "utf8").trim() : "";
+  const ORIGIN = `http://127.0.0.1:${port}`;
+  const req = (method, path, { headers = {}, body = null } = {}) => new Promise(res => {
+    const r = http.request({ host: "127.0.0.1", port, method, path, headers }, resp => {
+      let d = ""; resp.on("data", c => (d += c)); resp.on("end", () => res({ status: resp.statusCode, headers: resp.headers, body: d }));
+    });
+    r.on("error", e => res({ status: 0, headers: {}, body: String(e) }));
+    if (body != null) r.write(body);
+    r.end();
+  });
+  const post = (obj, { origin = ORIGIN, type = "application/json", path = "/review/demo", raw = null } = {}) => {
+    const body = raw ?? JSON.stringify(obj);
+    const headers = { "Content-Type": type, "Content-Length": Buffer.byteLength(body) };
+    if (origin) headers.Origin = origin;
+    return req("POST", path, { headers, body });
+  };
+  const store = () => JSON.parse(fs.readFileSync(join(reviews, "demo.json"), "utf8"));
+  try {
+    checks.push(["review route: the server came up under the temp HOME", !!token]);
+    const page = await req("GET", "/review/demo");
+    checks.push(["review route: the page is served with its token script before </body>",
+      page.status === 200 && page.body.includes(`window.lookout.serve({ token: "${token}", id: "demo" })`) &&
+      page.body.indexOf("window.lookout.serve") < page.body.indexOf("</body>")]);
+    const noTok = await req("GET", "/review/demo.json");
+    const withTok = await req("GET", `/review/demo.json?t=${encodeURIComponent(token)}`);
+    checks.push(["review route: the record needs the token, and opens to no other origin",
+      noTok.status === 403 && withTok.status === 200 && JSON.parse(withTok.body).id === "demo" &&
+      !("access-control-allow-origin" in withTok.headers)]);
+    checks.push(["review route: an id that is not a slug is not a file",
+      (await req("GET", "/review/..%2Fdemo")).status === 404 && (await req("GET", "/review/nope")).status === 404]);
+
+    const ok = { op: "comment", t: token, file: "a.js", line: 1, side: "new", text: "why?" };
+    checks.push(["review POST: no Origin is refused", (await post(ok, { origin: "" })).status === 403]);
+    checks.push(["review POST: another origin is refused", (await post(ok, { origin: "https://evil.example" })).status === 403]);
+    checks.push(["review POST: only JSON", (await post(ok, { type: "text/plain" })).status === 415]);
+    checks.push(["review POST: over 64KB is refused", (await post({ ...ok, text: "x".repeat(70 * 1024) })).status === 413]);
+    checks.push(["review POST: a wrong token is refused", (await post({ ...ok, t: "nope" })).status === 403]);
+    checks.push(["review POST: an unknown op is refused", (await post({ ...ok, op: "delete" })).status === 400]);
+    checks.push(["review POST: an unknown review is 404", (await post(ok, { path: "/review/nope" })).status === 404]);
+    checks.push(["review POST: a file outside the review is refused", (await post({ ...ok, file: "zzz.js" })).status === 400]);
+    checks.push(["review store untouched by every refusal", store().threads.length === 0 && store().updatedAt === review.updatedAt]);
+
+    const c = await post(ok);
+    const s1 = store();
+    checks.push(["review POST comment: a new thread, written as the human",
+      c.status === 200 && JSON.parse(c.body).item === "t1" && s1.threads[0].messages[0].by === "human" &&
+      s1.threads[0].messages[0].text === "why?" && s1.updatedAt !== review.updatedAt]);
+    await post({ op: "comment", t: token, item: "f1", text: "is this real?" });
+    await post({ op: "resolve", t: token, item: "f1", text: "fixed, thanks" });
+    const s2 = store();
+    const f1 = s2.findings[0];
+    checks.push(["review POST: a reply and a resolve on a finding, both the human's",
+      f1.thread.length === 2 && f1.thread[0].text === "is this real?" && f1.status === "resolved" &&
+      f1.statusBy === "human" && f1.thread[1].kind === "status" && f1.thread[1].to === "resolved"]);
+    await post({ op: "reopen", t: token, item: "f1" });
+    await post({ op: "dismiss", t: token, item: "t1" });
+    const s3 = store();
+    checks.push(["review POST: reopen; and a comment thread is resolved, never dismissed",
+      s3.findings[0].status === "open" && s3.threads[0].status === "resolved"]);
+    checks.push(["review POST: writes are atomic (no temp files left)",
+      !fs.readdirSync(reviews).some(n => n.includes(".tmp-") || n.endsWith(".lock"))]);
+    // A lock left by a crashed writer is broken once stale.
+    const lock = join(reviews, "demo.lock");
+    fs.mkdirSync(lock);
+    const old = new Date(Date.now() - 60000);
+    fs.utimesSync(lock, old, old);
+    checks.push(["review POST: a stale lock is broken, not waited on",
+      (await post({ op: "comment", t: token, item: "t1", text: "after a crash" })).status === 200 && !fs.existsSync(lock)]);
+  } finally {
+    srv.kill();
+    fs.rmSync(HOME, { recursive: true, force: true });
+  }
+}
+
 let bad = 0;
 for (const [n, ok] of checks) { if (!ok) bad++; console.log(`  ${ok ? "ok  " : "FAIL"} ${n}`); }
 console.log(`\n${bad ? "\x1b[31m" : "\x1b[32m"}board probe: ${checks.length - bad} passed, ${bad} failed\x1b[0m`);

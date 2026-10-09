@@ -415,6 +415,190 @@ ASK_JS = """
 
 
 # ---------------------------------------------------------------------------
+# Reviews. lookout (the code-review plugin) writes reviews/<id>.json, the
+# review's record, and reviews/<id>.html, its page, under PLANS. This server
+# serves the page at /review/<id> with the token injected, the record at
+# /review/<id>.json for the page to poll, and takes the human's comments and
+# closes as POST /review/<id>.
+#
+# A comment travels as DATA: it is stored, and lookout's prompt hook hands it
+# to the session at its next prompt. Nothing here types into a terminal; the
+# keystroke rule for asks (verify, then send only an option number) is
+# untouched. This is the server's first POST route, so it is held to more
+# than the GETs: the token, a JSON body (a cross-origin page cannot send one
+# without a preflight, which this server never answers), an Origin that is
+# this server's own, and a size cap. Writes take the same lock directory the
+# lookout CLI takes and replace the file atomically.
+# ---------------------------------------------------------------------------
+
+REVIEWS = os.path.join(PLANS, "reviews")
+LOOKOUT_POINTER = os.path.join(os.path.expanduser("~"), ".claude", "lookout", "engine.json")
+REVIEW_MAX_BODY = 64 * 1024
+REVIEW_MAX_TEXT = 4000
+REVIEW_OPS = ("comment", "resolve", "dismiss", "reopen")
+LOCK_STALE = 10.0
+
+
+def review_path(rid, ext):
+    """Resolve a review id to its .json or .html, or None. Anchored like ask_path."""
+    if not SLUG_OK.match(rid or ""):
+        return None
+    base = os.path.realpath(REVIEWS)
+    target = os.path.realpath(os.path.join(REVIEWS, rid + ext))
+    if not target.startswith(base + os.sep):
+        return None
+    return target if os.path.isfile(target) else None
+
+
+class review_lock:
+    """lookout's lock: a <id>.lock directory, created atomically, stale after 10s."""
+
+    def __init__(self, rid):
+        self.path = os.path.join(REVIEWS, rid + ".lock")
+
+    def __enter__(self):
+        deadline = time.time() + 5
+        while True:
+            try:
+                os.mkdir(self.path)
+                return self
+            except FileExistsError:
+                try:
+                    if time.time() - os.stat(self.path).st_mtime > LOCK_STALE:
+                        os.rmdir(self.path)
+                        continue
+                except OSError:
+                    continue
+                if time.time() > deadline:
+                    raise TimeoutError("the review is locked by another writer")
+                time.sleep(0.025)
+
+    def __exit__(self, *_):
+        try:
+            os.rmdir(self.path)
+        except OSError:
+            pass
+
+
+def _iso_now():
+    # The same shape as JavaScript's toISOString(), which the rest of the
+    # record uses, so string comparison orders them.
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _next_id(items, prefix):
+    n = 0
+    for x in items:
+        tail = str(x.get("id", ""))[len(prefix):]
+        if str(x.get("id", "")).startswith(prefix) and tail.isdigit():
+            n = max(n, int(tail))
+    return "%s%d" % (prefix, n + 1)
+
+
+def _message(msgs, text, **extra):
+    m = {"id": _next_id(msgs, "m"), "by": "human", "at": _iso_now(), "text": text}
+    m.update(extra)
+    msgs.append(m)
+    return m
+
+
+def review_apply(rid, body):
+    """One op from the page, as the human. Returns (http code, reply dict)."""
+    op = body.get("op")
+    if op not in REVIEW_OPS:
+        return 400, {"error": "unknown op"}
+    text = str(body.get("text") or "").strip()[:REVIEW_MAX_TEXT]
+    item_id = str(body.get("item") or "")
+    path = os.path.join(REVIEWS, rid + ".json")
+    try:
+        with review_lock(rid):
+            with open(path, encoding="utf-8") as fh:
+                review = json.load(fh)
+            findings = review.setdefault("findings", [])
+            threads = review.setdefault("threads", [])
+            item, kind = None, None
+            if item_id:
+                item = next((f for f in findings if f.get("id") == item_id), None)
+                kind = "finding" if item else None
+                if item is None:
+                    item = next((t for t in threads if t.get("id") == item_id), None)
+                    kind = "thread" if item else None
+                if item is None:
+                    return 404, {"error": "no finding or thread " + item_id}
+            msgs = (item.setdefault("thread", []) if kind == "finding"
+                    else item.setdefault("messages", []) if kind == "thread" else None)
+
+            if op == "comment":
+                if not text:
+                    return 400, {"error": "an empty comment says nothing"}
+                if item is not None:
+                    _message(msgs, text)
+                else:
+                    f = str(body.get("file") or "")
+                    side = body.get("side") or "new"
+                    line = body.get("line")
+                    if not any(x.get("path") == f for x in review.get("files", [])):
+                        return 400, {"error": "file is not in this review"}
+                    if side not in ("new", "old") or not isinstance(line, int) or isinstance(line, bool) or line < 1:
+                        return 400, {"error": "a comment needs a line and a side"}
+                    t = {"id": _next_id(threads, "t"), "file": f, "line": line, "side": side,
+                         "status": "open", "by": "human", "createdAt": _iso_now(), "messages": []}
+                    _message(t["messages"], text)
+                    threads.append(t)
+                    item_id = t["id"]
+            else:
+                if item is None:
+                    return 400, {"error": op + " needs an item"}
+                to = {"resolve": "resolved", "dismiss": "dismissed", "reopen": "open"}[op]
+                if kind == "thread" and to == "dismissed":
+                    to = "resolved"
+                frm = item.get("status") or "open"
+                item.update({"status": to, "statusBy": "human", "statusAt": _iso_now()})
+                _message(msgs, text, kind="status", **{"from": frm, "to": to})
+
+            review["updatedAt"] = _iso_now()
+            tmp = "%s.tmp-%d-%s" % (path, os.getpid(), secrets.token_hex(3))
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(review, fh, indent=2)
+                fh.write("\n")
+            os.replace(tmp, path)
+    except FileNotFoundError:
+        return 404, {"error": "no such review"}
+    except (ValueError, TimeoutError) as exc:
+        return 409, {"error": str(exc)}
+    review_sync(rid)
+    return 200, {"ok": True, "item": item_id, "review": review}
+
+
+def review_sync(rid):
+    """Have lookout re-rank and redraw the review (a close moves risk), in the
+    background. Best-effort: without the engine the record is still right and
+    the page polls it."""
+    try:
+        with open(LOOKOUT_POINTER, encoding="utf-8") as fh:
+            root = json.load(fh).get("root") or ""
+    except (OSError, ValueError):
+        return
+    engine = os.path.join(root, "lookout.mjs")
+    node = shutil.which("node") or next((c for c in ("/opt/homebrew/bin/node", "/usr/local/bin/node")
+                                         if os.path.exists(c)), None)
+    if not node or not os.path.isfile(engine):
+        return
+    try:
+        subprocess.Popen([node, engine, "sync", rid], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        pass
+
+
+# Injected into a served review page: the page's own script turns on comments
+# and polling when it is given the token.
+REVIEW_JS = """
+<script>window.lookout && window.lookout.serve({ token: "__TOKEN__", id: "__ID__" });</script>
+"""
+
+
+# ---------------------------------------------------------------------------
 # Actions. Keys are the chip labels the collector already emits, so the board's
 # vocabulary and this table cannot drift apart silently.
 # ---------------------------------------------------------------------------
@@ -719,6 +903,87 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if body:
             self.wfile.write(body)
 
+    def _json(self, code, obj):
+        """A JSON reply WITHOUT the open CORS header _reply sends: review data is
+        for the page this server served, not for any origin that asks."""
+        body = json.dumps(obj).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _review_get(self, rest, token):
+        if rest.endswith(".json"):
+            if not secrets.compare_digest(token, self.token):
+                log("DENY bad token on /review json from %s" % self.client_address[0])
+                return self._json(403, {"error": "bad token"})
+            page = review_path(rest[:-len(".json")], ".json")
+            if not page:
+                return self._json(404, {"error": "no such review"})
+            with open(page, "rb") as fh:
+                body = fh.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            return self.wfile.write(body)
+        page = review_path(rest, ".html")
+        if not page:
+            return self._json(404, {"error": "no such review"})
+        try:
+            html = open(page, encoding="utf-8", errors="replace").read()
+        except OSError as exc:
+            return self._json(500, {"error": str(exc)})
+        boot = REVIEW_JS.replace("__TOKEN__", self.token).replace("__ID__", rest)
+        i = html.rfind("</body>")
+        html = html[:i] + boot + html[i:] if i >= 0 else html + boot
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        return self.wfile.write(body)
+
+    def do_POST(self):
+        u = urllib.parse.urlparse(self.path)
+        if not u.path.startswith("/review/"):
+            return self._json(404, {"error": "no such path"})
+        rid = u.path[len("/review/"):]
+        port = self.server.server_address[1]
+        if self.headers.get("Origin") not in ("http://127.0.0.1:%d" % port, "http://localhost:%d" % port):
+            log("DENY review POST from origin %r" % self.headers.get("Origin"))
+            return self._json(403, {"error": "cross-origin request refused"})
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            return self._json(415, {"error": "JSON only"})
+        try:
+            length = int(self.headers.get("Content-Length") or "-1")
+        except ValueError:
+            length = -1
+        if length < 0:
+            return self._json(411, {"error": "length required"})
+        if length > REVIEW_MAX_BODY:
+            self.close_connection = True
+            return self._json(413, {"error": "too large"})
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except ValueError:
+            return self._json(400, {"error": "not JSON"})
+        if not isinstance(body, dict):
+            return self._json(400, {"error": "not a JSON object"})
+        if not secrets.compare_digest(str(body.get("t") or ""), self.token):
+            log("DENY bad token on review POST from %s" % self.client_address[0])
+            return self._json(403, {"error": "bad token"})
+        if not review_path(rid, ".json"):
+            return self._json(404, {"error": "no such review"})
+        code, out = review_apply(rid, body)
+        log("%s review %s %s %s" % ("OK  " if code == 200 else "FAIL", rid, body.get("op"), out.get("error", out.get("item", ""))))
+        return self._json(code, out)
+
     def _plan(self, slug):
         """Serve a plan's live surface, with its buttons wired.
 
@@ -824,6 +1089,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             log("%s open %s" % ("OK  " if ok else "FAIL", detail))
             return self._reply(200 if ok else 500,
                                json.dumps({"ok": ok, "detail": detail}).encode())
+
+        if u.path.startswith("/review/"):
+            return self._review_get(u.path[len("/review/"):], one("t"))
 
         if u.path.startswith("/ask/"):
             page = ask_path(u.path[len("/ask/"):], ".html")

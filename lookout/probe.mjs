@@ -528,6 +528,57 @@ const R1 = repo("r1");
   ok("page: findings and threads are in the drawn page", page.includes("b is wrong") && page.includes("why 2?"));
 }
 
+// ---------------------------------------------------------------- comments hook
+{
+  const R7 = repo("r7");
+  write(R7, "a.js", "1\n"); sh(R7, `git add -A && ${G} commit -q -m base`);
+  write(R7, "a.js", "2\n");
+  fs.mkdirSync(path.join(R7, "sub"), { recursive: true });
+  const id = JSON.parse(cli(R7, "open", "--worktree", "--json").stdout).id;
+  const hook = (cwd, event = "UserPromptSubmit") => spawnSync("bash", [path.join(HERE, "hooks", "comments.sh")],
+    { encoding: "utf8", env: ENV, input: JSON.stringify({ cwd, hook_event_name: event }) });
+  ok("hook: a review with nothing from the human says nothing", hook(R7).stdout === "");
+  // The human comments and closes on the page (the intent server's writes).
+  const FD = await import("./lib/findings.mjs");
+  S.update(id, cur => {
+    FD.ingest(cur, [{ file: "a.js", line: 1, side: "new", severity: "major", category: "correctness", verdict: "PLAUSIBLE",
+      summary: "s", short_summary: "s", failure_scenario: "f", outside: false }]);
+    FD.comment(cur, { file: "a.js", line: 1, text: "why 2 and not 3?" }, "human");
+    FD.setStatus(cur, "f1", "dismissed", "human", "intended");
+    FD.reply(cur, "f1", "agent words", "agent");
+    return cur;
+  });
+  const out = hook(path.join(R7, "sub"));
+  let ctx = "";
+  try { const j = JSON.parse(out.stdout); ctx = j.hookSpecificOutput.additionalContext; ok("hook: the event name is echoed", j.hookSpecificOutput.hookEventName === "UserPromptSubmit"); }
+  catch { ok("hook: emits additionalContext JSON", false, out.stdout + out.stderr); }
+  ok("hook: a session in the repo (a subfolder too) hears the human's comment and close",
+     ctx.includes(`[lookout ${id}] 2 new`) && ctx.includes('t1 (comment on a.js:1): "why 2 and not 3?"') &&
+     ctx.includes("f1 (major finding, a.js:1): the human marked it dismissed") && ctx.includes(`lookout reply ${id}`), ctx);
+  ok("hook: the agent's own words are not echoed back", !ctx.includes("agent words"));
+  ok("hook: each message is delivered once", hook(R7).stdout === "");
+  S.update(id, cur => { FD.reply(cur, "t1", "and also this", "human"); return cur; });
+  const again = hook(R7, "SessionStart").stdout;
+  ok("hook: only what is new since the last prompt", again.includes("1 new") && again.includes("and also this") && !again.includes("why 2"));
+  ok("hook: a session elsewhere hears nothing", (S.update(id, cur => { FD.reply(cur, "t1", "x", "human"); return cur; }), hook(TMP).stdout === ""));
+  const none = spawnSync("bash", [path.join(HERE, "hooks", "comments.sh")],
+    { encoding: "utf8", env: { ...ENV, LOOKOUT_REVIEWS_DIR: path.join(TMP, "empty-reviews") }, input: "{}" });
+  ok("hook: no reviews at all costs a glob and exits clean", none.status === 0 && none.stdout === "");
+  ok("hook: garbage on stdin never fails the prompt",
+     spawnSync("bash", [path.join(HERE, "hooks", "comments.sh")], { encoding: "utf8", env: ENV, input: "{not json" }).status === 0);
+
+  // sync re-ranks after a page close: a resolved major stops lifting its file.
+  S.update(id, cur => { FD.setStatus(cur, "f1", "open", "human"); return cur; });
+  cli(R7, "sync", id);
+  const before = S.read(id).files[0].risk;
+  S.update(id, cur => { FD.setStatus(cur, "f1", "resolved", "human"); return cur; });
+  cli(R7, "sync", id);
+  ok("sync: re-ranks after a close made outside the CLI", S.read(id).files[0].risk < before);
+  const page = fs.readFileSync(path.join(HERE, "page", "review.js"), "utf8");
+  ok("page: has the served mode (serve, polling, POST)", /function serve\(/.test(page) && page.includes('method: "POST"') &&
+     page.includes(".json?t="));
+}
+
 // ---------------------------------------------------------------- setup
 {
   const bad = path.join(TMP, "bad.js");

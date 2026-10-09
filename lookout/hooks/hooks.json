@@ -1,0 +1,22 @@
+{
+  "description": "lookout: the human's review-page comments at the next prompt, and the engine pointer out-of-session callers read",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/lookout.mjs\" engine >/dev/null 2>&1 || true", "timeout": 10 },
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/comments.sh\"", "timeout": 10 }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/comments.sh\"", "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}
