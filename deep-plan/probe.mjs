@@ -35,6 +35,9 @@ const ENV = {
   DEEP_PLAN_BIN_DIR: path.join(TMP, "shim-bin"),
   DEEP_PLAN_MERMAID_SRC: path.join(TMP, "no-download-in-the-probe"),
   DEEP_PLAN_MERMAID: "",
+  // Authoritative and empty: no lookout, so `diff` falls back to cmux diff and
+  // nothing reaches the machine's real reviews. The review block sets its own.
+  LOOKOUT_ENGINE: "",
 };
 delete ENV.DEEP_PLAN_SKILL_DIR;
 delete ENV.DEEP_PLAN_ENGINE;
@@ -2719,6 +2722,114 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     edit(path.join(SR, "fresh", "deeper", "new.ts")).status === 2);
   cli("close", "symlinked-root");
   fs.rmSync(SR, { recursive: true, force: true });
+}
+
+// -------------------------------------------------- review checks (lookout)
+//
+// A deliverable that declares a `review` check is gated on `lookout gate` for
+// its increment. deep-plan synthesizes the command and runs it through
+// lookout's engine; nothing names a recipe. The spike: a synthesized command
+// must never trip the recipe-drift warning, however often it runs.
+{
+  const LK = path.join(HERE, "..", "lookout");
+  const RV = path.join(TMP, "review-root");
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  fs.mkdirSync(path.join(RV, ".seamux"), { recursive: true });
+  fs.mkdirSync(path.join(RV, "src"), { recursive: true });
+  fs.writeFileSync(path.join(RV, "src", "a.ts"), "export const a = 1;\n");
+  fs.writeFileSync(path.join(RV, ".seamux", "verify.json"), JSON.stringify({ recipes: [
+    { id: "envs", run: 'echo "root=$DEEP_PLAN_ROOT start=$DEEP_PLAN_START_SHA"' }] }));
+  execSync(`git init -q && git add -A && ${G} commit -q -m init`, { cwd: RV });
+  const LENV = { ...ENV, LOOKOUT_ENGINE: LK, LOOKOUT_REVIEWS_DIR: path.join(TMP, "lookout-reviews"),
+    LOOKOUT_TYPESAFE_CLIENT: "", LOOKOUT_VENDOR_DIR: path.join(TMP, "lookout-vendor"),
+    LOOKOUT_ENGINE_FILE: path.join(TMP, "lookout-engine.json"), LOOKOUT_BIN_DIR: path.join(TMP, "lookout-bin") };
+  const lc = (env, ...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env, cwd: RV });
+  const lk = (...a) => spawnSync("node", [path.join(LK, "lookout.mjs"), ...a], { encoding: "utf8", env: LENV, cwd: RV });
+  const mk = (slug, checks, extra = {}) => {
+    const s = JSON.parse(JSON.stringify(spec));
+    s.slug = slug;
+    Object.assign(s, extra);
+    s.verifiedFacts = [...s.verifiedFacts, { claim: "a starts at 1", evidence: "src/a.ts:1" }];
+    s.deliverables[0] = { title: "Retry sweep", body: "A timer job.", files: ["src/a.ts"], checks };
+    return s;
+  };
+  const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
+  const ck = (n, id) => stOf(n).increments[0].checks[id];
+  const arm = (n, checks, extra) => {
+    const r = lc(LENV, "render", tmpSpec(mk(n, checks, extra)), "--root", RV);
+    const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, n + ".key.json"), "utf8"));
+    lc(LENV, "grade", n, ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+    lc(LENV, "go", n, "1"); lc(LENV, "start", n, "1");
+    return r;
+  };
+
+  const bad = (checks, extra) => lc(LENV, "render", tmpSpec(mk("rv-bad", checks, extra)), "--root", RV);
+  ok("review check: one that names a recipe is refused",
+    /names no recipe or command/.test(bad([{ kind: "review", recipe: "envs" }]).stderr));
+  ok("review check: two in one increment are refused",
+    /one review check per increment/.test(bad([{ kind: "review" }, { kind: "review", id: "r2" }]).stderr));
+  ok("review check: spec.review must be an object", /review: an object/.test(bad([{ kind: "review" }], { review: "yes" }).stderr));
+
+  const r0 = arm("rv-1", [{ kind: "review" }, { id: "envs", kind: "test", name: "envs", recipe: "envs" }]);
+  const v0 = ck("rv-1", "review-code-review");
+  ok("review check: renders with no recipe in the repo, its command synthesized",
+    r0.status === 0 && v0 && v0.kind === "review" && v0.synth === "review" && v0.recipe === "lookout:gate" &&
+    v0.exec.steps[0].command === "lookout gate --plan rv-1 --inc 1", JSON.stringify(v0));
+  let r = lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
+  ok("review check: fails with no review yet, and says how to open one",
+    r.status === 1 && ck("rv-1", "review-code-review").status === "fail" &&
+    /deep-plan review rv-1 1/.test(ck("rv-1", "review-code-review").note), ck("rv-1", "review-code-review").note);
+  const r2 = lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
+  ok("spike settled: running a synthesized review check never warns about recipe drift",
+    !/⚠|drift|changed in|no longer in/.test(r.stderr + r2.stderr), r.stderr + r2.stderr);
+  ok("review check: a hand pass is refused like any command-backed check",
+    lc(LENV, "check", "pass", "rv-1", "1", "review-code-review", "looked fine").status !== 0);
+
+  r = lc(LENV, "check", "run", "rv-1", "1", "envs");
+  const startSha = stOf("rv-1").increments[0].startSha;
+  ok("recipes see DEEP_PLAN_ROOT and DEEP_PLAN_START_SHA",
+    fs.readFileSync(ck("rv-1", "envs").ran.log, "utf8").includes(`root=${RV} start=${startSha}`) && !!startSha);
+
+  fs.writeFileSync(path.join(RV, "src", "a.ts"), "export const a = 2;\n");
+  r = lc(LENV, "review", "rv-1", "1");
+  ok("deep-plan review: opens the increment's lookout review and names the brief",
+    r.status === 0 && /lookout rv-1-inc1/.test(r.stdout) && /lookout prompt rv-1-inc1/.test(r.stdout), r.stdout + r.stderr);
+  const store = path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-1-inc1.json");
+  const rv = JSON.parse(fs.readFileSync(store, "utf8"));
+  ok("deep-plan review: the review covers the increment's work since its start sha",
+    rv.source.plan === "rv-1" && rv.source.inc === 1 && rv.files.some(f => f.path === "src/a.ts") &&
+    rv.policy.agentMayClose === false);
+  const fjson = path.join(TMP, "rv-findings.json");
+  fs.writeFileSync(fjson, JSON.stringify([{ file: "src/a.ts", line: 1, severity: "major", summary: "a is 2", failure_scenario: "callers expect 1" }]));
+  lk("findings", "add", "rv-1-inc1", fjson);
+  r = lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
+  ok("review check: fails while a major is open, saying the human closes it",
+    r.status === 1 && /human closes it/.test(ck("rv-1", "review-code-review").note));
+  ok("done is refused while the review check fails", lc(LENV, "done", "rv-1", "1").status === 1);
+  // The human resolves it on the page (the intent server's write, by hand here).
+  const closed = JSON.parse(fs.readFileSync(store, "utf8"));
+  closed.findings[0].status = "resolved"; closed.findings[0].statusBy = "human";
+  fs.writeFileSync(store, JSON.stringify(closed));
+  r = lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
+  lc(LENV, "check", "run", "rv-1", "1", "envs");
+  ok("review check: passes once the human closed the major; done then succeeds",
+    r.status === 0 && ck("rv-1", "review-code-review").status === "pass" && lc(LENV, "done", "rv-1", "1").status === 0,
+    r.stdout + r.stderr);
+  ok("the working page links the increment's review",
+    fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "rv-1.working.html"), "utf8").includes('href="/review/rv-1-inc1"'));
+
+  arm("rv-2", [{ kind: "review" }], { review: { agentMayClose: true } });
+  fs.writeFileSync(path.join(RV, "src", "a.ts"), "export const a = 3;\n");
+  lc(LENV, "review", "rv-2", "1");
+  ok("spec review.agentMayClose reaches the review's policy",
+    JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-2-inc1.json"), "utf8")).policy.agentMayClose === true);
+  r = lc({ ...LENV, LOOKOUT_ENGINE: path.join(TMP, "no-lookout-here") }, "check", "run", "rv-2", "1", "review-code-review");
+  ok("review check: without lookout it fails with the install hint",
+    r.status === 1 && /lookout is not installed/.test(ck("rv-2", "review-code-review").note));
+  r = lc(LENV, "diff", "rv-2", "1");
+  ok("deep-plan diff opens the increment in lookout, view-only (no reviewer hint)",
+    r.status === 0 && /lookout rv-2-inc1/.test(r.stdout) && !/next:\s+brief/.test(r.stdout), r.stdout + r.stderr);
+  for (const n of ["rv-1", "rv-2"]) lc(LENV, "close", n);
 }
 
 // -------------------------------------------------- hot-path cost

@@ -2,7 +2,7 @@
 # install.sh — seamux, as Claude Code plugins.
 #
 #   ./install.sh [--dry-run] [--github] [--mods] [--no-crew] [--no-restack]
-#                [--no-guard] [--no-apply] [--no-migrate] [--main-repo PATH]
+#                [--no-guard] [--no-lookout] [--no-apply] [--no-migrate] [--main-repo PATH]
 #                [--with-jira[=SITE]] [--with-github-issues]
 #                [--with-observability=STACK]
 #   ./install.sh --check        what is installed, and drift in the crew tree
@@ -11,8 +11,8 @@
 # A thin bootstrap over `claude plugin`. It adds this checkout as the `seamux`
 # marketplace (a folder marketplace: the plugins run from the checkout itself,
 # so an edit plus /reload-plugins is live with no version bump; --github adds
-# the published repo instead), installs deep-plan, restack, bash-guard and crew
-# (seamux-mods with --mods), runs each engine's `setup` and `crew apply`, then
+# the published repo instead), installs deep-plan, restack, bash-guard, lookout
+# and crew (seamux-mods with --mods), runs each engine's `setup` and `crew apply`, then
 # migrates what the old installer left behind: the ~/.claude/skills copies,
 # their shims, and the settings.json hook entries the plugins now carry. Every
 # file it migrates is moved into ~/.claude/seamux-migrated/<time>/, never
@@ -28,7 +28,7 @@ LOCALBIN="$HOME/.local/bin"
 GITHUB_REPO="rickykoter/seamux"
 MARKET="seamux"
 
-DRY=0 CHECK=0 UNINSTALL=0 GITHUB=0 MODS=0 CREW=1 RESTACK=1 GUARD=1 APPLY=1 MIGRATE=1 MAIN=""
+DRY=0 CHECK=0 UNINSTALL=0 GITHUB=0 MODS=0 CREW=1 RESTACK=1 GUARD=1 LOOKOUT=1 APPLY=1 MIGRATE=1 MAIN=""
 WITH_JIRA="" JIRA_SITE="" WITH_GHI="" OBS_STACK=""
 
 while [ $# -gt 0 ]; do
@@ -41,6 +41,7 @@ while [ $# -gt 0 ]; do
     --no-crew) CREW=0; shift ;;
     --no-restack) RESTACK=0; shift ;;
     --no-guard) GUARD=0; shift ;;
+    --no-lookout) LOOKOUT=0; shift ;;
     --no-apply) APPLY=0; shift ;;
     --no-migrate) MIGRATE=0; shift ;;
     --main-repo) MAIN="${2:-}"; shift 2 ;;
@@ -69,9 +70,10 @@ run() {
 PLUGINS="deep-plan"
 [ "$RESTACK" = 1 ] && PLUGINS="$PLUGINS restack"
 [ "$GUARD" = 1 ]   && PLUGINS="$PLUGINS bash-guard"
+[ "$LOOKOUT" = 1 ] && PLUGINS="$PLUGINS lookout"
 [ "$CREW" = 1 ]    && PLUGINS="$PLUGINS crew"
 [ "$MODS" = 1 ]    && PLUGINS="$PLUGINS seamux-mods"
-ALL_PLUGINS="deep-plan restack bash-guard crew seamux-mods"
+ALL_PLUGINS="deep-plan restack bash-guard lookout crew seamux-mods"
 
 # Where Claude runs a plugin from (the checkout folder for a folder marketplace).
 plugin_root() { python3 "$HERE/crew/bin/crew-plugin-root" "$1" 2>/dev/null; }
@@ -168,7 +170,7 @@ try:
 except ValueError:
     ps = []
 bad = 0
-for name in ("deep-plan", "restack", "bash-guard", "crew", "seamux-mods"):
+for name in ("deep-plan", "restack", "bash-guard", "lookout", "crew", "seamux-mods"):
     p = next((x for x in ps if x.get("id", "").split("@")[0] == name and x.get("id", "").endswith("@seamux")), None)
     if not p:
         print(f"  \033[2m·    {name}: not installed\033[0m"); continue
@@ -207,14 +209,15 @@ if [ "$UNINSTALL" = 1 ]; then
       run "claude plugin uninstall '$p@$MARKET' >/dev/null" && did "uninstalled $p"
     fi
   done
-  for name in deep-plan restack; do
+  for name in deep-plan restack lookout; do
     f="$LOCALBIN/$name"
     if [ -f "$f" ] && grep -q "engine.json" "$f" 2>/dev/null; then
       run "rm -f '$f'" && did "removed the $name shim"
     fi
   done
   run "claude plugin marketplace remove '$MARKET' >/dev/null 2>&1" && did "removed the seamux marketplace"
-  say "kept: ~/.claude/deep-plan (plan state, keys, the engine pointer), ~/.claude/plans,"
+  say "kept: ~/.claude/deep-plan (plan state, keys, the engine pointer), ~/.claude/plans"
+  say "      (reviews included), ~/.claude/lookout (its pointer and highlight.js),"
   say "      each repo's .seamux/restack.json, ~/.config/cmux/crew-local, crew backups"
   printf '\n'
   exit 0
@@ -269,15 +272,19 @@ PY
 fi
 
 # ---------------------------------------------------------------- engines
-# Each engine's own setup: the ~/.local/bin shim, the engine pointer, and for
-# deep-plan the pinned mermaid bundle (copied from the old skills copy when it
-# matches the pin, so this runs before the migration moves that copy).
+# Each engine's own setup: the ~/.local/bin shim, the engine pointer, and the
+# pinned bundle it renders with — deep-plan's mermaid (copied from the old
+# skills copy when it matches the pin, so this runs before the migration moves
+# that copy) and lookout's highlight.js.
 head_ "engines"
-for pair in deep-plan:deep_plan.mjs restack:restack.mjs; do
+for pair in deep-plan:deep_plan.mjs restack:restack.mjs lookout:lookout.mjs; do
   name="${pair%%:*}"; script="${pair#*:}"
   case " $PLUGINS " in *" $name "*) ;; *) continue ;; esac
   root="$(plugin_root "$name")"
-  if [ "$DRY" = 1 ]; then say "would run: $name setup (shim, engine pointer$([ "$name" = deep-plan ] && echo ', mermaid'))"; continue; fi
+  if [ "$DRY" = 1 ]; then
+    extra=""; [ "$name" = deep-plan ] && extra=", mermaid"; [ "$name" = lookout ] && extra=", highlight.js"
+    say "would run: $name setup (shim, engine pointer$extra)"; continue
+  fi
   if [ -z "$root" ] || [ ! -f "$root/$script" ]; then warn "$name: plugin root not found — run \`$name setup\` inside Claude"; continue; fi
   out="$("$NODE" "$root/$script" setup 2>&1)"; src=$?
   printf '%s\n' "$out" | sed "s/^  /  $name /"

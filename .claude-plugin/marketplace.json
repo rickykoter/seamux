@@ -37,6 +37,12 @@
       "source": "./seamux-mods",
       "description": "deep-plan inside the terminal: a /plan-pane pane, a `go next` band when the gate refuses, and the plan and cache clock in the status line. Needs Claude Code 2.1.287 or later.",
       "category": "development"
+    },
+    {
+      "name": "lookout",
+      "source": "./lookout",
+      "description": "Review a diff in a browser pane beside the terminal: files sorted by risk or by path, highlighted split or unified diffs, and findings discussed with the agent in threads on their lines.",
+      "category": "development"
     }
   ]
 }
