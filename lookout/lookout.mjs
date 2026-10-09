@@ -13,8 +13,9 @@
 // reads the store (ADR 0004: a plugin cannot import another's libs).
 //
 // Exit codes:
-//   0  done
-//   1  refused or failed (the reason is on stderr)
+//   0  done (gate: pass)
+//   1  refused or failed, the reason on stderr (gate: a blocker or major is open)
+//   3  gate only: no review, or no reviewer has reported on it yet
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -27,6 +28,8 @@ import { resolveSource, buildPatch, parsePatch, sideText, buildRows, looksGenera
 import * as SC from "./lib/score.mjs";
 import * as GR from "./lib/group.mjs";
 import { repoConfig } from "./lib/typesafe.mjs";
+import * as FD from "./lib/findings.mjs";
+import { brief } from "./lib/prompt.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -41,7 +44,7 @@ const opt = (n, d = null) => {
   return i >= 0 && rest[i + 1] !== undefined && !rest[i + 1].startsWith("--") ? rest[i + 1] : d;
 };
 // Options that take a value; every other --flag stands alone.
-const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at"]);
+const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file"]);
 const positional = () => rest.filter((a, i) => !a.startsWith("--") && !(i > 0 && VALUED.has(rest[i - 1])));
 
 const say = s => process.stdout.write(s + "\n");
@@ -110,7 +113,7 @@ function workspaceFor(cwd) {
 // Best-effort, never a failure: a tab already showing this review is pointed
 // at the page again (a re-open refreshes, it does not stack tabs); otherwise a
 // new browser tab opens beside the terminal without taking focus.
-function showPage(id, file, cwd) {
+function showPage(id, file, cwd, { onlyIfOpen = false } = {}) {
   if (process.env.LOOKOUT_REVIEWS_DIR || flag("no-open")) return "";
   const ws = workspaceFor(cwd);
   if (!ws) return "";
@@ -125,6 +128,7 @@ function showPage(id, file, cwd) {
       if (n.status === 0) return "refreshed the open tab";
     }
   } catch { /* fall through to a new tab */ }
+  if (onlyIfOpen) return "";
   const o = spawnSync("cmux", ["open", file, "--workspace", ws, "--focus", "false"], { encoding: "utf8", env, timeout: 10000 });
   return o.status === 0 ? "opened beside the terminal" : "";
 }
@@ -191,7 +195,15 @@ function cmdOpen() {
     scoring,
     highlight: plain ? (flag("plain") ? "off" : V.hljsMissing()) : "highlight.js " + V.HLJS_VERSION,
   };
-  if (flag("agent-may-close")) fresh.policy = { agentMayClose: true };
+  // Who may close findings is decided when a review is created, never on a
+  // later open: otherwise the agent the policy restrains could re-open its
+  // own review with the flag and grant itself the right.
+  if (flag("agent-may-close")) {
+    if (S.exists(id) && !(S.read(id).policy || {}).agentMayClose)
+      die(`review ${id} was created without --agent-may-close, and that is not changed on a re-open. ` +
+          "Only the human closes its findings, on the page.");
+    fresh.policy = { agentMayClose: true };
+  }
   const review = S.update(id, cur => {
     const m = S.merge(cur, fresh);
     m.policy = { agentMayClose: false, ...(m.policy || {}) };
@@ -216,6 +228,120 @@ function cmdOpen() {
                          : `  (signals only: ${review.scoring.why})`));
   say(`  page:  ${page}${shown ? "  (" + shown + ")" : ""}`);
   say(`  store: ${p.json}`);
+}
+
+// ---------------------------------------------------------------- findings
+
+// Change a review under its lock, re-rank (findings move risk and groups),
+// redraw the page, and refresh a tab already showing it.
+function mutate(id, fn) {
+  let out;
+  const r = S.update(id, cur => { out = fn(cur); return arrange(cur); });
+  const page = renderPage(id);
+  showPage(id, page, (r.source && r.source.root) || process.cwd(), { onlyIfOpen: true });
+  return { review: r, out };
+}
+
+function readInput(arg) {
+  if (!arg || arg === "-") return fs.readFileSync(0, "utf8");
+  return fs.readFileSync(path.resolve(arg), "utf8");
+}
+
+// The text of a reply or note: the words after the ids, else --file, else stdin
+// when it is not a terminal.
+function textArg(words) {
+  if (opt("file")) return fs.readFileSync(path.resolve(opt("file")), "utf8");
+  if (words.length) return words.join(" ");
+  if (!process.stdin.isTTY) { try { return fs.readFileSync(0, "utf8"); } catch { return ""; } }
+  return "";
+}
+
+function cmdPrompt() {
+  const id = reviewArg();
+  const r = S.read(id);
+  const p = S.paths(id);
+  process.stdout.write(brief(r, { patchPath: p.patch, plansDir: path.dirname(S.REVIEWS_DIR),
+                                  outPath: path.join(S.REVIEWS_DIR, id + ".incoming.json") }));
+}
+
+function cmdFindings() {
+  const sub = positional()[0];
+  const id = positional()[1];
+  if (!id || !S.ID_OK.test(id) || !S.exists(id)) die(`findings ${sub || "add|list"} wants a review id (lookout list)`);
+  if (sub === "add") {
+    let items;
+    try { items = FD.parseInput(readInput(positional()[2])); } catch (e) { die(e.message); }
+    let rows = {};
+    try { rows = JSON.parse(fs.readFileSync(S.paths(id).rows, "utf8")); } catch { /* no rows: nothing is outside */ }
+    let result;
+    // A reviewer that answered [] has reviewed; one whose every item was
+    // rejected has not, and must not turn the gate's "no verdict" into a pass.
+    const peek = FD.validate(S.read(id), items, FD.anchorsFrom(rows));
+    if (items.length && !peek.accepted.length) {
+      for (const r of peek.rejected) say(`  rejected item ${r.index}: ${r.why}`);
+      die(`nothing accepted: all ${items.length} item(s) were rejected; the review is unchanged`);
+    }
+    const { out } = mutate(id, cur => {
+      const v = FD.validate(cur, items, FD.anchorsFrom(rows));
+      result = v;
+      return FD.ingest(cur, v.accepted, "reviewer");
+    });
+    const dup = result.accepted.length - out.length;
+    say(`lookout ${id}: ${out.length} finding(s) added` + (dup ? `, ${dup} already there` : "") +
+        (result.rejected.length ? `, ${result.rejected.length} rejected` : ""));
+    for (const f of out) say(`  ${f.id} ${f.severity.padEnd(7)} ${f.file}:${f.line}${f.outside ? " (outside the diff)" : ""}  ${f.short_summary}`);
+    for (const r of result.rejected) say(`  rejected item ${r.index}: ${r.why}`);
+    return;
+  }
+  if (sub === "list") {
+    const r = S.read(id);
+    let fs_ = r.findings || [];
+    if (flag("open")) fs_ = fs_.filter(FD.isOpen);
+    if (flag("json")) { process.stdout.write(JSON.stringify({ findings: fs_, threads: r.threads || [] }, null, 2) + "\n"); return; }
+    if (!fs_.length && !(r.threads || []).length) { say("no findings"); return; }
+    for (const f of fs_) {
+      say(`${f.id} [${f.status}] ${f.severity} ${f.category} ${f.verdict} ${f.file}:${f.line}${f.side === "old" ? " (old)" : ""}`);
+      say(`   ${f.summary}`);
+      for (const m of f.thread || []) say(`   ${m.by}: ${m.kind === "status" ? `→ ${m.to}` + (m.text ? " — " + m.text : "") : m.text}`);
+    }
+    for (const t of r.threads || []) {
+      say(`${t.id} [${t.status}] comment ${t.file}:${t.line}${t.side === "old" ? " (old)" : ""}`);
+      for (const m of t.messages || []) say(`   ${m.by}: ${m.kind === "status" ? `→ ${m.to}` : m.text}`);
+    }
+    return;
+  }
+  die("findings add <id> <file|-> | findings list <id> [--open] [--json]");
+}
+
+// reply / address / resolve / dismiss / reopen <id> <finding-or-thread> [text]
+function cmdThread(op) {
+  const [id, fid, ...words] = positional();
+  if (!id || !fid) die(`${op} <review-id> <finding-or-thread-id> [text]`);
+  if (!S.ID_OK.test(id) || !S.exists(id)) die("no review " + id);
+  const text = textArg(words);
+  try {
+    const { out } = mutate(id, cur => {
+      if (op === "reply") return FD.reply(cur, fid, text, "agent");
+      const to = { address: "addressed", resolve: "resolved", dismiss: "dismissed", reopen: "open" }[op];
+      return FD.setStatus(cur, fid, to, "agent", text);
+    });
+    say(op === "reply" ? `replied on ${fid} (${out.id})` : `${fid} is now ${out.status}`);
+  } catch (e) { die(e.message); }
+}
+
+// The gate deep-plan's review check runs. Exit 0 pass, 1 blocker/major open,
+// 3 nothing to judge.
+function cmdGate() {
+  let id = positional()[0];
+  if (!id && opt("plan")) id = S.idFrom(opt("plan"), "inc" + (opt("inc") || ""));
+  if (!id) die("gate <id> | gate --plan SLUG --inc N");
+  const r = S.ID_OK.test(id) && S.exists(id) ? S.read(id) : null;
+  const g = FD.gate(r);
+  if (flag("json")) process.stdout.write(JSON.stringify({ id, ...g }) + "\n");
+  else say(`lookout gate ${id}: ${g.code === 0 ? "pass" : g.code === 1 ? "blocked" : "no verdict"} — ${g.why}` +
+           (g.code === 3 && !r ? `\n  open one: lookout open${opt("plan") ? ` --plan ${opt("plan")} --inc ${opt("inc")}` : ""}, then run its reviewer (lookout prompt <id>)` : "") +
+           (g.code === 3 && r ? `\n  brief a reviewer subagent with: lookout prompt ${id}` : ""));
+  process.exit(g.code);
 }
 
 // ---------------------------------------------------------------- the rest
@@ -269,6 +395,14 @@ function usage() {
         Files are ranked by risk (signals + one Jev score per file; hunk text
         is sent only to a loopback endpoint or with .seamux/lookout.json
         sendContent: true) and grouped by how they relate.
+  lookout prompt <id>       the reviewer brief: give it to ONE fresh subagent
+  lookout findings add <id> <file|->     validate and ingest a reviewer's JSON
+  lookout findings list <id> [--open] [--json]
+  lookout reply <id> <f#|t#> <text>      answer in a finding's or comment's thread
+  lookout address <id> <f#> [note]       say a finding is fixed; the human closes it
+  lookout resolve|dismiss <id> <f#> [note]  refused unless opened --agent-may-close
+  lookout reopen <id> <f#|t#> [note]
+  lookout gate <id> | --plan SLUG --inc N   exit 0 pass, 1 blocker/major open, 3 no review
   lookout render <id>       redraw the page from the store
   lookout show <id> [--json]
   lookout list [--json]
@@ -287,6 +421,10 @@ try { pointerBody = V.writeEnginePointer(HERE); } catch { /* read-only home */ }
 switch (verb) {
   case "open":   cmdOpen(); break;
   case "render": say(renderPage(reviewArg())); break;
+  case "prompt": cmdPrompt(); break;
+  case "findings": cmdFindings(); break;
+  case "reply": case "address": case "resolve": case "dismiss": case "reopen": cmdThread(verb); break;
+  case "gate":   cmdGate(); break;
   case "show":   cmdShow(); break;
   case "list":   cmdList(); break;
   case "setup":  cmdSetup(); break;

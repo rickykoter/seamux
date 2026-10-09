@@ -212,10 +212,10 @@ const R1 = repo("r1");
   const rev2 = S.read(again.id);
   ok("store: re-open keeps findings and createdAt", rev2.findings.length === 1 && rev2.createdAt === rev.createdAt);
   ok("store: a new patch drops the score cache", !rev2.scoring.cached && rev2.patchHash !== rev.patchHash);
-  ok("store: agent-may-close defaults off and sticks once set",
-     rev2.policy.agentMayClose === false &&
-     (cli(R1, "open", "--agent-may-close", "--json"), S.read(again.id).policy.agentMayClose === true) &&
-     (cli(R1, "open", "--json"), S.read(again.id).policy.agentMayClose === true));
+  const grant = cli(R1, "open", "--agent-may-close", "--json");
+  ok("store: agent-may-close defaults off, and a re-open cannot grant it",
+     rev2.policy.agentMayClose === false && grant.status === 1 && /not changed on a re-open/.test(grant.stderr) &&
+     S.read(again.id).policy.agentMayClose === false, grant.stderr);
 
   const wt = JSON.parse(cli(R1, "open", "--worktree", "--json").stdout || "{}");
   const wf = S.read(wt.id).files.map(f => f.path).sort();
@@ -230,7 +230,14 @@ const R1 = repo("r1");
   fs.writeFileSync(pf, sh(R1, "git diff main dev/feature -- src/app.js"));
   const pr = JSON.parse(cli(TMP, "open", "--patch", pf, "--json").stdout || "{}");
   const prow = JSON.parse(fs.readFileSync(S.paths(pr.id).rows, "utf8"))["src/app.js"];
-  ok("open --patch: works outside a repo, highlighted per hunk", pr.id === "patch-x" && prow.whole === false && prow.hunks.length === 1);
+  ok("open --patch: works outside a repo, highlighted per hunk", /^patch-x-[0-9a-f]{6}$/.test(pr.id) && prow.whole === false && prow.hunks.length === 1, pr.id);
+  {
+    const other = path.join(TMP, "elsewhere", "x.patch");
+    fs.mkdirSync(path.dirname(other), { recursive: true });
+    fs.copyFileSync(pf, other);
+    const po = JSON.parse(cli(TMP, "open", "--patch", other, "--json").stdout || "{}");
+    ok("open --patch: two patches with one name are two reviews", po.id && po.id !== pr.id);
+  }
 
   ok("open: two sources at once are refused", cli(R1, "open", "--worktree", "--base", "main").status === 1);
   ok("open: a bad id is refused", cli(R1, "open", "--id", "../etc").status === 1);
@@ -309,6 +316,12 @@ const R1 = repo("r1");
      groups.every(g => g.files.every((p, i) => i === 0 || gf.find(f => f.path === g.files[i - 1]).risk >= gf.find(f => f.path === p).risk)));
   const hub = Array.from({ length: 10 }, (_, i) => F(`m/mod${i}.js`));
   const hubEdges = hub.slice(1).map(f => ({ a: "m/mod0.js", b: f.path, weight: 1, why: "x", provider: "references" }));
+  {
+    const many = Array.from({ length: GR.REF_MAX_FILES + 1 }, (_, i) => F(`big/m${i}.js`));
+    const t0 = Date.now();
+    const e = GR.edges(many, { text: () => 'import x from "./m1.js";', findings: [] }, ["references"]).edges;
+    ok("edges: references is bounded on a sweeping change", e.length === 0 && Date.now() - t0 < 2000);
+  }
   ok("groups: a hub cannot swallow the whole change", Math.max(...GR.group(hub, hubEdges).map(g => g.files.length)) === GR.MAX_GROUP);
   {
     const twins = [F("x/README.md"), F("y/README.md"), F("z/tool.js")];
@@ -372,6 +385,147 @@ const R1 = repo("r1");
      /no TypeSafe client/.test(S.read(o3.id).scoring.why));
   const page = fs.readFileSync(o3.page, "utf8");
   ok("page: the Risk view and its banner are in the page", page.includes('data-view="risk"') && page.includes("Risk from signals only"));
+}
+
+// ---------------------------------------------------------------- findings + gate
+{
+  const FD = await import("./lib/findings.mjs");
+  const one = { file: "a.js", line: 2, severity: "major", summary: "s", failure_scenario: "f" };
+  ok("input: a bare array, {findings}, and a fenced block with prose all parse",
+     FD.parseInput(JSON.stringify([one])).length === 1 && FD.parseInput(JSON.stringify({ findings: [one] })).length === 1 &&
+     FD.parseInput("Here you go:\n```json\n" + JSON.stringify([one]) + "\n```\nDone.").length === 1);
+  let threw = false; try { FD.parseInput("no json here"); } catch { threw = true; }
+  ok("input: no array is an error, not an empty review", threw);
+
+  const R4 = repo("r4");
+  write(R4, "a.js", "const a = 1;\nconst b = 2;\n");
+  write(R4, "b.py", "x = 1\n");
+  sh(R4, `git add -A && ${G} commit -q -m base`);
+  write(R4, "a.js", "const a = 1;\nconst b = 3;\nconst c = 4;\n");
+  write(R4, "b.py", "x = 2\n");
+  const id = JSON.parse(cli(R4, "open", "--worktree", "--json").stdout).id;
+  const gate = (...a) => cli(R4, "gate", ...a);
+  ok("gate: 3 before any reviewer has reported", gate(id).status === 3 && gate("no-such-review").status === 3);
+
+  const ffile = path.join(TMP, "findings.json");
+  fs.writeFileSync(ffile, JSON.stringify([
+    { file: "a.js", line: 2, severity: "major", category: "Correctness", verdict: "confirmed", summary: "b is wrong", failure_scenario: "b=3 breaks x" },
+    { file: "a.js", line: 1, side: "old", severity: "nit", summary: "old line", failure_scenario: "f" },
+    { file: "b.py", line: 40, severity: "minor", summary: "outside", failure_scenario: "f", short_summary: "x".repeat(90) },
+    { file: "zzz.js", line: 1, severity: "major", summary: "s", failure_scenario: "f" },
+    { file: "a.js", line: 1, severity: "urgent", summary: "s", failure_scenario: "f" },
+    { file: "a.js", line: 0, severity: "minor", summary: "s", failure_scenario: "f" },
+    { file: "a.js", line: 1, severity: "minor", summary: "", failure_scenario: "f" },
+  ]));
+  const add = cli(R4, "findings", "add", id, ffile);
+  const r = S.read(id);
+  ok("findings add: three accepted, four rejected with reasons", add.status === 0 && r.findings.length === 3 &&
+     (add.stdout.match(/rejected item/g) || []).length === 4 && /not in this review/.test(add.stdout), add.stdout);
+  const [f1, f2, f3] = r.findings;
+  ok("findings add: normalized (ids, category, verdict, side, status, clipped short summary)",
+     f1.id === "f1" && f1.category === "correctness" && f1.verdict === "CONFIRMED" && f1.side === "new" && f1.status === "open" &&
+     f2.side === "old" && f3.short_summary.length === 60);
+  ok("findings add: a line the diff does not show is kept and flagged outside", f3.outside === true && f1.outside === false);
+  cli(R4, "findings", "add", id, ffile);
+  ok("findings add: ingesting the same file again adds nothing", S.read(id).findings.length === 3);
+  {
+    const fresh = JSON.parse(cli(R4, "open", "--worktree", "--id", "r4-rejected", "--json").stdout).id;
+    const bad = path.join(TMP, "all-bad.json");
+    fs.writeFileSync(bad, JSON.stringify([{ file: "/abs/a.js", line: 1, severity: "blocker", summary: "s", failure_scenario: "f" }]));
+    const r1 = cli(R4, "findings", "add", fresh, bad);
+    ok("findings add: all rejected changes nothing and the gate stays at no verdict",
+       r1.status === 1 && !S.read(fresh).reviewedAt && cli(R4, "gate", fresh).status === 3, r1.stderr);
+    const empty = path.join(TMP, "empty.json");
+    fs.writeFileSync(empty, "[]");
+    ok("findings add: an explicit [] is a review that found nothing (gate passes)",
+       cli(R4, "findings", "add", fresh, empty).status === 0 && cli(R4, "gate", fresh).status === 0);
+  }
+  ok("findings move risk: the file with the major ranks first", S.read(id).groups[0].files[0] === "a.js" &&
+     S.read(id).files.find(f => f.path === "a.js").reasons.includes("open major finding"));
+  ok("gate: 1 while a major is open", gate(id).status === 1 && /f1 major a\.js:2/.test(gate(id).stdout));
+
+  const res = cli(R4, "resolve", id, "f1", "done");
+  ok("authority: the agent cannot resolve without the policy", res.status === 1 && /only the human closes/.test(res.stderr) &&
+     S.read(id).findings[0].status === "open");
+  ok("authority: nor dismiss", cli(R4, "dismiss", id, "f1").status === 1);
+  ok("address: allowed, and leaves a status message", cli(R4, "address", id, "f1", "b is 2 again").status === 0 &&
+     S.read(id).findings[0].status === "addressed" && S.read(id).findings[0].thread[0].kind === "status");
+  ok("gate: an addressed major still blocks (the human closes it)", gate(id).status === 1 && /awaiting the human/.test(gate(id).stdout));
+  ok("reply: lands in the thread as the agent", cli(R4, "reply", id, "f2", "it", "is", "fine").status === 0 &&
+     S.read(id).findings[1].thread.at(-1).text === "it is fine" && S.read(id).findings[1].thread.at(-1).by === "agent");
+  ok("reply: an unknown id is refused", cli(R4, "reply", id, "f99", "x").status === 1);
+
+  // The human's close, as the page will do it (increment 4 carries it over HTTP).
+  S.update(id, cur => { FD.setStatus(cur, "f1", "resolved", "human", "ok"); return cur; });
+  const g0 = gate(id, "--json");
+  ok("gate: 0 once the major is closed; minor and nit never hold it", g0.status === 0 && JSON.parse(g0.stdout).open === 2, g0.stdout);
+  cli(R4, "reopen", id, "f1", "regressed");
+  ok("reopen: the agent may reopen, and the gate blocks again", S.read(id).findings[0].status === "open" && gate(id).status === 1);
+
+  // Comment threads (a human's line note) take replies and resolve.
+  S.update(id, cur => { FD.comment(cur, { file: "b.py", line: 1, text: "why 2?" }); return cur; });
+  ok("threads: a comment gets a t-id, and the agent can answer it",
+     S.read(id).threads[0].id === "t1" && cli(R4, "reply", id, "t1", "spec says 2").status === 0 &&
+     S.read(id).threads[0].messages.length === 2);
+  ok("threads: re-open keeps findings and threads", (cli(R4, "open", "--worktree", "--json"), S.read(id).findings.length === 3 &&
+     S.read(id).threads.length === 1));
+
+  {
+    // A same-size edit in the same second as the commit: the scratch index must
+    // not trust the stat cache here (git's racy-entry rule needs the copied
+    // index to keep the real one's mtime).
+    const R6 = repo("r6");
+    write(R6, "same.txt", "aaaa\n"); sh(R6, `git add -A && ${G} commit -q -m base`);
+    write(R6, "same.txt", "bbbb\n");
+    const rid = JSON.parse(cli(R6, "open", "--worktree", "--json").stdout).id;
+    ok("scratch index: a same-size edit right after the commit is in the diff",
+       S.read(rid).files.some(f => f.path === "same.txt"));
+  }
+  // A finding on a file that later leaves the diff is kept, still gates, and
+  // is drawn in the page's "no longer in the diff" list.
+  {
+    const R5 = repo("r5");
+    write(R5, "x.js", "a\n"); sh(R5, `git add -A && ${G} commit -q -m base`);
+    write(R5, "x.js", "b\n"); write(R5, "y.js", "c\n");
+    const gid = JSON.parse(cli(R5, "open", "--worktree", "--json").stdout).id;
+    const gf = path.join(TMP, "ghost.json");
+    fs.writeFileSync(gf, JSON.stringify([{ file: "x.js", line: 1, severity: "major", summary: "ghostly", failure_scenario: "f" }]));
+    cli(R5, "findings", "add", gid, gf);
+    write(R5, "x.js", "a\n");
+    cli(R5, "open", "--worktree", "--json");
+    const gr = S.read(gid);
+    ok("left the diff: the finding is kept and still gates", !gr.files.some(f => f.path === "x.js") &&
+       gr.findings.length === 1 && cli(R5, "gate", gid).status === 1);
+    ok("left the diff: the page lists it where the human can close it",
+       fs.readFileSync(S.paths(gid).html, "utf8").includes("ghostly") &&
+       fs.readFileSync(path.join(HERE, "page", "review.js"), "utf8").includes("no longer in the diff"));
+  }
+  ok("list: a reviewer's incoming file is not a review",
+     (fs.writeFileSync(path.join(ENV.LOOKOUT_REVIEWS_DIR, id + ".incoming.json"), "[]"),
+      !/undefined/.test(cli(R4, "list").stdout) && JSON.parse(cli(R4, "list", "--json").stdout).every(x => x.id)));
+
+  // A review opened --agent-may-close lets the agent close.
+  const idc = JSON.parse(cli(R4, "open", "--worktree", "--id", "r4-close", "--agent-may-close", "--json").stdout).id;
+  cli(R4, "findings", "add", idc, ffile);
+  ok("authority: --agent-may-close lets the agent resolve", cli(R4, "resolve", idc, "f1", "fixed").status === 0 &&
+     S.read(idc).findings[0].status === "resolved" && S.read(idc).findings[0].statusBy === "agent");
+
+  // The plan form: id from slug and increment, brief carries the cutover.
+  fs.mkdirSync(path.join(TMP, "demo-plan.cutover"), { recursive: true });
+  fs.writeFileSync(path.join(TMP, "demo-plan.cutover", "02-make-b-three.md"), "# Make b three\nThe increment sets b to 3.\n");
+  const pid = JSON.parse(cli(R4, "open", "--plan", "demo-plan", "--inc", "2", "--base", "HEAD", "--json").stdout).id;
+  ok("plan: the review id is <slug>-inc<n>", pid === "demo-plan-inc2");
+  ok("plan: gate --plan --inc finds it", gate("--plan", "demo-plan", "--inc", "2").status === 3 &&
+     gate("--plan", "demo-plan", "--inc", "9").status === 3);
+  const br = cli(R4, "prompt", pid).stdout;
+  ok("prompt: carries the patch, the plan increment, the rubric, the schema and the ingest command",
+     br.includes(S.paths(pid).patch) && br.includes("The increment sets b to 3.") && /security —/.test(br) &&
+     br.includes('"failure_scenario"') && br.includes(`lookout findings add ${pid} `));
+  const bs = cli(R4, "prompt", id).stdout;
+  ok("prompt: standalone has no plan section and names the prior findings", !/plan increment it implements/.test(bs) &&
+     /already has 3 finding/.test(bs));
+  const page = fs.readFileSync(S.paths(id).html, "utf8");
+  ok("page: findings and threads are in the drawn page", page.includes("b is wrong") && page.includes("why 2?"));
 }
 
 // ---------------------------------------------------------------- setup

@@ -62,7 +62,15 @@ export function worktreeTree(root) {
   const tmp = path.join(os.tmpdir(), `lookout-index-${process.pid}-${Date.now()}`);
   const env = { GIT_INDEX_FILE: tmp };
   try {
-    if (fs.existsSync(real)) fs.copyFileSync(real, tmp);
+    if (fs.existsSync(real)) {
+      fs.copyFileSync(real, tmp);
+      // Keep the index file's own mtime. Git trusts an entry's cached stat only
+      // when the entry is older than the index file ("racy git"); a copy stamped
+      // now would make a same-size edit from the last second look unchanged,
+      // and the review would silently miss it.
+      const st = fs.statSync(real);
+      fs.utimesSync(tmp, st.atime, st.mtime);
+    }
     else if (git(root, ["rev-parse", "-q", "--verify", "HEAD"], { allowFail: true }))
       git(root, ["read-tree", "HEAD"], { env });
     git(root, ["add", "-A"], { env });

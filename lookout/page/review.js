@@ -6,7 +6,7 @@
 (() => {
   "use strict";
   const D = JSON.parse(document.getElementById("lookout-data").textContent);
-  const R = D.review;
+  let R = D.review;               // replaced whole when a fresher copy arrives
   const ROWS = D.rows || {};
   const $ = id => document.getElementById(id);
 
@@ -91,7 +91,7 @@
           title: f.path + (f.oldPath ? " (from " + f.oldPath + ")" : ""),
           "data-path": f.path, onclick: () => select(f.path),
         }, el("span", { class: "chev" }), el("span", { class: "name" }, name),
-           el("span", { class: "counts" }, countsText(f)),
+           badge(f.path), el("span", { class: "counts" }, countsText(f)),
            el("span", { class: "st st-" + f.status }, f.status))));
       }
       return ul;
@@ -109,7 +109,7 @@
   // draws a rail beside its files and says why they belong together.
   const BANDS = [["high", 0.6], ["medium", 0.35], ["low", 0]];
   const bandOf = r => BANDS.find(([, min]) => (r || 0) >= min)[0];
-  const byPath = new Map((R.files || []).map(f => [f.path, f]));
+  const byPath = () => new Map((R.files || []).map(f => [f.path, f]));
 
   function fileRow(f, { dir = false } = {}) {
     const cut = f.path.lastIndexOf("/");
@@ -121,7 +121,7 @@
     }, el("span", { class: "dot band-" + (f.band || "low") }),
        el("span", { class: "name" }, f.path.slice(cut + 1),
          dir && cut >= 0 ? el("span", { class: "in" }, " " + f.path.slice(0, cut)) : null),
-       el("span", { class: "counts" }, countsText(f)),
+       badge(f.path), el("span", { class: "counts" }, countsText(f)),
        el("span", { class: "st st-" + f.status }, f.status));
   }
 
@@ -134,7 +134,7 @@
       const n = groups.reduce((x, g) => x + g.files.length, 0);
       box.append(el("div", { class: "band-head band-" + band }, el("span", null, band), el("span", null, String(n))));
       for (const g of groups) {
-        const files = g.files.map(p => byPath.get(p)).filter(Boolean);
+        const files = g.files.map(p => byPath().get(p)).filter(Boolean);
         for (const f of files) ORDER.push(f.path);
         if (files.length < 2) { box.append(fileRow(files[0], { dir: true })); continue; }
         const why = (g.edges || []).map(e => e.why);
@@ -147,20 +147,113 @@
     $("tree").replaceChildren(box);
   }
 
-  const hasRisk = (R.files || []).some(f => typeof f.risk === "number") && (R.groups || []).length > 0;
-  let view = hasRisk && store.get("lookout.view", "risk") === "risk" ? "risk" : "path";
+  const hasRisk = () => (R.files || []).some(f => typeof f.risk === "number") && (R.groups || []).length > 0;
+  let view = hasRisk() && store.get("lookout.view", "risk") === "risk" ? "risk" : "path";
   function drawSide() {
+    if (!hasRisk()) view = "path";
     for (const b of document.querySelectorAll("#view button"))
       b.setAttribute("aria-pressed", String(b.dataset.view === view));
-    $("view").hidden = !hasRisk;
+    $("view").hidden = !hasRisk();
     $("side-title").textContent = view === "risk" ? "By risk" : "Changes";
     $("side-count").textContent = String((R.files || []).length);
     view === "risk" ? drawRisk() : drawPathTree();
+    drawGhosts();
+  }
+
+  // Files that left the diff (a fix reverted them) but still carry findings
+  // or comments. The gate still counts what is open on them, so they stay
+  // listed where the human can read and close them.
+  const ghosts = () => {
+    const here = new Set((R.files || []).map(f => f.path));
+    return [...new Set(items().map(x => x.file).filter(p => !here.has(p)))].sort();
+  };
+  function drawGhosts() {
+    const g = ghosts();
+    if (!g.length) return;
+    $("tree").append(el("div", { class: "band-head ghost-head" }, el("span", null, "no longer in the diff"), el("span", null, String(g.length))),
+      ...g.map(p => {
+        ORDER.push(p);
+        return el("div", { class: "row file ghost" + (p === current ? " sel" : ""), "data-path": p, title: p, onclick: () => select(p) },
+          el("span", { class: "chev" }), el("span", { class: "name" }, p.slice(p.lastIndexOf("/") + 1),
+            el("span", { class: "in" }, " " + p.slice(0, Math.max(0, p.lastIndexOf("/"))))), badge(p));
+      }));
   }
   for (const b of document.querySelectorAll("#view button"))
     b.addEventListener("click", () => { view = b.dataset.view; store.set("lookout.view", view); drawSide(); select(current); });
 
   const countsText = f => f.binary ? "bin" : `+${f.adds} −${f.dels}`;
+
+  // ---------------------------------------------------------------- findings
+
+  const SEV = ["blocker", "major", "minor", "nit"];
+  const isOpen = x => !["resolved", "dismissed"].includes(x.status || "open");
+  const items = () => [...(R.findings || []), ...(R.threads || [])];
+  const openFindings = p => (R.findings || []).filter(x => x.file === p && isOpen(x));
+
+  // A file's open findings as one badge, colored by the worst of them.
+  function badge(p) {
+    const o = openFindings(p);
+    const t = (R.threads || []).filter(x => x.file === p && isOpen(x)).length;
+    if (!o.length && !t) return null;
+    const worst = SEV.find(s => o.some(x => x.severity === s));
+    return el("span", { class: "fbadge" + (worst ? " sev-" + worst : " sev-comment"),
+      title: `${o.length} open finding(s)` + (t ? `, ${t} open comment(s)` : "") }, String(o.length + t));
+  }
+
+  const when = iso => { try { return new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return ""; } };
+  function message(m) {
+    if (m.kind === "status")
+      return el("div", { class: "msg status" }, `${m.by} marked it ${m.to}`, m.text ? " — " + m.text : "",
+        el("span", { class: "at" }, " · " + when(m.at)));
+    return el("div", { class: "msg by-" + m.by }, el("div", { class: "who" }, m.by, el("span", { class: "at" }, " · " + when(m.at))),
+      el("div", { class: "text" }, m.text));
+  }
+
+  // One finding or comment thread, drawn under its line.
+  const expandedClosed = new Set();
+  function card(x) {
+    const finding = x.id.startsWith("f");
+    const closed = !isOpen(x);
+    const body = !closed || expandedClosed.has(x.id);
+    const head = el("div", { class: "card-head", onclick: closed ? () => { expandedClosed.has(x.id) ? expandedClosed.delete(x.id) : expandedClosed.add(x.id); drawFile(); } : null },
+      finding ? el("span", { class: "sev sev-" + x.severity }, x.severity) : el("span", { class: "sev sev-comment" }, "comment"),
+      el("span", { class: "fid" }, x.id),
+      finding ? el("span", { class: "cat" }, x.category + " · " + (x.verdict === "CONFIRMED" ? "confirmed" : "plausible")) : null,
+      el("span", { class: "title" }, finding ? x.short_summary || x.summary : ((x.messages || [])[0] || {}).text || ""),
+      el("span", { class: "status st-" + (x.status || "open") }, x.status || "open"));
+    return el("div", { class: "card" + (closed ? " closed" : "") + (finding ? "" : " comment"), "data-item": x.id },
+      head,
+      body && finding ? el("div", { class: "card-body" },
+        el("div", { class: "summary" }, x.summary),
+        el("div", { class: "failure" }, el("b", null, "Fails when: "), x.failure_scenario)) : null,
+      body ? el("div", { class: "msgs" }, (finding ? x.thread || [] : (x.messages || []).slice(1)).map(message)) : null,
+      body ? actions(x) : null);
+  }
+  // Increment 4's comment channel fills this in when the page is served.
+  let actions = () => null;
+
+  // Items anchored per file: "new:12" / "old:7" → items; and the ones whose
+  // line the drawn diff does not show.
+  function anchorsFor(p, drawn) {
+    const at = new Map();
+    const shown = new Set();
+    for (const h of drawn.hunks || []) for (const [, o, n] of h.rows) {
+      if (o != null) shown.add("old:" + o);
+      if (n != null) shown.add("new:" + n);
+    }
+    const outside = [];
+    for (const x of items().filter(x => x.file === p)) {
+      const k = (x.side || "new") + ":" + x.line;
+      if (!shown.has(k)) { outside.push(x); continue; }
+      if (!at.has(k)) at.set(k, []);
+      at.get(k).push(x);
+    }
+    const sort = a => a.sort((x, y) => (isOpen(y) - isOpen(x)) || SEV.indexOf(x.severity) - SEV.indexOf(y.severity));
+    for (const v of at.values()) sort(v);
+    return { at, outside: sort(outside) };
+  }
+  const threadRow = (list, span) => el("tr", { class: "thread-row" }, el("td", { colspan: span },
+    el("div", { class: "threads" }, list.map(card))));
 
   // ---------------------------------------------------------------- diff
 
@@ -208,23 +301,40 @@
   const codeCell = (html, cls, sign) => el("td", { class: "code" + (cls ? " " + cls : ""), "data-sign": sign, html });
   const KIND = { "+": "add", "-": "del", " ": "" };
 
-  function unified(drawn) {
+  // The items to draw after a row: each anchor key once per table.
+  function takeAt(anch, used, keys) {
+    const out = [];
+    for (const k of keys) if (k && anch.at.has(k) && !used.has(k)) { used.add(k); out.push(...anch.at.get(k)); }
+    return out;
+  }
+
+  function unified(drawn, anch) {
     const t = el("table", { class: "diff unified" },
       el("colgroup", null, el("col", { style: "width:52px" }), el("col", { style: "width:52px" }), el("col")));
+    const used = new Set();
     for (const h of drawn.hunks) {
       t.append(el("tr", { class: "hunk" }, el("td", { colspan: 3 }, h.header)));
       for (const [ty, o, n, html] of h.rows) {
         const k = KIND[ty];
-        t.append(el("tr", { class: "line " + (k || "ctx") }, lnCell(o, k), lnCell(n, k), codeCell(html, k, ty === " " ? " " : ty)));
+        t.append(el("tr", { class: "line " + (k || "ctx"), "data-old": o ?? null, "data-new": n ?? null },
+          lnCell(o, k), lnCell(n, k), codeCell(html, k, ty === " " ? " " : ty)));
+        const here = takeAt(anch, used, [n != null ? "new:" + n : null, o != null ? "old:" + o : null]);
+        if (here.length) t.append(threadRow(here, 3));
       }
     }
     return t;
   }
 
-  function split(drawn) {
+  function split(drawn, anch) {
     const t = el("table", { class: "diff split" },
       el("colgroup", null, el("col", { style: "width:52px" }), el("col"), el("col", { style: "width:52px" }), el("col")));
-    const pair = (l, r) => el("tr", { class: "line" },
+    const used = new Set();
+    const pair = (l, r) => {
+      const row = pairRow(l, r);
+      const here = takeAt(anch, used, [r ? "new:" + r[2] : null, l ? "old:" + l[1] : null]);
+      return here.length ? [row, threadRow(here, 4)] : [row];
+    };
+    const pairRow = (l, r) => el("tr", { class: "line", "data-old": l ? l[1] : null, "data-new": r ? r[2] : null },
       l ? lnCell(l[1], KIND[l[0]]) : el("td", { class: "ln empty" }),
       l ? codeCell(l[3], KIND[l[0]], l[0] === " " ? " " : l[0]) : el("td", { class: "code empty" }),
       r ? lnCell(r[2], KIND[r[0]]) : el("td", { class: "ln empty" }),
@@ -233,11 +343,11 @@
       t.append(el("tr", { class: "hunk" }, el("td", { colspan: 4 }, h.header)));
       const rows = h.rows;
       for (let i = 0; i < rows.length;) {
-        if (rows[i][0] === " ") { t.append(pair(rows[i], rows[i])); i++; continue; }
+        if (rows[i][0] === " ") { t.append(...pair(rows[i], rows[i])); i++; continue; }
         const dels = [], adds = [];
         while (i < rows.length && rows[i][0] === "-") dels.push(rows[i++]);
         while (i < rows.length && rows[i][0] === "+") adds.push(rows[i++]);
-        for (let k = 0; k < Math.max(dels.length, adds.length); k++) t.append(pair(dels[k], adds[k]));
+        for (let k = 0; k < Math.max(dels.length, adds.length); k++) t.append(...pair(dels[k], adds[k]));
       }
     }
     return t;
@@ -245,6 +355,13 @@
 
   function drawFile() {
     const f = (R.files || []).find(x => x.path === current);
+    if (!f && current && ghosts().includes(current)) {
+      $("file-head").replaceChildren(el("span", { class: "path" }, current), el("span", { class: "from" }, "no longer in the diff"));
+      $("diff").replaceChildren(el("div", { class: "outside" },
+        el("div", { class: "outside-head" }, "This file has left the diff; what was said on it is kept until closed"),
+        el("div", { class: "threads" }, items().filter(x => x.file === current).map(card))));
+      return;
+    }
     if (!f) {
       $("file-head").replaceChildren();
       $("diff").replaceChildren(el("div", { class: "empty-review" },
@@ -261,7 +378,40 @@
     const oneSided = drawn.hunks.every(h => h.rows.every(r => r[0] === "+")) ||
                      drawn.hunks.every(h => h.rows.every(r => r[0] === "-"));
     const useSplit = layout === "split" && !narrow() && !oneSided;
-    $("diff").replaceChildren(useSplit ? split(drawn) : unified(drawn));
+    const anch = anchorsFor(f.path, drawn);
+    $("diff").replaceChildren(
+      anch.outside.length ? el("div", { class: "outside" }, el("div", { class: "outside-head" }, "On lines this diff does not show"),
+        el("div", { class: "threads" }, anch.outside.map(card))) : "",
+      useSplit ? split(drawn, anch) : unified(drawn, anch));
+  }
+
+  // n / p: through open findings (all of them once none is open), in the
+  // side list's order, then by line.
+  function stepFinding(d) {
+    let list = (R.findings || []).filter(isOpen);
+    if (!list.length) list = R.findings || [];
+    if (!list.length) return;
+    const pos = x => [ORDER.indexOf(x.file), x.line];
+    list = [...list].sort((a, b) => pos(a)[0] - pos(b)[0] || a.line - b.line);
+    let i = list.findIndex(x => x.id === curFinding);
+    i = i < 0 ? (d > 0 ? 0 : list.length - 1) : (i + d + list.length) % list.length;
+    goTo(list[i].id);
+  }
+  let curFinding = null;
+  function goTo(id) {
+    const x = items().find(y => y.id === id);
+    if (!x) return;
+    curFinding = id;
+    if (x.file !== current) select(x.file);
+    const f = (R.files || []).find(y => y.path === x.file);
+    if (f && f.collapsed && !opened.has(f.path)) { opened.add(f.path); drawFile(); }
+    if (!isOpen(x)) { expandedClosed.add(id); drawFile(); }
+    const c = document.querySelector(`[data-item="${CSS.escape(id)}"]`);
+    if (c) {
+      c.scrollIntoView({ block: "center" });
+      for (const o of document.querySelectorAll(".card.flash")) o.classList.remove("flash");
+      c.classList.add("flash");
+    }
   }
 
   // ---------------------------------------------------------------- chrome
@@ -284,23 +434,57 @@
     if (e.key === "j") { step(1); e.preventDefault(); }
     else if (e.key === "k") { step(-1); e.preventDefault(); }
     else if (e.key === "v") { setLayout(layout === "split" ? "unified" : "split"); e.preventDefault(); }
+    else if (e.key === "n") { stepFinding(1); e.preventDefault(); }
+    else if (e.key === "p") { stepFinding(-1); e.preventDefault(); }
   });
   let wasNarrow = narrow();
   window.addEventListener("resize", () => { if (narrow() !== wasNarrow) { wasNarrow = narrow(); drawFile(); } });
 
-  $("title").textContent = R.title || R.id;
-  const s = R.stats || {};
-  const where = R.source && (R.source.kind === "patch" ? "patch " + R.source.label : R.source.label);
-  $("label").textContent = [where !== R.title ? where : null,
-    `${s.files || 0} files`, `+${s.adds || 0} −${s.dels || 0}`].filter(Boolean).join(" · ");
-  document.title = "lookout · " + R.id;
-  const notes = [];
-  if (R.highlight && !/^highlight\.js/.test(R.highlight) && R.highlight !== "off")
-    notes.push("Drawn without syntax highlighting: " + R.highlight);
-  if (R.scoring && !R.scoring.ok)
-    notes.push("Risk from signals only — " + (R.scoring.why || "no Jev scores") + ".");
-  if (notes.length) { $("banner").textContent = notes.join("  "); $("banner").hidden = false; }
+  // The gate as the page sees it, the same rule `lookout gate` applies.
+  function gateText() {
+    if (!R.reviewedAt) return { cls: "none", text: "not reviewed yet" };
+    const open = (R.findings || []).filter(isOpen);
+    const blocking = open.filter(x => x.severity === "blocker" || x.severity === "major");
+    const counts = SEV.map(s => [s, open.filter(x => x.severity === s).length]).filter(([, n]) => n)
+      .map(([s, n]) => `${n} ${s}`).join(", ");
+    if (blocking.length) return { cls: "blocked", text: `blocked · ${counts} open` };
+    return { cls: "pass", text: open.length ? `pass · ${counts} open` : "pass · no open findings" };
+  }
 
+  function drawHeader() {
+    $("title").textContent = R.title || R.id;
+    const s = R.stats || {};
+    const where = R.source && (R.source.kind === "patch" ? "patch " + R.source.label : R.source.label);
+    $("label").textContent = [where !== R.title ? where : null,
+      `${s.files || 0} files`, `+${s.adds || 0} −${s.dels || 0}`].filter(Boolean).join(" · ");
+    const g = gateText();
+    $("gate").className = "gate " + g.cls;
+    $("gate").textContent = g.text;
+    $("gate").title = (R.policy && R.policy.agentMayClose) ? "The agent may also close findings on this review."
+                                                           : "Only you close findings; the agent replies and marks them addressed.";
+    document.title = "lookout · " + R.id;
+    const notes = [];
+    if (R.highlight && !/^highlight\.js/.test(R.highlight) && R.highlight !== "off")
+      notes.push("Drawn without syntax highlighting: " + R.highlight);
+    if (R.scoring && !R.scoring.ok)
+      notes.push("Risk from signals only — " + (R.scoring.why || "no Jev scores") + ".");
+    $("banner").textContent = notes.join("  ");
+    $("banner").hidden = !notes.length;
+  }
+
+  // Swap in a fresher review (the served page polls for one) and redraw what
+  // depends on it, keeping the reader's place.
+  function applyReview(next) {
+    const y = $("main").scrollTop;
+    R = next;
+    drawHeader();
+    drawSide();
+    drawFile();
+    $("main").scrollTop = y;
+  }
+  window.lookout = { get review() { return R; }, applyReview, setActions(fn) { actions = fn; drawFile(); }, el, current: () => current };
+
+  drawHeader();
   drawLayout();
   drawSide();
   const want = decodeURIComponent((location.hash.match(/file=([^&]+)/) || [])[1] || "");

@@ -31,11 +31,18 @@ export const isCode = p => !NOT_CODE.test(p);
 // A code file that names another changed file the way code does: inside a
 // string or after a slash (an import, a require, a path it opens, a source
 // line, a path in a comment), or a Python import of its module name.
+// Bounded on purpose: it is one regex per target over every source's text,
+// so past these sizes a sweeping change (a rename across a monorepo) would
+// stall the open. Over the file cap it finds nothing and the other providers
+// still group; each source is read up to the text cap.
+export const REF_MAX_FILES = 300;
+const REF_TEXT_CAP = 200_000;
 const references = {
   name: "references",
   needsText: true,
   edges(files, ctx) {
     const out = [];
+    if (files.length > REF_MAX_FILES) return out;
     const targets = files.map(f => {
       // The shortest path suffix no other changed file shares: two changed
       // READMEs are crew/README.md and board/README.md, never README.md. An
@@ -58,7 +65,7 @@ const references = {
     });
     for (const a of files) {
       if (!isCode(a.path)) continue;
-      const text = ctx.text(a.path);
+      const text = (ctx.text(a.path) || "").slice(0, REF_TEXT_CAP);
       if (!text) continue;
       for (const { f: b, re } of targets) {
         if (a === b || !re.test(text)) continue;

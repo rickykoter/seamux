@@ -1,6 +1,6 @@
 ---
 name: lookout
-description: Review a diff in a browser pane beside the terminal — a branch against its base, a commit range, the uncommitted working tree, or a patch file — with files in a VS Code-style tree, highlighted split or unified diffs, and word-level change marks. Use when the user asks to review a branch, a diff, a PR's changes or an increment, to "look at the diff", or runs /lookout.
+description: Review a diff in a browser pane beside the terminal — a branch against its base, a commit range, the uncommitted working tree, or a patch file — with files sorted by risk or path, highlighted split or unified diffs, and findings from a reviewer subagent discussed with the human in threads on their lines. Use when the user asks to review a branch, a diff, a PR's changes or an increment, to "look at the diff", or runs /lookout.
 ---
 
 # lookout
@@ -33,6 +33,47 @@ The id is stable per source (`<repo>-<branch>`, `<repo>-<branch>-wt`, …), so
 re-opening a branch after more work updates its review and keeps everything
 said on it.
 
+## Run a review
+
+The findings come from ONE fresh subagent, not from you: reviewing your own
+change in the context that wrote it reads your intent instead of the code.
+
+1. `lookout open …` (above). Note the id it prints.
+2. Spawn a subagent (the Agent tool, general-purpose) whose prompt is the
+   exact output of `lookout prompt <id>`. The brief carries the patch path,
+   how to read whole files, the files riskiest first, the rubric, the
+   severities and the JSON schema, and tells the subagent to run
+   `lookout findings add <id> <file>` itself. Do not add your own opinion of
+   the change to the brief.
+3. When it returns, `lookout findings list <id>` and tell the human what was
+   found (counts by severity, the blockers and majors in a line each). The
+   page beside the terminal already shows every finding under its line.
+4. Discuss. Fix what is real, then `lookout address <id> <f#> "<what changed>"`;
+   answer anything with `lookout reply <id> <f#|t#> "<text>"`.
+5. **Only the human closes a finding** — resolve or dismiss, on the page.
+   `lookout resolve` and `lookout dismiss` are refused for you unless the
+   review was opened with `--agent-may-close` (a plan opts in with
+   `review.agentMayClose`). Never work around that refusal, and never ask
+   for the flag yourself; it is the human's call at planning time.
+
+`lookout gate <id>` is the verdict: exit 0 when no blocker or major finding
+is open (minor and nit never hold it), 1 when one is open or only addressed,
+3 when there is no review or no reviewer has reported. A finding the agent
+marked addressed still holds the gate until the human closes it.
+
+**Standalone** (`/lookout`, any branch, no plan): open with `--base`,
+`--range`, `--worktree` or `--patch`; the brief carries the patch and the
+rubric only, and the page header names the branch and base. `lookout gate`
+still answers, but nothing gates on it: a standalone review is a
+conversation, not a gate.
+
+**Inside a deep-plan increment**: the plan's `review` check runs
+`lookout gate --plan <slug> --inc <n>`, so open the review as
+`lookout open --plan <slug> --inc <n> --base <the increment's start sha>`
+(its id is `<slug>-inc<n>`). The brief then also carries the increment's
+own description from the plan's cutover. `deep-plan check run` re-runs the
+gate; it passes once the human has closed every blocker and major.
+
 ## The page
 
 VS Code's Source Control layout: changed files on the left as a directory
@@ -40,7 +81,20 @@ tree (single-child folders folded together), one file's diff on the right.
 
 - **Split or Unified** (header toggle, or `v`). Narrow panes and one-sided
   files (added, deleted) draw unified.
-- **`j` / `k`** step through files in tree order.
+- **`j` / `k`** step through files in the side list's order; **`n` / `p`**
+  through open findings.
+- **Risk / Path** (side toggle). Risk puts files in high, medium and low
+  bands, riskiest first, with related files grouped on a rail that says why
+  they belong together (one imports the other, a test and its source, a
+  finding naming both, a small shared folder). Risk blends deterministic
+  signals with one Jev score per file; by default only paths and line counts
+  leave the machine, and `.seamux/lookout.json` `{"sendContent": true}`
+  lets hunk text go too. Without TypeSafe the page says it is ranking on
+  signals alone.
+- **Findings** sit under the line they name, with severity, category,
+  verdict, status and their thread; the header shows the gate. Findings on
+  lines the diff does not show are listed at the top of the file. Closed
+  ones fold to one line.
 - **Highlighting** is highlight.js over each side's whole file, so a change
   inside a block comment or a template string reads right. Changed words in
   a paired removed/added line are marked.
@@ -54,6 +108,12 @@ If highlight.js is missing the page is drawn plain with a banner naming why;
 ## Other verbs
 
 ```
+lookout prompt <id>          the reviewer brief
+lookout findings add <id> <file|->   validate and ingest a reviewer's JSON
+lookout findings list <id> [--open] [--json]
+lookout reply <id> <f#|t#> <text>    lookout address <id> <f#> [note]
+lookout resolve|dismiss|reopen <id> <f#|t#> [note]
+lookout gate <id> | --plan SLUG --inc N
 lookout show <id> [--json]   files of a review (or the whole store as JSON)
 lookout list [--json]        every review, newest first
 lookout render <id>          redraw the page from the store

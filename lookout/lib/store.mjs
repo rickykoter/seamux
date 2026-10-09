@@ -37,7 +37,9 @@ export function idFrom(...parts) {
 // (and keeps its findings) instead of starting another.
 export function defaultId(src, o = {}) {
   if (o.plan) return idFrom(o.plan, "inc" + (o.inc || ""));
-  if (src.kind === "patch") return idFrom("patch", path.basename(src.file).replace(/\.(patch|diff)$/, ""));
+  // Two patches named fix.patch in different places are different reviews.
+  if (src.kind === "patch") return idFrom("patch", path.basename(src.file).replace(/\.(patch|diff)$/, ""),
+    crypto.createHash("sha256").update(path.resolve(src.file)).digest("hex").slice(0, 6));
   if (src.kind === "range") return idFrom(src.repo, src.range.replace(/\.\.\.?/g, "_"));
   if (src.kind === "worktree") return idFrom(src.repo, src.branch, "wt");
   return idFrom(src.repo, src.branch);
@@ -52,9 +54,12 @@ export function read(id) {
 export function list() {
   let names = [];
   try { names = fs.readdirSync(REVIEWS_DIR); } catch { return []; }
-  return names.filter(n => n.endsWith(".json") && !n.endsWith(".rows.json") && !n.endsWith(".seen.json"))
+  // Only <id>.json files whose content is a review: the directory also holds
+  // rows, seen cursors and a reviewer's incoming findings.
+  return names.filter(n => /^[a-z0-9][a-z0-9_-]*(\.[a-z0-9_-]+)*\.json$/.test(n) &&
+                           !/\.(rows|seen|incoming)\.json$/.test(n))
     .map(n => { try { return read(n.slice(0, -5)); } catch { return null; } })
-    .filter(Boolean)
+    .filter(r => r && typeof r === "object" && !Array.isArray(r) && r.id && Array.isArray(r.files))
     .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
 }
 
@@ -106,10 +111,12 @@ export function patchHash(text) {
 // threads) and how the review was opened (policy, createdAt) are kept.
 export function merge(cur, fresh) {
   if (!cur) return { version: STORE_VERSION, createdAt: new Date().toISOString(),
-                     findings: [], groups: [], scoring: null, ...fresh };
+                     findings: [], threads: [], groups: [], scoring: null, ...fresh };
   return { ...cur, ...fresh, version: STORE_VERSION, createdAt: cur.createdAt,
-           findings: cur.findings || [],
-           policy: { ...(cur.policy || {}), ...(fresh.policy || {}) },
+           findings: cur.findings || [], threads: cur.threads || [],
+           // The policy is the one the review was created with (see the
+           // --agent-may-close refusal in lookout.mjs).
+           policy: cur.policy || fresh.policy || {},
            // A score cache is only good for the patch it scored; one the open
            // just computed wins.
            scoring: fresh.scoring !== undefined ? fresh.scoring
