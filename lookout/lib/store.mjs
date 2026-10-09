@@ -110,7 +110,10 @@ export function merge(cur, fresh) {
   return { ...cur, ...fresh, version: STORE_VERSION, createdAt: cur.createdAt,
            findings: cur.findings || [],
            policy: { ...(cur.policy || {}), ...(fresh.policy || {}) },
-           // A score cache is only good for the patch it scored.
-           scoring: cur.patchHash === fresh.patchHash ? cur.scoring : null,
-           groups: cur.patchHash === fresh.patchHash ? cur.groups || [] : [] };
+           // A score cache is only good for the patch it scored; one the open
+           // just computed wins.
+           scoring: fresh.scoring !== undefined ? fresh.scoring
+             : cur.patchHash === fresh.patchHash ? cur.scoring : null,
+           groups: fresh.groups !== undefined ? fresh.groups
+             : cur.patchHash === fresh.patchHash ? cur.groups || [] : [] };
 }

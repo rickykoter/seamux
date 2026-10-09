@@ -24,6 +24,9 @@ import * as V from "./lib/vendor.mjs";
 import * as S from "./lib/store.mjs";
 import { resolveSource, buildPatch, parsePatch, sideText, buildRows, looksGenerated,
          generatedByAttr, LARGE_LINES } from "./lib/patch.mjs";
+import * as SC from "./lib/score.mjs";
+import * as GR from "./lib/group.mjs";
+import { repoConfig } from "./lib/typesafe.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -76,6 +79,21 @@ export function renderPage(id) {
   return p.html;
 }
 
+// ---------------------------------------------------------------- arrange
+
+// Risk per file and the groups, from what the review already holds: the
+// cached Jev scores, the stored text edges, and the findings as they are now.
+// Called on every open and whenever findings change. Mutates and returns.
+export function arrange(review) {
+  const files = review.files || [];
+  SC.rank(files, review.findings || [], review.scoring);
+  const names = (review.scoring && review.scoring.providers) || GR.DEFAULT_PROVIDERS;
+  const shared = names.includes("shared-finding")
+    ? GR.edges(files, { text: () => "", findings: review.findings || [] }, ["shared-finding"]).edges : [];
+  review.groups = GR.group(files, [...(review.edges || []), ...shared]);
+  return review;
+}
+
 // ---------------------------------------------------------------- open
 
 // The cmux workspace to put the page in: the caller's own, else the one the
@@ -126,35 +144,58 @@ function cmdOpen() {
   const files = parsePatch(text);
   const gen = src.kind === "patch" ? new Set() : generatedByAttr(src.root, files.map(f => f.path));
   const plain = flag("plain") || !!V.hljsMissing();
-  const rows = {};
+  const rows = {}, texts = {}, hunks = {};
   const meta = files.map(f => {
     const changed = f.adds + f.dels;
     const generated = looksGenerated(f.path) || gen.has(f.path);
     const large = changed > LARGE_LINES;
     // A file the page starts collapsed is drawn plain: nobody reads a lockfile
     // for its colors, and highlighting thousands of rows is the slow part.
-    const drawn = buildRows(f, (generated || large || f.binary) ? null : sideText(src, "old", f),
-      (generated || large || f.binary) ? null : sideText(src, "new", f), { plain: plain || generated || large });
+    const skip = generated || large || f.binary;
+    const newText = skip ? null : sideText(src, "new", f);
+    const drawn = buildRows(f, skip ? null : sideText(src, "old", f), newText, { plain: plain || skip });
     rows[f.path] = drawn;
+    // What the edge providers read: the new side, or (from a patch file) the
+    // lines the hunks carry. Collapsed files are read by nobody.
+    texts[f.path] = skip ? "" : newText ?? f.hunks.flatMap(h => h.lines.filter(r => r[0] !== "-").map(r => r[3])).join("\n");
+    hunks[f.path] = f.hunks.map(h => h.lines.filter(r => r[0] !== " ").map(r => r[0] + r[3]).join("\n")).join("\n");
     return { path: f.path, oldPath: f.oldPath, status: f.status, adds: f.adds, dels: f.dels,
              binary: f.binary, generated, large, hunks: f.hunks.length, lang: drawn.lang || "",
              collapsed: f.binary || generated || large || !!drawn.note };
   });
 
+  // Risk and relatedness. Jev answers are reused while the patch is the same.
+  const prior = S.exists(id) ? S.read(id) : null;
+  const hash = S.patchHash(text);
+  const cfg = repoConfig(src.root);
+  let scoring;
+  if (prior && prior.scoring && prior.scoring.patchHash === hash && prior.scoring.ok && !flag("rescore")) scoring = prior.scoring;
+  else if (flag("no-jev")) scoring = { ok: false, jev: {}, why: "Jev scoring was turned off (--no-jev)" };
+  else scoring = SC.jevScores(meta, { cfg, hunkText: p => hunks[p] });
+  scoring = { ...scoring, patchHash: hash, at: scoring.at || new Date().toISOString() };
+  const names = Array.isArray(cfg.edgeProviders) ? cfg.edgeProviders : GR.DEFAULT_PROVIDERS;
+  // Edges that need file text are found now, while the text is in hand, and
+  // kept; shared-finding edges are recomputed whenever findings change.
+  const found = GR.edges(meta, { text: q => texts[q] || "", findings: [] }, names.filter(n => n !== "shared-finding"));
+  scoring.providers = names;
+  if (found.unknown.length) scoring.unknownProviders = found.unknown;
+
   const p = S.paths(id);
   const fresh = {
     id, title: opt("title") || (o.plan ? `${o.plan} · increment ${o.inc}` : src.label),
     source: { ...src, plan: o.plan || undefined, inc: o.inc ? Number(o.inc) : undefined },
-    patchHash: S.patchHash(text),
+    patchHash: hash,
     stats: { files: meta.length, adds: meta.reduce((x, f) => x + f.adds, 0), dels: meta.reduce((x, f) => x + f.dels, 0) },
     files: meta,
+    edges: found.edges,
+    scoring,
     highlight: plain ? (flag("plain") ? "off" : V.hljsMissing()) : "highlight.js " + V.HLJS_VERSION,
   };
   if (flag("agent-may-close")) fresh.policy = { agentMayClose: true };
   const review = S.update(id, cur => {
     const m = S.merge(cur, fresh);
     m.policy = { agentMayClose: false, ...(m.policy || {}) };
-    return m;
+    return arrange(m);
   });
   S.writeAtomic(p.patch, text);
   S.writeAtomic(p.rows, JSON.stringify(rows));
@@ -162,12 +203,17 @@ function cmdOpen() {
   const shown = showPage(id, page, src.root || cwd);
   if (flag("json")) {
     process.stdout.write(JSON.stringify({ id, page, store: p.json, patch: p.patch, files: meta.length,
-      shown: shown || null, highlight: review.highlight }, null, 2) + "\n");
+      shown: shown || null, highlight: review.highlight,
+      scoring: { ok: review.scoring.ok, content: !!review.scoring.content, why: review.scoring.why || "" } }, null, 2) + "\n");
     return;
   }
   say(`lookout ${id}: ${review.title}`);
   say(`  ${meta.length} file(s), +${review.stats.adds} −${review.stats.dels}` +
       (plain ? `  (no highlighting: ${review.highlight})` : ""));
+  const bands = SC.BANDS.map(([b]) => `${review.files.filter(f => f.band === b).length} ${b}`).join(", ");
+  say(`  risk:  ${bands}; ${review.groups.filter(g => g.files.length > 1).length} related group(s)` +
+      (review.scoring.ok ? `  (Jev${review.scoring.content ? " with hunk text" : ", paths and counts only"})`
+                         : `  (signals only: ${review.scoring.why})`));
   say(`  page:  ${page}${shown ? "  (" + shown + ")" : ""}`);
   say(`  store: ${p.json}`);
 }
@@ -196,7 +242,7 @@ function cmdShow() {
   if (flag("json")) { process.stdout.write(JSON.stringify(r, null, 2) + "\n"); return; }
   say(`${r.id}: ${r.title}`);
   for (const f of r.files)
-    say(`  ${f.status} ${f.path}${f.oldPath ? " (from " + f.oldPath + ")" : ""}  +${f.adds} −${f.dels}` +
+    say(`  ${(f.band || "").padEnd(6)} ${f.status} ${f.path}${f.oldPath ? " (from " + f.oldPath + ")" : ""}  +${f.adds} −${f.dels}` +
         (f.collapsed ? "  [collapsed" + (f.binary ? ": binary" : f.generated ? ": generated" : f.large ? ": large" : "") + "]" : ""));
 }
 
@@ -216,10 +262,13 @@ function usage() {
 
   lookout open [--base REF | --worktree | --range A..B | --patch FILE]
                [--id ID] [--title T] [--plan SLUG --inc N] [--agent-may-close]
-               [--plain] [--no-open] [--json]
+               [--plain] [--no-jev] [--rescore] [--no-open] [--json]
         build the diff, store the review, draw the page and show it.
         Default: --base <origin's default branch, else main/master>, which
         compares the merge base with the working tree (uncommitted included).
+        Files are ranked by risk (signals + one Jev score per file; hunk text
+        is sent only to a loopback endpoint or with .seamux/lookout.json
+        sendContent: true) and grouped by how they relate.
   lookout render <id>       redraw the page from the store
   lookout show <id> [--json]
   lookout list [--json]

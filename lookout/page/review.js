@@ -63,9 +63,9 @@
     return root;
   }
 
-  // The order j/k walks: the tree's visual order, folders first.
+  // The order j/k walks: the side list's visual order.
   let ORDER = [];
-  function drawTree() {
+  function drawPathTree() {
     const tree = buildTree(R.files || []);
     ORDER = [];
     const walk = (n, prefix) => {
@@ -77,7 +77,7 @@
           el("div", { class: "row dir", title: key, onclick: () => {
             closed ? closedDirs.delete(key) : closedDirs.add(key);
             store.set("lookout.closed." + R.id, JSON.stringify([...closedDirs]));
-            drawTree();
+            drawSide();
           } }, el("span", { class: "chev" }, closed ? "▸" : "▾"), el("span", { class: "name" }, d.name)));
         if (!closed) li.append(walk(d, key + "/"));
         else collectHidden(d);
@@ -102,8 +102,63 @@
       for (const f of n.files) ORDER.push(f.path);
     };
     $("tree").replaceChildren(walk(tree, ""));
-    $("side-count").textContent = String((R.files || []).length);
   }
+
+  // Risk view: high, medium and low bands; inside each, the groups whose
+  // riskiest file sits in that band, riskiest first. A group of two or more
+  // draws a rail beside its files and says why they belong together.
+  const BANDS = [["high", 0.6], ["medium", 0.35], ["low", 0]];
+  const bandOf = r => BANDS.find(([, min]) => (r || 0) >= min)[0];
+  const byPath = new Map((R.files || []).map(f => [f.path, f]));
+
+  function fileRow(f, { dir = false } = {}) {
+    const cut = f.path.lastIndexOf("/");
+    return el("div", {
+      class: "row file" + (f.path === current ? " sel" : "") + (f.collapsed ? " collapsed-file" : ""),
+      title: f.path + (f.oldPath ? " (from " + f.oldPath + ")" : "") +
+        (f.reasons && f.reasons.length ? "\nrisk " + Math.round((f.risk || 0) * 100) + "%: " + f.reasons.join(", ") : ""),
+      "data-path": f.path, onclick: () => select(f.path),
+    }, el("span", { class: "dot band-" + (f.band || "low") }),
+       el("span", { class: "name" }, f.path.slice(cut + 1),
+         dir && cut >= 0 ? el("span", { class: "in" }, " " + f.path.slice(0, cut)) : null),
+       el("span", { class: "counts" }, countsText(f)),
+       el("span", { class: "st st-" + f.status }, f.status));
+  }
+
+  function drawRisk() {
+    ORDER = [];
+    const box = el("div", { class: "risk-list" });
+    for (const [band] of BANDS) {
+      const groups = (R.groups || []).filter(g => bandOf(g.risk) === band);
+      if (!groups.length) continue;
+      const n = groups.reduce((x, g) => x + g.files.length, 0);
+      box.append(el("div", { class: "band-head band-" + band }, el("span", null, band), el("span", null, String(n))));
+      for (const g of groups) {
+        const files = g.files.map(p => byPath.get(p)).filter(Boolean);
+        for (const f of files) ORDER.push(f.path);
+        if (files.length < 2) { box.append(fileRow(files[0], { dir: true })); continue; }
+        const why = (g.edges || []).map(e => e.why);
+        box.append(el("div", { class: "group", "data-group": g.id },
+          files.map(f => fileRow(f, { dir: true })),
+          why.length ? el("div", { class: "why", title: why.join("\n") },
+            why.slice(0, 2).join(" · ") + (why.length > 2 ? ` · +${why.length - 2} more` : "")) : null));
+      }
+    }
+    $("tree").replaceChildren(box);
+  }
+
+  const hasRisk = (R.files || []).some(f => typeof f.risk === "number") && (R.groups || []).length > 0;
+  let view = hasRisk && store.get("lookout.view", "risk") === "risk" ? "risk" : "path";
+  function drawSide() {
+    for (const b of document.querySelectorAll("#view button"))
+      b.setAttribute("aria-pressed", String(b.dataset.view === view));
+    $("view").hidden = !hasRisk;
+    $("side-title").textContent = view === "risk" ? "By risk" : "Changes";
+    $("side-count").textContent = String((R.files || []).length);
+    view === "risk" ? drawRisk() : drawPathTree();
+  }
+  for (const b of document.querySelectorAll("#view button"))
+    b.addEventListener("click", () => { view = b.dataset.view; store.set("lookout.view", view); drawSide(); select(current); });
 
   const countsText = f => f.binary ? "bin" : `+${f.adds} −${f.dels}`;
 
@@ -131,6 +186,9 @@
       f.oldPath ? el("span", { class: "from" }, "from " + f.oldPath) : null,
       el("span", { class: "counts" }, el("span", { class: "plus" }, "+" + f.adds), " ",
         el("span", { class: "minus" }, "−" + f.dels)),
+      typeof f.risk === "number" ? el("span", { class: "risk band-" + (f.band || "low"),
+        title: (f.reasons || []).join(", ") }, `${f.band} risk`,
+        f.reasons && f.reasons.length ? el("span", { class: "reasons" }, " · " + f.reasons.join(", ")) : null) : null,
       f.lang ? el("span", { class: "lang" }, f.lang) : null,
     ];
   }
@@ -236,13 +294,15 @@
   $("label").textContent = [where !== R.title ? where : null,
     `${s.files || 0} files`, `+${s.adds || 0} −${s.dels || 0}`].filter(Boolean).join(" · ");
   document.title = "lookout · " + R.id;
-  if (R.highlight && !/^highlight\.js/.test(R.highlight) && R.highlight !== "off") {
-    $("banner").textContent = "Drawn without syntax highlighting: " + R.highlight;
-    $("banner").hidden = false;
-  }
+  const notes = [];
+  if (R.highlight && !/^highlight\.js/.test(R.highlight) && R.highlight !== "off")
+    notes.push("Drawn without syntax highlighting: " + R.highlight);
+  if (R.scoring && !R.scoring.ok)
+    notes.push("Risk from signals only — " + (R.scoring.why || "no Jev scores") + ".");
+  if (notes.length) { $("banner").textContent = notes.join("  "); $("banner").hidden = false; }
 
   drawLayout();
-  drawTree();
+  drawSide();
   const want = decodeURIComponent((location.hash.match(/file=([^&]+)/) || [])[1] || "");
   select((R.files || []).some(f => f.path === want) ? want : ORDER[0] || null);
 })();

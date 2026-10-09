@@ -21,7 +21,11 @@ const ENV = {
   LOOKOUT_ENGINE_FILE: path.join(HOME, ".claude", "lookout", "engine.json"),
   LOOKOUT_BIN_DIR: path.join(TMP, "shim-bin"),
   LOOKOUT_HLJS_SRC: path.join(TMP, "no-download-in-the-probe"),
+  // Authoritative and empty: no TypeSafe client, so no open in the probe can
+  // reach the network. The scoring block below points it at a mock.
+  LOOKOUT_TYPESAFE_CLIENT: "",
 };
+delete ENV.TYPESAFE_BASE_URL;
 delete ENV.LOOKOUT_ENGINE;
 delete ENV.CMUX_WORKSPACE_ID;
 // The libs read their overrides at import time, so set them before importing.
@@ -202,12 +206,12 @@ const R1 = repo("r1");
 
   // Re-open keeps what people said; a changed patch drops the score cache.
   S.update(out.id, cur => ({ ...cur, findings: [{ id: "f1", file: "tool.py", line: 2, summary: "kept" }],
-                            scoring: { cached: true } }));
+                            scoring: { ...cur.scoring, cached: true } }));
   write(R1, "tool.py", "def f():\n    return 3\n");
   const again = JSON.parse(cli(R1, "open", "--json").stdout || "{}");
   const rev2 = S.read(again.id);
   ok("store: re-open keeps findings and createdAt", rev2.findings.length === 1 && rev2.createdAt === rev.createdAt);
-  ok("store: a new patch drops the score cache", rev2.scoring === null && rev2.patchHash !== rev.patchHash);
+  ok("store: a new patch drops the score cache", !rev2.scoring.cached && rev2.patchHash !== rev.patchHash);
   ok("store: agent-may-close defaults off and sticks once set",
      rev2.policy.agentMayClose === false &&
      (cli(R1, "open", "--agent-may-close", "--json"), S.read(again.id).policy.agentMayClose === true) &&
@@ -245,6 +249,129 @@ const R1 = repo("r1");
   ok("collapse: .gitattributes linguist-generated is honored", by["gen/out.js"].generated);
   const rows = JSON.parse(fs.readFileSync(S.paths(r.id).rows, "utf8"));
   ok("collapse: a collapsed file is still drawable, plain", rows["big.txt"].hunks[0].rows.length === 1700 && rows["big.txt"].lang === "");
+}
+
+// ---------------------------------------------------------------- risk + groups
+{
+  const SC = await import("./lib/score.mjs");
+  const GR = await import("./lib/group.mjs");
+  const T = await import("./lib/typesafe.mjs");
+  ok("jev: the score is read from the distribution, not confidence",
+     Math.abs(T.expected({ score: 9, confidence: 0.99, probabilities: { 0: 0, 1: 0.09, 2: 0.56, 3: 0.35 } }) - 0.753) < 0.001 &&
+     T.expected({ confidence: 0.9 }) === null);
+  {
+    const keep = process.env.TYPESAFE_BASE_URL;
+    process.env.TYPESAFE_BASE_URL = "https://api.typesafe.ai";
+    const remote = T.contentAllowed({}), optIn = T.contentAllowed({ sendContent: true });
+    process.env.TYPESAFE_BASE_URL = "http://127.0.0.1:8123";
+    const local = T.contentAllowed({});
+    if (keep === undefined) delete process.env.TYPESAFE_BASE_URL; else process.env.TYPESAFE_BASE_URL = keep;
+    ok("jev: hunk text goes only to loopback or with sendContent", !remote && optIn && local);
+  }
+
+  const F = (p, adds = 10, dels = 2, extra = {}) => ({ path: p, status: "M", adds, dels, ...extra });
+  const files = [F("README.md"), F("crew/hooks/news.sh"), F("server/routes.py"), F("src/app.js"),
+                 F("src/app.test.js", 80), F("package-lock.json", 400, 300, { generated: true })];
+  SC.rank(files, [], null);
+  const r = Object.fromEntries(files.map(f => [f.path, f.risk]));
+  ok("signals: hook and server files rank above docs", r["crew/hooks/news.sh"] > r["README.md"] && r["server/routes.py"] > r["README.md"]);
+  ok("signals: a test ranks below its source, a lockfile below both", r["src/app.test.js"] < r["src/app.js"] &&
+     r["package-lock.json"] < r["src/app.test.js"], JSON.stringify(r));
+  SC.rank(files, [{ file: "README.md", severity: "major", status: "open" }], { ok: true, jev: { "README.md": 0 } });
+  const readme = files.find(f => f.path === "README.md");
+  ok("signals: an open major finding lifts a file however low Jev scored it", readme.risk >= 0.75 && readme.reasons.includes("open major finding"), readme.risk);
+  SC.rank(files, [{ file: "README.md", severity: "major", status: "resolved" }], null);
+  ok("signals: a resolved finding no longer lifts", files.find(f => f.path === "README.md").risk < 0.3);
+
+  const texts = { "src/app.js": 'import { total } from "./lib/money";\nconst x = 1;\n',
+                  "src/lib/money.js": "export const total = 1;\n",
+                  "README.md": "See src/app.js and src/lib/money.js and lib/vendor.js.\n",
+                  "bin/tool": "#!/bin/sh\nexec node tool.mjs\n", "notes/x.js": "// the tool and a review\n" };
+  const gf = [F("src/app.js"), F("src/lib/money.js"), F("src/app.test.js"), F("README.md"), F("bin/tool"), F("notes/x.js"),
+              F("a/one.py"), F("a/two.py")];
+  SC.rank(gf, [], null);
+  const { edges, unknown } = GR.edges(gf, { text: p => texts[p] || "", findings: [] },
+    [...GR.DEFAULT_PROVIDERS, "jev-later"]);
+  const has = (a, b, prov) => edges.some(e => e.a === a && e.b === b && e.provider === prov);
+  ok("edges: an import links source to the imported file", has("src/app.js", "src/lib/money.js", "references"));
+  ok("edges: docs naming files are not references", !edges.some(e => e.a === "README.md"));
+  ok("edges: a bare word never matches an extensionless file", !has("notes/x.js", "bin/tool", "references"));
+  ok("edges: a test is paired with its source", has("src/app.test.js", "src/app.js", "test-pair"));
+  ok("edges: a small directory links its files", has("a/one.py", "a/two.py", "same-dir"));
+  ok("edges: an unknown provider is reported, not fatal", unknown.length === 1 && unknown[0] === "jev-later");
+  const groups = GR.group(gf, edges);
+  const gOf = p => groups.find(g => g.files.includes(p));
+  ok("groups: test, source and import share a group, with the why kept",
+     gOf("src/app.test.js") === gOf("src/app.js") && gOf("src/app.js") === gOf("src/lib/money.js") &&
+     gOf("src/app.js").edges.some(e => /tests/.test(e.why)));
+  ok("groups: sorted by riskiest file, files within by risk",
+     groups.every((g, i) => i === 0 || groups[i - 1].risk >= g.risk) &&
+     groups.every(g => g.files.every((p, i) => i === 0 || gf.find(f => f.path === g.files[i - 1]).risk >= gf.find(f => f.path === p).risk)));
+  const hub = Array.from({ length: 10 }, (_, i) => F(`m/mod${i}.js`));
+  const hubEdges = hub.slice(1).map(f => ({ a: "m/mod0.js", b: f.path, weight: 1, why: "x", provider: "references" }));
+  ok("groups: a hub cannot swallow the whole change", Math.max(...GR.group(hub, hubEdges).map(g => g.files.length)) === GR.MAX_GROUP);
+  {
+    const twins = [F("x/README.md"), F("y/README.md"), F("z/tool.js")];
+    const tw = GR.edges(twins, { text: p => p === "z/tool.js" ? 'read("README.md"); open("y/README.md")' : "", findings: [] }, ["references"]).edges;
+    ok("edges: a basename two changed files share needs its folder to match", tw.length === 1 && tw[0].b === "y/README.md", JSON.stringify(tw));
+  }
+  const shared = GR.edges(gf, { text: () => "", findings: [{ id: "f1", file: "src/app.js", summary: "breaks a/one.py on retry" }] }, ["shared-finding"]).edges;
+  ok("edges: a finding naming another file links the two", shared.length === 1 && shared[0].b === "a/one.py");
+
+  // The whole open, against a mock client that logs every request it gets.
+  const R3 = repo("r3");
+  write(R3, "hooks/gate.sh", "#!/bin/sh\nexit 0\n");
+  write(R3, "docs/guide.md", "# guide\n");
+  sh(R3, `git add -A && ${G} commit -q -m base`);
+  write(R3, "hooks/gate.sh", "#!/bin/sh\nSECRET_TOKEN=abc\nexit 1\n");
+  write(R3, "docs/guide.md", "# guide\nmore\n");
+  const log = path.join(TMP, "mock.log");
+  const mock = path.join(TMP, "mock_typesafe.py");
+  fs.writeFileSync(mock, [
+    "import json, sys",
+    "if sys.argv[1] == 'available': sys.exit(0)",
+    "req = json.load(sys.stdin)",
+    `open(${JSON.stringify(log)}, 'a').write(json.dumps(req) + '\\n')`,
+    "out = {}",
+    "for k, st in req['state'].items():",
+    "    hi = 'hooks' in st['path']",
+    "    out[k] = {'type': 'score', 'score': 0, 'confidence': 0.99,",
+    "              'probabilities': {'0': 0.0, '1': 0.1, '2': 0.2, '3': 0.7} if hi else {'0': 0.9, '1': 0.1, '2': 0, '3': 0}}",
+    "json.dump(out, sys.stdout)",
+  ].join("\n"));
+  const failing = path.join(TMP, "failing_typesafe.py");
+  fs.writeFileSync(failing, "import sys\nif sys.argv[1] == 'available': sys.exit(0)\nsys.stderr.write('typesafe: HTTP Error 503\\n'); sys.exit(2)\n");
+  const env = (client, extra = {}) => ({ ...ENV, LOOKOUT_TYPESAFE_CLIENT: client, TYPESAFE_BASE_URL: "https://api.typesafe.ai", ...extra });
+  const open = (client, ...a) => spawnSync("node", [path.join(HERE, "lookout.mjs"), "open", "--worktree", "--json", ...a],
+    { encoding: "utf8", env: env(client), cwd: R3 });
+  const reqs = () => fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l)) : [];
+
+  const o1 = JSON.parse(open(mock).stdout || "{}");
+  const rv = S.read(o1.id);
+  const byP = Object.fromEntries(rv.files.map(f => [f.path, f]));
+  ok("open: one batched Jev request scores every file", reqs().length === 1 && Object.keys(reqs()[0].questions).length === 2 &&
+     Object.values(reqs()[0].questions).every(q => q.type === "score"));
+  ok("open: a remote endpoint gets paths and counts, never hunk text",
+     !JSON.stringify(reqs()[0]).includes("SECRET_TOKEN") && Object.values(reqs()[0].state).every(st => !("changed_hunks" in st)));
+  ok("open: Jev and signals together put the hook first", rv.scoring.ok && byP["hooks/gate.sh"].risk > byP["docs/guide.md"].risk &&
+     byP["hooks/gate.sh"].jev > 0.8 && rv.groups[0].files[0] === "hooks/gate.sh");
+  open(mock);
+  ok("open: an unchanged patch reuses the cached scores (no second request)", reqs().length === 1);
+  write(R3, ".seamux/lookout.json", '{"sendContent": true}');
+  open(mock, "--rescore");
+  const last = reqs().pop();
+  ok("open: with sendContent the changed lines are sent", JSON.stringify(last).includes("SECRET_TOKEN"));
+  fs.rmSync(path.join(R3, ".seamux"), { recursive: true });
+
+  const o2 = JSON.parse(open(failing, "--rescore").stdout || "{}");
+  const rf = S.read(o2.id);
+  ok("open: a TypeSafe failure falls back to signals, with the reason kept for the banner",
+     rf.scoring.ok === false && /503/.test(rf.scoring.why) && rf.files.every(f => typeof f.risk === "number" && f.jev === null), rf.scoring.why);
+  const o3 = JSON.parse(open("", "--rescore").stdout || "{}");
+  ok("open: no client at all is signals only too", S.read(o3.id).scoring.ok === false &&
+     /no TypeSafe client/.test(S.read(o3.id).scoring.why));
+  const page = fs.readFileSync(o3.page, "utf8");
+  ok("page: the Risk view and its banner are in the page", page.includes('data-view="risk"') && page.includes("Risk from signals only"));
 }
 
 // ---------------------------------------------------------------- setup

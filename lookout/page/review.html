@@ -21,7 +21,14 @@
   </header>
   <div id="banner" hidden></div>
   <aside id="side">
-    <div class="side-head"><span id="side-title">Changes</span><span id="side-count"></span></div>
+    <div class="side-head">
+      <span id="side-title">Changes</span>
+      <div class="seg small" id="view" role="group" aria-label="File order" hidden>
+        <button type="button" data-view="risk">Risk</button>
+        <button type="button" data-view="path">Path</button>
+      </div>
+      <span id="side-count"></span>
+    </div>
     <nav id="tree" aria-label="Changed files"></nav>
   </aside>
   <main id="main">
