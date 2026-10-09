@@ -65,6 +65,23 @@ the cat naps.
 
 ![the crew board: four ranked rows with gate state, progress dials, cost facts and action chips](docs/img/board.png)
 
+### News
+
+The board's footer says what the rows say, as sentences: one per workspace,
+or one per family, in the board's order. Shut gates and untaken alignment
+checks come first, then red CI, work in progress with its increment count,
+finished and merged plans, and quiet workspaces that committed in the last
+five hours. Collapsed, it shows the first sentence. Open, it shows them all.
+
+![the board's news footer, open beneath two family cards: one sentence per workspace and one for the auth-revamp family, each on its tier's color](docs/img/news.png)
+
+It is rebuilt on every push from the same rows, so it can't disagree with the
+cards above it, and no model writes it. `crew-digest` opens with the same
+sentences in the terminal, and `crew-digest --paragraph` prints them as one
+line to paste. Inside a [plan family](#families-parallel-workstreams-with-one-goal),
+each session also hears what changed at its next prompt. More in
+[the board README](crew/board/README.md#the-news-footer).
+
 ### Usage
 
 Tokens against your 5-hour and weekly budgets, a 21-day history, and dollars
