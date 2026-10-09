@@ -1,0 +1,10 @@
+{
+  "name": "lookout",
+  "version": "0.1.0",
+  "description": "Review a diff in a browser pane beside the terminal: files sorted by risk or by path, highlighted split or unified diffs, and findings you discuss with the agent in threads on their lines.",
+  "author": { "name": "Richard Kotermanski", "url": "https://github.com/rickykoter" },
+  "homepage": "https://github.com/rickykoter/seamux/tree/main/lookout",
+  "repository": "https://github.com/rickykoter/seamux",
+  "license": "MIT",
+  "keywords": ["code-review", "diff", "review", "highlight"]
+}

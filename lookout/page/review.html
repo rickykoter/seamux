@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>/*__CSS__*/</style>
+</head>
+<body>
+<div id="app">
+  <header id="top">
+    <div class="brand">lookout</div>
+    <div class="what"><div id="title"></div><div id="label"></div></div>
+    <div class="tools">
+      <div class="seg" id="layout" role="group" aria-label="Diff layout">
+        <button type="button" data-layout="split">Split</button>
+        <button type="button" data-layout="unified">Unified</button>
+      </div>
+      <span class="keys" title="Keyboard">j/k files · v layout</span>
+    </div>
+  </header>
+  <div id="banner" hidden></div>
+  <aside id="side">
+    <div class="side-head"><span id="side-title">Changes</span><span id="side-count"></span></div>
+    <nav id="tree" aria-label="Changed files"></nav>
+  </aside>
+  <main id="main">
+    <div id="file-head"></div>
+    <div id="diff"></div>
+  </main>
+</div>
+<script type="application/json" id="lookout-data">__DATA__</script>
+<script>/*__JS__*/</script>
+</body>
+</html>
