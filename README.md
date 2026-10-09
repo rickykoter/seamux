@@ -8,6 +8,7 @@ It is a set of Claude Code plugins. Take the one you came for, or all of them.
 | **crew** | A board in the [cmux](https://cmux.io) Dock that ranks your worktrees by which one needs you next. | macOS with cmux |
 | **deep-plan** | Turns "make a plan" into a page you review, with a short quiz. The agent can't edit until you approve each increment, and can't call an increment done until its checks pass. | anywhere Claude Code runs |
 | **restack** | Rebases a stack of branches onto a moved base and regenerates conflicting generated files instead of making you merge them. | anywhere Claude Code runs |
+| **lookout** | Opens a diff beside the terminal, riskiest files first, with a reviewer's findings on their lines for you and the agent to talk through. A plan can make an increment wait on its review. | anywhere Claude Code runs; comments need crew |
 | **seamux-mods** *(optional)* | Draws deep-plan inside the terminal: a plan pane, a `go next` prompt when the gate blocks an edit, and the plan in the status line. | Claude Code 2.1.287+ |
 
 Out of the box you only need git and GitHub. If your team uses Jira, GitHub
@@ -33,6 +34,7 @@ covers a first install and an update, and what to ask you along the way.
 [crew](#crew-the-board) ·
 [deep-plan](#deep-plan-plans-you-approve-one-step-at-a-time) ·
 [restack](#restack-rebase-without-merging-generated-files) ·
+[lookout](#lookout-review-a-diff-with-the-agent) ·
 [seamux-mods](#seamux-mods-deep-plan-in-the-terminal) ·
 [Setup](#setup) ·
 [Configuration](#configuration) ·
@@ -226,6 +228,13 @@ records its own verdict. Remote QA is three steps: get a preview, wait for it,
 test it. Getting the preview (a push, a channel deploy) is always your step:
 the engine prints what to run and picks up from the wait once you have.
 
+A deliverable can also declare a **review** check (`{ "kind": "review" }`).
+`deep-plan review <slug> <n>` opens the increment in
+[lookout](#lookout-review-a-diff-with-the-agent), a reviewer subagent writes
+findings, and the check runs `lookout gate`: it passes once no blocker or
+major finding is open, and only you close those, on the review page.
+`deep-plan diff` opens an increment in lookout too, when it is installed.
+
 A pass belongs to the code it ran against. Edit a file afterwards and it goes
 stale; commit what passed and it stays valid. With seamux-mods, the plan pane
 lists the same checks with `run checks` and `variant ready` buttons.
@@ -379,6 +388,43 @@ $ restack push
 If you use Graphite, restack leaves the rebase to `gt restack` and does its
 resolving between Graphite's stops. Without Graphite, it finds the chain from
 your open PRs or from branch topology.
+
+## lookout: review a diff with the agent
+
+`lookout open` puts a diff in a browser tab beside the terminal: this branch
+against its base by default, or `--worktree`, `--range A..B`, `--patch FILE`.
+The layout is VS Code's Source Control view, with the changed files on the
+left and one file's diff on the right, split or unified. Highlighting
+covers each side's whole file, so a change inside a block comment still
+reads as a comment, and changed words are marked. Lockfiles, generated and
+very large files start collapsed. Opening a review never touches your git
+index.
+
+The file list has two orders. **Path** is a folder tree. **Risk** puts the
+riskiest files first, in high, medium and low bands, with related files
+grouped together and a line saying why (one imports the other, a test and
+its source, a finding that names both). Risk blends simple signals (how much
+changed, whether the path is a hook, a server, a schema or config, whether
+it is only tests) with one Jev score per file. By default only paths and
+line counts go to TypeSafe; `.seamux/lookout.json` `{"sendContent": true}`
+lets the changed lines go too. Without TypeSafe the page says it is ranking
+on the signals alone.
+
+Findings come from one fresh reviewer subagent, not from the agent that
+wrote the code: `lookout prompt <id>` prints its brief, and the subagent
+writes findings in `/code-review`'s shape plus a severity. Each finding sits
+under its line with a thread. When crew's intent server is running, the page
+is live: click a line number to comment, reply under a finding, resolve or
+dismiss it. Your words reach the agent at its next prompt, and its replies
+(`lookout reply`) appear on the page without a reload. Without crew the page
+opens as a read-only file.
+
+Only you close a finding. The agent can reply and mark one addressed; it
+can resolve or dismiss only when the review was opened with
+`--agent-may-close`, which a plan sets with `review.agentMayClose`.
+`lookout gate` answers 0 when no blocker or major is open, and deep-plan's
+review check runs it (see [Checks before done](#checks-before-done)). On a
+plain branch nothing gates on it: the review is a conversation.
 
 ## seamux-mods: deep-plan in the terminal
 
@@ -644,6 +690,12 @@ Read these before you rely on seamux.
   Any local process running as you can read that token, but such a process
   could drive cmux directly anyway. Don't expose the server beyond
   localhost.
+- **The review page writes through the same server.** `POST /review/<id>`
+  stores your comments and closes as data; it never types into a terminal.
+  It takes the token, a JSON body (which a page on another site can't send
+  without a preflight the server never answers), only its own Origin, and at
+  most 64KB. By default lookout sends TypeSafe only file paths and line
+  counts, never code.
 
 ## Layout
 
@@ -653,6 +705,7 @@ Read these before you rely on seamux.
 | `.claude-plugin/marketplace.json` | the `seamux` marketplace, one entry per plugin below |
 | `deep-plan/` | plugin: the skill, its gate hook and `bin/deep-plan` (see its `SKILL.md`); `verify/` holds the remote QA templates and the setup prompt |
 | `restack/` | plugin: the skill and `bin/restack` (see its `SKILL.md`) |
+| `lookout/` | plugin: the review skill, `bin/lookout`, the page and the comments hook (see its `SKILL.md`) |
 | `bash-guard/` | plugin: blocks destructive commands on every Bash call |
 | `crew/` | plugin: Claude hooks and options; `crew apply` copies it to `~/.config/cmux/crew` (see `crew/README.md`) |
 | `crew/claude/` | the status line, and the settings merge `crew apply` runs |
@@ -662,4 +715,4 @@ Read these before you rely on seamux.
 | `tools/scrub_check.py` | refuses internal identifiers in tracked files; the first step in CI |
 
 Never committed: rendered cmux configs, deep-plan state and keys, the mermaid
-file, and your `~/.claude/settings.json`.
+and highlight.js files, reviews, and your `~/.claude/settings.json`.

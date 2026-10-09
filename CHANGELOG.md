@@ -6,6 +6,27 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **lookout: a code review you and the agent hold in a browser tab.** A new
+  plugin. `lookout open` shows a diff (this branch against its base, the
+  working tree, a range or a patch file) beside the terminal in VS Code's
+  Source Control layout, split or unified, highlighted with a pinned
+  highlight.js over each side's whole file, with word-level change marks. It
+  never touches the git index. The file list sorts by path or by risk: each
+  file's risk blends deterministic signals with one Jev score (paths and line
+  counts only, unless `.seamux/lookout.json` sets `sendContent`), and related
+  files are grouped by pluggable edge providers, each edge with its reason.
+  `lookout prompt` briefs one fresh reviewer subagent; its findings, in
+  `/code-review`'s shape plus severity, sit under their lines as threads. With
+  crew's intent server the page is live: comments and closes go to the agent
+  at its next prompt through a prompt hook, its replies arrive by polling, and
+  only the human closes a finding unless the review was opened with
+  `--agent-may-close`. The intent server gains its first POST route for this
+  (token, JSON-only, Origin-checked, 64KB cap). deep-plan gains a `review`
+  check kind gated on `lookout gate` (no blocker or major open), `deep-plan
+  review`, spec `review.agentMayClose`, `DEEP_PLAN_ROOT` and
+  `DEEP_PLAN_START_SHA` in recipe env, and `deep-plan diff` through lookout.
+  `./install.sh` installs it (`--no-lookout` skips) and runs `lookout setup`.
+
 - **The crew board has a news footer.** A paragraph pinned to the bottom of
   the Dock board: one sentence per workspace, or per family, in the board's
   own priority order. It covers shut gates and untaken alignment checks, red

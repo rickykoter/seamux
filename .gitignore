@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 deep-plan/vendor/mermaid.min.js
+lookout/vendor/
 *.bak
 .DS_Store
 .vscode/

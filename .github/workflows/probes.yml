@@ -1,6 +1,6 @@
 # Runs the scrub check, the plugin validation and every probe with no cmux
-# present. Mermaid comes from `deep-plan setup`, which carries the pin and the
-# sha256 and fails closed on a mismatch.
+# present. Mermaid comes from `deep-plan setup` and highlight.js from `lookout
+# setup`; each carries its pin and sha256 and fails closed on a mismatch.
 name: probes
 
 on:
@@ -11,6 +11,7 @@ on:
 env:
   # The probes and setup read the bundle from here, and look nowhere else.
   DEEP_PLAN_VENDOR_DIR: ${{ github.workspace }}/deep-plan/vendor
+  LOOKOUT_VENDOR_DIR: ${{ github.workspace }}/lookout/vendor
 
 jobs:
   probes:
@@ -40,6 +41,12 @@ jobs:
           DEEP_PLAN_BIN_DIR: ${{ runner.temp }}/bin
         run: node deep-plan/deep_plan.mjs setup
 
+      - name: Fetch pinned highlight.js (lookout setup)
+        env:
+          LOOKOUT_ENGINE_FILE: ${{ runner.temp }}/lookout-engine.json
+          LOOKOUT_BIN_DIR: ${{ runner.temp }}/bin
+        run: node lookout/lookout.mjs setup
+
       # The manifests, hooks and mods module as Claude Code reads them. The CLI
       # comes from npm; validate and test need no login.
       - name: Install the Claude Code CLI
@@ -48,7 +55,7 @@ jobs:
       - name: Validate the marketplace and every plugin
         run: |
           claude plugin validate .
-          for p in deep-plan restack bash-guard crew seamux-mods; do claude plugin validate "$p"; done
+          for p in deep-plan restack bash-guard crew seamux-mods lookout; do claude plugin validate "$p"; done
 
       - name: seamux-mods tests
         run: claude plugin test seamux-mods
@@ -58,6 +65,13 @@ jobs:
 
       - name: board probe
         run: node crew/board/board_probe.mjs
+
+      # Throwaway repos, reviews, pointer and shim under a temp dir; a mock
+      # TypeSafe client, so nothing reaches the network.
+      - name: lookout probe
+        env:
+          LOOKOUT_PROBE_HLJS: ${{ github.workspace }}/lookout/vendor/highlight.min.js
+        run: node lookout/probe.mjs
 
       # Real git repos in a temp dir; the probe carries its own identity and
       # GIT_CONFIG_GLOBAL, so a runner with no git user is the normal case.
