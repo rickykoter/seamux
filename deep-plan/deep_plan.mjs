@@ -187,10 +187,15 @@ function validate(spec, force) {
       const label = `deliverable ${i + 1} check "${c.id || c.name || c.recipe || "?"}"`;
       if (!CHECK_KINDS.includes(c.kind))
         errs.push(`${label}: kind must be one of ${CHECK_KINDS.join("|")}`);
-      if (!(c.name || c.recipe)) errs.push(`${label}: needs a name, or the recipe it runs`);
+      if (c.kind === "review") {
+        if (c.recipe || c.run)
+          errs.push(`${label}: a review check runs \`lookout gate\` for its increment; it names no recipe or command`);
+      } else if (!(c.name || c.recipe)) errs.push(`${label}: needs a name, or the recipe it runs`);
       if (c.id !== undefined && !/^[a-z0-9][a-z0-9._-]*$/i.test(String(c.id)))
         errs.push(`${label}: id must be letters, digits, dot, dash or underscore`);
     }
+    if ((d.checks || []).filter(c => c.kind === "review").length > 1)
+      errs.push(`deliverable ${i + 1}: one review check per increment (it gates on that increment's one review)`);
     if (d.waiver !== undefined && !(typeof d.waiver === "string" && d.waiver.trim()))
       errs.push(`deliverable ${i + 1}: a waiver is a sentence saying why nothing can prove it`);
     const ids = specChecks(d).map(c => c.id);
@@ -247,6 +252,9 @@ function validate(spec, force) {
     }
   }
 
+  if (spec.review !== undefined && (typeof spec.review !== "object" || spec.review === null || Array.isArray(spec.review) ||
+      (spec.review.agentMayClose !== undefined && typeof spec.review.agentMayClose !== "boolean")))
+    errs.push('review: an object, e.g. { "agentMayClose": true }');
   if (errs.length && !force) {
     console.error("deep-plan: spec refused —");
     for (const e of errs) console.error("  ✗ " + e);
@@ -257,6 +265,53 @@ function validate(spec, force) {
 }
 
 // ---------------------------------------------------------------- checks
+
+// A review check is gated on lookout's verdict for its increment. Its command
+// is synthesized, not a recipe: `lookout gate --plan <slug> --inc <n>`, run
+// through lookout's engine pointer (deep-plan reaches lookout only through its
+// CLI; plugins cannot import each other). It rides the recipe path — `check
+// run`, staleness, the hand-pass refusal — but is marked `synth`, so drift
+// against the repo's recipe files never applies to it.
+const REVIEW_RECIPE = "lookout:gate";
+function reviewCheck(c, slug, n) {
+  const shown = `lookout gate --plan ${slug} --inc ${n}`;
+  return { ...c, recipe: REVIEW_RECIPE, synth: "review", source: "deep-plan (review check)",
+    hash: crypto.createHash("sha256").update("review\0" + shown).digest("hex").slice(0, 12),
+    exec: { tier: "cheap", cwd: ".", timeout: 120, steps: [{ kind: "run", command: shown }] } };
+}
+
+// lookout's engine: $LOOKOUT_ENGINE, else the root its pointer names. "" when
+// lookout is not installed.
+function lookoutRoot() {
+  const ok = r => r && fs.existsSync(path.join(r, "lookout.mjs")) ? r : "";
+  // Authoritative when set, even empty: the probe sets it so no test run ever
+  // reaches the machine's real lookout (or its reviews).
+  if ("LOOKOUT_ENGINE" in process.env) return ok(process.env.LOOKOUT_ENGINE);
+  try {
+    return ok(JSON.parse(fs.readFileSync(path.join(os.homedir(), ".claude", "lookout", "engine.json"), "utf8")).root);
+  } catch { return ""; }
+}
+const LOOKOUT_MISSING = "lookout is not installed: enable the lookout plugin and run `lookout setup` (or set LOOKOUT_ENGINE)";
+const shq = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
+
+// The exec a review check actually runs: the stored one names the command a
+// reader understands; this one names the engine that answers it.
+function reviewExec(cur, slug, n) {
+  const root = lookoutRoot();
+  const command = root
+    ? `${shq(process.execPath)} ${shq(path.join(root, "lookout.mjs"))} gate --plan ${shq(slug)} --inc ${Number(n)}`
+    : `echo ${shq(LOOKOUT_MISSING)} >&2; exit 127`;
+  return { ...cur.exec, steps: [{ kind: "run", command }] };
+}
+
+// Run lookout with args; { ok, out } — never throws.
+function runLookout(args, { cwd } = {}) {
+  const root = lookoutRoot();
+  if (!root) return { ok: false, out: LOOKOUT_MISSING, missing: true };
+  const r = spawnSync(process.execPath, [path.join(root, "lookout.mjs"), ...args],
+    { encoding: "utf8", cwd: cwd || process.cwd(), timeout: 180000 });
+  return { ok: r.status === 0, out: ((r.stdout || "") + (r.stderr || "")).trim() };
+}
 
 // Each deliverable's checks as render resolved them: declared checks, with a
 // named recipe bound to the config its files land on; then every default
@@ -281,6 +336,7 @@ function resolvePlanChecks(spec, root) {
     for (const dir of dirs.length ? dirs : [R.root]) for (const r of R.available(dir)) nameable.set(r.key, r);
     const out = [];
     for (const c of specChecks(d)) {
+      if (c.kind === "review") { out.push(reviewCheck(c, spec.slug, i + 1)); continue; }
       if (!c.recipe) { out.push(c); continue; }
       const hits = [...nameable.values()].filter(r => r.key === c.recipe || r.id === c.recipe);
       if (hits.length === 1) out.push(bind(c, hits[0]));
@@ -1338,7 +1394,7 @@ const CHECK_MARK = { pass: "✅", fail: "❌", pending: "⏳", running: "🔄", 
 
 // Each check with its verdict, and — while it is outstanding — what it runs.
 // Showing the detail only while it matters keeps a finished increment short.
-function checksRow(inc) {
+function checksRow(inc, slug = "") {
   const all = Object.entries(checksOf(inc)).filter(([, v]) => !v.retired);
   if (!all.length) return "";
   const agg = checksAggregate(inc);
@@ -1348,6 +1404,8 @@ function checksRow(inc) {
       checkLinesMd({ id, ...v }).lines.map(l => `<br>${mdInline(l)}`).join("");
     return `<li>${CHECK_MARK[st] || ""} ${esc(st)} · [${esc(v.kind || "?")}${v.system ? " · " + esc(v.system) : ""}] ` +
       `${esc(v.name || "")} <code>${esc(id)}</code>` +
+      // A served working page reaches the review page on the same server.
+      (v.synth === "review" && slug ? ` · <a href="/review/${esc(slug)}-inc${inc.n}">open the review</a>` : "") +
       (v.note ? ` — ${esc(v.note)}` : "") + detail + "</li>";
   }).join("");
   return `<p class="dim">checks: ${CHECK_MARK[agg] || ""} ${esc(agg)}</p><ul class="dim">${items}</ul>`;
@@ -1364,7 +1422,7 @@ function workingHtml(spec, st, b64) {
     // The verdict belongs beside the status, not in a section of its own: it is
     // a precondition on THIS increment's `done`, and a reader deciding whether
     // the increment is finished needs both in one glance.
-    const checks = checksRow(inc) || (d.waiver ? `<p class="dim">checks: none — waived: ${esc(d.waiver)}</p>` : "");
+    const checks = checksRow(inc, st.slug) || (d.waiver ? `<p class="dim">checks: none — waived: ${esc(d.waiver)}</p>` : "");
     // Per-deliverable commits: the record of what actually landed for this one.
     const dcommits = (d.commits || []).map(c => commitLi(c)).join("");
     return `<div class="inc"><span class="st st-${esc(inc.status)}">${esc(inc.status)}</span>
@@ -2555,6 +2613,7 @@ function reapLost(slug) {
 // stored version and says so; a re-render adopts the edit (and re-pends any
 // pass recorded against the old one).
 function recipeDrift(st, v) {
+  if (v.synth) return "";                // synthesized by deep-plan: no recipe file to drift from
   try {
     const at = v.recipe.includes("@") ? v.recipe.slice(v.recipe.indexOf("@") + 1) : "";
     const cur = resolver(st.root).available(path.join(st.root, at)).find(r => r.key === v.recipe);
@@ -2663,8 +2722,18 @@ function checkRun(slug, n, ids, opts) {
       writeState(st);
     }
     const tree = treeOf(st.root);
-    const res = runExec(cur.exec, { root: st.root, from: opts.from || "", log,
-      env: { DEEP_PLAN_SLUG: slug, DEEP_PLAN_INCREMENT: String(n), DEEP_PLAN_CHECK: id } });
+    const exec = cur.synth === "review" ? reviewExec(cur, slug, n) : cur.exec;
+    const res = runExec(exec, { root: st.root, from: opts.from || "", log,
+      env: { DEEP_PLAN_SLUG: slug, DEEP_PLAN_INCREMENT: String(n), DEEP_PLAN_CHECK: id,
+             DEEP_PLAN_ROOT: st.root || "", DEEP_PLAN_START_SHA: findInc(st, n).startSha || "" } });
+    if (cur.synth === "review" && res.status === "fail") {
+      const code = res.ran && res.ran.code;
+      res.note = code === 127 ? LOOKOUT_MISSING
+        : code === 3 ? `no verdict yet (no review, or no reviewer has reported) — deep-plan review ${slug} ${n}, ` +
+          `then brief a reviewer subagent with lookout prompt ${slug}-inc${n}`
+        : code === 1 ? "a blocker or major finding is open — the human closes it on the review page"
+        : res.note;
+    }
     const fresh = readState(slug);
     const now = checksOf(findInc(fresh, n))[id];
     if (!now || !now.runner || now.runner.token !== token) {
@@ -2966,7 +3035,7 @@ function familyCmd(args, flags) {
 const BUILTIN_VERBS = new Set([
   "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
   "grade", "status", "go", "start", "done", "reset", "block", "check", "obs",
-  "open-gate", "shut-gate", "close", "diff", "ask", "help", "setup", "engine", "verify",
+  "open-gate", "shut-gate", "close", "diff", "review", "ask", "help", "setup", "engine", "verify",
   "family",
 ]);
 
@@ -3119,7 +3188,32 @@ switch (cmd) {
     const inc = args[1] ? findInc(st, args[1])
       : (st.increments || []).filter(i => i.startSha).pop();
     if (!inc || !inc.startSha) die("no started increment with a recorded sha");
+    // lookout's page when it is installed (risk-sorted, highlighted, the same
+    // review the increment's review check reads); cmux diff otherwise.
+    const r = runLookout(["open", "--plan", st.slug, "--inc", String(inc.n), "--base", inc.startSha,
+      "--at", st.root, "--view-only"], { cwd: st.root });
+    if (r.ok) { say(r.out); break; }
+    if (!r.missing) say(`lookout could not open it (${r.out.split("\n").pop()}); falling back to cmux diff`);
     incrementDiff(st, inc, { open: true }); break;
+  }
+  case "review": {
+    // Open (or refresh) the increment's review in lookout, with the plan's
+    // close policy, and say how to brief the reviewer.
+    const st = readState(args[0]) || die("review <slug> [n]");
+    const inc = args[1] ? findInc(st, args[1])
+      : (st.increments || []).filter(i => i.startSha).pop();
+    if (!inc || !inc.startSha) die("no started increment with a recorded sha — its first edit records one, " +
+      `or \`deep-plan start ${st.slug} ${args[1] || "<n>"}\``);
+    let spec = {};
+    try { spec = JSON.parse(fs.readFileSync(path.join(KEYS_DIR, st.slug + ".spec.json"), "utf8")); } catch { /* no spec: defaults */ }
+    const agent = !!(spec.review && spec.review.agentMayClose);
+    const r = runLookout(["open", "--plan", st.slug, "--inc", String(inc.n), "--base", inc.startSha, "--at", st.root,
+      ...(agent ? ["--agent-may-close"] : [])], { cwd: st.root });
+    if (!r.ok) die(r.out || "lookout open failed");
+    say(r.out);
+    say(`\nnext: spawn ONE reviewer subagent whose prompt is the output of\n  lookout prompt ${st.slug}-inc${inc.n}\n` +
+        `then: deep-plan check run ${st.slug} ${inc.n}` + (agent ? "\n(this plan lets the agent close findings too)" : ""));
+    break;
   }
   default: {
     // Fall through to an extension verb. This is AFTER every built-in case, so
@@ -3168,8 +3262,10 @@ switch (cmd) {
   obs check|pass|fail|reset <slug> <n> ...    the same, on the observability
                                               checks only (the older verb)
   open-gate|shut-gate <slug>                  the human lever, logged
-  diff <slug> [n]                             open the increment's patch since start
-                                              (done writes it; only this opens it)
+  diff <slug> [n]                             open the increment's diff: lookout's page when
+                                              installed, else cmux diff on the patch done writes
+  review <slug> [n]                           open the increment's lookout review (the plan's
+                                              review.agentMayClose applies); a review check gates on it
   close <slug>                                retire a finished plan
   ask <ask.json>                              render a question with diagrams/examples
                                               (served at /ask/<id>; a pick on the page

@@ -140,7 +140,10 @@ export function log1(st, what) {
 // (`inc.obs`); it is now one kind of check, and the legacy spec fields still
 // read: `observability.checks` become observability checks, and per-deliverable
 // `verification` strings become manual ones.
-export const CHECK_KINDS = ["test", "e2e", "observability", "manual"];
+// `review` is opt-in: a deliverable that declares one is gated on lookout's
+// verdict (`lookout gate`), which passes when no blocker or major finding is
+// open. deep-plan synthesizes its command; no recipe names it.
+export const CHECK_KINDS = ["test", "e2e", "observability", "manual", "review"];
 export const CHECK_STATUSES = ["pending", "running", "needs-variant", "pass", "fail"];
 // What a verdict is, as opposed to what the spec says the check is. Only these
 // survive a re-render; the description is always the spec's current one.
@@ -164,7 +167,7 @@ export function specChecks(d) {
   if (!d) return [];
   const out = [], seen = new Set();
   const add = (c, legacy) => {
-    const name = String(c.name || c.system || c.recipe || c.run || "").trim();
+    const name = String(c.name || c.system || c.recipe || c.run || (c.kind === "review" ? "code review" : "")).trim();
     let id = c.id ? String(c.id) : checkSlug(c.kind, name);
     if (!c.id) for (let k = 2, base = id; seen.has(id); k++) id = `${base}-${k}`;
     seen.add(id);

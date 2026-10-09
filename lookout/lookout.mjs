@@ -252,6 +252,9 @@ function cmdOpen() {
                          : `  (signals only: ${review.scoring.why})`));
   say(`  page:  ${page}${shown ? "  (" + shown + ")" : ""}`);
   say(`  store: ${p.json}`);
+  // --view-only: someone only wants to look (deep-plan diff); no reviewer hint.
+  if (!flag("view-only") && !review.reviewedAt)
+    say(`  next:  brief ONE reviewer subagent with \`lookout prompt ${id}\``);
 }
 
 // ---------------------------------------------------------------- findings
@@ -412,7 +415,7 @@ function usage() {
 
   lookout open [--base REF | --worktree | --range A..B | --patch FILE]
                [--id ID] [--title T] [--plan SLUG --inc N] [--agent-may-close]
-               [--plain] [--no-jev] [--rescore] [--no-open] [--json]
+               [--plain] [--no-jev] [--rescore] [--view-only] [--no-open] [--json]
         build the diff, store the review, draw the page and show it.
         Default: --base <origin's default branch, else main/master>, which
         compares the merge base with the working tree (uncommitted included).

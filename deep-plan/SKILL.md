@@ -157,7 +157,8 @@ plan surfaces at `/plan/<slug>`.
    increment's patch to `~/.claude/plans/<slug>.inc<n>.patch`, printing the
    path. It does **not** open a diff viewer — a state transition should not
    seize a browser split. `deep-plan diff <slug> [n]` opens it when someone
-   actually wants to look.
+   actually wants to look: in lookout's page (risk-sorted, highlighted) when
+   the lookout plugin is installed, else in `cmux diff`.
 10. **Prove the increment before `done`.** `done` is refused while any check
    is pending, running, needs a variant, failed, or passed against other
    content than the tree now (an edit after a pass makes it stale; a commit
@@ -179,6 +180,18 @@ plan surfaces at `/plan/<slug>`.
      what you actually observed, not that you looked — the note is the only
      durable evidence. Passing a recipe-backed check by hand is refused
      without `--force`, which is logged; use it only when the human says to.
+   - **A review check is lookout's verdict** (opt-in: the deliverable
+     declares `{ "kind": "review" }`). Its command is synthesized — `lookout
+     gate --plan <slug> --inc <n>` — and it passes when no blocker or major
+     finding is open on the increment's review. Before `check run`:
+     `deep-plan review <slug> <n>` opens the review (with the plan's
+     `review.agentMayClose`), then spawn ONE fresh reviewer subagent whose
+     prompt is `lookout prompt <slug>-inc<n>`. Fix what it finds and `lookout
+     address` each finding; the HUMAN resolves or dismisses on the page, and
+     only then does the check pass. Never pass it by hand, and never close
+     findings yourself unless the plan set `review.agentMayClose`. Like any
+     check it goes stale after an edit: re-run it (it reads statuses; it
+     does not re-review — say when a fix deserves a second reviewer).
    - `done --force` overrides the whole gate and writes that to the log; use
      it only when the human says to, and say that you did. `deep-plan reset`
      on an increment returns every verdict to `pending` — a check passed
@@ -207,7 +220,7 @@ plan surfaces at `/plan/<slug>`.
                       "note": "spike: the check that settles it; ticket: its context" }],
   "diagrams":      [{ "question": "the heading, phrased as a question", "mermaid": "..." }],
   "deliverables":  [{ "title": "...", "body": "...", "files": ["relative/paths"],
-                      "checks": [{ "kind": "test|e2e|observability|manual", "name": "...",
+                      "checks": [{ "kind": "test|e2e|observability|manual|review", "name": "...",
                         "id": "optional; derived from kind + name",
                         "recipe": "a recipe id (or id@project) from .seamux/verify.json",
                         "run": "a command shown, not run (no recipe)",
@@ -215,6 +228,7 @@ plan surfaces at `/plan/<slug>`.
                         "note": "optional" }],
                       "waiver": "only when nothing can prove it: why",
                       "commits": ["sha subject", { "sha": "...", "subject": "..." }] }],
+  "review":        { "agentMayClose": false },
   "nonGoals":      ["what this plan deliberately does not do"],
   "verification":  ["runnable commands"],
   "commits":       ["plan-wide record of what landed (same two shapes)"],
@@ -224,6 +238,12 @@ plan surfaces at `/plan/<slug>`.
                                     "name": "...", "ref": "url or path" }],
                      "gaps": ["what this change needs that does not exist"] } }
 ```
+
+A `review` check takes no recipe, run or command (`name` defaults to "code
+review"; one per deliverable): deep-plan runs `lookout gate` for it.
+Top-level `review.agentMayClose` (default false) is decided with the human
+at interrogation time: true lets the agent resolve and dismiss findings too,
+instead of only replying and marking them addressed.
 
 A parent plan (see Families) adds one block, and a child plan adds nothing:
 
