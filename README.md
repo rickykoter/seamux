@@ -455,6 +455,34 @@ Only you close a finding. The agent can reply and mark one addressed; it
 can resolve or dismiss only when the review was opened with
 `--agent-may-close`, which a plan sets with `review.agentMayClose`.
 
+### Group notes
+
+Findings say what is wrong. Alongside them the reviewer writes a note for
+each risky group of files: why it is risky, the direction it moves the
+design (a boundary moved, an invariant relaxed, a new dependency between
+systems), what to check by hand at which lines, and which fundamentals it
+touches. A review with notes opens on an **Overview** (`o` toggles it) that
+lists the groups riskiest first, so you can judge the architecture before
+reading lines; each file shows its group's note as a strip above the diff.
+The reviewer can also link files the grouping rules missed, such as a
+migration and the query that reads its table, and the link's reason shows
+on the group's rail.
+
+`lookout open --quiz` (or `.seamux/lookout.json` `{"quiz": true}`, or a
+plan's `review.quiz`) adds a question to each high-risk group and hides its
+note until you answer, so you form your own reading of the change before
+you see the agent's. The quiz never gates anything. A wrong answer reaches
+the agent at your next prompt, so it can explain the gap if you ask; a right
+one stays yours. Answers need crew's intent server: opened as a file, the
+page shows the notes in full.
+
+![the Overview of a quizzed review: the checkout group's question with four options, waiting for an answer, and below it the session group answered right, with its reason and the note: why it is risky, the direction, and what to watch at which lines](docs/img/lookout-overview.png)
+
+Inside a plan, a group that heads somewhere the increment's description
+does not is filed as a `plan-drift` finding, always major or worse. It
+holds the review check until you close it; dismissing it records that the
+deviation was meant.
+
 ### Reviews in a plan
 
 `lookout gate` answers 0 when no blocker or major finding is open. A deep-plan

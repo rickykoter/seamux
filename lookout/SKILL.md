@@ -41,13 +41,32 @@ change in the context that wrote it reads your intent instead of the code.
 1. `lookout open …` (above). Note the id it prints.
 2. Spawn a subagent (the Agent tool, general-purpose) whose prompt is the
    exact output of `lookout prompt <id>`. The brief carries the patch path,
-   how to read whole files, the files riskiest first, the rubric, the
-   severities and the JSON schema, and tells the subagent to run
+   how to read whole files, the files riskiest first, lookout's groups, the
+   rubric, the severities and the JSON schema, and tells the subagent to run
    `lookout findings add <id> <file>` itself. Do not add your own opinion of
    the change to the brief.
+
+   The reviewer writes ONE object, `{findings, edges, notes}` (a bare array
+   still means findings only):
+   - **notes**, one per high or medium group: why it is risky, the
+     direction it moves the design, what to watch at which lines, and the
+     fundamentals it touches (invariant, security-boundary, data-model,
+     cross-system-assumption). A note names its files, so it lands on
+     whichever group holds them, and goes stale when their hunks change.
+   - **edges** `{a, b, why}`: links the grouping rules missed. They only
+     join files, under the six-file cap, and their why shows on the rail.
+   - **with the quiz on**, a question on each high group's note,
+     multiple choice and linted so it cannot give its answer away.
+   - **in a plan review**, a group heading somewhere the increment does not
+     say is a `plan-drift` finding, raised to major; a standalone review
+     refuses one.
+
+   `findings add` prints what it rejected and any group still owed a note
+   or a question; the subagent fixes those and runs it again.
 3. When it returns, `lookout findings list <id>` and tell the human what was
    found (counts by severity, the blockers and majors in a line each). The
-   page beside the terminal already shows every finding under its line.
+   page beside the terminal already shows every finding under its line,
+   and opens on the Overview of the notes.
 4. Discuss. Fix what is real, then `lookout address <id> <f#> "<what changed>"`;
    answer anything with `lookout reply <id> <f#|t#> "<text>"`.
 5. **Only the human closes a finding** — resolve or dismiss, on the page.
@@ -60,6 +79,16 @@ change in the context that wrote it reads your intent instead of the code.
 is open (minor and nit never hold it), 1 when one is open or only addressed,
 3 when there is no review or no reviewer has reported. A finding the agent
 marked addressed still holds the gate until the human closes it.
+
+**The quiz** (`lookout open --quiz`, a repo's `.seamux/lookout.json`
+`{"quiz": true}`, or a plan's `review.quiz`) is fixed when the review is
+created; a re-open neither adds nor removes it. On the served page each
+high group's question hides its note until the human answers, and crew's
+intent server records the answer once. It never gates. A wrong answer
+reaches you at the human's next prompt, beside their comments: if they
+ask, explain the gap from the code, not from the note. Never answer a
+question for them, and never quote a note's answer before they have
+answered.
 
 **Standalone** (`/lookout`, any branch, no plan): open with `--base`,
 `--range`, `--worktree` or `--patch`; the brief carries the patch and the
@@ -78,6 +107,12 @@ gate; it passes once the human has closed every blocker and major.
 
 VS Code's Source Control layout: changed files on the left as a directory
 tree (single-child folders folded together), one file's diff on the right.
+
+- **Overview** (`o`, or the header button): a review with notes opens on
+  it. Every group riskiest first, each note in full: watch items link to
+  their lines, touches show as chips, drift findings are listed, and stale
+  or partial notes are marked. Each file shows its group's note as a strip
+  above the diff that expands.
 
 - **Split or Unified** (header toggle, or `v`). Narrow panes and one-sided
   files (added, deleted) draw unified.

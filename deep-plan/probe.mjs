@@ -2823,6 +2823,20 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   lc(LENV, "review", "rv-2", "1");
   ok("spec review.agentMayClose reaches the review's policy",
     JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-2-inc1.json"), "utf8")).policy.agentMayClose === true);
+  ok("spec review.quiz must be a boolean", /review: an object of booleans/.test(bad([{ kind: "review" }], { review: { quiz: "yes" } }).stderr));
+  ok("a review without review.quiz has the quiz off",
+    JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-2-inc1.json"), "utf8")).policy.quiz === false);
+  arm("rv-q", [{ kind: "review" }], { review: { quiz: true } });
+  fs.writeFileSync(path.join(RV, "src", "a.ts"), "export const a = 4;\n");
+  // A diff viewed first creates the review: with the plan's quiz, since a
+  // re-open cannot add it later.
+  lc(LENV, "diff", "rv-q", "1");
+  ok("deep-plan diff opened first still creates the review with the plan's quiz",
+    JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-q-inc1.json"), "utf8")).policy.quiz === true);
+  r = lc(LENV, "review", "rv-q", "1");
+  const qv = JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-q-inc1.json"), "utf8"));
+  ok("spec review.quiz opens a quizzed review, and says the reviewer owes questions",
+    r.status === 0 && qv.policy.quiz === true && qv.policy.agentMayClose === false && /this plan quizzes/.test(r.stdout), r.stdout + r.stderr);
   r = lc({ ...LENV, LOOKOUT_ENGINE: path.join(TMP, "no-lookout-here") }, "check", "run", "rv-2", "1", "review-code-review");
   ok("review check: without lookout it fails with the install hint",
     r.status === 1 && /lookout is not installed/.test(ck("rv-2", "review-code-review").note));
