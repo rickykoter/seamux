@@ -274,7 +274,10 @@
   const TOUCH = { "invariant": "invariant", "security-boundary": "security boundary",
                   "data-model": "data model", "cross-system-assumption": "cross-system assumption" };
   const quizOn = () => !!(R.policy && R.policy.quiz);
-  const asking = n => quizOn() && !!live && n.quiz && !n.quiz.answered;
+  // Served means asked: from http(s) even before serve() runs, so the first
+  // draw never shows a note its question should hide.
+  const served = () => !!live || /^https?:$/.test(location.protocol);
+  const asking = n => quizOn() && served() && n.quiz && !n.quiz.answered;
   const groupOf = p => (R.groups || []).find(g => g.files.includes(p));
   // The notes about a file: its group's, and a partial note that covers it
   // from another group.
@@ -294,8 +297,8 @@
     }
     return ix;
   }
-  // Recording an answer is crew's server's (the `answer` op); until the page
-  // is served with it, the options cannot be picked.
+  // Recording an answer is crew's server's (the `answer` op), set by serve();
+  // opened as a file the options cannot be picked.
   let answer = null;
 
   function marks(n) {
@@ -364,18 +367,22 @@
   function strip(p) {
     const ns = notesFor(p);
     if (!ns.length) return "";
-    return el("div", { class: "strips" }, ns.map(n => {
-      if (asking(n))
-        return el("div", { class: "strip ask", onclick: () => openOverview(n.id) },
-          el("span", { class: "chev" }, "?"), el("span", { class: "sline" }, `${n.group || n.id}: a question waits before this note — answer it in the Overview`));
-      const openNow = stripOpen.has(n.id);
-      return el("div", { class: "strip" + (openNow ? " open" : "") },
-        el("div", { class: "strip-head", onclick: () => { openNow ? stripOpen.delete(n.id) : stripOpen.add(n.id); drawFile(); } },
-          el("span", { class: "chev" }, openNow ? "▾" : "▸"),
-          el("span", { class: "sgroup" }, n.group || n.id),
-          el("span", { class: "sline" }, n.direction), ...marks(n)),
-        openNow ? noteBody(n) : null);
-    }));
+    return el("div", { class: "strips" }, ns.map(stripOf));
+  }
+  // One strip; toggling it swaps only this element, so the diff below (and
+  // a comment being typed in it) is left alone.
+  function stripOf(n) {
+    if (asking(n))
+      return el("div", { class: "strip ask", onclick: () => openOverview(n.id) },
+        el("span", { class: "chev" }, "?"), el("span", { class: "sline" }, `${n.group || n.id}: a question waits before this note — answer it in the Overview`));
+    const openNow = stripOpen.has(n.id);
+    const node = el("div", { class: "strip" + (openNow ? " open" : "") },
+      el("div", { class: "strip-head", onclick: () => { openNow ? stripOpen.delete(n.id) : stripOpen.add(n.id); node.replaceWith(stripOf(n)); } },
+        el("span", { class: "chev" }, openNow ? "▾" : "▸"),
+        el("span", { class: "sgroup" }, n.group || n.id),
+        el("span", { class: "sline" }, n.direction), ...marks(n)),
+      openNow ? noteBody(n) : null);
+    return node;
   }
 
   // The architecture pass: every group, riskiest first, with its notes.
@@ -389,7 +396,7 @@
         (quizOn() ? ` · quiz on${waiting ? `, ${waiting} to answer` : ""}` : ""))];
     $("file-head").replaceChildren(...head);
     const box = el("div", { class: "ov" });
-    if (quizOn() && !live)
+    if (quizOn() && !served())
       box.append(el("div", { class: "ov-line" }, "This review has the quiz on, which needs crew's intent server to record answers. Opened as a file, the notes are shown in full."));
     if (!R.reviewedAt) box.append(el("div", { class: "ov-line" }, "No reviewer has reported yet: groups are lookout's, and there are no notes."));
     else if (!ns.length) box.append(el("div", { class: "ov-line" }, "The reviewer wrote no notes for this review."));
@@ -623,13 +630,14 @@
     for (const b of document.querySelectorAll("#layout button"))
       b.setAttribute("aria-pressed", String(b.dataset.layout === layout));
   }
-  function setLayout(l) { layout = l; store.set("lookout.layout", l); drawLayout(); drawFile(); }
+  function setLayout(l) { layout = l; store.set("lookout.layout", l); drawLayout(); drawMain(); }
   for (const b of document.querySelectorAll("#layout button"))
     b.addEventListener("click", () => setLayout(b.dataset.layout));
 
   function step(d) {
     if (!ORDER.length) return;
-    const i = ORDER.indexOf(current);
+    // From the Overview, j/k move on from the file the reader left.
+    const i = ORDER.indexOf(current ?? lastFile);
     select(ORDER[Math.max(0, Math.min(ORDER.length - 1, (i < 0 ? 0 : i + d)))]);
   }
   document.addEventListener("keydown", e => {
@@ -733,6 +741,15 @@
         .catch(e => { status.textContent = e.message; status.classList.add("bad"); throw e; });
     };
 
+    // A quiz answer: graded and recorded by the server, once; the redraw
+    // that follows shows the note with the result above it.
+    answer = (n, pick, status) => {
+      for (const b of document.querySelectorAll(`[data-note="${CSS.escape(n.id)}"] .qopt`)) b.disabled = true;
+      send({ op: "answer", item: n.id, pick }, status).then(() => {}, () => {
+        for (const b of document.querySelectorAll(`[data-note="${CSS.escape(n.id)}"] .qopt`)) b.disabled = false;
+      });
+    };
+
     // Reply, and close or reopen, under every card.
     actions = x => {
       const finding = x.id.startsWith("f");
@@ -790,6 +807,6 @@
   // link names a file.
   const want = decodeURIComponent((location.hash.match(/file=([^&]+)/) || [])[1] || "");
   if ((R.files || []).some(f => f.path === want)) select(want);
-  else if (location.hash === "#overview" || notesOf().length) { lastFile = ORDER[0] || null; openOverview(); }
+  else if (location.hash === "#overview" || notesOf().length) openOverview();
   else select(ORDER[0] || null);
 })();

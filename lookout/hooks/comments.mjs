@@ -4,6 +4,11 @@
 // Pull, never push: nothing is typed into a session (ADR 0003), and an idle
 // session hears at its next prompt.
 //
+// A wrong quiz answer (lookout's notes) is delivered the same way, once: the
+// question, the human's pick, the expected answer and why, so the agent can
+// explain the gap if asked. A right answer is the human's own and is never
+// delivered.
+//
 // The seen cursor is per review (<id>.seen.json beside the store): a message
 // is delivered once, to the first session in that repository that prompts.
 //
@@ -31,11 +36,24 @@ function humanMessages(r) {
     for (const m of f.thread || []) if (m.by === "human") out.push({ key: f.id + "/" + m.id, item: f, msg: m });
   for (const t of r.threads || [])
     for (const m of t.messages || []) if (m.by === "human") out.push({ key: t.id + "/" + m.id, item: t, msg: m });
+  for (const n of r.notes || []) {
+    const a = n.quiz && n.quiz.answered;
+    // Keyed by the answer, not the note: a merge can carry an answered
+    // question onto another note's id, and it must not be delivered again.
+    if (a && a.by === "human" && a.correct === false)
+      out.push({ key: "quiz/" + a.at + "/" + String(n.quiz.prompt).slice(0, 120), item: n, msg: { at: a.at }, quiz: true });
+  }
   return out.sort((a, b) => String(a.msg.at).localeCompare(String(b.msg.at)));
 }
 
 function describe(r, news) {
-  const lines = news.slice(0, MAX_LINES).map(({ item, msg }) => {
+  const clip = s => String(s || "").replace(/\s+/g, " ").trim().slice(0, MAX_TEXT);
+  const lines = news.slice(0, MAX_LINES).map(({ item, msg, quiz }) => {
+    if (quiz) {
+      const q = item.quiz;
+      return `- ${item.id} quiz (${item.group ? item.group + ": " : ""}${item.files.join(", ")}): the human answered ` +
+        `"${clip(q.options[q.answered.pick])}" to "${clip(q.prompt)}"; the code says "${clip(q.options[q.answer])}" — ${clip(q.why)}`;
+    }
     const where = `${item.file}:${item.line}${item.side === "old" ? " (old side)" : ""}`;
     const what = item.id.startsWith("f") ? `${item.id} (${item.severity} finding, ${where})` : `${item.id} (comment on ${where})`;
     const text = String(msg.text || "").replace(/\s+/g, " ").trim().slice(0, MAX_TEXT);
@@ -46,7 +64,9 @@ function describe(r, news) {
   return `[lookout ${r.id}] ${news.length} new from the human on the review page for ${r.title}:\n` +
     lines.join("\n") + "\n" +
     `Answer in the page's thread with \`lookout reply ${r.id} <f#|t#> "<text>"\`; after fixing a finding, ` +
-    `\`lookout address ${r.id} <f#> "<what changed>"\`. Only the human resolves or dismisses.`;
+    `\`lookout address ${r.id} <f#> "<what changed>"\`. Only the human resolves or dismisses.` +
+    (news.some(x => x.quiz) ? " A wrong quiz answer is a gap between the human's model and the code: " +
+      "if they ask, explain it from the code, not from the note." : "");
 }
 
 try {

@@ -702,10 +702,10 @@ const R1 = repo("r1");
     ok("page: the drawn page carries the notes and the quiz policy",
        html.includes(base.why_risky) && html.includes('"quiz":true') && html.includes(good.prompt));
     ok("page: an Overview it opens on when there are notes, toggled by o and the header button",
-       /function drawOverview\(/.test(js) && /notesOf\(\)\.length\) \{ lastFile = ORDER\[0\] \|\| null; openOverview\(\); \}/.test(js) &&
+       /function drawOverview\(/.test(js) && /notesOf\(\)\.length\) openOverview\(\);/.test(js) &&
        js.includes('e.key === "o"') && tpl.includes('id="ov-btn"'));
     ok("page: a question hides its note only on a served page with the quiz on, until answered",
-       /const asking = n => quizOn\(\) && !!live && n\.quiz && !n\.quiz\.answered;/.test(js) &&
+       /const asking = n => quizOn\(\) && served\(\) && n\.quiz && !n\.quiz\.answered;/.test(js) &&
        /asking\(n\) \? quizBlock\(n\) :/.test(js));
     ok("page: a file shows its group's note as a strip above the diff, and watch items go to their lines",
        js.includes("strip(f.path),") && /function goToLine\(/.test(js) && js.includes("tr.line[data-${side"));
@@ -776,6 +776,26 @@ const R1 = repo("r1");
   ok("hook: garbage on stdin never fails the prompt",
      spawnSync("bash", [path.join(HERE, "hooks", "comments.sh")], { encoding: "utf8", env: ENV, input: "{not json" }).status === 0);
 
+  // Quiz answers (recorded by crew's server): a wrong one reaches the
+  // session once, with the question, the pick, the expected answer and why;
+  // a right one never does.
+  S.update(id, cur => {
+    const q = (prompt, answer, pick) => ({ prompt, options: ["it throws", "it is cached", "it is ignored"], answer, why: "db is never imported",
+      answered: { pick, correct: pick === answer, at: new Date().toISOString(), by: "human" } });
+    cur.policy = { ...cur.policy, quiz: true };
+    cur.notes = [{ id: "n1", files: ["a.js"], group: "g1", why_risky: "w", direction: "d", watch: [], touches: [], quiz: q("What happens with a code?", 0, 2) },
+                 { id: "n2", files: ["a.js"], group: "g1", why_risky: "w", direction: "d", watch: [], touches: [], quiz: q("And without one?", 1, 1) }];
+    return cur;
+  });
+  const qctx = (() => { try { return JSON.parse(hook(R7).stdout).hookSpecificOutput.additionalContext; } catch { return ""; } })();
+  ok("hook: a wrong quiz answer names the question, the pick, the expected answer and why",
+     qctx.includes('n1 quiz (g1: a.js): the human answered "it is ignored" to "What happens with a code?"; the code says "it throws" — db is never imported') &&
+     /explain it from the code/.test(qctx), qctx);
+  ok("hook: a right answer is never delivered", !qctx.includes("And without one?") && !qctx.includes("n2 quiz"));
+  ok("hook: the wrong answer is delivered once", hook(R7).stdout === "");
+  S.update(id, cur => { cur.notes = [{ ...cur.notes[0], id: "n7" }]; return cur; });
+  ok("hook: an answered question carried onto another note by a merge is not delivered again", hook(R7).stdout === "");
+
   // sync re-ranks after a page close: a resolved major stops lifting its file.
   S.update(id, cur => { FD.setStatus(cur, "f1", "open", "human"); return cur; });
   cli(R7, "sync", id);
@@ -784,6 +804,7 @@ const R1 = repo("r1");
   cli(R7, "sync", id);
   ok("sync: re-ranks after a close made outside the CLI", S.read(id).files[0].risk < before);
   const page = fs.readFileSync(path.join(HERE, "page", "review.js"), "utf8");
+  ok("page: a served page answers through op answer", page.includes('send({ op: "answer", item: n.id, pick }, status)'));
   ok("page: has the served mode (serve, polling, POST)", /function serve\(/.test(page) && page.includes('method: "POST"') &&
      page.includes(".json?t="));
 }

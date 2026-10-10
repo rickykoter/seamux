@@ -767,6 +767,15 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
   };
   fs.writeFileSync(join(reviews, "demo.json"), JSON.stringify(review));
   fs.writeFileSync(join(reviews, "demo.html"), "<!doctype html><html><body><p>page</p></body></html>");
+  // A review with the ownership quiz on: two notes with questions, answered
+  // through op answer and graded against the stored answer.
+  const q = (prompt, answer) => ({ prompt, options: ["one", "two", "three"], answer, why: "because" });
+  fs.writeFileSync(join(reviews, "quiz.json"), JSON.stringify({
+    id: "quiz", title: "quiz", updatedAt: "2026-01-01T00:00:00.000Z", policy: { quiz: true },
+    files: [{ path: "a.js" }], findings: [], threads: [],
+    notes: [{ id: "n1", files: ["a.js"], quiz: q("first?", 1) }, { id: "n2", files: ["a.js"], quiz: q("second?", 2) },
+            { id: "n3", files: ["a.js"] }],
+  }));
   const port = await new Promise(res => { const s = net.createServer(); s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => res(p)); }); });
   const srv = spawn("python3", [join(HERE, "crew-board-intent")],
     { env: { ...process.env, HOME, CREW_INTENT_PORT: String(port) }, stdio: "ignore" });
@@ -835,6 +844,28 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
       s3.findings[0].status === "open" && s3.threads[0].status === "resolved"]);
     checks.push(["review POST: writes are atomic (no temp files left)",
       !fs.readdirSync(reviews).some(n => n.includes(".tmp-") || n.endsWith(".lock"))]);
+    // The quiz's answer op: refused without a quiz, a question or a usable
+    // pick; graded and recorded once, as the human's.
+    const qstore = () => JSON.parse(fs.readFileSync(join(reviews, "quiz.json"), "utf8"));
+    const ans = (o, path = "/review/quiz") => post({ op: "answer", t: token, ...o }, { path });
+    checks.push(["review POST answer: a review without the quiz refuses it",
+      (await ans({ item: "f1", pick: 0 }, "/review/demo")).status === 400]);
+    checks.push(["review POST answer: a note without a question, or no such note, is 404",
+      (await ans({ item: "n3", pick: 0 })).status === 404 && (await ans({ item: "n9", pick: 0 })).status === 404]);
+    checks.push(["review POST answer: the pick is an index as written (not a bool, a string, or off the end)",
+      (await ans({ item: "n1", pick: true })).status === 400 && (await ans({ item: "n1", pick: "1" })).status === 400 &&
+      (await ans({ item: "n1", pick: 3 })).status === 400 && (await ans({ item: "n1", pick: -1 })).status === 400 &&
+      !qstore().notes[0].quiz.answered]);
+    const wrong = await ans({ item: "n1", pick: 2 });
+    const a1 = qstore().notes[0].quiz.answered;
+    checks.push(["review POST answer: a wrong pick is graded and recorded as the human's",
+      wrong.status === 200 && a1 && a1.pick === 2 && a1.correct === false && a1.by === "human" && !!a1.at &&
+      JSON.parse(wrong.body).review.notes[0].quiz.answered.pick === 2]);
+    const again = await ans({ item: "n1", pick: 1 });
+    checks.push(["review POST answer: recorded once (a second answer is refused, the first kept)",
+      again.status === 409 && qstore().notes[0].quiz.answered.pick === 2]);
+    checks.push(["review POST answer: a right pick is graded right",
+      (await ans({ item: "n2", pick: 2 })).status === 200 && qstore().notes[1].quiz.answered.correct === true]);
     // A lock left by a crashed writer is broken once stale.
     const lock = join(reviews, "demo.lock");
     fs.mkdirSync(lock);
