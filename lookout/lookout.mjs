@@ -227,8 +227,8 @@ function cmdOpen() {
 
   const p = S.paths(id);
   const fresh = {
-    id, title: opt("title") || (o.plan ? `${o.plan} · increment ${o.inc}` : src.label),
-    source: { ...src, plan: o.plan || undefined, inc: o.inc ? Number(o.inc) : undefined },
+    id, title: opt("title") || (o.plan ? (o.inc === "all" ? `${o.plan} · the full delivery` : `${o.plan} · increment ${o.inc}`) : src.label),
+    source: { ...src, plan: o.plan || undefined, inc: o.inc === "all" ? "all" : o.inc ? Number(o.inc) : undefined },
     patchHash: hash,
     stats: { files: meta.length, adds: meta.reduce((x, f) => x + f.adds, 0), dels: meta.reduce((x, f) => x + f.dels, 0) },
     files: meta,
@@ -411,7 +411,7 @@ function cmdThread(op) {
 // 3 nothing to judge.
 function cmdGate() {
   let id = positional()[0];
-  if (!id && opt("plan")) id = S.idFrom(opt("plan"), "inc" + (opt("inc") || ""));
+  if (!id && opt("plan")) id = S.planId(opt("plan"), opt("inc"));
   if (!id) die("gate <id> | gate --plan SLUG --inc N");
   const r = S.ID_OK.test(id) && S.exists(id) ? S.read(id) : null;
   const g = FD.gate(r);
@@ -465,7 +465,7 @@ function usage() {
   say(`lookout — review a diff in a browser pane beside the terminal
 
   lookout open [--base REF | --worktree | --range A..B | --patch FILE]
-               [--id ID] [--title T] [--plan SLUG --inc N] [--agent-may-close] [--quiz]
+               [--id ID] [--title T] [--plan SLUG --inc N|all] [--agent-may-close] [--quiz]
                [--plain] [--no-jev] [--rescore] [--view-only] [--no-open] [--json]
         build the diff, store the review, draw the page and show it.
         Default: --base <origin's default branch, else main/master>, which

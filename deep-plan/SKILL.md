@@ -85,6 +85,16 @@ plan surfaces at `/plan/<slug>`.
    committed by the developer — never commit one yourself. A `waiver` is for
    an increment nothing executable or observable can prove (docs only), and
    says why.
+
+   **Then ask which increments deserve a lookout review**, and whether the
+   full delivery does: one `AskUserQuestion` with `multiSelect` over the
+   increments (each option the increment's title and what it touches), and
+   one with the delivery as a yes or no — a review of every increment's
+   work together, after the last one, that the plan cannot close without.
+   Recommend from the risk (auth, data, contracts, cross-system seams lean
+   yes; docs and scaffolding lean no); the human decides. Record the answer
+   as `review.increments` and `review.delivery`; render refuses a spec
+   without them.
 5. **Write the spec** — a single JSON file (shape below, reference:
    `examples/example.spec.json`). Write it in the scratchpad; `render` archives it.
 6. **`deep-plan render <spec.json> --root <worktree>`** — refuse-first renderer.
@@ -184,18 +194,31 @@ plan surfaces at `/plan/<slug>`.
      what you actually observed, not that you looked — the note is the only
      durable evidence. Passing a recipe-backed check by hand is refused
      without `--force`, which is logged; use it only when the human says to.
-   - **A review check is lookout's verdict** (opt-in: the deliverable
-     declares `{ "kind": "review" }`). Its command is synthesized — `lookout
+   - **A review check is lookout's verdict.** Every increment the human
+     chose in `review.increments` carries one (a deliverable may also
+     declare `{ "kind": "review" }`). Its command is synthesized — `lookout
      gate --plan <slug> --inc <n>` — and it passes when no blocker or major
-     finding is open on the increment's review. Before `check run`:
-     `deep-plan review <slug> <n>` opens the review (with the plan's
-     `review.agentMayClose`), then spawn ONE fresh reviewer subagent whose
-     prompt is `lookout prompt <slug>-inc<n>`. Fix what it finds and `lookout
+     finding is open on the increment's review. With no reviewer yet,
+     `check run` opens the review itself (with the plan's
+     `review.agentMayClose` and `review.quiz`) and ends with `review: spawn a reviewer —
+     lookout prompt <slug>-inc<n>`: then spawn ONE fresh reviewer subagent
+     whose prompt is that command's output, and run the check again
+     (`deep-plan review <slug> <n>` opens it by hand). Fix what it finds and `lookout
      address` each finding; the HUMAN resolves or dismisses on the page, and
      only then does the check pass. Never pass it by hand, and never close
      findings yourself unless the plan set `review.agentMayClose`. Like any
      check it goes stale after an edit: re-run it (it reads statuses; it
      does not re-review — say when a fix deserves a second reviewer).
+   - **The delivery review** (`review.delivery: true`): when the last
+     increment is done the plan enters a `delivery` phase instead of
+     finishing. Run `deep-plan deliver <slug>`: with no reviewer yet it
+     opens lookout's review of every increment's work together (since the
+     first increment's start sha; its brief carries every increment's
+     description) and ends with `review: spawn a reviewer — lookout prompt
+     <slug>-delivery`. Spawn ONE fresh reviewer, fix and `lookout address`
+     what it finds, and run `deliver` again; it completes the plan once the
+     human has closed every blocker and major. The gate stays open in this
+     phase, so fixes need no `go`.
    - `done --force` overrides the whole gate and writes that to the log; use
      it only when the human says to, and say that you did. `deep-plan reset`
      on an increment returns every verdict to `pending` — a check passed
@@ -232,7 +255,8 @@ plan surfaces at `/plan/<slug>`.
                         "note": "optional" }],
                       "waiver": "only when nothing can prove it: why",
                       "commits": ["sha subject", { "sha": "...", "subject": "..." }] }],
-  "review":        { "agentMayClose": false, "quiz": false },
+  "review":        { "increments": [1, 3], "delivery": true,
+                     "agentMayClose": false, "quiz": false },
   "nonGoals":      ["what this plan deliberately does not do"],
   "verification":  ["runnable commands"],
   "commits":       ["plan-wide record of what landed (same two shapes)"],
@@ -248,8 +272,15 @@ review"; one per deliverable): deep-plan runs `lookout gate` for it.
 Top-level `review.agentMayClose` (default false) is decided with the human
 at interrogation time: true lets the agent resolve and dismiss findings too,
 instead of only replying and marking them addressed. `review.quiz` (default
-false) opens each increment's review with lookout's ownership quiz: a
-question before each high-risk group's note. It never gates.
+false) opens each review with lookout's ownership quiz: a question before
+each high-risk group's note. It never gates.
+
+`review.increments` and `review.delivery` are required, and are the human's
+answer to a planning question (step 4): which increments get a lookout
+review (a list of numbers, `"all"` or `"none"`; each listed increment
+carries a review check), and whether the full delivery does (`true` puts
+the plan in a `delivery` phase after its last increment, closed by
+`deep-plan deliver`). Render refuses a spec that does not say.
 
 A parent plan (see Families) adds one block, and a child plan adds nothing:
 

@@ -95,6 +95,7 @@
       ]
     }
   ],
+  "review": { "increments": "none", "delivery": false },
   "verification": [
     "npx playwright test e2e/sign-in.spec.ts"
   ],

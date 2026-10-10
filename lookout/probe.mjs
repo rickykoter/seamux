@@ -533,6 +533,17 @@ const R1 = repo("r1");
   ok("prompt: carries the patch, the plan increment, the rubric, the schema and the ingest command",
      br.includes(S.paths(pid).patch) && br.includes("The increment sets b to 3.") && /security —/.test(br) &&
      br.includes('"failure_scenario"') && br.includes(`lookout findings add ${pid} `));
+  // The full delivery: --inc all is <slug>-delivery, and its brief carries
+  // every increment's description.
+  fs.writeFileSync(path.join(TMP, "demo-plan.cutover", "01-make-a-one.md"), "# Make a one\nThe first increment keeps a at 1.\n");
+  const did = JSON.parse(cli(R4, "open", "--plan", "demo-plan", "--inc", "all", "--base", "HEAD", "--json").stdout).id;
+  const dbr = cli(R4, "prompt", did).stdout;
+  ok("plan: --inc all is the full delivery's review, gated by --inc all",
+     did === "demo-plan-delivery" && S.read(did).source.inc === "all" && /the full delivery/.test(S.read(did).title) &&
+     gate("--plan", "demo-plan", "--inc", "all").status === 3);
+  ok("prompt: the delivery brief carries every increment, in order",
+     /the plan it delivers, every increment/.test(dbr) && dbr.indexOf("keeps a at 1") >= 0 &&
+     dbr.indexOf("keeps a at 1") < dbr.indexOf("sets b to 3"));
   const bs = cli(R4, "prompt", id).stdout;
   ok("prompt: standalone has no plan section and names the prior findings", !/plan increment it implements/.test(bs) &&
      /already has 3 finding/.test(bs));
