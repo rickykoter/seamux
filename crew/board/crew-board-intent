@@ -435,7 +435,7 @@ REVIEWS = os.path.join(PLANS, "reviews")
 LOOKOUT_POINTER = os.path.join(os.path.expanduser("~"), ".claude", "lookout", "engine.json")
 REVIEW_MAX_BODY = 64 * 1024
 REVIEW_MAX_TEXT = 4000
-REVIEW_OPS = ("comment", "resolve", "dismiss", "reopen")
+REVIEW_OPS = ("comment", "resolve", "dismiss", "reopen", "answer")
 LOCK_STALE = 10.0
 
 
@@ -517,7 +517,24 @@ def review_apply(rid, body):
             findings = review.setdefault("findings", [])
             threads = review.setdefault("threads", [])
             item, kind = None, None
-            if item_id:
+            if op == "answer":
+                # The ownership quiz (lookout's notes): one multiple-choice
+                # question per note, graded here against the stored answer
+                # and recorded once, as the human's. It never gates anything.
+                if not (review.get("policy") or {}).get("quiz"):
+                    return 400, {"error": "this review has no quiz"}
+                note = next((n for n in review.get("notes") or [] if n.get("id") == item_id), None)
+                quiz = note.get("quiz") if note else None
+                if not isinstance(quiz, dict):
+                    return 404, {"error": "no question on note " + item_id}
+                pick = body.get("pick")
+                options = quiz.get("options") or []
+                if not isinstance(pick, int) or isinstance(pick, bool) or not 0 <= pick < len(options):
+                    return 400, {"error": "pick is an option's index as written"}
+                if quiz.get("answered"):
+                    return 409, {"error": "already answered", "review": review}
+                quiz["answered"] = {"pick": pick, "correct": pick == quiz.get("answer"), "at": _iso_now(), "by": "human"}
+            elif item_id:
                 item = next((f for f in findings if f.get("id") == item_id), None)
                 kind = "finding" if item else None
                 if item is None:
@@ -546,7 +563,7 @@ def review_apply(rid, body):
                     _message(t["messages"], text)
                     threads.append(t)
                     item_id = t["id"]
-            else:
+            elif op != "answer":
                 if item is None:
                     return 400, {"error": op + " needs an item"}
                 to = {"resolve": "resolved", "dismiss": "dismissed", "reopen": "open"}[op]

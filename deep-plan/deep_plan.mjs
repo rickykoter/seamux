@@ -253,8 +253,8 @@ function validate(spec, force) {
   }
 
   if (spec.review !== undefined && (typeof spec.review !== "object" || spec.review === null || Array.isArray(spec.review) ||
-      (spec.review.agentMayClose !== undefined && typeof spec.review.agentMayClose !== "boolean")))
-    errs.push('review: an object, e.g. { "agentMayClose": true }');
+      ["agentMayClose", "quiz"].some(k => spec.review[k] !== undefined && typeof spec.review[k] !== "boolean")))
+    errs.push('review: an object of booleans, e.g. { "agentMayClose": true, "quiz": true }');
   if (errs.length && !force) {
     console.error("deep-plan: spec refused —");
     for (const e of errs) console.error("  ✗ " + e);
@@ -282,6 +282,17 @@ function reviewCheck(c, slug, n) {
 
 // lookout's engine: $LOOKOUT_ENGINE, else the root its pointer names. "" when
 // lookout is not installed.
+// The plan's review policy as lookout open flags: who may close findings,
+// and the ownership quiz (lookout's group notes). Both are fixed when the
+// review is created, so every open of a plan's review passes both.
+function reviewPolicy(slug) {
+  let spec = {};
+  try { spec = JSON.parse(fs.readFileSync(path.join(KEYS_DIR, slug + ".spec.json"), "utf8")); } catch { /* no spec: defaults */ }
+  const agent = !!(spec.review && spec.review.agentMayClose);
+  const quiz = !!(spec.review && spec.review.quiz);
+  return { agent, quiz, flags: [...(agent ? ["--agent-may-close"] : []), ...(quiz ? ["--quiz"] : [])] };
+}
+
 function lookoutRoot() {
   const ok = r => r && fs.existsSync(path.join(r, "lookout.mjs")) ? r : "";
   // Authoritative when set, even empty: the probe sets it so no test run ever
@@ -2760,8 +2771,12 @@ function checkRun(slug, n, ids, opts) {
     checksOf(findInc(fresh, n))[id] = { ...rest, status: res.status, at: Date.now(), by: "runner",
       note: res.note, ran: res.ran, ...(res.status === "pass" && tree ? { tree } : {}) };
     log1(fresh, `check ${res.status}: increment ${inc.n} ${id} — ${res.note}`);
-    writeState(fresh); rerenderWorking(slug);
+    // The pidfile goes before the verdict lands: whoever waits on the verdict
+    // (check wait, the pane) must never find a finished run's pidfile, and the
+    // re-render after the write is slow on a busy machine. A lost runner is
+    // judged by its pid, not by this file.
     try { if (own) fs.rmSync(pidFile(slug, n, id), { force: true }); } catch { /* gone */ }
+    writeState(fresh); rerenderWorking(slug);
     if (res.status === "pass") say(`✅ ${id} pass — ${res.note} (log: ${log})`);
     else {
       failed++;
@@ -3198,13 +3213,17 @@ switch (cmd) {
   }
   case "diff": {
     const st = readState(args[0]) || die("diff <slug> [n]");
+    const pol = reviewPolicy(st.slug);
     const inc = args[1] ? findInc(st, args[1])
       : (st.increments || []).filter(i => i.startSha).pop();
     if (!inc || !inc.startSha) die("no started increment with a recorded sha");
     // lookout's page when it is installed (risk-sorted, highlighted, the same
     // review the increment's review check reads); cmux diff otherwise.
+    // The same review the check reads, so it is opened with the plan's
+    // policy too: lookout fixes it when the review is created, and a diff
+    // viewed first must not create it without the quiz or the close rule.
     const r = runLookout(["open", "--plan", st.slug, "--inc", String(inc.n), "--base", inc.startSha,
-      "--at", st.root, "--view-only"], { cwd: st.root });
+      "--at", st.root, "--view-only", ...pol.flags], { cwd: st.root });
     if (r.ok) { say(r.out); break; }
     if (!r.missing) say(`lookout could not open it (${r.out.split("\n").pop()}); falling back to cmux diff`);
     incrementDiff(st, inc, { open: true }); break;
@@ -3217,15 +3236,14 @@ switch (cmd) {
       : (st.increments || []).filter(i => i.startSha).pop();
     if (!inc || !inc.startSha) die("no started increment with a recorded sha — its first edit records one, " +
       `or \`deep-plan start ${st.slug} ${args[1] || "<n>"}\``);
-    let spec = {};
-    try { spec = JSON.parse(fs.readFileSync(path.join(KEYS_DIR, st.slug + ".spec.json"), "utf8")); } catch { /* no spec: defaults */ }
-    const agent = !!(spec.review && spec.review.agentMayClose);
+    const { agent, quiz, flags } = reviewPolicy(st.slug);
     const r = runLookout(["open", "--plan", st.slug, "--inc", String(inc.n), "--base", inc.startSha, "--at", st.root,
-      ...(agent ? ["--agent-may-close"] : [])], { cwd: st.root });
+      ...flags], { cwd: st.root });
     if (!r.ok) die(r.out || "lookout open failed");
     say(r.out);
     say(`\nnext: spawn ONE reviewer subagent whose prompt is the output of\n  lookout prompt ${st.slug}-inc${inc.n}\n` +
-        `then: deep-plan check run ${st.slug} ${inc.n}` + (agent ? "\n(this plan lets the agent close findings too)" : ""));
+        `then: deep-plan check run ${st.slug} ${inc.n}` + (agent ? "\n(this plan lets the agent close findings too)" : "") +
+        (quiz ? "\n(this plan quizzes: the reviewer writes a question for each high-risk group)" : ""));
     break;
   }
   default: {

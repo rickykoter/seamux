@@ -331,6 +331,18 @@ const R1 = repo("r1");
   const shared = GR.edges(gf, { text: () => "", findings: [{ id: "f1", file: "src/app.js", summary: "breaks a/one.py on retry" }] }, ["shared-finding"]).edges;
   ok("edges: a finding naming another file links the two", shared.length === 1 && shared[0].b === "a/one.py");
 
+  {
+    // Reviewer edges merge after every rule's: a folder pair stays together
+    // even when a reviewer's chain would fill the group first.
+    const rf = ["d/a.js", "d/b.js", "c.js", "e.js", "f.js", "g.js", "h.js"].map(p => ({ path: p, risk: 0.5 }));
+    const chain = [["c.js", "e.js"], ["e.js", "f.js"], ["f.js", "g.js"], ["g.js", "h.js"], ["h.js", "d/a.js"]].map(([a, b]) => ({ a, b, why: "chain" }));
+    const re = GR.edges(rf, { reviewerEdges: chain }, ["same-dir", "reviewer"]).edges;
+    const ga = GR.group(rf, re).find(g => g.files.includes("d/a.js"));
+    // (Merged first, the chain would take d/a.js to six files and leave d/b.js.)
+    ok("groups: a reviewer edge never takes a file out of a rule's group", ga.files.includes("d/b.js"),
+       JSON.stringify(ga.files));
+  }
+
   // The whole open, against a mock client that logs every request it gets.
   const R3 = repo("r3");
   write(R3, "hooks/gate.sh", "#!/bin/sh\nexit 0\n");
@@ -528,6 +540,203 @@ const R1 = repo("r1");
   ok("page: findings and threads are in the drawn page", page.includes("b is wrong") && page.includes("why 2?"));
 }
 
+// ---------------------------------------------------------------- notes, edges, quiz
+{
+  const FD = await import("./lib/findings.mjs");
+  const N = await import("./lib/notes.mjs");
+  const one = { file: "a.js", line: 2, severity: "major", summary: "s", failure_scenario: "f" };
+  const po = FD.parseOutput(JSON.stringify({ findings: [one], edges: [{ a: "a", b: "b", why: "w" }], notes: [{ files: ["a"] }] }));
+  ok("output: the object form carries findings, edges and notes", po.findings.length === 1 && po.edges.length === 1 && po.notes.length === 1);
+  ok("output: a bare array is still findings only", FD.parseOutput(JSON.stringify([one])).notes.length === 0);
+  ok("output: an unfenced array in prose is the array, not its first finding",
+     FD.parseOutput("Here they are:\n" + JSON.stringify([one, one]) + "\nThat is all.").findings.length === 2);
+  let why = ""; try { FD.parseOutput(JSON.stringify({ notes: [{ files: ["a"], why_risky: "x" }] })); } catch (e) { why = e.message; }
+  ok("output: an object without a findings array is refused, never read as findings", /no findings array/.test(why), why);
+
+  const good = { prompt: "A request arrives with a cookie signed by the old key. What happens?",
+    options: ["it is rejected as unsigned", "it is accepted until it expires", "it is re-signed with the new key"], answer: 0,
+    why: "verify only knows the current key" };
+  ok("quiz lint: a balanced question passes", N.lintQuiz(good).length === 0, N.lintQuiz(good));
+  const lint = q => N.lintQuiz({ ...good, ...q }).join("; ");
+  ok("quiz lint: leading words", /leading word/.test(lint({ options: ["the correct one is this", "it is accepted until it expires", "it is re-signed with a key"] })));
+  ok("quiz lint: all/none of the above", /all\/none/.test(lint({ options: ["it is rejected as unsigned", "none of the above", "it is re-signed with the new key"], answer: 1 })));
+  ok("quiz lint: the answer may not be the single longest option",
+     /single longest/.test(lint({ options: ["it is rejected outright as an unsigned cookie", "it is accepted", "it is re-signed now"] })));
+  ok("quiz lint: lengths within 2.2x", /2\.2x/.test(lint({ options: ["no", "it is accepted until it expires", "it is re-signed with the new key"] })));
+  ok("quiz lint: no prompt echo unique to the answer", /echoes "rejected"/.test(lint({ prompt: "Is the cookie rejected?" })));
+  ok("quiz lint: an answer index off the end", /index options/.test(lint({ answer: 3 })));
+
+  const R8 = repo("r8");
+  write(R8, "src/auth/session.js", "export function verify(c) {\n  return check(c);\n}\n");
+  write(R8, "server/routes.js", "import { verify } from 'x';\n");
+  write(R8, "lib/money.js", "export const m = 1;\n");
+  write(R8, "lib/tax.js", "export const t = 1;\n");
+  write(R8, "docs/x.md", "# x\n");
+  sh(R8, `git add -A && ${G} commit -q -m base`);
+  write(R8, "src/auth/session.js", "export function verify(c) {\n  return c && check(c);\n}\nexport const MAX_AGE = 30;\n");
+  write(R8, "server/routes.js", "import { verify } from 'x';\napp.use(verify);\n");
+  write(R8, "lib/money.js", "export const m = 2;\n");
+  write(R8, "lib/tax.js", "export const t = 2;\n");
+  write(R8, "docs/x.md", "# x\nmore\n");
+  const id = JSON.parse(cli(R8, "open", "--worktree", "--quiz", "--id", "n8", "--json").stdout).id;
+  ok("quiz: --quiz is recorded in the policy, and every file has a hunk hash",
+     S.read(id).policy.quiz === true && S.read(id).files.every(f => /^[0-9a-f]{16}$/.test(f.hash)));
+  cli(R8, "open", "--worktree", "--id", "n8", "--json");
+  ok("quiz: a re-open without --quiz does not turn it off", S.read(id).policy.quiz === true);
+  cli(R8, "open", "--worktree", "--id", "n8b", "--json");
+  const re = cli(R8, "open", "--worktree", "--id", "n8b", "--quiz");
+  ok("quiz: a re-open with --quiz does not turn it on, and says so", S.read("n8b").policy.quiz === false && /does not add it/.test(re.stdout), re.stdout);
+  {
+    const R10 = repo("r10");
+    write(R10, ".seamux/lookout.json", '{"quiz": true}'); write(R10, "a.js", "1\n");
+    sh(R10, `git add -A && ${G} commit -q -m base`);
+    write(R10, "a.js", "2\n");
+    const rid = JSON.parse(cli(R10, "open", "--worktree", "--json").stdout).id;
+    ok("quiz: .seamux/lookout.json quiz: true is the repo's default", S.read(rid).policy.quiz === true);
+  }
+
+  const inFile = (name, obj) => { const f = path.join(TMP, name); fs.writeFileSync(f, JSON.stringify(obj)); return f; };
+  const base = { why_risky: "a forged cookie reaches every route", direction: "verification moves from each route to one middleware",
+                 watch: [{ text: "check() still throws on a bad signature", file: "src/auth/session.js", line: 2 }], touches: ["security-boundary"] };
+  const major = { file: "src/auth/session.js", line: 2, severity: "major", summary: "null cookie passes", failure_scenario: "c=null returns null, read as ok" };
+  const r1 = cli(R8, "findings", "add", id, inFile("n1.json", {
+    findings: [major],
+    edges: [{ a: "server/routes.js", b: "src/auth/session.js", why: "routes mount verify from session" },
+            { a: "nope.js", b: "lib/tax.js", why: "x" }, { a: "lib/tax.js", b: "docs/x.md", why: "" }],
+    notes: [
+      { ...base, files: ["src/auth/session.js"] },
+      { ...base, files: ["src/auth/session.js"], quiz: { ...good, options: ["it is rejected outright as an unsigned cookie", "it is accepted", "it is re-signed now"] } },
+      { ...base, files: ["lib/money.js"], touches: ["vibes"] },
+      { ...base, files: ["lib/money.js", "lib/tax.js"], watch: [{ text: "far away", file: "lib/tax.js", line: 40 }], touches: [], quiz: good },
+      { ...base, files: ["lib/money.js", "docs/x.md"], watch: [], touches: ["data-model"] },
+    ] }));
+  const v1 = S.read(id);
+  const authG = v1.groups.find(g => g.files.includes("src/auth/session.js"));
+  ok("edges: a reviewer edge joins two groups, and its why is on the rail",
+     authG.files.includes("server/routes.js") && authG.edges.some(e => e.provider === "reviewer" && e.why === "reviewer: routes mount verify from session"),
+     JSON.stringify(authG));
+  ok("edges: an unknown file and a missing why are rejected", (r1.stdout.match(/rejected edge/g) || []).length === 2 &&
+     /not in this review/.test(r1.stdout) && /why is required/.test(r1.stdout), r1.stdout);
+  ok("quiz: a high group's note without a question is rejected (the major made it high)",
+     authG.band === "high" && /g1 is a high group and the quiz is on/.test(r1.stdout), r1.stdout);
+  ok("quiz: a leaky question is rejected with the lint's reason", /quiz: the answer is the single longest/.test(r1.stdout), r1.stdout);
+  ok("notes: touches outside the four are rejected", /"vibes" is not one of invariant/.test(r1.stdout));
+  const nt = v1.notes.find(n => n.files.length === 2 && n.files.includes("lib/tax.js"));
+  ok("quiz: a question on a group that is not high is dropped, the note kept", nt && !nt.quiz && /only a high group gets a question/.test(r1.stdout));
+  ok("notes: a watch on a line the diff does not show is kept and flagged outside", nt && nt.watch[0].outside === true);
+  const np = v1.notes.find(n => n.files.includes("docs/x.md"));
+  ok("notes: a note whose files sit in two groups is partial", np && np.partial === true && np.group);
+  ok("notes: the owed list names the high group still without a question", /still owed: g1 \(high/.test(r1.stdout), r1.stdout);
+
+  const r2 = cli(R8, "findings", "add", id, inFile("n2.json", { findings: [major], notes: [{ ...base, files: ["src/auth/session.js"], quiz: good }] }));
+  const v2 = S.read(id);
+  const na = v2.notes.find(n => n.files.join() === "src/auth/session.js");
+  ok("notes: keyed by files, a one-file note lands on the group the reviewer's edge grew",
+     na && na.quiz && na.group === v2.groups.find(g => g.files.includes("server/routes.js")).id && !na.partial, JSON.stringify(na));
+  ok("findings add: a repeat finding is skipped, and nothing is owed now", /0 finding\(s\) added, 1 already there/.test(r2.stdout) &&
+     !/still owed: g1/.test(r2.stdout), r2.stdout);
+  ok("prompt: with the quiz on, the brief marks the high group and prints the quiz schema",
+     /g1 high\s+note \+ quiz/.test(cli(R8, "prompt", id).stdout) && cli(R8, "prompt", id).stdout.includes('"quiz"'));
+  ok("prompt: without it, no question is asked for", !cli(R8, "prompt", "n8b").stdout.includes('"quiz"') &&
+     !/note \+ quiz/.test(cli(R8, "prompt", "n8b").stdout));
+
+  // An answered question survives the reviewer re-writing the note.
+  S.update(id, cur => { cur.notes.find(n => n.id === na.id).quiz.answered = { pick: 1, correct: false, by: "human" }; return cur; });
+  cli(R8, "findings", "add", id, inFile("n3.json", { findings: [], notes: [{ ...base, files: ["src/auth/session.js"], direction: "new words",
+    quiz: { ...good, prompt: "A different question about the cookie?" } }] }));
+  const na3 = S.read(id).notes.find(n => n.id === na.id);
+  ok("notes: the same files replace the note's text but keep an answered question", na3.direction === "new words" &&
+     na3.quiz.prompt === good.prompt && na3.quiz.answered.pick === 1 && S.read(id).notes.filter(n => n.files.join() === "src/auth/session.js").length === 1);
+
+  cli(R8, "findings", "add", id, inFile("n3b.json", { findings: [], notes: [{ ...base, files: ["src/auth/session.js", "server/routes.js"],
+    direction: "the whole group", quiz: { ...good, prompt: "Yet another question about the cookie?" } }] }));
+  const grown = S.read(id).notes.filter(n => n.files.includes("src/auth/session.js"));
+  ok("notes: a note on a grown group replaces the notes it covers, keeping the id and the answered question",
+     grown.length === 1 && grown[0].id === na.id && grown[0].direction === "the whole group" && grown[0].quiz.answered.pick === 1, JSON.stringify(grown));
+  write(R8, "lib/tax.js", "export const t = 3;\n");
+  cli(R8, "open", "--worktree", "--id", "n8", "--json");
+  const v4 = S.read(id);
+  ok("stale: a note goes stale when one of its files' hunks change, and only that note",
+     v4.notes.find(n => n.id === nt.id).stale === true && v4.notes.find(n => n.id === na.id).stale === false);
+  ok("stale: notes and reviewer edges survive the re-open", v4.notes.length === 3 && v4.reviewerEdges.length === 1);
+  cli(R8, "findings", "add", id, inFile("n4.json", { findings: [], notes: [{ ...base, files: ["lib/tax.js", "lib/money.js"], watch: [], touches: [] }] }));
+  ok("stale: re-writing the note refreshes it", S.read(id).notes.find(n => n.id === nt.id).stale === false);
+
+  const all = cli(R8, "findings", "add", id, inFile("n5.json", { findings: [{ ...major, file: "/abs" }], notes: [{ ...base, files: ["docs/x.md"] }] }));
+  ok("findings add: every finding rejected changes nothing, notes or not", all.status === 1 &&
+     !S.read(id).notes.some(n => n.files.join() === "docs/x.md"));
+
+  // Plan drift: a finding only a plan review can have, always major or worse.
+  const drift = { ...major, category: "plan-drift", severity: "minor", summary: "verify moved to middleware; the increment keeps it per route" };
+  const sd = cli(R8, "findings", "add", "n8b", inFile("n6.json", { findings: [drift] }));
+  ok("drift: a standalone review refuses plan-drift", sd.status === 1 && /plan-drift needs a plan increment/.test(sd.stdout), sd.stdout);
+  fs.mkdirSync(path.join(TMP, "drift-plan.cutover"), { recursive: true });
+  fs.writeFileSync(path.join(TMP, "drift-plan.cutover", "01-verify-per-route.md"), "# Verify per route\nEach route calls verify itself.\n");
+  const pid = JSON.parse(cli(R8, "open", "--plan", "drift-plan", "--inc", "1", "--worktree", "--json").stdout).id;
+  cli(R8, "findings", "add", pid, inFile("n7.json", { findings: [drift], notes: [{ ...base, files: ["src/auth/session.js"] }] }));
+  const dv = S.read(pid);
+  ok("drift: in a plan review it is raised to major and holds the gate",
+     dv.findings[0].severity === "major" && dv.findings[0].category === "plan-drift" && cli(R8, "gate", pid).status === 1);
+  ok("drift: the note on its file lists it", dv.notes[0].drift.includes(dv.findings[0].id));
+  ok("drift: the brief of a plan review asks for it, a standalone one does not",
+     /category "plan-drift"/.test(cli(R8, "prompt", pid).stdout) && !/plan-drift/.test(cli(R8, "prompt", "n8b").stdout));
+
+  // The cap: a reviewer linking eight files in a chain still makes groups of six or fewer.
+  const R9 = repo("r9");
+  const names = "abcdefgh".split("").map((c, i) => `${c}/m${i}.js`);
+  for (const n of names) write(R9, n, "1\n");
+  sh(R9, `git add -A && ${G} commit -q -m base`);
+  for (const n of names) write(R9, n, "2\n");
+  const cid = JSON.parse(cli(R9, "open", "--worktree", "--json").stdout).id;
+  const chain = names.slice(1).map((n, i) => ({ a: names[i], b: n, why: "one chain" }));
+  const cr = cli(R9, "findings", "add", cid, inFile("n8.json", { findings: [], edges: chain }));
+  const big = Math.max(...S.read(cid).groups.map(g => g.files.length));
+  ok("edges: reviewer edges stay under the six-file cap", /7 edge\(s\)/.test(cr.stdout) && big === (await import("./lib/group.mjs")).MAX_GROUP, `${big} ${cr.stdout}`);
+  S.update(cid, cur => { cur.scoring.providers = cur.scoring.providers.filter(n => n !== "reviewer"); delete cur.scoring.providersFromConfig; return cur; });
+  cli(R9, "sync", cid);
+  {
+    // The page: the notes travel in its data, and its script draws them.
+    const html = fs.readFileSync(S.paths(id).html, "utf8");
+    const js = fs.readFileSync(path.join(HERE, "page", "review.js"), "utf8");
+    const tpl = fs.readFileSync(path.join(HERE, "page", "review.html"), "utf8");
+    ok("page: the drawn page carries the notes and the quiz policy",
+       html.includes(base.why_risky) && html.includes('"quiz":true') && html.includes(good.prompt));
+    ok("page: an Overview it opens on when there are notes, toggled by o and the header button",
+       /function drawOverview\(/.test(js) && /notesOf\(\)\.length\) openOverview\(\);/.test(js) &&
+       js.includes('e.key === "o"') && tpl.includes('id="ov-btn"'));
+    ok("page: a question hides its note only on a served page with the quiz on, until answered",
+       /const asking = n => quizOn\(\) && served\(\) && n\.quiz && !n\.quiz\.answered;/.test(js) &&
+       /asking\(n\) \? quizBlock\(n\) :/.test(js));
+    ok("page: a file shows its group's note as a strip above the diff, and watch items go to their lines",
+       js.includes("strip(f.path),") && /function goToLine\(/.test(js) && js.includes("tr.line[data-${side"));
+    ok("page: opened as a file with the quiz on, it says the quiz needs crew's server",
+       js.includes("which needs crew's intent server to record answers"));
+  }
+  ok("edges: a review opened before the reviewer provider still draws reviewer edges", Math.max(...S.read(cid).groups.map(g => g.files.length)) === 6);
+  S.update(cid, cur => { cur.scoring.providersFromConfig = true; return cur; });
+  cli(R9, "sync", cid);
+  ok("edges: a repo's edgeProviders without reviewer ignores the reviewer's edges", Math.max(...S.read(cid).groups.map(g => g.files.length)) === 1);
+  ok("edges: and findings add says they are stored but not drawn",
+     /stored but not drawn/.test(cli(R9, "findings", "add", cid, inFile("n9.json", { findings: [], edges: chain.slice(0, 1) })).stdout));
+
+  // A review opened before hashes existed: a note written now is not stale.
+  const hid = JSON.parse(cli(R9, "open", "--worktree", "--id", "r9-nohash", "--json").stdout).id;
+  S.update(hid, cur => { for (const f of cur.files) delete f.hash; return cur; });
+  cli(R9, "findings", "add", hid, inFile("n10.json", { findings: [], notes: [{ ...base, files: [names[0]], watch: [], touches: [] }] }));
+  ok("stale: a file with no hash is unknown, not changed", S.read(hid).notes[0].stale === false);
+
+  // A binary file's blob ids stand in for the hunks it does not have.
+  const R11 = repo("r11");
+  fs.writeFileSync(path.join(R11, "img.bin"), Buffer.from([0, 1, 2, 0, 255]));
+  sh(R11, `git add -A && ${G} commit -q -m base`);
+  fs.writeFileSync(path.join(R11, "img.bin"), Buffer.from([0, 1, 3, 0, 255]));
+  const bid = JSON.parse(cli(R11, "open", "--worktree", "--json").stdout).id;
+  const h1 = S.read(bid).files[0].hash;
+  fs.writeFileSync(path.join(R11, "img.bin"), Buffer.from([0, 9, 3, 0, 255]));
+  cli(R11, "open", "--worktree", "--json");
+  ok("stale: a binary file that changes again gets a new hash", S.read(bid).files[0].binary && h1 !== S.read(bid).files[0].hash);
+}
+
 // ---------------------------------------------------------------- comments hook
 {
   const R7 = repo("r7");
@@ -567,6 +776,26 @@ const R1 = repo("r1");
   ok("hook: garbage on stdin never fails the prompt",
      spawnSync("bash", [path.join(HERE, "hooks", "comments.sh")], { encoding: "utf8", env: ENV, input: "{not json" }).status === 0);
 
+  // Quiz answers (recorded by crew's server): a wrong one reaches the
+  // session once, with the question, the pick, the expected answer and why;
+  // a right one never does.
+  S.update(id, cur => {
+    const q = (prompt, answer, pick) => ({ prompt, options: ["it throws", "it is cached", "it is ignored"], answer, why: "db is never imported",
+      answered: { pick, correct: pick === answer, at: new Date().toISOString(), by: "human" } });
+    cur.policy = { ...cur.policy, quiz: true };
+    cur.notes = [{ id: "n1", files: ["a.js"], group: "g1", why_risky: "w", direction: "d", watch: [], touches: [], quiz: q("What happens with a code?", 0, 2) },
+                 { id: "n2", files: ["a.js"], group: "g1", why_risky: "w", direction: "d", watch: [], touches: [], quiz: q("And without one?", 1, 1) }];
+    return cur;
+  });
+  const qctx = (() => { try { return JSON.parse(hook(R7).stdout).hookSpecificOutput.additionalContext; } catch { return ""; } })();
+  ok("hook: a wrong quiz answer names the question, the pick, the expected answer and why",
+     qctx.includes('n1 quiz (g1: a.js): the human answered "it is ignored" to "What happens with a code?"; the code says "it throws" — db is never imported') &&
+     /explain it from the code/.test(qctx), qctx);
+  ok("hook: a right answer is never delivered", !qctx.includes("And without one?") && !qctx.includes("n2 quiz"));
+  ok("hook: the wrong answer is delivered once", hook(R7).stdout === "");
+  S.update(id, cur => { cur.notes = [{ ...cur.notes[0], id: "n7" }]; return cur; });
+  ok("hook: an answered question carried onto another note by a merge is not delivered again", hook(R7).stdout === "");
+
   // sync re-ranks after a page close: a resolved major stops lifting its file.
   S.update(id, cur => { FD.setStatus(cur, "f1", "open", "human"); return cur; });
   cli(R7, "sync", id);
@@ -575,6 +804,7 @@ const R1 = repo("r1");
   cli(R7, "sync", id);
   ok("sync: re-ranks after a close made outside the CLI", S.read(id).files[0].risk < before);
   const page = fs.readFileSync(path.join(HERE, "page", "review.js"), "utf8");
+  ok("page: a served page answers through op answer", page.includes('send({ op: "answer", item: n.id, pick }, status)'));
   ok("page: has the served mode (serve, polling, POST)", /function serve\(/.test(page) && page.includes('method: "POST"') &&
      page.includes(".json?t="));
 }

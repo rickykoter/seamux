@@ -108,14 +108,17 @@ export function patchHash(text) {
 
 // A fresh review from an open, folded onto the one already stored under the
 // id: the source, files and patch are replaced; what people said (findings,
-// threads) and how the review was opened (policy, createdAt) are kept.
+// threads, the reviewer's notes and edges) and how the review was opened
+// (policy, createdAt) are kept. A note whose files changed is marked stale on
+// the next arrange, not dropped.
 export function merge(cur, fresh) {
   if (!cur) return { version: STORE_VERSION, createdAt: new Date().toISOString(),
-                     findings: [], threads: [], groups: [], scoring: null, ...fresh };
+                     findings: [], threads: [], notes: [], reviewerEdges: [], groups: [], scoring: null, ...fresh };
   return { ...cur, ...fresh, version: STORE_VERSION, createdAt: cur.createdAt,
            findings: cur.findings || [], threads: cur.threads || [],
+           notes: cur.notes || [], reviewerEdges: cur.reviewerEdges || [],
            // The policy is the one the review was created with (see the
-           // --agent-may-close refusal in lookout.mjs).
+           // --agent-may-close refusal and --quiz in lookout.mjs).
            policy: cur.policy || fresh.policy || {},
            // A score cache is only good for the patch it scored; one the open
            // just computed wins.

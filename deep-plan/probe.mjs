@@ -2496,12 +2496,24 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     encoding: "utf8", env: ENV,
     input: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: target }, cwd, session_id: session }),
   });
-  const timeEdits = () => {
+  // The guard's cost: an edit in a family member against an edit outside
+  // every family, taken alternately at the same moment (so the state the
+  // gate scans is the same for both), each side's fastest of 15. One hook
+  // call is a process spawn of 50-70 ms; a mean of a few is mostly a shared
+  // runner's scheduling, while the fastest call still carries any real work.
+  const once = (target, cwd) => {
     const t = process.hrtime.bigint();
-    for (let i = 0; i < 10; i++) gateAs("timing", path.join(UI, "web", "login", "form.tsx"));
-    return Number(process.hrtime.bigint() - t) / 10e6;
+    gateAs("timing", target, cwd);
+    return Number(process.hrtime.bigint() - t) / 1e6;
   };
-  const famless = timeEdits();
+  const guardCost = () => {
+    const fam = [], out = [];
+    for (let i = 0; i < 15; i++) {
+      fam.push(once(path.join(UI, "web", "login", "form.tsx"), UI));
+      out.push(once(path.join(REPO, "x.txt"), REPO));
+    }
+    return { fam: Math.min(...fam), out: Math.min(...out) };
+  };
   const before = fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "example-auth-ui.json"), "utf8");
 
   const withDocs = { ...fam, workstreams: [...fam.workstreams, { slug: "example-docs", owns: ["README.md"] }] };
@@ -2579,9 +2591,9 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     ok("each told trespass is recorded once",
       log.length === 3 && log[0].from === "example-auth-ui" && log[0].owner === "example-auth-api" &&
       log[0].path === "api/auth/session.ts" && log[0].session === "s1" && log[1].session === "s2");
-    const withFamily = timeEdits();
-    console.log(`\n  family guard: ${(withFamily - famless).toFixed(1)} ms/edit over the same edit with no family (${famless.toFixed(1)} → ${withFamily.toFixed(1)})`);
-    ok("the family guard costs under 15 ms per edit", withFamily - famless < 15);
+    const cost = guardCost();
+    console.log(`\n  family guard: ${(cost.fam - cost.out).toFixed(1)} ms/edit over an edit outside every family (${cost.out.toFixed(1)} → ${cost.fam.toFixed(1)}, fastest of 15 each)`);
+    ok("the family guard costs under 15 ms per edit", cost.fam - cost.out < 15);
   }
 
   // Sequencing: a child whose workstream names parent increments in `after`
@@ -2835,6 +2847,20 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   lc(LENV, "review", "rv-2", "1");
   ok("spec review.agentMayClose reaches the review's policy",
     JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-2-inc1.json"), "utf8")).policy.agentMayClose === true);
+  ok("spec review.quiz must be a boolean", /review: an object of booleans/.test(bad([{ kind: "review" }], { review: { quiz: "yes" } }).stderr));
+  ok("a review without review.quiz has the quiz off",
+    JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-2-inc1.json"), "utf8")).policy.quiz === false);
+  arm("rv-q", [{ kind: "review" }], { review: { quiz: true } });
+  fs.writeFileSync(path.join(RV, "src", "a.ts"), "export const a = 4;\n");
+  // A diff viewed first creates the review: with the plan's quiz, since a
+  // re-open cannot add it later.
+  lc(LENV, "diff", "rv-q", "1");
+  ok("deep-plan diff opened first still creates the review with the plan's quiz",
+    JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-q-inc1.json"), "utf8")).policy.quiz === true);
+  r = lc(LENV, "review", "rv-q", "1");
+  const qv = JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-q-inc1.json"), "utf8"));
+  ok("spec review.quiz opens a quizzed review, and says the reviewer owes questions",
+    r.status === 0 && qv.policy.quiz === true && qv.policy.agentMayClose === false && /this plan quizzes/.test(r.stdout), r.stdout + r.stderr);
   r = lc({ ...LENV, LOOKOUT_ENGINE: path.join(TMP, "no-lookout-here") }, "check", "run", "rv-2", "1", "review-code-review");
   ok("review check: without lookout it fails with the install hint",
     r.status === 1 && /lookout is not installed/.test(ck("rv-2", "review-code-review").note));

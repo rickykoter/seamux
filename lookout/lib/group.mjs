@@ -12,7 +12,7 @@
 // in `.seamux/lookout.json` "edgeProviders"; the grouping, the store and the
 // page do not change.
 //
-// ctx: { text(path) -> the file's new-side text or "", findings }.
+// ctx: { text(path) -> the file's new-side text or "", findings, reviewerEdges }.
 import path from "node:path";
 
 export const LINK_WEIGHT = 0.5;
@@ -144,8 +144,26 @@ const sameDir = {
   },
 };
 
-export const PROVIDERS = { references, "test-pair": testPair, "shared-finding": sharedFinding, "same-dir": sameDir };
-export const DEFAULT_PROVIDERS = ["references", "test-pair", "shared-finding", "same-dir"];
+// Links the reviewer proposed (lookout findings add, `edges`), each with its
+// why. At the link threshold and ranked after every rule, so they are merged
+// last: under the cap the rules fill each group first, and a reviewer edge
+// only joins what is left, never taking a file out of a rule's group.
+const REVIEWER_WEIGHT = LINK_WEIGHT;
+const reviewer = {
+  name: "reviewer",
+  needsText: false,
+  edges(files, ctx) {
+    const have = new Set(files.map(f => f.path));
+    return (ctx.reviewerEdges || []).filter(e => have.has(e.a) && have.has(e.b))
+      .map(e => ({ a: e.a, b: e.b, weight: REVIEWER_WEIGHT, why: "reviewer: " + e.why }));
+  },
+};
+
+export const PROVIDERS = { references, "test-pair": testPair, "shared-finding": sharedFinding, "same-dir": sameDir, reviewer };
+export const DEFAULT_PROVIDERS = ["references", "test-pair", "shared-finding", "same-dir", "reviewer"];
+// Providers that read the review as it is now rather than the files' text:
+// arrange reruns them on every change.
+export const LIVE_PROVIDERS = ["shared-finding", "reviewer"];
 
 // Run the named providers. Unknown names are skipped and reported, never fatal.
 export function edges(files, ctx, names = DEFAULT_PROVIDERS) {
@@ -167,7 +185,7 @@ export function edges(files, ctx, names = DEFAULT_PROVIDERS) {
 // whole change. Groups sort by their riskiest file; files within a group by
 // risk, then path. Each group keeps the edges inside it, for the page's rail.
 export const MAX_GROUP = 6;
-const RANK = { "test-pair": 0, references: 1, "shared-finding": 2, "same-dir": 3 };
+const RANK = { "test-pair": 0, references: 1, "shared-finding": 2, "same-dir": 3, reviewer: 4 };
 export function group(files, allEdges) {
   const parent = new Map(files.map(f => [f.path, f.path]));
   const size = new Map(files.map(f => [f.path, 1]));

@@ -6,6 +6,21 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **lookout: group notes, and an optional quiz before them.** The reviewer
+  now writes one object: its findings, links between files the grouping
+  rules missed (one more edge provider, `reviewer`, under the six-file cap),
+  and a note per risky group saying why it is risky, the direction it takes
+  the design, what to watch at which lines, and which fundamentals it
+  touches. Notes are keyed by their files, so they follow a regroup, and
+  are marked stale when those files change. The page opens on an Overview
+  of every group riskiest first (`o`), and each file shows its group's note
+  above the diff. `lookout open --quiz`, a repo's `.seamux/lookout.json`
+  `quiz`, or a plan's `review.quiz` asks one linted multiple-choice question
+  per high-risk group and hides its note until answered; crew's intent
+  server records answers (op `answer`), the comments hook hands wrong ones
+  to the agent, and nothing gates on it. In a plan review a `plan-drift`
+  finding is always major.
+
 - **lookout: a code review you and the agent hold in a browser tab.** A new
   plugin. `lookout open` shows a diff (this branch against its base, the
   working tree, a range or a patch file) beside the terminal in VS Code's

@@ -767,14 +767,35 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
   };
   fs.writeFileSync(join(reviews, "demo.json"), JSON.stringify(review));
   fs.writeFileSync(join(reviews, "demo.html"), "<!doctype html><html><body><p>page</p></body></html>");
-  const port = await new Promise(res => { const s = net.createServer(); s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => res(p)); }); });
+  // A review with the ownership quiz on: two notes with questions, answered
+  // through op answer and graded against the stored answer.
+  const q = (prompt, answer) => ({ prompt, options: ["one", "two", "three"], answer, why: "because" });
+  fs.writeFileSync(join(reviews, "quiz.json"), JSON.stringify({
+    id: "quiz", title: "quiz", updatedAt: "2026-01-01T00:00:00.000Z", policy: { quiz: true },
+    files: [{ path: "a.js" }], findings: [], threads: [],
+    notes: [{ id: "n1", files: ["a.js"], quiz: q("first?", 1) }, { id: "n2", files: ["a.js"], quiz: q("second?", 2) },
+            { id: "n3", files: ["a.js"] }],
+  }));
+  const pinned = await new Promise(res => { const s = net.createServer(); s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => res(p)); }); });
   const srv = spawn("python3", [join(HERE, "crew-board-intent")],
-    { env: { ...process.env, HOME, CREW_INTENT_PORT: String(port) }, stdio: "ignore" });
+    { env: { ...process.env, HOME, CREW_INTENT_PORT: String(pinned) }, stdio: "ignore" });
   const tokenFile = join(HOME, ".cache", "cmux-crew", "board-intent.token");
-  for (let i = 0; i < 100 && !fs.existsSync(join(HOME, ".cache", "cmux-crew", "board-intent.port")); i++)
-    await new Promise(r => setTimeout(r, 50));
-  await new Promise(r => setTimeout(r, 150));
-  const token = fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, "utf8").trim() : "";
+  const portFile = join(HOME, ".cache", "cmux-crew", "board-intent.port");
+  // Up when it answers, on the port it wrote: the pin is a preference the
+  // server may fall back from, and a cold python on a CI runner can take
+  // seconds to start. Never a fixed sleep.
+  let port = 0;
+  const ping = p => new Promise(res => {
+    const r = http.request({ host: "127.0.0.1", port: p, method: "GET", path: "/review/demo" }, resp => { resp.resume(); res(true); });
+    r.on("error", () => res(false));
+    r.setTimeout(1000, () => { r.destroy(); res(false); });
+    r.end();
+  });
+  for (const deadline = Date.now() + 20000; Date.now() < deadline; await new Promise(r => setTimeout(r, 100))) {
+    const p = fs.existsSync(portFile) ? parseInt(fs.readFileSync(portFile, "utf8"), 10) : 0;
+    if (p && fs.existsSync(tokenFile) && await ping(p)) { port = p; break; }
+  }
+  const token = port && fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, "utf8").trim() : "";
   const ORIGIN = `http://127.0.0.1:${port}`;
   const req = (method, path, { headers = {}, body = null } = {}) => new Promise(res => {
     const r = http.request({ host: "127.0.0.1", port, method, path, headers }, resp => {
@@ -793,6 +814,7 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
   const store = () => JSON.parse(fs.readFileSync(join(reviews, "demo.json"), "utf8"));
   try {
     checks.push(["review route: the server came up under the temp HOME", !!token]);
+    if (!token) throw new Error("the intent server never answered; the review route checks are skipped");
     const page = await req("GET", "/review/demo");
     checks.push(["review route: the page is served with its token script before </body>",
       page.status === 200 && page.body.includes(`window.lookout.serve({ token: "${token}", id: "demo" })`) &&
@@ -835,6 +857,28 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
       s3.findings[0].status === "open" && s3.threads[0].status === "resolved"]);
     checks.push(["review POST: writes are atomic (no temp files left)",
       !fs.readdirSync(reviews).some(n => n.includes(".tmp-") || n.endsWith(".lock"))]);
+    // The quiz's answer op: refused without a quiz, a question or a usable
+    // pick; graded and recorded once, as the human's.
+    const qstore = () => JSON.parse(fs.readFileSync(join(reviews, "quiz.json"), "utf8"));
+    const ans = (o, path = "/review/quiz") => post({ op: "answer", t: token, ...o }, { path });
+    checks.push(["review POST answer: a review without the quiz refuses it",
+      (await ans({ item: "f1", pick: 0 }, "/review/demo")).status === 400]);
+    checks.push(["review POST answer: a note without a question, or no such note, is 404",
+      (await ans({ item: "n3", pick: 0 })).status === 404 && (await ans({ item: "n9", pick: 0 })).status === 404]);
+    checks.push(["review POST answer: the pick is an index as written (not a bool, a string, or off the end)",
+      (await ans({ item: "n1", pick: true })).status === 400 && (await ans({ item: "n1", pick: "1" })).status === 400 &&
+      (await ans({ item: "n1", pick: 3 })).status === 400 && (await ans({ item: "n1", pick: -1 })).status === 400 &&
+      !qstore().notes[0].quiz.answered]);
+    const wrong = await ans({ item: "n1", pick: 2 });
+    const a1 = qstore().notes[0].quiz.answered;
+    checks.push(["review POST answer: a wrong pick is graded and recorded as the human's",
+      wrong.status === 200 && a1 && a1.pick === 2 && a1.correct === false && a1.by === "human" && !!a1.at &&
+      JSON.parse(wrong.body).review.notes[0].quiz.answered.pick === 2]);
+    const again = await ans({ item: "n1", pick: 1 });
+    checks.push(["review POST answer: recorded once (a second answer is refused, the first kept)",
+      again.status === 409 && qstore().notes[0].quiz.answered.pick === 2]);
+    checks.push(["review POST answer: a right pick is graded right",
+      (await ans({ item: "n2", pick: 2 })).status === 200 && qstore().notes[1].quiz.answered.correct === true]);
     // A lock left by a crashed writer is broken once stale.
     const lock = join(reviews, "demo.lock");
     fs.mkdirSync(lock);
@@ -842,6 +886,8 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
     fs.utimesSync(lock, old, old);
     checks.push(["review POST: a stale lock is broken, not waited on",
       (await post({ op: "comment", t: token, item: "t1", text: "after a crash" })).status === 200 && !fs.existsSync(lock)]);
+  } catch (e) {
+    checks.push(["review routes ran to the end: " + e.message, false]);
   } finally {
     srv.kill();
     fs.rmSync(HOME, { recursive: true, force: true });

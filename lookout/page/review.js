@@ -158,6 +158,9 @@
     $("side-count").textContent = String((R.files || []).length);
     view === "risk" ? drawRisk() : drawPathTree();
     drawGhosts();
+    $("tree").prepend(el("div", { class: "row ov-row" + (overview ? " sel" : ""), onclick: () => openOverview() },
+      el("span", { class: "chev" }, "◇"), el("span", { class: "name" }, "Overview"),
+      notesOf().length ? el("span", { class: "counts" }, `${notesOf().length} note(s)`) : null));
   }
 
   // Files that left the diff (a fix reverted them) but still carry findings
@@ -179,7 +182,7 @@
       }));
   }
   for (const b of document.querySelectorAll("#view button"))
-    b.addEventListener("click", () => { view = b.dataset.view; store.set("lookout.view", view); drawSide(); select(current); });
+    b.addEventListener("click", () => { view = b.dataset.view; store.set("lookout.view", view); drawSide(); if (!overview) select(current); });
 
   const countsText = f => f.binary ? "bin" : `+${f.adds} −${f.dels}`;
 
@@ -255,11 +258,216 @@
   const threadRow = (list, span) => el("tr", { class: "thread-row" }, el("td", { colspan: span },
     el("div", { class: "threads" }, list.map(card))));
 
+  // ---------------------------------------------------------------- notes
+
+  // What the reviewer says each group MEANS (lib/notes.mjs): why it is risky,
+  // the direction it moves the design, what to check by hand, the
+  // fundamentals it touches. The Overview lists every group with its notes;
+  // a file shows its group's note as a strip above the diff.
+  //
+  // The quiz: with it on (policy.quiz), a note that carries a question shows
+  // the question first, its options shuffled, and the note only once the
+  // question is answered, so the reader meets the code before the agent's
+  // account of it. Answers are recorded by crew's server; opened as a file the
+  // page cannot record one, so it shows the notes and says so.
+  const notesOf = () => R.notes || [];
+  const TOUCH = { "invariant": "invariant", "security-boundary": "security boundary",
+                  "data-model": "data model", "cross-system-assumption": "cross-system assumption" };
+  const quizOn = () => !!(R.policy && R.policy.quiz);
+  // Served means asked: from http(s) even before serve() runs, so the first
+  // draw never shows a note its question should hide.
+  const served = () => !!live || /^https?:$/.test(location.protocol);
+  const asking = n => quizOn() && served() && n.quiz && !n.quiz.answered;
+  const groupOf = p => (R.groups || []).find(g => g.files.includes(p));
+  // The notes about a file: its group's, and a partial note that covers it
+  // from another group.
+  const notesFor = p => {
+    const g = groupOf(p);
+    return notesOf().filter(n => (g && n.group === g.id) || n.files.includes(p));
+  };
+  // A stable shuffle per note, so options do not move between redraws.
+  function order(n) {
+    let h = 2166136261;
+    for (const c of n.id + n.quiz.prompt) h = Math.imul(h ^ c.charCodeAt(0), 16777619);
+    const ix = n.quiz.options.map((_, i) => i);
+    for (let i = ix.length - 1; i > 0; i--) {
+      h = Math.imul(h ^ (h >>> 15), 2246822507) >>> 0;
+      const j = h % (i + 1);
+      [ix[i], ix[j]] = [ix[j], ix[i]];
+    }
+    return ix;
+  }
+  // Recording an answer is crew's server's (the `answer` op), set by serve();
+  // opened as a file the options cannot be picked.
+  let answer = null;
+
+  function marks(n) {
+    const others = n.partial ? [...new Set(n.files.map(p => groupOf(p)).filter(g => g && g.id !== n.group).map(g => g.id))] : [];
+    return [
+      n.stale ? el("span", { class: "nmark stale", title: "One of its files changed after the note was written; the reviewer has not looked again." }, "stale") : null,
+      n.partial ? el("span", { class: "nmark partial", title: "Its files are split across groups." }, "partial" + (others.length ? ": also " + others.join(", ") : "")) : null,
+    ];
+  }
+
+  function watchLink(w) {
+    return el("li", null, el("a", { href: "#", class: "wloc", onclick: e => { e.preventDefault(); goToLine(w.file, w.side || "new", w.line); } },
+      `${w.file.slice(w.file.lastIndexOf("/") + 1)}:${w.line}`), w.outside ? el("span", { class: "outside-tag", title: "a line the diff does not show" }, " outside") : null,
+      " ", w.text);
+  }
+
+  function noteBody(n) {
+    const drift = (n.drift || []).map(id => (R.findings || []).find(f => f.id === id)).filter(Boolean);
+    return el("div", { class: "note-body" },
+      el("div", { class: "nfield" }, el("div", { class: "nlabel" }, "Why it is risky"), el("div", null, n.why_risky)),
+      el("div", { class: "nfield" }, el("div", { class: "nlabel" }, "Direction"), el("div", null, n.direction)),
+      (n.watch || []).length ? el("div", { class: "nfield" }, el("div", { class: "nlabel" }, "Watch for"),
+        el("ul", { class: "watch" }, n.watch.map(watchLink))) : null,
+      drift.length ? el("div", { class: "nfield drift" }, el("div", { class: "nlabel" }, "Drift from the plan"),
+        el("ul", { class: "watch" }, drift.map(f => el("li", null,
+          el("a", { href: "#", class: "wloc", onclick: e => { e.preventDefault(); goTo(f.id); } }, f.id),
+          ` ${f.severity}${isOpen(f) ? "" : " (" + f.status + ")"} `, f.short_summary || f.summary)))) : null,
+      (n.touches || []).length ? el("div", { class: "touches" }, n.touches.map(t => el("span", { class: "touch" }, TOUCH[t] || t))) : null);
+  }
+
+  // A question in place of its note, or (answered) the result above the note.
+  function quizBlock(n) {
+    const q = n.quiz;
+    if (q.answered) {
+      const a = q.answered;
+      return el("div", { class: "quiz done " + (a.correct ? "right" : "wrong") },
+        el("div", { class: "qprompt" }, q.prompt),
+        el("div", null, "You answered: ", el("b", null, q.options[a.pick] ?? "?"),
+          a.correct ? " — right." : " — not what the code does."),
+        a.correct ? null : el("div", null, "Expected: ", el("b", null, q.options[q.answer])),
+        el("div", { class: "qwhy" }, q.why));
+    }
+    const status = el("span", { class: "send-status" });
+    const ix = order(n);
+    return el("div", { class: "quiz ask" },
+      el("div", { class: "qlead" }, "Before the note: answer from the code."),
+      el("div", { class: "qprompt" }, q.prompt),
+      el("div", { class: "qopts" }, ix.map((i, k) => el("button", {
+        type: "button", class: "qopt", disabled: !answer,
+        title: answer ? null : "this server cannot record answers yet",
+        onclick: () => answer && answer(n, i, status),
+      }, el("span", { class: "qkey" }, String.fromCharCode(97 + k)), " ", q.options[i]))),
+      status);
+  }
+
+  function noteCard(n) {
+    return el("div", { class: "note", "data-note": n.id },
+      el("div", { class: "note-head" }, el("span", { class: "nid" }, n.id),
+        el("span", { class: "nfiles" }, n.files.map(p => p.slice(p.lastIndexOf("/") + 1)).join(", ")), ...marks(n)),
+      asking(n) ? quizBlock(n) : [n.quiz && n.quiz.answered ? quizBlock(n) : null, noteBody(n)]);
+  }
+
+  // The strip above a file's diff: one line per note about it, expanding to
+  // the note; a question still waiting sends the reader to the Overview.
+  const stripOpen = new Set();
+  function strip(p) {
+    const ns = notesFor(p);
+    if (!ns.length) return "";
+    return el("div", { class: "strips" }, ns.map(stripOf));
+  }
+  // One strip; toggling it swaps only this element, so the diff below (and
+  // a comment being typed in it) is left alone.
+  function stripOf(n) {
+    if (asking(n))
+      return el("div", { class: "strip ask", onclick: () => openOverview(n.id) },
+        el("span", { class: "chev" }, "?"), el("span", { class: "sline" }, `${n.group || n.id}: a question waits before this note — answer it in the Overview`));
+    const openNow = stripOpen.has(n.id);
+    const node = el("div", { class: "strip" + (openNow ? " open" : "") },
+      el("div", { class: "strip-head", onclick: () => { openNow ? stripOpen.delete(n.id) : stripOpen.add(n.id); node.replaceWith(stripOf(n)); } },
+        el("span", { class: "chev" }, openNow ? "▾" : "▸"),
+        el("span", { class: "sgroup" }, n.group || n.id),
+        el("span", { class: "sline" }, n.direction), ...marks(n)),
+      openNow ? noteBody(n) : null);
+    return node;
+  }
+
+  // The architecture pass: every group, riskiest first, with its notes.
+  let overview = false;
+  function drawOverview() {
+    const groups = R.groups || [];
+    const ns = notesOf();
+    const waiting = ns.filter(asking).length;
+    const head = [el("span", { class: "path" }, "Overview"),
+      el("span", { class: "from" }, `${groups.length} group(s) · ${ns.length} note(s)` +
+        (quizOn() ? ` · quiz on${waiting ? `, ${waiting} to answer` : ""}` : ""))];
+    $("file-head").replaceChildren(...head);
+    const box = el("div", { class: "ov" });
+    if (quizOn() && !served())
+      box.append(el("div", { class: "ov-line" }, "This review has the quiz on, which needs crew's intent server to record answers. Opened as a file, the notes are shown in full."));
+    if (!R.reviewedAt) box.append(el("div", { class: "ov-line" }, "No reviewer has reported yet: groups are lookout's, and there are no notes."));
+    else if (!ns.length) box.append(el("div", { class: "ov-line" }, "The reviewer wrote no notes for this review."));
+    for (const g of groups) {
+      const files = g.files.map(p => byPath().get(p)).filter(Boolean);
+      const mine = ns.filter(n => n.group === g.id);
+      const band = g.band || bandOf(g.risk);
+      if (!mine.length && band === "low") continue;
+      const why = [...new Set((g.edges || []).map(e => e.why))];
+      box.append(el("section", { class: "ov-group band-" + band, "data-group": g.id },
+        el("div", { class: "ov-head" }, el("span", { class: "dot band-" + band }), el("span", { class: "gid" }, g.id),
+          el("span", { class: "gband" }, band),
+          el("span", { class: "gfiles" }, files.map(f => el("a", { href: "#", class: "gfile", title: f.path,
+            onclick: e => { e.preventDefault(); select(f.path); } }, f.path.slice(f.path.lastIndexOf("/") + 1), badge(f.path))))),
+        why.length ? el("div", { class: "ov-why" }, why.join(" · ")) : null,
+        mine.length ? mine.map(noteCard) : el("div", { class: "ov-none" }, "No note for this group.")));
+    }
+    const low = groups.filter(g => (g.band || bandOf(g.risk)) === "low" && !ns.some(n => n.group === g.id));
+    if (low.length)
+      box.append(el("div", { class: "ov-line" }, `${low.length} low-risk group(s) without notes: `,
+        ...low.flatMap(g => g.files).map((p, i) => [i ? ", " : "", el("a", { href: "#", class: "gfile",
+          onclick: e => { e.preventDefault(); select(p); } }, p.slice(p.lastIndexOf("/") + 1))])));
+    const lost = ns.filter(n => !n.group);
+    if (lost.length)
+      box.append(el("section", { class: "ov-group" }, el("div", { class: "ov-head" }, "Notes on files no longer in the diff"), lost.map(noteCard)));
+    $("diff").replaceChildren(box);
+  }
+
+  function openOverview(noteId) {
+    overview = true;
+    current = null;
+    try { history.replaceState(null, "", "#overview"); } catch { /* file:// in some hosts */ }
+    for (const r of document.querySelectorAll("#tree .row")) r.classList.remove("sel");
+    drawOverviewChrome();
+    drawOverview();
+    $("main").scrollTop = 0;
+    const c = noteId && document.querySelector(`[data-note="${CSS.escape(noteId)}"]`);
+    if (c) { c.scrollIntoView({ block: "center" }); c.classList.add("flash"); }
+  }
+  function drawOverviewChrome() {
+    $("ov-btn").setAttribute("aria-pressed", String(overview));
+    const row = document.querySelector("#tree .ov-row");
+    if (row) row.classList.toggle("sel", overview);
+  }
+  function toggleOverview() {
+    if (overview) select(lastFile && (R.files || []).some(f => f.path === lastFile) ? lastFile : ORDER[0] || null);
+    else openOverview();
+  }
+  $("ov-btn").addEventListener("click", toggleOverview);
+  const drawMain = () => overview ? drawOverview() : drawFile();
+
+  // A watch item's line: its file, uncollapsed, scrolled to the row.
+  function goToLine(p, side, line) {
+    if (!(R.files || []).some(f => f.path === p)) return;
+    select(p);
+    if ((R.files.find(f => f.path === p) || {}).collapsed && !opened.has(p)) { opened.add(p); drawFile(); }
+    const tr = document.querySelector(`#diff tr.line[data-${side === "old" ? "old" : "new"}="${line}"]`);
+    if (!tr) return;
+    tr.scrollIntoView({ block: "center" });
+    for (const o of document.querySelectorAll("tr.line.flash")) o.classList.remove("flash");
+    tr.classList.add("flash");
+  }
+
   // ---------------------------------------------------------------- diff
 
-  let current = null;
+  let current = null, lastFile = null;
   function select(p) {
     current = p;
+    if (p) lastFile = p;
+    overview = false;
+    drawOverviewChrome();
     if (!p) { drawFile(); return; }
     try { history.replaceState(null, "", "#file=" + encodeURIComponent(p)); } catch { /* file:// in some hosts */ }
     for (const r of document.querySelectorAll("#tree .row.file"))
@@ -372,7 +580,7 @@
     $("file-head").replaceChildren(...fileHead(f).filter(Boolean));
     const drawn = ROWS[f.path] || { note: "missing" };
     if (drawn.note || (f.collapsed && !opened.has(f.path))) {
-      $("diff").replaceChildren(notice(f, drawn));
+      $("diff").replaceChildren(strip(f.path), notice(f, drawn));
       return;
     }
     // An added or deleted file has one side; split would draw half a page of nothing.
@@ -381,6 +589,7 @@
     const useSplit = layout === "split" && !narrow() && !oneSided;
     const anch = anchorsFor(f.path, drawn);
     $("diff").replaceChildren(
+      strip(f.path),
       anch.outside.length ? el("div", { class: "outside" }, el("div", { class: "outside-head" }, "On lines this diff does not show"),
         el("div", { class: "threads" }, anch.outside.map(card))) : "",
       useSplit ? split(drawn, anch) : unified(drawn, anch));
@@ -421,13 +630,14 @@
     for (const b of document.querySelectorAll("#layout button"))
       b.setAttribute("aria-pressed", String(b.dataset.layout === layout));
   }
-  function setLayout(l) { layout = l; store.set("lookout.layout", l); drawLayout(); drawFile(); }
+  function setLayout(l) { layout = l; store.set("lookout.layout", l); drawLayout(); drawMain(); }
   for (const b of document.querySelectorAll("#layout button"))
     b.addEventListener("click", () => setLayout(b.dataset.layout));
 
   function step(d) {
     if (!ORDER.length) return;
-    const i = ORDER.indexOf(current);
+    // From the Overview, j/k move on from the file the reader left.
+    const i = ORDER.indexOf(current ?? lastFile);
     select(ORDER[Math.max(0, Math.min(ORDER.length - 1, (i < 0 ? 0 : i + d)))]);
   }
   document.addEventListener("keydown", e => {
@@ -437,9 +647,10 @@
     else if (e.key === "v") { setLayout(layout === "split" ? "unified" : "split"); e.preventDefault(); }
     else if (e.key === "n") { stepFinding(1); e.preventDefault(); }
     else if (e.key === "p") { stepFinding(-1); e.preventDefault(); }
+    else if (e.key === "o") { toggleOverview(); e.preventDefault(); }
   });
   let wasNarrow = narrow();
-  window.addEventListener("resize", () => { if (narrow() !== wasNarrow) { wasNarrow = narrow(); drawFile(); } });
+  window.addEventListener("resize", () => { if (narrow() !== wasNarrow) { wasNarrow = narrow(); drawMain(); } });
 
   // The gate as the page sees it, the same rule `lookout gate` applies.
   function gateText() {
@@ -484,7 +695,7 @@
     R = next;
     drawHeader();
     drawSide();
-    drawFile();
+    drawMain();
     $("main").scrollTop = y;
   }
   // ---------------------------------------------------------------- served
@@ -530,6 +741,15 @@
         .catch(e => { status.textContent = e.message; status.classList.add("bad"); throw e; });
     };
 
+    // A quiz answer: graded and recorded by the server, once; the redraw
+    // that follows shows the note with the result above it.
+    answer = (n, pick, status) => {
+      for (const b of document.querySelectorAll(`[data-note="${CSS.escape(n.id)}"] .qopt`)) b.disabled = true;
+      send({ op: "answer", item: n.id, pick }, status).then(() => {}, () => {
+        for (const b of document.querySelectorAll(`[data-note="${CSS.escape(n.id)}"] .qopt`)) b.disabled = false;
+      });
+    };
+
     // Reply, and close or reopen, under every card.
     actions = x => {
       const finding = x.id.startsWith("f");
@@ -573,14 +793,20 @@
       tr.after(row);
       ta.focus();
     });
-    drawFile();
+    drawSide();
+    drawMain();
   }
 
-  window.lookout = { get review() { return R; }, applyReview, serve, el, current: () => current };
+  window.lookout = { get review() { return R; }, applyReview, serve, el, current: () => current,
+                     overview: () => overview, openOverview, goToLine };
 
   drawHeader();
   drawLayout();
   drawSide();
+  // Architecture first: a review with notes opens on its Overview, unless the
+  // link names a file.
   const want = decodeURIComponent((location.hash.match(/file=([^&]+)/) || [])[1] || "");
-  select((R.files || []).some(f => f.path === want) ? want : ORDER[0] || null);
+  if ((R.files || []).some(f => f.path === want)) select(want);
+  else if (location.hash === "#overview" || notesOf().length) openOverview();
+  else select(ORDER[0] || null);
 })();

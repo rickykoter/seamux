@@ -29,6 +29,7 @@ import * as SC from "./lib/score.mjs";
 import * as GR from "./lib/group.mjs";
 import { repoConfig } from "./lib/typesafe.mjs";
 import * as FD from "./lib/findings.mjs";
+import * as N from "./lib/notes.mjs";
 import { brief } from "./lib/prompt.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -85,16 +86,28 @@ export function renderPage(id) {
 // ---------------------------------------------------------------- arrange
 
 // Risk per file and the groups, from what the review already holds: the
-// cached Jev scores, the stored text edges, and the findings as they are now.
-// Called on every open and whenever findings change. Mutates and returns.
+// cached Jev scores, the stored text edges, the reviewer's edges and the
+// findings as they are now; then each note finds its group. Called on every
+// open and whenever findings or notes change. Mutates and returns.
+// The edge providers a review runs: the repo's own edgeProviders list as it
+// was when the review opened, else the default. A review opened before the
+// reviewer provider existed stored the old default, and gets it added; only a
+// list the repo chose can leave it out.
+export function providerNames(review) {
+  const sc = review.scoring || {};
+  if (sc.providersFromConfig && Array.isArray(sc.providers)) return sc.providers;
+  return [...new Set([...(Array.isArray(sc.providers) ? sc.providers : GR.DEFAULT_PROVIDERS), "reviewer"])];
+}
+
 export function arrange(review) {
   const files = review.files || [];
   SC.rank(files, review.findings || [], review.scoring);
-  const names = (review.scoring && review.scoring.providers) || GR.DEFAULT_PROVIDERS;
-  const shared = names.includes("shared-finding")
-    ? GR.edges(files, { text: () => "", findings: review.findings || [] }, ["shared-finding"]).edges : [];
-  review.groups = GR.group(files, [...(review.edges || []), ...shared]);
-  return review;
+  const names = providerNames(review);
+  const live = GR.edges(files, { text: () => "", findings: review.findings || [], reviewerEdges: review.reviewerEdges || [] },
+    GR.LIVE_PROVIDERS.filter(n => names.includes(n))).edges;
+  review.groups = GR.group(files, [...(review.edges || []), ...live]);
+  for (const g of review.groups) g.band = SC.bandOf(g.risk);
+  return N.attach(review);
 }
 
 // ---------------------------------------------------------------- open
@@ -187,7 +200,10 @@ function cmdOpen() {
     // lines the hunks carry. Collapsed files are read by nobody.
     texts[f.path] = skip ? "" : newText ?? f.hunks.flatMap(h => h.lines.filter(r => r[0] !== "-").map(r => r[3])).join("\n");
     hunks[f.path] = f.hunks.map(h => h.lines.filter(r => r[0] !== " ").map(r => r[0] + r[3]).join("\n")).join("\n");
-    return { path: f.path, oldPath: f.oldPath, status: f.status, adds: f.adds, dels: f.dels,
+    // What a note remembers of each file it covers: a changed hunk makes it
+    // stale. A binary file has no hunks, so its blob ids stand in.
+    const hash = S.patchHash(f.binary ? "binary " + (f.blobs || "") : hunks[f.path]);
+    return { path: f.path, oldPath: f.oldPath, status: f.status, adds: f.adds, dels: f.dels, hash,
              binary: f.binary, generated, large, hunks: f.hunks.length, lang: drawn.lang || "",
              collapsed: f.binary || generated || large || !!drawn.note };
   });
@@ -203,9 +219,10 @@ function cmdOpen() {
   scoring = { ...scoring, patchHash: hash, at: scoring.at || new Date().toISOString() };
   const names = Array.isArray(cfg.edgeProviders) ? cfg.edgeProviders : GR.DEFAULT_PROVIDERS;
   // Edges that need file text are found now, while the text is in hand, and
-  // kept; shared-finding edges are recomputed whenever findings change.
-  const found = GR.edges(meta, { text: q => texts[q] || "", findings: [] }, names.filter(n => n !== "shared-finding"));
+  // kept; shared-finding and reviewer edges are recomputed on every arrange.
+  const found = GR.edges(meta, { text: q => texts[q] || "", findings: [] }, names.filter(n => !GR.LIVE_PROVIDERS.includes(n)));
   scoring.providers = names;
+  scoring.providersFromConfig = Array.isArray(cfg.edgeProviders);
   if (found.unknown.length) scoring.unknownProviders = found.unknown;
 
   const p = S.paths(id);
@@ -228,9 +245,16 @@ function cmdOpen() {
           "Only the human closes its findings, on the page.");
     fresh.policy = { agentMayClose: true };
   }
+  // The quiz too: --quiz or the repo's default, fixed at creation, so a
+  // re-open (with or without the flag) neither starts nor stops it.
+  const quizAsked = flag("quiz") || cfg.quiz === true;
+  let quizNote = "";
+  if (!S.exists(id)) fresh.policy = { ...(fresh.policy || {}), quiz: quizAsked };
+  else if (flag("quiz") && !(S.read(id).policy || {}).quiz)
+    quizNote = `review ${id} was created without the quiz, and a re-open does not add it; open a new review (--id) to quiz`;
   const review = S.update(id, cur => {
     const m = S.merge(cur, fresh);
-    m.policy = { agentMayClose: false, ...(m.policy || {}) };
+    m.policy = { agentMayClose: false, quiz: false, ...(m.policy || {}) };
     return arrange(m);
   });
   S.writeAtomic(p.patch, text);
@@ -239,7 +263,7 @@ function cmdOpen() {
   const shown = showPage(id, page, src.root || cwd);
   if (flag("json")) {
     process.stdout.write(JSON.stringify({ id, page, store: p.json, patch: p.patch, files: meta.length,
-      shown: shown || null, highlight: review.highlight,
+      shown: shown || null, highlight: review.highlight, quiz: !!review.policy.quiz,
       scoring: { ok: review.scoring.ok, content: !!review.scoring.content, why: review.scoring.why || "" } }, null, 2) + "\n");
     return;
   }
@@ -251,6 +275,8 @@ function cmdOpen() {
       (review.scoring.ok ? `  (Jev${review.scoring.content ? " with hunk text" : ", paths and counts only"})`
                          : `  (signals only: ${review.scoring.why})`));
   say(`  page:  ${page}${shown ? "  (" + shown + ")" : ""}`);
+  if (review.policy.quiz) say("  quiz:  on (a question on each high group before its note)");
+  if (quizNote) say("  note:  " + quizNote);
   say(`  store: ${p.json}`);
   // --view-only: someone only wants to look (deep-plan diff); no reviewer hint.
   if (!flag("view-only") && !review.reviewedAt)
@@ -296,35 +322,60 @@ function cmdFindings() {
   const id = positional()[1];
   if (!id || !S.ID_OK.test(id) || !S.exists(id)) die(`findings ${sub || "add|list"} wants a review id (lookout list)`);
   if (sub === "add") {
-    let items;
-    try { items = FD.parseInput(readInput(positional()[2])); } catch (e) { die(e.message); }
+    let input;
+    try { input = FD.parseOutput(readInput(positional()[2])); } catch (e) { die(e.message); }
+    const items = input.findings;
     let rows = {};
     try { rows = JSON.parse(fs.readFileSync(S.paths(id).rows, "utf8")); } catch { /* no rows: nothing is outside */ }
-    let result;
-    // A reviewer that answered [] has reviewed; one whose every item was
-    // rejected has not, and must not turn the gate's "no verdict" into a pass.
-    const peek = FD.validate(S.read(id), items, FD.anchorsFrom(rows));
+    const anchors = FD.anchorsFrom(rows);
+    // A reviewer that answered [] has reviewed; one whose every finding was
+    // rejected has not, and must not turn the gate's "no verdict" into a
+    // pass, whatever notes came with them.
+    const peek = FD.validate(S.read(id), items, anchors);
     if (items.length && !peek.accepted.length) {
       for (const r of peek.rejected) say(`  rejected item ${r.index}: ${r.why}`);
-      die(`nothing accepted: all ${items.length} item(s) were rejected; the review is unchanged`);
+      die(`nothing accepted: all ${items.length} finding(s) were rejected; the review is unchanged`);
     }
-    const { out } = mutate(id, cur => {
-      const v = FD.validate(cur, items, FD.anchorsFrom(rows));
-      result = v;
-      return FD.ingest(cur, v.accepted, "reviewer");
+    let fv, ev, nv, edgesAdded = 0, notesIn = { added: 0, replaced: 0 }, owed = [];
+    const { out, review } = mutate(id, cur => {
+      fv = FD.validate(cur, items, anchors);
+      const added = FD.ingest(cur, fv.accepted, "reviewer");
+      // Edges first, then a re-arrange, so each note is checked against the
+      // groups the reviewer's own links produced (a quiz is owed by a group
+      // that is high once they are in).
+      ev = N.validateEdges(cur, input.edges);
+      edgesAdded = N.ingestEdges(cur, ev.accepted);
+      arrange(cur);
+      nv = N.validateNotes(cur, input.notes, anchors);
+      notesIn = N.ingestNotes(cur, nv.accepted, "reviewer");
+      arrange(cur);
+      owed = N.missing(cur);
+      return added;
     });
-    const dup = result.accepted.length - out.length;
+    const dup = fv.accepted.length - out.length;
     say(`lookout ${id}: ${out.length} finding(s) added` + (dup ? `, ${dup} already there` : "") +
-        (result.rejected.length ? `, ${result.rejected.length} rejected` : ""));
+        (fv.rejected.length ? `, ${fv.rejected.length} rejected` : "") +
+        `; ${edgesAdded} edge(s)` + (ev.rejected.length ? ` (${ev.rejected.length} rejected)` : "") +
+        `; ${notesIn.added} note(s) added` + (notesIn.replaced ? `, ${notesIn.replaced} replaced` : "") +
+        (nv.rejected.length ? `, ${nv.rejected.length} rejected` : ""));
     for (const f of out) say(`  ${f.id} ${f.severity.padEnd(7)} ${f.file}:${f.line}${f.outside ? " (outside the diff)" : ""}  ${f.short_summary}`);
-    for (const r of result.rejected) say(`  rejected item ${r.index}: ${r.why}`);
+    for (const r of fv.rejected) say(`  rejected item ${r.index}: ${r.why}`);
+    for (const r of ev.rejected) say(`  rejected edge ${r.index}: ${r.why}`);
+    if (ev.accepted.length && !providerNames(review).includes("reviewer"))
+      say("  the edges are stored but not drawn: this repo's .seamux/lookout.json edgeProviders leaves out reviewer");
+    for (const r of nv.rejected) say(`  rejected note ${r.index}: ${r.why}`);
+    for (const d of nv.dropped) say(`  ${d}`);
+    for (const n of review.notes || [])
+      say(`  ${n.id} ${String(n.group || "-").padEnd(4)} ${n.files.join(", ")}` +
+          (n.quiz ? "  [quiz]" : "") + (n.partial ? "  (partial: its files are split)" : "") + (n.stale ? "  (stale)" : ""));
+    for (const m of owed) say(`  still owed: ${m}`);
     return;
   }
   if (sub === "list") {
     const r = S.read(id);
     let fs_ = r.findings || [];
     if (flag("open")) fs_ = fs_.filter(FD.isOpen);
-    if (flag("json")) { process.stdout.write(JSON.stringify({ findings: fs_, threads: r.threads || [] }, null, 2) + "\n"); return; }
+    if (flag("json")) { process.stdout.write(JSON.stringify({ findings: fs_, threads: r.threads || [], notes: r.notes || [] }, null, 2) + "\n"); return; }
     if (!fs_.length && !(r.threads || []).length) { say("no findings"); return; }
     for (const f of fs_) {
       say(`${f.id} [${f.status}] ${f.severity} ${f.category} ${f.verdict} ${f.file}:${f.line}${f.side === "old" ? " (old)" : ""}`);
@@ -414,16 +465,19 @@ function usage() {
   say(`lookout — review a diff in a browser pane beside the terminal
 
   lookout open [--base REF | --worktree | --range A..B | --patch FILE]
-               [--id ID] [--title T] [--plan SLUG --inc N] [--agent-may-close]
+               [--id ID] [--title T] [--plan SLUG --inc N] [--agent-may-close] [--quiz]
                [--plain] [--no-jev] [--rescore] [--view-only] [--no-open] [--json]
         build the diff, store the review, draw the page and show it.
         Default: --base <origin's default branch, else main/master>, which
         compares the merge base with the working tree (uncommitted included).
         Files are ranked by risk (signals + one Jev score per file; hunk text
         is sent only to a loopback endpoint or with .seamux/lookout.json
-        sendContent: true) and grouped by how they relate.
+        sendContent: true) and grouped by how they relate. --quiz (or
+        .seamux/lookout.json quiz: true) puts a question before each high
+        group's note; it never gates, and is fixed when the review is created.
   lookout prompt <id>       the reviewer brief: give it to ONE fresh subagent
-  lookout findings add <id> <file|->     validate and ingest a reviewer's JSON
+  lookout findings add <id> <file|->     validate and ingest a reviewer's JSON:
+                            {findings, edges, notes}, or a bare array of findings
   lookout findings list <id> [--open] [--json]
   lookout reply <id> <f#|t#> <text>      answer in a finding's or comment's thread
   lookout address <id> <f#> [note]       say a finding is fixed; the human closes it
