@@ -2117,7 +2117,19 @@ function transition(action, slug, n, why, force = false) {
   const st = readState(slug) || die("no plan " + slug);
   if (action === "go") {
     if (st.phase === "review") die("the alignment check has not passed — `deep-plan grade` first");
+    let beside = null;
     if (n === "next") {
+      // A go already given and not yet acted on (the pane's or the board's
+      // button, then the human typing "go" to the session) must not open a
+      // second increment: `next` would skip past the one waiting to start.
+      // The reason goes on the last line, which is what the chip and the pane show.
+      const open = (st.increments || []).find(i => i.status === "authorized" || i.status === "working");
+      if (open && !force)
+        die(`increment ${open.n} (${open.title}) is already ${open.status}: start it, or close it with ` +
+          `\`deep-plan done ${slug} ${open.n}\` before the next go.\n` +
+          `  another increment beside it, logged:  deep-plan go ${slug} next --force\n` +
+          `go refused: increment ${open.n} is already ${open.status}`);
+      beside = open || null;
       const nxt = (st.increments || []).find(i => i.status === "pending");
       if (!nxt) die("no pending increment in " + slug);
       n = nxt.n;
@@ -2135,7 +2147,8 @@ function transition(action, slug, n, why, force = false) {
         `go refused: waits on ${waits.map(w => `${w.parent} increment ${w.n}`).join(", ")}`);
     inc.status = "authorized"; inc.authorizedAt = Date.now(); inc.note = "";
     log1(st, `go: increment ${n} (${inc.title}) authorized` +
-      (waits.length ? ` (--force past the family wait: ${waitText(waits)})` : ""));
+      (waits.length ? ` (--force past the family wait: ${waitText(waits)})` : "") +
+      (beside ? ` (--force beside increment ${beside.n}, still ${beside.status})` : ""));
   } else if (action === "start") {
     const inc = findInc(st, n);
     if (inc.status !== "authorized") die(`increment ${n} is ${inc.status}, not authorized`);

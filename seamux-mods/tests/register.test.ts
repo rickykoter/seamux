@@ -100,6 +100,9 @@ function world(on: On, opts: WorldOpts = {}) {
   on('ui.status', (_$, e) => { statuses.push(e.text); return { value: undefined } })
   const toasts: string[] = []
   on('ui.toast', (_$, e) => { toasts.push(e.text); return { value: undefined } })
+  // What the plugin hands the session as a turn of its own.
+  const prompts: string[] = []
+  on('prompt.submit', (_$, e) => { prompts.push(e.text); return { text: e.text } })
   const cmux: string[][] = []
   on('process.run', (_$, e) => {
     if (e.argv[0] === 'cmux') {
@@ -156,7 +159,7 @@ function world(on: On, opts: WorldOpts = {}) {
     if (verb === 'obs') return okOut('check: dashboards show the new series')
     return { ...okOut(''), exitCode: 1, stderr: `unknown verb ${verb}` }
   }
-  return { incs, calls, opened, statuses, clock, toasts, cmux }
+  return { incs, calls, opened, statuses, clock, toasts, cmux, prompts }
 }
 
 const DENY = 'deep-plan gate [demo]: No increment is authorized — `deep-plan go` opens the next one.\n' +
@@ -199,6 +202,9 @@ describe('seamux-mods', () => {
 
       await ui.press({ key: 'go' })
       expect(w.calls).toContainEqual(['go', 'demo', 'next'])
+      // The go reaches the session as a turn, so it starts without a typed
+      // "go" (which would authorize the increment after this one).
+      expect(w.prompts).toEqual([expect.stringMatching(/increment 2 of demo is authorized\. Start it now; .*do not run `deep-plan go` again/)])
       expect((await ui.find({ key: 'inc-2' }))?.text).toMatch(/● 2\. second/)
       expect((await ui.find({ key: 'gate' }))?.text).toMatch(/gate open/)
       expect(await ui.find({ key: 'go' })).toBeUndefined()
@@ -238,6 +244,7 @@ describe('seamux-mods', () => {
       await band.press({ key: 'go' })
       expect(w.calls).toContainEqual(['go', 'demo', 'next'])
       expect(w.incs[1]?.status).toBe('authorized')
+      expect(w.prompts).toEqual([expect.stringMatching(/increment 2 of demo is authorized/)])
       expect(await band.find({ key: 'gate-band' })).toBeUndefined()
       await band.unmount()
     }

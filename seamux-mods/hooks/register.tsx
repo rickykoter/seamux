@@ -246,13 +246,23 @@ async function runChecks($: EngineInterface, slug: string, n: number, resume?: s
   await act($, ['check', 'run', slug, String(n), ...(resume ? [resume, '--from', 'wait'] : [])], CHECK_RUN_MS)
 }
 
+// A go from a button is the human's go-ahead, so the session hears it as a
+// turn of its own: authorizing alone left it idle, and a "go" typed to wake it
+// would then authorize a second increment.
 async function goNext($: EngineInterface, slug: string): Promise<void> {
   const ran = await act($, ['go', slug, 'next'])
-  if (ran.ok) {
-    await update($, denied, () => null)
-    $.ui.toast(`${ran.out.split("\n")[0]}. Tell Claude to carry on.`, { timeoutMs: 8000 })
-  } else {
+  if (!ran.ok) {
     $.ui.toast(headline(ran.out) || 'deep-plan go failed', { timeoutMs: 8000 })
+    return
+  }
+  await update($, denied, () => null)
+  const n = /^go \S+ (\d+)/.exec(ran.out)?.[1]
+  const text = `deep-plan go ran from the plan pane: increment ${n ?? '(next)'} of ${slug} is authorized. ` +
+    `Start it now; the go is already given, so do not run \`deep-plan go\` again.`
+  try {
+    await $.prompt.submit({ text })
+  } catch {
+    $.ui.toast(`${ran.out.split('\n')[0]}. Tell Claude to carry on.`, { timeoutMs: 8000 })
   }
 }
 
@@ -503,7 +513,7 @@ export const register: Register = on => {
           ]
         })}
         <Box key="actions" flexDirection="row" gap={1} marginTop={1}>
-          {canGo && <Button key="go" label="go next" hotkey="g" variant="primary" onPress={() => act($, ['go', p.slug, 'next'])} />}
+          {canGo && <Button key="go" label="go next" hotkey="g" variant="primary" onPress={() => goNext($, p.slug)} />}
           {page !== '' && <Button key="open" label={pageLabel} hotkey="o" onPress={() => openPage($, page)} />}
           <Button key="refresh" label="refresh" hotkey="r" onPress={() => refresh($)} />
           {pin === p.slug && <Button key="unpin" label="unpin" onPress={() => switchTo($, '')} />}
