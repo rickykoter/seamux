@@ -2776,9 +2776,13 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     r0.status === 0 && v0 && v0.kind === "review" && v0.synth === "review" && v0.recipe === "lookout:gate" &&
     v0.exec.steps[0].command === "lookout gate --plan rv-1 --inc 1", JSON.stringify(v0));
   let r = lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
-  ok("review check: fails with no review yet, and says how to open one",
+  ok("review check: with no review yet, check run opens it and says to spawn the reviewer",
     r.status === 1 && ck("rv-1", "review-code-review").status === "fail" &&
-    /deep-plan review rv-1 1/.test(ck("rv-1", "review-code-review").note), ck("rv-1", "review-code-review").note);
+    fs.existsSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-1-inc1.json")) &&
+    /spawn ONE fresh reviewer subagent with lookout prompt rv-1-inc1/.test(ck("rv-1", "review-code-review").note) &&
+    /lookout prompt rv-1-inc1\nthen: deep-plan check run rv-1 1/.test(r.stdout), ck("rv-1", "review-code-review").note + r.stdout);
+  ok("review check: the last line is the board's: spawn a reviewer",
+    r.stdout.trim().split("\n").pop() === "review: spawn a reviewer — lookout prompt rv-1-inc1", r.stdout);
   const r2 = lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
   ok("spike settled: running a synthesized review check never warns about recipe drift",
     !/⚠|drift|changed in|no longer in/.test(r.stderr + r2.stderr), r.stderr + r2.stderr);
@@ -2805,7 +2809,9 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   r = lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
   ok("review check: fails while a major is open, saying the human closes it",
     r.status === 1 && /human closes it/.test(ck("rv-1", "review-code-review").note));
-  ok("done is refused while the review check fails", lc(LENV, "done", "rv-1", "1").status === 1);
+  const dr = lc(LENV, "done", "rv-1", "1");
+  ok("done is refused while the review check fails, naming the reviewer's brief",
+    dr.status === 1 && /spawn ONE fresh reviewer subagent whose prompt is the output of `lookout prompt rv-1-inc1`/.test(dr.stderr), dr.stderr);
   // The human resolves it on the page (the intent server's write, by hand here).
   const closed = JSON.parse(fs.readFileSync(store, "utf8"));
   closed.findings[0].status = "resolved"; closed.findings[0].statusBy = "human";
@@ -2829,7 +2835,25 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   r = lc(LENV, "diff", "rv-2", "1");
   ok("deep-plan diff opens the increment in lookout, view-only (no reviewer hint)",
     r.status === 0 && /lookout rv-2-inc1/.test(r.stdout) && !/next:\s+brief/.test(r.stdout), r.stdout + r.stderr);
-  for (const n of ["rv-1", "rv-2"]) lc(LENV, "close", n);
+  // Every code increment is reviewed by default: the check is implied at
+  // render, where lookout is installed, unless the plan opts out.
+  const implied = (n, env, d = {}, extra = {}) => {
+    const s = mk(n, [{ kind: "manual", name: "looked" }], extra);
+    Object.assign(s.deliverables[0], d);
+    lc(env, "render", tmpSpec(s), "--root", RV);
+    return stOf(n).increments[0].checks["review-code-review"];
+  };
+  const iv = implied("rv-auto", LENV);
+  ok("implied review: a code increment gets one, inferred, its command synthesized",
+    iv && iv.inferred === true && iv.synth === "review" && iv.exec.steps[0].command === "lookout gate --plan rv-auto --inc 1", JSON.stringify(iv));
+  ok("implied review: a docs-only increment gets none", !implied("rv-docs", LENV, { files: ["docs/guide.md", "docs/img/a.png"] }));
+  ok("implied review: review.auto false opts the plan out", !implied("rv-off", LENV, {}, { review: { auto: false } }));
+  ok("implied review: none where lookout is not installed", !implied("rv-nolk", ENV));
+  ok("implied review: none on a waived increment", !implied("rv-waived", LENV, { checks: [], waiver: "nothing runs here" }));
+  ok("implied review: config is code", !!implied("rv-cfg", LENV, { files: [".github/workflows/ci.yml"] }));
+  ok("implied review: a lockfile alone is not", !implied("rv-lock", LENV, { files: ["package-lock.json", "web/pnpm-lock.yaml"] }));
+  ok("review.auto must be a boolean", /review: an object/.test(bad([{ kind: "review" }], { review: { auto: "no" } }).stderr));
+  for (const n of ["rv-1", "rv-2", "rv-auto", "rv-docs", "rv-off", "rv-nolk", "rv-waived", "rv-cfg"]) lc(LENV, "close", n);
 }
 
 // -------------------------------------------------- hot-path cost

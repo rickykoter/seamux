@@ -245,11 +245,12 @@ records its own verdict. Remote QA is three steps: get a preview, wait for it,
 test it. Getting the preview (a push, a channel deploy) is always your step:
 the engine prints what to run and picks up from the wait once you have.
 
-A deliverable can also declare a **review** check (`{ "kind": "review" }`).
-`deep-plan review <slug> <n>` opens the increment in
-[lookout](#lookout-review-a-diff-with-the-agent), a reviewer subagent writes
-findings, and the check runs `lookout gate`: it passes once no blocker or
-major finding is open, and only you close those, on the review page.
+Every increment that touches code also gets a **review** check when
+[lookout](#lookout-review-a-diff-with-the-agent) is installed (a plan opts out
+with `"review": { "auto": false }`). The first `check run` opens the
+increment's review beside the terminal and tells the agent to brief a
+reviewer subagent; the check runs `lookout gate`, so it passes once no blocker
+or major finding is open, and only you close those, on the review page.
 `deep-plan diff` opens an increment in lookout too, when it is installed.
 
 A pass belongs to the code it ran against. Edit a file afterwards and it goes
@@ -457,9 +458,9 @@ can resolve or dismiss only when the review was opened with
 
 ### Reviews in a plan
 
-`lookout gate` answers 0 when no blocker or major finding is open. A deep-plan
-deliverable that declares a review check runs it, so the increment can't be
-done until you have closed those findings (see
+`lookout gate` answers 0 when no blocker or major finding is open. Every
+deep-plan increment that touches code has a review check that runs it, so
+the increment can't be done until you have closed those findings (see
 [Checks before done](#checks-before-done)). On a plain branch nothing gates
 on it: the review is a conversation.
 
