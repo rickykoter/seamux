@@ -694,6 +694,24 @@ const R1 = repo("r1");
   ok("edges: reviewer edges stay under the six-file cap", /7 edge\(s\)/.test(cr.stdout) && big === (await import("./lib/group.mjs")).MAX_GROUP, `${big} ${cr.stdout}`);
   S.update(cid, cur => { cur.scoring.providers = cur.scoring.providers.filter(n => n !== "reviewer"); delete cur.scoring.providersFromConfig; return cur; });
   cli(R9, "sync", cid);
+  {
+    // The page: the notes travel in its data, and its script draws them.
+    const html = fs.readFileSync(S.paths(id).html, "utf8");
+    const js = fs.readFileSync(path.join(HERE, "page", "review.js"), "utf8");
+    const tpl = fs.readFileSync(path.join(HERE, "page", "review.html"), "utf8");
+    ok("page: the drawn page carries the notes and the quiz policy",
+       html.includes(base.why_risky) && html.includes('"quiz":true') && html.includes(good.prompt));
+    ok("page: an Overview it opens on when there are notes, toggled by o and the header button",
+       /function drawOverview\(/.test(js) && /notesOf\(\)\.length\) \{ lastFile = ORDER\[0\] \|\| null; openOverview\(\); \}/.test(js) &&
+       js.includes('e.key === "o"') && tpl.includes('id="ov-btn"'));
+    ok("page: a question hides its note only on a served page with the quiz on, until answered",
+       /const asking = n => quizOn\(\) && !!live && n\.quiz && !n\.quiz\.answered;/.test(js) &&
+       /asking\(n\) \? quizBlock\(n\) :/.test(js));
+    ok("page: a file shows its group's note as a strip above the diff, and watch items go to their lines",
+       js.includes("strip(f.path),") && /function goToLine\(/.test(js) && js.includes("tr.line[data-${side"));
+    ok("page: opened as a file with the quiz on, it says the quiz needs crew's server",
+       js.includes("which needs crew's intent server to record answers"));
+  }
   ok("edges: a review opened before the reviewer provider still draws reviewer edges", Math.max(...S.read(cid).groups.map(g => g.files.length)) === 6);
   S.update(cid, cur => { cur.scoring.providersFromConfig = true; return cur; });
   cli(R9, "sync", cid);
