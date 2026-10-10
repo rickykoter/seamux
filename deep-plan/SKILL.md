@@ -149,7 +149,11 @@ plan surfaces at `/plan/<slug>`.
    a suggestion to the human, not something you run yourself — wait for them
    to compact (or decline) before asking for the first `go`.
 9. **Implement increment by increment.** `deep-plan go <slug> next` is the
-   human's go-ahead (also the board's `go` chip). Every `go` also opens (or
+   human's go-ahead (also the board's `go` chip, and the plan pane's `go next`,
+   which then hands you a prompt saying which increment is authorized). When
+   the human says "go" and an increment is already authorized, the go was
+   given: start that one. `go next` refuses while one is open, and `--force`
+   past it only on the human's word. Every `go` also opens (or
    refocuses — the intent server dedups the Dock tab) the plan's working
    surface in the cmux Dock, best-effort: no board running means no tab and
    no error. The first edit inside the root flips the increment to `working`

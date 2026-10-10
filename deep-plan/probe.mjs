@@ -949,6 +949,18 @@ ok("go authorizes the next increment", cli("go", spec.slug, "next").status === 0
 ok("authorized increment: Edit allowed", edit(path.join(REPO, "a.txt")).status === 0);
 let st = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"));
 ok("that edit flipped it to working (via gate)", st.increments[0].status === "working");
+// A second go next while increment 1 waits (a button's go, then a typed one)
+// is refused, naming the open increment on the last line the chip shows.
+r = cli("go", spec.slug, "next");
+ok("go next is refused while an increment is already open", r.status === 1 &&
+  /increment 1 \(.*\) is already working/.test(r.stderr) &&
+  r.stderr.trim().split("\n").pop() === "go refused: increment 1 is already working", r.stderr);
+st = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"));
+ok("…and authorizes nothing", st.increments[1].status === "pending");
+r = cli("go", spec.slug, "next", "--force");
+ok("…unless forced, which opens the next one beside it (logged)", r.status === 0 &&
+  JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8")).increments[1].status === "authorized");
+cli("reset", spec.slug, "2");
 ok("go --at resolves a plan from a directory", cli("go", "--at", REPO, "next").status !== 0 ||
   true); // inc 2 is pending; go --at authorizes it
 r = cli("status", "--json");
