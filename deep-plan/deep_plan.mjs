@@ -2758,8 +2758,12 @@ function checkRun(slug, n, ids, opts) {
     checksOf(findInc(fresh, n))[id] = { ...rest, status: res.status, at: Date.now(), by: "runner",
       note: res.note, ran: res.ran, ...(res.status === "pass" && tree ? { tree } : {}) };
     log1(fresh, `check ${res.status}: increment ${inc.n} ${id} — ${res.note}`);
-    writeState(fresh); rerenderWorking(slug);
+    // The pidfile goes before the verdict lands: whoever waits on the verdict
+    // (check wait, the pane) must never find a finished run's pidfile, and the
+    // re-render after the write is slow on a busy machine. A lost runner is
+    // judged by its pid, not by this file.
     try { if (own) fs.rmSync(pidFile(slug, n, id), { force: true }); } catch { /* gone */ }
+    writeState(fresh); rerenderWorking(slug);
     if (res.status === "pass") say(`✅ ${id} pass — ${res.note} (log: ${log})`);
     else {
       failed++;
