@@ -212,6 +212,7 @@ export function parsePatch(text) {
     else if ((m = L.match(/^copy from (.+)$/))) { f.oldPath = unquote(m[1]); f.status = "C"; }
     else if ((m = L.match(/^copy to (.+)$/))) { f.path = unquote(m[1]); f.status = "C"; }
     else if (L.startsWith("Binary files ") || L === "GIT binary patch") f.binary = true;
+    else if ((m = L.match(/^index ([0-9a-f]+)\.\.([0-9a-f]+)/))) f.blobs = m[1] + ".." + m[2];
     else if ((m = L.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/))) {
       const h = { oldStart: +m[1], oldLines: m[2] === undefined ? 1 : +m[2],
                   newStart: +m[3], newLines: m[4] === undefined ? 1 : +m[4],

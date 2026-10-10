@@ -1,15 +1,21 @@
 // The reviewer's brief. The implementing session spawns ONE fresh subagent
-// with this text as its prompt; the subagent reads the diff, writes findings
-// as JSON, and ingests them with `lookout findings add`. Reviewing in the
+// with this text as its prompt; the subagent reads the diff, writes findings,
+// edges and a note per group as one JSON object, and ingests it with
+// `lookout findings add`. Reviewing in the
 // implementer's own context is weak (it reads its intent, not the code), and
 // a separate headless session costs a whole session; a subagent is neither.
 //
 // The rubric merges the built-in /code-review's stance — real defects with a
 // concrete failure, verified before reporting, nothing stylistic — with
 // engineering:code-review's four dimensions, which become the categories.
+// The notes ask for what Karpathy's agentic-engineering review asks of the
+// human: the architecture a group moves toward, its hidden cross-system
+// assumptions, and the fundamentals it touches, so the reader keeps
+// conceptual ownership instead of inheriting the agent's account.
 import fs from "node:fs";
 import path from "node:path";
-import { SCHEMA, SEVERITIES } from "./findings.mjs";
+import { SEVERITIES, DRIFT } from "./findings.mjs";
+import { outputSchema, TOUCHES, MAX_WATCH, MAX_EDGES } from "./notes.mjs";
 
 const PLAN_CAP = 6000;
 
@@ -42,11 +48,19 @@ export function brief(review, { patchPath, plansDir, outPath }) {
       (f.collapsed ? "  (collapsed: " + (f.binary ? "binary" : f.generated ? "generated" : "large") + ")" : "") +
       (f.reasons && f.reasons.length ? "  — " + f.reasons.join(", ") : ""))
     .join("\n");
+  const quiz = !!(review.policy && review.policy.quiz);
+  const groups = (review.groups || []).map(g => {
+    const owes = g.band === "high" || g.band === "medium" ? (quiz && g.band === "high" ? "  note + quiz" : "  note") : "";
+    const rails = (g.edges || []).map(e => `      ${e.why}`).join("\n");
+    return `  ${g.id} ${(g.band || "").padEnd(6)}${owes}`.trimEnd() + "\n" + g.files.map(f => `      ${f}`).join("\n") +
+      (rails ? "\n    linked because:\n" + rails : "");
+  }).join("\n");
   const prior = (review.findings || []).length
     ? `\nThis review already has ${(review.findings || []).length} finding(s) (\`lookout findings list ${review.id}\`). ` +
       "Do not report them again; an exact repeat is skipped anyway.\n" : "";
 
-  return `You are reviewing a code change. Report real defects only, as JSON.
+  return `You are reviewing a code change. Report its real defects, and explain what
+each group of changes means, as one JSON object.
 
 ## What you are reviewing
 
@@ -55,6 +69,11 @@ The whole diff is in ${patchPath}.${show}
 Files, riskiest first (lookout's ranking; spend your attention in this order):
 
 ${order || "  (no files)"}
+
+Groups (lookout's, by imports, test pairs and folders; riskiest first). The
+ones marked "note" are owed a note${quiz ? ', and "note + quiz" a question too' : ""}:
+
+${groups || "  (no groups)"}
 ${plan ? `
 ## What the change is for (the plan increment it implements)
 
@@ -79,13 +98,18 @@ Rules:
   the wrong result. If you cannot name one, it is not a finding.
 - Verify before you report: read the surrounding code and the callers. Mark
   verdict CONFIRMED only when you traced it; otherwise PLAUSIBLE.
-- No style, formatting or preference comments. No praise. No summaries.
+- No style, formatting or preference comments. No praise. A finding is a
+  defect, never a summary; what a change means goes in its group's note.
 - Anchor each finding to a line in the diff: \`side: "new"\` with the new-side
   line number for added or context lines, \`side: "old"\` with the old-side
   number for a removed line. Point at context outside the hunks only when the
   change breaks that line.
 - Report at most 15 findings, most severe first. None is a fine answer: [].
-
+${plan ? `- Plan drift: when a group heads somewhere the increment above does not
+  say (a different design, scope it did not name, a contract it did not
+  mention), file a finding with category "${DRIFT}" at the line that shows
+  it. It is always major or worse; the human dismisses it if it was meant.
+` : ""}
 Severity:
 - blocker — data loss, a security hole, or the change cannot work at all.
 - major — a real bug users or callers will hit; must be fixed before merge.
@@ -93,19 +117,62 @@ Severity:
   short-lived process); worth fixing.
 - nit — a small thing that is still a defect, not taste.
 
+## Notes: what each group means
+
+Findings say what is wrong. A note says what a group of changes IS, so the
+human can judge its architecture rather than read lines. Write one for every
+group marked "note" above (low groups may have one too). A note names the
+files it covers, normally the group's files as listed.
+
+- why_risky — what breaks, and for whom, if this group is wrong. Concrete:
+  "a forged cookie reaches every route behind requireUser", not "auth code".
+- direction — the concept the change moves the design toward: a boundary
+  moved, an invariant introduced or relaxed, ownership of data shifting, a
+  new dependency between systems. Name the concept in your own words; do not
+  restate the diff ("adds a function that…") or guess at intent the code
+  does not show.
+- watch — up to ${MAX_WATCH} things a human should verify by hand, each anchored to the
+  line where it shows (same file/line/side rules as findings). Hidden
+  assumptions belong here: what this code expects of a caller, a config, a
+  schema, another service.
+- touches — which fundamentals it touches, from: ${TOUCHES.join(", ")}.
+  [] when none.
+${quiz ? `- quiz — required on every group marked "note + quiz", and only there. One
+  multiple-choice question the human answers BEFORE seeing your note, so it
+  must be answerable from the code: a consequence of the change ("a request
+  with an expired cookie now…"), not a fact about your note. 3 to 5 options,
+  "answer" the index as written (the page shuffles them), "why" one sentence
+  shown after. It is linted and rejected if it leads: no "correct",
+  "recommended", "obviously", "best practice" or "the right"; no all/none of
+  the above; the answer must not be the single longest option; the longest
+  option at most 2.2 times the shortest; and the prompt must not echo a word
+  of 7+ letters that only the answer contains.
+` : ""}
+## Edges: links lookout's rules missed
+
+When two changed files belong together for a reason the rules above cannot
+see (a contract and its consumer in another language, a config and the code
+reading it, a migration and the query it changes), add an edge {a, b, why}.
+The why is drawn on the group's rail, so it names the shared thing. Edges
+only join files, groups stay at six files or fewer, and a link the rules
+already made needs no edge. At most ${MAX_EDGES}; [] is the usual answer. Notes are
+matched to groups after your edges apply, so write each note for the files
+it covers and it lands on whichever group holds them.
+
 ## Output
 
-Write a JSON array of findings to ${outPath}, matching this schema:
+Write ONE JSON object to ${outPath}, matching this schema:
 
-${JSON.stringify(SCHEMA, null, 2)}
+${JSON.stringify(outputSchema(quiz), null, 2)}
 
 Then ingest it:
 
   lookout findings add ${review.id} ${outPath}
 
-It prints what it accepted and why it rejected anything; fix rejected items and
-run it again (accepted ones are not duplicated). Finish by replying with the
-number of findings per severity (${SEVERITIES.join(", ")}) and nothing else —
-the findings themselves live in the review, where the human reads them.
+It prints what it accepted, why it rejected anything, and any group still
+owed a note${quiz ? " or a question" : ""}; fix those and run it again (accepted findings are not
+duplicated, and a note for the same files replaces the earlier one). Finish by
+replying with the number of findings per severity (${SEVERITIES.join(", ")}) and
+of notes, and nothing else — the review is where the human reads them.
 `;
 }

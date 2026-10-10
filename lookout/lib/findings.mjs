@@ -17,6 +17,10 @@
 export const SEVERITIES = ["blocker", "major", "minor", "nit"];
 export const BLOCKING = new Set(["blocker", "major"]);
 export const CATEGORIES = ["correctness", "security", "performance", "maintainability"];
+// A group heading somewhere its plan increment does not say. Always major or
+// worse, so it holds the gate until the human closes it (a dismiss is the
+// record that the deviation was meant); only a review of a plan has one.
+export const DRIFT = "plan-drift";
 export const VERDICTS = ["CONFIRMED", "PLAUSIBLE"];
 export const STATUSES = ["open", "addressed", "resolved", "dismissed"];
 const CLOSED = new Set(["resolved", "dismissed"]);
@@ -26,11 +30,10 @@ const MAX_TEXT = 4000;
 const clip = (s, n = MAX_TEXT) => String(s ?? "").trim().slice(0, n);
 const now = () => new Date().toISOString();
 
-// The JSON a reviewer writes, as a schema it can follow (printed by
-// `lookout prompt`).
-export const SCHEMA = {
-  type: "array",
-  items: {
+// One finding as a reviewer writes it. The whole output (findings with the
+// reviewer's edges and notes) is notes.mjs outputSchema, printed by
+// `lookout prompt`.
+export const FINDING = {
     type: "object",
     required: ["file", "line", "severity", "summary", "failure_scenario"],
     properties: {
@@ -44,27 +47,38 @@ export const SCHEMA = {
       failure_scenario: { type: "string", description: "concrete inputs or state -> the wrong output or crash" },
       short_summary: { type: "string", maxLength: 60, description: "the claim alone, for a compact list" },
     },
-  },
 };
+export const SCHEMA = { type: "array", items: FINDING };
 
-// A reviewer's output to an array: a bare array, {findings: [...]}, or either
-// inside a ```json fence with prose around it.
-export function parseInput(text) {
+// A reviewer's output: an object {findings, edges, notes}, or a bare array
+// (findings only, as before notes existed), either inside a ```json fence
+// with prose around it. Returns { findings, edges, notes }.
+export function parseOutput(text) {
   const t = String(text || "").trim();
   const tries = [t];
   const fence = t.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
   if (fence) tries.push(fence[1]);
-  const a = t.indexOf("["), b = t.lastIndexOf("]");
-  if (a >= 0 && b > a) tries.push(t.slice(a, b + 1));
+  // Unfenced JSON in prose: whichever bracket opens first is the outer one,
+  // so an array of findings is never read as its first finding.
+  const slices = [["{", "}"], ["[", "]"]].map(([o, c]) => [t.indexOf(o), t.lastIndexOf(c)])
+    .filter(([a, b]) => a >= 0 && b > a).sort((x, y) => x[0] - y[0]);
+  for (const [a, b] of slices) tries.push(t.slice(a, b + 1));
   for (const x of tries) {
-    try {
-      const v = JSON.parse(x);
-      if (Array.isArray(v)) return v;
-      if (v && Array.isArray(v.findings)) return v.findings;
-    } catch { /* next form */ }
+    let v;
+    try { v = JSON.parse(x); } catch { continue; }
+    if (Array.isArray(v)) return { findings: v, edges: [], notes: [] };
+    if (v && typeof v === "object") {
+      // The findings array is required even when empty: a reviewer that wrote
+      // notes and forgot its findings has not said "none". Refused here, not
+      // passed over, or a later form would read the notes array as findings.
+      if (!Array.isArray(v.findings)) throw new Error('the object has no findings array (write "findings": [] for none)');
+      return { findings: v.findings, edges: Array.isArray(v.edges) ? v.edges : [],
+               notes: Array.isArray(v.notes) ? v.notes : [] };
+    }
   }
-  throw new Error("no JSON array of findings in the input");
+  throw new Error("no JSON object or array of findings in the input");
 }
+export const parseInput = text => parseOutput(text).findings;
 
 // The lines a finding may anchor to, per file and side, from the drawn rows.
 export function anchorsFrom(rows) {
@@ -106,10 +120,14 @@ export function validate(review, items, anchors) {
     const verdict = String(x.verdict || "PLAUSIBLE").toUpperCase();
     if (!VERDICTS.includes(verdict)) return bad("verdict must be CONFIRMED or PLAUSIBLE");
     const category = String(x.category || "correctness").toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 40) || "correctness";
+    const drift = category === DRIFT;
+    if (drift && !(review.source && review.source.plan))
+      return bad("plan-drift needs a plan increment to drift from, and this review has none; use another category");
     const summary = clip(x.summary, 1000);
     const a = anchors && anchors[file];
     accepted.push({
-      file, line, side, severity, category, verdict, summary,
+      file, line, side, category, verdict, summary,
+      severity: drift && !BLOCKING.has(severity) ? "major" : severity,
       short_summary: clip(x.short_summary || summary, 60),
       failure_scenario: clip(x.failure_scenario),
       outside: a ? !a[side].has(line) : false,
