@@ -184,13 +184,17 @@ plan surfaces at `/plan/<slug>`.
      what you actually observed, not that you looked — the note is the only
      durable evidence. Passing a recipe-backed check by hand is refused
      without `--force`, which is logged; use it only when the human says to.
-   - **A review check is lookout's verdict** (opt-in: the deliverable
-     declares `{ "kind": "review" }`). Its command is synthesized — `lookout
+   - **A review check is lookout's verdict.** Every increment whose files
+     include code gets one, implied at render where lookout is installed
+     (a deliverable may also declare `{ "kind": "review" }`; the plan opts
+     out with `review.auto: false`). Its command is synthesized — `lookout
      gate --plan <slug> --inc <n>` — and it passes when no blocker or major
-     finding is open on the increment's review. Before `check run`:
-     `deep-plan review <slug> <n>` opens the review (with the plan's
-     `review.agentMayClose`), then spawn ONE fresh reviewer subagent whose
-     prompt is `lookout prompt <slug>-inc<n>`. Fix what it finds and `lookout
+     finding is open on the increment's review. With no reviewer yet,
+     `check run` opens the review itself (with the plan's
+     `review.agentMayClose`) and ends with `review: spawn a reviewer —
+     lookout prompt <slug>-inc<n>`: then spawn ONE fresh reviewer subagent
+     whose prompt is that command's output, and run the check again
+     (`deep-plan review <slug> <n>` opens it by hand). Fix what it finds and `lookout
      address` each finding; the HUMAN resolves or dismisses on the page, and
      only then does the check pass. Never pass it by hand, and never close
      findings yourself unless the plan set `review.agentMayClose`. Like any
@@ -232,7 +236,7 @@ plan surfaces at `/plan/<slug>`.
                         "note": "optional" }],
                       "waiver": "only when nothing can prove it: why",
                       "commits": ["sha subject", { "sha": "...", "subject": "..." }] }],
-  "review":        { "agentMayClose": false },
+  "review":        { "agentMayClose": false, "auto": true },
   "nonGoals":      ["what this plan deliberately does not do"],
   "verification":  ["runnable commands"],
   "commits":       ["plan-wide record of what landed (same two shapes)"],
@@ -247,7 +251,10 @@ A `review` check takes no recipe, run or command (`name` defaults to "code
 review"; one per deliverable): deep-plan runs `lookout gate` for it.
 Top-level `review.agentMayClose` (default false) is decided with the human
 at interrogation time: true lets the agent resolve and dismiss findings too,
-instead of only replying and marking them addressed.
+instead of only replying and marking them addressed. `review.auto` (default
+true) implies a review check on every increment that touches code: anything
+but prose, images, lockfiles and data (config counts as code). A waived
+increment gets none.
 
 A parent plan (see Families) adds one block, and a child plan adds nothing:
 

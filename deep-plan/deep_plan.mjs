@@ -253,8 +253,9 @@ function validate(spec, force) {
   }
 
   if (spec.review !== undefined && (typeof spec.review !== "object" || spec.review === null || Array.isArray(spec.review) ||
-      (spec.review.agentMayClose !== undefined && typeof spec.review.agentMayClose !== "boolean")))
-    errs.push('review: an object, e.g. { "agentMayClose": true }');
+      (spec.review.agentMayClose !== undefined && typeof spec.review.agentMayClose !== "boolean") ||
+      (spec.review.auto !== undefined && typeof spec.review.auto !== "boolean")))
+    errs.push('review: an object, e.g. { "agentMayClose": true, "auto": false }');
   if (errs.length && !force) {
     console.error("deep-plan: spec refused —");
     for (const e of errs) console.error("  ✗ " + e);
@@ -280,6 +281,14 @@ function reviewCheck(c, slug, n) {
     exec: { tier: "cheap", cwd: ".", timeout: 120, steps: [{ kind: "run", command: shown }] } };
 }
 
+// Which files a reviewer reads as code. Prose, images and data are not: an
+// increment that only touches those gets no implied review. Config (json,
+// yaml, toml) is code here, unlike in lookout's reference grouping: a
+// workflow, a manifest or a hook table changes behavior as much as a source
+// file does, and lookout ranks it risky for that reason.
+const NOT_CODE = /\.(md|mdx|markdown|txt|rst|adoc|png|jpe?g|gif|webp|ico|svg|pdf|csv|tsv|jsonl|lock)$|(^|\/)(LICENSE|COPYING|NOTICE|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|go\.sum)$/i;
+const isCodeFile = f => !NOT_CODE.test(String(f));
+
 // lookout's engine: $LOOKOUT_ENGINE, else the root its pointer names. "" when
 // lookout is not installed.
 function lookoutRoot() {
@@ -302,6 +311,29 @@ function reviewExec(cur, slug, n) {
     ? `${shq(process.execPath)} ${shq(path.join(root, "lookout.mjs"))} gate --plan ${shq(slug)} --inc ${Number(n)}`
     : `echo ${shq(LOOKOUT_MISSING)} >&2; exit 127`;
   return { ...cur.exec, steps: [{ kind: "run", command }] };
+}
+
+const reviewId = (slug, n) => `${slug}-inc${Number(n)}`;
+// What the session does once a review is open: the engine opens it, but only
+// the session can spawn the one reviewer subagent (it must not be the context
+// that wrote the change). The last line is for the board, which shows only that.
+const spawnLine = (slug, n) => `review: spawn a reviewer — lookout prompt ${reviewId(slug, n)}`;
+function spawnHint(slug, n, agent) {
+  return `next: spawn ONE fresh reviewer subagent whose prompt is the output of\n  lookout prompt ${reviewId(slug, n)}\n` +
+    `then: deep-plan check run ${slug} ${n}` + (agent ? "\n(this plan lets the agent close findings too)" : "");
+}
+
+// Open (or refresh) an increment's review in lookout: its work since the
+// start sha, with the plan's close policy. { ok, out, agent } — never throws.
+function openReview(st, inc) {
+  if (!inc || !inc.startSha) return { ok: false, out: "no recorded start sha — the increment's first edit records one, " +
+    `or \`deep-plan start ${st.slug} ${inc ? inc.n : "<n>"}\`` };
+  let spec = {};
+  try { spec = JSON.parse(fs.readFileSync(path.join(KEYS_DIR, st.slug + ".spec.json"), "utf8")); } catch { /* no spec: defaults */ }
+  const agent = !!(spec.review && spec.review.agentMayClose);
+  const r = runLookout(["open", "--plan", st.slug, "--inc", String(inc.n), "--base", inc.startSha, "--at", st.root,
+    ...(agent ? ["--agent-may-close"] : [])], { cwd: st.root });
+  return { ...r, agent };
 }
 
 // Run lookout with args; { ok, out } — never throws.
@@ -355,6 +387,19 @@ function resolvePlanChecks(spec, root) {
       for (let k = 2; ids.has(id); k++) id = `${r.key}-${k}`;
       ids.add(id);
       out.push(bind({ id, kind: r.kind, name: r.name, inferred: true }, r));
+    }
+    // Every increment that changes code is reviewed by lookout unless the plan
+    // says otherwise (`review.auto: false`): the review is implied the way a
+    // default recipe is, and only where lookout is installed, so a machine
+    // without it renders the plan it always did. A waiver says nothing can
+    // prove the increment; an implied review would contradict it.
+    const waived = typeof d.waiver === "string" && d.waiver.trim();
+    if (!out.some(c => c.kind === "review") && !(spec.review && spec.review.auto === false) && !waived &&
+        (d.files || []).some(isCodeFile) && lookoutRoot()) {
+      let id = "review-code-review";
+      for (let k = 2; ids.has(id); k++) id = `review-code-review-${k}`;
+      ids.add(id);
+      out.push(reviewCheck({ id, kind: "review", name: "code review", inferred: true }, spec.slug, i + 1));
     }
     // Old plans are not grandfathered: an increment nothing can prove is a
     // finding, and the author either names the proof or says why there is none.
@@ -2086,12 +2131,15 @@ function resolveSlugAt(dir) {
 // there, never a hint.
 function checksRefusal(slug, n, out) {
   const short = s => s.length > 60 ? s.slice(0, 57) + "…" : s;
+  const review = out.find(c => c.synth === "review" || c.kind === "review");
   const lines = out.map(c => `  ${CHECK_MARK[c.status] || "·"} ${c.id}  [${c.kind}] ${c.status}` +
     (c.status === "stale" ? " — passed against other content than the tree now" : "") +
     (c.note ? ` — ${c.note}` : ""));
   return `increment ${n} has ${out.length} check(s) outstanding:\n${lines.join("\n")}` +
     `\n\n  what each one runs:  deep-plan check list ${slug} ${n}` +
     `\n  record a verdict:    deep-plan check pass|fail ${slug} ${n} <id> "<what you saw>"` +
+    (review ? `\n  the review:          deep-plan check run ${slug} ${n} opens it; then spawn ONE fresh reviewer ` +
+      `subagent whose prompt is the output of \`lookout prompt ${reviewId(slug, n)}\`` : "") +
     `\n  override, logged:    deep-plan done ${slug} ${n} --force` +
     `\n\ndone refused: ${out.map(c => `${c.id} ${c.status}${c.note ? ` (${short(c.note)})` : ""}`).join("; ")}`;
 }
@@ -2665,6 +2713,7 @@ function checkRun(slug, n, ids, opts) {
 
   const lines = [];
   let failed = 0;
+  const kickoffs = [];         // reviews this run opened, for the spawn instruction
   for (const id of want) {
     st = readState(slug);
     const cur = checksOf(findInc(st, n))[id];
@@ -2741,9 +2790,15 @@ function checkRun(slug, n, ids, opts) {
              DEEP_PLAN_ROOT: st.root || "", DEEP_PLAN_START_SHA: findInc(st, n).startSha || "" } });
     if (cur.synth === "review" && res.status === "fail") {
       const code = res.ran && res.ran.code;
-      res.note = code === 127 ? LOOKOUT_MISSING
-        : code === 3 ? `no verdict yet (no review, or no reviewer has reported) — deep-plan review ${slug} ${n}, ` +
-          `then brief a reviewer subagent with lookout prompt ${slug}-inc${n}`
+      if (code === 3) {
+        // No verdict yet: the engine opens the review itself (a re-open of one
+        // already there refreshes it to the tree now), and the session is told
+        // to spawn the reviewer. It stays failed until a reviewer reports.
+        const o = openReview(readState(slug), findInc(readState(slug), n));
+        res.note = o.ok ? `review opened, no reviewer yet — spawn ONE fresh reviewer subagent with lookout prompt ${reviewId(slug, n)}`
+          : `no verdict yet, and the review could not be opened: ${(o.out || "").split("\n").pop()}`;
+        if (o.ok) kickoffs.push({ out: o.out, agent: o.agent });
+      } else res.note = code === 127 ? LOOKOUT_MISSING
         : code === 1 ? "a blocker or major finding is open — the human closes it on the review page"
         : res.note;
     }
@@ -2771,6 +2826,11 @@ function checkRun(slug, n, ids, opts) {
     lines.push(`${id} ${res.status}`);
   }
   if (lines.length > 1 || failed) say(`\ncheck run ${slug} ${n}: ${lines.join("; ")}`);
+  if (kickoffs.length) {
+    const k = kickoffs[kickoffs.length - 1];
+    say("\n" + k.out + "\n\n" + spawnHint(slug, n, k.agent));
+    say(spawnLine(slug, n));
+  }
   return failed ? 1 : 0;
 }
 
@@ -3217,15 +3277,10 @@ switch (cmd) {
       : (st.increments || []).filter(i => i.startSha).pop();
     if (!inc || !inc.startSha) die("no started increment with a recorded sha — its first edit records one, " +
       `or \`deep-plan start ${st.slug} ${args[1] || "<n>"}\``);
-    let spec = {};
-    try { spec = JSON.parse(fs.readFileSync(path.join(KEYS_DIR, st.slug + ".spec.json"), "utf8")); } catch { /* no spec: defaults */ }
-    const agent = !!(spec.review && spec.review.agentMayClose);
-    const r = runLookout(["open", "--plan", st.slug, "--inc", String(inc.n), "--base", inc.startSha, "--at", st.root,
-      ...(agent ? ["--agent-may-close"] : [])], { cwd: st.root });
+    const r = openReview(st, inc);
     if (!r.ok) die(r.out || "lookout open failed");
     say(r.out);
-    say(`\nnext: spawn ONE reviewer subagent whose prompt is the output of\n  lookout prompt ${st.slug}-inc${inc.n}\n` +
-        `then: deep-plan check run ${st.slug} ${inc.n}` + (agent ? "\n(this plan lets the agent close findings too)" : ""));
+    say("\n" + spawnHint(st.slug, inc.n, r.agent));
     break;
   }
   default: {
