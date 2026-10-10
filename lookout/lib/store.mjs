@@ -35,8 +35,12 @@ export function idFrom(...parts) {
 // The id a source gets when none is given: stable across re-opens of the same
 // thing, so a second `lookout open` on a branch updates that branch's review
 // (and keeps its findings) instead of starting another.
+// A plan's review: one per increment (<slug>-inc<n>), and the full
+// delivery's (--inc all) as <slug>-delivery.
+export const planId = (plan, inc) => inc === "all" ? idFrom(plan, "delivery") : idFrom(plan, "inc" + (inc || ""));
+
 export function defaultId(src, o = {}) {
-  if (o.plan) return idFrom(o.plan, "inc" + (o.inc || ""));
+  if (o.plan) return planId(o.plan, o.inc);
   // Two patches named fix.patch in different places are different reviews.
   if (src.kind === "patch") return idFrom("patch", path.basename(src.file).replace(/\.(patch|diff)$/, ""),
     crypto.createHash("sha256").update(path.resolve(src.file)).digest("hex").slice(0, 6));

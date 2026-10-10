@@ -245,11 +245,15 @@ records its own verdict. Remote QA is three steps: get a preview, wait for it,
 test it. Getting the preview (a push, a channel deploy) is always your step:
 the engine prints what to run and picks up from the wait once you have.
 
-A deliverable can also declare a **review** check (`{ "kind": "review" }`).
-`deep-plan review <slug> <n>` opens the increment in
-[lookout](#lookout-review-a-diff-with-the-agent), a reviewer subagent writes
-findings, and the check runs `lookout gate`: it passes once no blocker or
-major finding is open, and only you close those, on the review page.
+While planning, the agent asks you which increments deserve a
+[lookout](#lookout-review-a-diff-with-the-agent) review and whether the full
+delivery does, and the spec records the answer. Each increment you pick gets
+a **review** check: the first `check run` opens its review beside the
+terminal and tells the agent to brief a reviewer subagent, and the check
+passes once no blocker or major finding is open (only you close those, on
+the review page). A delivery review comes after the last increment:
+`deep-plan deliver` opens a review of every increment's work together, and
+the plan isn't complete until it passes.
 `deep-plan diff` opens an increment in lookout too, when it is installed.
 
 A pass belongs to the code it ran against. Edit a file afterwards and it goes
@@ -485,9 +489,10 @@ deviation was meant.
 
 ### Reviews in a plan
 
-`lookout gate` answers 0 when no blocker or major finding is open. A deep-plan
-deliverable that declares a review check runs it, so the increment can't be
-done until you have closed those findings (see
+`lookout gate` answers 0 when no blocker or major finding is open. A
+deep-plan increment you chose for review has a check that runs it, so the
+increment can't be done until you have closed those findings, and a plan
+with a delivery review can't be complete until its review passes (see
 [Checks before done](#checks-before-done)). On a plain branch nothing gates
 on it: the review is a conversation.
 

@@ -2764,7 +2764,9 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   fs.writeFileSync(path.join(RV, ".seamux", "verify.json"), JSON.stringify({ recipes: [
     { id: "envs", run: 'echo "root=$DEEP_PLAN_ROOT start=$DEEP_PLAN_START_SHA"' }] }));
   execSync(`git init -q && git add -A && ${G} commit -q -m init`, { cwd: RV });
-  const LENV = { ...ENV, LOOKOUT_ENGINE: LK, LOOKOUT_REVIEWS_DIR: path.join(TMP, "lookout-reviews"),
+  // Reviews beside the plans, as installed (~/.claude/plans/reviews): lookout
+  // finds a plan's cutover one level up from its store.
+  const LENV = { ...ENV, LOOKOUT_ENGINE: LK, LOOKOUT_REVIEWS_DIR: path.join(ENV.DEEP_PLAN_PLANS_DIR, "reviews"),
     LOOKOUT_TYPESAFE_CLIENT: "", LOOKOUT_VENDOR_DIR: path.join(TMP, "lookout-vendor"),
     LOOKOUT_ENGINE_FILE: path.join(TMP, "lookout-engine.json"), LOOKOUT_BIN_DIR: path.join(TMP, "lookout-bin") };
   const lc = (env, ...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env, cwd: RV });
@@ -2772,7 +2774,11 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   const mk = (slug, checks, extra = {}) => {
     const s = JSON.parse(JSON.stringify(spec));
     s.slug = slug;
-    Object.assign(s, extra);
+    // A review block merges into the example's (which answers the planning
+    // question: no reviews, no delivery review); anything else replaces it.
+    const { review, ...rest } = extra;
+    Object.assign(s, rest);
+    if (review !== undefined) s.review = review && typeof review === "object" && !Array.isArray(review) ? { ...s.review, ...review } : review;
     s.verifiedFacts = [...s.verifiedFacts, { claim: "a starts at 1", evidence: "src/a.ts:1" }];
     s.deliverables[0] = { title: "Retry sweep", body: "A timer job.", files: ["src/a.ts"], checks };
     return s;
@@ -2800,9 +2806,13 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     r0.status === 0 && v0 && v0.kind === "review" && v0.synth === "review" && v0.recipe === "lookout:gate" &&
     v0.exec.steps[0].command === "lookout gate --plan rv-1 --inc 1", JSON.stringify(v0));
   let r = lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
-  ok("review check: fails with no review yet, and says how to open one",
+  ok("review check: with no review yet, check run opens it and says to spawn the reviewer",
     r.status === 1 && ck("rv-1", "review-code-review").status === "fail" &&
-    /deep-plan review rv-1 1/.test(ck("rv-1", "review-code-review").note), ck("rv-1", "review-code-review").note);
+    fs.existsSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-1-inc1.json")) &&
+    /spawn ONE fresh reviewer subagent with lookout prompt rv-1-inc1/.test(ck("rv-1", "review-code-review").note) &&
+    /lookout prompt rv-1-inc1\nthen: deep-plan check run rv-1 1/.test(r.stdout), ck("rv-1", "review-code-review").note + r.stdout);
+  ok("review check: the last line is the board's: spawn a reviewer",
+    r.stdout.trim().split("\n").pop() === "review: spawn a reviewer — lookout prompt rv-1-inc1", r.stdout);
   const r2 = lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
   ok("spike settled: running a synthesized review check never warns about recipe drift",
     !/⚠|drift|changed in|no longer in/.test(r.stderr + r2.stderr), r.stderr + r2.stderr);
@@ -2829,7 +2839,9 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   r = lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
   ok("review check: fails while a major is open, saying the human closes it",
     r.status === 1 && /human closes it/.test(ck("rv-1", "review-code-review").note));
-  ok("done is refused while the review check fails", lc(LENV, "done", "rv-1", "1").status === 1);
+  const dr = lc(LENV, "done", "rv-1", "1");
+  ok("done is refused while the review check fails, naming the reviewer's brief",
+    dr.status === 1 && /spawn ONE fresh reviewer subagent whose prompt is the output of `lookout prompt rv-1-inc1`/.test(dr.stderr), dr.stderr);
   // The human resolves it on the page (the intent server's write, by hand here).
   const closed = JSON.parse(fs.readFileSync(store, "utf8"));
   closed.findings[0].status = "resolved"; closed.findings[0].statusBy = "human";
@@ -2847,7 +2859,7 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   lc(LENV, "review", "rv-2", "1");
   ok("spec review.agentMayClose reaches the review's policy",
     JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-2-inc1.json"), "utf8")).policy.agentMayClose === true);
-  ok("spec review.quiz must be a boolean", /review: an object of booleans/.test(bad([{ kind: "review" }], { review: { quiz: "yes" } }).stderr));
+  ok("spec review.quiz must be a boolean", /review\.quiz: true or false/.test(bad([{ kind: "review" }], { review: { quiz: "yes" } }).stderr));
   ok("a review without review.quiz has the quiz off",
     JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-2-inc1.json"), "utf8")).policy.quiz === false);
   arm("rv-q", [{ kind: "review" }], { review: { quiz: true } });
@@ -2867,7 +2879,64 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   r = lc(LENV, "diff", "rv-2", "1");
   ok("deep-plan diff opens the increment in lookout, view-only (no reviewer hint)",
     r.status === 0 && /lookout rv-2-inc1/.test(r.stdout) && !/next:\s+brief/.test(r.stdout), r.stdout + r.stderr);
-  for (const n of ["rv-1", "rv-2"]) lc(LENV, "close", n);
+  // Which increments are reviewed is the human's answer at planning time:
+  // the spec must record it, and each chosen increment carries the check.
+  const chosen = (n, review) => {
+    lc(LENV, "render", tmpSpec(mk(n, [{ kind: "manual", name: "looked" }], { review })), "--root", RV);
+    return stOf(n).increments[0].checks["review-code-review"];
+  };
+  const cv = chosen("rv-pick", { increments: [1] });
+  ok("chosen review: an increment the human picked carries the check, its command synthesized",
+    cv && cv.chosen === true && cv.synth === "review" && cv.exec.steps[0].command === "lookout gate --plan rv-pick --inc 1", JSON.stringify(cv));
+  ok("chosen review: \"all\" picks every increment", !!chosen("rv-all", { increments: "all" }));
+  ok("chosen review: \"none\" picks none", !chosen("rv-none", { increments: "none" }));
+  const noAnswer = s => { const x = mk("rv-ask", [{ kind: "manual", name: "looked" }]); s(x); return lc(LENV, "render", tmpSpec(x), "--root", RV).stderr; };
+  ok("render refuses a spec that does not say which increments are reviewed",
+    /ask the human which increments deserve a lookout review/.test(noAnswer(x => delete x.review.increments)));
+  ok("…or whether the full delivery is", /ask the human which increments/.test(noAnswer(x => delete x.review.delivery)) &&
+    /ask the human which increments/.test(noAnswer(x => delete x.review)));
+  ok("review.increments names real increments, each once",
+    /review\.increments: "all", "none", or increment numbers from 1 to/.test(bad([{ kind: "manual", name: "m" }], { review: { increments: [9] } }).stderr) &&
+    /review\.increments/.test(bad([{ kind: "manual", name: "m" }], { review: { increments: [1, 1] } }).stderr));
+  ok("review.delivery is a boolean", /review\.delivery: true or false/.test(bad([{ kind: "manual", name: "m" }], { review: { delivery: "yes" } }).stderr));
+
+  // The delivery review: after the last increment the plan waits in a
+  // delivery phase until lookout's review of every increment's work passes.
+  {
+    const s = mk("rv-d", [{ kind: "manual", name: "looked" }], { review: { delivery: true } });
+    s.deliverables = [s.deliverables[0]];
+    lc(LENV, "render", tmpSpec(s), "--root", RV);
+    const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "rv-d.key.json"), "utf8"));
+    lc(LENV, "grade", "rv-d", ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+    lc(LENV, "go", "rv-d", "1"); lc(LENV, "start", "rv-d", "1");
+    fs.writeFileSync(path.join(RV, "src", "a.ts"), "export const a = 5;\n");
+    ok("deliver before the last increment is refused", /every increment must be done first/.test(lc(LENV, "deliver", "rv-d").stderr));
+    lc(LENV, "check", "pass", "rv-d", "1", "manual-looked", "a is 5");
+    let d = lc(LENV, "done", "rv-d", "1");
+    ok("the last increment done puts a delivery plan in its delivery phase, naming the next step",
+      d.status === 0 && stOf("rv-d").phase === "delivery" && /deep-plan deliver rv-d/.test(d.stdout), d.stdout + d.stderr);
+    const row = JSON.parse(lc(LENV, "status", "--json").stdout).find(x => x.slug === "rv-d");
+    ok("…where the gate stays open for its fixes", row && row.gate.allow === true && /delivery review holds the plan open/.test(row.gate.why));
+    d = lc(LENV, "deliver", "rv-d");
+    const dstore = path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-d-delivery.json");
+    const dv = fs.existsSync(dstore) ? JSON.parse(fs.readFileSync(dstore, "utf8")) : {};
+    ok("deliver with no reviewer opens the whole plan's review and says to spawn one",
+      d.status === 1 && dv.source && dv.source.inc === "all" && /the full delivery/.test(dv.title) &&
+      dv.files.some(f => f.path === "src/a.ts") && stOf("rv-d").phase === "delivery" &&
+      d.stdout.trim().split("\n").pop() === "review: spawn a reviewer — lookout prompt rv-d-delivery" &&
+      /then: deep-plan deliver rv-d/.test(d.stdout), d.stdout + d.stderr);
+    ok("the delivery brief carries the plan, every increment", /the plan it delivers, every increment/.test(lk("prompt", "rv-d-delivery").stdout));
+    lk("findings", "add", "rv-d-delivery", fjson);
+    d = lc(LENV, "deliver", "rv-d");
+    ok("deliver is refused while a blocker or major is open", d.status === 1 && /deliver refused/.test(d.stderr) && stOf("rv-d").phase === "delivery", d.stderr);
+    const cl = JSON.parse(fs.readFileSync(dstore, "utf8"));
+    cl.findings[0].status = "resolved"; cl.findings[0].statusBy = "human";
+    fs.writeFileSync(dstore, JSON.stringify(cl));
+    d = lc(LENV, "deliver", "rv-d");
+    ok("once the human closed it, deliver completes the plan", d.status === 0 && /delivered rv-d — plan complete/.test(d.stdout) &&
+      stOf("rv-d").phase === "done", d.stdout + d.stderr);
+  }
+  for (const n of ["rv-1", "rv-2", "rv-q", "rv-pick", "rv-all", "rv-none", "rv-d"]) lc(LENV, "close", n);
 }
 
 // -------------------------------------------------- hot-path cost

@@ -32,6 +32,7 @@
     { "title": "Backoff bookkeeping", "body": "Attempt count and next-try-at on the outbox row.", "files": ["db/migrate/add_retry_columns.rb"],
       "waiver": "the retry sweep spec in increment 1 exercises both new columns; a migration has nothing of its own to prove" }
   ],
+  "review": { "increments": "none", "delivery": false },
   "verification": ["bundle exec rspec spec/workers/retry_sweep_spec.rb"],
   "quiz": [
     { "id": "q1", "prompt": "A delivery fails while the downstream is mid-outage. What happens next?",

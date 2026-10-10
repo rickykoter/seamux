@@ -170,6 +170,7 @@ DP = os.path.join(os.path.expanduser("~"), ".claude", "deep-plan")
 PHASES = {
     "review": "is awaiting its alignment check",
     "implementing": "is mid-implementation",
+    "delivery": "is awaiting its delivery review",
 }
 
 

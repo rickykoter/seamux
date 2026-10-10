@@ -101,7 +101,11 @@ conversation, not a gate.
 `lookout open --plan <slug> --inc <n> --base <the increment's start sha>`
 (its id is `<slug>-inc<n>`). The brief then also carries the increment's
 own description from the plan's cutover. `deep-plan check run` re-runs the
-gate; it passes once the human has closed every blocker and major.
+gate; it passes once the human has closed every blocker and major. A plan
+whose human asked for a review of the full delivery opens one more after
+its last increment, `--inc all` (id `<slug>-delivery`, base the first
+increment's start sha, every increment's description in the brief), through
+`deep-plan deliver <slug>`.
 
 ## The page
 

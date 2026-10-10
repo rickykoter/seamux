@@ -20,12 +20,18 @@ import { outputSchema, TOUCHES, MAX_WATCH, MAX_EDGES } from "./notes.mjs";
 const PLAN_CAP = 6000;
 
 // A plan increment's own description, when the review came from a plan: the
-// cutover file deep-plan writes per increment, made to be read alone.
+// cutover file deep-plan writes per increment, made to be read alone. For the
+// full delivery (inc "all"), every increment's, in order, within the cap.
 export function planContext(plansDir, slug, inc) {
   if (!slug || !inc) return "";
   const dir = path.join(plansDir, slug + ".cutover");
   let names = [];
   try { names = fs.readdirSync(dir); } catch { return ""; }
+  if (inc === "all") {
+    const parts = names.filter(n => /^\d+-.*\.md$/.test(n)).sort()
+      .map(n => { try { return fs.readFileSync(path.join(dir, n), "utf8").trim(); } catch { return ""; } }).filter(Boolean);
+    return parts.join("\n\n---\n\n").slice(0, PLAN_CAP * 2);
+  }
   const want = String(inc).padStart(2, "0") + "-";
   const f = names.find(n => n.startsWith(want) && n.endsWith(".md"));
   if (!f) return "";
@@ -75,7 +81,7 @@ ones marked "note" are owed a note${quiz ? ', and "note + quiz" a question too' 
 
 ${groups || "  (no groups)"}
 ${plan ? `
-## What the change is for (the plan increment it implements)
+## What the change is for (${src.inc === "all" ? "the plan it delivers, every increment" : "the plan increment it implements"})
 
 ${plan.trim()}
 ` : ""}${prior}
@@ -105,7 +111,7 @@ Rules:
   number for a removed line. Point at context outside the hunks only when the
   change breaks that line.
 - Report at most 15 findings, most severe first. None is a fine answer: [].
-${plan ? `- Plan drift: when a group heads somewhere the increment above does not
+${plan ? `- Plan drift: when a group heads somewhere the ${src.inc === "all" ? "plan" : "increment"} above does not
   say (a different design, scope it did not name, a contract it did not
   mention), file a finding with category "${DRIFT}" at the line that shows
   it. It is always major or worse; the human dismisses it if it was meant.

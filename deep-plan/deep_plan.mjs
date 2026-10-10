@@ -252,9 +252,24 @@ function validate(spec, force) {
     }
   }
 
-  if (spec.review !== undefined && (typeof spec.review !== "object" || spec.review === null || Array.isArray(spec.review) ||
-      ["agentMayClose", "quiz"].some(k => spec.review[k] !== undefined && typeof spec.review[k] !== "boolean")))
-    errs.push('review: an object of booleans, e.g. { "agentMayClose": true, "quiz": true }');
+  // Which increments get a lookout review, and whether the full delivery
+  // does, is the human's call at planning time: the spec must say, even when
+  // the answer is none (`deep-plan render --force` past it is logged).
+  const rv = spec.review;
+  if (rv !== undefined && (typeof rv !== "object" || rv === null || Array.isArray(rv)))
+    errs.push('review: an object, e.g. { "increments": [1, 3], "delivery": true }');
+  else {
+    const n = (spec.deliverables || []).length;
+    for (const k of ["agentMayClose", "quiz", "delivery"])
+      if (rv && rv[k] !== undefined && typeof rv[k] !== "boolean") errs.push(`review.${k}: true or false`);
+    const inc = rv && rv.increments;
+    if (!rv || inc === undefined || rv.delivery === undefined)
+      errs.push('review: ask the human which increments deserve a lookout review and whether the full delivery ' +
+        'does, and record it: "review": { "increments": [1, 3] | "all" | "none", "delivery": true | false }');
+    else if (!(inc === "all" || inc === "none" || (Array.isArray(inc) && inc.length &&
+        inc.every(x => Number.isInteger(x) && x >= 1 && x <= n) && new Set(inc).size === inc.length)))
+      errs.push(`review.increments: "all", "none", or increment numbers from 1 to ${n}, each once`);
+  }
   if (errs.length && !force) {
     console.error("deep-plan: spec refused —");
     for (const e of errs) console.error("  ✗ " + e);
@@ -280,19 +295,23 @@ function reviewCheck(c, slug, n) {
     exec: { tier: "cheap", cwd: ".", timeout: 120, steps: [{ kind: "run", command: shown }] } };
 }
 
-// lookout's engine: $LOOKOUT_ENGINE, else the root its pointer names. "" when
-// lookout is not installed.
+// The plan as approved (its archived spec), or {} when there is none.
+function planSpec(slug) {
+  try { return JSON.parse(fs.readFileSync(path.join(KEYS_DIR, slug + ".spec.json"), "utf8")); } catch { return {}; }
+}
+
 // The plan's review policy as lookout open flags: who may close findings,
 // and the ownership quiz (lookout's group notes). Both are fixed when the
 // review is created, so every open of a plan's review passes both.
 function reviewPolicy(slug) {
-  let spec = {};
-  try { spec = JSON.parse(fs.readFileSync(path.join(KEYS_DIR, slug + ".spec.json"), "utf8")); } catch { /* no spec: defaults */ }
+  const spec = planSpec(slug);
   const agent = !!(spec.review && spec.review.agentMayClose);
   const quiz = !!(spec.review && spec.review.quiz);
   return { agent, quiz, flags: [...(agent ? ["--agent-may-close"] : []), ...(quiz ? ["--quiz"] : [])] };
 }
 
+// lookout's engine: $LOOKOUT_ENGINE, else the root its pointer names. "" when
+// lookout is not installed.
 function lookoutRoot() {
   const ok = r => r && fs.existsSync(path.join(r, "lookout.mjs")) ? r : "";
   // Authoritative when set, even empty: the probe sets it so no test run ever
@@ -315,13 +334,41 @@ function reviewExec(cur, slug, n) {
   return { ...cur.exec, steps: [{ kind: "run", command }] };
 }
 
+// An increment's review is <slug>-inc<n>; the full delivery's is
+// <slug>-delivery (lookout's --inc all).
+const reviewId = (slug, n) => n === "all" ? `${slug}-delivery` : `${slug}-inc${Number(n)}`;
+// What the session does once a review is open: the engine opens it, but only
+// the session can spawn the one reviewer subagent (it must not be the context
+// that wrote the change). The last line is for the board, which shows only that.
+const spawnLine = (slug, n) => `review: spawn a reviewer — lookout prompt ${reviewId(slug, n)}`;
+function spawnHint(slug, n, pol = {}) {
+  return `next: spawn ONE fresh reviewer subagent whose prompt is the output of\n  lookout prompt ${reviewId(slug, n)}\n` +
+    `then: ${n === "all" ? `deep-plan deliver ${slug}` : `deep-plan check run ${slug} ${n}`}` +
+    (pol.agent ? "\n(this plan lets the agent close findings too)" : "") +
+    (pol.quiz ? "\n(this plan quizzes: the reviewer writes a question for each high-risk group)" : "");
+}
+
+// Open (or refresh) a review in lookout with the plan's policy: an
+// increment's work since its start sha, or (inc "all") the whole plan's since
+// the first increment's. { ok, out, agent, quiz } — never throws.
+function openReview(st, inc) {
+  const all = inc === "all";
+  const sha = all ? ((st.increments || []).find(i => i.startSha) || {}).startSha : inc && inc.startSha;
+  if (!sha) return { ok: false, out: "no recorded start sha — an increment's first edit records one, " +
+    `or \`deep-plan start ${st.slug} ${all || !inc ? "<n>" : inc.n}\`` };
+  const pol = reviewPolicy(st.slug);
+  const r = runLookout(["open", "--plan", st.slug, "--inc", all ? "all" : String(inc.n), "--base", sha, "--at", st.root,
+    ...pol.flags], { cwd: st.root });
+  return { ...r, agent: pol.agent, quiz: pol.quiz };
+}
+
 // Run lookout with args; { ok, out } — never throws.
 function runLookout(args, { cwd } = {}) {
   const root = lookoutRoot();
   if (!root) return { ok: false, out: LOOKOUT_MISSING, missing: true };
   const r = spawnSync(process.execPath, [path.join(root, "lookout.mjs"), ...args],
     { encoding: "utf8", cwd: cwd || process.cwd(), timeout: 180000 });
-  return { ok: r.status === 0, out: ((r.stdout || "") + (r.stderr || "")).trim() };
+  return { ok: r.status === 0, code: r.status, out: ((r.stdout || "") + (r.stderr || "")).trim() };
 }
 
 // Each deliverable's checks as render resolved them: declared checks, with a
@@ -366,6 +413,15 @@ function resolvePlanChecks(spec, root) {
       for (let k = 2; ids.has(id); k++) id = `${r.key}-${k}`;
       ids.add(id);
       out.push(bind({ id, kind: r.kind, name: r.name, inferred: true }, r));
+    }
+    // The increments the human chose for a lookout review at planning time
+    // (`review.increments`) carry a review check, as if each declared one.
+    const chosen = spec.review && spec.review.increments;
+    if (!out.some(c => c.kind === "review") && (chosen === "all" || (Array.isArray(chosen) && chosen.includes(i + 1)))) {
+      let id = "review-code-review";
+      for (let k = 2; ids.has(id); k++) id = `review-code-review-${k}`;
+      ids.add(id);
+      out.push(reviewCheck({ id, kind: "review", name: "code review", chosen: true }, spec.slug, i + 1));
     }
     // Old plans are not grandfathered: an increment nothing can prove is a
     // finding, and the author either names the proof or says why there is none.
@@ -2097,12 +2153,15 @@ function resolveSlugAt(dir) {
 // there, never a hint.
 function checksRefusal(slug, n, out) {
   const short = s => s.length > 60 ? s.slice(0, 57) + "…" : s;
+  const review = out.find(c => c.synth === "review" || c.kind === "review");
   const lines = out.map(c => `  ${CHECK_MARK[c.status] || "·"} ${c.id}  [${c.kind}] ${c.status}` +
     (c.status === "stale" ? " — passed against other content than the tree now" : "") +
     (c.note ? ` — ${c.note}` : ""));
   return `increment ${n} has ${out.length} check(s) outstanding:\n${lines.join("\n")}` +
     `\n\n  what each one runs:  deep-plan check list ${slug} ${n}` +
     `\n  record a verdict:    deep-plan check pass|fail ${slug} ${n} <id> "<what you saw>"` +
+    (review ? `\n  the review:          deep-plan check run ${slug} ${n} opens it; then spawn ONE fresh reviewer ` +
+      `subagent whose prompt is the output of \`lookout prompt ${reviewId(slug, n)}\`` : "") +
     `\n  override, logged:    deep-plan done ${slug} ${n} --force` +
     `\n\ndone refused: ${out.map(c => `${c.id} ${c.status}${c.note ? ` (${short(c.note)})` : ""}`).join("; ")}`;
 }
@@ -2183,12 +2242,17 @@ function transition(action, slug, n, why, force = false) {
       ? ` (checks outstanding: ${out.map(c => `${c.id} [${c.kind}] ${c.status}`).join(", ")}; overridden with --force)`
       : ""));
     if ((st.increments || []).every(i => i.status === "done")) {
-      st.phase = "done";
-      log1(st, "every increment done; the gate retires");
+      // A plan whose human asked for a review of the full delivery is not
+      // complete until that review passes: `deep-plan deliver` closes it.
+      const delivery = !!(planSpec(slug).review || {}).delivery;
+      st.phase = delivery ? "delivery" : "done";
+      log1(st, delivery ? `every increment done; the delivery review closes the plan — deep-plan deliver ${slug}`
+                        : "every increment done; the gate retires");
     }
     writeState(st); rerenderWorking(slug);
     incrementDiff(st, inc);
-    say(`done ${slug} ${n}` + (st.phase === "done" ? " — plan complete" : ""));
+    say(`done ${slug} ${n}` + (st.phase === "done" ? " — plan complete"
+      : st.phase === "delivery" ? `\nevery increment is done; the full delivery is reviewed next: deep-plan deliver ${slug}` : ""));
     return;
   } else if (action === "block") {
     const inc = findInc(st, n);
@@ -2676,6 +2740,7 @@ function checkRun(slug, n, ids, opts) {
 
   const lines = [];
   let failed = 0;
+  const kickoffs = [];         // reviews this run opened, for the spawn instruction
   for (const id of want) {
     st = readState(slug);
     const cur = checksOf(findInc(st, n))[id];
@@ -2752,9 +2817,15 @@ function checkRun(slug, n, ids, opts) {
              DEEP_PLAN_ROOT: st.root || "", DEEP_PLAN_START_SHA: findInc(st, n).startSha || "" } });
     if (cur.synth === "review" && res.status === "fail") {
       const code = res.ran && res.ran.code;
-      res.note = code === 127 ? LOOKOUT_MISSING
-        : code === 3 ? `no verdict yet (no review, or no reviewer has reported) — deep-plan review ${slug} ${n}, ` +
-          `then brief a reviewer subagent with lookout prompt ${slug}-inc${n}`
+      if (code === 3) {
+        // No verdict yet: the engine opens the review itself (a re-open of one
+        // already there refreshes it to the tree now), and the session is told
+        // to spawn the reviewer. It stays failed until a reviewer reports.
+        const o = openReview(readState(slug), findInc(readState(slug), n));
+        res.note = o.ok ? `review opened, no reviewer yet — spawn ONE fresh reviewer subagent with lookout prompt ${reviewId(slug, n)}`
+          : `no verdict yet, and the review could not be opened: ${(o.out || "").split("\n").pop()}`;
+        if (o.ok) kickoffs.push({ out: o.out, agent: o.agent });
+      } else res.note = code === 127 ? LOOKOUT_MISSING
         : code === 1 ? "a blocker or major finding is open — the human closes it on the review page"
         : res.note;
     }
@@ -2786,6 +2857,11 @@ function checkRun(slug, n, ids, opts) {
     lines.push(`${id} ${res.status}`);
   }
   if (lines.length > 1 || failed) say(`\ncheck run ${slug} ${n}: ${lines.join("; ")}`);
+  if (kickoffs.length) {
+    const k = kickoffs[kickoffs.length - 1];
+    say("\n" + k.out + "\n\n" + spawnHint(slug, n, k));
+    say(spawnLine(slug, n));
+  }
   return failed ? 1 : 0;
 }
 
@@ -3063,7 +3139,7 @@ function familyCmd(args, flags) {
 const BUILTIN_VERBS = new Set([
   "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
   "grade", "status", "go", "start", "done", "reset", "block", "check", "obs",
-  "open-gate", "shut-gate", "close", "diff", "review", "ask", "help", "setup", "engine", "verify",
+  "open-gate", "shut-gate", "close", "diff", "review", "deliver", "ask", "help", "setup", "engine", "verify",
   "family",
 ]);
 
@@ -3228,6 +3304,35 @@ switch (cmd) {
     if (!r.missing) say(`lookout could not open it (${r.out.split("\n").pop()}); falling back to cmux diff`);
     incrementDiff(st, inc, { open: true }); break;
   }
+  case "deliver": {
+    // The closing step a plan with review.delivery takes after its last
+    // increment: lookout's review of the whole plan's diff. No reviewer yet,
+    // and it opens the review and says how to brief one; a blocker or major
+    // open, and it names them; passed, and the plan is complete.
+    const slug = args[0] || die("deliver <slug>");
+    const st = readState(slug) || die("no plan " + slug);
+    if (st.phase === "done") { say(`${slug} is already complete`); break; }
+    if (st.phase !== "delivery")
+      die(st.phase === "implementing" || st.phase === "review"
+        ? `${slug} is not delivered yet: every increment must be done first (phase: ${st.phase})`
+        : `${slug} is ${st.phase}`);
+    const g = runLookout(["gate", "--plan", slug, "--inc", "all"], { cwd: st.root });
+    if (g.missing) die(LOOKOUT_MISSING);
+    if (g.code === 3) {
+      const r = openReview(st, "all");
+      if (!r.ok) die(r.out || "lookout open failed");
+      say(r.out + "\n\n" + spawnHint(slug, "all", r));
+      say(spawnLine(slug, "all"));
+      process.exit(1);
+    }
+    if (g.code !== 0) die(`the delivery review holds the plan open — ${g.out.split("\n")[0]}\n` +
+      `deliver refused: a blocker or major is open on ${reviewId(slug, "all")}`);
+    st.phase = "done";
+    log1(st, `deliver: the delivery review passed (${g.out.split("\n")[0]}); the gate retires`);
+    writeState(st); rerenderWorking(slug);
+    say(`delivered ${slug} — plan complete`);
+    break;
+  }
   case "review": {
     // Open (or refresh) the increment's review in lookout, with the plan's
     // close policy, and say how to brief the reviewer.
@@ -3236,14 +3341,10 @@ switch (cmd) {
       : (st.increments || []).filter(i => i.startSha).pop();
     if (!inc || !inc.startSha) die("no started increment with a recorded sha — its first edit records one, " +
       `or \`deep-plan start ${st.slug} ${args[1] || "<n>"}\``);
-    const { agent, quiz, flags } = reviewPolicy(st.slug);
-    const r = runLookout(["open", "--plan", st.slug, "--inc", String(inc.n), "--base", inc.startSha, "--at", st.root,
-      ...flags], { cwd: st.root });
+    const r = openReview(st, inc);
     if (!r.ok) die(r.out || "lookout open failed");
     say(r.out);
-    say(`\nnext: spawn ONE reviewer subagent whose prompt is the output of\n  lookout prompt ${st.slug}-inc${inc.n}\n` +
-        `then: deep-plan check run ${st.slug} ${inc.n}` + (agent ? "\n(this plan lets the agent close findings too)" : "") +
-        (quiz ? "\n(this plan quizzes: the reviewer writes a question for each high-risk group)" : ""));
+    say("\n" + spawnHint(st.slug, inc.n, r));
     break;
   }
   default: {
@@ -3297,6 +3398,8 @@ switch (cmd) {
                                               installed, else cmux diff on the patch done writes
   review <slug> [n]                           open the increment's lookout review (the plan's
                                               review.agentMayClose applies); a review check gates on it
+  deliver <slug>                              after the last increment of a plan with review.delivery:
+                                              open, then pass, the full delivery's lookout review
   close <slug>                                retire a finished plan
   ask <ask.json>                              render a question with diagrams/examples
                                               (served at /ask/<id>; a pick on the page
