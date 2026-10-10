@@ -776,14 +776,26 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
     notes: [{ id: "n1", files: ["a.js"], quiz: q("first?", 1) }, { id: "n2", files: ["a.js"], quiz: q("second?", 2) },
             { id: "n3", files: ["a.js"] }],
   }));
-  const port = await new Promise(res => { const s = net.createServer(); s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => res(p)); }); });
+  const pinned = await new Promise(res => { const s = net.createServer(); s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => res(p)); }); });
   const srv = spawn("python3", [join(HERE, "crew-board-intent")],
-    { env: { ...process.env, HOME, CREW_INTENT_PORT: String(port) }, stdio: "ignore" });
+    { env: { ...process.env, HOME, CREW_INTENT_PORT: String(pinned) }, stdio: "ignore" });
   const tokenFile = join(HOME, ".cache", "cmux-crew", "board-intent.token");
-  for (let i = 0; i < 100 && !fs.existsSync(join(HOME, ".cache", "cmux-crew", "board-intent.port")); i++)
-    await new Promise(r => setTimeout(r, 50));
-  await new Promise(r => setTimeout(r, 150));
-  const token = fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, "utf8").trim() : "";
+  const portFile = join(HOME, ".cache", "cmux-crew", "board-intent.port");
+  // Up when it answers, on the port it wrote: the pin is a preference the
+  // server may fall back from, and a cold python on a CI runner can take
+  // seconds to start. Never a fixed sleep.
+  let port = 0;
+  const ping = p => new Promise(res => {
+    const r = http.request({ host: "127.0.0.1", port: p, method: "GET", path: "/review/demo" }, resp => { resp.resume(); res(true); });
+    r.on("error", () => res(false));
+    r.setTimeout(1000, () => { r.destroy(); res(false); });
+    r.end();
+  });
+  for (const deadline = Date.now() + 20000; Date.now() < deadline; await new Promise(r => setTimeout(r, 100))) {
+    const p = fs.existsSync(portFile) ? parseInt(fs.readFileSync(portFile, "utf8"), 10) : 0;
+    if (p && fs.existsSync(tokenFile) && await ping(p)) { port = p; break; }
+  }
+  const token = port && fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, "utf8").trim() : "";
   const ORIGIN = `http://127.0.0.1:${port}`;
   const req = (method, path, { headers = {}, body = null } = {}) => new Promise(res => {
     const r = http.request({ host: "127.0.0.1", port, method, path, headers }, resp => {
@@ -802,6 +814,7 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
   const store = () => JSON.parse(fs.readFileSync(join(reviews, "demo.json"), "utf8"));
   try {
     checks.push(["review route: the server came up under the temp HOME", !!token]);
+    if (!token) throw new Error("the intent server never answered; the review route checks are skipped");
     const page = await req("GET", "/review/demo");
     checks.push(["review route: the page is served with its token script before </body>",
       page.status === 200 && page.body.includes(`window.lookout.serve({ token: "${token}", id: "demo" })`) &&
@@ -873,6 +886,8 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
     fs.utimesSync(lock, old, old);
     checks.push(["review POST: a stale lock is broken, not waited on",
       (await post({ op: "comment", t: token, item: "t1", text: "after a crash" })).status === 200 && !fs.existsSync(lock)]);
+  } catch (e) {
+    checks.push(["review routes ran to the end: " + e.message, false]);
   } finally {
     srv.kill();
     fs.rmSync(HOME, { recursive: true, force: true });
