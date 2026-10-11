@@ -67,6 +67,9 @@ run() {
   if [ "$DRY" = 1 ]; then printf '  \033[2mwould run:\033[0m %s\n' "$*"; return 0; fi
   eval "$@"
 }
+# A value spliced into a `run` command, quoted for its eval: a path or option
+# value with an apostrophe or a space stays one word.
+q() { printf '%q' "$1"; }
 
 # The plugins this run is about, in install order (crew depends on deep-plan).
 PLUGINS="deep-plan"
@@ -200,11 +203,11 @@ fi
 # and the old ~/.claude/hooks/cmux/guard_bash.sh if it is there.
 if [ "$UNINSTALL" = 1 ]; then
   if [ -x "$DEST/bin/crew" ]; then
-    run "'$DEST/bin/crew' uninstall" || warn "crew uninstall failed — continuing"
+    run "$(q "$DEST/bin/crew") uninstall" || warn "crew uninstall failed — continuing"
   fi
   if [ -d "$DEST" ]; then
     BAK="$HOME/.config/cmux/crew-backups/crew.uninstalled.$(date +%Y%m%d-%H%M%S)"
-    run "mkdir -p '$(dirname "$BAK")' && mv '$DEST' '$BAK'" && did "crew tree moved aside -> ${BAK/#$HOME/~}"
+    run "mkdir -p $(q "$(dirname "$BAK")") && mv $(q "$DEST") $(q "$BAK")" && did "crew tree moved aside -> ${BAK/#$HOME/~}"
   fi
   for p in $ALL_PLUGINS; do
     if claude plugin list --json 2>/dev/null | grep -q "\"$p@$MARKET\""; then
@@ -214,7 +217,7 @@ if [ "$UNINSTALL" = 1 ]; then
   for name in deep-plan restack lookout; do
     f="$LOCALBIN/$name"
     if [ -f "$f" ] && grep -q "engine.json" "$f" 2>/dev/null; then
-      run "rm -f '$f'" && did "removed the $name shim"
+      run "rm -f $(q "$f")" && did "removed the $name shim"
     fi
   done
   run "claude plugin marketplace remove '$MARKET' >/dev/null 2>&1" && did "removed the seamux marketplace"
@@ -247,7 +250,7 @@ SOURCE="$HERE"
 [ "$GITHUB" = 1 ] && SOURCE="$GITHUB_REPO"
 # Adding again re-points an existing `seamux` marketplace at this source, and
 # installed plugins follow it; nothing is uninstalled.
-run "claude plugin marketplace add '$SOURCE' >/dev/null" && did "marketplace seamux -> $SOURCE" \
+run "claude plugin marketplace add $(q "$SOURCE") >/dev/null" && did "marketplace seamux -> $SOURCE" \
   || die "could not add the seamux marketplace from $SOURCE — nothing else was changed"
 for p in $PLUGINS; do
   run "claude plugin install '$p@$MARKET' >/dev/null" && did "installed $p" \
@@ -269,7 +272,7 @@ PY
 )"
   [ -n "$WITH_JIRA" ] && [ -z "$JIRA_SITE" ] && warn "--with-jira needs a site now (--with-jira=yourco.atlassian.net): Jira is on when jira_site is set"
   if [ "$VALUES" != "{}" ]; then
-    run "printf '%s' '$VALUES' | claude plugin configure crew@$MARKET --values-stdin >/dev/null" && did "crew options: $VALUES"
+    run "printf '%s' $(q "$VALUES") | claude plugin configure crew@$MARKET --values-stdin >/dev/null" && did "crew options: $VALUES"
   fi
 fi
 
