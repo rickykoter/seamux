@@ -645,6 +645,29 @@ print(json.dumps([m.tree_url_is(L("crew · who needs you", "file:///h/.config/cm
 `, join(HERE, "crew-board")], { encoding: "utf8" }));
   checks.push(["tidy/adopt: board.html and /usage match by URL, not dashboard.html or a title",
     JSON.stringify(tm) === JSON.stringify([true, false, false, true, false])]);
+
+  // crew-board-diag carries its own copy (it must run when crew-board is
+  // broken), so its duplicate count is one tidy can clear. Same code, and a
+  // dashboard.html tab is not counted.
+  const dm = JSON.parse(execFileSync("python3", ["-c", `
+import ast, json, re, sys
+def fn(path):
+    for n in ast.walk(ast.parse(open(path).read())):
+        if isinstance(n, ast.FunctionDef) and n.name == "tree_url_is":
+            n.body = [b for b in n.body if not (isinstance(b, ast.Expr) and isinstance(b.value, ast.Constant))]
+            return n
+d, b = fn(sys.argv[1]), fn(sys.argv[2])
+if not (d and b):
+    print(json.dumps([False, -1])); sys.exit()
+ns = {"re": re}
+exec(compile(ast.fix_missing_locations(ast.Module(body=[d], type_ignores=[])), "diag", "exec"), ns)
+U = "E80C26CC-48A8-4BB1-A439-65887FA2F457"
+L = lambda t, u: '├── surface surface:%s %s [browser] "%s" %s' % (t, U, t, u)
+tree = "\\n".join([L("1", "file:///h/crew/board/board.html"), L("2", "file:///x/dashboard.html"), L("board.html", "https://e.com/a")])
+print(json.dumps([ast.dump(d) == ast.dump(b), sum(ns["tree_url_is"](l, "board.html") for l in tree.splitlines())]))
+`, join(HERE, "crew-board-diag"), join(HERE, "crew-board")], { encoding: "utf8" }));
+  checks.push(["diag: counts board surfaces with crew-board's own tree_url_is, not dashboard.html",
+    JSON.stringify(dm) === JSON.stringify([true, 1])]);
 }
 
 // ---- crew-color: a family's shades, and the colors from before ------------
