@@ -419,12 +419,15 @@ function cmdRun(ctx) {
   const base = baseFacts(ctx);
 
   const stack = discover(ctx.cwd, ctx.cfg, ctx.branch, base, ctx.gitDirPath);
+  // `--branch` is planned against the whole chain and filtered after, so a
+  // branch mid-stack is lifted off its real parent. Filtered first, it was the
+  // bottom step and went onto the base with its parent's old commits in tow.
   const only = opt("branch");
-  let chain = stack.chain;
-  if (only) chain = chain.filter(c => c.name === only);
-  if (!chain.length) die(`no branches to restack${only ? ` matching --branch ${only}` : ""}`);
+  let planned = planWalk(ctx.cwd, stack.chain, base);
+  if (only) planned = planned.filter(s => s.branch === only);
+  if (!planned.length) die(`no branches to restack${only ? ` matching --branch ${only}` : ""}`);
 
-  const steps = planWalk(ctx.cwd, chain, base).map(s => ({ ...s, status: "pending", newTip: null }));
+  const steps = planned.map(s => ({ ...s, status: "pending", newTip: null }));
   ctx.st = { ...S.fresh(), stale: ctx.st.stale || [], phase: "walking",
              startedAt: new Date().toISOString(), base: { ref: base.ref, sha: base.sha },
              driver: stack.driver, steps, index: 0, returnTo: ctx.branch };
@@ -434,13 +437,22 @@ function cmdRun(ctx) {
   return walkGit(ctx);
 }
 
+// What a step is replayed onto: the base for the bottom branch, else its
+// parent's rewritten tip, or the parent as it is now when the parent is not
+// in this walk (`--branch`).
+function ontoFor(cwd, st, step) {
+  if (!(step.parentIndex >= 0)) return st.base.sha;
+  const parent = st.steps.find(s => s.branch === step.onto);
+  return parent ? parent.newTip : revParse(cwd, step.onto);
+}
+
 function walkGit(ctx) {
   const st = ctx.st;
   for (; st.index < st.steps.length; st.index++) {
     const step = st.steps[st.index];
     if (step.error) { step.status = "skipped"; continue; }
 
-    const onto = st.index === 0 ? st.base.sha : st.steps[st.index - 1].newTip;
+    const onto = ontoFor(ctx.cwd, st, step);
     // Nothing to do: this branch already sits on the new parent.
     if (step.upstream === onto) {
       step.status = "already-current";
@@ -450,7 +462,7 @@ function walkGit(ctx) {
     const co = git(ctx.cwd, ["checkout", "--quiet", step.branch]);
     if (!co.ok) { step.status = "error"; step.why = co.err; break; }
 
-    say(`  rebasing ${step.branch} onto ${st.index === 0 ? st.base.ref : st.steps[st.index - 1].branch}`);
+    say(`  rebasing ${step.branch} onto ${step.onto}`);
     if (OPTS.dryRun) { step.status = "dry-run"; continue; }
     // `--exec` implies `--empty=keep`; `drop` keeps today's handling of a
     // commit that becomes empty.
@@ -924,8 +936,7 @@ function cmdVerify(ctx) {
   const factor = Number(ctx.cfg.verify?.creationFactor) || CREATION_FACTOR;
   const results = [];
   for (let i = 0; i < wanted.length; i++) {
-    const idx = st.steps.indexOf(wanted[i]);
-    const newParent = idx === 0 ? st.base.sha : st.steps[idx - 1].newTip;
+    const newParent = ontoFor(ctx.cwd, st, wanted[i]);
     results.push(verifyBranch(ctx.cwd, ctx.cfg, wanted[i], newParent, st.humanResolved || [], factor));
   }
   const unexplained = results.flatMap(r => (r.unexplained || []).map(u => ({ branch: r.branch, ...u })));

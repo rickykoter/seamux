@@ -477,6 +477,36 @@ step("abort mid-stack puts back the branches already restacked");
   ok("while putting back the rest", git(r, "rev-parse", "feat2").out === before[1]);
 }
 
+// ---------------------------------------------------------------- --branch mid-stack
+step("--branch on a branch mid-stack lifts it off its parent, never the base");
+{
+  const cfg = { ...cheapCfg, stack: { tool: "git", branches: ["feat1", "feat2"] } };
+  const r = newRepo("onebranch", cfg);
+  git(r, "checkout", "-q", "-b", "feat1");
+  addDef(r, "b", "bravo\n", "feat1: b");
+  git(r, "checkout", "-q", "-b", "feat2");
+  addDef(r, "d", "delta\n", "feat2: d");
+  git(r, "checkout", "-q", "master");
+  addDef(r, "c", "charlie\n", "master: c");
+  git(r, "checkout", "-q", "feat2");
+  const feat2Tip = git(r, "rev-parse", "feat2").out;
+
+  // Its parent has not moved, so feat2 already sits where it belongs.
+  const alone = cli(r, "run", "--branch", "feat2", "--json", "--no-fetch");
+  ok("--branch feat2 alone succeeds", alone.status === 0, alone.out + alone.err);
+  ok("and leaves feat2 on feat1, without copying feat1's commits onto the base",
+    git(r, "rev-parse", "feat2").out === feat2Tip && git(r, "merge-base", "--is-ancestor", "feat1", "feat2").ok,
+    git(r, "log", "--oneline", "--graph", "--all").out);
+
+  // One branch at a time, bottom first: feat2 follows its rewritten parent.
+  const one = cli(r, "run", "--branch", "feat1", "--json", "--no-fetch");
+  ok("--branch feat1 restacks the bottom onto the base", one.status === 0 && git(r, "merge-base", "--is-ancestor", "master", "feat1").ok, one.out + one.err);
+  const two = cli(r, "run", "--branch", "feat2", "--json", "--no-fetch");
+  ok("then --branch feat2 follows it", two.status === 0 && git(r, "merge-base", "--is-ancestor", "feat1", "feat2").ok, two.out + two.err);
+  ok("with nothing replayed twice", Number(git(r, "rev-list", "--count", "master..feat2").out) === 2,
+    git(r, "log", "--oneline", "master..feat2").out);
+}
+
 // ---------------------------------------------------------------- a checkout that fails
 step("a branch that cannot be checked out fails the walk, not finishes it");
 {

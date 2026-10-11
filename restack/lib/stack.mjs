@@ -18,7 +18,7 @@
 // Reporting the source matters more than being clever: "topology" next to a
 // two-branch chain is how you notice that the third branch of your stack is
 // not checked out locally, before a rebase silently leaves it behind.
-import { revParse, mergeBase, isAncestor, localBranches, countRange, defaultBase } from "./git.mjs";
+import { git, revParse, mergeBase, isAncestor, localBranches, countRange, defaultBase } from "./git.mjs";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -139,9 +139,16 @@ export function planWalk(cwd, chain, base) {
     const b = chain[i];
     const tip = revParse(cwd, b.name);
     if (!tip) { steps.push({ branch: b.name, error: "no local ref", pr: b.pr }); continue; }
-    const upstream = i === 0
+    let upstream = i === 0
       ? mergeBase(cwd, base.ref, b.name)          // fork point from the base
       : revParse(cwd, chain[i - 1].name);         // the parent AS IT IS NOW
+    // A parent rewritten before this walk (restacked alone with --branch, or
+    // amended) no longer sits under b, and lifting b off its new tip replays
+    // the parent's old commits. Its reflog still has the tip b was built on.
+    if (i > 0 && upstream && !isAncestor(cwd, upstream, b.name)) {
+      const fp = git(cwd, ["merge-base", "--fork-point", chain[i - 1].name, b.name]);
+      if (fp.ok && fp.out) upstream = fp.out;
+    }
     steps.push({
       branch: b.name, pr: b.pr, tip, upstream,
       onto: i === 0 ? base.ref : chain[i - 1].name,   // resolved again at run time
