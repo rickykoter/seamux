@@ -143,6 +143,18 @@ def plan_surface_file(slug):
     return os.path.join(STATE_DIR, "plan-surface-" + slug)
 
 
+def _surface_cmux(argv, timeout):
+    """(returncode, output) of a cmux call. A hung cmux is a failure with a
+    reason: TimeoutExpired out of a handler drops the page's connection bare."""
+    try:
+        p = subprocess.run([CMUX] + argv, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, (p.stdout or "") + (p.stderr or "")
+    except subprocess.TimeoutExpired:
+        return 1, "cmux did not answer in %ds" % timeout
+    except OSError as exc:
+        return 1, "cmux could not run: %s" % exc
+
+
 def open_plan(slug, port):
     """Show a plan in the Dock, reusing its own surface.
 
@@ -166,17 +178,14 @@ def open_plan(slug, port):
     if sid:
         # Still there? Then this is a focus, not an open -- clicking `plan` twice
         # must not stack Dock tabs.
-        p = subprocess.run([CMUX, "browser", "--surface", sid, "get", "url"],
-                           capture_output=True, text=True, timeout=10)
-        if p.returncode == 0:
+        if _surface_cmux(["browser", "--surface", sid, "get", "url"], 10)[0] == 0:
             run([CMUX, "browser", "--surface", sid, "goto", url])
             run([CMUX, "focus", "--surface", sid])
             return True, "focused " + sid
 
-    p = subprocess.run([CMUX, "new-surface", "--type", "browser", "--placement",
-                        "dock", "--url", url], capture_output=True, text=True, timeout=20)
-    out = (p.stdout or "") + (p.stderr or "")
-    if p.returncode != 0:
+    rc, out = _surface_cmux(["new-surface", "--type", "browser", "--placement",
+                             "dock", "--url", url], 20)
+    if rc != 0:
         return False, "could not open a Dock surface: " + out.strip()[:160]
     new = next((t for t in out.split() if len(t) == 36 and t.count("-") == 4), "")
     if new:
@@ -371,16 +380,13 @@ def open_ask(ask_id, port, wsid):
     except OSError:
         pass
     if sid:
-        p = subprocess.run([CMUX, "browser", "--surface", sid, "get", "url"],
-                           capture_output=True, text=True, timeout=10)
-        if p.returncode == 0:
+        if _surface_cmux(["browser", "--surface", sid, "get", "url"], 10)[0] == 0:
             run([CMUX, "browser", "--surface", sid, "goto", url])
             run([CMUX, "focus", "--surface", sid])
             return True, "focused " + sid
-    p = subprocess.run([CMUX, "new-surface", "--type", "browser", "--placement",
-                        "dock", "--url", url], capture_output=True, text=True, timeout=20)
-    out = (p.stdout or "") + (p.stderr or "")
-    if p.returncode != 0:
+    rc, out = _surface_cmux(["new-surface", "--type", "browser", "--placement",
+                             "dock", "--url", url], 20)
+    if rc != 0:
         return False, "could not open a Dock surface: " + out.strip()[:160]
     new = next((t for t in out.split() if len(t) == 36 and t.count("-") == 4), "")
     if new:
@@ -904,7 +910,12 @@ def increment(slug, n, action, why):
     argv = ["node", dp_engine.script(), action, slug, str(n)]
     if action == "block":
         argv.append(why or "blocked from the plan surface")
-    p = subprocess.run(argv, capture_output=True, text=True, timeout=90)
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=90)
+    except subprocess.TimeoutExpired:
+        # Answer the page with a reason rather than dropping its connection.
+        log("FAIL inc %s %s %s: timed out" % (action, slug, n))
+        return False, "deep-plan did not finish in 90s"
     detail = ((p.stdout or "") + (p.stderr or "")).strip().split("\n")[-1][:160]
     if p.returncode != 0:
         log("FAIL inc %s %s %s: %s" % (action, slug, n, detail))
