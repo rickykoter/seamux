@@ -1747,12 +1747,29 @@ def selftest():
     # different parents and none of them source a shell rc, so reading it only
     # from the environment meant it inherited the value from whichever process
     # happened to spawn it -- correct until the next restart, then silently not.
+    # Asked of _billing_mode itself, with the env var unset and a config file in
+    # a temp CREW_LOCAL: grepping this file for a name would match the check.
+    import tempfile
+    saved_env = {k: os.environ.get(k) for k in ("CREW_LOCAL", "CREW_BILLING")}
+    try:
+        tmpcfg = tempfile.mkdtemp(prefix="crew-local-selftest-")
+        with open(os.path.join(tmpcfg, "config.json"), "w") as fh:
+            json.dump({"billing": "selftest-mode"}, fh)
+        os.environ["CREW_LOCAL"] = tmpcfg
+        os.environ.pop("CREW_BILLING", None)
+        check("billing mode is read from a file, not just the environment",
+              _billing_mode() == "selftest-mode",
+              "an inherited env var reverts on the next respawn")
+        shutil.rmtree(tmpcfg, ignore_errors=True)
+    finally:
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
     try:
         cfgdir = os.environ.get("CREW_LOCAL") or os.path.join(
             os.path.expanduser("~"), ".config", "cmux", "crew-local")
-        check("billing mode is read from a file, not just the environment",
-              "_crew_local" in open(__file__, encoding="utf-8").read(),
-              "an inherited env var reverts on the next respawn")
         cfgp = os.path.join(cfgdir, "config.json")
         if os.path.exists(cfgp):
             json.load(open(cfgp, encoding="utf-8"))
@@ -1776,11 +1793,24 @@ def selftest():
         check("a restart reuses the persisted token",
               reuse in me and mode in me,
               "crew apply restarts this server; a fresh token 403s every chip")
-        check("...and the port, via the pin",
-              "__INTENT_PORT__" in me or "CREW_INTENT_PORT" in me,
-              "a moved port orphans the URLs already in the pushed page")
     except OSError as exc:
         check("crew-board-intent is readable", False, str(exc))
+    # The port: free_port() must take the pin when it is free. Asked of the
+    # function with a pin known to be free, not of this file's text.
+    saved_pin = os.environ.get("CREW_INTENT_PORT")
+    try:
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        pin = s.getsockname()[1]
+        s.close()
+        os.environ["CREW_INTENT_PORT"] = str(pin)
+        check("...and the port, via the pin", free_port() == pin,
+              "a moved port orphans the URLs already in the pushed page")
+    finally:
+        if saved_pin is None:
+            os.environ.pop("CREW_INTENT_PORT", None)
+        else:
+            os.environ["CREW_INTENT_PORT"] = saved_pin
     check("ccusage is installed", bool(shutil.which("ccusage")),
           "npm i -g ccusage — the status line and /usage both need it")
 
