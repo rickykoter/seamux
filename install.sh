@@ -303,7 +303,9 @@ if [ "$CREW" = 1 ] && [ "$APPLY" = 1 ]; then
   elif [ -z "$root" ] || [ ! -x "$root/bin/crew" ]; then
     warn "crew: plugin root not found — run \`crew apply\` inside Claude"
   else
-    CREW_MONOLITH="$MAIN" "$root/bin/crew" apply || warn "crew apply reported a problem (above)"
+    # Only --main-repo overrides: an empty CREW_MONOLITH would hide an exported one.
+    if [ -n "$MAIN" ]; then CREW_MONOLITH="$MAIN" "$root/bin/crew" apply; else "$root/bin/crew" apply; fi \
+      || warn "crew apply reported a problem (above)"
   fi
 elif [ "$CREW" = 1 ]; then
   say "skipped crew apply (--no-apply) — run it yourself: crew apply"
