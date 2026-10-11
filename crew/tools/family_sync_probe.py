@@ -14,6 +14,7 @@ plus a bystander repo. What is asserted:
   - a second sync sets no color (it is idempotent);
   - after the parent closes, the next sync gives each child its color from
     before (api its teal, ui none) and drops the tokens;
+  - two overlapping syncs send one banner for one PR transition (the run lock);
   - the machine's deep-plan engine pointer is not moved to this checkout.
 
     python3 crew/tools/family_sync_probe.py      exit 0 when all hold
@@ -129,6 +130,37 @@ with tempfile.TemporaryDirectory(prefix="family-sync-") as t:
           w["ws-api"]["custom_color"] == "#006B6B" and w["ws-ui"]["custom_color"] == "", json.dumps(w))
     check("…and Peacock its color from before", peacock() == "#006B6B", peacock())
     check("…and drops the family tokens", not any(toks(x) for x in w.values()))
+
+    # Two overlapping syncs (the Stop hook and the listener's tick, say) see one
+    # PR transition: one banner, not two. A slow fake gh holds both runs between
+    # reading the last-notified signature and writing the new one, which is
+    # exactly where they used to race. The cache is seeded stale, so gh is asked.
+    import hashlib
+    gh_bin = os.path.join(t, "bin")
+    os.makedirs(gh_bin)
+    with open(os.path.join(gh_bin, "gh"), "w") as fh:
+        fh.write('#!/bin/sh\n[ "$(pwd -P)" = "$FAKE_GH_CWD" ] || '
+                 '{ echo "no pull requests found for branch" >&2; exit 1; }\nsleep 2\n'
+                 "echo '" + json.dumps({
+                     "number": 7, "url": "https://example.com/pr/7", "baseRefName": "main",
+                     "state": "OPEN", "isDraft": False, "reviewDecision": "",
+                     "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
+                     "statusCheckRollup": [{"name": "build", "conclusion": "FAILURE"}],
+                     "closingIssuesReferences": []}) + "'\n")
+    os.chmod(os.path.join(gh_bin, "gh"), 0o755)
+    with open(os.path.join(env["XDG_CACHE_HOME"], "cmux-crew",
+                           "gh-" + hashlib.md5(X.encode()).hexdigest() + ".json"), "w") as fh:
+        json.dump({"at": 0, "pr": 7, "notified": {"ci": "pass"}}, fh)
+    genv = dict(env, PATH=gh_bin + os.pathsep + env.get("PATH", ""), FAKE_GH_CWD=X)
+    runs = [subprocess.Popen([sys.executable, os.path.join(REPO, "crew", "bin", "crew-sync")],
+                             env=genv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            for _ in range(2)]
+    for r in runs:
+        r.wait(timeout=180)
+    banners = [l for l in open(os.path.join(t, "cmux.log")).read().splitlines()
+               if l.startswith("notify") and "crew:pr" in l]
+    check("two overlapping syncs send one banner for one PR transition, not two",
+          len(banners) == 1, "\n       ".join(banners) or "no banner")
 
 root_after = pointer_root()
 check("the machine's engine pointer is not moved to this checkout",

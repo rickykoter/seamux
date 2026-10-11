@@ -27,6 +27,7 @@ Safe to run at any time: every write is conditional on the current value being
 wrong, so a converged system produces no calls at all.
 """
 
+import fcntl
 import glob
 import json
 import os
@@ -353,6 +354,37 @@ def write_json(path, obj):
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
+
+
+SYNC_LOCK_WAIT = 60   # seconds a run waits for the one before it
+
+
+def take_run_lock():
+    """One sync at a time. Runs overlap (the Stop hook, crew-listen's events and
+    tick, the board's "sync now" and plan-go), and two runs that both read the
+    old `notified` signature both send the same banner; a slower run's gh-cache
+    write can also put an old signature back. flock, so the kernel drops the
+    lock if a run dies.
+
+    Polled, not blocking: a hung run must not stall every run after it. Returns
+    the open lock file (hold it for the run), None when another run held it for
+    SYNC_LOCK_WAIT, or False when the lock file cannot be opened at all, in which
+    case the run goes ahead unlocked rather than never syncing."""
+    try:
+        os.makedirs(STATE, exist_ok=True)
+        fh = open(os.path.join(STATE, "sync.lock"), "a")
+    except OSError:
+        return False
+    deadline = time.time() + SYNC_LOCK_WAIT
+    while True:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fh
+        except OSError:
+            if time.time() >= deadline:
+                fh.close()
+                return None
+            time.sleep(0.2)
 
 
 def gh_state(cwd, force=False):
@@ -945,6 +977,12 @@ def plan(sid):
 
 
 def main():
+    # Held until main returns; a dry run changes nothing, so it does not wait.
+    lock = None if DRY else take_run_lock()
+    if lock is None and not DRY:
+        print(f"crew-sync: another sync has run for {SYNC_LOCK_WAIT}s and still "
+              "holds the lock; skipping this one", file=sys.stderr)
+        return 0
     by_ws, sess = sessions()
     rows = workspaces()
     taken = {w.get("custom_title") or w.get("title") for w in rows}
