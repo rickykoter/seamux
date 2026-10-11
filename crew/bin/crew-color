@@ -138,6 +138,8 @@ def all_entries():
     except Exception:
         return out
     for n in names:
+        if ".crew-tmp." in n or n.endswith(".tmp"):
+            continue   # a write in flight (or the old fixed-name temp file)
         e = read_entry(os.path.join(REG, n))
         if e and e.get("ROOT") and e.get("COLOR"):
             e["_file"] = os.path.join(REG, n)
@@ -147,17 +149,28 @@ def all_entries():
     return out
 
 
+def write_atomic(path, text):
+    """Write through a per-pid temp file and a rename, so two writers never
+    share one temp file and a failed write leaves the old file untouched."""
+    tmp = path + ".crew-tmp.%d" % os.getpid()
+    try:
+        with open(tmp, "w") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def write_entry(root, name, hexv, extra=None):
     """`extra` carries keys beyond the four every entry has (FAMILY, PREV);
     an entry written without it has none, which is how a member leaves."""
     os.makedirs(REG, exist_ok=True)
-    tmp = entry_path(root) + ".tmp"
-    with open(tmp, "w") as fh:
-        fh.write(f"ROOT={root}\nCOLOR={hexv}\nNAME={name}\n"
-                 f"CREATED={int(time.time())}\n")
-        for k, v in (extra or {}).items():
-            fh.write(f"{k}={v}\n")
-    os.replace(tmp, entry_path(root))
+    text = (f"ROOT={root}\nCOLOR={hexv}\nNAME={name}\n"
+            f"CREATED={int(time.time())}\n")
+    for k, v in (extra or {}).items():
+        text += f"{k}={v}\n"
+    write_atomic(entry_path(root), text)
 
 
 # --- allocation --------------------------------------------------------------
@@ -479,11 +492,7 @@ def apply(root, hexv, name):
     if merged == cur:
         return False
     os.makedirs(vsdir, exist_ok=True)
-    tmp = path + ".crew-tmp"
-    with open(tmp, "w") as fh:
-        json.dump(merged, fh, indent=2, sort_keys=True)
-        fh.write("\n")
-    os.replace(tmp, path)
+    write_atomic(path, json.dumps(merged, indent=2, sort_keys=True) + "\n")
     if had_comments:
         sys.stderr.write(
             f"\033[33m!\033[0m {path} had comments; they were dropped when "
@@ -508,11 +517,7 @@ def unapply(root):
     if merged == cur:
         return False
     if merged:
-        tmp = path + ".crew-tmp"
-        with open(tmp, "w") as fh:
-            json.dump(merged, fh, indent=2, sort_keys=True)
-            fh.write("\n")
-        os.replace(tmp, path)
+        write_atomic(path, json.dumps(merged, indent=2, sort_keys=True) + "\n")
     else:
         # Nothing of ours and nothing of anyone else's: leave no empty file
         # behind, so `crew-color free` really does undo `apply`.

@@ -3,10 +3,10 @@
 // the rows the page draws — highlighted, with word-level marks on changed lines.
 //
 // The working tree is captured on a SCRATCH index (GIT_INDEX_FILE), never the
-// real one. deep-plan's increment patch runs `git add -AN` against the real
-// index (deep-plan/deep_plan.mjs, incrementDiff), which leaves intent-to-add
-// entries behind in the user's staging area; a review tool must not change
-// what `git commit` would do. The scratch index starts as a copy of the real
+// real one: staging the real index would change what `git commit` does.
+// deep-plan's increment patch once ran `git add -AN` there and left
+// intent-to-add entries for `git commit -a` to sweep up (deep-plan/
+// deep_plan.mjs, incrementDiff, now on a scratch index too). The scratch index starts as a copy of the real
 // one (so its stat cache spares a rehash of every file), takes `git add -A`,
 // and is written to a tree object: both sides of the diff are then plain git
 // objects, readable with `git show <rev>:<path>`.

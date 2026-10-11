@@ -284,7 +284,7 @@ seed_credentials() {
   # claudeAiOauth, the other only MCP connector tokens. Take just the account
   # credential — the connector tokens are unrelated and none of the sandbox's
   # business.
-  local tmp; tmp="$cfg/.credentials.json.tmp"
+  local tmp; tmp="$cfg/.credentials.json.tmp.$$"
   ( umask 077
     security find-generic-password -s "Claude Code-credentials" -a "$USER" -w 2>/dev/null \
       | python3 -c '

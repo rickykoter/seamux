@@ -100,10 +100,16 @@ def workspace_color():
     cache.setdefault(wsid, {"at": now, "color": "", "title": ""})
     try:
         os.makedirs(os.path.dirname(CMUX_COLORS), exist_ok=True)
-        tmp = CMUX_COLORS + ".tmp"
-        with open(tmp, "w") as fh:
-            json.dump(cache, fh)
-        os.replace(tmp, CMUX_COLORS)
+        # Per-pid: every session's status line writes this file, and two
+        # writers truncating one shared .tmp could publish a torn file.
+        tmp = CMUX_COLORS + ".tmp.%d" % os.getpid()
+        try:
+            with open(tmp, "w") as fh:
+                json.dump(cache, fh)
+            os.replace(tmp, CMUX_COLORS)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
     except OSError:
         pass
     e = cache.get(wsid) or {}

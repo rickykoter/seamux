@@ -472,8 +472,61 @@ def review_path(rid, ext):
     return target if os.path.isfile(target) else None
 
 
+def _lock_stale(path):
+    return time.time() - os.stat(path).st_mtime > LOCK_STALE
+
+
+def _break_stale_lock(lock):
+    """Remove a stale lock, one breaker at a time; True when it is gone.
+
+    Two writers that both saw it stale would otherwise both remove it, the
+    second taking away the lock the first had just made fresh. The breaker
+    holds <id>.lock-break (beside the lock, which stays empty), looks again,
+    and removes the lock only if it is still stale. Anything else (another
+    breaker, a lock that will not go) waits out the deadline like a live
+    writer's lock."""
+    guard = lock + "-break"
+    try:
+        if not _lock_stale(lock):
+            return False
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    try:
+        os.mkdir(guard)
+    except FileExistsError:
+        # A guard as old as a stale lock is a crashed breaker's.
+        try:
+            if _lock_stale(guard):
+                os.rmdir(guard)
+        except OSError:
+            pass
+        return False
+    except OSError:
+        return False
+    try:
+        if not _lock_stale(lock):
+            return False
+        os.rmdir(lock)
+        return True
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            os.rmdir(guard)
+        except OSError:
+            pass
+
+
 class review_lock:
-    """lookout's lock: a <id>.lock directory, created atomically, stale after 10s."""
+    """lookout's lock: a <id>.lock directory, created atomically, stale after 10s.
+
+    A file contract (ADR 0004) with a twin that must stay in step: withLock in
+    lookout/lib/store.mjs takes the same <id>.lock, breaks it through the same
+    <id>.lock-break guard, with the same timings."""
 
     def __init__(self, rid):
         self.path = os.path.join(REVIEWS, rid + ".lock")
@@ -485,14 +538,11 @@ class review_lock:
                 os.mkdir(self.path)
                 return self
             except FileExistsError:
-                try:
-                    if time.time() - os.stat(self.path).st_mtime > LOCK_STALE:
-                        os.rmdir(self.path)
-                        continue
-                except OSError:
-                    continue
-                if time.time() > deadline:
-                    raise TimeoutError("the review is locked by another writer")
+                pass
+            gone = _break_stale_lock(self.path)
+            if time.time() > deadline:
+                raise TimeoutError("the review is locked by another writer")
+            if not gone:
                 time.sleep(0.025)
 
     def __exit__(self, *_):

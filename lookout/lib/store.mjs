@@ -76,20 +76,47 @@ export function writeAtomic(file, text) {
 
 // A lock directory: mkdir is atomic on every filesystem this runs on, from
 // node and from python alike. A lock older than STALE_MS is a crashed writer's.
+//
+// This lock is a file contract (ADR 0004) with a twin that must stay in step:
+// review_lock in crew/board/crew-board-intent takes the same <id>.lock, breaks
+// it through the same <id>.lock-break guard, with the same timings.
 const STALE_MS = 10_000;
+const isStale = p => Date.now() - fs.statSync(p).mtimeMs > STALE_MS;
+
+// Break a stale lock, one breaker at a time: two writers that both saw it stale
+// would otherwise both remove it, and the second would remove the lock the first
+// had just taken fresh. The breaker holds <id>.lock-break (beside the lock, which
+// stays empty), looks again, and removes the lock only if it is still stale.
+// True when the lock is gone and mkdir is worth retrying at once; anything else
+// (another breaker, a lock that will not go) waits out the deadline like a live
+// writer's lock.
+function breakStale(lock) {
+  const guard = lock + "-break";
+  try { if (!isStale(lock)) return false; } catch (e) { return e.code === "ENOENT"; }
+  try { fs.mkdirSync(guard); }
+  catch (e) {
+    // A guard as old as a stale lock is a crashed breaker's.
+    try { if (e.code === "EEXIST" && isStale(guard)) fs.rmdirSync(guard); } catch { /* raced, or gone */ }
+    return false;
+  }
+  try {
+    if (!isStale(lock)) return false;
+    fs.rmdirSync(lock);
+    return true;
+  } catch (e) { return e.code === "ENOENT"; }
+  finally { try { fs.rmdirSync(guard); } catch { /* already gone */ } }
+}
+
 export function withLock(id, fn) {
   const { lock } = paths(id);
   fs.mkdirSync(REVIEWS_DIR, { recursive: true });
   const deadline = Date.now() + 5000;
   for (;;) {
     try { fs.mkdirSync(lock); break; }
-    catch (e) {
-      if (e.code !== "EEXIST") throw e;
-      try { if (Date.now() - fs.statSync(lock).mtimeMs > STALE_MS) { fs.rmdirSync(lock); continue; } }
-      catch { continue; }
-      if (Date.now() > deadline) throw new Error("review " + id + " is locked by another writer");
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
-    }
+    catch (e) { if (e.code !== "EEXIST") throw e; }
+    const gone = breakStale(lock);
+    if (Date.now() > deadline) throw new Error("review " + id + " is locked by another writer");
+    if (!gone) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
   }
   try { return fn(); } finally { try { fs.rmdirSync(lock); } catch { /* already gone */ } }
 }

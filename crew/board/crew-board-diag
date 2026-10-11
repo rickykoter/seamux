@@ -92,6 +92,19 @@ def cmux_bin():
 
 
 CMUX = cmux_bin()
+
+
+# A copy of crew-board's tree_url_is (board_probe.mjs checks the two match).
+# Copied, not imported: diag only shells out to crew-board, and must still run
+# when crew-board itself is broken.
+def tree_url_is(line, marker):
+    """Does this `cmux tree` surface line show a URL whose path ends in `marker`?
+    The URL is the line's last token, matched on a "/" boundary: a substring
+    match also counted dashboard.html, and a tab's title."""
+    tok = line.rsplit(None, 1)[-1] if line.strip() else ""
+    if "://" not in tok:
+        return False
+    return re.split(r"[?#]", tok, 1)[0].endswith("/" + marker.lstrip("/"))
 fatal = False
 
 
@@ -171,14 +184,16 @@ else:
         want = "file://" + BOARD_HTML
         if url == want:
             say("ok", "surface URL is the installed page")
-        elif "board.html" in url:
+        elif tree_url_is(url, "board.html"):
             say("fail", "surface shows a DIFFERENT board.html", url[:90],
                 f"crew-board close && crew-board open   (expected {want})")
         else:
             say("fail", "surface is not the board", url[:90], "crew-board close && crew-board open")
 
     rc, dupes = cmux_run("tree")
-    n = dupes.count("board.html") if rc == 0 else 0
+    # Counted the way `crew-board tidy` finds them, so a warning here is one
+    # tidy can clear.
+    n = sum(tree_url_is(l, "board.html") for l in dupes.splitlines()) if rc == 0 else 0
     if n > 1:
         say("warn", f"{n} surfaces show board.html", fix="crew-board tidy")
     elif n == 1:

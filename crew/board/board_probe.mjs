@@ -645,6 +645,29 @@ print(json.dumps([m.tree_url_is(L("crew · who needs you", "file:///h/.config/cm
 `, join(HERE, "crew-board")], { encoding: "utf8" }));
   checks.push(["tidy/adopt: board.html and /usage match by URL, not dashboard.html or a title",
     JSON.stringify(tm) === JSON.stringify([true, false, false, true, false])]);
+
+  // crew-board-diag carries its own copy (it must run when crew-board is
+  // broken), so its duplicate count is one tidy can clear. Same code, and a
+  // dashboard.html tab is not counted.
+  const dm = JSON.parse(execFileSync("python3", ["-c", `
+import ast, json, re, sys
+def fn(path):
+    for n in ast.walk(ast.parse(open(path).read())):
+        if isinstance(n, ast.FunctionDef) and n.name == "tree_url_is":
+            n.body = [b for b in n.body if not (isinstance(b, ast.Expr) and isinstance(b.value, ast.Constant))]
+            return n
+d, b = fn(sys.argv[1]), fn(sys.argv[2])
+if not (d and b):
+    print(json.dumps([False, -1])); sys.exit()
+ns = {"re": re}
+exec(compile(ast.fix_missing_locations(ast.Module(body=[d], type_ignores=[])), "diag", "exec"), ns)
+U = "E80C26CC-48A8-4BB1-A439-65887FA2F457"
+L = lambda t, u: '├── surface surface:%s %s [browser] "%s" %s' % (t, U, t, u)
+tree = "\\n".join([L("1", "file:///h/crew/board/board.html"), L("2", "file:///x/dashboard.html"), L("board.html", "https://e.com/a")])
+print(json.dumps([ast.dump(d) == ast.dump(b), sum(ns["tree_url_is"](l, "board.html") for l in tree.splitlines())]))
+`, join(HERE, "crew-board-diag"), join(HERE, "crew-board")], { encoding: "utf8" }));
+  checks.push(["diag: counts board surfaces with crew-board's own tree_url_is, not dashboard.html",
+    JSON.stringify(dm) === JSON.stringify([true, 1])]);
 }
 
 // ---- crew-color: a family's shades, and the colors from before ------------
@@ -930,7 +953,7 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
     checks.push(["review POST: reopen; and a comment thread is resolved, never dismissed",
       s3.findings[0].status === "open" && s3.threads[0].status === "resolved"]);
     checks.push(["review POST: writes are atomic (no temp files left)",
-      !fs.readdirSync(reviews).some(n => n.includes(".tmp-") || n.endsWith(".lock"))]);
+      !fs.readdirSync(reviews).some(n => n.includes(".tmp-") || n.endsWith(".lock") || n.endsWith(".lock-break"))]);
     // The quiz's answer op: refused without a quiz, a question or a usable
     // pick; graded and recorded once, as the human's.
     const qstore = () => JSON.parse(fs.readFileSync(join(reviews, "quiz.json"), "utf8"));
@@ -959,12 +982,138 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
     const old = new Date(Date.now() - 60000);
     fs.utimesSync(lock, old, old);
     checks.push(["review POST: a stale lock is broken, not waited on",
-      (await post({ op: "comment", t: token, item: "t1", text: "after a crash" })).status === 200 && !fs.existsSync(lock)]);
+      (await post({ op: "comment", t: token, item: "t1", text: "after a crash" })).status === 200 &&
+      !fs.existsSync(lock) && !fs.existsSync(lock + "-break")]);
   } catch (e) {
     checks.push(["review routes ran to the end: " + e.message, false]);
   } finally {
     srv.kill();
     fs.rmSync(HOME, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The review lock's two twins, review_lock here and withLock in lookout's
+// store, against each other: the file contract they share (<id>.lock, broken
+// through <id>.lock-break) has to hold from both sides. Each case runs in a
+// child with a hard timeout, because the failure being guarded against is a
+// writer that never comes back.
+{
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const { spawn } = await import("node:child_process");
+  const { pathToFileURL } = await import("node:url");
+  const DIR = fs.mkdtempSync(join(os.tmpdir(), "board-probe-lock-"));
+  const INTENT = join(HERE, "crew-board-intent");
+  const STORE = pathToFileURL(join(HERE, "..", "..", "lookout", "lib", "store.mjs")).href;
+  const env = { ...process.env, LOOKOUT_REVIEWS_DIR: DIR };
+  // One lock attempt, or (with a count) that many counter increments under the
+  // lock, 2ms apart. Prints {took, err, s}; null when the child had to be killed.
+  // Counting writers are also given an unlucky scheduler: a pause of up to 2ms
+  // after every stat. Two breakers race only in the gap between "I saw it
+  // stale" and "I removed it", which on an idle machine is a microsecond or
+  // two; the pause widens it, without touching the lock code, so the race
+  // shows in a second instead of a day.
+  const PY = `
+import importlib.machinery, importlib.util, json, os, random, sys, time
+l = importlib.machinery.SourceFileLoader("cbi", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("cbi", l)); l.exec_module(m)
+m.REVIEWS = sys.argv[2]
+rid, n = sys.argv[3], int(sys.argv[4])
+if n:
+    sys.setprofile(lambda f, ev, arg: time.sleep(random.random() * 0.002) if ev == "c_return" and arg is os.stat else None)
+t = time.time()
+try:
+    for i in range(max(n, 1)):
+        with m.review_lock(rid):
+            if n:
+                p = os.path.join(m.REVIEWS, rid + ".json")
+                with open(p) as fh: r = json.load(fh)
+                r["n"] += 1
+                tmp = "%s.tmp-%d-%d" % (p, os.getpid(), i)
+                with open(tmp, "w") as fh: json.dump(r, fh)
+                os.replace(tmp, p)
+        if n: time.sleep(0.002)
+    print(json.dumps({"took": True, "s": time.time() - t}))
+except TimeoutError as e:
+    print(json.dumps({"took": False, "err": str(e), "s": time.time() - t}))
+`;
+  const JS = `
+const fs = (await import("node:fs")).default, stat = fs.statSync;
+const nap = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const [rid, n] = [process.argv[2], +process.argv[3]];
+if (n) fs.statSync = (...a) => { const r = stat(...a); nap(Math.random() * 2); return r; };
+const S = await import(process.argv[1]);
+const t = Date.now();
+try {
+  for (let i = 0; i < Math.max(n, 1); i++)
+    if (n) { S.update(rid, r => ({ ...r, n: r.n + 1 })); nap(2); } else S.withLock(rid, () => {});
+  console.log(JSON.stringify({ took: true, s: (Date.now() - t) / 1000 }));
+} catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.now() - t) / 1000 })); }
+`;
+  const run = (cmd, args, ms) => new Promise(res => {
+    const c = spawn(cmd, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    c.stdout.on("data", d => (out += d));
+    const kill = setTimeout(() => c.kill("SIGKILL"), ms);
+    c.on("exit", () => { clearTimeout(kill); try { res(JSON.parse(out.trim().split("\n").pop())); } catch { res(null); } });
+  });
+  const py = (rid, n = 0, ms = 10000) => run("python3", ["-c", PY, INTENT, DIR, rid, String(n)], ms);
+  const js = (rid, n = 0, ms = 10000) => run(process.execPath, ["--input-type=module", "-e", JS, STORE, rid, String(n)], ms);
+  const old = new Date(Date.now() - 60000);
+  const plant = (p, stale) => { fs.mkdirSync(p); if (stale) fs.utimesSync(p, old, old); };
+  const lk = rid => join(DIR, rid + ".lock");
+  let planter = null;
+  const timedOut = r => r && r.took === false && /locked by another writer/.test(r.err) && r.s >= 4.5 && r.s < 8;
+  try {
+    // guard: a stale lock with a breaker at work on it (a fresh guard) is not
+    // broken a second time; the writer waits it out and gives up as normal.
+    // A guard left by a crashed breaker is itself stale and is broken.
+    // spin: a stale lock that will not go (rmdir gets ENOTEMPTY) is a timeout,
+    // not a writer stuck in a loop.
+    for (const s of ["p", "n"]) {
+      plant(lk("guard" + s), true); plant(lk("guard" + s) + "-break", false);
+      plant(lk("crash" + s), true); plant(lk("crash" + s) + "-break", true);
+      plant(lk("spin" + s), true); fs.writeFileSync(join(lk("spin" + s), "x"), "");
+      fs.utimesSync(lk("spin" + s), old, old);
+    }
+    const [gp, gn, cp, cn, sp, sn] = await Promise.all([
+      py("guardp"), js("guardn"), py("crashp"), js("crashn"), py("spinp"), js("spinn")]);
+    checks.push(["review lock (python): a stale lock under a fresh break guard is waited out, not broken",
+      timedOut(gp) && fs.existsSync(lk("guardp")) && fs.existsSync(lk("guardp") + "-break")]);
+    checks.push(["review lock (node): a stale lock under a fresh break guard is waited out, not broken",
+      timedOut(gn) && fs.existsSync(lk("guardn")) && fs.existsSync(lk("guardn") + "-break")]);
+    checks.push(["review lock (python): a crashed breaker's stale guard is cleared, then the lock is broken",
+      cp?.took === true && !fs.existsSync(lk("crashp")) && !fs.existsSync(lk("crashp") + "-break")]);
+    checks.push(["review lock (node): a crashed breaker's stale guard is cleared, then the lock is broken",
+      cn?.took === true && !fs.existsSync(lk("crashn")) && !fs.existsSync(lk("crashn") + "-break")]);
+    checks.push(["review lock (python): a stale lock that will not go is a timeout, not a hang",
+      timedOut(sp) && !fs.existsSync(lk("spinp") + "-break")]);
+    checks.push(["review lock (node): a stale lock that will not go is a timeout, not a hang",
+      timedOut(sn) && !fs.existsSync(lk("spinn") + "-break")]);
+
+    // stress: python and node writers increment one counter while stale locks
+    // keep appearing (a writer crashing every 5ms, whenever the lock is free).
+    // Two writers that both break the same stale lock must not both end up
+    // holding it. The planter tries once per beat and never spins: a planter
+    // that pounced on every freed lock would starve the writers, not test them.
+    fs.writeFileSync(join(DIR, "stress.json"), JSON.stringify({ id: "stress", n: 0 }));
+    planter = spawn(process.execPath, ["-e", `
+const fs = require("fs"), p = process.argv[1], old = new Date(Date.now() - 60000);
+setInterval(() => { try { fs.mkdirSync(p); fs.utimesSync(p, old, old); } catch {} }, 5);`, lk("stress")],
+      { stdio: "ignore" });
+    const N = 40, W = 3;
+    const t0 = Date.now();
+    const rs = await Promise.all([...Array(W)].flatMap(() => [py("stress", N, 20000), js("stress", N, 20000)]));
+    const n = JSON.parse(fs.readFileSync(join(DIR, "stress.json"), "utf8")).n;
+    checks.push([`review lock: ${W} python and ${W} node writers under planted stale locks lose no increment ` +
+      `(${n}/${2 * W * N}, ${((Date.now() - t0) / 1000).toFixed(1)}s)`,
+      rs.every(r => r?.took === true) && n === 2 * W * N]);
+  } catch (e) {
+    checks.push(["review lock checks ran to the end: " + e.message, false]);
+  } finally {
+    planter?.kill("SIGKILL");
+    fs.rmSync(DIR, { recursive: true, force: true });
   }
 }
 

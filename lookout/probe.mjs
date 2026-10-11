@@ -853,6 +853,43 @@ const R1 = repo("r1");
   ok("bin/lookout: runs the engine beside it", viaBin.status === 0 && JSON.parse(viaBin.stdout).root === HERE);
 }
 
+// ---------------------------------------------------------------- the review lock
+// withLock against what a crashed or busy writer leaves behind. Each attempt
+// runs in a child with a hard timeout (the failure guarded against is a writer
+// that never returns), and the two that wait out the deadline run side by side.
+// crew/board/board_probe.mjs runs the same cases against crew's python twin.
+{
+  const { spawn } = await import("node:child_process");
+  const dir = path.join(TMP, "lock-reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  const lk = id => path.join(dir, id + ".lock");
+  const old = new Date(Date.now() - 60000);
+  const plant = (p, stale) => { fs.mkdirSync(p); if (stale) fs.utimesSync(p, old, old); };
+  const take = id => new Promise(res => {
+    const c = spawn(process.execPath, ["--input-type=module", "-e", `
+const S = await import(${JSON.stringify(path.join(HERE, "lib", "store.mjs"))});
+const t = Date.now();
+try { S.withLock(process.argv[1], () => {}); console.log(JSON.stringify({ took: true })); }
+catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.now() - t) / 1000 })); }`, id],
+      { env: { ...ENV, LOOKOUT_REVIEWS_DIR: dir }, stdio: ["ignore", "pipe", "ignore"] });
+    let out = "";
+    c.stdout.on("data", d => (out += d));
+    const kill = setTimeout(() => c.kill("SIGKILL"), 10000);
+    c.on("exit", () => { clearTimeout(kill); try { res(JSON.parse(out)); } catch { res(null); } });
+  });
+  const waited = r => r && r.took === false && /locked by another writer/.test(r.err) && r.s >= 4.5 && r.s < 8;
+  plant(lk("guard"), true); plant(lk("guard") + "-break", false);
+  plant(lk("crash"), true); plant(lk("crash") + "-break", true);
+  plant(lk("spin"), true); fs.writeFileSync(path.join(lk("spin"), "x"), ""); fs.utimesSync(lk("spin"), old, old);
+  const [guard, crash, spin] = await Promise.all([take("guard"), take("crash"), take("spin")]);
+  ok("lock: a stale lock another breaker is at work on (a fresh .lock-break) is waited out, not broken",
+     waited(guard) && fs.existsSync(lk("guard")) && fs.existsSync(lk("guard") + "-break"), JSON.stringify(guard));
+  ok("lock: a crashed breaker's stale .lock-break is cleared, then the stale lock is broken",
+     crash?.took === true && !fs.existsSync(lk("crash")) && !fs.existsSync(lk("crash") + "-break"), JSON.stringify(crash));
+  ok("lock: a stale lock that will not go (rmdir gets ENOTEMPTY) is a timeout, not a hang",
+     waited(spin) && !fs.existsSync(lk("spin") + "-break"), JSON.stringify(spin));
+}
+
 // ---------------------------------------------------------------- page script
 {
   const r = spawnSync("node", ["--check", path.join(HERE, "page", "review.js")], { encoding: "utf8" });
