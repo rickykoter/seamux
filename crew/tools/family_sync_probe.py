@@ -9,6 +9,7 @@ plus a bystander repo. What is asserted:
   - the first sync tags each member family:/famrole:, keeps the parent's
     color, gives each child a shade of it, and leaves the bystander alone;
   - Peacock follows where it already colors a worktree (api), and only there;
+  - a crew-feed ask (feed:*) on the bystander survives the sync;
   - a second sync sets no color (it is idempotent);
   - after the parent closes, the next sync gives each child its color from
     before (api its teal, ui none) and drops the tokens;
@@ -74,8 +75,10 @@ with tempfile.TemporaryDirectory(prefix="family-sync-") as t:
                XDG_CACHE_HOME=os.path.join(t, "cache"))
     mk = lambda i, cwd, color: {"id": i, "title": i, "current_directory": cwd, "custom_color": color,
                                 "description": "", "has_custom_title": True}
-    json.dump([mk("ws-parent", P, "#1565C0"), mk("ws-api", A, "#006B6B"),
-               mk("ws-ui", U, ""), mk("ws-x", X, "#7D6608")], open(os.path.join(t, "workspaces.json"), "w"))
+    # The bystander carries a pending crew-feed ask: sync must leave it alone.
+    json.dump([mk("ws-parent", P, "#1565C0"), mk("ws-api", A, "#006B6B"), mk("ws-ui", U, ""),
+               dict(mk("ws-x", X, "#7D6608"), description="feed:perm feedby:9999999999 feedgate:allow")],
+              open(os.path.join(t, "workspaces.json"), "w"))
 
     def sync():
         subprocess.run([sys.executable, os.path.join(REPO, "crew", "bin", "crew-sync")],
@@ -98,6 +101,9 @@ with tempfile.TemporaryDirectory(prefix="family-sync-") as t:
     check("each child wears its own shade, not its old color",
           len(kids) == 2 and "#006B6B" not in kids and "" not in kids and "#1565C0" not in kids, str(kids))
     check("the bystander is untouched", w["ws-x"]["custom_color"] == "#7D6608" and not toks(w["ws-x"]))
+    check("crew-feed's ask survives the sync",
+          {"feed:perm", "feedby:9999999999", "feedgate:allow"} <= set(w["ws-x"]["description"].split()),
+          w["ws-x"]["description"])
     check("Peacock follows the shade where it already colored the worktree",
           peacock() == w["ws-api"]["custom_color"], peacock())
     check("Peacock is not created where it was not", not os.path.exists(os.path.join(U, ".vscode")))

@@ -103,6 +103,24 @@ def workspaces():
         return []
 
 
+# crew-feed's tokens: the pending Feed ask it publishes from the Notification
+# hook. Not this script's to judge or rebuild, so they are carried as found --
+# the description is shared, and every writer merges (hooks/lib.sh).
+FEED_KEYS = ("feed", "feedby", "feedgate", "feedreq", "feedws")
+
+
+def feed_tokens(desc):
+    return [t for t in (desc or "").split() if t.split(":", 1)[0] in FEED_KEYS]
+
+
+def live_description(ws):
+    """This workspace's description as cmux has it now, or None if unknown."""
+    for w in workspaces():
+        if w.get("id") == ws:
+            return w.get("description") or ""
+    return None
+
+
 def state_of(ws):
     out = cmux("sidebar-state", "--workspace", ws) if not DRY else \
         subprocess.run([CMUX, "sidebar-state", "--workspace", ws],
@@ -1132,7 +1150,15 @@ def main():
             for slot, t in zip(idx, ordered):
                 tok[slot] = t
 
-        want_desc = " ".join(tok)
+        want_desc = " ".join(tok + feed_tokens(have_desc))
+        # The list was read at the start of a run that takes seconds; a feed
+        # publish or clear in that window must survive this write, so take the
+        # feed tokens from a fresh read, the way crew-feed itself merges.
+        if want_desc != have_desc and not DRY:
+            fresh = live_description(ws)
+            if fresh is not None:
+                have_desc = fresh
+                want_desc = " ".join(tok + feed_tokens(fresh))
         if want_desc != have_desc:
             if want_desc:
                 cmux("workspace-action", "--action", "set-description",
