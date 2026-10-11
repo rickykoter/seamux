@@ -417,17 +417,21 @@ const MUTATORS = [
   /\bsed\s+(-[a-zA-Z]*\s+)*-i\b/,          // sed -i, sed -E -i
   /<<-?\s*['"]?\w+/,                        // heredoc
   /\btee\s+(?!-a\s*$)/,
-  /\brm\s+/, /\bmv\s+/, /\bcp\s+/,
+  /\brm(\s|$|[;&|)`])/, /\bmv\s+/, /\bcp\s+/, // rm last too: `xargs rm`
+  /\bfind\b[^;&|]*\s['"]?-(delete|fprint\w*|fls)\b/, // find's own writes
   /\bgit\s+(commit|checkout|reset|clean|apply|stash|merge|rebase|cherry-pick|rm|mv)\b/,
   /\btouch\s+/, /\bmkdir\s+/, /\bln\s+/, /\bchmod\s+/, /\bchown\s+/,
   /\btruncate\s+/, /\binstall\s+/, /\bpatch\b/,
   /\bnpm\s+(install|i|uninstall|update)\b/, /\bpip3?\s+install\b/,
 ];
 // SAFE only when the command is one plain reader with no redirect/heredoc/chain
-// after it — `cat <<EOF > f` must not ride on `cat` being a reader.
+// or second line after it — `cat <<EOF > f` must not ride on `cat` being a
+// reader. It is tested on the command with its substitutions taken out.
 const SAFE = [
-  /^\s*(grep|rg|ag|find|ls|cat|head|tail|wc|git\s+(status|log|diff|show|branch|blame)|which|file|stat|du|df)\b[^><;&|]*$/,
+  /^\s*(grep|rg|ag|find|ls|cat|head|tail|wc|git\s+(status|log|diff|show|branch|blame)|which|file|stat|du|df)\b[^><;&|\n]*$/,
 ];
+// find runs or writes things with these; it is then no plain reader.
+const FIND_ACTS = /\s['"]?-(delete|exec|execdir|ok|okdir|fprint\w*|fls)\b/;
 
 // Redirecting a stream to /dev/null (or fd-to-fd, 2>&1) writes nothing.
 // Un-scrubbed, `lsof 2>/dev/null` reads as "redirect into a file" and the
@@ -459,12 +463,77 @@ export function blankQuotes(cmd) {
   return q === null ? out : null;
 }
 
+// Where the substitution opened just before `i` closes: the index of its `)`
+// (closer ")") or backtick (closer "`"), or -1 when it never does. Quotes,
+// escapes and nested substitutions are stepped over, so a `)` inside them
+// closes nothing.
+function closeOf(cmd, i, closer) {
+  let dq = false, depth = 0;
+  for (; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (c === "\\") { i++; continue; }
+    if (c === "'" && !dq) {
+      i = cmd.indexOf("'", i + 1);
+      if (i < 0) return -1;
+      continue;
+    }
+    if (c === '"') { dq = !dq; continue; }
+    if (c === closer && closer === "`") return i;
+    if (c === "$" && cmd[i + 1] === "(") { i = closeOf(cmd, i + 2, ")"); if (i < 0) return -1; continue; }
+    if (c === "`") { i = closeOf(cmd, i + 1, "`"); if (i < 0) return -1; continue; }
+    if (dq || closer === "`") continue;
+    if (c === "(") depth++;
+    else if (c === ")" && depth-- === 0) return i;
+  }
+  return -1;
+}
+
+// The command split into its top level, each `$(…)` and backtick replaced by a
+// space, and the bodies those ran. Null when a quote or substitution never
+// closes: the command is then no plain reader.
+function substitutions(cmd) {
+  let outer = "", q = null;
+  const inner = [];
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (q === "'") { outer += c; if (c === "'") q = null; continue; }
+    if (c === "\\") { outer += cmd.slice(i, i + 2); i++; continue; }
+    if (c === "'" && q === null) { q = c; outer += c; continue; }
+    if (c === '"') { q = q ? null : c; outer += c; continue; }
+    const open = c === "`" ? 1 : c === "$" && cmd[i + 1] === "(" ? 2 : 0;
+    if (!open) { outer += c; continue; }
+    const end = closeOf(cmd, i + open, open === 1 ? "`" : ")");
+    if (end < 0) return null;
+    inner.push(cmd.slice(i + open, end));
+    outer += " ";
+    i = end;
+  }
+  return q === null ? { outer, inner } : null;
+}
+
+// One plain reader: the command passes SAFE as written (so this test only ever
+// gets stricter), so does its top level with the substitutions taken out, and
+// every substitution body is itself no write. Any doubt (a process
+// substitution, $'…', a quote that never closes) is no reader, which only
+// hands the command to the denylist below.
+function plainReader(cmd) {
+  if (cmd.includes("$'")) return false;
+  const whole = blankQuotes(cmd);
+  if (whole === null || !SAFE.some(re => re.test(whole))) return false;
+  const split = substitutions(cmd);
+  if (!split) return false;
+  const bare = blankQuotes(split.outer);
+  if (bare === null || /[<>]\(/.test(bare) || !SAFE.some(re => re.test(bare))) return false;
+  if (/^\s*find\b/.test(bare) && FIND_ACTS.test(cmd)) return false;
+  return split.inner.every(body => !bashMutates(body));
+}
+
 export function bashMutates(cmd) {
   if (!cmd) return false;
+  if (plainReader(cmd)) return false;
   // Quotes matter only to the reader test and the redirect: every other
   // mutator still reads the command as written (`bash -c "rm -rf x"`).
   const bare = blankQuotes(cmd) ?? cmd;
-  if (SAFE.some(re => re.test(bare))) return false;
   return REDIRECT.test(scrub(bare)) || MUTATORS.some(re => re.test(scrub(cmd)));
 }
 

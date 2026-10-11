@@ -1107,6 +1107,21 @@ ok("a quoted command still mutates, and a substitution is not blanked",
   lib.bashMutates('cat "$(echo x > f)"'));
 ok("an escaped quote opens nothing; an unclosed one reads as written",
   lib.bashMutates('cat \\"; rm -rf x; echo \\"') && lib.bashMutates("echo it's > f"));
+// A reader is judged by its structure: what its substitutions run, a second
+// line, find's own actions, and `rm` with nothing after it all used to ride
+// on the first word being a reader.
+for (const c of ["cat $(rm -rf x)", "cat `rm -rf x`", "ls $(touch y)", "git diff $(rm x)",
+  'cat "$(rm x)"', "cat $(echo $(rm x))", "cat ${X:-$(rm y)}", "cat $(bash -c \"rm -rf x\")"])
+  ok(`a write inside a substitution gates: ${c}`, lib.bashMutates(c));
+for (const c of ["cat f\nrm -rf x", "ls\ntouch y"])
+  ok(`a second line is not part of the reader: ${JSON.stringify(c)}`, lib.bashMutates(c));
+for (const c of ["find . -delete", "find . -exec rm {} +", "find . -fprint out", "find . | xargs rm"])
+  ok(`find's writes and a trailing rm gate: ${c}`, lib.bashMutates(c));
+for (const c of ["cat $(ls)", "cat `ls`", "cat $(git rev-parse --show-toplevel)/x",
+  "grep 'rm -rf' $(git ls-files)", "diff <(ls a) <(ls b)", "git status", "git diff",
+  "git log | head", "grep foo", "rg '=>'", "jq '.a > 1'", "ls", "sed -n 1,5p f",
+  "find . -name '*.js'", "find . -exec grep -l x {} +", "grep 'find . -delete' notes"])
+  ok(`a reader stays a reader: ${c}`, !lib.bashMutates(c));
 
 // -------------------------------------------------- broken root: fail open, loudly
 const GONE = path.join(TMP, "gone-root");
