@@ -226,7 +226,7 @@ def write_facts(session_id, facts):
     try:
         os.makedirs(FACTS_DIR, exist_ok=True)
         path = os.path.join(FACTS_DIR, session_id + ".json")
-        tmp = path + ".tmp"
+        tmp = path + ".tmp.%d" % os.getpid()   # two writers must not share one tmp
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(facts, fh)
         os.replace(tmp, path)

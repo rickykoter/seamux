@@ -315,7 +315,9 @@ def load_sidebar_cache():
 def save_sidebar_cache(c):
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
-        tmp = SIDEBAR_CACHE + ".tmp"
+        # Per-pid, as costs.py does: `push --fast` and a manual push can overlap,
+        # and two writers truncating one .tmp could publish a torn file.
+        tmp = SIDEBAR_CACHE + ".tmp.%d" % os.getpid()
         with open(tmp, "w") as fh:
             json.dump(c, fh)
         os.replace(tmp, SIDEBAR_CACHE)
@@ -1168,7 +1170,7 @@ def write_targets(d):
         targets = {r["id"]: {k: r.get(k, "") for k in
                              ("ref", "cwd", "pr_url", "slug", "name", "issue_url")}
                    for r in d.get("rows", [])}
-        tmp = TARGETS_FILE + ".tmp"
+        tmp = TARGETS_FILE + ".tmp.%d" % os.getpid()   # per-pid: see save_sidebar_cache
         with open(tmp, "w") as fh:
             json.dump(targets, fh)
         os.replace(tmp, TARGETS_FILE)
