@@ -477,6 +477,32 @@ step("abort mid-stack puts back the branches already restacked");
   ok("while putting back the rest", git(r, "rev-parse", "feat2").out === before[1]);
 }
 
+// ---------------------------------------------------------------- a checkout that fails
+step("a branch that cannot be checked out fails the walk, not finishes it");
+{
+  const r = newRepo("cofail", cheapCfg);
+  git(r, "checkout", "-q", "-b", "feat1");
+  addDef(r, "b", "bravo\n", "feat1: b");
+  git(r, "checkout", "-q", "-b", "feat2");
+  addDef(r, "d", "delta\n", "feat2: d");
+  git(r, "checkout", "-q", "-b", "feat3");
+  addDef(r, "e", "echo\n", "feat3: e");
+  git(r, "checkout", "-q", "master");
+  addDef(r, "c", "charlie\n", "master: c");
+  git(r, "checkout", "-q", "feat3");
+  git(r, "worktree", "add", "-q", path.join(TMP, "cofail-wt"), "feat2");   // feat2 is busy elsewhere
+  const before = git(r, "rev-parse", "feat1").out;
+
+  const run = cli(r, "run", "--json", "--no-fetch");
+  ok("exit 1, status error", run.status === 1 && run.json?.status === "error", `status ${run.status}\n` + run.out + run.err);
+  const s2 = run.json?.steps?.find(s => s.branch === "feat2");
+  ok("the failed branch carries git's reason", s2?.status === "error" && /feat2|worktree|checked out/.test(s2?.why || ""), JSON.stringify(s2));
+  ok("nothing above it pretends to be done", run.json?.steps?.find(s => s.branch === "feat3")?.status === "pending");
+  ok("and no push lines are offered", (run.json?.push || []).length === 0);
+  const ab = cli(r, "abort", "--json");
+  ok("abort then puts the restacked bottom back", ab.status === 0 && git(r, "rev-parse", "feat1").out === before, ab.out + ab.err);
+}
+
 // ---------------------------------------------------------------- verify
 step("verify: did the restack change anything of yours?");
 {

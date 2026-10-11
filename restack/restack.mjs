@@ -639,20 +639,25 @@ function finish(ctx) {
     const d = (st.dropped || []).find(x => x.sha === a.sha);
     if (d) { d.escalated = true; d.why = a.why; d.pRegenOnly = a.pRegenOnly ?? null; }
   }
-  st.phase = "done"; st.finishedAt = new Date().toISOString();
+  // A step that broke the walk (a checkout that failed) leaves the branches
+  // above it unrestacked: that is a failure, not a finish, and the phase keeps
+  // the run abortable.
+  const broken = st.steps.filter(s => s.status === "error");
+  st.phase = broken.length ? "error" : "done"; st.finishedAt = new Date().toISOString();
   S.write(ctx.gitDirPath, st);
   if (st.returnTo && currentBranch(ctx.cwd) !== st.returnTo && !OPTS.dryRun)
     git(ctx.cwd, ["checkout", "--quiet", st.returnTo]);
 
-  const pushes = st.steps.filter(s => s.status === "done")
+  const pushes = broken.length ? [] : st.steps.filter(s => s.status === "done")
     .map(s => `${ctx.cfg.push.command} ${ctx.cfg.remote} ${s.branch}`);
   const escalatedDrops = (st.dropped || []).filter(d => d.escalated);
   const out = {
-    verb, status: escalatedDrops.length ? "needs-human" : st.stale.length ? "stale" : "ok", repo: ctx.cwd,
-    steps: st.steps.map(s => ({ branch: s.branch, status: s.status, tip: s.newTip && s.newTip.slice(0, 12) })),
+    verb, status: broken.length ? "error" : escalatedDrops.length ? "needs-human" : st.stale.length ? "stale" : "ok", repo: ctx.cwd,
+    steps: st.steps.map(s => ({ branch: s.branch, status: s.status, tip: s.newTip && s.newTip.slice(0, 12), ...(s.why ? { why: s.why } : {}) })),
     dropped: st.dropped || [],
     stale: st.stale,
-    next: [
+    ...(broken.length ? { error: broken.map(s => `${s.branch}: ${s.why}`).join("\n") } : {}),
+    next: broken.length ? ["restack abort   # puts back the branches already restacked", "restack run"] : [
       ...(escalatedDrops.length ? ["restack verify   # a dropped commit claimed real work"] : []),
       ...(st.stale.length ? st.stale.map(s => s.command).filter(Boolean) : []),
       "restack verify",
@@ -660,11 +665,16 @@ function finish(ctx) {
       ...pushes,
     ],
     push: pushes,
-    exit: escalatedDrops.length ? NEEDS_HUMAN : 0,
+    exit: broken.length ? 1 : escalatedDrops.length ? NEEDS_HUMAN : 0,
   };
   emit(out, o => {
     say("");
-    for (const s of o.steps) say(`  ${s.status === "done" ? "\x1b[32mok\x1b[0m  " : s.status === "already-current" ? "—   " : "    "} ${s.branch} ${s.status === "done" ? s.tip : s.status}`);
+    for (const s of o.steps) say(`  ${s.status === "done" ? "\x1b[32mok\x1b[0m  " : s.status === "already-current" ? "—   " : s.status === "error" ? "\x1b[31mfail\x1b[0m" : "    "} ${s.branch} ${s.status === "done" ? s.tip : s.status}${s.why ? ` — ${s.why}` : ""}`);
+    if (o.status === "error") {
+      say(`\n  the walk stopped before the branches above it; fix that, then:`);
+      for (const n of o.next) say(`        ${n}`);
+      return;
+    }
     if (o.dropped.length) {
       say(`\n  \x1b[33m${o.dropped.length} commit(s) became empty and were dropped\x1b[0m — the base already carries the change:`);
       for (const d of o.dropped) say(`    ${d.sha} ${d.subject} (${d.branch})${d.escalated ? "  \x1b[31m← " + d.why + "\x1b[0m" : ""}`);
