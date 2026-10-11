@@ -707,15 +707,60 @@ function cmdContinue(ctx) {
   return ctx.st.driver === "gt" ? walkGraphite(ctx) : walkGit(ctx);
 }
 
+// Abort puts back EVERY branch the run moved, not just the one mid-rebase:
+// `rebase --abort` restores only its own branch, and a stack whose bottom half
+// is restacked and top half is not is the worst place to leave it. Each goes
+// back to the tip planWalk recorded before anything moved. A branch that moved
+// again after the walk wrote it is someone's later work and is left alone,
+// loudly; the run state is kept then, so the recorded tips are not lost.
 function cmdAbort(ctx) {
   const op = operation(ctx.cwd);
   // `git rebase --abort` whichever tool started it: graphite's restack IS a
   // git rebase underneath, and aborting it restores the refs gt will re-read.
-  if (op) git(ctx.cwd, ["rebase", "--abort"]);
-  if (ctx.st.returnTo) git(ctx.cwd, ["checkout", "--quiet", ctx.st.returnTo]);
-  const st = S.clearRun(ctx.gitDirPath, ctx.st);
-  emit({ verb: "abort", status: "ok", aborted: !!op, stale: st.stale, exit: 0 },
-    o => say(o.aborted ? "  aborted; branches are back where they were" : "  nothing in progress; run state cleared"));
+  // A merge or cherry-pick is never ours, and aborting it would throw away a
+  // human's resolution.
+  if (op && op !== "rebase")
+    die(`a ${op} is in progress, and restack did not start it — finish it, or \`git ${op} --abort\` yourself`);
+  if (op) {
+    const r = git(ctx.cwd, ["rebase", "--abort"]);
+    if (!r.ok) die(`git rebase --abort failed, so nothing else was touched:\n${r.err}`);
+  }
+  const st = ctx.st;
+  const restored = [], failed = [];
+  if (["walking", "conflict", "error"].includes(st.phase)) {
+    const moved = (st.steps || []).filter(s => s.tip &&
+      (st.driver === "gt" || s.status === "done" || s.status === "conflict"));
+    // Off every branch first: moving the ref of the checked-out branch would
+    // leave its work tree describing the walk's tip.
+    if (moved.length) git(ctx.cwd, ["checkout", "--quiet", "--detach"]);
+    for (const s of moved) {
+      const cur = revParse(ctx.cwd, s.branch);
+      if (cur === s.tip) continue;
+      if (s.newTip && cur !== s.newTip) {
+        failed.push({ branch: s.branch, tip: s.tip, why: `moved after the walk (now ${cur ? cur.slice(0, 12) : "deleted"})` });
+        continue;
+      }
+      const r = git(ctx.cwd, ["update-ref", "-m", "restack abort", `refs/heads/${s.branch}`, s.tip, cur || ""]);
+      if (r.ok) restored.push({ branch: s.branch, from: cur && cur.slice(0, 12), to: s.tip.slice(0, 12) });
+      else failed.push({ branch: s.branch, tip: s.tip, why: r.err });
+    }
+  }
+  if (st.returnTo) {
+    const co = git(ctx.cwd, ["checkout", "--quiet", st.returnTo]);
+    if (!co.ok) failed.push({ branch: st.returnTo, tip: null, why: `could not check it out: ${co.err}` });
+  }
+  if (failed.length) {
+    S.write(ctx.gitDirPath, st);
+    return emit({ verb: "abort", status: "error", aborted: !!op, restored, failed, stale: st.stale || [],
+      error: `${failed.length} branch(es) not put back`, exit: 1 }, o => {
+      for (const r of o.restored) say(`  put back ${r.branch} ${r.to}`);
+      for (const f of o.failed) say(`  \x1b[31mnot put back\x1b[0m ${f.branch} — ${f.why}${f.tip ? `\n    it was at ${f.tip}: git branch -f ${f.branch} ${f.tip}` : ""}`);
+    });
+  }
+  const cleared = S.clearRun(ctx.gitDirPath, st);
+  emit({ verb: "abort", status: "ok", aborted: !!op || restored.length > 0, restored, stale: cleared.stale, exit: 0 },
+    o => say(o.aborted ? `  aborted; branches are back where they were${o.restored.length ? ` (${o.restored.map(r => r.branch).join(", ")} put back)` : ""}`
+      : "  nothing in progress; run state cleared"));
 }
 
 function cmdRegen(ctx) {
