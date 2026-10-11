@@ -1652,8 +1652,11 @@ async function render(specPath, opts) {
   // batched JQL, key parsing and a status cache. Files that do not exist yet
   // are exempt (they are the plan's output, not its input), and --force
   // remains the say-so-out-loud override.
+  // The root this render will record (see State below): --root wins, then the
+  // recorded one. Resolving against the recorded root under --root checked a
+  // moved plan against the path it was moved away from.
   const prior0 = readState(spec.slug);
-  const planRoot = (prior0 && prior0.root) || opts.root ||
+  const planRoot = opts.root || (prior0 && prior0.root) ||
     gitRoot(process.cwd()) || process.cwd();
   {
     const root = planRoot;

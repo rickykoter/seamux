@@ -464,6 +464,24 @@ ok("mermaid theme follows the page theme",
   fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "custom-tpl-plan.json"), { force: true });
 }
 
+// -------------------------------------------------- re-render --root resolves against the new root
+// The recovery for a moved root is `render --root NEW`; the floors used to
+// keep reading the recorded (gone) root, so the new one was never checked.
+{
+  const RA = path.join(TMP, "root-a"), RB = path.join(TMP, "root-b");
+  for (const d of [RA, RB]) { fs.mkdirSync(d, { recursive: true }); execSync("git init -q", { cwd: d }); }
+  fs.writeFileSync(path.join(RB, "only-in-b.txt"), "x\n");
+  const mv = JSON.parse(JSON.stringify(spec));
+  mv.slug = "moved-root-plan";
+  mv.deliverables[0].files.push("only-in-b.txt");
+  ok("a plan renders at its first root", cli("render", tmpSpec(mv), "--root", RA).status === 0);
+  const rb = cli("render", tmpSpec(mv), "--root", RB);
+  ok("a re-render with --root runs the read-before-plan floor on the new root",
+    rb.status === 1 && /edits only-in-b\.txt — no verifiedFact cites it/.test(rb.stderr));
+  cli("close", "moved-root-plan");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "moved-root-plan.json"), { force: true });
+}
+
 // -------------------------------------------------- observability block: advisory
 {
   const obSpec = { ...spec, slug: "ob-plan", observability: {
