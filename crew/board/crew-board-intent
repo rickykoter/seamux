@@ -318,8 +318,20 @@ def deliver(surface, n, label="", runner=None):
     return False, "typed %d but could not confirm it on screen — check the terminal" % n
 
 
+# One answer at a time. The server is threaded, and the "not yet answered" check
+# and the write that answers must not straddle another thread's deliver(): a
+# double submit (two tabs, a double click) would type the digit twice, and the
+# second keystroke answers whatever prompt comes next.
+_ANSWER_LOCK = threading.Lock()
+
+
 def answer(ask_id, n_raw, runner=None):
     """Record and deliver one answer. Returns (ok, delivered, detail)."""
+    with _ANSWER_LOCK:
+        return _answer(ask_id, n_raw, runner)
+
+
+def _answer(ask_id, n_raw, runner):
     jp = ask_path(ask_id, ".json")
     if not jp:
         return False, False, "no such ask"
@@ -1818,6 +1830,16 @@ def selftest():
         check("the answer is recorded as delivered",
               json.load(open(os.path.join(ASKS, aid + ".json")))["answer"]["delivered"] is True)
         check("a second answer is refused", answer(aid, "1", runner)[0] is False)
+        # Two submits at once (two tabs, a double click): one keystroke, not two.
+        ask["answer"] = None
+        with open(os.path.join(ASKS, aid + ".json"), "w") as fh:
+            json.dump(ask, fh)
+        runner, calls = fake("  What should it do? → b\n❯ \n")
+        slow = lambda argv: (time.sleep(0.05), runner(argv))[1]
+        both = [threading.Thread(target=answer, args=(aid, "2", slow)) for _ in range(2)]
+        [t.start() for t in both]
+        [t.join() for t in both]
+        check("a double submit types the option once", calls.count("send") == 1, " ".join(calls))
         # A prompt that only moved its pointer gets the Enter.
         ask["answer"] = None
         with open(os.path.join(ASKS, aid + ".json"), "w") as fh:
