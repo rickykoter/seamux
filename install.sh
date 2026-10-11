@@ -301,8 +301,10 @@ if [ "$CREW" = 1 ] && [ "$APPLY" = 1 ]; then
   head_ "crew"
   root="$(plugin_root crew)"
   if [ "$DRY" = 1 ]; then
-    if [ -n "$root" ]; then "$root/bin/crew" apply --dry-run | sed 's/^/  /'
-    else "$HERE/crew/bin/crew" apply --dry-run | sed 's/^/  /'; fi
+    crew_bin="$HERE/crew/bin/crew"; [ -n "$root" ] && crew_bin="$root/bin/crew"
+    # Same override as the real apply, so "would bake" names the --main-repo path.
+    if [ -n "$MAIN" ]; then CREW_MONOLITH="$MAIN" "$crew_bin" apply --dry-run
+    else "$crew_bin" apply --dry-run; fi | sed 's/^/  /'
   elif [ -z "$root" ] || [ ! -x "$root/bin/crew" ]; then
     warn "crew: plugin root not found — run \`crew apply\` inside Claude"
   else
