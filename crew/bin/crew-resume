@@ -152,10 +152,14 @@ def build_index(force=False):
                 out[key] = info
 
     os.makedirs(os.path.dirname(CACHE), exist_ok=True)
-    tmp = CACHE + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump(out, fh)
-    os.replace(tmp, CACHE)
+    tmp = CACHE + ".tmp.%d" % os.getpid()   # two writers must not share one tmp
+    try:
+        with open(tmp, "w") as fh:
+            json.dump(out, fh)
+        os.replace(tmp, CACHE)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
     return list(out.values()), seen
 
 
