@@ -187,6 +187,10 @@ def main(argv=None):
             print(f"{args.plugin} {model}: {e}", file=sys.stderr)
             failed = True
             continue
+        except (KeyError, TypeError) as e:
+            print(f"{args.plugin} {model}: malformed result ({type(e).__name__}: {e})", file=sys.stderr)
+            failed = True
+            continue
         path = baseline_path(args.root, args.plugin, model)
         if args.verb == "record":
             os.makedirs(os.path.dirname(path), exist_ok=True)

@@ -149,6 +149,14 @@ with tempfile.TemporaryDirectory() as root:
           json.load(open(path))["cases"].keys() == {"a", "b"})
     code, out = run_cli(["compare", "plug", "--model", "opus", "--result", nocases, "--root", root])
     check("compare of a run with no cases exits 1, not held", code == 1 and "held" not in out, out)
+    nameless = os.path.join(root, "nameless.json")
+    r = result({"a": [2]})
+    del r["cases"][0]["name"]
+    with open(nameless, "w") as fh:
+        json.dump(r, fh)
+    code, out = run_cli(["compare", "plug", "--model", "opus", "--result", nameless, "--root", root])
+    check("a malformed result exits 1 with one line, not a traceback",
+          code == 1 and "malformed result" in out and "Traceback" not in out, out)
 
 print(f"\n{'all good' if not FAILS else f'{len(FAILS)} failed'}")
 sys.exit(1 if FAILS else 0)
