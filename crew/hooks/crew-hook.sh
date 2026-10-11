@@ -32,6 +32,11 @@ if [ "$event" = "pretool" ]; then
   _m="${XDG_CACHE_HOME:-$HOME/.cache}/cmux-crew/lane-${CMUX_WORKSPACE_ID:-none}"
   [ -f "$_m" ] || exit 0
   [ -f "${XDG_CACHE_HOME:-$HOME/.cache}/cmux-crew/disabled" ] && exit 0
+  # AskUserQuestion also fires the `ask` hook, in parallel with this one, and
+  # that is no resumed work: releasing here could undo its needs-attention lane
+  # while the question is open. A builtin read and match, so no fork.
+  IFS= read -r -d '' _p || true
+  [[ ${_p:-} =~ \"tool_name\"[[:space:]]*:[[:space:]]*\"AskUserQuestion\" ]] && exit 0
   rm -f "$_m" 2>/dev/null
   if command -v cmux >/dev/null 2>&1; then
     cmux workspace status set auto >/dev/null 2>&1
