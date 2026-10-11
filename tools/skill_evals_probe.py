@@ -107,6 +107,16 @@ p = cmp({"a": [2, 2, 2], "b": [2, 2, 2], "c": [1, 1, 1], "d": [2, 2, 2]})
 check("a case missing from the baseline fails", any(x.startswith("d:") for x in p), str(p))
 p = cmp({"a": [2, 2, 2], "b": [2, 2, 2], "c": [1, 1, 1]}, model="haiku")
 check("a model mismatch fails", len(p) == 1 and "haiku" in p[0], str(p))
+try:
+    se.trim(result({}), "p", "opus")
+    check("trim refuses a run with no cases", False, "accepted")
+except ValueError:
+    check("trim refuses a run with no cases", True)
+empty = dict(base, cases={})
+p = se.compare(empty, empty)
+check("an empty baseline against an empty run fails", len(p) == 1 and "no cases" in p[0], str(p))
+p = se.compare(empty, base)
+check("an empty baseline fails", len(p) == 1 and "baseline has no cases" in p[0], str(p))
 
 # CLI: record then compare through --result, in a throwaway root
 with tempfile.TemporaryDirectory() as root:
@@ -130,6 +140,15 @@ with tempfile.TemporaryDirectory() as root:
     check("--result with two models is refused", code == 2, out)
     code, out = run_cli(["record", "nope", "--model", "opus", "--result", good, "--root", root])
     check("a plugin with no evals/ is refused", code == 2, out)
+    nocases = os.path.join(root, "nocases.json")
+    with open(nocases, "w") as fh:
+        json.dump(result({}), fh)
+    code, out = run_cli(["record", "plug", "--model", "opus", "--result", nocases, "--root", root])
+    check("record of a run with no cases exits 1", code == 1 and "no cases" in out, out)
+    check("record of a run with no cases keeps the baseline",
+          json.load(open(path))["cases"].keys() == {"a", "b"})
+    code, out = run_cli(["compare", "plug", "--model", "opus", "--result", nocases, "--root", root])
+    check("compare of a run with no cases exits 1, not held", code == 1 and "held" not in out, out)
 
 print(f"\n{'all good' if not FAILS else f'{len(FAILS)} failed'}")
 sys.exit(1 if FAILS else 0)

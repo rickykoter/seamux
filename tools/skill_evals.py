@@ -85,6 +85,8 @@ def trim(result, plugin, model):
             "graders": dict(sorted(graders.items())),
             "errors": errors,
         }
+    if not cases:
+        raise ValueError("the run has no cases; nothing was evaluated")
     return {
         "schema": SCHEMA,
         "plugin": plugin,
@@ -105,6 +107,9 @@ def compare(baseline, current):
         out.append(f"baseline is for {baseline.get('model')}, the run is {current.get('model')}")
         return out
     b, c = baseline["cases"], current["cases"]
+    if not b or not c:
+        out.append(f"the {'baseline' if not b else 'run'} has no cases; nothing to hold")
+        return out
     for name in sorted(set(b) - set(c)):
         out.append(f"{name}: in the baseline, not in the run")
     for name in sorted(set(c) - set(b)):
