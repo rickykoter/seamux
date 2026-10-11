@@ -715,7 +715,14 @@ function cmdContinue(ctx) {
     // there is a walk to resume.
     if (ctx.st.phase === "conflict" || ctx.st.phase === "walking") {
       const step = ctx.st.steps[ctx.st.index];
-      if (step) { step.status = "done"; step.newTip = revParse(ctx.cwd, step.branch); ctx.st.index++; }
+      // Finished by hand only if the branch now sits on its new parent. A
+      // rebase aborted by hand leaves it where it was, and calling that done
+      // would stack the rest onto an unrestacked branch.
+      const onto = step && ctx.st.driver !== "gt" && step.upstream ? ontoFor(ctx.cwd, ctx.st, step) : null;
+      const landed = !onto || isAncestor(ctx.cwd, onto, step.branch);
+      if (!landed && ctx.st.phase === "conflict")
+        die(`no rebase is in progress and ${step.branch} is not on its new parent — the rebase was aborted by hand. \`restack abort\` puts the stack back; \`restack run\` starts over`);
+      if (step && landed) { step.status = "done"; step.newTip = revParse(ctx.cwd, step.branch); ctx.st.index++; }
       ctx.st.phase = "walking"; S.write(ctx.gitDirPath, ctx.st);
       return ctx.st.driver === "gt" ? walkGraphite(ctx) : walkGit(ctx);
     }

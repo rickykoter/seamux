@@ -467,6 +467,10 @@ step("abort mid-stack puts back the branches already restacked");
   const run2 = cli(r, "run", "--json", "--no-fetch");
   ok("a second walk stops in the same place", run2.status === 2, run2.out + run2.err);
   git(r, "rebase", "--abort");
+  // ...and a rebase aborted by hand is not a rebase finished by hand.
+  const cont = cli(r, "continue", "--json", "--no-fetch");
+  ok("continue after a hand abort refuses, not marks it done", cont.status === 1 && /aborted by hand/.test(cont.json?.error || ""), cont.out + cont.err);
+  ok("and the stopped branch is still the stopped one", cli(r, "status", "--json").json?.run?.steps?.[2]?.status === "conflict");
   git(r, "checkout", "-q", "feat1");
   addDef(r, "e", "echo\n", "feat1: later work");
   const later = git(r, "rev-parse", "feat1").out;
