@@ -273,6 +273,12 @@ def reply(ws, mode):
     this script rather than the sidebar calling feed.permission.reply directly,
     because that is the only way there is anywhere to write the audit line.
     """
+    # Only the two answers the board offers. Anything else would be forwarded
+    # as some other approval scope than the audited one-shot Allow.
+    if mode not in ("once", "deny"):
+        audit({"ws": ws, "mode": mode, "result": "refused", "why": "unknown mode"})
+        print(f"crew-feed: reply mode must be once or deny, not {mode!r}", file=sys.stderr)
+        return 2
     ev = evaluate(ws)
     if not ev or not ev["live"]:
         audit({"ws": ws, "mode": mode, "result": "refused", "why": "window closed"})
