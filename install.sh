@@ -355,9 +355,9 @@ else
     if printf '%s\n' "$left" | grep -q '^hook' && [ -n "$MARKS" ]; then
       cp "$SETTINGS" "$MIG/settings.json" && ok "backed up settings.json -> ${MIG/#$HOME/~}/settings.json"
       python3 - "$SETTINGS" $MARKS <<'PY' && ok "removed the old hook entries the installed plugins replace:$MARKS"
-import json, sys
-p = sys.argv[1]
-s = json.load(open(p))
+import json, os, sys, tempfile
+p = os.path.realpath(sys.argv[1])
+s = json.load(open(p, encoding="utf-8"))
 marks = tuple(sys.argv[2:])
 hooks = s.get("hooks") or {}
 for event, ms in list(hooks.items()):
@@ -366,9 +366,18 @@ for event, ms in list(hooks.items()):
     hooks[event] = [m for m in ms if m.get("hooks")]
     if not hooks[event]:
         del hooks[event]
-with open(p, "w") as fh:
-    json.dump(s, fh, indent=2)
-    fh.write("\n")
+# Atomically: a temp file beside it, then a rename, so an interrupted write
+# never leaves settings.json truncated. realpath above keeps a symlink a symlink.
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), prefix=".settings.", suffix=".tmp")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(s, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    os.chmod(tmp, os.stat(p).st_mode & 0o7777)
+    os.replace(tmp, p)
+except BaseException:
+    os.unlink(tmp)
+    raise
 PY
     fi
     # The engines' shims, if a migrated old one left the name free.
