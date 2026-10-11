@@ -2186,11 +2186,13 @@ function findInc(st, n) {
   return inc;
 }
 
+// Both sides resolved as the gate resolves them: a root is recorded as the
+// real path (/private/var/… on macOS), and --at is often spelled /var/….
 function resolveSlugAt(dir) {
-  const target = path.resolve(dir);
+  const target = canon(dir);
   for (const st of allStates()) {
     if (!st.root || st.phase === "closed") continue;
-    const r = path.resolve(st.root);
+    const r = canon(st.root);
     if (target === r || target.startsWith(r + path.sep)) return st.slug;
   }
   return null;

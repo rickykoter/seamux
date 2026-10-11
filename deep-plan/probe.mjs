@@ -1005,8 +1005,15 @@ r = cli("go", spec.slug, "next", "--force");
 ok("…unless forced, which opens the next one beside it (logged)", r.status === 0 &&
   JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8")).increments[1].status === "authorized");
 cli("reset", spec.slug, "2");
-ok("go --at resolves a plan from a directory", cli("go", "--at", REPO, "next").status !== 0 ||
-  true); // inc 2 is pending; go --at authorizes it
+// go --at finds the plan from a directory: its `next` is refused by name while
+// increment 1 is open, and a number authorizes that increment.
+r = cli("go", "--at", REPO, "next");
+ok("go --at resolves a plan from a directory",
+  r.status === 1 && /go refused: increment 1 is already working/.test(r.stderr));
+r = cli("go", "--at", REPO, "2");
+ok("…and authorizes the increment it names", r.status === 0 &&
+  JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8")).increments[1].status === "authorized");
+cli("reset", spec.slug, "2");
 r = cli("status", "--json");
 const rows = JSON.parse(r.stdout);
 ok("status --json carries the board's fields",
