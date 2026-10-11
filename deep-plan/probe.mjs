@@ -946,9 +946,13 @@ ok("the denial opens with `deep-plan gate [<slug>]: ` (seamux-mods keys off it)"
 
 // -------------------------------------------------- go / working / done
 ok("go authorizes the next increment", cli("go", spec.slug, "next").status === 0);
-ok("authorized increment: Edit allowed", edit(path.join(REPO, "a.txt")).status === 0);
+const HEAD0 = execSync("git rev-parse HEAD", { cwd: REPO, encoding: "utf8" }).trim();
 let st = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"));
+ok("go records HEAD as the increment's start sha", st.increments[0].startSha === HEAD0);
+ok("authorized increment: Edit allowed", edit(path.join(REPO, "a.txt")).status === 0);
+st = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"));
 ok("that edit flipped it to working (via gate)", st.increments[0].status === "working");
+ok("…and kept the sha go recorded", st.increments[0].startSha === HEAD0);
 // A second go next while increment 1 waits (a button's go, then a typed one)
 // is refused, naming the open increment on the last line the chip shows.
 r = cli("go", spec.slug, "next");
@@ -2402,6 +2406,60 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   execSync("git add -A && git -c user.email=p@p -c user.name=p commit -q -m cleanup --allow-empty", { cwd: REPO });
   scli("close", "diff-plan");
   fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "diff-plan.json"), { force: true });
+}
+
+// -------------------------------------------------- the start sha comes from go
+//
+// The gate sees Edit/Write and the Bash writes its heuristic catches, so an
+// increment built by a script or a `cp` was never flipped to working and closed
+// with no base: no patch, nothing for a review to open. go records the base, so
+// every increment has one however its writes were made.
+{
+  const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
+  const sha = n => stOf("sha-plan").increments[n - 1].startSha;
+  const head = () => execSync("git rev-parse HEAD", { cwd: REPO, encoding: "utf8" }).trim();
+  const commit = m => execSync(`git add -A && git -c user.email=p@p -c user.name=p commit -q --allow-empty -m ${m}`, { cwd: REPO });
+  cli("render", tmpSpec({ ...spec, slug: "sha-plan" }));
+  const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "sha-plan.key.json"), "utf8"));
+  cli("grade", "sha-plan", ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+
+  const h1 = head();
+  cli("go", "sha-plan", "1");
+  ok("go stamps HEAD on the increment", sha(1) === h1 && stOf("sha-plan").increments[0].status === "authorized");
+  // A write the gate never sees: no Edit, no Bash command, just a file landing.
+  fs.writeFileSync(path.join(REPO, "scripted.txt"), "written by a script\n");
+  passAll("sha-plan", 1);
+  const d = cli("done", "sha-plan", "1");
+  const patch = path.join(ENV.DEEP_PLAN_PLANS_DIR, "sha-plan.inc1.patch");
+  ok("an increment taken from go to done with no gated edit still writes its patch",
+    d.status === 0 && fs.existsSync(patch) && fs.readFileSync(patch, "utf8").includes("scripted.txt"), d.stderr);
+  commit("inc1");
+
+  const h2 = head();
+  cli("go", "sha-plan", "2");
+  commit("late");                            // HEAD moves after the go
+  ok("start keeps the sha go recorded", cli("start", "sha-plan", "2").status === 0 && sha(2) === h2 && h2 !== head());
+  cli("reset", "sha-plan", "2");
+  ok("reset clears the start sha", sha(2) === "" && stOf("sha-plan").increments[1].status === "pending");
+  const h3 = head();
+  cli("go", "sha-plan", "2");
+  ok("the next go re-stamps it at the new HEAD", sha(2) === h3 && h3 !== h2);
+  cli("block", "sha-plan", "2", "waiting");
+  commit("blocked");
+  ok("block keeps the sha", sha(2) === h3);
+  cli("go", "sha-plan", "2");
+  ok("a blocked increment's re-go keeps its first sha", sha(2) === h3 && h3 !== head());
+  // An older engine's reset left the sha in place; go from pending must not keep it.
+  cli("reset", "sha-plan", "2");
+  const stale = stOf("sha-plan"); stale.increments[1].startSha = h1;
+  fs.writeFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "sha-plan.json"), JSON.stringify(stale));
+  cli("go", "sha-plan", "2");
+  ok("go re-stamps a pending increment that still carries an old sha", sha(2) === head() && head() !== h1);
+
+  fs.rmSync(path.join(REPO, "scripted.txt"), { force: true });
+  commit("cleanup");
+  cli("close", "sha-plan");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "sha-plan.json"), { force: true });
 }
 
 // -------------------------------------------------- owner: session and workspace

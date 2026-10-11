@@ -2183,6 +2183,12 @@ function repend(inc, ids, why) {
   return moved;
 }
 
+// HEAD of the plan root, or "" outside git: an increment's base.
+function headSha(root) {
+  const sha = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" });
+  return sha.status === 0 ? sha.stdout.trim() : "";
+}
+
 function transition(action, slug, n, why, force = false) {
   const st = readState(slug) || die("no plan " + slug);
   if (action === "go") {
@@ -2215,6 +2221,14 @@ function transition(action, slug, n, why, force = false) {
       die(`${slug} waits on its family's parent: ${waitText(waits)}.\n` +
         `  override, logged:  deep-plan go ${slug} ${n} --force\n` +
         `go refused: waits on ${waits.map(w => `${w.parent} increment ${w.n}`).join(", ")}`);
+    // The increment's base is HEAD at authorization, recorded here rather than
+    // at the first edit: the gate sees only Edit/Write and the Bash writes its
+    // heuristic catches, so an increment built by a script or a `cp` was never
+    // marked working and closed with no base, no patch and no review. A
+    // blocked increment's re-go keeps the sha its first go recorded; a pending
+    // one is always re-stamped, so a sha left by an older engine's reset
+    // (which did not clear it) cannot become a stale base.
+    if (inc.status === "pending" || !inc.startSha) inc.startSha = headSha(st.root);
     inc.status = "authorized"; inc.authorizedAt = Date.now(); inc.note = "";
     log1(st, `go: increment ${n} (${inc.title}) authorized` +
       (waits.length ? ` (--force past the family wait: ${waitText(waits)})` : "") +
@@ -2223,8 +2237,8 @@ function transition(action, slug, n, why, force = false) {
     const inc = findInc(st, n);
     if (inc.status !== "authorized") die(`increment ${n} is ${inc.status}, not authorized`);
     inc.status = "working"; inc.startedAt = Date.now();
-    const sha = spawnSync("git", ["-C", st.root, "rev-parse", "HEAD"], { encoding: "utf8" });
-    inc.startSha = sha.status === 0 ? sha.stdout.trim() : "";
+    // go records the base; this stamps only an increment authorized before it did.
+    if (!inc.startSha) inc.startSha = headSha(st.root);
     log1(st, `start: increment ${n}`);
   } else if (action === "done") {
     const inc = findInc(st, n);
@@ -2261,6 +2275,7 @@ function transition(action, slug, n, why, force = false) {
   } else if (action === "reset") {
     const inc = findInc(st, n);
     inc.status = "pending"; inc.note = "";
+    inc.startSha = "";                      // redone work gets a fresh base at its next go
     // Reset means the work is being redone, so a verdict recorded against the
     // PREVIOUS attempt no longer proves anything — leaving it would let the
     // gate pass on stale evidence, silently, which is the failure this whole

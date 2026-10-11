@@ -121,8 +121,9 @@ These survive a compaction; everything below them is how.
    says "go" and an increment is already authorized, start that one. `go
    next` refuses while one is open; `--force` past it only on the human's
    word. Each `go` opens or refocuses the working surface in the Dock,
-   best-effort. The first edit inside the root marks the increment
-   `working`; `deep-plan done <slug> <n>` closes it and writes its patch to
+   best-effort. `go` records HEAD as the increment's start sha, the base of
+   its patch and its review; the first edit inside the root marks it
+   `working`. `deep-plan done <slug> <n>` closes it and writes its patch to
    `~/.claude/plans/<slug>.inc<n>.patch`. `deep-plan diff <slug> [n]` opens
    it in lookout (or `cmux diff`) when someone wants to look.
 10. **Prove the increment before `done`.** `done` is refused while any check
