@@ -321,8 +321,7 @@ def jira_status(keys):
             return {}
     try:
         os.makedirs(STATE, exist_ok=True)
-        with open(JIRA_CACHE, "w") as fh:
-            json.dump({"at": now, "keys": keys, "status": out}, fh)
+        write_json(JIRA_CACHE, {"at": now, "keys": keys, "status": out})
     except Exception:
         pass
     return out
@@ -340,6 +339,20 @@ def jira_token(entry):
 def gh_cache_path(cwd):
     import hashlib
     return os.path.join(STATE, "gh-" + hashlib.md5(cwd.encode()).hexdigest() + ".json")
+
+
+def write_json(path, obj):
+    """Write through a temp file and a rename. Syncs overlap (the Stop hook,
+    the listener, by hand), and a half-written cache read as "no cache" would
+    publish empty signals instead of carrying the previous ones."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w") as fh:
+            json.dump(obj, fh)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def gh_state(cwd, force=False):
@@ -438,8 +451,7 @@ def gh_state(cwd, force=False):
     out["notified"] = prev.get("notified", {})
     try:
         os.makedirs(STATE, exist_ok=True)
-        with open(path, "w") as fh:
-            json.dump(out, fh)
+        write_json(path, out)
     except Exception:
         pass
     return out
@@ -1294,8 +1306,7 @@ def main():
                 chime()
         raw["notified"] = sig
         try:
-            with open(gh_cache_path(cwd), "w") as fh:
-                json.dump(raw, fh)
+            write_json(gh_cache_path(cwd), raw)
         except Exception:
             pass
 
