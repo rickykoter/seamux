@@ -292,7 +292,13 @@ async function pageUrl($: EngineInterface, h: string, served: string, file: stri
   } catch {
     // no intent server
   }
-  return `file://${await plansDir($, h)}/${file}`
+  return fileUrl(`${await plansDir($, h)}/${file}`)
+}
+
+// A path as a file:// URL, each segment percent-encoded: a home such as
+// `/Users/John Smith` otherwise gives a link that does not resolve.
+function fileUrl(path: string): string {
+  return `file://${path.split('/').map(encodeURIComponent).join('/')}`
 }
 
 // The page `deep-plan ask` opened for this cwd within the last minute: the

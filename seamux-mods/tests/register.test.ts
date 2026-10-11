@@ -462,6 +462,15 @@ describe('seamux-mods', () => {
     await ui.unmount()
   })
 
+  test('the file link percent-encodes a plans directory with a space in it', async ($, on) => {
+    const w = world(on, { noPort: true, noCmux: true, plansDir: '/Users/John Smith/plans' })
+    await $.command.run({ command: 'plan-pane', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
+    await ui.press({ key: 'open' })
+    expect(w.toasts).toContain('Plan page: file:///Users/John%20Smith/plans/demo.working.html')
+    await ui.unmount()
+  })
+
   test('no engine pointer: the pane names the missing file', async ($, on) => {
     world(on, { pointer: false })
     await $.command.run({ command: 'plan-pane', args: '' } as never)
