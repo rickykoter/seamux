@@ -160,8 +160,9 @@ for w in hits:
 for w in here:
     if "plan:mode" in (w.get("description") or "").split():
         print("MODE %s" % label(w))' "$top" "${ws:-none}" 2>/dev/null)"
+  # No COUNT line means cmux did not answer (socket refused, mid-restart). Left
+  # empty, that is a blocker below, not a pass: "could not tell" is not "none".
   others="$(printf '%s\n' "$probe" | sed -n 's/^COUNT //p')"
-  others="${others:-0}"
   ws_title="$(printf '%s\n' "$probe" | sed -n 's/^KEEP //p')"
   others_desc="$(printf '%s\n' "$probe" | sed -n 's/^HIT //p' | paste -sd, -)"
   planmode_desc="$(printf '%s\n' "$probe" | sed -n 's/^MODE //p' | paste -sd, -)"
@@ -352,7 +353,9 @@ else
   fail "this shell is inside $top — run it from elsewhere"
 fi
 
-if [ "${others:-0}" -eq 0 ]; then
+if [ -z "$others" ]; then
+  fail "cmux did not list its workspaces — could not tell whether another is open here"
+elif [ "$others" -eq 0 ]; then
   pass "no other cmux workspace is open here"
 else
   fail "$others other workspace(s) still open here${others_desc:+: $others_desc}"
