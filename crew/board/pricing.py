@@ -199,6 +199,12 @@ def _write(cfg):
     d = cache_dir()
     path = os.path.join(d, "config-%s.json" % digest)
     if os.path.isfile(path):
+        # Still in use: keep it younger than the prune below, or a caller with a
+        # different config could delete it under a ccusage that is reading it.
+        try:
+            os.utime(path)
+        except OSError:
+            pass
         return path
     os.makedirs(d, exist_ok=True)
     tmp = "%s.tmp.%d" % (path, os.getpid())
