@@ -31,8 +31,8 @@ function __boardRender(d) {
   };
 
   function esc(s) {
-    return String(s == null ? "" : s).replace(/[&<>]/g, function (c) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c];
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
   }
   // `said` can carry raw terminal text captured with read-screen, so it is escaped first

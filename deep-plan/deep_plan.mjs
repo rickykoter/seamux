@@ -1652,8 +1652,11 @@ async function render(specPath, opts) {
   // batched JQL, key parsing and a status cache. Files that do not exist yet
   // are exempt (they are the plan's output, not its input), and --force
   // remains the say-so-out-loud override.
+  // The root this render will record (see State below): --root wins, then the
+  // recorded one. Resolving against the recorded root under --root checked a
+  // moved plan against the path it was moved away from.
   const prior0 = readState(spec.slug);
-  const planRoot = (prior0 && prior0.root) || opts.root ||
+  const planRoot = opts.root || (prior0 && prior0.root) ||
     gitRoot(process.cwd()) || process.cwd();
   {
     const root = planRoot;
@@ -1730,6 +1733,15 @@ async function render(specPath, opts) {
   } else if (badDiagrams.length) {
     console.error(`deep-plan: --force past ${badDiagrams.length} broken diagram(s) — logged`);
   }
+  // ADR destinations resolve once, here, and live in state: surfaces and
+  // drafts re-render from the stored resolution (rehydrate stays
+  // byte-identical); apply re-checks the numbering against the repo. The
+  // drafts are filled before anything is written: a house template that is
+  // not there refuses the render, not half of it.
+  const adrs = planAdrs(spec, planRoot);
+  let adrDrafts;
+  try { adrDrafts = adrs.map(a => adrDraftText(spec, planRoot, a)); }
+  catch (e) { die("spec refused — adr: " + e.message); }
   fs.mkdirSync(PLANS_DIR, { recursive: true });
   fs.mkdirSync(KEYS_DIR, { recursive: true });
 
@@ -1752,16 +1764,12 @@ async function render(specPath, opts) {
   fs.writeFileSync(path.join(KEYS_DIR, spec.slug + ".spec.json"), JSON.stringify(spec, null, 2) + "\n");
   fs.writeFileSync(path.join(KEYS_DIR, spec.slug + ".key.json"), JSON.stringify(key, null, 2) + "\n");
 
-  // ADR destinations resolve once, here, and live in state: surfaces and
-  // drafts re-render from the stored resolution (rehydrate stays
-  // byte-identical); apply re-checks the numbering against the repo.
-  const adrs = planAdrs(spec, planRoot);
   const b64 = mermaidB64();
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".md"), mdPlan(spec, adrs));
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".review.html"), reviewHtml(spec, b64, adrs));
   const extras = writeSpecArtifacts(spec, b64);
-  adrs.forEach(a => fs.writeFileSync(
-    path.join(PLANS_DIR, `${spec.slug}.adr${a.n}.md`), adrDraftText(spec, planRoot, a)));
+  adrs.forEach((a, i) => fs.writeFileSync(
+    path.join(PLANS_DIR, `${spec.slug}.adr${a.n}.md`), adrDrafts[i]));
 
   // State: an existing root outranks an inferred one; only --root overwrites.
   let st = readState(spec.slug);
@@ -1804,6 +1812,7 @@ async function render(specPath, opts) {
     return prev ? { ...a, number: prev.number, file: prev.file, dir: prev.dir,
       source: prev.source, applied: prev.applied || "" } : a;
   });
+  reopenPhase(st);
   writeState(st);
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".working.html"), workingHtml(spec, st, b64));
   say(`rendered ${spec.slug}: ${PLANS_DIR}/${spec.slug}.md, .review.html, .working.html`);
@@ -2148,7 +2157,9 @@ async function grade(slug, answers) {
     writeState(st); rerenderWorking(slug);
     process.exit(1);
   }
-  st.phase = "implementing";
+  // Review is the only phase a pass moves on from: a re-grade must not pull a
+  // delivery, done or closed plan back to implementing.
+  if (st.phase === "review") st.phase = "implementing";
   log1(st, "alignment check passed");
   // The approved snapshot: the plan AS AGREED, cut once at the plan→working
   // boundary and never overwritten — paste-anywhere context (Jira, PRs).
@@ -2175,11 +2186,13 @@ function findInc(st, n) {
   return inc;
 }
 
+// Both sides resolved as the gate resolves them: a root is recorded as the
+// real path (/private/var/… on macOS), and --at is often spelled /var/….
 function resolveSlugAt(dir) {
-  const target = path.resolve(dir);
+  const target = canon(dir);
   for (const st of allStates()) {
     if (!st.root || st.phase === "closed") continue;
-    const r = path.resolve(st.root);
+    const r = canon(st.root);
     if (target === r || target.startsWith(r + path.sep)) return st.slug;
   }
   return null;
@@ -2224,6 +2237,17 @@ function repend(inc, ids, why) {
 function headSha(root) {
   const sha = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" });
   return sha.status === 0 ? sha.stdout.trim() : "";
+}
+
+// A complete plan that has work again (an increment reset or blocked, or an
+// amend that added one) is being implemented: the board, `deliver` and the
+// family's sequencing all read the phase.
+function reopenPhase(st) {
+  if ((st.phase === "done" || st.phase === "delivery") &&
+      !(st.increments || []).every(i => i.status === "done")) {
+    log1(st, `phase ${st.phase} -> implementing: an increment is not done`);
+    st.phase = "implementing";
+  }
 }
 
 function transition(action, slug, n, why, force = false) {
@@ -2325,6 +2349,7 @@ function transition(action, slug, n, why, force = false) {
     log1(st, `reset: increment ${n}` + (back.length
       ? ` — ${back.length} check verdict(s) returned to pending (${back.join(", ")})` : ""));
   } else die("unknown transition " + action);
+  reopenPhase(st);
   writeState(st); rerenderWorking(slug);
   say(`${action} ${slug} ${n}`);
   if (action === "go") openWorkingSurface(st);
@@ -2510,9 +2535,21 @@ function openWorkingSurface(st) {
 function incrementDiff(st, inc, { open = false, base = "" } = {}) {
   const sha = inc.startSha || base;
   if (!sha || !st.root) return;
+  // `add -AN` (so untracked files show) runs on a scratch copy of the index:
+  // on the real one it left intent-to-add entries for `git commit -a` to sweep
+  // up. The copy keeps the index's mtime, or git trusts racily-clean entries.
+  const tmp = path.join(os.tmpdir(), `deep-plan-diff-${process.pid}-${Date.now()}`);
+  const env = { ...process.env, GIT_INDEX_FILE: tmp };
   try {
-    execSync("git add -AN", { cwd: st.root });
-    const patch = execSync(`git diff ${sha}`, { cwd: st.root, maxBuffer: 64e6 }).toString();
+    const index = execSync("git rev-parse --path-format=absolute --git-path index",
+      { cwd: st.root }).toString().trim();
+    if (fs.existsSync(index)) {
+      fs.copyFileSync(index, tmp);
+      const s = fs.statSync(index);
+      fs.utimesSync(tmp, s.atime, s.mtime);
+    }
+    execSync("git add -AN", { cwd: st.root, env });
+    const patch = execSync(`git diff ${sha}`, { cwd: st.root, env, maxBuffer: 64e6 }).toString();
     if (!patch.trim()) return;
     const p = path.join(PLANS_DIR, `${st.slug}.inc${inc.n}.patch`);
     fs.writeFileSync(p, patch);
@@ -2523,6 +2560,7 @@ function incrementDiff(st, inc, { open = false, base = "" } = {}) {
     const r = spawnSync("cmux", ["diff", "--title", title, p], { stdio: "ignore" });
     if (r.error || r.status !== 0) say(`patch: ${p}\n${how}`);
   } catch { /* the patch is a courtesy, never a failure */ }
+  finally { for (const f of [tmp, tmp + ".lock"]) fs.rmSync(f, { force: true }); }
 }
 
 // ---------------------------------------------------------------- status

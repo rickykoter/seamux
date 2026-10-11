@@ -4,7 +4,7 @@
 #   crew status     what is installed and live right now
 #   crew adopt      back-fill a session that started before crew was applied
 #   crew sync       reconcile every workspace against what is actually true
-#   crew timer      on|off|status — periodic reconcile via launchd (opt-in)
+#   crew timer      status|off — retired; off removes the old launchd job
 #   crew listen     on|off|status|log — reconcile on cmux workspace events (opt-in)
 #   crew color      list|show|assign|apply|free|prune — per-worktree identity color
 #   crew doctor     check the install, exit non-zero if something is wrong
@@ -109,6 +109,20 @@ render_local() {
   local ov="$CREW_LOCAL/$2"
   if [ ! -f "$ov" ]; then render "$1"; return; fi
   render "$1" | python3 "$CREW_HOME/bin/crew-overlay" <(render "$ov") "$ov"
+}
+
+# render_to <template> <overlay-name> <dest>
+# render_local into a temp file beside <dest>, moved into place only when it
+# succeeded. A redirect straight onto <dest> truncates the live config before a
+# broken overlay has failed, leaving it empty. A symlinked <dest> is written
+# through, as the redirect did, rather than replaced.
+render_to() {
+  local tmp="$3.crew-tmp.$$"
+  if render_local "$1" "$2" > "$tmp"; then
+    if [ -L "$3" ]; then cat "$tmp" > "$3" && rm -f "$tmp"; else mv -f "$tmp" "$3"; fi
+  else
+    rm -f "$tmp"; return 1
+  fi
 }
 
 # --------------------------------------------------------- plugin plumbing --
@@ -357,15 +371,20 @@ cmd_apply() {
   fi
 
   # 2. render config
-  render_local "$CREW_HOME/config/cmux.jsonc" cmux.json > "$CMUX_JSON"
-  ok "rendered cmux.json from config/cmux.jsonc"
+  if render_to "$CREW_HOME/config/cmux.jsonc" cmux.json "$CMUX_JSON"; then
+    ok "rendered cmux.json from config/cmux.jsonc"
+  else
+    bad "could not render cmux.json (check $CREW_LOCAL/cmux.json) — the live one is unchanged"
+  fi
 
   # 3. put the commands on PATH. ~/.local/bin is already there, so this needs
   #    no shell-config edit. crew-code-open is deliberately excluded: cmux
-  #    invokes it by absolute path, nobody types it.
+  #    invokes it by absolute path, nobody types it. crew-cmux-bin is nobody's
+  #    to type either, but every command looks for it beside the path it was
+  #    run by, and run from here that is $LOCALBIN, not bin/.
   if [ -d "$LOCALBIN" ] || mkdir -p "$LOCALBIN" 2>/dev/null; then
     local linked=0
-    for f in crew crew-color crew-diff crew-code crew-digest crew-feed crew-reclaim crew-resume crew-sandbox crew-spec crew-sync crew-worktree crew-watch crew-listen; do
+    for f in crew crew-color crew-diff crew-code crew-digest crew-feed crew-reclaim crew-resume crew-sandbox crew-spec crew-sync crew-worktree crew-watch crew-listen crew-cmux-bin; do
       ln -sf "$CREW_HOME/bin/$f" "$LOCALBIN/$f" && linked=$((linked + 1))
     done
     # The board lives in board/, not bin/: it is a surface with an HTML shell beside it.
@@ -382,12 +401,15 @@ cmd_apply() {
   # 4. project Dock, untracked
   if [ -d "$MONOLITH/.git" ]; then
     mkdir -p "$MONOLITH/.cmux"
-    render_local "$CREW_HOME/config/dock.json" dock.json > "$MONOLITH/.cmux/dock.json"
     local ex="$MONOLITH/.git/info/exclude"
     if ! grep -qx '.cmux/' "$ex" 2>/dev/null; then
       printf '\n# crew (local cmux Dock config)\n.cmux/\n' >> "$ex"
     fi
-    ok "installed Dock -> $MONOLITH/.cmux/dock.json (untracked)"
+    if render_to "$CREW_HOME/config/dock.json" dock.json "$MONOLITH/.cmux/dock.json"; then
+      ok "installed Dock -> $MONOLITH/.cmux/dock.json (untracked)"
+    else
+      bad "could not render the project Dock (check $CREW_LOCAL/dock.json) — left unchanged"
+    fi
   else
     warn "no monolith checkout at $MONOLITH — skipped Dock"
   fi
@@ -400,8 +422,11 @@ cmd_apply() {
     cp "$HOME/.config/cmux/dock.json" "$HOME/.config/cmux/dock.json.pre-crew.bak"
     ok "backed up dock.json -> dock.json.pre-crew.bak"
   fi
-  render_local "$CREW_HOME/config/dock.global.json" dock.global.json > "$HOME/.config/cmux/dock.json"
-  ok "installed global Dock -> ~/.config/cmux/dock.json (board + usage)"
+  if render_to "$CREW_HOME/config/dock.global.json" dock.global.json "$HOME/.config/cmux/dock.json"; then
+    ok "installed global Dock -> ~/.config/cmux/dock.json (board + usage)"
+  else
+    bad "could not render the global Dock (check $CREW_LOCAL/dock.global.json) — left unchanged"
+  fi
 
   # 5. Claude hooks. The crew plugin wires them from its own hooks.json, so
   #    apply writes none, and removes the settings.json entries the old apply
@@ -611,7 +636,7 @@ cmd_uninstall() {
 
   # Only remove links that actually point back into the package.
   local unlinked=0
-  for f in crew crew-color crew-diff crew-code crew-digest crew-feed crew-reclaim crew-resume crew-sandbox crew-spec crew-sync crew-worktree crew-watch crew-listen; do
+  for f in crew crew-color crew-diff crew-code crew-digest crew-feed crew-reclaim crew-resume crew-sandbox crew-spec crew-sync crew-worktree crew-watch crew-listen crew-cmux-bin; do
     if [ -L "$LOCALBIN/$f" ] && [ "$(readlink "$LOCALBIN/$f")" = "$CREW_HOME/bin/$f" ]; then
       rm -f "$LOCALBIN/$f"; unlinked=$((unlinked + 1))
     fi

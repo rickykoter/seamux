@@ -262,7 +262,8 @@ export function renderAdr(entry, config, meta) {
   const adr = entry.adr || {};
   let tpl;
   if (config && typeof config.template === "object") {
-    tpl = fs.readFileSync(path.join(meta.root, config.template.path), "utf8");
+    try { tpl = fs.readFileSync(path.join(meta.root, config.template.path), "utf8"); }
+    catch { throw new Error(`template file missing: ${config.template.path} (named by .seamux/adr.json)`); }
   } else {
     tpl = (config && config.template === "madr") ? MADR : NYGARD;
   }

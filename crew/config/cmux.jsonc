@@ -303,7 +303,7 @@
       "title": "Crew board (legacy sidebar)",
       "subtitle": "mount the SwiftUI board as the left sidebar",
       "keywords": ["crew", "board", "sidebar", "legacy"],
-      "command": "C=/Applications/cmux.app/Contents/Resources/bin/cmux; $C sidebar select crew && $C close-surface --surface \"$CMUX_SURFACE_ID\"",
+      "command": "C=\"$(__HOME__/.config/cmux/crew/bin/crew-cmux-bin)\"; \"$C\" sidebar select crew && \"$C\" close-surface --surface \"$CMUX_SURFACE_ID\"",
       "target": "newTabInCurrentPane",
       "icon": { "type": "symbol", "name": "rectangle.split.2x1" },
       "newWorkspaceMenu": false

@@ -31,6 +31,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -101,6 +102,24 @@ def workspaces():
         return json.loads(out).get("workspaces") or []
     except Exception:
         return []
+
+
+# crew-feed's tokens: the pending Feed ask it publishes from the Notification
+# hook. Not this script's to judge or rebuild, so they are carried as found --
+# the description is shared, and every writer merges (hooks/lib.sh).
+FEED_KEYS = ("feed", "feedby", "feedgate", "feedreq", "feedws")
+
+
+def feed_tokens(desc):
+    return [t for t in (desc or "").split() if t.split(":", 1)[0] in FEED_KEYS]
+
+
+def live_description(ws):
+    """This workspace's description as cmux has it now, or None if unknown."""
+    for w in workspaces():
+        if w.get("id") == ws:
+            return w.get("description") or ""
+    return None
 
 
 def state_of(ws):
@@ -302,8 +321,7 @@ def jira_status(keys):
             return {}
     try:
         os.makedirs(STATE, exist_ok=True)
-        with open(JIRA_CACHE, "w") as fh:
-            json.dump({"at": now, "keys": keys, "status": out}, fh)
+        write_json(JIRA_CACHE, {"at": now, "keys": keys, "status": out})
     except Exception:
         pass
     return out
@@ -321,6 +339,20 @@ def jira_token(entry):
 def gh_cache_path(cwd):
     import hashlib
     return os.path.join(STATE, "gh-" + hashlib.md5(cwd.encode()).hexdigest() + ".json")
+
+
+def write_json(path, obj):
+    """Write through a temp file and a rename. Syncs overlap (the Stop hook,
+    the listener, by hand), and a half-written cache read as "no cache" would
+    publish empty signals instead of carrying the previous ones."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w") as fh:
+            json.dump(obj, fh)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def gh_state(cwd, force=False):
@@ -419,8 +451,7 @@ def gh_state(cwd, force=False):
     out["notified"] = prev.get("notified", {})
     try:
         os.makedirs(STATE, exist_ok=True)
-        with open(path, "w") as fh:
-            json.dump(out, fh)
+        write_json(path, out)
     except Exception:
         pass
     return out
@@ -440,8 +471,28 @@ def chime():
         pass
 
 
+def default_base(cwd):
+    """The default branch as a remote ref: origin/HEAD, else origin/main or
+    origin/master, else None. Same order as crew-worktree's default_base —
+    not every repo defaults to master."""
+    try:
+        r = subprocess.run(["git", "-C", cwd, "symbolic-ref", "--quiet", "--short",
+                            "refs/remotes/origin/HEAD"],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+        for b in ("origin/main", "origin/master"):
+            r = subprocess.run(["git", "-C", cwd, "show-ref", "--verify", "--quiet",
+                                f"refs/remotes/{b}"], capture_output=True, timeout=5)
+            if r.returncode == 0:
+                return b
+    except Exception:
+        pass
+    return None
+
+
 def merged_already(cwd):
-    """True when this branch is fully contained in origin/master.
+    """True when this branch is fully contained in the default branch.
 
     The cleanup signal for a worktree fleet: the branch shipped, so the
     worktree is safe to remove. 94 of the sessions on this machine already
@@ -451,15 +502,14 @@ def merged_already(cwd):
         b = branch(cwd)
         if not b:
             return False
-        # The primary checkout is trivially contained in origin/master, so without
-        # this it permanently reads as "shipped, reclaim me".
+        # The primary checkout is trivially contained in the default branch, so
+        # without this it permanently reads as "shipped, reclaim me".
         if b in ("master", "main"):
             return False
-        base = subprocess.run(["git", "-C", cwd, "rev-parse", "--verify", "-q", "origin/master"],
-                              capture_output=True, text=True, timeout=5)
-        if base.returncode != 0:
+        base = default_base(cwd)
+        if not base:
             return False
-        r = subprocess.run(["git", "-C", cwd, "merge-base", "--is-ancestor", "HEAD", "origin/master"],
+        r = subprocess.run(["git", "-C", cwd, "merge-base", "--is-ancestor", "HEAD", base],
                            capture_output=True, timeout=10)
         return r.returncode == 0
     except Exception:
@@ -487,8 +537,14 @@ def sandbox_registry():
             if line.startswith("NAME="):
                 name = line[5:].strip()
             elif line.startswith("ROOT="):
-                # written with printf %q, so a plain path arrives bare
-                root = line[5:].strip().strip("'\"")
+                # Written with printf %q: a plain path arrives bare, one with a
+                # space as `my\ code`. Undo the shell quoting, not just quotes.
+                root = line[5:].strip()
+                try:
+                    parts = shlex.split(root)
+                    root = parts[0] if len(parts) == 1 else root
+                except ValueError:
+                    pass
         if name and root:
             roots[root] = name
     return roots
@@ -600,7 +656,7 @@ def signals(cwd, is_repo):
         try:
             parent_in = subprocess.run(
                 ["git", "-C", cwd, "merge-base", "--is-ancestor",
-                 f"origin/{base}", "origin/master"],
+                 f"origin/{base}", default_base(cwd) or "origin/master"],
                 capture_output=True, timeout=10).returncode == 0
         except Exception:
             pass
@@ -1113,7 +1169,15 @@ def main():
             for slot, t in zip(idx, ordered):
                 tok[slot] = t
 
-        want_desc = " ".join(tok)
+        want_desc = " ".join(tok + feed_tokens(have_desc))
+        # The list was read at the start of a run that takes seconds; a feed
+        # publish or clear in that window must survive this write, so take the
+        # feed tokens from a fresh read, the way crew-feed itself merges.
+        if want_desc != have_desc and not DRY:
+            fresh = live_description(ws)
+            if fresh is not None:
+                have_desc = fresh
+                want_desc = " ".join(tok + feed_tokens(fresh))
         if want_desc != have_desc:
             if want_desc:
                 cmux("workspace-action", "--action", "set-description",
@@ -1242,8 +1306,7 @@ def main():
                 chime()
         raw["notified"] = sig
         try:
-            with open(gh_cache_path(cwd), "w") as fh:
-                json.dump(raw, fh)
+            write_json(gh_cache_path(cwd), raw)
         except Exception:
             pass
 

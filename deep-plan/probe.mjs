@@ -137,8 +137,21 @@ ok("key lives on the keys tree, not beside the surfaces",
   fs.existsSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, spec.slug + ".key.json")) &&
   !fs.existsSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".key.json")));
 const review = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".review.html"), "utf8");
-ok("review page never contains the answer key", !/answer/i.test(review.replace(/Alignment/g, "")) ||
-  !review.includes('"answers"'));
+// The page's own copy says "answer", so a word search proves nothing. A page
+// that carries no key in any form cannot depend on it: the same plan with every
+// correct option moved must render byte-identical.
+{
+  const a = { ...JSON.parse(JSON.stringify(spec)), slug: "key-leak-plan" };
+  const b = JSON.parse(JSON.stringify(a));
+  for (const q of b.quiz) q.answer = (q.answer + 1) % q.options.length;
+  const page = s => cli("render", tmpSpec(s), "--force").status === 0 &&
+    fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "key-leak-plan.review.html"), "utf8");
+  const pa = page(a), pb = page(b);
+  ok("review page never contains the answer key",
+    !review.includes('"answers"') && typeof pa === "string" && pa === pb);
+  cli("close", "key-leak-plan");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "key-leak-plan.json"), { force: true });
+}
 ok("mermaid inlined as base64 (the swap regex's shape)",
   /src="data:text\/javascript;base64,[A-Za-z0-9+/=]+"/.test(review));
 // A fresh plugin install has no bundle until setup or the first render fetches
@@ -462,6 +475,33 @@ ok("mermaid theme follows the page theme",
       .adrs[0].dir === "notes/decisions");
   cli("close", "custom-tpl-plan");
   fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "custom-tpl-plan.json"), { force: true });
+  // A house template that is not there refuses the render by name, before any
+  // write. It used to throw ENOENT after the surfaces and before the state.
+  fs.writeFileSync(path.join(REPO3, ".seamux", "adr.json"), JSON.stringify({ template: "docs/typo.md" }));
+  const tr = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "render", tmpSpec({ ...cSpec, slug: "typo-tpl-plan" })],
+    { encoding: "utf8", env: ENV, cwd: REPO3 });
+  ok("a missing house template refuses the render by name, before any write",
+    tr.status === 1 && /template file missing: docs\/typo\.md/.test(tr.stderr) && !/ENOENT/.test(tr.stderr) &&
+    !fs.existsSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "typo-tpl-plan.md")) &&
+    !fs.existsSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "typo-tpl-plan.key.json")));
+}
+
+// -------------------------------------------------- re-render --root resolves against the new root
+// The recovery for a moved root is `render --root NEW`; the floors used to
+// keep reading the recorded (gone) root, so the new one was never checked.
+{
+  const RA = path.join(TMP, "root-a"), RB = path.join(TMP, "root-b");
+  for (const d of [RA, RB]) { fs.mkdirSync(d, { recursive: true }); execSync("git init -q", { cwd: d }); }
+  fs.writeFileSync(path.join(RB, "only-in-b.txt"), "x\n");
+  const mv = JSON.parse(JSON.stringify(spec));
+  mv.slug = "moved-root-plan";
+  mv.deliverables[0].files.push("only-in-b.txt");
+  ok("a plan renders at its first root", cli("render", tmpSpec(mv), "--root", RA).status === 0);
+  const rb = cli("render", tmpSpec(mv), "--root", RB);
+  ok("a re-render with --root runs the read-before-plan floor on the new root",
+    rb.status === 1 && /edits only-in-b\.txt — no verifiedFact cites it/.test(rb.stderr));
+  cli("close", "moved-root-plan");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "moved-root-plan.json"), { force: true });
 }
 
 // -------------------------------------------------- observability block: advisory
@@ -865,12 +905,25 @@ ok("review phase: the denial names the plan and the lever",
   /example-outbox-retry/.test(edit(path.join(REPO, "a.txt")).stderr));
 ok("path outside the root allowed", edit(path.join(TMP, "elsewhere.txt")).status === 0);
 ok("grep allowed", bash("grep -r foo .").status === 0);
+ok("a search for a quoted > allowed", bash('rg "=>" src').status === 0);
 ok("git status allowed", bash("git status").status === 0);
 ok("test run allowed", bash("npm test").status === 0);
 ok("sed -i denied", bash("sed -i '' s/a/b/ file.rb").status === 2);
 ok("git commit denied", bash("git commit -m x").status === 2);
 ok("a heredoc write denied", bash("cat <<EOF > f.txt\nhi\nEOF").status === 2);
 ok("the plan's own tooling allowed", bash("deep-plan status").status === 0);
+ok("…its quoted notes are its arguments, not writes",
+  bash('cd /x && deep-plan check fail slug 1 t "rm left > 5 rows" 2>/dev/null | tail -1').status === 0);
+// The word alone used to be the test: a path, a comment or a commit message
+// naming deep-plan let any write through.
+ok("the word deep-plan in a path, a comment or a message opens nothing",
+  bash("sed -i s/a/b/ deep-plan/lib/x.mjs").status === 2 &&
+  bash("echo hi > f # deep-plan").status === 2 &&
+  bash('git commit -m "deep-plan: x"').status === 2);
+ok("a write chained beside the CLI is still a write",
+  bash("deep-plan status && rm -rf x").status === 2 &&
+  bash("deep-plan diff slug > out.patch").status === 2 &&
+  bash('deep-plan block slug 2 "$(rm -rf x)"').status === 2);
 
 // -------------------------------------------------- grade -> implementing
 r = cli("grade", spec.slug);
@@ -965,8 +1018,15 @@ r = cli("go", spec.slug, "next", "--force");
 ok("…unless forced, which opens the next one beside it (logged)", r.status === 0 &&
   JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8")).increments[1].status === "authorized");
 cli("reset", spec.slug, "2");
-ok("go --at resolves a plan from a directory", cli("go", "--at", REPO, "next").status !== 0 ||
-  true); // inc 2 is pending; go --at authorizes it
+// go --at finds the plan from a directory: its `next` is refused by name while
+// increment 1 is open, and a number authorizes that increment.
+r = cli("go", "--at", REPO, "next");
+ok("go --at resolves a plan from a directory",
+  r.status === 1 && /go refused: increment 1 is already working/.test(r.stderr));
+r = cli("go", "--at", REPO, "2");
+ok("…and authorizes the increment it names", r.status === 0 &&
+  JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8")).increments[1].status === "authorized");
+cli("reset", spec.slug, "2");
 r = cli("status", "--json");
 const rows = JSON.parse(r.stdout);
 ok("status --json carries the board's fields",
@@ -991,6 +1051,19 @@ ok("shut-gate restores it", cli("shut-gate", spec.slug).status === 0 &&
   edit(path.join(REPO, "a.txt")).status === 2);
 cli("go", spec.slug, "2"); cli("done", spec.slug, "2");
 ok("all increments done: Edit allowed, gate retired", edit(path.join(REPO, "a.txt")).status === 0);
+// A reset on a complete plan reopens it. The phase stayed "done", and the
+// gate, reading the phase, let edits through with increment 2 pending.
+{
+  const phase = () => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8")).phase;
+  cli("reset", spec.slug, "2");
+  ok("a reset on a complete plan reopens it and gates again",
+    phase() === "implementing" && edit(path.join(REPO, "a.txt")).status === 2);
+  cli("go", spec.slug, "2"); passAll(spec.slug, 2); cli("done", spec.slug, "2");
+  ok("…until its done closes the plan again",
+    phase() === "done" && edit(path.join(REPO, "a.txt")).status === 0);
+  ok("a passing re-grade leaves a complete plan complete",
+    cli("grade", spec.slug, ...right).status === 0 && phase() === "done");
+}
 
 // -------------------------------------------------- a parked plan must not deadlock a live one
 const REPO2 = path.join(TMP, "repo2");
@@ -1017,6 +1090,23 @@ ok("a real file redirect still mutates", lib.bashMutates("echo hi > out.txt"));
 ok("a heredoc still mutates", lib.bashMutates("cat <<EOF > f\nx\nEOF"));
 ok("scrubbing cannot hide a real mutator",
   lib.bashMutates("sed -i s/a/b/ f 2>/dev/null"));
+// The gate counts increments rather than trusting the phase, whichever writer
+// left a "done" or "delivery" phase over pending work.
+ok("a done or delivery phase with an increment pending gates",
+  ["done", "delivery"].every(phase => !lib.gateView({ slug: "x", phase, gate: "increment",
+    increments: [{ n: 1, status: "done" }, { n: 2, status: "pending" }] }).allow));
+// A `>` inside quotes is a pattern, not a redirect: searching for arrow
+// functions was blocked until a go.
+ok("a quoted > is not a redirect (rg, jq)",
+  !lib.bashMutates('rg "=>" src') && !lib.bashMutates("jq '.a > 1' f.json") &&
+  !lib.bashMutates('grep -n "a; rm -rf b" f'));
+ok("…but a redirect after the quotes still mutates",
+  lib.bashMutates('rg "=>" src > hits.txt') && lib.bashMutates('echo "x" >"out"'));
+ok("a quoted command still mutates, and a substitution is not blanked",
+  lib.bashMutates('bash -c "rm -rf x"') && lib.bashMutates('echo "$(date)" > f') &&
+  lib.bashMutates('cat "$(echo x > f)"'));
+ok("an escaped quote opens nothing; an unclosed one reads as written",
+  lib.bashMutates('cat \\"; rm -rf x; echo \\"') && lib.bashMutates("echo it's > f"));
 
 // -------------------------------------------------- broken root: fail open, loudly
 const GONE = path.join(TMP, "gone-root");
@@ -2385,6 +2475,10 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   const patch = path.join(ENV.DEEP_PLAN_PLANS_DIR, "diff-plan.inc1.patch");
   ok("done still writes the increment patch", doneOut.status === 0 && fs.existsSync(patch) &&
     fs.readFileSync(patch, "utf8").includes("worked.txt"));
+  // The untracked file reaches the patch through a scratch index; the real one
+  // used to keep it as intent-to-add, for the next `git commit -a` to commit.
+  ok("…and leaves the untracked file out of the user's index",
+    execSync("git ls-files -- worked.txt", { cwd: REPO, encoding: "utf8" }).trim() === "");
   ok("done does NOT open cmux diff", calls().length === 0);
   ok("…and says where the patch is instead",
     doneOut.stdout.includes(patch) && /deep-plan diff diff-plan 1/.test(doneOut.stdout));

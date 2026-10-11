@@ -44,7 +44,9 @@ while [ $# -gt 0 ]; do
     --no-lookout) LOOKOUT=0; shift ;;
     --no-apply) APPLY=0; shift ;;
     --no-migrate) MIGRATE=0; shift ;;
-    --main-repo) MAIN="${2:-}"; shift 2 ;;
+    --main-repo)
+      case "${2:-}" in ""|-*) echo "install.sh: --main-repo needs a PATH (--help lists the options)" >&2; exit 2 ;; esac
+      MAIN="$2"; shift 2 ;;
     --with-jira) WITH_JIRA=1; shift ;;
     --with-jira=*) WITH_JIRA=1; JIRA_SITE="${1#--with-jira=}"; shift ;;
     --with-github-issues) WITH_GHI=1; shift ;;
@@ -65,6 +67,9 @@ run() {
   if [ "$DRY" = 1 ]; then printf '  \033[2mwould run:\033[0m %s\n' "$*"; return 0; fi
   eval "$@"
 }
+# A value spliced into a `run` command, quoted for its eval: a path or option
+# value with an apostrophe or a space stays one word.
+q() { printf '%q' "$1"; }
 
 # The plugins this run is about, in install order (crew depends on deep-plan).
 PLUGINS="deep-plan"
@@ -198,11 +203,11 @@ fi
 # and the old ~/.claude/hooks/cmux/guard_bash.sh if it is there.
 if [ "$UNINSTALL" = 1 ]; then
   if [ -x "$DEST/bin/crew" ]; then
-    run "'$DEST/bin/crew' uninstall" || warn "crew uninstall failed — continuing"
+    run "$(q "$DEST/bin/crew") uninstall" || warn "crew uninstall failed — continuing"
   fi
   if [ -d "$DEST" ]; then
     BAK="$HOME/.config/cmux/crew-backups/crew.uninstalled.$(date +%Y%m%d-%H%M%S)"
-    run "mkdir -p '$(dirname "$BAK")' && mv '$DEST' '$BAK'" && did "crew tree moved aside -> ${BAK/#$HOME/~}"
+    run "mkdir -p $(q "$(dirname "$BAK")") && mv $(q "$DEST") $(q "$BAK")" && did "crew tree moved aside -> ${BAK/#$HOME/~}"
   fi
   for p in $ALL_PLUGINS; do
     if claude plugin list --json 2>/dev/null | grep -q "\"$p@$MARKET\""; then
@@ -212,7 +217,7 @@ if [ "$UNINSTALL" = 1 ]; then
   for name in deep-plan restack lookout; do
     f="$LOCALBIN/$name"
     if [ -f "$f" ] && grep -q "engine.json" "$f" 2>/dev/null; then
-      run "rm -f '$f'" && did "removed the $name shim"
+      run "rm -f $(q "$f")" && did "removed the $name shim"
     fi
   done
   run "claude plugin marketplace remove '$MARKET' >/dev/null 2>&1" && did "removed the seamux marketplace"
@@ -245,7 +250,7 @@ SOURCE="$HERE"
 [ "$GITHUB" = 1 ] && SOURCE="$GITHUB_REPO"
 # Adding again re-points an existing `seamux` marketplace at this source, and
 # installed plugins follow it; nothing is uninstalled.
-run "claude plugin marketplace add '$SOURCE' >/dev/null" && did "marketplace seamux -> $SOURCE" \
+run "claude plugin marketplace add $(q "$SOURCE") >/dev/null" && did "marketplace seamux -> $SOURCE" \
   || die "could not add the seamux marketplace from $SOURCE — nothing else was changed"
 for p in $PLUGINS; do
   run "claude plugin install '$p@$MARKET' >/dev/null" && did "installed $p" \
@@ -267,7 +272,7 @@ PY
 )"
   [ -n "$WITH_JIRA" ] && [ -z "$JIRA_SITE" ] && warn "--with-jira needs a site now (--with-jira=yourco.atlassian.net): Jira is on when jira_site is set"
   if [ "$VALUES" != "{}" ]; then
-    run "printf '%s' '$VALUES' | claude plugin configure crew@$MARKET --values-stdin >/dev/null" && did "crew options: $VALUES"
+    run "printf '%s' $(q "$VALUES") | claude plugin configure crew@$MARKET --values-stdin >/dev/null" && did "crew options: $VALUES"
   fi
 fi
 
@@ -301,7 +306,9 @@ if [ "$CREW" = 1 ] && [ "$APPLY" = 1 ]; then
   elif [ -z "$root" ] || [ ! -x "$root/bin/crew" ]; then
     warn "crew: plugin root not found — run \`crew apply\` inside Claude"
   else
-    CREW_MONOLITH="$MAIN" "$root/bin/crew" apply || warn "crew apply reported a problem (above)"
+    # Only --main-repo overrides: an empty CREW_MONOLITH would hide an exported one.
+    if [ -n "$MAIN" ]; then CREW_MONOLITH="$MAIN" "$root/bin/crew" apply; else "$root/bin/crew" apply; fi \
+      || warn "crew apply reported a problem (above)"
   fi
 elif [ "$CREW" = 1 ]; then
   say "skipped crew apply (--no-apply) — run it yourself: crew apply"
@@ -348,9 +355,9 @@ else
     if printf '%s\n' "$left" | grep -q '^hook' && [ -n "$MARKS" ]; then
       cp "$SETTINGS" "$MIG/settings.json" && ok "backed up settings.json -> ${MIG/#$HOME/~}/settings.json"
       python3 - "$SETTINGS" $MARKS <<'PY' && ok "removed the old hook entries the installed plugins replace:$MARKS"
-import json, sys
-p = sys.argv[1]
-s = json.load(open(p))
+import json, os, sys, tempfile
+p = os.path.realpath(sys.argv[1])
+s = json.load(open(p, encoding="utf-8"))
 marks = tuple(sys.argv[2:])
 hooks = s.get("hooks") or {}
 for event, ms in list(hooks.items()):
@@ -359,9 +366,18 @@ for event, ms in list(hooks.items()):
     hooks[event] = [m for m in ms if m.get("hooks")]
     if not hooks[event]:
         del hooks[event]
-with open(p, "w") as fh:
-    json.dump(s, fh, indent=2)
-    fh.write("\n")
+# Atomically: a temp file beside it, then a rename, so an interrupted write
+# never leaves settings.json truncated. realpath above keeps a symlink a symlink.
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), prefix=".settings.", suffix=".tmp")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(s, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    os.chmod(tmp, os.stat(p).st_mode & 0o7777)
+    os.replace(tmp, p)
+except BaseException:
+    os.unlink(tmp)
+    raise
 PY
     fi
     # The engines' shims, if a migrated old one left the name free.

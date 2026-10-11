@@ -296,6 +296,12 @@ step("the same conflict with an expensive generator: stale, not silent");
   const push = cli(r, "push", "--json");
   ok("push refuses too, and still only prints", push.status === 1 && (push.json?.push || []).length > 0);
 
+  const preview = cli(r, "regen", "--deep", "--dry-run", "--json");
+  ok("regen --dry-run runs nothing and says so", preview.status === 0 && preview.json?.results?.[0]?.ran === false
+    && /dry run/.test(preview.json?.results?.[0]?.out || ""), preview.out + preview.err);
+  ok("and does not clear the stale mark", (cli(r, "status", "--json").json?.stale || []).length === 1);
+  ok("or touch the file", !/bravo/.test(read(r, "gen/schema.txt")));
+
   const deep = cli(r, "regen", "--deep", "--json");
   ok("regen --deep runs the expensive recipe", deep.status === 0, deep.out + deep.err);
   ok("and the file now has both sides", /bravo/.test(read(r, "gen/schema.txt")));
@@ -333,6 +339,43 @@ step("take-base drops your copy — and says so, and can be signed off");
   const cl = cli(r, "clear-stale", "--only", "db", "--json");
   ok("clear-stale --only clears exactly that one", cl.status === 0 && (cl.json?.stale || []).length === 0);
   ok("and check passes afterwards", cli(r, "check", "--json", "--no-fetch").status === 0);
+}
+
+// ---------------------------------------------------------------- union
+step("union keeps both sides' lines and the file's own whitespace");
+{
+  const cfg = { base: "master", remote: "origin", checks: [],
+    artifacts: [{ name: "set", paths: ["lists/**"], resolve: "union", tier: "cheap" }] };
+  const r = newRepo("union", cfg);
+  write(r, "lists/set.txt", "  indented\nb\n\n"); commit(r, "set");
+  git(r, "checkout", "-q", "-b", "feat1");
+  write(r, "lists/set.txt", "  indented\nb\n\nfrom-branch\n"); commit(r, "feat1: add");
+  git(r, "checkout", "-q", "master");
+  write(r, "lists/set.txt", "  indented\nb\n\nfrom-master\n"); commit(r, "master: add");
+  git(r, "checkout", "-q", "feat1");
+  const run = cli(r, "run", "--json", "--no-fetch");
+  const s = read(r, "lists/set.txt");
+  ok("the union walk completes", run.status === 0, run.out + run.err);
+  ok("with both sides' lines", /from-branch/.test(s) && /from-master/.test(s), s);
+  ok("and the first line's indent intact", s.startsWith("  indented\nb\n\n"), JSON.stringify(s));
+}
+
+// ---------------------------------------------------------------- check --dry-run
+step("check --dry-run runs nothing, so it passes nothing");
+{
+  const cfg = { ...cheapCfg, checks: [{ name: "breaking", run: "exit 1", tier: "cheap" }] };
+  const r = newRepo("checkdry", cfg);
+  // The checked-in file is stale: a real check would catch it.
+  write(r, "gen/schema.txt", "out of date\n"); commit(r, "stale schema");
+  ok("a real check fails on it", cli(r, "check", "--json", "--no-fetch").status === 1);
+  const dry = cli(r, "check", "--dry-run", "--json", "--no-fetch");
+  ok("a dry run says dry-run, not ok", dry.json?.status === "dry-run", dry.out + dry.err);
+  ok("marks every check and artifact as not run",
+    dry.json?.checks?.every(c => c.ran === false && c.dryRun) && dry.json?.staleness?.every(a => a.dryRun && a.clean === null),
+    JSON.stringify(dry.json));
+  ok("and never offers the push", !(dry.json?.next || []).some(n => /push/.test(n)), JSON.stringify(dry.json?.next));
+  const human = cli(r, "check", "--dry-run", "--no-fetch");
+  ok("it prints the commands it would run", human.out.includes("would run: exit 1") && human.out.includes(GEN), human.out);
 }
 
 // ---------------------------------------------------------------- dropped commits
@@ -424,6 +467,119 @@ step("two stacked branches: order, no duplicated commits, one pass");
   ok("it came back to the branch you started on", git(r, "symbolic-ref", "--short", "HEAD").out === "feat2");
   ok("push lines are printed for both branches, bottom first",
     (run.json?.push || []).length === 2 && run.json.push[0].includes("feat1"));
+}
+
+// ---------------------------------------------------------------- abort mid-stack
+step("abort mid-stack puts back the branches already restacked");
+{
+  const r = newRepo("abortstack", cheapCfg);
+  git(r, "checkout", "-q", "-b", "feat1");
+  addDef(r, "b", "bravo\n", "feat1: b");
+  git(r, "checkout", "-q", "-b", "feat2");
+  addDef(r, "d", "delta\n", "feat2: d");
+  git(r, "checkout", "-q", "-b", "feat3");
+  write(r, "app.txt", "feat3 version\n"); commit(r, "feat3: app");
+  git(r, "checkout", "-q", "master");
+  addDef(r, "c", "charlie\n", "master: c");
+  write(r, "app.txt", "master version\n"); commit(r, "master: app");
+  git(r, "checkout", "-q", "feat3");
+  const names = ["feat1", "feat2", "feat3"];
+  const before = names.map(b => git(r, "rev-parse", b).out);
+  const tips = () => names.map(b => git(r, "rev-parse", b).out);
+
+  const run = cli(r, "run", "--json", "--no-fetch");
+  ok("the walk stops on the top branch", run.status === 2 && run.json?.stopped?.branch === "feat3", run.out + run.err);
+  ok("having restacked the two under it", tips()[0] !== before[0] && tips()[1] !== before[1]);
+  const ab = cli(r, "abort", "--json");
+  ok("abort succeeds", ab.status === 0 && ab.json?.status === "ok", ab.out + ab.err);
+  ok("every branch is back on its pre-walk tip", tips().every((t, i) => t === before[i]),
+    tips().join(" ") + "\nvs " + before.join(" "));
+  ok("the already-restacked ones are named",
+    (ab.json?.restored || []).map(x => x.branch).join(",") === "feat1,feat2", JSON.stringify(ab.json?.restored));
+  ok("no rebase left, back on the branch it started from",
+    !fs.existsSync(path.join(r, ".git", "rebase-merge")) && git(r, "symbolic-ref", "--short", "HEAD").out === "feat3");
+  ok("the work tree is clean", git(r, "status", "--porcelain").out === "");
+
+  // A branch moved again after the walk wrote it is someone's work: not reset.
+  const run2 = cli(r, "run", "--json", "--no-fetch");
+  ok("a second walk stops in the same place", run2.status === 2, run2.out + run2.err);
+  git(r, "rebase", "--abort");
+  // ...and a rebase aborted by hand is not a rebase finished by hand.
+  const cont = cli(r, "continue", "--json", "--no-fetch");
+  ok("continue after a hand abort refuses, not marks it done", cont.status === 1 && /aborted by hand/.test(cont.json?.error || ""), cont.out + cont.err);
+  ok("and the stopped branch is still the stopped one", cli(r, "status", "--json").json?.run?.steps?.[2]?.status === "conflict");
+  git(r, "checkout", "-q", "feat1");
+  addDef(r, "e", "echo\n", "feat1: later work");
+  const later = git(r, "rev-parse", "feat1").out;
+  const ab2 = cli(r, "abort", "--json");
+  ok("abort reports what it could not put back, non-zero",
+    ab2.status === 1 && (ab2.json?.failed || []).some(f => f.branch === "feat1"), ab2.out + ab2.err);
+  ok("and leaves the later work where it is", git(r, "rev-parse", "feat1").out === later);
+  ok("while putting back the rest", git(r, "rev-parse", "feat2").out === before[1]);
+}
+
+// ---------------------------------------------------------------- --branch mid-stack
+step("--branch on a branch mid-stack lifts it off its parent, never the base");
+{
+  const cfg = { ...cheapCfg, stack: { tool: "git", branches: ["feat1", "feat2"] } };
+  const r = newRepo("onebranch", cfg);
+  git(r, "checkout", "-q", "-b", "feat1");
+  addDef(r, "b", "bravo\n", "feat1: b");
+  git(r, "checkout", "-q", "-b", "feat2");
+  addDef(r, "d", "delta\n", "feat2: d");
+  git(r, "checkout", "-q", "master");
+  addDef(r, "c", "charlie\n", "master: c");
+  git(r, "checkout", "-q", "feat2");
+  const feat2Tip = git(r, "rev-parse", "feat2").out;
+  const feat1Tip = git(r, "rev-parse", "feat1").out;
+
+  const dry = cli(r, "run", "--dry-run", "--branch", "feat1", "--no-fetch");
+  ok("a dry run prints the rebase it would run", dry.status === 0 && /dry run: git rebase --onto master/.test(dry.out), dry.out + dry.err);
+  ok("and changes nothing: HEAD, refs, run state",
+    git(r, "symbolic-ref", "--short", "HEAD").out === "feat2" && git(r, "rev-parse", "feat1").out === feat1Tip
+      && !fs.existsSync(path.join(r, ".git", "seamux-restack.json")),
+    git(r, "symbolic-ref", "--short", "HEAD").out);
+
+  // Its parent has not moved, so feat2 already sits where it belongs.
+  const alone = cli(r, "run", "--branch", "feat2", "--json", "--no-fetch");
+  ok("--branch feat2 alone succeeds", alone.status === 0, alone.out + alone.err);
+  ok("and leaves feat2 on feat1, without copying feat1's commits onto the base",
+    git(r, "rev-parse", "feat2").out === feat2Tip && git(r, "merge-base", "--is-ancestor", "feat1", "feat2").ok,
+    git(r, "log", "--oneline", "--graph", "--all").out);
+
+  // One branch at a time, bottom first: feat2 follows its rewritten parent.
+  const one = cli(r, "run", "--branch", "feat1", "--json", "--no-fetch");
+  ok("--branch feat1 restacks the bottom onto the base", one.status === 0 && git(r, "merge-base", "--is-ancestor", "master", "feat1").ok, one.out + one.err);
+  const two = cli(r, "run", "--branch", "feat2", "--json", "--no-fetch");
+  ok("then --branch feat2 follows it", two.status === 0 && git(r, "merge-base", "--is-ancestor", "feat1", "feat2").ok, two.out + two.err);
+  ok("with nothing replayed twice", Number(git(r, "rev-list", "--count", "master..feat2").out) === 2,
+    git(r, "log", "--oneline", "master..feat2").out);
+}
+
+// ---------------------------------------------------------------- a checkout that fails
+step("a branch that cannot be checked out fails the walk, not finishes it");
+{
+  const r = newRepo("cofail", cheapCfg);
+  git(r, "checkout", "-q", "-b", "feat1");
+  addDef(r, "b", "bravo\n", "feat1: b");
+  git(r, "checkout", "-q", "-b", "feat2");
+  addDef(r, "d", "delta\n", "feat2: d");
+  git(r, "checkout", "-q", "-b", "feat3");
+  addDef(r, "e", "echo\n", "feat3: e");
+  git(r, "checkout", "-q", "master");
+  addDef(r, "c", "charlie\n", "master: c");
+  git(r, "checkout", "-q", "feat3");
+  git(r, "worktree", "add", "-q", path.join(TMP, "cofail-wt"), "feat2");   // feat2 is busy elsewhere
+  const before = git(r, "rev-parse", "feat1").out;
+
+  const run = cli(r, "run", "--json", "--no-fetch");
+  ok("exit 1, status error", run.status === 1 && run.json?.status === "error", `status ${run.status}\n` + run.out + run.err);
+  const s2 = run.json?.steps?.find(s => s.branch === "feat2");
+  ok("the failed branch carries git's reason", s2?.status === "error" && /feat2|worktree|checked out/.test(s2?.why || ""), JSON.stringify(s2));
+  ok("nothing above it pretends to be done", run.json?.steps?.find(s => s.branch === "feat3")?.status === "pending");
+  ok("and no push lines are offered", (run.json?.push || []).length === 0);
+  const ab = cli(r, "abort", "--json");
+  ok("abort then puts the restacked bottom back", ab.status === 0 && git(r, "rev-parse", "feat1").out === before, ab.out + ab.err);
 }
 
 // ---------------------------------------------------------------- verify
@@ -720,6 +876,7 @@ step("refusals: dirty tree, a rebase already in flight, a bad base");
   git(r, "checkout", "-q", "master");
   write(r, "app.txt", "master version\n"); commit(r, "master: app");
   git(r, "checkout", "-q", "feat1");
+  const feat1Tip = git(r, "rev-parse", "feat1").out;
   git(r, "rebase", "master");   // leave a real conflict in flight, by hand
   ok("a rebase is genuinely in progress", fs.existsSync(path.join(r, ".git", "rebase-merge")));
   const busy = cli(r, "run", "--json", "--no-fetch");
@@ -727,6 +884,18 @@ step("refusals: dirty tree, a rebase already in flight, a bad base");
   ok("and says which verb continues it", (busy.json?.error || "").includes("continue"));
   const ab = cli(r, "abort", "--json");
   ok("abort puts it back", ab.status === 0 && !fs.existsSync(path.join(r, ".git", "rebase-merge")));
+  ok("and the branch is on its old tip", git(r, "rev-parse", "feat1").out === feat1Tip);
+
+  // A merge is never restack's, so abort refuses rather than throwing away
+  // someone's resolution — and says so, instead of reporting it aborted.
+  git(r, "checkout", "-q", "-b", "side", "master~1");
+  write(r, "app.txt", "side version\n"); commit(r, "side: app");
+  git(r, "merge", "-q", "feat1");
+  ok("a merge is genuinely in progress", fs.existsSync(path.join(r, ".git", "MERGE_HEAD")));
+  const abm = cli(r, "abort", "--json");
+  ok("abort refuses a merge it did not start", abm.status === 1 && abm.json?.status === "error", abm.out + abm.err);
+  ok("and the merge is still there to finish", fs.existsSync(path.join(r, ".git", "MERGE_HEAD")));
+  git(r, "merge", "--abort");
 
   const bad = spawnSync("node", [path.join(HERE, "restack.mjs"), "plan", "--json", "--no-fetch"], {
     cwd: r, encoding: "utf8",

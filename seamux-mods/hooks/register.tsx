@@ -155,9 +155,16 @@ async function tick($: EngineInterface): Promise<void> {
   }
 }
 
+// Which refresh started last. Refreshes are not awaited by the timer and can
+// overlap (an engine run may take up to 20s); only the newest one applies
+// what it found, so an older run that finishes late cannot put back the
+// state from before a button press, nor clear a pin set since it started.
+let refreshes = 0
+
 // Runs `deep-plan status --json`, keeps what it found, and redraws the status
 // entry. Called by the timer, after every button, and after a refusal.
 async function refresh($: EngineInterface): Promise<SeamuxView> {
+  const mine = ++refreshes
   const me: Me = {
     cwd: await $.session.cwd(),
     session: await $.session.id(),
@@ -176,10 +183,13 @@ async function refresh($: EngineInterface): Promise<SeamuxView> {
     if (rows) {
       // A pin outlives its plan only until the plan is closed.
       const pin = await read($, pinned)
-      if (pin && !rows.some(r => r.slug === pin)) await update($, pinned, () => '')
+      if (pin && !rows.some(r => r.slug === pin) && mine === refreshes) await update($, pinned, () => '')
       next = { ...next, ...pick(rows, me, await read($, pinned)) }
     }
   }
+  // Overtaken: a newer refresh applies its own, fresher answer. The caller
+  // still gets this one's.
+  if (mine !== refreshes) return next
   await update($, view, () => next)
   // A refusal is moot once the gate lets this plan through (someone pressed go
   // on the board, or typed it).
@@ -292,25 +302,44 @@ async function pageUrl($: EngineInterface, h: string, served: string, file: stri
   } catch {
     // no intent server
   }
-  return `file://${await plansDir($, h)}/${file}`
+  return fileUrl(`${await plansDir($, h)}/${file}`)
 }
 
-// The page `deep-plan ask` opened for this cwd within the last minute.
+// A path as a file:// URL, each segment percent-encoded: a home such as
+// `/home/John Smith` otherwise gives a link that does not resolve.
+function fileUrl(path: string): string {
+  return `file://${path.split('/').map(encodeURIComponent).join('/')}`
+}
+
+// The page `deep-plan ask` opened for this cwd within the last minute: the
+// newest such ask, not the newest ask of all, since another session's newer
+// ask for another directory must not hide this one's.
 async function askPage($: EngineInterface): Promise<string> {
   const h = await home($)
   if (!h) return ''
   const dir = await plansDir($, h)
+  let asks: { name: string; mtimeMs: number }[]
   try {
-    const asks = (await $.fs.list(`${dir}/asks`)).filter(f => f.name.endsWith('.json'))
-    const newest = asks.sort((a, b) => b.mtimeMs - a.mtimeMs)[0]
-    if (!newest || (await $.clock.now()) - newest.mtimeMs > 60000) return ''
-    const ask = JSON.parse(String(await $.fs.read(`${dir}/asks/${newest.name}`)))
-    if (ask.cwd && ask.cwd !== (await $.session.cwd())) return ''
-    const id = String(ask.id ?? newest.name.slice(0, -5))
-    return await pageUrl($, h, `ask/${id}`, `asks/${id}.html`)
+    asks = await $.fs.list(`${dir}/asks`)
   } catch {
     return ''
   }
+  const now = await $.clock.now()
+  const cwd = await $.session.cwd()
+  const recent = asks
+    .filter(f => f.name.endsWith('.json') && now - f.mtimeMs <= 60000)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+  for (const f of recent) {
+    try {
+      const ask = JSON.parse(String(await $.fs.read(`${dir}/asks/${f.name}`)))
+      if (ask.cwd && ask.cwd !== cwd) continue
+      const id = String(ask.id ?? f.name.slice(0, -5))
+      return await pageUrl($, h, `ask/${id}`, `asks/${id}.html`)
+    } catch {
+      // unreadable or half-written: try the next one
+    }
+  }
+  return ''
 }
 
 // The plan's page to jump back into: the review, with the alignment check,

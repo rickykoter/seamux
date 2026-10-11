@@ -9,7 +9,8 @@
 # hold or it refuses:
 #
 #   * the path is a git worktree, and NOT the primary checkout
-#   * HEAD is an ancestor of origin/master, i.e. the work really did land
+#   * HEAD is an ancestor of the default branch (origin/HEAD, else origin/main
+#     or origin/master), i.e. the work really did land
 #   * the tree is clean and there are no unpushed commits
 #   * nothing live is standing in it — not this shell, not another workspace
 #   * no Docker sandbox is still running for it
@@ -31,7 +32,6 @@ CMUX="$(command -v cmux || true)"
 # version skew that fails silently, because the old bundle is still on disk.
 [ -n "$CMUX" ] || CMUX="$("$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/crew-cmux-bin" 2>/dev/null || true)"
 [ -n "$CMUX" ] || CMUX=cmux
-MAIN="${CREW_MONOLITH:-__MAIN_REPO__}"
 
 die()  { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 ok()   { printf '\033[32m✓\033[0m %s\n' "$*"; }
@@ -84,6 +84,18 @@ common="$(git -C "$path" rev-parse --path-format=absolute --git-common-dir 2>/de
 gitdir="$(git -C "$path" rev-parse --path-format=absolute --git-dir 2>/dev/null)"
 branch="$(git -C "$top" branch --show-current 2>/dev/null)"
 
+# origin/HEAD names the default branch; not every repo has it set, and not every
+# repo is master. Same order as crew-worktree's default_base.
+default_base() {
+  local head
+  head="$(git -C "$top" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  if [ -n "$head" ]; then printf '%s\n' "$head"; return; fi
+  for b in origin/main origin/master; do
+    git -C "$top" show-ref --verify --quiet "refs/remotes/$b" && { printf '%s\n' "$b"; return; }
+  done
+  printf 'origin/master\n'
+}
+
 say "checking $top"
 if [ -n "$branch" ]; then
   say "fetching origin"
@@ -91,8 +103,9 @@ if [ -n "$branch" ]; then
 fi
 
 ahead=""
+base="$(default_base)"
 if [ -n "$branch" ]; then
-  ahead="$(git -C "$top" rev-list --count origin/master..HEAD 2>/dev/null)"
+  ahead="$(git -C "$top" rev-list --count "$base..HEAD" 2>/dev/null)"
 fi
 dirty_n="$(git -C "$top" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
 caller_top="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)"
@@ -147,8 +160,9 @@ for w in hits:
 for w in here:
     if "plan:mode" in (w.get("description") or "").split():
         print("MODE %s" % label(w))' "$top" "${ws:-none}" 2>/dev/null)"
+  # No COUNT line means cmux did not answer (socket refused, mid-restart). Left
+  # empty, that is a blocker below, not a pass: "could not tell" is not "none".
   others="$(printf '%s\n' "$probe" | sed -n 's/^COUNT //p')"
-  others="${others:-0}"
   ws_title="$(printf '%s\n' "$probe" | sed -n 's/^KEEP //p')"
   others_desc="$(printf '%s\n' "$probe" | sed -n 's/^HIT //p' | paste -sd, -)"
   planmode_desc="$(printf '%s\n' "$probe" | sed -n 's/^MODE //p' | paste -sd, -)"
@@ -299,9 +313,9 @@ if [ -z "$branch" ]; then
   fail "detached HEAD — resolve it by hand"
   skip "merge check skipped: no branch"
 elif [ "${ahead:-1}" = "0" ]; then
-  pass "merged: HEAD is an ancestor of origin/master"
+  pass "merged: HEAD is an ancestor of $base"
 else
-  fail "${ahead:-?} commit(s) not in origin/master — not merged"
+  fail "${ahead:-?} commit(s) not in $base — not merged"
 fi
 
 if [ "${dirty_n:-0}" = "0" ]; then
@@ -339,7 +353,9 @@ else
   fail "this shell is inside $top — run it from elsewhere"
 fi
 
-if [ "${others:-0}" -eq 0 ]; then
+if [ -z "$others" ]; then
+  fail "cmux did not list its workspaces — could not tell whether another is open here"
+elif [ "$others" -eq 0 ]; then
   pass "no other cmux workspace is open here"
 else
   fail "$others other workspace(s) still open here${others_desc:+: $others_desc}"
@@ -406,13 +422,15 @@ if [ -n "$sandboxed" ] && [ -x "$SANDBOX_BIN" ]; then
   rm -f "$sb_reg"
 fi
 
-git -C "$MAIN" worktree remove "$top" 2>/dev/null \
-  || git -C "$MAIN" worktree remove --force "$top" 2>/dev/null \
-  || die "git worktree remove failed for $top"
+# Through the worktree's own repository, named by its common git dir: crew
+# worktrees can belong to any repo, not only the baked main one. Never --force:
+# what git refuses to remove is exactly what this has to keep.
+git -C "$common" worktree remove "$top" \
+  || die "git refused to remove $top (reason above) — nothing was forced"
 ok "removed worktree $top"
 
 # The branch is merged, so -d (safe delete) is enough; never -D.
-if git -C "$MAIN" branch -d "$branch" >/dev/null 2>&1; then
+if git -C "$common" branch -d "$branch" >/dev/null 2>&1; then
   ok "deleted branch $branch"
 else
   say "kept branch $branch (git declined a safe delete)"

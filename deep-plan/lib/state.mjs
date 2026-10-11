@@ -340,12 +340,14 @@ export function gateView(st) {
   const p = progress(st);
   if (st.gate === "open") return { allow: true, why: "gate opened by hand" };
   if (st.phase === "review") return { allow: false, why: "Alignment check not taken." };
+  // Counted, never taken from the phase: a reset, a block or an amend that
+  // adds an increment leaves work pending under a "done" or "delivery" phase.
+  const allDone = p.total > 0 && p.done === p.total;
   // The full delivery's lookout review holds the plan open; its fixes are
   // edits like any other, so the gate stays open while it runs.
-  if (st.phase === "delivery")
+  if (st.phase === "delivery" && allDone)
     return { allow: true, why: `every increment is done; the delivery review holds the plan open — deep-plan deliver ${st.slug}` };
-  if (st.phase === "done" || (p.total > 0 && p.done === p.total))
-    return { allow: true, why: "every increment is done" };
+  if (allDone) return { allow: true, why: "every increment is done" };
   if (p.open.length > 0) return { allow: true, why: "increment authorized" };
   return { allow: false, why: "No increment is authorized — `deep-plan go` opens the next one." };
 }
@@ -410,9 +412,9 @@ export function mayEdit(target) {
 
 // Mutating-Bash heuristic. False negatives are acceptable; false positives are
 // not — blocking `grep` makes the whole thing intolerable within an hour.
+const REDIRECT = /(^|[^>])>>?\s*[^&|;\s]/;  // redirect into a file (not >&2)
 const MUTATORS = [
   /\bsed\s+(-[a-zA-Z]*\s+)*-i\b/,          // sed -i, sed -E -i
-  /(^|[^>])>>?\s*[^&|;\s]/,                // redirect into a file (not >&2)
   /<<-?\s*['"]?\w+/,                        // heredoc
   /\btee\s+(?!-a\s*$)/,
   /\brm\s+/, /\bmv\s+/, /\bcp\s+/,
@@ -427,14 +429,75 @@ const SAFE = [
   /^\s*(grep|rg|ag|find|ls|cat|head|tail|wc|git\s+(status|log|diff|show|branch|blame)|which|file|stat|du|df)\b[^><;&|]*$/,
 ];
 
+// Redirecting a stream to /dev/null (or fd-to-fd, 2>&1) writes nothing.
+// Un-scrubbed, `lsof 2>/dev/null` reads as "redirect into a file" and the
+// gate blocked four read-only commands in one session on exactly this.
+const scrub = cmd => cmd.replace(/\d*>>?\s*\/dev\/null/g, " ").replace(/\d+>&\d+/g, " ");
+
+// The command with each quoted string's contents blanked, length kept, so
+// `rg "=>" src` and `jq ".a > 1" f.json` read as the arguments they are. A
+// double-quoted string that runs a command (`$(`, a backtick) is kept as
+// written. Null when a quote never closes, or for $'…' (its \' would fool
+// this scan): the caller then reads the command as written.
+export function blankQuotes(cmd) {
+  if (cmd.includes("$'")) return null;
+  let out = "", q = null, start = 0;
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (q === null) {
+      if (c === "\\") { out += cmd.slice(i, i + 2); i++; }
+      else if (c === "'" || c === '"') { q = c; start = i; }
+      else out += c;
+      continue;
+    }
+    if (q === '"' && c === "\\") { i++; continue; }
+    if (c !== q) continue;
+    const body = cmd.slice(start + 1, i);
+    out += q + (q === '"' && /\$\(|`/.test(body) ? body : " ".repeat(body.length)) + q;
+    q = null;
+  }
+  return q === null ? out : null;
+}
+
 export function bashMutates(cmd) {
   if (!cmd) return false;
-  if (SAFE.some(re => re.test(cmd))) return false;
-  // Redirecting a stream to /dev/null (or fd-to-fd, 2>&1) writes nothing.
-  // Un-scrubbed, `lsof 2>/dev/null` reads as "redirect into a file" and the
-  // gate blocked four read-only commands in one session on exactly this.
-  const scrubbed = cmd.replace(/\d*>>?\s*\/dev\/null/g, " ").replace(/\d+>&\d+/g, " ");
-  return MUTATORS.some(re => re.test(scrubbed));
+  // Quotes matter only to the reader test and the redirect: every other
+  // mutator still reads the command as written (`bash -c "rm -rf x"`).
+  const bare = blankQuotes(cmd) ?? cmd;
+  if (SAFE.some(re => re.test(bare))) return false;
+  return REDIRECT.test(scrub(bare)) || MUTATORS.some(re => re.test(scrub(cmd)));
+}
+
+// The plan's own CLI in command position: `deep-plan …` by any path, node on
+// deep_plan.mjs, or a script under the old skills copy.
+function ownCli(seg, OWN) {
+  const words = seg.trim().replace(/^(\w+=\S*\s+)*/, "").split(/\s+/);
+  const prog = (/^(node|bash|sh)$/.test(words[0]) ? words[1] || "" : words[0])
+    .replace(/^["']|["']$/g, "").replace(/^~(?=\/)/, os.homedir());
+  return /(^|\/)(deep-plan|deep_plan\.mjs)$/.test(prog) || prog.startsWith(OWN + path.sep);
+}
+
+// The CLI's arguments are not the shell's: a note like "rm the cache > 5
+// rows" must not read as a write. But the word alone was the old test, and
+// `sed -i … deep-plan/x.mjs` or `git commit -m "deep-plan: x"` rode it. So
+// every link of the chain must be the CLI or no write; a CLI link may not
+// redirect into a file, and any command substitution reads as written.
+function ownTooling(cmd, OWN) {
+  const bare = blankQuotes(cmd);
+  if (bare === null || /\$\(|`|[<>]\(/.test(bare)) return false;
+  const links = [];
+  let at = 0;
+  for (const m of bare.matchAll(/&&|\|\||[;\n|]|(?<![<>&])&(?![>&])/g)) {
+    links.push([cmd.slice(at, m.index), bare.slice(at, m.index)]);
+    at = m.index + m[0].length;
+  }
+  links.push([cmd.slice(at), bare.slice(at)]);
+  let own = false;
+  for (const [raw, b] of links) {
+    if (ownCli(raw, OWN)) { own = true; if (REDIRECT.test(scrub(b))) return false; }
+    else if (bashMutates(raw)) return false;
+  }
+  return own;
 }
 
 // Where a bash command "lands": its cwd. We gate bash by cwd, not by parsing
@@ -443,8 +506,7 @@ export function decideToolCall(toolName, input, cwd) {
   const OWN = path.join(os.homedir(), ".claude", "skills", "deep-plan");
   if (toolName === "Bash") {
     const cmd = (input && input.command) || "";
-    if (cmd.includes(OWN) || /\bdeep-plan\b/.test(cmd))
-      return { allow: true, why: "the plan's own tooling" };
+    if (ownTooling(cmd, OWN)) return { allow: true, why: "the plan's own tooling" };
     if (!bashMutates(cmd)) return { allow: true, why: "not a write" };
     return mayEdit(cwd || process.cwd());
   }

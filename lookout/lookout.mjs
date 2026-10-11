@@ -49,6 +49,12 @@ const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--pl
 const positional = () => rest.filter((a, i) => !a.startsWith("--") && !(i > 0 && VALUED.has(rest[i - 1])));
 
 const say = s => process.stdout.write(s + "\n");
+// A reader that stopped early (`lookout show … | head`) is not a failure: stop
+// writing, and keep whatever exit code the verb already set (gate's verdict).
+process.stdout.on("error", e => {
+  if (e.code === "EPIPE") process.exit(process.exitCode ?? 0);
+  throw e;
+});
 function die(msg, code = 1) { process.stderr.write("lookout: " + msg + "\n"); process.exit(code); }
 
 // ---------------------------------------------------------------- page

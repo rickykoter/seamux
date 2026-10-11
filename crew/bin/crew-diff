@@ -211,13 +211,14 @@ dispatch() {
 # CREW_EPHEMERAL=1 and we close it once the work is done.
 #
 # Gated on the env var, never unconditional: run by hand from your own terminal,
-# CREW_EPHEMERAL is unset and this does nothing. Placed after dispatch so it is
-# only reached on success — a failure leaves the tab up with the error in it.
+# CREW_EPHEMERAL is unset and this does nothing. Reached only when dispatch
+# succeeded — some failures return rather than exit, so the status is checked —
+# and a failure leaves the tab up with the error in it.
 ephemeral_close() {
   [ "${CREW_EPHEMERAL:-}" = "1" ] || return 0
   [ -n "${CMUX_SURFACE_ID:-}" ] || return 0
   "$CMUX" close-surface --surface "$CMUX_SURFACE_ID" >/dev/null 2>&1 || true
 }
 
-dispatch "$@"
+dispatch "$@" || exit $?
 ephemeral_close

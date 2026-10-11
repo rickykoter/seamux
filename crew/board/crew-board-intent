@@ -31,7 +31,9 @@ including its "ask before deleting anything" gate on reclaim.
 Security. Bound to 127.0.0.1 only, so nothing off-box can reach it. That is not
 sufficient on its own: any page in any browser can issue a cross-origin GET to
 localhost, so a request must also carry the token from board-intent.token (mode
-0600, regenerated per server start). Actions are a fixed allowlist, row ids are
+0600, regenerated per server start). The Host header must name this server
+(127.0.0.1 or localhost, on its own port), so a DNS-rebound page cannot read
+the token out of a served page. Actions are a fixed allowlist, row ids are
 looked up in a snapshot the collector writes rather than taken from the URL, and
 no argument is ever passed through a shell.
 """
@@ -62,6 +64,7 @@ LOG = os.path.join(STATE_DIR, "board-intent.log")
 _RESOLVER = os.path.join(HERE, "..", "bin", "crew-cmux-bin")
 CREW_DIFF = os.path.join(HERE, "..", "bin", "crew-diff")
 USAGE_TMPL = os.path.join(HERE, "usage.tmpl.html")
+USAGE_SLOT = '<script id="data" type="application/json">__DATA__</script>'
 CODE_OPEN = os.path.join(HERE, "..", "bin", "crew-code-open")
 DP_STATE = os.path.join(os.path.expanduser("~"), ".claude", "deep-plan", "state")
 PLANS = os.path.join(os.path.expanduser("~"), ".claude", "plans")
@@ -140,6 +143,18 @@ def plan_surface_file(slug):
     return os.path.join(STATE_DIR, "plan-surface-" + slug)
 
 
+def _surface_cmux(argv, timeout):
+    """(returncode, output) of a cmux call. A hung cmux is a failure with a
+    reason: TimeoutExpired out of a handler drops the page's connection bare."""
+    try:
+        p = subprocess.run([CMUX] + argv, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, (p.stdout or "") + (p.stderr or "")
+    except subprocess.TimeoutExpired:
+        return 1, "cmux did not answer in %ds" % timeout
+    except OSError as exc:
+        return 1, "cmux could not run: %s" % exc
+
+
 def open_plan(slug, port):
     """Show a plan in the Dock, reusing its own surface.
 
@@ -163,17 +178,14 @@ def open_plan(slug, port):
     if sid:
         # Still there? Then this is a focus, not an open -- clicking `plan` twice
         # must not stack Dock tabs.
-        p = subprocess.run([CMUX, "browser", "--surface", sid, "get", "url"],
-                           capture_output=True, text=True, timeout=10)
-        if p.returncode == 0:
+        if _surface_cmux(["browser", "--surface", sid, "get", "url"], 10)[0] == 0:
             run([CMUX, "browser", "--surface", sid, "goto", url])
             run([CMUX, "focus", "--surface", sid])
             return True, "focused " + sid
 
-    p = subprocess.run([CMUX, "new-surface", "--type", "browser", "--placement",
-                        "dock", "--url", url], capture_output=True, text=True, timeout=20)
-    out = (p.stdout or "") + (p.stderr or "")
-    if p.returncode != 0:
+    rc, out = _surface_cmux(["new-surface", "--type", "browser", "--placement",
+                             "dock", "--url", url], 20)
+    if rc != 0:
         return False, "could not open a Dock surface: " + out.strip()[:160]
     new = next((t for t in out.split() if len(t) == 36 and t.count("-") == 4), "")
     if new:
@@ -315,8 +327,20 @@ def deliver(surface, n, label="", runner=None):
     return False, "typed %d but could not confirm it on screen — check the terminal" % n
 
 
+# One answer at a time. The server is threaded, and the "not yet answered" check
+# and the write that answers must not straddle another thread's deliver(): a
+# double submit (two tabs, a double click) would type the digit twice, and the
+# second keystroke answers whatever prompt comes next.
+_ANSWER_LOCK = threading.Lock()
+
+
 def answer(ask_id, n_raw, runner=None):
     """Record and deliver one answer. Returns (ok, delivered, detail)."""
+    with _ANSWER_LOCK:
+        return _answer(ask_id, n_raw, runner)
+
+
+def _answer(ask_id, n_raw, runner):
     jp = ask_path(ask_id, ".json")
     if not jp:
         return False, False, "no such ask"
@@ -356,16 +380,13 @@ def open_ask(ask_id, port, wsid):
     except OSError:
         pass
     if sid:
-        p = subprocess.run([CMUX, "browser", "--surface", sid, "get", "url"],
-                           capture_output=True, text=True, timeout=10)
-        if p.returncode == 0:
+        if _surface_cmux(["browser", "--surface", sid, "get", "url"], 10)[0] == 0:
             run([CMUX, "browser", "--surface", sid, "goto", url])
             run([CMUX, "focus", "--surface", sid])
             return True, "focused " + sid
-    p = subprocess.run([CMUX, "new-surface", "--type", "browser", "--placement",
-                        "dock", "--url", url], capture_output=True, text=True, timeout=20)
-    out = (p.stdout or "") + (p.stderr or "")
-    if p.returncode != 0:
+    rc, out = _surface_cmux(["new-surface", "--type", "browser", "--placement",
+                             "dock", "--url", url], 20)
+    if rc != 0:
         return False, "could not open a Dock surface: " + out.strip()[:160]
     new = next((t for t in out.split() if len(t) == 36 and t.count("-") == 4), "")
     if new:
@@ -889,7 +910,12 @@ def increment(slug, n, action, why):
     argv = ["node", dp_engine.script(), action, slug, str(n)]
     if action == "block":
         argv.append(why or "blocked from the plan surface")
-    p = subprocess.run(argv, capture_output=True, text=True, timeout=90)
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=90)
+    except subprocess.TimeoutExpired:
+        # Answer the page with a reason rather than dropping its connection.
+        log("FAIL inc %s %s %s: timed out" % (action, slug, n))
+        return False, "deep-plan did not finish in 90s"
     detail = ((p.stdout or "") + (p.stderr or "")).strip().split("\n")[-1][:160]
     if p.returncode != 0:
         log("FAIL inc %s %s %s: %s" % (action, slug, n, detail))
@@ -966,7 +992,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         return self.wfile.write(body)
 
+    def _host_ok(self):
+        """Refuse any Host but this server's own loopback name and port. DNS
+        rebinding points attacker.example at 127.0.0.1, which makes its page
+        same-origin with this server; the served pages embed the token, so that
+        page could read one. The Host header still names attacker.example."""
+        port = self.server.server_address[1]
+        if self.headers.get("Host") in ("127.0.0.1:%d" % port, "localhost:%d" % port):
+            return True
+        log("DENY host %r" % self.headers.get("Host"))
+        self._json(403, {"error": "unknown host"})
+        return False
+
     def do_POST(self):
+        if not self._host_ok():
+            return
         u = urllib.parse.urlparse(self.path)
         if not u.path.startswith("/review/"):
             return self._json(404, {"error": "no such path"})
@@ -1050,6 +1090,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self.wfile.write(body)
 
     def do_GET(self):
+        if not self._host_ok():
+            return
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query)
         one = lambda k: (q.get(k) or [""])[0]
@@ -1079,8 +1121,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except OSError as exc:
                 return self._reply(500, json.dumps({"error": str(exc)}).encode())
             # The template is read per request on purpose: editing the dashboard
-            # should not need a server restart.
-            body = tmpl.replace("__DATA__", json.dumps(usage_data())).encode("utf-8")
+            # should not need a server restart. Only the script's placeholder is
+            # filled (the header comment names it too), and < > & are \u-escaped:
+            # a workspace title holding "</script>" must not end the data block.
+            data = (json.dumps(usage_data()).replace("<", "\\u003c")
+                    .replace(">", "\\u003e").replace("&", "\\u0026"))
+            body = tmpl.replace(USAGE_SLOT, USAGE_SLOT.replace("__DATA__", data)).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -1254,8 +1300,10 @@ def serve(background=False):
     httpd = LocalServer(("127.0.0.1", port), Handler)
 
     # Write the token first and tightly. The port file is public knowledge; the
-    # token is the actual credential.
+    # token is the actual credential. The open mode applies only on create, so a
+    # file left loose (the case that discarded the old token) is tightened here.
     fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w") as fh:
         fh.write(token)
     with open(PORT_FILE, "w") as fh:
@@ -1674,7 +1722,7 @@ def selftest():
     # is a lint, not a smoke test.
     try:
         tmpl = open(USAGE_TMPL, encoding="utf-8").read()
-        check("the usage template has its data placeholder", "__DATA__" in tmpl)
+        check("the usage template has its data placeholder", USAGE_SLOT in tmpl)
         check("...and a table twin for the chart", 'id="tbl"' in tmpl)
         check("...and does not reuse a board status colour for the series",
               "#e69875" in tmpl and "#dfa000" not in tmpl and "#e67e80" not in tmpl,
@@ -1710,12 +1758,29 @@ def selftest():
     # different parents and none of them source a shell rc, so reading it only
     # from the environment meant it inherited the value from whichever process
     # happened to spawn it -- correct until the next restart, then silently not.
+    # Asked of _billing_mode itself, with the env var unset and a config file in
+    # a temp CREW_LOCAL: grepping this file for a name would match the check.
+    import tempfile
+    saved_env = {k: os.environ.get(k) for k in ("CREW_LOCAL", "CREW_BILLING")}
+    try:
+        tmpcfg = tempfile.mkdtemp(prefix="crew-local-selftest-")
+        with open(os.path.join(tmpcfg, "config.json"), "w") as fh:
+            json.dump({"billing": "selftest-mode"}, fh)
+        os.environ["CREW_LOCAL"] = tmpcfg
+        os.environ.pop("CREW_BILLING", None)
+        check("billing mode is read from a file, not just the environment",
+              _billing_mode() == "selftest-mode",
+              "an inherited env var reverts on the next respawn")
+        shutil.rmtree(tmpcfg, ignore_errors=True)
+    finally:
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
     try:
         cfgdir = os.environ.get("CREW_LOCAL") or os.path.join(
             os.path.expanduser("~"), ".config", "cmux", "crew-local")
-        check("billing mode is read from a file, not just the environment",
-              "_crew_local" in open(__file__, encoding="utf-8").read(),
-              "an inherited env var reverts on the next respawn")
         cfgp = os.path.join(cfgdir, "config.json")
         if os.path.exists(cfgp):
             json.load(open(cfgp, encoding="utf-8"))
@@ -1739,11 +1804,24 @@ def selftest():
         check("a restart reuses the persisted token",
               reuse in me and mode in me,
               "crew apply restarts this server; a fresh token 403s every chip")
-        check("...and the port, via the pin",
-              "__INTENT_PORT__" in me or "CREW_INTENT_PORT" in me,
-              "a moved port orphans the URLs already in the pushed page")
     except OSError as exc:
         check("crew-board-intent is readable", False, str(exc))
+    # The port: free_port() must take the pin when it is free. Asked of the
+    # function with a pin known to be free, not of this file's text.
+    saved_pin = os.environ.get("CREW_INTENT_PORT")
+    try:
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        pin = s.getsockname()[1]
+        s.close()
+        os.environ["CREW_INTENT_PORT"] = str(pin)
+        check("...and the port, via the pin", free_port() == pin,
+              "a moved port orphans the URLs already in the pushed page")
+    finally:
+        if saved_pin is None:
+            os.environ.pop("CREW_INTENT_PORT", None)
+        else:
+            os.environ["CREW_INTENT_PORT"] = saved_pin
     check("ccusage is installed", bool(shutil.which("ccusage")),
           "npm i -g ccusage — the status line and /usage both need it")
 
@@ -1793,6 +1871,16 @@ def selftest():
         check("the answer is recorded as delivered",
               json.load(open(os.path.join(ASKS, aid + ".json")))["answer"]["delivered"] is True)
         check("a second answer is refused", answer(aid, "1", runner)[0] is False)
+        # Two submits at once (two tabs, a double click): one keystroke, not two.
+        ask["answer"] = None
+        with open(os.path.join(ASKS, aid + ".json"), "w") as fh:
+            json.dump(ask, fh)
+        runner, calls = fake("  What should it do? → b\n❯ \n")
+        slow = lambda argv: (time.sleep(0.05), runner(argv))[1]
+        both = [threading.Thread(target=answer, args=(aid, "2", slow)) for _ in range(2)]
+        [t.start() for t in both]
+        [t.join() for t in both]
+        check("a double submit types the option once", calls.count("send") == 1, " ".join(calls))
         # A prompt that only moved its pointer gets the Enter.
         ask["answer"] = None
         with open(os.path.join(ASKS, aid + ".json"), "w") as fh:

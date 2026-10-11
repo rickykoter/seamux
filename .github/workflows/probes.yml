@@ -68,6 +68,11 @@ jobs:
       - name: seamux-mods tests
         run: claude plugin test seamux-mods
 
+      # Every must-block and must-allow command, read by python3 and by the
+      # plain-shell fallback; macOS runs it under its own bash.
+      - name: bash-guard probe
+        run: bash bash-guard/hooks/guard_bash_probe.sh
+
       - name: deep-plan probe
         run: node deep-plan/probe.mjs
 

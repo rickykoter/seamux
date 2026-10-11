@@ -71,9 +71,11 @@ function takeSide(cwd, op, p, side) {
 // with ordering or a header (a Rails schema's version line, a lockfile's
 // resolution graph), which is why it is never a default.
 function unionMerge(cwd, op, p) {
+  // Read raw, not through git(): its trim would strip the first line's indent
+  // and the file's own trailing whitespace before the merge.
   const stage = n => {
-    const r = git(cwd, ["show", `:${n}:${p}`]);
-    return r.ok ? r.out + "\n" : null;
+    const r = spawnSync("git", ["show", `:${n}:${p}`], { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    return r.status === 0 ? r.stdout : null;
   };
   const ancestor = stage(1), ours = stage(sideStage(op, "base")), theirs = stage(sideStage(op, "branch"));
   if (ours === null || theirs === null)
@@ -128,6 +130,10 @@ export function regen(cwd, artifact, opts = {}) {
     return { artifact: artifact.name, ran: false, ok: false, deferred: true,
              why: "expensive tier — run with --deep, or run the command yourself", command: artifact.regen };
   const r = sh(cwd, artifact.regen, { ...opts, label: `regen-${artifact.name}` });
+  // A dry run did not run, and must not read as a regen that succeeded: that
+  // is what clears a stale mark.
+  if (r.skipped) return { artifact: artifact.name, ran: false, ok: false, dryRun: true,
+                          why: `dry run — would run: ${artifact.regen}`, command: artifact.regen };
   const changed = stagePaths(cwd, artifact.paths, opts);
   return { artifact: artifact.name, ran: true, ok: r.ok, command: artifact.regen,
            ms: r.ms, out: r.out, log: r.log, changed };
@@ -149,7 +155,9 @@ export function verifyClean(cwd, artifact, opts = {}) {
   const res = { artifact: artifact.name, checked: false, clean: null, dirty: [], regen: null };
   if (artifact.regen && !(artifact.tier === "expensive" && !opts.deep)) {
     res.regen = sh(cwd, artifact.regen, { ...opts, label: `verify-${artifact.name}` });
-    if (!res.regen.ok && !res.regen.skipped) return { ...res, error: "the regen command failed" };
+    // A dry run proves nothing: diffing HEAD without the regen would read clean.
+    if (res.regen.skipped) return { ...res, dryRun: true, command: artifact.regen };
+    if (!res.regen.ok) return { ...res, error: "the regen command failed" };
   } else if (artifact.regen) {
     return { ...res, deferred: true, command: artifact.regen,
              error: "expensive tier — not run; pass --deep to prove it here" };
@@ -170,6 +178,7 @@ export function runCheck(cwd, check, opts = {}) {
     return { name: check.name, ran: false, deferred: true, command: check.run,
              why: "expensive tier — run with --deep" };
   const r = sh(cwd, check.run, { ...opts, label: `check-${check.name}` });
+  if (r.skipped) return { name: check.name, ran: false, dryRun: true, command: check.run };
   return { name: check.name, ran: true, ok: r.ok, code: r.code, ms: r.ms,
            command: check.run, out: r.ok ? "" : r.out, log: r.log, timedOut: r.timedOut };
 }

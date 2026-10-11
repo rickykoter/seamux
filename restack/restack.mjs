@@ -419,19 +419,31 @@ function cmdRun(ctx) {
   const base = baseFacts(ctx);
 
   const stack = discover(ctx.cwd, ctx.cfg, ctx.branch, base, ctx.gitDirPath);
+  // `--branch` is planned against the whole chain and filtered after, so a
+  // branch mid-stack is lifted off its real parent. Filtered first, it was the
+  // bottom step and went onto the base with its parent's old commits in tow.
   const only = opt("branch");
-  let chain = stack.chain;
-  if (only) chain = chain.filter(c => c.name === only);
-  if (!chain.length) die(`no branches to restack${only ? ` matching --branch ${only}` : ""}`);
+  let planned = planWalk(ctx.cwd, stack.chain, base);
+  if (only) planned = planned.filter(s => s.branch === only);
+  if (!planned.length) die(`no branches to restack${only ? ` matching --branch ${only}` : ""}`);
 
-  const steps = planWalk(ctx.cwd, chain, base).map(s => ({ ...s, status: "pending", newTip: null }));
+  const steps = planned.map(s => ({ ...s, status: "pending", newTip: null }));
   ctx.st = { ...S.fresh(), stale: ctx.st.stale || [], phase: "walking",
              startedAt: new Date().toISOString(), base: { ref: base.ref, sha: base.sha },
              driver: stack.driver, steps, index: 0, returnTo: ctx.branch };
-  S.write(ctx.gitDirPath, ctx.st);
+  if (!OPTS.dryRun) S.write(ctx.gitDirPath, ctx.st);
 
   if (stack.driver === "gt") return walkGraphite(ctx);
   return walkGit(ctx);
+}
+
+// What a step is replayed onto: the base for the bottom branch, else its
+// parent's rewritten tip, or the parent as it is now when the parent is not
+// in this walk (`--branch`).
+function ontoFor(cwd, st, step) {
+  if (!(step.parentIndex >= 0)) return st.base.sha;
+  const parent = st.steps.find(s => s.branch === step.onto);
+  return parent ? parent.newTip : revParse(cwd, step.onto);
 }
 
 function walkGit(ctx) {
@@ -440,18 +452,22 @@ function walkGit(ctx) {
     const step = st.steps[st.index];
     if (step.error) { step.status = "skipped"; continue; }
 
-    const onto = st.index === 0 ? st.base.sha : st.steps[st.index - 1].newTip;
+    const onto = ontoFor(ctx.cwd, st, step);
     // Nothing to do: this branch already sits on the new parent.
     if (step.upstream === onto) {
       step.status = "already-current";
       step.newTip = revParse(ctx.cwd, step.branch);
       continue;
     }
+    // Before the checkout: a dry run leaves HEAD where it found it.
+    if (OPTS.dryRun) {
+      say(`  dry run: git rebase --onto ${step.onto} ${String(step.upstream).slice(0, 12)} ${step.branch}`);
+      step.status = "dry-run"; continue;
+    }
     const co = git(ctx.cwd, ["checkout", "--quiet", step.branch]);
     if (!co.ok) { step.status = "error"; step.why = co.err; break; }
 
-    say(`  rebasing ${step.branch} onto ${st.index === 0 ? st.base.ref : st.steps[st.index - 1].branch}`);
-    if (OPTS.dryRun) { step.status = "dry-run"; continue; }
+    say(`  rebasing ${step.branch} onto ${step.onto}`);
     // `--exec` implies `--empty=keep`; `drop` keeps today's handling of a
     // commit that becomes empty.
     step.collide = replayArtifacts(ctx, step.upstream, step.branch, onto);
@@ -639,20 +655,25 @@ function finish(ctx) {
     const d = (st.dropped || []).find(x => x.sha === a.sha);
     if (d) { d.escalated = true; d.why = a.why; d.pRegenOnly = a.pRegenOnly ?? null; }
   }
-  st.phase = "done"; st.finishedAt = new Date().toISOString();
-  S.write(ctx.gitDirPath, st);
+  // A step that broke the walk (a checkout that failed) leaves the branches
+  // above it unrestacked: that is a failure, not a finish, and the phase keeps
+  // the run abortable.
+  const broken = st.steps.filter(s => s.status === "error");
+  st.phase = broken.length ? "error" : "done"; st.finishedAt = new Date().toISOString();
+  if (!OPTS.dryRun) S.write(ctx.gitDirPath, st);
   if (st.returnTo && currentBranch(ctx.cwd) !== st.returnTo && !OPTS.dryRun)
     git(ctx.cwd, ["checkout", "--quiet", st.returnTo]);
 
-  const pushes = st.steps.filter(s => s.status === "done")
+  const pushes = broken.length ? [] : st.steps.filter(s => s.status === "done")
     .map(s => `${ctx.cfg.push.command} ${ctx.cfg.remote} ${s.branch}`);
   const escalatedDrops = (st.dropped || []).filter(d => d.escalated);
   const out = {
-    verb, status: escalatedDrops.length ? "needs-human" : st.stale.length ? "stale" : "ok", repo: ctx.cwd,
-    steps: st.steps.map(s => ({ branch: s.branch, status: s.status, tip: s.newTip && s.newTip.slice(0, 12) })),
+    verb, status: broken.length ? "error" : escalatedDrops.length ? "needs-human" : st.stale.length ? "stale" : "ok", repo: ctx.cwd,
+    steps: st.steps.map(s => ({ branch: s.branch, status: s.status, tip: s.newTip && s.newTip.slice(0, 12), ...(s.why ? { why: s.why } : {}) })),
     dropped: st.dropped || [],
     stale: st.stale,
-    next: [
+    ...(broken.length ? { error: broken.map(s => `${s.branch}: ${s.why}`).join("\n") } : {}),
+    next: broken.length ? ["restack abort   # puts back the branches already restacked", "restack run"] : [
       ...(escalatedDrops.length ? ["restack verify   # a dropped commit claimed real work"] : []),
       ...(st.stale.length ? st.stale.map(s => s.command).filter(Boolean) : []),
       "restack verify",
@@ -660,11 +681,16 @@ function finish(ctx) {
       ...pushes,
     ],
     push: pushes,
-    exit: escalatedDrops.length ? NEEDS_HUMAN : 0,
+    exit: broken.length ? 1 : escalatedDrops.length ? NEEDS_HUMAN : 0,
   };
   emit(out, o => {
     say("");
-    for (const s of o.steps) say(`  ${s.status === "done" ? "\x1b[32mok\x1b[0m  " : s.status === "already-current" ? "—   " : "    "} ${s.branch} ${s.status === "done" ? s.tip : s.status}`);
+    for (const s of o.steps) say(`  ${s.status === "done" ? "\x1b[32mok\x1b[0m  " : s.status === "already-current" ? "—   " : s.status === "error" ? "\x1b[31mfail\x1b[0m" : "    "} ${s.branch} ${s.status === "done" ? s.tip : s.status}${s.why ? ` — ${s.why}` : ""}`);
+    if (o.status === "error") {
+      say(`\n  the walk stopped before the branches above it; fix that, then:`);
+      for (const n of o.next) say(`        ${n}`);
+      return;
+    }
     if (o.dropped.length) {
       say(`\n  \x1b[33m${o.dropped.length} commit(s) became empty and were dropped\x1b[0m — the base already carries the change:`);
       for (const d of o.dropped) say(`    ${d.sha} ${d.subject} (${d.branch})${d.escalated ? "  \x1b[31m← " + d.why + "\x1b[0m" : ""}`);
@@ -689,7 +715,14 @@ function cmdContinue(ctx) {
     // there is a walk to resume.
     if (ctx.st.phase === "conflict" || ctx.st.phase === "walking") {
       const step = ctx.st.steps[ctx.st.index];
-      if (step) { step.status = "done"; step.newTip = revParse(ctx.cwd, step.branch); ctx.st.index++; }
+      // Finished by hand only if the branch now sits on its new parent. A
+      // rebase aborted by hand leaves it where it was, and calling that done
+      // would stack the rest onto an unrestacked branch.
+      const onto = step && ctx.st.driver !== "gt" && step.upstream ? ontoFor(ctx.cwd, ctx.st, step) : null;
+      const landed = !onto || isAncestor(ctx.cwd, onto, step.branch);
+      if (!landed && ctx.st.phase === "conflict")
+        die(`no rebase is in progress and ${step.branch} is not on its new parent — the rebase was aborted by hand. \`restack abort\` puts the stack back; \`restack run\` starts over`);
+      if (step && landed) { step.status = "done"; step.newTip = revParse(ctx.cwd, step.branch); ctx.st.index++; }
       ctx.st.phase = "walking"; S.write(ctx.gitDirPath, ctx.st);
       return ctx.st.driver === "gt" ? walkGraphite(ctx) : walkGit(ctx);
     }
@@ -707,15 +740,60 @@ function cmdContinue(ctx) {
   return ctx.st.driver === "gt" ? walkGraphite(ctx) : walkGit(ctx);
 }
 
+// Abort puts back EVERY branch the run moved, not just the one mid-rebase:
+// `rebase --abort` restores only its own branch, and a stack whose bottom half
+// is restacked and top half is not is the worst place to leave it. Each goes
+// back to the tip planWalk recorded before anything moved. A branch that moved
+// again after the walk wrote it is someone's later work and is left alone,
+// loudly; the run state is kept then, so the recorded tips are not lost.
 function cmdAbort(ctx) {
   const op = operation(ctx.cwd);
   // `git rebase --abort` whichever tool started it: graphite's restack IS a
   // git rebase underneath, and aborting it restores the refs gt will re-read.
-  if (op) git(ctx.cwd, ["rebase", "--abort"]);
-  if (ctx.st.returnTo) git(ctx.cwd, ["checkout", "--quiet", ctx.st.returnTo]);
-  const st = S.clearRun(ctx.gitDirPath, ctx.st);
-  emit({ verb: "abort", status: "ok", aborted: !!op, stale: st.stale, exit: 0 },
-    o => say(o.aborted ? "  aborted; branches are back where they were" : "  nothing in progress; run state cleared"));
+  // A merge or cherry-pick is never ours, and aborting it would throw away a
+  // human's resolution.
+  if (op && op !== "rebase")
+    die(`a ${op} is in progress, and restack did not start it — finish it, or \`git ${op} --abort\` yourself`);
+  if (op) {
+    const r = git(ctx.cwd, ["rebase", "--abort"]);
+    if (!r.ok) die(`git rebase --abort failed, so nothing else was touched:\n${r.err}`);
+  }
+  const st = ctx.st;
+  const restored = [], failed = [];
+  if (["walking", "conflict", "error"].includes(st.phase)) {
+    const moved = (st.steps || []).filter(s => s.tip &&
+      (st.driver === "gt" || s.status === "done" || s.status === "conflict"));
+    // Off every branch first: moving the ref of the checked-out branch would
+    // leave its work tree describing the walk's tip.
+    if (moved.length) git(ctx.cwd, ["checkout", "--quiet", "--detach"]);
+    for (const s of moved) {
+      const cur = revParse(ctx.cwd, s.branch);
+      if (cur === s.tip) continue;
+      if (s.newTip && cur !== s.newTip) {
+        failed.push({ branch: s.branch, tip: s.tip, why: `moved after the walk (now ${cur ? cur.slice(0, 12) : "deleted"})` });
+        continue;
+      }
+      const r = git(ctx.cwd, ["update-ref", "-m", "restack abort", `refs/heads/${s.branch}`, s.tip, cur || ""]);
+      if (r.ok) restored.push({ branch: s.branch, from: cur && cur.slice(0, 12), to: s.tip.slice(0, 12) });
+      else failed.push({ branch: s.branch, tip: s.tip, why: r.err });
+    }
+  }
+  if (st.returnTo) {
+    const co = git(ctx.cwd, ["checkout", "--quiet", st.returnTo]);
+    if (!co.ok) failed.push({ branch: st.returnTo, tip: null, why: `could not check it out: ${co.err}` });
+  }
+  if (failed.length) {
+    S.write(ctx.gitDirPath, st);
+    return emit({ verb: "abort", status: "error", aborted: !!op, restored, failed, stale: st.stale || [],
+      error: `${failed.length} branch(es) not put back`, exit: 1 }, o => {
+      for (const r of o.restored) say(`  put back ${r.branch} ${r.to}`);
+      for (const f of o.failed) say(`  \x1b[31mnot put back\x1b[0m ${f.branch} — ${f.why}${f.tip ? `\n    it was at ${f.tip}: git branch -f ${f.branch} ${f.tip}` : ""}`);
+    });
+  }
+  const cleared = S.clearRun(ctx.gitDirPath, st);
+  emit({ verb: "abort", status: "ok", aborted: !!op || restored.length > 0, restored, stale: cleared.stale, exit: 0 },
+    o => say(o.aborted ? `  aborted; branches are back where they were${o.restored.length ? ` (${o.restored.map(r => r.branch).join(", ")} put back)` : ""}`
+      : "  nothing in progress; run state cleared"));
 }
 
 function cmdRegen(ctx) {
@@ -769,25 +847,28 @@ function cmdCheck(ctx) {
   const dirty = arts.filter(a => a.clean === false);
   const failed = checks.filter(c => c.ran && !c.ok);
   const deferred = [...arts.filter(a => a.deferred), ...checks.filter(c => c.deferred)];
+  // A dry run ran nothing, so it can pass nothing: never "ok", never "push".
+  const notRun = [...arts, ...checks].filter(x => x.dryRun);
   const stale = ctx.st.stale || [];
   const bad = dirty.length || failed.length || stale.length;
   emit({
-    verb: "check", status: bad ? "fail" : deferred.length ? "partial" : "ok",
+    verb: "check", status: bad ? "fail" : notRun.length ? "dry-run" : deferred.length ? "partial" : "ok",
     base: { ref: base.ref, sha: base.sha.slice(0, 12) },
-    staleness: arts.map(a => ({ artifact: a.artifact, clean: a.clean, dirty: a.dirty, deferred: !!a.deferred, error: a.error || null, command: a.command || null })),
-    checks: checks.map(c => ({ name: c.name, ran: c.ran, ok: c.ok ?? null, deferred: !!c.deferred, command: c.command, out: c.out || "", log: c.log || null })),
+    staleness: arts.map(a => ({ artifact: a.artifact, clean: a.clean, dirty: a.dirty, deferred: !!a.deferred, dryRun: !!a.dryRun, error: a.error || null, command: a.command || null })),
+    checks: checks.map(c => ({ name: c.name, ran: c.ran, ok: c.ok ?? null, deferred: !!c.deferred, dryRun: !!c.dryRun, command: c.command, out: c.out || "", log: c.log || null })),
     stale,
     next: bad
       ? [...dirty.map(d => `commit the regenerated ${d.artifact} (${d.dirty.join(", ")})`),
          ...stale.map(s => s.command || `restack clear-stale --only ${s.artifact}`),
          ...failed.map(f => `fix: ${f.name}`)]
+      : notRun.length ? ["restack check   # without --dry-run, to run them"]
       : deferred.length ? ["restack check --deep   # the expensive half has not run"] : ["restack push"],
     exit: bad ? 1 : 0,
   }, o => {
     for (const a of o.staleness)
-      say(`  ${a.clean === true ? "\x1b[32mok\x1b[0m  " : a.deferred ? "—   " : "\x1b[31mfail\x1b[0m"} ${a.artifact}${a.clean === false ? ` — regen rewrote ${a.dirty.length} file(s): ${a.dirty.join(", ")}` : a.deferred ? " — deferred (expensive; pass --deep)" : a.error ? ` — ${a.error}` : ""}`);
+      say(`  ${a.clean === true ? "\x1b[32mok\x1b[0m  " : a.deferred || a.dryRun ? "—   " : "\x1b[31mfail\x1b[0m"} ${a.artifact}${a.clean === false ? ` — regen rewrote ${a.dirty.length} file(s): ${a.dirty.join(", ")}` : a.dryRun ? ` — dry run, would run: ${a.command}` : a.deferred ? " — deferred (expensive; pass --deep)" : a.error ? ` — ${a.error}` : ""}`);
     for (const c of o.checks) {
-      say(`  ${c.ok ? "\x1b[32mok\x1b[0m  " : c.deferred ? "—   " : "\x1b[31mfail\x1b[0m"} ${c.name}${c.deferred ? " — deferred (expensive; pass --deep)" : ""}`);
+      say(`  ${c.ok ? "\x1b[32mok\x1b[0m  " : c.deferred || c.dryRun ? "—   " : "\x1b[31mfail\x1b[0m"} ${c.name}${c.dryRun ? ` — dry run, would run: ${c.command}` : c.deferred ? " — deferred (expensive; pass --deep)" : ""}`);
       if (c.ran && !c.ok) say(indent(c.out, 6));
     }
     for (const s of o.stale) say(`  \x1b[33mstale\x1b[0m ${s.artifact}\n${staleLines(s, 8)}`);
@@ -869,8 +950,7 @@ function cmdVerify(ctx) {
   const factor = Number(ctx.cfg.verify?.creationFactor) || CREATION_FACTOR;
   const results = [];
   for (let i = 0; i < wanted.length; i++) {
-    const idx = st.steps.indexOf(wanted[i]);
-    const newParent = idx === 0 ? st.base.sha : st.steps[idx - 1].newTip;
+    const newParent = ontoFor(ctx.cwd, st, wanted[i]);
     results.push(verifyBranch(ctx.cwd, ctx.cfg, wanted[i], newParent, st.humanResolved || [], factor));
   }
   const unexplained = results.flatMap(r => (r.unexplained || []).map(u => ({ branch: r.branch, ...u })));

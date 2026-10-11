@@ -132,6 +132,13 @@ render({ rows: [{ id: "x", name: "<img src=x onerror=1>", kind: "attend",
 const esc = els.rows.innerHTML;
 checks.push(["agent text escaped, not executed",
   !esc.includes("<img") && !esc.includes("<script>") && esc.includes("&lt;img")]);
+// Names land in double-quoted attributes too (title=, data-id=), and git allows a quote
+// in a branch name: it must not close the attribute and open a handler.
+render({ rows: [{ id: 'q"', name: 'x" onmouseover="alert(1)', kind: "attend", badge: "b",
+  said: "", chips: [], frac: 0.5, meta: "m" }], quiet: "" });
+const escq = els.rows.innerHTML;
+checks.push(["a quote cannot break out of an attribute",
+  !escq.includes('" onmouseover=') && escq.includes("x&quot; onmouseover=")]);
 
 // The page must have no script of its own: that dependency is what broke.
 const pageHtml = readFileSync(join(HERE, "board.html"), "utf8");
@@ -467,6 +474,19 @@ if (live && Array.isArray(live.rows)) {
     cache["/w/a"]?.stuck === 0.7 && cache["/w/b"]?.urgency === 0.5]);
   checks.push(["judgments: blocked rides as an arg, size as an int",
     cache["/w/a"]?.blocked === 0.9 && cache["/w/a"]?.transcript_size === 111]);
+  // Turn-ends in the same instant: each writer must see the others' entries.
+  const raced = execFileSync("python3", ["-c", `
+import importlib.util, json, multiprocessing as mp, os, sys
+spec = importlib.util.spec_from_file_location("judgments", sys.argv[1])
+J = importlib.util.module_from_spec(spec); spec.loader.exec_module(J)
+ctx = mp.get_context("fork"); bar = ctx.Barrier(16)
+def go(i):
+    bar.wait(); J.record("/w/r%d" % i, i, {"stuck": 0.1})
+ps = [ctx.Process(target=go, args=(i,)) for i in range(16)]
+[p.start() for p in ps]; [p.join() for p in ps]
+print(sum(k.startswith("/w/r") for k in json.load(open(J.CACHE))))
+`, join(HERE, "judgments.py")], { encoding: "utf8", env }).trim();
+  checks.push(["judgments: concurrent records all survive", raced === "16"]);
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
@@ -606,6 +626,25 @@ print(json.dumps([[r["id"], r["kind"], r.get("famtier", "")] for r in m.rank_pla
     /<div class="sect">quiet · 3<\/div>/.test(html) && html.indexOf('class="sect"') > html.indexOf('data-id="k3"')]);
   checks.push(["families: a family with no parent row is headed by its name",
     /<div class="famhd">family · G<\/div><div class="row quiet[^"]* fam kid"[^>]*data-id="g1"/.test(html)]);
+}
+
+// ---- tidy/adopt: a board surface is the one whose URL is board.html ---------
+// Not a substring of the tree line: tidy closes every match but the recorded one.
+{
+  const tm = JSON.parse(execFileSync("python3", ["-c", `
+import importlib.machinery, importlib.util, json, sys
+l = importlib.machinery.SourceFileLoader("cb", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("cb", l)); l.exec_module(m)
+U = "E80C26CC-48A8-4BB1-A439-65887FA2F457"
+L = lambda t, u: '├── surface surface:1 %s [browser] "%s" %s' % (U, t, u)
+print(json.dumps([m.tree_url_is(L("crew · who needs you", "file:///h/.config/cmux/crew/board/board.html"), "board.html"),
+  m.tree_url_is(L("x", "file:///x/dashboard.html"), "board.html"),
+  m.tree_url_is(L("notes on board.html", "https://example.com/a"), "board.html"),
+  m.tree_url_is(L("usage", "http://127.0.0.1:7345/usage"), "/usage"),
+  m.tree_url_is(L("x", "http://127.0.0.1:7345/plan/usage-dash"), "/usage")]))
+`, join(HERE, "crew-board")], { encoding: "utf8" }));
+  checks.push(["tidy/adopt: board.html and /usage match by URL, not dashboard.html or a title",
+    JSON.stringify(tm) === JSON.stringify([true, false, false, true, false])]);
 }
 
 // ---- crew-color: a family's shades, and the colors from before ------------
@@ -759,6 +798,10 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
   const HOME = fs.mkdtempSync(join(os.tmpdir(), "board-probe-intent-"));
   const reviews = join(HOME, ".claude", "plans", "reviews");
   fs.mkdirSync(reviews, { recursive: true });
+  // A token file left world-readable: the server must discard it and tighten the file.
+  fs.mkdirSync(join(HOME, ".cache", "cmux-crew"), { recursive: true });
+  fs.writeFileSync(join(HOME, ".cache", "cmux-crew", "board-intent.token"), "loose", { mode: 0o644 });
+  fs.chmodSync(join(HOME, ".cache", "cmux-crew", "board-intent.token"), 0o644);
   const review = {
     id: "demo", title: "demo", updatedAt: "2026-01-01T00:00:00.000Z",
     files: [{ path: "a.js" }],
@@ -838,6 +881,8 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
       }
       throw new Error("the intent server never answered; the review route checks are skipped\n" + why());
     }
+    checks.push(["intent token: a loose token file is replaced and made 0600",
+      token !== "loose" && (fs.statSync(tokenFile).mode & 0o777) === 0o600]);
     const page = await req("GET", "/review/demo");
     checks.push(["review route: the page is served with its token script before </body>",
       page.status === 200 && page.body.includes(`window.lookout.serve({ token: "${token}", id: "demo" })`) &&
@@ -849,6 +894,12 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
       !("access-control-allow-origin" in withTok.headers)]);
     checks.push(["review route: an id that is not a slug is not a file",
       (await req("GET", "/review/..%2Fdemo")).status === 404 && (await req("GET", "/review/nope")).status === 404]);
+    // DNS rebinding: the page is reached at 127.0.0.1, but the browser names the attacker's host.
+    const rebound = await req("GET", "/review/demo", { headers: { Host: `evil.example:${port}` } });
+    const localhost = await req("GET", "/health", { headers: { Host: `localhost:${port}` } });
+    checks.push(["intent server: a foreign Host is refused, localhost on its port is not",
+      rebound.status === 403 && !rebound.body.includes(token) && localhost.status === 200 &&
+      (await req("GET", "/health", { headers: { Host: "127.0.0.1:1" } })).status === 403]);
 
     const ok = { op: "comment", t: token, file: "a.js", line: 1, side: "new", text: "why?" };
     checks.push(["review POST: no Origin is refused", (await post(ok, { origin: "" })).status === 403]);

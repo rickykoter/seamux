@@ -242,6 +242,17 @@ const R1 = repo("r1");
   ok("open: two sources at once are refused", cli(R1, "open", "--worktree", "--base", "main").status === 1);
   ok("open: a bad id is refused", cli(R1, "open", "--id", "../etc").status === 1);
   ok("show/list answer", cli(R1, "show", out.id).status === 0 && /r1-dev-feature/.test(cli(R1, "list").stdout));
+  // A reader that stops early (`| head`) closes the pipe while `show` is still
+  // writing one line per file; 400 files keep it writing long enough.
+  {
+    const many = path.join(TMP, "many.patch");
+    fs.writeFileSync(many, Array.from({ length: 400 }, (_, i) =>
+      `diff --git a/f${i}.txt b/f${i}.txt\nnew file mode 100644\n--- /dev/null\n+++ b/f${i}.txt\n@@ -0,0 +1 @@\n+x\n`).join(""));
+    cli(TMP, "open", "--patch", many, "--id", "many-files", "--no-open");
+    const piped = spawnSync("bash", ["-c", 'set -o pipefail; node "$0" show many-files | head -c 1 >/dev/null',
+      path.join(HERE, "lookout.mjs")], { encoding: "utf8", env: ENV, cwd: TMP });
+    ok("a closed pipe ends output quietly", piped.status === 0 && !/EPIPE|Unhandled/.test(piped.stderr), piped.stderr);
+  }
 }
 
 // ---------------------------------------------------------------- big and plain
