@@ -2149,7 +2149,9 @@ async function grade(slug, answers) {
     writeState(st); rerenderWorking(slug);
     process.exit(1);
   }
-  st.phase = "implementing";
+  // Review is the only phase a pass moves on from: a re-grade must not pull a
+  // delivery, done or closed plan back to implementing.
+  if (st.phase === "review") st.phase = "implementing";
   log1(st, "alignment check passed");
   // The approved snapshot: the plan AS AGREED, cut once at the plan→working
   // boundary and never overwritten — paste-anywhere context (Jira, PRs).

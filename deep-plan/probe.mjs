@@ -1014,6 +1014,8 @@ ok("all increments done: Edit allowed, gate retired", edit(path.join(REPO, "a.tx
   cli("go", spec.slug, "2"); passAll(spec.slug, 2); cli("done", spec.slug, "2");
   ok("…until its done closes the plan again",
     phase() === "done" && edit(path.join(REPO, "a.txt")).status === 0);
+  ok("a passing re-grade leaves a complete plan complete",
+    cli("grade", spec.slug, ...right).status === 0 && phase() === "done");
 }
 
 // -------------------------------------------------- a parked plan must not deadlock a live one
