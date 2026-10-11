@@ -128,6 +128,10 @@ export function regen(cwd, artifact, opts = {}) {
     return { artifact: artifact.name, ran: false, ok: false, deferred: true,
              why: "expensive tier — run with --deep, or run the command yourself", command: artifact.regen };
   const r = sh(cwd, artifact.regen, { ...opts, label: `regen-${artifact.name}` });
+  // A dry run did not run, and must not read as a regen that succeeded: that
+  // is what clears a stale mark.
+  if (r.skipped) return { artifact: artifact.name, ran: false, ok: false, dryRun: true,
+                          why: `dry run — would run: ${artifact.regen}`, command: artifact.regen };
   const changed = stagePaths(cwd, artifact.paths, opts);
   return { artifact: artifact.name, ran: true, ok: r.ok, command: artifact.regen,
            ms: r.ms, out: r.out, log: r.log, changed };

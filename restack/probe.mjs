@@ -296,6 +296,12 @@ step("the same conflict with an expensive generator: stale, not silent");
   const push = cli(r, "push", "--json");
   ok("push refuses too, and still only prints", push.status === 1 && (push.json?.push || []).length > 0);
 
+  const preview = cli(r, "regen", "--deep", "--dry-run", "--json");
+  ok("regen --dry-run runs nothing and says so", preview.status === 0 && preview.json?.results?.[0]?.ran === false
+    && /dry run/.test(preview.json?.results?.[0]?.out || ""), preview.out + preview.err);
+  ok("and does not clear the stale mark", (cli(r, "status", "--json").json?.stale || []).length === 1);
+  ok("or touch the file", !/bravo/.test(read(r, "gen/schema.txt")));
+
   const deep = cli(r, "regen", "--deep", "--json");
   ok("regen --deep runs the expensive recipe", deep.status === 0, deep.out + deep.err);
   ok("and the file now has both sides", /bravo/.test(read(r, "gen/schema.txt")));
