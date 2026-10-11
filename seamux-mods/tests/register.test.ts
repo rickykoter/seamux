@@ -38,6 +38,10 @@ function plan(slug: string, root: string, phase: string, touchedAt: number, owne
 
 type WorldOpts = {
   cwd?: string; pointer?: boolean; facts?: object; askAgeMs?: number
+  /** a second ask, from another session in /other/repo */
+  otherAskAgeMs?: number
+  /** $DEEP_PLAN_PLANS_DIR */
+  plansDir?: string
   /** the session's cmux workspace */
   workspace?: string
   /** rows `status --json` answers after demo's; `demoOff` drops demo itself */
@@ -69,7 +73,11 @@ function world(on: On, opts: WorldOpts = {}) {
   const fold = (i: Inc) => !i.checks ? i.obs : !i.checks.length ? 'n/a'
     : i.checks.some(c => c.status === 'fail') ? 'fail' : i.checks.every(c => c.status === 'pass') ? 'pass' : 'pending'
   const calls: string[][] = []
-  mock.env(on, { HOME, ...(opts.workspace ? { CMUX_WORKSPACE_ID: opts.workspace } : {}) })
+  mock.env(on, {
+    HOME,
+    ...(opts.workspace ? { CMUX_WORKSPACE_ID: opts.workspace } : {}),
+    ...(opts.plansDir ? { DEEP_PLAN_PLANS_DIR: opts.plansDir } : {}),
+  })
   const clock = mock.clock(on, { now: 1_000_000 })
   on('session.cwd', () => ({ value: opts.cwd ?? `${ROOT}/src` }))
   on('session.id', () => ({ value: 'sess-1' }))
@@ -80,12 +88,17 @@ function world(on: On, opts: WorldOpts = {}) {
       return { value: JSON.stringify(opts.facts) }
     if (e.path === `${HOME}/.claude/plans/asks/20261004-120000-ab12.json` && opts.askAgeMs !== undefined)
       return { value: JSON.stringify({ id: '20261004-120000-ab12', cwd: opts.cwd ?? `${ROOT}/src` }) }
+    if (e.path === `${HOME}/.claude/plans/asks/20261004-120010-cd34.json` && opts.otherAskAgeMs !== undefined)
+      return { value: JSON.stringify({ id: '20261004-120010-cd34', cwd: '/other/repo' }) }
     if (e.path === `${HOME}/.cache/cmux-crew/board-intent.port` && !opts.noPort) return { value: '7345\n' }
     return { deny: `ENOENT ${e.path}` }
   })
   on('fs.list', (_$, e) => ({
-    value: e.path === `${HOME}/.claude/plans/asks` && opts.askAgeMs !== undefined
-      ? [{ name: '20261004-120000-ab12.json', kind: 'file', size: 10, mtimeMs: 1_000_000 - opts.askAgeMs, isLink: false }]
+    value: e.path === `${HOME}/.claude/plans/asks`
+      ? [
+          ...(opts.askAgeMs === undefined ? [] : [{ name: '20261004-120000-ab12.json', kind: 'file', size: 10, mtimeMs: 1_000_000 - opts.askAgeMs, isLink: false }]),
+          ...(opts.otherAskAgeMs === undefined ? [] : [{ name: '20261004-120010-cd34.json', kind: 'file', size: 10, mtimeMs: 1_000_000 - opts.otherAskAgeMs, isLink: false }]),
+        ]
       : [],
   }) as never)
   // The engine's own band, beneath the plugin: an empty box keyed so a test
@@ -464,6 +477,13 @@ describe('seamux-mods', () => {
     const toast = w.toasts.find(t => t.startsWith('Ask page:'))
     if (shown) expect(toast).toBe('Ask page: http://127.0.0.1:7345/ask/20261004-120000-ab12')
     else expect(toast).toBeUndefined()
+  })
+
+  test("a newer ask from another directory does not hide this directory's ask", async ($, on) => {
+    const w = world(on, { askAgeMs: 20_000, otherAskAgeMs: 5_000 })
+    on('tool.call', () => ({ result: { answers: {} } }) as never)
+    await $.tool.call({ tool: 'AskUserQuestion', questions: [] } as never)
+    expect(w.toasts.find(t => t.startsWith('Ask page:'))).toBe('Ask page: http://127.0.0.1:7345/ask/20261004-120000-ab12')
   })
 
   test('the status entry carries the plan and the cache clock', async ($, on) => {

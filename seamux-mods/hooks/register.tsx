@@ -295,22 +295,35 @@ async function pageUrl($: EngineInterface, h: string, served: string, file: stri
   return `file://${await plansDir($, h)}/${file}`
 }
 
-// The page `deep-plan ask` opened for this cwd within the last minute.
+// The page `deep-plan ask` opened for this cwd within the last minute: the
+// newest such ask, not the newest ask of all, since another session's newer
+// ask for another directory must not hide this one's.
 async function askPage($: EngineInterface): Promise<string> {
   const h = await home($)
   if (!h) return ''
   const dir = await plansDir($, h)
+  let asks: { name: string; mtimeMs: number }[]
   try {
-    const asks = (await $.fs.list(`${dir}/asks`)).filter(f => f.name.endsWith('.json'))
-    const newest = asks.sort((a, b) => b.mtimeMs - a.mtimeMs)[0]
-    if (!newest || (await $.clock.now()) - newest.mtimeMs > 60000) return ''
-    const ask = JSON.parse(String(await $.fs.read(`${dir}/asks/${newest.name}`)))
-    if (ask.cwd && ask.cwd !== (await $.session.cwd())) return ''
-    const id = String(ask.id ?? newest.name.slice(0, -5))
-    return await pageUrl($, h, `ask/${id}`, `asks/${id}.html`)
+    asks = await $.fs.list(`${dir}/asks`)
   } catch {
     return ''
   }
+  const now = await $.clock.now()
+  const cwd = await $.session.cwd()
+  const recent = asks
+    .filter(f => f.name.endsWith('.json') && now - f.mtimeMs <= 60000)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+  for (const f of recent) {
+    try {
+      const ask = JSON.parse(String(await $.fs.read(`${dir}/asks/${f.name}`)))
+      if (ask.cwd && ask.cwd !== cwd) continue
+      const id = String(ask.id ?? f.name.slice(0, -5))
+      return await pageUrl($, h, `ask/${id}`, `asks/${id}.html`)
+    } catch {
+      // unreadable or half-written: try the next one
+    }
+  }
+  return ''
 }
 
 // The plan's page to jump back into: the review, with the alignment check,
