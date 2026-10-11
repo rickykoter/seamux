@@ -474,6 +474,19 @@ if (live && Array.isArray(live.rows)) {
     cache["/w/a"]?.stuck === 0.7 && cache["/w/b"]?.urgency === 0.5]);
   checks.push(["judgments: blocked rides as an arg, size as an int",
     cache["/w/a"]?.blocked === 0.9 && cache["/w/a"]?.transcript_size === 111]);
+  // Turn-ends in the same instant: each writer must see the others' entries.
+  const raced = execFileSync("python3", ["-c", `
+import importlib.util, json, multiprocessing as mp, os, sys
+spec = importlib.util.spec_from_file_location("judgments", sys.argv[1])
+J = importlib.util.module_from_spec(spec); spec.loader.exec_module(J)
+ctx = mp.get_context("fork"); bar = ctx.Barrier(16)
+def go(i):
+    bar.wait(); J.record("/w/r%d" % i, i, {"stuck": 0.1})
+ps = [ctx.Process(target=go, args=(i,)) for i in range(16)]
+[p.start() for p in ps]; [p.join() for p in ps]
+print(sum(k.startswith("/w/r") for k in json.load(open(J.CACHE))))
+`, join(HERE, "judgments.py")], { encoding: "utf8", env }).trim();
+  checks.push(["judgments: concurrent records all survive", raced === "16"]);
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 

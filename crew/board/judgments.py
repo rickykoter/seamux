@@ -22,6 +22,7 @@ a row to wilt, and urgency orders rows within a tier. Tier order itself never
 moves. Anything missing — no cache, no key, unreadable entry — must leave the
 board byte-identical to a machine that never heard of TypeSafe.
 """
+import fcntl
 import json
 import os
 import sys
@@ -62,8 +63,18 @@ def record(cwd, size, values, now=None):
     """Read-modify-write one entry; atomic replace; GC entries nobody will read.
 
     Other cwds' entries survive — twelve worktrees end turns independently and
-    each write must not blank the other eleven.
+    each write must not blank the other eleven. The atomic replace alone does not
+    give that: two turn-ends in the same second both read the old file, and the
+    second replace drops the first's entry. So the read-modify-write runs under
+    an flock on a sidecar file, released by the kernel if the writer dies.
     """
+    os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+    with open(CACHE + ".lock", "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        _record(cwd, size, values, now)
+
+
+def _record(cwd, size, values, now):
     now = now or time.time()
     cache = _load()
     entry = {"at": now, "transcript_size": int(size or 0)}
@@ -74,7 +85,6 @@ def record(cwd, size, values, now=None):
     for k in [k for k, v in cache.items()
               if now - float(v.get("at", 0) or 0) > GC_AGE]:
         cache.pop(k, None)
-    os.makedirs(os.path.dirname(CACHE), exist_ok=True)
     tmp = CACHE + ".tmp.%d" % os.getpid()
     with open(tmp, "w") as fh:
         json.dump(cache, fh)
