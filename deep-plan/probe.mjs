@@ -137,8 +137,21 @@ ok("key lives on the keys tree, not beside the surfaces",
   fs.existsSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, spec.slug + ".key.json")) &&
   !fs.existsSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".key.json")));
 const review = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".review.html"), "utf8");
-ok("review page never contains the answer key", !/answer/i.test(review.replace(/Alignment/g, "")) ||
-  !review.includes('"answers"'));
+// The page's own copy says "answer", so a word search proves nothing. A page
+// that carries no key in any form cannot depend on it: the same plan with every
+// correct option moved must render byte-identical.
+{
+  const a = { ...JSON.parse(JSON.stringify(spec)), slug: "key-leak-plan" };
+  const b = JSON.parse(JSON.stringify(a));
+  for (const q of b.quiz) q.answer = (q.answer + 1) % q.options.length;
+  const page = s => cli("render", tmpSpec(s), "--force").status === 0 &&
+    fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "key-leak-plan.review.html"), "utf8");
+  const pa = page(a), pb = page(b);
+  ok("review page never contains the answer key",
+    !review.includes('"answers"') && typeof pa === "string" && pa === pb);
+  cli("close", "key-leak-plan");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "key-leak-plan.json"), { force: true });
+}
 ok("mermaid inlined as base64 (the swap regex's shape)",
   /src="data:text\/javascript;base64,[A-Za-z0-9+/=]+"/.test(review));
 // A fresh plugin install has no bundle until setup or the first render fetches
