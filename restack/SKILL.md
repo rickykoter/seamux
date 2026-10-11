@@ -1,6 +1,6 @@
 ---
 name: restack
-description: Rebase a stack of branches onto a moved base without hand-resolving generated files — regenerate schemas and clients instead of merging them, then run the staleness and breaking-change checks CI would run, and stop before the push. Use when the user asks to restack, rebase a stack or a PR chain, fix conflicts with master/main, deal with schema or API drift, a stale generated/checked-in artifact, or a "breaking change" CI failure.
+description: Rebases a stack of branches onto a moved base without hand-resolving generated files — regenerates schemas and clients instead of merging them, then runs the staleness and breaking-change checks CI would run, and stops before the push. Use when the user asks to restack, rebase a stack or a PR chain, fix conflicts with master/main, deal with schema or API drift, a stale generated/checked-in artifact, or a "breaking change" CI failure.
 ---
 
 # restack
@@ -14,6 +14,21 @@ Run it from the worktree. While the restack plugin is enabled, `restack` is on
 the Bash tool's PATH from the plugin's `bin/`; the engine is `restack.mjs` at the
 plugin's root, wherever it is installed. `restack engine` prints that root, and
 `restack setup` installs a `~/.local/bin/restack` shim for your own shell.
+
+## Must hold
+
+- **Never hand-resolve a generated file.** The fix is a config entry naming
+  it and a command that rebuilds it.
+- **Stop before the push.** `restack push` prints the lines; hand them to the
+  human, bottom branch first. Never force-push yourself.
+- **A stale list is a promise.** Clear it by regenerating; `restack
+  clear-stale` asserts the artifact is correct without checking, so use it
+  only when it is, and tell the human you did.
+- **Read the JSON, report what it says.** Every verb takes `--json`; a failure
+  is reported with its command and its tail, never as "some checks failed".
+- **A judgment may escalate, never authorize.**
+- **`restack abort` is always safe** before a push, and the right answer to
+  any surprise.
 
 ## The two failures it exists for
 
@@ -93,55 +108,12 @@ plugin's root, wherever it is installed. `restack engine` prints that root, and
 
 ## Config — `.seamux/restack.json`
 
-Per repo, committed, because "this repo checks in a generated client" is a
-property of the repo. `restack init` writes a starting point by detecting the
-usual suspects; **every detected entry lands with an empty regen command on
-purpose** — a command nobody has run is worse than none.
-
-```json
-{
-  "base": "origin/master",
-  "remote": "origin",
-  "artifacts": [
-    { "name": "graphql-schema",
-      "paths": ["app/graphql/schema.graphql", "app/graphql/schema.json"],
-      "resolve": "regen", "tier": "expensive",
-      "regen": "docker compose run --rm app bundle exec rake graphql:dump",
-      "breaks": "CI regenerates this and asserts no diff" },
-    { "name": "grpc-clients",
-      "paths": ["protobuf/**/*_pb.rb"],
-      "resolve": "regen", "tier": "cheap",
-      "regen": "cd protobuf && buf generate" },
-    { "name": "db-schema",
-      "paths": ["**/db/schema.rb"],
-      "resolve": "take-base", "tier": "expensive",
-      "note": "take the base copy; re-running your own migration re-adds your lines" }
-  ],
-  "checks": [
-    { "name": "proto-breaking", "tier": "cheap",
-      "run": "cd protobuf && buf breaking --against '../.git#branch=origin/master,subdir=protobuf'" },
-    { "name": "graphql-breaking", "tier": "expensive",
-      "run": "git show origin/master:app/graphql/schema.graphql > /tmp/base.graphql && schema_comparator verify /tmp/base.graphql app/graphql/schema.graphql" }
-  ]
-}
-```
-
-- **`resolve`** — `regen` (take the base copy, re-derive), `take-base`,
-  `take-branch`, `union` (both sides' lines; only ever right for a file that is
-  a set), `manual` (always a human's).
-- **`tier`** — `cheap` runs inside the walk, `expensive` runs only under
-  `--deep` and is otherwise recorded stale.
-- **`checks`** — whatever CI runs that a laptop can run. `needsBase: true`
-  (the default) is documentation for the reader; the base is fetched either way.
-
-Setting this up for a repo for the first time is its own job, and the best
-moment is right after a rebase that hurt — `examples/setup-prompt.md` is the
-prompt for it, built around the conflicts that session just resolved.
-
-`regen` and `check.run` are shell, read out of the working tree — running the
-tool in a repo trusts that repo's config the way you trust its Makefile.
-`--dry-run` prints every command without running it; `restack doctor` lists
-them, and flags globs that match no tracked file.
+Per repo and committed. `restack init` writes a starting point, with every
+detected regen command left empty on purpose — a command nobody has run is
+worse than none. The fields (`resolve`, `tier`, `checks`), a worked example,
+and why running restack trusts a repo's config like its Makefile:
+[references/config.md](references/config.md). Setting one up right after a
+rebase that hurt: `examples/setup-prompt.md` in the plugin root.
 
 ## The inversion that causes bad resolutions
 
@@ -183,52 +155,13 @@ follow-ups.
 
 ## The judgment layer (optional, local, escalation-only)
 
-When a TypeSafe-compatible client is on the machine — on this laptop that is a
-local Kev — restack asks it three narrow questions. The rule, enforced in
-`lib/judge.mjs` rather than trusted to callers:
-
-> **A judgment may escalate, never authorize.**
-
-There is no answer that makes restack resolve something it would not have
-resolved, clear a stale mark, or let a push through. The worst a wrong answer
-can do is cost you a look.
-
-1. **The glob guard.** Before auto-resolving a conflicted file because an
-   artifact glob claimed it, it asks whether the file reads as generated. A
-   `protobuf/**` that quietly covers a hand-written helper is invisible to
-   every deterministic check — the glob is narrow, the config is valid, the
-   file just is not generated — and it is how a branch loses a change silently.
-   The question carries the artifact's regen command and the top of the file
-   as the base has it (no conflict markers).
-   A file that does not clear the bar goes to the human pile with its conflict
-   markers intact.
-2. **Dropped-commit triage.** A commit that became empty is always reported;
-   this decides whether it is a line or a stop. `chore: regenerate protos`
-   vanishing is housekeeping. `feat: add the phone field` vanishing is a stop.
-3. **Residue triage in `verify`.** Ranks leftover patch changes as benign
-   (context moved) or semantic (the commit does something different now).
-
-**The bar is asymmetric, and that is the whole design.** It does not ask
-"is the model confident in the alarming answer" — it asks "is the model
-positively confident this is SAFE", and escalates otherwise. Measured reason:
-Kev reports `confidence` as the *margin* between its top two options, so a
-file it scored `{generated 0.14, handwritten 0.48, unclear 0.38}` — one it
-plainly would not call generated — arrives with confidence 0.21 and sailed
-straight through the naive rule. Under the asymmetric bar, uncertainty
-escalates. `judge.safeFloor` (default 0.5) is the knob; raise it toward 1 for
-a more cautious tool. Every answer is logged to
-`~/.cache/seamux-restack/judgments.log` with its probabilities, because these
-numbers deserve tuning against real runs rather than trust.
-
-**What leaves the machine.** The content questions carry file heads and patch
-excerpts, which is what makes them answerable — and they are sent **only when
-the endpoint is loopback**. Point `TYPESAFE_BASE_URL` at anything else and the
-questions degrade to paths and commit subjects, plus two things for the glob
-guard: the artifact's configured regen command, and the one line near the top
-of the file that declares it generated ("DO NOT EDIT", "@generated"), when
-there is one. Neither lowers the bar a file has to clear. No client, no key, a server
-that is down, an unparsable answer: silence, and restack behaves exactly as it
-does with no judgment layer at all. `--no-judge` turns it off explicitly.
+When a TypeSafe-compatible client is on the machine, restack asks it three
+narrow questions: does a conflicted file an artifact glob claimed really read
+as generated, does a commit that became empty matter, and is `verify`'s
+leftover residue semantic. **A judgment may escalate, never authorize** — no
+answer makes restack resolve, clear or push anything it otherwise would not,
+and `--no-judge` turns it off. The asymmetric bar, what leaves the machine,
+and tuning `judge.safeFloor`: [references/judgment.md](references/judgment.md).
 
 ## When a plan is in flight
 
