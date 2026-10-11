@@ -76,8 +76,14 @@ def local_target(target):
 
 def links_in(text):
     """(line_no, target) for markdown links and bare references/ mentions."""
-    out = []
+    out, fenced = [], False
     for n, line in enumerate(text.split("\n"), 1):
+        # Code in a fence is code: `handlers[0](event)` is not a link.
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
         for m in LINK.finditer(line):
             t = local_target(m.group(1))
             if t:

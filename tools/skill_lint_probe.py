@@ -64,6 +64,9 @@ with tempfile.TemporaryDirectory() as root:
         got = rules(lint(root, rule))
         check(f"{rule} rule fires alone", got == [rule], f"got {got}")
 
+    plugin(root, "fenced", GOOD_FM + "Example:\n\n```js\nhandlers[0](event)\n```\n")
+    check("link-like code inside a fence is not a link", lint(root, "fenced") == [], str(lint(root, "fenced")))
+
     plugin(root, "nofm", "# No frontmatter\n")
     check("a missing frontmatter block is reported", rules(lint(root, "nofm")) == ["frontmatter"])
 

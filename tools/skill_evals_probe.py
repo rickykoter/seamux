@@ -23,7 +23,7 @@ def check(name, cond, detail=""):
         FAILS.append(name)
 
 
-def result(scores, ablation="none", partial=False):
+def result(scores, ablation="none", partial=False, model=None, plugin=None):
     """A --json result: one case per (name, [run passes]) with two graders a run."""
     cases = []
     for name, runs in scores.items():
@@ -36,7 +36,9 @@ def result(scores, ablation="none", partial=False):
         cases.append({"name": name, "dir": f"evals/{name}", "promptMarkdown": "a prompt",
                       "arms": {"with": arms}, "aggregates": {"score": mean}})
     return {"schemaVersion": 1, "claudeVersion": "2.1.294", "costUsd": 0.0123, "partial": partial,
-            "suite": {"root": HOME_PATH + "/code/seamux/deep-plan", "ablation": ablation},
+            "suite": {"root": HOME_PATH + "/code/seamux/deep-plan", "ablation": ablation,
+                      **({"modelOverride": model} if model else {}),
+                      **({"plugins": [{"name": plugin}]} if plugin else {})},
             "cases": cases}
 
 
@@ -82,6 +84,22 @@ check("one flaky case with the rest equal holds (no overall rule)",
       cmp({"a": [2, 2, 1], "b": [2, 2, 2], "c": [1, 1, 1]}) == [])
 p = cmp({"a": [2, 1, 0], "b": [2, 2, 2], "c": [1, 1, 1]})
 check("a case down more than one run fails, naming it", len(p) == 1 and p[0].startswith("a:"), str(p))
+# Scores are stored rounded: 2/3 -> 0.6667 and 1/3 -> 0.3333 is still one run.
+thirds = se.trim(result({"a": [2, 2, 0]}), "p", "opus")
+check("a one-run drop between rounded scores holds",
+      se.compare(thirds, se.trim(result({"a": [2, 0, 0]}), "p", "opus")) == [],
+      str(se.compare(thirds, se.trim(result({"a": [2, 0, 0]}), "p", "opus"))))
+check("two runs lost from a rounded score fails",
+      len(se.compare(thirds, se.trim(result({"a": [0, 0, 0]}), "p", "opus"))) == 1)
+p = se.compare(base, se.trim(result({"a": [2, 2], "b": [2, 2, 2], "c": [1, 1, 1]}), "p", "opus"))
+check("a run count that differs from the baseline fails", any("2 runs against a 3-run" in x for x in p), str(p))
+for bad, why in ((result({"a": [2]}, model="haiku"), "a run of another model"),
+                 (result({"a": [2]}, plugin="lookout"), "a run of another plugin")):
+    try:
+        se.trim(bad, "p", "opus")
+        check(f"trim refuses {why}", False, "accepted")
+    except ValueError:
+        check(f"trim refuses {why}", True)
 check("an improvement holds", cmp({"a": [2, 2, 2], "b": [2, 2, 2], "c": [2, 2, 2]}) == [])
 p = cmp({"a": [2, 2, 2], "b": [2, 2, 2]})
 check("a case missing from the run fails", any(x.startswith("c:") for x in p), str(p))

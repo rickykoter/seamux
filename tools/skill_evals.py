@@ -19,8 +19,9 @@ Why the shape is what it is:
   under one arm it is not, so the two modes give different numbers for the
   same transcript. A baseline is only comparable to a run in its own mode, and
   one arm is half the cost.
-- The bar is per case: a case may fall at most 1/3 below its baseline (one run
-  in three gone wrong). There is deliberately no overall rule -- any single
+- The bar is per case: a case may fall by at most one run's worth of score
+  (1/runs -- 1/3 at the default three runs), and only against a baseline with
+  the same number of runs, since that is what makes 'one run' mean anything. There is deliberately no overall rule -- any single
   dropped case also drops the overall score, so an overall floor would cancel
   the one-run tolerance it sits beside.
 - The baseline is trimmed to per-case numbers. The raw result carries
@@ -39,8 +40,10 @@ import sys
 import tempfile
 
 SCHEMA = 1
-TOLERANCE = 1 / 3
-EPS = 1e-9
+# Scores are stored rounded to 4 places, so a one-run drop between two
+# rounded scores can read up to 1e-4 past 1/runs; the slack absorbs that and
+# nothing more (the next step down is a whole run).
+EPS = 1e-3
 DEFAULT_CAP_USD = 40.0
 
 
@@ -57,8 +60,15 @@ def trim(result, plugin, model):
     """The comparable part of a `claude plugin eval --json` result."""
     if result.get("partial"):
         raise ValueError("the run is partial (cost ceiling or a rejected credential); nothing to record")
-    if result.get("suite", {}).get("ablation") != "none":
+    suite = result.get("suite", {})
+    if suite.get("ablation") != "none":
         raise ValueError("the run was not --ablation none; its scores are not comparable to a one-arm baseline")
+    ran = suite.get("modelOverride")
+    if ran and ran != model:
+        raise ValueError(f"the run is {ran}, not {model}; it would land in the wrong baseline")
+    names = [p.get("name") for p in suite.get("plugins", []) if p.get("name")]
+    if names and plugin not in names:
+        raise ValueError(f"the run evaluated {', '.join(names)}, not {plugin}")
     cases = {}
     for c in result.get("cases", []):
         runs = c.get("arms", {}).get("with", [])
@@ -100,8 +110,12 @@ def compare(baseline, current):
     for name in sorted(set(c) - set(b)):
         out.append(f"{name}: in the run, not in the baseline -- record it before comparing")
     for name in sorted(set(b) & set(c)):
+        runs, now_runs = b[name]["runs"], c[name]["runs"]
+        if runs != now_runs or not runs:
+            out.append(f"{name}: {now_runs} runs against a {runs}-run baseline -- compare like with like, or re-record")
+            continue
         was, now = b[name]["score"], c[name]["score"]
-        if now < was - TOLERANCE - EPS:
+        if now < was - 1 / runs - EPS:
             out.append(f"{name}: {was:.2f} -> {now:.2f} ({now - was:+.2f}), more than one run lost")
     return out
 
