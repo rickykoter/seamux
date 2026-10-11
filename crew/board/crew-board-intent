@@ -62,6 +62,7 @@ LOG = os.path.join(STATE_DIR, "board-intent.log")
 _RESOLVER = os.path.join(HERE, "..", "bin", "crew-cmux-bin")
 CREW_DIFF = os.path.join(HERE, "..", "bin", "crew-diff")
 USAGE_TMPL = os.path.join(HERE, "usage.tmpl.html")
+USAGE_SLOT = '<script id="data" type="application/json">__DATA__</script>'
 CODE_OPEN = os.path.join(HERE, "..", "bin", "crew-code-open")
 DP_STATE = os.path.join(os.path.expanduser("~"), ".claude", "deep-plan", "state")
 PLANS = os.path.join(os.path.expanduser("~"), ".claude", "plans")
@@ -1079,8 +1080,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except OSError as exc:
                 return self._reply(500, json.dumps({"error": str(exc)}).encode())
             # The template is read per request on purpose: editing the dashboard
-            # should not need a server restart.
-            body = tmpl.replace("__DATA__", json.dumps(usage_data())).encode("utf-8")
+            # should not need a server restart. Only the script's placeholder is
+            # filled (the header comment names it too), and < > & are \u-escaped:
+            # a workspace title holding "</script>" must not end the data block.
+            data = (json.dumps(usage_data()).replace("<", "\\u003c")
+                    .replace(">", "\\u003e").replace("&", "\\u0026"))
+            body = tmpl.replace(USAGE_SLOT, USAGE_SLOT.replace("__DATA__", data)).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -1674,7 +1679,7 @@ def selftest():
     # is a lint, not a smoke test.
     try:
         tmpl = open(USAGE_TMPL, encoding="utf-8").read()
-        check("the usage template has its data placeholder", "__DATA__" in tmpl)
+        check("the usage template has its data placeholder", USAGE_SLOT in tmpl)
         check("...and a table twin for the chart", 'id="tbl"' in tmpl)
         check("...and does not reuse a board status colour for the series",
               "#e69875" in tmpl and "#dfa000" not in tmpl and "#e67e80" not in tmpl,
