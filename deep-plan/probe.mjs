@@ -872,6 +872,18 @@ ok("sed -i denied", bash("sed -i '' s/a/b/ file.rb").status === 2);
 ok("git commit denied", bash("git commit -m x").status === 2);
 ok("a heredoc write denied", bash("cat <<EOF > f.txt\nhi\nEOF").status === 2);
 ok("the plan's own tooling allowed", bash("deep-plan status").status === 0);
+ok("…its quoted notes are its arguments, not writes",
+  bash('cd /x && deep-plan check fail slug 1 t "rm left > 5 rows" 2>/dev/null | tail -1').status === 0);
+// The word alone used to be the test: a path, a comment or a commit message
+// naming deep-plan let any write through.
+ok("the word deep-plan in a path, a comment or a message opens nothing",
+  bash("sed -i s/a/b/ deep-plan/lib/x.mjs").status === 2 &&
+  bash("echo hi > f # deep-plan").status === 2 &&
+  bash('git commit -m "deep-plan: x"').status === 2);
+ok("a write chained beside the CLI is still a write",
+  bash("deep-plan status && rm -rf x").status === 2 &&
+  bash("deep-plan diff slug > out.patch").status === 2 &&
+  bash('deep-plan block slug 2 "$(rm -rf x)"').status === 2);
 
 // -------------------------------------------------- grade -> implementing
 r = cli("grade", spec.slug);

@@ -466,14 +466,45 @@ export function bashMutates(cmd) {
   return REDIRECT.test(scrub(bare)) || MUTATORS.some(re => re.test(scrub(cmd)));
 }
 
+// The plan's own CLI in command position: `deep-plan …` by any path, node on
+// deep_plan.mjs, or a script under the old skills copy.
+function ownCli(seg, OWN) {
+  const words = seg.trim().replace(/^(\w+=\S*\s+)*/, "").split(/\s+/);
+  const prog = (/^(node|bash|sh)$/.test(words[0]) ? words[1] || "" : words[0])
+    .replace(/^["']|["']$/g, "").replace(/^~(?=\/)/, os.homedir());
+  return /(^|\/)(deep-plan|deep_plan\.mjs)$/.test(prog) || prog.startsWith(OWN + path.sep);
+}
+
+// The CLI's arguments are not the shell's: a note like "rm the cache > 5
+// rows" must not read as a write. But the word alone was the old test, and
+// `sed -i … deep-plan/x.mjs` or `git commit -m "deep-plan: x"` rode it. So
+// every link of the chain must be the CLI or no write; a CLI link may not
+// redirect into a file, and any command substitution reads as written.
+function ownTooling(cmd, OWN) {
+  const bare = blankQuotes(cmd);
+  if (bare === null || /\$\(|`|[<>]\(/.test(bare)) return false;
+  const links = [];
+  let at = 0;
+  for (const m of bare.matchAll(/&&|\|\||[;\n|]|(?<![<>&])&(?![>&])/g)) {
+    links.push([cmd.slice(at, m.index), bare.slice(at, m.index)]);
+    at = m.index + m[0].length;
+  }
+  links.push([cmd.slice(at), bare.slice(at)]);
+  let own = false;
+  for (const [raw, b] of links) {
+    if (ownCli(raw, OWN)) { own = true; if (REDIRECT.test(scrub(b))) return false; }
+    else if (bashMutates(raw)) return false;
+  }
+  return own;
+}
+
 // Where a bash command "lands": its cwd. We gate bash by cwd, not by parsing
 // paths out of the command — conservative in the false-negative direction.
 export function decideToolCall(toolName, input, cwd) {
   const OWN = path.join(os.homedir(), ".claude", "skills", "deep-plan");
   if (toolName === "Bash") {
     const cmd = (input && input.command) || "";
-    if (cmd.includes(OWN) || /\bdeep-plan\b/.test(cmd))
-      return { allow: true, why: "the plan's own tooling" };
+    if (ownTooling(cmd, OWN)) return { allow: true, why: "the plan's own tooling" };
     if (!bashMutates(cmd)) return { allow: true, why: "not a write" };
     return mayEdit(cwd || process.cwd());
   }
