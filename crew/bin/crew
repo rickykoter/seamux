@@ -4,7 +4,7 @@
 #   crew status     what is installed and live right now
 #   crew adopt      back-fill a session that started before crew was applied
 #   crew sync       reconcile every workspace against what is actually true
-#   crew timer      on|off|status — periodic reconcile via launchd (opt-in)
+#   crew timer      status|off — retired; off removes the old launchd job
 #   crew listen     on|off|status|log — reconcile on cmux workspace events (opt-in)
 #   crew color      list|show|assign|apply|free|prune — per-worktree identity color
 #   crew doctor     check the install, exit non-zero if something is wrong

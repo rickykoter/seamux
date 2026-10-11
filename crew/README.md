@@ -63,7 +63,7 @@ but the layout is tuned for sidebar width and reads very loose full-width.
 | `bin/crew-diff` | Turn / branch / PR / per-commit diffs, one keystroke away |
 | `bin/crew-code` | The VS Code desktop app, one window per worktree |
 | `bin/crew-worktree` | New worktree in any repo, able to commit, + Claude |
-| `bin/crew-spec` | The gems/core harness, prerequisites and all |
+| `bin/crew-spec` | The repo's test suite (npm, pytest, cargo or go), or your crew-local harness |
 
 ## What each Claude hook event does
 
@@ -592,7 +592,7 @@ The row lands in exactly one section, first match wins:
 | **Planning · not editing yet** | `plan:mode` or `plan:deep` — see *Planning rather than doing* |
 | **Working** | `phase:working`, or any activity in the last 90s |
 | **Review** | an open PR, a dirty tree, or a plan at 100% |
-| **Merged · can clean up** | PR merged/closed, or the branch is already an ancestor of `origin/master` |
+| **Merged · can clean up** | PR merged/closed, or the branch is already an ancestor of the default branch (`origin/HEAD`, else `origin/main` or `origin/master`) |
 | **Idle** | none of the above |
 
 Merged is the cleanup signal for a worktree fleet: the branch shipped, so
@@ -709,7 +709,6 @@ system produces no output and no calls.
 crew sync              reconcile now
 crew sync --dry-run    say what would change
 crew sync --prune      also drop stale crew state files
-crew timer on|off      periodic reconcile via launchd (opt-in, 5 min)
 ```
 
 **It runs itself.** The `Stop` hook triggers a throttled background sync at most
@@ -717,7 +716,7 @@ once every 120s. That is hung off turn-end rather than the `PreToolUse` hot
 path — `Stop` fires once per turn instead of thousands of times, and because
 sync reconciles *every* workspace, one active agent unsticks all the others. The
 only gap is "everything idle and something is stuck", where nothing is changing
-anyway; `crew timer on` closes that if you would rather not think about it.
+anyway; the reconciler's 120s tick (below) closes that.
 
 ### The reconciler
 
@@ -782,9 +781,10 @@ the board correctly and trusting a badge that has not moved in an hour:
 | Branch, dirty, PR presence | cmux's git watcher and PR poll | cmux, not crew |
 | **CI, review, Jira, sandbox, `gone:merged`** | **only when `crew-sync` runs** | crew |
 
-And `crew-sync` runs on turn-end (≥120s apart) or when you tap `↻` — nothing
-else, unless `crew timer on`. So on a quiet afternoon with no agent finishing a
-turn, the bottom row of that table simply stops moving.
+And `crew-sync` runs on turn-end (≥120s apart), when you tap `↻`, and on the
+reconciler's 120s tick while `crew listen` is up — nothing else. So with the
+reconciler down, on a quiet afternoon with no agent finishing a turn, the
+bottom row of that table simply stops moving.
 
 Even when it does run, two caches sit behind it: GitHub results are cached for
 `CREW_GH_INTERVAL` (**300s**) and Jira for `CREW_JIRA_INTERVAL` (**900s**). A
@@ -852,7 +852,7 @@ crew demo        fire each hook synthetically and show what changed
 crew color       list | show | assign | apply | free | prune — identity colors
 ```
 
-`crew-watch <seconds> <cmd...>`, `crew-spec [rspec-args]`, and
+`crew-watch <seconds> <cmd...>`, `crew-spec [test-runner args]`, and
 `crew-worktree [--repo <name|path>] [branch] [base]` are usable on their own.
 
 ### Which repo
@@ -963,10 +963,11 @@ rotation, so a long-lived sandbox can log you out on the host.
 
 The board shows `▣ sandbox` when one is running and `▢ sandbox` when it is
 stopped; both are tappable and toggle it through the notification-hook RPC.
-`crew-spec` runs inside the sandbox automatically when one exists, which is the
-real payoff — the sandbox has its own Docker daemon, so Postgres comes up
-per-worktree and parallel worktrees stop fighting over 5432. `crew-reclaim`
-refuses while a sandbox is still running.
+The sandbox has its own Docker daemon, so a test stack run inside it brings
+Postgres up per-worktree and parallel worktrees stop fighting over 5432.
+`crew-spec` does not move into the sandbox on its own: it runs on the host
+unless a machine-local harness at `~/.config/cmux/crew-local/crew-spec` runs
+the suite in there. `crew-reclaim` refuses while a sandbox is still running.
 
 ## The one thing to know if it misbehaves
 
