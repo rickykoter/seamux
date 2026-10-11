@@ -54,6 +54,9 @@ type WorldOpts = {
   checks2?: Check[]
   /** the demo row's `family` field */
   family?: object
+  /** the first `status --json` answers the state as it was when called, but
+   * only once this settles: a slow engine run overtaken by a later one */
+  holdFirstStatus?: Promise<void>
 }
 
 function world(on: On, opts: WorldOpts = {}) {
@@ -117,13 +120,19 @@ function world(on: On, opts: WorldOpts = {}) {
   const prompts: string[] = []
   on('prompt.submit', (_$, e) => { prompts.push(e.text); return { text: e.text } })
   const cmux: string[][] = []
-  on('process.run', (_$, e) => {
+  let held = false
+  on('process.run', async (_$, e) => {
     if (e.argv[0] === 'cmux') {
       cmux.push(e.argv.slice(1) as string[])
       if (opts.noCmux) return { deny: 'spawn cmux ENOENT' } as never
       return { value: { exitCode: 0, stdout: 'OK urls=1', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
-    return { value: engineRun(e.argv) }
+    const answer = engineRun(e.argv)
+    if (opts.holdFirstStatus && !held && e.argv[2] === 'status') {
+      held = true
+      await opts.holdFirstStatus
+    }
+    return { value: answer }
   })
   function engineRun(argv: readonly string[]) {
     const [, script, verb, ...rest] = argv
@@ -493,6 +502,25 @@ describe('seamux-mods', () => {
     on('tool.call', () => ({ result: { answers: {} } }) as never)
     await $.tool.call({ tool: 'AskUserQuestion', questions: [] } as never)
     expect(w.toasts.find(t => t.startsWith('Ask page:'))).toBe('Ask page: http://127.0.0.1:7345/ask/20261004-120000-ab12')
+  })
+
+  test('a slow refresh that finishes after a newer one does not put back the older state', async ($, on) => {
+    let release = () => {}
+    const w = world(on, { holdFirstStatus: new Promise<void>(r => { release = r }) })
+    // The first refresh reads the plan with no increment open, then stalls.
+    const slow = $.command.run({ command: 'plan-pane', args: '' } as never)
+    await w.clock.advance(0)
+    // Meanwhile increment 2 is authorized (the board's go chip, say), and a
+    // second refresh sees it and finishes first.
+    w.incs[1]!.status = 'authorized'
+    await $.command.run({ command: 'plan-pane', args: '' } as never)
+    expect(w.statuses.at(-1)).toBe('demo 1/3 · ● 2')
+    release()
+    await slow
+    expect(w.statuses.at(-1)).toBe('demo 1/3 · ● 2')
+    const ui = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
+    expect((await ui.find({ key: 'gate' }))?.text).toMatch(/gate open/)
+    await ui.unmount()
   })
 
   test('the status entry carries the plan and the cache clock', async ($, on) => {

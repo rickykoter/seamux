@@ -155,9 +155,16 @@ async function tick($: EngineInterface): Promise<void> {
   }
 }
 
+// Which refresh started last. Refreshes are not awaited by the timer and can
+// overlap (an engine run may take up to 20s); only the newest one applies
+// what it found, so an older run that finishes late cannot put back the
+// state from before a button press, nor clear a pin set since it started.
+let refreshes = 0
+
 // Runs `deep-plan status --json`, keeps what it found, and redraws the status
 // entry. Called by the timer, after every button, and after a refusal.
 async function refresh($: EngineInterface): Promise<SeamuxView> {
+  const mine = ++refreshes
   const me: Me = {
     cwd: await $.session.cwd(),
     session: await $.session.id(),
@@ -176,10 +183,13 @@ async function refresh($: EngineInterface): Promise<SeamuxView> {
     if (rows) {
       // A pin outlives its plan only until the plan is closed.
       const pin = await read($, pinned)
-      if (pin && !rows.some(r => r.slug === pin)) await update($, pinned, () => '')
+      if (pin && !rows.some(r => r.slug === pin) && mine === refreshes) await update($, pinned, () => '')
       next = { ...next, ...pick(rows, me, await read($, pinned)) }
     }
   }
+  // Overtaken: a newer refresh applies its own, fresher answer. The caller
+  // still gets this one's.
+  if (mine !== refreshes) return next
   await update($, view, () => next)
   // A refusal is moot once the gate lets this plan through (someone pressed go
   // on the board, or typed it).
