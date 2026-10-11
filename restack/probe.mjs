@@ -341,6 +341,25 @@ step("take-base drops your copy — and says so, and can be signed off");
   ok("and check passes afterwards", cli(r, "check", "--json", "--no-fetch").status === 0);
 }
 
+// ---------------------------------------------------------------- union
+step("union keeps both sides' lines and the file's own whitespace");
+{
+  const cfg = { base: "master", remote: "origin", checks: [],
+    artifacts: [{ name: "set", paths: ["lists/**"], resolve: "union", tier: "cheap" }] };
+  const r = newRepo("union", cfg);
+  write(r, "lists/set.txt", "  indented\nb\n\n"); commit(r, "set");
+  git(r, "checkout", "-q", "-b", "feat1");
+  write(r, "lists/set.txt", "  indented\nb\n\nfrom-branch\n"); commit(r, "feat1: add");
+  git(r, "checkout", "-q", "master");
+  write(r, "lists/set.txt", "  indented\nb\n\nfrom-master\n"); commit(r, "master: add");
+  git(r, "checkout", "-q", "feat1");
+  const run = cli(r, "run", "--json", "--no-fetch");
+  const s = read(r, "lists/set.txt");
+  ok("the union walk completes", run.status === 0, run.out + run.err);
+  ok("with both sides' lines", /from-branch/.test(s) && /from-master/.test(s), s);
+  ok("and the first line's indent intact", s.startsWith("  indented\nb\n\n"), JSON.stringify(s));
+}
+
 // ---------------------------------------------------------------- check --dry-run
 step("check --dry-run runs nothing, so it passes nothing");
 {

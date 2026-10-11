@@ -71,9 +71,11 @@ function takeSide(cwd, op, p, side) {
 // with ordering or a header (a Rails schema's version line, a lockfile's
 // resolution graph), which is why it is never a default.
 function unionMerge(cwd, op, p) {
+  // Read raw, not through git(): its trim would strip the first line's indent
+  // and the file's own trailing whitespace before the merge.
   const stage = n => {
-    const r = git(cwd, ["show", `:${n}:${p}`]);
-    return r.ok ? r.out + "\n" : null;
+    const r = spawnSync("git", ["show", `:${n}:${p}`], { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    return r.status === 0 ? r.stdout : null;
   };
   const ancestor = stage(1), ours = stage(sideStage(op, "base")), theirs = stage(sideStage(op, "branch"));
   if (ours === null || theirs === null)
