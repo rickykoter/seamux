@@ -423,6 +423,206 @@ if (live && Array.isArray(live.rows)) {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
+// ---- pricing overrides + unpriced usage, through a fake ccusage -------------
+// The fake records its argv and answers with output recorded from ccusage
+// 20.0.23 against a transcript fixture holding one model it cannot price
+// (claude-test-9-9): `missingPricing` on that breakdown, $0 for its tokens.
+// So nothing here needs ccusage, the network or this machine's transcripts.
+{
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), "pricing-probe-"));
+  const PRICING = join(HERE, "pricing.py");
+  const d = new Date();
+  const TODAY = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const sonnet = { modelName: "claude-sonnet-5-5", cost: 0.1145, inputTokens: 1000,
+    outputTokens: 1000, cacheCreationTokens: 1000, cacheReadTokens: 1000000 };
+  const unknown = { modelName: "claude-test-9-9", cost: 0, missingPricing: true,
+    inputTokens: 5000, outputTokens: 5000, cacheCreationTokens: 0, cacheReadTokens: 0 };
+  const row = (extra) => ({ totalCost: 0.1145, totalTokens: 1013000,
+    modelsUsed: ["claude-sonnet-5-5", "claude-test-9-9"], modelBreakdowns: [sonnet, unknown], ...extra });
+  const CWD = "/tmp/fx/ws", OTHER = "/tmp/fx/priced";
+  fs.writeFileSync(join(tmp, "daily.json"), JSON.stringify({
+    projects: {
+      "-tmp-fx-ws": [row({ date: TODAY, project: "-tmp-fx-ws" })],
+      "-tmp-fx-priced": [{ date: TODAY, totalCost: 2, modelBreakdowns: [{ ...sonnet, cost: 2 }] }],
+    },
+    totals: { totalCost: 2.1145, unpricedModels: ["claude-test-9-9"] },
+  }));
+  fs.writeFileSync(join(tmp, "monthly.json"), JSON.stringify({
+    monthly: [row({ period: TODAY.slice(0, 7) })],
+    totals: { totalCost: 0.1145, unpricedModels: ["claude-test-9-9"] },
+  }));
+  // The unified (all-agent) reports /usage reads: rows keyed by `period`.
+  fs.writeFileSync(join(tmp, "unified-daily.json"), JSON.stringify({
+    daily: [row({ period: TODAY, agent: "claude" })] }));
+  fs.writeFileSync(join(tmp, "weekly.json"), JSON.stringify({
+    weekly: [row({ period: TODAY, agent: "claude" })] }));
+  fs.writeFileSync(join(tmp, "blocks.json"), JSON.stringify({ blocks: [] }));
+  const bin = join(tmp, "bin"), log = join(tmp, "argv.log");
+  fs.mkdirSync(bin);
+  fs.writeFileSync(join(bin, "ccusage"),
+    `#!/bin/sh\necho "$*" >> "${log}"\ncase " $* " in\n` +
+    `  *" --instances "*) cat "${join(tmp, "daily.json")}" ;;\n` +
+    `  *" monthly "*) cat "${join(tmp, "monthly.json")}" ;;\n` +
+    `  *" weekly "*) cat "${join(tmp, "weekly.json")}" ;;\n` +
+    `  *" blocks "*) cat "${join(tmp, "blocks.json")}" ;;\n` +
+    `  *) cat "${join(tmp, "unified-daily.json")}" ;;\nesac\n`, { mode: 0o755 });
+  const local = join(tmp, "crew-local"), home = join(tmp, "home"), claudeDir = join(tmp, "claude");
+  fs.mkdirSync(local); fs.mkdirSync(home); fs.mkdirSync(claudeDir);
+  const env = { ...process.env, PATH: `${bin}:/usr/bin:/bin`, HOME: home, CREW_LOCAL: local,
+    CREW_COSTS_TTL: "0", CLAUDE_CONFIG_DIR: claudeDir, CREW_BILLING: "usage" };
+  const py = (args, opts = {}) => execFileSync("python3", args, { encoding: "utf8", env, ...opts });
+  const args = () => JSON.parse(py([PRICING, "--args"]));
+  const lastArgv = () => fs.readFileSync(log, "utf8").trim().split("\n").pop();
+
+  // No local file: only the shipped set. While that is empty (the normal
+  // state) there is no --config at all, so ccusage still discovers the user's
+  // own config exactly as it did before. Asked of the shipped file rather than
+  // assumed, so adding a real shipped entry does not break the probe.
+  const shipped = JSON.parse(fs.readFileSync(join(HERE, "..", "config", "ccusage-pricing.json"), "utf8"));
+  const shippedEmpty = !Object.keys(shipped.defaults?.pricingOverrides || {}).length;
+  const base = args();
+  checks.push([shippedEmpty ? "pricing: nothing to override means no --config"
+                            : "pricing: the shipped overrides alone give a --config",
+    shippedEmpty ? base.length === 0 : base[0] === "--config"]);
+  py([join(HERE, "costs.py"), CWD]);
+  checks.push(["pricing: ...and costs.py runs ccusage accordingly",
+    shippedEmpty ? !lastArgv().includes("--config") : lastArgv().includes(`--config ${base[1]}`)]);
+
+  // A local override: --config, pointing at a generated file holding only what
+  // ccusage accepts (a provenance key passes through crew's file, not ccusage's).
+  fs.writeFileSync(join(local, "ccusage-pricing.json"), JSON.stringify({ defaults: { pricingOverrides: {
+    "claude-test-9-9": { inputCostPerToken: 1e-6, source: "probe" } } } }));
+  // The user's own ccusage.json, which a bare --config would silently replace.
+  fs.writeFileSync(join(claudeDir, "ccusage.json"), JSON.stringify({ defaults: { timezone: "UTC",
+    pricingOverrides: { "claude-test-9-9": { outputCostPerToken: 5e-6, inputCostPerToken: 9 } } } }));
+  const a2 = args();
+  let gen = {};
+  try { gen = JSON.parse(fs.readFileSync(a2[1], "utf8")); } catch { /* checked below */ }
+  const ent = gen.defaults?.pricingOverrides?.["claude-test-9-9"] || {};
+  checks.push(["pricing: an override file means --config <generated file>",
+    a2[0] === "--config" && a2[1].startsWith(home)]);
+  checks.push(["pricing: crew's field wins over the user's for the same model",
+    ent.inputCostPerToken === 1e-6]);
+  checks.push(["pricing: ...and the user's config survives underneath it",
+    ent.outputCostPerToken === 5e-6 && gen.defaults?.timezone === "UTC"]);
+  checks.push(["pricing: provenance keys never reach ccusage", !("source" in ent)]);
+  py([join(HERE, "costs.py"), CWD]);
+  checks.push(["pricing: costs.py passes the same --config", lastArgv().includes(`--config ${a2[1]}`)]);
+  py([join(HERE, "..", "claude", "statusline.py")], { input: "{}" });
+  checks.push(["pricing: the status line passes it too", lastArgv().includes("--config")]);
+
+  // A broken local file degrades to what there was without it, never an error.
+  // The user's ccusage.json is moved aside first: with it present, the
+  // generated file's name would differ from `base` even for the same overrides.
+  fs.rmSync(join(claudeDir, "ccusage.json"));
+  const same = (x) => JSON.stringify(x) === JSON.stringify(base);
+  fs.writeFileSync(join(local, "ccusage-pricing.json"), "{ not json");
+  checks.push(["pricing: an unreadable local file is ignored, not an error", same(args())]);
+  // ...and so is a value ccusage would choke on (it drops the WHOLE config).
+  fs.writeFileSync(join(local, "ccusage-pricing.json"), JSON.stringify({ defaults: { pricingOverrides: {
+    "claude-test-9-9": { inputCostPerToken: "cheap" } } } }));
+  checks.push(["pricing: a non-numeric price is dropped, not passed on", same(args())]);
+  fs.rmSync(join(local, "ccusage-pricing.json"));
+
+  // Local entries win over shipped ones, per model and wholesale.
+  const shippedF = join(tmp, "shipped.json"), localF = join(tmp, "local.json");
+  fs.writeFileSync(shippedF, JSON.stringify({ defaults: { pricingOverrides: {
+    "m-a": { inputCostPerToken: 1e-6, outputCostPerToken: 5e-6 }, "m-b": { inputCostPerToken: 2e-6 } } } }));
+  fs.writeFileSync(localF, JSON.stringify({ defaults: { pricingOverrides: {
+    "m-a": { cacheReadInputTokenCost: 1e-7 } } } }));
+  const merged = JSON.parse(py([PRICING, "--merge", shippedF, localF]));
+  checks.push(["pricing: a local entry replaces the shipped one for its model",
+    JSON.stringify(merged["m-a"]) === JSON.stringify({ cacheReadInputTokenCost: 1e-7 })]);
+  checks.push(["pricing: ...and shipped entries for other models remain", merged["m-b"]?.inputCostPerToken === 2e-6]);
+  const mergedNoLocal = JSON.parse(py([PRICING, "--merge", shippedF, join(tmp, "absent.json")]));
+  checks.push(["pricing: a missing local file leaves the shipped set as is",
+    Object.keys(mergedNoLocal).sort().join() === "m-a,m-b"]);
+
+  // Doctor's comparison, pure: the override against upstream's cached entry.
+  const ovF = join(tmp, "ov.json"), upF = join(tmp, "up.json");
+  fs.writeFileSync(ovF, JSON.stringify({
+    "m-same": { cacheReadInputTokenCost: 1e-7 },
+    "m-diff": { cacheReadInputTokenCost: 2e-7 },
+    "m-gap": { inputCostPerToken: 1e-6 },
+  }));
+  fs.writeFileSync(upF, JSON.stringify({
+    "m-same": { cache_read_input_token_cost: 1e-7, input_cost_per_token: 2e-6 },
+    "m-diff": { cache_read_input_token_cost: 1e-7 },
+  }));
+  const cmp = JSON.parse(py([PRICING, "--compare", ovF, upF]));
+  const said = (lvl, re) => cmp.some(([l, m]) => l === lvl && re.test(m));
+  checks.push(["doctor: an override equal to upstream says remove it",
+    said("warn", /override for m-same now matches upstream — remove it/)]);
+  checks.push(["doctor: a differing override quotes both values",
+    said("note", /m-diff.*2e-07.*upstream 1e-07/)]);
+  checks.push(["doctor: no upstream entry means the override fills a gap",
+    said("warn", /m-gap: upstream has no entry — the override is filling a gap.*outputCostPerToken/)]);
+  const noCache = JSON.parse(py([PRICING, "--compare", ovF, "-"]));
+  checks.push(["doctor: no price cache skips with a note",
+    noCache.length === 1 && noCache[0][0] === "note" && /skipped/.test(noCache[0][1])]);
+  fs.writeFileSync(ovF, "{}");
+  checks.push(["doctor: no overrides says nothing about upstream",
+    JSON.parse(py([PRICING, "--compare", ovF, upF])).length === 0]);
+
+  // Unpriced usage, end to end: ccusage output -> costs.py -> board row render.
+  const cm = JSON.parse(py([join(HERE, "costs.py"), CWD, OTHER]));
+  checks.push(["unpriced: costs.py names the model ccusage could not price",
+    JSON.stringify(cm[CWD]?.unpricedToday) === '["claude-test-9-9"]' &&
+    JSON.stringify(cm[CWD]?.unpriced) === '["claude-test-9-9"]']);
+  checks.push(["unpriced: a fully priced workspace carries none",
+    cm[OTHER]?.today === 2 && cm[OTHER]?.unpricedToday?.length === 0]);
+  render({ rows: [
+    { id: "u", name: "unpriced", kind: "running", badge: "b", said: "", chips: [], frac: 0.5, meta: "",
+      cost: cm[CWD].today, cost_unpriced: cm[CWD].unpricedToday },
+    { id: "p", name: "priced", kind: "running", badge: "b", said: "", chips: [], frac: 0.5, meta: "",
+      cost: cm[OTHER].today, cost_unpriced: cm[OTHER].unpricedToday },
+    { id: "z", name: "only-unpriced", kind: "running", badge: "b", said: "", chips: [], frac: 0.5, meta: "",
+      cost: 0, cost_unpriced: ["claude-test-9-9"] },
+  ], quiet: "" });
+  const uout = els.rows.innerHTML;
+  checks.push(["unpriced: the row's dollars carry a + marker", uout.includes(">$0.11+<")]);
+  checks.push(["unpriced: ...and a title naming the model",
+    /class="cost"[^>]*title="[^"]*no price for claude-test-9-9[^"]*">\$0\.11\+</.test(uout)]);
+  checks.push(["unpriced: a priced row has no marker", uout.includes(">$2.00<")]);
+  checks.push(["unpriced: $0 of only-unpriced usage still shows, as a floor", uout.includes(">$0.00+<")]);
+
+  // The status line, on usage billing, where it shows dollars.
+  const sl = py(["-c", "import sys; sys.path.insert(0, sys.argv[1]); import statusline; print(statusline.month_line())",
+    join(HERE, "..", "claude")]);
+  checks.push(["unpriced: the status line's month figure carries a +", /\$0\.11\+ this month/.test(sl)]);
+
+  // /usage: every dollar figure in usage_data carries its own list, and all
+  // five of its ccusage calls (four reports plus costs.py) get the override.
+  // (The fake answers the same either way; it is the argv being checked.)
+  fs.writeFileSync(join(local, "ccusage-pricing.json"), JSON.stringify({ defaults: { pricingOverrides: {
+    "claude-test-9-9": { inputCostPerToken: 1e-6 } } } }));
+  fs.mkdirSync(join(home, ".cache", "cmux-crew"), { recursive: true });
+  fs.writeFileSync(join(home, ".cache", "cmux-crew", "board-targets.json"),
+    JSON.stringify({ w1: { cwd: CWD, name: "fx-ws" } }));
+  let ud = {};
+  try {
+    ud = JSON.parse(py(["-c", [
+      "import importlib.machinery, importlib.util, json, sys",
+      "ld = importlib.machinery.SourceFileLoader('cbi', sys.argv[1])",
+      "m = importlib.util.module_from_spec(importlib.util.spec_from_loader('cbi', ld)); ld.exec_module(m)",
+      "print(json.dumps(m.usage_data()))"].join("\n"), join(HERE, "crew-board-intent")]));
+  } catch (e) { console.log("  --   usage_data run failed: " + String(e.message).split("\n")[0]); }
+  const U = '["claude-test-9-9"]';
+  checks.push(["unpriced: /usage day, week and month each name the model",
+    JSON.stringify(ud.daily?.[0]?.unpriced) === U && JSON.stringify(ud.week?.unpriced) === U &&
+    JSON.stringify(ud.month?.unpriced) === U]);
+  checks.push(["unpriced: ...and so does the per-workspace card",
+    JSON.stringify(ud.costs?.[0]?.unpricedToday) === U]);
+  checks.push(["pricing: /usage passes the --config to every ccusage call", (() => {
+    const lines = fs.readFileSync(log, "utf8").trim().split("\n").slice(-5);
+    return ["blocks", "daily", "weekly", "monthly", "--instances"].every((c) =>
+      lines.some((l) => l.includes(c) && l.includes("--config")));
+  })()]);
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
 // ---- judgments.py: turn-end TypeSafe policy, pure, no network -------------
 // The policy the board actually applies: stuck>=threshold flags wilt, urgency
 // is the within-tier sort key, and anything missing or stale answers exactly
