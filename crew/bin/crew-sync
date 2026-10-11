@@ -31,6 +31,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -524,8 +525,14 @@ def sandbox_registry():
             if line.startswith("NAME="):
                 name = line[5:].strip()
             elif line.startswith("ROOT="):
-                # written with printf %q, so a plain path arrives bare
-                root = line[5:].strip().strip("'\"")
+                # Written with printf %q: a plain path arrives bare, one with a
+                # space as `my\ code`. Undo the shell quoting, not just quotes.
+                root = line[5:].strip()
+                try:
+                    parts = shlex.split(root)
+                    root = parts[0] if len(parts) == 1 else root
+                except ValueError:
+                    pass
         if name and root:
             roots[root] = name
     return roots

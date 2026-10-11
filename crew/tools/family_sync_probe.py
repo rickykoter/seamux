@@ -10,6 +10,7 @@ plus a bystander repo. What is asserted:
     color, gives each child a shade of it, and leaves the bystander alone;
   - Peacock follows where it already colors a worktree (api), and only there;
   - a crew-feed ask (feed:*) on the bystander survives the sync;
+  - the bystander's sandbox, registered under a path with a space, is found;
   - a second sync sets no color (it is idempotent);
   - after the parent closes, the next sync gives each child its color from
     before (api its teal, ui none) and drops the tokens;
@@ -66,12 +67,20 @@ with tempfile.TemporaryDirectory(prefix="family-sync-") as t:
         sys.exit("fixture failed:\n" + fx.stderr)
     env = dict(kv.split("=", 1) for kv in fx.stdout.split("\0") if "=" in kv)
     P, A, U = env["FIX_PARENT"], env["FIX_API"], env["FIX_UI"]
-    X = os.path.join(t, "bystander")
+    # A space in the bystander's path, registered as a sandbox the way
+    # crew-sandbox writes it (printf %q), so the registry has to be unquoted.
+    X = os.path.join(t, "by stander")
     os.makedirs(X)
     subprocess.run(["git", "init", "-q"], cwd=X, check=True)
+    reg = os.path.join(t, "cache", "cmux-crew", "sandbox", "roots")
+    os.makedirs(reg)
+    with open(os.path.join(reg, "bystander"), "w") as fh:
+        fh.write("NAME=crew-by-stander\n" + subprocess.run(
+            ["bash", "-c", 'printf "ROOT=%q\\n" "$0"', X], capture_output=True, text=True).stdout)
     os.makedirs(os.path.join(A, ".vscode"))
     json.dump({"peacock.color": "#006B6B"}, open(os.path.join(A, ".vscode", "settings.json"), "w"))
     env.update(FAKE_CMUX_DIR=t, CREW_CMUX=os.path.join(HERE, "fakecmux.py"),
+               CREW_SBX=os.path.join(t, "no-sbx"),
                XDG_CACHE_HOME=os.path.join(t, "cache"))
     mk = lambda i, cwd, color: {"id": i, "title": i, "current_directory": cwd, "custom_color": color,
                                 "description": "", "has_custom_title": True}
@@ -104,6 +113,8 @@ with tempfile.TemporaryDirectory(prefix="family-sync-") as t:
     check("crew-feed's ask survives the sync",
           {"feed:perm", "feedby:9999999999", "feedgate:allow"} <= set(w["ws-x"]["description"].split()),
           w["ws-x"]["description"])
+    check("a sandbox registered under a path with a space is found",
+          "sandbox:stopped" in w["ws-x"]["description"].split(), w["ws-x"]["description"])
     check("Peacock follows the shade where it already colored the worktree",
           peacock() == w["ws-api"]["custom_color"], peacock())
     check("Peacock is not created where it was not", not os.path.exists(os.path.join(U, ".vscode")))
