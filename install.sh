@@ -44,7 +44,9 @@ while [ $# -gt 0 ]; do
     --no-lookout) LOOKOUT=0; shift ;;
     --no-apply) APPLY=0; shift ;;
     --no-migrate) MIGRATE=0; shift ;;
-    --main-repo) MAIN="${2:-}"; shift 2 ;;
+    --main-repo)
+      case "${2:-}" in ""|-*) echo "install.sh: --main-repo needs a PATH (--help lists the options)" >&2; exit 2 ;; esac
+      MAIN="$2"; shift 2 ;;
     --with-jira) WITH_JIRA=1; shift ;;
     --with-jira=*) WITH_JIRA=1; JIRA_SITE="${1#--with-jira=}"; shift ;;
     --with-github-issues) WITH_GHI=1; shift ;;
