@@ -9,7 +9,8 @@
 # hold or it refuses:
 #
 #   * the path is a git worktree, and NOT the primary checkout
-#   * HEAD is an ancestor of origin/master, i.e. the work really did land
+#   * HEAD is an ancestor of the default branch (origin/HEAD, else origin/main
+#     or origin/master), i.e. the work really did land
 #   * the tree is clean and there are no unpushed commits
 #   * nothing live is standing in it — not this shell, not another workspace
 #   * no Docker sandbox is still running for it
@@ -84,6 +85,18 @@ common="$(git -C "$path" rev-parse --path-format=absolute --git-common-dir 2>/de
 gitdir="$(git -C "$path" rev-parse --path-format=absolute --git-dir 2>/dev/null)"
 branch="$(git -C "$top" branch --show-current 2>/dev/null)"
 
+# origin/HEAD names the default branch; not every repo has it set, and not every
+# repo is master. Same order as crew-worktree's default_base.
+default_base() {
+  local head
+  head="$(git -C "$top" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  if [ -n "$head" ]; then printf '%s\n' "$head"; return; fi
+  for b in origin/main origin/master; do
+    git -C "$top" show-ref --verify --quiet "refs/remotes/$b" && { printf '%s\n' "$b"; return; }
+  done
+  printf 'origin/master\n'
+}
+
 say "checking $top"
 if [ -n "$branch" ]; then
   say "fetching origin"
@@ -91,8 +104,9 @@ if [ -n "$branch" ]; then
 fi
 
 ahead=""
+base="$(default_base)"
 if [ -n "$branch" ]; then
-  ahead="$(git -C "$top" rev-list --count origin/master..HEAD 2>/dev/null)"
+  ahead="$(git -C "$top" rev-list --count "$base..HEAD" 2>/dev/null)"
 fi
 dirty_n="$(git -C "$top" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
 caller_top="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)"
@@ -299,9 +313,9 @@ if [ -z "$branch" ]; then
   fail "detached HEAD — resolve it by hand"
   skip "merge check skipped: no branch"
 elif [ "${ahead:-1}" = "0" ]; then
-  pass "merged: HEAD is an ancestor of origin/master"
+  pass "merged: HEAD is an ancestor of $base"
 else
-  fail "${ahead:-?} commit(s) not in origin/master — not merged"
+  fail "${ahead:-?} commit(s) not in $base — not merged"
 fi
 
 if [ "${dirty_n:-0}" = "0" ]; then
