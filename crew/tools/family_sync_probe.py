@@ -11,7 +11,8 @@ plus a bystander repo. What is asserted:
   - Peacock follows where it already colors a worktree (api), and only there;
   - a second sync sets no color (it is idempotent);
   - after the parent closes, the next sync gives each child its color from
-    before (api its teal, ui none) and drops the tokens.
+    before (api its teal, ui none) and drops the tokens;
+  - the machine's deep-plan engine pointer is not moved to this checkout.
 
     python3 crew/tools/family_sync_probe.py      exit 0 when all hold
 """
@@ -30,6 +31,28 @@ def check(name, cond, extra=""):
     results.append(cond)
     print(f"  {'ok  ' if cond else 'FAIL'} {name}" + (f"\n       {extra}" if extra and not cond else ""))
 
+
+# The fixture runs this checkout's engine, and every run refreshes the
+# machine-wide engine pointer to the copy that ran unless DEEP_PLAN_ENGINE_FILE
+# says otherwise. Run from a worktree, that repointed the machine's deep-plan
+# at it. The fixture keeps its pointer in its own dir; this holds it to that.
+# What is checked is the leak's own mark, the pointer newly naming this
+# checkout's engine: another session may rewrite the pointer to its own copy
+# meanwhile, and that is not this run's doing.
+POINTER = os.path.join(os.path.expanduser("~"), ".claude", "deep-plan", "engine.json")
+ENGINE = os.path.realpath(os.path.join(REPO, "deep-plan"))
+
+
+def pointer_root():
+    try:
+        with open(POINTER) as fh:
+            root = json.load(fh).get("root") or ""
+    except (OSError, ValueError, AttributeError):
+        return None
+    return os.path.realpath(root) if root else None
+
+
+root_before = pointer_root()
 
 with tempfile.TemporaryDirectory(prefix="family-sync-") as t:
     t = os.path.realpath(t)
@@ -89,6 +112,10 @@ with tempfile.TemporaryDirectory(prefix="family-sync-") as t:
           w["ws-api"]["custom_color"] == "#006B6B" and w["ws-ui"]["custom_color"] == "", json.dumps(w))
     check("…and Peacock its color from before", peacock() == "#006B6B", peacock())
     check("…and drops the family tokens", not any(toks(x) for x in w.values()))
+
+root_after = pointer_root()
+check("the machine's engine pointer is not moved to this checkout",
+      root_before == ENGINE or root_after != ENGINE, f"{POINTER} now names {root_after}, before {root_before}")
 
 bad = results.count(False)
 print(f"\nfamily sync probe: {len(results) - bad} passed, {bad} failed")

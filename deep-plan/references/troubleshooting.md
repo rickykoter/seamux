@@ -15,6 +15,8 @@ Symptoms keyed on the engine's real error strings.
 | plan row on the board but no `plan →` chip | intent server down: `crew listen on`, or open the board once |
 | `go`/`done` buttons dead on the plan page | port moved; the next `crew sync` push re-injects it |
 | `rehydrate` says REWRITTEN (differs) | someone hand-edited a surface; the spec is the artifact, the rewrite is the fix |
+| `no recorded start sha — give one: deep-plan review\|diff\|deliver … --base <sha>` | the increment was authorized before `go` recorded a start sha; pass the commit its work started from as `--base` (for `deliver`, increment 1's); it is recorded, so later runs need no flag |
+| `--base refused: a start sha is recorded` | the recorded sha is the base; drop `--base` |
 | `done refused: <id> pending` (or `fail`) | `deep-plan check list <slug> <n>`; `check run` for recipe-backed ones, `check pass\|fail … <id> "<what you saw>"` for the rest |
 | `done refused: <id> stale` | the tree changed after the pass (an edit, a new file): run it again — a commit of what passed never stales it |
 | `done refused: <id> needs-variant` | its acquire step is the human's: ask them to run what `check status` prints, then `check run <slug> <n> <id> --from wait` |

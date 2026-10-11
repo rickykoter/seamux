@@ -3,7 +3,10 @@
 //
 // Also the one side effect the gate is allowed: the first permitted edit
 // inside an authorized increment flips it to "working", so the board shows
-// motion without anyone running `deep-plan start` by hand.
+// motion without anyone running `deep-plan start` by hand. The flip is
+// status-only: `go` already recorded the increment's start sha, because the
+// gate never sees a write its Bash heuristic misses and so cannot be the
+// one place a base comes from.
 import fs from "node:fs";
 import { decideToolCall, readState, writeState, log1, brokenRoots } from "../lib/state.mjs";
 import { trespass, waitingOn, waitText } from "../lib/family.mjs";

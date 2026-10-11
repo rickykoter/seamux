@@ -114,7 +114,11 @@ check and what it runs.
   `review.agentMayClose` and `review.quiz`) and ends with `review: spawn a reviewer —
   lookout prompt <slug>-inc<n>`: then spawn one fresh reviewer subagent
   whose prompt is that command's output, and run the check again
-  (`deep-plan review <slug> <n>` opens it by hand). Fix what it finds and `lookout
+  (`deep-plan review <slug> <n>` opens it by hand). Its base is the start
+  sha `go` recorded; an increment authorized before go recorded one has
+  none, and `review`, `diff` and `deliver` then take `--base <sha>`, which
+  is recorded as that start sha, so the check run after it needs no flag
+  (refused beside a recorded sha). Fix what it finds and `lookout
   address` each finding; the human resolves or dismisses on the page, and
   only then does the check pass. Never pass it by hand, and never close
   findings yourself unless the plan set `review.agentMayClose`. Like any

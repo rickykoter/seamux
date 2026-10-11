@@ -348,14 +348,51 @@ function spawnHint(slug, n, pol = {}) {
     (pol.quiz ? "\n(this plan quizzes: the reviewer writes a question for each high-risk group)" : "");
 }
 
+// The increment whose start sha a review or diff is based on: the increment
+// itself, or (inc "all") the plan's first. Never a later one standing in for a
+// first that has none: a delivery review based there silently drops the
+// earlier increments' work.
+const baseInc = (st, inc) => inc === "all" ? (st.increments || [])[0] : inc;
+const recordedSha = (st, inc) => (baseInc(st, inc) || {}).startSha || "";
+
+// The base a review or diff opens at: the recorded start sha, else the --base
+// given for a plan that has none (an increment authorized before go recorded
+// one). A --base is recorded as that start sha, logged, so the check run and
+// the deliver re-run that follow open the same review. A recorded sha always
+// wins, and --base beside one is refused rather than ignored, so the flag
+// cannot quietly move a base. Dies on a refusal.
+function baseFor(st, inc, base) {
+  const rec = recordedSha(st, inc);
+  const bi = baseInc(st, inc);
+  const what = inc === "all" ? `${st.slug}'s first increment` : `increment ${inc.n}`;
+  if (rec && base) die(`${what} has a recorded start sha (${rec.slice(0, 8)}), which is its base; drop --base\n` +
+    `--base refused: a start sha is recorded`);
+  if (!base) return rec;
+  const r = spawnSync("git", ["-C", st.root, "rev-parse", "--verify", "--quiet", `${base}^{commit}`], { encoding: "utf8" });
+  if (r.status !== 0) die(`--base ${base} is not a commit in ${st.root}`);
+  const sha = r.stdout.trim();
+  if (bi) {
+    const fresh = readState(st.slug);         // re-read: never clobber a newer write
+    const fi = findInc(fresh, bi.n);
+    fi.startSha = bi.startSha = sha;
+    log1(fresh, `--base: increment ${bi.n}'s start sha recorded as ${sha.slice(0, 8)}`);
+    writeState(fresh);
+  }
+  return sha;
+}
+
+// The refusal for a review or diff with no base, naming the flag that gives one.
+const noBase = (verb, slug, n) => `no recorded start sha — give one: deep-plan ${verb} ${slug}` +
+  (verb === "deliver" ? "" : ` ${n || "<n>"}`) + " --base <sha>";
+
 // Open (or refresh) a review in lookout with the plan's policy: an
 // increment's work since its start sha, or (inc "all") the whole plan's since
-// the first increment's. { ok, out, agent, quiz } — never throws.
-function openReview(st, inc) {
+// the first increment's; `base` stands in when none is recorded (baseFor has
+// vetted it). { ok, out, agent, quiz } — never throws.
+function openReview(st, inc, base = "") {
   const all = inc === "all";
-  const sha = all ? ((st.increments || []).find(i => i.startSha) || {}).startSha : inc && inc.startSha;
-  if (!sha) return { ok: false, out: "no recorded start sha — an increment's first edit records one, " +
-    `or \`deep-plan start ${st.slug} ${all || !inc ? "<n>" : inc.n}\`` };
+  const sha = recordedSha(st, inc) || base;
+  if (!sha) return { ok: false, out: noBase(all ? "deliver" : "review", st.slug, all || !inc ? "" : inc.n) };
   const pol = reviewPolicy(st.slug);
   const r = runLookout(["open", "--plan", st.slug, "--inc", all ? "all" : String(inc.n), "--base", sha, "--at", st.root,
     ...pol.flags], { cwd: st.root });
@@ -2183,6 +2220,12 @@ function repend(inc, ids, why) {
   return moved;
 }
 
+// HEAD of the plan root, or "" outside git: an increment's base.
+function headSha(root) {
+  const sha = spawnSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" });
+  return sha.status === 0 ? sha.stdout.trim() : "";
+}
+
 function transition(action, slug, n, why, force = false) {
   const st = readState(slug) || die("no plan " + slug);
   if (action === "go") {
@@ -2215,6 +2258,14 @@ function transition(action, slug, n, why, force = false) {
       die(`${slug} waits on its family's parent: ${waitText(waits)}.\n` +
         `  override, logged:  deep-plan go ${slug} ${n} --force\n` +
         `go refused: waits on ${waits.map(w => `${w.parent} increment ${w.n}`).join(", ")}`);
+    // The increment's base is HEAD at authorization, recorded here rather than
+    // at the first edit: the gate sees only Edit/Write and the Bash writes its
+    // heuristic catches, so an increment built by a script or a `cp` was never
+    // marked working and closed with no base, no patch and no review. A
+    // blocked increment's re-go keeps the sha its first go recorded; a pending
+    // one is always re-stamped, so a sha left by an older engine's reset
+    // (which did not clear it) cannot become a stale base.
+    if (inc.status === "pending" || !inc.startSha) inc.startSha = headSha(st.root);
     inc.status = "authorized"; inc.authorizedAt = Date.now(); inc.note = "";
     log1(st, `go: increment ${n} (${inc.title}) authorized` +
       (waits.length ? ` (--force past the family wait: ${waitText(waits)})` : "") +
@@ -2223,8 +2274,8 @@ function transition(action, slug, n, why, force = false) {
     const inc = findInc(st, n);
     if (inc.status !== "authorized") die(`increment ${n} is ${inc.status}, not authorized`);
     inc.status = "working"; inc.startedAt = Date.now();
-    const sha = spawnSync("git", ["-C", st.root, "rev-parse", "HEAD"], { encoding: "utf8" });
-    inc.startSha = sha.status === 0 ? sha.stdout.trim() : "";
+    // go records the base; this stamps only an increment authorized before it did.
+    if (!inc.startSha) inc.startSha = headSha(st.root);
     log1(st, `start: increment ${n}`);
   } else if (action === "done") {
     const inc = findInc(st, n);
@@ -2261,6 +2312,7 @@ function transition(action, slug, n, why, force = false) {
   } else if (action === "reset") {
     const inc = findInc(st, n);
     inc.status = "pending"; inc.note = "";
+    inc.startSha = "";                      // redone work gets a fresh base at its next go
     // Reset means the work is being redone, so a verdict recorded against the
     // PREVIOUS attempt no longer proves anything — leaving it would let the
     // gate pass on stale evidence, silently, which is the failure this whole
@@ -2455,18 +2507,19 @@ function openWorkingSurface(st) {
 // split landed somewhere unrelated or not at all. The patch file is the durable
 // part and it still gets written; `deep-plan diff <slug> [n]` opens it, which
 // is the point at which someone has actually asked to look.
-function incrementDiff(st, inc, { open = false } = {}) {
-  if (!inc.startSha || !st.root) return;
+function incrementDiff(st, inc, { open = false, base = "" } = {}) {
+  const sha = inc.startSha || base;
+  if (!sha || !st.root) return;
   try {
     execSync("git add -AN", { cwd: st.root });
-    const patch = execSync(`git diff ${inc.startSha}`, { cwd: st.root, maxBuffer: 64e6 }).toString();
+    const patch = execSync(`git diff ${sha}`, { cwd: st.root, maxBuffer: 64e6 }).toString();
     if (!patch.trim()) return;
     const p = path.join(PLANS_DIR, `${st.slug}.inc${inc.n}.patch`);
     fs.writeFileSync(p, patch);
-    const how = `  view: git -C ${st.root} diff ${inc.startSha.slice(0, 8)}` +
+    const how = `  view: git -C ${st.root} diff ${sha.slice(0, 8)}` +
       `\n  or:   deep-plan diff ${st.slug} ${inc.n}`;
     if (!open) { say(`patch: ${p}\n${how}`); return; }
-    const title = `${st.slug} · increment ${inc.n} since ${inc.startSha.slice(0, 8)}`;
+    const title = `${st.slug} · increment ${inc.n} since ${sha.slice(0, 8)}`;
     const r = spawnSync("cmux", ["diff", "--title", title, p], { stdio: "ignore" });
     if (r.error || r.status !== 0) say(`patch: ${p}\n${how}`);
   } catch { /* the patch is a courtesy, never a failure */ }
@@ -3159,6 +3212,7 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--log") flags.log = rest[++i];
   else if (rest[i] === "--token") flags.token = rest[++i];
   else if (rest[i] === "--timeout") flags.timeout = Number(rest[++i]);
+  else if (rest[i] === "--base") flags.base = rest[++i] || die("--base needs a sha");
   else args.push(rest[i]);
 }
 
@@ -3292,17 +3346,19 @@ switch (cmd) {
     const pol = reviewPolicy(st.slug);
     const inc = args[1] ? findInc(st, args[1])
       : (st.increments || []).filter(i => i.startSha).pop();
-    if (!inc || !inc.startSha) die("no started increment with a recorded sha");
+    if (!inc) die(noBase("diff", st.slug, ""));
+    const base = baseFor(st, inc, flags.base);
+    if (!base) die(noBase("diff", st.slug, inc.n));
     // lookout's page when it is installed (risk-sorted, highlighted, the same
     // review the increment's review check reads); cmux diff otherwise.
     // The same review the check reads, so it is opened with the plan's
     // policy too: lookout fixes it when the review is created, and a diff
     // viewed first must not create it without the quiz or the close rule.
-    const r = runLookout(["open", "--plan", st.slug, "--inc", String(inc.n), "--base", inc.startSha,
+    const r = runLookout(["open", "--plan", st.slug, "--inc", String(inc.n), "--base", base,
       "--at", st.root, "--view-only", ...pol.flags], { cwd: st.root });
     if (r.ok) { say(r.out); break; }
     if (!r.missing) say(`lookout could not open it (${r.out.split("\n").pop()}); falling back to cmux diff`);
-    incrementDiff(st, inc, { open: true }); break;
+    incrementDiff(st, inc, { open: true, base }); break;
   }
   case "deliver": {
     // The closing step a plan with review.delivery takes after its last
@@ -3316,10 +3372,11 @@ switch (cmd) {
       die(st.phase === "implementing" || st.phase === "review"
         ? `${slug} is not delivered yet: every increment must be done first (phase: ${st.phase})`
         : `${slug} is ${st.phase}`);
+    const base = baseFor(st, "all", flags.base);
     const g = runLookout(["gate", "--plan", slug, "--inc", "all"], { cwd: st.root });
     if (g.missing) die(LOOKOUT_MISSING);
     if (g.code === 3) {
-      const r = openReview(st, "all");
+      const r = openReview(st, "all", base);
       if (!r.ok) die(r.out || "lookout open failed");
       say(r.out + "\n\n" + spawnHint(slug, "all", r));
       say(spawnLine(slug, "all"));
@@ -3339,9 +3396,10 @@ switch (cmd) {
     const st = readState(args[0]) || die("review <slug> [n]");
     const inc = args[1] ? findInc(st, args[1])
       : (st.increments || []).filter(i => i.startSha).pop();
-    if (!inc || !inc.startSha) die("no started increment with a recorded sha — its first edit records one, " +
-      `or \`deep-plan start ${st.slug} ${args[1] || "<n>"}\``);
-    const r = openReview(st, inc);
+    if (!inc) die(noBase("review", st.slug, ""));
+    const base = baseFor(st, inc, flags.base);
+    if (!base) die(noBase("review", st.slug, inc.n));
+    const r = openReview(st, inc, base);
     if (!r.ok) die(r.out || "lookout open failed");
     say(r.out);
     say("\n" + spawnHint(st.slug, inc.n, r));
@@ -3394,12 +3452,14 @@ switch (cmd) {
   obs check|pass|fail|reset <slug> <n> ...    the same, on the observability
                                               checks only (the older verb)
   open-gate|shut-gate <slug>                  the human lever, logged
-  diff <slug> [n]                             open the increment's diff: lookout's page when
+  diff <slug> [n] [--base <sha>]              open the increment's diff: lookout's page when
                                               installed, else cmux diff on the patch done writes
-  review <slug> [n]                           open the increment's lookout review (the plan's
+  review <slug> [n] [--base <sha>]            open the increment's lookout review (the plan's
                                               review.agentMayClose applies); a review check gates on it
-  deliver <slug>                              after the last increment of a plan with review.delivery:
+  deliver <slug> [--base <sha>]               after the last increment of a plan with review.delivery:
                                               open, then pass, the full delivery's lookout review
+                                              (--base: only where no start sha is recorded;
+                                              it is recorded as the start sha)
   close <slug>                                retire a finished plan
   ask <ask.json>                              render a question with diagrams/examples
                                               (served at /ask/<id>; a pick on the page

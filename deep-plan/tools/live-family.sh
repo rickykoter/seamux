@@ -27,7 +27,8 @@ fail=0
 # wrappers below carry the fixture's env.
 session() {
   env -u DEEP_PLAN_STATE_DIR -u DEEP_PLAN_KEYS_DIR -u DEEP_PLAN_PLANS_DIR -u DEEP_PLAN_VENDOR_DIR \
-      -u DEEP_PLAN_SKILL_DIR -u DEEP_PLAN_ENGINE claude -p --model "$MODEL" "$@"
+      -u DEEP_PLAN_SKILL_DIR -u DEEP_PLAN_ENGINE -u DEEP_PLAN_ENGINE_FILE -u DEEP_PLAN_BIN_DIR \
+      claude -p --model "$MODEL" "$@"
 }
 check() {  # check <name> <0|1 result> [what to show on failure]
   if [ "$2" = 0 ]; then echo "  ok   $1"; else echo "  FAIL $1"; [ -n "${3:-}" ] && printf '       %s\n' "$3"; fail=1; fi

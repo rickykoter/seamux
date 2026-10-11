@@ -10,7 +10,7 @@ For whoever changes this next. Built 2026-09-12 on this machine, from
 | `deep_plan.mjs` | 1488 | CLI: render/rehydrate/grade/status/transitions/diff; validate() enforces the contracts block, grade() enforces contract quiz coverage + cuts the approved snapshot; DP_EDITOR_JS carries dpMd + the ADR editor |
 | `lib/state.mjs` | 160 | state IO + THE decision function (`decideToolCall`) — one definition of "may I edit", shared by CLI and gate |
 | `hooks/gate.sh` | 13 | PreToolUse fast path: glob test, exec node only when state files exist |
-| `hooks/decide.mjs` | 43 | slow half: parse payload, decide, exit 2; flips authorized→working on first edit; the family guard's note on an allowed edit |
+| `hooks/decide.mjs` | 43 | slow half: parse payload, decide, exit 2; flips authorized→working on first edit (status only: `go` records the start sha); the family guard's note on an allowed edit |
 | `lib/family.mjs` | — | families: repo identity from `.git`, the index, claims, the guard (`trespass`), sequencing (`waitingOn`), news (`gatherNews`), the status field (`familyRow`) |
 | `hooks/news.sh`, `hooks/news.mjs` | — | UserPromptSubmit + SessionStart: family news as `additionalContext`; a bash glob keeps sessions outside a family off node |
 | `probe.mjs` | 563 | throwaway everything, `-v` walks it; prints its own count |
@@ -65,7 +65,10 @@ place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_D
 - `engine.json` is `{root, version, mermaid?}`, written by every run and by the
   SessionStart hook, only when it changes. JSON.stringify's two-space form is
   part of the contract: the shim reads `"root"` with sed. The old
-  `~/.claude/skills` copy never writes it.
+  `~/.claude/skills` copy never writes it. So any tool that runs an engine
+  copy (a worktree's, a fixture's) sets `DEEP_PLAN_ENGINE_FILE` (and
+  `DEEP_PLAN_BIN_DIR`) to a temp path, as probe.mjs and family-fixture.sh do;
+  left at the default, it repoints the machine's deep-plan at that copy.
 - The gate's refusal opens `deep-plan gate [<slug>]: ` (decide.mjs). The
   seamux-mods band finds refusals by that opening in the tool result; the probe
   asserts it. `status --json` rows carry `increments` (`n`, `title`, `status`,
