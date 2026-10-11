@@ -410,9 +410,9 @@ export function mayEdit(target) {
 
 // Mutating-Bash heuristic. False negatives are acceptable; false positives are
 // not — blocking `grep` makes the whole thing intolerable within an hour.
+const REDIRECT = /(^|[^>])>>?\s*[^&|;\s]/;  // redirect into a file (not >&2)
 const MUTATORS = [
   /\bsed\s+(-[a-zA-Z]*\s+)*-i\b/,          // sed -i, sed -E -i
-  /(^|[^>])>>?\s*[^&|;\s]/,                // redirect into a file (not >&2)
   /<<-?\s*['"]?\w+/,                        // heredoc
   /\btee\s+(?!-a\s*$)/,
   /\brm\s+/, /\bmv\s+/, /\bcp\s+/,
@@ -427,14 +427,43 @@ const SAFE = [
   /^\s*(grep|rg|ag|find|ls|cat|head|tail|wc|git\s+(status|log|diff|show|branch|blame)|which|file|stat|du|df)\b[^><;&|]*$/,
 ];
 
+// Redirecting a stream to /dev/null (or fd-to-fd, 2>&1) writes nothing.
+// Un-scrubbed, `lsof 2>/dev/null` reads as "redirect into a file" and the
+// gate blocked four read-only commands in one session on exactly this.
+const scrub = cmd => cmd.replace(/\d*>>?\s*\/dev\/null/g, " ").replace(/\d+>&\d+/g, " ");
+
+// The command with each quoted string's contents blanked, length kept, so
+// `rg "=>" src` and `jq ".a > 1" f.json` read as the arguments they are. A
+// double-quoted string that runs a command (`$(`, a backtick) is kept as
+// written. Null when a quote never closes, or for $'…' (its \' would fool
+// this scan): the caller then reads the command as written.
+export function blankQuotes(cmd) {
+  if (cmd.includes("$'")) return null;
+  let out = "", q = null, start = 0;
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (q === null) {
+      if (c === "\\") { out += cmd.slice(i, i + 2); i++; }
+      else if (c === "'" || c === '"') { q = c; start = i; }
+      else out += c;
+      continue;
+    }
+    if (q === '"' && c === "\\") { i++; continue; }
+    if (c !== q) continue;
+    const body = cmd.slice(start + 1, i);
+    out += q + (q === '"' && /\$\(|`/.test(body) ? body : " ".repeat(body.length)) + q;
+    q = null;
+  }
+  return q === null ? out : null;
+}
+
 export function bashMutates(cmd) {
   if (!cmd) return false;
-  if (SAFE.some(re => re.test(cmd))) return false;
-  // Redirecting a stream to /dev/null (or fd-to-fd, 2>&1) writes nothing.
-  // Un-scrubbed, `lsof 2>/dev/null` reads as "redirect into a file" and the
-  // gate blocked four read-only commands in one session on exactly this.
-  const scrubbed = cmd.replace(/\d*>>?\s*\/dev\/null/g, " ").replace(/\d+>&\d+/g, " ");
-  return MUTATORS.some(re => re.test(scrubbed));
+  // Quotes matter only to the reader test and the redirect: every other
+  // mutator still reads the command as written (`bash -c "rm -rf x"`).
+  const bare = blankQuotes(cmd) ?? cmd;
+  if (SAFE.some(re => re.test(bare))) return false;
+  return REDIRECT.test(scrub(bare)) || MUTATORS.some(re => re.test(scrub(cmd)));
 }
 
 // Where a bash command "lands": its cwd. We gate bash by cwd, not by parsing

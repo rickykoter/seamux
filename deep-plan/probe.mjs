@@ -865,6 +865,7 @@ ok("review phase: the denial names the plan and the lever",
   /example-outbox-retry/.test(edit(path.join(REPO, "a.txt")).stderr));
 ok("path outside the root allowed", edit(path.join(TMP, "elsewhere.txt")).status === 0);
 ok("grep allowed", bash("grep -r foo .").status === 0);
+ok("a search for a quoted > allowed", bash('rg "=>" src').status === 0);
 ok("git status allowed", bash("git status").status === 0);
 ok("test run allowed", bash("npm test").status === 0);
 ok("sed -i denied", bash("sed -i '' s/a/b/ file.rb").status === 2);
@@ -1017,6 +1018,18 @@ ok("a real file redirect still mutates", lib.bashMutates("echo hi > out.txt"));
 ok("a heredoc still mutates", lib.bashMutates("cat <<EOF > f\nx\nEOF"));
 ok("scrubbing cannot hide a real mutator",
   lib.bashMutates("sed -i s/a/b/ f 2>/dev/null"));
+// A `>` inside quotes is a pattern, not a redirect: searching for arrow
+// functions was blocked until a go.
+ok("a quoted > is not a redirect (rg, jq)",
+  !lib.bashMutates('rg "=>" src') && !lib.bashMutates("jq '.a > 1' f.json") &&
+  !lib.bashMutates('grep -n "a; rm -rf b" f'));
+ok("…but a redirect after the quotes still mutates",
+  lib.bashMutates('rg "=>" src > hits.txt') && lib.bashMutates('echo "x" >"out"'));
+ok("a quoted command still mutates, and a substitution is not blanked",
+  lib.bashMutates('bash -c "rm -rf x"') && lib.bashMutates('echo "$(date)" > f') &&
+  lib.bashMutates('cat "$(echo x > f)"'));
+ok("an escaped quote opens nothing; an unclosed one reads as written",
+  lib.bashMutates('cat \\"; rm -rf x; echo \\"') && lib.bashMutates("echo it's > f"));
 
 // -------------------------------------------------- broken root: fail open, loudly
 const GONE = path.join(TMP, "gone-root");
