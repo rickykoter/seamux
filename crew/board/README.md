@@ -352,15 +352,18 @@ against a fixture transcript; the fourth is its config schema:
   one.
 - The override fields have one long-context tier, at **200K** tokens
   (`…Above200kTokens`). A model whose price steps at a different threshold,
-  such as Haiku 5.5 at 100K, cannot be expressed as an override. That tier has
-  to come from upstream.
+  such as Haiku 5.5 at 100K, cannot be expressed as an override. LiteLLM does
+  list that tier (`…_above_100k_tokens`), but ccusage 20.0.23 does not apply it:
+  a fixture with one 150K-token Haiku 5.5 request priced at $0.021, the base
+  rate, where the published tier makes it $0.083. Long Haiku 5.5 prompts read
+  low until ccusage handles the 100K step; the fix is ccusage's, not crew's.
 
 Every ccusage call crew makes passes the same `--config`: `costs.py` (the board
 rows and the per-workspace card), `/usage`'s reports, and the status line.
 
 | model | field | override | upstream at time of adding | source | why |
 |---|---|---|---|---|---|
-| *example:* `claude-example-9` | `cacheReadInputTokenCost` | `1e-7` | `5e-8` | Anthropic pricing, 2026-10-11 | *example row, not a live override:* upstream had half the published rate; LiteLLM PR pending |
+| *example:* `claude-example-9` | `cacheReadInputTokenCost` | `1e-7` | `5e-8` | Anthropic pricing, 2026-10-11 | *example row, not a live override:* upstream had half the published rate |
 
 There are no live overrides. A row goes in with its upstream value at the time,
 and comes out when doctor says upstream matches.
