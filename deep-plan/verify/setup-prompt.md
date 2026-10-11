@@ -12,7 +12,7 @@ Replace nothing; the prompt asks for what it needs.
 
 ```
 Set up verification recipes for this repo, for deep-plan (`deep-plan` with
-no arguments lists the verbs; its SKILL.md explains the checks gate). The
+no arguments lists the verbs; its references/checks.md explains the checks gate). The
 deliverable is a reviewed
 .seamux/verify.json for each project that needs one, plus a short report —
 not a committed file, and nothing pushed.
