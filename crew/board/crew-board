@@ -747,6 +747,7 @@ def rank(wss, plan_by_root, screens=False):
                 "said": "", "chips": qchips, "frac": frac,
                 "meta": " · ".join(qmeta),
                 "cost": (cost_map.get(w["cwd"]) or {}).get("today") or 0,
+                "cost_unpriced": (cost_map.get(w["cwd"]) or {}).get("unpricedToday") or [],
                 **issue_fields(w),
                 "branch": "" if w["branch"] in ("", "none") else w["branch"],
                 "dirty": bool(w.get("dirty")),
@@ -783,6 +784,9 @@ def rank(wss, plan_by_root, screens=False):
                      # explicit property, so the extra field is invisible to it.
                      "urgency": _judg.urgency_for(w, jmap) if _judg else 0.0,
                      "cost": (cost_map.get(w["cwd"]) or {}).get("today") or 0,
+                     # Models whose tokens ccusage could not price: the dollars
+                     # beside them are a floor, and the row says so.
+                     "cost_unpriced": (cost_map.get(w["cwd"]) or {}).get("unpricedToday") or [],
                      **issue_fields(w),
                      "branch": "" if w["branch"] in ("", "none") else w["branch"],
                      "dirty": bool(w.get("dirty")),
@@ -881,7 +885,8 @@ def rank_plans_only(plan_by_root):
         r.setdefault("pr_url", "")
         for k, v in (("branch", ""), ("dirty", False), ("pr", ""), ("pr_state", ""),
                      ("color", ""), ("signals", []), ("feedby", 0), ("feedgate", ""),
-                     ("selected", False), ("cost", 0), ("issue", ""), ("issue_url", ""),
+                     ("selected", False), ("cost", 0), ("cost_unpriced", []),
+                     ("issue", ""), ("issue_url", ""),
                      ("subject", ""), ("commits", [])):
             r.setdefault(k, v)
     order = {"attend": 0, "wilt": 1, "running": 2, "done": 3}

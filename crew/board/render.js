@@ -220,11 +220,20 @@ function __boardRender(d) {
     }
     // Today's spend, when known and non-zero. Dim under a dollar: the point
     // is spotting the row that is quietly burning, not pricing every row.
-    if (typeof a.cost === "number" && a.cost > 0) {
-      var amt = a.cost >= 100 ? Math.round(a.cost) : a.cost.toFixed(2);
-      out += '<span class="cost' + (a.cost < 1 ? " small" : "") +
-        '" title="Claude spend in this worktree today (ccusage, ~5min cache)">$' +
-        amt + "</span>";
+    // A model ccusage could not price counts as $0, so its tokens make the
+    // figure a floor: it gets a "+" and a title naming the model, and shows
+    // even at $0 -- a row burning only an unpriced model is not a quiet row.
+    var unpriced = Array.isArray(a.cost_unpriced) ? a.cost_unpriced : [];
+    var cost = typeof a.cost === "number" ? a.cost : 0;
+    if (cost > 0 || unpriced.length) {
+      var amt = cost >= 100 ? Math.round(cost) : cost.toFixed(2);
+      var tip = "Claude spend in this worktree today (ccusage, ~5min cache)";
+      if (unpriced.length) {
+        tip += ". At least this much: ccusage has no price for " +
+          unpriced.join(", ") + ", so its tokens count as $0";
+      }
+      out += '<span class="cost' + (cost < 1 && !unpriced.length ? " small" : "") +
+        '" title="' + esc(tip) + '">$' + amt + (unpriced.length ? "+" : "") + "</span>";
     }
     return out ? '<div class="facts">' + out + "</div>" : "";
   }

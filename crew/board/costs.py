@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """Per-workspace dollars from ccusage, cached.
 
-    costs_for(cwds) -> {cwd: {"today": float, "week": float}}
+    costs_for(cwds) -> {cwd: {"today": float, "week": float,
+                              "unpriced": [model], "unpricedToday": [model]}}
 
 Source: `ccusage claude daily --instances --json`, whose output is already
 grouped by munged project directory and date — no session bookkeeping here.
 Attribution reverse-matches each munged dir against the KNOWN workspace cwds:
 the munging (every non-alphanumeric to "-") is lossy, so a dir name is never
 parsed back into a path, only compared against candidates we already hold.
+
+`unpriced` names the models ccusage reported tokens for but could not price
+(`missingPricing` on a model breakdown, which the JSON always carries). Their
+tokens count as $0 in the dollars, so the dollars are a floor, and every
+surface showing them says so with a `+` rather than a silently low figure.
 
 Prices are ccusage's, with crew's published-price overrides when there are
 any (pricing.py): the same `--config` every other ccusage call here gets.
@@ -49,7 +55,8 @@ def attribute(projects: dict, cwds, today: str = "") -> dict:
         cwd = by_munged.get(dirname)
         if not cwd:
             continue
-        tot = out.setdefault(cwd, {"today": 0.0, "week": 0.0})
+        tot = out.setdefault(cwd, {"today": 0.0, "week": 0.0,
+                                   "unpriced": [], "unpricedToday": []})
         for r in rows or []:
             try:
                 cost = float(r.get("totalCost") or 0)
@@ -58,6 +65,22 @@ def attribute(projects: dict, cwds, today: str = "") -> dict:
             tot["week"] += cost
             if r.get("date") == today:
                 tot["today"] += cost
+            for m in unpriced(r):
+                if m not in tot["unpriced"]:
+                    tot["unpriced"].append(m)
+                if r.get("date") == today and m not in tot["unpricedToday"]:
+                    tot["unpricedToday"].append(m)
+    return out
+
+
+def unpriced(row) -> list:
+    """Models in one ccusage row whose tokens it could not price."""
+    out = []
+    for b in (row or {}).get("modelBreakdowns") or []:
+        if isinstance(b, dict) and b.get("missingPricing"):
+            name = b.get("modelName") or "?"
+            if name not in out:
+                out.append(name)
     return out
 
 

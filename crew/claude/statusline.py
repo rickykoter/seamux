@@ -296,17 +296,22 @@ def month_line():
 
     spent = cur.get("totalCost") or 0
     budget = _month_budget()
+    # A model ccusage could not price counts as $0, so the figure is a floor:
+    # "+" says so in one character. The status line has no room for the name;
+    # /usage and the board carry it.
+    floor = "+" if any(isinstance(b, dict) and b.get("missingPricing")
+                       for b in cur.get("modelBreakdowns") or []) else ""
 
     days_in = calendar.monthrange(now.year, now.month)[1]
     elapsed = now.day
     projected = spent / elapsed * days_in if elapsed else 0
 
     if budget > 0:
-        bits = [f"💰 {_fmt_usd(spent)} of {_fmt_usd(budget)} ({spent / budget * 100:.0f}%)"]
+        bits = [f"💰 {_fmt_usd(spent)}{floor} of {_fmt_usd(budget)} ({spent / budget * 100:.0f}%)"]
     else:
         # No budget set is a legitimate way to run: show the figure, and do not
         # invent a denominator the way the window line does.
-        bits = [f"💰 {_fmt_usd(spent)} this month"]
+        bits = [f"💰 {_fmt_usd(spent)}{floor} this month"]
     if elapsed > 1 and projected > spent:
         arrow = "↗" if not budget or projected > budget else "→"
         bits.append(f"{arrow} {_fmt_usd(projected)} by {now.strftime('%b')} {days_in}")
