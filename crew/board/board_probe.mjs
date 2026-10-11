@@ -132,6 +132,13 @@ render({ rows: [{ id: "x", name: "<img src=x onerror=1>", kind: "attend",
 const esc = els.rows.innerHTML;
 checks.push(["agent text escaped, not executed",
   !esc.includes("<img") && !esc.includes("<script>") && esc.includes("&lt;img")]);
+// Names land in double-quoted attributes too (title=, data-id=), and git allows a quote
+// in a branch name: it must not close the attribute and open a handler.
+render({ rows: [{ id: 'q"', name: 'x" onmouseover="alert(1)', kind: "attend", badge: "b",
+  said: "", chips: [], frac: 0.5, meta: "m" }], quiet: "" });
+const escq = els.rows.innerHTML;
+checks.push(["a quote cannot break out of an attribute",
+  !escq.includes('" onmouseover=') && escq.includes("x&quot; onmouseover=")]);
 
 // The page must have no script of its own: that dependency is what broke.
 const pageHtml = readFileSync(join(HERE, "board.html"), "utf8");
