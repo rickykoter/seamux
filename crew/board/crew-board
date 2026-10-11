@@ -1018,8 +1018,21 @@ def surface_alive(sid):
     return ok
 
 
+def tree_url_is(line, marker):
+    """Does this `cmux tree` surface line show a URL whose path ends in `marker`?
+
+    The URL is the line's last token. Matched on a "/" boundary and not as a
+    substring: "board.html" in the line also matched dashboard.html, and a tab's
+    title, which tidy would then have closed as a duplicate board.
+    """
+    tok = line.rsplit(None, 1)[-1] if line.strip() else ""
+    if "://" not in tok:
+        return False
+    return re.split(r"[?#]", tok, 1)[0].endswith("/" + marker.lstrip("/"))
+
+
 def adopt_surface(marker, record_file):
-    """Find a live surface whose tree line carries `marker`; record it as ours.
+    """Find a live surface whose tree line shows `marker`; record it as ours.
 
     The web Dock (dock.json browser controls) seeds the board and /usage pages
     at app start, before any crew command runs — the surface exists but no state
@@ -1033,7 +1046,7 @@ def adopt_surface(marker, record_file):
     uuid_re = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
                          r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
     for line in out.splitlines():
-        if marker not in line:
+        if not tree_url_is(line, marker):
             continue
         m = uuid_re.search(line)
         if m:
@@ -1520,7 +1533,7 @@ def cmd_tidy():
     uuid_re = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
     found, closed = [], 0
     for line in out.splitlines():
-        if "board.html" not in line:
+        if not tree_url_is(line, "board.html"):
             continue
         for u in uuid_re.findall(line):
             u = u.upper()

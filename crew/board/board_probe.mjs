@@ -615,6 +615,25 @@ print(json.dumps([[r["id"], r["kind"], r.get("famtier", "")] for r in m.rank_pla
     /<div class="famhd">family · G<\/div><div class="row quiet[^"]* fam kid"[^>]*data-id="g1"/.test(html)]);
 }
 
+// ---- tidy/adopt: a board surface is the one whose URL is board.html ---------
+// Not a substring of the tree line: tidy closes every match but the recorded one.
+{
+  const tm = JSON.parse(execFileSync("python3", ["-c", `
+import importlib.machinery, importlib.util, json, sys
+l = importlib.machinery.SourceFileLoader("cb", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("cb", l)); l.exec_module(m)
+U = "E80C26CC-48A8-4BB1-A439-65887FA2F457"
+L = lambda t, u: '├── surface surface:1 %s [browser] "%s" %s' % (U, t, u)
+print(json.dumps([m.tree_url_is(L("crew · who needs you", "file:///h/.config/cmux/crew/board/board.html"), "board.html"),
+  m.tree_url_is(L("x", "file:///x/dashboard.html"), "board.html"),
+  m.tree_url_is(L("notes on board.html", "https://example.com/a"), "board.html"),
+  m.tree_url_is(L("usage", "http://127.0.0.1:7345/usage"), "/usage"),
+  m.tree_url_is(L("x", "http://127.0.0.1:7345/plan/usage-dash"), "/usage")]))
+`, join(HERE, "crew-board")], { encoding: "utf8" }));
+  checks.push(["tidy/adopt: board.html and /usage match by URL, not dashboard.html or a title",
+    JSON.stringify(tm) === JSON.stringify([true, false, false, true, false])]);
+}
+
 // ---- crew-color: a family's shades, and the colors from before ------------
 {
   const fs = await import("node:fs");
