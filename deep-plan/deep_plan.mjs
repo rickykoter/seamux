@@ -2528,9 +2528,21 @@ function openWorkingSurface(st) {
 function incrementDiff(st, inc, { open = false, base = "" } = {}) {
   const sha = inc.startSha || base;
   if (!sha || !st.root) return;
+  // `add -AN` (so untracked files show) runs on a scratch copy of the index:
+  // on the real one it left intent-to-add entries for `git commit -a` to sweep
+  // up. The copy keeps the index's mtime, or git trusts racily-clean entries.
+  const tmp = path.join(os.tmpdir(), `deep-plan-diff-${process.pid}-${Date.now()}`);
+  const env = { ...process.env, GIT_INDEX_FILE: tmp };
   try {
-    execSync("git add -AN", { cwd: st.root });
-    const patch = execSync(`git diff ${sha}`, { cwd: st.root, maxBuffer: 64e6 }).toString();
+    const index = execSync("git rev-parse --path-format=absolute --git-path index",
+      { cwd: st.root }).toString().trim();
+    if (fs.existsSync(index)) {
+      fs.copyFileSync(index, tmp);
+      const s = fs.statSync(index);
+      fs.utimesSync(tmp, s.atime, s.mtime);
+    }
+    execSync("git add -AN", { cwd: st.root, env });
+    const patch = execSync(`git diff ${sha}`, { cwd: st.root, env, maxBuffer: 64e6 }).toString();
     if (!patch.trim()) return;
     const p = path.join(PLANS_DIR, `${st.slug}.inc${inc.n}.patch`);
     fs.writeFileSync(p, patch);
@@ -2541,6 +2553,7 @@ function incrementDiff(st, inc, { open = false, base = "" } = {}) {
     const r = spawnSync("cmux", ["diff", "--title", title, p], { stdio: "ignore" });
     if (r.error || r.status !== 0) say(`patch: ${p}\n${how}`);
   } catch { /* the patch is a courtesy, never a failure */ }
+  finally { for (const f of [tmp, tmp + ".lock"]) fs.rmSync(f, { force: true }); }
 }
 
 // ---------------------------------------------------------------- status

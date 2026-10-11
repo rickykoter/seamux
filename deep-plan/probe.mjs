@@ -2446,6 +2446,10 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   const patch = path.join(ENV.DEEP_PLAN_PLANS_DIR, "diff-plan.inc1.patch");
   ok("done still writes the increment patch", doneOut.status === 0 && fs.existsSync(patch) &&
     fs.readFileSync(patch, "utf8").includes("worked.txt"));
+  // The untracked file reaches the patch through a scratch index; the real one
+  // used to keep it as intent-to-add, for the next `git commit -a` to commit.
+  ok("…and leaves the untracked file out of the user's index",
+    execSync("git ls-files -- worked.txt", { cwd: REPO, encoding: "utf8" }).trim() === "");
   ok("done does NOT open cmux diff", calls().length === 0);
   ok("…and says where the patch is instead",
     doneOut.stdout.includes(patch) && /deep-plan diff diff-plan 1/.test(doneOut.stdout));
