@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+import socketserver
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -39,8 +40,16 @@ class Mock(BaseHTTPRequestHandler):
         pass
 
 
+class LocalServer(HTTPServer):
+    # HTTPServer.server_bind does a reverse-DNS lookup (socket.getfqdn) of the
+    # bind address that never returns on GitHub's macOS runners; skip it.
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 def serve():
-    srv = HTTPServer(("127.0.0.1", 0), Mock)
+    srv = LocalServer(("127.0.0.1", 0), Mock)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv, "http://127.0.0.1:%d" % srv.server_address[1]
 

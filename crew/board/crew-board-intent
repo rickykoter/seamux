@@ -45,6 +45,7 @@ import re
 import secrets
 import shutil
 import socket
+import socketserver
 import subprocess
 import sys
 import threading
@@ -1211,6 +1212,22 @@ def free_port():
     return port
 
 
+class LocalServer(http.server.ThreadingHTTPServer):
+    """ThreadingHTTPServer without the reverse-DNS lookup in server_bind.
+
+    HTTPServer.server_bind calls socket.getfqdn() on the bind address only to
+    fill server_name, which nothing here reads. On a host whose resolver
+    stalls on 127.0.0.1 -- GitHub's macOS runners, found by the board probe's
+    faulthandler dump -- that call never returns, and the server hangs before
+    it listens or writes its port file.
+    """
+    allow_reuse_address = True
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 def serve(background=False):
     """Start the server. Returns (port, token). Idempotent-ish: a live server on
     the recorded port is left alone and its token reused."""
@@ -1234,8 +1251,7 @@ def serve(background=False):
     token = token or secrets.token_urlsafe(24)
     port = free_port()
     Handler.token = token
-    http.server.ThreadingHTTPServer.allow_reuse_address = True
-    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    httpd = LocalServer(("127.0.0.1", port), Handler)
 
     # Write the token first and tightly. The port file is public knowledge; the
     # token is the actual credential.
