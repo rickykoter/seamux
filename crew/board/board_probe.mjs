@@ -766,6 +766,10 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
   const HOME = fs.mkdtempSync(join(os.tmpdir(), "board-probe-intent-"));
   const reviews = join(HOME, ".claude", "plans", "reviews");
   fs.mkdirSync(reviews, { recursive: true });
+  // A token file left world-readable: the server must discard it and tighten the file.
+  fs.mkdirSync(join(HOME, ".cache", "cmux-crew"), { recursive: true });
+  fs.writeFileSync(join(HOME, ".cache", "cmux-crew", "board-intent.token"), "loose", { mode: 0o644 });
+  fs.chmodSync(join(HOME, ".cache", "cmux-crew", "board-intent.token"), 0o644);
   const review = {
     id: "demo", title: "demo", updatedAt: "2026-01-01T00:00:00.000Z",
     files: [{ path: "a.js" }],
@@ -845,6 +849,8 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
       }
       throw new Error("the intent server never answered; the review route checks are skipped\n" + why());
     }
+    checks.push(["intent token: a loose token file is replaced and made 0600",
+      token !== "loose" && (fs.statSync(tokenFile).mode & 0o777) === 0o600]);
     const page = await req("GET", "/review/demo");
     checks.push(["review route: the page is served with its token script before </body>",
       page.status === 200 && page.body.includes(`window.lookout.serve({ token: "${token}", id: "demo" })`) &&

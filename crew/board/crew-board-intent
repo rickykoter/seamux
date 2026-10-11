@@ -1259,8 +1259,10 @@ def serve(background=False):
     httpd = LocalServer(("127.0.0.1", port), Handler)
 
     # Write the token first and tightly. The port file is public knowledge; the
-    # token is the actual credential.
+    # token is the actual credential. The open mode applies only on create, so a
+    # file left loose (the case that discarded the old token) is tightened here.
     fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w") as fh:
         fh.write(token)
     with open(PORT_FILE, "w") as fh:
