@@ -1498,9 +1498,18 @@ def usage_data(days=21):
     if not exe:
         return {"error": "ccusage is not installed — npm i -g ccusage"}
 
+    # crew's published-price overrides, when there are any (pricing.py); [] --
+    # ccusage's own prices, exactly as before -- otherwise or on any failure.
+    try:
+        sys.path.insert(0, HERE)
+        import pricing as _pricing
+        cfg = _pricing.config_args()
+    except Exception:
+        cfg = []
+
     def ask(args):
         try:
-            p = subprocess.run([exe] + args + ["--json"], capture_output=True,
+            p = subprocess.run([exe] + args + cfg + ["--json"], capture_output=True,
                                text=True, timeout=45)
             return json.loads(p.stdout) if p.returncode == 0 and p.stdout.strip() else None
         except Exception:

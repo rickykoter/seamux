@@ -153,6 +153,25 @@ def _fmt_tokens(n):
     return str(n)
 
 
+def _pricing_args():
+    """crew's published-price overrides for ccusage (board/pricing.py), or [].
+
+    Found beside this file in the crew tree (this runs from
+    ~/.config/cmux/crew/claude/), else at the live install -- the same two
+    places cachefacts.py is looked for. Any failure is [], which is ccusage's
+    own prices: exactly the line this printed before overrides existed.
+    """
+    here = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "board")
+    if not os.path.isfile(os.path.join(here, "pricing.py")):
+        here = os.path.join(os.path.expanduser("~"), ".config", "cmux", "crew", "board")
+    try:
+        sys.path.insert(0, here)
+        import pricing
+        return pricing.config_args()
+    except Exception:
+        return []
+
+
 def window_line(payload):
     """The 5h window as a share of its budget. Short reason when it cannot.
 
@@ -163,7 +182,7 @@ def window_line(payload):
     if not exe:
         return "ccusage not installed — npm i -g ccusage"
     try:
-        p = subprocess.run([exe, "blocks", "--json"], capture_output=True,
+        p = subprocess.run([exe, "blocks", "--json"] + _pricing_args(), capture_output=True,
                            text=True, timeout=10)
         blocks = json.loads(p.stdout).get("blocks") or []
     except Exception as exc:
@@ -263,7 +282,7 @@ def month_line():
     if not exe:
         return "ccusage not installed — npm i -g ccusage"
     try:
-        p = subprocess.run([exe, "monthly", "--json"], capture_output=True,
+        p = subprocess.run([exe, "monthly", "--json"] + _pricing_args(), capture_output=True,
                            text=True, timeout=15)
         rows = json.loads(p.stdout).get("monthly") or []
     except Exception as exc:
