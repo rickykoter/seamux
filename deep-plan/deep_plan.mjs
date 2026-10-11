@@ -1733,6 +1733,15 @@ async function render(specPath, opts) {
   } else if (badDiagrams.length) {
     console.error(`deep-plan: --force past ${badDiagrams.length} broken diagram(s) — logged`);
   }
+  // ADR destinations resolve once, here, and live in state: surfaces and
+  // drafts re-render from the stored resolution (rehydrate stays
+  // byte-identical); apply re-checks the numbering against the repo. The
+  // drafts are filled before anything is written: a house template that is
+  // not there refuses the render, not half of it.
+  const adrs = planAdrs(spec, planRoot);
+  let adrDrafts;
+  try { adrDrafts = adrs.map(a => adrDraftText(spec, planRoot, a)); }
+  catch (e) { die("spec refused — adr: " + e.message); }
   fs.mkdirSync(PLANS_DIR, { recursive: true });
   fs.mkdirSync(KEYS_DIR, { recursive: true });
 
@@ -1755,16 +1764,12 @@ async function render(specPath, opts) {
   fs.writeFileSync(path.join(KEYS_DIR, spec.slug + ".spec.json"), JSON.stringify(spec, null, 2) + "\n");
   fs.writeFileSync(path.join(KEYS_DIR, spec.slug + ".key.json"), JSON.stringify(key, null, 2) + "\n");
 
-  // ADR destinations resolve once, here, and live in state: surfaces and
-  // drafts re-render from the stored resolution (rehydrate stays
-  // byte-identical); apply re-checks the numbering against the repo.
-  const adrs = planAdrs(spec, planRoot);
   const b64 = mermaidB64();
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".md"), mdPlan(spec, adrs));
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".review.html"), reviewHtml(spec, b64, adrs));
   const extras = writeSpecArtifacts(spec, b64);
-  adrs.forEach(a => fs.writeFileSync(
-    path.join(PLANS_DIR, `${spec.slug}.adr${a.n}.md`), adrDraftText(spec, planRoot, a)));
+  adrs.forEach((a, i) => fs.writeFileSync(
+    path.join(PLANS_DIR, `${spec.slug}.adr${a.n}.md`), adrDrafts[i]));
 
   // State: an existing root outranks an inferred one; only --root overwrites.
   let st = readState(spec.slug);

@@ -462,6 +462,15 @@ ok("mermaid theme follows the page theme",
       .adrs[0].dir === "notes/decisions");
   cli("close", "custom-tpl-plan");
   fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "custom-tpl-plan.json"), { force: true });
+  // A house template that is not there refuses the render by name, before any
+  // write. It used to throw ENOENT after the surfaces and before the state.
+  fs.writeFileSync(path.join(REPO3, ".seamux", "adr.json"), JSON.stringify({ template: "docs/typo.md" }));
+  const tr = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "render", tmpSpec({ ...cSpec, slug: "typo-tpl-plan" })],
+    { encoding: "utf8", env: ENV, cwd: REPO3 });
+  ok("a missing house template refuses the render by name, before any write",
+    tr.status === 1 && /template file missing: docs\/typo\.md/.test(tr.stderr) && !/ENOENT/.test(tr.stderr) &&
+    !fs.existsSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "typo-tpl-plan.md")) &&
+    !fs.existsSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "typo-tpl-plan.key.json")));
 }
 
 // -------------------------------------------------- re-render --root resolves against the new root
