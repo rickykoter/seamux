@@ -379,10 +379,12 @@ cmd_apply() {
 
   # 3. put the commands on PATH. ~/.local/bin is already there, so this needs
   #    no shell-config edit. crew-code-open is deliberately excluded: cmux
-  #    invokes it by absolute path, nobody types it.
+  #    invokes it by absolute path, nobody types it. crew-cmux-bin is nobody's
+  #    to type either, but every command looks for it beside the path it was
+  #    run by, and run from here that is $LOCALBIN, not bin/.
   if [ -d "$LOCALBIN" ] || mkdir -p "$LOCALBIN" 2>/dev/null; then
     local linked=0
-    for f in crew crew-color crew-diff crew-code crew-digest crew-feed crew-reclaim crew-resume crew-sandbox crew-spec crew-sync crew-worktree crew-watch crew-listen; do
+    for f in crew crew-color crew-diff crew-code crew-digest crew-feed crew-reclaim crew-resume crew-sandbox crew-spec crew-sync crew-worktree crew-watch crew-listen crew-cmux-bin; do
       ln -sf "$CREW_HOME/bin/$f" "$LOCALBIN/$f" && linked=$((linked + 1))
     done
     # The board lives in board/, not bin/: it is a surface with an HTML shell beside it.
@@ -634,7 +636,7 @@ cmd_uninstall() {
 
   # Only remove links that actually point back into the package.
   local unlinked=0
-  for f in crew crew-color crew-diff crew-code crew-digest crew-feed crew-reclaim crew-resume crew-sandbox crew-spec crew-sync crew-worktree crew-watch crew-listen; do
+  for f in crew crew-color crew-diff crew-code crew-digest crew-feed crew-reclaim crew-resume crew-sandbox crew-spec crew-sync crew-worktree crew-watch crew-listen crew-cmux-bin; do
     if [ -L "$LOCALBIN/$f" ] && [ "$(readlink "$LOCALBIN/$f")" = "$CREW_HOME/bin/$f" ]; then
       rm -f "$LOCALBIN/$f"; unlinked=$((unlinked + 1))
     fi
