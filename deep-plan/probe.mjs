@@ -2994,7 +2994,79 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     ok("once the human closed it, deliver completes the plan", d.status === 0 && /delivered rv-d — plan complete/.test(d.stdout) &&
       stOf("rv-d").phase === "done", d.stdout + d.stderr);
   }
-  for (const n of ["rv-1", "rv-2", "rv-q", "rv-pick", "rv-all", "rv-none", "rv-d"]) lc(LENV, "close", n);
+  // --base: a plan whose increments were authorized before go recorded a
+  // start sha has none, and review, diff and deliver refused it with nothing
+  // to do about it. They take a base then, recorded as the start sha so what
+  // follows opens the same review; a recorded sha always wins.
+  {
+    const unsha = (n, only) => { const st = stOf(n); for (const i of st.increments) if (!only || i.n === only) i.startSha = "";
+      fs.writeFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), JSON.stringify(st)); };
+    const base = execSync("git rev-parse HEAD", { cwd: RV, encoding: "utf8" }).trim();
+    arm("rv-b", [{ kind: "review" }]);
+    unsha("rv-b");
+    fs.writeFileSync(path.join(RV, "src", "a.ts"), "export const a = 6;\n");
+    lc(LENV, "check", "run", "rv-b", "1", "review-code-review");
+    ok("a review check with no start sha says to give one with --base",
+      /deep-plan review rv-b 1 --base <sha>/.test(ck("rv-b", "review-code-review").note), ck("rv-b", "review-code-review").note);
+    for (const verb of ["review", "diff"]) {
+      r = lc(LENV, verb, "rv-b", "1");
+      ok(`${verb} with no start sha is refused, naming --base`,
+        r.status === 1 && r.stderr.includes(`deep-plan ${verb} rv-b 1 --base <sha>`), r.stderr);
+    }
+    r = lc(LENV, "review", "rv-b");
+    ok("review of a plan with no start sha at all names the increment and --base",
+      r.status === 1 && r.stderr.includes("deep-plan review rv-b <n> --base <sha>"), r.stderr);
+    r = lc(LENV, "review", "rv-b", "1", "--base", "not-a-commit");
+    ok("--base that is not a commit is refused", r.status === 1 && /is not a commit/.test(r.stderr), r.stderr);
+    r = lc(LENV, "review", "rv-b", "1", "--base", base.slice(0, 10));
+    const bv = JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-b-inc1.json"), "utf8"));
+    ok("review --base opens the review at that base",
+      r.status === 0 && bv.source.base === base && bv.files.some(f => f.path === "src/a.ts"), r.stdout + r.stderr);
+    ok("…and records it as the increment's start sha, logged",
+      stOf("rv-b").increments[0].startSha === base && (stOf("rv-b").log || []).some(l => /--base: increment 1's start sha recorded/.test(JSON.stringify(l))));
+    lc(LENV, "check", "run", "rv-b", "1", "review-code-review");
+    ok("so the check run that follows reopens that review, not a refusal",
+      /spawn ONE fresh reviewer subagent/.test(ck("rv-b", "review-code-review").note), ck("rv-b", "review-code-review").note);
+    r = lc(LENV, "review", "rv-b", "1", "--base", base);
+    ok("a second --base is refused once one is recorded", r.status === 1 && /--base refused/.test(r.stderr), r.stderr);
+    unsha("rv-b");
+    r = lc(LENV, "diff", "rv-b", "1", "--base", base);
+    ok("diff --base opens the increment at that base", r.status === 0 && /lookout rv-b-inc1/.test(r.stdout), r.stdout + r.stderr);
+    for (const verb of ["review", "diff"]) {
+      r = lc(LENV, verb, "rv-2", "1", "--base", base);
+      ok(`${verb} --base beside a recorded start sha is refused`,
+        r.status === 1 && /--base refused: a start sha is recorded/.test(r.stderr), r.stderr);
+    }
+
+    const s = mk("rv-bd", [{ kind: "manual", name: "looked" }], { review: { delivery: true } });
+    s.deliverables = [s.deliverables[0], { ...s.deliverables[0], title: "Retry metrics", body: "Count the retries." }];
+    lc(LENV, "render", tmpSpec(s), "--root", RV);
+    const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "rv-bd.key.json"), "utf8"));
+    lc(LENV, "grade", "rv-bd", ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+    for (const n of ["1", "2"]) {
+      lc(LENV, "go", "rv-bd", n);
+      lc(LENV, "check", "pass", "rv-bd", n, "manual-looked", "a is 6");
+      lc(LENV, "done", "rv-bd", n);
+    }
+    r = lc(LENV, "deliver", "rv-bd", "--base", base);
+    ok("deliver --base beside a recorded start sha is refused",
+      stOf("rv-bd").phase === "delivery" && r.status === 1 && /--base refused/.test(r.stderr) &&
+      !fs.existsSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-bd-delivery.json")), r.stderr);
+    // Only the first increment lacks one: a later increment's sha must not
+    // stand in, or the delivery review silently drops the first one's work.
+    unsha("rv-bd", 1);
+    r = lc(LENV, "deliver", "rv-bd");
+    ok("deliver whose first increment has no start sha is refused, naming --base",
+      r.status === 1 && r.stderr.includes("deep-plan deliver rv-bd --base <sha>") && !!stOf("rv-bd").increments[1].startSha, r.stderr);
+    r = lc(LENV, "deliver", "rv-bd", "--base", base);
+    const dv = JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-bd-delivery.json"), "utf8"));
+    ok("deliver --base opens the full delivery's review at that base",
+      r.status === 1 && dv.source.base === base && dv.source.inc === "all" && /lookout prompt rv-bd-delivery/.test(r.stdout), r.stdout + r.stderr);
+    r = lc(LENV, "deliver", "rv-bd");
+    ok("…and the deliver re-run its hint names needs no --base",
+      r.status === 1 && /lookout prompt rv-bd-delivery/.test(r.stdout) && !/no recorded start sha/.test(r.stderr), r.stdout + r.stderr);
+  }
+  for (const n of ["rv-1", "rv-2", "rv-q", "rv-pick", "rv-all", "rv-none", "rv-d", "rv-b", "rv-bd"]) lc(LENV, "close", n);
 }
 
 // -------------------------------------------------- hot-path cost
