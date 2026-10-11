@@ -490,6 +490,14 @@ step("--branch on a branch mid-stack lifts it off its parent, never the base");
   addDef(r, "c", "charlie\n", "master: c");
   git(r, "checkout", "-q", "feat2");
   const feat2Tip = git(r, "rev-parse", "feat2").out;
+  const feat1Tip = git(r, "rev-parse", "feat1").out;
+
+  const dry = cli(r, "run", "--dry-run", "--branch", "feat1", "--no-fetch");
+  ok("a dry run prints the rebase it would run", dry.status === 0 && /dry run: git rebase --onto master/.test(dry.out), dry.out + dry.err);
+  ok("and changes nothing: HEAD, refs, run state",
+    git(r, "symbolic-ref", "--short", "HEAD").out === "feat2" && git(r, "rev-parse", "feat1").out === feat1Tip
+      && !fs.existsSync(path.join(r, ".git", "seamux-restack.json")),
+    git(r, "symbolic-ref", "--short", "HEAD").out);
 
   // Its parent has not moved, so feat2 already sits where it belongs.
   const alone = cli(r, "run", "--branch", "feat2", "--json", "--no-fetch");

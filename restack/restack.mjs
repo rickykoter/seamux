@@ -431,7 +431,7 @@ function cmdRun(ctx) {
   ctx.st = { ...S.fresh(), stale: ctx.st.stale || [], phase: "walking",
              startedAt: new Date().toISOString(), base: { ref: base.ref, sha: base.sha },
              driver: stack.driver, steps, index: 0, returnTo: ctx.branch };
-  S.write(ctx.gitDirPath, ctx.st);
+  if (!OPTS.dryRun) S.write(ctx.gitDirPath, ctx.st);
 
   if (stack.driver === "gt") return walkGraphite(ctx);
   return walkGit(ctx);
@@ -459,11 +459,15 @@ function walkGit(ctx) {
       step.newTip = revParse(ctx.cwd, step.branch);
       continue;
     }
+    // Before the checkout: a dry run leaves HEAD where it found it.
+    if (OPTS.dryRun) {
+      say(`  dry run: git rebase --onto ${step.onto} ${String(step.upstream).slice(0, 12)} ${step.branch}`);
+      step.status = "dry-run"; continue;
+    }
     const co = git(ctx.cwd, ["checkout", "--quiet", step.branch]);
     if (!co.ok) { step.status = "error"; step.why = co.err; break; }
 
     say(`  rebasing ${step.branch} onto ${step.onto}`);
-    if (OPTS.dryRun) { step.status = "dry-run"; continue; }
     // `--exec` implies `--empty=keep`; `drop` keeps today's handling of a
     // commit that becomes empty.
     step.collide = replayArtifacts(ctx, step.upstream, step.branch, onto);
@@ -656,7 +660,7 @@ function finish(ctx) {
   // the run abortable.
   const broken = st.steps.filter(s => s.status === "error");
   st.phase = broken.length ? "error" : "done"; st.finishedAt = new Date().toISOString();
-  S.write(ctx.gitDirPath, st);
+  if (!OPTS.dryRun) S.write(ctx.gitDirPath, st);
   if (st.returnTo && currentBranch(ctx.cwd) !== st.returnTo && !OPTS.dryRun)
     git(ctx.cwd, ["checkout", "--quiet", st.returnTo]);
 
