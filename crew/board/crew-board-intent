@@ -31,7 +31,9 @@ including its "ask before deleting anything" gate on reclaim.
 Security. Bound to 127.0.0.1 only, so nothing off-box can reach it. That is not
 sufficient on its own: any page in any browser can issue a cross-origin GET to
 localhost, so a request must also carry the token from board-intent.token (mode
-0600, regenerated per server start). Actions are a fixed allowlist, row ids are
+0600, regenerated per server start). The Host header must name this server
+(127.0.0.1 or localhost, on its own port), so a DNS-rebound page cannot read
+the token out of a served page. Actions are a fixed allowlist, row ids are
 looked up in a snapshot the collector writes rather than taken from the URL, and
 no argument is ever passed through a shell.
 """
@@ -967,7 +969,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         return self.wfile.write(body)
 
+    def _host_ok(self):
+        """Refuse any Host but this server's own loopback name and port. DNS
+        rebinding points attacker.example at 127.0.0.1, which makes its page
+        same-origin with this server; the served pages embed the token, so that
+        page could read one. The Host header still names attacker.example."""
+        port = self.server.server_address[1]
+        if self.headers.get("Host") in ("127.0.0.1:%d" % port, "localhost:%d" % port):
+            return True
+        log("DENY host %r" % self.headers.get("Host"))
+        self._json(403, {"error": "unknown host"})
+        return False
+
     def do_POST(self):
+        if not self._host_ok():
+            return
         u = urllib.parse.urlparse(self.path)
         if not u.path.startswith("/review/"):
             return self._json(404, {"error": "no such path"})
@@ -1051,6 +1067,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self.wfile.write(body)
 
     def do_GET(self):
+        if not self._host_ok():
+            return
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query)
         one = lambda k: (q.get(k) or [""])[0]

@@ -862,6 +862,12 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
       !("access-control-allow-origin" in withTok.headers)]);
     checks.push(["review route: an id that is not a slug is not a file",
       (await req("GET", "/review/..%2Fdemo")).status === 404 && (await req("GET", "/review/nope")).status === 404]);
+    // DNS rebinding: the page is reached at 127.0.0.1, but the browser names the attacker's host.
+    const rebound = await req("GET", "/review/demo", { headers: { Host: `evil.example:${port}` } });
+    const localhost = await req("GET", "/health", { headers: { Host: `localhost:${port}` } });
+    checks.push(["intent server: a foreign Host is refused, localhost on its port is not",
+      rebound.status === 403 && !rebound.body.includes(token) && localhost.status === 200 &&
+      (await req("GET", "/health", { headers: { Host: "127.0.0.1:1" } })).status === 403]);
 
     const ok = { op: "comment", t: token, file: "a.js", line: 1, side: "new", text: "why?" };
     checks.push(["review POST: no Origin is refused", (await post(ok, { origin: "" })).status === 403]);
