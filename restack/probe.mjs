@@ -341,6 +341,24 @@ step("take-base drops your copy — and says so, and can be signed off");
   ok("and check passes afterwards", cli(r, "check", "--json", "--no-fetch").status === 0);
 }
 
+// ---------------------------------------------------------------- check --dry-run
+step("check --dry-run runs nothing, so it passes nothing");
+{
+  const cfg = { ...cheapCfg, checks: [{ name: "breaking", run: "exit 1", tier: "cheap" }] };
+  const r = newRepo("checkdry", cfg);
+  // The checked-in file is stale: a real check would catch it.
+  write(r, "gen/schema.txt", "out of date\n"); commit(r, "stale schema");
+  ok("a real check fails on it", cli(r, "check", "--json", "--no-fetch").status === 1);
+  const dry = cli(r, "check", "--dry-run", "--json", "--no-fetch");
+  ok("a dry run says dry-run, not ok", dry.json?.status === "dry-run", dry.out + dry.err);
+  ok("marks every check and artifact as not run",
+    dry.json?.checks?.every(c => c.ran === false && c.dryRun) && dry.json?.staleness?.every(a => a.dryRun && a.clean === null),
+    JSON.stringify(dry.json));
+  ok("and never offers the push", !(dry.json?.next || []).some(n => /push/.test(n)), JSON.stringify(dry.json?.next));
+  const human = cli(r, "check", "--dry-run", "--no-fetch");
+  ok("it prints the commands it would run", human.out.includes("would run: exit 1") && human.out.includes(GEN), human.out);
+}
+
 // ---------------------------------------------------------------- dropped commits
 step("a commit that becomes empty is reported, never silently dropped");
 {

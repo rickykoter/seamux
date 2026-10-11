@@ -153,7 +153,9 @@ export function verifyClean(cwd, artifact, opts = {}) {
   const res = { artifact: artifact.name, checked: false, clean: null, dirty: [], regen: null };
   if (artifact.regen && !(artifact.tier === "expensive" && !opts.deep)) {
     res.regen = sh(cwd, artifact.regen, { ...opts, label: `verify-${artifact.name}` });
-    if (!res.regen.ok && !res.regen.skipped) return { ...res, error: "the regen command failed" };
+    // A dry run proves nothing: diffing HEAD without the regen would read clean.
+    if (res.regen.skipped) return { ...res, dryRun: true, command: artifact.regen };
+    if (!res.regen.ok) return { ...res, error: "the regen command failed" };
   } else if (artifact.regen) {
     return { ...res, deferred: true, command: artifact.regen,
              error: "expensive tier — not run; pass --deep to prove it here" };
@@ -174,6 +176,7 @@ export function runCheck(cwd, check, opts = {}) {
     return { name: check.name, ran: false, deferred: true, command: check.run,
              why: "expensive tier — run with --deep" };
   const r = sh(cwd, check.run, { ...opts, label: `check-${check.name}` });
+  if (r.skipped) return { name: check.name, ran: false, dryRun: true, command: check.run };
   return { name: check.name, ran: true, ok: r.ok, code: r.code, ms: r.ms,
            command: check.run, out: r.ok ? "" : r.out, log: r.log, timedOut: r.timedOut };
 }

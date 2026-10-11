@@ -847,25 +847,28 @@ function cmdCheck(ctx) {
   const dirty = arts.filter(a => a.clean === false);
   const failed = checks.filter(c => c.ran && !c.ok);
   const deferred = [...arts.filter(a => a.deferred), ...checks.filter(c => c.deferred)];
+  // A dry run ran nothing, so it can pass nothing: never "ok", never "push".
+  const notRun = [...arts, ...checks].filter(x => x.dryRun);
   const stale = ctx.st.stale || [];
   const bad = dirty.length || failed.length || stale.length;
   emit({
-    verb: "check", status: bad ? "fail" : deferred.length ? "partial" : "ok",
+    verb: "check", status: bad ? "fail" : notRun.length ? "dry-run" : deferred.length ? "partial" : "ok",
     base: { ref: base.ref, sha: base.sha.slice(0, 12) },
-    staleness: arts.map(a => ({ artifact: a.artifact, clean: a.clean, dirty: a.dirty, deferred: !!a.deferred, error: a.error || null, command: a.command || null })),
-    checks: checks.map(c => ({ name: c.name, ran: c.ran, ok: c.ok ?? null, deferred: !!c.deferred, command: c.command, out: c.out || "", log: c.log || null })),
+    staleness: arts.map(a => ({ artifact: a.artifact, clean: a.clean, dirty: a.dirty, deferred: !!a.deferred, dryRun: !!a.dryRun, error: a.error || null, command: a.command || null })),
+    checks: checks.map(c => ({ name: c.name, ran: c.ran, ok: c.ok ?? null, deferred: !!c.deferred, dryRun: !!c.dryRun, command: c.command, out: c.out || "", log: c.log || null })),
     stale,
     next: bad
       ? [...dirty.map(d => `commit the regenerated ${d.artifact} (${d.dirty.join(", ")})`),
          ...stale.map(s => s.command || `restack clear-stale --only ${s.artifact}`),
          ...failed.map(f => `fix: ${f.name}`)]
+      : notRun.length ? ["restack check   # without --dry-run, to run them"]
       : deferred.length ? ["restack check --deep   # the expensive half has not run"] : ["restack push"],
     exit: bad ? 1 : 0,
   }, o => {
     for (const a of o.staleness)
-      say(`  ${a.clean === true ? "\x1b[32mok\x1b[0m  " : a.deferred ? "—   " : "\x1b[31mfail\x1b[0m"} ${a.artifact}${a.clean === false ? ` — regen rewrote ${a.dirty.length} file(s): ${a.dirty.join(", ")}` : a.deferred ? " — deferred (expensive; pass --deep)" : a.error ? ` — ${a.error}` : ""}`);
+      say(`  ${a.clean === true ? "\x1b[32mok\x1b[0m  " : a.deferred || a.dryRun ? "—   " : "\x1b[31mfail\x1b[0m"} ${a.artifact}${a.clean === false ? ` — regen rewrote ${a.dirty.length} file(s): ${a.dirty.join(", ")}` : a.dryRun ? ` — dry run, would run: ${a.command}` : a.deferred ? " — deferred (expensive; pass --deep)" : a.error ? ` — ${a.error}` : ""}`);
     for (const c of o.checks) {
-      say(`  ${c.ok ? "\x1b[32mok\x1b[0m  " : c.deferred ? "—   " : "\x1b[31mfail\x1b[0m"} ${c.name}${c.deferred ? " — deferred (expensive; pass --deep)" : ""}`);
+      say(`  ${c.ok ? "\x1b[32mok\x1b[0m  " : c.deferred || c.dryRun ? "—   " : "\x1b[31mfail\x1b[0m"} ${c.name}${c.dryRun ? ` — dry run, would run: ${c.command}` : c.deferred ? " — deferred (expensive; pass --deep)" : ""}`);
       if (c.ran && !c.ok) say(indent(c.out, 6));
     }
     for (const s of o.stale) say(`  \x1b[33mstale\x1b[0m ${s.artifact}\n${staleLines(s, 8)}`);
