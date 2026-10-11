@@ -1123,6 +1123,27 @@ for (const c of ["cat $(ls)", "cat `ls`", "cat $(git rev-parse --show-toplevel)/
   "find . -name '*.js'", "find . -exec grep -l x {} +", "grep 'find . -delete' notes"])
   ok(`a reader stays a reader: ${c}`, !lib.bashMutates(c));
 
+// -------------------------------------------------- treeOf: a racily clean edit
+// Git trusts an entry's cached stat only when the entry is older than the index
+// file. treeOf's scratch copy of the index must keep the real one's mtime, or a
+// same-size edit made in the same second as `git add` is read as unchanged.
+{
+  const RR = path.join(TMP, "racy-repo");
+  fs.mkdirSync(RR);
+  execSync("git init -q && git config core.trustctime false && " +
+    "git -c user.email=p@p -c user.name=p commit -q --allow-empty -m init", { cwd: RR });
+  const f = path.join(RR, "f.txt"), past = 1_700_000_000;
+  fs.writeFileSync(f, "old\n");
+  fs.utimesSync(f, past, past);
+  execSync("git add f.txt", { cwd: RR });
+  fs.writeFileSync(f, "new\n");
+  fs.utimesSync(f, past, past);
+  fs.utimesSync(path.join(RR, ".git", "index"), past, past);
+  const t = lib.treeOf(RR);
+  const blob = t && t.content ? execSync(`git cat-file -p ${t.content}:f.txt`, { cwd: RR, encoding: "utf8" }) : "";
+  ok("treeOf sees a same-size edit made in the second of its git add", blob === "new\n");
+}
+
 // -------------------------------------------------- broken root: fail open, loudly
 const GONE = path.join(TMP, "gone-root");
 fs.writeFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "ghost.json"), JSON.stringify(

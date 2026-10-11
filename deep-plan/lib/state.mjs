@@ -271,8 +271,15 @@ export function treeOf(root) {
   const index = git(["rev-parse", "--path-format=absolute", "--git-path", "index"]).stdout.trim();
   const tmp = path.join(os.tmpdir(), `deep-plan-index-${process.pid}-${Date.now()}`);
   try {
-    // Seeded from the real index so `add` only rehashes what changed.
-    try { fs.copyFileSync(index, tmp); } catch { /* no index yet: add builds one */ }
+    // Seeded from the real index so `add` only rehashes what changed. The copy
+    // keeps the index's own mtime: git trusts an entry's cached stat only when
+    // the entry is older than the index file ("racy git"), so a copy stamped
+    // now would read a same-size edit from the second of `git add` as unchanged.
+    try {
+      fs.copyFileSync(index, tmp);
+      const s = fs.statSync(index);
+      fs.utimesSync(tmp, s.atime, s.mtime);
+    } catch { /* no index yet: add builds one */ }
     const env = { GIT_INDEX_FILE: tmp };
     const tree = git(["add", "-A"], env).status === 0 ? git(["write-tree"], env) : null;
     return { head: head.stdout.trim(), content: tree && tree.status === 0 ? tree.stdout.trim() : "" };
