@@ -65,7 +65,10 @@ place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_D
 - `engine.json` is `{root, version, mermaid?}`, written by every run and by the
   SessionStart hook, only when it changes. JSON.stringify's two-space form is
   part of the contract: the shim reads `"root"` with sed. The old
-  `~/.claude/skills` copy never writes it.
+  `~/.claude/skills` copy never writes it. So any tool that runs an engine
+  copy (a worktree's, a fixture's) sets `DEEP_PLAN_ENGINE_FILE` (and
+  `DEEP_PLAN_BIN_DIR`) to a temp path, as probe.mjs and family-fixture.sh do;
+  left at the default, it repoints the machine's deep-plan at that copy.
 - The gate's refusal opens `deep-plan gate [<slug>]: ` (decide.mjs). The
   seamux-mods band finds refusals by that opening in the tool result; the probe
   asserts it. `status --json` rows carry `increments` (`n`, `title`, `status`,

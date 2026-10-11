@@ -11,7 +11,8 @@
 #
 # Prints shell assignments on stdout, so a caller drives the family with the
 # same engine and state: FIX_DIR FIX_PARENT FIX_API FIX_UI FIX_ENV (a file to
-# `source` from hook wrappers), plus the DEEP_PLAN_* overrides. Shared by the
+# `source` from hook wrappers), plus the DEEP_PLAN_* overrides (the engine
+# pointer and shim dir among them). Shared by the
 # live e2e (live-family.sh), crew's family sync probe, and demo takes that
 # want a family on screen.
 set -eu
@@ -24,8 +25,12 @@ G="git -c user.email=fixture@deep-plan -c user.name=fixture"
 (cd "$DIR" && mkdir -p shop && cd shop && git init -q && $G commit -q --allow-empty -m init &&
   git worktree add -q -b api ../shop.worktrees/api && git worktree add -q -b ui ../shop.worktrees/ui) >&2
 
+# The pointer and shim dir stay inside DIR too: every engine run refreshes the
+# pointer to its own copy, and this one is a checkout's, often a worktree's.
+# Left at the default, a fixture run repoints the machine's deep-plan there.
 cat > "$DIR/env.sh" <<EOF
 export DEEP_PLAN_STATE_DIR=$DIR/state DEEP_PLAN_KEYS_DIR=$DIR/keys DEEP_PLAN_PLANS_DIR=$DIR/plans
+export DEEP_PLAN_ENGINE_FILE=$DIR/engine.json DEEP_PLAN_BIN_DIR=$DIR/bin
 export DEEP_PLAN_VENDOR_DIR=\${DEEP_PLAN_VENDOR_DIR:-$HOME/.claude/deep-plan/vendor}
 export DEEP_PLAN_SKILL_DIR=$HERE DEEP_PLAN_ENGINE=$HERE
 EOF
