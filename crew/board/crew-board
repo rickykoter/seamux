@@ -1441,7 +1441,11 @@ def cmd_watch():
                 continue  # nothing a viewer could see changed
             last_payload = payload
             if push_state(d) != 0:
-                return 1
+                # Usually transient (cmux restarting, the Dock reseeding its tabs),
+                # and push_state has said why. Keep watching; this push never
+                # landed, so the next pass pushes even if nothing changed.
+                last_payload = None
+                continue
             last_push = time.time()
     except KeyboardInterrupt:
         stop.set()
