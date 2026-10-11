@@ -53,7 +53,7 @@ block rm -rf \\\n  /
 block `rm -rf ~`
 allow rm -rf /tmp/foo
 allow rm -rf /tmp/*
-allow rm -rf /Users/x/proj/build
+allow rm -rf /home/x/proj/build
 allow rm -rf /tmp/build-cache /tmp/other
 allow rm -rf ~/proj/build
 allow rm -rf $HOME/.cache/foo

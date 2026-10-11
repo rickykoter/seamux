@@ -306,7 +306,7 @@ async function pageUrl($: EngineInterface, h: string, served: string, file: stri
 }
 
 // A path as a file:// URL, each segment percent-encoded: a home such as
-// `/Users/John Smith` otherwise gives a link that does not resolve.
+// `/home/John Smith` otherwise gives a link that does not resolve.
 function fileUrl(path: string): string {
   return `file://${path.split('/').map(encodeURIComponent).join('/')}`
 }
