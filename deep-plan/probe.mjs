@@ -1004,6 +1004,17 @@ ok("shut-gate restores it", cli("shut-gate", spec.slug).status === 0 &&
   edit(path.join(REPO, "a.txt")).status === 2);
 cli("go", spec.slug, "2"); cli("done", spec.slug, "2");
 ok("all increments done: Edit allowed, gate retired", edit(path.join(REPO, "a.txt")).status === 0);
+// A reset on a complete plan reopens it. The phase stayed "done", and the
+// gate, reading the phase, let edits through with increment 2 pending.
+{
+  const phase = () => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8")).phase;
+  cli("reset", spec.slug, "2");
+  ok("a reset on a complete plan reopens it and gates again",
+    phase() === "implementing" && edit(path.join(REPO, "a.txt")).status === 2);
+  cli("go", spec.slug, "2"); passAll(spec.slug, 2); cli("done", spec.slug, "2");
+  ok("…until its done closes the plan again",
+    phase() === "done" && edit(path.join(REPO, "a.txt")).status === 0);
+}
 
 // -------------------------------------------------- a parked plan must not deadlock a live one
 const REPO2 = path.join(TMP, "repo2");
@@ -1030,6 +1041,11 @@ ok("a real file redirect still mutates", lib.bashMutates("echo hi > out.txt"));
 ok("a heredoc still mutates", lib.bashMutates("cat <<EOF > f\nx\nEOF"));
 ok("scrubbing cannot hide a real mutator",
   lib.bashMutates("sed -i s/a/b/ f 2>/dev/null"));
+// The gate counts increments rather than trusting the phase, whichever writer
+// left a "done" or "delivery" phase over pending work.
+ok("a done or delivery phase with an increment pending gates",
+  ["done", "delivery"].every(phase => !lib.gateView({ slug: "x", phase, gate: "increment",
+    increments: [{ n: 1, status: "done" }, { n: 2, status: "pending" }] }).allow));
 // A `>` inside quotes is a pattern, not a redirect: searching for arrow
 // functions was blocked until a go.
 ok("a quoted > is not a redirect (rg, jq)",

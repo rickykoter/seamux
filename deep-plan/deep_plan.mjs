@@ -1804,6 +1804,7 @@ async function render(specPath, opts) {
     return prev ? { ...a, number: prev.number, file: prev.file, dir: prev.dir,
       source: prev.source, applied: prev.applied || "" } : a;
   });
+  reopenPhase(st);
   writeState(st);
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".working.html"), workingHtml(spec, st, b64));
   say(`rendered ${spec.slug}: ${PLANS_DIR}/${spec.slug}.md, .review.html, .working.html`);
@@ -2226,6 +2227,17 @@ function headSha(root) {
   return sha.status === 0 ? sha.stdout.trim() : "";
 }
 
+// A complete plan that has work again (an increment reset or blocked, or an
+// amend that added one) is being implemented: the board, `deliver` and the
+// family's sequencing all read the phase.
+function reopenPhase(st) {
+  if ((st.phase === "done" || st.phase === "delivery") &&
+      !(st.increments || []).every(i => i.status === "done")) {
+    log1(st, `phase ${st.phase} -> implementing: an increment is not done`);
+    st.phase = "implementing";
+  }
+}
+
 function transition(action, slug, n, why, force = false) {
   const st = readState(slug) || die("no plan " + slug);
   if (action === "go") {
@@ -2325,6 +2337,7 @@ function transition(action, slug, n, why, force = false) {
     log1(st, `reset: increment ${n}` + (back.length
       ? ` — ${back.length} check verdict(s) returned to pending (${back.join(", ")})` : ""));
   } else die("unknown transition " + action);
+  reopenPhase(st);
   writeState(st); rerenderWorking(slug);
   say(`${action} ${slug} ${n}`);
   if (action === "go") openWorkingSurface(st);

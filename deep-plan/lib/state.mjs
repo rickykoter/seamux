@@ -340,12 +340,14 @@ export function gateView(st) {
   const p = progress(st);
   if (st.gate === "open") return { allow: true, why: "gate opened by hand" };
   if (st.phase === "review") return { allow: false, why: "Alignment check not taken." };
+  // Counted, never taken from the phase: a reset, a block or an amend that
+  // adds an increment leaves work pending under a "done" or "delivery" phase.
+  const allDone = p.total > 0 && p.done === p.total;
   // The full delivery's lookout review holds the plan open; its fixes are
   // edits like any other, so the gate stays open while it runs.
-  if (st.phase === "delivery")
+  if (st.phase === "delivery" && allDone)
     return { allow: true, why: `every increment is done; the delivery review holds the plan open — deep-plan deliver ${st.slug}` };
-  if (st.phase === "done" || (p.total > 0 && p.done === p.total))
-    return { allow: true, why: "every increment is done" };
+  if (allDone) return { allow: true, why: "every increment is done" };
   if (p.open.length > 0) return { allow: true, why: "increment authorized" };
   return { allow: false, why: "No increment is authorized — `deep-plan go` opens the next one." };
 }
