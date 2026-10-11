@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "plugin": "restack",
+  "model": "haiku",
+  "claudeVersion": "2.1.296",
+  "costUsd": 0.0741,
+  "cases": {
+    "fires-on-stack-conflicts": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "fired": 3
+      },
+      "errors": 0
+    },
+    "fires-on-stale-generated": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "fired": 3
+      },
+      "errors": 0
+    },
+    "quiet-on-gitignore": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "quiet": 3
+      },
+      "errors": 0
+    },
+    "quiet-on-merge-vs-rebase": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "quiet": 3
+      },
+      "errors": 0
+    },
+    "regen-before-clear-stale": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "careful": 3,
+        "fired": 3
+      },
+      "errors": 0
+    },
+    "regenerates-not-hand-merges": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "fired": 3,
+        "regen": 3
+      },
+      "errors": 0
+    },
+    "stops-before-push": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "fired": 3,
+        "handed": 3
+      },
+      "errors": 0
+    }
+  }
+}

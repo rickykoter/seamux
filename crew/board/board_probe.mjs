@@ -778,9 +778,24 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
   }));
   const pinned = await new Promise(res => { const s = net.createServer(); s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => res(p)); }); });
   const srv = spawn("python3", [join(HERE, "crew-board-intent")],
-    { env: { ...process.env, HOME, CREW_INTENT_PORT: String(pinned) }, stdio: "ignore" });
+    { env: { ...process.env, HOME, CREW_INTENT_PORT: String(pinned), PYTHONFAULTHANDLER: "1" },
+      stdio: ["ignore", "pipe", "pipe"] });
+  // Kept, not discarded: when the server does not come up on a runner, its
+  // own output and log are the only account of why, and HOME is gone after.
+  let srvOut = "", srvExit = null;
+  const keep = c => { srvOut = (srvOut + c).slice(-4000); };
+  srv.stdout.on("data", keep);
+  srv.stderr.on("data", keep);
+  srv.on("exit", (code, sig) => { srvExit = sig || code; });
   const tokenFile = join(HOME, ".cache", "cmux-crew", "board-intent.token");
   const portFile = join(HOME, ".cache", "cmux-crew", "board-intent.port");
+  const logFile = join(HOME, ".cache", "cmux-crew", "board-intent.log");
+  const why = () => {
+    const log = fs.existsSync(logFile) ? fs.readFileSync(logFile, "utf8").slice(-2000) : "(no board-intent.log)";
+    return `server ${srvExit === null ? "still running" : "exited " + srvExit}; ` +
+      `port file ${fs.existsSync(portFile) ? fs.readFileSync(portFile, "utf8").trim() : "missing"}, ` +
+      `token file ${fs.existsSync(tokenFile) ? "present" : "missing"}\n--- output ---\n${srvOut.trim() || "(none)"}\n--- log ---\n${log.trim()}`;
+  };
   // Up when it answers, on the port it wrote: the pin is a preference the
   // server may fall back from, and a cold python on a CI runner can take
   // seconds to start. Never a fixed sleep.
@@ -791,7 +806,7 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
     r.setTimeout(1000, () => { r.destroy(); res(false); });
     r.end();
   });
-  for (const deadline = Date.now() + 20000; Date.now() < deadline; await new Promise(r => setTimeout(r, 100))) {
+  for (const deadline = Date.now() + 20000; Date.now() < deadline && srvExit === null; await new Promise(r => setTimeout(r, 100))) {
     const p = fs.existsSync(portFile) ? parseInt(fs.readFileSync(portFile, "utf8"), 10) : 0;
     if (p && fs.existsSync(tokenFile) && await ping(p)) { port = p; break; }
   }
@@ -814,7 +829,15 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
   const store = () => JSON.parse(fs.readFileSync(join(reviews, "demo.json"), "utf8"));
   try {
     checks.push(["review route: the server came up under the temp HOME", !!token]);
-    if (!token) throw new Error("the intent server never answered; the review route checks are skipped");
+    if (!token) {
+      // Still running but never listening: abort it, and faulthandler
+      // (PYTHONFAULTHANDLER) prints the stack it was stuck in.
+      if (srvExit === null) {
+        srv.kill("SIGABRT");
+        for (let i = 0; i < 30 && srvExit === null; i++) await new Promise(r => setTimeout(r, 100));
+      }
+      throw new Error("the intent server never answered; the review route checks are skipped\n" + why());
+    }
     const page = await req("GET", "/review/demo");
     checks.push(["review route: the page is served with its token script before </body>",
       page.status === 200 && page.body.includes(`window.lookout.serve({ token: "${token}", id: "demo" })`) &&

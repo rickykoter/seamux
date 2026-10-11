@@ -12,14 +12,23 @@ guessing, preview with `./install.sh --dry-run`, verify with
 
 - Each plugin is a folder: `deep-plan/`, `restack/`, `crew/`, `bash-guard/`,
   `seamux-mods/`. Start with its `SKILL.md` or `README.md` (bash-guard is
-  only `hooks/`); deep-plan and restack also have a `DEVELOPING.md`.
+  only `hooks/`); deep-plan and restack also have a `DEVELOPING.md`. A
+  skill's detail lives in `references/` beside its SKILL.md, each file linked
+  straight from it; `python3 tools/skill_lint.py` holds every skill to
+  Anthropic's authoring rules (ADR 0019), and CI runs it.
 - The plugins run from this checkout, so an edit is live after
   `/reload-plugins`. crew is the exception: `crew apply` copies it to
   `~/.config/cmux/crew` (see `docs/SYNCING.md`).
 - Tests: `node deep-plan/probe.mjs`, `node restack/probe.mjs`,
   `node crew/board/board_probe.mjs`, `python3 crew/tools/family_sync_probe.py`,
-  `claude plugin test seamux-mods`. `.seamux/verify.json` holds each as a
+  `claude plugin test seamux-mods`, `python3 tools/skill_lint_probe.py`,
+  `python3 tools/skill_evals_probe.py`. `.seamux/verify.json` holds each as a
   recipe matched to the files it tests, so `deep-plan check run` picks them.
+- A change to a skill's text is held to its eval baseline:
+  `python3 tools/skill_evals.py compare <plugin> --model opus --model haiku`
+  (the `evals-<plugin>` recipes; real model spend, so name them on purpose).
+  Re-record with `record` only when a change is meant to move the scores,
+  and say so in the PR.
 - Type-check seamux-mods after changing it: copy
   `~/.claude/plugins/cache/seamux/seamux-mods/<version>/.claude-plugin/types`
   to `seamux-mods/.claude-plugin/types` (git ignores the copy), then

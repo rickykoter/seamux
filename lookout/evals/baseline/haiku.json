@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "plugin": "lookout",
+  "model": "haiku",
+  "claudeVersion": "2.1.296",
+  "costUsd": 0.0552,
+  "cases": {
+    "fires-on-branch-review": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "fired": 3
+      },
+      "errors": 0
+    },
+    "fires-on-look-at-diff": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "fired": 3
+      },
+      "errors": 0
+    },
+    "human-closes-findings": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "fired": 3,
+        "human": 3
+      },
+      "errors": 0
+    },
+    "never-answers-the-quiz": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "fired": 3,
+        "withheld": 3
+      },
+      "errors": 0
+    },
+    "quiet-on-diff-stat": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "quiet": 3
+      },
+      "errors": 0
+    },
+    "quiet-on-unit-test": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "quiet": 3
+      },
+      "errors": 0
+    },
+    "reviewer-is-a-subagent": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "fired": 3,
+        "subagent": 3
+      },
+      "errors": 0
+    }
+  }
+}

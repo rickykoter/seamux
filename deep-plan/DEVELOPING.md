@@ -113,7 +113,7 @@ place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_D
 - Pulled-back annotations live at `~/.claude/deep-plan/annotations/<slug>/annotations/<id>.json`
   (the Artifact read_db `out_dir` layout); `readAnnotations` renders them on the
   working surface. The CLI never touches the network — the agent does the
-  fetching, per SKILL.md.
+  fetching, per references/sharing.md.
 
 ## The evidence gate reads a distribution, not `confidence` (2026-09-28)
 
@@ -152,7 +152,7 @@ fact would teach them to ignore all of them. `$DEEP_PLAN_EVIDENCE_FLOOR`
 
 ## Contracts seam (added 2026-09-14)
 
-- Spec gains an optional top-level `contracts` key (see SKILL.md shape).
+- Spec gains an optional top-level `contracts` key (see references/spec.md).
   Enforced in `validate()`: fields, decisionRef→decision, external scope
   needs adr-flag or `waiver`. Coverage lives in the KEY file
   (`uncoveredContracts`, computed at render) and is refused by `grade()`

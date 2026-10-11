@@ -656,6 +656,7 @@ and `{"typesafe": {"enabled": false}}` turns it off with the key in place.
 crew doctor                                      # everything green
 claude plugin list                               # each plugin, "Read from" this checkout
 node deep-plan/probe.mjs && node restack/probe.mjs && node crew/board/board_probe.mjs
+python3 tools/skill_lint.py                      # every skill against the authoring rules
 ```
 
 Open the board with `cmux sidebar open crew` or the Dock button. New Claude
@@ -785,6 +786,8 @@ Read these before you rely on seamux.
 | `docs/` | dev history, test notes, adoption audit, ADRs and README images; not installed |
 | `docs/SYNCING.md` | who owns which path, and how a change moves between the repo and your machine |
 | `tools/scrub_check.py` | refuses internal identifiers in tracked files; the first step in CI |
+| `tools/skill_lint.py` | holds every root SKILL.md and its `references/` to Anthropic's authoring rules; CI runs it after the scrub |
+| `tools/skill_evals.py` | runs a skill's `evals/` suite and holds it to the committed baseline in `evals/baseline/` |
 
 Never committed: rendered cmux configs, deep-plan state and keys, the mermaid
 and highlight.js files, reviews, and your `~/.claude/settings.json`.

@@ -116,7 +116,7 @@ a refusal with no way out is a refusal people learn to route around.
 
 ## The judgment layer, and the threshold that was wrong
 
-`lib/judge.mjs` is optional and escalation-only — see SKILL.md for the rule.
+`lib/judge.mjs` is optional and escalation-only — see references/judgment.md for the rule.
 Two things here are worth keeping:
 
 **The bar is asymmetric because a symmetric one silently authorizes.** The

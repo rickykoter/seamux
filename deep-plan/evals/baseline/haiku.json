@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "plugin": "deep-plan",
+  "model": "haiku",
+  "claudeVersion": "2.1.296",
+  "costUsd": 0.1245,
+  "cases": {
+    "asks-forks-before-drafting": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "asked": 3,
+        "fired": 3,
+        "no-spec": 3
+      },
+      "errors": 0
+    },
+    "challenges-the-goal": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "challenged": 3,
+        "fired": 3,
+        "no-spec": 3
+      },
+      "errors": 0
+    },
+    "confirms-before-sharing": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "confirmed": 3,
+        "fired": 3
+      },
+      "errors": 0
+    },
+    "fires-on-deep-plan": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "fired": 3
+      },
+      "errors": 0
+    },
+    "fires-on-increments": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "fired": 3
+      },
+      "errors": 0
+    },
+    "quiet-on-adr-question": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "quiet": 3
+      },
+      "errors": 0
+    },
+    "quiet-on-quick-list": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "quiet": 3
+      },
+      "errors": 0
+    },
+    "waits-for-go": {
+      "runs": 3,
+      "score": 0.8333,
+      "graders": {
+        "fired": 2,
+        "gated": 3
+      },
+      "errors": 0
+    }
+  }
+}

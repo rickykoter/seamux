@@ -33,6 +33,14 @@ jobs:
       - name: scrub check
         run: python3 tools/scrub_check.py
 
+      # claude plugin validate skips a SKILL.md at a plugin's root, which is
+      # where every seamux skill lives (docs/adr/0004); this checks them.
+      - name: skill lint
+        run: python3 tools/skill_lint.py
+
+      - name: skill lint and eval-harness probes
+        run: python3 tools/skill_lint_probe.py && python3 tools/skill_evals_probe.py
+
       # The pointer and the shim land in the runner's temp dir, never in a
       # home the job does not own.
       - name: Fetch pinned mermaid (deep-plan setup)

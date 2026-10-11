@@ -1,6 +1,6 @@
 ---
 name: lookout
-description: Review a diff in a browser pane beside the terminal — a branch against its base, a commit range, the uncommitted working tree, or a patch file — with files sorted by risk or path, highlighted split or unified diffs, and findings from a reviewer subagent discussed with the human in threads on their lines. Use when the user asks to review a branch, a diff, a PR's changes or an increment, to "look at the diff", or runs /lookout.
+description: Reviews a diff in a browser pane beside the terminal — a branch against its base, a commit range, the uncommitted working tree, or a patch file — with files sorted by risk or path, highlighted split or unified diffs, and findings from a reviewer subagent discussed with the human in threads on their lines. Use when the user asks to review a branch, a diff, a PR's changes or an increment, to "look at the diff", or runs /lookout.
 ---
 
 # lookout
@@ -9,6 +9,17 @@ A review is a source, the diff it yields, and (later) what you and the human
 say about it. `lookout` is on the Bash tool's PATH from the plugin's `bin/`
 while the plugin is enabled; `lookout setup` adds a `~/.local/bin/lookout`
 shim for the human's own shell and fetches the pinned highlight.js.
+
+## Must hold
+
+- **The findings come from one fresh reviewer subagent**, briefed with the
+  exact output of `lookout prompt <id>` — never from you, and with nothing of
+  your own opinion added to the brief.
+- **Only the human closes a finding** (resolve or dismiss, on the page) unless
+  the review was opened with `--agent-may-close`. Never work around the
+  refusal, and never ask for the flag.
+- **Never answer a quiz question for the human**, or quote a note's answer
+  before they have answered.
 
 ## Open a review
 
@@ -109,40 +120,10 @@ increment's start sha, every increment's description in the brief), through
 
 ## The page
 
-VS Code's Source Control layout: changed files on the left as a directory
-tree (single-child folders folded together), one file's diff on the right.
-
-- **Overview** (`o`, or the header button): a review with notes opens on
-  it. Every group riskiest first, each note in full: watch items link to
-  their lines, touches show as chips, drift findings are listed, and stale
-  or partial notes are marked. Each file shows its group's note as a strip
-  above the diff that expands.
-
-- **Split or Unified** (header toggle, or `v`). Narrow panes and one-sided
-  files (added, deleted) draw unified.
-- **`j` / `k`** step through files in the side list's order; **`n` / `p`**
-  through open findings.
-- **Risk / Path** (side toggle). Risk puts files in high, medium and low
-  bands, riskiest first, with related files grouped on a rail that says why
-  they belong together (one imports the other, a test and its source, a
-  finding naming both, a small shared folder). Risk blends deterministic
-  signals with one Jev score per file; by default only paths and line counts
-  leave the machine, and `.seamux/lookout.json` `{"sendContent": true}`
-  lets hunk text go too. Without TypeSafe the page says it is ranking on
-  signals alone.
-- **Findings** sit under the line they name, with severity, category,
-  verdict, status and their thread; the header shows the gate. Findings on
-  lines the diff does not show are listed at the top of the file. Closed
-  ones fold to one line.
-- **Highlighting** is highlight.js over each side's whole file, so a change
-  inside a block comment or a template string reads right. Changed words in
-  a paired removed/added line are marked.
-- **Collapsed files**: lockfiles, minified bundles, `linguist-generated`
-  paths, binaries and changes over 1500 lines start collapsed behind a
-  "Show diff" button (binaries and very large files cannot be drawn).
-
-If highlight.js is missing the page is drawn plain with a banner naming why;
-`lookout setup` fixes it.
+VS Code's Source Control layout beside the terminal: changed files on the left
+as a tree, one file's diff on the right, findings under the lines they name,
+and an Overview of the group notes. Its toggles, keys, risk bands and what
+starts collapsed: [references/page.md](references/page.md).
 
 ## Other verbs
 
