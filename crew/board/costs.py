@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
 """Per-workspace dollars from ccusage, cached.
 
-    costs_for(cwds) -> {cwd: {"today": float, "week": float}}
+    costs_for(cwds) -> {cwd: {"today": float, "week": float,
+                              "unpriced": [model], "unpricedToday": [model]}}
 
 Source: `ccusage claude daily --instances --json`, whose output is already
 grouped by munged project directory and date — no session bookkeeping here.
 Attribution reverse-matches each munged dir against the KNOWN workspace cwds:
 the munging (every non-alphanumeric to "-") is lossy, so a dir name is never
 parsed back into a path, only compared against candidates we already hold.
+
+`unpriced` names the models ccusage reported tokens for but could not price
+(`missingPricing` on a model breakdown, which the JSON always carries). Their
+tokens count as $0 in the dollars, so the dollars are a floor, and every
+surface showing them says so with a `+` rather than a silently low figure.
+
+Prices are ccusage's, with crew's published-price overrides when there are
+any (pricing.py): the same `--config` every other ccusage call here gets.
 
 The raw ccusage output is cached (~5 min TTL) because a run over a long
 transcript history costs seconds and both consumers — the board collector and
@@ -46,7 +55,8 @@ def attribute(projects: dict, cwds, today: str = "") -> dict:
         cwd = by_munged.get(dirname)
         if not cwd:
             continue
-        tot = out.setdefault(cwd, {"today": 0.0, "week": 0.0})
+        tot = out.setdefault(cwd, {"today": 0.0, "week": 0.0,
+                                   "unpriced": [], "unpricedToday": []})
         for r in rows or []:
             try:
                 cost = float(r.get("totalCost") or 0)
@@ -55,15 +65,41 @@ def attribute(projects: dict, cwds, today: str = "") -> dict:
             tot["week"] += cost
             if r.get("date") == today:
                 tot["today"] += cost
+            for m in unpriced(r):
+                if m not in tot["unpriced"]:
+                    tot["unpriced"].append(m)
+                if r.get("date") == today and m not in tot["unpricedToday"]:
+                    tot["unpricedToday"].append(m)
     return out
 
 
-def fetch_projects(days: int = DAYS):
+def unpriced(row) -> list:
+    """Models in one ccusage row whose tokens it could not price."""
+    out = []
+    for b in (row or {}).get("modelBreakdowns") or []:
+        if isinstance(b, dict) and b.get("missingPricing"):
+            name = b.get("modelName") or "?"
+            if name not in out:
+                out.append(name)
+    return out
+
+
+def _config_args():
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+        import pricing
+        return pricing.config_args()
+    except Exception:
+        return []
+
+
+def fetch_projects(days: int = DAYS, cfg=None):
     """Raw ccusage output, or None when it cannot be had."""
     since = (date.today() - timedelta(days=days)).strftime("%Y%m%d")
     try:
         p = subprocess.run(
-            ["ccusage", "claude", "daily", "--instances", "--json", "--since", since],
+            ["ccusage", "claude", "daily", "--instances", "--json", "--since", since]
+            + list(cfg or []),
             capture_output=True, text=True, timeout=60)
         if p.returncode != 0:
             return None
@@ -72,35 +108,40 @@ def fetch_projects(days: int = DAYS):
         return None
 
 
-def _read_cache():
+def _read_cache(cfg=()):
+    # A cache written under other overrides is a miss, not stale-but-fine: the
+    # point of changing an override is to see its effect. A cache from before
+    # `cfg` was recorded has none, which is what no overrides look like.
     try:
         with open(CACHE) as fh:
             c = json.load(fh)
-        if time.time() - float(c.get("at", 0)) < TTL:
+        if time.time() - float(c.get("at", 0)) < TTL and \
+                list(c.get("cfg") or []) == list(cfg):
             return c.get("projects")
     except (OSError, ValueError):
         pass
     return None
 
 
-def _write_cache(projects):
+def _write_cache(projects, cfg=()):
     try:
         os.makedirs(os.path.dirname(CACHE), exist_ok=True)
         tmp = CACHE + ".tmp.%d" % os.getpid()
         with open(tmp, "w") as fh:
-            json.dump({"at": time.time(), "projects": projects}, fh)
+            json.dump({"at": time.time(), "projects": projects, "cfg": list(cfg)}, fh)
         os.replace(tmp, CACHE)
     except OSError:
         pass
 
 
 def costs_for(cwds) -> dict:
-    projects = _read_cache()
+    cfg = _config_args()
+    projects = _read_cache(cfg)
     if projects is None:
-        projects = fetch_projects()
+        projects = fetch_projects(cfg=cfg)
         if projects is None:
             return {}
-        _write_cache(projects)
+        _write_cache(projects, cfg)
     return attribute(projects, cwds)
 
 

@@ -153,6 +153,25 @@ def _fmt_tokens(n):
     return str(n)
 
 
+def _pricing_args():
+    """crew's published-price overrides for ccusage (board/pricing.py), or [].
+
+    Found beside this file in the crew tree (this runs from
+    ~/.config/cmux/crew/claude/), else at the live install -- the same two
+    places cachefacts.py is looked for. Any failure is [], which is ccusage's
+    own prices: exactly the line this printed before overrides existed.
+    """
+    here = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "board")
+    if not os.path.isfile(os.path.join(here, "pricing.py")):
+        here = os.path.join(os.path.expanduser("~"), ".config", "cmux", "crew", "board")
+    try:
+        sys.path.insert(0, here)
+        import pricing
+        return pricing.config_args()
+    except Exception:
+        return []
+
+
 def window_line(payload):
     """The 5h window as a share of its budget. Short reason when it cannot.
 
@@ -163,7 +182,7 @@ def window_line(payload):
     if not exe:
         return "ccusage not installed — npm i -g ccusage"
     try:
-        p = subprocess.run([exe, "blocks", "--json"], capture_output=True,
+        p = subprocess.run([exe, "blocks", "--json"] + _pricing_args(), capture_output=True,
                            text=True, timeout=10)
         blocks = json.loads(p.stdout).get("blocks") or []
     except Exception as exc:
@@ -263,7 +282,7 @@ def month_line():
     if not exe:
         return "ccusage not installed — npm i -g ccusage"
     try:
-        p = subprocess.run([exe, "monthly", "--json"], capture_output=True,
+        p = subprocess.run([exe, "monthly", "--json"] + _pricing_args(), capture_output=True,
                            text=True, timeout=15)
         rows = json.loads(p.stdout).get("monthly") or []
     except Exception as exc:
@@ -277,17 +296,22 @@ def month_line():
 
     spent = cur.get("totalCost") or 0
     budget = _month_budget()
+    # A model ccusage could not price counts as $0, so the figure is a floor:
+    # "+" says so in one character. The status line has no room for the name;
+    # /usage and the board carry it.
+    floor = "+" if any(isinstance(b, dict) and b.get("missingPricing")
+                       for b in cur.get("modelBreakdowns") or []) else ""
 
     days_in = calendar.monthrange(now.year, now.month)[1]
     elapsed = now.day
     projected = spent / elapsed * days_in if elapsed else 0
 
     if budget > 0:
-        bits = [f"💰 {_fmt_usd(spent)} of {_fmt_usd(budget)} ({spent / budget * 100:.0f}%)"]
+        bits = [f"💰 {_fmt_usd(spent)}{floor} of {_fmt_usd(budget)} ({spent / budget * 100:.0f}%)"]
     else:
         # No budget set is a legitimate way to run: show the figure, and do not
         # invent a denominator the way the window line does.
-        bits = [f"💰 {_fmt_usd(spent)} this month"]
+        bits = [f"💰 {_fmt_usd(spent)}{floor} this month"]
     if elapsed > 1 and projected > spent:
         arrow = "↗" if not budget or projected > budget else "→"
         bits.append(f"{arrow} {_fmt_usd(projected)} by {now.strftime('%b')} {days_in}")

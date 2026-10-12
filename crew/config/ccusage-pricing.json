@@ -1,0 +1,6 @@
+{
+  "$comment": "Published prices for models ccusage's upstream (LiteLLM) has wrong or missing. Empty is the normal state. Each entry is a stopgap: crew doctor says when upstream has caught up so it can be deleted. Per-entry provenance keys: source, why, added. See crew/board/README.md, 'Pricing overrides'.",
+  "defaults": {
+    "pricingOverrides": {}
+  }
+}

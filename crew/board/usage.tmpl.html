@@ -179,6 +179,15 @@ td:last-child,th:last-child{text-align:right;color:var(--ink)}
     return "$" + n.toFixed(2);
   };
 
+  // A model ccusage could not price counts as $0, so a dollar figure that
+  // covers one is a floor. It is marked "+", and its card says which model in
+  // one line -- never a silently low number. Tokens are unaffected.
+  var plus = function(u){ return (u && u.length) ? "+" : ""; };
+  var unpricedNote = function(u){
+    return (u && u.length) ? '<div class="foot"><span>+ at least: ccusage has no price for ' +
+      esc(u.join(", ")) + ", so its tokens count as $0</span></div>" : "";
+  };
+
   var b = D.block, out = "";
   var wlab = winLabel((b && b.windowMinutes) || D.windowMinutes);
 
@@ -195,13 +204,13 @@ td:last-child,th:last-child{text-align:right;color:var(--ink)}
     out += '<div class="card">' +
       '<div class="hd"><h2>' + esc(M.label) + "</h2><span class=\"when\">day " +
         M.daysElapsed + " of " + M.daysInMonth + "</span></div>" +
-      '<div class="hero">' + (M.budget > 0 ? mpct.toFixed(0) + "%" : usd(M.spent)) +
+      '<div class="hero">' + (M.budget > 0 ? mpct.toFixed(0) + "%" : usd(M.spent)) + plus(M.unpriced) +
         "<small>" + (M.budget > 0 ? "of " + usd(M.budget) : "this month") + "</small></div>" +
       '<div class="bullet"><i style="width:' + Math.min(100, M.budget > 0 ? mpct : dayPct).toFixed(1) + '%"></i></div>' +
-      '<div class="foot"><span>' + usd(M.spent) + " spent</span>" +
+      '<div class="foot"><span>' + usd(M.spent) + plus(M.unpriced) + " spent</span>" +
       "<span>" + dayPct.toFixed(0) + "% of the month gone</span>" +
-      "<span>" + (M.projected ? (over ? "↗ " : "→ ") + usd(M.projected) + " by month end" : "") + "</span>" +
-      "</div></div>";
+      "<span>" + (M.projected ? (over ? "↗ " : "→ ") + usd(M.projected) + plus(M.unpriced) + " by month end" : "") + "</span>" +
+      "</div>" + unpricedNote(M.unpriced) + "</div>";
   }
 
   function blockBody(mode){
@@ -260,6 +269,12 @@ td:last-child,th:last-child{text-align:right;color:var(--ink)}
   var val = function(d){ return money ? (d.cost || 0) : (d.tokens || 0); };
   var fmtVal = function(n){ return money ? usd(n) : tok(n); };
   var unit = money ? "" : " tokens";
+  // A day's figure as shown: dollars are a floor ("+") when that day had usage
+  // ccusage could not price; tokens are exact either way.
+  var fmtDay = function(d){ return fmtVal(val(d)) + (money ? plus(d.unpriced) : ""); };
+  var dayUnpriced = [];
+  if (money) days.forEach(function(d){ (d.unpriced||[]).forEach(function(m){
+    if (dayUnpriced.indexOf(m) < 0) dayUnpriced.push(m); }); });
   if (days.length) {
     var max = Math.max.apply(null, days.map(val)) || 1;
     var peak = days.reduce(function(a,c){ return val(c) > val(a) ? c : a; }, days[0]);
@@ -267,9 +282,9 @@ td:last-child,th:last-child{text-align:right;color:var(--ink)}
       var h = Math.max(1, val(d) / max * 100);
       // Only two labels, ever: the peak and the most recent day.
       var tagged = (d === peak) || (i === days.length - 1 && d !== peak);
-      var tag = tagged ? '<span class="tag">' + fmtVal(val(d)) + "</span>" : "";
+      var tag = tagged ? '<span class="tag">' + fmtDay(d) + "</span>" : "";
       return '<div class="col" tabindex="0" data-i="' + i + '" role="img" aria-label="' +
-        esc(d.period) + ": " + fmtVal(val(d)) + unit + '">' + tag +
+        esc(d.period) + ": " + fmtDay(d) + unit + '">' + tag +
         '<i style="height:' + h.toFixed(1) + '%"></i></div>';
     }).join("");
     out += '<div class="card">' +
@@ -280,14 +295,14 @@ td:last-child,th:last-child{text-align:right;color:var(--ink)}
         bars +
       "</div>" +
       '<div class="axis"><span>' + esc(days[0].period.slice(5)) + "</span>" +
-      "<span>peak " + fmtVal(max) + "</span>" +
+      "<span>peak " + fmtDay(peak) + "</span>" +
       "<span>" + esc(days[days.length-1].period.slice(5)) + "</span></div>" +
       '<table id="tbl" hidden><thead><tr><th>Day</th><th>' + (money ? "Cost" : "Tokens") + "</th></tr></thead><tbody>" +
         days.slice().reverse().map(function(d){
           return "<tr><td>" + esc(d.period) + "</td><td>" +
-            (money ? usd(d.cost) : (d.tokens||0).toLocaleString()) + "</td></tr>";
+            (money ? usd(d.cost) + plus(d.unpriced) : (d.tokens||0).toLocaleString()) + "</td></tr>";
         }).join("") +
-      "</tbody></table></div>";
+      "</tbody></table>" + unpricedNote(dayUnpriced) + "</div>";
   }
 
   // --- the week -----------------------------------------------------------------
@@ -301,7 +316,7 @@ td:last-child,th:last-child{text-align:right;color:var(--ink)}
       '<div class="hd"><h2>' + esc(D.week.label) + '</h2><span class="when">' +
         (money ? tok(D.week.tokens) + " tokens" : tok(D.week.budget) + " budget") + "</span></div>" +
       (money
-        ? '<div class="hero">' + usd(D.week.cost) + "<small>this week</small></div>"
+        ? '<div class="hero">' + usd(D.week.cost) + plus(D.week.unpriced) + "<small>this week</small></div>"
         : '<div class="hero">' + wp.toFixed(0) + "%<small>" + tok(D.week.tokens) + " tokens</small></div>" +
           '<div class="bullet"><i style="width:' + Math.min(100, wp).toFixed(1) + '%"></i></div>') +
       // One model means the list would just repeat the hero figure underneath it.
@@ -310,7 +325,7 @@ td:last-child,th:last-child{text-align:right;color:var(--ink)}
         ? '<ul class="models"><li><span>' + esc(D.week.models[0].name) + "</span></li></ul>"
         : '<ul class="models">' + (D.week.models||[]).map(function(m){
             return "<li><span>" + esc(m.name) + "</span><b>" + tok(m.tokens) + "</b></li>";
-          }).join("") + "</ul>") + "</div>";
+          }).join("") + "</ul>") + (money ? unpricedNote(D.week.unpriced) : "") + "</div>";
   }
 
   // --- per-workspace dollars ---------------------------------------------------
@@ -325,9 +340,11 @@ td:last-child,th:last-child{text-align:right;color:var(--ink)}
       '<ul class="wcosts">' + D.costs.map(function(c){
         return '<li><span class="nm">' + esc(c.name) + "</span>" +
           '<span class="bar"><i style="width:' + Math.min(100, c.week / cmax * 100).toFixed(1) + '%"></i></span>' +
-          '<b>' + usd(c.today) + ' today · ' + usd(c.week) + '</b></li>';
+          '<b>' + usd(c.today) + plus(c.unpricedToday) + ' today · ' + usd(c.week) + plus(c.unpriced) + '</b></li>';
       }).join("") + "</ul>" +
       '<div class="foot"><span>ccusage dollars, ~5min cache · subagent/cloud sessions may be missing</span></div>' +
+      unpricedNote(D.costs.reduce(function(a, c){
+        (c.unpriced||[]).forEach(function(m){ if (a.indexOf(m) < 0) a.push(m); }); return a; }, [])) +
       "</div>";
   }
 
@@ -364,8 +381,8 @@ td:last-child,th:last-child{text-align:right;color:var(--ink)}
   if (plot) {
     var show = function(el){
       var d = days[+el.getAttribute("data-i")];
-      tip.innerHTML = esc(d.period) + " &nbsp; <b>" + fmtVal(val(d)) + "</b><br>" +
-        (money ? usd(d.cost) + " · " + tok(d.tokens) + " tokens"
+      tip.innerHTML = esc(d.period) + " &nbsp; <b>" + fmtDay(d) + "</b><br>" +
+        (money ? usd(d.cost) + plus(d.unpriced) + " · " + tok(d.tokens) + " tokens"
                : (d.tokens||0).toLocaleString() + " tokens");
       tip.style.opacity = 1;
       var r = el.getBoundingClientRect(), t = tip.getBoundingClientRect();

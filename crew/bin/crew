@@ -1002,7 +1002,7 @@ typesafe.threshold('stuck_threshold', 0.8)))" 2>/dev/null)"
            bin/crew-code-open bin/crew-color bin/crew-digest bin/crew-feed bin/crew-listen bin/crew-reclaim bin/crew-resume bin/crew-sandbox bin/crew-sync sidebars/crew.swift config/cmux.jsonc config/dock.json \
            bin/crew-frame bin/crew-overlay config/dock.global.json \
            board/crew-board board/board.html board/render.js board/board_probe.mjs bin/crew-cmux-bin \
-           board/crew-board-intent board/crew-board-diag board/costs.py board/judgments.py board/intent.js board/cat_from_swift.py board/usage.tmpl.html \
+           board/crew-board-intent board/crew-board-diag board/costs.py board/pricing.py config/ccusage-pricing.json board/judgments.py board/intent.js board/cat_from_swift.py board/usage.tmpl.html \
            board/dp_engine.py hooks/hooks.json .claude-plugin/plugin.json bin/crew-plugin-root \
            tools/render_probe.py; do
     [ -f "$CREW_HOME/$f" ] && ok "$f" || bad "missing $f"
@@ -1131,6 +1131,16 @@ sys.exit(0 if any(k.startswith("bash-guard@") and v for k,v in (d.get("enabledPl
   else
     bad "intent selftest failed — python3 board/crew-board-intent --selftest"
   fi
+  # Pricing overrides are stopgaps for a lagging upstream price table, so the
+  # check that matters is the one that says when each can go. Compared with
+  # ccusage's own cached copy of that table; never fetched.
+  local _plvl _pmsg
+  while IFS=$'\t' read -r _plvl _pmsg; do
+    case "$_plvl" in
+      ok) ok "$_pmsg" ;; warn) warn "$_pmsg" ;; bad) bad "$_pmsg" ;; *) note "$_pmsg" ;;
+    esac
+  done < <(python3 "$CREW_HOME/board/pricing.py" --doctor 2>/dev/null \
+             || printf 'bad\tboard/pricing.py --doctor failed\n')
   # A running server keeps executing whatever code it started with. install.sh
   # and `crew apply` both report success without touching it, and crew-listen
   # only respawns it when it is DOWN, never when it is merely behind -- so an

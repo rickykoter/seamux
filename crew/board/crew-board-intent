@@ -1498,15 +1498,32 @@ def usage_data(days=21):
     if not exe:
         return {"error": "ccusage is not installed — npm i -g ccusage"}
 
+    # crew's published-price overrides, when there are any (pricing.py); [] --
+    # ccusage's own prices, exactly as before -- otherwise or on any failure.
+    try:
+        sys.path.insert(0, HERE)
+        import pricing as _pricing
+        cfg = _pricing.config_args()
+    except Exception:
+        cfg = []
+
     def ask(args):
         try:
-            p = subprocess.run([exe] + args + ["--json"], capture_output=True,
+            p = subprocess.run([exe] + args + cfg + ["--json"], capture_output=True,
                                text=True, timeout=45)
             return json.loads(p.stdout) if p.returncode == 0 and p.stdout.strip() else None
         except Exception:
             return None
 
     out = {}
+
+    # Models ccusage reported tokens for but could not price count as $0, so
+    # any dollar figure covering them is a floor. Each figure carries its own
+    # list, and the page marks it "+" -- never a silently low number.
+    def unpriced_of(row):
+        return sorted({b.get("modelName") or "?" for b in (row or {}).get("modelBreakdowns") or []
+                       if isinstance(b, dict) and b.get("missingPricing")})
+
     # One blocks call carries both the active window and the history the
     # default budget derives from, so the two cannot disagree.
     blocks = [b for b in ((ask(["blocks"]) or {}).get("blocks") or [])
@@ -1554,7 +1571,7 @@ def usage_data(days=21):
     rows = [r for r in (daily.get("daily") or []) if r.get("period")]
     rows.sort(key=lambda r: r["period"])
     out["daily"] = [{"period": r["period"], "tokens": r.get("totalTokens") or 0,
-                     "cost": r.get("totalCost") or 0}
+                     "cost": r.get("totalCost") or 0, "unpriced": unpriced_of(r)}
                     for r in rows[-days:]]
 
     weekly = ask(["weekly"]) or {}
@@ -1578,6 +1595,7 @@ def usage_data(days=21):
             "label": "week of " + str(cur["_p"]),
             "tokens": cur.get("totalTokens") or 0,
             "cost": cur.get("totalCost") or 0,
+            "unpriced": unpriced_of(cur),
             "budget": week_budget,
             "models": [{"name": k, "tokens": v}
                        for k, v in sorted(models.items(), key=lambda kv: -kv[1])],
@@ -1604,6 +1622,7 @@ def usage_data(days=21):
         out["month"] = {
             "label": now.strftime("%B %Y"),
             "spent": spent,
+            "unpriced": unpriced_of(cur_m),
             "budget": mbudget,
             "daysElapsed": now.day,
             "daysInMonth": days_in,
@@ -1624,8 +1643,11 @@ def usage_data(days=21):
                   for v in targets().values() if v.get("cwd")}
         cm = _costs.costs_for(list(by_cwd))
         rows_c = [{"name": by_cwd[c], "today": round(v["today"], 2),
-                   "week": round(v["week"], 2)}
-                  for c, v in cm.items() if v.get("week") or v.get("today")]
+                   "week": round(v["week"], 2),
+                   "unpricedToday": v.get("unpricedToday") or [],
+                   "unpriced": v.get("unpriced") or []}
+                  for c, v in cm.items()
+                  if v.get("week") or v.get("today") or v.get("unpriced")]
         if rows_c:
             out["costs"] = sorted(rows_c, key=lambda r: -r["week"])
     except Exception:
@@ -1798,6 +1820,11 @@ def selftest():
         # guard string is the contract with usage_data()'s "cache" key.
         check("...and renders cache re-writes only when facts exist",
               "D.cache" in tmpl and "cache-facts" in tmpl)
+        # A model ccusage cannot price counts as $0. A dollar figure covering
+        # one is a floor, and a page that prints it bare reads as exact.
+        check("...and marks a dollar figure ccusage could not fully price",
+              "plus(" in tmpl and "unpricedNote(" in tmpl and ".unpriced" in tmpl,
+              "usage_data() hands each figure an `unpriced` list")
         check("...and carries one unit per mode, not tokens beside dollars",
               "var money = " in tmpl and "fmtVal" in tmpl,
               "daily bars, the axis, the table twin and the tooltip all follow it")

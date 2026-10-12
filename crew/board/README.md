@@ -291,6 +291,101 @@ Nothing here computes a price. It shells out to `ccusage` — the hand-rolled
 pricing table this replaced was reading about **2.5× high**, because it guessed a
 rate for a model whose real price it had no way to know.
 
+### Pricing overrides, while upstream is behind
+
+ccusage prices from LiteLLM's model table, fetched at run time and cached in
+`~/.cache/ccusage/http-cache` (its built-in snapshot is only for offline runs).
+A new Claude model reads $0, or a wrong rate, until someone adds it there, and
+that can take days. ccusage has its own way round that, `pricingOverrides` in
+its config, so crew uses it instead of growing a price table again.
+
+**An override is a published price for a named model, never a guess.** It goes
+in only when upstream is missing it or has it wrong, it quotes Anthropic's
+pricing page and the date, and it comes out once upstream agrees. Two files,
+both shaped like a ccusage config holding only `defaults.pricingOverrides`:
+
+- `crew/config/ccusage-pricing.json`, shipped with crew. Empty is its normal
+  state.
+- `~/.config/cmux/crew-local/ccusage-pricing.json`, this machine's own. An entry
+  here replaces the shipped entry for the same model.
+
+```json
+{ "defaults": { "pricingOverrides": {
+  "claude-example-9": { "cacheReadInputTokenCost": 1e-7,
+                        "source": "Anthropic pricing, 2026-10-11" } } } }
+```
+
+Entries are keyed by the raw model name from the transcript, in dollars per
+token. For a model upstream lists, a partial entry is enough: ccusage merges it
+field by field with upstream's rates. Overriding only the cache-read rate moved
+a day's cost by exactly cache-read tokens × the difference, and nothing else.
+For a model upstream does not list, any field you leave out prices at $0, so
+give all four base fields.
+
+`crew doctor` compares each override with ccusage's cached copy of LiteLLM's
+table. It reads that cache and never fetches:
+
+- override equal to upstream: *now matches upstream — remove it* (a warning,
+  because the override is no longer needed);
+- different from upstream: a note quoting both values;
+- no upstream entry: a note that the override is filling a gap (a warning if
+  it leaves base fields at $0);
+- no cache yet: skipped, with a dim note.
+
+Four facts about ccusage 20.0.23 shaped this. The first three were measured
+against a fixture transcript; the fourth is its config schema:
+
+- **`--config` replaces ccusage's own config discovery. It does not merge.**
+  ccusage looks for `./.ccusage/ccusage.json`, then `ccusage.json` in
+  `$CLAUDE_CONFIG_DIR` (else `~/.config/claude`, then `~/.claude`), and uses
+  the first one it finds. Passing crew's file directly would silently drop your
+  own `ccusage.json`, with its timezone and your own overrides. So crew generates
+  the file it passes: your discovered config with crew's entries merged over
+  it, under a content-hashed name in `~/.cache/cmux-crew/ccusage/`. With no
+  override at all there is no `--config`, and ccusage runs exactly as before.
+- **One malformed value loses every override, silently, with exit 0.** A price
+  written as a string does it, and so does a non-entry key inside
+  `pricingOverrides`. So only known fields with numeric values reach ccusage,
+  and doctor names whatever was dropped.
+- An extra key *inside* an entry is tolerated. That is where `source`, `why`
+  and `added` go. They stay in crew's files and are stripped from the generated
+  one.
+- The override fields have one long-context tier, at **200K** tokens
+  (`…Above200kTokens`). A model whose price steps at a different threshold,
+  such as Haiku 5.5 at 100K, cannot be expressed as an override. LiteLLM does
+  list that tier (`…_above_100k_tokens`), but ccusage 20.0.23 does not apply it:
+  a fixture with one 150K-token Haiku 5.5 request priced at $0.021, the base
+  rate, where the published tier makes it $0.083. Long Haiku 5.5 prompts read
+  low until ccusage handles the 100K step; the fix is ccusage's, not crew's.
+
+Every ccusage call crew makes passes the same `--config`: `costs.py` (the board
+rows and the per-workspace card), `/usage`'s reports, and the status line.
+
+| model | field | override | upstream at time of adding | source | why |
+|---|---|---|---|---|---|
+| *example:* `claude-example-9` | `cacheReadInputTokenCost` | `1e-7` | `5e-8` | Anthropic pricing, 2026-10-11 | *example row, not a live override:* upstream had half the published rate |
+
+There are no live overrides. A row goes in with its upstream value at the time,
+and comes out when doctor says upstream matches.
+
+### Usage ccusage could not price
+
+When ccusage has no price for a model, it counts that model's tokens as $0 and
+says so: `missingPricing: true` on the model's breakdown, which its JSON always
+carries (no `--breakdown` needed), and `unpricedModels` in the totals. Any
+dollar figure covering that model is then a floor, and **crew never prints a
+floor as if it were exact.**
+
+- A board row shows `$12.30+`, with a title naming the model. It shows even at
+  `$0.00+`: a row burning only an unpriced model is not a quiet row.
+- On `/usage`, the month, daily, week and per-workspace figures carry the same
+  `+`, and each card adds one line naming the model.
+- The status line's month figure gets the `+` and nothing more. It has no room
+  for the name, and the other two surfaces show it.
+
+Token counts are exact either way, so the subscription framing is unaffected.
+An override (above) clears the `+` until upstream catches up.
+
 ### Two billing models, and they want different pages
 
 Everything above assumes a subscription, where the binding constraint is the 5h
