@@ -247,9 +247,39 @@ mood class crosses the wire.
 
 | mood | when | what it does |
 |---|---|---|
-| `swat` | a human is being waited on | crouches, lunges 3px on alternate seconds, *"hey. hey. HEY."* |
-| `pace` | anything working **or** broken | walks the **full width** of the shelf, turns around at the halfway point, *"supervising"* |
-| `nap` | nothing is happening | breathes on a 6s cycle, three z's drift up, *"off duty"* |
+| `swat` | a human is being waited on | crouches, lunges 3px on alternate seconds, *"hey. hey. HEY."*, *"{row} is waiting on you"* |
+| `pace` | anything working **or** broken | walks the **full width** of the shelf, turns around at the halfway point, *"supervising"*, *"keeping an eye on {row}"* |
+| `nap` | nothing is happening | breathes on a 6s cycle, three z's drift up, *"off duty"*, *"all quiet. nap time."* |
+
+**What it says** (`#says`) rotates through a few lines per mood. The first of
+each is the sidebar's `catSays()`; the rest are the board's own, and some name
+the row the cat is watching (the first waiting row, or the first broken or
+working one). The line is picked from the push's stamp, so it holds still for a
+whole push and moves on with the next one rather than flickering.
+
+**It reacts**, once, to what changed since the last push (`data-prev` remembers
+each row's tier):
+
+| reaction | when | what it does |
+|---|---|---|
+| `hop` | a row turned done | crouches, jumps, lands; a pixel heart rises. *"{row} is done!"* |
+| `stretch` | the last thing needing you went away | one long stretch, then whatever the mood is now |
+| `perk` | a row newly needs you | ears up. *"ears up: {row}"* |
+
+One at a time, in that order, and only for the push that caused it; never on a
+page's first push, when every row is new. `render.js` adds the reaction's class
+beside the mood. Each plays once and hides the mood's own frames for exactly as
+long, so the mood is simply back when it ends and nothing has to take the class
+off in time.
+
+Those poses are **the board's own**. `cat_poses.py` draws them as ASCII grids,
+in crew.swift's 3px cells and palette, and writes them into a second marker
+block nested inside the sprite, so they walk and turn with the cat.
+`cat_from_swift.py` emits that block empty, keeps it when it rewrites the
+sprite, and leaves it out of its `--check`: a change to the sidebar's cat does
+not reach them, and nothing checks them against it. `python3 cat_poses.py
+--sheet out.html` draws every pose, old and new, side by side; `--check` runs
+in the probe.
 
 `pace` covers broken as well as working because the sidebar's `catMood()` does
 (`bucket == 1 || bucket == 5`) — the row rails already say which, and the cat is
