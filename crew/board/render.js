@@ -48,7 +48,7 @@ function __boardRender(d) {
     // far". A dial that HAS a percentage never spins -- it already answered.
     var indet = frac === null || frac === undefined;
     var head = '<svg class="dial' + (indet ? " pending" : "") +
-      '" width="32" height="32" viewBox="0 0 32 32">' +
+      '" width="26" height="26" viewBox="0 0 32 32">' +
       '<circle cx="16" cy="16" r="' + r + '" fill="none" stroke="#2f3639" stroke-width="3"/>';
     // A plan with no increments has nothing to fill. Show a dot, not a lying 0%.
     if (indet) {
@@ -167,12 +167,12 @@ function __boardRender(d) {
   // catSays(), verbatim.
   var SAYS = { swat: "hey. hey. HEY.", pace: "supervising", nap: "off duty" };
 
-  // The tally: the same five tiers the ranking uses, counted. Labelled by what
-  // the tier MEANS rather than by its internal name -- "broken" is the word you
-  // would use, "wilt" is the word the shader used. Ordered by urgency, like the
-  // list below it, so the eye travels the same way in both.
-  var TIERS = [["attend", "need you"], ["wilt", "broken"], ["running", "working"],
-               ["done", "to close"], ["quiet", "quiet"]];
+  // The tally: the tiers between the headline and the quiet divider, counted.
+  // Attend is the headline's own number and quiet is the divider's, so neither
+  // is repeated on the line they share. Labelled by what the tier MEANS rather
+  // than by its internal name -- "broken" is the word you would use, "wilt" is
+  // the word the shader used. Ordered by urgency, like the list below it.
+  var TIERS = [["wilt", "broken"], ["running", "working"], ["done", "to close"]];
 
   function tally(rows) {
     var n = {};
@@ -196,17 +196,91 @@ function __boardRender(d) {
     return v.length > n ? "…" + v.slice(v.length - (n - 1)) : v;
   }
 
-  // The facts line: branch, dirty marker, PR number. Each is its own target
-  // rather than a segment of the grey meta string it used to be folded into.
-  function facts(a) {
+  // The signals carry the Swift sidebar's palette, which was picked for a
+  // near-black ground. On a card some of it falls under 4.5:1 -- the red is
+  // 3.8, the draft grey 3.2 -- so each colour is mixed toward white just far
+  // enough to pass against the lightest card ground. The bright ones come back
+  // unchanged. Anything that is not a plain hex comes back empty, and the
+  // signal inherits the footer's grey: the value lands in a style attribute.
+  var CARD = [59, 65, 54];                       // --bg-attend, the lightest card
+  function lum(c) {
+    var v = c.map(function (x) {
+      x /= 255;
+      return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+  }
+  function lift(hex) {
+    var m = /^#([0-9a-f]{6})$/i.exec(String(hex || ""));
+    if (!m) return "";
+    var n = parseInt(m[1], 16), c = [n >> 16, (n >> 8) & 255, n & 255];
+    var ground = lum(CARD);
+    for (var k = 0; k <= 20; k++) {
+      var t = k / 20, mix = c.map(function (x) { return Math.round(x + (255 - x) * t); });
+      if ((lum(mix) + 0.05) / (ground + 0.05) >= 4.6) {
+        return k ? "#" + mix.map(function (x) { return (x < 16 ? "0" : "") + x.toString(16); }).join("")
+                 : "#" + m[1].toLowerCase();
+      }
+    }
+    return "#ffffff";
+  }
+
+  function chipTip(c) {
+    return TIP[c] || TIP[String(c).replace(/\s+\d+$/, "")] || c;
+  }
+
+  // The button row. The first chip is the verb that resolves the row -- the
+  // collector orders them that way -- and it is filled only on the tiers that
+  // ask something of you. Actionable signals follow as ghost buttons in their
+  // own colour; the collector has already dropped any that repeat a chip.
+  var FILLED = { attend: true, wilt: true, done: true };
+  function buttons(a) {
+    var out = (a.chips || []).map(function (c, i) {
+      return '<span class="chip' + (i === 0 && FILLED[a.kind] ? " pri" : "") +
+        '" title="' + esc(chipTip(c)) + '">' + esc(c) + "</span>";
+    });
+    (a.signals || []).forEach(function (e) {
+      if (!e.a) return;
+      var col = lift(e.c);
+      out.push('<span class="chip sig"' + (col ? ' style="color:' + col + '"' : "") +
+        ' data-a="' + esc(e.a) + '"' +
+        (e.x !== undefined && e.x !== null && e.x !== "" ? ' data-x="' + esc(e.x) + '"' : "") +
+        ' title="' + esc(e.h) + '">' + esc(e.t) + "</span>");
+    });
+    return out.length ? '<div class="chips">' + out.join("") + "</div>" : "";
+  }
+
+  // Today's spend, when known and non-zero. Dimmer under a dollar: the point
+  // is spotting the row that is quietly burning, not pricing every row.
+  // A model ccusage could not price counts as $0, so its tokens make the
+  // figure a floor: it gets a "+" and a title naming the model, and shows
+  // even at $0 -- a row burning only an unpriced model is not a quiet row.
+  function cost(a) {
+    var unpriced = Array.isArray(a.cost_unpriced) ? a.cost_unpriced : [];
+    var c = typeof a.cost === "number" ? a.cost : 0;
+    if (!(c > 0 || unpriced.length)) return "";
+    var amt = c >= 100 ? Math.round(c) : c.toFixed(2);
+    var tip = "Claude spend in this worktree today (ccusage, ~5min cache)";
+    if (unpriced.length) {
+      tip += ". At least this much: ccusage has no price for " +
+        unpriced.join(", ") + ", so its tokens count as $0";
+    }
+    return '<span class="cost' + (c < 1 && !unpriced.length ? " small" : "") +
+      '" title="' + esc(tip) + '">$' + amt + (unpriced.length ? "+" : "") + "</span>";
+  }
+
+  var DIRTY = '<span class="dirty" title="Uncommitted changes in this worktree">●</span>';
+
+  // The footer: what you recognise a row by, in one mono line. Branch, PR and
+  // issue are targets; status signals, progress and spend are read, not
+  // clicked, so they do not react.
+  function foot(a) {
     var out = "";
     if (a.branch) {
       out += '<span class="branch" data-a="code" title="Open this worktree in VS Code — ' +
-        esc(a.branch) + '">' + esc(headClip(a.branch, 34)) + "</span>";
+        esc(a.branch) + '">' + esc(headClip(a.branch, 30)) + "</span>";
     }
-    if (a.dirty) {
-      out += '<span class="dirty" title="Uncommitted changes in this worktree">●</span>';
-    }
+    if (a.dirty) out += DIRTY;
     if (a.pr) {
       out += '<span class="pr' + (a.pr_state === "open" ? " open" : "") +
         '" data-a="pr" title="Open the pull request in your default browser">' +
@@ -218,36 +292,15 @@ function __boardRender(d) {
       out += '<span class="issue" data-a="issue" title="Open the linked issue in your default browser">' +
         esc(a.issue) + "</span>";
     }
-    // Today's spend, when known and non-zero. Dim under a dollar: the point
-    // is spotting the row that is quietly burning, not pricing every row.
-    // A model ccusage could not price counts as $0, so its tokens make the
-    // figure a floor: it gets a "+" and a title naming the model, and shows
-    // even at $0 -- a row burning only an unpriced model is not a quiet row.
-    var unpriced = Array.isArray(a.cost_unpriced) ? a.cost_unpriced : [];
-    var cost = typeof a.cost === "number" ? a.cost : 0;
-    if (cost > 0 || unpriced.length) {
-      var amt = cost >= 100 ? Math.round(cost) : cost.toFixed(2);
-      var tip = "Claude spend in this worktree today (ccusage, ~5min cache)";
-      if (unpriced.length) {
-        tip += ". At least this much: ccusage has no price for " +
-          unpriced.join(", ") + ", so its tokens count as $0";
-      }
-      out += '<span class="cost' + (cost < 1 && !unpriced.length ? " small" : "") +
-        '" title="' + esc(tip) + '">$' + amt + (unpriced.length ? "+" : "") + "</span>";
-    }
-    return out ? '<div class="facts">' + out + "</div>" : "";
-  }
-
-  // The signals strip. Entries carrying an action are click targets; the rest are
-  // status and say so by not reacting -- the affordance rule the Swift board set.
-  function sigs(list) {
-    if (!list || !list.length) return "";
-    return '<div class="sigs">' + list.map(function (e) {
-      return '<span class="sig' + (e.a ? " act" : "") + '" style="color:' + esc(e.c) +
-        '"' + (e.a ? ' data-a="' + esc(e.a) + '"' : "") +
-        (e.x !== undefined && e.x !== null ? ' data-x="' + esc(e.x) + '"' : "") +
+    (a.signals || []).forEach(function (e) {
+      if (e.a) return;
+      var col = lift(e.c);
+      out += '<span class="sig"' + (col ? ' style="color:' + col + '"' : "") +
         ' title="' + esc(e.h) + '">' + esc(e.t) + "</span>";
-    }).join("") + "</div>";
+    });
+    if (a.meta) out += '<span class="meta">' + esc(a.meta) + "</span>";
+    out += cost(a);
+    return out ? '<div class="foot">' + out + "</div>" : "";
   }
 
   // A blocked ask has a deadline. The bar is a CSS animation whose duration IS
@@ -299,29 +352,41 @@ function __boardRender(d) {
     // prompt, and the CSS clamps it to one line, so the hover is the only way to
     // read the whole thing.
     // --own is the worktree's identity colour, the same hex Peacock paints the
-    // VS Code window with. Worn as an inner stripe so the outer rail can keep
-    // saying which tier the row is in -- the Swift row only had room for one and
-    // spent it on identity.
-    var own = a.color ? ' style="--own:' + esc(a.color) + '"' : "";
+    // VS Code window with. Worn as a dot beside the name so the rail can keep
+    // saying which tier the row is in. Only a plain hex gets through: it lands
+    // in a style attribute.
+    var hex = /^#[0-9a-f]{3,8}$/i.test(a.color || "") ? a.color : "";
+    var own = hex ? ' style="--own:' + hex + '"' : "";
     // The workspace you are standing in. Marked, not moved: promoting it to the
     // top would fight the ranking, which is the one thing this board is for.
     var here = a.selected ? " here" : "";
     // Children sit indented under their family's parent (or its label).
     var fam = a.family ? " fam" + (a.famkid ? " kid" : "") : "";
-    return sect + '<div class="row ' + a.kind + ripple + inert + here + fam +
-      (a.color ? " owned" : "") +
-      '" data-id="' + esc(a.id) + '" title="' + esc(a.name) + '"' + own + ">" +
-      dial(a.frac, a.kind) +
-      '<div class="main"><div class="hd"><span class="nm">' + esc(a.name) + "</span>" +
-      '<span class="badge">' + esc(a.badge) + "</span></div>" +
+    var open = '<div class="row ' + a.kind + ripple + inert + here + fam +
+      (hex ? " owned" : "") +
+      '" data-id="' + esc(a.id) + '" title="' + esc(a.name) + '"' + own + ">";
+    var dot = hex ? '<span class="own"></span>' : "";
+    // No empty badge: a bare outline pill was the quiet row's second line.
+    var badge = a.badge ? '<span class="badge">' + esc(a.badge) + "</span>" : "";
+    var name = '<span class="nm">' + esc(a.name) + "</span>";
+    // A quiet row is one line and the whole of it is the target, which jumps.
+    // Its other chips (diff, pr) stay, as ghosts at the end of the line: a row
+    // badged "pr open" with no way to open the PR was the first cut of this.
+    // When it has them, they say what the badge would, so the badge steps aside
+    // for the name. Spend still shows, because a row that is quietly burning
+    // money is the one quiet row worth noticing.
+    if (a.kind === "quiet") {
+      var acts = (a.chips || []).filter(function (c) { return c !== "jump"; });
+      var qb = acts.length ? '<span class="chips">' + acts.map(function (c) {
+        return '<span class="chip" title="' + esc(chipTip(c)) + '">' + esc(c) + "</span>";
+      }).join("") + "</span>" : "";
+      return sect + open + '<div class="top">' + dot + name + (a.dirty ? DIRTY : "") +
+        cost(a) + (qb || badge) + "</div></div>";
+    }
+    return sect + open +
+      '<div class="top">' + dial(a.frac, a.kind) + dot + name + badge + "</div>" +
       (a.said ? '<p class="said">' + said(a.said) + "</p>" : "") +
-      facts(a) + sigs(a.signals) + feed(a) +
-      (a.chips && a.chips.length ? '<div class="chips">' + a.chips.map(function (c, i) {
-        return '<span class="chip' + (i === 0 && a.kind === "attend" ? " lead" : "") +
-          '" title="' + esc(TIP[c] || TIP[String(c).replace(/\s+\d+$/, "")] || c) + '">' +
-          esc(c) + "</span>"; }).join("") + "</div>" : "") +
-      (a.meta ? '<div class="meta">' + esc(a.meta) + "</div>" : "") +
-      "</div></div>";
+      feed(a) + buttons(a) + foot(a) + "</div>";
   }).join("") :
     '<div class="empty">Nothing is waiting on you.<br>' + esc(d.quiet || "") + "</div>";
   // With quiet workspaces now rendered as rows, #quiet is only reached when there
@@ -347,9 +412,10 @@ function __boardRender(d) {
   // "all clear" claimed more than this number knows: it counts the attend tier
   // only, so it was printing ALL CLEAR directly above a tally reading "5 broken".
   // The headline answers exactly one question -- is anything blocked on a human --
-  // and the tally beneath it answers the rest.
-  $("need").textContent = n ? n + (n === 1 ? " needs you" : " need you")
-                            : "nothing needs you";
+  // and the tally beside it answers the rest.
+  var need = $("need");
+  need.textContent = n ? n + (n === 1 ? " needs you" : " need you") : "nothing needs you";
+  need.className = n ? "on" : "";
   $("quiet").textContent = tail;
   // The news footer. Only its contents are written: the <details> itself is
   // never replaced, so whether you left it open survives every push without

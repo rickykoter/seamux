@@ -10,12 +10,12 @@
 
   The contract with render.js, and nothing more:
     #rows    innerHTML target; also carries data-prev for cross-push ripple memory
-    #need    "N need you" / "all clear"
+    #need    "N need you" / "nothing needs you"; .on while anything does
     #quiet   the collapsed tail
     #src     where the snapshot came from
     #stamp   when
     #cat     the whimsy sprite; render.js sets its mood class, nothing else
-    #tally   how many rows are in each state
+    #tally   how many rows are broken, working and waiting to close
     #says    what the cat has to say about that mood
     #news    the news footer, a <details> render.js never replaces -- so its open
              state survives every push; render.js sets .hidden and fills
@@ -34,19 +34,34 @@
   Classes render.js emits: .row + .attend/.running/.wilt/.done/.quiet + .ripple,
   .enter (a row that was not on the previous push), .up/.down (a row that changed
   position, animated with the Web Animations API rather than CSS),
-  svg.dial, .main, .hd, .nm, .badge, .said (may contain <b> and <code>), .chips,
-  .chip + .lead, .meta, .empty, .facts > .branch/.dirty/.pr, .sigs > .sig + .act,
-  .feed > .feedbar, .owned (which reads --own, the worktree's Peacock colour),
-  .fam + .kid on a deep-plan family's rows, and a .famhd label before a family
-  whose parent has no row.
-  Palette is Everforest, matching render.js's COL map; the signals strip carries
-  the Swift sidebar's palette instead, which the collector supplies per entry.
+  .top > svg.dial + .own + .nm + .badge, .said (may contain <b> and <code>),
+  .feed > .feedbar, .chips > .chip (+ .pri, the one filled button; + .sig, an
+  actionable signal), .foot > .branch/.dirty/.pr/.issue/.sig/.meta/.cost,
+  .owned + .here, .empty, .sect, .fam + .kid on a deep-plan family's rows, and a
+  .famhd label before a family whose parent has no row.
+  Palette is Everforest, matching render.js's COL map; the signals carry the Swift
+  sidebar's palette instead, which the collector supplies per entry and render.js
+  lifts until it reads on a card.
 -->
 <style>
+/* Every colour that is ever a `color:` below is a token here, and
+   board_probe.mjs measures each one against every ground: 4.5:1 or the probe
+   fails. The old board lost its meta line this way -- #5c6a72 on a card is
+   1.9:1 -- and nothing noticed. */
 :root{
-  --bg:#2d353b; --bg1:#343f44; --bg2:#3d484d; --line:#2f3639;
-  --fg:#d3c6aa; --grey:#859289; --grey2:#5c6a72;
-  --attend:#dfa000; --running:#7fbbb3; --wilt:#e67e80; --done:#a7c080; --quiet:#5c6a72;
+  /* Grounds: the page, a card, an attend card. */
+  --bg:#2d353b; --bg1:#343f44; --bg-attend:#3b4136;
+  --bg2:#3d484d; --line:#414b50; --edge:#56636a;
+  /* Text. fg names things, fg2 is what an agent said, grey is everything around it. */
+  --fg:#d3c6aa; --fg2:#b8b0a0; --grey:#a3ada5;
+  /* Tiers. The rail, the dial and the filled button wear these. Wilt's red is
+     3.9:1 on a card, so where it is text it uses its lighter twin. */
+  --attend:#dfa000; --running:#7fbbb3; --wilt:#e67e80; --done:#a7c080; --quiet:#7a8478;
+  --wilt-tx:#f0a0a0;
+  /* The footer's own colours: an open PR, a linked issue, uncommitted work. */
+  --pr-open:#4ADE80; --issue:#b9a5fb; --dirty:#F5A524;
+  /* Text on a filled button, measured against each tier colour instead. */
+  --ink:#1e2326;
 }
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--fg)}
@@ -64,19 +79,19 @@ body{display:flex;flex-direction:column;min-height:100vh;
    want in view is what is waiting on you. Negative side margins cancel the body's
    padding so the bar -- and the cat's shelf inside it -- reach both edges. */
 header{position:sticky;top:0;z-index:5;background:var(--bg);
-  margin:0 -11px 10px;padding:0 11px 7px;border-bottom:1px solid var(--line)}
+  margin:0 -11px 9px;padding:0 11px 5px;border-bottom:1px solid var(--line)}
 
-/* Wraps rather than collides. The count and the timestamp are both nowrap and
-   neither can usefully shrink, so in a narrow Dock the timestamp drops to its own
-   line instead of printing on top of the count -- which is what it did before,
-   and it was unreadable. */
-.hud{display:flex;justify-content:space-between;align-items:center;gap:4px 8px;
-  flex-wrap:wrap;min-width:0}
-#need{font:600 11px/1 system-ui;letter-spacing:.1em;text-transform:uppercase;color:var(--fg);
-  white-space:nowrap;flex:none}
-.right{display:flex;gap:8px;align-items:baseline;font:500 10px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
-  color:var(--grey2);white-space:nowrap;margin-left:auto}
-#src{opacity:.85}
+/* Two lines under the shelf. The first answers the board's question: the
+   headline, then what else is going on, counted. The second is the cat talking,
+   with the timestamp at its end. Both wrap rather than collide: nothing here is
+   worth printing on top of anything else. */
+.hud{display:flex;align-items:baseline;gap:2px 10px;flex-wrap:wrap;min-width:0}
+#need{font:700 11.5px/1.35 system-ui;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--fg);white-space:nowrap;flex:none}
+#need.on{color:var(--attend)}
+.hud2{display:flex;align-items:baseline;gap:8px;margin-top:1px;min-width:0}
+.right{display:flex;gap:8px;align-items:baseline;font:500 10.5px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;
+  color:var(--grey);white-space:nowrap;margin-left:auto;flex:none}
 
 /* --- the cat ----------------------------------------------------------- */
 /* The crew sidebar's tuxedo cat, ported pixel-for-pixel by cat_from_swift.py --
@@ -94,18 +109,11 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
    a 1Hz sprite cannot be driven by the renderer. render.js sets ONE class.
    Whimsy's rule still holds -- nap is the resting state and its only motion is a
    slow breath and the z's, which is what "nothing is happening" should look like. */
-/* The shelf it paces along -- and the reason the palette survives the port.
-   catColor()'s charcoal body was chosen against the sidebar's near-black
-   background ("a true-black cat is a hole in the screen"). The board's ground is
-   #2d353b, which is LIGHTER than charcoal, so on it the body disappeared and only
-   the white bib and paws read -- the cat looked like four floating dashes. A dark
-   plinth restores the contrast the art was drawn for without touching a pixel of
-   it, and crew.swift's own comments call this thing a shelf. */
 /* The shelf spans the bar edge to edge; the cat is positioned along it, so the
    walk covers the whole width instead of a 35px stub. It also keeps the palette
    honest -- catColor()'s charcoal body was chosen against a near-black ground and
    is LIGHTER than this board's, so without the plinth only the white bib reads. */
-#shelf{position:relative;height:30px;margin:0 -11px 7px;overflow:hidden;
+#shelf{position:relative;height:30px;margin:0 -11px 4px;overflow:hidden;
   background:#1e2326;box-shadow:inset 0 -1px 0 0 #171c1f}
 #cat{position:absolute;left:0;bottom:0;height:30px;width:auto;overflow:visible}
 #cat .pose{visibility:hidden}
@@ -149,138 +157,134 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
 #cat.nap .zz{animation:drift 6s linear infinite}
 #cat.nap .z1{animation-delay:2s} #cat.nap .z2{animation-delay:4s}
 
-/* What the cat has to say about it. */
-/* First thing to give up its space when the Dock is narrow: the count and the
-   timestamp both matter more than the cat's commentary. */
-/* How many things are in each state, which is the question the ranking answers
-   one row at a time. Only non-zero states appear: a row of zeroes is noise, and
-   the absence of "broken" is easier to read than "0 broken". */
-#tally{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:5px;
-  font:500 10px/1.4 system-ui;color:var(--grey2)}
+/* How many things are broken, working and waiting to close -- folded onto the
+   headline's line, which already says how many need you. Quiet is not counted
+   here either: the "quiet · N" divider in the list says it where it applies.
+   Only non-zero states appear: the absence of "broken" reads faster than
+   "0 broken". */
+#tally{display:inline-flex;flex-wrap:wrap;gap:2px 9px;
+  font:500 11px/1.35 system-ui;color:var(--grey)}
 #tally:empty{display:none}
 .tl{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
-.tl::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+.tl::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--dot);flex:none}
 .tl b{font-weight:700;font-variant-numeric:tabular-nums;color:var(--fg)}
-.tl.attend{color:var(--attend)} .tl.wilt{color:var(--wilt)}
-.tl.running{color:var(--running)} .tl.done{color:var(--done)}
-.tl.quiet{color:var(--quiet)}
+.tl.wilt{--dot:var(--wilt)} .tl.running{--dot:var(--running)} .tl.done{--dot:var(--done)}
+.tl.attend{--dot:var(--attend)} .tl.quiet{--dot:var(--quiet)}
 
-#says{font:9px/1 system-ui;color:var(--grey2);opacity:.55;white-space:nowrap;
+/* What the cat has to say about it. A sentence, so it is set like one: full
+   strength, full size, clipped only when the Dock is too narrow for it. */
+#says{flex:1;font:italic 11.5px/1.35 system-ui;color:var(--fg2);white-space:nowrap;
   min-width:0;overflow:hidden;text-overflow:ellipsis}
 
-/* --- a row ------------------------------------------------------------ */
-.row{display:flex;gap:9px;align-items:flex-start;background:var(--bg1);
-  border:1px solid var(--line);border-left:3px solid var(--quiet);
-  border-radius:8px;padding:9px 10px;margin-bottom:6px}
-.row.attend{border-left-color:var(--attend);background:#39403c}
-.row.running{border-left-color:var(--running)}
-.row.wilt{border-left-color:var(--wilt)}
-.row.done{border-left-color:var(--done)}
-/* The worktree's own colour -- the same hex Peacock paints its VS Code window --
-   as an inner stripe, so the outer rail is still free to say which tier the row
-   is in. An inset shadow rather than another element: it spans the full height
-   without a height constant that every new strip would invalidate. */
-.row.owned{box-shadow:inset 3px 0 0 0 var(--own)}
-.row.quiet.owned{box-shadow:inset 2px 0 0 0 var(--own)}
-/* Where you are standing. The Swift row said this with a stronger background
-   (0.18 vs 0.05) and a semibold title; here it is a full ring in the worktree's
-   OWN colour, so the card, the VS Code title bar and the pane frame are all
-   wearing the same hex and "this one is mine" needs no reading.
-   Falls back to the tier rail's grey when a workspace has no colour set. */
-.row.here{background:#3f4a4f}
-.row.here .nm{color:#fff}
-.row.here.owned{box-shadow:inset 3px 0 0 0 var(--own),0 0 0 1.5px var(--own)}
-.row.here:not(.owned){box-shadow:0 0 0 1.5px var(--quiet)}
-/* A selected quiet row is not quiet any more -- it is the one you are in. */
-.row.quiet.here{opacity:1}
-.row.quiet{border-left-color:var(--quiet);opacity:.62;padding:5px 8px}
-.row.quiet:hover{opacity:1}
-/* A quiet row is one line. Names here are often a full shell prompt, so the name
-   clamps and the row carries title= for the rest. */
-.row.quiet .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:15em}
-.row.quiet .dial{width:20px;height:20px}
-.sect{color:var(--quiet);font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;
-  margin:12px 0 4px;padding-top:7px;border-top:1px solid var(--line)}
-/* A deep-plan family: the parent row leads, its children sit indented beneath
-   it behind a thin elbow, so the group reads as one thing at one tier. */
-.row.kid{margin-left:16px;position:relative}
-.row.kid::before{content:"";position:absolute;left:-11px;top:-7px;height:22px;width:8px;
-  border-left:1px solid var(--line);border-bottom:1px solid var(--line);border-bottom-left-radius:4px}
-.famhd{color:var(--quiet);font-size:9.5px;letter-spacing:.06em;margin:8px 0 3px 2px}
+/* --- a card ------------------------------------------------------------ */
+/* One rail, and it says the tier. The worktree's own colour used to be a second
+   stripe beside it; two stripes read as one thick smudge at Dock width, so the
+   identity colour is a dot beside the name now (.own). --c is the tier colour
+   the rail, the badge and the filled button all read. */
+.row{--c:var(--quiet);position:relative;background:var(--bg1);
+  border-left:4px solid var(--c);border-radius:9px;padding:9px 10px 9px 9px;margin-bottom:7px}
+.row.attend{--c:var(--attend);background:var(--bg-attend)}
+.row.running{--c:var(--running)}
+.row.wilt{--c:var(--wilt)}
+.row.done{--c:var(--done)}
 
-/* Fires once, on the transition into done -- render.js gates it with data-prev. */
-@keyframes ripple{0%{box-shadow:0 0 0 0 rgba(167,192,128,.5)}100%{box-shadow:0 0 0 14px rgba(167,192,128,0)}}
-.row.ripple{animation:ripple 900ms ease-out 1}
-
-.dial{flex:none;margin-top:1px}
-.main{min-width:0;flex:1}
-.hd{display:flex;gap:6px;align-items:baseline;flex-wrap:wrap}
-.nm{font-weight:600;font-size:12.5px;color:var(--fg);min-width:0;
+.top{display:flex;align-items:center;gap:7px;min-width:0}
+.dial{flex:none;width:26px;height:26px}
+.own{flex:none;width:8px;height:8px;border-radius:50%;background:var(--own)}
+.nm{flex:1;min-width:0;font:600 13.5px/1.3 system-ui;color:var(--fg);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.badge{font:600 9px/1.6 system-ui;letter-spacing:.06em;text-transform:uppercase;
-  padding:0 6px;border-radius:20px;border:1px solid currentColor;flex:none;color:var(--grey)}
+.badge{flex:none;font:700 10px/1.3 system-ui;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--grey);white-space:nowrap}
 .attend .badge{color:var(--attend)} .running .badge{color:var(--running)}
-.wilt .badge{color:var(--wilt)} .done .badge{color:var(--done)}
+.wilt .badge{color:var(--wilt-tx)} .done .badge{color:var(--done)}
 
-.said{margin:4px 0 0;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;
-  color:var(--grey);overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;
-  -webkit-box-orient:vertical;word-break:break-word}
+/* What the agent said: proportional, because it is a sentence, and two lines at
+   most, because the card's job is to say what is next and the rest is a click
+   away. */
+.said{margin:6px 0 0;font-size:13px;line-height:1.4;color:var(--fg2);
+  overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+  word-break:break-word}
 .said b{color:var(--fg);font-weight:600}
-.said code{color:var(--running);font-size:11.5px}
+.said code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--running)}
 
-/* --- the facts line: branch, dirty, PR --------------------------------- */
-/* These were folded into the grey .meta string, where they were both
-   unclickable and, as reported, hard to even see. They are their own targets
-   now, and they are underlined because that is what says "this opens
-   something" -- the same signal the Swift row used. */
-.facts{display:flex;gap:7px;align-items:baseline;margin-top:6px;min-width:0}
-.branch{font:10.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;
-  color:var(--grey);text-decoration:underline;text-decoration-color:var(--grey2);
-  text-underline-offset:2px;cursor:pointer;min-width:0;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Where you are standing. A ring in the worktree's OWN colour, so the card, the
+   VS Code title bar and the pane frame are all wearing the same hex. The card's
+   ground does not change: a lighter ground was the one place text fell under
+   4.5:1. Falls back to grey when a workspace has no colour set. */
+.row.here{box-shadow:0 0 0 2px var(--own,var(--grey))}
+
+/* --- the button row ---------------------------------------------------- */
+/* Every target is at least 28px tall: these are things you click while doing
+   something else. The first chip is the one that resolves the row, and on the
+   tiers that ask something of you -- attend, wilt, done -- it is filled. A
+   working card asks nothing, so everything on it stays a ghost; filling every
+   card's first button turned the board into a wall of colour. Actionable
+   signals (CI, allow, deny, a ticket) join the row as ghosts in their own
+   colour. Labels stay bare text: intent.js reads a chip's verb off its label. */
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.chip{display:inline-flex;align-items:center;min-height:28px;padding:0 11px;border-radius:7px;
+  border:1px solid var(--edge);background:transparent;color:var(--fg);
+  font:600 12.5px/1 system-ui;white-space:nowrap;user-select:none;-webkit-user-select:none}
+.chip.pri{background:var(--c);border-color:var(--c);color:var(--ink)}
+.chip.sig{font-weight:500}
+
+/* --- the footer -------------------------------------------------------- */
+/* Branch, uncommitted work, PR, issue, status signals, progress, spend: the
+   facts you recognise a row by, in one mono line that wraps. The links are
+   24px tall -- smaller than a button, still a target -- and underlined, because
+   that is what says "this opens something". Status signals are plain text in
+   their own colour and do not react. */
+.foot{display:flex;flex-wrap:wrap;align-items:center;gap:0 9px;margin-top:6px;min-width:0;
+  font:11.5px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--grey);
+  font-variant-numeric:tabular-nums}
+.foot>span{min-height:24px;line-height:24px;white-space:nowrap;min-width:0;max-width:100%;
+  overflow:hidden;text-overflow:ellipsis}
+.branch,.pr,.issue{cursor:pointer;text-decoration:underline;text-decoration-thickness:1px;
+  text-underline-offset:3px}
+.branch{color:var(--fg2);text-decoration-color:var(--edge)}
 .branch:hover{color:var(--fg);text-decoration-color:var(--fg)}
-.dirty{font-size:8px;color:#F5A524;flex:none;line-height:1.9}
-.pr{font:10.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;
-  color:var(--grey2);text-decoration:underline;text-decoration-color:currentColor;
-  text-underline-offset:2px;cursor:pointer;flex:none;font-variant-numeric:tabular-nums}
-.pr.open{color:#4ADE80}
-.pr:hover{filter:brightness(1.3)}
-.issue{font:10.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:#A78BFA;
-  text-decoration:underline;text-decoration-color:currentColor;text-underline-offset:2px;
-  cursor:pointer;flex:none;font-variant-numeric:tabular-nums}
-.issue:hover{filter:brightness(1.3)}
-.cost{font:10.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;
-  color:var(--grey2);flex:none;margin-left:auto;font-variant-numeric:tabular-nums}
-.cost.small{opacity:.55}
-
-/* --- the signals strip ------------------------------------------------- */
-/* Colour comes from the collector, which took the palette verbatim from the
-   Swift sidebar. Entries with an action get a pointer; the rest are status and
-   are deliberately unreactive. */
-.sigs{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;align-items:baseline}
-.sig{font:500 10px/1.5 system-ui;white-space:nowrap;opacity:.92}
-.sig.act{cursor:pointer;padding:1px 5px;border-radius:4px;
-  background:color-mix(in srgb,currentColor 13%,transparent)}
-.sig.act:hover{background:color-mix(in srgb,currentColor 24%,transparent);
-  text-decoration:underline}
+.pr{color:var(--grey);text-decoration-color:currentColor}
+.pr.open{color:var(--pr-open)}
+.issue{color:var(--issue);text-decoration-color:currentColor}
+.pr:hover,.issue:hover{filter:brightness(1.25)}
+.dirty{color:var(--dirty);font-size:9px}
+.cost{margin-left:auto;color:var(--fg2)}
+.cost.small{color:var(--grey)}
 
 /* --- the reply window -------------------------------------------------- */
 /* The animation's DURATION is the time remaining, set inline per row, so the
    bar drains in real time and empties exactly when the window closes. No
    resident timer, and nothing to go stale between pushes. */
 @keyframes drain{from{transform:scaleX(1)}to{transform:scaleX(0)}}
-.feed{margin-top:6px;height:3px;border-radius:2px;background:var(--bg2);overflow:hidden}
+.feed{margin-top:7px;height:3px;border-radius:2px;background:var(--bg2);overflow:hidden}
 .feedbar{display:block;height:100%;border-radius:2px;background:#F5A524;
   transform-origin:left center;animation:drain linear 1 forwards}
 
-.chips{display:flex;gap:4px;margin-top:7px;flex-wrap:wrap}
-.chip{font:500 11px system-ui;padding:2px 7px;border-radius:5px;
-  border:1px solid var(--line);background:var(--bg2);color:var(--grey);white-space:nowrap}
-.chip.lead{border-color:var(--attend);color:var(--attend)}
+/* --- a quiet row ------------------------------------------------------- */
+/* One line: the dot, the name, then its ghost buttons (diff, pr) or, with none,
+   its badge -- and no badge at all when it has none. No dial, no said, no
+   footer: the whole row is the target and it selects the workspace. Recessed by losing the card's fill, not by fading: an opacity
+   dim took the name under 4.5:1. */
+.row.quiet{background:transparent;border:1px solid var(--line);border-left:4px solid var(--c);
+  padding:5px 10px 5px 9px;margin-bottom:5px}
+.row.quiet .top{min-height:22px}
+.row.quiet .chips{display:inline-flex;flex:none;flex-wrap:nowrap;gap:5px;margin:0}
+.row.quiet .chip{padding:0 9px}
+.row.quiet .nm{font-weight:500;font-size:13px;color:var(--fg2)}
+.row.quiet .cost{margin-left:0;font:11.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-variant-numeric:tabular-nums}
+.sect{color:var(--grey);font:600 10.5px/1.3 system-ui;letter-spacing:.08em;text-transform:uppercase;
+  margin:12px 0 5px;padding-top:8px;border-top:1px solid var(--line)}
+/* A deep-plan family: the parent row leads, its children sit indented beneath
+   it behind a thin elbow, so the group reads as one thing at one tier. */
+.row.kid{margin-left:14px}
+.row.kid::before{content:"";position:absolute;left:-14px;top:-8px;height:24px;width:9px;
+  border-left:1px solid var(--edge);border-bottom:1px solid var(--edge);border-bottom-left-radius:4px}
+.famhd{color:var(--grey);font:600 11px/1.3 system-ui;letter-spacing:.04em;margin:9px 0 4px 2px}
 
-.meta{margin-top:5px;font:10.5px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;
-  color:var(--grey2);font-variant-numeric:tabular-nums;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Fires once, on the transition into done -- render.js gates it with data-prev. */
+@keyframes ripple{0%{box-shadow:0 0 0 0 rgba(167,192,128,.5)}100%{box-shadow:0 0 0 14px rgba(167,192,128,0)}}
+.row.ripple{animation:ripple 900ms ease-out 1}
 
 /* --- motion ------------------------------------------------------------- */
 /* Reordering is animated from render.js with the Web Animations API, not from
@@ -289,20 +293,19 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
    set-transform / force-reflow / clear-transform dance. What CSS owns is the
    accent that says WHY a row moved. */
 
-/* A row that climbed the ranking earned a look. One pass of its own rail
-   colour, brightest at the moment it arrives. Rows that sank get nothing:
+/* A row that climbed the ranking earned a look. One pass of a ring in its own
+   tier colour, brightest at the moment it arrives. Rows that sank get nothing:
    losing urgency is not news. */
-@keyframes rail{0%{box-shadow:inset 3px 0 0 0 currentColor}100%{box-shadow:inset 3px 0 0 0 transparent}}
-.row.up{animation:rail 900ms ease-out 1}
-.row.up.attend{color:var(--attend)} .row.up.wilt{color:var(--wilt)}
-.row.up.running{color:var(--running)} .row.up.done{color:var(--done)}
+@keyframes climb{0%{box-shadow:0 0 0 2px var(--c)}100%{box-shadow:0 0 0 2px transparent}}
+.row.up{animation:climb 900ms ease-out 1}
 
 /* Pending. A gate nobody has opened, a question nobody has answered: the one
-   chip that would resolve it breathes. Exactly one element per row moves, and
-   only on rows that are actually waiting on a human. */
-@keyframes breathe{0%,100%{opacity:.55;box-shadow:0 0 0 0 rgba(223,160,0,0)}
-  50%{opacity:1;box-shadow:0 0 0 3px rgba(223,160,0,.13)}}
-.row.attend .chip.lead{animation:breathe 2.2s ease-in-out infinite}
+   button that would resolve it breathes a halo. Exactly one element per row
+   moves, only on rows that are actually waiting on a human, and the button
+   itself never fades -- its label stays at full contrast. */
+@keyframes breathe{0%,100%{box-shadow:0 0 0 0 rgba(223,160,0,0)}
+  50%{box-shadow:0 0 0 4px rgba(223,160,0,.22)}}
+.row.attend .chip.pri{animation:breathe 2.2s ease-in-out infinite}
 
 /* Mid-turn with no measurable progress: an indeterminate sweep on the dial,
    which is the honest shape for "working, cannot say how far". A dial WITH a
@@ -314,14 +317,15 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
 /* Everything above is decoration. If the reader has asked the OS for less
    motion, none of it is worth overriding that. */
 @media (prefers-reduced-motion:reduce){
-  #cat .tail,#cat .ear,#cat .eye,.row.up,.row.attend .chip.lead,
+  #cat .tail,#cat .ear,#cat .eye,.row.up,.row.attend .chip.pri,
   .row.running .dial.pending .arc,.row.ripple{animation:none}
   #cat .eye{transform:none}
 }
 
-.empty{color:var(--grey2);font-size:12.5px;line-height:1.6;padding:18px 4px;text-align:center}
+.empty{color:var(--grey);font-size:13px;line-height:1.6;padding:18px 4px;text-align:center}
+.empty code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg2)}
 #quiet{margin-top:10px;padding-top:8px;border-top:1px solid var(--line);
-  color:var(--grey2);font-size:11.5px}
+  color:var(--grey);font-size:12px}
 #quiet:empty{display:none}
 
 /* The news: pinned to the pane's bottom edge, one line until opened. Sticky
@@ -333,19 +337,19 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
   padding:6px 11px 8px;background:var(--bg);border-top:1px solid var(--line);
   max-height:45vh;overflow-y:auto}
 #news[hidden]{display:none}
-#news summary{display:flex;gap:8px;align-items:baseline;cursor:pointer;
-  list-style:none;white-space:nowrap;overflow:hidden;color:var(--grey);font-size:11.5px}
+#news summary{display:flex;gap:8px;align-items:center;cursor:pointer;min-height:24px;
+  list-style:none;white-space:nowrap;overflow:hidden;color:var(--fg2);font-size:12px}
 #news summary::-webkit-details-marker{display:none}
-#news summary::before{content:"\25B8";color:var(--grey2)}
+#news summary::before{content:"\25B8";color:var(--grey)}
 #news[open] summary::before{content:"\25BE"}
-#news-ttl{flex:none;color:var(--grey2);text-transform:uppercase;letter-spacing:.06em;font-size:10px}
+#news-ttl{flex:none;color:var(--grey);text-transform:uppercase;letter-spacing:.06em;font-size:10.5px}
 #news-lede{overflow:hidden;text-overflow:ellipsis}
 #news[open] #news-lede{display:none}
 #news-lede b,#news-body b{color:var(--fg);font-weight:600}
-#news-lede code,#news-body code{color:var(--running);font-size:11px}
+#news-lede code,#news-body code{color:var(--running);font-size:11.5px}
 #news-body{margin-top:5px}
 .ni{margin:0 0 4px;padding-left:7px;border-left:2px solid var(--quiet);
-  color:var(--grey);font-size:12px;line-height:1.45}
+  color:var(--fg2);font-size:12.5px;line-height:1.45}
 .ni.attend{border-left-color:var(--attend)}
 .ni.wilt{border-left-color:var(--wilt)}
 .ni.running{border-left-color:var(--running)}
@@ -409,10 +413,12 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
   </div>
   <div class="hud">
     <span id="need">…</span>
+    <span id="tally"></span>
+  </div>
+  <div class="hud2">
     <span id="says"></span>
     <span class="right"><span id="src"></span><span id="stamp"></span></span>
   </div>
-  <div id="tally"></div>
 </header>
 <div id="rows" data-prev="{}">
   <!-- Overwritten by the first push. Present so a restored-but-unpushed surface
