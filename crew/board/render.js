@@ -414,15 +414,53 @@ function __boardRender(d) {
   // is for.
   // data-in names the card a sub-row sits in, so the reorder animation can
   // take the card's own slide out of the child's (see slide()).
+  // A row that turned done on THIS push: the ripple, the confetti and the
+  // family-complete moment all key off it, and data-prev is what makes it once.
+  function turned(a) { return !!prev[a.id] && prev[a.id] !== "done" && a.kind === "done"; }
+
+  // Pixel confetti for a card that just turned done. Every bit's spot, drift,
+  // delay and colour come from the row id through a small LCG, so the same card
+  // throws the same handful and the probe can count it.
+  var CONFETTI = ["#a7c080", "#dfa000", "#7fbbb3", "#e69875", "#d699b6", "#F5F5F7"];
+  function confetti(id, n) {
+    var h = 7;
+    for (var i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 2147483647;
+    function rnd() { h = (h * 48271) % 2147483647; return h / 2147483647; }
+    var out = '<span class="confetti" aria-hidden="true">';
+    for (var k = 0; k < n; k++) {
+      out += '<i style="--x:' + Math.round(8 + rnd() * 84) + "%;--dx:" + Math.round(rnd() * 48 - 24) +
+        "px;--up:" + -Math.round(10 + rnd() * 14) + "px;--dy:" + Math.round(18 + rnd() * 26) +
+        "px;--t:" + Math.round(rnd() * 160) + "ms;background:" + CONFETTI[k % CONFETTI.length] + '"></i>';
+    }
+    return out + "</span>";
+  }
+
+  // Family pips: a kitten head per child, filled in the child's tier colour,
+  // with the child's name and badge as its tooltip. Two cut-out cells are its
+  // eyes. Five at most, most urgent first, then "+N": the name beside them is
+  // the only thing in the head that shrinks, and a big family clipped it.
+  var PIP = "M0 0h1v1h1v1h3v-1h1v-1h1v5h-1v1h-5v-1h-1zM2 3v1h1v-1zM4 3v1h1v-1z";
+  function pips(kids) {
+    var shown = kids.slice().sort(function (x, y) {
+      return (RANK[x.kind] === undefined ? 9 : RANK[x.kind]) - (RANK[y.kind] === undefined ? 9 : RANK[y.kind]);
+    }).slice(0, 5);
+    var more = kids.length - shown.length;
+    return '<span class="pips">' + shown.map(function (k) {
+      return '<svg class="pip ' + (COL[k.kind] ? k.kind : "quiet") + '" viewBox="0 0 7 6" aria-hidden="true">' +
+        "<title>" + esc(k.name + (k.badge ? " · " + k.badge : "")) + '</title><path fill-rule="evenodd" d="' +
+        PIP + '"/></svg>';
+    }).join("") + (more > 0 ? '<span class="pipmore">+' + more + "</span>" : "") + "</span>";
+  }
+
   function opening(a, cls, inCard) {
-    var ripple = prev[a.id] && prev[a.id] !== a.kind && a.kind === "done" ? " ripple" : "";
+    var ripple = turned(a) ? " ripple" : "";
     next[a.id] = a.kind;
     var inert = !a.ref && !a.slug ? " inert" : "";
     var hex = /^#[0-9a-f]{3,8}$/i.test(a.color || "") ? a.color : "";
     return '<div class="row ' + a.kind + ripple + inert + (a.selected ? " here" : "") + cls +
       (hex ? " owned" : "") + '" data-id="' + esc(a.id) + '" title="' + esc(a.name) + '"' +
       (inCard ? ' data-in="' + esc(inCard) + '"' : "") +
-      (hex ? ' style="--own:' + hex + '"' : "") + ">";
+      (hex ? ' style="--own:' + hex + '"' : "") + ">" + (ripple ? confetti(a.id, inCard ? 8 : 12) : "");
   }
   function dotOf(a) { return /^#[0-9a-f]{3,8}$/i.test(a.color || "") ? '<span class="own"></span>' : ""; }
   // No empty badge: a bare outline pill was the quiet row's second line.
@@ -449,11 +487,20 @@ function __boardRender(d) {
       (a.dirty ? DIRTY : "") + cost(a) + (qb || badgeOf(a)) + "</div></div>";
   }
 
-  function card(a, kids, roll) {
+  function card(a, kids, roll, g) {
     if (a.kind === "quiet" && !kids) return quietRow(a);
-    return opening(a, a.family ? " fam" : "") +
-      '<div class="top">' + dial(a.frac, a.kind) + dotOf(a) + nameOf(a) + (roll || badgeOf(a)) + "</div>" +
-      body(a) + kids + "</div>";
+    var whole = g && famDone(g);
+    return opening(a, (a.family ? " fam" : "") + (whole ? " famdone" : "")) +
+      (whole && !turned(a) ? confetti("fam:" + a.id, 22) : "") +
+      '<div class="top">' + dial(a.frac, a.kind) + dotOf(a) + nameOf(a) +
+      (g ? pips(g.kids) : "") + (roll || badgeOf(a)) + "</div>" + body(a) + kids + "</div>";
+  }
+
+  // The family-complete moment: every child is done now, and at least one of
+  // them got there on this push.
+  function famDone(g) {
+    return g.kids.length > 0 && g.kids.every(function (k) { return k.kind === "done"; }) &&
+      g.kids.some(turned);
   }
 
   // A child, inside its family's card. One line until opened: the caret, its
@@ -486,14 +533,14 @@ function __boardRender(d) {
   // a broken child, whose own row says it is broken.
   var RANK = { attend: 0, wilt: 1, running: 2, done: 3, quiet: 4 };
   function rollup(kids, own) {
-    var n = { attend: 0, wilt: 0 };
+    var n = { attend: 0, wilt: 0, done: 0 };
     kids.forEach(function (k) { if (k.kind in n) n[k.kind]++; });
-    var top = n.attend ? "attend" : n.wilt ? "wilt" : "";
+    var top = n.attend ? "attend" : n.wilt ? "wilt" : n.done === kids.length ? "done" : "";
     if (!top || (own in RANK && RANK[own] <= RANK[top])) return "";
     if (n.attend) return '<span class="badge roll attend">' + n.attend +
       (n.attend === 1 ? " needs you" : " need you") + "</span>";
     if (n.wilt) return '<span class="badge roll wilt">' + n.wilt + " broken</span>";
-    return "";
+    return '<span class="badge roll done">all ' + n.done + " done</span>";
   }
 
   // families.py emits each family as one contiguous run, parent first. Fold the
@@ -510,8 +557,10 @@ function __boardRender(d) {
     var t = g.kids[0].famtier || g.kids[0].kind;
     if (!COL[t]) t = "quiet";
     var id = "fam:" + g.family;
-    return '<div class="row ' + t + ' fam shell inert" data-id="' + esc(id) + '" title="' +
-      esc(g.label) + '"><div class="top"><span class="nm">' + esc(g.label) + "</span>" +
+    var whole = famDone(g);
+    return '<div class="row ' + t + ' fam shell inert' + (whole ? " famdone" : "") + '" data-id="' +
+      esc(id) + '" title="' + esc(g.label) + '">' + (whole ? confetti(id, 22) : "") +
+      '<div class="top"><span class="nm">' + esc(g.label) + "</span>" + pips(g.kids) +
       (rollup(g.kids) || '<span class="badge">' + g.kids.length + " plans</span>") + "</div>" +
       '<div class="kids">' + g.kids.map(function (k) { return kid(k, id); }).join("") + "</div></div>";
   }
@@ -534,7 +583,7 @@ function __boardRender(d) {
     var kids = g.kids.length ? '<div class="kids">' + g.kids.map(function (k) {
       return kid(k, g.lead.id);
     }).join("") + "</div>" : "";
-    return sect + card(g.lead, kids, g.kids.length ? rollup(g.kids, g.lead.kind) : "");
+    return sect + card(g.lead, kids, g.kids.length ? rollup(g.kids, g.lead.kind) : "", g.kids.length ? g : null);
   }).join("") :
     '<div class="empty">Nothing is waiting on you.<br>' + esc(d.quiet || "") + "</div>";
   host.setAttribute("data-open", JSON.stringify(openSet));
@@ -562,6 +611,16 @@ function __boardRender(d) {
       if (cat.getBoundingClientRect) cat.getBoundingClientRect();
     }
     cat.setAttribute("class", m + (rx ? " " + rx.cls : ""));
+  }
+  // The sky follows the local hour at push time. Pushes come at least every
+  // 120s, so it is never more than two minutes behind the clock.
+  var shelf = $("shelf");
+  if (shelf) {
+    var hr = new Date().getHours();
+    var sky = hr >= 5 && hr < 8 ? "dawn" : hr >= 8 && hr < 18 ? "day" : hr >= 18 && hr < 21 ? "dusk" : "night";
+    if (!shelf.getAttribute("data-sky")) shelf.setAttribute("data-sky-first", "1");
+    else if (shelf.removeAttribute) shelf.removeAttribute("data-sky-first");
+    shelf.setAttribute("data-sky", sky);
   }
   var says = $("says");
   var lead = rows.filter(function (a) {

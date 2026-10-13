@@ -27,6 +27,7 @@ const mk = (id) => (els[id] = {
   id, innerHTML: "", textContent: "", className: "", attrs: {},
   getAttribute(k) { return this.attrs[k] ?? null; },
   setAttribute(k, v) { this.attrs[k] = String(v); },
+  removeAttribute(k) { delete this.attrs[k]; },
 });
 ["need", "rows", "quiet", "src", "stamp", "cat", "says", "tally"].forEach(mk);
 
@@ -494,6 +495,104 @@ checks.push(["and it has something to say about each",
   checks.push(["cat: a row needing you right after an empty board still perks",
     P([Rw("z", "attend")]) === "swat perk"]);
   P([Rw("x", "running")]);
+  // ---- celebrations ------------------------------------------------------
+  const R4 = (id, kind, extra = {}) => ({ id, name: id, kind, badge: "b", said: "", chips: [], frac: null, meta: "", ref: "w", ...extra });
+  P([R4("c1", "running")]);
+  render({ rows: [R4("c1", "done")], quiet: "", stamp: "1" });
+  const conf1 = els.rows.innerHTML;
+  checks.push(["confetti: a card that turns done throws a handful of pixel bits",
+    /class="row done ripple[^"]*"[^>]*><span class="confetti" aria-hidden="true">(<i style="[^"]+"><\/i>){12}<\/span>/.test(conf1)]);
+  els.rows.attrs["data-prev"] = JSON.stringify({ c1: "running" });
+  render({ rows: [R4("c1", "done")], quiet: "", stamp: "1" });
+  checks.push(["confetti: ...the same handful every time, from the row id", els.rows.innerHTML === conf1]);
+  render({ rows: [R4("c1", "done")], quiet: "", stamp: "2" });
+  checks.push(["confetti: ...and only on the push it turned done", !els.rows.innerHTML.includes("confetti")]);
+
+  const famRows = (k1, k2) => [R4("FP", "running", { family: "F4", famrole: "parent", famkid: false }),
+    R4("F1", k1, { family: "F4", famrole: "child", famkid: true }),
+    R4("F2", k2, { family: "F4", famrole: "child", famkid: true })];
+  render({ rows: famRows("done", "running"), quiet: "" });
+  checks.push(["pips: one kitten head per child, in its tier, most urgent first",
+    /<span class="pips"><svg class="pip running"[^>]*><title>F2 · b<\/title>[^]*?<\/svg><svg class="pip done"[^>]*><title>F1 · b/.test(els.rows.innerHTML) &&
+    (els.rows.innerHTML.match(/class="pip /g) || []).length === 2]);
+  checks.push(["family: not complete while a child is still working", !els.rows.innerHTML.includes("famdone")]);
+  render({ rows: famRows("done", "done"), quiet: "" });
+  const fd = els.rows.innerHTML;
+  checks.push(["family: the push its last child turns done, the whole card celebrates",
+    /class="row running fam famdone"[^>]*data-id="FP"[^>]*><span class="confetti" aria-hidden="true">(<i [^>]+><\/i>){22}/.test(fd)]);
+  render({ rows: famRows("done", "done"), quiet: "" });
+  checks.push(["family: ...once", !els.rows.innerHTML.includes("famdone")]);
+  render({ rows: [R4("S1", "done", { family: "S", famrole: "child", famkid: true, famlabel: "S" }),
+    R4("S2", "done", { family: "S", famrole: "child", famkid: true })], quiet: "" });
+  checks.push(["family: a shell whose children are all done says so",
+    els.rows.innerHTML.includes('<span class="badge roll done">all 2 done</span>')]);
+
+  // A big family: five pips, then a count, so the name keeps its room.
+  render({ rows: [R4("BP", "running", { family: "B", famrole: "parent", famkid: false }),
+    ...[0, 1, 2, 3, 4, 5, 6, 7].map((i) => R4("B" + i, i === 6 ? "attend" : "quiet", { family: "B", famrole: "child", famkid: true }))], quiet: "" });
+  checks.push(["pips: a big family shows five, the most urgent among them, then +N",
+    (els.rows.innerHTML.match(/class="pip /g) || []).length === 5 &&
+    /<span class="pips"><svg class="pip attend"/.test(els.rows.innerHTML) &&
+    els.rows.innerHTML.includes('<span class="pipmore">+3</span>')]);
+  checks.push(["family: a card that climbs on the push it turns done keeps its ring",
+    /\.row\.up\.ripple\{animation:ripple/.test(css) && /\.row\.up\.famdone\{animation:famdone/.test(css) &&
+    css.indexOf(".row.up.ripple{") > css.indexOf(".row.up{")]);
+
+  // ---- the sky ------------------------------------------------------------
+  // The context's own Date is shadowed for one render by a sandbox property,
+  // then the property goes and the builtin is back.
+  const skyAt = (h) => {
+    sandbox.Date = class extends Date { getHours() { return h; } };
+    render({ rows: [], quiet: "" });
+    delete sandbox.Date;
+    return els.shelf.attrs["data-sky"];
+  };
+  delete (els.shelf || mk("shelf")).attrs["data-sky"];
+  const firstSky = skyAt(6);
+  checks.push(["sky: a page's first push shows its sky at once", els.shelf.attrs["data-sky-first"] === "1"]);
+  checks.push(["sky: dawn, day, dusk and night follow the local hour",
+    firstSky === "dawn" && skyAt(12) === "day" && skyAt(19) === "dusk" && skyAt(23) === "night" &&
+    skyAt(3) === "night" && skyAt(5) === "dawn" && skyAt(8) === "day" && skyAt(21) === "night"]);
+  checks.push(["sky: ...and fades between them after that", !("data-sky-first" in els.shelf.attrs)]);
+  checks.push(["sky: every sky keeps the shelf's bottom edge",
+    /#shelf \.sky\{[^}]*box-shadow:inset 0 -1px 0 0 #171c1f/.test(css)]);
+  checks.push(["sky: every hour's layer is in the page and is shown by its data-sky",
+    ["dawn", "day", "dusk", "night"].every((k) => pageHtml.includes('<div class="sky ' + k + '">') &&
+      css.includes("#shelf[data-sky=" + k + "] .sky." + k))]);
+
+  // ---- the nap, idling ------------------------------------------------------
+  // One cycle for all of it: a peek and a flick on cycles of their own drifted
+  // into each other and drew two full poses at once. So: the same duration for
+  // the two shows and the hide, show windows that never overlap, and the hide
+  // covering exactly their union. And none of it on a push with a reaction.
+  {
+    const IDLE = "#cat\\.nap:not\\(\\.hop\\):not\\(\\.perk\\):not\\(\\.stretch\\) ";
+    const dur = (sel, name) => (new RegExp(IDLE + sel + "\\{animation:" + name + " (\\d+)s").exec(css) || [])[1];
+    const d1 = dur("\\.peek", "peekshow"), d2 = dur("\\.flick", "flickshow"), d3 = dur("\\.pose:not\\(\\.x\\) path", "idlehide");
+    const windows = (name, prop, on) => {
+      const body = (new RegExp("@keyframes " + name + "\\{([\\s\\S]*?)\\}\\}").exec(css) || ["", ""])[1] + "}";
+      const out = [];
+      for (const [, sel, decl] of body.matchAll(/([\d.%,\s]+)\{([^}]*)\}/g)) {
+        if (decl.includes(prop + ":" + on)) {
+          const ps = sel.split(",").map((x) => parseFloat(x));
+          out.push([Math.min(...ps), Math.max(...ps)]);
+        }
+      }
+      return out;
+    };
+    const pw = windows("peekshow", "visibility", "visible"), fw = windows("flickshow", "visibility", "visible");
+    const hw = windows("idlehide", "opacity", "0");
+    const overlap = pw.some(([a, b]) => fw.some(([c, e]) => a <= e && c <= b));
+    const union = [...pw, ...fw].sort((x, y) => x[0] - y[0]);
+    checks.push(["nap: peek and flick share one long cycle, and the nap hides on it too",
+      d1 && +d1 >= 30 && d1 === d2 && d2 === d3]);
+    checks.push(["nap: ...their moments never overlap, and the nap hides for exactly those",
+      pw.length >= 2 && fw.length >= 1 && !overlap && JSON.stringify(hw) === JSON.stringify(union)]);
+    checks.push(["nap: ...and none of it runs on a push that carries a reaction",
+      !/#cat\.nap \.(peek|flick)\{/.test(css) && !/#cat\.nap \.pose:not\(\.x\) path\{/.test(css)]);
+  }
+
+  P([Rw("x", "running")]);
   checks.push(["cat: a $ in a row's name reaches the caption as written",
     P([Rw("x", "done", "fix-$&-and-$$")]) === "nap hop" && els.says.textContent.includes("fix-$&-and-$$")]);
 
@@ -558,24 +657,30 @@ checks.push(["the board-only poses are in sync with cat_poses.py",
   checks.push(["every reaction has its poses shown and the mood hidden for as long",
     ["hop", "perk", "stretch"].every((r) => new RegExp("#cat\\." + r + " \\.pose:not\\(\\.x\\) path\\{animation:rxhide").test(css)) &&
     /#cat\.hop \.hop-a\{/.test(css) && /#cat\.perk \.perk\{/.test(css) && /#cat\.stretch \.stretch\{/.test(css)]);
-  // Reduced motion must name each reaction rule by its OWN selector. A broader
-  // selector loses on specificity: the mood's frames stayed hidden for the
-  // reaction's length while the reaction's poses were stopped, and the cat
-  // vanished. So every selector of every rule that animates a reaction has to
-  // appear, verbatim, in the reduce block's animation:none list.
+  // Reduced motion stops EVERYTHING, and names each rule by its OWN selector. A
+  // broader selector loses on specificity: the mood's frames stayed hidden for
+  // a reaction's length while the reaction's poses were stopped, and the cat
+  // vanished. So every selector of every rule that starts an animation has to
+  // appear, verbatim, in the reduce block's animation:none list. One
+  // exception: the reply window's bar, which is not decoration -- it is the
+  // only thing on the page that says how long is left to answer.
   const reduce = (css.match(/@media \(prefers-reduced-motion:reduce\)\{([\s\S]*?)\}\s*\}/) || ["", ""])[1];
   const stopped = new Set(((reduce.match(/([^{}]+)\{animation:none\}/) || ["", ""])[1]).split(",").map((x) => x.trim()));
   const outside = css.replace(/@media \(prefers-reduced-motion:reduce\)\{[\s\S]*?\}\s*\}/, "");
   const rxSels = [];
   for (const [, sel, body] of outside.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-    if (!/animation/.test(body)) continue;
+    if (!/(^|;)\s*animation(-name)?\s*:/.test(body) || /animation:\s*none/.test(body) ||
+        /^@keyframes|^\d|^from|^to/.test(sel.trim())) continue;
     for (const one of sel.split(",").map((x) => x.trim())) {
-      if (/^#cat(\.nap)?\.(hop|perk|stretch)\b/.test(one)) rxSels.push(one);
+      if (one !== ".feedbar") rxSels.push(one);
     }
   }
-  const missing = rxSels.filter((x) => !stopped.has(x) && !/\.z[12]$/.test(x));
-  checks.push([`reduced motion stops every reaction rule by its own selector (${rxSels.length})`,
-    rxSels.length >= 10 && missing.length === 0]);
+  const missing = rxSels.filter((x) => !stopped.has(x));
+  checks.push([`reduced motion stops every animation by its own selector (${rxSels.length})`,
+    rxSels.length >= 30 && missing.length === 0]);
+  checks.push(["...and, stopped, each mood holds its first frame instead of vanishing",
+    /#cat\.swat \.swat-a,#cat\.pace \.walk-a,#cat\.nap \.nap-a\{visibility:visible\}/.test(reduce)]);
+  checks.push(["...and the sky changes without fading", /#shelf \.sky,#shelf \.orb\{transition:none\b/.test(reduce)]);
   if (missing.length) console.log("    not stopped: " + missing.join(" | "));
 }
 
@@ -1208,7 +1313,7 @@ print(json.dumps([[r["id"], r["kind"], r.get("famtier", "")] for r in m.rank_pla
     /<div class="sect">quiet · 3<\/div>/.test(html) && html.indexOf('class="sect"') > html.indexOf('data-id="k3"')]);
   const gc = cardOf(html, "fam:G");
   checks.push(["families: a family with no parent row gets a shell card named by its label",
-    /<div class="row quiet fam shell inert" data-id="fam:G" title="G"><div class="top"><span class="nm">G<\/span><span class="badge">2 plans<\/span>/.test(html) &&
+    /<div class="row quiet fam shell inert" data-id="fam:G" title="G"><div class="top"><span class="nm">G<\/span><span class="pips">.*?<\/span><span class="badge">2 plans<\/span>/.test(html) &&
     /data-id="g1"[^>]*data-in="fam:G"/.test(gc) && /data-id="g2"[^>]*data-in="fam:G"/.test(gc)]);
 
   // A child is one line until opened. One that needs you or is broken also
