@@ -89,10 +89,22 @@ function __boardRender(d) {
     var els = document.querySelectorAll("#rows .row[data-id]");
     for (var i = 0; i < els.length; i++) {
       var id = els[i].getAttribute("data-id");
-      was.at[id] = els[i].offsetTop;
+      was.at[id] = at(els[i]);
       was.idx[id] = i;
     }
     return was;
+  }
+
+  // Where a row sits on the PAGE. offsetTop alone is relative to the nearest
+  // positioned ancestor, and a family's card is one: a child's offsetTop is its
+  // place inside the card, so a whole family could climb the board while its
+  // children measured as having not moved -- or move inside the card and be
+  // mistaken for a board-level slide. Summing up the offsetParent chain puts
+  // every row, nested or not, on one axis.
+  function at(el) {
+    var y = 0;
+    for (var e = el; e; e = e.offsetParent) y += e.offsetTop || 0;
+    return y;
   }
 
   // The document's own window, because the pushed script may be running in an
@@ -128,6 +140,12 @@ function __boardRender(d) {
     survivors.slice().sort(function (a, b) { return was.idx[a] - was.idx[b]; })
       .forEach(function (id, n) { wasRank[id] = n; });
 
+    // Where everything is now, so a child can subtract its card's slide: the
+    // card's own animation already carries the child with it, and adding the
+    // same distance again on the child would move it twice.
+    var now = {};
+    for (var n = 0; n < els.length; n++) now[els[n].getAttribute("data-id")] = at(els[n]);
+
     for (var i = 0; i < els.length; i++) {
       var el = els[i], id = el.getAttribute("data-id");
       if (!(id in was.at)) {
@@ -142,7 +160,9 @@ function __boardRender(d) {
       // Slide on any pixel move, so a row never teleports when something above
       // it grows or a divider appears. This is presentation only and says nothing
       // about rank.
-      var dy = was.at[id] - el.offsetTop;
+      var dy = was.at[id] - now[id];
+      var inCard = el.getAttribute("data-in");
+      if (inCard && inCard in was.at && inCard in now) dy -= was.at[inCard] - now[inCard];
       if (Math.abs(dy) >= 2) {
         el.animate([{ transform: "translateY(" + dy + "px)" }, { transform: "none" }],
                    { duration: 300, easing: "cubic-bezier(.2,.7,.3,1)" });
@@ -325,6 +345,136 @@ function __boardRender(d) {
 
   var rows = d.rows || [];
   var was = positions();
+  // The open set: the children whose full card is showing. intent.js flips an
+  // id in and out when a sub-row is clicked, and it lives on #rows for the same
+  // reason data-prev does -- #rows survives a push and nothing else does. Ids no
+  // longer on the board are dropped here, so it cannot grow without bound.
+  var openSet = [];
+  try { openSet = JSON.parse(host.getAttribute("data-open") || "[]"); } catch (e) { openSet = []; }
+  if (!Array.isArray(openSet)) openSet = [];
+  var onBoard = {};
+  rows.forEach(function (r) { onBoard[r.id] = true; });
+  openSet = openSet.filter(function (id) { return onBoard[id] === true; });
+
+  // The opening tag every row shares, card or sub-row.
+  // data-id is the delegation handle intent.js needs: #rows survives a push but
+  // its children do not, so a click is resolved from the row's id at click time.
+  // A row with neither a workspace ref nor a plan has nothing to act on, and is
+  // marked inert so it does not offer a pointer it cannot honour.
+  // title= on the row, not on .nm: a quiet row's name is often a full shell
+  // prompt, and the CSS clamps it to one line, so the hover is the only way to
+  // read the whole thing.
+  // --own is the worktree's identity colour, the same hex Peacock paints the
+  // VS Code window with. Worn as a dot beside the name so the rail can keep
+  // saying which tier the row is in. Only a plain hex gets through: it lands
+  // in a style attribute.
+  // The workspace you are standing in is marked (.here), not moved: promoting
+  // it to the top would fight the ranking, which is the one thing this board
+  // is for.
+  // data-in names the card a sub-row sits in, so the reorder animation can
+  // take the card's own slide out of the child's (see slide()).
+  function opening(a, cls, inCard) {
+    var ripple = prev[a.id] && prev[a.id] !== a.kind && a.kind === "done" ? " ripple" : "";
+    next[a.id] = a.kind;
+    var inert = !a.ref && !a.slug ? " inert" : "";
+    var hex = /^#[0-9a-f]{3,8}$/i.test(a.color || "") ? a.color : "";
+    return '<div class="row ' + a.kind + ripple + inert + (a.selected ? " here" : "") + cls +
+      (hex ? " owned" : "") + '" data-id="' + esc(a.id) + '" title="' + esc(a.name) + '"' +
+      (inCard ? ' data-in="' + esc(inCard) + '"' : "") +
+      (hex ? ' style="--own:' + hex + '"' : "") + ">";
+  }
+  function dotOf(a) { return /^#[0-9a-f]{3,8}$/i.test(a.color || "") ? '<span class="own"></span>' : ""; }
+  // No empty badge: a bare outline pill was the quiet row's second line.
+  function badgeOf(a) { return a.badge ? '<span class="badge">' + esc(a.badge) + "</span>" : ""; }
+  function nameOf(a) { return '<span class="nm">' + esc(a.name) + "</span>"; }
+  // Everything under a card's head: what was said, the reply window, the
+  // buttons, the footer.
+  function body(a) {
+    return (a.said ? '<p class="said">' + said(a.said) + "</p>" : "") + feed(a) + buttons(a) + foot(a);
+  }
+
+  // A quiet row is one line and the whole of it is the target, which jumps.
+  // Its other chips (diff, pr) stay, as ghosts at the end of the line: a row
+  // badged "pr open" with no way to open the PR was the first cut of this.
+  // When it has them, they say what the badge would, so the badge steps aside
+  // for the name. Spend still shows, because a row that is quietly burning
+  // money is the one quiet row worth noticing.
+  function quietRow(a) {
+    var acts = (a.chips || []).filter(function (c) { return c !== "jump"; });
+    var qb = acts.length ? '<span class="chips">' + acts.map(function (c) {
+      return '<span class="chip" title="' + esc(chipTip(c)) + '">' + esc(c) + "</span>";
+    }).join("") + "</span>" : "";
+    return opening(a, a.family ? " fam" : "") + '<div class="top">' + dotOf(a) + nameOf(a) +
+      (a.dirty ? DIRTY : "") + cost(a) + (qb || badgeOf(a)) + "</div></div>";
+  }
+
+  function card(a, kids, roll) {
+    if (a.kind === "quiet" && !kids) return quietRow(a);
+    return opening(a, a.family ? " fam" : "") +
+      '<div class="top">' + dial(a.frac, a.kind) + dotOf(a) + nameOf(a) + (roll || badgeOf(a)) + "</div>" +
+      body(a) + kids + "</div>";
+  }
+
+  // A child, inside its family's card. One line until opened: the caret, its
+  // dial, its dot, its name and badge. A child that needs you or is broken also
+  // shows what it said and its first chip, filled, so the family card answers
+  // "what do I press" without opening anything. The header and that line are
+  // data-a="toggle": intent.js opens the child's full card in place (the body
+  // is always rendered, CSS shows it) and selects its workspace; a second click
+  // closes it and goes nowhere. The inline chip is its own target, nearer than
+  // the toggle, so it fires its verb for the child.
+  function kid(a, inCard) {
+    var isOpen = openSet.indexOf(a.id) >= 0;
+    // Opening selects the child's workspace -- if it has one to select.
+    var sel = a.ref ? ' data-x="select"' : "";
+    var loud = a.kind === "attend" || a.kind === "wilt";
+    var first = (a.chips || [])[0];
+    var inline = loud && first ? '<span class="chip pri" title="' + esc(chipTip(first)) + '">' +
+      esc(first) + "</span>" : "";
+    return opening(a, " fam kid" + (isOpen ? " open" : ""), inCard) +
+      '<div class="top kidhd' + (inline ? " loud" : "") + '" data-a="toggle"' + sel + '><span class="caret"></span>' + dial(a.frac, a.kind) +
+      dotOf(a) + nameOf(a) + badgeOf(a) + inline + "</div>" +
+      (loud && a.said ? '<p class="said nest" data-a="toggle"' + sel + ">" + said(a.said) + "</p>" : "") +
+      '<div class="kbody">' + body(a) + "</div></div>";
+  }
+
+  // What the family's card says about its children: the most urgent tier among
+  // them, counted. It replaces the parent's own badge, because "working" on a
+  // card holding a shut gate is the wrong half of the story -- but only when
+  // the children ARE more urgent: a parent waiting on you keeps saying so over
+  // a broken child, whose own row says it is broken.
+  var RANK = { attend: 0, wilt: 1, running: 2, done: 3, quiet: 4 };
+  function rollup(kids, own) {
+    var n = { attend: 0, wilt: 0 };
+    kids.forEach(function (k) { if (k.kind in n) n[k.kind]++; });
+    var top = n.attend ? "attend" : n.wilt ? "wilt" : "";
+    if (!top || (own in RANK && RANK[own] <= RANK[top])) return "";
+    if (n.attend) return '<span class="badge roll attend">' + n.attend +
+      (n.attend === 1 ? " needs you" : " need you") + "</span>";
+    if (n.wilt) return '<span class="badge roll wilt">' + n.wilt + " broken</span>";
+    return "";
+  }
+
+  // families.py emits each family as one contiguous run, parent first. Fold the
+  // run into one group; a run with no parent row gets a shell card named by the
+  // family's label, which carries no actions of its own (inert).
+  var groups = [];
+  rows.forEach(function (r) {
+    var last = groups[groups.length - 1];
+    if (r.family && r.famkid && last && last.family === r.family) last.kids.push(r);
+    else if (r.family && r.famkid) groups.push({ family: r.family, label: r.famlabel || r.family, lead: null, kids: [r] });
+    else groups.push({ family: r.family || "", lead: r, kids: [] });
+  });
+  function shell(g) {
+    var t = g.kids[0].famtier || g.kids[0].kind;
+    if (!COL[t]) t = "quiet";
+    var id = "fam:" + g.family;
+    return '<div class="row ' + t + ' fam shell inert" data-id="' + esc(id) + '" title="' +
+      esc(g.label) + '"><div class="top"><span class="nm">' + esc(g.label) + "</span>" +
+      (rollup(g.kids) || '<span class="badge">' + g.kids.length + " plans</span>") + "</div>" +
+      '<div class="kids">' + g.kids.map(function (k) { return kid(k, id); }).join("") + "</div></div>";
+  }
+
   // A label before the first quiet row, so the divider between "needs you" and
   // "does not" stays legible now that both are on the page. Emitted inline with
   // the rows rather than as separate markup, because #rows is replaced whole.
@@ -333,62 +483,20 @@ function __boardRender(d) {
   // family, not under it (families.py), so it neither opens the quiet section
   // nor counts toward it.
   var belowDivider = function (r) { return r.kind === "quiet" && (!r.famtier || r.famtier === "quiet"); };
-  host.innerHTML = rows.length ? rows.map(function (a) {
-    var sect = "";
-    if (belowDivider(a) && !seenQuiet) {
+  host.innerHTML = rows.length ? groups.map(function (g) {
+    var lead = g.lead || g.kids[0], sect = "";
+    if (belowDivider(lead) && !seenQuiet) {
       seenQuiet = true;
       sect = '<div class="sect">quiet · ' + rows.filter(belowDivider).length + "</div>";
     }
-    // A family whose parent has no row on the board is headed by its name.
-    if (a.famlabel) sect += '<div class="famhd">family · ' + esc(a.famlabel) + "</div>";
-    var ripple = prev[a.id] && prev[a.id] !== a.kind && a.kind === "done" ? " ripple" : "";
-    next[a.id] = a.kind;
-    // data-id is the delegation handle intent.js needs: #rows survives a push but
-    // its children do not, so a click is resolved from the row's id at click time.
-    // A row with neither a workspace ref nor a plan has nothing to act on, and is
-    // marked inert so it does not offer a pointer it cannot honour.
-    var inert = !a.ref && !a.slug ? " inert" : "";
-    // title= on the row, not on .nm: a quiet row's name is often a full shell
-    // prompt, and the CSS clamps it to one line, so the hover is the only way to
-    // read the whole thing.
-    // --own is the worktree's identity colour, the same hex Peacock paints the
-    // VS Code window with. Worn as a dot beside the name so the rail can keep
-    // saying which tier the row is in. Only a plain hex gets through: it lands
-    // in a style attribute.
-    var hex = /^#[0-9a-f]{3,8}$/i.test(a.color || "") ? a.color : "";
-    var own = hex ? ' style="--own:' + hex + '"' : "";
-    // The workspace you are standing in. Marked, not moved: promoting it to the
-    // top would fight the ranking, which is the one thing this board is for.
-    var here = a.selected ? " here" : "";
-    // Children sit indented under their family's parent (or its label).
-    var fam = a.family ? " fam" + (a.famkid ? " kid" : "") : "";
-    var open = '<div class="row ' + a.kind + ripple + inert + here + fam +
-      (hex ? " owned" : "") +
-      '" data-id="' + esc(a.id) + '" title="' + esc(a.name) + '"' + own + ">";
-    var dot = hex ? '<span class="own"></span>' : "";
-    // No empty badge: a bare outline pill was the quiet row's second line.
-    var badge = a.badge ? '<span class="badge">' + esc(a.badge) + "</span>" : "";
-    var name = '<span class="nm">' + esc(a.name) + "</span>";
-    // A quiet row is one line and the whole of it is the target, which jumps.
-    // Its other chips (diff, pr) stay, as ghosts at the end of the line: a row
-    // badged "pr open" with no way to open the PR was the first cut of this.
-    // When it has them, they say what the badge would, so the badge steps aside
-    // for the name. Spend still shows, because a row that is quietly burning
-    // money is the one quiet row worth noticing.
-    if (a.kind === "quiet") {
-      var acts = (a.chips || []).filter(function (c) { return c !== "jump"; });
-      var qb = acts.length ? '<span class="chips">' + acts.map(function (c) {
-        return '<span class="chip" title="' + esc(chipTip(c)) + '">' + esc(c) + "</span>";
-      }).join("") + "</span>" : "";
-      return sect + open + '<div class="top">' + dot + name + (a.dirty ? DIRTY : "") +
-        cost(a) + (qb || badge) + "</div></div>";
-    }
-    return sect + open +
-      '<div class="top">' + dial(a.frac, a.kind) + dot + name + badge + "</div>" +
-      (a.said ? '<p class="said">' + said(a.said) + "</p>" : "") +
-      feed(a) + buttons(a) + foot(a) + "</div>";
+    if (!g.lead) return sect + shell(g);
+    var kids = g.kids.length ? '<div class="kids">' + g.kids.map(function (k) {
+      return kid(k, g.lead.id);
+    }).join("") + "</div>" : "";
+    return sect + card(g.lead, kids, g.kids.length ? rollup(g.kids, g.lead.kind) : "");
   }).join("") :
     '<div class="empty">Nothing is waiting on you.<br>' + esc(d.quiet || "") + "</div>";
+  host.setAttribute("data-open", JSON.stringify(openSet));
   // With quiet workspaces now rendered as rows, #quiet is only reached when there
   // are no rows at all -- and in that case the .empty block above has already said
   // it. Echoing it there put the same sentence on the page twice.

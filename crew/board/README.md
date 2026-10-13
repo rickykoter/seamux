@@ -70,6 +70,40 @@ whole row is the target and selects the workspace, which is why `jump` is not
 repeated there. Its branch link is the one target a quiet row gives up for the
 single line; `diff` and the row itself cover the worktree.
 
+A **deep-plan family** is one card. `families.py` already emits each family as a
+contiguous run, parent first, ranked at its most urgent member's tier;
+`render.js` folds that run into the parent's card and puts the children inside
+it, on a darker well:
+
+```
+┃ ◔ ● billing-revamp                  1 NEEDS YOU   the badge counts the children
+┃ Split the ledger in progress.
+┃ ( diff ) ( jump )
+┃ dev/billing-revamp  1/3 increments
+┃ ┌───────────────────────────────────────────┐
+┃ │ ▸ ◔ ● billing-ledger            [ go 2 ]  │   needs you: its line and button, inline
+┃ │     Ledger schema needs your go-ahead.    │
+┃ │ ▾ ◌ ● billing-invoices           WORKING  │   opened: its whole card, in place
+┃ │     Mid-turn.  ( diff ) ( jump )  …       │
+┃ │ ▸ ○   billing-emails           PLAN IDLE  │   one line
+┃ └───────────────────────────────────────────┘
+```
+
+Each child is still a `.row` with its own `data-id`, so every button inside it
+acts on the child. Its header is a toggle (`data-a="toggle"`, which only
+`intent.js` knows): opening it shows the child's full card in place **and**
+selects that child's workspace, using the ordinary row action (a plan child with
+no workspace just opens); closing it is local and goes nowhere. The ids that are open live on `#rows` as `data-open`,
+beside `data-prev`, so an opened child stays open across pushes. The parent's
+badge says the children's most urgent tier, counted (`1 needs you`, `2 broken`),
+when that is more urgent than the parent itself; otherwise it keeps its own. A family whose
+parent has no row gets a shell card named by its label, which carries no actions
+of its own.
+
+The reorder animation measures every row against the page, not its card, and
+takes the card's slide out of each child's: the card's own animation already
+carries the child, and adding it again moved children twice.
+
 **Every piece of text reads at 4.5:1** on the ground behind it. The colours are
 tokens on `:root` in `board.html`, and `board_probe.mjs` resolves every `color:` in
 the stylesheet through them and measures it against the page, a card and an
@@ -163,7 +197,9 @@ inventing one.
 node board/board_probe.mjs   # the render path, contrast and target sizes, no cmux needed
 crew-board state             # the ranking, as text
 python3 docs/demo/board-preview.py --open      # this checkout's board, fixed cast, in the Dock
-python3 docs/demo/board-preview.py --audit S   # measure it there: contrast, target heights, quiet rows
+python3 docs/demo/board-preview.py --audit S   # measure it there: contrast, target heights, one-line rows
+python3 docs/demo/board-preview.py --open --listen 8791   # ...wired to a stand-in server that prints each click
+python3 docs/demo/board-preview.py --push S --port 8791   # push again, as the collector does
 ```
 
 The render path is the riskiest piece: a JS error there yields a *blank surface* rather
@@ -619,6 +655,7 @@ list is the sixteen call sites of `onTapGesture` / `openURL` / `chipRPC` /
 | `read it →` / `jump →` (:690, :695) | `jump` chip | goes to the workspace |
 | reclaim (:736) | `reclaim` chip | dry-runs the reclaim, asks first |
 | whole row (:803) | `.row` | selects the workspace |
+| — | a family child's header, `data-a=toggle` | opens the child in place and selects its workspace; closes locally |
 | sync clock (:1020) | `#stamp` | forces a reconcile |
 
 Also carried over, though not clickable: the dirty dot, the whole signals
@@ -642,7 +679,10 @@ is always in the tooltip.
 The chips and rows are click targets. The Swift sidebar had them and losing them was a
 regression, so the taxonomy is restored one-for-one: row → select the workspace, `jump`,
 `diff`, `pr`, `checks`, `plan` / `take the check`, `reclaim`, `go N`, `close plan`, and
-the sync stamp → force a reconcile.
+the sync stamp → force a reconcile. One verb is the board's own and never reaches the
+server: a family child's `toggle`, which sends the plain row action when it opens.
+When a click lands on a target inside another target (a child's filled button sits in
+its header), the nearest one wins.
 
 A webview click cannot reach cmux on its own, and the alternatives were tried first:
 

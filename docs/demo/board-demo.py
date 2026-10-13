@@ -49,7 +49,7 @@ PLAN_SLUG = "example-outbox-retry"
 # One row is REAL: checkout-flow borrows this machine's first live workspace
 # (ref, cwd, Peacock colour) so the VS Code tie-ins work on camera — the branch
 # fact opens the worktree in a Peacock-painted window, `jump` switches to the
-# workspace, and the row's inner stripe matches that title bar. The other rows
+# workspace, and the card's colour dot matches that title bar. The other rows
 # stay fake and inert.
 import subprocess
 
@@ -139,21 +139,53 @@ def payments():
                feedby=int(time.time()) + 95)
 
 
+def billing(stage):
+    """A deep-plan family: the parent card holds its children as sub-rows.
+
+    Stage 0 has a child waiting on its gate (the card's badge says "1 needs
+    you" and the child shows its go button inline); stage 1 has that child
+    working, so the card goes back to the parent's own badge.
+    """
+    fam = dict(family="billing-revamp", famtier="attend" if stage == 0 else "running",
+               slug=PLAN_SLUG)
+    ledger = (row(id="billing-ledger", kind="attend", name="billing-ledger",
+                  badge="GATE SHUT", said="{{Ledger schema}} needs your go-ahead.",
+                  frac=0.25, branch="dev/billing-ledger", chips=["go 2", "diff", "jump"],
+                  meta="1/4 increments", color="#e69875", famrole="child", famkid=True, **fam)
+              if stage == 0 else
+              row(id="billing-ledger", kind="running", name="billing-ledger",
+                  badge="WORKING", said="{{Ledger schema}} in progress.", frac=None,
+                  branch="dev/billing-ledger", dirty=True, chips=["diff", "jump"],
+                  meta="1/4 increments", color="#e69875", famrole="child", famkid=True, **fam))
+    return [
+        row(id="billing-revamp", kind="running", name="billing-revamp", badge="WORKING",
+            said="{{Split the ledger}} in progress.", frac=0.33,
+            branch="dev/billing-revamp", chips=["diff", "jump"], meta="1/3 increments",
+            color="#d699b6", famrole="parent", famkid=False, **fam),
+        ledger,
+        row(id="billing-emails", kind="quiet", name="billing-emails", badge="PLAN IDLE",
+            frac=0, branch="dev/billing-emails", chips=["jump"], meta="0/3 increments",
+            famrole="child", famkid=True, **fam),
+    ]
+
+
 def snap(rows):
     return {"rows": rows, "quiet": "", "src": "demo data · board-demo.py",
             "stamp": "just now", "stale": False}
 
 
+# The family sits with the attend rows while its ledger waits on a gate, and
+# with the working rows once it is through.
 SCENES = [
-    (0, lambda: snap([checkout("attend"), ratelimits("wilt"),
+    (0, lambda: snap([checkout("attend")] + billing(0) + [ratelimits("wilt"),
         search(0.25, "Inc 2 in progress — building the tokenizer."), LOGIN] + QUIET)),
-    (5, lambda: snap([checkout("attend"), ratelimits("wilt"),
+    (5, lambda: snap([checkout("attend")] + billing(0) + [ratelimits("wilt"),
         search(0.5, "Inc 2 — tokenizer wired, tests running."), LOGIN] + QUIET)),
-    (5, lambda: snap([checkout("attend"), ratelimits("wilt"),
+    (5, lambda: snap([checkout("attend"), ratelimits("wilt")] + billing(1) + [
         search(1, "Done — all four increments landed, PR opened.", "done"), LOGIN] + QUIET)),
-    (5, lambda: snap([payments(), checkout("running"), ratelimits("wilt"),
+    (5, lambda: snap([payments(), checkout("running")] + billing(1) + [ratelimits("wilt"),
         search(1, "Done — all four increments landed, PR opened.", "done"), LOGIN] + QUIET)),
-    (5, lambda: snap([payments(), checkout("running"), ratelimits("done"),
+    (5, lambda: snap([payments(), checkout("running")] + billing(1) + [ratelimits("done"),
         search(1, "Done — all four increments landed, PR opened.", "done"), LOGIN] + QUIET)),
 ]
 
