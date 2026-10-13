@@ -43,14 +43,22 @@ covers a first install and an update, and what to ask you along the way.
 
 ## Tour
 
-Three Claude Code sessions take one change from plan to checked code. The 
-video starts with a tour of the screen, one feature at a time: the plan page, 
-the alignment quiz, the gate, checks, the crew board and the plan pane. Then it 
-plays the run. Each session plans its part with deep-plan and passes the quiz 
-before writing any code. Every increment opens with `go` and closes only when 
-its checks pass, and the crew board keeps each session ranked by who needs you.
+One change to a throwaway shop app, made by three Claude Code sessions: a
+parent plan and two workstreams, one for the API and one for the web form.
+Each session plans its part with deep-plan, and you check every plan on its
+review page before any code is written. That means a short quiz, a
+disposition for each risk, and a question answered with a picture. The gate
+refuses edits until you say `go`, and the ui's `go` waits on the parent. The
+crew board shows the family as one card, with each workstream's own `go`
+inside it. The plan pane tracks increments and their checks in the
+terminal. restack moves the API branch onto the parent's work and
+regenerates the route table instead of merging it. lookout reviews the
+diff beside the terminal, and its quiz was answered wrong on purpose to
+show what happens: the note puts your answer next to what the code does.
+The parent merges both workstreams, proves sign-in end to end, and the
+whole family reads done.
 
-https://github.com/user-attachments/assets/07591958-3786-44df-86ce-254c4d0ee362
+https://github.com/user-attachments/assets/cb23e079-9b94-466c-8e8b-fd278c0c2155
 
 _Note: The sessions, plans, checks, and commits are real, on a throwaway repo. 
 Portions are sped up for convenience._
