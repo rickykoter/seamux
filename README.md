@@ -73,7 +73,12 @@ PR (both clickable), today's spend, and one-tap chips. `go 3`, for example,
 approves a plan increment without leaving the Dock. When nothing needs you,
 the cat naps.
 
-![the crew board: four ranked rows with gate state, progress dials, cost facts and action chips](docs/img/board.png)
+A deep-plan family is one card: the parent's row, with each workstream
+nested inside it as a compact bar with its dial, gate, a line of status and
+its `go` chip. Click a bar to open the workstream's full card and jump to
+its session.
+
+![the crew board: a family card whose parent waits on an answer, with its two workstreams nested inside (auth-ui opened, its gate shut, with go chips; auth-api collapsed and done), and a quiet row below](docs/img/board.png)
 
 ### News
 
@@ -83,7 +88,7 @@ checks come first, then red CI, work in progress with its increment count,
 finished and merged plans, and quiet workspaces that committed in the last
 five hours. Collapsed, it shows the first sentence. Open, it shows them all.
 
-![the board's news footer, open beneath two family cards: one sentence per workspace and one for the auth-revamp family, each on its tier's color](docs/img/news.png)
+![the board's news footer, open beneath a family card: one sentence for the demo-auth family and one for a working workspace, each on its tier's color](docs/img/news.png)
 
 It is rebuilt on every push from the same rows, so it can't disagree with the
 cards above it, and no model writes it. `crew-digest` opens with the same
