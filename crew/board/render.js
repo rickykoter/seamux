@@ -184,8 +184,49 @@ function __boardRender(d) {
     return "nap";
   }
 
-  // catSays(), verbatim.
-  var SAYS = { swat: "hey. hey. HEY.", pace: "supervising", nap: "off duty" };
+  // What the cat says. The first line of each mood is catSays(), verbatim; the
+  // rest are the board's own. {top} is the row the line is about -- the first
+  // waiting row, the first broken-or-working one, or the row a reaction is
+  // for -- and a line that names one is skipped when there is none. The line
+  // is picked from the push's stamp, so it holds still for a whole push and
+  // moves on with the next one instead of flickering.
+  var SAYS = {
+    swat: ["hey. hey. HEY.", "{top} is waiting on you", "paws on the gate: {top}",
+           "a human is required", "psst. {top}."],
+    pace: ["supervising", "keeping an eye on {top}", "patrolling the worktrees",
+           "{top}, still at it", "on the prowl"],
+    nap: ["off duty", "nothing needs you", "all quiet. nap time.", "zzz",
+          "dreaming of green checks"],
+    hop: ["{top} is done!", "{top} landed. nice."],
+    stretch: ["all clear. big stretch.", "nothing left for you. stretching."],
+    perk: ["ears up: {top}", "ooh. {top} needs you."]
+  };
+  function line(key, top, stamp) {
+    var pool = (SAYS[key] || []).filter(function (l) { return top || l.indexOf("{top}") < 0; });
+    if (!pool.length) return "";
+    var h = 0, k = String(stamp || "");
+    for (var i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) % 9973;
+    // A function, not a string: "$&" or "$$" in a row's name is not a pattern.
+    return pool[h % pool.length].replace("{top}", function () { return top || ""; });
+  }
+
+  // The cat's reactions: this push against the last one, which data-prev
+  // remembers as id -> kind. One at a time, most cheerful first. Nothing on the
+  // first push of a page, when every row is "new" and nothing has changed --
+  // which is data-pushed, not an empty data-prev: a board that was empty a
+  // moment ago has an empty data-prev too, and its first waiting row is news.
+  function reaction(rows) {
+    if (host.getAttribute("data-pushed") !== "1") return null;
+    var ids = Object.keys(prev);
+    var hop = rows.filter(function (a) { return a.kind === "done" && prev[a.id] && prev[a.id] !== "done"; })[0];
+    if (hop) return { cls: "hop", top: hop.name };
+    var had = ids.filter(function (id) { return prev[id] === "attend"; }).length;
+    var need = rows.filter(function (a) { return a.kind === "attend"; }).length;
+    if (had && !need) return { cls: "stretch", top: "" };
+    var perk = rows.filter(function (a) { return a.kind === "attend" && prev[a.id] !== "attend"; })[0];
+    if (perk) return { cls: "perk", top: perk.name };
+    return null;
+  }
 
   // The tally: the tiers between the headline and the quiet divider, counted.
   // Attend is the headline's own number and quiet is the divider's, so neither
@@ -510,9 +551,23 @@ function __boardRender(d) {
   // -- the sprite kept its initial mood forever and no animation ever started,
   // with no error to show for it.
   var m = mood(rows);
-  if (cat) cat.setAttribute("class", m);
+  var rx = reaction(rows);
+  host.setAttribute("data-pushed", "1");
+  if (cat) {
+    // Off, a style flush, then on: the same reaction two pushes running would
+    // otherwise leave the class unchanged, and CSS replays an animation only
+    // when its name comes back.
+    if (rx) {
+      cat.setAttribute("class", m);
+      if (cat.getBoundingClientRect) cat.getBoundingClientRect();
+    }
+    cat.setAttribute("class", m + (rx ? " " + rx.cls : ""));
+  }
   var says = $("says");
-  if (says) says.textContent = SAYS[m] || "";
+  var lead = rows.filter(function (a) {
+    return m === "swat" ? a.kind === "attend" : a.kind === "wilt" || a.kind === "running";
+  })[0];
+  if (says) says.textContent = rx ? line(rx.cls, rx.top, d.stamp) : line(m, lead ? lead.name : "", d.stamp);
   var tl = $("tally");
   if (tl) tl.innerHTML = tally(rows);
 

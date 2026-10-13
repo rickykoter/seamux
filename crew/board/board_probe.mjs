@@ -444,14 +444,74 @@ const moodFor = (kinds) => {
   // className is a read-only SVGAnimatedString -- the stub happily accepted a
   // .className assignment that the real element silently ignored, so this probe
   // passed while the cat never once changed mood.
-  return els.cat.attrs.class;
+  // The mood is the first class; a reaction may follow it (see below).
+  return (els.cat.attrs.class || "").split(" ")[0];
 };
 checks.push(["cat swats when a human is waited on", moodFor(["running", "attend"]) === "swat"]);
 checks.push(["cat paces over work in progress", moodFor(["running"]) === "pace"]);
 checks.push(["cat paces over a broken build too, as the sidebar's does",
   moodFor(["wilt"]) === "pace"]);
 checks.push(["cat naps when the board is clear", moodFor(["quiet"]) === "nap"]);
-checks.push(["and it has something to say about each", els.says.textContent === "off duty"]);
+checks.push(["and it has something to say about each",
+  ["off duty", "nothing needs you", "all quiet. nap time.", "zzz", "dreaming of green checks"]
+    .includes(els.says.textContent)]);
+
+// Reactions: this push against the last, one at a time, each for one push.
+{
+  const P = (rows, stamp = "00:00:01") => { render({ rows, quiet: "", stamp }); return els.cat.attrs.class; };
+  const Rw = (id, kind, name = id) => ({ id, name, kind, badge: "b", said: "", chips: [], frac: null, meta: "", ref: "w" });
+  els.rows.attrs["data-prev"] = "{}";
+  delete els.rows.attrs["data-pushed"];
+  checks.push(["cat: the first push of a page is not a reaction", P([Rw("a", "attend"), Rw("r", "running")]) === "swat"]);
+  checks.push(["cat: nothing changed, no reaction", P([Rw("a", "attend"), Rw("r", "running")]) === "swat"]);
+  checks.push(["cat: a row newly needing you perks its ears, and says which",
+    P([Rw("a", "attend"), Rw("b", "attend", "billing-ledger"), Rw("r", "running")]) === "swat perk" &&
+    els.says.textContent.includes("billing-ledger")]);
+  checks.push(["cat: ...for that push only", P([Rw("a", "attend"), Rw("b", "attend"), Rw("r", "running")]) === "swat"]);
+  checks.push(["cat: the last thing needing you going away is a stretch",
+    P([Rw("r", "running")]) === "pace stretch"]);
+  checks.push(["cat: a row turning done is a hop, and it names the row",
+    P([Rw("r", "done", "login-copy")]) === "nap hop" && els.says.textContent.includes("login-copy")]);
+  P([Rw("a", "attend"), Rw("r", "running")]);
+  checks.push(["cat: a hop outranks a stretch when both happen at once",
+    P([Rw("r", "done")]) === "nap hop"]);
+  // The same reaction two pushes running: the class has to come off and go
+  // back on, with a style flush between, or CSS does not replay it.
+  const seen = [];
+  const realSet = els.cat.setAttribute;
+  els.cat.setAttribute = function (k, v) { seen.push(v); return realSet.call(this, k, v); };
+  els.cat.getBoundingClientRect = () => { seen.push("flush"); return {}; };
+  P([Rw("a", "attend")]);
+  seen.length = 0;
+  P([Rw("a", "attend"), Rw("b", "attend")]);
+  checks.push(["cat: a second perk in a row replays: off, flush, on",
+    seen.join() === "swat,flush,swat perk"]);
+  els.cat.setAttribute = realSet;
+  delete els.cat.getBoundingClientRect;
+  // A board that was empty a moment ago has an empty data-prev too; its first
+  // waiting row is still news.
+  P([]);
+  checks.push(["cat: a row needing you right after an empty board still perks",
+    P([Rw("z", "attend")]) === "swat perk"]);
+  P([Rw("x", "running")]);
+  checks.push(["cat: a $ in a row's name reaches the caption as written",
+    P([Rw("x", "done", "fix-$&-and-$$")]) === "nap hop" && els.says.textContent.includes("fix-$&-and-$$")]);
+
+  // The caption: still within a push, moving across pushes, naming the top row.
+  const said = (stamp, rows) => { render({ rows, quiet: "", stamp }); return els.says.textContent; };
+  const busy = [Rw("w", "running", "search-index")];
+  const lines = new Set();
+  for (let i = 0; i < 40; i++) lines.add(said("12:00:" + String(i).padStart(2, "0"), busy));
+  checks.push(["cat: the caption rotates across pushes", lines.size >= 3]);
+  checks.push(["cat: ...holds still for the same push", said("12:00:07", busy) === said("12:00:07", busy)]);
+  checks.push(["cat: ...and can name the row it is watching",
+    [...lines].some((l) => l.includes("search-index"))]);
+  const idle = new Set();
+  for (let i = 0; i < 40; i++) idle.add(said("13:00:" + String(i).padStart(2, "0"), [Rw("q", "quiet")]));
+  checks.push(["cat: a line about a row is never used with no row to name",
+    ![...idle].some((l) => /^\s|\s$|  |\{top\}/.test(l))]);
+  els.rows.attrs["data-prev"] = "{}";
+}
 
 // The tally counts every tier, in the ranking's own order, and says nothing about
 // the tiers that are empty.
@@ -483,6 +543,41 @@ render({ rows: [
 ], quiet: "" });
 checks.push(["the headline never says all-clear over a broken board",
   !/all clear/i.test(els.need.textContent) && /nothing needs you/i.test(els.need.textContent)]);
+
+// The board-only poses are generated too, from cat_poses.py's grids.
+checks.push(["the board-only poses are in sync with cat_poses.py",
+  (() => { try { execFileSync("python3", [join(HERE, "cat_poses.py"), "--check"],
+    { encoding: "utf8" }); return true; } catch { return false; } })()]);
+// They sit inside the sprite, so they walk and turn with it, and every
+// reaction render.js can set has a pose to show and a rule to show it.
+{
+  const sprite = (pageHtml.match(/<!-- CAT:BEGIN[\s\S]*?<!-- CAT:END -->/) || [""])[0];
+  const facing = (sprite.match(/<g class="facing">([\s\S]*)<\/g><\/g>/) || ["", ""])[1];
+  checks.push(["the new poses are inside the cat's svg, in the turning group",
+    ["hop-a", "hop-b", "heart", "perk", "stretch", "peek", "flick"].every((p) => facing.includes('class="pose x ' + p + '"'))]);
+  checks.push(["every reaction has its poses shown and the mood hidden for as long",
+    ["hop", "perk", "stretch"].every((r) => new RegExp("#cat\\." + r + " \\.pose:not\\(\\.x\\) path\\{animation:rxhide").test(css)) &&
+    /#cat\.hop \.hop-a\{/.test(css) && /#cat\.perk \.perk\{/.test(css) && /#cat\.stretch \.stretch\{/.test(css)]);
+  // Reduced motion must name each reaction rule by its OWN selector. A broader
+  // selector loses on specificity: the mood's frames stayed hidden for the
+  // reaction's length while the reaction's poses were stopped, and the cat
+  // vanished. So every selector of every rule that animates a reaction has to
+  // appear, verbatim, in the reduce block's animation:none list.
+  const reduce = (css.match(/@media \(prefers-reduced-motion:reduce\)\{([\s\S]*?)\}\s*\}/) || ["", ""])[1];
+  const stopped = new Set(((reduce.match(/([^{}]+)\{animation:none\}/) || ["", ""])[1]).split(",").map((x) => x.trim()));
+  const outside = css.replace(/@media \(prefers-reduced-motion:reduce\)\{[\s\S]*?\}\s*\}/, "");
+  const rxSels = [];
+  for (const [, sel, body] of outside.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!/animation/.test(body)) continue;
+    for (const one of sel.split(",").map((x) => x.trim())) {
+      if (/^#cat(\.nap)?\.(hop|perk|stretch)\b/.test(one)) rxSels.push(one);
+    }
+  }
+  const missing = rxSels.filter((x) => !stopped.has(x) && !/\.z[12]$/.test(x));
+  checks.push([`reduced motion stops every reaction rule by its own selector (${rxSels.length})`,
+    rxSels.length >= 10 && missing.length === 0]);
+  if (missing.length) console.log("    not stopped: " + missing.join(" | "));
+}
 
 // The sprite is generated from crew.swift, so the two boards cannot drift apart
 // silently. This is the check that notices if the sidebar's cat moves on.
