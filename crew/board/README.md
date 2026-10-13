@@ -35,10 +35,49 @@ Five tiers. The top of the list is the whole point; the bottom is deliberately n
 | **wilt** | broken | `ci:fail`, a deep-plan check that failed or lost its runner, `pr:conflict`, `review:changes`, a blocked increment |
 | **running** | mid-turn | `claude_code=Running`, `phase:working` |
 | **done** | finished, needs closing | `gone:merged`, a plan whose every increment is done |
-| quiet | everything else | collapsed to a count |
+| quiet | everything else | one line each, under a `quiet · N` divider |
 
 `--screens` adds one `cmux read-screen` per active row, so a card shows what the agent
 actually last said. It costs a socket call per row, which is why it is opt-in.
+
+## Reading a card
+
+```
+┃ ◔ ● checkout-flow                    GATE SHUT    rail = tier · dot = worktree colour
+┃ Coupon at capture needs your go-ahead.            what was said, 2 lines at most
+┃ [ go 3 ] ( diff ) ( jump ) ( ● CI )               28px buttons; the first is filled
+┃ dev/checkout-flow ● #142 ✓ approved   $4.20      mono footer: links, status, spend
+```
+
+One rail, in the tier's colour. The worktree's own colour, the hex Peacock paints
+its VS Code window with, is the dot beside the name; it used to be a second stripe
+beside the rail, and two stripes read as one smudge at Dock width.
+
+The **button row** is everything you can do. The first chip is the verb that
+resolves the row (the collector orders them that way), and on the tiers that ask
+something of you (attend, wilt, done) it is filled. A working card asks nothing,
+so its buttons stay ghosts: filling every card's first button made the board a
+wall of colour. Actionable signals (`● CI`, `allow`, `deny`, a Jira key, the
+sandbox) follow as ghosts in their own colour. Every button is at least 28px tall.
+
+The **footer** is what you recognise the row by: branch, the dirty dot, PR, issue,
+status signals (`✓ approved`, `draft`, `⚠ conflicts`), progress and spend, in one
+mono line that wraps. Branch, PR and issue are links, at least 24px tall.
+
+A **quiet row** is one line: the dot, the name, then its `diff` / `pr` chips as
+ghost buttons, or, with none, its badge (and no badge when it has none). The
+whole row is the target and selects the workspace, which is why `jump` is not
+repeated there. Its branch link is the one target a quiet row gives up for the
+single line; `diff` and the row itself cover the worktree.
+
+**Every piece of text reads at 4.5:1** on the ground behind it. The colours are
+tokens on `:root` in `board.html`, and `board_probe.mjs` resolves every `color:` in
+the stylesheet through them and measures it against the page, a card and an
+attend card. The collector's signal colours are the Swift sidebar's, picked for a
+near-black ground, and five of the seven fall short on a card (`#F97066` is 3.9:1), so
+`render.js` mixes each toward white until it passes. Nothing dims text with
+`opacity`, because the measurement cannot see it; the old board lost its meta line
+and quiet rows that way.
 
 ## How it stays current
 
@@ -121,8 +160,10 @@ inventing one.
 ## Verifying it
 
 ```bash
-node board/board_probe.mjs   # 10 assertions on the render path, no cmux needed
+node board/board_probe.mjs   # the render path, contrast and target sizes, no cmux needed
 crew-board state             # the ranking, as text
+python3 docs/demo/board-preview.py --open      # this checkout's board, fixed cast, in the Dock
+python3 docs/demo/board-preview.py --audit S   # measure it there: contrast, target heights, quiet rows
 ```
 
 The render path is the riskiest piece: a JS error there yields a *blank surface* rather
@@ -140,12 +181,16 @@ genuinely in flight and stops when it is not, and all of it yields to
 **The header is parked.** It is `position: sticky`, with negative side margins
 cancelling the body's padding so it and the shelf reach both edges. The board is a
 list you scroll and the one thing you always want in view is what is waiting on
-you. It costs 75px, about 12% of a Dock pane.
+you. It costs 72px, about 12% of a Dock pane: the shelf, then the headline with
+the tally beside it, then the cat's caption with the timestamp at its end. The
+caption is a sentence set like one, 11.5px at full strength; it used to be 9px at
+55% opacity, crammed onto the headline's line.
 
-**The tally** (`#tally`) counts the five tiers — `need you`, `broken`, `working`,
-`to close`, `quiet` — in the ranking's own order, so the eye travels the header
-and the list the same way. Empty tiers are omitted: a row of zeroes is noise, and
-the absence of "broken" reads faster than "0 broken".
+**The tally** (`#tally`) counts `broken`, `working` and `to close`, in the
+ranking's own order, on the headline's line. The headline already counts the
+attend tier and the `quiet · N` divider counts the quiet one, so neither repeats
+there. Empty tiers are omitted: a row of zeroes is noise, and the absence of
+"broken" reads faster than "0 broken".
 
 Adding it exposed a contradiction that had been there all along. `#need` counts the
 `attend` tier only, and printed **ALL CLEAR directly above "5 broken"**. It now
@@ -192,7 +237,7 @@ left on the style attribute. Two separate decisions on the same element:
 
 - the **slide** follows the pixel delta, so a row never teleports when something
   above it grows or a divider appears;
-- the **climb accent** (one pass of the row's own rail colour) fires only when a row
+- the **climb accent** (one pass of a ring in the row's tier colour) fires only when a row
   changed rank *relative to the rows present in both pushes* — i.e. it overtook
   something. A row displaced by an arrival has not climbed anything. See FINDINGS.md
   for the two wrong definitions this went through.
@@ -200,8 +245,9 @@ left on the style attribute. Two separate decisions on the same element:
 Rows that sink get no accent: losing urgency is not news. A row seen for the first
 time fades in from slightly above, never from below, which would read as demotion.
 
-**Pending** things breathe. On a row that is waiting on a human, the one chip that
-would resolve it pulses — exactly one moving element per row. A mid-turn row with no
+**Pending** things breathe. On a row that is waiting on a human, the filled button
+that would resolve it breathes a halo — exactly one moving element per row, and the
+button itself never fades, so its label stays at full contrast. A mid-turn row with no
 measurable progress gets an indeterminate sweep on its dial; a dial that *has* a
 percentage never spins, because it has already answered the question, and a row that
 is broken or waiting gets a bare dot rather than a stationary arc that would read as
@@ -219,7 +265,7 @@ One colour per worktree, in four places. It is cmux's own `custom_color`, which
 |---|---|
 | the workspace tab in cmux | cmux, natively |
 | the VS Code title bar | Peacock, via `bin/crew-color` |
-| the board's card | a ring in that colour on `.row.here`, plus a brighter ground |
+| the board's card | a dot in that colour by every card's name; a ring around `.row.here` |
 | the focused pane's frame | `bin/crew-frame` rewrites `activePaneBorderColor` |
 | Claude Code's status line | `~/.config/cmux/crew/claude/statusline.py` prints `▊ <title>` in it |
 
@@ -565,11 +611,11 @@ list is the sixteen call sites of `onTapGesture` / `openURL` / `chipRPC` /
 |---|---|---|
 | branch text (:510) | `.branch` `data-a=code` | opens the worktree in VS Code, Peacock colour and all |
 | PR number (:539) | `.pr` `data-a=pr` | opens the pull request |
-| `✗ CI` (:565), `● CI` (:568), `✓ CI` (:572) | `checks` chip / `.sig` | opens the checks page |
-| `▣ ▢ sandbox` (:629, :634) | `.sig` `data-a=sandbox-up/-down` | starts or stops the microVM |
-| `go N` (:653) | `go N` chip / `.sig` | authorizes the next increment |
-| `plan →` (:662) | `plan` chip / `.sig` | opens the plan's live page |
-| `allow` / `deny` (:682, :687) | `.sig` `data-a=feed-allow/-deny` | answers a blocked ask |
+| `✗ CI` (:565), `● CI` (:568), `✓ CI` (:572) | `checks` chip / `.chip.sig` | opens the checks page |
+| `▣ ▢ sandbox` (:629, :634) | `.chip.sig` `data-a=sandbox-up/-down` | starts or stops the microVM |
+| `go N` (:653) | `go N` chip / `.chip.sig` | authorizes the next increment |
+| `plan →` (:662) | `plan` chip / `.chip.sig` | opens the plan's live page |
+| `allow` / `deny` (:682, :687) | `.chip.sig` `data-a=feed-allow/-deny` | answers a blocked ask |
 | `read it →` / `jump →` (:690, :695) | `jump` chip | goes to the workspace |
 | reclaim (:736) | `reclaim` chip | dry-runs the reclaim, asks first |
 | whole row (:803) | `.row` | selects the workspace |
@@ -577,7 +623,7 @@ list is the sixteen call sites of `onTapGesture` / `openURL` / `chipRPC` /
 
 Also carried over, though not clickable: the dirty dot, the whole signals
 vocabulary (review, conflicts, draft, stack, **jira**), and the worktree's identity
-colour, which the row wears as an inner stripe — the same hex Peacock paints its
+colour, which the card wears as a dot by its name — the same hex Peacock paints its
 VS Code title bar with.
 
 The `jira:` chips work here and never did in the sidebar: `crew.swift` wrapped the

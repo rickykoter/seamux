@@ -190,10 +190,15 @@ checks.push(["the whole branch survives in the tooltip",
 checks.push(["the PR number is its own target", /class="pr open" data-a="pr"/.test(f)]);
 checks.push(["uncommitted work is marked", f.includes('class="dirty"')]);
 checks.push(["branch and PR are no longer buried in meta",
-  /<div class="meta">2\/4 increments<\/div>/.test(f)]);
-checks.push(["an actionable signal is a target, a status signal is not",
-  /class="sig act" style="color:#F97066" data-a="checks"/.test(f) &&
-  /class="sig" style="color:#859289"/.test(f)]);
+  /<span class="meta">2\/4 increments<\/span>/.test(f)]);
+// Actionable signals are buttons in the button row; status signals are text in
+// the footer. Both wear the collector's colour, lifted until it reads on a card.
+const fChips = (f.match(/<div class="chips">.*?<\/div>/) || [""])[0];
+const fFoot = (f.match(/<div class="foot">.*?<\/div>/) || [""])[0];
+checks.push(["an actionable signal is a button, a status signal is footer text",
+  /class="chip sig" style="color:#[0-9a-f]{6}" data-a="checks"/.test(fChips) &&
+  /class="sig" style="color:#[0-9a-f]{6}"[^>]*>draft</.test(fFoot) &&
+  !/data-a=/.test(fFoot.replace(/class="(branch|pr[^"]*|issue)" data-a="[^"]+"/g, ""))]);
 checks.push(["a signal can carry an argument", /data-a="go" data-x="5"/.test(f)]);
 // A linked Jira chip is just a signal wearing the ticket key: actionable,
 // state-colored, carrying the key as its argument for the server to resolve.
@@ -232,12 +237,143 @@ render({ rows: [{ id: "w", name: "w", kind: "attend", badge: "asked you", said: 
 checks.push(["a closed window shows no bar", !els.rows.innerHTML.includes("feedbar")]);
 
 // A row with none of these must not emit empty containers.
-render({ rows: [{ id: "b", name: "bare", kind: "quiet", badge: "idle", said: "",
+render({ rows: [{ id: "b", name: "bare", kind: "running", badge: "", said: "",
   chips: [], frac: null, meta: "", branch: "", dirty: false, pr: "", pr_state: "",
-  color: "", signals: [], feedby: 0, feedgate: "" }], quiet: "" });
-checks.push(["a bare row emits no empty facts or signals blocks",
-  !els.rows.innerHTML.includes('class="facts"') &&
-  !els.rows.innerHTML.includes('class="sigs"')]);
+  color: "", signals: [], feedby: 0, feedgate: "", ref: "workspace:1" }], quiet: "" });
+checks.push(["a bare row emits no empty button row, footer or badge",
+  !/class="(chips|foot|said|badge)"/.test(els.rows.innerHTML)]);
+
+// --- the tidy card -------------------------------------------------------
+// Readability and clickability were the point of the redesign, so both are
+// measured here rather than eyeballed: a later palette tweak or a "slightly
+// smaller" button fails the probe instead of quietly shipping.
+//
+// Contrast. Every `color:` in board.html's stylesheet is resolved through the
+// :root tokens and measured against every ground a card can sit on. A filled
+// button's text is measured against the tier colours instead, which are its
+// ground.
+const hexRgb = (h) => { const n = parseInt(h.slice(1), 16); return [n >> 16, (n >> 8) & 255, n & 255]; };
+const lumOf = (h) => {
+  const v = hexRgb(h).map((x) => { x /= 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; });
+  return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+};
+const ratio = (a, b) => { const x = lumOf(a), y = lumOf(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+const css = (pageHtml.match(/<style>([\s\S]*?)<\/style>/) || ["", ""])[1].replace(/\/\*[\s\S]*?\*\//g, "");
+const TOK = {};
+for (const m of (css.match(/:root\{([^}]*)\}/) || ["", ""])[1].matchAll(/--([\w-]+):\s*(#[0-9a-fA-F]{6})/g)) TOK[m[1]] = m[2];
+const GROUNDS = ["bg", "bg1", "bg-attend"].map((k) => TOK[k]);
+const FILLS = ["attend", "running", "wilt", "done"].map((k) => TOK[k]);
+const lows = [];
+let measured = 0;
+for (const rule of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+  const sel = rule[1].trim();
+  if (sel.startsWith(":root") || /^(from|to|\d)/.test(sel)) continue;     // tokens, keyframes
+  for (const d of rule[2].matchAll(/(?:^|[;{\s])color:\s*([^;]+)/g)) {
+    const v = d[1].trim();
+    const tok = /^var\(--([\w-]+)\)$/.exec(v);
+    const hex = tok ? TOK[tok[1]] : (/^#[0-9a-fA-F]{6}$/.test(v) ? v : null);
+    if (!hex) {
+      if (!/^(currentColor|inherit)$/.test(v)) lows.push(`${sel}: ${v} is not a measurable colour`);
+      continue;
+    }
+    measured++;
+    for (const g of /\.pri\b/.test(sel) ? FILLS : GROUNDS) {
+      const r = ratio(hex, g);
+      if (r < 4.5) lows.push(`${sel}: ${v} on ${g} is ${r.toFixed(2)}:1`);
+    }
+  }
+}
+checks.push([`every text colour reads at 4.5:1 on every ground (${measured} measured)`,
+  measured > 20 && lows.length === 0]);
+if (lows.length) console.log("    " + lows.join("\n    "));
+// Opacity was how the old board dimmed quiet rows and small costs, and it is
+// invisible to the measurement above, so it is not allowed on text at all.
+checks.push(["nothing dims text with opacity",
+  ![...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].some(([, sel, body]) =>
+    /(^|;)opacity:\s*\.\d/.test(body) && !/#cat|\.zz|@keyframes|^\s*(\d|from|to)/.test(sel))]);
+
+// The collector's signal colours are the Swift sidebar's. render.js lifts each
+// one until it reads on the lightest card; every colour the collector can send
+// is pushed through here.
+const SIGCOLS = ["#4ADE80", "#60A5FA", "#859289", "#8E8E93", "#A78BFA", "#F5A524", "#F97066"];
+render({ rows: [{ id: "s", name: "s", kind: "attend", badge: "b", said: "", chips: ["jump"],
+  frac: null, meta: "", ref: "workspace:1",
+  signals: SIGCOLS.flatMap((c, i) => [{ t: "a" + i, c, h: "", a: "checks" }, { t: "s" + i, c, h: "" }]
+    ).concat([{ t: "bad", c: "red;background:url(x)", h: "", a: "checks" }]) }], quiet: "" });
+const sigOut = els.rows.innerHTML;
+const lifted = [...sigOut.matchAll(/style="color:(#[0-9a-f]{6})"/g)].map((m) => m[1]);
+checks.push(["every collector signal colour is lifted to 4.5:1 on a card",
+  lifted.length === SIGCOLS.length * 2 &&
+  lifted.every((c) => ratio(c, TOK["bg-attend"]) >= 4.5 && ratio(c, TOK.bg1) >= 4.5)]);
+checks.push(["...and a bright one comes back unchanged", lifted.includes("#4ade80")]);
+checks.push(["a signal colour that is not a hex never reaches a style attribute",
+  !sigOut.includes("url(") && /class="chip sig" data-a="checks"[^>]*>bad</.test(sigOut)]);
+render({ rows: [{ id: "c", name: "c", kind: "running", badge: "b", said: "", chips: [], frac: null,
+  meta: "", ref: "workspace:1", color: "red;background:url(x)" }], quiet: "" });
+checks.push(["a worktree colour that is not a hex never reaches a style attribute",
+  !els.rows.innerHTML.includes("url(") && !els.rows.innerHTML.includes("owned")]);
+
+// One filled button, and only where the row asks something of you.
+const tiers = ["attend", "wilt", "done", "running"].map((kind) => ({
+  id: kind, name: kind, kind, badge: "b", said: "", chips: ["first", "second"], frac: 0.5,
+  meta: "", ref: "workspace:1" }));
+render({ rows: tiers, quiet: "" });
+const pri = els.rows.innerHTML;
+const priOf = (id) => {
+  const card = pri.split('data-id="' + id + '"')[1].split('<div class="row ')[0];
+  return (card.match(/class="chip pri"[^>]*>(\w+)</g) || []).map((m) => m.replace(/.*>/, "").replace("<", ""));
+};
+checks.push(["attend, wilt and done fill their first button, and only that one",
+  ["attend", "wilt", "done"].every((k) => priOf(k).join() === "first")]);
+checks.push(["a working card's buttons are all ghosts", priOf("running").length === 0]);
+
+// A quiet row is one line: dot, name, badge if it has one. No dial, no said,
+// no buttons, no footer -- the row is the target.
+render({ rows: [
+  { id: "q1", name: "q-with", kind: "quiet", badge: "pr open", said: "", chips: ["jump", "pr"],
+    frac: 0.3, meta: "1/3 increments", branch: "dev/q", pr: "#9", color: "#7fbbb3", ref: "workspace:1" },
+  { id: "q2", name: "q-bare", kind: "quiet", badge: "", said: "", chips: ["jump"], frac: null,
+    meta: "", ref: "workspace:2" },
+], quiet: "" });
+const qo = els.rows.innerHTML;
+checks.push(["a quiet row is one line: no dial, said or footer",
+  !/class="(dial|said|foot|feed)/.test(qo) && (qo.match(/class="top"/g) || []).length === 2 &&
+  !/<div class="chips">/.test(qo)]);
+// Its chips stay, as ghosts on that line -- except jump, which the row itself
+// does. Buttons say what the badge would, so the badge steps aside for them.
+const q1 = qo.split('data-id="q2"')[0];
+checks.push(["a quiet row keeps its chips as ghost buttons on its one line",
+  /<div class="top">.*<span class="chips"><span class="chip"[^>]*>pr<\/span><\/span><\/div>/.test(q1) &&
+  !/>jump</.test(qo) && !/chip pri/.test(qo)]);
+checks.push(["...with the badge only when there are none, and no empty badge",
+  !q1.includes('class="badge"') && (qo.match(/class="badge"/g) || []).length === 0]);
+render({ rows: [{ id: "q3", name: "q-idle", kind: "quiet", badge: "idle", said: "", chips: ["jump"],
+  frac: null, meta: "", ref: "workspace:3" }], quiet: "" });
+checks.push(["...and an idle quiet row shows its badge", els.rows.innerHTML.includes('class="badge">idle<')]);
+
+// One rail. The worktree colour is a dot by the name, not a second stripe.
+checks.push(["the worktree colour is a dot, not a second stripe",
+  qo.includes('<span class="own"></span>') && !/inset\s+\d+px\s+0\s+0\s+0\s+var\(--own\)/.test(css)]);
+
+// Targets. The sizes live in CSS, so the CSS is what is asserted.
+const ruleBody = (sel) => {
+  for (const [, s, b] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) if (s.trim() === sel) return b;
+  return "";
+};
+const px = (body, prop) => Number((new RegExp("(?:^|;)" + prop + ":(\\d+(?:\\.\\d+)?)px").exec(body) || [])[1] || 0);
+checks.push(["every button is at least 28px tall", px(ruleBody(".chip"), "min-height") >= 28]);
+checks.push(["a footer item that runs long ends in an ellipsis, not past the card",
+  /text-overflow:ellipsis/.test(ruleBody(".foot>span")) && /max-width:100%/.test(ruleBody(".foot>span"))]);
+checks.push(["every footer link is at least 24px tall",
+  px(ruleBody(".foot>span"), "min-height") >= 24 && px(ruleBody(".foot>span"), "line-height") >= 24]);
+checks.push(["body text is 13px", /font:13px\//.test(ruleBody("body")) && /font-size:13px/.test(ruleBody(".said"))]);
+
+// The header: the tally shares the headline's line, and the caption is a
+// sentence at full strength, not 9px at half opacity.
+checks.push(["the tally folds into the headline's line",
+  /<div class="hud">\s*<span id="need">[^<]*<\/span>\s*<span id="tally">/.test(pageHtml)]);
+checks.push(["the cat's caption is legible", px(ruleBody("#says"), "font:italic ") >= 11 ||
+  /font:italic 1[1-9](\.\d+)?px/.test(ruleBody("#says"))]);
 
 // --- motion ---------------------------------------------------------------
 // Whimsy's rule is that motion means something, so each of these asserts that a
@@ -313,11 +449,19 @@ render({ rows: [
   { id: "d", name: "d", kind: "quiet", badge: "b", said: "", chips: [], frac: null, meta: "" },
 ], quiet: "" });
 const tal = els.tally.innerHTML;
-checks.push(["the tally counts each state", /class="tl attend"><b>1<\/b> need you/.test(tal) &&
-  /class="tl wilt"><b>2<\/b> broken/.test(tal) && /class="tl quiet"><b>1<\/b> quiet/.test(tal)]);
+// Attend is the headline's number and quiet is the divider's, so the tally
+// that shares the headline's line counts neither.
+checks.push(["the tally counts the tiers between the headline and the divider",
+  /class="tl wilt"><b>2<\/b> broken/.test(tal) && !/need you|quiet/.test(tal)]);
 checks.push(["...omits the empty ones", !tal.includes("working") && !tal.includes("to close")]);
+render({ rows: [
+  { id: "d", name: "d", kind: "done", badge: "b", said: "", chips: [], frac: 1, meta: "" },
+  { id: "r", name: "r", kind: "running", badge: "b", said: "", chips: [], frac: null, meta: "" },
+  { id: "w", name: "w", kind: "wilt", badge: "b", said: "", chips: [], frac: null, meta: "" },
+], quiet: "" });
+const tal2 = els.tally.innerHTML;
 checks.push(["...in the ranking's order",
-  tal.indexOf("need you") < tal.indexOf("broken") && tal.indexOf("broken") < tal.indexOf("quiet")]);
+  tal2.indexOf("broken") < tal2.indexOf("working") && tal2.indexOf("working") < tal2.indexOf("to close")]);
 render({ rows: [], quiet: "" });
 checks.push(["...and disappears when there is nothing", els.tally.innerHTML === ""]);
 // The headline counts one tier, so it must not speak for the others.
