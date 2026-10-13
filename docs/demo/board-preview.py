@@ -5,19 +5,30 @@
     python3 docs/demo/board-preview.py --open          ...and open it in a Dock browser tab
     python3 docs/demo/board-preview.py --audit S       measure the page in surface S
     python3 docs/demo/board-preview.py --shot S PATH   screenshot surface S to PATH
+    python3 docs/demo/board-preview.py --open --listen 8791
+                        open it wired to a stand-in server that prints each click
+    python3 docs/demo/board-preview.py --push S [--port 8791]
+                        push the cast again, the way the collector does
 
 For design work on board.html / render.js / intent.js. Unlike board-demo.py,
 which pushes into the LIVE board through the installed collector, this touches
 nothing installed: it inlines the working tree's three files into one static
 page with a cast that covers every tier, every signal colour the collector
 sends, a reply window, the current workspace, quiet rows and both kinds of
-family. Clicks go nowhere (port 0); the red flash on a pressed button is the
-fetch failing, which is expected.
+family. Clicks go nowhere (port 0) unless --listen is given; the red flash on
+a pressed button is the fetch failing, which is expected.
+
+--listen PORT stands in for crew-board-intent on 127.0.0.1:PORT: it answers
+every /do with ok and prints the action, row id and argument, so you can see
+exactly what a click would have asked the real server for. It runs until ^C.
+--push S re-sends render.js, the cast and intent.js into surface S with
+`cmux browser addscript`, as crew-board does on every update -- which is how to
+check that something survives a push (an opened family child, say).
 
 --audit runs in the page and reports, against what the board promises:
   - every visible piece of text at 4.5:1 or better on the ground behind it
   - every button at least 28px tall, every footer link at least 24px
-  - every quiet row one line tall
+  - every quiet row, and every family child's header, one line tall
 It cancels the rows' entry animations first: WebKit pauses Web Animations in a
 Dock tab that is not showing, which leaves fresh rows at opacity 0.
 Exit status is non-zero when anything fails.
@@ -156,20 +167,24 @@ AUDIT = r"""(() => {
     const key = name(el);
     if (r < 4.5 && !seen[key]) { seen[key] = 1; fails.push("contrast " + r.toFixed(2) + ":1 on " + key + " \"" + el.textContent.trim().slice(0, 24) + "\""); }
   });
-  const h = (sel) => [...document.querySelectorAll(sel)].map((e) => [e, e.getBoundingClientRect().height]);
+  // Only what is showing: a closed family child carries its whole card, hidden.
+  const h = (sel) => [...document.querySelectorAll(sel)].filter((e) => e.getClientRects().length)
+    .map((e) => [e, e.getBoundingClientRect().height]);
   const chips = h("#rows .chip"), links = h("#rows .foot .branch, #rows .foot .pr, #rows .foot .issue");
   chips.forEach(([e, v]) => { if (v < 28) fails.push("button " + v.toFixed(1) + "px: " + e.textContent.trim()); });
   links.forEach(([e, v]) => { if (v < 24) fails.push("footer link " + v.toFixed(1) + "px: " + e.textContent.trim()); });
-  const quiet = h("#rows .row.quiet .top");
-  quiet.forEach(([e, v]) => { const tallest = Math.max(...[...e.children].map((c) => c.getBoundingClientRect().height)); if (v > Math.max(22, tallest) + 1) fails.push("quiet row wraps (" + v.toFixed(1) + "px): " + e.textContent.trim().slice(0, 24)); });
+  // A quiet row, and a family child's header, are each one line: no taller
+  // than their floor (22px, 36px) or their tallest item, whichever is more.
+  const quiet = h("#rows .row.quiet:not(.kid) > .top").concat(h("#rows .kidhd"));
+  quiet.forEach(([e, v]) => { const tallest = Math.max(...[...e.children].map((c) => c.getBoundingClientRect().height)); if (v > Math.max(e.classList.contains("kidhd") ? 36 : 22, tallest) + 1) fails.push((e.classList.contains("kidhd") ? "child header" : "quiet row") + " wraps (" + v.toFixed(1) + "px): " + e.textContent.trim().slice(0, 24)); });
   return JSON.stringify({ width: document.documentElement.clientWidth, texts, minRatio: +minRatio.toFixed(2),
     buttons: chips.length, minButton: Math.min(...chips.map(([, v]) => v)),
     links: links.length, minLink: Math.min(...links.map(([, v]) => v)),
-    quietRows: quiet.length, fails });
+    oneLiners: quiet.length, fails });
 })()"""
 
 
-def build(path=OUT):
+def build(path=OUT, port=0):
     def read(name):
         with open(os.path.join(BOARD, name), encoding="utf8") as fh:
             return fh.read()
@@ -179,7 +194,7 @@ def build(path=OUT):
     data = json.dumps(SNAP, ensure_ascii=False).replace("</", "<\\/")
     inject = ("<script>\n" + read("render.js") + "\n" + read("intent.js") +
               "\nvar SNAP = " + data + ";\n__boardRender(SNAP);\n"
-              "__boardIntent({port: 0, token: \"\"});\n</script>\n")
+              "__boardIntent({port: %d, token: \"preview\"});\n</script>\n" % port)
     page = page.replace("</body>", inject + "</body>")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf8") as fh:
@@ -201,14 +216,62 @@ def audit(surface):
         return 2
     print("width %(width)spx · %(texts)s text runs, lowest %(minRatio)s:1 · "
           "%(buttons)s buttons, shortest %(minButton)spx · "
-          "%(links)s footer links, shortest %(minLink)spx · %(quietRows)s quiet rows" % rep)
+          "%(links)s footer links, shortest %(minLink)spx · %(oneLiners)s quiet rows and child headers" % rep)
     for f in rep["fails"]:
         print("  FAIL " + f)
     print("audit: " + ("clean" if not rep["fails"] else "%d problem(s)" % len(rep["fails"])))
     return 1 if rep["fails"] else 0
 
 
+def push(surface, port):
+    """One update, built the way crew-board's push_state builds it."""
+    def read(name):
+        with open(os.path.join(BOARD, name), encoding="utf8") as fh:
+            return fh.read()
+
+    script = (read("render.js") + "\n__boardRender(" + json.dumps(SNAP) + ");\n" +
+              read("intent.js") + "\n__boardIntent(" +
+              json.dumps({"port": port, "token": "preview"}) + ");")
+    r = cmux("browser", "--surface", surface, "addscript", "--script", script)
+    print(r.stdout.strip() or r.stderr.strip())
+    return r.returncode
+
+
+def listen(port):
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.parse import parse_qs, urlparse
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+            print("click  a=%-10s r=%-18s x=%s" % (q.get("a", ""), q.get("r", ""), q.get("x", "")),
+                  flush=True)
+            body = b'{"ok": true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    print("listening on 127.0.0.1:%d -- every click prints here" % port, flush=True)
+    try:
+        HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def arg(argv, flag, default=None):
+    return argv[argv.index(flag) + 1] if flag in argv else default
+
+
 def main(argv):
+    if "--push" in argv:
+        return push(arg(argv, "--push"), int(arg(argv, "--port", 0)))
     if "--audit" in argv:
         return audit(argv[argv.index("--audit") + 1])
     if "--shot" in argv:
@@ -217,13 +280,14 @@ def main(argv):
         r = cmux("browser", argv[i + 1], "screenshot", "--out", argv[i + 2])
         print(r.stdout.strip() or r.stderr.strip())
         return r.returncode
-    path = build()
+    port = int(arg(argv, "--listen", 0))
+    path = build(port=port)
     print(path)
     if "--open" in argv:
         r = cmux("new-surface", "--type", "browser", "--placement", "dock",
                  "--url", "file://" + path)
-        print(r.stdout.strip() or r.stderr.strip())
-    return 0
+        print(r.stdout.strip() or r.stderr.strip(), flush=True)
+    return listen(port) if port else 0
 
 
 if __name__ == "__main__":

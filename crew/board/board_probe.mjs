@@ -38,17 +38,24 @@ const mk = (id) => (els[id] = {
 // non-throwing, and it means the enter/up/down logic is tested, not skipped.
 const ANIMS = [];      // every .animate() call render.js makes, in order
 const ADDED = [];      // every classList.add() it makes: [id, class]
+// Geometry for the tests that need it: each query render.js makes takes the
+// next id -> offsetTop map off this queue -- the first is where rows were
+// before the push, the second where they are after it. Empty: uniform rows.
+const STUB_GEO = [];
 function synthRows() {
   const html = els.rows.innerHTML;
   const out = [];
-  const re = /class="row ([^"]*)"\s+data-id="([^"]+)"/g;
+  const geo = STUB_GEO.length ? STUB_GEO.shift() : {};
+  const re = /class="row ([^"]*)"\s+data-id="([^"]+)"([^>]*)>/g;
   let m, i = 0;
   while ((m = re.exec(html))) {
     const id = m[2];
+    const inCard = (/data-in="([^"]+)"/.exec(m[3]) || [])[1] || null;
     out.push({
       // Rows are uniform-height in the stub; only the ORDER matters to a FLIP.
-      offsetTop: i++ * 50,
-      getAttribute: (k) => (k === "data-id" ? id : null),
+      offsetTop: id in geo ? geo[id] : i * 50,
+      _i: i++,
+      getAttribute: (k) => (k === "data-id" ? id : k === "data-in" ? inCard : null),
       classList: { add: (c) => ADDED.push([id, c]) },
       animate: (frames, opts) => { ANIMS.push({ id, frames, opts }); return {}; },
     });
@@ -350,6 +357,12 @@ checks.push(["...with the badge only when there are none, and no empty badge",
 render({ rows: [{ id: "q3", name: "q-idle", kind: "quiet", badge: "idle", said: "", chips: ["jump"],
   frac: null, meta: "", ref: "workspace:3" }], quiet: "" });
 checks.push(["...and an idle quiet row shows its badge", els.rows.innerHTML.includes('class="badge">idle<')]);
+
+// A family card holds rows of other tiers, so a tier rule that reaches its
+// badge or quiet line through a DESCENDANT selector paints the children too:
+// an attend child's badge came out the working parent's teal.
+checks.push(["tier rules style a row's own head, never its children's",
+  !/\.(attend|running|wilt|done|quiet) \.(badge|top|nm|cost|chips|dial)\b/.test(css)]);
 
 // One rail. The worktree colour is a dot by the name, not a second stripe.
 checks.push(["the worktree colour is a dot, not a second stripe",
@@ -913,6 +926,120 @@ print(sum(k.startswith("/w/r") for k in json.load(open(J.CACHE))))
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
+// ---- intent.js: what a click on a family child sends ----------------------
+// intent.js runs against a small fake DOM shaped like render.js's family card:
+// a parent row holding two children, one with an inline filled button. Every
+// fetch it makes is recorded, which is the whole of what a click does.
+{
+  const mkEl = (tag, attrs = {}, kids = [], text = "") => {
+    const el = {
+      tagName: tag.toUpperCase(), attrs: { ...attrs }, children: [], parentElement: null, text,
+      listeners: [],
+      getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
+      setAttribute(k, v) { this.attrs[k] = String(v); },
+      hasAttribute(k) { return k in this.attrs; },
+      get textContent() { return this.text + this.children.map((c) => c.textContent).join(""); },
+      set textContent(v) { this.text = v; this.children = []; },
+      get classList() {
+        const self = this;
+        const list = () => (self.attrs.class || "").split(/\s+/).filter(Boolean);
+        return {
+          contains: (c) => list().includes(c),
+          add: (c) => { if (!list().includes(c)) self.attrs.class = [...list(), c].join(" "); },
+          remove: (c) => { self.attrs.class = list().filter((x) => x !== c).join(" "); },
+        };
+      },
+      matches(sel) {
+        return sel.split(",").map((x) => x.trim()).some((one) =>
+          one.startsWith(".") ? this.classList.contains(one.slice(1)) :
+          one.startsWith("[") ? this.hasAttribute(one.slice(1, -1)) :
+          one.startsWith("#") ? this.attrs.id === one.slice(1) : this.tagName === one.toUpperCase());
+      },
+      closest(sel) { for (let e = this; e; e = e.parentElement) if (e.matches(sel)) return e; return null; },
+      addEventListener(type, fn) { this.listeners.push(fn); },
+      appendChild(c) { c.parentElement = this; this.children.push(c); return c; },
+    };
+    kids.forEach((k) => el.appendChild(k));
+    return el;
+  };
+  const span = (cls, text = "", attrs = {}) => mkEl("span", { class: cls, ...attrs }, [], text);
+  const goA = span("chip pri", "go 2");
+  const hdA = mkEl("div", { class: "top kidhd", "data-a": "toggle", "data-x": "select" }, [span("caret"), span("nm", "A"), goA]);
+  const diffA = span("chip", "diff");
+  const bodyA = mkEl("div", { class: "kbody" }, [mkEl("div", { class: "chips" }, [span("chip pri", "go 2"), diffA])]);
+  const kidA = mkEl("div", { class: "row attend fam kid", "data-id": "A", "data-in": "P" }, [hdA, bodyA]);
+  const hdW = mkEl("div", { class: "top kidhd", "data-a": "toggle", "data-x": "select" }, [span("caret"), span("nm", "W")]);
+  // A plan child with no workspace: render.js leaves data-x off its toggle.
+  const hdN = mkEl("div", { class: "top kidhd", "data-a": "toggle" }, [span("caret"), span("nm", "N")]);
+  const kidN = mkEl("div", { class: "row quiet fam kid", "data-id": "N", "data-in": "P" }, [hdN]);
+  const kidW = mkEl("div", { class: "row running fam kid", "data-id": "W", "data-in": "P" }, [hdW]);
+  const jumpP = span("chip", "jump");
+  const card = mkEl("div", { class: "row running fam", "data-id": "P" },
+    [mkEl("div", { class: "chips" }, [jumpP]), mkEl("div", { class: "kids" }, [kidA, kidW, kidN])]);
+  const host = mkEl("div", { id: "rows", "data-open": "[]" }, [card]);
+  const oldCss = mkEl("style", { id: "intent-css" }, [], ".chip{cursor:pointer}");
+  const head = mkEl("head", {}, [oldCss]);
+  // A page an older handler already wired: its stamp listener has no version
+  // check, so it will act on every click whatever version is installed.
+  const stampEl = mkEl("span", { id: "stamp", "data-intent": "3" });
+  stampEl.listeners.push(() => fetched.push("http://127.0.0.1:4242/do?t=t&a=sync&r=-&x="));
+  const byId = { rows: host, "intent-css": oldCss, stamp: stampEl };
+  const fetched = [];
+  const doc = {
+    head,
+    getElementById: (id) => byId[id] || null,
+    createElement: (tag) => mkEl(tag),
+  };
+  const box = {
+    document: doc, JSON, Math, encodeURIComponent,
+    setTimeout: () => 0,
+    fetch: (url) => { fetched.push(url); return Promise.resolve({ json: () => ({ ok: true }) }); },
+  };
+  createContext(box);
+  runInContext(readFileSync(join(HERE, "intent.js"), "utf8"), box);
+  box.__boardIntent({ port: 4242, token: "t" });
+  box.__boardIntent({ port: 4242, token: "t" });     // a second push: still one listener acting
+  const click = (el) => {
+    const ev = { target: el, preventDefault() {}, stopPropagation() {} };
+    host.listeners.forEach((fn) => fn(ev));
+  };
+  const q = (u) => Object.fromEntries(new URL(u).searchParams);
+  const last = () => q(fetched[fetched.length - 1]);
+
+  checks.push(["intent: an older page's click CSS is replaced on upgrade",
+    oldCss.getAttribute("data-v") === "4" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
+
+  click(hdA.children[1]);                            // the name, inside the header
+  checks.push(["intent: opening a child opens it in place and selects its workspace",
+    fetched.length === 1 && last().a === "row" && last().r === "A" &&
+    kidA.classList.contains("open") && host.getAttribute("data-open") === '["A"]']);
+  click(hdA);
+  checks.push(["intent: closing it sends nothing and forgets it",
+    fetched.length === 1 && !kidA.classList.contains("open") && host.getAttribute("data-open") === "[]"]);
+  click(goA);
+  checks.push(["intent: a child's inline button fires its own verb for the child, not the toggle",
+    fetched.length === 2 && last().a === "go" && last().x === "2" && last().r === "A" &&
+    host.getAttribute("data-open") === "[]"]);
+  click(hdA); click(diffA);
+  checks.push(["intent: a chip inside an opened child fires with the child's row id",
+    fetched.length === 4 && last().a === "diff" && last().r === "A"]);
+  click(jumpP);
+  checks.push(["intent: the parent's own chips still fire for the parent",
+    fetched.length === 5 && last().a === "jump" && last().r === "P"]);
+  click(hdW);
+  checks.push(["intent: two children can be open at once",
+    host.getAttribute("data-open") === '["A","W"]' && last().r === "W"]);
+  const n0 = fetched.length;
+  click(hdN);
+  checks.push(["intent: a child with no workspace opens without asking the server to select one",
+    fetched.length === n0 && kidN.classList.contains("open")]);
+  stampEl.listeners.forEach((fn) => fn({}));
+  checks.push(["intent: an upgrade does not add a second sync listener to the stamp",
+    stampEl.listeners.length === 1 && fetched.length === n0 + 1]);
+  checks.push(["intent: an inert row keeps its card ground (a shell card is inert)",
+    !/\.row\.inert[^{]*\{[^}]*background/.test(oldCss.textContent) && /\.row:not\(\.inert\):hover/.test(oldCss.textContent)]);
+}
+
 // ---- deep-plan families: grouped, ordered by the most urgent member --------
 {
   const R = (id, kind, extra = {}) => ({ id, name: id, kind, badge: "b", said: "", chips: [], frac: null, meta: "", ...extra });
@@ -964,12 +1091,102 @@ print(json.dumps([[r["id"], r["kind"], r.get("famtier", "")] for r in m.rank_pla
 
   render({ rows: [...g.rows, ...g.quiet], quietCount: g.quiet.length, quiet: "" });
   const html = els.rows.innerHTML;
-  checks.push(["families: render indents children and leaves the parent flush",
-    /class="row attend[^"]* fam kid"[^>]*data-id="k2"/.test(html) && /class="row done[^"]* fam"[^>]*data-id="p"/.test(html)]);
+  // The card that holds a family runs from its opening tag to the next card at
+  // the top level; sub-rows are .row too, so "next card" is the next row not
+  // marked kid.
+  const cardOf = (h, id) => {
+    const at = h.indexOf('data-id="' + id + '"');
+    const start = h.lastIndexOf('<div class="row ', at);
+    const rest = h.slice(at);
+    const end = rest.search(/<div class="sect">|<div class="row (?![^"]*\bkid\b)/);
+    return h.slice(start, end < 0 ? h.length : at + end);
+  };
+  const pc = cardOf(html, "p");
+  checks.push(["families: the children sit inside the parent's card, each its own .row",
+    /class="row done[^"]* fam"[^>]*data-id="p"/.test(html) &&
+    /<div class="kids">/.test(pc) &&
+    /class="row attend[^"]* fam kid"[^>]*data-id="k2" title="k2" data-in="p"/.test(pc) &&
+    /class="row quiet[^"]* fam kid"[^>]*data-id="k3"[^>]*data-in="p"/.test(pc)]);
+  checks.push(["families: the parent's badge rolls up its children",
+    /<span class="badge roll attend">1 needs you<\/span>/.test(pc)]);
   checks.push(["families: the quiet divider counts only rows below it",
     /<div class="sect">quiet · 3<\/div>/.test(html) && html.indexOf('class="sect"') > html.indexOf('data-id="k3"')]);
-  checks.push(["families: a family with no parent row is headed by its name",
-    /<div class="famhd">family · G<\/div><div class="row quiet[^"]* fam kid"[^>]*data-id="g1"/.test(html)]);
+  const gc = cardOf(html, "fam:G");
+  checks.push(["families: a family with no parent row gets a shell card named by its label",
+    /<div class="row quiet fam shell inert" data-id="fam:G" title="G"><div class="top"><span class="nm">G<\/span><span class="badge">2 plans<\/span>/.test(html) &&
+    /data-id="g1"[^>]*data-in="fam:G"/.test(gc) && /data-id="g2"[^>]*data-in="fam:G"/.test(gc)]);
+
+  // A child is one line until opened. One that needs you or is broken also
+  // shows what it said and its first chip, filled, without being opened.
+  const fr = (extra = {}) => [
+    R("P", "running", { family: "F", famrole: "parent", famkid: false, ref: "w:p", chips: ["diff", "jump"] }),
+    R("A", "attend", { family: "F", famrole: "child", famkid: true, ref: "w:a", said: "{{Inc 2}} needs your go-ahead.", chips: ["go 2", "diff", "jump"], branch: "dev/a" }),
+    R("W", "running", { family: "F", famrole: "child", famkid: true, ref: "w:w", said: "Mid-turn.", chips: ["diff", "jump"] }),
+  ];
+  els.rows.attrs["data-open"] = "[]";
+  render({ rows: fr(), quiet: "" });
+  const fh = els.rows.innerHTML;
+  const kA = cardOf(fh, "A").split('data-id="W"')[0], kW = cardOf(fh, "W");
+  checks.push(["families: a child's header is the toggle, with a caret",
+    /<div class="top kidhd loud" data-a="toggle" data-x="select"><span class="caret"><\/span>/.test(kA) &&
+    /<div class="top kidhd" data-a="toggle" data-x="select">/.test(kW)]);
+  checks.push(["families: a child that needs you shows its line and its filled button inline",
+    /<div class="top kidhd loud"[^]*<span class="chip pri"[^>]*>go 2<\/span><\/div><p class="said nest" data-a="toggle" data-x="select">/.test(kA)]);
+  checks.push(["families: a working child is one line: no inline button, no line",
+    !/kidhd[^]*chip[^]*<\/div><div class="kbody"/.test(kW.split('<div class="kbody">')[0] + '<div class="kbody">') &&
+    !kW.includes("said nest")]);
+  checks.push(["families: every child carries its full card, closed",
+    /<div class="kbody"><p class="said">/.test(kA) && /class="chip pri"[^>]*>go 2<\/span><span class="chip"/.test(kA.split('<div class="kbody">')[1]) &&
+    /class="branch" data-a="code"/.test(kA) && !/ open"/.test(fh)]);
+  // The open set survives a push, and loses ids that left the board.
+  els.rows.attrs["data-open"] = JSON.stringify(["W", "gone"]);
+  render({ rows: fr(), quiet: "" });
+  checks.push(["families: an opened child is still open after the next push",
+    /class="row running[^"]* fam kid open"[^>]*data-id="W"/.test(els.rows.innerHTML) &&
+    !/kid open"[^>]*data-id="A"/.test(els.rows.innerHTML)]);
+  checks.push(["families: ...and the open set forgets ids that left the board",
+    els.rows.attrs["data-open"] === '["W"]']);
+  els.rows.attrs["data-open"] = "[]";
+  render({ rows: [R("P2", "running", { family: "H", famrole: "parent", famkid: false, ref: "w" }),
+    R("X", "wilt", { family: "H", famrole: "child", famkid: true, ref: "x", chips: ["checks"] }),
+    R("Y", "wilt", { family: "H", famrole: "child", famkid: true, ref: "y", chips: ["jump"] })], quiet: "" });
+  checks.push(["families: with nothing waiting, the rollup counts the broken",
+    els.rows.innerHTML.includes('<span class="badge roll wilt">2 broken</span>')]);
+  render({ rows: [R("P3", "running", { family: "J", famrole: "parent", famkid: false, ref: "w", badge: "working" }),
+    R("Z", "running", { family: "J", famrole: "child", famkid: true, ref: "z" })], quiet: "" });
+  render({ rows: [R("P4", "attend", { family: "K", famrole: "parent", famkid: false, ref: "w", badge: "gate shut" }),
+    R("V", "wilt", { family: "K", famrole: "child", famkid: true, ref: "v" })], quiet: "" });
+  checks.push(["families: a parent that needs you keeps saying so over a broken child",
+    /data-id="P4"[^]*?<span class="badge">gate shut<\/span>/.test(els.rows.innerHTML) && !els.rows.innerHTML.includes("roll")]);
+  render({ rows: [R("P5", "running", { family: "L", famrole: "parent", famkid: false, ref: "w" }),
+    R("NR", "quiet", { family: "L", famrole: "child", famkid: true, slug: "nr" })], quiet: "" });
+  checks.push(["families: a child with no workspace ref gets a toggle that selects nothing",
+    /<div class="top kidhd" data-a="toggle"><span class="caret">/.test(els.rows.innerHTML)]);
+  render({ rows: [R("P3", "running", { family: "J", famrole: "parent", famkid: false, ref: "w", badge: "working" }),
+    R("Z", "running", { family: "J", famrole: "child", famkid: true, ref: "z" })], quiet: "" });
+  checks.push(["families: with nothing to report, the parent keeps its own badge",
+    /data-id="P3"[^]*?<span class="badge">working<\/span>/.test(els.rows.innerHTML) && !els.rows.innerHTML.includes("roll")]);
+
+  // The FLIP on nested rows. A whole family climbs: the card slides, and its
+  // child -- carried by the card -- must not slide the same distance again.
+  // Then the child moves inside a card that stayed put: only the child slides.
+  const fam2 = (order) => ({ rows: order.map((id) => id === "P"
+    ? R("P", "running", { family: "F", famrole: "parent", famkid: false, ref: "w:p" })
+    : id === "K" ? R("K", "running", { family: "F", famrole: "child", famkid: true, ref: "w:k" })
+    : R(id, "running", { ref: "w:" + id })), quiet: "" });
+  render(fam2(["o", "P", "K"]));
+  STUB_GEO.push({ o: 0, P: 100, K: 140 }, { P: 0, K: 40, o: 200 });
+  ANIMS.length = 0;
+  render(fam2(["P", "K", "o"]));
+  const slid = (id) => ANIMS.filter((a) => a.id === id).map((a) => JSON.stringify(a.frames[0]));
+  checks.push(["families: a climbing family slides its card, not its child a second time",
+    /translateY\(100px\)/.test(slid("P").join()) && slid("K").length === 0]);
+  STUB_GEO.push({ P: 0, K: 40, o: 200 }, { P: 0, K: 70, o: 200 });
+  ANIMS.length = 0;
+  render(fam2(["P", "K", "o"]));
+  checks.push(["families: a child that moved inside a still card slides by its own distance",
+    slid("P").length === 0 && /translateY\(-30px\)/.test(slid("K").join())]);
+  STUB_GEO.length = 0;
 }
 
 // ---- tidy/adopt: a board surface is the one whose URL is board.html ---------

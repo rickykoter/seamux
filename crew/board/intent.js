@@ -15,9 +15,17 @@
 //   feed allow / deny    crew:feed-allow / crew:feed-deny  -> a=feed-allow|-deny
 //   the sync clock       crew:sync-now                     -> a=sync
 //
-// Two ways an element declares itself a target, in precedence order:
+// One verb never leaves the page: a=toggle, on a family child's header. It opens
+// the child's full card in place and, on opening only, sends the ordinary row
+// action for the child, so cmux selects that workspace. Closing is local and
+// goes nowhere. The open set lives on #rows as data-open, which render.js reads
+// on the next push so an opened child stays open.
+//
+// Two ways an element declares itself a target:
 //   data-a="verb" [data-x="arg"]   explicit -- branch, PR, every signal chip
 //   a .chip whose LABEL is in MAP  the tier action row, which has no attributes
+// The NEAREST one to the click wins. A child's filled button sits inside its
+// header, which is itself a target (toggle); the button must fire its own verb.
 //
 // Two structural constraints, both learned the hard way:
 //
@@ -37,29 +45,39 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "3";
+  var V = "4";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
   // ---- affordance ------------------------------------------------------
   // Injected here rather than into board.html so that the page stays inert and
-  // its probe contract is untouched.
-  if (!document.getElementById("intent-css")) {
-    var st = document.createElement("style");
+  // its probe contract is untouched. Versioned like the listener: a page wired
+  // by an older handler keeps its <style> element, and its rules are replaced.
+  var st = document.getElementById("intent-css");
+  if (!st) {
+    st = document.createElement("style");
     st.id = "intent-css";
+    document.head.appendChild(st);
+  }
+  if (st.getAttribute("data-v") !== V) {
+    st.setAttribute("data-v", V);
     st.textContent =
       ".row{cursor:pointer}" +
-      ".row:hover{background:#2f3639}" +
-      ".row:active{background:#374145}" +
+      ".row:not(.inert):hover{background:#2f3639}" +
+      ".row:not(.inert):active{background:#374145}" +
       ".chip{cursor:pointer}" +
       ".chip:hover{filter:brightness(1.35);text-decoration:underline}" +
       ".chip.hit{opacity:.45}" +
       ".chip.ok{box-shadow:inset 0 0 0 1px #a7c080}" +
       ".chip.bad{box-shadow:inset 0 0 0 1px #e67e80}" +
       "#stamp{cursor:pointer}#stamp:hover{text-decoration:underline}" +
-      // A row that cannot be acted on must not pretend otherwise.
-      ".row.inert,.row.inert:hover{cursor:default;background:none}";
-    document.head.appendChild(st);
+      // A child sits on its family's darker well; hover lifts it from there.
+      ".kids>.row.kid:not(.inert):hover{background:#323b40}" +
+      ".kidhd.hit{opacity:.6}" +
+      // A row that cannot be acted on must not pretend otherwise: no pointer
+      // and no hover. It keeps its card ground -- a family's shell card is
+      // inert and is still a card.
+      ".row.inert{cursor:default}";
   }
 
   // ---- the chip vocabulary --------------------------------------------
@@ -72,16 +90,19 @@ function __boardIntent(cfg) {
   };
 
   function target(el) {
-    // An explicit data-a wins over everything. It is how the branch name, the PR
-    // number and the signals strip declare what they do, which means a new target
-    // is one attribute in render.js rather than a new entry in the label table
-    // below -- and it cannot drift, because there is no label to match.
-    var decl = el.closest && el.closest("[data-a]");
-    if (decl) {
-      return { a: decl.getAttribute("data-a"),
-               x: decl.getAttribute("data-x") || "", el: decl };
+    // The nearest target to the click wins, explicit or chip: a family child's
+    // filled button sits inside its header, which is itself a target (toggle),
+    // and the button must fire its own verb. On the element it lands on, an
+    // explicit data-a beats the label -- that is how the branch, the PR number
+    // and every signal declare what they do, so a new target is one attribute
+    // in render.js rather than a new entry in the table above, and it cannot
+    // drift, because there is no label to match.
+    var hit = el.closest && el.closest("[data-a], .chip");
+    if (hit && hit.getAttribute("data-a")) {
+      return { a: hit.getAttribute("data-a"),
+               x: hit.getAttribute("data-x") || "", el: hit };
     }
-    var chip = el.closest && el.closest(".chip");
+    var chip = hit;
     if (chip) {
       var label = (chip.textContent || "").trim();
       var m = /^go\s+(\d+)$/.exec(label);
@@ -128,6 +149,29 @@ function __boardIntent(cfg) {
       .catch(function () { done("bad"); });
   }
 
+  // Open or close a family child in place. The class flips now, so the card
+  // opens under the pointer instead of on the next push; data-open is what the
+  // next push reads. Opening also selects the child's workspace -- the ordinary
+  // row action, which the server already knows -- when it has one: render.js
+  // marks the toggle data-x="select" only for a child with a workspace ref, so
+  // a plan with no workspace opens without asking the server for one. Closing
+  // sends nothing.
+  function toggle(t, row, rid) {
+    var open = [];
+    try { open = JSON.parse(host.getAttribute("data-open") || "[]"); } catch (e) { open = []; }
+    if (!Array.isArray(open)) open = [];
+    var i = open.indexOf(rid);
+    if (i >= 0) {
+      open.splice(i, 1);
+      row.classList.remove("open");
+    } else {
+      open.push(rid);
+      row.classList.add("open");
+      if (t.x === "select") fire({ a: "row", x: "", el: t.el }, rid);
+    }
+    host.setAttribute("data-open", JSON.stringify(open));
+  }
+
   // Refreshed on every push; the listener below is installed only once.
   host.setAttribute("data-intent-cfg", JSON.stringify({ port: cfg.port, token: cfg.token }));
 
@@ -145,13 +189,18 @@ function __boardIntent(cfg) {
       // fire too and steal focus away from whatever the chip just opened.
       ev.preventDefault();
       ev.stopPropagation();
+      if (t.a === "toggle") return toggle(t, row, rid);
       fire(t, rid);
     });
     host.setAttribute("data-intent", V);
   }
 
+  // The stamp's click has never changed, and its listener carries no version
+  // check (v3's did not, and it cannot be retired from here). So it is
+  // installed once per page, whatever version got there first: re-installing
+  // it on an upgrade sent every sync click twice.
   var stamp = document.getElementById("stamp");
-  if (stamp && stamp.getAttribute("data-intent") !== V) {
+  if (stamp && !stamp.getAttribute("data-intent")) {
     stamp.title = "Force a full reconcile";
     stamp.addEventListener("click", function () {
       fire({ a: "sync", x: "", el: stamp }, "-");
