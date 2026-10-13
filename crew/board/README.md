@@ -188,8 +188,10 @@ inventing one.
   back over it. `EV_SUCCESS` ripples once, on transition only.
 - **The principle matters more than the palette.** whimsy's README: it "costs nothing when
   nothing is happening", because animation phase comes from events and never from a free
-  clock. So a quiet row here has no animation at all, and `prefers-reduced-motion` stops
-  the rest.
+  clock. The board keeps that for everything that carries information: a quiet row has no
+  animation at all, and motion on a card always means something changed. It makes two
+  deliberate exceptions, the shelf's sky and the napping cat (see **Whimsy** below), and
+  `prefers-reduced-motion` stops those too.
 
 ## Verifying it
 
@@ -209,10 +211,50 @@ captured with `read-screen` is escaped rather than executed.
 
 ## Whimsy
 
-Carried over from whimsy's shaders, including its rule: **nothing animates unless
-something is happening.** Every animation on this page is bound to a state that is
-genuinely in flight and stops when it is not, and all of it yields to
-`prefers-reduced-motion`.
+The rule, inherited from whimsy's shaders and amended once: **motion on a card
+means something happened; motion on the shelf means the board is alive.**
+
+- **Events** move cards, and only for the push that brought them: a row that
+  climbs gets a ring, one that turns done ripples and throws pixel confetti, a
+  family whose last child turns done celebrates as a whole card, and the cat
+  hops, stretches or perks its ears. `data-prev` on `#rows` is what makes each
+  of these fire once. A quiet row never moves.
+- **States in flight** move for as long as they last: a gate or question
+  waiting on you breathes its button, a working dial with no number sweeps, a
+  reply window drains, and the cat swats or paces.
+- **The ambient two** are the exception, and the human chose them knowing they
+  break whimsy's "nothing moves unless something is happening": the shelf's
+  sky follows the local hour, and the napping cat opens an eye or flicks its
+  tail every so often. Both are slow and sparse on purpose -- a minute-long
+  fade four times a day, and three brief moments in a 47-second cycle, unevenly
+  spaced so it reads as a cat and not a metronome. One cycle holds all three, so
+  a peek and a flick can never land on top of each other, and the idling sits
+  out any push that carries a reaction.
+- **`prefers-reduced-motion` stops all of it**, except the reply window's bar,
+  which is information (how long is left to answer) rather than decoration.
+  Each animation is named in the reduced-motion block by its own selector, and
+  `board_probe.mjs` fails if one is not; stopped, each mood holds its first
+  frame, so the cat stays on its shelf, still.
+
+**The sky** (`#shelf` `data-sky`): render.js reads the local hour at each push
+and picks dawn (5-8), day (8-18), dusk (18-21) or night, and four layers inside
+the shelf cross-fade over a minute -- except on a page's first push, which
+shows its sky at once. A low sun, a high sun, and at night a moon with a
+handful of pixel stars twinkling on a slow cycle. Every sky is dark: the cat's
+charcoal was chosen against a near-black ground. The sky only changes when a
+push arrives, which is at most two minutes apart.
+
+**Confetti** is pixel bits, a dozen per card (eight for a family child, 22 for
+a whole family), bursting up from the card's top edge and falling away in
+steps. Each bit's spot, drift, delay and colour come from the row id, so a card
+throws the same handful every time.
+
+**Family pips** are kitten heads, one per child, beside the family card's name
+and filled in that child's tier colour, with its name and badge as a tooltip --
+so a card says how its family is doing before you read a sub-row. Five at most,
+the most urgent first, then `+N`, so a big family does not clip its own name. When every
+child is done, a family card with nothing more urgent of its own says
+`all N done`.
 
 **The header is parked.** It is `position: sticky`, with negative side margins
 cancelling the body's padding so it and the shelf reach both edges. The board is a

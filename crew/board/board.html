@@ -16,6 +16,9 @@
     #stamp   when
     #cat     the whimsy sprite; render.js sets its mood class, plus at most one
              reaction (hop / stretch / perk) for the push that caused it
+    #shelf   the cat's shelf; render.js sets data-sky (dawn / day / dusk /
+             night) from the local hour, and data-sky-first on a page's first
+             push so that sky appears at once instead of fading in
     #tally   how many rows are broken, working and waiting to close
     #says    what the cat has to say about that mood
     #news    the news footer, a <details> render.js never replaces -- so its open
@@ -126,6 +129,41 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
 #cat{position:absolute;left:0;bottom:0;height:30px;width:auto;overflow:visible}
 #cat .pose{visibility:hidden}
 
+/* The sky. render.js reads the local hour at each push and sets #shelf
+   data-sky: dawn 5-8, day 8-18, dusk 18-21, night otherwise. Each layer fades
+   in over a minute when its turn comes, so the shelf drifts from one to the
+   next rather than snapping -- except on a page's first push (data-sky-first),
+   which should not open on a minute of bare plinth. Every sky stays dark: the
+   cat's charcoal was picked against a near-black ground, and a pale sky would
+   leave only its white bib showing again. */
+/* Each sky carries the shelf's bottom edge line itself: the layers cover
+   #shelf's own inset shadow, and one of them is always opaque. */
+#shelf .sky{position:absolute;inset:0;opacity:0;transition:opacity 60s linear;
+  box-shadow:inset 0 -1px 0 0 #171c1f}
+#shelf[data-sky-first] .sky,#shelf[data-sky-first] .orb{transition:none}
+.sky.dawn{background:linear-gradient(#1f2330,#33282f)}
+.sky.day{background:linear-gradient(#1d2a33,#22313a)}
+.sky.dusk{background:linear-gradient(#22202b,#3a2b27)}
+.sky.night{background:#13181c}
+#shelf[data-sky=dawn] .sky.dawn,#shelf[data-sky=day] .sky.day,
+#shelf[data-sky=dusk] .sky.dusk,#shelf[data-sky=night] .sky.night{opacity:1}
+/* Pixel stars: one 2px square, drawn many times by box-shadow, twinkling on a
+   slow cycle. */
+.stars{position:absolute;left:0;top:0;width:2px;height:2px;background:#c9c3b0;
+  box-shadow:31px 5px #c9c3b0,74px 13px #8f8a7c,118px 4px #c9c3b0,163px 17px #8f8a7c,
+    205px 7px #c9c3b0,251px 15px #8f8a7c,296px 3px #c9c3b0,340px 11px #8f8a7c,
+    388px 6px #c9c3b0,431px 16px #8f8a7c,12px 18px #8f8a7c,142px 21px #8f8a7c}
+@keyframes twinkle{0%,100%{opacity:1}50%{opacity:.55}}
+#shelf[data-sky=night] .stars{animation:twinkle 9s steps(3,end) infinite}
+/* The sun, low at dawn and dusk and high by day, and the moon at night: a
+   chunky 9px disc at the far end of the shelf, behind the cat. */
+.orb{position:absolute;right:22px;top:20px;width:9px;height:9px;border-radius:3px;
+  background:#5c4a2a;opacity:0;transition:top 60s linear,background-color 60s linear,opacity 60s linear}
+#shelf[data-sky=dawn] .orb{opacity:1;top:17px;background:#8a5f2c}
+#shelf[data-sky=day] .orb{opacity:1;top:5px;background:#9c7a2a}
+#shelf[data-sky=dusk] .orb{opacity:1;top:17px;background:#93512f}
+#shelf[data-sky=night] .orb{opacity:1;top:5px;background:#cfc7b0;box-shadow:inset -3px -1px 0 #13181c}
+
 /* A and B, one second each. steps(1) makes it a cut, not a crossfade: this is
    pixel art and a tween would blur it. */
 @keyframes fa{0%,49.99%{visibility:visible}50%,100%{visibility:hidden}}
@@ -164,6 +202,23 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
   100%{opacity:0;transform:translateY(-12px)}}
 #cat.nap .zz{animation:drift 6s linear infinite}
 #cat.nap .z1{animation-delay:2s} #cat.nap .z2{animation-delay:4s}
+
+/* The nap, idling. Now and then the cat opens one eye (peek) or flicks its
+   tail (flick). One 47s cycle holds all three moments -- a peek at ~10s, a
+   flick at ~24s, a shorter peek at ~37s -- unevenly spaced, so it reads as a
+   cat and not a metronome. One cycle, not two of different lengths: two
+   independent cycles drifted into each other and drew both poses at once.
+   While a moment shows, the nap's own frames are hidden on the same timeline.
+   None of it runs on a push that carries a reaction, whose rules own the same
+   paths for that push; the idling starts again, in step, on the next push. */
+@keyframes peekshow{0%,20.99%{visibility:hidden}21%,23.99%{visibility:visible}24%,78.99%{visibility:hidden}
+  79%,80.99%{visibility:visible}81%,100%{visibility:hidden}}
+@keyframes flickshow{0%,51.99%{visibility:hidden}52%,53.49%{visibility:visible}53.5%,100%{visibility:hidden}}
+@keyframes idlehide{0%,20.99%{opacity:1}21%,23.99%{opacity:0}24%,51.99%{opacity:1}52%,53.49%{opacity:0}
+  53.5%,78.99%{opacity:1}79%,80.99%{opacity:0}81%,100%{opacity:1}}
+#cat.nap:not(.hop):not(.perk):not(.stretch) .peek{animation:peekshow 47s steps(1,end) infinite}
+#cat.nap:not(.hop):not(.perk):not(.stretch) .flick{animation:flickshow 47s steps(1,end) infinite}
+#cat.nap:not(.hop):not(.perk):not(.stretch) .pose:not(.x) path{animation:idlehide 47s steps(1,end) infinite}
 
 /* Reactions. render.js compares this push with the last (data-prev) and adds
    ONE of these beside the mood, for one push:
@@ -365,6 +420,30 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
 @keyframes ripple{0%{box-shadow:0 0 0 0 rgba(167,192,128,.5)}100%{box-shadow:0 0 0 14px rgba(167,192,128,0)}}
 .row.ripple{animation:ripple 900ms ease-out 1}
 
+/* Pixel confetti, on the same push as the ripple and only then: square bits
+   that burst up from the card's top edge and fall away, in steps, because a
+   tween would blur them. render.js picks each bit's spot, drift and colour
+   from the row id, so a card throws the same handful every time. A family's
+   card throws a bigger one (.famdone) when its last child turns done. */
+.confetti{position:absolute;left:0;right:0;top:0;height:0;pointer-events:none;z-index:2}
+.confetti i{position:absolute;top:6px;left:var(--x);width:4px;height:4px;opacity:0;
+  animation:confetti 1.3s steps(10,end) 1;animation-delay:var(--t)}
+@keyframes confetti{0%{opacity:1;transform:translate(0,0)}
+  35%{opacity:1;transform:translate(calc(var(--dx) * .6),var(--up))}
+  100%{opacity:0;transform:translate(var(--dx),var(--dy))}}
+@keyframes famdone{0%{box-shadow:0 0 0 0 rgba(167,192,128,.55)}
+  100%{box-shadow:0 0 0 22px rgba(167,192,128,0)}}
+.row.famdone{animation:famdone 1.4s ease-out 1}
+
+/* Family pips: one kitten head per child on the family's card, in that
+   child's tier colour, so the card says how its family is doing before you
+   read a single sub-row. Drawn, not text: they are filled, never coloured. */
+.pips{display:inline-flex;gap:3px;flex:none;align-items:center}
+.pip{display:block;width:10px;height:9px;fill:var(--quiet)}
+.pip.attend{fill:var(--attend)} .pip.running{fill:var(--running)}
+.pip.wilt{fill:var(--wilt)} .pip.done{fill:var(--done)}
+.pipmore{font:600 10.5px/1 system-ui;color:var(--grey)}
+
 /* --- motion ------------------------------------------------------------- */
 /* Reordering is animated from render.js with the Web Animations API, not from
    here: a FLIP needs the OLD offsetTop, which only exists before innerHTML is
@@ -377,6 +456,10 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
    losing urgency is not news. */
 @keyframes climb{0%{box-shadow:0 0 0 2px var(--c)}100%{box-shadow:0 0 0 2px transparent}}
 .row.up{animation:climb 900ms ease-out 1}
+/* Turning done outranks climbing: both are a ring on box-shadow, and a card
+   that does both on one push shows the one that says more. */
+.row.up.ripple{animation:ripple 900ms ease-out 1}
+.row.up.famdone{animation:famdone 1.4s ease-out 1}
 
 /* Pending. A gate nobody has opened, a question nobody has answered: the one
    button that would resolve it breathes a halo. Exactly one element per row
@@ -405,9 +488,19 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
   #cat.hop .pose:not(.x) path,#cat.perk .pose:not(.x) path,#cat.stretch .pose:not(.x) path,
   #cat.perk .perk,#cat.stretch .stretch,#cat.hop .hop-a,#cat.hop .hop-b,#cat.hop .heart,
   #cat.nap.hop .zz,#cat.nap.perk .zz,#cat.nap.stretch .zz,
-  #cat .tail,#cat .ear,#cat .eye,.row.up,.row.attend .chip.pri,
-  .row.running>.top>.dial.pending .arc,.row.ripple{animation:none}
-  #cat .eye{transform:none}
+  /* The moods and the nap's idling. */
+  #cat.swat .swat-a,#cat.pace .walk-a,#cat.swat .swat-b,#cat.pace .walk-b,
+  #cat.nap .nap-a,#cat.nap .nap-b,#cat.pace,#cat.pace .walker,#cat.nap .walker,
+  #cat.swat .walker,#cat.pace .facing,#cat.nap .zz,
+  #cat.nap:not(.hop):not(.perk):not(.stretch) .peek,#cat.nap:not(.hop):not(.perk):not(.stretch) .flick,
+  #cat.nap:not(.hop):not(.perk):not(.stretch) .pose:not(.x) path,
+  /* The board. */
+  .row.up,.row.attend .chip.pri,.row.running>.top>.dial.pending .arc,.row.ripple,
+  .row.famdone,.row.up.ripple,.row.up.famdone,.confetti i,#shelf[data-sky=night] .stars{animation:none}
+  /* Stopped, the moods would show no frame at all -- frames are hidden until
+     their animation shows them -- so each holds its first. */
+  #cat.swat .swat-a,#cat.pace .walk-a,#cat.nap .nap-a{visibility:visible}
+  #shelf .sky,#shelf .orb{transition:none}
 }
 
 .empty{color:var(--grey);font-size:13px;line-height:1.6;padding:18px 4px;text-align:center}
@@ -449,6 +542,10 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
        fa-cat / md-cat exist in cmux's icon set as font glyphs, but a glyph cannot
        flick its tail, so the cat is drawn here instead. -->
   <div id="shelf">
+    <!-- The sky behind the shelf: render.js sets data-sky from the local hour
+         at each push, and CSS cross-fades these four layers over a minute. -->
+    <div class="sky dawn"></div><div class="sky day"></div><div class="sky dusk"></div>
+    <div class="sky night"><i class="stars"></i></div><i class="orb"></i>
 <!-- CAT:BEGIN generated by cat_from_swift.py -->
     <svg id="cat" class="nap" viewBox="0 0 90 39" aria-hidden="true">
       <g class="walker"><g class="facing">
