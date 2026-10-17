@@ -15,6 +15,8 @@ What is asserted:
     remembers it, and puts the old record back when the close fails;
   - restore reopens the cwd with its title, color and `claude --resume`, and
     forget drops a record; two writers at once keep both records;
+  - the finder has one row per directory in its state (live, archived, past,
+    gone), and its fuzzy scorer orders by score, then state, then recency;
   - merged() is true for a landed branch, false for an unlanded one and for
     main; dormant_days() reads integrations.json and defaults to 5;
   - crew-reclaim reports the mid-turn guard on a dry run and changes nothing,
@@ -124,6 +126,12 @@ with open(mid, "w") as fh:
     pad = json.dumps({"type": "progress", "pad": "x" * 1000}) + "\n"
     fh.write(pad * 100)                       # ~100 KB: past the head, inside head+tail
     fh.write(json.dumps({"type": "assistant", "message": {"content": "the real last words"}}) + "\n")
+side = os.path.join(proj, "11111111-aaaa", "subagents")
+os.makedirs(side)
+with open(os.path.join(side, "agent-x.jsonl"), "w") as fh:
+    fh.write(json.dumps({"type": "user", "cwd": "/tmp/a", "message": {"content": "sidechain"}}) + "\n")
+check("a subagent's sidechain transcript is not indexed as a session",
+      all("subagents" not in r["path"] for r in W.build_index()[0]))
 check("a transcript between the head and head+tail sizes yields its real last words",
       (W.scan(mid) or {}).get("said") == "the real last words", json.dumps(W.scan(mid)))
 
@@ -266,6 +274,64 @@ json.dump({"sweep": {"dormant_days": 9}}, open(ENV["CREW_INTEGRATIONS"], "w"))
 check("dormant days reads integrations.json", W.dormant_days() == 9)
 json.dump({"sweep": {"dormant_days": 0}}, open(ENV["CREW_INTEGRATIONS"], "w"))
 check("dormant days is at least 1", W.dormant_days() == 1)
+
+# --- the finder: crew-resume's rows and scorer ------------------------------------
+print("finder")
+import importlib.machinery  # noqa: E402
+import importlib.util  # noqa: E402
+_l = importlib.machinery.SourceFileLoader("crew_resume", os.path.join(CREW, "bin", "crew-resume"))
+R = importlib.util.module_from_spec(importlib.util.spec_from_loader("crew_resume", _l))
+_l.exec_module(R)
+
+S = lambda i, cwd, t, mtime, branch="": {"id": i, "path": "/p/" + i, "cwd": cwd, "title": t,
+                                         "prompt": "", "branch": branch, "mtime": mtime}
+here = {"/r/live", "/r/arch", "/r/past", "/r/both"}
+rows_ = R.build_rows(
+    [S("1", "/r/live", "older talk", 10), S("2", "/r/live", "newest talk", 20),
+     S("3", "/r/past", "past talk", 30, "dev/past-work"), S("4", "/r/gone", "gone talk", 40),
+     S("5", "/r/both", "both", 5)],
+    [{"id": "w1", "ref": "workspace:1", "cwd": "/r/live", "title": "live-one"},
+     {"id": "w2", "ref": "workspace:2", "cwd": "/r/both", "title": "both"}],
+    {"/r/arch": {"cwd": "/r/arch", "title": "arch-one", "archived_at": 50},
+     "/r/both": {"cwd": "/r/both", "title": "stale", "archived_at": 1}},
+    isdir=lambda p: p in here)
+by = {r["cwd"]: r for r in rows_}
+check("one row per workspace directory, however many sessions it has",
+      len(rows_) == 5 and len(by["/r/live"]["sessions"]) == 2, json.dumps(sorted(by)))
+check("a row's states: live, archived, past and gone",
+      [by[c]["state"] for c in ("/r/live", "/r/arch", "/r/past", "/r/gone")]
+      == ["live", "archived", "past", "gone"])
+check("live beats a leftover archive record on the same directory", by["/r/both"]["state"] == "live")
+check("a row carries its latest session's title and the workspace's own name",
+      by["/r/live"]["latest"] == "newest talk" and by["/r/live"]["title"] == "live-one"
+      and by["/r/arch"]["title"] == "arch-one")
+
+check("an abbreviation matches as a subsequence", R.fuzzy("dkorg", "dock-organization") is not None)
+check("letters that are not there in order do not", R.fuzzy("xq", "dock-organization") is None
+      and R.fuzzy("od", "do") is None)
+check("consecutive letters outscore scattered ones",
+      R.fuzzy("dock", "dock-organization") > R.fuzzy("dock", "d-o-c-k"))
+check("a word start outscores a mid-word hit", R.fuzzy("o", "dock-org") > R.fuzzy("o", "docko"))
+check("the best alignment wins, not the first letter found",
+      R.fuzzy("org", "xo-organization") == R.fuzzy("org", "organization"))
+row = lambda t, st="past", when=0, cwd=None: {"title": t, "cwd": cwd or "/r/" + t, "branch": "",
+                                             "latest": "", "state": st, "when": when}
+check("terms match in any order, each on its own", R.score(["org", "dock"], row("dock-organization")))
+check("a match across the seam of two fields is no match",
+      R.score(["kx"], dict(row("dock"), latest="xylophone")) is None)
+check("the latest session's title matches a term as written",
+      R.score(["phone"], dict(row("dock"), latest="xylophone")) is not None)
+check("…but not a scattered subsequence of it", R.score(["xlpn"], dict(row("dock"), latest="xylophone")) is None)
+check("…and the full path does not match scattered letters either",
+      R.score(["hmc"], row("dock", cwd="/home/someone/code/dock")) is None)
+check("a session id prefix finds its row",
+      R.score(["8f3a2b"], dict(row("dock"), sessions=[{"id": "8f3a2b11-0000"}])) is not None)
+got = [r["title"] for r in R.order([row("dorg-z", "gone"), row("dock-organization", "past"),
+                                    row("dorg", "live", 1), row("dorg", "archived", 9)], ["dorg"])]
+check("order: score first, then state, then recency",
+      got[:2] == ["dorg", "dorg"] and got[-1] == "dock-organization", str(got))
+same = R.order([row("a", "past", 1), row("b", "past", 9), row("c", "live", 0)], [])
+check("with no query: state, then recency", [r["title"] for r in same] == ["c", "b", "a"])
 
 # --- crew-reclaim's close guard ---------------------------------------------------
 print("crew-reclaim")

@@ -116,38 +116,56 @@ passes `--session` explicitly.)
 
 `cmd+k r`, or `crew-resume`. Also a **Sessions** Dock control.
 
-Claude keeps one JSONL transcript per session under `~/.claude/projects/`.
-There are **324 of them across 46 projects** here, which is well past what
-`/resume`'s own list is comfortable for — so this is a searchable picker.
+A finder over workspaces, not transcripts. Claude keeps one JSONL transcript
+per session under `~/.claude/projects/`, and there are hundreds of them here;
+what you are usually after is one of a dozen workspaces. So the picker shows
+**one row per workspace directory**, in one of four states:
+
+| Mark | State | `⏎` does |
+|---|---|---|
+| `●` | **live**: open in cmux now | jump to it |
+| `◒` | **archived**: closed by crew's archive, and remembered | restore it with its title and color, resuming its Claude |
+| `○` | **past**: the directory exists, nothing is open | resume its latest session in a new workspace |
+| `✕` | **gone**: the worktree was removed | print the transcript path; nothing can resume there |
 
 ```
-crew-resume              this repo's sessions
+crew-resume              this repo family's workspaces
 crew-resume --all        every project
 crew-resume moto         open pre-filtered
-crew-resume --reindex    force a full rebuild
+crew-resume --reindex    force a full rebuild of the transcript cache
 ```
 
 | Key | Does |
 |---|---|
-| type | filter live — space-separated terms all have to match |
-| `⏎` | resume in a **new workspace** at that session's cwd |
-| `^T` | resume **here**, in the current tab |
+| type | fuzzy filter: each space-separated term has to match, in any order |
+| `⏎` | by state, as above |
+| `^T` | resume the row's latest session **here**, in the current tab |
+| `→` | open the row's sessions: `⏎` resumes one in a new workspace, `^T` resumes it here, `←` goes back |
+| `^A` | archive a live row |
+| `^X` | forget an archived row's record (the row becomes past) |
 | `⇥` | toggle this-repo / all-projects |
 | `^R` | reindex |
 | `esc` | out |
 
-Rows show age, branch (or repo when unscoped), and a title: the session's
-`ai-title` when it has one, else its first prompt. Only 31 of 324 have a
-generated title — it is a recent addition — so the first prompt carries most of
-them.
+The search is a fuzzy score per term, taken against the workspace's name, its
+directory's name and its branch separately: the letters of a term have to
+appear in order, and consecutive letters and word starts score higher, so
+`dkorg` finds `dock-organization`. The latest session's title and the full path
+match only a term as written, and a session id prefix of four or more
+characters finds its row. Rows are ordered by that score,
+then by state (live first), then by recency. Nothing on this path talks to the
+network.
 
-Scoping is by **repo family**, not directory: from a worktree you still see
-sessions from its siblings and the primary checkout. That is 293 of the 324
-here.
+**Archive** is the third way out of the sidebar, between closing a workspace
+for good and reclaiming its worktree (ADR 0022). It closes the cmux workspace,
+and `~/.cache/cmux-crew/archive.json` keeps what a close loses: the title, the
+color, the branch and the Claude session id. The worktree, branch and transcript
+already survive a close. Archive refuses while the agent is mid-turn or waiting
+on a prompt, and force-closes an idle one. Deleting the file only turns archived
+rows into past ones.
 
-**`no cwd` means the directory is gone.** 94 sessions — 29% — point at worktrees
-that have since been removed. Those cannot be resumed, and the picker says so
-rather than handing you a broken `--resume`.
+Scoping is by **repo family**, not directory: from a worktree you still see its
+siblings and the primary checkout.
 
 Indexing 324 transcripts takes **0.39s** cold and 0.01s warm; the cache is keyed
 on mtime and size, so only changed transcripts are re-read. Transcripts run to
