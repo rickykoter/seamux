@@ -173,7 +173,10 @@ def build_index(force=False):
             cache = {}
 
     out, seen = {}, 0
-    for root, _dirs, files in os.walk(PROJECTS):
+    for root, dirs, files in os.walk(PROJECTS):
+        # <session>/subagents/agent-*.jsonl are sidechains: a subagent's run
+        # inside a session, never something to resume or judge on its own.
+        dirs[:] = [d for d in dirs if d != "subagents"]
         for name in files:
             if not name.endswith(".jsonl"):
                 continue
