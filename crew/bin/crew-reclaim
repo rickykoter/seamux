@@ -13,11 +13,14 @@
 #     or origin/master), i.e. the work really did land
 #   * the tree is clean and there are no unpushed commits
 #   * nothing live is standing in it — not this shell, not another workspace
+#   * the workspace being closed has no agent mid-turn (an idle Claude is
+#     closed with it: cmux needs --force for any running process, and this
+#     guard is what stands in for that confirmation)
 #   * no Docker sandbox is still running for it
 #
 # Every guard is evaluated and reported before anything is touched, so the
 # answer to "why did it refuse?" is on screen in full rather than one reason at
-# a time. Nothing is ever forced.
+# a time. Nothing on disk is ever forced.
 #
 # Interactive by default: with a tty on stdin it prints the report and waits for
 # a yes. --yes skips the prompt, --dry-run stops after the report. Without a tty
@@ -26,12 +29,17 @@
 
 set -uo pipefail
 
-CMUX="$(command -v cmux || true)"
+CMUX="${CREW_CMUX:-$(command -v cmux || true)}"
 # One definition of "which cmux": bin/crew-cmux-bin. A hardcoded bundle path kept
 # driving the OLD cli against the NEW app after the switch to the nightly build --
 # version skew that fails silently, because the old bundle is still on disk.
 [ -n "$CMUX" ] || CMUX="$("$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/crew-cmux-bin" 2>/dev/null || true)"
 [ -n "$CMUX" ] || CMUX=cmux
+
+# The real path, not the one it was run by: ~/.local/bin holds a link to it, and
+# workspaces.py lives beside the real bin/, in hooks/.
+SELF_DIR="$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")")"
+WORKSPACES="$SELF_DIR/../hooks/workspaces.py"
 
 die()  { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 ok()   { printf '\033[32m✓\033[0m %s\n' "$*"; }
@@ -51,7 +59,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     -n|--dry-run) dry=1 ;;
     -y|--yes)     assume_yes=1 ;;
-    -h|--help)    sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)    sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --)           shift; arg="${1:-}"; break ;;
     -*)           die "unknown option: $1" ;;
     *)            arg="$1" ;;
@@ -111,6 +119,7 @@ dirty_n="$(git -C "$top" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
 caller_top="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)"
 
 others=0
+ws_id=""
 others_desc=""
 ws_title=""
 planmode_desc=""
@@ -155,6 +164,7 @@ here = [w for w in ws if inside(w)]
 hits = [w for w in here if not is_keep(w)]
 print("COUNT %d" % len(hits))
 print("KEEP %s" % next((label(w) for w in ws if is_keep(w)), ""))
+print("KEEPID %s" % next((w.get("id") or "" for w in ws if is_keep(w)), ""))
 for w in hits:
     print("HIT %s" % label(w))
 for w in here:
@@ -164,8 +174,18 @@ for w in here:
   # empty, that is a blocker below, not a pass: "could not tell" is not "none".
   others="$(printf '%s\n' "$probe" | sed -n 's/^COUNT //p')"
   ws_title="$(printf '%s\n' "$probe" | sed -n 's/^KEEP //p')"
+  ws_id="$(printf '%s\n' "$probe" | sed -n 's/^KEEPID //p')"
   others_desc="$(printf '%s\n' "$probe" | sed -n 's/^HIT //p' | paste -sd, -)"
   planmode_desc="$(printf '%s\n' "$probe" | sed -n 's/^MODE //p' | paste -sd, -)"
+fi
+
+# Whether the agent in the workspace about to be closed is mid-turn. Same answer
+# the board's archive chip and the sweep get, from the one reader of cmux's
+# session records. "unknown" is a blocker, for the same reason as above.
+life=""
+if [ -n "$ws" ]; then
+  life="$(CREW_CMUX="$CMUX" python3 "$WORKSPACES" lifecycle "$ws" 2>/dev/null)"
+  [ -n "$life" ] || life=unknown
 fi
 
 # --- deep-plan ---------------------------------------------------------------
@@ -353,6 +373,17 @@ else
   fail "this shell is inside $top — run it from elsewhere"
 fi
 
+# The close is forced now, so it would take this terminal down with it — after
+# the close, before the removal. Same reason the board opens its reclaim
+# terminal anywhere but the workspace being reclaimed.
+if [ -n "$ws" ]; then
+  if [ -n "${CMUX_WORKSPACE_ID:-}" ] && [ "$CMUX_WORKSPACE_ID" = "${ws_id:-$ws}" ]; then
+    fail "this terminal is in ${ws_title:-$ws}, the workspace it would close — run it from another"
+  else
+    pass "this terminal is not in the workspace it closes"
+  fi
+fi
+
 if [ -z "$others" ]; then
   fail "cmux did not list its workspaces — could not tell whether another is open here"
 elif [ "$others" -eq 0 ]; then
@@ -360,6 +391,14 @@ elif [ "$others" -eq 0 ]; then
 else
   fail "$others other workspace(s) still open here${others_desc:+: $others_desc}"
 fi
+
+case "$life" in
+  "")      ;;
+  running) fail "an agent is mid-turn in ${ws_title:-$ws} — let the turn end first" ;;
+  idle)    pass "the agent in ${ws_title:-$ws} is idle — it is closed with the workspace" ;;
+  none)    pass "no agent is running in ${ws_title:-$ws}" ;;
+  *)       fail "could not tell whether an agent is mid-turn in ${ws_title:-$ws}" ;;
+esac
 
 case "$sb_state" in
   *running*)   fail "a sandbox is still running — run: crew-sandbox down $top" ;;
@@ -377,7 +416,7 @@ fi
 printf '\033[1mWould remove\033[0m\n'
 printf '  \033[2m·\033[0m worktree   %s \033[2m(%s)\033[0m\n' "$top" "${size:-?}"
 printf '  \033[2m·\033[0m branch     %s \033[2m(safe delete; kept if git declines)\033[0m\n' "$branch"
-[ -n "$ws" ] && printf '  \033[2m·\033[0m workspace  %s \033[2m(closed first)\033[0m\n' "${ws_title:-$ws}"
+[ -n "$ws" ] && printf '  \033[2m·\033[0m workspace  %s \033[2m(closed first, with whatever runs in it)\033[0m\n' "${ws_title:-$ws}"
 [ -n "$sandboxed" ] && printf '  \033[2m·\033[0m sandbox    the microVM and its image cache\n'
 
 if [ -n "$dry" ]; then
@@ -404,11 +443,24 @@ fi
 # ---------------------------------------------------------------------------
 [ -z "$(git -C "$top" status --porcelain 2>/dev/null | head -1)" ] \
   || die "$top picked up uncommitted changes while you were deciding — refusing"
+if [ -n "$ws" ]; then
+  case "$(CREW_CMUX="$CMUX" python3 "$WORKSPACES" lifecycle "$ws" 2>/dev/null)" in
+    idle|none) ;;
+    running) die "an agent started a turn in ${ws_title:-$ws} while you were deciding — refusing" ;;
+    *)       die "could not tell whether an agent is mid-turn in ${ws_title:-$ws} — refusing" ;;
+  esac
+fi
 
 say "reclaiming $top ($branch, ${size:-?})"
 
-# Close the workspace first so cmux is not left pointing at a deleted path.
-[ -n "$ws" ] && "$CMUX" close-workspace --workspace "$ws" >/dev/null 2>&1
+# Close the workspace first so cmux is not left pointing at a deleted path —
+# and stop here if it will not go. A close that fails in silence is how a
+# worktree got removed out from under a workspace that was still open on it.
+if [ -n "$ws" ]; then
+  why="$(CREW_CMUX="$CMUX" python3 "$WORKSPACES" close "$ws" 2>&1 >/dev/null)" \
+    || die "cmux did not close ${ws_title:-$ws} (${why:-no answer}) — nothing was removed"
+  ok "closed workspace ${ws_title:-$ws}"
+fi
 
 # Destroy the microVM before the directory goes: it has the worktree mounted, and
 # an orphaned sandbox keeps a whole private image cache on disk. Host files are
