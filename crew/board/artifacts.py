@@ -43,6 +43,7 @@ HOME = os.path.expanduser("~")
 CREW_HOME = os.environ.get("CREW_DURABLE_DIR") or os.path.join(HOME, ".claude", "crew")
 DB = os.path.join(CREW_HOME, "artifacts.db")
 LOCK = os.path.join(CREW_HOME, "index.lock")
+AGAIN = LOCK + ".again"
 PROJECTS = os.path.join(HOME, ".claude", "projects")
 PLANS = os.path.join(HOME, ".claude", "plans")
 DP_STATE = os.path.join(HOME, ".claude", "deep-plan", "state")
@@ -722,6 +723,12 @@ def _lock():
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         fh.close()
+        # The holder may have read this turn's transcript before its last
+        # lines landed: ask it to go round once more instead of waiting.
+        try:
+            open(AGAIN, "a").close()
+        except OSError:
+            pass
         raise Busy()
     return fh
 
@@ -729,7 +736,8 @@ def _lock():
 def index(wait=False):
     """Rescan every transcript whose size or mtime moved, then the stores.
     Another run holding the lock means this one has nothing to add: it
-    exits at once (wait=True blocks instead, for backfill)."""
+    leaves a marker and exits at once, and the holder goes round again
+    (wait=True blocks instead, for backfill)."""
     if wait:
         os.makedirs(CREW_HOME, mode=0o700, exist_ok=True)
         lk = open(LOCK, "a")
@@ -737,9 +745,25 @@ def index(wait=False):
     else:
         lk = _lock()
     try:
-        _git_cache.clear()
-        Scan._timelines.clear()
-        db = connect()
+        n = _index_once()
+        for _ in range(3):
+            if not os.path.exists(AGAIN):
+                break
+            try:
+                os.unlink(AGAIN)
+            except OSError:
+                pass
+            n += _index_once()
+        return n
+    finally:
+        lk.close()
+
+
+def _index_once():
+    _git_cache.clear()
+    Scan._timelines.clear()
+    db = connect()
+    try:
         n = 0
         for path in transcripts():
             try:
@@ -748,18 +772,17 @@ def index(wait=False):
                 raise
             except Exception:
                 continue
+        rows = store_rows()
         db.execute("BEGIN IMMEDIATE")
         try:
-            rows = store_rows()
             write_rows(db, rows)
             db.execute("COMMIT")
         except Exception:
             db.execute("ROLLBACK")
             raise
-        db.close()
         return n + len(rows)
     finally:
-        lk.close()
+        db.close()
 
 
 def backfill():

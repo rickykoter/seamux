@@ -226,6 +226,12 @@ except Exception:
       ( nohup python3 "$CREW_DIR/cachefacts.py" --sleep "$sid" "$transcript" \
           "$(crew_label)" >/dev/null 2>&1 & ) >/dev/null 2>&1
     fi
+
+    # The Artifact Log: index every transcript that grew, this one and any
+    # session run outside cmux since the last Stop. Detached like asked.sh; a
+    # run that finds another holding the lock exits at once.
+    ( nohup "$(dirname "$CREW_DIR")/bin/crew-artifacts" index \
+        >/dev/null 2>&1 & ) >/dev/null 2>&1
     ;;
 
   end)
