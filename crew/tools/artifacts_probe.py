@@ -22,7 +22,9 @@ and deep-plan, lookout and ask stores each hold one record. What is asserted:
   - search goes through FTS5 by prompt word, filters by ws and kind, and
     treats query syntax as text;
   - plan, review and ask rows land keyed by root or cwd;
-  - a second index run exits while the lock is held; ~/.claude/crew is 0700;
+  - a second index run exits while the lock is held, leaving a marker the
+    holder consumes; ~/.claude/crew is 0700;
+  - crew-artifacts index and search (text, --ws, --kind, --json) work;
   - /usr/bin/python3 (3.9) runs the indexer too.
 
     python3 crew/tools/artifacts_probe.py      exit 0 when all hold
@@ -274,6 +276,24 @@ with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
         busy = True
     lk.close()
     check("a second index run exits while the lock is held", busy)
+    check("and leaves a marker asking the holder to go round again", os.path.exists(A.AGAIN))
+    A.index()
+    check("the next run consumes the marker", not os.path.exists(A.AGAIN))
+    cli = os.path.join(REPO, "crew", "bin", "crew-artifacts")
+    p = subprocess.run([sys.executable, cli, "search", "scratch", "notes", "--ws", ws, "--json"],
+                       capture_output=True, text=True, env=env)
+    try:
+        got = json.loads(p.stdout)
+    except ValueError:
+        got = None
+    check("crew-artifacts search --ws --json returns the rows",
+          got and any(r["locator"].endswith("notes.md") for r in got), p.stderr[-300:])
+    p = subprocess.run([sys.executable, cli, "search", "guide", "--kind", "commit"],
+                       capture_output=True, text=True, env=env)
+    check("crew-artifacts search prints a row with its prompt",
+          p.returncode == 0 and "Add guide" in p.stdout and "> " in p.stdout, p.stdout[-300:])
+    p = subprocess.run([sys.executable, cli, "index"], capture_output=True, text=True, env=env)
+    check("crew-artifacts index runs", p.returncode == 0 and "indexed" in p.stdout, p.stderr[-300:])
     sys39 = "/usr/bin/python3"
     if os.path.exists(sys39):
         with open(tr, "a") as fh:
