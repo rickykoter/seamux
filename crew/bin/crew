@@ -997,7 +997,7 @@ typesafe.threshold('stuck_threshold', 0.8)))" 2>/dev/null)"
   # facts, crew-overlay only for machines that have an overlay, crew-frame
   # behind an `[ -x ]` that skips it without a word.
   for f in hooks/lib.sh hooks/crew-hook.sh hooks/progress.sh hooks/triage.py \
-           hooks/asked.py hooks/asked.sh hooks/typesafe.py hooks/typesafe_probe.py \
+           hooks/asked.py hooks/asked.sh hooks/typesafe.py hooks/typesafe_probe.py hooks/workspaces.py \
            bin/crew-watch bin/crew-spec bin/crew-worktree bin/crew-diff bin/crew-code \
            bin/crew-code-open bin/crew-color bin/crew-digest bin/crew-feed bin/crew-listen bin/crew-reclaim bin/crew-resume bin/crew-sandbox bin/crew-sync sidebars/crew.swift config/cmux.jsonc config/dock.json \
            bin/crew-frame bin/crew-overlay config/dock.global.json \
@@ -1023,6 +1023,8 @@ typesafe.threshold('stuck_threshold', 0.8)))" 2>/dev/null)"
   done
   python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$CREW_HOME/board/crew-board" \
     2>/dev/null && ok "crew-board parses" || bad "crew-board syntax error"
+  python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$CREW_HOME/hooks/workspaces.py" \
+    2>/dev/null && ok "workspaces.py parses" || bad "workspaces.py syntax error"
   # The board's renderer is pushed with each update, not resident in the page -- so the
   # entry point lives in render.js and board.html must stay inert. Both directions are
   # checked: a page that regains a <script> has regained a dependency that already broke.
