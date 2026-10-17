@@ -1,0 +1,291 @@
+#!/usr/bin/env python3
+"""artifacts_probe — the Artifact Log's indexer and store against fixture
+transcripts in a throwaway HOME. No real transcripts, db or scratchpads.
+
+A fixture session in a real git checkout (origin on GitHub) writes a
+scratchpad note, a doc, source code, a file under ~, an image and a
+transcript-dir file; redirects to /tmp through a literal path and through a
+variable; commits; and publishes the doc as a claude.ai artifact. A subagent
+writes into the same scratchpad, a stray file sits only in the scratchpad,
+and deep-plan, lookout and ask stores each hold one record. What is asserted:
+
+  - each write lands as its kind, and source code and ~/.claude/projects do not;
+  - each row carries the prompt in flight, system reminders stripped, capped
+    at 500 characters, with session and branch; a subagent's row carries the
+    human's prompt from the parent transcript;
+  - the commit row has its full sha and a GitHub URL from origin;
+  - the publish adds a row with its URL and gives the doc's own row the URL;
+  - the scratchpad file only a listing finds is indexed, .git skipped;
+  - lines that are malformed or in a newer shape cost nothing else;
+  - an appended chunk resumes from the cursor and still finds the prompt in
+    flight before it; an unchanged transcript is not reread; backfill keeps ids;
+  - search goes through FTS5 by prompt word, filters by ws and kind, and
+    treats query syntax as text;
+  - plan, review and ask rows land keyed by root or cwd;
+  - a second index run exits while the lock is held; ~/.claude/crew is 0700;
+  - /usr/bin/python3 (3.9) runs the indexer too.
+
+    python3 crew/tools/artifacts_probe.py      exit 0 when all hold
+"""
+import fcntl
+import json
+import os
+import stat
+import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))
+BOARD = os.path.join(REPO, "crew", "board")
+results = []
+
+
+def check(name, cond, extra=""):
+    results.append(bool(cond))
+    print(f"  {'ok  ' if cond else 'FAIL'} {name}" + (f"\n       {extra}" if extra and not cond else ""))
+
+
+def jl(fh, d):
+    fh.write(json.dumps(d) + "\n")
+
+
+with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
+    t = os.path.realpath(t)
+    home = os.path.join(t, "home")
+    faketmp = os.path.join(t, "faketmp")
+    scratch_base = os.path.join(faketmp, "claude-501")
+    env = dict(os.environ, HOME=home, CREW_SCRATCH_BASE=scratch_base,
+               CREW_TEMP_ROOTS=faketmp + "/:/private/tmp/",
+               GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+    env.pop("CREW_DURABLE_DIR", None)
+    os.environ.clear()
+    os.environ.update(env)
+
+    ws = os.path.join(home, "code", "shop")
+    os.makedirs(os.path.join(ws, "docs"))
+    os.makedirs(os.path.join(home, "notes"))
+
+    def git(*a):
+        return subprocess.run(["git", "-C", ws] + list(a), capture_output=True, text=True,
+                              check=True).stdout.strip()
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "probe@example.com")
+    git("config", "user.name", "probe")
+    open(os.path.join(ws, "docs", "guide.md"), "w").write("# Guide\n")
+    git("add", ".")
+    git("commit", "-q", "-m", "Add guide")
+    sha = git("rev-parse", "HEAD")
+    git("remote", "add", "origin", "git@github.com:octo/shop.git")
+
+    proj = "-probe-code-shop"
+    sess = "11111111-2222-3333-4444-555555555555"
+    pdir = os.path.join(home, ".claude", "projects", proj)
+    os.makedirs(os.path.join(pdir, sess, "subagents"))
+    sp = os.path.join(scratch_base, proj, sess, "scratchpad")
+    os.makedirs(os.path.join(sp, "repo", ".git"))
+    open(os.path.join(sp, "notes.md"), "w").write("notes")
+    open(os.path.join(sp, "stray.py"), "w").write("print(1)")
+    open(os.path.join(sp, "repo", ".git", "HEAD"), "w").write("ref")
+    tr = os.path.join(pdir, sess + ".jsonl")
+
+    base = {"cwd": ws, "sessionId": sess, "gitBranch": "main"}
+
+    def user(ts, text):
+        return dict(base, type="user", timestamp=ts, message={"role": "user", "content": text})
+
+    def use(ts, uid, name, inp):
+        return dict(base, type="assistant", timestamp=ts, message={
+            "role": "assistant", "content": [{"type": "tool_use", "id": uid, "name": name,
+                                              "input": inp}]})
+
+    def result(ts, uid, tur, text="ok"):
+        return dict(base, type="user", timestamp=ts, toolUseResult=tur, message={
+            "role": "user", "content": [{"type": "tool_result", "tool_use_id": uid,
+                                         "content": text}]})
+
+    P1 = "Draft the shop guide and keep scratch notes"
+    long_tail = " word" * 200
+    with open(tr, "w") as fh:
+        jl(fh, user("2020-01-01T10:00:00.000Z",
+                    "<system-reminder>secret context here</system-reminder>" + P1 + long_tail))
+        jl(fh, use("2020-01-01T10:00:01.000Z", "u1", "Write",
+                   {"file_path": os.path.join(sp, "notes.md"), "content": "x"}))
+        jl(fh, use("2020-01-01T10:00:02.000Z", "u2", "Write",
+                   {"file_path": os.path.join(ws, "docs", "guide.md"), "content": "x"}))
+        jl(fh, use("2020-01-01T10:00:03.000Z", "u3", "Write",
+                   {"file_path": os.path.join(ws, "src", "app.py"), "content": "x"}))
+        jl(fh, use("2020-01-01T10:00:04.000Z", "u4", "Write",
+                   {"file_path": os.path.join(home, "notes", "todo.txt"), "content": "x"}))
+        jl(fh, use("2020-01-01T10:00:05.000Z", "u5", "Write",
+                   {"file_path": os.path.join(pdir, "memo.md"), "content": "x"}))
+        jl(fh, use("2020-01-01T10:00:06.000Z", "u6", "Write",
+                   {"file_path": os.path.join(ws, "shot.png"), "content": "x"}))
+        jl(fh, use("2020-01-01T10:00:07.000Z", "u7", "Bash",
+                   {"command": "echo hi > /tmp/artprobe-out.log; echo x > $S/hidden.txt"}))
+        fh.write("{not json at all\n")
+        jl(fh, dict(base, type="user", timestamp="2020-01-01T10:00:08.000Z",
+                    toolUseResult=["a", "list"], message={"content": 42}))
+        jl(fh, dict(base, type="assistant", timestamp="2020-01-01T10:00:09.000Z",
+                    message={"content": [{"type": "tool_use", "id": "u8", "name": "Write",
+                                          "input": "a string where a dict was"}]}))
+        jl(fh, use("2020-01-01T10:00:10.000Z", "u9", "Bash",
+                   {"command": "git commit -m 'Add guide'"}))
+        jl(fh, result("2020-01-01T10:00:11.000Z", "u9",
+                      {"stdout": "[main %s] Add guide\n 1 file changed, 1 insertion(+)\n" % sha[:7],
+                       "stderr": ""}))
+        jl(fh, user("2099-01-01T10:00:00.000Z", "Publish the guide as an artifact"))
+        jl(fh, use("2099-01-01T10:00:01.000Z", "u10", "Artifact",
+                   {"file_path": os.path.join(ws, "docs", "guide.md"), "title": "Shop guide"}))
+        jl(fh, result("2099-01-01T10:00:02.000Z", "u10",
+                      {"url": "https://claude.ai/code/artifact/abc-123",
+                       "path": os.path.join(ws, "docs", "guide.md"), "title": "Shop guide"}))
+    with open(os.path.join(pdir, sess, "subagents", "agent-a1.jsonl"), "w") as fh:
+        jl(fh, dict(user("2020-01-01T10:05:00.000Z", "You are a subagent: write the summary"),
+                    isSidechain=True))
+        jl(fh, use("2020-01-01T10:05:01.000Z", "s1", "Write",
+                   {"file_path": os.path.join(sp, "summary.txt"), "content": "x"}))
+
+    dp = os.path.join(home, ".claude", "deep-plan", "state")
+    os.makedirs(dp)
+    json.dump({"slug": "shop-guide", "root": ws, "session": sess,
+               "log": [{"at": 1600000000000, "what": "rendered"},
+                       {"at": 1600000500000, "what": "graded"}]},
+              open(os.path.join(dp, "shop-guide.json"), "w"))
+    plans = os.path.join(home, ".claude", "plans")
+    os.makedirs(os.path.join(plans, "reviews"))
+    os.makedirs(os.path.join(plans, "asks"))
+    open(os.path.join(plans, "shop-guide.md"), "w").write("# Write the shop guide\n")
+    json.dump({"id": "shop-inc1", "title": "shop · increment 1", "createdAt": "2020-02-01T00:00:00.000Z",
+               "source": {"root": ws, "branch": "main"}},
+              open(os.path.join(plans, "reviews", "shop-inc1.json"), "w"))
+    json.dump({"rows": []}, open(os.path.join(plans, "reviews", "shop-inc1.rows.json"), "w"))
+    json.dump({"cwd": ws, "created": "2020-03-01T00:00:00.000Z", "header": "Scope",
+               "question": "Which pages?"}, open(os.path.join(plans, "asks", "a1.json"), "w"))
+
+    sys.path.insert(0, BOARD)
+    import artifacts as A
+
+    print("index a fixture session")
+    A.index()
+    rows = A.search(limit=1000)
+    by = {}
+    for r in rows:
+        by.setdefault(r["kind"], []).append(r)
+
+    def find(kind, tail):
+        return next((r for r in by.get(kind, []) if r["locator"].endswith(tail)), None)
+
+    notes = find("temp", "scratchpad/notes.md")
+    guide = find("doc", "docs/guide.md")
+    check("a scratchpad Write is temp", notes, [r["locator"] for r in rows])
+    check("a .md in the workspace is a doc", guide)
+    check("a file elsewhere under ~ is a file", find("file", "notes/todo.txt"))
+    check("an image is an image", find("image", "shot.png"))
+    check("a literal /tmp redirect is temp", find("temp", "/tmp/artprobe-out.log"))
+    check("source code and ~/.claude/projects are skipped",
+          not any(r["locator"].endswith(("app.py", "memo.md")) for r in rows))
+    check("a variable redirect is not guessed at",
+          not any(r["locator"].endswith("hidden.txt") for r in rows))
+    p = (notes or {}).get("prompt", "")
+    check("the prompt in flight rides along, reminder stripped",
+          p.startswith(P1) and "secret" not in p, repr(p[:80]))
+    check("the prompt is capped at 500 characters", len(p) == 500, len(p))
+    check("session and branch ride along",
+          notes and notes["session_id"] == sess and notes["branch"] == "main")
+    check("ws is the session cwd and created_at the line's time",
+          notes and notes["ws"] == ws and notes["created_at"] == "2020-01-01T10:00:01.000Z")
+    c = find("commit", sha[:7])
+    check("a commit carries its full sha", c and c["sha"] == sha and c["title"] == "Add guide")
+    check("a commit's URL comes from origin",
+          c and c["url"] == "https://github.com/octo/shop/commit/" + sha, (c or {}).get("url"))
+    art = find("artifact", "abc-123")
+    check("a publish is a row with its URL and title",
+          art and art["title"] == "Shop guide" and art["prompt"] == "Publish the guide as an artifact")
+    check("the published file's own row gains the URL",
+          guide and guide["url"] == "https://claude.ai/code/artifact/abc-123")
+    stray = find("temp", "scratchpad/stray.py")
+    check("a file only the scratchpad listing knows is indexed", stray)
+    check("a listed file takes the prompt in flight at its birth",
+          stray and stray["prompt"].startswith(P1), (stray or {}).get("prompt"))
+    check("a fixture repo's .git is not listed", not any("/.git/" in r["locator"] for r in rows))
+    sub = find("temp", "scratchpad/summary.txt")
+    check("a subagent's write carries the human's prompt from the parent",
+          sub and sub["prompt"].startswith(P1), (sub or {}).get("prompt"))
+    check("bad lines cost nothing else", len(by.get("temp", [])) >= 4 and guide)
+    check("a plan row is keyed by its root",
+          find("plan", "shop-guide") and find("plan", "shop-guide")["ws"] == ws
+          and find("plan", "shop-guide")["title"] == "Write the shop guide")
+    rv = find("review", "shop-inc1")
+    check("a review row is keyed by source.root; sidecar json is not a review",
+          rv and rv["ws"] == ws and len(by.get("review", [])) == 1)
+    ask = find("ask", "a1")
+    check("an ask row is keyed by its cwd", ask and ask["title"] == "Scope: Which pages?")
+    mode = stat.S_IMODE(os.stat(os.path.join(home, ".claude", "crew")).st_mode)
+    check("~/.claude/crew is 0700", mode == 0o700, oct(mode))
+
+    print("resume, reread nothing unchanged, backfill")
+    n_before = len(rows)
+    ids = {r["locator"]: r["id"] for r in rows}
+    with open(tr, "a") as fh:
+        jl(fh, use("2099-01-01T11:00:00.000Z", "u11", "Write",
+                   {"file_path": os.path.join(ws, "docs", "later.md"), "content": "x"}))
+    A.index()
+    later = next((r for r in A.search(kind="doc") if r["locator"].endswith("later.md")), None)
+    check("an appended chunk finds the prompt in flight before its offset",
+          later and later["prompt"] == "Publish the guide as an artifact", (later or {}).get("prompt"))
+    db = A.connect()
+    cur = db.execute("SELECT offset, size FROM cursors WHERE transcript = ?", (tr,)).fetchone()
+    db.close()
+    check("the cursor sits at the end of the transcript",
+          cur and cur["offset"] == cur["size"] == os.path.getsize(tr))
+    check("an unchanged index run adds nothing",
+          A.index() == len(A.store_rows()) and len(A.search(limit=1000)) == n_before + 1)
+    A.backfill()
+    after = A.search(limit=1000)
+    check("backfill keeps every row and id",
+          len(after) == n_before + 1 and all(ids[r["locator"]] == r["id"]
+                                             for r in after if r["locator"] in ids))
+
+    print("search")
+    hits = A.search("scratch notes")
+    check("FTS finds rows by a word in their prompt", any(r["locator"].endswith("notes.md") for r in hits))
+    check("search filters by ws", A.search("guide", ws="/nowhere") == [] and A.search("guide", ws=ws))
+    check("search filters by kind", all(r["kind"] == "commit" for r in A.search("guide", kind="commit"))
+          and A.search("guide", kind="commit"))
+    try:
+        A.search('"oops* OR (NEAR')
+        ok = True
+    except Exception as e:
+        ok = False
+        print("       ", e)
+    check("query syntax is treated as text", ok)
+    check("workspaces() lists the fixture ws", any(w["ws"] == ws for w in A.workspaces()))
+    check("row(id) returns that row", A.row(after[0]["id"])["locator"] == after[0]["locator"])
+
+    print("lock and 3.9")
+    lk = open(A.LOCK, "a")
+    fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        A.index()
+        busy = False
+    except A.Busy:
+        busy = True
+    lk.close()
+    check("a second index run exits while the lock is held", busy)
+    sys39 = "/usr/bin/python3"
+    if os.path.exists(sys39):
+        with open(tr, "a") as fh:
+            jl(fh, use("2099-01-01T12:00:00.000Z", "u12", "Write",
+                       {"file_path": os.path.join(ws, "docs", "py39.md"), "content": "x"}))
+        p = subprocess.run([sys39, os.path.join(BOARD, "artifacts.py"), "index"],
+                           capture_output=True, text=True, env=env)
+        check("/usr/bin/python3 runs the indexer",
+              p.returncode == 0 and any(r["locator"].endswith("py39.md") for r in A.search(kind="doc")),
+              p.stderr[-400:])
+    else:
+        print("  skip /usr/bin/python3 is not on this machine")
+
+print(f"\n{sum(results)}/{len(results)} hold")
+sys.exit(0 if all(results) else 1)
