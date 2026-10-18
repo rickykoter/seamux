@@ -842,11 +842,12 @@ def act(action, row, extra):
         # lookout first: ranked files, threads, the review the agent may
         # already have opened. It opens the page beside the row's terminal
         # without focus, so the row's workspace is selected to bring it in.
-        sel = wsid if UUID_OK.match(wsid) else ""
+        # lookout hands this to `cmux open --workspace`, which takes either.
+        sel = wsid if UUID_OK.match(wsid) else ref
         ok, why = _lookout_diff(cwd, sel)
         if ok:
-            if sel or ref:
-                run([CMUX, "workspace", "select", sel or ref])
+            if sel:
+                run([CMUX, "workspace", "select", sel])
             return True, why
         ok = run(["bash", CREW_DIFF, "branch"], cwd=cwd)
         if ok:
@@ -1239,6 +1240,10 @@ def _lookout_engine():
     return node, engine
 
 
+_DIFF_BUSY = set()                       # worktrees whose lookout diff is building now
+_DIFF_LOCK = threading.Lock()
+
+
 def _lookout_diff(cwd, wsid):
     """The board's diff chip: this branch against its base, as a lookout
     review beside the row's terminal. No --id, so it is the branch's own
@@ -1250,6 +1255,21 @@ def _lookout_diff(cwd, wsid):
     node, engine = _lookout_engine()
     if not node:
         return False, "lookout is not installed"
+    # One build per worktree at a time. A big branch takes a while, the chip
+    # shows only that it was pressed, and a second press would race a second
+    # build of the same review; the first one opens the page.
+    with _DIFF_LOCK:
+        if cwd in _DIFF_BUSY:
+            return True, "lookout already opening " + cwd
+        _DIFF_BUSY.add(cwd)
+    try:
+        return _lookout_diff_run(node, engine, cwd, wsid)
+    finally:
+        with _DIFF_LOCK:
+            _DIFF_BUSY.discard(cwd)
+
+
+def _lookout_diff_run(node, engine, cwd, wsid):
     env = dict(os.environ)
     env.pop("CMUX_WORKSPACE_ID", None)
     if wsid:

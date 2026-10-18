@@ -1454,7 +1454,7 @@ print(json.dumps([[r["id"], r["kind"], r.get("famtier", "")] for r in m.rank_pla
   };
   const pc = cardOf(html, "p");
   checks.push(["families: the children sit inside the parent's card, each its own .row",
-    /class="row done[^"]* fam fd"[^>]*data-id="p"/.test(html) &&
+    /class="row done[^"]* fam fd open"[^>]*data-id="p" data-k="attend"/.test(html) &&
     /<div class="fold">[^]*<div class="kids">/.test(pc) &&
     /class="row attend[^"]* fam kid fd"[^>]*data-id="k2" data-k="attend" title="k2" data-in="p"/.test(pc) &&
     /class="row quiet[^"]* fam kid fd"[^>]*data-id="k3"[^>]*data-in="p"/.test(pc)]);
@@ -1475,6 +1475,11 @@ print(json.dumps([[r["id"], r["kind"], r.get("famtier", "")] for r in m.rank_pla
     R("W", "running", { family: "F", famrole: "child", famkid: true, ref: "w:w", said: "Mid-turn.", chips: ["diff", "jump"] }),
   ];
   els.rows.attrs["data-fold"] = "{}";
+  // A family card folds by the family's tier: a working parent holding a
+  // child that needs you starts open, and keys its fold on that tier.
+  render({ rows: fr().map((r) => ({ ...r, famtier: "attend" })), quiet: "" });
+  checks.push(["fold: a working family card with a child waiting on you starts open",
+    /class="row running[^"]* fam fd open"[^>]*data-id="P" data-k="attend"/.test(els.rows.innerHTML)]);
   render({ rows: fr(), quiet: "" });
   const fh = els.rows.innerHTML;
   const kA = cardOf(fh, "A").split('data-id="W"')[0], kW = cardOf(fh, "W");
@@ -1725,6 +1730,7 @@ l = importlib.machinery.SourceFileLoader("cbi", sys.argv[1])
 m = importlib.util.module_from_spec(importlib.util.spec_from_loader("cbi", l)); l.exec_module(m)
 calls = []
 m.run = lambda argv, cwd=None: calls.append(argv[1:]) or True
+real_diff = m._lookout_diff
 m._lookout_diff = lambda cwd, ws: (calls.append(["lookout", cwd, ws]) or True, "lookout")
 U = "8B5F643D-E94F-41B8-945C-EBCB4DF64FB1"
 row = {"id": U, "ref": "workspace:9", "cwd": sys.argv[2], "name": "n", "slug": "s"}
@@ -1732,6 +1738,17 @@ out = {}
 for a in ("reclaim", "archive", "code", "sandbox-up", "feed-deny", "jump", "diff"):
     calls.clear(); m.act(a, dict(row), "")
     out[a] = list(calls)
+calls.clear(); m.act("diff", dict(row, id="not-a-uuid"), ""); out["diffref"] = list(calls)
+# A second press while the first build runs does not start another: the
+# build below presses again from inside itself, and only one run happens.
+m._lookout_engine = lambda: ("node", "x")
+runs, inner = [], []
+def build(*a):
+    runs.append(a)
+    inner.append(real_diff(sys.argv[2], "")[1])
+    return True, "built"
+m._lookout_diff_run = build
+out["busy"] = [real_diff(sys.argv[2], "")[1], len(runs), inner, sorted(m._DIFF_BUSY)]
 calls.clear(); m.act("go", dict(row), "3"); out["go"] = list(calls)
 print(json.dumps(out))
 `, join(HERE, "crew-board-intent"), HERE], { encoding: "utf8" }));
@@ -1742,6 +1759,11 @@ print(json.dumps(out))
       return p.length === 1 && p[0].workspace_id === "8B5F643D-E94F-41B8-945C-EBCB4DF64FB1" &&
         !("workspaceId" in p[0]) && p[0].subtitle === "crew:" + (a === "go" ? "plan-go" : a);
     })]);
+  checks.push(["buttons: a row without a uuid hands lookout its ref, and selects it",
+    ran.diffref[0][2] === "workspace:9" && JSON.stringify(ran.diffref[1]) === JSON.stringify(["workspace", "select", "workspace:9"])]);
+  checks.push(["buttons: a diff pressed while its lookout build runs does not start another",
+    ran.busy[0] === "built" && ran.busy[1] === 1 && ran.busy[2][0].startsWith("lookout already opening") &&
+    ran.busy[3].length === 0]);
   checks.push(["buttons: jump selects by the workspace uuid, which a cmux restart does not renumber",
     JSON.stringify(ran.jump) === JSON.stringify([["workspace", "select", "8B5F643D-E94F-41B8-945C-EBCB4DF64FB1"]])]);
   checks.push(["buttons: diff opens the branch in lookout, in the row's workspace, and brings it forward",

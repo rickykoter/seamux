@@ -499,13 +499,15 @@ function __boardRender(d) {
     return " fd" + (isOpen(id, kind, isKid) ? " open" : "");
   }
 
-  function opening(a, cls, inCard, fcls) {
+  // fk is the tier the fold keys on, when it is not the row's own: a family
+  // card folds by its family's tier (see card()).
+  function opening(a, cls, inCard, fcls, fk) {
     var ripple = turned(a) ? " ripple" : "";
     next[a.id] = a.kind;
     var inert = !a.ref && !a.slug ? " inert" : "";
     var hex = /^#[0-9a-f]{3,8}$/i.test(a.color || "") ? a.color : "";
     return '<div class="row ' + a.kind + ripple + inert + (a.selected ? " here" : "") + cls +
-      (hex ? " owned" : "") + (fcls || "") + '" data-id="' + esc(a.id) + '" data-k="' + esc(a.kind) + '" title="' + esc(a.name) + '"' +
+      (hex ? " owned" : "") + (fcls || "") + '" data-id="' + esc(a.id) + '" data-k="' + esc(fk || a.kind) + '" title="' + esc(a.name) + '"' +
       (inCard ? ' data-in="' + esc(inCard) + '"' : "") +
       (hex ? ' style="--own:' + hex + '"' : "") + ">" + (ripple ? confetti(a.id, inCard ? 8 : 12) : "") + rail(a);
   }
@@ -552,7 +554,12 @@ function __boardRender(d) {
     if (a.kind === "quiet" && !kids) return quietRow(a);
     var whole = g && famDone(g);
     var inner = body(a) + kids, fq = loudChip(a);
-    return opening(a, (a.family ? " fam" : "") + (whole ? " famdone" : ""), "", foldCls(a.id, a.kind, !!inner)) +
+    // A family card folds by the family's tier, as a shell does: a working
+    // parent holding a child that needs you starts open, so the child's line
+    // and button show, and it reopens when a child starts waiting.
+    var fk = g && COL[a.famtier] ? a.famtier : a.kind;
+    return opening(a, (a.family ? " fam" : "") + (whole ? " famdone" : ""), "",
+      foldCls(a.id, fk, !!inner), fk) +
       (whole && !turned(a) ? confetti("fam:" + a.id, 22) : "") +
       '<div class="top' + (fq ? " loud" : "") + '"' + (inner ? ' data-a="fold">' + CARET : ">") +
       dial(a.frac, a.kind) + dotOf(a) + nameOf(a) +
