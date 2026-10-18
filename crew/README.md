@@ -182,6 +182,50 @@ control is unavailable — there is no way to express a search box. It also bind
 only to cmux's own workspace data; arbitrary files like Claude transcripts are
 not reachable. See FINDINGS.md.
 
+## Sweep
+
+`crew-sweep`, or the **Sweep** Dock control. A once-a-day pass over everything
+that could be put away, one card at a time.
+
+It looks machine-wide, because cmux is: every live workspace in every window,
+every archive record, and every worktree of each repo those point at. A card is
+one of:
+
+| | |
+|---|---|
+| **merged** | the branch is in the default branch, or its PR merged |
+| **dormant** | idle at least `sweep_dormant_days` (a crew plugin option, default 5), not mid-turn, no open deep-plan |
+| **orphaned** | an archive record whose worktree is gone |
+
+```
+ 3/9  seamux · dev/dock-organization   idle 6d · PR #41 merged
+ merged
+ last: "Done: the endpoint is in and tested."
+ jev: finished 0.91 · abandoned 0.12
+ [r]eclaim [a]rchive [s]kip [o]pen [q]uit
+```
+
+| Key | Does |
+|---|---|
+| `r` | runs `crew-reclaim` on it, with its full report and its `y/N` (linked worktrees only) |
+| `a` | archives the live workspace (see [Sessions](#sessions)) |
+| `f` | forgets an archive record |
+| `o` | jumps to the live workspace and stops |
+| `s` / `q` | skip / quit |
+
+Each key shows only where it applies. The sweep deletes nothing itself: the one
+delete is `crew-reclaim`'s, behind its own guards and its own question.
+
+**Jev orders the cards** (ADR 0023). It is asked two questions per card, *is this
+finished?* and *was this abandoned?*, over Claude's last message, the last
+prompt, the workspace title, the branch, the PR state, the idle days and the
+plan phase. The card ranks by the higher of the two. The answers are cached in
+`~/.cache/cmux-crew/sweep-judgments.json` by transcript size, so the next sweep
+asks only about what moved. It goes through `hooks/typesafe.py` like every
+other judgment, so a local Jev reached by overriding the TypeSafe config needs
+nothing extra. With TypeSafe off or not answering, the order is orphaned and
+merged first, then the longest idle. The finder never asks Jev anything.
+
 ## VS Code
 
 ```

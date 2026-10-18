@@ -22,6 +22,10 @@ What is asserted:
   - the board's archive chip (triage.py's crew:archive) archives in the hook,
     refuses a mid-turn agent with a banner, and on a slow cmux hands the
     archive to a terminal instead of overrunning the hook's 10s;
+  - crew-sweep finds orphaned, merged and dormant workspaces machine-wide,
+    leaves out mid-turn, planned and fresh ones, orders by Jev (a mock) or by
+    merged-then-idle without it, caches by transcript size, and its wizard
+    takes one key a card; sweep_dormant_days renders through options.py;
   - crew-reclaim reports the mid-turn guard on a dry run and changes nothing,
     refuses a mid-turn agent, stops before deleting when the close fails, and
     refuses to close its own terminal's workspace, and otherwise force-closes
@@ -427,6 +431,179 @@ row = json.load(open(B_.TARGETS_FILE))["UUID-1"]
 ok, _ = I.act("archive", row, "")
 check("an archive tap reaches triage.py naming the row's workspace",
       ok and posted == [("crew:archive", "UUID-1")], str(posted))
+
+# --- crew-sweep ---------------------------------------------------------------------
+print("crew-sweep")
+import threading  # noqa: E402
+from http.server import BaseHTTPRequestHandler, HTTPServer  # noqa: E402
+SWEEP = os.path.join(CREW, "bin", "crew-sweep")
+OLD = time.time() - 30 * 86400
+
+
+def old_tree(name, branch):
+    path = os.path.join(T, "repo.worktrees", name)
+    git(main, "worktree", "add", "-q", "-b", branch, path, "origin/main")
+    open(os.path.join(path, name), "w").write(name + "\n")
+    git(path, "add", name)
+    stamp = "@%d +0000" % OLD
+    subprocess.run(["git", "-C", path, "commit", "-qm", name], check=True,
+                   env=dict(os.environ, GIT_AUTHOR_DATE=stamp, GIT_COMMITTER_DATE=stamp))
+    return path
+
+
+def transcript(cwd, sid, said, mtime):
+    d = os.path.join(T, "projects", cwd.replace("/", "-"))
+    os.makedirs(d, exist_ok=True)
+    p = os.path.join(d, sid + ".jsonl")
+    with open(p, "w") as fh:
+        fh.write(json.dumps({"type": "user", "cwd": cwd, "message": {"content": "do " + sid}}) + "\n")
+        fh.write(json.dumps({"type": "assistant", "message": {"content": said}}) + "\n")
+    os.utime(p, (mtime, mtime))
+    return p
+
+
+stale = old_tree("stale", "dev/stale")            # dormant, quiet in cmux
+spike = old_tree("spike", "dev/spike")            # dormant, not open anywhere
+planned = old_tree("planned", "dev/planned")      # dormant but a plan is open
+busy_ = old_tree("busy", "dev/busy")              # dormant but mid-turn
+transcript(stale, "s-stale", "Done: the endpoint is in and tested.", OLD)
+transcript(spike, "s-spike", "That approach will not work here.", OLD + 86400)
+dp = os.path.join(T, "deep-plan", "state")
+os.makedirs(dp)
+json.dump({"slug": "p", "root": planned, "phase": "implementing"}, open(os.path.join(dp, "p.json"), "w"))
+for i in range(8):
+    W.forget("/w/%d" % i)                       # the concurrency test's records
+gone_rec = os.path.join(T, "repo.worktrees", "removed")
+W._update(lambda r: r.__setitem__(gone_rec, {"cwd": gone_rec, "title": "removed", "archived_at": OLD}))
+os.makedirs(os.path.join(stale, "sub"))
+plain_dir = os.path.join(T, "not-a-repo")
+os.makedirs(plain_dir)
+put_rows([ws("ws-m", main, title="main"), ws("ws-st", os.path.join(stale, "sub"), title="stale"),
+          ws("ws-bz", busy_, title="busy"), ws("ws-op", open_, title="open"),
+          ws("ws-pl", plain_dir, title="plain")])
+put_sessions([sess("ws-bz", "s-bz", "running"), sess("ws-st", "s-stale", "idle")])
+SENV = dict(os.environ, CREW_DEEP_PLAN_DIR=os.path.join(T, "deep-plan"),
+            XDG_CONFIG_HOME=os.path.join(T, "config"))
+SENV.pop("TYPESAFE_API_KEY", None)
+
+
+def sweep(*argv, stdin="", **env):
+    r = subprocess.run([sys.executable, SWEEP] + list(argv), env=dict(SENV, **env), input=stdin,
+                       capture_output=True, text=True, timeout=120)
+    return r
+
+
+r = sweep("--json")
+q = json.loads(r.stdout or "{}") if r.returncode == 0 else {}
+names = [os.path.basename(c["cwd"]) for c in q.get("queue", [])]
+check("the sweep finds the orphaned record, the merged worktree and the dormant ones",
+      names[:2] == ["removed", "landed"] and set(names) == {"removed", "landed", "stale", "spike"},
+      r.stderr + str(names))
+check("…and leaves out a mid-turn workspace, an open plan, fresh work and the primary checkout",
+      not {"busy", "planned", "fresh", "open", "repo"} & set(names))
+check("a workspace in a worktree's subdirectory is that worktree's one card, and it is open",
+      names.count("stale") == 1 and "sub" not in names
+      and next((c for c in q.get("queue", []) if c["cwd"] == stale), {}).get("ws") == "ws-st")
+check("a directory with no activity on record is not called dormant", "not-a-repo" not in names)
+check("with TypeSafe off: orphaned and merged first, then the longest idle",
+      q.get("typesafe") is False and names == ["removed", "landed", "stale", "spike"], str(names))
+by = {os.path.basename(c["cwd"]): c for c in q.get("queue", [])}
+check("each card offers only the keys that apply",
+      by.get("removed", {}).get("keys") == ["f", "s", "q"]
+      and by.get("stale", {}).get("keys") == ["r", "a", "s", "o", "q"]
+      and by.get("spike", {}).get("keys") == ["r", "s", "q"], json.dumps({k: v["keys"] for k, v in by.items()}))
+json.dump({"sweep": {"dormant_days": 60}}, open(ENV["CREW_INTEGRATIONS"], "w"))
+names60 = [os.path.basename(c["cwd"]) for c in json.loads(sweep("--json").stdout)["queue"]]
+check("dormant_days moves the line", names60 == ["removed", "landed"], str(names60))
+json.dump({}, open(ENV["CREW_INTEGRATIONS"], "w"))
+
+ASKED = []
+
+
+class Jev(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        ASKED.append(body)
+        t = body["state"]["workspace_title"]
+        f, a = {"stale": (0.9, 0.1), "spike": (0.1, 0.95), "landed": (0.3, 0.2)}.get(t, (0.5, 0.5))
+        out = json.dumps({"answers": {"finished": {"noul": f}, "abandoned": {"noul": a}}}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    def log_message(self, *a):
+        pass
+
+
+srv = HTTPServer(("127.0.0.1", 0), Jev)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+JEV = dict(TYPESAFE_API_KEY="k", TYPESAFE_BASE_URL="http://127.0.0.1:%d" % srv.server_port)
+r = sweep("--json", **JEV)
+q = json.loads(r.stdout or "{}") if r.returncode == 0 else {}
+names = [os.path.basename(c["cwd"]) for c in q.get("queue", [])]
+check("with Jev: by the higher of finished and abandoned, the orphan ahead of anything judged",
+      names == ["removed", "spike", "stale", "landed"], r.stderr + str(names))
+check("…asking both questions per judged card, with the title, prompt and facts",
+      len(ASKED) == 3 and all(set(b["questions"]) == {"finished", "abandoned"} for b in ASKED)
+      and all({"last_message", "last_prompt", "workspace_title", "branch", "pr_state",
+               "idle_days", "plan_phase"} <= set(b["state"]) for b in ASKED), json.dumps(ASKED[:1]))
+cache = json.load(open(os.path.join(T, "cache", "cmux-crew", "sweep-judgments.json")))
+check("…and caching each answer with its transcript size",
+      cache.get(stale, {}).get("finished") == 0.9 and "transcript_size" in cache.get(stale, {}))
+ASKED.clear()
+sweep("--json", **JEV)
+check("a second sweep with nothing new asks nothing", ASKED == [], str(len(ASKED)))
+with open(os.path.join(T, "projects", stale.replace("/", "-"), "s-stale.jsonl"), "a") as fh:
+    fh.write(json.dumps({"type": "assistant", "message": {"content": "one more thing"}}) + "\n")
+os.utime(os.path.join(T, "projects", stale.replace("/", "-"), "s-stale.jsonl"), (OLD, OLD))
+sweep("--json", **JEV)
+check("…and a transcript that grew is asked about again",
+      [b["state"]["workspace_title"] for b in ASKED] == ["stale"], str(ASKED))
+srv.shutdown()
+r = sweep("--json", TYPESAFE_API_KEY="k", TYPESAFE_BASE_URL="http://127.0.0.1:9")
+check("a TypeSafe that does not answer still sweeps, on the cached and fallback order",
+      r.returncode == 0 and len(json.loads(r.stdout)["queue"]) == 4, r.stderr)
+
+r = sweep(stdin="fq")
+import re  # noqa: E402
+plain = [re.sub(r"\033\[[0-9;]*m", "", ln) for ln in r.stdout.splitlines()]
+check("the wizard shows one card, takes a key, and moves on",
+      any(ln.startswith(" 1/4") for ln in plain) and any(ln.startswith(" 2/4") for ln in plain)
+      and not any(ln.startswith(" 3/4") for ln in plain), r.stdout)
+check("…f forgets the orphaned record", gone_rec not in W.load_archive())
+check("…every card line fits an 80-column pane", all(len(ln) <= 80 for ln in plain),
+      max(plain, key=len))
+check("…and it says what it did", any("swept: 1 forgot" in ln for ln in plain), r.stdout[-200:])
+r = sweep(stdin="rq")
+check("r down a pipe does not reach crew-reclaim, which would not ask",
+      "needs a terminal" in r.stdout and os.path.isdir(landed), r.stdout[-300:])
+_l = importlib.machinery.SourceFileLoader("sw", SWEEP)
+SW = importlib.util.module_from_spec(importlib.util.spec_from_loader("sw", _l))
+_l.exec_module(SW)
+line = SW.card({"cwd": stale, "title": "t", "branch": "dev/" + "x" * 200, "idle_days": 3.0, "pr": None,
+                "pr_state": "", "merged": False, "plan": "", "ws": {"id": "w"}, "rec": None,
+                "reason": "dormant", "said": "y" * 300, "last": "", "linked": True}, 1, 9, 60)
+check("a cut card line is measured on what shows and still ends its colour",
+      all(len(SW._plain(ln)) <= 60 and ln.endswith(SW.RESET) for ln in line), str([len(SW._plain(x)) for x in line]))
+r = sweep(stdin="saq")                          # skip landed, archive stale, quit
+check("a archives a live card's workspace, and remembers it",
+      "ws-st" not in [w["id"] for w in rows()] and os.path.join(stale, "sub") in W.load_archive()
+      and "swept: 1 skipped, 1 archived" in r.stdout, r.stdout[-400:])
+
+OPTS = os.path.join(CREW, "hooks", "options.py")
+out_ = os.path.join(T, "opts.json")
+json.dump({"typesafe": {"enabled": True}}, open(out_, "w"))
+subprocess.run([sys.executable, OPTS, "--out", out_], env=dict(os.environ, CLAUDE_PLUGIN_OPTION_SWEEP_DORMANT_DAYS="9"))
+got = json.load(open(out_))
+check("the sweep_dormant_days option renders to sweep.dormant_days, keeping other keys",
+      got.get("sweep") == {"dormant_days": 9} and got.get("typesafe") == {"enabled": True}, json.dumps(got))
+subprocess.run([sys.executable, OPTS, "--out", out_], env=dict(os.environ, CLAUDE_PLUGIN_OPTION_SWEEP_DORMANT_DAYS=""))
+check("…and a blank one drops it, for crew-sweep's default", "sweep" not in json.load(open(out_)))
+r = subprocess.run([sys.executable, OPTS, "--out", out_], capture_output=True,
+                   env=dict(os.environ, CLAUDE_PLUGIN_OPTION_SWEEP_DORMANT_DAYS="1e999"))
+check("…and one too large to be a number is ignored, not a crash", r.returncode == 0 and not r.stderr, r.stderr)
 
 # --- crew-reclaim's close guard ---------------------------------------------------
 print("crew-reclaim")

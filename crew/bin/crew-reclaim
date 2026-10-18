@@ -128,7 +128,9 @@ if [ -x "$CMUX" ]; then
   # what the workspace we are about to close is actually called, and whether any
   # session in here is in plan mode. `plan:mode` is crew-sync's token, read off
   # the description — the same thing the board draws ◇ from.
-  probe="$(CMUX_QUIET=1 "$CMUX" workspace list --json 2>/dev/null \
+  # Every window, not the caller's: the sweep hands this workspaces from all of
+  # them, and a blocker in another window is still a blocker.
+  probe="$(CREW_CMUX="$CMUX" python3 "$WORKSPACES" list-json 2>/dev/null \
     | python3 -c '
 import json,sys
 try:

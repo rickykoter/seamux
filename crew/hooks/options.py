@@ -19,7 +19,8 @@ What it writes, keeping every other key of the file (typesafe.*, anything yours)
     jira_site                  -> jira = {enabled, site}           (blank: Jira off)
     github_issues              -> github_issues = {enabled}
     observability_stack        -> observability = {enabled, stack} (none: off)
-and `managedBy`, so the file says where those three came from. main_repo is not
+    sweep_dormant_days         -> sweep = {dormant_days}           (blank: crew-sweep's 5)
+and `managedBy`, so the file says where those came from. main_repo is not
 an integration; `--get main_repo` prints it for `crew apply` to bake.
 
 Options left at their defaults on a file this has never written change nothing:
@@ -34,7 +35,7 @@ import json
 import os
 import sys
 
-KEYS = ("jira_site", "github_issues", "observability_stack", "main_repo")
+KEYS = ("jira_site", "github_issues", "observability_stack", "main_repo", "sweep_dormant_days")
 STACKS = ("datadog", "splunk", "grafana")
 MARK = "crew plugin options (crew/hooks/options.py)"
 
@@ -67,7 +68,17 @@ def truthy(v):
 def is_default(opts):
     return (not str(opts.get("jira_site") or "").strip()
             and not truthy(opts.get("github_issues"))
-            and str(opts.get("observability_stack") or "none").strip() not in STACKS)
+            and str(opts.get("observability_stack") or "none").strip() not in STACKS
+            and dormant(opts) in (None, 5))
+
+
+def dormant(opts):
+    """sweep_dormant_days as a whole number of days, at least 1; None when unset
+    or not a number (crew-sweep then uses its default of 5)."""
+    try:
+        return max(1, int(float(str(opts.get("sweep_dormant_days")).strip())))
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def render(current, opts):
@@ -88,6 +99,11 @@ def render(current, opts):
                                 "note": "read-only for planning; keys come from env at read time"}
     else:
         cfg.pop("observability", None)
+    days = dormant(opts)
+    if days is not None:
+        cfg["sweep"] = {"dormant_days": days}
+    else:
+        cfg.pop("sweep", None)
     cfg["managedBy"] = MARK
     return cfg
 

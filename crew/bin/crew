@@ -384,7 +384,7 @@ cmd_apply() {
   #    run by, and run from here that is $LOCALBIN, not bin/.
   if [ -d "$LOCALBIN" ] || mkdir -p "$LOCALBIN" 2>/dev/null; then
     local linked=0
-    for f in crew crew-color crew-diff crew-code crew-digest crew-feed crew-reclaim crew-resume crew-sandbox crew-spec crew-sync crew-worktree crew-watch crew-listen crew-cmux-bin; do
+    for f in crew crew-color crew-diff crew-code crew-digest crew-feed crew-reclaim crew-resume crew-sweep crew-sandbox crew-spec crew-sync crew-worktree crew-watch crew-listen crew-cmux-bin; do
       ln -sf "$CREW_HOME/bin/$f" "$LOCALBIN/$f" && linked=$((linked + 1))
     done
     # The board lives in board/, not bin/: it is a surface with an HTML shell beside it.
@@ -636,7 +636,7 @@ cmd_uninstall() {
 
   # Only remove links that actually point back into the package.
   local unlinked=0
-  for f in crew crew-color crew-diff crew-code crew-digest crew-feed crew-reclaim crew-resume crew-sandbox crew-spec crew-sync crew-worktree crew-watch crew-listen crew-cmux-bin; do
+  for f in crew crew-color crew-diff crew-code crew-digest crew-feed crew-reclaim crew-resume crew-sweep crew-sandbox crew-spec crew-sync crew-worktree crew-watch crew-listen crew-cmux-bin; do
     if [ -L "$LOCALBIN/$f" ] && [ "$(readlink "$LOCALBIN/$f")" = "$CREW_HOME/bin/$f" ]; then
       rm -f "$LOCALBIN/$f"; unlinked=$((unlinked + 1))
     fi
@@ -999,7 +999,7 @@ typesafe.threshold('stuck_threshold', 0.8)))" 2>/dev/null)"
   for f in hooks/lib.sh hooks/crew-hook.sh hooks/progress.sh hooks/triage.py \
            hooks/asked.py hooks/asked.sh hooks/typesafe.py hooks/typesafe_probe.py hooks/workspaces.py \
            bin/crew-watch bin/crew-spec bin/crew-worktree bin/crew-diff bin/crew-code \
-           bin/crew-code-open bin/crew-color bin/crew-digest bin/crew-feed bin/crew-listen bin/crew-reclaim bin/crew-resume bin/crew-sandbox bin/crew-sync sidebars/crew.swift config/cmux.jsonc config/dock.json \
+           bin/crew-code-open bin/crew-color bin/crew-digest bin/crew-feed bin/crew-listen bin/crew-reclaim bin/crew-resume bin/crew-sweep bin/crew-sandbox bin/crew-sync sidebars/crew.swift config/cmux.jsonc config/dock.json \
            bin/crew-frame bin/crew-overlay config/dock.global.json \
            board/crew-board board/board.html board/render.js board/board_probe.mjs bin/crew-cmux-bin \
            board/crew-board-intent board/crew-board-diag board/costs.py board/pricing.py config/ccusage-pricing.json board/judgments.py board/intent.js board/cat_from_swift.py board/usage.tmpl.html \
@@ -1010,14 +1010,14 @@ typesafe.threshold('stuck_threshold', 0.8)))" 2>/dev/null)"
   # crew-frame is here because `crew apply` gates it on [ -x ] and skips it in
   # silence; the pane frame then just never follows the workspace.
   for f in hooks/crew-hook.sh hooks/triage.py bin/crew-watch bin/crew-spec \
-           bin/crew-worktree bin/crew-diff bin/crew-code bin/crew-code-open bin/crew-color bin/crew-listen bin/crew-reclaim bin/crew-resume bin/crew-sandbox \
+           bin/crew-worktree bin/crew-diff bin/crew-code bin/crew-code-open bin/crew-color bin/crew-listen bin/crew-reclaim bin/crew-resume bin/crew-sweep bin/crew-sandbox \
            bin/crew-frame bin/crew-cmux-bin board/crew-board; do
     [ -x "$CREW_HOME/$f" ] || bad "$f is not executable"
   done
   for f in crew-diff crew-code crew-code-open crew-sandbox crew-worktree crew-cmux-bin; do
     bash -n "$CREW_HOME/bin/$f" 2>/dev/null && ok "$f parses" || bad "$f syntax error"
   done
-  for f in crew-resume crew-sync crew-digest crew-feed crew-listen crew-color; do
+  for f in crew-resume crew-sweep crew-sync crew-digest crew-feed crew-listen crew-color; do
     python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$CREW_HOME/bin/$f" \
       2>/dev/null && ok "$f parses" || bad "$f syntax error"
   done
