@@ -29,6 +29,7 @@ costs that one row, never the run. Python 3.9 compatible: /usr/bin/python3
 runs this from the Stop hook on machines without Homebrew.
 """
 import bisect
+import calendar
 import fcntl
 import json
 import os
@@ -63,6 +64,8 @@ SCRATCH_CAP = 400           # files listed per scratchpad, at most
 
 COMMIT_RE = re.compile(r"^\[([^\]\n]+?) ([0-9a-f]{7,40})\] (.+)$", re.M)
 CHANGED_RE = re.compile(r"\b\d+ files? changed\b")
+GIT_COMMIT_RE = re.compile(r"\bgit\b[^;&|\n]*?\bcommit\b")
+ONELINE_RE = re.compile(r"^([0-9a-f]{7,40}) (.+)$")
 TMP_REDIRECT_RE = re.compile(
     r"(?:>>?|\btee(?:\s+-a)?)\s*((?:/private)?/tmp/[^\s;|&<>'\"`$()]+)")
 REMINDER_RE = re.compile(
@@ -311,6 +314,39 @@ def full_sha(cwd, sha):
         return ""
 
 
+def _epoch(ts):
+    try:
+        return calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
+    except (TypeError, ValueError):
+        return None
+
+
+def quiet_commit(cwd, out, ts):
+    """The commit a `git commit -q` made, which prints no [branch sha] line.
+    First a `<sha> <subject>` line in the same output (a trailing `git log
+    --oneline -1`) that names a real commit; else the commit HEAD gained in
+    the two minutes before the result, asked while the worktree exists."""
+    for line in out.splitlines():
+        m = ONELINE_RE.match(line.strip())
+        if m and full_sha(cwd, m.group(1)):
+            return [(m.group(1), m.group(2).strip())]
+    at = _epoch(ts)
+    if at is None or not (cwd and os.path.isdir(cwd)):
+        return []
+    try:
+        p = subprocess.run(["git", "-C", cwd, "log", "-n", "5", "--format=%h%x09%ct%x09%s", "HEAD"],
+                           capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    best = None
+    for line in p.stdout.splitlines() if p.returncode == 0 else []:
+        parts = line.split("\t", 2)
+        if len(parts) == 3 and parts[1].isdigit() and at - 120 <= int(parts[1]) <= at + 5:
+            if best is None or int(parts[1]) > best[0]:
+                best = (int(parts[1]), parts[0], parts[2])
+    return [(best[1], best[2])] if best else []
+
+
 # ---------------------------------------------------------------- classify
 
 
@@ -461,22 +497,25 @@ class Scan(object):
                 self.links.append((norm(path), url))
             return
         out = r.get("stdout")
-        if not isinstance(out, str) or "] " not in out:
+        if not isinstance(out, str):
             return
         use = None
         for c in (d.get("message") or {}).get("content") or []:
             if isinstance(c, dict) and c.get("type") == "tool_result":
                 use = self.tools.get(c.get("tool_use_id"))
         cmd = (use[1].get("command") or "") if use and use[0] == "Bash" else ""
-        if not ("commit" in cmd or CHANGED_RE.search(out)):
+        committed = bool(GIT_COMMIT_RE.search(cmd))
+        if not (committed or ("] " in out and CHANGED_RE.search(out))):
             return
         cwd = d.get("cwd") or self.cwd
-        for m in COMMIT_RE.finditer(out):
-            short, subject = m.group(2), m.group(3).strip()
-            full = full_sha(cwd, short)
-            _, web = git_facts(cwd)
-            sha = full or short
-            self.add(d, "commit", short, title=subject, sha=sha,
+        found = [(m.group(2), m.group(3).strip()) for m in COMMIT_RE.finditer(out)]
+        if not found and committed and not r.get("interrupted"):
+            found = quiet_commit(cwd, out, d.get("timestamp") or "")
+        _, web = git_facts(cwd)
+        for short, subject in found:
+            sha = full_sha(cwd, short) or short
+            # Seven characters, however many git printed: one commit, one row.
+            self.add(d, "commit", short[:7], title=subject, sha=sha,
                      url=("%s/commit/%s" % (web, sha)) if web else "")
 
     def scratchpad(self):
@@ -679,6 +718,8 @@ def store_rows():
     for n in names:
         if not n.endswith(".json") or n.count(".") > 1:
             continue                      # .rows.json, .seen.json, .incoming.json
+        if n.startswith("wake-"):
+            continue                      # a commit the Wake itself opened in lookout
         d = _load(os.path.join(rdir, n))
         src = (d or {}).get("source")
         if not (isinstance(src, dict) and isinstance(src.get("root"), str)):

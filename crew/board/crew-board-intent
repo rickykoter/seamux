@@ -980,6 +980,186 @@ def increment(slug, n, action, why):
     return True, "%s %s %s" % (action, slug, n)
 
 
+# ---------------------------------------------------------------------------
+# The Wake: the Artifact Log's page. artifacts.py owns the store; this serves
+# /artifacts (the page, token injected, read per request like /usage),
+# /artifacts/data (rows as JSON) and /artifacts/open (a click).
+#
+# The page names row ids, never paths. A path shown on the page is for the eye;
+# what gets opened is resolved here from the row the id names, so a page --
+# or anything that learned the token -- cannot point this server at a file the
+# indexer never recorded.
+# ---------------------------------------------------------------------------
+
+ARTIFACTS_TMPL = os.path.join(HERE, "artifacts.tmpl.html")
+ARTIFACTS_SLOT = '<script id="boot" type="application/json">__BOOT__</script>'
+WAKE_VIEW = "wake-view"                  # the Dock tab files and pages open in
+WAKE_TAB = "wake"                        # the Dock tab the Wake itself lives in
+VIEW_IN_DOCK = {".html", ".htm", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf"}
+BROWSER_HOSTS = ("claude.ai", "github.com")
+import artifacts  # noqa: E402
+
+
+def _dock_tab(keep_name, url):
+    """Show url in one reused Dock tab whose surface id lives in a state file,
+    the way open_plan and open_ask do: a second click navigates, never stacks."""
+    keep = plan_surface_file(keep_name)
+    sid = ""
+    try:
+        with open(keep) as fh:
+            sid = fh.read().strip()
+    except OSError:
+        pass
+    if sid and _surface_cmux(["browser", "--surface", sid, "get", "url"], 10)[0] == 0:
+        run([CMUX, "browser", "--surface", sid, "goto", url])
+        run([CMUX, "focus", "--surface", sid])
+        return True, "focused " + sid
+    rc, out = _surface_cmux(["new-surface", "--type", "browser", "--placement",
+                             "dock", "--url", url], 20)
+    if rc != 0:
+        return False, "could not open a Dock surface: " + out.strip()[:160]
+    new = next((t for t in out.split() if len(t) == 36 and t.count("-") == 4), "")
+    if new:
+        try:
+            os.makedirs(STATE_DIR, exist_ok=True)
+            with open(keep, "w") as fh:
+                fh.write(new + "\n")
+        except OSError:
+            pass
+    return True, url
+
+
+def _browser(url):
+    """A claude.ai or GitHub URL in the default browser; nothing else."""
+    u = urllib.parse.urlparse(url or "")
+    if u.scheme != "https" or u.hostname not in BROWSER_HOSTS:
+        return False, "not a claude.ai or GitHub URL"
+    ok = run(["open", url])
+    return ok, ("opened " + url) if ok else "the browser did not open"
+
+
+def _lookout_commit(ws, sha):
+    """One commit as a view-only lookout diff, in the workspace it was made in."""
+    try:
+        with open(LOOKOUT_POINTER, encoding="utf-8") as fh:
+            engine = os.path.join(json.load(fh).get("root") or "", "lookout.mjs")
+    except (OSError, ValueError):
+        return False
+    node = shutil.which("node") or next((c for c in ("/opt/homebrew/bin/node", "/usr/local/bin/node")
+                                         if os.path.exists(c)), None)
+    if not node or not os.path.isfile(engine):
+        return False
+    # The page goes to the workspace the board lists for ws, not to whichever
+    # workspace started this server.
+    env = {k: v for k, v in os.environ.items() if k != "CMUX_WORKSPACE_ID"}
+    try:
+        subprocess.Popen([node, engine, "open", "--range", "%s^..%s" % (sha, sha), "--view-only",
+                          "--at", ws, "--id", "wake-" + sha[:12]], cwd=ws, env=env,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+        return True
+    except OSError:
+        return False
+
+
+def _has_commit(ws, sha):
+    try:
+        return subprocess.run(["git", "-C", ws, "cat-file", "-e", sha + "^{commit}"],
+                              capture_output=True, timeout=5).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def wake_row(r):
+    """A row as the page sees it: the store's fields plus its state now."""
+    path = r.get("path") or ""
+    present = bool(path) and os.path.exists(path)
+    url = r.get("url") or ""
+    if r.get("kept_at"):
+        state = "kept" if present else "gone"
+    elif r["kind"] in ("commit", "artifact"):
+        state = "ok"                     # a sha or a URL does not go missing with a file
+    elif path and not present:
+        state = "gone"
+    elif present and artifacts.is_temp(path):
+        state = "risk"
+    else:
+        state = "ok"
+    return {
+        "id": r["id"], "kind": r["kind"], "title": r.get("title") or "",
+        "path": path, "was_path": r.get("was_path") or "", "url": url,
+        "sha": (r.get("sha") or "")[:7], "created_at": r.get("created_at") or "",
+        "session_id": r.get("session_id") or "", "branch": r.get("branch") or "",
+        "prompt": r.get("prompt") or "", "source": r.get("source") or "",
+        "locator": r["locator"] if r["kind"] in ("plan", "review", "ask") else "",
+        "state": state, "published": url.startswith("https://claude.ai/"),
+        "ws": r.get("ws") or "",
+    }
+
+
+def wake_data(ws, q="", kind=""):
+    rows = artifacts.search(q, ws=ws or None, kind=kind or None, limit=2000)
+    wss = artifacts.workspaces()
+    return {"ws": ws, "rows": [wake_row(r) for r in rows],
+            "workspaces": [{"ws": w["ws"], "n": w["n"], "last": w["last"] or "",
+                            "name": os.path.basename(w["ws"].rstrip("/")) or w["ws"],
+                            "here": os.path.isdir(w["ws"])} for w in wss]}
+
+
+def open_artifact(rid, port, sub=""):
+    """Open the row an id names, by kind. Returns (ok, detail)."""
+    try:
+        r = artifacts.row(int(rid))
+    except (TypeError, ValueError):
+        return False, "bad id"
+    if not r:
+        return False, "no such row"
+    kind, path, url, loc = r["kind"], r.get("path") or "", r.get("url") or "", r["locator"]
+    base = "http://127.0.0.1:%d" % port
+    if kind == "plan":
+        suffix = {"": "", "working": "", "review": ".review.html", "md": ".md"}.get(sub)
+        if suffix is None or not SLUG_OK.match(loc):
+            return False, "unknown plan surface"
+        if not suffix:
+            return open_plan(loc, port)
+        if not plan_asset(loc + suffix):
+            return False, "no %s for %s" % (sub, loc)
+        return _dock_tab(WAKE_VIEW, "%s/plan/%s%s" % (base, loc, suffix))
+    if kind == "review":
+        if not review_path(loc, ".html"):
+            return False, "the review page is gone"
+        return _dock_tab(WAKE_VIEW, "%s/review/%s" % (base, loc))
+    if kind == "ask":
+        if not ask_path(loc, ".html"):
+            return False, "the ask page is gone"
+        return _dock_tab(WAKE_VIEW, "%s/ask/%s" % (base, loc))
+    if kind == "commit":
+        sha, ws = r.get("sha") or loc, r.get("ws") or ""
+        if ws and os.path.isdir(ws) and re.match(r"^[0-9a-f]{7,40}$", sha) and _has_commit(ws, sha):
+            if _lookout_commit(ws, sha):
+                return True, "lookout diff of " + sha[:7]
+        if url:
+            return _browser(url)
+        return False, "the worktree is gone and no GitHub remote was recorded"
+    if kind == "artifact":
+        return _browser(url)
+    if path and os.path.isfile(path):
+        if os.path.splitext(path)[1].lower() in VIEW_IN_DOCK:
+            return _dock_tab(WAKE_VIEW, "file://" + urllib.parse.quote(path))
+        ok = run(["bash", CODE_OPEN, path])
+        return ok, ("opened " + path) if ok else "crew-code-open refused it"
+    if url:
+        return _browser(url)             # the file is gone; its publish is not
+    return False, "gone: " + (path or loc)
+
+
+def wake_page(ws, token):
+    tmpl = open(ARTIFACTS_TMPL, encoding="utf-8").read()
+    boot = (json.dumps({"t": token, "ws": ws}).replace("<", "\\u003c")
+            .replace(">", "\\u003e").replace("&", "\\u0026"))
+    return tmpl.replace(ARTIFACTS_SLOT, ARTIFACTS_SLOT.replace("__BOOT__", boot))
+
+
 ACTIONS = ("jump", "row", "diff", "pr", "issue", "jira", "checks", "plan", "take the check",
            "review", "code", "reclaim", "archive", "sync", "go", "close plan", "ask",
            "sandbox-up", "sandbox-down", "feed-allow", "feed-deny")
@@ -1250,6 +1430,43 @@ class Handler(http.server.BaseHTTPRequestHandler):
             log("%s inc %s" % ("OK  " if ok else "FAIL", detail))
             return self._reply(200 if ok else 500,
                                json.dumps({"ok": ok, "detail": detail}).encode())
+
+        # The Wake. The page itself carries the token, like /plan/ and /review/;
+        # the Host check keeps a rebound page from reading it, and the data and
+        # open routes answer without an open CORS header.
+        if u.path == "/artifacts":
+            try:
+                html = wake_page(one("ws"), self.token)
+            except OSError as exc:
+                return self._json(500, {"error": str(exc)})
+            body = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            return self.wfile.write(body)
+
+        if u.path == "/artifacts/data":
+            if not secrets.compare_digest(one("t"), self.token):
+                log("DENY bad token on /artifacts/data from %s" % self.client_address[0])
+                return self._json(403, {"error": "bad token"})
+            try:
+                return self._json(200, wake_data(one("ws"), one("q"), one("kind")))
+            except Exception as exc:          # a locked or missing db is a message, not a dropped socket
+                log("FAIL artifacts data: %s" % exc)
+                return self._json(500, {"error": "the artifact store could not be read: %s" % exc})
+
+        if u.path == "/artifacts/open":
+            if not secrets.compare_digest(one("t"), self.token):
+                log("DENY bad token on /artifacts/open from %s" % self.client_address[0])
+                return self._json(403, {"error": "bad token"})
+            try:
+                ok, detail = open_artifact(one("id"), self.server.server_address[1], one("s"))
+            except Exception as exc:
+                ok, detail = False, "could not open: %s" % exc
+            log("%s artifacts open %s: %s" % ("OK  " if ok else "FAIL", one("id"), detail))
+            return self._json(200 if ok else 400, {"ok": ok, "detail": detail})
 
         if u.path != "/do":
             return self._reply(404, b'{"error":"no such path"}')
