@@ -348,9 +348,10 @@ mark{background:none;color:var(--mark);box-shadow:inset 0 -1px 0 var(--mark)}
   function load(quiet) {
     var url = "/artifacts/data?t=" + encodeURIComponent(T) + "&ws=" + encodeURIComponent(WS) +
               "&q=" + encodeURIComponent(state.q);
-    var asked = state.q;
+    var asked = state.q, askedWs = WS;
     return fetch(url, {cache: "no-store"}).then(function (r) { return r.json(); }).then(function (j) {
-      if (asked !== state.q) return;               // a newer keystroke is in flight
+      // A newer keystroke or a workspace switch is in flight: this answer is stale.
+      if (asked !== state.q || askedWs !== WS) return;
       if (j.error) { toast(j.error, true); return; }
       state.rows = j.rows || [];
       state.truncated = !!j.truncated; state.limit = j.limit || 0;
@@ -555,7 +556,8 @@ mark{background:none;color:var(--mark);box-shadow:inset 0 -1px 0 var(--mark)}
     var ka = $("keepall");
     if (!ka.classList.contains("sure")) {
       ka.classList.add("sure");
-      ka.textContent = "sure? copy " + ka.getAttribute("data-n") + " files";
+      // The list may be cut at the newest rows; keep all acts on the whole workspace.
+      ka.textContent = "sure? copy " + (state.truncated ? "at least " : "") + ka.getAttribute("data-n") + " files";
       clearTimeout(keepAll.h);
       keepAll.h = setTimeout(function () { ka.classList.remove("sure"); ka.textContent = "keep all " + ka.getAttribute("data-n"); }, 3500);
       return;

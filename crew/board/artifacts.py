@@ -418,17 +418,19 @@ def is_temp(path):
     return any(path.startswith(r) for r in TEMP_ROOTS)
 
 
-def classify(path, cwd):
+def classify(path, cwd, root=""):
     """A written file's kind, or None when it is not an artifact: source code
     in the workspace (git records it) and Claude Code's own transcripts. A
     doc in a workspace that itself sits in /tmp is still a doc; the page
-    flags it at risk by its path, whatever its kind."""
+    flags it at risk by its path, whatever its kind. Inside means inside
+    the line's cwd or the session's starting directory: after a `cd docs`,
+    a Write to the repo's tools/ is still the repo's source."""
     if under(path, PROJECTS):
         return None
     ext = os.path.splitext(path)[1].lower()
     if ext in IMAGE_EXT:
         return "image"
-    if cwd and under(path, norm(cwd)):
+    if any(c and under(path, norm(c)) for c in (cwd, root)):
         return "doc" if ext in DOC_EXT else None
     if is_temp(path):
         return "temp"
@@ -534,7 +536,7 @@ class Scan(object):
 
     def _file(self, d, raw):
         p = norm(raw)
-        kind = classify(p, d.get("cwd") or self.cwd)
+        kind = classify(p, d.get("cwd") or self.cwd, self.root)
         if kind:
             self.add(d, kind, p, title=os.path.basename(p), path=p)
 
@@ -567,7 +569,10 @@ class Scan(object):
             found = quiet_commit(cwd, out, d.get("timestamp") or "")
         _, web = git_facts(cwd)
         for short, subject in found:
-            sha = full_sha(cwd, short) or short
+            full = full_sha(cwd, short)
+            if not committed and not full:
+                continue          # a [branch sha] line from a test fixture, not this repo's commit
+            sha = full or short
             # Seven characters, however many git printed: one commit, one row.
             self.add(d, "commit", short[:7], title=subject, sha=sha,
                      url=("%s/commit/%s" % (web, sha)) if web else "")
@@ -576,10 +581,13 @@ class Scan(object):
         """Every file in this session's scratchpad, dated by birth time. Files
         not touched since the last pass (since, the cursor's mtime) are
         already rows and are skipped, so an incremental pass stays cheap."""
-        if self.subagent or not self.session:
+        if self.subagent:
             return
+        # The session id is the transcript's own name, so a pass whose chunk
+        # had no complete line still knows whose scratchpad to list.
+        session = self.session or os.path.basename(self.path)[:-len(".jsonl")]
         proj = os.path.basename(os.path.dirname(self.path))
-        root = os.path.join(SCRATCH_BASE, proj, self.session, "scratchpad")
+        root = os.path.join(SCRATCH_BASE, proj, session, "scratchpad")
         if not os.path.isdir(root):
             return
         root = norm(root)
@@ -599,7 +607,7 @@ class Scan(object):
                     continue
                 kind = "image" if os.path.splitext(fn)[1].lower() in IMAGE_EXT else "temp"
                 ts = iso(birth(st))
-                d = {"cwd": self.cwd, "timestamp": ts, "sessionId": self.session,
+                d = {"cwd": self.cwd, "timestamp": ts, "sessionId": session,
                      "gitBranch": self.branch}
                 self.add(d, kind, p, title=os.path.relpath(p, root), path=p)
                 self.rows[-1]["updated_at"] = iso(st.st_mtime)
@@ -711,6 +719,11 @@ def index_transcript(db, path):
     since = cur["mtime"] if cur and offset else 0.0
     try:
         sc, end = scan_transcript(path, offset)
+        if cur and end == offset:
+            # Nothing complete to read yet (a line mid-flush): leave the cursor,
+            # so the next pass's scratchpad cut-off does not move past files
+            # this pass never listed.
+            return 0
         sc.scratchpad(since)
         sc.finish()
     except OSError:
@@ -758,6 +771,10 @@ def _heading(md):
 
 
 STORE_KEY = "store:plans,reviews,asks"
+# A review's or ask's files beside its record; the record is <id>.json.
+SIDECARS = (".rows.json", ".seen.json", ".incoming.json")
+# The lookout reviews the Wake makes itself to show a commit (crew-board-intent).
+WAKE_REVIEW = re.compile(r"^wake-[0-9a-f]{7,12}\.json$")
 
 
 def store_fingerprint():
@@ -819,9 +836,9 @@ def store_rows():
     except OSError:
         names = []
     for n in names:
-        if not n.endswith(".json") or n.count(".") > 1:
-            continue                      # .rows.json, .seen.json, .incoming.json
-        if n.startswith("wake-"):
+        if not n.endswith(".json") or n.endswith(SIDECARS):
+            continue
+        if WAKE_REVIEW.match(n):
             continue                      # a commit the Wake itself opened in lookout
         d = _load(os.path.join(rdir, n))
         src = (d or {}).get("source")
@@ -839,7 +856,7 @@ def store_rows():
     except OSError:
         names = []
     for n in names:
-        if not n.endswith(".json") or n.count(".") > 1:
+        if not n.endswith(".json") or n.endswith(SIDECARS):
             continue
         d = _load(os.path.join(adir, n))
         if not d or not isinstance(d.get("cwd"), str):

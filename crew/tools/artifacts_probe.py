@@ -301,7 +301,24 @@ with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
         jl(fh, result(now, "u31", {"stdout": git("log", "--oneline", "-1", "HEAD~2") + "\n", "stderr": ""}))
         jl(fh, use(now, "u32", "Bash", {"command": "git show HEAD~2 --oneline -s && echo commit"}))
         jl(fh, result(now, "u32", {"stdout": git("log", "--oneline", "-1", "HEAD~2") + "\n", "stderr": ""}))
+        # Still in docs/: a Write to the repo's tools/ is source, not a file.
+        jl(fh, dict(use(now, "u33", "Write", {"file_path": os.path.join(ws, "tools", "new_tool.py"), "content": "x"}),
+                    cwd=sub_dir))
+        # A probe printing a fixture repo's commit is not this repo's commit.
+        jl(fh, use(now, "u34", "Bash", {"command": "python3 fixture_probe.py"}))
+        jl(fh, result(now, "u34", {"stdout": "[main (root-commit) 1a2b3c4] init\n 1 file changed, 1 insertion(+)\n",
+                                   "stderr": ""}))
+    json.dump({"id": "v2.1-migration", "title": "dotted id", "createdAt": "2020-04-01T00:00:00.000Z",
+               "source": {"root": ws}}, open(os.path.join(plans, "reviews", "v2.1-migration.json"), "w"))
+    json.dump({"id": "wake-page-r1", "title": "a plan named wake-page", "createdAt": "2020-04-01T00:00:00.000Z",
+               "source": {"root": ws}}, open(os.path.join(plans, "reviews", "wake-page-r1.json"), "w"))
     A.index()
+    check("source written elsewhere in the repo after a cd is still source",
+          not any(r["locator"].endswith("new_tool.py") for r in A.search(limit=2000)))
+    check("a [branch sha] line from a non-commit command needs a real sha", not A.search("init", kind="commit"))
+    revs = sorted(r["locator"] for r in A.search(kind="review"))
+    check("a review id with a dot, or one that merely starts with wake-, is still a review",
+          "v2.1-migration" in revs and "wake-page-r1" in revs, revs)
     ac = next((r for r in A.search(limit=2000) if r["locator"].endswith("after-cd.txt")), None)
     check("a row files under the session's starting directory after a cd", ac and ac["ws"] == ws, (ac or {}).get("ws"))
     check("a ws spelled through a symlink finds the same rows",
