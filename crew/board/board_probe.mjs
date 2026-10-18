@@ -993,7 +993,8 @@ if (live && Array.isArray(live.rows)) {
     id, innerHTML: "", value: "", hidden: true, attrs: {},
     textContent: id === "boot" ? JSON.stringify({ t: "tok", ws: "/w/a" }) : "",
     setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k]; },
-    addEventListener() {}, classList: { add() {}, remove() {}, toggle() {} }, focus() {}, blur() {}, select() {} });
+    addEventListener() {}, classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+    focus() {}, blur() {}, select() {} });
   const evil = "</span><img src=x onerror=alert(1)>";
   const now = new Date().toISOString();
   const row = (o) => ({ id: 1, kind: "temp", title: "t", path: "", was_path: "", url: "", sha: "", created_at: now,
@@ -1022,9 +1023,15 @@ if (live && Array.isArray(live.rows)) {
     (els.list.innerHTML.match(/class="ph"/g) || []).length === 2]);
   checks.push(["wake page: rows carry their state, and a kept row says where it was",
     /class="row risk/.test(els.list.innerHTML) && /class="row gone/.test(els.list.innerHTML) &&
-    /class="row kept/.test(els.list.innerHTML) && els.list.innerHTML.includes("was /tmp/&lt;/span&gt;")]);
+    /class="row kept/.test(els.list.innerHTML) && els.list.innerHTML.includes("<i>was</i><span><bdi>/tmp/&lt;/span&gt;")]);
   checks.push(["wake page: open sends a row id and never a path",
     /"\/artifacts\/open\?t=" \+ encodeURIComponent\(T\) \+ "&id=" \+ r\.id/.test(html) && !/[?&]path=/.test(html)]);
+  checks.push(["wake page: an at-risk row offers Keep, and keep all counts them",
+    /data-act="keep"/.test(els.list.innerHTML) && els.keepall.hidden === false && els.keepall.textContent === "keep all 1"]);
+  checks.push(["wake page: keep posts a row id or the workspace, never a path",
+    html.includes('post("/artifacts/keep", {id: r.id})') && html.includes('post("/artifacts/keep", {ws: WS, all: true})')]);
+  checks.push(["wake page: publish asks first, naming the file, then posts the row id",
+    html.includes('"send " + r.path.split("/").pop() + " to claude.ai?"') && html.includes('post("/artifacts/publish", {id: r.id})')]);
   checks.push(["wake page: every icon is an inline SVG, no emoji",
     !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(html)]);
   checks.push(["wake page: reduced motion stills the crab",
@@ -1794,6 +1801,36 @@ print(json.dumps({r["id"]: [r["kind"], r["chips"]] for r in rows + quiet}))
       (await wo("path=" + encodeURIComponent(kept))).detail === "bad id" && (await wo("id=99999")).detail === "no such row"]);
     checks.push(["wake: a gone row says so instead of opening",
       /^gone: /.test((await wo("id=" + byTitle("gone.txt").id)).detail || "")]);
+    const kp = (obj, o = {}) => post({ t: token, ...obj }, { path: "/artifacts/keep", ...o });
+    checks.push(["wake keep: the POST guards hold (Origin, JSON, token)",
+      (await kp({ id: byTitle("notes.md").id }, { origin: "" })).status === 403 &&
+      (await kp({ id: byTitle("notes.md").id }, { origin: "https://evil.example" })).status === 403 &&
+      (await kp({ id: byTitle("notes.md").id }, { type: "text/plain" })).status === 415 &&
+      (await kp({ id: byTitle("notes.md").id, t: "nope" })).status === 403]);
+    checks.push(["wake keep: a path in the body is not an id",
+      JSON.parse((await kp({ path: kept })).body).error === "bad id" &&
+      JSON.parse((await kp({ id: String(byTitle("notes.md").id) })).body).error === "bad id"]);
+    checks.push(["wake keep: a gone file is refused with its reason",
+      JSON.parse((await kp({ id: byTitle("gone.txt").id })).body).why === "the file is gone"]);
+    const kr = await kp({ id: byTitle("notes.md").id });
+    let kj = {};
+    try { kj = JSON.parse(kr.body); } catch {}
+    // notes.md sits under the temp HOME, itself in a temp root on every runner.
+    checks.push(["wake keep: an at-risk file is copied into kept/ and the row repointed",
+      kr.status === 200 && kj.ok && kj.path.startsWith(join(HOME, ".claude", "crew", "kept") + "/") &&
+      fs.readFileSync(kj.path, "utf8") === "# notes\n" && kj.was === kept]);
+    const pp = (obj, o = {}) => post({ t: token, ...obj }, { path: "/artifacts/publish", ...o });
+    checks.push(["wake publish: the POST guards hold, and it takes an id",
+      (await pp({ id: byTitle("gone.txt").id }, { origin: "https://evil.example" })).status === 403 &&
+      (await pp({ id: byTitle("gone.txt").id, t: "nope" })).status === 403 &&
+      JSON.parse((await pp({ path: kept })).body).error === "bad id"]);
+    checks.push(["wake publish: a gone or non-page file is refused before any terminal opens",
+      /only a present HTML/.test(JSON.parse((await pp({ id: byTitle("gone.txt").id })).body).detail) &&
+      /only a present HTML/.test(JSON.parse((await pp({ id: byTitle("a plan").id })).body).detail)]);
+    checks.push(["wake publish: the row says whether it can be published",
+      byTitle("notes.md").publishable === true && byTitle("gone.txt").publishable === false]);
+    const ka = await kp({ ws: "/w/wake", all: true });
+    checks.push(["wake keep: keep all answers per row", ka.status === 200 && Array.isArray(JSON.parse(ka.body).results)]);
     checks.push(["wake: a plan surface is one of three names",
       (await wo(`id=${byTitle("a plan").id}&s=..%2F..%2Fetc`)).detail === "unknown plan surface"]);
 

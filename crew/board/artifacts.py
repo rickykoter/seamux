@@ -31,9 +31,11 @@ runs this from the Stop hook on machines without Homebrew.
 import bisect
 import calendar
 import fcntl
+import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -833,6 +835,115 @@ def backfill():
     db.execute("DELETE FROM cursors")
     db.close()
     return index(wait=True)
+
+
+# ---------------------------------------------------------------- keep
+
+KEPT = os.path.join(CREW_HOME, "kept")
+KEEP_MAX = 50 * 1024 * 1024
+
+
+def kept_dir(ws):
+    """kept/<workspace>/: the workspace's name, plus a short hash of its path
+    so two checkouts called `app` do not share a folder."""
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", os.path.basename(ws.rstrip("/")) or "root").strip("-") or "ws"
+    return os.path.join(KEPT, "%s-%s" % (name[:60], hashlib.sha1(ws.encode("utf-8")).hexdigest()[:6]))
+
+
+def _keep_one(db, r):
+    """Copy one at-risk row's file into kept/ and repoint the row. Returns
+    {ok, id, path, was} or {ok: False, id, why}. Refuses a row outside a temp
+    root, a missing file, a symlink, a directory and anything over 50MB."""
+    out = {"ok": False, "id": r["id"]}
+    path = r["path"] or ""
+    if r["kept_at"]:
+        out["why"] = "already kept"
+        return out
+    if not path or not is_temp(norm(path)):
+        out["why"] = "not in a temp directory"
+        return out
+    if os.path.islink(path):
+        out["why"] = "a symlink"
+        return out
+    if os.path.isdir(path):
+        out["why"] = "a directory"
+        return out
+    try:
+        st = os.stat(path)
+    except OSError:
+        out["why"] = "the file is gone"
+        return out
+    if st.st_size > KEEP_MAX:
+        out["why"] = "over 50MB"
+        return out
+    d = kept_dir(r["ws"])
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    dest = os.path.join(d, "%s-%s" % (stamp, os.path.basename(path)))
+    n = 1
+    while os.path.exists(dest):
+        n += 1
+        dest = os.path.join(d, "%s-%d-%s" % (stamp, n, os.path.basename(path)))
+    tmp = dest + ".part"
+    try:
+        shutil.copy2(path, tmp)              # copy2 keeps the mtime
+        os.replace(tmp, dest)
+    except OSError as exc:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        out["why"] = "copy failed: %s" % exc
+        return out
+    cur = db.execute("UPDATE artifacts SET path = ?, was_path = ?, kept_at = ?, updated_at = ? "
+                     "WHERE id = ? AND kept_at IS NULL",
+                     (dest, path, iso(time.time()), iso(time.time()), r["id"]))
+    if cur.rowcount != 1:
+        os.unlink(dest)
+        out["why"] = "kept meanwhile by another click"
+        return out
+    out.update(ok=True, path=dest, was=path)
+    return out
+
+
+def keep(rid):
+    """Keep one row, in one transaction."""
+    db = connect()
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        r = db.execute("SELECT * FROM artifacts WHERE id = ?", (int(rid),)).fetchone()
+        res = _keep_one(db, r) if r else {"ok": False, "id": rid, "why": "no such row"}
+        db.execute("COMMIT")
+        return res
+    except Exception:
+        db.execute("ROLLBACK")
+        raise
+    finally:
+        db.close()
+
+
+def keep_all(ws):
+    """Keep every at-risk row in a workspace: each row in a temp directory
+    whose file is still there, not yet kept. One result per row, refusals
+    included."""
+    db = connect()
+    try:
+        rows = db.execute("SELECT * FROM artifacts WHERE ws = ? AND kept_at IS NULL AND path <> '' "
+                          "ORDER BY created_at", (ws,)).fetchall()
+        out = []
+        for r in rows:
+            if not (is_temp(norm(r["path"])) and os.path.lexists(r["path"])):
+                continue
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                out.append(_keep_one(db, r))
+                db.execute("COMMIT")
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
+        return out
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------- read side
