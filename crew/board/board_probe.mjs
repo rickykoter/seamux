@@ -1704,8 +1704,11 @@ print(json.dumps({r["id"]: [r["kind"], r["chips"]] for r in rows + quiet}))
             { id: "n3", files: ["a.js"] }],
   }));
   const pinned = await new Promise(res => { const s = net.createServer(); s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => res(p)); }); });
+  // A stand-in for VS Code's `code`: it records what it was asked to open.
+  const fakeCode = join(HOME, "fake-code");
+  fs.writeFileSync(fakeCode, `#!/bin/sh\nprintf '%s\\n' "$@" >> "${join(HOME, "fake-code.log")}"\n`, { mode: 0o755 });
   const srv = spawn("python3", [join(HERE, "crew-board-intent")],
-    { env: { ...process.env, HOME, CREW_INTENT_PORT: String(pinned), PYTHONFAULTHANDLER: "1" },
+    { env: { ...process.env, HOME, CREW_INTENT_PORT: String(pinned), PYTHONFAULTHANDLER: "1", CREW_CODE_BIN: fakeCode },
       stdio: ["ignore", "pipe", "pipe"] });
   // Kept, not discarded: when the server does not come up on a runner, its
   // own output and log are the only account of why, and HOME is gone after.
@@ -1850,6 +1853,12 @@ print(json.dumps({r["id"]: [r["kind"], r["chips"]] for r in rows + quiet}))
       /only a present HTML/.test(JSON.parse((await pp({ id: byTitle("a plan").id })).body).detail)]);
     checks.push(["wake publish: the row says whether it can be published",
       byTitle("notes.md").publishable === true && byTitle("gone.txt").publishable === false]);
+    // The kept copy sits in ~/.claude/crew/kept, outside any repo, where
+    // crew-code-open exits 1 by design: the Wake falls through to the editor.
+    const ed = await wo("id=" + byTitle("notes.md").id);
+    const edLog = fs.existsSync(join(HOME, "fake-code.log")) ? fs.readFileSync(join(HOME, "fake-code.log"), "utf8") : "";
+    checks.push(["wake open: a file outside any repo still opens in the editor",
+      ed.ok === true && edLog.includes(kj.path), JSON.stringify(ed) + " " + edLog]);
     const ka = await kp({ ws: "/w/wake", all: true });
     checks.push(["wake keep: keep all answers per row", ka.status === 200 && Array.isArray(JSON.parse(ka.body).results)]);
     checks.push(["wake: a plan surface is one of three names",
