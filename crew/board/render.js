@@ -298,7 +298,7 @@ function __boardRender(d) {
   // own colour; the collector has already dropped any that repeat a chip.
   var FILLED = { attend: true, wilt: true, done: true };
   function buttons(a) {
-    var out = (a.chips || []).map(function (c, i) {
+    var out = chipsOf(a).map(function (c, i) {
       return '<span class="chip' + (i === 0 && FILLED[a.kind] ? " pri" : "") +
         '" title="' + esc(chipTip(c)) + '">' + esc(c) + "</span>";
     });
@@ -334,6 +334,22 @@ function __boardRender(d) {
 
   var DIRTY = '<span class="dirty" title="Uncommitted changes in this worktree">●</span>';
 
+  // The Wake is not a chip: every live row carries it and it says nothing about
+  // the row, so as one more ghost button it read as noise and was easy to miss.
+  // It is an icon at the right end instead, beside the spend -- a hull and the
+  // ripples it leaves behind -- and declares its verb with data-a, so the label
+  // table is not involved. The collector still lists it among the chips; that
+  // is what says a row has one.
+  var WAKE = '<span class="wk" data-a="wake" title="' + esc(TIP.wake) + '">' +
+    '<svg viewBox="0 0 28 16" width="28" height="16" aria-hidden="true">' +
+    '<path class="hull" d="M17 5.5h5l4.5 2.5-4.5 2.5h-5z"/>' +
+    '<path d="M14.5 5.2Q12.4 8 14.5 10.8"/>' +
+    '<path class="r2" d="M10.6 3.6Q7.2 8 10.6 12.4"/>' +
+    '<path class="r3" d="M6.6 2Q2 8 6.6 14"/></svg></span>';
+  function hasWake(a) { return (a.chips || []).indexOf("wake") >= 0; }
+  function chipsOf(a) { return (a.chips || []).filter(function (c) { return c !== "wake"; }); }
+  function wakeOf(a) { return hasWake(a) ? WAKE : ""; }
+
   // The footer: what you recognise a row by, in one mono line. Branch, PR and
   // issue are targets; status signals, progress and spend are read, not
   // clicked, so they do not react.
@@ -362,7 +378,7 @@ function __boardRender(d) {
         ' title="' + esc(e.h) + '">' + esc(e.t) + "</span>";
     });
     if (a.meta) out += '<span class="meta">' + esc(a.meta) + "</span>";
-    out += cost(a);
+    out += cost(a) + wakeOf(a);
     return out ? '<div class="foot">' + out + "</div>" : "";
   }
 
@@ -478,18 +494,17 @@ function __boardRender(d) {
   // Its other chips (diff, pr) stay, as ghosts at the end of the line: a row
   // badged "pr open" with no way to open the PR was the first cut of this.
   // When it has them, they say what the badge would, so the badge steps aside
-  // for the name -- except wake, which every row carries and which says nothing
-  // about the row, so an idle row with only wake still says idle. Spend still
-  // shows, because a row that is quietly burning money is the one quiet row
+  // for the name. The Wake is an icon, not one of them, so an idle row with
+  // only the Wake still says idle. Spend still shows, at the right end beside
+  // the Wake, because a row that is quietly burning money is the one quiet row
   // worth noticing.
   function quietRow(a) {
-    var acts = (a.chips || []).filter(function (c) { return c !== "jump"; });
+    var acts = chipsOf(a).filter(function (c) { return c !== "jump"; });
     var qb = acts.length ? '<span class="chips">' + acts.map(function (c) {
       return '<span class="chip" title="' + esc(chipTip(c)) + '">' + esc(c) + "</span>";
     }).join("") + "</span>" : "";
-    var loud = acts.filter(function (c) { return c !== "wake"; });
     return opening(a, a.family ? " fam" : "") + '<div class="top">' + dotOf(a) + nameOf(a) +
-      (a.dirty ? DIRTY : "") + cost(a) + (loud.length ? qb : badgeOf(a) + qb) + "</div></div>";
+      (a.dirty ? DIRTY : "") + (acts.length ? qb : badgeOf(a)) + cost(a) + wakeOf(a) + "</div></div>";
   }
 
   function card(a, kids, roll, g) {
@@ -521,7 +536,7 @@ function __boardRender(d) {
     // Opening selects the child's workspace -- if it has one to select.
     var sel = a.ref ? ' data-x="select"' : "";
     var loud = a.kind === "attend" || a.kind === "wilt";
-    var first = (a.chips || [])[0];
+    var first = chipsOf(a)[0];
     var inline = loud && first ? '<span class="chip pri" title="' + esc(chipTip(first)) + '">' +
       esc(first) + "</span>" : "";
     return opening(a, " fam kid" + (isOpen ? " open" : ""), inCard) +

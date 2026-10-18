@@ -181,7 +181,7 @@ def open_plan(slug, port):
         # must not stack Dock tabs.
         if _surface_cmux(["browser", "--surface", sid, "get", "url"], 10)[0] == 0:
             run([CMUX, "browser", "--surface", sid, "goto", url])
-            run([CMUX, "focus", "--surface", sid])
+            run([CMUX, "focus-panel", "--panel", sid])
             return True, "focused " + sid
 
     rc, out = _surface_cmux(["new-surface", "--type", "browser", "--placement",
@@ -383,7 +383,7 @@ def open_ask(ask_id, port, wsid):
     if sid:
         if _surface_cmux(["browser", "--surface", sid, "get", "url"], 10)[0] == 0:
             run([CMUX, "browser", "--surface", sid, "goto", url])
-            run([CMUX, "focus", "--surface", sid])
+            run([CMUX, "focus-panel", "--panel", sid])
             return True, "focused " + sid
     rc, out = _surface_cmux(["new-surface", "--type", "browser", "--placement",
                              "dock", "--url", url], 20)
@@ -892,15 +892,16 @@ def act(action, row, extra):
         return open_plan(slug, port)
 
     if action == "wake":
-        # The Wake for this row's workspace, in one Dock tab whose surface id
-        # is kept like open_plan's: a tap on another row navigates it there.
+        # The Wake for this row's workspace, in one tab whose surface id is
+        # kept like open_plan's: a tap on another row moves it there, and
+        # switches to that row's workspace with it.
         if not cwd:
             return False, "no workspace directory on this row"
         port = (current() or (None,))[0]
         if not port:
             return False, "intent server not answering"
-        return _dock_tab(WAKE_TAB, "http://127.0.0.1:%d/artifacts?ws=%s"
-                         % (port, urllib.parse.quote(cwd, safe="")))
+        return _wake_tab(WAKE_TAB, "http://127.0.0.1:%d/artifacts?ws=%s"
+                         % (port, urllib.parse.quote(cwd, safe="")), select=ref)
 
     if action == "ask":
         # `deep-plan ask` opens its page here, best-effort, with the id as extra.
@@ -1005,42 +1006,193 @@ def increment(slug, n, action, why):
 
 ARTIFACTS_TMPL = os.path.join(HERE, "artifacts.tmpl.html")
 ARTIFACTS_SLOT = '<script id="boot" type="application/json">__BOOT__</script>'
-WAKE_VIEW = "wake-view"                  # the Dock tab files and pages open in
-WAKE_TAB = "wake"                        # the Dock tab the Wake itself lives in
+WAKE_VIEW = "wake-view"                  # the tab files and pages open in, beside the Wake
+WAKE_TAB = "wake"                        # the tab the Wake itself lives in
 WAKE_LIMIT = 2000                        # rows per answer; the page says when it is cut
-VIEW_IN_DOCK = {".html", ".htm", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf"}
+VIEW_IN_WAKE = {".html", ".htm", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf"}
 BROWSER_HOSTS = ("claude.ai", "github.com")
 import artifacts  # noqa: E402
 
 
-def _dock_tab(keep_name, url):
-    """Show url in one reused Dock tab whose surface id lives in a state file,
-    the way open_plan and open_ask do: a second click navigates, never stacks."""
-    # Its own namespace: plan_surface_file("wake") would share a file with a
-    # deep-plan whose slug is "wake".
-    keep = os.path.join(STATE_DIR, "wake-surface-" + keep_name)
-    sid = ""
+WAKE_SHARE = 0.8                         # the least of the main area the Wake's split is widened to
+
+
+def _cmux_json(argv, timeout=10):
+    """A cmux call's stdout as JSON, with UUIDs for ids, or None. stdout only:
+    cmux puts notices on stderr."""
     try:
-        with open(keep) as fh:
-            sid = fh.read().strip()
+        p = subprocess.run([CMUX, "--id-format", "uuids"] + argv, capture_output=True,
+                           text=True, timeout=timeout)
+        return json.loads(p.stdout) if p.returncode == 0 else None
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return None
+
+
+def _main_panes(ws):
+    """(main-area width, panes with a frame) of a workspace. Dock panes are in
+    the same list, with a dock_scope and no frame; a workspace that is not on
+    screen has no frames at all."""
+    d = _cmux_json(["list-panes", "--workspace", ws, "--json"]) or {}
+    width = (d.get("container_frame") or {}).get("width") or 0
+    return width, [p for p in d.get("panes") or [] if p.get("pixel_frame") and not p.get("dock_scope")]
+
+
+def _pane_of(panes, sid):
+    return next((p for p in panes if sid and sid in (p.get("surface_ids") or [])), None)
+
+
+def _settle(probe, timeout=1.5):
+    """probe() until it answers, for up to timeout seconds. cmux applies a
+    select, a new pane and a resize after it has answered the call: the list
+    read straight after still shows the layout from before."""
+    end = time.monotonic() + timeout
+    while True:
+        got = probe()
+        if got or time.monotonic() >= end:
+            return got
+        time.sleep(0.1)
+
+
+def _frame_width(ws, sid):
+    p = _pane_of(_main_panes(ws)[1], sid)
+    return p["pixel_frame"]["width"] if p else 0
+
+
+def _widen(ws, sid):
+    """Widen the pane holding sid to WAKE_SHARE of the main area, never
+    narrower than it is. resize-pane moves one divider and does not pass the
+    rest on, so once the pane's own left edge is spent -- its sibling is at its
+    least -- the pane beside it moves its left edge, which is the divider of
+    the split holding both; then the next, nearest first. A pass that moves
+    nothing ends it."""
+    _settle(lambda: _frame_width(ws, sid))
+    for _ in range(6):
+        width, panes = _main_panes(ws)
+        me = _pane_of(panes, sid)
+        if not me or not width:
+            return
+        w = me["pixel_frame"]["width"]
+        need = int(WAKE_SHARE * width - w)
+        if need < 8:
+            return
+        x = me["pixel_frame"]["x"]
+        # A pane at the left edge has no divider to move.
+        beside = sorted((p for p in panes if 0 < p["pixel_frame"]["x"] < x),
+                        key=lambda p: -p["pixel_frame"]["x"])
+        for p in [me] + beside:
+            run([CMUX, "resize-pane", "--pane", p["id"], "--workspace", ws, "-L",
+                 "--amount", str(need)])
+            if _settle(lambda: _frame_width(ws, sid) > w + 1, 0.6):
+                break
+        else:
+            return
+
+
+def _keep_path(keep_name, ws=""):
+    # Its own namespace: plan_surface_file("wake") would share a file with a
+    # deep-plan whose slug is "wake". One per workspace; no ws is the single
+    # file an older crew kept, for one Dock tab.
+    return os.path.join(STATE_DIR, "wake-surface-" + keep_name + ("-" + ws if ws else ""))
+
+
+def _read_keep(keep_name, ws=""):
+    try:
+        with open(_keep_path(keep_name, ws)) as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def _write_keep(keep_name, ws, sid):
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(_keep_path(keep_name, ws), "w") as fh:
+            fh.write(sid + "\n")
     except OSError:
         pass
-    if sid and _surface_cmux(["browser", "--surface", sid, "get", "url"], 10)[0] == 0:
-        run([CMUX, "browser", "--surface", sid, "goto", url])
-        run([CMUX, "focus", "--surface", sid])
-        return True, "focused " + sid
-    rc, out = _surface_cmux(["new-surface", "--type", "browser", "--placement",
-                             "dock", "--url", url], 20)
-    if rc != 0:
-        return False, "could not open a Dock surface: " + out.strip()[:160]
-    new = next((t for t in out.split() if len(t) == 36 and t.count("-") == 4), "")
-    if new:
+
+
+def _adopt_legacy(ws):
+    """The one Wake tab an older crew kept, in the Dock: closed, and its file
+    dropped. One that is already a split in this workspace becomes its own."""
+    for name in (WAKE_TAB, WAKE_VIEW):
+        sid = _read_keep(name)
+        if not sid:
+            continue
+        if _pane_of(_main_panes(ws)[1], sid):
+            _write_keep(name, ws, sid)
+        elif _surface_cmux(["browser", "--surface", sid, "get", "url"], 10)[0] == 0:
+            d = _cmux_json(["list-panes", "--workspace", ws, "--json"]) or {}
+            if any(p.get("dock_scope") and sid in (p.get("surface_ids") or []) for p in d.get("panes") or []):
+                run([CMUX, "close-surface", "--surface", sid])
+            else:
+                continue                 # a split in another workspace adopts it there
         try:
-            os.makedirs(STATE_DIR, exist_ok=True)
-            with open(keep, "w") as fh:
-                fh.write(new + "\n")
+            os.remove(_keep_path(name))
         except OSError:
             pass
+
+
+def _wake_tab(keep_name, url, select=""):
+    """Show url in the Wake's own tab group in the workspace in front: one
+    split at the right holding the Wake and a tab for what it opens, nothing
+    else. Focused, and widened to WAKE_SHARE of the window. A second click
+    navigates, never stacks. Each workspace has its own group, kept per
+    workspace; one in another workspace is left where it is. select names a
+    workspace to switch to first, so a row's Wake opens in that row's
+    workspace: the one you asked about, and the only one with frames to widen
+    (one off screen has none).
+
+    Not in the Dock: cmux has no way to widen the Dock from outside (its width
+    is read once, at launch, and resize-pane does not reach Dock panes), and the
+    Wake wants the room."""
+    # tree's "active", not current-workspace: that one answers for the
+    # caller's workspace, and stays there after a select.
+    def front():
+        return ((_cmux_json(["tree", "--json"]) or {}).get("active") or {}).get("workspace_id")
+    if select:
+        rc, out = _surface_cmux(["--id-format", "uuids", "workspace", "select", select], 10)
+        target = next((t for t in out.split() if len(t) == 36 and t.count("-") == 4), "")
+        if rc != 0 or not target:
+            return False, "could not switch to " + select
+        # "active" follows a select a moment later; until it does it names
+        # the workspace you were in, whose group would be the one reused.
+        if not _settle(lambda: front() == target):
+            return False, "cmux did not switch to " + select
+        ws = target
+    else:
+        ws = front()
+    if not ws:
+        return False, "cmux did not say which workspace is in front"
+    _adopt_legacy(ws)
+    _, panes = _main_panes(ws)
+    # The group is the pane the Wake is in, else the pane its view is in. A
+    # tab of either dragged out of it is no longer the group's: the next open
+    # makes a new one in the group rather than following it.
+    group = (_pane_of(panes, _read_keep(WAKE_TAB, ws)) or
+             _pane_of(panes, _read_keep(WAKE_VIEW, ws)))
+    sid = _read_keep(keep_name, ws)
+    if group and sid in (group.get("surface_ids") or []):
+        run([CMUX, "browser", "--surface", sid, "goto", url])
+        run([CMUX, "focus-panel", "--panel", sid, "--workspace", ws])
+        _widen(ws, sid)
+        return True, "focused " + sid
+    if group:
+        argv = ["new-surface", "--type", "browser", "--pane", group["id"], "--workspace", ws, "--url", url]
+    else:
+        # A new split at the right edge, cut from the rightmost pane: new-pane
+        # splits whichever pane is focused.
+        right = max(panes, key=lambda p: p["pixel_frame"]["x"] + p["pixel_frame"]["width"], default=None)
+        if right and right.get("selected_surface_id"):
+            run([CMUX, "focus-panel", "--panel", right["selected_surface_id"], "--workspace", ws])
+        argv = ["new-pane", "--type", "browser", "--direction", "right", "--workspace", ws, "--url", url]
+    rc, out = _surface_cmux(["--id-format", "uuids"] + argv, 20)
+    new = next((t for t in out.split() if len(t) == 36 and t.count("-") == 4), "") if rc == 0 else ""
+    if not new:
+        return False, "could not open the Wake's split: " + out.strip()[:160]
+    _write_keep(keep_name, ws, new)
+    run([CMUX, "focus-panel", "--panel", new, "--workspace", ws])
+    _widen(ws, new)
     return True, url
 
 
@@ -1167,37 +1319,37 @@ def open_artifact(rid, port, sub=""):
         if suffix is None or not SLUG_OK.match(loc):
             return False, "unknown plan surface"
         if not suffix:
-            return open_plan(loc, port)
+            return _wake_tab(WAKE_VIEW, "%s/plan/%s" % (base, loc))
         if not plan_asset(loc + suffix):
             return False, "no %s for %s" % (sub, loc)
-        return _dock_tab(WAKE_VIEW, "%s/plan/%s%s" % (base, loc, suffix))
+        return _wake_tab(WAKE_VIEW, "%s/plan/%s%s" % (base, loc, suffix))
     if kind == "review":
         if not review_path(loc, ".html"):
             return False, "the review page is gone"
-        return _dock_tab(WAKE_VIEW, "%s/review/%s" % (base, loc))
+        return _wake_tab(WAKE_VIEW, "%s/review/%s" % (base, loc))
     if kind == "ask":
         if not ask_path(loc, ".html"):
             return False, "the ask page is gone"
-        return _dock_tab(WAKE_VIEW, "%s/ask/%s" % (base, loc))
+        return _wake_tab(WAKE_VIEW, "%s/ask/%s" % (base, loc))
     if kind == "commit":
         sha, ws = r.get("sha") or loc, r.get("ws") or ""
         if (ws and os.path.isdir(ws) and re.match(r"^[0-9a-f]{7,40}$", sha) and _has_commit(ws, sha)
                 and _has_commit(ws, sha + "^")):          # a root commit has no sha^..sha
             rid = _lookout_commit(ws, sha)
             if rid and review_path(rid, ".html"):
-                # Where you are looking: the Wake's own Dock tab, through this
+                # Where you are looking: the tab beside the Wake, through this
                 # server's review page. lookout left alone opens it beside the
                 # commit's workspace's terminal, unfocused -- often a workspace
                 # other than the one the Wake is open in, so nothing appeared.
-                return _dock_tab(WAKE_VIEW, "%s/review/%s" % (base, rid))
+                return _wake_tab(WAKE_VIEW, "%s/review/%s" % (base, rid))
         if url:
             return _browser(url)
         return False, "the worktree is gone and no GitHub remote was recorded"
     if kind == "artifact":
         return _browser(url)
     if path and os.path.isfile(path):
-        if os.path.splitext(path)[1].lower() in VIEW_IN_DOCK:
-            return _dock_tab(WAKE_VIEW, "file://" + urllib.parse.quote(path))
+        if os.path.splitext(path)[1].lower() in VIEW_IN_WAKE:
+            return _wake_tab(WAKE_VIEW, "file://" + urllib.parse.quote(path))
         return _open_in_editor(path)
     if url:
         return _browser(url)             # the file is gone; its publish is not
