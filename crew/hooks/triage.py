@@ -17,7 +17,8 @@ Markers come from crew-hook.sh, which stamps the notification subtitle:
 Board buttons ride the same channel with their own verbs; crew:plan-go is
 deep-plan's, and it is the only one that authorizes work rather than reporting it.
 crew:reclaim is the only one that deletes, so it opens a terminal and asks
-rather than acting.
+rather than acting. crew:archive deletes nothing, so it acts here, in the hook,
+and says so only when it refuses.
 
 Anything without a crew marker is left exactly as cmux proposed it. On any
 error we echo the input back unchanged, so a bug here degrades to stock
@@ -31,6 +32,8 @@ import subprocess
 import sys
 import time
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin")
 CREW_SYNC = os.path.join(BIN, "crew-sync")
 # One definition of "which cmux": bin/crew-cmux-bin. PATH is consulted here first so
@@ -68,6 +71,68 @@ PLAN_GO = ('PATH="$HOME/.local/bin:$PATH"; '  # sh -lc never has the shim's dir
            '[ -f "$R/deep_plan.mjs" ] || R="$HOME/.claude/skills/deep-plan"; '
            'node "$R/deep_plan.mjs" go --at %s next; fi; '
            'exec %s')
+
+
+# cmux kills a notification hook at 10s. The archive is priced from the first
+# thing it does, the live list (1 + one per window calls): what is left is the
+# session records, the process tree, the close and the list again (3 + the
+# list's own count), plus up to 1.5s of close() waiting for the list to catch
+# up. Done here when that fits the budget; otherwise handed to a terminal,
+# where nothing is waiting on it, when the 4 calls that takes fit instead.
+ARCHIVE_BUDGET = float(os.environ.get("CREW_ARCHIVE_BUDGET", "7"))
+HOOK_LIMIT = 10.0
+CLOSE_SETTLE = 1.5
+
+
+def archive_in_hook(ws: str) -> str:
+    """Archive the board row's workspace. -> what happened, for the log.
+
+    Synchronously, for the reason ws_cwd spells out: the close needs a caller
+    cmux trusts, and a fired child is not one. A refusal (mid-turn, a job
+    running, a close that did not take) is the one outcome worth a banner; a
+    success shows by the row leaving the board.
+    """
+    import workspaces
+    workspaces.CMUX = CMUX
+    t0 = time.monotonic()
+    live = workspaces.live_workspaces()
+    took = time.monotonic() - t0
+    if live is None:
+        say("archive", "cmux did not list its workspaces — nothing was archived")
+        return "no live list"
+    if not workspaces.find_live(ws, live):
+        # The row outlives its workspace until the next push, so a second tap
+        # lands here. The first one worked; that is not worth a banner.
+        if any(r.get("workspace_id") == ws for r in workspaces.load_archive().values()):
+            return "already archived"
+        say("archive", "that workspace is no longer open")
+        return "not open"
+    calls = 1 + len({w["window"] for w in live} or {""})
+    per = took / calls
+    if took + per * (3 + calls) + CLOSE_SETTLE > ARCHIVE_BUDGET:
+        if took + per * 5 > HOOK_LIMIT - 1:
+            say("archive", "cmux is too slow to archive from the board — use crew-resume")
+            return "slow cmux (%.1fs a call): refused" % per
+        argv = [sys.executable, os.path.join(HERE, "workspaces.py"), "archive", ws]
+        if open_terminal(host_workspace(ws), argv, title="archive"):
+            return "slow cmux (%.1fs a call): archiving in a terminal" % per
+        say("archive", "cmux is slow and no terminal would open — archive it from crew-resume")
+        return "slow cmux, no terminal"
+    ok, msg = workspaces.archive(ws, live=live)
+    if not ok:
+        say("archive", msg)
+    return msg
+
+
+def say(subtitle: str, body: str) -> None:
+    """A banner from inside the hook, synchronously: a fired child would hold
+    no token, and the notification would fail as silently as the thing it
+    reports."""
+    try:
+        subprocess.run([CMUX, "notify", "--title", "crew", "--subtitle", subtitle,
+                        "--body", body], capture_output=True, timeout=10)
+    except Exception:
+        pass
 
 
 def ws_cwd(ws: str) -> str:
@@ -129,7 +194,7 @@ def host_workspace(avoid: str) -> str:
     return usable[0]["id"] if usable else ""
 
 
-def open_terminal(ws: str, argv) -> bool:
+def open_terminal(ws: str, argv, title: str = "reclaim") -> bool:
     """Split a terminal into `ws` and run `argv` in it.
 
     Both calls happen here, in the hook, for the reason ws_cwd spells out — a
@@ -161,7 +226,7 @@ def open_terminal(ws: str, argv) -> bool:
         if r.returncode != 0:
             return False
         # After respawn, not before: respawn resets the title to "Terminal".
-        subprocess.run([CMUX, "rename-tab", "--surface", surface, "reclaim"],
+        subprocess.run([CMUX, "rename-tab", "--surface", surface, title],
                        capture_output=True, timeout=10)
         return True
     except Exception:
@@ -205,7 +270,7 @@ def main() -> int:
         # actual command. Suppress every effect: it is an RPC, not a message.
         # Board buttons ride this channel. The workspace id comes off the
         # notification itself, so a per-row button needs no extra encoding.
-        if subtitle in ("crew:sync-now", "crew:reclaim", "crew:code",
+        if subtitle in ("crew:sync-now", "crew:reclaim", "crew:archive", "crew:code",
                         "crew:sandbox-up", "crew:sandbox-down",
                         "crew:feed-allow", "crew:feed-deny",
                         "crew:plan-go"):
@@ -242,6 +307,11 @@ def main() -> int:
                             capture_output=True, timeout=10)
                     except Exception:
                         pass
+            elif subtitle == "crew:archive":
+                # Close and remember, from a quiet row's chip. It deletes
+                # nothing — the worktree, branch and transcript all stay — so
+                # there is no y/N to sit through, unlike reclaim.
+                tlog("archive %s: %s" % (ws, archive_in_hook(ws) if ws else "no workspace"))
             elif subtitle == "crew:code":
                 # Opens that worktree in the VS Code desktop app, or focuses the
                 # window already on it. Hand it the resolved path: it cannot do

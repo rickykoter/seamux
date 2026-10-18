@@ -351,6 +351,51 @@ def lifecycle(ws, records=None):
     return "idle" if "claude_code=" in out else "none"
 
 
+# Foreground jobs that are not work: the shell at its prompt, and the agent,
+# whose own state lifecycle() has already answered.
+PROMPT_JOBS = ("zsh", "bash", "sh", "fish", "dash", "ksh", "tcsh", "csh", "nu", "login",
+               "claude", "codex")
+PS = os.environ.get("CREW_PS") or "ps"
+
+
+def busy(ws):
+    """What a force-close would kill besides an idle agent: the foreground job
+    of each of the workspace's terminals, when it is not a shell or the agent.
+    -> [names], [] for nothing, None when cmux would not say.
+
+    cmux asks before closing over any running process, and archive passes
+    --force so an idle Claude does not need a confirmation. This is what keeps
+    that from also taking down a dev server or a test run with one tap.
+    """
+    tree = _cmux_json("tree", "--json")
+    if not isinstance(tree, dict):
+        return None
+    ttys = []
+    for win in tree.get("windows") or []:
+        for w in win.get("workspaces") or []:
+            if ws not in (w.get("id"), w.get("ref")):
+                continue
+            for p in w.get("panes") or []:
+                for s in p.get("surfaces") or []:
+                    if s.get("type") == "terminal" and s.get("tty"):
+                        ttys.append(s["tty"])
+    names = []
+    for tty in ttys:
+        try:
+            out = subprocess.run([PS, "-o", "pid=,pgid=,tpgid=,comm=", "-t", tty],
+                                 capture_output=True, text=True, timeout=5).stdout
+        except Exception:
+            return None
+        for line in out.splitlines():
+            parts = line.split(None, 3)
+            if len(parts) < 4 or parts[0] != parts[1] or parts[1] != parts[2]:
+                continue            # only the foreground group's leader
+            name = os.path.basename(parts[3].strip()).lstrip("-")
+            if name not in PROMPT_JOBS and name not in names:
+                names.append(name)
+    return names
+
+
 def find_live(handle, live=None):
     """The live workspace a uuid, ref or cwd names, or None."""
     live = live_workspaces() if live is None else live
@@ -514,6 +559,12 @@ def archive(handle, live=None, records=None):
         return False, "%s: Claude is mid-turn — archive it when the turn ends" % name
     if life == "unknown":
         return False, "%s: could not tell whether Claude is mid-turn" % name
+    jobs = busy(ws["id"])
+    if jobs is None:
+        return False, "%s: could not tell what else is running in it" % name
+    if jobs:
+        return False, "%s: %s is running in it — stop it, or close the workspace yourself" % (
+            name, ", ".join(jobs))
     cwd = ws["cwd"]
     if not cwd:
         return False, "%s has no directory to remember" % name

@@ -738,6 +738,11 @@ def rank(wss, plan_by_root, screens=False):
                 qchips.append("diff")
             if w["pr"] not in ("", "none"):
                 qchips.append("pr")
+            # Put it away: close the workspace and remember it, for crew-resume
+            # to bring back (ADR 0022). Never on a row that is mid-turn — the
+            # tiers above claim those, and this guard keeps it that way.
+            if not w["running"]:
+                qchips.append("archive")
             quiet.append({
                 "id": w["id"], "name": w["title"], "kind": "quiet",
                 "badge": qbadge,
@@ -1172,8 +1177,10 @@ def write_targets(d):
     """
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
+        # `id` too: it is the workspace uuid that a verb posting a
+        # notification (reclaim, archive) has to name for triage.py.
         targets = {r["id"]: {k: r.get(k, "") for k in
-                             ("ref", "cwd", "pr_url", "slug", "name", "issue_url")}
+                             ("id", "ref", "cwd", "pr_url", "slug", "name", "issue_url")}
                    for r in d.get("rows", [])}
         tmp = TARGETS_FILE + ".tmp.%d" % os.getpid()   # per-pid: see save_sidebar_cache
         with open(tmp, "w") as fh:

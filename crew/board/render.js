@@ -26,6 +26,7 @@ function __boardRender(d) {
     "review": "Open the plan page",
     "take the check": "Open the plan and take the alignment check",
     "reclaim": "Dry-run the reclaim in a terminal, and ask before deleting anything",
+    "archive": "Close this workspace and remember it; crew-resume brings it back",
     "close plan": "Retire this plan's gate",
     "go": "Authorize this increment"
   };
