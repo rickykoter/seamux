@@ -38,27 +38,27 @@
 }
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--ink)}
-body{padding:12px 14px 40px;font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
-  -webkit-font-smoothing:antialiased;max-width:980px}
+body{padding:14px 22px 48px;font:15px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;max-width:1500px;margin:0 auto}
 button{font:inherit;color:inherit}
 
 /* ---- header: the crab, the name, the workspace ---- */
 .top{display:flex;align-items:flex-end;gap:12px;margin-bottom:10px}
 .ttl{flex:1;min-width:0}
-h1{font:600 17px/1.15 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;margin:0;letter-spacing:-.01em;
+h1{font:600 20px/1.15 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;margin:0;letter-spacing:-.01em;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 h1 .dot{color:var(--faint);margin:0 3px}
 h1 #wsname{color:var(--muted);font-weight:500}
-.sub{color:var(--muted);font-size:11.5px;margin-top:3px}
+.sub{color:var(--muted);font-size:13px;margin-top:3px}
 .sub b{color:var(--ink);font-weight:600}
 .sub .risk{color:var(--risk)} .sub .kept{color:var(--kept)}
 .keepall{margin-left:8px;background:none;border:1px solid var(--risk);color:var(--risk);border-radius:999px;
-  padding:0 9px;font:500 11px/1.6 system-ui;cursor:pointer}
+  padding:0 10px;font:500 12.5px/1.6 system-ui;cursor:pointer}
 .keepall.sure{background:var(--risk);color:var(--bg)}
 .acts button.keep{border-color:var(--risk);color:var(--risk)}
 .acts button.sure{background:var(--pub);border-color:var(--pub);color:var(--bg)}
 select#ws{background:var(--card);color:var(--ink);border:1px solid var(--line2);border-radius:7px;
-  padding:4px 6px;font:12px/1.2 system-ui;max-width:240px}
+  padding:5px 7px;font:13.5px/1.2 system-ui;max-width:280px}
 
 /* ---- the crab ---- */
 .crab{width:76px;height:50px;flex:none;overflow:visible}
@@ -83,55 +83,59 @@ select#ws{background:var(--card);color:var(--ink);border:1px solid var(--line2);
 /* ---- search and chips ---- */
 .bar{display:flex;gap:8px;align-items:center;margin-bottom:8px}
 #q{flex:1;background:var(--card);color:var(--ink);border:1px solid var(--line2);border-radius:8px;
-  padding:7px 10px;font:13px/1.2 system-ui;outline:none}
+  padding:9px 12px;font:15px/1.2 system-ui;outline:none}
 #q:focus{border-color:var(--muted)}
 #q::placeholder{color:var(--faint)}
-.keyhint{font:600 10.5px/1 var(--mono);color:var(--faint);border:1px solid var(--line2);border-radius:5px;
+.keyhint{font:600 12px/1 var(--mono);color:var(--faint);border:1px solid var(--line2);border-radius:5px;
   padding:4px 6px;cursor:pointer;background:none}
 .chips{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px}
 .chip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line2);background:none;border-radius:999px;
-  padding:2px 9px 2px 7px;font:500 11.5px/1.5 system-ui;color:var(--muted);cursor:pointer}
+  padding:3px 11px 3px 8px;font:500 13px/1.5 system-ui;color:var(--muted);cursor:pointer}
 .chip i{width:7px;height:7px;border-radius:50%;background:var(--c,var(--muted))}
-.chip span{font:500 10.5px/1 var(--mono);color:var(--faint)}
+.chip span{font:500 12px/1 var(--mono);color:var(--faint)}
 .chip.on{color:var(--ink);background:var(--card2);border-color:var(--muted)}
 .chip.on span{color:var(--muted)}
 .chip.zero{opacity:.45}
 
 /* ---- the timeline ---- */
-.day{margin-bottom:16px}
-.day h2{display:flex;align-items:center;gap:8px;font:600 10px/1 system-ui;letter-spacing:.1em;text-transform:uppercase;
-  color:var(--muted);margin:0 0 8px}
-.day h2::after{content:"";flex:1;border-top:1px solid var(--line2)}
-.grp{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 10px 6px;margin-bottom:7px}
+/* Each day's header sticks inside its own section, so the day you are
+   reading stays pinned and the next one pushes it off. */
+.day{margin-bottom:22px}
+.day h2{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:10px;
+  font:700 13px/1 system-ui;letter-spacing:.12em;text-transform:uppercase;color:var(--mark);
+  background:var(--bg);margin:0 -22px 10px;padding:11px 22px 9px;box-shadow:0 1px 0 var(--line2)}
+.day h2::before{content:"";width:8px;height:8px;border-radius:2px;background:var(--mark);flex:none}
+.day h2::after{content:"";flex:1;border-top:2px solid var(--mark);opacity:.35}
+.grp{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px 8px;margin-bottom:9px}
 .ph{display:flex;align-items:baseline;gap:8px;margin-bottom:4px;min-width:0}
-.ph time{font:500 11px/1 var(--mono);color:var(--faint);flex:none;width:38px}
+.ph time{font:500 12.5px/1 var(--mono);color:var(--faint);flex:none;width:46px}
 .ph .prompt{flex:1;min-width:0;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
 .ph .prompt::before{content:"\203A  ";color:var(--faint)}
 .ph .prompt.none{color:var(--faint);font-style:italic}
 .grp.open .ph .prompt{white-space:normal}
-.ph .sess,.ph .br{flex:none;font:500 10.5px/1.4 var(--mono);color:var(--faint)}
+.ph .sess,.ph .br{flex:none;font:500 12px/1.4 var(--mono);color:var(--faint)}
 .ph .sess{cursor:pointer;border-bottom:1px dotted var(--faint)}
 .ph .sess:hover{color:var(--muted)}
-ul.rows{list-style:none;margin:0;padding:0 0 0 46px}
-.row{display:grid;grid-template-columns:58px minmax(0,1fr) auto;gap:2px 8px;align-items:center;padding:3px 6px;
-  margin:0 -6px;border-radius:6px;cursor:default;outline:none}
+ul.rows{list-style:none;margin:0;padding:0 0 0 54px}
+.row{display:grid;grid-template-columns:66px minmax(0,1fr) auto;gap:2px 10px;align-items:center;padding:4px 8px;
+  margin:0 -8px;border-radius:6px;cursor:default;outline:none;scroll-margin-top:48px}
 .row:hover{background:var(--card2)}
 .row.sel{background:var(--card2);box-shadow:inset 2px 0 0 var(--muted)}
-.k{font:600 10px/1 var(--mono);text-transform:lowercase;color:var(--c,var(--muted))}
+.k{font:600 11.5px/1 var(--mono);text-transform:lowercase;color:var(--c,var(--muted))}
 .t{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
 .t:hover{text-decoration:underline;text-decoration-color:var(--faint)}
-.p{grid-column:2 / 4;font:11px/1.35 var(--mono);color:var(--faint);white-space:nowrap;overflow:hidden;
+.p{grid-column:2 / 4;font:12.5px/1.4 var(--mono);color:var(--faint);white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis;direction:rtl;text-align:left}
 .p bdi{direction:ltr;unicode-bidi:isolate}
 .p.was{display:flex;gap:6px;direction:ltr;font-style:italic}
 .p.was i{flex:none;font-style:normal;color:var(--kept);opacity:.8}
 .p.was span{min-width:0;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left}
-.st{display:inline-flex;align-items:center;gap:4px;font:500 10.5px/1 system-ui;color:var(--faint);white-space:nowrap}
-.st svg{width:15px;height:15px;flex:none}
+.st{display:inline-flex;align-items:center;gap:5px;font:500 12px/1 system-ui;color:var(--faint);white-space:nowrap}
+.st svg{width:17px;height:17px;flex:none}
 .st.risk{color:var(--risk)} .st.kept{color:var(--kept)} .st.pub{color:var(--pub)}
 .acts{grid-column:2 / 4;display:none;gap:6px;padding:3px 0 2px}
 .row.sel .acts{display:flex}
-.acts button{background:none;border:1px solid var(--line2);border-radius:6px;padding:1px 8px;font:500 11px/1.6 system-ui;
+.acts button{background:none;border:1px solid var(--line2);border-radius:6px;padding:2px 10px;font:500 12.5px/1.6 system-ui;
   color:var(--muted);cursor:pointer}
 .acts button:hover{color:var(--ink);border-color:var(--muted)}
 .row.gone .k,.row.gone .t,.row.gone .p{opacity:.45}
@@ -160,6 +164,8 @@ mark{background:none;color:var(--mark);box-shadow:inset 0 -1px 0 var(--mark)}
   .crab *, #toast{animation:none !important;transition:none !important}
 }
 @media (max-width:560px){
+  body{padding-left:16px;padding-right:16px}
+  .day h2{margin-left:-16px;margin-right:-16px;padding-left:16px;padding-right:16px}
   ul.rows{padding-left:0}
   .ph time{width:auto}
   .top{flex-wrap:wrap}
