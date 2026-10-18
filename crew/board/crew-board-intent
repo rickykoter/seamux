@@ -1007,6 +1007,7 @@ ARTIFACTS_TMPL = os.path.join(HERE, "artifacts.tmpl.html")
 ARTIFACTS_SLOT = '<script id="boot" type="application/json">__BOOT__</script>'
 WAKE_VIEW = "wake-view"                  # the Dock tab files and pages open in
 WAKE_TAB = "wake"                        # the Dock tab the Wake itself lives in
+WAKE_LIMIT = 2000                        # rows per answer; the page says when it is cut
 VIEW_IN_DOCK = {".html", ".htm", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf"}
 BROWSER_HOSTS = ("claude.ai", "github.com")
 import artifacts  # noqa: E402
@@ -1015,7 +1016,9 @@ import artifacts  # noqa: E402
 def _dock_tab(keep_name, url):
     """Show url in one reused Dock tab whose surface id lives in a state file,
     the way open_plan and open_ask do: a second click navigates, never stacks."""
-    keep = plan_surface_file(keep_name)
+    # Its own namespace: plan_surface_file("wake") would share a file with a
+    # deep-plan whose slug is "wake".
+    keep = os.path.join(STATE_DIR, "wake-surface-" + keep_name)
     sid = ""
     try:
         with open(keep) as fh:
@@ -1111,9 +1114,11 @@ def wake_row(r):
 
 
 def wake_data(ws, q="", kind=""):
-    rows = artifacts.search(q, ws=ws or None, kind=kind or None, limit=2000)
+    rows = artifacts.search(q, ws=ws or None, kind=kind or None, limit=WAKE_LIMIT)
     wss = artifacts.workspaces()
-    return {"ws": ws, "rows": [wake_row(r) for r in rows],
+    ws = artifacts.wskey(ws) if ws else ""
+    return {"ws": ws, "rows": [wake_row(r) for r in rows], "limit": WAKE_LIMIT,
+            "truncated": len(rows) >= WAKE_LIMIT,
             "workspaces": [{"ws": w["ws"], "n": w["n"], "last": w["last"] or "",
                             "name": os.path.basename(w["ws"].rstrip("/")) or w["ws"],
                             "here": os.path.isdir(w["ws"])} for w in wss]}

@@ -353,6 +353,11 @@ mark{background:none;color:var(--mark);box-shadow:inset 0 -1px 0 var(--mark)}
       if (asked !== state.q) return;               // a newer keystroke is in flight
       if (j.error) { toast(j.error, true); return; }
       state.rows = j.rows || [];
+      state.truncated = !!j.truncated; state.limit = j.limit || 0;
+      if (j.ws && j.ws !== WS) {               // the server's spelling of this workspace
+        WS = j.ws;
+        try { history.replaceState(null, "", "/artifacts?ws=" + encodeURIComponent(WS)); } catch (e) {}
+      }
       state.workspaces = j.workspaces || [];
       if (!WS && state.workspaces.length) {        // no ws given: the most recent one
         WS = state.workspaces[0].ws;
@@ -407,6 +412,7 @@ mark{background:none;color:var(--mark);box-shadow:inset 0 -1px 0 var(--mark)}
     if (risk) s += ' · <span class="risk">' + risk + " at risk</span>";
     if (kept) s += ' · <span class="kept">' + kept + " kept</span>";
     if (gone) s += " · " + gone + " gone";
+    if (state.truncated) s += " · newest " + state.limit + " shown; search to reach older";
     $("stats").innerHTML = s;
     var ka = $("keepall");
     ka.hidden = !risk || !!state.q;

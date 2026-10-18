@@ -24,6 +24,11 @@ and deep-plan, lookout and ask stores each hold one record. What is asserted:
     repoints the row, which re-indexing never undoes; it refuses rows outside
     a temp root, missing files, symlinks, directories and files over 50MB;
     keep all reports each refusal;
+  - a row files under the session's starting directory even after a cd, a
+    symlinked spelling of it finds the same rows, and a git command that only
+    mentions commit adds no commit;
+  - a kept file written again at its temp path is at risk (and keepable)
+    again; keep all leaves artifact rows alone;
   - search goes through FTS5 by prompt word, filters by ws and kind, and
     treats query syntax as text;
   - plan, review and ask rows land keyed by root or cwd;
@@ -51,6 +56,11 @@ results = []
 def check(name, cond, extra=""):
     results.append(bool(cond))
     print(f"  {'ok  ' if cond else 'FAIL'} {name}" + (f"\n       {extra}" if extra and not cond else ""))
+
+
+def norm_sp(p):
+    d, b = os.path.split(p)
+    return os.path.join(os.path.realpath(d), b)
 
 
 def jl(fh, d):
@@ -247,8 +257,8 @@ with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
     db.close()
     check("the cursor sits at the end of the transcript",
           cur and cur["offset"] == cur["size"] == os.path.getsize(tr))
-    check("an unchanged index run adds nothing",
-          A.index() == len(A.store_rows()) and len(A.search(limit=1000)) == n_before + 1)
+    check("an unchanged index run reads nothing, stores included",
+          A.index() == 0 and len(A.search(limit=1000)) == n_before + 1)
     A.backfill()
     after = A.search(limit=1000)
     check("backfill keeps every row and id",
@@ -276,6 +286,29 @@ with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
     check("a silent -q commit is found by HEAD's time", "Quiet and silent" in titles, titles)
     check("one commit is one row however git abbreviated it",
           all(len(r["locator"]) == 7 for r in A.search(kind="commit")))
+
+    print("workspace keys and commit matching")
+    sub_dir = os.path.join(ws, "docs")
+    link = os.path.join(t, "shop-link")
+    os.symlink(ws, link)
+    with open(tr, "a") as fh:
+        # A Bash cd left the session in docs/: the row still files under ws.
+        jl(fh, dict(use(now, "u30", "Write", {"file_path": os.path.join(sp, "after-cd.txt"), "content": "x"}),
+                    cwd=sub_dir))
+        # A git command that only mentions commit is not a commit, and a sha
+        # line in its output is not this session's commit.
+        jl(fh, use(now, "u31", "Bash", {"command": "git log --grep commit --oneline -1"}))
+        jl(fh, result(now, "u31", {"stdout": git("log", "--oneline", "-1", "HEAD~2") + "\n", "stderr": ""}))
+        jl(fh, use(now, "u32", "Bash", {"command": "git show HEAD~2 --oneline -s && echo commit"}))
+        jl(fh, result(now, "u32", {"stdout": git("log", "--oneline", "-1", "HEAD~2") + "\n", "stderr": ""}))
+    A.index()
+    ac = next((r for r in A.search(limit=2000) if r["locator"].endswith("after-cd.txt")), None)
+    check("a row files under the session's starting directory after a cd", ac and ac["ws"] == ws, (ac or {}).get("ws"))
+    check("a ws spelled through a symlink finds the same rows",
+          ac and any(r["id"] == ac["id"] for r in A.search(ws=link + "/")))
+    check("a git command that only mentions commit adds no commit row",
+          sorted(r["title"] for r in A.search(kind="commit")) == ["Add guide", "Quiet and silent", "Quiet with oneline"],
+          [r["title"] for r in A.search(kind="commit")])
 
     print("search")
     hits = A.search("scratch notes")
@@ -337,6 +370,36 @@ with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
           "stray.py" in kept_titles and whys == ["a directory", "a symlink", "over 50MB"], (kept_titles, whys))
     check("keep all skips rows already kept or gone",
           all(A.row(x["id"])["title"] not in ("notes.md", "summary.txt") for x in allres))
+
+    print("keep, again")
+    re_src = os.path.join(sp, "again.txt")
+    open(re_src, "w").write("v1")
+    with open(tr, "a") as fh:            # the turn that made it grows the transcript
+        jl(fh, dict(base, type="assistant", timestamp=now, message={"content": [{"type": "text", "text": "ok"}]}))
+    A.index()
+    ag = next(r for r in A.search(limit=2000) if r["locator"].endswith("again.txt"))
+    first = A.keep(ag["id"])
+    _t.sleep(1.1)
+    open(re_src, "w").write("v2")
+    with open(tr, "a") as fh:
+        later_ts = _t.strftime("%Y-%m-%dT%H:%M:%S.000Z", _t.gmtime(_t.time() + 2))
+        jl(fh, use(later_ts, "u40", "Write", {"file_path": re_src, "content": "v2"}))
+    A.index()
+    ag2 = A.row(ag["id"])
+    check("a kept file written again at its temp path is at risk again",
+          first.get("ok") and ag2["path"] == norm_sp(re_src) and not ag2["kept_at"] and os.path.exists(first["path"]),
+          (ag2["path"], ag2["kept_at"]))
+    check("...and can be kept again", A.keep(ag["id"]).get("ok"))
+    db = A.connect()
+    db.execute("BEGIN IMMEDIATE")
+    art_file = os.path.join(sp, "published.html")
+    open(art_file, "w").write("<p>x</p>")
+    A.write_rows(db, [dict(dict.fromkeys(A.FIELDS, ""), ws=ws, kind="artifact", locator="https://claude.ai/artifact/z",
+                           path=art_file, url="https://claude.ai/artifact/z", title="published")])
+    db.execute("COMMIT")
+    db.close()
+    zr = next(r for r in A.search(kind="artifact") if r["locator"].endswith("/z"))
+    check("keep all leaves artifact rows alone", all(x["id"] != zr["id"] for x in A.keep_all(ws)))
 
     print("lock and 3.9")
     lk = open(A.LOCK, "a")

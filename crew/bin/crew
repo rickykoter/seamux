@@ -1002,7 +1002,7 @@ typesafe.threshold('stuck_threshold', 0.8)))" 2>/dev/null)"
            bin/crew-code-open bin/crew-color bin/crew-digest bin/crew-feed bin/crew-listen bin/crew-reclaim bin/crew-resume bin/crew-sweep bin/crew-artifacts bin/crew-sandbox bin/crew-sync sidebars/crew.swift config/cmux.jsonc config/dock.json \
            bin/crew-frame bin/crew-overlay config/dock.global.json \
            board/crew-board board/board.html board/render.js board/board_probe.mjs bin/crew-cmux-bin \
-           board/crew-board-intent board/crew-board-diag board/costs.py board/pricing.py config/ccusage-pricing.json board/judgments.py board/artifacts.py board/intent.js board/cat_from_swift.py board/usage.tmpl.html \
+           board/crew-board-intent board/crew-board-diag board/costs.py board/pricing.py config/ccusage-pricing.json board/judgments.py board/artifacts.py board/artifacts.tmpl.html board/intent.js board/cat_from_swift.py board/usage.tmpl.html \
            board/dp_engine.py hooks/hooks.json .claude-plugin/plugin.json bin/crew-plugin-root \
            tools/render_probe.py; do
     [ -f "$CREW_HOME/$f" ] && ok "$f" || bad "missing $f"
