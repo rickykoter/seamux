@@ -15,11 +15,17 @@
 //   feed allow / deny    crew:feed-allow / crew:feed-deny  -> a=feed-allow|-deny
 //   the sync clock       crew:sync-now                     -> a=sync
 //
-// One verb never leaves the page: a=toggle, on a family child's header. It opens
-// the child's full card in place and, on opening only, sends the ordinary row
-// action for the child, so cmux selects that workspace. Closing is local and
-// goes nowhere. The open set lives on #rows as data-open, which render.js reads
-// on the next push so an opened child stays open.
+// One verb never leaves the page: a=fold, on every card's header. It folds or
+// unfolds the card in place and sends nothing. Where a click lands decides
+// what it does:
+//
+//   the rail (left edge)    jump, folded or not          -> a=jump
+//   the header              fold / unfold                -> a=fold
+//   a folded card, anywhere unfold
+//   an unfolded card's body select the workspace         -> a=row
+//
+// What was folded by hand lives on #rows as data-fold, id -> [open, tier],
+// which render.js reads on the next push so the choice holds.
 //
 // Two ways an element declares itself a target:
 //   data-a="verb" [data-x="arg"]   explicit -- branch, PR, every signal chip
@@ -45,7 +51,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "4";
+  var V = "5";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -76,6 +82,10 @@ function __boardIntent(cfg) {
       // A child sits on its family's darker well; hover lifts it from there.
       ".kids>.row.kid:not(.inert):hover{background:#323b40}" +
       ".kidhd.hit{opacity:.6}" +
+      // A fold header is a target even on an inert card: a family's shell.
+      "[data-a=fold]{cursor:pointer}" +
+      ".jmp.hit{opacity:.6}" +
+      ".jmp.ok{box-shadow:inset 0 0 0 2px #a7c080}.jmp.bad{box-shadow:inset 0 0 0 2px #e67e80}" +
       // A row that cannot be acted on must not pretend otherwise: no pointer
       // and no hover. It keeps its card ground -- a family's shell card is
       // inert and is still a card.
@@ -105,6 +115,9 @@ function __boardIntent(cfg) {
       return { a: hit.getAttribute("data-a"),
                x: hit.getAttribute("data-x") || "", el: hit };
     }
+    // A rail with nowhere to jump is colour, not a target: it neither jumps
+    // nor stands in for the card around it.
+    if (el.closest && el.closest(".jmp")) return null;
     var chip = hit;
     if (chip) {
       var label = (chip.textContent || "").trim();
@@ -114,7 +127,11 @@ function __boardIntent(cfg) {
       return null;                       // an unknown chip stays inert
     }
     var row = el.closest && el.closest(".row");
-    if (row && !row.classList.contains("inert")) return { a: "row", x: "", el: row };
+    if (!row) return null;
+    // Folded, the whole card opens; unfolded, its body is the card itself and
+    // selects the workspace -- the header above it is what folds it again.
+    if (row.classList.contains("fd") && !row.classList.contains("open")) return { a: "fold", x: "", el: row };
+    if (!row.classList.contains("inert")) return { a: "row", x: "", el: row };
     return null;
   }
 
@@ -152,27 +169,19 @@ function __boardIntent(cfg) {
       .catch(function () { done("bad"); });
   }
 
-  // Open or close a family child in place. The class flips now, so the card
-  // opens under the pointer instead of on the next push; data-open is what the
-  // next push reads. Opening also selects the child's workspace -- the ordinary
-  // row action, which the server already knows -- when it has one: render.js
-  // marks the toggle data-x="select" only for a child with a workspace ref, so
-  // a plan with no workspace opens without asking the server for one. Closing
-  // sends nothing.
-  function toggle(t, row, rid) {
-    var open = [];
-    try { open = JSON.parse(host.getAttribute("data-open") || "[]"); } catch (e) { open = []; }
-    if (!Array.isArray(open)) open = [];
-    var i = open.indexOf(rid);
-    if (i >= 0) {
-      open.splice(i, 1);
-      row.classList.remove("open");
-    } else {
-      open.push(rid);
-      row.classList.add("open");
-      if (t.x === "select") fire({ a: "row", x: "", el: t.el }, rid);
-    }
-    host.setAttribute("data-open", JSON.stringify(open));
+  // Fold or unfold a card in place. The class flips now, so the card changes
+  // under the pointer instead of on the next push; data-fold is what the next
+  // push reads, with the tier the card had, so render.js can drop the choice
+  // when the card moves tier. Sends nothing: the rail is the jump.
+  function fold(row, rid) {
+    var f = {};
+    try { f = JSON.parse(host.getAttribute("data-fold") || "{}"); } catch (e) { f = {}; }
+    if (!f || typeof f !== "object" || Array.isArray(f)) f = {};
+    var open = !row.classList.contains("open");
+    if (open) row.classList.add("open");
+    else row.classList.remove("open");
+    f[rid] = [open ? 1 : 0, row.getAttribute("data-k") || ""];
+    host.setAttribute("data-fold", JSON.stringify(f));
   }
 
   // Refreshed on every push; the listener below is installed only once.
@@ -192,7 +201,7 @@ function __boardIntent(cfg) {
       // fire too and steal focus away from whatever the chip just opened.
       ev.preventDefault();
       ev.stopPropagation();
-      if (t.a === "toggle") return toggle(t, row, rid);
+      if (t.a === "fold") return fold(row, rid);
       fire(t, rid);
     });
     host.setAttribute("data-intent", V);

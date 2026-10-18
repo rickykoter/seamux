@@ -227,8 +227,29 @@ checks.push(["the current workspace's card is marked",
   /class="row running owned" data-id="t"/.test(h)]);
 checks.push(["exactly one card is marked", (h.match(/ here /g) || []).length === 1]);
 
+// Every card folds. Unfolded to start: the tiers that ask something of you.
+// Folded, a loud card keeps its first chip, filled, on its header line.
+render({ rows: ["attend", "wilt", "running", "done"].map((k) => ({
+  id: k, name: k, kind: k, badge: "b", said: "said", chips: ["first", "jump"], frac: null, meta: "", ref: "workspace:1" })),
+  quiet: "" });
+const fo = els.rows.innerHTML;
+checks.push(["fold: waiting and broken cards start unfolded; working and done start folded",
+  /class="row attend fd open" data-id="attend" data-k="attend"/.test(fo) && /class="row wilt fd open" data-id="wilt"/.test(fo) &&
+  /class="row running fd" data-id="running"/.test(fo) && /class="row done fd" data-id="done"/.test(fo)]);
+checks.push(["fold: the header folds, the rail jumps, and the body is what folds away",
+  /data-id="running"[^>]*><span class="jmp" data-a="jump" title="Switch to this workspace"><svg[^]*?<\/svg><\/span><div class="top" data-a="fold"><span class="caret"><\/span>[^]*?<\/div><div class="fold"><p class="said">/.test(fo)]);
+checks.push(["fold: a loud card carries its first chip on the header for when it is folded",
+  /data-id="wilt"[^]*?<div class="top loud" data-a="fold">[^]*?<span class="chip pri fq"[^>]*>first<\/span><\/div>/.test(fo) &&
+  !/data-id="running"[^]*?class="chip pri fq/.test(fo.split('data-id="done"')[0])]);
+els.rows.attrs["data-fold"] = JSON.stringify({ running: [1, "running"], attend: [0, "attend"] });
+render({ rows: [{ id: "running", name: "r", kind: "running", said: "s", chips: [], ref: "w" },
+  { id: "attend", name: "a", kind: "attend", said: "s", chips: [], ref: "w" }], quiet: "" });
+checks.push(["fold: a choice made by hand holds across a push, either way",
+  /class="row running fd open"/.test(els.rows.innerHTML) && /class="row attend fd"/.test(els.rows.innerHTML)]);
+els.rows.attrs["data-fold"] = "{}";
+
 checks.push(["the worktree's Peacock colour rides on the row",
-  f.includes('class="row wilt owned"') && f.includes('style="--own:#1565C0"')]);
+  /class="row wilt owned( fd open)?"/.test(f) && f.includes('style="--own:#1565C0"')]);
 
 // The reply window is a CSS animation whose duration IS the time left, so it
 // drains in real time instead of showing a number that goes stale between pushes.
@@ -344,14 +365,19 @@ render({ rows: [
     meta: "", ref: "workspace:2" },
 ], quiet: "" });
 const qo = els.rows.innerHTML;
-checks.push(["a quiet row is one line: no dial, said or footer",
-  !/class="(dial|said|foot|feed)/.test(qo) && (qo.match(/class="top"/g) || []).length === 2 &&
-  !/<div class="chips">/.test(qo)]);
+// Its footer is there, folded: unfolding a quiet row shows its branch and PR.
+// One with no footer has nothing to fold, and its line selects it.
+checks.push(["a quiet row is one line: no dial, said, or footer until unfolded",
+  !/class="(dial|said|feed)/.test(qo) && (qo.match(/class="top"/g) || []).length === 2 &&
+  !/<div class="chips">/.test(qo) && !/ open"/.test(qo) &&
+  /class="row quiet owned fd"[^]*<div class="top" data-a="fold"><span class="caret"><\/span>[^]*<div class="fold"><div class="foot"><span class="branch"/.test(qo) &&
+  !/class="cost|class="wk/.test((qo.match(/<div class="fold">[^]*?<\/div><\/div>/) || [""])[0]) &&
+  /class="row quiet" data-id="q2"[^]*?<div class="top">/.test(qo) && !qo.split('data-id="q2"')[1].includes("fold")]);
 // Its chips stay, as ghosts on that line -- except jump, which the row itself
 // does. Buttons say what the badge would, so the badge steps aside for them.
 const q1 = qo.split('data-id="q2"')[0];
 checks.push(["a quiet row keeps its chips as ghost buttons on its one line",
-  /<div class="top">.*<span class="chips"><span class="chip"[^>]*>pr<\/span><\/span><\/div>/.test(q1) &&
+  /<div class="top"[^>]*>.*<span class="chips"><span class="chip"[^>]*>pr<\/span><\/span><\/div>/.test(q1) &&
   !/>jump</.test(qo) && !/chip pri/.test(qo)]);
 checks.push(["...with the badge only when there are none, and no empty badge",
   !q1.includes('class="badge"') && (qo.match(/class="badge"/g) || []).length === 0]);
@@ -550,7 +576,7 @@ checks.push(["and it has something to say about each",
   render({ rows: famRows("done", "done"), quiet: "" });
   const fd = els.rows.innerHTML;
   checks.push(["family: the push its last child turns done, the whole card celebrates",
-    /class="row running fam famdone"[^>]*data-id="FP"[^>]*><span class="confetti" aria-hidden="true">(<i [^>]+><\/i>){22}/.test(fd)]);
+    /class="row running fam famdone fd"[^>]*data-id="FP"[^>]*><span class="jmp"[^]*?<\/span><span class="confetti" aria-hidden="true">(<i [^>]+><\/i>){22}/.test(fd)]);
   render({ rows: famRows("done", "done"), quiet: "" });
   checks.push(["family: ...once", !els.rows.innerHTML.includes("famdone")]);
   render({ rows: [R4("S1", "done", { family: "S", famrole: "child", famkid: true, famlabel: "S" }),
@@ -1252,24 +1278,32 @@ print(sum(k.startswith("/w/r") for k in json.load(open(J.CACHE))))
     return el;
   };
   const span = (cls, text = "", attrs = {}) => mkEl("span", { class: cls, ...attrs }, [], text);
+  // Every row has a rail; one with a workspace makes it the jump, and the
+  // click lands on the arrow inside it.
+  const railOf = (on = true) => on ? mkEl("span", { class: "jmp", "data-a": "jump" }, [mkEl("svg")]) : span("jmp");
   const goA = span("chip pri", "go 2");
-  const hdA = mkEl("div", { class: "top kidhd", "data-a": "toggle", "data-x": "select" }, [span("caret"), span("nm", "A"), goA]);
+  const hdA = mkEl("div", { class: "top kidhd loud", "data-a": "fold" }, [span("caret"), span("nm", "A"), goA]);
   const diffA = span("chip", "diff");
-  const bodyA = mkEl("div", { class: "kbody" }, [mkEl("div", { class: "chips" }, [span("chip pri", "go 2"), diffA])]);
-  const kidA = mkEl("div", { class: "row attend fam kid", "data-id": "A", "data-in": "P" }, [hdA, bodyA]);
-  const hdW = mkEl("div", { class: "top kidhd", "data-a": "toggle", "data-x": "select" }, [span("caret"), span("nm", "W")]);
-  // A plan child with no workspace: render.js leaves data-x off its toggle.
-  const hdN = mkEl("div", { class: "top kidhd", "data-a": "toggle" }, [span("caret"), span("nm", "N")]);
-  const kidN = mkEl("div", { class: "row quiet fam kid", "data-id": "N", "data-in": "P" }, [hdN]);
-  const kidW = mkEl("div", { class: "row running fam kid", "data-id": "W", "data-in": "P" }, [hdW]);
+  const saidA = mkEl("p", { class: "said" }, [], "Inc 2 needs you");
+  const bodyA = mkEl("div", { class: "kbody" }, [saidA, mkEl("div", { class: "chips" }, [span("chip pri", "go 2"), diffA])]);
+  const railA = railOf();
+  const kidA = mkEl("div", { class: "row attend fam kid fd", "data-id": "A", "data-k": "attend", "data-in": "P" }, [railA, hdA, bodyA]);
+  const hdW = mkEl("div", { class: "top kidhd", "data-a": "fold" }, [span("caret"), span("nm", "W")]);
+  // A plan child with no workspace: its rail is colour only.
+  const hdN = mkEl("div", { class: "top kidhd", "data-a": "fold" }, [span("caret"), span("nm", "N")]);
+  const railN = railOf(false);
+  const kidN = mkEl("div", { class: "row quiet fam kid fd", "data-id": "N", "data-k": "quiet", "data-in": "P" }, [railN, hdN]);
+  const kidW = mkEl("div", { class: "row running fam kid fd", "data-id": "W", "data-k": "running", "data-in": "P" }, [railOf(), hdW]);
   const jumpP = span("chip", "jump");
   // The Wake's icon, as render.js draws it: the click lands on the svg inside.
   const wakeSvg = mkEl("svg", { "aria-hidden": "true" });
   const wakeP = mkEl("span", { class: "wk", "data-a": "wake" }, [wakeSvg]);
-  const card = mkEl("div", { class: "row running fam", "data-id": "P" },
-    [mkEl("div", { class: "chips" }, [jumpP]), mkEl("div", { class: "foot" }, [wakeP]),
-     mkEl("div", { class: "kids" }, [kidA, kidW, kidN])]);
-  const host = mkEl("div", { id: "rows", "data-open": "[]" }, [card]);
+  const hdP = mkEl("div", { class: "top", "data-a": "fold" }, [span("caret"), span("nm", "P")]);
+  const saidP = mkEl("p", { class: "said" }, [], "Mid-turn.");
+  const card = mkEl("div", { class: "row running fam fd open", "data-id": "P", "data-k": "running" },
+    [railOf(), hdP, mkEl("div", { class: "fold" }, [saidP, mkEl("div", { class: "chips" }, [jumpP]),
+     mkEl("div", { class: "foot" }, [wakeP]), mkEl("div", { class: "kids" }, [kidA, kidW, kidN])])]);
+  const host = mkEl("div", { id: "rows", "data-fold": "{}" }, [card]);
   const oldCss = mkEl("style", { id: "intent-css" }, [], ".chip{cursor:pointer}");
   const head = mkEl("head", {}, [oldCss]);
   // A page an older handler already wired: its stamp listener has no version
@@ -1300,35 +1334,55 @@ print(sum(k.startswith("/w/r") for k in json.load(open(J.CACHE))))
   const last = () => q(fetched[fetched.length - 1]);
 
   checks.push(["intent: an older page's click CSS is replaced on upgrade",
-    oldCss.getAttribute("data-v") === "4" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
+    oldCss.getAttribute("data-v") === "5" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
+  const fold = () => JSON.parse(host.getAttribute("data-fold"));
 
   click(hdA.children[1]);                            // the name, inside the header
-  checks.push(["intent: opening a child opens it in place and selects its workspace",
-    fetched.length === 1 && last().a === "row" && last().r === "A" &&
-    kidA.classList.contains("open") && host.getAttribute("data-open") === '["A"]']);
+  checks.push(["intent: a child's header unfolds it in place, and sends nothing",
+    fetched.length === 0 && kidA.classList.contains("open") && JSON.stringify(fold()) === '{"A":[1,"attend"]}']);
   click(hdA);
-  checks.push(["intent: closing it sends nothing and forgets it",
-    fetched.length === 1 && !kidA.classList.contains("open") && host.getAttribute("data-open") === "[]"]);
+  checks.push(["intent: ...and folds it again, remembering the choice and its tier",
+    fetched.length === 0 && !kidA.classList.contains("open") && JSON.stringify(fold()) === '{"A":[0,"attend"]}']);
   click(goA);
-  checks.push(["intent: a child's inline button fires its own verb for the child, not the toggle",
-    fetched.length === 2 && last().a === "go" && last().x === "2" && last().r === "A" &&
-    host.getAttribute("data-open") === "[]"]);
-  click(hdA); click(diffA);
+  checks.push(["intent: a child's inline button fires its own verb for the child, not the fold",
+    fetched.length === 1 && last().a === "go" && last().x === "2" && last().r === "A" &&
+    !kidA.classList.contains("open")]);
+  click(railA.children[0]);
+  checks.push(["intent: the rail jumps to the child's workspace, folded",
+    fetched.length === 2 && last().a === "jump" && last().r === "A" && !kidA.classList.contains("open")]);
+  click(kidA);
+  checks.push(["intent: a click anywhere on a folded child unfolds it",
+    fetched.length === 2 && kidA.classList.contains("open")]);
+  click(saidA);
+  checks.push(["intent: a click on an unfolded child's body selects its workspace",
+    fetched.length === 3 && last().a === "row" && last().r === "A"]);
+  click(railA);
+  checks.push(["intent: ...and the rail still jumps, unfolded",
+    fetched.length === 4 && last().a === "jump" && last().r === "A" && kidA.classList.contains("open")]);
+  click(diffA);
   checks.push(["intent: a chip inside an opened child fires with the child's row id",
-    fetched.length === 4 && last().a === "diff" && last().r === "A"]);
+    fetched.length === 5 && last().a === "diff" && last().r === "A"]);
   click(jumpP);
   checks.push(["intent: the parent's own chips still fire for the parent",
-    fetched.length === 5 && last().a === "jump" && last().r === "P"]);
+    fetched.length === 6 && last().a === "jump" && last().r === "P"]);
   click(wakeSvg);
   checks.push(["wake: a click on the icon sends a=wake for its row",
-    fetched.length === 6 && last().a === "wake" && last().r === "P"]);
-  fetched.pop();                                     // the counts below predate the wake icon
+    fetched.length === 7 && last().a === "wake" && last().r === "P"]);
+  click(saidP);
+  checks.push(["intent: an unfolded card's body selects its workspace",
+    fetched.length === 8 && last().a === "row" && last().r === "P"]);
+  click(hdP);
+  checks.push(["intent: a card's header folds it, and sends nothing",
+    fetched.length === 8 && !card.classList.contains("open") && fold().P[0] === 0]);
+  click(saidP);
+  checks.push(["intent: a click on a folded card unfolds it instead of selecting",
+    fetched.length === 8 && card.classList.contains("open") && fold().P[0] === 1]);
   click(hdW);
   checks.push(["intent: two children can be open at once",
-    host.getAttribute("data-open") === '["A","W"]' && last().r === "W"]);
+    kidA.classList.contains("open") && kidW.classList.contains("open") && fold().W[0] === 1]);
   const n0 = fetched.length;
-  click(hdN);
-  checks.push(["intent: a child with no workspace opens without asking the server to select one",
+  click(railN); click(hdN);
+  checks.push(["intent: a child with no workspace has a rail that sends nothing, and still folds",
     fetched.length === n0 && kidN.classList.contains("open")]);
   stampEl.listeners.forEach((fn) => fn({}));
   checks.push(["intent: an upgrade does not add a second sync listener to the stamp",
@@ -1400,17 +1454,17 @@ print(json.dumps([[r["id"], r["kind"], r.get("famtier", "")] for r in m.rank_pla
   };
   const pc = cardOf(html, "p");
   checks.push(["families: the children sit inside the parent's card, each its own .row",
-    /class="row done[^"]* fam"[^>]*data-id="p"/.test(html) &&
-    /<div class="kids">/.test(pc) &&
-    /class="row attend[^"]* fam kid"[^>]*data-id="k2" title="k2" data-in="p"/.test(pc) &&
-    /class="row quiet[^"]* fam kid"[^>]*data-id="k3"[^>]*data-in="p"/.test(pc)]);
+    /class="row done[^"]* fam fd open"[^>]*data-id="p" data-k="attend"/.test(html) &&
+    /<div class="fold">[^]*<div class="kids">/.test(pc) &&
+    /class="row attend[^"]* fam kid fd"[^>]*data-id="k2" data-k="attend" title="k2" data-in="p"/.test(pc) &&
+    /class="row quiet[^"]* fam kid fd"[^>]*data-id="k3"[^>]*data-in="p"/.test(pc)]);
   checks.push(["families: the parent's badge rolls up its children",
     /<span class="badge roll attend">1 needs you<\/span>/.test(pc)]);
   checks.push(["families: the quiet divider counts only rows below it",
     /<div class="sect">quiet · 3<\/div>/.test(html) && html.indexOf('class="sect"') > html.indexOf('data-id="k3"')]);
   const gc = cardOf(html, "fam:G");
   checks.push(["families: a family with no parent row gets a shell card named by its label",
-    /<div class="row quiet fam shell inert" data-id="fam:G" title="G"><div class="top"><span class="nm">G<\/span><span class="pips">.*?<\/span><span class="badge">2 plans<\/span>/.test(html) &&
+    /<div class="row quiet fam shell inert fd" data-id="fam:G" data-k="quiet" title="G"><span class="jmp"><\/span><div class="top" data-a="fold"><span class="caret"><\/span><span class="nm">G<\/span><span class="pips">.*?<\/span><span class="badge">2 plans<\/span>/.test(html) &&
     /data-id="g1"[^>]*data-in="fam:G"/.test(gc) && /data-id="g2"[^>]*data-in="fam:G"/.test(gc)]);
 
   // A child is one line until opened. One that needs you or is broken also
@@ -1420,30 +1474,39 @@ print(json.dumps([[r["id"], r["kind"], r.get("famtier", "")] for r in m.rank_pla
     R("A", "attend", { family: "F", famrole: "child", famkid: true, ref: "w:a", said: "{{Inc 2}} needs your go-ahead.", chips: ["go 2", "diff", "jump"], branch: "dev/a" }),
     R("W", "running", { family: "F", famrole: "child", famkid: true, ref: "w:w", said: "Mid-turn.", chips: ["diff", "jump"] }),
   ];
-  els.rows.attrs["data-open"] = "[]";
+  els.rows.attrs["data-fold"] = "{}";
+  // A family card folds by the family's tier: a working parent holding a
+  // child that needs you starts open, and keys its fold on that tier.
+  render({ rows: fr().map((r) => ({ ...r, famtier: "attend" })), quiet: "" });
+  checks.push(["fold: a working family card with a child waiting on you starts open",
+    /class="row running[^"]* fam fd open"[^>]*data-id="P" data-k="attend"/.test(els.rows.innerHTML)]);
   render({ rows: fr(), quiet: "" });
   const fh = els.rows.innerHTML;
   const kA = cardOf(fh, "A").split('data-id="W"')[0], kW = cardOf(fh, "W");
-  checks.push(["families: a child's header is the toggle, with a caret",
-    /<div class="top kidhd loud" data-a="toggle" data-x="select"><span class="caret"><\/span>/.test(kA) &&
-    /<div class="top kidhd" data-a="toggle" data-x="select">/.test(kW)]);
+  checks.push(["families: a child's header is its fold, with a caret, and its rail is the jump",
+    /<span class="jmp" data-a="jump"[^>]*><svg[^]*?<\/svg><\/span><div class="top kidhd loud" data-a="fold"><span class="caret"><\/span>/.test(kA) &&
+    /<div class="top kidhd" data-a="fold">/.test(kW) && !/data-x="select"/.test(fh)]);
   checks.push(["families: a child that needs you shows its line and its filled button inline",
-    /<div class="top kidhd loud"[^]*<span class="chip pri"[^>]*>go 2<\/span><\/div><p class="said nest" data-a="toggle" data-x="select">/.test(kA)]);
+    /<div class="top kidhd loud"[^]*<span class="chip pri"[^>]*>go 2<\/span><\/div><p class="said nest" data-a="fold">/.test(kA)]);
   checks.push(["families: a working child is one line: no inline button, no line",
     !/kidhd[^]*chip[^]*<\/div><div class="kbody"/.test(kW.split('<div class="kbody">')[0] + '<div class="kbody">') &&
     !kW.includes("said nest")]);
   checks.push(["families: every child carries its full card, closed",
     /<div class="kbody"><p class="said">/.test(kA) && /class="chip pri"[^>]*>go 2<\/span><span class="chip"/.test(kA.split('<div class="kbody">')[1]) &&
     /class="branch" data-a="code"/.test(kA) && !/ open"/.test(fh)]);
-  // The open set survives a push, and loses ids that left the board.
-  els.rows.attrs["data-open"] = JSON.stringify(["W", "gone"]);
+  // What was folded by hand survives a push, and loses ids that left the board.
+  els.rows.attrs["data-fold"] = JSON.stringify({ W: [1, "running"], gone: [1, "quiet"] });
   render({ rows: fr(), quiet: "" });
   checks.push(["families: an opened child is still open after the next push",
-    /class="row running[^"]* fam kid open"[^>]*data-id="W"/.test(els.rows.innerHTML) &&
-    !/kid open"[^>]*data-id="A"/.test(els.rows.innerHTML)]);
-  checks.push(["families: ...and the open set forgets ids that left the board",
-    els.rows.attrs["data-open"] === '["W"]']);
-  els.rows.attrs["data-open"] = "[]";
+    /class="row running[^"]* fam kid fd open"[^>]*data-id="W"/.test(els.rows.innerHTML) &&
+    !/kid fd open"[^>]*data-id="A"/.test(els.rows.innerHTML)]);
+  checks.push(["families: ...and the fold map forgets ids that left the board",
+    els.rows.attrs["data-fold"] === '{"W":[1,"running"]}']);
+  // A choice is for the tier it was made in: W turning broken drops it.
+  render({ rows: fr().map((r) => r.id === "W" ? { ...r, kind: "wilt" } : r), quiet: "" });
+  checks.push(["fold: a card that changes tier drops its fold choice",
+    !/kid fd open"[^>]*data-id="W"/.test(els.rows.innerHTML) && els.rows.attrs["data-fold"] === "{}"]);
+  els.rows.attrs["data-fold"] = "{}";
   render({ rows: [R("P2", "running", { family: "H", famrole: "parent", famkid: false, ref: "w" }),
     R("X", "wilt", { family: "H", famrole: "child", famkid: true, ref: "x", chips: ["checks"] }),
     R("Y", "wilt", { family: "H", famrole: "child", famkid: true, ref: "y", chips: ["jump"] })], quiet: "" });
@@ -1457,8 +1520,8 @@ print(json.dumps([[r["id"], r["kind"], r.get("famtier", "")] for r in m.rank_pla
     /data-id="P4"[^]*?<span class="badge">gate shut<\/span>/.test(els.rows.innerHTML) && !els.rows.innerHTML.includes("roll")]);
   render({ rows: [R("P5", "running", { family: "L", famrole: "parent", famkid: false, ref: "w" }),
     R("NR", "quiet", { family: "L", famrole: "child", famkid: true, slug: "nr" })], quiet: "" });
-  checks.push(["families: a child with no workspace ref gets a toggle that selects nothing",
-    /<div class="top kidhd" data-a="toggle"><span class="caret">/.test(els.rows.innerHTML)]);
+  checks.push(["families: a child with no workspace ref gets a colour-only rail, and still folds",
+    /data-id="NR"[^>]*><span class="jmp"><\/span><div class="top kidhd" data-a="fold"><span class="caret">/.test(els.rows.innerHTML)]);
   render({ rows: [R("P3", "running", { family: "J", famrole: "parent", famkid: false, ref: "w", badge: "working" }),
     R("Z", "running", { family: "J", famrole: "child", famkid: true, ref: "z" })], quiet: "" });
   checks.push(["families: with nothing to report, the parent keeps its own badge",
@@ -1657,6 +1720,55 @@ print(json.dumps({r["id"]: [r["kind"], r["chips"]] for r in rows + quiet}))
   checks.push(["archive: a working row does not", out.busy[0] === "running" && !out.busy[1].includes("archive")]);
   const intent = readFileSync(join(HERE, "intent.js"), "utf8"), rjs = readFileSync(join(HERE, "render.js"), "utf8");
   const srv = readFileSync(join(HERE, "crew-board-intent"), "utf8");
+  // What the server actually runs for a row's buttons, with run() stubbed. cmux
+  // refuses notification.create outright over an unknown key, and a camelCase
+  // workspaceId beside workspace_id was that key: every row-scoped RPC button
+  // (reclaim, archive, code, go, sandbox, feed) failed before triage.py ran.
+  const ran = JSON.parse(execFileSync("python3", ["-c", `
+import importlib.machinery, importlib.util, json, sys
+l = importlib.machinery.SourceFileLoader("cbi", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("cbi", l)); l.exec_module(m)
+calls = []
+m.run = lambda argv, cwd=None: calls.append(argv[1:]) or True
+real_diff = m._lookout_diff
+m._lookout_diff = lambda cwd, ws: (calls.append(["lookout", cwd, ws]) or True, "lookout")
+U = "8B5F643D-E94F-41B8-945C-EBCB4DF64FB1"
+row = {"id": U, "ref": "workspace:9", "cwd": sys.argv[2], "name": "n", "slug": "s"}
+out = {}
+for a in ("reclaim", "archive", "code", "sandbox-up", "feed-deny", "jump", "diff"):
+    calls.clear(); m.act(a, dict(row), "")
+    out[a] = list(calls)
+calls.clear(); m.act("diff", dict(row, id="not-a-uuid"), ""); out["diffref"] = list(calls)
+# A second press while the first build runs does not start another: the
+# build below presses again from inside itself, and only one run happens.
+m._lookout_engine = lambda: ("node", "x")
+runs, inner = [], []
+def build(*a):
+    runs.append(a)
+    inner.append(real_diff(sys.argv[2], "")[1])
+    return True, "built"
+m._lookout_diff_run = build
+out["busy"] = [real_diff(sys.argv[2], "")[1], len(runs), inner, sorted(m._DIFF_BUSY)]
+calls.clear(); m.act("go", dict(row), "3"); out["go"] = list(calls)
+print(json.dumps(out))
+`, join(HERE, "crew-board-intent"), HERE], { encoding: "utf8" }));
+  const rpc = (a) => (ran[a] || []).map((c) => c[0] === "rpc" ? JSON.parse(c[2]) : null).filter(Boolean);
+  checks.push(["buttons: every row-scoped RPC names its workspace once, as workspace_id",
+    ["reclaim", "archive", "code", "sandbox-up", "feed-deny", "go"].every((a) => {
+      const p = rpc(a);
+      return p.length === 1 && p[0].workspace_id === "8B5F643D-E94F-41B8-945C-EBCB4DF64FB1" &&
+        !("workspaceId" in p[0]) && p[0].subtitle === "crew:" + (a === "go" ? "plan-go" : a);
+    })]);
+  checks.push(["buttons: a row without a uuid hands lookout its ref, and selects it",
+    ran.diffref[0][2] === "workspace:9" && JSON.stringify(ran.diffref[1]) === JSON.stringify(["workspace", "select", "workspace:9"])]);
+  checks.push(["buttons: a diff pressed while its lookout build runs does not start another",
+    ran.busy[0] === "built" && ran.busy[1] === 1 && ran.busy[2][0].startsWith("lookout already opening") &&
+    ran.busy[3].length === 0]);
+  checks.push(["buttons: jump selects by the workspace uuid, which a cmux restart does not renumber",
+    JSON.stringify(ran.jump) === JSON.stringify([["workspace", "select", "8B5F643D-E94F-41B8-945C-EBCB4DF64FB1"]])]);
+  checks.push(["buttons: diff opens the branch in lookout, in the row's workspace, and brings it forward",
+    ran.diff[0][0] === "lookout" && ran.diff[0][2] === "8B5F643D-E94F-41B8-945C-EBCB4DF64FB1" &&
+    JSON.stringify(ran.diff[1]) === JSON.stringify(["workspace", "select", "8B5F643D-E94F-41B8-945C-EBCB4DF64FB1"])]);
   checks.push(["archive: the chip is clickable, has a tooltip, and the intent server admits it",
     /"archive": "archive"/.test(intent) && /"archive": "Close this workspace/.test(rjs) &&
     /ACTIONS = \([^)]*"archive"/.test(srv) && srv.includes('notify("crew:archive"')]);

@@ -19,7 +19,7 @@ function __boardRender(d) {
   // board, which is most of the time you are reading it.
   var TIP = {
     "jump": "Switch to this workspace",
-    "diff": "Open this workspace's diff",
+    "diff": "Review this branch's diff in lookout, beside its terminal",
     "pr": "Open the pull request in your default browser",
     "checks": "Open the checks in your default browser",
     "plan": "Open the plan page",
@@ -353,7 +353,7 @@ function __boardRender(d) {
   // The footer: what you recognise a row by, in one mono line. Branch, PR and
   // issue are targets; status signals, progress and spend are read, not
   // clicked, so they do not react.
-  function foot(a) {
+  function foot(a, bare) {
     var out = "";
     if (a.branch) {
       out += '<span class="branch" data-a="code" title="Open this worktree in VS Code — ' +
@@ -381,7 +381,7 @@ function __boardRender(d) {
     // Spend and the Wake are one unit at the right end: when the line is full
     // they wrap together, still on the right. Apart, the icon alone dropped to
     // the far left of a line of its own, away from the spend it sits beside.
-    var end = cost(a) + wakeOf(a);
+    var end = bare ? "" : cost(a) + wakeOf(a);
     if (end) out += '<span class="end">' + end + "</span>";
     return out ? '<div class="foot">' + out + "</div>" : "";
   }
@@ -408,16 +408,23 @@ function __boardRender(d) {
 
   var rows = d.rows || [];
   var was = positions();
-  // The open set: the children whose full card is showing. intent.js flips an
-  // id in and out when a sub-row is clicked, and it lives on #rows for the same
-  // reason data-prev does -- #rows survives a push and nothing else does. Ids no
-  // longer on the board are dropped here, so it cannot grow without bound.
-  var openSet = [];
-  try { openSet = JSON.parse(host.getAttribute("data-open") || "[]"); } catch (e) { openSet = []; }
-  if (!Array.isArray(openSet)) openSet = [];
-  var onBoard = {};
-  rows.forEach(function (r) { onBoard[r.id] = true; });
-  openSet = openSet.filter(function (id) { return onBoard[id] === true; });
+  // Every card folds in place. Unfolded by default are the cards that ask
+  // something of you -- waiting and broken -- and nothing else; a child starts
+  // folded, its family card already says what it is. What you fold or unfold
+  // by hand is remembered as id -> [open, tier] on #rows (data-fold), which
+  // survives a push for the same reason data-prev does. The tier is kept so a
+  // card that changes tier drops the choice and takes its new tier's default:
+  // a quiet card you folded that starts waiting on you opens itself. Ids that
+  // left the board, or changed tier, are not written back, so it cannot grow.
+  var fold = {};
+  try { fold = JSON.parse(host.getAttribute("data-fold") || "{}"); } catch (e) { fold = {}; }
+  if (!fold || typeof fold !== "object" || Array.isArray(fold)) fold = {};
+  var keptFold = {};
+  function isOpen(id, kind, isKid) {
+    var f = fold[id];
+    if (Array.isArray(f) && f[1] === kind) { keptFold[id] = f; return !!f[0]; }
+    return !isKid && (kind === "attend" || kind === "wilt");
+  }
 
   // The opening tag every row shares, card or sub-row.
   // data-id is the delegation handle intent.js needs: #rows survives a push but
@@ -474,15 +481,35 @@ function __boardRender(d) {
     }).join("") + (more > 0 ? '<span class="pipmore">+' + more + "</span>" : "") + "</span>";
   }
 
-  function opening(a, cls, inCard) {
+  // The rail down a card's left edge says its tier, and it is the jump: one
+  // place, folded or not, that always switches to the workspace. A row with no
+  // workspace to switch to keeps the colour and loses the target. The arrow
+  // shows on hover only (CSS).
+  var ARROW = '<svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">' +
+    '<path d="M1.8 5h6M5.2 2.2 8 5 5.2 7.8"/></svg>';
+  function rail(a) {
+    return a.ref ? '<span class="jmp" data-a="jump" title="' + esc(TIP.jump) + '">' + ARROW + "</span>"
+                 : '<span class="jmp"></span>';
+  }
+  var CARET = '<span class="caret"></span>';
+  // A card that has something to fold carries .fd, its open state, and its
+  // tier in data-k, which is what intent.js writes into data-fold.
+  function foldCls(id, kind, foldable, isKid) {
+    if (!foldable) return "";
+    return " fd" + (isOpen(id, kind, isKid) ? " open" : "");
+  }
+
+  // fk is the tier the fold keys on, when it is not the row's own: a family
+  // card folds by its family's tier (see card()).
+  function opening(a, cls, inCard, fcls, fk) {
     var ripple = turned(a) ? " ripple" : "";
     next[a.id] = a.kind;
     var inert = !a.ref && !a.slug ? " inert" : "";
     var hex = /^#[0-9a-f]{3,8}$/i.test(a.color || "") ? a.color : "";
     return '<div class="row ' + a.kind + ripple + inert + (a.selected ? " here" : "") + cls +
-      (hex ? " owned" : "") + '" data-id="' + esc(a.id) + '" title="' + esc(a.name) + '"' +
+      (hex ? " owned" : "") + (fcls || "") + '" data-id="' + esc(a.id) + '" data-k="' + esc(fk || a.kind) + '" title="' + esc(a.name) + '"' +
       (inCard ? ' data-in="' + esc(inCard) + '"' : "") +
-      (hex ? ' style="--own:' + hex + '"' : "") + ">" + (ripple ? confetti(a.id, inCard ? 8 : 12) : "");
+      (hex ? ' style="--own:' + hex + '"' : "") + ">" + (ripple ? confetti(a.id, inCard ? 8 : 12) : "") + rail(a);
   }
   function dotOf(a) { return /^#[0-9a-f]{3,8}$/i.test(a.color || "") ? '<span class="own"></span>' : ""; }
   // No empty badge: a bare outline pill was the quiet row's second line.
@@ -502,22 +529,42 @@ function __boardRender(d) {
   // only the Wake still says idle. Spend still shows, at the right end beside
   // the Wake, because a row that is quietly burning money is the one quiet row
   // worth noticing.
+  // Unfolded, it shows its footer -- branch, PR, issue -- under the line; a
+  // row with no footer has nothing to fold, and its line selects it instead.
   function quietRow(a) {
     var acts = chipsOf(a).filter(function (c) { return c !== "jump"; });
     var qb = acts.length ? '<span class="chips">' + acts.map(function (c) {
       return '<span class="chip" title="' + esc(chipTip(c)) + '">' + esc(c) + "</span>";
     }).join("") + "</span>" : "";
-    return opening(a, a.family ? " fam" : "") + '<div class="top">' + dotOf(a) + nameOf(a) +
-      (a.dirty ? DIRTY : "") + (acts.length ? qb : badgeOf(a)) + cost(a) + wakeOf(a) + "</div></div>";
+    var more = foot(a, true);
+    return opening(a, a.family ? " fam" : "", "", foldCls(a.id, a.kind, !!more)) +
+      '<div class="top"' + (more ? ' data-a="fold">' + CARET : ">") + dotOf(a) + nameOf(a) +
+      (a.dirty ? DIRTY : "") + (acts.length ? qb : badgeOf(a)) + cost(a) + wakeOf(a) + "</div>" +
+      (more ? '<div class="fold">' + more + "</div>" : "") + "</div>";
   }
 
+  // The header is the fold. Folded, a card that needs you or is broken keeps
+  // its first chip, filled, on the header line, as a family child does.
+  function loudChip(a) {
+    var first = chipsOf(a)[0];
+    return (a.kind === "attend" || a.kind === "wilt") && first ?
+      '<span class="chip pri fq" title="' + esc(chipTip(first)) + '">' + esc(first) + "</span>" : "";
+  }
   function card(a, kids, roll, g) {
     if (a.kind === "quiet" && !kids) return quietRow(a);
     var whole = g && famDone(g);
-    return opening(a, (a.family ? " fam" : "") + (whole ? " famdone" : "")) +
+    var inner = body(a) + kids, fq = loudChip(a);
+    // A family card folds by the family's tier, as a shell does: a working
+    // parent holding a child that needs you starts open, so the child's line
+    // and button show, and it reopens when a child starts waiting.
+    var fk = g && COL[a.famtier] ? a.famtier : a.kind;
+    return opening(a, (a.family ? " fam" : "") + (whole ? " famdone" : ""), "",
+      foldCls(a.id, fk, !!inner), fk) +
       (whole && !turned(a) ? confetti("fam:" + a.id, 22) : "") +
-      '<div class="top">' + dial(a.frac, a.kind) + dotOf(a) + nameOf(a) +
-      (g ? pips(g.kids) : "") + (roll || badgeOf(a)) + "</div>" + body(a) + kids + "</div>";
+      '<div class="top' + (fq ? " loud" : "") + '"' + (inner ? ' data-a="fold">' + CARET : ">") +
+      dial(a.frac, a.kind) + dotOf(a) + nameOf(a) +
+      (g ? pips(g.kids) : "") + (roll || badgeOf(a)) + fq + "</div>" +
+      (inner ? '<div class="fold">' + inner + "</div>" : "") + "</div>";
   }
 
   // The family-complete moment: every child is done now, and at least one of
@@ -531,22 +578,19 @@ function __boardRender(d) {
   // dial, its dot, its name and badge. A child that needs you or is broken also
   // shows what it said and its first chip, filled, so the family card answers
   // "what do I press" without opening anything. The header and that line are
-  // data-a="toggle": intent.js opens the child's full card in place (the body
-  // is always rendered, CSS shows it) and selects its workspace; a second click
-  // closes it and goes nowhere. The inline chip is its own target, nearer than
-  // the toggle, so it fires its verb for the child.
+  // data-a="fold", like every card's header: intent.js opens the child's full
+  // card in place (the body is always rendered, CSS shows it) and selects
+  // nothing -- its rail is the jump. The inline chip is its own target, nearer
+  // than the fold, so it fires its verb for the child.
   function kid(a, inCard) {
-    var isOpen = openSet.indexOf(a.id) >= 0;
-    // Opening selects the child's workspace -- if it has one to select.
-    var sel = a.ref ? ' data-x="select"' : "";
     var loud = a.kind === "attend" || a.kind === "wilt";
     var first = chipsOf(a)[0];
     var inline = loud && first ? '<span class="chip pri" title="' + esc(chipTip(first)) + '">' +
       esc(first) + "</span>" : "";
-    return opening(a, " fam kid" + (isOpen ? " open" : ""), inCard) +
-      '<div class="top kidhd' + (inline ? " loud" : "") + '" data-a="toggle"' + sel + '><span class="caret"></span>' + dial(a.frac, a.kind) +
+    return opening(a, " fam kid", inCard, foldCls(a.id, a.kind, true, true)) +
+      '<div class="top kidhd' + (inline ? " loud" : "") + '" data-a="fold">' + CARET + dial(a.frac, a.kind) +
       dotOf(a) + nameOf(a) + badgeOf(a) + inline + "</div>" +
-      (loud && a.said ? '<p class="said nest" data-a="toggle"' + sel + ">" + said(a.said) + "</p>" : "") +
+      (loud && a.said ? '<p class="said nest" data-a="fold">' + said(a.said) + "</p>" : "") +
       '<div class="kbody">' + body(a) + "</div></div>";
   }
 
@@ -582,11 +626,13 @@ function __boardRender(d) {
     if (!COL[t]) t = "quiet";
     var id = "fam:" + g.family;
     var whole = famDone(g);
-    return '<div class="row ' + t + ' fam shell inert' + (whole ? " famdone" : "") + '" data-id="' +
-      esc(id) + '" title="' + esc(g.label) + '">' + (whole ? confetti(id, 22) : "") +
-      '<div class="top"><span class="nm">' + esc(g.label) + "</span>" + pips(g.kids) +
+    return '<div class="row ' + t + ' fam shell inert' + (whole ? " famdone" : "") + foldCls(id, t, true) +
+      '" data-id="' + esc(id) + '" data-k="' + t + '" title="' + esc(g.label) + '"><span class="jmp"></span>' +
+      (whole ? confetti(id, 22) : "") +
+      '<div class="top" data-a="fold">' + CARET + '<span class="nm">' + esc(g.label) + "</span>" + pips(g.kids) +
       (rollup(g.kids) || '<span class="badge">' + g.kids.length + " plans</span>") + "</div>" +
-      '<div class="kids">' + g.kids.map(function (k) { return kid(k, id); }).join("") + "</div></div>";
+      '<div class="fold"><div class="kids">' + g.kids.map(function (k) { return kid(k, id); }).join("") +
+      "</div></div></div>";
   }
 
   // A label before the first quiet row, so the divider between "needs you" and
@@ -610,7 +656,7 @@ function __boardRender(d) {
     return sect + card(g.lead, kids, g.kids.length ? rollup(g.kids, g.lead.kind) : "", g.kids.length ? g : null);
   }).join("") :
     '<div class="empty">Nothing is waiting on you.<br>' + esc(d.quiet || "") + "</div>";
-  host.setAttribute("data-open", JSON.stringify(openSet));
+  host.setAttribute("data-fold", JSON.stringify(keptFold));
   // With quiet workspaces now rendered as rows, #quiet is only reached when there
   // are no rows at all -- and in that case the .empty block above has already said
   // it. Echoing it there put the same sentence on the page twice.
