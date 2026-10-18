@@ -45,6 +45,13 @@
       "required": false,
       "default": "none"
     },
+    "sweep_dormant_days": {
+      "type": "number",
+      "title": "Sweep: dormant after (days)",
+      "description": "How many idle days put a workspace on crew-sweep's list, when it is not merged, not mid-turn and has no open plan.",
+      "default": 5,
+      "required": false
+    },
     "main_repo": {
       "type": "directory",
       "title": "Main repo",

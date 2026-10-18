@@ -7,6 +7,8 @@
     workspaces.py restore <cwd>           reopen an archived cwd, resuming its Claude
     workspaces.py forget <cwd>            drop an archive record
     workspaces.py dormant-days            the sweep's threshold, default 5
+    workspaces.py list-json               every window's workspaces, in `workspace list
+                                          --json`'s field names; exit 1 if cmux is silent
 
 Four callers need the same answers: crew-resume (the finder), crew-sweep,
 triage.py (the board's archive chip) and crew-reclaim (its mid-turn guard).
@@ -653,6 +655,15 @@ def main(argv):
         if not ok:
             print(why, file=sys.stderr)
         return 0 if ok else 1
+    if cmd == "list-json":
+        live = live_workspaces()
+        if live is None:
+            return 1
+        json.dump({"workspaces": [{"id": w["id"], "ref": w["ref"], "title": w["title"],
+                                   "current_directory": w["cwd"],
+                                   "description": w["description"]} for w in live]},
+                  sys.stdout)
+        return 0
     if cmd == "dormant-days":
         print(dormant_days())
         return 0

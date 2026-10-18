@@ -1,0 +1,561 @@
+#!/usr/bin/env python3
+"""crew-sweep — walk the machine's finished and dormant workspaces, one card at a time.
+
+    crew-sweep            the wizard: one card, one key, next card
+    crew-sweep --json     the ordered queue, for scripts and the probe
+
+What it looks at, machine-wide because cmux is: every live workspace in every
+window, every archive record, and every worktree of each repo those point at.
+What it keeps:
+
+    merged     the branch landed (in the default branch, or its PR merged)
+    dormant    idle at least sweep.dormant_days (5 unless the crew plugin's
+               sweep_dormant_days says otherwise), not mid-turn, no open plan
+    orphaned   an archive record whose worktree is gone
+
+Jev orders the queue (ADR 0023): two System One questions per candidate —
+finished, abandoned — over Claude's last message and last prompt, the
+workspace's title and a few facts, asked in parallel and cached in
+~/.cache/cmux-crew/sweep-judgments.json by transcript size, so a second sweep
+asks only about what moved. A card's rank is the higher of the two. Through
+crew/hooks/typesafe.py and nothing else, so a local Jev reached by overriding
+the TypeSafe config is the same code path. With TypeSafe off or failing, the
+order is merged first, then the longest idle, and nothing else changes.
+
+Each card takes one key, shown only where it applies:
+
+    r  reclaim   crew-reclaim, interactively: its full report and its y/N.
+                 Only for a linked worktree; every guard stays crew-reclaim's
+    a  archive   close the live workspace and remember it (crew-resume ⏎ restores)
+    f  forget    drop an archive record
+    o  open      jump to the live workspace and stop
+    s  skip      next card
+    q  quit
+
+Nothing here deletes anything itself. The one delete is crew-reclaim's, behind
+its own guards and its own question.
+"""
+
+import fcntl
+import json
+import os
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeout
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, os.path.join(HERE, "..", "hooks"))
+import workspaces as W  # noqa: E402
+
+CACHE = os.path.join(W.CACHE_DIR, "sweep-judgments.json")
+GH_STATE = W.CACHE_DIR
+DEEP_PLAN = os.environ.get("CREW_DEEP_PLAN_DIR") or os.path.join(W.HOME, ".claude", "deep-plan")
+RECLAIM = os.path.join(HERE, "crew-reclaim")
+DAY = 86400
+MAX_CHARS = 4000
+
+DIM, BOLD, RESET = "\033[2m", "\033[1m", "\033[0m"
+TINT = {"merged": "\033[32m", "dormant": "\033[33m", "orphaned": "\033[35m"}
+
+# Question text lives here, next to the code that consumes the answers, as
+# asked.py keeps its own. Independent judgments asked together: System One
+# answers a questions map in parallel.
+FINISHED = {
+    "type": "noul",
+    "instructions": (
+        "This is a software workspace an engineer left idle: a git worktree with an "
+        "AI coding agent in it. `last_message` is the agent's final message, "
+        "`last_prompt` the engineer's final request, and the other fields describe "
+        "the branch. Is the work in this workspace finished, so that the workspace "
+        "can be put away?"
+    ),
+    "criteria": {
+        "true": ("The task is done: the agent reports it complete, the branch merged "
+                 "or its pull request is up with nothing left to do, or the last "
+                 "exchange closes the work out."),
+        "false": ("Work remains: the agent is partway, asks something, reports a "
+                  "failure, or lists next steps that nobody has taken."),
+    },
+}
+ABANDONED = {
+    "type": "noul",
+    "instructions": (
+        "This is a software workspace an engineer left idle: a git worktree with an "
+        "AI coding agent in it. `last_message` is the agent's final message, "
+        "`last_prompt` the engineer's final request, and the other fields describe "
+        "the branch. Has the engineer abandoned this work, so that the workspace "
+        "can be put away even though it is not finished?"
+    ),
+    "criteria": {
+        "true": ("The work was dropped: an experiment or spike that went nowhere, a "
+                 "question answered with no follow-up, a superseded approach, or a "
+                 "long idle stretch after an unanswered or dead-end exchange."),
+        "false": ("The work is live or finished: it was idle only briefly, it is "
+                  "waiting on review or another person, or it ended in a clear "
+                  "result."),
+    },
+}
+
+
+# --- gathering ------------------------------------------------------------------------
+
+def worktrees_of(cwd):
+    """(primary checkout, [linked worktree paths]) of the repo cwd belongs to."""
+    rc, out = W._git(cwd, "worktree", "list", "--porcelain")
+    if rc != 0:
+        return None, []
+    paths = [line[9:] for line in out.splitlines() if line.startswith("worktree ")]
+    return (paths[0] if paths else None), paths[1:]
+
+
+def toplevel(path):
+    """(worktree root, linked?) for a directory inside a git checkout, by real
+    path; (None, False) outside one. A workspace sitting in a subdirectory, or
+    on a symlinked path, is the same worktree as its root."""
+    rc, out = W._git(path, "rev-parse", "--path-format=absolute", "--show-toplevel",
+                     "--git-dir", "--git-common-dir")
+    parts = out.splitlines() if rc == 0 else []
+    if len(parts) != 3:
+        return None, False
+    return os.path.realpath(parts[0]), os.path.realpath(parts[1]) != os.path.realpath(parts[2])
+
+
+def gh_cache(cwd):
+    """crew-sync's cached PR facts for a worktree; {} when it never looked."""
+    import hashlib
+    try:
+        with open(os.path.join(GH_STATE, "gh-" + hashlib.md5(cwd.encode()).hexdigest()
+                               + ".json")) as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def open_plan(cwd):
+    """The phase of an unfinished deep-plan rooted here, or "" — the same state
+    files crew-reclaim's plan guard reads."""
+    state = os.path.join(DEEP_PLAN, "state")
+    for n in sorted(os.listdir(state)) if os.path.isdir(state) else []:
+        if not n.endswith(".json"):
+            continue
+        try:
+            st = json.load(open(os.path.join(state, n))) or {}
+        except Exception:
+            continue
+        phase = (st.get("phase") or "").strip()
+        try:
+            same = os.path.realpath(st.get("root") or "") == os.path.realpath(cwd)
+        except Exception:
+            same = False
+        if same and phase != "done":
+            return phase or "open"
+    return ""
+
+
+def last_commit_at(cwd):
+    rc, out = W._git(cwd, "log", "-1", "--format=%ct")
+    try:
+        return float(out) if rc == 0 else 0.0
+    except ValueError:
+        return 0.0
+
+
+def gather(now=None):
+    """Every candidate on the machine, unordered. -> list, or None when cmux did
+    not list its workspaces (a sweep that cannot see what is open must not
+    offer to archive or reclaim anything)."""
+    now = now or time.time()
+    live = W.live_workspaces()
+    if live is None:
+        return None
+    records = W.agent_sessions()
+    archived = W.load_archive()
+    sessions, _ = W.build_index()
+    by_cwd = {}
+    for s in sessions:
+        if s.get("cwd"):
+            by_cwd.setdefault(s["cwd"], []).append(s)
+    for ss in by_cwd.values():
+        ss.sort(key=lambda s: s.get("mtime") or 0, reverse=True)
+
+    # Everything is keyed by worktree root: a workspace in a subdirectory, the
+    # record it left, and the worktree git lists are one card, not three.
+    roots, linked_of = {}, {}
+
+    def root_of(path):
+        if path not in roots:
+            top, linked = toplevel(path) if os.path.isdir(path) else (None, False)
+            roots[path] = top or path
+            linked_of[roots[path]] = linked
+        return roots[path]
+
+    open_at, rec_at = {}, {}
+    for w in live:
+        if w["cwd"]:
+            open_at.setdefault(root_of(w["cwd"]), w)
+    for k, rec in archived.items():
+        rec_at.setdefault(root_of(k), rec)
+    cwds = set(open_at) | set(rec_at)
+    for c in list(cwds):
+        if os.path.isdir(c):
+            _primary, linked = worktrees_of(c)
+            cwds.update(root_of(p) for p in linked if os.path.isdir(p))
+    # A session started in a subdirectory, or on a symlinked path, belongs to
+    # its worktree's card. Matched by path, not by asking git about every one
+    # of hundreds of transcript directories.
+    for c in [c for c in by_cwd if c not in cwds]:
+        real = os.path.realpath(c)
+        r = next((r for r in cwds if real == r or real.startswith(r.rstrip("/") + "/")
+                  or c.startswith(r.rstrip("/") + "/")), None)
+        if r:
+            by_cwd.setdefault(r, []).extend(by_cwd[c])
+    for ss in by_cwd.values():
+        ss.sort(key=lambda s: s.get("mtime") or 0, reverse=True)
+    days = W.dormant_days()
+
+    out = []
+    for cwd in sorted(cwds):
+        ws, rec = open_at.get(cwd), rec_at.get(cwd)
+        exists = os.path.isdir(cwd)
+        if not exists and not rec:
+            continue                         # a worktree git still lists, removed by hand
+        ss = by_cwd.get(cwd, [])
+        latest = ss[0] if ss else {}
+        gh = gh_cache(cwd) if exists else {}
+        when = max(latest.get("mtime") or 0, (rec or {}).get("archived_at") or 0,
+                   last_commit_at(cwd) if exists else 0)
+        c = {
+            "cwd": cwd,
+            "ws": ws,
+            "rec": rec,
+            "title": (ws or {}).get("title") or (rec or {}).get("title") or os.path.basename(cwd),
+            "branch": (W.branch(cwd) if exists else "") or (rec or {}).get("branch") or "",
+            "linked": exists and linked_of.get(cwd, False),
+            # None, not a large number: no evidence of activity is not evidence
+            # of dormancy.
+            "idle_days": (now - when) / DAY if when else None,
+            "life": W.lifecycle(ws, records) if ws else "none",
+            "plan": open_plan(cwd) if exists else "",
+            "pr": gh.get("pr"),
+            "pr_state": (gh.get("prState") or "").lower(),
+            "session": latest,
+            "said": latest.get("said") or (ws or {}).get("last_message") or "",
+            "last": latest.get("last") or latest.get("prompt") or "",
+        }
+        c["merged"] = exists and (c["pr_state"] == "merged" or W.merged(cwd))
+        c["reason"] = classify(c, days)
+        if c["reason"]:
+            out.append(c)
+    return out
+
+
+def classify(c, days):
+    """Why this is on the sweep, or "" when it is not."""
+    if c["rec"] and not os.path.isdir(c["cwd"]):
+        return "orphaned"
+    if c["life"] in ("running", "unknown"):
+        return ""                            # never offer to put away a turn in progress
+    if c["merged"]:
+        return "merged"
+    if c["idle_days"] is not None and c["idle_days"] >= days and not c["plan"]:
+        return "dormant"
+    return ""
+
+
+# --- judging --------------------------------------------------------------------------
+
+def _load_cache():
+    try:
+        with open(CACHE) as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save(entries):
+    os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+    with open(CACHE + ".lock", "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        cache = _load_cache()
+        cache.update(entries)
+        W._write_json(CACHE, cache)
+
+
+def state_of(c):
+    """What Jev is shown: the human accepted the prompt and title leaving the
+    machine (ADR 0023)."""
+    return {
+        "last_message": (c["said"] or "")[-MAX_CHARS:],
+        "last_prompt": (c["last"] or "")[-MAX_CHARS:],
+        "workspace_title": c["title"],
+        "branch": c["branch"],
+        "pr_state": c["pr_state"] or ("merged" if c["merged"] else "none"),
+        "idle_days": round(c["idle_days"], 1) if c["idle_days"] is not None else -1,
+        "plan_phase": c["plan"] or "none",
+    }
+
+
+JUDGE_DEADLINE = float(os.environ.get("CREW_SWEEP_JUDGE_SECONDS", "20"))
+ASK_TIMEOUT = 8.0
+
+
+def judge(cands, now=None):
+    """Fill c["jev"] = {finished, abandoned} where TypeSafe answers. -> True when
+    any card was judged. A failure leaves that card unjudged, never guessed,
+    and the whole pass stops waiting after JUDGE_DEADLINE: a sweep that sits on
+    a dead endpoint is worse than one in the fallback order."""
+    try:
+        import typesafe
+    except Exception:
+        return False
+    key = typesafe.api_key()
+    if not key:
+        return False
+    now = now or time.time()
+    cache = _load_cache()
+    ask = []
+    for c in cands:
+        if c["reason"] == "orphaned":
+            continue                         # nothing left to judge: the tree is gone
+        size = int((c["session"] or {}).get("size") or 0)
+        hit = cache.get(c["cwd"])
+        if hit and int(hit.get("transcript_size", -1)) == size and "finished" in hit:
+            c["jev"] = {"finished": hit["finished"], "abandoned": hit["abandoned"]}
+        else:
+            ask.append((c, size))
+
+    def one(pair):
+        c, size = pair
+        try:
+            a = typesafe.ask(key, state_of(c), {"finished": FINISHED, "abandoned": ABANDONED},
+                             timeout=ASK_TIMEOUT)
+            return c, size, {"finished": round(float(a["finished"]["noul"]), 3),
+                             "abandoned": round(float(a["abandoned"]["noul"]), 3)}
+        except Exception:
+            return c, size, None
+
+    fresh = {}
+    if ask and sys.stdout.isatty():
+        print(DIM + "→ asking Jev about %d" % len(ask) + RESET)
+    pool = ThreadPoolExecutor(max_workers=8)
+    futs = [pool.submit(one, p) for p in ask]
+    try:
+        for f in as_completed(futs, timeout=JUDGE_DEADLINE):
+            c, size, v = f.result()
+            if v:
+                c["jev"] = v
+                fresh[c["cwd"]] = dict(v, at=now, transcript_size=size)
+    except FuturesTimeout:
+        pass                                 # the rest keep the fallback order
+    pool.shutdown(wait=False, cancel_futures=True)
+    if fresh:
+        _save(fresh)
+    return any(c.get("jev") for c in cands)
+
+
+def order(cands):
+    """Jev's rank first (the higher of finished and abandoned); a card Jev did
+    not answer for, or every card when TypeSafe is off: orphaned and merged
+    first, then the longest idle."""
+    def key(c):
+        j = c.get("jev")
+        idle = c["idle_days"] if c["idle_days"] is not None else -1
+        tier = 0 if c["reason"] == "orphaned" else 1 if c["merged"] else 2
+        if c["reason"] == "orphaned":
+            return (0, 0, tier, -idle)
+        if j:
+            return (1, -max(j["finished"], j["abandoned"]), tier, -idle)
+        return (2, 0, tier, -idle)
+    return sorted(cands, key=key)
+
+
+def keys_for(c):
+    """The keys this card takes, in display order."""
+    ks = []
+    if c["linked"] and os.path.isdir(c["cwd"]):
+        ks.append("r")
+    if c["ws"]:
+        ks.append("a")
+    if c["rec"] and not c["ws"]:
+        ks.append("f")
+    ks.append("s")
+    if c["ws"]:
+        ks.append("o")
+    ks.append("q")
+    return ks
+
+
+def _plain(s):
+    import re
+    return re.sub(r"\033\[[0-9;]*m", "", s)
+
+
+LABEL = {"r": "[r]eclaim", "a": "[a]rchive", "f": "[f]orget", "s": "[s]kip",
+         "o": "[o]pen", "q": "[q]uit"}
+
+
+def card(c, i, n, width=80):
+    """The card's lines, each at most `width` columns."""
+    def fit(s):
+        # Measured and cut on what shows, not on the escapes around it: a cut
+        # inside an escape, or one that drops the RESET, bleeds into the next line.
+        out, shown, i = [], 0, 0
+        while i < len(s):
+            if s[i] == "\033":
+                j = s.find("m", i)
+                j = len(s) - 1 if j == -1 else j
+                out.append(s[i:j + 1])
+                i = j + 1
+                continue
+            if shown == width - 1 and len(_plain(s[i:])) > 1:
+                out.append("…")
+                break
+            out.append(s[i])
+            shown += 1
+            i += 1
+        return "".join(out) + RESET
+    repo = os.path.basename(c["cwd"].split(".worktrees")[0].rstrip("/")) or c["title"]
+    where = "%s · %s" % (repo, c["branch"] or c["title"])
+    facts = ["idle %dd" % c["idle_days"] if c["idle_days"] is not None else "no activity on record"]
+    if c["pr"]:
+        facts.append("PR #%s %s" % (c["pr"], c["pr_state"] or ""))
+    elif c["merged"]:
+        facts.append("merged")
+    if c["plan"]:
+        facts.append("plan %s" % c["plan"])
+    if not c["ws"]:
+        facts.append("archived" if c["rec"] else "not open")
+    lines = [fit(" %d/%d  %s%s%s   %s%s%s" % (i, n, BOLD, where, RESET, DIM, " · ".join(facts), RESET))]
+    head = " %s%s%s" % (TINT.get(c["reason"], ""), c["reason"], RESET)
+    if c["reason"] == "orphaned":
+        head += DIM + "  the worktree is gone; only the record is left" + RESET
+    lines.append(fit(head))
+    said = " ".join((c["said"] or c["last"] or "").split())
+    if said:
+        lines.append(fit(' last: "%s"' % said))
+    j = c.get("jev")
+    if j:
+        lines.append(fit(" jev: finished %.2f · abandoned %.2f" % (j["finished"], j["abandoned"])))
+    lines.append(fit(" " + " ".join(LABEL[k] for k in keys_for(c))))
+    return lines
+
+
+# --- the wizard -----------------------------------------------------------------------
+
+def read_key():
+    """One keypress, raw when stdin is a terminal; one character a key otherwise,
+    so a script (or the probe) can drive the wizard down a pipe."""
+    if not sys.stdin.isatty():
+        ch = sys.stdin.read(1)
+        return ch or "q"
+    import termios
+    import tty
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    return "q" if ch in ("\x03", "\x04", "\x1b") else ch.lower()
+
+
+def act(k, c):
+    """Run one key. -> (tally word or None, keep going)."""
+    if k == "r":
+        # crew-reclaim asks only when it has a terminal, and proceeds when it
+        # does not. A sweep driven down a pipe must not turn r into a delete
+        # nobody was asked about.
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            print("  ✗ reclaim needs a terminal for crew-reclaim's question — skipped")
+            return None, True
+        target = c["ws"]["id"] if c["ws"] else c["cwd"]
+        rc = subprocess.call([RECLAIM, target])
+        if rc == 0 and c["rec"]:
+            W.forget(c["rec"].get("cwd") or c["cwd"])
+        return ("reclaimed" if rc == 0 else None), True
+    if k == "a":
+        ok, msg = W.archive(c["ws"]["id"])
+        print(("  ✓ " if ok else "  ✗ ") + msg)
+        return ("archived" if ok else None), True
+    if k == "f":
+        W.forget(c["rec"].get("cwd") or c["cwd"])
+        print("  ✓ forgot " + c["title"])
+        return "forgot", True
+    if k == "o":
+        W.select(c["ws"]["id"])
+        return None, False
+    if k == "q":
+        return None, False
+    return "skipped", True
+
+
+def wizard(queue):
+    tally = {}
+    n = len(queue)
+    width = max(40, min(120, _width()))
+    for i, c in enumerate(queue, 1):
+        print()
+        for line in card(c, i, n, width):
+            print(line)
+        ks = keys_for(c)
+        k = ""
+        while k not in ks:
+            k = read_key()
+        word, more = act(k, c)
+        if word:
+            tally[word] = tally.get(word, 0) + 1
+        if not more:
+            break
+    print()
+    print(DIM + "swept: " + (", ".join("%d %s" % (v, k) for k, v in tally.items()) or "nothing")
+          + RESET)
+
+
+def _width():
+    try:
+        return os.get_terminal_size().columns
+    except OSError:
+        return 80
+
+
+def main(argv):
+    as_json = "--json" in argv
+    if not as_json:
+        print(DIM + "→ looking at every workspace and worktree on this machine" + RESET)
+    cands = gather()
+    if cands is None:
+        print("crew-sweep: cmux did not list its workspaces — nothing to sweep against",
+              file=sys.stderr)
+        return 1
+    on = judge(cands)
+    queue = order(cands)
+    if as_json:
+        json.dump({"typesafe": on, "dormant_days": W.dormant_days(), "queue": [
+            {k: c[k] for k in ("cwd", "title", "branch", "reason", "merged", "linked",
+                               "life", "plan", "pr", "pr_state")}
+            | {"idle_days": round(c["idle_days"], 1) if c["idle_days"] is not None else None,
+               "jev": c.get("jev"),
+               "ws": (c["ws"] or {}).get("id"), "keys": keys_for(c)}
+            for c in queue]}, sys.stdout, indent=1)
+        print()
+        return 0
+    if not queue:
+        print("nothing to sweep: no merged, dormant (%dd) or orphaned workspaces"
+              % W.dormant_days())
+        return 0
+    print(DIM + "%d to look at, %s" % (len(queue), "in Jev's order" if on else
+          "merged first, then longest idle (TypeSafe is off)") + RESET)
+    wizard(queue)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        sys.exit(130)
