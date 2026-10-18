@@ -20,6 +20,10 @@ and deep-plan, lookout and ask stores each hold one record. What is asserted:
   - lines that are malformed or in a newer shape cost nothing else;
   - an appended chunk resumes from the cursor and still finds the prompt in
     flight before it; an unchanged transcript is not reread; backfill keeps ids;
+  - Keep copies an at-risk file into kept/<workspace>/ keeping its mtime and
+    repoints the row, which re-indexing never undoes; it refuses rows outside
+    a temp root, missing files, symlinks, directories and files over 50MB;
+    keep all reports each refusal;
   - search goes through FTS5 by prompt word, filters by ws and kind, and
     treats query syntax as text;
   - plan, review and ask rows land keyed by root or cwd;
@@ -288,6 +292,51 @@ with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
     check("query syntax is treated as text", ok)
     check("workspaces() lists the fixture ws", any(w["ws"] == ws for w in A.workspaces()))
     check("row(id) returns that row", A.row(after[0]["id"])["locator"] == after[0]["locator"])
+
+    print("keep")
+    notes = next(r for r in A.search(kind="temp") if r["locator"].endswith("scratchpad/notes.md"))
+    src = notes["path"]
+    os.utime(src, (1600000000, 1600000000))
+    res = A.keep(notes["id"])
+    k = A.row(notes["id"])
+    check("keep copies into kept/<workspace>/ and repoints the row",
+          res.get("ok") and k["path"].startswith(os.path.join(home, ".claude", "crew", "kept", "shop-"))
+          and k["was_path"] == src and k["kept_at"] and open(k["path"]).read() == "notes", res)
+    check("keep preserves the file's mtime", res.get("ok") and int(os.path.getmtime(k["path"])) == 1600000000)
+    check("a kept copy sits in a 0700 directory",
+          stat.S_IMODE(os.stat(os.path.dirname(k["path"])).st_mode) == 0o700)
+    os.unlink(src)
+    A.backfill()
+    k2 = A.row(notes["id"])
+    check("re-indexing never moves a kept row back to its temp path", k2["path"] == k["path"] and k2["kept_at"])
+    check("keeping twice is refused", A.keep(notes["id"]).get("why") == "already kept")
+    todo = next(r for r in A.search(kind="file") if r["locator"].endswith("todo.txt"))
+    check("a row outside a temp root is refused", A.keep(todo["id"]).get("why") == "not in a temp directory")
+    sub = next(r for r in A.search(kind="temp") if r["locator"].endswith("summary.txt"))
+    check("a missing file is refused", A.keep(sub["id"]).get("why") == "the file is gone")
+    big = os.path.join(sp, "big.bin")
+    with open(big, "wb") as fh:
+        fh.truncate(51 * 1024 * 1024)
+    os.makedirs(os.path.join(sp, "adir"))
+    os.symlink(os.path.join(home, "notes", "todo.txt") if os.path.exists(os.path.join(home, "notes", "todo.txt"))
+               else tr, os.path.join(sp, "link.txt"))
+    db = A.connect()
+    db.execute("BEGIN IMMEDIATE")
+    mk = lambda p: dict(dict.fromkeys(A.FIELDS, ""), ws=ws, kind="temp", locator=p, path=p, title=os.path.basename(p))
+    A.write_rows(db, [mk(big), mk(os.path.join(sp, "adir")), mk(os.path.join(sp, "link.txt"))])
+    db.execute("COMMIT")
+    db.close()
+    rid = {r["title"]: r["id"] for r in A.search(ws=ws, kind="temp")}
+    check("a file over 50MB is refused", A.keep(rid["big.bin"]).get("why") == "over 50MB")
+    check("a directory is refused", A.keep(rid["adir"]).get("why") == "a directory")
+    check("a symlink is refused", A.keep(rid["link.txt"]).get("why") == "a symlink")
+    allres = A.keep_all(ws)
+    kept_titles = [A.row(x["id"])["title"] for x in allres if x["ok"]]
+    whys = sorted(x.get("why") for x in allres if not x["ok"])
+    check("keep all keeps every at-risk row and reports each refusal",
+          "stray.py" in kept_titles and whys == ["a directory", "a symlink", "over 50MB"], (kept_titles, whys))
+    check("keep all skips rows already kept or gone",
+          all(A.row(x["id"])["title"] not in ("notes.md", "summary.txt") for x in allres))
 
     print("lock and 3.9")
     lk = open(A.LOCK, "a")

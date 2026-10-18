@@ -18,6 +18,13 @@
   one has a shell of its own, a gone one is an empty shell. Every icon is an
   inline SVG; no emoji. Reduced motion stills the crab.
 
+  Keep (a row's button, K, or "keep all" with a second click to confirm)
+  POSTs a row id or the workspace to /artifacts/keep; the server copies the
+  file into ~/.claude/crew/kept/ and the row redraws as kept, showing where
+  it was. Publish (present HTML, markdown and image rows, a second click to
+  confirm naming the file) POSTs the row id to /artifacts/publish; the server
+  opens a terminal running an interactive claude limited to Artifact and Read.
+
   Every string from the store (titles, paths, prompts, branches) goes through
   esc() or text nodes before it reaches the DOM.
 -->
@@ -45,6 +52,11 @@ h1 #wsname{color:var(--muted);font-weight:500}
 .sub{color:var(--muted);font-size:11.5px;margin-top:3px}
 .sub b{color:var(--ink);font-weight:600}
 .sub .risk{color:var(--risk)} .sub .kept{color:var(--kept)}
+.keepall{margin-left:8px;background:none;border:1px solid var(--risk);color:var(--risk);border-radius:999px;
+  padding:0 9px;font:500 11px/1.6 system-ui;cursor:pointer}
+.keepall.sure{background:var(--risk);color:var(--bg)}
+.acts button.keep{border-color:var(--risk);color:var(--risk)}
+.acts button.sure{background:var(--pub);border-color:var(--pub);color:var(--bg)}
 select#ws{background:var(--card);color:var(--ink);border:1px solid var(--line2);border-radius:7px;
   padding:4px 6px;font:12px/1.2 system-ui;max-width:240px}
 
@@ -111,7 +123,9 @@ ul.rows{list-style:none;margin:0;padding:0 0 0 46px}
 .p{grid-column:2 / 4;font:11px/1.35 var(--mono);color:var(--faint);white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis;direction:rtl;text-align:left}
 .p bdi{direction:ltr;unicode-bidi:isolate}
-.p.was{color:var(--faint);font-style:italic}
+.p.was{display:flex;gap:6px;direction:ltr;font-style:italic}
+.p.was i{flex:none;font-style:normal;color:var(--kept);opacity:.8}
+.p.was span{min-width:0;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left}
 .st{display:inline-flex;align-items:center;gap:4px;font:500 10.5px/1 system-ui;color:var(--faint);white-space:nowrap}
 .st svg{width:15px;height:15px;flex:none}
 .st.risk{color:var(--risk)} .st.kept{color:var(--kept)} .st.pub{color:var(--pub)}
@@ -215,7 +229,8 @@ mark{background:none;color:var(--mark);box-shadow:inset 0 -1px 0 var(--mark)}
   </svg>
   <div class="ttl">
     <h1>the wake<span class="dot">&middot;</span><span id="wsname"></span></h1>
-    <div class="sub" id="stats">what this workspace left behind</div>
+    <div class="sub"><span id="stats">what this workspace left behind</span>
+      <button id="keepall" class="keepall" hidden></button></div>
   </div>
   <select id="ws" title="workspace" aria-label="workspace"></select>
 </header>
@@ -234,6 +249,7 @@ mark{background:none;color:var(--mark);box-shadow:inset 0 -1px 0 var(--mark)}
     <dt>j k</dt><dd>next &middot; previous row</dd>
     <dt>Enter</dt><dd>open the row</dd>
     <dt>Space</dt><dd>show the whole prompt</dd>
+    <dt>K</dt><dd>keep an at-risk file</dd>
     <dt>c</dt><dd>copy the path</dd>
     <dt>r</dt><dd>copy the resume command</dd>
     <dt>?</dt><dd>this card</dd>
@@ -392,6 +408,10 @@ mark{background:none;color:var(--mark);box-shadow:inset 0 -1px 0 var(--mark)}
     if (kept) s += ' · <span class="kept">' + kept + " kept</span>";
     if (gone) s += " · " + gone + " gone";
     $("stats").innerHTML = s;
+    var ka = $("keepall");
+    ka.hidden = !risk || !!state.q;
+    if (!ka.classList.contains("sure")) ka.textContent = "keep all " + risk;
+    ka.setAttribute("data-n", risk);
   }
 
   function badge(r) {
@@ -418,6 +438,9 @@ mark{background:none;color:var(--mark);box-shadow:inset 0 -1px 0 var(--mark)}
     } else if (r.state !== "gone" || r.url || r.kind === "commit") {
       a += '<button data-act="open">open</button>';
     }
+    if (r.state === "risk") a += '<button data-act="keep" class="keep" title="copy it into ~/.claude/crew/kept and point this row there">keep</button>';
+    if (r.publishable) a += '<button data-act="publish" title="publish this file to claude.ai">' +
+                            (r.published ? "publish again" : "publish") + "</button>";
     if (r.path) a += '<button data-act="copy">copy path</button>';
     if (r.session_id) a += '<button data-act="resume">copy resume</button>';
     return a;
@@ -458,7 +481,7 @@ mark{background:none;color:var(--mark);box-shadow:inset 0 -1px 0 var(--mark)}
               '<span class="t" title="' + esc(r.title) + '">' + hl(r.title) + "</span>" +
               "<span>" + badge(r) + "</span>" +
               (where(r) ? '<span class="p" title="' + esc(where(r)) + '"><bdi>' + hl(where(r)) + "</bdi></span>" : "") +
-              (r.was_path ? '<span class="p was"><bdi>was ' + esc(tilde(r.was_path)) + "</bdi></span>" : "") +
+              (r.was_path ? '<span class="p was" title="' + esc(r.was_path) + '"><i>was</i><span><bdi>' + esc(tilde(r.was_path)) + "</bdi></span></span>" : "") +
               '<span class="acts">' + acts(r) + "</span></li>";
     }
     if (grp !== null) html += "</ul></div>";
@@ -494,7 +517,58 @@ mark{background:none;color:var(--mark);box-shadow:inset 0 -1px 0 var(--mark)}
       .catch(function () { toast("the crew intent server did not answer", true); });
   }
 
+  function post(path, body) {
+    body.t = T;
+    return fetch(path, {method: "POST", cache: "no-store", headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify(body)}).then(function (x) { return x.json(); });
+  }
+  function keep(r) {
+    if (!r || r.state !== "risk") return;
+    post("/artifacts/keep", {id: r.id}).then(function (j) {
+      if (j.ok) { mood("pat", 900); toast("kept \u2192 " + tilde(j.path)); load(true); }
+      else toast("not kept: " + (j.why || j.error || "refused"), true);
+    }).catch(function () { toast("the crew intent server did not answer", true); });
+  }
+  // Publish sends the file off the machine and spends a model call, so the
+  // first click only asks, naming the file; the second, within 4s, sends.
+  function publish(r, b) {
+    if (!r || !r.publishable) return;
+    if (!b.classList.contains("sure")) {
+      b.classList.add("sure");
+      b.textContent = "send " + r.path.split("/").pop() + " to claude.ai?";
+      setTimeout(function () { if (b.isConnected) { b.classList.remove("sure"); b.textContent = r.published ? "publish again" : "publish"; } }, 4000);
+      return;
+    }
+    b.classList.remove("sure");
+    b.textContent = "publishing\u2026";
+    post("/artifacts/publish", {id: r.id}).then(function (j) {
+      toast(j.ok ? j.detail : (j.detail || j.error || "refused"), !j.ok);
+    }).catch(function () { toast("the crew intent server did not answer", true); });
+  }
+  function keepAll() {
+    var ka = $("keepall");
+    if (!ka.classList.contains("sure")) {
+      ka.classList.add("sure");
+      ka.textContent = "sure? copy " + ka.getAttribute("data-n") + " files";
+      clearTimeout(keepAll.h);
+      keepAll.h = setTimeout(function () { ka.classList.remove("sure"); ka.textContent = "keep all " + ka.getAttribute("data-n"); }, 3500);
+      return;
+    }
+    clearTimeout(keepAll.h);
+    ka.classList.remove("sure");
+    post("/artifacts/keep", {ws: WS, all: true}).then(function (j) {
+      var res = j.results || [], ok = res.filter(function (x) { return x.ok; }).length, no = res.length - ok;
+      var whys = {};
+      res.forEach(function (x) { if (!x.ok) whys[x.why] = (whys[x.why] || 0) + 1; });
+      var why = Object.keys(whys).map(function (w) { return whys[w] + " " + w; }).join(", ");
+      if (ok) mood("pat", 900);
+      toast(j.ok ? "kept " + ok + (no ? " \u00b7 refused " + no + ": " + why : "") : (j.error || "refused"), !j.ok || !!no);
+      load(true);
+    }).catch(function () { toast("the crew intent server did not answer", true); });
+  }
+
   // ---- events ----
+  $("keepall").addEventListener("click", keepAll);
   var qt = null;
   $("q").addEventListener("input", function () {
     mood("look");
@@ -536,6 +610,8 @@ mark{background:none;color:var(--mark);box-shadow:inset 0 -1px 0 var(--mark)}
     if (b) {
       var a = b.getAttribute("data-act");
       if (a === "open") open(r, b.getAttribute("data-s"));
+      else if (a === "keep") keep(r);
+      else if (a === "publish") publish(r, b);
       else if (a === "copy") copy(r.path, "the path");
       else if (a === "resume") copy(resumeCmd(r), "the resume command");
       return;
@@ -572,6 +648,7 @@ mark{background:none;color:var(--mark);box-shadow:inset 0 -1px 0 var(--mark)}
           var li = document.querySelectorAll(".row")[state.sel], g = li && li.closest(".grp");
           if (g) { var gk = g.getAttribute("data-g"); state.open[gk] = !state.open[gk]; g.classList.toggle("open"); }
         } break;
+      case "K": keep(r); break;
       case "c": if (r && r.path) copy(r.path, "the path"); break;
       case "r": if (r && r.session_id) copy(resumeCmd(r), "the resume command"); break;
       case "?": $("help").hidden = !$("help").hidden; break;

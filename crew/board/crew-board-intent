@@ -45,6 +45,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import socketserver
@@ -1093,6 +1094,7 @@ def wake_row(r):
         "prompt": r.get("prompt") or "", "source": r.get("source") or "",
         "locator": r["locator"] if r["kind"] in ("plan", "review", "ask") else "",
         "state": state, "published": url.startswith("https://claude.ai/"),
+        "publishable": state != "gone" and publishable(r),
         "ws": r.get("ws") or "",
     }
 
@@ -1151,6 +1153,64 @@ def open_artifact(rid, port, sub=""):
     if url:
         return _browser(url)             # the file is gone; its publish is not
     return False, "gone: " + (path or loc)
+
+
+PUBLISHABLE = {".html", ".htm", ".md", ".markdown", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+PUBLISH_KINDS = ("temp", "image", "doc", "file")
+
+
+def publishable(r):
+    path = r.get("path") or ""
+    return (r["kind"] in PUBLISH_KINDS and os.path.splitext(path)[1].lower() in PUBLISHABLE
+            and os.path.isfile(path))
+
+
+def workspace_for(ws):
+    """The cmux workspace the board lists for a directory, or ''."""
+    try:
+        want = os.path.realpath(ws)
+    except (TypeError, ValueError):
+        return ""
+    for wid, row in targets().items():
+        cwd = (row or {}).get("cwd") if isinstance(row, dict) else None
+        if cwd and os.path.realpath(cwd) == want:
+            return wid
+    return ""
+
+
+def publish_artifact(rid):
+    """Publish one row's file to claude.ai: a terminal pane in the row's
+    workspace runs an interactive claude limited to Artifact and Read, with
+    the prompt already given. Headless `claude -p` is not offered the
+    Artifact tool, so the run is one the human can watch and stop. The URL
+    reaches the row when the indexer reads that session's transcript."""
+    try:
+        r = artifacts.row(int(rid))
+    except (TypeError, ValueError):
+        return False, "bad id"
+    if not r:
+        return False, "no such row"
+    if not publishable(r):
+        return False, "only a present HTML, markdown or image file can be published"
+    path = r["path"]
+    if any(ord(c) < 32 for c in path):
+        return False, "a path with control characters is not sent to a terminal"
+    ws = r.get("ws") or ""
+    cwd = ws if ws and os.path.isdir(ws) else os.path.expanduser("~")
+    # No title: a page's own <title> names the artifact, and asking for
+    # another made the run offer to edit the file.
+    prompt = ("Publish the file %s to claude.ai with the Artifact tool, exactly as it is: read it "
+              "first and do not edit or rewrite it. Then reply with only the URL." % path)
+    cmd = "claude --tools Artifact Read --strict-mcp-config " + shlex.quote(prompt)
+    argv = ["new-surface", "--type", "terminal", "--working-directory", cwd, "--command", cmd,
+            "--focus", "true"]
+    wid = workspace_for(cwd)
+    if wid:
+        argv += ["--workspace", wid]
+    rc, out = _surface_cmux(argv, 20)
+    if rc != 0:
+        return False, "could not open a terminal: " + out.strip()[:160]
+    return True, "publishing %s in a terminal; the URL lands here when it finishes" % os.path.basename(path)
 
 
 def wake_page(ws, token):
@@ -1245,39 +1305,89 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not self._host_ok():
             return
         u = urllib.parse.urlparse(self.path)
-        if not u.path.startswith("/review/"):
+        if not (u.path.startswith("/review/") or u.path in ("/artifacts/keep", "/artifacts/publish")):
             return self._json(404, {"error": "no such path"})
+        body = self._post_body(u.path)
+        if body is None:
+            return
+        if u.path == "/artifacts/keep":
+            return self._keep(body)
+        if u.path == "/artifacts/publish":
+            rid = body.get("id")
+            if isinstance(rid, bool) or not isinstance(rid, int):
+                return self._json(400, {"error": "bad id"})
+            try:
+                ok, detail = publish_artifact(rid)
+            except Exception as exc:
+                ok, detail = False, "publish failed: %s" % exc
+            log("%s artifacts publish %s: %s" % ("OK  " if ok else "FAIL", rid, detail))
+            return self._json(200 if ok else 400, {"ok": ok, "detail": detail})
         rid = u.path[len("/review/"):]
-        port = self.server.server_address[1]
-        if self.headers.get("Origin") not in ("http://127.0.0.1:%d" % port, "http://localhost:%d" % port):
-            log("DENY review POST from origin %r" % self.headers.get("Origin"))
-            return self._json(403, {"error": "cross-origin request refused"})
-        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-        if ctype != "application/json":
-            return self._json(415, {"error": "JSON only"})
-        try:
-            length = int(self.headers.get("Content-Length") or "-1")
-        except ValueError:
-            length = -1
-        if length < 0:
-            return self._json(411, {"error": "length required"})
-        if length > REVIEW_MAX_BODY:
-            self.close_connection = True
-            return self._json(413, {"error": "too large"})
-        try:
-            body = json.loads(self.rfile.read(length) or b"{}")
-        except ValueError:
-            return self._json(400, {"error": "not JSON"})
-        if not isinstance(body, dict):
-            return self._json(400, {"error": "not a JSON object"})
-        if not secrets.compare_digest(str(body.get("t") or ""), self.token):
-            log("DENY bad token on review POST from %s" % self.client_address[0])
-            return self._json(403, {"error": "bad token"})
         if not review_path(rid, ".json"):
             return self._json(404, {"error": "no such review"})
         code, out = review_apply(rid, body)
         log("%s review %s %s %s" % ("OK  " if code == 200 else "FAIL", rid, body.get("op"), out.get("error", out.get("item", ""))))
         return self._json(code, out)
+
+    def _post_body(self, path):
+        """Every POST's guards, in order: an Origin that is this server's own,
+        a JSON body under the cap, and the token inside it. Returns the body,
+        or None after replying with the refusal."""
+        port = self.server.server_address[1]
+        if self.headers.get("Origin") not in ("http://127.0.0.1:%d" % port, "http://localhost:%d" % port):
+            log("DENY POST %s from origin %r" % (path, self.headers.get("Origin")))
+            self._json(403, {"error": "cross-origin request refused"})
+            return None
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            self._json(415, {"error": "JSON only"})
+            return None
+        try:
+            length = int(self.headers.get("Content-Length") or "-1")
+        except ValueError:
+            length = -1
+        if length < 0:
+            self._json(411, {"error": "length required"})
+            return None
+        if length > REVIEW_MAX_BODY:
+            self.close_connection = True
+            self._json(413, {"error": "too large"})
+            return None
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except ValueError:
+            self._json(400, {"error": "not JSON"})
+            return None
+        if not isinstance(body, dict):
+            self._json(400, {"error": "not a JSON object"})
+            return None
+        if not secrets.compare_digest(str(body.get("t") or ""), self.token):
+            log("DENY bad token on POST %s from %s" % (path, self.client_address[0]))
+            self._json(403, {"error": "bad token"})
+            return None
+        return body
+
+    def _keep(self, body):
+        """POST /artifacts/keep {t, id} | {t, ws, all: true}. A row id or a
+        workspace; never a path."""
+        try:
+            if body.get("all") is True:
+                ws = body.get("ws")
+                if not isinstance(ws, str) or not ws:
+                    return self._json(400, {"error": "no workspace"})
+                res = artifacts.keep_all(ws)
+                log("OK   artifacts keep all %s: %d kept, %d refused" % (
+                    ws, sum(1 for r in res if r["ok"]), sum(1 for r in res if not r["ok"])))
+                return self._json(200, {"ok": True, "results": res})
+            rid = body.get("id")
+            if isinstance(rid, bool) or not isinstance(rid, int):
+                return self._json(400, {"error": "bad id"})
+            res = artifacts.keep(rid)
+        except Exception as exc:
+            log("FAIL artifacts keep: %s" % exc)
+            return self._json(500, {"error": "keep failed: %s" % exc})
+        log("%s artifacts keep %s: %s" % ("OK  " if res["ok"] else "FAIL", rid, res.get("path") or res.get("why")))
+        return self._json(200 if res["ok"] else 400, res)
 
     def _plan(self, slug):
         """Serve a plan's live surface, with its buttons wired.
