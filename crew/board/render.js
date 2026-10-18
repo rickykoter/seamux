@@ -378,7 +378,11 @@ function __boardRender(d) {
         ' title="' + esc(e.h) + '">' + esc(e.t) + "</span>";
     });
     if (a.meta) out += '<span class="meta">' + esc(a.meta) + "</span>";
-    out += cost(a) + wakeOf(a);
+    // Spend and the Wake are one unit at the right end: when the line is full
+    // they wrap together, still on the right. Apart, the icon alone dropped to
+    // the far left of a line of its own, away from the spend it sits beside.
+    var end = cost(a) + wakeOf(a);
+    if (end) out += '<span class="end">' + end + "</span>";
     return out ? '<div class="foot">' + out + "</div>" : "";
   }
 
