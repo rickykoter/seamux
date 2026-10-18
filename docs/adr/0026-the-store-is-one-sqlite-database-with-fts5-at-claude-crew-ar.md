@@ -1,4 +1,4 @@
-# 0024. The store is one SQLite database with FTS5 at ~/.claude/crew/artifacts.db
+# 0026. The store is one SQLite database with FTS5 at ~/.claude/crew/artifacts.db
 
 Date: 2026-10-18
 

@@ -1,4 +1,4 @@
-# 0022. Durable crew state lives in ~/.claude/crew/
+# 0024. Durable crew state lives in ~/.claude/crew/
 
 Date: 2026-10-18
 
