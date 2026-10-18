@@ -40,8 +40,9 @@
   position, animated with the Web Animations API rather than CSS),
   .top > svg.dial + .own + .nm + .badge, .said (may contain <b> and <code>),
   .feed > .feedbar, .chips > .chip (+ .pri, the one filled button; + .sig, an
-  actionable signal), .foot > .branch/.dirty/.pr/.issue/.sig/.meta/.cost/.wk
-  (the Wake's icon, data-a="wake"; also at the end of a quiet row's .top),
+  actionable signal), .foot > .branch/.dirty/.pr/.issue/.sig/.meta and
+  .end > .cost + .wk (the spend and the Wake's icon, data-a="wake", which wrap
+  together; also at the end of a quiet row's .top),
   .owned + .here, .empty, .sect, and for a deep-plan family: .fam on its card,
   .kids > .row.kid (+ .open) for each child, holding .top.kidhd (the toggle,
   data-a="toggle") > .caret, an optional .said.nest, and .kbody (the child's
@@ -368,8 +369,11 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
 .wk{flex:none;display:inline-flex;align-items:center;justify-content:center;
   min-width:34px;height:24px;margin-left:auto;padding:0 3px;border-radius:7px;cursor:pointer;
   color:var(--wake);background:var(--wake-bg);border:1px solid transparent}
-.foot>.cost+.wk,.top>.cost+.wk{margin-left:0}
-.foot>.wk{overflow:visible;max-width:none}
+.top>.cost+.wk{margin-left:0}
+/* The footer's spend and Wake, held together at the right end (render.js). */
+.foot>.end{display:inline-flex;align-items:center;gap:9px;margin-left:auto;
+  overflow:visible;max-width:none}
+.foot>.end>.cost,.foot>.end>.wk{margin-left:0}
 .wk svg{display:block;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round}
 .wk .hull{fill:currentColor;stroke:none}
 .wk .r2{stroke-opacity:.7} .wk .r3{stroke-opacity:.4}

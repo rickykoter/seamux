@@ -380,10 +380,13 @@ render({ rows: [
     !w5.includes('class="badge"') && />pr<\/span>/.test(w5) &&
     /class="cost[^"]*"[^>]*>\$2\.50<\/span><span class="wk"/.test(w5) && /<\/svg><\/span><\/div><\/div><div class="row [^"]*" $/.test(w5)]);
   checks.push(["wake: a card's footer ends with the spend and then the Wake",
-    /<div class="foot">.*class="cost[^"]*"[^>]*>\$4\.12<\/span><span class="wk".*<\/svg><\/span><\/div>/.test(w6) &&
+    /<div class="foot">.*<span class="end"><span class="cost[^"]*"[^>]*>\$4\.12<\/span><span class="wk".*<\/svg><\/span><\/span><\/div>/.test(w6) &&
     !/<div class="chips">[^]*wk/.test(w6.split('<div class="foot">')[0])]);
   checks.push(["wake: a card with nothing else in its footer still gets one for the Wake, and no empty chip row",
-    /<div class="foot"><span class="wk"/.test(w7) && !w7.includes('class="chips"')]);
+    /<div class="foot"><span class="end"><span class="wk"/.test(w7) && !w7.includes('class="chips"')]);
+  checks.push(["wake: the spend and the Wake wrap as one unit, held at the right end",
+    /\.foot>\.end\{[^}]*display:inline-flex[^}]*margin-left:auto/.test(css) &&
+    !/\.foot>\.end\{[^}]*flex-wrap:wrap/.test(css)]);
   checks.push(["wake: a row the collector gave no wake has no icon", !w8.includes('class="wk"')]);
 }
 
