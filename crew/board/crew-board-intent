@@ -891,6 +891,17 @@ def act(action, row, extra):
             return False, "intent server not answering"
         return open_plan(slug, port)
 
+    if action == "wake":
+        # The Wake for this row's workspace, in one Dock tab whose surface id
+        # is kept like open_plan's: a tap on another row navigates it there.
+        if not cwd:
+            return False, "no workspace directory on this row"
+        port = (current() or (None,))[0]
+        if not port:
+            return False, "intent server not answering"
+        return _dock_tab(WAKE_TAB, "http://127.0.0.1:%d/artifacts?ws=%s"
+                         % (port, urllib.parse.quote(cwd, safe="")))
+
     if action == "ask":
         # `deep-plan ask` opens its page here, best-effort, with the id as extra.
         ask_id = (extra or "").strip()
@@ -1222,7 +1233,7 @@ def wake_page(ws, token):
 
 ACTIONS = ("jump", "row", "diff", "pr", "issue", "jira", "checks", "plan", "take the check",
            "review", "code", "reclaim", "archive", "sync", "go", "close plan", "ask",
-           "sandbox-up", "sandbox-down", "feed-allow", "feed-deny")
+           "sandbox-up", "sandbox-down", "feed-allow", "feed-deny", "wake")
 
 
 class Handler(http.server.BaseHTTPRequestHandler):

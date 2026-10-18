@@ -358,6 +358,18 @@ checks.push(["...with the badge only when there are none, and no empty badge",
 render({ rows: [{ id: "q3", name: "q-idle", kind: "quiet", badge: "idle", said: "", chips: ["jump"],
   frac: null, meta: "", ref: "workspace:3" }], quiet: "" });
 checks.push(["...and an idle quiet row shows its badge", els.rows.innerHTML.includes('class="badge">idle<')]);
+render({ rows: [
+  { id: "q4", name: "q-idle-wake", kind: "quiet", badge: "idle", said: "", chips: ["jump", "wake"], frac: null, meta: "", ref: "workspace:4" },
+  { id: "q5", name: "q-pr-wake", kind: "quiet", badge: "pr open", said: "", chips: ["jump", "pr", "wake"], frac: null, meta: "", ref: "workspace:5" },
+], quiet: "" });
+{
+  const [w4, w5] = els.rows.innerHTML.split('data-id="q5"');
+  checks.push(["wake: an idle quiet row with only wake still says idle, and keeps the chip",
+    w4.includes('class="badge">idle<') && />wake<\/span>/.test(w4)]);
+  checks.push(["wake: ...while a quiet row with pr lets its badge step aside",
+    !w5.includes('class="badge"') && />pr<\/span>/.test(w5) && />wake<\/span>/.test(w5)]);
+  checks.push(["wake: the chip has a tooltip", /title="Open the Wake[^"]*">wake</.test(els.rows.innerHTML)]);
+}
 
 // A family card holds rows of other tiers, so a tier rule that reaches its
 // badge or quiet line through a DESCENDANT selector paints the children too:
@@ -1232,8 +1244,9 @@ print(sum(k.startswith("/w/r") for k in json.load(open(J.CACHE))))
   const kidN = mkEl("div", { class: "row quiet fam kid", "data-id": "N", "data-in": "P" }, [hdN]);
   const kidW = mkEl("div", { class: "row running fam kid", "data-id": "W", "data-in": "P" }, [hdW]);
   const jumpP = span("chip", "jump");
+  const wakeP = span("chip", "wake");
   const card = mkEl("div", { class: "row running fam", "data-id": "P" },
-    [mkEl("div", { class: "chips" }, [jumpP]), mkEl("div", { class: "kids" }, [kidA, kidW, kidN])]);
+    [mkEl("div", { class: "chips" }, [jumpP, wakeP]), mkEl("div", { class: "kids" }, [kidA, kidW, kidN])]);
   const host = mkEl("div", { id: "rows", "data-open": "[]" }, [card]);
   const oldCss = mkEl("style", { id: "intent-css" }, [], ".chip{cursor:pointer}");
   const head = mkEl("head", {}, [oldCss]);
@@ -1284,6 +1297,10 @@ print(sum(k.startswith("/w/r") for k in json.load(open(J.CACHE))))
   click(jumpP);
   checks.push(["intent: the parent's own chips still fire for the parent",
     fetched.length === 5 && last().a === "jump" && last().r === "P"]);
+  click(wakeP);
+  checks.push(["wake: the chip sends a=wake for its row",
+    fetched.length === 6 && last().a === "wake" && last().r === "P"]);
+  fetched.pop();                                     // the counts below predate the wake chip
   click(hdW);
   checks.push(["intent: two children can be open at once",
     host.getAttribute("data-open") === '["A","W"]' && last().r === "W"]);
@@ -1582,11 +1599,12 @@ pb = {"/w/f": P("f", "implementing", [{"n": 2, "id": "test-a", "kind": "test", "
       "/w/d": P("d", "done", [{"n": 3, "id": "test-d", "kind": "test", "status": "fail"}])}
 W = lambda s, running: {"id": s, "title": s, "cwd": "/w/" + s, "desc": "", "running": running,
   "branch": "none", "pr": "none", "dirty": False, "commits": [{"at": 1, "s": "x"}]}
-rows, quiet = m.rank([W("f", True), W("l", False), W("p", True), W("d", False)], pb)
+rows, quiet = m.rank([W("f", True), W("l", False), W("p", True), W("d", False), W("q", False)], pb)
 po = m.rank_plans_only(pb)
 print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")] for r in rows + quiet},
                   "plans": {r["id"]: [r["kind"], r["badge"]] for r in po},
-                  "commits": [r["commits"] for r in rows + quiet if r["id"] == "f"][0]}))
+                  "commits": [r["commits"] for r in rows + quiet if r["id"] == "f"][0],
+                  "chips": {r["id"]: r["chips"] for r in rows + quiet}}))
 `, join(HERE, "crew-board")], { encoding: "utf8" }));
   checks.push(["checks: a failed check ranks wilt even mid-turn, naming it",
     JSON.stringify(out.rank.f) === JSON.stringify(["wilt", "check failed", "increment 2 · test-a"])]);
@@ -1595,6 +1613,9 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
   checks.push(["checks: a done plan never climbs back to wilt", out.rank.d[0] === "done"]);
   checks.push(["checks: the plans-only path agrees",
     out.plans.f[1] === "check failed" && out.plans.l[1] === "check failed" && out.plans.p[1] === "working" && out.plans.d[0] === "done"]);
+  checks.push(["wake: every row, tiered and quiet, ends with the wake chip",
+    Object.keys(out.chips).length === 5 && Object.values(out.chips).every(c => c[c.length - 1] === "wake") &&
+    out.chips.q[0] === "jump" && out.chips.f[0] !== "wake"]);
   checks.push(["rank: a row carries its workspace's commits for the news", out.commits.length === 1 && out.commits[0].s === "x"]);
 }
 
