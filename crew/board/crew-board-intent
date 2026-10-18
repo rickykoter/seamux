@@ -1081,6 +1081,29 @@ def _lookout_commit(ws, sha):
     return p.returncode == 0
 
 
+CODE_APP = "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+
+
+def _open_in_editor(path):
+    """A file in an editor. crew-code-open first: it puts a file inside a
+    repo in that worktree's VS Code window. It exits 1 on purpose for a file
+    outside any repo (cmux then falls back to the default app), and most
+    Wake rows -- scratchpads, ~/.claude/plans -- are outside one. Then VS Code
+    on the bare file, then the default TEXT editor (`open -t`). Never plain
+    `open`: the default app for a .py or .sh can run it."""
+    try:                                  # quiet: its exit 1 here is a fallback, not a failure
+        if subprocess.run(["bash", CODE_OPEN, path], capture_output=True, timeout=20).returncode == 0:
+            return True, "opened " + path
+    except (OSError, subprocess.SubprocessError):
+        pass
+    code = os.environ.get("CREW_CODE_BIN") or (CODE_APP if os.access(CODE_APP, os.X_OK) else shutil.which("code"))
+    if code and run([code, path]):
+        return True, "opened " + path + " in VS Code"
+    if run(["open", "-t", path]):
+        return True, "opened " + path + " in the text editor"
+    return False, "no editor would open " + path
+
+
 def _has_commit(ws, sha):
     try:
         return subprocess.run(["git", "-C", ws, "cat-file", "-e", sha + "^{commit}"],
@@ -1169,8 +1192,7 @@ def open_artifact(rid, port, sub=""):
     if path and os.path.isfile(path):
         if os.path.splitext(path)[1].lower() in VIEW_IN_DOCK:
             return _dock_tab(WAKE_VIEW, "file://" + urllib.parse.quote(path))
-        ok = run(["bash", CODE_OPEN, path])
-        return ok, ("opened " + path) if ok else "crew-code-open refused it"
+        return _open_in_editor(path)
     if url:
         return _browser(url)             # the file is gone; its publish is not
     return False, "gone: " + (path or loc)
