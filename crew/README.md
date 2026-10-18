@@ -114,7 +114,9 @@ passes `--session` explicitly.)
 
 ## Sessions
 
-`cmd+k r`, or `crew-resume`. Also a **Sessions** Dock control.
+`cmd+k r` ("Find a workspace…" in the palette), or `crew-resume`. Also a
+**Sessions** Dock control, in every workspace: the global Dock carries it as
+well as each repo's. The search bar is the picker's second line; start typing.
 
 A finder over workspaces, not transcripts. Claude keeps one JSONL transcript
 per session under `~/.claude/projects/`, and there are hundreds of them here;
@@ -184,8 +186,9 @@ not reachable. See FINDINGS.md.
 
 ## Sweep
 
-`crew-sweep`, or the **Sweep** Dock control. A once-a-day pass over everything
-that could be put away, one card at a time.
+`cmd+k s` ("Sweep workspaces…"), `crew-sweep`, or the **Sweep** Dock control
+(global and per-repo, like Sessions). A once-a-day pass over everything that
+could be put away, one card at a time.
 
 It looks machine-wide, because cmux is: every live workspace in every window,
 every archive record, and every worktree of each repo those point at. A card is
