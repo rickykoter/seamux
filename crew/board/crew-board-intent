@@ -77,6 +77,7 @@ import dp_engine  # noqa: E402
 # A slug reaches us from a URL, and it is about to be joined onto a path. Anchored
 # and character-limited so it can only ever name a file inside PLANS.
 SLUG_OK = re.compile(r"^[a-z0-9][a-z0-9._-]{0,120}$")
+UUID_OK = re.compile(r"^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$")
 MERMAID_DATA = re.compile(r'src="data:text/javascript;base64,[A-Za-z0-9+/=]+"')
 
 
@@ -124,10 +125,13 @@ def notify(subtitle, body, workspace_id=None):
     """Post a marked notification: the RPC channel hooks/triage.py dispatches."""
     argv = [CMUX, "rpc", "notification.create", json.dumps({
         "title": "crew", "subtitle": subtitle, "body": body,
-        # Both spellings on purpose: triage.py reads workspaceId off the policy
-        # JSON, and a snake_case-only payload arrived there with no workspace at
-        # all — the go chip authorized nothing, silently (FINDINGS 2026-09-13).
-        **({"workspace_id": workspace_id, "workspaceId": workspace_id} if workspace_id else {}),
+        # snake_case only. cmux now refuses the whole call over an unknown key
+        # ("Unsupported parameter 'workspaceId'; use 'workspace_id'"), and the
+        # camelCase twin added for the go chip (FINDINGS 2026-09-13) had made
+        # every row-scoped button -- reclaim, archive, code, go, sandbox, feed --
+        # fail before triage.py ever saw it. The policy JSON triage.py reads
+        # carries the id under workspaceId either way, and it reads both.
+        **({"workspace_id": workspace_id} if workspace_id else {}),
     })]
     return run(argv)
 
@@ -819,17 +823,31 @@ def act(action, row, extra):
     if action in ("jump", "row"):
         if not ref:
             return False, "no workspace ref"
+        # By uuid first. A `workspace:N` ref is renumbered when cmux restarts,
+        # and the targets snapshot lags a sync behind that: a jump on a fresh
+        # app failed with "Workspace ref not found". The uuid does not move.
+        if UUID_OK.match(wsid) and run([CMUX, "workspace", "select", wsid]):
+            return True, "select " + wsid
         return run([CMUX, "workspace", "select", ref]), "select " + ref
 
     if action == "diff":
         # `cmux diff --workspace` defaults to the UNSTAGED source, which is empty
         # for the common board row: a branch whose work is committed and under
         # review. It failed with "diff input is empty" and read as a dead chip.
-        # crew-diff's `branch` is the diff a board row actually means -- this
-        # branch against its merge base -- and it must run inside the worktree
-        # because it resolves the repo from cwd.
+        # The diff a board row means is this branch against its merge base:
+        # lookout's default, and crew-diff's `branch` when lookout is absent.
+        # Both run inside the worktree because they resolve the repo from cwd.
         if not cwd or not os.path.isdir(cwd):
             return False, "no worktree for this row"
+        # lookout first: ranked files, threads, the review the agent may
+        # already have opened. It opens the page beside the row's terminal
+        # without focus, so the row's workspace is selected to bring it in.
+        sel = wsid if UUID_OK.match(wsid) else ""
+        ok, why = _lookout_diff(cwd, sel)
+        if ok:
+            if sel or ref:
+                run([CMUX, "workspace", "select", sel or ref])
+            return True, why
         ok = run(["bash", CREW_DIFF, "branch"], cwd=cwd)
         if ok:
             return True, "diff branch in " + cwd
@@ -901,7 +919,8 @@ def act(action, row, extra):
         if not port:
             return False, "intent server not answering"
         return _wake_tab(WAKE_TAB, "http://127.0.0.1:%d/artifacts?ws=%s"
-                         % (port, urllib.parse.quote(cwd, safe="")), select=ref)
+                         % (port, urllib.parse.quote(cwd, safe="")),
+                         select=wsid if UUID_OK.match(wsid) else ref)
 
     if action == "ask":
         # `deep-plan ask` opens its page here, best-effort, with the id as extra.
@@ -1205,18 +1224,54 @@ def _browser(url):
     return ok, ("opened " + url) if ok else "the browser did not open"
 
 
-def _lookout_commit(ws, sha):
-    """Build one commit's view-only lookout review, run in the workspace it
-    was made in but opened nowhere (--no-open): the caller shows it. Returns
-    the review id, or "" when lookout is missing or failed."""
+def _lookout_engine():
+    """(node, lookout.mjs) from the engine pointer lookout setup wrote, or
+    (None, None) when lookout is not installed."""
     try:
         with open(LOOKOUT_POINTER, encoding="utf-8") as fh:
             engine = os.path.join(json.load(fh).get("root") or "", "lookout.mjs")
     except (OSError, ValueError):
-        return ""
+        return None, None
     node = shutil.which("node") or next((c for c in ("/opt/homebrew/bin/node", "/usr/local/bin/node")
                                          if os.path.exists(c)), None)
     if not node or not os.path.isfile(engine):
+        return None, None
+    return node, engine
+
+
+def _lookout_diff(cwd, wsid):
+    """The board's diff chip: this branch against its base, as a lookout
+    review beside the row's terminal. No --id, so it is the branch's own
+    review -- the one /lookout opens -- and its threads and findings come
+    along; lookout keeps them across a rebuild. lookout places the page in
+    CMUX_WORKSPACE_ID, which for this server is nobody's, so the row's
+    workspace is handed in. -> (ok, detail); not ok when lookout is missing
+    or refused, so the caller can fall back to crew-diff."""
+    node, engine = _lookout_engine()
+    if not node:
+        return False, "lookout is not installed"
+    env = dict(os.environ)
+    env.pop("CMUX_WORKSPACE_ID", None)
+    if wsid:
+        env["CMUX_WORKSPACE_ID"] = wsid
+    try:
+        p = subprocess.run([node, engine, "open", "--view-only", "--at", cwd], cwd=cwd, env=env,
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=90)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log("FAIL lookout diff %s: %s" % (cwd, exc))
+        return False, "lookout did not run"
+    if p.returncode != 0:
+        log("FAIL lookout diff %s: %s" % (cwd, (p.stderr or p.stdout).strip()[-160:]))
+        return False, "lookout refused it"
+    return True, "lookout " + cwd
+
+
+def _lookout_commit(ws, sha):
+    """Build one commit's view-only lookout review, run in the workspace it
+    was made in but opened nowhere (--no-open): the caller shows it. Returns
+    the review id, or "" when lookout is missing or failed."""
+    node, engine = _lookout_engine()
+    if not node:
         return ""
     rid = "wake-" + sha[:12]
     # Waited on, not spawned and forgotten: a lookout that fails (a root

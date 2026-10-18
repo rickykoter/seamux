@@ -44,14 +44,18 @@
   .end > .cost + .wk (the spend and the Wake's icon, data-a="wake", which wrap
   together; also at the end of a quiet row's .top),
   .owned + .here, .empty, .sect, and for a deep-plan family: .fam on its card,
-  .kids > .row.kid (+ .open) for each child, holding .top.kidhd (the toggle,
-  data-a="toggle") > .caret, an optional .said.nest, and .kbody (the child's
-  full card); .badge.roll on the card that counts them; .row.shell for a family
-  whose parent has no row.
+  .kids > .row.kid for each child, holding .top.kidhd > .caret, an optional
+  .said.nest, and .kbody (the child's full card); .badge.roll on the card that
+  counts them; .row.shell for a family whose parent has no row.
+  Every row also carries .jmp, its rail and jump target (data-a="jump" when it
+  has a workspace), and data-k, its tier. A row with something to fold is .fd
+  (+ .open when unfolded): its .top is data-a="fold" and starts with .caret,
+  and what folds away is .fold (.kbody on a child); .top > .chip.fq is the
+  filled chip a folded loud card keeps on its header.
 
-  #rows also carries data-open, the ids of the children whose full card is
-  showing. intent.js writes it on a click; render.js reads it and drops ids
-  that have left the board.
+  #rows also carries data-fold, id -> [open, tier] for the cards folded or
+  unfolded by hand. intent.js writes it on a click; render.js reads it and
+  drops ids that left the board or changed tier.
   Palette is Everforest, matching render.js's COL map; the signals carry the Swift
   sidebar's palette instead, which the collector supplies per entry and render.js
   lifts until it reads on a card.
@@ -288,9 +292,28 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
 /* One rail, and it says the tier. The worktree's own colour used to be a second
    stripe beside it; two stripes read as one thick smudge at Dock width, so the
    identity colour is a dot beside the name now (.own). --c is the tier colour
-   the rail, the badge and the filled button all read. */
+   the rail, the badge and the filled button all read.
+   The rail is also the jump (.jmp, render.js): wide enough to hit without
+   looking, 14px, and the same target folded or not. Hover brightens it and
+   shows the arrow; a row with nowhere to jump keeps the colour only. */
 .row{--c:var(--quiet);position:relative;background:var(--bg1);
-  border-left:4px solid var(--c);border-radius:9px;padding:9px 10px 9px 9px;margin-bottom:7px}
+  border-radius:9px;padding:9px 10px 9px 23px;margin-bottom:7px}
+.jmp{position:absolute;left:0;top:0;bottom:0;width:14px;border-radius:9px 0 0 9px;
+  background:var(--c);display:flex;align-items:center;justify-content:center}
+.jmp svg{display:block;fill:none;stroke:var(--ink);stroke-width:1.8;stroke-linecap:round;
+  stroke-linejoin:round;opacity:0;transition:opacity .12s}
+.jmp[data-a]{cursor:pointer}
+.jmp[data-a]:hover{filter:brightness(1.2)}
+.jmp[data-a]:hover svg{opacity:1}
+
+/* Folding. Every card's header (data-a="fold") folds it in place; .fold holds
+   what goes away. Folded, a card that needs you keeps its first chip, filled,
+   on the header line (.fq), and its own badge steps aside for the name -- a
+   rolled-up family badge stays, it is the news. */
+.row.fd:not(.open)>.fold{display:none}
+.row.open>.top>.fq{display:none}
+.row.fd:not(.open)>.top.loud>.badge:not(.roll){display:none}
+.top>.fq{flex:none;padding:0 9px}
 .row.attend{--c:var(--attend);background:var(--bg-attend)}
 .row.running{--c:var(--running)}
 .row.wilt{--c:var(--wilt)}
@@ -397,8 +420,10 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
    its badge -- and no badge at all when it has none. No dial, no said, no
    footer: the whole row is the target and it selects the workspace. Recessed by losing the card's fill, not by fading: an opacity
    dim took the name under 4.5:1. */
-.row.quiet{background:transparent;border:1px solid var(--line);border-left:4px solid var(--c);
-  padding:5px 10px 5px 9px;margin-bottom:5px}
+.row.quiet{background:transparent;border:1px solid var(--line);border-left:0;
+  padding:5px 10px 5px 23px;margin-bottom:5px}
+.row.quiet>.jmp{top:-1px;bottom:-1px}
+.row.quiet>.fold>.foot{margin-top:2px}
 .row.quiet>.top{min-height:22px}
 .row.quiet>.top>.chips{display:inline-flex;flex:none;flex-wrap:nowrap;gap:5px;margin:0}
 .row.quiet>.top>.chips>.chip{padding:0 9px}
@@ -417,7 +442,10 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
    with no parent row gets a shell card named by its label (.shell). */
 .kids{margin-top:9px;background:var(--bg-kids);border-radius:8px;padding:0 7px}
 .kids>.row.kid{background:transparent;border:0;border-top:1px solid var(--line);border-radius:0;
-  margin:0;padding:0}
+  margin:0;padding:0 0 0 18px}
+/* A child's rail is a pill inside its line, dimmer than a card's until hovered. */
+.kids>.row.kid>.jmp{top:6px;bottom:6px;width:12px;border-radius:4px;filter:brightness(.7)}
+.kids>.row.kid>.jmp[data-a]:hover{filter:none}
 .kids>.row.kid:first-child{border-top:0}
 .kids>.row.kid.here{box-shadow:inset 0 0 0 2px var(--own,var(--grey));border-radius:6px}
 /* Specific enough to beat .row.quiet>.top, which would clamp a quiet child to 22px. */
@@ -428,7 +456,7 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
 .kidhd .chip{flex:none;padding:0 9px}
 .caret{flex:none;width:9px;color:var(--grey);font-size:10px;line-height:1}
 .caret::before{content:"\25B8"}
-.kid.open .caret::before{content:"\25BE"}
+.row.open>.top>.caret::before{content:"\25BE"}
 .said.nest{margin:0 0 8px 35px;cursor:pointer}
 .kbody{display:none;padding:0 0 10px 15px}
 .kbody>.said:first-child{margin-top:0}

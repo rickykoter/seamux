@@ -65,10 +65,21 @@ status signals (`✓ approved`, `draft`, `⚠ conflicts`), progress and spend, i
 mono line that wraps. Branch, PR and issue are links, at least 24px tall.
 
 A **quiet row** is one line: the dot, the name, then its `diff` / `pr` chips as
-ghost buttons, or, with none, its badge (and no badge when it has none). The
-whole row is the target and selects the workspace, which is why `jump` is not
-repeated there. Its branch link is the one target a quiet row gives up for the
-single line; `diff` and the row itself cover the worktree.
+ghost buttons, or, with none, its badge (and no badge when it has none). Its
+rail is the jump, which is why `jump` is not repeated there. Unfolded, it shows
+its footer -- branch, PR, issue -- under the line; a quiet row with no footer has
+nothing to fold, and its line selects the workspace.
+
+**Every card folds in place, and its rail is the jump.** The tier-coloured strip
+down a card's left edge is 14px wide and switches to the workspace whether the
+card is folded or not; hover shows an arrow on it. The header line (with a caret)
+folds and unfolds. A click anywhere on a folded card unfolds it; on an unfolded
+card, a click on its body (not a chip or link) selects the workspace. Cards that
+wait on you or are broken start unfolded, everything else folded; a folded card
+that needs you keeps its first chip, filled, on its header. What you fold by hand
+lives on `#rows` as `data-fold` (id -> [open, tier]) and holds across pushes until
+the card changes tier, when it takes the new tier's default -- so a card you folded
+while quiet opens itself when it starts waiting on you.
 
 A **deep-plan family** is one card. `families.py` already emits each family as a
 contiguous run, parent first, ranked at its most urgent member's tier;
@@ -90,11 +101,9 @@ it, on a darker well:
 ```
 
 Each child is still a `.row` with its own `data-id`, so every button inside it
-acts on the child. Its header is a toggle (`data-a="toggle"`, which only
-`intent.js` knows): opening it shows the child's full card in place **and**
-selects that child's workspace, using the ordinary row action (a plan child with
-no workspace just opens); closing it is local and goes nowhere. The ids that are open live on `#rows` as `data-open`,
-beside `data-prev`, so an opened child stays open across pushes. The parent's
+acts on the child. It folds like any card -- its header is `data-a="fold"`, which
+only `intent.js` knows, and its rail (a pill inside the well) is its jump -- and
+it starts folded. Unfolding sends nothing. The parent's
 badge says the children's most urgent tier, counted (`1 needs you`, `2 broken`),
 when that is more urgent than the parent itself; otherwise it keeps its own. A family whose
 parent has no row gets a shell card named by its label, which carries no actions
@@ -726,8 +735,8 @@ list is the sixteen call sites of `onTapGesture` / `openURL` / `chipRPC` /
 | `allow` / `deny` (:682, :687) | `.chip.sig` `data-a=feed-allow/-deny` | answers a blocked ask |
 | `read it →` / `jump →` (:690, :695) | `jump` chip | goes to the workspace |
 | reclaim (:736) | `reclaim` chip | dry-runs the reclaim, asks first |
-| whole row (:803) | `.row` | selects the workspace |
-| — | a family child's header, `data-a=toggle` | opens the child in place and selects its workspace; closes locally |
+| whole row (:803) | `.jmp` rail, `data-a=jump`; an unfolded card's body | selects the workspace |
+| — | a card's header, `data-a=fold`; a folded card | folds / unfolds in place; sends nothing |
 | sync clock (:1020) | `#stamp` | forces a reconcile |
 
 Also carried over, though not clickable: the dirty dot, the whole signals
@@ -752,9 +761,16 @@ The chips and rows are click targets. The Swift sidebar had them and losing them
 regression, so the taxonomy is restored one-for-one: row → select the workspace, `jump`,
 `diff`, `pr`, `checks`, `plan` / `take the check`, `reclaim`, `go N`, `close plan`, and
 the sync stamp → force a reconcile. One verb is the board's own and never reaches the
-server: a family child's `toggle`, which sends the plain row action when it opens.
+server: `fold`, on every card's header.
 When a click lands on a target inside another target (a child's filled button sits in
 its header), the nearest one wins.
+
+`diff` opens the branch against its base as a **lookout** review, beside the row's
+terminal, and switches to that workspace: the branch's own review, so any threads
+and findings `/lookout` left on it come along. `crew-diff branch` is the fallback
+when lookout is not installed. Row-scoped verbs that go through the notification
+RPC (`reclaim`, `archive`, `code`, `go N`, sandbox, allow / deny) send the workspace
+as `workspace_id` only: cmux refuses the whole call over any key it does not know.
 
 A webview click cannot reach cmux on its own, and the alternatives were tried first:
 
