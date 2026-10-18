@@ -53,7 +53,7 @@ DP_STATE = os.path.join(HOME, ".claude", "deep-plan", "state")
 # Claude Code's per-session scratchpads: <base>/<project dir name>/<session>/scratchpad.
 SCRATCH_BASE = os.environ.get("CREW_SCRATCH_BASE") or "/private/tmp/claude-%d" % os.getuid()
 
-VERSION = 1
+VERSION = 2
 PROMPT_MAX = 500
 TEMP_ROOTS = tuple(os.environ["CREW_TEMP_ROOTS"].split(":")) if os.environ.get("CREW_TEMP_ROOTS") \
     else ("/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/")
@@ -66,7 +66,9 @@ SCRATCH_CAP = 400           # files listed per scratchpad, at most
 
 COMMIT_RE = re.compile(r"^\[([^\]\n]+?) ([0-9a-f]{7,40})\] (.+)$", re.M)
 CHANGED_RE = re.compile(r"\b\d+ files? changed\b")
-GIT_COMMIT_RE = re.compile(r"\bgit\b[^;&|\n]*?\bcommit\b")
+# `git commit`, `git -C dir commit`, `git -c k=v commit`: commit as the
+# subcommand, not a word anywhere in a git command (git log --grep commit).
+GIT_COMMIT_RE = re.compile(r"\bgit(?:\s+-[Cc]\s+\S+|\s+--?[A-Za-z][\w-]*(?:=\S+)?)*\s+commit\b")
 ONELINE_RE = re.compile(r"^([0-9a-f]{7,40}) (.+)$")
 TMP_REDIRECT_RE = re.compile(
     r"(?:>>?|\btee(?:\s+-a)?)\s*((?:/private)?/tmp/[^\s;|&<>'\"`$()]+)")
@@ -123,7 +125,9 @@ VALUES (:ws, :repo, :kind, :title, :locator, :path, :url, :sha,
 ON CONFLICT(ws, kind, locator) DO UPDATE SET
   repo = CASE WHEN excluded.repo <> '' THEN excluded.repo ELSE repo END,
   title = CASE WHEN excluded.title <> '' THEN excluded.title ELSE title END,
-  path = CASE WHEN kept_at IS NULL AND excluded.path <> '' THEN excluded.path ELSE path END,
+  path = CASE WHEN kept_at IS NULL AND excluded.path <> '' THEN excluded.path
+              WHEN kept_at IS NOT NULL AND excluded.path = was_path AND excluded.updated_at > kept_at
+              THEN excluded.path ELSE path END,
   url = CASE WHEN excluded.url <> '' THEN excluded.url ELSE url END,
   sha = CASE WHEN excluded.sha <> '' THEN excluded.sha ELSE sha END,
   created_at = CASE WHEN created_at = '' OR (excluded.created_at <> ''
@@ -134,7 +138,13 @@ ON CONFLICT(ws, kind, locator) DO UPDATE SET
   session_id = CASE WHEN session_id = '' THEN excluded.session_id ELSE session_id END,
   branch = CASE WHEN branch = '' THEN excluded.branch ELSE branch END,
   prompt = CASE WHEN prompt = '' THEN excluded.prompt ELSE prompt END,
-  source = CASE WHEN source = '' THEN excluded.source ELSE source END
+  source = CASE WHEN source = '' THEN excluded.source ELSE source END,
+  -- Written again at its temp path after Keep: the row follows the new file
+  -- (at risk again, keepable again); the earlier copy stays in kept/.
+  was_path = CASE WHEN kept_at IS NOT NULL AND excluded.path = was_path
+                  AND excluded.updated_at > kept_at THEN '' ELSE was_path END,
+  kept_at = CASE WHEN kept_at IS NOT NULL AND excluded.path = was_path
+                 AND excluded.updated_at > kept_at THEN NULL ELSE kept_at END
 """
 FIELDS = ("ws", "repo", "kind", "title", "locator", "path", "url", "sha",
           "created_at", "updated_at", "session_id", "branch", "prompt", "source")
@@ -156,20 +166,38 @@ def connect():
     return db
 
 
-def migrate(db):
-    """Migrations run by meta.version. Version 1 is the first schema."""
-    have = 0
+def _version(db):
     try:
         r = db.execute("SELECT version FROM meta").fetchone()
-        have = r[0] if r else 0
+        return r[0] if r else 0
     except sqlite3.OperationalError:
-        pass
-    if have >= VERSION:
+        return 0
+
+
+def migrate(db):
+    """Migrations run by meta.version, each inside one transaction that
+    re-reads the version, so two first connects do not both migrate.
+
+    1  the first schema.
+    2  ws became the session's starting directory, resolved (it was each
+       line's raw cwd). Derived rows are dropped with every cursor, so the
+       next index rebuilds them; kept rows stay and are re-keyed.
+    """
+    if _version(db) >= VERSION:
         return
     db.execute("BEGIN IMMEDIATE")
     try:
+        have = _version(db)
+        if have >= VERSION:
+            db.execute("COMMIT")
+            return
         for stmt in _statements(SCHEMA):
             db.execute(stmt)
+        if 1 <= have < 2:
+            db.execute("DELETE FROM artifacts WHERE kept_at IS NULL")
+            db.execute("DELETE FROM cursors")
+            for r in db.execute("SELECT id, ws FROM artifacts").fetchall():
+                db.execute("UPDATE OR IGNORE artifacts SET ws = ? WHERE id = ?", (wskey(r[1]), r[0]))
         db.execute("DELETE FROM meta")
         db.execute("INSERT INTO meta(version) VALUES (?)", (VERSION,))
         db.execute("COMMIT")
@@ -323,18 +351,30 @@ def _epoch(ts):
         return None
 
 
+def commit_time(cwd, sha):
+    try:
+        p = subprocess.run(["git", "-C", cwd, "show", "-s", "--format=%ct", sha + "^{commit}"],
+                           capture_output=True, text=True, timeout=5)
+        return int(p.stdout.strip()) if p.returncode == 0 and p.stdout.strip().isdigit() else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def quiet_commit(cwd, out, ts):
     """The commit a `git commit -q` made, which prints no [branch sha] line.
     First a `<sha> <subject>` line in the same output (a trailing `git log
     --oneline -1`) that names a real commit; else the commit HEAD gained in
     the two minutes before the result, asked while the worktree exists."""
-    for line in out.splitlines():
-        m = ONELINE_RE.match(line.strip())
-        if m and full_sha(cwd, m.group(1)):
-            return [(m.group(1), m.group(2).strip())]
     at = _epoch(ts)
     if at is None or not (cwd and os.path.isdir(cwd)):
         return []
+    for line in out.splitlines():
+        m = ONELINE_RE.match(line.strip())
+        # Only a commit made in the two minutes before this result: a sha
+        # line from some other command's output is not this session's commit.
+        t = commit_time(cwd, m.group(1)) if m else None
+        if t is not None and at - 120 <= t <= at + 5:
+            return [(m.group(1), m.group(2).strip())]
     try:
         p = subprocess.run(["git", "-C", cwd, "log", "-n", "5", "--format=%h%x09%ct%x09%s", "HEAD"],
                            capture_output=True, text=True, timeout=5)
@@ -358,6 +398,15 @@ def norm(path):
     path = os.path.normpath(os.path.expanduser(path))
     d, b = os.path.split(path)
     return os.path.join(os.path.realpath(d), b)
+
+
+def wskey(ws):
+    """A workspace as the store keys it: absolute, symlinks resolved, no
+    trailing slash. Every writer and every lookup goes through this, so the
+    board's spelling of a directory and a transcript's always meet."""
+    if not ws:
+        return ""
+    return os.path.realpath(os.path.expanduser(ws)).rstrip("/") or "/"
 
 
 def under(path, root):
@@ -412,6 +461,9 @@ class Scan(object):
         self.first_ts = ""
         proj = os.path.basename(os.path.dirname(path))
         self.subagent = proj == "subagents"
+        # The workspace is where the session started, not wherever a Bash
+        # `cd` left it: the first cwd in the transcript.
+        self.root = first_cwd(path)
         self.parent = None
         if self.subagent:
             # <proj>/<session>/subagents/agent-*.jsonl: the human's prompt is
@@ -437,11 +489,11 @@ class Scan(object):
         return self.tl.at(ts)
 
     def add(self, d, kind, locator, title="", path="", url="", sha=""):
-        cwd = d.get("cwd") or self.cwd
+        cwd = self.root or d.get("cwd") or self.cwd
         ts = d.get("timestamp") or ""
         repo, _ = git_facts(cwd)
         self.rows.append({
-            "ws": cwd, "repo": repo, "kind": kind, "title": title, "locator": locator,
+            "ws": wskey(cwd), "repo": repo, "kind": kind, "title": title, "locator": locator,
             "path": path, "url": url, "sha": sha, "created_at": ts, "updated_at": ts,
             "session_id": d.get("sessionId") or self.session,
             "branch": d.get("gitBranch") or self.branch,
@@ -520,8 +572,10 @@ class Scan(object):
             self.add(d, "commit", short[:7], title=subject, sha=sha,
                      url=("%s/commit/%s" % (web, sha)) if web else "")
 
-    def scratchpad(self):
-        """Every file in this session's scratchpad, dated by birth time."""
+    def scratchpad(self, since=0.0):
+        """Every file in this session's scratchpad, dated by birth time. Files
+        not touched since the last pass (since, the cursor's mtime) are
+        already rows and are skipped, so an incremental pass stays cheap."""
         if self.subagent or not self.session:
             return
         proj = os.path.basename(os.path.dirname(self.path))
@@ -541,6 +595,8 @@ class Scan(object):
                 except OSError:
                     continue
                 n += 1
+                if since and max(st.st_mtime, birth(st)) < since - 2:
+                    continue
                 kind = "image" if os.path.splitext(fn)[1].lower() in IMAGE_EXT else "temp"
                 ts = iso(birth(st))
                 d = {"cwd": self.cwd, "timestamp": ts, "sessionId": self.session,
@@ -553,6 +609,26 @@ class Scan(object):
             if r["prompt"] is None:
                 r["prompt"] = self.prompt_at(r.pop("_ts")) if r["_ts"] else ""
             r.pop("_ts", None)
+
+
+def first_cwd(path):
+    """The first cwd a transcript records, reading only until it is found."""
+    try:
+        with open(path, "rb") as fh:
+            for n, raw in enumerate(fh):
+                if n > 200:
+                    break
+                if b'"cwd"' not in raw:
+                    continue
+                try:
+                    d = json.loads(raw)
+                except ValueError:
+                    continue
+                if isinstance(d, dict) and isinstance(d.get("cwd"), str) and d["cwd"]:
+                    return d["cwd"]
+    except OSError:
+        pass
+    return ""
 
 
 def scan_transcript(path, offset):
@@ -632,9 +708,10 @@ def index_transcript(db, path):
         if cur["size"] == st.st_size and cur["mtime"] == st.st_mtime:
             return 0
         offset = cur["offset"] if cur["offset"] <= st.st_size else 0
+    since = cur["mtime"] if cur and offset else 0.0
     try:
         sc, end = scan_transcript(path, offset)
-        sc.scratchpad()
+        sc.scratchpad(since)
         sc.finish()
     except OSError:
         return 0
@@ -680,6 +757,29 @@ def _heading(md):
     return ""
 
 
+STORE_KEY = "store:plans,reviews,asks"
+
+
+def store_fingerprint():
+    """(entries, newest mtime) over the deep-plan state, review and ask dirs."""
+    n, newest = 0, 0.0
+    for d in (DP_STATE, os.path.join(PLANS, "reviews"), os.path.join(PLANS, "asks")):
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for name in names:
+            if not name.endswith(".json"):
+                continue
+            try:
+                m = os.stat(os.path.join(d, name)).st_mtime
+            except OSError:
+                continue
+            n += 1
+            newest = max(newest, m)
+    return n, newest
+
+
 def store_rows():
     """Plan, review and ask rows from their own stores, keyed by root or cwd."""
     rows = []
@@ -688,6 +788,7 @@ def store_rows():
         r = dict.fromkeys(FIELDS, "")
         r.update(kw)
         r["repo"] = git_facts(r["ws"])[0] if r["ws"] else ""
+        r["ws"] = wskey(r["ws"])
         rows.append(r)
 
     try:
@@ -815,10 +916,20 @@ def _index_once():
                 raise
             except Exception:
                 continue
+        # The stores change rarely and every turn end runs this: rewrite their
+        # rows only when a fingerprint of the three directories moved (kept
+        # as a cursors row, keyed so it can never be a transcript path).
+        fp = store_fingerprint()
+        cur = db.execute("SELECT size, mtime FROM cursors WHERE transcript = ?", (STORE_KEY,)).fetchone()
+        if cur and (cur["size"], cur["mtime"]) == fp:
+            return n
         rows = store_rows()
         db.execute("BEGIN IMMEDIATE")
         try:
             write_rows(db, rows)
+            db.execute("INSERT INTO cursors(transcript, offset, size, mtime) VALUES (?, 0, ?, ?) "
+                       "ON CONFLICT(transcript) DO UPDATE SET size = excluded.size, mtime = excluded.mtime",
+                       (STORE_KEY,) + fp)
             db.execute("COMMIT")
         except Exception:
             db.execute("ROLLBACK")
@@ -841,6 +952,8 @@ def backfill():
 
 KEPT = os.path.join(CREW_HOME, "kept")
 KEEP_MAX = 50 * 1024 * 1024
+KEEP_ALL_MAX = 500 * 1024 * 1024
+KEEP_KINDS = ("temp", "image", "doc", "file")
 
 
 def kept_dir(ws):
@@ -923,20 +1036,31 @@ def keep(rid):
 
 
 def keep_all(ws):
-    """Keep every at-risk row in a workspace: each row in a temp directory
-    whose file is still there, not yet kept. One result per row, refusals
-    included."""
+    """Keep every at-risk row in a workspace: each file row in a temp
+    directory whose file is still there, not yet kept, up to 500MB in all.
+    One result per row, refusals included."""
     db = connect()
     try:
         rows = db.execute("SELECT * FROM artifacts WHERE ws = ? AND kept_at IS NULL AND path <> '' "
-                          "ORDER BY created_at", (ws,)).fetchall()
-        out = []
+                          "AND kind IN (%s) ORDER BY created_at" % ",".join("?" * len(KEEP_KINDS)),
+                          (wskey(ws),) + KEEP_KINDS).fetchall()
+        out, total = [], 0
         for r in rows:
             if not (is_temp(norm(r["path"])) and os.path.lexists(r["path"])):
                 continue
+            try:
+                size = os.path.getsize(r["path"]) if os.path.isfile(r["path"]) else 0
+            except OSError:
+                size = 0
+            if size <= KEEP_MAX and total + size > KEEP_ALL_MAX:
+                out.append({"ok": False, "id": r["id"], "why": "over keep all's 500MB"})
+                continue
             db.execute("BEGIN IMMEDIATE")
             try:
-                out.append(_keep_one(db, r))
+                res = _keep_one(db, r)
+                out.append(res)
+                if res["ok"]:
+                    total += size
                 db.execute("COMMIT")
             except Exception:
                 db.execute("ROLLBACK")
@@ -967,7 +1091,7 @@ def search(q="", ws=None, kind=None, limit=500):
         where, args = [], []
         if ws:
             where.append("a.ws = ?")
-            args.append(ws)
+            args.append(wskey(ws))
         if kind:
             where.append("a.kind = ?")
             args.append(kind)
@@ -983,6 +1107,14 @@ def search(q="", ws=None, kind=None, limit=500):
         sql += " ORDER BY a.created_at DESC, a.id DESC LIMIT ?"
         args.append(int(limit))
         return [_dict(r) for r in db.execute(sql, args)]
+    finally:
+        db.close()
+
+
+def count(ws):
+    db = connect()
+    try:
+        return db.execute("SELECT COUNT(*) FROM artifacts WHERE ws = ?", (wskey(ws),)).fetchone()[0]
     finally:
         db.close()
 
