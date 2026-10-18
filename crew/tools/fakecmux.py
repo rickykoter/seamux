@@ -14,6 +14,8 @@ last one did.
     workspace create | new-workspace     appends a row, prints OK workspace:<n>
     sessions list --json                 $FAKE_CMUX_DIR/sessions.json, else none
     sidebar-state --workspace <ws>       cwd= and claude_code= from the row
+    tree --json                          one window; a row's "tty" is its terminal
+    new-pane                             OK surface:900 pane:900 <workspace>
 
 $FAKE_CMUX_DELAY (seconds) sleeps before every call, for hook-budget probes.
 Anything else succeeds and does nothing.
@@ -79,6 +81,14 @@ elif args[:2] == ["workspace", "create"] or args[:1] == ["new-workspace"]:
                  "command": o.get("--command", "")})
     json.dump(rows, open(db, "w"))
     print("OK " + ref)
+elif args[:2] == ["tree", "--json"]:
+    # One window; a row's "tty" becomes its one terminal surface.
+    print(json.dumps({"windows": [{"workspaces": [
+        {"id": w["id"], "ref": w.get("ref"), "panes": [{"surfaces": (
+            [{"type": "terminal", "tty": w["tty"]}] if w.get("tty") else [])}]}
+        for w in rows]}]}))
+elif args[:1] == ["new-pane"]:
+    print("OK surface:900 pane:900 " + (opts_of(args[1:]).get("--workspace") or "workspace:1"))
 elif args[:1] == ["sidebar-state"]:
     w = next((w for w in rows if named(w, opts_of(args[1:]).get("--workspace"))), None)
     if not w:

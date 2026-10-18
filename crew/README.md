@@ -161,7 +161,8 @@ for good and reclaiming its worktree (ADR 0022). It closes the cmux workspace,
 and `~/.cache/cmux-crew/archive.json` keeps what a close loses: the title, the
 color, the branch and the Claude session id. The worktree, branch and transcript
 already survive a close. Archive refuses while the agent is mid-turn or waiting
-on a prompt, and force-closes an idle one. Deleting the file only turns archived
+on a prompt, or while a terminal there runs a foreground job that is not its
+shell or the agent, and force-closes an idle one. Deleting the file only turns archived
 rows into past ones.
 
 Scoping is by **repo family**, not directory: from a worktree you still see its
@@ -492,6 +493,7 @@ Otherwise a tap on row 3 would act on whichever row you happen to be standing on
 | `▣ sandbox` / `▢ sandbox` | stops / starts the sandbox |
 | `allow` / `deny` / `read it →` / `jump →` | answer or escape a live Feed ask |
 | `shipped · reclaim this worktree` | opens a terminal where you are, dry-runs the reclaim in it, and asks |
+| `archive` on a quiet row | closes the workspace and remembers it, for `crew-resume` to bring back |
 | `↻` in the header | forces a full reconcile |
 | anywhere else on the row | selects the workspace |
 
@@ -517,6 +519,23 @@ cmux by every route.
 Do not "turn it off" by emptying that list. `[]` means *no restriction* — every
 link stays inside, the exact opposite. The off switch is
 `openTerminalLinksInCmuxBrowser` / `interceptTerminalOpenCommandInCmuxBrowser`.
+
+### Archive from the board
+
+A quiet row, one that is not mid-turn and has nothing to say, carries an
+`archive` chip. The tap closes that workspace and records it in
+`~/.cache/cmux-crew/archive.json` (see [Sessions](#sessions)), and the row
+leaves the board on the next push. Nothing is deleted, so unlike reclaim it
+does not ask.
+
+It runs inside the notification hook, not in a fired child, because the close
+needs a caller cmux trusts and a detached child is not one. cmux kills that hook
+at 10s, so the hook times its first cmux call: when cmux is slow enough that the
+rest would not fit, it opens a terminal in the workspace you are looking at and
+archives there instead. A refusal comes back as a banner and a success says
+nothing. It refuses when the agent is mid-turn, when a terminal in the workspace
+is running something other than its shell or the agent (a dev server, a test
+run: the close is forced, and would kill it), and when the close does not take.
 
 ### The one tap that asks first
 

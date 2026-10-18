@@ -909,6 +909,13 @@ def act(action, row, extra):
         # triage.py opens a terminal and asks before deleting anything.
         return notify("crew:reclaim", title, wsid), "reclaim " + title
 
+    if action == "archive":
+        # triage.py archives in the hook: a close needs a caller cmux trusts,
+        # and this server is not one of its children. Nothing is deleted.
+        if not wsid:
+            return False, "no workspace on this row"
+        return notify("crew:archive", title, wsid), "archive " + title
+
     if action in ("sandbox-up", "sandbox-down"):
         # triage.py resolves the worktree and runs crew-sandbox; the board only
         # asks. Same channel as the Swift sidebar's sandbox chip.
@@ -974,7 +981,7 @@ def increment(slug, n, action, why):
 
 
 ACTIONS = ("jump", "row", "diff", "pr", "issue", "jira", "checks", "plan", "take the check",
-           "review", "code", "reclaim", "sync", "go", "close plan", "ask",
+           "review", "code", "reclaim", "archive", "sync", "go", "close plan", "ask",
            "sandbox-up", "sandbox-down", "feed-allow", "feed-deny")
 
 

@@ -19,6 +19,9 @@ What is asserted:
     gone), and its fuzzy scorer orders by score, then state, then recency;
   - merged() is true for a landed branch, false for an unlanded one and for
     main; dormant_days() reads integrations.json and defaults to 5;
+  - the board's archive chip (triage.py's crew:archive) archives in the hook,
+    refuses a mid-turn agent with a banner, and on a slow cmux hands the
+    archive to a terminal instead of overrunning the hook's 10s;
   - crew-reclaim reports the mid-turn guard on a dry run and changes nothing,
     refuses a mid-turn agent, stops before deleting when the close fails, and
     refuses to close its own terminal's workspace, and otherwise force-closes
@@ -57,6 +60,15 @@ ENV = dict(os.environ, CREW_CMUX=FAKE, FAKE_CMUX_DIR=FAKE_DIR,
            CREW_CLAUDE_PROJECTS=os.path.join(T, "projects"),
            CREW_INTEGRATIONS=os.path.join(T, "integrations.json"),
            GIT_CONFIG_GLOBAL=os.path.join(T, "gitconfig"), GIT_CONFIG_NOSYSTEM="1")
+FAKE_PS = os.path.join(T, "ps")
+with open(FAKE_PS, "w") as fh:
+    # Foreground leaders per tty: a shell, an idle claude, and a dev server.
+    fh.write('#!/bin/sh\ncase "$4" in\n'
+             '  ttys-shell) echo " 10 10 10 -zsh" ;;\n'
+             '  ttys-agent) echo " 11 11 30 -zsh"; echo " 30 30 30 /opt/bin/claude"; echo " 31 30 30 node" ;;\n'
+             '  ttys-busy) echo " 12 12 40 -zsh"; echo " 40 40 40 npm" ;;\nesac\n')
+os.chmod(FAKE_PS, 0o755)
+ENV["CREW_PS"] = FAKE_PS
 os.environ.update(ENV)
 with open(ENV["GIT_CONFIG_GLOBAL"], "w") as fh:
     fh.write("[user]\n\tname = probe\n\temail = probe@example.com\n[init]\n\tdefaultBranch = main\n")
@@ -332,6 +344,89 @@ check("order: score first, then state, then recency",
       got[:2] == ["dorg", "dorg"] and got[-1] == "dock-organization", str(got))
 same = R.order([row("a", "past", 1), row("b", "past", 9), row("c", "live", 0)], [])
 check("with no query: state, then recency", [r["title"] for r in same] == ["c", "b", "a"])
+
+put_rows([ws("ws-s", A, tty="ttys-shell"), ws("ws-a", B, tty="ttys-agent"),
+          ws("ws-b", os.path.join(T, "gone"), tty="ttys-busy", title="busy")])
+check("a terminal at its prompt, or an idle agent, is not busy",
+      W.busy("ws-s") == [] and W.busy("ws-a") == [])
+check("a foreground job that is neither is", W.busy("ws-b") == ["npm"])
+ok, msg = W.archive("ws-b")
+check("archive refuses a workspace with a job running, naming it",
+      not ok and "npm is running" in msg and len(rows()) == 3, msg)
+
+# --- the board's archive chip: triage.py's crew:archive ---------------------------
+print("board archive chip (triage.py)")
+import time  # noqa: E402
+TRIAGE = os.path.join(CREW, "hooks", "triage.py")
+
+
+def tap(ws_id, delay=None):
+    """One crew:archive notification through the hook, as cmux would send it."""
+    env = dict(os.environ, CMUX_CLAUDE_HOOK_CMUX_BIN=FAKE, HOME=T)
+    env.pop("FAKE_CMUX_DELAY", None)
+    if delay:
+        env["FAKE_CMUX_DELAY"] = str(delay)
+    policy = {"notification": {"subtitle": "crew:archive", "body": "x", "workspaceId": ws_id},
+              "effects": {"desktop": True, "sound": True, "record": True}}
+    open(os.path.join(FAKE_DIR, "cmux.log"), "w").close()
+    t0 = time.monotonic()
+    r = subprocess.run([sys.executable, TRIAGE], input=json.dumps(policy), env=env,
+                       capture_output=True, text=True, timeout=30)
+    return r, time.monotonic() - t0
+
+
+C = os.path.join(T, "c")
+os.makedirs(C)
+put_rows([ws("ws-c", C, process=True, title="chip")])
+put_sessions([sess("ws-c", "s-c", "idle")])
+r, took = tap("ws-c")
+out = json.loads(r.stdout or "{}")
+check("a tap archives the row's workspace in the hook",
+      not rows() and (W.load_archive().get(C) or {}).get("session_id") == "s-c", r.stderr)
+check("…and the notification is swallowed: it is an RPC, not a message",
+      not any((out.get("effects") or {}).values()), r.stdout)
+check("…and says nothing when it worked", "notify" not in log())
+put_rows([ws("ws-c", C, process=True, title="chip")])
+put_sessions([sess("ws-c", "s-c", "running")])
+W.forget(C)
+r, took = tap("ws-c")
+check("a tap on a mid-turn workspace refuses with a banner, and closes nothing",
+      len(rows()) == 1 and "notify --title crew --subtitle archive" in log() and "mid-turn" in log()
+      and C not in W.load_archive(), log())
+put_sessions([sess("ws-c", "s-c", "idle")])
+r, took = tap("ws-c")
+r, took = tap("ws-c")
+check("a second tap on a row that already went is silent", "notify" not in log() and not rows(), log())
+put_rows([ws("ws-c", C, process=True, title="chip")])
+W.forget(C)
+r, took = tap("ws-c", delay=0.4)
+check("with cmux at 0.4s a call, the archive still happens in the hook, inside 10s",
+      not rows() and took < 10 and "new-pane" not in log(), "%.1fs\n%s" % (took, log()))
+put_rows([ws("ws-c", C, process=True, title="chip"), ws("ws-h", A, selected=True)])
+W.forget(C)
+r, took = tap("ws-c", delay=1.0)
+check("with cmux at 1s a call, it goes to a terminal elsewhere instead, inside 10s",
+      took < 10 and "new-pane --type terminal --direction down --workspace ws-h" in log()
+      and "workspaces.py archive ws-c" in log() and "workspace close" not in log(),
+      "%.1fs\n%s" % (took, log()))
+
+# The page names a row id and a verb; the server resolves the rest from the
+# targets file the collector writes. The id has to survive that trip, or the
+# notification reaches triage.py with no workspace on it.
+_l = importlib.machinery.SourceFileLoader("cbi", os.path.join(CREW, "board", "crew-board-intent"))
+I = importlib.util.module_from_spec(importlib.util.spec_from_loader("cbi", _l))
+_l.exec_module(I)
+posted = []
+I.notify = lambda sub, body, wsid=None: posted.append((sub, wsid)) or True
+_l = importlib.machinery.SourceFileLoader("cb", os.path.join(CREW, "board", "crew-board"))
+B_ = importlib.util.module_from_spec(importlib.util.spec_from_loader("cb", _l))
+_l.exec_module(B_)
+B_.TARGETS_FILE = os.path.join(T, "targets.json")
+B_.write_targets({"rows": [{"id": "UUID-1", "ref": "workspace:1", "name": "chip", "cwd": C}]})
+row = json.load(open(B_.TARGETS_FILE))["UUID-1"]
+ok, _ = I.act("archive", row, "")
+check("an archive tap reaches triage.py naming the row's workspace",
+      ok and posted == [("crew:archive", "UUID-1")], str(posted))
 
 # --- crew-reclaim's close guard ---------------------------------------------------
 print("crew-reclaim")

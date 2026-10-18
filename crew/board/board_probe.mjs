@@ -1540,6 +1540,27 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
   checks.push(["rank: a row carries its workspace's commits for the news", out.commits.length === 1 && out.commits[0].s === "x"]);
 }
 
+// ---- the archive chip: on a quiet row, never on a working one -------------
+{
+  const out = JSON.parse(execFileSync("python3", ["-c", `
+import importlib.machinery, importlib.util, json, sys
+l = importlib.machinery.SourceFileLoader("cb", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("cb", l)); l.exec_module(m)
+W = lambda s, running: {"id": s, "title": s, "cwd": "/w/" + s, "desc": "", "running": running,
+  "branch": "none", "pr": "none", "dirty": False}
+rows, quiet = m.rank([W("idle", False), W("busy", True)], {})
+print(json.dumps({r["id"]: [r["kind"], r["chips"]] for r in rows + quiet}))
+`, join(HERE, "crew-board")], { encoding: "utf8" }));
+  checks.push(["archive: a quiet row offers the archive chip",
+    out.idle[0] === "quiet" && out.idle[1].includes("archive")]);
+  checks.push(["archive: a working row does not", out.busy[0] === "running" && !out.busy[1].includes("archive")]);
+  const intent = readFileSync(join(HERE, "intent.js"), "utf8"), rjs = readFileSync(join(HERE, "render.js"), "utf8");
+  const srv = readFileSync(join(HERE, "crew-board-intent"), "utf8");
+  checks.push(["archive: the chip is clickable, has a tooltip, and the intent server admits it",
+    /"archive": "archive"/.test(intent) && /"archive": "Close this workspace/.test(rjs) &&
+    /ACTIONS = \([^)]*"archive"/.test(srv) && srv.includes('notify("crew:archive"')]);
+}
+
 // ---- the news footer: escaped, keeps its open state, hides when empty ------
 {
   const NEWS = { hours: 5, lede: "{{gate}} needs your go-ahead on <img src=x onerror=1>.",
