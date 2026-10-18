@@ -361,17 +361,33 @@
     },
 
     // --- sessions ----------------------------------------------------------
-    // 324 transcripts across 46 projects is well past what /resume's own list
-    // is comfortable for. Searchable picker; ⏎ resumes into a new workspace.
+    // The finder: one row per workspace, live, archived, past or gone, with a
+    // fuzzy search. ⏎ jumps, restores or resumes by state.
     "crew.resume": {
       "type": "command",
-      "title": "Resume a session…",
-      "subtitle": "search every Claude session and hop back in",
-      "keywords": ["resume", "session", "history", "claude", "crew"],
+      "title": "Find a workspace…",
+      "subtitle": "search live, archived and past workspaces; jump, restore or resume",
+      "keywords": ["find", "search", "workspace", "resume", "restore", "archive",
+                   "session", "history", "claude", "crew"],
       "command": "CREW_EPHEMERAL=1 __HOME__/.config/cmux/crew/bin/crew-resume",
       "target": "newTabInCurrentPane",
       "shortcut": ["cmd+k", "r"],
-      "icon": { "type": "symbol", "name": "clock.arrow.2.circlepath" }
+      "icon": { "type": "symbol", "name": "magnifyingglass" }
+    },
+
+    // The sweep: merged, dormant and orphaned workspaces, one card at a time.
+    // Not ephemeral: the tab is where crew-reclaim's report and y/N appear,
+    // and the tally at the end is worth reading.
+    "crew.sweep": {
+      "type": "command",
+      "title": "Sweep workspaces…",
+      "subtitle": "merged, dormant and orphaned, one card at a time: reclaim, archive or skip",
+      "keywords": ["sweep", "cleanup", "clean", "reclaim", "archive", "dormant",
+                   "worktree", "crew"],
+      "command": "__HOME__/.config/cmux/crew/bin/crew-sweep",
+      "target": "newTabInCurrentPane",
+      "shortcut": ["cmd+k", "s"],
+      "icon": { "type": "symbol", "name": "wand.and.stars" }
     },
 
     "crew.digest": {
