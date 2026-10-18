@@ -479,8 +479,9 @@ function __boardRender(d) {
   // badged "pr open" with no way to open the PR was the first cut of this.
   // When it has them, they say what the badge would, so the badge steps aside
   // for the name -- except wake, which every row carries and which says nothing
-  // about the row, so an idle row with only wake still says idle. Spend still shows, because a row that is quietly burning
-  // money is the one quiet row worth noticing.
+  // about the row, so an idle row with only wake still says idle. Spend still
+  // shows, because a row that is quietly burning money is the one quiet row
+  // worth noticing.
   function quietRow(a) {
     var acts = (a.chips || []).filter(function (c) { return c !== "jump"; });
     var qb = acts.length ? '<span class="chips">' + acts.map(function (c) {

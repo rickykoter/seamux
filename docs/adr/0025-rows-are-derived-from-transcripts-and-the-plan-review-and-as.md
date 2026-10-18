@@ -1,4 +1,4 @@
-# 0023. Rows are derived from transcripts and the plan, review and ask stores, not captured by a tool hook
+# 0025. Rows are derived from transcripts and the plan, review and ask stores, not captured by a tool hook
 
 Date: 2026-10-18
 
