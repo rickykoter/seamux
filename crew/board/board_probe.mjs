@@ -980,6 +980,57 @@ if (live && Array.isArray(live.rows)) {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
+// ---- the Wake's page: store text reaches the DOM escaped -------------------
+// artifacts.tmpl.html's script, run against a stub DOM and a stub fetch whose
+// rows carry markup in every free-text field. What reaches innerHTML must be
+// text. Also: one header per prompt, states on rows, open by id, no emoji.
+{
+  const fs = await import("node:fs");
+  const html = fs.readFileSync(join(HERE, "artifacts.tmpl.html"), "utf8");
+  const script = (html.match(/<script>\n([\s\S]*?)<\/script>\s*<\/body>/) || [])[1] || "";
+  const els = {};
+  const el = id => els[id] || (els[id] = {
+    id, innerHTML: "", value: "", hidden: true, attrs: {},
+    textContent: id === "boot" ? JSON.stringify({ t: "tok", ws: "/w/a" }) : "",
+    setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k]; },
+    addEventListener() {}, classList: { add() {}, remove() {}, toggle() {} }, focus() {}, blur() {}, select() {} });
+  const evil = "</span><img src=x onerror=alert(1)>";
+  const now = new Date().toISOString();
+  const row = (o) => ({ id: 1, kind: "temp", title: "t", path: "", was_path: "", url: "", sha: "", created_at: now,
+    session_id: "s1", branch: "main", prompt: "p", source: "", locator: "", state: "ok", published: false, ws: "/w/a", ...o });
+  const rows = [
+    row({ id: 1, title: evil, path: "/tmp/" + evil, branch: evil, prompt: evil + " first", state: "risk" }),
+    row({ id: 2, title: "b.txt", path: "/tmp/b.txt", prompt: evil + " first", state: "gone" }),
+    row({ id: 3, kind: "doc", title: "c.md", path: "/w/a/c.md", prompt: "second", state: "kept", was_path: "/tmp/" + evil }),
+  ];
+  const fetched = [];
+  const ctx = createContext({
+    document: { getElementById: el, addEventListener() {}, title: "", activeElement: null, visibilityState: "visible",
+                querySelectorAll: () => [], body: { appendChild() {}, removeChild() {} } },
+    fetch: u => { fetched.push(u); return Promise.resolve({ json: () => Promise.resolve(
+      { ws: "/w/a", rows, workspaces: [{ ws: "/w/a", n: 3, last: now, name: "a", here: true }] }) }); },
+    setInterval() {}, setTimeout, clearTimeout, history: { replaceState() {} }, navigator: {} });
+  let ran = true;
+  try { runInContext(script, ctx); } catch (e) { ran = false; console.log("  --   wake page script threw: " + e.message); }
+  await new Promise(r => setTimeout(r, 30));
+  const all = Object.values(els).map(e => e.innerHTML).join("\n");
+  checks.push(["wake page: the script runs and asks for rows with its token and workspace",
+    ran && (fetched[0] || "").startsWith("/artifacts/data?t=tok&ws=%2Fw%2Fa")]);
+  checks.push(["wake page: titles, paths, prompts and branches reach the DOM as text",
+    all.includes("&lt;img src=x") && !/<img\b/.test(all) && !all.includes("</span><img")]);
+  checks.push(["wake page: a prompt is said once for the rows it produced",
+    (els.list.innerHTML.match(/class="ph"/g) || []).length === 2]);
+  checks.push(["wake page: rows carry their state, and a kept row says where it was",
+    /class="row risk/.test(els.list.innerHTML) && /class="row gone/.test(els.list.innerHTML) &&
+    /class="row kept/.test(els.list.innerHTML) && els.list.innerHTML.includes("was /tmp/&lt;/span&gt;")]);
+  checks.push(["wake page: open sends a row id and never a path",
+    /"\/artifacts\/open\?t=" \+ encodeURIComponent\(T\) \+ "&id=" \+ r\.id/.test(html) && !/[?&]path=/.test(html)]);
+  checks.push(["wake page: every icon is an inline SVG, no emoji",
+    !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(html)]);
+  checks.push(["wake page: reduced motion stills the crab",
+    /@media \(prefers-reduced-motion: reduce\)\{\s*\.crab \*/.test(html)]);
+}
+
 // ---- judgments.py: turn-end TypeSafe policy, pure, no network -------------
 // The policy the board actually applies: stuck>=threshold flags wilt, urgency
 // is the within-tier sort key, and anything missing or stale answers exactly
@@ -1705,6 +1756,46 @@ print(json.dumps({r["id"]: [r["kind"], r["chips"]] for r in rows + quiet}))
     checks.push(["intent server: a foreign Host is refused, localhost on its port is not",
       rebound.status === 403 && !rebound.body.includes(token) && localhost.status === 200 &&
       (await req("GET", "/health", { headers: { Host: "127.0.0.1:1" } })).status === 403]);
+
+    // The Wake's routes, against a store seeded under the temp HOME. The page
+    // names row ids; nothing it sends is a path.
+    const kept = join(HOME, "notes.md");
+    fs.writeFileSync(kept, "# notes\n");
+    execFileSync("python3", ["-c", [
+      "import sys; sys.path.insert(0, sys.argv[1]); import artifacts as A",
+      "db = A.connect(); db.execute('BEGIN IMMEDIATE')",
+      "row = lambda **k: dict(dict.fromkeys(A.FIELDS, ''), ws='/w/wake', **k)",
+      "A.write_rows(db, [row(kind='file', locator=sys.argv[2], path=sys.argv[2], title='notes.md', prompt='write the notes'),",
+      "                  row(kind='temp', locator='/private/tmp/wake-gone.txt', path='/private/tmp/wake-gone.txt', title='gone.txt'),",
+      "                  row(kind='plan', locator='wake-plan', title='a plan')])",
+      "db.execute('COMMIT')"].join("\n"), HERE, kept], { env: { ...process.env, HOME } });
+    const tq = `t=${encodeURIComponent(token)}`;
+    const wp = await req("GET", "/artifacts?ws=" + encodeURIComponent("</script><b>x"));
+    checks.push(["wake: the page carries its token, and a ws cannot close the boot block",
+      wp.status === 200 && wp.body.includes(`"t": "${token}"`) && wp.body.includes("\\u003c/script\\u003e") &&
+      !wp.body.includes("</script><b>x")]);
+    const wd0 = await req("GET", "/artifacts/data?ws=%2Fw%2Fwake");
+    const wd = await req("GET", `/artifacts/data?${tq}&ws=%2Fw%2Fwake`);
+    let wj = {};
+    try { wj = JSON.parse(wd.body); } catch {}
+    const byTitle = t => (wj.rows || []).find(r => r.title === t) || {};
+    checks.push(["wake: rows need the token, and open to no other origin",
+      wd0.status === 403 && wd.status === 200 && !("access-control-allow-origin" in wd.headers) &&
+      (wj.rows || []).length === 3]);
+    checks.push(["wake: a missing file is gone, a present one is not",
+      byTitle("gone.txt").state === "gone" && ["ok", "risk"].includes(byTitle("notes.md").state)]);
+    checks.push(["wake: search goes through the prompt", await (async () => {
+      const r = await req("GET", `/artifacts/data?${tq}&ws=%2Fw%2Fwake&q=notes+write`);
+      try { return JSON.parse(r.body).rows.map(x => x.title).join() === "notes.md"; } catch { return false; }
+    })()]);
+    const wo = async q => { const r = await req("GET", `/artifacts/open?${tq}&${q}`); try { return JSON.parse(r.body); } catch { return {}; } };
+    checks.push(["wake: open needs the token", (await req("GET", `/artifacts/open?id=${byTitle("gone.txt").id}`)).status === 403]);
+    checks.push(["wake: open takes a row id, not a path",
+      (await wo("path=" + encodeURIComponent(kept))).detail === "bad id" && (await wo("id=99999")).detail === "no such row"]);
+    checks.push(["wake: a gone row says so instead of opening",
+      /^gone: /.test((await wo("id=" + byTitle("gone.txt").id)).detail || "")]);
+    checks.push(["wake: a plan surface is one of three names",
+      (await wo(`id=${byTitle("a plan").id}&s=..%2F..%2Fetc`)).detail === "unknown plan surface"]);
 
     const ok = { op: "comment", t: token, file: "a.js", line: 1, side: "new", text: "why?" };
     checks.push(["review POST: no Origin is refused", (await post(ok, { origin: "" })).status === 403]);

@@ -1,0 +1,589 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>the wake</title>
+<!--
+  The Wake: what a workspace's sessions left behind. Served by crew-board-intent
+  at /artifacts?ws=<cwd>, read per request like /usage. The server fills the
+  boot block below with {t, ws}: the token for /artifacts/data and
+  /artifacts/open, and the workspace to show first.
+
+  Rows come from ~/.claude/crew/artifacts.db (board/artifacts.py). The page
+  never names a path to the server: a click sends a row id and the server
+  resolves the file from the row. Paths appear here only to be read.
+
+  Layout: day headers, then each prompt quoted once with the rows it produced
+  beneath it. Same Everforest palette as the board and /usage. The hermit
+  crab is the Keep metaphor: a temp file lives in a borrowed shell, a kept
+  one has a shell of its own, a gone one is an empty shell. Every icon is an
+  inline SVG; no emoji. Reduced motion stills the crab.
+
+  Every string from the store (titles, paths, prompts, branches) goes through
+  esc() or text nodes before it reaches the DOM.
+-->
+<style>
+:root{
+  --bg:#2d353b; --card:#343f44; --card2:#3a464c; --line:#2f3639; --line2:#3d484d;
+  --ink:#d3c6aa; --muted:#859289; --faint:#5c6a72;
+  --risk:#e69875; --kept:#a7c080; --pub:#83c092; --mark:#dbbc7f; --bad:#e67e80;
+  --shell:#d699b6; --shell2:#a8738f; --crab:#e67e80;
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink)}
+body{padding:12px 14px 40px;font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;max-width:980px}
+button{font:inherit;color:inherit}
+
+/* ---- header: the crab, the name, the workspace ---- */
+.top{display:flex;align-items:flex-end;gap:12px;margin-bottom:10px}
+.ttl{flex:1;min-width:0}
+h1{font:600 17px/1.15 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;margin:0;letter-spacing:-.01em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+h1 .dot{color:var(--faint);margin:0 3px}
+h1 #wsname{color:var(--muted);font-weight:500}
+.sub{color:var(--muted);font-size:11.5px;margin-top:3px}
+.sub b{color:var(--ink);font-weight:600}
+.sub .risk{color:var(--risk)} .sub .kept{color:var(--kept)}
+select#ws{background:var(--card);color:var(--ink);border:1px solid var(--line2);border-radius:7px;
+  padding:4px 6px;font:12px/1.2 system-ui;max-width:240px}
+
+/* ---- the crab ---- */
+.crab{width:76px;height:50px;flex:none;overflow:visible}
+.crab .sand{stroke:var(--line2);stroke-width:1.5;fill:none;stroke-linecap:round}
+.crab #cb{transition:transform .5s cubic-bezier(.5,-.35,.4,1.35),opacity .35s}
+.crab #eyes{transform-origin:50px 31px;animation:sway 7.3s ease-in-out infinite}
+.crab .eye{transform-box:fill-box;transform-origin:center;animation:blink 6.1s infinite}
+.crab .eye + .eye{animation-delay:.04s}
+.crab #pupils{transition:transform .25s}
+.crab #claw{transform-box:fill-box;transform-origin:0% 100%}
+.crab.look #pupils{transform:translate(1.1px,1.3px)}
+.crab.look #eyes{animation-play-state:paused}
+.crab.hide #cb{transform:translate(-11px,3px);opacity:0}
+.crab.hide #shell{animation:wobble .55s ease-out 1}
+.crab.pat #claw{animation:pat .7s ease-in-out 1}
+@keyframes blink{0%,93%,100%{transform:scaleY(1)}95.5%{transform:scaleY(.12)}}
+@keyframes sway{0%,100%{transform:rotate(0)}50%{transform:rotate(2.5deg)}}
+@keyframes wobble{0%,100%{transform:rotate(0)}30%{transform:rotate(-3deg)}65%{transform:rotate(2deg)}}
+@keyframes pat{0%,100%{transform:rotate(0)}40%{transform:rotate(-28deg)}70%{transform:rotate(6deg)}}
+.crab #shell{transform-box:fill-box;transform-origin:50% 100%}
+
+/* ---- search and chips ---- */
+.bar{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+#q{flex:1;background:var(--card);color:var(--ink);border:1px solid var(--line2);border-radius:8px;
+  padding:7px 10px;font:13px/1.2 system-ui;outline:none}
+#q:focus{border-color:var(--muted)}
+#q::placeholder{color:var(--faint)}
+.keyhint{font:600 10.5px/1 var(--mono);color:var(--faint);border:1px solid var(--line2);border-radius:5px;
+  padding:4px 6px;cursor:pointer;background:none}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px}
+.chip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line2);background:none;border-radius:999px;
+  padding:2px 9px 2px 7px;font:500 11.5px/1.5 system-ui;color:var(--muted);cursor:pointer}
+.chip i{width:7px;height:7px;border-radius:50%;background:var(--c,var(--muted))}
+.chip span{font:500 10.5px/1 var(--mono);color:var(--faint)}
+.chip.on{color:var(--ink);background:var(--card2);border-color:var(--muted)}
+.chip.on span{color:var(--muted)}
+.chip.zero{opacity:.45}
+
+/* ---- the timeline ---- */
+.day{margin-bottom:16px}
+.day h2{display:flex;align-items:center;gap:8px;font:600 10px/1 system-ui;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--muted);margin:0 0 8px}
+.day h2::after{content:"";flex:1;border-top:1px solid var(--line2)}
+.grp{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 10px 6px;margin-bottom:7px}
+.ph{display:flex;align-items:baseline;gap:8px;margin-bottom:4px;min-width:0}
+.ph time{font:500 11px/1 var(--mono);color:var(--faint);flex:none;width:38px}
+.ph .prompt{flex:1;min-width:0;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.ph .prompt::before{content:"\203A  ";color:var(--faint)}
+.ph .prompt.none{color:var(--faint);font-style:italic}
+.grp.open .ph .prompt{white-space:normal}
+.ph .sess,.ph .br{flex:none;font:500 10.5px/1.4 var(--mono);color:var(--faint)}
+.ph .sess{cursor:pointer;border-bottom:1px dotted var(--faint)}
+.ph .sess:hover{color:var(--muted)}
+ul.rows{list-style:none;margin:0;padding:0 0 0 46px}
+.row{display:grid;grid-template-columns:58px minmax(0,1fr) auto;gap:2px 8px;align-items:center;padding:3px 6px;
+  margin:0 -6px;border-radius:6px;cursor:default;outline:none}
+.row:hover{background:var(--card2)}
+.row.sel{background:var(--card2);box-shadow:inset 2px 0 0 var(--muted)}
+.k{font:600 10px/1 var(--mono);text-transform:lowercase;color:var(--c,var(--muted))}
+.t{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.t:hover{text-decoration:underline;text-decoration-color:var(--faint)}
+.p{grid-column:2 / 4;font:11px/1.35 var(--mono);color:var(--faint);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;direction:rtl;text-align:left}
+.p bdi{direction:ltr;unicode-bidi:isolate}
+.p.was{color:var(--faint);font-style:italic}
+.st{display:inline-flex;align-items:center;gap:4px;font:500 10.5px/1 system-ui;color:var(--faint);white-space:nowrap}
+.st svg{width:15px;height:15px;flex:none}
+.st.risk{color:var(--risk)} .st.kept{color:var(--kept)} .st.pub{color:var(--pub)}
+.acts{grid-column:2 / 4;display:none;gap:6px;padding:3px 0 2px}
+.row.sel .acts{display:flex}
+.acts button{background:none;border:1px solid var(--line2);border-radius:6px;padding:1px 8px;font:500 11px/1.6 system-ui;
+  color:var(--muted);cursor:pointer}
+.acts button:hover{color:var(--ink);border-color:var(--muted)}
+.row.gone .k,.row.gone .t,.row.gone .p{opacity:.45}
+.row.gone .t{text-decoration:line-through;text-decoration-color:var(--faint)}
+mark{background:none;color:var(--mark);box-shadow:inset 0 -1px 0 var(--mark)}
+
+.empty{color:var(--muted);text-align:center;padding:30px 10px;line-height:1.7}
+.empty code{font:12px var(--mono);color:var(--ink);background:var(--card);padding:1px 5px;border-radius:4px}
+
+#toast{position:fixed;left:50%;bottom:12px;transform:translateX(-50%) translateY(20px);opacity:0;pointer-events:none;
+  background:#232a2e;border:1px solid var(--line2);border-radius:8px;padding:6px 12px;max-width:90vw;
+  font:12px/1.4 system-ui;color:var(--ink);transition:opacity .15s,transform .15s;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;box-shadow:0 6px 18px rgba(0,0,0,.4)}
+#toast.on{opacity:1;transform:translateX(-50%)}
+#toast.bad{color:var(--bad)}
+
+#help{position:fixed;inset:0;background:rgba(30,35,38,.72);display:flex;align-items:center;justify-content:center}
+#help[hidden]{display:none}
+#help .card{background:var(--card);border:1px solid var(--line2);border-radius:12px;padding:14px 18px;min-width:260px}
+#help h3{margin:0 0 8px;font:600 12px system-ui;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+#help dl{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;margin:0;font-size:12.5px}
+#help dt{font:600 11px/1.6 var(--mono);color:var(--ink)}
+#help dd{margin:0;color:var(--muted)}
+
+@media (prefers-reduced-motion: reduce){
+  .crab *, #toast{animation:none !important;transition:none !important}
+}
+@media (max-width:560px){
+  ul.rows{padding-left:0}
+  .ph time{width:auto}
+  .top{flex-wrap:wrap}
+  select#ws{max-width:100%}
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <!-- at risk: a crab with no shell of its own -->
+    <symbol id="i-bare" viewBox="0 0 16 16">
+      <path d="M4 12.5l-1.6 2M6.3 13l-.6 2M9.7 13l.6 2M12 12.5l1.6 2" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
+      <ellipse cx="8" cy="10.6" rx="4.6" ry="2.9" fill="currentColor"/>
+      <path d="M6.4 8.4l-.6-3M9.6 8.4l.6-3" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
+      <circle cx="5.7" cy="4.6" r="1.25" fill="currentColor"/><circle cx="10.3" cy="4.6" r="1.25" fill="currentColor"/>
+      <circle cx="1.9" cy="8.6" r="1.4" fill="currentColor"/><circle cx="14.1" cy="8.6" r="1.4" fill="currentColor"/>
+    </symbol>
+    <!-- kept: a shell of its own -->
+    <symbol id="i-shell" viewBox="0 0 16 16">
+      <path d="M1.8 14.6C.6 10.4 2.2 4.4 7.4 3.4c4.6-.9 7.6 2.4 6.8 6.6-.5 2.8-3 4.6-6 4.6z" fill="currentColor"/>
+      <path d="M8.6 9.4c0-1 1.4-1 1.4 0 0 1.4-2.2 1.7-2.8.3-.9-1.8 1.1-3.5 2.8-2.8 2 .8 2.3 3.5.6 5.1" fill="none"
+        stroke="var(--card)" stroke-width="1" stroke-linecap="round"/>
+    </symbol>
+    <!-- gone: an empty shell, left on the sand -->
+    <symbol id="i-empty" viewBox="0 0 16 16">
+      <path d="M1.8 14.6C.6 10.4 2.2 4.4 7.4 3.4c4.6-.9 7.6 2.4 6.8 6.6-.5 2.8-3 4.6-6 4.6z" fill="none"
+        stroke="currentColor" stroke-width="1.1" stroke-dasharray="2 1.6"/>
+      <path d="M.5 15.4h15" stroke="currentColor" stroke-width=".9" stroke-linecap="round" opacity=".6"/>
+    </symbol>
+    <!-- published: out to claude.ai -->
+    <symbol id="i-pub" viewBox="0 0 16 16">
+      <rect x="1.8" y="4.2" width="10" height="10" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.2"/>
+      <path d="M7.4 8.6L14.2 1.8M9.6 1.8h4.6v4.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+  </defs>
+</svg>
+
+<header class="top">
+  <svg id="crab" class="crab" viewBox="0 0 76 50" aria-hidden="true">
+    <path class="sand" d="M2 46.5 Q38 43.5 74 46.5"/>
+    <g id="cb">
+      <path d="M45 41.5l-3 4.2M49 42.6l-1.2 4.2M54 42.6l1.2 4.2M58 41.5l3 4.2" stroke="var(--crab)" stroke-width="1.7" stroke-linecap="round"/>
+      <g id="claw">
+        <path d="M59 36.5l3.2-2.2" stroke="var(--crab)" stroke-width="2" stroke-linecap="round"/>
+        <circle cx="65" cy="32.6" r="4.4" fill="var(--crab)"/>
+        <path d="M68.6 29.2L65.2 32.6L69.8 32.4Z" fill="var(--bg)"/>
+      </g>
+      <ellipse cx="51" cy="38" rx="10" ry="6.2" fill="var(--crab)"/>
+      <ellipse cx="52" cy="35.8" rx="6" ry="2" fill="#f2a0a0" opacity=".45"/>
+      <g id="eyes">
+        <path d="M48 32.5l-2-10.5M54 32.5l2-10.5" stroke="var(--crab)" stroke-width="1.8" stroke-linecap="round"/>
+        <circle class="eye" cx="45.8" cy="20.6" r="2.9" fill="var(--ink)"/>
+        <circle class="eye" cx="56.2" cy="20.6" r="2.9" fill="var(--ink)"/>
+        <g id="pupils" fill="var(--bg)">
+          <circle cx="46.3" cy="20.9" r="1.35"/><circle cx="56.7" cy="20.9" r="1.35"/>
+        </g>
+      </g>
+    </g>
+    <g id="shell">
+      <path d="M10 45 C4 32 9 15 25 12 C38 9.5 48 18.5 46 30.5 C45 39 38 45 28.5 45 Z" fill="var(--shell)"/>
+      <path d="M10 45 C7 37 8 29 12.5 23.5 C12.5 33 18 40.5 28.5 45 Z" fill="var(--shell2)" opacity=".55"/>
+      <path d="M29 27.5c0-3.2 4.3-3.2 4.3 0 0 4.3-6.6 5.4-8.6 1-3-5.6 3.3-10.8 8.6-8.6 6.4 2.4 7.4 10.8 2 16"
+        fill="none" stroke="#8a5a75" stroke-width="2" stroke-linecap="round"/>
+      <path d="M45.4 27.5C47 34 43.6 41.5 36 44.6" fill="none" stroke="#8a5a75" stroke-width="1.6" stroke-linecap="round" opacity=".7"/>
+    </g>
+  </svg>
+  <div class="ttl">
+    <h1>the wake<span class="dot">&middot;</span><span id="wsname"></span></h1>
+    <div class="sub" id="stats">what this workspace left behind</div>
+  </div>
+  <select id="ws" title="workspace" aria-label="workspace"></select>
+</header>
+
+<div class="bar">
+  <input id="q" type="search" placeholder="search titles, paths and prompts" autocomplete="off" spellcheck="false" aria-label="search">
+  <button class="keyhint" id="keys" title="keyboard">?</button>
+</div>
+<div class="chips" id="chips"></div>
+<main id="list"></main>
+
+<div id="help" hidden><div class="card">
+  <h3>keys</h3>
+  <dl>
+    <dt>/</dt><dd>search &middot; Esc clears</dd>
+    <dt>j k</dt><dd>next &middot; previous row</dd>
+    <dt>Enter</dt><dd>open the row</dd>
+    <dt>Space</dt><dd>show the whole prompt</dd>
+    <dt>c</dt><dd>copy the path</dd>
+    <dt>r</dt><dd>copy the resume command</dd>
+    <dt>?</dt><dd>this card</dd>
+  </dl>
+</div></div>
+<div id="toast" role="status"></div>
+
+<script id="boot" type="application/json">__BOOT__</script>
+<script>
+(function () {
+  "use strict";
+  var boot = {};
+  try { boot = JSON.parse(document.getElementById("boot").textContent); } catch (e) {}
+  var T = boot.t || "", WS = boot.ws || "";
+  var KINDS = ["plan", "review", "ask", "artifact", "doc", "temp", "image", "file", "commit"];
+  var HUE = {plan: "#7fbbb3", review: "#d699b6", ask: "#dbbc7f", artifact: "#83c092", doc: "#a7c080",
+             temp: "#e69875", image: "#e67e80", file: "#9da9a0", commit: "#d3c6aa"};
+  var SOURCE = {"deep-plan": "deep-plan", lookout: "lookout review", ask: "deep-plan ask"};
+  var $ = function (id) { return document.getElementById(id); };
+  var state = {rows: [], workspaces: [], q: "", kinds: {}, sel: -1, open: {}, vis: []};
+  var crab = $("crab");
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c];
+    });
+  }
+  // Highlight the query's words in raw text, escaping every piece: the marks
+  // are the only markup that comes out.
+  function hl(text) {
+    text = String(text || "");
+    var words = state.q.toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.length) return esc(text);
+    var re = new RegExp("(" + words.map(function (w) {
+      return w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }).join("|") + ")", "ig");
+    var out = "", last = 0, m;
+    while ((m = re.exec(text))) {
+      if (!m[0]) { re.lastIndex++; continue; }
+      out += esc(text.slice(last, m.index)) + "<mark>" + esc(m[0]) + "</mark>";
+      last = m.index + m[0].length;
+    }
+    return out + esc(text.slice(last));
+  }
+  var HOME = (WS.match(/^\/Users\/[^/]+/) || [""])[0];
+  function tilde(p) { return HOME && p.indexOf(HOME + "/") === 0 ? "~" + p.slice(HOME.length) : p; }
+
+  function toast(msg, bad) {
+    var t = $("toast");
+    t.textContent = msg;
+    t.className = "on" + (bad ? " bad" : "");
+    clearTimeout(toast.h);
+    toast.h = setTimeout(function () { t.className = ""; }, 2600);
+  }
+  function mood(m, ms) {
+    crab.setAttribute("class", "crab" + (m ? " " + m : ""));
+    clearTimeout(mood.h);
+    if (ms) mood.h = setTimeout(function () { settle(); }, ms);
+  }
+  function settle() { mood(state.vis.length ? "" : "hide"); }
+
+  function copy(text, what) {
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) {}
+      document.body.removeChild(ta);
+      toast(ok ? "copied " + what : "could not copy", !ok);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { toast("copied " + what); }, fallback);
+    } else fallback();
+  }
+  function shq(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
+  function resumeCmd(r) { return "cd " + shq(r.ws) + " && claude --resume " + r.session_id; }
+
+  // ---- time ----
+  function local(iso) { var d = new Date(iso); return isNaN(d) ? null : d; }
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  function hm(d) { return d ? pad(d.getHours()) + ":" + pad(d.getMinutes()) : ""; }
+  var MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  var DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  function dayKey(d) { return d ? d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) : "undated"; }
+  function dayLabel(d) {
+    if (!d) return "undated";
+    var now = new Date(), y = new Date(now); y.setDate(now.getDate() - 1);
+    var base = MON[d.getMonth()] + " " + d.getDate() + (d.getFullYear() !== now.getFullYear() ? ", " + d.getFullYear() : "");
+    if (dayKey(d) === dayKey(now)) return "today · " + base;
+    if (dayKey(d) === dayKey(y)) return "yesterday · " + base;
+    return DOW[d.getDay()] + " · " + base;
+  }
+
+  // ---- data ----
+  function load(quiet) {
+    var url = "/artifacts/data?t=" + encodeURIComponent(T) + "&ws=" + encodeURIComponent(WS) +
+              "&q=" + encodeURIComponent(state.q);
+    var asked = state.q;
+    return fetch(url, {cache: "no-store"}).then(function (r) { return r.json(); }).then(function (j) {
+      if (asked !== state.q) return;               // a newer keystroke is in flight
+      if (j.error) { toast(j.error, true); return; }
+      state.rows = j.rows || [];
+      state.workspaces = j.workspaces || [];
+      if (!WS && state.workspaces.length) {        // no ws given: the most recent one
+        WS = state.workspaces[0].ws;
+        return load(quiet);
+      }
+      picker();
+      draw(quiet);
+    }).catch(function () { if (!quiet) toast("the crew intent server did not answer", true); });
+  }
+
+  function picker() {
+    var sel = $("ws"), names = {}, html = "";
+    state.workspaces.forEach(function (w) { names[w.name] = (names[w.name] || 0) + 1; });
+    var have = false;
+    state.workspaces.forEach(function (w) {
+      var label = names[w.name] > 1 ? w.ws.split("/").slice(-2).join("/") : w.name;
+      if (w.ws === WS) have = true;
+      html += '<option value="' + esc(w.ws) + '"' + (w.ws === WS ? " selected" : "") + ">" +
+              esc(label) + " (" + w.n + ")" + (w.here ? "" : " — gone") + "</option>";
+    });
+    if (WS && !have) html = '<option value="' + esc(WS) + '" selected>' + esc(WS.split("/").pop()) + " (0)</option>" + html;
+    sel.innerHTML = html;
+    $("wsname").textContent = (WS.split("/").pop() || "");
+    document.title = "the wake · " + (WS.split("/").pop() || "");
+  }
+
+  function shown(r) {
+    var any = false, k;
+    for (k in state.kinds) if (state.kinds[k]) { any = true; break; }
+    return !any || state.kinds[r.kind];
+  }
+
+  function chips() {
+    var n = {}, total = state.rows.length;
+    state.rows.forEach(function (r) { n[r.kind] = (n[r.kind] || 0) + 1; });
+    var any = KINDS.some(function (k) { return state.kinds[k]; });
+    var html = '<button class="chip' + (any ? "" : " on") + '" data-k="">all <span>' + total + "</span></button>";
+    KINDS.forEach(function (k) {
+      html += '<button class="chip' + (state.kinds[k] ? " on" : "") + (n[k] ? "" : " zero") +
+              '" data-k="' + k + '" style="--c:' + HUE[k] + '"><i></i>' + k + " <span>" + (n[k] || 0) + "</span></button>";
+    });
+    $("chips").innerHTML = html;
+  }
+
+  function stats() {
+    var risk = 0, kept = 0, gone = 0;
+    state.rows.forEach(function (r) {
+      if (r.state === "risk") risk++; else if (r.state === "kept") kept++; else if (r.state === "gone") gone++;
+    });
+    var s = state.q ? "<b>" + state.rows.length + "</b> for “" + esc(state.q) + "”"
+                    : "<b>" + state.rows.length + "</b> things left behind";
+    if (risk) s += ' · <span class="risk">' + risk + " at risk</span>";
+    if (kept) s += ' · <span class="kept">' + kept + " kept</span>";
+    if (gone) s += " · " + gone + " gone";
+    $("stats").innerHTML = s;
+  }
+
+  function badge(r) {
+    var b = "";
+    if (r.state === "risk") b = '<span class="st risk" title="in a temp directory: it will not last"><svg><use href="#i-bare"/></svg>at risk</span>';
+    else if (r.state === "kept") b = '<span class="st kept" title="kept in ~/.claude/crew/kept"><svg><use href="#i-shell"/></svg>kept</span>';
+    else if (r.state === "gone") b = '<span class="st" title="the file is gone; the row keeps its context"><svg><use href="#i-empty"/></svg>gone</span>';
+    if (r.published) b += ' <span class="st pub" title="' + esc(r.url) + '"><svg><use href="#i-pub"/></svg>claude.ai</span>';
+    if (r.kind === "commit" && r.sha) b += ' <span class="st">' + esc(r.sha) + "</span>";
+    return b;
+  }
+
+  function where(r) {
+    if (r.kind === "commit") return r.url ? r.url.replace(/^https:\/\//, "").replace(/\/commit\/.*$/, "") : "";
+    if (r.kind === "artifact") return r.url.replace(/^https:\/\//, "") + (r.path ? "  ← " + tilde(r.path) : "");
+    return tilde(r.path || "");
+  }
+
+  function acts(r) {
+    var a = "";
+    if (r.kind === "plan") {
+      a += '<button data-act="open" data-s="working">working</button><button data-act="open" data-s="review">review</button>' +
+           '<button data-act="open" data-s="md">markdown</button>';
+    } else if (r.state !== "gone" || r.url || r.kind === "commit") {
+      a += '<button data-act="open">open</button>';
+    }
+    if (r.path) a += '<button data-act="copy">copy path</button>';
+    if (r.session_id) a += '<button data-act="resume">copy resume</button>';
+    return a;
+  }
+
+  // ---- draw ----
+  function draw(quiet) {
+    chips();
+    stats();
+    var rows = state.rows.filter(shown);
+    var keepSel = state.sel >= 0 && state.vis[state.sel] ? state.vis[state.sel].id : null;
+    state.vis = rows;
+    var html = "", day = null, grp = null, i;
+    for (i = 0; i < rows.length; i++) {
+      var r = rows[i], d = local(r.created_at), dk = dayKey(d);
+      var gk = dk + "|" + r.session_id + "|" + r.prompt + "|" + (r.prompt ? "" : r.kind);
+      if (dk !== day) {
+        if (grp !== null) html += "</ul></div>";
+        if (day !== null) html += "</section>";
+        html += '<section class="day"><h2>' + esc(dayLabel(d)) + "</h2>";
+        day = dk; grp = null;
+      }
+      if (gk !== grp) {
+        if (grp !== null) html += "</ul></div>";
+        var none = !r.prompt;
+        html += '<div class="grp' + (state.open[gk] ? " open" : "") + '" data-g="' + esc(gk) + '"><div class="ph">' +
+                "<time>" + esc(hm(d)) + "</time>" +
+                '<span class="prompt' + (none ? " none" : "") + '" title="' + esc(r.prompt) + '">' +
+                (none ? esc(SOURCE[r.source] || "no prompt recorded") : hl(r.prompt)) + "</span>" +
+                (r.branch ? '<span class="br">' + esc(r.branch) + "</span>" : "") +
+                (r.session_id ? '<span class="sess" data-i="' + i + '" title="copy the command that resumes this session">' +
+                                esc(r.session_id.slice(0, 8)) + "</span>" : "") +
+                '</div><ul class="rows">';
+        grp = gk;
+      }
+      html += '<li class="row ' + esc(r.state) + (keepSel === r.id ? " sel" : "") + '" data-i="' + i + '" tabindex="-1">' +
+              '<span class="k" style="--c:' + HUE[r.kind] + '">' + esc(r.kind) + "</span>" +
+              '<span class="t" title="' + esc(r.title) + '">' + hl(r.title) + "</span>" +
+              "<span>" + badge(r) + "</span>" +
+              (where(r) ? '<span class="p" title="' + esc(where(r)) + '"><bdi>' + hl(where(r)) + "</bdi></span>" : "") +
+              (r.was_path ? '<span class="p was"><bdi>was ' + esc(tilde(r.was_path)) + "</bdi></span>" : "") +
+              '<span class="acts">' + acts(r) + "</span></li>";
+    }
+    if (grp !== null) html += "</ul></div>";
+    if (day !== null) html += "</section>";
+    if (!rows.length) {
+      html = '<div class="empty">' + (state.q
+        ? "nothing in the wake matches “" + esc(state.q) + "”"
+        : WS ? "nothing in this workspace’s wake yet.<br>rows land at the end of each turn; <code>crew-artifacts backfill</code> reads every transcript once."
+             : "no workspace given.") + "</div>";
+    }
+    $("list").innerHTML = html;
+    state.sel = -1;
+    if (keepSel !== null) for (i = 0; i < rows.length; i++) if (rows[i].id === keepSel) state.sel = i;
+    if (!quiet || !rows.length) settle();
+  }
+
+  function select(i, scroll) {
+    var els = document.querySelectorAll(".row");
+    if (state.sel >= 0 && els[state.sel]) els[state.sel].classList.remove("sel");
+    state.sel = Math.max(-1, Math.min(i, state.vis.length - 1));
+    var el = els[state.sel];
+    if (el) {
+      el.classList.add("sel");
+      if (scroll) el.scrollIntoView({block: "nearest"});
+    }
+  }
+
+  function open(r, s) {
+    fetch("/artifacts/open?t=" + encodeURIComponent(T) + "&id=" + r.id + (s ? "&s=" + encodeURIComponent(s) : ""),
+          {cache: "no-store"})
+      .then(function (x) { return x.json(); })
+      .then(function (j) { toast(j.ok ? j.detail : (j.detail || j.error || "refused"), !j.ok); })
+      .catch(function () { toast("the crew intent server did not answer", true); });
+  }
+
+  // ---- events ----
+  var qt = null;
+  $("q").addEventListener("input", function () {
+    mood("look");
+    clearTimeout(qt);
+    qt = setTimeout(function () {
+      state.q = $("q").value.trim();
+      load().then(function () { mood(state.vis.length ? "look" : "hide", 1400); });
+    }, 140);
+  });
+  $("ws").addEventListener("change", function () {
+    WS = this.value;
+    state.kinds = {}; state.sel = -1;
+    try { history.replaceState(null, "", "/artifacts?ws=" + encodeURIComponent(WS)); } catch (e) {}
+    load();
+  });
+  $("keys").addEventListener("click", function () { $("help").hidden = false; });
+  $("help").addEventListener("click", function () { this.hidden = true; });
+  $("chips").addEventListener("click", function (ev) {
+    var b = ev.target.closest(".chip");
+    if (!b) return;
+    var k = b.getAttribute("data-k");
+    if (!k) state.kinds = {};
+    else if (ev.shiftKey) state.kinds[k] = !state.kinds[k];
+    else { var only = state.kinds[k] && Object.keys(state.kinds).filter(function (x) { return state.kinds[x]; }).length === 1;
+           state.kinds = {}; if (!only) state.kinds[k] = true; }
+    state.sel = -1;
+    draw();
+  });
+  $("list").addEventListener("click", function (ev) {
+    var sess = ev.target.closest(".sess");
+    if (sess) { copy(resumeCmd(state.vis[+sess.getAttribute("data-i")]), "the resume command"); return; }
+    var ph = ev.target.closest(".ph .prompt");
+    if (ph) { var g = ph.closest(".grp"), gk = g.getAttribute("data-g");
+              state.open[gk] = !state.open[gk]; g.classList.toggle("open"); return; }
+    var li = ev.target.closest(".row");
+    if (!li) return;
+    var i = +li.getAttribute("data-i"), r = state.vis[i];
+    var b = ev.target.closest("button[data-act]");
+    if (b) {
+      var a = b.getAttribute("data-act");
+      if (a === "open") open(r, b.getAttribute("data-s"));
+      else if (a === "copy") copy(r.path, "the path");
+      else if (a === "resume") copy(resumeCmd(r), "the resume command");
+      return;
+    }
+    if (ev.target.closest(".t") && state.sel === i) { open(r); return; }
+    select(i);
+  });
+  $("list").addEventListener("dblclick", function (ev) {
+    var li = ev.target.closest(".row");
+    if (li && !ev.target.closest("button")) open(state.vis[+li.getAttribute("data-i")]);
+  });
+
+  document.addEventListener("keydown", function (ev) {
+    var inQ = document.activeElement === $("q");
+    if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    if (ev.key === "Escape") {
+      if (!$("help").hidden) { $("help").hidden = true; return; }
+      if ($("q").value) { $("q").value = ""; state.q = ""; load(); }
+      $("q").blur(); return;
+    }
+    if (inQ) {
+      if (ev.key === "Enter" || ev.key === "ArrowDown") { ev.preventDefault(); $("q").blur(); select(0, true); }
+      return;
+    }
+    if (ev.target && ev.target.tagName === "SELECT") return;
+    var r = state.vis[state.sel];
+    switch (ev.key) {
+      case "/": ev.preventDefault(); $("q").focus(); $("q").select(); break;
+      case "j": case "ArrowDown": ev.preventDefault(); select(state.sel + 1, true); break;
+      case "k": case "ArrowUp": ev.preventDefault(); select(state.sel - 1, true); break;
+      case "Enter": if (r) { ev.preventDefault(); open(r); } break;
+      case " ": if (r) {
+          ev.preventDefault();
+          var li = document.querySelectorAll(".row")[state.sel], g = li && li.closest(".grp");
+          if (g) { var gk = g.getAttribute("data-g"); state.open[gk] = !state.open[gk]; g.classList.toggle("open"); }
+        } break;
+      case "c": if (r && r.path) copy(r.path, "the path"); break;
+      case "r": if (r && r.session_id) copy(resumeCmd(r), "the resume command"); break;
+      case "?": $("help").hidden = !$("help").hidden; break;
+    }
+  });
+
+  // New rows land at each turn's end; look again now and then while visible.
+  setInterval(function () {
+    if (document.visibilityState === "visible" && document.activeElement !== $("q")) load(true);
+  }, 30000);
+
+  load();
+})();
+</script>
+</body></html>

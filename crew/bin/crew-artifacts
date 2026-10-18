@@ -11,6 +11,7 @@ The crew Stop hook spawns `index` detached, so a turn never waits on it, and
 an index run that finds another holding the lock exits at once: that run is
 already reading the same transcripts.
 """
+import calendar
 import json
 import os
 import sys
@@ -34,8 +35,17 @@ def take(args, flag):
     return None
 
 
+def local(iso):
+    """The store's UTC ISO time as this machine's local YYYY-MM-DD HH:MM."""
+    try:
+        t = calendar.timegm(time.strptime(iso[:19], "%Y-%m-%dT%H:%M:%S"))
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(t))
+    except ValueError:
+        return iso[:16].replace("T", " ")
+
+
 def line(r):
-    when = (r.get("created_at") or "")[:16].replace("T", " ")
+    when = local(r.get("created_at") or "")
     where = r.get("url") or r.get("path") or r.get("sha") or ""
     out = "%-5d %s  %-8s %s" % (r["id"], when, r["kind"], r.get("title") or "")
     if where and where != r.get("title"):

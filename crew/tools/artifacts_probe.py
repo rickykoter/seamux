@@ -13,7 +13,8 @@ and deep-plan, lookout and ask stores each hold one record. What is asserted:
   - each row carries the prompt in flight, system reminders stripped, capped
     at 500 characters, with session and branch; a subagent's row carries the
     human's prompt from the parent transcript;
-  - the commit row has its full sha and a GitHub URL from origin;
+  - the commit row has its full sha and a GitHub URL from origin, and a
+    `git commit -q` is found by a trailing oneline or by HEAD's time;
   - the publish adds a row with its URL and gives the doc's own row the URL;
   - the scratchpad file only a listing finds is indexed, .git skipped;
   - lines that are malformed or in a newer shape cost nothing else;
@@ -249,6 +250,28 @@ with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
     check("backfill keeps every row and id",
           len(after) == n_before + 1 and all(ids[r["locator"]] == r["id"]
                                              for r in after if r["locator"] in ids))
+
+    print("quiet commits")
+    import time as _t
+    now = _t.strftime("%Y-%m-%dT%H:%M:%S.000Z", _t.gmtime())
+    open(os.path.join(ws, "docs", "q1.md"), "w").write("q1")
+    git("add", ".")
+    git("commit", "-q", "-m", "Quiet with oneline")
+    one = git("log", "--oneline", "-1")
+    open(os.path.join(ws, "docs", "q2.md"), "w").write("q2")
+    git("add", ".")
+    git("commit", "-q", "-m", "Quiet and silent")
+    with open(tr, "a") as fh:
+        jl(fh, use(now, "u20", "Bash", {"command": "git add . && git commit -q -m x && git log --oneline -1"}))
+        jl(fh, result(now, "u20", {"stdout": one + "\n", "stderr": ""}))
+        jl(fh, use(now, "u21", "Bash", {"command": "git -C . commit -q -F -"}))
+        jl(fh, result(now, "u21", {"stdout": "", "stderr": ""}))
+    A.index()
+    titles = [r["title"] for r in A.search(kind="commit")]
+    check("a -q commit followed by git log --oneline is a commit row", "Quiet with oneline" in titles, titles)
+    check("a silent -q commit is found by HEAD's time", "Quiet and silent" in titles, titles)
+    check("one commit is one row however git abbreviated it",
+          all(len(r["locator"]) == 7 for r in A.search(kind="commit")))
 
     print("search")
     hits = A.search("scratch notes")
