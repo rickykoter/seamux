@@ -1054,31 +1054,32 @@ def _browser(url):
 
 
 def _lookout_commit(ws, sha):
-    """One commit as a view-only lookout diff, in the workspace it was made in."""
+    """Build one commit's view-only lookout review, run in the workspace it
+    was made in but opened nowhere (--no-open): the caller shows it. Returns
+    the review id, or "" when lookout is missing or failed."""
     try:
         with open(LOOKOUT_POINTER, encoding="utf-8") as fh:
             engine = os.path.join(json.load(fh).get("root") or "", "lookout.mjs")
     except (OSError, ValueError):
-        return False
+        return ""
     node = shutil.which("node") or next((c for c in ("/opt/homebrew/bin/node", "/usr/local/bin/node")
                                          if os.path.exists(c)), None)
     if not node or not os.path.isfile(engine):
-        return False
-    # The page goes to the workspace the board lists for ws, not to whichever
-    # workspace started this server.
-    env = {k: v for k, v in os.environ.items() if k != "CMUX_WORKSPACE_ID"}
+        return ""
+    rid = "wake-" + sha[:12]
     # Waited on, not spawned and forgotten: a lookout that fails (a root
     # commit has no sha^) must fall through to the GitHub URL, not report an
     # open that never happened. The server is threaded; one click waits.
     try:
         p = subprocess.run([node, engine, "open", "--range", "%s^..%s" % (sha, sha), "--view-only",
-                            "--at", ws, "--id", "wake-" + sha[:12]], cwd=ws, env=env,
+                            "--at", ws, "--id", rid, "--no-open"], cwd=ws,
                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=90)
     except (OSError, subprocess.SubprocessError):
-        return False
+        return ""
     if p.returncode != 0:
         log("FAIL lookout open %s: %s" % (sha[:7], (p.stderr or p.stdout).strip()[-160:]))
-    return p.returncode == 0
+        return ""
+    return rid
 
 
 CODE_APP = "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
@@ -1182,8 +1183,13 @@ def open_artifact(rid, port, sub=""):
         sha, ws = r.get("sha") or loc, r.get("ws") or ""
         if (ws and os.path.isdir(ws) and re.match(r"^[0-9a-f]{7,40}$", sha) and _has_commit(ws, sha)
                 and _has_commit(ws, sha + "^")):          # a root commit has no sha^..sha
-            if _lookout_commit(ws, sha):
-                return True, "lookout diff of " + sha[:7]
+            rid = _lookout_commit(ws, sha)
+            if rid and review_path(rid, ".html"):
+                # Where you are looking: the Wake's own Dock tab, through this
+                # server's review page. lookout left alone opens it beside the
+                # commit's workspace's terminal, unfocused -- often a workspace
+                # other than the one the Wake is open in, so nothing appeared.
+                return _dock_tab(WAKE_VIEW, "%s/review/%s" % (base, rid))
         if url:
             return _browser(url)
         return False, "the worktree is gone and no GitHub remote was recorded"
