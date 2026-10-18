@@ -743,6 +743,7 @@ def rank(wss, plan_by_root, screens=False):
             # tiers above claim those, and this guard keeps it that way.
             if not w["running"]:
                 qchips.append("archive")
+            qchips.append("wake")
             quiet.append({
                 "id": w["id"], "name": w["title"], "kind": "quiet",
                 "badge": qbadge,
@@ -771,6 +772,10 @@ def rank(wss, plan_by_root, screens=False):
                 **fam_fields(plan),
             })
             continue
+
+        # Every live row can open its Wake; last, so the verb that resolves
+        # the row stays first.
+        chips = chips + ["wake"]
 
         if screens and kind in ("attend", "running", "wilt"):
             live = last_line(w["id"])

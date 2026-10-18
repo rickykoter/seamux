@@ -28,7 +28,8 @@ function __boardRender(d) {
     "reclaim": "Dry-run the reclaim in a terminal, and ask before deleting anything",
     "archive": "Close this workspace and remember it; crew-resume brings it back",
     "close plan": "Retire this plan's gate",
-    "go": "Authorize this increment"
+    "go": "Authorize this increment",
+    "wake": "Open the Wake: what this workspace's sessions left behind"
   };
 
   function esc(s) {
@@ -477,15 +478,17 @@ function __boardRender(d) {
   // Its other chips (diff, pr) stay, as ghosts at the end of the line: a row
   // badged "pr open" with no way to open the PR was the first cut of this.
   // When it has them, they say what the badge would, so the badge steps aside
-  // for the name. Spend still shows, because a row that is quietly burning
+  // for the name -- except wake, which every row carries and which says nothing
+  // about the row, so an idle row with only wake still says idle. Spend still shows, because a row that is quietly burning
   // money is the one quiet row worth noticing.
   function quietRow(a) {
     var acts = (a.chips || []).filter(function (c) { return c !== "jump"; });
     var qb = acts.length ? '<span class="chips">' + acts.map(function (c) {
       return '<span class="chip" title="' + esc(chipTip(c)) + '">' + esc(c) + "</span>";
     }).join("") + "</span>" : "";
+    var loud = acts.filter(function (c) { return c !== "wake"; });
     return opening(a, a.family ? " fam" : "") + '<div class="top">' + dotOf(a) + nameOf(a) +
-      (a.dirty ? DIRTY : "") + cost(a) + (qb || badgeOf(a)) + "</div></div>";
+      (a.dirty ? DIRTY : "") + cost(a) + (loud.length ? qb : badgeOf(a) + qb) + "</div></div>";
   }
 
   function card(a, kids, roll, g) {

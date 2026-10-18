@@ -226,6 +226,64 @@ other judgment, so a local Jev reached by overriding the TypeSafe config needs
 nothing extra. With TypeSafe off or not answering, the order is orphaned and
 merged first, then the longest idle. The finder never asks Jev anything.
 
+## The Wake
+
+Tap **wake** on any board row. It opens the Wake, the Artifact Log for that
+workspace, in one Dock tab, and tapping wake on another row moves the same tab
+there.
+
+Sessions leave things all over the place: scratch scripts and screenshots in
+`/private/tmp` scratchpads, plans and reviews in `~/.claude/plans`, docs in the
+worktree, claude.ai artifacts behind a URL, and commits. The Wake ties each one
+back to when it was made, in which session and on which branch, and the prompt
+it was answering. Rows sit under day headers, and a prompt appears once above
+everything it produced.
+
+What gets indexed:
+
+| Kind | From |
+|---|---|
+| `temp` | a Write into a temp directory, a literal `> /tmp/…` redirect, and every file in the session's scratchpad (listed, so files made through `$S/x` count too) |
+| `image` | the same, for images, anywhere |
+| `doc` | a `.md` or `.html` Write inside the workspace (other source code is git's job) |
+| `file` | a Write anywhere else under `~` |
+| `artifact` | a claude.ai publish, with its URL |
+| `commit` | a commit's `[branch sha]` line, a trailing `git log --oneline`, or HEAD's time after a `git commit -q`; opens as a lookout diff while the worktree exists, on GitHub after |
+| `plan`, `review`, `ask` | deep-plan state, lookout reviews and asks, keyed by their root or cwd |
+
+Nothing is copied when a row is indexed. A row is a pointer plus its context, so
+when a scratchpad gets cleaned out, its rows remain, ghosted, with their prompts.
+
+**Keep** is the exception, and it only happens when you click it. A row whose
+file is still in a temp directory says *at risk*. Keep (the row's button, or
+`K`) copies the file to `~/.claude/crew/kept/<workspace>/`, keeps its mtime,
+and points the row at the copy, which shows where the file used to be.
+**keep all** does every at-risk row in the workspace and asks for a second click
+first. Keep refuses symlinks, directories and anything over 50MB.
+
+**Publish** works on a present HTML, markdown or image row. The first click asks
+you to confirm and names the file. The second opens a terminal in that workspace
+running an interactive `claude --tools Artifact Read`, which reads the file and
+publishes it. It's an interactive run because headless `claude -p` doesn't have
+the Artifact tool. The URL appears on the row once that session is indexed.
+
+Keys: `/` searches as you type (titles, paths and prompts), `j`/`k` move
+between rows, `⏎` opens, space shows the whole prompt, `c` copies the path,
+`r` copies `claude --resume` for the row's session, and `?` lists them all.
+
+From a shell:
+
+```
+crew-artifacts search <words> [--ws <dir>] [--kind <k>] [--json]
+crew-artifacts keep <id>
+crew-artifacts backfill        index every transcript once (about 5–15s here)
+crew-artifacts index           what the Stop hook runs, detached, at each turn end
+```
+
+Each turn's Stop hook indexes every transcript that has grown since the last
+run, so sessions run outside cmux show up at the next cmux turn end. If a
+transcript is pruned before any run reads it, its rows are lost for good.
+
 ## VS Code
 
 ```
@@ -1127,6 +1185,12 @@ installed a newer crew that `crew apply` has not landed yet.
 Two exceptions that are yours and are never synced: `integrations.json` beside
 this file, and the machine-local overlay at `~/.config/cmux/crew-local`
 (`crew-spec`, `cmux.json`, `dock.json` — see `docs/SYNCING.md`).
+
+State lives in two places. `~/.cache/cmux-crew` holds what can be rebuilt:
+board targets, judgments, crew-resume's index. Deleting it costs labels and
+nothing else. `~/.claude/crew` (mode 0700) holds what has to outlast what it
+points at: the Wake's `artifacts.db` and the `kept/` copies. It keeps prompt
+excerpts and copies of temp files, so it stays on this machine.
 
 ### Options
 

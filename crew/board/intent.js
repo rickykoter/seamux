@@ -87,7 +87,7 @@ function __boardIntent(cfg) {
     "jump": "jump", "diff": "diff", "pr": "pr", "checks": "checks",
     "plan": "plan", "review": "plan", "take the check": "take the check",
     "reclaim": "reclaim", "close plan": "close plan", "code": "code",
-    "archive": "archive"
+    "archive": "archive", "wake": "wake"
   };
 
   function target(el) {
