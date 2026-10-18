@@ -360,15 +360,31 @@ render({ rows: [{ id: "q3", name: "q-idle", kind: "quiet", badge: "idle", said: 
 checks.push(["...and an idle quiet row shows its badge", els.rows.innerHTML.includes('class="badge">idle<')]);
 render({ rows: [
   { id: "q4", name: "q-idle-wake", kind: "quiet", badge: "idle", said: "", chips: ["jump", "wake"], frac: null, meta: "", ref: "workspace:4" },
-  { id: "q5", name: "q-pr-wake", kind: "quiet", badge: "pr open", said: "", chips: ["jump", "pr", "wake"], frac: null, meta: "", ref: "workspace:5" },
+  { id: "q5", name: "q-pr-wake", kind: "quiet", badge: "pr open", said: "", chips: ["jump", "pr", "wake"], frac: null, meta: "", ref: "workspace:5", cost: 2.5 },
+  { id: "c6", name: "c-wake", kind: "running", badge: "working", said: "", chips: ["diff", "wake"], frac: null, meta: "", ref: "workspace:6", cost: 4.12, branch: "dev/x" },
+  { id: "c7", name: "c-bare", kind: "running", badge: "working", said: "", chips: ["wake"], frac: null, meta: "", ref: "workspace:7" },
+  { id: "c8", name: "c-none", kind: "running", badge: "working", said: "", chips: ["diff"], frac: null, meta: "", ref: "workspace:8" },
 ], quiet: "" });
 {
-  const [w4, w5] = els.rows.innerHTML.split('data-id="q5"');
-  checks.push(["wake: an idle quiet row with only wake still says idle, and keeps the chip",
-    w4.includes('class="badge">idle<') && />wake<\/span>/.test(w4)]);
-  checks.push(["wake: ...while a quiet row with pr lets its badge step aside",
-    !w5.includes('class="badge"') && />pr<\/span>/.test(w5) && />wake<\/span>/.test(w5)]);
-  checks.push(["wake: the chip has a tooltip", /title="Open the Wake[^"]*">wake</.test(els.rows.innerHTML)]);
+  const h = els.rows.innerHTML;
+  const [w4, rest] = h.split('data-id="q5"');
+  const [w5, rest2] = rest.split('data-id="c6"');
+  const [w6, rest3] = rest2.split('data-id="c7"');
+  const [w7, w8] = rest3.split('data-id="c8"');
+  const icon = /<span class="wk" data-a="wake" title="Open the Wake[^"]*"><svg [^>]*aria-hidden="true">/;
+  checks.push(["wake: an icon with data-a=wake and a tooltip, never a text chip",
+    icon.test(w4) && !/>wake<\/span>/.test(h) && !/class="chip"[^>]*>wake</.test(h)]);
+  checks.push(["wake: an idle quiet row with only the Wake still says idle",
+    w4.includes('class="badge">idle<')]);
+  checks.push(["wake: ...while a quiet row with pr lets its badge step aside, spend then the Wake last",
+    !w5.includes('class="badge"') && />pr<\/span>/.test(w5) &&
+    /class="cost[^"]*"[^>]*>\$2\.50<\/span><span class="wk"/.test(w5) && /<\/svg><\/span><\/div><\/div><div class="row [^"]*" $/.test(w5)]);
+  checks.push(["wake: a card's footer ends with the spend and then the Wake",
+    /<div class="foot">.*class="cost[^"]*"[^>]*>\$4\.12<\/span><span class="wk".*<\/svg><\/span><\/div>/.test(w6) &&
+    !/<div class="chips">[^]*wk/.test(w6.split('<div class="foot">')[0])]);
+  checks.push(["wake: a card with nothing else in its footer still gets one for the Wake, and no empty chip row",
+    /<div class="foot"><span class="wk"/.test(w7) && !w7.includes('class="chips"')]);
+  checks.push(["wake: a row the collector gave no wake has no icon", !w8.includes('class="wk"')]);
 }
 
 // A family card holds rows of other tiers, so a tier rule that reaches its
@@ -1244,9 +1260,12 @@ print(sum(k.startswith("/w/r") for k in json.load(open(J.CACHE))))
   const kidN = mkEl("div", { class: "row quiet fam kid", "data-id": "N", "data-in": "P" }, [hdN]);
   const kidW = mkEl("div", { class: "row running fam kid", "data-id": "W", "data-in": "P" }, [hdW]);
   const jumpP = span("chip", "jump");
-  const wakeP = span("chip", "wake");
+  // The Wake's icon, as render.js draws it: the click lands on the svg inside.
+  const wakeSvg = mkEl("svg", { "aria-hidden": "true" });
+  const wakeP = mkEl("span", { class: "wk", "data-a": "wake" }, [wakeSvg]);
   const card = mkEl("div", { class: "row running fam", "data-id": "P" },
-    [mkEl("div", { class: "chips" }, [jumpP, wakeP]), mkEl("div", { class: "kids" }, [kidA, kidW, kidN])]);
+    [mkEl("div", { class: "chips" }, [jumpP]), mkEl("div", { class: "foot" }, [wakeP]),
+     mkEl("div", { class: "kids" }, [kidA, kidW, kidN])]);
   const host = mkEl("div", { id: "rows", "data-open": "[]" }, [card]);
   const oldCss = mkEl("style", { id: "intent-css" }, [], ".chip{cursor:pointer}");
   const head = mkEl("head", {}, [oldCss]);
@@ -1297,10 +1316,10 @@ print(sum(k.startswith("/w/r") for k in json.load(open(J.CACHE))))
   click(jumpP);
   checks.push(["intent: the parent's own chips still fire for the parent",
     fetched.length === 5 && last().a === "jump" && last().r === "P"]);
-  click(wakeP);
-  checks.push(["wake: the chip sends a=wake for its row",
+  click(wakeSvg);
+  checks.push(["wake: a click on the icon sends a=wake for its row",
     fetched.length === 6 && last().a === "wake" && last().r === "P"]);
-  fetched.pop();                                     // the counts below predate the wake chip
+  fetched.pop();                                     // the counts below predate the wake icon
   click(hdW);
   checks.push(["intent: two children can be open at once",
     host.getAttribute("data-open") === '["A","W"]' && last().r === "W"]);

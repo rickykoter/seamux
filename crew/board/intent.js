@@ -67,7 +67,9 @@ function __boardIntent(cfg) {
       ".row:not(.inert):active{background:#374145}" +
       ".chip{cursor:pointer}" +
       ".chip:hover{filter:brightness(1.35);text-decoration:underline}" +
-      ".chip.hit{opacity:.45}" +
+      ".chip.hit,.wk.hit{opacity:.45}" +
+      ".wk.ok{box-shadow:inset 0 0 0 1px #a7c080}" +
+      ".wk.bad{box-shadow:inset 0 0 0 1px #e67e80}" +
       ".chip.ok{box-shadow:inset 0 0 0 1px #a7c080}" +
       ".chip.bad{box-shadow:inset 0 0 0 1px #e67e80}" +
       "#stamp{cursor:pointer}#stamp:hover{text-decoration:underline}" +

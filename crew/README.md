@@ -231,9 +231,19 @@ merged first, then the longest idle. The finder never asks Jev anything.
 
 ## The Wake
 
-Tap **wake** on any board row. It opens the Wake, the Artifact Log for that
-workspace, in one Dock tab, and tapping wake on another row moves the same tab
-there.
+Tap the aqua wake icon at the right end of any board row, beside its spend. It
+switches to that row's workspace and opens the Wake, its Artifact Log, in the
+workspace's own Wake tab group: a split at the right, focused and widened to at
+least 80% of the window. Whatever you open from the Wake lands in a second tab
+in that group, widened the same way, and nothing else goes there. Each
+workspace has its own group, so tapping wake on a row elsewhere opens or
+reuses that workspace's group and leaves this one where it is. A Wake tab you
+drag out of the group stays where you put it; the next open goes to the group.
+
+The split is not in the Dock because cmux has no command to widen the Dock.
+It reads the Dock's width once, at launch, and `resize-pane` doesn't reach Dock
+panes. A Wake tab left in the Dock by an older crew is closed the first time
+the Wake opens.
 
 Sessions leave things all over the place: scratch scripts and screenshots in
 `/private/tmp` scratchpads, plans and reviews in `~/.claude/plans`, docs in the

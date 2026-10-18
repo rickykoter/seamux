@@ -40,7 +40,8 @@
   position, animated with the Web Animations API rather than CSS),
   .top > svg.dial + .own + .nm + .badge, .said (may contain <b> and <code>),
   .feed > .feedbar, .chips > .chip (+ .pri, the one filled button; + .sig, an
-  actionable signal), .foot > .branch/.dirty/.pr/.issue/.sig/.meta/.cost,
+  actionable signal), .foot > .branch/.dirty/.pr/.issue/.sig/.meta/.cost/.wk
+  (the Wake's icon, data-a="wake"; also at the end of a quiet row's .top),
   .owned + .here, .empty, .sect, and for a deep-plan family: .fam on its card,
   .kids > .row.kid (+ .open) for each child, holding .top.kidhd (the toggle,
   data-a="toggle") > .caret, an optional .said.nest, and .kbody (the child's
@@ -71,6 +72,8 @@
   --wilt-tx:#f0a0a0;
   /* The footer's own colours: an open PR, a linked issue, uncommitted work. */
   --pr-open:#4ADE80; --issue:#b9a5fb; --dirty:#F5A524;
+  /* The Wake's icon: an aqua no tier wears, on a tint of itself. */
+  --wake:#83c092; --wake-bg:rgba(131,192,146,.14);
   /* Text on a filled button, measured against each tier colour instead. */
   --ink:#1e2326;
 }
@@ -358,6 +361,24 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
 .cost{margin-left:auto;color:var(--fg2)}
 .cost.small{color:var(--grey)}
 
+/* The Wake: an icon, not a chip, pinned to the right end of the footer (and of
+   a quiet row's line) beside the spend. Its own colour, the aqua no tier wears,
+   so it reads as the same door on every row. The hull is filled and the
+   ripples behind it fade; hover lifts the ground and sends the ripples out. */
+.wk{flex:none;display:inline-flex;align-items:center;justify-content:center;
+  min-width:34px;height:24px;margin-left:auto;padding:0 3px;border-radius:7px;cursor:pointer;
+  color:var(--wake);background:var(--wake-bg);border:1px solid transparent}
+.foot>.cost+.wk,.top>.cost+.wk{margin-left:0}
+.foot>.wk{overflow:visible;max-width:none}
+.wk svg{display:block;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round}
+.wk .hull{fill:currentColor;stroke:none}
+.wk .r2{stroke-opacity:.7} .wk .r3{stroke-opacity:.4}
+.wk:hover{border-color:var(--wake)}
+.wk:hover path:not(.hull){animation:wkout 1.1s ease-out infinite}
+.wk:hover .r2{animation-delay:.15s} .wk:hover .r3{animation-delay:.3s}
+@keyframes wkout{from{transform:translateX(0);opacity:1}to{transform:translateX(-3px);opacity:.15}}
+.row.quiet>.top>.wk{height:22px;min-width:32px}
+
 /* --- the reply window -------------------------------------------------- */
 /* The animation's DURATION is the time remaining, set inline per row, so the
    bar drains in real time and empties exactly when the window closes. No
@@ -496,7 +517,8 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
   #cat.nap:not(.hop):not(.perk):not(.stretch) .pose:not(.x) path,
   /* The board. */
   .row.up,.row.attend .chip.pri,.row.running>.top>.dial.pending .arc,.row.ripple,
-  .row.famdone,.row.up.ripple,.row.up.famdone,.confetti i,#shelf[data-sky=night] .stars{animation:none}
+  .row.famdone,.row.up.ripple,.row.up.famdone,.confetti i,#shelf[data-sky=night] .stars,
+  .wk:hover path:not(.hull){animation:none}
   /* Stopped, the moods would show no frame at all -- frames are hidden until
      their animation shows them -- so each holds its first. */
   #cat.swat .swat-a,#cat.pace .walk-a,#cat.nap .nap-a{visibility:visible}

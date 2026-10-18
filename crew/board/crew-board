@@ -1513,7 +1513,7 @@ def cmd_usage():
         sid = adopt_surface("/usage", USAGE_SURFACE)
     if sid and surface_alive(sid):
         cmux("browser", "--surface", sid, "goto", url)
-        cmux("focus", "--surface", sid)
+        cmux("focus-panel", "--panel", sid)
         print("reusing surface %s" % sid)
         return 0
 
