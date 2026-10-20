@@ -149,6 +149,8 @@ string from the engine.
   a wall is to draw it, not to trim it to just under the limit.
 - **ceil(prose words / 900) diagrams, minimum 1.** Derived from this house's
   own plans: 4 of 7 had zero diagrams; the worst walls ran 178/140/130 words.
+  Give each a `simple` overview too: the same idea in plain words, which
+  the page opens on ([spec.md](references/spec.md)).
 - **Evidence or it is a risk.** Render checks citations back, warn-only; a
   missing path or a line past the end of its file always warns (how the
   judged half works: [spec.md](references/spec.md)).

@@ -8,6 +8,7 @@ For whoever changes this next. Built 2026-09-12 on this machine, from
 | file | lines | what |
 |---|---|---|
 | `deep_plan.mjs` | 1488 | CLI: render/rehydrate/grade/status/transitions/diff; validate() enforces the contracts block, grade() enforces contract quiz coverage + cuts the approved snapshot; DP_EDITOR_JS carries dpMd + the ADR editor |
+| `lib/surface.mjs` | — | the reading layer inlined into review + working: section rail (sticky top bar under 980px), folds, find (case/word/regex/fuzzy, CSS Custom Highlights), diagram cards (Overview/Detailed tabs, zoom, full screen), comments anchored by quote + context (margin cards from 1300px, popovers below), drafts in localStorage per slug + surface; plus the server-side `fileTreeHtml` / `diagramCardHtml` |
 | `lib/state.mjs` | 160 | state IO + THE decision function (`decideToolCall`) — one definition of "may I edit", shared by CLI and gate |
 | `hooks/gate.sh` | 13 | PreToolUse fast path: glob test, exec node only when state files exist |
 | `hooks/decide.mjs` | 43 | slow half: parse payload, decide, exit 2; flips authorized→working on first edit (status only: `go` records the start sha); the family guard's note on an allowed edit |
@@ -41,7 +42,15 @@ place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_D
 - Working surface markup: `.dp-act[data-a][data-n]` buttons rendered disabled
   with a title ending "— available when served in the Dock" (the injected
   PLAN_JS strips exactly that suffix); `.dp-path[data-file]` spans; `#dp-auto`
-  checkbox armed on its change event, polling `window.__dpChanged`.
+  checkbox armed on its change event, polling `window.__dpChanged` — and
+  skipping a tick while `window.dpBusy()` says someone is mid-comment.
+- Review and working pages wrap their body in `#dp-shell` > `#dp-rail`,
+  `#dp-main`, `#dp-margin` (lib/surface.mjs); the client moves `#dp-mode` and
+  `label.auto` into the rail and sections each `h2` at load. Highlight
+  comments are `.dp-quote` cards whose textarea is a `.dp-note`, so both
+  copy buttons pick them up with the rest. `SURFACE_JS` is `String.raw`: no
+  backtick, no dollar-brace, and no literal pre/code/script/textarea tag text
+  (validateSurface counts those tags).
 - Asks: `~/.claude/plans/asks/<id>.json` (`{id, created, header, question,
   mermaid, options:[{label, description, mermaid, example}], surface, workspace,
   cwd, slug, answer:{n, at, delivered}|null}`) and `<id>.html` beside it, written

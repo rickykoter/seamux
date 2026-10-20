@@ -126,6 +126,17 @@ bad.diagrams[0].mermaid = 'flowchart LR\n  A --> B[\\"broken label]';
     (rr.status !== 0 && /mermaid/.test(rr.stderr)) || /validation skipped/.test(rr.stderr));
 }
 
+bad = JSON.parse(JSON.stringify(spec));
+bad.diagrams[0].simple = 'flowchart LR\n  A --> B[\\"broken label]';
+{
+  const rr = cli("render", tmpSpec(bad));
+  ok("a broken overview diagram is refused like a detailed one (or says it skipped)",
+    (rr.status !== 0 && /overview/.test(rr.stderr)) || /validation skipped/.test(rr.stderr));
+}
+bad = JSON.parse(JSON.stringify(spec));
+bad.diagrams[0].simple = { not: "a string" };
+ok("refuses an overview that is not mermaid source", cli("render", tmpSpec(bad)).status !== 0);
+
 // -------------------------------------------------- a good spec renders
 ok("gate with no plan: Edit allowed (fast path)", edit(path.join(REPO, "a.txt")).status === 0);
 let r = cli("render", tmpSpec(spec));
@@ -389,7 +400,35 @@ ok("theme toggle exists on every surface", review.includes('id="dp-mode"') &&
   fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8")
     .includes('id="dp-mode"'));
 ok("mermaid theme follows the page theme",
-  review.includes('"data-theme")==="light"?"default":"dark"'));
+  review.includes('getAttribute("data-theme")==="light"') && review.includes('theme: "base"') &&
+  review.includes("startOnLoad: false"));
+// The reading layer (lib/surface.mjs): shell, rail, find, diagram cards,
+// file trees, comments kept where they were left, drafts kept across reloads.
+{
+  const working0 = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
+  const both = [review, working0];
+  ok("both surfaces carry the shell: rail, main column, comment margin",
+    both.every(h => h.includes('id="dp-rail"') && h.includes('id="dp-main"') && h.includes('id="dp-margin"') &&
+      h.includes("window.DP_PAGE=")));
+  ok("both surfaces carry find with case, word, regex and fuzzy toggles",
+    both.every(h => ['data-o="c"', 'data-o="w"', 'data-o="r"', 'data-o="z"', "fuzzyTok", "new RegExp(src"].every(x => h.includes(x))));
+  ok("comments are painted where they were left and re-anchor by quote",
+    both.every(h => h.includes('paint("dp-note"') && h.includes("resolveNote") && h.includes("::highlight(dp-note)")));
+  ok("drafts are kept per plan and surface, and auto-refresh waits on them",
+    both.every(h => h.includes('key("drafts")')) && working0.includes("window.dpBusy && window.dpBusy()"));
+  ok("a diagram with an overview renders Overview/Detailed tabs, overview first",
+    review.includes('data-view="simple" aria-selected="true">Overview') &&
+    review.indexOf('class="dp-dg-view" data-view="simple"') < review.indexOf('class="dp-dg-view" data-view="detailed"') &&
+    review.includes("a timer tries again") && review.includes("<h2>Diagrams</h2>"));
+  ok("diagrams zoom and open full screen", review.includes('data-z="full"') && review.includes("openLb"));
+  ok("file lists render names, keeping the full path as the open target",
+    review.includes('data-file="app/workers/retry_sweep.rb" title="app/workers/retry_sweep.rb">retry_sweep.rb</span>'));
+  ok("increments carry anchors for the rail; working rows carry their status",
+    review.includes('id="inc-1"') && /id="inc-1" data-status="\w+"/.test(working0));
+  const md0 = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".md"), "utf8");
+  ok("the md plan carries the overview before the detailed diagram",
+    md0.indexOf("Overview:") > 0 && md0.indexOf("Overview:") < md0.indexOf("Detailed:"));
+}
 // Evidence refs that read as repo paths are click targets carrying file:line
 // (a range collapses to its first line); prose evidence stays plain.
 {
