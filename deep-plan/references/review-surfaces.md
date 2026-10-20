@@ -17,3 +17,15 @@ be read alone by someone who will not open the epic first. Its `README.md`
 says what goes where. The quiz and the answer key are deliberately not in
 it — both carry the answers, and a directory attached to a ticket is the
 worst place for them.
+
+**To bring older plans onto the current pages** (a new engine, or the human
+asks to redraw or replan them): `deep-plan redraw --all --dry-run` lists
+every plan and how many diagrams lack an overview, and `deep-plan redraw
+--all` (or one slug) re-renders their surfaces with spec and state untouched.
+Overviews need an author: `deep-plan overviews <slug>` prints each diagram's
+mermaid; draft a plain-words version of each (four to six boxes, no code
+names), write them as `{"<n>": "<mermaid>"}` to a file, and run `deep-plan
+overviews <slug> <file>`. It refuses the whole file if any overview fails to
+parse, then patches the archived and authored specs and redraws. An overview
+is not an amendment: it moves no spec hash, so no drift is flagged. Ask the
+human before drafting overviews for many plans at once.

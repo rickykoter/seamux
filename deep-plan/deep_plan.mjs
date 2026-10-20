@@ -1397,8 +1397,12 @@ function readAnnotations(slug) {
   return out;
 }
 
+// Overview diagrams are presentation, not plan: adding one (deep-plan
+// overviews) neither drifts the approved snapshot nor stales a published copy.
+// A spec without any hashes exactly as it did before overviews existed.
 function specHash(spec) {
-  return crypto.createHash("sha256").update(JSON.stringify(spec)).digest("hex").slice(0, 16);
+  const plain = spec.diagrams ? { ...spec, diagrams: spec.diagrams.map(({ simple, ...d }) => d) } : spec;
+  return crypto.createHash("sha256").update(JSON.stringify(plain)).digest("hex").slice(0, 16);
 }
 
 function annotationsSection(spec, st) {
@@ -1814,7 +1818,7 @@ function writeSpecArtifacts(spec, b64) {
   return out;
 }
 
-function rehydrate(slug) {
+function rehydrate(slug, { quiet = false } = {}) {
   const specPath = path.join(KEYS_DIR, slug + ".spec.json");
   if (!fs.existsSync(specPath)) die("no archived spec for " + slug);
   const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
@@ -1832,8 +1836,117 @@ function rehydrate(slug) {
     path.join(PLANS_DIR, `${slug}.adr${a.n}.md`), adrDraftText(spec, st0.root, a)));
   const extras = writeSpecArtifacts(spec, b64);
   rerenderWorking(slug);
+  if (quiet) return { md: okMd, review: okRv, missing: missingOverviews(spec).length };
   say(`rehydrated ${slug} — md ${okMd ? "byte-identical" : "REWRITTEN (differs)"}, review ${okRv ? "byte-identical" : "REWRITTEN (differs)"}`);
   say(`  also rewritten: ${extras.join(", ")}`);
+}
+
+// ---------------------------------------------------------------- redraw
+//
+// The migration for a new engine: every plan with an archived spec gets its
+// surfaces re-rendered by THIS engine, spec and state untouched. rehydrate is
+// the writer (it alone re-renders a spec that no longer passes today's
+// floors); redraw only finds the plans and keeps one failure from stopping
+// the rest. "Differs" is the expected answer here — the engine moved — so it
+// is reported as redrawn, not as a hand edit.
+function archivedSlugs() {
+  try {
+    return fs.readdirSync(KEYS_DIR).filter(n => n.endsWith(".spec.json"))
+      .map(n => n.slice(0, -".spec.json".length)).sort();
+  } catch { return []; }
+}
+
+function missingOverviews(spec) {
+  return (spec.diagrams || []).map((d, i) => ({ n: i + 1, question: d.question, has: !!d.simple }))
+    .filter(d => !d.has);
+}
+
+function redraw(target, { json = false, dry = false } = {}) {
+  const slugs = target === "--all" || target === "all" ? archivedSlugs() : [target];
+  if (!slugs.length) die("no archived specs under " + KEYS_DIR);
+  const rows = [];
+  for (const slug of slugs) {
+    const specPath = path.join(KEYS_DIR, slug + ".spec.json");
+    if (!fs.existsSync(specPath)) { rows.push({ slug, ok: false, error: "no archived spec" }); continue; }
+    try {
+      const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
+      if (dry) { rows.push({ slug, ok: true, dry: true, missing: missingOverviews(spec).length }); continue; }
+      rows.push({ slug, ok: true, ...rehydrate(slug, { quiet: true }) });
+    } catch (e) {
+      rows.push({ slug, ok: false, error: String(e && e.message || e).split("\n")[0] });
+    }
+  }
+  if (json) { say(JSON.stringify(rows, null, 2)); return rows; }
+  for (const r of rows) {
+    if (!r.ok) { say(`  ✗ ${r.slug}: ${r.error}`); continue; }
+    const tail = r.missing ? ` · ${r.missing} diagram${r.missing === 1 ? "" : "s"} without an overview` : "";
+    say(`  ${r.dry ? "would redraw" : "redrew"} ${r.slug}${tail}`);
+  }
+  const need = rows.filter(r => r.ok && r.missing);
+  say(`${dry ? "would redraw" : "redrew"} ${rows.filter(r => r.ok).length}/${rows.length} plan(s)` +
+    (need.length ? `; ${need.length} lack overview diagrams — \`deep-plan overviews <slug>\` lists them` : ""));
+  if (rows.some(r => !r.ok)) process.exitCode = 1;
+  return rows;
+}
+
+// ---------------------------------------------------------------- overviews
+//
+// `overviews <slug>` lists a plan's diagrams with their mermaid, for whoever
+// drafts the plain-words versions; `overviews <slug> <file.json>` takes
+// {"<n>": "<mermaid>"} (or [{n, simple}]), parses each with the vendored
+// mermaid, refuses on any error, and only then writes. The archived spec is
+// patched, and so is ~/.claude/plans/<slug>.spec.json when it carries the same
+// diagram questions, so a later render from the authored file keeps them.
+async function overviews(slug, file, { json = false, force = false } = {}) {
+  const specPath = path.join(KEYS_DIR, slug + ".spec.json");
+  if (!fs.existsSync(specPath)) die("no archived spec for " + slug);
+  const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
+  const ds = spec.diagrams || [];
+  if (!file) {
+    const list = ds.map((d, i) => ({ n: i + 1, question: d.question, mermaid: d.mermaid, simple: d.simple || null }));
+    if (json) return say(JSON.stringify(list, null, 2));
+    for (const d of list) {
+      say(`\n## ${d.n}. ${d.question}${d.simple ? "   (has an overview)" : ""}\n`);
+      say(d.mermaid.trim());
+    }
+    const miss = list.filter(d => !d.simple).length;
+    say(`\n${miss} of ${list.length} without an overview. Write {"<n>": "<mermaid>"} to a file, then: deep-plan overviews ${slug} <file.json>`);
+    return;
+  }
+  let raw;
+  try { raw = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) { die(`overviews: ${file} is not JSON (${e.message})`); }
+  const pairs = Array.isArray(raw) ? raw.map(o => [Number(o && o.n), o && o.simple]) : Object.entries(raw).map(([n, v]) => [Number(n), v]);
+  const errs = [];
+  for (const [n, v] of pairs) {
+    if (!Number.isInteger(n) || n < 1 || n > ds.length) errs.push(`diagram ${n}: no such diagram (the plan has ${ds.length})`);
+    else if (typeof v !== "string" || !v.trim()) errs.push(`diagram ${n}: the overview must be mermaid source, a non-empty string`);
+    else if (ds[n - 1].simple && !force) errs.push(`diagram ${n} already has an overview (--force replaces it)`);
+  }
+  if (!errs.length) {
+    const parsed = await validateDiagrams(pairs.map(([n, v]) => ({ question: `overview of diagram ${n}`, mermaid: v })));
+    for (const b of parsed) if (b.error !== null) errs.push(`${b.label}: ${b.error}`);
+    if (parsed.some(b => b.error === null)) console.error("deep-plan: mermaid validation skipped for some overviews (environment-limited here)");
+  }
+  if (errs.length) { for (const e of errs) console.error("  ✗ " + e); die(`overviews refused for ${slug}: nothing written`); }
+  const patch = sp => {
+    for (const [n, v] of pairs) {
+      const d = (sp.diagrams || [])[n - 1];
+      if (d && d.question === ds[n - 1].question) d.simple = v.trim();
+    }
+    return sp;
+  };
+  fs.writeFileSync(specPath, JSON.stringify(patch(spec), null, 2) + "\n");
+  const authored = path.join(PLANS_DIR, slug + ".spec.json");
+  let alsoAuthored = false;
+  try {
+    const a = JSON.parse(fs.readFileSync(authored, "utf8"));
+    if ((a.diagrams || []).length === ds.length) {
+      fs.writeFileSync(authored, JSON.stringify(patch(a), null, 2) + "\n");
+      alsoAuthored = true;
+    }
+  } catch { /* no authored copy, or not ours to touch */ }
+  rehydrate(slug, { quiet: true });
+  say(`overviews: ${pairs.length} written to ${slug}${alsoAuthored ? " (archived + authored spec)" : " (archived spec)"}; surfaces redrawn`);
 }
 
 // ---------------------------------------------------------------- grade
@@ -3186,7 +3299,7 @@ const BUILTIN_VERBS = new Set([
   "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
   "grade", "status", "go", "start", "done", "reset", "block", "check", "obs",
   "open-gate", "shut-gate", "close", "diff", "review", "deliver", "ask", "help", "setup", "engine", "verify",
-  "family",
+  "family", "redraw", "overviews",
 ]);
 
 const [, , cmd, ...rest] = process.argv;
@@ -3197,6 +3310,7 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--root") flags.root = rest[++i];
   else if (rest[i] === "--at") flags.at = rest[++i];
   else if (rest[i] === "--json") flags.json = true;
+  else if (rest[i] === "--dry-run") flags.dry = true;
   else if (rest[i] === "--inline") flags.inline = true;
   else if (rest[i] === "--write") flags.write = true;
   else if (rest[i] === "--out") flags.out = rest[++i];
@@ -3227,6 +3341,8 @@ switch (cmd) {
     await render(args[0], flags); break;
   }
   case "rehydrate": rehydrate(args[0] || die("rehydrate <slug>")); break;
+  case "redraw": redraw(args[0] || die("redraw <slug> | --all [--dry-run] [--json]"), flags); break;
+  case "overviews": await overviews(args[0] || die("overviews <slug> [file.json] [--force] [--json]"), args[1], flags); break;
   case "ask": {
     if (args[0] === "show") askShow(args[1] || die("ask show <id>"));
     else askCreate(args[0] || die("ask <ask.json> | ask show <id>"));
@@ -3414,6 +3530,8 @@ switch (cmd) {
   engine                                      print the engine pointer (which copy runs)
   render <spec.json> [--root DIR] [--force]   spec -> md + review + working surfaces
   rehydrate <slug>                            re-render from the archived spec
+  redraw <slug> | --all [--dry-run] [--json]  re-render plans with this engine (spec + state untouched)
+  overviews <slug> [file.json] [--force]      list diagrams, or add plain-words overviews {"<n>": "<mermaid>"}
   validate <slug|file>                        mermaid + formatting lint of rendered surfaces
   adr apply <slug>                            write flagged ADRs into the repo (refused in review phase)
   export-artifact <slug> [--json]             shareable annotate-able page (agent publishes it)

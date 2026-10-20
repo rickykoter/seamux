@@ -44,6 +44,10 @@ place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_D
   PLAN_JS strips exactly that suffix); `.dp-path[data-file]` spans; `#dp-auto`
   checkbox armed on its change event, polling `window.__dpChanged` — and
   skipping a tick while `window.dpBusy()` says someone is mid-comment.
+- `redraw <slug>|--all` loops `rehydrate` over archived specs (one failure
+  does not stop the rest); `overviews` is the only writer of
+  `diagrams[].simple` into an archived spec, and `specHash` strips `simple`
+  so adding one never drifts an approved snapshot or stales a published copy.
 - Review and working pages wrap their body in `#dp-shell` > `#dp-rail`,
   `#dp-main`, `#dp-margin` (lib/surface.mjs); the client moves `#dp-mode` and
   `label.auto` into the rail and sections each `h2` at load. Highlight

@@ -901,6 +901,59 @@ ok("amend copy button builds the paste blob",
 r = cli("rehydrate", spec.slug);
 ok("rehydrate reports byte-identical", r.status === 0 && /byte-identical/.test(r.stdout) && !/differs/.test(r.stdout));
 
+// -------------------------------------------------- redraw + overviews
+// The migration for a new engine: redraw re-renders surfaces with spec and
+// state untouched; overviews adds plain-words diagrams through mermaid.
+{
+  const rs = JSON.parse(JSON.stringify(spec));
+  rs.slug = "redraw-plan";
+  rs.diagrams.forEach(d => delete d.simple);
+  ok("redraw fixture renders", cli("render", tmpSpec(rs)).status === 0);
+  const P = n => path.join(ENV.DEEP_PLAN_PLANS_DIR, n);
+  fs.writeFileSync(P("redraw-plan.spec.json"), JSON.stringify(rs, null, 2));
+  const stP = path.join(ENV.DEEP_PLAN_STATE_DIR, "redraw-plan.json");
+  const st0 = fs.readFileSync(stP, "utf8");
+  const hash0 = JSON.parse(cli("export-artifact", "redraw-plan", "--json").stdout).spec_hash;
+  let o = cli("redraw", "redraw-plan", "--dry-run");
+  ok("redraw --dry-run names plans missing overviews and writes nothing",
+    o.status === 0 && /would redraw redraw-plan · 1 diagram without an overview/.test(o.stdout));
+  fs.writeFileSync(P("redraw-plan.review.html"), "<html>an old engine's page</html>");
+  fs.writeFileSync(P("redraw-plan.working.html"), "<html>an old engine's page</html>");
+  o = cli("redraw", "redraw-plan");
+  ok("redraw brings an old plan's review and working pages onto this engine",
+    o.status === 0 && /redrew redraw-plan/.test(o.stdout) &&
+    fs.readFileSync(P("redraw-plan.review.html"), "utf8").includes('id="dp-rail"') &&
+    fs.readFileSync(P("redraw-plan.working.html"), "utf8").includes('id="dp-rail"'));
+  ok("redraw leaves state untouched", fs.readFileSync(stP, "utf8") === st0);
+  o = cli("overviews", "redraw-plan");
+  ok("overviews lists each diagram with its mermaid",
+    o.status === 0 && o.stdout.includes(rs.diagrams[0].question) && o.stdout.includes("1 of 1 without an overview"));
+  const archived = () => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "redraw-plan.spec.json"), "utf8"));
+  const ovf = path.join(TMP, "ov.json");
+  fs.writeFileSync(ovf, JSON.stringify({ "1": 'flowchart LR\n  A --> B[\\"broken label]' }));
+  o = cli("overviews", "redraw-plan", ovf);
+  ok("overviews refuses an overview mermaid cannot parse, writing nothing (or says it skipped)",
+    (o.status !== 0 && /nothing written/.test(o.stderr) && !archived().diagrams[0].simple) || /validation skipped/.test(o.stderr));
+  fs.writeFileSync(ovf, JSON.stringify({ "2": "flowchart LR\n  A --> B" }));
+  ok("overviews refuses a diagram number the plan does not have", cli("overviews", "redraw-plan", ovf).status !== 0);
+  fs.writeFileSync(ovf, JSON.stringify({ "1": "flowchart LR\n  A[a save fails] --> B[a timer tries again]" }));
+  o = cli("overviews", "redraw-plan", ovf);
+  ok("overviews writes the archived and authored specs and redraws",
+    o.status === 0 && archived().diagrams[0].simple.includes("a timer tries again") &&
+    JSON.parse(fs.readFileSync(P("redraw-plan.spec.json"), "utf8")).diagrams[0].simple.includes("a timer tries again") &&
+    fs.readFileSync(P("redraw-plan.review.html"), "utf8").includes('data-view="simple"'));
+  ok("an overview is not an amendment: the spec hash does not move",
+    JSON.parse(cli("export-artifact", "redraw-plan", "--json").stdout).spec_hash === hash0);
+  ok("overviews will not replace one without --force",
+    cli("overviews", "redraw-plan", ovf).status !== 0 && cli("overviews", "redraw-plan", ovf, "--force").status === 0);
+  o = cli("redraw", "--all", "--json");
+  const rows = o.status === 0 ? JSON.parse(o.stdout) : [];
+  ok("redraw --all walks every archived plan", rows.some(x => x.slug === "redraw-plan" && x.ok) && rows.some(x => x.slug === spec.slug));
+  // Gone again, so the plan counts further down see only the example.
+  fs.rmSync(stP, { force: true });
+  fs.rmSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "redraw-plan.spec.json"), { force: true });
+}
+
 // -------------------------------------------------- export-artifact
 r = cli("export-artifact", spec.slug, "--json");
 ok("export-artifact emits and prints metadata", r.status === 0 && JSON.parse(r.stdout).spec_hash.length === 16);
