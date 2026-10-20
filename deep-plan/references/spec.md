@@ -18,7 +18,8 @@ The full shape of the spec JSON (discipline step 5); `examples/example.spec.json
                     { "risk": "…", "disposition": "accept|mitigate|spike|promote",
                       "deliverableRef": "mitigate: a deliverable title", "ticketRef": "mitigate: or a filed ticket",
                       "note": "spike: the check that settles it; ticket: its context" }],
-  "diagrams":      [{ "question": "the heading, phrased as a question", "mermaid": "..." }],
+  "diagrams":      [{ "question": "the heading, phrased as a question", "mermaid": "...",
+                      "simple": "optional: the same idea in plain words, the page opens on it" }],
   "deliverables":  [{ "title": "...", "body": "...", "files": ["relative/paths"],
                       "checks": [{ "kind": "test|e2e|observability|manual|review", "name": "...",
                         "id": "optional; derived from kind + name",
@@ -39,6 +40,14 @@ The full shape of the spec JSON (discipline step 5); `examples/example.spec.json
                                     "name": "...", "ref": "url or path" }],
                      "gaps": ["what this change needs that does not exist"] } }
 ```
+
+## Overview diagrams
+
+`simple` is a second mermaid source for the same question, drawn for someone
+who has not read the code: four to six boxes, plain words, no file, function
+or table names. The review and working pages show it first, with the
+detailed diagram one tab away, and it is parsed like any other diagram. It
+does not count toward the diagram floor.
 
 ## Parent plans
 

@@ -22,6 +22,7 @@
   ],
   "diagrams": [
     { "question": "How does a failed write get retried?",
+      "simple": "flowchart LR\n  A[a save fails] --> B[it waits in line] --> C[a timer tries again]",
       "mermaid": "flowchart LR\n  W[write] --> O[(outbox)] --> D[deliver]\n  D -- fail --> O\n  T[timer sweep] --> O" }
   ],
   "deliverables": [

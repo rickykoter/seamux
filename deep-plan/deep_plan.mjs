@@ -23,6 +23,7 @@ import { validateDiagrams, validateSurface, mermaidPath, mermaidCandidates, VEND
 import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries, adrScanReport } from "./lib/adr.mjs";
 import { epicHtml, incrementMd, bundleReadme, incrementFileNames, checkLinesMd } from "./lib/cutover.mjs";
 import { checkEvidence } from "./lib/evidence.mjs";
+import { SURFACE_CSS, SURFACE_JS, surfaceOpen, surfaceClose, fileTreeHtml, diagramCardHtml, diagramsForValidation } from "./lib/surface.mjs";
 import { resolveFiles, resolver } from "./lib/verify.mjs";
 import { runExec, acquireSteps, alive, sleep, tail } from "./lib/runner.mjs";
 import { detect, draftFile } from "./lib/detect.mjs";
@@ -214,6 +215,8 @@ function validate(spec, force) {
   for (const dg of spec.diagrams || []) {
     if (!dg.question) errs.push("a diagram is missing its question — the question is the heading");
     if (!dg.mermaid) errs.push(`diagram "${dg.question}" has no mermaid`);
+    if (dg.simple != null && typeof dg.simple !== "string")
+      errs.push(`diagram "${dg.question}": simple is the overview's mermaid source, a string`);
   }
   prose.forEach((p, i) => {
     for (const para of (p || "").split(/\n\s*\n/)) {
@@ -606,7 +609,9 @@ function mdPlan(spec, adrs = []) {
     L.push("");
   }
   for (const dg of spec.diagrams || []) {
-    L.push(`## ${dg.question}`, "", "```mermaid", dg.mermaid.trim(), "```", "");
+    L.push(`## ${dg.question}`, "");
+    if (dg.simple) L.push("Overview:", "", "```mermaid", String(dg.simple).trim(), "```", "", "Detailed:", "");
+    L.push("```mermaid", dg.mermaid.trim(), "```", "");
   }
   L.push("## Increments", "");
   (spec.deliverables || []).forEach((d, i) => {
@@ -792,15 +797,21 @@ function htmlHead(title, b64) {
 </script>
 <script src="data:text/javascript;base64,${b64}"></script>
 <style>
-:root{--bg:#0e1116;--fg:#d5dbe3;--dim:#859289;--line:#232a33;--accent:#7aa2f7;
---good:#4ADE80;--warn:#F5A524;--bad:#F97066;--card:#161b22;--card2:#12161d;--card3:#1a212b}
-:root[data-theme="light"]{--bg:#f6f8fa;--fg:#1f2328;--dim:#57606a;--line:#d0d7de;--accent:#0969da;
---good:#1a7f37;--warn:#9a6700;--bad:#cf222e;--card:#eaeef2;--card2:#f0f3f6;--card3:#e6ebf1}
-body{background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,system-ui,sans-serif;
-max-width:860px;margin:0 auto;padding:28px 20px 80px}
-h1{font-size:22px}h2{font-size:17px;margin-top:2em;border-bottom:1px solid var(--line);padding-bottom:4px}
+:root{--bg:#2d353b;--fg:#d3c6aa;--dim:#859289;--faint:#5c6a72;--line:#3d484d;--line2:#4f5b58;--accent:#7fbbb3;
+--good:#a7c080;--warn:#dbbc7f;--bad:#e67e80;--mark:#dbbc7f;--card:#3a464c;--card2:#343f44;--card3:#424e54;
+--hl:rgba(167,192,128,.26);--hl-on:rgba(167,192,128,.5);--find:rgba(219,188,127,.32);--find-on:#e69875;
+--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+:root[data-theme="light"]{--bg:#fdf6e3;--fg:#5c6a72;--dim:#829181;--faint:#a6b0a0;--line:#e6e2cc;--line2:#c9cdb6;--accent:#3a94c5;
+--good:#8da101;--warn:#c08000;--bad:#f85552;--mark:#a77c00;--card:#efebd4;--card2:#f4f0d9;--card3:#e6e2cc;
+--hl:rgba(141,161,1,.2);--hl-on:rgba(141,161,1,.38);--find:rgba(223,160,0,.28);--find-on:#f57d26}
+body{background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+-webkit-font-smoothing:antialiased;max-width:860px;margin:0 auto;padding:28px 20px 80px}
+h1{font:600 22px/1.2 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;letter-spacing:-.01em}
+h2{font:700 12.5px/1.3 system-ui;letter-spacing:.12em;text-transform:uppercase;color:var(--mark);
+margin-top:2.4em;border-bottom:1px solid var(--line);padding-bottom:7px}
 h3{font-size:15px}
-code{background:var(--card);border-radius:4px;padding:1px 5px;font-size:13px}
+a{color:var(--accent)}
+code{background:var(--card);border-radius:4px;padding:1px 5px;font:12.5px var(--mono)}
 .dim{color:var(--dim)}.mermaid{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:12px;margin:12px 0}
 .inc{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:10px 0}
 .inc .st{float:right;font-size:12px;padding:2px 8px;border-radius:10px;border:1px solid var(--line)}
@@ -847,9 +858,11 @@ document.getElementById("dp-mode").addEventListener("click", function () {
 const MERMAID_BOOT = `<script>mermaid.initialize({startOnLoad:true,
 theme:document.documentElement.getAttribute("data-theme")==="light"?"default":"dark"});</script>`;
 
+// One section, a card per diagram: an optional plain-words overview beside
+// the detailed drawing, with zoom and a full-screen view (lib/surface.mjs).
 function diagramsHtml(spec) {
-  return (spec.diagrams || []).map(dg =>
-    `<h2>${esc(dg.question)}</h2><pre class="mermaid">${esc(dg.mermaid.trim())}</pre>`).join("\n");
+  const ds = spec.diagrams || [];
+  return ds.length ? `<h2>Diagrams</h2>\n` + ds.map(diagramCardHtml).join("\n") : "";
 }
 
 // ADR cards: title, resolved destination (and why that destination), the
@@ -1282,8 +1295,8 @@ function reviewHtml(spec, b64, adrs = []) {
   }).join("\n");
   const verif = (spec.verification || []).map(v => `<li><code>${esc(v)}</code></li>`).join("");
   const incs = (spec.deliverables || []).map((d, i) =>
-    `<div class="inc"><b>${i + 1}. ${esc(d.title)}</b><p>${esc(d.body || "")}</p>
-${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${esc(f)}</code>`).join(" ")}</p>` : ""}
+    `<div class="inc" id="inc-${i + 1}"><b>${i + 1}. ${esc(d.title)}</b><p>${esc(d.body || "")}</p>
+${fileTreeHtml(d.files)}
 ${checksHtml(planChecks(spec, i), d.waiver)}
 ${(d.commits || []).length ? `<ul class="dim">${d.commits.map(c => commitLi(c)).join("")}</ul>` : ""}
 <textarea class="dp-note" data-section="increment ${i + 1}" rows="1" placeholder="comment on this increment (optional)" aria-label="comment on increment ${i + 1}"></textarea></div>`).join("\n");
@@ -1293,7 +1306,9 @@ ${(d.commits || []).length ? `<ul class="dim">${d.commits.map(c => commitLi(c)).
   const COPYBACK = `
 <h2>Send it back</h2>
 <p class="dim">Highlight any text above — mouse or keyboard — then click the
-＋&nbsp;comment chip, or press <kbd>⌘M</kbd> / <kbd>Ctrl+M</kbd>, to pin a comment to it.</p>
+comment chip, or press <kbd>⌘M</kbd> / <kbd>Ctrl+M</kbd>, to pin a comment to it. It stays
+marked where you left it; click the marked text to edit it. Everything here is kept as a draft
+until you clear it.</p>
 <div id="dp-quotes"></div>
 <textarea class="dp-note" data-section="general" rows="2" placeholder="general comments (optional)" aria-label="general comments"></textarea>
 <p><button id="dp-copyback" type="button">Copy for session</button>
@@ -1332,97 +1347,21 @@ ${(d.commits || []).length ? `<ul class="dim">${d.commits.map(c => commitLi(c)).
     ta.remove();
   }
 
-  // Highlight-to-comment: select any text (mouse or keyboard), a chip appears,
-  // and clicking it — or ⌘M/Ctrl+M, the keyboard path — pins the excerpt with
-  // its own comment box. The blob labels the comment with the nearest heading
-  // and the quote, so the session can find the spot.
-  var chip = document.createElement("button");
-  chip.id = "dp-hl-add"; chip.type = "button";
-  chip.textContent = "\\uFF0B comment";
-  chip.setAttribute("aria-label", "pin a comment to the highlighted text (or press Cmd/Ctrl+M)");
-  chip.style.display = "none";
-  document.body.appendChild(chip);
-  function placeChip() {
-    var sel = window.getSelection();
-    var txt = sel ? String(sel).trim() : "";
-    if (!txt || sel.rangeCount === 0 || chip.contains(sel.anchorNode)) { chip.style.display = "none"; return; }
-    var r = sel.getRangeAt(0).getBoundingClientRect();
-    // Measure first, then clamp inside the viewport: a selection ending near
-    // the right margin used to push the chip clean off the page.
-    chip.style.visibility = "hidden"; chip.style.display = "block";
-    var w = chip.offsetWidth, h = chip.offsetHeight;
-    var x = Math.max(8, Math.min(r.right + 6, document.documentElement.clientWidth - w - 8));
-    var y = r.top - h - 6;
-    if (y < 8) y = r.bottom + 6;
-    chip.style.left = (window.scrollX + x) + "px";
-    chip.style.top = (window.scrollY + y) + "px";
-    chip.style.visibility = "visible";
-  }
-  document.addEventListener("mouseup", function () { setTimeout(placeChip, 0); });
-  document.addEventListener("keyup", function (e) {
-    // Keyboard selection (Shift+arrows / Shift+Cmd+arrows) surfaces the chip too.
-    if (e.key === "Shift" || e.shiftKey) setTimeout(placeChip, 0);
-  });
-  function pinComment() {
-    var sel = window.getSelection();
-    var txt = sel ? String(sel).trim() : "";
-    if (!txt) return;
-    var excerpt = txt.length > 120 ? txt.slice(0, 117) + "\\u2026" : txt;
-    var section = "";
-    var hs = document.querySelectorAll("h2");
-    for (var i = 0; i < hs.length; i++) {
-      if (hs[i].compareDocumentPosition(sel.anchorNode) & Node.DOCUMENT_POSITION_FOLLOWING)
-        section = hs[i].textContent;
-    }
-    var row = document.createElement("div");
-    row.className = "dp-quote";
-    var bq = document.createElement("blockquote");
-    bq.textContent = excerpt;
-    var note = document.createElement("textarea");
-    note.className = "dp-note"; note.rows = 1;
-    note.placeholder = "comment on the highlighted text";
-    note.setAttribute("aria-label", 'comment on "' + excerpt + '"');
-    note.setAttribute("data-section", (section ? section + " \\u00B7 " : "") + 'on "' + excerpt + '"');
-    var rm = document.createElement("button");
-    rm.className = "dp-x"; rm.type = "button"; rm.textContent = "\\u00D7";
-    rm.setAttribute("aria-label", "remove this pinned comment");
-    rm.addEventListener("click", function () { row.remove(); });
-    row.appendChild(bq); row.appendChild(note); row.appendChild(rm);
-    document.getElementById("dp-quotes").appendChild(row);
-    chip.style.display = "none";
-    sel.removeAllRanges();
-    note.focus();
-    note.scrollIntoView({ block: "center" });
-  }
-  chip.addEventListener("mousedown", function (e) { e.preventDefault(); pinComment(); });
-  chip.addEventListener("keydown", function (e) {
-    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pinComment(); }
-  });
-  document.addEventListener("keydown", function (e) {
-    if ((e.metaKey || e.ctrlKey) && (e.key === "m" || e.key === "M")) {
-      e.preventDefault(); pinComment();
-    }
-  });
+  // Highlight-to-comment lives in lib/surface.mjs (SURFACE_JS): a comment
+  // stays marked where it was pinned, and its card is a .dp-note like the
+  // boxes above, so this button carries it with no extra wiring.
 })();
 </script>`;
-  return htmlHead(spec.title + " — review", b64) + `<style>
+  return htmlHead(spec.title + " — review", b64) + SURFACE_CSS + surfaceOpen(spec.slug, "review") + `<style>
 label.opt{cursor:pointer;padding:3px 0}
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
   color:inherit;border:1px solid var(--dim,#888);border-radius:4px;padding:6px;font:inherit}
 ${DP_RISK_CSS}
-#dp-copyback{background:var(--accent,#46f);color:#fff;border:0;border-radius:4px;
+#dp-copyback{background:var(--accent,#46f);color:var(--bg);border:0;border-radius:6px;font-weight:600;
   padding:10px 16px;font:inherit;cursor:pointer;min-height:44px}
-#dp-hl-add{position:absolute;z-index:9;background:var(--accent,#46f);color:#fff;border:0;
-  border-radius:14px;padding:6px 14px;font:inherit;font-size:.85em;cursor:pointer;
-  white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.35)}
-.dp-quote{position:relative;margin:10px 0;padding:2px 34px 2px 10px;border-left:3px solid var(--accent,#46f)}
-.dp-quote blockquote{margin:0 0 4px;font-style:italic;opacity:.8}
 kbd{font:inherit;font-size:.85em;border:1px solid var(--dim,#888);border-radius:3px;padding:0 4px}
 .opt input:focus-visible,#dp-copyback:focus-visible,#dp-hl-add:focus-visible,
 .dp-note:focus-visible,.dp-x:focus-visible{outline:2px solid var(--accent,#46f);outline-offset:2px}
-.dp-x{position:absolute;top:0;right:0;background:transparent;border:0;color:inherit;
-  opacity:.6;cursor:pointer;font:inherit;padding:6px 10px;min-width:32px;min-height:32px}
-.dp-x:hover{opacity:1}
 </style>` + commonBody(spec, adrs, true) + `
 <h2>Increments</h2>${incs}
 ${verif ? `<h2>Verification</h2><ul>${verif}</ul>` : ""}
@@ -1433,7 +1372,7 @@ ${verif ? `<h2>Verification</h2><ul>${verif}</ul>` : ""}
 and your model of it disagree — and either one may be the broken one.</p>
 ${qs}
 ${COPYBACK}
-${MERMAID_BOOT}</body></html>`;
+${surfaceClose()}${SURFACE_JS}</body></html>`;
 }
 
 // Annotations pulled back from the plan's published artifact, if any. The AGENT
@@ -1458,8 +1397,12 @@ function readAnnotations(slug) {
   return out;
 }
 
+// Overview diagrams are presentation, not plan: adding one (deep-plan
+// overviews) neither drifts the approved snapshot nor stales a published copy.
+// A spec without any hashes exactly as it did before overviews existed.
 function specHash(spec) {
-  return crypto.createHash("sha256").update(JSON.stringify(spec)).digest("hex").slice(0, 16);
+  const plain = spec.diagrams ? { ...spec, diagrams: spec.diagrams.map(({ simple, ...d }) => d) } : spec;
+  return crypto.createHash("sha256").update(JSON.stringify(plain)).digest("hex").slice(0, 16);
 }
 
 function annotationsSection(spec, st) {
@@ -1495,6 +1438,18 @@ const commitLine = c => typeof c === "string"
   : `- ${c.sha ? "`" + String(c.sha).slice(0, 12) + "` " : ""}${c.subject || c.ref || ""}`;
 
 const CHECK_MARK = { pass: "✅", fail: "❌", pending: "⏳", running: "🔄", "needs-variant": "✋", stale: "⚠️" };
+// The same verdicts drawn for the pages, which carry no emoji. The terminal
+// keeps CHECK_MARK.
+const glyphSvg = inner => `<svg class="dp-mark" viewBox="0 0 12 12" width="13" height="13" aria-hidden="true">${inner}</svg>`;
+const RING = c => `<circle cx="6" cy="6" r="4.6" fill="none" stroke="${c}" stroke-width="1.4"/>`;
+const CHECK_GLYPH = {
+  pass: glyphSvg(`<circle cx="6" cy="6" r="5.2" fill="var(--good)"/><path d="M3.5 6.2l1.7 1.7 3.3-3.5" fill="none" stroke="var(--bg)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`),
+  fail: glyphSvg(`<circle cx="6" cy="6" r="5.2" fill="var(--bad)"/><path d="M4.2 4.2l3.6 3.6M7.8 4.2l-3.6 3.6" stroke="var(--bg)" stroke-width="1.5" stroke-linecap="round"/>`),
+  pending: glyphSvg(RING("var(--faint)")),
+  running: glyphSvg(RING("var(--accent)") + `<path d="M6 1.4a4.6 4.6 0 0 1 0 9.2z" fill="var(--accent)"/>`),
+  "needs-variant": glyphSvg(RING("var(--warn)") + `<circle cx="6" cy="6" r="1.8" fill="var(--warn)"/>`),
+  stale: glyphSvg(`<path d="M6 1.2l5 9.3H1z" fill="var(--warn)"/><path d="M6 4.6v2.6M6 8.9v.1" stroke="var(--bg)" stroke-width="1.4" stroke-linecap="round"/>`),
+};
 
 // Each check with its verdict, and — while it is outstanding — what it runs.
 // Showing the detail only while it matters keeps a finished increment short.
@@ -1506,20 +1461,19 @@ function checksRow(inc, slug = "") {
     const st = v.status || "pending";
     const detail = st === "pass" ? "" :
       checkLinesMd({ id, ...v }).lines.map(l => `<br>${mdInline(l)}`).join("");
-    return `<li>${CHECK_MARK[st] || ""} ${esc(st)} · [${esc(v.kind || "?")}${v.system ? " · " + esc(v.system) : ""}] ` +
+    return `<li>${CHECK_GLYPH[st] || ""} ${esc(st)} · [${esc(v.kind || "?")}${v.system ? " · " + esc(v.system) : ""}] ` +
       `${esc(v.name || "")} <code>${esc(id)}</code>` +
       // A served working page reaches the review page on the same server.
       (v.synth === "review" && slug ? ` · <a href="/review/${esc(slug)}-inc${inc.n}">open the review</a>` : "") +
       (v.note ? ` — ${esc(v.note)}` : "") + detail + "</li>";
   }).join("");
-  return `<p class="dim">checks: ${CHECK_MARK[agg] || ""} ${esc(agg)}</p><ul class="dim">${items}</ul>`;
+  return `<p class="dim">checks: ${CHECK_GLYPH[agg] || ""} ${esc(agg)}</p><ul class="dim">${items}</ul>`;
 }
 
 function workingHtml(spec, st, b64) {
   const rows = (st.increments || []).map(inc => {
     const d = (spec.deliverables || [])[inc.n - 1] || {};
-    const files = (d.files || []).map(f =>
-      `<span class="dp-path" data-file="${esc(f)}">${esc(f)}</span>`).join(" · ");
+    const files = fileTreeHtml(d.files);
     const acts = ["go", "start", "done", "block", "reset"].map(a =>
       `<button class="dp-act" data-a="${a}" data-n="${inc.n}" disabled ` +
       `title="${a} increment ${inc.n} — available when served in the Dock">${a}</button>`).join("");
@@ -1529,10 +1483,10 @@ function workingHtml(spec, st, b64) {
     const checks = checksRow(inc, st.slug) || (d.waiver ? `<p class="dim">checks: none — waived: ${esc(d.waiver)}</p>` : "");
     // Per-deliverable commits: the record of what actually landed for this one.
     const dcommits = (d.commits || []).map(c => commitLi(c)).join("");
-    return `<div class="inc"><span class="st st-${esc(inc.status)}">${esc(inc.status)}</span>
+    return `<div class="inc" id="inc-${inc.n}" data-status="${esc(inc.status)}"><span class="st st-${esc(inc.status)}">${esc(inc.status)}</span>
 <b>${inc.n}. ${esc(inc.title)}</b>
 <p>${esc(d.body || "")}</p>
-${files ? `<p class="dim">${files}</p>` : ""}
+${files}
 ${dcommits ? `<ul class="dim">${dcommits}</ul>` : ""}
 ${checks}
 <p>${acts}</p></div>`;
@@ -1540,20 +1494,20 @@ ${checks}
   const g = gateView(st);
   const logRows = (st.log || []).slice(-12).reverse().map(l =>
     `<li class="dim">${esc(new Date(l.at).toISOString().slice(0, 16).replace("T", " "))} — ${esc(l.what)}</li>`).join("");
-  return htmlHead(spec.title, b64) + `
+  return htmlHead(spec.title, b64) + SURFACE_CSS + surfaceOpen(spec.slug, "working") + `
 <label class="auto"><input type="checkbox" id="dp-auto" checked> auto-refresh</label>
 <style>
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
   color:inherit;border:1px solid var(--dim,#888);border-radius:4px;padding:6px;font:inherit}
 ${DP_RISK_CSS}
-#dp-amend-copy{background:var(--accent,#46f);color:#fff;border:0;border-radius:4px;
+#dp-amend-copy{background:var(--accent,#46f);color:var(--bg);border:0;border-radius:6px;font-weight:600;
   padding:10px 16px;font:inherit;cursor:pointer;min-height:44px}
 #dp-amend-copy:focus-visible,.dp-note:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </style>` +
     commonBody(spec, st.adrs || [], true) + `
 ${st.approved ? `<p class="dim">approved snapshot: <span class="dp-path" data-file="${esc(st.approved.path)}"><code>${esc(st.approved.path)}</code></span>${
       st.approved.spec_hash !== specHash(spec) ? ' · <span style="color:var(--warn)">the live plan has DRIFTED from the approved snapshot (spec amended since grade-pass)</span>' : ""}</p>` : ""}
-<h2>Gate</h2><p>${g.allow ? "🟢 open" : "🔴 shut"} <span class="dim">— ${esc(g.why)}</span>
+<h2>Gate</h2><p>${g.allow ? CHECK_GLYPH.pass + " open" : CHECK_GLYPH.fail + " shut"} <span class="dim">— ${esc(g.why)}</span>
 <span class="dim">· root <code>${esc(st.root || "?")}</code> · phase ${esc(st.phase)}</span></p>
 <h2>Increments</h2>${rows}
 ${annotationsSection(spec, st)}
@@ -1561,7 +1515,9 @@ ${annotationsSection(spec, st)}
 <p class="dim">Discovery amends the spec, not just the code — mid-increment included. Note what
 changed (per section above, per ADR card, or generally), then <b>Copy amendments</b> puts one
 paste-back on your clipboard; the session applies it as a spec edit and re-renders. Increment
-statuses survive a re-render.</p>
+statuses survive a re-render. Highlight any text above and press <kbd>⌘M</kbd> to pin an amendment
+to that spot; drafts survive the auto-refresh.</p>
+<div id="dp-quotes"></div>
 ${["context", "decisions", "risks"].map(s =>
   `<textarea class="dp-note" data-section="${s}" rows="1" placeholder="amend ${s} (optional)" aria-label="amend ${s}"></textarea>`).join("\n")}
 <textarea class="dp-note" data-section="general" rows="2" placeholder="general amendment (optional)" aria-label="general amendment"></textarea>
@@ -1594,7 +1550,7 @@ ${["context", "decisions", "risks"].map(s =>
 })();
 </script>
 ${logRows ? `<h2>Log</h2><ul>${logRows}</ul>` : ""}
-${MERMAID_BOOT}
+${surfaceClose()}${SURFACE_JS}
 <script>
 // Auto-refresh, armed on the checkbox's change event. The served page injects
 // window.__dpChanged (a /plan-stamp probe); on disk there is no probe and the
@@ -1602,7 +1558,8 @@ ${MERMAID_BOOT}
 (function(){
   var t = null, box = document.getElementById("dp-auto");
   function tick(){
-    if (!window.__dpChanged) return;
+    // Not under someone mid-comment: the reload would cost them their place.
+    if (!window.__dpChanged || (window.dpBusy && window.dpBusy())) return;
     window.__dpChanged(function(moved){ if (moved) location.reload(); });
   }
   function arm(){ if (t) clearInterval(t); t = null;
@@ -1722,7 +1679,7 @@ async function render(specPath, opts) {
   // Refuse-first extends to the diagrams: parse each with the vendored
   // mermaid before any surface is written — a plan page with a parse error
   // where a drawing should be fails the reader exactly where it matters.
-  const diagResults = await validateDiagrams(spec.diagrams || []);
+  const diagResults = await validateDiagrams(diagramsForValidation(spec.diagrams));
   const badDiagrams = diagResults.filter(b => b.error !== null);
   if (diagResults.some(b => b.error === null))
     console.error("deep-plan: mermaid validation skipped for some/all diagrams (environment-limited here)");
@@ -1861,7 +1818,7 @@ function writeSpecArtifacts(spec, b64) {
   return out;
 }
 
-function rehydrate(slug) {
+function rehydrate(slug, { quiet = false } = {}) {
   const specPath = path.join(KEYS_DIR, slug + ".spec.json");
   if (!fs.existsSync(specPath)) die("no archived spec for " + slug);
   const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
@@ -1879,8 +1836,117 @@ function rehydrate(slug) {
     path.join(PLANS_DIR, `${slug}.adr${a.n}.md`), adrDraftText(spec, st0.root, a)));
   const extras = writeSpecArtifacts(spec, b64);
   rerenderWorking(slug);
+  if (quiet) return { md: okMd, review: okRv, missing: missingOverviews(spec).length };
   say(`rehydrated ${slug} — md ${okMd ? "byte-identical" : "REWRITTEN (differs)"}, review ${okRv ? "byte-identical" : "REWRITTEN (differs)"}`);
   say(`  also rewritten: ${extras.join(", ")}`);
+}
+
+// ---------------------------------------------------------------- redraw
+//
+// The migration for a new engine: every plan with an archived spec gets its
+// surfaces re-rendered by THIS engine, spec and state untouched. rehydrate is
+// the writer (it alone re-renders a spec that no longer passes today's
+// floors); redraw only finds the plans and keeps one failure from stopping
+// the rest. "Differs" is the expected answer here — the engine moved — so it
+// is reported as redrawn, not as a hand edit.
+function archivedSlugs() {
+  try {
+    return fs.readdirSync(KEYS_DIR).filter(n => n.endsWith(".spec.json"))
+      .map(n => n.slice(0, -".spec.json".length)).sort();
+  } catch { return []; }
+}
+
+function missingOverviews(spec) {
+  return (spec.diagrams || []).map((d, i) => ({ n: i + 1, question: d.question, has: !!d.simple }))
+    .filter(d => !d.has);
+}
+
+function redraw(target, { json = false, dry = false } = {}) {
+  const slugs = target === "--all" || target === "all" ? archivedSlugs() : [target];
+  if (!slugs.length) die("no archived specs under " + KEYS_DIR);
+  const rows = [];
+  for (const slug of slugs) {
+    const specPath = path.join(KEYS_DIR, slug + ".spec.json");
+    if (!fs.existsSync(specPath)) { rows.push({ slug, ok: false, error: "no archived spec" }); continue; }
+    try {
+      const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
+      if (dry) { rows.push({ slug, ok: true, dry: true, missing: missingOverviews(spec).length }); continue; }
+      rows.push({ slug, ok: true, ...rehydrate(slug, { quiet: true }) });
+    } catch (e) {
+      rows.push({ slug, ok: false, error: String(e && e.message || e).split("\n")[0] });
+    }
+  }
+  if (json) { say(JSON.stringify(rows, null, 2)); return rows; }
+  for (const r of rows) {
+    if (!r.ok) { say(`  ✗ ${r.slug}: ${r.error}`); continue; }
+    const tail = r.missing ? ` · ${r.missing} diagram${r.missing === 1 ? "" : "s"} without an overview` : "";
+    say(`  ${r.dry ? "would redraw" : "redrew"} ${r.slug}${tail}`);
+  }
+  const need = rows.filter(r => r.ok && r.missing);
+  say(`${dry ? "would redraw" : "redrew"} ${rows.filter(r => r.ok).length}/${rows.length} plan(s)` +
+    (need.length ? `; ${need.length} lack overview diagrams — \`deep-plan overviews <slug>\` lists them` : ""));
+  if (rows.some(r => !r.ok)) process.exitCode = 1;
+  return rows;
+}
+
+// ---------------------------------------------------------------- overviews
+//
+// `overviews <slug>` lists a plan's diagrams with their mermaid, for whoever
+// drafts the plain-words versions; `overviews <slug> <file.json>` takes
+// {"<n>": "<mermaid>"} (or [{n, simple}]), parses each with the vendored
+// mermaid, refuses on any error, and only then writes. The archived spec is
+// patched, and so is ~/.claude/plans/<slug>.spec.json when it carries the same
+// diagram questions, so a later render from the authored file keeps them.
+async function overviews(slug, file, { json = false, force = false } = {}) {
+  const specPath = path.join(KEYS_DIR, slug + ".spec.json");
+  if (!fs.existsSync(specPath)) die("no archived spec for " + slug);
+  const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
+  const ds = spec.diagrams || [];
+  if (!file) {
+    const list = ds.map((d, i) => ({ n: i + 1, question: d.question, mermaid: d.mermaid, simple: d.simple || null }));
+    if (json) return say(JSON.stringify(list, null, 2));
+    for (const d of list) {
+      say(`\n## ${d.n}. ${d.question}${d.simple ? "   (has an overview)" : ""}\n`);
+      say(d.mermaid.trim());
+    }
+    const miss = list.filter(d => !d.simple).length;
+    say(`\n${miss} of ${list.length} without an overview. Write {"<n>": "<mermaid>"} to a file, then: deep-plan overviews ${slug} <file.json>`);
+    return;
+  }
+  let raw;
+  try { raw = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) { die(`overviews: ${file} is not JSON (${e.message})`); }
+  const pairs = Array.isArray(raw) ? raw.map(o => [Number(o && o.n), o && o.simple]) : Object.entries(raw).map(([n, v]) => [Number(n), v]);
+  const errs = [];
+  for (const [n, v] of pairs) {
+    if (!Number.isInteger(n) || n < 1 || n > ds.length) errs.push(`diagram ${n}: no such diagram (the plan has ${ds.length})`);
+    else if (typeof v !== "string" || !v.trim()) errs.push(`diagram ${n}: the overview must be mermaid source, a non-empty string`);
+    else if (ds[n - 1].simple && !force) errs.push(`diagram ${n} already has an overview (--force replaces it)`);
+  }
+  if (!errs.length) {
+    const parsed = await validateDiagrams(pairs.map(([n, v]) => ({ question: `overview of diagram ${n}`, mermaid: v })));
+    for (const b of parsed) if (b.error !== null) errs.push(`${b.label}: ${b.error}`);
+    if (parsed.some(b => b.error === null)) console.error("deep-plan: mermaid validation skipped for some overviews (environment-limited here)");
+  }
+  if (errs.length) { for (const e of errs) console.error("  ✗ " + e); die(`overviews refused for ${slug}: nothing written`); }
+  const patch = sp => {
+    for (const [n, v] of pairs) {
+      const d = (sp.diagrams || [])[n - 1];
+      if (d && d.question === ds[n - 1].question) d.simple = v.trim();
+    }
+    return sp;
+  };
+  fs.writeFileSync(specPath, JSON.stringify(patch(spec), null, 2) + "\n");
+  const authored = path.join(PLANS_DIR, slug + ".spec.json");
+  let alsoAuthored = false;
+  try {
+    const a = JSON.parse(fs.readFileSync(authored, "utf8"));
+    if ((a.diagrams || []).length === ds.length) {
+      fs.writeFileSync(authored, JSON.stringify(patch(a), null, 2) + "\n");
+      alsoAuthored = true;
+    }
+  } catch { /* no authored copy, or not ours to touch */ }
+  rehydrate(slug, { quiet: true });
+  say(`overviews: ${pairs.length} written to ${slug}${alsoAuthored ? " (archived + authored spec)" : " (archived spec)"}; surfaces redrawn`);
 }
 
 // ---------------------------------------------------------------- grade
@@ -1909,7 +1975,9 @@ function exportArtifact(slug, asJson) {
 ${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${esc(f)}</code>`).join(" ")}</p>` : ""}
 ${checksHtml(planChecks(spec, i), d.waiver)}</div>`).join("\n");
   const diagrams = (spec.diagrams || []).map(dg =>
-    `<h2>${esc(dg.question)}</h2><pre class="mermaid">${esc(dg.mermaid.trim())}</pre>`).join("\n");
+    `<h2>${esc(dg.question)}</h2>` +
+    (dg.simple ? `<p class="dim">overview</p><pre class="mermaid">${esc(String(dg.simple).trim())}</pre><p class="dim">detailed</p>` : "") +
+    `<pre class="mermaid">${esc(dg.mermaid.trim())}</pre>`).join("\n");
   const facts = (spec.verifiedFacts || []).map(f =>
     `<li>${esc(f.claim)} <span class="dim">— <code>${esc(f.evidence)}</code></span></li>`).join("");
   const decs = (spec.decisions || []).map(d =>
@@ -3231,7 +3299,7 @@ const BUILTIN_VERBS = new Set([
   "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
   "grade", "status", "go", "start", "done", "reset", "block", "check", "obs",
   "open-gate", "shut-gate", "close", "diff", "review", "deliver", "ask", "help", "setup", "engine", "verify",
-  "family",
+  "family", "redraw", "overviews",
 ]);
 
 const [, , cmd, ...rest] = process.argv;
@@ -3242,6 +3310,7 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--root") flags.root = rest[++i];
   else if (rest[i] === "--at") flags.at = rest[++i];
   else if (rest[i] === "--json") flags.json = true;
+  else if (rest[i] === "--dry-run") flags.dry = true;
   else if (rest[i] === "--inline") flags.inline = true;
   else if (rest[i] === "--write") flags.write = true;
   else if (rest[i] === "--out") flags.out = rest[++i];
@@ -3272,6 +3341,8 @@ switch (cmd) {
     await render(args[0], flags); break;
   }
   case "rehydrate": rehydrate(args[0] || die("rehydrate <slug>")); break;
+  case "redraw": redraw(args[0] || die("redraw <slug> | --all [--dry-run] [--json]"), flags); break;
+  case "overviews": await overviews(args[0] || die("overviews <slug> [file.json] [--force] [--json]"), args[1], flags); break;
   case "ask": {
     if (args[0] === "show") askShow(args[1] || die("ask show <id>"));
     else askCreate(args[0] || die("ask <ask.json> | ask show <id>"));
@@ -3459,6 +3530,8 @@ switch (cmd) {
   engine                                      print the engine pointer (which copy runs)
   render <spec.json> [--root DIR] [--force]   spec -> md + review + working surfaces
   rehydrate <slug>                            re-render from the archived spec
+  redraw <slug> | --all [--dry-run] [--json]  re-render plans with this engine (spec + state untouched)
+  overviews <slug> [file.json] [--force]      list diagrams, or add plain-words overviews {"<n>": "<mermaid>"}
   validate <slug|file>                        mermaid + formatting lint of rendered surfaces
   adr apply <slug>                            write flagged ADRs into the repo (refused in review phase)
   export-artifact <slug> [--json]             shareable annotate-able page (agent publishes it)
