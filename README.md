@@ -157,15 +157,54 @@ You ask for a plan. deep-plan makes the agent work through it in this order:
 ### The review page
 
 The page has the plan's context, decisions, cited evidence, diagrams and
-increments.
+increments, with a rail of its sections down the side. Highlight any text
+and press ⌘M to comment on it: the text stays marked, and the comment sits
+beside it in the margin. Click the marked text to edit what you wrote.
 
-![the top of a plan's review page: title, context, and the decisions with an "add an ADR" button](docs/img/plan-page.png)
+![the top of a plan's review page: the section rail with a comment count on Context, the context paragraphs with one phrase highlighted, and its comment card in the margin](docs/img/plan-page.png)
+
+In a narrow pane the rail becomes a bar across the top, and a comment opens
+over its marked text instead. Comments, answers and edits are kept as drafts
+in the browser, so a reload loses nothing.
+
+![the same page in a narrow pane: sections as a bar across the top, and the comment open beneath its highlighted phrase](docs/img/plan-narrow.png)
+
+Press `/` to search the plan by plain text, whole word, regex, or a fuzzy
+match ranked by how close it is. Every hit is listed with its section, and
+the search reaches folded sections and diagram labels too.
+
+![find open on a plan with fuzzy matching: the query "keep temp", eight ranked hits listed by section, and the hits highlighted on the page](docs/img/plan-find.png)
+
+Each diagram opens on a plain-words overview, with the detailed drawing one
+tab away. Zoom with ⌘-scroll or a pinch, or double-click a diagram to open
+it full screen.
+
+![a diagram card on its Overview tab: four plain boxes from "Your sessions make files" to "Open, keep or share it"](docs/img/plan-diagram.png)
+
+![a state diagram open full screen on its Detailed tab, with zoom controls](docs/img/plan-diagram-full.png)
 
 At the bottom is a short quiz that checks that you and the plan agree.
 Answer on the page, highlight text anywhere to pin comments, then click
-**Copy for session** and paste the result back into the terminal.
+**Copy for session** and paste the result back into the terminal. The paste
+carries your answers, every comment with the passage it was left on, and
+any risk or ADR edits.
 
 ![the quiz at the bottom of the review page: two questions answered](docs/img/plan-review.png)
+
+### The working page
+
+Once the quiz passes, the plan's Dock tab becomes its working page: the same
+plan with each increment's status, its checks, and `go` and `done` buttons.
+It refreshes itself as the session works, but not while you are partway
+through a comment. It has the same rail, search and comments. Comments here
+are amendments: **Copy amendments** hands them to the session, which edits
+the spec and re-renders, and increment progress carries over.
+
+Plans made before an engine update get the current pages with
+`deep-plan redraw --all`; their specs and progress are left as they are.
+Older diagrams have no overview yet. Ask the agent to add them:
+`deep-plan overviews <slug>` lists each diagram, and adding an overview
+doesn't count as a change to the approved plan.
 
 ### Questions with pictures
 
@@ -194,7 +233,7 @@ an ADR, or the entry must carry a written waiver. `deep-plan grade` also
 fails, before reading any answers, if a contract's decision has no quiz
 question.
 
-![the review surface's Decisions and Contracts sections: a declared db-schema change with scouted reach, and an "add an ADR" chip](docs/img/contracts.png)
+![the review page's Contracts section: a new db-schema contract and a config contract, each with its scouted reach and the decision that owns it](docs/img/contracts.png)
 
 ### Risks
 
@@ -212,7 +251,7 @@ Your choices go back with the same **Copy for session** paste as your quiz
 answers. `deep-plan grade` refuses while any risk is undecided, just as it
 refuses a contract change with no quiz question.
 
-![risk cards on the review page: a disposition per risk, with a deliverable picker and a ticket box for mitigations](docs/img/risks.png)
+![risk cards on the review page: a disposition per risk, with a deliverable picker and a ticket box for mitigations, and a note for a spike](docs/img/risks.png)
 
 ### ADRs
 
@@ -235,7 +274,7 @@ The repo isn't touched until the quiz passes and you run `deep-plan adr apply
 template. If your ADRs are named like `adr_013_snake_case.md`, its
 `filePattern` and `numberScan` keep new records in your numbering.
 
-![an ADR card with the in-page editor open: destination, fields, and live preview](docs/img/adr-editing.png)
+![an ADR card with the in-page editor open: its destination, then the decision, context and consequences fields](docs/img/adr-editing.png)
 
 ### Checks before done
 
