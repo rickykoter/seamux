@@ -632,6 +632,43 @@ r = run("crew-color", "show", MAIN, env=COLOR_ENV)
 check("crew-color show names it and says Peacock is not applied",
       r.returncode == 0 and f"  color      {hexv}" in r.stdout and "  peacock    not applied" in r.stdout, r.stdout)
 
+# A family: the parent's colour (Blue, preset), shades on the children, a child's
+# Peacock file followed, and leaving puts the colour from before back. The hexes
+# are the Python's own arithmetic (Peacock's HSL lighten/darken).
+import hashlib  # noqa: E402
+FAM = os.path.join(T, "fam")
+PARENT, KID1, KID2 = (os.path.join(FAM, n) for n in ("parent", "kid1", "kid2"))
+for d in (PARENT, KID1, os.path.join(KID2, ".vscode")):
+    os.makedirs(d)
+open(os.path.join(KID2, ".vscode", "settings.json"), "w").write(
+    '{\n  // mine\n  "peacock.color": "#C0392B", "editor.fontSize": 13,\n}\n')
+REG = os.path.join(CACHE, "cmux-crew", "colors")
+os.makedirs(REG, exist_ok=True)
+open(os.path.join(REG, hashlib.md5(PARENT.encode()).hexdigest()), "w").write(
+    f"ROOT={PARENT}\nCOLOR=#1565C0\nNAME=Blue\nCREATED=1\n")
+open(os.path.join(REG, hashlib.md5(KID2.encode()).hexdigest()), "w").write(
+    f"ROOT={KID2}\nCOLOR=#C0392B\nNAME=Red\nCREATED=2\n")
+r = run("crew-color", "family", PARENT, KID1, KID2, env=COLOR_ENV)
+check("crew-color family: the parent keeps Blue, the children take its shades",
+      r.returncode == 0 and r.stdout == f"{PARENT}\t#1565C0\n{KID1}\t#3D8EEA\n{KID2}\t#0D3E76\n", r.stdout + r.stderr)
+k2 = json.loads(open(os.path.join(KID2, ".vscode", "settings.json")).read())
+cc = k2.get("workbench.colorCustomizations") or {}
+check("…a child already wearing Peacock follows its shade, keeping its own keys",
+      k2.get("peacock.color") == "#0D3E76" and k2.get("editor.fontSize") == 13
+      and cc.get("activityBar.background") == "#104A8D" and cc.get("activityBarBadge.background") == "#3488E8"
+      and cc.get("statusBar.foreground") == "#e7e7e7", str(k2))
+check("…and a child with no .vscode gets none", not os.path.exists(os.path.join(KID1, ".vscode")))
+r = run("crew-color", "list", env=COLOR_ENV)
+check("crew-color list marks Blue held and names its holder",
+      r.returncode == 0 and "  ● #1565C0  Blue     \n        parent\n" in r.stdout, r.stdout)
+r = run("crew-color", "unfamily", "--stale", env=COLOR_ENV)
+check("crew-color unfamily --stale gives each member its colour from before",
+      r.returncode == 0 and f"{KID2}\t#C0392B\n" in r.stdout and f"{KID1}\t\n" in r.stdout
+      and json.loads(open(os.path.join(KID2, ".vscode", "settings.json")).read())["peacock.color"] == "#C0392B",
+      r.stdout + r.stderr)
+r = run("crew-color", "bogus", env=COLOR_ENV)
+check("crew-color: an unknown command fails with exit 1", r.returncode == 1 and r.stdout == "" and "unknown 'bogus'" in r.stderr)
+
 TEMPLATE = """{
   // the template's own docs
   "hosts": ["a", "b"],

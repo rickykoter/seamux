@@ -5,13 +5,17 @@
 //! Output goes through crew-core's `pyjson` and `py`, the family's one
 //! Python-compatible writer. The Python stays until the family's cutover.
 
+pub mod color;
 pub mod frame;
+mod md5;
 pub mod overlay;
 pub mod plugin_root;
 mod pyerr;
+mod pypath;
 
 /// The seamux tools this crate provides, by the Python script's basename.
 pub const TOOLS: &[(&str, fn(&[String]) -> i32)] = &[
+    ("crew-color", color::main),
     ("crew-frame", frame::main),
     ("crew-overlay", overlay::main),
     ("crew-plugin-root", plugin_root::main),

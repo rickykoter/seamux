@@ -16,6 +16,7 @@ use crew_core::py::{env_or, home};
 use serde_json::{Map, Value};
 
 use crate::pyerr;
+use crate::pypath::{join, normpath};
 
 const USAGE: &str = "    crew-plugin-root <plugin-name>       prints the root, or nothing (exit 1)";
 
@@ -175,76 +176,9 @@ pub fn plugin_root(name: &str, config_dir: Option<&str>) -> Result<String, Raise
     Ok(String::new())
 }
 
-/// `os.path.join(a, b)` for two parts.
-fn join(a: &str, b: &str) -> String {
-    if b.starts_with('/') || a.is_empty() {
-        b.to_string()
-    } else if a.ends_with('/') {
-        format!("{a}{b}")
-    } else {
-        format!("{a}/{b}")
-    }
-}
-
-/// `os.path.normpath`, POSIX: lexical, keeps a leading `//`, never touches disk.
-fn normpath(p: &str) -> String {
-    if p.is_empty() {
-        return ".".into();
-    }
-    let lead = if p.starts_with("//") && !p.starts_with("///") {
-        2
-    } else if p.starts_with('/') {
-        1
-    } else {
-        0
-    };
-    let mut parts: Vec<&str> = Vec::new();
-    for c in p.split('/') {
-        if c.is_empty() || c == "." {
-            continue;
-        }
-        if c != ".." || (lead == 0 && parts.is_empty()) || parts.last() == Some(&"..") {
-            parts.push(c);
-        } else if !parts.is_empty() {
-            parts.pop();
-        }
-    }
-    let out = "/".repeat(lead) + &parts.join("/");
-    if out.is_empty() {
-        ".".into()
-    } else {
-        out
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn normpath_matches_posixpath() {
-        for (i, o) in [
-            ("", "."),
-            ("/", "/"),
-            ("//", "//"),
-            ("///", "/"),
-            ("a/./b/../c", "a/c"),
-            ("../a", "../a"),
-            ("/../a", "/a"),
-            ("a/../..", ".."),
-            ("/x/y/", "/x/y"),
-            ("//x/../y", "//y"),
-        ] {
-            assert_eq!(normpath(i), o, "{i}");
-        }
-    }
-
-    #[test]
-    fn join_matches_os_path_join() {
-        assert_eq!(join("", "x"), "x");
-        assert_eq!(join("/a/", "x"), "/a/x");
-        assert_eq!(join("/a", "/abs"), "/abs");
-    }
 
     fn tree() -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("crew-cli-pr-{}-{:?}", std::process::id(), std::thread::current().id()));
