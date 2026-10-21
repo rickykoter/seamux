@@ -3,6 +3,9 @@
    cmux colour as a slim edge. */
 
 #wall { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+/* The tab strip hides panels with the hidden attribute; a display rule of
+   our own would otherwise keep the Wall drawn under every other tab. */
+#wall[hidden] { display: none; }
 .wall-status { margin: 10px 16px 0; color: var(--bad); }
 
 .split {

@@ -43,12 +43,18 @@ pub struct Head {
     pub server: String,
 }
 
-/// GET `path` on loopback with a short timeout, reading until the headers end
-/// (or 8 KB), so a status line split across reads still parses.
-pub fn http_head(port: u16, path: &str) -> Result<Head, String> {
+/// How long /health may take: it answers at once when the server is up.
+pub const HEALTH_WAIT: Duration = Duration::from_millis(800);
+/// How long a page may take to start answering: /usage runs ccusage first
+/// (about 1.3 s here), so a page gets far longer than /health.
+pub const PAGE_WAIT: Duration = Duration::from_secs(20);
+
+/// GET `path` on loopback, waiting at most `wait` for an answer, reading until
+/// the headers end (or 8 KB), so a status line split across reads still parses.
+pub fn http_head(port: u16, path: &str, wait: Duration) -> Result<Head, String> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_millis(400)).map_err(|e| e.to_string())?;
-    s.set_read_timeout(Some(Duration::from_millis(800))).ok();
+    s.set_read_timeout(Some(wait)).ok();
     // One write: write! on a stream sends each formatted piece separately.
     let req = format!("GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\n\r\n");
     s.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
@@ -58,6 +64,10 @@ pub fn http_head(port: u16, path: &str) -> Result<Head, String> {
         match s.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            // A read that timed out reports WouldBlock (os error 35 on macOS).
+            Err(e) if buf.is_empty() && matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+                return Err(format!("no answer within {} s", wait.as_secs_f32()));
+            }
             Err(e) if buf.is_empty() => return Err(e.to_string()),
             Err(_) => break,
         }
@@ -84,8 +94,8 @@ pub fn is_intent_server(head: &Head) -> bool {
 }
 
 /// A page's status, but only from the intent server itself.
-pub fn http_status(port: u16, path: &str) -> Result<u16, String> {
-    let head = http_head(port, path)?;
+pub fn http_status(port: u16, path: &str, wait: Duration) -> Result<u16, String> {
+    let head = http_head(port, path, wait)?;
     if !is_intent_server(&head) {
         return Err(format!("port {port} is held by {:?}, not crew-board-intent", head.server));
     }
@@ -94,7 +104,7 @@ pub fn http_status(port: u16, path: &str) -> Result<u16, String> {
 
 /// /health answering 200 means up.
 pub fn health(port: u16) -> Result<(), String> {
-    match http_status(port, "/health")? {
+    match http_status(port, "/health", HEALTH_WAIT)? {
         200 => Ok(()),
         code => Err(format!("/health answered {code}")),
     }
@@ -133,7 +143,7 @@ pub async fn intent_page(path: String) -> Result<u16, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let text = port_file().and_then(|p| std::fs::read_to_string(p).ok()).ok_or("no port file")?;
         let port = parse_port(&text).ok_or("bad port file")?;
-        http_status(port, &path)
+        http_status(port, &path, PAGE_WAIT)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -403,7 +413,7 @@ mod tests {
             let _ = c.read(&mut buf).unwrap();
             c.write_all(b"HTTP/1.0 404 Not Found\r\nServer: crew-board-intent\r\n\r\n").unwrap();
         });
-        assert_eq!(http_status(port, "/board"), Ok(404));
+        assert_eq!(http_status(port, "/board", PAGE_WAIT), Ok(404));
         t.join().unwrap();
     }
 
@@ -426,14 +436,35 @@ mod tests {
     #[test]
     fn another_server_on_the_port_is_refused() {
         let port = serve_once(vec![b"HTTP/1.0 200 OK\r\nServer: SimpleHTTP/0.6\r\n\r\n"]);
-        let err = http_status(port, "/health").unwrap_err();
+        let err = http_status(port, "/health", HEALTH_WAIT).unwrap_err();
         assert!(err.contains("not crew-board-intent"), "{err}");
     }
 
     #[test]
     fn a_status_line_split_across_reads_parses() {
         let port = serve_once(vec![b"HTTP/1.0 ", b"200 OK\r\nServer: crew-board-intent\r\n\r\n"]);
-        assert_eq!(http_status(port, "/health"), Ok(200));
+        assert_eq!(http_status(port, "/health", HEALTH_WAIT), Ok(200));
+    }
+
+    /// /usage runs ccusage before it answers (about 1.3 s): a page gets the
+    /// long wait, and a slow answer is reported as such, not as os error 35.
+    #[test]
+    fn a_slow_page_still_answers_and_a_timeout_says_so() {
+        let slow = |delay: u64| {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = l.local_addr().unwrap().port();
+            std::thread::spawn(move || {
+                let (mut c, _) = l.accept().unwrap();
+                let mut buf = [0u8; 256];
+                let _ = c.read(&mut buf);
+                std::thread::sleep(Duration::from_millis(delay));
+                let _ = c.write_all(b"HTTP/1.0 200 OK\r\nServer: crew-board-intent\r\n\r\n");
+            });
+            port
+        };
+        assert_eq!(http_status(slow(1500), "/usage", PAGE_WAIT), Ok(200));
+        let err = http_status(slow(1500), "/usage", Duration::from_millis(300)).unwrap_err();
+        assert!(err.contains("no answer within"), "{err}");
     }
 
     #[test]
