@@ -1,5 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { reflow, type Block } from "./reflow";
+
+/** One re-flowed paragraph: wraps at the window, hanging past its marker. */
+function flowLine(b: Block): HTMLElement {
+  const el = document.createElement("div");
+  el.className = "ln";
+  el.style.paddingLeft = `${b.start}ch`;
+  el.style.textIndent = `-${b.hang}ch`;
+  el.textContent = b.text || " ";
+  return el;
+}
 
 // The shapes of wall.rs's Frame and Tile.
 export type Tile = {
@@ -245,7 +256,15 @@ class Preview {
         // then an update leaves them where they are.
         const b = this.body;
         const atEnd = switched || b.scrollHeight - b.scrollTop - b.clientHeight < 24;
-        b.textContent = text || "(nothing on screen yet)";
+        if (t.agent && text) {
+          // An agent's prose re-flows to the window; a shell keeps the
+          // terminal's own layout.
+          b.classList.add("flow");
+          b.replaceChildren(...reflow(t.lines).map(flowLine));
+        } else {
+          b.classList.remove("flow");
+          b.textContent = text || "(nothing on screen yet)";
+        }
         this.lastText = text;
         if (atEnd) requestAnimationFrame(() => (b.scrollTop = b.scrollHeight));
       }
