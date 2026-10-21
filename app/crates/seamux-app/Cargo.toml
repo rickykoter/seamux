@@ -1,0 +1,28 @@
+[package]
+name = "seamux-app"
+description = "The seamux app: a Tauri window that owns the UI, with cmux behind crates/cmux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "seamux-app"
+path = "src/main.rs"
+
+# custom-protocol serves the built pages (app/dist) instead of the Vite dev
+# server. The Tauri CLI turns it on for release builds; we build with plain
+# cargo, so it is on by default. `--no-default-features` loads devUrl, for
+# `npm run dev` with hot reload.
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2.6", features = [] }
+
+[dependencies]
+cmux.workspace = true
+serde_json.workspace = true
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2.11", features = [] }
