@@ -1,5 +1,5 @@
 {
-  "description": "crew: publish each session's state to cmux (a no-op outside cmux). The same eight entries `crew apply` used to write into settings.json.",
+  "description": "crew: publish each session's state to cmux (a no-op outside cmux, and when seamux is not installed). Each event runs seamux-hook.sh, which hands the work to `seamux crew-hook <event>`.",
   "hooks": {
     "SessionStart": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/crew-hook.sh\" session",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/seamux-hook.sh\" session",
             "timeout": 5
           }
         ]
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/crew-hook.sh\" end",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/seamux-hook.sh\" end",
             "timeout": 3
           }
         ]
@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/crew-hook.sh\" stop",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/seamux-hook.sh\" stop",
             "timeout": 5
           }
         ]
@@ -43,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/crew-hook.sh\" notification",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/seamux-hook.sh\" notification",
             "timeout": 5
           }
         ]
@@ -55,7 +55,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/crew-hook.sh\" pretool",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/seamux-hook.sh\" pretool",
             "timeout": 3
           }
         ]
@@ -65,7 +65,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/crew-hook.sh\" ask",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/seamux-hook.sh\" ask",
             "timeout": 3
           }
         ]
@@ -77,7 +77,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/crew-hook.sh\" answered",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/seamux-hook.sh\" answered",
             "timeout": 3
           }
         ]
@@ -87,7 +87,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/crew-hook.sh\" task",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/seamux-hook.sh\" task",
             "timeout": 5,
             "statusMessage": "Publishing plan to cmux..."
           }

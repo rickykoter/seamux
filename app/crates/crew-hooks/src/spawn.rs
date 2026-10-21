@@ -40,7 +40,9 @@ fn path_of(name: &str) -> (&'static str, bool) {
 
 fn exe() -> Option<&'static PathBuf> {
     static E: OnceLock<Option<PathBuf>> = OnceLock::new();
-    E.get_or_init(|| std::env::current_exe().ok()).as_ref()
+    // Through links to the real binary: a tool name linked to seamux must
+    // self-exec seamux, not the link (which would run that tool instead).
+    E.get_or_init(|| std::env::current_exe().ok().map(|e| std::fs::canonicalize(&e).unwrap_or(e))).as_ref()
 }
 
 /// The names `seamux --tools` lists, asked once per process.

@@ -632,8 +632,9 @@ environment), or push anything.
 | | why | without it |
 |---|---|---|
 | macOS | cmux and the Dock are Mac-only | nothing works |
-| [cmux](https://cmux.io) nightly | the board lives in cmux's web Dock | files install, nothing shows |
-| `python3` + `node` | board, intent server, probes, deep-plan | install refuses |
+| [cmux](https://cmux.io) nightly | the terminals, workspaces and socket crew drives | files install, nothing shows |
+| `cargo`, `node` + Xcode CLT | build the seamux app and its `seamux` CLI, which every crew tool and hook runs as | install refuses |
+| `python3` | crew apply's and the bash tools' JSON helpers, and the probes | install refuses |
 | Claude Code | the agents this is all for | not much point |
 | `gh` *(optional)* | PR and checks chips on rows | those chips stay blank |
 | `ccusage` *(optional)* | spend on rows and `/usage` | cost surfaces are absent |
@@ -745,8 +746,9 @@ node deep-plan/probe.mjs && node restack/probe.mjs && node crew/board/board_prob
 python3 tools/skill_lint.py                      # every skill against the authoring rules
 ```
 
-Open the board with `cmux sidebar open crew` or the Dock button. New Claude
-Code sessions pick up the plugins' hooks; sessions already running don't.
+Open the board with Control-Option-Space (the seamux app's Board tab) or
+`cmd+k c` in cmux. New Claude Code sessions pick up the plugins' hooks;
+sessions already running don't.
 
 Then ask Claude for a "deep plan" of any change. You'll get the review page,
 the quiz, and the per-increment gate. In a repo with no `.seamux/verify.json`

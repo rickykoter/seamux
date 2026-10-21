@@ -9,7 +9,7 @@
 #   crew color      list|show|assign|apply|free|prune — per-worktree identity color
 #   crew doctor     check the install, exit non-zero if something is wrong
 #   crew drift      list what differs between the crew plugin and the live tree
-#   crew apply      install the live tree from the plugin, render config, sidebar + Dock
+#   crew apply      install the live tree from the plugin, render config + Dock
 #                   (--dry-run says what it would do and changes nothing)
 #   crew on|off     enable / disable at runtime (hooks stay wired, become no-ops)
 #   crew uninstall  restore the pre-crew cmux.json, remove legacy Claude hook entries
@@ -45,7 +45,10 @@ SIDEBAR_DIR="$HOME/.config/cmux/sidebars"
 STATE="${XDG_CACHE_HOME:-$HOME/.cache}/cmux-crew"
 LOCALBIN="$HOME/.local/bin"
 MONOLITH="${CREW_MONOLITH:-__MAIN_REPO__}"
-HOOK="$CREW_HOME/hooks/crew-hook.sh"
+HOOK="$CREW_HOME/hooks/seamux-hook.sh"
+# seamux: the Rust every crew tool runs as since the cutover. install.sh
+# (--app) builds it and links it here; SEAMUX_BIN overrides, for tests.
+SEAMUX="${SEAMUX_BIN:-$LOCALBIN/seamux}"
 
 CMUX="$(command -v cmux || true)"
 # One definition of "which cmux": bin/crew-cmux-bin. A hardcoded bundle path kept
@@ -108,7 +111,7 @@ CREW_LOCAL="${CREW_LOCAL:-$HOME/.config/cmux/crew-local}"
 render_local() {
   local ov="$CREW_LOCAL/$2"
   if [ ! -f "$ov" ]; then render "$1"; return; fi
-  render "$1" | python3 "$CREW_HOME/bin/crew-overlay" <(render "$ov") "$ov"
+  render "$1" | "$SEAMUX" crew-overlay <(render "$ov") "$ov"
 }
 
 # render_to <template> <overlay-name> <dest>
@@ -143,7 +146,7 @@ PY
 # simply installPath: a folder marketplace's plugin runs from the folder, while
 # its installPath names a cache snapshot (bin/crew-plugin-root says more).
 plugin_install_path() {
-  python3 "$CREW_HOME/bin/crew-plugin-root" "$1" 2>/dev/null
+  "$SEAMUX" crew-plugin-root "$1" 2>/dev/null
 }
 
 # How many settings.json hook entries still run crew-hook.sh (the wiring the
@@ -167,7 +170,7 @@ PY
 resolve_main() {
   if [ -n "${CREW_MONOLITH:-}" ]; then printf '%s\n' "$CREW_MONOLITH"; return; fi
   local opt
-  opt="$(python3 "$CREW_HOME/hooks/options.py" --from-settings --get main_repo 2>/dev/null)"
+  opt="$("$SEAMUX" options --from-settings --get main_repo 2>/dev/null)"
   if [ -n "$opt" ]; then printf '%s\n' "$opt"; return; fi
   local baked=""
   [ -f "$LIVE/bin/crew" ] && baked="$(sed -n 's/^MONOLITH="\${CREW_MONOLITH:-\(.*\)}"$/\1/p' "$LIVE/bin/crew" | head -1)"
@@ -196,14 +199,20 @@ plugin_source() {
   fi
 }
 
+# The crew Python, retired at the cutover but kept in the repo for the probes
+# until they are ported (seamux-inversion inc4): every *.py, and the Python
+# CLIs that carry no extension. apply leaves all of it out of the live tree,
+# so nothing live can run it, and the drift check does not count it.
+RETIRED_PY="bin/crew-artifacts bin/crew-color bin/crew-digest bin/crew-feed bin/crew-frame bin/crew-listen bin/crew-overlay bin/crew-plugin-root bin/crew-resume bin/crew-sweep bin/crew-sync board/crew-board board/crew-board-diag board/crew-board-intent"
+
 # Files that differ between a plugin root and the live tree, one per line, as
 # "differs|source-only|live-only <path>". The main repo baked into the live
 # tree is put back to __MAIN_REPO__ before comparing; install-time state
 # (.seamux-source, integrations.json) and caches are not compared.
 crew_drift() {
-  python3 - "$1" "$LIVE" "$(resolve_main)" <<'PY'
+  python3 - "$1" "$LIVE" "$(resolve_main)" "$RETIRED_PY" <<'PY'
 import os, sys
-src, live, main = sys.argv[1], sys.argv[2], sys.argv[3]
+src, live, main, retired = sys.argv[1], sys.argv[2], sys.argv[3], set(sys.argv[4].split())
 SKIP_DIRS = {"__pycache__", "types"}
 SKIP = {".seamux-source", "integrations.json", ".DS_Store"}
 def files(root):
@@ -211,9 +220,11 @@ def files(root):
     for d, dirs, fs in os.walk(root):
         dirs[:] = [x for x in dirs if x not in SKIP_DIRS]
         for f in fs:
-            if f in SKIP or f.endswith(".pyc"):
+            if f in SKIP or f.endswith(".pyc") or f.endswith(".py"):
                 continue
-            out.add(os.path.relpath(os.path.join(d, f), root))
+            rel = os.path.relpath(os.path.join(d, f), root)
+            if rel not in retired:
+                out.add(rel)
     return out
 a, b = files(src), files(live)
 for rel in sorted(a | b):
@@ -242,10 +253,11 @@ apply_from_source() {
     printf '  would record the source in %s/.seamux-source\n' "${LIVE/#$HOME/~}"
     if [ -n "$main" ]; then printf '  would bake the main repo: %s\n' "$main"
     else printf '  no main repo found: __MAIN_REPO__ stays (set CREW_MONOLITH)\n'; fi
-    printf '  then run the live copy'"'"'s apply: render cmux.json, link commands, sidebar, Dock,\n'
+    printf '  would leave the retired crew Python out of the live tree (seamux runs every tool)\n'
+    printf '  then run the live copy'"'"'s apply: render cmux.json, link commands, Dock,\n'
     printf '  install the deep-plan and restack shims through their engine pointers\n'
     printf '  settings.json: no hook entries written (the crew plugin'"'"'s hooks.json wires them);\n'
-    printf '  statusLine and the push flags merged (claude/merge_settings.py)\n'
+    printf '  statusLine and the push flags merged (seamux merge_settings)\n'
     printf '  %s legacy crew-hook.sh entr%s to remove\n' "$n_legacy" "$([ "$n_legacy" = 1 ] && echo y || echo ies)"
     return 0
   fi
@@ -258,6 +270,11 @@ apply_from_source() {
   fi
   mkdir -p "$LIVE" && cp -R "$src/." "$LIVE/" || { bad "could not copy $src -> $LIVE"; return 1; }
   ok "copied ${src/#$HOME/~} -> ${LIVE/#$HOME/~}"
+  # The retired Python stays out of the live tree: seamux runs every tool.
+  find "$LIVE" -name '*.py' -delete 2>/dev/null
+  find "$LIVE" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null
+  local r; for r in $RETIRED_PY; do rm -f "$LIVE/$r"; done
+  ok "left the retired crew Python out of the live tree"
   # Provenance: `crew doctor` compares the live tree against this root.
   printf '%s\n' "$src" > "$LIVE/.seamux-source"
   [ -n "$prev_integ" ] && printf '%s\n' "$prev_integ" > "$LIVE/integrations.json" && ok "kept integrations.json"
@@ -349,13 +366,22 @@ cmd_apply() {
   fi
   if [ "$dry" = 1 ]; then
     head_ "crew apply --dry-run  (live tree)"
-    printf '  would re-render cmux.json, relink commands, reinstall sidebar and Dock\n'
+    printf '  would re-render cmux.json, relink commands, reinstall the Dock\n'
     printf '  settings.json: %s\n' "$(plugin_enabled crew && echo "no hook entries written; $(legacy_hook_count) legacy crew-hook.sh entries to remove" || echo "legacy wiring rewritten (the crew plugin is not enabled)")"
     return 0
   fi
   head_ "crew apply"
 
-  mkdir -p "$HOME/.config/cmux" "$SIDEBAR_DIR" "$STATE"
+  # Every crew tool runs as seamux since the cutover, the hooks included, and
+  # they are silent no-ops without it: refuse rather than install a crew that
+  # quietly does nothing.
+  if [ ! -x "$SEAMUX" ]; then
+    bad "seamux is not installed at ${SEAMUX/#$HOME/~} — run ./install.sh --app from the seamux checkout, then crew apply"
+    return 1
+  fi
+  ok "seamux: ${SEAMUX/#$HOME/~} ($("$SEAMUX" --version 2>/dev/null))"
+
+  mkdir -p "$HOME/.config/cmux" "$STATE"
 
   # 1. back up whatever cmux.json is there now — but only if it is not already
   #    crew's own output. Re-applying must never overwrite the pre-crew backup
@@ -384,19 +410,26 @@ cmd_apply() {
   #    run by, and run from here that is $LOCALBIN, not bin/.
   if [ -d "$LOCALBIN" ] || mkdir -p "$LOCALBIN" 2>/dev/null; then
     local linked=0
-    for f in crew crew-color crew-diff crew-code crew-digest crew-feed crew-reclaim crew-resume crew-sweep crew-sandbox crew-spec crew-sync crew-worktree crew-watch crew-listen crew-artifacts crew-cmux-bin; do
+    # The bash tools, from the live tree.
+    for f in crew crew-diff crew-code crew-reclaim crew-sandbox crew-spec crew-worktree crew-watch crew-cmux-bin; do
       ln -sf "$CREW_HOME/bin/$f" "$LOCALBIN/$f" && linked=$((linked + 1))
     done
-    # The board lives in board/, not bin/: it is a surface with an HTML shell beside it.
-    for f in crew-board crew-board-diag; do
-      ln -sf "$CREW_HOME/board/$f" "$LOCALBIN/$f" && linked=$((linked + 1))
+    # The ported tools: each name links to seamux, which runs the tool it was
+    # started as. Only names seamux lists, so a partial build links no dead name.
+    local tools; tools="$("$SEAMUX" --tools 2>/dev/null)"
+    for f in crew-color crew-digest crew-feed crew-resume crew-sweep crew-sync crew-listen crew-artifacts crew-board; do
+      printf '%s\n' "$tools" | grep -qx "$f" && ln -sf "$SEAMUX" "$LOCALBIN/$f" && linked=$((linked + 1))
     done
+    # Retired with the Dock board.
+    rm -f "$LOCALBIN/crew-board-diag"
     ok "linked $linked commands into $LOCALBIN"
   fi
 
-  # 4. sidebar
-  cp "$CREW_HOME/sidebars/crew.swift" "$SIDEBAR_DIR/crew.swift"
-  ok "installed sidebar -> $SIDEBAR_DIR/crew.swift"
+  # 4. the Swift sidebar board is retired (the board is the app's /board tab):
+  #    remove a copy an earlier apply installed.
+  if [ -f "$SIDEBAR_DIR/crew.swift" ]; then
+    rm -f "$SIDEBAR_DIR/crew.swift" && ok "removed the retired sidebar board ($SIDEBAR_DIR/crew.swift)"
+  fi
 
   # 4. project Dock, untracked
   if [ -d "$MONOLITH/.git" ]; then
@@ -423,7 +456,7 @@ cmd_apply() {
     ok "backed up dock.json -> dock.json.pre-crew.bak"
   fi
   if render_to "$CREW_HOME/config/dock.global.json" dock.global.json "$HOME/.config/cmux/dock.json"; then
-    ok "installed global Dock -> ~/.config/cmux/dock.json (board + usage)"
+    ok "installed global Dock -> ~/.config/cmux/dock.json (usage, sessions, sweep)"
   else
     bad "could not render the global Dock (check $CREW_LOCAL/dock.global.json) — left unchanged"
   fi
@@ -464,15 +497,15 @@ cmd_apply() {
 
   # 5c. The crew plugin's options -> integrations.json, for a machine where no
   #     session has run since they were set (the SessionStart hook does the same).
-  python3 "$CREW_HOME/hooks/options.py" --from-settings \
+  "$SEAMUX" options --from-settings \
     && ok "integrations.json follows the crew plugin's options$(grep -q managedBy "$CREW_HOME/integrations.json" 2>/dev/null || echo ' (none set; earlier answers kept)')" \
     || warn "could not render the crew plugin's options into integrations.json"
 
   # 5d. The status line and the phone-push flags: the two things a plugin
   #     cannot set, merged into settings.json (additive, backed up).
-  python3 "$CREW_HOME/claude/merge_settings.py" | sed 's/^/  /'
+  "$SEAMUX" merge_settings | sed 's/^/  /'
 
-  chmod +x "$CREW_HOME"/bin/* "$CREW_HOME"/hooks/*.sh "$CREW_HOME"/hooks/*.py 2>/dev/null
+  chmod +x "$CREW_HOME"/bin/* "$CREW_HOME"/hooks/*.sh 2>/dev/null
   rm -f "$STATE/disabled"
 
   # 6. validate + reload
@@ -484,11 +517,9 @@ cmd_apply() {
   # The template carries activePaneBorderColor as null, so an apply resets the
   # pane frame. Repaint it now rather than leaving it blank until the next
   # workspace switch.
-  if [ -x "$CREW_HOME/bin/crew-frame" ]; then
-    python3 "$CREW_HOME/bin/crew-frame" >/dev/null 2>&1 \
-      && ok "pane frame follows the selected workspace" \
-      || warn "crew-frame did not run"
-  fi
+  "$SEAMUX" crew-frame >/dev/null 2>&1 \
+    && ok "pane frame follows the selected workspace" \
+    || warn "crew-frame did not run"
 
   # A running intent server keeps executing whatever code it started with, and
   # nothing else restarts it: crew-listen only spawns one when it is DOWN, so an
@@ -499,16 +530,18 @@ cmd_apply() {
   #
   # Only when it is actually behind: an apply with no new code should not bounce
   # a healthy server for nothing. Same test `crew doctor` reports.
-  if [ -f "$STATE/board-intent.port" ] && [ "$CREW_HOME/board/crew-board-intent" -nt "$STATE/board-intent.port" ]; then
+  # The server's code is the seamux binary now, so "behind" is seamux newer
+  # than the port file (written once, at the server's start).
+  if [ -f "$STATE/board-intent.port" ] && [ "$SEAMUX" -nt "$STATE/board-intent.port" ]; then
     # One python call does the whole bounce: kill, respawn detached, wait on the
     # socket. Spawned with start_new_session so it outlives this shell -- the
     # same reason crew-board does it that way, and there is no setsid on BSD.
     # It is started here rather than left to crew-listen, which is not running
     # when the daemon is off, in which case nothing would restart it at all.
-    if python3 - "$CREW_HOME/board/crew-board-intent" "$STATE/board-intent.port" <<'PY'
+    if python3 - "$SEAMUX" "$STATE/board-intent.port" <<'PY'
 import os, signal, socket, subprocess, sys, time
 
-intent, portfile = sys.argv[1], sys.argv[2]
+seamux, portfile = sys.argv[1], sys.argv[2]
 
 # Match any generation, including one started with a relative path.
 subprocess.run(["pkill", "-f", "crew-board-intent"], capture_output=True)
@@ -518,7 +551,7 @@ for _ in range(20):                       # let the port come free
                       capture_output=True).returncode != 0:
         break
 
-subprocess.Popen([sys.executable, intent], stdout=subprocess.DEVNULL,
+subprocess.Popen([seamux, "crew-board-intent"], stdout=subprocess.DEVNULL,
                  stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
                  start_new_session=True)
 
@@ -537,11 +570,11 @@ PY
     then
       ok "restarted the intent server on the new code"
     else
-      warn "intent server did not come back — it starts again on the next board push"
+      warn "intent server did not come back — crew-listen starts it again"
     fi
   fi
 
-  printf '\nNew Claude sessions pick up the hooks. Open the board with:\n  cmux sidebar open crew\n'
+  printf '\nNew Claude sessions pick up the hooks. The board is the seamux app'"'"'s Board tab,\nor ⌘K c in cmux (http://127.0.0.1:%s/board).\n' "${CREW_INTENT_PORT:-7345}"
 }
 
 # Rewrites only crew's own hook entries. Every other hook — whimsy, gitnexus,
@@ -632,12 +665,20 @@ cmd_uninstall() {
     strip_legacy_hooks && ok "removed the legacy crew-hook.sh entries from settings.json (whimsy, gitnexus, guard_bash untouched)"
   fi
   plugin_enabled crew && warn "the crew plugin is still enabled: claude plugin uninstall crew (its hooks are no-ops once crew is off)"
-  python3 "$CREW_HOME/claude/merge_settings.py" --remove | sed 's/^/  /'
+  if [ -x "$SEAMUX" ]; then
+    "$SEAMUX" merge_settings --remove | sed 's/^/  /'
+  else
+    warn "seamux is not installed: statusLine and the push flags stay in settings.json"
+  fi
 
   # Only remove links that actually point back into the package.
   local unlinked=0
-  for f in crew crew-color crew-diff crew-code crew-digest crew-feed crew-reclaim crew-resume crew-sweep crew-sandbox crew-spec crew-sync crew-worktree crew-watch crew-listen crew-artifacts crew-cmux-bin; do
-    if [ -L "$LOCALBIN/$f" ] && [ "$(readlink "$LOCALBIN/$f")" = "$CREW_HOME/bin/$f" ]; then
+  for f in crew crew-color crew-diff crew-code crew-digest crew-feed crew-reclaim crew-resume crew-sweep crew-sandbox crew-spec crew-sync crew-worktree crew-watch crew-listen crew-artifacts crew-cmux-bin crew-board crew-board-diag; do
+    # A link into the package, or (a ported tool) to seamux itself. The seamux
+    # link is install.sh's, not crew's, and stays.
+    if [ -L "$LOCALBIN/$f" ] && { [ "$(readlink "$LOCALBIN/$f")" = "$CREW_HOME/bin/$f" ] \
+        || [ "$(readlink "$LOCALBIN/$f")" = "$SEAMUX" ] \
+        || [ "$(readlink "$LOCALBIN/$f")" = "$CREW_HOME/board/$f" ]; }; then
       rm -f "$LOCALBIN/$f"; unlinked=$((unlinked + 1))
     fi
   done
@@ -807,11 +848,11 @@ cmd_listen() {
         ok "listener already running (pid $pid)"
       else
         mkdir -p "$STATE"
-        ( nohup "$CREW_HOME/bin/crew-listen" >>"$STATE/listen.log" 2>&1 & ) >/dev/null 2>&1
+        ( nohup "$SEAMUX" crew-listen >>"$STATE/listen.log" 2>&1 & ) >/dev/null 2>&1
         sleep 1
         pid="$(cat "$pidf" 2>/dev/null || true)"
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-          ok "listener on (pid $pid) — events + a ${CREW_TICK_SECONDS:-120}s reconcile, board every ${CREW_BOARD_TICK:-10}s"
+          ok "listener on (pid $pid) — events + a ${CREW_TICK_SECONDS:-120}s reconcile"
         else
           bad "listener failed to start; see: crew listen log"
         fi
@@ -904,7 +945,20 @@ cmd_doctor() {
   FAIL=0
   head_ "binaries"
   [ -x "$CMUX" ] && ok "cmux: $CMUX" || bad "cmux not found"
-  command -v python3 >/dev/null && ok "python3" || bad "python3 missing (hooks need it)"
+  if [ -x "$SEAMUX" ]; then
+    ok "seamux: ${SEAMUX/#$HOME/~} ($("$SEAMUX" --version 2>/dev/null))"
+    # Every tool crew runs live, the hooks included: a missing one would make
+    # a caller quietly fall back to nothing.
+    local _tools _need="crew-hook asked-hook triage statusline options merge_settings crew-sync crew-listen crew-color crew-feed crew-digest crew-frame crew-overlay crew-plugin-root crew-resume crew-sweep crew-artifacts crew-board crew-board-intent workspaces typesafe asked cachefacts pricing costs" _gone=""
+    _tools="$("$SEAMUX" --tools 2>/dev/null)"
+    for _t in $_need; do printf '%s\n' "$_tools" | grep -qx "$_t" || _gone="$_gone $_t"; done
+    [ -z "$_gone" ] && ok "seamux registers every crew tool ($(printf '%s\n' "$_tools" | grep -c .))" \
+      || bad "seamux is missing tools:$_gone — rebuild it: ./install.sh --app"
+  else
+    bad "seamux not installed at ${SEAMUX/#$HOME/~} — every crew tool and hook runs as seamux: ./install.sh --app"
+  fi
+  command -v python3 >/dev/null && ok "python3 (crew apply and the bash tools' JSON helpers)" \
+    || bad "python3 missing (crew apply and the bash tools need it)"
   command -v git >/dev/null && ok "git" || bad "git missing"
   command -v gh >/dev/null && ok "gh (Dock checks, crew-diff pr)" || warn "gh missing — Dock 'Checks' and 'crew-diff pr' will fail"
   command -v docker >/dev/null && ok "docker (Dock db)" || warn "docker missing — Dock 'DB' will fail"
@@ -955,13 +1009,11 @@ cmd_doctor() {
     note "GitHub Issues integration off — turn it on with the crew plugin's github_issues option (/plugin configure crew@seamux)"
   fi
   # Optional and keyed, not chosen at setup: a key on this machine turns it on.
-  if python3 "$CREW_HOME/hooks/asked.py" available 2>/dev/null; then
-    # Both knobs live in integrations.json typesafe; the client owns the
-    # defaults, so read them through it rather than restating 0.7/0.8 here.
+  if "$SEAMUX" asked available 2>/dev/null; then
+    # Both knobs live in integrations.json typesafe; read them through the
+    # client, which owns the clamp.
     local _ts_t
-    _ts_t="$(python3 -c "import sys; sys.path.insert(0, '$CREW_HOME/hooks'); \
-import typesafe; print('asked>=%.2f stuck>=%.2f' % (typesafe.threshold(), \
-typesafe.threshold('stuck_threshold', 0.8)))" 2>/dev/null)"
+    _ts_t="asked>=$("$SEAMUX" typesafe threshold 2>/dev/null) stuck>=$("$SEAMUX" typesafe threshold stuck_threshold 0.8 2>/dev/null)"
     ok "TypeSafe: turn-end ask + board ranking (${_ts_t:-thresholds unreadable})"
   else
     note "TypeSafe off — set TYPESAFE_API_KEY or ~/.config/typesafe/api-key to catch questions at turn end"
@@ -996,42 +1048,32 @@ typesafe.threshold('stuck_threshold', 0.8)))" 2>/dev/null)"
   # when missing -- costs.py behind a bare `except` that simply drops the cost
   # facts, crew-overlay only for machines that have an overlay, crew-frame
   # behind an `[ -x ]` that skips it without a word.
-  for f in hooks/lib.sh hooks/crew-hook.sh hooks/progress.sh hooks/triage.py \
-           hooks/asked.py hooks/asked.sh hooks/typesafe.py hooks/typesafe_probe.py hooks/workspaces.py \
+  # The crew Python is not in the live tree since the cutover (seamux runs
+  # every tool), so only the bash, the configs and the board page are files.
+  for f in hooks/seamux-hook.sh hooks/seamux-asked.sh hooks/hooks.json \
            bin/crew-watch bin/crew-spec bin/crew-worktree bin/crew-diff bin/crew-code \
-           bin/crew-code-open bin/crew-color bin/crew-digest bin/crew-feed bin/crew-listen bin/crew-reclaim bin/crew-resume bin/crew-sweep bin/crew-artifacts bin/crew-sandbox bin/crew-sync sidebars/crew.swift config/cmux.jsonc config/dock.json \
-           bin/crew-frame bin/crew-overlay config/dock.global.json \
-           board/crew-board board/board.html board/render.js board/board_probe.mjs bin/crew-cmux-bin \
-           board/crew-board-intent board/crew-board-diag board/costs.py board/pricing.py config/ccusage-pricing.json board/judgments.py board/artifacts.py board/artifacts.tmpl.html board/intent.js board/cat_from_swift.py board/usage.tmpl.html \
-           board/dp_engine.py hooks/hooks.json .claude-plugin/plugin.json bin/crew-plugin-root \
-           tools/render_probe.py; do
+           bin/crew-code-open bin/crew-reclaim bin/crew-sandbox bin/crew-cmux-bin \
+           config/cmux.jsonc config/dock.json config/dock.global.json config/ccusage-pricing.json \
+           board/board.html board/render.js board/intent.js board/artifacts.tmpl.html board/usage.tmpl.html \
+           .claude-plugin/plugin.json; do
     [ -f "$CREW_HOME/$f" ] && ok "$f" || bad "missing $f"
   done
-  # crew-frame is here because `crew apply` gates it on [ -x ] and skips it in
-  # silence; the pane frame then just never follows the workspace.
-  for f in hooks/crew-hook.sh hooks/triage.py bin/crew-watch bin/crew-spec \
-           bin/crew-worktree bin/crew-diff bin/crew-code bin/crew-code-open bin/crew-color bin/crew-listen bin/crew-reclaim bin/crew-resume bin/crew-sweep bin/crew-artifacts bin/crew-sandbox \
-           bin/crew-frame bin/crew-cmux-bin board/crew-board; do
+  for f in hooks/seamux-hook.sh hooks/seamux-asked.sh bin/crew-watch bin/crew-spec \
+           bin/crew-worktree bin/crew-diff bin/crew-code bin/crew-code-open bin/crew-reclaim bin/crew-sandbox \
+           bin/crew-cmux-bin; do
     [ -x "$CREW_HOME/$f" ] || bad "$f is not executable"
   done
-  for f in crew-diff crew-code crew-code-open crew-sandbox crew-worktree crew-cmux-bin; do
-    bash -n "$CREW_HOME/bin/$f" 2>/dev/null && ok "$f parses" || bad "$f syntax error"
+  for f in bin/crew-diff bin/crew-code bin/crew-code-open bin/crew-sandbox bin/crew-worktree bin/crew-cmux-bin \
+           bin/crew-reclaim hooks/seamux-hook.sh hooks/seamux-asked.sh; do
+    bash -n "$CREW_HOME/$f" 2>/dev/null && ok "$(basename "$f") parses" || bad "$f syntax error"
   done
-  for f in crew-resume crew-sweep crew-artifacts crew-sync crew-digest crew-feed crew-listen crew-color; do
-    python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$CREW_HOME/bin/$f" \
-      2>/dev/null && ok "$f parses" || bad "$f syntax error"
-  done
-  python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$CREW_HOME/board/crew-board" \
-    2>/dev/null && ok "crew-board parses" || bad "crew-board syntax error"
-  python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$CREW_HOME/hooks/workspaces.py" \
-    2>/dev/null && ok "workspaces.py parses" || bad "workspaces.py syntax error"
-  # The board's renderer is pushed with each update, not resident in the page -- so the
-  # entry point lives in render.js and board.html must stay inert. Both directions are
-  # checked: a page that regains a <script> has regained a dependency that already broke.
+  # The intent server injects render.js and intent.js when it serves /board, so the
+  # entry point lives in render.js and board.html itself must stay script-free. Both
+  # directions are checked: a page that grows a <script> gets the renderer twice.
   grep -q "__boardRender" "$CREW_HOME/board/render.js" \
     2>/dev/null && ok "render.js defines __boardRender" || bad "render.js has no entry point"
   grep -q "<script" "$CREW_HOME/board/board.html" \
-    2>/dev/null && bad "board.html has a <script> — the renderer is pushed, not resident" \
+    2>/dev/null && bad "board.html has a <script> — the server injects the renderer" \
     || ok "board.html is inert"
   # Inert is not the same as correct. A page with no script can still be the WRONG page:
   # one was installed with #list where render.js writes into #rows, and it passed the check
@@ -1048,17 +1090,11 @@ typesafe.threshold('stuck_threshold', 0.8)))" 2>/dev/null)"
       grep -q "id=\"$_id\"" "$CREW_HOME/board/board.html" 2>/dev/null || _miss="$_miss $_id"
     done
     if [ -n "$_miss" ]; then
-      bad "board.html is missing render targets:$_miss — the board will throw on push"
+      bad "board.html is missing render targets:$_miss — the board will throw on render"
     else
       ok "board.html satisfies render.js ($(printf '%s' "$_want" | wc -w | tr -d ' ') targets)"
     fi
   fi
-  # Not a command — a dev tool. It renders sidebars/crew.swift through cmux's own
-  # interpreter worker so a render bug can be caught before it reaches the board,
-  # which `cmux sidebar validate` cannot do. See TESTING.md.
-  python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" \
-    "$CREW_HOME/tools/render_probe.py" 2>/dev/null \
-    && ok "render_probe.py parses" || bad "render_probe.py syntax error"
   # preferredEditor is only consulted when cmux is not previewing the file
   # itself, so these two settings have to agree or Cmd-click never reaches
   # VS Code.
@@ -1068,10 +1104,6 @@ typesafe.threshold('stuck_threshold', 0.8)))" 2>/dev/null)"
       && ok "openSupportedFilesInCmux false — Cmd-click reaches preferredEditor" \
       || warn "openSupportedFilesInCmux is true — cmux previews win, VS Code only sees unsupported files"
   fi
-  bash -n "$CREW_HOME/hooks/lib.sh" 2>/dev/null && ok "lib.sh parses" || bad "lib.sh syntax error"
-  bash -n "$CREW_HOME/hooks/crew-hook.sh" 2>/dev/null && ok "crew-hook.sh parses" || bad "crew-hook.sh syntax error"
-  python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$CREW_HOME/hooks/triage.py" \
-    2>/dev/null && ok "triage.py parses" || bad "triage.py syntax error"
 
   head_ "reconciler"
   local dpid=""
@@ -1127,11 +1159,11 @@ sys.exit(0 if any(k.startswith("bash-guard@") and v for k,v in (d.get("enabledPl
   else
     bad "the destructive-command guard is off — claude plugin install bash-guard@seamux"
   fi
-  [ -f "$SIDEBAR_DIR/crew.swift" ] && ok "sidebar installed" || bad "sidebar not installed"
-  if python3 "$CREW_HOME/board/crew-board-intent" --selftest >/dev/null 2>&1; then
+  [ -f "$SIDEBAR_DIR/crew.swift" ] && warn "the retired sidebar board is still installed — crew apply removes it"
+  if "$SEAMUX" crew-board-intent --selftest >/dev/null 2>&1; then
     ok "intent server routes + mermaid swap"
   else
-    bad "intent selftest failed — python3 board/crew-board-intent --selftest"
+    bad "intent selftest failed — seamux crew-board-intent --selftest"
   fi
   # Pricing overrides are stopgaps for a lagging upstream price table, so the
   # check that matters is the one that says when each can go. Compared with
@@ -1141,8 +1173,8 @@ sys.exit(0 if any(k.startswith("bash-guard@") and v for k,v in (d.get("enabledPl
     case "$_plvl" in
       ok) ok "$_pmsg" ;; warn) warn "$_pmsg" ;; bad) bad "$_pmsg" ;; *) note "$_pmsg" ;;
     esac
-  done < <(python3 "$CREW_HOME/board/pricing.py" --doctor 2>/dev/null \
-             || printf 'bad\tboard/pricing.py --doctor failed\n')
+  done < <("$SEAMUX" pricing --doctor 2>/dev/null \
+             || printf 'bad\tseamux pricing --doctor failed\n')
   # A running server keeps executing whatever code it started with. install.sh
   # and `crew apply` both report success without touching it, and crew-listen
   # only respawns it when it is DOWN, never when it is merely behind -- so an
@@ -1154,8 +1186,8 @@ sys.exit(0 if any(k.startswith("bash-guard@") and v for k,v in (d.get("enabledPl
   # The port file is written once, in serve(), so its mtime is the server's
   # start time without parsing `ps`. Newer code than that means stale.
   if [ ! -f "$STATE/board-intent.port" ]; then
-    note "no intent server has started yet — the next board push starts one"
-  elif [ "$CREW_HOME/board/crew-board-intent" -nt "$STATE/board-intent.port" ]; then
+    note "no intent server has started yet — crew-listen starts one"
+  elif [ "$SEAMUX" -nt "$STATE/board-intent.port" ]; then
     bad "intent server is running older code than is installed — restart it:"
     bad "  pkill -f crew-board-intent   (crew-listen respawns it within ~10s)"
   else
@@ -1180,7 +1212,6 @@ sys.exit(0 if any(k.startswith("bash-guard@") and v for k,v in (d.get("enabledPl
     else
       bad "socket mode is ${_mode:-unknown}, not automation — run: crew apply (restart cmux if it stays)"
     fi
-    "$CMUX" sidebar validate crew >/dev/null 2>&1 && ok "sidebar validates" || bad "sidebar has errors: cmux sidebar validate crew"
   else
     warn "cmux socket unreachable (app not running?) — skipped live checks"
   fi

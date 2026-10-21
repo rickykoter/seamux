@@ -87,7 +87,12 @@ PLUGINS="deep-plan"
 ALL_PLUGINS="deep-plan restack bash-guard lookout crew seamux-mods"
 
 # Where Claude runs a plugin from (the checkout folder for a folder marketplace).
-plugin_root() { python3 "$HERE/crew/bin/crew-plugin-root" "$1" 2>/dev/null; }
+# Through seamux once it is installed (the crew Python is retired at the
+# cutover); the checkout's Python only before seamux exists, until inc4 deletes it.
+plugin_root() {
+  if [ -x "$LOCALBIN/seamux" ]; then "$LOCALBIN/seamux" crew-plugin-root "$1" 2>/dev/null
+  else python3 "$HERE/crew/bin/crew-plugin-root" "$1" 2>/dev/null; fi
+}
 
 find_node() {
   if command -v node >/dev/null 2>&1; then echo node; return; fi
@@ -274,6 +279,15 @@ command -v claude  >/dev/null || die "the claude CLI is required (https://code.c
 command -v python3 >/dev/null || die "python3 is required (crew, the option bridge, this script's checks)"
 NODE="$(find_node)"
 [ -n "$NODE" ] || die "node is required (deep-plan, restack, the board renderer)"
+
+# crew runs as seamux since the cutover, its hooks included, and they are silent
+# no-ops without it. So a crew install with no seamux yet builds the app first
+# (the CLI ships inside it), before anything below resolves a plugin root
+# through it. An existing seamux is left as it is: ./install.sh --app rebuilds.
+if [ "$CREW" = 1 ] && [ "$CHECK" = 0 ] && [ "$UNINSTALL" = 0 ] && [ ! -x "$LOCALBIN/seamux" ]; then
+  say "crew needs seamux, and $LOCALBIN/seamux is not there: building the app first"
+  install_app
+fi
 
 # ---------------------------------------------------------------- check
 if [ "$CHECK" = 1 ]; then

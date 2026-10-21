@@ -311,13 +311,20 @@ if os.path.exists(SYNC_LOCK):
 clear_log()
 r = run("crew-listen", "--once", env=LENV, crew_home=STUB_HOME)
 calls = stub_calls()
-check("--once with no stamp: prints reconciled and starts crew-sync and a board push",
+check("--once with no stamp: prints reconciled and starts crew-sync"
+      + ("" if RUST_LISTEN else " and a board push"),
       r.returncode == 0 and r.stdout.strip() == "reconciled"
       and os.path.exists(os.path.join(LSTATE, "sync-stamp")), r.stdout + r.stderr)
-waited(lambda: sync_started() and ["crew-board", "push"] in stub_calls(), 10)
+# The Rust listener no longer pushes the board: the Dock board is retired at
+# the cutover, and /board follows the state over SSE. The Python, kept in the
+# tree only for the probes until inc4, still pushes.
+pushed = lambda c: any(x[:2] == ["crew-board", "push"] for x in c)  # noqa: E731
+waited(lambda: sync_started() and (RUST_LISTEN or pushed(stub_calls())), 10)
+time.sleep(0.5 if RUST_LISTEN else 0)
 calls = stub_calls()
-check("…the sync it starts is the sibling crew-sync, and the push is crew-board push",
-      sync_started() and ["crew-board", "push"] in calls, str(calls))
+check("…the sync it starts is the sibling crew-sync, and the push is crew-board push"
+      if not RUST_LISTEN else "…the sync it starts is the sibling crew-sync, and no board push (retired)",
+      sync_started() and (pushed(calls) != RUST_LISTEN), str(calls))
 r = run("crew-listen", "--once", env=LENV, crew_home=STUB_HOME)
 check("--once again inside the throttle: not due", r.returncode == 0 and r.stdout.strip() == "not due",
       r.stdout + r.stderr)
@@ -360,10 +367,14 @@ check("it follows the four structural events through cmux events, with the curso
                        ("workspace.created", "workspace.closed", "workspace.renamed", "workspace.selected"))
       and "--cursor-file " + os.path.join(LSTATE, "events.seq") in ev_calls[0]
       and "--reconnect" in ev_calls[0] and "sidebar.metadata.updated" not in ev_calls[0], str(ev_calls))
-check("at startup it pushes the board and makes sure the click server is up",
-      ["crew-board", "push"] in calls and ["crew-board-intent", "--status"] in calls, str(calls))
-check("a selection pushes the board fast with the payload's workspace id",
-      ["crew-board", "push", "--fast", "--selected", "ws-b"] in calls, str(calls))
+if RUST_LISTEN:
+    check("at startup it makes sure the click server is up, and pushes no board (retired)",
+          ["crew-board-intent", "--status"] in calls and not pushed(calls), str(calls))
+else:
+    check("at startup it pushes the board and makes sure the click server is up",
+          ["crew-board", "push"] in calls and ["crew-board-intent", "--status"] in calls, str(calls))
+    check("a selection pushes the board fast with the payload's workspace id",
+          ["crew-board", "push", "--fast", "--selected", "ws-b"] in calls, str(calls))
 check("…and repaints the frame for that same workspace",
       ["crew-frame", "--workspace", "ws-b"] in calls
       or (RUST_LISTEN and waited(lambda: '"activePaneBorderColor": "#7D6608"' in open(CMUX_JSON).read(), 10)),

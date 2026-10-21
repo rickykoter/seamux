@@ -4,6 +4,7 @@
 //!   seamux typesafe available   exit 0 when TypeSafe is configured, 1 when not
 //!   seamux typesafe ask         {"state", "questions"} on stdin -> answers JSON
 //!                               on stdout; exit 2 on any failure
+//!   seamux typesafe threshold [name] [default]   one named threshold, %.2f (crew doctor)
 //!
 //! TypeSafe is on when a key exists ($TYPESAFE_API_KEY, or the first line of
 //! ${XDG_CONFIG_HOME:-~/.config}/typesafe/api-key) and integrations.json does
@@ -145,6 +146,13 @@ pub fn main(args: &[String]) -> i32 {
             } else {
                 0
             }
+        }
+        // Rust-only, for crew doctor: one named threshold, as `%.2f`.
+        Some("threshold") => {
+            let name = args.get(1).map(String::as_str).unwrap_or("threshold");
+            let default = args.get(2).and_then(|d| d.parse().ok()).unwrap_or(0.7);
+            println!("{:.2}", threshold(name, default));
+            0
         }
         Some("ask") => {
             let key = api_key();

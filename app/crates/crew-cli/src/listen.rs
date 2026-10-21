@@ -9,14 +9,16 @@
 //! follows four structural events only (created, closed, renamed, selected):
 //! crew's own writes are hot events, and subscribing to them would loop. It
 //! shares the Stop hook's sync stamp, so whichever trigger arrives first runs
-//! the reconcile and the rest stand down for CREW_SYNC_INTERVAL. Three
-//! cadences: events (immediate), the reconcile tick (TICK) and the fast board
-//! tick (CREW_BOARD_TICK). A selection repaints the board and the pane frame
-//! at once, with the id from the event, which beats `workspace list` by
-//! ~151ms. One listener at a time, by pidfile.
+//! the reconcile and the rest stand down for CREW_SYNC_INTERVAL. Two
+//! cadences: events (immediate) and the reconcile tick (TICK). A selection
+//! repaints the pane frame at once, with the id from the event, which beats
+//! `workspace list` by ~151ms. One listener at a time, by pidfile.
+//!
+//! It no longer pushes the board: the Dock board it pushed into is retired,
+//! and the board is the intent server's /board page, which follows the ranked
+//! state over SSE. It still makes sure that server is up.
 
 use std::path::PathBuf;
-use std::process::Child;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -32,7 +34,6 @@ struct Cfg {
     state: PathBuf,
     interval: i64,
     tick: i64,
-    board_tick: i64,
 }
 
 impl Cfg {
@@ -49,8 +50,6 @@ impl Cfg {
 
 /// One reconcile at a time: the ticker and the event loop both claim the stamp.
 static CLAIM: Mutex<()> = Mutex::new(());
-/// The last board push, so a tick can decline to stack another on top.
-static LAST_PUSH: Mutex<Option<Child>> = Mutex::new(None);
 
 /// stderr, `HH:MM:SS msg`, as the log under launchd reads.
 fn log(msg: &str) {
@@ -112,51 +111,6 @@ fn start_intent() -> bool {
     }
 }
 
-/// One board update, fire-and-forget; never creates a surface.
-fn push_board(fast: bool, selected: Option<&str>, skip_if_busy: bool) -> bool {
-    let head = match sibling::own("crew-board") {
-        Some(h) => h,
-        None => {
-            let board = sibling::home_path("board/crew-board");
-            if !sibling::executable(&board) {
-                return false;
-            }
-            vec![board.to_string_lossy().into_owned()]
-        }
-    };
-    let mut last = LAST_PUSH.lock().unwrap_or_else(|p| p.into_inner());
-    if skip_if_busy {
-        if let Some(ch) = last.as_mut() {
-            if matches!(ch.try_wait(), Ok(None)) {
-                return false;
-            }
-        }
-    }
-    let mut argv = head;
-    argv.push("push".into());
-    if fast {
-        argv.push("--fast".into());
-    }
-    if let Some(s) = selected {
-        argv.extend(["--selected".into(), s.to_string()]);
-    }
-    match sibling::spawn_detached(&argv) {
-        Ok(child) => {
-            // The one it replaces is reaped on its own thread.
-            if let Some(mut old) = last.replace(child) {
-                std::thread::spawn(move || {
-                    let _ = old.wait();
-                });
-            }
-            true
-        }
-        Err(e) => {
-            log(&format!("board push failed to start: {e}"));
-            false
-        }
-    }
-}
-
 /// Claim the stamp, then start a reconcile in the background.
 fn reconcile(c: &Cfg, reason: &str) -> bool {
     {
@@ -173,7 +127,6 @@ fn reconcile(c: &Cfg, reason: &str) -> bool {
     };
     match sibling::spawn_reaped(&sync) {
         Ok(()) => {
-            push_board(false, None, false);
             log(&format!("reconcile <- {reason}"));
             true
         }
@@ -184,9 +137,8 @@ fn reconcile(c: &Cfg, reason: &str) -> bool {
     }
 }
 
-/// A switch moves the board's ring and the pane frame now, with the event's id.
+/// A switch moves the pane frame now, with the event's id.
 fn follow_selection(wsid: Option<&str>) {
-    push_board(true, wsid, false);
     if std::env::var("CREW_FRAME").as_deref() == Ok("0") {
         return;
     }
@@ -280,10 +232,10 @@ pub fn main(args: &[String]) -> i32 {
     let Some(interval) = int("CREW_SYNC_INTERVAL", 120) else {
         return pyerr::crash("ValueError: invalid literal for int() with base 10");
     };
-    let (Some(tick), Some(board_tick)) = (int("CREW_TICK_SECONDS", interval), int("CREW_BOARD_TICK", 10)) else {
+    let Some(tick) = int("CREW_TICK_SECONDS", interval) else {
         return pyerr::crash("ValueError: invalid literal for int() with base 10");
     };
-    let c = Cfg { state: crew_core::home::xdg_cache(), interval, tick, board_tick };
+    let c = Cfg { state: crew_core::home::xdg_cache(), interval, tick };
     let _ = std::fs::create_dir_all(&c.state);
 
     if args.iter().any(|a| a == "--once") {
@@ -325,9 +277,8 @@ pub fn main(args: &[String]) -> i32 {
         libc::signal(libc::SIGINT, on_interrupt as *const () as libc::sighandler_t);
     }
 
-    // A board cmux restored after a restart is blank until something pushes.
+    // The intent server serves the board (/board); make sure it is up.
     start_intent();
-    push_board(false, None, false);
     follow_selection(None);
 
     let ticks = std::sync::Arc::new(Cfg { state: c.state.clone(), ..c });
@@ -336,20 +287,11 @@ pub fn main(args: &[String]) -> i32 {
         std::thread::sleep(Duration::from_secs(t.tick.max(0) as u64));
         reconcile(&t, "tick");
     });
-    let fast = 0 < ticks.board_tick && ticks.board_tick < ticks.tick;
-    if fast {
-        let bt = ticks.board_tick as u64;
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_secs(bt));
-            push_board(true, None, true);
-        });
-    }
     log(&format!(
-        "listening for {} (throttle {}s, tick {}s, board {}s)",
+        "listening for {} (throttle {}s, tick {}s)",
         NAMES.join(", "),
         ticks.interval,
         ticks.tick,
-        if fast { ticks.board_tick } else { ticks.tick }
     ));
     // The stream is retried forever with backoff: a cmux restart degrades to
     // tick-only reconciles, never to a dead listener.

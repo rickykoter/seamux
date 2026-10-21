@@ -81,14 +81,14 @@
     "suppressOnlyFocusedSurface": true,
 
     // Routine turn-complete goes to the sidebar only; anything actually
-    // blocked still raises a banner. See hooks/triage.py for the rule.
-    // The path is the live tree, never the crew plugin's root: cmux runs this
-    // outside Claude, and a plugin root's path changes with every version.
-    // `crew apply` copies the plugin here, which is what keeps it current.
+    // blocked still raises a banner. `seamux triage` holds the rule
+    // (app/crates/crew-hooks). seamux is the link install.sh makes in
+    // ~/.local/bin, never a plugin root, whose path changes with every version.
+    // Without it the hook fails and cmux falls back to its default behavior.
     "hooks": [
       {
         "id": "crew-triage",
-        "command": "__HOME__/.config/cmux/crew/hooks/triage.py",
+        "command": "__HOME__/.local/bin/seamux triage",
         "timeoutSeconds": 10
       }
     ]
@@ -288,31 +288,18 @@
       "newWorkspaceMenu": true
     },
 
-    // The board's home is the web Dock (beta): dock.json seeds it as a
-    // chromeless browser control and crew-board adopts that surface. This
-    // command re-opens/repushes it if the tab was closed. The old SwiftUI
-    // sidebar (crew.swift) still installs and `cmux sidebar select crew`
-    // still mounts it, as the fallback for a build with the Dock beta off.
+    // The board is the page the intent server serves at /board (the seamux
+    // app shows it as a tab): ranked, live over SSE, its buttons same-origin.
+    // This opens it in a cmux browser tab for when the app is not at hand.
     "crew.board": {
       "type": "command",
       "title": "Crew board",
-      "subtitle": "open the who-needs-me board in the Dock",
-      "keywords": ["crew", "board", "dock", "agents", "who"],
-      "command": "B=__HOME__/.config/cmux/crew; python3 \"$B/board/crew-board\" open; \"$(\"$B/bin/crew-cmux-bin\")\" close-surface --surface \"$CMUX_SURFACE_ID\"",
+      "subtitle": "open the who-needs-me board",
+      "keywords": ["crew", "board", "agents", "who"],
+      "command": "C=\"$(__HOME__/.config/cmux/crew/bin/crew-cmux-bin)\"; \"$C\" open http://127.0.0.1:__INTENT_PORT__/board; \"$C\" close-surface --surface \"$CMUX_SURFACE_ID\"",
       "target": "newTabInCurrentPane",
       "shortcut": ["cmd+k", "c"],
       "icon": { "type": "symbol", "name": "person.2.badge.gearshape" },
-      "newWorkspaceMenu": false
-    },
-
-    "crew.board.sidebar": {
-      "type": "command",
-      "title": "Crew board (legacy sidebar)",
-      "subtitle": "mount the SwiftUI board as the left sidebar",
-      "keywords": ["crew", "board", "sidebar", "legacy"],
-      "command": "C=\"$(__HOME__/.config/cmux/crew/bin/crew-cmux-bin)\"; \"$C\" sidebar select crew && \"$C\" close-surface --surface \"$CMUX_SURFACE_ID\"",
-      "target": "newTabInCurrentPane",
-      "icon": { "type": "symbol", "name": "rectangle.split.2x1" },
       "newWorkspaceMenu": false
     },
 
@@ -376,7 +363,7 @@
       "subtitle": "search live, archived and past workspaces; jump, restore or resume",
       "keywords": ["find", "search", "workspace", "resume", "restore", "archive",
                    "session", "history", "claude", "crew"],
-      "command": "CREW_EPHEMERAL=1 __HOME__/.config/cmux/crew/bin/crew-resume",
+      "command": "CREW_EPHEMERAL=1 __HOME__/.local/bin/seamux crew-resume",
       "target": "newTabInCurrentPane",
       "shortcut": ["cmd+k", "r"],
       "icon": { "type": "symbol", "name": "magnifyingglass" }
@@ -391,7 +378,7 @@
       "subtitle": "merged, dormant and orphaned, one card at a time: reclaim, archive or skip",
       "keywords": ["sweep", "cleanup", "clean", "reclaim", "archive", "dormant",
                    "worktree", "crew"],
-      "command": "__HOME__/.config/cmux/crew/bin/crew-sweep",
+      "command": "__HOME__/.local/bin/seamux crew-sweep",
       "target": "newTabInCurrentPane",
       "shortcut": ["cmd+k", "s"],
       "icon": { "type": "symbol", "name": "wand.and.stars" }
@@ -402,7 +389,7 @@
       "title": "Digest — what happened overnight",
       "subtitle": "commits, PRs, red CI, waiting sessions, reclaimable worktrees",
       "keywords": ["digest", "overnight", "standup", "morning", "crew"],
-      "command": "__HOME__/.config/cmux/crew/bin/crew-digest",
+      "command": "__HOME__/.local/bin/seamux crew-digest",
       "target": "newTabInCurrentPane",
       "shortcut": ["cmd+k", "m"],
       "icon": { "type": "symbol", "name": "sun.horizon.fill" }

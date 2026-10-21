@@ -12,9 +12,12 @@ use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-/// This binary, when it is seamux (never a test harness).
+/// This binary, when it is seamux (never a test harness). Resolved through
+/// links: crew apply links each tool's name to seamux, and a run through
+/// ~/.local/bin/crew-listen must still find itself as seamux.
 fn seamux() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
     (exe.file_name()? == "seamux").then_some(exe)
 }
 

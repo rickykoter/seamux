@@ -10,11 +10,22 @@ through its plan Claude is, and whether a finished turn actually left something
 worth looking at.
 
 ```
-  Claude Code hooks ──▶ crew-hook.sh ──▶ cmux socket ──▶ sidebar / Dock / board
-       │                                     ▲
-       └── ~/.claude/tasks/<session>/*.json ─┘
-              (authoritative plan state, read not parsed)
+  Claude Code hooks ──▶ seamux-hook.sh ──▶ seamux crew-hook ──▶ cmux socket ──▶ cmux's sidebar
+       │                                                  ▲           │
+       └── ~/.claude/tasks/<session>/*.json ──────────────┘           ▼
+              (authoritative plan state, read not parsed)     seamux app: Board tab,
+                                                              agent wall (/board, SSE)
 ```
+
+**Since the seamux-inversion cutover every crew tool is Rust, run as
+`seamux <tool>`** (`app/crates`; `seamux --tools` lists them), hooks included.
+`install.sh` builds the seamux app and links its CLI at `~/.local/bin/seamux`,
+and `crew apply` links each tool's old name (`crew-sync`, `crew-resume`, …) to
+it. The Python in `bin/`, `board/`, `hooks/` and `claude/` is kept only for
+the parity probes until they are ported, and `crew apply` leaves it out of the
+live tree. The Swift sidebar board and the Dock board are retired. Below,
+`triage.py` and the other Python names refer to the `seamux` tool of the same
+name. Design notes about the sidebar are kept as history.
 
 ## Why these things and not others
 
@@ -34,30 +45,25 @@ turn: every hook exits 0 and every cmux call is fire-and-forget.
 
 ## Opening the board
 
-Any of:
+The board is the page the intent server serves at `/board`: ranked, live over
+server-sent events, its buttons acting on the same origin.
 
 | How | What it does |
 |---|---|
-| **`cmd+k c`** | mounts it as the left sidebar — its home |
-| Right-click the **sidebar toggle button** → **crew** | same, by mouse |
-| `cmux sidebar select crew` | same, from a terminal |
-| `cmux sidebar open crew` | full-width pane instead |
+| **Control-Option-Space** | summons the seamux app's overlay; the **Board** tab is the board |
+| **`cmd+k c`** in cmux | opens `http://127.0.0.1:7345/board` in a cmux browser tab |
+| `open http://127.0.0.1:7345/board` | the same page in any browser on this machine |
 
-`cmd+b` toggles the left sidebar itself. If the board does not appear after
-selecting it, the sidebar is just hidden — there is no CLI to reveal it
-(`right-sidebar show` only covers the right one), so that keystroke is the way.
-
-The pane variant is for editing `sidebars/crew.swift` — it hot-reloads on save —
-but the layout is tuned for sidebar width and reads very loose full-width.
+The port is `CREW_INTENT_PORT` (default 7345). crew-listen keeps the intent
+server up; `crew doctor` reports whether it runs the installed code.
 
 ## Layers
 
 | Layer | What it does |
 |---|---|
-| `hooks/crew-hook.sh` | One entry point for every Claude hook event |
-| `hooks/progress.sh` | Plan → progress bar, checklist, in-flight pill |
-| `hooks/triage.py` | Decides which notifications earn a banner |
-| `sidebars/crew.swift` | The board: Needs you / Planning / Working / Review / Idle |
+| `hooks/seamux-hook.sh` | One entry point for every Claude hook event; `seamux crew-hook` does the work |
+| `seamux triage` | Decides which notifications earn a banner |
+| `seamux crew-board` + `board/` | The board: ranked state, served at `/board` with `render.js` and `intent.js` |
 | `config/cmux.jsonc` | Settings, workspace groups, actions, plus-button |
 | `config/dock.json` | Checks / Git / Spec / DB, for the monolith |
 | `bin/crew-diff` | Turn / branch / PR / per-commit diffs, one keystroke away |
@@ -989,13 +995,16 @@ you.
 ## Commands
 
 `crew apply` symlinks these into `~/.local/bin`, which is already on your PATH,
-so they are plain commands — no shell-config edit. `crew uninstall` removes only
-the links that still point back into the package.
+so they are plain commands — no shell-config edit. The bash tools link into the
+package; the ported ones (`crew-sync`, `crew-resume`, `crew-board`, …) link to
+`seamux`, which runs the tool it was started as. `crew uninstall` removes only
+the links that point back into the package or at seamux, and leaves `seamux`
+itself, which is install.sh's.
 
 ```
 crew status      what is installed and live right now
 crew doctor      check the install; non-zero exit if something is wrong
-crew apply       install the live tree from the plugin, render config, sidebar + Dock,
+crew apply       install the live tree from the plugin, render config + Dock,
                  status line; --dry-run says what it would do
 crew on | off    runtime kill switch (hooks stay wired, become no-ops)
 crew uninstall   restore the pre-crew cmux.json, remove the status line and any
