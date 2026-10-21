@@ -1219,9 +1219,13 @@ def _wake_tab(keep_name, url, select=""):
 
 
 def _browser(url):
-    """A claude.ai or GitHub URL in the default browser; nothing else."""
-    u = urllib.parse.urlparse(url or "")
-    if u.scheme != "https" or u.hostname not in BROWSER_HOSTS:
+    """A claude.ai or GitHub URL in the default browser; nothing else. Rows come
+    from transcripts, so a URL a browser could read differently from urlparse
+    (a backslash, whitespace, a control character, userinfo) is refused."""
+    url = url or ""
+    u = urllib.parse.urlparse(url)
+    if (any(c == "\\" or c.isspace() or ord(c) < 32 or ord(c) == 127 for c in url)
+            or "@" in u.netloc or u.scheme != "https" or u.hostname not in BROWSER_HOSTS):
         return False, "not a claude.ai or GitHub URL"
     ok = run(["open", url])
     return ok, ("opened " + url) if ok else "the browser did not open"

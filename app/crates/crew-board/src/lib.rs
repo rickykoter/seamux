@@ -1,6 +1,6 @@
-//! The crew board in Rust (plan port-board): the board's news, its TypeSafe
-//! judgments cache and its cat poses, then the ranking and the intent
-//! server as later increments land.
+//! The crew board in Rust (plan port-board): the ranking (`crew-board`), its
+//! news, the TypeSafe judgments cache, the cat poses, and the intent server
+//! (`crew-board-intent`) with the served board and the Wake.
 //!
 //! Each module with a Python CLI is a `seamux <basename>` tool with the
 //! Python's args, stdin, stdout, exit codes and files written, so the board's
@@ -24,6 +24,7 @@ pub mod selftest;
 pub mod server;
 pub mod state;
 pub mod usage;
+pub mod wake;
 
 /// The seamux tools this crate provides, by the Python script's basename.
 pub const TOOLS: &[(&str, fn(&[String]) -> i32)] = &[

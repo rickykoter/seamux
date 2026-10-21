@@ -366,7 +366,17 @@ pub fn act(action: &str, row: &Map<String, Value>, extra: &str) -> (bool, String
                 None => (false, "intent server not answering".into()),
             }
         }
-        "wake" => (false, "the Wake is not ported yet (port-board increment 6)".into()),
+        "wake" => {
+            // The Wake for this row's workspace, in one tab kept like a plan's:
+            // a tap on another row moves it there, switching workspace with it.
+            if cwd.is_empty() {
+                return (false, "no workspace directory on this row".into());
+            }
+            match current() {
+                Some((port, _)) => crate::wake::for_row(&cwd, &wsid, &r, port),
+                None => (false, "intent server not answering".into()),
+            }
+        }
         "ask" => {
             let ask_id = extra.trim();
             if crate::ask::ask_path(ask_id, ".html").is_none() {

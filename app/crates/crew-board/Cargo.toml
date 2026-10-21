@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 cmux.workspace = true
 crew-core.workspace = true
+crew-store = { path = "../crew-store" }
 libc = "0.2"
 regex = "1"
 serde_json.workspace = true

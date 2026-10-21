@@ -41,8 +41,6 @@ fn read_lossy(p: &std::path::Path) -> std::io::Result<String> {
     std::fs::read(p).map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
-const WAKE_LATER: &str = "the Wake is not ported yet (port-board increment 6)";
-
 pub fn get(req: &mut Request) {
     if !host_ok(req) {
         return;
@@ -99,8 +97,36 @@ pub fn get(req: &mut Request) {
             log(&format!("{} inc {detail}", if ok { "OK  " } else { "FAIL" }));
             return req.reply_json(if ok { 200 } else { 500 }, &json!({"ok": ok, "detail": detail}));
         }
-        "/artifacts" | "/artifacts/data" | "/artifacts/open" => {
-            return req.json(501, &json!({"error": WAKE_LATER}));
+        // The Wake. The page carries the token, like /plan/ and /review/; the
+        // data and open routes answer without an open CORS header.
+        "/artifacts" => {
+            return match crate::wake::wake_page(&req.one("ws"), &req.token) {
+                Ok(html) => req.send(200, "text/html; charset=utf-8", "no-store", html.as_bytes()),
+                Err(e) => req.json(500, &json!({"error": e.to_string()})),
+            };
+        }
+        "/artifacts/data" => {
+            if !token_ok(req, &req.one("t")) {
+                log("DENY bad token on /artifacts/data from 127.0.0.1");
+                return req.json(403, &json!({"error": "bad token"}));
+            }
+            return match crate::wake::wake_data(&req.one("ws"), &req.one("q"), &req.one("kind")) {
+                Ok(v) => req.json(200, &v),
+                Err(e) => {
+                    log(&format!("FAIL artifacts data: {e}"));
+                    req.json(500, &json!({"error": format!("the artifact store could not be read: {e}")}))
+                }
+            };
+        }
+        "/artifacts/open" => {
+            if !token_ok(req, &req.one("t")) {
+                log("DENY bad token on /artifacts/open from 127.0.0.1");
+                return req.json(403, &json!({"error": "bad token"}));
+            }
+            let id = req.one("id");
+            let (ok, detail) = crate::wake::open_artifact(&id, req.port, &req.one("s"));
+            log(&format!("{} artifacts open {id}: {detail}", if ok { "OK  " } else { "FAIL" }));
+            return req.json(if ok { 200 } else { 400 }, &json!({"ok": ok, "detail": detail}));
         }
         "/do" => return do_action(req),
         "/board" => return board_page(req),
@@ -241,8 +267,17 @@ pub fn post(req: &mut Request) {
         return req.json(404, &json!({"error": "no such path"}));
     }
     let Some(body) = post_body(req) else { return };
-    if wake {
-        return req.json(501, &json!({"error": WAKE_LATER}));
+    if path == "/artifacts/keep" {
+        let (code, out) = crate::wake::keep(&body);
+        return req.json(code, &out);
+    }
+    if path == "/artifacts/publish" {
+        let Some(rid) = body.get("id").and_then(|v| if v.is_i64() || v.is_u64() { v.as_i64() } else { None }) else {
+            return req.json(400, &json!({"error": "bad id"}));
+        };
+        let (ok, detail) = crate::wake::publish_artifact(rid);
+        log(&format!("{} artifacts publish {rid}: {detail}", if ok { "OK  " } else { "FAIL" }));
+        return req.json(if ok { 200 } else { 400 }, &json!({"ok": ok, "detail": detail}));
     }
     let rid = &path["/review/".len()..];
     if review::review_path(rid, ".json").is_none() {

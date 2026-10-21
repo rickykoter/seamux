@@ -512,10 +512,17 @@ pub fn main(args: &[String]) -> i32 {
         };
         return crate::review::lock_test(rid, n, has("--jitter"));
     }
-    if has("--wake-tab") {
-        eprintln!("seamux crew-board-intent: the Wake is not ported yet (port-board increment 6); \
-                   run crew/board/crew-board-intent --wake-tab");
-        return 2;
+    if let Some(i) = args.iter().position(|a| a == "--wake-tab") {
+        // --wake-tab NAME URL [--select WS]: the Wake's tab group, as /do and
+        // /artifacts/open drive it.
+        let (Some(name), Some(url)) = (args.get(i + 1), args.get(i + 2)) else {
+            eprintln!("crew-board-intent: --wake-tab NAME URL [--select WS]");
+            return 2;
+        };
+        let select = args.iter().position(|a| a == "--select").and_then(|j| args.get(j + 1)).cloned().unwrap_or_default();
+        let (ok, detail) = crate::wake::wake_tab(name, url, &select);
+        println!("{}", pyjson::dumps(&json!({"ok": ok, "detail": detail})));
+        return 0;
     }
     if has("--selftest") {
         return crate::selftest::run();

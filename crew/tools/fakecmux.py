@@ -13,7 +13,7 @@ last one did.
                                          one with "close_fails": true never goes
     workspace create | new-workspace     appends a row, prints OK workspace:<n>
     sessions list --json                 $FAKE_CMUX_DIR/sessions.json, else none
-    sidebar-state --workspace <ws>       cwd= and claude_code= from the row
+    sidebar-state --workspace <ws>       cwd=, claude_code=, git_branch= and pr= from the row
     tree --json                          one window; a row's "tty" is its terminal
     new-pane                             OK surface:900 pane:900 <workspace>
 
@@ -277,6 +277,10 @@ elif args[:1] == ["sidebar-state"]:
     print("cwd=" + (w.get("current_directory") or ""))
     if w.get("claude"):
         print("  claude_code=" + w["claude"])
+    if w.get("git_branch"):
+        print("  git_branch=" + w["git_branch"])
+    if w.get("pr"):
+        print("  pr=" + w["pr"])
 elif args[:2] == ["workspace-action", "--action"]:
     act, opts = args[2], opts_of(args[3:])
     for w in rows:
