@@ -108,7 +108,7 @@
     "run": "cp -R \"$(ls -d ~/.claude/plugins/cache/seamux/seamux-mods/*/ | sort -V | tail -1).claude-plugin/types\" seamux-mods/.claude-plugin/ && npx -y -p typescript@5 tsc -p seamux-mods",
     "match": ["seamux-mods/**"], "default": true },
   { "id": "app-rust", "kind": "test",
-    "run": "cargo test --manifest-path app/Cargo.toml --workspace",
+    "run": "{ test -d app/dist || (cd app && npm ci --silent && npm run build --silent); } && cargo test --manifest-path app/Cargo.toml --workspace",
     "match": ["app/**"], "default": true,
     "note": "every crate in the app/ cargo workspace: crates/cmux against a fake socket and fakecmux, seamux-cli, crew-core and the ports" },
   { "id": "app-ui", "kind": "test",
