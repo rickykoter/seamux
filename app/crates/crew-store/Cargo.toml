@@ -1,0 +1,17 @@
+[package]
+name = "crew-store"
+description = "The Artifact Log's store in Rust: artifacts.py and crew-artifacts, on the same ~/.claude/crew/artifacts.db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+crew-core.workspace = true
+serde_json.workspace = true
+libc = "0.2"
+regex = "1"
+# Bundled: FTS5 is always there, whatever libsqlite3 the machine has. The file
+# it writes is the same SQLite 3 format Python's sqlite3 reads.
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha1_smol = "1"
