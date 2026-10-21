@@ -4,6 +4,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod shell;
+
 use serde::Serialize;
 use serde_json::Value;
 
@@ -86,7 +88,11 @@ async fn cmux_status() -> Status {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![cmux_status])
+        .setup(|app| {
+            shell::install(app)?;
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![cmux_status, shell::intent_server, shell::intent_page, shell::hide_overlay])
         .run(tauri::generate_context!())
         .expect("seamux app failed to start");
 }

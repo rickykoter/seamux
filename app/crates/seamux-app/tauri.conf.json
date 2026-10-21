@@ -13,12 +13,20 @@
       {
         "label": "main",
         "title": "seamux",
-        "width": 720,
-        "height": 480
+        "width": 1100,
+        "height": 720,
+        "minWidth": 520,
+        "minHeight": 320,
+        "center": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "visibleOnAllWorkspaces": true,
+        "skipTaskbar": true,
+        "shadow": true
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost; frame-src http://127.0.0.1:* http://localhost:*"
     }
   },
   "bundle": {

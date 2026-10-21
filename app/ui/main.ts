@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { Tabs } from "./tabs";
 
 // The shape of `cmux_status` in crates/seamux-app/src/main.rs.
 type Workspace = { id: string; ref: string; title: string };
@@ -19,16 +20,21 @@ const why: Record<string, string> = {
 function show(s: Status): void {
   const status = document.getElementById("status")!;
   const list = document.getElementById("workspaces")!;
+  const conn = document.getElementById("conn")!;
   list.replaceChildren();
   if (s.state === "failed") {
     status.className = "bad";
     status.textContent = `${why[s.kind] ?? "Couldn't reach cmux."} (${s.message})`;
+    conn.className = "bad";
+    conn.textContent = "cmux unreachable";
     return;
   }
+  const n = s.workspaces.length;
   status.className = "muted";
   const mode = s.access_mode ? `, ${s.access_mode} mode` : "";
-  const n = s.workspaces.length;
   status.textContent = `Connected over the ${s.transport}${mode}: ${n} workspace${n === 1 ? "" : "s"} open.`;
+  conn.className = "good";
+  conn.textContent = `cmux · ${n} workspace${n === 1 ? "" : "s"}`;
   for (const w of s.workspaces) {
     const li = document.createElement("li");
     li.textContent = w.title || w.ref;
@@ -40,6 +46,22 @@ function show(s: Status): void {
   }
 }
 
-invoke<Status>("cmux_status").then(show, (e) =>
-  show({ state: "failed", kind: "app", message: String(e) }),
+const tabs = new Tabs(
+  document.getElementById("strip")!,
+  document.getElementById("stage")!,
+  new Map([["wall", document.getElementById("wall")!]]),
 );
+tabs.select("wall");
+
+const hide = () => void invoke("hide_overlay");
+document.getElementById("hide")!.addEventListener("click", hide);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") hide();
+  // ⌘1…⌘4 switch tabs, while focus is in the shell rather than a framed page.
+  if (e.metaKey && e.key >= "1" && e.key <= "9") {
+    tabs.selectIndex(Number(e.key) - 1);
+    e.preventDefault();
+  }
+});
+
+invoke<Status>("cmux_status").then(show, (e) => show({ state: "failed", kind: "app", message: String(e) }));
