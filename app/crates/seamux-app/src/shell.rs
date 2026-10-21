@@ -250,7 +250,10 @@ fn on_active_space<R: Runtime>(_: &WebviewWindow<R>) -> bool {
 fn toggle<R: Runtime>(app: &AppHandle<R>) {
     if let Some(w) = app.get_webview_window("main") {
         let visible = w.is_visible().unwrap_or(false);
-        if visible && on_active_space(&w) {
+        // The window is not kept above other apps, so a visible one can sit
+        // behind them: the hotkey hides it only when it is in front.
+        let in_front = w.is_focused().unwrap_or(false);
+        if visible && in_front && on_active_space(&w) {
             hide(&w);
         } else {
             if visible {
@@ -301,7 +304,8 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
 
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.set_visible_on_all_workspaces(true);
-        let _ = w.set_always_on_top(true);
+        // Not always on top: clicking another app brings that app in front.
+        // The hotkey and the tray bring this window back.
         #[cfg(target_os = "macos")]
         join_full_screen_spaces(&w);
         // The window starts hidden (tauri.conf.json) so its first placement
