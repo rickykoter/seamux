@@ -283,16 +283,37 @@ check("a cmux.json without the key: exit 1, says to run crew apply, writes nothi
 print("crew-listen")
 LSTATE = os.path.join(CACHE, "cmux-crew")
 LENV = dict(ENV, CREW_SYNC_INTERVAL="3600", CREW_BOARD_TICK="0")
+# The Python starts its siblings from its own folder (here the stub tree, which
+# logs each call). seamux starts crew-sync and crew-frame as `seamux <tool>`,
+# its own tools, so under Rust they are judged by what they do: a sync takes
+# the run lock, and the frame paints the workspace it was given.
+RUST_LISTEN = crew_impl.is_rust("crew-listen")
+SYNC_LOCK = os.path.join(LSTATE, "sync.lock")
+
+
+def waited(cond, secs=15):
+    end = time.time() + secs
+    while time.time() < end and not cond():
+        time.sleep(0.2)
+    return cond()
+
+
+def sync_started():
+    return ["crew-sync"] in stub_calls() or (RUST_LISTEN and os.path.exists(SYNC_LOCK))
+
+
+if os.path.exists(SYNC_LOCK):
+    os.remove(SYNC_LOCK)
 clear_log()
 r = run("crew-listen", "--once", env=LENV, crew_home=STUB_HOME)
 calls = stub_calls()
 check("--once with no stamp: prints reconciled and starts crew-sync and a board push",
       r.returncode == 0 and r.stdout.strip() == "reconciled"
       and os.path.exists(os.path.join(LSTATE, "sync-stamp")), r.stdout + r.stderr)
-time.sleep(0.5)
+waited(lambda: sync_started() and ["crew-board", "push"] in stub_calls(), 10)
 calls = stub_calls()
 check("…the sync it starts is the sibling crew-sync, and the push is crew-board push",
-      ["crew-sync"] in calls and ["crew-board", "push"] in calls, str(calls))
+      sync_started() and ["crew-board", "push"] in calls, str(calls))
 r = run("crew-listen", "--once", env=LENV, crew_home=STUB_HOME)
 check("--once again inside the throttle: not due", r.returncode == 0 and r.stdout.strip() == "not due",
       r.stdout + r.stderr)
@@ -309,11 +330,15 @@ events = [{"seq": 1, "name": "workspace.selected", "workspace_id": "ws-a",
           {"seq": 4, "name": "workspace.renamed", "workspace_id": "ws-c"}]
 with open(os.path.join(FAKE_DIR, "events.jsonl"), "w") as fh:
     fh.write("".join(json.dumps(e) + "\n" for e in events))
+# ws-a is the selected one; the event names ws-b, whose colour the frame must take.
+put_rows([ws("ws-a", "/r/a", custom_color="#1565C0", selected=True),
+          ws("ws-b", "/r/b", custom_color="#7D6608")])
+open(CMUX_JSON, "w").write(FRAME_SRC)
+if os.path.exists(SYNC_LOCK):
+    os.remove(SYNC_LOCK)
 clear_log()
 p = spawn("crew-listen", env=LENV, crew_home=STUB_HOME)
-deadline = time.time() + 15
-while time.time() < deadline and not any(c[:1] == ["crew-sync"] for c in stub_calls()):
-    time.sleep(0.2)
+waited(sync_started)
 time.sleep(1.0)
 pid = open(os.path.join(LSTATE, "listen.pid")).read().strip() if os.path.exists(
     os.path.join(LSTATE, "listen.pid")) else ""
@@ -336,10 +361,12 @@ check("at startup it pushes the board and makes sure the click server is up",
 check("a selection pushes the board fast with the payload's workspace id",
       ["crew-board", "push", "--fast", "--selected", "ws-b"] in calls, str(calls))
 check("…and repaints the frame for that same workspace",
-      ["crew-frame", "--workspace", "ws-b"] in calls, str(calls))
+      ["crew-frame", "--workspace", "ws-b"] in calls
+      or (RUST_LISTEN and waited(lambda: '"activePaneBorderColor": "#7D6608"' in open(CMUX_JSON).read(), 10)),
+      str(calls) + open(CMUX_JSON).read())
+syncs = (err.count("reconcile <- ") if RUST_LISTEN else sum(1 for c in calls if c == ["crew-sync"]))
 check("a structural event reconciles exactly once; the next is throttled",
-      sum(1 for c in calls if c == ["crew-sync"]) == 1 and "workspace.renamed (no reconcile: throttled)" in err,
-      err)
+      syncs == 1 and "workspace.renamed (no reconcile: throttled)" in err, err)
 check("an event crew emits itself never reaches it",
       "sidebar.metadata.updated" not in err, err)
 check("the cursor is kept: the last event's seq",

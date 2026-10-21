@@ -174,9 +174,12 @@ pub fn sessions(p: &Paths) -> (Value, Value) {
 
 /// `os.kill(int(pid), 0)` succeeded.
 pub fn alive(pid: Option<&Value>) -> bool {
-    if !truthy(pid) {
-        return false;
-    }
+    truthy(pid) && kill0(pid)
+}
+
+/// `os.kill(int(pid), 0)` succeeded, with no truthiness gate (pid 0 is the
+/// caller's own process group); False where int() or kill raises.
+pub fn kill0(pid: Option<&Value>) -> bool {
     let n: Option<i64> = match pid {
         Some(Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().map(|f| f.trunc() as i64)),
         Some(Value::Bool(b)) => Some(*b as i64),

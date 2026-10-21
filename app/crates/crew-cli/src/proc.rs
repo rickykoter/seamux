@@ -15,9 +15,24 @@ pub struct Out {
 /// None where Python raises: it cannot start, or `timeout` passed (the child
 /// is killed first). No timeout waits for as long as it takes.
 pub fn run(argv: &[&str], cwd: Option<&str>, env: &[(&str, &str)], timeout: Option<Duration>) -> Option<Out> {
+    run_with_input(argv, cwd, env, None, timeout)
+}
+
+/// `run`, with `input` written to the child's stdin (`input=` in Python).
+pub fn run_with_input(
+    argv: &[&str],
+    cwd: Option<&str>,
+    env: &[(&str, &str)],
+    input: Option<&str>,
+    timeout: Option<Duration>,
+) -> Option<Out> {
+    use std::io::Write;
     let (prog, args) = argv.split_first()?;
     let mut cmd = Command::new(prog);
-    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(args)
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if let Some(d) = cwd {
         cmd.current_dir(d);
     }
@@ -25,6 +40,14 @@ pub fn run(argv: &[&str], cwd: Option<&str>, env: &[(&str, &str)], timeout: Opti
         cmd.env(k, v);
     }
     let mut child = cmd.spawn().ok()?;
+    if let Some(data) = input {
+        // Written on its own thread, so a child that never reads cannot block us.
+        let mut sin = child.stdin.take()?;
+        let data = data.as_bytes().to_vec();
+        std::thread::spawn(move || {
+            let _ = sin.write_all(&data);
+        });
+    }
     let mut out = child.stdout.take()?;
     let mut err = child.stderr.take()?;
     // The readers report through a channel, so the deadline covers reading the
