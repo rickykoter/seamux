@@ -15,4 +15,5 @@ cmux.workspace = true
 crew-core.workspace = true
 crew-store = { path = "../crew-store" }
 crew-hooks = { path = "../crew-hooks" }
+crew-cli = { path = "../crew-cli" }
 serde_json.workspace = true

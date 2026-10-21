@@ -41,6 +41,18 @@ the Wake's split (crew-board-intent _wake_tab):
     focus-panel --panel S | close-surface --surface S | browser --surface S ...
                                          S must exist (the Dock counts)
 
+For crew-listen and crew-feed (cli_probe):
+
+    events --cursor-file F [--name N]... replays $FAKE_CMUX_DIR/events.jsonl, one
+                                         JSON event per line with a "seq": those
+                                         past the cursor and named by --name, then
+                                         stores the last seq in F and exits
+    rpc feed.list                        {"items": $FAKE_CMUX_DIR/feed.json}
+    rpc feed.permission.reply <json>     {"ok": true}; the call is in the log
+    workspace status --workspace <ws>    "override: " + the row's "override"
+                                         ("none" when unset); `workspace status
+                                         set` only logs
+
 A leading --id-format is dropped; ids are whatever the file holds.
 
 $FAKE_CMUX_DELAY (seconds) sleeps before every call, for hook-budget probes.
@@ -269,6 +281,37 @@ elif args[:1] == ["sidebar-state"]:
     print("color=" + (w.get("custom_color") or "none"))
     if w.get("claude"):
         print("  claude_code=" + w["claude"])
+elif args[:1] == ["events"]:
+    cur_file = args[args.index("--cursor-file") + 1] if "--cursor-file" in args else ""
+    names = [args[i + 1] for i, a in enumerate(args[:-1]) if a == "--name"]
+    try:
+        cursor = int(open(cur_file).read().strip() or 0) if cur_file else 0
+    except (OSError, ValueError):
+        cursor = 0
+    path = os.path.join(T, "events.jsonl")
+    last = cursor
+    for line in (open(path).read().splitlines() if os.path.exists(path) else []):
+        if not line.strip():
+            continue
+        ev = json.loads(line)
+        if ev.get("seq", 0) <= cursor or (names and ev.get("name") not in names):
+            continue
+        print(line, flush=True)
+        last = max(last, ev.get("seq", 0))
+    if cur_file:
+        open(cur_file, "w").write(str(last))
+elif args[:1] == ["rpc"]:
+    if args[1:2] == ["feed.list"]:
+        path = os.path.join(T, "feed.json")
+        print(json.dumps({"items": json.load(open(path)) if os.path.exists(path) else []}))
+    else:
+        print(json.dumps({"ok": True}))
+elif args[:2] == ["workspace", "status"] and args[2:3] != ["set"]:
+    w = next((w for w in rows if named(w, opts_of(args[2:]).get("--workspace"))), None)
+    if not w:
+        print("Error: not_found: Workspace not found", file=sys.stderr)
+        sys.exit(1)
+    print("override: " + (w.get("override") or "none"))
 elif args[:2] == ["workspace-action", "--action"]:
     act, opts = args[2], opts_of(args[3:])
     # Like cmux: no --workspace means the caller's own, from CMUX_WORKSPACE_ID.

@@ -27,6 +27,7 @@ pub type Tool = (&'static str, fn(&[String]) -> i32);
 /// Each crate's tool table. One line per crate; keep them sorted to ease merges.
 pub const TABLES: &[&[Tool]] = &[
     crate::cmux_tool::TOOLS,
+    crew_cli::TOOLS,
     crew_core::TOOLS,
     crew_store::TOOLS,
     crew_hooks::TOOLS,
