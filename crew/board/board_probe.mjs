@@ -10,7 +10,8 @@
 // The last check is the important one. `said` can carry raw terminal text captured with
 // `cmux read-screen`, which means agent output reaches innerHTML. It must be escaped.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { createContext, runInContext } from "node:vm";
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
@@ -24,6 +25,24 @@ const crewTool = (name, file, args, opts = {}) => {
   const [cmd, ...pre] = crewImpl.argv(name, file, "python3");
   return execFileSync(cmd, [...pre, ...args],
     { encoding: "utf8", ...opts, env: crewImpl.env(opts.env || process.env) });
+};
+// The argv that runs one board tool, as [cmd, ...args]: the one place this
+// probe names crew-board, crew-board-intent, news and judgments, so the same
+// checks can run against the Python tools and the Rust ones.
+const tool = (name) => name.endsWith(".py") ? ["python3", join(HERE, name)] : [join(HERE, name)];
+const runTool = (name, args, opts = {}) => {
+  const [cmd, ...pre] = tool(name);
+  return execFileSync(cmd, [...pre, ...args], { encoding: "utf8", ...opts });
+};
+// crew-board's ranking over a fixture: {plans: {root: plan}, workspaces: [...]}
+// in place of deep-plan and cmux; no workspaces is the cmux-down path. Returns
+// the state, whose rows are rank()'s rows followed by its quiet ones.
+const stateFrom = (fx) => {
+  const dir = mkdtempSync(join(tmpdir(), "board-probe-fx-"));
+  try {
+    writeFileSync(join(dir, "fx.json"), JSON.stringify(fx));
+    return JSON.parse(runTool("crew-board", ["state", "--json", "--fixture", join(dir, "fx.json")]));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 };
 // render.js, not an inline script in the page: the renderer is pushed with each update
 // because a page-resident entry point was not reachable, and because a wrong BOARD_HTML
@@ -710,7 +729,7 @@ checks.push(["the headline never says all-clear over a broken board",
 
 // The board-only poses are generated too, from cat_poses.py's grids.
 checks.push(["the board-only poses are in sync with cat_poses.py",
-  (() => { try { execFileSync("python3", [join(HERE, "cat_poses.py"), "--check"],
+  (() => { try { runTool("cat_poses.py", ["--check"],
     { encoding: "utf8" }); return true; } catch { return false; } })()]);
 // They sit inside the sprite, so they walk and turn with it, and every
 // reaction render.js can set has a pose to show and a rule to show it.
@@ -779,7 +798,7 @@ checks.push(["an empty board does not say the same thing twice",
 // only against assertions real data can satisfy: that it renders, and that nothing leaks.
 let live = null;
 try {
-  live = JSON.parse(execFileSync(join(HERE, "crew-board"), ["state", "--json"], { encoding: "utf8" }));
+  live = JSON.parse(runTool("crew-board", ["state", "--json"]));
 } catch { /* cmux down, or no crew-board: not a probe failure */ }
 if (live && Array.isArray(live.rows)) {
   render(live);
@@ -794,8 +813,7 @@ if (live && Array.isArray(live.rows)) {
   // trick: if the cache and the full read disagree, the board quietly shows the
   // wrong branch. So the two are compared on every probe run.
   try {
-    const fast = JSON.parse(execFileSync(join(HERE, "crew-board"),
-      ["state", "--fast", "--json"], { encoding: "utf8" }));
+    const fast = JSON.parse(runTool("crew-board", ["state", "--fast", "--json"]));
     const key = (d) => JSON.stringify((d.rows || []).map((r) =>
       [r.id, r.kind, r.branch, r.pr, r.pr_url, r.meta, r.chips]));
     checks.push(["a fast build agrees with a full build", key(fast) === key(live)]);
@@ -1029,11 +1047,7 @@ if (live && Array.isArray(live.rows)) {
     JSON.stringify({ w1: { cwd: CWD, name: "fx-ws" } }));
   let ud = {};
   try {
-    ud = JSON.parse(py(["-c", [
-      "import importlib.machinery, importlib.util, json, sys",
-      "ld = importlib.machinery.SourceFileLoader('cbi', sys.argv[1])",
-      "m = importlib.util.module_from_spec(importlib.util.spec_from_loader('cbi', ld)); ld.exec_module(m)",
-      "print(json.dumps(m.usage_data()))"].join("\n"), join(HERE, "crew-board-intent")]));
+    ud = JSON.parse(runTool("crew-board-intent", ["--usage-json"], { env }));
   } catch (e) { console.log("  --   usage_data run failed: " + String(e.message).split("\n")[0]); }
   const U = '["claude-test-9-9"]';
   checks.push(["unpriced: /usage day, week and month each name the model",
@@ -1134,8 +1148,7 @@ if (live && Array.isArray(live.rows)) {
     },
   }));
   const env = { ...process.env, CREW_JUDGMENTS_FILE: join(tmp, "j.json") };
-  const r = JSON.parse(execFileSync("python3",
-    [join(HERE, "judgments.py"), "--apply", fixture], { encoding: "utf8", env }));
+  const r = JSON.parse(runTool("judgments.py", ["--apply", fixture], { env }));
   checks.push(["judgments: fresh + over threshold reads stuck",
     r["/w/stuck"]?.stuck === true && r["/w/stuck"]?.urgency === 2.8]);
   checks.push(["judgments: a mid-turn row is never stuck — the turn it judged is over",
@@ -1149,27 +1162,24 @@ if (live && Array.isArray(live.rows)) {
 
   // The writer half: --record merges one cwd without blanking the others and
   // folds the blocked arg in beside the stdin values.
-  execFileSync("python3", [join(HERE, "judgments.py"), "--record", "/w/a", "111", "0.9"],
-    { encoding: "utf8", env, input: JSON.stringify({ stuck: 0.7, urgency: 2.0 }) });
-  execFileSync("python3", [join(HERE, "judgments.py"), "--record", "/w/b", "222"],
-    { encoding: "utf8", env, input: JSON.stringify({ stuck: 0.1, urgency: 0.5 }) });
+  runTool("judgments.py", ["--record", "/w/a", "111", "0.9"], { env, input: JSON.stringify({ stuck: 0.7, urgency: 2.0 }) });
+  runTool("judgments.py", ["--record", "/w/b", "222"], { env, input: JSON.stringify({ stuck: 0.1, urgency: 0.5 }) });
   const cache = JSON.parse(fs.readFileSync(join(tmp, "j.json"), "utf8"));
   checks.push(["judgments: record keeps other worktrees' entries",
     cache["/w/a"]?.stuck === 0.7 && cache["/w/b"]?.urgency === 0.5]);
   checks.push(["judgments: blocked rides as an arg, size as an int",
     cache["/w/a"]?.blocked === 0.9 && cache["/w/a"]?.transcript_size === 111]);
   // Turn-ends in the same instant: each writer must see the others' entries.
-  const raced = execFileSync("python3", ["-c", `
-import importlib.util, json, multiprocessing as mp, os, sys
-spec = importlib.util.spec_from_file_location("judgments", sys.argv[1])
-J = importlib.util.module_from_spec(spec); spec.loader.exec_module(J)
-ctx = mp.get_context("fork"); bar = ctx.Barrier(16)
-def go(i):
-    bar.wait(); J.record("/w/r%d" % i, i, {"stuck": 0.1})
-ps = [ctx.Process(target=go, args=(i,)) for i in range(16)]
-[p.start() for p in ps]; [p.join() for p in ps]
-print(sum(k.startswith("/w/r") for k in json.load(open(J.CACHE))))
-`, join(HERE, "judgments.py")], { encoding: "utf8", env }).trim();
+  // Sixteen writers started together, each its own process as asked.sh runs it.
+  const { spawn: spawnJ } = await import("node:child_process");
+  const [jcmd, ...jpre] = tool("judgments.py");
+  await Promise.all([...Array(16).keys()].map(i => new Promise(res => {
+    const c = spawnJ(jcmd, [...jpre, "--record", "/w/r" + i, String(i)], { env, stdio: ["pipe", "ignore", "ignore"] });
+    c.on("exit", res);
+    c.stdin.end(JSON.stringify({ stuck: 0.1 }));
+  })));
+  const raced = String(Object.keys(JSON.parse(fs.readFileSync(join(tmp, "j.json"), "utf8")))
+    .filter(k => k.startsWith("/w/r")).length);
   checks.push(["judgments: concurrent records all survive", raced === "16"]);
   fs.rmSync(tmp, { recursive: true, force: true });
 }
@@ -1439,16 +1449,12 @@ print(sum(k.startswith("/w/r") for k in json.load(open(J.CACHE))))
 
   // crew-board itself, on the path that needs no cmux: plan rows carry the
   // family and come back grouped.
-  const po = JSON.parse(execFileSync("python3", ["-c", `
-import importlib.machinery, importlib.util, json, sys
-l = importlib.machinery.SourceFileLoader("cb", sys.argv[1])
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader("cb", l)); l.exec_module(m)
-P = lambda s, ph, allow, fam=None: {"slug": s, "root": "/w/" + s, "phase": ph, "gate": {"allow": allow, "why": ""},
-  "progress": {"total": 2, "done": 0, "blocked": [], "open": [], "next": {"n": 1, "title": "t"}}, **({"family": fam} if fam else {})}
-pb = {"/w/x": P("x", "implementing", True), "/w/par": P("par", "implementing", True, {"parent": "par", "role": "parent"}),
-  "/w/kid": P("kid", "review", False, {"parent": "par", "role": "child"})}
-print(json.dumps([[r["id"], r["kind"], r.get("famtier", "")] for r in m.rank_plans_only(pb)]))
-`, join(HERE, "crew-board")], { encoding: "utf8" }));
+  const P = (s, ph, allow, fam) => ({ slug: s, root: "/w/" + s, phase: ph, gate: { allow, why: "" },
+    progress: { total: 2, done: 0, blocked: [], open: [], next: { n: 1, title: "t" } }, ...(fam ? { family: fam } : {}) });
+  const po = stateFrom({ plans: { "/w/x": P("x", "implementing", true),
+    "/w/par": P("par", "implementing", true, { parent: "par", role: "parent" }),
+    "/w/kid": P("kid", "review", false, { parent: "par", role: "child" }) } })
+    .rows.map(r => [r.id, r.kind, r.famtier ?? ""]);
   checks.push(["families: crew-board with cmux down groups plan rows at the family's tier",
     JSON.stringify(po) === JSON.stringify([["par", "running", "attend"], ["kid", "attend", "attend"], ["x", "running", ""]])]);
 
@@ -1563,6 +1569,9 @@ print(json.dumps([[r["id"], r["kind"], r.get("famtier", "")] for r in m.rank_pla
 
 // ---- tidy/adopt: a board surface is the one whose URL is board.html ---------
 // Not a substring of the tree line: tidy closes every match but the recorded one.
+// White-box on purpose, and always against the Python: tree_url_is serves only
+// `crew-board tidy`/`open` and crew-board-diag, which stay Python until the
+// cutover deletes them with the Dock board (plan port-board).
 {
   const tm = JSON.parse(execFileSync("python3", ["-c", `
 import importlib.machinery, importlib.util, json, sys
@@ -1639,7 +1648,7 @@ print(json.dumps([ast.dump(d) == ast.dump(b), sum(ns["tree_url_is"](l, "board.ht
   const compose = (rows, hours = 5) => {
     const f = join(tmp, "fx.json");
     fs.writeFileSync(f, JSON.stringify({ rows, now: NOW, hours }));
-    return JSON.parse(execFileSync("python3", [join(HERE, "news.py"), "--compose", f], { encoding: "utf8" }));
+    return JSON.parse(runTool("news.py", ["--compose", f]));
   };
   const n = compose([
     R("gate", "attend", "gate shut", { subject: "Wire the cache" }),
@@ -1683,26 +1692,23 @@ print(json.dumps([ast.dump(d) == ast.dump(b), sum(ns["tree_url_is"](l, "board.ht
 
 // ---- failed validation ranks wilt, on both rank paths ----------------------
 {
-  const out = JSON.parse(execFileSync("python3", ["-c", `
-import importlib.machinery, importlib.util, json, sys
-l = importlib.machinery.SourceFileLoader("cb", sys.argv[1])
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader("cb", l)); l.exec_module(m)
-P = lambda s, ph, chk: {"slug": s, "root": "/w/" + s, "phase": ph, "gate": {"allow": True, "why": ""},
-  "progress": {"total": 3, "done": 1, "blocked": [], "open": [{"n": 2, "title": "t"}], "next": None},
-  "checksOutstanding": chk}
-pb = {"/w/f": P("f", "implementing", [{"n": 2, "id": "test-a", "kind": "test", "status": "fail"}]),
-      "/w/l": P("l", "implementing", [{"n": 2, "id": "e2e-b", "kind": "e2e", "status": "lost"}]),
-      "/w/p": P("p", "implementing", [{"n": 2, "id": "test-c", "kind": "test", "status": "pending"}]),
-      "/w/d": P("d", "done", [{"n": 3, "id": "test-d", "kind": "test", "status": "fail"}])}
-W = lambda s, running: {"id": s, "title": s, "cwd": "/w/" + s, "desc": "", "running": running,
-  "branch": "none", "pr": "none", "dirty": False, "commits": [{"at": 1, "s": "x"}]}
-rows, quiet = m.rank([W("f", True), W("l", False), W("p", True), W("d", False), W("q", False)], pb)
-po = m.rank_plans_only(pb)
-print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")] for r in rows + quiet},
-                  "plans": {r["id"]: [r["kind"], r["badge"]] for r in po},
-                  "commits": [r["commits"] for r in rows + quiet if r["id"] == "f"][0],
-                  "chips": {r["id"]: r["chips"] for r in rows + quiet}}))
-`, join(HERE, "crew-board")], { encoding: "utf8" }));
+  const P = (s, ph, chk) => ({ slug: s, root: "/w/" + s, phase: ph, gate: { allow: true, why: "" },
+    progress: { total: 3, done: 1, blocked: [], open: [{ n: 2, title: "t" }], next: null },
+    checksOutstanding: chk });
+  const pb = { "/w/f": P("f", "implementing", [{ n: 2, id: "test-a", kind: "test", status: "fail" }]),
+    "/w/l": P("l", "implementing", [{ n: 2, id: "e2e-b", kind: "e2e", status: "lost" }]),
+    "/w/p": P("p", "implementing", [{ n: 2, id: "test-c", kind: "test", status: "pending" }]),
+    "/w/d": P("d", "done", [{ n: 3, id: "test-d", kind: "test", status: "fail" }]) };
+  const W = (s, running) => ({ id: s, title: s, cwd: "/w/" + s, desc: "", running,
+    branch: "none", pr: "none", dirty: false, commits: [{ at: 1, s: "x" }] });
+  const all = stateFrom({ plans: pb, workspaces: [W("f", true), W("l", false), W("p", true), W("d", false), W("q", false)] }).rows;
+  const po = stateFrom({ plans: pb }).rows;
+  const out = {
+    rank: Object.fromEntries(all.map(r => [r.id, [r.kind, r.badge, r.subject ?? ""]])),
+    plans: Object.fromEntries(po.map(r => [r.id, [r.kind, r.badge]])),
+    commits: all.find(r => r.id === "f").commits,
+    chips: Object.fromEntries(all.map(r => [r.id, r.chips])),
+  };
   checks.push(["checks: a failed check ranks wilt even mid-turn, naming it",
     JSON.stringify(out.rank.f) === JSON.stringify(["wilt", "check failed", "increment 2 · test-a"])]);
   checks.push(["checks: a lost runner ranks wilt too", out.rank.l[0] === "wilt" && out.rank.l[1] === "check failed"]);
@@ -1717,73 +1723,19 @@ print(json.dumps({"rank": {r["id"]: [r["kind"], r["badge"], r.get("subject", "")
 }
 
 // ---- the archive chip: on a quiet row, never on a working one -------------
+// (What the server does with a press is checked against the running server,
+// with the review routes below.)
 {
-  const out = JSON.parse(execFileSync("python3", ["-c", `
-import importlib.machinery, importlib.util, json, sys
-l = importlib.machinery.SourceFileLoader("cb", sys.argv[1])
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader("cb", l)); l.exec_module(m)
-W = lambda s, running: {"id": s, "title": s, "cwd": "/w/" + s, "desc": "", "running": running,
-  "branch": "none", "pr": "none", "dirty": False}
-rows, quiet = m.rank([W("idle", False), W("busy", True)], {})
-print(json.dumps({r["id"]: [r["kind"], r["chips"]] for r in rows + quiet}))
-`, join(HERE, "crew-board")], { encoding: "utf8" }));
+  const W = (s, running) => ({ id: s, title: s, cwd: "/w/" + s, desc: "", running,
+    branch: "none", pr: "none", dirty: false });
+  const out = Object.fromEntries(stateFrom({ plans: {}, workspaces: [W("idle", false), W("busy", true)] })
+    .rows.map(r => [r.id, [r.kind, r.chips]]));
   checks.push(["archive: a quiet row offers the archive chip",
     out.idle[0] === "quiet" && out.idle[1].includes("archive")]);
   checks.push(["archive: a working row does not", out.busy[0] === "running" && !out.busy[1].includes("archive")]);
   const intent = readFileSync(join(HERE, "intent.js"), "utf8"), rjs = readFileSync(join(HERE, "render.js"), "utf8");
-  const srv = readFileSync(join(HERE, "crew-board-intent"), "utf8");
-  // What the server actually runs for a row's buttons, with run() stubbed. cmux
-  // refuses notification.create outright over an unknown key, and a camelCase
-  // workspaceId beside workspace_id was that key: every row-scoped RPC button
-  // (reclaim, archive, code, go, sandbox, feed) failed before triage.py ran.
-  const ran = JSON.parse(execFileSync("python3", ["-c", `
-import importlib.machinery, importlib.util, json, sys
-l = importlib.machinery.SourceFileLoader("cbi", sys.argv[1])
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader("cbi", l)); l.exec_module(m)
-calls = []
-m.run = lambda argv, cwd=None: calls.append(argv[1:]) or True
-real_diff = m._lookout_diff
-m._lookout_diff = lambda cwd, ws: (calls.append(["lookout", cwd, ws]) or True, "lookout")
-U = "8B5F643D-E94F-41B8-945C-EBCB4DF64FB1"
-row = {"id": U, "ref": "workspace:9", "cwd": sys.argv[2], "name": "n", "slug": "s"}
-out = {}
-for a in ("reclaim", "archive", "code", "sandbox-up", "feed-deny", "jump", "diff"):
-    calls.clear(); m.act(a, dict(row), "")
-    out[a] = list(calls)
-calls.clear(); m.act("diff", dict(row, id="not-a-uuid"), ""); out["diffref"] = list(calls)
-# A second press while the first build runs does not start another: the
-# build below presses again from inside itself, and only one run happens.
-m._lookout_engine = lambda: ("node", "x")
-runs, inner = [], []
-def build(*a):
-    runs.append(a)
-    inner.append(real_diff(sys.argv[2], "")[1])
-    return True, "built"
-m._lookout_diff_run = build
-out["busy"] = [real_diff(sys.argv[2], "")[1], len(runs), inner, sorted(m._DIFF_BUSY)]
-calls.clear(); m.act("go", dict(row), "3"); out["go"] = list(calls)
-print(json.dumps(out))
-`, join(HERE, "crew-board-intent"), HERE], { encoding: "utf8" }));
-  const rpc = (a) => (ran[a] || []).map((c) => c[0] === "rpc" ? JSON.parse(c[2]) : null).filter(Boolean);
-  checks.push(["buttons: every row-scoped RPC names its workspace once, as workspace_id",
-    ["reclaim", "archive", "code", "sandbox-up", "feed-deny", "go"].every((a) => {
-      const p = rpc(a);
-      return p.length === 1 && p[0].workspace_id === "8B5F643D-E94F-41B8-945C-EBCB4DF64FB1" &&
-        !("workspaceId" in p[0]) && p[0].subtitle === "crew:" + (a === "go" ? "plan-go" : a);
-    })]);
-  checks.push(["buttons: a row without a uuid hands lookout its ref, and selects it",
-    ran.diffref[0][2] === "workspace:9" && JSON.stringify(ran.diffref[1]) === JSON.stringify(["workspace", "select", "workspace:9"])]);
-  checks.push(["buttons: a diff pressed while its lookout build runs does not start another",
-    ran.busy[0] === "built" && ran.busy[1] === 1 && ran.busy[2][0].startsWith("lookout already opening") &&
-    ran.busy[3].length === 0]);
-  checks.push(["buttons: jump selects by the workspace uuid, which a cmux restart does not renumber",
-    JSON.stringify(ran.jump) === JSON.stringify([["workspace", "select", "8B5F643D-E94F-41B8-945C-EBCB4DF64FB1"]])]);
-  checks.push(["buttons: diff opens the branch in lookout, in the row's workspace, and brings it forward",
-    ran.diff[0][0] === "lookout" && ran.diff[0][2] === "8B5F643D-E94F-41B8-945C-EBCB4DF64FB1" &&
-    JSON.stringify(ran.diff[1]) === JSON.stringify(["workspace", "select", "8B5F643D-E94F-41B8-945C-EBCB4DF64FB1"])]);
-  checks.push(["archive: the chip is clickable, has a tooltip, and the intent server admits it",
-    /"archive": "archive"/.test(intent) && /"archive": "Close this workspace/.test(rjs) &&
-    /ACTIONS = \([^)]*"archive"/.test(srv) && srv.includes('notify("crew:archive"')]);
+  checks.push(["archive: the chip is clickable and has a tooltip",
+    /"archive": "archive"/.test(intent) && /"archive": "Close this workspace/.test(rjs)]);
 }
 
 // ---- the news footer: escaped, keeps its open state, hides when empty ------
@@ -1853,9 +1805,14 @@ print(json.dumps(out))
   // A stand-in for VS Code's `code`: it records what it was asked to open.
   const fakeCode = join(HOME, "fake-code");
   fs.writeFileSync(fakeCode, `#!/bin/sh\nprintf '%s\\n' "$@" >> "${join(HOME, "fake-code.log")}"\n`, { mode: 0o755 });
-  const srv = spawn("python3", [join(HERE, "crew-board-intent")],
-    { env: { ...process.env, HOME, CREW_INTENT_PORT: String(pinned), PYTHONFAULTHANDLER: "1", CREW_CODE_BIN: fakeCode },
-      stdio: ["ignore", "pipe", "pipe"] });
+  // cmux is fakecmux, which logs each call's argv to cmux.jsonl: the row
+  // buttons below are judged by what the server sent, not by stubbing it.
+  const FAKE_DIR = join(HOME, "fakecmux");
+  fs.mkdirSync(FAKE_DIR);
+  const ienv = { ...process.env, HOME, CREW_INTENT_PORT: String(pinned), PYTHONFAULTHANDLER: "1", CREW_CODE_BIN: fakeCode,
+    CREW_CMUX: join(HERE, "..", "tools", "fakecmux.py"), FAKE_CMUX_DIR: FAKE_DIR };
+  const [icmd, ...ipre] = tool("crew-board-intent");
+  const srv = spawn(icmd, ipre, { env: ienv, stdio: ["ignore", "pipe", "pipe"] });
   // Kept, not discarded: when the server does not come up on a runner, its
   // own output and log are the only account of why, and HOME is gone after.
   let srvOut = "", srvExit = null;
@@ -2070,6 +2027,68 @@ print(json.dumps(out))
     checks.push(["review POST: a stale lock is broken, not waited on",
       (await post({ op: "comment", t: token, item: "t1", text: "after a crash" })).status === 200 &&
       !fs.existsSync(lock) && !fs.existsSync(lock + "-break")]);
+
+    // ---- row buttons, through /do ------------------------------------------
+    // What the server actually sends for a row's buttons. cmux refuses
+    // notification.create outright over an unknown key, and a camelCase
+    // workspaceId beside workspace_id was that key: every row-scoped RPC button
+    // (reclaim, archive, code, go, sandbox, feed) failed before triage.py ran.
+    // The collector writes the click table; lookout is a stand-in that logs
+    // each run and, while `slow` exists, takes a second over it.
+    const U = "8B5F643D-E94F-41B8-945C-EBCB4DF64FB1";
+    runTool("crew-board", ["write-targets"], { env: ienv, input: JSON.stringify({ rows: [
+      { id: U, ref: "workspace:9", cwd: HERE, name: "n", slug: "s" },
+      { id: "not-a-uuid", ref: "workspace:9", cwd: HERE, name: "n", slug: "s" }] }) });
+    const LK = join(HOME, "fake-lookout"), lkLog = join(HOME, "lookout.jsonl"), slow = join(HOME, "slow");
+    fs.mkdirSync(LK);
+    fs.writeFileSync(join(LK, "lookout.mjs"), `import fs from "node:fs";
+if (fs.existsSync(${JSON.stringify(slow)})) await new Promise(r => setTimeout(r, 1000));
+fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.slice(2), ws: process.env.CMUX_WORKSPACE_ID || "" }) + "\\n");\n`);
+    fs.mkdirSync(join(HOME, ".claude", "lookout"), { recursive: true });
+    fs.writeFileSync(join(HOME, ".claude", "lookout", "engine.json"), JSON.stringify({ root: LK }));
+    const jsonl = f => fs.existsSync(f) ? fs.readFileSync(f, "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l)) : [];
+    const press = async (a, r = U, x = "") => {
+      for (const f of [join(FAKE_DIR, "cmux.jsonl"), lkLog]) fs.rmSync(f, { force: true });
+      const res = await req("GET", `/do?a=${encodeURIComponent(a)}&r=${encodeURIComponent(r)}&x=${x}&t=${encodeURIComponent(token)}`);
+      return { res: JSON.parse(res.body || "{}"), cmux: jsonl(join(FAKE_DIR, "cmux.jsonl")), lookout: jsonl(lkLog) };
+    };
+    const rpcOf = p => p.cmux.filter(c => c[0] === "rpc" && c[1] === "notification.create").map(c => JSON.parse(c[2]));
+    const sent = {};
+    for (const a of ["reclaim", "archive", "code", "sandbox-up", "feed-deny"]) sent[a] = await press(a);
+    sent.go = await press("go", U, "3");
+    checks.push(["buttons: every row-scoped RPC names its workspace once, as workspace_id",
+      ["reclaim", "archive", "code", "sandbox-up", "feed-deny", "go"].every((a) => {
+        const p = rpcOf(sent[a]);
+        return sent[a].res.ok === true && p.length === 1 && p[0].workspace_id === U &&
+          !("workspaceId" in p[0]) && p[0].subtitle === "crew:" + (a === "go" ? "plan-go" : a);
+      }), JSON.stringify(Object.fromEntries(Object.entries(sent).map(([k, v]) => [k, v.cmux])))]);
+    const jump = await press("jump");
+    checks.push(["buttons: jump selects by the workspace uuid, which a cmux restart does not renumber",
+      JSON.stringify(jump.cmux) === JSON.stringify([["workspace", "select", U]]), JSON.stringify(jump.cmux)]);
+    const diff = await press("diff");
+    checks.push(["buttons: diff opens the branch in lookout, in the row's workspace, and brings it forward",
+      diff.res.ok === true && diff.lookout.length === 1 && diff.lookout[0].ws === U &&
+      JSON.stringify(diff.lookout[0].argv) === JSON.stringify(["open", "--view-only", "--at", HERE]) &&
+      JSON.stringify(diff.cmux) === JSON.stringify([["workspace", "select", U]]), JSON.stringify(diff)]);
+    const dref = await press("diff", "not-a-uuid");
+    checks.push(["buttons: a row without a uuid hands lookout its ref, and selects it",
+      dref.lookout.length === 1 && dref.lookout[0].ws === "workspace:9" &&
+      JSON.stringify(dref.cmux) === JSON.stringify([["workspace", "select", "workspace:9"]]), JSON.stringify(dref)]);
+    // Two presses while the first build runs: one build, and the second says so.
+    fs.writeFileSync(slow, "");
+    fs.rmSync(lkLog, { force: true });
+    const both = await Promise.all([1, 2].map(() =>
+      req("GET", `/do?a=diff&r=${U}&t=${encodeURIComponent(token)}`).then(r => JSON.parse(r.body).detail)));
+    fs.rmSync(slow);
+    const builds = jsonl(lkLog).length;
+    const third = await press("diff");
+    checks.push(["buttons: a diff pressed while its lookout build runs does not start another",
+      builds === 1 && both.filter(d => d.startsWith("lookout already opening")).length === 1 &&
+      third.lookout.length === 1, JSON.stringify({ both, builds, third: third.lookout.length })]);
+    const unk = await req("GET", `/do?a=rm&r=${U}&t=${encodeURIComponent(token)}`);
+    checks.push(["buttons: an action outside the allowlist is refused, and archive is in it",
+      unk.status === 400 && sent.archive.res.ok === true]);
+    fs.rmSync(join(HOME, ".claude", "lookout"), { recursive: true, force: true });
   } catch (e) {
     checks.push(["review routes ran to the end: " + e.message, false]);
   } finally {
@@ -2090,7 +2109,6 @@ print(json.dumps(out))
   const { spawn } = await import("node:child_process");
   const { pathToFileURL } = await import("node:url");
   const DIR = fs.mkdtempSync(join(os.tmpdir(), "board-probe-lock-"));
-  const INTENT = join(HERE, "crew-board-intent");
   const STORE = pathToFileURL(join(HERE, "..", "..", "lookout", "lib", "store.mjs")).href;
   const env = { ...process.env, LOOKOUT_REVIEWS_DIR: DIR };
   // One lock attempt, or (with a count) that many counter increments under the
@@ -2100,30 +2118,6 @@ print(json.dumps(out))
   // stale" and "I removed it", which on an idle machine is a microsecond or
   // two; the pause widens it, without touching the lock code, so the race
   // shows in a second instead of a day.
-  const PY = `
-import importlib.machinery, importlib.util, json, os, random, sys, time
-l = importlib.machinery.SourceFileLoader("cbi", sys.argv[1])
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader("cbi", l)); l.exec_module(m)
-m.REVIEWS = sys.argv[2]
-rid, n = sys.argv[3], int(sys.argv[4])
-if n:
-    sys.setprofile(lambda f, ev, arg: time.sleep(random.random() * 0.002) if ev == "c_return" and arg is os.stat else None)
-t = time.time()
-try:
-    for i in range(max(n, 1)):
-        with m.review_lock(rid):
-            if n:
-                p = os.path.join(m.REVIEWS, rid + ".json")
-                with open(p) as fh: r = json.load(fh)
-                r["n"] += 1
-                tmp = "%s.tmp-%d-%d" % (p, os.getpid(), i)
-                with open(tmp, "w") as fh: json.dump(r, fh)
-                os.replace(tmp, p)
-        if n: time.sleep(0.002)
-    print(json.dumps({"took": True, "s": time.time() - t}))
-except TimeoutError as e:
-    print(json.dumps({"took": False, "err": str(e), "s": time.time() - t}))
-`;
   const JS = `
 const fs = (await import("node:fs")).default, stat = fs.statSync;
 const nap = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -2144,7 +2138,11 @@ try {
     const kill = setTimeout(() => c.kill("SIGKILL"), ms);
     c.on("exit", () => { clearTimeout(kill); try { res(JSON.parse(out.trim().split("\n").pop())); } catch { res(null); } });
   });
-  const py = (rid, n = 0, ms = 10000) => run("python3", ["-c", PY, INTENT, DIR, rid, String(n)], ms);
+  // The Python twin's writer is the server's own --lock-test, which takes the
+  // lock N times (jittering every os.stat when counting) from the command line.
+  const [lcmd, ...lpre] = tool("crew-board-intent");
+  const py = (rid, n = 0, ms = 10000) =>
+    run(lcmd, [...lpre, "--lock-test", rid, String(n), ...(n ? ["--jitter"] : [])], ms);
   const js = (rid, n = 0, ms = 10000) => run(process.execPath, ["--input-type=module", "-e", JS, STORE, rid, String(n)], ms);
   const old = new Date(Date.now() - 60000);
   const plant = (p, stale) => { fs.mkdirSync(p); if (stale) fs.utimesSync(p, old, old); };

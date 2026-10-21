@@ -103,5 +103,21 @@
   { "id": "parity-strict", "kind": "test",
     "run": "cargo build --manifest-path app/Cargo.toml -p seamux-cli && CREW_IMPL=rust-strict sh -c 'python3 crew/tools/family_sync_probe.py && python3 crew/tools/workspaces_probe.py && python3 crew/tools/wake_split_probe.py && python3 crew/tools/artifacts_probe.py && python3 crew/hooks/typesafe_probe.py && python3 crew/tools/core_probe.py && python3 crew/tools/cli_probe.py && python3 crew/tools/hooks_probe.py && node crew/board/board_probe.mjs'",
     "match": [], "default": false,
-    "note": "the cutover's proof that no crew tool is left on Python: an unregistered tool fails the run" }
+    "note": "the cutover's proof that no crew tool is left on Python: an unregistered tool fails the run" },
+  { "id": "crew-board-rust", "kind": "test",
+    "run": "cargo test --manifest-path app/Cargo.toml -p crew-board",
+    "match": ["app/crates/crew-board/**"], "default": true,
+    "note": "the board crate's own tests (ranking, news, judgments, server routes); no cmux needed" },
+  { "id": "board-probe-rust", "kind": "test",
+    "run": "cargo build --manifest-path app/Cargo.toml -p seamux-cli && CREW_IMPL=rust node crew/board/board_probe.mjs",
+    "match": ["app/crates/crew-board/**"], "default": true,
+    "note": "the board probe with every crew tool resolved to `seamux <tool>` (the parent's CREW_IMPL helper)" },
+  { "id": "wake-split-probe-rust", "kind": "test",
+    "run": "cargo build --manifest-path app/Cargo.toml -p seamux-cli && CREW_IMPL=rust python3 crew/tools/wake_split_probe.py",
+    "match": ["app/crates/crew-board/src/wake*"], "default": false,
+    "note": "the Wake's split against fakecmux, through the Rust server; name it where the Wake is ported" },
+  { "id": "workspaces-probe-rust", "kind": "test",
+    "run": "cargo build --manifest-path app/Cargo.toml -p seamux-cli && CREW_IMPL=rust python3 crew/tools/workspaces_probe.py",
+    "match": [], "default": false,
+    "note": "the shared workspaces probe with crew tools resolved to seamux; its board section is the archive tap through /do" }
 ] }

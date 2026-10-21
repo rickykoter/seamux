@@ -458,7 +458,9 @@ ASK_JS = """
 # lookout CLI takes and replace the file atomically.
 # ---------------------------------------------------------------------------
 
-REVIEWS = os.path.join(PLANS, "reviews")
+# LOOKOUT_REVIEWS_DIR first, as lookout/lib/store.mjs resolves it: the two
+# sides of the lock contract have to agree on where the lock lives.
+REVIEWS = os.environ.get("LOOKOUT_REVIEWS_DIR") or os.path.join(PLANS, "reviews")
 LOOKOUT_POINTER = os.path.join(os.path.expanduser("~"), ".claude", "lookout", "engine.json")
 REVIEW_MAX_BODY = 64 * 1024
 REVIEW_MAX_TEXT = 4000
@@ -2618,7 +2620,65 @@ def selftest():
     return 1 if bad else 0
 
 
+def lock_test(rid, n, jitter):
+    """`--lock-test RID N [--jitter]`: take the review lock once (N=0), or N
+    times incrementing <RID>.json's "n" under it, 2ms apart. --jitter pauses up
+    to 2ms after every os.stat, widening the gap two stale-lock breakers race
+    in. Prints {took, s} or {took: false, err, s}. For the board probe, which
+    races this against lookout's own writers."""
+    import random
+    if jitter:
+        sys.setprofile(lambda f, ev, arg: time.sleep(random.random() * 0.002)
+                       if ev == "c_return" and arg is os.stat else None)
+    t = time.time()
+    try:
+        return _lock_test_run(rid, n, t)
+    finally:
+        sys.setprofile(None)
+
+
+def _lock_test_run(rid, n, t):
+    try:
+        for i in range(max(n, 1)):
+            with review_lock(rid):
+                if n:
+                    p = os.path.join(REVIEWS, rid + ".json")
+                    with open(p) as fh:
+                        r = json.load(fh)
+                    r["n"] += 1
+                    tmp = "%s.tmp-%d-%d" % (p, os.getpid(), i)
+                    with open(tmp, "w") as fh:
+                        json.dump(r, fh)
+                    os.replace(tmp, p)
+            if n:
+                time.sleep(0.002)
+        print(json.dumps({"took": True, "s": time.time() - t}))
+    except TimeoutError as e:
+        print(json.dumps({"took": False, "err": str(e), "s": time.time() - t}))
+    return 0
+
+
+def _arg(flag, default=""):
+    i = sys.argv.index(flag) + 1 if flag in sys.argv else 0
+    return sys.argv[i] if i and i < len(sys.argv) else default
+
+
 if __name__ == "__main__":
+    # Probe entry points: each reaches one piece of the server from the
+    # command line, so the same probe drives the Python and the Rust server.
+    if "--usage-json" in sys.argv:
+        print(json.dumps(usage_data()))
+        sys.exit(0)
+    if "--lock-test" in sys.argv:
+        i = sys.argv.index("--lock-test")
+        sys.exit(lock_test(sys.argv[i + 1], int(sys.argv[i + 2]), "--jitter" in sys.argv))
+    if "--wake-tab" in sys.argv:
+        # --wake-tab NAME URL [--select WS]: the Wake's tab group, as /do and
+        # /artifacts/open drive it.
+        i = sys.argv.index("--wake-tab")
+        ok, detail = _wake_tab(sys.argv[i + 1], sys.argv[i + 2], select=_arg("--select"))
+        print(json.dumps({"ok": bool(ok), "detail": detail}))
+        sys.exit(0)
     if "--selftest" in sys.argv:
         sys.exit(selftest())
     if "--status" in sys.argv:
