@@ -5,7 +5,7 @@
 //! wall polls: current.list for the panes and their agents, then every
 //! terminal's text in parallel over a small pool of connections (a `Cmux`
 //! serializes calls on its own connection). An event that names a known
-//! surface pulls that surface's read forward. The page gets a `wall.frame`
+//! surface pulls that surface's read forward. The page gets a `wall:frame` event
 //! only when something it shows changed.
 
 use std::collections::{HashMap, HashSet};
@@ -142,7 +142,7 @@ pub struct Tile {
     pub error: Option<String>,
 }
 
-/// The `wall.frame` payload: every tile, in current.list's order.
+/// The `wall:frame` payload: every tile, in current.list's order.
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct Frame {
     pub tiles: Vec<Tile>,

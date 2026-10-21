@@ -132,7 +132,8 @@ class Card {
     this.title.textContent = t.workspace_title || t.label || "terminal";
     this.sub.textContent = t.workspace_title && t.label !== t.workspace_title ? t.label : t.cwd;
     this.stateEl.replaceChildren(stateMark(t.state), document.createTextNode(STATE_WORDS[t.state] ?? t.state));
-    this.form.hidden = !t.agent;
+    // Wall::reply refuses a pane without a running agent; so does the page.
+    this.form.hidden = !t.agent || t.state === "ended";
     if (t.error) {
       this.body.textContent = `Couldn't read this pane: ${t.error}`;
       this.body.classList.add("err");

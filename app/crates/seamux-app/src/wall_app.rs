@@ -14,22 +14,28 @@ const READERS: usize = 4;
 
 static WALL: OnceLock<Arc<Wall>> = OnceLock::new();
 
-/// Connect the pool and start polling. When cmux is down the wall stays
-/// empty; the page reports cmux_status's named error.
+/// Connect the pool and start polling. Until cmux answers, the wall stays
+/// empty and the page shows cmux_status's named error.
 pub fn start<R: Runtime>(app: AppHandle<R>) {
-    let mut pool: Vec<Arc<dyn Source>> = Vec::new();
-    for _ in 0..READERS {
-        match cmux::Cmux::connect() {
-            Ok(c) => pool.push(Arc::new(c)),
-            Err(e) => {
-                eprintln!("seamux: wall reader could not connect: {e}");
-                break;
+    // cmux may start after the app (a login item, or a cmux restart): keep
+    // trying, with a growing pause, until the readers connect.
+    std::thread::spawn(move || {
+        let mut pause = Duration::from_secs(1);
+        let pool = loop {
+            let pool: Vec<Arc<dyn Source>> = (0..READERS)
+                .map_while(|_| cmux::Cmux::connect().ok().map(|c| Arc::new(c) as Arc<dyn Source>))
+                .collect();
+            if !pool.is_empty() {
+                break pool;
             }
-        }
-    }
-    if pool.is_empty() {
-        return;
-    }
+            std::thread::sleep(pause);
+            pause = (pause * 2).min(Duration::from_secs(30));
+        };
+        run_wall(app, pool);
+    });
+}
+
+fn run_wall<R: Runtime>(app: AppHandle<R>, pool: Vec<Arc<dyn Source>>) {
     // Reply and jump get a connection of their own, so a click never waits
     // behind a tick's reads.
     let actions: Arc<dyn Source> = match cmux::Cmux::connect() {
@@ -85,19 +91,18 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
         });
     }
 
-    std::thread::spawn(move || {
-        wall.run(rx, move |f: Frame| match app.emit("wall:frame", f) {
-            Ok(()) => true,
-            Err(e) => {
-                eprintln!("seamux: wall frame not sent: {e}");
-                false
-            }
-        })
+    // run_wall is already on its own thread; poll here.
+    wall.run(rx, move |f: Frame| match app.emit("wall:frame", f) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("seamux: wall frame not sent: {e}");
+            false
+        }
     });
 }
 
 fn wall() -> Result<&'static Arc<Wall>, String> {
-    WALL.get().ok_or_else(|| "the wall is not connected to cmux".to_string())
+    WALL.get().ok_or_else(|| "the wall is not connected to cmux yet".to_string())
 }
 
 /// The last frame, for a page that loads after it was sent.

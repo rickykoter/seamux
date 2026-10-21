@@ -33,7 +33,7 @@ MARKET="seamux"
 
 APPDIR="$HOME/Applications/seamux.app"
 APP_BUNDLE_ID="dev.seamux.app"
-DRY=0 CHECK=0 UNINSTALL=0 APP=0GITHUB=0 MODS=0 CREW=1 RESTACK=1 GUARD=1 LOOKOUT=1 APPLY=1 MIGRATE=1 MAIN=""
+DRY=0 CHECK=0 UNINSTALL=0 APP=0 GITHUB=0 MODS=0 CREW=1 RESTACK=1 GUARD=1 LOOKOUT=1 APPLY=1 MIGRATE=1 MAIN=""
 WITH_JIRA="" JIRA_SITE="" WITH_GHI="" OBS_STACK=""
 
 while [ $# -gt 0 ]; do
@@ -223,16 +223,27 @@ PLIST
     iconutil -c icns "$set" -o "$bundle/Contents/Resources/AppIcon.icns" 2>/dev/null || warn "no app icon (iconutil failed)"
     ok "bundle assembled: $bundle"
   fi
-  # Ad-hoc signed, so macOS treats the copied bundle as one unit.
-  run "codesign --force --deep --sign - $(q "$bundle") >/dev/null 2>&1"
-  # Swap it in. A previous bundle is moved aside, never deleted.
+  # Ad-hoc signed, so macOS treats the copied bundle as one unit. A bundle
+  # that failed to build or sign never replaces a working one.
+  if [ "$DRY" != 1 ]; then
+    [ -x "$bundle/Contents/MacOS/seamux-app" ] && [ -x "$bundle/Contents/Resources/bin/seamux" ] \
+      || die "the bundle is incomplete ($bundle); the installed app is unchanged"
+  fi
+  run "codesign --force --deep --sign - $(q "$bundle") >/dev/null 2>&1" \
+    || die "codesign failed for $bundle; the installed app is unchanged"
+  # Swap it in. A previous bundle is moved aside, never deleted, and comes
+  # back if the copy fails.
+  local aside=""
   if [ -d "$APPDIR" ]; then
     local tmp="${TMPDIR:-/tmp}"
-    local aside="${tmp%/}/seamux.app.replaced.$(date +%Y%m%d%H%M%S)"
-    run "mv $(q "$APPDIR") $(q "$aside")"
+    aside="${tmp%/}/seamux.app.replaced.$(date +%Y%m%d%H%M%S)"
+    run "mv $(q "$APPDIR") $(q "$aside")" || die "could not move the old seamux.app aside; nothing changed"
     did "the previous seamux.app moved to $aside"
   fi
-  run "mkdir -p $(q "$HOME/Applications") && cp -R $(q "$bundle") $(q "$APPDIR")"
+  if ! run "mkdir -p $(q "$HOME/Applications") && cp -R $(q "$bundle") $(q "$APPDIR")"; then
+    [ -n "$aside" ] && mv "$APPDIR" "$aside.failed" 2>/dev/null; [ -n "$aside" ] && mv "$aside" "$APPDIR"
+    die "copying the bundle to $APPDIR failed; the previous app is back in place"
+  fi
   did "installed $APPDIR"
   # The CLI the hook shims call, linked into ~/.local/bin. A file that is
   # not a link at that name is someone else's, and is left alone.
