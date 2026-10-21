@@ -1,0 +1,227 @@
+//! The served board's feed: one worker per server builds the ranked state
+//! from cmux events, plan-state stat and a heartbeat (as `crew-board watch`
+//! does) and hands each change to every /board/events subscriber. No request
+//! thread waits on a build. The worker stops a minute after the last
+//! subscriber leaves (the event tail and plan watcher it wakes on stay, one
+//! of each per server). Each build also writes the click table, so /do
+//! resolves the rows the page shows.
+
+use std::collections::VecDeque;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime};
+
+use serde_json::Value;
+
+use crew_core::pyjson;
+
+use crate::server::{dp_state, log};
+use crate::state::{self, Opts};
+
+pub const BOARD_JS: &str = include_str!("inject/board.js");
+
+const WAKE_EVENTS: [&str; 6] = [
+    "agent.hook.Notification", "agent.hook.Stop", "workspace.created",
+    "workspace.closed", "workspace.renamed", "workspace.selected",
+];
+const IDLE_STOP: Duration = Duration::from_secs(60);
+
+/// CREW_BOARD_HEARTBEAT seconds (30 by default): the backstop for what no
+/// event announces (CI, review and Jira state).
+fn heartbeat() -> Duration {
+    let h = std::env::var("CREW_BOARD_HEARTBEAT").ok().and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(30.0);
+    // Clamped: a nonsense value (0, inf, 1e30) must not stop the feed.
+    Duration::from_secs_f64(if h.is_finite() && h > 0.0 { h.clamp(0.1, 3600.0) } else { 30.0 })
+}
+
+pub type Sub = Arc<Mutex<VecDeque<String>>>;
+
+struct Inner {
+    subs: Vec<Sub>,
+    last: Option<String>,
+    running: bool,
+    /// The event tail and the plan watcher: started once, for the server's life.
+    watching: bool,
+}
+
+pub struct Feed {
+    inner: Mutex<Inner>,
+    news: Condvar,
+    dirty: Mutex<bool>,
+    woke: Condvar,
+}
+
+pub fn feed() -> &'static Feed {
+    static F: OnceLock<Feed> = OnceLock::new();
+    F.get_or_init(|| Feed {
+        inner: Mutex::new(Inner { subs: Vec::new(), last: None, running: false, watching: false }),
+        news: Condvar::new(),
+        dirty: Mutex::new(false),
+        woke: Condvar::new(),
+    })
+}
+
+impl Feed {
+    fn mark_dirty(&self) {
+        *self.dirty.lock().unwrap_or_else(|p| p.into_inner()) = true;
+        self.woke.notify_all();
+    }
+
+    /// Wait for a wake or the heartbeat: true when something woke it.
+    fn wait_dirty(&self, t: Duration) -> bool {
+        let g = self.dirty.lock().unwrap_or_else(|p| p.into_inner());
+        let (mut g, _) = self.woke.wait_timeout_while(g, t, |d| !*d).unwrap_or_else(|p| p.into_inner());
+        std::mem::replace(&mut *g, false)
+    }
+
+    fn clear_dirty(&self) {
+        *self.dirty.lock().unwrap_or_else(|p| p.into_inner()) = false;
+    }
+
+    pub fn subscribe(&'static self) -> Sub {
+        let q: Sub = Arc::new(Mutex::new(VecDeque::new()));
+        let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(l) = &inner.last {
+            q.lock().unwrap().push_back(l.clone());
+        }
+        inner.subs.push(q.clone());
+        if !inner.watching {
+            inner.watching = true;
+            std::thread::spawn(move || self.tail_events());
+            std::thread::spawn(move || self.watch_plans());
+        }
+        if !inner.running {
+            inner.running = true;
+            self.mark_dirty();
+            std::thread::spawn(move || {
+                // An idle stop clears `running` itself, under the lock; a panic
+                // is cleared here, so the next subscriber starts another worker.
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.work())).is_err() {
+                    log("FAIL board feed worker panicked; the next subscriber restarts it");
+                    self.inner.lock().unwrap_or_else(|p| p.into_inner()).running = false;
+                }
+            });
+        }
+        q
+    }
+
+    pub fn unsubscribe(&self, q: &Sub) {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).subs.retain(|s| !Arc::ptr_eq(s, q));
+    }
+
+    /// The next state line for this subscriber, or None after `t`.
+    pub fn wait(&self, q: &Sub, t: Duration) -> Option<String> {
+        let inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        if q.lock().unwrap().is_empty() {
+            let _ = self.news.wait_timeout(inner, t);
+        }
+        q.lock().unwrap().pop_front()
+    }
+
+    fn publish(&self, line: String) {
+        let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        inner.last = Some(line.clone());
+        for q in &inner.subs {
+            // Each state is the whole board: a slow reader needs only the newest.
+            let mut q = q.lock().unwrap();
+            q.clear();
+            q.push_back(line.clone());
+        }
+        self.news.notify_all();
+    }
+
+    fn work(&'static self) {
+        let mut last_payload: Option<String> = None;
+        let mut idle_since: Option<Instant> = None;
+        loop {
+            let woke = self.wait_dirty(heartbeat());
+            {
+                let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+                if inner.subs.is_empty() {
+                    let since = *idle_since.get_or_insert_with(Instant::now);
+                    if since.elapsed() > IDLE_STOP {
+                        // The next page builds afresh rather than paint an old snapshot.
+                        inner.last = None;
+                        inner.running = false;
+                        return;
+                    }
+                } else {
+                    idle_since = None;
+                }
+            }
+            if woke {
+                // Coalesce a burst: created+renamed+selected arrive together.
+                std::thread::sleep(Duration::from_millis(150));
+                self.clear_dirty();
+            }
+            let built = std::panic::catch_unwind(|| state::build(&Opts { screens: false, fast: false, selected: None, fixture: None }));
+            let Ok(d) = built else {
+                log("FAIL board feed build: it panicked; trying again on the next wake");
+                continue;
+            };
+            state::write_targets(&d);
+            // Rows and news decide whether a viewer would see a change; the
+            // clock alone does not.
+            let payload = pyjson::dumps(&Value::Array(vec![d["rows"].clone(), d["news"].clone()]));
+            if Some(&payload) == last_payload.as_ref() {
+                continue;
+            }
+            last_payload = Some(payload);
+            self.publish(pyjson::dumps(&d));
+        }
+    }
+
+    fn tail_events(&self) {
+        let mut backoff = Duration::from_secs(1);
+        loop {
+            let stream = crate::cmux_cli::client().and_then(|c| {
+                c.events(cmux::EventOptions {
+                    names: WAKE_EVENTS.iter().map(|s| s.to_string()).collect(),
+                    cursor_file: None,
+                    reconnect: false,
+                })
+                .ok()
+            });
+            match stream {
+                Some(events) => {
+                    backoff = Duration::from_secs(1);
+                    for _ in events {
+                        self.mark_dirty();
+                    }
+                }
+                None => log("board feed: no cmux event stream; the heartbeat carries the board"),
+            }
+            std::thread::sleep(backoff);
+            backoff = (backoff * 2).min(Duration::from_secs(30));
+        }
+    }
+
+    fn watch_plans(&self) {
+        let mut last = plan_fingerprint();
+        loop {
+            std::thread::sleep(Duration::from_millis(250));
+            let cur = plan_fingerprint();
+            if cur != last {
+                last = cur;
+                self.mark_dirty();
+            }
+        }
+    }
+}
+
+/// mtime and size of every plan state file: deep-plan writes a file, and that
+/// is the whole signal of an increment moving.
+fn plan_fingerprint() -> Vec<(String, Option<SystemTime>, u64)> {
+    let mut out: Vec<(String, Option<SystemTime>, u64)> = std::fs::read_dir(dp_state())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".json"))
+        .map(|e| {
+            let m = e.metadata().ok();
+            (e.file_name().to_string_lossy().into_owned(), m.as_ref().and_then(|m| m.modified().ok()),
+             m.map(|m| m.len()).unwrap_or(0))
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}

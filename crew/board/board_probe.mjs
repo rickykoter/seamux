@@ -1913,7 +1913,7 @@ if (crewImpl.isRust("crew-board")) {
   const FAKE_DIR = join(HOME, "fakecmux");
   fs.mkdirSync(FAKE_DIR);
   const ienv = { ...process.env, HOME, CREW_INTENT_PORT: String(pinned), PYTHONFAULTHANDLER: "1", CREW_CODE_BIN: fakeCode,
-    CREW_CMUX: join(HERE, "..", "tools", "fakecmux.py"), FAKE_CMUX_DIR: FAKE_DIR };
+    CREW_CMUX: join(HERE, "..", "tools", "fakecmux.py"), FAKE_CMUX_DIR: FAKE_DIR, CREW_BOARD_HEARTBEAT: "1" };
   const [icmd, ...ipre] = tool("crew-board-intent");
   const srv = spawn(icmd, ipre, { env: toolEnv(ienv), stdio: ["ignore", "pipe", "pipe"] });
   // Kept, not discarded: when the server does not come up on a runner, its
@@ -2201,6 +2201,56 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
     checks.push(["buttons: an action outside the allowlist is refused, and archive is in it",
       unk.status === 400 && sent.archive.res.ok === true]);
     fs.rmSync(join(HOME, ".claude", "lookout"), { recursive: true, force: true });
+
+    // ---- the served board: /board and its /board/events feed ---------------
+    // Last in this server's life: once a page subscribes, the feed rebuilds on
+    // every heartbeat (1s here) and its cmux reads would land in the log the
+    // button checks above read.
+    const WS = (id, n, title) => ({ id, ref: "workspace:" + n, title, current_directory: HOME });
+    fs.writeFileSync(join(FAKE_DIR, "workspaces.json"), JSON.stringify([WS("W-FEED-1", 5, "feed one")]));
+    const bp = await req("GET", "/board");
+    checks.push(["board page: board.html with the renderer, the click targets and the feed, before </body>",
+      bp.status === 200 && bp.body.includes('id="rows"') && bp.body.includes("function __boardRender") &&
+      bp.body.includes("function __boardIntent") && bp.body.includes(`new EventSource("/board/events?t=" + encodeURIComponent(T))`) &&
+      bp.body.includes(`var T = "${token}", PORT = ${port};`) &&
+      bp.body.lastIndexOf("EventSource") < bp.body.lastIndexOf("</body>")]);
+    checks.push(["board page: the feed needs the token", (await req("GET", "/board/events")).status === 403 &&
+      (await req("GET", "/board/events?t=nope")).status === 403]);
+    // Read `state` events off the stream until `want` holds for one, or time runs out.
+    const states = (want, ms) => new Promise(res => {
+      let buf = "", done = false;
+      const r = http.request({ host: "127.0.0.1", port, method: "GET", path: `/board/events?t=${encodeURIComponent(token)}` }, resp => {
+        if (resp.headers["content-type"] !== "text/event-stream") { done = true; r.destroy(); return res(null); }
+        resp.on("data", c => {
+          buf += c;
+          let i;
+          while ((i = buf.indexOf("\n\n")) >= 0) {
+            const block = buf.slice(0, i); buf = buf.slice(i + 2);
+            if (!/^event: state$/m.test(block)) continue;
+            let d = null;
+            try { d = JSON.parse((block.match(/^data: (.*)$/m) || [])[1]); } catch {}
+            if (d && want(d) && !done) { done = true; r.destroy(); res(d); }
+          }
+        });
+      });
+      r.on("error", () => { if (!done) { done = true; res(null); } });
+      setTimeout(() => { if (!done) { done = true; r.destroy(); res(null); } }, ms);
+      r.end();
+    });
+    const ids = d => (d.rows || []).map(x => x.id);
+    const first = await states(() => true, 30000);
+    checks.push(["board feed: the first state arrives on connect, ranked from cmux",
+      !!first && ids(first).includes("W-FEED-1") && typeof first.stamp === "string" && first.news && first.stale === false,
+      JSON.stringify(first).slice(0, 300)]);
+    const tgt = JSON.parse(fs.readFileSync(join(HOME, ".cache", "cmux-crew", "board-targets.json"), "utf8"));
+    checks.push(["board feed: each build writes the click table, so /do knows the rows shown",
+      tgt["W-FEED-1"]?.ref === "workspace:5"]);
+    const clk = await req("GET", `/do?a=jump&r=W-FEED-1&t=${encodeURIComponent(token)}`);
+    checks.push(["board feed: a click on a fed row acts", clk.status === 200 && JSON.parse(clk.body).ok === true]);
+    fs.writeFileSync(join(FAKE_DIR, "workspaces.json"),
+      JSON.stringify([WS("W-FEED-1", 5, "feed one"), WS("W-FEED-2", 6, "feed two")]));
+    const second = await states(d => ids(d).includes("W-FEED-2"), 30000);
+    checks.push(["board feed: a change reaches an open page as a new state event", !!second && ids(second).includes("W-FEED-1")]);
   } catch (e) {
     checks.push(["review routes ran to the end: " + e.message, false]);
   } finally {

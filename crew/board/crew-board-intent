@@ -1498,6 +1498,204 @@ def wake_page(ws, token):
     return tmpl.replace(ARTIFACTS_SLOT, ARTIFACTS_SLOT.replace("__BOOT__", boot))
 
 
+# ---------------------------------------------------------------------------
+# The served board. GET /board is board.html with render.js, intent.js and a
+# boot script injected; GET /board/events is a server-sent-events stream of the
+# ranked state (crew-board state --json), one `state` event per change. One
+# worker builds it -- from cmux events, plan-state stat and a heartbeat, the
+# way `crew-board watch` does -- so no request thread ever waits on a build,
+# and it stops a minute after the last subscriber leaves (the event tail and
+# plan watcher it wakes on stay, one of each per server). Each build also
+# writes the click table, so /do resolves the rows the page shows.
+# ---------------------------------------------------------------------------
+
+BOARD_HTML = os.path.join(HERE, "board.html")
+RENDER_JS = os.path.join(HERE, "render.js")
+INTENT_JS = os.path.join(HERE, "intent.js")
+CREW_BOARD = os.path.join(HERE, "crew-board")
+BOARD_WAKE_EVENTS = ["agent.hook.Notification", "agent.hook.Stop", "workspace.created",
+                     "workspace.closed", "workspace.renamed", "workspace.selected"]
+BOARD_IDLE_STOP = 60.0
+
+BOARD_JS = """
+<style>html[data-feed="lost"] #stamp::after{content:" · reconnecting"}</style>
+<script>
+(function(){
+  var T = "__TOKEN__", PORT = __PORT__;
+  // EventSource reconnects by itself; the stamp says so while it is down.
+  var es = new EventSource("/board/events?t=" + encodeURIComponent(T));
+  es.addEventListener("state", function(ev){
+    var d;
+    try { d = JSON.parse(ev.data); } catch (e) { return; }
+    document.documentElement.removeAttribute("data-feed");
+    __boardRender(d);
+    __boardIntent({ port: PORT, token: T });
+  });
+  es.onerror = function(){ document.documentElement.setAttribute("data-feed", "lost"); };
+})();
+</script>
+"""
+
+
+def _heartbeat():
+    """CREW_BOARD_HEARTBEAT, clamped: a nonsense value (0, inf, 1e999) must not stop the feed."""
+    try:
+        h = float(os.environ.get("CREW_BOARD_HEARTBEAT") or 30)
+    except ValueError:
+        return 30.0
+    return min(max(h, 0.1), 3600.0) if h > 0 and h != float("inf") else 30.0
+
+
+def _plan_fingerprint():
+    try:
+        names = sorted(n for n in os.listdir(DP_STATE) if n.endswith(".json"))
+    except OSError:
+        return ()
+    out = []
+    for n in names:
+        try:
+            st = os.stat(os.path.join(DP_STATE, n))
+            out.append((n, st.st_mtime_ns, st.st_size))
+        except OSError:
+            pass
+    return tuple(out)
+
+
+class BoardFeed:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.subs = []              # one list per subscriber, appended to under lock
+        self.cond = threading.Condition(self.lock)
+        self.last = None            # the last state's JSON line
+        self.dirty = threading.Event()
+        self.running = False
+        self.watching = False       # the event tail and plan watcher: once per server
+
+    def subscribe(self):
+        q = []
+        with self.lock:
+            self.subs.append(q)
+            if self.last is not None:
+                q.append(self.last)
+            if not self.watching:
+                self.watching = True
+                threading.Thread(target=self._tail_events, daemon=True).start()
+                threading.Thread(target=self._watch_plans, daemon=True).start()
+            if not self.running:
+                self.running = True
+                self.dirty.set()
+                threading.Thread(target=self._work, daemon=True).start()
+        return q
+
+    def unsubscribe(self, q):
+        with self.lock:
+            if q in self.subs:
+                self.subs.remove(q)
+
+    def wait(self, q, timeout):
+        """The next state line for this subscriber, or None after timeout."""
+        with self.cond:
+            if not q:
+                self.cond.wait(timeout)
+            return q.pop(0) if q else None
+
+    def _publish(self, line):
+        with self.cond:
+            self.last = line
+            for q in self.subs:
+                # Each state is the whole board: a slow reader needs only the newest.
+                q[:] = [line]
+            self.cond.notify_all()
+
+    def _build(self):
+        try:
+            p = subprocess.run([CREW_BOARD, "state", "--json"], capture_output=True, text=True, timeout=60)
+            d = json.loads(p.stdout) if p.returncode == 0 else None
+        except Exception as exc:
+            log("FAIL board feed build: %s" % exc)
+            return None
+        if not isinstance(d, dict):
+            log("FAIL board feed build: rc=%s %s" % (p.returncode, (p.stderr or "").strip()[-160:]))
+            return None
+        try:
+            subprocess.run([CREW_BOARD, "write-targets"], input=json.dumps(d), text=True,
+                           capture_output=True, timeout=20)
+        except Exception as exc:
+            log("FAIL board feed targets: %s" % exc)
+        return d
+
+    def _tail_events(self):
+        argv = [CMUX, "events", "--no-ack", "--no-heartbeat"]
+        for n in BOARD_WAKE_EVENTS:
+            argv += ["--name", n]
+        backoff = 1.0
+        while True:
+            try:
+                pr = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                      text=True, bufsize=1)
+            except Exception:
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+                continue
+            for line in pr.stdout:
+                if line.strip():
+                    self.dirty.set()
+            try:
+                pr.kill()
+                pr.wait()
+            except Exception:
+                pass
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 30.0)
+
+    def _watch_plans(self):
+        last = _plan_fingerprint()
+        while True:
+            time.sleep(0.25)
+            cur = _plan_fingerprint()
+            if cur != last:
+                last = cur
+                self.dirty.set()
+
+    def _work(self):
+        last_payload, idle_since = None, None
+        try:
+            while True:
+                woke = self.dirty.wait(timeout=_heartbeat())
+                self.dirty.clear()
+                with self.lock:
+                    if not self.subs:
+                        idle_since = idle_since or time.time()
+                        if time.time() - idle_since > BOARD_IDLE_STOP:
+                            # The next page builds afresh rather than paint an old snapshot.
+                            self.last = None
+                            self.running = False
+                            return
+                    else:
+                        idle_since = None
+                if woke:
+                    time.sleep(0.15)
+                    self.dirty.clear()
+                try:
+                    d = self._build()
+                    if d is None:
+                        continue
+                    payload = json.dumps([d.get("rows"), d.get("news")], sort_keys=True)
+                    if payload == last_payload:
+                        continue
+                    last_payload = payload
+                    self._publish(json.dumps(d))
+                except Exception as exc:     # one bad pass must not end the feed
+                    log("FAIL board feed pass: %s" % exc)
+        except BaseException:
+            with self.lock:
+                self.running = False
+            raise
+
+
+BOARD_FEED = BoardFeed()
+
+
 ACTIONS = ("jump", "row", "diff", "pr", "issue", "jira", "checks", "plan", "take the check",
            "review", "code", "reclaim", "archive", "sync", "go", "close plan", "ask",
            "sandbox-up", "sandbox-down", "feed-allow", "feed-deny", "wake")
@@ -1720,6 +1918,52 @@ class Handler(http.server.BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query)
         one = lambda k: (q.get(k) or [""])[0]
+
+        if u.path == "/board":
+            try:
+                html = open(BOARD_HTML, encoding="utf-8", errors="replace").read()
+                scripts = ("<script>\n" + open(RENDER_JS, encoding="utf-8").read() + "\n</script>\n" +
+                           "<script>\n" + open(INTENT_JS, encoding="utf-8").read() + "\n</script>\n")
+            except OSError as exc:
+                return self._json(500, {"error": str(exc)})
+            boot = scripts + BOARD_JS.replace("__TOKEN__", self.token).replace(
+                "__PORT__", str(self.server.server_address[1]))
+            html = html.replace("</body>", boot + "</body>", 1) if "</body>" in html else html + boot
+            body = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            return self.wfile.write(body)
+
+        if u.path == "/board/events":
+            if not secrets.compare_digest(one("t"), self.token):
+                log("DENY bad token on /board/events from %s" % self.client_address[0])
+                return self._json(403, {"error": "bad token"})
+            # A reader that stops reading (a suspended tab) ends its stream after
+            # 30s of a blocked write, rather than holding the worker up for ever.
+            self.connection.settimeout(30)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            q = BOARD_FEED.subscribe()
+            try:
+                self.wfile.write(b"retry: 3000\n\n")
+                self.wfile.flush()
+                while True:
+                    line = BOARD_FEED.wait(q, 15)
+                    if line is None:
+                        self.wfile.write(b": ping\n\n")
+                    else:
+                        self.wfile.write(("event: state\ndata: %s\n\n" % line).encode("utf-8"))
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                BOARD_FEED.unsubscribe(q)
+            return
 
         if u.path == "/health":
             return self._reply(200, b'{"ok":true}')

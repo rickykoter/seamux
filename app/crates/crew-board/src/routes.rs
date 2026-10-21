@@ -103,6 +103,8 @@ pub fn get(req: &mut Request) {
             return req.json(501, &json!({"error": WAKE_LATER}));
         }
         "/do" => return do_action(req),
+        "/board" => return board_page(req),
+        "/board/events" => return board_events(req),
         _ => {}
     }
     if let Some(rest) = path.strip_prefix("/plan/") {
@@ -251,4 +253,40 @@ pub fn post(req: &mut Request) {
     log(&format!("{} review {rid} {} {what}", if code == 200 { "OK  " } else { "FAIL" },
                  body.get("op").map(crate::pyval::py_str).unwrap_or("None".into())));
     req.json(code, &out)
+}
+
+/// board.html with render.js, intent.js and the feed's boot script: the board
+/// as a page this server serves, for the app's tab or any cmux browser pane.
+fn board_page(req: &mut Request) {
+    let read = |rel: &str| std::fs::read(crew_file(rel)).map(|b| String::from_utf8_lossy(&b).into_owned());
+    let (html, render, intent) = match (read("board/board.html"), read("board/render.js"), read("board/intent.js")) {
+        (Ok(h), Ok(r), Ok(i)) => (h, r, i),
+        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => return req.json(500, &json!({"error": e.to_string()})),
+    };
+    let boot = format!("<script>\n{render}\n</script>\n<script>\n{intent}\n</script>\n{}",
+        crate::board_feed::BOARD_JS.replace("__TOKEN__", &req.token).replace("__PORT__", &req.port.to_string()));
+    req.send(200, "text/html; charset=utf-8", "no-store", inject_first(&html, &boot).as_bytes())
+}
+
+/// The ranked state as server-sent events: one `state` event per change, the
+/// latest at once on connect, a comment every 15s to find a closed client.
+fn board_events(req: &mut Request) {
+    if !token_ok(req, &req.one("t")) {
+        log("DENY bad token on /board/events from 127.0.0.1");
+        return req.json(403, &json!({"error": "bad token"}));
+    }
+    // A reader that stops reading (a suspended tab) ends its stream after
+    // 30s of a blocked write, rather than holding the worker up for ever.
+    req.set_write_timeout(std::time::Duration::from_secs(30));
+    req.start_stream("text/event-stream");
+    let feed = crate::board_feed::feed();
+    let q = feed.subscribe();
+    let mut out = req.push(b"retry: 3000\n\n");
+    while out.is_ok() {
+        out = match feed.wait(&q, std::time::Duration::from_secs(15)) {
+            Some(line) => req.push(format!("event: state\ndata: {line}\n\n").as_bytes()),
+            None => req.push(b": ping\n\n"),
+        };
+    }
+    feed.unsubscribe(&q);
 }

@@ -268,6 +268,22 @@ impl Request {
                            ("Content-Length", b.len().to_string())], b.as_bytes());
     }
 
+    pub fn set_write_timeout(&mut self, t: Duration) {
+        let _ = self.reader.get_ref().set_write_timeout(Some(t));
+    }
+
+    /// A response with no length that the caller keeps writing to (SSE).
+    pub fn start_stream(&mut self, ctype: &str) {
+        self.write(200, &[("Content-Type", ctype.into()), ("Cache-Control", "no-store".into())], b"");
+    }
+
+    /// One more piece of a stream; an error means the client has gone.
+    pub fn push(&mut self, b: &[u8]) -> std::io::Result<()> {
+        let s = self.reader.get_mut();
+        s.write_all(b)?;
+        s.flush()
+    }
+
     /// A page or file, never cached unless `cache` says otherwise.
     pub fn send(&mut self, code: u16, ctype: &str, cache: &str, body: &[u8]) {
         self.write(code, &[("Content-Type", ctype.into()), ("Cache-Control", cache.into()),

@@ -10,6 +10,7 @@
 
 pub mod act;
 pub mod ask;
+pub mod board_feed;
 pub mod cat_poses;
 pub mod cmux_cli;
 pub mod judgments;
