@@ -9,11 +9,13 @@
         color-scheme: light dark;
         --fg: #1d1d1f; --muted: #6e6e73; --bg: #fbfbfd; --strip: #ececf0; --line: #d8d8de;
         --on: #ffffff; --accent: #b7791f; --bad: #c0392b; --good: #2f855a;
+        --card: #ffffff; --shade: rgba(0, 0, 0, 0.06); --term: #f3f3f6; --term-fg: #2b2b30;
       }
       @media (prefers-color-scheme: dark) {
         :root {
           --fg: #f5f5f7; --muted: #a1a1a6; --bg: #1c1c1e; --strip: #121214; --line: #2c2c30;
           --on: #2a2a2e; --accent: #f2c462; --bad: #ff6b5b; --good: #68d391;
+          --card: #232326; --shade: rgba(0, 0, 0, 0.4); --term: #161618; --term-fg: #d8d8dc;
         }
       }
       html, body { height: 100%; }
@@ -51,11 +53,8 @@
         font: inherit; margin-top: 10px; padding: 5px 14px; border-radius: 6px; cursor: pointer;
         border: 1px solid var(--line); background: var(--on); color: var(--fg);
       }
-      #wall { padding: 18px 22px; }
-      #wall h1 { font-size: 15px; margin: 0 0 6px; }
       .muted { color: var(--muted); }
       .bad { color: var(--bad); }
-      ul { padding-left: 18px; }
       code { font: 12px ui-monospace, Menlo, monospace; }
     </style>
   </head>
@@ -76,12 +75,7 @@
       </button>
     </header>
     <main id="stage">
-      <section id="wall">
-        <h1>Agent wall</h1>
-        <p class="muted">The live wall arrives in the next increment. For now, what the app sees in cmux:</p>
-        <p id="status" class="muted">Connecting to cmux…</p>
-        <ul id="workspaces"></ul>
-      </section>
+      <section id="wall"></section>
     </main>
     <script type="module" src="./main.ts"></script>
   </body>

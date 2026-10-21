@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Tabs } from "./tabs";
+import { WallView } from "./wall";
+import "./wall.css";
 
 // The shape of `cmux_status` in crates/seamux-app/src/main.rs.
 type Workspace = { id: string; ref: string; title: string };
@@ -17,33 +19,20 @@ const why: Record<string, string> = {
   app: "The app couldn't run its cmux check.",
 };
 
+const wall = new WallView(document.getElementById("wall")!);
+
 function show(s: Status): void {
-  const status = document.getElementById("status")!;
-  const list = document.getElementById("workspaces")!;
   const conn = document.getElementById("conn")!;
-  list.replaceChildren();
   if (s.state === "failed") {
-    status.className = "bad";
-    status.textContent = `${why[s.kind] ?? "Couldn't reach cmux."} (${s.message})`;
     conn.className = "bad";
     conn.textContent = "cmux unreachable";
+    wall.problem(`${why[s.kind] ?? "Couldn't reach cmux."} (${s.message})`);
     return;
   }
   const n = s.workspaces.length;
-  status.className = "muted";
-  const mode = s.access_mode ? `, ${s.access_mode} mode` : "";
-  status.textContent = `Connected over the ${s.transport}${mode}: ${n} workspace${n === 1 ? "" : "s"} open.`;
   conn.className = "good";
+  conn.title = `Connected over the ${s.transport}${s.access_mode ? `, ${s.access_mode} mode` : ""}`;
   conn.textContent = `cmux · ${n} workspace${n === 1 ? "" : "s"}`;
-  for (const w of s.workspaces) {
-    const li = document.createElement("li");
-    li.textContent = w.title || w.ref;
-    const ref = document.createElement("code");
-    ref.className = "muted";
-    ref.textContent = `  ${w.ref}`;
-    li.append(ref);
-    list.append(li);
-  }
 }
 
 const tabs = new Tabs(
@@ -65,3 +54,4 @@ document.addEventListener("keydown", (e) => {
 });
 
 invoke<Status>("cmux_status").then(show, (e) => show({ state: "failed", kind: "app", message: String(e) }));
+wall.start().catch((e) => wall.problem(`The wall couldn't start: ${String(e)}`));

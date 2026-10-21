@@ -5,6 +5,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod shell;
+mod wall_app;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -90,9 +91,10 @@ fn main() {
     tauri::Builder::default()
         .setup(|app| {
             shell::install(app)?;
+            wall_app::start(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![cmux_status, shell::intent_server, shell::intent_page, shell::hide_overlay])
+        .invoke_handler(tauri::generate_handler![cmux_status, shell::intent_server, shell::intent_page, shell::hide_overlay, wall_app::wall_frame, wall_app::wall_reply, wall_app::wall_jump])
         .run(tauri::generate_context!())
         .expect("seamux app failed to start");
 }
