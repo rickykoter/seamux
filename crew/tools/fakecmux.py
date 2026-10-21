@@ -3,8 +3,9 @@
 
 The workspace list lives in $FAKE_CMUX_DIR/workspaces.json; every call is
 appended to $FAKE_CMUX_DIR/cmux.log; `workspace-action` set-color, clear-color
-and set-description are applied to the list, so the next sync sees what the
-last one did.
+and set-description are applied to the list (to $CMUX_WORKSPACE_ID's row when
+no --workspace is given, as cmux does), so the next sync sees what the last
+one did.
 
     workspace list --json [--window W]   the list (one window, whatever W is)
     list-windows --json                  one window
@@ -13,7 +14,7 @@ last one did.
                                          one with "close_fails": true never goes
     workspace create | new-workspace     appends a row, prints OK workspace:<n>
     sessions list --json                 $FAKE_CMUX_DIR/sessions.json, else none
-    sidebar-state --workspace <ws>       cwd= and claude_code= from the row
+    sidebar-state --workspace <ws>       cwd=, color= and claude_code= from the row
     tree --json                          one window; a row's "tty" is its terminal
     new-pane                             OK surface:900 pane:900 <workspace>
 
@@ -265,12 +266,15 @@ elif args[:1] == ["sidebar-state"]:
     if not w:
         sys.exit(1)
     print("cwd=" + (w.get("current_directory") or ""))
+    print("color=" + (w.get("custom_color") or "none"))
     if w.get("claude"):
         print("  claude_code=" + w["claude"])
 elif args[:2] == ["workspace-action", "--action"]:
     act, opts = args[2], opts_of(args[3:])
+    # Like cmux: no --workspace means the caller's own, from CMUX_WORKSPACE_ID.
+    target = opts.get("--workspace") or os.environ.get("CMUX_WORKSPACE_ID")
     for w in rows:
-        if named(w, opts.get("--workspace")):
+        if named(w, target):
             if act == "set-color":
                 w["custom_color"] = opts["--color"]
             elif act == "clear-color":

@@ -1,0 +1,822 @@
+#!/usr/bin/env python3
+"""hooks_probe — crew's Claude Code hooks, options, merge_settings and the
+status line, against fakecmux in a throwaway HOME. No app, no network.
+
+The hooks run from a copy of the crew tree. In that copy every tool a hook
+spawns (crew-sync, crew-feed, crew-color, crew-listen, crew-artifacts,
+cachefacts.py, asked.py, judgments.py) is a stub that appends its argv to a
+spawn log, so a detached spawn is asserted by name rather than run for real.
+`cmux` on PATH and $CREW_CMUX are both fakecmux.
+
+What is asserted, per event (crew-hook.sh) and tool:
+
+  - the guard: outside cmux, CREW_DISABLED, or the disabled file, nothing runs;
+  - session: options rendered first (with CLAUDE_PLUGIN_ROOT), the session
+    marker (never under CREW_ADOPT), workspace and tab names from the branch's
+    ticket, a colour only when there is none, phase:working, crew-listen
+    unless listen.off or a live pid;
+  - pretool: no marker means no cmux call; a marker is released to auto,
+    except for AskUserQuestion; an outstanding turn-end ask takes phase back;
+  - ask / answered / notification: lane, phase, question marker, banner text,
+    crew-feed publish;
+  - task: progress fraction and label, the checklist, the in-flight pill;
+  - stop: stop_hook_active is a no-op; review lane only on unreviewed work;
+    the five feed tokens and phase cleared in one write (none when unchanged);
+    the turn banner; throttled crew-sync; cachefacts --stop's stdout reaching
+    Claude and --sleep detached; crew-artifacts index; asked.sh only with
+    TypeSafe available;
+  - end: lane released, status cleared, phase dropped;
+  - asked.sh: a judgment of "asked" sets the lane, phase, marker and banner;
+    "not asked" only records the ranking; no judgment, or a transcript that
+    grew, does nothing;
+  - options.py, merge_settings.py and statusline.py: their files and lines.
+
+With CREW_IMPL=rust the same cases drive crew/hooks/seamux-hook.sh and
+seamux-asked.sh, and `seamux <tool>` for the three tools.
+
+    python3 crew/tools/hooks_probe.py      exit 0 when all hold
+"""
+import calendar
+import colorsys
+import datetime
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))
+SRC = os.environ.get("PROBE_CREW_SRC") or os.path.join(REPO, "crew")
+FAKE = os.path.join(HERE, "fakecmux.py")
+RUST = os.environ.get("CREW_IMPL") == "rust"
+BASH = shutil.which("bash") or "/bin/bash"
+results = []
+
+
+def check(name, cond, extra=""):
+    results.append(bool(cond))
+    print(f"  {'ok  ' if cond else 'FAIL'} {name}" + (f"\n       {extra}" if extra and not cond else ""))
+
+
+T = os.path.realpath(tempfile.mkdtemp(prefix="hooks-probe-"))
+HOME = os.path.join(T, "home")
+CACHE = os.path.join(HOME, ".cache")
+STATE = os.path.join(CACHE, "cmux-crew")
+LIVE = os.path.join(T, "live")
+SPAWN = os.path.join(T, "spawn.log")
+BIN = os.path.join(T, "bin")
+NOCC = os.path.join(T, "bin-nocc")
+for d in (HOME, LIVE, BIN, NOCC):
+    os.makedirs(d)
+
+# --- the crew tree, with stubs where a hook spawns something ----------------------
+CREW = os.path.join(T, "crew")
+shutil.copytree(SRC, CREW, ignore=shutil.ignore_patterns("node_modules", "__pycache__", "*.pyc"))
+
+STUB = r'''#!/usr/bin/env python3
+import os, sys
+name = os.path.basename(sys.argv[0])
+with open(os.environ["PROBE_SPAWN_LOG"], "a") as fh:
+    fh.write(" ".join([name] + sys.argv[1:]) + "\n")
+if name == "crew-color" and sys.argv[1:2] == ["assign"]:
+    print("#1565C0")
+elif name == "asked.py":
+    sys.stdin.read()
+    if sys.argv[1:2] == ["available"]:
+        sys.exit(int(os.environ.get("PROBE_ASKED_AVAILABLE", "1")))
+    out = os.environ.get("PROBE_ASKED_OUT", "")
+    if out:
+        sys.stdout.write(out + "\n")
+    sys.exit(int(os.environ.get("PROBE_ASKED_RC", "2")))
+elif name == "judgments.py":
+    with open(os.environ["PROBE_SPAWN_LOG"], "a") as fh:
+        fh.write("judgments.py stdin " + sys.stdin.read() + "\n")
+elif name == "cachefacts.py" and sys.argv[1:2] == ["--stop"]:
+    sys.stdout.write(os.environ.get("PROBE_CACHEFACTS_OUT", ""))
+'''
+
+
+def put_exe(path, text):
+    with open(path, "w") as fh:
+        fh.write(text)
+    os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+for rel in ("bin/crew-sync", "bin/crew-feed", "bin/crew-color", "bin/crew-listen",
+            "bin/crew-artifacts", "hooks/cachefacts.py", "hooks/asked.py", "board/judgments.py"):
+    put_exe(os.path.join(CREW, rel), STUB)
+
+put_exe(os.path.join(BIN, "cmux"), f'#!/bin/sh\nexec "{sys.executable}" "{FAKE}" "$@"\n')
+put_exe(os.path.join(NOCC, "cmux"), f'#!/bin/sh\nexec "{sys.executable}" "{FAKE}" "$@"\n')
+put_exe(os.path.join(BIN, "ccusage"), f'''#!{sys.executable}
+import os, sys
+with open(os.environ["PROBE_SPAWN_LOG"], "a") as fh:
+    fh.write(" ".join(["ccusage"] + sys.argv[1:]) + "\\n")
+sys.stdout.write(open(os.environ["PROBE_CCUSAGE_" + sys.argv[1].upper()]).read())
+''')
+for d in (BIN, NOCC):
+    os.symlink(sys.executable, os.path.join(d, "python3"))
+    if shutil.which("seamux"):
+        os.symlink(shutil.which("seamux"), os.path.join(d, "seamux"))
+
+GIT = shutil.which("git")
+SYS_PATH = os.pathsep.join(p for p in ("/usr/bin", "/bin", "/usr/sbin", "/sbin",
+                                       os.path.dirname(GIT)) if p)
+
+
+def git(cwd, *argv):
+    return subprocess.run([GIT, "-C", cwd] + list(argv), capture_output=True, text=True,
+                          check=True).stdout.strip()
+
+
+# A clone on a ticket branch that tracks its upstream, so "ahead" is countable.
+ORIGIN = os.path.join(T, "origin.git")
+subprocess.run([GIT, "init", "-q", "--bare", "-b", "main", ORIGIN], check=True)
+WT = os.path.join(T, "repo")
+subprocess.run([GIT, "clone", "-q", ORIGIN, WT], check=True, capture_output=True)
+for k, v in (("user.email", "probe@example.invalid"), ("user.name", "probe"),
+             ("commit.gpgsign", "false"), ("core.hooksPath", "/dev/null")):
+    git(WT, "config", k, v)
+open(os.path.join(WT, "a.txt"), "w").write("a\n")
+git(WT, "add", "a.txt")
+git(WT, "commit", "-qm", "a")
+git(WT, "push", "-q", "origin", "HEAD:main")
+BRANCH = "dev/thing-proj-123"
+LABEL = "PROJ-123 · thing"
+git(WT, "checkout", "-qb", BRANCH)
+git(WT, "push", "-q", "-u", "origin", BRANCH)
+MAIN_WT = os.path.join(T, "plain")
+subprocess.run([GIT, "clone", "-q", ORIGIN, MAIN_WT], check=True, capture_output=True)
+
+TRANSCRIPT = os.path.join(T, "t.jsonl")
+open(TRANSCRIPT, "w").write('{"type":"user"}\n')
+SIZE = str(os.path.getsize(TRANSCRIPT))
+
+# --- running things -----------------------------------------------------------------
+FAKE_DIR = os.path.join(T, "cmux")
+os.makedirs(FAKE_DIR)
+DB = os.path.join(FAKE_DIR, "workspaces.json")
+CLOG = os.path.join(FAKE_DIR, "cmux.log")
+
+
+def row(desc="", color="", title="thing", ws="ws-1"):
+    return {"id": ws, "ref": "workspace:1", "title": title, "current_directory": WT,
+            "custom_color": color, "description": desc}
+
+
+def reset(rows=None, state=True):
+    """A fresh fake cmux, spawn log and (by default) crew state."""
+    json.dump(rows if rows is not None else [row()], open(DB, "w"))
+    open(CLOG, "w").close()
+    open(SPAWN, "w").close()
+    if state:
+        shutil.rmtree(STATE, ignore_errors=True)
+        os.makedirs(STATE)
+        # Throttled by default: a fresh stamp means no crew-sync spawn.
+        open(os.path.join(STATE, "sync-stamp"), "w").write(str(int(time.time())))
+        open(os.path.join(STATE, "listen.off"), "w").close()
+
+
+def env_for(ws="ws-1", path=BIN, **extra):
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("CMUX_", "CLAUDE_PLUGIN_", "CREW_", "TYPESAFE", "PROBE_",
+                                "XDG_"))}
+    env.update(HOME=HOME, XDG_CACHE_HOME=CACHE, FAKE_CMUX_DIR=FAKE_DIR,
+               CREW_CMUX=os.path.join(path, "cmux"), PROBE_SPAWN_LOG=SPAWN,
+               CREW_LIVE=LIVE, PATH=path + os.pathsep + SYS_PATH)
+    if RUST:
+        env["CREW_IMPL"] = "rust"
+    if ws:
+        env["CMUX_WORKSPACE_ID"] = ws
+    env.update({k: v for k, v in extra.items() if v is not None})
+    return env
+
+
+def hook_argv(event):
+    shim = "seamux-hook.sh" if RUST else "crew-hook.sh"
+    return [BASH, os.path.join(CREW, "hooks", shim), event]
+
+
+def asked_argv(size):
+    shim = "seamux-asked.sh" if RUST else "asked.sh"
+    return [BASH, os.path.join(CREW, "hooks", shim), size]
+
+
+def tool_argv(name, *argv):
+    """A crew tool by its Python basename: the script in the copy, or `seamux`."""
+    if RUST:
+        return ["seamux", name] + list(argv)
+    rel = {"options": "hooks/options.py", "merge_settings": "claude/merge_settings.py",
+           "statusline": "claude/statusline.py"}[name]
+    return [sys.executable, os.path.join(CREW, rel)] + list(argv)
+
+
+def payload(**kw):
+    p = {"session_id": "s-1", "cwd": WT, "transcript_path": TRANSCRIPT}
+    p.update(kw)
+    return json.dumps(p)
+
+
+def run(argv, stdin="", env=None, settle=True):
+    r = subprocess.run(argv, input=stdin, env=env or env_for(), capture_output=True, text=True,
+                       timeout=30, cwd=T)
+    if settle:
+        quiet()
+    return r
+
+
+def hook(event, stdin=None, **env):
+    return run(hook_argv(event), payload() if stdin is None else stdin, env_for(**env))
+
+
+def quiet():
+    """Wait until the detached spawns stop writing, so an absence means absence."""
+    last, steady = None, 0
+    for _ in range(60):
+        now = (os.path.getsize(SPAWN), os.path.getsize(CLOG))
+        steady = steady + 1 if now == last else 0
+        if steady >= 4:
+            return
+        last = now
+        time.sleep(0.05)
+
+
+def wait_for(pred, timeout=8.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if pred():
+            return True
+        time.sleep(0.05)
+    return pred()
+
+
+def log():
+    return open(CLOG).read().splitlines()
+
+
+def spawns():
+    return open(SPAWN).read().splitlines()
+
+
+def desc(ws="ws-1"):
+    return next((w.get("description") for w in json.load(open(DB)) if w["id"] == ws), None)
+
+
+def color(ws="ws-1"):
+    return next((w.get("custom_color") for w in json.load(open(DB)) if w["id"] == ws), None)
+
+
+def marker(name):
+    return os.path.exists(os.path.join(STATE, name))
+
+
+def touch(name):
+    open(os.path.join(STATE, name), "w").close()
+
+
+if RUST and not os.path.exists(os.path.join(CREW, "hooks", "seamux-hook.sh")):
+    print("CREW_IMPL=rust, but crew/hooks/seamux-hook.sh does not exist yet")
+    sys.exit(1)
+
+# --- the guard ------------------------------------------------------------------------
+print("guard")
+reset()
+r = hook("session", ws=None)
+check("outside cmux (no CMUX_WORKSPACE_ID) a hook does nothing",
+      r.returncode == 0 and not r.stdout and not log() and not marker("session-s-1"), log())
+r = hook("session", CREW_DISABLED="1")
+check("CREW_DISABLED makes it a no-op", r.returncode == 0 and not log(), log())
+touch("disabled")
+r = hook("stop")
+check("…and so does the disabled file", r.returncode == 0 and not log() and not spawns(), log())
+
+# --- session ---------------------------------------------------------------------------
+print("session")
+reset([row(desc="ci:green")])
+r = hook("session")
+L = log()
+check("session exits 0 and prints nothing (SessionStart stdout reaches the model)",
+      r.returncode == 0 and r.stdout == "", r.stdout + r.stderr)
+check("the session marker is written", marker("session-s-1"))
+check("the workspace is named for the branch's ticket", f"rename-workspace {LABEL}" in L, L)
+check("the tab is named dir · branch", f"rename-tab repo · {BRANCH}" in L, L)
+check("a blank colour is filled from crew-color assign",
+      f"crew-color assign {WT}" in spawns()
+      and "workspace-action --action set-color --color #1565C0" in L and color() == "#1565C0",
+      "\n".join(L + spawns()))
+check("phase:working is merged into the description, keeping other tokens",
+      desc() == "ci:green phase:working", desc())
+check("names, then colour, then phase, in that order",
+      [l.split()[0] for l in L if l.split()[0] in ("rename-workspace", "rename-tab", "sidebar-state")]
+      == ["rename-workspace", "rename-tab", "sidebar-state"]
+      and L.index(next(l for l in L if l.startswith("sidebar-state")))
+      < L.index(next(l for l in L if "set-description" in l)), L)
+check("listen.off keeps crew-listen from starting", not any(s.startswith("crew-listen") for s in spawns()))
+
+reset([row(color="#922B21")])
+hook("session")
+check("a colour already set is left alone",
+      not any("set-color" in l for l in log()) and not any("crew-color" in s for s in spawns())
+      and color() == "#922B21", "\n".join(log()))
+
+reset()
+hook("session", CREW_ADOPT="1")
+check("CREW_ADOPT replays the session without leaving the marker",
+      not marker("session-s-1") and f"rename-workspace {LABEL}" in log())
+
+reset()
+os.remove(os.path.join(STATE, "listen.off"))
+hook("session")
+check("without listen.off, crew-listen is started", wait_for(lambda: "crew-listen" in spawns()), spawns())
+reset()
+os.remove(os.path.join(STATE, "listen.off"))
+open(os.path.join(STATE, "listen.pid"), "w").write(str(os.getpid()))
+hook("session")
+check("…but not when listen.pid names a live process", "crew-listen" not in spawns(), spawns())
+
+reset()
+hook("session", stdin=payload(cwd=MAIN_WT))
+check("on main there is no ticket: the workspace takes the directory's name",
+      "rename-workspace plain" in log() and "rename-tab plain · main" in log(), log())
+
+reset()
+hook("session", CLAUDE_PLUGIN_ROOT=CREW, CLAUDE_PLUGIN_OPTION_JIRA_SITE="acme.atlassian.net")
+got = json.load(open(os.path.join(LIVE, "integrations.json"))) if os.path.exists(
+    os.path.join(LIVE, "integrations.json")) else {}
+check("with CLAUDE_PLUGIN_ROOT, the plugin's options are rendered at session start",
+      got.get("jira") == {"enabled": True, "site": "acme.atlassian.net"}, json.dumps(got))
+os.remove(os.path.join(LIVE, "integrations.json"))
+
+# --- pretool ----------------------------------------------------------------------------
+print("pretool")
+reset()
+r = hook("pretool", stdin=payload(tool_name="Bash"))
+check("no lane marker: no cmux call at all", r.returncode == 0 and not log(), log())
+touch("lane-ws-1")
+hook("pretool", stdin=payload(tool_name="Bash"))
+check("a lane marker is released back to auto", not marker("lane-ws-1")
+      and log() == ["workspace status set auto"], log())
+touch("lane-ws-1")
+open(CLOG, "w").close()
+hook("pretool", stdin=payload(tool_name="AskUserQuestion"))
+check("…except on AskUserQuestion, which is no resumed work", marker("lane-ws-1") and not log(), log())
+reset([row(desc="phase:waiting ci:green")])
+touch("lane-ws-1")
+touch("asked-ws-1")
+hook("pretool", stdin=payload(tool_name="Edit"))
+check("an outstanding turn-end ask is answered: phase back to working",
+      not marker("asked-ws-1") and desc() == "ci:green phase:working", f"{desc()} {log()}")
+reset()
+touch("lane-ws-1")
+touch("disabled")
+hook("pretool", stdin=payload(tool_name="Bash"))
+check("the disabled file holds even on the hot path", marker("lane-ws-1") and not log(), log())
+
+# --- ask / answered / notification ----------------------------------------------------
+print("ask, answered, notification")
+reset([row(desc="ci:green")])
+hook("ask", stdin=payload(tool_name="AskUserQuestion",
+                          tool_input={"questions": [{"question": "Which of the two?"}]}))
+L = log()
+check("ask marks the question and pins needs-attention",
+      marker("question-ws-1") and marker("lane-ws-1") and "workspace status set needs-attention" in L, L)
+check("…publishes phase:waiting", desc() == "ci:green phase:waiting", desc())
+check("…and raises a blocked banner with the question",
+      f"notify --title {LABEL} --subtitle crew:blocked --body Which of the two?" in L, L)
+reset()
+hook("ask", stdin=payload(tool_name="AskUserQuestion", tool_input={"questions": []}))
+check("an ask with no question text still says something",
+      f"notify --title {LABEL} --subtitle crew:blocked --body Claude asked you a question" in log(),
+      log())
+
+reset([row(desc="phase:waiting")])
+touch("question-ws-1")
+touch("lane-ws-1")
+hook("answered", stdin=payload(tool_name="AskUserQuestion"))
+check("answered clears the question, releases the lane and resumes the phase",
+      not marker("question-ws-1") and not marker("lane-ws-1")
+      and "workspace status set auto" in log() and desc() == "phase:working", f"{desc()} {log()}")
+reset([row(desc="phase:waiting")])
+hook("answered", stdin=payload(tool_name="AskUserQuestion"))
+check("…and with no lane override there is nothing to release",
+      not any(l.startswith("workspace status") for l in log()), log())
+
+reset()
+hook("notification", stdin=payload(message="Claude needs your permission to use Bash"))
+L = log()
+check("notification pins needs-attention and publishes phase:waiting",
+      "workspace status set needs-attention" in L and marker("lane-ws-1")
+      and desc() == "phase:waiting", f"{desc()} {L}")
+check("…publishes the pending ask through crew-feed",
+      wait_for(lambda: "crew-feed publish ws-1" in spawns()), spawns())
+check("…and banners the message",
+      f"notify --title {LABEL} --subtitle crew:blocked --body Claude needs your permission to use Bash"
+      in L, L)
+reset()
+hook("notification", stdin=payload())
+check("a notification with no message says Claude needs attention",
+      f"notify --title {LABEL} --subtitle crew:blocked --body Claude needs attention" in log(), log())
+
+# --- task -------------------------------------------------------------------------------
+print("task")
+TASKS = os.path.join(HOME, ".claude", "tasks", "s-1")
+os.makedirs(TASKS)
+for n, t in ((1, {"subject": "Do A", "status": "completed"}),
+             (2, {"subject": "Do B", "activeForm": "Doing B", "status": "in_progress"}),
+             (10, {"subject": "Do C", "status": "pending"})):
+    json.dump(dict(t, id=str(n)), open(os.path.join(TASKS, f"{n}.json"), "w"))
+open(os.path.join(TASKS, "junk.json"), "w").write("{not json")
+reset()
+hook("task", stdin=payload(tool_name="TaskUpdate"))
+L = log()
+check("the progress bar is done/total with the task in flight",
+      "set-progress 0.3333 --label 1/3 · Doing B" in L, L)
+todo = next((l for l in L if l.startswith("todo set ")), "")
+check("the checklist is set in one call, in numeric file order",
+      json.loads(todo[len("todo set "):] or "[]") == [
+          {"text": "Do A", "state": "completed"}, {"text": "Do B", "state": "in-progress"},
+          {"text": "Do C", "state": "pending"}], todo)
+check("the pill names the in-flight task",
+      "set-status claude Doing B --icon list.bullet --color #4C8DFF" in L, L)
+check("…and the phase is working", desc() == "phase:working", desc())
+reset()
+hook("task", stdin=payload(session_id="s-none", tool_name="TodoWrite"))
+check("no tasks directory: only the phase", not any(l.startswith(("set-progress", "todo"))
+                                                    for l in log()) and desc() == "phase:working",
+      log())
+
+# --- stop -------------------------------------------------------------------------------
+print("stop")
+reset([row(desc="ci:green phase:working feed:ask feedby:me feedgate:x feedreq:y feedws:z")])
+r = hook("stop", stdin=payload(stop_hook_active=True))
+check("a re-entered Stop (stop_hook_active) does nothing", not log() and not spawns(), log())
+
+r = hook("stop")
+L = log()
+check("a clean tree releases rather than pinning review",
+      not any(l.startswith("workspace status") for l in L), L)
+check("the claude status is cleared", "clear-status claude" in L, L)
+check("phase and the five feed tokens are dropped in one write, others kept",
+      desc() == "ci:green" and sum("set-description" in l for l in L) == 1, f"{desc()} {L}")
+check("the turn banner names the branch",
+      f"notify --title {LABEL} --subtitle crew:turn --body Turn complete — {BRANCH}" in L, L)
+check("cachefacts --stop runs with transcript, session and label",
+      f"cachefacts.py --stop {TRANSCRIPT} s-1 {LABEL}" in spawns(), spawns())
+check("…and --sleep is detached with session first",
+      wait_for(lambda: f"cachefacts.py --sleep s-1 {TRANSCRIPT} {LABEL}" in spawns()), spawns())
+check("the artifact index is kicked", wait_for(lambda: "crew-artifacts index" in spawns()), spawns())
+check("a fresh sync stamp holds crew-sync back", "crew-sync" not in spawns(), spawns())
+check("TypeSafe unavailable: no asked.sh judgment",
+      "asked.py available" in spawns() and not any(s.startswith("asked.py judge") for s in spawns()),
+      spawns())
+check("Stop prints nothing when cachefacts has nothing to say", r.stdout == "", r.stdout)
+
+reset([row(desc="ci:green")])
+open(CLOG, "w").close()
+hook("stop")
+check("nothing to clear is nothing to write", not any("description" in l for l in log()), log())
+
+reset()
+r = hook("stop", PROBE_CACHEFACTS_OUT='{"systemMessage":"cache broke"}')
+check("cachefacts' systemMessage is the hook's stdout", r.stdout == '{"systemMessage":"cache broke"}',
+      r.stdout)
+
+reset()
+os.remove(os.path.join(STATE, "sync-stamp"))
+hook("stop")
+check("with no stamp, crew-sync is spawned and the stamp written",
+      wait_for(lambda: "crew-sync" in spawns()) and marker("sync-stamp"), spawns())
+reset()
+open(os.path.join(STATE, "sync-stamp"), "w").write(str(int(time.time()) - 500))
+hook("stop", CREW_SYNC_INTERVAL="120")
+check("…and so with a stamp older than CREW_SYNC_INTERVAL", wait_for(lambda: "crew-sync" in spawns()),
+      spawns())
+
+reset()
+open(os.path.join(WT, "dirty.txt"), "w").write("x\n")
+hook("stop")
+check("a dirty tree pins the review lane", "workspace status set review" in log() and marker("lane-ws-1"),
+      log())
+os.remove(os.path.join(WT, "dirty.txt"))
+open(os.path.join(WT, "b.txt"), "w").write("b\n")
+git(WT, "add", "b.txt")
+git(WT, "commit", "-qm", "b")
+reset()
+hook("stop")
+check("so does a commit the upstream has not seen", "workspace status set review" in log(), log())
+git(WT, "push", "-q")
+reset()
+touch("lane-ws-1")
+hook("stop")
+check("pushed and clean again: an outstanding lane is released",
+      "workspace status set auto" in log() and not marker("lane-ws-1"), log())
+
+reset([row(desc="phase:working")])
+touch("asked-ws-1")
+hook("stop", PROBE_ASKED_AVAILABLE="0", PROBE_ASKED_RC="0",
+     PROBE_ASKED_OUT='0.910\nWhich of the two?\n{"stuck": 0.1}')
+check("TypeSafe available: asked.sh judges the turn in the background",
+      wait_for(lambda: marker("asked-ws-1") and any("--subtitle crew:blocked" in l for l in log())),
+      "\n".join(spawns() + log()))
+check("…and publishes phase:waiting once the judgment lands",
+      wait_for(lambda: desc() == "phase:waiting"), desc())
+check("…with the payload handed over in a file",
+      open(os.path.join(STATE, "asked-payload-ws-1")).read() == payload())
+
+# --- asked.sh -------------------------------------------------------------------------
+print("asked.sh")
+
+
+def asked(rc, out, size=SIZE):
+    return run(asked_argv(size), payload(),
+               env_for(PROBE_ASKED_RC=str(rc), PROBE_ASKED_OUT=out))
+
+
+reset([row(desc="phase:working")])
+asked(0, '0.910\nWhich of the two?\n{"stuck": 0.1, "urgency": 2.0}')
+L = log()
+check("asked: needs-attention, phase:waiting, the marker and a banner with the question",
+      "workspace status set needs-attention" in L and desc() == "phase:waiting"
+      and marker("asked-ws-1") and marker("lane-ws-1")
+      and f"notify --title {LABEL} --subtitle crew:blocked --body Which of the two?" in L, L)
+check("…and the ranking extras are recorded for the board, keyed by cwd",
+      f"judgments.py --record {WT} {SIZE} 0.910" in spawns()
+      and 'judgments.py stdin {"stuck": 0.1, "urgency": 2.0}' in spawns(), spawns())
+logged = open(os.path.join(STATE, "asked.log")).read()
+check("…and the judgment is logged with the workspace and p",
+      "ws-1 p=0.910 extras={\"stuck\": 0.1, \"urgency\": 2.0}" in logged, logged)
+
+reset([row(desc="phase:working")])
+asked(1, '0.120\nDone.\n{"stuck": 0.0}')
+check("not asked: the ranking is recorded and nothing else moves",
+      any(s.startswith("judgments.py --record") for s in spawns())
+      and not log() and desc() == "phase:working" and not marker("asked-ws-1"),
+      "\n".join(spawns() + log()))
+reset()
+asked(2, "")
+check("no judgment: nothing at all", not log() and spawns() == ["asked.py judge"], spawns())
+reset()
+asked(0, '0.910\nWhich?\n{}', size="1")
+check("a transcript that grew since the stop makes the judgment stale",
+      not log() and not any(s.startswith("judgments") for s in spawns()), log())
+reset()
+asked(0, '0.910\n\n')
+check("asked with no banner line says Claude is waiting on you",
+      f"notify --title {LABEL} --subtitle crew:blocked --body Claude is waiting on you" in log(), log())
+
+# --- end -------------------------------------------------------------------------------
+print("end")
+reset([row(desc="ci:green phase:working")])
+touch("lane-ws-1")
+hook("end")
+check("end releases the lane, clears the status and drops the phase",
+      "workspace status set auto" in log() and "clear-status claude" in log()
+      and desc() == "ci:green" and not marker("lane-ws-1"), f"{desc()} {log()}")
+
+# --- options ---------------------------------------------------------------------------
+print("options")
+OUT = os.path.join(T, "integrations.json")
+
+
+def options(*argv, **env):
+    return run(tool_argv("options", *argv), "", env_for(**env), settle=False)
+
+
+json.dump({"typesafe": {"enabled": True}, "jira": {"enabled": True, "site": "old"}}, open(OUT, "w"))
+before = open(OUT).read()
+r = options("--out", OUT, CLAUDE_PLUGIN_OPTION_JIRA_SITE="")
+check("defaults on a file options never wrote change nothing", open(OUT).read() == before
+      and r.returncode == 0)
+r = options("--out", OUT, CLAUDE_PLUGIN_OPTION_JIRA_SITE="acme.atlassian.net",
+            CLAUDE_PLUGIN_OPTION_GITHUB_ISSUES="true", CLAUDE_PLUGIN_OPTION_OBSERVABILITY_STACK="datadog")
+got = json.load(open(OUT))
+check("set options render jira, github_issues and observability, keeping other keys",
+      got.get("jira") == {"enabled": True, "site": "acme.atlassian.net"}
+      and got.get("github_issues") == {"enabled": True}
+      and got.get("observability", {}).get("stack") == "datadog"
+      and got.get("typesafe") == {"enabled": True}
+      and got.get("managedBy") == "crew plugin options (crew/hooks/options.py)", json.dumps(got))
+check("…written as two-space JSON with a trailing newline",
+      open(OUT).read() == json.dumps(got, indent=2) + "\n")
+m = os.stat(OUT).st_mtime_ns
+time.sleep(0.02)
+options("--out", OUT, CLAUDE_PLUGIN_OPTION_JIRA_SITE="acme.atlassian.net",
+        CLAUDE_PLUGIN_OPTION_GITHUB_ISSUES="true", CLAUDE_PLUGIN_OPTION_OBSERVABILITY_STACK="datadog")
+check("unchanged options leave the file untouched", os.stat(OUT).st_mtime_ns == m)
+options("--out", OUT, CLAUDE_PLUGIN_OPTION_JIRA_SITE="", CLAUDE_PLUGIN_OPTION_GITHUB_ISSUES="no",
+        CLAUDE_PLUGIN_OPTION_OBSERVABILITY_STACK="none")
+got = json.load(open(OUT))
+check("once managed, cleared options turn the integrations off",
+      not {"jira", "github_issues", "observability"} & set(got) and got.get("typesafe"), json.dumps(got))
+SETTINGS = os.path.join(T, "settings.json")
+json.dump({"pluginConfigs": {"crew@seamux": {"options": {"main_repo": "/x/main",
+                                                         "jira_site": "s.example"}}}},
+          open(SETTINGS, "w"))
+r = options("--from-settings", SETTINGS, "--get", "main_repo")
+check("--from-settings --get main_repo prints the option", r.stdout == "/x/main\n", r.stdout)
+r = options("--from-settings", SETTINGS, "--get", "nope")
+check("…and an unset one prints nothing", r.stdout == "" and r.returncode == 0, r.stdout)
+options("--from-settings", SETTINGS, "--out", OUT)
+check("--from-settings renders from pluginConfigs", json.load(open(OUT)).get("jira", {}).get("site")
+      == "s.example")
+r = options("--bogus")
+check("an unknown flag is usage on stderr, exit 2", r.returncode == 2 and r.stderr.strip()
+      and not r.stdout, r.stderr)
+open(OUT, "w").write("{broken")
+r = options("--out", OUT, CLAUDE_PLUGIN_OPTION_JIRA_SITE="x")
+check("an unreadable file is left as is, exit 0", r.returncode == 0 and open(OUT).read() == "{broken"
+      and "cannot read" in r.stderr, r.stderr)
+
+# --- merge_settings --------------------------------------------------------------------
+print("merge_settings")
+STATUSLINE = os.path.join(CREW, "claude", "statusline.py")
+CMD = f"python3 {STATUSLINE}"
+S = os.path.join(HOME, ".claude", "settings.json")
+
+
+def merge(*argv):
+    return run(tool_argv("merge_settings", "--settings", S, *argv), "", env_for(), settle=False)
+
+
+def baks():
+    d = os.path.dirname(S)
+    return sorted(f for f in os.listdir(d) if ".bak" in f) if os.path.isdir(d) else []
+
+
+r = merge("--dry-run")
+check("--dry-run on no file reports and writes nothing",
+      r.stdout == ("  statusLine -> crew's statusline.py\n"
+                   "  agentPushNotifEnabled -> true (phone push via Remote Control)\n"
+                   "  inputNeededNotifEnabled -> true (phone push via Remote Control)\n"
+                   "\n--dry-run: nothing written\n") and not os.path.exists(S), r.stdout)
+r = merge()
+got = json.load(open(S))
+check("with no settings file: the status line and both push flags, no backup",
+      got == {"statusLine": {"type": "command", "command": CMD},
+              "agentPushNotifEnabled": True, "inputNeededNotifEnabled": True}
+      and not baks() and r.stdout.endswith(f"wrote {S}\nNew Claude sessions pick these up; "
+                                            "existing ones do not.\n"), r.stdout)
+check("…as two-space JSON with a trailing newline", open(S).read() == json.dumps(got, indent=2) + "\n")
+r = merge()
+check("a second run finds everything set and writes nothing",
+      r.stdout == ("  already set: statusLine\n  already set: agentPushNotifEnabled\n"
+                   "  already set: inputNeededNotifEnabled\n") and not baks(), r.stdout)
+json.dump({"statusLine": {"type": "command", "command": "ccusage statusline"},
+           "agentPushNotifEnabled": False}, open(S, "w"))
+r = merge()
+got = json.load(open(S))
+check("someone else's status line and an explicit false are left alone",
+      got["statusLine"]["command"] == "ccusage statusline" and got["agentPushNotifEnabled"] is False
+      and got["inputNeededNotifEnabled"] is True and "LEFT ALONE" in r.stdout, r.stdout)
+check("…and the file is backed up before the write",
+      len(baks()) == 1 and baks()[0].startswith("settings.json.pre-crew-dock."), baks())
+for b in baks():
+    os.remove(os.path.join(os.path.dirname(S), b))
+json.dump({"statusLine": {"type": "command", "command": f"python3 {HOME}/.claude/statusline.py",
+                          "padding": 1}}, open(S, "w"))
+r = merge()
+got = json.load(open(S))
+check("the old installer's status line is repointed, keeping its other keys",
+      got["statusLine"] == {"type": "command", "command": CMD, "padding": 1}
+      and "repointed from the old copy" in r.stdout, r.stdout)
+for b in baks():
+    os.remove(os.path.join(os.path.dirname(S), b))
+r = merge("--remove")
+got = json.load(open(S))
+check("--remove takes out our status line and keeps the push flags",
+      "statusLine" not in got and got.get("agentPushNotifEnabled") is True
+      and "  removed: statusLine\n" in r.stdout
+      and baks() and baks()[0].startswith("settings.json.pre-uninstall."), r.stdout)
+r = merge("--remove")
+check("…and a second --remove finds nothing of ours",
+      r.stdout == f"  nothing of ours found in {S}\n", r.stdout)
+
+# --- statusline ------------------------------------------------------------------------
+print("statusline")
+FIX = os.path.join(T, "ccusage")
+os.makedirs(FIX)
+BLOCKS = os.path.join(FIX, "blocks.json")
+MONTHLY = os.path.join(FIX, "monthly.json")
+COLORS = os.path.join(HOME, ".claude", "cache", "cmux-colors.json")
+
+
+def blocks(*bs):
+    json.dump({"blocks": list(bs)}, open(BLOCKS, "w"))
+
+
+def statusline(stdin="{}", ws=None, path=BIN, **env):
+    return run(tool_argv("statusline"), stdin,
+               env_for(ws=ws, path=path, PROBE_CCUSAGE_BLOCKS=BLOCKS, PROBE_CCUSAGE_MONTHLY=MONTHLY,
+                       **env), settle=False)
+
+
+def tint(hexcolor, text):
+    r_, g_, b_ = (int(hexcolor[i:i + 2], 16) for i in (1, 3, 5))
+    h, l, s = colorsys.rgb_to_hls(r_ / 255, g_ / 255, b_ / 255)
+    r_, g_, b_ = (int(c * 255) for c in colorsys.hls_to_rgb(h, max(l, 0.62), max(s, 0.45)))
+    return f"\033[38;2;{r_};{g_};{b_}m{text}\033[0m"
+
+
+reset([row(color="#196F3D", title="thing")])
+WINDOW = "⏱ 42% of 5h window (420k/1.0M) · 2h 10m left · ↗ 78% by reset"
+blocks({"isGap": False, "totalTokens": 1_000_000},
+       {"isGap": True, "totalTokens": 9_000_000},
+       {"isActive": True, "totalTokens": 420_000,
+        "projection": {"remainingMinutes": 130, "totalTokens": 780_000}})
+r = statusline()
+check("outside cmux: the window line alone", r.stdout == WINDOW + "\n", repr(r.stdout))
+check("…asking ccusage for blocks", "ccusage blocks --json" in spawns(), spawns())
+r = statusline(ws="ws-1")
+check("in cmux: the workspace's colour bar and title lead, lifted for dark terminals",
+      r.stdout == tint("#196F3D", "▊") + " " + tint("#196F3D", "thing") + "  " + WINDOW + "\n",
+      repr(r.stdout))
+cache = json.load(open(COLORS))
+check("…and the colour is cached per workspace", cache.get("ws-1", {}).get("color") == "#196F3D"
+      and cache["ws-1"].get("title") == "thing", json.dumps(cache))
+open(CLOG, "w").close()
+statusline(ws="ws-1")
+check("a cached colour costs no cmux call", not log(), log())
+cache["ws-1"]["at"] = 0
+json.dump(cache, open(COLORS, "w"))
+statusline(ws="ws-1")
+check("a stale one is refreshed", "workspace list --json" in log(), log())
+reset([row(color="", title="thing")])
+os.remove(COLORS)
+r = statusline(ws="ws-1")
+check("no colour: no lead", r.stdout == WINDOW + "\n", repr(r.stdout))
+r = statusline(CREW_BLOCK_BUDGET="2000000")
+check("CREW_BLOCK_BUDGET overrides the largest block", r.stdout.startswith(
+    "⏱ 21% of 5h window (420k/2.0M) · 2h 10m left · ↗ 39% by reset"), r.stdout)
+blocks({"totalTokens": 1_000_000}, {"isActive": True, "totalTokens": 5_000,
+                                    "projection": {"remainingMinutes": 45, "totalTokens": 5_000}})
+r = statusline()
+check("under an hour left, minutes only, and no projection when it is not above use",
+      r.stdout == "⏱ 0% of 5h window (5k/1.0M) · 45m left\n", repr(r.stdout))
+blocks({"totalTokens": 1_500_000})
+r = statusline()
+check("no active block: the window is quiet", r.stdout == "⏱ window quiet · budget 1.5M\n", r.stdout)
+blocks()
+r = statusline()
+check("no blocks at all: no usage history", r.stdout == "⏱ no usage history yet\n", r.stdout)
+r = statusline(path=NOCC)
+check("no ccusage: says how to get it", r.stdout == "ccusage not installed — npm i -g ccusage\n",
+      r.stdout)
+open(BLOCKS, "w").write("not json")
+r = statusline()
+check("unparseable ccusage output names the error", r.stdout == "ccusage: JSONDecodeError\n",
+      r.stdout)
+
+now = datetime.datetime.now()
+days = calendar.monthrange(now.year, now.month)[1]
+json.dump({"monthly": [{"period": now.strftime("%Y-%m"), "totalCost": 1288.4,
+                        "modelBreakdowns": [{"missingPricing": True}]}]}, open(MONTHLY, "w"))
+r = statusline(CREW_BILLING="usage", CREW_MONTH_BUDGET="3000")
+proj = 1288.4 / now.day * days
+want = "💰 $1,288+ of $3,000 (43%)"
+if now.day > 1 and proj > 1288.4:
+    want += f" · {'↗' if proj > 3000 else '→'} {('$%s' % format(proj, ',.0f')) if proj >= 1000 else ('$%.0f' % proj if proj >= 100 else '$%.2f' % proj)} by {now.strftime('%b')} {days}"
+check("usage billing: month-to-date against the budget, a floor mark, and the pace",
+      r.stdout == want + "\n", f"{r.stdout!r} != {want!r}")
+check("…asking ccusage for monthly", "ccusage monthly --json" in spawns(), spawns())
+r = statusline(CREW_BILLING="usage")
+check("no budget: the figure alone", r.stdout.startswith("💰 $1,288+ this month"), r.stdout)
+os.makedirs(os.path.join(HOME, ".config", "cmux", "crew-local"))
+json.dump({"billing": "usage", "monthBudget": 5000},
+          open(os.path.join(HOME, ".config", "cmux", "crew-local", "config.json"), "w"))
+r = statusline()
+check("crew-local config.json selects usage billing and the budget",
+      r.stdout.startswith("💰 $1,288+ of $5,000 (26%)"), r.stdout)
+os.remove(os.path.join(HOME, ".config", "cmux", "crew-local", "config.json"))
+json.dump({"monthly": []}, open(MONTHLY, "w"))
+r = statusline(CREW_BILLING="usage")
+check("nothing billed this month", r.stdout == "💰 nothing billed this month yet\n", r.stdout)
+
+blocks({"totalTokens": 1_500_000})
+QUIET = "⏱ window quiet · budget 1.5M"
+r = statusline(json.dumps({"session_id": "s-9", "context_window": {"current_usage": {
+    "cache_creation_input_tokens": 50_000, "cache_read_input_tokens": 1_000}}}))
+check("a cache break in the live payload is named", r.stdout == QUIET + " · 🧊 broke: 50k re-cached\n",
+      r.stdout)
+FACTS = os.path.join(CACHE, "cmux-crew", "cache-facts")
+os.makedirs(FACTS, exist_ok=True)
+json.dump({"ttl": 3600, "lastRequestAt": time.time() - 60}, open(os.path.join(FACTS, "s-9.json"), "w"))
+r = statusline(json.dumps({"session_id": "s-9"}))
+check("warm cache: minutes left", r.stdout in (QUIET + " · 🧊 59m\n", QUIET + " · 🧊 58m\n"), r.stdout)
+json.dump({"ttl": 300, "lastRequestAt": time.time() - 250}, open(os.path.join(FACTS, "s-9.json"), "w"))
+r = statusline(json.dumps({"session_id": "s-9"}))
+check("nearly stale: seconds", r.stdout.startswith(QUIET + " · 🧊 stale in ") and r.stdout.endswith("s\n"),
+      r.stdout)
+json.dump({"ttl": 300, "lastRequestAt": time.time() - 900}, open(os.path.join(FACTS, "s-9.json"), "w"))
+r = statusline(json.dumps({"session_id": "s-9"}))
+check("past the TTL: cold", r.stdout == QUIET + " · 🧊 cache cold\n", r.stdout)
+r = statusline("not json")
+check("an unreadable payload drops the cache segment only", r.stdout == QUIET + "\n", r.stdout)
+
+shutil.rmtree(T, ignore_errors=True)
+n = len(results)
+print(f"\n{sum(results)}/{n} hold" + ("" if all(results) else " — FAILURES above"))
+sys.exit(0 if all(results) else 1)
