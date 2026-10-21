@@ -694,8 +694,22 @@ It checks for `cargo`, `node` and the Xcode command line tools, builds the
 pages and the release binaries, puts the bundle in `~/Applications/seamux.app`
 and links the `seamux` CLI inside it to `~/.local/bin/seamux`. The bundle is a
 copy, so unlike the plugins an edit to `app/` is not live: run `--app` again
-to rebuild. A previous bundle is moved to `$TMPDIR`, not deleted. Quit a
-running copy from its tray icon first.
+to rebuild. A previous bundle is moved to `$TMPDIR`, not deleted, and a
+running app restarts on the new one.
+
+To try an app change before it merges, build it from a worktree or a commit:
+
+```sh
+./install.sh --app --from ../seamux.worktrees/my-change   # the folder as it is, edits included
+./install.sh --app --from origin/my-branch                # any branch or sha; fetches if needed
+./install.sh --app                                        # back to the checkout you keep
+```
+
+A commit is exported to `~/.cache/seamux/app-from/`, and those builds share
+one cargo folder, so the next one rebuilds only what changed.
+`./install.sh --check` names the commit the installed app was built from.
+`--from` is for the app alone: the plugins run from the folder `install.sh`
+is in, so they stay on the checkout you keep.
 
 For scripted installs, `--main-repo PATH`, `--with-jira=SITE`,
 `--with-github-issues` and `--with-observability=STACK` set the crew plugin's
