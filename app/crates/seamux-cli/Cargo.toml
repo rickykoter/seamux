@@ -13,4 +13,5 @@ path = "src/main.rs"
 [dependencies]
 cmux.workspace = true
 crew-core.workspace = true
+crew-cli = { path = "../crew-cli" }
 serde_json.workspace = true

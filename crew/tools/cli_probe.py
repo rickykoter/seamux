@@ -56,41 +56,34 @@ def check(name, cond, extra=""):
 # The one place a tool becomes a command. With CREW_IMPL=rust a tool that seamux
 # registers runs as `seamux <tool>`, told where crew lives (CREW_HOME) and to reach
 # cmux through the CLI, so fakecmux still answers; anything else runs the Python.
-# The parent's harness helper under crew/tools/ takes this over when it lands.
-IMPL = os.environ.get("CREW_IMPL", "")
-SEAMUX = os.environ.get("SEAMUX_BIN") or shutil.which("seamux") or ""
+# crew_impl (the family's shared helper) decides; this only adds the crew tree.
+sys.path.insert(0, HERE)
+import crew_impl  # noqa: E402
 
-
-if IMPL.startswith("rust") and not SEAMUX:
+if crew_impl.mode() and not crew_impl.seamux_bin():
     # Running the Python here would pass and prove nothing about the Rust.
-    sys.exit(f"cli_probe: CREW_IMPL={IMPL} but no seamux binary (PATH or SEAMUX_BIN)")
+    sys.exit(f"cli_probe: CREW_IMPL={crew_impl.mode()} but no seamux binary "
+             "(SEAMUX_BIN, app/target/debug/seamux or PATH)")
 
 
-def _registered(tool):
-    if not IMPL.startswith("rust"):
-        return False
-    r = subprocess.run([SEAMUX, "--has", tool], capture_output=True)
-    if r.returncode != 0 and IMPL == "rust-strict":
-        sys.exit(f"cli_probe: CREW_IMPL=rust-strict and seamux does not register {tool}")
-    return r.returncode == 0
+def _cmd(tool, args, env, crew_home):
+    try:
+        argv = crew_impl.argv(tool, os.path.join(crew_home, "bin", tool), sys.executable)
+    except crew_impl.NotPorted as e:
+        sys.exit(f"cli_probe: {e}")
+    if crew_impl.is_rust(tool):
+        env = crew_impl.env(dict(env, CREW_HOME=crew_home))
+    return argv + list(args), env
 
 
 def run(tool, *args, env, crew_home=CREW, stdin=None, timeout=60, cwd=None):
-    if _registered(tool):
-        argv = [SEAMUX, tool, *args]
-        env = dict(env, CREW_HOME=crew_home, CREW_CMUX_TRANSPORT="cli")
-    else:
-        argv = [sys.executable, os.path.join(crew_home, "bin", tool), *args]
+    argv, env = _cmd(tool, args, env, crew_home)
     return subprocess.run(argv, env=env, input=stdin, capture_output=True, text=True,
                           timeout=timeout, cwd=cwd)
 
 
 def spawn(tool, *args, env, crew_home=CREW):
-    if _registered(tool):
-        argv = [SEAMUX, tool, *args]
-        env = dict(env, CREW_HOME=crew_home, CREW_CMUX_TRANSPORT="cli")
-    else:
-        argv = [sys.executable, os.path.join(crew_home, "bin", tool), *args]
+    argv, env = _cmd(tool, args, env, crew_home)
     return subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, start_new_session=True)
 
@@ -272,6 +265,10 @@ check("no flag follows the selected workspace's colour",
 r = run("crew-frame", "--workspace", "ws-a", env=ENV)
 check("--workspace takes that workspace's colour, not the selected one",
       r.returncode == 0 and '"#1565C0"' in open(CMUX_JSON).read() and reloads() == 4)
+r = run("crew-frame", "--status", "--workspace", "", env=ENV)
+check("an empty --workspace is no id: it follows the selection",
+      r.returncode == 0 and json.loads(r.stdout or "{}").get("selected_workspace_color") == "#7D6608",
+      r.stdout + r.stderr)
 r = run("crew-frame", "--off", env=dict(ENV, CREW_FRAME="0"))
 check("CREW_FRAME=0 turns it off entirely",
       r.returncode == 0 and '"#1565C0"' in open(CMUX_JSON).read() and reloads() == 4)
