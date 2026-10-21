@@ -35,9 +35,19 @@ and deep-plan, lookout and ask stores each hold one record. What is asserted:
   - a second index run exits while the lock is held, leaving a marker the
     holder consumes; ~/.claude/crew is 0700;
   - crew-artifacts index and search (text, --ws, --kind, --json) work;
-  - /usr/bin/python3 (3.9) runs the indexer too.
+  - /usr/bin/python3 (3.9) runs the indexer too;
+  - when seamux registers crew-artifacts, the two implementations share one
+    store: the CLIs print the same bytes, each indexes nothing after the
+    other, rows Rust writes read back through Python, and a lock Python
+    holds makes Rust busy.
 
-    python3 crew/tools/artifacts_probe.py      exit 0 when all hold
+With CREW_IMPL=rust (crew/tools/crew_impl.py), every module call above runs
+through `seamux crew-artifacts` instead, while seeding (connect, write_rows)
+stays Python's: each check then has Python writing the store and Rust
+reading it. Build seamux first: cargo build --manifest-path app/Cargo.toml -p seamux-cli
+
+    python3 crew/tools/artifacts_probe.py                 exit 0 when all hold
+    CREW_IMPL=rust python3 crew/tools/artifacts_probe.py  the same, against Rust
 """
 import fcntl
 import json
@@ -50,7 +60,91 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 BOARD = os.path.join(REPO, "crew", "board")
+CLI = os.path.join(REPO, "crew", "bin", "crew-artifacts")
+sys.path.insert(0, HERE)
+import crew_impl  # noqa: E402
 results = []
+
+
+class RustStore(object):
+    """artifacts.py's module surface, run through `seamux crew-artifacts`.
+
+    The probe's seeding (connect, write_rows) and the store's constants stay
+    the Python module's own, so under CREW_IMPL=rust every check has Python
+    writing the store and Rust reading it."""
+
+    def __init__(self, py, env):
+        self.py, self.env = py, env
+        self.Busy = py.Busy
+        self.FIELDS, self.LOCK, self.AGAIN = py.FIELDS, py.LOCK, py.AGAIN
+        self.connect, self.write_rows = py.connect, py.write_rows
+
+    def _run(self, *args):
+        return subprocess.run(crew_impl.argv("crew-artifacts", CLI) + list(args),
+                              capture_output=True, text=True, env=crew_impl.env(self.env))
+
+    def _json(self, *args, ok=(0,)):
+        """The command's JSON, refusing an exit code outside `ok` (keep
+        exits 1 on a refusal, as the Python CLI does) or output that is not
+        JSON, with seamux's stderr in the error."""
+        p = self._run(*args)
+        try:
+            if p.returncode not in ok:
+                raise ValueError("exit code")
+            return json.loads(p.stdout)
+        except ValueError:
+            raise RuntimeError("seamux crew-artifacts %s: exit %d: %s" % (" ".join(args), p.returncode, p.stderr))
+
+    @staticmethod
+    def _id(rid):
+        """A row id as the CLI takes it. The module would also take a
+        negative id; the CLI cannot, so the shim refuses rather than map it."""
+        rid = int(rid)
+        if rid < 0:
+            raise ValueError("RustStore: the CLI takes no negative id (%d)" % rid)
+        return str(rid)
+
+    def index(self):
+        p = self._run("index")
+        if p.stdout.startswith("another index run holds the lock"):
+            raise self.Busy()
+        if p.returncode != 0 or not p.stdout.startswith("indexed "):
+            raise RuntimeError("seamux crew-artifacts index: exit %d: %s" % (p.returncode, p.stderr))
+        return int(p.stdout.split()[1])
+
+    def backfill(self):
+        p = self._run("backfill")
+        if p.returncode != 0:
+            raise RuntimeError("seamux crew-artifacts backfill: exit %d: %s" % (p.returncode, p.stderr))
+        return int(p.stdout.split()[1])
+
+    FLAGS = ("--json", "--ws", "--kind", "--limit")
+
+    def search(self, q="", ws=None, kind=None, limit=500):
+        # The module's limit goes straight to SQL (LIMIT -1 is no limit); the
+        # CLI takes a positive count. Words the CLI would read as its own
+        # flags cannot be passed either. Refuse both rather than map them.
+        words = (q or "").split()
+        if int(limit) < 1 or any(w in self.FLAGS for w in words):
+            raise ValueError("RustStore.search: the CLI cannot express limit=%r, q=%r" % (limit, q))
+        args = ["search"] + words + ["--limit", str(int(limit)), "--json"]
+        if ws:
+            args += ["--ws", ws]
+        if kind:
+            args += ["--kind", kind]
+        return self._json(*args)
+
+    def keep(self, rid):
+        return self._json("keep", self._id(rid), "--json", ok=(0, 1))
+
+    def keep_all(self, ws):
+        return self._json("keep-all", ws, "--json")
+
+    def row(self, rid):
+        return self._json("row", self._id(rid))
+
+    def workspaces(self):
+        return self._json("workspaces")
 
 
 def check(name, cond, extra=""):
@@ -182,7 +276,19 @@ with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
                "question": "Which pages?"}, open(os.path.join(plans, "asks", "a1.json"), "w"))
 
     sys.path.insert(0, BOARD)
-    import artifacts as A
+    import artifacts as PY
+    # rust-strict raises NotPorted here when seamux does not register
+    # crew-artifacts, so the module calls never fall back to Python unseen.
+    crew_impl.argv("crew-artifacts", CLI)
+    RUST = crew_impl.is_rust("crew-artifacts")
+    A = RustStore(PY, env) if RUST else PY
+    if RUST:
+        print("implementation: seamux crew-artifacts (%s)" % crew_impl.seamux_bin())
+    elif crew_impl.mode():
+        print("implementation: artifacts.py -- CREW_IMPL=%s, but seamux (%s) does not register "
+              "crew-artifacts, so this run tests the Python" % (crew_impl.mode(), crew_impl.seamux_bin() or "not found"))
+    else:
+        print("implementation: artifacts.py")
 
     print("index a fixture session")
     A.index()
@@ -431,20 +537,20 @@ with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
     check("and leaves a marker asking the holder to go round again", os.path.exists(A.AGAIN))
     A.index()
     check("the next run consumes the marker", not os.path.exists(A.AGAIN))
-    cli = os.path.join(REPO, "crew", "bin", "crew-artifacts")
-    p = subprocess.run([sys.executable, cli, "search", "scratch", "notes", "--ws", ws, "--json"],
-                       capture_output=True, text=True, env=env)
+    cli = crew_impl.argv("crew-artifacts", CLI, sys.executable)
+    p = subprocess.run(cli + ["search", "scratch", "notes", "--ws", ws, "--json"],
+                       capture_output=True, text=True, env=crew_impl.env(env))
     try:
         got = json.loads(p.stdout)
     except ValueError:
         got = None
     check("crew-artifacts search --ws --json returns the rows",
           got and any(r["locator"].endswith("notes.md") for r in got), p.stderr[-300:])
-    p = subprocess.run([sys.executable, cli, "search", "guide", "--kind", "commit"],
-                       capture_output=True, text=True, env=env)
+    p = subprocess.run(cli + ["search", "guide", "--kind", "commit"],
+                       capture_output=True, text=True, env=crew_impl.env(env))
     check("crew-artifacts search prints a row with its prompt",
           p.returncode == 0 and "Add guide" in p.stdout and "> " in p.stdout, p.stdout[-300:])
-    p = subprocess.run([sys.executable, cli, "index"], capture_output=True, text=True, env=env)
+    p = subprocess.run(cli + ["index"], capture_output=True, text=True, env=crew_impl.env(env))
     check("crew-artifacts index runs", p.returncode == 0 and "indexed" in p.stdout, p.stderr[-300:])
     sys39 = "/usr/bin/python3"
     if os.path.exists(sys39):
@@ -458,6 +564,95 @@ with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
               p.stderr[-400:])
     else:
         print("  skip /usr/bin/python3 is not on this machine")
+
+    print("one store, two implementations")
+    if "crew-artifacts" not in crew_impl.registered():
+        print("  skip seamux does not register crew-artifacts "
+              "(cargo build --manifest-path app/Cargo.toml -p seamux-cli)")
+    else:
+        py_cli = [sys.executable, CLI]
+        rs_cli = [crew_impl.seamux_bin(), "crew-artifacts"]
+
+        def run(argv, *args):
+            return subprocess.run(argv + list(args), capture_output=True, text=True, env=crew_impl.env(env))
+
+        todo_id = next(r["id"] for r in PY.search(kind="file") if r["locator"].endswith("todo.txt"))
+        # Text outside ASCII, where json.dumps escapes and %-5d pads by characters.
+        db = PY.connect()
+        db.execute("BEGIN IMMEDIATE")
+        PY.write_rows(db, [dict(dict.fromkeys(PY.FIELDS, ""), ws=ws, kind="doc", locator="/naïve/ünï.md",
+                                path="/naïve/ünï.md", title="naïve ✓ 中文", prompt="résumé 🙂 " + "é" * 300,
+                                created_at="2099-02-01T00:00:00.000Z")])
+        db.execute("COMMIT")
+        db.close()
+        differ = []
+        for args in (["search"], ["search", "guide", "--json"], ["search", "--kind", "commit"],
+                     ["search", "scratch", "notes", "--ws", ws + "/", "--json"], ["search", '"oops* OR (NEAR'],
+                     ["search", "naïve"], ["search", "résumé", "--json"],
+                     ["keep", str(todo_id)], ["keep", "x"], ["nonsense"]):
+            a, b = run(py_cli, *args), run(rs_cli, *args)
+            if (a.stdout, a.stderr, a.returncode) != (b.stdout, b.stderr, b.returncode):
+                differ.append(" ".join(args))
+        check("the Python and Rust CLIs print the same bytes and exit codes", not differ, differ)
+
+        # The Rust-only outputs print what the module returns, as
+        # json.dumps(..., indent=1) would. One keep_all first keeps whatever
+        # is still keepable, so the compared runs only refuse (the
+        # directory, the symlink, the big file) and change nothing.
+        PY.keep_all(ws)
+        dumps = lambda v: json.dumps(v, indent=1) + "\n"
+        any_id = PY.search(limit=1)[0]["id"]
+        pairs = [(["row", str(any_id)], dumps(PY.row(any_id))), (["row", "99999"], dumps(None)),
+                 (["workspaces"], dumps(PY.workspaces())),
+                 (["search", "--limit", "2", "--json"], dumps(PY.search(limit=2))),
+                 (["keep", str(todo_id), "--json"], dumps(PY.keep(todo_id))),
+                 (["keep-all", ws, "--json"], dumps(PY.keep_all(ws)))]
+        differ = [" ".join(a) for a, want in pairs if run(rs_cli, *a).stdout != want]
+        check("row, workspaces, --limit, keep --json and keep-all print the module's own results", not differ, differ)
+
+        # A successful keep from each side: the same message, into the same
+        # folder, the copy beside the other.
+        for name in ("py-keep.txt", "rs-keep.txt"):
+            open(os.path.join(sp, name), "w").write(name)
+        with open(tr, "a") as fh:
+            jl(fh, use("2099-01-01T12:59:00.000Z", "u15", "Write", {"file_path": os.path.join(sp, "py-keep.txt")}))
+            jl(fh, use("2099-01-01T12:59:01.000Z", "u16", "Write", {"file_path": os.path.join(sp, "rs-keep.txt")}))
+        run(py_cli, "index")
+        kid = {r["title"]: r["id"] for r in PY.search(kind="temp", limit=2000)}
+        ka, kb = run(py_cli, "keep", str(kid["py-keep.txt"])), run(rs_cli, "keep", str(kid["rs-keep.txt"]))
+        da = ka.stdout[len("kept -> "):].strip() if ka.stdout.startswith("kept -> ") else ""
+        db_ = kb.stdout[len("kept -> "):].strip() if kb.stdout.startswith("kept -> ") else ""
+        check("a successful keep prints 'kept -> <copy>' from both, into one kept/ folder",
+              ka.returncode == kb.returncode == 0 and da and db_ and os.path.dirname(da) == os.path.dirname(db_)
+              and open(db_).read() == "rs-keep.txt" and PY.row(kid["rs-keep.txt"])["path"] == db_,
+              (ka.stdout, kb.stdout, kb.stderr[-300:]))
+
+        with open(tr, "a") as fh:
+            jl(fh, use("2099-01-01T13:00:00.000Z", "u13", "Write",
+                       {"file_path": os.path.join(ws, "docs", "by-python.md"), "content": "x"}))
+        pa, pb = run(py_cli, "index"), run(rs_cli, "index")
+        check("after a Python index, a Rust index reads nothing",
+              any(r["locator"].endswith("by-python.md") for r in PY.search(kind="doc"))
+              and pb.stdout == "indexed 0 rows\n", (pa.stdout, pb.stdout, pb.stderr[-300:]))
+
+        with open(tr, "a") as fh:
+            jl(fh, use("2099-01-01T13:00:01.000Z", "u14", "Write",
+                       {"file_path": os.path.join(ws, "docs", "by-rust.md"), "content": "x"}))
+        pc, pd = run(rs_cli, "index"), run(py_cli, "index")
+        by_rust = next((r for r in PY.search(kind="doc") if r["locator"].endswith("by-rust.md")), None)
+        check("rows Rust writes read back through Python, and a Python index then reads nothing",
+              by_rust and by_rust["prompt"] == "Publish the guide as an artifact" and pd.stdout == "indexed 0 rows\n",
+              (pc.stdout, pd.stdout, (by_rust or {}).get("prompt")))
+
+        lk = open(PY.LOCK, "a")
+        fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        pe = run(rs_cli, "index")
+        lk.close()
+        check("a lock Python holds makes Rust busy, and Rust leaves the marker",
+              pe.returncode == 0 and pe.stdout == "another index run holds the lock; nothing to do\n"
+              and os.path.exists(PY.AGAIN), (pe.stdout, pe.stderr[-300:]))
+        run(py_cli, "index")
+        check("and the Python holder's next run consumes Rust's marker", not os.path.exists(PY.AGAIN))
 
 print(f"\n{sum(results)}/{len(results)} hold")
 sys.exit(0 if all(results) else 1)
