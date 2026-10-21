@@ -16,10 +16,11 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-/// Lines of scrollback asked for; the page shows the last few of them.
-pub const READ_LINES: u32 = 40;
-/// Lines kept per tile.
-pub const TILE_LINES: usize = 14;
+/// Lines of scrollback asked for: enough that, with Claude's prompt box and
+/// footer cut, the preview still has a screenful of the agent's own words.
+pub const READ_LINES: u32 = 80;
+/// Lines kept per tile (the Wall's preview pane shows up to this many).
+pub const TILE_LINES: usize = 40;
 /// A reply longer than this is refused rather than typed into an agent.
 pub const REPLY_MAX: usize = 4000;
 /// One surface is re-read on an event at most this often.
@@ -117,6 +118,67 @@ pub fn titles(workspaces: &Value) -> HashMap<String, String> {
         .unwrap_or_default()
 }
 
+/// Workspace UUID to its cmux colour (custom_color), from workspace.list;
+/// only workspaces that have one.
+pub fn colors(workspaces: &Value) -> HashMap<String, String> {
+    let rows = workspaces.get("workspaces").unwrap_or(workspaces);
+    rows.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|w| {
+                    let id = w.get("id")?.as_str()?.to_string();
+                    let c = w.get("custom_color")?.as_str()?.trim().to_string();
+                    (!c.is_empty()).then_some((id, c))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A full-width rule Claude Code draws around its prompt box.
+fn is_rule(line: &str) -> bool {
+    let t = line.trim();
+    t.chars().count() >= 20 && t.chars().all(|c| c == '─')
+}
+
+/// Notices Claude Code prints over its prompt box, not the agent's words.
+fn is_notice(line: &str) -> bool {
+    let t = line.trim();
+    t.starts_with("Update available!") || t.starts_with("new task? /clear")
+}
+
+/// An agent pane's last `n` lines of its own words. Claude Code ends the
+/// screen with its prompt box (a rule, the `❯` input line, a rule) and the
+/// status lines under it; all of that is cut, so is a notice above the box,
+/// and runs of blank lines fold to one. A box that does not start with `❯`
+/// is a question being asked (its options), and stays: that is what the
+/// person needs to see. A plain shell keeps its tail as is.
+pub fn clean(text: &str, agent: bool, n: usize) -> Vec<String> {
+    if !agent {
+        return tail(text, n);
+    }
+    let mut lines: Vec<&str> = text.lines().map(str::trim_end).collect();
+    let rules: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| is_rule(l)).map(|(i, _)| i).collect();
+    if rules.len() >= 2 {
+        let (top, bottom) = (rules[rules.len() - 2], rules[rules.len() - 1]);
+        let first = lines.get(top + 1).map(|l| l.trim_start()).unwrap_or("");
+        if bottom > top + 1 && first.starts_with('❯') {
+            lines.truncate(top);
+        }
+    }
+    let mut out: Vec<&str> = Vec::new();
+    for l in lines {
+        if is_notice(l) {
+            continue;
+        }
+        if l.trim().is_empty() && out.last().is_none_or(|p| p.trim().is_empty()) {
+            continue;
+        }
+        out.push(l);
+    }
+    tail(&out.join("\n"), n)
+}
+
 /// The last `n` lines of a read, with trailing blank lines dropped.
 pub fn tail(text: &str, n: usize) -> Vec<String> {
     let mut lines: Vec<&str> = text.lines().map(str::trim_end).collect();
@@ -140,6 +202,11 @@ pub struct Tile {
     pub lines: Vec<String>,
     /// Why the text could not be read this time.
     pub error: Option<String>,
+    /// The workspace's cmux colour (`#RRGGBB`), when it has one.
+    pub color: Option<String>,
+    /// When this pane entered its current state, as the wall first saw it
+    /// (ms since the epoch): how long a needs-you agent has waited.
+    pub since: u64,
 }
 
 /// The `wall:frame` payload: every tile, in current.list's order.
@@ -154,6 +221,9 @@ pub struct Frame {
 struct State {
     terms: Vec<Terminal>,
     titles: HashMap<String, String>,
+    colors: HashMap<String, String>,
+    /// Per surface: the state last seen, and when it was first seen.
+    since: HashMap<String, (String, u64)>,
     text: HashMap<String, Result<Vec<String>, String>>,
     error: Option<String>,
     sent: Option<Frame>,
@@ -203,7 +273,9 @@ impl Wall {
     /// frame when it differs from the last one returned.
     pub fn tick(&self) -> Option<Frame> {
         let listed = self.pool[0].current();
-        let titles = self.pool[0].workspaces().map(|w| titles(&w)).ok();
+        let listing = self.pool[0].workspaces().ok();
+        let titles = listing.as_ref().map(titles);
+        let colors = listing.as_ref().map(colors);
         let terms = match &listed {
             Ok(v) => terminals(v),
             Err(_) => self.state.lock().unwrap().terms.clone(),
@@ -213,6 +285,9 @@ impl Wall {
         st.error = listed.err().map(|e| e.to_string());
         if let Some(t) = titles {
             st.titles = t;
+        }
+        if let Some(c) = colors {
+            st.colors = c;
         }
         st.terms = terms;
         st.text = reads;
@@ -233,7 +308,8 @@ impl Wall {
             }
             pulled.insert(surface.to_string(), now);
         }
-        let read = self.pool[0].read(surface, READ_LINES).map(|t| tail(&t, TILE_LINES)).map_err(|e| e.to_string());
+        let agent = self.state.lock().unwrap().terms.iter().any(|t| t.surface == surface && t.agent.is_some());
+        let read = self.pool[0].read(surface, READ_LINES).map(|t| clean(&t, agent, TILE_LINES)).map_err(|e| e.to_string());
         let mut st = self.state.lock().unwrap();
         st.text.insert(surface.to_string(), read);
         self.frame_if_changed(&mut st)
@@ -250,7 +326,10 @@ impl Wall {
                     scope.spawn(move || {
                         part.iter()
                             .map(|t| {
-                                let r = src.read(&t.surface, READ_LINES).map(|x| tail(&x, TILE_LINES)).map_err(|e| e.to_string());
+                                let r = src
+                                    .read(&t.surface, READ_LINES)
+                                    .map(|x| clean(&x, t.agent.is_some(), TILE_LINES))
+                                    .map_err(|e| e.to_string());
                                 (t.surface.clone(), r)
                             })
                             .collect::<Vec<_>>()
@@ -272,6 +351,18 @@ impl Wall {
     }
 
     fn frame_if_changed(&self, st: &mut State) -> Option<Frame> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let live: HashSet<&str> = st.terms.iter().map(|t| t.surface.as_str()).collect();
+        st.since.retain(|s, _| live.contains(s.as_str()));
+        for t in &st.terms {
+            let keep = st.since.get(&t.surface).is_some_and(|(s, _)| *s == t.state);
+            if !keep {
+                st.since.insert(t.surface.clone(), (t.state.clone(), now));
+            }
+        }
         let tiles = st
             .terms
             .iter()
@@ -291,6 +382,8 @@ impl Wall {
                     state: t.state.clone(),
                     lines,
                     error,
+                    color: st.colors.get(&t.workspace).cloned(),
+                    since: st.since.get(&t.surface).map(|(_, at)| *at).unwrap_or(now),
                 }
             })
             .collect();
@@ -423,6 +516,24 @@ mod tests {
     #[test]
     fn tail_drops_trailing_blanks() {
         assert_eq!(tail("a\nb\n\n  \n", 1), vec!["b"]);
+    }
+
+    #[test]
+    fn an_agent_pane_loses_its_prompt_box_and_footer() {
+        let rule = "─".repeat(60);
+        let pane = format!(
+            "\n\nNext step: review PR #56.\n\n\n\nAll done.\n              Update available! Run: brew upgrade\n{rule}\n❯ \n{rule}\n  ⚠ seamux-mods: x\n  ⏵⏵ auto mode on"
+        );
+        assert_eq!(clean(&pane, true, 10), vec!["Next step: review PR #56.", "", "All done."]);
+        // A plain shell keeps everything.
+        assert_eq!(clean(&pane, false, 3), vec![rule.clone(), "  ⚠ seamux-mods: x".to_string(), "  ⏵⏵ auto mode on".to_string()]);
+    }
+
+    #[test]
+    fn a_question_box_is_kept() {
+        let rule = "─".repeat(60);
+        let pane = format!("Which one?\n{rule}\n  1. A\n  2. B\n{rule}\nEnter to select");
+        assert_eq!(clean(&pane, true, 10), vec!["Which one?", &rule, "  1. A", "  2. B", &rule, "Enter to select"]);
         assert_eq!(tail("", 3), Vec::<String>::new());
     }
 }

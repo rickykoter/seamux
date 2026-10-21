@@ -1,89 +1,132 @@
-/* The live agent wall: soft cards, light or dark with the system. */
+/* The live agent wall: a ranked list of every pane, and the selected one
+   large. Light or dark with the system; each agent wears its workspace's
+   cmux colour as a slim edge. */
 
-#wall { padding: 14px 18px 24px; }
+#wall { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+.wall-status { margin: 10px 16px 0; color: var(--bad); }
 
-.wall-status { margin: 0 0 10px; color: var(--bad); }
-
-.group { margin-bottom: 18px; }
-.group h2 {
-  font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
-  color: var(--muted); margin: 0 0 8px;
-}
-.group h2 .count { font-weight: 400; }
-
-.grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
-.group-needs .grid { grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); }
-
-.card {
-  position: relative; display: flex; flex-direction: column; min-width: 0;
-  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
-  box-shadow: 0 1px 2px var(--shade); overflow: hidden;
-}
-/* Waiting on you: a quiet amber edge, nothing that moves. */
-.card[data-state="needs_input"] {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent), 0 0 18px -6px var(--accent);
+.split {
+  flex: 1; min-height: 0; display: grid;
+  grid-template-columns: minmax(220px, 290px) minmax(0, 1fr);
 }
 
-.card header { display: flex; align-items: center; gap: 10px; padding: 9px 12px 6px; }
-.card .names { display: flex; flex-direction: column; min-width: 0; }
-.card .title { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.card .sub { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.card .state {
-  order: 2; margin-left: auto; display: flex; align-items: center; gap: 5px;
-  font-size: 11px; color: var(--muted); white-space: nowrap;
+/* ---- the list ---- */
+.list {
+  overflow-y: auto; padding: 8px 6px 12px; border-right: 1px solid var(--line);
+  background: color-mix(in srgb, var(--strip) 55%, var(--bg));
 }
-.card .mark { width: 10px; height: 10px; flex: none; }
-.card .mark .fill { fill: var(--muted); }
-.card .mark .ring { fill: none; stroke: var(--muted); stroke-width: 1.3; }
-.card[data-state="needs_input"] .state { color: var(--accent); }
-.card[data-state="needs_input"] .mark .fill { fill: var(--accent); }
-.card[data-state="working"] .mark .fill { fill: var(--good); }
-.card[data-state="working"] .mark .ring { stroke: var(--good); }
-
-.card pre {
-  margin: 0 12px; padding: 8px 10px; flex: 1; min-height: 72px; max-height: 210px; overflow: auto;
-  font: 11.5px/1.4 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word;
-  background: var(--term); color: var(--term-fg); border-radius: 8px;
+.list h2 {
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--muted); margin: 10px 10px 4px;
 }
-.group-working pre, .group-idle pre, .group-shell pre { max-height: 130px; }
-.card pre.err { color: var(--bad); }
+.list h2:first-child { margin-top: 2px; }
+.list h2 .count { font-weight: 400; }
 
-.card footer { display: flex; align-items: center; gap: 8px; padding: 8px 12px 10px; flex-wrap: wrap; }
-.card form.reply { flex: 1; display: flex; gap: 6px; min-width: 160px; }
-.card .send {
+.row {
+  position: relative; display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 6px 9px 6px 14px; border: 0; border-radius: 7px; background: none;
+  font: inherit; color: var(--fg); text-align: left; cursor: pointer;
+}
+.row:hover { background: color-mix(in srgb, var(--on) 60%, transparent); }
+.row.on { background: var(--on); box-shadow: 0 0 0 1px var(--line), 0 1px 2px var(--shade); }
+.row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* The workspace's colour: a slim edge, as its sidebar row and pane frame wear it. */
+.row::before {
+  content: ""; position: absolute; left: 4px; top: 7px; bottom: 7px; width: 3px;
+  border-radius: 2px; background: var(--ws, transparent);
+}
+.row .state { display: flex; flex: none; }
+.row .names { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.row .title { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .sub { font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .wait { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--accent); }
+.row[data-state="needs_input"] .title { font-weight: 600; }
+.row[data-state="idle"] .title, .row[data-state="ended"] .title, .row[data-state="shell"] .title { color: var(--muted); }
+
+.mark { width: 10px; height: 10px; flex: none; }
+.mark .fill { fill: var(--muted); }
+.mark .ring { fill: none; stroke: var(--muted); stroke-width: 1.3; }
+[data-state="needs_input"] .mark .fill { fill: var(--accent); }
+[data-state="working"] .mark .fill { fill: var(--good); }
+[data-state="working"] .mark .ring { stroke: var(--good); }
+
+/* Newly waiting on you: a seam stitches down the row's edge, once. */
+.row::after {
+  content: ""; position: absolute; left: 0; top: 4px; bottom: 4px; width: 2px;
+  background: repeating-linear-gradient(180deg, var(--accent) 0 5px, transparent 5px 9px);
+  transform: scaleY(0); transform-origin: top; opacity: 0;
+}
+.row.arrived::after { animation: stitch-down 0.9s ease-out 1 both; }
+@keyframes stitch-down {
+  0% { transform: scaleY(0); opacity: 1; }
+  70% { transform: scaleY(1); opacity: 1; }
+  100% { transform: scaleY(1); opacity: 0; }
+}
+
+/* ---- the preview ---- */
+.preview { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.preview header {
+  display: flex; align-items: center; gap: 12px; padding: 10px 16px 8px;
+  border-bottom: 1px solid var(--line);
+  box-shadow: inset 3px 0 0 var(--ws, transparent);
+}
+.preview .names { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.preview .title { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.preview .sub { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.preview .state {
+  display: flex; align-items: center; gap: 6px; flex: none;
+  font-size: 11.5px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.preview[data-state="needs_input"] .state { color: var(--accent); }
+
+/* The pane's own last words, laid out as the terminal laid them out: no
+   re-wrap; a long line clips under a fade at the right edge. */
+.preview pre {
+  flex: 1; min-height: 0; margin: 0; padding: 10px 16px 10px;
+  overflow-y: auto; overflow-x: hidden; white-space: pre;
+  font: 11.5px/1.45 ui-monospace, Menlo, monospace;
+  background: var(--term); color: var(--term-fg);
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+}
+.preview pre.err { color: var(--bad); white-space: pre-wrap; -webkit-mask-image: none; mask-image: none; }
+
+.preview footer { display: flex; align-items: center; gap: 8px; padding: 9px 16px 11px; flex-wrap: wrap; border-top: 1px solid var(--line); }
+.preview form.reply { flex: 1; display: flex; gap: 6px; min-width: 160px; }
+.preview .send {
   font: inherit; font-size: 12px; cursor: pointer; padding: 4px 12px; border-radius: 7px;
   border: 1px solid var(--accent); background: var(--accent); color: var(--bg);
 }
-.card .send:disabled { opacity: 0.6; cursor: default; }
-.card input {
+.preview .send:disabled { opacity: 0.6; cursor: default; }
+.preview input {
   flex: 1; min-width: 120px; font: inherit; padding: 5px 9px; border-radius: 7px;
   border: 1px solid var(--line); background: var(--bg); color: var(--fg);
 }
-.card input:focus { outline: none; border-color: var(--accent); }
-.card .jump {
+.preview input:focus { outline: none; border-color: var(--accent); }
+.preview .jump {
   font: inherit; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
   padding: 4px 10px; border-radius: 7px; border: 1px solid var(--line); background: var(--on); color: var(--fg);
 }
-.card .jump svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; }
-.card .note-line { flex-basis: 100%; font-size: 11px; color: var(--muted); min-height: 0; }
-.card .note-line:empty { display: none; }
-.card .note-line.bad { color: var(--bad); }
+.preview .jump svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; }
+.preview .note-line { flex-basis: 100%; font-size: 11px; color: var(--muted); }
+.preview .note-line:empty { display: none; }
+.preview .note-line.bad { color: var(--bad); }
 
-/* A finished turn: a stitch runs once across the card's top edge. */
-.card::before {
-  content: ""; position: absolute; left: 0; top: 0; height: 3px; width: 100%;
+/* A finished turn: a stitch runs once across the preview's top edge. */
+.preview::before {
+  content: ""; position: absolute; left: 0; top: 0; height: 3px; width: 100%; z-index: 1;
   background: repeating-linear-gradient(90deg, var(--accent) 0 7px, transparent 7px 12px);
   transform: scaleX(0); transform-origin: left; opacity: 0;
 }
-.card.stitched::before { animation: stitch 1.1s ease-out 1 both; }
+.preview.stitched::before { animation: stitch 1.1s ease-out 1 both; }
 @keyframes stitch {
   0% { transform: scaleX(0); opacity: 1; }
   70% { transform: scaleX(1); opacity: 1; }
   100% { transform: scaleX(1); opacity: 0; }
 }
+
 @media (prefers-reduced-motion: reduce) {
-  .card.stitched::before { animation: none; }
+  .preview.stitched::before, .row.arrived::after { animation: none; }
 }
 
 .empty {
