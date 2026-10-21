@@ -40,6 +40,24 @@ CMUX="${CREW_CMUX:-$(command -v cmux || true)}"
 # workspaces.py lives beside the real bin/, in hooks/.
 SELF_DIR="$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")")"
 WORKSPACES="$SELF_DIR/../hooks/workspaces.py"
+CALLER_CREW_CMUX="${CREW_CMUX:-}"
+
+# workspaces: `seamux workspaces`, else the Python until it is deleted. seamux
+# gets CREW_CMUX only when the caller set it (a probe's fakecmux): set at all,
+# it means "drive the CLI", and live use belongs on the socket.
+SEAMUX="${SEAMUX_BIN:-$HOME/.local/bin/seamux}"
+ws_tool() {
+  if [ -x "$SEAMUX" ]; then
+    if [ -n "$CALLER_CREW_CMUX" ]; then CREW_CMUX="$CALLER_CREW_CMUX" "$SEAMUX" workspaces "$@"
+    else env -u CREW_CMUX "$SEAMUX" workspaces "$@"; fi
+  elif [ -f "$WORKSPACES" ]; then
+    # A checkout run before seamux exists (the live tree has no Python).
+    CREW_CMUX="$CMUX" python3 "$WORKSPACES" "$@"
+  else
+    printf 'crew-reclaim: seamux is not installed at %s (./install.sh --app)\n' "$SEAMUX" >&2
+    return 1
+  fi
+}
 
 die()  { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 ok()   { printf '\033[32m✓\033[0m %s\n' "$*"; }
@@ -130,7 +148,7 @@ if [ -x "$CMUX" ]; then
   # the description — the same thing the board draws ◇ from.
   # Every window, not the caller's: the sweep hands this workspaces from all of
   # them, and a blocker in another window is still a blocker.
-  probe="$(CREW_CMUX="$CMUX" python3 "$WORKSPACES" list-json 2>/dev/null \
+  probe="$(ws_tool list-json 2>/dev/null \
     | python3 -c '
 import json,sys
 try:
@@ -186,7 +204,7 @@ fi
 # session records. "unknown" is a blocker, for the same reason as above.
 life=""
 if [ -n "$ws" ]; then
-  life="$(CREW_CMUX="$CMUX" python3 "$WORKSPACES" lifecycle "$ws" 2>/dev/null)"
+  life="$(ws_tool lifecycle "$ws" 2>/dev/null)"
   [ -n "$life" ] || life=unknown
 fi
 
@@ -446,7 +464,7 @@ fi
 [ -z "$(git -C "$top" status --porcelain 2>/dev/null | head -1)" ] \
   || die "$top picked up uncommitted changes while you were deciding — refusing"
 if [ -n "$ws" ]; then
-  case "$(CREW_CMUX="$CMUX" python3 "$WORKSPACES" lifecycle "$ws" 2>/dev/null)" in
+  case "$(ws_tool lifecycle "$ws" 2>/dev/null)" in
     idle|none) ;;
     running) die "an agent started a turn in ${ws_title:-$ws} while you were deciding — refusing" ;;
     *)       die "could not tell whether an agent is mid-turn in ${ws_title:-$ws} — refusing" ;;
@@ -459,7 +477,7 @@ say "reclaiming $top ($branch, ${size:-?})"
 # and stop here if it will not go. A close that fails in silence is how a
 # worktree got removed out from under a workspace that was still open on it.
 if [ -n "$ws" ]; then
-  why="$(CREW_CMUX="$CMUX" python3 "$WORKSPACES" close "$ws" 2>&1 >/dev/null)" \
+  why="$(ws_tool close "$ws" 2>&1 >/dev/null)" \
     || die "cmux did not close ${ws_title:-$ws} (${why:-no answer}) — nothing was removed"
   ok "closed workspace ${ws_title:-$ws}"
 fi

@@ -8,20 +8,12 @@
     "shared database. `spec` runs crew-spec, which detects the repo's test",
     "runner (npm/pytest/cargo/go) instead of assuming one stack.",
     "",
-    "The web Dock (beta) seeds the board and the usage dashboard as chromeless",
-    "browser controls. The board page is inert until crew-listen pushes the",
-    "renderer into it; crew-board adopts the seeded surface instead of creating",
-    "its own. __INTENT_PORT__ is substituted by `crew apply` and must match the",
-    "intent server's pin (CREW_INTENT_PORT, default 7345)."
+    "The web Dock (beta) seeds the usage dashboard as a chromeless browser",
+    "control. The board is the seamux app's tab (the intent server's /board),",
+    "no longer a Dock control. __INTENT_PORT__ is substituted by `crew apply`",
+    "and must match the intent server's pin (CREW_INTENT_PORT, default 7345)."
   ],
   "controls": [
-    {
-      "id": "board",
-      "title": "Crew",
-      "type": "browser",
-      "chrome": false,
-      "url": "file://__HOME__/.config/cmux/crew/board/board.html"
-    },
     {
       "id": "usage",
       "title": "Usage",
@@ -47,14 +39,14 @@
     {
       "id": "sessions",
       "title": "Sessions",
-      "command": "__HOME__/.config/cmux/crew/bin/crew-resume",
+      "command": "__HOME__/.local/bin/seamux crew-resume",
       "cwd": ".",
       "height": 360
     },
     {
       "id": "sweep",
       "title": "Sweep",
-      "command": "__HOME__/.config/cmux/crew/bin/crew-sweep",
+      "command": "__HOME__/.local/bin/seamux crew-sweep",
       "cwd": ".",
       "height": 360
     },

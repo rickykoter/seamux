@@ -1,0 +1,15 @@
+[package]
+name = "crew-core"
+description = "crew's shared modules in Rust: pricing, costs, typesafe, workspaces, cachefacts, families, dp_engine, asked"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+cmux.workspace = true
+serde_json.workspace = true
+libc = "0.2"
+sha2 = "0.10"
+# proxy-from-env: honor ALL_PROXY / HTTPS_PROXY / HTTP_PROXY, as urllib does.
+ureq = { version = "2", default-features = false, features = ["tls", "proxy-from-env"] }

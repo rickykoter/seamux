@@ -1,0 +1,13 @@
+[package]
+name = "crew-hooks"
+description = "crew's Claude hooks, triage, status line and settings tools as `seamux <tool>`"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+cmux.workspace = true
+crew-core.workspace = true
+serde_json.workspace = true
+libc = "0.2"

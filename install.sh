@@ -7,6 +7,9 @@
 #                [--with-observability=STACK]
 #   ./install.sh --check        what is installed, and drift in the crew tree
 #   ./install.sh --uninstall    remove the plugins, the shims and the crew tree
+#   ./install.sh --app [--dry-run]  build the seamux app (app/) into
+#                               ~/Applications/seamux.app and link its seamux CLI
+#                               into ~/.local/bin; needs cargo, node and Xcode CLT
 #
 # A thin bootstrap over `claude plugin`. It adds this checkout as the `seamux`
 # marketplace (a folder marketplace: the plugins run from the checkout itself,
@@ -28,7 +31,9 @@ LOCALBIN="$HOME/.local/bin"
 GITHUB_REPO="rickykoter/seamux"
 MARKET="seamux"
 
-DRY=0 CHECK=0 UNINSTALL=0 GITHUB=0 MODS=0 CREW=1 RESTACK=1 GUARD=1 LOOKOUT=1 APPLY=1 MIGRATE=1 MAIN=""
+APPDIR="$HOME/Applications/seamux.app"
+APP_BUNDLE_ID="dev.seamux.app"
+DRY=0 CHECK=0 UNINSTALL=0 APP=0 GITHUB=0 MODS=0 CREW=1 RESTACK=1 GUARD=1 LOOKOUT=1 APPLY=1 MIGRATE=1 MAIN=""
 WITH_JIRA="" JIRA_SITE="" WITH_GHI="" OBS_STACK=""
 
 while [ $# -gt 0 ]; do
@@ -36,6 +41,7 @@ while [ $# -gt 0 ]; do
     --dry-run) DRY=1; shift ;;
     --check) CHECK=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
+    --app) APP=1; shift ;;
     --github) GITHUB=1; shift ;;
     --mods) MODS=1; shift ;;
     --no-crew) CREW=0; shift ;;
@@ -51,7 +57,7 @@ while [ $# -gt 0 ]; do
     --with-jira=*) WITH_JIRA=1; JIRA_SITE="${1#--with-jira=}"; shift ;;
     --with-github-issues) WITH_GHI=1; shift ;;
     --with-observability=*) OBS_STACK="${1#--with-observability=}"; shift ;;
-    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install.sh: unknown option $1 (--help lists them)" >&2; exit 2 ;;
   esac
 done
@@ -81,7 +87,17 @@ PLUGINS="deep-plan"
 ALL_PLUGINS="deep-plan restack bash-guard lookout crew seamux-mods"
 
 # Where Claude runs a plugin from (the checkout folder for a folder marketplace).
-plugin_root() { python3 "$HERE/crew/bin/crew-plugin-root" "$1" 2>/dev/null; }
+# Through seamux once it is installed (the crew Python is retired at the
+# cutover); the checkout's Python only before seamux exists, until inc4 deletes it.
+# An older seamux without the tool (exit 127) falls back the same way.
+plugin_root() {
+  local r=""
+  [ -x "$LOCALBIN/seamux" ] && r="$("$LOCALBIN/seamux" crew-plugin-root "$1" 2>/dev/null)"
+  if [ -z "$r" ] && [ -f "$HERE/crew/bin/crew-plugin-root" ]; then
+    r="$(python3 "$HERE/crew/bin/crew-plugin-root" "$1" 2>/dev/null)"
+  fi
+  [ -n "$r" ] && printf '%s\n' "$r"
+}
 
 find_node() {
   if command -v node >/dev/null 2>&1; then echo node; return; fi
@@ -139,12 +155,152 @@ print("\n".join(out))
 PY
 }
 
+# ---------------------------------------------------------------- app
+# The seamux app (app/, Tauri) and the `seamux` CLI it carries. A mode of its
+# own: it builds from this checkout and copies the bundle out, so nothing it
+# installs points back here, and it leaves the plugins alone.
+app_version() { sed -n 's/^version = "\(.*\)"/\1/p' "$HERE/app/Cargo.toml" | head -1; }
+
+# The app's lines for --check; non-zero when something is off.
+app_report() {
+  local rc=0 v link
+  if [ ! -d "$APPDIR" ]; then
+    printf '  \033[2m·    seamux.app: not installed (./install.sh --app)\033[0m\n'
+    return 0
+  fi
+  v="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APPDIR/Contents/Info.plist" 2>/dev/null)"
+  ok "seamux.app ${v:-?} in $APPDIR"
+  link="$(readlink "$LOCALBIN/seamux" 2>/dev/null)"
+  if [ "$link" = "$APPDIR/Contents/Resources/bin/seamux" ] && [ -x "$link" ]; then
+    ok "seamux -> $link ($("$LOCALBIN/seamux" --version 2>/dev/null))"
+  else
+    warn "seamux is not linked to the app's CLI in $LOCALBIN (./install.sh --app)"; rc=1
+  fi
+  case ":$PATH:" in *":$LOCALBIN:"*) ;; *) warn "$LOCALBIN is not on PATH"; rc=1 ;; esac
+  return $rc
+}
+
+install_app() {
+  head_ "seamux app"
+  command -v cargo >/dev/null || die "cargo is required for the app (https://rustup.rs)"
+  command -v npm >/dev/null || die "node and npm are required for the app's pages"
+  xcode-select -p >/dev/null 2>&1 || die "the Xcode command line tools are required (xcode-select --install)"
+  ok "toolchain: $(cargo --version | cut -d' ' -f1-2), node $(node --version), Xcode CLT"
+  local v build stage bundle
+  v="$(app_version)"; [ -n "$v" ] || die "no version in app/Cargo.toml"
+  build="$HERE/app/target/release"
+  run "(cd $(q "$HERE/app") && npm ci --silent && npm run build --silent >/dev/null)"
+  did "pages built (app/dist)"
+  run "cargo build --release --quiet --manifest-path $(q "$HERE/app/Cargo.toml") -p seamux-app -p seamux-cli"
+  did "seamux-app and seamux built (release)"
+  # Assemble the bundle in a fresh folder under the build output.
+  if [ "$DRY" = 1 ]; then
+    stage="$build/bundle.XXXXXX"
+  else
+    stage="$(mktemp -d "$build/bundle.XXXXXX")" || die "cannot make a staging folder in $build"
+  fi
+  bundle="$stage/seamux.app"
+  run "mkdir -p $(q "$bundle/Contents/MacOS") $(q "$bundle/Contents/Resources/bin")"
+  run "cp $(q "$build/seamux-app") $(q "$bundle/Contents/MacOS/seamux-app")"
+  run "cp $(q "$build/seamux") $(q "$bundle/Contents/Resources/bin/seamux")"
+  if [ "$DRY" = 1 ]; then
+    say "would write: Info.plist ($APP_BUNDLE_ID $v) and AppIcon.icns from the crate's icon"
+  else
+    cat > "$bundle/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>$APP_BUNDLE_ID</string>
+  <key>CFBundleName</key><string>seamux</string>
+  <key>CFBundleDisplayName</key><string>seamux</string>
+  <key>CFBundleExecutable</key><string>seamux-app</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>$v</string>
+  <key>CFBundleVersion</key><string>$v</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>LSUIElement</key><true/>
+  <key>NSHighResolutionCapable</key><true/>
+</dict></plist>
+PLIST
+    # The icon, from the crate's PNG at the sizes an .icns wants.
+    local set="$stage/AppIcon.iconset" png="$HERE/app/crates/seamux-app/icons/icon.png" px
+    mkdir -p "$set"
+    for px in 16 32 128 256; do
+      sips -z $px $px "$png" --out "$set/icon_${px}x${px}.png" >/dev/null 2>&1
+      sips -z $((px * 2)) $((px * 2)) "$png" --out "$set/icon_${px}x${px}@2x.png" >/dev/null 2>&1
+    done
+    iconutil -c icns "$set" -o "$bundle/Contents/Resources/AppIcon.icns" 2>/dev/null || warn "no app icon (iconutil failed)"
+    ok "bundle assembled: $bundle"
+  fi
+  # Ad-hoc signed, so macOS treats the copied bundle as one unit. A bundle
+  # that failed to build or sign never replaces a working one.
+  if [ "$DRY" != 1 ]; then
+    [ -x "$bundle/Contents/MacOS/seamux-app" ] && [ -x "$bundle/Contents/Resources/bin/seamux" ] \
+      || die "the bundle is incomplete ($bundle); the installed app is unchanged"
+  fi
+  run "codesign --force --deep --sign - $(q "$bundle") >/dev/null 2>&1" \
+    || die "codesign failed for $bundle; the installed app is unchanged"
+  # Swap it in. A previous bundle is moved aside, never deleted, and comes
+  # back if the copy fails.
+  local aside=""
+  if [ -d "$APPDIR" ]; then
+    local tmp="${TMPDIR:-/tmp}"
+    aside="${tmp%/}/seamux.app.replaced.$(date +%Y%m%d%H%M%S)"
+    run "mv $(q "$APPDIR") $(q "$aside")" || die "could not move the old seamux.app aside; nothing changed"
+    did "the previous seamux.app moved to $aside"
+  fi
+  if ! run "mkdir -p $(q "$HOME/Applications") && cp -R $(q "$bundle") $(q "$APPDIR")"; then
+    [ -n "$aside" ] && mv "$APPDIR" "$aside.failed" 2>/dev/null; [ -n "$aside" ] && mv "$aside" "$APPDIR"
+    die "copying the bundle to $APPDIR failed; the previous app is back in place"
+  fi
+  did "installed $APPDIR"
+  # The CLI the hook shims call, linked into ~/.local/bin. A file that is
+  # not a link at that name is someone else's, and is left alone.
+  local target="$APPDIR/Contents/Resources/bin/seamux"
+  if [ -e "$LOCALBIN/seamux" ] && [ ! -L "$LOCALBIN/seamux" ]; then
+    warn "$LOCALBIN/seamux exists and is not a link; left it (move it aside, then re-run)"
+  else
+    run "mkdir -p $(q "$LOCALBIN") && ln -sfn $(q "$target") $(q "$LOCALBIN/seamux")"
+    did "linked $LOCALBIN/seamux -> $target"
+  fi
+  case ":$PATH:" in *":$LOCALBIN:"*) ;; *) warn "$LOCALBIN is not on PATH; add it so hooks and shells find seamux" ;; esac
+  head_ "next"
+  say "open $(q "$APPDIR")    # then Control-Option-Space shows the overlay"
+  say "quit an older copy from its tray icon first, if one is running"
+  say "./install.sh --check         # the app, its version and the link"
+  printf '\n'
+}
+
+if [ "$APP" = 1 ]; then
+  printf '\n\033[1mseamux app install\033[0m  %s\n' "$([ "$DRY" = 1 ] && echo '(dry run: nothing changes)')"
+  install_app
+  exit 0
+fi
+
 # ---------------------------------------------------------------- preflight
 printf '\n\033[1mseamux install\033[0m  %s\n' "$([ "$DRY" = 1 ] && echo '(dry run: nothing changes)')"
 command -v claude  >/dev/null || die "the claude CLI is required (https://code.claude.com) — the features ship as its plugins"
 command -v python3 >/dev/null || die "python3 is required (crew, the option bridge, this script's checks)"
 NODE="$(find_node)"
 [ -n "$NODE" ] || die "node is required (deep-plan, restack, the board renderer)"
+
+# crew runs as seamux since the cutover, its hooks included, and they are silent
+# no-ops without it. So a crew install with no seamux yet builds the app first
+# (the CLI ships inside it), before anything below resolves a plugin root
+# through it. An existing seamux is left as it is: ./install.sh --app rebuilds.
+# Without the toolchain to build it, crew is skipped with a reason and the other
+# plugins still install.
+if [ "$CREW" = 1 ] && [ "$CHECK" = 0 ] && [ "$UNINSTALL" = 0 ] && [ ! -x "$LOCALBIN/seamux" ]; then
+  if command -v cargo >/dev/null && command -v npm >/dev/null && xcode-select -p >/dev/null 2>&1; then
+    say "crew needs seamux, and $LOCALBIN/seamux is not there: building the app first"
+    install_app
+  else
+    warn "crew needs seamux, which needs cargo, npm and the Xcode command line tools to build — skipping crew; install them, then ./install.sh --app and ./install.sh"
+    CREW=0
+    PLUGINS=" $PLUGINS "; PLUGINS="${PLUGINS// crew / }"; PLUGINS="${PLUGINS# }"; PLUGINS="${PLUGINS% }"
+  fi
+fi
 
 # ---------------------------------------------------------------- check
 if [ "$CHECK" = 1 ]; then
@@ -185,6 +341,8 @@ for name in ("deep-plan", "restack", "bash-guard", "lookout", "crew", "seamux-mo
     bad += not p.get("enabled")
 sys.exit(1 if bad else 0)
 PY
+  head_ "app"
+  app_report || rc=1
   head_ "left by the old installer"
   left="$(legacy_report)"
   if [ -z "$left" ]; then ok "nothing"; else printf '%s\n' "$left" | sed 's/^/  warn /'; rc=1; fi

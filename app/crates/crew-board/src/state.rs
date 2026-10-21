@@ -1,0 +1,441 @@
+//! The board's state: gather, rank, compose the news (crew/board/crew-board).
+//!
+//!   seamux crew-board state [--json] [--fast] [--screens] [--selected ID]
+//!   seamux crew-board state --json --fixture FILE   rank {plans, workspaces} from a file
+//!   seamux crew-board write-targets [FILE]          the click table from a state
+//!
+//! Only these are ported. open, push, watch, tidy, close and usage drive the
+//! Dock surface the family's cutover retires, so they stay Python until then.
+
+use std::collections::HashMap;
+use std::io::Read;
+use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::Duration;
+
+use serde_json::{json, Map, Value};
+
+use crew_core::{dp_engine, py, pyjson};
+
+use crate::cmux_cli::{self, cmux};
+use crate::pyval::{get, py_str, truthy};
+use crate::{news, rank};
+
+/// A fast pass will not trust a cached sidebar-state row older than this.
+const FAST_MAX_AGE: i64 = 300;
+
+/// crew-board's docstring, which the Python prints for an unknown subcommand.
+const DOC: &str = "crew-board — the agent board: who needs you, ranked, in a cmux Dock browser surface.\n\n    crew-board open            create the Dock surface and load the board\n    crew-board push            gather, rank, push one update into the page\n    crew-board push --fast     the same, reusing cached branch/PR (~190ms vs ~2.1s)\n    crew-board watch [secs]    event-driven; [secs] is the backstop heartbeat (30s)\n    crew-board state [--json]  the ranked state, without touching cmux\n    crew-board tidy            close duplicate board surfaces\n    crew-board close           close the surface\n    crew-board usage           open the spend dashboard (ccusage) as a Dock tab\n\n    crew-board state --json --fixture FILE   rank {\"plans\", \"workspaces\"} from FILE\n    crew-board write-targets [FILE]          the click table from a state (stdin if no FILE)\n\nThe last two are for probes: they let a probe drive the ranking and the click\ntable through the command line, so the same probe can run against the Python\nand the Rust board (`seamux crew-board`) alike.\n\nWhy a browser surface rather than the sidebar: the custom-sidebar interpreter has no\n@State, no text input, and can only bind cmux's own workspace data -- so it cannot host\na ranked list built from deep-plan state and agent output. A Dock browser surface has\nnone of those limits, and `cmux browser addscript` pushes state into a page that is\nalready open, so the surface never reloads and nothing stateful is lost.\n\nClickable. Rows and chips dispatch through crew-board-intent, a loopback HTTP server, and\nintent.js is pushed alongside the renderer on every update. See board/README.md for why a\nserver rather than the four routes that do not work. A click carries only (row id, action);\ncrew-board-intent resolves the target from the snapshot write_targets() leaves behind.\n\nStill not trusted to act unilaterally: `go N` and `reclaim` post the same `crew:*`\nnotification RPC the Swift sidebar used, and hooks/triage.py gates them -- including its\nconfirm-before-delete on reclaim. The board asks; it does not authorize.\n\nWhimsy carry-over: the four row states are whimsy's shader events -- EV_ATTEND,\nEV_RUNNING, EV_FAILURE (wilt), EV_SUCCESS (ripple) -- with its Everforest constants and,\nmost importantly, its principle: nothing animates unless something is happening. The\ncat in the header states the same thing in one word, the ranking animates when it\nactually changes, and a board with nothing on it is completely still.";
+
+pub fn state_dir() -> PathBuf {
+    py::home().join(".cache").join("cmux-crew")
+}
+
+pub fn targets_file() -> PathBuf {
+    state_dir().join("board-targets.json")
+}
+
+fn sidebar_cache_file() -> PathBuf {
+    state_dir().join("board-sidebar.json")
+}
+
+// ------------------------------------------------------------------ gather
+
+/// deep-plan's tracked plans, keyed by worktree root. Works with cmux down.
+pub fn plans() -> Map<String, Value> {
+    let script = dp_engine::script();
+    let (ok, out) = cmux_cli::run("node", &[&script.to_string_lossy(), "status", "--json"], Duration::from_secs(15));
+    if !ok || out.is_empty() {
+        return Map::new();
+    }
+    match serde_json::from_str::<Value>(&out) {
+        Ok(Value::Array(rows)) => by_root(rows),
+        _ => Map::new(),
+    }
+}
+
+fn by_root(rows: Vec<Value>) -> Map<String, Value> {
+    let mut out = Map::new();
+    for p in rows {
+        if truthy(get(&p, "root")) {
+            out.insert(py_str(get(&p, "root")), p);
+        }
+    }
+    out
+}
+
+static SLUGS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+/// "owner/repo" for a worktree, from its git remote. Cached per process.
+pub fn remote_slug(cwd: &str) -> String {
+    if cwd.is_empty() || !std::path::Path::new(cwd).is_dir() {
+        return String::new();
+    }
+    if let Some(s) = SLUGS.lock().unwrap().get_or_insert_with(HashMap::new).get(cwd) {
+        return s.clone();
+    }
+    let (ok, out) = cmux_cli::run("git", &["-C", cwd, "remote", "get-url", "origin"], Duration::from_secs(5));
+    let mut slug = String::new();
+    if ok && !out.is_empty() {
+        let mut u = out.trim().to_string();
+        if u.starts_with("git@") {
+            u = u.split_once(':').map(|(_, r)| r.to_string()).unwrap_or(u);
+        } else if let Some((_, rest)) = u.split_once("://") {
+            u = rest.split_once('/').map(|(_, r)| r.to_string()).unwrap_or_else(|| rest.to_string());
+        }
+        slug = u.strip_suffix(".git").unwrap_or(&u).trim_matches('/').to_string();
+    }
+    SLUGS.lock().unwrap().get_or_insert_with(HashMap::new).insert(cwd.to_string(), slug.clone());
+    slug
+}
+
+/// [{at, s}] for this worktree's own commits in the news window, newest first.
+pub fn recent_commits(cwd: &str) -> Vec<Value> {
+    if cwd.is_empty() || !std::path::Path::new(cwd).is_dir() {
+        return Vec::new();
+    }
+    let since = format!("--since={}.minutes", (news::hours() * 60.0) as i64);
+    let (ok, out) = cmux_cli::run(
+        "git",
+        &["-C", cwd, "log", "HEAD", "--not", "origin/HEAD", &since, "--no-merges", "-n", "20", "--format=%ct%x09%s"],
+        Duration::from_secs(5),
+    );
+    if !ok {
+        return Vec::new();
+    }
+    py::splitlines(&out)
+        .into_iter()
+        .filter_map(|line| {
+            let (at, subj) = line.split_once('\t').unwrap_or((line, ""));
+            if !at.is_empty() && at.chars().all(|c| c.is_ascii_digit()) {
+                let s: String = subj.chars().take(120).collect();
+                Some(json!({"at": at.parse::<i64>().unwrap_or(0), "s": s}))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn load_sidebar_cache() -> Map<String, Value> {
+    std::fs::read_to_string(sidebar_cache_file())
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default()
+}
+
+fn save_json(path: &PathBuf, v: &Value) {
+    let _ = std::fs::create_dir_all(state_dir());
+    let _ = py::write_atomic(path, pyjson::dumps(v).as_bytes());
+}
+
+fn s_or(v: &Value, default: Value) -> Value {
+    if truthy(v) { v.clone() } else { default }
+}
+
+/// [{id, title, cwd, desc, running, branch, pr, ...}]. Empty when cmux is down.
+pub fn workspaces(fast: bool, forced: Option<&str>) -> Vec<Value> {
+    let Some(c) = cmux_cli::client() else { return Vec::new() };
+    let listed = match c.workspace_list(None) {
+        Ok(v) => get(&v, "workspaces").as_array().cloned().unwrap_or_default(),
+        Err(_) => {
+            cmux_cli::failed();
+            return Vec::new();
+        }
+    };
+    let mut cache = load_sidebar_cache();
+    let now = py::now() as i64;
+    let mut rows: Vec<Value> = Vec::new();
+    for w in &listed {
+        let r = s_or(get(w, "ref"), s_or(get(w, "id"), json!("")));
+        if !truthy(&r) {
+            continue;
+        }
+        let rs = py_str(&r);
+        let wid = s_or(get(w, "id"), r.clone());
+        let wid_s = py_str(&wid);
+        let title_raw = get(w, "title").as_str().unwrap_or("").trim().to_string();
+        let title = if title_raw.is_empty() { r.clone() } else { json!(title_raw) };
+        let hit = if fast { cache.get(&wid_s).cloned() } else { None };
+        if let Some(hit) = hit.filter(|h| truthy(h)) {
+            let at = hit.get("at").and_then(Value::as_f64).unwrap_or(0.0) as i64;
+            if now - at < FAST_MAX_AGE {
+                let mut row = get(&hit, "row").as_object().cloned().unwrap_or_default();
+                let cached_cwd = row.get("cwd").cloned().unwrap_or(json!(""));
+                row.insert("id".into(), wid.clone());
+                row.insert("ref".into(), r.clone());
+                row.insert("title".into(), title);
+                row.insert("cwd".into(), s_or(get(w, "current_directory"), cached_cwd));
+                row.insert("desc".into(), s_or(get(w, "description"), json!("")));
+                row.insert("color".into(), s_or(get(w, "custom_color"), json!("")));
+                let sel = match forced {
+                    Some(f) => get(w, "id").as_str() == Some(f),
+                    None => truthy(get(w, "selected")),
+                };
+                row.insert("selected".into(), json!(sel));
+                rows.push(Value::Object(row));
+                continue;
+            }
+        }
+        let st = c.cli(&["sidebar-state", "--workspace", &rs]);
+        let (ok2, st) = match st {
+            Ok(o) => (o.ok(), cmux_cli::text(&o.stdout, &o.stderr)),
+            Err(e) => (false, e.to_string()),
+        };
+        let mut f: HashMap<String, String> = HashMap::new();
+        if ok2 {
+            for l in py::splitlines(&st) {
+                if let Some((k, v)) = l.trim().split_once('=') {
+                    f.insert(k.trim().to_string(), v.trim().to_string());
+                }
+            }
+        }
+        let pr_raw = f.get("pr").cloned().unwrap_or_default();
+        let pr_parts: Vec<&str> = pr_raw.split_whitespace().collect();
+        let pr_num = if !pr_parts.is_empty() && pr_raw != "none" { pr_parts[0].to_string() } else { "none".into() };
+        let pr_state = pr_parts.get(1).copied().unwrap_or("").to_string();
+        let pr_url_direct = pr_parts.iter().find(|t| t.starts_with("http")).map(|t| t.to_string()).unwrap_or_default();
+        let br_raw: Vec<String> = f.get("git_branch").map(|b| b.split_whitespace().map(String::from).collect()).unwrap_or_default();
+        let branch = br_raw.first().cloned().unwrap_or_else(|| "none".into());
+        let dirty = br_raw.len() > 1 && br_raw[1] != "clean";
+        let cwd = s_or(get(w, "current_directory"), json!(f.get("cwd").cloned().unwrap_or_default()));
+        let selected = match forced {
+            Some(fd) => wid_s == fd,
+            None => truthy(get(w, "selected")),
+        };
+        let mut row = Map::new();
+        row.insert("id".into(), s_or(get(w, "id"), r.clone()));
+        row.insert("title".into(), title);
+        row.insert("cwd".into(), cwd.clone());
+        row.insert("desc".into(), s_or(get(w, "description"), json!("")));
+        row.insert("branch".into(), json!(branch));
+        row.insert("pr".into(), json!(pr_num));
+        row.insert("dirty".into(), json!(dirty));
+        row.insert("running".into(), json!(ok2 && st.contains("claude_code=Running")));
+        row.insert("raw".into(), json!(if ok2 { st.clone() } else { String::new() }));
+        row.insert("ref".into(), r.clone());
+        row.insert("color".into(), s_or(get(w, "custom_color"), json!("")));
+        row.insert("selected".into(), json!(selected));
+        row.insert("pr_state".into(), json!(pr_state));
+        let cwd_s = cwd.as_str().unwrap_or("").to_string();
+        let pr_url = if !pr_url_direct.is_empty() {
+            pr_url_direct
+        } else {
+            let slug = if pr_num != "" && pr_num != "none" { remote_slug(&cwd_s) } else { String::new() };
+            if slug.is_empty() { String::new() } else {
+                format!("https://github.com/{}/pull/{}", slug, pr_num.trim_start_matches('#'))
+            }
+        };
+        row.insert("pr_url".into(), json!(pr_url));
+        row.insert("commits".into(), Value::Array(recent_commits(&cwd_s)));
+        let row = Value::Object(row);
+        if ok2 {
+            cache.insert(wid_s.clone(), json!({"at": now, "row": row.clone()}));
+        }
+        rows.push(row);
+    }
+    let live: Vec<String> = listed.iter().map(|w| py_str(&s_or(get(w, "id"), get(w, "ref").clone()))).collect();
+    cache.retain(|k, _| live.contains(k));
+    save_json(&sidebar_cache_file(), &Value::Object(cache));
+    rows
+}
+
+/// The last non-empty thing the agent said; one cmux call, so opt-in.
+pub fn last_line(ws_id: &str) -> String {
+    let (ok, out) = cmux(&["read-screen", "--workspace", ws_id, "--lines", "4"]);
+    if !ok {
+        return String::new();
+    }
+    for l in py::splitlines(&out).into_iter().rev() {
+        let s = l.trim();
+        let furniture = ["╭", "│", "╰", "▐", ">", "?"].iter().any(|p| s.starts_with(p));
+        if !s.is_empty() && !furniture && s.chars().count() > 8 {
+            return s.chars().take(180).collect();
+        }
+    }
+    String::new()
+}
+
+// ------------------------------------------------------------------- build
+
+fn local_hms() -> String {
+    // SAFETY: localtime_r writes only into the tm we hand it.
+    unsafe {
+        let t = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&t, &mut tm);
+        format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
+    }
+}
+
+/// Options parsed from the argument list, as the Python reads sys.argv.
+pub struct Opts {
+    pub screens: bool,
+    pub fast: bool,
+    pub selected: Option<String>,
+    pub fixture: Option<(Map<String, Value>, Vec<Value>)>,
+}
+
+/// `{"plans": {root: plan} or [plan], "workspaces": [...]}` from a file.
+pub fn load_fixture(path: &str) -> Result<(Map<String, Value>, Vec<Value>), String> {
+    let fx: Value = std::fs::read_to_string(path)
+        .map_err(|e| py::os_error(&e, std::path::Path::new(path)))
+        .and_then(|s| serde_json::from_str(&s).map_err(|e| format!("{path}: {e}")))?;
+    let ps = s_or(get(&fx, "plans"), json!({}));
+    let plans = match ps {
+        Value::Array(a) => by_root(a),
+        Value::Object(o) => o,
+        _ => Map::new(),
+    };
+    let wss = s_or(get(&fx, "workspaces"), json!([])).as_array().cloned().unwrap_or_default();
+    Ok((plans, wss))
+}
+
+pub fn build(o: &Opts) -> Value {
+    let (plan_by_root, wss) = match &o.fixture {
+        Some((p, w)) => (p.clone(), w.clone()),
+        None => (plans(), workspaces(o.fast, o.selected.as_deref())),
+    };
+    let stale = wss.is_empty();
+    let (rows, quiet) = if stale {
+        (rank::rank_plans_only(&plan_by_root), Vec::new())
+    } else {
+        rank::rank(&wss, &plan_by_root, o.screens)
+    };
+    let all: Vec<Value> = rows.into_iter().chain(quiet.iter().cloned()).collect();
+    let news = news::compose_now(&all);
+    let n = plan_by_root.len();
+    let mut d = Map::new();
+    d.insert("rows".into(), Value::Array(all));
+    d.insert("quietCount".into(), json!(quiet.len()));
+    d.insert("quiet".into(), json!(if !quiet.is_empty() { "" }
+        else if stale { "cmux unreachable — plan state only, no workspaces" }
+        else { "nothing else in flight" }));
+    d.insert("stamp".into(), json!(local_hms()));
+    d.insert("stale".into(), json!(stale));
+    d.insert("src".into(), json!(format!("{} plan{}", n, if n == 1 { "" } else { "s" })));
+    d.insert("news".into(), news);
+    Value::Object(d)
+}
+
+/// Persist the row -> action-target map crew-board-intent resolves clicks from.
+pub fn write_targets(d: &Value) {
+    let mut targets = Map::new();
+    for r in get(d, "rows").as_array().into_iter().flatten() {
+        let mut t = Map::new();
+        for k in ["id", "ref", "cwd", "pr_url", "slug", "name", "issue_url"] {
+            t.insert(k.into(), r.get(k).cloned().unwrap_or(json!("")));
+        }
+        let key = match get(r, "id") {
+            Value::Null => "null".to_string(),
+            Value::Bool(b) => b.to_string(),
+            v => py_str(v),
+        };
+        targets.insert(key, Value::Object(t));
+    }
+    save_json(&targets_file(), &Value::Object(targets));
+}
+
+fn print_state(d: &Value) {
+    println!("{} · {}", py_str(get(d, "stamp")), py_str(get(d, "src")));
+    for r in get(d, "rows").as_array().into_iter().flatten() {
+        let name: String = py_str(get(r, "name")).chars().take(26).collect();
+        let said: String = py_str(get(r, "said")).chars().take(76).collect();
+        println!("  {:<8} {:<26} {}", py_str(get(r, "kind")), name, said);
+    }
+    if truthy(get(d, "quiet")) {
+        println!("  {:<8} {}", "quiet", py_str(get(d, "quiet")));
+    }
+    let news = get(d, "news");
+    let items = get(news, "items").as_array().cloned().unwrap_or_default();
+    if !items.is_empty() {
+        let h = crate::pyval::py_float(get(news, "hours")).unwrap_or(0.0);
+        println!("news · last {}h", py::percent_g(h));
+        for it in items {
+            let text = py_str(get(&it, "text")).replace("{{", "").replace("}}", "").replace('`', "");
+            println!("  {:<8} {}", py_str(get(&it, "tier")), text);
+        }
+    }
+}
+
+fn flag(args: &[String], f: &str) -> bool {
+    args.iter().any(|a| a == f)
+}
+
+fn after(args: &[String], f: &str) -> Option<String> {
+    let i = args.iter().position(|a| a == f)?;
+    args.get(i + 1).cloned()
+}
+
+fn cmd_state(args: &[String]) -> i32 {
+    let fixture = if flag(args, "--fixture") {
+        let Some(path) = after(args, "--fixture") else {
+            eprintln!("crew-board: --fixture needs a file");
+            return 1;
+        };
+        match load_fixture(&path) {
+            Ok(fx) => Some(fx),
+            Err(e) => {
+                eprintln!("crew-board: {e}");
+                return 1;
+            }
+        }
+    } else {
+        None
+    };
+    let o = Opts {
+        screens: flag(args, "--screens"),
+        fast: flag(args, "--fast"),
+        // Python's `if forced`: an empty id is no override.
+        selected: after(args, "--selected").filter(|s| !s.is_empty()),
+        fixture,
+    };
+    let d = build(&o);
+    if flag(args, "--json") {
+        println!("{}", pyjson::dumps_indent(&d, 2));
+    } else {
+        print_state(&d);
+    }
+    0
+}
+
+fn cmd_write_targets(args: &[String]) -> i32 {
+    let mut body = String::new();
+    let read = match args.get(1) {
+        Some(p) => std::fs::read_to_string(p).map(|s| body = s),
+        None => std::io::stdin().read_to_string(&mut body).map(|_| ()),
+    };
+    if let Err(e) = read {
+        eprintln!("crew-board: {e}");
+        return 1;
+    }
+    match serde_json::from_str::<Value>(&body) {
+        Ok(d) => {
+            write_targets(&d);
+            0
+        }
+        Err(e) => {
+            eprintln!("crew-board: the state is not JSON: {e}");
+            1
+        }
+    }
+}
+
+pub fn main(args: &[String]) -> i32 {
+    match args.first().map(String::as_str).unwrap_or("state") {
+        "state" => cmd_state(args),
+        "write-targets" => cmd_write_targets(args),
+        sub @ ("open" | "push" | "watch" | "close" | "tidy" | "usage") => {
+            eprintln!(
+                "seamux crew-board: `{sub}` drives the Dock board, which is not ported \
+                 (the cutover retires it); run the Python: crew/board/crew-board {sub}"
+            );
+            2
+        }
+        _ => {
+            println!("{DOC}");
+            2
+        }
+    }
+}

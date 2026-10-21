@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>seamux</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --fg: #1d1d1f; --muted: #6e6e73; --bg: #fbfbfd; --strip: #ececf0; --line: #d8d8de;
+        --on: #ffffff; --accent: #b7791f; --bad: #c0392b; --good: #2f855a;
+        --card: #ffffff; --shade: rgba(0, 0, 0, 0.06); --term: #f3f3f6; --term-fg: #2b2b30;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #f5f5f7; --muted: #a1a1a6; --bg: #1c1c1e; --strip: #121214; --line: #2c2c30;
+          --on: #2a2a2e; --accent: #f2c462; --bad: #ff6b5b; --good: #68d391;
+          --card: #232326; --shade: rgba(0, 0, 0, 0.4); --term: #161618; --term-fg: #d8d8dc;
+        }
+      }
+      html, body { height: 100%; }
+      body {
+        margin: 0; display: flex; flex-direction: column; background: var(--bg); color: var(--fg);
+        font: 13px/1.45 -apple-system, system-ui, sans-serif; overflow: hidden;
+      }
+      header {
+        display: flex; align-items: center; gap: 4px; padding: 8px 10px; background: var(--strip);
+        border-bottom: 1px solid var(--line); user-select: none; -webkit-user-select: none; cursor: default;
+      }
+      .mark { width: 16px; height: 16px; margin: 0 8px 0 2px; flex: none; }
+      #strip { display: flex; gap: 2px; }
+      .tab {
+        font: inherit; color: var(--muted); background: none; border: 0; border-radius: 6px;
+        padding: 4px 12px; cursor: pointer;
+      }
+      .tab:hover { color: var(--fg); }
+      .tab.on { color: var(--fg); background: var(--on); box-shadow: 0 0 0 1px var(--line); }
+      .grow { flex: 1; align-self: stretch; }
+      #conn { color: var(--muted); font-size: 12px; margin-right: 8px; white-space: nowrap; }
+      #conn::before {
+        content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+        margin-right: 6px; vertical-align: 1px; background: var(--muted);
+      }
+      #conn.good::before { background: var(--good); }
+      #conn.bad::before { background: var(--bad); }
+      #hide { font: inherit; background: none; border: 0; color: var(--muted); cursor: pointer; padding: 2px 6px; }
+      #hide:hover { color: var(--fg); }
+      main { flex: 1; position: relative; min-height: 0; }
+      .panel { position: absolute; inset: 0; overflow: auto; }
+      .panel iframe { width: 100%; height: 100%; border: 0; display: block; background: var(--bg); }
+      .note { max-width: 460px; margin: 18vh auto 0; text-align: center; color: var(--muted); }
+      .retry {
+        font: inherit; margin-top: 10px; padding: 5px 14px; border-radius: 6px; cursor: pointer;
+        border: 1px solid var(--line); background: var(--on); color: var(--fg);
+      }
+      .muted { color: var(--muted); }
+      .bad { color: var(--bad); }
+      code { font: 12px ui-monospace, Menlo, monospace; }
+    </style>
+  </head>
+  <body>
+    <header data-tauri-drag-region>
+      <svg class="mark" viewBox="0 0 16 16" aria-hidden="true">
+        <rect x="0.5" y="0.5" width="15" height="15" rx="4" fill="currentColor" opacity="0.18" />
+        <path d="M3 13 13 3" stroke="var(--accent)" stroke-width="1.6" stroke-linecap="round" />
+        <path d="M4.5 9.5l2 2M6.5 7.5l2 2M8.5 5.5l2 2" stroke="var(--accent)" stroke-width="1.2" stroke-linecap="round" />
+      </svg>
+      <nav id="strip"></nav>
+      <div class="grow" data-tauri-drag-region></div>
+      <span id="conn">cmux</span>
+      <button id="hide" title="Hide (Esc or ⌃⌥Space)" aria-label="Hide">
+        <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">
+          <path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+        </svg>
+      </button>
+    </header>
+    <main id="stage">
+      <section id="wall"></section>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

@@ -5,6 +5,9 @@
     crew-resume --all        finder, every project
     crew-resume <query>      finder, pre-filtered
     crew-resume --reindex    force a full rebuild of the transcript cache
+    crew-resume --rows-json  the finder's rows as JSON, in the order it would
+                             show them for the query and scope, then exit;
+                             live_known is false when cmux did not answer
 
 One row per workspace, keyed by its directory, in one of four states:
 
@@ -30,6 +33,7 @@ interpreter has no @State and therefore no TextField. See FINDINGS.md.
 """
 
 import curses
+import json
 import os
 import subprocess
 import sys
@@ -180,6 +184,19 @@ def order(rows, terms):
             scored.append((s, r))
     scored.sort(key=lambda p: (-p[0], STATES.index(p[1]["state"]), -p[1]["when"]))
     return [r for _, r in scored]
+
+
+def rows_json(rows, query, scope_root):
+    """What the picker would list first, for scripts and the probe: the same
+    scope filter and order, the fields a row is judged by, no curses."""
+    pool = [r for r in rows if r["cwd"].startswith(scope_root)] if scope_root else rows
+    shown = order(pool, [t for t in query.lower().split() if t])
+    return {"scope": scope_root, "total": len(rows), "rows": [
+        {"cwd": r["cwd"], "state": r["state"], "title": r["title"], "latest": r["latest"],
+         "branch": r["branch"], "when": r["when"], "exists": r["exists"],
+         "ws": (r["ws"] or {}).get("id") or "",
+         "sessions": [s.get("id") or "" for s in r["sessions"]]}
+        for r in shown]}
 
 
 def scope_of(cwd):
@@ -431,7 +448,9 @@ def main():
         t0 = time.time()
         sessions, seen = W.build_index(force)
         if force:
-            print(f"indexed {seen} transcripts in {time.time() - t0:.1f}s")
+            # On stderr under --rows-json, where stdout is the JSON alone.
+            print(f"indexed {seen} transcripts in {time.time() - t0:.1f}s",
+                  file=sys.stderr if "--rows-json" in args else sys.stdout)
         force = False
         live = W.live_workspaces()
         if live is None:
@@ -440,6 +459,11 @@ def main():
             ui["flash"] = ui.get("flash") or \
                 "✗ cmux did not list its workspaces — open ones show as past or archived"
         rows = build_rows(sessions, live or [], W.load_archive())
+
+        if "--rows-json" in args:
+            print(json.dumps(dict(rows_json(rows, query, scope_root), live_known=live is not None),
+                             indent=1))
+            return 0
 
         result = curses.wrapper(picker, rows, ui, scope_root)
         if result is None:

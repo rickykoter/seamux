@@ -755,6 +755,29 @@ branch is clipped from the **head** (`…prelim-invoice-dedupe-match-process`), 
 every branch starts `dev/` and the tail is the half worth keeping — the full value
 is always in the tooltip.
 
+## The served board
+
+The same board also comes as a page of the intent server: `GET /board` serves
+`board.html` with `render.js`, `intent.js` and a small boot script, for the
+seamux app's tab or any cmux browser pane (`http://127.0.0.1:<port>/board`). It
+carries the token the way `/plan/` pages do, so the Host check keeps a rebound
+page from reading it.
+
+The page does not wait for a push. Its boot script opens `GET /board/events`, a
+server-sent-events stream of the ranked state (`crew-board state --json`), one
+`state` event per change and the latest one at once on connect. One worker per
+server builds it the way `crew-board watch` does: cmux's wake events, a stat of
+deep-plan's state files, and a heartbeat (`CREW_BOARD_HEARTBEAT`, 30s) for CI,
+review and Jira, which no event announces. A build that changes neither rows nor
+news is not sent. Each build also writes `board-targets.json`, so a click on the
+served page resolves through `/do` exactly as a Dock click does. The worker stops
+a minute after the last page closes.
+
+`EventSource` reconnects by itself; while it is down the stamp reads
+"· reconnecting". `board.html` itself is unchanged, so the Dock push still works
+until the family's cutover retires it. Both servers serve `/board`: the Python
+`crew-board-intent` today, and `seamux crew-board-intent` after the cutover.
+
 ## Clickable, through a loopback server
 
 The chips and rows are click targets. The Swift sidebar had them and losing them was a

@@ -107,27 +107,38 @@ export function deterministicCheck(spec, root) {
   return { warnings, resolvable };
 }
 
-// The one shared client (crew/hooks/typesafe.py): env override for the probe,
-// the installed crew tree, then the repo layout for work inside seamux itself.
-export function clientPath() {
-  // The env override is authoritative, not a first preference: the probe
-  // points it at a mock (or at nothing, to force the deterministic-only
-  // path), and falling through to the machine's real client from under a
-  // test would put a probe on the network.
+// The one shared client, as a command: `seamux typesafe` (crew's client,
+// ported to Rust) at $SEAMUX_BIN or ~/.local/bin/seamux; until the crew
+// Python is deleted, its typesafe.py from the installed tree or this checkout
+// is the fallback. The env override is authoritative, not a first preference:
+// the probe points it at a mock (or at nothing, to force the
+// deterministic-only path), and falling through to the machine's real client
+// from under a test would put a probe on the network.
+export function clientCmd() {
+  const exists = (p) => { try { return fs.existsSync(p); } catch { return false; } };
   if ("DEEP_PLAN_TYPESAFE_CLIENT" in process.env) {
     const c = process.env.DEEP_PLAN_TYPESAFE_CLIENT;
-    try { return c && fs.existsSync(c) ? c : ""; } catch { return ""; }
+    return c && exists(c) ? ["python3", c] : null;
+  }
+  // Only a seamux that lists the tool: an older build without it would read
+  // as "TypeSafe not configured" and never reach the fallback below.
+  const lists = (s) => {
+    const r = spawnSync(s, ["--tools"], { encoding: "utf8", timeout: 5000 });
+    return r.status === 0 && (r.stdout || "").split("\n").includes("typesafe");
+  };
+  for (const s of [process.env.SEAMUX_BIN, path.join(os.homedir(), ".local", "bin", "seamux")]) {
+    if (s && exists(s) && lists(s)) return [s, "typesafe"];
   }
   const here = path.dirname(new URL(import.meta.url).pathname);
-  const candidates = [
+  const py = [
     path.join(os.homedir(), ".config", "cmux", "crew", "hooks", "typesafe.py"),
     path.join(here, "..", "..", "crew", "hooks", "typesafe.py"),
-  ];
-  return candidates.find(c => { try { return fs.existsSync(c); } catch { return false; } }) || "";
+  ].find(exists);
+  return py ? ["python3", py] : null;
 }
 
-function clientAvailable(client) {
-  const r = spawnSync("python3", [client, "available"], { timeout: 5000 });
+function clientAvailable(cmd) {
+  const r = spawnSync(cmd[0], [...cmd.slice(1), "available"], { timeout: 5000 });
   return r.status === 0;
 }
 
@@ -154,7 +165,7 @@ export function judgeFacts(resolvable, client) {
       },
     };
   });
-  const r = spawnSync("python3", [client, "ask"],
+  const r = spawnSync(client[0], [...client.slice(1), "ask"],
     { input: JSON.stringify({ state, questions }), encoding: "utf8", timeout: 45000 });
   if (r.status !== 0 || !r.stdout) return [];
   let answers;
@@ -178,7 +189,7 @@ export function judgeFacts(resolvable, client) {
 export function checkEvidence(spec, root) {
   try {
     const { warnings, resolvable } = deterministicCheck(spec, root);
-    const client = clientPath();
+    const client = clientCmd();
     if (client && resolvable.length && clientAvailable(client)) {
       try { warnings.push(...judgeFacts(resolvable, client)); }
       catch { /* judged half is optional by construction */ }

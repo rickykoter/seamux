@@ -158,8 +158,10 @@ cmd_up() {
   #
   # Never fatal. A worktree with no color, no Peacock, or an unparseable
   # settings.json is still a worktree you asked to open.
-  if [ -x "$CREW_BIN/crew-color" ]; then
-    "$CREW_BIN/crew-color" apply "$ROOT" >/dev/null 2>&1 || true
+  # crew-color is `seamux crew-color` since the cutover.
+  SEAMUX="${SEAMUX_BIN:-$HOME/.local/bin/seamux}"
+  if [ -x "$SEAMUX" ]; then
+    "$SEAMUX" crew-color apply "$ROOT" >/dev/null 2>&1 || true
   fi
   say "opening $ROOT${BRANCH:+ ($BRANCH)} in VS Code"
   "$CODE_BIN" "$ROOT" || die "code exited nonzero"

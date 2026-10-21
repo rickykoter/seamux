@@ -1,0 +1,20 @@
+[package]
+name = "seamux-cli"
+description = "The seamux binary: `seamux <tool> [args...]`, one entry per ported crew tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "seamux"
+path = "src/main.rs"
+
+[dependencies]
+cmux.workspace = true
+crew-board = { path = "../crew-board" }
+crew-core.workspace = true
+crew-store = { path = "../crew-store" }
+crew-hooks = { path = "../crew-hooks" }
+crew-cli = { path = "../crew-cli" }
+serde_json.workspace = true
