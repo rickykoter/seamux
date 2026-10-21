@@ -130,6 +130,10 @@ for d in (BIN, NOCC):
     if crew_impl.seamux_bin():
         # The shims exec `seamux` from PATH: make it the one crew_impl runs.
         os.symlink(os.path.abspath(crew_impl.seamux_bin()), os.path.join(d, "seamux"))
+if crew_impl.seamux_bin():
+    # ...and from ~/.local/bin, where install.sh links it and the shims look.
+    os.makedirs(os.path.join(HOME, ".local", "bin"))
+    os.symlink(os.path.abspath(crew_impl.seamux_bin()), os.path.join(HOME, ".local", "bin", "seamux"))
 
 GIT = shutil.which("git")
 SYS_PATH = os.pathsep.join(p for p in ("/usr/bin", "/bin", "/usr/sbin", "/sbin",
@@ -198,7 +202,10 @@ def env_for(ws="ws-1", path=BIN, **extra):
                CREW_LIVE=LIVE, PATH=path + os.pathsep + SYS_PATH)
     if RUST:
         # What crew_impl.env adds, with CREW_HOME on the copy under test.
-        env.update(CREW_IMPL=crew_impl.mode(), CREW_CMUX_TRANSPORT="cli", CREW_HOME=CREW)
+        # SEAMUX_TOOLS_BY_PATH: seamux spawns crew tools from the copy, by
+        # path, so the stubs below see them as they see the bash's spawns.
+        env.update(CREW_IMPL=crew_impl.mode(), CREW_CMUX_TRANSPORT="cli", CREW_HOME=CREW,
+                   SEAMUX_TOOLS_BY_PATH="1")
     if ws:
         env["CMUX_WORKSPACE_ID"] = ws
     env.update({k: v for k, v in extra.items() if v is not None})
@@ -308,6 +315,21 @@ check("CREW_DISABLED makes it a no-op", r.returncode == 0 and not log(), log())
 touch("disabled")
 r = hook("stop")
 check("…and so does the disabled file", r.returncode == 0 and not log() and not spawns(), log())
+
+# The seamux shims without a seamux: every event a no-op, whichever way the run goes.
+if os.path.exists(os.path.join(CREW, "hooks", "seamux-hook.sh")):
+    reset()
+    touch("lane-ws-1")
+    quiet_all = True
+    for ev in ("session", "pretool", "ask", "answered", "task", "notification", "stop", "end"):
+        r = run([BASH, os.path.join(CREW, "hooks", "seamux-hook.sh"), ev], payload(),
+                env_for(SEAMUX_BIN=os.path.join(T, "no-seamux"), CLAUDE_PLUGIN_ROOT=CREW))
+        quiet_all = quiet_all and r.returncode == 0 and not r.stdout and not r.stderr
+    r = run([BASH, os.path.join(CREW, "hooks", "seamux-asked.sh"), "1"], payload(),
+            env_for(SEAMUX_BIN=os.path.join(T, "no-seamux")))
+    check("without seamux, the shims are no-ops: exit 0, nothing printed, nothing sent",
+          quiet_all and r.returncode == 0 and not r.stdout and not log() and not spawns()
+          and marker("lane-ws-1"), log() + spawns())
 
 # --- session ---------------------------------------------------------------------------
 print("session")
@@ -479,12 +501,23 @@ check("phase and the five feed tokens are dropped in one write, others kept",
       desc() == "ci:green" and sum("set-description" in l for l in L) == 1, f"{desc()} {L}")
 check("the turn banner names the branch",
       f"notify --title {LABEL} --subtitle crew:turn --body Turn complete — {BRANCH}" in L, L)
+PLAIN = os.path.join(T, "plain-dir")
+os.makedirs(PLAIN, exist_ok=True)
+reset([row()])
+hook("stop", stdin=payload(cwd=PLAIN))
+check("outside a repo the banner has no branch, titled with the directory",
+      "notify --title plain-dir --subtitle crew:turn --body Turn complete" in log(), log())
+reset([row(desc="ci:green phase:working feed:x")])
+hook("stop")
 check("cachefacts --stop runs with transcript, session and label",
       f"cachefacts.py --stop {TRANSCRIPT} s-1 {LABEL}" in spawns(), spawns())
 check("…and --sleep is detached with session first",
       wait_for(lambda: f"cachefacts.py --sleep s-1 {TRANSCRIPT} {LABEL}" in spawns()), spawns())
 check("the artifact index is kicked", wait_for(lambda: "crew-artifacts index" in spawns()), spawns())
 check("a fresh sync stamp holds crew-sync back", "crew-sync" not in spawns(), spawns())
+open(os.path.join(STATE, "sync-stamp"), "w").close()
+hook("stop")
+check("an empty sync stamp counts as 0 and syncs", wait_for(lambda: "crew-sync" in spawns()), spawns())
 check("TypeSafe unavailable: no asked.sh judgment",
       "asked.py available" in spawns() and not any(s.startswith("asked.py judge") for s in spawns()),
       spawns())
