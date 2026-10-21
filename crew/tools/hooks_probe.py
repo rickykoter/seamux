@@ -873,6 +873,31 @@ check("past the TTL: cold", r.stdout == QUIET + " · 🧊 cache cold\n", r.stdou
 r = statusline("not json")
 check("an unreadable payload drops the cache segment only", r.stdout == QUIET + "\n", r.stdout)
 
+# Odd values meet Python's rules where Python meets them: `x or 0` first, the
+# TypeError only at arithmetic, max() keeping a NaN that comes first.
+blocks({"totalTokens": 100}, {"isActive": True, "totalTokens": {},
+                              "projection": {"totalTokens": [], "remainingMinutes": -5}})
+r = statusline()
+check("empty containers count as 0, and a negative minute count prints as is",
+      r.stdout == "⏱ 0% of 5h window (0/100) · -5m left\n", r.stdout)
+blocks({"totalTokens": 1_500_000})
+r = statusline(json.dumps({"context_window": {"current_usage": {
+    "cache_creation_input_tokens": 5, "cache_read_input_tokens": "x"}}}))
+check("a string the break test never reaches is no error", r.stdout == QUIET + "\n"
+      and r.returncode == 0, r.stdout + r.stderr)
+open(BLOCKS, "w").write('{"blocks": [{"totalTokens": NaN}]}')
+r = statusline()
+check("a NaN budget fails as the Python fails: exit 1, no line", r.returncode == 1 and not r.stdout,
+      r.stdout)
+open(BLOCKS, "w").write('{"blocks": [{"totalTokens": 5}, {"totalTokens": NaN}]}')
+r = statusline()
+check("…but a NaN after a number never wins max()", r.stdout == "⏱ window quiet · budget 5\n", r.stdout)
+open(BLOCKS, "w").write('{"blocks": [{"isActive": true, "totalTokens": 123456789012345678901234567890}]}')
+r = statusline()
+check("an integer past 64 bits divides as Python's does",
+      r.stdout == "⏱ 100% of 5h window (123456789012345685803008.0M/123456789012345685803008.0M)\n",
+      r.stdout)
+
 shutil.rmtree(T, ignore_errors=True)
 n = len(results)
 print(f"\n{sum(results)}/{n} hold" + ("" if all(results) else " — FAILURES above"))
