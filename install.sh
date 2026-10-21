@@ -10,6 +10,10 @@
 #   ./install.sh --app [--dry-run]  build the seamux app (app/) into
 #                               ~/Applications/seamux.app and link its seamux CLI
 #                               into ~/.local/bin; needs cargo, node and Xcode CLT
+#   ./install.sh --app --from WORKTREE|COMMIT
+#                               the same, built from a worktree or any commit
+#                               (a branch, origin/<branch>, a sha), to try a
+#                               change before it merges; a running app restarts
 #
 # A thin bootstrap over `claude plugin`. It adds this checkout as the `seamux`
 # marketplace (a folder marketplace: the plugins run from the checkout itself,
@@ -33,7 +37,7 @@ MARKET="seamux"
 
 APPDIR="$HOME/Applications/seamux.app"
 APP_BUNDLE_ID="dev.seamux.app"
-DRY=0 CHECK=0 UNINSTALL=0 APP=0 GITHUB=0 MODS=0 CREW=1 RESTACK=1 GUARD=1 LOOKOUT=1 APPLY=1 MIGRATE=1 MAIN=""
+DRY=0 CHECK=0 UNINSTALL=0 APP=0 GITHUB=0 MODS=0 CREW=1 RESTACK=1 GUARD=1 LOOKOUT=1 APPLY=1 MIGRATE=1 MAIN="" FROM=""
 WITH_JIRA="" JIRA_SITE="" WITH_GHI="" OBS_STACK=""
 
 while [ $# -gt 0 ]; do
@@ -42,6 +46,9 @@ while [ $# -gt 0 ]; do
     --check) CHECK=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     --app) APP=1; shift ;;
+    --from)
+      case "${2:-}" in ""|-*) echo "install.sh: --from needs a WORKTREE or a COMMIT (--help lists the options)" >&2; exit 2 ;; esac
+      FROM="$2"; shift 2 ;;
     --github) GITHUB=1; shift ;;
     --mods) MODS=1; shift ;;
     --no-crew) CREW=0; shift ;;
@@ -57,7 +64,7 @@ while [ $# -gt 0 ]; do
     --with-jira=*) WITH_JIRA=1; JIRA_SITE="${1#--with-jira=}"; shift ;;
     --with-github-issues) WITH_GHI=1; shift ;;
     --with-observability=*) OBS_STACK="${1#--with-observability=}"; shift ;;
-    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install.sh: unknown option $1 (--help lists them)" >&2; exit 2 ;;
   esac
 done
@@ -158,8 +165,60 @@ PY
 # ---------------------------------------------------------------- app
 # The seamux app (app/, Tauri) and the `seamux` CLI it carries. A mode of its
 # own: it builds from this checkout and copies the bundle out, so nothing it
-# installs points back here, and it leaves the plugins alone.
-app_version() { sed -n 's/^version = "\(.*\)"/\1/p' "$HERE/app/Cargo.toml" | head -1; }
+# installs points back here, and it leaves the plugins alone. That is also why
+# --from is safe for the app alone: the bundle keeps nothing of the tree it was
+# built from, so a worktree can be removed after.
+SRC="$HERE" SRC_LABEL="" CARGO_TARGET="" FROM_SHA=""
+app_version() {
+  # A dry run exports nothing, so a commit's version comes from git.
+  if [ -f "$SRC/app/Cargo.toml" ]; then cat "$SRC/app/Cargo.toml"
+  elif [ -n "$FROM_SHA" ]; then git -C "$HERE" show "$FROM_SHA:app/Cargo.toml"
+  fi 2>/dev/null | sed -n 's/^version = "\(.*\)"/\1/p' | head -1
+}
+
+# Where --from builds: a folder as it is (uncommitted edits included), or a
+# commit exported into a cache folder. Exports share one cargo target folder,
+# so trying commit after commit rebuilds only what changed.
+resolve_from() {
+  local sha cache="${XDG_CACHE_HOME:-$HOME/.cache}/seamux/app-from"
+  if [ -z "$FROM" ]; then
+    SRC_LABEL="$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null)"
+  elif [ -d "$FROM" ]; then
+    SRC="$(cd -P -- "$FROM" && pwd)"
+    [ -f "$SRC/app/Cargo.toml" ] || die "--from $FROM: no app/Cargo.toml there (a seamux checkout or worktree?)"
+    SRC_LABEL="$(git -C "$SRC" rev-parse --short HEAD 2>/dev/null)"
+    [ -n "$(git -C "$SRC" status --porcelain -- app 2>/dev/null)" ] && SRC_LABEL="$SRC_LABEL+edits"
+  else
+    sha="$(git -C "$HERE" rev-parse --verify --quiet "$FROM^{commit}")"
+    if [ -z "$sha" ]; then
+      git -C "$HERE" fetch --quiet origin 2>/dev/null
+      sha="$(git -C "$HERE" rev-parse --verify --quiet "$FROM^{commit}")"
+    fi
+    [ -n "$sha" ] || die "--from $FROM: not a folder, and not a commit in $HERE (even after git fetch)"
+    SRC="$cache/$sha" FROM_SHA="$sha"
+    if [ ! -f "$SRC/app/Cargo.toml" ]; then
+      run "mkdir -p $(q "$SRC") && git -C $(q "$HERE") archive $(q "$sha") app | tar -x -C $(q "$SRC")" \
+        || die "--from $FROM: could not export $sha"
+    fi
+    did "exported $FROM ($(git -C "$HERE" rev-parse --short "$sha")) to $SRC"
+    SRC_LABEL="$(git -C "$HERE" rev-parse --short "$sha")"
+    CARGO_TARGET="$cache/target"
+  fi
+  [ -n "$FROM" ] && SRC_LABEL="$SRC_LABEL ${FROM}"
+}
+
+# Restart the app when it was running, so what was just installed is what runs.
+restart_app() {
+  pgrep -f "$APPDIR/Contents/MacOS/seamux-app" >/dev/null || return 0
+  if [ "$DRY" = 1 ]; then say "would restart the running seamux app"; return 0; fi
+  osascript -e "tell application id \"$APP_BUNDLE_ID\" to quit" >/dev/null 2>&1
+  local i; for i in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -f "$APPDIR/Contents/MacOS/seamux-app" >/dev/null || break; sleep 0.3
+  done
+  pkill -f "$APPDIR/Contents/MacOS/seamux-app" 2>/dev/null; sleep 0.3
+  pkill -9 -f "$APPDIR/Contents/MacOS/seamux-app" 2>/dev/null
+  open "$APPDIR" && ok "restarted the seamux app"
+}
 
 # The app's lines for --check; non-zero when something is off.
 app_report() {
@@ -168,8 +227,10 @@ app_report() {
     printf '  \033[2m·    seamux.app: not installed (./install.sh --app)\033[0m\n'
     return 0
   fi
+  local from
   v="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APPDIR/Contents/Info.plist" 2>/dev/null)"
-  ok "seamux.app ${v:-?} in $APPDIR"
+  from="$(/usr/libexec/PlistBuddy -c 'Print :SeamuxBuiltFrom' "$APPDIR/Contents/Info.plist" 2>/dev/null)"
+  ok "seamux.app ${v:-?} in $APPDIR${from:+, built from $from}"
   link="$(readlink "$LOCALBIN/seamux" 2>/dev/null)"
   if [ "$link" = "$APPDIR/Contents/Resources/bin/seamux" ] && [ -x "$link" ]; then
     ok "seamux -> $link ($("$LOCALBIN/seamux" --version 2>/dev/null))"
@@ -186,12 +247,14 @@ install_app() {
   command -v npm >/dev/null || die "node and npm are required for the app's pages"
   xcode-select -p >/dev/null 2>&1 || die "the Xcode command line tools are required (xcode-select --install)"
   ok "toolchain: $(cargo --version | cut -d' ' -f1-2), node $(node --version), Xcode CLT"
-  local v build stage bundle
+  local v build stage bundle target
+  resolve_from
   v="$(app_version)"; [ -n "$v" ] || die "no version in app/Cargo.toml"
-  build="$HERE/app/target/release"
-  run "(cd $(q "$HERE/app") && npm ci --silent && npm run build --silent >/dev/null)"
+  target="${CARGO_TARGET:-$SRC/app/target}"
+  build="$target/release"
+  run "(cd $(q "$SRC/app") && npm ci --silent && npm run build --silent >/dev/null)"
   did "pages built (app/dist)"
-  run "cargo build --release --quiet --manifest-path $(q "$HERE/app/Cargo.toml") -p seamux-app -p seamux-cli"
+  run "CARGO_TARGET_DIR=$(q "$target") cargo build --release --quiet --manifest-path $(q "$SRC/app/Cargo.toml") -p seamux-app -p seamux-cli"
   did "seamux-app and seamux built (release)"
   # Assemble the bundle in a fresh folder under the build output.
   if [ "$DRY" = 1 ]; then
@@ -217,6 +280,7 @@ install_app() {
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$v</string>
   <key>CFBundleVersion</key><string>$v</string>
+  <key>SeamuxBuiltFrom</key><string>$(printf '%s' "$SRC_LABEL" | sed 's/&/\&amp;/g; s/</\&lt;/g')</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
@@ -224,7 +288,7 @@ install_app() {
 </dict></plist>
 PLIST
     # The icon, from the crate's PNG at the sizes an .icns wants.
-    local set="$stage/AppIcon.iconset" png="$HERE/app/crates/seamux-app/icons/icon.png" px
+    local set="$stage/AppIcon.iconset" png="$SRC/app/crates/seamux-app/icons/icon.png" px
     mkdir -p "$set"
     for px in 16 32 128 256; do
       sips -z $px $px "$png" --out "$set/icon_${px}x${px}.png" >/dev/null 2>&1
@@ -265,13 +329,15 @@ PLIST
     did "linked $LOCALBIN/seamux -> $target"
   fi
   case ":$PATH:" in *":$LOCALBIN:"*) ;; *) warn "$LOCALBIN is not on PATH; add it so hooks and shells find seamux" ;; esac
+  restart_app
   head_ "next"
   say "open $(q "$APPDIR")    # then Control-Option-Space shows the overlay"
-  say "quit an older copy from its tray icon first, if one is running"
+  [ -n "$FROM" ] && say "./install.sh --app             # from the checkout you keep: back to it"
   say "./install.sh --check         # the app, its version and the link"
   printf '\n'
 }
 
+[ -n "$FROM" ] && [ "$APP" != 1 ] && die "--from goes with --app: the plugins run from the folder install.sh is in (docs/SYNCING.md)"
 if [ "$APP" = 1 ]; then
   printf '\n\033[1mseamux app install\033[0m  %s\n' "$([ "$DRY" = 1 ] && echo '(dry run: nothing changes)')"
   install_app

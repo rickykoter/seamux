@@ -29,6 +29,9 @@ guessing, preview with `./install.sh --dry-run`, verify with
 - `app/` is the seamux app (Tauri: Rust in `app/crates`, Vite + TypeScript
   pages in `app/ui`). Unlike the plugins it is not live from the checkout:
   `./install.sh --app` builds it and copies the bundle to `~/Applications`.
+  To try an app change before it merges, `./install.sh --app --from <worktree
+  or commit>` installs that build and restarts the app; `--app` alone from
+  the kept checkout goes back. The never-a-worktree rule is for the plugins.
 - A change to a skill's text is held to its eval baseline:
   `python3 tools/skill_evals.py compare <plugin> --model opus --model haiku`
   (the `evals-<plugin>` recipes; real model spend, so name them on purpose).
