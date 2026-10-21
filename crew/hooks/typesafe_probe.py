@@ -20,6 +20,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__))
 TYPESAFE = os.path.join(HERE, "typesafe.py")
 ASKED = os.path.join(HERE, "asked.py")
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools"))
+import crew_impl  # noqa: E402  CREW_IMPL picks the Python or `seamux <tool>`
+TOOL = {TYPESAFE: "typesafe", ASKED: "asked"}
 
 SCRIPT = []          # (status, dict-body) pairs, consumed per request
 REQUESTS = []        # every body the mock ever received
@@ -67,7 +70,8 @@ def ok(name, cond):
 
 
 def run(argv, env, stdin=""):
-    return subprocess.run([sys.executable, *argv], input=stdin, env=env,
+    head = crew_impl.argv(TOOL[argv[0]], argv[0], sys.executable)
+    return subprocess.run(head + list(argv[1:]), input=stdin, env=crew_impl.env(env),
                           capture_output=True, text=True, timeout=30)
 
 

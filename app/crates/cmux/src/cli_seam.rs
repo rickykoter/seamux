@@ -13,6 +13,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::Error;
 
@@ -126,17 +127,62 @@ impl CliOutput {
     }
 }
 
-/// Run `bin argv…` and capture its output. Err only when it cannot start.
+/// How long one CLI call may take: crew's Python gave every cmux call
+/// `timeout=10` and read a hang as "cmux did not answer".
+pub const CLI_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Run `bin argv…` and capture its output, within CLI_TIMEOUT. Err when it
+/// cannot start or does not finish in time (the child is killed).
 pub fn run_cli(bin: &Path, argv: &[String]) -> Result<CliOutput, Error> {
-    let out = Command::new(bin)
+    run_cli_env(bin, argv, &[], CLI_TIMEOUT)
+}
+
+/// run_cli with extra environment variables and its own time limit.
+pub fn run_cli_env(
+    bin: &Path,
+    argv: &[String],
+    env: &[(String, String)],
+    timeout: Duration,
+) -> Result<CliOutput, Error> {
+    use std::io::Read;
+    let mut child = Command::new(bin)
         .args(argv)
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(Stdio::null())
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| Error::Unavailable(format!("cannot run {}: {e}", bin.display())))?;
+    let drain = |mut r: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut b = Vec::new();
+            let _ = r.read_to_end(&mut b);
+            b
+        })
+    };
+    let out = drain(Box::new(child.stdout.take().expect("piped stdout")));
+    let err = drain(Box::new(child.stderr.take().expect("piped stderr")));
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(2)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Error::Unavailable(format!(
+                    "{} {} did not answer within {}s",
+                    bin.display(),
+                    argv.first().map(String::as_str).unwrap_or(""),
+                    timeout.as_secs()
+                )));
+            }
+        }
+    };
     Ok(CliOutput {
-        status: out.status.code().unwrap_or(-1),
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        status: status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&out.join().unwrap_or_default()).into_owned(),
+        stderr: String::from_utf8_lossy(&err.join().unwrap_or_default()).into_owned(),
     })
 }
 
@@ -177,6 +223,14 @@ mod tests {
     fn empty_crew_cmux_does_not_count() {
         let e = env_of(&[("CREW_CMUX", ""), ("CMUX_SOCKET_PATH", "/tmp/s.sock")]);
         assert!(!wants_cli(&e));
+    }
+
+    #[test]
+    fn a_hung_cli_is_killed_at_the_limit() {
+        let t = Instant::now();
+        let r = run_cli_env(Path::new("/bin/sleep"), &["5".to_string()], &[], Duration::from_millis(200));
+        assert!(matches!(r, Err(Error::Unavailable(m)) if m.contains("did not answer")));
+        assert!(t.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

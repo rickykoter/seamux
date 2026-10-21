@@ -13,5 +13,8 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
-serde_json = { version = "1", features = ["preserve_order"] }
+# preserve_order: keys print in Python's insertion order. float_roundtrip:
+# a float parses to the exact f64 Python reads, so it re-prints the same digits.
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 cmux = { path = "crates/cmux" }
+crew-core = { path = "crates/crew-core" }

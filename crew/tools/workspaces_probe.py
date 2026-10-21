@@ -80,6 +80,89 @@ with open(ENV["GIT_CONFIG_GLOBAL"], "w") as fh:
 sys.path.insert(0, os.path.join(CREW, "hooks"))
 import workspaces as W  # noqa: E402  (after the env, which it reads at import)
 
+import crew_impl  # noqa: E402  (beside this probe)
+
+
+class RustW:
+    """workspaces.py's in-process API, answered by `seamux workspaces` under
+    CREW_IMPL=rust, so the sections below test the Rust with no edits. Each
+    call is one subprocess, through the Rust-only JSON subcommands where the
+    Python CLI has no verb. Constants (INDEX, ARCHIVE, CMUX) stay the module's
+    and can be reassigned as the probe does; ARCHIVE reaches the Rust through
+    CREW_WORKSPACES_ARCHIVE. _update(fn) runs fn on a copy here and sends the
+    resulting sets and pops to the Rust, which applies them under its lock."""
+
+    def __init__(self, py):
+        self.__dict__["_py"] = py
+        self.__dict__["ARCHIVE"] = py.ARCHIVE
+
+    def __getattr__(self, name):
+        return getattr(self._py, name)
+
+    def __setattr__(self, name, value):
+        self.__dict__[name] = value
+
+    def _run(self, *args, stdin=None):
+        env = crew_impl.env(os.environ)
+        env["CREW_WORKSPACES_ARCHIVE"] = self.ARCHIVE
+        return subprocess.run(crew_impl.argv("workspaces", W_PY) + list(args), input=stdin,
+                              env=env, capture_output=True, text=True, timeout=60)
+
+    def _json(self, *args):
+        return json.loads(self._run(*args).stdout or "null")
+
+    def build_index(self, force=False):
+        d = self._json("index", *(["--force"] if force else []))
+        return d["rows"], d["seen"]
+
+    def scan(self, path):
+        return self._json("scan", path)
+
+    def live_workspaces(self):
+        return self._json("live")
+
+    def busy(self, ws):
+        return self._json("busy", ws)
+
+    def lifecycle(self, handle):
+        return self._run("lifecycle", handle).stdout.strip()
+
+    def _said(self, *args):
+        r = self._run(*args)
+        return r.returncode == 0, (r.stdout if r.returncode == 0 else r.stderr).strip()
+
+    def archive(self, handle):
+        return self._said("archive", handle)
+
+    def restore(self, cwd):
+        return self._said("restore", cwd)
+
+    def forget(self, cwd):
+        return self._run("forget", cwd).returncode == 0
+
+    def merged(self, cwd):
+        return self._run("merged", cwd).returncode == 0
+
+    def dormant_days(self):
+        return int(self._run("dormant-days").stdout.strip())
+
+    def load_archive(self):
+        return self._json("load-archive")
+
+    def _update(self, fn):
+        recs = self.load_archive()
+        before = json.loads(json.dumps(recs))
+        out = fn(recs)
+        ops = {"set": {k: v for k, v in recs.items() if before.get(k) != v},
+               "pop": [k for k in before if k not in recs]}
+        self._run("update-archive", stdin=json.dumps(ops))
+        return out
+
+
+W_PY = os.path.join(CREW, "hooks", "workspaces.py")
+if crew_impl.is_rust("workspaces"):
+    W = RustW(W)
+
 
 def put_rows(rows):
     json.dump(rows, open(os.path.join(FAKE_DIR, "workspaces.json"), "w"))
@@ -246,13 +329,24 @@ check("forget drops a record", W.forget(os.path.join(T, "gone"))
       and os.path.join(T, "gone") not in W.load_archive())
 check("forget of nothing says so", not W.forget(os.path.join(T, "gone")))
 
-writers = [subprocess.Popen([sys.executable, "-c",
-                             "import sys; sys.path.insert(0, %r); import workspaces as W; "
-                             "W._update(lambda r: r.__setitem__('/w/%d', {'cwd': '/w/%d'}))"
-                             % (os.path.join(CREW, "hooks"), i, i)], env=os.environ)
-           for i in range(8)]
-for p in writers:
-    p.wait()
+if isinstance(W, RustW):
+    # The Rust's own read-modify-write, eight processes at once.
+    writers = [subprocess.Popen(crew_impl.argv("workspaces", W_PY) + ["update-archive"],
+                                stdin=subprocess.PIPE, env=crew_impl.env(os.environ), text=True)
+               for i in range(8)]
+    for i, p in enumerate(writers):
+        p.stdin.write(json.dumps({"set": {"/w/%d" % i: {"cwd": "/w/%d" % i}}}))
+        p.stdin.close()
+    for p in writers:
+        p.wait()
+else:
+    writers = [subprocess.Popen([sys.executable, "-c",
+                                 "import sys; sys.path.insert(0, %r); import workspaces as W; "
+                                 "W._update(lambda r: r.__setitem__('/w/%d', {'cwd': '/w/%d'}))"
+                                 % (os.path.join(CREW, "hooks"), i, i)], env=os.environ)
+               for i in range(8)]
+    for p in writers:
+        p.wait()
 check("eight writers at once keep all eight records",
       all("/w/%d" % i in W.load_archive() for i in range(8)))
 

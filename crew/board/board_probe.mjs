@@ -17,6 +17,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+// A crew tool by name, through the CREW_IMPL helper: `seamux <name>` when
+// CREW_IMPL=rust and seamux registers it, else python3 <file> as always.
+const crewImpl = await import("../tools/crew_impl.mjs");
+const crewTool = (name, file, args, opts = {}) => {
+  const [cmd, ...pre] = crewImpl.argv(name, file, "python3");
+  return execFileSync(cmd, [...pre, ...args],
+    { encoding: "utf8", ...opts, env: crewImpl.env(opts.env || process.env) });
+};
 // render.js, not an inline script in the page: the renderer is pushed with each update
 // because a page-resident entry point was not reachable, and because a wrong BOARD_HTML
 // path once loaded a nonexistent file and the failure was indistinguishable.
@@ -820,8 +828,8 @@ if (live && Array.isArray(live.rows)) {
       "-code-unknown": [{ date: "2026-09-13", totalCost: 99 }],
     },
   }));
-  const runAttr = (...cwds) => JSON.parse(execFileSync("python3",
-    [join(HERE, "costs.py"), "--attribute", fixture, ...cwds], { encoding: "utf8" }));
+  const runAttr = (...cwds) => JSON.parse(crewTool("costs", join(HERE, "costs.py"),
+    ["--attribute", fixture, ...cwds]));
   const r1 = runAttr(A, B, C);
   checks.push(["costs: today/week split by date", r1[A]?.today === 1.5 && r1[A]?.week === 3.5]);
   checks.push(["costs: munge collision resolves to the first claim, once",
@@ -830,9 +838,8 @@ if (live && Array.isArray(live.rows)) {
     !JSON.stringify(r1).includes("99")]);
   checks.push(["costs: week-only workspace has a zero today", r1[C]?.today === 0 && r1[C]?.week === 0.25]);
   // The CI path: no ccusage on PATH -> {} and exit 0, never a traceback.
-  const r2 = execFileSync("python3", [join(HERE, "costs.py"), A],
-    { encoding: "utf8", env: { ...process.env, PATH: "/usr/bin:/bin", CREW_COSTS_TTL: "0",
-      HOME: tmp } });
+  const r2 = crewTool("costs", join(HERE, "costs.py"), [A],
+    { env: { ...process.env, PATH: "/usr/bin:/bin", CREW_COSTS_TTL: "0", HOME: tmp } });
   checks.push(["costs: missing ccusage degrades to {}", r2.trim() === "{}"]);
   fs.rmSync(tmp, { recursive: true, force: true });
 }
@@ -886,7 +893,12 @@ if (live && Array.isArray(live.rows)) {
   fs.mkdirSync(local); fs.mkdirSync(home); fs.mkdirSync(claudeDir);
   const env = { ...process.env, PATH: `${bin}:/usr/bin:/bin`, HOME: home, CREW_LOCAL: local,
     CREW_COSTS_TTL: "0", CLAUDE_CONFIG_DIR: claudeDir, CREW_BILLING: "usage" };
-  const py = (args, opts = {}) => execFileSync("python3", args, { encoding: "utf8", env, ...opts });
+  // pricing.py and costs.py go through the CREW_IMPL helper; the status line
+  // is port-hooks' and stays python3 until that port routes it.
+  const PORTED = { [PRICING]: "pricing", [join(HERE, "costs.py")]: "costs" };
+  const py = (args, opts = {}) => PORTED[args[0]]
+    ? crewTool(PORTED[args[0]], args[0], args.slice(1), { env, ...opts })
+    : execFileSync("python3", args, { encoding: "utf8", env, ...opts });
   const args = () => JSON.parse(py([PRICING, "--args"]));
   const lastArgv = () => fs.readFileSync(log, "utf8").trim().split("\n").pop();
 

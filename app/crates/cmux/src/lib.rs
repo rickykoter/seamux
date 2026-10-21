@@ -21,7 +21,7 @@ use std::sync::Mutex;
 
 use serde_json::{json, Value};
 
-pub use cli_seam::{resolve_cli_bin, resolve_cli_bin_with, run_cli, wants_cli, CliOutput, Env, Transport};
+pub use cli_seam::{resolve_cli_bin, CLI_TIMEOUT, resolve_cli_bin_with, run_cli, wants_cli, CliOutput, Env, Transport};
 pub use events::{EventOptions, EventStream};
 pub use verbs::{NewPane, Notify, WorkspaceAction, CLI_ONLY_OPS, SOCKET_OPS};
 
@@ -68,6 +68,7 @@ pub struct Cmux {
     methods: HashSet<String>,
     capabilities: Value,
     cli_override: Option<PathBuf>,
+    cli_env: Vec<(String, String)>,
 }
 
 impl Cmux {
@@ -86,6 +87,7 @@ impl Cmux {
                 methods: HashSet::new(),
                 capabilities: Value::Null,
                 cli_override: None,
+                cli_env: Vec::new(),
             }),
             Transport::Socket(path) => {
                 let mut conn = socket::Conn::open(path)?;
@@ -101,6 +103,7 @@ impl Cmux {
                     methods,
                     capabilities: caps,
                     cli_override: None,
+                    cli_env: Vec::new(),
                 })
             }
         }
@@ -110,6 +113,13 @@ impl Cmux {
     /// the environment. For tests and for a caller that already knows its cmux.
     pub fn with_cli_bin(mut self, bin: PathBuf) -> Cmux {
         self.cli_override = Some(bin);
+        self
+    }
+
+    /// Set an environment variable on every CLI run this client makes (for
+    /// example CMUX_QUIET=1, which workspaces.py passes to each call).
+    pub fn with_cli_env(mut self, key: &str, value: &str) -> Cmux {
+        self.cli_env.push((key.to_string(), value.to_string()));
         self
     }
 
@@ -172,7 +182,7 @@ impl Cmux {
     /// op covers. A non-zero exit comes back in the output, not as an error.
     pub fn cli<S: AsRef<str>>(&self, argv: &[S]) -> Result<CliOutput, Error> {
         let argv: Vec<String> = argv.iter().map(|a| a.as_ref().to_string()).collect();
-        run_cli(&self.cli_bin()?, &argv)
+        cli_seam::run_cli_env(&self.cli_bin()?, &argv, &self.cli_env, cli_seam::CLI_TIMEOUT)
     }
 
     /// The CLI this client runs: the transport's own on the CLI path, else the
@@ -186,7 +196,7 @@ impl Cmux {
     }
 
     pub(crate) fn cli_checked(&self, argv: &[String]) -> Result<CliOutput, Error> {
-        let out = run_cli(&self.cli_bin()?, argv)?;
+        let out = cli_seam::run_cli_env(&self.cli_bin()?, argv, &self.cli_env, cli_seam::CLI_TIMEOUT)?;
         if !out.ok() {
             return Err(Error::Cli { status: out.status, stderr: out.stderr });
         }

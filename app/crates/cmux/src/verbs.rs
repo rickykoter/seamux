@@ -19,6 +19,7 @@ use crate::{check_handle, parse_cli_json, Cmux, Error};
 pub const SOCKET_OPS: &[(&str, &str)] = &[
     ("ping", "system.ping"),
     ("workspace_list", "workspace.list"),
+    ("window_list", "window.list"),
     ("current_list", "current.list"),
     ("read_text", "surface.read_text"),
     ("send_text", "surface.send_text"),
@@ -46,6 +47,10 @@ pub const CLI_ONLY_OPS: &[(&str, &str)] = &[
     ("rename_tab", "the CLI resolves the tab from the surface client-side"),
     ("new_pane", "callers parse the CLI's `OK surface:N pane:N` line"),
     ("respawn_pane", "the CLI builds the command and environment client-side"),
+    ("sessions_list", "no socket method; the CLI reads cmux's saved session records"),
+    ("tree", "callers parse the CLI's tree --json, which system.tree does not match"),
+    ("workspace_close", "callers read the CLI's error text and its --force confirmation"),
+    ("workspace_create", "callers parse the CLI's `OK workspace:N` line"),
 ];
 
 /// `workspace-action` edits crew makes.
@@ -114,6 +119,19 @@ impl Cmux {
             params.insert("window_id".into(), json!(w));
         }
         self.route(Some(("workspace.list", Value::Object(params))), &[], argv)?.json()
+    }
+
+    /// `list-windows --json`: every window, as a list. The socket answers
+    /// `{"windows": [...]}` and the CLI the bare list; both come back as the list.
+    pub fn window_list(&self) -> Result<Vec<Value>, Error> {
+        let v = match self.route(Some(("window.list", json!({}))), &[], vec![s("list-windows"), s("--json")])? {
+            Routed::Socket(v) => v.get("windows").cloned().unwrap_or(Value::Null),
+            Routed::Cli(out) => parse_cli_json(&out)?,
+        };
+        match v {
+            Value::Array(a) => Ok(a),
+            other => Err(Error::Protocol(format!("list-windows gave no list: {other}"))),
+        }
     }
 
     /// `current --json`: per-agent state (working, needs_input, ended).
@@ -338,6 +356,44 @@ impl Cmux {
             .find(|t| t.starts_with("surface:"))
             .map(String::from)
             .ok_or_else(|| Error::Protocol(format!("new-pane printed no surface: {}", out.trim())))
+    }
+
+    /// `sessions list --json --all`: cmux's saved agent session records, as
+    /// it prints them (the field names move between nightly builds).
+    pub fn sessions_list(&self) -> Result<Value, Error> {
+        parse_cli_json(&self.cli_checked(&[s("sessions"), s("list"), s("--json"), s("--all")])?.stdout)
+    }
+
+    /// `tree --json`: windows, workspaces, panes and surfaces.
+    pub fn tree(&self) -> Result<Value, Error> {
+        parse_cli_json(&self.cli_checked(&[s("tree"), s("--json")])?.stdout)
+    }
+
+    /// `workspace close <handle> [--force]`. The raw output: callers report
+    /// cmux's own words when it refuses.
+    pub fn workspace_close(&self, handle: &str, force: bool) -> Result<crate::CliOutput, Error> {
+        let mut argv = vec![s("workspace"), s("close"), s(handle)];
+        if force {
+            argv.push(s("--force"));
+        }
+        self.cli(&argv)
+    }
+
+    /// `workspace create [--name N] --cwd C --command CMD --focus B`, the argv
+    /// workspaces.py's restore sends. The raw output (`OK workspace:N`).
+    pub fn workspace_create(
+        &self,
+        name: Option<&str>,
+        cwd: &str,
+        command: &str,
+        focus: bool,
+    ) -> Result<crate::CliOutput, Error> {
+        let mut argv = vec![s("workspace"), s("create")];
+        if let Some(n) = name {
+            argv.extend([s("--name"), s(n)]);
+        }
+        argv.extend([s("--cwd"), s(cwd), s("--command"), s(command), s("--focus"), s(if focus { "true" } else { "false" })]);
+        self.cli(&argv)
     }
 
     /// `respawn-pane --surface S --command C`.
