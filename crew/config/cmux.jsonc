@@ -290,13 +290,14 @@
 
     // The board is the page the intent server serves at /board (the seamux
     // app shows it as a tab): ranked, live over SSE, its buttons same-origin.
-    // This opens it in a cmux browser tab for when the app is not at hand.
+    // This opens it in a cmux browser tab for when the app is not at hand,
+    // starting the server first when crew-listen has not.
     "crew.board": {
       "type": "command",
       "title": "Crew board",
       "subtitle": "open the who-needs-me board",
       "keywords": ["crew", "board", "agents", "who"],
-      "command": "C=\"$(__HOME__/.config/cmux/crew/bin/crew-cmux-bin)\"; \"$C\" open http://127.0.0.1:__INTENT_PORT__/board; \"$C\" close-surface --surface \"$CMUX_SURFACE_ID\"",
+      "command": "S=__HOME__/.local/bin/seamux; C=\"$(__HOME__/.config/cmux/crew/bin/crew-cmux-bin)\"; \"$S\" crew-board-intent --status 2>/dev/null | grep -q '\"running\": true' || { (nohup \"$S\" crew-board-intent >/dev/null 2>&1 &); sleep 1; }; \"$C\" open http://127.0.0.1:__INTENT_PORT__/board; \"$C\" close-surface --surface \"$CMUX_SURFACE_ID\"",
       "target": "newTabInCurrentPane",
       "shortcut": ["cmd+k", "c"],
       "icon": { "type": "symbol", "name": "person.2.badge.gearshape" },

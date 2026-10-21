@@ -149,7 +149,7 @@ plugin_install_path() {
   "$SEAMUX" crew-plugin-root "$1" 2>/dev/null
 }
 
-# How many settings.json hook entries still run crew-hook.sh (the wiring the
+# How many settings.json hook entries still run crew-hook.sh or seamux-hook.sh (the wiring the
 # old `crew apply` wrote; the crew plugin's hooks.json replaces it).
 legacy_hook_count() {
   python3 - "$SETTINGS" <<'PY' 2>/dev/null || echo 0
@@ -158,7 +158,7 @@ try:
     s = json.load(open(sys.argv[1]))
 except Exception:
     print(0); sys.exit(0)
-print(sum("crew-hook.sh" in (h.get("command") or "")
+print(sum(any(s in (h.get("command") or "") for s in ("crew-hook.sh", "seamux-hook.sh"))
           for ms in (s.get("hooks") or {}).values() for m in ms for h in m.get("hooks", [])))
 PY
 }
@@ -336,7 +336,7 @@ hooks = s.get("hooks", {})
 for event, matchers in list(hooks.items()):
     for m in matchers:
         m["hooks"] = [h for h in m.get("hooks", [])
-                      if "crew-hook.sh" not in (h.get("command") or "")]
+                      if not any(s in (h.get("command") or "") for s in ("crew-hook.sh", "seamux-hook.sh"))]
     hooks[event] = [m for m in matchers if m.get("hooks")]
     if not hooks[event]:
         del hooks[event]
@@ -350,6 +350,16 @@ PY
 cmd_apply() {
   local dry=0
   [ "${1:-}" = "--dry-run" ] && dry=1
+  # Before anything moves: every crew tool and hook runs as seamux, so an apply
+  # without it would replace a working live tree with one that does nothing.
+  if [ ! -x "$SEAMUX" ]; then
+    if [ "$dry" = 1 ]; then
+      warn "seamux is not installed at ${SEAMUX/#$HOME/~} — a real apply would refuse; run ./install.sh --app first"
+    else
+      bad "seamux is not installed at ${SEAMUX/#$HOME/~} — nothing changed; run ./install.sh --app from the seamux checkout, then crew apply"
+      return 1
+    fi
+  fi
   # Not the live tree: this is the plugin's root (or a checkout). Install the
   # live tree from it, then hand over to the live copy.
   if [ "$CREW_HOME" != "$LIVE" ]; then
@@ -372,13 +382,6 @@ cmd_apply() {
   fi
   head_ "crew apply"
 
-  # Every crew tool runs as seamux since the cutover, the hooks included, and
-  # they are silent no-ops without it: refuse rather than install a crew that
-  # quietly does nothing.
-  if [ ! -x "$SEAMUX" ]; then
-    bad "seamux is not installed at ${SEAMUX/#$HOME/~} — run ./install.sh --app from the seamux checkout, then crew apply"
-    return 1
-  fi
   ok "seamux: ${SEAMUX/#$HOME/~} ($("$SEAMUX" --version 2>/dev/null))"
 
   mkdir -p "$HOME/.config/cmux" "$STATE"
@@ -418,7 +421,14 @@ cmd_apply() {
     # started as. Only names seamux lists, so a partial build links no dead name.
     local tools; tools="$("$SEAMUX" --tools 2>/dev/null)"
     for f in crew-color crew-digest crew-feed crew-resume crew-sweep crew-sync crew-listen crew-artifacts crew-board; do
-      printf '%s\n' "$tools" | grep -qx "$f" && ln -sf "$SEAMUX" "$LOCALBIN/$f" && linked=$((linked + 1))
+      if printf '%s\n' "$tools" | grep -qx "$f"; then
+        ln -sf "$SEAMUX" "$LOCALBIN/$f" && linked=$((linked + 1))
+      else
+        # An older seamux: say so, and drop a link into the package that now
+        # points at nothing (the Python is not in the live tree).
+        warn "seamux does not provide $f — rebuild it: ./install.sh --app"
+        [ -L "$LOCALBIN/$f" ] && [ ! -e "$LOCALBIN/$f" ] && rm -f "$LOCALBIN/$f"
+      fi
     done
     # Retired with the Dock board.
     rm -f "$LOCALBIN/crew-board-diag"
@@ -479,7 +489,7 @@ cmd_apply() {
     # Back up settings.json the same way, and for the same reason: apply
     # supersedes the v1 bridge hooks, and `uninstall` strips crew surgically
     # rather than restoring wholesale.
-    if [ -f "$SETTINGS" ] && ! grep -q "crew-hook.sh" "$SETTINGS" 2>/dev/null; then
+    if [ -f "$SETTINGS" ] && ! grep -qE "crew-hook.sh|seamux-hook.sh" "$SETTINGS" 2>/dev/null; then
       cp "$SETTINGS" "$SETTINGS.pre-crew.$(date +%Y%m%d-%H%M%S).bak"
       ok "backed up settings.json (pre-crew hook wiring)"
     fi
@@ -603,7 +613,7 @@ def entry(arg, timeout=5, msg=None):
     return h
 
 # Anything that runs crew-hook.sh, or the v1 bridge crew replaces.
-SUPERSEDED = ("crew-hook.sh", "on_stop_notify.sh", "on_session_start.sh",
+SUPERSEDED = ("crew-hook.sh", "seamux-hook.sh", "on_stop_notify.sh", "on_session_start.sh",
               "on_notification.sh", "set_status_running.sh", "clear_status.sh",
               "flash_on_edit.sh")
 
@@ -1340,10 +1350,10 @@ case "${1:-status}" in
   doctor)    cmd_doctor ;;
   drift)     cmd_drift ;;
   adopt)     cmd_adopt ;;
-  sync)      shift; exec "$CREW_HOME/bin/crew-sync" "$@" ;;
+  sync)      shift; exec "$SEAMUX" crew-sync "$@" ;;
   timer)     shift; cmd_timer "${1:-status}" ;;
   listen)    shift; cmd_listen "${1:-status}" "${2:-}" ;;
-  color)     shift; exec "$CREW_HOME/bin/crew-color" "$@" ;;
+  color)     shift; exec "$SEAMUX" crew-color "$@" ;;
   demo)      shift; cmd_demo "${1:-}" ;;
   *) sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ; exit 2 ;;
 esac

@@ -50,8 +50,12 @@ ws_tool() {
   if [ -x "$SEAMUX" ]; then
     if [ -n "$CALLER_CREW_CMUX" ]; then CREW_CMUX="$CALLER_CREW_CMUX" "$SEAMUX" workspaces "$@"
     else env -u CREW_CMUX "$SEAMUX" workspaces "$@"; fi
-  else
+  elif [ -f "$WORKSPACES" ]; then
+    # A checkout run before seamux exists (the live tree has no Python).
     CREW_CMUX="$CMUX" python3 "$WORKSPACES" "$@"
+  else
+    printf 'crew-reclaim: seamux is not installed at %s (./install.sh --app)\n' "$SEAMUX" >&2
+    return 1
   fi
 }
 

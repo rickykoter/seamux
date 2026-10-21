@@ -24,8 +24,14 @@ export function clientCmd() {
     const c = process.env.LOOKOUT_TYPESAFE_CLIENT;
     return c && exists(c) ? ["python3", c] : null;
   }
+  // Only a seamux that lists the tool: an older build without it would read
+  // as "TypeSafe not configured" and never reach the fallback below.
+  const lists = (s) => {
+    const r = spawnSync(s, ["--tools"], { encoding: "utf8", timeout: 5000 });
+    return r.status === 0 && (r.stdout || "").split("\n").includes("typesafe");
+  };
   for (const s of [process.env.SEAMUX_BIN, path.join(os.homedir(), ".local", "bin", "seamux")]) {
-    if (s && exists(s)) return [s, "typesafe"];
+    if (s && exists(s) && lists(s)) return [s, "typesafe"];
   }
   const py = [
     path.join(os.homedir(), ".config", "cmux", "crew", "hooks", "typesafe.py"),

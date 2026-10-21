@@ -89,9 +89,14 @@ ALL_PLUGINS="deep-plan restack bash-guard lookout crew seamux-mods"
 # Where Claude runs a plugin from (the checkout folder for a folder marketplace).
 # Through seamux once it is installed (the crew Python is retired at the
 # cutover); the checkout's Python only before seamux exists, until inc4 deletes it.
+# An older seamux without the tool (exit 127) falls back the same way.
 plugin_root() {
-  if [ -x "$LOCALBIN/seamux" ]; then "$LOCALBIN/seamux" crew-plugin-root "$1" 2>/dev/null
-  else python3 "$HERE/crew/bin/crew-plugin-root" "$1" 2>/dev/null; fi
+  local r=""
+  [ -x "$LOCALBIN/seamux" ] && r="$("$LOCALBIN/seamux" crew-plugin-root "$1" 2>/dev/null)"
+  if [ -z "$r" ] && [ -f "$HERE/crew/bin/crew-plugin-root" ]; then
+    r="$(python3 "$HERE/crew/bin/crew-plugin-root" "$1" 2>/dev/null)"
+  fi
+  [ -n "$r" ] && printf '%s\n' "$r"
 }
 
 find_node() {
@@ -284,9 +289,17 @@ NODE="$(find_node)"
 # no-ops without it. So a crew install with no seamux yet builds the app first
 # (the CLI ships inside it), before anything below resolves a plugin root
 # through it. An existing seamux is left as it is: ./install.sh --app rebuilds.
+# Without the toolchain to build it, crew is skipped with a reason and the other
+# plugins still install.
 if [ "$CREW" = 1 ] && [ "$CHECK" = 0 ] && [ "$UNINSTALL" = 0 ] && [ ! -x "$LOCALBIN/seamux" ]; then
-  say "crew needs seamux, and $LOCALBIN/seamux is not there: building the app first"
-  install_app
+  if command -v cargo >/dev/null && command -v npm >/dev/null && xcode-select -p >/dev/null 2>&1; then
+    say "crew needs seamux, and $LOCALBIN/seamux is not there: building the app first"
+    install_app
+  else
+    warn "crew needs seamux, which needs cargo, npm and the Xcode command line tools to build — skipping crew; install them, then ./install.sh --app and ./install.sh"
+    CREW=0
+    PLUGINS=" $PLUGINS "; PLUGINS="${PLUGINS// crew / }"; PLUGINS="${PLUGINS# }"; PLUGINS="${PLUGINS% }"
+  fi
 fi
 
 # ---------------------------------------------------------------- check
