@@ -10,6 +10,13 @@
     crew-board close           close the surface
     crew-board usage           open the spend dashboard (ccusage) as a Dock tab
 
+    crew-board state --json --fixture FILE   rank {"plans", "workspaces"} from FILE
+    crew-board write-targets [FILE]          the click table from a state (stdin if no FILE)
+
+The last two are for probes: they let a probe drive the ranking and the click
+table through the command line, so the same probe can run against the Python
+and the Rust board (`seamux crew-board`) alike.
+
 Why a browser surface rather than the sidebar: the custom-sidebar interpreter has no
 @State, no text input, and can only bind cmux's own workspace data -- so it cannot host
 a ranked list built from deep-plan state and agent output. A Dock browser surface has
@@ -904,9 +911,28 @@ def rank_plans_only(plan_by_root):
     return group_families(rows, [])[0]
 
 
+def fixture():
+    """`--fixture FILE`: {"plans": {root: plan} or [plan], "workspaces": [...]}
+    in place of deep-plan and cmux, or None. No "workspaces" is cmux down."""
+    if "--fixture" not in sys.argv:
+        return None
+    i = sys.argv.index("--fixture") + 1
+    if i >= len(sys.argv):
+        sys.exit("crew-board: --fixture needs a file")
+    # Keyed by root, as plans() keys deep-plan's rows; a plan with no root
+    # is dropped there too, so a list-form fixture behaves the same.
+    with open(sys.argv[i]) as fh:
+        fx = json.load(fh)
+    ps = fx.get("plans") or {}
+    if isinstance(ps, list):
+        ps = {p.get("root", ""): p for p in ps if p.get("root")}
+    return ps, fx.get("workspaces") or []
+
+
 def build(screens=False, fast=False):
-    plan_by_root = plans()
-    wss = workspaces(fast=fast)
+    fx = fixture()
+    plan_by_root = plans() if fx is None else fx[0]
+    wss = workspaces(fast=fast) if fx is None else fx[1]
     stale = not wss
     if stale:
         rows, quiet = rank_plans_only(plan_by_root), []
@@ -1605,11 +1631,22 @@ def cmd_state():
     return 0
 
 
+def cmd_write_targets():
+    src = sys.argv[2] if len(sys.argv) > 2 else None
+    if src:
+        with open(src) as fh:
+            d = json.load(fh)
+    else:
+        d = json.load(sys.stdin)
+    write_targets(d)
+    return 0
+
+
 if __name__ == "__main__":
     sub = sys.argv[1] if len(sys.argv) > 1 else "state"
     fn = {"open": cmd_open, "push": cmd_push, "watch": cmd_watch,
           "close": cmd_close, "state": cmd_state, "tidy": cmd_tidy,
-          "usage": cmd_usage}.get(sub)
+          "usage": cmd_usage, "write-targets": cmd_write_targets}.get(sub)
     if not fn:
         print(__doc__.strip())
         sys.exit(2)

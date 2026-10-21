@@ -14,7 +14,7 @@ one did.
                                          one with "close_fails": true never goes
     workspace create | new-workspace     appends a row, prints OK workspace:<n>
     sessions list --json                 $FAKE_CMUX_DIR/sessions.json, else none
-    sidebar-state --workspace <ws>       cwd=, color= and claude_code= from the row
+    sidebar-state --workspace <ws>       cwd=, color=, claude_code=, git_branch= and pr= from the row
     tree --json                          one window; a row's "tty" is its terminal
     new-pane                             OK surface:900 pane:900 <workspace>
 
@@ -58,6 +58,10 @@ A leading --id-format is dropped; ids are whatever the file holds.
 $FAKE_CMUX_DELAY (seconds) sleeps before every call, for hook-budget probes.
 Anything else succeeds and does nothing.
 
+Every call also goes to $FAKE_CMUX_DIR/cmux.jsonl as its argv array. With
+$FAKE_CMUX_QUIET set, a call is answered but logged nowhere: for a probe
+reading the layout back.
+
     CREW_CMUX=crew/tools/fakecmux.py FAKE_CMUX_DIR=/tmp/x crew/bin/crew-sync
 """
 import json
@@ -70,8 +74,14 @@ db = os.path.join(T, "workspaces.json")
 args = sys.argv[1:]
 if args[:1] == ["--id-format"]:
     args = args[2:]
-with open(os.path.join(T, "cmux.log"), "a") as fh:
-    fh.write(" ".join(args) + "\n")
+# cmux.log is one line per call, joined on spaces; cmux.jsonl keeps each argv
+# as a JSON array, so an argument holding spaces (an rpc payload) survives.
+# FAKE_CMUX_QUIET: a probe reading state back, not a call under test.
+if not os.environ.get("FAKE_CMUX_QUIET"):
+    with open(os.path.join(T, "cmux.log"), "a") as fh:
+        fh.write(" ".join(args) + "\n")
+    with open(os.path.join(T, "cmux.jsonl"), "a") as fh:
+        fh.write(json.dumps(args) + "\n")
 if os.environ.get("FAKE_CMUX_DELAY"):
     time.sleep(float(os.environ["FAKE_CMUX_DELAY"]))
 rows = json.load(open(db)) if os.path.exists(db) else []
@@ -281,6 +291,10 @@ elif args[:1] == ["sidebar-state"]:
     print("color=" + (w.get("custom_color") or "none"))
     if w.get("claude"):
         print("  claude_code=" + w["claude"])
+    if w.get("git_branch"):
+        print("  git_branch=" + w["git_branch"])
+    if w.get("pr"):
+        print("  pr=" + w["pr"])
 elif args[:1] == ["events"]:
     cur_file = args[args.index("--cursor-file") + 1] if "--cursor-file" in args else ""
     names = [args[i + 1] for i, a in enumerate(args[:-1]) if a == "--name"]

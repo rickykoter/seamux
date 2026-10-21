@@ -515,20 +515,54 @@ check("with cmux at 1s a call, it goes to a terminal elsewhere instead, inside 1
 # The page names a row id and a verb; the server resolves the rest from the
 # targets file the collector writes. The id has to survive that trip, or the
 # notification reaches triage.py with no workspace on it.
-_l = importlib.machinery.SourceFileLoader("cbi", os.path.join(CREW, "board", "crew-board-intent"))
-I = importlib.util.module_from_spec(importlib.util.spec_from_loader("cbi", _l))
-_l.exec_module(I)
-posted = []
-I.notify = lambda sub, body, wsid=None: posted.append((sub, wsid)) or True
-_l = importlib.machinery.SourceFileLoader("cb", os.path.join(CREW, "board", "crew-board"))
-B_ = importlib.util.module_from_spec(importlib.util.spec_from_loader("cb", _l))
-_l.exec_module(B_)
-B_.TARGETS_FILE = os.path.join(T, "targets.json")
-B_.write_targets({"rows": [{"id": "UUID-1", "ref": "workspace:1", "name": "chip", "cwd": C}]})
-row = json.load(open(B_.TARGETS_FILE))["UUID-1"]
-ok, _ = I.act("archive", row, "")
+# Black-box: the collector writes the table, a real server takes the tap, and
+# the notification it posts is read back from fakecmux.
+import socket  # noqa: E402
+import urllib.parse  # noqa: E402
+import urllib.request  # noqa: E402
+
+
+def board_tool(name):
+    """The argv that runs one board tool: the one place this probe names it,
+    through the CREW_IMPL helper like the rest of this probe."""
+    return crew_impl.argv(name, os.path.join(CREW, "board", name))
+
+
+IHOME = os.path.join(T, "intent-home")
+IENV = crew_impl.env(dict(ENV, HOME=IHOME))
+subprocess.run(board_tool("crew-board") + ["write-targets"], env=IENV, check=True, text=True,
+               input=json.dumps({"rows": [{"id": "UUID-1", "ref": "workspace:1", "name": "chip", "cwd": C}]}))
+_s = socket.socket()
+_s.bind(("127.0.0.1", 0))
+IENV["CREW_INTENT_PORT"] = str(_s.getsockname()[1])
+_s.close()
+_istate = os.path.join(IHOME, ".cache", "cmux-crew")
+_srv = subprocess.Popen(board_tool("crew-board-intent"), env=IENV,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+posted, tapped = [], None
+try:
+    for _ in range(200):
+        try:
+            _port = open(os.path.join(_istate, "board-intent.port")).read().strip()
+            _tok = open(os.path.join(_istate, "board-intent.token")).read().strip()
+            urllib.request.urlopen("http://127.0.0.1:%s/health" % _port, timeout=1).read()
+            break
+        except (OSError, ValueError):
+            time.sleep(0.1)
+    open(os.path.join(FAKE_DIR, "cmux.jsonl"), "w").close()
+    tapped = json.loads(urllib.request.urlopen("http://127.0.0.1:%s/do?a=archive&r=UUID-1&t=%s" % (
+        _port, urllib.parse.quote(_tok)), timeout=30).read())
+    for line in open(os.path.join(FAKE_DIR, "cmux.jsonl")):
+        a = json.loads(line)
+        if a[:2] == ["rpc", "notification.create"]:
+            p = json.loads(a[2])
+            posted.append((p.get("subtitle"), p.get("workspace_id")))
+except Exception as exc:  # a server that never came up is a failed check, not a crash
+    tapped = {"error": str(exc)}
+finally:
+    _srv.kill()
 check("an archive tap reaches triage.py naming the row's workspace",
-      ok and posted == [("crew:archive", "UUID-1")], str(posted))
+      (tapped or {}).get("ok") and posted == [("crew:archive", "UUID-1")], "%s %s" % (tapped, posted))
 
 # --- crew-sweep ---------------------------------------------------------------------
 print("crew-sweep")

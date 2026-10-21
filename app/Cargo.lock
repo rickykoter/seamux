@@ -427,6 +427,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "crew-board"
+version = "0.1.0"
+dependencies = [
+ "cmux",
+ "crew-core",
+ "crew-store",
+ "libc",
+ "regex",
+ "serde_json",
+]
+
+[[package]]
 name = "crew-cli"
 version = "0.1.0"
 dependencies = [
@@ -2879,6 +2891,7 @@ name = "seamux-cli"
 version = "0.1.0"
 dependencies = [
  "cmux",
+ "crew-board",
  "crew-cli",
  "crew-core",
  "crew-hooks",
