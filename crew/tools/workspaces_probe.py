@@ -519,12 +519,13 @@ import urllib.request  # noqa: E402
 
 
 def board_tool(name):
-    """The argv that runs one board tool: the one place this probe names it."""
-    return [os.path.join(CREW, "board", name)]
+    """The argv that runs one board tool: the one place this probe names it,
+    through the CREW_IMPL helper like the rest of this probe."""
+    return crew_impl.argv(name, os.path.join(CREW, "board", name))
 
 
 IHOME = os.path.join(T, "intent-home")
-IENV = dict(ENV, HOME=IHOME)
+IENV = crew_impl.env(dict(ENV, HOME=IHOME))
 subprocess.run(board_tool("crew-board") + ["write-targets"], env=IENV, check=True, text=True,
                input=json.dumps({"rows": [{"id": "UUID-1", "ref": "workspace:1", "name": "chip", "cwd": C}]}))
 _s = socket.socket()

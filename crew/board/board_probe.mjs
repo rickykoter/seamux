@@ -27,12 +27,17 @@ const crewTool = (name, file, args, opts = {}) => {
     { encoding: "utf8", ...opts, env: crewImpl.env(opts.env || process.env) });
 };
 // The argv that runs one board tool, as [cmd, ...args]: the one place this
-// probe names crew-board, crew-board-intent, news and judgments, so the same
-// checks can run against the Python tools and the Rust ones.
-const tool = (name) => name.endsWith(".py") ? ["python3", join(HERE, name)] : [join(HERE, name)];
+// probe names crew-board, crew-board-intent, news, judgments and cat_poses.
+// Through the CREW_IMPL helper, so under CREW_IMPL=rust a tool seamux
+// registers runs as `seamux <basename>` and the rest stay Python.
+const tool = (name) => name.endsWith(".py")
+  ? crewImpl.argv(name.slice(0, -3), join(HERE, name), "python3")
+  : crewImpl.argv(name, join(HERE, name));
+// The env any board tool or the server it starts runs in.
+const toolEnv = (base = process.env) => crewImpl.env(base);
 const runTool = (name, args, opts = {}) => {
   const [cmd, ...pre] = tool(name);
-  return execFileSync(cmd, [...pre, ...args], { encoding: "utf8", ...opts });
+  return execFileSync(cmd, [...pre, ...args], { encoding: "utf8", ...opts, env: toolEnv(opts.env || process.env) });
 };
 // crew-board's ranking over a fixture: {plans: {root: plan}, workspaces: [...]}
 // in place of deep-plan and cmux; no workspaces is the cmux-down path. Returns
@@ -1174,7 +1179,7 @@ if (live && Array.isArray(live.rows)) {
   const { spawn: spawnJ } = await import("node:child_process");
   const [jcmd, ...jpre] = tool("judgments.py");
   await Promise.all([...Array(16).keys()].map(i => new Promise(res => {
-    const c = spawnJ(jcmd, [...jpre, "--record", "/w/r" + i, String(i)], { env, stdio: ["pipe", "ignore", "ignore"] });
+    const c = spawnJ(jcmd, [...jpre, "--record", "/w/r" + i, String(i)], { env: toolEnv(env), stdio: ["pipe", "ignore", "ignore"] });
     c.on("exit", res);
     c.stdin.end(JSON.stringify({ stuck: 0.1 }));
   })));
@@ -1690,6 +1695,71 @@ print(json.dumps([ast.dump(d) == ast.dump(b), sum(ns["tree_url_is"](l, "board.ht
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
+// ---- parity: the Rust prints the Python's bytes ---------------------------
+// Under CREW_IMPL=rust, news and judgments run as seamux everywhere above. Here
+// both implementations get the same fixtures (every badge, families, commit
+// windows, odd types, non-ASCII) and their stdout must match byte for byte.
+if (crewImpl.isRust("news") || crewImpl.isRust("judgments")) {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), "board-parity-"));
+  const both = (name, args, opts = {}) => {
+    const py = execFileSync("python3", [join(HERE, name + ".py"), ...args], { encoding: "utf8", ...opts });
+    const [cmd, ...pre] = crewImpl.argv(name, join(HERE, name + ".py"), "python3");
+    const rs = execFileSync(cmd, [...pre, ...args], { encoding: "utf8", ...opts, env: toolEnv(opts.env || process.env) });
+    return [py, rs];
+  };
+  const NOW = 1790000000.25;
+  const badges = ["asked you", "review", "gate shut", "ci failed", "check failed", "conflicts", "changes",
+    "blocked", "stuck", "working", "merged", "plan done", "something else", ""];
+  const rows = badges.flatMap((b, i) => [
+    { id: "b" + i, name: "név {{" + i + "}}", kind: i % 3 ? "attend" : "running", badge: b,
+      subject: i % 2 ? "the `thing` " + i : "", branch: i % 2 ? "dev/x" + i : "",
+      meta: i % 4 ? `${i}/${i + 3} increments · s` : (i ? "0/0 increments" : ""),
+      commits: i % 3 ? [{ at: NOW - 60 * i, s: "c" + i + " ✓" }, { at: String(NOW - 7200), s: "str-at" }, { at: null }, "junk"] : [] },
+  ]).concat([
+    { id: 7, kind: "quiet", commits: [{ at: NOW - 5, s: "x".repeat(90) }] },
+    { name: "", id: "", kind: "quiet" },
+    { id: "f1", name: "par", kind: "running", badge: "working", family: "Fam", famtier: "attend", famrole: "parent" },
+    { id: "f2", name: "kid", kind: "attend", badge: "review", family: "Fam", meta: "0/1 increments" },
+    { id: "f3", name: "idle", kind: "quiet", family: "Fam" },
+    { id: "g1", name: "q", kind: "quiet", family: "G2" },
+  ]);
+  const cases = [{ rows, now: NOW, hours: 5 }, { rows, now: NOW, hours: 0.25 }, { rows: [], now: NOW, hours: 2.5 },
+    { rows: rows.slice(0, 3), now: NOW }];
+  const newsSame = cases.every((fx, i) => {
+    const f = join(tmp, `news${i}.json`);
+    fs.writeFileSync(f, JSON.stringify(fx));
+    const [py, rs] = both("news", ["--compose", f], { env: { ...process.env, CREW_NEWS_HOURS: "3" } });
+    if (py !== rs) console.log(`  --   news case ${i}\n       py ${py.slice(0, 300)}\n       rs ${rs.slice(0, 300)}`);
+    return py === rs;
+  });
+  checks.push(["parity: news --compose prints the Python's bytes, every badge and family", newsSame]);
+  const jfx = join(tmp, "j.json");
+  fs.writeFileSync(jfx, JSON.stringify({ now: NOW, threshold: 0.5,
+    workspaces: [{ cwd: "/w/a" }, { cwd: "/w/b", running: true }, { cwd: "/w/c" }, { cwd: "/w/d" }, { cwd: "/w/e" }, {}],
+    cache: { "/w/a": { at: NOW - 10, stuck: 0.5, urgency: 2 }, "/w/b": { at: NOW - 10, stuck: 0.9 },
+      "/w/c": { at: NOW - 999999, stuck: 1 }, "/w/d": { at: String(NOW), stuck: "0.75", urgency: "1e1" },
+      "/w/e": { at: NOW, stuck: "nope", urgency: [] } } }));
+  const [jp, jr] = both("judgments", ["--apply", jfx]);
+  checks.push(["parity: judgments --apply prints the Python's bytes", jp === jr, jp + " | " + jr]);
+  // The writer: the same records into two caches, read back as bytes (times aside).
+  const rec = (impl, file) => {
+    const env = { ...process.env, CREW_JUDGMENTS_FILE: file };
+    for (const [cwd, size, extra, vals] of [["/w/a", "12", "0.4", { stuck: 0.25, urgency: "3" }], ["/w/b", "", null, {}],
+      ["/w/ü", "7", "x", { blocked: 1, stuck: true }]]) {
+      const args = ["--record", cwd, size, ...(extra == null ? [] : [extra])];
+      if (impl === "py") execFileSync("python3", [join(HERE, "judgments.py"), ...args], { input: JSON.stringify(vals), env });
+      else { const [cmd, ...pre] = crewImpl.argv("judgments", join(HERE, "judgments.py"), "python3");
+        execFileSync(cmd, [...pre, ...args], { input: JSON.stringify(vals), env: toolEnv(env) }); }
+    }
+    return fs.readFileSync(file, "utf8").replace(/"at": [0-9.e+]+/g, '"at": T');
+  };
+  const rp = rec("py", join(tmp, "jp.json")), rr = rec("rs", join(tmp, "jr.json"));
+  checks.push(["parity: judgments --record writes the Python's cache", rp === rr, rp + " | " + rr]);
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
 // ---- failed validation ranks wilt, on both rank paths ----------------------
 {
   const P = (s, ph, chk) => ({ slug: s, root: "/w/" + s, phase: ph, gate: { allow: true, why: "" },
@@ -1812,7 +1882,7 @@ print(json.dumps([ast.dump(d) == ast.dump(b), sum(ns["tree_url_is"](l, "board.ht
   const ienv = { ...process.env, HOME, CREW_INTENT_PORT: String(pinned), PYTHONFAULTHANDLER: "1", CREW_CODE_BIN: fakeCode,
     CREW_CMUX: join(HERE, "..", "tools", "fakecmux.py"), FAKE_CMUX_DIR: FAKE_DIR };
   const [icmd, ...ipre] = tool("crew-board-intent");
-  const srv = spawn(icmd, ipre, { env: ienv, stdio: ["ignore", "pipe", "pipe"] });
+  const srv = spawn(icmd, ipre, { env: toolEnv(ienv), stdio: ["ignore", "pipe", "pipe"] });
   // Kept, not discarded: when the server does not come up on a runner, its
   // own output and log are the only account of why, and HOME is gone after.
   let srvOut = "", srvExit = null;
@@ -2110,7 +2180,7 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
   const { pathToFileURL } = await import("node:url");
   const DIR = fs.mkdtempSync(join(os.tmpdir(), "board-probe-lock-"));
   const STORE = pathToFileURL(join(HERE, "..", "..", "lookout", "lib", "store.mjs")).href;
-  const env = { ...process.env, LOOKOUT_REVIEWS_DIR: DIR };
+  const env = toolEnv({ ...process.env, LOOKOUT_REVIEWS_DIR: DIR });
   // One lock attempt, or (with a count) that many counter increments under the
   // lock, 2ms apart. Prints {took, err, s}; null when the child had to be killed.
   // Counting writers are also given an unlucky scheduler: a pause of up to 2ms

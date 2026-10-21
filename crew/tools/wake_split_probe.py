@@ -26,14 +26,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 FAKE = os.path.join(HERE, "fakecmux.py")
 tmp = tempfile.mkdtemp(prefix="wake-split-")
-ENV = dict(os.environ, HOME=tmp, FAKE_CMUX_DIR=tmp, CREW_CMUX=FAKE)
+sys.path.insert(0, HERE)
+import crew_impl  # noqa: E402  (beside this probe)
+ENV = crew_impl.env(dict(os.environ, HOME=tmp, FAKE_CMUX_DIR=tmp, CREW_CMUX=FAKE))
 STATE_DIR = os.path.join(tmp, ".cache", "cmux-crew")
 WAKE_TAB, WAKE_VIEW, WAKE_SHARE = "wake", "wake-view", 0.8
 
 
 def tool(name):
-    """The argv that runs one board tool: the one place a probe names it."""
-    return [os.path.join(ROOT, "board", name)]
+    """The argv that runs one board tool: the one place a probe names it,
+    through the CREW_IMPL helper (`seamux <name>` once the Rust registers it)."""
+    return crew_impl.argv(name, os.path.join(ROOT, "board", name))
 
 
 def wake_tab(name, url, select=""):
