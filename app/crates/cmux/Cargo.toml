@@ -1,0 +1,11 @@
+[package]
+name = "cmux"
+description = "The one cmux client: v2 JSON lines on the socket, or the cmux CLI when a probe asks for it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+libc = "0.2"

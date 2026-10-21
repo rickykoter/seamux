@@ -1823,3 +1823,60 @@ is the server's start time without parsing `ps` — and the comparison works
 against any server generation, including ones predating the check. Newer code
 than that is a red check, not a habit. The fix is `pkill -f crew-board-intent`;
 `crew-listen` respawns it within ~10s.
+
+## The cmux socket, read directly (2026-10-21)
+
+Measured on cmux 0.64.25 nightly for the seamux-inversion family, which moves
+every crew call from the cmux CLI onto the socket through `app/crates/cmux`.
+
+**Who may connect.** `automation.socketControlMode` picks one of four modes
+(cmux source: `SocketClientAuthorization.swift`,
+`SocketControlMode+SocketControl.swift`). `cmuxOnly`, the default, admits a
+cmux descendant or a holder of the per-terminal capability token. `automation`
+and `password` admit any same-uid peer, and `password` also demands
+`auth.login` from every caller, cmux's own children included. The password
+lives in `CMUX_SOCKET_PASSWORD`, then `~/.local/state/cmux/socket-control-password`,
+then a legacy Keychain entry, all readable by the same user, so it adds no real
+boundary. `allowAll` makes the socket 0666. crew now sets `automation`;
+`crew doctor` reads the live mode from `system.capabilities`' `access_mode`.
+
+**The wire.** One JSON object per line each way, on `/tmp/cmux-nightly.sock`
+here (`CMUX_SOCKET_PATH` in cmux's terminals; outside them the newest
+`/tmp/cmux*.sock`). A request is `{"id", "method", "params"}`. A response is
+`{"id", "ok": true, "result"}` or `{"id", "ok": false, "error": {"code",
+"message"}}`; an unknown method is `method_not_found`. The CLI's `--json`
+output is the socket's `result` as-is (`workspace list --json` and
+`workspace.list` print the same workspace objects), so a client can switch
+transports without reshaping anything.
+
+**An unknown handle is not refused.** `workspace.status.get` with
+`workspace_id: "nope"` answered for a different, real workspace instead of
+failing. Refs (`workspace:N`) and UUIDs both work. `crates/cmux` therefore
+refuses anything that is neither before it reaches the socket; a mutation sent
+with a typo would otherwise land on someone else's workspace.
+
+**Methods and gaps.** `system.capabilities` lists 506 methods. There is no
+socket method for `sidebar-state`, `set-progress`, `clear-progress`,
+`set-status`, `clear-status` or `reload-config`; those stay CLI verbs. Some
+verbs do real work client-side, so they stay on the CLI too: `notify` targets
+the caller's own surface, `todo set` parses its items, `new-pane` callers parse
+its `OK surface:N pane:N` line. The table is `SOCKET_OPS` / `CLI_ONLY_OPS` in
+`app/crates/cmux/src/verbs.rs`.
+
+**`events.stream` works but is not listed.** It is missing from the method
+list, yet the CLI's own `cmux events` uses it and it serves: an `ack` frame,
+then `{"type": "event", "seq": n, ...}` frames and a `heartbeat` every 15 s,
+resuming from `after_seq` and filtering on `names`. The client tries it and
+falls back to a `cmux events` child only if it is refused. No event fires on
+terminal output.
+
+**Timings.** `read-screen` (`surface.read_text`) takes about 32–54 ms and
+returns plain text with no ANSI; the socket answer carries it as `text` (and
+`base64`). `current --json` (`current.list`) takes about 40 ms and gives each
+agent's `working`, `needs_input` and `ended`.
+
+**Two shapes the CLI hides.** `workspace.status.get`'s `override` is an
+object (`{"status": "review", "inferred_at_override": "todo"}`) or null; the
+CLI prints only its status (`override: review`). `workspace.list` lags a close:
+right after `close-workspace` answers OK the workspace is still listed, and
+about a second later it is gone.

@@ -1170,6 +1170,16 @@ sys.exit(0 if any(k.startswith("bash-guard@") and v for k,v in (d.get("enabledPl
   "$CMUX" config validate >/dev/null 2>&1 && ok "config validates" || bad "cmux config doctor reports a problem"
   if "$CMUX" ping >/dev/null 2>&1; then
     ok "socket reachable"
+    # The seamux app and launchd jobs are not cmux descendants; only automation
+    # mode admits them (automation.socketControlMode in cmux.jsonc).
+    local _mode
+    _mode="$("$CMUX" rpc system.capabilities 2>/dev/null \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_mode",""))' 2>/dev/null)"
+    if [ "$_mode" = automation ]; then
+      ok "socket mode automation (the app and launchd jobs can connect)"
+    else
+      bad "socket mode is ${_mode:-unknown}, not automation — run: crew apply (restart cmux if it stays)"
+    fi
     "$CMUX" sidebar validate crew >/dev/null 2>&1 && ok "sidebar validates" || bad "sidebar has errors: cmux sidebar validate crew"
   else
     warn "cmux socket unreachable (app not running?) — skipped live checks"

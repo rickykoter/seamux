@@ -8,3 +8,6 @@ lookout/vendor/
 
 # claude plugin eval output; baselines under evals/baseline/ are committed
 */evals/results/
+
+# cargo build output for the app/ workspace
+app/target/

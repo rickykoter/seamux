@@ -95,6 +95,13 @@
   },
 
   "automation": {
+    // Any process running as this user may drive the socket, which stays 0600.
+    // The seamux app and launchd jobs are not cmux descendants, so cmuxOnly
+    // (the default) refuses them. password adds nothing (cmux keeps it in a
+    // same-user-readable file) and makes every cmux child log in; allowAll
+    // would make the socket 0666. crew doctor reports the live mode.
+    "socketControlMode": "automation",
+
     // 73 Agent calls across the sample. Nested subagents finishing is not news.
     "suppressSubagentNotifications": true,
     "claudeCodeIntegration": true,
