@@ -141,21 +141,117 @@ pub async fn intent_page(path: String) -> Result<u16, String> {
 
 #[tauri::command]
 pub fn hide_overlay<R: Runtime>(window: WebviewWindow<R>) {
-    let _ = window.hide();
+    hide(&window);
+}
+
+/// Make the window a non-activating panel that joins every Space, including
+/// another app's full-screen one. An ordinary NSWindow from an accessory app
+/// stays off a full-screen Space even with FullScreenAuxiliary set (seen with
+/// cmux full screen: isOnActiveSpace stayed false after orderFrontRegardless);
+/// Spotlight-style overlays are NSPanels with the non-activating style.
+#[cfg(target_os = "macos")]
+fn join_full_screen_spaces<R: Runtime>(w: &WebviewWindow<R>) {
+    use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
+    use objc2::{sel, ClassType};
+    use objc2_app_kit::{NSPanel, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask};
+
+    extern "C-unwind" fn yes(_: &AnyObject, _: Sel) -> Bool {
+        Bool::YES
+    }
+
+    /// NSPanel, but able to take keyboard focus without a title bar (a
+    /// borderless panel refuses key status by default, and the wall's reply
+    /// box needs it).
+    fn panel_class() -> &'static AnyClass {
+        static CLASS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let ptr = *CLASS.get_or_init(|| {
+            let name = c"SeamuxOverlayPanel";
+            let cls = AnyClass::get(name).unwrap_or_else(|| {
+                let mut b = ClassBuilder::new(name, NSPanel::class()).expect("class name is free");
+                // SAFETY: the signatures match canBecomeKeyWindow/MainWindow.
+                unsafe {
+                    b.add_method(sel!(canBecomeKeyWindow), yes as extern "C-unwind" fn(_, _) -> _);
+                    b.add_method(sel!(canBecomeMainWindow), yes as extern "C-unwind" fn(_, _) -> _);
+                }
+                b.register()
+            });
+            cls as *const AnyClass as usize
+        });
+        // SAFETY: a registered class lives for the whole process.
+        unsafe { &*(ptr as *const AnyClass) }
+    }
+
+    let Ok(ptr) = w.ns_window() else { return };
+    // SAFETY: Tauri hands back this window's live NSWindow and setup runs on
+    // the main thread. Swapping its class to an NSPanel subclass is what
+    // tauri-nspanel does; NSPanel adds no instance variables to NSWindow.
+    unsafe {
+        objc2::ffi::object_setClass(ptr as *mut AnyObject, panel_class());
+    }
+    let win: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
+    win.setStyleMask(win.styleMask() | NSWindowStyleMask::NonactivatingPanel);
+    win.setCollectionBehavior(
+        win.collectionBehavior()
+            | NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary,
+    );
+}
+
+/// Whether the window is on the Space in front. A visible window can sit on
+/// another Space (the desktop, while a full-screen app is in front); the
+/// hotkey must bring it here then, not hide it.
+#[cfg(target_os = "macos")]
+fn on_active_space<R: Runtime>(w: &WebviewWindow<R>) -> bool {
+    let Ok(ptr) = w.ns_window() else { return true };
+    // SAFETY: as in join_full_screen_spaces; the shortcut handler runs on the
+    // main thread.
+    let win: &objc2_app_kit::NSWindow = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
+    win.isOnActiveSpace()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn on_active_space<R: Runtime>(_: &WebviewWindow<R>) -> bool {
+    true
 }
 
 fn toggle<R: Runtime>(app: &AppHandle<R>) {
     if let Some(w) = app.get_webview_window("main") {
-        if w.is_visible().unwrap_or(false) {
-            let _ = w.hide();
+        let visible = w.is_visible().unwrap_or(false);
+        if visible && on_active_space(&w) {
+            hide(&w);
         } else {
+            if visible {
+                // Order it out so macOS re-places it on the Space in front.
+                hide(&w);
+            }
             show(&w);
         }
     }
 }
 
+/// Tauri's hide does not take the window off screen once its class is the
+/// panel subclass (seen: hide ran, the window stayed on screen), so order it
+/// out directly as well.
+fn hide<R: Runtime>(w: &WebviewWindow<R>) {
+    let _ = w.hide();
+    #[cfg(target_os = "macos")]
+    if let Ok(ptr) = w.ns_window() {
+        // SAFETY: as in join_full_screen_spaces; callers run on the main thread.
+        let win: &objc2_app_kit::NSWindow = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
+        win.orderOut(None);
+    }
+}
+
 fn show<R: Runtime>(w: &WebviewWindow<R>) {
     let _ = w.show();
+    #[cfg(target_os = "macos")]
+    if let Ok(ptr) = w.ns_window() {
+        // SAFETY: as in join_full_screen_spaces; callers run on the main thread.
+        let win: &objc2_app_kit::NSWindow = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
+        // An accessory app is not active when the hotkey fires; this places
+        // the window in front on the Space in front anyway.
+        win.orderFrontRegardless();
+    }
     let _ = w.set_focus();
 }
 
@@ -169,6 +265,11 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.set_visible_on_all_workspaces(true);
         let _ = w.set_always_on_top(true);
+        #[cfg(target_os = "macos")]
+        join_full_screen_spaces(&w);
+        // The window starts hidden (tauri.conf.json) so its first placement
+        // already carries the Space flags; macOS reads them only on placement.
+        show(&w);
     }
 
     let shortcut: Shortcut = HOTKEY.parse().expect("HOTKEY parses");
@@ -190,6 +291,17 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
     let key_item = MenuItemBuilder::with_id("hotkey", format!("Hotkey: {HOTKEY_LABEL}")).enabled(false).build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "Quit seamux").build(app)?;
     let menu = MenuBuilder::new(app).items(&[&show_item, &key_item]).separator().item(&quit_item).build()?;
+    // Closing the window (Cmd+W, or a close from the system) hides it: the
+    // app lives in the tray, and the hotkey needs the window to exist.
+    if let Some(w) = app.get_webview_window("main") {
+        let w2 = w.clone();
+        w.on_window_event(move |e| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = e {
+                api.prevent_close();
+                hide(&w2);
+            }
+        });
+    }
     let mut tray = TrayIconBuilder::with_id("seamux").tooltip("seamux").menu(&menu).on_menu_event(|app, e| {
         match e.id().as_ref() {
             "show" => {
