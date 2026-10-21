@@ -1760,6 +1760,39 @@ if (crewImpl.isRust("news") || crewImpl.isRust("judgments")) {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
+// ---- parity: the Rust ranks as the Python does -----------------------------
+// One fixture through every tier (asked, review, gate shut, ci failed, check
+// failed, blocked, working, merged, plan done, quiet), signals, a family, and
+// the cmux-down path without workspaces: both implementations, JSON and text,
+// compared byte for byte with the clock line set aside.
+if (crewImpl.isRust("crew-board")) {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), "board-rank-parity-"));
+  const FX = {"plans": {"/w/f": {"slug": "f", "root": "/w/f", "phase": "implementing", "gate": {"allow": true, "why": ""}, "progress": {"total": 3, "done": 1, "blocked": [], "open": [{"n": 2, "title": "t"}], "next": null}, "checksOutstanding": [{"n": 2, "id": "test-a", "kind": "test", "status": "fail"}]}, "/w/g": {"slug": "g", "root": "/w/g", "phase": "implementing", "gate": {"allow": false, "why": "Alignment check not taken."}, "progress": {"total": 4, "done": 2, "blocked": [], "open": [], "next": {"n": 3, "title": "Gate me"}}, "family": {"parent": "g", "role": "parent"}}, "/w/r": {"slug": "r", "root": "/w/r", "phase": "review", "gate": {"allow": false, "why": ""}, "progress": {"total": 0, "done": 0, "blocked": [], "open": [], "next": null}}, "/w/b": {"slug": "b", "root": "/w/b", "phase": "implementing", "gate": {"allow": true, "why": ""}, "progress": {"total": 2, "done": 0, "blocked": [{"title": "Blk", "note": null}], "open": [], "next": null}, "family": {"parent": "g", "role": "child"}}, "/w/d": {"slug": "d", "root": "/w/d", "phase": "done", "gate": {"allow": true, "why": ""}, "progress": {"total": 2, "done": 2, "blocked": [], "open": [], "next": null}}}, "workspaces": [{"id": "f", "title": "f PROJ-12", "cwd": "/w/f", "desc": "ci:pass review:approved planinc:1/3 plannext:2 planpath:x", "running": true, "branch": "dev/f", "pr": "#5", "dirty": false, "commits": [{"at": 1, "s": "x"}], "pr_url": "https://x/pull/5"}, {"id": "g", "title": "g", "cwd": "/w/g", "desc": "pr:draft jira:in-review", "running": false, "branch": "none", "pr": "none", "dirty": true}, {"id": "r", "title": "r", "cwd": "/w/r", "desc": "phase:waiting feedby:9999999999 feedgate:allow", "running": false, "branch": "", "pr": "none", "dirty": false}, {"id": "b", "title": "b", "cwd": "/w/b", "desc": "", "running": false, "branch": "b", "pr": "none", "dirty": false}, {"id": "c", "title": "c", "cwd": "/w/c", "desc": "ci:fail stack:ready sandbox:running", "running": false, "branch": "none", "pr": "#9", "dirty": false}, {"id": "m", "title": "m", "cwd": "/w/m", "desc": "gone:merged", "running": false, "branch": "m", "pr": "none", "dirty": false}, {"id": "d", "title": "d", "cwd": "/w/d", "desc": "", "running": false, "branch": "d", "pr": "none", "dirty": false}, {"id": "q", "title": "quiet one", "cwd": "/w/q", "desc": "", "running": false, "branch": "q", "pr": "#3", "dirty": true, "pr_state": "open", "color": "#123456", "selected": true}]};
+  const noPlans = { plans: FX.plans };
+  const out = (impl, fx, json) => {
+    const f = join(tmp, "fx.json");
+    fs.writeFileSync(f, JSON.stringify(fx));
+    const args = ["state", ...(json ? ["--json"] : []), "--fixture", f];
+    const [cmd, ...pre] = impl === "py" ? [join(HERE, "crew-board")] : crewImpl.argv("crew-board", join(HERE, "crew-board"));
+    return execFileSync(cmd, [...pre, ...args], { encoding: "utf8", env: toolEnv(process.env) })
+      .replace(/"stamp": "[0-9:]+"/, '"stamp": "T"').replace(/^\d\d:\d\d:\d\d · /, "T · ");
+  };
+  const same = (fx, json) => { const p = out("py", fx, json), r = out("rs", fx, json);
+    if (p !== r) console.log(`  --   rank parity (${json ? "json" : "text"})\n       py ${p.slice(0, 400)}\n       rs ${r.slice(0, 400)}`);
+    return p === r; };
+  checks.push(["parity: state --json ranks every tier as the Python does", same(FX, true)]);
+  checks.push(["parity: ...and the cmux-down path, from plans alone", same(noPlans, true)]);
+  checks.push(["parity: ...and the text listing", same(FX, false) && same(noPlans, false)]);
+  // An unknown subcommand prints the docstring and exits 2, on both sides.
+  const usage = (argv) => { try { execFileSync(argv[0], [...argv.slice(1), "bogus"], { encoding: "utf8", env: toolEnv(process.env) });
+    return "exit 0"; } catch (e) { return `exit ${e.status}\n${e.stdout}`; } };
+  const up = usage([join(HERE, "crew-board")]), ur = usage(crewImpl.argv("crew-board", join(HERE, "crew-board")));
+  checks.push(["parity: an unknown subcommand prints the same usage and exits 2", up === ur && up.startsWith("exit 2\n")]);
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
 // ---- failed validation ranks wilt, on both rank paths ----------------------
 {
   const P = (s, ph, chk) => ({ slug: s, root: "/w/" + s, phase: ph, gate: { allow: true, why: "" },

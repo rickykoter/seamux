@@ -9,13 +9,17 @@
 //! deletes them with the Dock board.
 
 pub mod cat_poses;
+pub mod cmux_cli;
 pub mod judgments;
 pub mod news;
 pub mod pyval;
+pub mod rank;
+pub mod state;
 
 /// The seamux tools this crate provides, by the Python script's basename.
 pub const TOOLS: &[(&str, fn(&[String]) -> i32)] = &[
     ("cat_poses", cat_poses::main),
+    ("crew-board", state::main),
     ("judgments", judgments::main),
     ("news", news::main),
 ];

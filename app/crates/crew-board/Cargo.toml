@@ -9,4 +9,5 @@ publish.workspace = true
 [dependencies]
 cmux.workspace = true
 crew-core.workspace = true
+libc = "0.2"
 serde_json.workspace = true
