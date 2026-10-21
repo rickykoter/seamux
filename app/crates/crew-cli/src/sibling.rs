@@ -31,10 +31,17 @@ fn registered() -> &'static Vec<String> {
 }
 
 /// `seamux <tool>`'s argv head when this binary can run `tool`, else None.
+///
+/// `SEAMUX_TOOLS_BY_PATH=1` (probe-only, the same switch crew-hooks honors)
+/// runs every tool another crate registers from its path under the crew
+/// home, so a probe's stub tree sees the call; crew-cli's own tools still
+/// self-exec, since their parity is what the probe tests.
 pub fn own(tool: &str) -> Option<Vec<String>> {
     let exe = seamux()?;
     let ours = crate::TOOLS.iter().any(|(n, _)| *n == tool);
-    (ours || registered().iter().any(|t| t == tool)).then(|| vec![exe.to_string_lossy().into_owned(), tool.to_string()])
+    let by_path = std::env::var("SEAMUX_TOOLS_BY_PATH").is_ok_and(|v| v == "1");
+    (ours || (!by_path && registered().iter().any(|t| t == tool)))
+        .then(|| vec![exe.to_string_lossy().into_owned(), tool.to_string()])
 }
 
 /// A file under the crew home (CREW_HOME, else ~/.config/cmux/crew).

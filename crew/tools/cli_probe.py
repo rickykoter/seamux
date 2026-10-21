@@ -73,6 +73,10 @@ def _cmd(tool, args, env, crew_home):
         sys.exit(f"cli_probe: {e}")
     if crew_impl.is_rust(tool):
         env = crew_impl.env(dict(env, CREW_HOME=crew_home))
+        if crew_home != CREW:
+            # A stub tree: siblings another crate ports must still run from it,
+            # by path, so the stubs log the call (crew-hooks honors the same).
+            env["SEAMUX_TOOLS_BY_PATH"] = "1"
     return argv + list(args), env
 
 
