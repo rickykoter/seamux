@@ -567,6 +567,25 @@ away.
 
 ![the gate band above the prompt after a blocked edit: the reason, go next, open plan and dismiss](docs/img/gate-band.png)
 
+## The seamux app: everything over cmux, on a hotkey
+
+A small Mac app that lives outside cmux and drives it over its socket. Press
+⌃⌥Space from anywhere, a full-screen cmux included, and an overlay drops in
+over whatever you're doing; press it again, or Esc, and it's gone. It has no
+Dock icon; a tray icon carries Show, Quit and the hotkey.
+
+The first tab is the **wall**: every terminal pane in cmux as a card, showing
+its last lines live (within about a second and a half of new output). Agents
+waiting on you float to the top with an amber edge, then the working ones,
+the idle ones and plain shells. Each agent's card has a reply box and a Jump
+button. A reply types your line into that agent's pane and presses Enter;
+Jump brings the pane to the front in cmux. The other tabs (Wake, Usage and
+Board) frame the intent server's own pages until they're ported. The board
+tab says so until the server serves `/board`.
+
+Install it with `./install.sh --app` (see [Install](#install)). It needs cmux's
+socket in `automation` mode, which `crew apply` sets.
+
 ## Setup
 
 ### Install or update with an agent
@@ -619,6 +638,7 @@ environment), or push anything.
 | `gh` *(optional)* | PR and checks chips on rows | those chips stay blank |
 | `ccusage` *(optional)* | spend on rows and `/usage` | cost surfaces are absent |
 | [TypeSafe](https://typesafe.ai) key *(optional)* | judgment calls: turn-end questions, board ranking, plan citation checks | those judgments don't happen |
+| Rust (`cargo`) + Xcode command line tools *(optional)* | building the seamux app with `./install.sh --app` | no app; everything else works |
 
 deep-plan and restack alone need only Claude Code and `node`; the macOS and
 cmux rows are for crew.
@@ -662,6 +682,19 @@ Nothing is deleted, and each item moves only once the plugin replacing it is
 installed and enabled. `--dry-run` prints every command and the migration
 list without changing anything.
 
+The app installs on its own, after the plugins:
+
+```sh
+./install.sh --app        # add --dry-run to see each step first
+```
+
+It checks for `cargo`, `node` and the Xcode command line tools, builds the
+pages and the release binaries, puts the bundle in `~/Applications/seamux.app`
+and links the `seamux` CLI inside it to `~/.local/bin/seamux`. The bundle is a
+copy, so unlike the plugins an edit to `app/` is not live: run `--app` again
+to rebuild. A previous bundle is moved to `$TMPDIR`, not deleted. Quit a
+running copy from its tray icon first.
+
 For scripted installs, `--main-repo PATH`, `--with-jira=SITE`,
 `--with-github-issues` and `--with-observability=STACK` set the crew plugin's
 options, and `--no-crew`, `--no-restack`, `--no-guard` and `--no-lookout`
@@ -704,8 +737,9 @@ and `{"typesafe": {"enabled": false}}` turns it off with the key in place.
 ### Check it worked
 
 ```sh
-./install.sh --check                             # plugins, leftovers, crew drift
+./install.sh --check                             # plugins, the app, leftovers, crew drift
 crew doctor                                      # everything green
+seamux --version                                 # with the app: its CLI, through ~/.local/bin
 claude plugin list                               # each plugin, "Read from" this checkout
 node deep-plan/probe.mjs && node restack/probe.mjs && node crew/board/board_probe.mjs
 python3 tools/skill_lint.py                      # every skill against the authoring rules
@@ -727,7 +761,9 @@ yet, `deep-plan verify init` shows the checks it would draft.
 This puts cmux's config back, moves the crew folder to a timestamped backup,
 uninstalls the plugins, and removes the marketplace and the shims. It keeps
 your plan state (`~/.claude/deep-plan`, `~/.claude/plans`), each repo's
-`.seamux/restack.json`, and `~/.config/cmux/crew-local`.
+`.seamux/restack.json`, and `~/.config/cmux/crew-local`. It leaves the app:
+quit it from the tray, then move `~/Applications/seamux.app` to the Trash and
+remove the `~/.local/bin/seamux` link.
 
 ## Configuration
 
@@ -835,6 +871,7 @@ Read these before you rely on seamux.
 | `crew/` | plugin: Claude hooks and options; `crew apply` copies it to `~/.config/cmux/crew` (see `crew/README.md`) |
 | `crew/claude/` | the status line, and the settings merge `crew apply` runs |
 | `seamux-mods/` | optional plugin: deep-plan drawn in the terminal (see its `README.md`) |
+| `app/` | the seamux app and the `seamux` CLI: a cargo workspace (`crates/cmux`, the only cmux client; `crates/seamux-app`, the Tauri window; `crates/seamux-cli`; the crew ports) and the pages in `ui/`; built by `./install.sh --app` |
 | `docs/` | dev history, test notes, adoption audit, ADRs and README images; not installed |
 | `docs/SYNCING.md` | who owns which path, and how a change moves between the repo and your machine |
 | `tools/scrub_check.py` | refuses internal identifiers in tracked files; the first step in CI |

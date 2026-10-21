@@ -11,3 +11,8 @@ lookout/vendor/
 
 # cargo build output for the app/ workspace
 app/target/
+# the app's pages: npm packages and the Vite build tauri.conf.json serves
+app/node_modules/
+app/dist/
+# tauri-build regenerates its ACL schemas on every build
+app/crates/*/gen/

@@ -1880,3 +1880,52 @@ object (`{"status": "review", "inferred_at_override": "todo"}`) or null; the
 CLI prints only its status (`override: review`). `workspace.list` lags a close:
 right after `close-workspace` answers OK the workspace is still listed, and
 about a second later it is gone.
+
+## The live agent wall, measured, and what the overlay had to work around (2026-10-21)
+
+The seamux app's wall (`app/crates/seamux-app/src/wall.rs`) polls, because
+nothing in cmux says a terminal changed: there is no output event, and
+`surface.read_text` has no follow mode.
+
+**What one poll costs.** `current.list`, then `read_text` for every running
+terminal, fanned over four socket connections (a `Cmux` serializes calls on
+its own connection). Against live cmux with 14 running terminals, frames went
+out about every 1.07 s (the 1 s interval plus the poll), and a pane printing
+the time each second showed each line in a frame 0.5 to 1.6 s after it was
+printed. Events that carry a `surface_id` pull that one surface's read
+forward, throttled to one read per surface per 250 ms, and a due poll always
+runs before queued pulls so a chatty pane cannot starve the rest.
+
+**Which id a pane has.** In `current.list` each item is a pane (`kind`
+`terminal` or `browser`), its `agents` carry `state` (`working`,
+`needs_input`, `idle`, `ended`), and the surface UUID that `read_text` and
+`send_text` take is `projections[0].panel_id`; `durable_surface_id` is a
+different id.
+
+**`send_text` turns a typed `\n` into Enter, with no escape.** The CLI, and
+`crates/cmux`'s socket path to match it, replace backslash-n with a carriage
+return, and there is no way to send a literal backslash-n. A reply typed into
+an agent therefore goes through the raw `surface.send_text` method, which
+types its text as given, with control characters stripped (Ctrl-C, Escape and
+so a bracketed-paste end marker would act on the agent) and one `\r` added.
+
+**Tauri 2 event names may not contain a dot.** `emit("wall.frame")` fails and
+`listen("wall.frame")` throws; only letters, digits, `-`, `/`, `:` and `_` are
+allowed. The event is `wall:frame`.
+
+**A plain cargo build loads the dev server.** Without the Tauri CLI, a debug
+build loads `devUrl` and shows a blank window when Vite isn't running; the
+crate turns on Tauri's `custom-protocol` feature by default so it serves
+`app/dist`.
+
+**An overlay over a full-screen app has to be an NSPanel.** An ordinary
+window from an accessory app (no Dock icon) stays on the desktop Space when
+another app is full screen, even with `CanJoinAllSpaces` and
+`FullScreenAuxiliary` set: `isOnActiveSpace` stayed false after
+`orderFrontRegardless`, and the hotkey toggled a window nobody could see. The
+window's class is swapped at start for a non-activating `NSPanel` subclass
+that carries tao's `focusable` ivar at the same offset (checked before the
+swap), as tauri-nspanel does. After the swap, Tauri's `hide()` no longer takes
+the window off screen, so the app orders it out through AppKit, and the
+hotkey brings a window that is visible on another Space to this one instead of
+hiding it.
