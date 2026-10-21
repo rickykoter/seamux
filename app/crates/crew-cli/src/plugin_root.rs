@@ -16,6 +16,7 @@ use crew_core::py::{env_or, home};
 use serde_json::{Map, Value};
 
 use crate::pyerr;
+use crate::pyval::truthy;
 use crate::pypath::{join, normpath};
 
 const USAGE: &str = "    crew-plugin-root <plugin-name>       prints the root, or nothing (exit 1)";
@@ -44,19 +45,8 @@ fn load(path: &str) -> Value {
     let Ok(bytes) = std::fs::read(path) else { return Value::Object(Map::new()) };
     let Ok(text) = String::from_utf8(bytes) else { return Value::Object(Map::new()) };
     match serde_json::from_str::<Value>(&text) {
-        Ok(v) if truthy(&v) => v,
+        Ok(v) if truthy(Some(&v)) => v,
         _ => Value::Object(Map::new()),
-    }
-}
-
-fn truthy(v: &Value) -> bool {
-    match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64().map(|f| f != 0.0).unwrap_or(true),
-        Value::String(s) => !s.is_empty(),
-        Value::Array(a) => !a.is_empty(),
-        Value::Object(o) => !o.is_empty(),
     }
 }
 
@@ -82,7 +72,7 @@ fn get<'a>(d: &'a Value, key: &str) -> Result<Option<&'a Value>, Raise> {
 
 /// `d.get(key) or default`: the value when truthy.
 fn get_truthy<'a>(d: &'a Value, key: &str) -> Result<Option<&'a Value>, Raise> {
-    Ok(get(d, key)?.filter(|v| truthy(v)))
+    Ok(get(d, key)?.filter(|v| truthy(Some(v))))
 }
 
 /// `for x in (v or [])`: the items of a list. Anything else truthy is a
@@ -153,7 +143,7 @@ pub fn plugin_root(name: &str, config_dir: Option<&str>) -> Result<String, Raise
                 }
             }
         }
-        for inst in items(Some(installs).filter(|v| truthy(v)))? {
+        for inst in items(Some(installs).filter(|v| truthy(Some(v))))? {
             match get_truthy(inst, "installPath")? {
                 Some(Value::String(p)) if Path::new(p).is_dir() => return Ok(p.clone()),
                 // os.path.isdir takes an int as a file descriptor (never a

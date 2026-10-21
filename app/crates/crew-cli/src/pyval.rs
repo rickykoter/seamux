@@ -24,8 +24,44 @@ pub fn py_str(v: &Value) -> String {
         Value::Bool(false) => "False".into(),
         Value::Null => "None".into(),
         Value::Number(n) if n.is_f64() => pyjson::float_repr(n.as_f64().unwrap_or(0.0)),
-        other => pyjson::dumps(other),
+        Value::Number(n) => n.to_string(),
+        other => py_repr(other),
     }
+}
+
+/// `repr(v)` for a JSON value as Python holds it: lists and dicts in Python's
+/// own spelling (single-quoted strings, True/False/None).
+pub fn py_repr(v: &Value) -> String {
+    match v {
+        Value::String(s) => repr_str(s),
+        Value::Array(a) => format!("[{}]", a.iter().map(py_repr).collect::<Vec<_>>().join(", ")),
+        Value::Object(o) => format!("{{{}}}", o.iter().map(|(k, x)| format!("{}: {}", repr_str(k), py_repr(x))).collect::<Vec<_>>().join(", ")),
+        other => py_str(other),
+    }
+}
+
+/// `repr(str)`: single quotes unless the text holds one and no double quote;
+/// backslash, the quote, \n \r \t and other control characters escaped.
+fn repr_str(s: &str) -> String {
+    let q = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
+    let mut out = String::from(q);
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c == q => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => out.push_str(&format!("\\x{:02x}", c as u32)),
+            c if (0x80..0xa0).contains(&(c as u32)) => out.push_str(&format!("\\x{:02x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push(q);
+    out
 }
 
 /// `str.isspace` for one character.
@@ -86,6 +122,14 @@ pub fn head(s: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn str_of_containers_is_their_python_repr() {
+        let v: Value = serde_json::from_str(r#"{"command": "ls 'x'", "n": [1, 2.5, true, null], "s": "a\nb"}"#).unwrap();
+        // python3 -c 'print(str({"command": "ls \'x\'", "n": [1, 2.5, True, None], "s": "a\nb"}))'
+        assert_eq!(py_str(&v), r#"{'command': "ls 'x'", 'n': [1, 2.5, True, None], 's': 'a\nb'}"#);
+        assert_eq!(py_str(&serde_json::json!(["a", {}])), "['a', {}]");
+    }
 
     #[test]
     fn py_int_takes_what_python_takes() {

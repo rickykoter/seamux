@@ -25,6 +25,7 @@ use crew_core::pyjson;
 use serde_json::{json, Value};
 
 use crate::pyerr;
+use crate::pyval::truthy;
 
 const KEY: &str = "activePaneBorderColor";
 
@@ -163,17 +164,6 @@ fn selected_color(wsid: Option<&str>) -> String {
         }
     }
     String::new()
-}
-
-fn truthy(v: Option<&Value>) -> bool {
-    match v {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(b)) => *b,
-        Some(Value::Number(n)) => n.as_f64() != Some(0.0),
-        Some(Value::String(s)) => !s.is_empty(),
-        Some(Value::Array(a)) => !a.is_empty(),
-        Some(Value::Object(o)) => !o.is_empty(),
-    }
 }
 
 /// Replace the one value in place. True when the file changed.
