@@ -13,12 +13,15 @@ pub mod listen;
 mod md5;
 pub mod overlay;
 pub mod plugin_root;
+pub mod resume;
 mod proc;
 mod pyerr;
 mod pypath;
 mod pyval;
 mod sibling;
+pub mod sweep;
 pub mod sync;
+mod term;
 
 /// The seamux tools this crate provides, by the Python script's basename.
 pub const TOOLS: &[(&str, fn(&[String]) -> i32)] = &[
@@ -29,5 +32,7 @@ pub const TOOLS: &[(&str, fn(&[String]) -> i32)] = &[
     ("crew-listen", listen::main),
     ("crew-overlay", overlay::main),
     ("crew-plugin-root", plugin_root::main),
+    ("crew-resume", resume::main),
+    ("crew-sweep", sweep::main),
     ("crew-sync", sync::main),
 ];
