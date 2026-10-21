@@ -571,8 +571,9 @@ away.
 
 A small Mac app that lives outside cmux and drives it over its socket. Press
 ⌃⌥Space from anywhere, a full-screen cmux included, and an overlay drops in
-over whatever you're doing; press it again, or Esc, and it's gone. It has no
-Dock icon; a tray icon carries Show, Quit and the hotkey.
+over whatever you're doing; press it again, or Esc, and it's gone. Click
+another app and that app comes in front; the hotkey brings the overlay back.
+It has no Dock icon; a tray icon carries Show, Quit and the hotkey.
 
 The first tab is the **wall**: every terminal pane in cmux as a card, showing
 its last lines live (within about a second and a half of new output). Agents
