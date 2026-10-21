@@ -12,16 +12,22 @@
 //! CREW_HOME, which crew_impl points at the checkout's crew/),
 //! CREW_SCRATCH_BASE and CREW_TEMP_ROOTS exist for the probes only.
 
+pub mod classify;
 pub mod cli;
+pub mod index;
 pub mod keep;
+pub mod lock;
 pub mod paths;
 pub mod read;
+pub mod scan;
 pub mod schema;
+pub mod stores;
 
+pub use index::{backfill, index};
 pub use keep::{keep, keep_all, kept_dir, KeepResult};
 pub use paths::{is_temp, norm, realpath, wskey, Paths};
 pub use read::{count, fts_query, row, search, workspaces, Row, WsCount};
-pub use schema::{connect, VERSION};
+pub use schema::{connect, write_rows, FIELDS, VERSION};
 
 /// What `seamux` runs: `seamux crew-artifacts ...`.
 pub const TOOLS: &[(&str, fn(&[String]) -> i32)] = &[("crew-artifacts", cli::main)];
@@ -80,6 +86,39 @@ pub fn iso(ts: f64) -> String {
         rem % 60,
         ms
     )
+}
+
+/// `calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))`, or None
+/// where strptime raises: the wrong shape, or a date the calendar lacks.
+pub fn epoch19(ts: &str) -> Option<i64> {
+    let b = ts.as_bytes();
+    if b.len() < 19 || !ts.is_char_boundary(19) {
+        return None;
+    }
+    if b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let num = |a: usize, z: usize| -> Option<i64> {
+        let s = &ts[a..z];
+        if s.bytes().all(|c| c.is_ascii_digit()) { s.parse().ok() } else { None }
+    };
+    let (y, mo, d, h, mi, s) = (num(0, 4)?, num(5, 7)?, num(8, 10)?, num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let days = match mo {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    if !(1..=12).contains(&mo) || d < 1 || d > days || h > 23 || mi > 59 || s > 61 {
+        return None;
+    }
+    Some(crew_core::py::days_from_civil(y, mo as u32, d as u32) * 86400 + h * 3600 + mi * 60 + s)
+}
+
+/// `bytes.strip()`'s whitespace: space, \t, \n, \r, \x0b, \x0c.
+pub fn py_bytes_space(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
 }
 
 /// `str.isspace()` for one character: Unicode White_Space plus the four

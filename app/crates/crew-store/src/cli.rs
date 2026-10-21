@@ -47,34 +47,8 @@ fn take_flag(args: &mut Vec<String>, flag: &str) -> bool {
 /// The store's UTC ISO time as this machine's local `YYYY-MM-DD HH:MM`.
 pub fn local(iso: &str) -> String {
     let fallback = || crate::py_prefix(iso, 16).replace('T', " ");
-    let b = iso.as_bytes();
-    if b.len() < 19 {
-        return fallback();
-    }
-    let num = |a: usize, z: usize| -> Option<i64> {
-        let s = std::str::from_utf8(&b[a..z]).ok()?;
-        if s.bytes().all(|c| c.is_ascii_digit()) { s.parse().ok() } else { None }
-    };
-    let parts = (|| {
-        if b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' {
-            return None;
-        }
-        let (y, mo, d, h, mi, s) = (num(0, 4)?, num(5, 7)?, num(8, 10)?, num(11, 13)?, num(14, 16)?, num(17, 19)?);
-        // strptime refuses a day the month does not have (Feb 30, Apr 31).
-        let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-        let days = match mo {
-            2 if leap => 29,
-            2 => 28,
-            4 | 6 | 9 | 11 => 30,
-            _ => 31,
-        };
-        if !(1..=12).contains(&mo) || d < 1 || d > days || h > 23 || mi > 59 || s > 61 {
-            return None;
-        }
-        Some((y, mo, d, h, mi, s))
-    })();
-    let Some((y, mo, d, h, mi, s)) = parts else { return fallback() };
-    let t = crew_core::py::days_from_civil(y, mo as u32, d as u32) * 86400 + h * 3600 + mi * 60 + s;
+    // strptime refuses a day the month does not have (Feb 30, Apr 31).
+    let Some(t) = crate::epoch19(iso) else { return fallback() };
     // SAFETY: localtime_r writes into tm, which lives on this frame.
     let tm = unsafe {
         let mut tm: libc::tm = std::mem::zeroed();
@@ -140,9 +114,26 @@ pub fn main(argv: &[String]) -> i32 {
     let mut args: Vec<String> = argv.to_vec();
     let cmd = if args.is_empty() { String::new() } else { args.remove(0) };
     match cmd.as_str() {
-        "index" | "backfill" => {
-            eprintln!("crew-artifacts: {cmd} is not ported to seamux yet (the indexer is port-store increment 2)");
-            1
+        "index" => match crate::index() {
+            Ok(n) => {
+                println!("indexed {n} rows");
+                0
+            }
+            Err(crate::Error::Busy) => {
+                println!("another index run holds the lock; nothing to do");
+                0
+            }
+            Err(e) => fail(e),
+        },
+        "backfill" => {
+            let t = crew_core::py::now();
+            match crate::backfill() {
+                Ok(n) => {
+                    println!("indexed {n} rows in {:.1}s", crew_core::py::now() - t);
+                    0
+                }
+                Err(e) => fail(e),
+            }
         }
         "search" => {
             let as_json = take_flag(&mut args, "--json");
