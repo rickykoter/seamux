@@ -36,7 +36,7 @@ and deep-plan, lookout and ask stores each hold one record. What is asserted:
     holder consumes; ~/.claude/crew is 0700;
   - crew-artifacts index and search (text, --ws, --kind, --json) work;
   - /usr/bin/python3 (3.9) runs the indexer too;
-  - when seamux registers crew-artifacts, the two implementations share one
+  - under CREW_IMPL, when seamux registers crew-artifacts, the two implementations share one
     store: the CLIs print the same bytes, each indexes nothing after the
     other, rows Rust writes read back through Python, and a lock Python
     holds makes Rust busy.
@@ -566,7 +566,11 @@ with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
         print("  skip /usr/bin/python3 is not on this machine")
 
     print("one store, two implementations")
-    if "crew-artifacts" not in crew_impl.registered():
+    if not crew_impl.mode():
+        # Only when a Rust run was asked for: a stale seamux on PATH or in
+        # app/target must not fail the Python's own run.
+        print("  skip CREW_IMPL is unset (CREW_IMPL=rust compares the two)")
+    elif "crew-artifacts" not in crew_impl.registered():
         print("  skip seamux does not register crew-artifacts "
               "(cargo build --manifest-path app/Cargo.toml -p seamux-cli)")
     else:

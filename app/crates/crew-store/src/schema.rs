@@ -82,9 +82,20 @@ ON CONFLICT(ws, kind, locator) DO UPDATE SET
                  AND excluded.updated_at > kept_at THEN NULL ELSE kept_at END
 ";
 
-/// `os.makedirs(d, mode=0o700, exist_ok=True)`.
+/// `os.makedirs(d, mode=0o700, exist_ok=True)`: the mode is the leaf's;
+/// missing parents get the default mode (umask applies to both).
 pub(crate) fn makedirs_0700(d: &str) -> std::io::Result<()> {
-    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(d)
+    let leaf = std::path::Path::new(d);
+    if leaf.is_dir() {
+        return Ok(());
+    }
+    if let Some(parent) = leaf.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    match std::fs::DirBuilder::new().mode(0o700).create(leaf) {
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && leaf.is_dir() => Ok(()),
+        r => r,
+    }
 }
 
 /// Open (and create or migrate) the store. The directory is 0700: the db

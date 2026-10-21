@@ -106,10 +106,11 @@
     "note": "the cutover's proof that no crew tool is left on Python: an unregistered tool fails the run" },
   { "id": "crew-store-rust", "kind": "test",
     "run": "cargo test --manifest-path app/Cargo.toml -p crew-store",
-    "match": ["app/crates/crew-store/**"], "default": true,
+    "match": ["app/crates/crew-store/**", "app/crates/crew-core/**", "app/Cargo.lock", "crew/board/artifacts.py"], "default": true,
     "note": "the Rust Artifact Log store: schema, read side, Keep and the indexer, including dbs made by artifacts.py" },
   { "id": "artifacts-probe-rust", "kind": "test",
     "run": "cargo build --manifest-path app/Cargo.toml -p seamux-cli && CREW_IMPL=rust-strict python3 crew/tools/artifacts_probe.py",
-    "match": ["app/crates/crew-store/**", "crew/tools/artifacts_probe.py"], "default": true,
+    "match": ["app/crates/crew-store/**", "app/crates/crew-core/**", "app/crates/seamux-cli/**", "app/Cargo.lock",
+              "crew/tools/artifacts_probe.py", "crew/tools/crew_impl.py", "crew/board/artifacts.py", "crew/bin/crew-artifacts"], "default": true,
     "note": "the artifacts probe against seamux crew-artifacts: Python seeds, Rust reads and writes the same artifacts.db; rust-strict, so a seamux that does not register crew-artifacts fails instead of testing the Python" }
 ] }
