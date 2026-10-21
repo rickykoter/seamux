@@ -276,6 +276,10 @@ fn hide<R: Runtime>(w: &WebviewWindow<R>) {
 }
 
 fn show<R: Runtime>(w: &WebviewWindow<R>) {
+    // Minimized with the yellow button: showing alone would leave it in the Dock.
+    if w.is_minimized().unwrap_or(false) {
+        let _ = w.unminimize();
+    }
     let _ = w.show();
     #[cfg(target_os = "macos")]
     if let Ok(ptr) = w.ns_window() {

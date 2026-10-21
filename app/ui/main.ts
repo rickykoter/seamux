@@ -42,8 +42,8 @@ const tabs = new Tabs(
 );
 tabs.select("wall");
 
+// The window's own red button hides it too (shell.rs turns a close into a hide).
 const hide = () => void invoke("hide_overlay");
-document.getElementById("hide")!.addEventListener("click", hide);
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") hide();
   // ⌘1…⌘4 switch tabs, while focus is in the shell rather than a framed page.
