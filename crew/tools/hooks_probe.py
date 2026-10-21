@@ -31,8 +31,12 @@ What is asserted, per event (crew-hook.sh) and tool:
     grew, does nothing;
   - options.py, merge_settings.py and statusline.py: their files and lines.
 
-With CREW_IMPL=rust the same cases drive crew/hooks/seamux-hook.sh and
-seamux-asked.sh, and `seamux <tool>` for the three tools.
+With CREW_IMPL=rust (crew/tools/crew_impl.py) the same cases run each
+piece seamux registers as Rust: `seamux <tool>` for the three tools, and
+crew/hooks/seamux-hook.sh and seamux-asked.sh once seamux registers
+crew-hook and asked-hook. Anything unregistered runs as today's script, so
+the probe passes at every step of the port; CREW_IMPL=rust-strict refuses
+an unregistered piece instead.
 
     python3 crew/tools/hooks_probe.py      exit 0 when all hold
 """
@@ -52,7 +56,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 SRC = os.environ.get("PROBE_CREW_SRC") or os.path.join(REPO, "crew")
 FAKE = os.path.join(HERE, "fakecmux.py")
-RUST = os.environ.get("CREW_IMPL") == "rust"
+sys.path.insert(0, HERE)
+import crew_impl  # noqa: E402
+
+RUST = bool(crew_impl.mode())
 BASH = shutil.which("bash") or "/bin/bash"
 results = []
 
@@ -120,8 +127,9 @@ sys.stdout.write(open(os.environ["PROBE_CCUSAGE_" + sys.argv[1].upper()]).read()
 ''')
 for d in (BIN, NOCC):
     os.symlink(sys.executable, os.path.join(d, "python3"))
-    if shutil.which("seamux"):
-        os.symlink(shutil.which("seamux"), os.path.join(d, "seamux"))
+    if crew_impl.seamux_bin():
+        # The shims exec `seamux` from PATH: make it the one crew_impl runs.
+        os.symlink(os.path.abspath(crew_impl.seamux_bin()), os.path.join(d, "seamux"))
 
 GIT = shutil.which("git")
 SYS_PATH = os.pathsep.join(p for p in ("/usr/bin", "/bin", "/usr/sbin", "/sbin",
@@ -189,30 +197,36 @@ def env_for(ws="ws-1", path=BIN, **extra):
                CREW_CMUX=os.path.join(path, "cmux"), PROBE_SPAWN_LOG=SPAWN,
                CREW_LIVE=LIVE, PATH=path + os.pathsep + SYS_PATH)
     if RUST:
-        env["CREW_IMPL"] = "rust"
+        # What crew_impl.env adds, with CREW_HOME on the copy under test.
+        env.update(CREW_IMPL=crew_impl.mode(), CREW_CMUX_TRANSPORT="cli", CREW_HOME=CREW)
     if ws:
         env["CMUX_WORKSPACE_ID"] = ws
     env.update({k: v for k, v in extra.items() if v is not None})
     return env
 
 
+def shim(tool, rust_sh, bash_sh):
+    """The shim seamux's `tool` stands behind once it is registered, else today's."""
+    if crew_impl.is_rust(tool):
+        return rust_sh
+    if crew_impl.mode() == "rust-strict":
+        raise crew_impl.NotPorted("CREW_IMPL=rust-strict: seamux does not register %r" % tool)
+    return bash_sh
+
+
 def hook_argv(event):
-    shim = "seamux-hook.sh" if RUST else "crew-hook.sh"
-    return [BASH, os.path.join(CREW, "hooks", shim), event]
+    return [BASH, os.path.join(CREW, "hooks", shim("crew-hook", "seamux-hook.sh", "crew-hook.sh")), event]
 
 
 def asked_argv(size):
-    shim = "seamux-asked.sh" if RUST else "asked.sh"
-    return [BASH, os.path.join(CREW, "hooks", shim), size]
+    return [BASH, os.path.join(CREW, "hooks", shim("asked-hook", "seamux-asked.sh", "asked.sh")), size]
 
 
 def tool_argv(name, *argv):
     """A crew tool by its Python basename: the script in the copy, or `seamux`."""
-    if RUST:
-        return ["seamux", name] + list(argv)
     rel = {"options": "hooks/options.py", "merge_settings": "claude/merge_settings.py",
            "statusline": "claude/statusline.py"}[name]
-    return [sys.executable, os.path.join(CREW, rel)] + list(argv)
+    return crew_impl.argv(name, os.path.join(CREW, rel), sys.executable) + list(argv)
 
 
 def payload(**kw):
@@ -278,9 +292,10 @@ def touch(name):
     open(os.path.join(STATE, name), "w").close()
 
 
-if RUST and not os.path.exists(os.path.join(CREW, "hooks", "seamux-hook.sh")):
-    print("CREW_IMPL=rust, but crew/hooks/seamux-hook.sh does not exist yet")
-    sys.exit(1)
+if RUST:
+    print("CREW_IMPL=%s: as seamux: %s" % (crew_impl.mode(), ", ".join(
+        t for t in ("crew-hook", "asked-hook", "options", "merge_settings", "statusline")
+        if crew_impl.is_rust(t)) or "nothing yet"))
 
 # --- the guard ------------------------------------------------------------------------
 print("guard")
@@ -629,7 +644,34 @@ check("an unknown flag is usage on stderr, exit 2", r.returncode == 2 and r.stde
 open(OUT, "w").write("{broken")
 r = options("--out", OUT, CLAUDE_PLUGIN_OPTION_JIRA_SITE="x")
 check("an unreadable file is left as is, exit 0", r.returncode == 0 and open(OUT).read() == "{broken"
-      and "cannot read" in r.stderr, r.stderr)
+      and r.stderr == f"crew options: cannot read {OUT}: Expecting property name enclosed in double quotes: line 1 column 2 (char 1); left as is\n", r.stderr)
+
+os.remove(OUT)
+for days, want in (("9.7", 9), ("0", 1), ("-4", 1), ("1_2", 12), ("1e20", 10 ** 20), ("\u0663", 3)):
+    r = options("--out", OUT, CLAUDE_PLUGIN_OPTION_SWEEP_DORMANT_DAYS=days)
+    got = json.load(open(OUT))
+    check(f"sweep_dormant_days {days!r} renders as {want}", got.get("sweep") == {"dormant_days": want}
+          and r.returncode == 0, open(OUT).read())
+r = options("--out", OUT, CLAUDE_PLUGIN_OPTION_SWEEP_DORMANT_DAYS="1e999")
+check("…one too large to be a whole number drops the key, exit 0 and quiet",
+      "sweep" not in json.load(open(OUT)) and r.returncode == 0 and not r.stderr, r.stderr)
+r = options("--out", OUT, CLAUDE_PLUGIN_OPTION_GITHUB_ISSUES=" YES ")
+check("github_issues takes yes/on/1/true in any case and spacing",
+      json.load(open(OUT)).get("github_issues") == {"enabled": True})
+json.dump({"pluginConfigs": {"other@x": {"options": {"jira_site": "no"}},
+                             "crew@local": {"options": {"jira_site": True, "github_issues": 1,
+                                                        "sweep_dormant_days": 7.9, "main_repo": False}}}},
+          open(SETTINGS, "w"))
+options("--from-settings", SETTINGS, "--out", OUT)
+got = json.load(open(OUT))
+check("settings values that are not strings read as Python's str() of them",
+      got.get("jira") == {"enabled": True, "site": "True"} and got.get("github_issues") == {"enabled": True}
+      and got.get("sweep") == {"dormant_days": 7}, json.dumps(got))
+r = options("--from-settings", SETTINGS, "--get", "main_repo")
+check("--get prints a non-string option the way Python prints it", r.stdout == "False\n", r.stdout)
+open(SETTINGS, "w").write("[1]")
+r = options("--from-settings", SETTINGS, "--get", "main_repo")
+check("a settings file that is not an object is a crash, exit 1", r.returncode == 1 and not r.stdout, r.stderr)
 
 # --- merge_settings --------------------------------------------------------------------
 print("merge_settings")
@@ -694,6 +736,21 @@ check("--remove takes out our status line and keeps the push flags",
 r = merge("--remove")
 check("…and a second --remove finds nothing of ours",
       r.stdout == f"  nothing of ours found in {S}\n", r.stdout)
+for b in baks():
+    os.remove(os.path.join(os.path.dirname(S), b))
+KEEP = ('{\n  "big": 123456789012345678901234567890,\n  "n": NaN,\n  "f": 1e400,\n'
+        '  "x": 0.1,\n  "u": "\\u00e9"\n}\n')
+open(S, "w").write(KEEP)
+merge()
+check("numbers JSON's 64 bits cannot hold come back as Python wrote them",
+      open(S).read().startswith('{\n  "big": 123456789012345678901234567890,\n  "n": NaN,\n'
+                                '  "f": Infinity,\n  "x": 0.1,\n  "u": "\\u00e9",\n'), open(S).read())
+for b in baks():
+    os.remove(os.path.join(os.path.dirname(S), b))
+open(S, "w").write("{nope")
+r = merge()
+check("unparseable settings: exit 1, nothing printed, the file untouched",
+      r.returncode == 1 and not r.stdout and open(S).read() == "{nope" and not baks(), r.stdout + r.stderr)
 
 # --- statusline ------------------------------------------------------------------------
 print("statusline")
