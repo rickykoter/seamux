@@ -83,7 +83,8 @@
 .preview[data-state="needs_input"] .state { color: var(--accent); }
 
 /* The pane's own last words, laid out as the terminal laid them out: no
-   re-wrap; a long line clips under a fade at the right edge. */
+   re-wrap; a long line clips under a fade at the right edge. (Agents
+   re-flow: see .flow.) */
 .preview pre {
   flex: 1; min-height: 0; margin: 0; padding: 10px 16px 10px;
   overflow-y: auto; overflow-x: hidden; white-space: pre;
@@ -92,6 +93,10 @@
   -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
   mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
 }
+/* An agent's pane, re-flowed: each paragraph wraps at the window's edge
+   instead of the terminal's, so there is nothing to clip or fade. */
+.preview pre.flow { white-space: normal; -webkit-mask-image: none; mask-image: none; }
+.preview pre.flow .ln { white-space: pre-wrap; overflow-wrap: anywhere; }
 .preview pre.err { color: var(--bad); white-space: pre-wrap; -webkit-mask-image: none; mask-image: none; }
 
 .preview footer { display: flex; align-items: center; gap: 8px; padding: 9px 16px 11px; flex-wrap: wrap; border-top: 1px solid var(--line); }

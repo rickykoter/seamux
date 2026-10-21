@@ -18,9 +18,9 @@ use serde_json::{json, Value};
 
 /// Lines of scrollback asked for: enough that, with Claude's prompt box and
 /// footer cut, the preview still has a screenful of the agent's own words.
-pub const READ_LINES: u32 = 80;
-/// Lines kept per tile (the Wall's preview pane shows up to this many).
-pub const TILE_LINES: usize = 40;
+pub const READ_LINES: u32 = 160;
+/// Lines kept per tile: enough to fill a tall window's preview.
+pub const TILE_LINES: usize = 120;
 /// A reply longer than this is refused rather than typed into an agent.
 pub const REPLY_MAX: usize = 4000;
 /// One surface is re-read on an event at most this often.
