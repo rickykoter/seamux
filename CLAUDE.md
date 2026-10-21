@@ -22,8 +22,13 @@ guessing, preview with `./install.sh --dry-run`, verify with
 - Tests: `node deep-plan/probe.mjs`, `node restack/probe.mjs`,
   `node crew/board/board_probe.mjs`, `python3 crew/tools/family_sync_probe.py`,
   `claude plugin test seamux-mods`, `python3 tools/skill_lint_probe.py`,
-  `python3 tools/skill_evals_probe.py`. `.seamux/verify.json` holds each as a
+  `python3 tools/skill_evals_probe.py`, and for `app/`
+  `cargo test --manifest-path app/Cargo.toml --workspace` and
+  `cd app && npm ci && npm run build`. `.seamux/verify.json` holds each as a
   recipe matched to the files it tests, so `deep-plan check run` picks them.
+- `app/` is the seamux app (Tauri: Rust in `app/crates`, Vite + TypeScript
+  pages in `app/ui`). Unlike the plugins it is not live from the checkout:
+  `./install.sh --app` builds it and copies the bundle to `~/Applications`.
 - A change to a skill's text is held to its eval baseline:
   `python3 tools/skill_evals.py compare <plugin> --model opus --model haiku`
   (the `evals-<plugin>` recipes; real model spend, so name them on purpose).
