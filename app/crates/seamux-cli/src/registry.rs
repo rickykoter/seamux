@@ -28,6 +28,7 @@ pub type Tool = (&'static str, fn(&[String]) -> i32);
 pub const TABLES: &[&[Tool]] = &[
     crate::cmux_tool::TOOLS,
     crew_core::TOOLS,
+    crew_store::TOOLS,
 ];
 
 /// Every registered tool, in name order.
