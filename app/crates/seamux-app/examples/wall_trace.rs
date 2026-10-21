@@ -45,6 +45,7 @@ fn main() {
                 let last = t.lines.iter().rev().find(|l| l.contains(&pattern)).cloned().unwrap_or_default();
                 println!("frame at {}  tiles={n}  {last}", clock());
             }
+            true
         })
     });
     std::thread::sleep(Duration::from_secs(secs));

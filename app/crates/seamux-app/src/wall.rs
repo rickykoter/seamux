@@ -20,6 +20,10 @@ use serde_json::{json, Value};
 pub const READ_LINES: u32 = 40;
 /// Lines kept per tile.
 pub const TILE_LINES: usize = 14;
+/// A reply longer than this is refused rather than typed into an agent.
+pub const REPLY_MAX: usize = 4000;
+/// One surface is re-read on an event at most this often.
+pub const PULL_GAP: Duration = Duration::from_millis(250);
 
 /// What the wall needs from cmux. `cmux::Cmux` is the live one; tests pass a fake.
 pub trait Source: Send + Sync {
@@ -157,15 +161,32 @@ struct State {
 
 pub struct Wall {
     pool: Vec<Arc<dyn Source>>,
+    /// Reply and jump use their own connection, so a click never queues
+    /// behind a tick's reads (a Cmux serializes calls on its connection).
+    actions: Arc<dyn Source>,
     pub interval: Duration,
     state: Mutex<State>,
+    pulled: Mutex<HashMap<String, Instant>>,
 }
 
 impl Wall {
     /// `pool` holds one source per parallel reader; at least one.
     pub fn new(pool: Vec<Arc<dyn Source>>, interval: Duration) -> Wall {
         assert!(!pool.is_empty(), "the wall needs a source");
-        Wall { pool, interval, state: Mutex::new(State::default()) }
+        let actions = pool[0].clone();
+        Wall::with_actions(pool, actions, interval)
+    }
+
+    /// As `new`, with a separate source for reply and jump.
+    pub fn with_actions(pool: Vec<Arc<dyn Source>>, actions: Arc<dyn Source>, interval: Duration) -> Wall {
+        assert!(!pool.is_empty(), "the wall needs a source");
+        Wall { pool, actions, interval, state: Mutex::new(State::default()), pulled: Mutex::default() }
+    }
+
+    /// Forget the last frame sent, so the next poll sends it again (the page
+    /// missed it: emit failed).
+    pub fn resend(&self) {
+        self.state.lock().unwrap().sent = None;
     }
 
     /// The last frame sent, for a page that loads after it went out.
@@ -204,6 +225,14 @@ impl Wall {
         if !self.knows(surface) {
             return None;
         }
+        {
+            let mut pulled = self.pulled.lock().unwrap();
+            let now = Instant::now();
+            if pulled.get(surface).is_some_and(|t| now.duration_since(*t) < PULL_GAP) {
+                return None;
+            }
+            pulled.insert(surface.to_string(), now);
+        }
         let read = self.pool[0].read(surface, READ_LINES).map(|t| tail(&t, TILE_LINES)).map_err(|e| e.to_string());
         let mut st = self.state.lock().unwrap();
         st.text.insert(surface.to_string(), read);
@@ -228,7 +257,17 @@ impl Wall {
                     })
                 })
                 .collect();
-            handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+            handles
+                .into_iter()
+                .zip(terms.chunks(chunk))
+                .flat_map(|(h, part)| {
+                    h.join().unwrap_or_else(|_| {
+                        // A reader panicked: say so on each of its tiles rather
+                        // than show them blank.
+                        part.iter().map(|t| (t.surface.clone(), Err("reader failed".to_string()))).collect()
+                    })
+                })
+                .collect()
         })
     }
 
@@ -270,37 +309,50 @@ impl Wall {
         if !cmux::is_uuid(surface) {
             return Err(format!("reply and jump take a surface UUID, not {surface:?}"));
         }
-        let now = self.pool[0].current().map_err(|e| e.to_string())?;
+        let now = self.actions.current().map_err(|e| e.to_string())?;
         terminals(&now)
             .into_iter()
             .find(|t| t.surface == surface)
             .ok_or_else(|| format!("{surface} is not a live terminal"))
     }
 
-    /// Type `text` into the agent's pane and press Enter. Line breaks in the
-    /// text become spaces, so one reply is one submitted line.
+    /// Type `text` into the agent's pane and press Enter. Only an agent's pane
+    /// takes a reply: in a plain shell the text would run as a command.
     pub fn reply(&self, surface: &str, text: &str) -> Result<(), String> {
-        let line: String = text.chars().map(|c| if c == '\n' || c == '\r' { ' ' } else { c }).collect();
-        if line.trim().is_empty() {
-            return Err("empty reply".into());
-        }
+        let line = reply_line(text)?;
         let t = self.live(surface)?;
-        self.pool[0].send_raw(&t.surface, &format!("{line}\r")).map_err(|e| e.to_string())
+        if t.agent.is_none() || t.state == "ended" {
+            return Err(format!("{} has no running agent to reply to", t.surface));
+        }
+        self.actions.send_raw(&t.surface, &format!("{line}\r")).map_err(|e| e.to_string())
     }
 
     /// Bring the pane to the front in cmux: its workspace, then the pane.
     pub fn jump(&self, surface: &str) -> Result<(), String> {
         let t = self.live(surface)?;
-        self.pool[0].select_workspace(&t.workspace).map_err(|e| e.to_string())?;
-        self.pool[0].focus(&t.surface, &t.workspace).map_err(|e| e.to_string())
+        self.actions.select_workspace(&t.workspace).map_err(|e| e.to_string())?;
+        self.actions.focus(&t.surface, &t.workspace).map_err(|e| e.to_string())
     }
 
     /// Poll every `interval`, and re-read a surface as soon as its id comes in
-    /// on `pulls`. Each changed frame goes to `emit`. Returns when `pulls`
-    /// closes.
-    pub fn run(&self, pulls: Receiver<String>, emit: impl Fn(Frame)) {
+    /// on `pulls`. Each changed frame goes to `emit`, which says whether the
+    /// page got it. Returns when `pulls` closes.
+    pub fn run(&self, pulls: Receiver<String>, emit: impl Fn(Frame) -> bool) {
+        let send = |f: Frame| {
+            if !emit(f) {
+                self.resend();
+            }
+        };
         let mut next = Instant::now();
         loop {
+            // A tick that is due runs first, so a steady stream of events can
+            // never starve the poll.
+            if Instant::now() >= next {
+                if let Some(f) = self.tick() {
+                    send(f);
+                }
+                next = Instant::now() + self.interval;
+            }
             let wait = next.saturating_duration_since(Instant::now());
             match pulls.recv_timeout(wait) {
                 Ok(first) => {
@@ -309,20 +361,36 @@ impl Wall {
                     want.extend(pulls.try_iter());
                     for s in want {
                         if let Some(f) = self.pull(&s) {
-                            emit(f);
+                            send(f);
                         }
                     }
                 }
-                Err(RecvTimeoutError::Timeout) => {
-                    if let Some(f) = self.tick() {
-                        emit(f);
-                    }
-                    next = Instant::now() + self.interval;
-                }
+                Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
         }
     }
+}
+
+/// A reply as one typed line: line breaks and tabs become spaces, every other
+/// control character (Ctrl-C, Escape and so a bracketed-paste end marker) is
+/// dropped, and an empty or over-long reply is refused.
+pub fn reply_line(text: &str) -> Result<String, String> {
+    let line: String = text
+        .chars()
+        .filter_map(|c| match c {
+            '\n' | '\r' | '\t' => Some(' '),
+            c if c.is_control() => None,
+            c => Some(c),
+        })
+        .collect();
+    if line.trim().is_empty() {
+        return Err("empty reply".into());
+    }
+    if line.chars().count() > REPLY_MAX {
+        return Err(format!("reply is longer than {REPLY_MAX} characters"));
+    }
+    Ok(line)
 }
 
 #[cfg(test)]
@@ -343,6 +411,13 @@ mod tests {
         assert_eq!(t.len(), 2);
         assert_eq!((t[0].agent.as_deref(), t[0].state.as_str()), (Some("claude"), "needs_input"));
         assert_eq!((t[1].agent.as_deref(), t[1].state.as_str()), (None, "shell"));
+    }
+
+    #[test]
+    fn reply_line_drops_control_characters() {
+        assert_eq!(reply_line("yes\x03\x04 \x1b[201~go\tnow\nok").unwrap(), "yes [201~go now ok");
+        assert!(reply_line("\x1b\x03").is_err());
+        assert!(reply_line(&"x".repeat(REPLY_MAX + 1)).is_err());
     }
 
     #[test]

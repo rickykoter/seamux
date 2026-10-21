@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 
 const A: &str = "088AC8B3-C1B1-4EB9-9A88-1DA89CDBFF76";
 const B: &str = "7C47DD0A-7A85-4389-A705-ACEF3DD0A71E";
+const C: &str = "5D2E7A10-1B2C-4D3E-8F40-A1B2C3D4E5F6";
 const WS: &str = "68A92708-B9BD-4D9D-9043-A55FD88A17AA";
 
 #[derive(Default)]
@@ -44,10 +45,13 @@ impl Source for Fake {
             .unwrap()
             .iter()
             .map(|s| {
-                let state = if *s == A { "needs_input" } else { "working" };
+                let agents = match *s {
+                    A => json!([{"kind": "claude", "state": "needs_input"}]),
+                    C => json!([]),
+                    _ => json!([{"kind": "claude", "state": "working"}]),
+                };
                 json!({"kind": "terminal", "lifecycle": "running", "label": s, "cwd": "/w",
-                       "agents": [{"kind": "claude", "state": state}],
-                       "projections": [{"panel_id": s, "workspace_id": WS}]})
+                       "agents": agents, "projections": [{"panel_id": s, "workspace_id": WS}]})
             })
             .collect();
         Ok(json!({"items": items}))
@@ -99,7 +103,7 @@ fn polls_every_terminal_at_the_interval() {
     let (tx, rx) = mpsc::channel::<String>();
     let runner = {
         let w = w.clone();
-        std::thread::spawn(move || w.run(rx, |_| {}))
+        std::thread::spawn(move || w.run(rx, |_| true))
     };
     std::thread::sleep(Duration::from_millis(520));
     drop(tx);
@@ -119,7 +123,12 @@ fn an_event_pulls_one_read_forward() {
     let (tx, rx) = mpsc::channel::<String>();
     let runner = {
         let (w, frames) = (w.clone(), frames.clone());
-        std::thread::spawn(move || w.run(rx, move |f| frames.lock().unwrap().push((Instant::now(), f))))
+        std::thread::spawn(move || {
+            w.run(rx, move |f| {
+                frames.lock().unwrap().push((Instant::now(), f));
+                true
+            })
+        })
     };
     // The first tick runs at once; wait for it.
     let t0 = Instant::now();
@@ -158,8 +167,14 @@ fn reply_goes_only_to_a_live_surface_uuid() {
     assert!(e.contains("not a live terminal"), "{e}");
     assert!(w.reply(A, "  ").is_err(), "empty reply refused");
     assert!(fake.sent.lock().unwrap().is_empty());
-    // The live one gets the text as typed, line breaks flattened, then Enter.
-    w.reply(A, "use \\n literally\nplease").unwrap();
+    // A plain shell takes no reply: the text would run as a command.
+    fake.live.lock().unwrap().push(C);
+    let e = w.reply(C, "rm -rf ~").unwrap_err();
+    assert!(e.contains("no running agent"), "{e}");
+    assert!(fake.sent.lock().unwrap().is_empty());
+    // The live agent gets the text as typed, control characters dropped,
+    // line breaks flattened, then Enter.
+    w.reply(A, "use \\n literally\nplease\x03").unwrap();
     assert_eq!(*fake.sent.lock().unwrap(), vec![(A.to_string(), "use \\n literally please\r".to_string())]);
 }
 
@@ -170,4 +185,49 @@ fn jump_focuses_the_pane_in_its_workspace() {
     w.jump(A).unwrap();
     assert_eq!(*fake.focused.lock().unwrap(), vec![(A.to_string(), WS.to_string())]);
     assert!(w.jump("workspace:1").is_err());
+}
+
+#[test]
+fn a_stream_of_events_never_starves_the_poll() {
+    let fake = Fake::new();
+    let w = wall(&fake, Duration::from_millis(100));
+    let (tx, rx) = mpsc::channel::<String>();
+    let runner = {
+        let w = w.clone();
+        std::thread::spawn(move || w.run(rx, |_| true))
+    };
+    // Events for A far faster than a read takes, for half a second.
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_millis(500) {
+        let _ = tx.send(A.into());
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    drop(tx);
+    runner.join().unwrap();
+    let b = fake.reads_of(B).len();
+    assert!(b >= 3, "B is only read by ticks; it was read {b} times");
+    let a = fake.reads_of(A).len();
+    assert!(a <= 12, "pulls of A are throttled; it was read {a} times");
+}
+
+#[test]
+fn a_failed_emit_is_sent_again() {
+    let fake = Fake::new();
+    let w = wall(&fake, Duration::from_millis(40));
+    let (tx, rx) = mpsc::channel::<String>();
+    let calls: Arc<Mutex<u32>> = Arc::default();
+    let runner = {
+        let (w, calls) = (w.clone(), calls.clone());
+        std::thread::spawn(move || {
+            w.run(rx, move |_| {
+                let mut n = calls.lock().unwrap();
+                *n += 1;
+                *n > 1 // the first emit fails
+            })
+        })
+    };
+    std::thread::sleep(Duration::from_millis(200));
+    drop(tx);
+    runner.join().unwrap();
+    assert_eq!(*calls.lock().unwrap(), 2, "the unchanged frame went again once, then stopped");
 }

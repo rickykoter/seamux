@@ -30,32 +30,67 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
     if pool.is_empty() {
         return;
     }
-    let wall = Arc::new(Wall::new(pool, Duration::from_secs(1)));
+    // Reply and jump get a connection of their own, so a click never waits
+    // behind a tick's reads.
+    let actions: Arc<dyn Source> = match cmux::Cmux::connect() {
+        Ok(c) => Arc::new(c),
+        Err(_) => pool[0].clone(),
+    };
+    let wall = Arc::new(Wall::with_actions(pool, actions, Duration::from_secs(1)));
     let _ = WALL.set(wall.clone());
     let (tx, rx) = mpsc::channel::<String>();
 
     // Events that name a terminal on the wall pull its read forward. The
-    // stream reconnects on its own; it ends only when the app does.
+    // stream reconnects by itself; when it cannot start or ends, try again
+    // with a growing pause, so pull-forward comes back after cmux restarts.
     {
         let wall = wall.clone();
         std::thread::spawn(move || {
-            let Ok(c) = cmux::Cmux::connect() else { return };
-            let opts = cmux::EventOptions { names: Vec::new(), cursor_file: None, reconnect: true };
-            let Ok(stream) = c.events(opts) else { return };
-            for ev in stream.flatten() {
-                if let Some(s) = ev.get("surface_id").and_then(|v| v.as_str()) {
-                    if wall.knows(s) && tx.send(s.to_string()).is_err() {
-                        return;
+            let mut pause = Duration::from_secs(1);
+            loop {
+                match cmux::Cmux::connect().and_then(|c| {
+                    let opts = cmux::EventOptions { names: Vec::new(), cursor_file: None, reconnect: true };
+                    c.events(opts)
+                }) {
+                    Ok(stream) => {
+                        let mut errors = 0u32;
+                        for ev in stream {
+                            match ev {
+                                Ok(ev) => {
+                                    errors = 0;
+                                    pause = Duration::from_secs(1);
+                                    if let Some(s) = ev.get("surface_id").and_then(|v| v.as_str()) {
+                                        if wall.knows(s) && tx.send(s.to_string()).is_err() {
+                                            return; // the poller is gone
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    errors += 1;
+                                    if errors == 1 {
+                                        eprintln!("seamux: wall event stream: {e}");
+                                    }
+                                    if errors >= 20 {
+                                        break; // a stream that only fails: start over
+                                    }
+                                }
+                            }
+                        }
                     }
+                    Err(e) => eprintln!("seamux: wall events unavailable, retrying in {pause:?}: {e}"),
                 }
+                std::thread::sleep(pause);
+                pause = (pause * 2).min(Duration::from_secs(60));
             }
         });
     }
 
     std::thread::spawn(move || {
-        wall.run(rx, move |f: Frame| {
-            if let Err(e) = app.emit("wall:frame", f) {
+        wall.run(rx, move |f: Frame| match app.emit("wall:frame", f) {
+            Ok(()) => true,
+            Err(e) => {
                 eprintln!("seamux: wall frame not sent: {e}");
+                false
             }
         })
     });

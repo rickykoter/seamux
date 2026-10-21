@@ -176,8 +176,20 @@ class Card {
     } finally {
       this.input.disabled = false;
       this.send.disabled = false;
-      this.input.focus();
+      // Back into this box only if focus went nowhere else meanwhile (a
+      // disabled input drops focus to the body).
+      const at = document.activeElement;
+      if (!at || at === document.body || at === this.input) this.input.focus();
     }
+  }
+
+  /** An unsent reply, kept if the card goes away for a frame. */
+  get draft(): string {
+    return this.input.value;
+  }
+  set draft(text: string) {
+    this.input.value = text;
+    this.send.hidden = !text.trim();
   }
 
   private async jump(): Promise<void> {
@@ -199,6 +211,8 @@ const SLEEPING_CAT = String.raw`
 /** The wall: groups of cards, updated in place from each wall:frame event. */
 export class WallView {
   private cards = new Map<string, Card>();
+  /** Unsent replies of cards that dropped out of a frame, by surface. */
+  private drafts = new Map<string, string>();
   private groups = new Map<string, { box: HTMLElement; grid: HTMLElement; count: HTMLElement }>();
   private empty = document.createElement("pre");
   private status = document.createElement("p");
@@ -248,6 +262,11 @@ export class WallView {
       if (!card) {
         card = new Card(t.surface);
         this.cards.set(t.surface, card);
+        const kept = this.drafts.get(t.surface);
+        if (kept) {
+          card.draft = kept;
+          this.drafts.delete(t.surface);
+        }
       }
       card.update(t);
       const g = groupOf(t).id;
@@ -255,6 +274,7 @@ export class WallView {
     }
     for (const [id, card] of this.cards) {
       if (!seen.has(id)) {
+        if (card.draft.trim()) this.drafts.set(id, card.draft);
         card.el.remove();
         this.cards.delete(id);
       }
@@ -265,9 +285,16 @@ export class WallView {
       // Re-append only when the order changed, so a focused reply box stays focused.
       const now = Array.from(slot.grid.children);
       if (now.length !== els.length || now.some((el, i) => el !== els[i])) {
+        // Moving a focused box out and back loses focus and the caret, so
+        // put both back.
         const active = document.activeElement as HTMLElement | null;
+        const box = active instanceof HTMLInputElement ? active : null;
+        const caret = box ? [box.selectionStart, box.selectionEnd] : null;
         slot.grid.replaceChildren(...els);
-        if (active && active.isConnected) active.focus();
+        if (active && active.isConnected && document.activeElement !== active) {
+          active.focus();
+          if (box && caret && caret[0] !== null && caret[1] !== null) box.setSelectionRange(caret[0], caret[1]);
+        }
       }
       slot.box.hidden = els.length === 0;
       slot.count.textContent = els.length ? ` ${els.length}` : "";
