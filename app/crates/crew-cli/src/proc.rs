@@ -9,6 +9,8 @@ pub struct Out {
     pub code: i32,
     pub stdout: String,
     pub stderr: String,
+    /// Both streams were valid UTF-8 (Python's text=True raises otherwise).
+    pub utf8: bool,
 }
 
 /// Run `argv` (stdin closed), optionally in `cwd` and with extra environment;
@@ -90,10 +92,12 @@ pub fn run_with_input(
             None => return None, // past the deadline with a pipe still open
         }
     }
+    let (stdout, stderr) = (stdout.unwrap_or_default(), stderr.unwrap_or_default());
     Some(Out {
         code: status.code().unwrap_or(-1),
-        stdout: String::from_utf8_lossy(&stdout.unwrap_or_default()).into_owned(),
-        stderr: String::from_utf8_lossy(&stderr.unwrap_or_default()).into_owned(),
+        utf8: std::str::from_utf8(&stdout).is_ok() && std::str::from_utf8(&stderr).is_ok(),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
     })
 }
 
