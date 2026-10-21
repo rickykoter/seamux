@@ -10,4 +10,5 @@ publish.workspace = true
 cmux.workspace = true
 crew-core.workspace = true
 libc = "0.2"
+regex = "1"
 serde_json.workspace = true

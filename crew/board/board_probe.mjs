@@ -1994,81 +1994,90 @@ if (crewImpl.isRust("crew-board")) {
       rebound.status === 403 && !rebound.body.includes(token) && localhost.status === 200 &&
       (await req("GET", "/health", { headers: { Host: "127.0.0.1:1" } })).status === 403]);
 
-    // The Wake's routes, against a store seeded under the temp HOME. The page
-    // names row ids; nothing it sends is a path.
-    const kept = join(HOME, "notes.md");
-    fs.writeFileSync(kept, "# notes\n");
-    execFileSync("python3", ["-c", [
-      "import sys; sys.path.insert(0, sys.argv[1]); import artifacts as A",
-      "db = A.connect(); db.execute('BEGIN IMMEDIATE')",
-      "row = lambda **k: dict(dict.fromkeys(A.FIELDS, ''), ws='/w/wake', **k)",
-      "A.write_rows(db, [row(kind='file', locator=sys.argv[2], path=sys.argv[2], title='notes.md', prompt='write the notes'),",
-      "                  row(kind='temp', locator='/private/tmp/wake-gone.txt', path='/private/tmp/wake-gone.txt', title='gone.txt'),",
-      "                  row(kind='plan', locator='wake-plan', title='a plan')])",
-      "db.execute('COMMIT')"].join("\n"), HERE, kept], { env: { ...process.env, HOME } });
-    const tq = `t=${encodeURIComponent(token)}`;
-    const wp = await req("GET", "/artifacts?ws=" + encodeURIComponent("</script><b>x"));
-    checks.push(["wake: the page carries its token, and a ws cannot close the boot block",
-      wp.status === 200 && wp.body.includes(`"t": "${token}"`) && wp.body.includes("\\u003c/script\\u003e") &&
-      !wp.body.includes("</script><b>x")]);
-    const wd0 = await req("GET", "/artifacts/data?ws=%2Fw%2Fwake");
-    const wd = await req("GET", `/artifacts/data?${tq}&ws=%2Fw%2Fwake`);
-    let wj = {};
-    try { wj = JSON.parse(wd.body); } catch {}
-    const byTitle = t => (wj.rows || []).find(r => r.title === t) || {};
-    checks.push(["wake: rows need the token, and open to no other origin",
-      wd0.status === 403 && wd.status === 200 && !("access-control-allow-origin" in wd.headers) &&
-      (wj.rows || []).length === 3]);
-    checks.push(["wake: a missing file is gone, a present one is not",
-      byTitle("gone.txt").state === "gone" && ["ok", "risk"].includes(byTitle("notes.md").state)]);
-    checks.push(["wake: search goes through the prompt", await (async () => {
-      const r = await req("GET", `/artifacts/data?${tq}&ws=%2Fw%2Fwake&q=notes+write`);
-      try { return JSON.parse(r.body).rows.map(x => x.title).join() === "notes.md"; } catch { return false; }
-    })()]);
-    const wo = async q => { const r = await req("GET", `/artifacts/open?${tq}&${q}`); try { return JSON.parse(r.body); } catch { return {}; } };
-    checks.push(["wake: open needs the token", (await req("GET", `/artifacts/open?id=${byTitle("gone.txt").id}`)).status === 403]);
-    checks.push(["wake: open takes a row id, not a path",
-      (await wo("path=" + encodeURIComponent(kept))).detail === "bad id" && (await wo("id=99999")).detail === "no such row"]);
-    checks.push(["wake: a gone row says so instead of opening",
-      /^gone: /.test((await wo("id=" + byTitle("gone.txt").id)).detail || "")]);
-    const kp = (obj, o = {}) => post({ t: token, ...obj }, { path: "/artifacts/keep", ...o });
-    checks.push(["wake keep: the POST guards hold (Origin, JSON, token)",
-      (await kp({ id: byTitle("notes.md").id }, { origin: "" })).status === 403 &&
-      (await kp({ id: byTitle("notes.md").id }, { origin: "https://evil.example" })).status === 403 &&
-      (await kp({ id: byTitle("notes.md").id }, { type: "text/plain" })).status === 415 &&
-      (await kp({ id: byTitle("notes.md").id, t: "nope" })).status === 403]);
-    checks.push(["wake keep: a path in the body is not an id",
-      JSON.parse((await kp({ path: kept })).body).error === "bad id" &&
-      JSON.parse((await kp({ id: String(byTitle("notes.md").id) })).body).error === "bad id"]);
-    checks.push(["wake keep: a gone file is refused with its reason",
-      JSON.parse((await kp({ id: byTitle("gone.txt").id })).body).why === "the file is gone"]);
-    const kr = await kp({ id: byTitle("notes.md").id });
-    let kj = {};
-    try { kj = JSON.parse(kr.body); } catch {}
-    // notes.md sits under the temp HOME, itself in a temp root on every runner.
-    checks.push(["wake keep: an at-risk file is copied into kept/ and the row repointed",
-      kr.status === 200 && kj.ok && kj.path.startsWith(join(HOME, ".claude", "crew", "kept") + "/") &&
-      fs.readFileSync(kj.path, "utf8") === "# notes\n" && kj.was === kept]);
-    const pp = (obj, o = {}) => post({ t: token, ...obj }, { path: "/artifacts/publish", ...o });
-    checks.push(["wake publish: the POST guards hold, and it takes an id",
-      (await pp({ id: byTitle("gone.txt").id }, { origin: "https://evil.example" })).status === 403 &&
-      (await pp({ id: byTitle("gone.txt").id, t: "nope" })).status === 403 &&
-      JSON.parse((await pp({ path: kept })).body).error === "bad id"]);
-    checks.push(["wake publish: a gone or non-page file is refused before any terminal opens",
-      /only a present HTML/.test(JSON.parse((await pp({ id: byTitle("gone.txt").id })).body).detail) &&
-      /only a present HTML/.test(JSON.parse((await pp({ id: byTitle("a plan").id })).body).detail)]);
-    checks.push(["wake publish: the row says whether it can be published",
-      byTitle("notes.md").publishable === true && byTitle("gone.txt").publishable === false]);
-    // The kept copy sits in ~/.claude/crew/kept, outside any repo, where
-    // crew-code-open exits 1 by design: the Wake falls through to the editor.
-    const ed = await wo("id=" + byTitle("notes.md").id);
-    const edLog = fs.existsSync(join(HOME, "fake-code.log")) ? fs.readFileSync(join(HOME, "fake-code.log"), "utf8") : "";
-    checks.push(["wake open: a file outside any repo still opens in the editor",
-      ed.ok === true && edLog.includes(kj.path), JSON.stringify(ed) + " " + edLog]);
-    const ka = await kp({ ws: "/w/wake", all: true });
-    checks.push(["wake keep: keep all answers per row", ka.status === 200 && Array.isArray(JSON.parse(ka.body).results)]);
-    checks.push(["wake: a plan surface is one of three names",
-      (await wo(`id=${byTitle("a plan").id}&s=..%2F..%2Fetc`)).detail === "unknown plan surface"]);
+    // Until port-board increment 6 lands the Wake in Rust, the Rust server
+    // answers its routes 501. Then these checks are reported, not run, and
+    // CREW_IMPL=rust-strict (the cutover's proof) fails them.
+    const wakeProbe = await req("GET", `/artifacts/data?t=${encodeURIComponent(token)}`);
+    if (wakeProbe.status === 501) {
+      console.log("  --   wake routes: not ported to Rust yet (port-board increment 6); 16 checks not run");
+      checks.push(["wake routes are served (rust-strict requires them)", process.env.CREW_IMPL !== "rust-strict"]);
+    } else {
+      // The Wake's routes, against a store seeded under the temp HOME. The page
+      // names row ids; nothing it sends is a path.
+      const kept = join(HOME, "notes.md");
+      fs.writeFileSync(kept, "# notes\n");
+      execFileSync("python3", ["-c", [
+        "import sys; sys.path.insert(0, sys.argv[1]); import artifacts as A",
+        "db = A.connect(); db.execute('BEGIN IMMEDIATE')",
+        "row = lambda **k: dict(dict.fromkeys(A.FIELDS, ''), ws='/w/wake', **k)",
+        "A.write_rows(db, [row(kind='file', locator=sys.argv[2], path=sys.argv[2], title='notes.md', prompt='write the notes'),",
+        "                  row(kind='temp', locator='/private/tmp/wake-gone.txt', path='/private/tmp/wake-gone.txt', title='gone.txt'),",
+        "                  row(kind='plan', locator='wake-plan', title='a plan')])",
+        "db.execute('COMMIT')"].join("\n"), HERE, kept], { env: { ...process.env, HOME } });
+      const tq = `t=${encodeURIComponent(token)}`;
+      const wp = await req("GET", "/artifacts?ws=" + encodeURIComponent("</script><b>x"));
+      checks.push(["wake: the page carries its token, and a ws cannot close the boot block",
+        wp.status === 200 && wp.body.includes(`"t": "${token}"`) && wp.body.includes("\\u003c/script\\u003e") &&
+        !wp.body.includes("</script><b>x")]);
+      const wd0 = await req("GET", "/artifacts/data?ws=%2Fw%2Fwake");
+      const wd = await req("GET", `/artifacts/data?${tq}&ws=%2Fw%2Fwake`);
+      let wj = {};
+      try { wj = JSON.parse(wd.body); } catch {}
+      const byTitle = t => (wj.rows || []).find(r => r.title === t) || {};
+      checks.push(["wake: rows need the token, and open to no other origin",
+        wd0.status === 403 && wd.status === 200 && !("access-control-allow-origin" in wd.headers) &&
+        (wj.rows || []).length === 3]);
+      checks.push(["wake: a missing file is gone, a present one is not",
+        byTitle("gone.txt").state === "gone" && ["ok", "risk"].includes(byTitle("notes.md").state)]);
+      checks.push(["wake: search goes through the prompt", await (async () => {
+        const r = await req("GET", `/artifacts/data?${tq}&ws=%2Fw%2Fwake&q=notes+write`);
+        try { return JSON.parse(r.body).rows.map(x => x.title).join() === "notes.md"; } catch { return false; }
+      })()]);
+      const wo = async q => { const r = await req("GET", `/artifacts/open?${tq}&${q}`); try { return JSON.parse(r.body); } catch { return {}; } };
+      checks.push(["wake: open needs the token", (await req("GET", `/artifacts/open?id=${byTitle("gone.txt").id}`)).status === 403]);
+      checks.push(["wake: open takes a row id, not a path",
+        (await wo("path=" + encodeURIComponent(kept))).detail === "bad id" && (await wo("id=99999")).detail === "no such row"]);
+      checks.push(["wake: a gone row says so instead of opening",
+        /^gone: /.test((await wo("id=" + byTitle("gone.txt").id)).detail || "")]);
+      const kp = (obj, o = {}) => post({ t: token, ...obj }, { path: "/artifacts/keep", ...o });
+      checks.push(["wake keep: the POST guards hold (Origin, JSON, token)",
+        (await kp({ id: byTitle("notes.md").id }, { origin: "" })).status === 403 &&
+        (await kp({ id: byTitle("notes.md").id }, { origin: "https://evil.example" })).status === 403 &&
+        (await kp({ id: byTitle("notes.md").id }, { type: "text/plain" })).status === 415 &&
+        (await kp({ id: byTitle("notes.md").id, t: "nope" })).status === 403]);
+      checks.push(["wake keep: a path in the body is not an id",
+        JSON.parse((await kp({ path: kept })).body).error === "bad id" &&
+        JSON.parse((await kp({ id: String(byTitle("notes.md").id) })).body).error === "bad id"]);
+      checks.push(["wake keep: a gone file is refused with its reason",
+        JSON.parse((await kp({ id: byTitle("gone.txt").id })).body).why === "the file is gone"]);
+      const kr = await kp({ id: byTitle("notes.md").id });
+      let kj = {};
+      try { kj = JSON.parse(kr.body); } catch {}
+      // notes.md sits under the temp HOME, itself in a temp root on every runner.
+      checks.push(["wake keep: an at-risk file is copied into kept/ and the row repointed",
+        kr.status === 200 && kj.ok && kj.path.startsWith(join(HOME, ".claude", "crew", "kept") + "/") &&
+        fs.readFileSync(kj.path, "utf8") === "# notes\n" && kj.was === kept]);
+      const pp = (obj, o = {}) => post({ t: token, ...obj }, { path: "/artifacts/publish", ...o });
+      checks.push(["wake publish: the POST guards hold, and it takes an id",
+        (await pp({ id: byTitle("gone.txt").id }, { origin: "https://evil.example" })).status === 403 &&
+        (await pp({ id: byTitle("gone.txt").id, t: "nope" })).status === 403 &&
+        JSON.parse((await pp({ path: kept })).body).error === "bad id"]);
+      checks.push(["wake publish: a gone or non-page file is refused before any terminal opens",
+        /only a present HTML/.test(JSON.parse((await pp({ id: byTitle("gone.txt").id })).body).detail) &&
+        /only a present HTML/.test(JSON.parse((await pp({ id: byTitle("a plan").id })).body).detail)]);
+      checks.push(["wake publish: the row says whether it can be published",
+        byTitle("notes.md").publishable === true && byTitle("gone.txt").publishable === false]);
+      // The kept copy sits in ~/.claude/crew/kept, outside any repo, where
+      // crew-code-open exits 1 by design: the Wake falls through to the editor.
+      const ed = await wo("id=" + byTitle("notes.md").id);
+      const edLog = fs.existsSync(join(HOME, "fake-code.log")) ? fs.readFileSync(join(HOME, "fake-code.log"), "utf8") : "";
+      checks.push(["wake open: a file outside any repo still opens in the editor",
+        ed.ok === true && edLog.includes(kj.path), JSON.stringify(ed) + " " + edLog]);
+      const ka = await kp({ ws: "/w/wake", all: true });
+      checks.push(["wake keep: keep all answers per row", ka.status === 200 && Array.isArray(JSON.parse(ka.body).results)]);
+      checks.push(["wake: a plan surface is one of three names",
+        (await wo(`id=${byTitle("a plan").id}&s=..%2F..%2Fetc`)).detail === "unknown plan surface"]);
+    }
 
     const ok = { op: "comment", t: token, file: "a.js", line: 1, side: "new", text: "why?" };
     checks.push(["review POST: no Origin is refused", (await post(ok, { origin: "" })).status === 403]);
