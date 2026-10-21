@@ -103,5 +103,13 @@
   { "id": "parity-strict", "kind": "test",
     "run": "cargo build --manifest-path app/Cargo.toml -p seamux-cli && CREW_IMPL=rust-strict sh -c 'python3 crew/tools/family_sync_probe.py && python3 crew/tools/workspaces_probe.py && python3 crew/tools/wake_split_probe.py && python3 crew/tools/artifacts_probe.py && python3 crew/hooks/typesafe_probe.py && python3 crew/tools/core_probe.py && python3 crew/tools/cli_probe.py && python3 crew/tools/hooks_probe.py && node crew/board/board_probe.mjs'",
     "match": [], "default": false,
-    "note": "the cutover's proof that no crew tool is left on Python: an unregistered tool fails the run" }
+    "note": "the cutover's proof that no crew tool is left on Python: an unregistered tool fails the run" },
+  { "id": "crew-store-rust", "kind": "test",
+    "run": "cargo test --manifest-path app/Cargo.toml -p crew-store",
+    "match": ["app/crates/crew-store/**"], "default": true,
+    "note": "the Rust Artifact Log store: schema, read side, Keep and the indexer, including dbs made by artifacts.py" },
+  { "id": "artifacts-probe-rust", "kind": "test",
+    "run": "cargo build --manifest-path app/Cargo.toml -p seamux-cli && CREW_IMPL=rust python3 crew/tools/artifacts_probe.py",
+    "match": ["app/crates/crew-store/**", "crew/tools/artifacts_probe.py"], "default": true,
+    "note": "the unchanged artifacts probe against seamux crew-artifacts: Python seeds, Rust reads and writes the same artifacts.db" }
 ] }
