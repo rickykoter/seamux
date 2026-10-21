@@ -25,6 +25,13 @@ pub fn client() -> Option<Arc<Cmux>> {
     slot.clone()
 }
 
+/// A call through the client failed: drop it, so the next one connects
+/// afresh and re-resolves the socket (cmux restarted, perhaps elsewhere), as
+/// the Python's CLI-per-call did.
+pub fn failed() {
+    *CLIENT.lock().unwrap_or_else(|p| p.into_inner()) = None;
+}
+
 /// Python's `(p.stdout or "").strip() or (p.stderr or "").strip()`.
 pub fn text(stdout: &str, stderr: &str) -> String {
     let o = stdout.trim();
@@ -36,7 +43,10 @@ pub fn cmux(argv: &[&str]) -> (bool, String) {
     let Some(c) = client() else { return (false, "cmux is not reachable".into()) };
     match c.cli(argv) {
         Ok(o) => (o.ok(), text(&o.stdout, &o.stderr)),
-        Err(e) => (false, e.to_string()),
+        Err(e) => {
+            failed();
+            (false, e.to_string())
+        }
     }
 }
 

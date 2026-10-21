@@ -149,6 +149,10 @@ pub fn increment(slug: &str, n: &str, action: &str, why: &str) -> (bool, String)
     if action == "block" {
         args.push(why);
     }
+    if crate::act::which("node").is_none() {
+        log(&format!("FAIL inc {action} {slug} {n}: node is not on PATH"));
+        return (false, "node is not on this server's PATH, so deep-plan cannot run".into());
+    }
     let Some((code, out, err)) = crew_core::py::run("node", &args, Duration::from_secs(90)) else {
         log(&format!("FAIL inc {action} {slug} {n}: timed out"));
         return (false, "deep-plan did not finish in 90s".into());

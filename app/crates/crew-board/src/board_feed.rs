@@ -172,6 +172,8 @@ impl Feed {
 
     fn tail_events(&self) {
         let mut backoff = Duration::from_secs(1);
+        // Said once when the stream goes away, not on every retry.
+        let mut said = false;
         loop {
             let stream = crate::cmux_cli::client().and_then(|c| {
                 c.events(cmux::EventOptions {
@@ -184,11 +186,19 @@ impl Feed {
             match stream {
                 Some(events) => {
                     backoff = Duration::from_secs(1);
+                    said = false;
                     for _ in events {
                         self.mark_dirty();
                     }
+                    crate::cmux_cli::failed();
                 }
-                None => log("board feed: no cmux event stream; the heartbeat carries the board"),
+                None => {
+                    if !said {
+                        log("board feed: no cmux event stream; the heartbeat carries the board");
+                        said = true;
+                    }
+                    crate::cmux_cli::failed();
+                }
             }
             std::thread::sleep(backoff);
             backoff = (backoff * 2).min(Duration::from_secs(30));

@@ -48,13 +48,16 @@ impl Runner for Cmux {
     fn run(&self, argv: &[&str]) -> (i32, String) {
         let Some(c) = client() else { return (1, "cmux is not reachable".into()) };
         let res = match argv {
-            ["read-screen", "--surface", s, "--lines", n] => c.read_text(s, n.parse().ok()).map(|t| t),
+            ["read-screen", "--surface", s, "--lines", n] => c.read_text(s, n.parse().ok()),
             ["send", "--surface", s, text] => c.send_text(s, text).map(|_| "OK".into()),
-            _ => c.cli(argv).map(|o| format!("{}{}", o.stdout, o.stderr)).and_then(|t| Ok(t)),
+            _ => c.cli(argv).map(|o| format!("{}{}", o.stdout, o.stderr)),
         };
         match res {
             Ok(t) => (0, t),
-            Err(e) => (1, e.to_string()),
+            Err(e) => {
+                crate::cmux_cli::failed();
+                (1, e.to_string())
+            }
         }
     }
 }
@@ -68,18 +71,32 @@ fn on_screen(label: &str, screen: &str) -> bool {
 /// What the screen shows after the number: the prompt resolved to "→ label"
 /// (CREW_ASK_RESOLVED_RE, %s = the label), or the pointer moved to n without
 /// resolving (CREW_ASK_SELECTED_RE, %d = n).
+/// A pattern built the Python's way (`pattern % value`: the first %s or %d
+/// replaced, %% a literal %). The Rust regex crate has no lookaround, so an
+/// override that does not compile is logged rather than silently never matching.
+fn compile(name: &str, pat: &str, slot: &str, value: &str) -> Option<Regex> {
+    let filled = pat.replacen(slot, value, 1).replace("%%", "%");
+    match Regex::new(&filled) {
+        Ok(r) => Some(r),
+        Err(e) => {
+            log(&format!("FAIL {name} does not compile as a Rust regex: {e}"));
+            None
+        }
+    }
+}
+
 fn resolved_re(label: &str) -> Option<Regex> {
     let pat = std::env::var("CREW_ASK_RESOLVED_RE").ok().filter(|s| !s.is_empty())
         .unwrap_or_else(|| r"→\s*%s\s*$".into());
-    Regex::new(&pat.replacen("%s", &regex::escape(label), 1)).ok()
+    compile("CREW_ASK_RESOLVED_RE", &pat, "%s", &regex::escape(label))
 }
 
 fn selected_re(n: u32) -> Option<Regex> {
     let pat = std::env::var("CREW_ASK_SELECTED_RE").ok().filter(|s| !s.is_empty())
         .unwrap_or_else(|| r"^\s*[❯›>]\s*%d[.)]".into());
     // re.match: anchored at the start of the line.
-    let pat = pat.replacen("%d", &n.to_string(), 1);
-    Regex::new(&if pat.starts_with('^') { pat } else { format!("^(?:{pat})") }).ok()
+    let pat = if pat.starts_with('^') { pat } else { format!("^(?:{pat})") };
+    compile("CREW_ASK_SELECTED_RE", &pat, "%d", &n.to_string())
 }
 
 /// Type option n into `surface` and prove it landed before claiming so.

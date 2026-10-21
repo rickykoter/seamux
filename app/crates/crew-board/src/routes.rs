@@ -37,6 +37,12 @@ fn inject_first(html: &str, boot: &str) -> String {
     }
 }
 
+/// An OSError as Python's str(exc) gives it: "[Errno 2] No such file or directory: '/path'".
+pub fn os_err(e: &std::io::Error, p: &std::path::Path) -> String {
+    let full = crew_core::py::os_error(e, p);
+    full.split_once(": ").map(|(_, rest)| rest.to_string()).unwrap_or(full)
+}
+
 fn read_lossy(p: &std::path::Path) -> std::io::Result<String> {
     std::fs::read(p).map(|b| String::from_utf8_lossy(&b).into_owned())
 }
@@ -57,9 +63,10 @@ pub fn get(req: &mut Request) {
         }
         "/usage" => {
             // Read per request: editing the dashboard needs no restart.
-            return match std::fs::read_to_string(crew_file("board/usage.tmpl.html")) {
+            let f = crew_file("board/usage.tmpl.html");
+            return match std::fs::read_to_string(&f) {
                 Ok(tmpl) => req.send(200, "text/html; charset=utf-8", "no-store", usage::page(&tmpl).as_bytes()),
-                Err(e) => req.reply_json(500, &json!({"error": e.to_string()})),
+                Err(e) => req.reply_json(500, &json!({"error": os_err(&e, &f)})),
             };
         }
         "/plan-stamp" => {
@@ -102,7 +109,7 @@ pub fn get(req: &mut Request) {
         "/artifacts" => {
             return match crate::wake::wake_page(&req.one("ws"), &req.token) {
                 Ok(html) => req.send(200, "text/html; charset=utf-8", "no-store", html.as_bytes()),
-                Err(e) => req.json(500, &json!({"error": e.to_string()})),
+                Err(e) => req.json(500, &json!({"error": os_err(&e, &crew_file("board/artifacts.tmpl.html"))})),
             };
         }
         "/artifacts/data" => {
@@ -293,10 +300,13 @@ pub fn post(req: &mut Request) {
 /// board.html with render.js, intent.js and the feed's boot script: the board
 /// as a page this server serves, for the app's tab or any cmux browser pane.
 fn board_page(req: &mut Request) {
-    let read = |rel: &str| std::fs::read(crew_file(rel)).map(|b| String::from_utf8_lossy(&b).into_owned());
+    let read = |rel: &str| {
+        let f = crew_file(rel);
+        std::fs::read(&f).map(|b| String::from_utf8_lossy(&b).into_owned()).map_err(|e| os_err(&e, &f))
+    };
     let (html, render, intent) = match (read("board/board.html"), read("board/render.js"), read("board/intent.js")) {
         (Ok(h), Ok(r), Ok(i)) => (h, r, i),
-        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => return req.json(500, &json!({"error": e.to_string()})),
+        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => return req.json(500, &json!({"error": e})),
     };
     let boot = format!("<script>\n{render}\n</script>\n<script>\n{intent}\n</script>\n{}",
         crate::board_feed::BOARD_JS.replace("__TOKEN__", &req.token).replace("__PORT__", &req.port.to_string()));

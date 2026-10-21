@@ -94,6 +94,7 @@ pub fn cmux_ok(argv: &[&str]) -> bool {
             false
         }
         Err(e) => {
+            crate::cmux_cli::failed();
             log(&format!("FAIL {:?} {e}", argv.iter().take(3).collect::<Vec<_>>()));
             false
         }
@@ -105,7 +106,10 @@ pub fn cmux_out(argv: &[&str]) -> (i32, String) {
     let Some(c) = client() else { return (1, "cmux could not run: not reachable".into()) };
     match c.cli(argv) {
         Ok(o) => (o.status, format!("{}{}", o.stdout, o.stderr)),
-        Err(e) => (1, format!("cmux could not run: {e}")),
+        Err(e) => {
+            crate::cmux_cli::failed();
+            (1, format!("cmux could not run: {e}"))
+        }
     }
 }
 
@@ -114,6 +118,7 @@ fn select(ws: &str) -> bool {
         Some(c) => match c.workspace_select(ws) {
             Ok(()) => true,
             Err(e) => {
+                crate::cmux_cli::failed();
                 log(&format!("FAIL [\"workspace\", \"select\", {ws:?}] {e}"));
                 false
             }
@@ -136,6 +141,7 @@ pub fn notify(subtitle: &str, body: &str, workspace_id: Option<&str>) -> bool {
         Some(c) => match c.rpc("notification.create", Value::Object(p)) {
             Ok(_) => true,
             Err(e) => {
+                crate::cmux_cli::failed();
                 log(&format!("FAIL [\"notification.create\"] {e}"));
                 false
             }

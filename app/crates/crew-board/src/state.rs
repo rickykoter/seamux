@@ -139,7 +139,10 @@ pub fn workspaces(fast: bool, forced: Option<&str>) -> Vec<Value> {
     let Some(c) = cmux_cli::client() else { return Vec::new() };
     let listed = match c.workspace_list(None) {
         Ok(v) => get(&v, "workspaces").as_array().cloned().unwrap_or_default(),
-        Err(_) => return Vec::new(),
+        Err(_) => {
+            cmux_cli::failed();
+            return Vec::new();
+        }
     };
     let mut cache = load_sidebar_cache();
     let now = py::now() as i64;
