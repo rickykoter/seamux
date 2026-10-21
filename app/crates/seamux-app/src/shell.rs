@@ -155,23 +155,31 @@ fn join_full_screen_spaces<R: Runtime>(w: &WebviewWindow<R>) {
     use objc2::{sel, ClassType};
     use objc2_app_kit::{NSPanel, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask};
 
-    extern "C-unwind" fn yes(_: &AnyObject, _: Sel) -> Bool {
-        Bool::YES
+    /// Like tao's TaoWindow: key and main status follow its `focusable` ivar,
+    /// so tao's set_focusable keeps working after the swap.
+    extern "C-unwind" fn focusable(this: &AnyObject, _: Sel) -> Bool {
+        let cls = this.class();
+        match cls.instance_variable(c"focusable") {
+            // SAFETY: the ivar is declared Bool on this class.
+            Some(ivar) => unsafe { *ivar.load::<Bool>(this) },
+            None => Bool::YES,
+        }
     }
 
-    /// NSPanel, but able to take keyboard focus without a title bar (a
-    /// borderless panel refuses key status by default, and the wall's reply
-    /// box needs it).
+    /// NSPanel, but carrying TaoWindow's `focusable` ivar at the same offset
+    /// (tao reads and writes it by name) and able to take keyboard focus
+    /// without a title bar, which the wall's reply box needs.
     fn panel_class() -> &'static AnyClass {
         static CLASS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
         let ptr = *CLASS.get_or_init(|| {
             let name = c"SeamuxOverlayPanel";
             let cls = AnyClass::get(name).unwrap_or_else(|| {
                 let mut b = ClassBuilder::new(name, NSPanel::class()).expect("class name is free");
+                b.add_ivar::<Bool>(c"focusable");
                 // SAFETY: the signatures match canBecomeKeyWindow/MainWindow.
                 unsafe {
-                    b.add_method(sel!(canBecomeKeyWindow), yes as extern "C-unwind" fn(_, _) -> _);
-                    b.add_method(sel!(canBecomeMainWindow), yes as extern "C-unwind" fn(_, _) -> _);
+                    b.add_method(sel!(canBecomeKeyWindow), focusable as extern "C-unwind" fn(_, _) -> _);
+                    b.add_method(sel!(canBecomeMainWindow), focusable as extern "C-unwind" fn(_, _) -> _);
                 }
                 b.register()
             });
@@ -181,12 +189,27 @@ fn join_full_screen_spaces<R: Runtime>(w: &WebviewWindow<R>) {
         unsafe { &*(ptr as *const AnyClass) }
     }
 
+    /// The swap is sound only if the instance's storage fits the new class:
+    /// same size, and `focusable` at the same offset as on the current class.
+    fn layout_matches(current: &AnyClass, panel: &AnyClass) -> bool {
+        let off = |c: &AnyClass| c.instance_variable(c"focusable").map(|i| i.offset());
+        current.instance_size() == panel.instance_size() && off(current).is_some() && off(current) == off(panel)
+    }
+
     let Ok(ptr) = w.ns_window() else { return };
-    // SAFETY: Tauri hands back this window's live NSWindow and setup runs on
-    // the main thread. Swapping its class to an NSPanel subclass is what
-    // tauri-nspanel does; NSPanel adds no instance variables to NSWindow.
-    unsafe {
-        objc2::ffi::object_setClass(ptr as *mut AnyObject, panel_class());
+    // SAFETY: Tauri hands back this window's live NSWindow, and setup runs on
+    // the main thread.
+    let obj: &AnyObject = unsafe { &*(ptr as *const AnyObject) };
+    let panel = panel_class();
+    if layout_matches(obj.class(), panel) {
+        // SAFETY: checked above that the instance's layout is the panel
+        // class's, so tao's ivar stays where tao reads it. This is the
+        // swap tauri-nspanel does.
+        unsafe {
+            objc2::ffi::object_setClass(ptr as *mut AnyObject, panel);
+        }
+    } else {
+        eprintln!("seamux: window class layout differs from the panel's; staying a plain window (no full-screen Spaces)");
     }
     let win: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
     win.setStyleMask(win.styleMask() | NSWindowStyleMask::NonactivatingPanel);
@@ -282,13 +305,18 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
             })
             .build(),
     )?;
-    if let Err(e) = app.global_shortcut().register(shortcut) {
-        // Another app holds the hotkey; the tray still works.
-        eprintln!("seamux: could not register {HOTKEY}: {e}");
-    }
+    let hotkey_label = match app.global_shortcut().register(shortcut) {
+        Ok(()) => format!("Hotkey: {HOTKEY_LABEL}"),
+        Err(e) => {
+            // Another app holds the hotkey; the tray is then the way back in,
+            // and says so.
+            eprintln!("seamux: could not register {HOTKEY}: {e}");
+            format!("Hotkey {HOTKEY_LABEL} is taken by another app")
+        }
+    };
 
     let show_item = MenuItemBuilder::with_id("show", "Show seamux").build(app)?;
-    let key_item = MenuItemBuilder::with_id("hotkey", format!("Hotkey: {HOTKEY_LABEL}")).enabled(false).build(app)?;
+    let key_item = MenuItemBuilder::with_id("hotkey", hotkey_label).enabled(false).build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "Quit seamux").build(app)?;
     let menu = MenuBuilder::new(app).items(&[&show_item, &key_item]).separator().item(&quit_item).build()?;
     // Closing the window (Cmd+W, or a close from the system) hides it: the
