@@ -18,6 +18,7 @@ use cmux::Cmux;
 use crew_core::pyjson::{self, Opts};
 use serde_json::{Map, Value};
 
+use crate::pyval::{py_int, py_space, py_str, py_strip, truthy, universal};
 use crate::{md5, pyerr, pypath};
 
 /// cmux's own sixteen workspace colors, in cmux's order.
@@ -49,97 +50,47 @@ fn by_hex(h: &str) -> Option<&'static str> {
 /// swallows a `Die` (the Python catches SystemExit there) but not a `Crash`.
 #[derive(Debug)]
 pub enum Stop {
-    Die,
-    Crash,
+    /// `die(msg)`: a red cross and the message on stderr.
+    Die(String),
+    /// An uncaught Python exception: its last traceback line.
+    Crash(String),
 }
 
-type R<T> = Result<T, Stop>;
+impl Stop {
+    /// Print as the Python would have, and give its exit code.
+    pub fn report(&self) -> i32 {
+        match self {
+            Stop::Die(m) => {
+                eprint!("\x1b[31m✗\x1b[0m {m}\n");
+                1
+            }
+            Stop::Crash(m) => pyerr::crash(m),
+        }
+    }
+}
+
+/// Warnings off: crew-sync calls this module in-process where the Python ran
+/// crew-color with its stderr captured.
+static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_quiet(q: bool) {
+    QUIET.store(q, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn warn(msg: &str) {
+    if !QUIET.load(std::sync::atomic::Ordering::Relaxed) {
+        eprint!("{msg}");
+    }
+}
+
+pub type R<T> = Result<T, Stop>;
 
 fn die(msg: &str) -> Stop {
-    eprint!("\x1b[31m✗\x1b[0m {msg}\n");
-    Stop::Die
+    Stop::Die(msg.to_string())
 }
 
 fn crash(msg: &str) -> Stop {
-    pyerr::crash(msg);
-    Stop::Crash
-}
-
-// --- Python's string rules ----------------------------------------------------
-
-/// `str.isspace` for one character.
-fn py_space(c: char) -> bool {
-    c.is_whitespace() || ('\x1c'..='\x1f').contains(&c)
-}
-
-fn py_strip(s: &str) -> &str {
-    s.trim_matches(py_space)
-}
-
-/// Text mode's universal newlines: CRLF and a lone CR read as LF.
-fn universal(text: String) -> String {
-    if text.contains('\r') {
-        text.replace("\r\n", "\n").replace('\r', "\n")
-    } else {
-        text
-    }
-}
-
-/// `int(s)` for a decimal string, or None where Python raises ValueError.
-fn py_int(s: &str) -> Option<i128> {
-    let s = py_strip(s);
-    let (neg, digits) = match s.as_bytes().first() {
-        Some(b'-') => (true, &s[1..]),
-        Some(b'+') => (false, &s[1..]),
-        _ => (false, s),
-    };
-    let b = digits.as_bytes();
-    if b.is_empty() || !b[0].is_ascii_digit() || !b[b.len() - 1].is_ascii_digit() || digits.contains("__") {
-        return None;
-    }
-    if !b.iter().all(|c| c.is_ascii_digit() || *c == b'_') {
-        return None;
-    }
-    let v: i128 = digits.replace('_', "").parse().ok()?;
-    Some(if neg { -v } else { v })
-}
-
-/// `int(s, 16)` for a slice of at most two characters.
-fn py_hex_int(s: &str) -> Option<i64> {
-    let s = py_strip(s);
-    let (neg, digits) = match s.as_bytes().first() {
-        Some(b'-') => (true, &s[1..]),
-        Some(b'+') => (false, &s[1..]),
-        _ => (false, s),
-    };
-    if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
-    let v = i64::from_str_radix(digits, 16).ok()?;
-    Some(if neg { -v } else { v })
-}
-
-fn truthy(v: Option<&Value>) -> bool {
-    match v {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(b)) => *b,
-        Some(Value::Number(n)) => n.as_f64() != Some(0.0),
-        Some(Value::String(s)) => !s.is_empty(),
-        Some(Value::Array(a)) => !a.is_empty(),
-        Some(Value::Object(o)) => !o.is_empty(),
-    }
-}
-
-/// `str(v)` for a JSON value printed in an f-string.
-fn py_str(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        Value::Bool(true) => "True".into(),
-        Value::Bool(false) => "False".into(),
-        Value::Null => "None".into(),
-        Value::Number(n) if n.is_f64() => pyjson::float_repr(n.as_f64().unwrap_or(0.0)),
-        other => pyjson::dumps(other),
-    }
+    Stop::Crash(msg.to_string())
 }
 
 // --- registry -------------------------------------------------------------------
@@ -316,7 +267,7 @@ fn pick(root: &str) -> R<(&'static str, &'static str)> {
     Ok(*PALETTE.iter().enumerate().min_by_key(|(i, p)| (count(p.1), *i)).map(|(_, p)| p).unwrap())
 }
 
-fn resolve_root(arg: Option<&str>) -> R<String> {
+pub fn resolve_root(arg: Option<&str>) -> R<String> {
     let start = match arg.filter(|a| !a.is_empty()) {
         Some(a) => a.to_string(),
         None => std::env::current_dir()
@@ -375,6 +326,21 @@ pub fn peek(root: &str) -> Option<String> {
 // --- color math (Peacock's, reimplemented) ----------------------------------------
 
 type Rgb = (f64, f64, f64);
+
+/// `int(s, 16)` for a slice of at most two characters.
+fn py_hex_int(s: &str) -> Option<i64> {
+    let s = py_strip(s);
+    let (neg, digits) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let v = i64::from_str_radix(digits, 16).ok()?;
+    Some(if neg { -v } else { v })
+}
 
 fn to_rgb(h: &str) -> R<Rgb> {
     let h: Vec<char> = h.trim_start_matches('#').chars().collect();
@@ -678,7 +644,7 @@ fn apply(root: &str, hexv: &str) -> R<bool> {
     fs::create_dir_all(&vsdir).map_err(|e| crash(&format!("OSError: {}", pyerr::os_error(&e, Path::new(&vsdir)))))?;
     write_atomic(&path, &dumps_settings(&merged))?;
     if had_comments {
-        eprint!("\x1b[33m!\x1b[0m {path} had comments; they were dropped when the file was rewritten\n");
+        warn(&format!("\x1b[33m!\x1b[0m {path} had comments; they were dropped when the file was rewritten\n"));
     }
     Ok(true)
 }
@@ -723,7 +689,7 @@ fn peacock_follow(root: &str, hexv: &str) -> R<()> {
     };
     if truthy(o.get("peacock.color")) {
         match apply(root, hexv) {
-            Ok(_) | Err(Stop::Die) => {}
+            Ok(_) | Err(Stop::Die(_)) => {}
             Err(e) => return Err(e),
         }
     }
@@ -921,19 +887,52 @@ pub fn unfamily(root: &str) -> R<Option<String>> {
     Ok(Some(prev))
 }
 
-fn cmd_unfamily(args: &[String]) -> R<()> {
-    if args.first().map(String::as_str) == Some("--stale") {
-        let live = &args[1..];
-        for e in all_entries()? {
-            if let Some(fam) = e.val("FAMILY") {
-                if !live.iter().any(|l| l == fam) {
-                    if let Some(prev) = unfamily(e.root())? {
-                        println!("{}\t{prev}", e.root());
-                    }
+/// `unfamily --stale`: every member of a family not in `live` gets its colour
+/// from before. Returns the (root, prev) pairs done, and the error that
+/// stopped the sweep, if one did (the Python had printed the earlier lines).
+pub fn unfamily_stale(live: &[String]) -> (Vec<(String, String)>, Option<Stop>) {
+    let mut done = Vec::new();
+    let entries = match all_entries() {
+        Ok(e) => e,
+        Err(stop) => return (done, Some(stop)),
+    };
+    for e in entries {
+        if let Some(fam) = e.val("FAMILY") {
+            if !live.iter().any(|l| l == fam) {
+                match unfamily(e.root()) {
+                    Ok(Some(prev)) => done.push((e.root().to_string(), prev)),
+                    Ok(None) => {}
+                    Err(stop) => return (done, Some(stop)),
                 }
             }
         }
-        return Ok(());
+    }
+    (done, None)
+}
+
+/// What `crew-color assign|peek <root>` prints, as crew-sync reads it: the
+/// hex, or "" when it is not one or the run failed.
+pub fn color_for(root: &str, peek_only: bool) -> String {
+    let hexv = resolve_root(Some(root)).and_then(|r| {
+        if peek_only {
+            Ok(peek(&r).unwrap_or_default())
+        } else {
+            assign(&r).map(|(_, h)| h)
+        }
+    });
+    match hexv {
+        Ok(h) if py_strip(&h).starts_with('#') => py_strip(&h).to_string(),
+        _ => String::new(),
+    }
+}
+
+fn cmd_unfamily(args: &[String]) -> R<()> {
+    if args.first().map(String::as_str) == Some("--stale") {
+        let (done, stop) = unfamily_stale(&args[1..]);
+        for (root, prev) in done {
+            println!("{root}\t{prev}");
+        }
+        return stop.map_or(Ok(()), Err);
     }
     let Some(root) = args.first() else {
         return Err(die("unfamily <root> | unfamily --stale [<live-parent-root>...]"));
@@ -1053,7 +1052,7 @@ pub fn main(args: &[String]) -> i32 {
     };
     match res {
         Ok(()) => 0,
-        Err(_) => 1,
+        Err(stop) => stop.report(),
     }
 }
 
@@ -1062,24 +1061,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hash_index_is_the_rolling_hash() {
-        // python3 -c 's=0\nfor c in "/Users/x/repo": s=(s*31+ord(c))%100003\nprint(s%16)'
-        let mut s: u64 = 0;
-        for c in "/r/a".chars() {
-            s = (s * 31 + c as u64) % 100003;
-        }
-        assert_eq!(hash_index("/r/a"), (s % 16) as usize);
-    }
-
-    #[test]
-    fn py_int_takes_what_python_takes() {
-        assert_eq!(py_int(" 12 "), Some(12));
-        assert_eq!(py_int("1_000"), Some(1000));
-        assert_eq!(py_int("-3"), Some(-3));
-        assert_eq!(py_int("1__0"), None);
-        assert_eq!(py_int("_1"), None);
-        assert_eq!(py_int("1e3"), None);
-        assert_eq!(py_int(""), None);
+    fn hash_index_matches_the_python() {
+        // python3: s = (s * 31 + ord(c)) % 100003 over the root, then s % 16
+        assert_eq!(hash_index("/r/a"), 8);
+        assert_eq!(hash_index("~/code/repo"), 2);
+        assert_eq!(hash_index("é/x"), 12);
     }
 
     #[test]

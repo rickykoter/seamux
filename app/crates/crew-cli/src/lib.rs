@@ -10,8 +10,11 @@ pub mod frame;
 mod md5;
 pub mod overlay;
 pub mod plugin_root;
+mod proc;
 mod pyerr;
 mod pypath;
+mod pyval;
+pub mod sync;
 
 /// The seamux tools this crate provides, by the Python script's basename.
 pub const TOOLS: &[(&str, fn(&[String]) -> i32)] = &[
@@ -19,4 +22,5 @@ pub const TOOLS: &[(&str, fn(&[String]) -> i32)] = &[
     ("crew-frame", frame::main),
     ("crew-overlay", overlay::main),
     ("crew-plugin-root", plugin_root::main),
+    ("crew-sync", sync::main),
 ];

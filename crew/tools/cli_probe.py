@@ -619,6 +619,35 @@ check("crew-sync --dry-run reconciles a workspace and writes nothing to cmux",
       r.returncode == 0 and not writes and any(l.startswith("workspace list") for l in cmux_log()),
       f"rc={r.returncode} writes={writes} {r.stderr[-300:]}")
 
+# A real sync: a worktree on a ticket branch, a live session mid-task. The
+# exact cmux calls are the contract (fakecmux logs them, the board reads them).
+SYNCWT = os.path.join(T, "syncwt")
+git(MAIN, "worktree", "add", "-q", "-b", "dev/tidy-proj-3", SYNCWT)
+os.makedirs(os.path.join(HOME, ".cmuxterm"), exist_ok=True)
+json.dump({"activeSessionsByWorkspace": {"ws-y": {"sessionId": "SY"}},
+           "sessions": {"SY": {"agentLifecycle": "running", "pid": os.getpid()}}},
+          open(os.path.join(HOME, ".cmuxterm", "claude-hook-sessions.json"), "w"))
+TASKS = os.path.join(HOME, ".claude", "tasks", "SY")
+os.makedirs(TASKS)
+for i, (st, subj) in enumerate([("completed", "a"), ("in_progress", "b")], 1):
+    json.dump({"subject": subj, "status": st, "activeForm": "Doing " + subj}, open(os.path.join(TASKS, f"{i}.json"), "w"))
+put_rows([ws("ws-y", SYNCWT, title="syncwt", has_custom_title=False)])
+clear_log()
+r = run("crew-sync", env=dict(ENV, CREW_GH_INTERVAL="0"), timeout=120)
+log = cmux_log()
+desc = next((l for l in log if l.startswith("workspace-action --action set-description")), "")
+check("crew-sync renames a worktree after its ticket, publishes its plan, phase and stamp, and colours it",
+      r.returncode == 0
+      and "rename-workspace --workspace ws-y PROJ-3 · tidy" in log
+      and "set-progress 0.5000 --label 1/2 · Doing b --workspace ws-y" in log
+      and 'todo set [{"text":"a","state":"completed"},{"text":"b","state":"in-progress"}] --workspace ws-y' in log
+      # gone:merged: the new branch has no commits of its own, so it is contained in origin's
+      and desc.startswith("workspace-action --action set-description --description phase:working gone:merged synced:")
+      and any(l.startswith("workspace-action --action set-color --color #") for l in log),
+      f"rc={r.returncode}\n       " + "\n       ".join(log) + r.stderr[-300:])
+check("…and reports each change",
+      "  ws-y  name -> PROJ-3 · tidy\n  ws-y  progress -> 1/2 · Doing b\n" in r.stdout, r.stdout)
+
 COLOR_ENV = dict(ENV, CREW_CMUX="/usr/bin/false")
 r = run("crew-color", "peek", MAIN, env=COLOR_ENV)
 check("crew-color peek allocates nothing", r.returncode == 0 and r.stdout == "")
@@ -659,8 +688,23 @@ check("…a child already wearing Peacock follows its shade, keeping its own key
       and cc.get("statusBar.foreground") == "#e7e7e7", str(k2))
 check("…and a child with no .vscode gets none", not os.path.exists(os.path.join(KID1, ".vscode")))
 r = run("crew-color", "list", env=COLOR_ENV)
+
+def color_block(out, hexv):
+    """The list's line for one colour and the holder lines under it."""
+    lines = out.splitlines()
+    for i, l in enumerate(lines):
+        if l[4:11] == hexv:
+            rest = [x for x in lines[i + 1:]]
+            end = next((j for j, x in enumerate(rest) if not x.startswith("        ")), len(rest))
+            return l, [x.strip() for x in rest[:end]]
+    return "", []
+
+
+blue, holders = color_block(r.stdout, "#1565C0")
+# Another worktree (the crew-sync case above) may hash to Blue too: then the
+# line also says (shared), which is the list doing its job.
 check("crew-color list marks Blue held and names its holder",
-      r.returncode == 0 and "  ● #1565C0  Blue     \n        parent\n" in r.stdout, r.stdout)
+      r.returncode == 0 and blue.startswith("  ● #1565C0  Blue") and "parent" in holders, r.stdout)
 r = run("crew-color", "unfamily", "--stale", env=COLOR_ENV)
 check("crew-color unfamily --stale gives each member its colour from before",
       r.returncode == 0 and f"{KID2}\t#C0392B\n" in r.stdout and f"{KID1}\t\n" in r.stdout
