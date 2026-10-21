@@ -8,7 +8,9 @@
 pub mod merge_settings;
 pub mod options;
 pub mod pyval;
+pub mod spawn;
 pub mod statusline;
+pub mod triage;
 pub mod unicode;
 
 /// The seamux tools this crate provides, by the Python script's basename.
@@ -16,4 +18,5 @@ pub const TOOLS: &[(&str, fn(&[String]) -> i32)] = &[
     ("merge_settings", merge_settings::main),
     ("options", options::main),
     ("statusline", statusline::main),
+    ("triage", triage::main),
 ];

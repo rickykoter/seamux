@@ -114,7 +114,7 @@ def put_exe(path, text):
 
 
 for rel in ("bin/crew-sync", "bin/crew-feed", "bin/crew-color", "bin/crew-listen",
-            "bin/crew-artifacts", "hooks/cachefacts.py", "hooks/asked.py", "board/judgments.py"):
+            "bin/crew-artifacts", "bin/crew-code", "bin/crew-sandbox", "hooks/cachefacts.py", "hooks/asked.py", "board/judgments.py"):
     put_exe(os.path.join(CREW, rel), STUB)
 
 put_exe(os.path.join(BIN, "cmux"), f'#!/bin/sh\nexec "{sys.executable}" "{FAKE}" "$@"\n')
@@ -225,7 +225,7 @@ def asked_argv(size):
 def tool_argv(name, *argv):
     """A crew tool by its Python basename: the script in the copy, or `seamux`."""
     rel = {"options": "hooks/options.py", "merge_settings": "claude/merge_settings.py",
-           "statusline": "claude/statusline.py"}[name]
+           "statusline": "claude/statusline.py", "triage": "hooks/triage.py"}[name]
     return crew_impl.argv(name, os.path.join(CREW, rel), sys.executable) + list(argv)
 
 
@@ -294,7 +294,7 @@ def touch(name):
 
 if RUST:
     print("CREW_IMPL=%s: as seamux: %s" % (crew_impl.mode(), ", ".join(
-        t for t in ("crew-hook", "asked-hook", "options", "merge_settings", "statusline")
+        t for t in ("crew-hook", "asked-hook", "options", "merge_settings", "statusline", "triage")
         if crew_impl.is_rust(t)) or "nothing yet"))
 
 # --- the guard ------------------------------------------------------------------------
@@ -897,6 +897,105 @@ r = statusline()
 check("an integer past 64 bits divides as Python's does",
       r.stdout == "⏱ 100% of 5h window (123456789012345685803008.0M/123456789012345685803008.0M)\n",
       r.stdout)
+
+# --- triage (cmux's notification hook) --------------------------------------------------
+print("triage")
+TLOG = os.path.join(STATE, "triage.log")
+
+
+def triage(policy, ws_rows=None, raw=None, **env):
+    if ws_rows is not None:
+        reset(ws_rows)
+    else:
+        open(CLOG, "w").close()
+        open(SPAWN, "w").close()
+    stdin = raw if raw is not None else json.dumps(policy)
+    return run(tool_argv("triage"), stdin, env_for(ws=None, **env))
+
+
+def note(sub, ws="ws-1", key="workspaceId", **effects):
+    return {"notification": {"title": "t", "subtitle": sub, "body": "b", key: ws},
+            "effects": effects or {"desktop": True, "sound": True, "record": True, "markUnread": True}}
+
+
+def tlog():
+    return open(TLOG).read() if os.path.exists(TLOG) else ""
+
+
+p = {"notification": {"title": "Claude", "subtitle": "other", "body": "é"},
+     "effects": {"desktop": True, "sound": True}}
+r = triage(p, [row()])
+check("a notification without a crew marker is printed back as cmux proposed it",
+      r.stdout == json.dumps(p) and r.returncode == 0 and not log(), r.stdout)
+p = note("crew:turn")
+r = triage(p)
+want = json.loads(json.dumps(p))
+want["effects"].update(desktop=False, sound=False)
+check("crew:turn keeps the sidebar but loses the banner and the sound", r.stdout == json.dumps(want),
+      r.stdout)
+for raw in ("not json", "[1, 2]", '{"notification": 5}', "{\r\n"):
+    r = triage(None, raw=raw)
+    check(f"input it cannot read is echoed unchanged: {raw!r}",
+          r.stdout == raw.replace("\r\n", "\n") and r.returncode == 0, repr(r.stdout))
+r = triage(note("crew:sync-now"))
+check("crew:sync-now fires crew-sync and switches every effect off",
+      wait_for(lambda: "crew-sync" in spawns()) and r.stdout == json.dumps(dict(
+          note("crew:sync-now"), effects={"desktop": False, "sound": False, "record": False,
+                                          "markUnread": False})), r.stdout)
+check("…and logs the fire to triage.log", "fire: " in tlog() and "crew-sync" in tlog(), tlog())
+triage(note("crew:feed-allow"))
+check("crew:feed-allow replies once through crew-feed",
+      wait_for(lambda: "crew-feed reply once ws-1" in spawns()), spawns())
+triage(note("crew:feed-deny", key="workspace_id"))
+check("crew:feed-deny replies deny, reading the workspace_id spelling too",
+      wait_for(lambda: "crew-feed reply deny ws-1" in spawns()), spawns())
+triage(note("crew:code"), [row()])
+check("crew:code opens the row's resolved directory",
+      wait_for(lambda: f"crew-code {WT}" in spawns()) and "sidebar-state --workspace ws-1" in log(),
+      spawns())
+triage(note("crew:code", ws="ws-x"), [row()])
+check("…and hands over the id when it has no directory",
+      wait_for(lambda: "crew-code --workspace ws-x" in spawns()), spawns())
+triage(note("crew:sandbox-up"), [row()])
+check("crew:sandbox-up builds around the resolved directory",
+      wait_for(lambda: f"crew-sandbox up {WT}" in spawns()), spawns())
+triage(note("crew:sandbox-down", ws="ws-x"), [row()])
+check("crew:sandbox-down without one names the workspace",
+      wait_for(lambda: "crew-sandbox --workspace ws-x down" in spawns()), spawns())
+host = dict(row(ws="ws-2", title="host"), selected=True)
+r = triage(note("crew:reclaim"), [row(), host])
+reclaim = os.path.join(CREW, "bin", "crew-reclaim")
+check("crew:reclaim opens a terminal in another workspace, runs the dry run there and keeps it",
+      "new-pane --type terminal --direction down --workspace ws-2 --focus true" in log()
+      and f'respawn-pane --surface surface:900 --command {reclaim} ws-1; exec "${{SHELL:-/bin/zsh}}" -l'
+      in log() and "rename-tab --surface surface:900 reclaim" in log() and not spawns(), log())
+r = triage(note("crew:reclaim"), [row()])
+check("…and with nowhere else to put it, says how to run it, never running it",
+      f"notify --title crew --subtitle reclaim --body could not open a terminal — run: crew-reclaim {WT}"
+      in log() and "respawn-pane" not in log(), log())
+triage(note("crew:plan-go"), [row()])
+check("crew:plan-go runs deep-plan's go in a login shell, then crew-sync",
+      wait_for(lambda: "crew-sync" in spawns()) and "fire: /bin/sh -lc PATH=" in tlog(), tlog())
+triage(note("crew:plan-go", ws="ws-x"), [row()])
+check("…and with no directory to name, drops it and says so",
+      "plan-go DROPPED: no cwd (ws='ws-x')" in tlog() and not spawns(), tlog())
+r = triage(note("crew:archive", ws=""), [row()])
+check("crew:archive with no workspace archives nothing", "archive : no workspace" in tlog()
+      and "workspace close" not in log(), tlog())
+bad = b'{"notification": {"subtitle": "crew:turn", "body": "\xff"}, "effects": {"sound": true}}'
+r = subprocess.run(tool_argv("triage"), input=bad, env=env_for(ws=None, LC_ALL="C", LANG="C"),
+                   capture_output=True, timeout=30)
+check("bytes that are not UTF-8 still get cmux's policy back", r.returncode == 0 and r.stdout
+      and b"crew:turn" in r.stdout, r.stdout)
+triage(dict(note("crew:feed-allow"), notification={"subtitle": "crew:feed-allow", "workspaceId": 5}))
+check("a workspace id that is not a string fails the fire, logged, and runs nothing",
+      "fire FAILED:" in tlog() and "not int" in tlog() and not wait_for(lambda: spawns(), 1.0), tlog())
+r = triage(dict(note("crew:reclaim"), notification={"subtitle": "crew:reclaim", "workspaceId": 5}), [row()])
+check("…and a reclaim for one echoes the input, opening nothing",
+      json.loads(r.stdout)["effects"]["desktop"] is True and "new-pane" not in log(), r.stdout)
+r = triage(note("crew:turn"), CREW_ARCHIVE_BUDGET="soon")
+check("a CREW_ARCHIVE_BUDGET that is not a number fails before reading anything",
+      r.returncode == 1 and not r.stdout, r.stdout)
 
 shutil.rmtree(T, ignore_errors=True)
 n = len(results)

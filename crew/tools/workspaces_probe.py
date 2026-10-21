@@ -468,8 +468,8 @@ def tap(ws_id, delay=None):
               "effects": {"desktop": True, "sound": True, "record": True}}
     open(os.path.join(FAKE_DIR, "cmux.log"), "w").close()
     t0 = time.monotonic()
-    r = subprocess.run([sys.executable, TRIAGE], input=json.dumps(policy), env=env,
-                       capture_output=True, text=True, timeout=30)
+    r = subprocess.run(crew_impl.argv("triage", TRIAGE, sys.executable), input=json.dumps(policy),
+                       env=crew_impl.env(env), capture_output=True, text=True, timeout=30)
     return r, time.monotonic() - t0
 
 
@@ -484,6 +484,9 @@ check("a tap archives the row's workspace in the hook",
 check("…and the notification is swallowed: it is an RPC, not a message",
       not any((out.get("effects") or {}).values()), r.stdout)
 check("…and says nothing when it worked", "notify" not in log())
+before_close = log().split("workspace close")[0].splitlines()
+check("…listing the workspaces once before the close: the hook's own list is reused",
+      sum(l.startswith("list-windows") for l in before_close) == 1, log())
 put_rows([ws("ws-c", C, process=True, title="chip")])
 put_sessions([sess("ws-c", "s-c", "running")])
 W.forget(C)
@@ -505,7 +508,8 @@ W.forget(C)
 r, took = tap("ws-c", delay=1.0)
 check("with cmux at 1s a call, it goes to a terminal elsewhere instead, inside 10s",
       took < 10 and "new-pane --type terminal --direction down --workspace ws-h" in log()
-      and "workspaces.py archive ws-c" in log() and "workspace close" not in log(),
+      and ("workspaces archive ws-c" if crew_impl.is_rust("triage") else "workspaces.py archive ws-c")
+      in log() and "workspace close" not in log(),
       "%.1fs\n%s" % (took, log()))
 
 # The page names a row id and a verb; the server resolves the rest from the
