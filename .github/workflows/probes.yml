@@ -101,3 +101,8 @@ jobs:
       # before coming back when the family closes.
       - name: family sync probe
         run: python3 crew/tools/family_sync_probe.py
+
+      # The ten crew CLIs port-cli ports, black-box against fakecmux in a
+      # throwaway HOME; the same run proves the Rust with CREW_IMPL=rust.
+      - name: cli probe
+        run: python3 crew/tools/cli_probe.py
