@@ -438,6 +438,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "crew-hooks"
+version = "0.1.0"
+dependencies = [
+ "cmux",
+ "crew-core",
+ "libc",
+ "serde_json",
+]
+
+[[package]]
 name = "crew-store"
 version = "0.1.0"
 dependencies = [
@@ -2825,6 +2835,7 @@ version = "0.1.0"
 dependencies = [
  "cmux",
  "crew-core",
+ "crew-hooks",
  "crew-store",
  "serde_json",
 ]

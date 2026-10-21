@@ -892,6 +892,19 @@ Measured with 40 iterations on this machine:
 | `set_status_running.sh` (the v1 hook crew replaces) | **51.5 ms** | every tool use |
 | `session` (git + python + 3 socket calls) | 193 ms | once per session |
 
+On `seamux` (port-hooks, 2026-10-21), 40 runs each on this machine, live
+against cmux 0.64.25-nightly over the socket, beside today's bash measured in
+the same sitting:
+
+| Hook path | `crew-hook.sh` | `seamux-hook.sh` |
+|---|---|---|
+| `pretool`, no override outstanding | 4.5 ms | 4.5 ms (bash only: the marker test never starts the binary) |
+| `session` | 473 ms | 84 ms (release build; 92 ms debug) |
+
+Most of the session saving is one read: `cmux sidebar-state` costs ~170 ms
+through the CLI, and on the socket the workspace list the hook already reads
+carries the colour.
+
 The hot path is short-circuited *before* `lib.sh` is sourced — parsing the
 library costs more than the work it would do. Net effect: crew is about 5.7×
 cheaper per tool use than the bridge it replaces, because the v1 hook made an

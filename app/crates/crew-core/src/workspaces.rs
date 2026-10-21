@@ -613,10 +613,35 @@ pub fn update<T>(f: impl FnOnce(&mut Map<String, Value>) -> T) -> std::io::Resul
 
 /// Close a live workspace and remember it. -> (ok, message)
 pub fn archive(handle: &str) -> (bool, String) {
-    let Some(live) = live_workspaces() else { return (false, "cmux did not list its workspaces".into()) };
-    let Some(ws) = find_live(handle, Some(&live)) else { return (false, format!("no open workspace {handle}")) };
-    let records = agent_sessions();
-    let life = lifecycle_of(&ws.id, &ws.r#ref, records.as_deref());
+    archive_with(handle, None, None)
+}
+
+/// archive(), with the live list and the session records when the caller
+/// already has them, as workspaces.py's archive(handle, live, records) takes
+/// them: triage times its own list and must not pay for a second one. None
+/// fetches each, as archive() does; a passed list is used as is.
+pub fn archive_with(handle: &str, live: Option<&[Ws]>, records: Option<&[Value]>) -> (bool, String) {
+    let fetched;
+    let live = match live {
+        Some(l) => l,
+        None => match live_workspaces() {
+            Some(l) => {
+                fetched = l;
+                &fetched[..]
+            }
+            None => return (false, "cmux did not list its workspaces".into()),
+        },
+    };
+    let Some(ws) = find_live(handle, Some(live)) else { return (false, format!("no open workspace {handle}")) };
+    let fetched_records;
+    let records = match records {
+        Some(r) => Some(r),
+        None => {
+            fetched_records = agent_sessions();
+            fetched_records.as_deref()
+        }
+    };
+    let life = lifecycle_of(&ws.id, &ws.r#ref, records);
     let name = if ws.title.is_empty() { ws.r#ref.clone() } else { ws.title.clone() };
     if life == "running" {
         return (false, format!("{name}: Claude is mid-turn — archive it when the turn ends"));
@@ -636,7 +661,7 @@ pub fn archive(handle: &str) -> (bool, String) {
         return (false, format!("{name} has no directory to remember"));
     }
     let mut sids: Vec<Value> = Vec::new();
-    for r in sessions_for(&ws.id, &ws.r#ref, records.as_deref().unwrap_or(&[])) {
+    for r in sessions_for(&ws.id, &ws.r#ref, records.unwrap_or(&[])) {
         let Some(s) = sid_of(&r).filter(|s| !is_falsy(s)).cloned() else { continue };
         let agent = r.get("agent").filter(|a| !is_falsy(a)).map(|a| sval(Some(a))).unwrap_or_else(|| "claude".into());
         if !sids.contains(&s) && agent.to_lowercase() == "claude" {

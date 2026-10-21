@@ -893,9 +893,10 @@ if (live && Array.isArray(live.rows)) {
   fs.mkdirSync(local); fs.mkdirSync(home); fs.mkdirSync(claudeDir);
   const env = { ...process.env, PATH: `${bin}:/usr/bin:/bin`, HOME: home, CREW_LOCAL: local,
     CREW_COSTS_TTL: "0", CLAUDE_CONFIG_DIR: claudeDir, CREW_BILLING: "usage" };
-  // pricing.py and costs.py go through the CREW_IMPL helper; the status line
-  // is port-hooks' and stays python3 until that port routes it.
-  const PORTED = { [PRICING]: "pricing", [join(HERE, "costs.py")]: "costs" };
+  // pricing.py, costs.py and the status line go through the CREW_IMPL helper.
+  // The status line runs with no workspace id, so it never asks cmux for a colour.
+  const STATUSLINE = join(HERE, "..", "claude", "statusline.py");
+  const PORTED = { [PRICING]: "pricing", [join(HERE, "costs.py")]: "costs", [STATUSLINE]: "statusline" };
   const py = (args, opts = {}) => PORTED[args[0]]
     ? crewTool(PORTED[args[0]], args[0], args.slice(1), { env, ...opts })
     : execFileSync("python3", args, { encoding: "utf8", env, ...opts });
@@ -936,7 +937,7 @@ if (live && Array.isArray(live.rows)) {
   checks.push(["pricing: provenance keys never reach ccusage", !("source" in ent)]);
   py([join(HERE, "costs.py"), CWD]);
   checks.push(["pricing: costs.py passes the same --config", lastArgv().includes(`--config ${a2[1]}`)]);
-  py([join(HERE, "..", "claude", "statusline.py")], { input: "{}" });
+  py([STATUSLINE], { input: "{}", env: { ...env, CMUX_WORKSPACE_ID: "" } });
   checks.push(["pricing: the status line passes it too", lastArgv().includes("--config")]);
 
   // A broken local file degrades to what there was without it, never an error.
@@ -1015,8 +1016,8 @@ if (live && Array.isArray(live.rows)) {
   checks.push(["unpriced: $0 of only-unpriced usage still shows, as a floor", uout.includes(">$0.00+<")]);
 
   // The status line, on usage billing, where it shows dollars.
-  const sl = py(["-c", "import sys; sys.path.insert(0, sys.argv[1]); import statusline; print(statusline.month_line())",
-    join(HERE, "..", "claude")]);
+  // The whole line: on usage billing it is the month line, then any cache segment.
+  const sl = py([STATUSLINE], { input: "{}", env: { ...env, CMUX_WORKSPACE_ID: "" } });
   checks.push(["unpriced: the status line's month figure carries a +", /\$0\.11\+ this month/.test(sl)]);
 
   // /usage: every dollar figure in usage_data carries its own list, and all

@@ -29,6 +29,7 @@ pub const TABLES: &[&[Tool]] = &[
     crate::cmux_tool::TOOLS,
     crew_core::TOOLS,
     crew_store::TOOLS,
+    crew_hooks::TOOLS,
 ];
 
 /// Every registered tool, in name order.
