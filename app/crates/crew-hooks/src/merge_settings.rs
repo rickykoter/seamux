@@ -5,9 +5,10 @@
 //! seamux merge_settings [--dry-run] [--settings PATH] [--remove]
 //! ```
 //!
-//! The status line it writes is still `python3 <crew>/claude/statusline.py`,
-//! the Python's command: repointing it at `seamux statusline` is the
-//! cutover's job. `<crew>` is crew-core's crew home, resolved through
+//! The status line it writes is `python3 <crew>/claude/statusline.py`, the
+//! Python's command, for as long as that file exists. Once the cutover has
+//! deleted it, the same run writes `<seamux> statusline` instead, and either
+//! spelling counts as crew's own for repointing and --remove. `<crew>` is crew-core's crew home, resolved through
 //! symlinks as the Python resolves its own file. Same printed lines, same
 //! backup names, same bytes written.
 
@@ -22,16 +23,27 @@ struct Paths {
     statusline: String,
     legacy: String,
     command: String,
+    /// No status line to point at: neither statusline.py nor a seamux.
+    missing: bool,
 }
 
+/// The status line command. While crew/claude/statusline.py exists it is
+/// the Python's, byte for byte. Once the cutover has deleted it, it is
+/// `<seamux> statusline`: the ~/.local/bin link when there is one (a path
+/// that survives upgrades), else this executable.
 fn paths() -> Paths {
     let claude = crew_core::crew_home().join("claude");
     let claude = std::fs::canonicalize(&claude).unwrap_or(claude);
     let statusline = claude.join("statusline.py").to_string_lossy().into_owned();
-    Paths {
-        command: format!("python3 {statusline}"),
-        legacy: home().join(".claude/statusline.py").to_string_lossy().into_owned(),
-        statusline,
+    let legacy = home().join(".claude/statusline.py").to_string_lossy().into_owned();
+    if Path::new(&statusline).exists() {
+        return Paths { command: format!("python3 {statusline}"), legacy, statusline, missing: false };
+    }
+    let link = home().join(".local/bin/seamux");
+    let seamux = if crate::spawn::is_executable(&link) { Some(link) } else { std::env::current_exe().ok() };
+    match seamux {
+        Some(s) => Paths { command: format!("{} statusline", s.display()), legacy, statusline, missing: false },
+        None => Paths { command: format!("python3 {statusline}"), legacy, statusline, missing: true },
     }
 }
 
@@ -39,7 +51,10 @@ fn paths() -> Paths {
 fn ours(p: &Paths, status_line: &Value) -> bool {
     let empty = Value::Object(Map::new());
     let text = pyval::dumps(if truthy(status_line) { status_line } else { &empty }, None);
-    text.contains(&p.statusline) || text.contains(&p.legacy) || text.contains("/crew/claude/statusline.py")
+    text.contains(&p.statusline)
+        || text.contains(&p.legacy)
+        || text.contains("/crew/claude/statusline.py")
+        || text.contains("seamux statusline")
 }
 
 fn crash(msg: &str) -> i32 {
@@ -118,7 +133,7 @@ pub fn main(args: &[String]) -> i32 {
     }
 
     let current = s.get("statusLine").cloned().unwrap_or(Value::Null);
-    if !Path::new(&p.statusline).exists() {
+    if p.missing {
         changes.push(format!("SKIPPED: no {}", p.statusline));
     } else if !truthy(&current) {
         s.insert("statusLine".into(), json!({"type": "command", "command": p.command}));
@@ -194,7 +209,13 @@ mod tests {
 
     #[test]
     fn ours_matches_the_three_spellings() {
-        let p = Paths { statusline: "/a/crew/claude/statusline.py".into(), legacy: "/h/.claude/statusline.py".into(), command: String::new() };
+        let p = Paths {
+            statusline: "/a/crew/claude/statusline.py".into(),
+            legacy: "/h/.claude/statusline.py".into(),
+            command: String::new(),
+            missing: false,
+        };
+        assert!(ours(&p, &json!({"command": "/h/.local/bin/seamux statusline"})));
         assert!(ours(&p, &json!({"command": "python3 /h/.claude/statusline.py"})));
         assert!(ours(&p, &json!({"command": "python3 /elsewhere/crew/claude/statusline.py"})));
         assert!(!ours(&p, &json!({"command": "ccusage statusline"})));

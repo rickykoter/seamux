@@ -38,7 +38,8 @@ pub fn state_dir() -> PathBuf {
 /// crew_guard: outside cmux, with no workspace, or with crew disabled, a
 /// hook does nothing. None means exit 0 now.
 pub fn guard() -> Option<(Cmux, String, PathBuf)> {
-    let cmux = spawn::connect()?;
+    // The cheap tests first, so a hook outside cmux or with crew disabled
+    // never opens a connection.
     let ws = crew_core::py::env_or("CMUX_WORKSPACE_ID")?;
     if crew_core::py::env_or("CREW_DISABLED").is_some() {
         return None;
@@ -47,6 +48,7 @@ pub fn guard() -> Option<(Cmux, String, PathBuf)> {
     if state.join("disabled").exists() {
         return None;
     }
+    let cmux = spawn::connect()?;
     Some((cmux, ws, state))
 }
 

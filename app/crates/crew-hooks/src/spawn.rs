@@ -48,7 +48,9 @@ fn registered() -> &'static [String] {
     static R: OnceLock<Vec<String>> = OnceLock::new();
     R.get_or_init(|| {
         let Some(exe) = exe() else { return Vec::new() };
-        match crew_core::py::run(&exe.display().to_string(), &["--tools"], std::time::Duration::from_secs(5)) {
+        // `--tools` only prints a list; 2 s is generous, and a hook cannot
+        // afford the 5 s it would otherwise get.
+        match crew_core::py::run(&exe.display().to_string(), &["--tools"], std::time::Duration::from_secs(2)) {
             Some((0, out, _)) => out.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect(),
             _ => Vec::new(),
         }

@@ -778,6 +778,23 @@ merge()
 check("numbers JSON's 64 bits cannot hold come back as Python wrote them",
       open(S).read().startswith('{\n  "big": 123456789012345678901234567890,\n  "n": NaN,\n'
                                 '  "f": Infinity,\n  "x": 0.1,\n  "u": "\\u00e9",\n'), open(S).read())
+# After the cutover deletes statusline.py: the Python has nothing to point at,
+# seamux points the status line at itself (its ~/.local/bin link).
+for b in baks():
+    os.remove(os.path.join(os.path.dirname(S), b))
+os.remove(S)
+os.rename(STATUSLINE, STATUSLINE + ".away")
+r = merge()
+if crew_impl.is_rust("merge_settings"):
+    SEAMUX_CMD = os.path.join(HOME, ".local", "bin", "seamux") + " statusline"
+    check("with statusline.py gone, seamux points the status line at `seamux statusline`",
+          json.load(open(S)).get("statusLine") == {"type": "command", "command": SEAMUX_CMD}, r.stdout)
+    r = merge("--remove")
+    check("…and counts that one as crew's own", "  removed: statusLine\n" in r.stdout, r.stdout)
+else:
+    check("with statusline.py gone, the Python skips the status line",
+          f"  SKIPPED: no {STATUSLINE}\n" in r.stdout and "statusLine" not in json.load(open(S)), r.stdout)
+os.rename(STATUSLINE + ".away", STATUSLINE)
 for b in baks():
     os.remove(os.path.join(os.path.dirname(S), b))
 open(S, "w").write("{nope")

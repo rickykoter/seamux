@@ -120,7 +120,9 @@ fn workspace_color() -> R<(Option<Value>, Option<Value>)> {
         }
     }
 
-    let Ok(cmux) = cmux::Cmux::connect() else { return Ok((None, None)) };
+    // No cmux at all is (None, None), uncached, as the Python's "no cmux"
+    // is; a cmux that is there but does not answer is a cached miss below.
+    let Some(cmux) = crate::spawn::connect() else { return Ok((None, None)) };
     // Cache the miss too, or a cmux that is down costs a timeout per render.
     let listed = match cmux.workspace_list(None) {
         Ok(Value::Object(o)) => match o.get("workspaces") {

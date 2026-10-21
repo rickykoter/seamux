@@ -5,7 +5,8 @@
 #
 #   seamux-asked.sh <transcript-size-at-stop>  < stop-payload
 #
-# seamux is $SEAMUX_BIN, else ~/.local/bin/seamux; without it, a no-op.
+# seamux is $SEAMUX_BIN, else ~/.local/bin/seamux (the family's install
+# links it there); without it, a no-op.
 
 set -u
 

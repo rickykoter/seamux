@@ -8,7 +8,9 @@
 # always there is no lane override to release, so a missing marker has to
 # exit from bash without starting a binary (crew-hook.sh explains the cost).
 #
-# seamux is $SEAMUX_BIN, else the link install.sh makes in ~/.local/bin.
+# seamux is $SEAMUX_BIN, else ~/.local/bin/seamux, where the family's
+# install is to link it (the cutover makes the link before it points
+# hooks.json here).
 # Without it every event is a no-op: exit 0, nothing printed, nothing sent.
 
 set -u
