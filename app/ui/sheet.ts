@@ -9,7 +9,12 @@ export type Page = {
   title: string;
   /** The cmux workspace it belongs to, for Open in cmux. */
   workspace?: string;
+  /** What Open in cmux does instead of open_in_cmux (the Wake opens its rows its own way). */
+  toCmux?: () => Promise<unknown>;
 };
+
+/** A file the sheet shows itself: an image, a sandboxed HTML page or a PDF. */
+export type Shown = { kind: "image" | "html" | "pdf"; title: string; data: string };
 
 const SVG = "http://www.w3.org/2000/svg";
 
@@ -31,6 +36,7 @@ export class Sheet {
   private body = document.createElement("div");
   private say = document.createElement("span");
   private page: Page | null = null;
+  private toCmuxFn: (() => Promise<unknown>) | null = null;
 
   constructor() {
     this.el.className = "sheet";
@@ -77,8 +83,38 @@ export class Sheet {
     return !this.el.hidden;
   }
 
+  /** Show a file's content: images as an image, HTML with scripts off, PDFs framed. */
+  show(s: Shown, toCmux: () => Promise<unknown>): void {
+    this.page = null;
+    this.toCmuxFn = toCmux;
+    this.titleEl.textContent = s.title;
+    this.say.textContent = "";
+    this.el.hidden = false;
+    if (s.kind === "image") {
+      const img = document.createElement("img");
+      img.className = "sheet-img";
+      img.alt = s.title;
+      img.src = s.data;
+      const box = document.createElement("div");
+      box.className = "sheet-imgbox";
+      box.append(img);
+      this.body.replaceChildren(box);
+    } else {
+      const frame = document.createElement("iframe");
+      frame.title = s.title;
+      if (s.kind === "html") {
+        // No scripts, no forms, no top navigation: a page to look at.
+        frame.setAttribute("sandbox", "");
+        const bin = atob(s.data.slice(s.data.indexOf(",") + 1));
+        frame.srcdoc = new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
+      } else frame.src = s.data;
+      this.body.replaceChildren(frame);
+    }
+  }
+
   async open(p: Page): Promise<void> {
     this.page = p;
+    this.toCmuxFn = p.toCmux ?? null;
     this.titleEl.textContent = p.title;
     this.say.textContent = "";
     this.el.hidden = false;
@@ -100,13 +136,15 @@ export class Sheet {
   close(): void {
     this.el.hidden = true;
     this.page = null;
+    this.toCmuxFn = null;
     this.body.replaceChildren();
   }
 
   private async toCmux(): Promise<void> {
-    if (!this.page) return;
+    if (!this.page && !this.toCmuxFn) return;
     try {
-      await openInCmux(this.page);
+      if (this.toCmuxFn) await this.toCmuxFn();
+      else if (this.page) await openInCmux(this.page);
       this.close();
     } catch (e) {
       this.say.textContent = String(e);

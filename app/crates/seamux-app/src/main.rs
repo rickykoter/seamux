@@ -7,6 +7,7 @@
 mod desk_app;
 mod shell;
 mod views_app;
+mod wake_app;
 mod wall_app;
 
 use serde::Serialize;
@@ -147,7 +148,14 @@ fn main() {
             shell::open_in_cmux,
             desk_app::desk_answer,
             desk_app::plan_go,
-            desk_app::plan_check
+            desk_app::plan_check,
+            wake_app::wake_data,
+            wake_app::wake_open,
+            wake_app::wake_keep,
+            wake_app::wake_keep_all,
+            wake_app::wake_publish,
+            wake_app::home_dir,
+            wake_app::wake_file
         ])
         .run(tauri::generate_context!())
         .expect("seamux app failed to start");

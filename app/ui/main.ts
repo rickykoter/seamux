@@ -7,6 +7,8 @@ import { Desk } from "./desk";
 import "./desk.css";
 import { Mosaic } from "./mosaic";
 import "./mosaic.css";
+import { Wake } from "./wake";
+import "./wake.css";
 
 // The shape of `cmux_status` in crates/seamux-app/src/main.rs.
 type Workspace = { id: string; ref: string; title: string };
@@ -60,7 +62,7 @@ const deskView = new Desk(desk);
 const mosaicEl = document.getElementById("mosaic")!;
 const mosaic = new Mosaic(mosaicEl, document.getElementById("wall")!, wall);
 soon(timeline, "──▬▬▬──◆──▬▬──●──│──", "Timeline shows who waited, and how long.");
-soon(wakeEl, "· · ·  ▸ commit  ▸ PR  ▸ page", "The Wake moves into the app soon; for now it is at /artifacts in cmux.");
+const wakeView = new Wake(wakeEl);
 
 const tabs = new Tabs(
   document.getElementById("strip")!,
@@ -72,6 +74,7 @@ const tabs = new Tabs(
     ["wake", wakeEl],
   ]),
 );
+tabs.onSelect = (id) => id === "wake" && wakeView.shown();
 tabs.select(DEFAULT_TAB);
 
 // Every summon (the hotkey, the tray) lands on Desk.
@@ -92,3 +95,4 @@ invoke<Status>("cmux_status").then(show, (e) => show({ state: "failed", kind: "a
 wall.start().catch((e) => wall.problem(`The wall couldn't start: ${String(e)}`));
 deskView.start().catch((e) => console.error("desk", e));
 mosaic.start().catch((e) => console.error("mosaic", e));
+wakeView.start().catch((e) => console.error("wake", e));
