@@ -6,6 +6,7 @@
 
 mod desk_app;
 mod shell;
+mod term_app;
 mod tuck_app;
 mod views_app;
 mod wake_app;
@@ -145,6 +146,9 @@ fn main() {
             wall_app::wall_frame,
             wall_app::wall_reply,
             wall_app::wall_jump,
+            term_app::term_frame,
+            term_app::term_input,
+            term_app::term_paste,
             views_app::views_frame,
             shell::open_in_cmux,
             desk_app::desk_answer,

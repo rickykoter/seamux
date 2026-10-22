@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { reflow } from "./reflow";
 import type { Frame as WallFrame, Tile } from "./wall";
 import { Wake } from "./wake";
+import { Term } from "./term";
 
 type IntentServer = { origin: string | null; up: boolean; reason: string | null };
 
@@ -51,6 +52,8 @@ class Chat {
   private name = document.createElement("b");
   private state = document.createElement("span");
   private body = document.createElement("div");
+  /** The pane itself, live: click into it and keys go to the agent. */
+  private term = new Term();
   private input = document.createElement("input");
   private note = document.createElement("span");
   surface = "";
@@ -61,6 +64,7 @@ class Chat {
     const head = document.createElement("header");
     head.append(this.name, this.state);
     this.body.className = "sheet-chat-body";
+    this.body.hidden = true; // the live terminal shows the pane; the text stays for no-socket fallback
     const form = document.createElement("form");
     form.className = "sheet-chat-reply";
     this.input.type = "text";
@@ -93,11 +97,21 @@ class Chat {
     });
     this.note.className = "sheet-chat-note";
     form.append(this.input, jump);
-    this.el.append(head, this.body, form, this.note);
+    this.input.hidden = true;
+    const hint = document.createElement("span");
+    hint.className = "sheet-chat-hint";
+    hint.textContent = "Click the terminal to type into it · click outside to leave";
+    form.prepend(hint);
+    this.el.append(head, this.term.el, this.body, form, this.note);
+  }
+
+  stopTerm(): void {
+    this.term.stop();
   }
 
   show(t: Tile): void {
     this.surface = t.surface;
+    this.term.show(t.surface);
     this.name.textContent = t.workspace_title || t.label;
     this.state.textContent = t.state.replace("_", " ");
     this.state.className = `sheet-chat-state ${t.state}`;
@@ -211,7 +225,7 @@ export class Sheet {
     document.addEventListener(
       "keydown",
       (e) => {
-        if (e.key === "Escape" && !this.el.hidden) {
+        if (e.key === "Escape" && !this.el.hidden && !(document.activeElement as HTMLElement | null)?.closest(".term")) {
           this.close();
           e.stopImmediatePropagation();
           e.preventDefault();
@@ -268,13 +282,12 @@ export class Sheet {
   /** The agent pane for the page's workspace (or the one working in its directory). */
   private tile(): Tile | undefined {
     const { workspace, dir } = this.place;
+    // An agent's pane first; else the workspace's terminal (an agent cmux has
+    // not recognised yet, at a trust prompt say, is still worth showing live).
     const agents = this.tiles.filter((t) => t.agent && t.state !== "ended");
-    if (workspace) return agents.find((t) => t.workspace === workspace);
-    if (dir) {
-      const d = dir.replace(/\/+$/, "");
-      return agents.find((t) => t.cwd === d || t.cwd.startsWith(d + "/"));
-    }
-    return undefined;
+    const d = (dir ?? "").replace(/\/+$/, "");
+    const here = (t: Tile) => (workspace ? t.workspace === workspace : !!d && (t.cwd === d || t.cwd.startsWith(d + "/")));
+    return agents.find(here) ?? this.tiles.find(here);
   }
 
   /** The cmux workspace the sheet is for: named, or the agent's in its directory. */
@@ -523,6 +536,7 @@ export class Sheet {
 
   close(): void {
     this.el.hidden = true;
+    this.chat.stopTerm();
     this.page = null;
     this.toCmuxFn = null;
     this.reset();

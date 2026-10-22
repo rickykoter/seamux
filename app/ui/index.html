@@ -133,6 +133,22 @@
       .sheet-chat-body .ln { white-space: pre-wrap; overflow-wrap: anywhere; }
       .sheet-chat-reply { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); }
       .sheet-chat-reply input { flex: 1; min-width: 0; font: inherit; padding: 5px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+      /* The live terminal: the pane's own colours and cursor, scaled to fit. */
+      .term {
+        --t-size: 12px; --t-line: calc(var(--t-size) * 1.25);
+        flex: 1; min-height: 0; overflow: auto; position: relative; padding: 8px;
+        background: var(--t-bg, var(--term)); color: var(--t-fg, var(--term-fg)); outline: none; cursor: text;
+      }
+      .term.focused { box-shadow: inset 0 0 0 2px var(--accent); }
+      .term-screen { position: relative; font: var(--t-size)/var(--t-line) ui-monospace, Menlo, monospace; white-space: pre; width: max-content; }
+      .term-row { height: var(--t-line); }
+      .term-cursor { position: absolute; left: 0; top: 0; width: 1ch; height: var(--t-line); background: var(--t-cursor); opacity: 0.35; pointer-events: none; }
+      .term.focused .term-cursor { opacity: 0.75; }
+      .term-cursor.bar { width: 2px; opacity: 0.9; }
+      .term-cursor.underline { height: 2px; margin-top: calc(var(--t-line) - 2px); opacity: 0.9; }
+      .term-status { position: absolute; left: 8px; bottom: 8px; font-size: 11.5px; color: var(--bad); }
+      .term-status[hidden] { display: none; }
+      .sheet-chat-hint { flex: 1; font-size: 11.5px; color: var(--muted); align-self: center; }
       .sheet-chat-note { padding: 0 12px 6px; font-size: 11.5px; color: var(--muted); }
       .sheet-imgbox { flex: 1; min-width: 0; overflow: auto; display: flex; align-items: center; justify-content: center; padding: 12px; background: var(--term); }
       .sheet-img { max-width: 100%; max-height: 100%; object-fit: contain; }
