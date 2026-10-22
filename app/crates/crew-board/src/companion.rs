@@ -107,7 +107,7 @@ fn fit(ws: &str, sid: &str) {
 
 /// The companion pane of `ws`, if it is still there: the kept pane, or the
 /// Wake's group from before the companion (adopted, so a workspace never gets two).
-fn companion_pane(ws: &str, panes: &[Value]) -> Option<Value> {
+fn companion_pane(ws: &str, panes: &[Value], caller: &str) -> Option<Value> {
     let kept = read_keep(&format!("{NS}-pane"), ws);
     if !kept.is_empty() {
         if let Some(p) = panes.iter().find(|p| p.get("id").and_then(Value::as_str) == Some(kept.as_str())) {
@@ -119,7 +119,31 @@ fn companion_pane(ws: &str, panes: &[Value]) -> Option<Value> {
             return Some(p.clone());
         }
     }
-    None
+    // A pane of pages already at the right (tabs opened before there was a
+    // companion): adopt it rather than split a second one beside it.
+    let pages = adoptable(ws, panes, caller)?;
+    if let Some(id) = pages.get("id").and_then(Value::as_str) {
+        write_keep(&format!("{NS}-pane"), ws, id);
+    }
+    Some(pages)
+}
+
+/// The rightmost main pane, not the caller's, whose every surface is a
+/// browser page; None when cmux cannot list the surfaces' types.
+fn adoptable(ws: &str, panes: &[Value], caller: &str) -> Option<Value> {
+    let listed = crate::wake::cmux_json(&["list-panels", "--workspace", ws, "--json"])?;
+    let surfaces = listed.get("surfaces")?.as_array()?.clone();
+    let all_pages = |pane: &Value| {
+        let id = pane.get("id").and_then(Value::as_str).unwrap_or("");
+        let mine: Vec<&Value> = surfaces.iter().filter(|s| s.get("pane_id").and_then(Value::as_str) == Some(id)).collect();
+        !mine.is_empty() && mine.iter().all(|s| s.get("type").and_then(Value::as_str) == Some("browser"))
+    };
+    let callers = pane_of(panes, caller).and_then(|p| p.get("id")).cloned();
+    panes
+        .iter()
+        .filter(|p| Some(p.get("id").cloned().unwrap_or(Value::Null)) != callers && all_pages(p))
+        .max_by(|a, b| (frame(a, "x") + frame(a, "width")).partial_cmp(&(frame(b, "x") + frame(b, "width"))).unwrap_or(std::cmp::Ordering::Equal))
+        .cloned()
 }
 
 fn new_id(out: &str) -> String {
@@ -138,7 +162,7 @@ pub fn open(url: &str, key: &str, ws: &str, caller: &str, focus: bool) -> Result
         return Err("cmux did not say which workspace is in front".into());
     }
     let (_, panes) = main_panes(&ws);
-    let pane = companion_pane(&ws, &panes);
+    let pane = companion_pane(&ws, &panes, caller);
     let kept = read_keep(&keep_name(key), &ws);
     let give_back = |sid: &str| {
         if focus {

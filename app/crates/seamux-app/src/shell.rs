@@ -154,6 +154,13 @@ pub fn hide_overlay<R: Runtime>(window: WebviewWindow<R>) {
     hide(&window);
 }
 
+/// A page's companion tab key: plan-<slug>, review-<id> or ask-<id>.
+pub fn companion_key(path: &str) -> String {
+    let rest = path.trim_start_matches('/');
+    let (kind, id) = rest.split_once('/').unwrap_or(("page", rest));
+    format!("{kind}-{id}").to_ascii_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '-' }).take(96).collect()
+}
+
 /// The intent-server pages the app may hand to cmux: a plan, a review or
 /// an ask, by a plain path (no `..`, no scheme, nothing to escape).
 pub fn cmux_path_ok(path: &str) -> bool {
@@ -180,17 +187,12 @@ pub async fn open_in_cmux<R: Runtime>(window: WebviewWindow<R>, path: String, wo
         let port = parse_port(&text).ok_or("bad port file")?;
         let url = format!("http://127.0.0.1:{port}{path}");
         let c = cmux::Cmux::connect().map_err(|e| e.to_string())?;
-        let mut argv = vec!["open", url.as_str()];
-        if let Some(w) = &ws {
-            argv.extend(["--workspace", w.as_str()]);
-        }
-        let out = c.cli(&argv).map_err(|e| e.to_string())?;
-        if !out.ok() {
-            return Err(format!("cmux open failed: {}", out.stderr.trim()));
-        }
+        // The workspace comes forward first, so its companion is on screen
+        // and sized; then the page opens there, focused: the person asked.
         if let Some(w) = &ws {
             c.workspace_select(w).map_err(|e| e.to_string())?;
         }
+        crew_board::companion::open(&url, &companion_key(&path), ws.as_deref().unwrap_or(""), "", true)?;
         Ok::<(), String>(())
     })
     .await
@@ -520,6 +522,13 @@ mod tests {
         assert_eq!(http_status(slow(1500), "/usage", PAGE_WAIT), Ok(200));
         let err = http_status(slow(1500), "/usage", Duration::from_millis(300)).unwrap_err();
         assert!(err.contains("no answer within"), "{err}");
+    }
+
+    #[test]
+    fn a_page_names_its_companion_tab() {
+        assert_eq!(companion_key("/plan/seamux-views"), "plan-seamux-views");
+        assert_eq!(companion_key("/review/seamux-views-inc1"), "review-seamux-views-inc1");
+        assert_eq!(companion_key("/ask/20261022-031500-AB12"), "ask-20261022-031500-ab12");
     }
 
     #[test]

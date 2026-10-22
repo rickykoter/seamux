@@ -2529,6 +2529,24 @@ function askShow(id) {
   say(`ask ${id}: ${ask.answer.n} — ${o.label || ""}${ask.answer.delivered ? "" : " (shown on the page, not typed)"}`);
 }
 
+// The house's one way to show a page beside the chat: the workspace's
+// companion pane (crew-board companion.rs, `seamux companion open`). One tab
+// per key, reused; an agent's open gives the keyboard back to its terminal.
+// false when seamux is not installed or refuses: the caller then opens the
+// page the way it did before.
+function companionKey(prefix, id) {
+  return (prefix + "-" + String(id)).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").slice(0, 96);
+}
+
+function companionOpen(url, key, ws, surface) {
+  const bin = process.env.SEAMUX_BIN || path.join(os.homedir(), ".local", "bin", "seamux");
+  if (!ws || !fs.existsSync(bin)) return false;
+  const args = ["companion", "open", url, "--key", key, "--workspace", ws];
+  if (surface) args.push("--surface", surface);
+  const r = spawnSync(bin, args, { encoding: "utf8", timeout: 20000, env: { ...process.env, CMUX_QUIET: "1" } });
+  return r.status === 0;
+}
+
 // Best-effort, like openWorkingSurface. Returns the served URL when the
 // intent server is up.
 //
@@ -2548,6 +2566,8 @@ function openAskSurface(ask) {
     const token = rd("board-intent.token");
     if (!port || !token) return "";
     const url = `http://127.0.0.1:${port}/ask/${ask.id}`;
+    // Beside the terminal that asked, in the workspace's companion.
+    if (ask.workspace && companionOpen(url, companionKey("ask", ask.id), ask.workspace, ask.surface)) return url;
     if (ask.workspace) {
       // --focus false: the human is mid-prompt in the terminal; do not steal it.
       const r = spawnSync("cmux", ["open", url, "--workspace", ask.workspace, "--focus", "false"],
@@ -2575,6 +2595,11 @@ function openWorkingSurface(st) {
     const port = parseInt(rd("board-intent.port"), 10);
     const token = rd("board-intent.token");
     if (!port || !token) return;
+    // Run by an agent in cmux: the plan opens in its workspace's companion,
+    // beside its terminal, which keeps the keyboard.
+    const here = process.env.CMUX_WORKSPACE_ID;
+    if (here && companionOpen(`http://127.0.0.1:${port}/plan/${st.slug}`, companionKey("plan", st.slug), here,
+                              process.env.CMUX_SURFACE_ID || "")) return;
     const targets = JSON.parse(fs.readFileSync(path.join(cache, "board-targets.json"), "utf8"));
     const rid = Object.keys(targets).find(k => {
       const t = targets[k] || {};
