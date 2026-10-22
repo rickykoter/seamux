@@ -4,12 +4,13 @@ import { answerable, type Decision, type ViewsFrame } from "./desk";
 import type { Frame as WallFrame, Tile } from "./wall";
 import { ago } from "./wall";
 import { levelOf, menu } from "./tuck";
+import { familyOf, grouped, header as familyHeader, waitText, type FamilyBrief } from "./family";
 
 type Span = { state: string; start: number; end: number };
 type Mark = { kind: "go" | "done" | "review"; at: number; n: number; label: string };
 type Lane = { ws: string; spans: Span[]; marks: Mark[] };
 type PlanBrief = { ws: string; slug: string; phase: string; done: number; total: number; n: number; open: boolean };
-type Views = ViewsFrame & { lanes?: Lane[]; plans?: PlanBrief[] };
+type Views = ViewsFrame & { lanes?: Lane[]; plans?: PlanBrief[]; families?: FamilyBrief[] };
 
 /** The window Timeline shows, as views.rs's HISTORY_WINDOW. */
 export const WINDOW_MS = 2 * 3600 * 1000;
@@ -124,7 +125,13 @@ export class Timeline {
     const shells = this.tiles.filter((t) => t.state === "shell").length;
     const waitWs = new Set(this.waits().map((d) => d.ws));
 
-    const rows = shown.map((l) => this.lane(l, start, now, waitWs.has(l.ws)));
+    // A family's lanes sit together under its header.
+    const fams = this.views.families;
+    const rows: HTMLElement[] = grouped(shown, (l) => familyOf(fams, l.ws)?.fam.parent ?? "").flatMap((g) => {
+      const lanes = g.items.map((l) => this.lane(l, start, now, waitWs.has(l.ws)));
+      const fam = g.key ? fams?.find((f) => f.parent === g.key) : undefined;
+      return fam ? [familyHeader(fam, "fam-head t-fam"), ...lanes] : lanes;
+    });
     if (resting || shells) rows.push(el("div", "t-fold", [resting ? `+${resting} idle` : "", shells ? `${shells} terminals` : ""].filter(Boolean).join(" · ")));
     if (!lanes.length) rows.push(el("p", "t-empty", "No agent has a lane yet: lanes fill from the state history as agents work, ask and wait."));
     this.lanesEl.replaceChildren(...rows);
@@ -149,6 +156,9 @@ export class Timeline {
     if (tile?.state === "needs_input" && last?.state === "needs_input") sub = `waiting ${ago(now - last.start)}`;
     if (tile?.state === "working" && plan && plan.open) sub = `working · inc ${plan.n}/${plan.total}`;
     if (tile?.state !== "working" && tile?.state !== "needs_input" && plan?.phase === "done") sub = "delivered";
+    const kin = familyOf(this.views.families, l.ws);
+    const waits = kin ? waitText(kin.fam, kin.member) : "";
+    if (waits && tile?.state !== "needs_input") sub = waits;
     if (level === "mute") sub = sub ? `${sub} · muted` : "muted";
     const top = el("span", "t-name-top");
     top.append(el("b", "", this.title(l.ws)), menu(l.ws, this.title(l.ws), level));
