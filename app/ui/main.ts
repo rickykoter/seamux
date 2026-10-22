@@ -11,6 +11,7 @@ import { Wake } from "./wake";
 import "./wake.css";
 import { Timeline } from "./timeline";
 import "./timeline.css";
+import { Palette } from "./palette";
 
 // The shape of `cmux_status` in crates/seamux-app/src/main.rs.
 type Workspace = { id: string; ref: string; title: string };
@@ -64,6 +65,9 @@ const tabs = new Tabs(
   ]),
 );
 tabs.onSelect = (id) => id === "wake" && wakeView.shown();
+// The Tucked chip sits at the end of the strip; Command-K opens the same palette.
+const palette = new Palette();
+document.getElementById("strip")!.append(palette.chip);
 tabs.select(DEFAULT_TAB);
 
 // Every summon (the hotkey, the tray) lands on Desk.
@@ -86,3 +90,4 @@ deskView.start().catch((e) => console.error("desk", e));
 mosaic.start().catch((e) => console.error("mosaic", e));
 wakeView.start().catch((e) => console.error("wake", e));
 timelineView.start().catch((e) => console.error("timeline", e));
+palette.start().catch((e) => console.error("palette", e));

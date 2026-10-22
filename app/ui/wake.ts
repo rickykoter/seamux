@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { sheet, type Shown } from "./sheet";
+import type { TuckRow } from "./tuck";
 
 // A row as crew-board's wake_data serves it (wake.rs's wake_row).
 export type Row = {
@@ -117,6 +118,8 @@ export class Wake {
   private home = "";
   private seq = 0;
   private lastTop = -1;
+  /** Muted and tucked worktrees, from the views feed: tucked ones sink in the picker. */
+  private tucked: TuckRow[] = [];
 
   constructor(private root: HTMLElement) {
     root.classList.add("wake");
@@ -184,7 +187,12 @@ export class Wake {
       this.home = "";
     }
     // New rows land at each turn's end; the views feed says when.
-    await listen<{ wake: { id: number }[] }>("views:frame", (e) => {
+    await listen<{ wake: { id: number }[]; tucked?: TuckRow[] }>("views:frame", (e) => {
+      const tucked = (e.payload.tucked ?? []).filter((r) => r.level === "tuck");
+      if (JSON.stringify(tucked.map((r) => r.path)) !== JSON.stringify(this.tucked.map((r) => r.path))) {
+        this.tucked = tucked;
+        if (this.data.workspaces.length) this.draw();
+      }
       const top = e.payload.wake?.[0]?.id ?? -1;
       if (top !== this.lastTop) {
         this.lastTop = top;
@@ -231,12 +239,22 @@ export class Wake {
     // The picker: names, with the parent folder where two share one.
     const names = new Map<string, number>();
     for (const w of this.data.workspaces) names.set(w.name, (names.get(w.name) ?? 0) + 1);
-    const opts = this.data.workspaces.map((w) => {
+    const option = (w: Ws) => {
       const o = el("option", "", `${(names.get(w.name) ?? 0) > 1 ? w.ws.split("/").slice(-2).join("/") : w.name} (${w.n})${w.here ? "" : " — gone"}`);
       o.value = w.ws;
       o.selected = w.ws === this.ws;
       return o;
-    });
+    };
+    // Tucked worktrees stay pickable (the Wake is history), after the rest.
+    const isTucked = (w: Ws) => this.tucked.some((t) => w.ws === t.path || w.ws.startsWith(t.path + "/"));
+    const opts: HTMLElement[] = this.data.workspaces.filter((w) => !isTucked(w)).map(option);
+    const tuckedOpts = this.data.workspaces.filter(isTucked).map(option);
+    if (tuckedOpts.length) {
+      const g = el("optgroup");
+      g.label = "Tucked";
+      g.append(...tuckedOpts);
+      opts.push(g);
+    }
     if (this.ws && !this.data.workspaces.some((w) => w.ws === this.ws)) {
       const o = el("option", "", `${this.ws.split("/").pop()} (0)`);
       o.value = this.ws;

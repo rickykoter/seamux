@@ -85,7 +85,7 @@ export class Mosaic {
       "keydown",
       (e) => {
         if (e.key !== "Escape" || !this.expanded || this.root.offsetParent === null) return;
-        if (document.querySelector(".sheet:not([hidden])")) return;
+        if (document.querySelector(".sheet:not([hidden]), .palette:not([hidden])")) return;
         const at = document.activeElement;
         if (at instanceof HTMLInputElement && this.wallEl.contains(at)) return; // the reply box blurs first
         this.collapse();
