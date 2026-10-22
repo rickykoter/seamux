@@ -104,12 +104,14 @@ export class Term {
     });
     this.el.addEventListener("focus", () => {
       this.el.classList.add("focused");
+      this.scale();
       this.hold();
       this.tick();
     });
     this.el.addEventListener("blur", () => {
       this.el.classList.remove("focused");
       this.release();
+      this.scale();
     });
     // Back from a hide (which released every hold): hold again if still focused.
     window.addEventListener("focus", () => {
@@ -208,6 +210,7 @@ export class Term {
     this.el.style.setProperty("--t-cursor", theme.cursor ?? theme.foreground ?? "#ddd");
     this.cols = f.columns;
     this.rows = f.rows;
+    this.scale();
     const styles = new Map(g.styles.map((s) => [s.id, s]));
     const lines: HTMLElement[] = [];
     for (let r = 0; r < f.rows; r++) {
@@ -242,6 +245,20 @@ export class Term {
     this.cursor.hidden = !c.visible;
     this.cursor.className = `term-cursor ${c.style}`;
     this.cursor.style.transform = `translate(${c.column}ch, calc(${c.row} * var(--t-line)))`;
+  }
+
+  /** Focused (holding the pane at this view's size): 12px. Otherwise the
+   *  pane keeps its own width, so the view scales to show all of it. */
+  private scale(): void {
+    let px = 12;
+    if (document.activeElement !== this.el) {
+      const cs = getComputedStyle(this.el);
+      const w = this.el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      const cell = this.probe.getBoundingClientRect().width / 10 || 7.2; // at 12px
+      if (w > 0 && this.cols > 0) px = Math.max(8, Math.min(12, (12 * w) / (this.cols * cell)));
+    }
+    this.el.style.setProperty("--t-size", `${px.toFixed(2)}px`);
+    this.el.style.setProperty("--t-line", `${(px * 1.25).toFixed(2)}px`);
   }
 
   private key(e: KeyboardEvent): void {

@@ -153,16 +153,26 @@ export class Mosaic {
     const shells = this.tiles.filter((t) => t.state === "shell" && levelOf(lv, t.workspace) !== "tuck").length;
     // A family's tiles sit together under its header, where its first tile falls.
     const fams = this.views.families;
-    const els: HTMLElement[] = grouped(shown, (t) => familyOf(fams, t.workspace)?.fam.parent ?? "").flatMap((g) => {
-      const tiles = g.items.map((t) => this.tile(t));
+    // Each family is a section of its own, packed densely under its header;
+    // the tiles between families pack together, so no group leaves holes.
+    const els: HTMLElement[] = [];
+    let loose: HTMLElement | null = null;
+    const section = () => el("div", "m-sec");
+    for (const g of grouped(shown, (t) => familyOf(fams, t.workspace)?.fam.parent ?? "")) {
       const fam = g.key ? fams?.find((f) => f.parent === g.key) : undefined;
-      return fam ? [familyHeader(fam, "fam-head m-fam"), ...tiles] : tiles;
-    });
-    // Dense packing would pull later tiles above a family's header.
-    this.grid.classList.toggle("has-fam", els.some((e) => e.classList.contains("m-fam")));
+      if (fam) {
+        loose = null;
+        const sec = section();
+        sec.append(...g.items.map((t) => this.tile(t)));
+        els.push(familyHeader(fam, "fam-head m-fam"), sec);
+      } else {
+        if (!loose) els.push((loose = section()));
+        loose.append(...g.items.map((t) => this.tile(t)));
+      }
+    }
     if (shells) {
-      const s = el("div", "m-tile small folded", `+ ${shells} terminal${shells === 1 ? "" : "s"}`);
-      els.push(s);
+      if (!loose) els.push((loose = section()));
+      loose.append(el("div", "m-tile small folded", `+ ${shells} terminal${shells === 1 ? "" : "s"}`));
     }
     this.grid.replaceChildren(...els);
     this.grid.hidden = false;
@@ -220,8 +230,9 @@ export class Mosaic {
     const waits = kin ? waitText(kin.fam, kin.member) : "";
     if (waits && t.state !== "needs_input") state.textContent = waits;
     if (level === "mute") state.textContent += " · muted";
-    head.append(state, el("span", "grow"), menu(t.workspace, name, level));
+    head.append(state, el("span", "grow"));
     if (plan && size !== "small") head.append(el("span", "m-plan", plan.phase === "done" ? `plan done · ${plan.done}/${plan.total}` : `inc ${plan.n}/${plan.total}`));
+    head.append(menu(t.workspace, name, level)); // the menu always last, in every tile
     box.append(head);
 
     if (size === "small") {
