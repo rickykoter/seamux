@@ -274,6 +274,23 @@ pub struct ReviewBrief {
     pub since: u64,
 }
 
+/// A page a workspace has open now, for the chat sheet's tabs: its newest
+/// plan, each lookout review not yet closed, and an ask still unanswered.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct NowPage {
+    pub ws: String,
+    /// "plan", "review" or "ask".
+    pub kind: String,
+    /// The intent server path: /plan/<slug>[.review.html], /review/<id>, /ask/<id>.
+    pub path: String,
+    pub label: String,
+    /// A few words on where it stands: "working inc 2/5", "3 open", "waiting".
+    pub state: String,
+    /// It waits on the person: an ask, or a review with addressed findings.
+    pub waiting: bool,
+    pub since: u64,
+}
+
 /// The `views:frame` payload.
 #[derive(Clone, Debug, Serialize, PartialEq, Default)]
 pub struct ViewsFrame {
@@ -290,6 +307,8 @@ pub struct ViewsFrame {
     pub tucked: Vec<TuckRow>,
     /// Plan families: their parent, members and waits.
     pub families: Vec<FamilyBrief>,
+    /// Each live workspace's open pages, plan first, then reviews, then asks.
+    pub pages: Vec<NowPage>,
     /// Each live workspace that is muted or tucked: "mute" or "tuck".
     pub levels: std::collections::BTreeMap<String, String>,
     /// What could not be read this time, for the page to say.
@@ -307,6 +326,8 @@ pub struct Inputs {
     pub dp_state_dir: PathBuf,
     /// Muted and tucked worktrees (tuck.rs).
     pub tuck_file: PathBuf,
+    /// crew-board's ask pages and their records.
+    pub asks_dir: PathBuf,
     /// `deep-plan status --json`'s rows.
     pub plans: Box<dyn Fn() -> Result<Vec<Value>, String> + Send + Sync>,
     /// The Artifact Log's newest rows.
@@ -321,6 +342,7 @@ impl Inputs {
             history_dir: history::dir(),
             dp_state_dir: crew_board::server::dp_state(),
             tuck_file: crate::tuck::Store::live().file,
+            asks_dir: crew_board::ask::asks_dir(),
             plans: Box::new(plans_now),
             wake: Box::new(|n| crew_store::search("", None, None, n).map_err(|e| e.to_string())),
         }
@@ -660,6 +682,7 @@ pub struct Feed {
     reviews_dir: PathBuf,
     history_dir: PathBuf,
     dp_state_dir: PathBuf,
+    asks_dir: PathBuf,
     tuck: crate::tuck::Store,
     reviews: Mutex<HashMap<PathBuf, (SystemTime, Option<ReviewSummary>)>>,
     plans: Slow<Vec<Value>>,
@@ -674,6 +697,7 @@ impl Feed {
             reviews_dir: inputs.reviews_dir,
             history_dir: inputs.history_dir,
             dp_state_dir: inputs.dp_state_dir,
+            asks_dir: inputs.asks_dir,
             tuck: crate::tuck::Store { file: inputs.tuck_file },
             reviews: Mutex::default(),
             plans: Slow::new(Arc::from(inputs.plans), PLANS_TTL),
@@ -778,6 +802,7 @@ impl Feed {
         // One read: a day back, so each lane knows its state at the window's start.
         let recent = history::read_since(&self.history_dir, start.saturating_sub(24 * 3600 * 1000));
         let lanes = self.lanes(&panes, &plans, &live_reviews, &recent, start, now_ms);
+        let pages = self.pages(&panes, &plans, &live_reviews);
         let reviews = review_briefs(live_reviews);
 
         let wake = match self.wake.get() {
@@ -801,7 +826,87 @@ impl Feed {
 
         let history = recent.iter().filter(|e| e.at >= start).map(Change::from).collect();
         let (tucked, levels) = self.tucks(tiles, &decisions, &recent, &mut problems);
-        ViewsFrame { decisions, wake, history, plans, reviews, lanes, tucked, families: fams, levels, problems }
+        ViewsFrame { decisions, wake, history, plans, reviews, lanes, tucked, families: fams, pages, levels, problems }
+    }
+
+    /// Each live workspace's open pages: its plan (the review surface while
+    /// the plan is in review), its lookout reviews with findings not yet
+    /// closed (newest first), and its unanswered asks whose terminal is live.
+    fn pages(&self, panes: &Panes, plans: &[PlanBrief], reviews: &[(String, ReviewSummary)]) -> Vec<NowPage> {
+        let mut out = Vec::new();
+        for p in plans {
+            let review = p.phase == "review";
+            let state = if review {
+                "in review".to_string()
+            } else if p.phase == "done" || (p.total > 0 && p.done == p.total) {
+                "done".to_string()
+            } else if p.open {
+                format!("working inc {}/{}", p.n, p.total)
+            } else if p.n > 0 {
+                format!("next inc {}/{}", p.n, p.total)
+            } else {
+                p.phase.clone()
+            };
+            out.push(NowPage {
+                ws: p.ws.clone(),
+                kind: "plan".into(),
+                path: if review { format!("/plan/{}.review.html", p.slug) } else { format!("/plan/{}", p.slug) },
+                label: p.slug.clone(),
+                state,
+                waiting: review,
+                since: p.touched,
+            });
+        }
+        let mut revs: Vec<&(String, ReviewSummary)> = reviews.iter().filter(|(_, r)| r.open + r.addressed > 0).collect();
+        revs.sort_by(|a, b| b.1.since.cmp(&a.1.since));
+        for (ws, r) in revs {
+            let state = match (r.open, r.addressed) {
+                (o, 0) => format!("{o} open"),
+                (0, a) => format!("{a} to close"),
+                (o, a) => format!("{o} open · {a} to close"),
+            };
+            out.push(NowPage {
+                ws: ws.clone(),
+                kind: "review".into(),
+                path: format!("/review/{}", r.id),
+                label: if r.inc > 0 && !r.plan.is_empty() { format!("{} inc {}", r.plan, r.inc) } else if r.title.is_empty() { r.id.clone() } else { r.title.clone() },
+                state,
+                waiting: r.addressed > 0,
+                since: r.since,
+            });
+        }
+        let mut asks = Vec::new();
+        for e in std::fs::read_dir(&self.asks_dir).into_iter().flatten().filter_map(|e| e.ok()) {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Some(id) = name.strip_suffix(".json") else { continue };
+            if !self.asks_dir.join(format!("{id}.html")).exists() {
+                continue;
+            }
+            let Some(v) = std::fs::read_to_string(e.path()).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { continue };
+            if v.get("answer").is_some_and(|a| !a.is_null()) {
+                continue;
+            }
+            // Only while the terminal that asked is still there.
+            let surface = s(&v, "surface");
+            let Some(ws) = panes.live_ws(&s(&v, "workspace")) else { continue };
+            if surface.is_empty() || !panes.tiles.iter().any(|t| t.surface.eq_ignore_ascii_case(&surface)) {
+                continue;
+            }
+            let since = e.metadata().and_then(|m| m.modified()).map(ms).unwrap_or(0);
+            let q = s(&v, "header");
+            asks.push(NowPage {
+                ws,
+                kind: "ask".into(),
+                path: format!("/ask/{id}"),
+                label: if q.is_empty() { "ask".into() } else { q },
+                state: "waiting".into(),
+                waiting: true,
+                since,
+            });
+        }
+        asks.sort_by(|a, b| b.since.cmp(&a.since));
+        out.extend(asks);
+        out
     }
 
     /// The quieted worktrees and each live workspace's level. A muted

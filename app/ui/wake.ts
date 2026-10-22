@@ -121,8 +121,13 @@ export class Wake {
   /** Muted and tucked worktrees, from the views feed: tucked ones sink in the picker. */
   private tucked: TuckRow[] = [];
 
-  constructor(private root: HTMLElement) {
+  /** Embedded: the copy in the chat sheet, which has the keys while the sheet is open. */
+  private embedded: boolean;
+
+  constructor(readonly root: HTMLElement, opts: { embedded?: boolean } = {}) {
+    this.embedded = !!opts.embedded;
     root.classList.add("wake");
+    if (this.embedded) root.classList.add("embedded");
     this.picker.setAttribute("aria-label", "workspace");
     this.picker.addEventListener("change", () => {
       this.ws = this.picker.value;
@@ -209,6 +214,18 @@ export class Wake {
   /** Called when the tab is shown: fresh rows. */
   shown(): void {
     void this.load(true);
+  }
+
+  /** Show the Wake of the worktree at `dir` (the sheet's workspace), fresh. */
+  showDir(dir: string): void {
+    if (dir && dir !== this.ws) {
+      this.ws = dir;
+      this.kinds.clear();
+      this.sel = -1;
+      this.q.value = "";
+      this.query = "";
+      void this.load();
+    } else void this.load(true);
   }
 
   private toast(text: string, bad = false): void {
@@ -544,7 +561,8 @@ export class Wake {
 
   private key(e: KeyboardEvent): void {
     if (!this.visible() || e.ctrlKey || e.altKey) return;
-    if (document.querySelector(".sheet:not([hidden])")) return;
+    // The Wake tab yields to the sheet; the sheet's own Wake has the keys there.
+    if (!!document.querySelector(".sheet:not([hidden])") !== this.embedded) return;
     const inQ = document.activeElement === this.q;
     if (e.key === "Escape") {
       if (!this.help.hidden) {

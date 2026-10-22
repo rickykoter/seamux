@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { reflow } from "./reflow";
 import type { Frame as WallFrame, Tile } from "./wall";
+import { Wake } from "./wake";
 
 type IntentServer = { origin: string | null; up: boolean; reason: string | null };
 
@@ -119,8 +120,31 @@ class Chat {
   }
 }
 
-/** A sheet over the current view: the page, beside its agent's live chat
- * when it has one. Escape closes it. */
+/** views.rs NowPage: a page a workspace has open now. */
+export type NowPage = { ws: string; kind: string; path: string; label: string; state: string; waiting: boolean; since: number };
+
+/** One tab on the sheet's page side: the Wake, a page, or a file shown here. */
+type Tab = {
+  key: string;
+  kind: string;
+  label: string;
+  state: string;
+  waiting: boolean;
+  /** From the workspace's open pages, rather than opened by hand. */
+  now: boolean;
+  /** Made on first show and kept, so a swap is instant and keeps its scroll. */
+  el: HTMLElement | null;
+  page?: Page;
+  shown?: Shown;
+  toCmux?: (() => Promise<unknown>) | null;
+};
+
+const WAKE = "wake";
+
+/** A sheet over the current view: the page beside its agent's live chat.
+ *  The page side has tabs: the workspace's Wake, then its open plan, lookout
+ *  reviews and asks, then anything else opened here. ⌘E shows the Wake and
+ *  goes back; ⌘] and ⌘[ step through the tabs; 1–9 pick one. Escape closes. */
 export class Sheet {
   el = document.createElement("div");
   private card = document.createElement("div");
@@ -135,6 +159,15 @@ export class Sheet {
   private tiles: Tile[] = [];
   /** The page's workspace and directory, for the chat beside it. */
   private place: { workspace?: string; dir?: string } = {};
+  private tabsEl = document.createElement("div");
+  private stack = document.createElement("div");
+  private tabs: Tab[] = [];
+  private active = "";
+  /** The tab before the Wake, for ⌘E to go back to. */
+  private back = "";
+  private pages: NowPage[] = [];
+  private wake: Wake | null = null;
+  private origin: string | null = null;
 
   constructor() {
     this.el.className = "sheet";
@@ -160,6 +193,10 @@ export class Sheet {
     head.append(this.titleEl, this.say, cmux, close);
     this.body.className = "sheet-body";
     this.pageEl.className = "sheet-page";
+    this.tabsEl.className = "sheet-tabs";
+    this.tabsEl.setAttribute("role", "tablist");
+    this.stack.className = "sheet-stack";
+    this.pageEl.append(this.tabsEl, this.stack);
     this.divider.className = "sheet-divider";
     this.divider.setAttribute("role", "separator");
     this.divider.setAttribute("aria-label", "Drag to resize the chat");
@@ -188,14 +225,44 @@ export class Sheet {
     return !this.el.hidden;
   }
 
-  /** Follow the panes, so the chat beside a page stays live. */
+  /** Follow the panes, so the chat beside a page stays live, and each
+   *  workspace's open pages, for the tabs. */
   async start(): Promise<void> {
     await listen<WallFrame>("wall:frame", (e) => {
       this.tiles = e.payload.tiles;
       if (!this.el.hidden) this.drawChat();
     });
-    const f = await invoke<WallFrame | null>("wall_frame");
+    await listen<{ pages?: NowPage[] }>("views:frame", (e) => {
+      const pages = e.payload.pages ?? [];
+      if (JSON.stringify(pages) === JSON.stringify(this.pages)) return;
+      this.pages = pages;
+      if (!this.el.hidden) this.syncTabs();
+    });
+    // shell.rs's keys: they work with focus in a framed page too.
+    await listen<string>("sheet:key", (e) => {
+      if (this.el.hidden) return;
+      if (e.payload === "wake") this.toggleWake();
+      else this.step(e.payload === "next" ? 1 : -1);
+    });
+    // 1–9 pick a page tab while focus is in the shell (a framed page keeps its own keys).
+    document.addEventListener("keydown", (e) => {
+      if (this.el.hidden || e.metaKey || e.ctrlKey || e.altKey || !(e.key >= "1" && e.key <= "9")) return;
+      const at = document.activeElement;
+      if (at instanceof HTMLInputElement || at instanceof HTMLTextAreaElement || at instanceof HTMLSelectElement) return;
+      const t = this.tabs.filter((x) => x.key !== WAKE)[Number(e.key) - 1];
+      if (t) {
+        this.select(t.key);
+        e.preventDefault();
+      }
+    });
+    // Frames go out only on change: start from the latest one.
+    const [f, v] = await Promise.all([invoke<WallFrame | null>("wall_frame"), invoke<{ pages?: NowPage[] } | null>("views_frame")]);
     if (f) this.tiles = f.tiles;
+    if (v?.pages) this.pages = v.pages;
+    if (!this.el.hidden) {
+      this.drawChat();
+      this.syncTabs();
+    }
   }
 
   /** The agent pane for the page's workspace (or the one working in its directory). */
@@ -208,6 +275,16 @@ export class Sheet {
       return agents.find((t) => t.cwd === d || t.cwd.startsWith(d + "/"));
     }
     return undefined;
+  }
+
+  /** The cmux workspace the sheet is for: named, or the agent's in its directory. */
+  private workspace(): string {
+    return this.place.workspace ?? this.tile()?.workspace ?? "";
+  }
+
+  /** The worktree directory, for the Wake: named, else the agent's cwd. */
+  private dir(): string {
+    return this.place.dir ?? this.tile()?.cwd ?? "";
   }
 
   private drawChat(): void {
@@ -238,64 +315,218 @@ export class Sheet {
 
   /** Show a file's content: images as an image, HTML with scripts off, PDFs framed. */
   show(s: Shown, toCmux: () => Promise<unknown>, place: { workspace?: string; dir?: string } = {}): void {
-    this.page = null;
-    this.toCmuxFn = toCmux;
-    this.place = place;
-    this.drawChat();
-    this.titleEl.textContent = s.title;
-    this.say.textContent = "";
-    this.el.hidden = false;
-    if (s.kind === "image") {
-      const img = document.createElement("img");
-      img.className = "sheet-img";
-      img.alt = s.title;
-      img.src = s.data;
-      const box = document.createElement("div");
-      box.className = "sheet-imgbox";
-      box.append(img);
-      this.pageEl.replaceChildren(box);
-    } else {
-      const frame = document.createElement("iframe");
-      frame.title = s.title;
-      if (s.kind === "html") {
-        // No scripts, no forms, no top navigation: a page to look at.
-        frame.setAttribute("sandbox", "");
-        const bin = atob(s.data.slice(s.data.indexOf(",") + 1));
-        frame.srcdoc = new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
-      } else frame.src = s.data;
-      this.pageEl.replaceChildren(frame);
-    }
+    this.enter(place);
+    const key = `file:${s.title}`;
+    this.drop(key);
+    this.tabs.push({ key, kind: "file", label: s.title, state: "", waiting: false, now: false, el: null, shown: s, toCmux });
+    this.select(key);
   }
 
   async open(p: Page): Promise<void> {
-    this.page = p;
-    this.toCmuxFn = p.toCmux ?? null;
-    this.place = { workspace: p.workspace, dir: p.dir };
+    this.enter({ workspace: p.workspace, dir: p.dir });
+    const t = this.tabs.find((x) => x.key === p.path);
+    if (t) {
+      t.page = p;
+      t.toCmux = p.toCmux ?? null;
+    } else this.tabs.push({ key: p.path, kind: kindOf(p.path), label: p.title, state: "", waiting: false, now: false, el: null, page: p, toCmux: p.toCmux ?? null });
+    this.select(p.path);
+  }
+
+  /** Open the sheet for a place: another place starts its tabs afresh. */
+  private enter(place: { workspace?: string; dir?: string }): void {
+    // The same workspace is the same place, however a caller names it.
+    const where = () => this.workspace() || this.dir();
+    const was = this.el.hidden ? null : where();
+    this.place = place;
+    if (was !== where()) this.reset();
     this.drawChat();
-    this.titleEl.textContent = p.title;
     this.say.textContent = "";
     this.el.hidden = false;
-    const server = await invoke<IntentServer>("intent_server");
-    if (this.page !== p) return;
-    if (!server.up || !server.origin) {
-      const n = document.createElement("p");
-      n.className = "note";
-      n.textContent = `The intent server is down (${server.reason ?? "no answer"}), so this page can't be shown here. Open in cmux may still work once it is back.`;
-      this.pageEl.replaceChildren(n);
+    this.syncTabs();
+  }
+
+  private drop(key: string): void {
+    const t = this.tabs.find((x) => x.key === key);
+    t?.el?.remove();
+    this.tabs = this.tabs.filter((x) => x.key !== key);
+  }
+
+  private reset(): void {
+    for (const t of this.tabs) if (t.key !== WAKE) t.el?.remove();
+    this.tabs = this.tabs.filter((t) => t.key === WAKE);
+    this.active = "";
+    this.back = "";
+  }
+
+  /** The tabs: the Wake, this workspace's open pages, then the rest opened here. */
+  private syncTabs(): void {
+    const ws = this.workspace();
+    const wake: Tab = this.tabs.find((t) => t.key === WAKE) ?? { key: WAKE, kind: WAKE, label: "Wake", state: "", waiting: false, now: false, el: null };
+    const live = this.pages
+      .filter((p) => p.ws === ws)
+      .map((p): Tab => {
+        const had = this.tabs.find((t) => t.key === p.path);
+        return {
+          key: p.path, kind: p.kind, label: p.label, state: p.state, waiting: p.waiting, now: true, el: had?.el ?? null,
+          page: had?.page ?? { path: p.path, title: p.label, workspace: ws }, toCmux: had?.toCmux ?? null,
+        };
+      });
+    // A page that left the list (answered, closed) keeps its tab while it is shown.
+    const rest = this.tabs.filter((t) => t.key !== WAKE && !live.some((l) => l.key === t.key) && (!t.now || t.key === this.active));
+    for (const t of this.tabs) if (t.key !== WAKE && !live.some((l) => l.key === t.key) && !rest.includes(t)) t.el?.remove();
+    this.tabs = [wake, ...live, ...rest.map((t) => ({ ...t, waiting: false }))];
+    this.drawTabs();
+  }
+
+  private drawTabs(): void {
+    let n = 0;
+    this.tabsEl.replaceChildren(
+      ...this.tabs.map((t) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = `sheet-tab tk-${t.kind}` + (t.key === this.active ? " on" : "") + (t.waiting ? " waiting" : "");
+        b.setAttribute("role", "tab");
+        b.setAttribute("aria-selected", String(t.key === this.active));
+        const key = document.createElement("kbd");
+        key.textContent = t.key === WAKE ? "⌘E" : ++n <= 9 ? String(n) : "";
+        b.append(key);
+        if (t.key !== WAKE) {
+          const kind = document.createElement("span");
+          kind.className = "sheet-tab-kind";
+          kind.textContent = t.kind === "review" ? "lookout" : t.kind;
+          b.append(kind);
+        }
+        const name = document.createElement("span");
+        name.className = "sheet-tab-name";
+        name.textContent = t.label;
+        b.append(name);
+        if (t.state) {
+          const st = document.createElement("span");
+          st.className = "sheet-tab-state";
+          st.textContent = t.state;
+          b.append(st);
+        }
+        if (t.waiting) {
+          const dot = document.createElement("i");
+          dot.className = "sheet-tab-dot";
+          dot.setAttribute("aria-label", "waiting on you");
+          b.append(dot);
+        }
+        b.title = t.key === WAKE ? "This workspace's Wake (⌘E)" : `${t.label}${t.state ? " · " + t.state : ""}`;
+        b.addEventListener("click", () => this.select(t.key));
+        return b;
+      }),
+    );
+  }
+
+  /** ⌘E: the Wake, or back to the tab before it. */
+  private toggleWake(): void {
+    if (this.active === WAKE) {
+      const back = this.tabs.find((t) => t.key === this.back) ?? this.tabs.find((t) => t.key !== WAKE);
+      if (back) this.select(back.key);
+    } else this.select(WAKE);
+  }
+
+  private step(by: number): void {
+    if (!this.tabs.length) return;
+    const i = Math.max(0, this.tabs.findIndex((t) => t.key === this.active));
+    this.select(this.tabs[(i + by + this.tabs.length) % this.tabs.length].key);
+  }
+
+  private select(key: string): void {
+    const t = this.tabs.find((x) => x.key === key);
+    if (!t) return;
+    if (key === WAKE && this.active && this.active !== WAKE) this.back = this.active;
+    this.active = key;
+    this.page = t.page ?? null;
+    this.toCmuxFn = t.toCmux ?? null;
+    this.titleEl.textContent = t.key === WAKE ? `the wake · ${this.dir().split("/").pop() ?? ""}` : t.label;
+    this.say.textContent = "";
+    // A page that could not load (the server was down) tries again.
+    if (t.el?.dataset.failed) {
+      t.el.remove();
+      t.el = null;
+    }
+    if (!t.el) this.build(t);
+    for (const x of this.tabs) if (x.el) x.el.hidden = x.key !== key;
+    if (key === WAKE) this.wakeView().showDir(this.dir());
+    this.drawTabs();
+  }
+
+  private wakeView(): Wake {
+    if (!this.wake) {
+      const root = document.createElement("div");
+      root.className = "sheet-wake";
+      this.wake = new Wake(root, { embedded: true });
+      void this.wake.start();
+      this.stack.append(root);
+    }
+    const t = this.tabs.find((x) => x.key === WAKE);
+    if (t) t.el = this.wake.root;
+    return this.wake;
+  }
+
+  /** Make a tab's content: the Wake, a framed page, or a file shown here. */
+  private build(t: Tab): void {
+    if (t.key === WAKE) {
+      this.wakeView();
       return;
     }
-    const frame = document.createElement("iframe");
-    frame.src = server.origin + p.path;
-    frame.title = p.title;
-    this.pageEl.replaceChildren(frame);
+    const box = document.createElement("div");
+    box.className = "sheet-pane";
+    t.el = box;
+    this.stack.append(box);
+    const s = t.shown;
+    if (s) {
+      if (s.kind === "image") {
+        const img = document.createElement("img");
+        img.className = "sheet-img";
+        img.alt = s.title;
+        img.src = s.data;
+        const ib = document.createElement("div");
+        ib.className = "sheet-imgbox";
+        ib.append(img);
+        box.append(ib);
+      } else {
+        const frame = document.createElement("iframe");
+        frame.title = s.title;
+        if (s.kind === "html") {
+          // No scripts, no forms, no top navigation: a page to look at.
+          frame.setAttribute("sandbox", "");
+          const bin = atob(s.data.slice(s.data.indexOf(",") + 1));
+          frame.srcdoc = new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
+        } else frame.src = s.data;
+        box.append(frame);
+      }
+      return;
+    }
+    const frame = (origin: string) => {
+      const f = document.createElement("iframe");
+      f.src = origin + t.key;
+      f.title = t.label;
+      box.append(f);
+    };
+    if (this.origin) return frame(this.origin);
+    void invoke<IntentServer>("intent_server").then((server) => {
+      if (!server.up || !server.origin) {
+        const n = document.createElement("p");
+        n.className = "note";
+        n.textContent = `The intent server is down (${server.reason ?? "no answer"}), so this page can't be shown here. Open in cmux may still work once it is back.`;
+        box.append(n);
+        box.dataset.failed = "1";
+        return;
+      }
+      this.origin = server.origin;
+      frame(server.origin);
+    });
   }
 
   close(): void {
     this.el.hidden = true;
     this.page = null;
     this.toCmuxFn = null;
+    this.reset();
     this.place = {};
-    this.pageEl.replaceChildren();
   }
 
   private async toCmux(): Promise<void> {
@@ -308,6 +539,10 @@ export class Sheet {
       this.say.textContent = String(e);
     }
   }
+}
+
+function kindOf(path: string): string {
+  return path.startsWith("/review/") ? "review" : path.startsWith("/ask/") ? "ask" : path.startsWith("/plan/") ? "plan" : "page";
 }
 
 export function openInCmux(p: Page): Promise<void> {
