@@ -77,24 +77,32 @@ fn plan_answer_at(state_dir: &Path, ws: &str, n: u32) -> Result<(String, String,
 /// Answer the open question in `ws` with option `n`. `live` says whether a
 /// surface is a running terminal now. Ok carries what the screen showed.
 pub fn answer(state_dir: &Path, ws: &str, n: u32, runner: &dyn Runner, live: &dyn Fn(&str) -> bool) -> Result<String, String> {
-    let mut answered = ANSWERED.lock().unwrap_or_else(|p| p.into_inner());
-    // Re-read under the lock: a second press finds the first one's answer.
-    let (surface, label, at) = plan_answer_at(state_dir, ws, n)?;
-    let id = (ws.to_ascii_uppercase(), at);
-    if answered.contains(&id) {
-        return Err("already answered from here".into());
-    }
+    // Claim the ask under the lock, then deliver without it: one ask is
+    // answered once, and another agent's answer need not wait on this one's
+    // screen checks.
+    let (surface, label, id) = {
+        let mut answered = ANSWERED.lock().unwrap_or_else(|p| p.into_inner());
+        let (surface, label, at) = plan_answer_at(state_dir, ws, n)?;
+        let id = (ws.to_ascii_uppercase(), at);
+        if answered.contains(&id) {
+            return Err("already answered from here".into());
+        }
+        answered.push(id.clone());
+        let keep = answered.len().saturating_sub(64);
+        answered.drain(..keep);
+        (surface, label, id)
+    };
+    let release = || ANSWERED.lock().unwrap_or_else(|p| p.into_inner()).retain(|x| *x != id);
     if !live(&surface) {
+        release();
         return Err("that pane is gone".into());
     }
     match deliver(&surface, n, &label, runner) {
-        (true, detail) => {
-            answered.push(id);
-            let keep = answered.len().saturating_sub(64);
-            answered.drain(..keep);
-            Ok(detail)
+        (true, detail) => Ok(detail),
+        (false, detail) => {
+            release(); // not typed: the person may try again
+            Err(detail)
         }
-        (false, detail) => Err(detail),
     }
 }
 
@@ -168,6 +176,9 @@ mod tests {
         let err = answer(&d, WS, 1, &other, &|_| true).unwrap_err();
         assert!(err.contains("not showing this question"), "{err}");
         assert!(other.sent.borrow().is_empty());
+        // Nothing was typed, so the same ask can be tried again once it shows.
+        let back = Screen { before: "Pick a colour\n❯ 1. Red\n  2. Blue".into(), after: "  → Red".into(), sent: RefCell::default() };
+        assert!(answer(&d, WS, 1, &back, &|_| true).unwrap().contains("delivered 1"));
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -702,7 +702,9 @@ pub fn main(args: &[String]) -> i32 {
         }
         "stop" => stop(&mut h),
         "end" => {
-            let _ = std::fs::remove_file(h.question_file());
+            // The session is over: nothing it asked waits any more.
+            let _ = std::fs::remove_file(h.state.join(format!("asked-{}", h.ws)));
+            h.question_clear();
             h.history("ended", "end");
             h.lane_release();
             h.cli(&["clear-status", "claude"]);

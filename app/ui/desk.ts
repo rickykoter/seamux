@@ -167,7 +167,9 @@ export class Desk {
   private draw(force = false): void {
     const at = document.activeElement;
     const typing = (at instanceof HTMLInputElement || at instanceof HTMLTextAreaElement) && this.root.contains(at);
-    const shape = JSON.stringify([this.frame, this.tiles.map((t) => [t.workspace, t.workspace_title, t.color, t.state]), this.recording, this.selected]);
+    // Only what Desk shows: the lanes and history change every minute.
+    const shown = [this.frame.decisions, this.frame.wake.slice(0, 40), this.frame.problems];
+    const shape = JSON.stringify([shown, this.tiles.map((t) => [t.workspace, t.workspace_title, t.color, t.state]), this.recording, this.selected]);
     if (typing || (!force && shape === this.drawn)) {
       if (typing) at!.addEventListener("blur", () => setTimeout(() => this.draw(), 0), { once: true });
       return;

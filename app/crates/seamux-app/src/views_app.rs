@@ -36,13 +36,21 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
         // The panes last seen: the wall forgets its frame when an emit fails
         // (so it resends), and decisions must not vanish meanwhile.
         let mut tiles = Vec::new();
+        let mut pruned = std::time::Instant::now();
         loop {
             let now = history::now_ms();
             gaps().flush(feed.history_dir(), now);
+            if pruned.elapsed() >= Duration::from_secs(3600) {
+                let _ = history::prune(feed.history_dir(), now, history::KEEP_DAYS);
+                pruned = std::time::Instant::now();
+            }
             if let Some(f) = crate::wall_app::last_frame() {
                 tiles = f.tiles;
             }
-            let frame = feed.build(&tiles, now);
+            // The window moves in whole minutes: an open span's end and the
+            // window's start would otherwise change every build, and every
+            // frame would go out (and every view redraw) every two seconds.
+            let frame = feed.build(&tiles, now - now % 60_000);
             if sent.as_ref() != Some(&frame) {
                 *LAST.lock().unwrap() = Some(frame.clone());
                 match app.emit("views:frame", &frame) {

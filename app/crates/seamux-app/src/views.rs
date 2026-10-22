@@ -507,7 +507,9 @@ impl<T: Clone + Send + 'static> Slow<T> {
             st.busy = true;
             let (fetch, state) = (self.fetch.clone(), self.state.clone());
             std::thread::spawn(move || {
-                let r = fetch();
+                // A fetch that panics must not leave the source busy for good.
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fetch()))
+                    .unwrap_or_else(|_| Err("the source panicked; it is tried again".into()));
                 let mut st = state.lock().unwrap();
                 st.last = Some((Instant::now(), r));
                 st.busy = false;
@@ -620,7 +622,9 @@ impl Feed {
         }
         decisions.sort_by_key(|d| d.since());
         let start = now_ms.saturating_sub(HISTORY_WINDOW.as_millis() as u64);
-        let lanes = self.lanes(&panes, &plans, &live_reviews, start, now_ms);
+        // One read: a day back, so each lane knows its state at the window's start.
+        let recent = history::read_since(&self.history_dir, start.saturating_sub(24 * 3600 * 1000));
+        let lanes = self.lanes(&panes, &plans, &live_reviews, &recent, start, now_ms);
         let reviews = review_briefs(live_reviews);
 
         let wake = match self.wake.get() {
@@ -642,19 +646,17 @@ impl Feed {
             }
         };
 
-        let history = history::read_since(&self.history_dir, start).iter().map(Change::from).collect();
+        let history = recent.iter().filter(|e| e.at >= start).map(Change::from).collect();
         ViewsFrame { decisions, wake, history, plans, reviews, lanes, problems }
     }
 
     /// One lane per live workspace with an agent: its spans over the window
     /// and its marks (increments going and finishing, lookout reviews).
-    fn lanes(&self, panes: &Panes, plans: &[PlanBrief], reviews: &[(String, ReviewSummary)], start: u64, now: u64) -> Vec<Lane> {
-        // A day back, so the state at the window's start is known.
-        let all = history::read_since(&self.history_dir, start.saturating_sub(24 * 3600 * 1000));
+    fn lanes(&self, panes: &Panes, plans: &[PlanBrief], reviews: &[(String, ReviewSummary)], recent: &[Entry], start: u64, now: u64) -> Vec<Lane> {
         let mut by_ws: HashMap<String, Vec<Entry>> = HashMap::new();
-        for e in all {
+        for e in recent {
             if let Some(ws) = panes.live_ws(&e.ws) {
-                by_ws.entry(ws).or_default().push(e);
+                by_ws.entry(ws).or_default().push(e.clone());
             }
         }
         let mut wss: Vec<String> = panes.tiles.iter().filter(|t| t.agent.is_some()).map(|t| t.workspace.clone()).collect();

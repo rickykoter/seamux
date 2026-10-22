@@ -145,11 +145,13 @@ export class Timeline {
     name.append(el("b", "", this.title(l.ws)), el("span", `t-sub ${tile?.state ?? ""}`, sub));
     const track = el("div", "t-track");
     track.style.setProperty("--ws", this.color(l.ws));
-    for (const s of l.spans) {
+    for (const [i, s0] of l.spans.entries()) {
+      // The feed's clock moves in minutes: the run still going reaches now.
+      const s = i === l.spans.length - 1 && tile?.state === s0.state ? { ...s0, end: now } : s0;
       if (s.state !== "working" && s.state !== "needs_input") continue;
       // A wait the popover can answer is a button: keys and screen readers reach it.
       // The lane's last span is the wait still open (frames come only on change, so its end may lag now).
-      const open = s.state === "needs_input" && waiting && s === l.spans[l.spans.length - 1];
+      const open = s.state === "needs_input" && waiting && i === l.spans.length - 1;
       const b = open ? el("button", "t-span wait open") : el("span", `t-span ${s.state === "working" ? "work" : "wait"}`);
       b.style.left = `${pct(s.start, start, now)}%`;
       b.style.width = `${Math.max(0.4, pct(s.end, start, now) - pct(s.start, start, now))}%`;
