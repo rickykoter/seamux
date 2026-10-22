@@ -23,17 +23,16 @@ pub const WAKE_TAB: &str = "wake"; // the tab the Wake itself lives in
 pub const WAKE_LIMIT: usize = 2000; // rows per answer; the page says when it is cut
 const VIEW_IN_WAKE: [&str; 9] = [".html", ".htm", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf"];
 const BROWSER_HOSTS: [&str; 2] = ["claude.ai", "github.com"];
-pub const WAKE_SHARE: f64 = 0.8; // the least of the main area the Wake's split is widened to
 const ARTIFACTS_SLOT: &str = r#"<script id="boot" type="application/json">__BOOT__</script>"#;
 const PUBLISHABLE: [&str; 10] = [".html", ".htm", ".md", ".markdown", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"];
 const PUBLISH_KINDS: [&str; 4] = ["temp", "image", "doc", "file"];
 
-fn is_uuid_token(t: &str) -> bool {
+pub(crate) fn is_uuid_token(t: &str) -> bool {
     t.chars().count() == 36 && t.matches('-').count() == 4
 }
 
 /// A cmux call's stdout as JSON, with UUIDs for ids, or None.
-fn cmux_json(argv: &[&str]) -> Option<Value> {
+pub(crate) fn cmux_json(argv: &[&str]) -> Option<Value> {
     let c = crate::cmux_cli::client()?;
     let mut full = vec!["--id-format", "uuids"];
     full.extend_from_slice(argv);
@@ -46,7 +45,7 @@ fn cmux_json(argv: &[&str]) -> Option<Value> {
 
 /// (main-area width, panes with a frame) of a workspace. Dock panes carry a
 /// dock_scope and no frame; a workspace not on screen has no frames at all.
-fn main_panes(ws: &str) -> (f64, Vec<Value>) {
+pub(crate) fn main_panes(ws: &str) -> (f64, Vec<Value>) {
     let d = cmux_json(&["list-panes", "--workspace", ws, "--json"]).unwrap_or(Value::Null);
     let width = d.get("container_frame").and_then(|f| f.get("width")).and_then(Value::as_f64).unwrap_or(0.0);
     let panes = d.get("panes").and_then(Value::as_array).cloned().unwrap_or_default()
@@ -57,7 +56,7 @@ fn main_panes(ws: &str) -> (f64, Vec<Value>) {
     (width, panes)
 }
 
-fn pane_of<'a>(panes: &'a [Value], sid: &str) -> Option<&'a Value> {
+pub(crate) fn pane_of<'a>(panes: &'a [Value], sid: &str) -> Option<&'a Value> {
     if sid.is_empty() {
         return None;
     }
@@ -65,13 +64,13 @@ fn pane_of<'a>(panes: &'a [Value], sid: &str) -> Option<&'a Value> {
         .map(|ids| ids.iter().any(|i| i.as_str() == Some(sid))).unwrap_or(false))
 }
 
-fn frame(p: &Value, k: &str) -> f64 {
+pub(crate) fn frame(p: &Value, k: &str) -> f64 {
     p.get("pixel_frame").and_then(|f| f.get(k)).and_then(Value::as_f64).unwrap_or(0.0)
 }
 
 /// probe() until it answers, for up to `timeout`: cmux applies a select, a
 /// new pane and a resize after it has answered the call.
-fn settle<T: Default + PartialEq>(mut probe: impl FnMut() -> T, timeout: Duration) -> T {
+pub(crate) fn settle<T: Default + PartialEq>(mut probe: impl FnMut() -> T, timeout: Duration) -> T {
     let end = Instant::now() + timeout;
     loop {
         let got = probe();
@@ -82,44 +81,9 @@ fn settle<T: Default + PartialEq>(mut probe: impl FnMut() -> T, timeout: Duratio
     }
 }
 
-fn frame_width(ws: &str, sid: &str) -> f64 {
+pub(crate) fn frame_width(ws: &str, sid: &str) -> f64 {
     let (_, panes) = main_panes(ws);
     pane_of(&panes, sid).map(|p| frame(p, "width")).unwrap_or(0.0)
-}
-
-/// Widen the pane holding sid to WAKE_SHARE of the main area, never
-/// narrower than it is. resize-pane moves one divider and does not pass the
-/// rest on, so once the pane's own left edge is spent the pane beside it
-/// moves its edge, nearest first. A pass that moves nothing ends it.
-fn widen(ws: &str, sid: &str) {
-    settle(|| frame_width(ws, sid), Duration::from_millis(1500));
-    for _ in 0..6 {
-        let (width, panes) = main_panes(ws);
-        let Some(me) = pane_of(&panes, sid) else { return };
-        if width == 0.0 {
-            return;
-        }
-        let w = frame(me, "width");
-        let need = (WAKE_SHARE * width - w) as i64;
-        if need < 8 {
-            return;
-        }
-        let x = frame(me, "x");
-        let mut beside: Vec<&Value> = panes.iter().filter(|p| { let px = frame(p, "x"); 0.0 < px && px < x }).collect();
-        beside.sort_by(|a, b| frame(b, "x").partial_cmp(&frame(a, "x")).unwrap_or(std::cmp::Ordering::Equal));
-        let mut moved = false;
-        for p in std::iter::once(me).chain(beside) {
-            let id = p.get("id").map(crate::pyval::py_str).unwrap_or_default();
-            cmux_ok(&["resize-pane", "--pane", &id, "--workspace", ws, "-L", "--amount", &need.to_string()]);
-            if settle(|| frame_width(ws, sid) > w + 1.0, Duration::from_millis(600)) {
-                moved = true;
-                break;
-            }
-        }
-        if !moved {
-            return;
-        }
-    }
 }
 
 /// Its own namespace, one file per workspace; no ws is the single file an
@@ -128,11 +92,11 @@ pub fn keep_path(name: &str, ws: &str) -> std::path::PathBuf {
     state_dir().join(format!("wake-surface-{name}{}", if ws.is_empty() { String::new() } else { format!("-{ws}") }))
 }
 
-fn read_keep(name: &str, ws: &str) -> String {
+pub(crate) fn read_keep(name: &str, ws: &str) -> String {
     std::fs::read_to_string(keep_path(name, ws)).map(|s| s.trim().to_string()).unwrap_or_default()
 }
 
-fn write_keep(name: &str, ws: &str, sid: &str) {
+pub(crate) fn write_keep(name: &str, ws: &str, sid: &str) {
     let _ = std::fs::create_dir_all(state_dir());
     let _ = std::fs::write(keep_path(name, ws), format!("{sid}\n"));
 }
@@ -164,7 +128,7 @@ fn adopt_legacy(ws: &str) {
 }
 
 /// The workspace in front, from tree's "active".
-fn front() -> String {
+pub(crate) fn front() -> String {
     cmux_json(&["tree", "--json"]).as_ref()
         .and_then(|t| t.get("active")).and_then(|a| a.get("workspace_id"))
         .map(crate::pyval::str_or_empty).unwrap_or_default()
@@ -193,45 +157,13 @@ pub fn wake_tab(keep_name: &str, url: &str, select: &str) -> (bool, String) {
         return (false, "cmux did not say which workspace is in front".into());
     }
     adopt_legacy(&ws);
-    let (_, panes) = main_panes(&ws);
-    let group = pane_of(&panes, &read_keep(WAKE_TAB, &ws)).or_else(|| pane_of(&panes, &read_keep(WAKE_VIEW, &ws))).cloned();
-    let sid = read_keep(keep_name, &ws);
-    if let Some(g) = &group {
-        let has = g.get("surface_ids").and_then(Value::as_array).map(|ids| ids.iter().any(|i| i.as_str() == Some(sid.as_str()))).unwrap_or(false);
-        if has && !sid.is_empty() {
-            cmux_ok(&["browser", "--surface", &sid, "goto", url]);
-            cmux_ok(&["focus-panel", "--panel", &sid, "--workspace", &ws]);
-            widen(&ws, &sid);
-            return (true, format!("focused {sid}"));
-        }
+    // The Wake and what it opens are tabs in the workspace's companion
+    // (companion.rs): one pane beside the chat, at its share, not a split of
+    // their own. Opened by a click, so the page takes the keyboard.
+    match crate::companion::open(url, keep_name, &ws, "", true) {
+        Ok(sid) => (true, format!("focused {sid}")),
+        Err(e) => (false, e),
     }
-    let argv: Vec<String> = match &group {
-        Some(g) => {
-            let id = g.get("id").map(crate::pyval::py_str).unwrap_or_default();
-            ["new-surface", "--type", "browser", "--pane", &id, "--workspace", &ws, "--url", url].iter().map(|s| s.to_string()).collect()
-        }
-        None => {
-            // A new split at the right edge, cut from the rightmost pane:
-            // new-pane splits whichever pane is focused.
-            let right = panes.iter().max_by(|a, b| (frame(a, "x") + frame(a, "width"))
-                .partial_cmp(&(frame(b, "x") + frame(b, "width"))).unwrap_or(std::cmp::Ordering::Equal));
-            if let Some(sel) = right.and_then(|r| r.get("selected_surface_id")).map(crate::pyval::str_or_empty).filter(|s| !s.is_empty()) {
-                cmux_ok(&["focus-panel", "--panel", &sel, "--workspace", &ws]);
-            }
-            ["new-pane", "--type", "browser", "--direction", "right", "--workspace", &ws, "--url", url].iter().map(|s| s.to_string()).collect()
-        }
-    };
-    let mut full: Vec<&str> = vec!["--id-format", "uuids"];
-    full.extend(argv.iter().map(String::as_str));
-    let (rc, out) = cmux_out(&full);
-    let new = if rc == 0 { out.split_whitespace().find(|t| is_uuid_token(t)).unwrap_or("").to_string() } else { String::new() };
-    if new.is_empty() {
-        return (false, format!("could not open the Wake's split: {}", out.trim().chars().take(160).collect::<String>()));
-    }
-    write_keep(keep_name, &ws, &new);
-    cmux_ok(&["focus-panel", "--panel", &new, "--workspace", &ws]);
-    widen(&ws, &new);
-    (true, url.to_string())
 }
 
 /// A claude.ai or GitHub URL in the default browser; nothing else.

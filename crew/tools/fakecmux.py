@@ -33,7 +33,7 @@ the Wake's split (crew-board-intent _wake_tab):
     workspace select W                   W becomes ws
     tree --json                          "active" names that ws (and no windows)
     list-panes --json                    a frame per pane, the Dock pane unframed
-    resize-pane --pane P -L --amount N   moves the divider of the nearest split
+    resize-pane --pane P -L|-R --amount N   moves the divider of the nearest split
                                          holding P on its right side, and no
                                          other; the left side keeps MIN points
     new-pane --direction right           splits the focused surface's pane
@@ -198,6 +198,18 @@ def panes_cmd():
                 aw = max(MIN, w * node["ratio"] - amount)
                 node["ratio"] = min(node["ratio"], aw / w)
                 break
+            if side == "a" and "-R" in args:
+                # As cmux: the left-hand pane's right border moves right, so
+                # it grows and its right neighbour narrows. A pane with no
+                # border to its right is refused below.
+                w = width_of(t, st["width"], node)
+                aw = min(w - MIN, w * node["ratio"] + amount)
+                node["ratio"] = max(node["ratio"], aw / w)
+                break
+        else:
+            if "-R" in args:
+                print("Error: invalid_state: Pane has no adjacent border in direction right", file=sys.stderr)
+                sys.exit(1)
         save()
         print("OK " + o["--pane"])
     elif args[:1] == ["new-pane"]:
