@@ -189,6 +189,18 @@ pub fn open_plan(slug: &str, port: u16) -> (bool, String) {
     dock_tab(slug, &format!("http://127.0.0.1:{port}/plan/{slug}"))
 }
 
+/// A plan beside its workspace's chat, in the companion, when the row names
+/// the workspace; the Dock otherwise (a row with no workspace).
+pub fn open_plan_in(slug: &str, port: u16, wsid: &str) -> (bool, String) {
+    if !crate::plans::uuid_ok(wsid) {
+        return open_plan(slug, port);
+    }
+    match crate::companion::open(&format!("http://127.0.0.1:{port}/plan/{slug}"), &format!("plan-{slug}"), wsid, "", true) {
+        Ok(sid) => (true, format!("focused {sid}")),
+        Err(e) => (false, e),
+    }
+}
+
 /// An ask in the Dock: one tab per workspace, navigated in place.
 pub fn open_ask(ask_id: &str, port: u16, wsid: &str) -> (bool, String) {
     let key = format!("ask-{}", if wsid.is_empty() { "any" } else { wsid });
@@ -368,7 +380,7 @@ pub fn act(action: &str, row: &Map<String, Value>, extra: &str) -> (bool, String
                 return (false, format!("no plan page for {slug}"));
             }
             match current() {
-                Some((port, _)) => open_plan(&slug, port),
+                Some((port, _)) => open_plan_in(&slug, port, &wsid),
                 None => (false, "intent server not answering".into()),
             }
         }

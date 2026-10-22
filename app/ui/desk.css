@@ -109,3 +109,18 @@
   .desk { grid-template-columns: minmax(0, 1fr); }
   .desk-side { display: none; }
 }
+
+/* ---- families ---- */
+.chip.family { background: var(--chip-gate-bg); color: var(--chip-gate-fg); }
+.chip.fam { background: none; border: 1px solid var(--line); color: var(--muted); }
+.fam-head { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.fam-head b { color: var(--fg); }
+.fam-head .fam-roll { margin-left: 6px; }
+.fam-mark { width: 14px; height: 14px; fill: currentColor; }
+.fam-head.in-card { display: none; }
+.fam-member { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-top: 1px solid var(--line); }
+.fam-member:first-of-type { border-top: 0; }
+.fam-role { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); min-width: 44px; }
+.fam-state { font-size: 12px; color: var(--muted); }
+.fam-member.waiting .fam-state { color: var(--accent); }
+.fam-member.ready .fam-state { color: var(--good); }

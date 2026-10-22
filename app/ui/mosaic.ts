@@ -5,6 +5,7 @@ import { reflow } from "./reflow";
 import type { Frame as WallFrame, Tile } from "./wall";
 import { ago, WallView } from "./wall";
 import { levelOf, menu, toggle } from "./tuck";
+import { familyOf, grouped, header as familyHeader, waitText } from "./family";
 
 type PlanBrief = { ws: string; slug: string; phase: string; done: number; total: number; n: number; open: boolean; title: string };
 type ReviewBrief = { ws: string; id: string; plan: string; inc: number; open: number; addressed: number; closed: number; since: number };
@@ -139,7 +140,7 @@ export class Mosaic {
     if (this.expanded) return;
     const at = document.activeElement;
     const typing = at instanceof HTMLInputElement && this.grid.contains(at);
-    const shape = JSON.stringify([this.tiles, this.views.decisions, this.views.plans, this.views.reviews, this.views.wake.slice(0, 40), [...this.notes], this.views.levels ?? {}]);
+    const shape = JSON.stringify([this.tiles, this.views.decisions, this.views.plans, this.views.reviews, this.views.wake.slice(0, 40), [...this.notes], this.views.levels ?? {}, this.views.families ?? []]);
     if (typing || (!force && shape === this.drawn)) {
       if (typing) at!.addEventListener("blur", () => setTimeout(() => this.draw(), 0), { once: true });
       return;
@@ -150,7 +151,15 @@ export class Mosaic {
     const ranked = order(this.tiles.filter((t) => levelOf(lv, t.workspace) !== "tuck"));
     const shown = [...ranked.filter((t) => !levelOf(lv, t.workspace)), ...ranked.filter((t) => levelOf(lv, t.workspace) === "mute")];
     const shells = this.tiles.filter((t) => t.state === "shell" && levelOf(lv, t.workspace) !== "tuck").length;
-    const els = shown.map((t) => this.tile(t));
+    // A family's tiles sit together under its header, where its first tile falls.
+    const fams = this.views.families;
+    const els: HTMLElement[] = grouped(shown, (t) => familyOf(fams, t.workspace)?.fam.parent ?? "").flatMap((g) => {
+      const tiles = g.items.map((t) => this.tile(t));
+      const fam = g.key ? fams?.find((f) => f.parent === g.key) : undefined;
+      return fam ? [familyHeader(fam, "fam-head m-fam"), ...tiles] : tiles;
+    });
+    // Dense packing would pull later tiles above a family's header.
+    this.grid.classList.toggle("has-fam", els.some((e) => e.classList.contains("m-fam")));
     if (shells) {
       const s = el("div", "m-tile small folded", `+ ${shells} terminal${shells === 1 ? "" : "s"}`);
       els.push(s);
@@ -206,6 +215,10 @@ export class Mosaic {
     if (t.state === "needs_input") state.textContent = `${d?.kind === "question" ? "question" : "needs you"} · ${ago(Date.now() - this.since(t))}`;
     else if (t.state === "working") state.textContent = `working · ${ago(Date.now() - this.since(t))}`;
     else state.textContent = t.state === "ended" ? "ended" : "idle";
+    // A child waiting on its parent says so, rather than looking idle.
+    const kin = familyOf(this.views.families, t.workspace);
+    const waits = kin ? waitText(kin.fam, kin.member) : "";
+    if (waits && t.state !== "needs_input") state.textContent = waits;
     if (level === "mute") state.textContent += " · muted";
     head.append(state, el("span", "grow"), menu(t.workspace, name, level));
     if (plan && size !== "small") head.append(el("span", "m-plan", plan.phase === "done" ? `plan done · ${plan.done}/${plan.total}` : `inc ${plan.n}/${plan.total}`));
