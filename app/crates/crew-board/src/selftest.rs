@@ -293,8 +293,11 @@ pub fn run() -> i32 {
         write("b", "SURF-1");
         let f = fake("  1. a\n  2. b\n❯ 3. c\n", PROMPT);
         let (ok, delivered, detail) = ask::answer(aid, "2", &f);
+        // It looks again after typing, a few times, before giving up.
+        let mut want = vec!["read-screen", "send"];
+        want.extend(std::iter::repeat_n("read-screen", ask::CONFIRM_TRIES as usize + 1));
         t.check("unconfirmed: recorded, no Enter sent, the human is told",
-                ok && !delivered && *f.calls.borrow() == ["read-screen", "send", "read-screen"] && detail.contains("check the terminal"), &detail);
+                ok && !delivered && *f.calls.borrow() == want && detail.contains("check the terminal"), &detail);
 
         write("b", "SURF-1");
         let f = fake("", "  1. red\n❯ 2. green\n");
