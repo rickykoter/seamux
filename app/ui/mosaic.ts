@@ -5,6 +5,7 @@ import { reflow } from "./reflow";
 import type { Frame as WallFrame, Tile } from "./wall";
 import { ago, WallView } from "./wall";
 import { levelOf, menu, toggle } from "./tuck";
+import { primeTheme } from "./term";
 import { familyOf, grouped, header as familyHeader, waitText } from "./family";
 
 type PlanBrief = { ws: string; slug: string; phase: string; done: number; total: number; n: number; open: boolean; title: string };
@@ -108,6 +109,8 @@ export class Mosaic {
 
   private setTiles(t: Tile[]): void {
     this.tiles = t;
+    // The tiles' text wears the terminal's theme from the first frame on.
+    primeTheme(t.find((x) => x.surface)?.surface ?? "");
     this.draw();
   }
 

@@ -20,9 +20,10 @@ Statuses: `open`, `fixed (inc N): what was seen`, `follow-up`.
 
 | # | View | Steps | What happens | Should | Code | How found | Status |
 |---|------|-------|--------------|--------|------|-----------|--------|
-| T4 | Mosaic, opened pane | Open a tile | The pane shows as re-flowed text from `read_text`, with no cursor or colours, and you can't type into it | The same live terminal as the sheet, with the text as its fallback | `app/ui/wall.ts:253` | code | open |
-| T5 | sheet fallback, wall preview, Mosaic tile | Compare one agent across views | The text is 11.5px in the app's `--term` colours; the live terminal is 12px in the pane's own theme and padding | One font size, padding and theme everywhere a pane is drawn | `app/ui/index.html:130`, `app/ui/wall.css:88`, `app/ui/mosaic.css:48` | code | open |
+| T4 | Mosaic, opened pane | Open a tile | The pane shows as re-flowed text from `read_text`, with no cursor or colours, and you can't type into it | The same live terminal as the sheet, with the text as its fallback | `app/ui/wall.ts:253` | code | fixed (inc 3): the opened pane shows the live terminal (55 rows), its text hidden; keys and the wheel reached the pane |
+| T5 | sheet fallback, wall preview, Mosaic tile | Compare one agent across views | The text is 11.5px in the app's `--term` colours; the live terminal is 12px in the pane's own theme and padding | One font size, padding and theme everywhere a pane is drawn | `app/ui/index.html:130`, `app/ui/wall.css:88`, `app/ui/mosaic.css:48` | code | fixed (inc 3): sheet, Desk and Mosaic pane all 12px/15px, 8px padding, rgb(39,49,54) on rgb(242,255,252); a tile's text wears the same |
 | T6 | Desk card | Open a card's terminal | A fixed 340px box, whatever the window's height | Sized like the sheet's terminal and resizable (increment 4) | `app/ui/desk.css:132` | code | open |
+| T7 | sheet, Desk card, Mosaic pane | Look at a wide pane (165 columns) in a half-width view without clicking it | Unfocused, the terminal shrinks to fit the pane's own width, down to 8px; it is held at 12px only once focused | Readable unfocused too. But holding the pane whenever it's shown would resize it in cmux just for looking, which the live-terminal plan ruled out | `app/ui/term.ts` `scale()` | harness screenshot | follow-up |
 
 ## Resize zones (increment 4)
 

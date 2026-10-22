@@ -182,6 +182,8 @@ export class Term {
   /** Mirror `surface` (a cmux surface id); "" stops. */
   show(surface: string): void {
     if (surface === this.surface) return;
+    // Keys typed for one pane must never land in another.
+    if (document.activeElement === this.el) this.el.blur();
     this.release();
     this.surface = surface;
     this.drawnOnce = false;
@@ -206,8 +208,11 @@ export class Term {
     if (!this.surface) return;
     // Faster while typing into it, slower when only watched, idle off screen.
     const next = document.activeElement === this.el ? 70 : 160;
-    this.timer = window.setTimeout(() => this.tick(), this.visible() ? next : 600);
-    if (!this.visible() || this.busy || document.hidden) return;
+    // In trouble the terminal is hidden behind its fallback; it keeps asking
+    // (slowly) while that fallback is on screen, so it can come back.
+    const shown = this.visible() || (this.failures >= 3 && this.el.isConnected && (this.el.parentElement?.offsetParent ?? null) !== null);
+    this.timer = window.setTimeout(() => this.tick(), this.visible() ? next : this.failures >= 3 && shown ? 1000 : 600);
+    if (!shown || this.busy || document.hidden) return;
     this.busy = true;
     const surface = this.surface;
     invoke<Frame | null>("term_frame", { surfaceId: surface, seen: this.stamp })
@@ -233,6 +238,7 @@ export class Term {
     this.el.style.setProperty("--t-bg", theme.background ?? "#1e1e1e");
     this.el.style.setProperty("--t-fg", theme.foreground ?? "#ddd");
     this.el.style.setProperty("--t-cursor", theme.cursor ?? theme.foreground ?? "#ddd");
+    paneTheme(theme);
     this.cols = f.columns;
     this.rows = f.rows;
     this.scale();
@@ -374,6 +380,24 @@ export class Term {
     this.status.textContent = text;
     this.status.hidden = !text;
   }
+}
+
+/** cmux's terminal theme, app-wide: every text drawing of a pane (Mosaic's
+ *  tiles, the fallbacks) wears the colours the live terminal does. */
+function paneTheme(theme: Grid["terminal_theme"]): void {
+  const root = document.documentElement.style;
+  if (theme?.background && root.getPropertyValue("--pane-bg") !== theme.background) root.setProperty("--pane-bg", theme.background);
+  if (theme?.foreground && root.getPropertyValue("--pane-fg") !== theme.foreground) root.setProperty("--pane-fg", theme.foreground);
+}
+
+let primed = false;
+/** Fetch the theme once from any pane, before a live terminal is shown. */
+export function primeTheme(surface: string): void {
+  if (primed || !surface) return;
+  primed = true;
+  invoke<Frame | null>("term_frame", { surfaceId: surface, seen: "" })
+    .then((f) => (f ? paneTheme(f.grid.terminal_theme) : (primed = false)))
+    .catch(() => (primed = false));
 }
 
 /** `n` rows of cells from spans that arrive by row and column; the gaps

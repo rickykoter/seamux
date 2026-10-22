@@ -45,7 +45,8 @@
 .m-bar span.now { background: var(--accent); }
 
 .m-tail {
-  flex: 1; min-height: 0; overflow: hidden; font: 11.5px/1.45 ui-monospace, Menlo, monospace; color: var(--term-fg);
+  flex: 1; min-height: 0; overflow: hidden; font: var(--term-font); color: var(--pane-fg-or);
+  background: var(--pane-bg-or); border-radius: 7px; padding: 6px var(--term-pad);
   display: flex; flex-direction: column; justify-content: flex-end;
   /* The oldest line fades out at the top rather than being cut through. */
   -webkit-mask-image: linear-gradient(to bottom, transparent, #000 2.2em);
