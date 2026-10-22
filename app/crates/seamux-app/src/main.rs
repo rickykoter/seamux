@@ -5,6 +5,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod desk_app;
+mod review_app;
 mod shell;
 mod term_app;
 mod tuck_app;
@@ -136,6 +137,7 @@ fn main() {
             shell::install(app)?;
             wall_app::start(app.handle().clone());
             views_app::start(app.handle().clone());
+            review_app::start(app.handle().clone());
             term_app::restore_at_start();
             Ok(())
         })
@@ -147,6 +149,17 @@ fn main() {
             wall_app::wall_frame,
             wall_app::wall_reply,
             wall_app::wall_jump,
+            wall_app::workspace_sessions,
+            wall_app::session_resume,
+            wall_app::desk_cleanup_plan,
+            wall_app::desk_cleanup_run,
+            review_app::review_jobs,
+            review_app::review_start,
+            review_app::review_findings,
+            review_app::review_fix,
+            review_app::review_post,
+            review_app::review_push,
+            review_app::review_remove,
             term_app::term_frame,
             term_app::term_input,
             term_app::term_key,

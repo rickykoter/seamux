@@ -237,7 +237,14 @@ pub struct Wall {
     pub interval: Duration,
     state: Mutex<State>,
     pulled: Mutex<HashMap<String, Instant>>,
+    /// Where an agent's state comes from when cmux says `unknown`: surface
+    /// UUID (upper case) to the last state recorded for it, or `shell` when
+    /// its process is gone.
+    hint: Mutex<Option<StateHint>>,
 }
+
+/// See `Wall::hint`.
+pub type StateHint = Box<dyn Fn() -> HashMap<String, String> + Send + Sync>;
 
 impl Wall {
     /// `pool` holds one source per parallel reader; at least one.
@@ -250,7 +257,13 @@ impl Wall {
     /// As `new`, with a separate source for reply and jump.
     pub fn with_actions(pool: Vec<Arc<dyn Source>>, actions: Arc<dyn Source>, interval: Duration) -> Wall {
         assert!(!pool.is_empty(), "the wall needs a source");
-        Wall { pool, actions, interval, state: Mutex::new(State::default()), pulled: Mutex::default() }
+        Wall { pool, actions, interval, state: Mutex::new(State::default()), pulled: Mutex::default(), hint: Mutex::default() }
+    }
+
+    /// Fill an agent's `unknown` state (cmux has no lifecycle hooks from that
+    /// session) from `hint`, which is asked once per poll and only then.
+    pub fn set_state_hint(&self, hint: StateHint) {
+        *self.hint.lock().unwrap() = Some(hint);
     }
 
     /// Forget the last frame sent, so the next poll sends it again (the page
@@ -276,10 +289,11 @@ impl Wall {
         let listing = self.pool[0].workspaces().ok();
         let titles = listing.as_ref().map(titles);
         let colors = listing.as_ref().map(colors);
-        let terms = match &listed {
+        let mut terms = match &listed {
             Ok(v) => terminals(v),
             Err(_) => self.state.lock().unwrap().terms.clone(),
         };
+        self.apply_hint(&mut terms);
         let reads = self.read_all(&terms);
         let mut st = self.state.lock().unwrap();
         st.error = listed.err().map(|e| e.to_string());
@@ -292,6 +306,24 @@ impl Wall {
         st.terms = terms;
         st.text = reads;
         self.frame_if_changed(&mut st)
+    }
+
+    fn apply_hint(&self, terms: &mut [Terminal]) {
+        if !terms.iter().any(|t| t.agent.is_some() && t.state == "unknown") {
+            return;
+        }
+        let guard = self.hint.lock().unwrap();
+        let Some(hint) = guard.as_ref() else { return };
+        let known = hint();
+        for t in terms.iter_mut().filter(|t| t.agent.is_some() && t.state == "unknown") {
+            if let Some(s) = known.get(&t.surface.to_uppercase()) {
+                if s == "shell" {
+                    // The agent's process is gone; what is left is a terminal.
+                    t.agent = None;
+                }
+                t.state = s.clone();
+            }
+        }
     }
 
     /// Re-read one surface now (an event named it). Returns the frame when
@@ -420,6 +452,24 @@ impl Wall {
         self.actions.send_raw(&t.surface, &format!("{line}\r")).map_err(|e| e.to_string())
     }
 
+    /// Put Claude session `session` in the pane: where no Claude process
+    /// runs, start it (`claude --resume`, from the session's own directory,
+    /// which is where Claude looks for it); in a Claude that is not mid-turn,
+    /// `/resume`. `claude_alive` is whether cmux's record for this pane has a
+    /// live process: its agent list outlives the process (a cmux restart),
+    /// so the list alone cannot say a shell prompt is not a shell.
+    pub fn resume(&self, surface: &str, session: &str, cwd: &str, claude_alive: bool) -> Result<(), String> {
+        let t = self.live(surface)?;
+        if !claude_alive && t.agent.as_deref().is_some_and(|a| a != "claude") && t.state != "ended" {
+            return Err(format!("{} runs {}, not Claude", t.surface, t.agent.as_deref().unwrap_or("an agent")));
+        }
+        if claude_alive && t.state == "working" {
+            return Err("Claude is mid-turn here; swap when it is idle".into());
+        }
+        let line = resume_line(session, cwd, claude_alive)?;
+        self.actions.send_raw(&t.surface, &format!("{line}\r")).map_err(|e| e.to_string())
+    }
+
     /// Bring the pane to the front in cmux: its workspace, then the pane.
     pub fn jump(&self, surface: &str) -> Result<(), String> {
         let t = self.live(surface)?;
@@ -486,9 +536,38 @@ pub fn reply_line(text: &str) -> Result<String, String> {
     Ok(line)
 }
 
+/// The line that puts `session` in a pane. The id must be a UUID and the
+/// directory free of control characters: both end up on a command line.
+pub fn resume_line(session: &str, cwd: &str, in_agent: bool) -> Result<String, String> {
+    if !cmux::is_uuid(session) {
+        return Err(format!("{session:?} is not a session id"));
+    }
+    if in_agent {
+        return Ok(format!("/resume {session}"));
+    }
+    if cwd.chars().any(char::is_control) {
+        return Err("the session's directory has control characters".into());
+    }
+    let resume = format!("claude --resume {session}");
+    if cwd.is_empty() {
+        return Ok(resume);
+    }
+    Ok(format!("cd '{}' && {resume}", cwd.replace('\'', "'\\''")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resume_line_starts_in_a_shell_and_swaps_in_an_agent() {
+        let id = "4d1720f1-de6f-498e-b58e-cc8b66b09027";
+        assert_eq!(resume_line(id, "/a b/it's", false).unwrap(), format!("cd '/a b/it'\\''s' && claude --resume {id}"));
+        assert_eq!(resume_line(id, "", false).unwrap(), format!("claude --resume {id}"));
+        assert_eq!(resume_line(id, "/x", true).unwrap(), format!("/resume {id}"));
+        assert!(resume_line("x; rm -rf ~", "/x", false).is_err());
+        assert!(resume_line(id, "/x\n", false).is_err());
+    }
 
     #[test]
     fn terminals_skip_browsers_and_bad_ids() {

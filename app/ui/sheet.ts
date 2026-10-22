@@ -4,6 +4,7 @@ import { reflow } from "./reflow";
 import type { Frame as WallFrame, Tile } from "./wall";
 import { Wake } from "./wake";
 import { Term } from "./term";
+import { familyOf, memberState, type FamilyBrief } from "./family";
 
 type IntentServer = { origin: string | null; up: boolean; reason: string | null };
 
@@ -46,6 +47,14 @@ function savedSplit(): number {
   }
 }
 
+/** sessions.rs SessionRow. */
+type SessionRow = { id: string; cwd: string; updated: number; active: boolean; label: string };
+
+const ageOf = (secs: number): string => {
+  const d = Math.max(0, Date.now() / 1000 - secs);
+  return d < 3600 ? `${Math.floor(d / 60)}m` : d < 86400 ? `${Math.floor(d / 3600)}h` : `${Math.floor(d / 86400)}d`;
+};
+
 /** The agent's chat beside a page: its last words, live, with reply and Jump. */
 class Chat {
   el = document.createElement("section");
@@ -58,9 +67,17 @@ class Chat {
   private note = document.createElement("span");
   surface = "";
   private last = "";
+  /** Claude sessions of the shown workspace: resume the newest in a shell, swap to another in Claude. */
+  private bar = document.createElement("div");
+  private sessions: SessionRow[] = [];
+  private sessKey = "";
+  private sessAt = 0;
+  private pickOpen = false;
 
   constructor() {
     this.el.className = "sheet-chat";
+    this.bar.className = "sheet-chat-sessions";
+    this.bar.hidden = true;
     const head = document.createElement("header");
     head.append(this.name, this.state);
     this.body.className = "sheet-chat-body";
@@ -110,16 +127,97 @@ class Chat {
     };
     live(true);
     this.term.onTrouble = (bad) => live(!bad);
-    this.el.append(head, this.term.el, this.body, form, this.note);
+    this.el.append(head, this.bar, this.term.el, this.body, form, this.note);
   }
 
   stopTerm(): void {
     this.term.stop();
   }
 
+  /** Load the workspace's sessions when the pane or what it runs changes, and now and then. */
+  private loadSessions(t: Tile): void {
+    const key = `${t.workspace}|${t.surface}|${t.agent && t.state !== "ended" ? (t.state === "working" ? "busy" : "agent") : "shell"}`;
+    if (key === this.sessKey && Date.now() - this.sessAt < 15000) return;
+    this.sessKey = key;
+    this.sessAt = Date.now();
+    this.pickOpen = false;
+    void invoke<SessionRow[]>("workspace_sessions", { workspace: t.workspace }).then(
+      (rows) => {
+        if (this.sessKey !== key) return;
+        this.sessions = rows;
+        this.drawSessions(t);
+      },
+      () => {
+        this.sessions = [];
+        this.drawSessions(t);
+      },
+    );
+  }
+
+  private async resume(t: Tile, r: SessionRow): Promise<void> {
+    try {
+      await invoke("session_resume", { surfaceId: t.surface, sessionId: r.id, cwd: r.cwd });
+      this.note.textContent = `Resuming ${r.id.slice(0, 8)}…`;
+      this.pickOpen = false;
+      this.sessAt = 0;
+    } catch (e) {
+      this.note.textContent = String(e);
+    }
+    this.drawSessions(t);
+  }
+
+  private drawSessions(t: Tile): void {
+    const inShell = !t.agent || t.state === "ended";
+    const rows = this.sessions;
+    this.bar.hidden = rows.length === 0;
+    if (rows.length === 0) return;
+    const name = (r: SessionRow) => `${r.label || r.id.slice(0, 8)} · ${ageOf(r.updated)}`;
+    const parts: HTMLElement[] = [];
+    if (inShell) {
+      const go = document.createElement("button");
+      go.type = "button";
+      go.className = "sheet-btn primary";
+      go.textContent = "Resume Claude";
+      go.title = `claude --resume ${rows[0].id}`;
+      go.addEventListener("click", () => void this.resume(t, rows[0]));
+      const what = document.createElement("span");
+      what.className = "sheet-chat-sess-what";
+      what.textContent = name(rows[0]);
+      parts.push(go, what);
+    }
+    if (rows.length > 1 || !inShell) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "sheet-btn";
+      more.textContent = `${inShell ? "Other sessions" : "Swap session"} (${rows.length}) ▾`;
+      more.addEventListener("click", () => {
+        this.pickOpen = !this.pickOpen;
+        this.drawSessions(t);
+      });
+      parts.push(more);
+    }
+    if (this.pickOpen) {
+      const list = document.createElement("div");
+      list.className = "sheet-chat-sess-list";
+      for (const r of rows) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "sheet-chat-sess" + (r.active ? " active" : "");
+        b.textContent = (r.active ? "● " : "") + name(r);
+        b.title = `${r.id}\n${r.cwd}`;
+        b.disabled = !inShell && t.state === "working";
+        b.addEventListener("click", () => void this.resume(t, r));
+        list.append(b);
+      }
+      parts.push(list);
+    }
+    this.bar.replaceChildren(...parts);
+  }
+
   show(t: Tile): void {
     this.surface = t.surface;
     this.term.show(t.surface);
+    this.loadSessions(t);
     this.name.textContent = t.workspace_title || t.label;
     this.state.textContent = t.state.replace("_", " ");
     this.state.className = `sheet-chat-state ${t.state}`;
@@ -190,9 +288,14 @@ export class Sheet {
   private pages: NowPage[] = [];
   private wake: Wake | null = null;
   private origin: string | null = null;
+  /** Plan families, for the strip that gets from a parent to its children. */
+  private families: FamilyBrief[] = [];
+  private kin = document.createElement("div");
 
   constructor() {
     this.el.className = "sheet";
+    this.kin.className = "sheet-kin";
+    this.kin.hidden = true;
     this.el.hidden = true;
     this.card.className = "sheet-card";
     this.card.setAttribute("role", "dialog");
@@ -226,7 +329,7 @@ export class Sheet {
     this.divider.addEventListener("pointerdown", (e) => this.drag(e));
     this.body.append(this.chat.el, this.divider, this.pageEl);
     this.body.style.setProperty("--chat", String(savedSplit()));
-    this.card.append(head, this.body);
+    this.card.append(head, this.kin, this.body);
     this.el.append(this.card);
     // A click on the dimmed backdrop closes; one inside the card does not.
     this.el.addEventListener("click", (e) => e.target === this.el && this.close());
@@ -255,7 +358,12 @@ export class Sheet {
       this.tiles = e.payload.tiles;
       if (!this.el.hidden) this.drawChat();
     });
-    await listen<{ pages?: NowPage[] }>("views:frame", (e) => {
+    await listen<{ pages?: NowPage[]; families?: FamilyBrief[] }>("views:frame", (e) => {
+      const fams = e.payload.families ?? [];
+      if (JSON.stringify(fams) !== JSON.stringify(this.families)) {
+        this.families = fams;
+        if (!this.el.hidden) this.drawKin();
+      }
       const pages = e.payload.pages ?? [];
       if (JSON.stringify(pages) === JSON.stringify(this.pages)) return;
       this.pages = pages;
@@ -279,9 +387,10 @@ export class Sheet {
       }
     });
     // Frames go out only on change: start from the latest one.
-    const [f, v] = await Promise.all([invoke<WallFrame | null>("wall_frame"), invoke<{ pages?: NowPage[] } | null>("views_frame")]);
+    const [f, v] = await Promise.all([invoke<WallFrame | null>("wall_frame"), invoke<{ pages?: NowPage[]; families?: FamilyBrief[] } | null>("views_frame")]);
     if (f) this.tiles = f.tiles;
     if (v?.pages) this.pages = v.pages;
+    if (v?.families) this.families = v.families;
     if (!this.el.hidden) {
       this.drawChat();
       this.syncTabs();
@@ -307,6 +416,36 @@ export class Sheet {
   /** The worktree directory, for the Wake: named, else the agent's cwd. */
   private dir(): string {
     return this.place.dir ?? this.tile()?.cwd ?? "";
+  }
+
+  /** The family strip: the parent and every child, each a click to its workspace. */
+  private drawKin(): void {
+    const ws = this.workspace();
+    const kin = ws ? familyOf(this.families, ws) : undefined;
+    this.kin.hidden = !kin;
+    if (!kin) return;
+    const { fam, member } = kin;
+    const label = document.createElement("span");
+    label.className = "sheet-kin-label";
+    label.textContent = `family · ${fam.parent} · ${fam.done}/${fam.total} done`;
+    const chips = fam.members.map((m, i) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      const here = m === member || m.slug === member.slug;
+      b.className = `sheet-kin-chip${here ? " here" : ""}${m.phase === "done" ? " done" : ""}`;
+      const name = document.createElement("b");
+      name.textContent = m.role === "parent" ? `${m.slug} (parent)` : m.slug;
+      const state = document.createElement("span");
+      state.textContent = memberState(fam, m);
+      b.append(name, state);
+      b.title = m.ws ? `${m.slug} · ${state.textContent}` : `${m.slug} has no open workspace`;
+      b.disabled = !m.ws || here;
+      b.setAttribute("aria-current", here ? "true" : "false");
+      b.addEventListener("click", () => m.ws && this.enter({ workspace: m.ws }));
+      b.dataset.n = String(i);
+      return b;
+    });
+    this.kin.replaceChildren(label, ...chips);
   }
 
   private drawChat(): void {
@@ -362,6 +501,7 @@ export class Sheet {
     this.place = place;
     if (was !== where()) this.reset();
     this.drawChat();
+    this.drawKin();
     this.say.textContent = "";
     this.el.hidden = false;
     this.syncTabs();

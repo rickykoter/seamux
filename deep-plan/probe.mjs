@@ -2815,6 +2815,10 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   ok("the parent's surfaces list the workstreams",
     /## Workstreams/.test(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, fam.slug + ".md"), "utf8")) &&
     /<h2>Workstreams<\/h2>/.test(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, fam.slug + ".review.html"), "utf8")));
+  ok("the parent's review page links each child to its own page",
+    ["example-auth-api", "example-auth-ui", "example-docs"].every(c =>
+      fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, fam.slug + ".review.html"), "utf8")
+        .includes(`<a class="dp-fam-link" href="${c}.working.html" data-plan="${c}">`)));
   r = cli("rehydrate", fam.slug);
   ok("a parent rehydrates byte-identical", r.status === 0 && /byte-identical/.test(r.stdout));
 

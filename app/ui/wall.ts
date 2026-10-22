@@ -187,7 +187,7 @@ class Preview {
     this.input.placeholder = "Reply…";
     this.input.spellcheck = false;
     this.input.addEventListener("keydown", (e) => {
-      e.stopPropagation(); // the list's keys and ⌘1…⌘4 stay out of a reply
+      e.stopPropagation(); // the list's keys and ⌘1…⌘5 stay out of a reply
       if (e.key === "Escape") this.input.blur();
     });
     this.input.addEventListener("input", () => {

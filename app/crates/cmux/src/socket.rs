@@ -57,6 +57,9 @@ pub(crate) struct Conn {
     reader: BufReader<UnixStream>,
     writer: UnixStream,
     next_id: u64,
+    /// The last call failed writing its request to a peer that had already
+    /// hung up: cmux never saw it, so it is safe to send again.
+    pub(crate) undelivered: bool,
 }
 
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(10);
@@ -68,7 +71,7 @@ impl Conn {
         stream.set_read_timeout(Some(TIMEOUT)).ok();
         stream.set_write_timeout(Some(TIMEOUT)).ok();
         let writer = stream.try_clone().map_err(Error::Io)?;
-        Ok(Conn { reader: BufReader::new(stream), writer, next_id: 1 })
+        Ok(Conn { reader: BufReader::new(stream), writer, next_id: 1, undelivered: false })
     }
 
     /// Send one request and wait for the response with its id.
@@ -77,7 +80,17 @@ impl Conn {
         self.next_id += 1;
         let mut line = json!({"id": id, "method": method, "params": params}).to_string();
         line.push('\n');
-        self.writer.write_all(line.as_bytes()).map_err(Error::Io)?;
+        self.undelivered = false;
+        if let Err(e) = self.writer.write_all(line.as_bytes()) {
+            // A stale connection (cmux restarted or closed it) fails here
+            // before a byte reaches cmux; a write that died midway is not
+            // known to be undelivered.
+            self.undelivered = matches!(
+                e.kind(),
+                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::NotConnected
+            );
+            return Err(Error::Io(e));
+        }
         loop {
             let resp = read_frame(&mut self.reader)?;
             // A response for an earlier, abandoned request is skipped.

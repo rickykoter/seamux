@@ -266,3 +266,41 @@ fn reconnect_survives_a_failed_reopen_and_resumes_from_the_cursor() {
     assert_eq!(afters, vec![10, 12], "the retry resumes after the last event seen");
     assert_eq!(std::fs::read_to_string(&cursor).unwrap(), "14");
 }
+
+#[test]
+fn a_call_on_a_connection_cmux_hung_up_goes_again_on_a_fresh_one() {
+    // The first connection answers the capabilities read and is closed (cmux
+    // restarted); the write on it then fails with a broken pipe, before cmux
+    // sees a byte, so the call is sent once more on a new connection.
+    let dir = tmpdir("stale");
+    let sock = dir.join("s.sock");
+    let listener = UnixListener::bind(&sock).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen2 = seen.clone();
+    std::thread::spawn(move || {
+        for (i, conn) in listener.incoming().enumerate() {
+            let Ok(conn) = conn else { return };
+            let seen = seen2.clone();
+            std::thread::spawn(move || {
+                let mut w = conn.try_clone().unwrap();
+                for line in BufReader::new(conn).lines() {
+                    let Ok(line) = line else { return };
+                    let req: Value = serde_json::from_str(&line).unwrap();
+                    seen.lock().unwrap().push(req["method"].as_str().unwrap().to_string());
+                    let result = match req["method"].as_str().unwrap() {
+                        "system.capabilities" => json!({"methods": ["system.ping"]}),
+                        _ => json!({"pong": true}),
+                    };
+                    writeln!(w, "{}", json!({"id": req["id"], "ok": true, "result": result})).unwrap();
+                    if i == 0 {
+                        return; // hang up after the first answer
+                    }
+                }
+            });
+        }
+    });
+    let c = Cmux::open(Transport::Socket(sock)).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100)); // let the hang-up land
+    assert_eq!(c.call("system.ping", json!({})).unwrap(), json!({"pong": true}));
+    assert_eq!(seen.lock().unwrap().iter().filter(|m| *m == "system.ping").count(), 1, "sent once, not twice");
+}

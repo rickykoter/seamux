@@ -53,6 +53,9 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
   return e;
 }
 
+const n0 = (n: number) =>
+  `${n} terminal${n === 1 ? "" : "s"} lost ${n === 1 ? "its" : "their"} Claude when cmux restarted. Tick the ones to resume where they left off.`;
+
 function button(text: string, cls = "d-btn"): HTMLButtonElement {
   const b = el("button", cls, text);
   b.type = "button";
@@ -114,11 +117,22 @@ const SLEEPING_CAT = String.raw`
 type Ws = { title: string; color: string };
 
 /** Desk: every decision waiting on you, oldest first, answered in place. */
+/** sessions.rs Revival. */
+type Revival = { surface: string; workspace: string; session: string; cwd: string; updated: number; label: string };
+
 export class Desk {
   private main = el("div", "desk-main");
   private side = el("aside", "desk-side");
   private head = el("div", "desk-head");
   private count = el("span", "desk-count");
+  private cleanBtn = button("", "d-btn small");
+  private cleanEl = el("div", "d-clean");
+  /** desk_cleanup_plan: dead sessions to bring back, and which are ticked. */
+  private revivals: Revival[] = [];
+  private ticked = new Set<string>();
+  private cleaning = false;
+  private cleanOpen = false;
+  private cleanNote = "";
   private hint = el("span", "desk-hint", "oldest first · 1–9 picks an option · j/k move · ↵ reply · J jumps · O opens · m mutes · t tucks away");
   private problems = el("p", "desk-problems");
   private list = el("div", "desk-list");
@@ -153,9 +167,17 @@ export class Desk {
 
   constructor(private root: HTMLElement) {
     root.classList.add("desk");
-    this.head.append(this.count, this.hint);
+    this.cleanBtn.hidden = true;
+    this.cleanBtn.addEventListener("click", () => {
+      this.cleanOpen = !this.cleanOpen;
+      this.drawClean();
+    });
+    this.cleanEl.hidden = true;
+    this.head.append(this.count, this.hint, el("span", "grow"), this.cleanBtn);
     this.problems.hidden = true;
-    this.main.append(this.head, this.problems, this.list, this.empty);
+    this.main.append(this.head, this.cleanEl, this.problems, this.list, this.empty);
+    void this.loadPlan();
+    setInterval(() => void this.loadPlan(), 20_000);
     const awayHead = el("h2", "", "While you were away · Wake");
     this.side.append(awayHead, this.away, el("span", "grow"), this.working, this.tally);
     root.replaceChildren(this.main, this.side);
@@ -170,6 +192,80 @@ export class Desk {
     const [v, w] = await Promise.all([invoke<ViewsFrame | null>("views_frame"), invoke<WallFrame | null>("wall_frame")]);
     if (w) this.setTiles(w.tiles);
     if (v) this.setViews(v);
+  }
+
+  /** Dead sessions: Claudes that died with cmux, in terminals still open. */
+  private async loadPlan(): Promise<void> {
+    if (this.cleaning) return;
+    try {
+      this.revivals = await invoke<Revival[]>("desk_cleanup_plan");
+    } catch {
+      this.revivals = [];
+    }
+    const here = new Set(this.revivals.map((r) => r.surface));
+    for (const k of [...this.ticked]) if (!here.has(k)) this.ticked.delete(k);
+    this.drawClean();
+  }
+
+  private drawClean(): void {
+    const n = this.revivals.length;
+    this.cleanBtn.hidden = n === 0 && !this.cleanNote;
+    this.cleanBtn.textContent = this.cleanOpen ? "Close clean-up" : `Clean up · ${n} dead`;
+    this.cleanEl.hidden = !this.cleanOpen;
+    if (!this.cleanOpen) return;
+    const rows = this.revivals.map((r) => {
+      const row = el("label", "d-clean-row");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = this.ticked.has(r.surface);
+      box.disabled = this.cleaning;
+      box.addEventListener("change", () => {
+        if (box.checked) this.ticked.add(r.surface);
+        else this.ticked.delete(r.surface);
+        this.drawClean();
+      });
+      const w = this.ws(r.workspace, r.cwd);
+      const name = el("b", "", w.title);
+      const what = el("span", "d-clean-what", r.label || r.session.slice(0, 8));
+      row.title = `claude --resume ${r.session}\n${r.cwd}`;
+      row.append(box, name, what);
+      return row;
+    });
+    const k = this.ticked.size;
+    const go = button(this.cleaning ? "Resuming…" : `Resume ${k} session${k === 1 ? "" : "s"}`, "d-btn primary");
+    go.disabled = this.cleaning || k === 0;
+    go.addEventListener("click", () => void this.runClean());
+    const all = button(k === this.revivals.length ? "None" : "All", "d-btn small");
+    all.disabled = this.cleaning;
+    all.addEventListener("click", () => {
+      this.ticked = k === this.revivals.length ? new Set() : new Set(this.revivals.map((r) => r.surface));
+      this.drawClean();
+    });
+    const note = el("span", "d-clean-note", this.cleanNote);
+    this.cleanEl.replaceChildren(
+      el("p", "d-clean-lead", n0(this.revivals.length)),
+      ...rows,
+      Object.assign(el("div", "d-clean-actions"), {}),
+    );
+    this.cleanEl.lastElementChild!.append(go, all, note);
+  }
+
+  private async runClean(): Promise<void> {
+    const picks = this.revivals.filter((r) => this.ticked.has(r.surface)).map((r) => [r.surface, r.session, r.cwd]);
+    if (!picks.length) return;
+    this.cleaning = true;
+    this.cleanNote = "";
+    this.drawClean();
+    try {
+      const res = await invoke<({ Ok: null } | { Err: string })[]>("desk_cleanup_run", { picks });
+      const bad = res.filter((x) => "Err" in x) as { Err: string }[];
+      this.cleanNote = bad.length ? `${res.length - bad.length} resumed, ${bad.length} not: ${bad[0].Err}` : `${res.length} resumed`;
+      this.ticked.clear();
+    } catch (e) {
+      this.cleanNote = String(e);
+    }
+    this.cleaning = false;
+    await this.loadPlan();
   }
 
   private setViews(f: ViewsFrame): void {
