@@ -70,6 +70,17 @@ function arrow(): SVGSVGElement {
   return svg;
 }
 
+/** A small prompt mark, ">_", for the Terminal button. */
+function promptMark(): SVGSVGElement {
+  const svg = document.createElementNS(SVG, "svg");
+  svg.setAttribute("viewBox", "0 0 10 10");
+  svg.setAttribute("aria-hidden", "true");
+  const p = document.createElementNS(SVG, "path");
+  p.setAttribute("d", "M2 3l2.5 2L2 7M5.5 7.5H8");
+  svg.append(p);
+  return svg;
+}
+
 /** A #RRGGBB the page can trust in a style, or "". */
 function safeColor(c: string | null | undefined): string {
   return c && /^#[0-9a-fA-F]{6}$/.test(c) ? c : "";
@@ -292,7 +303,8 @@ export class Desk {
     if (level === "mute") head.append(el("span", "chip status", "muted"));
     const kin = d.kind === "family" ? undefined : familyOf(this.frame.families, d.ws);
     if (kin) head.append(el("span", "chip fam", `family · ${kin.fam.parent}`));
-    const termBtn = button(key === this.termKey ? "Hide terminal" : "Terminal", "d-btn small");
+    const termBtn = button(key === this.termKey ? "Hide terminal " : "Terminal ", "d-btn small");
+    termBtn.append(promptMark());
     termBtn.title = "This workspace's live terminal, here (⌘↩)";
     termBtn.addEventListener("click", (e) => {
       e.stopPropagation();

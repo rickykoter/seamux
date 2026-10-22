@@ -33,8 +33,8 @@
 .t-sub.working { color: var(--good); }
 .t-track {
   flex: 1; position: relative; height: 18px; border-radius: 9px; background: var(--term);
-  border-left: 3px solid var(--ws);
 }
+.t-mark-ws { width: 8px; height: 8px; border-radius: 2px; background: var(--ws); flex: none; }
 .t-span { position: absolute; top: 4px; height: 10px; border-radius: 5px; }
 .t-span.work { background: var(--good); }
 .t-span.wait { background: var(--accent); }
@@ -65,7 +65,10 @@
 .t-pop-in { flex: 1; min-width: 160px; font: inherit; padding: 5px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
 
 @media (max-width: 760px) {
-  .t-name { width: 110px; }
-  .t-legend, .t-fold, .t-empty, .t-pop { padding-left: 0; margin-left: 0; }
-  .t-axis { margin-left: 120px; }
+  .t-name { width: 132px; }
+  .t-legend, .t-fold, .t-empty { padding-left: 0; margin-left: 0; }
+  .t-pop { margin-left: 0; }
+  .t-axis { margin-left: 142px; }
 }
+.t-name-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.t-name-top b { min-width: 0; }
