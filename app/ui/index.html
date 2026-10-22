@@ -72,18 +72,13 @@
       }
       .menu-item:hover, .menu-item:focus-visible { background: var(--on); outline: none; }
 
-      /* ---- the sheet: a plan, review or ask page over the current view ---- */
-      .sheet {
-        position: fixed; inset: 0; z-index: 40; display: flex; padding: 54px 18px 18px;
-        background: color-mix(in srgb, var(--bg) 40%, transparent); backdrop-filter: blur(2px);
-      }
+      /* ---- the sheet: a plan, review or ask page beside the agent, full screen ---- */
+      .sheet { position: fixed; inset: 0; z-index: 40; display: flex; background: var(--bg); }
       .sheet[hidden] { display: none; }
-      .sheet-card {
-        flex: 1; display: flex; flex-direction: column; min-width: 0; border-radius: 12px; overflow: hidden;
-        background: var(--card); border: 1px solid var(--line); box-shadow: 0 18px 50px var(--shade);
-      }
+      .sheet-card { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; background: var(--card); }
+      /* Over the window's own title bar: clear of the traffic lights, and a drag handle. */
       .sheet-card header {
-        display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 14px; border-bottom: 1px solid var(--line);
+        display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 84px; min-height: 38px; border-bottom: 1px solid var(--line);
       }
       .sheet-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .sheet-say { flex: 1; color: var(--bad); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -121,7 +116,7 @@
       /* Beside the chat: the agent's pane on the left, the page on the right. */
       .sheet-chat, .sheet-divider { display: none; }
       .sheet-body.with-chat .sheet-chat {
-        display: flex; flex-direction: column; flex: 0 0 calc(var(--chat, 0.38) * 100%); min-width: 0;
+        display: flex; flex-direction: column; flex: 0 0 calc(var(--chat, 0.5) * 100%); min-width: 0;
         border-right: 1px solid var(--line); background: var(--bg);
       }
       .sheet-body.with-chat .sheet-divider { display: block; flex: 0 0 5px; margin-left: -3px; cursor: col-resize; }
@@ -135,19 +130,20 @@
       .sheet-chat-reply input { flex: 1; min-width: 0; font: inherit; padding: 5px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
       /* The live terminal: the pane's own colours and cursor, scaled to fit. */
       .term {
-        --t-size: 12px; --t-line: calc(var(--t-size) * 1.25);
+        --t-size: 12px; --t-line: 15px;
         flex: 1; min-height: 0; overflow: auto; position: relative; padding: 8px;
         background: var(--t-bg, var(--term)); color: var(--t-fg, var(--term-fg)); outline: none; cursor: text;
       }
       .term.focused { box-shadow: inset 0 0 0 2px var(--accent); }
       .term-screen { position: relative; font: var(--t-size)/var(--t-line) ui-monospace, Menlo, monospace; white-space: pre; width: max-content; }
       .term-row { height: var(--t-line); }
+      .term-probe { position: absolute; visibility: hidden; font: var(--t-size)/var(--t-line) ui-monospace, Menlo, monospace; white-space: pre; }
       .term-cursor { position: absolute; left: 0; top: 0; width: 1ch; height: var(--t-line); background: var(--t-cursor); opacity: 0.35; pointer-events: none; }
       .term.focused .term-cursor { opacity: 0.75; }
       .term-cursor.bar { width: 2px; opacity: 0.9; }
       .term-cursor.underline { height: 2px; margin-top: calc(var(--t-line) - 2px); opacity: 0.9; }
       .term-status { position: absolute; left: 8px; bottom: 8px; font-size: 11.5px; color: var(--bad); }
-      .term-status[hidden] { display: none; }
+      .term-status[hidden], .term[hidden], .sheet-chat-body[hidden], .sheet-chat-hint[hidden] { display: none; }
       .sheet-chat-hint { flex: 1; font-size: 11.5px; color: var(--muted); align-self: center; }
       .sheet-chat-note { padding: 0 12px 6px; font-size: 11.5px; color: var(--muted); }
       .sheet-imgbox { flex: 1; min-width: 0; overflow: auto; display: flex; align-items: center; justify-content: center; padding: 12px; background: var(--term); }

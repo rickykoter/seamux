@@ -40,9 +40,9 @@ const SPLIT_KEY = "seamux.sheet.chat";
 function savedSplit(): number {
   try {
     const v = Number(localStorage.getItem(SPLIT_KEY));
-    return v > 0.15 && v < 0.75 ? v : 0.38;
+    return v > 0.15 && v < 0.75 ? v : 0.5;
   } catch {
-    return 0.38;
+    return 0.5;
   }
 }
 
@@ -64,7 +64,6 @@ class Chat {
     const head = document.createElement("header");
     head.append(this.name, this.state);
     this.body.className = "sheet-chat-body";
-    this.body.hidden = true; // the live terminal shows the pane; the text stays for no-socket fallback
     const form = document.createElement("form");
     form.className = "sheet-chat-reply";
     this.input.type = "text";
@@ -97,11 +96,20 @@ class Chat {
     });
     this.note.className = "sheet-chat-note";
     form.append(this.input, jump);
-    this.input.hidden = true;
     const hint = document.createElement("span");
     hint.className = "sheet-chat-hint";
-    hint.textContent = "Click the terminal to type into it · click outside to leave";
+    hint.textContent = "Click the terminal to type into it · ⌘Esc or a click outside leaves it";
     form.prepend(hint);
+    // Live by default; the plain text and its reply box only when frames fail.
+    const live = (on: boolean) => {
+      this.term.el.hidden = !on;
+      this.body.hidden = on;
+      this.input.hidden = on;
+      hint.hidden = !on;
+      if (!on) this.last = "";
+    };
+    live(true);
+    this.term.onTrouble = (bad) => live(!bad);
     this.el.append(head, this.term.el, this.body, form, this.note);
   }
 
@@ -190,6 +198,7 @@ export class Sheet {
     this.card.setAttribute("role", "dialog");
     this.card.setAttribute("aria-modal", "true");
     const head = document.createElement("header");
+    head.setAttribute("data-tauri-drag-region", "");
     this.titleEl.className = "sheet-title";
     this.say.className = "sheet-say";
     const cmux = document.createElement("button");

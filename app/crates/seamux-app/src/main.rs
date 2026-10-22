@@ -149,6 +149,7 @@ fn main() {
             wall_app::wall_jump,
             term_app::term_frame,
             term_app::term_input,
+            term_app::term_key,
             term_app::term_paste,
             term_app::term_hold,
             term_app::term_release,

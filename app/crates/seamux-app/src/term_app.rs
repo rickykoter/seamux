@@ -234,6 +234,17 @@ pub async fn term_input(surface_id: String, text: String) -> Result<(), String> 
     .map_err(|e| e.to_string())?
 }
 
+/// A named key ("enter", "shift+tab", "ctrl+c"), which cmux encodes for the
+/// keyboard protocol the program in the pane asked for.
+#[tauri::command]
+pub async fn term_key(surface_id: String, key: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        client()?.call("surface.send_key", json!({"surface_id": surface_id, "key": key})).map(|_| ()).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// A paste, so the agent sees it as one (bracketed) paste.
 #[tauri::command]
 pub async fn term_paste(surface_id: String, text: String) -> Result<(), String> {
