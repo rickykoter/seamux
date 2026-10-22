@@ -124,3 +124,8 @@
 .fam-state { font-size: 12px; color: var(--muted); }
 .fam-member.waiting .fam-state { color: var(--accent); }
 .fam-member.ready .fam-state { color: var(--good); }
+
+/* ---- a card's live terminal ---- */
+.d-btn.small { padding: 2px 9px; font-size: 11.5px; }
+.d-term { height: 340px; display: flex; flex-direction: column; border-radius: 9px; overflow: hidden; border: 1px solid var(--line); }
+.d-term .term { flex: 1; }
