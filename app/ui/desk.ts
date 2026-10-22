@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openPage } from "./sheet";
+import { Term } from "./term";
 import type { Frame as WallFrame, Tile } from "./wall";
 import { ago } from "./wall";
 import { levelOf, menu, toggle, type Levels, type TuckRow } from "./tuck";
@@ -135,6 +136,9 @@ export class Desk {
   /** Cards with an action in flight (go next, a check, an answer). */
   private busy = new Set<string>();
   private drawn = "";
+  /** One live terminal, opened in place under one card at a time. */
+  private term = new Term();
+  private termKey = "";
 
   constructor(private root: HTMLElement) {
     root.classList.add("desk");
@@ -190,7 +194,8 @@ export class Desk {
   /** Redraw, unless the person is typing in a card (then wait for the blur). */
   private draw(force = false): void {
     const at = document.activeElement;
-    const typing = (at instanceof HTMLInputElement || at instanceof HTMLTextAreaElement) && this.root.contains(at);
+    // Typing in a reply box or the live terminal: a redraw would take the focus.
+    const typing = (at instanceof HTMLInputElement || at instanceof HTMLTextAreaElement || !!(at as HTMLElement | null)?.closest?.(".term")) && this.root.contains(at);
     // Only what Desk shows: the lanes and history change every minute.
     const shown = [this.frame.decisions, this.frame.wake.slice(0, 40), this.frame.problems, this.frame.levels ?? {}, this.frame.families ?? []];
     const shape = JSON.stringify([shown, this.tiles.map((t) => [t.workspace, t.workspace_title, t.color, t.state]), this.recording, this.selectedKey]);
@@ -213,6 +218,8 @@ export class Desk {
     this.count.textContent = n === 1 ? "1 decision waiting" : `${n} decisions waiting`;
     this.problems.hidden = !this.frame.problems.length;
     this.problems.textContent = this.frame.problems.join(" · ");
+    // The open terminal's card is gone (answered, tucked): close it.
+    if (this.termKey && !ds.some((d) => keyOf(d) === this.termKey)) this.closeTerm();
     this.list.replaceChildren(...ds.map((d, i) => this.card(d, i === this.selected)));
     this.empty.hidden = ds.length > 0;
     this.drawSide();
@@ -285,7 +292,13 @@ export class Desk {
     if (level === "mute") head.append(el("span", "chip status", "muted"));
     const kin = d.kind === "family" ? undefined : familyOf(this.frame.families, d.ws);
     if (kin) head.append(el("span", "chip fam", `family · ${kin.fam.parent}`));
-    head.append(el("span", "grow"), when, menu(d.ws, w.title, level));
+    const termBtn = button(key === this.termKey ? "Hide terminal" : "Terminal", "d-btn small");
+    termBtn.title = "This workspace's live terminal, here (⌘↩)";
+    termBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.toggleTerm(d);
+    });
+    head.append(el("span", "grow"), when, termBtn, menu(d.ws, w.title, level));
     c.append(head);
 
     if (d.kind === "question") {
@@ -308,7 +321,31 @@ export class Desk {
 
     const note = this.notes.get(key);
     if (note) c.append(el("p", `d-note${note.bad ? " bad" : ""}`, note.text));
+    if (key === this.termKey) {
+      const box = el("div", "d-term");
+      box.append(this.term.el);
+      box.addEventListener("click", (e) => e.stopPropagation());
+      c.append(box);
+      this.term.show(d.surface);
+    }
     return c;
+  }
+
+  /** Open the card's live terminal (closing any other), or close it. */
+  private toggleTerm(d: Decision): void {
+    const key = keyOf(d);
+    if (this.termKey === key) this.closeTerm();
+    else {
+      this.term.stop();
+      this.termKey = key;
+    }
+    this.draw(true);
+    if (this.termKey) requestAnimationFrame(() => this.term.el.focus());
+  }
+
+  private closeTerm(): void {
+    this.termKey = "";
+    this.term.stop();
   }
 
   private jumpButton(surface: string, key: string): HTMLButtonElement {
@@ -565,7 +602,16 @@ export class Desk {
     const at = document.activeElement;
     if (at instanceof HTMLInputElement || at instanceof HTMLTextAreaElement) return;
     const d = this.decisions()[this.selected];
+    const inTerm = at instanceof HTMLElement && !!at.closest(".term");
+    if (inTerm && !e.metaKey) return; // the terminal's keys; ⌘ ones stay Desk's
     if (e.metaKey) {
+      // ⌘↩: the selected card's live terminal, here (from inside it: closes it).
+      const open = inTerm ? this.decisions().find((x) => keyOf(x) === this.termKey) : d;
+      if (e.key === "Enter" && open) {
+        e.preventDefault();
+        this.toggleTerm(open);
+        return;
+      }
       if (e.key.toLowerCase() === "o" && d) {
         // ⌘O: the selected card's page, in cmux.
         if (d.kind === "gate") void this.open({ path: `/plan/${d.slug}`, title: d.slug, workspace: d.ws }, keyOf(d), e);

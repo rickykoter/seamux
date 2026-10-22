@@ -6,6 +6,7 @@
 
 mod desk_app;
 mod shell;
+mod term_app;
 mod tuck_app;
 mod views_app;
 mod wake_app;
@@ -135,6 +136,7 @@ fn main() {
             shell::install(app)?;
             wall_app::start(app.handle().clone());
             views_app::start(app.handle().clone());
+            term_app::restore_at_start();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -145,6 +147,12 @@ fn main() {
             wall_app::wall_frame,
             wall_app::wall_reply,
             wall_app::wall_jump,
+            term_app::term_frame,
+            term_app::term_input,
+            term_app::term_key,
+            term_app::term_paste,
+            term_app::term_hold,
+            term_app::term_release,
             views_app::views_frame,
             shell::open_in_cmux,
             desk_app::desk_answer,
