@@ -45,6 +45,8 @@
 .t-mark.review { top: 3px; width: 11px; height: 11px; margin-left: -5px; border-radius: 50%; background: var(--t-look); }
 .t-mark.wake { top: 0; width: 2px; height: 18px; margin-left: -1px; background: var(--fg); opacity: 0.7; }
 .t-fold { padding-left: 168px; font-size: 12px; color: var(--muted); }
+.t-fam { padding-top: 4px; }
+.t-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .t-empty { padding-left: 168px; color: var(--muted); }
 
 .t-axis { position: relative; height: 16px; margin: 0 0 0 168px; font-size: 11px; color: var(--muted); }

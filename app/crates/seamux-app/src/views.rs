@@ -84,6 +84,9 @@ pub enum Decision {
         /// No increment is open and one is next: go next is the person's.
         ready: bool,
     },
+    /// A plan family's next step: the members that can go now and the ones
+    /// still waiting on the parent.
+    Family { ws: String, surface: String, since: u64, parent: String, members: Vec<FamilyMember> },
     /// A lookout review with findings addressed and left to close.
     Review {
         ws: String,
@@ -104,6 +107,7 @@ impl Decision {
             Decision::Question { since, .. }
             | Decision::Asked { since, .. }
             | Decision::Gate { since, .. }
+            | Decision::Family { since, .. }
             | Decision::Review { since, .. } => *since,
         }
     }
@@ -145,6 +149,83 @@ impl From<&Entry> for Change {
             detail: e.detail.clone(),
         }
     }
+}
+
+/// One plan of a family, as the views show it.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct FamilyMember {
+    pub slug: String,
+    /// parent or child
+    pub role: String,
+    pub phase: String,
+    pub done: u64,
+    pub total: u64,
+    /// The open increment, else the next one; 0 when neither.
+    pub n: u64,
+    pub open: bool,
+    /// The live workspace working on it.
+    pub ws: Option<String>,
+    /// The parent increments its go still waits on.
+    pub waits: Vec<u64>,
+    /// Its next increment can go now: nothing open, one next, nothing waited on.
+    pub ready: bool,
+}
+
+/// A family: its parent and every member.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct FamilyBrief {
+    pub parent: String,
+    pub members: Vec<FamilyMember>,
+    /// Members whose plan is done, of all members.
+    pub done: u64,
+    pub total: u64,
+}
+
+/// The families among deep-plan's status rows, each member placed in its
+/// live workspace (its owner's, else the pane working in its root).
+pub fn families(rows: &[Value], tiles: &[Tile]) -> Vec<FamilyBrief> {
+    let panes = Panes::new(tiles);
+    let mut order: Vec<String> = Vec::new();
+    let mut by: HashMap<String, Vec<FamilyMember>> = HashMap::new();
+    for p in rows {
+        let Some(f) = p.get("family").filter(|f| f.is_object()) else { continue };
+        let parent = s(f, "parent");
+        if parent.is_empty() {
+            continue;
+        }
+        let ws = plan_ws(&panes, p);
+        let progress = p.get("progress").cloned().unwrap_or(Value::Null);
+        let open = progress.get("open").and_then(Value::as_array).and_then(|a| a.first()).cloned();
+        let next = progress.get("next").filter(|n| n.is_object()).cloned();
+        let waits: Vec<u64> = f.get("waitingOn").and_then(Value::as_array).map(|a| a.iter().map(|w| u(w, "n")).collect()).unwrap_or_default();
+        let phase = s(p, "phase");
+        let m = FamilyMember {
+            slug: s(p, "slug"),
+            role: s(f, "role"),
+            n: open.as_ref().or(next.as_ref()).map(|x| u(x, "n")).unwrap_or(0),
+            open: open.is_some(),
+            ready: phase == "implementing" && open.is_none() && next.is_some() && waits.is_empty(),
+            phase,
+            done: u(&progress, "done"),
+            total: u(&progress, "total"),
+            ws,
+            waits,
+        };
+        if !by.contains_key(&parent) {
+            order.push(parent.clone());
+        }
+        by.entry(parent).or_default().push(m);
+    }
+    order
+        .into_iter()
+        .map(|parent| {
+            let mut members = by.remove(&parent).unwrap_or_default();
+            // The parent first, then the children as deep-plan lists them.
+            members.sort_by_key(|m| m.role != "parent");
+            let done = members.iter().filter(|m| m.phase == "done").count() as u64;
+            FamilyBrief { total: members.len() as u64, done, parent, members }
+        })
+        .collect()
 }
 
 /// A muted or tucked worktree, as the palette lists it.
@@ -207,6 +288,8 @@ pub struct ViewsFrame {
     pub lanes: Vec<Lane>,
     /// Muted and tucked worktrees, for the chip and the palette.
     pub tucked: Vec<TuckRow>,
+    /// Plan families: their parent, members and waits.
+    pub families: Vec<FamilyBrief>,
     /// Each live workspace that is muted or tucked: "mute" or "tuck".
     pub levels: std::collections::BTreeMap<String, String>,
     /// What could not be read this time, for the page to say.
@@ -346,6 +429,14 @@ impl<'a> Panes<'a> {
     }
 }
 
+/// The live workspace a plan is worked in: the pane working in its root
+/// first (the session that rendered a plan may sit elsewhere), else its
+/// owner's workspace when that is live.
+fn plan_ws(panes: &Panes, p: &Value) -> Option<String> {
+    let owner = p.get("owner").map(|o| s(o, "workspace")).unwrap_or_default();
+    panes.ws_for_dir(&s(p, "root")).or_else(|| panes.live_ws(&owner))
+}
+
 /// The workspace a hook file names: `<prefix><ws>`, the rest a UUID.
 fn ws_of(name: &str, prefix: &str, suffix: &str) -> Option<String> {
     let ws = name.strip_prefix(prefix)?.strip_suffix(suffix)?;
@@ -414,8 +505,7 @@ fn gate_decisions(plans: &[Value], panes: &Panes) -> Vec<Decision> {
         if s(p, "phase") != "implementing" {
             continue;
         }
-        let owner = p.get("owner").map(|o| s(o, "workspace")).unwrap_or_default();
-        let ws = panes.live_ws(&owner).or_else(|| panes.ws_for_dir(&s(p, "root")));
+        let ws = plan_ws(&panes, p);
         let Some(ws) = ws else { continue };
         let progress = p.get("progress").cloned().unwrap_or(Value::Null);
         let open = progress.get("open").and_then(Value::as_array).and_then(|a| a.first()).cloned();
@@ -623,9 +713,32 @@ impl Feed {
         let mut problems = Vec::new();
         let mut decisions = hook_decisions(&self.state_dir, &panes);
         let mut plans = Vec::new();
+        let mut fams = Vec::new();
         match self.plans.get() {
             Some(Ok(rows)) => {
-                decisions.extend(gate_decisions(&rows, &panes));
+                fams = families(&rows, tiles);
+                // A family member's go is offered on its family's card, not
+                // as a gate of its own; a gate for checks the person owes stays.
+                let in_family = |slug: &str| fams.iter().any(|f| f.members.iter().any(|m| m.slug == slug));
+                decisions.extend(gate_decisions(&rows, &panes).into_iter().filter(|d| match d {
+                    Decision::Gate { slug, ready: true, .. } => !in_family(slug),
+                    _ => true,
+                }));
+                for f in &fams {
+                    let live: Vec<&FamilyMember> = f.members.iter().filter(|m| m.ws.is_some()).collect();
+                    let pending = f.members.iter().any(|m| m.ready || !m.waits.is_empty());
+                    if !pending || live.is_empty() {
+                        continue;
+                    }
+                    let home = f.members.iter().find(|m| m.role == "parent" && m.ws.is_some()).or(live.first().copied()).and_then(|m| m.ws.clone()).unwrap_or_default();
+                    let since = rows
+                        .iter()
+                        .filter(|r| f.members.iter().any(|m| m.slug == s(r, "slug")))
+                        .map(|r| u(r, "touchedAt"))
+                        .max()
+                        .unwrap_or(0);
+                    decisions.push(Decision::Family { surface: panes.surface_in(&home), ws: home, since, parent: f.parent.clone(), members: f.members.clone() });
+                }
                 plans = plan_briefs(&rows, &panes);
             }
             Some(Err(e)) => problems.push(e),
@@ -673,7 +786,7 @@ impl Feed {
 
         let history = recent.iter().filter(|e| e.at >= start).map(Change::from).collect();
         let (tucked, levels) = self.tucks(tiles, &decisions, &recent, &mut problems);
-        ViewsFrame { decisions, wake, history, plans, reviews, lanes, tucked, levels, problems }
+        ViewsFrame { decisions, wake, history, plans, reviews, lanes, tucked, families: fams, levels, problems }
     }
 
     /// The quieted worktrees and each live workspace's level. A muted
@@ -868,8 +981,7 @@ fn increment_marks(dir: &Path, slug: &str, start: u64, now: u64) -> Vec<Mark> {
 fn plan_briefs(rows: &[Value], panes: &Panes) -> Vec<PlanBrief> {
     let mut by_ws: HashMap<String, PlanBrief> = HashMap::new();
     for p in rows {
-        let owner = p.get("owner").map(|o| s(o, "workspace")).unwrap_or_default();
-        let Some(ws) = panes.live_ws(&owner).or_else(|| panes.ws_for_dir(&s(p, "root"))) else { continue };
+        let Some(ws) = plan_ws(&panes, p) else { continue };
         let progress = p.get("progress").cloned().unwrap_or(Value::Null);
         let open = progress.get("open").and_then(Value::as_array).and_then(|a| a.first()).cloned();
         let next = progress.get("next").filter(|n| n.is_object()).cloned();

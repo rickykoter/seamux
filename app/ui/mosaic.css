@@ -12,6 +12,9 @@
   align-content: start;
 }
 .mosaic-grid[hidden], .mosaic-still[hidden], .mosaic-detail[hidden] { display: none; }
+.m-fam { grid-column: 1 / -1; padding: 4px 2px 0; }
+.mosaic-grid.has-fam { grid-auto-flow: row; }
+.m-state:not(.working):not(.needs_input) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mosaic-still { margin: 16vh auto 0; color: var(--muted); font: 13px/1.35 ui-monospace, Menlo, monospace; }
 
 .m-tile {

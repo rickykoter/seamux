@@ -4,6 +4,7 @@ import { openPage } from "./sheet";
 import type { Frame as WallFrame, Tile } from "./wall";
 import { ago } from "./wall";
 import { levelOf, menu, toggle, type Levels, type TuckRow } from "./tuck";
+import { familyOf, grouped, header as familyHeader, memberState, type FamilyBrief, type FamilyMember } from "./family";
 
 // The shapes of views.rs's ViewsFrame.
 export type Opt = { label: string; description: string };
@@ -25,6 +26,7 @@ export type Decision =
       checks: Check[];
       ready: boolean;
     }
+  | { kind: "family"; ws: string; surface: string; since: number; parent: string; members: FamilyMember[] }
   | {
       kind: "review";
       ws: string;
@@ -39,7 +41,7 @@ export type Decision =
     };
 export type WakeRow = { id: number; kind: string; title: string; dir: string; ws: string | null; at: number };
 export type Change = { at: number; ws: string; surface: string; state: string; source: string; detail: string };
-export type ViewsFrame = { decisions: Decision[]; wake: WakeRow[]; history: Change[]; problems: string[]; levels?: Levels; tucked?: TuckRow[] };
+export type ViewsFrame = { decisions: Decision[]; wake: WakeRow[]; history: Change[]; problems: string[]; levels?: Levels; tucked?: TuckRow[]; families?: FamilyBrief[] };
 
 const SVG = "http://www.w3.org/2000/svg";
 
@@ -82,6 +84,8 @@ export function keyOf(d: Decision): string {
       return `gate:${d.slug}`;
     case "review":
       return `review:${d.id}`;
+    case "family":
+      return `family:${d.parent}`;
   }
 }
 
@@ -177,7 +181,10 @@ export class Desk {
   private decisions(): Decision[] {
     const lv = this.frame.levels;
     const shown = this.frame.decisions.filter((d) => levelOf(lv, d.ws) !== "tuck");
-    return [...shown.filter((d) => !levelOf(lv, d.ws)), ...shown.filter((d) => levelOf(lv, d.ws) === "mute")];
+    // A family's cards sit together, where its first card falls.
+    const fam = (d: Decision) => (d.kind === "family" ? d.parent : familyOf(this.frame.families, d.ws)?.fam.parent ?? "");
+    const together = (ds: Decision[]) => grouped(ds, fam).flatMap((g) => g.items);
+    return [...together(shown.filter((d) => !levelOf(lv, d.ws))), ...together(shown.filter((d) => levelOf(lv, d.ws) === "mute"))];
   }
 
   /** Redraw, unless the person is typing in a card (then wait for the blur). */
@@ -185,7 +192,7 @@ export class Desk {
     const at = document.activeElement;
     const typing = (at instanceof HTMLInputElement || at instanceof HTMLTextAreaElement) && this.root.contains(at);
     // Only what Desk shows: the lanes and history change every minute.
-    const shown = [this.frame.decisions, this.frame.wake.slice(0, 40), this.frame.problems, this.frame.levels ?? {}];
+    const shown = [this.frame.decisions, this.frame.wake.slice(0, 40), this.frame.problems, this.frame.levels ?? {}, this.frame.families ?? []];
     const shape = JSON.stringify([shown, this.tiles.map((t) => [t.workspace, t.workspace_title, t.color, t.state]), this.recording, this.selectedKey]);
     if (typing || (!force && shape === this.drawn)) {
       if (typing) at!.addEventListener("blur", () => setTimeout(() => this.draw(), 0), { once: true });
@@ -272,10 +279,12 @@ export class Desk {
     const head = el("header", "d-head");
     const mark = el("span", "ws-mark");
     mark.style.setProperty("--ws", w.color || "var(--muted)");
-    const chip = el("span", `chip ${d.kind}`, { question: "question", asked: "asked", gate: "deep-plan gate", review: "lookout" }[d.kind]);
+    const chip = el("span", `chip ${d.kind}`, { question: "question", asked: "asked", gate: "deep-plan gate", review: "lookout", family: "family" }[d.kind]);
     const when = el("span", "d-when");
-    head.append(mark, el("span", "d-name", w.title), chip);
+    head.append(mark, el("span", "d-name", d.kind === "family" ? d.parent : w.title), chip);
     if (level === "mute") head.append(el("span", "chip status", "muted"));
+    const kin = d.kind === "family" ? undefined : familyOf(this.frame.families, d.ws);
+    if (kin) head.append(el("span", "chip fam", `family · ${kin.fam.parent}`));
     head.append(el("span", "grow"), when, menu(d.ws, w.title, level));
     c.append(head);
 
@@ -288,6 +297,10 @@ export class Desk {
     } else if (d.kind === "gate") {
       when.textContent = d.ready ? `inc ${d.n} is next` : `inc ${d.n}/${d.total} · ${d.checks.length} ${d.checks.length === 1 ? "check is" : "checks are"} yours`;
       this.gateBody(c, d, key);
+    } else if (d.kind === "family") {
+      const fam = (this.frame.families ?? []).find((f) => f.parent === d.parent);
+      when.textContent = fam ? `${fam.done}/${fam.total} plans done` : "";
+      this.familyBody(c, d, fam, key);
     } else {
       when.textContent = d.plan ? `${d.plan} · inc ${d.inc}` : "";
       this.reviewBody(c, d);
@@ -485,6 +498,43 @@ export class Desk {
     f.append(label, row);
     setTimeout(() => ta.focus(), 0);
     return f;
+  }
+
+  /** A family's next step: each member's state, a go for those that can go now. */
+  private familyBody(c: HTMLElement, d: Extract<Decision, { kind: "family" }>, fam: FamilyBrief | undefined, key: string): void {
+    const f = fam ?? { parent: d.parent, members: d.members, done: 0, total: d.members.length };
+    c.append(familyHeader(f, "fam-head in-card"));
+    for (const m of d.members) {
+      const row = el("div", `fam-member${m.waits.length ? " waiting" : ""}${m.ready ? " ready" : ""}`);
+      row.append(el("span", "fam-role", m.role === "parent" ? "parent" : "child"), el("b", "", m.slug), el("span", "fam-state", memberState(f, m)), el("span", "grow"));
+      const open = button("Plan ");
+      open.append(arrow());
+      open.title = "In a sheet here; ⌘-click opens it in cmux";
+      open.addEventListener("click", (e) => {
+        e.stopPropagation();
+        void this.open({ path: `/plan/${m.slug}`, title: m.slug, workspace: m.ws ?? d.ws }, key, e);
+      });
+      row.append(open);
+      if (m.ready) {
+        const go = button(`go · inc ${m.n}`, "d-btn primary");
+        go.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          if (this.busy.has(`${key}:${m.slug}`)) return;
+          this.busy.add(`${key}:${m.slug}`);
+          go.disabled = true;
+          try {
+            this.say(key, await invoke<string>("plan_go", { slug: m.slug, n: m.n }));
+          } catch (err) {
+            this.say(key, String(err), true);
+          } finally {
+            this.busy.delete(`${key}:${m.slug}`);
+            this.draw(true);
+          }
+        });
+        row.append(go);
+      }
+      c.append(row);
+    }
   }
 
   private reviewBody(c: HTMLElement, d: Extract<Decision, { kind: "review" }>): void {

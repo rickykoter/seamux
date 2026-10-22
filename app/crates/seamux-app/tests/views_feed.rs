@@ -177,6 +177,7 @@ fn decisions_merge_oldest_first_from_every_source() {
             Decision::Asked { .. } => ("asked", d.since()),
             Decision::Gate { slug, .. } => (if slug == "inv" { "gate-inv" } else { "gate-ux" }, d.since()),
             Decision::Review { .. } => ("review", d.since()),
+            Decision::Family { .. } => ("family", d.since()),
         })
         .collect();
     // Briefs for Mosaic: every live workspace's newest plan (done ones too)
@@ -214,6 +215,7 @@ fn decisions_merge_oldest_first_from_every_source() {
             Decision::Review { ws, addressed, open, plan, inc, .. } => {
                 assert_eq!((ws.as_str(), *addressed, *open, plan.as_str(), *inc), (WS_A, 2, 1, "inv", 3));
             }
+            Decision::Family { .. } => panic!("no family in this fixture"),
         }
     }
 }
@@ -460,4 +462,56 @@ fn tuck_a_newer_ask_clears_a_mute_and_an_older_one_does_not() {
     assert!(frame.levels.is_empty());
     assert!(frame.tucked.is_empty());
     assert!(store.load().is_empty());
+}
+
+fn family_rows(a: &str, b: &str) -> serde_json::Value {
+    let fam = |role: &str, waits: serde_json::Value| json!({"role": role, "parent": "auth", "waitingOn": waits, "members": []});
+    json!([
+        {"slug": "auth", "root": "/nowhere/auth", "phase": "implementing", "touchedAt": 10, "family": fam("parent", json!([])),
+         "progress": {"total": 3, "done": 1, "open": [{"n": 2, "title": "Contract"}], "next": null}, "increments": []},
+        {"slug": "auth-api", "root": a, "phase": "implementing", "touchedAt": 20, "owner": {"workspace": WS_A}, "family": fam("child", json!([])),
+         "progress": {"total": 2, "done": 0, "open": [], "next": {"n": 1, "title": "Endpoints"}}, "increments": []},
+        {"slug": "auth-ui", "root": b, "phase": "implementing", "touchedAt": 30, "family": fam("child", json!([{"n": 2, "title": "Contract", "status": "working"}])),
+         "progress": {"total": 2, "done": 0, "open": [], "next": {"n": 1, "title": "Screens"}}, "increments": []},
+        {"slug": "solo", "root": "/nowhere/solo", "phase": "implementing", "touchedAt": 5, "progress": {"open": [], "next": {"n": 1, "title": "x"}}, "increments": []}
+    ])
+}
+
+#[test]
+fn family_briefs_place_members_and_say_what_each_waits_on() {
+    let f = Fixture::new("family");
+    let (a, b) = (f.dir("work/a"), f.dir("work/b"));
+    let tiles = [tile(SURF_A, WS_A, &a, "idle"), tile(SURF_B, WS_B, &b, "idle")];
+    let frame = primed(inputs(&f, family_rows(&a, &b), vec![])).build(&tiles, NOW);
+    assert_eq!(frame.families.len(), 1, "a plan with no family is not one");
+    let fam = &frame.families[0];
+    assert_eq!(fam.parent, "auth");
+    assert_eq!(fam.members.iter().map(|m| m.slug.as_str()).collect::<Vec<_>>(), vec!["auth", "auth-api", "auth-ui"], "parent first");
+    let api = &fam.members[1];
+    assert_eq!((api.ws.as_deref(), api.ready, api.waits.len()), (Some(WS_A), true, 0));
+    let ui = &fam.members[2];
+    assert_eq!((ui.ws.as_deref(), ui.ready, ui.waits.clone()), (Some(WS_B), false, vec![2]), "waits on the parent's increment 2");
+    assert_eq!(fam.members[0].ws, None, "the parent has no live pane here");
+    assert_eq!((fam.done, fam.total), (0, 3));
+}
+
+#[test]
+fn family_next_step_is_one_decision_and_members_lose_their_ready_gates() {
+    let f = Fixture::new("family-step");
+    let (a, b) = (f.dir("work/a"), f.dir("work/b"));
+    let tiles = [tile(SURF_A, WS_A, &a, "idle"), tile(SURF_B, WS_B, &b, "idle")];
+    let frame = primed(inputs(&f, family_rows(&a, &b), vec![])).build(&tiles, NOW);
+    let fams: Vec<&Decision> = frame.decisions.iter().filter(|d| matches!(d, Decision::Family { .. })).collect();
+    assert_eq!(fams.len(), 1);
+    match fams[0] {
+        Decision::Family { parent, members, since, ws, .. } => {
+            assert_eq!(parent, "auth");
+            assert_eq!(members.iter().filter(|m| m.ready).count(), 1);
+            assert_eq!(*since, 30, "the family's newest change");
+            assert_eq!(ws, WS_A, "no live parent: the first live member's workspace");
+        }
+        _ => unreachable!(),
+    }
+    // auth-api's ready go is on the family card, not a gate of its own.
+    assert!(!frame.decisions.iter().any(|d| matches!(d, Decision::Gate { slug, .. } if slug == "auth-api")));
 }
