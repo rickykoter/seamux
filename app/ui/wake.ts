@@ -454,14 +454,14 @@ export class Wake {
       if (e?.metaKey) return await toCmux();
       if (r.path && VIEWABLE.test(r.path) && r.state !== "gone" && !["plan", "review", "ask", "commit", "artifact"].includes(r.kind)) {
         try {
-          return sheet().show(await invoke<Shown>("wake_file", { id: r.id }), toCmux);
+          return sheet().show(await invoke<Shown>("wake_file", { id: r.id }), toCmux, { dir: r.ws });
         } catch (err) {
           this.toast(`${String(err)} · opening it in cmux`, true);
           return await toCmux();
         }
       }
       const o = await invoke<{ sheet: string | null; detail: string }>("wake_open", { id: r.id, sub, here: true });
-      if (o.sheet) await sheet().open({ path: o.sheet, title: r.title || r.locator, toCmux });
+      if (o.sheet) await sheet().open({ path: o.sheet, title: r.title || r.locator, toCmux, dir: r.ws });
       else if (o.detail) this.toast(o.detail);
     } catch (err) {
       this.toast(String(err), true);
