@@ -190,7 +190,7 @@ export class Mosaic {
     });
     box.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && e.target === box) this.expand(t.surface);
-      if ((e.key === "m" || e.key === "t") && e.target === box) {
+      if ((e.key === "m" || e.key === "t") && e.target === box && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         toggle(t.workspace, t.workspace_title || t.label, e.key, level);
       }

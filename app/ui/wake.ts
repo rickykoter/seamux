@@ -246,7 +246,8 @@ export class Wake {
       return o;
     };
     // Tucked worktrees stay pickable (the Wake is history), after the rest.
-    const isTucked = (w: Ws) => this.tucked.some((t) => w.ws === t.path || w.ws.startsWith(t.path + "/"));
+    // The exact worktree: a nested worktree under a tucked one is its own.
+    const isTucked = (w: Ws) => this.tucked.some((t) => w.ws === t.path);
     const opts: HTMLElement[] = this.data.workspaces.filter((w) => !isTucked(w)).map(option);
     const tuckedOpts = this.data.workspaces.filter(isTucked).map(option);
     if (tuckedOpts.length) {

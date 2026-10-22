@@ -64,6 +64,14 @@ export class Palette {
     document.addEventListener(
       "keydown",
       (e) => {
+        // While open, the palette has every key: none reaches the view behind.
+        if (!this.el.hidden && !this.card.contains(e.target as Node) && !(e.metaKey && e.key.toLowerCase() === "k")) {
+          e.stopImmediatePropagation();
+          e.preventDefault();
+          if (e.key === "Escape") this.close();
+          else this.input.focus();
+          return;
+        }
         if (e.metaKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") {
           e.preventDefault();
           e.stopImmediatePropagation();

@@ -50,6 +50,11 @@ pub struct Entry {
     pub name: String,
 }
 
+/// One change to the store at a time in this process (the app is its only
+/// writer): a read-modify-write must not lose another's entry.
+static WRITE: Mutex<()> = Mutex::new(());
+static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// The store file.
 pub struct Store {
     pub file: PathBuf,
@@ -61,13 +66,14 @@ impl Store {
         Store { file: PathBuf::from(crew_store::Paths::from_env().crew_home).join("tucked.json") }
     }
 
-    /// Every entry; a missing or unreadable file is no entries.
+    /// Every entry; a missing or unreadable file is no entries, and one
+    /// malformed entry is skipped rather than costing the rest.
     pub fn load(&self) -> Vec<Entry> {
         let Ok(text) = std::fs::read_to_string(&self.file) else { return Vec::new() };
-        serde_json::from_str::<serde_json::Value>(&text)
-            .ok()
-            .and_then(|v| v.get("entries").cloned())
-            .and_then(|e| serde_json::from_value::<Vec<Entry>>(e).ok())
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return Vec::new() };
+        v.get("entries")
+            .and_then(|e| e.as_array())
+            .map(|a| a.iter().filter_map(|e| serde_json::from_value::<Entry>(e.clone()).ok()).collect())
             .unwrap_or_default()
     }
 
@@ -77,7 +83,8 @@ impl Store {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
         let text = serde_json::to_string_pretty(&json!({"version": 1, "entries": entries})).map_err(|e| e.to_string())?;
-        let tmp = self.file.with_extension(format!("json.tmp-{}", std::process::id()));
+        let n = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = self.file.with_extension(format!("json.tmp-{}-{n}", std::process::id()));
         std::fs::write(&tmp, format!("{text}\n")).map_err(|e| e.to_string())?;
         std::fs::rename(&tmp, &self.file).map_err(|e| {
             let _ = std::fs::remove_file(&tmp);
@@ -90,6 +97,7 @@ impl Store {
         if root.is_empty() {
             return Err("no worktree to quiet".into());
         }
+        let _held = WRITE.lock().unwrap_or_else(|p| p.into_inner());
         let mut entries: Vec<Entry> = self.load().into_iter().filter(|e| e.path != root).collect();
         if let Some(level) = level {
             entries.push(Entry { path: root.to_string(), level, at, name: name.to_string() });
@@ -99,12 +107,25 @@ impl Store {
 
     /// Unmute every muted worktree; tucked ones stay. Returns how many.
     pub fn unmute_all(&self) -> Result<usize, String> {
+        let _held = WRITE.lock().unwrap_or_else(|p| p.into_inner());
         let entries = self.load();
         let before = entries.len();
         let kept: Vec<Entry> = entries.into_iter().filter(|e| e.level != Level::Mute).collect();
         let n = before - kept.len();
         self.save(&kept)?;
         Ok(n)
+    }
+
+    /// Drop the entries `gone` names, under the write lock, keeping any
+    /// entry written meanwhile. Returns whether anything changed.
+    pub fn remove(&self, gone: &[Entry]) -> Result<bool, String> {
+        let _held = WRITE.lock().unwrap_or_else(|p| p.into_inner());
+        let entries = self.load();
+        let kept: Vec<Entry> = entries.iter().filter(|e| !gone.contains(e)).cloned().collect();
+        if kept.len() == entries.len() {
+            return Ok(false);
+        }
+        self.save(&kept).map(|_| true)
     }
 }
 
@@ -119,20 +140,27 @@ pub fn root_of(cwd: &str) -> String {
     if cwd.is_empty() {
         return String::new();
     }
-    let mut roots = ROOTS.lock().unwrap_or_else(|p| p.into_inner());
-    let map = roots.get_or_insert_with(HashMap::new);
-    if let Some((r, at)) = map.get(cwd) {
-        if at.elapsed() < ROOT_TTL {
-            return r.clone();
+    {
+        let roots = ROOTS.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((r, at)) = roots.as_ref().and_then(|m| m.get(cwd)) {
+            if at.elapsed() < ROOT_TTL {
+                return r.clone();
+            }
         }
-    }
-    let top = crew_core::py::run("git", &["-C", cwd, "rev-parse", "--show-toplevel"], Duration::from_secs(3))
+    } // git runs without the lock held
+    let run = crew_core::py::run("git", &["-C", cwd, "rev-parse", "--show-toplevel"], Duration::from_secs(3));
+    let top = run
+        .as_ref()
         .filter(|(code, _, _)| *code == 0)
         .map(|(_, out, _)| out.trim().to_string())
-        .filter(|t| !t.is_empty() && Path::new(t).is_dir())
-        .unwrap_or_else(|| cwd.to_string());
-    let root = crew_store::wskey(&top);
-    map.insert(cwd.to_string(), (root.clone(), Instant::now()));
+        .filter(|t| !t.is_empty() && Path::new(t).is_dir());
+    let root = crew_store::wskey(top.as_deref().unwrap_or(cwd));
+    // Cache an answer git gave (a root, or "not a repository"); a git that
+    // did not run or timed out is asked again next time.
+    if run.is_some() {
+        let mut roots = ROOTS.lock().unwrap_or_else(|p| p.into_inner());
+        roots.get_or_insert_with(HashMap::new).insert(cwd.to_string(), (root.clone(), Instant::now()));
+    }
     root
 }
 
@@ -141,18 +169,20 @@ const BRANCH_TTL: Duration = Duration::from_secs(60);
 
 /// The branch checked out at `root`, or "" (cached for a minute).
 pub fn branch_of(root: &str) -> String {
-    let mut b = BRANCHES.lock().unwrap_or_else(|p| p.into_inner());
-    let map = b.get_or_insert_with(HashMap::new);
-    if let Some((br, at)) = map.get(root) {
-        if at.elapsed() < BRANCH_TTL {
-            return br.clone();
+    {
+        let b = BRANCHES.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((br, at)) = b.as_ref().and_then(|m| m.get(root)) {
+            if at.elapsed() < BRANCH_TTL {
+                return br.clone();
+            }
         }
-    }
+    } // git runs without the lock held
     let br = crew_core::py::run("git", &["-C", root, "branch", "--show-current"], Duration::from_secs(3))
         .filter(|(code, _, _)| *code == 0)
         .map(|(_, out, _)| out.trim().to_string())
         .unwrap_or_default();
-    map.insert(root.to_string(), (br.clone(), Instant::now()));
+    let mut b = BRANCHES.lock().unwrap_or_else(|p| p.into_inner());
+    b.get_or_insert_with(HashMap::new).insert(root.to_string(), (br.clone(), Instant::now()));
     br
 }
 
@@ -164,6 +194,20 @@ mod tests {
         let d = std::env::temp_dir().join(format!("seamux-tuck-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         Store { file: d.join("tucked.json") }
+    }
+
+    #[test]
+    fn tuck_one_bad_entry_does_not_cost_the_rest() {
+        let s = store("bad");
+        std::fs::create_dir_all(s.file.parent().unwrap()).unwrap();
+        std::fs::write(&s.file, r#"{"version": 1, "entries": [{"path": "/w/a", "level": "mute", "at": 1}, {"path": "/w/b", "level": "loud"}]}"#).unwrap();
+        assert_eq!(s.load().len(), 1);
+        s.set("/w/c", Some(Level::Tuck), "c", 2).unwrap();
+        assert_eq!(s.load().iter().map(|e| e.path.as_str()).collect::<Vec<_>>(), vec!["/w/a", "/w/c"]);
+        let a = s.load()[0].clone();
+        assert!(s.remove(&[a]).unwrap());
+        assert_eq!(s.load().len(), 1);
+        let _ = std::fs::remove_dir_all(s.file.parent().unwrap());
     }
 
     #[test]

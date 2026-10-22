@@ -684,12 +684,12 @@ impl Feed {
         if entries.is_empty() {
             return (Vec::new(), Default::default());
         }
+        // A workspace's worktree is its first agent pane's, else its first
+        // pane's: the same pane tuck_set picks.
         let mut root: HashMap<String, String> = HashMap::new();
-        for t in tiles {
-            let r = root_of(&t.cwd);
-            // An agent pane names its workspace's worktree over a stray shell.
-            if t.agent.is_some() || !root.contains_key(&t.workspace) {
-                root.insert(t.workspace.clone(), r);
+        for t in tiles.iter().filter(|t| t.agent.is_some()).chain(tiles.iter().filter(|t| t.agent.is_none())) {
+            if !root.contains_key(&t.workspace) {
+                root.insert(t.workspace.clone(), root_of(&t.cwd));
             }
         }
         let under = |path: &str| -> Vec<String> {
@@ -701,15 +701,21 @@ impl Feed {
             decisions
                 .iter()
                 .filter_map(|d| match d {
-                    Decision::Question { ws: w, since, .. } | Decision::Asked { ws: w, since, .. } if ws.contains(w) => Some(*since),
+                    Decision::Question { ws: w, since, .. } | Decision::Asked { ws: w, since, .. }
+                        if ws.iter().any(|x| x.eq_ignore_ascii_case(w)) =>
+                    {
+                        Some(*since)
+                    }
                     _ => None,
                 })
                 .collect()
         };
-        let before = entries.len();
-        entries.retain(|e| e.level != Level::Mute || !asks(&under(&e.path)).iter().any(|at| *at > e.at));
-        if entries.len() != before {
-            if let Err(e) = self.tuck.save(&entries) {
+        let (gone, kept): (Vec<_>, Vec<_>) =
+            entries.drain(..).partition(|e| e.level == Level::Mute && asks(&under(&e.path)).iter().any(|at| *at > e.at));
+        entries = kept;
+        if !gone.is_empty() {
+            // Under the store's lock, so a mute set meanwhile is not lost.
+            if let Err(e) = self.tuck.remove(&gone) {
                 problems.push(format!("could not save the unmute: {e}"));
             }
         }
