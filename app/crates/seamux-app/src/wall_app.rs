@@ -92,13 +92,21 @@ fn run_wall<R: Runtime>(app: AppHandle<R>, pool: Vec<Arc<dyn Source>>) {
     }
 
     // run_wall is already on its own thread; poll here.
-    wall.run(rx, move |f: Frame| match app.emit("wall:frame", f) {
-        Ok(()) => true,
-        Err(e) => {
-            eprintln!("seamux: wall frame not sent: {e}");
-            false
+    wall.run(rx, move |f: Frame| {
+        crate::views_app::observe(&f);
+        match app.emit("wall:frame", f) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("seamux: wall frame not sent: {e}");
+                false
+            }
         }
     });
+}
+
+/// The wall's last frame, for the views feed.
+pub fn last_frame() -> Option<Frame> {
+    WALL.get().and_then(|w| w.last())
 }
 
 fn wall() -> Result<&'static Arc<Wall>, String> {

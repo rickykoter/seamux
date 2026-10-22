@@ -634,13 +634,15 @@ def add(event, matcher, hook_entry):
         hooks[event].insert(0, {"matcher": matcher, "hooks": [hook_entry]})
 
 for ev in ("SessionStart", "SessionEnd", "Stop", "Notification",
-           "PreToolUse", "PostToolUse"):
+           "UserPromptSubmit", "PreToolUse", "PostToolUse"):
     strip(ev)
 
 add("SessionStart", "", entry("session"))
 add("SessionEnd", "", entry("end", 3))
 add("Stop", "", entry("stop"))
 add("Notification", "", entry("notification"))
+# The person typed a reply: the wait ends here, in the state history too.
+add("UserPromptSubmit", "", entry("prompt", 3))
 add("PreToolUse", "", entry("pretool", 3))
 # A question to the human is a block on the human from the moment the tool is
 # called; no Notification fires for it. Own matchers so the hot path stays

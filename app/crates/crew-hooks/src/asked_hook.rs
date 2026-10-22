@@ -59,7 +59,10 @@ pub fn main(args: &[String]) -> i32 {
     }
     h.lane_set("needs-attention");
     h.phase("waiting on you");
-    let _ = std::fs::write(h.state.join(format!("asked-{}", h.ws)), "");
+    // The marker's existence is what pretool and stop test; its text is the
+    // question, for the app's Desk.
+    let _ = std::fs::write(h.state.join(format!("asked-{}", h.ws)), &question);
+    h.history("needs_input", "asked");
     let body = if question.is_empty() { "Claude is waiting on you".to_string() } else { question };
     h.notify("crew:blocked", &body);
     0

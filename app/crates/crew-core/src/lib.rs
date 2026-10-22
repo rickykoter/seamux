@@ -12,6 +12,7 @@ pub mod cachefacts;
 pub mod costs;
 pub mod dp_engine;
 pub mod families;
+pub mod history;
 pub mod home;
 pub mod pricing;
 pub mod py;

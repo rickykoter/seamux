@@ -2877,6 +2877,9 @@ name = "seamux-app"
 version = "0.1.0"
 dependencies = [
  "cmux",
+ "crew-board",
+ "crew-core",
+ "crew-store",
  "objc2",
  "objc2-app-kit",
  "serde",

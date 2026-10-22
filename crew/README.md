@@ -82,7 +82,14 @@ server up; `crew doctor` reports whether it runs the installed code.
 | `PostToolUse` on `Task*` | `set-progress`, `todo set`, and a pill naming the task in flight |
 | `Notification` | `phase:waiting` — the *only* thing that opens "Needs you" — lane → `needs-attention`, banner |
 | `Stop` | Clear `phase`, so the row leaves "Needs you"; lane → `review` **only if** the tree is dirty or ahead of upstream; clear the pill; sidebar-only turn record. With TypeSafe on, a background check may then promote the turn to waiting (below) |
+| `UserPromptSubmit` | You replied: drop a turn-end ask, release the lane, `phase:working` |
 | `SessionEnd` | Release the lane, clear the pill |
+
+Each event that changes an agent's state (ask, answered, prompt,
+notification, stop, end, and a turn-end ask) also appends a line to
+`~/.claude/crew/history/<day>.jsonl`, and an ask keeps its questions and
+options in `question-<ws>.json` beside its marker. The seamux app's views
+read both.
 
 ## Diffs
 

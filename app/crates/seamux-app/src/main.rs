@@ -5,6 +5,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod shell;
+mod views_app;
 mod wall_app;
 
 use serde::Serialize;
@@ -87,14 +88,62 @@ async fn cmux_status() -> Status {
         .unwrap_or_else(|e| Status::Failed { kind: "app".into(), message: e.to_string() })
 }
 
+/// Where node usually is when launchd's PATH lacks it: asdf, volta,
+/// Homebrew (both prefixes), and ~/.local/bin for seamux's own links.
+const NODE_DIRS: [&str; 5] = ["~/.asdf/shims", "~/.volta/bin", "/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin"];
+
+/// An app opened from Finder gets launchd's PATH (/usr/bin:/bin:...), where
+/// node, git's helpers and the cmux CLI may be missing; the in-process crew
+/// calls need them. Once, before any thread: the usual places first, and
+/// only if node is in none of them, the login shell's PATH (an interactive
+/// shell, since asdf and nvm hook in from .zshrc), capped at two seconds.
+fn adopt_login_path() {
+    let old = std::env::var("PATH").unwrap_or_default();
+    let has_node = |path: &str| path.split(':').any(|d| std::path::Path::new(d).join("node").is_file());
+    if has_node(&old) {
+        return;
+    }
+    let home = crew_core::py::home();
+    let known: Vec<String> = NODE_DIRS
+        .iter()
+        .map(|d| d.strip_prefix("~/").map(|r| home.join(r).to_string_lossy().into_owned()).unwrap_or_else(|| d.to_string()))
+        .filter(|d| std::path::Path::new(d).is_dir() && !old.split(':').any(|o| o == d))
+        .collect();
+    let with_known = [known.join(":"), old.clone()].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(":");
+    if has_node(&with_known) {
+        std::env::set_var("PATH", with_known);
+        return;
+    }
+    let shell = crew_core::py::env_or("SHELL").unwrap_or_else(|| "/bin/zsh".into());
+    let Some((0, out, _)) = crew_core::py::run(&shell, &["-ilc", "printf '%s' \"$PATH\""], std::time::Duration::from_secs(2)) else {
+        return;
+    };
+    // The last line: a login shell may print a banner before it.
+    let login = out.lines().last().unwrap_or("").trim();
+    if !login.is_empty() {
+        std::env::set_var("PATH", if old.is_empty() { login.to_string() } else { format!("{login}:{old}") });
+    }
+}
+
 fn main() {
+    adopt_login_path();
     tauri::Builder::default()
         .setup(|app| {
             shell::install(app)?;
             wall_app::start(app.handle().clone());
+            views_app::start(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![cmux_status, shell::intent_server, shell::intent_page, shell::hide_overlay, wall_app::wall_frame, wall_app::wall_reply, wall_app::wall_jump])
+        .invoke_handler(tauri::generate_handler![
+            cmux_status,
+            shell::intent_server,
+            shell::intent_page,
+            shell::hide_overlay,
+            wall_app::wall_frame,
+            wall_app::wall_reply,
+            wall_app::wall_jump,
+            views_app::views_frame
+        ])
         .run(tauri::generate_context!())
         .expect("seamux app failed to start");
 }
