@@ -420,6 +420,15 @@ impl<'a> Panes<'a> {
         hits.iter().find(|t| t.agent.is_some()).or(hits.first()).map(|t| t.workspace.clone())
     }
 
+    /// Whether a pane of `ws` works in `dir` or under it.
+    fn ws_in_dir(&self, ws: &str, dir: &str) -> bool {
+        if dir.is_empty() {
+            return false;
+        }
+        let d = canon(dir);
+        self.tiles.iter().zip(&self.cwds).any(|(t, c)| t.workspace.eq_ignore_ascii_case(ws) && (*c == d || c.starts_with(&format!("{d}/"))))
+    }
+
     /// The live surface a question file names, else the workspace's agent pane.
     fn surface_or(&self, ws: &str, named: &str) -> String {
         match self.tiles.iter().find(|t| !named.is_empty() && t.workspace.eq_ignore_ascii_case(ws) && t.surface.eq_ignore_ascii_case(named)) {
@@ -429,12 +438,17 @@ impl<'a> Panes<'a> {
     }
 }
 
-/// The live workspace a plan is worked in: the pane working in its root
-/// first (the session that rendered a plan may sit elsewhere), else its
-/// owner's workspace when that is live.
+/// The live workspace a plan is worked in: its owner's when that works in
+/// the plan's root, else the pane working in its root (the session that
+/// rendered a plan may sit elsewhere), else the owner's when it is live.
 fn plan_ws(panes: &Panes, p: &Value) -> Option<String> {
     let owner = p.get("owner").map(|o| s(o, "workspace")).unwrap_or_default();
-    panes.ws_for_dir(&s(p, "root")).or_else(|| panes.live_ws(&owner))
+    let root = s(p, "root");
+    panes
+        .live_ws(&owner)
+        .filter(|w| panes.ws_in_dir(w, &root))
+        .or_else(|| panes.ws_for_dir(&root))
+        .or_else(|| panes.live_ws(&owner))
 }
 
 /// The workspace a hook file names: `<prefix><ws>`, the rest a UUID.
@@ -726,8 +740,9 @@ impl Feed {
                 }));
                 for f in &fams {
                     let live: Vec<&FamilyMember> = f.members.iter().filter(|m| m.ws.is_some()).collect();
-                    let pending = f.members.iter().any(|m| m.ready || !m.waits.is_empty());
-                    if !pending || live.is_empty() {
+                    // A card only when a member can go: a member that only
+                    // waits says so on its tile and in the next card.
+                    if !f.members.iter().any(|m| m.ready) || live.is_empty() {
                         continue;
                     }
                     let home = f.members.iter().find(|m| m.role == "parent" && m.ws.is_some()).or(live.first().copied()).and_then(|m| m.ws.clone()).unwrap_or_default();

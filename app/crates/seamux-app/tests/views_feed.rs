@@ -515,3 +515,29 @@ fn family_next_step_is_one_decision_and_members_lose_their_ready_gates() {
     // auth-api's ready go is on the family card, not a gate of its own.
     assert!(!frame.decisions.iter().any(|d| matches!(d, Decision::Gate { slug, .. } if slug == "auth-api")));
 }
+
+#[test]
+fn family_with_nothing_ready_is_no_decision() {
+    let f = Fixture::new("family-wait");
+    let (a, b) = (f.dir("work/a"), f.dir("work/b"));
+    let tiles = [tile(SURF_A, WS_A, &a, "working"), tile(SURF_B, WS_B, &b, "idle")];
+    let mut rows = family_rows(&a, &b);
+    // auth-api is mid increment and auth-ui waits on the parent: nothing to go.
+    rows[1]["progress"] = json!({"total": 2, "done": 0, "open": [{"n": 1, "title": "Endpoints"}], "next": null});
+    let frame = primed(inputs(&f, rows, vec![])).build(&tiles, NOW);
+    assert_eq!(frame.families.len(), 1, "the family is still drawn in the views");
+    assert!(!frame.decisions.iter().any(|d| matches!(d, Decision::Family { .. })), "but no card waits on the person");
+}
+
+#[test]
+fn plan_owner_working_in_its_root_keeps_the_plan() {
+    let f = Fixture::new("plan-owner");
+    let a = f.dir("work/a");
+    // Two workspaces in the plan's root; the owner, WS_B, is the second.
+    let tiles = [tile(SURF_A, WS_A, &a, "idle"), tile(SURF_B, WS_B, &a, "idle")];
+    let mut rows = family_rows(&a, &a);
+    rows[1]["owner"] = json!({"workspace": WS_B});
+    let frame = primed(inputs(&f, rows, vec![])).build(&tiles, NOW);
+    let api = frame.families[0].members.iter().find(|m| m.slug == "auth-api").unwrap();
+    assert_eq!(api.ws.as_deref(), Some(WS_B), "the owner's workspace, not the first pane in the root");
+}
