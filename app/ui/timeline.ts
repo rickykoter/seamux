@@ -120,10 +120,12 @@ export class Timeline {
       return s === "needs_input" ? 0 : s === "working" ? 1 : 2;
     };
     const muted = (ws: string) => (levelOf(lv, ws) === "mute" ? 10 : 0);
-    const shown = lanes.filter(active).sort((a, b) => muted(a.ws) + rank(a.ws) - (muted(b.ws) + rank(b.ws)));
+    const waitWs = new Set(this.waits().map((d) => d.ws));
+    // A lane waiting on you stays, however quiet its window: a turn that
+    // ended on a question reads idle to cmux.
+    const shown = lanes.filter((l) => active(l) || waitWs.has(l.ws)).sort((a, b) => muted(a.ws) + rank(a.ws) - (muted(b.ws) + rank(b.ws)));
     const resting = lanes.length - shown.length;
     const shells = this.tiles.filter((t) => t.state === "shell").length;
-    const waitWs = new Set(this.waits().map((d) => d.ws));
 
     // A family's lanes sit together under its header.
     const fams = this.views.families;
@@ -154,6 +156,8 @@ export class Timeline {
     let sub = WORDS[tile?.state ?? ""] ?? "";
     const last = l.spans[l.spans.length - 1];
     if (tile?.state === "needs_input" && last?.state === "needs_input") sub = `waiting ${ago(now - last.start)}`;
+    const asked = waiting && tile?.state !== "needs_input" ? this.waits().find((d) => d.ws === l.ws) : undefined;
+    if (asked) sub = `waiting ${ago(now - asked.since)}`;
     if (tile?.state === "working" && plan && plan.open) sub = `working · inc ${plan.n}/${plan.total}`;
     if (tile?.state !== "working" && tile?.state !== "needs_input" && plan?.phase === "done") sub = "delivered";
     const kin = familyOf(this.views.families, l.ws);
@@ -161,10 +165,12 @@ export class Timeline {
     if (waits && tile?.state !== "needs_input") sub = waits;
     if (level === "mute") sub = sub ? `${sub} · muted` : "muted";
     const top = el("span", "t-name-top");
-    top.append(el("b", "", this.title(l.ws)), menu(l.ws, this.title(l.ws), level));
-    name.append(top, el("span", `t-sub ${tile?.state ?? ""}`, sub));
+    // The workspace's colour as a mark beside its name, as Desk's cards wear it.
+    const mark = el("span", "t-mark-ws");
+    mark.style.setProperty("--ws", this.color(l.ws));
+    top.append(mark, el("b", "", this.title(l.ws)), menu(l.ws, this.title(l.ws), level));
+    name.append(top, el("span", `t-sub ${asked ? "needs_input" : tile?.state ?? ""}`, sub));
     const track = el("div", "t-track");
-    track.style.setProperty("--ws", this.color(l.ws));
     for (const [i, s0] of l.spans.entries()) {
       // The feed's clock moves in minutes: the run still going reaches now.
       const s = i === l.spans.length - 1 && tile?.state === s0.state ? { ...s0, end: now } : s0;
@@ -184,6 +190,22 @@ export class Timeline {
           this.drawPop();
         });
       }
+      track.append(b);
+    }
+    // A wait the history does not hold (the turn ended on a question, which
+    // cmux calls idle): drawn from the decision, an open span to now.
+    if (asked) {
+      const from = Math.max(start, asked.since);
+      const b = el("button", "t-span wait open");
+      (b as HTMLButtonElement).type = "button";
+      b.style.left = `${pct(from, start, now)}%`;
+      b.style.width = `${Math.max(0.4, 100 - pct(from, start, now))}%`;
+      b.title = `waiting on you ${ago(now - asked.since)} (since ${hm(asked.since)})`;
+      b.setAttribute("aria-label", `${this.title(l.ws)}: ${b.title}; answer it below`);
+      b.addEventListener("click", () => {
+        this.picked = l.ws;
+        this.drawPop();
+      });
       track.append(b);
     }
     for (const m of l.marks) {

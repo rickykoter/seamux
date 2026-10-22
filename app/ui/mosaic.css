@@ -6,14 +6,13 @@
 .mosaic { display: flex; flex-direction: column; height: 100%; }
 .mosaic .grow { flex: 1; }
 
-.mosaic-grid {
-  flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: grid; gap: 10px;
-  grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: minmax(58px, auto); grid-auto-flow: row dense;
-  align-content: start;
+.mosaic-grid { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.m-sec {
+  display: grid; gap: 10px; grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-rows: minmax(58px, auto); grid-auto-flow: row dense; align-content: start;
 }
 .mosaic-grid[hidden], .mosaic-still[hidden], .mosaic-detail[hidden] { display: none; }
-.m-fam { grid-column: 1 / -1; padding: 4px 2px 0; }
-.mosaic-grid.has-fam { grid-auto-flow: row; }
+.m-fam { padding: 6px 2px 0; }
 .m-state:not(.working):not(.needs_input) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mosaic-still { margin: 16vh auto 0; color: var(--muted); font: 13px/1.35 ui-monospace, Menlo, monospace; }
 
@@ -48,6 +47,9 @@
 .m-tail {
   flex: 1; min-height: 0; overflow: hidden; font: 11.5px/1.45 ui-monospace, Menlo, monospace; color: var(--term-fg);
   display: flex; flex-direction: column; justify-content: flex-end;
+  /* The oldest line fades out at the top rather than being cut through. */
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 2.2em);
+  mask-image: linear-gradient(to bottom, transparent, #000 2.2em);
 }
 .m-tail .ln { white-space: pre-wrap; overflow-wrap: anywhere; }
 .m-look { font-size: 11px; color: var(--chip-look-fg, var(--muted)); }
@@ -60,5 +62,7 @@
 .mosaic-detail #wall { flex: 1; min-height: 0; }
 
 @media (max-width: 760px) {
-  .mosaic-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .m-sec { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+/* A section with a single tile gives it the width, not an empty half. */
+.m-sec > .m-tile:only-child { grid-column: 1 / -1; }

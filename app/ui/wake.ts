@@ -80,6 +80,16 @@ function where(r: Row, home: string): string {
   return tilde(r.path || "");
 }
 
+/** A long path shortened by whole folders: its first two and its last two
+ *  (the file's folder and the file), "…" between. */
+export function shortPath(p: string, max = 72): string {
+  if (p.length <= max || p.includes("://")) return p;
+  const lead = p.startsWith("/") ? "/" : "";
+  const parts = p.split("/").filter(Boolean);
+  if (parts.length <= 4) return p;
+  return `${lead}${parts.slice(0, 2).join("/")}/…/${parts.slice(-2).join("/")}`;
+}
+
 /** `text` with the search's words marked. */
 function marked(text: string, q: string): DocumentFragment {
   const f = document.createDocumentFragment();
@@ -388,13 +398,10 @@ export class Wake {
     li.append(badges);
     const w = where(r, this.home);
     if (w) {
-      // Right-to-left keeps a long path's tail in view; <bdi> keeps its
-      // characters in order.
+      // Cut by whole folders, the full path on hover; a search shows it whole.
       const p = el("span", "w-p");
       p.title = w;
-      const b = el("bdi");
-      b.append(marked(w, this.query));
-      p.append(b);
+      p.append(marked(this.query ? w : shortPath(w), this.query));
       li.append(p);
     }
     if (r.was_path) {
