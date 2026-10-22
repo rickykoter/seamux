@@ -24,6 +24,15 @@ fn client() -> Result<&'static cmux::Cmux, String> {
 pub fn frame(c: &cmux::Cmux, surface: &str, seen: &str) -> Result<Option<Value>, String> {
     let d = c.call("terminal.replay", json!({"surface_id": surface})).map_err(|e| e.to_string())?;
     let g = d.get("render_grid").cloned().unwrap_or(Value::Null);
+    // What the pane's program asked of the mouse, for term_mouse to encode by.
+    // Panes come and go: the map is emptied rather than left to grow.
+    {
+        let mut m = modes().lock().unwrap();
+        if m.len() >= 256 && !m.contains_key(surface) {
+            m.clear();
+        }
+        m.insert(surface.to_string(), Mouse::of(&g));
+    }
     let stamp = stamp_of(&d, &g);
     if stamp == seen {
         return Ok(None);
@@ -41,7 +50,7 @@ pub fn frame(c: &cmux::Cmux, surface: &str, seen: &str) -> Result<Option<Value>,
 fn stamp_of(d: &Value, g: &Value) -> String {
     use std::hash::Hasher;
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    for v in [&d["rows"], &d["columns"], &g["row_spans"], &g["cursor"], &g["styles"], &g["terminal_theme"], &g["active_screen"]] {
+    for v in [&d["rows"], &d["columns"], &g["row_spans"], &g["scrollback_spans"], &g["cursor"], &g["styles"], &g["terminal_theme"], &g["active_screen"], &g["modes"]] {
         hash_value(v, &mut h);
     }
     format!("{:016x}", h.finish())
@@ -67,6 +76,117 @@ fn hash_value(v: &Value, h: &mut impl std::hash::Hasher) {
         }
         other => other.to_string().hash(h),
     }
+}
+
+// ---- the mouse: wheel and clicks to the pane's program ----
+
+/// What a pane's program asked of the mouse, read from a frame's modes.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Mouse {
+    /// Mouse reporting is on (1000, 1002 or 1003).
+    pub report: bool,
+    /// Reports in SGR form (1006); otherwise the old X10 bytes.
+    pub sgr: bool,
+    /// On the alternate screen the wheel becomes arrow keys (1007).
+    pub alt_scroll: bool,
+    pub alt_screen: bool,
+    /// Arrow keys in application form (DECCKM, mode 1): ESC O A, not ESC [ A.
+    pub app_cursor: bool,
+}
+
+impl Mouse {
+    pub fn of(g: &Value) -> Mouse {
+        let on = |code: u64| {
+            g["modes"].as_array().is_some_and(|ms| {
+                ms.iter().any(|m| m["ansi"] == json!(false) && m["code"].as_u64() == Some(code) && m["on"] == json!(true))
+            })
+        };
+        Mouse {
+            report: on(1000) || on(1002) || on(1003),
+            sgr: on(1006),
+            alt_scroll: on(1007),
+            alt_screen: g["active_screen"].as_str() == Some("alternate"),
+            app_cursor: on(1),
+        }
+    }
+}
+
+/// One mouse event from the app's terminal. Cells count from 0.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Act {
+    WheelUp,
+    WheelDown,
+    /// A button (0 left, 1 middle, 2 right) going down.
+    Press(u8),
+    Release(u8),
+}
+
+/// The bytes a terminal would send for `act` at (col, row), `count` times,
+/// or None when the program asked for nothing that takes it (the app then
+/// scrolls its own view).
+pub fn encode(m: Mouse, act: Act, col: u32, row: u32, shift: bool, alt: bool, ctrl: bool, count: u32) -> Option<String> {
+    let count = count.clamp(1, 10) as usize;
+    let mods = (if shift { 4 } else { 0 }) + (if alt { 8 } else { 0 }) + (if ctrl { 16 } else { 0 });
+    let wheel = matches!(act, Act::WheelUp | Act::WheelDown);
+    if m.report {
+        let (b, up) = match act {
+            Act::WheelUp => (64, false),
+            Act::WheelDown => (65, false),
+            Act::Press(b) => (b.min(2) as u32, false),
+            Act::Release(b) => (b.min(2) as u32, true),
+        };
+        let one = if m.sgr {
+            format!("\x1b[<{};{};{}{}", b + mods, col + 1, row + 1, if up { 'm' } else { 'M' })
+        } else {
+            // X10: a release is button 3, and each value rides on 32. Past
+            // 127 a value would go out as two UTF-8 bytes, not one: refused.
+            let b = if up { 3 } else { b } + mods + 32;
+            let (x, y) = (col + 33, row + 33);
+            if x > 127 || y > 127 {
+                return None;
+            }
+            format!("\x1b[M{}{}{}", char::from(b as u8), char::from(x as u8), char::from(y as u8))
+        };
+        return Some(one.repeat(if wheel { count } else { 1 }));
+    }
+    if wheel && m.alt_screen && m.alt_scroll {
+        let key = match (act, m.app_cursor) {
+            (Act::WheelUp, true) => "\x1bOA",
+            (Act::WheelUp, false) => "\x1b[A",
+            (_, true) => "\x1bOB",
+            (_, false) => "\x1b[B",
+        };
+        // Three lines a notch, as terminals scroll.
+        return Some(key.repeat(3 * count));
+    }
+    None
+}
+
+static MODES: OnceLock<std::sync::Mutex<std::collections::HashMap<String, Mouse>>> = OnceLock::new();
+
+fn modes() -> &'static std::sync::Mutex<std::collections::HashMap<String, Mouse>> {
+    MODES.get_or_init(Default::default)
+}
+
+/// A wheel, press or release on the app's terminal, sent to the pane as its
+/// program asked for it. Ok(false): nothing in the pane takes it.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn term_mouse(surface_id: String, kind: String, col: u32, row: u32, button: u8, shift: bool, alt: bool, ctrl: bool, count: u32) -> Result<bool, String> {
+    let act = match kind.as_str() {
+        "wheel_up" => Act::WheelUp,
+        "wheel_down" => Act::WheelDown,
+        "press" => Act::Press(button),
+        "release" => Act::Release(button),
+        other => return Err(format!("no such mouse event: {other}")),
+    };
+    let m = modes().lock().unwrap().get(&surface_id).copied().unwrap_or_default();
+    let Some(text) = encode(m, act, col, row, shift, alt, ctrl, count) else { return Ok(false) };
+    tauri::async_runtime::spawn_blocking(move || {
+        client()?.call("terminal.input", json!({"surface_id": surface_id, "text": text})).map(|_| true).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ---- holding a pane at the app's size ----
@@ -321,6 +441,59 @@ mod tests {
         let t = std::time::Instant::now();
         let again = super::frame(&c, &s, &stamp).unwrap();
         println!("first {:?}, unchanged {:?} (none: {}), {} spans", first, t.elapsed(), again.is_none(), f["grid"]["row_spans"].as_array().map(|a| a.len()).unwrap_or(0));
+    }
+}
+
+#[cfg(test)]
+mod mouse_tests {
+    use super::{encode, Act, Mouse};
+    use serde_json::json;
+
+    fn modes(codes: &[u64], screen: &str) -> serde_json::Value {
+        let ms: Vec<_> = [1, 1000, 1002, 1003, 1006, 1007].iter().map(|c| json!({"ansi": false, "code": c, "on": codes.contains(c)})).collect();
+        json!({"modes": ms, "active_screen": screen})
+    }
+
+    #[test]
+    fn term_mouse_reads_the_pane_modes_claude_turns_on() {
+        let m = Mouse::of(&modes(&[1000, 1002, 1003, 1006, 1007], "alternate"));
+        assert_eq!(m, Mouse { report: true, sgr: true, alt_scroll: true, alt_screen: true, app_cursor: false });
+        // An ANSI mode 1000 is not the private one.
+        let ansi = json!({"modes": [{"ansi": true, "code": 1000, "on": true}]});
+        assert!(!Mouse::of(&ansi).report);
+    }
+
+    #[test]
+    fn term_mouse_sends_sgr_wheel_and_clicks_one_based() {
+        let m = Mouse::of(&modes(&[1000, 1006], "alternate"));
+        assert_eq!(encode(m, Act::WheelUp, 0, 0, false, false, false, 2).unwrap(), "\x1b[<64;1;1M\x1b[<64;1;1M");
+        assert_eq!(encode(m, Act::WheelDown, 9, 4, false, false, false, 1).unwrap(), "\x1b[<65;10;5M");
+        assert_eq!(encode(m, Act::Press(0), 3, 7, false, false, false, 1).unwrap(), "\x1b[<0;4;8M");
+        assert_eq!(encode(m, Act::Release(0), 3, 7, false, false, false, 1).unwrap(), "\x1b[<0;4;8m");
+        assert_eq!(encode(m, Act::Press(0), 0, 0, true, false, true, 1).unwrap(), "\x1b[<20;1;1M", "shift 4 + ctrl 16");
+        assert_eq!(encode(m, Act::Press(0), 0, 0, false, false, false, 5).unwrap(), "\x1b[<0;1;1M", "a click is never repeated");
+        assert_eq!(encode(m, Act::WheelUp, 0, 0, false, false, false, 99).unwrap().matches('M').count(), 10, "at most ten notches");
+    }
+
+    #[test]
+    fn term_mouse_falls_back_to_x10_bytes_and_refuses_far_cells() {
+        let m = Mouse::of(&modes(&[1000], "primary"));
+        assert_eq!(encode(m, Act::Press(0), 0, 0, false, false, false, 1).unwrap(), "\x1b[M !!");
+        assert_eq!(encode(m, Act::Release(0), 0, 0, false, false, false, 1).unwrap(), "\x1b[M#!!");
+        assert_eq!(encode(m, Act::Press(0), 94, 94, false, false, false, 1).unwrap(), "\x1b[M \x7f\x7f", "the last cell one byte holds");
+        assert_eq!(encode(m, Act::Press(0), 95, 0, false, false, false, 1), None, "no UTF-8 pair for a far cell");
+        assert_eq!(encode(m, Act::Press(0), 300, 0, false, false, false, 1), None);
+    }
+
+    #[test]
+    fn term_mouse_turns_the_wheel_into_arrows_only_on_the_alternate_screen() {
+        let alt = Mouse::of(&modes(&[1007], "alternate"));
+        assert_eq!(encode(alt, Act::WheelUp, 0, 0, false, false, false, 1).unwrap(), "\x1b[A\x1b[A\x1b[A");
+        let app = Mouse::of(&modes(&[1, 1007], "alternate"));
+        assert_eq!(encode(app, Act::WheelDown, 0, 0, false, false, false, 1).unwrap(), "\x1bOB\x1bOB\x1bOB");
+        assert_eq!(encode(alt, Act::Press(0), 0, 0, false, false, false, 1), None, "no click without reporting");
+        let shell = Mouse::of(&modes(&[1007], "primary"));
+        assert_eq!(encode(shell, Act::WheelUp, 0, 0, false, false, false, 1), None, "a shell's own scrollback, in the app");
     }
 }
 
