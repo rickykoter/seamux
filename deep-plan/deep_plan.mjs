@@ -1470,6 +1470,42 @@ function checksRow(inc, slug = "") {
   return `<p class="dim">checks: ${CHECK_GLYPH[agg] || ""} ${esc(agg)}</p><ul class="dim">${items}</ul>`;
 }
 
+// The family this plan belongs to, under the title: the parent and every
+// sibling with its phase and progress, what this plan owns, and what it waits
+// on. Names link to each plan's own page (served /plan/<slug>, or the file).
+function familyStripHtml(slug) {
+  const idx = familyOf(slug);
+  const f = idx && familyRow(idx, slug);
+  if (!f) return "";
+  const items = f.members.map(m => {
+    const me = m.slug === slug;
+    const name = me ? `<b>${esc(m.slug)}</b>` :
+      `<a class="dp-fam-link" href="${esc(m.slug)}.working.html" data-plan="${esc(m.slug)}">${esc(m.slug)}</a>`;
+    return `<li class="dp-fam-m${me ? " dp-fam-me" : ""}"><span class="dim">${m.role === "parent" ? "parent" : "child"}</span> ${name}` +
+      ` <span class="dim">· ${esc(m.phase)} · ${m.done}/${m.total} done</span></li>`;
+  }).join("");
+  const owns = f.owns.length ? `<p class="dim">this plan owns ${f.owns.map(g => `<code>${esc(g)}</code>`).join(" ")}</p>` : "";
+  const waits = f.waitingOn.length
+    ? `<p class="dp-fam-wait">waits on ${f.waitingOn.map(w => `<a class="dp-fam-link" href="${esc(f.parent)}.working.html" data-plan="${esc(f.parent)}">${esc(f.parent)}</a> increment ${w.n}${w.title ? ` (${esc(w.title)})` : ""}, ${esc(w.status)}`).join("; ")}</p>`
+    : (f.after.length ? `<p class="dim">its parent's increments ${f.after.join(", ")} are done: free to go</p>` : "");
+  return `<section class="dp-fam" aria-label="plan family">
+<style>
+.dp-fam{border:1px solid var(--line,#8884);border-radius:8px;padding:8px 12px;margin:4px 0 14px}
+.dp-fam ul{list-style:none;margin:4px 0;padding:0;display:flex;flex-wrap:wrap;gap:4px 18px}
+.dp-fam p{margin:4px 0}
+.dp-fam-wait{color:var(--warn,#c80)}
+.dp-fam-link{color:inherit}
+</style>
+<p class="dim">family <b>${esc(f.parent)}</b> · ${f.members.filter(m => m.phase === "done" || (m.total && m.done === m.total)).length}/${f.members.length} plans done</p>
+<ul>${items}</ul>${owns}${waits}
+<script>
+if (/^https?:/.test(location.protocol)) document.querySelectorAll(".dp-fam-link").forEach(function (a) {
+  a.setAttribute("href", "/plan/" + encodeURIComponent(a.getAttribute("data-plan")));
+});
+</script>
+</section>`;
+}
+
 function workingHtml(spec, st, b64) {
   const rows = (st.increments || []).map(inc => {
     const d = (spec.deliverables || [])[inc.n - 1] || {};
@@ -1504,7 +1540,7 @@ ${DP_RISK_CSS}
   padding:10px 16px;font:inherit;cursor:pointer;min-height:44px}
 #dp-amend-copy:focus-visible,.dp-note:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </style>` +
-    commonBody(spec, st.adrs || [], true) + `
+    commonBody(spec, st.adrs || [], true).replace(/(<p class="dim">plan <code>[^\n]*<\/p>)/, (m) => m + "\n" + familyStripHtml(spec.slug)) + `
 ${st.approved ? `<p class="dim">approved snapshot: <span class="dp-path" data-file="${esc(st.approved.path)}"><code>${esc(st.approved.path)}</code></span>${
       st.approved.spec_hash !== specHash(spec) ? ' · <span style="color:var(--warn)">the live plan has DRIFTED from the approved snapshot (spec amended since grade-pass)</span>' : ""}</p>` : ""}
 <h2>Gate</h2><p>${g.allow ? CHECK_GLYPH.pass + " open" : CHECK_GLYPH.fail + " shut"} <span class="dim">— ${esc(g.why)}</span>
@@ -1779,11 +1815,17 @@ async function render(specPath, opts) {
   if (st.phase === "review") say("phase: review — the alignment check gates everything.");
 }
 
-function rerenderWorking(slug) {
+function rerenderWorking(slug, kin = true) {
   const spec = JSON.parse(fs.readFileSync(path.join(KEYS_DIR, slug + ".spec.json"), "utf8"));
   const st = readState(slug);
   if (!st) return;
   fs.writeFileSync(path.join(PLANS_DIR, slug + ".working.html"), workingHtml(spec, st, mermaidB64()));
+  // Each family member's page shows this plan's progress in its strip.
+  const idx = kin && familyOf(slug);
+  for (const m of (idx && idx.members) || []) {
+    if (m.slug === slug) continue;
+    try { rerenderWorking(m.slug, false); } catch { /* a member's page is best-effort */ }
+  }
 }
 
 // The three artifacts that are pure functions of the spec: the widget, the
