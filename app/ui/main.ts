@@ -9,6 +9,8 @@ import { Mosaic } from "./mosaic";
 import "./mosaic.css";
 import { Wake } from "./wake";
 import "./wake.css";
+import { Timeline } from "./timeline";
+import "./timeline.css";
 
 // The shape of `cmux_status` in crates/seamux-app/src/main.rs.
 type Workspace = { id: string; ref: string; title: string };
@@ -42,26 +44,13 @@ function show(s: Status): void {
   conn.textContent = `cmux · ${n} workspace${n === 1 ? "" : "s"}`;
 }
 
-/** A view whose increment has not landed: says so, with a small drawing. */
-function soon(el: HTMLElement, art: string, text: string): void {
-  const box = document.createElement("div");
-  box.className = "soon";
-  const pre = document.createElement("pre");
-  pre.setAttribute("aria-hidden", "true");
-  pre.textContent = art;
-  const p = document.createElement("p");
-  p.textContent = text;
-  box.append(pre, p);
-  el.replaceChildren(box);
-}
-
 const desk = document.getElementById("desk")!;
 const timeline = document.getElementById("timeline")!;
 const wakeEl = document.getElementById("wake")!;
 const deskView = new Desk(desk);
 const mosaicEl = document.getElementById("mosaic")!;
 const mosaic = new Mosaic(mosaicEl, document.getElementById("wall")!, wall);
-soon(timeline, "──▬▬▬──◆──▬▬──●──│──", "Timeline shows who waited, and how long.");
+const timelineView = new Timeline(timeline);
 const wakeView = new Wake(wakeEl);
 
 const tabs = new Tabs(
@@ -96,3 +85,4 @@ wall.start().catch((e) => wall.problem(`The wall couldn't start: ${String(e)}`))
 deskView.start().catch((e) => console.error("desk", e));
 mosaic.start().catch((e) => console.error("mosaic", e));
 wakeView.start().catch((e) => console.error("wake", e));
+timelineView.start().catch((e) => console.error("timeline", e));

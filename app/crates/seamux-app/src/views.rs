@@ -187,6 +187,8 @@ pub struct ViewsFrame {
     pub plans: Vec<PlanBrief>,
     /// Each live workspace's newest lookout review: Mosaic's review line.
     pub reviews: Vec<ReviewBrief>,
+    /// Timeline: one lane per live agent workspace over the last two hours.
+    pub lanes: Vec<Lane>,
     /// What could not be read this time, for the page to say.
     pub problems: Vec<String>,
 }
@@ -198,6 +200,8 @@ pub struct Inputs {
     /// lookout's reviews dir.
     pub reviews_dir: PathBuf,
     pub history_dir: PathBuf,
+    /// deep-plan's per-plan state files (when each increment went and finished).
+    pub dp_state_dir: PathBuf,
     /// `deep-plan status --json`'s rows.
     pub plans: Box<dyn Fn() -> Result<Vec<Value>, String> + Send + Sync>,
     /// The Artifact Log's newest rows.
@@ -210,6 +214,7 @@ impl Inputs {
             state_dir: crew_core::home::xdg_cache(),
             reviews_dir: crew_board::review::reviews_dir(),
             history_dir: history::dir(),
+            dp_state_dir: crew_board::server::dp_state(),
             plans: Box::new(plans_now),
             wake: Box::new(|n| crew_store::search("", None, None, n).map_err(|e| e.to_string())),
         }
@@ -525,6 +530,7 @@ pub struct Feed {
     state_dir: PathBuf,
     reviews_dir: PathBuf,
     history_dir: PathBuf,
+    dp_state_dir: PathBuf,
     reviews: Mutex<HashMap<PathBuf, (SystemTime, Option<ReviewSummary>)>>,
     plans: Slow<Vec<Value>>,
     wake: Slow<Vec<crew_store::Row>>,
@@ -537,6 +543,7 @@ impl Feed {
             state_dir: inputs.state_dir,
             reviews_dir: inputs.reviews_dir,
             history_dir: inputs.history_dir,
+            dp_state_dir: inputs.dp_state_dir,
             reviews: Mutex::default(),
             plans: Slow::new(Arc::from(inputs.plans), PLANS_TTL),
             wake: Slow::new(Arc::new(move || wake(WAKE_ROWS)), WAKE_TTL),
@@ -612,6 +619,8 @@ impl Feed {
             });
         }
         decisions.sort_by_key(|d| d.since());
+        let start = now_ms.saturating_sub(HISTORY_WINDOW.as_millis() as u64);
+        let lanes = self.lanes(&panes, &plans, &live_reviews, start, now_ms);
         let reviews = review_briefs(live_reviews);
 
         let wake = match self.wake.get() {
@@ -633,10 +642,131 @@ impl Feed {
             }
         };
 
-        let since = now_ms.saturating_sub(HISTORY_WINDOW.as_millis() as u64);
-        let history = history::read_since(&self.history_dir, since).iter().map(Change::from).collect();
-        ViewsFrame { decisions, wake, history, plans, reviews, problems }
+        let history = history::read_since(&self.history_dir, start).iter().map(Change::from).collect();
+        ViewsFrame { decisions, wake, history, plans, reviews, lanes, problems }
     }
+
+    /// One lane per live workspace with an agent: its spans over the window
+    /// and its marks (increments going and finishing, lookout reviews).
+    fn lanes(&self, panes: &Panes, plans: &[PlanBrief], reviews: &[(String, ReviewSummary)], start: u64, now: u64) -> Vec<Lane> {
+        // A day back, so the state at the window's start is known.
+        let all = history::read_since(&self.history_dir, start.saturating_sub(24 * 3600 * 1000));
+        let mut by_ws: HashMap<String, Vec<Entry>> = HashMap::new();
+        for e in all {
+            if let Some(ws) = panes.live_ws(&e.ws) {
+                by_ws.entry(ws).or_default().push(e);
+            }
+        }
+        let mut wss: Vec<String> = panes.tiles.iter().filter(|t| t.agent.is_some()).map(|t| t.workspace.clone()).collect();
+        let mut seen = std::collections::HashSet::new();
+        wss.retain(|w| seen.insert(w.clone()));
+        wss.into_iter()
+            .map(|ws| {
+                let mut spans = spans_of(by_ws.get(&ws).map(Vec::as_slice).unwrap_or(&[]), start, now);
+                if spans.is_empty() {
+                    // No history yet (it began after this pane's state did):
+                    // the state the wall sees, from when it first saw it.
+                    if let Some(t) = panes.tiles.iter().find(|t| t.workspace == ws && t.agent.is_some()) {
+                        if history::STATES.contains(&t.state.as_str()) {
+                            spans.push(Span { state: t.state.clone(), start: t.since.clamp(start, now), end: now });
+                        }
+                    }
+                }
+                let mut marks = Vec::new();
+                let plan = plans.iter().find(|p| p.ws == ws);
+                if let Some(p) = plan {
+                    marks.extend(increment_marks(&self.dp_state_dir, &p.slug, start, now));
+                }
+                // A review of a plan sits on that plan's lane; any other on
+                // the lane of the workspace working in its worktree.
+                let mine = |(w, r): &&(String, ReviewSummary)| match plans.iter().find(|p| !r.plan.is_empty() && p.slug == r.plan) {
+                    Some(p) => p.ws == ws,
+                    None => *w == ws,
+                };
+                for (_, r) in reviews.iter().filter(mine).filter(|(_, r)| r.since >= start && r.since <= now) {
+                    marks.push(Mark { kind: "review".into(), at: r.since, n: r.inc, label: r.title.clone() });
+                }
+                marks.sort_by_key(|m| m.at);
+                Lane { ws, spans, marks }
+            })
+            .collect()
+    }
+}
+
+/// A run of one state in a lane, [start, end) in ms.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct Span {
+    pub state: String,
+    pub start: u64,
+    pub end: u64,
+}
+
+/// A point on a lane: an increment going (`go`) or finishing (`done`), or a
+/// lookout review (`review`).
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct Mark {
+    pub kind: String,
+    pub at: u64,
+    pub n: u64,
+    pub label: String,
+}
+
+/// One workspace's row on Timeline.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct Lane {
+    pub ws: String,
+    pub spans: Vec<Span>,
+    pub marks: Vec<Mark>,
+}
+
+/// A workspace's history as runs of one state over [start, now): the state
+/// at `start` is the last one recorded before it; a repeat of the same state
+/// (a hook and the poll both saw it) does not start a new run.
+pub fn spans_of(entries: &[Entry], start: u64, now: u64) -> Vec<Span> {
+    let mut sorted: Vec<&Entry> = entries.iter().filter(|e| e.at < now).collect();
+    sorted.sort_by_key(|e| e.at);
+    let mut out: Vec<Span> = Vec::new();
+    let mut cur: Option<(String, u64)> = None;
+    for e in sorted {
+        let at = e.at.max(start);
+        match &cur {
+            Some((state, _)) if *state == e.state => continue,
+            Some((state, from)) => {
+                if at > *from {
+                    out.push(Span { state: state.clone(), start: *from, end: at });
+                }
+            }
+            None => {}
+        }
+        cur = Some((e.state.clone(), at));
+    }
+    if let Some((state, from)) = cur {
+        if now > from {
+            out.push(Span { state, start: from, end: now });
+        }
+    }
+    // A run that ended before the window opened left a zero-width span at start.
+    out.retain(|s| s.end > start);
+    out
+}
+
+/// When each of a plan's increments went and finished inside [start, now],
+/// from deep-plan's state file.
+fn increment_marks(dir: &Path, slug: &str, start: u64, now: u64) -> Vec<Mark> {
+    let Some(v) = std::fs::read_to_string(dir.join(format!("{slug}.json"))).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for inc in v.get("increments").and_then(Value::as_array).into_iter().flatten() {
+        let n = u(inc, "n");
+        for (key, kind) in [("authorizedAt", "go"), ("doneAt", "done")] {
+            let at = u(inc, key);
+            if at >= start && at <= now && at > 0 {
+                out.push(Mark { kind: kind.into(), at, n, label: format!("{slug} · {}", s(inc, "title")) });
+            }
+        }
+    }
+    out
 }
 
 /// Each live workspace's plan, the one touched last when it has several.
