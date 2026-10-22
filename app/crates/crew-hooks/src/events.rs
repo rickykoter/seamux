@@ -241,6 +241,12 @@ impl Hook {
         self.state.join(format!("question-{}.json", self.ws))
     }
 
+    /// The ask is over: its marker and its questions go.
+    pub fn question_clear(&self) {
+        let _ = std::fs::remove_file(self.state.join(format!("question-{}", self.ws)));
+        let _ = std::fs::remove_file(self.question_file());
+    }
+
     pub fn lane_release(&self) {
         let m = self.lane_marker();
         if !m.exists() {
@@ -542,6 +548,9 @@ fn stop(h: &mut Hook) -> String {
         h.lane_release();
     }
     h.cli(&["clear-status", "claude"]);
+    // A turn cannot end with its AskUserQuestion still open: one cancelled
+    // with Esc fires no answered event, so its marker goes here.
+    h.question_clear();
     h.history("idle", "stop");
     h.token_clear(&["phase", "feed", "feedby", "feedgate", "feedreq", "feedws"]);
     let body = if br.is_empty() { "Turn complete".to_string() } else { format!("Turn complete — {br}") };
@@ -657,8 +666,7 @@ pub fn main(args: &[String]) -> i32 {
             String::new()
         }
         "answered" => {
-            let _ = std::fs::remove_file(h.state.join(format!("question-{}", h.ws)));
-            let _ = std::fs::remove_file(h.question_file());
+            h.question_clear();
             h.history("working", "answered");
             h.lane_release();
             h.phase("working");
@@ -668,6 +676,7 @@ pub fn main(args: &[String]) -> i32 {
         // waited on is answered and the agent is at work again.
         "prompt" => {
             let _ = std::fs::remove_file(h.state.join(format!("asked-{}", h.ws)));
+            h.question_clear();
             h.history("working", "prompt");
             h.lane_release();
             h.phase("working");

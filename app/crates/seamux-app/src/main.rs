@@ -4,6 +4,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod desk_app;
 mod shell;
 mod views_app;
 mod wall_app;
@@ -143,7 +144,10 @@ fn main() {
             wall_app::wall_reply,
             wall_app::wall_jump,
             views_app::views_frame,
-            shell::open_in_cmux
+            shell::open_in_cmux,
+            desk_app::desk_answer,
+            desk_app::plan_go,
+            desk_app::plan_check
         ])
         .run(tauri::generate_context!())
         .expect("seamux app failed to start");

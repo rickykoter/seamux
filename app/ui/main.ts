@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import { DEFAULT_TAB, Tabs } from "./tabs";
 import { WallView } from "./wall";
 import "./wall.css";
+import { Desk } from "./desk";
+import "./desk.css";
 
 // The shape of `cmux_status` in crates/seamux-app/src/main.rs.
 type Workspace = { id: string; ref: string; title: string };
@@ -52,7 +54,7 @@ function soon(el: HTMLElement, art: string, text: string): void {
 const desk = document.getElementById("desk")!;
 const timeline = document.getElementById("timeline")!;
 const wakeEl = document.getElementById("wake")!;
-soon(desk, "[ ? ]  [ ✓ ]  [ ↗ ]", "Desk lists every decision waiting on you. It arrives next.");
+const deskView = new Desk(desk);
 soon(timeline, "──▬▬▬──◆──▬▬──●──│──", "Timeline shows who waited, and how long.");
 soon(wakeEl, "· · ·  ▸ commit  ▸ PR  ▸ page", "The Wake moves into the app soon; for now it is at /artifacts in cmux.");
 
@@ -84,3 +86,4 @@ document.addEventListener("keydown", (e) => {
 
 invoke<Status>("cmux_status").then(show, (e) => show({ state: "failed", kind: "app", message: String(e) }));
 wall.start().catch((e) => wall.problem(`The wall couldn't start: ${String(e)}`));
+deskView.start().catch((e) => console.error("desk", e));

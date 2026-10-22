@@ -26,7 +26,7 @@ use crate::wall::Tile;
 /// How far back the frame's history reaches: Timeline's window.
 pub const HISTORY_WINDOW: Duration = Duration::from_secs(2 * 3600);
 /// Wake rows in a frame.
-pub const WAKE_ROWS: usize = 40;
+pub const WAKE_ROWS: usize = 120;
 /// How long a poll-seen change waits for a hook to report it before the
 /// poll records it itself.
 pub const GAP_GRACE: Duration = Duration::from_secs(5);
