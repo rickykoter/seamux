@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { Tabs } from "./tabs";
+import { listen } from "@tauri-apps/api/event";
+import { DEFAULT_TAB, Tabs } from "./tabs";
 import { WallView } from "./wall";
 import "./wall.css";
 
@@ -35,18 +36,46 @@ function show(s: Status): void {
   conn.textContent = `cmux · ${n} workspace${n === 1 ? "" : "s"}`;
 }
 
+/** A view whose increment has not landed: says so, with a small drawing. */
+function soon(el: HTMLElement, art: string, text: string): void {
+  const box = document.createElement("div");
+  box.className = "soon";
+  const pre = document.createElement("pre");
+  pre.setAttribute("aria-hidden", "true");
+  pre.textContent = art;
+  const p = document.createElement("p");
+  p.textContent = text;
+  box.append(pre, p);
+  el.replaceChildren(box);
+}
+
+const desk = document.getElementById("desk")!;
+const timeline = document.getElementById("timeline")!;
+const wakeEl = document.getElementById("wake")!;
+soon(desk, "[ ? ]  [ ✓ ]  [ ↗ ]", "Desk lists every decision waiting on you. It arrives next.");
+soon(timeline, "──▬▬▬──◆──▬▬──●──│──", "Timeline shows who waited, and how long.");
+soon(wakeEl, "· · ·  ▸ commit  ▸ PR  ▸ page", "The Wake moves into the app soon; for now it is at /artifacts in cmux.");
+
 const tabs = new Tabs(
   document.getElementById("strip")!,
   document.getElementById("stage")!,
-  new Map([["wall", document.getElementById("wall")!]]),
+  new Map([
+    ["desk", desk],
+    ["mosaic", document.getElementById("wall")!],
+    ["timeline", timeline],
+    ["wake", wakeEl],
+  ]),
 );
-tabs.select("wall");
+tabs.select(DEFAULT_TAB);
+
+// Every summon (the hotkey, the tray) lands on Desk.
+void listen("app:summoned", () => tabs.select(DEFAULT_TAB));
 
 // The window's own red button hides it too (shell.rs turns a close into a hide).
 const hide = () => void invoke("hide_overlay");
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") hide();
-  // ⌘1…⌘4 switch tabs, while focus is in the shell rather than a framed page.
+  // ⌘1…⌘4 pick the views, while focus is in the shell rather than a framed page.
   if (e.metaKey && e.key >= "1" && e.key <= "9") {
     tabs.selectIndex(Number(e.key) - 1);
     e.preventDefault();

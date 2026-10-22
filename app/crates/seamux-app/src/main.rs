@@ -142,7 +142,8 @@ fn main() {
             wall_app::wall_frame,
             wall_app::wall_reply,
             wall_app::wall_jump,
-            views_app::views_frame
+            views_app::views_frame,
+            shell::open_in_cmux
         ])
         .run(tauri::generate_context!())
         .expect("seamux app failed to start");
