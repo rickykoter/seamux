@@ -140,7 +140,7 @@ export class Mosaic {
     if (this.expanded) return;
     const at = document.activeElement;
     const typing = at instanceof HTMLInputElement && this.grid.contains(at);
-    const shape = JSON.stringify([this.tiles, this.views.decisions, this.views.plans, this.views.reviews, this.views.wake.slice(0, 40), [...this.notes], this.views.levels ?? {}]);
+    const shape = JSON.stringify([this.tiles, this.views.decisions, this.views.plans, this.views.reviews, this.views.wake.slice(0, 40), [...this.notes], this.views.levels ?? {}, this.views.families ?? []]);
     if (typing || (!force && shape === this.drawn)) {
       if (typing) at!.addEventListener("blur", () => setTimeout(() => this.draw(), 0), { once: true });
       return;

@@ -153,6 +153,17 @@ checks.append(("a second click navigates the same tab and stacks nothing",
 checks.append(("...focuses it, and widens it back (%.2f -> %.2f)" % (narrow, wake_width(sid)),
                state()["focused"] == sid and narrow < WAKE_SHARE and at_share(wake_width(sid))))
 
+# Widened by hand past its share, then clicked again: the Rust companion
+# leaves it as wide as the person made it (only a squeezed one is widened).
+if RUST:
+    st = state()
+    st["trees"][WS1]["ratio"] = 0.3
+    json.dump(st, open(PANES, "w"))
+    wide = wake_width(sid)
+    ok, detail = wake_tab(WAKE_TAB, URL + "z")
+    checks.append(("a companion widened by hand stays that wide (%.2f -> %.2f)" % (wide, wake_width(sid)),
+                   ok and wide > WAKE_SHARE + 0.05 and abs(wake_width(sid) - wide) < 0.01))
+
 # What the Wake opens goes into its group, as a tab in the same pane.
 open(LOG, "w").close()
 ok, detail = wake_tab(WAKE_VIEW, "file:///tmp/a.png")

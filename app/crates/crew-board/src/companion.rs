@@ -25,9 +25,11 @@ pub const SHARE: f64 = 0.4;
 const NS: &str = "companion";
 
 /// A key names a page's tab: lower case, digits, `.`, `_`, `-`, after a letter.
+/// `pane` and `fit` are the pane's own keep names, so no tab may take them.
 pub fn key_ok(key: &str) -> bool {
     let mut c = key.chars();
-    c.next().is_some_and(|f| f.is_ascii_lowercase())
+    key != "pane" && key != "fit"
+        && c.next().is_some_and(|f| f.is_ascii_lowercase())
         && key.len() <= 96
         && key.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ".-_".contains(ch))
 }
@@ -42,6 +44,28 @@ fn keep_name(key: &str) -> String {
     }
 }
 
+/// A page the companion may show: one the intent server serves on loopback
+/// (`http://127.0.0.1:<port>/…` or `localhost`), or a local file. The host is
+/// read up to the path, so `http://127.0.0.1:80@elsewhere/` is refused.
+pub fn url_ok(url: &str) -> bool {
+    if let Some(rest) = url.strip_prefix("file://") {
+        return rest.starts_with('/');
+    }
+    let Some(rest) = url.strip_prefix("http://") else { return false };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let Some((name, port)) = host.split_once(':') else { return false };
+    (name == "127.0.0.1" || name == "localhost") && !port.is_empty() && port.chars().all(|c| c.is_ascii_digit())
+}
+
+/// A tab that is one of seamux's own pages: served by the intent server.
+fn seamux_page(url: &str) -> bool {
+    let port = std::fs::read_to_string(crew_core::py::home().join(".cache/cmux-crew/board-intent.port")).unwrap_or_default();
+    let port = port.trim();
+    !port.is_empty()
+        && (url.starts_with(&format!("http://127.0.0.1:{port}/")) || url.starts_with(&format!("http://localhost:{port}/")))
+        && url_ok(url)
+}
+
 /// How far, in points, the companion's left border must move to reach SHARE
 /// of `width`: positive widens it (resize -L), negative narrows it (-R).
 pub fn resize_by(width: f64, companion: f64) -> i64 {
@@ -53,15 +77,26 @@ pub fn resize_by(width: f64, companion: f64) -> i64 {
 }
 
 /// Size the pane holding `sid` to SHARE: a few passes, since a resize can
-/// land a moment after cmux answers and one divider moves at a time.
+/// land a moment after cmux answers and one divider moves at a time. A new
+/// pane is fitted both ways; once fitted it is only widened back to SHARE,
+/// so a companion the person made wider stays as they left it. One that
+/// could not be measured (its workspace off screen) is fitted on a later open.
 fn fit(ws: &str, sid: &str) {
+    let pane_id = |panes: &[Value]| pane_of(panes, sid).and_then(|p| p.get("id")).map(crate::pyval::py_str).unwrap_or_default();
+    let (_, panes) = main_panes(ws);
+    let pid = pane_id(&panes);
+    let fitted = !pid.is_empty() && read_keep(&format!("{NS}-fit"), ws) == pid;
     settle(|| frame_width(ws, sid), Duration::from_millis(1500));
     for _ in 0..4 {
         let (width, panes) = main_panes(ws);
         let Some(me) = pane_of(&panes, sid) else { return };
         let w = frame(me, "width");
+        if width <= 0.0 {
+            return;
+        }
         let by = resize_by(width, w);
-        if by.abs() < 8 {
+        if by.abs() < 8 || (fitted && by < 0) {
+            write_keep(&format!("{NS}-fit"), ws, &pane_id(&panes));
             return;
         }
         if by < 0 {
@@ -128,15 +163,21 @@ fn companion_pane(ws: &str, panes: &[Value], caller: &str) -> Option<Value> {
     Some(pages)
 }
 
-/// The rightmost main pane, not the caller's, whose every surface is a
-/// browser page; None when cmux cannot list the surfaces' types.
+/// The rightmost main pane, not the caller's, whose every surface is one of
+/// seamux's own pages (a person's own browser split is never taken); None
+/// when cmux cannot list the surfaces' types.
 fn adoptable(ws: &str, panes: &[Value], caller: &str) -> Option<Value> {
     let listed = crate::wake::cmux_json(&["list-panels", "--workspace", ws, "--json"])?;
     let surfaces = listed.get("surfaces")?.as_array()?.clone();
     let all_pages = |pane: &Value| {
         let id = pane.get("id").and_then(Value::as_str).unwrap_or("");
         let mine: Vec<&Value> = surfaces.iter().filter(|s| s.get("pane_id").and_then(Value::as_str) == Some(id)).collect();
-        !mine.is_empty() && mine.iter().all(|s| s.get("type").and_then(Value::as_str) == Some("browser"))
+        !mine.is_empty()
+            && mine.iter().all(|s| {
+                let sref = s.get("id").or_else(|| s.get("ref")).map(crate::pyval::py_str).unwrap_or_default();
+                s.get("type").and_then(Value::as_str) == Some("browser")
+                    && seamux_page(&cmux_out(&["browser", "--surface", &sref, "url"]).1.trim().to_string())
+            })
     };
     let callers = pane_of(panes, caller).and_then(|p| p.get("id")).cloned();
     panes
@@ -262,7 +303,7 @@ pub fn main(args: &[String]) -> i32 {
         eprintln!("{USAGE}");
         return 2;
     }
-    if !(url.starts_with("http://127.0.0.1:") || url.starts_with("http://localhost:") || url.starts_with("file://")) {
+    if !url_ok(&url) {
         eprintln!("seamux companion: only loopback pages and local files open in the companion, not {url:?}");
         return 1;
     }
@@ -297,6 +338,7 @@ mod tests {
         for k in ["", "Plan-x", "plan/x", "../x", "-x", "plan x", &"x".repeat(97)] {
             assert!(!key_ok(k), "{k}");
         }
+        assert!(!key_ok("pane") && !key_ok("fit"), "the pane's own keep names");
         assert_eq!(keep_name("plan-a"), "companion-plan-a");
         assert_eq!(keep_name("wake"), "wake", "the Wake's tab keeps its old name");
     }
@@ -317,5 +359,12 @@ mod tests {
         assert_eq!(main(&s(&["open", "--key", "plan-a"])), 2, "no url");
         assert_eq!(main(&s(&["open", "http://127.0.0.1:1/plan/a"])), 2, "no key");
         assert_eq!(main(&s(&["open", "https://evil.example/x", "--key", "plan-a"])), 1);
+        assert_eq!(main(&s(&["open", "http://127.0.0.1:80@evil.example/x", "--key", "plan-a"])), 1, "userinfo");
+        for ok in ["http://127.0.0.1:7345/plan/a", "http://localhost:1/ask/x?t=1", "file:///tmp/plan.html"] {
+            assert!(url_ok(ok), "{ok}");
+        }
+        for bad in ["http://127.0.0.1.evil.example:80/", "http://127.0.0.1:80@h/", "http://127.0.0.1/", "http://127.0.0.1:x/", "file:relative", "https://127.0.0.1:1/"] {
+            assert!(!url_ok(bad), "{bad}");
+        }
     }
 }
