@@ -99,6 +99,10 @@ fn selected_re(n: u32) -> Option<Regex> {
     compile("CREW_ASK_SELECTED_RE", &pat, "%d", &n.to_string())
 }
 
+/// Looks at the screen after typing: the first right away, then this many more.
+pub const CONFIRM_TRIES: u32 = 5;
+pub const CONFIRM_GAP: std::time::Duration = std::time::Duration::from_millis(300);
+
 /// Type option n into `surface` and prove it landed before claiming so.
 pub fn deliver(surface: &str, n: u32, label: &str, runner: &dyn Runner) -> (bool, String) {
     if surface.is_empty() {
@@ -113,23 +117,30 @@ pub fn deliver(surface: &str, n: u32, label: &str, runner: &dyn Runner) -> (bool
     if rc != 0 {
         return (false, format!("cmux send failed ({}) — press {n} in the terminal", out.trim().chars().take(80).collect::<String>()));
     }
-    let (rc, screen) = runner.run(&["read-screen", "--surface", surface, "--lines", "60"]);
-    let lines: Vec<&str> = if rc == 0 { crew_core::py::splitlines(&screen) } else { Vec::new() };
-    if !label.is_empty() {
-        if let Some(re) = resolved_re(label) {
-            if lines.iter().any(|l| re.is_match(l)) {
-                return (true, format!("delivered {n} — the prompt took it"));
+    // The prompt redraws a moment after the digit: look again a few times
+    // before saying it could not be confirmed.
+    for attempt in 0..=CONFIRM_TRIES {
+        if attempt > 0 {
+            std::thread::sleep(CONFIRM_GAP);
+        }
+        let (rc, screen) = runner.run(&["read-screen", "--surface", surface, "--lines", "60"]);
+        let lines: Vec<&str> = if rc == 0 { crew_core::py::splitlines(&screen) } else { Vec::new() };
+        if !label.is_empty() {
+            if let Some(re) = resolved_re(label) {
+                if lines.iter().any(|l| re.is_match(l)) {
+                    return (true, format!("delivered {n} — the prompt took it"));
+                }
             }
         }
-    }
-    if let Some(re) = selected_re(n) {
-        if lines.iter().any(|l| re.is_match(l)) {
-            let (rc, out) = runner.run(&["send-key", "--surface", surface, "enter"]);
-            if rc != 0 {
-                return (false, format!("{n} is selected; Enter did not send ({}) — press Enter",
-                                       out.trim().chars().take(80).collect::<String>()));
+        if let Some(re) = selected_re(n) {
+            if lines.iter().any(|l| re.is_match(l)) {
+                let (rc, out) = runner.run(&["send-key", "--surface", surface, "enter"]);
+                if rc != 0 {
+                    return (false, format!("{n} is selected; Enter did not send ({}) — press Enter",
+                                           out.trim().chars().take(80).collect::<String>()));
+                }
+                return (true, format!("delivered {n} — selected, then Enter"));
             }
-            return (true, format!("delivered {n} — selected, then Enter"));
         }
     }
     (false, format!("typed {n} but could not confirm it on screen — check the terminal"))

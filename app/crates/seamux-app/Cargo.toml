@@ -23,6 +23,13 @@ tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
 cmux.workspace = true
+crew-core.workspace = true
+# The views act in-process (ADR: the app links crew-board and crew-store),
+# so Desk and the Wake work while the intent server is down.
+crew-board = { path = "../crew-board" }
+crew-store = { path = "../crew-store" }
+# A Wake file shown in the sheet travels as a data: URL.
+base64 = "0.22"
 serde_json.workspace = true
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2.11", features = ["tray-icon"] }

@@ -1,8 +1,12 @@
 //! `seamux crew-hook <event>`: crew/hooks/crew-hook.sh and lib.sh in Rust.
 //!
 //! ```text
-//! seamux crew-hook <session|pretool|ask|answered|task|notification|stop|end>  < payload
+//! seamux crew-hook <session|pretool|prompt|ask|answered|task|notification|stop|end>  < payload
 //! ```
+//!
+//! Beyond the bash: `prompt` (UserPromptSubmit) and the state history every
+//! event that changes an agent's state appends (crew-core's history), and
+//! the ask's questions kept in question-<ws>.json for the app.
 //!
 //! crew/hooks/seamux-hook.sh is the hook command: it keeps pretool's
 //! lane-marker test in bash, so the common tool use never starts this
@@ -227,6 +231,22 @@ impl Hook {
         touch(&self.lane_marker());
     }
 
+    /// One line of state history for this workspace's pane (crew-core's history).
+    pub fn history(&self, state: &str, detail: &str) {
+        crew_core::history::record(&self.ws, &surface(), state, "hook", detail);
+    }
+
+    /// The ask's questions, beside the question-<ws> marker crew sync reads.
+    pub fn question_file(&self) -> PathBuf {
+        self.state.join(format!("question-{}.json", self.ws))
+    }
+
+    /// The ask is over: its marker and its questions go.
+    pub fn question_clear(&self) {
+        let _ = std::fs::remove_file(self.state.join(format!("question-{}", self.ws)));
+        let _ = std::fs::remove_file(self.question_file());
+    }
+
     pub fn lane_release(&self) {
         let m = self.lane_marker();
         if !m.exists() {
@@ -422,6 +442,54 @@ impl Hook {
 
 // ---- the events ------------------------------------------------------------
 
+/// The pane this hook runs in, as cmux tells Claude Code, or "".
+pub fn surface() -> String {
+    crew_core::py::env_or("CMUX_SURFACE_ID").unwrap_or_default()
+}
+
+/// What the app reads back to show and answer an ask:
+/// `{at, surface, session_id, questions: [{question, header, multiSelect, options: [{label, description}]}]}`.
+/// None when the payload carries no questions.
+pub fn question_record(payload: &str, surface: &str, at_ms: u64) -> Option<Value> {
+    let d: Value = serde_json::from_str(payload).ok()?;
+    let qs = d.get("tool_input")?.get("questions")?.as_array()?;
+    if qs.is_empty() {
+        return None;
+    }
+    let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let questions: Vec<Value> = qs
+        .iter()
+        .map(|q| {
+            let options: Vec<Value> = q
+                .get("options")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().map(|o| serde_json::json!({"label": s(o, "label"), "description": s(o, "description")})).collect())
+                .unwrap_or_default();
+            serde_json::json!({
+                "question": s(q, "question"),
+                "header": s(q, "header"),
+                "multiSelect": q.get("multiSelect").and_then(Value::as_bool).unwrap_or(false),
+                "options": options,
+            })
+        })
+        .collect();
+    Some(serde_json::json!({"at": at_ms, "surface": surface, "session_id": s(&d, "session_id"), "questions": questions}))
+}
+
+/// The "waiting for your input" reminder Claude Code sends a while after a
+/// turn ends, by its type where the payload carries one, else its words.
+pub fn is_idle_reminder(kind: &str, message: &str) -> bool {
+    kind == "idle_prompt" || (kind.is_empty() && message.trim_start().starts_with("Claude is waiting for your input"))
+}
+
+/// Write `text` to `path` whole: a reader never sees half a file.
+fn write_whole(path: &Path, text: &str) {
+    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    if std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
 /// The ask's first question, at most 160 characters, as the Python showed it.
 fn question(payload: &str) -> String {
     let Ok(Value::Object(d)) = pyval::loads(payload) else { return String::new() };
@@ -480,6 +548,10 @@ fn stop(h: &mut Hook) -> String {
         h.lane_release();
     }
     h.cli(&["clear-status", "claude"]);
+    // A turn cannot end with its AskUserQuestion still open: one cancelled
+    // with Esc fires no answered event, so its marker goes here.
+    h.question_clear();
+    h.history("idle", "stop");
     h.token_clear(&["phase", "feed", "feedby", "feedgate", "feedreq", "feedws"]);
     let body = if br.is_empty() { "Turn complete".to_string() } else { format!("Turn complete — {br}") };
     h.notify("crew:turn", &body);
@@ -577,6 +649,13 @@ pub fn main(args: &[String]) -> i32 {
         "ask" => {
             mkdir(&h.state);
             touch(&h.state.join(format!("question-{}", h.ws)));
+            match question_record(&h.payload, &surface(), crew_core::history::now_ms()) {
+                Some(rec) => write_whole(&h.question_file(), &format!("{rec}\n")),
+                None => {
+                    let _ = std::fs::remove_file(h.question_file());
+                }
+            }
+            h.history("needs_input", "ask");
             h.lane_set("needs-attention");
             h.phase("waiting on you");
             let mut q = question(&h.payload);
@@ -587,12 +666,29 @@ pub fn main(args: &[String]) -> i32 {
             String::new()
         }
         "answered" => {
-            let _ = std::fs::remove_file(h.state.join(format!("question-{}", h.ws)));
+            h.question_clear();
+            h.history("working", "answered");
+            h.lane_release();
+            h.phase("working");
+            String::new()
+        }
+        // UserPromptSubmit: the person typed into the pane, so whatever it
+        // waited on is answered and the agent is at work again.
+        "prompt" => {
+            let _ = std::fs::remove_file(h.state.join(format!("asked-{}", h.ws)));
+            h.question_clear();
+            h.history("working", "prompt");
             h.lane_release();
             h.phase("working");
             String::new()
         }
         "notification" => {
+            // Claude Code's idle reminder after a finished turn is no new
+            // block: the turn's own stop (and the asked judgment) said what
+            // the agent waits on.
+            if !is_idle_reminder(&h.json("notification_type"), &h.json("message")) {
+                h.history("needs_input", "notification");
+            }
             h.lane_set("needs-attention");
             h.phase("waiting on you");
             let t = spawn::tool("crew-feed", &["publish", &h.ws]);
@@ -606,6 +702,10 @@ pub fn main(args: &[String]) -> i32 {
         }
         "stop" => stop(&mut h),
         "end" => {
+            // The session is over: nothing it asked waits any more.
+            let _ = std::fs::remove_file(h.state.join(format!("asked-{}", h.ws)));
+            h.question_clear();
+            h.history("ended", "end");
             h.lane_release();
             h.cli(&["clear-status", "claude"]);
             h.phase("");
@@ -646,5 +746,39 @@ mod tests {
     fn lines_as_sed_reads_them() {
         assert_eq!(line("a\nb\nc", 2), "b");
         assert_eq!(line("a", 3), "");
+    }
+
+    #[test]
+    fn the_question_record_keeps_every_question_and_option() {
+        let payload = r#"{"session_id": "S1", "tool_name": "AskUserQuestion", "tool_input": {"questions": [
+            {"question": "Which?", "header": "Pick", "multiSelect": false,
+             "options": [{"label": "A", "description": "first"}, {"label": "B"}]},
+            {"question": "And?", "multiSelect": true, "options": [{"label": "C", "description": "x", "preview": "p"}]}]}}"#;
+        let r = question_record(payload, "SURF", 7).unwrap();
+        assert_eq!(r["at"], 7);
+        assert_eq!(r["surface"], "SURF");
+        assert_eq!(r["session_id"], "S1");
+        let qs = r["questions"].as_array().unwrap();
+        assert_eq!(qs.len(), 2);
+        assert_eq!(qs[0]["options"][1], serde_json::json!({"label": "B", "description": ""}));
+        assert_eq!(qs[1]["multiSelect"], true);
+        assert_eq!(qs[1]["header"], "");
+        // Only what the app needs: a preview is not kept.
+        assert!(qs[1]["options"][0].get("preview").is_none());
+    }
+
+    #[test]
+    fn the_idle_reminder_is_told_from_a_block() {
+        assert!(is_idle_reminder("idle_prompt", ""));
+        assert!(is_idle_reminder("", "Claude is waiting for your input"));
+        assert!(!is_idle_reminder("permission_prompt", "Claude is waiting for your input"));
+        assert!(!is_idle_reminder("", "Claude needs your permission to use Bash"));
+    }
+
+    #[test]
+    fn no_questions_no_record() {
+        assert!(question_record("{}", "", 0).is_none());
+        assert!(question_record(r#"{"tool_input": {"questions": []}}"#, "", 0).is_none());
+        assert!(question_record("not json", "", 0).is_none());
     }
 }

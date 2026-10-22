@@ -383,13 +383,21 @@ fn row_by(rid: &str) -> Result<crew_store::Row, (bool, String)> {
     }
 }
 
-/// Open the row an id names, by kind.
-pub fn open_artifact(rid: &str, port: u16, sub: &str) -> (bool, String) {
-    let r = match row_by(rid) {
-        Ok(r) => r,
-        Err(e) => return e,
-    };
-    let base = format!("http://127.0.0.1:{port}");
+/// What a row opens to: a page on this server, a file shown in the Wake's
+/// tab, a URL for the browser, or a file for the editor.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Target {
+    /// A path on the intent server: /plan/<slug>[suffix], /review/<id>, /ask/<id>.
+    Page(String),
+    /// A local file the Wake's tab can show (HTML, SVG, an image, a PDF).
+    File(String),
+    Browser(String),
+    Editor(String),
+}
+
+/// Where a row leads, by kind, without opening anything. `sub` picks a
+/// plan's surface: "" or "working", "review", "md".
+pub fn resolve_row(r: &crew_store::Row, sub: &str) -> Result<Target, String> {
     let loc = r.locator.as_str();
     match r.kind.as_str() {
         "plan" => {
@@ -399,27 +407,20 @@ pub fn open_artifact(rid: &str, port: u16, sub: &str) -> (bool, String) {
                 "md" => Some(".md"),
                 _ => None,
             };
-            let Some(suffix) = suffix.filter(|_| slug_ok(loc)) else { return (false, "unknown plan surface".into()) };
-            if suffix.is_empty() {
-                return wake_tab(WAKE_VIEW, &format!("{base}/plan/{loc}"), "");
+            let Some(suffix) = suffix.filter(|_| slug_ok(loc)) else { return Err("unknown plan surface".into()) };
+            if !suffix.is_empty() && plan_asset(&format!("{loc}{suffix}")).is_none() {
+                return Err(format!("no {sub} for {loc}"));
             }
-            if plan_asset(&format!("{loc}{suffix}")).is_none() {
-                return (false, format!("no {sub} for {loc}"));
-            }
-            wake_tab(WAKE_VIEW, &format!("{base}/plan/{loc}{suffix}"), "")
+            Ok(Target::Page(format!("/plan/{loc}{suffix}")))
         }
-        "review" => {
-            if crate::review::review_path(loc, ".html").is_none() {
-                return (false, "the review page is gone".into());
-            }
-            wake_tab(WAKE_VIEW, &format!("{base}/review/{loc}"), "")
-        }
-        "ask" => {
-            if crate::ask::ask_path(loc, ".html").is_none() {
-                return (false, "the ask page is gone".into());
-            }
-            wake_tab(WAKE_VIEW, &format!("{base}/ask/{loc}"), "")
-        }
+        "review" => match crate::review::review_path(loc, ".html") {
+            Some(_) => Ok(Target::Page(format!("/review/{loc}"))),
+            None => Err("the review page is gone".into()),
+        },
+        "ask" => match crate::ask::ask_path(loc, ".html") {
+            Some(_) => Ok(Target::Page(format!("/ask/{loc}"))),
+            None => Err("the ask page is gone".into()),
+        },
         "commit" => {
             let sha = if r.sha.is_empty() { loc.to_string() } else { r.sha.clone() };
             let ws = r.ws.as_str();
@@ -427,27 +428,53 @@ pub fn open_artifact(rid: &str, port: u16, sub: &str) -> (bool, String) {
             if !ws.is_empty() && Path::new(ws).is_dir() && sha_ok && has_commit(ws, &sha) && has_commit(ws, &format!("{sha}^")) {
                 let rid = lookout_commit(ws, &sha);
                 if !rid.is_empty() && crate::review::review_path(&rid, ".html").is_some() {
-                    return wake_tab(WAKE_VIEW, &format!("{base}/review/{rid}"), "");
+                    return Ok(Target::Page(format!("/review/{rid}")));
                 }
             }
             if !r.url.is_empty() {
-                return browser(&r.url);
+                return Ok(Target::Browser(r.url.clone()));
             }
-            (false, "the worktree is gone and no GitHub remote was recorded".into())
+            Err("the worktree is gone and no GitHub remote was recorded".into())
         }
-        "artifact" => browser(&r.url),
+        "artifact" => Ok(Target::Browser(r.url.clone())),
         _ => {
             if !r.path.is_empty() && Path::new(&r.path).is_file() {
                 if VIEW_IN_WAKE.contains(&ext(&r.path).as_str()) {
-                    return wake_tab(WAKE_VIEW, &format!("file://{}", quote(&r.path, "/")), "");
+                    return Ok(Target::File(r.path.clone()));
                 }
-                return open_in_editor(&r.path);
+                return Ok(Target::Editor(r.path.clone()));
             }
             if !r.url.is_empty() {
-                return browser(&r.url);
+                return Ok(Target::Browser(r.url.clone()));
             }
-            (false, format!("gone: {}", if r.path.is_empty() { loc } else { r.path.as_str() }))
+            Err(format!("gone: {}", if r.path.is_empty() { loc } else { r.path.as_str() }))
         }
+    }
+}
+
+/// `resolve_row` for the row an id names.
+pub fn resolve_artifact(rid: &str, sub: &str) -> Result<Target, (bool, String)> {
+    let r = row_by(rid)?;
+    resolve_row(&r, sub).map_err(|e| (false, e))
+}
+
+/// Open what a row leads to, in cmux: pages and viewable files in the Wake's
+/// tab, URLs in the browser, other files in the editor.
+pub fn open_target(t: &Target, port: u16) -> (bool, String) {
+    let base = format!("http://127.0.0.1:{port}");
+    match t {
+        Target::Page(p) => wake_tab(WAKE_VIEW, &format!("{base}{p}"), ""),
+        Target::File(f) => wake_tab(WAKE_VIEW, &format!("file://{}", quote(f, "/")), ""),
+        Target::Browser(u) => browser(u),
+        Target::Editor(f) => open_in_editor(f),
+    }
+}
+
+/// Open the row an id names, by kind.
+pub fn open_artifact(rid: &str, port: u16, sub: &str) -> (bool, String) {
+    match resolve_artifact(rid, sub) {
+        Ok(t) => open_target(&t, port),
+        Err(e) => e,
     }
 }
 
@@ -569,5 +596,54 @@ mod tests {
         assert_eq!(shlex_quote("plain-word_1.txt"), "plain-word_1.txt");
         assert_eq!(shlex_quote("it's here"), "'it'\"'\"'s here'");
         assert_eq!(shlex_quote(""), "''");
+    }
+
+    fn row(kind: &str, locator: &str, path: &str, url: &str) -> crew_store::Row {
+        crew_store::Row {
+            id: 1,
+            ws: String::new(),
+            repo: String::new(),
+            kind: kind.into(),
+            title: String::new(),
+            locator: locator.into(),
+            path: path.into(),
+            url: url.into(),
+            sha: String::new(),
+            was_path: String::new(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            session_id: String::new(),
+            branch: String::new(),
+            prompt: String::new(),
+            source: String::new(),
+            kept_at: None,
+        }
+    }
+
+    /// resolve_row names what open_artifact opens, for every row kind,
+    /// without opening anything.
+    #[test]
+    fn a_row_resolves_to_what_it_opens() {
+        let dir = std::env::temp_dir().join(format!("crew-board-resolve-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let html = dir.join("page.html");
+        let code = dir.join("main.rs");
+        std::fs::write(&html, "<p>x</p>").unwrap();
+        std::fs::write(&code, "fn main() {}").unwrap();
+        let (h, c) = (html.to_string_lossy().into_owned(), code.to_string_lossy().into_owned());
+
+        assert_eq!(resolve_row(&row("plan", "seamux-views", "", ""), ""), Ok(Target::Page("/plan/seamux-views".into())));
+        assert_eq!(resolve_row(&row("plan", "seamux-views", "", ""), "working"), Ok(Target::Page("/plan/seamux-views".into())));
+        assert!(resolve_row(&row("plan", "../x", "", ""), "").is_err());
+        assert!(resolve_row(&row("plan", "p", "", ""), "pdf").is_err());
+        assert!(resolve_row(&row("review", "no-such-review-xyz", "", ""), "").unwrap_err().contains("gone"));
+        assert_eq!(resolve_row(&row("artifact", "a", "", "https://claude.ai/a/1"), ""), Ok(Target::Browser("https://claude.ai/a/1".into())));
+        assert_eq!(resolve_row(&row("image", "i", &h, ""), ""), Ok(Target::File(h.clone())));
+        assert_eq!(resolve_row(&row("file", "f", &c, ""), ""), Ok(Target::Editor(c.clone())));
+        assert_eq!(resolve_row(&row("doc", "d", "/no/such/file.md", "https://example.com/d"), ""), Ok(Target::Browser("https://example.com/d".into())));
+        assert!(resolve_row(&row("doc", "d", "/no/such/file.md", ""), "").unwrap_err().starts_with("gone"));
+        assert!(resolve_row(&row("commit", "abc", "", ""), "").is_err(), "no worktree and no remote");
+        assert_eq!(resolve_row(&row("commit", "abc", "", "https://github.com/o/r/commit/abc"), ""), Ok(Target::Browser("https://github.com/o/r/commit/abc".into())));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

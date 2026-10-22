@@ -407,6 +407,11 @@ export class WallView {
     this.select(surface);
   }
 
+  /** Show `surface` large, as if the person picked its row (Mosaic's expand). */
+  open(surface: string): void {
+    if (this.rows.has(surface)) this.pick(surface);
+  }
+
   private select(surface: string): void {
     const moved = surface !== this.selected;
     this.selected = surface;

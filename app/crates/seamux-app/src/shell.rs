@@ -10,7 +10,7 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, Runtime, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewWindow};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 /// The hotkey, as the global-shortcut plugin spells it and as the tray shows it.
@@ -154,6 +154,51 @@ pub fn hide_overlay<R: Runtime>(window: WebviewWindow<R>) {
     hide(&window);
 }
 
+/// The intent-server pages the app may hand to cmux: a plan, a review or
+/// an ask, by a plain path (no `..`, no scheme, nothing to escape).
+pub fn cmux_path_ok(path: &str) -> bool {
+    ["/plan/", "/review/", "/ask/"].iter().any(|p| path.starts_with(p) && path.len() > p.len())
+        && !path.contains("..")
+        && path.chars().all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c))
+}
+
+/// Open an intent-server page in cmux, in `workspace`'s tab group when one
+/// is given (the workspace is brought to the front), then hide the app.
+#[tauri::command]
+pub async fn open_in_cmux<R: Runtime>(window: WebviewWindow<R>, path: String, workspace: Option<String>) -> Result<(), String> {
+    if !cmux_path_ok(&path) {
+        return Err(format!("not a page cmux opens from here: {path:?}"));
+    }
+    let ws = workspace.filter(|w| !w.is_empty());
+    if let Some(w) = &ws {
+        if !cmux::is_uuid(w) {
+            return Err(format!("not a workspace UUID: {w:?}"));
+        }
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let text = port_file().and_then(|p| std::fs::read_to_string(p).ok()).ok_or("no port file: the intent server has not started")?;
+        let port = parse_port(&text).ok_or("bad port file")?;
+        let url = format!("http://127.0.0.1:{port}{path}");
+        let c = cmux::Cmux::connect().map_err(|e| e.to_string())?;
+        let mut argv = vec!["open", url.as_str()];
+        if let Some(w) = &ws {
+            argv.extend(["--workspace", w.as_str()]);
+        }
+        let out = c.cli(&argv).map_err(|e| e.to_string())?;
+        if !out.ok() {
+            return Err(format!("cmux open failed: {}", out.stderr.trim()));
+        }
+        if let Some(w) = &ws {
+            c.workspace_select(w).map_err(|e| e.to_string())?;
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    hide(&window);
+    Ok(())
+}
+
 /// Make the window a non-activating panel that joins every Space, including
 /// another app's full-screen one. An ordinary NSWindow from an accessory app
 /// stays off a full-screen Space even with FullScreenAuxiliary set (seen with
@@ -279,6 +324,8 @@ fn hide<R: Runtime>(w: &WebviewWindow<R>) {
 }
 
 fn show<R: Runtime>(w: &WebviewWindow<R>) {
+    // Every summon lands on Desk: the page switches when it hears this.
+    let _ = w.emit("app:summoned", ());
     // Minimized with the yellow button: showing alone would leave it in the Dock.
     if w.is_minimized().unwrap_or(false) {
         let _ = w.unminimize();
@@ -473,6 +520,19 @@ mod tests {
         assert_eq!(http_status(slow(1500), "/usage", PAGE_WAIT), Ok(200));
         let err = http_status(slow(1500), "/usage", Duration::from_millis(300)).unwrap_err();
         assert!(err.contains("no answer within"), "{err}");
+    }
+
+    #[test]
+    fn only_plan_review_and_ask_pages_go_to_cmux() {
+        assert!(cmux_path_ok("/plan/seamux-views"));
+        assert!(cmux_path_ok("/review/seamux-views-inc1"));
+        assert!(cmux_path_ok("/ask/a1b2"));
+        assert!(!cmux_path_ok("/plan/"));
+        assert!(!cmux_path_ok("/usage"));
+        assert!(!cmux_path_ok("/plan/../../etc"));
+        assert!(!cmux_path_ok("/plan/x?t=1"));
+        assert!(!cmux_path_ok("/plan/x y"));
+        assert!(!cmux_path_ok("http://evil/plan/x"));
     }
 
     #[test]

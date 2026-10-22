@@ -23,7 +23,7 @@
         margin: 0; display: flex; flex-direction: column; background: var(--bg); color: var(--fg);
         font: 13px/1.45 -apple-system, system-ui, sans-serif; overflow: hidden;
       }
-      header {
+      body > header {
         /* Left room for the window's own close / minimize / zoom buttons,
            which sit over this strip (titleBarStyle Overlay). */
         display: flex; align-items: center; gap: 4px; padding: 8px 10px 8px 84px; background: var(--strip);
@@ -53,6 +53,52 @@
         font: inherit; margin-top: 10px; padding: 5px 14px; border-radius: 6px; cursor: pointer;
         border: 1px solid var(--line); background: var(--on); color: var(--fg);
       }
+      .panel[hidden] { display: none; }
+
+      /* ---- the ⋯ menu: Usage and Board ---- */
+      .more-wrap { position: relative; }
+      .tab.more { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; }
+      .tab.more svg { width: 16px; height: 16px; fill: currentColor; }
+      .more-label:empty { display: none; }
+      .menu {
+        position: absolute; top: calc(100% + 6px); left: 0; z-index: 30; min-width: 150px;
+        padding: 4px; border-radius: 9px; background: var(--card); border: 1px solid var(--line);
+        box-shadow: 0 10px 28px var(--shade);
+      }
+      .menu[hidden] { display: none; }
+      .menu-item {
+        display: block; width: 100%; text-align: left; font: inherit; color: var(--fg);
+        background: none; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer;
+      }
+      .menu-item:hover, .menu-item:focus-visible { background: var(--on); outline: none; }
+
+      /* ---- the sheet: a plan, review or ask page over the current view ---- */
+      .sheet {
+        position: fixed; inset: 0; z-index: 40; display: flex; padding: 54px 18px 18px;
+        background: color-mix(in srgb, var(--bg) 40%, transparent); backdrop-filter: blur(2px);
+      }
+      .sheet[hidden] { display: none; }
+      .sheet-card {
+        flex: 1; display: flex; flex-direction: column; min-width: 0; border-radius: 12px; overflow: hidden;
+        background: var(--card); border: 1px solid var(--line); box-shadow: 0 18px 50px var(--shade);
+      }
+      .sheet-card header {
+        display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 14px; border-bottom: 1px solid var(--line);
+      }
+      .sheet-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .sheet-say { flex: 1; color: var(--bad); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .sheet-btn {
+        display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: 12px; color: var(--fg);
+        background: var(--on); border: 1px solid var(--line); border-radius: 7px; padding: 4px 10px; cursor: pointer;
+      }
+      .sheet-btn svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; }
+      .sheet-btn.icon { padding: 5px 7px; }
+      .sheet-body { flex: 1; min-height: 0; display: flex; }
+      .sheet-body iframe { flex: 1; border: 0; background: var(--bg); }
+      .sheet-imgbox { flex: 1; min-width: 0; overflow: auto; display: flex; align-items: center; justify-content: center; padding: 12px; background: var(--term); }
+      .sheet-img { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+
       .muted { color: var(--muted); }
       .bad { color: var(--bad); }
       code { font: 12px ui-monospace, Menlo, monospace; }
@@ -70,7 +116,10 @@
       <span id="conn">cmux</span>
     </header>
     <main id="stage">
-      <section id="wall"></section>
+      <section id="desk" aria-label="Desk"></section>
+      <section id="mosaic" aria-label="Mosaic"><section id="wall" aria-label="Pane"></section></section>
+      <section id="timeline" aria-label="Timeline"></section>
+      <section id="wake" aria-label="Wake"></section>
     </main>
     <script type="module" src="./main.ts"></script>
   </body>

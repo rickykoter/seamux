@@ -166,9 +166,79 @@ pub fn increment(slug: &str, n: &str, action: &str, why: &str) -> (bool, String)
     (true, format!("{action} {slug} {n}"))
 }
 
+/// A check id as deep-plan derives one: lower-case words joined by `-`.
+pub fn check_id_ok(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 120 && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// The argv for recording a manual or observability check by hand, or why not.
+pub fn check_record_args(slug: &str, n: &str, id: &str, verdict: &str, note: &str) -> Result<Vec<String>, String> {
+    if !slug_ok(slug) {
+        return Err("bad slug".into());
+    }
+    if n.is_empty() || !n.chars().all(|c| c.is_ascii_digit()) {
+        return Err("bad increment".into());
+    }
+    if !check_id_ok(id) {
+        return Err("bad check id".into());
+    }
+    if verdict != "pass" && verdict != "fail" {
+        return Err("a check passes or fails".into());
+    }
+    let note = note.trim();
+    if note.is_empty() {
+        return Err("say what you saw: the note is the check's only evidence".into());
+    }
+    if note.chars().count() > 2000 || note.chars().any(|c| c.is_control() && c != '\n') {
+        return Err("the note is too long or carries control characters".into());
+    }
+    // The note is a positional argument: one that starts like a flag
+    // (`--force`) could be read as one by the engine.
+    if note.starts_with('-') {
+        return Err("a note can't start with '-'".into());
+    }
+    let script = crew_core::dp_engine::script().to_string_lossy().into_owned();
+    Ok([script.as_str(), "check", verdict, slug, n, id, note].iter().map(|s| s.to_string()).collect())
+}
+
+/// Record a check the person observed: `deep-plan check pass|fail`.
+pub fn check_record(slug: &str, n: &str, id: &str, verdict: &str, note: &str) -> (bool, String) {
+    let args = match check_record_args(slug, n, id, verdict, note) {
+        Ok(a) => a,
+        Err(e) => return (false, e),
+    };
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let Some((code, out, err)) = crew_core::py::run("node", &argv, Duration::from_secs(60)) else {
+        log(&format!("FAIL check {verdict} {slug} {n} {id}: node did not finish"));
+        return (false, "deep-plan did not run (no node, or it timed out)".into());
+    };
+    let detail: String = format!("{out}{err}").trim().lines().last().unwrap_or("").chars().take(160).collect();
+    if code != 0 {
+        log(&format!("FAIL check {verdict} {slug} {n} {id}: {detail}"));
+        return (false, if detail.is_empty() { "deep-plan refused it".into() } else { detail });
+    }
+    (true, format!("recorded {verdict} for {id}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_check_record_names_the_engine_verb_and_refuses_bad_input() {
+        let a = check_record_args("seamux-views", "3", "manual-live", "pass", " saw it land \n").unwrap();
+        assert_eq!(&a[1..], ["check", "pass", "seamux-views", "3", "manual-live", "saw it land"]);
+        assert!(a[0].ends_with("deep_plan.mjs"), "{}", a[0]);
+        assert!(check_record_args("../x", "3", "m", "pass", "n").is_err());
+        assert!(check_record_args("p", "3a", "m", "pass", "n").is_err());
+        assert!(check_record_args("p", "3", "Manual Live", "pass", "n").is_err());
+        assert!(check_record_args("p", "3", "m", "done", "n").is_err());
+        assert!(check_record_args("p", "3", "m", "fail", "   ").is_err());
+        assert!(check_record_args("p", "3", "m", "fail", "a\u{1b}[2J").is_err());
+        assert!(check_record_args("p", "3", "m", "pass", "--force").is_err());
+        assert!(check_record_args("p", "3", "m", "pass", "  -x saw").is_err());
+        assert!(check_record_args("p", "3", "m", "pass", "saw it, no --force needed").is_ok());
+    }
 
     #[test]
     fn slugs_and_uuids() {
