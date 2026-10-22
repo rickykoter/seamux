@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! ~/.claude/crew/tucked.json   (CREW_DURABLE_DIR overrides ~/.claude/crew)
-//! {"version": 1, "entries": [{"path": "/Users/me/code/x", "level": "mute", "at": 1792627200000, "name": "x"}]}
+//! {"version": 1, "entries": [{"path": "~/code/x", "level": "mute", "at": 1792627200000, "name": "x"}]}
 //! ```
 //!
 //! One entry per worktree root: every workspace whose pane works in that

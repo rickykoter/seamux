@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { openPage } from "./sheet";
 import type { Frame as WallFrame, Tile } from "./wall";
 import { ago } from "./wall";
+import { levelOf, menu, toggle, type Levels, type TuckRow } from "./tuck";
 
 // The shapes of views.rs's ViewsFrame.
 export type Opt = { label: string; description: string };
@@ -38,7 +39,7 @@ export type Decision =
     };
 export type WakeRow = { id: number; kind: string; title: string; dir: string; ws: string | null; at: number };
 export type Change = { at: number; ws: string; surface: string; state: string; source: string; detail: string };
-export type ViewsFrame = { decisions: Decision[]; wake: WakeRow[]; history: Change[]; problems: string[] };
+export type ViewsFrame = { decisions: Decision[]; wake: WakeRow[]; history: Change[]; problems: string[]; levels?: Levels; tucked?: TuckRow[] };
 
 const SVG = "http://www.w3.org/2000/svg";
 
@@ -102,7 +103,7 @@ export class Desk {
   private side = el("aside", "desk-side");
   private head = el("div", "desk-head");
   private count = el("span", "desk-count");
-  private hint = el("span", "desk-hint", "oldest first · 1–9 picks an option · j/k move · ↵ reply · J jumps · O opens");
+  private hint = el("span", "desk-hint", "oldest first · 1–9 picks an option · j/k move · ↵ reply · J jumps · O opens · m mutes · t tucks away");
   private problems = el("p", "desk-problems");
   private list = el("div", "desk-list");
   private empty = el("pre", "desk-empty", SLEEPING_CAT);
@@ -111,6 +112,15 @@ export class Desk {
   private tally = el("div", "desk-tally");
   private frame: ViewsFrame = { decisions: [], wake: [], history: [], problems: [] };
   private tiles: Tile[] = [];
+  /** The selected card, by its key: frames reorder cards (a mute, an Undo, a
+   * new ask), and keys must act on the card the person chose, not on
+   * whatever card took its place. */
+  private selectedKey = "";
+  /** The card an m or t just hid, and until when: if an Undo brings it back,
+   * it is selected again, so the next key acts on it and not its neighbour. */
+  private actedKey = "";
+  private actedUntil = 0;
+  /** Where the selected card is now; recomputed from selectedKey. */
   private selected = 0;
   /** Unsent replies and check notes, by card key. */
   private drafts = new Map<string, string>();
@@ -163,32 +173,47 @@ export class Desk {
     return this.root.offsetParent !== null;
   }
 
+  /** The decisions Desk shows: tucked workspaces left out, muted ones last. */
+  private decisions(): Decision[] {
+    const lv = this.frame.levels;
+    const shown = this.frame.decisions.filter((d) => levelOf(lv, d.ws) !== "tuck");
+    return [...shown.filter((d) => !levelOf(lv, d.ws)), ...shown.filter((d) => levelOf(lv, d.ws) === "mute")];
+  }
+
   /** Redraw, unless the person is typing in a card (then wait for the blur). */
   private draw(force = false): void {
     const at = document.activeElement;
     const typing = (at instanceof HTMLInputElement || at instanceof HTMLTextAreaElement) && this.root.contains(at);
     // Only what Desk shows: the lanes and history change every minute.
-    const shown = [this.frame.decisions, this.frame.wake.slice(0, 40), this.frame.problems];
-    const shape = JSON.stringify([shown, this.tiles.map((t) => [t.workspace, t.workspace_title, t.color, t.state]), this.recording, this.selected]);
+    const shown = [this.frame.decisions, this.frame.wake.slice(0, 40), this.frame.problems, this.frame.levels ?? {}];
+    const shape = JSON.stringify([shown, this.tiles.map((t) => [t.workspace, t.workspace_title, t.color, t.state]), this.recording, this.selectedKey]);
     if (typing || (!force && shape === this.drawn)) {
       if (typing) at!.addEventListener("blur", () => setTimeout(() => this.draw(), 0), { once: true });
       return;
     }
     this.drawn = shape;
-    const ds = this.frame.decisions;
-    this.selected = Math.min(this.selected, Math.max(0, ds.length - 1));
-    const n = ds.length;
+    const ds = this.decisions();
+    if (this.actedKey && Date.now() < this.actedUntil && ds.some((d) => keyOf(d) === this.actedKey)) {
+      this.selectedKey = this.actedKey; // back from an Undo
+      this.actedKey = "";
+    }
+    const kept = ds.findIndex((d) => keyOf(d) === this.selectedKey);
+    // The chosen card is gone (answered, tucked): stay at its place in the list.
+    this.selected = kept >= 0 ? kept : Math.min(this.selected, Math.max(0, ds.length - 1));
+    this.selectedKey = ds[this.selected] ? keyOf(ds[this.selected]) : "";
+    // Muted workspaces are out of the count.
+    const n = ds.filter((d) => !levelOf(this.frame.levels, d.ws)).length;
     this.count.textContent = n === 1 ? "1 decision waiting" : `${n} decisions waiting`;
     this.problems.hidden = !this.frame.problems.length;
     this.problems.textContent = this.frame.problems.join(" · ");
     this.list.replaceChildren(...ds.map((d, i) => this.card(d, i === this.selected)));
-    this.empty.hidden = n > 0;
+    this.empty.hidden = ds.length > 0;
     this.drawSide();
   }
 
   private drawSide(): void {
     // What landed, not the scratch files a session wrote along the way.
-    const landed = this.frame.wake.filter((r) => r.kind !== "temp");
+    const landed = this.frame.wake.filter((r) => r.kind !== "temp" && !(r.ws && levelOf(this.frame.levels, r.ws) === "tuck"));
     const rows = landed.slice(0, 8).map((r) => {
       const w = this.ws(r.ws, r.dir);
       const row = el("div", "away-row");
@@ -201,7 +226,8 @@ export class Desk {
       return row;
     });
     this.away.replaceChildren(...(rows.length ? rows : [el("p", "muted", "Nothing new in the Wake.")]));
-    const by = (s: string) => this.tiles.filter((t) => t.state === s);
+    // The counts leave out what is muted or tucked.
+    const by = (s: string) => this.tiles.filter((t) => t.state === s && !levelOf(this.frame.levels, t.workspace));
     const working = by("working");
     this.working.replaceChildren(
       ...working.slice(0, 4).map((t) => {
@@ -232,12 +258,14 @@ export class Desk {
   private card(d: Decision, on: boolean): HTMLElement {
     const key = keyOf(d);
     const w = this.ws(d.ws);
-    const c = el("article", `d-card ${d.kind}${on ? " on" : ""}`);
+    const level = levelOf(this.frame.levels, d.ws);
+    const c = el("article", `d-card ${d.kind}${on ? " on" : ""}${level === "mute" ? " muted" : ""}`);
     c.dataset.key = key;
     c.addEventListener("click", () => {
-      const i = this.frame.decisions.findIndex((x) => keyOf(x) === key);
+      const i = this.decisions().findIndex((x) => keyOf(x) === key);
       if (i >= 0 && i !== this.selected) {
         this.selected = i;
+        this.selectedKey = key;
         this.draw(true);
       }
     });
@@ -246,7 +274,9 @@ export class Desk {
     mark.style.setProperty("--ws", w.color || "var(--muted)");
     const chip = el("span", `chip ${d.kind}`, { question: "question", asked: "asked", gate: "deep-plan gate", review: "lookout" }[d.kind]);
     const when = el("span", "d-when");
-    head.append(mark, el("span", "d-name", w.title), chip, el("span", "grow"), when);
+    head.append(mark, el("span", "d-name", w.title), chip);
+    if (level === "mute") head.append(el("span", "chip status", "muted"));
+    head.append(el("span", "grow"), when, menu(d.ws, w.title, level));
     c.append(head);
 
     if (d.kind === "question") {
@@ -484,7 +514,7 @@ export class Desk {
     if (document.querySelector(".sheet:not([hidden])")) return; // the sheet has the keys
     const at = document.activeElement;
     if (at instanceof HTMLInputElement || at instanceof HTMLTextAreaElement) return;
-    const d = this.frame.decisions[this.selected];
+    const d = this.decisions()[this.selected];
     if (e.metaKey) {
       if (e.key.toLowerCase() === "o" && d) {
         // ⌘O: the selected card's page, in cmux.
@@ -495,9 +525,11 @@ export class Desk {
       return;
     }
     const move = (by: number) => {
-      const n = this.frame.decisions.length;
+      this.actedKey = ""; // moving on: an Undo no longer takes the selection back
+      const n = this.decisions().length;
       if (!n) return;
       this.selected = Math.min(n - 1, Math.max(0, this.selected + by));
+      this.selectedKey = keyOf(this.decisions()[this.selected]);
       this.draw(true);
       this.list.querySelector(".d-card.on")?.scrollIntoView({ block: "nearest" });
       e.preventDefault();
@@ -505,6 +537,14 @@ export class Desk {
     if (e.key === "j" || e.key === "ArrowDown") return move(1);
     if (e.key === "k" || e.key === "ArrowUp") return move(-1);
     if (!d) return;
+    if (e.key === "m" || e.key === "t") {
+      // Mute or tuck the selected card's workspace (again to undo).
+      e.preventDefault();
+      this.actedKey = keyOf(d);
+      this.actedUntil = Date.now() + 8000; // the note offers Undo for 6 s
+      toggle(d.ws, this.ws(d.ws).title, e.key, levelOf(this.frame.levels, d.ws));
+      return;
+    }
     if (/^[1-9]$/.test(e.key) && d.kind === "question") {
       e.preventDefault();
       void this.answer(d, Number(e.key));

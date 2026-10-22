@@ -4,6 +4,7 @@ import { answerable, type Decision, type ViewsFrame } from "./desk";
 import { reflow } from "./reflow";
 import type { Frame as WallFrame, Tile } from "./wall";
 import { ago, WallView } from "./wall";
+import { levelOf, menu, toggle } from "./tuck";
 
 type PlanBrief = { ws: string; slug: string; phase: string; done: number; total: number; n: number; open: boolean; title: string };
 type ReviewBrief = { ws: string; id: string; plan: string; inc: number; open: number; addressed: number; closed: number; since: number };
@@ -138,14 +139,17 @@ export class Mosaic {
     if (this.expanded) return;
     const at = document.activeElement;
     const typing = at instanceof HTMLInputElement && this.grid.contains(at);
-    const shape = JSON.stringify([this.tiles, this.views.decisions, this.views.plans, this.views.reviews, this.views.wake.slice(0, 40), [...this.notes]]);
+    const shape = JSON.stringify([this.tiles, this.views.decisions, this.views.plans, this.views.reviews, this.views.wake.slice(0, 40), [...this.notes], this.views.levels ?? {}]);
     if (typing || (!force && shape === this.drawn)) {
       if (typing) at!.addEventListener("blur", () => setTimeout(() => this.draw(), 0), { once: true });
       return;
     }
     this.drawn = shape;
-    const shown = order(this.tiles);
-    const shells = this.tiles.filter((t) => t.state === "shell").length;
+    // Tucked workspaces are left out; muted ones come last, small.
+    const lv = this.views.levels;
+    const ranked = order(this.tiles.filter((t) => levelOf(lv, t.workspace) !== "tuck"));
+    const shown = [...ranked.filter((t) => !levelOf(lv, t.workspace)), ...ranked.filter((t) => levelOf(lv, t.workspace) === "mute")];
+    const shells = this.tiles.filter((t) => t.state === "shell" && levelOf(lv, t.workspace) !== "tuck").length;
     const els = shown.map((t) => this.tile(t));
     if (shells) {
       const s = el("div", "m-tile small folded", `+ ${shells} terminal${shells === 1 ? "" : "s"}`);
@@ -174,8 +178,9 @@ export class Mosaic {
   }
 
   private tile(t: Tile): HTMLElement {
-    const size = sizeOf(t)!;
-    const box = el("article", `m-tile ${size}`);
+    const level = levelOf(this.views.levels, t.workspace);
+    const size = level === "mute" ? "small" : sizeOf(t)!;
+    const box = el("article", `m-tile ${size}${level === "mute" ? " muted" : ""}`);
     box.style.setProperty("--ws", safeColor(t.color) || "var(--line)");
     box.tabIndex = 0;
     box.setAttribute("aria-label", `${t.workspace_title || t.label}: ${t.state.replace("_", " ")}`);
@@ -185,6 +190,10 @@ export class Mosaic {
     });
     box.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && e.target === box) this.expand(t.surface);
+      if ((e.key === "m" || e.key === "t") && e.target === box) {
+        e.preventDefault();
+        toggle(t.workspace, t.workspace_title || t.label, e.key, level);
+      }
     });
     const plan = this.views.plans.find((p) => p.ws === t.workspace);
     const review = this.views.reviews.find((r) => r.ws === t.workspace);
@@ -197,7 +206,8 @@ export class Mosaic {
     if (t.state === "needs_input") state.textContent = `${d?.kind === "question" ? "question" : "needs you"} · ${ago(Date.now() - this.since(t))}`;
     else if (t.state === "working") state.textContent = `working · ${ago(Date.now() - this.since(t))}`;
     else state.textContent = t.state === "ended" ? "ended" : "idle";
-    head.append(state, el("span", "grow"));
+    if (level === "mute") state.textContent += " · muted";
+    head.append(state, el("span", "grow"), menu(t.workspace, name, level));
     if (plan && size !== "small") head.append(el("span", "m-plan", plan.phase === "done" ? `plan done · ${plan.done}/${plan.total}` : `inc ${plan.n}/${plan.total}`));
     box.append(head);
 

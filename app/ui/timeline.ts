@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { answerable, type Decision, type ViewsFrame } from "./desk";
 import type { Frame as WallFrame, Tile } from "./wall";
 import { ago } from "./wall";
+import { levelOf, menu } from "./tuck";
 
 type Span = { state: string; start: number; end: number };
 type Mark = { kind: "go" | "done" | "review"; at: number; n: number; label: string };
@@ -100,7 +101,9 @@ export class Timeline {
 
   /** The waits the popover can answer: open questions and asked turns, oldest first. */
   private waits(): Extract<Decision, { kind: "question" | "asked" }>[] {
-    return this.views.decisions.filter((d): d is Extract<Decision, { kind: "question" | "asked" }> => d.kind === "question" || d.kind === "asked");
+    return this.views.decisions.filter(
+      (d): d is Extract<Decision, { kind: "question" | "asked" }> => (d.kind === "question" || d.kind === "asked") && levelOf(this.views.levels, d.ws) !== "tuck",
+    );
   }
 
   private draw(): void {
@@ -108,12 +111,15 @@ export class Timeline {
     const now = Date.now();
     const start = now - WINDOW_MS;
     this.head.textContent = `last 2h · now ${hm(now)}`;
-    const lanes = this.views.lanes ?? [];
+    // Tucked workspaces have no lane; muted ones sit last, dimmed.
+    const lv = this.views.levels;
+    const lanes = (this.views.lanes ?? []).filter((l) => levelOf(lv, l.ws) !== "tuck");
     const rank = (ws: string) => {
       const s = this.tiles.find((t) => t.workspace === ws)?.state;
       return s === "needs_input" ? 0 : s === "working" ? 1 : 2;
     };
-    const shown = lanes.filter(active).sort((a, b) => rank(a.ws) - rank(b.ws));
+    const muted = (ws: string) => (levelOf(lv, ws) === "mute" ? 10 : 0);
+    const shown = lanes.filter(active).sort((a, b) => muted(a.ws) + rank(a.ws) - (muted(b.ws) + rank(b.ws)));
     const resting = lanes.length - shown.length;
     const shells = this.tiles.filter((t) => t.state === "shell").length;
     const waitWs = new Set(this.waits().map((d) => d.ws));
@@ -133,7 +139,8 @@ export class Timeline {
   }
 
   private lane(l: Lane, start: number, now: number, waiting: boolean): HTMLElement {
-    const row = el("div", "t-lane");
+    const level = levelOf(this.views.levels, l.ws);
+    const row = el("div", `t-lane${level === "mute" ? " muted" : ""}`);
     const name = el("div", "t-name");
     const tile = this.tiles.find((t) => t.workspace === l.ws);
     const plan = (this.views.plans ?? []).find((p) => p.ws === l.ws);
@@ -142,7 +149,10 @@ export class Timeline {
     if (tile?.state === "needs_input" && last?.state === "needs_input") sub = `waiting ${ago(now - last.start)}`;
     if (tile?.state === "working" && plan && plan.open) sub = `working · inc ${plan.n}/${plan.total}`;
     if (tile?.state !== "working" && tile?.state !== "needs_input" && plan?.phase === "done") sub = "delivered";
-    name.append(el("b", "", this.title(l.ws)), el("span", `t-sub ${tile?.state ?? ""}`, sub));
+    if (level === "mute") sub = sub ? `${sub} · muted` : "muted";
+    const top = el("span", "t-name-top");
+    top.append(el("b", "", this.title(l.ws)), menu(l.ws, this.title(l.ws), level));
+    name.append(top, el("span", `t-sub ${tile?.state ?? ""}`, sub));
     const track = el("div", "t-track");
     track.style.setProperty("--ws", this.color(l.ws));
     for (const [i, s0] of l.spans.entries()) {

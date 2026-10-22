@@ -1,0 +1,37 @@
+/* Mute and tuck: the ⋯ menu on a card, tile or lane, a dimmed muted look,
+   and the note with Undo. Colours are the index.html tokens. */
+
+.tuck-wrap { position: relative; display: inline-flex; }
+.tuck-btn {
+  display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 20px; padding: 0;
+  border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer;
+}
+.tuck-btn svg { width: 14px; height: 14px; fill: currentColor; }
+.tuck-btn:hover, .tuck-btn:focus-visible { background: var(--on); color: var(--fg); outline: none; }
+.tuck-menu {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 25; min-width: 150px; padding: 4px;
+  border-radius: 9px; background: var(--card); border: 1px solid var(--line); box-shadow: 0 10px 28px var(--shade);
+}
+.tuck-menu[hidden] { display: none; }
+.tuck-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; font: inherit; font-size: 12.5px;
+  color: var(--fg); background: none; border: 0; border-radius: 6px; padding: 6px 9px; cursor: pointer; text-align: left;
+}
+.tuck-item:hover, .tuck-item:focus-visible { background: var(--on); outline: none; }
+.tuck-item kbd { font: 11px ui-monospace, Menlo, monospace; color: var(--muted); }
+
+/* Muted: present, quiet. */
+.d-card.muted, .m-tile.muted, .t-lane.muted { opacity: 0.55; }
+.d-card.muted:hover, .m-tile.muted:hover, .t-lane.muted:hover, .d-card.muted.on { opacity: 0.85; }
+.t-name-top { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.t-name-top b { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.tuck-note {
+  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 50; display: flex; align-items: center; gap: 12px;
+  padding: 7px 10px 7px 14px; border-radius: 10px; background: var(--card); border: 1px solid var(--line);
+  box-shadow: 0 8px 24px var(--shade); font-size: 12.5px; opacity: 0; pointer-events: none; transition: opacity 0.2s;
+}
+.tuck-note.on { opacity: 1; pointer-events: auto; }
+.tuck-note.bad { color: var(--bad); }
+.tuck-note button { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 7px; border: 1px solid var(--line); background: var(--on); color: var(--fg); cursor: pointer; }
+@media (prefers-reduced-motion: reduce) { .tuck-note { transition: none; } }
