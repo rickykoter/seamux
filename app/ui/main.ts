@@ -5,6 +5,8 @@ import { WallView } from "./wall";
 import "./wall.css";
 import { Desk } from "./desk";
 import "./desk.css";
+import { Mosaic } from "./mosaic";
+import "./mosaic.css";
 
 // The shape of `cmux_status` in crates/seamux-app/src/main.rs.
 type Workspace = { id: string; ref: string; title: string };
@@ -55,6 +57,8 @@ const desk = document.getElementById("desk")!;
 const timeline = document.getElementById("timeline")!;
 const wakeEl = document.getElementById("wake")!;
 const deskView = new Desk(desk);
+const mosaicEl = document.getElementById("mosaic")!;
+const mosaic = new Mosaic(mosaicEl, document.getElementById("wall")!, wall);
 soon(timeline, "──▬▬▬──◆──▬▬──●──│──", "Timeline shows who waited, and how long.");
 soon(wakeEl, "· · ·  ▸ commit  ▸ PR  ▸ page", "The Wake moves into the app soon; for now it is at /artifacts in cmux.");
 
@@ -63,7 +67,7 @@ const tabs = new Tabs(
   document.getElementById("stage")!,
   new Map([
     ["desk", desk],
-    ["mosaic", document.getElementById("wall")!],
+    ["mosaic", mosaicEl],
     ["timeline", timeline],
     ["wake", wakeEl],
   ]),
@@ -87,3 +91,4 @@ document.addEventListener("keydown", (e) => {
 invoke<Status>("cmux_status").then(show, (e) => show({ state: "failed", kind: "app", message: String(e) }));
 wall.start().catch((e) => wall.problem(`The wall couldn't start: ${String(e)}`));
 deskView.start().catch((e) => console.error("desk", e));
+mosaic.start().catch((e) => console.error("mosaic", e));

@@ -177,6 +177,13 @@ fn decisions_merge_oldest_first_from_every_source() {
             Decision::Review { .. } => ("review", d.since()),
         })
         .collect();
+    // Briefs for Mosaic: every live workspace's newest plan (done ones too)
+    // and newest review, whether or not it waits on the person.
+    let plans: Vec<(&str, &str, u64, bool)> = frame.plans.iter().map(|p| (p.ws.as_str(), p.slug.as_str(), p.n, p.open)).collect();
+    assert_eq!(plans, vec![("11111111-2222-3333-4444-555555555555", "ux", 2, false), (WS_A, "inv", 3, true)]);
+    assert_eq!(frame.reviews.len(), 1, "one per workspace");
+    assert_eq!(frame.reviews[0].id, "quiet", "the newer one (its file time, now)");
+    assert_eq!(frame.reviews[0].closed, 1);
     let names: Vec<&str> = kinds.iter().map(|k| k.0).collect();
     // The review's updatedAt (2026-10-21T19:19:35Z) is before every other since.
     assert_eq!(names, vec!["review", "gate-inv", "question", "asked", "gate-ux"]);

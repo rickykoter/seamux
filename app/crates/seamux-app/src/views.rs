@@ -147,12 +147,46 @@ impl From<&Entry> for Change {
     }
 }
 
+/// A workspace's plan, in brief.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct PlanBrief {
+    pub ws: String,
+    pub slug: String,
+    pub phase: String,
+    pub done: u64,
+    pub total: u64,
+    /// The open increment, else the next one; 0 when neither.
+    pub n: u64,
+    /// Whether `n` is open (authorized or working) rather than next.
+    pub open: bool,
+    pub title: String,
+    pub touched: u64,
+}
+
+/// A workspace's newest lookout review, in brief.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct ReviewBrief {
+    pub ws: String,
+    pub id: String,
+    pub plan: String,
+    pub inc: u64,
+    pub open: u64,
+    pub addressed: u64,
+    /// Resolved or dismissed.
+    pub closed: u64,
+    pub since: u64,
+}
+
 /// The `views:frame` payload.
 #[derive(Clone, Debug, Serialize, PartialEq, Default)]
 pub struct ViewsFrame {
     pub decisions: Vec<Decision>,
     pub wake: Vec<WakeRow>,
     pub history: Vec<Change>,
+    /// Each live workspace's plan, waiting or not: Mosaic's increment bars.
+    pub plans: Vec<PlanBrief>,
+    /// Each live workspace's newest lookout review: Mosaic's review line.
+    pub reviews: Vec<ReviewBrief>,
     /// What could not be read this time, for the page to say.
     pub problems: Vec<String>,
 }
@@ -408,6 +442,7 @@ struct ReviewSummary {
     inc: u64,
     addressed: u64,
     open: u64,
+    closed: u64,
     since: u64,
 }
 
@@ -425,6 +460,7 @@ fn summarize_review(text: &str, path: &Path) -> Option<ReviewSummary> {
         plan: s(&src, "plan"),
         inc: u(&src, "inc"),
         addressed: count("addressed"),
+        closed: count("resolved") + count("dismissed"),
         open: count("open"),
         since,
     })
@@ -519,7 +555,8 @@ impl Feed {
         self.wake.settle(limit);
     }
 
-    fn review_decisions(&self, panes: &Panes) -> Vec<Decision> {
+    /// Every review whose worktree has a live pane, with that workspace.
+    fn live_reviews(&self, panes: &Panes) -> Vec<(String, ReviewSummary)> {
         let Ok(rd) = std::fs::read_dir(&self.reviews_dir) else { return Vec::new() };
         let mut cache = self.reviews.lock().unwrap();
         let mut seen = Vec::new();
@@ -539,21 +576,8 @@ impl Feed {
                 cache.insert(path.clone(), (mtime, sum));
             }
             let Some((_, Some(r))) = cache.get(&path) else { continue };
-            if r.addressed == 0 {
-                continue;
-            }
             let Some(ws) = panes.ws_for_dir(&r.root) else { continue };
-            out.push(Decision::Review {
-                surface: panes.surface_in(&ws),
-                ws,
-                since: r.since,
-                id: r.id.clone(),
-                title: r.title.clone(),
-                plan: r.plan.clone(),
-                inc: r.inc,
-                addressed: r.addressed,
-                open: r.open,
-            });
+            out.push((ws, r.clone()));
         }
         cache.retain(|p, _| seen.contains(p));
         out
@@ -564,13 +588,31 @@ impl Feed {
         let panes = Panes::new(tiles);
         let mut problems = Vec::new();
         let mut decisions = hook_decisions(&self.state_dir, &panes);
+        let mut plans = Vec::new();
         match self.plans.get() {
-            Some(Ok(rows)) => decisions.extend(gate_decisions(&rows, &panes)),
+            Some(Ok(rows)) => {
+                decisions.extend(gate_decisions(&rows, &panes));
+                plans = plan_briefs(&rows, &panes);
+            }
             Some(Err(e)) => problems.push(e),
             None => {} // the first answer is on its way
         }
-        decisions.extend(self.review_decisions(&panes));
+        let live_reviews = self.live_reviews(&panes);
+        for (ws, r) in live_reviews.iter().filter(|(_, r)| r.addressed > 0) {
+            decisions.push(Decision::Review {
+                surface: panes.surface_in(ws),
+                ws: ws.clone(),
+                since: r.since,
+                id: r.id.clone(),
+                title: r.title.clone(),
+                plan: r.plan.clone(),
+                inc: r.inc,
+                addressed: r.addressed,
+                open: r.open,
+            });
+        }
         decisions.sort_by_key(|d| d.since());
+        let reviews = review_briefs(live_reviews);
 
         let wake = match self.wake.get() {
             None => Vec::new(),
@@ -593,8 +635,56 @@ impl Feed {
 
         let since = now_ms.saturating_sub(HISTORY_WINDOW.as_millis() as u64);
         let history = history::read_since(&self.history_dir, since).iter().map(Change::from).collect();
-        ViewsFrame { decisions, wake, history, problems }
+        ViewsFrame { decisions, wake, history, plans, reviews, problems }
     }
+}
+
+/// Each live workspace's plan, the one touched last when it has several.
+fn plan_briefs(rows: &[Value], panes: &Panes) -> Vec<PlanBrief> {
+    let mut by_ws: HashMap<String, PlanBrief> = HashMap::new();
+    for p in rows {
+        let owner = p.get("owner").map(|o| s(o, "workspace")).unwrap_or_default();
+        let Some(ws) = panes.live_ws(&owner).or_else(|| panes.ws_for_dir(&s(p, "root"))) else { continue };
+        let progress = p.get("progress").cloned().unwrap_or(Value::Null);
+        let open = progress.get("open").and_then(Value::as_array).and_then(|a| a.first()).cloned();
+        let next = progress.get("next").filter(|n| n.is_object()).cloned();
+        let (n, title) = match (open.as_ref(), next.as_ref()) {
+            (Some(o), _) => (u(o, "n"), s(o, "title")),
+            (None, Some(nx)) => (u(nx, "n"), s(nx, "title")),
+            _ => (0, String::new()),
+        };
+        let b = PlanBrief {
+            ws: ws.clone(),
+            slug: s(p, "slug"),
+            phase: s(p, "phase"),
+            done: u(&progress, "done"),
+            total: u(&progress, "total"),
+            n,
+            open: open.is_some(),
+            title,
+            touched: u(p, "touchedAt"),
+        };
+        if by_ws.get(&ws).is_none_or(|was| was.touched <= b.touched) {
+            by_ws.insert(ws, b);
+        }
+    }
+    let mut out: Vec<PlanBrief> = by_ws.into_values().collect();
+    out.sort_by(|a, b| a.ws.cmp(&b.ws));
+    out
+}
+
+/// Each live workspace's newest review.
+fn review_briefs(live: Vec<(String, ReviewSummary)>) -> Vec<ReviewBrief> {
+    let mut by_ws: HashMap<String, ReviewBrief> = HashMap::new();
+    for (ws, r) in live {
+        let b = ReviewBrief { ws: ws.clone(), id: r.id, plan: r.plan, inc: r.inc, open: r.open, addressed: r.addressed, closed: r.closed, since: r.since };
+        if by_ws.get(&ws).is_none_or(|was| was.since <= b.since) {
+            by_ws.insert(ws, b);
+        }
+    }
+    let mut out: Vec<ReviewBrief> = by_ws.into_values().collect();
+    out.sort_by(|a, b| a.ws.cmp(&b.ws));
+    out
 }
 
 /// Records the state changes the wall's poll sees that no hook reported
