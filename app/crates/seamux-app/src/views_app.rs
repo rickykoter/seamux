@@ -15,6 +15,15 @@ use tauri::{AppHandle, Emitter, Runtime};
 const EVERY: Duration = Duration::from_secs(2);
 
 static LAST: Mutex<Option<ViewsFrame>> = Mutex::new(None);
+/// Wakes the feed before its next tick: a mute or tuck shows at once.
+static NUDGE: OnceLock<Mutex<std::sync::mpsc::Sender<()>>> = OnceLock::new();
+
+/// Rebuild the views frame now rather than on the next tick.
+pub fn nudge() {
+    if let Some(tx) = NUDGE.get() {
+        let _ = tx.lock().unwrap().send(());
+    }
+}
 static GAPS: OnceLock<Arc<GapFill>> = OnceLock::new();
 
 fn gaps() -> &'static Arc<GapFill> {
@@ -27,6 +36,8 @@ pub fn observe(f: &Frame) {
 }
 
 pub fn start<R: Runtime>(app: AppHandle<R>) {
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let _ = NUDGE.set(Mutex::new(tx));
     std::thread::spawn(move || {
         let feed = Feed::new(Inputs::live());
         // The first frame should already carry the plans and the Wake.
@@ -58,7 +69,10 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
                     Err(e) => eprintln!("seamux: views frame not sent: {e}"),
                 }
             }
-            std::thread::sleep(EVERY);
+            // The next tick, or sooner when a command nudges.
+            if rx.recv_timeout(EVERY).is_ok() {
+                while rx.try_recv().is_ok() {}
+            }
         }
     });
 }

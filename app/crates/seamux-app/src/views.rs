@@ -147,6 +147,22 @@ impl From<&Entry> for Change {
     }
 }
 
+/// A muted or tucked worktree, as the palette lists it.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct TuckRow {
+    pub path: String,
+    pub level: crate::tuck::Level,
+    pub at: u64,
+    pub name: String,
+    pub branch: String,
+    /// The live workspaces working in it.
+    pub workspaces: Vec<String>,
+    /// One of them has a question or an asked turn open.
+    pub waiting: bool,
+    /// Its newest state change in the history, else when it was quieted.
+    pub last: u64,
+}
+
 /// A workspace's plan, in brief.
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct PlanBrief {
@@ -189,6 +205,10 @@ pub struct ViewsFrame {
     pub reviews: Vec<ReviewBrief>,
     /// Timeline: one lane per live agent workspace over the last two hours.
     pub lanes: Vec<Lane>,
+    /// Muted and tucked worktrees, for the chip and the palette.
+    pub tucked: Vec<TuckRow>,
+    /// Each live workspace that is muted or tucked: "mute" or "tuck".
+    pub levels: std::collections::BTreeMap<String, String>,
     /// What could not be read this time, for the page to say.
     pub problems: Vec<String>,
 }
@@ -202,6 +222,8 @@ pub struct Inputs {
     pub history_dir: PathBuf,
     /// deep-plan's per-plan state files (when each increment went and finished).
     pub dp_state_dir: PathBuf,
+    /// Muted and tucked worktrees (tuck.rs).
+    pub tuck_file: PathBuf,
     /// `deep-plan status --json`'s rows.
     pub plans: Box<dyn Fn() -> Result<Vec<Value>, String> + Send + Sync>,
     /// The Artifact Log's newest rows.
@@ -215,6 +237,7 @@ impl Inputs {
             reviews_dir: crew_board::review::reviews_dir(),
             history_dir: history::dir(),
             dp_state_dir: crew_board::server::dp_state(),
+            tuck_file: crate::tuck::Store::live().file,
             plans: Box::new(plans_now),
             wake: Box::new(|n| crew_store::search("", None, None, n).map_err(|e| e.to_string())),
         }
@@ -533,6 +556,7 @@ pub struct Feed {
     reviews_dir: PathBuf,
     history_dir: PathBuf,
     dp_state_dir: PathBuf,
+    tuck: crate::tuck::Store,
     reviews: Mutex<HashMap<PathBuf, (SystemTime, Option<ReviewSummary>)>>,
     plans: Slow<Vec<Value>>,
     wake: Slow<Vec<crew_store::Row>>,
@@ -546,6 +570,7 @@ impl Feed {
             reviews_dir: inputs.reviews_dir,
             history_dir: inputs.history_dir,
             dp_state_dir: inputs.dp_state_dir,
+            tuck: crate::tuck::Store { file: inputs.tuck_file },
             reviews: Mutex::default(),
             plans: Slow::new(Arc::from(inputs.plans), PLANS_TTL),
             wake: Slow::new(Arc::new(move || wake(WAKE_ROWS)), WAKE_TTL),
@@ -647,7 +672,69 @@ impl Feed {
         };
 
         let history = recent.iter().filter(|e| e.at >= start).map(Change::from).collect();
-        ViewsFrame { decisions, wake, history, plans, reviews, lanes, problems }
+        let (tucked, levels) = self.tucks(tiles, &decisions, &recent, &mut problems);
+        ViewsFrame { decisions, wake, history, plans, reviews, lanes, tucked, levels, problems }
+    }
+
+    /// The quieted worktrees and each live workspace's level. A muted
+    /// worktree whose workspace asked after the mute is unmuted (and saved).
+    fn tucks(&self, tiles: &[Tile], decisions: &[Decision], recent: &[Entry], problems: &mut Vec<String>) -> (Vec<TuckRow>, std::collections::BTreeMap<String, String>) {
+        use crate::tuck::{branch_of, root_of, Level};
+        let mut entries = self.tuck.load();
+        if entries.is_empty() {
+            return (Vec::new(), Default::default());
+        }
+        let mut root: HashMap<String, String> = HashMap::new();
+        for t in tiles {
+            let r = root_of(&t.cwd);
+            // An agent pane names its workspace's worktree over a stray shell.
+            if t.agent.is_some() || !root.contains_key(&t.workspace) {
+                root.insert(t.workspace.clone(), r);
+            }
+        }
+        let under = |path: &str| -> Vec<String> {
+            let mut w: Vec<String> = root.iter().filter(|(_, r)| r.as_str() == path).map(|(ws, _)| ws.clone()).collect();
+            w.sort();
+            w
+        };
+        let asks = |ws: &[String]| -> Vec<u64> {
+            decisions
+                .iter()
+                .filter_map(|d| match d {
+                    Decision::Question { ws: w, since, .. } | Decision::Asked { ws: w, since, .. } if ws.contains(w) => Some(*since),
+                    _ => None,
+                })
+                .collect()
+        };
+        let before = entries.len();
+        entries.retain(|e| e.level != Level::Mute || !asks(&under(&e.path)).iter().any(|at| *at > e.at));
+        if entries.len() != before {
+            if let Err(e) = self.tuck.save(&entries) {
+                problems.push(format!("could not save the unmute: {e}"));
+            }
+        }
+        let mut levels = std::collections::BTreeMap::new();
+        let rows = entries
+            .iter()
+            .map(|e| {
+                let ws = under(&e.path);
+                for w in &ws {
+                    levels.insert(w.clone(), match e.level { Level::Mute => "mute", Level::Tuck => "tuck" }.to_string());
+                }
+                let last = recent.iter().filter(|h| ws.iter().any(|w| w.eq_ignore_ascii_case(&h.ws))).map(|h| h.at).max().unwrap_or(e.at);
+                TuckRow {
+                    path: e.path.clone(),
+                    level: e.level,
+                    at: e.at,
+                    name: if e.name.is_empty() { e.path.rsplit('/').next().unwrap_or("").to_string() } else { e.name.clone() },
+                    branch: branch_of(&e.path),
+                    waiting: !asks(&ws).is_empty(),
+                    workspaces: ws,
+                    last,
+                }
+            })
+            .collect();
+        (rows, levels)
     }
 
     /// One lane per live workspace with an agent: its spans over the window

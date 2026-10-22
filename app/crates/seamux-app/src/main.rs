@@ -6,6 +6,7 @@
 
 mod desk_app;
 mod shell;
+mod tuck_app;
 mod views_app;
 mod wake_app;
 mod wall_app;
@@ -155,7 +156,10 @@ fn main() {
             wake_app::wake_keep_all,
             wake_app::wake_publish,
             wake_app::home_dir,
-            wake_app::wake_file
+            wake_app::wake_file,
+            tuck_app::tuck_set,
+            tuck_app::tuck_restore,
+            tuck_app::tuck_unmute_all
         ])
         .run(tauri::generate_context!())
         .expect("seamux app failed to start");

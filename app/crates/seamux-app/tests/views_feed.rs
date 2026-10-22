@@ -93,6 +93,7 @@ fn inputs(f: &Fixture, plans: serde_json::Value, wake: Vec<crew_store::Row>) -> 
         reviews_dir: f.p("reviews"),
         history_dir: f.p("history"),
         dp_state_dir: f.p("dp-state"),
+        tuck_file: f.p("tucked.json"),
         plans: Box::new(move || Ok(plans.as_array().cloned().unwrap_or_default())),
         wake: Box::new(move |n| Ok(wake.iter().take(n).cloned().collect())),
     }
@@ -406,4 +407,57 @@ fn lanes_carry_spans_increment_marks_and_reviews() {
     b.since = NOW - 10 * m;
     let frame = primed(inputs(&f, json!([]), vec![])).build(&[b], NOW);
     assert_eq!(frame.lanes[0].spans, vec![Span { state: "needs_input".into(), start: NOW - 10 * m, end: NOW }]);
+}
+
+#[test]
+fn tuck_two_workspaces_in_one_worktree_go_together_and_a_tucked_ask_marks_waiting() {
+    use seamux_app::tuck::{Level, Store};
+    let f = Fixture::new("tuck-two");
+    let a = f.dir("work/a");
+    // A real worktree: a pane in a subdirectory shares its root.
+    fs::create_dir_all(f.p("work/a/sub")).unwrap();
+    let git = std::process::Command::new("git").args(["init", "-q"]).current_dir(f.p("work/a")).status();
+    if !git.map(|s| s.success()).unwrap_or(false) {
+        return; // no git on this machine: nothing to group by
+    }
+    let store = Store { file: f.p("tucked.json") };
+    let root = seamux_app::tuck::root_of(&a);
+    store.set(&root, Some(Level::Tuck), "a", NOW - 60_000).unwrap();
+    f.write(&format!("state/asked-{WS_B}"), "Ship it?");
+    let tiles = [tile(SURF_A, WS_A, &a, "idle"), tile(SURF_B, WS_B, &format!("{a}/sub"), "needs_input")];
+    let frame = primed(inputs(&f, json!([]), vec![])).build(&tiles, NOW);
+    assert_eq!(frame.levels.get(WS_A).map(String::as_str), Some("tuck"));
+    assert_eq!(frame.levels.get(WS_B).map(String::as_str), Some("tuck"), "same worktree, same tuck");
+    assert_eq!(frame.tucked.len(), 1);
+    let row = &frame.tucked[0];
+    assert_eq!((row.path.as_str(), row.level, row.waiting), (root.as_str(), Level::Tuck, true));
+    assert_eq!(row.workspaces.len(), 2);
+    // A tuck holds through an ask.
+    assert_eq!(store.load().len(), 1);
+}
+
+#[test]
+fn tuck_a_newer_ask_clears_a_mute_and_an_older_one_does_not() {
+    use seamux_app::tuck::{Level, Store};
+    let f = Fixture::new("tuck-mute");
+    let a = f.dir("work/a");
+    let store = Store { file: f.p("tucked.json") };
+    let root = seamux_app::tuck::root_of(&a);
+    let asked = f.p(&format!("state/asked-{WS_A}"));
+    f.write(&format!("state/asked-{WS_A}"), "Ready?");
+    set_mtime(&asked, NOW - 10 * 60_000);
+    let tiles = [tile(SURF_A, WS_A, &a, "needs_input")];
+
+    // Muted after the ask was raised: the old ask does not undo the mute.
+    store.set(&root, Some(Level::Mute), "a", NOW - 5 * 60_000).unwrap();
+    let frame = primed(inputs(&f, json!([]), vec![])).build(&tiles, NOW);
+    assert_eq!(frame.levels.get(WS_A).map(String::as_str), Some("mute"));
+    assert_eq!(store.load().len(), 1);
+
+    // A new ask after the mute: unmuted, and saved so.
+    set_mtime(&asked, NOW - 60_000);
+    let frame = primed(inputs(&f, json!([]), vec![])).build(&tiles, NOW);
+    assert!(frame.levels.is_empty());
+    assert!(frame.tucked.is_empty());
+    assert!(store.load().is_empty());
 }
