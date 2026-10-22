@@ -22,6 +22,8 @@ struct Fake {
     focused: Mutex<Vec<(String, String)>>,
     /// Surfaces current.list reports; closing one drops it.
     live: Mutex<Vec<&'static str>>,
+    /// cmux has no lifecycle hooks from these sessions: every agent is `unknown`.
+    unknown: Mutex<bool>,
 }
 
 impl Fake {
@@ -46,6 +48,7 @@ impl Source for Fake {
             .iter()
             .map(|s| {
                 let agents = match *s {
+                    _ if *self.unknown.lock().unwrap() => json!([{"kind": "claude", "state": "unknown"}]),
                     A => json!([{"kind": "claude", "state": "needs_input"}]),
                     C => json!([]),
                     _ => json!([{"kind": "claude", "state": "working"}]),
@@ -94,6 +97,21 @@ fn first_tick_frames_every_terminal_then_only_changes() {
     fake.text.lock().unwrap().insert(B.into(), "$ cargo test\nok\n".into());
     let f = w.tick().expect("a change frames again");
     assert_eq!(f.tiles[1].lines, vec!["$ cargo test", "ok"]);
+}
+
+#[test]
+fn an_unknown_state_comes_from_the_hint_when_it_has_one() {
+    let fake = Fake::new();
+    *fake.unknown.lock().unwrap() = true;
+    let w = wall(&fake, Duration::from_secs(1));
+    let f = w.tick().unwrap();
+    assert_eq!((f.tiles[0].state.as_str(), f.tiles[1].state.as_str()), ("unknown", "unknown"));
+    w.set_state_hint(Box::new(|| {
+        HashMap::from([(A.to_uppercase(), "working".to_string()), (B.to_uppercase(), "shell".to_string())])
+    }));
+    let f = w.tick().expect("the hint changes the frame");
+    assert_eq!((f.tiles[0].state.as_str(), f.tiles[1].state.as_str()), ("working", "shell"));
+    assert!(f.tiles[0].agent.is_some() && f.tiles[1].agent.is_none(), "a gone agent leaves a terminal");
 }
 
 #[test]

@@ -946,12 +946,24 @@ function workstreamLine(w) {
   return parts.join(" · ") || "no claims declared";
 }
 
-function workstreamsHtml(spec) {
+// `link` makes each child's name a link to its own plan page (served
+// /plan/<slug>, or the file beside this one): the review and working pages
+// have them, the shareable artifact page does not, its readers have no files.
+function workstreamsHtml(spec, link = false) {
+  const name = w => link
+    ? `<a class="dp-fam-link" href="${esc(w.slug)}.working.html" data-plan="${esc(w.slug)}">${esc(w.slug)}</a>`
+    : esc(w.slug);
   const items = (spec.workstreams || []).map(w =>
-    `<li><b>${esc(w.slug)}</b> <span class="dim">— ${esc(workstreamLine(w))}</span></li>`).join("");
+    `<li><b>${name(w)}</b> <span class="dim">— ${esc(workstreamLine(w))}</span></li>`).join("");
+  const served = link && items ? `
+<script>
+if (/^https?:/.test(location.protocol)) document.querySelectorAll(".dp-ws .dp-fam-link").forEach(function (a) {
+  a.setAttribute("href", "/plan/" + encodeURIComponent(a.getAttribute("data-plan")));
+});
+</script>` : "";
   return items ? `<h2>Workstreams</h2>
 <p class="dim">child plans this family coordinates. Their own deliverable files are claims too; an edit into a sibling's claim is allowed and noted, never refused.</p>
-<ul>${items}</ul>` : "";
+<ul class="dp-ws">${items}</ul>${served}` : "";
 }
 
 // Contracts card list, shared by the review/working body and the shareable
@@ -1149,7 +1161,7 @@ ${obGaps ? `<p class="dim">gaps this plan fills:</p><ul>${obGaps}</ul>` : ""}` :
 <h2>Context</h2><p>${esc(spec.context).replace(/\n\s*\n/g, "</p><p>")}</p>
 ${nonGoals ? `<h2>Non-goals</h2><ul>${nonGoals}</ul>` : ""}
 ${decs ? `<h2>Decisions</h2><ul>${decs}</ul>` : ""}
-${workstreamsHtml(spec)}
+${workstreamsHtml(spec, true)}
 ${contractsSection}
 ${facts ? `<h2>Verified facts</h2><ul>${facts}</ul>` : ""}
 ${risks ? `<h2>Risks</h2><ul>${risks}</ul>` : ""}

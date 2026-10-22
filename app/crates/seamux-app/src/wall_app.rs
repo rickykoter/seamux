@@ -43,6 +43,33 @@ fn run_wall<R: Runtime>(app: AppHandle<R>, pool: Vec<Arc<dyn Source>>) {
         Err(_) => pool[0].clone(),
     };
     let wall = Arc::new(Wall::with_actions(pool, actions, Duration::from_secs(1)));
+    // cmux reports a session's state as `unknown` when it gets no lifecycle
+    // hooks from it: a session whose process is gone (cmux restarted under
+    // it) is a terminal now; one that runs takes the last hook state crew
+    // recorded for its pane.
+    let cache: std::sync::Mutex<Option<(std::time::Instant, std::collections::HashMap<String, String>)>> = Default::default();
+    wall.set_state_hint(Box::new(move || {
+        let mut c = cache.lock().unwrap();
+        if let Some((at, m)) = c.as_ref() {
+            if at.elapsed() < Duration::from_secs(5) {
+                return m.clone();
+            }
+        }
+        let since = crew_core::history::now_ms().saturating_sub(6 * 3600 * 1000);
+        let mut m: std::collections::HashMap<String, String> =
+            crew_core::history::read_since(&crew_core::history::dir(), since)
+                .into_iter()
+                .filter(|e| !e.surface.is_empty())
+                .map(|e| (e.surface.to_uppercase(), e.state))
+                .collect();
+        if let Some(records) = crew_core::workspaces::agent_sessions() {
+            for s in seamux_app::sessions::gone_surfaces(&records) {
+                m.insert(s, "shell".into());
+            }
+        }
+        *c = Some((std::time::Instant::now(), m.clone()));
+        m
+    }));
     let _ = WALL.set(wall.clone());
     let (tx, rx) = mpsc::channel::<String>();
 
@@ -123,6 +150,68 @@ pub fn wall_frame() -> Option<Frame> {
 pub async fn wall_reply(surface_id: String, text: String) -> Result<(), String> {
     let w = wall()?.clone();
     tauri::async_runtime::spawn_blocking(move || w.reply(&surface_id, &text)).await.map_err(|e| e.to_string())?
+}
+
+/// The Claude sessions of a workspace, for the picker.
+#[tauri::command]
+pub async fn workspace_sessions(workspace: String) -> Result<Vec<seamux_app::sessions::SessionRow>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let records = crew_core::workspaces::agent_sessions().ok_or("cmux did not list its sessions")?;
+        Ok(seamux_app::sessions::rows(&records, &workspace))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The dead sessions Desk's cleanup would bring back, one per terminal.
+#[tauri::command]
+pub async fn desk_cleanup_plan() -> Result<Vec<seamux_app::sessions::Revival>, String> {
+    let w = wall()?.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let records = crew_core::workspaces::agent_sessions().ok_or("cmux did not list its sessions")?;
+        let panes: Vec<(String, String)> = w.last().map(|f| f.tiles).unwrap_or_default().into_iter().map(|t| (t.surface, t.workspace)).collect();
+        Ok(seamux_app::sessions::revivals(&records, &panes))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Resume each chosen session in its pane, one after another: starting a
+/// dozen Claudes at once would stall the machine. One line per session: Ok
+/// when it was typed, else why not. Each is checked fresh against cmux's
+/// records, so a pane whose Claude came back meanwhile is left alone.
+#[tauri::command]
+pub async fn desk_cleanup_run(picks: Vec<(String, String, String)>) -> Result<Vec<Result<(), String>>, String> {
+    let w = wall()?.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut out = Vec::new();
+        for (surface, session, cwd) in picks {
+            let records = crew_core::workspaces::agent_sessions().ok_or("cmux did not list its sessions")?;
+            out.push(if seamux_app::sessions::claude_alive(&records, &surface) {
+                Err("Claude is running there now".to_string())
+            } else {
+                w.resume(&surface, &session, &cwd, false)
+            });
+            std::thread::sleep(Duration::from_millis(600));
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Resume (in a shell) or swap to (in an idle Claude) a session in a pane.
+#[tauri::command]
+pub async fn session_resume(surface_id: String, session_id: String, cwd: String) -> Result<(), String> {
+    let w = wall()?.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Asked fresh: the answer decides whether `/resume` or a shell command is typed.
+        let records = crew_core::workspaces::agent_sessions().ok_or("cmux did not list its sessions")?;
+        let alive = seamux_app::sessions::claude_alive(&records, &surface_id);
+        w.resume(&surface_id, &session_id, &cwd, alive)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

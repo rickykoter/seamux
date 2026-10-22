@@ -11,6 +11,8 @@ import { Wake } from "./wake";
 import "./wake.css";
 import { Timeline } from "./timeline";
 import "./timeline.css";
+import { ReviewView } from "./review";
+import "./review.css";
 import { Palette } from "./palette";
 
 // The shape of `cmux_status` in crates/seamux-app/src/main.rs.
@@ -53,6 +55,8 @@ const mosaicEl = document.getElementById("mosaic")!;
 const mosaic = new Mosaic(mosaicEl, document.getElementById("wall")!, wall);
 const timelineView = new Timeline(timeline);
 const wakeView = new Wake(wakeEl);
+const reviewEl = document.getElementById("review")!;
+const reviewView = new ReviewView(reviewEl);
 
 const tabs = new Tabs(
   document.getElementById("strip")!,
@@ -62,6 +66,7 @@ const tabs = new Tabs(
     ["mosaic", mosaicEl],
     ["timeline", timeline],
     ["wake", wakeEl],
+    ["review", reviewEl],
   ]),
 );
 tabs.onSelect = (id) => id === "wake" && wakeView.shown();
@@ -77,7 +82,7 @@ void listen("app:summoned", () => tabs.select(DEFAULT_TAB));
 const hide = () => void invoke("hide_overlay");
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") hide();
-  // ⌘1…⌘4 pick the views, while focus is in the shell rather than a framed page.
+  // ⌘1…⌘5 pick the views, while focus is in the shell rather than a framed page.
   if (e.metaKey && e.key >= "1" && e.key <= "9") {
     tabs.selectIndex(Number(e.key) - 1);
     e.preventDefault();
@@ -90,4 +95,5 @@ deskView.start().catch((e) => console.error("desk", e));
 mosaic.start().catch((e) => console.error("mosaic", e));
 wakeView.start().catch((e) => console.error("wake", e));
 timelineView.start().catch((e) => console.error("timeline", e));
+reviewView.begin().catch((e) => console.error("review", e));
 palette.start().catch((e) => console.error("palette", e));

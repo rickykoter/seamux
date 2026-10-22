@@ -13,12 +13,13 @@ export type Tab = {
   missing?: string;
 };
 
-/** The views, in the strip, Command-1 to Command-4. */
+/** The views, in the strip, Command-1 to Command-5. */
 export const TABS: Tab[] = [
   { id: "desk", label: "Desk" },
   { id: "mosaic", label: "Mosaic" },
   { id: "timeline", label: "Timeline" },
   { id: "wake", label: "Wake" },
+  { id: "review", label: "Lookout" },
 ];
 
 /** The pages behind the ⋯ menu, framed from the intent server. */
@@ -144,7 +145,7 @@ export class Tabs {
     this.onSelect(id);
   }
 
-  /** Command-1 to Command-4 pick the views. */
+  /** Command-1 to Command-5 pick the views. */
   selectIndex(i: number): void {
     const tab = TABS[i];
     if (tab) this.select(tab.id);

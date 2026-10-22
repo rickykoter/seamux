@@ -162,9 +162,16 @@ impl Cmux {
                 if guard.is_none() {
                     *guard = Some(socket::Conn::open(path)?);
                 }
-                let res = guard.as_mut().unwrap().call(method, params);
-                // A dead connection is reopened on the next call, never retried
-                // here: a retried mutation could land twice.
+                let mut res = guard.as_mut().unwrap().call(method, params.clone());
+                // A request that never left (the connection was already dead)
+                // goes once more on a fresh one. Any other failure is not
+                // retried: a retried mutation could land twice.
+                if res.is_err() && guard.as_ref().is_some_and(|c| c.undelivered) {
+                    *guard = None;
+                    *guard = Some(socket::Conn::open(path)?);
+                    res = guard.as_mut().unwrap().call(method, params);
+                }
+                // A dead connection is reopened on the next call.
                 if matches!(res, Err(Error::Closed) | Err(Error::Io(_))) {
                     *guard = None;
                 }
