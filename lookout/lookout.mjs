@@ -145,6 +145,18 @@ function servedUrl(id) {
   } catch { return ""; }
 }
 
+// The workspace's companion pane (crew-board companion.rs): one tab per
+// review beside the chat. false when seamux is missing or refuses.
+function companionOpen(url, id, ws) {
+  const bin = process.env.SEAMUX_BIN || path.join(os.homedir(), ".local", "bin", "seamux");
+  if (!ws || !fs.existsSync(bin)) return false;
+  const key = ("review-" + id).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").slice(0, 96);
+  const args = ["companion", "open", url, "--key", key, "--workspace", ws];
+  if (process.env.CMUX_SURFACE_ID) args.push("--surface", process.env.CMUX_SURFACE_ID);
+  const r = spawnSync(bin, args, { encoding: "utf8", timeout: 20000, env: { ...process.env, CMUX_QUIET: "1" } });
+  return r.status === 0;
+}
+
 // Best-effort, never a failure: a tab already showing this review is pointed
 // at the page again (a re-open refreshes, it does not stack tabs); otherwise a
 // new browser tab opens beside the terminal without taking focus.
@@ -154,6 +166,11 @@ function showPage(id, file, cwd, { onlyIfOpen = false } = {}) {
   if (!ws) return "";
   const served = servedUrl(id);
   const url = served || "file://" + encodeURI(file);
+  // A fresh open goes beside the chat, in the workspace's companion; a
+  // refresh of a tab already open keeps the path below.
+  if (!onlyIfOpen && companionOpen(url, id, ws)) {
+    return "opened beside the terminal" + (served ? "" : ", read-only: crew's intent server is not serving reviews");
+  }
   const env = { ...process.env, CMUX_QUIET: "1" };
   try {
     const r = spawnSync("cmux", ["list-panels", "--workspace", ws, "--json"], { encoding: "utf8", env, timeout: 10000 });
