@@ -43,7 +43,17 @@ export function keyAction(e: KeyboardEvent): KeyAction | null {
   const named = NAMED[e.key];
   if (named) return { key: mods(true) + named };
   if (e.key.length !== 1) return null; // Shift, Control, F-keys: nothing to send
-  if (e.ctrlKey || e.altKey) return { key: mods(false) + e.key.toLowerCase() };
+  if (e.ctrlKey) {
+    // The control bytes cmux has no name for go as the bytes themselves.
+    const raw: Record<string, string> = { "[": "\x1b", "\\": "\x1c", "]": "\x1d", "^": "\x1e", "_": "\x1f" };
+    if (!e.altKey && raw[e.key]) return { text: raw[e.key] };
+    if (e.key === " ") return { key: mods(false) + "space" };
+  }
+  // A letter or digit with ⌃ or ⌥: by its key (⌥ on a Mac composes "å" from A),
+  // shift kept.
+  const base = /^Key([A-Z])$/.exec(e.code)?.[1]?.toLowerCase() ?? /^Digit([0-9])$/.exec(e.code)?.[1];
+  if ((e.ctrlKey || e.altKey) && base) return { key: mods(true) + base };
+  if (e.ctrlKey) return null;
   return { text: e.key };
 }
 
@@ -68,6 +78,9 @@ export class Term {
   private held = "";
   private holdTimer = 0;
   private probe = document.createElement("span");
+  /** Holds and releases run one after another, in the order they were asked. */
+  private sizing: Promise<unknown> = Promise.resolve();
+  private drawnOnce = false;
 
   constructor() {
     this.el.className = "term";
@@ -98,6 +111,10 @@ export class Term {
       this.el.classList.remove("focused");
       this.release();
     });
+    // Back from a hide (which released every hold): hold again if still focused.
+    window.addEventListener("focus", () => {
+      if (document.activeElement === this.el) this.hold();
+    });
     new ResizeObserver(() => {
       if (document.activeElement !== this.el) return;
       clearTimeout(this.holdTimer);
@@ -122,11 +139,9 @@ export class Term {
     if (cols < 20 || rows < 5) return;
     const surface = this.surface;
     this.held = surface;
-    void invoke("term_hold", { surfaceId: surface, cols, rows })
-      .then(() => {
-        this.stamp = "";
-        this.tick();
-      })
+    this.sizing = this.sizing
+      .then(() => invoke("term_hold", { surfaceId: surface, cols, rows }))
+      .then(() => this.tick())
       .catch((err) => this.say(`can't size the pane here: ${String(err)}`));
   }
 
@@ -134,7 +149,7 @@ export class Term {
     clearTimeout(this.holdTimer);
     const s = this.held;
     this.held = "";
-    if (s) void invoke("term_release", { surfaceId: s }).catch(() => {});
+    if (s) this.sizing = this.sizing.then(() => invoke("term_release", { surfaceId: s })).catch(() => {});
   }
 
   /** Mirror `surface` (a cmux surface id); "" stops. */
@@ -142,6 +157,7 @@ export class Term {
     if (surface === this.surface) return;
     this.release();
     this.surface = surface;
+    this.drawnOnce = false;
     this.stamp = "";
     this.failures = 0;
     this.tick();
@@ -218,7 +234,8 @@ export class Term {
       at[sp.row] = sp.column + sp.cell_width;
     }
     // Follow the bottom, as a terminal does, unless the person scrolled up.
-    const follow = this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight < 24;
+    const follow = !this.drawnOnce || this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight < 24;
+    this.drawnOnce = true;
     this.screen.replaceChildren(...lines, this.cursor);
     if (follow) this.el.scrollTop = this.el.scrollHeight;
     const c = g.cursor;

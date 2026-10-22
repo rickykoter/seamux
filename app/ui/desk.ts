@@ -602,12 +602,14 @@ export class Desk {
     const at = document.activeElement;
     if (at instanceof HTMLInputElement || at instanceof HTMLTextAreaElement) return;
     const d = this.decisions()[this.selected];
-    if (at instanceof HTMLElement && at.closest(".term")) return; // the terminal's keys
+    const inTerm = at instanceof HTMLElement && !!at.closest(".term");
+    if (inTerm && !e.metaKey) return; // the terminal's keys; ⌘ ones stay Desk's
     if (e.metaKey) {
-      if (e.key === "Enter" && d) {
-        // ⌘↩: the selected card's live terminal, here.
+      // ⌘↩: the selected card's live terminal, here (from inside it: closes it).
+      const open = inTerm ? this.decisions().find((x) => keyOf(x) === this.termKey) : d;
+      if (e.key === "Enter" && open) {
         e.preventDefault();
-        this.toggleTerm(d);
+        this.toggleTerm(open);
         return;
       }
       if (e.key.toLowerCase() === "o" && d) {

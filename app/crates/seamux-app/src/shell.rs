@@ -434,7 +434,7 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
                 }
             }
             "quit" => {
-                crate::term_app::release_all();
+                crate::term_app::release_all_briefly();
                 app.exit(0)
             }
             _ => {}

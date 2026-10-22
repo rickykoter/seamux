@@ -90,10 +90,16 @@ impl Policy for cmux::Cmux {
     fn get(&self, surface: &str) -> Result<Saved, String> {
         let d = self.call("terminal.size_state", json!({"surface_id": surface})).map_err(|e| e.to_string())?;
         let p = &d["size_state"]["policy"];
-        let mode = p["mode"].as_str().unwrap_or("smallest").to_string();
-        let fixed = (mode == "fixed")
-            .then(|| Some((p["fixed"]["cols"].as_u64()?, p["fixed"]["rows"].as_u64()?)))
-            .flatten();
+        // A shape we do not know is a refusal, never a guess saved as the pane's own.
+        let mode = p["mode"].as_str().filter(|m| !m.is_empty()).ok_or("cmux did not say the pane's size policy")?.to_string();
+        let fixed = if mode == "fixed" {
+            Some((
+                p["fixed"]["cols"].as_u64().ok_or("cmux gave a fixed policy with no size")?,
+                p["fixed"]["rows"].as_u64().ok_or("cmux gave a fixed policy with no size")?,
+            ))
+        } else {
+            None
+        };
         Ok(Saved { mode, fixed })
     }
 
@@ -108,23 +114,26 @@ impl Policy for cmux::Cmux {
 }
 
 /// The panes the app holds and what each had before, kept in a file too so a
-/// crash cannot leave a pane at the app's size.
+/// crash cannot leave a pane at the app's size. The file is read when the
+/// holds are made, so what a crash left is never written over.
 pub struct Holds {
     pub file: std::path::PathBuf,
     held: std::sync::Mutex<std::collections::BTreeMap<String, Saved>>,
 }
 
+/// A pane cmux no longer knows: its policy went with it.
+fn gone(err: &str) -> bool {
+    err.contains("not_found") || err.contains("not found")
+}
+
 impl Holds {
     pub fn new(file: std::path::PathBuf) -> Holds {
-        Holds { file, held: std::sync::Mutex::default() }
+        let held = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        Holds { file, held: std::sync::Mutex::new(held) }
     }
 
     pub fn live() -> Holds {
         Holds::new(crew_core::py::home().join(".cache/seamux/term-holds.json"))
-    }
-
-    fn load(&self) -> std::collections::BTreeMap<String, Saved> {
-        std::fs::read_to_string(&self.file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
     }
 
     fn save(&self, held: &std::collections::BTreeMap<String, Saved>) {
@@ -138,28 +147,34 @@ impl Holds {
     }
 
     /// Fix `surface` at cols x rows, saving its own policy the first time.
+    /// The lock is never held across a cmux call.
     pub fn hold(&self, p: &dyn Policy, surface: &str, cols: u64, rows: u64) -> Result<(), String> {
         if cols < 20 || rows < 5 {
             return Err(format!("{cols}x{rows} is too small to hold a pane at"));
         }
-        let mut held = self.held.lock().unwrap();
-        if !held.contains_key(surface) {
+        let known = self.held.lock().unwrap().contains_key(surface);
+        if !known {
             let was = p.get(surface)?;
-            held.insert(surface.to_string(), was);
-            // Saved before the change: a crash after this line is put right at start.
+            let mut held = self.held.lock().unwrap();
+            // Saved before the change: a crash after this is put right at start.
+            held.entry(surface.to_string()).or_insert(was);
             self.save(&held);
         }
         p.set(surface, "fixed", Some((cols, rows)))
     }
 
-    /// Give `surface` back the policy it had before the first hold.
+    /// Give `surface` back the policy it had before the first hold. A failed
+    /// set keeps the record (for the next release or the next start) unless
+    /// cmux says the pane is gone.
     pub fn release(&self, p: &dyn Policy, surface: &str) -> Result<(), String> {
-        let mut held = self.held.lock().unwrap();
-        let Some(was) = held.get(surface).cloned() else { return Ok(()) };
+        let Some(was) = self.held.lock().unwrap().get(surface).cloned() else { return Ok(()) };
         let res = p.set(surface, &was.mode, was.fixed);
-        // A pane cmux no longer knows is gone with its policy: drop it either way.
-        held.remove(surface);
-        self.save(&held);
+        if res.as_ref().is_ok() || res.as_ref().is_err_and(|e| gone(e)) {
+            let mut held = self.held.lock().unwrap();
+            held.remove(surface);
+            self.save(&held);
+            return Ok(());
+        }
         res
     }
 
@@ -170,14 +185,9 @@ impl Holds {
         }
     }
 
-    /// At start: what a crash left held, put back.
-    pub fn restore_leftovers(&self, p: &dyn Policy) {
-        let left = self.load();
-        if left.is_empty() {
-            return;
-        }
-        *self.held.lock().unwrap() = left;
-        self.release_all(p);
+    /// What is still held (a crash's leftovers at start, or failed releases).
+    pub fn pending(&self) -> usize {
+        self.held.lock().unwrap().len()
     }
 }
 
@@ -194,11 +204,33 @@ pub fn release_all() {
     }
 }
 
-/// At start, in the background: holds a crash left behind.
+/// At quit: release, but never let a hung cmux keep the app from quitting.
+pub fn release_all_briefly() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        release_all();
+        let _ = tx.send(());
+    });
+    let _ = rx.recv_timeout(std::time::Duration::from_millis(1500));
+}
+
+/// At start, in the background: holds a crash left behind, retried while
+/// cmux is not answering yet (the file keeps them meanwhile).
 pub fn restore_at_start() {
     std::thread::spawn(|| {
-        if let Ok(c) = client() {
-            holds().restore_leftovers(c);
+        for _ in 0..60 {
+            if holds().pending() == 0 {
+                return;
+            }
+            if let Ok(c) = client() {
+                holds().release_all(c);
+            } else {
+                // The client is made once; a cmux not up yet is asked again directly.
+                if let Ok(c) = cmux::Cmux::connect() {
+                    holds().release_all(&c);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(5));
         }
     });
 }
@@ -372,9 +404,60 @@ mod hold_tests {
         Holds::new(f.clone()).hold(&pane, "S", 80, 30).unwrap();
         // The app died here; a new one starts.
         let again = Holds::new(f.clone());
-        again.restore_leftovers(&pane);
+        assert_eq!(again.pending(), 1, "read from the file when made");
+        again.release_all(&pane);
         assert_eq!(*pane.now.borrow(), Saved { mode: "latest".into(), fixed: None });
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "{}");
+    }
+
+    /// A Fake whose sets fail with `err` (one shot each) while `failing` holds.
+    struct Flaky {
+        inner: Fake,
+        err: RefCell<Option<String>>,
+    }
+
+    impl Policy for Flaky {
+        fn get(&self, s: &str) -> Result<Saved, String> {
+            self.inner.get(s)
+        }
+        fn set(&self, s: &str, mode: &str, fixed: Option<(u64, u64)>) -> Result<(), String> {
+            if mode != "fixed" {
+                if let Some(e) = self.err.borrow_mut().take() {
+                    return Err(e);
+                }
+            }
+            self.inner.set(s, mode, fixed)
+        }
+    }
+
+    #[test]
+    fn term_hold_a_failed_release_keeps_the_record_unless_the_pane_is_gone() {
+        let f = file("flaky");
+        let h = Holds::new(f.clone());
+        let pane = Flaky { inner: Fake::new("latest", None), err: RefCell::new(Some("timed out".into())) };
+        h.hold(&pane, "S", 80, 30).unwrap();
+        assert!(h.release(&pane, "S").is_err());
+        assert_eq!(h.pending(), 1, "kept for the next try");
+        assert!(Holds::new(f.clone()).pending() == 1, "and in the file, for the next start");
+        h.release(&pane, "S").unwrap();
+        assert_eq!(*pane.inner.now.borrow(), Saved { mode: "latest".into(), fixed: None });
+
+        let gone = Flaky { inner: Fake::new("latest", None), err: RefCell::new(Some("not_found: Terminal surface not found".into())) };
+        h.hold(&gone, "G", 80, 30).unwrap();
+        assert!(h.release(&gone, "G").is_ok());
+        assert_eq!(h.pending(), 0, "a gone pane's record goes with it");
+    }
+
+    #[test]
+    fn term_hold_leftovers_survive_a_start_when_cmux_is_not_up() {
+        let f = file("notup");
+        let pane = Fake::new("latest", None);
+        Holds::new(f.clone()).hold(&pane, "OLD", 80, 30).unwrap();
+        // A new start: cmux not answering, so nothing is released; then a new hold.
+        let again = Holds::new(f.clone());
+        again.hold(&pane, "NEW", 70, 20).unwrap();
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(text.contains("OLD") && text.contains("NEW"), "the crash's record is not written over: {text}");
     }
 
     #[test]
