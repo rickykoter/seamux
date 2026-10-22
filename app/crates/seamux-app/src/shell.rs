@@ -13,6 +13,16 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewWindow};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
+/// The chat sheet's keys while the window has focus: ⌘E shows the Wake (or
+/// goes back), ⌘] and ⌘[ step through its tabs. A page in a frame keeps
+/// keys from the shell, so they are shortcuts rather than key listeners.
+fn sheet_keys() -> Vec<(Shortcut, &'static str)> {
+    [("CmdOrCtrl+KeyE", "wake"), ("CmdOrCtrl+BracketRight", "next"), ("CmdOrCtrl+BracketLeft", "prev")]
+        .iter()
+        .filter_map(|(k, n)| k.parse::<Shortcut>().ok().map(|s| (s, *n)))
+        .collect()
+}
+
 /// The hotkey, as the global-shortcut plugin spells it and as the tray shows it.
 pub const HOTKEY: &str = "Control+Alt+Space";
 pub const HOTKEY_LABEL: &str = "⌃⌥Space";
@@ -363,11 +373,18 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
     }
 
     let shortcut: Shortcut = HOTKEY.parse().expect("HOTKEY parses");
+    let sheet_keys = sheet_keys();
+    let in_handler = sheet_keys.clone();
     app.handle().plugin(
         tauri_plugin_global_shortcut::Builder::new()
             .with_handler(move |app, s, event| {
-                if *s == shortcut && event.state() == ShortcutState::Pressed {
+                if event.state() != ShortcutState::Pressed {
+                    return;
+                }
+                if *s == shortcut {
                     toggle(app);
+                } else if let Some((_, name)) = in_handler.iter().find(|(k, _)| k == s) {
+                    let _ = app.emit("sheet:key", *name);
                 }
             })
             .build(),
@@ -390,11 +407,21 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
     // app lives in the tray, and the hotkey needs the window to exist.
     if let Some(w) = app.get_webview_window("main") {
         let w2 = w.clone();
-        w.on_window_event(move |e| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = e {
+        let handle = app.handle().clone();
+        w.on_window_event(move |e| match e {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 hide(&w2);
             }
+            // The sheet's keys work wherever focus is, a framed page
+            // included, but only while this window has it.
+            tauri::WindowEvent::Focused(on) => {
+                let gs = handle.global_shortcut();
+                for (k, _) in &sheet_keys {
+                    let _ = if *on { gs.register(*k) } else { gs.unregister(*k) };
+                }
+            }
+            _ => {}
         });
     }
     let mut tray = TrayIconBuilder::with_id("seamux").tooltip("seamux").menu(&menu).on_menu_event(|app, e| {
@@ -418,6 +445,12 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sheet_keys_all_parse() {
+        let names: Vec<&str> = sheet_keys().iter().map(|(_, n)| *n).collect();
+        assert_eq!(names, ["wake", "next", "prev"]);
+    }
     use std::net::TcpListener;
 
     #[test]

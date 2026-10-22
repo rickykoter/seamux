@@ -94,8 +94,30 @@
       .sheet-btn svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; }
       .sheet-btn.icon { padding: 5px 7px; }
       .sheet-body { flex: 1; min-height: 0; display: flex; }
-      .sheet-page { flex: 1; min-width: 0; display: flex; }
+      .sheet-page { flex: 1; min-width: 0; display: flex; flex-direction: column; }
       .sheet-page iframe { flex: 1; border: 0; background: var(--bg); }
+      /* The page side's tabs: the Wake, the workspace's open pages, the rest. */
+      .sheet-tabs { display: flex; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; flex: none; }
+      .sheet-tab {
+        display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; max-width: 280px; font: inherit; font-size: 12px;
+        padding: 4px 9px; border-radius: 8px; border: 1px solid transparent; background: none; color: var(--muted); cursor: pointer;
+      }
+      .sheet-tab:hover { background: var(--card); color: var(--fg); }
+      .sheet-tab.on { background: var(--card); border-color: var(--line); color: var(--fg); flex-shrink: 0; }
+      .sheet-tab kbd, .sheet-tab-kind, .sheet-tab-dot { flex: none; }
+      .sheet-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+      .sheet-tab kbd { font: 10.5px ui-monospace, Menlo, monospace; color: var(--muted); padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; }
+      .sheet-tab-kind { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--kc, var(--muted)); }
+      .sheet-tab.tk-plan { --kc: var(--k-plan); } .sheet-tab.tk-review { --kc: var(--k-review); } .sheet-tab.tk-ask { --kc: var(--k-ask); }
+      .sheet-tab-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 4ch; flex: 0 1 auto; }
+      /* The state gives way first, then the name. */
+      .sheet-tab-state { white-space: nowrap; color: var(--muted); overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 100 auto; }
+      .sheet-tab-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
+      .sheet-stack { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+      .sheet-pane, .sheet-wake { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+      .sheet-pane[hidden], .sheet-wake[hidden] { display: none; }
+      .sheet-wake { overflow: hidden; }
+      .sheet-wake .w-list { flex: 1; min-height: 0; overflow-y: auto; }
       /* Beside the chat: the agent's pane on the left, the page on the right. */
       .sheet-chat, .sheet-divider { display: none; }
       .sheet-body.with-chat .sheet-chat {

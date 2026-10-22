@@ -27,7 +27,7 @@ impl Fixture {
     fn new(name: &str) -> Fixture {
         let root = std::env::temp_dir().join(format!("seamux-views-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        for d in ["state", "reviews", "history", "dp-state", "work/a", "work/b"] {
+        for d in ["state", "reviews", "history", "dp-state", "asks", "work/a", "work/b"] {
             fs::create_dir_all(root.join(d)).unwrap();
         }
         Fixture { root }
@@ -94,6 +94,7 @@ fn inputs(f: &Fixture, plans: serde_json::Value, wake: Vec<crew_store::Row>) -> 
         history_dir: f.p("history"),
         dp_state_dir: f.p("dp-state"),
         tuck_file: f.p("tucked.json"),
+        asks_dir: f.p("asks"),
         plans: Box::new(move || Ok(plans.as_array().cloned().unwrap_or_default())),
         wake: Box::new(move |n| Ok(wake.iter().take(n).cloned().collect())),
     }
@@ -540,4 +541,38 @@ fn plan_owner_working_in_its_root_keeps_the_plan() {
     let frame = primed(inputs(&f, rows, vec![])).build(&tiles, NOW);
     let api = frame.families[0].members.iter().find(|m| m.slug == "auth-api").unwrap();
     assert_eq!(api.ws.as_deref(), Some(WS_B), "the owner's workspace, not the first pane in the root");
+}
+
+#[test]
+fn pages_list_a_workspaces_plan_open_reviews_and_unanswered_asks() {
+    let f = Fixture::new("pages");
+    let (a, b) = (f.dir("work/a"), f.dir("work/b"));
+    let tiles = [tile(SURF_A, WS_A, &a, "needs_input"), tile(SURF_B, WS_B, &b, "idle")];
+    let plans = json!([
+        {"slug": "inv", "root": a, "phase": "implementing", "touchedAt": 20,
+         "progress": {"total": 5, "done": 1, "open": [{"n": 2, "title": "x"}], "next": null}, "increments": []},
+        {"slug": "ux", "root": b, "phase": "review", "touchedAt": 30, "progress": {"total": 3, "done": 0, "open": [], "next": null}, "increments": []}
+    ]);
+    f.write("reviews/inv-inc1.json", &json!({"id": "inv-inc1", "updatedAt": "2026-10-21T10:00:00.000Z",
+        "source": {"root": a, "plan": "inv", "inc": 1}, "findings": [{"status": "open"}]}).to_string());
+    f.write("reviews/inv-inc2.json", &json!({"id": "inv-inc2", "updatedAt": "2026-10-21T11:00:00.000Z",
+        "source": {"root": a, "plan": "inv", "inc": 2}, "findings": [{"status": "addressed"}]}).to_string());
+    f.write("reviews/closed.json", &json!({"id": "closed", "source": {"root": a}, "findings": [{"status": "resolved"}]}).to_string());
+    let ask = |id: &str, surface: &str, answer: serde_json::Value| {
+        f.write(&format!("asks/{id}.json"), &json!({"id": id, "header": "Pick", "workspace": WS_A, "surface": surface, "answer": answer}).to_string());
+        f.write(&format!("asks/{id}.html"), "<p>");
+    };
+    ask("open1", SURF_A, serde_json::Value::Null);
+    ask("answered", SURF_A, json!({"n": 1}));
+    ask("gone", "00000000-0000-0000-0000-000000000000", serde_json::Value::Null);
+
+    let frame = primed(inputs(&f, plans, vec![])).build(&tiles, NOW);
+    let of = |ws: &str| frame.pages.iter().filter(|p| p.ws == ws).map(|p| (p.kind.as_str(), p.path.as_str(), p.state.as_str(), p.waiting)).collect::<Vec<_>>();
+    assert_eq!(of(WS_A), vec![
+        ("plan", "/plan/inv", "working inc 2/5", false),
+        ("review", "/review/inv-inc2", "1 to close", true),
+        ("review", "/review/inv-inc1", "1 open", false),
+        ("ask", "/ask/open1", "waiting", true),
+    ], "plan, then reviews newest first (a closed one left out), then the live unanswered ask");
+    assert_eq!(of(WS_B), vec![("plan", "/plan/ux.review.html", "in review", true)], "a plan in review opens its review surface");
 }
