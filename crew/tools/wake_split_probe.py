@@ -30,7 +30,17 @@ sys.path.insert(0, HERE)
 import crew_impl  # noqa: E402  (beside this probe)
 ENV = crew_impl.env(dict(os.environ, HOME=tmp, FAKE_CMUX_DIR=tmp, CREW_CMUX=FAKE))
 STATE_DIR = os.path.join(tmp, ".cache", "cmux-crew")
-WAKE_TAB, WAKE_VIEW, WAKE_SHARE = "wake", "wake-view", 0.8
+WAKE_TAB, WAKE_VIEW = "wake", "wake-view"
+# The Rust server opens the Wake in the workspace's companion pane (crew-board
+# companion.rs), sized to 40% so the chat keeps the rest; the Python server it
+# replaced widened its own split to 80%.
+RUST = crew_impl.is_rust("crew-board-intent")
+WAKE_SHARE = 0.4 if RUST else 0.8
+
+
+def at_share(w):
+    """The companion lands on its share; the old split reached at least its."""
+    return abs(w - WAKE_SHARE) <= 0.04 if RUST else w >= WAKE_SHARE - 0.01
 
 
 def tool(name):
@@ -127,8 +137,8 @@ checks.append(("...cut from the rightmost pane, not the focused one",
                "focus-panel --panel T2" in log().split("new-pane")[0]))
 checks.append(("...never asking the pane at the left edge to move a divider it does not have",
                "resize-pane --pane P1 " not in log()))
-checks.append(("...and widened to at least 80%% through nested splits (%.2f)" % wake_width(sid),
-               wake_width(sid) >= WAKE_SHARE - 0.01))
+checks.append(("...and sized to %d%% through nested splits (%.2f)" % (WAKE_SHARE * 100, wake_width(sid)),
+               at_share(wake_width(sid))))
 
 # Narrowed by hand, then clicked again: the same tab, navigated, widened again.
 st = state()
@@ -141,7 +151,7 @@ checks.append(("a second click navigates the same tab and stacks nothing",
                ok and kept(WAKE_TAB) == sid and "new-pane" not in log() and "new-surface" not in log() and
                ("browser --surface %s goto %sy" % (sid, URL)) in log()))
 checks.append(("...focuses it, and widens it back (%.2f -> %.2f)" % (narrow, wake_width(sid)),
-               state()["focused"] == sid and narrow < 0.8 and wake_width(sid) >= WAKE_SHARE - 0.01))
+               state()["focused"] == sid and narrow < WAKE_SHARE and at_share(wake_width(sid))))
 
 # What the Wake opens goes into its group, as a tab in the same pane.
 open(LOG, "w").close()
@@ -161,7 +171,7 @@ lines = log().splitlines()
 checks.append(("a row's Wake switches to the row's workspace before anything else",
                ok and lines[0] == "workspace select " + WS2 and state()["ws"] == WS2))
 checks.append(("...and opens a group of its own there, widened, not the other workspace's tab",
-               two and two != sid and pane_of(two, WS2) and wake_width(two, WS2) >= WAKE_SHARE - 0.01))
+               two and two != sid and pane_of(two, WS2) and at_share(wake_width(two, WS2))))
 checks.append(("...leaving the first workspace's group where it was",
                "close-surface" not in log() and kept(WAKE_TAB) == sid and kept(WAKE_VIEW) == view))
 
@@ -206,7 +216,7 @@ new = kept(WAKE_TAB)
 checks.append(("an older crew's Dock tab is closed, its file dropped, and the Wake opens in a split",
                ok and new and new != "D-old" and state()["dock"] == ["D-board"] and
                "close-surface --surface D-old" in log() and not os.path.exists(keep_path(WAKE_TAB)) and
-               wake_width(new) >= WAKE_SHARE - 0.01))
+               at_share(wake_width(new))))
 
 # A kept id cmux no longer knows is simply replaced.
 with open(keep_path(WAKE_TAB, WS1), "w") as fh:
