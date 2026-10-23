@@ -227,7 +227,7 @@ class Preview {
     this.jumpBtn.addEventListener("click", () => void this.jump());
     this.note.className = "note-line";
     this.hint.className = "hint";
-    this.hint.textContent = "Click the terminal to type into it · ⌘Esc or a click outside leaves it";
+    this.hint.textContent = "Click the terminal to type into it · Esc twice, ⌘Esc or a click outside leaves it";
     const foot = document.createElement("footer");
     foot.append(this.hint, this.form, this.jumpBtn, this.note);
     this.el.append(head, this.term.el, this.body, foot);
