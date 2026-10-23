@@ -11,6 +11,10 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { Term } from "./term";
 
+// A page that starts (or reloads) owns no terminal yet: any its last life
+// left attached would keep its tmux client, and its size, for nothing.
+void invoke("pty_reset").catch(() => {});
+
 /** How long an unseen terminal stays attached: a tab flick keeps it. */
 const DETACH_AFTER = 1500;
 
@@ -32,8 +36,10 @@ export class NativeTerm {
    *  attach that made it, so the exit a detach provokes, or bytes a killed
    *  client left in flight, are never taken for this one's. */
   private gen = 0;
-  /** The link under the pointer, if any. */
-  private link = "";
+  /** The link under the pointer, and its buffer row (1-based), if any. */
+  private link: { uri: string; y: number } | null = null;
+  /** Keys go out one after another: the next waits for the last. */
+  private keys: Promise<unknown> = Promise.resolve();
 
   constructor() {
     this.el.className = "native-term";
@@ -55,22 +61,29 @@ export class NativeTerm {
     const open = (uri: string) => void invoke("open_url", { url: uri }).catch(() => {});
     this.term.loadAddon(
       new WebLinksAddon((_e, uri) => open(uri), {
-        hover: (_e, uri) => (this.link = uri),
-        leave: () => (this.link = ""),
+        hover: (_e, uri, range) => (this.link = { uri, y: range?.start.y ?? 0 }),
+        leave: () => (this.link = null),
       }),
     );
     this.el.addEventListener(
       "mousedown",
       (e) => {
         if (!this.link || e.button !== 0 || e.metaKey || e.altKey) return;
+        // The screen may have moved under a still pointer: only a link still
+        // on its row opens; otherwise the click is tmux's.
+        const row = this.term.buffer.active.getLine(this.link.y - 1)?.translateToString(true) ?? "";
+        if (!row.includes(this.link.uri.slice(0, 24))) {
+          this.link = null;
+          return;
+        }
         e.preventDefault();
         e.stopPropagation();
-        open(this.link);
+        open(this.link.uri);
       },
       true,
     );
-    this.term.onData((d) => this.id !== null && void invoke("pty_write", { id: this.id, data: d }).catch(() => {}));
-    this.term.onBinary((b) => this.id !== null && void invoke("pty_write", { id: this.id, raw: Array.from(b, (c) => c.charCodeAt(0)) }).catch(() => {}));
+    this.term.onData((d) => this.send({ data: d }));
+    this.term.onBinary((b) => this.send({ raw: Array.from(b, (c) => c.charCodeAt(0)) }));
     this.term.onResize(({ cols, rows }) => this.id !== null && void invoke("pty_resize", { id: this.id, cols, rows }).catch(() => {}));
     this.term.attachCustomKeyEventHandler((e) => this.key(e));
     new ResizeObserver(() => {
@@ -79,6 +92,12 @@ export class NativeTerm {
     }).observe(this.el);
     // Attach while on screen, let go a moment after it is not.
     setInterval(() => this.check(), 400);
+  }
+
+  private send(k: { data?: string; raw?: number[] }): void {
+    const id = this.id;
+    if (id === null) return;
+    this.keys = this.keys.then(() => invoke("pty_write", { id, ...k })).catch(() => {});
   }
 
   show(surface: string): void {

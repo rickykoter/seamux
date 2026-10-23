@@ -117,6 +117,14 @@ pub fn tmux_bin() -> String {
     "tmux".into()
 }
 
+/// `s` as one shell word (tmux runs the command through a shell).
+pub fn sh_quote(s: &str) -> String {
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c)) {
+        return s.to_string();
+    }
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
 /// A cmux pane's variables, as cmux's own client of a session has them: its
 /// IDs, socket and capability, Claude's hook settings, and PATH (led by the
 /// pane's claude shim). tmux copies these from the attaching client into the
@@ -178,7 +186,7 @@ pub fn start_native(ws: &str, cwd: &str, resume: Option<&str>) -> Result<String,
     let name = format!("claude-{:x}", stamp & 0xffff_ffff);
     let shell = std::env::var("SHELL").ok().filter(|s| s.starts_with('/')).unwrap_or_else(|| "/bin/zsh".into());
     // A login shell until cmux's client has attached and filled the variables in.
-    cmux_ok(&["local-tmux", "start", &name, "--cwd", cwd, "--command", &format!("{shell} -l"), "--detached"])?;
+    cmux_ok(&["local-tmux", "start", &name, "--cwd", cwd, "--command", &format!("{} -l", sh_quote(&shell)), "--detached"])?;
     // Anything that fails from here takes the half-made session with it.
     let made = finish_native(&name, ws, &claude);
     if made.is_err() {
@@ -299,6 +307,12 @@ impl Pty {
         self.master.try_clone().map_err(|e| e.to_string())
     }
 
+    /// A second handle on the input, for a writer thread that writes keys in
+    /// the order they came.
+    pub fn writer(&self) -> Result<File, String> {
+        self.master.try_clone().map_err(|e| e.to_string())
+    }
+
     pub fn write(&mut self, data: &[u8]) -> Result<(), String> {
         self.master.write_all(data).map_err(|e| e.to_string())
     }
@@ -369,6 +383,9 @@ mod tests {
         assert_eq!(claude_line(Some("21b4ad73-7b2a-4926-a7dc-33f10ebfac32")).unwrap(), "claude --resume 21b4ad73-7b2a-4926-a7dc-33f10ebfac32");
         assert!(claude_line(Some("x; rm -rf /")).is_err());
         assert!(PANE_VARS.contains(&"CMUX_SURFACE_ID") && PANE_VARS.contains(&"PATH"));
+        assert_eq!(sh_quote("/bin/zsh"), "/bin/zsh");
+        assert_eq!(sh_quote("/opt/a b/bin/fish"), "'/opt/a b/bin/fish'");
+        assert_eq!(sh_quote("/x/it's"), r"'/x/it'\''s'");
     }
 
     /// Read from `r` until `want` shows up (or the time runs out).
