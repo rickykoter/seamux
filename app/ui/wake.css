@@ -5,11 +5,13 @@
   /* Light: the hues deepened, so a kind's label reads on a light page. */
   --k-plan: #3d7f76; --k-review: #a3577b; --k-ask: #8f6d24; --k-artifact: #3f8a52; --k-doc: #5e7a33;
   --k-temp: #b0562e; --k-image: #b83f42; --k-file: #5f6b63; --k-commit: #7d6f4f;
+  --k-pr: #7c5bb4; --k-issue: #3a7d44;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --k-plan: #7fbbb3; --k-review: #d699b6; --k-ask: #dbbc7f; --k-artifact: #83c092; --k-doc: #a7c080;
     --k-temp: #e69875; --k-image: #e67e80; --k-file: #9da9a0; --k-commit: #d3c6aa;
+    --k-pr: #b9a0e6; --k-issue: #8fcf96;
   }
 }
 
@@ -71,6 +73,7 @@
 .k-plan { --kc: var(--k-plan); } .k-review { --kc: var(--k-review); } .k-ask { --kc: var(--k-ask); }
 .k-artifact { --kc: var(--k-artifact); } .k-doc { --kc: var(--k-doc); } .k-temp { --kc: var(--k-temp); }
 .k-image { --kc: var(--k-image); } .k-file { --kc: var(--k-file); } .k-commit { --kc: var(--k-commit); }
+.k-pr { --kc: var(--k-pr); } .k-issue { --kc: var(--k-issue); }
 
 .w-help { position: absolute; right: 26px; top: 84px; z-index: 20; padding: 10px 14px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); box-shadow: 0 10px 28px var(--shade); font-size: 12px; }
 .w-help[hidden] { display: none; }

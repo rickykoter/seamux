@@ -300,3 +300,46 @@ fn a_lock_python_holds_makes_rust_busy() {
     assert!(!Path::new(&format!("{dir}/index.lock.again")).exists());
     std::env::remove_var("CREW_DURABLE_DIR");
 }
+
+/// Pull requests and issues a session linked: one row a link, made or named,
+/// the made one titled from `gh pr create --title`, a later mention leaving
+/// that title alone. (Rust only: artifacts.py is retired and has no such rows.)
+#[test]
+fn github_links_become_rows() {
+    let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let f = fixture("links");
+    let db = s(&f.root.join("rs"));
+    rs_index(&db);
+    let base = json!({"cwd": f.ws, "sessionId": "11111111-2222-3333-4444-555555555555", "gitBranch": "main"});
+    let at = |extra: Value| {
+        let mut b = base.clone();
+        for (k, v) in extra.as_object().unwrap() {
+            b[k] = v.clone();
+        }
+        b
+    };
+    let said = |ts: &str, text: &str| at(json!({"type": "assistant", "timestamp": ts, "message": {"content": [{"type": "text", "text": text}]}}));
+    jl(&f.tr, &[
+        said("2030-01-01T10:00:00.000Z", "See https://github.com/acme/shop/pull/7 and https://github.com/acme/shop/pull/7/files, then https://github.com/acme/shop/issues/3#issuecomment-1."),
+        at(json!({"type": "assistant", "timestamp": "2030-01-01T10:00:01.000Z", "message": {"content": [{"type": "tool_use", "id": "g1", "name": "Bash",
+            "input": {"command": "gh pr create --base main --title \"Add the cart\" --body-file b.md"}}]}})),
+        at(json!({"type": "user", "timestamp": "2030-01-01T10:00:02.000Z", "toolUseResult": {"stdout": "https://github.com/acme/shop/pull/8\n", "stderr": ""},
+            "message": {"content": [{"type": "tool_result", "tool_use_id": "g1"}]}})),
+        said("2030-01-01T10:00:03.000Z", "Opened https://github.com/acme/shop/pull/8 for you; not https://example.com/pull/9."),
+    ]);
+    rs_index(&db);
+    let (rows, _) = dump(&format!("{db}/artifacts.db"));
+    let links: Vec<(&str, &str, &str)> = rows
+        .iter()
+        .filter(|r| r["kind"] == "pr" || r["kind"] == "issue")
+        .map(|r| (r["kind"].as_str().unwrap(), r["locator"].as_str().unwrap(), r["title"].as_str().unwrap()))
+        .collect();
+    assert_eq!(links, vec![
+        ("issue", "https://github.com/acme/shop/issues/3", ""),
+        ("pr", "https://github.com/acme/shop/pull/7", ""),
+        ("pr", "https://github.com/acme/shop/pull/8", "Add the cart"),
+    ]);
+    let made = rows.iter().find(|r| r["locator"] == "https://github.com/acme/shop/pull/8").unwrap();
+    assert_eq!(made["url"], "https://github.com/acme/shop/pull/8");
+    assert_eq!(made["path"], "");
+}

@@ -270,9 +270,20 @@ mark{background:none;color:var(--mark);box-shadow:inset 0 -1px 0 var(--mark)}
   var boot = {};
   try { boot = JSON.parse(document.getElementById("boot").textContent); } catch (e) {}
   var T = boot.t || "", WS = boot.ws || "";
-  var KINDS = ["plan", "review", "ask", "artifact", "doc", "temp", "image", "file", "commit"];
+  var KINDS = ["plan", "review", "ask", "artifact", "doc", "temp", "image", "file", "commit", "pr", "issue"];
   var HUE = {plan: "#7fbbb3", review: "#d699b6", ask: "#dbbc7f", artifact: "#83c092", doc: "#a7c080",
-             temp: "#e69875", image: "#e67e80", file: "#9da9a0", commit: "#d3c6aa"};
+             temp: "#e69875", image: "#e67e80", file: "#9da9a0", commit: "#d3c6aa", pr: "#b9a0e6", issue: "#8fcf96"};
+  // A pull request's or issue's URL: owner/repo and its number.
+  function ghLink(r) {
+    if (r.kind !== "pr" && r.kind !== "issue") return null;
+    var m = /^https:\/\/github\.com\/([^\/]+\/[^\/]+)\/(?:pull|issues)\/(\d+)/.exec(r.url || r.locator || "");
+    return m ? {repo: m[1], n: m[2]} : null;
+  }
+  // A link made with a title shows it; one only named shows owner/repo #n.
+  function titleOf(r) {
+    var gh = ghLink(r);
+    return r.title || (gh ? gh.repo + " #" + gh.n : r.locator);
+  }
   var SOURCE = {"deep-plan": "deep-plan", lookout: "lookout review", ask: "deep-plan ask"};
   var $ = function (id) { return document.getElementById(id); };
   var state = {rows: [], workspaces: [], q: "", kinds: {}, sel: -1, open: {}, vis: []};
@@ -434,12 +445,16 @@ mark{background:none;color:var(--mark);box-shadow:inset 0 -1px 0 var(--mark)}
     else if (r.state === "gone") b = '<span class="st" title="the file is gone; the row keeps its context"><svg><use href="#i-empty"/></svg>gone</span>';
     if (r.published) b += ' <span class="st pub" title="' + esc(r.url) + '"><svg><use href="#i-pub"/></svg>claude.ai</span>';
     if (r.kind === "commit" && r.sha) b += ' <span class="st">' + esc(r.sha) + "</span>";
+    var gh = ghLink(r);
+    if (gh && r.title) b += ' <span class="st">#' + esc(gh.n) + "</span>";
     return b;
   }
 
   function where(r) {
     if (r.kind === "commit") return r.url ? r.url.replace(/^https:\/\//, "").replace(/\/commit\/.*$/, "") : "";
     if (r.kind === "artifact") return r.url.replace(/^https:\/\//, "") + (r.path ? "  ← " + tilde(r.path) : "");
+    var gh = ghLink(r);
+    if (gh) return "github.com/" + gh.repo;
     return tilde(r.path || "");
   }
 
@@ -491,7 +506,7 @@ mark{background:none;color:var(--mark);box-shadow:inset 0 -1px 0 var(--mark)}
       }
       html += '<li class="row ' + esc(r.state) + (keepSel === r.id ? " sel" : "") + '" data-i="' + i + '" tabindex="-1">' +
               '<span class="k" style="--c:' + HUE[r.kind] + '">' + esc(r.kind) + "</span>" +
-              '<span class="t" title="' + esc(r.title) + '">' + hl(r.title) + "</span>" +
+              '<span class="t" title="' + esc(ghLink(r) ? r.url : titleOf(r)) + '">' + hl(titleOf(r)) + "</span>" +
               "<span>" + badge(r) + "</span>" +
               (where(r) ? '<span class="p" title="' + esc(where(r)) + '"><bdi>' + hl(where(r)) + "</bdi></span>" : "") +
               (r.was_path ? '<span class="p was" title="' + esc(r.was_path) + '"><i>was</i><span><bdi>' + esc(tilde(r.was_path)) + "</bdi></span></span>" : "") +

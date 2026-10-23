@@ -6,8 +6,8 @@
 //! shape costs that one row, never the run.
 
 use crate::classify::{
-    classify, commit_re, changed_re, git_commit_re, github_re, gs, oneline_re, prompt_of, splitext_ext,
-    tmp_redirect_re, truthy, IMAGE_EXT,
+    classify, commit_re, changed_re, gh_create_title_re, gh_link_re, git_commit_re, github_re, gs, oneline_re,
+    prompt_of, splitext_ext, tmp_redirect_re, truthy, IMAGE_EXT,
 };
 use crate::paths::{basename, norm, wskey, Paths};
 use crate::{iso, py_isspace};
@@ -404,6 +404,13 @@ impl Scan {
             return;
         };
         for c in items {
+            // The pull requests and issues Claude names in what it says.
+            if c.is_object() && c.get("type").and_then(Value::as_str) == Some("text") {
+                if let Some(t) = c.get("text").and_then(Value::as_str) {
+                    self.gh_links(ctx, d, t, "");
+                }
+                continue;
+            }
             if !(c.is_object() && c.get("type").and_then(Value::as_str) == Some("tool_use")) {
                 continue;
             }
@@ -432,6 +439,23 @@ impl Scan {
                 for f in found {
                     self.file(ctx, d, &f);
                 }
+            }
+        }
+    }
+
+    /// A row for each GitHub pull request or issue linked in `text`, by its
+    /// canonical URL (one row a link, however often it is named). `title` is
+    /// given only where the link was made (`gh pr create --title`): a mention
+    /// leaves the title alone, so it never replaces the real one.
+    fn gh_links(&mut self, ctx: &mut Ctx, d: &Value, text: &str, title: &str) {
+        let found: Vec<(String, &str)> = gh_link_re()
+            .captures_iter(text)
+            .map(|m| (format!("https://github.com/{}/{}/{}/{}", &m[1], &m[2], &m[3], &m[4]), if &m[3] == "pull" { "pr" } else { "issue" }))
+            .collect();
+        let mut seen = std::collections::HashSet::new();
+        for (url, kind) in found {
+            if seen.insert(url.clone()) {
+                self.add(ctx, d, kind, &url, title, "", &url, "");
             }
         }
     }
@@ -478,6 +502,13 @@ impl Scan {
             }
             _ => String::new(),
         };
+        // The pull requests and issues a command printed (`gh pr create`
+        // prints the new one): titled from --title when it made them.
+        let made = gh_create_title_re()
+            .captures(&cmd)
+            .and_then(|m| m.get(1).or(m.get(2)).or(m.get(3)).map(|t| t.as_str().to_string()))
+            .unwrap_or_default();
+        self.gh_links(ctx, d, out, &made);
         let committed = git_commit_re().is_match(&cmd);
         if !(committed || (out.contains("] ") && changed_re().is_match(out))) {
             return;
