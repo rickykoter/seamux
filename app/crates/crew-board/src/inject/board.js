@@ -12,6 +12,19 @@
     __boardRender(d);
     __boardIntent({ port: PORT, token: T });
   });
-  es.onerror = function(){ document.documentElement.setAttribute("data-feed", "lost"); };
+  // A server that restarted has a new token and refuses this one, and a
+  // refused EventSource never retries: if the stream stays down while the
+  // server answers, this page is stale, so it loads afresh.
+  var stale = 0;
+  es.onerror = function(){
+    document.documentElement.setAttribute("data-feed", "lost");
+    clearTimeout(stale);
+    stale = setTimeout(function(){
+      if (es.readyState === 1) return;
+      fetch("/health", { cache: "no-store" })
+        .then(function(r){ if (r.ok) location.reload(); })
+        .catch(function(){});
+    }, 4000);
+  };
 })();
 </script>

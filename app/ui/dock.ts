@@ -17,6 +17,9 @@ type IntentServer = { origin: string | null; up: boolean; reason: string | null 
 export class DockView {
   private board = document.createElement("div");
   private frame: HTMLIFrameElement | null = null;
+  /** When the board was last loaded: a page left from before a server
+   *  restart has old code and a refused token, so it is loaded afresh. */
+  private loadedAt = 0;
   private note = document.createElement("p");
   private sheet = new Sheet(true);
   private origin: string | null = null;
@@ -79,12 +82,13 @@ export class DockView {
     await this.frameBoard();
   }
 
-  /** Called when the tab is shown: a board whose server moved loads again. */
+  /** Called when the tab is shown (and on every summon): a board whose
+   *  server moved, or that was loaded over a minute ago, loads again. */
   shown(): void {
-    void this.frameBoard();
+    void this.frameBoard(Date.now() - this.loadedAt > 60_000);
   }
 
-  private async frameBoard(): Promise<void> {
+  private async frameBoard(fresh = false): Promise<void> {
     const server = await invoke<IntentServer>("intent_server").catch(() => null);
     if (!server?.up || !server.origin) {
       this.note.hidden = false;
@@ -94,13 +98,19 @@ export class DockView {
       this.origin = null;
       return;
     }
-    if (this.frame && this.origin === server.origin) return;
+    if (this.frame && this.origin === server.origin) {
+      if (!fresh) return;
+      this.loadedAt = Date.now();
+      this.frame.src = `${server.origin}/board`;
+      return;
+    }
     this.frame?.remove();
     this.note.hidden = true;
     this.origin = server.origin;
     const f = document.createElement("iframe");
     f.title = "Dock";
     f.src = `${server.origin}/board`;
+    this.loadedAt = Date.now();
     f.addEventListener("load", () => this.tell());
     this.frame = f;
     this.board.append(f);
