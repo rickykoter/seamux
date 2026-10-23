@@ -512,3 +512,10 @@ mod hold_tests {
         assert!(pane.sets.borrow().is_empty());
     }
 }
+
+/// cmux's terminal look (theme palette, colors, font) for the light or dark
+/// appearance: the native terminal draws with it.
+#[tauri::command]
+pub async fn term_look(dark: bool) -> seamux_app::ghostty::Look {
+    tauri::async_runtime::spawn_blocking(move || seamux_app::ghostty::look(dark)).await.unwrap_or_default()
+}
