@@ -115,12 +115,13 @@
 }
 .preview input:focus { outline: none; border-color: var(--accent); }
 .preview .jump {
-  font: inherit; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
-  padding: 4px 10px; border-radius: 7px; border: 1px solid var(--line); background: var(--on); color: var(--fg);
+  flex: none; display: inline-flex; align-items: center; cursor: pointer;
+  padding: 4px 6px; border-radius: 7px; border: 1px solid var(--line); background: var(--on); color: var(--fg);
 }
 .preview .jump svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; }
-.preview .hint { flex: 1; font-size: 11.5px; color: var(--muted); }
-.preview .hint[hidden], .preview pre[hidden] { display: none; }
+.preview pre[hidden], .preview form.reply[hidden] { display: none; }
+/* Live, the footer has nothing to show until a note comes. */
+.preview footer:has(> form.reply[hidden]):has(> .note-line:empty) { display: none; }
 .preview .note-line { flex-basis: 100%; font-size: 11px; color: var(--muted); }
 .preview .note-line:empty { display: none; }
 .preview .note-line.bad { color: var(--bad); }

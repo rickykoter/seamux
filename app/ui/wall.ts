@@ -169,7 +169,6 @@ class Preview {
   private live = true;
   /** The read error the note shows while live. */
   private errShown = "";
-  private hint = document.createElement("span");
   private form = document.createElement("form");
   private input = document.createElement("input");
   private send = document.createElement("button");
@@ -190,7 +189,7 @@ class Preview {
     this.subEl.className = "sub";
     names.append(this.titleEl, this.subEl);
     this.stateEl.className = "state";
-    head.append(names, this.stateEl);
+    head.append(names, this.stateEl, this.jumpBtn);
 
     this.input.type = "text";
     this.input.placeholder = "Reply…";
@@ -216,7 +215,7 @@ class Preview {
     this.jumpBtn.type = "button";
     this.jumpBtn.className = "jump";
     this.jumpBtn.title = "Show this pane in cmux (J)";
-    this.jumpBtn.append(document.createTextNode("Jump "));
+    this.jumpBtn.setAttribute("aria-label", this.jumpBtn.title);
     const arrow = document.createElementNS(SVG, "svg");
     arrow.setAttribute("viewBox", "0 0 10 10");
     arrow.setAttribute("aria-hidden", "true");
@@ -226,10 +225,8 @@ class Preview {
     this.jumpBtn.append(arrow);
     this.jumpBtn.addEventListener("click", () => void this.jump());
     this.note.className = "note-line";
-    this.hint.className = "hint";
-    this.hint.textContent = "Click the terminal to type into it · Esc twice, ⌘Esc or a click outside leaves it";
     const foot = document.createElement("footer");
-    foot.append(this.hint, this.form, this.jumpBtn, this.note);
+    foot.append(this.form, this.note);
     this.el.append(head, this.term.el, this.body, foot);
     this.setLive(true);
     this.term.onTrouble = (bad) => this.setLive(!bad);
@@ -308,7 +305,6 @@ class Preview {
     this.live = on;
     this.term.el.hidden = !on;
     this.body.hidden = on;
-    this.hint.hidden = !on;
     if (on) this.form.hidden = true;
     else this.lastText = ""; // the fallback redraws on the next frame
   }
