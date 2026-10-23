@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { reflow, type Block } from "./reflow";
 import { Term } from "./term";
+import { splitter } from "./splitter";
 
 /** One re-flowed paragraph: wraps at the window, hanging past its marker. */
 function flowLine(b: Block): HTMLElement {
@@ -392,7 +393,20 @@ export class WallView {
     this.list.setAttribute("aria-label", "Agents");
     this.split.className = "split";
     this.split.hidden = true;
-    this.split.append(this.list, this.preview.el);
+    const grip = document.createElement("div");
+    grip.className = "list-grip";
+    this.split.append(this.list, this.preview.el, grip);
+    splitter(grip, {
+      zone: "wall-list",
+      axis: "x",
+      from: (x) => x - this.split.getBoundingClientRect().left,
+      min: 180,
+      max: 640,
+      initial: 290,
+      step: 16,
+      apply: (v) => this.split.style.setProperty("--list-w", `${Math.round(v)}px`),
+      label: "Resize the list of agents",
+    });
     root.append(this.status, this.empty, this.split);
     // Wait times move without a frame.
     setInterval(() => this.tickTimes(), 15_000);

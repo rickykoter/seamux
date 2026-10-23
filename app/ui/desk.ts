@@ -6,6 +6,7 @@ import type { Frame as WallFrame, Tile } from "./wall";
 import { ago } from "./wall";
 import { levelOf, menu, toggle, type Levels, type TuckRow } from "./tuck";
 import { familyOf, grouped, header as familyHeader, memberState, type FamilyBrief, type FamilyMember } from "./family";
+import { splitter } from "./splitter";
 
 // The shapes of views.rs's ViewsFrame.
 export type Opt = { label: string; description: string };
@@ -310,6 +311,11 @@ export class Desk {
       if (typing) at!.addEventListener("blur", () => setTimeout(() => this.draw(), 0), { once: true });
       return;
     }
+    // A handle mid-drag (a card's terminal height) would be rebuilt away: after it.
+    if (document.body.classList.contains("splitting")) {
+      setTimeout(() => this.draw(force), 250);
+      return;
+    }
     this.drawn = shape;
     const ds = this.decisions();
     if (this.actedKey && Date.now() < this.actedUntil && ds.some((d) => keyOf(d) === this.actedKey)) {
@@ -431,7 +437,20 @@ export class Desk {
     if (note) c.append(el("p", `d-note${note.bad ? " bad" : ""}`, note.text));
     if (key === this.termKey) {
       const box = el("div", "d-term");
-      box.append(this.term.el);
+      const grip = el("div", "d-term-grip");
+      box.append(this.term.el, grip);
+      // One height for every card's terminal, kept across redraws and restarts.
+      splitter(grip, {
+        zone: "desk-term",
+        axis: "y",
+        from: (y) => y - box.getBoundingClientRect().top,
+        min: 160,
+        max: 1200,
+        initial: 340,
+        step: 24,
+        apply: (v) => document.documentElement.style.setProperty("--d-term-h", `${Math.round(v)}px`),
+        label: "Resize the terminal",
+      });
       box.addEventListener("click", (e) => e.stopPropagation());
       c.append(box);
       this.term.show(d.surface);

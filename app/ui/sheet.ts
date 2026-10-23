@@ -4,6 +4,7 @@ import { reflow } from "./reflow";
 import type { Frame as WallFrame, Tile } from "./wall";
 import { Wake } from "./wake";
 import { Term } from "./term";
+import { splitter } from "./splitter";
 import { familyOf, memberState, type FamilyBrief } from "./family";
 
 type IntentServer = { origin: string | null; up: boolean; reason: string | null };
@@ -36,16 +37,8 @@ function mark(d: string): SVGSVGElement {
   return svg;
 }
 
-/** Where the page sits beside the chat: the chat's share of the width. */
+/** Where the chat's share of the width was kept before splitter.ts. */
 const SPLIT_KEY = "seamux.sheet.chat";
-function savedSplit(): number {
-  try {
-    const v = Number(localStorage.getItem(SPLIT_KEY));
-    return v > 0.15 && v < 0.75 ? v : 0.5;
-  } catch {
-    return 0.5;
-  }
-}
 
 /** sessions.rs SessionRow. */
 type SessionRow = { id: string; cwd: string; updated: number; active: boolean; label: string };
@@ -324,11 +317,23 @@ export class Sheet {
     this.stack.className = "sheet-stack";
     this.pageEl.append(this.tabsEl, this.stack);
     this.divider.className = "sheet-divider";
-    this.divider.setAttribute("role", "separator");
-    this.divider.setAttribute("aria-label", "Drag to resize the chat");
-    this.divider.addEventListener("pointerdown", (e) => this.drag(e));
     this.body.append(this.chat.el, this.divider, this.pageEl);
-    this.body.style.setProperty("--chat", String(savedSplit()));
+    // The chat's share of the width, beside the page.
+    splitter(this.divider, {
+      zone: "sheet-chat",
+      legacyKey: SPLIT_KEY,
+      axis: "x",
+      from: (x) => {
+        const b = this.body.getBoundingClientRect();
+        return (x - b.left) / b.width;
+      },
+      min: 0.2,
+      max: 0.7,
+      initial: 0.5,
+      step: 0.02,
+      apply: (v) => this.body.style.setProperty("--chat", String(v)),
+      label: "Resize the chat",
+    });
     this.card.append(head, this.kin, this.body);
     this.el.append(this.card);
     // A click on the dimmed backdrop closes; one inside the card does not.
@@ -452,26 +457,6 @@ export class Sheet {
     const t = this.tile();
     this.body.classList.toggle("with-chat", !!t);
     if (t) this.chat.show(t);
-  }
-
-  private drag(e: PointerEvent): void {
-    e.preventDefault();
-    const box = this.body.getBoundingClientRect();
-    const move = (m: PointerEvent) => {
-      const share = Math.min(0.7, Math.max(0.2, (m.clientX - box.left) / box.width));
-      this.body.style.setProperty("--chat", String(share));
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      try {
-        localStorage.setItem(SPLIT_KEY, this.body.style.getPropertyValue("--chat"));
-      } catch {
-        /* a private window: the split is only for now */
-      }
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
   }
 
   /** Show a file's content: images as an image, HTML with scripts off, PDFs framed. */
