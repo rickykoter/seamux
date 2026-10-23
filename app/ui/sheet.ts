@@ -108,7 +108,7 @@ class Chat {
     form.append(this.input, jump);
     const hint = document.createElement("span");
     hint.className = "sheet-chat-hint";
-    hint.textContent = "Click the terminal to type into it · ⌘Esc or a click outside leaves it";
+    hint.textContent = "Click the terminal to type into it · Esc twice, ⌘Esc or a click outside leaves it";
     form.prepend(hint);
     // Live by default; the plain text and its reply box only when frames fail.
     const live = (on: boolean) => {

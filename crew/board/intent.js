@@ -51,7 +51,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "7";
+  var V = "8";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -91,9 +91,7 @@ function __boardIntent(cfg) {
       // inert and is still a card.
       ".row.inert{cursor:default}" +
       // Framed by the seamux app: the workspace the app shows beside the board.
-      ".row.appsel{outline:2px solid #dbbc7f;outline-offset:-2px;background:#2f3639}" +
-      // Framed, the caret is the fold: show it as its own target.
-      (framed() ? ".caret{cursor:pointer;padding:0 4px}.caret:hover{filter:brightness(1.6)}" : "");
+      ".row.appsel{outline:2px solid #dbbc7f;outline-offset:-2px;background:#2f3639}";
   }
 
   // ---- the chip vocabulary --------------------------------------------
@@ -236,19 +234,15 @@ function __boardIntent(cfg) {
       // fire too and steal focus away from whatever the chip just opened.
       ev.preventDefault();
       ev.stopPropagation();
-      // Framed by the seamux app, a card is its workspace: a click on its
-      // header, its body or its rail shows it in the app (terminal and pages
-      // beside the board) and cmux stays put. Only the caret folds, and a
-      // family's shell, which has no workspace of its own, folds as before.
-      // A command-click still jumps in cmux.
-      var select = t.a === "row" || t.a === "jump" ||
-        (t.a === "fold" && !row.classList.contains("inert") && !(ev.target.closest && ev.target.closest(".caret")));
-      if (framed() && select && !ev.metaKey) {
-        window.parent.postMessage({ crew: "select", ws: rid }, "*");
-        return mark(rid);
-      }
       if (t.a === "fold") return fold(row, rid);
       fire(t, rid);
+      // Framed by the seamux app, the clicks that select a workspace (a card's
+      // body, its rail) also show it there: its terminal and pages beside the
+      // board. Every click still does what it does in cmux's Dock.
+      if (framed() && (t.a === "row" || t.a === "jump")) {
+        window.parent.postMessage({ crew: "select", ws: rid }, "*");
+        mark(rid);
+      }
     });
     host.setAttribute("data-intent", V);
   }

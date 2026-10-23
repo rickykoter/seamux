@@ -110,6 +110,8 @@ export class Term {
   private rowCache: RowCache = new Map();
   /** Rows of history drawn above the screen. */
   private sbRows = 0;
+  /** When Esc last went to the pane, so a second one leaves instead. */
+  private escAt = 0;
   /** Wheel travel not yet sent as a page. */
   private wheelLeft = 0;
   /** Pages sent and not yet answered: a long flick never queues up. */
@@ -398,6 +400,20 @@ export class Term {
       e.stopPropagation();
       this.el.blur();
       return;
+    }
+    // One Esc is the agent's (it interrupts Claude). A second within a
+    // moment would open Claude's Rewind, which pressing Esc to get out of
+    // the app's terminal never means: it leaves the terminal instead.
+    if (e.key === "Escape" && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      const now = performance.now();
+      if (e.repeat || now - this.escAt < 600) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.escAt = 0;
+        this.el.blur();
+        return;
+      }
+      this.escAt = now;
     }
     const act = keyAction(e);
     if (act === null || !this.surface) return;
