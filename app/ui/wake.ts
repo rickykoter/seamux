@@ -29,7 +29,14 @@ type Data = { ws: string; rows: Row[]; limit: number; truncated: boolean; worksp
 /** The files the sheet shows itself (wake_app.rs show_kind). */
 const VIEWABLE = /\.(png|jpe?g|gif|webp|svg|html?|pdf)$/i;
 
-export const KINDS = ["plan", "review", "ask", "artifact", "doc", "temp", "image", "file", "commit"];
+export const KINDS = ["plan", "review", "ask", "artifact", "doc", "temp", "image", "file", "commit", "pr", "issue"];
+
+/** A pull request's or issue's URL: owner/repo, and its number. */
+function ghLink(r: Row): { repo: string; n: string } | null {
+  if (r.kind !== "pr" && r.kind !== "issue") return null;
+  const m = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/(?:pull|issues)\/(\d+)/.exec(r.url || r.locator);
+  return m ? { repo: m[1], n: m[2] } : null;
+}
 const SOURCE: Record<string, string> = { "deep-plan": "deep-plan", lookout: "lookout review", ask: "deep-plan ask" };
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -77,6 +84,8 @@ function where(r: Row, home: string): string {
   const tilde = (p: string) => (home && p.startsWith(home + "/") ? "~" + p.slice(home.length) : p);
   if (r.kind === "commit") return r.url ? r.url.replace(/^https:\/\//, "").replace(/\/commit\/.*$/, "") : "";
   if (r.kind === "artifact") return r.url.replace(/^https:\/\//, "") + (r.path ? `  ← ${tilde(r.path)}` : "");
+  const gh = ghLink(r);
+  if (gh) return `github.com/${gh.repo}`;
   return tilde(r.path || "");
 }
 
@@ -386,8 +395,11 @@ export class Wake {
     li.dataset.i = String(i);
     li.append(el("span", `w-k k-${r.kind}`, r.kind));
     const t = el("span", "w-t");
-    t.title = r.title;
-    t.append(marked(r.title || r.locator, this.query));
+    const gh = ghLink(r);
+    // A link made with a title shows it; one only named shows owner/repo #n.
+    const title = r.title || (gh ? `${gh.repo} #${gh.n}` : r.locator);
+    t.title = gh ? r.url : title;
+    t.append(marked(title, this.query));
     li.append(t);
     const badges = el("span", "w-badges");
     if (r.state === "risk") badges.append(el("span", "w-st risk", "at risk"));
@@ -395,6 +407,7 @@ export class Wake {
     else if (r.state === "gone") badges.append(el("span", "w-st", "gone"));
     if (r.published) badges.append(el("span", "w-st pub", "claude.ai"));
     if (r.kind === "commit" && r.sha) badges.append(el("span", "w-st", r.sha));
+    if (gh && r.title) badges.append(el("span", "w-st", `#${gh.n}`));
     li.append(badges);
     const w = where(r, this.home);
     if (w) {

@@ -39,6 +39,11 @@ re!(tag_re, r"</?[a-z][a-z0-9-]*>");
 re!(command_re, r"(?s)<command-name>(.*?)</command-name>");
 re!(command_args_re, r"(?s)<command-args>(.*?)</command-args>");
 re!(github_re, r"github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?$");
+// A GitHub pull request or issue link, wherever it sits in text: owner, repo,
+// pull|issues, number. What follows the number (/files, #comment) is not kept.
+re!(gh_link_re, r"https://github\.com/([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9._-]+)/(pull|issues)/([0-9]+)");
+// `gh pr create ... --title "x"` (or `gh issue create`): the title it was given.
+re!(gh_create_title_re, r#"\bgh\s+(?:pr|issue)\s+create\b[^\n]*?(?:--title|-t)(?:\s+|=)(?:"([^"]*)"|'([^']*)'|(\S+))"#);
 
 /// Python truthiness for a JSON value.
 pub fn truthy(v: Option<&Value>) -> bool {
