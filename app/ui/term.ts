@@ -114,6 +114,10 @@ export class Term {
   private wheelLeft = 0;
   /** Pages sent and not yet answered: a long flick never queues up. */
   private paging = 0;
+  /** When the wheel last moved, for where a gesture starts. */
+  private wheelAt = 0;
+  /** Poll fast until then: input just went to the pane, its answer is coming. */
+  private burstUntil = 0;
   /** Pages go to the pane one after another, in order. */
   private pages: Promise<unknown> = Promise.resolve();
 
@@ -257,7 +261,7 @@ export class Term {
     clearTimeout(this.timer);
     if (!this.surface) return;
     // Faster while typing into it, slower when only watched, idle off screen.
-    const next = document.activeElement === this.el ? 70 : 160;
+    const next = performance.now() < this.burstUntil ? 30 : document.activeElement === this.el ? 70 : 160;
     // In trouble the terminal is hidden behind its fallback; it keeps asking
     // (slowly) while that fallback is on screen, so it can come back.
     const shown = this.visible() || (this.failures >= 3 && this.el.isConnected && (this.el.parentElement?.offsetParent ?? null) !== null);
@@ -342,9 +346,15 @@ export class Term {
     if (!this.surface || !takes || e.deltaY === 0) return;
     e.preventDefault();
     const lh = parseFloat(getComputedStyle(this.el).getPropertyValue("--t-line")) || 15;
-    this.wheelLeft += e.deltaMode === 1 ? e.deltaY * lh : e.deltaMode === 2 ? e.deltaY * this.el.clientHeight : e.deltaY;
-    // A page (Claude moves about a dozen lines) per dozen lines of travel.
-    const step = lh * 12;
+    const dy = e.deltaMode === 1 ? e.deltaY * lh : e.deltaMode === 2 ? e.deltaY * this.el.clientHeight : e.deltaY;
+    const now = performance.now();
+    // A gesture's first movement (after a pause, or turning back) pages at
+    // once, so a small scroll is never lost; after that a page per six lines.
+    const step = lh * 6;
+    const fresh = now - this.wheelAt > 250 || Math.sign(dy) !== Math.sign(this.wheelLeft || dy);
+    this.wheelAt = now;
+    if (fresh) this.wheelLeft = Math.sign(dy) * step;
+    else this.wheelLeft += dy;
     const n = Math.trunc(this.wheelLeft / step);
     if (!n) return;
     this.wheelLeft -= n * step;
@@ -352,6 +362,7 @@ export class Term {
     const key = n < 0 ? "pageup" : "pagedown";
     for (let i = 0; i < Math.min(3, Math.abs(n)) && this.paging < 3; i++) {
       this.paging++;
+      this.burstUntil = performance.now() + 600;
       this.pages = this.pages
         .then(() => invoke("term_key", { surfaceId: surface, key }))
         .then(() => this.tick())
@@ -393,6 +404,7 @@ export class Term {
     // The key is the agent's: not Desk's, not the sheet's, not the window's.
     e.preventDefault();
     e.stopPropagation();
+    this.burstUntil = performance.now() + 600;
     const sent = "key" in act ? invoke("term_key", { surfaceId: this.surface, key: act.key }) : invoke("term_input", { surfaceId: this.surface, text: act.text });
     void sent
       .then(() => {
