@@ -24,6 +24,7 @@ pub mod routes;
 pub mod selftest;
 pub mod server;
 pub mod state;
+pub mod tucked;
 pub mod usage;
 pub mod wake;
 

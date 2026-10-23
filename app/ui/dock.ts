@@ -10,6 +10,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { Decision } from "./desk";
 import { Sheet } from "./sheet";
 import { splitter } from "./splitter";
+import { setLevel, type Levels } from "./tuck";
 import type { Frame as WallFrame, Tile } from "./wall";
 
 type IntentServer = { origin: string | null; up: boolean; reason: string | null };
@@ -29,6 +30,8 @@ export class DockView {
   private picked = false;
   private tiles: Tile[] = [];
   private decisions: Decision[] = [];
+  /** Muted and tucked workspaces, for the board's ⋯ menu (its Undo). */
+  private levels: Levels = {};
   private empty = document.createElement("p");
 
   constructor(private root: HTMLElement) {
@@ -59,6 +62,11 @@ export class DockView {
       if (!this.frame || e.source !== this.frame.contentWindow || e.origin !== this.origin) return;
       const d = e.data as { crew?: string; ws?: unknown; show?: unknown } | null;
       if (d?.crew === "select" && typeof d.ws === "string" && d.ws) this.select(d.ws, true, typeof d.show === "string" ? d.show : "any");
+      // The board's ⋯ menu: mute, tuck away or bring back, as the views do.
+      const t = d as { level?: unknown; name?: unknown } | null;
+      if (d?.crew === "tuck" && typeof d.ws === "string" && d.ws && (t?.level === "mute" || t?.level === "tuck" || t?.level === "none")) {
+        void setLevel(d.ws, typeof t.name === "string" ? t.name : d.ws, t.level, this.levels[d.ws]);
+      }
       // The board's click handler is installed (its first push): mark ours.
       if (d?.crew === "ready") this.tell();
     });
@@ -71,8 +79,9 @@ export class DockView {
       this.tiles = e.payload.tiles;
       this.fallback();
     });
-    await listen<{ decisions?: Decision[] }>("views:frame", (e) => {
+    await listen<{ decisions?: Decision[]; levels?: Levels }>("views:frame", (e) => {
       this.decisions = e.payload.decisions ?? [];
+      this.levels = e.payload.levels ?? {};
       this.fallback();
     });
     const [w, v] = await Promise.all([invoke<WallFrame | null>("wall_frame"), invoke<{ decisions?: Decision[] } | null>("views_frame")]);
