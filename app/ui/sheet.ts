@@ -481,7 +481,11 @@ export class Sheet {
       const pages = e.payload.pages ?? [];
       if (JSON.stringify(pages) === JSON.stringify(this.pages)) return;
       this.pages = pages;
-      if (!this.el.hidden) this.syncTabs();
+      if (!this.el.hidden) {
+        this.syncTabs();
+        // The sheet was entered before its pages were known: start on one now.
+        if (!this.active) this.pickTab();
+      }
     });
     // shell.rs's keys: they work with focus in a framed page too.
     await listen<string>("sheet:key", (e) => {
@@ -574,7 +578,7 @@ export class Sheet {
 
   /** Show a file's content: images as an image, HTML with scripts off, PDFs framed. */
   show(s: Shown, toCmux: () => Promise<unknown>, place: { workspace?: string; dir?: string } = {}): void {
-    this.enter(place);
+    this.enter(place, false);
     const key = `file:${s.title}`;
     this.drop(key);
     this.tabs.push({ key, kind: "file", label: s.title, state: "", waiting: false, now: false, el: null, shown: s, toCmux });
@@ -582,7 +586,7 @@ export class Sheet {
   }
 
   async open(p: Page): Promise<void> {
-    this.enter({ workspace: p.workspace, dir: p.dir });
+    this.enter({ workspace: p.workspace, dir: p.dir }, false);
     const t = this.tabs.find((x) => x.key === p.path);
     if (t) {
       t.page = p;
@@ -592,7 +596,7 @@ export class Sheet {
   }
 
   /** Open the sheet for a place: another place starts its tabs afresh. */
-  private enter(place: { workspace?: string; dir?: string }): void {
+  private enter(place: { workspace?: string; dir?: string }, pick = true): void {
     // The same workspace is the same place, however a caller names it.
     const where = () => this.workspace() || this.dir();
     const was = this.el.hidden ? null : where();
@@ -603,6 +607,15 @@ export class Sheet {
     this.say.textContent = "";
     this.el.hidden = false;
     this.syncTabs();
+    if (pick) this.pickTab();
+  }
+
+  /** A new place starts on a page, not blank: its plan, else what waits on you, else the Wake. */
+  private pickTab(): void {
+    if (this.active && this.tabs.some((t) => t.key === this.active)) return;
+    const pages = this.tabs.filter((t) => t.key !== WAKE);
+    const t = pages.find((x) => x.kind === "plan") ?? pages.find((x) => x.waiting) ?? pages[0];
+    this.select((t ?? this.tabs.find((x) => x.key === WAKE))?.key ?? WAKE);
   }
 
   private drop(key: string): void {
@@ -677,6 +690,8 @@ export class Sheet {
         return b;
       }),
     );
+    // Many tabs scroll rather than crush; the current one stays in view.
+    this.tabsEl.querySelector(".on")?.scrollIntoView({ inline: "nearest", block: "nearest" });
   }
 
   /** ⌘E: the Wake, or back to the tab before it. */
