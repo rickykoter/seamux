@@ -406,7 +406,12 @@ function __boardRender(d) {
   try { prev = JSON.parse(host.getAttribute("data-prev") || "{}"); } catch (e) { prev = {}; }
   var next = {};
 
-  var rows = d.rows || [];
+  // The app's tucked worktrees leave the list for the collapsed "tucked"
+  // section at the end; they count toward nothing above it.
+  var all = d.rows || [];
+  var rows = all.filter(function (r) { return r.tuck !== "tuck"; });
+  var tkOpen = host.getAttribute("data-tk-open") || "", tkUp = host.getAttribute("data-tk-up") === "1";
+  var tucked = all.filter(function (r) { return r.tuck === "tuck"; });
   var was = positions();
   // Every card folds in place. Unfolded by default are the cards that ask
   // something of you -- waiting and broken -- and nothing else; a child starts
@@ -506,7 +511,11 @@ function __boardRender(d) {
     next[a.id] = a.kind;
     var inert = !a.ref && !a.slug ? " inert" : "";
     var hex = /^#[0-9a-f]{3,8}$/i.test(a.color || "") ? a.color : "";
-    return '<div class="row ' + a.kind + ripple + inert + (a.selected ? " here" : "") + cls +
+    // Muted: dimmed until it needs you again.
+    var muted = a.tuck === "mute" && a.kind !== "attend" ? " muted" : "";
+    // Its ⋯ menu was open before this push: it stays open (intent.js keeps which).
+    if (tkOpen && a.id === tkOpen) muted += " tkopen" + (tkUp ? " tkup" : "");
+    return '<div class="row ' + a.kind + ripple + inert + muted + (a.selected ? " here" : "") + cls +
       (hex ? " owned" : "") + (fcls || "") + '" data-id="' + esc(a.id) + '" data-k="' + esc(fk || a.kind) + '" title="' + esc(a.name) + '"' +
       (inCard ? ' data-in="' + esc(inCard) + '"' : "") +
       (hex ? ' style="--own:' + hex + '"' : "") + ">" + (ripple ? confetti(a.id, inCard ? 8 : 12) : "") + rail(a);
@@ -515,6 +524,18 @@ function __boardRender(d) {
   // No empty badge: a bare outline pill was the quiet row's second line.
   function badgeOf(a) { return a.badge ? '<span class="badge">' + esc(a.badge) + "</span>" : ""; }
   function nameOf(a) { return '<span class="nm">' + esc(a.name) + "</span>"; }
+  // Mute / tuck, as the app's views offer it: only framed by the app, which
+  // keeps tucked.json (intent.js hands the choice to it), and only for a row
+  // that is a workspace.
+  var inApp = (function () { try { return !!window.parent && window.parent !== window; } catch (e) { return false; } })();
+  function tuckOf(a) {
+    if (!inApp || !a.cwd) return "";
+    var item = function (label, x) { return '<span class="tki" data-a="tuck" data-x="' + x + '">' + label + "</span>"; };
+    return '<span class="tk" data-a="tk" title="Mute or tuck away" aria-label="Mute or tuck away">' +
+      '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg></span>' +
+      '<span class="tkm">' + (a.tuck === "mute" ? item("Unmute", "none") : item("Mute", "mute")) +
+      (a.tuck === "tuck" ? item("Bring back", "none") : item("Tuck away", "tuck")) + "</span>";
+  }
   // Everything under a card's head: what was said, the reply window, the
   // buttons, the footer.
   function body(a) {
@@ -539,7 +560,7 @@ function __boardRender(d) {
     var more = foot(a, true);
     return opening(a, a.family ? " fam" : "", "", foldCls(a.id, a.kind, !!more)) +
       '<div class="top"' + (more ? ' data-a="fold">' + CARET : ">") + dotOf(a) + nameOf(a) +
-      (a.dirty ? DIRTY : "") + (acts.length ? qb : badgeOf(a)) + cost(a) + wakeOf(a) + "</div>" +
+      (a.dirty ? DIRTY : "") + (acts.length ? qb : badgeOf(a)) + cost(a) + wakeOf(a) + tuckOf(a) + "</div>" +
       (more ? '<div class="fold">' + more + "</div>" : "") + "</div>";
   }
 
@@ -563,7 +584,7 @@ function __boardRender(d) {
       (whole && !turned(a) ? confetti("fam:" + a.id, 22) : "") +
       '<div class="top' + (fq ? " loud" : "") + '"' + (inner ? ' data-a="fold">' + CARET : ">") +
       dial(a.frac, a.kind) + dotOf(a) + nameOf(a) +
-      (g ? pips(g.kids) : "") + (roll || badgeOf(a)) + fq + "</div>" +
+      (g ? pips(g.kids) : "") + (roll || badgeOf(a)) + fq + tuckOf(a) + "</div>" +
       (inner ? '<div class="fold">' + inner + "</div>" : "") + "</div>";
   }
 
@@ -643,7 +664,11 @@ function __boardRender(d) {
   // family, not under it (families.py), so it neither opens the quiet section
   // nor counts toward it.
   var belowDivider = function (r) { return r.kind === "quiet" && (!r.famtier || r.famtier === "quiet"); };
-  host.innerHTML = rows.length ? groups.map(function (g) {
+  // The tucked section stays open or shut across pushes, as a card's fold does.
+  var tuckOpen = host.getAttribute("data-tuck-open") === "1";
+  var tuckSect = tucked.length ? '<details class="tucked"' + (tuckOpen ? " open" : "") + '><summary class="sect">tucked · ' +
+    tucked.length + "</summary>" + tucked.map(quietRow).join("") + "</details>" : "";
+  host.innerHTML = (rows.length ? groups.map(function (g) {
     var lead = g.lead || g.kids[0], sect = "";
     if (belowDivider(lead) && !seenQuiet) {
       seenQuiet = true;
@@ -655,7 +680,7 @@ function __boardRender(d) {
     }).join("") + "</div>" : "";
     return sect + card(g.lead, kids, g.kids.length ? rollup(g.kids, g.lead.kind) : "", g.kids.length ? g : null);
   }).join("") :
-    '<div class="empty">Nothing is waiting on you.<br>' + esc(d.quiet || "") + "</div>";
+    '<div class="empty">Nothing is waiting on you.<br>' + esc(d.quiet || "") + "</div>") + tuckSect;
   host.setAttribute("data-fold", JSON.stringify(keptFold));
   // With quiet workspaces now rendered as rows, #quiet is only reached when there
   // are no rows at all -- and in that case the .empty block above has already said

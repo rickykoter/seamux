@@ -303,7 +303,11 @@ pub fn build(o: &Opts) -> Value {
     } else {
         rank::rank(&wss, &plan_by_root, o.screens)
     };
-    let all: Vec<Value> = rows.into_iter().chain(quiet.iter().cloned()).collect();
+    let mut all: Vec<Value> = rows.into_iter().chain(quiet.iter().cloned()).collect();
+    // The app's muted and tucked worktrees (fixtures stay as given).
+    if o.fixture.is_none() {
+        crate::tucked::mark_live(&mut all);
+    }
     let news = news::compose_now(&all);
     let n = plan_by_root.len();
     let mut d = Map::new();

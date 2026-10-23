@@ -1345,7 +1345,7 @@ if (live && Array.isArray(live.rows)) {
   const last = () => q(fetched[fetched.length - 1]);
 
   checks.push(["intent: an older page's click CSS is replaced on upgrade",
-    oldCss.getAttribute("data-v") === "8" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
+    oldCss.getAttribute("data-v") === "9" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
   const fold = () => JSON.parse(host.getAttribute("data-fold"));
 
   click(hdA.children[1]);                            // the name, inside the header
@@ -1842,6 +1842,44 @@ if (crewImpl.isRust("crew-board")) {
     Object.keys(out.chips).length === 5 && Object.values(out.chips).every(c => c[c.length - 1] === "wake") &&
     out.chips.q[0] === "jump" && out.chips.f[0] !== "wake"]);
   checks.push(["rank: a row carries its workspace's commits for the news", out.commits.length === 1 && out.commits[0].s === "x"]);
+}
+
+// ---- muted and tucked (the app's tucked.json, marked by crew-board) -------
+{
+  const rowsT = [
+    { id: "ma", name: "ma", kind: "attend", badge: "b", said: "", chips: [], frac: null, meta: "", cwd: "/w/ma", tuck: "mute" },
+    { id: "mr", name: "mr", kind: "running", badge: "b", said: "", chips: [], frac: null, meta: "", cwd: "/w/mr", tuck: "mute" },
+    { id: "ta", name: "ta", kind: "attend", badge: "b", said: "", chips: [], frac: null, meta: "", cwd: "/w/ta", tuck: "tuck" },
+    { id: "tq", name: "tq", kind: "quiet", badge: "idle", said: "", chips: ["jump"], frac: null, meta: "", cwd: "/w/tq", tuck: "tuck" },
+    { id: "pl", name: "pl", kind: "running", badge: "b", said: "", chips: [], frac: null, meta: "" },
+  ];
+  els.rows.attrs["data-tuck-open"] = "0";
+  render({ rows: rowsT, quiet: "" });
+  const h = els.rows.innerHTML;
+  const tuckAt = h.indexOf('<details class="tucked"');
+  checks.push(["tuck: tucked rows leave the list for a collapsed 'tucked · 2' section at the end",
+    tuckAt > h.indexOf('data-id="pl"') && /<details class="tucked"><summary class="sect">tucked · 2<\/summary>/.test(h) &&
+    h.indexOf('data-id="ta"') > tuckAt && h.indexOf('data-id="tq"') > tuckAt]);
+  // Two rows wait on you (ma, muted; ta, tucked): only the muted one counts.
+  const need = String(els.need.textContent || "") + " " + String(els.need.innerHTML || "");
+  checks.push([`tuck: a tucked row counts toward nothing above the section (${need.trim()})`,
+    /\b1\b/.test(need) && !/\b2\b/.test(need)]);
+  checks.push(["tuck: a muted row is greyed until it needs you",
+    /class="row running[^"]* muted/.test(h) && !/class="row attend[^"]* muted/.test(h)]);
+  checks.push(["tuck: top-level (cmux's Dock) there is no ⋯ menu", !/data-a="tk"/.test(h)]);
+  els.rows.attrs["data-tuck-open"] = "1";
+  sandbox.parent = { postMessage() {} };
+  render({ rows: rowsT, quiet: "" });
+  const hf = els.rows.innerHTML;
+  delete sandbox.parent;
+  checks.push(["tuck: framed by the app, a workspace row has the ⋯ menu, set by its level",
+    /data-id="mr"[^]*?data-a="tk"[^]*?data-x="none">Unmute<[^]*?data-x="tuck">Tuck away</.test(hf) &&
+    /data-id="tq"[^]*?data-x="mute">Mute<[^]*?data-x="none">Bring back</.test(hf)]);
+  const plAt = hf.indexOf('data-id="pl"');
+  const plCard = hf.slice(plAt, hf.indexOf('<div class="row ', plAt) > 0 ? hf.indexOf('<div class="row ', plAt) : hf.indexOf("<details", plAt));
+  checks.push(["tuck: a plan row with no workspace has no menu", plAt > 0 && plCard.length > 0 && !/data-a="tk"/.test(plCard)]);
+  checks.push(["tuck: the section stays open across a push when it was open", /<details class="tucked" open>/.test(hf)]);
+  els.rows.attrs["data-tuck-open"] = "0";
 }
 
 // ---- the archive chip: on a quiet row, never on a working one -------------

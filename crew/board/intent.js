@@ -51,7 +51,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "8";
+  var V = "9";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -186,6 +186,13 @@ function __boardIntent(cfg) {
     host.setAttribute("data-fold", JSON.stringify(f));
   }
 
+  // The ⋯ menu that is open, if any: shut, and forgotten for the next push.
+  function shutMenu() {
+    host.setAttribute("data-tk-open", "");
+    var open = host.querySelectorAll ? host.querySelectorAll(".row.tkopen") : [];
+    for (var j = 0; j < open.length; j++) { open[j].classList.remove("tkopen"); open[j].classList.remove("tkup"); }
+  }
+
   // ---- framed by the seamux app ----------------------------------------
   // In a frame, the app asks for the workspace it shows to be marked, and a
   // row click goes to it (above). Top-level, as cmux's Dock, none of this runs.
@@ -225,6 +232,14 @@ function __boardIntent(cfg) {
       // A listener from a superseded version stands down instead of acting, so
       // an upgraded page fires exactly one command per click.
       if (host.getAttribute("data-intent") !== V) return;
+      // A click anywhere but the ⋯ menu shuts an open one.
+      if (!(ev.target.closest && ev.target.closest(".tk, .tkm"))) shutMenu();
+      // The tucked section's header: remember it open or shut for the next push.
+      var sum = ev.target.closest && ev.target.closest("details.tucked > summary");
+      if (sum) {
+        setTimeout(function () { host.setAttribute("data-tuck-open", sum.parentNode.open ? "1" : "0"); }, 0);
+        return;
+      }
       var t = target(ev.target);
       if (!t) return;
       var row = ev.target.closest(".row");
@@ -235,6 +250,32 @@ function __boardIntent(cfg) {
       ev.preventDefault();
       ev.stopPropagation();
       if (t.a === "fold") return fold(row, rid);
+      // The ⋯ menu (framed by the app only): open it, or hand the choice to
+      // the app, which keeps tucked.json and says what it did, with Undo.
+      if (t.a === "tk") {
+        var openNow = !row.classList.contains("tkopen");
+        shutMenu();
+        if (openNow) {
+          // Near the bottom (the news bar sits there), it opens upward.
+          var r = row.getBoundingClientRect ? row.getBoundingClientRect() : null;
+          var up = !!r && typeof window.innerHeight === "number" && r.bottom > window.innerHeight - 140;
+          row.classList.add("tkopen");
+          if (up) row.classList.add("tkup");
+          // A push redraws the rows: render.js opens it again from these.
+          host.setAttribute("data-tk-open", rid);
+          host.setAttribute("data-tk-up", up ? "1" : "0");
+        }
+        return;
+      }
+      if (t.a === "tuck") {
+        shutMenu();
+        if (framed()) {
+          var nm = row.querySelector(".nm");
+          window.parent.postMessage({ crew: "tuck", ws: rid, level: t.x,
+            name: nm ? nm.textContent : rid }, "*");
+        }
+        return;
+      }
       fire(t, rid);
       // Framed by the seamux app, the clicks that select a workspace (a card's
       // body, its rail) also show it there: its terminal and pages beside the
