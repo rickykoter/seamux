@@ -331,7 +331,7 @@ PLIST
   case ":$PATH:" in *":$LOCALBIN:"*) ;; *) warn "$LOCALBIN is not on PATH; add it so hooks and shells find seamux" ;; esac
   restart_app
   head_ "next"
-  say "open $(q "$APPDIR")    # then Control-Option-Space shows the overlay"
+  say "open $(q "$APPDIR")    # then Option-Space shows the overlay"
   [ -n "$FROM" ] && say "./install.sh --app             # from the checkout you keep: back to it"
   say "./install.sh --check         # the app, its version and the link"
   printf '\n'
