@@ -57,8 +57,8 @@ export class DockView {
     this.sheet.onPlace = (ws) => this.select(ws, true);
     window.addEventListener("message", (e) => {
       if (!this.frame || e.source !== this.frame.contentWindow || e.origin !== this.origin) return;
-      const d = e.data as { crew?: string; ws?: unknown } | null;
-      if (d?.crew === "select" && typeof d.ws === "string" && d.ws) this.select(d.ws, true);
+      const d = e.data as { crew?: string; ws?: unknown; show?: unknown } | null;
+      if (d?.crew === "select" && typeof d.ws === "string" && d.ws) this.select(d.ws, true, typeof d.show === "string" ? d.show : "any");
       // The board's click handler is installed (its first push): mark ours.
       if (d?.crew === "ready") this.tell();
     });
@@ -116,9 +116,11 @@ export class DockView {
     this.board.append(f);
   }
 
-  /** Until a workspace is picked: the one waiting longest on you, else an agent at work. */
+  /** Until one is shown: the one waiting longest on you, else an agent at work. */
   private fallback(): void {
-    if (this.picked && this.tiles.some((t) => t.workspace === this.ws)) return;
+    // What is shown stays while its workspace lives, picked or not: choosing
+    // again on every frame flips between whichever is waiting or working now.
+    if (this.ws && this.tiles.some((t) => t.workspace === this.ws)) return;
     this.picked = false;
     const waiting = this.decisions.filter((d) => d.kind === "question" || d.kind === "asked").map((d) => d.ws);
     const agents = this.tiles.filter((t) => t.agent && t.state !== "ended");
@@ -133,10 +135,10 @@ export class DockView {
     else if (!ws) this.draw();
   }
 
-  private select(ws: string, picked: boolean): void {
+  private select(ws: string, picked: boolean, show = "any"): void {
     if (picked) this.picked = true;
     this.ws = ws;
-    this.sheet.focusWorkspace(ws);
+    this.sheet.focusWorkspace(ws, show);
     this.draw();
     this.tell();
   }
