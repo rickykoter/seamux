@@ -50,7 +50,7 @@ server-sent events, its buttons acting on the same origin.
 
 | How | What it does |
 |---|---|
-| **Control-Option-Space** | summons the seamux app's overlay; the **Board** tab is the board |
+| **Option-Space** (or Control-Option-Space) | summons the seamux app's overlay; its **Dock** tab is the board |
 | **`cmd+k c`** in cmux | opens `http://127.0.0.1:7345/board` in a cmux browser tab |
 | `open http://127.0.0.1:7345/board` | the same page in any browser on this machine |
 

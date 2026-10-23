@@ -570,7 +570,7 @@ away.
 ## The seamux app: everything over cmux, on a hotkey
 
 A small Mac app that lives outside cmux and drives it over its socket. Press
-⌃⌥Space from anywhere, a full-screen cmux included, and an overlay drops in
+⌥Space (or ⌃⌥Space) from anywhere, a full-screen cmux included, and an overlay drops in
 over whatever you're doing; press it again, or Esc, and it's gone. Click
 another app and that app comes in front; the hotkey brings the overlay back.
 It has no Dock icon; a tray icon carries Show, Quit and the hotkey.
@@ -761,7 +761,7 @@ node deep-plan/probe.mjs && node restack/probe.mjs && node crew/board/board_prob
 python3 tools/skill_lint.py                      # every skill against the authoring rules
 ```
 
-Open the board with Control-Option-Space (the seamux app's Board tab) or
+Open the board with Option-Space (the seamux app's Dock tab) or
 `cmd+k c` in cmux. New Claude Code sessions pick up the plugins' hooks;
 sessions already running don't.
 

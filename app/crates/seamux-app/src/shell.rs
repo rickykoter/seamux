@@ -23,9 +23,10 @@ fn sheet_keys() -> Vec<(Shortcut, &'static str)> {
         .collect()
 }
 
-/// The hotkey, as the global-shortcut plugin spells it and as the tray shows it.
-pub const HOTKEY: &str = "Control+Alt+Space";
-pub const HOTKEY_LABEL: &str = "⌃⌥Space";
+/// The hotkeys, as the global-shortcut plugin spells them and as the tray
+/// shows them: Option-Space, the easy one, and Control-Option-Space for when
+/// another app (a launcher, a chat app) already holds Option-Space.
+pub const HOTKEYS: [(&str, &str); 2] = [("Alt+Space", "⌥Space"), ("Control+Alt+Space", "⌃⌥Space")];
 
 /// Where crew-board-intent writes its port (crew/board/crew-board-intent:60).
 fn port_file() -> Option<PathBuf> {
@@ -374,7 +375,9 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
         show(&w);
     }
 
-    let shortcut: Shortcut = HOTKEY.parse().expect("HOTKEY parses");
+    let shortcuts: Vec<(Shortcut, &str)> =
+        HOTKEYS.iter().map(|(k, label)| (k.parse::<Shortcut>().expect("HOTKEYS parse"), *label)).collect();
+    let toggles: Vec<Shortcut> = shortcuts.iter().map(|(s, _)| *s).collect();
     let sheet_keys = sheet_keys();
     let in_handler = sheet_keys.clone();
     app.handle().plugin(
@@ -383,7 +386,7 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
                 if event.state() != ShortcutState::Pressed {
                     return;
                 }
-                if *s == shortcut {
+                if toggles.contains(s) {
                     toggle(app);
                 } else if let Some((_, name)) = in_handler.iter().find(|(k, _)| k == s) {
                     let _ = app.emit("sheet:key", *name);
@@ -391,14 +394,19 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
             })
             .build(),
     )?;
-    let hotkey_label = match app.global_shortcut().register(shortcut) {
-        Ok(()) => format!("Hotkey: {HOTKEY_LABEL}"),
-        Err(e) => {
-            // Another app holds the hotkey; the tray is then the way back in,
-            // and says so.
-            eprintln!("seamux: could not register {HOTKEY}: {e}");
-            format!("Hotkey {HOTKEY_LABEL} is taken by another app")
+    // Each on its own: one another app holds leaves the other working.
+    let mut live = Vec::new();
+    for (s, label) in &shortcuts {
+        match app.global_shortcut().register(*s) {
+            Ok(()) => live.push(*label),
+            Err(e) => eprintln!("seamux: could not register {label}: {e}"),
         }
+    }
+    let hotkey_label = if live.is_empty() {
+        // Every hotkey is taken; the tray is then the way back in, and says so.
+        format!("Hotkeys {} are taken by other apps", HOTKEYS.map(|(_, l)| l).join(" and "))
+    } else {
+        format!("Hotkey: {}", live.join(" or "))
     };
 
     let show_item = MenuItemBuilder::with_id("show", "Show seamux").build(app)?;
@@ -583,7 +591,9 @@ mod tests {
     }
 
     #[test]
-    fn hotkey_parses() {
-        let _: Shortcut = HOTKEY.parse().unwrap();
+    fn hotkeys_parse() {
+        for (k, _) in HOTKEYS {
+            let _: Shortcut = k.parse().unwrap();
+        }
     }
 }
