@@ -318,9 +318,26 @@ fn toggle<R: Runtime>(app: &AppHandle<R>) {
                 // Order it out so macOS re-places it on the Space in front.
                 hide(&w);
             }
+            fill_screen(&w);
             show(&w);
         }
     }
+}
+
+/// The hotkey brings the window up filling the screen under the pointer
+/// (its work area: the menu bar and the Dock stay clear). Escape hides it.
+fn fill_screen<R: Runtime>(w: &WebviewWindow<R>) {
+    // Each monitor's frame is physical, as the pointer is.
+    let under = w.cursor_position().ok().and_then(|at| {
+        w.available_monitors().ok()?.into_iter().find(|m| {
+            let (p, s) = (m.position(), m.size());
+            at.x >= p.x as f64 && at.y >= p.y as f64 && at.x < p.x as f64 + s.width as f64 && at.y < p.y as f64 + s.height as f64
+        })
+    });
+    let Some(m) = under.or_else(|| w.current_monitor().ok().flatten()) else { return };
+    let area = m.work_area();
+    let _ = w.set_position(tauri::Position::Physical(area.position));
+    let _ = w.set_size(tauri::Size::Physical(area.size));
 }
 
 /// Tauri's hide does not take the window off screen once its class is the
