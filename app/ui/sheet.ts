@@ -284,17 +284,23 @@ export class Sheet {
   /** Plan families, for the strip that gets from a parent to its children. */
   private families: FamilyBrief[] = [];
   private kin = document.createElement("div");
+  /** The workspace changed here (a family chip): the Dock view follows. */
+  onPlace: (ws: string) => void = () => {};
 
-  constructor() {
-    this.el.className = "sheet";
+  /** `embedded`: a view's own columns (the Dock view's terminal and pages),
+   *  always there, rather than the overlay over the stage that closes. */
+  constructor(private embedded = false) {
+    this.el.className = embedded ? "sheet embedded" : "sheet";
     this.kin.className = "sheet-kin";
     this.kin.hidden = true;
-    this.el.hidden = true;
+    this.el.hidden = !embedded;
     this.card.className = "sheet-card";
-    this.card.setAttribute("role", "dialog");
-    this.card.setAttribute("aria-modal", "true");
+    if (!embedded) {
+      this.card.setAttribute("role", "dialog");
+      this.card.setAttribute("aria-modal", "true");
+    }
     const head = document.createElement("header");
-    head.setAttribute("data-tauri-drag-region", "");
+    if (!embedded) head.setAttribute("data-tauri-drag-region", "");
     this.titleEl.className = "sheet-title";
     this.say.className = "sheet-say";
     const cmux = document.createElement("button");
@@ -309,6 +315,7 @@ export class Sheet {
     close.setAttribute("aria-label", "Close");
     close.append(mark("M2.5 2.5l5 5M7.5 2.5l-5 5"));
     close.addEventListener("click", () => this.close());
+    close.hidden = embedded;
     head.append(this.titleEl, this.say, cmux, close);
     this.body.className = "sheet-body";
     this.pageEl.className = "sheet-page";
@@ -336,6 +343,7 @@ export class Sheet {
     });
     this.card.append(head, this.kin, this.body);
     this.el.append(this.card);
+    if (embedded) return;
     // A click on the dimmed backdrop closes; one inside the card does not.
     this.el.addEventListener("click", (e) => e.target === this.el && this.close());
     // Capture, so the window's own Escape (hide) waits for the sheet.
@@ -354,6 +362,20 @@ export class Sheet {
 
   get isOpen(): boolean {
     return !this.el.hidden;
+  }
+
+  /** Keys are this sheet's: the overlay while it is open; an embedded one
+   *  while its view is on screen and no overlay is open over it. */
+  private keysHere(): boolean {
+    if (!this.embedded) return !this.el.hidden;
+    return this.el.getClientRects().length > 0 && !document.querySelector(".sheet:not(.embedded):not([hidden])");
+  }
+
+  /** Show a workspace: its terminal, and the Wake unless a page is up. */
+  focusWorkspace(ws: string): void {
+    if (ws === this.workspace() && this.active) return;
+    this.enter({ workspace: ws });
+    if (!this.active) this.select(WAKE);
   }
 
   /** Follow the panes, so the chat beside a page stays live, and each
@@ -376,13 +398,13 @@ export class Sheet {
     });
     // shell.rs's keys: they work with focus in a framed page too.
     await listen<string>("sheet:key", (e) => {
-      if (this.el.hidden) return;
+      if (!this.keysHere()) return;
       if (e.payload === "wake") this.toggleWake();
       else this.step(e.payload === "next" ? 1 : -1);
     });
     // 1–9 pick a page tab while focus is in the shell (a framed page keeps its own keys).
     document.addEventListener("keydown", (e) => {
-      if (this.el.hidden || e.metaKey || e.ctrlKey || e.altKey || !(e.key >= "1" && e.key <= "9")) return;
+      if (!this.keysHere() || e.metaKey || e.ctrlKey || e.altKey || !(e.key >= "1" && e.key <= "9")) return;
       const at = document.activeElement;
       if (at instanceof HTMLInputElement || at instanceof HTMLTextAreaElement || at instanceof HTMLSelectElement) return;
       const t = this.tabs.filter((x) => x.key !== WAKE)[Number(e.key) - 1];
@@ -446,7 +468,11 @@ export class Sheet {
       b.title = m.ws ? `${m.slug} · ${state.textContent}` : `${m.slug} has no open workspace`;
       b.disabled = !m.ws || here;
       b.setAttribute("aria-current", here ? "true" : "false");
-      b.addEventListener("click", () => m.ws && this.enter({ workspace: m.ws }));
+      b.addEventListener("click", () => {
+        if (!m.ws) return;
+        this.enter({ workspace: m.ws });
+        this.onPlace(m.ws);
+      });
       b.dataset.n = String(i);
       return b;
     });
@@ -682,7 +708,7 @@ export class Sheet {
     try {
       if (this.toCmuxFn) await this.toCmuxFn();
       else if (this.page) await openInCmux(this.page);
-      this.close();
+      if (!this.embedded) this.close();
     } catch (e) {
       this.say.textContent = String(e);
     }
