@@ -109,21 +109,83 @@ fn worktree_of(dir: &str) -> String {
         .unwrap_or_else(|| dir.to_string())
 }
 
+fn git(root: &str, args: &[&str]) -> Option<std::process::Output> {
+    std::process::Command::new("/usr/bin/git").arg("-C").arg(root).args(args).output().ok()
+}
+
+/// Whether Peacock's file may be written in `root`, making sure git never
+/// sees it: refused where the repo tracks .vscode/settings.json (it would show
+/// as a change); where git would list it as new, it goes in the repo's own
+/// exclude file (info/exclude, shared by its worktrees, never committed).
+fn settings_ok(root: &str) -> Result<(), String> {
+    const FILE: &str = ".vscode/settings.json";
+    if !git(root, &["rev-parse", "--is-inside-work-tree"]).is_some_and(|o| o.status.success()) {
+        return Ok(()); // not git: nothing to dirty
+    }
+    if git(root, &["ls-files", "--error-unmatch", FILE]).is_some_and(|o| o.status.success()) {
+        return Err("this repo tracks .vscode/settings.json, so it was left uncolored".into());
+    }
+    if git(root, &["check-ignore", "-q", FILE]).is_some_and(|o| o.status.success()) {
+        return Ok(());
+    }
+    let out = git(root, &["rev-parse", "--git-path", "info/exclude"]).filter(|o| o.status.success()).ok_or("git did not say where its exclude file is")?;
+    let rel = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let path = if rel.starts_with('/') { std::path::PathBuf::from(rel) } else { std::path::Path::new(root).join(rel) };
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let had = std::fs::read_to_string(&path).unwrap_or_default();
+    let line = format!("/{FILE}");
+    if !had.lines().any(|l| l.trim() == line) {
+        let sep = if had.is_empty() || had.ends_with('\n') { "" } else { "\n" };
+        std::fs::write(&path, format!("{had}{sep}# seamux: Peacock's colors for VS Code\n{line}\n")).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// The seamux CLI beside this app (in its bundle), else the one on the usual path.
+fn seamux_cli() -> std::path::PathBuf {
+    let bundled = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.parent()?.join("Resources/bin/seamux")));
+    bundled.filter(|p| p.is_file()).unwrap_or_else(|| crew_core::py::home().join(".local/bin/seamux"))
+}
+
+/// Give the worktree its color in VS Code, as on the Dock: crew-color's
+/// one color per worktree, written as Peacock's settings.
+fn paint(root: &str) -> Result<(), String> {
+    settings_ok(root)?;
+    let out = std::process::Command::new(seamux_cli()).args(["crew-color", "apply", root]).output().map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!("crew-color: {}", String::from_utf8_lossy(&out.stderr).trim()))
+    }
+}
+
+/// What opening a worktree in VS Code did: the folder, and why it is not
+/// colored, if it is not.
+#[derive(serde::Serialize)]
+pub struct Opened {
+    folder: String,
+    note: Option<String>,
+}
+
 /// Open the worktree a pane works in, in VS Code (by its bundle id, so it
-/// needs no `code` on the app's PATH). Returns the folder opened.
+/// needs no `code` on the app's PATH), wearing the worktree's color first.
 #[tauri::command]
-pub async fn open_in_vscode(dir: String) -> Result<String, String> {
+pub async fn open_in_vscode(dir: String) -> Result<Opened, String> {
     if !dir.starts_with('/') || !std::path::Path::new(&dir).is_dir() {
         return Err(format!("not a folder: {dir:?}"));
     }
     tauri::async_runtime::spawn_blocking(move || {
         let root = worktree_of(&dir);
+        // Colored before it opens, so VS Code reads the colors as it starts.
+        let note = paint(&root).err();
         let st = std::process::Command::new("/usr/bin/open")
             .args(["-b", "com.microsoft.VSCode"])
             .arg(&root)
             .status()
             .map_err(|e| e.to_string())?;
-        if st.success() { Ok(root) } else { Err("VS Code did not open (is it installed?)".into()) }
+        if st.success() { Ok(Opened { folder: root, note }) } else { Err("VS Code did not open (is it installed?)".into()) }
     })
     .await
     .map_err(|e| e.to_string())?
@@ -561,5 +623,43 @@ mod worktree_tests {
         let top = super::worktree_of(&format!("{here}/src"));
         assert!(std::path::Path::new(&top).join(".git").exists(), "{top}");
         assert_eq!(super::worktree_of("/"), "/");
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use std::process::Command;
+
+    fn repo(name: &str) -> String {
+        let d = std::env::temp_dir().join(format!("seamux-peacock-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let d = d.to_string_lossy().into_owned();
+        Command::new("/usr/bin/git").args(["-C", &d, "init", "-q"]).status().unwrap();
+        d
+    }
+
+    #[test]
+    fn an_untracked_settings_file_is_kept_out_of_git() {
+        let d = repo("excl");
+        super::settings_ok(&d).unwrap();
+        super::settings_ok(&d).unwrap(); // a second time adds nothing
+        let ex = std::fs::read_to_string(format!("{d}/.git/info/exclude")).unwrap();
+        assert_eq!(ex.matches("/.vscode/settings.json").count(), 1, "{ex}");
+        std::fs::create_dir_all(format!("{d}/.vscode")).unwrap();
+        std::fs::write(format!("{d}/.vscode/settings.json"), "{}").unwrap();
+        let st = Command::new("/usr/bin/git").args(["-C", &d, "status", "--porcelain"]).output().unwrap();
+        assert!(String::from_utf8_lossy(&st.stdout).trim().is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_tracked_settings_file_is_left_alone() {
+        let d = repo("tracked");
+        std::fs::create_dir_all(format!("{d}/.vscode")).unwrap();
+        std::fs::write(format!("{d}/.vscode/settings.json"), "{}").unwrap();
+        Command::new("/usr/bin/git").args(["-C", &d, "add", ".vscode/settings.json"]).status().unwrap();
+        assert!(super::settings_ok(&d).is_err());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
