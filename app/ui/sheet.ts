@@ -112,7 +112,15 @@ class Chat {
       }
     });
     this.note.className = "sheet-chat-note";
-    head.append(this.name, this.state, jump);
+    // Its worktree in VS Code, beside Jump.
+    const code = document.createElement("button");
+    code.type = "button";
+    code.className = "sheet-btn icon sheet-chat-code";
+    code.title = "Open this worktree in VS Code";
+    code.setAttribute("aria-label", code.title);
+    code.append(mark("M3.5 2.5 1 5l2.5 2.5M6.5 2.5 9 5 6.5 7.5"));
+    code.addEventListener("click", () => void openInVSCode(this.shown?.cwd ?? "", (m) => (this.note.textContent = m)));
+    head.append(this.name, this.state, code, jump);
     form.append(this.input);
     // Live by default; the plain text and its reply box only when frames fail.
     const live = (on: boolean) => {
@@ -796,6 +804,16 @@ export class Sheet {
 
 function kindOf(path: string): string {
   return path.startsWith("/review/") ? "review" : path.startsWith("/ask/") ? "ask" : path.startsWith("/plan/") ? "plan" : "page";
+}
+
+/** Open the worktree `dir` is in, in VS Code; `say` gets an error to show. */
+export async function openInVSCode(dir: string, say: (m: string) => void): Promise<void> {
+  if (!dir) return say("this pane has no folder yet");
+  try {
+    await invoke<string>("open_in_vscode", { dir });
+  } catch (e) {
+    say(String(e));
+  }
 }
 
 export function openInCmux(p: Page): Promise<void> {

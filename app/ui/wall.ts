@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { reflow, type Block } from "./reflow";
 import { TermSlot } from "./native";
+import { openInVSCode } from "./sheet";
 import { splitter } from "./splitter";
 
 /** One re-flowed paragraph: wraps at the window, hanging past its marker. */
@@ -174,6 +175,9 @@ class Preview {
   private input = document.createElement("input");
   private send = document.createElement("button");
   private jumpBtn = document.createElement("button");
+  private codeBtn = document.createElement("button");
+  /** The shown pane's folder: VS Code opens its worktree. */
+  private cwd = "";
   private note = document.createElement("span");
   private surface = "";
   private lastText = "";
@@ -190,7 +194,7 @@ class Preview {
     this.subEl.className = "sub";
     names.append(this.titleEl, this.subEl);
     this.stateEl.className = "state";
-    head.append(names, this.stateEl, this.jumpBtn);
+    head.append(names, this.stateEl, this.codeBtn, this.jumpBtn);
 
     this.input.type = "text";
     this.input.placeholder = "Reply…";
@@ -225,6 +229,18 @@ class Preview {
     arrow.append(p);
     this.jumpBtn.append(arrow);
     this.jumpBtn.addEventListener("click", () => void this.jump());
+    this.codeBtn.type = "button";
+    this.codeBtn.className = "jump";
+    this.codeBtn.title = "Open this worktree in VS Code";
+    this.codeBtn.setAttribute("aria-label", this.codeBtn.title);
+    const code = document.createElementNS(SVG, "svg");
+    code.setAttribute("viewBox", "0 0 10 10");
+    code.setAttribute("aria-hidden", "true");
+    const cp = document.createElementNS(SVG, "path");
+    cp.setAttribute("d", "M3.5 2.5 1 5l2.5 2.5M6.5 2.5 9 5 6.5 7.5");
+    code.append(cp);
+    this.codeBtn.append(code);
+    this.codeBtn.addEventListener("click", () => void openInVSCode(this.cwd, (m) => (this.note.textContent = m)));
     this.note.className = "note-line";
     const foot = document.createElement("footer");
     foot.append(this.form, this.note);
@@ -252,6 +268,7 @@ class Preview {
       this.note.textContent = "";
       this.lastText = "";
     }
+    this.cwd = t.cwd;
     this.el.dataset.state = t.state;
     this.el.style.setProperty("--ws", safeColor(t.color) || "var(--line)");
     this.titleEl.textContent = titleOf(t);

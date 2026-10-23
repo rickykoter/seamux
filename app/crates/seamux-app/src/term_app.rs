@@ -96,6 +96,39 @@ pub async fn open_url(url: String) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+/// The worktree a pane's directory is in (git's top level), else the
+/// directory itself.
+fn worktree_of(dir: &str) -> String {
+    std::process::Command::new("/usr/bin/git")
+        .args(["-C", dir, "rev-parse", "--show-toplevel"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|t| t.starts_with('/'))
+        .unwrap_or_else(|| dir.to_string())
+}
+
+/// Open the worktree a pane works in, in VS Code (by its bundle id, so it
+/// needs no `code` on the app's PATH). Returns the folder opened.
+#[tauri::command]
+pub async fn open_in_vscode(dir: String) -> Result<String, String> {
+    if !dir.starts_with('/') || !std::path::Path::new(&dir).is_dir() {
+        return Err(format!("not a folder: {dir:?}"));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = worktree_of(&dir);
+        let st = std::process::Command::new("/usr/bin/open")
+            .args(["-b", "com.microsoft.VSCode"])
+            .arg(&root)
+            .status()
+            .map_err(|e| e.to_string())?;
+        if st.success() { Ok(root) } else { Err("VS Code did not open (is it installed?)".into()) }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod url_tests {
     use super::url_ok;
@@ -518,4 +551,15 @@ mod hold_tests {
 #[tauri::command]
 pub async fn term_look(dark: bool) -> seamux_app::ghostty::Look {
     tauri::async_runtime::spawn_blocking(move || seamux_app::ghostty::look(dark)).await.unwrap_or_default()
+}
+
+#[cfg(test)]
+mod worktree_tests {
+    #[test]
+    fn a_folder_inside_a_repo_opens_at_its_top_level() {
+        let here = env!("CARGO_MANIFEST_DIR");
+        let top = super::worktree_of(&format!("{here}/src"));
+        assert!(std::path::Path::new(&top).join(".git").exists(), "{top}");
+        assert_eq!(super::worktree_of("/"), "/");
+    }
 }
