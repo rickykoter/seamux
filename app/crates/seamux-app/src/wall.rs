@@ -241,10 +241,16 @@ pub struct Wall {
     /// UUID (upper case) to the last state recorded for it, or `shell` when
     /// its process is gone.
     hint: Mutex<Option<StateHint>>,
+    /// The surfaces whose native (tmux) session has a Claude in it: cmux
+    /// sees only the tmux client there, so reports a terminal.
+    native: Mutex<Option<NativeProbe>>,
 }
 
 /// See `Wall::hint`.
 pub type StateHint = Box<dyn Fn() -> HashMap<String, String> + Send + Sync>;
+
+/// See `Wall::native`: surface UUIDs, upper case.
+pub type NativeProbe = Box<dyn Fn() -> std::collections::HashSet<String> + Send + Sync>;
 
 impl Wall {
     /// `pool` holds one source per parallel reader; at least one.
@@ -257,7 +263,12 @@ impl Wall {
     /// As `new`, with a separate source for reply and jump.
     pub fn with_actions(pool: Vec<Arc<dyn Source>>, actions: Arc<dyn Source>, interval: Duration) -> Wall {
         assert!(!pool.is_empty(), "the wall needs a source");
-        Wall { pool, actions, interval, state: Mutex::new(State::default()), pulled: Mutex::default(), hint: Mutex::default() }
+        Wall { pool, actions, interval, state: Mutex::new(State::default()), pulled: Mutex::default(), hint: Mutex::default(), native: Mutex::default() }
+    }
+
+    /// Name the terminals that hold a native Claude, asked once per poll.
+    pub fn set_native_probe(&self, probe: NativeProbe) {
+        *self.native.lock().unwrap() = Some(probe);
     }
 
     /// Fill an agent's `unknown` state (cmux has no lifecycle hooks from that
@@ -293,7 +304,12 @@ impl Wall {
             Ok(v) => terminals(v),
             Err(_) => self.state.lock().unwrap().terms.clone(),
         };
+        let native = self.apply_native(&mut terms);
         self.apply_hint(&mut terms);
+        // A native Claude nothing has reported on yet is at least up.
+        for t in terms.iter_mut().filter(|t| native.contains(&t.surface.to_uppercase()) && t.state == "unknown") {
+            t.state = "idle".into();
+        }
         let reads = self.read_all(&terms);
         let mut st = self.state.lock().unwrap();
         st.error = listed.err().map(|e| e.to_string());
@@ -306,6 +322,23 @@ impl Wall {
         st.terms = terms;
         st.text = reads;
         self.frame_if_changed(&mut st)
+    }
+
+    /// A terminal with no agent that holds a native Claude has one: kind claude,
+    /// state to be found by the hint. Returns those surfaces.
+    fn apply_native(&self, terms: &mut [Terminal]) -> std::collections::HashSet<String> {
+        let guard = self.native.lock().unwrap();
+        let Some(probe) = guard.as_ref() else { return Default::default() };
+        let held = probe();
+        let mut found = std::collections::HashSet::new();
+        for t in terms.iter_mut().filter(|t| held.contains(&t.surface.to_uppercase())) {
+            if t.agent.is_none() {
+                t.agent = Some("claude".into());
+                t.state = "unknown".into();
+            }
+            found.insert(t.surface.to_uppercase());
+        }
+        found
     }
 
     fn apply_hint(&self, terms: &mut [Terminal]) {

@@ -1882,6 +1882,21 @@ if (crewImpl.isRust("crew-board")) {
   els.rows.attrs["data-tuck-open"] = "0";
 }
 
+// A tucked workstream stays with its family: its card is not missing a member.
+{
+  const R = (id, extra) => ({ id, name: id, kind: "attend", badge: "b", said: "", chips: [], frac: null, meta: "", cwd: "/w/" + id, ...extra });
+  els.rows.attrs["data-tuck-open"] = "0";
+  render({ rows: [
+    R("par", { family: "F", famrole: "parent", famtier: "attend", famkid: false }),
+    R("kidA", { family: "F", famrole: "child", famtier: "attend", famkid: true }),
+    R("kidT", { family: "F", famrole: "child", famtier: "attend", famkid: true, kind: "quiet", tuck: "tuck" }),
+    R("solo", { kind: "quiet", tuck: "tuck" }),
+  ], quiet: "" });
+  const h = els.rows.innerHTML, tuckAt = h.indexOf('<details class="tucked"');
+  checks.push(["tuck: a tucked family member stays in its family; a tucked loner still leaves",
+    h.indexOf('data-id="kidT"') > 0 && h.indexOf('data-id="kidT"') < tuckAt && /tucked · 1</.test(h) && h.indexOf('data-id="solo"') > tuckAt]);
+}
+
 // ---- the archive chip: on a quiet row, never on a working one -------------
 // (What the server does with a press is checked against the running server,
 // with the review routes below.)

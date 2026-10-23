@@ -106,6 +106,68 @@ pub fn target_for(surface: &str) -> Result<Option<Target>, String> {
     Ok(None)
 }
 
+/// The surfaces (upper case) of native panes with a Claude running inside
+/// their tmux session. `panes` are (client surface, the session's pane pid);
+/// `procs` is `ps -axo pid=,ppid=,command=`. cmux sees only the tmux client
+/// in such a pane, so it reports no agent there.
+pub fn claude_in_panes(panes: &[(String, u32)], procs: &str) -> Vec<String> {
+    let mut kids: std::collections::HashMap<u32, Vec<u32>> = Default::default();
+    let mut cmd: std::collections::HashMap<u32, String> = Default::default();
+    for line in procs.lines() {
+        let mut f = line.split_whitespace();
+        let (Some(pid), Some(ppid)) = (f.next().and_then(|v| v.parse::<u32>().ok()), f.next().and_then(|v| v.parse::<u32>().ok())) else { continue };
+        let first = f.next().unwrap_or("").to_string();
+        kids.entry(ppid).or_default().push(pid);
+        cmd.insert(pid, first);
+    }
+    let is_claude = |c: &str| c.rsplit('/').next() == Some("claude");
+    let mut out: Vec<String> = Vec::new();
+    for (surface, root) in panes {
+        let mut stack = vec![*root];
+        let mut seen = std::collections::HashSet::new();
+        while let Some(pid) = stack.pop() {
+            if !seen.insert(pid) {
+                continue;
+            }
+            if cmd.get(&pid).is_some_and(|c| is_claude(c)) {
+                let s = surface.to_uppercase();
+                if !out.contains(&s) {
+                    out.push(s);
+                }
+                break;
+            }
+            stack.extend(kids.get(&pid).cloned().unwrap_or_default());
+        }
+    }
+    out
+}
+
+/// Which native panes have a Claude in them now: the registry's sessions, each
+/// session's pane process, and one look at the process table.
+pub fn native_claude_now() -> std::collections::HashSet<String> {
+    let file = crew_core::py::home().join(".cmux/local-tmux/sessions.json");
+    let Some(reg) = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return Default::default() };
+    let mut panes: Vec<(String, u32)> = Vec::new();
+    for s in reg.get("sessions").and_then(Value::as_array).into_iter().flatten() {
+        let (Some(surface), Some(name), Some(sock)) = (
+            s.get("surfaceID").and_then(Value::as_str),
+            s.get("name").and_then(Value::as_str).filter(|n| name_ok(n)),
+            s.get("socketPath").and_then(Value::as_str).filter(|p| !p.is_empty()),
+        ) else {
+            continue;
+        };
+        let Ok(o) = Command::new(tmux_bin()).args(["-S", sock, "list-panes", "-t", &format!("={name}"), "-F", "#{pane_pid}"]).stderr(Stdio::null()).output() else { continue };
+        for pid in String::from_utf8_lossy(&o.stdout).lines().filter_map(|l| l.trim().parse::<u32>().ok()) {
+            panes.push((surface.to_string(), pid));
+        }
+    }
+    if panes.is_empty() {
+        return Default::default();
+    }
+    let Ok(ps) = Command::new("ps").args(["-axo", "pid=,ppid=,command="]).output() else { return Default::default() };
+    claude_in_panes(&panes, &String::from_utf8_lossy(&ps.stdout)).into_iter().collect()
+}
+
 /// tmux, from PATH (the app adopts the login shell's at start) or Homebrew.
 pub fn tmux_bin() -> String {
     for dir in std::env::var("PATH").unwrap_or_default().split(':').chain(["/opt/homebrew/bin", "/usr/local/bin"]) {
@@ -611,5 +673,19 @@ mod tests {
         assert_eq!(tmux(&sock, &["list-sessions", "-F", "#{session_name}"]), "t1");
         tmux(&sock, &["kill-server"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_claude_under_a_native_panes_shell_is_found_and_a_shell_alone_is_not() {
+        let procs = "100 1 -zsh\n101 100 claude --resume x\n102 101 node /x/gitnexus mcp\n200 1 -zsh\n201 200 vim a\n300 1 /usr/local/bin/claude\n";
+        let panes = vec![("aa".to_string(), 100), ("bb".to_string(), 200), ("cc".to_string(), 300), ("dd".to_string(), 999)];
+        assert_eq!(claude_in_panes(&panes, procs), vec!["AA".to_string(), "CC".to_string()]);
+    }
+
+    /// Against this machine's tmux and process table: `cargo test -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn live_native_claude_surfaces() {
+        println!("{:?}", native_claude_now());
     }
 }

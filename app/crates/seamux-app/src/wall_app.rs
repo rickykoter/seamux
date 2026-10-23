@@ -14,6 +14,24 @@ const READERS: usize = 4;
 
 static WALL: OnceLock<Arc<Wall>> = OnceLock::new();
 
+/// The surfaces holding a native Claude, looked up at most every 5 seconds
+/// (a tmux call per session and a process table); `fresh` looks now, for the
+/// moment before something is typed into a pane.
+fn native_surfaces(fresh: bool) -> std::collections::HashSet<String> {
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, std::collections::HashSet<String>)>> = std::sync::Mutex::new(None);
+    let mut c = CACHE.lock().unwrap();
+    if !fresh {
+        if let Some((at, set)) = c.as_ref() {
+            if at.elapsed() < Duration::from_secs(5) {
+                return set.clone();
+            }
+        }
+    }
+    let set = seamux_app::pty::native_claude_now();
+    *c = Some((std::time::Instant::now(), set.clone()));
+    set
+}
+
 /// Connect the pool and start polling. Until cmux answers, the wall stays
 /// empty and the page shows cmux_status's named error.
 pub fn start<R: Runtime>(app: AppHandle<R>) {
@@ -63,13 +81,17 @@ fn run_wall<R: Runtime>(app: AppHandle<R>, pool: Vec<Arc<dyn Source>>) {
                 .map(|e| (e.surface.to_uppercase(), e.state))
                 .collect();
         if let Some(records) = crew_core::workspaces::agent_sessions() {
-            for s in seamux_app::sessions::gone_surfaces(&records) {
+            // A native pane's recorded process is the old one; its Claude is
+            // in tmux, so it is not gone.
+            let native = native_surfaces(false);
+            for s in seamux_app::sessions::gone_surfaces(&records).into_iter().filter(|s| !native.contains(s)) {
                 m.insert(s, "shell".into());
             }
         }
         *c = Some((std::time::Instant::now(), m.clone()));
         m
     }));
+    wall.set_native_probe(Box::new(|| native_surfaces(false)));
     let _ = WALL.set(wall.clone());
     let (tx, rx) = mpsc::channel::<String>();
 
@@ -169,7 +191,15 @@ pub async fn desk_cleanup_plan() -> Result<Vec<seamux_app::sessions::Revival>, S
     let w = wall()?.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let records = crew_core::workspaces::agent_sessions().ok_or("cmux did not list its sessions")?;
-        let panes: Vec<(String, String)> = w.last().map(|f| f.tiles).unwrap_or_default().into_iter().map(|t| (t.surface, t.workspace)).collect();
+        let native = native_surfaces(true);
+        let panes: Vec<(String, String)> = w
+            .last()
+            .map(|f| f.tiles)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|t| !native.contains(&t.surface.to_uppercase()))
+            .map(|t| (t.surface, t.workspace))
+            .collect();
         Ok(seamux_app::sessions::revivals(&records, &panes))
     })
     .await
@@ -187,7 +217,7 @@ pub async fn desk_cleanup_run(picks: Vec<(String, String, String)>) -> Result<Ve
         let mut out = Vec::new();
         for (surface, session, cwd) in picks {
             let records = crew_core::workspaces::agent_sessions().ok_or("cmux did not list its sessions")?;
-            out.push(if seamux_app::sessions::claude_alive(&records, &surface) {
+            out.push(if seamux_app::sessions::claude_alive(&records, &surface) || native_surfaces(true).contains(&surface.to_uppercase()) {
                 Err("Claude is running there now".to_string())
             } else {
                 w.resume(&surface, &session, &cwd, false)
@@ -207,7 +237,7 @@ pub async fn session_resume(surface_id: String, session_id: String, cwd: String)
     tauri::async_runtime::spawn_blocking(move || {
         // Asked fresh: the answer decides whether `/resume` or a shell command is typed.
         let records = crew_core::workspaces::agent_sessions().ok_or("cmux did not list its sessions")?;
-        let alive = seamux_app::sessions::claude_alive(&records, &surface_id);
+        let alive = seamux_app::sessions::claude_alive(&records, &surface_id) || native_surfaces(true).contains(&surface_id.to_uppercase());
         w.resume(&surface_id, &session_id, &cwd, alive)
     })
     .await
