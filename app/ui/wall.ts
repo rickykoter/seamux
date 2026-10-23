@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { reflow, type Block } from "./reflow";
+import { Term } from "./term";
+import { splitter } from "./splitter";
 
 /** One re-flowed paragraph: wraps at the window, hanging past its marker. */
 function flowLine(b: Block): HTMLElement {
@@ -161,6 +163,13 @@ class Preview {
   private subEl = document.createElement("span");
   private stateEl = document.createElement("span");
   private body = document.createElement("pre");
+  /** The pane itself, live, as the sheet and Desk show it; the text above is
+   *  its fallback when frames fail. */
+  private term = new Term();
+  private live = true;
+  /** The read error the note shows while live. */
+  private errShown = "";
+  private hint = document.createElement("span");
   private form = document.createElement("form");
   private input = document.createElement("input");
   private send = document.createElement("button");
@@ -217,13 +226,22 @@ class Preview {
     this.jumpBtn.append(arrow);
     this.jumpBtn.addEventListener("click", () => void this.jump());
     this.note.className = "note-line";
+    this.hint.className = "hint";
+    this.hint.textContent = "Click the terminal to type into it · ⌘Esc or a click outside leaves it";
     const foot = document.createElement("footer");
-    foot.append(this.form, this.jumpBtn, this.note);
-    this.el.append(head, this.body, foot);
+    foot.append(this.hint, this.form, this.jumpBtn, this.note);
+    this.el.append(head, this.term.el, this.body, foot);
+    this.setLive(true);
+    this.term.onTrouble = (bad) => this.setLive(!bad);
   }
 
   get current(): string {
     return this.surface;
+  }
+
+  /** Focus is in the preview: its live terminal or its reply box. */
+  get holding(): boolean {
+    return this.el.contains(document.activeElement);
   }
 
   show(t: Tile, now: number): void {
@@ -242,10 +260,18 @@ class Preview {
     this.subEl.textContent = subOf(t);
     const waited = t.state === "needs_input" ? ` · ${ago(now - t.since)}` : "";
     this.stateEl.replaceChildren(stateMark(t.state), document.createTextNode((STATE_WORDS[t.state] ?? t.state) + waited));
+    this.term.show(t.surface);
+    // Live, keys go to the terminal itself; the reply box is the fallback's.
     // Wall::reply refuses a pane without a running agent; so does the page.
-    this.form.hidden = !t.agent || t.state === "ended";
+    this.form.hidden = this.live || !t.agent || t.state === "ended";
+    const err = t.error ? `Couldn't read this pane: ${t.error}` : "";
+    if (this.live && err !== this.errShown) {
+      if (err) this.say(err, true);
+      else if (this.note.textContent === this.errShown) this.say("");
+    }
+    this.errShown = this.live ? err : "";
     if (t.error) {
-      this.body.textContent = `Couldn't read this pane: ${t.error}`;
+      this.body.textContent = err;
       this.body.classList.add("err");
       this.lastText = "";
     } else {
@@ -274,7 +300,17 @@ class Preview {
   }
 
   focusReply(): void {
-    if (!this.form.hidden) this.input.focus();
+    if (this.live) this.term.el.focus();
+    else if (!this.form.hidden) this.input.focus();
+  }
+
+  private setLive(on: boolean): void {
+    this.live = on;
+    this.term.el.hidden = !on;
+    this.body.hidden = on;
+    this.hint.hidden = !on;
+    if (on) this.form.hidden = true;
+    else this.lastText = ""; // the fallback redraws on the next frame
   }
 
   /** The seam runs across the preview's top edge once. */
@@ -357,7 +393,21 @@ export class WallView {
     this.list.setAttribute("aria-label", "Agents");
     this.split.className = "split";
     this.split.hidden = true;
-    this.split.append(this.list, this.preview.el);
+    const grip = document.createElement("div");
+    grip.className = "list-grip";
+    this.split.append(this.list, this.preview.el, grip);
+    splitter(grip, {
+      zone: "wall-list",
+      axis: "x",
+      from: (x) => x,
+      min: 180,
+      max: 640,
+      initial: 290,
+      step: 16,
+      apply: (v) => this.split.style.setProperty("--list-w", `${Math.round(v)}px`),
+      label: "Resize the list of agents",
+      measure: () => this.list.getBoundingClientRect().width,
+    });
     root.append(this.status, this.empty, this.split);
     // Wait times move without a frame.
     setInterval(() => this.tickTimes(), 15_000);
@@ -486,7 +536,8 @@ export class WallView {
     this.split.hidden = tiles.length === 0;
     if (!tiles.length) return;
     // Keep the person's pick while it lives; otherwise follow the top of the list.
-    const keep = this.rows.has(this.selected) && (this.pinned || this.selected === order[0]);
+    // Typing into the preview holds it too: keys must never move to another agent.
+    const keep = this.rows.has(this.selected) && (this.pinned || this.selected === order[0] || this.preview.holding);
     if (!this.rows.has(this.selected)) this.pinned = false;
     this.select(keep ? this.selected : order[0]);
   }

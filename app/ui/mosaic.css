@@ -28,7 +28,8 @@
 .m-tile.large { grid-column: span 2; grid-row: span 4; border-color: var(--accent); box-shadow: 0 0 22px -10px var(--accent); }
 .m-tile.medium { grid-column: span 2; grid-row: span 2; }
 .m-tile.small { grid-column: span 1; gap: 3px; padding-top: 8px; padding-bottom: 8px; }
-.m-tile.folded { color: var(--muted); cursor: default; justify-content: center; }
+.m-tile.folded { color: var(--muted); justify-content: center; font: inherit; text-align: left; }
+.m-tile.folded:hover { color: var(--fg); border-color: var(--accent); }
 .m-tile.folded::before { display: none; }
 
 .m-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
@@ -45,7 +46,8 @@
 .m-bar span.now { background: var(--accent); }
 
 .m-tail {
-  flex: 1; min-height: 0; overflow: hidden; font: 11.5px/1.45 ui-monospace, Menlo, monospace; color: var(--term-fg);
+  flex: 1; min-height: 0; overflow: hidden; font: var(--term-font); color: var(--pane-fg-or);
+  background: var(--pane-bg-or); border-radius: 7px; padding: 6px var(--term-pad);
   display: flex; flex-direction: column; justify-content: flex-end;
   /* The oldest line fades out at the top rather than being cut through. */
   -webkit-mask-image: linear-gradient(to bottom, transparent, #000 2.2em);

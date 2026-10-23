@@ -23,7 +23,18 @@ type Grid = {
   cursor: { row: number; column: number; visible: boolean; style: string };
   terminal_theme?: { background?: string; foreground?: string; cursor?: string };
   active_screen?: string;
+  /** The rows above the screen (a shell's history), in row_spans' shape. */
+  scrollback_spans?: Span[];
+  modes?: { code: number; on: boolean; ansi?: boolean }[];
 };
+
+/** What the pane's program asked of the mouse (term_app.rs Mouse). */
+type MouseModes = { report: boolean; altScroll: boolean; alt: boolean };
+
+function mouseModes(g: Grid): MouseModes {
+  const on = (code: number) => !!g.modes?.some((m) => m.ansi === false && m.code === code && m.on);
+  return { report: on(1000) || on(1002) || on(1003), altScroll: on(1007), alt: g.active_screen === "alternate" };
+}
 type Frame = { stamp: string; rows: number; columns: number; grid: Grid };
 
 /** What a key sends: a named key for cmux to encode (it knows the keyboard
@@ -81,6 +92,19 @@ export class Term {
   /** Holds and releases run one after another, in the order they were asked. */
   private sizing: Promise<unknown> = Promise.resolve();
   private drawnOnce = false;
+  private mouse: MouseModes = { report: false, altScroll: false, alt: false };
+  /** Last frame's rows by what they show, for the next frame to reuse. */
+  private rowCache: RowCache = new Map();
+  /** Rows of history drawn above the screen. */
+  private sbRows = 0;
+  /** Wheel travel not yet sent as a notch. */
+  private wheelLeft = 0;
+  /** A button is down and was sent to the pane: its release is owed. */
+  private pressed = false;
+  /** Where the pointer last was, for a release whose own event never came. */
+  private lastPointer: MouseEvent | null = null;
+  /** Mouse events go to the pane one after another, in order. */
+  private mousing: Promise<unknown> = Promise.resolve();
 
   constructor() {
     this.el.className = "term";
@@ -97,6 +121,9 @@ export class Term {
     this.probe.setAttribute("aria-hidden", "true");
     this.el.append(this.screen, this.status, this.probe);
     this.el.addEventListener("keydown", (e) => this.key(e));
+    this.el.addEventListener("wheel", (e) => this.wheel(e), { passive: false });
+    this.el.addEventListener("pointerdown", (e) => this.press(e));
+    this.el.addEventListener("pointermove", (e) => (this.lastPointer = e), { passive: true });
     this.el.addEventListener("paste", (e) => {
       const text = e.clipboardData?.getData("text") ?? "";
       e.preventDefault();
@@ -157,8 +184,11 @@ export class Term {
   /** Mirror `surface` (a cmux surface id); "" stops. */
   show(surface: string): void {
     if (surface === this.surface) return;
+    // Keys typed for one pane must never land in another.
+    if (document.activeElement === this.el) this.el.blur();
     this.release();
     this.surface = surface;
+    this.rowCache = new Map();
     this.drawnOnce = false;
     this.stamp = "";
     this.failures = 0;
@@ -181,8 +211,11 @@ export class Term {
     if (!this.surface) return;
     // Faster while typing into it, slower when only watched, idle off screen.
     const next = document.activeElement === this.el ? 70 : 160;
-    this.timer = window.setTimeout(() => this.tick(), this.visible() ? next : 600);
-    if (!this.visible() || this.busy || document.hidden) return;
+    // In trouble the terminal is hidden behind its fallback; it keeps asking
+    // (slowly) while that fallback is on screen, so it can come back.
+    const shown = this.visible() || (this.failures >= 3 && this.el.isConnected && (this.el.parentElement?.offsetParent ?? null) !== null);
+    this.timer = window.setTimeout(() => this.tick(), this.visible() ? next : this.failures >= 3 && shown ? 1000 : 600);
+    if (!shown || this.busy || document.hidden) return;
     this.busy = true;
     const surface = this.surface;
     invoke<Frame | null>("term_frame", { surfaceId: surface, seen: this.stamp })
@@ -208,43 +241,112 @@ export class Term {
     this.el.style.setProperty("--t-bg", theme.background ?? "#1e1e1e");
     this.el.style.setProperty("--t-fg", theme.foreground ?? "#ddd");
     this.el.style.setProperty("--t-cursor", theme.cursor ?? theme.foreground ?? "#ddd");
+    paneTheme(theme);
     this.cols = f.columns;
     this.rows = f.rows;
     this.scale();
+    this.mouse = mouseModes(g);
     const styles = new Map(g.styles.map((s) => [s.id, s]));
-    const lines: HTMLElement[] = [];
-    for (let r = 0; r < f.rows; r++) {
-      const ln = document.createElement("div");
-      ln.className = "term-row";
-      lines.push(ln);
-    }
-    // Spans arrive by row and column; gaps between them are blank cells.
-    const at = new Array<number>(f.rows).fill(0);
-    for (const sp of g.row_spans) {
-      const ln = lines[sp.row];
-      if (!ln) continue;
-      if (sp.column > at[sp.row]) ln.append(" ".repeat(sp.column - at[sp.row]));
-      const st = styles.get(sp.style_id);
-      const span = document.createElement("span");
-      span.textContent = sp.text;
-      if (st) paint(span, st);
-      // Wide characters keep their cells, so the columns after them line up.
-      if (sp.cell_width !== [...sp.text].length) {
-        span.style.display = "inline-block";
-        span.style.width = `${sp.cell_width}ch`;
-      }
-      ln.append(span);
-      at[sp.row] = sp.column + sp.cell_width;
-    }
-    // Follow the bottom, as a terminal does, unless the person scrolled up.
+    // A shell's history sits above its screen; the alternate screen keeps none.
+    const back = this.mouse.alt ? [] : (g.scrollback_spans ?? []);
+    const sbRows = back.reduce((n, sp) => Math.max(n, sp.row + 1), 0);
+    const now: RowCache = new Map();
+    const lines = [...rowsOf(back, sbRows, styles, this.rowCache, now), ...rowsOf(g.row_spans, f.rows, styles, this.rowCache, now)];
+    this.rowCache = now;
+    // Follow the bottom, as a terminal does, unless the person scrolled up
+    // into the history: then the view stays where they are reading.
     const follow = !this.drawnOnce || this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight < 24;
+    // Scrolled up, the rows being read are found again after the redraw: at
+    // the history's cap the oldest rows drop off the top and everything moves up.
+    const lh = parseFloat(getComputedStyle(this.el).getPropertyValue("--t-line")) || 15;
+    const old = this.screen.querySelectorAll<HTMLElement>(".term-row");
+    const at = Math.floor(this.el.scrollTop / lh);
+    const sig = follow ? "" : [0, 1, 2].map((i) => old[at + i]?.textContent ?? "").join("\n");
     this.drawnOnce = true;
+    this.sbRows = sbRows;
     this.screen.replaceChildren(...lines, this.cursor);
     if (follow) this.el.scrollTop = this.el.scrollHeight;
+    else if (sig.trim()) {
+      const same = (i: number) => [0, 1, 2].map((k) => lines[i + k]?.textContent ?? "").join("\n") === sig;
+      for (let d = 0; d <= 240; d++) {
+        if (same(at - d)) {
+          if (d) this.el.scrollTop -= d * lh;
+          break;
+        }
+      }
+    }
     const c = g.cursor;
     this.cursor.hidden = !c.visible;
     this.cursor.className = `term-cursor ${c.style}`;
-    this.cursor.style.transform = `translate(${c.column}ch, calc(${c.row} * var(--t-line)))`;
+    this.cursor.style.transform = `translate(${c.column}ch, calc(${c.row + sbRows} * var(--t-line)))`;
+  }
+
+  /** The screen cell under a mouse event, counted from 0. */
+  private cellAt(e: MouseEvent): { col: number; row: number } {
+    const r = this.screen.getBoundingClientRect();
+    const cs = getComputedStyle(this.el);
+    const px = parseFloat(cs.getPropertyValue("--t-size")) || 12;
+    const lh = parseFloat(cs.getPropertyValue("--t-line")) || 15;
+    const cw = ((this.probe.getBoundingClientRect().width / 10) || 7.2) * (px / 12);
+    const col = Math.floor((e.clientX - r.left) / cw);
+    const row = Math.floor((e.clientY - r.top) / lh) - this.sbRows;
+    return { col: Math.max(0, Math.min(this.cols - 1, col)), row: Math.max(0, Math.min(this.rows - 1, row)) };
+  }
+
+  private sendMouse(kind: string, e: MouseEvent, count = 1, button = 0): void {
+    if (!this.surface) return;
+    const surface = this.surface;
+    const { col, row } = this.cellAt(e);
+    const args = { surfaceId: surface, kind, col, row, button, shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey, count };
+    this.mousing = this.mousing
+      .then(() => invoke<boolean>("term_mouse", args))
+      .then(() => this.tick())
+      .catch((err) => this.say(String(err)));
+  }
+
+  /** The wheel: to the program when it takes it (Claude scrolls its own
+   *  transcript); otherwise the view scrolls through the history drawn here. */
+  private wheel(e: WheelEvent): void {
+    const takes = this.mouse.report || (this.mouse.alt && this.mouse.altScroll);
+    if (!this.surface || !takes || e.deltaY === 0) return;
+    e.preventDefault();
+    const lh = parseFloat(getComputedStyle(this.el).getPropertyValue("--t-line")) || 15;
+    this.wheelLeft += e.deltaMode === 1 ? e.deltaY * lh : e.deltaMode === 2 ? e.deltaY * this.el.clientHeight : e.deltaY;
+    // A notch per line of travel (Claude moves under a line a notch); a
+    // trackpad's small deltas add up.
+    const step = lh;
+    const n = Math.trunc(this.wheelLeft / step);
+    if (!n) return;
+    this.wheelLeft -= n * step;
+    this.sendMouse(n < 0 ? "wheel_up" : "wheel_down", e, Math.min(10, Math.abs(n)));
+  }
+
+  /** A click: the first one into an unfocused terminal only focuses it.
+   *  Focused, a press and its release go to the program when it reports the
+   *  mouse; Shift keeps the click here, to select text. */
+  private press(e: PointerEvent): void {
+    if (document.activeElement !== this.el || !this.mouse.report || e.shiftKey || e.button > 2 || this.pressed) return;
+    // The view's own scrollbars are the app's, not a click in the pane.
+    const r = this.el.getBoundingClientRect();
+    if (e.clientX - r.left >= this.el.clientLeft + this.el.clientWidth || e.clientY - r.top >= this.el.clientTop + this.el.clientHeight) return;
+    e.preventDefault();
+    const button = e.button;
+    this.pressed = true;
+    // Captured, the release comes back here wherever the pointer goes; a
+    // capture lost (the window lost focus mid-press) releases too, so the
+    // program is never left holding a button.
+    this.el.setPointerCapture(e.pointerId);
+    this.sendMouse("press", e, 1, button);
+    this.lastPointer = e;
+    const done = (u: PointerEvent) => {
+      if (!this.pressed) return;
+      this.pressed = false;
+      this.el.removeEventListener("pointerup", done);
+      this.el.removeEventListener("lostpointercapture", done);
+      this.sendMouse("release", u.type === "pointerup" ? u : (this.lastPointer ?? u), 1, button);
+    };
+    this.el.addEventListener("pointerup", done);
+    this.el.addEventListener("lostpointercapture", done);
   }
 
   /** Focused (holding the pane at this view's size): 12px. Otherwise the
@@ -286,6 +388,76 @@ export class Term {
     this.status.textContent = text;
     this.status.hidden = !text;
   }
+}
+
+/** cmux's terminal theme, app-wide: every text drawing of a pane (Mosaic's
+ *  tiles, the fallbacks) wears the colours the live terminal does. */
+function paneTheme(theme: Grid["terminal_theme"]): void {
+  const root = document.documentElement.style;
+  if (theme?.background && root.getPropertyValue("--pane-bg") !== theme.background) root.setProperty("--pane-bg", theme.background);
+  if (theme?.foreground && root.getPropertyValue("--pane-fg") !== theme.foreground) root.setProperty("--pane-fg", theme.foreground);
+}
+
+let primed = false;
+/** Fetch the theme once from any pane, before a live terminal is shown. */
+export function primeTheme(surface: string): void {
+  if (primed || !surface) return;
+  primed = true;
+  invoke<Frame | null>("term_frame", { surfaceId: surface, seen: "" })
+    .then((f) => (f ? paneTheme(f.grid.terminal_theme) : (primed = false)))
+    .catch(() => (primed = false));
+}
+
+/** Rows drawn last frame, by what they show: a row whose cells are the same
+ *  this frame (history that moved up a line, say) keeps its node. */
+type RowCache = Map<string, HTMLElement[]>;
+
+/** `n` rows of cells from spans that arrive by row and column; the gaps
+ *  between them are blank cells. Nodes come from `was` when a row is
+ *  unchanged; every row drawn goes into `now`. */
+function rowsOf(spans: Span[], n: number, styles: Map<number, Style>, was: RowCache, now: RowCache): HTMLElement[] {
+  const byRow: Span[][] = Array.from({ length: n }, () => []);
+  for (const sp of spans) byRow[sp.row]?.push(sp);
+  const look = new Map<number, string>();
+  const styleKey = (id: number) => {
+    let k = look.get(id);
+    if (k === undefined) {
+      const st = styles.get(id);
+      k = st ? JSON.stringify({ ...st, id: 0 }) : "";
+      look.set(id, k);
+    }
+    return k;
+  };
+  return byRow.map((row) => {
+    const key = row.map((sp) => `${sp.column}:${sp.cell_width}:${styleKey(sp.style_id)}:${sp.text}`).join("\u0000");
+    let ln = was.get(key)?.pop();
+    if (!ln) ln = drawRow(row, styles);
+    const list = now.get(key);
+    if (list) list.push(ln);
+    else now.set(key, [ln]);
+    return ln;
+  });
+}
+
+function drawRow(row: Span[], styles: Map<number, Style>): HTMLElement {
+  const ln = document.createElement("div");
+  ln.className = "term-row";
+  let at = 0;
+  for (const sp of row) {
+    if (sp.column > at) ln.append(" ".repeat(sp.column - at));
+    const st = styles.get(sp.style_id);
+    const span = document.createElement("span");
+    span.textContent = sp.text;
+    if (st) paint(span, st);
+    // Wide characters keep their cells, so the columns after them line up.
+    if (sp.cell_width !== [...sp.text].length) {
+      span.style.display = "inline-block";
+      span.style.width = `${sp.cell_width}ch`;
+    }
+    ln.append(span);
+    at = sp.column + sp.cell_width;
+  }
+  return ln;
 }
 
 function paint(span: HTMLElement, st: Style): void {

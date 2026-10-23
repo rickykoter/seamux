@@ -129,7 +129,9 @@
 
 /* ---- a card's live terminal ---- */
 .d-btn.small { padding: 2px 9px; font-size: 11.5px; }
-.d-term { height: 340px; display: flex; flex-direction: column; border-radius: 9px; overflow: hidden; border: 1px solid var(--line); }
+.d-term { height: min(var(--d-term-h, 340px), 85vh); display: flex; flex-direction: column; border-radius: 9px; overflow: hidden; border: 1px solid var(--line); }
+/* The terminal's height: a grip along its bottom edge (splitter.ts). */
+.d-term > .d-term-grip { flex: 0 0 9px; background: var(--strip); border-top: 1px solid var(--line); }
 .d-term .term { flex: 1; }
 .d-head > .chip.fam { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 

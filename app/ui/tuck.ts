@@ -130,3 +130,17 @@ export function menu(ws: string, name: string, level: Level | undefined): HTMLEl
 
 // One click anywhere closes an open menu.
 document.addEventListener("click", () => document.querySelectorAll<HTMLElement>(".tuck-menu").forEach((m) => (m.hidden = true)));
+// Esc closes an open menu (and only that: the window stays), focus back on its button.
+document.addEventListener(
+  "keydown",
+  (e) => {
+    if (e.key !== "Escape") return;
+    const open = document.querySelector<HTMLElement>(".tuck-menu:not([hidden])");
+    if (!open) return;
+    open.hidden = true;
+    open.parentElement?.querySelector<HTMLElement>(".tuck-btn")?.focus();
+    e.stopImmediatePropagation();
+    e.preventDefault();
+  },
+  true,
+);

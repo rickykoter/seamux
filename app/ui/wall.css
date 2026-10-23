@@ -9,9 +9,12 @@
 .wall-status { margin: 10px 16px 0; color: var(--bad); }
 
 .split {
-  flex: 1; min-height: 0; display: grid;
-  grid-template-columns: minmax(220px, 290px) minmax(0, 1fr);
+  flex: 1; min-height: 0; display: grid; position: relative;
+  /* Never more than 60% of the width, however wide it was kept. */
+  grid-template-columns: min(var(--list-w, 290px), 60%) minmax(0, 1fr);
 }
+/* The list's width: a handle on its right edge (splitter.ts). */
+.split > .list-grip { position: absolute; top: 0; bottom: 0; left: calc(min(var(--list-w, 290px), 60%) - 1px); width: 9px; z-index: 3; }
 
 /* ---- the list ---- */
 .list {
@@ -86,10 +89,10 @@
    re-wrap; a long line clips under a fade at the right edge. (Agents
    re-flow: see .flow.) */
 .preview pre {
-  flex: 1; min-height: 0; margin: 0; padding: 10px 16px 10px;
+  flex: 1; min-height: 0; margin: 0; padding: var(--term-pad);
   overflow-y: auto; overflow-x: hidden; white-space: pre;
-  font: 11.5px/1.45 ui-monospace, Menlo, monospace;
-  background: var(--term); color: var(--term-fg);
+  font: var(--term-font);
+  background: var(--pane-bg-or); color: var(--pane-fg-or);
   -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
   mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
 }
@@ -116,6 +119,8 @@
   padding: 4px 10px; border-radius: 7px; border: 1px solid var(--line); background: var(--on); color: var(--fg);
 }
 .preview .jump svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; }
+.preview .hint { flex: 1; font-size: 11.5px; color: var(--muted); }
+.preview .hint[hidden], .preview pre[hidden] { display: none; }
 .preview .note-line { flex-basis: 100%; font-size: 11px; color: var(--muted); }
 .preview .note-line:empty { display: none; }
 .preview .note-line.bad { color: var(--bad); }

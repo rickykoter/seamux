@@ -45,6 +45,11 @@ export class Timeline {
   private lanesEl = el("div", "t-lanes");
   private axis = el("div", "t-axis");
   private pop = el("div", "t-pop");
+  /** A lane's name was clicked: open that workspace's pane (main.ts says where). */
+  onOpen: (ws: string) => void = () => {};
+  private drawn = "";
+  private pressing = false;
+  private later = 0;
   private head = el("span", "t-now");
   private views: Views = { decisions: [], wake: [], history: [], problems: [] };
   private tiles: Tile[] = [];
@@ -73,6 +78,16 @@ export class Timeline {
     root.replaceChildren(top, this.legend, this.lanesEl, this.axis, this.pop);
     // The now line and the waits move without a frame.
     setInterval(() => this.draw(), 30_000);
+    // A press and its release must land on the same lane: no rebuild between.
+    this.lanesEl.addEventListener("pointerdown", () => (this.pressing = true));
+    const up = () => {
+      if (!this.pressing) return;
+      this.pressing = false;
+      // After the click this release makes, never before it.
+      setTimeout(() => this.draw(), 0);
+    };
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   }
 
   async start(): Promise<void> {
@@ -107,8 +122,28 @@ export class Timeline {
     );
   }
 
+  /** Called when the tab is shown: what changed while hidden draws now. */
+  shown(): void {
+    this.draw();
+  }
+
   private draw(): void {
     if (this.root.contains(document.activeElement) && document.activeElement instanceof HTMLInputElement) return;
+    // Hidden, nothing draws; the tab's onSelect draws it when shown.
+    if (this.root.closest("[hidden]")) return;
+    // Only what the lanes show, by the minute (the axis and the waits' clocks):
+    // a frame that changes a pane's text alone redraws nothing.
+    const tiles = this.tiles.map((t) => [t.workspace, t.workspace_title, t.color, t.state]);
+    const v = this.views;
+    const shape = JSON.stringify([Math.floor(Date.now() / 60_000), tiles, v.lanes, v.decisions, v.levels, v.families, v.plans, v.wake?.slice(0, 40), this.picked]);
+    if (shape === this.drawn) return;
+    // An open menu or a press under way: rebuilding now would close or lose it.
+    if (this.pressing || this.lanesEl.querySelector(".tuck-menu:not([hidden])")) {
+      clearTimeout(this.later);
+      this.later = window.setTimeout(() => this.draw(), 400);
+      return;
+    }
+    this.drawn = shape;
     const now = Date.now();
     const start = now - WINDOW_MS;
     this.head.textContent = `last 2h · now ${hm(now)}`;
@@ -168,7 +203,12 @@ export class Timeline {
     // The workspace's colour as a mark beside its name, as Desk's cards wear it.
     const mark = el("span", "t-mark-ws");
     mark.style.setProperty("--ws", this.color(l.ws));
-    top.append(mark, el("b", "", this.title(l.ws)), menu(l.ws, this.title(l.ws), level));
+    const open = el("button", "t-open");
+    (open as HTMLButtonElement).type = "button";
+    open.title = `Open ${this.title(l.ws)}'s pane`;
+    open.append(el("b", "", this.title(l.ws)));
+    open.addEventListener("click", () => this.onOpen(l.ws));
+    top.append(mark, open, menu(l.ws, this.title(l.ws), level));
     name.append(top, el("span", `t-sub ${asked ? "needs_input" : tile?.state ?? ""}`, sub));
     const track = el("div", "t-track");
     for (const [i, s0] of l.spans.entries()) {
