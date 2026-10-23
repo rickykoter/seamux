@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { sheet, type Shown } from "./sheet";
+import { sheet, type Sheet, type Shown } from "./sheet";
 import type { TuckRow } from "./tuck";
 
 // A row as crew-board's wake_data serves it (wake.rs's wake_row).
@@ -142,9 +142,13 @@ export class Wake {
 
   /** Embedded: the copy in the chat sheet, which has the keys while the sheet is open. */
   private embedded: boolean;
+  /** The sheet this Wake is a tab of: what it opens goes there, beside it,
+   *  for the workspace shown (the Dock view stays). Else the app's sheet. */
+  private host: Sheet | null;
 
-  constructor(readonly root: HTMLElement, opts: { embedded?: boolean } = {}) {
+  constructor(readonly root: HTMLElement, opts: { embedded?: boolean; host?: Sheet } = {}) {
     this.embedded = !!opts.embedded;
+    this.host = opts.host ?? null;
     root.classList.add("wake");
     if (this.embedded) root.classList.add("embedded");
     this.picker.setAttribute("aria-label", "workspace");
@@ -491,14 +495,16 @@ export class Wake {
       if (e?.metaKey) return await toCmux();
       if (r.path && VIEWABLE.test(r.path) && r.state !== "gone" && !["plan", "review", "ask", "commit", "artifact"].includes(r.kind)) {
         try {
-          return sheet().show(await invoke<Shown>("wake_file", { id: r.id }), toCmux, { dir: r.ws });
+          const shown = await invoke<Shown>("wake_file", { id: r.id });
+          return this.host ? this.host.show(shown, toCmux, this.host.here()) : sheet().show(shown, toCmux, { dir: r.ws });
         } catch (err) {
           this.toast(`${String(err)} · opening it in cmux`, true);
           return await toCmux();
         }
       }
       const o = await invoke<{ sheet: string | null; detail: string }>("wake_open", { id: r.id, sub, here: true });
-      if (o.sheet) await sheet().open({ path: o.sheet, title: r.title || r.locator, toCmux, dir: r.ws });
+      if (o.sheet && this.host) await this.host.open({ path: o.sheet, title: r.title || r.locator, toCmux, ...this.host.here() });
+      else if (o.sheet) await sheet().open({ path: o.sheet, title: r.title || r.locator, toCmux, dir: r.ws });
       else if (o.detail) this.toast(o.detail);
     } catch (err) {
       this.toast(String(err), true);
