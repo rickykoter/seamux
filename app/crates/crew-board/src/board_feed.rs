@@ -206,10 +206,12 @@ impl Feed {
     }
 
     fn watch_plans(&self) {
-        let mut last = plan_fingerprint();
+        // Plan state files, and the app's tucked.json: a tuck shows at once.
+        let print = || (plan_fingerprint(), crate::tucked::stamp());
+        let mut last = print();
         loop {
             std::thread::sleep(Duration::from_millis(250));
-            let cur = plan_fingerprint();
+            let cur = print();
             if cur != last {
                 last = cur;
                 self.mark_dirty();
