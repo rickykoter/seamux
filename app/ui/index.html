@@ -176,6 +176,10 @@
       .term-probe { position: absolute; visibility: hidden; font: 12px/15px ui-monospace, Menlo, monospace; white-space: pre; }
       .term-cursor { position: absolute; left: 0; top: 0; width: 1ch; height: var(--t-line); background: var(--t-cursor); opacity: 0.35; pointer-events: none; }
       .term.focused .term-cursor { opacity: 0.75; }
+      /* A link in the pane's text: the pointer, and an underline under it. */
+      .term.on-link, .term.on-link * { cursor: pointer; }
+      .term-links { position: absolute; left: 0; top: 0; pointer-events: none; }
+      .term-links i { position: absolute; left: 0; top: 0; height: 1px; background: currentColor; opacity: 0.85; }
       .term-cursor.bar { width: 2px; opacity: 0.9; }
       .term-cursor.underline { height: 2px; margin-top: calc(var(--t-line) - 2px); opacity: 0.9; }
       .term-status { position: absolute; left: 8px; bottom: 8px; font-size: 11.5px; color: var(--bad); }

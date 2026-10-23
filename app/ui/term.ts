@@ -110,6 +110,13 @@ export class Term {
   private rowCache: RowCache = new Map();
   /** Rows of history drawn above the screen. */
   private sbRows = 0;
+  /** The links on screen and in the history drawn here, found in the text. */
+  private links: Link[] = [];
+  /** The link under the pointer, underlined. */
+  private hover: Link | null = null;
+  private underline = document.createElement("div");
+  /** Where a press started, so a drag to select text never opens a link. */
+  private downAt: { x: number; y: number } | null = null;
   /** When Esc last went to the pane, so a second one leaves instead. */
   private escAt = 0;
   /** Wheel travel not yet sent as a page. */
@@ -139,6 +146,12 @@ export class Term {
     this.el.append(this.screen, this.status, this.probe);
     this.el.addEventListener("keydown", (e) => this.key(e));
     this.el.addEventListener("wheel", (e) => this.wheel(e), { passive: false });
+    // Links: underlined under the pointer, opened by a click (not a drag).
+    this.underline.className = "term-links";
+    this.el.addEventListener("mousemove", (e) => this.hoverAt(e));
+    this.el.addEventListener("mouseleave", () => this.setHover(null));
+    this.el.addEventListener("pointerdown", (e) => (this.downAt = { x: e.clientX, y: e.clientY }));
+    this.el.addEventListener("click", (e) => this.clickAt(e));
     this.el.addEventListener("paste", (e) => {
       const text = e.clipboardData?.getData("text") ?? "";
       e.preventDefault();
@@ -309,6 +322,7 @@ export class Term {
     const sbRows = back.reduce((n, sp) => Math.max(n, sp.row + 1), 0);
     const now: RowCache = new Map();
     const lines = [...rowsOf(back, sbRows, styles, this.rowCache, now), ...rowsOf(g.row_spans, f.rows, styles, this.rowCache, now)];
+    this.links = findLinks([...cellsOf(back, sbRows), ...cellsOf(g.row_spans, f.rows)], f.columns);
     this.rowCache = now;
     // Follow the bottom, as a terminal does, unless the person scrolled up
     // into the history: then the view stays where they are reading.
@@ -321,7 +335,8 @@ export class Term {
     const sig = follow ? "" : [0, 1, 2].map((i) => old[at + i]?.textContent ?? "").join("\n");
     this.drawnOnce = true;
     this.sbRows = sbRows;
-    this.screen.replaceChildren(...lines, this.cursor);
+    this.screen.replaceChildren(...lines, this.cursor, this.underline);
+    if (this.hover) this.setHover(this.links.find((l) => l.url === this.hover?.url) ?? null);
     if (follow) this.el.scrollTop = this.el.scrollHeight;
     else if (sig.trim()) {
       const same = (i: number) => [0, 1, 2].map((k) => lines[i + k]?.textContent ?? "").join("\n") === sig;
@@ -336,6 +351,49 @@ export class Term {
     this.cursor.hidden = !c.visible;
     this.cursor.className = `term-cursor ${c.style}`;
     this.cursor.style.transform = `translate(${c.column}ch, calc(${c.row + sbRows} * var(--t-line)))`;
+  }
+
+  /** The link at a mouse event's cell, if any. */
+  private linkAt(e: MouseEvent): Link | null {
+    if (!this.links.length) return null;
+    const r = this.screen.getBoundingClientRect();
+    const cs = getComputedStyle(this.el);
+    const px = parseFloat(cs.getPropertyValue("--t-size")) || 12;
+    const lh = parseFloat(cs.getPropertyValue("--t-line")) || 15;
+    const cw = ((this.probe.getBoundingClientRect().width / 10) || 7.2) * (px / 12);
+    const col = Math.floor((e.clientX - r.left) / cw);
+    const row = Math.floor((e.clientY - r.top) / lh);
+    return this.links.find((l) => l.segs.some((s) => s.row === row && col >= s.c0 && col <= s.c1)) ?? null;
+  }
+
+  private hoverAt(e: MouseEvent): void {
+    this.setHover(this.linkAt(e));
+  }
+
+  private setHover(l: Link | null): void {
+    this.hover = l;
+    this.el.classList.toggle("on-link", !!l);
+    this.el.title = l ? `${l.url}\nClick to open` : "";
+    this.underline.replaceChildren(
+      ...(l?.segs ?? []).map((s) => {
+        const u = document.createElement("i");
+        u.style.transform = `translate(${s.c0}ch, calc(${s.row + 1} * var(--t-line) - 2px))`;
+        u.style.width = `${s.c1 - s.c0 + 1}ch`;
+        return u;
+      }),
+    );
+  }
+
+  /** A click on a link opens it in the browser; a drag (selecting) does not. */
+  private clickAt(e: MouseEvent): void {
+    const d = this.downAt;
+    this.downAt = null;
+    if (d && Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4) return;
+    if (String(window.getSelection() ?? "").trim()) return;
+    const l = this.linkAt(e);
+    if (!l) return;
+    e.preventDefault();
+    void invoke("open_url", { url: l.url }).catch((err) => this.say(String(err)));
   }
 
   /** The wheel: to the program when it takes the mouse or is on the
@@ -451,6 +509,96 @@ export function primeTheme(surface: string): void {
   invoke<Frame | null>("term_frame", { surfaceId: surface, seen: "" })
     .then((f) => (f ? paneTheme(f.grid.terminal_theme) : (primed = false)))
     .catch(() => (primed = false));
+}
+
+/** A link found in a pane's text: its URL and the cells it covers, a
+ *  segment a row (a URL the pane wrapped runs on into the next row). */
+type Link = { url: string; segs: { row: number; c0: number; c1: number }[] };
+
+/** Each row's cells: one string a cell, "" for the cells a wide character covers. */
+function cellsOf(spans: Span[], n: number): string[][] {
+  const rows: string[][] = Array.from({ length: n }, () => []);
+  for (const sp of spans) {
+    const row = rows[sp.row];
+    if (!row) continue;
+    const chars = [...sp.text];
+    const wide = sp.cell_width !== chars.length;
+    for (let i = 0; i < sp.cell_width; i++) row[sp.column + i] = wide ? (i === 0 ? sp.text : "") : (chars[i] ?? " ");
+  }
+  return rows.map((r) => Array.from(r, (c) => c ?? " "));
+}
+
+const URL_RE = /https?:\/\/[^\s<>"'`|\u2502]+/g;
+/** Not part of a URL when it ends one: closing punctuation around it in prose. */
+const TRAIL = /[.,;:!?'")\]}>]+$/;
+
+/** The http(s) links in a pane's rows. A row whose text runs to (or one
+ *  short of) the last column, followed by a row that starts within a few
+ *  spaces of the margin, is one line the program wrapped (Claude leaves a
+ *  column at the edge, and its prompt box hangs its lines by two): a link
+ *  may continue there, past those leading spaces. */
+export function findLinks(rows: string[][], cols: number): Link[] {
+  const out: Link[] = [];
+  let r = 0;
+  while (r < rows.length) {
+    // A logical line: rows joined while one fills to the edge and the next goes on at column 0.
+    const at: { row: number; col: number }[] = [];
+    let text = "";
+    let k = r;
+    let from = 0;
+    for (;;) {
+      const cells = rows[k];
+      for (let c = from; c < cells.length; c++) {
+        if (cells[c] === "") continue;
+        at.push({ row: k, col: c });
+        text += cells[c].length === 1 ? cells[c] : cells[c][0];
+      }
+      let end = cells.length - 1;
+      while (end >= 0 && (cells[end] === " " || cells[end] === undefined)) end--;
+      const next = rows[k + 1];
+      // Up to two columns short of the edge: Claude's margin, its prompt box's padding.
+      if (!next || end < cols - 3) break;
+      let lead = 0;
+      while (lead < next.length && next[lead] === " ") lead++;
+      if (lead >= next.length || lead > 4) break;
+      // The text above ran to the edge: drop what the pane padded it with.
+      while (text.endsWith(" ")) {
+        text = text.slice(0, -1);
+        at.pop();
+      }
+      // The terminal's own wrap (to the last column, on at column 0) splits
+      // anywhere: the two rows are one run of text. A program's word wrap (a
+      // margin, a hanging indent) splits a word only when it cannot fit on a
+      // line by itself; when the two pieces would fit, they are two words.
+      const soft = end === cols - 1 && lead === 0;
+      if (!soft) {
+        const tail = (/\S+$/.exec(text) ?? [""])[0].length;
+        let head = 0;
+        while (lead + head < next.length && next[lead + head] !== " " && next[lead + head] !== undefined) head++;
+        if (tail + head <= cols - lead - 2) {
+          text += " ";
+          at.push({ row: k, col: -1 });
+        }
+      }
+      k++;
+      from = lead;
+    }
+    for (const m of text.matchAll(URL_RE)) {
+      const url = m[0].replace(TRAIL, "");
+      if (url.length < "https://x".length - 1) continue;
+      const segs: Link["segs"] = [];
+      for (let i = m.index ?? 0; i < (m.index ?? 0) + url.length; i++) {
+        const p = at[i];
+        if (!p) break;
+        const last = segs[segs.length - 1];
+        if (last && last.row === p.row && p.col === last.c1 + 1) last.c1 = p.col;
+        else segs.push({ row: p.row, c0: p.col, c1: p.col });
+      }
+      out.push({ url, segs });
+    }
+    r = k + 1;
+  }
+  return out;
 }
 
 /** Rows drawn last frame, by what they show: a row whose cells are the same

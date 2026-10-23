@@ -69,6 +69,50 @@ fn hash_value(v: &Value, h: &mut impl std::hash::Hasher) {
     }
 }
 
+// ---- links in a pane ----
+
+/// A link from a pane the app will hand to the browser: http or https only,
+/// with no whitespace or control characters, and of a sane length. Anything
+/// else (file:, a custom scheme, text that only looks like a URL) is refused.
+pub fn url_ok(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    let rest = lower.strip_prefix("https://").or_else(|| lower.strip_prefix("http://"));
+    rest.is_some_and(|r| !r.is_empty())
+        && url.len() <= 4096
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// Open a link found in a pane in the default browser (macOS `open`, no shell).
+#[tauri::command]
+pub async fn open_url(url: String) -> Result<(), String> {
+    if !url_ok(&url) {
+        return Err(format!("not a link the app opens: {url:?}"));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let st = std::process::Command::new("/usr/bin/open").arg(&url).status().map_err(|e| e.to_string())?;
+        if st.success() { Ok(()) } else { Err(format!("open {url} exited {st}")) }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::url_ok;
+
+    #[test]
+    fn open_url_takes_web_links_only() {
+        assert!(url_ok("https://github.com/rickykoter/seamux/pull/76"));
+        assert!(url_ok("HTTP://127.0.0.1:7345/plan/x?y=1#z"));
+        assert!(!url_ok("file:///etc/passwd"));
+        assert!(!url_ok("javascript:alert(1)"));
+        assert!(!url_ok("https://"));
+        assert!(!url_ok("https://a b"));
+        assert!(!url_ok("https://a\nb"));
+        assert!(!url_ok(&format!("https://{}", "a".repeat(5000))));
+    }
+}
+
 // ---- holding a pane at the app's size ----
 
 /// A pane's size policy as cmux reports it, saved before a hold.
