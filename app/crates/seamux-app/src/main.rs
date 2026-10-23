@@ -173,6 +173,7 @@ fn main() {
             pty_app::pty_write,
             pty_app::pty_resize,
             pty_app::pty_detach,
+            pty_app::native_session,
             views_app::views_frame,
             shell::open_in_cmux,
             desk_app::desk_answer,

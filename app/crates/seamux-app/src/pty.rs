@@ -117,6 +117,123 @@ pub fn tmux_bin() -> String {
     "tmux".into()
 }
 
+/// A cmux pane's variables, as cmux's own client of a session has them: its
+/// IDs, socket and capability, Claude's hook settings, and PATH (led by the
+/// pane's claude shim). tmux copies these from the attaching client into the
+/// session (update-environment), so Claude started there is that pane's agent.
+pub const PANE_VARS: [&str; 25] = [
+    "CMUX_SURFACE_ID", "CMUX_PANEL_ID", "CMUX_TAB_ID", "CMUX_WORKSPACE_ID", "CMUX_SOCKET_PATH", "CMUX_SOCKET",
+    "CMUX_SOCKET_CAPABILITY", "CMUX_BUNDLE_ID", "CMUX_BUNDLED_CLI_PATH", "CMUX_CLAUDE_HOOK_CMUX_BIN",
+    "CMUX_CLAUDE_HOOK_SPOOL_DIR", "CMUX_CLAUDE_INTEGRATION_DISABLED", "CMUX_CLAUDE_HEADLESS", "CMUX_CLAUDE_WRAPPER_SHIM",
+    "CMUX_CLAUDE_WRAPPER_SHIM_ROOT", "CMUX_AGENT_COMMAND_SHIM_ROOT", "CMUX_TERMINAL_LIFECYCLE_ID",
+    "CMUX_SUPPRESS_SUBAGENT_NOTIFICATIONS", "CMUX_PORT", "CMUX_PORT_END", "CMUX_PORT_RANGE", "CMUX_SHELL_INTEGRATION",
+    "CMUX_SHELL_INTEGRATION_DIR", "CMUX_HISTORY_FILE", "PATH",
+];
+
+/// `key=value` out of a cmux CLI's `OK key=value ...` line.
+pub fn field(line: &str, key: &str) -> Option<String> {
+    line.split_whitespace().find_map(|w| w.strip_prefix(&format!("{key}=")).map(str::to_string)).filter(|v| !v.is_empty())
+}
+
+/// The claude command a native session runs: resuming `resume` when given.
+pub fn claude_line(resume: Option<&str>) -> Result<String, String> {
+    match resume {
+        None => Ok("claude".into()),
+        Some(id) if cmux::is_uuid(id) => Ok(format!("claude --resume {id}")),
+        Some(id) => Err(format!("not a session id: {id:?}")),
+    }
+}
+
+fn cmux_ok(argv: &[&str]) -> Result<String, String> {
+    let bin = cmux::resolve_cli_bin().map_err(|e| e.to_string())?;
+    let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
+    let out = cmux::run_cli(&bin, &argv).map_err(|e| e.to_string())?;
+    if !out.ok() {
+        return Err(format!("cmux {}: {}", argv.join(" "), out.stderr.trim()));
+    }
+    Ok(out.stdout)
+}
+
+fn tmux_ok(sock: &str, args: &[&str]) -> Result<(), String> {
+    let o = Command::new(tmux_bin()).arg("-S").arg(sock).args(args).output().map_err(|e| e.to_string())?;
+    if !o.status.success() {
+        return Err(format!("tmux {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()));
+    }
+    Ok(())
+}
+
+/// Start Claude as a native session in workspace `ws` (a UUID) at `cwd`:
+/// a local-tmux session, its pane's cmux variables copied in at attach,
+/// no tmux bar or prefix (Claude Code uses Ctrl-B), focus events on. Returns
+/// the new cmux pane's surface id.
+pub fn start_native(ws: &str, cwd: &str, resume: Option<&str>) -> Result<String, String> {
+    if !cmux::is_uuid(ws) {
+        return Err(format!("not a workspace UUID: {ws:?}"));
+    }
+    if !cwd.starts_with('/') || !std::path::Path::new(cwd).is_dir() {
+        return Err(format!("not a directory: {cwd:?}"));
+    }
+    let claude = claude_line(resume)?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros()).unwrap_or(0);
+    let name = format!("claude-{:x}", stamp & 0xffff_ffff);
+    let shell = std::env::var("SHELL").ok().filter(|s| s.starts_with('/')).unwrap_or_else(|| "/bin/zsh".into());
+    // A login shell until cmux's client has attached and filled the variables in.
+    cmux_ok(&["local-tmux", "start", &name, "--cwd", cwd, "--command", &format!("{shell} -l"), "--detached"])?;
+    // Anything that fails from here takes the half-made session with it.
+    let made = finish_native(&name, ws, &claude);
+    if made.is_err() {
+        let _ = cmux_ok(&["local-tmux", "close", &name]);
+    }
+    made
+}
+
+/// The socket of a session cmux has just started: from its registry (a path
+/// may hold spaces, so never from the CLI's `key=value` line), else its status.
+fn socket_of(name: &str) -> Result<String, String> {
+    let file = crew_core::py::home().join(".cmux/local-tmux/sessions.json");
+    let from_registry = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).and_then(|reg| {
+        reg.get("sessions")?.as_array()?.iter().find_map(|s| {
+            (s.get("name")?.as_str()? == name).then(|| s.get("socketPath")?.as_str().map(str::to_string)).flatten()
+        })
+    });
+    if let Some(s) = from_registry.filter(|s| !s.is_empty()) {
+        return Ok(s);
+    }
+    let st = cmux_json(&["local-tmux", "status", name, "--json"])?;
+    st.get("socket_path").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string).ok_or_else(|| format!("cmux did not say {name}'s socket"))
+}
+
+fn finish_native(name: &str, ws: &str, claude: &str) -> Result<String, String> {
+    let sock = socket_of(name)?;
+    tmux_ok(&sock, &["set-option", "-t", name, "update-environment", &PANE_VARS.join(" ")])?;
+    tmux_ok(&sock, &["set-option", "-t", name, "status", "off"])?;
+    tmux_ok(&sock, &["set-option", "-t", name, "prefix", "None"])?;
+    tmux_ok(&sock, &["set-option", "-t", name, "prefix2", "None"])?;
+    tmux_ok(&sock, &["set-option", "-s", "focus-events", "on"])?;
+    let out = cmux_ok(&["local-tmux", "attach", name, "--workspace", ws, "--focus", "false"])?;
+    let surface = field(&out, "surface").ok_or_else(|| format!("cmux did not say the new pane: {}", out.trim()))?;
+    // cmux's attach returns before its client has connected: wait until tmux
+    // has copied the pane's variables in, or Claude would start without them.
+    let want = format!("CMUX_SURFACE_ID={surface}");
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let o = Command::new(tmux_bin()).args(["-S", &sock, "show-environment", "-t", name, "CMUX_SURFACE_ID"]).output();
+        if o.map(|o| String::from_utf8_lossy(&o.stdout).trim().eq_ignore_ascii_case(&want)).unwrap_or(false) {
+            break;
+        }
+        if std::time::Instant::now() > end {
+            return Err(format!("cmux's pane {surface} did not reach the session {name}: Claude was not started"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    // From now on no client changes the session's variables: the app's own
+    // client (which has none of cmux's) must not wipe the pane's identity.
+    tmux_ok(&sock, &["set-option", "-t", name, "update-environment", ""])?;
+    // Claude starts now, from the session's environment: the pane's own.
+    tmux_ok(&sock, &["respawn-pane", "-k", "-t", &format!("={name}:"), claude])?;
+    Ok(surface)
+}
+
 /// A tmux client in a PTY.
 pub struct Pty {
     master: File,
@@ -245,6 +362,13 @@ mod tests {
         assert_eq!(registry_target(&reg, "76b6d503-5a78"), Some(Target { socket: "/s/server.sock".into(), session: "nt".into() }));
         assert_eq!(registry_target(&reg, "AAAA"), None, "a name tmux would misread is refused");
         assert_eq!(registry_target(&reg, "BBBB"), None);
+        let ok = "OK session=claude-1a2b surface=A7954A0D-17EC-45D2-95EC-FE3B946EC787 mode=local-tmux";
+        assert_eq!(field(ok, "surface").as_deref(), Some("A7954A0D-17EC-45D2-95EC-FE3B946EC787"));
+        assert_eq!(field(ok, "socket"), None);
+        assert_eq!(claude_line(None).unwrap(), "claude");
+        assert_eq!(claude_line(Some("21b4ad73-7b2a-4926-a7dc-33f10ebfac32")).unwrap(), "claude --resume 21b4ad73-7b2a-4926-a7dc-33f10ebfac32");
+        assert!(claude_line(Some("x; rm -rf /")).is_err());
+        assert!(PANE_VARS.contains(&"CMUX_SURFACE_ID") && PANE_VARS.contains(&"PATH"));
     }
 
     /// Read from `r` until `want` shows up (or the time runs out).
@@ -283,6 +407,18 @@ mod tests {
         let t = target_for(&s).unwrap().expect("a local-tmux session for that surface");
         println!("{s} -> {t:?}");
         assert!(target_for("00000000-0000-0000-0000-000000000000").unwrap().is_none());
+    }
+
+    /// Live against cmux: NATIVE_WS=<workspace uuid> NATIVE_CWD=<dir>
+    /// cargo test -p seamux-app --lib -- --ignored pty_starts_a_native_session
+    #[test]
+    #[ignore]
+    fn pty_starts_a_native_session() {
+        let ws = std::env::var("NATIVE_WS").expect("NATIVE_WS");
+        let cwd = std::env::var("NATIVE_CWD").expect("NATIVE_CWD");
+        let surface = start_native(&ws, &cwd, None).unwrap();
+        println!("surface={surface}");
+        assert_eq!(target_for(&surface).unwrap().map(|t| t.session.starts_with("claude-")), Some(true));
     }
 
     /// Two clients attached at once: closing one ends its output (no

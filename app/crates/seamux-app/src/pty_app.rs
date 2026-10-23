@@ -7,7 +7,7 @@ use std::io::Read;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use seamux_app::pty::{target_for, Pty};
+use seamux_app::pty::{start_native, target_for, Pty};
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 /// A terminal: its PTY (locked for writes and resizes) and its client's pid,
@@ -110,4 +110,13 @@ pub async fn pty_detach(id: u32) {
         libc::kill(live.pid as libc::pid_t, libc::SIGKILL);
     }
     let _ = tauri::async_runtime::spawn_blocking(move || live.pty.lock().unwrap().close()).await;
+}
+
+/// Start Claude as a native session in a workspace (resuming `resume` when
+/// given): returns the new cmux pane's surface id.
+#[tauri::command]
+pub async fn native_session(workspace_id: String, cwd: String, resume: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || start_native(&workspace_id, &cwd, resume.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
 }
