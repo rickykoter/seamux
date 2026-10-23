@@ -48,7 +48,8 @@ const ageOf = (secs: number): string => {
   return d < 3600 ? `${Math.floor(d / 60)}m` : d < 86400 ? `${Math.floor(d / 3600)}h` : `${Math.floor(d / 86400)}d`;
 };
 
-/** The agent's chat beside a page: its last words, live, with reply and Jump. */
+/** The agent's chat beside a page: its pane, live, with Jump (and a reply
+ *  box when the live pane fails). */
 class Chat {
   el = document.createElement("section");
   private name = document.createElement("b");
@@ -77,7 +78,6 @@ class Chat {
     this.bar.className = "sheet-chat-sessions";
     this.bar.hidden = true;
     const head = document.createElement("header");
-    head.append(this.name, this.state);
     this.body.className = "sheet-chat-body";
     const form = document.createElement("form");
     form.className = "sheet-chat-reply";
@@ -87,8 +87,10 @@ class Chat {
     this.input.addEventListener("keydown", (e) => e.stopPropagation());
     const jump = document.createElement("button");
     jump.type = "button";
-    jump.className = "sheet-btn";
-    jump.textContent = "Jump ↗";
+    jump.className = "sheet-btn icon sheet-chat-jump";
+    jump.title = "Jump to this pane in cmux";
+    jump.setAttribute("aria-label", jump.title);
+    jump.append(mark("M3 7 7 3M4 3h3v3"));
     jump.addEventListener("click", async () => {
       try {
         await invoke("wall_jump", { surfaceId: this.surface });
@@ -110,17 +112,13 @@ class Chat {
       }
     });
     this.note.className = "sheet-chat-note";
-    form.append(this.input, jump);
-    const hint = document.createElement("span");
-    hint.className = "sheet-chat-hint";
-    hint.textContent = "Click the terminal to type into it · Esc twice, ⌘Esc or a click outside leaves it";
-    form.prepend(hint);
+    head.append(this.name, this.state, jump);
+    form.append(this.input);
     // Live by default; the plain text and its reply box only when frames fail.
     const live = (on: boolean) => {
       this.term.el.hidden = !on;
       this.body.hidden = on;
-      this.input.hidden = on;
-      hint.hidden = !on;
+      form.hidden = on;
       if (!on) this.last = "";
     };
     live(true);
