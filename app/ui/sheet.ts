@@ -459,10 +459,17 @@ export class Sheet {
     return { ...this.place };
   }
 
-  focusWorkspace(ws: string): void {
-    if (ws === this.workspace() && this.active) return;
-    this.enter({ workspace: ws });
-    if (!this.active) this.select(WAKE);
+  /** `show`: "wake" or "plan" go to that tab even when the workspace is already up. */
+  focusWorkspace(ws: string, show = "any"): void {
+    if (ws !== this.workspace() || !this.active) {
+      this.enter({ workspace: ws });
+      if (!this.active) this.select(WAKE);
+    }
+    if (show === "wake") this.select(WAKE);
+    else if (show === "plan") {
+      const plan = this.tabs.find((t) => t.kind === "plan");
+      if (plan) this.select(plan.key);
+    }
   }
 
   /** Follow the panes, so the chat beside a page stays live, and each

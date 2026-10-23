@@ -51,7 +51,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "9";
+  var V = "10";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -103,6 +103,9 @@ function __boardIntent(cfg) {
     "reclaim": "reclaim", "close plan": "close plan", "code": "code",
     "archive": "archive", "wake": "wake"
   };
+
+  // The verbs the app answers itself when it frames the board, and what it shows.
+  var SHOWN = { "row": "any", "jump": "any", "plan": "plan", "wake": "wake" };
 
   function target(el) {
     // The nearest target to the click wins, explicit or chip: a family child's
@@ -276,14 +279,16 @@ function __boardIntent(cfg) {
         }
         return;
       }
-      fire(t, rid);
-      // Framed by the seamux app, the clicks that select a workspace (a card's
-      // body, its rail) also show it there: its terminal and pages beside the
-      // board. Every click still does what it does in cmux's Dock.
-      if (framed() && (t.a === "row" || t.a === "jump")) {
-        window.parent.postMessage({ crew: "select", ws: rid }, "*");
+      // Framed by the seamux app, the clicks that go to a workspace or its
+      // plan (a card's body, its rail, Plan, the Wake) show it in the app:
+      // its terminal and pages beside the board. cmux is not asked to jump.
+      // Every other chip still does what it does in cmux's Dock.
+      if (framed() && SHOWN[t.a]) {
+        window.parent.postMessage({ crew: "select", ws: rid, show: SHOWN[t.a] }, "*");
         mark(rid);
+        return;
       }
+      fire(t, rid);
     });
     host.setAttribute("data-intent", V);
   }
