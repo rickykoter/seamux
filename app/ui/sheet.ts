@@ -69,6 +69,8 @@ class Chat {
   private pickOpen = false;
   /** A native session is starting: its buttons wait. */
   private starting = false;
+  /** The tile last shown, to redraw the session bar when the pane's kind is known. */
+  private shown: Tile | null = null;
 
   constructor() {
     this.el.className = "sheet-chat";
@@ -123,6 +125,7 @@ class Chat {
     };
     live(true);
     this.term.onTrouble = (bad) => live(!bad);
+    this.term.onMode = () => this.shown && this.drawSessions(this.shown);
     this.el.append(head, this.bar, this.term.el, this.body, form, this.note);
   }
 
@@ -181,6 +184,24 @@ class Chat {
     this.drawSessions(t);
   }
 
+  /** Move the pane's running Claude to a native session: it stops here and
+   *  resumes in a new native pane, and this pane closes. */
+  private async moveNative(t: Tile): Promise<void> {
+    if (this.starting) return;
+    this.starting = true;
+    this.drawSessions(t);
+    this.note.textContent = "Moving Claude to a native session…";
+    try {
+      await invoke<string>("move_native", { surfaceId: t.surface });
+      this.note.textContent = "Moved to a native session";
+      this.sessAt = 0;
+    } catch (e) {
+      this.note.textContent = String(e);
+    }
+    this.starting = false;
+    this.drawSessions(t);
+  }
+
   private drawSessions(t: Tile): void {
     const inShell = !t.agent || t.state === "ended";
     const rows = this.sessions;
@@ -196,8 +217,20 @@ class Chat {
     // A start takes seconds: one at a time.
     fresh.disabled = this.starting;
     this.bar.hidden = false;
+    // A running Claude drawn from snapshots can move to a native session.
+    if (t.agent === "claude" && t.state !== "ended" && !this.term.isNative() && this.term.ready()) {
+      const mv = document.createElement("button");
+      mv.type = "button";
+      mv.className = "sheet-btn";
+      mv.textContent = "Move to native";
+      mv.title = "Stop Claude here and resume this conversation in a native session (a real terminal here); this pane closes";
+      mv.addEventListener("click", () => void this.moveNative(t));
+      mv.disabled = this.starting || t.state === "working";
+      if (t.state === "working") mv.title = "Claude is mid-turn: move it when it is idle";
+      parts.push(mv);
+    }
     if (rows.length === 0) {
-      this.bar.replaceChildren(fresh);
+      this.bar.replaceChildren(...parts, fresh);
       return;
     }
     if (inShell) {
@@ -250,6 +283,7 @@ class Chat {
   }
 
   show(t: Tile): void {
+    this.shown = t;
     this.surface = t.surface;
     this.term.show(t.surface);
     this.loadSessions(t);
