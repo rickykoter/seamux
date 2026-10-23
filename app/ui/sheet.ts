@@ -825,7 +825,9 @@ function kindOf(path: string): string {
 export async function openInVSCode(dir: string, say: (m: string) => void): Promise<void> {
   if (!dir) return say("this pane has no folder yet");
   try {
-    await invoke<string>("open_in_vscode", { dir });
+    const o = await invoke<{ folder: string; note: string | null }>("open_in_vscode", { dir });
+    // Opened; the note says why it is not wearing its color, if it is not.
+    say(o.note ? `Opened in VS Code · ${o.note}` : "");
   } catch (e) {
     say(String(e));
   }
