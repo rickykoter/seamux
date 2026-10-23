@@ -443,13 +443,15 @@ export class Desk {
       splitter(grip, {
         zone: "desk-term",
         axis: "y",
-        from: (y) => y - box.getBoundingClientRect().top,
+        // By the pointer's travel alone: the box moves as the page scrolls under it.
+        from: (y) => y,
         min: 160,
         max: 1200,
         initial: 340,
         step: 24,
         apply: (v) => document.documentElement.style.setProperty("--d-term-h", `${Math.round(v)}px`),
         label: "Resize the terminal",
+        measure: () => box.clientHeight,
       });
       box.addEventListener("click", (e) => e.stopPropagation());
       c.append(box);

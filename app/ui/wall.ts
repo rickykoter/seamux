@@ -399,13 +399,14 @@ export class WallView {
     splitter(grip, {
       zone: "wall-list",
       axis: "x",
-      from: (x) => x - this.split.getBoundingClientRect().left,
+      from: (x) => x,
       min: 180,
       max: 640,
       initial: 290,
       step: 16,
       apply: (v) => this.split.style.setProperty("--list-w", `${Math.round(v)}px`),
       label: "Resize the list of agents",
+      measure: () => this.list.getBoundingClientRect().width,
     });
     root.append(this.status, this.empty, this.split);
     // Wait times move without a frame.

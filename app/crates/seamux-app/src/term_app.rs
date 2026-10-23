@@ -156,8 +156,8 @@ pub fn encode(m: Mouse, act: Act, col: u32, row: u32, shift: bool, alt: bool, ct
             (_, true) => "\x1bOB",
             (_, false) => "\x1b[B",
         };
-        // Three lines a notch, as terminals scroll.
-        return Some(key.repeat(3 * count));
+        // One line a count: term.ts already sends a count per line of travel.
+        return Some(key.repeat(count));
     }
     None
 }
@@ -488,9 +488,9 @@ mod mouse_tests {
     #[test]
     fn term_mouse_turns_the_wheel_into_arrows_only_on_the_alternate_screen() {
         let alt = Mouse::of(&modes(&[1007], "alternate"));
-        assert_eq!(encode(alt, Act::WheelUp, 0, 0, false, false, false, 1).unwrap(), "\x1b[A\x1b[A\x1b[A");
+        assert_eq!(encode(alt, Act::WheelUp, 0, 0, false, false, false, 1).unwrap(), "\x1b[A");
         let app = Mouse::of(&modes(&[1, 1007], "alternate"));
-        assert_eq!(encode(app, Act::WheelDown, 0, 0, false, false, false, 1).unwrap(), "\x1bOB\x1bOB\x1bOB");
+        assert_eq!(encode(app, Act::WheelDown, 0, 0, false, false, false, 1).unwrap(), "\x1bOB");
         assert_eq!(encode(alt, Act::Press(0), 0, 0, false, false, false, 1), None, "no click without reporting");
         let shell = Mouse::of(&modes(&[1007], "primary"));
         assert_eq!(encode(shell, Act::WheelUp, 0, 0, false, false, false, 1), None, "a shell's own scrollback, in the app");

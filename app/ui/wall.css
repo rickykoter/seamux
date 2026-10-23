@@ -14,7 +14,7 @@
   grid-template-columns: min(var(--list-w, 290px), 60%) minmax(0, 1fr);
 }
 /* The list's width: a handle on its right edge (splitter.ts). */
-.split > .list-grip { position: absolute; top: 0; bottom: 0; left: calc(min(var(--list-w, 290px), 60%) - 5px); width: 9px; z-index: 3; }
+.split > .list-grip { position: absolute; top: 0; bottom: 0; left: calc(min(var(--list-w, 290px), 60%) - 1px); width: 9px; z-index: 3; }
 
 /* ---- the list ---- */
 .list {

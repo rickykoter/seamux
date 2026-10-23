@@ -13,7 +13,8 @@ export type Split = {
   legacyKey?: string;
   /** "x" drags left and right, "y" up and down. */
   axis: "x" | "y";
-  /** The value from a pointer position (clientX or clientY). */
+  /** The value from a pointer position (clientX or clientY). A drag moves the
+   *  value by the difference, from where the pointer took hold. */
   from: (at: number) => number;
   min: number;
   /** Bounds are fixed numbers: a hidden panel measures 0, so a measured
@@ -24,6 +25,9 @@ export type Split = {
   step: number;
   apply: (v: number) => void;
   label: string;
+  /** The size the layout gives now, when CSS can cap it below the kept
+   *  value: a drag starts from what is on screen. */
+  measure?: () => number;
 };
 
 const KEY = (zone: string) => `seamux.split.${zone}`;
@@ -78,7 +82,9 @@ export function splitter(handle: HTMLElement, s: Split): { value: () => number }
     document.body.classList.add("splitting", s.axis === "x" ? "splitting-x" : "splitting-y");
     // By the pointer's travel from where it took hold, so grabbing never jumps.
     const at = (m: PointerEvent) => (s.axis === "x" ? m.clientX : m.clientY);
-    const start = value;
+    // Start from what is on screen: a CSS cap (85vh, 60%) may hold it below the kept value.
+    const shown = s.measure?.();
+    const start = shown !== undefined && shown > 0 ? clamp(shown) : value;
     const from0 = s.from(at(e));
     const move = (m: PointerEvent) => set(start + s.from(at(m)) - from0, false);
     const done = () => {

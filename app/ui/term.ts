@@ -93,6 +93,8 @@ export class Term {
   private sizing: Promise<unknown> = Promise.resolve();
   private drawnOnce = false;
   private mouse: MouseModes = { report: false, altScroll: false, alt: false };
+  /** Last frame's rows by what they show, for the next frame to reuse. */
+  private rowCache: RowCache = new Map();
   /** Rows of history drawn above the screen. */
   private sbRows = 0;
   /** Wheel travel not yet sent as a notch. */
@@ -186,6 +188,7 @@ export class Term {
     if (document.activeElement === this.el) this.el.blur();
     this.release();
     this.surface = surface;
+    this.rowCache = new Map();
     this.drawnOnce = false;
     this.stamp = "";
     this.failures = 0;
@@ -247,7 +250,9 @@ export class Term {
     // A shell's history sits above its screen; the alternate screen keeps none.
     const back = this.mouse.alt ? [] : (g.scrollback_spans ?? []);
     const sbRows = back.reduce((n, sp) => Math.max(n, sp.row + 1), 0);
-    const lines = [...rowsOf(back, sbRows, styles), ...rowsOf(g.row_spans, f.rows, styles)];
+    const now: RowCache = new Map();
+    const lines = [...rowsOf(back, sbRows, styles, this.rowCache, now), ...rowsOf(g.row_spans, f.rows, styles, this.rowCache, now)];
+    this.rowCache = now;
     // Follow the bottom, as a terminal does, unless the person scrolled up
     // into the history: then the view stays where they are reading.
     const follow = !this.drawnOnce || this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight < 24;
@@ -321,6 +326,9 @@ export class Term {
    *  mouse; Shift keeps the click here, to select text. */
   private press(e: PointerEvent): void {
     if (document.activeElement !== this.el || !this.mouse.report || e.shiftKey || e.button > 2 || this.pressed) return;
+    // The view's own scrollbars are the app's, not a click in the pane.
+    const r = this.el.getBoundingClientRect();
+    if (e.clientX - r.left >= this.el.clientLeft + this.el.clientWidth || e.clientY - r.top >= this.el.clientTop + this.el.clientHeight) return;
     e.preventDefault();
     const button = e.button;
     this.pressed = true;
@@ -400,20 +408,43 @@ export function primeTheme(surface: string): void {
     .catch(() => (primed = false));
 }
 
+/** Rows drawn last frame, by what they show: a row whose cells are the same
+ *  this frame (history that moved up a line, say) keeps its node. */
+type RowCache = Map<string, HTMLElement[]>;
+
 /** `n` rows of cells from spans that arrive by row and column; the gaps
- *  between them are blank cells. */
-function rowsOf(spans: Span[], n: number, styles: Map<number, Style>): HTMLElement[] {
-  const lines: HTMLElement[] = [];
-  for (let r = 0; r < n; r++) {
-    const ln = document.createElement("div");
-    ln.className = "term-row";
-    lines.push(ln);
-  }
-  const at = new Array<number>(n).fill(0);
-  for (const sp of spans) {
-    const ln = lines[sp.row];
-    if (!ln) continue;
-    if (sp.column > at[sp.row]) ln.append(" ".repeat(sp.column - at[sp.row]));
+ *  between them are blank cells. Nodes come from `was` when a row is
+ *  unchanged; every row drawn goes into `now`. */
+function rowsOf(spans: Span[], n: number, styles: Map<number, Style>, was: RowCache, now: RowCache): HTMLElement[] {
+  const byRow: Span[][] = Array.from({ length: n }, () => []);
+  for (const sp of spans) byRow[sp.row]?.push(sp);
+  const look = new Map<number, string>();
+  const styleKey = (id: number) => {
+    let k = look.get(id);
+    if (k === undefined) {
+      const st = styles.get(id);
+      k = st ? JSON.stringify({ ...st, id: 0 }) : "";
+      look.set(id, k);
+    }
+    return k;
+  };
+  return byRow.map((row) => {
+    const key = row.map((sp) => `${sp.column}:${sp.cell_width}:${styleKey(sp.style_id)}:${sp.text}`).join("\u0000");
+    let ln = was.get(key)?.pop();
+    if (!ln) ln = drawRow(row, styles);
+    const list = now.get(key);
+    if (list) list.push(ln);
+    else now.set(key, [ln]);
+    return ln;
+  });
+}
+
+function drawRow(row: Span[], styles: Map<number, Style>): HTMLElement {
+  const ln = document.createElement("div");
+  ln.className = "term-row";
+  let at = 0;
+  for (const sp of row) {
+    if (sp.column > at) ln.append(" ".repeat(sp.column - at));
     const st = styles.get(sp.style_id);
     const span = document.createElement("span");
     span.textContent = sp.text;
@@ -424,9 +455,9 @@ function rowsOf(spans: Span[], n: number, styles: Map<number, Style>): HTMLEleme
       span.style.width = `${sp.cell_width}ch`;
     }
     ln.append(span);
-    at[sp.row] = sp.column + sp.cell_width;
+    at = sp.column + sp.cell_width;
   }
-  return lines;
+  return ln;
 }
 
 function paint(span: HTMLElement, st: Style): void {
