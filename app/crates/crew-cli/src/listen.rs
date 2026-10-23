@@ -75,6 +75,30 @@ fn due(c: &Cfg) -> bool {
     }
 }
 
+/// How often the listener checks the intent server is up (and its own binary).
+const INTENT_WATCH: Duration = Duration::from_secs(10);
+
+/// Whether the intent server answers on its port: a connect, no process.
+fn intent_up() -> bool {
+    // Where the server writes it (crew-board's state_dir), whatever XDG says.
+    let port = std::fs::read_to_string(crew_core::py::home().join(".cache/cmux-crew/board-intent.port"))
+        .ok()
+        .and_then(|s| s.trim().parse::<u16>().ok());
+    port.is_some_and(|p| {
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], p));
+        std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(400)).is_ok()
+    })
+}
+
+/// Replace this process with the installed binary, same arguments. Returns
+/// only if the exec failed (then this listener carries on as it was).
+fn reexec() {
+    use std::os::unix::process::CommandExt;
+    let Some(exe) = crew_core::upgrade::exe() else { return };
+    let err = std::process::Command::new(exe).args(std::env::args_os().skip(1)).arg0(std::env::args_os().next().unwrap_or_default()).exec();
+    log(&format!("re-exec failed: {err}"));
+}
+
 /// Bring the board's click server up if it is not already answering.
 fn start_intent() -> bool {
     let (status, start): (Vec<String>, Vec<String>) = match sibling::own("crew-board-intent") {
@@ -277,8 +301,23 @@ pub fn main(args: &[String]) -> i32 {
         libc::signal(libc::SIGINT, on_interrupt as *const () as libc::sighandler_t);
     }
 
-    // The intent server serves the board (/board); make sure it is up.
+    // The intent server serves the board (/board); make sure it is up, now and
+    // every few seconds after: it exits when an install replaces its binary,
+    // and is started again here with the new code.
     start_intent();
+    let started = std::time::SystemTime::now();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(INTENT_WATCH);
+        // This listener's own binary was replaced: become the new one (same
+        // pid, so the pidfile holds), which then watches with the new code.
+        if crew_core::upgrade::replaced_since(started) {
+            log("a newer binary is installed: re-executing");
+            reexec();
+        }
+        if !intent_up() {
+            start_intent();
+        }
+    });
     follow_selection(None);
 
     let ticks = std::sync::Arc::new(Cfg { state: c.state.clone(), ..c });

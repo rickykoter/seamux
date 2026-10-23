@@ -481,6 +481,16 @@ pub fn serve() -> i32 {
     }
     let _ = std::fs::write(port_file(), port.to_string());
     log(&format!("listening on 127.0.0.1:{port}"));
+    // An install replaced this binary: leave, so the new code serves (crew-listen
+    // starts it again within seconds; the token and the port carry over).
+    let started = std::time::SystemTime::now();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(10));
+        if crew_core::upgrade::replaced_since(started) {
+            log("a newer binary is installed: exiting so it can take over");
+            std::process::exit(0);
+        }
+    });
     for stream in listener.incoming().flatten() {
         let token = token.clone();
         std::thread::spawn(move || handle(stream, port, token));

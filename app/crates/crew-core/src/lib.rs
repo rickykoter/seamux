@@ -18,6 +18,7 @@ pub mod pricing;
 pub mod py;
 pub mod pyjson;
 pub mod typesafe;
+pub mod upgrade;
 pub mod workspaces;
 
 pub use home::{crew_home, crew_local};
