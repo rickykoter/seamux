@@ -446,6 +446,11 @@ export class Sheet {
   }
 
   /** Show a workspace: its terminal, and the Wake unless a page is up. */
+  /** The place shown: a page opened for it joins its tabs. */
+  here(): { workspace?: string; dir?: string } {
+    return { ...this.place };
+  }
+
   focusWorkspace(ws: string): void {
     if (ws === this.workspace() && this.active) return;
     this.enter({ workspace: ws });
@@ -704,7 +709,7 @@ export class Sheet {
     if (!this.wake) {
       const root = document.createElement("div");
       root.className = "sheet-wake";
-      this.wake = new Wake(root, { embedded: true });
+      this.wake = new Wake(root, { embedded: true, host: this });
       void this.wake.start();
       this.stack.append(root);
     }
