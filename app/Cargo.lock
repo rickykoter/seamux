@@ -2881,6 +2881,7 @@ dependencies = [
  "crew-board",
  "crew-core",
  "crew-store",
+ "libc",
  "objc2",
  "objc2-app-kit",
  "serde",

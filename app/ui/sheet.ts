@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { reflow } from "./reflow";
 import type { Frame as WallFrame, Tile } from "./wall";
 import { Wake } from "./wake";
-import { Term } from "./term";
+import { TermSlot } from "./native";
 import { splitter } from "./splitter";
 import { familyOf, memberState, type FamilyBrief } from "./family";
 
@@ -55,7 +55,8 @@ class Chat {
   private state = document.createElement("span");
   private body = document.createElement("div");
   /** The pane itself, live: click into it and keys go to the agent. */
-  private term = new Term();
+  /** The pane, live: native where it is tmux-backed, snapshots otherwise. */
+  private term = new TermSlot();
   private input = document.createElement("input");
   private note = document.createElement("span");
   surface = "";
@@ -66,6 +67,8 @@ class Chat {
   private sessKey = "";
   private sessAt = 0;
   private pickOpen = false;
+  /** A native session is starting: its buttons wait. */
+  private starting = false;
 
   constructor() {
     this.el.className = "sheet-chat";
@@ -159,13 +162,44 @@ class Chat {
     this.drawSessions(t);
   }
 
+  /** Start Claude as a native session (local-tmux, drawn by xterm.js here)
+   *  in this workspace, resuming `r` when given. */
+  private async native(t: Tile, r?: SessionRow): Promise<void> {
+    if (this.starting) return;
+    this.starting = true;
+    this.drawSessions(t);
+    this.note.textContent = r ? `Resuming ${r.id.slice(0, 8)} natively…` : "Starting a native session…";
+    try {
+      await invoke<string>("native_session", { workspaceId: t.workspace, cwd: r?.cwd || t.cwd, resume: r?.id ?? null });
+      this.note.textContent = r ? `Resumed ${r.id.slice(0, 8)} as a native session` : "Started a native session";
+      this.pickOpen = false;
+      this.sessAt = 0;
+    } catch (e) {
+      this.note.textContent = String(e);
+    }
+    this.starting = false;
+    this.drawSessions(t);
+  }
+
   private drawSessions(t: Tile): void {
     const inShell = !t.agent || t.state === "ended";
     const rows = this.sessions;
-    this.bar.hidden = rows.length === 0;
-    if (rows.length === 0) return;
     const name = (r: SessionRow) => `${r.label || r.id.slice(0, 8)} · ${ageOf(r.updated)}`;
     const parts: HTMLElement[] = [];
+    // A native session (a real terminal here, in tmux) can always be started.
+    const fresh = document.createElement("button");
+    fresh.type = "button";
+    fresh.className = "sheet-btn";
+    fresh.textContent = "New native session";
+    fresh.title = "Start Claude in a local-tmux session in this workspace: a real terminal here and a pane in cmux";
+    fresh.addEventListener("click", () => void this.native(t));
+    // A start takes seconds: one at a time.
+    fresh.disabled = this.starting;
+    this.bar.hidden = false;
+    if (rows.length === 0) {
+      this.bar.replaceChildren(fresh);
+      return;
+    }
     if (inShell) {
       const go = document.createElement("button");
       go.type = "button";
@@ -173,10 +207,17 @@ class Chat {
       go.textContent = "Resume Claude";
       go.title = `claude --resume ${rows[0].id}`;
       go.addEventListener("click", () => void this.resume(t, rows[0]));
+      const nat = document.createElement("button");
+      nat.type = "button";
+      nat.className = "sheet-btn";
+      nat.textContent = "Resume natively";
+      nat.title = `claude --resume ${rows[0].id}, in a local-tmux session: a real terminal here`;
+      nat.addEventListener("click", () => void this.native(t, rows[0]));
+      nat.disabled = this.starting;
       const what = document.createElement("span");
       what.className = "sheet-chat-sess-what";
       what.textContent = name(rows[0]);
-      parts.push(go, what);
+      parts.push(go, nat, what);
     }
     if (rows.length > 1 || !inShell) {
       const more = document.createElement("button");
@@ -204,6 +245,7 @@ class Chat {
       }
       parts.push(list);
     }
+    parts.push(fresh);
     this.bar.replaceChildren(...parts);
   }
 

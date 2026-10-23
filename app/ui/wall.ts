@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { reflow, type Block } from "./reflow";
-import { Term } from "./term";
+import { TermSlot } from "./native";
 import { splitter } from "./splitter";
 
 /** One re-flowed paragraph: wraps at the window, hanging past its marker. */
@@ -165,7 +165,8 @@ class Preview {
   private body = document.createElement("pre");
   /** The pane itself, live, as the sheet and Desk show it; the text above is
    *  its fallback when frames fail. */
-  private term = new Term();
+  /** The pane, live: native where it is tmux-backed, snapshots otherwise. */
+  private term = new TermSlot();
   private live = true;
   /** The read error the note shows while live. */
   private errShown = "";
@@ -300,7 +301,7 @@ class Preview {
   }
 
   focusReply(): void {
-    if (this.live) this.term.el.focus();
+    if (this.live) this.term.focus();
     else if (!this.form.hidden) this.input.focus();
   }
 

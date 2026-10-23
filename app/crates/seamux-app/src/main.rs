@@ -5,6 +5,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod desk_app;
+mod pty_app;
 mod review_app;
 mod shell;
 mod term_app;
@@ -166,6 +167,15 @@ fn main() {
             term_app::term_paste,
             term_app::term_hold,
             term_app::term_release,
+            term_app::open_url,
+            term_app::term_look,
+            pty_app::pty_native,
+            pty_app::pty_attach,
+            pty_app::pty_write,
+            pty_app::pty_resize,
+            pty_app::pty_detach,
+            pty_app::pty_reset,
+            pty_app::native_session,
             views_app::views_frame,
             shell::open_in_cmux,
             desk_app::desk_answer,

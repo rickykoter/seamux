@@ -164,6 +164,12 @@
       .sheet-chat-reply { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); }
       .sheet-chat-reply input { flex: 1; min-width: 0; font: inherit; padding: 5px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
       /* The live terminal: the pane's own colours and cursor, scaled to fit. */
+      /* The terminal's place (native.ts): the native one or the snapshot one. */
+      .term-slot { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+      .term-slot[hidden] { display: none; }
+      .native-term { flex: 1; min-height: 0; padding: var(--term-pad); background: var(--pane-bg-or); }
+      .native-term.focused { box-shadow: inset 0 0 0 2px var(--accent); }
+      .native-term .xterm { height: 100%; }
       .term {
         --t-size: 12px; --t-line: 15px;
         flex: 1; min-height: 0; overflow: auto; position: relative; padding: var(--term-pad);

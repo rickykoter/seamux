@@ -30,6 +30,8 @@ crew-board = { path = "../crew-board" }
 crew-store = { path = "../crew-store" }
 # A Wake file shown in the sheet travels as a data: URL.
 base64 = "0.22"
+# A native terminal's PTY (pty.rs): openpty, setsid, TIOCSWINSZ.
+libc = "0.2"
 serde_json.workspace = true
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2.11", features = ["tray-icon"] }
