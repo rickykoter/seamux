@@ -51,7 +51,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "5";
+  var V = "6";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -89,7 +89,9 @@ function __boardIntent(cfg) {
       // A row that cannot be acted on must not pretend otherwise: no pointer
       // and no hover. It keeps its card ground -- a family's shell card is
       // inert and is still a card.
-      ".row.inert{cursor:default}";
+      ".row.inert{cursor:default}" +
+      // Framed by the seamux app: the workspace the app shows beside the board.
+      ".row.appsel{outline:2px solid #dbbc7f;outline-offset:-2px;background:#2f3639}";
   }
 
   // ---- the chip vocabulary --------------------------------------------
@@ -184,6 +186,37 @@ function __boardIntent(cfg) {
     host.setAttribute("data-fold", JSON.stringify(f));
   }
 
+  // ---- framed by the seamux app ----------------------------------------
+  // In a frame, the app asks for the workspace it shows to be marked, and a
+  // row click goes to it (above). Top-level, as cmux's Dock, none of this runs.
+  function framed() {
+    try {
+      return typeof window !== "undefined" && !!window.parent && window.parent !== window &&
+        typeof window.parent.postMessage === "function";
+    } catch (e) { return false; }
+  }
+  function mark(ws) {
+    host.setAttribute("data-app-sel", ws || "");
+    if (!host.querySelectorAll) return;
+    var rows = host.querySelectorAll(".row");
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].getAttribute("data-id") === ws) rows[i].classList.add("appsel");
+      else rows[i].classList.remove("appsel");
+    }
+  }
+  // Every push redraws the rows: mark the app's workspace again.
+  if (framed()) mark(host.getAttribute("data-app-sel") || "");
+  if (framed() && host.getAttribute("data-app-msg") !== V) {
+    window.addEventListener("message", function (ev) {
+      if (host.getAttribute("data-app-msg") !== V) return;
+      var d = ev.data;
+      if (ev.source === window.parent && d && d.crew === "selected") mark(String(d.ws || ""));
+    });
+    host.setAttribute("data-app-msg", V);
+    // Listening now: ask the app which workspace it shows.
+    window.parent.postMessage({ crew: "ready" }, "*");
+  }
+
   // Refreshed on every push; the listener below is installed only once.
   host.setAttribute("data-intent-cfg", JSON.stringify({ port: cfg.port, token: cfg.token }));
 
@@ -202,6 +235,13 @@ function __boardIntent(cfg) {
       ev.preventDefault();
       ev.stopPropagation();
       if (t.a === "fold") return fold(row, rid);
+      // Framed by the seamux app, selecting a workspace selects it there: the
+      // app shows its terminal and pages beside the board, and cmux stays put.
+      // A command-click still jumps in cmux.
+      if (framed() && (t.a === "row" || t.a === "jump") && !ev.metaKey) {
+        window.parent.postMessage({ crew: "select", ws: rid }, "*");
+        return mark(rid);
+      }
       fire(t, rid);
     });
     host.setAttribute("data-intent", V);

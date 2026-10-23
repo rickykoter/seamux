@@ -15,7 +15,7 @@ export type Tab = {
 
 /** The views, in the strip, Command-1 to Command-5. */
 export const TABS: Tab[] = [
-  { id: "desk", label: "Desk" },
+  { id: "dock", label: "Dock" },
   { id: "mosaic", label: "Mosaic" },
   { id: "timeline", label: "Timeline" },
   { id: "wake", label: "Wake" },
@@ -33,7 +33,7 @@ export const MENU: Tab[] = [
   },
 ];
 
-export const DEFAULT_TAB = "desk";
+export const DEFAULT_TAB = "dock";
 
 const SVG = "http://www.w3.org/2000/svg";
 

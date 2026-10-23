@@ -1,0 +1,20 @@
+/* The Dock view: the board, the Claude terminal, the Wake and pages. */
+#dock[hidden] { display: none; }
+.dockview {
+  position: relative; height: 100%; display: grid;
+  grid-template-columns: min(var(--board-w, 340px), 45%) minmax(0, 1fr);
+}
+.dock-board { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: #272e33; }
+.dock-board iframe { flex: 1; width: 100%; border: 0; display: block; }
+.dock-board .note { margin: 18vh 16px 0; }
+/* The board's width: a grip on its right edge (splitter.ts). */
+.dockview > .dock-grip { position: absolute; top: 0; bottom: 0; left: calc(min(var(--board-w, 340px), 45%) - 4px); width: 9px; z-index: 3; }
+.dockview > .sheet, .dockview > .dock-empty { grid-column: 2; grid-row: 1; min-width: 0; min-height: 0; }
+.dock-empty { margin: 18vh auto 0; max-width: 360px; text-align: center; color: var(--muted); }
+.dock-empty[hidden] { display: none; }
+
+/* The sheet embedded as the view's columns, not the overlay over the stage. */
+.sheet.embedded { position: static; inset: auto; z-index: auto; display: flex; height: 100%; }
+.sheet.embedded[hidden] { display: none; }
+.sheet.embedded .sheet-card > header { padding-left: 12px; min-height: 0; }
+.sheet.embedded .sheet-card > header .sheet-btn.icon[hidden] { display: none; }

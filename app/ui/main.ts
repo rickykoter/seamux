@@ -3,8 +3,10 @@ import { listen } from "@tauri-apps/api/event";
 import { DEFAULT_TAB, Tabs } from "./tabs";
 import { WallView } from "./wall";
 import "./wall.css";
-import { Desk } from "./desk";
+// Desk's styles stay: Mosaic's cards and buttons wear them.
 import "./desk.css";
+import { DockView } from "./dock";
+import "./dock.css";
 import { Mosaic } from "./mosaic";
 import "./mosaic.css";
 import { Wake } from "./wake";
@@ -47,10 +49,10 @@ function show(s: Status): void {
   conn.textContent = `cmux · ${n} workspace${n === 1 ? "" : "s"}`;
 }
 
-const desk = document.getElementById("desk")!;
+const dockEl = document.getElementById("dock")!;
 const timeline = document.getElementById("timeline")!;
 const wakeEl = document.getElementById("wake")!;
-const deskView = new Desk(desk);
+const dockView = new DockView(dockEl);
 const mosaicEl = document.getElementById("mosaic")!;
 const mosaic = new Mosaic(mosaicEl, document.getElementById("wall")!, wall);
 const timelineView = new Timeline(timeline);
@@ -62,7 +64,7 @@ const tabs = new Tabs(
   document.getElementById("strip")!,
   document.getElementById("stage")!,
   new Map([
-    ["desk", desk],
+    ["dock", dockEl],
     ["mosaic", mosaicEl],
     ["timeline", timeline],
     ["wake", wakeEl],
@@ -70,6 +72,7 @@ const tabs = new Tabs(
   ]),
 );
 tabs.onSelect = (id) => {
+  if (id === "dock") dockView.shown();
   if (id === "wake") wakeView.shown();
   if (id === "timeline") timelineView.shown();
 };
@@ -83,7 +86,7 @@ const palette = new Palette();
 document.getElementById("strip")!.append(palette.chip);
 tabs.select(DEFAULT_TAB);
 
-// Every summon (the hotkey, the tray) lands on Desk.
+// Every summon (the hotkey, the tray) lands on the Dock view.
 void listen("app:summoned", () => tabs.select(DEFAULT_TAB));
 
 // The window's own red button hides it too (shell.rs turns a close into a hide).
@@ -99,7 +102,7 @@ document.addEventListener("keydown", (e) => {
 
 invoke<Status>("cmux_status").then(show, (e) => show({ state: "failed", kind: "app", message: String(e) }));
 wall.start().catch((e) => wall.problem(`The wall couldn't start: ${String(e)}`));
-deskView.start().catch((e) => console.error("desk", e));
+dockView.start().catch((e) => console.error("dock", e));
 mosaic.start().catch((e) => console.error("mosaic", e));
 wakeView.start().catch((e) => console.error("wake", e));
 timelineView.start().catch((e) => console.error("timeline", e));
