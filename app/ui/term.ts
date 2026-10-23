@@ -68,9 +68,18 @@ export function keyAction(e: KeyboardEvent): KeyAction | null {
   return { text: e.key };
 }
 
+/** Below this a pane drawn at its own width is too small to read. */
+const READABLE = 10.5;
+
+/** Which view sizes each pane: one at a time, so two never fight over it. */
+const holders = new Map<string, Term>();
+
 /** A live view of one pane. Polls while it is on screen. Focused, it takes
  *  the keys and holds the pane at the size that fits here (term_hold), so the
- *  agent redraws at a readable 12px; blurred, the pane gets its own size back. */
+ *  agent redraws at a readable 12px. Unfocused, the pane keeps its own size
+ *  and the view scales to show all of it, unless that would drop below
+ *  READABLE: then it holds the pane here while it is on screen, and gives
+ *  the pane its own size back once it is not. */
 export class Term {
   /** Frames failed three times running (true) or came back (false). */
   onTrouble: (bad: boolean) => void = () => {};
@@ -87,6 +96,10 @@ export class Term {
   private failures = 0;
   /** The surface held at this view's size, if any. */
   private held = "";
+  /** Why it is held: typing into it, or too small to read at the pane's own size. */
+  private reason: "" | "focus" | "view" = "";
+  /** The pane's own width, from frames while no view holds it. */
+  private ownCols = 0;
   private holdTimer = 0;
   private probe = document.createElement("span");
   /** Holds and releases run one after another, in the order they were asked. */
@@ -132,22 +145,24 @@ export class Term {
     this.el.addEventListener("focus", () => {
       this.el.classList.add("focused");
       this.scale();
-      this.hold();
+      this.hold("focus");
       this.tick();
     });
     this.el.addEventListener("blur", () => {
       this.el.classList.remove("focused");
-      this.release();
+      // Still too small to read at the pane's own size: keep the hold, so
+      // the pane does not jump back and forth.
+      if (this.holding() && this.wantsView()) this.reason = "view";
+      else this.release();
       this.scale();
     });
-    // Back from a hide (which released every hold): hold again if still focused.
+    // Back from a hide (which released every hold): hold again as before.
     window.addEventListener("focus", () => {
-      if (document.activeElement === this.el) this.hold();
+      if (this.reason) this.hold(this.reason);
     });
     new ResizeObserver(() => {
-      if (document.activeElement !== this.el) return;
       clearTimeout(this.holdTimer);
-      this.holdTimer = window.setTimeout(() => this.hold(), 250);
+      this.holdTimer = window.setTimeout(() => (this.holding() ? this.hold(this.reason || "view") : this.manage()), 250);
     }).observe(this.el);
   }
 
@@ -162,12 +177,43 @@ export class Term {
     return { cols: Math.floor(w / cw), rows: Math.floor(h / lh) };
   }
 
-  private hold(): void {
+  /** This view sizes its pane now. */
+  private holding(): boolean {
+    return !!this.held && holders.get(this.held) === this;
+  }
+
+  /** The font the pane's own width would be drawn at here, unfocused. */
+  private fitPx(cols: number): number {
+    const cs = getComputedStyle(this.el);
+    const w = this.el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const cell = this.probe.getBoundingClientRect().width / 10 || 7.2; // at 12px
+    return w > 0 && cols > 0 ? Math.min(12, (12 * w) / (cols * cell)) : 12;
+  }
+
+  /** On screen, and its pane's own width would be drawn too small to read. */
+  private wantsView(): boolean {
+    return this.visible() && !document.hidden && this.ownCols > 0 && this.fitPx(this.ownCols) < READABLE;
+  }
+
+  /** Unfocused: hold the pane while it would be unreadable here, else let it go. */
+  private manage(): void {
+    if (!this.surface || document.activeElement === this.el) return;
+    const want = this.wantsView();
+    if (want && !this.holding()) this.hold("view");
+    else if (!want && this.reason === "view") this.release();
+  }
+
+  private hold(reason: "focus" | "view"): void {
     if (!this.surface) return;
+    // Another view sizes this pane: a focus takes it over, a look does not.
+    const other = holders.get(this.surface);
+    if (reason === "view" && other && other !== this) return;
     const { cols, rows } = this.fits();
     if (cols < 20 || rows < 5) return;
     const surface = this.surface;
     this.held = surface;
+    this.reason = reason;
+    holders.set(surface, this);
     this.sizing = this.sizing
       .then(() => invoke("term_hold", { surfaceId: surface, cols, rows }))
       .then(() => this.tick())
@@ -178,7 +224,11 @@ export class Term {
     clearTimeout(this.holdTimer);
     const s = this.held;
     this.held = "";
-    if (s) this.sizing = this.sizing.then(() => invoke("term_release", { surfaceId: s })).catch(() => {});
+    this.reason = "";
+    // Only the view that sizes the pane gives it back; another may have taken it over.
+    if (!s || holders.get(s) !== this) return;
+    holders.delete(s);
+    this.sizing = this.sizing.then(() => invoke("term_release", { surfaceId: s })).catch(() => {});
   }
 
   /** Mirror `surface` (a cmux surface id); "" stops. */
@@ -188,6 +238,7 @@ export class Term {
     if (document.activeElement === this.el) this.el.blur();
     this.release();
     this.surface = surface;
+    this.ownCols = 0;
     this.rowCache = new Map();
     this.drawnOnce = false;
     this.stamp = "";
@@ -215,6 +266,7 @@ export class Term {
     // (slowly) while that fallback is on screen, so it can come back.
     const shown = this.visible() || (this.failures >= 3 && this.el.isConnected && (this.el.parentElement?.offsetParent ?? null) !== null);
     this.timer = window.setTimeout(() => this.tick(), this.visible() ? next : this.failures >= 3 && shown ? 1000 : 600);
+    this.manage();
     if (!shown || this.busy || document.hidden) return;
     this.busy = true;
     const surface = this.surface;
@@ -244,7 +296,10 @@ export class Term {
     paneTheme(theme);
     this.cols = f.columns;
     this.rows = f.rows;
+    // While a view holds the pane, its frames show that view's size, not the pane's own.
+    if (!holders.has(this.surface)) this.ownCols = f.columns;
     this.scale();
+    this.manage();
     this.mouse = mouseModes(g);
     const styles = new Map(g.styles.map((s) => [s.id, s]));
     // A shell's history sits above its screen; the alternate screen keeps none.
@@ -349,18 +404,24 @@ export class Term {
     this.el.addEventListener("lostpointercapture", done);
   }
 
-  /** Focused (holding the pane at this view's size): 12px. Otherwise the
-   *  pane keeps its own width, so the view scales to show all of it. */
+  /** Holding the pane at this view's size (focused, or too small to read
+   *  otherwise): 12px. Otherwise the pane keeps its own width, so the view
+   *  scales to show all of it. */
   private scale(): void {
     let px = 12;
-    if (document.activeElement !== this.el) {
+    if (document.activeElement !== this.el && !this.holding()) {
       const cs = getComputedStyle(this.el);
       const w = this.el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
       const cell = this.probe.getBoundingClientRect().width / 10 || 7.2; // at 12px
       if (w > 0 && this.cols > 0) px = Math.max(8, Math.min(12, (12 * w) / (this.cols * cell)));
     }
-    this.el.style.setProperty("--t-size", `${px.toFixed(2)}px`);
+    const size = `${px.toFixed(2)}px`;
+    if (this.el.style.getPropertyValue("--t-size") === size) return;
+    // A view at the bottom stays there through a change of size.
+    const atEnd = this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight < 24;
+    this.el.style.setProperty("--t-size", size);
     this.el.style.setProperty("--t-line", `${(px * 1.25).toFixed(2)}px`);
+    if (atEnd) this.el.scrollTop = this.el.scrollHeight;
   }
 
   private key(e: KeyboardEvent): void {
