@@ -303,6 +303,11 @@ fn finish_native(name: &str, ws: &str, claude: &str) -> Result<String, String> {
     // client (which has none of cmux's) must not wipe the pane's identity.
     tmux_ok(&sock, &["set-option", "-t", name, "update-environment", ""])?;
     // Claude starts now, from the session's environment: the pane's own.
+    // Every client of the session draws true color (cmux, and the app's own
+    // client says so), so Claude may use it as it does in a cmux pane: in
+    // tmux it keeps to 256 colors unless told otherwise.
+    tmux_ok(&sock, &["set-environment", "-t", name, "COLORTERM", "truecolor"])?;
+    tmux_ok(&sock, &["set-environment", "-t", name, "CLAUDE_CODE_TMUX_TRUECOLOR", "1"])?;
     tmux_ok(&sock, &["respawn-pane", "-k", "-t", &format!("={name}:"), claude])?;
     Ok(surface)
 }
@@ -345,7 +350,7 @@ impl Pty {
         let (master, slave) = unsafe { (OwnedFd::from_raw_fd(m), OwnedFd::from_raw_fd(s)) };
         let io = |fd: &OwnedFd| fd.try_clone().map(Stdio::from).map_err(|e| e.to_string());
         let mut cmd = Command::new(program);
-        cmd.args(args).stdin(io(&slave)?).stdout(io(&slave)?).stderr(io(&slave)?).env("TERM", "xterm-256color");
+        cmd.args(args).stdin(io(&slave)?).stdout(io(&slave)?).stderr(io(&slave)?).env("TERM", "xterm-256color").env("COLORTERM", "truecolor");
         // Inside a cmux pane or tmux the app's own variables would mislead tmux.
         cmd.env_remove("TMUX").env_remove("TMUX_PANE");
         // SAFETY: only async-signal-safe calls between fork and exec.

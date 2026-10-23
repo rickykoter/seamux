@@ -15,6 +15,30 @@ import { Term } from "./term";
 // left attached would keep its tmux client, and its size, for nothing.
 void invoke("pty_reset").catch(() => {});
 
+/** The terminal font when cmux names none (Ghostty's own default is
+ *  bundled, so the system's monospace stands in for it). */
+const FONT = "ui-monospace, Menlo, monospace";
+
+type Look = {
+  palette: Record<string, string>;
+  background?: string;
+  foreground?: string;
+  cursor?: string;
+  cursorText?: string;
+  selectionBackground?: string;
+  selectionForeground?: string;
+  fontFamily?: string;
+  fontSize?: number;
+};
+
+/** cmux's look for the page's appearance, asked once per appearance. */
+const looks = new Map<boolean, Promise<Look | null>>();
+function cmuxLook(): Promise<Look | null> {
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  if (!looks.has(dark)) looks.set(dark, invoke<Look>("term_look", { dark }).catch(() => null));
+  return looks.get(dark)!;
+}
+
 /** How long an unseen terminal stays attached: a tab flick keeps it. */
 const DETACH_AFTER = 1500;
 
@@ -44,7 +68,7 @@ export class NativeTerm {
   constructor() {
     this.el.className = "native-term";
     this.term = new Terminal({
-      fontFamily: "ui-monospace, Menlo, monospace",
+      fontFamily: FONT,
       fontSize: 12,
       lineHeight: 1.25,
       cursorBlink: true,
@@ -139,11 +163,34 @@ export class NativeTerm {
     }
   }
 
+  /** cmux's look: its theme's palette and colors, and its font if it sets
+   *  one; the page's pane colors until it comes, or if it cannot. */
   private theme(): void {
     const cs = getComputedStyle(document.documentElement);
     const bg = cs.getPropertyValue("--pane-bg").trim() || "#1e1e1e";
     const fg = cs.getPropertyValue("--pane-fg").trim() || "#dddddd";
-    this.term.options.theme = { background: bg, foreground: fg, cursor: fg, selectionBackground: "#5a6a7a" };
+    if (!this.term.options.theme?.background) this.term.options.theme = { background: bg, foreground: fg, cursor: fg, selectionBackground: "#5a6a7a" };
+    void cmuxLook().then((l) => {
+      if (!l) return;
+      const names = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"] as const;
+      const theme: Record<string, string> = {
+        background: l.background ?? bg,
+        foreground: l.foreground ?? fg,
+        cursor: l.cursor ?? l.foreground ?? fg,
+        selectionBackground: l.selectionBackground ?? "#5a6a7a",
+      };
+      if (l.cursorText) theme.cursorAccent = l.cursorText;
+      if (l.selectionForeground) theme.selectionForeground = l.selectionForeground;
+      for (const [n, c] of Object.entries(l.palette)) {
+        const i = Number(n);
+        if (i < 16) theme[i < 8 ? names[i] : "bright" + names[i - 8][0].toUpperCase() + names[i - 8].slice(1)] = c;
+      }
+      this.term.options.theme = theme;
+      this.el.style.background = theme.background;
+      if (l.fontFamily) this.term.options.fontFamily = `"${l.fontFamily.replace(/"/g, "")}", ${FONT}`;
+      if (l.fontSize) this.term.options.fontSize = Math.min(l.fontSize, 13);
+      if (this.visible()) this.fit.fit();
+    });
   }
 
   private async attach(): Promise<void> {
