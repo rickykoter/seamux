@@ -441,6 +441,11 @@ impl Wall {
             .ok_or_else(|| format!("{surface} is not a live terminal"))
     }
 
+    /// A live pane's state and workspace, read fresh.
+    pub fn state_of(&self, surface: &str) -> Result<(String, String), String> {
+        self.live(surface).map(|t| (t.state, t.workspace))
+    }
+
     /// Type `text` into the agent's pane and press Enter. Only an agent's pane
     /// takes a reply: in a plain shell the text would run as a command.
     pub fn reply(&self, surface: &str, text: &str) -> Result<(), String> {

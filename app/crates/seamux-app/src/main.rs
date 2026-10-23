@@ -150,6 +150,7 @@ fn main() {
             wall_app::wall_frame,
             wall_app::wall_reply,
             wall_app::wall_jump,
+            wall_app::move_native,
             wall_app::workspace_sessions,
             wall_app::session_resume,
             wall_app::desk_cleanup_plan,

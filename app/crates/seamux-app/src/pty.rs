@@ -195,6 +195,71 @@ pub fn start_native(ws: &str, cwd: &str, resume: Option<&str>) -> Result<String,
     made
 }
 
+/// The Claude that runs in a pane, by cmux's records: its session, the
+/// directory it runs in, and its process.
+#[derive(Debug, PartialEq)]
+pub struct Running {
+    pub session: String,
+    pub cwd: String,
+    pub pid: i32,
+}
+
+/// The pane's running Claude: a record on `surface` whose process still
+/// exists. None when no Claude runs there, or its record is not whole.
+pub fn running_on(records: &[Value], surface: &str) -> Option<Running> {
+    let str_of = |r: &Value, k: &str| r.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    records.iter().find_map(|r| {
+        let mine = r.get("agent").and_then(Value::as_str).is_none_or(|a| a == "claude")
+            && r.get("surface_id").and_then(Value::as_str).is_some_and(|s| s.eq_ignore_ascii_case(surface))
+            && r.get("stored_pid_exists").and_then(Value::as_bool) == Some(true);
+        if !mine {
+            return None;
+        }
+        let session = str_of(r, "session_id");
+        let pid = r.get("pid").and_then(Value::as_i64).filter(|p| *p > 1)? as i32;
+        let cwd = ["cwd", "launch_working_directory"].iter().map(|k| str_of(r, k)).find(|c| !c.is_empty())?;
+        cmux::is_uuid(&session).then_some(Running { session, cwd, pid })
+    })
+}
+
+fn alive(pid: i32) -> bool {
+    // SAFETY: signal 0 only asks whether the process exists.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// Move the Claude running in `surface` to a native session in workspace
+/// `ws`: stop it, resume its conversation natively, then close the old pane.
+/// Two Claudes never write the conversation at once: the resume starts only
+/// once the old process is gone. Returns the new pane's surface id.
+pub fn move_native(ws: &str, surface: &str, run: &Running) -> Result<String, String> {
+    if target_for(surface)?.is_some() {
+        return Err("this pane is already a native session".into());
+    }
+    // The pid is cmux's record: make sure it is still that Claude.
+    let out = Command::new("ps").args(["-o", "command=", "-p", &run.pid.to_string()]).output().map_err(|e| e.to_string())?;
+    let cmd = String::from_utf8_lossy(&out.stdout);
+    if !cmd.contains("claude") {
+        return Err(format!("process {} is no longer Claude", run.pid));
+    }
+    // SAFETY: kill(2) on the pane's Claude, checked just above.
+    unsafe {
+        libc::kill(run.pid, libc::SIGTERM);
+    }
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while alive(run.pid) {
+        if std::time::Instant::now() > until {
+            return Err("Claude did not exit; it is still in its pane".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let new = start_native(ws, &run.cwd, Some(&run.session))
+        .map_err(|e| format!("Claude stopped, but the native session did not start ({e}); resume it in its pane"))?;
+    // The old pane is a shell now, or gone with its Claude. (A surface is
+    // looked up in the workspace given, which defaults to the caller's.)
+    let _ = cmux_ok(&["close-surface", "--surface", surface, "--workspace", ws, "--force"]);
+    Ok(new)
+}
+
 /// The socket of a session cmux has just started: from its registry (a path
 /// may hold spaces, so never from the CLI's `key=value` line), else its status.
 fn socket_of(name: &str) -> Result<String, String> {
@@ -358,6 +423,34 @@ impl Drop for Pty {
 
 #[cfg(test)]
 mod tests {
+
+    /// Live: moves the Claude in MOVE_SURFACE (workspace MOVE_WS, both UUIDs)
+    /// to a native session. It stops that Claude: point it at a throwaway.
+    #[test]
+    #[ignore]
+    fn pty_moves_a_running_claude() {
+        let (surface, ws) = (std::env::var("MOVE_SURFACE").unwrap(), std::env::var("MOVE_WS").unwrap());
+        let recs = crew_core::workspaces::agent_sessions().unwrap();
+        let run = running_on(&recs, &surface).expect("a running Claude there");
+        let new = move_native(&ws, &surface, &run).unwrap();
+        assert!(!alive(run.pid));
+        assert!(target_for(&new).unwrap().is_some());
+        println!("moved {} to {new}", run.session);
+    }
+
+    #[test]
+    fn running_on_finds_the_panes_live_claude() {
+        let a = "f845cb03-378e-4332-8f2f-cef27e50e0c4";
+        let recs = vec![
+            serde_json::json!({"agent": "claude", "surface_id": "S1", "stored_pid_exists": false, "pid": 10, "session_id": a, "cwd": "/x"}),
+            serde_json::json!({"agent": "codex", "surface_id": "s1", "stored_pid_exists": true, "pid": 11, "session_id": a, "cwd": "/x"}),
+            serde_json::json!({"agent": "claude", "surface_id": "s1", "stored_pid_exists": true, "pid": 12, "session_id": a, "launch_working_directory": "/w"}),
+            serde_json::json!({"agent": "claude", "surface_id": "S2", "stored_pid_exists": true, "pid": 13, "session_id": "nope", "cwd": "/x"}),
+        ];
+        assert_eq!(running_on(&recs, "S1"), Some(Running { session: a.into(), cwd: "/w".into(), pid: 12 }));
+        assert_eq!(running_on(&recs, "S2"), None);
+        assert_eq!(running_on(&recs, "S3"), None);
+    }
     use super::*;
     use serde_json::json;
     use std::io::Read;
