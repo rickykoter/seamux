@@ -72,3 +72,7 @@
 }
 .t-name-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .t-name-top b { min-width: 0; }
+/* A lane's name opens its pane in Mosaic. */
+.t-open { min-width: 0; padding: 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; display: flex; }
+.t-open:hover b { text-decoration: underline; text-underline-offset: 2px; }
+.t-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 3px; }

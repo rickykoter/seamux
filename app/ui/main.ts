@@ -69,7 +69,15 @@ const tabs = new Tabs(
     ["review", reviewEl],
   ]),
 );
-tabs.onSelect = (id) => id === "wake" && wakeView.shown();
+tabs.onSelect = (id) => {
+  if (id === "wake") wakeView.shown();
+  if (id === "timeline") timelineView.shown();
+};
+// A Timeline lane's name opens its pane in Mosaic.
+timelineView.onOpen = (ws) => {
+  tabs.select("mosaic");
+  mosaic.openWorkspace(ws);
+};
 // The Tucked chip sits at the end of the strip; Command-K opens the same palette.
 const palette = new Palette();
 document.getElementById("strip")!.append(palette.chip);

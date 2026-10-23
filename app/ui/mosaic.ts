@@ -66,6 +66,11 @@ export class Mosaic {
   private notes = new Map<string, { text: string; bad: boolean }>();
   private expanded = false;
   private drawn = "";
+  /** Each drawn tile's parts that change with every frame, updated in place. */
+  private live = new Map<string, { state: HTMLElement; tail: HTMLElement | null; keep: number }>();
+  /** A press on the grid is under way: a rebuild now would lose its click. */
+  private pressing = false;
+  private later = 0;
 
   constructor(
     private root: HTMLElement,
@@ -96,7 +101,34 @@ export class Mosaic {
       },
       true,
     );
-    setInterval(() => this.draw(true), 30_000);
+    // A press and its release must land on the same tile: no rebuild between.
+    this.grid.addEventListener("pointerdown", () => (this.pressing = true));
+    const up = () => {
+      if (!this.pressing) return;
+      this.pressing = false;
+      // After the click this release makes, never before it.
+      setTimeout(() => this.draw(), 0);
+    };
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+    // The waits' clocks move without a frame.
+    setInterval(() => this.refresh(), 30_000);
+  }
+
+  /** A menu is open or the pointer is down on the grid: rebuilding would
+   *  close the one and lose the other's click. */
+  private busy(): boolean {
+    return this.pressing || !!this.grid.querySelector(".tuck-menu:not([hidden])");
+  }
+
+  /** What changes every frame (a pane's text, a wait's clock), updated in place. */
+  private refresh(): void {
+    for (const t of this.tiles) {
+      const parts = this.live.get(t.surface);
+      if (!parts) continue;
+      parts.state.textContent = this.stateText(t);
+      if (parts.tail) this.fillTail(parts.tail, t, parts.keep);
+    }
   }
 
   async start(): Promise<void> {
@@ -117,6 +149,13 @@ export class Mosaic {
   private setViews(v: Views): void {
     this.views = { ...v, plans: v.plans ?? [], reviews: v.reviews ?? [] };
     this.draw();
+  }
+
+  /** Open a workspace's pane large: its agent's, else its first terminal. */
+  openWorkspace(ws: string): void {
+    const mine = this.tiles.filter((t) => t.workspace === ws);
+    const t = mine.find((x) => x.agent && x.state !== "ended") ?? mine[0];
+    if (t) this.expand(t.surface);
   }
 
   private expand(surface: string): void {
@@ -143,12 +182,22 @@ export class Mosaic {
     if (this.expanded) return;
     const at = document.activeElement;
     const typing = at instanceof HTMLInputElement && this.grid.contains(at);
-    const shape = JSON.stringify([this.tiles, this.views.decisions, this.views.plans, this.views.reviews, this.views.wake.slice(0, 40), [...this.notes], this.views.levels ?? {}, this.views.families ?? []]);
+    // A pane's text is left out: it changes every frame and is updated in place.
+    const tiles = this.tiles.map(({ lines: _lines, ...rest }) => rest);
+    const shape = JSON.stringify([tiles, this.views.decisions, this.views.plans, this.views.reviews, this.views.wake.slice(0, 40), [...this.notes], this.views.levels ?? {}, this.views.families ?? []]);
     if (typing || (!force && shape === this.drawn)) {
       if (typing) at!.addEventListener("blur", () => setTimeout(() => this.draw(), 0), { once: true });
+      this.refresh();
+      return;
+    }
+    if (this.busy()) {
+      this.refresh();
+      clearTimeout(this.later);
+      this.later = window.setTimeout(() => this.draw(force), 400);
       return;
     }
     this.drawn = shape;
+    this.live.clear();
     // Tucked workspaces are left out; muted ones come last, small.
     const lv = this.views.levels;
     const ranked = order(this.tiles.filter((t) => levelOf(lv, t.workspace) !== "tuck"));
@@ -175,7 +224,13 @@ export class Mosaic {
     }
     if (shells) {
       if (!loose) els.push((loose = section()));
-      loose.append(el("div", "m-tile small folded", `+ ${shells} terminal${shells === 1 ? "" : "s"}`));
+      // The shells, folded into one tile: it opens them in the list.
+      const fold = el("button", "m-tile small folded", `+ ${shells} terminal${shells === 1 ? "" : "s"}`);
+      fold.type = "button";
+      fold.title = "Open the terminals";
+      const first = this.tiles.find((t) => t.state === "shell" && levelOf(lv, t.workspace) !== "tuck");
+      fold.addEventListener("click", () => first && this.expand(first.surface));
+      loose.append(fold);
     }
     this.grid.replaceChildren(...els);
     this.grid.hidden = false;
@@ -197,6 +252,43 @@ export class Mosaic {
 
   private decisionFor(t: Tile): Decision | undefined {
     return this.views.decisions.find((d) => (d.kind === "question" || d.kind === "asked") && d.ws === t.workspace);
+  }
+
+  /** A tile's state line: what it waits on and for how long. */
+  private stateText(t: Tile): string {
+    const level = levelOf(this.views.levels, t.workspace);
+    const d = this.decisionFor(t);
+    let s: string;
+    if (t.state === "needs_input") s = `${d?.kind === "question" ? "question" : "needs you"} · ${ago(Date.now() - this.since(t))}`;
+    else if (t.state === "working") s = `working · ${ago(Date.now() - this.since(t))}`;
+    else s = t.state === "ended" ? "ended" : "idle";
+    // A child waiting on its parent says so, rather than looking idle.
+    const kin = familyOf(this.views.families, t.workspace);
+    const waits = kin ? waitText(kin.fam, kin.member) : "";
+    if (waits && t.state !== "needs_input") s = waits;
+    if (level === "mute") s += " · muted";
+    return s;
+  }
+
+  /** A tile's last lines, re-flowed for an agent. Skipped when unchanged. */
+  private fillTail(tail: HTMLElement, t: Tile, keep: number): void {
+    const key = t.error ? `!${t.error}` : t.lines.slice(-keep * 3).join("\n");
+    if (tail.dataset.text === key) return;
+    tail.dataset.text = key;
+    if (t.error) {
+      tail.textContent = `Couldn't read this pane: ${t.error}`;
+      return;
+    }
+    const lines = t.lines.slice(-keep * 3);
+    const blocks = t.agent ? reflow(lines).slice(-keep) : lines.slice(-keep).map((x) => ({ start: 0, hang: 0, text: x }));
+    tail.replaceChildren(
+      ...blocks.map((b) => {
+        const ln = el("div", "ln", b.text || " ");
+        ln.style.paddingLeft = `${b.start}ch`;
+        ln.style.textIndent = `-${b.hang}ch`;
+        return ln;
+      }),
+    );
   }
 
   private tile(t: Tile): HTMLElement {
@@ -223,22 +315,15 @@ export class Mosaic {
 
     const head = el("header", "m-head");
     head.append(el("span", "m-name", name));
-    const state = el("span", `m-state ${t.state}`);
+    const state = el("span", `m-state ${t.state}`, this.stateText(t));
     const d = this.decisionFor(t);
-    if (t.state === "needs_input") state.textContent = `${d?.kind === "question" ? "question" : "needs you"} · ${ago(Date.now() - this.since(t))}`;
-    else if (t.state === "working") state.textContent = `working · ${ago(Date.now() - this.since(t))}`;
-    else state.textContent = t.state === "ended" ? "ended" : "idle";
-    // A child waiting on its parent says so, rather than looking idle.
-    const kin = familyOf(this.views.families, t.workspace);
-    const waits = kin ? waitText(kin.fam, kin.member) : "";
-    if (waits && t.state !== "needs_input") state.textContent = waits;
-    if (level === "mute") state.textContent += " · muted";
     head.append(state, el("span", "grow"));
     if (plan && size !== "small") head.append(el("span", "m-plan", plan.phase === "done" ? `plan done · ${plan.done}/${plan.total}` : `inc ${plan.n}/${plan.total}`));
     head.append(menu(t.workspace, name, level)); // the menu always last, in every tile
     box.append(head);
 
     if (size === "small") {
+      this.live.set(t.surface, { state, tail: null, keep: 0 });
       const bits = [plan ? (plan.phase === "done" ? `plan ${plan.done}/${plan.total} · delivered` : `plan ${plan.done}/${plan.total}`) : ""].filter(Boolean);
       if (bits.length) box.append(el("span", "m-sub", bits.join(" · ")));
       const wake = this.views.wake.find((r) => r.ws === t.workspace && r.kind !== "temp");
@@ -254,17 +339,8 @@ export class Mosaic {
 
     const keep = size === "large" ? 9 : 4;
     const tail = el("div", "m-tail");
-    if (t.error) tail.textContent = `Couldn't read this pane: ${t.error}`;
-    else {
-      const lines = t.lines.slice(-keep * 3);
-      const blocks = t.agent ? reflow(lines).slice(-keep) : lines.slice(-keep).map((x) => ({ start: 0, hang: 0, text: x }));
-      for (const b of blocks) {
-        const ln = el("div", "ln", b.text || " ");
-        ln.style.paddingLeft = `${b.start}ch`;
-        ln.style.textIndent = `-${b.hang}ch`;
-        tail.append(ln);
-      }
-    }
+    this.fillTail(tail, t, keep);
+    this.live.set(t.surface, { state, tail, keep });
     box.append(tail);
 
     if (review && size === "medium") {
