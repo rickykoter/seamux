@@ -115,6 +115,20 @@ fn an_unknown_state_comes_from_the_hint_when_it_has_one() {
 }
 
 #[test]
+fn a_terminal_holding_a_native_claude_is_an_agent() {
+    let fake = Fake::new();
+    fake.live.lock().unwrap().push(C);
+    let w = wall(&fake, Duration::from_secs(1));
+    let f = w.tick().unwrap();
+    let c = f.tiles.iter().find(|t| t.surface == C).unwrap();
+    assert!(c.agent.is_none(), "cmux sees a terminal there");
+    w.set_native_probe(Box::new(|| std::collections::HashSet::from([C.to_uppercase()])));
+    let f = w.tick().expect("the probe changes the frame");
+    let c = f.tiles.iter().find(|t| t.surface == C).unwrap();
+    assert_eq!((c.agent.as_deref(), c.state.as_str()), (Some("claude"), "idle"));
+}
+
+#[test]
 fn polls_every_terminal_at_the_interval() {
     let fake = Fake::new();
     let w = wall(&fake, Duration::from_millis(50));

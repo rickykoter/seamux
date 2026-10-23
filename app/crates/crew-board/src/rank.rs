@@ -318,6 +318,23 @@ fn integrations() -> Value {
         .unwrap_or(Value::Null)
 }
 
+/// The plan a workspace works on: the one rooted at its directory, else (a
+/// session sitting in a subfolder of the plan's worktree, like `gems/core`) the
+/// deepest plan root above it, unless a workspace of its own sits in that root.
+fn plan_for<'a>(plans: &'a Map<String, Value>, cwd: &str, all_cwds: &[String]) -> Option<&'a Value> {
+    if let Some(p) = plans.get(cwd) {
+        return Some(p);
+    }
+    plans
+        .iter()
+        .filter(|(root, _)| {
+            let r = root.trim_end_matches('/');
+            !r.is_empty() && cwd.starts_with(&format!("{r}/")) && !all_cwds.iter().any(|c| c.trim_end_matches('/') == r)
+        })
+        .max_by_key(|(root, _)| root.len())
+        .map(|(_, p)| p)
+}
+
 /// rank(): the tiered rows and the quiet ones, families grouped.
 pub fn rank(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool) -> (Vec<Value>, Vec<Value>) {
     let cwds: Vec<String> = wss.iter()
@@ -339,7 +356,7 @@ pub fn rank(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool) -> 
     let (mut rows, mut quiet): (Vec<Value>, Vec<Value>) = (Vec::new(), Vec::new());
     for w in wss {
         let d = get(w, "desc").as_str().unwrap_or("");
-        let plan = get(w, "cwd").as_str().and_then(|c| plan_by_root.get(c)).filter(|p| truthy(p));
+        let plan = get(w, "cwd").as_str().and_then(|c| plan_for(plan_by_root, c, &cwds)).filter(|p| truthy(p));
         let failed = failed_check(plan);
         let running = truthy(get(w, "running"));
         let branch = get(w, "branch");
@@ -621,6 +638,22 @@ pub fn rank_plans_only(plan_by_root: &Map<String, Value>) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_workspace_in_a_subfolder_of_a_plans_worktree_works_on_that_plan() {
+        let mut plans = Map::new();
+        plans.insert("/w/p".into(), json!({"slug": "p"}));
+        plans.insert("/w/p/inner".into(), json!({"slug": "inner"}));
+        let cwds: Vec<String> = vec!["/w/p/gems/core".into(), "/w/q".into()];
+        assert_eq!(plan_for(&plans, "/w/p/gems/core", &cwds).and_then(|p| p["slug"].as_str()), Some("p"));
+        assert_eq!(plan_for(&plans, "/w/p/inner/x", &cwds).and_then(|p| p["slug"].as_str()), Some("inner"));
+        assert!(plan_for(&plans, "/w/q", &cwds).is_none());
+        assert!(plan_for(&plans, "/w/pp/x", &cwds).is_none(), "a sibling folder with the same prefix is not inside");
+        // A workspace of its own in the root keeps the plan; a subfolder one does not also claim it.
+        let both: Vec<String> = vec!["/w/p".into(), "/w/p/gems/core".into()];
+        assert!(plan_for(&plans, "/w/p/gems/core", &both).is_none());
+        assert_eq!(plan_for(&plans, "/w/p", &both).and_then(|p| p["slug"].as_str()), Some("p"));
+    }
 
     #[test]
     fn jira_keys_match_pythons_regex() {

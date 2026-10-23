@@ -409,9 +409,12 @@ function __boardRender(d) {
   // The app's tucked worktrees leave the list for the collapsed "tucked"
   // section at the end; they count toward nothing above it.
   var all = d.rows || [];
-  var rows = all.filter(function (r) { return r.tuck !== "tuck"; });
+  // A family member stays with its family even tucked: a plan's workstream is
+  // not missing from its card because its worktree was put away.
+  var away = function (r) { return r.tuck === "tuck" && !r.family; };
+  var rows = all.filter(function (r) { return !away(r); });
   var tkOpen = host.getAttribute("data-tk-open") || "", tkUp = host.getAttribute("data-tk-up") === "1";
-  var tucked = all.filter(function (r) { return r.tuck === "tuck"; });
+  var tucked = all.filter(away);
   var was = positions();
   // Every card folds in place. Unfolded by default are the cards that ask
   // something of you -- waiting and broken -- and nothing else; a child starts
