@@ -167,6 +167,7 @@ fn main() {
             term_app::term_paste,
             term_app::term_hold,
             term_app::term_release,
+            term_app::open_url,
             pty_app::pty_native,
             pty_app::pty_attach,
             pty_app::pty_write,

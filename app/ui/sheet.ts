@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { reflow } from "./reflow";
 import type { Frame as WallFrame, Tile } from "./wall";
 import { Wake } from "./wake";
-import { Term } from "./term";
+import { TermSlot } from "./native";
 import { splitter } from "./splitter";
 import { familyOf, memberState, type FamilyBrief } from "./family";
 
@@ -55,7 +55,8 @@ class Chat {
   private state = document.createElement("span");
   private body = document.createElement("div");
   /** The pane itself, live: click into it and keys go to the agent. */
-  private term = new Term();
+  /** The pane, live: native where it is tmux-backed, snapshots otherwise. */
+  private term = new TermSlot();
   private input = document.createElement("input");
   private note = document.createElement("span");
   surface = "";
