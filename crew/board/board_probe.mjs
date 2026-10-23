@@ -1345,7 +1345,7 @@ if (live && Array.isArray(live.rows)) {
   const last = () => q(fetched[fetched.length - 1]);
 
   checks.push(["intent: an older page's click CSS is replaced on upgrade",
-    oldCss.getAttribute("data-v") === "6" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
+    oldCss.getAttribute("data-v") === "7" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
   const fold = () => JSON.parse(host.getAttribute("data-fold"));
 
   click(hdA.children[1]);                            // the name, inside the header
