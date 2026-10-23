@@ -227,6 +227,8 @@ async function isNative(surface: string): Promise<boolean> {
  *  terminal otherwise. Term's surface, so callers swap it in as is. */
 export class TermSlot {
   onTrouble: (bad: boolean) => void = () => {};
+  /** It switched between native and snapshots. */
+  onMode: () => void = () => {};
   el = document.createElement("div");
   private snap = new Term();
   private native = new NativeTerm();
@@ -266,6 +268,16 @@ export class TermSlot {
     this.surface = "";
   }
 
+  /** Whether the pane is drawn natively (a tmux-backed session). */
+  isNative(): boolean {
+    return this.mode === "native";
+  }
+
+  /** Whether the pane's kind is known yet. */
+  ready(): boolean {
+    return this.mode !== "";
+  }
+
   focus(): void {
     if (this.mode === "native") this.native.focus();
     else this.snap.el.focus();
@@ -282,6 +294,8 @@ export class TermSlot {
       if (this.mode !== "snap") this.el.replaceChildren(this.snap.el);
       this.snap.show(this.surface);
     }
+    const was = this.mode;
     this.mode = mode;
+    if (was !== mode) this.onMode();
   }
 }

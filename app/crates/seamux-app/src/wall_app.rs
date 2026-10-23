@@ -214,6 +214,24 @@ pub async fn session_resume(surface_id: String, session_id: String, cwd: String)
     .map_err(|e| e.to_string())?
 }
 
+/// Move the pane's running Claude to a native session (see pty::move_native).
+/// Returns the new pane's surface id.
+#[tauri::command]
+pub async fn move_native(surface_id: String) -> Result<String, String> {
+    let w = wall()?.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (state, ws) = w.state_of(&surface_id)?;
+        if state == "working" {
+            return Err("Claude is mid-turn here; move it when it is idle".into());
+        }
+        let records = crew_core::workspaces::agent_sessions().ok_or("cmux did not list its sessions")?;
+        let run = seamux_app::pty::running_on(&records, &surface_id).ok_or("no running Claude in this pane")?;
+        seamux_app::pty::move_native(&ws, &surface_id, &run)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn wall_jump(surface_id: String) -> Result<(), String> {
     let w = wall()?.clone();
