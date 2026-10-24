@@ -32,6 +32,7 @@ import {
   FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
   familyOf, refreshFamilyFor, overlaps, checkFamily, draftParent, waitingOn, waitText,
   memberAt, readSeen, gatherNews, newsText, familyRow, familiesBySlug, protects,
+  goOwner, goBy, goHow, goRefusal, updateControl, pruneControl, controlPath,
 } from "./lib/family.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, statePath, sessionId,
@@ -1625,6 +1626,7 @@ ${surfaceClose()}${SURFACE_JS}
 function renderFamily(spec, family) {
   if (family) {
     writeIndex(family.index);
+    pruneControl(family.index);
     const kids = family.index.members.filter(m => m.role === "child").map(m => m.slug);
     say(`family ${spec.slug}: ${kids.length} workstream(s) — ${kids.join(", ")}`);
     for (const o of overlaps(family.index)) console.error("  ⚠ overlap: " + o);
@@ -1633,6 +1635,8 @@ function renderFamily(spec, family) {
   const own = readIndex(spec.slug);
   if (own && !spec.workstreams) {
     fs.renameSync(indexPath(spec.slug), indexPath(spec.slug).replace(/index\.json$/, "index.dissolved.json"));
+    if (fs.existsSync(controlPath(spec.slug)))
+      fs.renameSync(controlPath(spec.slug), controlPath(spec.slug).replace(/control\.json$/, "control.dissolved.json"));
     say(`family ${spec.slug}: dissolved (the spec no longer lists workstreams)`);
     return;
   }
@@ -2372,10 +2376,17 @@ function reopenPhase(st) {
   }
 }
 
-function transition(action, slug, n, why, force = false) {
+function transition(action, slug, n, why, force = false, { byHuman = false } = {}) {
   const st = readState(slug) || die("no plan " + slug);
+  let by = "";
   if (action === "go") {
     if (st.phase === "review") die("the alignment check has not passed — `deep-plan grade` first");
+    // Who is giving this go, and whether they may. A delegated child cannot
+    // authorize itself; --force is not a way past that (a person's go is:
+    // --by human). The reason goes on the last line, for the chip and pane.
+    by = goBy(slug, { byHuman });
+    const refusal = goRefusal(slug, by);
+    if (refusal) die(`${refusal}\ngo refused: ${by === "self" ? "self-go on a delegated child" : "not the parent's go to give"}`);
     let beside = null;
     if (n === "next") {
       // A go already given and not yet acted on (the pane's or the board's
@@ -2412,8 +2423,9 @@ function transition(action, slug, n, why, force = false) {
     // one is always re-stamped, so a sha left by an older engine's reset
     // (which did not clear it) cannot become a stale base.
     if (inc.status === "pending" || !inc.startSha) inc.startSha = headSha(st.root);
-    inc.status = "authorized"; inc.authorizedAt = Date.now(); inc.note = "";
-    log1(st, `go: increment ${n} (${inc.title}) authorized` +
+    const how = by === "human" ? goHow({ byHuman }) : "";
+    inc.status = "authorized"; inc.authorizedAt = Date.now(); inc.note = ""; inc.by = by;
+    log1(st, `go: increment ${n} (${inc.title}) authorized by ${by}${how ? ` (${how})` : ""}` +
       (waits.length ? ` (--force past the family wait: ${waitText(waits)})` : "") +
       (beside ? ` (--force beside increment ${beside.n}, still ${beside.status})` : ""));
   } else if (action === "start") {
@@ -2754,7 +2766,7 @@ function statusRows() {
     // seamux-mods pane) rather than the board's one-line summary. `obs` is the
     // checks folded to one word, for a pane built before checks.
     increments: (st.increments || []).map(i => ({
-      n: i.n, title: i.title, status: i.status, obs: checksAggregate(i),
+      n: i.n, title: i.title, status: i.status, obs: checksAggregate(i), by: i.by || "",
       checks: Object.entries(checksOf(i)).filter(([, v]) => !v.retired).map(([id, v]) => {
         const status = shownStatus(v) || "pending";
         return {
@@ -2773,7 +2785,11 @@ function familyGate(st) {
   const g = gateView(st);
   if (g.allow) return g;
   const waits = waitingOn(st.slug);
-  return waits.length ? { ...g, why: `${g.why} go waits on ${waitText(waits)}.` } : g;
+  let why = waits.length ? `${g.why} go waits on ${waitText(waits)}.` : g.why;
+  const own = goOwner(st.slug);
+  if (own && own.hold) why += ` The parent is holding it: "${own.hold.reason}".`;
+  else if (own && own.delegated) why += ` Its go is the parent's to give (${own.parent}).`;
+  return why === g.why ? g : { ...g, why };
 }
 
 function status(json) {
@@ -3365,7 +3381,36 @@ function familyCmd(args, flags) {
     for (const p of f.trespasses.pairs) say(`  ⚠ ${p.from} edited ${p.owner}'s claims ${p.count}×`);
     return;
   }
-  die("family init <parent> <child>... [--out F] | family check <parent> [--json] | family news [slug] | family status [slug] [--json]");
+  if (["take-back", "give-back", "hold", "unhold"].includes(sub)) {
+    const slug = more[0] || die(`family ${sub} <child>${sub === "hold" ? ' "<reason>"' : ""}`);
+    const own = goOwner(slug) || die(`${slug} is not a family child`);
+    const by = goBy(slug, { byHuman: !!flags.byHuman });
+    const pst = readState(own.parent);
+    const note = what => { if (pst) { log1(pst, what); writeState(pst); } };
+    if (sub === "take-back" || sub === "give-back") {
+      // A person's lever over the parent: the agents it constrains do not pull it.
+      if (by !== "human")
+        die(`family ${sub} is a person's lever, and this is a Claude Code session (${by}). ` +
+          `Run it from your own shell, or have the agent pass --by human on your word.\nfamily ${sub} refused: not a person`);
+      if (!own.declared) die(`${slug}'s go is not delegated in the ${own.parent} spec; there is nothing to ${sub === "take-back" ? "take back" : "give back"}`);
+      updateControl(own.parent, c => { if (sub === "take-back") c.takenBack[slug] = { at: Date.now(), by }; else delete c.takenBack[slug]; });
+      note(`family ${sub}: ${slug}'s go is ${sub === "take-back" ? "a person's again" : "the parent's again"} (by ${by})`);
+      say(sub === "take-back"
+        ? `${slug}: its go is a person's until  deep-plan family give-back ${slug}`
+        : `${slug}: its go is the parent's again`);
+    } else {
+      if (by === "self") die(`family ${sub} is the parent's (or a person's), not the child's own\nfamily ${sub} refused: self`);
+      const reason = sub === "hold" ? more.slice(1).join(" ").trim() || die(`family hold ${slug} "<reason>": a hold says why`) : "";
+      if (sub === "unhold" && !own.hold) die(`${slug} is not held`);
+      updateControl(own.parent, c => { if (sub === "hold") c.holds[slug] = { reason, at: Date.now(), by }; else delete c.holds[slug]; });
+      note(`family ${sub}: ${slug}${reason ? ` — ${reason}` : ""} (by ${by})`);
+      say(sub === "hold" ? `holding ${slug}: ${reason}` : `${slug} is no longer held`);
+    }
+    for (const m of (familyOf(slug) || { members: [] }).members) rerenderWorking(m.slug, false);
+    return;
+  }
+  die("family init <parent> <child>... [--out F] | family check <parent> [--json] | family news [slug] | family status [slug] [--json]\n" +
+    "       family take-back|give-back <child> [--by human] | family hold <child> \"<reason>\" | family unhold <child>");
 }
 
 // ---------------------------------------------------------------- main
@@ -3399,6 +3444,12 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--token") flags.token = rest[++i];
   else if (rest[i] === "--timeout") flags.timeout = Number(rest[++i]);
   else if (rest[i] === "--base") flags.base = rest[++i] || die("--base needs a sha");
+  else if (rest[i] === "--by") {
+    // Only "human" can be claimed: parent and self are worked out from where
+    // the command runs, never asserted.
+    if (rest[++i] !== "human") die(`--by takes only "human" (got ${rest[i] || "nothing"}); parent and self are worked out from the cwd`);
+    flags.byHuman = true;
+  }
   else args.push(rest[i]);
 }
 
@@ -3457,7 +3508,7 @@ switch (cmd) {
     let slug = args[0], n = args[1];
     if (flags.at) { slug = resolveSlugAt(flags.at) || die("no plan tracks " + flags.at); n = args[0] || "next"; }
     if (!slug) die("go <slug> <n|next>  |  go --at DIR next");
-    transition("go", slug, n || "next", undefined, flags.force); break;
+    transition("go", slug, n || "next", undefined, flags.force, { byHuman: !!flags.byHuman }); break;
   }
   case "start": case "done": case "reset":
     transition(cmd, args[0], args[1] ?? die(cmd + " <slug> <n>"), undefined, flags.force); break;
@@ -3630,7 +3681,8 @@ switch (cmd) {
   status [--json]                             tracked plans (the board reads --json)
   protects <dir> [--json]                     whether live plan or family work sits at a
                                               directory (crew asks before closing one)
-  go <slug> <n|next> | go --at DIR next       authorize an increment
+  go <slug> <n|next> | go --at DIR next       authorize an increment; records who gave it
+     [--by human]                             (a delegated child cannot go itself)
   start|done|block|reset <slug> <n> [why]     move an increment
                                               (done is refused until every check
                                               passed against the tree as it is;
@@ -3674,6 +3726,10 @@ switch (cmd) {
                                               a sibling claims (exit 1 when any)
   family status [slug] [--json]               every member's phase and progress, what
                                               waits, and recorded overlaps
+  family take-back <child> [--by human]       a person takes a delegated child's go back
+                                              from the parent; give-back returns it
+  family hold <child> "<reason>"              the parent holds a child's go, saying why;
+                                              unhold lifts it
   family news [slug]                          what the news hook would tell that member
                                               (default: the one at the cwd) now; does
                                               not move its cursor

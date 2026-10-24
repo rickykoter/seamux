@@ -29,6 +29,10 @@ These survive a compaction; everything below them is how.
 - **`done` only on proven checks.** Never hand-pass a recipe-backed or review
   check, never `--force` anything unless the human says to, and say when you
   did.
+- **A delegated child's go is its parent's.** When a family's workstream sets
+  `go: "parent"`, the parent agent gives that child's go from its own
+  worktree, after reading the child's verdicts. The child never runs `go`
+  itself, and no agent passes `--by human` except on a person's word.
 - **An acquire step is the human's.** Never run one, even with a `go` in hand.
 - **Recipe files are the developer's** to review and commit.
 - **Publishing a plan sends it off the machine:** confirm with the human every
@@ -117,7 +121,9 @@ These survive a compaction; everything below them is how.
    `go`.
 9. **Implement increment by increment.** `deep-plan go <slug> next` is the
    human's go-ahead (also the board's `go` chip, and the plan pane's `go
-   next`, which then tells you which increment is authorized). When the human
+   next`, which then tells you which increment is authorized), or the parent
+   agent's for a delegated family child ([families.md](references/families.md)).
+   When the human
    says "go" and an increment is already authorized, start that one. `go
    next` refuses while one is open; `--force` past it only on the human's
    word. Each `go` opens or refocuses the working surface in the Dock,

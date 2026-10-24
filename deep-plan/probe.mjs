@@ -3068,6 +3068,120 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   for (const n of [fam.slug, "example-auth-api", "example-auth-ui", "example-docs"]) cli("close", n);
 }
 
+// -------------------------------------------------- delegated go
+// A workstream with go: "parent" lets the parent agent give that child's go.
+// Who gives a go is worked out from where it runs: inside the parent's root is
+// the parent, --by human or a shell outside Claude Code is a person, anything
+// else is the plan's own session (self). A delegated child's self-go is
+// refused, --force or not; a person can always step in.
+{
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const DR = path.join(TMP, "dlgrepo"), DW = path.join(TMP, "dlgrepo.worktrees");
+  fs.mkdirSync(DR, { recursive: true });
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: DR });
+  const KID = path.join(DW, "kid"), TWO = path.join(DW, "two");
+  execSync(`git worktree add -q -b kid ${KID} && git worktree add -q -b two ${TWO}`, { cwd: DR });
+  const NOCC = { ...ENV }; delete NOCC.CLAUDECODE;
+  // A command as some session would run it: from `cwd`, inside Claude Code or not.
+  const as = (cwd, agent, ...args) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...args],
+    { encoding: "utf8", cwd, env: agent ? { ...NOCC, CLAUDECODE: "1" } : NOCC });
+  const st = slug => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, slug + ".json"), "utf8"));
+  const lastLine = r => { const l = r.stderr.trim().split("\n"); return l[l.length - 1]; };
+  const gradeRight = slug => {
+    const k = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8"));
+    return cli("grade", slug, ...Object.entries(k.answers).map(([q, a]) => `${q}=${a.letter}`));
+  };
+  const kidSpec = slug => { const c = JSON.parse(JSON.stringify(spec)); c.slug = slug;
+    c.deliverables = c.deliverables.map(d => ({ ...d, files: [] })); return c; };
+  for (const [slug, root] of [["example-dlg-kid", KID], ["example-dlg-two", TWO]]) {
+    cli("render", tmpSpec(kidSpec(slug)), "--root", root); gradeRight(slug);
+  }
+  const fam = JSON.parse(fs.readFileSync(path.join(HERE, "examples", "example.family.spec.json"), "utf8"));
+  const parent = { ...fam, slug: "example-dlg",
+    workstreams: [{ slug: "example-dlg-kid", owns: ["kid/**"], go: "parent" }, { slug: "example-dlg-two", owns: ["two/**"] }] };
+  let r = cli("render", tmpSpec({ ...parent, workstreams: [{ slug: "example-dlg-kid", go: "parents" }] }), "--root", DR);
+  ok("delegation: a go other than \"parent\" is refused at render", r.status !== 0 && /\.go must be "parent"/.test(r.stderr));
+  r = cli("render", tmpSpec(parent), "--root", DR);
+  gradeRight("example-dlg");
+  const idx = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "families", "example-dlg", "index.json"), "utf8"));
+  ok("delegation: the index carries each child's go owner",
+    r.status === 0 && idx.members.find(m => m.slug === "example-dlg-kid").go === "parent" &&
+    idx.members.find(m => m.slug === "example-dlg-two").go === "");
+
+  // The child cannot authorize itself, and --force is no way past that.
+  r = as(KID, true, "go", "example-dlg-kid", "next");
+  ok("delegation: a delegated child's own go is refused, the reason on the last line",
+    r.status !== 0 && lastLine(r) === "go refused: self-go on a delegated child" && /--by human/.test(r.stderr));
+  r = as(KID, true, "go", "example-dlg-kid", "next", "--force");
+  ok("delegation: …--force does not get past it", r.status !== 0 && st("example-dlg-kid").increments.every(i => i.status === "pending"));
+  const row = JSON.parse(cli("status", "--json").stdout).find(x => x.slug === "example-dlg-kid");
+  ok("delegation: the shut gate says the parent gives the go", row && /parent's to give \(example-dlg\)/.test(row.gate.why));
+  const e = spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")], { encoding: "utf8", env: ENV,
+    input: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: path.join(KID, "x.ts") }, cwd: KID, session_id: "dlg" }) });
+  ok("delegation: the edit refusal tells the child not to run go", e.status === 2 && /delegated to the parent \(example-dlg\): do not run deep-plan go here/.test(e.stderr));
+
+  // The parent gives it from its own root; the record says so.
+  r = as(DR, true, "go", "example-dlg-kid", "next");
+  ok("delegation: the parent's go from its own root goes, recorded by parent",
+    r.status === 0 && st("example-dlg-kid").increments[0].status === "authorized" && st("example-dlg-kid").increments[0].by === "parent" &&
+    st("example-dlg-kid").log.some(l => /authorized by parent/.test(l.what)));
+  const incRow = JSON.parse(cli("status", "--json").stdout).find(x => x.slug === "example-dlg-kid").increments[0];
+  ok("delegation: status rows carry who gave each go", incRow.by === "parent");
+  cli("done", "example-dlg-kid", "1", "--force");
+
+  // A hold: the parent's written reason, and its own go refused while it holds.
+  ok("delegation: the child cannot hold itself", as(KID, true, "family", "hold", "example-dlg-kid", "x").status !== 0);
+  r = as(DR, true, "family", "hold", "example-dlg-kid", "the session type is still moving");
+  ok("delegation: the parent holds a child, saying why", r.status === 0 && /holding example-dlg-kid/.test(r.stdout));
+  ok("delegation: a hold needs a reason", as(DR, true, "family", "hold", "example-dlg-kid").status !== 0);
+  r = as(DR, true, "go", "example-dlg-kid", "next");
+  ok("delegation: the parent's go is refused while it holds", r.status !== 0 && /family unhold example-dlg-kid/.test(r.stderr));
+  const held = JSON.parse(cli("status", "--json").stdout).find(x => x.slug === "example-dlg-kid");
+  ok("delegation: the gate reason shows the hold", /holding it: "the session type is still moving"/.test(held.gate.why));
+  r = as(KID, true, "go", "example-dlg-kid", "next", "--by", "human");
+  ok("delegation: a person's go passes a hold, recorded by human",
+    r.status === 0 && st("example-dlg-kid").increments[1].by === "human");
+  cli("reset", "example-dlg-kid", "2");
+  ok("delegation: --by takes only human", as(DR, true, "go", "example-dlg-kid", "next", "--by", "parent").status !== 0);
+  r = as(DR, true, "family", "unhold", "example-dlg-kid");
+  ok("delegation: the parent lifts its hold", r.status === 0 && !JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "families", "example-dlg", "control.json"), "utf8")).holds["example-dlg-kid"]);
+
+  // Take-back is a person's, and outlives a re-render.
+  r = as(DR, true, "family", "take-back", "example-dlg-kid");
+  ok("delegation: an agent cannot take a child's go back", r.status !== 0 && lastLine(r) === "family take-back refused: not a person");
+  r = as(DR, false, "family", "take-back", "example-dlg-kid");
+  ok("delegation: a person takes it back", r.status === 0 && /a person's until/.test(r.stdout));
+  cli("render", tmpSpec(parent), "--root", DR);
+  r = as(DR, true, "go", "example-dlg-kid", "next");
+  ok("delegation: after a take-back (and a re-render) the parent's go is refused", r.status !== 0 && /family give-back example-dlg-kid/.test(r.stderr));
+  r = as(KID, true, "go", "example-dlg-kid", "next");
+  ok("delegation: …and the child's go is ordinary again, recorded by self", r.status === 0 && st("example-dlg-kid").increments[1].by === "self");
+  cli("reset", "example-dlg-kid", "2");
+  r = as(DR, true, "family", "give-back", "example-dlg-kid", "--by", "human");
+  ok("delegation: give-back on a person's word returns it", r.status === 0 && as(KID, true, "go", "example-dlg-kid", "next").status !== 0);
+
+  // A child the spec does not delegate: the parent may not give its go.
+  r = as(DR, true, "go", "example-dlg-two", "next");
+  ok("delegation: the parent's go on an undelegated child is refused", r.status !== 0 && /does not delegate it/.test(r.stderr));
+  r = as(TWO, true, "go", "example-dlg-two", "next");
+  ok("delegation: an undelegated child's own go goes, as before", r.status === 0 && st("example-dlg-two").increments[0].by === "self");
+  r = as(TWO, true, "family", "take-back", "example-dlg-two", "--by", "human");
+  ok("delegation: nothing to take back on an undelegated child", r.status !== 0);
+  r = as(TMP, false, "go", "example-dlg", "next");
+  ok("delegation: a go from a shell outside Claude Code is a person's", r.status === 0 && st("example-dlg").increments[0].by === "human");
+  ok("delegation: the log says how a person was decided",
+    st("example-dlg").log.some(l => /authorized by human \(no Claude Code session\)/.test(l.what)) &&
+    st("example-dlg-kid").log.some(l => /authorized by human \(--by human\)/.test(l.what)));
+  const ctl = path.join(ENV.DEEP_PLAN_STATE_DIR, "families", "example-dlg", "control.json");
+  const c0 = JSON.parse(fs.readFileSync(ctl, "utf8"));
+  c0.holds["example-gone"] = { reason: "stale", at: 1, by: "parent" };
+  fs.writeFileSync(ctl, JSON.stringify(c0));
+  cli("render", tmpSpec(parent), "--root", DR);
+  ok("delegation: a render drops control entries for slugs no longer children",
+    !("example-gone" in JSON.parse(fs.readFileSync(ctl, "utf8")).holds));
+  for (const n of ["example-dlg", "example-dlg-kid", "example-dlg-two"]) cli("close", n);
+}
+
 // -------------------------------------------------- a new directory under a symlinked root
 // macOS spells the temp tree /var/… and resolves it to /private/var/…. A file
 // in a directory that does not exist yet has to resolve through its nearest

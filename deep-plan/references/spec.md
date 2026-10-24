@@ -58,8 +58,11 @@ A parent plan (see Families) adds one block, and a child plan adds nothing:
                       "owns": ["glob", { "repo": "other-repo", "glob": "..." }],
                       "shared": ["globs no one owns: lockfiles, CHANGELOG"],
                       "contracts": ["surfaces from this spec it owns"], "consumes": ["... it uses"],
-                      "after": [1] }]
+                      "after": [1], "go": "parent" }]
 ```
+
+`go: "parent"` delegates that child's go to the parent agent; leave it out
+and the child's go is a person's, as for any plan (see Families).
 
 ## Advisory and derived fields
 

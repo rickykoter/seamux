@@ -122,6 +122,8 @@ export function validateWorkstreams(spec) {
     }
     if (w.repo !== undefined && (typeof w.repo !== "string" || !w.repo.trim()))
       errs.push(`${at}.repo must be a path or a repo name`);
+    if (w.go !== undefined && w.go !== "parent")
+      errs.push(`${at}.go must be "parent" (the parent agent gives this child's go) or absent (a person does)`);
   });
   return errs;
 }
@@ -231,6 +233,10 @@ export function buildIndex(spec, parentRoot) {
       owns: normClaims(w.owns, home, errors, where + " owns"),
       shared: normClaims(w.shared, home, errors, where + " shared"),
       contracts: w.contracts || [], consumes: w.consumes || [], after: w.after || [],
+      // Who gives this child's go: "parent" when the spec delegates it, else
+      // "" (a person, as for any plan). A take-back lives in control.json, so
+      // a re-render never silently hands delegation back.
+      go: w.go === "parent" ? "parent" : "",
       derived: derivedOf(archivedSpec(w.slug), st.root),
       // The ref news measures this member's base against, resolved once here
       // so the per-prompt hook needs a single git call.
@@ -515,6 +521,121 @@ export function familyDone(idx) {
     const incs = st.increments || [];
     return st.phase === "done" || st.phase === "closed" || (incs.length > 0 && incs.every(i => i.status === "done"));
   });
+}
+
+// ---------------------------------------------------------------- delegation
+
+// What a person and the parent agent have said about each child's go, beside
+// the index rather than in it: rendering rebuilds the index from the spec, and
+// a take-back or a hold must outlive that. {takenBack: {slug: {at, by}},
+// holds: {slug: {reason, at, by}}}.
+export function controlPath(parent) { return path.join(FAMILIES_DIR, parent, "control.json"); }
+
+export function readControl(parent) {
+  try {
+    const c = JSON.parse(fs.readFileSync(controlPath(parent), "utf8")) || {};
+    return { takenBack: c.takenBack || {}, holds: c.holds || {} };
+  } catch { return { takenBack: {}, holds: {} }; }
+}
+
+export function writeControl(parent, c) {
+  const p = controlPath(parent);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  const tmp = p + ".tmp." + process.pid;
+  fs.writeFileSync(tmp, JSON.stringify(c, null, 2) + "\n");
+  fs.renameSync(tmp, p);
+}
+
+// Read, change and write control.json under a lock, so a hold and a
+// take-back made at the same moment do not drop each other. The lock is the
+// state files' kind: a directory, a stale one broken after 5s, and on
+// sustained contention the write goes ahead unlocked rather than hang.
+export function updateControl(parent, fn) {
+  const lock = path.join(FAMILIES_DIR, parent, ".lock-control");
+  fs.mkdirSync(path.dirname(lock), { recursive: true });
+  let held = false;
+  for (const deadline = Date.now() + 1000; Date.now() < deadline;) {
+    try { fs.mkdirSync(lock); held = true; break; }
+    catch {
+      try { if (Date.now() - fs.statSync(lock).mtimeMs > 5000) { fs.rmdirSync(lock); continue; } } catch { continue; }
+      for (const until = Date.now() + 10; Date.now() < until;) { /* hold times are single-digit ms */ }
+    }
+  }
+  try {
+    const c = readControl(parent);
+    const out = fn(c);
+    writeControl(parent, c);
+    return out;
+  } finally { if (held) try { fs.rmdirSync(lock); } catch { /* gone already */ } }
+}
+
+// A render keeps control.json to the family it now describes: entries for a
+// slug that is no longer a child are dropped, so a later family that reuses
+// the slug starts clean. A dissolved family's control.json is set aside with
+// its index.
+export function pruneControl(idx) {
+  if (!fs.existsSync(controlPath(idx.parent))) return;
+  const kids = new Set(idx.members.filter(m => m.role === "child").map(m => m.slug));
+  updateControl(idx.parent, c => {
+    for (const k of ["takenBack", "holds"]) for (const s of Object.keys(c[k])) if (!kids.has(s)) delete c[k][s];
+  });
+}
+
+// Who a family child's go belongs to. Null for a plan that is not a child.
+// `declared` is the spec's word; `delegated` is that word unless a person took
+// it back; `hold` is the parent's written reason for not going yet.
+export function goOwner(slug) {
+  const idx = familyOf(slug);
+  if (!idx) return null;
+  const me = idx.members.find(m => m.slug === slug);
+  if (!me || me.role !== "child") return null;
+  const c = readControl(idx.parent);
+  const parent = idx.members.find(m => m.role === "parent");
+  const declared = me.go === "parent";
+  return {
+    parent: idx.parent, parentRoot: parent ? parent.root : "", root: me.root,
+    declared, delegated: declared && !c.takenBack[slug],
+    takenBack: c.takenBack[slug] || null, hold: c.holds[slug] || null,
+  };
+}
+
+// Who is giving a go (or a take-back, or a hold) on `slug`, from where the
+// command runs: "human" with --by human or from a shell outside any Claude
+// Code session (wherever it stands, the parent's worktree included); "parent"
+// from a Claude Code session inside the family parent's root; "self" from any
+// other Claude Code session, the plan's own included.
+// `--by human` is taken as given: the skill forbids an agent passing it on its
+// own word, and every use is logged.
+// How a "human" was decided, for the log: an explicit --by human, or no
+// Claude Code session in the environment. An agent that drops CLAUDECODE to
+// pass as a person is the same honour-system breach as passing --by human on
+// its own word, and the log shows which way each go came.
+export function goHow({ byHuman = false, env = process.env } = {}) {
+  return byHuman ? "--by human" : !env.CLAUDECODE ? "no Claude Code session" : "";
+}
+
+export function goBy(slug, { byHuman = false, cwd = process.cwd(), env = process.env } = {}) {
+  if (byHuman || !env.CLAUDECODE) return "human";
+  const idx = familyOf(slug);
+  const parent = idx && idx.parent !== slug ? idx.members.find(m => m.role === "parent") : null;
+  return parent && parent.root && insideRoot(canon(cwd), parent.root) ? "parent" : "self";
+}
+
+// Why a go on `slug` given `by` someone must be refused, or "". The engine's
+// other refusals (an open increment, a family wait) still apply after this.
+export function goRefusal(slug, by) {
+  const o = goOwner(slug);
+  if (!o) return "";
+  if (by === "self" && o.delegated)
+    return `${slug}'s go is delegated to its parent (${o.parent}): a child does not authorize itself. ` +
+      `The parent gives it from its own worktree; a person can too:  deep-plan go ${slug} next --by human`;
+  if (by === "parent" && !o.declared)
+    return `${slug}'s go is a person's: the ${o.parent} spec does not delegate it (workstreams[].go)`;
+  if (by === "parent" && o.takenBack)
+    return `a person took ${slug}'s go back from the parent; it is a person's until  deep-plan family give-back ${slug}`;
+  if (by === "parent" && o.hold)
+    return `the parent is holding ${slug}: "${o.hold.reason}" — lift it first:  deep-plan family unhold ${slug}`;
+  return "";
 }
 
 // ---------------------------------------------------------------- protection

@@ -30,6 +30,22 @@ the shared contract first, check the whole once everything is in).
 - **Sequencing:** a workstream's `after` lists parent increments it waits on.
   `go` on that child is refused until they are done (`go --force` is the
   logged override), and the shut gate's reason says what it waits on.
+- **Delegated go:** a workstream with `go: "parent"` lets the parent agent give
+  that child's go. Every go records who gave it (`by`, in the log and on
+  status rows): `human` with `--by human` or from a shell outside Claude Code,
+  `parent` from a Claude Code session inside the parent's root, and `self`
+  otherwise. A
+  delegated child's own `go` is refused, and `--force` does not get past
+  that. The parent's duty before each child go: the child's last increment is
+  done (checks and review), its waits are clear, and its patch and verdicts
+  read sensibly. If they do not, `deep-plan family hold <child> "<reason>"`
+  says why, and `unhold` lifts it; the parent's go is refused while it holds.
+- **A person can always step in.** A person's go on a delegated child is
+  allowed (`--by human`). `deep-plan family take-back <child>` makes the
+  child's go a person's again, and only `family give-back` returns it, so a
+  re-render never hands it back quietly. Both are a person's: from a Claude
+  Code session they need `--by human` on the person's word. Take-backs and
+  holds live in `state/families/<parent>/control.json`.
 - **News is pulled, not pushed.** At each prompt and session start, a member's
   session gets what changed since it last looked: sibling and parent
   increments done, a cleared wait, base-ref commits touching its claims, a
