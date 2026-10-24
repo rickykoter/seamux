@@ -94,6 +94,9 @@ if sys.argv[1:2] != ["protects"] or "--json" not in sys.argv:
     sys.exit(2)
 here = os.path.realpath(sys.argv[2])
 open(LOG, "a").write(here + "\n")
+if os.environ.get("FAKE_DP_DELAY"):
+    import time
+    time.sleep(float(os.environ["FAKE_DP_DELAY"]))
 table = json.load(open(TABLE)) if os.path.exists(TABLE) else {}
 for root, v in table.items():
     r = os.path.realpath(root)
@@ -628,9 +631,9 @@ import time  # noqa: E402
 TRIAGE = os.path.join(CREW, "hooks", "triage.py")
 
 
-def tap(ws_id, delay=None):
+def tap(ws_id, delay=None, **extra):
     """One crew:archive notification through the hook, as cmux would send it."""
-    env = dict(os.environ, CMUX_CLAUDE_HOOK_CMUX_BIN=FAKE, HOME=T)
+    env = dict(os.environ, CMUX_CLAUDE_HOOK_CMUX_BIN=FAKE, HOME=T, **extra)
     env.pop("FAKE_CMUX_DELAY", None)
     if delay:
         env["FAKE_CMUX_DELAY"] = str(delay)
@@ -681,6 +684,11 @@ r, took = tap("ws-c", delay=1.0)
 check("…and on a cmux slow enough for a terminal, it refuses in the hook instead of handing it off",
       "new-pane" not in log() and "the fam family" in log() and len(rows()) == 2, log())
 protect({})
+put_rows([ws("ws-c", C, process=True, title="chip"), ws("ws-h", A, selected=True)])
+r, took = tap("ws-c", FAKE_DP_DELAY="3", CREW_ARCHIVE_BUDGET="4")
+check("a deep-plan slow to answer counts against the hook's budget: the archive goes to a terminal",
+      took < 10 and "new-pane --type terminal" in log() and "workspace close" not in log(),
+      "%.1fs\n%s" % (took, log()))
 put_rows([ws("ws-c", C, process=True, title="chip")])
 put_rows([ws("ws-c", C, process=True, title="chip")])
 W.forget(C)
@@ -808,7 +816,8 @@ SENV.pop("TYPESAFE_API_KEY", None)
 
 
 def sweep(*argv, stdin="", **env):
-    r = subprocess.run([sys.executable, SWEEP] + list(argv), env=dict(SENV, **env), input=stdin,
+    r = subprocess.run(crew_impl.argv("crew-sweep", SWEEP, sys.executable) + list(argv),
+                       env=crew_impl.env(dict(SENV, **env)), input=stdin,
                        capture_output=True, text=True, timeout=120)
     return r
 

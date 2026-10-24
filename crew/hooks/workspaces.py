@@ -585,6 +585,8 @@ def protects(cwd):
                            timeout=PROTECTS_TIMEOUT)
     except FileNotFoundError:
         return _missing()
+    except subprocess.TimeoutExpired:
+        return err("deep-plan did not answer (no answer within %gs)" % PROTECTS_TIMEOUT)
     except Exception as e:
         return err("deep-plan did not answer (%s)" % e)
     if r.returncode == 127:                  # the shim, with no engine behind it
@@ -689,12 +691,13 @@ def _update(fn):
         return out
 
 
-def archive(handle, live=None, records=None, family_ok=False):
+def archive(handle, live=None, records=None, family_ok=False, guarded=False):
     """Close a live workspace and remember it. -> (ok, message)
 
     Refuses while its agent is mid-turn, or when that cannot be told, and when
     its directory holds live plan or family work (guard(); family_ok is a
-    person's override, asked last, once every other check has passed). The record
+    person's override, asked last, once every other check has passed; guarded
+    is a caller that asked it already, the board's hook, timing it). The record
     is written before the close, so a close that lands and a process that dies
     right after still leave it remembered; a close that fails puts back whatever
     was there before. --force is what gets an idle Claude past cmux's
@@ -723,7 +726,7 @@ def archive(handle, live=None, records=None, family_ok=False):
     cwd = ws["cwd"]
     if not cwd:
         return False, "%s has no directory to remember" % name
-    ok, why = guard(cwd, name, family_ok)
+    ok, why = (True, "") if guarded else guard(cwd, name, family_ok)
     if not ok:
         return False, why
 

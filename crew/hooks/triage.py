@@ -108,25 +108,27 @@ def archive_in_hook(ws: str) -> str:
             return "already archived"
         say("archive", "that workspace is no longer open")
         return "not open"
+    # The plan guard first, on either path: a refusal handed to a terminal
+    # would never reach a banner, and its deep-plan call is hook time too, so
+    # it counts against the budget. A chip never passes the override.
+    t1 = time.monotonic()
+    ok, why = workspaces.guard(w["cwd"], w["title"] or w["ref"])
+    asked = time.monotonic() - t1
+    if not ok:
+        say("archive", why)
+        return why
     calls = 1 + len({w["window"] for w in live} or {""})
     per = took / calls
-    if took + per * (3 + calls) + CLOSE_SETTLE > ARCHIVE_BUDGET:
-        if took + per * 5 > HOOK_LIMIT - 1:
+    if took + asked + per * (3 + calls) + CLOSE_SETTLE > ARCHIVE_BUDGET:
+        if took + asked + per * 5 > HOOK_LIMIT - 1:
             say("archive", "cmux is too slow to archive from the board — use crew-resume")
             return "slow cmux (%.1fs a call): refused" % per
-        # The plan guard first: archive() asks it on the fast path, but a
-        # refusal in a terminal would never reach a banner. A chip never
-        # passes the override.
-        ok, why = workspaces.guard(w["cwd"], w["title"] or w["ref"])
-        if not ok:
-            say("archive", why)
-            return why
         argv = [sys.executable, os.path.join(HERE, "workspaces.py"), "archive", ws]
         if open_terminal(host_workspace(ws), argv, title="archive"):
             return "slow cmux (%.1fs a call): archiving in a terminal" % per
         say("archive", "cmux is slow and no terminal would open — archive it from crew-resume")
         return "slow cmux, no terminal"
-    ok, msg = workspaces.archive(ws, live=live)
+    ok, msg = workspaces.archive(ws, live=live, guarded=True)
     if not ok:
         say("archive", msg)
     return msg
