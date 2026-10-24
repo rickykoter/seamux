@@ -131,8 +131,19 @@ fn adopt_login_path() {
     }
 }
 
+/// An app opened from Finder gets no locale either. cmux's `local-tmux start`
+/// cannot verify the session it made without a UTF-8 one, and Claude in that
+/// session would draw its UI wrong. Once, before any thread, as above.
+fn adopt_utf8_locale() {
+    let set = |k: &str| std::env::var(k).is_ok_and(|v| !v.is_empty());
+    if !["LC_ALL", "LC_CTYPE", "LANG"].iter().any(|k| set(k)) {
+        std::env::set_var("LANG", "en_US.UTF-8");
+    }
+}
+
 fn main() {
     adopt_login_path();
+    adopt_utf8_locale();
     tauri::Builder::default()
         .setup(|app| {
             shell::install(app)?;

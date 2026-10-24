@@ -248,7 +248,11 @@ pub fn start_native(ws: &str, cwd: &str, resume: Option<&str>) -> Result<String,
     let name = format!("claude-{:x}", stamp & 0xffff_ffff);
     let shell = std::env::var("SHELL").ok().filter(|s| s.starts_with('/')).unwrap_or_else(|| "/bin/zsh".into());
     // A login shell until cmux's client has attached and filled the variables in.
-    cmux_ok(&["local-tmux", "start", &name, "--cwd", cwd, "--command", &format!("{} -l", sh_quote(&shell)), "--detached"])?;
+    // A start that fails can still leave its tmux session behind, unrecorded.
+    if let Err(e) = cmux_ok(&["local-tmux", "start", &name, "--cwd", cwd, "--command", &format!("{} -l", sh_quote(&shell)), "--detached"]) {
+        let _ = cmux_ok(&["local-tmux", "close", &name]);
+        return Err(e);
+    }
     // Anything that fails from here takes the half-made session with it.
     let made = finish_native(&name, ws, &claude);
     if made.is_err() {
