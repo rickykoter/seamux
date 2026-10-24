@@ -531,6 +531,36 @@ fn family_with_nothing_ready_is_no_decision() {
 }
 
 #[test]
+fn family_members_carry_the_go_owner_holds_and_verdicts_from_status() {
+    let f = Fixture::new("family-owner");
+    let (a, b) = (f.dir("work/a"), f.dir("work/b"));
+    let tiles = [tile(SURF_A, WS_A, &a, "idle"), tile(SURF_B, WS_B, &b, "idle")];
+    let mut rows = family_rows(&a, &b);
+    let members = json!([
+        {"slug": "auth", "role": "parent", "go": "human", "held": "", "increments": []},
+        {"slug": "auth-api", "role": "child", "go": "parent", "held": "wait for the schema", "increments": [
+            {"n": 1, "title": "Endpoints", "status": "done", "checks": "pass", "review": "fail", "by": "parent"},
+            {"n": 2, "title": "Docs", "status": "pending", "checks": "pending", "review": "", "by": ""}]}]);
+    for r in rows.as_array_mut().unwrap().iter_mut().take(3) {
+        r["family"]["members"] = members.clone();
+        r["family"]["holds"] = json!({"auth-api": "wait for the schema"});
+    }
+    rows[1]["family"]["go"] = json!("parent");
+    // auth-ui's gate, as the engine reports it, is open: not ready either way.
+    rows[2]["gate"] = json!({"allow": true, "why": ""});
+    let frame = primed(inputs(&f, rows, vec![])).build(&tiles, NOW);
+    let fam = &frame.families[0];
+    let api = fam.members.iter().find(|m| m.slug == "auth-api").unwrap();
+    assert_eq!((api.go.as_str(), api.held.as_str(), api.ready), ("parent", "wait for the schema", true));
+    assert_eq!(api.increments.iter().map(|i| (i.n, i.checks.as_str(), i.review.as_str(), i.by.as_str())).collect::<Vec<_>>(),
+        vec![(1, "pass", "fail", "parent"), (2, "pending", "", "")]);
+    let parent = fam.members.iter().find(|m| m.slug == "auth").unwrap();
+    assert_eq!((parent.go.as_str(), parent.held.as_str()), ("human", ""));
+    let ui = fam.members.iter().find(|m| m.slug == "auth-ui").unwrap();
+    assert!(!ui.ready && ui.increments.is_empty(), "a member missing from the family list has no verdicts");
+}
+
+#[test]
 fn plan_owner_working_in_its_root_keeps_the_plan() {
     let f = Fixture::new("plan-owner");
     let a = f.dir("work/a");

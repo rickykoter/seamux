@@ -12,8 +12,16 @@ export type FamilyMember = {
   open: boolean;
   ws: string | null;
   waits: number[];
+  /** As status --json reports it; the Desk never works it out. */
   ready: boolean;
+  /** Who gives its go: "parent" for a delegated child, else "human". */
+  go: string;
+  /** The hold its family's parent wrote on it, or "". */
+  held: string;
+  increments: FamilyInc[];
 };
+/** views.rs FamilyInc: one increment's verdicts. */
+export type FamilyInc = { n: number; title: string; status: string; checks: string; review: string; by: string };
 export type FamilyBrief = { parent: string; members: FamilyMember[]; done: number; total: number };
 
 /** The family a workspace works in, and which member it is. */
@@ -37,11 +45,67 @@ export function memberState(fam: FamilyBrief, m: FamilyMember): string {
   const w = waitText(fam, m);
   if (w) return w;
   if (m.open) return `working inc ${m.n}/${m.total}`;
-  if (m.ready) return `can go: inc ${m.n}`;
+  if (m.ready) return m.go === "parent" ? `parent goes · inc ${m.n}` : `can go: inc ${m.n}`;
   return m.phase;
 }
 
 const SVG = "http://www.w3.org/2000/svg";
+
+/** "held by auth: wait for the schema", or "" when the parent holds nothing. */
+export function holdText(fam: FamilyBrief, m: FamilyMember): string {
+  return m.held ? `held by ${fam.parent}: ${m.held}` : "";
+}
+
+/** The go control's label: who is expected to give it, and which increment. */
+export function goLabel(m: FamilyMember): string {
+  return m.go === "parent" ? `parent goes · inc ${m.n}` : `go · inc ${m.n}`;
+}
+
+// A verdict's colour: passed, failed, or not in yet.
+const TONE: Record<string, string> = { pass: "var(--good)", fail: "var(--bad)", lost: "var(--bad)" };
+
+/** One increment's verdicts, as words for its tooltip. */
+export function incTip(i: FamilyInc): string {
+  return [`inc ${i.n} · ${i.title}`, i.status, `checks ${i.checks || "none"}`,
+    i.review ? `review ${i.review}` : "no review", i.by ? `go by ${i.by}` : ""].filter(Boolean).join(" · ");
+}
+
+/**
+ * Each increment of a member, drawn: a ring per increment, filled when done,
+ * its left half the checks' verdict and its right half the review's (a review
+ * the increment does not have leaves that half hollow). Hover says it in words.
+ */
+export function verdicts(m: FamilyMember): HTMLElement {
+  const box = document.createElement("span");
+  box.className = "fam-incs";
+  for (const i of m.increments) {
+    const svg = document.createElementNS(SVG, "svg");
+    svg.setAttribute("viewBox", "0 0 12 12");
+    svg.setAttribute("width", "12");
+    svg.setAttribute("height", "12");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", incTip(i));
+    const t = document.createElementNS(SVG, "title");
+    t.textContent = incTip(i);
+    svg.append(t);
+    const half = (d: string, verdict: string) => {
+      const p = document.createElementNS(SVG, "path");
+      p.setAttribute("d", d);
+      p.style.fill = TONE[verdict] ?? "none";
+      p.style.stroke = TONE[verdict] ?? "var(--muted)";
+      p.style.strokeWidth = "1";
+      svg.append(p);
+    };
+    half("M6 1.5a4.5 4.5 0 0 0 0 9z", i.checks);
+    half("M6 1.5a4.5 4.5 0 0 1 0 9z", i.review);
+    if (i.status !== "done") svg.style.opacity = "0.6";
+    box.append(svg);
+  }
+  box.style.display = "inline-flex";
+  box.style.gap = "3px";
+  box.style.alignItems = "center";
+  return box;
+}
 
 /** A small drawn tree: a parent node with two children. */
 function mark(): SVGSVGElement {

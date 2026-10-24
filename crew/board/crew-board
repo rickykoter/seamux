@@ -383,6 +383,8 @@ def dedupe(chips, sigs, has_plan):
             taken.add((a, None))
         elif c.startswith("go "):
             taken.add(("go", c[3:].strip()))
+        elif c.startswith(PARENT_GOES):
+            taken.add(("go", c[len(PARENT_GOES):].strip()))
     out = []
     for e in sigs:
         a = e.get("a")
@@ -528,11 +530,45 @@ def last_line(ws_id, lines=4):
 # ---------------------------------------------------------------- rank
 
 def fam_fields(plan):
-    """The row's place in a deep-plan family: the parent's slug and this
-    member's role, from the `family` field status --json carries. Empty for a
-    plan in no family (or no plan), so those rows are exactly as before."""
+    """The row's place in a deep-plan family: the parent's slug, this
+    member's role and who gives its go ("parent" or "human"; "" from an engine
+    older than delegated go), from the `family` field status --json carries.
+    Empty for a plan in no family (or no plan), so those rows are exactly as
+    before."""
     f = (plan or {}).get("family") or {}
-    return {"family": f["parent"], "famrole": f.get("role", "")} if f.get("parent") else {}
+    return ({"family": f["parent"], "famrole": f.get("role", ""), "famgo": f.get("go", "")}
+            if f.get("parent") else {})
+
+
+# A delegated child's go chip. The parent agent is expected to give that go,
+# but a person can still press it: intent.js reads the number off the label
+# like `go N`, and triage sends the go with --by human.
+PARENT_GOES = "parent goes · inc "
+
+
+def go_chip(plan, n):
+    """The gate-shut row's go chip: `go N`, or, when status --json says the
+    family's parent owns this plan's go, `parent goes · inc N`."""
+    f = (plan or {}).get("family") or {}
+    return (PARENT_GOES if f.get("go") == "parent" else "go ") + str(n)
+
+
+def go_said(plan, title, why):
+    """The gate-shut row's sentence. A delegated child's names the parent as
+    the one expected to give the go, and says a person still can."""
+    f = (plan or {}).get("family") or {}
+    if f.get("go") == "parent":
+        return "{{%s}} waits on its go from the parent, %s. You can still give it." % (
+            title, f.get("parent", "?"))
+    return "{{%s}} needs your go-ahead.%s" % (title, (" " + why) if why is not None else "")
+
+
+def hold_bits(plan):
+    """A parent row's written holds, one meta bit each: `held <child>: <reason>`."""
+    f = (plan or {}).get("family") or {}
+    if f.get("role") != "parent":
+        return []
+    return ["held %s: %s" % (s, r) for s, r in sorted((f.get("holds") or {}).items())]
 
 
 def group_families(rows, quiet):
@@ -650,6 +686,7 @@ def rank(wss, plan_by_root, screens=False):
             total = plan["progress"]["total"]
             frac = (plan["progress"]["done"] / total) if total else None
             meta_bits.append("%d/%d increments" % (plan["progress"]["done"], total))
+            meta_bits.extend(hold_bits(plan))
 
         # --- tier 1: blocked on a human ------------------------------------
         if has(d, "phase:waiting"):
@@ -665,9 +702,8 @@ def rank(wss, plan_by_root, screens=False):
             nxt = plan["progress"].get("next") or {}
             kind, badge = "attend", "gate shut"
             subject = nxt.get("title", "")
-            said = "{{%s}} needs your go-ahead. %s" % (
-                nxt.get("title", "The next increment"), plan["gate"]["why"])
-            chips = ["go %s" % nxt.get("n", "?"), "diff", "jump"]
+            said = go_said(plan, nxt.get("title", "The next increment"), plan["gate"]["why"])
+            chips = [go_chip(plan, nxt.get("n", "?")), "diff", "jump"]
 
         # --- tier 2: broken -------------------------------------------------
         elif has(d, "ci:fail"):
@@ -740,6 +776,7 @@ def rank(wss, plan_by_root, screens=False):
             if plan:
                 qmeta.append("%d/%d increments"
                              % (plan["progress"]["done"], plan["progress"]["total"]))
+                qmeta.extend(hold_bits(plan))
             qchips = ["jump"]
             if w.get("dirty"):
                 qchips.append("diff")
@@ -852,7 +889,8 @@ def rank_plans_only(plan_by_root):
         total = plan["progress"]["total"]
         frac = (plan["progress"]["done"] / total) if total else None
         name = os.path.basename(root.rstrip("/")) or plan["slug"]
-        meta = "%d/%d increments · %s" % (plan["progress"]["done"], total, plan["slug"])
+        meta = " · ".join(["%d/%d increments · %s" % (plan["progress"]["done"], total, plan["slug"])]
+                          + hold_bits(plan))
         if plan["phase"] == "review":
             rows.append({"id": plan["slug"], "name": name, "kind": "attend", "badge": "review",
                          "said": "{{Alignment check not taken.}} %d increments are locked behind "
@@ -861,9 +899,9 @@ def rank_plans_only(plan_by_root):
         elif not plan["gate"]["allow"]:
             nxt = plan["progress"].get("next") or {}
             rows.append({"id": plan["slug"], "name": name, "kind": "attend", "badge": "gate shut",
-                         "said": "{{%s}} needs your go-ahead." % nxt.get("title", "The next increment"),
+                         "said": go_said(plan, nxt.get("title", "The next increment"), None),
                          "subject": nxt.get("title", ""),
-                         "chips": ["go %s" % nxt.get("n", "?"), "plan"], "frac": frac, "meta": meta})
+                         "chips": [go_chip(plan, nxt.get("n", "?")), "plan"], "frac": frac, "meta": meta})
         elif failed_check(plan):
             f = failed_check(plan)
             rows.append({"id": plan["slug"], "name": name, "kind": "wilt", "badge": "check failed",

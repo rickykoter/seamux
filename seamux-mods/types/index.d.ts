@@ -27,6 +27,8 @@ export type SeamuxIncrement = {
   obs: string
   /** each check with its verdict; absent from an engine older than checks */
   checks?: SeamuxCheck[]
+  /** who gave its go: human | parent | self, "" before one was given; absent from an older engine */
+  by?: string
 }
 
 /** One plan row of `deep-plan status --json`, the fields this plugin reads. */
@@ -54,8 +56,12 @@ export type SeamuxFamily = {
   role: string
   /** the parent plan's slug */
   parent: string
+  /** who gives this plan's go: "parent" for a delegated child, else "human"; absent from an older engine */
+  go?: string
+  /** the holds the parent wrote, child slug to reason; absent from an older engine */
+  holds?: Record<string, string>
   /** every member, the parent first, with its phase and progress */
-  members: { slug: string; role: string; phase: string; done: number; total: number }[]
+  members: SeamuxFamilyMember[]
   /** the globs this plan's workstream owns */
   owns: string[]
   /** parent increments this plan's go waits on, and those not done yet */
@@ -68,6 +74,24 @@ export type SeamuxFamily = {
   /** every member is done */
   done: boolean
 }
+
+/** One member of a family, on every member's `family` field. */
+export type SeamuxFamilyMember = {
+  slug: string
+  role: string
+  phase: string
+  done: number
+  total: number
+  /** who gives its go: parent | human; absent from an older engine */
+  go?: string
+  /** the hold the parent wrote on it, "" for none */
+  held?: string
+  /** each increment's verdicts; absent from an older engine */
+  increments?: SeamuxFamilyIncrement[]
+}
+
+/** A member increment's verdicts: `checks` folds every check to one word, `review` is the lookout review check's status ("" when it has none), `by` who gave its go. */
+export type SeamuxFamilyIncrement = { n: number; title: string; status: string; checks: string; review: string; by: string }
 
 /** The session and cmux workspace that last wrote a plan, and when (ms). */
 export type SeamuxOwner = { session: string; workspace: string; at: number }

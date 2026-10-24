@@ -5,7 +5,7 @@ import { Term } from "./term";
 import type { Frame as WallFrame, Tile } from "./wall";
 import { ago } from "./wall";
 import { levelOf, menu, toggle, type Levels, type TuckRow } from "./tuck";
-import { familyOf, grouped, header as familyHeader, memberState, type FamilyBrief, type FamilyMember } from "./family";
+import { familyOf, goLabel, grouped, header as familyHeader, holdText, memberState, verdicts as famVerdicts, type FamilyBrief, type FamilyMember } from "./family";
 import { splitter } from "./splitter";
 
 // The shapes of views.rs's ViewsFrame.
@@ -672,7 +672,10 @@ export class Desk {
     c.append(familyHeader(f, "fam-head in-card"));
     for (const m of d.members) {
       const row = el("div", `fam-member${m.waits.length ? " waiting" : ""}${m.ready ? " ready" : ""}`);
-      row.append(el("span", "fam-role", m.role === "parent" ? "parent" : "child"), el("b", "", m.slug), el("span", "fam-state", memberState(f, m)), el("span", "grow"));
+      row.append(el("span", "fam-role", m.role === "parent" ? "parent" : "child"), el("b", "", m.slug), famVerdicts(m), el("span", "fam-state", memberState(f, m)));
+      const hold = holdText(f, m);
+      if (hold) row.append(el("span", "fam-state", hold));
+      row.append(el("span", "grow"));
       const open = button("Plan ");
       open.append(arrow());
       open.title = "In a sheet here; ⌘-click opens it in cmux";
@@ -682,7 +685,13 @@ export class Desk {
       });
       row.append(open);
       if (m.ready) {
-        const go = button(`go · inc ${m.n}`, "d-btn primary");
+        // A delegated child's go is its parent's to give, so the button is
+        // muted and says so; a person can still press it (sent as theirs).
+        const go = button(goLabel(m), m.go === "parent" ? "d-btn" : "d-btn primary");
+        if (m.go === "parent") {
+          go.style.color = "var(--muted)";
+          go.title = `${f.parent} is expected to give this go; pressing it gives it as yours`;
+        }
         go.addEventListener("click", async (e) => {
           e.stopPropagation();
           if (this.busy.has(`${key}:${m.slug}`)) return;
