@@ -1,0 +1,10 @@
+{
+  "name": "humanize",
+  "version": "0.1.0",
+  "description": "Rewrite prose so it reads like a careful human wrote it: removes AI writing tells and untangles hard-to-parse syntax, with a scanner for the mechanical tells.",
+  "author": { "name": "Richard Kotermanski", "url": "https://github.com/rickykoter" },
+  "homepage": "https://github.com/rickykoter/seamux/tree/main/humanize",
+  "repository": "https://github.com/rickykoter/seamux",
+  "license": "MIT",
+  "keywords": ["writing", "editing", "readability", "prose"]
+}

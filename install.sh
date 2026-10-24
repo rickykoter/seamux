@@ -2,7 +2,7 @@
 # install.sh — seamux, as Claude Code plugins.
 #
 #   ./install.sh [--dry-run] [--github] [--mods] [--no-crew] [--no-restack]
-#                [--no-guard] [--no-lookout] [--no-apply] [--no-migrate] [--main-repo PATH]
+#                [--no-guard] [--no-lookout] [--no-humanize] [--no-apply] [--no-migrate] [--main-repo PATH]
 #                [--with-jira[=SITE]] [--with-github-issues]
 #                [--with-observability=STACK]
 #   ./install.sh --check        what is installed, and drift in the crew tree
@@ -37,7 +37,7 @@ MARKET="seamux"
 
 APPDIR="$HOME/Applications/seamux.app"
 APP_BUNDLE_ID="dev.seamux.app"
-DRY=0 CHECK=0 UNINSTALL=0 APP=0 GITHUB=0 MODS=0 CREW=1 RESTACK=1 GUARD=1 LOOKOUT=1 APPLY=1 MIGRATE=1 MAIN="" FROM=""
+DRY=0 CHECK=0 UNINSTALL=0 APP=0 GITHUB=0 MODS=0 CREW=1 RESTACK=1 GUARD=1 LOOKOUT=1 HUMANIZE=1 APPLY=1 MIGRATE=1 MAIN="" FROM=""
 WITH_JIRA="" JIRA_SITE="" WITH_GHI="" OBS_STACK=""
 
 while [ $# -gt 0 ]; do
@@ -55,6 +55,7 @@ while [ $# -gt 0 ]; do
     --no-restack) RESTACK=0; shift ;;
     --no-guard) GUARD=0; shift ;;
     --no-lookout) LOOKOUT=0; shift ;;
+    --no-humanize) HUMANIZE=0; shift ;;
     --no-apply) APPLY=0; shift ;;
     --no-migrate) MIGRATE=0; shift ;;
     --main-repo)
@@ -89,9 +90,10 @@ PLUGINS="deep-plan"
 [ "$RESTACK" = 1 ] && PLUGINS="$PLUGINS restack"
 [ "$GUARD" = 1 ]   && PLUGINS="$PLUGINS bash-guard"
 [ "$LOOKOUT" = 1 ] && PLUGINS="$PLUGINS lookout"
+[ "$HUMANIZE" = 1 ] && PLUGINS="$PLUGINS humanize"
 [ "$CREW" = 1 ]    && PLUGINS="$PLUGINS crew"
 [ "$MODS" = 1 ]    && PLUGINS="$PLUGINS seamux-mods"
-ALL_PLUGINS="deep-plan restack bash-guard lookout crew seamux-mods"
+ALL_PLUGINS="deep-plan restack bash-guard lookout humanize crew seamux-mods"
 
 # Where Claude runs a plugin from (the checkout folder for a folder marketplace).
 # Through seamux once it is installed (the crew Python is retired at the
@@ -397,7 +399,7 @@ try:
 except ValueError:
     ps = []
 bad = 0
-for name in ("deep-plan", "restack", "bash-guard", "lookout", "crew", "seamux-mods"):
+for name in ("deep-plan", "restack", "bash-guard", "lookout", "humanize", "crew", "seamux-mods"):
     p = next((x for x in ps if x.get("id", "").split("@")[0] == name and x.get("id", "").endswith("@seamux")), None)
     if not p:
         print(f"  \033[2m·    {name}: not installed\033[0m"); continue

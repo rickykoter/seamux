@@ -9,6 +9,7 @@ It is a set of Claude Code plugins. Take the one you came for, or all of them.
 | **deep-plan** | Turns "make a plan" into a page you review, with a short quiz. The agent can't edit until you approve each increment, and can't call an increment done until its checks pass. | anywhere Claude Code runs |
 | **restack** | Rebases a stack of branches onto a moved base and regenerates conflicting generated files instead of making you merge them. | anywhere Claude Code runs |
 | **lookout** | Opens a diff beside the terminal, riskiest files first, with a reviewer's findings on their lines for you and the agent to talk through. A plan can make an increment wait on its review. | anywhere Claude Code runs; comments need crew |
+| **humanize** | Rewrites prose so it reads like a careful human wrote it: strips AI writing tells and untangles sentences that are hard to parse. Other seamux skills use it on the text they write. | anywhere Claude Code runs |
 | **seamux-mods** *(optional)* | Draws deep-plan inside the terminal: a plan pane, a `go next` prompt when the gate blocks an edit, and the plan in the status line. | Claude Code 2.1.287+ |
 
 Out of the box you only need git and GitHub. If your team uses Jira, GitHub
@@ -35,6 +36,7 @@ covers a first install and an update, and what to ask you along the way.
 [deep-plan](#deep-plan-plans-you-approve-one-step-at-a-time) ·
 [restack](#restack-rebase-without-merging-generated-files) ·
 [lookout](#lookout-review-a-diff-with-the-agent) ·
+[humanize](#humanize-prose-that-reads-like-a-person-wrote-it) ·
 [seamux-mods](#seamux-mods-deep-plan-in-the-terminal) ·
 [Setup](#setup) ·
 [Configuration](#configuration) ·
@@ -548,6 +550,38 @@ with a delivery review can't be complete until its review passes (see
 [Checks before done](#checks-before-done)). On a plain branch nothing gates
 on it: the review is a conversation.
 
+## humanize: prose that reads like a person wrote it
+
+humanize is an editing skill. Ask Claude to "humanize" a draft, or let it run
+as the last pass on a design doc, ADR, README, PR description or commit
+message. It keeps every claim in the original, adds none, removes the
+marks of machine-written text (puffery, stock vocabulary, em dashes,
+formulaic structure), and rewrites sentences a reader would have to parse
+twice. Text that already reads plainly comes back unchanged.
+
+deep-plan runs it over the prose in a spec before rendering, and lookout runs
+it over the replies it writes to you and tells its reviewer to write findings
+in plain verbs. `humanize/scripts/scan.py` finds the mechanical tells (dashes,
+curly quotes, emoji, bold density, watched words, long sentences) with line
+numbers. It only flags candidates, and the model decides which ones matter.
+
+The readability rules (`humanize/references/readability.md`, patterns 34 to
+39) follow Clark, Martin and Mahowald, who compared nine language models with
+human writing and found that the models use more inanimate subjects with
+animate verbs and more low-frequency n-grams, and most use longer dependencies
+and more stacked nouns:
+
+> Thomas Hikaru Clark, Matias B. Martin and Kyle Mahowald. *Why is
+> AI-generated language so hard to understand?* arXiv:2610.29162, October
+> 2026. <https://arxiv.org/abs/2610.29162>
+
+Those rules cover personified code, stacked noun compounds, long gaps between
+subject and verb, and coined jargon. The paper's conclusion (section 6) is
+that models trained for code and math face different pressures than human
+language does, so their output can be grammatical and still hard to read.
+The other patterns in the skill (content, language, rhetoric and formatting
+tells) are not taken from the paper.
+
 ## seamux-mods: deep-plan in the terminal
 
 An optional plugin that draws deep-plan inside Claude Code, so you can steer
@@ -713,8 +747,8 @@ is in, so they stay on the checkout you keep.
 
 For scripted installs, `--main-repo PATH`, `--with-jira=SITE`,
 `--with-github-issues` and `--with-observability=STACK` set the crew plugin's
-options, and `--no-crew`, `--no-restack`, `--no-guard` and `--no-lookout`
-skip plugins.
+options, and `--no-crew`, `--no-restack`, `--no-guard`, `--no-lookout` and
+`--no-humanize` skip plugins.
 
 ### Integrations
 

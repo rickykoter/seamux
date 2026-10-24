@@ -6,6 +6,14 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **humanize: a new plugin for readable prose.** A skill that removes AI
+  writing tells and untangles hard-to-parse syntax, with seven reference
+  files and `scripts/scan.py`, a scanner for the mechanical tells. Its
+  readability rules follow Clark, Martin and Mahowald (arXiv:2610.29162).
+  deep-plan now runs it over a spec's prose before rendering, and lookout
+  runs it over the agent's replies and adds a Writing section to the
+  reviewer brief. `install.sh` installs it; `--no-humanize` skips it.
+
 - **lookout: group notes, and an optional quiz before them.** The reviewer
   now writes one object: its findings, links between files the grouping
   rules missed (one more edge provider, `reviewer`, under the six-file cap),

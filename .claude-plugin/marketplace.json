@@ -43,6 +43,12 @@
       "source": "./lookout",
       "description": "Review a diff in a browser pane beside the terminal: files sorted by risk or by path, highlighted split or unified diffs, and findings discussed with the agent in threads on their lines.",
       "category": "development"
+    },
+    {
+      "name": "humanize",
+      "source": "./humanize",
+      "description": "Rewrite prose so it reads like a careful human wrote it: removes AI writing tells and untangles hard-to-parse syntax, with a scanner for the mechanical tells.",
+      "category": "productivity"
     }
   ]
 }
