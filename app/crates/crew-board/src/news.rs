@@ -141,6 +141,11 @@ pub fn state(r: &Value) -> String {
                 )
             }
         }
+        // A delegated child's go is its parent's to give (news.py says why).
+        "gate shut" if get(r, "famgo") == "parent" => {
+            let s = format!("waits on its go from the parent, {}", plain(get(r, "family")));
+            if subj.is_empty() { s } else { format!("{s}, for {subj}") }
+        }
         "gate shut" => with("needs your go-ahead on", "needs your go-ahead"),
         "ci failed" => {
             let br = plain(get(r, "branch"));

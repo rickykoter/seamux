@@ -1678,6 +1678,14 @@ print(json.dumps([ast.dump(d) == ast.dump(b), sum(ns["tree_url_is"](l, "board.ht
     !/tidy \{\{|`y`/.test(n.items[5].text) && n.items[5].text.includes("tidy x y")]);
   checks.push(["news: red CI names the branch, a failed check names it",
     n.items[1].text === "{{red}} is red on CI on `dev/red`." && n.items[2].text.includes("(increment 3 · test-probe)")]);
+  const del = compose([
+    R("ft-parent", "running", "working", { family: "ft-parent", famrole: "parent", famgo: "human", famtier: "attend" }),
+    R("ft-kid", "attend", "gate shut", { subject: "Retry sweep", family: "ft-parent", famrole: "child", famgo: "parent", famtier: "attend" }),
+    R("ft-own", "attend", "gate shut", { subject: "Own go", family: "ft-parent", famrole: "child", famgo: "human", famtier: "attend" }),
+  ]);
+  checks.push(["news: a delegated child at a shut gate waits on its parent, as its card says",
+    del.items[0].text.includes("{{ft-kid}} waits on its go from the parent, ft-parent, for Retry sweep") &&
+    del.items[0].text.includes("{{ft-own}} needs your go-ahead on Own go") && !/ft-kid\}\} needs your go-ahead/.test(del.items[0].text)]);
   const empty = compose([]);
   checks.push(["news: no rows give no items and an empty lede",
     empty.items.length === 0 && empty.lede === "" && empty.hours === 5]);
@@ -1751,6 +1759,9 @@ if (crewImpl.isRust("news") || crewImpl.isRust("judgments")) {
     { id: "f2", name: "kid", kind: "attend", badge: "review", family: "Fam", meta: "0/1 increments" },
     { id: "f3", name: "idle", kind: "quiet", family: "Fam" },
     { id: "g1", name: "q", kind: "quiet", family: "G2" },
+    { id: "d1", name: "dp", kind: "running", badge: "working", family: "Del", famrole: "parent", famgo: "human" },
+    { id: "d2", name: "dk", kind: "attend", badge: "gate shut", subject: "Retry `sweep`", family: "Del", famrole: "child", famgo: "parent" },
+    { id: "d3", name: "dk2", kind: "attend", badge: "gate shut", family: "Del", famgo: "parent" },
   ]);
   const cases = [{ rows, now: NOW, hours: 5 }, { rows, now: NOW, hours: 0.25 }, { rows: [], now: NOW, hours: 2.5 },
     { rows: rows.slice(0, 3), now: NOW }];

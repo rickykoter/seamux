@@ -530,11 +530,14 @@ def last_line(ws_id, lines=4):
 # ---------------------------------------------------------------- rank
 
 def fam_fields(plan):
-    """The row's place in a deep-plan family: the parent's slug and this
-    member's role, from the `family` field status --json carries. Empty for a
-    plan in no family (or no plan), so those rows are exactly as before."""
+    """The row's place in a deep-plan family: the parent's slug, this
+    member's role and who gives its go ("parent" or "human"; "" from an engine
+    older than delegated go), from the `family` field status --json carries.
+    Empty for a plan in no family (or no plan), so those rows are exactly as
+    before."""
     f = (plan or {}).get("family") or {}
-    return {"family": f["parent"], "famrole": f.get("role", "")} if f.get("parent") else {}
+    return ({"family": f["parent"], "famrole": f.get("role", ""), "famgo": f.get("go", "")}
+            if f.get("parent") else {})
 
 
 # A delegated child's go chip. The parent agent is expected to give that go,

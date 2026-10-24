@@ -177,6 +177,7 @@ pub fn fam_fields(plan: Option<&Value>) -> Vec<(String, Value)> {
         Some(f) if truthy(get(f, "parent")) => vec![
             ("family".into(), f["parent"].clone()),
             ("famrole".into(), f.get("role").cloned().unwrap_or(json!(""))),
+            ("famgo".into(), f.get("go").cloned().unwrap_or(json!(""))),
         ],
         _ => Vec::new(),
     }
