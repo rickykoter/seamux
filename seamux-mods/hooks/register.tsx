@@ -472,7 +472,8 @@ export const register: Register = on => {
     const canGo = p.phase === 'implementing' && !open && incs.some(i => i.status === 'pending') && !held
     // A delegated child's go is its parent's to give: the button says so and
     // stays pressable, the press going in as a person's (goNext).
-    const nextN = incs.find(i => i.status === 'pending')?.n
+    // The engine's own next, which is what `go <slug> next` opens.
+    const nextN = p.progress.next?.n ?? incs.find(i => i.status === 'pending')?.n
     const parentGoes = fam?.go === 'parent'
     const myHold = fam?.holds?.[p.slug] ?? ''
     const page = await planPage($, p)
