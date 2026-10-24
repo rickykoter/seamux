@@ -84,6 +84,10 @@ ${plan ? `
 ## What the change is for (${src.inc === "all" ? "the plan it delivers, every increment" : "the plan increment it implements"})
 
 ${plan.trim()}
+` : ""}${review.context ? `
+## The context it was opened with
+
+${String(review.context).trim()}
 ` : ""}${prior}
 ## How to review
 

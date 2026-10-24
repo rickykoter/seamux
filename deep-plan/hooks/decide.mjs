@@ -9,7 +9,7 @@
 // one place a base comes from.
 import fs from "node:fs";
 import { decideToolCall, readState, writeState, log1, brokenRoots } from "../lib/state.mjs";
-import { trespass, waitingOn, waitText } from "../lib/family.mjs";
+import { trespass, waitingOn, waitText, goOwner } from "../lib/family.mjs";
 
 let raw = "";
 try { raw = fs.readFileSync(0, "utf8"); } catch { process.exit(0); }
@@ -70,11 +70,19 @@ const slug = d.plan ? d.plan.slug : "?";
 let waits = [];
 try { waits = d.plan ? waitingOn(slug) : []; } catch { /* the reason is enough */ }
 if (waits.length) d.why += ` go waits on ${waitText(waits)}.`;
+// A delegated child's go is its parent's: asking the human for one, or running
+// it here, is the wrong move; the refusal says what is.
+let own = null;
+try { own = d.plan ? goOwner(slug) : null; } catch { /* the reason is enough */ }
+if (own && own.hold) d.why += ` The parent is holding it: "${own.hold.reason}".`;
 // The opening `deep-plan gate [<slug>]: ` is a contract: the seamux-mods band
 // finds a denial by it in the tool result, and probe.mjs asserts it. Change the
 // words after it freely; change the opening and update seamux-mods with it.
 process.stderr.write(
   `deep-plan gate [${slug}]: ${d.why}\n` +
-  `Ask the human, then: deep-plan go ${slug} next   (or the board's "go" chip; ` +
-  `deep-plan open-gate ${slug} lifts the gate entirely.)\n`);
+  (own && own.delegated
+    ? `Its go is delegated to the parent (${own.parent}): do not run deep-plan go here. ` +
+      `Wait for the parent's go (deep-plan await-go ${slug}); a person can also give it.\n`
+    : `Ask the human, then: deep-plan go ${slug} next   (or the board's "go" chip; ` +
+      `deep-plan open-gate ${slug} lifts the gate entirely.)\n`));
 process.exit(2);

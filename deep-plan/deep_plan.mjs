@@ -31,7 +31,8 @@ import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
   FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
   familyOf, refreshFamilyFor, overlaps, checkFamily, draftParent, waitingOn, waitText,
-  memberAt, readSeen, gatherNews, newsText, familyRow, familiesBySlug,
+  memberAt, readSeen, gatherNews, newsText, familyRow, familiesBySlug, protects,
+  goOwner, goBy, goHow, goRefusal, updateControl, pruneControl, controlPath,
 } from "./lib/family.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, statePath, sessionId,
@@ -263,8 +264,14 @@ function validate(spec, force) {
     errs.push('review: an object, e.g. { "increments": [1, 3], "delivery": true }');
   else {
     const n = (spec.deliverables || []).length;
-    for (const k of ["agentMayClose", "quiz", "delivery"])
+    for (const k of ["agentMayClose", "quiz", "delivery", "family"])
       if (rv && rv[k] !== undefined && typeof rv[k] !== "boolean") errs.push(`review.${k}: true or false`);
+    // The family review is how a parent's delivery closes, so it needs both
+    // a family and a delivery phase to happen in.
+    if (rv && rv.family === true && !(Array.isArray(spec.workstreams) && spec.workstreams.length))
+      errs.push("review.family: only a parent plan (one with workstreams) has a family to review");
+    else if (rv && rv.family === true && rv.delivery !== true)
+      errs.push("review.family needs review.delivery: true (the family review is how the parent's delivery closes)");
     const inc = rv && rv.increments;
     if (!rv || inc === undefined || rv.delivery === undefined)
       errs.push('review: ask the human which increments deserve a lookout review and whether the full delivery ' +
@@ -400,6 +407,98 @@ function openReview(st, inc, base = "") {
   const r = runLookout(["open", "--plan", st.slug, "--inc", all ? "all" : String(inc.n), "--base", sha, "--at", st.root,
     ...pol.flags], { cwd: st.root });
   return { ...r, agent: pol.agent, quiz: pol.quiz };
+}
+
+// ---------------------------------------------------------------- family review
+
+// The reviewer's view of the family around one member: who the members are,
+// what each owns, and the parent's contracts with who consumes them, so a
+// review of one member's work looks hardest at the seams.
+function familyContext(spec, idx) {
+  const lines = [
+    `This is one member's work in the deep-plan family ${spec.slug}. Each member is reviewed on its own;`,
+    "look hardest at the seams: the contracts below, and files members share.",
+  ];
+  // Contracts first: they are the seams, and the part to keep if the text is cut.
+  if ((spec.contracts || []).length) {
+    lines.push("", "Contracts (the parent's spec):");
+    for (const c of spec.contracts)
+      lines.push(`- ${c.surface} [${c.kind}, ${c.change}]: reached by ${c.reach || "?"}`);
+  }
+  lines.push("", "Members:");
+  for (const m of idx.members) {
+    const bits = [m.role === "parent" ? "the parent" : "a workstream"];
+    if ((m.owns || []).length) bits.push("owns " + m.owns.map(c => c.glob).join(", "));
+    if ((m.contracts || []).length) bits.push("provides " + m.contracts.join("; "));
+    if ((m.consumes || []).length) bits.push("consumes " + m.consumes.join("; "));
+    lines.push(`- ${m.slug}: ${bits.join(" · ")}`);
+  }
+  return lines.join("\n") + "\n";
+}
+
+// `deliver` for a parent with review.family: once every member is done, one
+// lookout review per member (<parent>-family-<member>: its work since its first
+// increment's start sha, at its root, with the family context), and the parent
+// is done only when every one passes. Returns the exit code.
+function familyDeliver(st, spec) {
+  const slug = st.slug;
+  const idx = familyOf(slug) || die(`${slug} sets review.family but has no live family index — re-render it`);
+  // A child still in its own delivery phase is not done: its own delivery
+  // review comes first. The parent is the one in delivery now. A closed
+  // member is skipped (closing a plan is setting it aside), and said so.
+  const closed = idx.members.filter(m => { const s = readState(m.slug); return s && s.phase === "closed"; }).map(m => m.slug);
+  const notDone = idx.members.filter(m => {
+    const s = readState(m.slug);
+    if (!s) return true;
+    if (s.phase === "done" || s.phase === "closed") return false;
+    const incs = s.increments || [];
+    return !(incs.length && incs.every(i => i.status === "done") && (m.role === "parent" || s.phase !== "delivery"));
+  }).map(m => m.slug);
+  if (notDone.length)
+    die(`the family review waits for every member to finish: ${notDone.join(", ")} not done yet\n` +
+      `deliver refused: family not done (${notDone.join(", ")})`);
+  const ctx = path.join(PLANS_DIR, `${slug}.family-context.md`);
+  fs.mkdirSync(PLANS_DIR, { recursive: true });
+  fs.writeFileSync(ctx, familyContext(spec, idx));
+  const pol = reviewPolicy(slug);
+  const spawn = [], blocked = [], passed = [], problems = [];
+  if (closed.length) say(`family review of ${slug}: skipping closed member(s) ${closed.join(", ")}`);
+  for (const m of idx.members.filter(x => !closed.includes(x.slug))) {
+    const id = `${slug}-family-${m.slug}`;
+    const ms = readState(m.slug);
+    const sha = (((ms && ms.increments) || [])[0] || {}).startSha || "";
+    if (!m.root || !fs.existsSync(m.root)) { problems.push(`${m.slug}: its root is gone (${m.root || "none"})`); continue; }
+    if (!sha) { problems.push(`${m.slug}: its first increment has no recorded start sha to review from`); continue; }
+    let g = runLookout(["gate", id], { cwd: m.root });
+    if (g.missing) die(LOOKOUT_MISSING);
+    if (g.code === 3) {
+      const r = runLookout(["open", "--id", id, "--title", `${slug} family review · ${m.slug}`,
+        "--plan", m.slug, "--inc", "all", "--base", sha, "--at", m.root, "--context-file", ctx, "--no-open",
+        ...pol.flags], { cwd: m.root });
+      if (!r.ok) { problems.push(`${m.slug}: lookout open failed — ${r.out.split("\n")[0]}`); continue; }
+      spawn.push(id);
+    } else if (g.code === 0) passed.push(id);
+    else blocked.push(`${id} (${g.out.split("\n")[0]})`);
+  }
+  say(`family review of ${slug}: ${passed.length} passed, ${spawn.length} awaiting a reviewer, ${blocked.length} blocked` +
+    (problems.length ? `, ${problems.length} cannot open` : ""));
+  for (const p of problems) say("  ✗ " + p);
+  for (const b of blocked) say("  ✗ " + b + " — fix, lookout address, then deliver again");
+  if (spawn.length) {
+    say("next: spawn ONE fresh reviewer subagent per review, whose prompt is the output of");
+    for (const id of spawn) say(`  lookout prompt ${id}`);
+    say(`then: deep-plan deliver ${slug}` + (pol.agent ? "\n(this plan lets the agent close findings too)" : ""));
+  }
+  if (problems.length || blocked.length || spawn.length) {
+    if (spawn.length) say(`review: spawn a reviewer — lookout prompt ${spawn[0]}`);
+    else console.error(`deliver refused: the family review is open on ${problems.length + blocked.length} member(s)`);
+    return 1;
+  }
+  st.phase = "done";
+  log1(st, `deliver: the family review passed for every member (${passed.join(", ")}); the gate retires`);
+  writeState(st); rerenderWorking(slug);
+  say(`delivered ${slug} — the family review passed for all ${passed.length} members; plan complete`);
+  return 0;
 }
 
 // Run lookout with args; { ok, out } — never throws.
@@ -1485,6 +1584,20 @@ function checksRow(inc, slug = "") {
 // The family this plan belongs to, under the title: the parent and every
 // sibling with its phase and progress, what this plan owns, and what it waits
 // on. Names link to each plan's own page (served /plan/<slug>, or the file).
+// One increment of a family member in a few characters, for `family status`
+// and the working page's strip: its status, then its checks and its lookout
+// review as glyphs, then who gave its go.
+const FAM_STATUS = { done: "✓", working: "●", authorized: "▶", pending: "·", blocked: "✗" };
+const FAM_VERDICT = { pass: "✓", fail: "✗", pending: "…", running: "…", "needs-variant": "…" };
+function famIncParts(i) {
+  return {
+    status: FAM_STATUS[i.status] || "·",
+    checks: i.checks && i.checks !== "n/a" ? `${FAM_VERDICT[i.checks] || "…"} checks` : "",
+    review: i.review ? `${FAM_VERDICT[i.review] || "…"} review` : "",
+    by: i.by ? `go by ${i.by}` : "",
+  };
+}
+
 function familyStripHtml(slug) {
   const idx = familyOf(slug);
   const f = idx && familyRow(idx, slug);
@@ -1493,8 +1606,15 @@ function familyStripHtml(slug) {
     const me = m.slug === slug;
     const name = me ? `<b>${esc(m.slug)}</b>` :
       `<a class="dp-fam-link" href="${esc(m.slug)}.working.html" data-plan="${esc(m.slug)}">${esc(m.slug)}</a>`;
+    const incs = (m.increments || []).map(i => {
+      const p = famIncParts(i);
+      return `<span class="dp-fam-inc dp-fam-${esc(i.status)}" title="${esc(i.title)} — ${esc(i.status)}">` +
+        `${p.status} ${i.n}${[p.checks, p.review, p.by].filter(Boolean).map((x, k) => `${k ? " ·" : ""} <span class="dim">${esc(x)}</span>`).join("")}</span>`;
+    }).join("");
     return `<li class="dp-fam-m${me ? " dp-fam-me" : ""}"><span class="dim">${m.role === "parent" ? "parent" : "child"}</span> ${name}` +
-      ` <span class="dim">· ${esc(m.phase)} · ${m.done}/${m.total} done</span></li>`;
+      ` <span class="dim">· ${esc(m.phase)} · ${m.done}/${m.total} done${m.role === "child" && m.go === "parent" ? " · parent goes" : ""}</span>` +
+      (m.held ? `<div class="dp-fam-wait">held by the parent: ${esc(m.held)}</div>` : "") +
+      (incs ? `<div class="dp-fam-incs">${incs}</div>` : "") + `</li>`;
   }).join("");
   const owns = f.owns.length ? `<p class="dim">this plan owns ${f.owns.map(g => `<code>${esc(g)}</code>`).join(" ")}</p>` : "";
   const waits = f.waitingOn.length
@@ -1503,7 +1623,10 @@ function familyStripHtml(slug) {
   return `<section class="dp-fam" aria-label="plan family">
 <style>
 .dp-fam{border:1px solid var(--line,#8884);border-radius:8px;padding:8px 12px;margin:4px 0 14px}
-.dp-fam ul{list-style:none;margin:4px 0;padding:0;display:flex;flex-wrap:wrap;gap:4px 18px}
+.dp-fam ul{list-style:none;margin:4px 0;padding:0;display:flex;flex-direction:column;gap:6px}
+.dp-fam-incs{display:flex;flex-wrap:wrap;gap:2px 14px;margin:2px 0 0 1.2em;font-size:.92em}
+.dp-fam-inc{white-space:nowrap}
+.dp-fam-done{opacity:.75}
 .dp-fam p{margin:4px 0}
 .dp-fam-wait{color:var(--warn,#c80)}
 .dp-fam-link{color:inherit}
@@ -1625,6 +1748,7 @@ ${surfaceClose()}${SURFACE_JS}
 function renderFamily(spec, family) {
   if (family) {
     writeIndex(family.index);
+    try { pruneControl(family.index); } catch (e) { console.error(`  ⚠ family ${spec.slug}: control.json not pruned (${e.message})`); }
     const kids = family.index.members.filter(m => m.role === "child").map(m => m.slug);
     say(`family ${spec.slug}: ${kids.length} workstream(s) — ${kids.join(", ")}`);
     for (const o of overlaps(family.index)) console.error("  ⚠ overlap: " + o);
@@ -1633,6 +1757,8 @@ function renderFamily(spec, family) {
   const own = readIndex(spec.slug);
   if (own && !spec.workstreams) {
     fs.renameSync(indexPath(spec.slug), indexPath(spec.slug).replace(/index\.json$/, "index.dissolved.json"));
+    if (fs.existsSync(controlPath(spec.slug)))
+      fs.renameSync(controlPath(spec.slug), controlPath(spec.slug).replace(/control\.json$/, "control.dissolved.json"));
     say(`family ${spec.slug}: dissolved (the spec no longer lists workstreams)`);
     return;
   }
@@ -2372,10 +2498,17 @@ function reopenPhase(st) {
   }
 }
 
-function transition(action, slug, n, why, force = false) {
+function transition(action, slug, n, why, force = false, { byHuman = false } = {}) {
   const st = readState(slug) || die("no plan " + slug);
+  let by = "";
   if (action === "go") {
     if (st.phase === "review") die("the alignment check has not passed — `deep-plan grade` first");
+    // Who is giving this go, and whether they may. A delegated child cannot
+    // authorize itself; --force is not a way past that (a person's go is:
+    // --by human). The reason goes on the last line, for the chip and pane.
+    by = goBy(slug, { byHuman });
+    const refusal = goRefusal(slug, by);
+    if (refusal) die(`${refusal}\ngo refused: ${by === "self" ? "self-go on a delegated child" : "not the parent's go to give"}`);
     let beside = null;
     if (n === "next") {
       // A go already given and not yet acted on (the pane's or the board's
@@ -2412,8 +2545,9 @@ function transition(action, slug, n, why, force = false) {
     // one is always re-stamped, so a sha left by an older engine's reset
     // (which did not clear it) cannot become a stale base.
     if (inc.status === "pending" || !inc.startSha) inc.startSha = headSha(st.root);
-    inc.status = "authorized"; inc.authorizedAt = Date.now(); inc.note = "";
-    log1(st, `go: increment ${n} (${inc.title}) authorized` +
+    const how = by === "human" ? goHow({ byHuman }) : "";
+    inc.status = "authorized"; inc.authorizedAt = Date.now(); inc.note = ""; inc.by = by;
+    log1(st, `go: increment ${n} (${inc.title}) authorized by ${by}${how ? ` (${how})` : ""}` +
       (waits.length ? ` (--force past the family wait: ${waitText(waits)})` : "") +
       (beside ? ` (--force beside increment ${beside.n}, still ${beside.status})` : ""));
   } else if (action === "start") {
@@ -2754,7 +2888,7 @@ function statusRows() {
     // seamux-mods pane) rather than the board's one-line summary. `obs` is the
     // checks folded to one word, for a pane built before checks.
     increments: (st.increments || []).map(i => ({
-      n: i.n, title: i.title, status: i.status, obs: checksAggregate(i),
+      n: i.n, title: i.title, status: i.status, obs: checksAggregate(i), by: i.by || "",
       checks: Object.entries(checksOf(i)).filter(([, v]) => !v.retired).map(([id, v]) => {
         const status = shownStatus(v) || "pending";
         return {
@@ -2773,7 +2907,11 @@ function familyGate(st) {
   const g = gateView(st);
   if (g.allow) return g;
   const waits = waitingOn(st.slug);
-  return waits.length ? { ...g, why: `${g.why} go waits on ${waitText(waits)}.` } : g;
+  let why = waits.length ? `${g.why} go waits on ${waitText(waits)}.` : g.why;
+  const own = goOwner(st.slug);
+  if (own && own.hold) why += ` The parent is holding it: "${own.hold.reason}".`;
+  else if (own && own.delegated) why += ` Its go is the parent's to give (${own.parent}).`;
+  return why === g.why ? g : { ...g, why };
 }
 
 function status(json) {
@@ -3158,6 +3296,52 @@ function checkWait(slug, n, ids, timeoutSec) {
   }
 }
 
+// ---------------------------------------------------------------- await-go
+
+// What a delegated child runs, in the background, between increments: block
+// until an increment is authorized, then print its number. Nothing is typed
+// into the waiting session (ADR 0012); it reads the state file. The deadline
+// is wall-clock, so after a sleep it may fire at once, and the child runs it
+// again. Exit 0 with the number, 2 at the deadline, 3 when there is nothing
+// left to wait for: the plan is done or closed, or a person took the go back
+// from the parent (the child's go is a person's again, so ask them).
+function awaitGo(slug, timeoutSec) {
+  const until = Date.now() + timeoutSec * 1000;
+  // A child that starts waiting in a family and then is in none (its parent
+  // closed or its family dissolved) has no parent left to give the go.
+  const startedIn = !!goOwner(slug);
+  for (;;) {
+    const st = readState(slug);
+    if (!st) { say(`await-go: no plan ${slug}`); return 3; }
+    const incs = st.increments || [];
+    const open = incs.find(i => i.status === "authorized" || i.status === "working");
+    if (open) {
+      say(String(open.n));
+      console.error(`await-go: increment ${open.n} (${open.title}) of ${slug} is ${open.status}` +
+        (open.by ? `, by ${open.by}` : "") + " — start it");
+      return 0;
+    }
+    if (st.phase === "closed" || st.phase === "done" || (incs.length && incs.every(i => i.status === "done"))) {
+      console.error(`await-go: ${slug} has no increment left to wait for (${st.phase})`);
+      return 3;
+    }
+    const own = goOwner(slug);
+    if (own && own.takenBack) {
+      console.error(`await-go: a person took ${slug}'s go back from the parent; ask them for the next go`);
+      return 3;
+    }
+    if (startedIn && !own) {
+      console.error(`await-go: ${slug} is no longer in a family (its parent closed or the family dissolved); ask a person for the next go`);
+      return 3;
+    }
+    if (Date.now() >= until) {
+      console.error(`await-go: no go for ${slug} after ${timeoutSec}s — run it again to keep waiting`);
+      return 2;
+    }
+    sleep(1000);
+  }
+}
+
 // ---------------------------------------------------------------- verify
 
 // `verify resolve` answers "which recipes would check these files, and from
@@ -3359,13 +3543,50 @@ function familyCmd(args, flags) {
       const mem = idx.members.find(x => x.slug === m.slug);
       const waits = waitingOn(m.slug);
       say(`  ${m.role === "parent" ? "◆" : "◇"} ${m.slug.padEnd(28)} ${m.phase.padEnd(12)} ${m.done}/${m.total}` +
+        (m.role === "child" ? `  · ${m.go === "parent" ? "parent goes" : "a person goes"}` : "") +
         ((mem.owns || []).length ? `  owns ${mem.owns.map(c => c.glob).join(", ")}` : "") +
         (waits.length ? `  · waits on ${waits.map(w => w.n).join(", ")}` : ""));
+      if (m.held) say(`      held by the parent: ${m.held}`);
+      for (const i of m.increments || []) {
+        const p = famIncParts(i);
+        say(`      ${p.status} ${String(i.n).padEnd(3)}${[p.checks, p.review, p.by].filter(Boolean).join("  ")}`);
+      }
     }
     for (const p of f.trespasses.pairs) say(`  ⚠ ${p.from} edited ${p.owner}'s claims ${p.count}×`);
     return;
   }
-  die("family init <parent> <child>... [--out F] | family check <parent> [--json] | family news [slug] | family status [slug] [--json]");
+  if (["take-back", "give-back", "hold", "unhold"].includes(sub)) {
+    const slug = more[0] || die(`family ${sub} <child>${sub === "hold" ? ' "<reason>"' : ""}`);
+    const own = goOwner(slug) || die(`${slug} is not a family child`);
+    const by = goBy(slug, { byHuman: !!flags.byHuman });
+    const pst = readState(own.parent);
+    const note = what => { if (pst) { log1(pst, what); writeState(pst); } };
+    if (sub === "take-back" || sub === "give-back") {
+      // A person's lever over the parent: the agents it constrains do not pull it.
+      if (by !== "human")
+        die(`family ${sub} is a person's lever, and this is a Claude Code session (${by}). ` +
+          `A person runs it from their own shell.\nfamily ${sub} refused: not a person`);
+      if (!own.declared) die(`${slug}'s go is not delegated in the ${own.parent} spec; there is nothing to ${sub === "take-back" ? "take back" : "give back"}`);
+      try { updateControl(own.parent, c => { if (sub === "take-back") c.takenBack[slug] = { at: Date.now(), by }; else delete c.takenBack[slug]; }); }
+      catch (e) { die(`family ${sub}: ${e.message}`); }
+      note(`family ${sub}: ${slug}'s go is ${sub === "take-back" ? "a person's again" : "the parent's again"} (by ${by})`);
+      say(sub === "take-back"
+        ? `${slug}: its go is a person's until  deep-plan family give-back ${slug}`
+        : `${slug}: its go is the parent's again`);
+    } else {
+      if (by === "self") die(`family ${sub} is the parent's (or a person's), not the child's own\nfamily ${sub} refused: self`);
+      const reason = sub === "hold" ? more.slice(1).join(" ").trim() || die(`family hold ${slug} "<reason>": a hold says why`) : "";
+      if (sub === "unhold" && !own.hold) die(`${slug} is not held`);
+      try { updateControl(own.parent, c => { if (sub === "hold") c.holds[slug] = { reason, at: Date.now(), by }; else delete c.holds[slug]; }); }
+      catch (e) { die(`family ${sub}: ${e.message}`); }
+      note(`family ${sub}: ${slug}${reason ? ` — ${reason}` : ""} (by ${by})`);
+      say(sub === "hold" ? `holding ${slug}: ${reason}` : `${slug} is no longer held`);
+    }
+    for (const m of (familyOf(slug) || { members: [] }).members) rerenderWorking(m.slug, false);
+    return;
+  }
+  die("family init <parent> <child>... [--out F] | family check <parent> [--json] | family news [slug] | family status [slug] [--json]\n" +
+    "       family take-back|give-back <child> [--by human] | family hold <child> \"<reason>\" | family unhold <child>");
 }
 
 // ---------------------------------------------------------------- main
@@ -3378,7 +3599,7 @@ const BUILTIN_VERBS = new Set([
   "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
   "grade", "status", "go", "start", "done", "reset", "block", "check", "obs",
   "open-gate", "shut-gate", "close", "diff", "review", "deliver", "ask", "help", "setup", "engine", "verify",
-  "family", "redraw", "overviews",
+  "family", "redraw", "overviews", "protects", "await-go",
 ]);
 
 const [, , cmd, ...rest] = process.argv;
@@ -3399,6 +3620,12 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--token") flags.token = rest[++i];
   else if (rest[i] === "--timeout") flags.timeout = Number(rest[++i]);
   else if (rest[i] === "--base") flags.base = rest[++i] || die("--base needs a sha");
+  else if (rest[i] === "--by") {
+    // Only "human" can be claimed: parent and self are worked out from where
+    // the command runs, never asserted.
+    if (rest[++i] !== "human") die(`--by takes only "human" (got ${rest[i] || "nothing"}); parent and self are worked out from the cwd`);
+    flags.byHuman = true;
+  }
   else args.push(rest[i]);
 }
 
@@ -3457,7 +3684,7 @@ switch (cmd) {
     let slug = args[0], n = args[1];
     if (flags.at) { slug = resolveSlugAt(flags.at) || die("no plan tracks " + flags.at); n = args[0] || "next"; }
     if (!slug) die("go <slug> <n|next>  |  go --at DIR next");
-    transition("go", slug, n || "next", undefined, flags.force); break;
+    transition("go", slug, n || "next", undefined, flags.force, { byHuman: !!flags.byHuman }); break;
   }
   case "start": case "done": case "reset":
     transition(cmd, args[0], args[1] ?? die(cmd + " <slug> <n>"), undefined, flags.force); break;
@@ -3504,6 +3731,22 @@ switch (cmd) {
     break;
   }
   case "family": familyCmd(args, flags); break;
+  case "await-go": {
+    const slug = args[0] || die("await-go <slug> [--timeout S]");
+    if (flags.timeout !== undefined && !(flags.timeout > 0)) die("--timeout takes a number of seconds above 0");
+    process.exit(awaitGo(slug, flags.timeout || 1800));
+  }
+  case "protects": {
+    // Whether live plan or family work sits at a directory: what crew's close
+    // paths ask before they archive, reclaim or close a workspace.
+    const dir = args[0] || die("protects <dir> [--json]");
+    // A directory that is gone still gets an answer: crew asks about a
+    // workspace whose worktree was removed, and a refusal there is no answer.
+    const p = protects(dir);
+    if (flags.json) { process.stdout.write(JSON.stringify(p) + "\n"); break; }
+    say(p.protected ? `protected: ${p.why}` : p.plan ? `not protected: ${p.why}` : `not protected: no tracked plan or family holds ${path.resolve(dir)}${fs.existsSync(dir) ? "" : " (it does not exist)"}`);
+    break;
+  }
   case "verify": {
     const root = flags.root || gitRoot(process.cwd()) || process.cwd();
     if (args[0] === "resolve") verifyResolve(args.slice(1), root, flags.json);
@@ -3560,6 +3803,12 @@ switch (cmd) {
       die(st.phase === "implementing" || st.phase === "review"
         ? `${slug} is not delivered yet: every increment must be done first (phase: ${st.phase})`
         : `${slug} is ${st.phase}`);
+    const pspec = planSpec(slug);
+    // An unreadable archived spec must not quietly turn a family parent's
+    // delivery into an ordinary one.
+    if (!pspec.slug && familyOf(slug) && familyOf(slug).parent === slug)
+      die(`cannot read ${slug}'s archived spec (${path.join(KEYS_DIR, slug + ".spec.json")}), so whether it asks for the family review is unknown — re-render it`);
+    if (pspec.review && pspec.review.family && (pspec.workstreams || []).length) { process.exit(familyDeliver(st, pspec)); }
     const base = baseFor(st, "all", flags.base);
     const g = runLookout(["gate", "--plan", slug, "--inc", "all"], { cwd: st.root });
     if (g.missing) die(LOOKOUT_MISSING);
@@ -3618,7 +3867,10 @@ switch (cmd) {
   grade <slug> [q1=a q2=c ...]                the alignment check; pass -> implementing
                                               (no answers on a TTY: prompts, keeps them out of history)
   status [--json]                             tracked plans (the board reads --json)
-  go <slug> <n|next> | go --at DIR next       authorize an increment
+  protects <dir> [--json]                     whether live plan or family work sits at a
+                                              directory (crew asks before closing one)
+  go <slug> <n|next> | go --at DIR next       authorize an increment; records who gave it
+     [--by human]                             (a delegated child cannot go itself)
   start|done|block|reset <slug> <n> [why]     move an increment
                                               (done is refused until every check
                                               passed against the tree as it is;
@@ -3662,6 +3914,13 @@ switch (cmd) {
                                               a sibling claims (exit 1 when any)
   family status [slug] [--json]               every member's phase and progress, what
                                               waits, and recorded overlaps
+  await-go <slug> [--timeout S]               block until an increment is authorized, print
+                                              its number (exit 0); 2 at the timeout (run it
+                                              again), 3 when nothing is left to wait for
+  family take-back <child> [--by human]       a person takes a delegated child's go back
+                                              from the parent; give-back returns it
+  family hold <child> "<reason>"              the parent holds a child's go, saying why;
+                                              unhold lifts it
   family news [slug]                          what the news hook would tell that member
                                               (default: the one at the cwd) now; does
                                               not move its cursor

@@ -185,18 +185,29 @@ impl Ctx {
             self.say("archive", "cmux did not list its workspaces — nothing was archived");
             return "no live list".into();
         };
-        if workspaces::find_live(ws, Some(&live)).is_none() {
+        let Some(found) = workspaces::find_live(ws, Some(&live)) else {
             // A second tap on a row that already went: the first one worked.
             if workspaces::load_archive().values().any(|r| r.get("workspace_id").and_then(Value::as_str) == Some(ws)) {
                 return "already archived".into();
             }
             self.say("archive", "that workspace is no longer open");
             return "not open".into();
+        };
+        // The plan guard first, on either path: a refusal handed to a terminal
+        // would never reach a banner, and its deep-plan call is hook time too,
+        // so it counts against the budget. A chip never passes the override.
+        let t1 = Instant::now();
+        let name = if found.title.is_empty() { found.r#ref.clone() } else { found.title.clone() };
+        let (ok, why) = workspaces::guard(&found.cwd, &name, false);
+        let asked = t1.elapsed().as_secs_f64();
+        if !ok {
+            self.say("archive", &why);
+            return why;
         }
         let calls = 1.0 + windows(&live) as f64;
         let per = took / calls;
-        if took + per * (3.0 + calls) + CLOSE_SETTLE > self.budget {
-            if took + per * 5.0 > HOOK_LIMIT - 1.0 {
+        if took + asked + per * (3.0 + calls) + CLOSE_SETTLE > self.budget {
+            if took + asked + per * 5.0 > HOOK_LIMIT - 1.0 {
                 self.say("archive", "cmux is too slow to archive from the board — use crew-resume");
                 return format!("slow cmux ({per:.1}s a call): refused");
             }
@@ -209,7 +220,7 @@ impl Ctx {
             self.say("archive", "cmux is slow and no terminal would open — archive it from crew-resume");
             return "slow cmux, no terminal".into();
         }
-        let (ok, msg) = workspaces::archive_with(ws, Some(&live), None);
+        let (ok, msg) = workspaces::archive_with(ws, Some(&live), None, workspaces::Guard::Asked);
         if !ok {
             self.say("archive", &msg);
         }

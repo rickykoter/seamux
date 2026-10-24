@@ -544,6 +544,23 @@ const R1 = repo("r1");
   ok("prompt: carries the patch, the plan increment, the rubric, the schema and the ingest command",
      br.includes(S.paths(pid).patch) && br.includes("The increment sets b to 3.") && /security —/.test(br) &&
      br.includes('"failure_scenario"') && br.includes(`lookout findings add ${pid} `));
+  ok("prompt: a review opened without --context-file has no context section", !/## The context it was opened with/.test(br));
+  // --context-file: text the opener wants beside the plan (a deep-plan family's
+  // contracts), taken in at open and printed in the brief.
+  const ctxf = path.join(TMP, "family-context.md");
+  fs.writeFileSync(ctxf, "Members:\n- demo-kid: a workstream · consumes POST /session\n");
+  const cid = JSON.parse(cli(R4, "open", "--id", "demo-fam-kid", "--plan", "demo-plan", "--inc", "2", "--base", "HEAD",
+    "--context-file", ctxf, "--json").stdout).id;
+  const cbr = cli(R4, "prompt", cid).stdout;
+  ok("--context-file: the brief prints it beside the plan",
+     cid === "demo-fam-kid" && /## The context it was opened with\n\nMembers:\n- demo-kid: a workstream · consumes POST \/session/.test(cbr) &&
+     cbr.includes("The increment sets b to 3."));
+  fs.writeFileSync(ctxf, "x".repeat(9000));
+  cli(R4, "open", "--id", "demo-fam-big", "--base", "HEAD", "--context-file", ctxf, "--json");
+  ok("--context-file: a long one is cut, and the cut is said",
+     /\[… cut: the context ran to 9000 characters; the rest is in /.test(cli(R4, "prompt", "demo-fam-big").stdout));
+  ok("--context-file: an unreadable file is refused",
+     cli(R4, "open", "--id", "demo-fam-x", "--base", "HEAD", "--context-file", path.join(TMP, "no-such.md"), "--json").status !== 0);
   // The full delivery: --inc all is <slug>-delivery, and its brief carries
   // every increment's description.
   fs.writeFileSync(path.join(TMP, "demo-plan.cutover", "01-make-a-one.md"), "# Make a one\nThe first increment keeps a at 1.\n");

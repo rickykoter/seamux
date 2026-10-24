@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """crew-sweep — walk the machine's finished and dormant workspaces, one card at a time.
 
-    crew-sweep            the wizard: one card, one key, next card
-    crew-sweep --json     the ordered queue, for scripts and the probe
+    crew-sweep              the wizard: one card, one key, next card
+    crew-sweep --json       the ordered queue, for scripts and the probe
+    crew-sweep --family-ok  also offer what deep-plan protects; a and r then
+                            ask a y/N naming the family (a person only)
 
 What it looks at, machine-wide because cmux is: every live workspace in every
 window, every archive record, and every worktree of each repo those point at.
@@ -10,8 +12,13 @@ What it keeps:
 
     merged     the branch landed (in the default branch, or its PR merged)
     dormant    idle at least sweep.dormant_days (5 unless the crew plugin's
-               sweep_dormant_days says otherwise), not mid-turn, no open plan
+               sweep_dormant_days says otherwise), not mid-turn
     orphaned   an archive record whose worktree is gone
+
+A merged or dormant worktree that `deep-plan protects` (a plan with work not
+done, or a member of a family that is not done) is held back, merged or not,
+and counted at the end; --family-ok offers it with the reason on its card
+(ADR 0031).
 
 Jev orders the queue (ADR 0023): two System One questions per candidate —
 finished, abandoned — over Claude's last message and last prompt, the
@@ -51,7 +58,6 @@ import workspaces as W  # noqa: E402
 
 CACHE = os.path.join(W.CACHE_DIR, "sweep-judgments.json")
 GH_STATE = W.CACHE_DIR
-DEEP_PLAN = os.environ.get("CREW_DEEP_PLAN_DIR") or os.path.join(W.HOME, ".claude", "deep-plan")
 RECLAIM = os.path.join(HERE, "crew-reclaim")
 DAY = 86400
 MAX_CHARS = 4000
@@ -134,27 +140,6 @@ def gh_cache(cwd):
         return {}
 
 
-def open_plan(cwd):
-    """The phase of an unfinished deep-plan rooted here, or "" — the same state
-    files crew-reclaim's plan guard reads."""
-    state = os.path.join(DEEP_PLAN, "state")
-    for n in sorted(os.listdir(state)) if os.path.isdir(state) else []:
-        if not n.endswith(".json"):
-            continue
-        try:
-            st = json.load(open(os.path.join(state, n))) or {}
-        except Exception:
-            continue
-        phase = (st.get("phase") or "").strip()
-        try:
-            same = os.path.realpath(st.get("root") or "") == os.path.realpath(cwd)
-        except Exception:
-            same = False
-        if same and phase != "done":
-            return phase or "open"
-    return ""
-
-
 def last_commit_at(cwd):
     rc, out = W._git(cwd, "log", "-1", "--format=%ct")
     try:
@@ -163,10 +148,12 @@ def last_commit_at(cwd):
         return 0.0
 
 
-def gather(now=None):
+def gather(now=None, family_ok=False):
     """Every candidate on the machine, unordered. -> list, or None when cmux did
     not list its workspaces (a sweep that cannot see what is open must not
-    offer to archive or reclaim anything)."""
+    offer to archive or reclaim anything). A candidate deep-plan protects
+    carries "protected" (why) and, unless family_ok, "held": it is counted,
+    never offered."""
     now = now or time.time()
     live = W.live_workspaces()
     if live is None:
@@ -238,7 +225,8 @@ def gather(now=None):
             # of dormancy.
             "idle_days": (now - when) / DAY if when else None,
             "life": W.lifecycle(ws, records) if ws else "none",
-            "plan": open_plan(cwd) if exists else "",
+            "plan": "",
+            "protected": "",
             "pr": gh.get("pr"),
             "pr_state": (gh.get("prState") or "").lower(),
             "session": latest,
@@ -247,6 +235,14 @@ def gather(now=None):
         }
         c["merged"] = exists and (c["pr_state"] == "merged" or W.merged(cwd))
         c["reason"] = classify(c, days)
+        if c["reason"] in ("merged", "dormant"):
+            # Asked only of what would be offered: one deep-plan call a card,
+            # and before the card exists, so a merged child is held like any.
+            p = W.protects(cwd)
+            if p["protected"]:
+                c["protected"] = p["why"] if not p.get("error") else W.refusal(c["title"], p)
+                c["plan"] = p.get("phase") or "open"
+                c["held"] = not family_ok
         if c["reason"]:
             out.append(c)
     return out
@@ -260,7 +256,7 @@ def classify(c, days):
         return ""                            # never offer to put away a turn in progress
     if c["merged"]:
         return "merged"
-    if c["idle_days"] is not None and c["idle_days"] >= days and not c["plan"]:
+    if c["idle_days"] is not None and c["idle_days"] >= days:
         return "dormant"
     return ""
 
@@ -434,6 +430,8 @@ def card(c, i, n, width=80):
     if c["reason"] == "orphaned":
         head += DIM + "  the worktree is gone; only the record is left" + RESET
     lines.append(fit(head))
+    if c.get("protected"):
+        lines.append(fit(" \033[31mprotected:\033[0m " + c["protected"]))
     said = " ".join((c["said"] or c["last"] or "").split())
     if said:
         lines.append(fit(' last: "%s"' % said))
@@ -474,12 +472,12 @@ def act(k, c):
             print("  ✗ reclaim needs a terminal for crew-reclaim's question — skipped")
             return None, True
         target = c["ws"]["id"] if c["ws"] else c["cwd"]
-        rc = subprocess.call([RECLAIM, target])
+        rc = subprocess.call([RECLAIM] + (["--family-ok"] if c.get("protected") else []) + [target])
         if rc == 0 and c["rec"]:
             W.forget(c["rec"].get("cwd") or c["cwd"])
         return ("reclaimed" if rc == 0 else None), True
     if k == "a":
-        ok, msg = W.archive(c["ws"]["id"])
+        ok, msg = W.archive(c["ws"]["id"], family_ok=bool(c.get("protected")))
         print(("  ✓ " if ok else "  ✗ ") + msg)
         return ("archived" if ok else None), True
     if k == "f":
@@ -525,32 +523,45 @@ def _width():
 
 def main(argv):
     as_json = "--json" in argv
+    family_ok = "--family-ok" in argv
     if not as_json:
         print(DIM + "→ looking at every workspace and worktree on this machine" + RESET)
-    cands = gather()
+    cands = gather(family_ok=family_ok)
     if cands is None:
         print("crew-sweep: cmux did not list its workspaces — nothing to sweep against",
               file=sys.stderr)
         return 1
+    held = [c for c in cands if c.get("held")]
+    cands = [c for c in cands if not c.get("held")]
     on = judge(cands)
     queue = order(cands)
     if as_json:
         json.dump({"typesafe": on, "dormant_days": W.dormant_days(), "queue": [
             {k: c[k] for k in ("cwd", "title", "branch", "reason", "merged", "linked",
-                               "life", "plan", "pr", "pr_state")}
+                               "life", "plan", "protected", "pr", "pr_state")}
             | {"idle_days": round(c["idle_days"], 1) if c["idle_days"] is not None else None,
                "jev": c.get("jev"),
                "ws": (c["ws"] or {}).get("id"), "keys": keys_for(c)}
-            for c in queue]}, sys.stdout, indent=1)
+            for c in queue], "held": [
+            {"cwd": c["cwd"], "title": c["title"], "reason": c["reason"], "why": c["protected"]}
+            for c in sorted(held, key=lambda c: c["cwd"])]}, sys.stdout, indent=1)
         print()
         return 0
     if not queue:
         print("nothing to sweep: no merged, dormant (%dd) or orphaned workspaces"
               % W.dormant_days())
-        return 0
-    print(DIM + "%d to look at, %s" % (len(queue), "in Jev's order" if on else
-          "merged first, then longest idle (TypeSafe is off)") + RESET)
-    wizard(queue)
+    else:
+        print(DIM + "%d to look at, %s" % (len(queue), "in Jev's order" if on else
+              "merged first, then longest idle (TypeSafe is off)") + RESET)
+        wizard(queue)
+    if held:
+        width = max(40, min(120, _width()))
+        names = ", ".join(c["title"] for c in held)
+        if len(names) > width - 8:
+            names = names[:width - 9] + "…"
+        print(DIM + "%d held back by live plan or family work — --family-ok offers %s"
+              % (len(held), "it" if len(held) == 1 else "them") + RESET)
+        print(DIM + " held: " + names + RESET)
     return 0
 
 

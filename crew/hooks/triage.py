@@ -89,8 +89,8 @@ def archive_in_hook(ws: str) -> str:
 
     Synchronously, for the reason ws_cwd spells out: the close needs a caller
     cmux trusts, and a fired child is not one. A refusal (mid-turn, a job
-    running, a close that did not take) is the one outcome worth a banner; a
-    success shows by the row leaving the board.
+    running, live plan or family work, a close that did not take) is the one
+    outcome worth a banner; a success shows by the row leaving the board.
     """
     import workspaces
     workspaces.CMUX = CMUX
@@ -100,17 +100,27 @@ def archive_in_hook(ws: str) -> str:
     if live is None:
         say("archive", "cmux did not list its workspaces — nothing was archived")
         return "no live list"
-    if not workspaces.find_live(ws, live):
+    w = workspaces.find_live(ws, live)
+    if not w:
         # The row outlives its workspace until the next push, so a second tap
         # lands here. The first one worked; that is not worth a banner.
         if any(r.get("workspace_id") == ws for r in workspaces.load_archive().values()):
             return "already archived"
         say("archive", "that workspace is no longer open")
         return "not open"
+    # The plan guard first, on either path: a refusal handed to a terminal
+    # would never reach a banner, and its deep-plan call is hook time too, so
+    # it counts against the budget. A chip never passes the override.
+    t1 = time.monotonic()
+    ok, why = workspaces.guard(w["cwd"], w["title"] or w["ref"])
+    asked = time.monotonic() - t1
+    if not ok:
+        say("archive", why)
+        return why
     calls = 1 + len({w["window"] for w in live} or {""})
     per = took / calls
-    if took + per * (3 + calls) + CLOSE_SETTLE > ARCHIVE_BUDGET:
-        if took + per * 5 > HOOK_LIMIT - 1:
+    if took + asked + per * (3 + calls) + CLOSE_SETTLE > ARCHIVE_BUDGET:
+        if took + asked + per * 5 > HOOK_LIMIT - 1:
             say("archive", "cmux is too slow to archive from the board — use crew-resume")
             return "slow cmux (%.1fs a call): refused" % per
         argv = [sys.executable, os.path.join(HERE, "workspaces.py"), "archive", ws]
@@ -118,7 +128,7 @@ def archive_in_hook(ws: str) -> str:
             return "slow cmux (%.1fs a call): archiving in a terminal" % per
         say("archive", "cmux is slow and no terminal would open — archive it from crew-resume")
         return "slow cmux, no terminal"
-    ok, msg = workspaces.archive(ws, live=live)
+    ok, msg = workspaces.archive(ws, live=live, guarded=True)
     if not ok:
         say("archive", msg)
     return msg
