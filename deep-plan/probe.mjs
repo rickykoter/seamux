@@ -3533,6 +3533,78 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     ok("…and the deliver re-run its hint names needs no --base",
       r.status === 1 && /lookout prompt rv-bd-delivery/.test(r.stdout) && !/no recorded start sha/.test(r.stderr), r.stdout + r.stderr);
   }
+  // The opt-in family review: a parent with review.family closes its delivery
+  // only when every member is done and one lookout review per member passes,
+  // each opened at the member's root with the family's contracts as context.
+  {
+    const FR = path.join(TMP, "famrv"), KR = path.join(TMP, "famrv.worktrees", "kid");
+    fs.mkdirSync(FR, { recursive: true });
+    execSync(`git init -q && ${G} commit -q --allow-empty -m init && git worktree add -q -b kid ${KR}`, { cwd: FR });
+    const kid = JSON.parse(JSON.stringify(spec));
+    kid.slug = "frv-kid"; kid.deliverables = kid.deliverables.map(d => ({ ...d, files: [] }));
+    const fam = JSON.parse(fs.readFileSync(path.join(HERE, "examples", "example.family.spec.json"), "utf8"));
+    const par = { ...fam, slug: "frv-par", workstreams: [{ slug: "frv-kid", owns: ["kid/**"], consumes: ["POST /session"] }],
+      review: { increments: "none", delivery: true, family: true, agentMayClose: true } };
+    let r = lc(LENV, "render", tmpSpec({ ...kid, review: { ...kid.review, family: true } }), "--root", KR);
+    ok("family review: review.family on a plan with no workstreams is refused", r.status !== 0 && /only a parent plan/.test(r.stderr));
+    r = lc(LENV, "render", tmpSpec({ ...par, review: { ...par.review, delivery: false } }), "--root", FR);
+    ok("family review: review.family needs review.delivery", r.status !== 0 && /needs review\.delivery: true/.test(r.stderr));
+    ok("family review: review.family is a boolean",
+      /review\.family: true or false/.test(lc(LENV, "render", tmpSpec({ ...par, review: { ...par.review, family: "yes" } }), "--root", FR).stderr));
+    lc(LENV, "render", tmpSpec(kid), "--root", KR);
+    r = lc(LENV, "render", tmpSpec(par), "--root", FR);
+    ok("family review: a parent with review.family renders", r.status === 0, r.stderr);
+    const passAll = (slug, root) => {
+      const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8"));
+      lc(LENV, "grade", slug, ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+      for (const i of stOf(slug).increments) {
+        lc(LENV, "go", slug, String(i.n), "--force");
+        fs.writeFileSync(path.join(root, `${slug}-${i.n}.txt`), `work ${i.n}\n`);
+        execSync(`git add -A && ${G} commit -q -m "${slug} ${i.n}"`, { cwd: root });
+        lc(LENV, "done", slug, String(i.n), "--force");
+      }
+    };
+    passAll("frv-par", FR);
+    r = lc(LENV, "deliver", "frv-par");
+    ok("family review: deliver waits for every member, naming the ones not done",
+      r.status !== 0 && /deliver refused: family not done \(frv-kid\)/.test(r.stderr) && stOf("frv-par").phase === "delivery", r.stdout + r.stderr);
+    passAll("frv-kid", KR);
+    const kidFile = path.join(ENV.DEEP_PLAN_STATE_DIR, "frv-kid.json");
+    const kidWas = fs.readFileSync(kidFile, "utf8");
+    fs.writeFileSync(kidFile, JSON.stringify({ ...JSON.parse(kidWas), phase: "delivery" }));
+    r = lc(LENV, "deliver", "frv-par");
+    ok("family review: a child still in its own delivery review is not done yet",
+      r.status !== 0 && /family not done \(frv-kid\)/.test(r.stderr), r.stderr);
+    fs.writeFileSync(kidFile, kidWas);
+    r = lc(LENV, "deliver", "frv-par");
+    const ids = ["frv-par-family-frv-par", "frv-par-family-frv-kid"];
+    const store = id => JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, id + ".json"), "utf8"));
+    ok("family review: deliver opens one review per member and names a reviewer for each",
+      r.status === 1 && ids.every(id => fs.existsSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, id + ".json")) && r.stdout.includes(`lookout prompt ${id}`)) &&
+      r.stdout.trim().split("\n").pop() === `review: spawn a reviewer — lookout prompt ${ids[0]}`, r.stdout + r.stderr);
+    const ks = store(ids[1]);
+    ok("family review: each is the member's own work, at its root, with the plan's close policy",
+      ks.source.root && fs.realpathSync(ks.source.root) === fs.realpathSync(KR) && ks.files.some(f => f.path === "frv-kid-1.txt") &&
+      !ks.files.some(f => /frv-par/.test(f.path)) && ks.policy.agentMayClose === true, JSON.stringify(ks.source));
+    const brief = lk("prompt", ids[1]).stdout;
+    ok("family review: the reviewer's brief carries the family's members and contracts",
+      /## The context it was opened with/.test(brief) && /frv-kid: a workstream · owns kid\/\*\* · consumes POST \/session/.test(brief) &&
+      /POST \/session \[api, new\]/.test(brief), brief.slice(0, 400));
+    const empty = path.join(TMP, "frv-empty.json"); fs.writeFileSync(empty, "[]");
+    lk("findings", "add", ids[0], empty);
+    const kjson = path.join(TMP, "frv-kid-findings.json");
+    fs.writeFileSync(kjson, JSON.stringify([{ file: "frv-kid-1.txt", line: 1, severity: "major", summary: "the seam is off", failure_scenario: "the parent's session type changes" }]));
+    lk("findings", "add", ids[1], kjson);
+    r = lc(LENV, "deliver", "frv-par");
+    ok("family review: a major open on one member holds the parent", r.status === 1 && /✗ frv-par-family-frv-kid/.test(r.stdout) &&
+      /deliver refused: the family review is open on 1 member/.test(r.stderr) && stOf("frv-par").phase === "delivery", r.stdout + r.stderr);
+    const cl = store(ids[1]); cl.findings[0].status = "resolved"; cl.findings[0].statusBy = "human";
+    fs.writeFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, ids[1] + ".json"), JSON.stringify(cl));
+    r = lc(LENV, "deliver", "frv-par");
+    ok("family review: once every member's review passes, the parent is done",
+      r.status === 0 && /family review passed for all 2 members/.test(r.stdout) && stOf("frv-par").phase === "done", r.stdout + r.stderr);
+    for (const n of ["frv-par", "frv-kid"]) lc(LENV, "close", n);
+  }
   for (const n of ["rv-1", "rv-2", "rv-q", "rv-pick", "rv-all", "rv-none", "rv-d", "rv-b", "rv-bd"]) lc(LENV, "close", n);
 }
 

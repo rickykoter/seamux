@@ -264,8 +264,14 @@ function validate(spec, force) {
     errs.push('review: an object, e.g. { "increments": [1, 3], "delivery": true }');
   else {
     const n = (spec.deliverables || []).length;
-    for (const k of ["agentMayClose", "quiz", "delivery"])
+    for (const k of ["agentMayClose", "quiz", "delivery", "family"])
       if (rv && rv[k] !== undefined && typeof rv[k] !== "boolean") errs.push(`review.${k}: true or false`);
+    // The family review is how a parent's delivery closes, so it needs both
+    // a family and a delivery phase to happen in.
+    if (rv && rv.family === true && !(Array.isArray(spec.workstreams) && spec.workstreams.length))
+      errs.push("review.family: only a parent plan (one with workstreams) has a family to review");
+    else if (rv && rv.family === true && rv.delivery !== true)
+      errs.push("review.family needs review.delivery: true (the family review is how the parent's delivery closes)");
     const inc = rv && rv.increments;
     if (!rv || inc === undefined || rv.delivery === undefined)
       errs.push('review: ask the human which increments deserve a lookout review and whether the full delivery ' +
@@ -401,6 +407,98 @@ function openReview(st, inc, base = "") {
   const r = runLookout(["open", "--plan", st.slug, "--inc", all ? "all" : String(inc.n), "--base", sha, "--at", st.root,
     ...pol.flags], { cwd: st.root });
   return { ...r, agent: pol.agent, quiz: pol.quiz };
+}
+
+// ---------------------------------------------------------------- family review
+
+// The reviewer's view of the family around one member: who the members are,
+// what each owns, and the parent's contracts with who consumes them, so a
+// review of one member's work looks hardest at the seams.
+function familyContext(spec, idx) {
+  const lines = [
+    `This is one member's work in the deep-plan family ${spec.slug}. Each member is reviewed on its own;`,
+    "look hardest at the seams: the contracts below, and files members share.",
+  ];
+  // Contracts first: they are the seams, and the part to keep if the text is cut.
+  if ((spec.contracts || []).length) {
+    lines.push("", "Contracts (the parent's spec):");
+    for (const c of spec.contracts)
+      lines.push(`- ${c.surface} [${c.kind}, ${c.change}]: reached by ${c.reach || "?"}`);
+  }
+  lines.push("", "Members:");
+  for (const m of idx.members) {
+    const bits = [m.role === "parent" ? "the parent" : "a workstream"];
+    if ((m.owns || []).length) bits.push("owns " + m.owns.map(c => c.glob).join(", "));
+    if ((m.contracts || []).length) bits.push("provides " + m.contracts.join("; "));
+    if ((m.consumes || []).length) bits.push("consumes " + m.consumes.join("; "));
+    lines.push(`- ${m.slug}: ${bits.join(" · ")}`);
+  }
+  return lines.join("\n") + "\n";
+}
+
+// `deliver` for a parent with review.family: once every member is done, one
+// lookout review per member (<parent>-family-<member>: its work since its first
+// increment's start sha, at its root, with the family context), and the parent
+// is done only when every one passes. Returns the exit code.
+function familyDeliver(st, spec) {
+  const slug = st.slug;
+  const idx = familyOf(slug) || die(`${slug} sets review.family but has no live family index — re-render it`);
+  // A child still in its own delivery phase is not done: its own delivery
+  // review comes first. The parent is the one in delivery now. A closed
+  // member is skipped (closing a plan is setting it aside), and said so.
+  const closed = idx.members.filter(m => { const s = readState(m.slug); return s && s.phase === "closed"; }).map(m => m.slug);
+  const notDone = idx.members.filter(m => {
+    const s = readState(m.slug);
+    if (!s) return true;
+    if (s.phase === "done" || s.phase === "closed") return false;
+    const incs = s.increments || [];
+    return !(incs.length && incs.every(i => i.status === "done") && (m.role === "parent" || s.phase !== "delivery"));
+  }).map(m => m.slug);
+  if (notDone.length)
+    die(`the family review waits for every member to finish: ${notDone.join(", ")} not done yet\n` +
+      `deliver refused: family not done (${notDone.join(", ")})`);
+  const ctx = path.join(PLANS_DIR, `${slug}.family-context.md`);
+  fs.mkdirSync(PLANS_DIR, { recursive: true });
+  fs.writeFileSync(ctx, familyContext(spec, idx));
+  const pol = reviewPolicy(slug);
+  const spawn = [], blocked = [], passed = [], problems = [];
+  if (closed.length) say(`family review of ${slug}: skipping closed member(s) ${closed.join(", ")}`);
+  for (const m of idx.members.filter(x => !closed.includes(x.slug))) {
+    const id = `${slug}-family-${m.slug}`;
+    const ms = readState(m.slug);
+    const sha = (((ms && ms.increments) || [])[0] || {}).startSha || "";
+    if (!m.root || !fs.existsSync(m.root)) { problems.push(`${m.slug}: its root is gone (${m.root || "none"})`); continue; }
+    if (!sha) { problems.push(`${m.slug}: its first increment has no recorded start sha to review from`); continue; }
+    let g = runLookout(["gate", id], { cwd: m.root });
+    if (g.missing) die(LOOKOUT_MISSING);
+    if (g.code === 3) {
+      const r = runLookout(["open", "--id", id, "--title", `${slug} family review · ${m.slug}`,
+        "--plan", m.slug, "--inc", "all", "--base", sha, "--at", m.root, "--context-file", ctx, "--no-open",
+        ...pol.flags], { cwd: m.root });
+      if (!r.ok) { problems.push(`${m.slug}: lookout open failed — ${r.out.split("\n")[0]}`); continue; }
+      spawn.push(id);
+    } else if (g.code === 0) passed.push(id);
+    else blocked.push(`${id} (${g.out.split("\n")[0]})`);
+  }
+  say(`family review of ${slug}: ${passed.length} passed, ${spawn.length} awaiting a reviewer, ${blocked.length} blocked` +
+    (problems.length ? `, ${problems.length} cannot open` : ""));
+  for (const p of problems) say("  ✗ " + p);
+  for (const b of blocked) say("  ✗ " + b + " — fix, lookout address, then deliver again");
+  if (spawn.length) {
+    say("next: spawn ONE fresh reviewer subagent per review, whose prompt is the output of");
+    for (const id of spawn) say(`  lookout prompt ${id}`);
+    say(`then: deep-plan deliver ${slug}` + (pol.agent ? "\n(this plan lets the agent close findings too)" : ""));
+  }
+  if (problems.length || blocked.length || spawn.length) {
+    if (spawn.length) say(`review: spawn a reviewer — lookout prompt ${spawn[0]}`);
+    else console.error(`deliver refused: the family review is open on ${problems.length + blocked.length} member(s)`);
+    return 1;
+  }
+  st.phase = "done";
+  log1(st, `deliver: the family review passed for every member (${passed.join(", ")}); the gate retires`);
+  writeState(st); rerenderWorking(slug);
+  say(`delivered ${slug} — the family review passed for all ${passed.length} members; plan complete`);
+  return 0;
 }
 
 // Run lookout with args; { ok, out } — never throws.
@@ -3702,6 +3800,12 @@ switch (cmd) {
       die(st.phase === "implementing" || st.phase === "review"
         ? `${slug} is not delivered yet: every increment must be done first (phase: ${st.phase})`
         : `${slug} is ${st.phase}`);
+    const pspec = planSpec(slug);
+    // An unreadable archived spec must not quietly turn a family parent's
+    // delivery into an ordinary one.
+    if (!pspec.slug && familyOf(slug) && familyOf(slug).parent === slug)
+      die(`cannot read ${slug}'s archived spec (${path.join(KEYS_DIR, slug + ".spec.json")}), so whether it asks for the family review is unknown — re-render it`);
+    if (pspec.review && pspec.review.family && (pspec.workstreams || []).length) { process.exit(familyDeliver(st, pspec)); }
     const base = baseFor(st, "all", flags.base);
     const g = runLookout(["gate", "--plan", slug, "--inc", "all"], { cwd: st.root });
     if (g.missing) die(LOOKOUT_MISSING);
