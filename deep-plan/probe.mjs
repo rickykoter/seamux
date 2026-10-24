@@ -3180,6 +3180,33 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   ok("delegation: a render drops control entries for slugs no longer children",
     !("example-gone" in JSON.parse(fs.readFileSync(ctl, "utf8")).holds));
 
+  // Family verdicts: who goes, what is held, and each increment's verdicts,
+  // on status rows, in `family status` and on the working page.
+  {
+    as(DR, true, "family", "hold", "example-dlg-two", "waiting on the contract");
+    const rows = JSON.parse(cli("status", "--json").stdout);
+    const kf = rows.find(x => x.slug === "example-dlg-kid").family;
+    const pf = rows.find(x => x.slug === "example-dlg").family;
+    ok("verdicts: a delegated child's row says the parent goes", kf.go === "parent" && pf.go === "human");
+    ok("verdicts: the row lists the parent's holds", pf.holds["example-dlg-two"] === "waiting on the contract");
+    const km = pf.members.find(m => m.slug === "example-dlg-kid"), tm = pf.members.find(m => m.slug === "example-dlg-two");
+    ok("verdicts: each member says who goes and what it is held on",
+      km.go === "parent" && km.held === "" && tm.go === "human" && tm.held === "waiting on the contract");
+    const k1 = km.increments[0];
+    ok("verdicts: each increment carries status, checks, review and who gave its go",
+      k1.n === 1 && k1.status === "done" && typeof k1.checks === "string" && k1.review === "" && k1.by === "parent" &&
+      km.increments.length === st("example-dlg-kid").increments.length);
+    const t = cli("family", "status", "example-dlg").stdout;
+    ok("verdicts: family status prints them per increment",
+      /example-dlg-kid .*· parent goes/.test(t) && /example-dlg-two .*· a person goes/.test(t) &&
+      /✓ 1 .*go by parent/.test(t) && /held by the parent: waiting on the contract/.test(t));
+    const page = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "example-dlg.working.html"), "utf8");
+    ok("verdicts: the parent's working page shows the go owner, the hold and each increment",
+      /parent goes/.test(page) && /held by the parent: waiting on the contract/.test(page) &&
+      /class="dp-fam-inc dp-fam-done"[^>]*>✓ 1 [\s\S]*?go by parent<\/span><\/span>/.test(page));
+    as(DR, true, "family", "unhold", "example-dlg-two");
+  }
+
   // await-go: the child blocks until the parent's go, and nothing is typed into it.
   r = as(KID, true, "await-go", "example-dlg-kid", "--timeout", "1");
   ok("await-go: with no go, it exits 2 at its timeout", r.status === 2 && /run it again/.test(r.stderr));

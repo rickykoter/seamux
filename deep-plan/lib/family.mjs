@@ -16,7 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { STATE_DIR, KEYS_DIR, readState, allStates, canon } from "./state.mjs";
+import { STATE_DIR, KEYS_DIR, readState, allStates, canon, checksOf, checksAggregate } from "./state.mjs";
 import { matchesGlob } from "./verify.mjs";
 
 export const FAMILIES_DIR = path.join(STATE_DIR, "families");
@@ -814,11 +814,24 @@ export function newsText(idx, lines) {
 export function familyRow(idx, slug) {
   const me = idx.members.find(m => m.slug === slug);
   if (!me) return null;
+  const control = readControl(idx.parent);
+  // Who gives a member's go: "parent" for a delegated child not taken back,
+  // "human" for everyone else, the parent included.
+  const goOf = m => m.role === "child" && m.go === "parent" && !control.takenBack[m.slug] ? "parent" : "human";
   const members = idx.members.map(m => {
     const st = readState(m.slug);
     const incs = (st && st.increments) || [];
     return { slug: m.slug, role: m.role, phase: st ? st.phase : "missing",
-      done: incs.filter(i => i.status === "done").length, total: incs.length };
+      done: incs.filter(i => i.status === "done").length, total: incs.length,
+      go: goOf(m), held: (control.holds[m.slug] || {}).reason || "",
+      // Each increment's verdicts, from state alone: `checks` folds every
+      // check to one word, `review` is the lookout review check's own status
+      // ("" when the increment has none), `by` is who gave its go.
+      increments: incs.map(i => {
+        const review = Object.values(checksOf(i)).find(v => !v.retired && v.kind === "review");
+        return { n: i.n, title: i.title, status: i.status, checks: checksAggregate(i),
+          review: review ? review.status || "pending" : "", by: i.by || "" };
+      }) };
   });
   const pairs = {};
   const tres = readTrespasses(idx.parent).filter(t => me.role === "parent" || t.from === slug || t.owner === slug);
@@ -827,6 +840,8 @@ export function familyRow(idx, slug) {
   return {
     role: me.role,
     parent: idx.parent,
+    go: goOf(me),
+    holds: Object.fromEntries(Object.entries(control.holds).map(([s, h]) => [s, h.reason])),
     members,
     owns: (me.owns || []).map(c => c.glob),
     after: me.after || [],

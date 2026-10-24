@@ -1486,6 +1486,20 @@ function checksRow(inc, slug = "") {
 // The family this plan belongs to, under the title: the parent and every
 // sibling with its phase and progress, what this plan owns, and what it waits
 // on. Names link to each plan's own page (served /plan/<slug>, or the file).
+// One increment of a family member in a few characters, for `family status`
+// and the working page's strip: its status, then its checks and its lookout
+// review as glyphs, then who gave its go.
+const FAM_STATUS = { done: "✓", working: "●", authorized: "▶", pending: "·", blocked: "✗" };
+const FAM_VERDICT = { pass: "✓", fail: "✗", pending: "…", running: "…", "needs-variant": "…" };
+function famIncParts(i) {
+  return {
+    status: FAM_STATUS[i.status] || "·",
+    checks: i.checks && i.checks !== "n/a" ? `${FAM_VERDICT[i.checks] || "…"} checks` : "",
+    review: i.review ? `${FAM_VERDICT[i.review] || "…"} review` : "",
+    by: i.by ? `go by ${i.by}` : "",
+  };
+}
+
 function familyStripHtml(slug) {
   const idx = familyOf(slug);
   const f = idx && familyRow(idx, slug);
@@ -1494,8 +1508,15 @@ function familyStripHtml(slug) {
     const me = m.slug === slug;
     const name = me ? `<b>${esc(m.slug)}</b>` :
       `<a class="dp-fam-link" href="${esc(m.slug)}.working.html" data-plan="${esc(m.slug)}">${esc(m.slug)}</a>`;
+    const incs = (m.increments || []).map(i => {
+      const p = famIncParts(i);
+      return `<span class="dp-fam-inc dp-fam-${esc(i.status)}" title="${esc(i.title)} — ${esc(i.status)}">` +
+        `${p.status} ${i.n}${[p.checks, p.review, p.by].filter(Boolean).map((x, k) => `${k ? " ·" : ""} <span class="dim">${esc(x)}</span>`).join("")}</span>`;
+    }).join("");
     return `<li class="dp-fam-m${me ? " dp-fam-me" : ""}"><span class="dim">${m.role === "parent" ? "parent" : "child"}</span> ${name}` +
-      ` <span class="dim">· ${esc(m.phase)} · ${m.done}/${m.total} done</span></li>`;
+      ` <span class="dim">· ${esc(m.phase)} · ${m.done}/${m.total} done${m.role === "child" && m.go === "parent" ? " · parent goes" : ""}</span>` +
+      (m.held ? `<div class="dp-fam-wait">held by the parent: ${esc(m.held)}</div>` : "") +
+      (incs ? `<div class="dp-fam-incs">${incs}</div>` : "") + `</li>`;
   }).join("");
   const owns = f.owns.length ? `<p class="dim">this plan owns ${f.owns.map(g => `<code>${esc(g)}</code>`).join(" ")}</p>` : "";
   const waits = f.waitingOn.length
@@ -1504,7 +1525,10 @@ function familyStripHtml(slug) {
   return `<section class="dp-fam" aria-label="plan family">
 <style>
 .dp-fam{border:1px solid var(--line,#8884);border-radius:8px;padding:8px 12px;margin:4px 0 14px}
-.dp-fam ul{list-style:none;margin:4px 0;padding:0;display:flex;flex-wrap:wrap;gap:4px 18px}
+.dp-fam ul{list-style:none;margin:4px 0;padding:0;display:flex;flex-direction:column;gap:6px}
+.dp-fam-incs{display:flex;flex-wrap:wrap;gap:2px 14px;margin:2px 0 0 1.2em;font-size:.92em}
+.dp-fam-inc{white-space:nowrap}
+.dp-fam-done{opacity:.75}
 .dp-fam p{margin:4px 0}
 .dp-fam-wait{color:var(--warn,#c80)}
 .dp-fam-link{color:inherit}
@@ -3421,8 +3445,14 @@ function familyCmd(args, flags) {
       const mem = idx.members.find(x => x.slug === m.slug);
       const waits = waitingOn(m.slug);
       say(`  ${m.role === "parent" ? "◆" : "◇"} ${m.slug.padEnd(28)} ${m.phase.padEnd(12)} ${m.done}/${m.total}` +
+        (m.role === "child" ? `  · ${m.go === "parent" ? "parent goes" : "a person goes"}` : "") +
         ((mem.owns || []).length ? `  owns ${mem.owns.map(c => c.glob).join(", ")}` : "") +
         (waits.length ? `  · waits on ${waits.map(w => w.n).join(", ")}` : ""));
+      if (m.held) say(`      held by the parent: ${m.held}`);
+      for (const i of m.increments || []) {
+        const p = famIncParts(i);
+        say(`      ${p.status} ${String(i.n).padEnd(3)}${[p.checks, p.review, p.by].filter(Boolean).join("  ")}`);
+      }
     }
     for (const p of f.trespasses.pairs) say(`  ⚠ ${p.from} edited ${p.owner}'s claims ${p.count}×`);
     return;
