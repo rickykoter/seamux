@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# crew-reclaim [-n|--dry-run] [-y|--yes] [<workspace-id>|<path>]
+# crew-reclaim [-n|--dry-run] [-y|--yes] [--family-ok] [<workspace-id>|<path>]
 #
 # The board's Merged bucket knows a worktree can go; this is the tap that
 # actually removes it. Invoked from the sidebar through the notification-hook
@@ -17,6 +17,8 @@
 #     closed with it: cmux needs --force for any running process, and this
 #     guard is what stands in for that confirmation)
 #   * no Docker sandbox is still running for it
+#   * deep-plan does not protect it: no plan with work not done is rooted in
+#     it, and it is no member of a family that is not done (ADR 0031)
 #
 # Every guard is evaluated and reported before anything is touched, so the
 # answer to "why did it refuse?" is on screen in full rather than one reason at
@@ -26,6 +28,11 @@
 # a yes. --yes skips the prompt, --dry-run stops after the report. Without a tty
 # there is nobody to ask, so it behaves as it always did and just proceeds —
 # that is the path a detached `fire()` from the hook still takes.
+#
+# --family-ok turns the deep-plan guard from a blocker into a question: a y/N
+# that names the family, asked at a terminal only (refused without one, and
+# --yes does not answer it), and logged to ~/.cache/cmux-crew/family-ok.log.
+# With a workspace to close, the close asks it; without one, this does.
 
 set -uo pipefail
 
@@ -65,19 +72,21 @@ say()  { printf '\033[2m→\033[0m %s\n' "$*"; }
 pass() { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 fail() { printf '  \033[31m✗\033[0m %s\n' "$*"; blockers=$((blockers + 1)); }
 skip() { printf '  \033[2m·\033[0m %s\n' "$*"; }
+warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
 note() { printf '    \033[2m%s\033[0m\n' "$*"; }
-TAB="$(printf '\t')"
 head2(){ printf '\n\033[1m%s\033[0m\n' "$*"; }
 kv()   { printf '  \033[2m%-9s\033[0m %s\n' "$1" "$2"; }
 
 dry=""
 assume_yes=""
+family_ok=""
 arg=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -n|--dry-run) dry=1 ;;
     -y|--yes)     assume_yes=1 ;;
-    -h|--help)    sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --family-ok)  family_ok=1 ;;
+    -h|--help)    sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --)           shift; arg="${1:-}"; break ;;
     -*)           die "unknown option: $1" ;;
     *)            arg="$1" ;;
@@ -209,91 +218,64 @@ if [ -n "$ws" ]; then
 fi
 
 # --- deep-plan ---------------------------------------------------------------
-# A plan that has been rendered but not signed off, or locked and not finished,
-# is unfinished work living outside the worktree — deleting the tree strands it.
-# Two sources because each covers the other's blind spot: the `active` marker is
-# written at render time and its CWD is wherever the renderer ran (which for a
-# spec rendered from the keys directory is not the worktree at all), while the
-# state file carries the plan's real `root`.
-plan_rows="$(python3 - "$top" 2>/dev/null <<'PLANPROBE'
-import json, os, sys
-
-top = sys.argv[1]
-DP = os.path.join(os.path.expanduser("~"), ".claude", "deep-plan")
-
-PHASES = {
-    "review": "is awaiting its alignment check",
-    "implementing": "is mid-implementation",
-    "delivery": "is awaiting its delivery review",
-}
-
-
-def same(a, b):
-    if not a or not b:
-        return False
-    try:
-        return os.path.realpath(a) == os.path.realpath(b)
-    except Exception:
-        return False
-
-
-# One entry per plan, not per file: a plan in review has both an active marker
-# and a state file, and reporting it twice makes two blockers out of one fact.
-plans = {}
-
-
-def touch(slug):
-    return plans.setdefault(slug, {"phase": "", "incs": "", "files": []})
-
-
-active = os.path.join(DP, "active")
-for n in sorted(os.listdir(active)) if os.path.isdir(active) else []:
-    path = os.path.join(active, n)
-    d = {}
-    try:
-        for line in open(path):
-            k, _, v = line.partition("=")
-            d[k.strip()] = v.strip()
-    except Exception:
-        continue
-    if not same(d.get("CWD"), top):
-        continue
-    e = touch(d.get("SLUG") or n)
-    e["phase"] = e["phase"] or "review"
-    e["files"].append(path)
-
-state = os.path.join(DP, "state")
-for n in sorted(os.listdir(state)) if os.path.isdir(state) else []:
-    if not n.endswith(".json"):
-        continue
-    path = os.path.join(state, n)
-    try:
-        st = json.load(open(path)) or {}
-    except Exception:
-        continue
-    phase = (st.get("phase") or "").strip()
-    if phase == "done" or not same(st.get("root"), top):
-        continue
-    e = touch(st.get("slug") or n[:-5])
-    e["phase"] = phase or e["phase"]
-    incs = st.get("increments") or []
-    if incs:
-        done = len([i for i in incs if i.get("status") == "done"])
-        e["incs"] = " (%d/%d increments done)" % (done, len(incs))
-    e["files"].append(path)
-
-for slug in sorted(plans):
-    e = plans[slug]
-    phase = e["phase"] or "open"
-    said = PHASES.get(phase, "is open (%s)" % phase)
-    print("\t".join([
-        "a deep-plan %s — %s%s" % (said, slug, e["incs"]),
-        "finish it, or if it is abandoned remove: %s" % " ".join(e["files"]),
-        "%s (%s)" % (slug, phase),
-    ]))
-PLANPROBE
-)"
-plan_names="$(printf '%s\n' "$plan_rows" | cut -f3 | sed '/^$/d' | paste -sd, -)"
+# A plan with work not done, or a member of a family that is not done, is work
+# living outside the worktree: deleting the tree strands it. deep-plan answers
+# that itself (`deep-plan protects`, matched anywhere inside a plan's root), so
+# this reads no plan state of its own. No deep-plan is no guard, said once; a
+# deep-plan that does not answer is a blocker, because "could not tell" is not
+# "nothing is there". CREW_DEEP_PLAN is the probe's override: a command line,
+# split on whitespace.
+plan_state=missing   # missing | clear | protected | error
+plan_why=""
+plan_slug=""
+plan_family=""
+if [ -n "${CREW_DEEP_PLAN:-}" ]; then
+  read -r -a dp_argv <<< "$CREW_DEEP_PLAN"
+elif command -v deep-plan >/dev/null 2>&1; then
+  dp_argv=(deep-plan)
+elif [ -x "$HOME/.local/bin/deep-plan" ]; then
+  dp_argv=("$HOME/.local/bin/deep-plan")
+else
+  dp_argv=()
+fi
+if [ "${#dp_argv[@]}" -gt 0 ]; then
+  dp_err="$(mktemp "${TMPDIR:-/tmp}/crew-reclaim.XXXXXX")"
+  dp_out="$("${dp_argv[@]}" protects "$top" --json 2>"$dp_err")"
+  dp_rc=$?
+  dp_tail="$(sed '/^[[:space:]]*$/d' "$dp_err" | tail -1)"
+  rm -f "$dp_err"
+  if [ "$dp_rc" -eq 127 ]; then
+    plan_state=missing
+  elif [ "$dp_rc" -ne 0 ]; then
+    plan_state=error
+    plan_why="could not ask deep-plan whether live work is here (deep-plan protects failed: ${dp_tail:-exit $dp_rc})"
+  else
+    dp_rows="$(printf '%s' "$dp_out" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    assert isinstance(d, dict) and isinstance(d.get("protected"), bool)
+except Exception:
+    sys.exit(1)
+fam = d.get("family") if isinstance(d.get("family"), dict) else {}
+clean = lambda v: " ".join(str(v or "").split())
+print("protected" if d["protected"] else "clear")
+print(clean(d.get("why")))
+print(clean(d.get("plan")))
+print(clean(fam.get("parent")))' 2>/dev/null)"
+    if [ -z "$dp_rows" ]; then
+      plan_state=error
+      plan_why="could not ask deep-plan whether live work is here (deep-plan protects gave an answer crew could not read)"
+    else
+      plan_state="$(printf '%s\n' "$dp_rows" | sed -n 1p)"
+      plan_why="$(printf '%s\n' "$dp_rows" | sed -n 2p)"
+      plan_slug="$(printf '%s\n' "$dp_rows" | sed -n 3p)"
+      plan_family="$(printf '%s\n' "$dp_rows" | sed -n 4p)"
+    fi
+  fi
+fi
+plan_names=""
+[ "$plan_state" = protected ] && plan_names="$plan_slug${plan_family:+ (the $plan_family family)}"
 
 # Registry presence is the cheap host-side answer to "was this sandboxed?", so
 # the common non-sandboxed case never touches sbx and never wakes its daemon.
@@ -369,18 +351,25 @@ fi
 # session here is still deciding what to do. Deleting the tree under either one
 # strands it — and in the deep-plan case the plan outlives the worktree, so what
 # you lose is the thing you were about to build, not the build.
-if [ -n "$plan_rows" ] || [ -n "$planmode_desc" ]; then
-  while IFS="$TAB" read -r msg hint _rest; do
-    [ -n "$msg" ] || continue
-    fail "$msg"
-    [ -n "$hint" ] && note "$hint"
-  done <<< "$plan_rows"
-  if [ -n "$planmode_desc" ]; then
-    fail "a session here is in plan mode: $planmode_desc"
-    note "leave plan mode there, or close it — crew-sync drops the token within 120s"
-  fi
-else
-  pass "no plan is open on this worktree"
+family_ask=""
+case "$plan_state" in
+  protected|error)
+    if [ -z "$family_ok" ]; then
+      fail "$plan_why"
+      note "finish it first — or, at a terminal, crew-reclaim --family-ok asks before it goes"
+    elif [ ! -t 0 ]; then
+      fail "$plan_why; --family-ok needs a person at a terminal"
+    else
+      warn "$plan_why"
+      note "--family-ok: you are asked to confirm before it goes"
+      family_ask=1
+    fi ;;
+  missing) skip "deep-plan is not installed — no plan guard" ;;
+  *)       pass "no live plan or family work here" ;;
+esac
+if [ -n "$planmode_desc" ]; then
+  fail "a session here is in plan mode: $planmode_desc"
+  note "leave plan mode there, or close it — crew-sync drops the token within 120s"
 fi
 
 # Never delete the ground you are standing on. Removing the caller's own
@@ -471,12 +460,44 @@ if [ -n "$ws" ]; then
   esac
 fi
 
+# The family question, which --yes never answers. With a workspace to close,
+# the close asks it (and logs the yes), so it is asked once; without one, it
+# is asked here, in the same words and the same log.
+if [ -n "$family_ask" ] && [ -z "$ws" ]; then
+  if [ -n "$plan_family" ]; then what="The $plan_family family is not done."
+  elif [ -n "$plan_slug" ]; then what="Plan $plan_slug is live there."
+  else what="Deep-plan could not say."; fi
+  printf '\n%s\n\033[1mReclaim %s anyway?\033[0m %s \033[2m[y/N]\033[0m ' "$plan_why" "$top" "$what"
+  reply=""
+  read -r reply || reply=""
+  case "$reply" in
+    y|Y|yes|YES) printf '\n' ;;
+    *) printf '\033[2mkept — nothing was changed.\033[0m\n'; exit 130 ;;
+  esac
+  FAMILY_LOG="${XDG_CACHE_HOME:-$HOME/.cache}/cmux-crew/family-ok.log"
+  python3 -c '
+import json, os, sys, time
+log, cwd, plan, family, why = sys.argv[1:6]
+os.makedirs(os.path.dirname(log), exist_ok=True)
+with open(log, "a") as fh:
+    fh.write(json.dumps({"at": time.time(), "cwd": cwd, "workspace": "", "plan": plan,
+                         "family": family, "why": why, "by": "crew-reclaim"}) + "\n")
+' "$FAMILY_LOG" "$top" "$plan_slug" "$plan_family" "$plan_why" \
+    || die "could not log the --family-ok override — nothing was changed"
+fi
+
 say "reclaiming $top ($branch, ${size:-?})"
 
 # Close the workspace first so cmux is not left pointing at a deleted path —
 # and stop here if it will not go. A close that fails in silence is how a
 # worktree got removed out from under a workspace that was still open on it.
-if [ -n "$ws" ]; then
+# The close runs the same plan guard; under --family-ok it asks the family
+# question on this terminal, so its stderr is left on the terminal too.
+if [ -n "$ws" ] && [ -n "$family_ask" ]; then
+  ws_tool close --family-ok "$ws" >/dev/null \
+    || die "${ws_title:-$ws} was not closed (above) — nothing was removed"
+  ok "closed workspace ${ws_title:-$ws}"
+elif [ -n "$ws" ]; then
   why="$(ws_tool close "$ws" 2>&1 >/dev/null)" \
     || die "cmux did not close ${ws_title:-$ws} (${why:-no answer}) — nothing was removed"
   ok "closed workspace ${ws_title:-$ws}"

@@ -2,8 +2,12 @@
 """crew — where workspaces are: live, archived, past or gone. One reader.
 
     workspaces.py lifecycle <workspace>   running | idle | none | unknown
-    workspaces.py close <workspace>       force-close and check it went; exit 1 if not
-    workspaces.py archive <workspace>     close it and remember it; exit 1 on refusal
+    workspaces.py close <workspace> [--family-ok]
+                                          force-close and check it went; exit 1 if not
+    workspaces.py archive <workspace> [--family-ok]
+                                          close it and remember it; exit 1 on refusal
+    workspaces.py protects <dir>          deep-plan's word on a directory, as JSON;
+                                          exit 1 when it may not be closed
     workspaces.py restore <cwd>           reopen an archived cwd, resuming its Claude
     workspaces.py forget <cwd>            drop an archive record
     workspaces.py dormant-days            the sweep's threshold, default 5
@@ -29,7 +33,14 @@ What is here:
     written read-modify-write under an flock with an atomic replace, the
     judgments.py pattern, so two archives in one second keep both records;
   - merged(), the cheap is-it-shipped check, with default_base in
-    crew-reclaim's order; dormant_days() from integrations.json.
+    crew-reclaim's order; dormant_days() from integrations.json;
+  - the plan guard (ADR 0031): protects() asks `deep-plan protects <dir>
+    --json` whether live plan or family work sits in a directory, and guard()
+    turns the answer into a refusal that names the plan and the family. Close,
+    archive, the sweep and the finder's ^A all go through it. Only a person at
+    a terminal overrides, with --family-ok and a y/N naming the family; the yes
+    is logged to ~/.cache/cmux-crew/family-ok.log. No deep-plan installed is
+    unprotected, said once; a deep-plan that does not answer is a refusal.
 
 Archive is close and remember. The worktree, branch and transcript all survive
 a close already; the record carries what a close loses — title, color, branch
@@ -41,6 +52,7 @@ past one.
 import fcntl
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -54,6 +66,7 @@ CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(HOME, 
 INDEX = os.path.join(CACHE_DIR, "resume-index.json")
 ARCHIVE = os.path.join(CACHE_DIR, "archive.json")
 INTEGRATIONS = os.environ.get("CREW_INTEGRATIONS") or os.path.join(HERE, "..", "integrations.json")
+FAMILY_LOG = os.path.join(CACHE_DIR, "family-ok.log")
 DORMANT_DEFAULT = 5
 
 # One definition of "which cmux": bin/crew-cmux-bin, the same lookup crew-resume
@@ -410,12 +423,29 @@ def find_live(handle, live=None):
     return None
 
 
-def close(handle):
+def close(handle, family_ok=False):
     """Force-close a workspace and check it went. -> (ok, why)
 
     --force because cmux asks for confirmation whenever any process runs in
     the workspace, and an idle Claude at its prompt is one. Callers have
     already refused a mid-turn agent; that check is the guard --force skips.
+    What this does check is the plan guard: a workspace whose directory holds
+    live plan or family work is refused, unless a person overrides it.
+    """
+    live = live_workspaces()
+    if live is None:
+        return False, "cmux did not list its workspaces — could not tell what is in it"
+    ws = find_live(handle, live)
+    if ws and ws["cwd"]:
+        ok, why = guard(ws["cwd"], ws["title"] or ws["ref"], family_ok)
+        if not ok:
+            return False, why
+    return _close(handle)
+
+
+def _close(handle):
+    """close() without the plan guard, for archive(), which has asked already.
+
     A close cmux reports as done is believed only once the workspace is gone
     from the list, unless the list itself does not answer.
     """
@@ -499,6 +529,127 @@ def dormant_days():
         return DORMANT_DEFAULT
 
 
+# --- the plan guard: deep-plan protects ------------------------------------------
+# One answer for every close path (ADR 0031). deep-plan knows whether a plan's
+# root holds work that is not done, and whether that plan is a member of a
+# family that is not done; crew asks rather than reading plan state itself.
+
+_missing_said = False
+PROTECTS_TIMEOUT = 4.0
+
+
+def _deep_plan():
+    """The deep-plan argv: CREW_DEEP_PLAN (words split on whitespace, as
+    crew-reclaim and the Rust split it; for the probes), else deep-plan on
+    PATH, else the ~/.local/bin shim. None when there is none."""
+    o = os.environ.get("CREW_DEEP_PLAN", "").split()
+    if o:
+        return o
+    for c in (shutil.which("deep-plan"), os.path.join(HOME, ".local", "bin", "deep-plan")):
+        if c and os.access(c, os.X_OK):
+            return [c]
+    return None
+
+
+def _missing():
+    global _missing_said
+    if not _missing_said:
+        _missing_said = True
+        sys.stderr.write("crew: deep-plan is not installed — closing without its plan guard\n")
+    return {"protected": False, "why": "", "plan": "", "family": "", "missing": True}
+
+
+def protects(cwd):
+    """deep-plan's word on a directory. -> {protected, why, plan, family, ...}
+
+    protected  refuse to close it
+    why        deep-plan's reason, naming the plan and the family, or what went
+               wrong asking
+    plan       the plan's slug; family, its family's parent ("" when none)
+    error      deep-plan was there and did not answer: protected, so refused
+    missing    there is no deep-plan: not protected, said once on stderr
+    A directory that does not exist holds nothing to protect.
+    """
+    if not cwd or not os.path.isdir(cwd):
+        return {"protected": False, "why": "", "plan": "", "family": ""}
+    argv = _deep_plan()
+    if not argv:
+        return _missing()
+
+    def err(why):
+        return {"protected": True, "why": why, "plan": "", "family": "", "error": True}
+    try:
+        # Short: the board chip asks from inside a hook cmux kills at 10s, and
+        # the answer is one state-directory read (well under a second).
+        r = subprocess.run(argv + ["protects", cwd, "--json"], capture_output=True, text=True,
+                           timeout=PROTECTS_TIMEOUT)
+    except FileNotFoundError:
+        return _missing()
+    except Exception as e:
+        return err("deep-plan did not answer (%s)" % e)
+    if r.returncode == 127:                  # the shim, with no engine behind it
+        return _missing()
+    tail = ((r.stderr or "").strip().splitlines() or ["exit %d" % r.returncode])[-1]
+    if r.returncode != 0:
+        return err("deep-plan protects failed: %s" % tail)
+    try:
+        d = json.loads(r.stdout)
+    except ValueError:
+        d = None
+    if not isinstance(d, dict) or not isinstance(d.get("protected"), bool):
+        return err("deep-plan protects gave an answer crew could not read")
+    fam = d.get("family") if isinstance(d.get("family"), dict) else {}
+    return {"protected": d["protected"], "why": str(d.get("why") or ""),
+            "plan": str(d.get("plan") or ""), "family": str(fam.get("parent") or ""),
+            "phase": str(d.get("phase") or "")}
+
+
+def refusal(name, p):
+    """The one sentence a refused close says, on a terminal and in a toast."""
+    if p.get("error"):
+        return "%s: could not ask deep-plan whether live work is here (%s) — not closed" % (
+            name, p["why"])
+    return "%s holds live work: %s — not closed" % (name, p["why"])
+
+
+def guard(cwd, name, family_ok=False, by=""):
+    """May the workspace at cwd be closed? -> (ok, why)
+
+    A protected directory is refused. family_ok is the override, and only for
+    a person: it needs a terminal on stdin, asks a y/N that names the family on
+    stderr, and logs the yes. The board's chips never pass it.
+    """
+    p = protects(cwd)
+    if not p["protected"]:
+        return True, ""
+    msg = refusal(name, p)
+    if not family_ok:
+        return False, msg
+    if not (sys.stdin.isatty() and sys.stderr.isatty()):
+        return False, msg + "; --family-ok needs a person at a terminal"
+    what = ("the %s family is not done" % p["family"]) if p["family"] else \
+        ("plan %s is live there" % p["plan"]) if p["plan"] else "deep-plan could not say"
+    sys.stderr.write("%s\nClose %s anyway? %s. [y/N] " % (msg, name, what[0].upper() + what[1:]))
+    sys.stderr.flush()
+    try:
+        ans = sys.stdin.readline().strip().lower()
+    except (OSError, KeyboardInterrupt):
+        ans = ""
+    if ans not in ("y", "yes"):
+        return False, "%s: kept — nothing was closed" % name
+    entry = {"at": time.time(), "cwd": cwd, "workspace": name, "plan": p["plan"],
+             "family": p["family"], "why": p["why"], "by": by or os.path.basename(sys.argv[0])}
+    try:
+        os.makedirs(os.path.dirname(FAMILY_LOG), exist_ok=True)
+        with open(FAMILY_LOG, "a") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    except OSError as e:
+        # An override nobody can find later is not one: refuse rather than
+        # close unrecorded.
+        return False, "%s: could not log the override (%s) — nothing was closed" % (name, e)
+    return True, ""
+
+
 # --- the archive store -----------------------------------------------------------
 
 def _write_json(path, data):
@@ -538,10 +689,12 @@ def _update(fn):
         return out
 
 
-def archive(handle, live=None, records=None):
+def archive(handle, live=None, records=None, family_ok=False):
     """Close a live workspace and remember it. -> (ok, message)
 
-    Refuses while its agent is mid-turn, or when that cannot be told. The record
+    Refuses while its agent is mid-turn, or when that cannot be told, and when
+    its directory holds live plan or family work (guard(); family_ok is a
+    person's override, asked last, once every other check has passed). The record
     is written before the close, so a close that lands and a process that dies
     right after still leave it remembered; a close that fails puts back whatever
     was there before. --force is what gets an idle Claude past cmux's
@@ -570,6 +723,9 @@ def archive(handle, live=None, records=None):
     cwd = ws["cwd"]
     if not cwd:
         return False, "%s has no directory to remember" % name
+    ok, why = guard(cwd, name, family_ok)
+    if not ok:
+        return False, why
 
     # Claude's sessions only: restore runs `claude --resume`, and another
     # agent's id would resume nothing. Mid-turn above counts every agent.
@@ -601,7 +757,7 @@ def archive(handle, live=None, records=None):
         return prev
     before = _update(put)
 
-    ok, why = close(ws["id"])
+    ok, why = _close(ws["id"])
     if not ok:
         def put_back(recs):
             if before is None:
@@ -646,12 +802,19 @@ def forget(cwd):
 
 
 def main(argv):
+    family_ok = "--family-ok" in argv
+    argv = [a for a in argv if a != "--family-ok"]
     cmd, arg = (argv[1] if len(argv) > 1 else ""), (argv[2] if len(argv) > 2 else "")
     if cmd == "lifecycle" and arg:
         print(lifecycle(arg))
         return 0
+    if cmd == "protects" and arg:
+        p = protects(arg)
+        json.dump(p, sys.stdout)
+        print()
+        return 1 if p["protected"] else 0
     if cmd == "close" and arg:
-        ok, why = close(arg)
+        ok, why = close(arg, family_ok)
         if not ok:
             print(why, file=sys.stderr)
         return 0 if ok else 1
@@ -668,7 +831,7 @@ def main(argv):
         print(dormant_days())
         return 0
     if cmd in ("archive", "restore") and arg:
-        ok, msg = (archive if cmd == "archive" else restore)(arg)
+        ok, msg = archive(arg, family_ok=family_ok) if cmd == "archive" else restore(arg)
         print(msg, file=sys.stdout if ok else sys.stderr)
         return 0 if ok else 1
     if cmd == "forget" and arg:

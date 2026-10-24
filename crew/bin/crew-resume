@@ -8,6 +8,8 @@
     crew-resume --rows-json  the finder's rows as JSON, in the order it would
                              show them for the query and scope, then exit;
                              live_known is false when cmux did not answer
+    crew-resume --family-ok  ^A may archive what deep-plan protects, after a
+                             y/N naming the family
 
 One row per workspace, keyed by its directory, in one of four states:
 
@@ -18,7 +20,9 @@ One row per workspace, keyed by its directory, in one of four states:
 
 → opens a row's sessions, where ⏎ resumes one in a new workspace and ^T resumes
 it here — what this picker did for every row before it was a finder. ^A
-archives a live row, ^X forgets an archived one.
+archives a live row, ^X forgets an archived one. ^A refuses a workspace whose
+directory holds live plan or family work (ADR 0031) and says whose; under
+--family-ok it asks first instead, below the finder, and logs a yes.
 
 Claude Code keeps one JSONL transcript per session under ~/.claude/projects;
 there are hundreds of them here, and a dozen workspaces is what you are looking
@@ -436,6 +440,7 @@ def main():
     args = sys.argv[1:]
     force = "--reindex" in args
     show_all = "--all" in args
+    family_ok = "--family-ok" in args
     query = " ".join(a for a in args if not a.startswith("--"))
 
     if not os.path.isdir(W.PROJECTS):
@@ -475,7 +480,7 @@ def main():
             if r["ws"]["id"] == os.environ.get("CMUX_WORKSPACE_ID"):
                 ui["flash"] = "that is this terminal's workspace — archive it from elsewhere"
             else:
-                ok, msg = W.archive(r["ws"]["id"])
+                ok, msg = W.archive(r["ws"]["id"], family_ok=family_ok)
                 ui["flash"] = ("✓ " if ok else "✗ ") + msg
         elif mode == "forget":
             W.forget(r["cwd"])

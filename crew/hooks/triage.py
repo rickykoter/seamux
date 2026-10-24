@@ -89,8 +89,8 @@ def archive_in_hook(ws: str) -> str:
 
     Synchronously, for the reason ws_cwd spells out: the close needs a caller
     cmux trusts, and a fired child is not one. A refusal (mid-turn, a job
-    running, a close that did not take) is the one outcome worth a banner; a
-    success shows by the row leaving the board.
+    running, live plan or family work, a close that did not take) is the one
+    outcome worth a banner; a success shows by the row leaving the board.
     """
     import workspaces
     workspaces.CMUX = CMUX
@@ -100,7 +100,8 @@ def archive_in_hook(ws: str) -> str:
     if live is None:
         say("archive", "cmux did not list its workspaces — nothing was archived")
         return "no live list"
-    if not workspaces.find_live(ws, live):
+    w = workspaces.find_live(ws, live)
+    if not w:
         # The row outlives its workspace until the next push, so a second tap
         # lands here. The first one worked; that is not worth a banner.
         if any(r.get("workspace_id") == ws for r in workspaces.load_archive().values()):
@@ -113,6 +114,13 @@ def archive_in_hook(ws: str) -> str:
         if took + per * 5 > HOOK_LIMIT - 1:
             say("archive", "cmux is too slow to archive from the board — use crew-resume")
             return "slow cmux (%.1fs a call): refused" % per
+        # The plan guard first: archive() asks it on the fast path, but a
+        # refusal in a terminal would never reach a banner. A chip never
+        # passes the override.
+        ok, why = workspaces.guard(w["cwd"], w["title"] or w["ref"])
+        if not ok:
+            say("archive", why)
+            return why
         argv = [sys.executable, os.path.join(HERE, "workspaces.py"), "archive", ws]
         if open_terminal(host_workspace(ws), argv, title="archive"):
             return "slow cmux (%.1fs a call): archiving in a terminal" % per

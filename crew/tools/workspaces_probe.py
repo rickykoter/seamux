@@ -26,6 +26,13 @@ What is asserted:
     leaves out mid-turn, planned and fresh ones, orders by Jev (a mock) or by
     merged-then-idle without it, caches by transcript size, and its wizard
     takes one key a card; sweep_dormant_days renders through options.py;
+  - the plan guard: archive and close refuse a workspace `deep-plan protects`
+    (a fake here, through CREW_DEEP_PLAN), naming the plan and the family;
+    --family-ok is refused without a terminal, and on one asks a y/N naming
+    the family and logs the yes; a deep-plan that errs or answers nonsense is
+    a refusal, and no deep-plan at all is no guard, said once. The board chip
+    refuses with a banner on either path, crew-sweep holds a protected card
+    back even when merged, and crew-reclaim makes it a blocker;
   - crew-reclaim reports the mid-turn guard on a dry run and changes nothing,
     refuses a mid-turn agent, stops before deleting when the close fails, and
     refuses to close its own terminal's workspace, and otherwise force-closes
@@ -38,6 +45,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
@@ -73,6 +81,32 @@ with open(FAKE_PS, "w") as fh:
              '  ttys-busy) echo " 12 12 40 -zsh"; echo " 40 40 40 npm" ;;\nesac\n')
 os.chmod(FAKE_PS, 0o755)
 ENV["CREW_PS"] = FAKE_PS
+# deep-plan, answered from a table: {root: verdict | "error" | "garbage"}. A
+# directory at or inside a root gets its verdict; anything else is unprotected.
+# Every call is logged, so a check can tell whether a close path asked.
+DP_TABLE = os.path.join(T, "protects.json")
+DP_LOG = os.path.join(T, "protects.log")
+FAKE_DP = os.path.join(T, "deep-plan")
+with open(FAKE_DP, "w") as fh:
+    fh.write("#!%s\n" % sys.executable + r'''import json, os, sys
+TABLE, LOG = %r, %r
+if sys.argv[1:2] != ["protects"] or "--json" not in sys.argv:
+    sys.exit(2)
+here = os.path.realpath(sys.argv[2])
+open(LOG, "a").write(here + "\n")
+table = json.load(open(TABLE)) if os.path.exists(TABLE) else {}
+for root, v in table.items():
+    r = os.path.realpath(root)
+    if here == r or here.startswith(r.rstrip("/") + "/"):
+        if v == "error":
+            sys.stderr.write("deep-plan: the state directory is unreadable\n")
+            sys.exit(1)
+        print("not json" if v == "garbage" else json.dumps(v))
+        sys.exit(0)
+print(json.dumps({"protected": False}))
+''' % (DP_TABLE, DP_LOG))
+os.chmod(FAKE_DP, 0o755)
+ENV["CREW_DEEP_PLAN"] = FAKE_DP
 os.environ.update(ENV)
 with open(ENV["GIT_CONFIG_GLOBAL"], "w") as fh:
     fh.write("[user]\n\tname = probe\n\temail = probe@example.com\n[init]\n\tdefaultBranch = main\n")
@@ -131,8 +165,14 @@ class RustW:
         r = self._run(*args)
         return r.returncode == 0, (r.stdout if r.returncode == 0 else r.stderr).strip()
 
-    def archive(self, handle):
-        return self._said("archive", handle)
+    def archive(self, handle, family_ok=False):
+        return self._said("archive", handle, *(["--family-ok"] if family_ok else []))
+
+    def close(self, handle, family_ok=False):
+        return self._said("close", handle, *(["--family-ok"] if family_ok else []))
+
+    def protects(self, cwd):
+        return self._json("protects", cwd)
 
     def restore(self, cwd):
         return self._said("restore", cwd)
@@ -190,6 +230,64 @@ def sess(i, sid, life="idle", pid=True, active=True, at=1.0):
     return {"workspace_id": i, "session_id": sid, "agent_lifecycle": life,
             "stored_pid_exists": pid, "active_for_workspace": active, "updated_at_unix": at,
             "agent": "claude"}
+
+
+def verdict(root, plan="kid", family="fam", phase="implementing"):
+    """What `deep-plan protects --json` says of live work: a plan with
+    increment 1 open, and a child of a family that is not done."""
+    why = "plan %s is %s with increment 1 not done" % (plan, phase)
+    if family:
+        why += "; %s is a workstream of the %s family, which is not done" % (plan, family)
+    return {"protected": True, "plan": plan, "root": root, "phase": phase, "open": [1],
+            "family": {"parent": family, "role": "child", "live": True} if family else None,
+            "why": why}
+
+
+def protect(table):
+    json.dump(table, open(DP_TABLE, "w"))
+    open(DP_LOG, "w").close()
+
+
+def asked():
+    return open(DP_LOG).read().split() if os.path.exists(DP_LOG) else []
+
+
+def family_log():
+    p = os.path.join(T, "cache", "cmux-crew", "family-ok.log")
+    return [json.loads(ln) for ln in open(p)] if os.path.exists(p) else []
+
+
+def on_tty(argv, answers, env=None, cwd=None, timeout=90):
+    """Run argv on a pseudo-terminal, typing answers[i] at the i-th [y/N].
+    -> (exit code, what showed, colours stripped)."""
+    import pty
+    import re
+    import select
+    m, sl = pty.openpty()
+    p = subprocess.Popen(argv, stdin=sl, stdout=sl, stderr=sl, env=env or os.environ, cwd=cwd,
+                         close_fds=True)
+    os.close(sl)
+    out, sent, t0 = b"", 0, time.time()
+    while time.time() - t0 < timeout:
+        r, _, _ = select.select([m], [], [], 0.2)
+        if r:
+            try:
+                chunk = os.read(m, 4096)
+            except OSError:
+                chunk = b""
+            if not chunk:
+                break
+            out += chunk
+        while sent < len(answers) and out.count(b"[y/N]") > sent:
+            os.write(m, (answers[sent] + "\n").encode())
+            sent += 1
+        if not r and p.poll() is not None:
+            break
+    else:
+        p.kill()
+    p.wait()
+    os.close(m)
+    return p.returncode, re.sub(r"\033\[[0-9;]*m", "", out.decode(errors="replace"))
 
 
 # --- the transcript index ---------------------------------------------------------
@@ -452,6 +550,78 @@ ok, msg = W.archive("ws-b")
 check("archive refuses a workspace with a job running, naming it",
       not ok and "npm is running" in msg and len(rows()) == 3, msg)
 
+# --- the plan guard: deep-plan protects --------------------------------------------
+print("plan guard")
+F = os.path.join(T, "f")
+os.makedirs(os.path.join(F, "deep"))
+WS_CLI = crew_impl.argv("workspaces", W_PY, sys.executable)
+WENV = crew_impl.env(os.environ)
+
+
+def guarded():
+    put_rows([ws("ws-f", F, process=True, title="kid")])
+    put_sessions([sess("ws-f", "s-f", "idle")])
+    W.forget(F)
+    open(os.path.join(FAKE_DIR, "cmux.log"), "w").close()
+
+
+guarded()
+protect({})
+check("deep-plan's no is not protected", W.protects(F)["protected"] is False and asked() == [os.path.realpath(F)])
+protect({F: verdict(F)})
+p_ = W.protects(os.path.join(F, "deep"))
+check("…and its yes is, inside the root too, with the plan and the family",
+      p_["protected"] and p_["plan"] == "kid" and p_["family"] == "fam", json.dumps(p_))
+ok, msg = W.archive("ws-f")
+check("archive refuses a workspace deep-plan protects, naming the plan and the family",
+      not ok and "kid holds live work" in msg and "plan kid is implementing" in msg
+      and "the fam family" in msg, msg)
+check("…and closes nothing and remembers nothing",
+      len(rows()) == 1 and "workspace close" not in log() and F not in W.load_archive(), log())
+ok, msg = W.close("ws-f")
+check("close refuses it too", not ok and "the fam family" in msg and len(rows()) == 1
+      and "workspace close" not in log(), msg)
+r = subprocess.run(WS_CLI + ["archive", "ws-f", "--family-ok"], env=WENV, capture_output=True,
+                   text=True, stdin=subprocess.DEVNULL, timeout=60)
+check("--family-ok without a terminal is refused", r.returncode == 1
+      and "--family-ok needs a person at a terminal" in r.stderr and len(rows()) == 1, r.stderr)
+rc, out = on_tty(WS_CLI + ["archive", "ws-f", "--family-ok"], ["n"], env=WENV)
+check("--family-ok at a terminal asks a y/N that names the family",
+      "Close kid anyway? The fam family is not done. [y/N]" in out, out)
+check("…and a no keeps it open", rc == 1 and "kept — nothing was closed" in out and len(rows()) == 1
+      and not family_log(), out)
+rc, out = on_tty(WS_CLI + ["archive", "ws-f", "--family-ok"], ["y"], env=WENV)
+lg = (family_log() or [{}])[-1]
+check("…and a yes archives it, and logs who said so about what",
+      rc == 0 and not rows() and F in W.load_archive() and lg.get("cwd") == F
+      and lg.get("family") == "fam" and lg.get("plan") == "kid" and "fam family" in lg.get("why", ""),
+      out + json.dumps(lg))
+guarded()
+protect({F: verdict(F, plan="solo", family=None)})
+rc, out = on_tty(WS_CLI + ["close", "ws-f", "--family-ok"], ["n"], env=WENV)
+check("a plan with no family is named instead", "Plan solo is live there. [y/N]" in out
+      and len(rows()) == 1, out)
+protect({F: "error"})
+ok, msg = W.archive("ws-f")
+check("a deep-plan that fails is a refusal, with its error",
+      not ok and "could not ask deep-plan" in msg and "unreadable" in msg and len(rows()) == 1, msg)
+protect({F: "garbage"})
+ok, msg = W.archive("ws-f")
+check("…and so is one that answers nonsense", not ok and "could not read" in msg and len(rows()) == 1, msg)
+protect({})
+_dp = os.environ["CREW_DEEP_PLAN"]
+os.environ["CREW_DEEP_PLAN"] = os.path.join(T, "no-deep-plan")
+if not isinstance(W, RustW):
+    r = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, %r); import workspaces as W; "
+                        "print(W.protects(%r)['protected'], W.protects(%r)['protected'])"
+                        % (os.path.join(CREW, "hooks"), F, A)], capture_output=True, text=True)
+    check("no deep-plan installed is no guard, said once",
+          r.stdout.split() == ["False", "False"] and r.stderr.count("deep-plan is not installed") == 1,
+          r.stdout + r.stderr)
+ok, msg = W.archive("ws-f")
+check("…so archive goes ahead without it", ok and not rows(), msg)
+os.environ["CREW_DEEP_PLAN"] = _dp
+
 # --- the board's archive chip: triage.py's crew:archive ---------------------------
 print("board archive chip (triage.py)")
 import time  # noqa: E402
@@ -498,6 +668,20 @@ put_sessions([sess("ws-c", "s-c", "idle")])
 r, took = tap("ws-c")
 r, took = tap("ws-c")
 check("a second tap on a row that already went is silent", "notify" not in log() and not rows(), log())
+put_rows([ws("ws-c", C, process=True, title="chip")])
+W.forget(C)
+protect({C: verdict(C)})
+r, took = tap("ws-c")
+check("a tap on a workspace deep-plan protects refuses, the banner naming the plan and the family",
+      len(rows()) == 1 and "notify --title crew --subtitle archive" in log() and "plan kid" in log()
+      and "the fam family" in log() and "workspace close" not in log() and C not in W.load_archive(), log())
+check("…and the chip never passes the override: nothing asks a y/N", "[y/N]" not in log() + r.stderr, r.stderr)
+put_rows([ws("ws-c", C, process=True, title="chip"), ws("ws-h", A, selected=True)])
+r, took = tap("ws-c", delay=1.0)
+check("…and on a cmux slow enough for a terminal, it refuses in the hook instead of handing it off",
+      "new-pane" not in log() and "the fam family" in log() and len(rows()) == 2, log())
+protect({})
+put_rows([ws("ws-c", C, process=True, title="chip")])
 put_rows([ws("ws-c", C, process=True, title="chip")])
 W.forget(C)
 r, took = tap("ws-c", delay=0.4)
@@ -600,9 +784,14 @@ planned = old_tree("planned", "dev/planned")      # dormant but a plan is open
 busy_ = old_tree("busy", "dev/busy")              # dormant but mid-turn
 transcript(stale, "s-stale", "Done: the endpoint is in and tested.", OLD)
 transcript(spike, "s-spike", "That approach will not work here.", OLD + 86400)
-dp = os.path.join(T, "deep-plan", "state")
-os.makedirs(dp)
-json.dump({"slug": "p", "root": planned, "phase": "implementing"}, open(os.path.join(dp, "p.json"), "w"))
+kid = os.path.join(T, "repo.worktrees", "kid")  # merged, and a live family's child
+git(main, "worktree", "add", "-q", "-b", "dev/kid", kid, "origin/main")
+open(os.path.join(kid, "kid"), "w").write("kid\n")
+git(kid, "add", "kid")
+git(kid, "commit", "-qm", "kid")
+git(kid, "push", "-q", "origin", "HEAD:main")
+git(main, "fetch", "-q")
+protect({planned: verdict(planned, "p", family=None), kid: verdict(kid)})
 for i in range(8):
     W.forget("/w/%d" % i)                       # the concurrency test's records
 gone_rec = os.path.join(T, "repo.worktrees", "removed")
@@ -612,10 +801,9 @@ plain_dir = os.path.join(T, "not-a-repo")
 os.makedirs(plain_dir)
 put_rows([ws("ws-m", main, title="main"), ws("ws-st", os.path.join(stale, "sub"), title="stale"),
           ws("ws-bz", busy_, title="busy"), ws("ws-op", open_, title="open"),
-          ws("ws-pl", plain_dir, title="plain")])
+          ws("ws-pl", plain_dir, title="plain"), ws("ws-k", kid, title="kid")])
 put_sessions([sess("ws-bz", "s-bz", "running"), sess("ws-st", "s-stale", "idle")])
-SENV = dict(os.environ, CREW_DEEP_PLAN_DIR=os.path.join(T, "deep-plan"),
-            XDG_CONFIG_HOME=os.path.join(T, "config"))
+SENV = dict(os.environ, XDG_CONFIG_HOME=os.path.join(T, "config"))
 SENV.pop("TYPESAFE_API_KEY", None)
 
 
@@ -644,6 +832,30 @@ check("each card offers only the keys that apply",
       by.get("removed", {}).get("keys") == ["f", "s", "q"]
       and by.get("stale", {}).get("keys") == ["r", "a", "s", "o", "q"]
       and by.get("spike", {}).get("keys") == ["r", "s", "q"], json.dumps({k: v["keys"] for k, v in by.items()}))
+held = {os.path.basename(c["cwd"]): c for c in q.get("held", [])}
+check("a merged worktree deep-plan protects is held back like a dormant one, not offered",
+      "kid" not in names and set(held) == {"kid", "planned"}
+      and "the fam family" in held["kid"]["why"] and held["kid"]["reason"] == "merged", json.dumps(q.get("held")))
+check("…and deep-plan is asked only about the cards that would be offered",
+      os.path.realpath(kid) in asked() and os.path.realpath(busy_) not in asked()
+      and os.path.realpath(open_) not in asked(), str(asked()))
+r = sweep("--json", "--family-ok")
+qf = json.loads(r.stdout or "{}") if r.returncode == 0 else {}
+byf = {os.path.basename(c["cwd"]): c for c in qf.get("queue", [])}
+check("--family-ok offers them, each with deep-plan's reason",
+      "the fam family" in byf.get("kid", {}).get("protected", "") and "planned" in byf
+      and not qf.get("held"), r.stderr + json.dumps(list(byf)))
+r = sweep(stdin="q")
+check("the wizard says what it held back, and how to see it",
+      "2 held back by live plan or family work — --family-ok offers them" in r.stdout
+      and " held: kid, planned" in r.stdout,
+      r.stdout[-300:])
+protect({planned: verdict(planned, "p", family=None), kid: "error"})
+q = json.loads(sweep("--json").stdout or "{}")
+check("a deep-plan that fails holds the card back too, saying so",
+      "could not ask deep-plan" in next((c["why"] for c in q.get("held", []) if c["cwd"] == kid), ""),
+      json.dumps(q.get("held")))
+protect({planned: verdict(planned, "p", family=None), kid: verdict(kid)})
 json.dump({"sweep": {"dormant_days": 60}}, open(ENV["CREW_INTEGRATIONS"], "w"))
 names60 = [os.path.basename(c["cwd"]) for c in json.loads(sweep("--json").stdout)["queue"]]
 check("dormant_days moves the line", names60 == ["removed", "landed"], str(names60))
@@ -742,8 +954,15 @@ print("crew-reclaim")
 RECLAIM = os.path.join(CREW, "bin", "crew-reclaim")
 
 
+def renv():
+    # workspaces through the implementation under test: the Python unless
+    # CREW_IMPL says rust, never whatever seamux this machine has installed.
+    return dict(os.environ, SEAMUX_BIN=(crew_impl.seamux_bin() if crew_impl.is_rust("workspaces")
+                                        else os.path.join(T, "no-seamux")))
+
+
 def reclaim(*argv):
-    r = subprocess.run(["bash", RECLAIM] + list(argv), cwd=T, env=os.environ, capture_output=True,
+    r = subprocess.run(["bash", RECLAIM] + list(argv), cwd=T, env=renv(), capture_output=True,
                        text=True, stdin=subprocess.DEVNULL, timeout=120)
     return r.returncode, r.stdout + r.stderr
 
@@ -768,6 +987,34 @@ rc, out = reclaim("--yes", "ws-l")
 check("it refuses to close the workspace its own terminal is in",
       rc == 1 and "the workspace it would close" in out and os.path.isdir(landed), out)
 os.environ["CMUX_WORKSPACE_ID"] = "ws-elsewhere"
+protect({landed: verdict(landed)})
+rc, out = reclaim("--yes", "ws-l")
+check("a worktree deep-plan protects is a blocker, even with --yes, naming the plan and the family",
+      rc == 1 and "plan kid is implementing" in out and "the fam family" in out
+      and "crew-reclaim --family-ok" in out and os.path.isdir(landed) and len(rows()) == 1, out)
+rc, out = reclaim("--yes", "--family-ok", "ws-l")
+check("…and --family-ok without a terminal is still one", rc == 1
+      and "--family-ok needs a person at a terminal" in out and os.path.isdir(landed), out)
+rc, out = on_tty(["bash", RECLAIM, "--yes", "--family-ok", "ws-l"], ["n"], env=renv(), cwd=T)
+check("…at a terminal, --yes does not answer the family's y/N, and a no removes nothing",
+      rc != 0 and "The fam family is not done. [y/N]" in out and "nothing was removed" in out
+      and os.path.isdir(landed) and len(rows()) == 1, out)
+put_rows([])
+rc, out = on_tty(["bash", RECLAIM, "--family-ok", landed], ["y", "n"], env=renv(), cwd=T)
+check("…and with no workspace to close, reclaim asks it itself",
+      rc == 130 and "Reclaim %s anyway? The fam family is not done. [y/N]" % landed in out
+      and "kept — nothing was changed" in out and os.path.isdir(landed), out)
+put_rows([ws("ws-k", kid, process=True, title="kid")])
+put_sessions([sess("ws-k", "s-k", "idle")])
+protect({kid: verdict(kid)})
+rc, out = on_tty(["bash", RECLAIM, "--yes", "--family-ok", "ws-k"], ["y"], env=renv(), cwd=T)
+lg = (family_log() or [{}])[-1]
+check("…and a yes there closes and reclaims it, logged",
+      rc == 0 and not os.path.isdir(kid) and not rows() and lg.get("cwd") == kid
+      and lg.get("family") == "fam", out + json.dumps(lg))
+protect({})
+put_rows([ws("ws-l", landed, process=True, title="landed")])
+put_sessions([sess("ws-l", "s-l", "idle")])
 rc, out = reclaim("--yes", "ws-l")
 check("an idle agent is force-closed and the worktree removed",
       rc == 0 and "workspace close ws-l --force" in log() and not rows() and not os.path.isdir(landed), out)
