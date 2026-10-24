@@ -149,6 +149,12 @@ pub fn increment(slug: &str, n: &str, action: &str, why: &str) -> (bool, String)
     if action == "block" {
         args.push(why);
     }
+    // A go from here is a person's click (the Desk's family card, the plan
+    // page). Said so, a delegated child's go is not refused as its own, and
+    // the log records who gave it.
+    if action == "go" {
+        args.extend(["--by", "human"]);
+    }
     if crate::act::which("node").is_none() {
         log(&format!("FAIL inc {action} {slug} {n}: node is not on PATH"));
         return (false, "node is not on this server's PATH, so deep-plan cannot run".into());

@@ -5,6 +5,8 @@
 //! crew-resume --all        finder, every project
 //! crew-resume <query>      finder, pre-filtered
 //! crew-resume --reindex    force a full rebuild of the transcript cache
+//! crew-resume --family-ok  ^A may archive what deep-plan protects, after a
+//!                          y/N naming the family (ADR 0031)
 //! crew-resume --rows-json  the finder's rows as JSON, in the order it would
 //!                          show them for the query and scope, then exit
 //! ```
@@ -576,6 +578,7 @@ fn open_row(r: &Row) -> i32 {
 fn run(args: &[String]) -> i32 {
     let mut force = args.iter().any(|a| a == "--reindex");
     let show_all = args.iter().any(|a| a == "--all");
+    let family_ok = args.iter().any(|a| a == "--family-ok");
     let rows_only = args.iter().any(|a| a == "--rows-json");
     let query = args.iter().filter(|a| !a.starts_with("--")).cloned().collect::<Vec<_>>().join(" ");
     if !w::projects().is_dir() {
@@ -627,7 +630,8 @@ fn run(args: &[String]) -> i32 {
                 if std::env::var("CMUX_WORKSPACE_ID").ok().as_deref() == Some(id.as_str()) {
                     ui.flash = "that is this terminal's workspace — archive it from elsewhere".into();
                 } else {
-                    let (ok, msg) = w::archive(&id);
+                    // The picker is down: a --family-ok y/N reads the plain terminal.
+                    let (ok, msg) = w::archive(&id, family_ok);
                     ui.flash = format!("{}{msg}", if ok { "✓ " } else { "✗ " });
                 }
             }

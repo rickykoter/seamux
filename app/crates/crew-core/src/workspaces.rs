@@ -2,8 +2,12 @@
 //! (crew/hooks/workspaces.py).
 //!
 //!   seamux workspaces lifecycle <workspace>   running | idle | none | unknown
-//!   seamux workspaces close <workspace>       force-close and check it went; exit 1 if not
-//!   seamux workspaces archive <workspace>     close it and remember it; exit 1 on refusal
+//!   seamux workspaces close <workspace> [--family-ok]
+//!                                             force-close and check it went; exit 1 if not
+//!   seamux workspaces archive <workspace> [--family-ok]
+//!                                             close it and remember it; exit 1 on refusal
+//!   seamux workspaces protects <dir>          deep-plan's word on a directory, as JSON;
+//!                                             exit 1 when it may not be closed
 //!   seamux workspaces restore <cwd>           reopen an archived cwd, resuming its Claude
 //!   seamux workspaces forget <cwd>            drop an archive record
 //!   seamux workspaces dormant-days            the sweep's threshold, default 5
@@ -22,11 +26,18 @@
 //!
 //! CREW_WORKSPACES_ARCHIVE overrides the archive file, for the shim only.
 //!
+//! The plan guard (ADR 0031) is workspaces.py's: protects() asks `deep-plan
+//! protects <dir> --json`, guard() refuses a protected directory naming the
+//! plan and the family, and --family-ok is a person's override (a terminal, a
+//! y/N naming the family, the yes logged to family-ok.log). No deep-plan is no
+//! guard, said once; a deep-plan that does not answer is a refusal.
+//!
 //! cmux is reached through crates/cmux: the socket in live use, the CLI (with
 //! CMUX_QUIET=1, as the Python passes) when CREW_CMUX is set.
 
-use std::io::Read;
+use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -326,9 +337,26 @@ fn last_line(s: &str) -> Option<String> {
     splitlines(s).last().map(|l| l.to_string())
 }
 
-/// Force-close a workspace and check it went: believed only once it is gone
-/// from the list (or the list does not answer), within ~1.5 s.
-pub fn close(handle: &str) -> (bool, String) {
+/// Force-close a workspace and check it went, refusing one whose directory
+/// holds live plan or family work unless a person overrides (guard()).
+pub fn close(handle: &str, family_ok: bool) -> (bool, String) {
+    let Some(live) = live_workspaces() else {
+        return (false, "cmux did not list its workspaces — could not tell what is in it".into());
+    };
+    if let Some(ws) = find_live(handle, Some(&live)).filter(|w| !w.cwd.is_empty()) {
+        let name = if ws.title.is_empty() { ws.r#ref.clone() } else { ws.title.clone() };
+        let (ok, why) = guard(&ws.cwd, &name, family_ok);
+        if !ok {
+            return (false, why);
+        }
+    }
+    close_unguarded(handle)
+}
+
+/// close() without the plan guard, for archive, which has asked already:
+/// believed only once it is gone from the list (or the list does not answer),
+/// within ~1.5 s.
+fn close_unguarded(handle: &str) -> (bool, String) {
     let Some(c) = cmux() else { return (false, "cmux unavailable".into()) };
     match c.workspace_close(handle, true) {
         Err(e) => return (false, e.to_string()),
@@ -585,6 +613,184 @@ pub fn label(s: &Value) -> String {
     t.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+// --- the plan guard: deep-plan protects ------------------------------------------
+
+/// Short: the board chip asks from inside a hook cmux kills at 10 s.
+const PROTECTS_TIMEOUT: Duration = Duration::from_secs(4);
+static MISSING_SAID: AtomicBool = AtomicBool::new(false);
+
+/// deep-plan's word on a directory, as workspaces.py's protects() returns it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Protection {
+    /// Refuse to close it.
+    pub protected: bool,
+    /// deep-plan's reason, naming the plan and the family, or what went wrong.
+    pub why: String,
+    pub plan: String,
+    /// The family's parent, "" when none.
+    pub family: String,
+    pub phase: String,
+    /// deep-plan was there and did not answer: protected, so refused.
+    pub error: bool,
+    /// There is no deep-plan: not protected.
+    pub missing: bool,
+}
+
+impl Protection {
+    pub fn json(&self) -> Value {
+        let mut m = json!({"protected": self.protected, "why": self.why, "plan": self.plan,
+                           "family": self.family, "phase": self.phase});
+        if self.error {
+            m["error"] = json!(true);
+        }
+        if self.missing {
+            m["missing"] = json!(true);
+        }
+        m
+    }
+
+    fn err(why: String) -> Protection {
+        Protection { protected: true, why, error: true, ..Default::default() }
+    }
+}
+
+fn executable(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+}
+
+/// The deep-plan argv: CREW_DEEP_PLAN split on whitespace (as workspaces.py and
+/// crew-reclaim split it), else deep-plan on PATH, else the ~/.local/bin shim.
+fn deep_plan_argv() -> Option<Vec<String>> {
+    if let Some(o) = env_or("CREW_DEEP_PLAN") {
+        let words: Vec<String> = o.split_whitespace().map(String::from).collect();
+        if !words.is_empty() {
+            return Some(words);
+        }
+    }
+    let on_path = std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .map(|d| d.join("deep-plan"))
+        .find(|c| executable(c));
+    on_path
+        .or_else(|| Some(home().join(".local/bin/deep-plan")).filter(|c| executable(c)))
+        .map(|c| vec![c.to_string_lossy().into_owned()])
+}
+
+/// Whether argv[0] names something that can be run at all.
+fn runnable(prog: &str) -> bool {
+    if prog.contains('/') {
+        return executable(Path::new(prog));
+    }
+    std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).any(|d| executable(&d.join(prog))))
+        .unwrap_or(false)
+}
+
+fn missing() -> Protection {
+    if !MISSING_SAID.swap(true, Ordering::SeqCst) {
+        eprintln!("crew: deep-plan is not installed — closing without its plan guard");
+    }
+    Protection { missing: true, ..Default::default() }
+}
+
+/// deep-plan's word on a directory (see Protection). A directory that does not
+/// exist holds nothing to protect.
+pub fn protects(cwd: &str) -> Protection {
+    if cwd.is_empty() || !Path::new(cwd).is_dir() {
+        return Protection::default();
+    }
+    let Some(argv) = deep_plan_argv() else { return missing() };
+    if !runnable(&argv[0]) {
+        return missing();
+    }
+    let mut args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+    args.extend(["protects", cwd, "--json"]);
+    let Some((rc, out, err)) = py::run(&argv[0], &args, PROTECTS_TIMEOUT) else {
+        return Protection::err(format!("deep-plan did not answer (no answer within {}s)", PROTECTS_TIMEOUT.as_secs()));
+    };
+    if rc == 127 {
+        return missing(); // the shim, with no engine behind it
+    }
+    if rc != 0 {
+        let tail = splitlines(err.trim()).last().map(|l| l.to_string()).unwrap_or_else(|| format!("exit {rc}"));
+        return Protection::err(format!("deep-plan protects failed: {tail}"));
+    }
+    let d: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
+    let Some(protected) = d.get("protected").and_then(Value::as_bool) else {
+        return Protection::err("deep-plan protects gave an answer crew could not read".into());
+    };
+    let text = |v: Option<&Value>| match v {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Null) | None => String::new(),
+        Some(other) => sval(Some(other)),
+    };
+    Protection {
+        protected,
+        why: text(d.get("why")),
+        plan: text(d.get("plan")),
+        family: text(d.get("family").and_then(|f| f.get("parent"))),
+        phase: text(d.get("phase")),
+        error: false,
+        missing: false,
+    }
+}
+
+/// The one sentence a refused close says, on a terminal and in a toast.
+pub fn refusal(name: &str, p: &Protection) -> String {
+    if p.error {
+        format!("{name}: could not ask deep-plan whether live work is here ({}) — not closed", p.why)
+    } else {
+        format!("{name} holds live work: {} — not closed", p.why)
+    }
+}
+
+/// May the workspace at cwd be closed? -> (ok, why). A protected directory is
+/// refused; family_ok is a person's override: a terminal on stdin and stderr,
+/// a y/N naming the family, and the yes logged. The board's chips never pass it.
+pub fn guard(cwd: &str, name: &str, family_ok: bool) -> (bool, String) {
+    let p = protects(cwd);
+    if !p.protected {
+        return (true, String::new());
+    }
+    let msg = refusal(name, &p);
+    if !family_ok {
+        return (false, msg);
+    }
+    // SAFETY: isatty only inspects the descriptor.
+    if unsafe { libc::isatty(0) != 1 || libc::isatty(2) != 1 } {
+        return (false, format!("{msg}; --family-ok needs a person at a terminal"));
+    }
+    let what = if !p.family.is_empty() {
+        format!("The {} family is not done", p.family)
+    } else if !p.plan.is_empty() {
+        format!("Plan {} is live there", p.plan)
+    } else {
+        "Deep-plan could not say".to_string()
+    };
+    eprint!("{msg}\nClose {name} anyway? {what}. [y/N] ");
+    let _ = std::io::stderr().flush();
+    let mut ans = String::new();
+    let _ = std::io::stdin().lock().read_line(&mut ans);
+    if !matches!(ans.trim().to_lowercase().as_str(), "y" | "yes") {
+        return (false, format!("{name}: kept — nothing was closed"));
+    }
+    let by = std::env::args().next().map(|a| Path::new(&a).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or(a)).unwrap_or_default();
+    let entry = json!({"at": pyjson::float(py::now()), "cwd": cwd, "workspace": name, "plan": p.plan,
+                       "family": p.family, "why": p.why, "by": by});
+    let log = xdg_cache().join("family-ok.log");
+    let wrote = std::fs::create_dir_all(xdg_cache()).and_then(|_| {
+        let mut f = std::fs::OpenOptions::new().append(true).create(true).open(&log)?;
+        f.write_all(format!("{}\n", serde_json::to_string(&entry).unwrap_or_default()).as_bytes())
+    });
+    if let Err(e) = wrote {
+        // An override nobody can find later is not one.
+        return (false, format!("{name}: could not log the override ({e}) — nothing was closed"));
+    }
+    (true, String::new())
+}
+
 // --- the archive store -----------------------------------------------------------
 
 fn write_json(path: &Path, data: &Value) -> std::io::Result<()> {
@@ -612,15 +818,25 @@ pub fn update<T>(f: impl FnOnce(&mut Map<String, Value>) -> T) -> std::io::Resul
 }
 
 /// Close a live workspace and remember it. -> (ok, message)
-pub fn archive(handle: &str) -> (bool, String) {
-    archive_with(handle, None, None)
+/// family_ok is a person's override of the plan guard (guard()).
+pub fn archive(handle: &str, family_ok: bool) -> (bool, String) {
+    archive_with(handle, None, None, Guard::Ask { family_ok })
+}
+
+/// How archive_with treats the plan guard.
+#[derive(Clone, Copy, Debug)]
+pub enum Guard {
+    /// Ask it, last; family_ok is a person's override.
+    Ask { family_ok: bool },
+    /// The caller asked it already (the board's hook, which times it).
+    Asked,
 }
 
 /// archive(), with the live list and the session records when the caller
 /// already has them, as workspaces.py's archive(handle, live, records) takes
 /// them: triage times its own list and must not pay for a second one. None
 /// fetches each, as archive() does; a passed list is used as is.
-pub fn archive_with(handle: &str, live: Option<&[Ws]>, records: Option<&[Value]>) -> (bool, String) {
+pub fn archive_with(handle: &str, live: Option<&[Ws]>, records: Option<&[Value]>, plan_guard: Guard) -> (bool, String) {
     let fetched;
     let live = match live {
         Some(l) => l,
@@ -660,6 +876,13 @@ pub fn archive_with(handle: &str, live: Option<&[Ws]>, records: Option<&[Value]>
     if cwd.is_empty() {
         return (false, format!("{name} has no directory to remember"));
     }
+    // The plan guard last: its override asks a person, after every other check.
+    if let Guard::Ask { family_ok } = plan_guard {
+        let (ok, why) = guard(&cwd, &name, family_ok);
+        if !ok {
+            return (false, why);
+        }
+    }
     let mut sids: Vec<Value> = Vec::new();
     for r in sessions_for(&ws.id, &ws.r#ref, records.unwrap_or(&[])) {
         let Some(s) = sid_of(&r).filter(|s| !is_falsy(s)).cloned() else { continue };
@@ -698,7 +921,7 @@ pub fn archive_with(handle: &str, live: Option<&[Ws]>, records: Option<&[Value]>
         Ok(b) => b,
         Err(e) => return (false, format!("{name}: could not write the archive ({e})")),
     };
-    let (ok, why) = close(&ws.id);
+    let (ok, why) = close_unguarded(&ws.id);
     if !ok {
         let _ = update(|recs| match &before {
             None => {
@@ -752,8 +975,12 @@ pub fn forget(cwd: &str) -> bool {
 const DOC: &str = "crew — where workspaces are: live, archived, past or gone. One reader.
 
     workspaces.py lifecycle <workspace>   running | idle | none | unknown
-    workspaces.py close <workspace>       force-close and check it went; exit 1 if not
-    workspaces.py archive <workspace>     close it and remember it; exit 1 on refusal
+    workspaces.py close <workspace> [--family-ok]
+                                          force-close and check it went; exit 1 if not
+    workspaces.py archive <workspace> [--family-ok]
+                                          close it and remember it; exit 1 on refusal
+    workspaces.py protects <dir>          deep-plan's word on a directory, as JSON;
+                                          exit 1 when it may not be closed
     workspaces.py restore <cwd>           reopen an archived cwd, resuming its Claude
     workspaces.py forget <cwd>            drop an archive record
     workspaces.py dormant-days            the sweep's threshold, default 5
@@ -762,15 +989,22 @@ const DOC: &str = "crew — where workspaces are: live, archived, past or gone. 
 ";
 
 pub fn main(args: &[String]) -> i32 {
-    let cmd = args.first().map(String::as_str).unwrap_or("");
-    let arg = args.get(1).map(String::as_str).unwrap_or("");
+    let family_ok = args.iter().any(|a| a == "--family-ok");
+    let args: Vec<&String> = args.iter().filter(|a| *a != "--family-ok").collect();
+    let cmd = args.first().map(|s| s.as_str()).unwrap_or("");
+    let arg = args.get(1).map(|s| s.as_str()).unwrap_or("");
     match (cmd, arg.is_empty()) {
+        ("protects", false) => {
+            let p = protects(arg);
+            println!("{}", pyjson::dumps(&p.json()));
+            if p.protected { 1 } else { 0 }
+        }
         ("lifecycle", false) => {
             println!("{}", lifecycle(arg));
             0
         }
         ("close", false) => {
-            let (ok, why) = close(arg);
+            let (ok, why) = close(arg, family_ok);
             if !ok {
                 eprintln!("{why}");
             }
@@ -791,7 +1025,7 @@ pub fn main(args: &[String]) -> i32 {
             0
         }
         ("archive", false) | ("restore", false) => {
-            let (ok, msg) = if cmd == "archive" { archive(arg) } else { restore(arg) };
+            let (ok, msg) = if cmd == "archive" { archive(arg, family_ok) } else { restore(arg) };
             if ok {
                 println!("{msg}");
                 0

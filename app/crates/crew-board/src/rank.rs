@@ -38,7 +38,7 @@ pub fn dedupe(chips: &[String], sigs: Vec<Value>, has_plan: bool) -> Vec<Value> 
     for c in chips {
         if let Some(a) = chip_action(c) {
             taken.push((a.into(), None));
-        } else if let Some(n) = c.strip_prefix("go ") {
+        } else if let Some(n) = c.strip_prefix("go ").or_else(|| c.strip_prefix(PARENT_GOES)) {
             taken.push(("go".into(), Some(n.trim().to_string())));
         }
     }
@@ -177,9 +177,51 @@ pub fn fam_fields(plan: Option<&Value>) -> Vec<(String, Value)> {
         Some(f) if truthy(get(f, "parent")) => vec![
             ("family".into(), f["parent"].clone()),
             ("famrole".into(), f.get("role").cloned().unwrap_or(json!(""))),
+            ("famgo".into(), f.get("go").cloned().unwrap_or(json!(""))),
         ],
         _ => Vec::new(),
     }
+}
+
+/// A delegated child's go chip (see crew-board's PARENT_GOES): a person can
+/// still press it, and intent.js reads the number off the label.
+pub const PARENT_GOES: &str = "parent goes \u{00b7} inc ";
+
+fn family_of(plan: Option<&Value>) -> Option<&Value> {
+    plan.map(|p| get(p, "family")).filter(|f| truthy(f))
+}
+
+fn parent_goes(plan: Option<&Value>) -> bool {
+    family_of(plan).is_some_and(|f| get(f, "go") == "parent")
+}
+
+/// The gate-shut row's go chip: `go N`, or `parent goes · inc N` when the
+/// family's parent owns this plan's go.
+pub fn go_chip(plan: Option<&Value>, n: &str) -> String {
+    if parent_goes(plan) { format!("{PARENT_GOES}{n}") } else { format!("go {n}") }
+}
+
+/// The gate-shut row's sentence; `why` is None on the plans-only path.
+pub fn go_said(plan: Option<&Value>, title: &str, why: Option<&str>) -> String {
+    match family_of(plan) {
+        Some(f) if get(f, "go") == "parent" => format!(
+            "{{{{{title}}}}} waits on its go from the parent, {}. You can still give it.",
+            get_s(f, "parent", "?")),
+        _ => match why {
+            Some(w) => format!("{{{{{title}}}}} needs your go-ahead. {w}"),
+            None => format!("{{{{{title}}}}} needs your go-ahead."),
+        },
+    }
+}
+
+/// A parent row's written holds, one meta bit each: `held <child>: <reason>`.
+pub fn hold_bits(plan: Option<&Value>) -> Vec<String> {
+    let Some(f) = family_of(plan).filter(|f| get(f, "role") == "parent") else { return Vec::new() };
+    let mut out: Vec<(String, String)> = get(f, "holds").as_object()
+        .map(|m| m.iter().map(|(k, v)| (k.clone(), py_str(v))).collect())
+        .unwrap_or_default();
+    out.sort();
+    out.into_iter().map(|(k, r)| format!("held {k}: {r}")).collect()
 }
 
 /// The first outstanding check whose verdict is fail or lost.
@@ -369,6 +411,7 @@ pub fn rank(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool) -> 
         let mut meta_bits = Vec::new();
         if let Some(p) = plan {
             meta_bits.push(incs(p));
+            meta_bits.extend(hold_bits(plan));
         }
         let phase = plan.map(|p| get(p, "phase").clone()).unwrap_or(Value::Null);
         let gate_allow = plan.map(|p| truthy(get(get(p, "gate"), "allow"))).unwrap_or(true);
@@ -389,9 +432,9 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
             let nxt = if truthy(nxt) { nxt.clone() } else { json!({}) };
             (kind, badge) = (Some("attend"), "gate shut");
             subject = nxt.get("title").cloned().unwrap_or(json!(""));
-            said = format!("{{{{{}}}}} needs your go-ahead. {}", get_s(&nxt, "title", "The next increment"),
-                           py_str(get(get(p, "gate"), "why")));
-            chips = vec![format!("go {}", get_s(&nxt, "n", "?")), "diff".into(), "jump".into()];
+            said = go_said(plan, &get_s(&nxt, "title", "The next increment"),
+                           Some(&py_str(get(get(p, "gate"), "why"))));
+            chips = vec![go_chip(plan, &get_s(&nxt, "n", "?")), "diff".into(), "jump".into()];
         } else if has(d, "ci:fail") {
             (kind, badge) = (Some("wilt"), "ci failed");
             said = if is_none_str(branch) { "Checks are red.".into() }
@@ -475,7 +518,8 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
                 else if !is_none_str(pr) { "pr open" }
                 else if truthy(get(w, "dirty")) { "uncommitted" }
                 else { "idle" };
-            let qmeta = plan.map(incs).into_iter().collect::<Vec<_>>();
+            let mut qmeta = plan.map(incs).into_iter().collect::<Vec<_>>();
+            qmeta.extend(hold_bits(plan));
             let mut qchips = vec!["jump".to_string()];
             if truthy(get(w, "dirty")) {
                 qchips.push("diff".into());
@@ -566,7 +610,8 @@ pub fn rank_plans_only(plan_by_root: &Map<String, Value>) -> Vec<Value> {
         let total = pct_d(get(pr, "total"));
         let base = root.trim_end_matches('/').rsplit('/').next().unwrap_or("");
         let name = if base.is_empty() { plan["slug"].clone() } else { json!(base) };
-        let meta = format!("{}/{} increments · {}", pct_d(get(pr, "done")), total, py_str(get(plan, "slug")));
+        let meta = std::iter::once(format!("{}/{} increments · {}", pct_d(get(pr, "done")), total, py_str(get(plan, "slug"))))
+            .chain(hold_bits(Some(plan))).collect::<Vec<_>>().join(" · ");
         let mut r = Map::new();
         r.insert("id".into(), get(plan, "slug").clone());
         r.insert("name".into(), name);
@@ -590,9 +635,9 @@ pub fn rank_plans_only(plan_by_root: &Map<String, Value>) -> Vec<Value> {
             let nxt = get(pr, "next");
             let nxt = if truthy(nxt) { nxt.clone() } else { json!({}) };
             put("attend", "gate shut",
-                format!("{{{{{}}}}} needs your go-ahead.", get_s(&nxt, "title", "The next increment")),
+                go_said(Some(plan), &get_s(&nxt, "title", "The next increment"), None),
                 Some(nxt.get("title").cloned().unwrap_or(json!(""))),
-                vec![format!("go {}", get_s(&nxt, "n", "?")), "plan".into()]);
+                vec![go_chip(Some(plan), &get_s(&nxt, "n", "?")), "plan".into()]);
         } else if let Some(f) = failed_check(Some(plan)) {
             put("wilt", "check failed",
                 format!("{{{{Increment {}'s check `{}` failed.}}}}", py_str(get(f, "n")), py_str(get(f, "id"))),

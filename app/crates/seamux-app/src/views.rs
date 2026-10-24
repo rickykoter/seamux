@@ -167,8 +167,29 @@ pub struct FamilyMember {
     pub ws: Option<String>,
     /// The parent increments its go still waits on.
     pub waits: Vec<u64>,
-    /// Its next increment can go now: nothing open, one next, nothing waited on.
+    /// Its next increment can go now, as the engine reports it: the gate
+    /// shut, a next increment named, nothing in the family waited on.
     pub ready: bool,
+    /// Who gives its go: "parent" for a delegated child, else "human".
+    pub go: String,
+    /// The hold its family's parent wrote on it, or "".
+    pub held: String,
+    /// Each increment's verdicts, from its family field.
+    pub increments: Vec<FamilyInc>,
+}
+
+/// One member increment's verdicts, as status --json's family field has them.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct FamilyInc {
+    pub n: u64,
+    pub title: String,
+    pub status: String,
+    /// Every check folded to one word: pass, fail, pending.
+    pub checks: String,
+    /// The lookout review check's status, "" when it has none.
+    pub review: String,
+    /// Who gave its go: human, parent, self, or "".
+    pub by: String,
 }
 
 /// A family: its parent and every member.
@@ -199,12 +220,28 @@ pub fn families(rows: &[Value], tiles: &[Tile]) -> Vec<FamilyBrief> {
         let next = progress.get("next").filter(|n| n.is_object()).cloned();
         let waits: Vec<u64> = f.get("waitingOn").and_then(Value::as_array).map(|a| a.iter().map(|w| u(w, "n")).collect()).unwrap_or_default();
         let phase = s(p, "phase");
+        let slug = s(p, "slug");
+        // The engine's own verdicts, read and not re-derived: its gate says
+        // nothing is authorized, it reports nothing open (so a missing gate
+        // field, read as shut, still cannot offer go beside an open
+        // increment), it names the next increment and the family field lists
+        // nothing waited on.
+        let gate_shut = !p.get("gate").and_then(|g| g.get("allow")).and_then(Value::as_bool).unwrap_or(false);
+        let me = f.get("members").and_then(Value::as_array)
+            .and_then(|ms| ms.iter().find(|m| s(m, "slug") == slug)).cloned().unwrap_or(Value::Null);
+        let increments = me.get("increments").and_then(Value::as_array).map(|a| a.iter().map(|i| FamilyInc {
+            n: u(i, "n"), title: s(i, "title"), status: s(i, "status"),
+            checks: s(i, "checks"), review: s(i, "review"), by: s(i, "by"),
+        }).collect()).unwrap_or_default();
         let m = FamilyMember {
-            slug: s(p, "slug"),
             role: s(f, "role"),
             n: open.as_ref().or(next.as_ref()).map(|x| u(x, "n")).unwrap_or(0),
             open: open.is_some(),
-            ready: phase == "implementing" && open.is_none() && next.is_some() && waits.is_empty(),
+            ready: phase == "implementing" && gate_shut && open.is_none() && next.is_some() && waits.is_empty(),
+            go: if s(f, "go") == "parent" { "parent".into() } else { "human".into() },
+            held: f.get("holds").and_then(|h| h.get(&slug)).and_then(Value::as_str).unwrap_or("").to_string(),
+            increments,
+            slug,
             phase,
             done: u(&progress, "done"),
             total: u(&progress, "total"),

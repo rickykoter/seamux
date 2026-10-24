@@ -94,6 +94,11 @@ def state(r):
         return "needs its alignment check taken; %s increment%s locked behind it" % (
             n, " is" if n == "1" else "s are")
     if b == "gate shut":
+        # A delegated child's go is its parent's to give: say so, as its
+        # card's 'parent goes · inc N' chip does.
+        if r.get("famgo") == "parent":
+            s = "waits on its go from the parent, %s" % _plain(r.get("family"))
+            return s + (", for %s" % subj if subj else "")
         return "needs your go-ahead on %s" % subj if subj else "needs your go-ahead"
     if b == "ci failed":
         br = _plain(r.get("branch"))

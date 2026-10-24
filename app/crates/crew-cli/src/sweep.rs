@@ -2,15 +2,18 @@
 //! at a time.
 //!
 //! ```text
-//! crew-sweep            the wizard: one card, one key, next card
-//! crew-sweep --json     the ordered queue, for scripts and the probe
+//! crew-sweep              the wizard: one card, one key, next card
+//! crew-sweep --json       the ordered queue, for scripts and the probe
+//! crew-sweep --family-ok  also offer what deep-plan protects; a and r then
+//!                         ask a y/N naming the family (a person only)
 //! ```
 //!
 //! Machine-wide, as cmux is: every live workspace, every archive record and
 //! every worktree of each repo those point at, keyed by worktree root. A card
 //! is merged (the branch landed), dormant (idle past sweep.dormant_days, not
-//! mid-turn, no open plan) or orphaned (an archive record whose worktree is
-//! gone). Jev orders the queue through crew-core's typesafe (ADR 0023), each
+//! mid-turn) or orphaned (an archive record whose worktree is gone). A merged
+//! or dormant worktree `deep-plan protects` is held back, merged or not, and
+//! counted at the end; --family-ok offers it with the reason (ADR 0031). Jev orders the queue through crew-core's typesafe (ADR 0023), each
 //! answer cached by transcript size; without it, orphaned and merged first,
 //! then the longest idle. Each card takes one key; nothing here deletes
 //! anything itself (crew-reclaim's guards and question do that).
@@ -75,9 +78,6 @@ fn cache_path() -> String {
     join(&cache_dir(), "sweep-judgments.json")
 }
 
-fn deep_plan_dir() -> String {
-    py::env_or("CREW_DEEP_PLAN_DIR").unwrap_or_else(|| join(&crate::pypath::home(), ".claude/deep-plan"))
-}
 
 /// workspaces.py's _git: (returncode, stdout stripped); (1, "") on a failure to run.
 fn git(cwd: &str, args: &[&str]) -> (i32, String) {
@@ -119,24 +119,6 @@ fn gh_cache(cwd: &str) -> Map<String, Value> {
     }
 }
 
-/// The phase of an unfinished deep-plan rooted here, or "".
-fn open_plan(cwd: &str) -> String {
-    let state = join(&deep_plan_dir(), "state");
-    let mut names = crate::sync::facts::listdir(&state).unwrap_or_default();
-    names.sort();
-    let here = realpath(cwd);
-    for n in names.into_iter().filter(|n| n.ends_with(".json")) {
-        let Some(st) = crate::pyval::read_json(&join(&state, &n)) else { continue };
-        let Some(o) = st.as_object() else { continue };
-        let phase = o.get("phase").filter(|v| truthy(Some(v))).map(|v| py_strip(&py_str(v)).to_string()).unwrap_or_default();
-        let root = o.get("root").filter(|v| truthy(Some(v))).map(py_str).unwrap_or_default();
-        if realpath(&root) == here && phase != "done" {
-            return if phase.is_empty() { "open".into() } else { phase };
-        }
-    }
-    String::new()
-}
-
 fn last_commit_at(cwd: &str) -> f64 {
     let (rc, out) = git(cwd, &["log", "-1", "--format=%ct"]);
     if rc != 0 {
@@ -161,6 +143,10 @@ pub struct Card {
     pub idle_days: Option<f64>,
     pub life: String,
     pub plan: String,
+    /// deep-plan's reason it protects this worktree, "" when it does not.
+    pub protected: String,
+    /// Protected and not offered: counted, never shown (no --family-ok).
+    pub held: bool,
     pub pr: Value,
     pub pr_state: String,
     pub session: Value,
@@ -182,15 +168,16 @@ fn classify(c: &Card, days: i64) -> String {
     if c.merged {
         return "merged".into();
     }
-    if c.idle_days.is_some_and(|d| d >= days as f64) && c.plan.is_empty() {
+    if c.idle_days.is_some_and(|d| d >= days as f64) {
         return "dormant".into();
     }
     String::new()
 }
 
 /// Every candidate on the machine, unordered; None when cmux did not list
-/// its workspaces (a sweep that cannot see what is open offers nothing).
-pub fn gather() -> Option<Vec<Card>> {
+/// its workspaces (a sweep that cannot see what is open offers nothing). One
+/// deep-plan protects carries `protected` and, unless family_ok, `held`.
+pub fn gather(family_ok: bool) -> Option<Vec<Card>> {
     let now = py::now();
     let live = w::live_workspaces()?;
     let records = w::agent_sessions();
@@ -320,7 +307,9 @@ pub fn gather() -> Option<Vec<Card>> {
         let mut c = Card {
             linked: exists && linked_of.get(&cwd).copied().unwrap_or(false),
             idle_days: (when != 0.0).then(|| (now - when) / DAY),
-            plan: if exists { open_plan(&cwd) } else { String::new() },
+            plan: String::new(),
+            protected: String::new(),
+            held: false,
             pr: gh.get("pr").cloned().unwrap_or(Value::Null),
             merged: false,
             reason: String::new(),
@@ -338,6 +327,16 @@ pub fn gather() -> Option<Vec<Card>> {
         };
         c.merged = exists && (c.pr_state == "merged" || w::merged(&cwd));
         c.reason = classify(&c, days);
+        if c.reason == "merged" || c.reason == "dormant" {
+            // Asked only of what would be offered, and before the card exists,
+            // so a merged child is held like any other.
+            let p = w::protects(&cwd);
+            if p.protected {
+                c.protected = if p.error { w::refusal(&c.title, &p) } else { p.why.clone() };
+                c.plan = if p.phase.is_empty() { "open".into() } else { p.phase.clone() };
+                c.held = !family_ok;
+            }
+        }
         if !c.reason.is_empty() {
             out.push(c);
         }
@@ -579,6 +578,9 @@ pub fn card(c: &Card, i: usize, n: usize, width: usize) -> Vec<String> {
         head.push_str(&format!("{DIM}  the worktree is gone; only the record is left{RESET}"));
     }
     lines.push(fit(&head, width));
+    if !c.protected.is_empty() {
+        lines.push(fit(&format!(" \x1b[31mprotected:\x1b[0m {}", c.protected), width));
+    }
     let src = if c.said.is_empty() { &c.last } else { &c.said };
     let said = src.split(py_space).filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" ");
     if !said.is_empty() {
@@ -605,7 +607,11 @@ fn act(k: &str, c: &Card) -> (Option<&'static str>, bool) {
             }
             let target = c.ws.as_ref().map(|w| w.id.clone()).unwrap_or_else(|| c.cwd.clone());
             let reclaim = sibling::home_path("bin/crew-reclaim");
-            let rc = std::process::Command::new(&reclaim).arg(&target).status().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
+            let mut cmd = std::process::Command::new(&reclaim);
+            if !c.protected.is_empty() {
+                cmd.arg("--family-ok");
+            }
+            let rc = cmd.arg(&target).status().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
             if rc == 0 {
                 if let Some(rec) = &c.rec {
                     let cwd = rec.get("cwd").filter(|v| truthy(Some(v))).map(py_str).unwrap_or_else(|| c.cwd.clone());
@@ -616,7 +622,7 @@ fn act(k: &str, c: &Card) -> (Option<&'static str>, bool) {
         }
         "a" => {
             let id = c.ws.as_ref().map(|w| w.id.clone()).unwrap_or_default();
-            let (ok, msg) = w::archive(&id);
+            let (ok, msg) = w::archive(&id, !c.protected.is_empty());
             println!("{}{msg}", if ok { "  ✓ " } else { "  ✗ " });
             (ok.then_some("archived"), true)
         }
@@ -669,13 +675,16 @@ fn wizard(queue: &[Card]) {
 
 fn run(args: &[String]) -> i32 {
     let as_json = args.iter().any(|a| a == "--json");
+    let family_ok = args.iter().any(|a| a == "--family-ok");
     if !as_json {
         println!("{DIM}→ looking at every workspace and worktree on this machine{RESET}");
     }
-    let Some(mut cands) = gather() else {
+    let Some(all) = gather(family_ok) else {
         eprintln!("crew-sweep: cmux did not list its workspaces — nothing to sweep against");
         return 1;
     };
+    let (mut held, mut cands): (Vec<Card>, Vec<Card>) = all.into_iter().partition(|c| c.held);
+    held.sort_by(|a, b| a.cwd.cmp(&b.cwd));
     let on = match judge(&mut cands) {
         Ok(on) => on,
         Err(code) => return code,
@@ -687,7 +696,8 @@ fn run(args: &[String]) -> i32 {
             .map(|c| {
                 json!({
                     "cwd": c.cwd, "title": c.title, "branch": c.branch, "reason": c.reason, "merged": c.merged,
-                    "linked": c.linked, "life": c.life, "plan": c.plan, "pr": c.pr, "pr_state": c.pr_state,
+                    "linked": c.linked, "life": c.life, "plan": c.plan, "protected": c.protected,
+                    "pr": c.pr, "pr_state": c.pr_state,
                     "idle_days": c.idle_days.map(|d| pyjson::float(round(d, 1))).unwrap_or(Value::Null),
                     "jev": c.jev.map(|(f, a)| json!({"finished": pyjson::float(f), "abandoned": pyjson::float(a)})).unwrap_or(Value::Null),
                     "ws": c.ws.as_ref().map(|w| json!(w.id)).unwrap_or(Value::Null),
@@ -695,17 +705,31 @@ fn run(args: &[String]) -> i32 {
                 })
             })
             .collect();
-        let out = json!({"typesafe": on, "dormant_days": w::dormant_days(), "queue": rows});
+        let held_rows: Vec<Value> = held
+            .iter()
+            .map(|c| json!({"cwd": c.cwd, "title": c.title, "reason": c.reason, "why": c.protected}))
+            .collect();
+        let out = json!({"typesafe": on, "dormant_days": w::dormant_days(), "queue": rows, "held": held_rows});
         println!("{}", pyjson::dumps_indent(&out, 1));
         return 0;
     }
     if queue.is_empty() {
         println!("nothing to sweep: no merged, dormant ({}d) or orphaned workspaces", w::dormant_days());
-        return 0;
+    } else {
+        let how = if on { "in Jev's order" } else { "merged first, then longest idle (TypeSafe is off)" };
+        println!("{DIM}{} to look at, {how}{RESET}", queue.len());
+        wizard(&queue);
     }
-    let how = if on { "in Jev's order" } else { "merged first, then longest idle (TypeSafe is off)" };
-    println!("{DIM}{} to look at, {how}{RESET}", queue.len());
-    wizard(&queue);
+    if !held.is_empty() {
+        let width = term::stdout_columns().unwrap_or(80).clamp(40, 120);
+        let mut names = held.iter().map(|c| c.title.as_str()).collect::<Vec<_>>().join(", ");
+        if names.chars().count() > width - 8 {
+            names = names.chars().take(width - 9).collect::<String>() + "…";
+        }
+        let them = if held.len() == 1 { "it" } else { "them" };
+        println!("{DIM}{} held back by live plan or family work — --family-ok offers {them}{RESET}", held.len());
+        println!("{DIM} held: {names}{RESET}");
+    }
     0
 }
 
@@ -750,6 +774,8 @@ mod tests {
             idle_days: Some(3.0),
             life: "idle".into(),
             plan: String::new(),
+            protected: String::new(),
+            held: false,
             pr: Value::Null,
             pr_state: String::new(),
             session: json!({}),
@@ -763,6 +789,15 @@ mod tests {
 
     /// workspaces_probe's in-process check, held here: a cut card line is
     /// measured on what shows, and still ends its colour.
+    #[test]
+    fn a_protected_card_says_why() {
+        let mut c = card_of("dev/kid", "hi");
+        c.protected = "plan kid is implementing; kid is a workstream of the fam family, which is not done".into();
+        let lines = card(&c, 1, 1, 200);
+        assert!(lines.iter().any(|l| plain(l).starts_with(" protected: plan kid") && plain(l).contains("the fam family")));
+        assert!(!card(&card_of("dev/x", "hi"), 1, 1, 80).iter().any(|l| plain(l).contains("protected:")));
+    }
+
     #[test]
     fn card_lines_fit_and_end_their_colour() {
         let c = card_of(&format!("dev/{}", "x".repeat(200)), &"y".repeat(300));
