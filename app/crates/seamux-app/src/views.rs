@@ -222,9 +222,10 @@ pub fn families(rows: &[Value], tiles: &[Tile]) -> Vec<FamilyBrief> {
         let phase = s(p, "phase");
         let slug = s(p, "slug");
         // The engine's own verdicts, read and not re-derived: its gate says
-        // nothing is authorized, it reports nothing open (a row with no gate
-        // field must not read as shut), it names the next increment and the
-        // family field lists nothing waited on.
+        // nothing is authorized, it reports nothing open (so a missing gate
+        // field, read as shut, still cannot offer go beside an open
+        // increment), it names the next increment and the family field lists
+        // nothing waited on.
         let gate_shut = !p.get("gate").and_then(|g| g.get("allow")).and_then(Value::as_bool).unwrap_or(false);
         let me = f.get("members").and_then(Value::as_array)
             .and_then(|ms| ms.iter().find(|m| s(m, "slug") == slug)).cloned().unwrap_or(Value::Null);
