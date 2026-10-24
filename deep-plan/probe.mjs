@@ -2996,7 +2996,12 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     const plain = fs.mkdtempSync(path.join(TMP, "plain-"));
     p = prot(plain);
     ok("protects: a directory no plan or family holds is not", JSON.stringify(p) === '{"protected":false}');
-    ok("protects: a missing directory is refused", cli("protects", path.join(TMP, "no-such-dir"), "--json").status !== 0);
+    {
+    const gone = cli("protects", path.join(TMP, "no-such-dir"), "--json");
+    ok("protects: a directory that is gone still gets an answer", gone.status === 0 && JSON.parse(gone.stdout).protected === false);
+    const goneIn = cli("protects", path.join(UI, "gone", "deeper"), "--json");
+    ok("protects: …inside a live root, a gone directory is protected", goneIn.status === 0 && JSON.parse(goneIn.stdout).protected === true);
+  }
 
     // A finished member stays protected while its family is not done.
     const apiFile = path.join(ENV.DEEP_PLAN_STATE_DIR, "example-auth-api.json");
@@ -3031,6 +3036,15 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     solo.phase = "closed"; fs.writeFileSync(soloFile, JSON.stringify(solo));
     p = prot(SOLO);
     ok("protects: a closed plan holds nothing", JSON.stringify(p) === '{"protected":false}');
+    // Reached through the family index rather than the state scan, a closed
+    // member with open increments is still set aside.
+    const uiFile = path.join(ENV.DEEP_PLAN_STATE_DIR, "example-auth-ui.json");
+    const uiWas = fs.readFileSync(uiFile, "utf8");
+    fs.writeFileSync(uiFile, JSON.stringify({ ...JSON.parse(uiWas), phase: "closed" }));
+    p = prot(UI);
+    ok("protects: a closed member with open increments is not live as a plan",
+      p.protected === true && !/plan example-auth-ui is closed/.test(p.why) && /family, which is not done/.test(p.why), JSON.stringify(p));
+    fs.writeFileSync(uiFile, uiWas);
   }
 
   // family check: what a worktree actually touched, Bash writes included.
@@ -3111,7 +3125,7 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   // The child cannot authorize itself, and --force is no way past that.
   r = as(KID, true, "go", "example-dlg-kid", "next");
   ok("delegation: a delegated child's own go is refused, the reason on the last line",
-    r.status !== 0 && lastLine(r) === "go refused: self-go on a delegated child" && /--by human/.test(r.stderr));
+    r.status !== 0 && lastLine(r) === "go refused: self-go on a delegated child" && /a person can too/.test(r.stderr) && !/--by human/.test(r.stderr));
   r = as(KID, true, "go", "example-dlg-kid", "next", "--force");
   ok("delegation: …--force does not get past it", r.status !== 0 && st("example-dlg-kid").increments.every(i => i.status === "pending"));
   const row = JSON.parse(cli("status", "--json").stdout).find(x => x.slug === "example-dlg-kid");

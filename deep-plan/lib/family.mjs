@@ -548,19 +548,21 @@ export function writeControl(parent, c) {
 
 // Read, change and write control.json under a lock, so a hold and a
 // take-back made at the same moment do not drop each other. The lock is the
-// state files' kind: a directory, a stale one broken after 5s, and on
-// sustained contention the write goes ahead unlocked rather than hang.
+// state files' kind: a directory, a stale one broken after 5s. Unlike a state
+// write, a take-back or a hold is a person's or the parent's deliberate act,
+// so on contention past the stale window it is refused, never written blind.
 export function updateControl(parent, fn) {
   const lock = path.join(FAMILIES_DIR, parent, ".lock-control");
   fs.mkdirSync(path.dirname(lock), { recursive: true });
   let held = false;
-  for (const deadline = Date.now() + 1000; Date.now() < deadline;) {
+  for (const deadline = Date.now() + 6000; Date.now() < deadline;) {
     try { fs.mkdirSync(lock); held = true; break; }
     catch {
       try { if (Date.now() - fs.statSync(lock).mtimeMs > 5000) { fs.rmdirSync(lock); continue; } } catch { continue; }
       for (const until = Date.now() + 10; Date.now() < until;) { /* hold times are single-digit ms */ }
     }
   }
+  if (!held) throw new Error(`control.json for ${parent} is locked by another write; try again`);
   try {
     const c = readControl(parent);
     const out = fn(c);
@@ -618,7 +620,12 @@ export function goBy(slug, { byHuman = false, cwd = process.cwd(), env = process
   if (byHuman || !env.CLAUDECODE) return "human";
   const idx = familyOf(slug);
   const parent = idx && idx.parent !== slug ? idx.members.find(m => m.role === "parent") : null;
-  return parent && parent.root && insideRoot(canon(cwd), parent.root) ? "parent" : "self";
+  const me = idx && idx.members.find(m => m.slug === slug);
+  const here = canon(cwd);
+  // Inside the plan's own root is self, whatever encloses it: render refuses
+  // nested roots, and this holds even if one slipped past.
+  if (me && me.root && insideRoot(here, me.root)) return "self";
+  return parent && parent.root && insideRoot(here, parent.root) ? "parent" : "self";
 }
 
 // Why a go on `slug` given `by` someone must be refused, or "". The engine's
@@ -628,7 +635,7 @@ export function goRefusal(slug, by) {
   if (!o) return "";
   if (by === "self" && o.delegated)
     return `${slug}'s go is delegated to its parent (${o.parent}): a child does not authorize itself. ` +
-      `The parent gives it from its own worktree; a person can too:  deep-plan go ${slug} next --by human`;
+      `The parent gives it from its own worktree; a person can too, from their own shell, the board or the plan pane`;
   if (by === "parent" && !o.declared)
     return `${slug}'s go is a person's: the ${o.parent} spec does not delegate it (workstreams[].go)`;
   if (by === "parent" && o.takenBack)
@@ -662,12 +669,21 @@ export function protects(dir) {
     if (!insideRoot(here, r)) continue;
     if (!best || r.length > best.r.length) best = { st, r };
   }
-  const hit = memberAt(here);
+  // The family is the one the named plan belongs to, so plan and family
+  // always describe the same member; only with no tracked plan here does the
+  // family index answer on its own.
+  let hit = null;
+  if (best) {
+    const idx = familyOf(best.st.slug);
+    const me = idx && idx.members.find(m => m.slug === best.st.slug);
+    if (me) hit = { idx, me };
+  } else hit = memberAt(here);
   if (!best && !hit) return { protected: false };
   const st = best ? best.st : readState(hit.me.slug);
   const open = ((st && st.increments) || []).filter(i => i.status !== "done").map(i => i.n);
   const phase = st ? st.phase || "" : "missing";
-  const planLive = !!st && ((phase !== "done" && phase !== "closed") || open.length > 0);
+  // A closed plan is set aside, open increments or not.
+  const planLive = !!st && phase !== "closed" && (phase !== "done" || open.length > 0);
   const family = hit ? { parent: hit.idx.parent, role: hit.me.role, live: !familyDone(hit.idx) } : null;
   const why = [];
   if (planLive) why.push(`plan ${st.slug} is ${phase}` + (open.length ? ` with increment${open.length > 1 ? "s" : ""} ${open.join(", ")} not done` : ""));

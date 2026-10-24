@@ -1748,7 +1748,7 @@ ${surfaceClose()}${SURFACE_JS}
 function renderFamily(spec, family) {
   if (family) {
     writeIndex(family.index);
-    pruneControl(family.index);
+    try { pruneControl(family.index); } catch (e) { console.error(`  ⚠ family ${spec.slug}: control.json not pruned (${e.message})`); }
     const kids = family.index.members.filter(m => m.role === "child").map(m => m.slug);
     say(`family ${spec.slug}: ${kids.length} workstream(s) — ${kids.join(", ")}`);
     for (const o of overlaps(family.index)) console.error("  ⚠ overlap: " + o);
@@ -3565,9 +3565,10 @@ function familyCmd(args, flags) {
       // A person's lever over the parent: the agents it constrains do not pull it.
       if (by !== "human")
         die(`family ${sub} is a person's lever, and this is a Claude Code session (${by}). ` +
-          `Run it from your own shell, or have the agent pass --by human on your word.\nfamily ${sub} refused: not a person`);
+          `A person runs it from their own shell.\nfamily ${sub} refused: not a person`);
       if (!own.declared) die(`${slug}'s go is not delegated in the ${own.parent} spec; there is nothing to ${sub === "take-back" ? "take back" : "give back"}`);
-      updateControl(own.parent, c => { if (sub === "take-back") c.takenBack[slug] = { at: Date.now(), by }; else delete c.takenBack[slug]; });
+      try { updateControl(own.parent, c => { if (sub === "take-back") c.takenBack[slug] = { at: Date.now(), by }; else delete c.takenBack[slug]; }); }
+      catch (e) { die(`family ${sub}: ${e.message}`); }
       note(`family ${sub}: ${slug}'s go is ${sub === "take-back" ? "a person's again" : "the parent's again"} (by ${by})`);
       say(sub === "take-back"
         ? `${slug}: its go is a person's until  deep-plan family give-back ${slug}`
@@ -3576,7 +3577,8 @@ function familyCmd(args, flags) {
       if (by === "self") die(`family ${sub} is the parent's (or a person's), not the child's own\nfamily ${sub} refused: self`);
       const reason = sub === "hold" ? more.slice(1).join(" ").trim() || die(`family hold ${slug} "<reason>": a hold says why`) : "";
       if (sub === "unhold" && !own.hold) die(`${slug} is not held`);
-      updateControl(own.parent, c => { if (sub === "hold") c.holds[slug] = { reason, at: Date.now(), by }; else delete c.holds[slug]; });
+      try { updateControl(own.parent, c => { if (sub === "hold") c.holds[slug] = { reason, at: Date.now(), by }; else delete c.holds[slug]; }); }
+      catch (e) { die(`family ${sub}: ${e.message}`); }
       note(`family ${sub}: ${slug}${reason ? ` — ${reason}` : ""} (by ${by})`);
       say(sub === "hold" ? `holding ${slug}: ${reason}` : `${slug} is no longer held`);
     }
@@ -3738,10 +3740,11 @@ switch (cmd) {
     // Whether live plan or family work sits at a directory: what crew's close
     // paths ask before they archive, reclaim or close a workspace.
     const dir = args[0] || die("protects <dir> [--json]");
-    if (!fs.existsSync(dir)) die("protects: no such directory " + dir);
+    // A directory that is gone still gets an answer: crew asks about a
+    // workspace whose worktree was removed, and a refusal there is no answer.
     const p = protects(dir);
     if (flags.json) { process.stdout.write(JSON.stringify(p) + "\n"); break; }
-    say(p.protected ? `protected: ${p.why}` : p.plan ? `not protected: ${p.why}` : `not protected: no tracked plan or family holds ${path.resolve(dir)}`);
+    say(p.protected ? `protected: ${p.why}` : p.plan ? `not protected: ${p.why}` : `not protected: no tracked plan or family holds ${path.resolve(dir)}${fs.existsSync(dir) ? "" : " (it does not exist)"}`);
     break;
   }
   case "verify": {

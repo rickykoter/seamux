@@ -82,7 +82,7 @@ process.stderr.write(
   `deep-plan gate [${slug}]: ${d.why}\n` +
   (own && own.delegated
     ? `Its go is delegated to the parent (${own.parent}): do not run deep-plan go here. ` +
-      `Wait for the parent's go; a person can also give it (deep-plan go ${slug} next --by human).\n`
+      `Wait for the parent's go (deep-plan await-go ${slug}); a person can also give it.\n`
     : `Ask the human, then: deep-plan go ${slug} next   (or the board's "go" chip; ` +
       `deep-plan open-gate ${slug} lifts the gate entirely.)\n`));
 process.exit(2);
