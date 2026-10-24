@@ -11,7 +11,7 @@ guessing, preview with `./install.sh --dry-run`, verify with
 **Changing seamux itself?**
 
 - Each plugin is a folder: `deep-plan/`, `restack/`, `crew/`, `bash-guard/`,
-  `seamux-mods/`. Start with its `SKILL.md` or `README.md` (bash-guard is
+  `lookout/`, `humanize/`, `seamux-mods/`. Start with its `SKILL.md` or `README.md` (bash-guard is
   only `hooks/`); deep-plan and restack also have a `DEVELOPING.md`. A
   skill's detail lives in `references/` beside its SKILL.md, each file linked
   straight from it; `python3 tools/skill_lint.py` holds every skill to
@@ -47,4 +47,10 @@ guessing, preview with `./install.sh --dry-run`, verify with
   only names the flag. Don't route around it: let a
   commit's hooks run, including a commit the code itself makes.
 - `python3 tools/scrub_check.py` must pass before any push; CI runs it first.
+- Prose a skill has Claude write for people (deep-plan spec text, lookout
+  replies and its reviewer brief's Writing section) goes through the
+  `humanize` skill or follows its rules. It never touches ids, citations,
+  quiz options or the brief's schema. The skill is the `humanize/` plugin.
+  Deterministic text (the board's news, the news hook) is not model-written
+  and stays out of it.
 - Architecture decisions live in `docs/adr/`.

@@ -79,7 +79,10 @@ change in the context that wrote it reads your intent instead of the code.
    page beside the terminal already shows every finding under its line,
    and opens on the Overview of the notes.
 4. Discuss. Fix what is real, then `lookout address <id> <f#> "<what changed>"`;
-   answer anything with `lookout reply <id> <f#|t#> "<text>"`.
+   answer anything with `lookout reply <id> <f#|t#> "<text>"`. Your replies,
+   address notes and the summary you give the human are prose people read:
+   run the `humanize` skill on any that runs past a sentence or two. The
+   brief itself stays exactly as `lookout prompt` prints it.
 5. **Only the human closes a finding** — resolve or dismiss, on the page.
    `lookout resolve` and `lookout dismiss` are refused for you unless the
    review was opened with `--agent-may-close` (a plan opts in with

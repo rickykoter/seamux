@@ -81,7 +81,12 @@ These survive a compaction; everything below them is how.
    `review.delivery`. All of it: [checks.md](references/checks.md).
 5. **Write the spec**, a single JSON file in the scratchpad
    ([spec.md](references/spec.md); `examples/example.spec.json` is a worked
-   one). `render` archives it.
+   one). `render` archives it. The prose in it (context, deliverable bodies,
+   risks, decision text) is read by people, so run the `humanize` skill over
+   those strings before rendering, editing them in place with Edit rather
+   than rewriting the file. Leave ids, `path:line` citations, check
+   commands and quiz options alone: the renderer and the quiz linter measure
+   those.
 6. **`deep-plan render <spec.json> --root <worktree>`**, the refuse-first
    renderer. Always pass `--root` when working outside the target worktree:
    an inferred root outside it does not gate the wrong thing, it *disarms
