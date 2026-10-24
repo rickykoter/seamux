@@ -517,6 +517,49 @@ export function familyDone(idx) {
   });
 }
 
+// ---------------------------------------------------------------- protection
+
+// Whether live plan or family work sits at `dir`: the one answer crew's close
+// paths ask before they close a workspace (`deep-plan protects`).
+//
+// A plan is live while its phase is not done or closed, or while any increment
+// is not done: a reset or an amend can leave work open under a "done" phase.
+// A family member's root stays protected until the whole family is done, so a
+// finished child is not closed while its parent or siblings still work.
+// Matched inside a root, not only at it; when roots nest (only possible across
+// families), the deepest one names the plan.
+//
+// Returns {protected: false} when no plan and no family holds `dir`; otherwise
+// {protected, plan, root, phase, open, family, why}, where `open` lists the
+// increments not done and `family` is {parent, role, live} or null.
+export function protects(dir) {
+  const here = canon(dir);
+  let best = null;
+  for (const st of allStates()) {
+    if (!st || !st.slug || !st.root || st.phase === "closed" || !fs.existsSync(st.root)) continue;
+    const r = canon(st.root);
+    if (!insideRoot(here, r)) continue;
+    if (!best || r.length > best.r.length) best = { st, r };
+  }
+  const hit = memberAt(here);
+  if (!best && !hit) return { protected: false };
+  const st = best ? best.st : readState(hit.me.slug);
+  const open = ((st && st.increments) || []).filter(i => i.status !== "done").map(i => i.n);
+  const phase = st ? st.phase || "" : "missing";
+  const planLive = !!st && ((phase !== "done" && phase !== "closed") || open.length > 0);
+  const family = hit ? { parent: hit.idx.parent, role: hit.me.role, live: !familyDone(hit.idx) } : null;
+  const why = [];
+  if (planLive) why.push(`plan ${st.slug} is ${phase}` + (open.length ? ` with increment${open.length > 1 ? "s" : ""} ${open.join(", ")} not done` : ""));
+  if (family && family.live) why.push(`${hit.me.slug} is ${family.role === "parent" ? "the parent" : "a workstream"} of the ${family.parent} family, which is not done`);
+  return {
+    protected: planLive || !!(family && family.live),
+    plan: st ? st.slug : hit.me.slug,
+    root: best ? best.r : canon(hit.me.root),
+    phase, open, family,
+    why: why.join("; ") || `plan ${st ? st.slug : hit.me.slug} is finished` + (family ? `, and so is the ${family.parent} family` : ""),
+  };
+}
+
 // ---------------------------------------------------------------- news
 
 export function seenPath(parent, slug) { return path.join(FAMILIES_DIR, parent, "seen", slug + ".json"); }

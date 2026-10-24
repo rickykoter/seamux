@@ -2982,6 +2982,57 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
       /example-auth-ui edited example-auth-api's claims/.test(fs2.stdout));
   }
 
+  // protects: the one answer crew's close paths ask before closing a workspace.
+  {
+    const prot = (dir) => { const x = cli("protects", dir, "--json"); return x.status === 0 ? JSON.parse(x.stdout) : { err: x.stderr }; };
+    let p = prot(UI);
+    ok("protects: a child of a live family is protected",
+      p.protected === true && p.plan === "example-auth-ui" && p.family && p.family.parent === fam.slug &&
+      p.family.role === "child" && p.family.live === true);
+    fs.mkdirSync(path.join(UI, "web", "deep"), { recursive: true });
+    p = prot(path.join(UI, "web", "deep"));
+    ok("protects: a directory inside a plan's root, not only at it", p.protected === true && p.plan === "example-auth-ui");
+    fs.rmSync(path.join(UI, "web", "deep"), { recursive: true, force: true });
+    const plain = fs.mkdtempSync(path.join(TMP, "plain-"));
+    p = prot(plain);
+    ok("protects: a directory no plan or family holds is not", JSON.stringify(p) === '{"protected":false}');
+    ok("protects: a missing directory is refused", cli("protects", path.join(TMP, "no-such-dir"), "--json").status !== 0);
+
+    // A finished member stays protected while its family is not done.
+    const apiFile = path.join(ENV.DEEP_PLAN_STATE_DIR, "example-auth-api.json");
+    const apiWas = fs.readFileSync(apiFile, "utf8");
+    const apiDone = JSON.parse(apiWas);
+    apiDone.phase = "done"; for (const i of apiDone.increments) i.status = "done";
+    fs.writeFileSync(apiFile, JSON.stringify(apiDone));
+    p = prot(API);
+    ok("protects: a finished child of a live family is still protected",
+      p.protected === true && p.open.length === 0 && /the example-auth-revamp family, which is not done/.test(p.why));
+    fs.writeFileSync(apiFile, apiWas);
+
+    // Outside every family: a done phase with an increment left open is live;
+    // a plan done in full is not.
+    const SOLO = path.join(TMP, "solo");
+    fs.mkdirSync(SOLO); execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: SOLO });
+    r = cli("render", tmpSpec(child("example-solo", ["solo.txt"])), "--root", SOLO);
+    ok("protects: a solo plan renders", r.status === 0);
+    const soloFile = path.join(ENV.DEEP_PLAN_STATE_DIR, "example-solo.json");
+    const solo = JSON.parse(fs.readFileSync(soloFile, "utf8"));
+    solo.phase = "done"; solo.increments.forEach((i, k) => { i.status = k === 0 ? "pending" : "done"; });
+    fs.writeFileSync(soloFile, JSON.stringify(solo));
+    p = prot(SOLO);
+    ok("protects: a done phase with an increment not done is protected",
+      p.protected === true && p.family === null && p.open.join() === String(solo.increments[0].n));
+    solo.increments.forEach(i => { i.status = "done"; });
+    fs.writeFileSync(soloFile, JSON.stringify(solo));
+    p = prot(SOLO);
+    ok("protects: a plan done in full, in no family, is not", p.protected === false && p.plan === "example-solo");
+    const t = cli("protects", UI);
+    ok("protects: the text form says why", t.status === 0 && /^protected: plan example-auth-ui is \w+/.test(t.stdout));
+    solo.phase = "closed"; fs.writeFileSync(soloFile, JSON.stringify(solo));
+    p = prot(SOLO);
+    ok("protects: a closed plan holds nothing", JSON.stringify(p) === '{"protected":false}');
+  }
+
   // family check: what a worktree actually touched, Bash writes included.
   r = cli("family", "check", fam.slug);
   ok("family check is clean before anyone strays", r.status === 0 && /no member has touched/.test(r.stdout));

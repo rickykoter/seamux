@@ -31,7 +31,7 @@ import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
   FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
   familyOf, refreshFamilyFor, overlaps, checkFamily, draftParent, waitingOn, waitText,
-  memberAt, readSeen, gatherNews, newsText, familyRow, familiesBySlug,
+  memberAt, readSeen, gatherNews, newsText, familyRow, familiesBySlug, protects,
 } from "./lib/family.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, statePath, sessionId,
@@ -3378,7 +3378,7 @@ const BUILTIN_VERBS = new Set([
   "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
   "grade", "status", "go", "start", "done", "reset", "block", "check", "obs",
   "open-gate", "shut-gate", "close", "diff", "review", "deliver", "ask", "help", "setup", "engine", "verify",
-  "family", "redraw", "overviews",
+  "family", "redraw", "overviews", "protects",
 ]);
 
 const [, , cmd, ...rest] = process.argv;
@@ -3504,6 +3504,16 @@ switch (cmd) {
     break;
   }
   case "family": familyCmd(args, flags); break;
+  case "protects": {
+    // Whether live plan or family work sits at a directory: what crew's close
+    // paths ask before they archive, reclaim or close a workspace.
+    const dir = args[0] || die("protects <dir> [--json]");
+    if (!fs.existsSync(dir)) die("protects: no such directory " + dir);
+    const p = protects(dir);
+    if (flags.json) { process.stdout.write(JSON.stringify(p) + "\n"); break; }
+    say(p.protected ? `protected: ${p.why}` : p.plan ? `not protected: ${p.why}` : `not protected: no tracked plan or family holds ${path.resolve(dir)}`);
+    break;
+  }
   case "verify": {
     const root = flags.root || gitRoot(process.cwd()) || process.cwd();
     if (args[0] === "resolve") verifyResolve(args.slice(1), root, flags.json);
@@ -3618,6 +3628,8 @@ switch (cmd) {
   grade <slug> [q1=a q2=c ...]                the alignment check; pass -> implementing
                                               (no answers on a TTY: prompts, keeps them out of history)
   status [--json]                             tracked plans (the board reads --json)
+  protects <dir> [--json]                     whether live plan or family work sits at a
+                                              directory (crew asks before closing one)
   go <slug> <n|next> | go --at DIR next       authorize an increment
   start|done|block|reset <slug> <n> [why]     move an increment
                                               (done is refused until every check
