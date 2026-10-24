@@ -64,12 +64,16 @@ CMUX = (os.environ.get("CMUX_CLAUDE_HOOK_CMUX_BIN")
 # Without the shim, the engine is the root the deep-plan plugin wrote to
 # engine.json, read with the same sed the shim uses (one key per line is that
 # file's contract), and only then the old ~/.claude/skills copy.
+#
+# `--by human`: only a person presses the chip, and the go runs `--at` the
+# plan's own root. Without the flag a delegated child's go would be refused as
+# that child's own, and every go would be logged as given from inside the plan.
 PLAN_GO = ('PATH="$HOME/.local/bin:$PATH"; '  # sh -lc never has the shim's dir
-           'if command -v deep-plan >/dev/null 2>&1; then deep-plan go --at %s next; '
+           'if command -v deep-plan >/dev/null 2>&1; then deep-plan go --at %s next --by human; '
            'else R=$(sed -n \'s/^  "root": "\\(.*\\)",\\{0,1\\}$/\\1/p\' '
            '"$HOME/.claude/deep-plan/engine.json" 2>/dev/null); '
            '[ -f "$R/deep_plan.mjs" ] || R="$HOME/.claude/skills/deep-plan"; '
-           'node "$R/deep_plan.mjs" go --at %s next; fi; '
+           'node "$R/deep_plan.mjs" go --at %s next --by human; fi; '
            'exec %s')
 
 

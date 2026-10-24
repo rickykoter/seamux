@@ -1296,7 +1296,9 @@ if (live && Array.isArray(live.rows)) {
   const hdA = mkEl("div", { class: "top kidhd loud", "data-a": "fold" }, [span("caret"), span("nm", "A"), goA]);
   const diffA = span("chip", "diff");
   const saidA = mkEl("p", { class: "said" }, [], "Inc 2 needs you");
-  const bodyA = mkEl("div", { class: "kbody" }, [saidA, mkEl("div", { class: "chips" }, [span("chip pri", "go 2"), diffA])]);
+  // A delegated child's go, as crew-board labels it: still a go a person can press.
+  const ownA = span("chip", "parent goes \u00b7 inc 3", { title: "parent goes \u00b7 inc 3" });
+  const bodyA = mkEl("div", { class: "kbody" }, [saidA, mkEl("div", { class: "chips" }, [span("chip pri", "go 2"), diffA, ownA])]);
   const railA = railOf();
   const kidA = mkEl("div", { class: "row attend fam kid fd", "data-id": "A", "data-k": "attend", "data-in": "P" }, [railA, hdA, bodyA]);
   const hdW = mkEl("div", { class: "top kidhd", "data-a": "fold" }, [span("caret"), span("nm", "W")]);
@@ -1345,7 +1347,9 @@ if (live && Array.isArray(live.rows)) {
   const last = () => q(fetched[fetched.length - 1]);
 
   checks.push(["intent: an older page's click CSS is replaced on upgrade",
-    oldCss.getAttribute("data-v") === "9" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
+    oldCss.getAttribute("data-v") === "10" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
+  checks.push(["intent: a delegated child's go chip is muted, never filled or breathing",
+    /\.row \.chip\.chip\[title\^="parent goes"\]\{[^}]*background:transparent[^}]*animation:none/.test(oldCss.textContent)]);
   const fold = () => JSON.parse(host.getAttribute("data-fold"));
 
   click(hdA.children[1]);                            // the name, inside the header
@@ -1373,6 +1377,10 @@ if (live && Array.isArray(live.rows)) {
   click(diffA);
   checks.push(["intent: a chip inside an opened child fires with the child's row id",
     fetched.length === 5 && last().a === "diff" && last().r === "A"]);
+  click(ownA);
+  checks.push(["intent: 'parent goes · inc N' is still a go a person can give, for the child",
+    fetched.length === 6 && last().a === "go" && last().x === "3" && last().r === "A"]);
+  fetched.pop();
   click(jumpP);
   checks.push(["intent: the parent's own chips still fire for the parent",
     fetched.length === 6 && last().a === "jump" && last().r === "P"]);
@@ -1788,7 +1796,7 @@ if (crewImpl.isRust("crew-board")) {
   const fs = await import("node:fs");
   const os = await import("node:os");
   const tmp = fs.mkdtempSync(join(os.tmpdir(), "board-rank-parity-"));
-  const FX = {"plans": {"/w/f": {"slug": "f", "root": "/w/f", "phase": "implementing", "gate": {"allow": true, "why": ""}, "progress": {"total": 3, "done": 1, "blocked": [], "open": [{"n": 2, "title": "t"}], "next": null}, "checksOutstanding": [{"n": 2, "id": "test-a", "kind": "test", "status": "fail"}]}, "/w/g": {"slug": "g", "root": "/w/g", "phase": "implementing", "gate": {"allow": false, "why": "Alignment check not taken."}, "progress": {"total": 4, "done": 2, "blocked": [], "open": [], "next": {"n": 3, "title": "Gate me"}}, "family": {"parent": "g", "role": "parent"}}, "/w/r": {"slug": "r", "root": "/w/r", "phase": "review", "gate": {"allow": false, "why": ""}, "progress": {"total": 0, "done": 0, "blocked": [], "open": [], "next": null}}, "/w/b": {"slug": "b", "root": "/w/b", "phase": "implementing", "gate": {"allow": true, "why": ""}, "progress": {"total": 2, "done": 0, "blocked": [{"title": "Blk", "note": null}], "open": [], "next": null}, "family": {"parent": "g", "role": "child"}}, "/w/d": {"slug": "d", "root": "/w/d", "phase": "done", "gate": {"allow": true, "why": ""}, "progress": {"total": 2, "done": 2, "blocked": [], "open": [], "next": null}}}, "workspaces": [{"id": "f", "title": "f PROJ-12", "cwd": "/w/f", "desc": "ci:pass review:approved planinc:1/3 plannext:2 planpath:x", "running": true, "branch": "dev/f", "pr": "#5", "dirty": false, "commits": [{"at": 1, "s": "x"}], "pr_url": "https://x/pull/5"}, {"id": "g", "title": "g", "cwd": "/w/g", "desc": "pr:draft jira:in-review", "running": false, "branch": "none", "pr": "none", "dirty": true}, {"id": "r", "title": "r", "cwd": "/w/r", "desc": "phase:waiting feedby:9999999999 feedgate:allow", "running": false, "branch": "", "pr": "none", "dirty": false}, {"id": "b", "title": "b", "cwd": "/w/b", "desc": "", "running": false, "branch": "b", "pr": "none", "dirty": false}, {"id": "c", "title": "c", "cwd": "/w/c", "desc": "ci:fail stack:ready sandbox:running", "running": false, "branch": "none", "pr": "#9", "dirty": false}, {"id": "m", "title": "m", "cwd": "/w/m", "desc": "gone:merged", "running": false, "branch": "m", "pr": "none", "dirty": false}, {"id": "d", "title": "d", "cwd": "/w/d", "desc": "", "running": false, "branch": "d", "pr": "none", "dirty": false}, {"id": "q", "title": "quiet one", "cwd": "/w/q", "desc": "", "running": false, "branch": "q", "pr": "#3", "dirty": true, "pr_state": "open", "color": "#123456", "selected": true}]};
+  const FX = {"plans": {"/w/f": {"slug": "f", "root": "/w/f", "phase": "implementing", "gate": {"allow": true, "why": ""}, "progress": {"total": 3, "done": 1, "blocked": [], "open": [{"n": 2, "title": "t"}], "next": null}, "checksOutstanding": [{"n": 2, "id": "test-a", "kind": "test", "status": "fail"}]}, "/w/g": {"slug": "g", "root": "/w/g", "phase": "implementing", "gate": {"allow": false, "why": "Alignment check not taken."}, "progress": {"total": 4, "done": 2, "blocked": [], "open": [], "next": {"n": 3, "title": "Gate me"}}, "family": {"parent": "g", "role": "parent", "go": "human", "holds": {"k": "wait for the schema", "b": "a second"}}}, "/w/k": {"slug": "k", "root": "/w/k", "phase": "implementing", "gate": {"allow": false, "why": "Its go is the parent's to give (g)."}, "progress": {"total": 2, "done": 0, "blocked": [], "open": [], "next": {"n": 1, "title": "Owned"}}, "family": {"parent": "g", "role": "child", "go": "parent", "holds": {}}}, "/w/r": {"slug": "r", "root": "/w/r", "phase": "review", "gate": {"allow": false, "why": ""}, "progress": {"total": 0, "done": 0, "blocked": [], "open": [], "next": null}}, "/w/b": {"slug": "b", "root": "/w/b", "phase": "implementing", "gate": {"allow": true, "why": ""}, "progress": {"total": 2, "done": 0, "blocked": [{"title": "Blk", "note": null}], "open": [], "next": null}, "family": {"parent": "g", "role": "child"}}, "/w/d": {"slug": "d", "root": "/w/d", "phase": "done", "gate": {"allow": true, "why": ""}, "progress": {"total": 2, "done": 2, "blocked": [], "open": [], "next": null}}}, "workspaces": [{"id": "f", "title": "f PROJ-12", "cwd": "/w/f", "desc": "ci:pass review:approved planinc:1/3 plannext:2 planpath:x", "running": true, "branch": "dev/f", "pr": "#5", "dirty": false, "commits": [{"at": 1, "s": "x"}], "pr_url": "https://x/pull/5"}, {"id": "g", "title": "g", "cwd": "/w/g", "desc": "pr:draft jira:in-review", "running": false, "branch": "none", "pr": "none", "dirty": true}, {"id": "r", "title": "r", "cwd": "/w/r", "desc": "phase:waiting feedby:9999999999 feedgate:allow", "running": false, "branch": "", "pr": "none", "dirty": false}, {"id": "b", "title": "b", "cwd": "/w/b", "desc": "", "running": false, "branch": "b", "pr": "none", "dirty": false}, {"id": "c", "title": "c", "cwd": "/w/c", "desc": "ci:fail stack:ready sandbox:running", "running": false, "branch": "none", "pr": "#9", "dirty": false}, {"id": "m", "title": "m", "cwd": "/w/m", "desc": "gone:merged", "running": false, "branch": "m", "pr": "none", "dirty": false}, {"id": "d", "title": "d", "cwd": "/w/d", "desc": "", "running": false, "branch": "d", "pr": "none", "dirty": false}, {"id": "k", "title": "k", "cwd": "/w/k", "desc": "plannext:1", "running": false, "branch": "k", "pr": "none", "dirty": false}, {"id": "q", "title": "quiet one", "cwd": "/w/q", "desc": "", "running": false, "branch": "q", "pr": "#3", "dirty": true, "pr_state": "open", "color": "#123456", "selected": true}]};
   const noPlans = { plans: FX.plans };
   const out = (impl, fx, json) => {
     const f = join(tmp, "fx.json");
@@ -1810,6 +1818,40 @@ if (crewImpl.isRust("crew-board")) {
   const up = usage([join(HERE, "crew-board")]), ur = usage(crewImpl.argv("crew-board", join(HERE, "crew-board")));
   checks.push(["parity: an unknown subcommand prints the same usage and exits 2", up === ur && up.startsWith("exit 2\n")]);
   fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+// ---- a delegated child: who goes, on both rank paths ------------------------
+// status --json's family.go says whose go a child's is. Delegated to the
+// parent, the gate-shut chip reads 'parent goes · inc N' and the sentence names
+// the parent; anyone else keeps `go N`. A parent row lists its written holds.
+{
+  const P = (s, allow, fam) => ({ slug: s, root: "/w/" + s, phase: "implementing",
+    gate: { allow, why: allow ? "" : "No increment is authorized." },
+    progress: { total: 3, done: 1, blocked: [], open: allow ? [{ n: 2, title: "t" }] : [], next: { n: 2, title: "Wire it" } },
+    family: { parent: "par", holds: {}, ...fam } });
+  const pb = { "/w/par": P("par", true, { role: "parent", go: "human", holds: { kid: "wait for the schema" } }),
+    "/w/kid": P("kid", false, { role: "child", go: "parent" }),
+    "/w/own": P("own", false, { role: "child", go: "human" }) };
+  const W = (s, desc = "") => ({ id: s, title: s, cwd: "/w/" + s, desc, running: false,
+    branch: "none", pr: "none", dirty: false });
+  const live = Object.fromEntries(stateFrom({ plans: pb, workspaces: [W("par"), W("kid", "plannext:2"), W("own")] })
+    .rows.map(r => [r.id, r]));
+  const off = Object.fromEntries(stateFrom({ plans: pb }).rows.map(r => [r.id, r]));
+  for (const [path, rows] of [["", live], [" (cmux down)", off]]) {
+    checks.push(["delegated: a child whose go is the parent's offers 'parent goes · inc 2'" + path,
+      rows.kid.chips[0] === "parent goes \u00b7 inc 2" && rows.kid.badge === "gate shut"]);
+    checks.push(["delegated: ...and says the parent is expected to give it, and you still can" + path,
+      rows.kid.said === "{{Wire it}} waits on its go from the parent, par. You can still give it."]);
+    checks.push(["delegated: a child whose go is a person's keeps `go 2`" + path,
+      rows.own.chips[0] === "go 2" && rows.own.said.startsWith("{{Wire it}} needs your go-ahead.")]);
+    checks.push(["delegated: the parent row shows the hold it wrote" + path,
+      rows.par.meta.includes("held kid: wait for the schema") && !rows.kid.meta.includes("held")]);
+  }
+  checks.push(["delegated: the plannext signal does not repeat the owner chip as a second go",
+    !(live.kid.signals || []).some(e => e.a === "go")]);
+  render({ rows: [live.kid], quiet: "" });
+  checks.push(["delegated: the chip renders titled by its label, which is what mutes it",
+    els.rows.innerHTML.includes('title="parent goes \u00b7 inc 2">parent goes \u00b7 inc 2</span>')]);
 }
 
 // ---- failed validation ranks wilt, on both rank paths ----------------------

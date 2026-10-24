@@ -11,6 +11,7 @@
 //   reclaim chip         crew:reclaim (asks before deleting)    -> a=reclaim
 //   plan / review        openURL(file:// plan page)        -> a=plan
 //   go N                 crew:plan-go                      -> a=go&x=N
+//   parent goes · inc N  the same go, on a delegated child    -> a=go&x=N
 //   sandbox chip         crew:sandbox-up / -down           -> a=sandbox-up|-down
 //   feed allow / deny    crew:feed-allow / crew:feed-deny  -> a=feed-allow|-deny
 //   the sync clock       crew:sync-now                     -> a=sync
@@ -51,7 +52,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "9";
+  var V = "10";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -78,6 +79,11 @@ function __boardIntent(cfg) {
       ".wk.bad{box-shadow:inset 0 0 0 1px #e67e80}" +
       ".chip.ok{box-shadow:inset 0 0 0 1px #a7c080}" +
       ".chip.bad{box-shadow:inset 0 0 0 1px #e67e80}" +
+      // A delegated child's go: its parent is expected to give it, so it is
+      // muted, never filled or breathing -- but still a button a person can
+      // press. render.js titles an unknown label with the label itself.
+      '.row .chip.chip[title^="parent goes"]{background:transparent;border-color:#4f585e;' +
+      'color:#9da9a0;font-weight:500;animation:none}' +
       "#stamp{cursor:pointer}#stamp:hover{text-decoration:underline}" +
       // A child sits on its family's darker well; hover lifts it from there.
       ".kids>.row.kid:not(.inert):hover{background:#323b40}" +
@@ -123,7 +129,7 @@ function __boardIntent(cfg) {
     var chip = hit;
     if (chip) {
       var label = (chip.textContent || "").trim();
-      var m = /^go\s+(\d+)$/.exec(label);
+      var m = /^(?:go|parent goes \u00b7 inc)\s+(\d+)$/.exec(label);
       if (m) return { a: "go", x: m[1], el: chip };
       if (MAP[label]) return { a: MAP[label], x: "", el: chip };
       return null;                       // an unknown chip stays inert
