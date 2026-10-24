@@ -223,7 +223,7 @@ describe('seamux-mods', () => {
       expect(await ui.find({ key: 'done-2' })).toBeUndefined()
 
       await ui.press({ key: 'go' })
-      expect(w.calls).toContainEqual(['go', 'demo', 'next'])
+      expect(w.calls).toContainEqual(['go', 'demo', 'next', '--by', 'human'])
       // The go reaches the session as a turn, so it starts without a typed
       // "go" (which would authorize the increment after this one).
       expect(w.prompts).toEqual([expect.stringMatching(/increment 2 of demo is authorized\. Start it now; .*do not run `deep-plan go` again/)])
@@ -264,7 +264,7 @@ describe('seamux-mods', () => {
         props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100 } as never })
       expect((await band.find({ key: 'gate-band' }))?.text).toMatch(/deep-plan gate \[demo\]: No increment is authorized/)
       await band.press({ key: 'go' })
-      expect(w.calls).toContainEqual(['go', 'demo', 'next'])
+      expect(w.calls).toContainEqual(['go', 'demo', 'next', '--by', 'human'])
       expect(w.incs[1]?.status).toBe('authorized')
       expect(w.prompts).toEqual([expect.stringMatching(/increment 2 of demo is authorized/)])
       expect(await band.find({ key: 'gate-band' })).toBeUndefined()
@@ -355,6 +355,33 @@ describe('seamux-mods', () => {
     expect(await ui.find({ key: 'fam-wait' })).toBeUndefined()
     expect(await ui.find({ key: 'fam-overlaps' })).toBeUndefined()
     expect(await ui.find({ key: 'go' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a delegated child says the parent goes, shows every verdict and hold, and a press is a person\'s go', async ($, on) => {
+    const w = world(on, { family: {
+      role: 'child', parent: 'auth-revamp', go: 'parent', holds: { 'auth-api': 'wait for the schema' },
+      members: [
+        { slug: 'auth-revamp', role: 'parent', phase: 'implementing', done: 1, total: 2, go: 'human', held: '',
+          increments: [{ n: 1, title: 'Shared session type', status: 'done', checks: 'pass', review: 'pass', by: 'human' },
+            { n: 2, title: 'Rollout', status: 'pending', checks: 'pending', review: '', by: '' }] },
+        { slug: 'auth-api', role: 'child', phase: 'implementing', done: 1, total: 2, go: 'parent', held: 'wait for the schema',
+          increments: [{ n: 1, title: 'Endpoints', status: 'done', checks: 'pass', review: 'fail', by: 'parent' }] },
+        { slug: 'demo', role: 'child', phase: 'implementing', done: 1, total: 3, go: 'parent', held: '', increments: [] },
+      ],
+      owns: [], after: [], waitingOn: [], trespasses: { total: 0, pairs: [] }, news: 0, done: false,
+    } })
+    await $.command.run({ command: 'plan-pane', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
+    expect((await ui.find({ key: 'fam-incs-auth-revamp' }))?.text).toMatch(/^1 ✓ review ✓ by human · 2 ·$/)
+    expect((await ui.find({ key: 'fam-auth-api' }))?.text).toMatch(/◇ auth-api · implementing · 1\/2 · parent goes/)
+    expect((await ui.find({ key: 'fam-incs-auth-api' }))?.text).toMatch(/^1 ✓ review ✗ by parent$/)
+    expect((await ui.find({ key: 'fam-held-auth-api' }))?.text).toMatch(/held by auth-revamp: wait for the schema/)
+    expect(await ui.find({ key: 'fam-held' })).toBeUndefined()
+    expect((await ui.find({ key: 'go' }))?.text).toMatch(/parent goes · inc 2/)
+    await ui.press({ key: 'go' })
+    expect(w.calls).toContainEqual(['go', 'demo', 'next', '--by', 'human'])
+    expect(w.incs[1]?.status).toBe('authorized')
     await ui.unmount()
   })
 

@@ -47,6 +47,11 @@ const CHECK_GLYPH: Record<string, string> = {
 // it waits on a test suite; expensive ones detach and return at once.
 const CHECK_RUN_MS = 600000
 
+// A member increment's verdicts in a few characters: `2 ✓ review ✗ by parent`.
+function incVerdicts(i: { n: number; checks: string; review: string; by: string }): string {
+  return `${i.n} ${CHECK_GLYPH[i.checks] ?? '·'}${i.review ? ` review ${CHECK_GLYPH[i.review] ?? '·'}` : ''}${i.by ? ` by ${i.by}` : ''}`
+}
+
 // ---------------------------------------------------------------- engine
 
 async function home($: EngineInterface): Promise<string> {
@@ -258,9 +263,11 @@ async function runChecks($: EngineInterface, slug: string, n: number, resume?: s
 
 // A go from a button is the human's go-ahead, so the session hears it as a
 // turn of its own: authorizing alone left it idle, and a "go" typed to wake it
-// would then authorize a second increment.
+// would then authorize a second increment. It is sent `--by human`: the pane
+// runs inside the plan's own session, where a delegated child's go would
+// otherwise be refused as the child authorizing itself.
 async function goNext($: EngineInterface, slug: string): Promise<void> {
-  const ran = await act($, ['go', slug, 'next'])
+  const ran = await act($, ['go', slug, 'next', '--by', 'human'])
   if (!ran.ok) {
     $.ui.toast(headline(ran.out) || 'deep-plan go failed', { timeoutMs: 8000 })
     return
@@ -463,6 +470,11 @@ export const register: Register = on => {
     // pane offers none and says what it waits on instead.
     const held = (fam?.waitingOn ?? []).length > 0
     const canGo = p.phase === 'implementing' && !open && incs.some(i => i.status === 'pending') && !held
+    // A delegated child's go is its parent's to give: the button says so and
+    // stays pressable, the press going in as a person's (goNext).
+    const nextN = incs.find(i => i.status === 'pending')?.n
+    const parentGoes = fam?.go === 'parent'
+    const myHold = fam?.holds?.[p.slug] ?? ''
     const page = await planPage($, p)
     const pageLabel = p.phase === 'review' ? 'open review' : 'open plan'
     return (
@@ -476,18 +488,40 @@ export const register: Register = on => {
           </Text>
         </Box>
         {p.rootBroken && <Text color="red">root is gone: the gate fails open for this plan</Text>}
+        {/* The actions sit under the gate, beside the reason it is shut: a
+            family's verdict lines below must never push go out of view. */}
+        <Box key="actions" flexDirection="row" gap={1}>
+          {canGo && <Button key="go" label={parentGoes ? `parent goes · inc ${nextN}` : 'go next'} hotkey="g"
+            variant={parentGoes ? undefined : 'primary'} dimColor={parentGoes} onPress={() => goNext($, p.slug)} />}
+          {page !== '' && <Button key="open" label={pageLabel} hotkey="o" onPress={() => openPage($, page)} />}
+          <Button key="refresh" label="refresh" hotkey="r" onPress={() => refresh($)} />
+          {pin === p.slug && <Button key="unpin" label="unpin" onPress={() => switchTo($, '')} />}
+        </Box>
         {fam && (
           <Box key="family" flexDirection="column" marginTop={1}>
             <Text wrap="truncate-end">
               family {fam.parent} · {fam.role}{fam.news > 0 ? ` · ${fam.news} new` : ''}{fam.done ? ' · family done' : ''}
             </Text>
-            {fam.members.filter(m => m.slug !== p.slug).map(m => (
+            {fam.members.filter(m => m.slug !== p.slug).flatMap(m => [
               <Box key={`fam-${m.slug}`} marginLeft={2}>
                 <Text dimColor={m.phase === 'done'} wrap="truncate-end">
-                  {m.role === 'parent' ? '◆' : '◇'} {m.slug} · {m.phase} · {m.done}/{m.total}
+                  {m.role === 'parent' ? '◆' : '◇'} {m.slug} · {m.phase} · {m.done}/{m.total}{m.go === 'parent' ? ' · parent goes' : ''}
                 </Text>
+              </Box>,
+              ...((m.increments ?? []).length ? [
+                <Box key={`fam-incs-${m.slug}`} marginLeft={4}>
+                  <Text dimColor wrap="wrap">{(m.increments ?? []).map(incVerdicts).join(' · ')}</Text>
+                </Box>] : []),
+              ...(m.held ? [
+                <Box key={`fam-held-${m.slug}`} marginLeft={4}>
+                  <Text color="yellow" wrap="wrap">held by {fam.parent}: {m.held}</Text>
+                </Box>] : []),
+            ])}
+            {myHold !== '' && (
+              <Box key="fam-held" marginLeft={2}>
+                <Text color="yellow" wrap="wrap">held by {fam.parent}: {myHold}</Text>
               </Box>
-            ))}
+            )}
             {held && (
               <Box key="fam-wait" marginLeft={2}>
                 <Text color="yellow" wrap="wrap">
@@ -512,7 +546,7 @@ export const register: Register = on => {
           return [
             <Box key={`inc-${i.n}`} flexDirection="row" gap={1}>
               <Text dimColor={i.status === 'done'} wrap="truncate-end">
-                {GLYPH[i.status] ?? '?'} {i.n}. {i.title}
+                {GLYPH[i.status] ?? '?'} {i.n}. {i.title}{i.by ? ` · go by ${i.by}` : ''}
               </Text>
               {isOpen && (
                 <Button key={`done-${i.n}`} label="done" hotkey="d" onPress={() => act($, ['done', p.slug, String(i.n)])} />
@@ -541,12 +575,6 @@ export const register: Register = on => {
             )),
           ]
         })}
-        <Box key="actions" flexDirection="row" gap={1} marginTop={1}>
-          {canGo && <Button key="go" label="go next" hotkey="g" variant="primary" onPress={() => goNext($, p.slug)} />}
-          {page !== '' && <Button key="open" label={pageLabel} hotkey="o" onPress={() => openPage($, page)} />}
-          <Button key="refresh" label="refresh" hotkey="r" onPress={() => refresh($)} />
-          {pin === p.slug && <Button key="unpin" label="unpin" onPress={() => switchTo($, '')} />}
-        </Box>
         {page !== '' && (
           <Box key="link">
             <Text dimColor wrap="truncate-end">
