@@ -169,6 +169,14 @@ already made needs no edge. At most ${MAX_EDGES}; [] is the usual answer. Notes 
 matched to groups after your edges apply, so write each note for the files
 it covers and it lands on whichever group holds them.
 
+## Writing
+
+Finding and note text is read by a person who reads one word at a time. Say
+what the code does in plain verbs: code returns, calls and rejects, it does
+not want, swallow or decide. Name the actor, give the file and the case, and
+leave out praise, filler and em dashes. Do not coin shorthand a reader has to
+decode; state the claim.
+
 ## Output
 
 Write ONE JSON object to ${outPath}, matching this schema:
