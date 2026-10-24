@@ -3174,6 +3174,52 @@ function checkWait(slug, n, ids, timeoutSec) {
   }
 }
 
+// ---------------------------------------------------------------- await-go
+
+// What a delegated child runs, in the background, between increments: block
+// until an increment is authorized, then print its number. Nothing is typed
+// into the waiting session (ADR 0012); it reads the state file. The deadline
+// is wall-clock, so after a sleep it may fire at once, and the child runs it
+// again. Exit 0 with the number, 2 at the deadline, 3 when there is nothing
+// left to wait for: the plan is done or closed, or a person took the go back
+// from the parent (the child's go is a person's again, so ask them).
+function awaitGo(slug, timeoutSec) {
+  const until = Date.now() + timeoutSec * 1000;
+  // A child that starts waiting in a family and then is in none (its parent
+  // closed or its family dissolved) has no parent left to give the go.
+  const startedIn = !!goOwner(slug);
+  for (;;) {
+    const st = readState(slug);
+    if (!st) { say(`await-go: no plan ${slug}`); return 3; }
+    const incs = st.increments || [];
+    const open = incs.find(i => i.status === "authorized" || i.status === "working");
+    if (open) {
+      say(String(open.n));
+      console.error(`await-go: increment ${open.n} (${open.title}) of ${slug} is ${open.status}` +
+        (open.by ? `, by ${open.by}` : "") + " — start it");
+      return 0;
+    }
+    if (st.phase === "closed" || st.phase === "done" || (incs.length && incs.every(i => i.status === "done"))) {
+      console.error(`await-go: ${slug} has no increment left to wait for (${st.phase})`);
+      return 3;
+    }
+    const own = goOwner(slug);
+    if (own && own.takenBack) {
+      console.error(`await-go: a person took ${slug}'s go back from the parent; ask them for the next go`);
+      return 3;
+    }
+    if (startedIn && !own) {
+      console.error(`await-go: ${slug} is no longer in a family (its parent closed or the family dissolved); ask a person for the next go`);
+      return 3;
+    }
+    if (Date.now() >= until) {
+      console.error(`await-go: no go for ${slug} after ${timeoutSec}s — run it again to keep waiting`);
+      return 2;
+    }
+    sleep(1000);
+  }
+}
+
 // ---------------------------------------------------------------- verify
 
 // `verify resolve` answers "which recipes would check these files, and from
@@ -3423,7 +3469,7 @@ const BUILTIN_VERBS = new Set([
   "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
   "grade", "status", "go", "start", "done", "reset", "block", "check", "obs",
   "open-gate", "shut-gate", "close", "diff", "review", "deliver", "ask", "help", "setup", "engine", "verify",
-  "family", "redraw", "overviews", "protects",
+  "family", "redraw", "overviews", "protects", "await-go",
 ]);
 
 const [, , cmd, ...rest] = process.argv;
@@ -3555,6 +3601,11 @@ switch (cmd) {
     break;
   }
   case "family": familyCmd(args, flags); break;
+  case "await-go": {
+    const slug = args[0] || die("await-go <slug> [--timeout S]");
+    if (flags.timeout !== undefined && !(flags.timeout > 0)) die("--timeout takes a number of seconds above 0");
+    process.exit(awaitGo(slug, flags.timeout || 1800));
+  }
   case "protects": {
     // Whether live plan or family work sits at a directory: what crew's close
     // paths ask before they archive, reclaim or close a workspace.
@@ -3726,6 +3777,9 @@ switch (cmd) {
                                               a sibling claims (exit 1 when any)
   family status [slug] [--json]               every member's phase and progress, what
                                               waits, and recorded overlaps
+  await-go <slug> [--timeout S]               block until an increment is authorized, print
+                                              its number (exit 0); 2 at the timeout (run it
+                                              again), 3 when nothing is left to wait for
   family take-back <child> [--by human]       a person takes a delegated child's go back
                                               from the parent; give-back returns it
   family hold <child> "<reason>"              the parent holds a child's go, saying why;

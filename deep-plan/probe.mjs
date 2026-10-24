@@ -3179,6 +3179,55 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   cli("render", tmpSpec(parent), "--root", DR);
   ok("delegation: a render drops control entries for slugs no longer children",
     !("example-gone" in JSON.parse(fs.readFileSync(ctl, "utf8")).holds));
+
+  // await-go: the child blocks until the parent's go, and nothing is typed into it.
+  r = as(KID, true, "await-go", "example-dlg-kid", "--timeout", "1");
+  ok("await-go: with no go, it exits 2 at its timeout", r.status === 2 && /run it again/.test(r.stderr));
+  ok("await-go: --timeout must be above 0", as(KID, true, "await-go", "example-dlg-kid", "--timeout", "0").status !== 0);
+  {
+    const { spawn } = await import("node:child_process");
+    const waiter = spawn("node", [path.join(HERE, "deep_plan.mjs"), "await-go", "example-dlg-kid", "--timeout", "30"],
+      { cwd: KID, env: { ...NOCC, CLAUDECODE: "1" } });
+    let out = "";
+    waiter.stdout.on("data", d => { out += d; });
+    const exited = new Promise(res => waiter.on("exit", code => res(code)));
+    await new Promise(res => setTimeout(res, 1500));
+    const g = as(DR, true, "go", "example-dlg-kid", "next");
+    const code = await Promise.race([exited, new Promise(res => setTimeout(() => res("timeout"), 10000))]);
+    if (code === "timeout") waiter.kill();
+    ok("await-go: the parent's go from another process wakes it, printing the number",
+      g.status === 0 && code === 0 && out.trim() === "2");
+  }
+  r = cli("family", "news", "example-dlg-kid");
+  ok("await-go: news says an authorized increment has not started, for a child whose wait died",
+    /Increment 2 \(.*\) of example-dlg-kid is authorized by parent and not started: start it\./.test(r.stdout));
+  r = as(KID, true, "await-go", "example-dlg-kid", "--timeout", "5");
+  ok("await-go: an increment already authorized returns at once", r.status === 0 && r.stdout.trim() === "2");
+  cli("reset", "example-dlg-kid", "2");
+  as(DR, false, "family", "take-back", "example-dlg-kid");
+  r = as(KID, true, "await-go", "example-dlg-kid", "--timeout", "5");
+  ok("await-go: a take-back ends the wait with exit 3", r.status === 3 && /took example-dlg-kid's go back/.test(r.stderr));
+  as(DR, false, "family", "give-back", "example-dlg-kid");
+  as(DR, true, "go", "example-dlg-kid", "next"); cli("done", "example-dlg-kid", "2", "--force");
+  r = as(KID, true, "await-go", "example-dlg-kid", "--timeout", "5");
+  ok("await-go: a plan with nothing left exits 3", r.status === 3 && /no increment left/.test(r.stderr));
+  ok("await-go: no such plan exits 3", as(KID, true, "await-go", "example-no-plan", "--timeout", "1").status === 3);
+  ok("await-go: a go not given by the parent is not repeated as news",
+    !/is authorized/.test(cli("family", "news", "example-dlg-two").stdout));
+  cli("reset", "example-dlg-two", "1");
+  {
+    const { spawn } = await import("node:child_process");
+    const waiter = spawn("node", [path.join(HERE, "deep_plan.mjs"), "await-go", "example-dlg-two", "--timeout", "30"],
+      { cwd: TWO, env: { ...NOCC, CLAUDECODE: "1" } });
+    let err = "";
+    waiter.stderr.on("data", d => { err += d; });
+    const exited = new Promise(res => waiter.on("exit", code => res(code)));
+    await new Promise(res => setTimeout(res, 1500));
+    cli("close", "example-dlg");
+    const code = await Promise.race([exited, new Promise(res => setTimeout(() => res("timeout"), 10000))]);
+    if (code === "timeout") waiter.kill();
+    ok("await-go: a parent closed mid-wait ends it with exit 3", code === 3 && /no longer in a family/.test(err));
+  }
   for (const n of ["example-dlg", "example-dlg-kid", "example-dlg-two"]) cli("close", n);
 }
 

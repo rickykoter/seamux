@@ -713,6 +713,17 @@ const claimsMatch = (me, repo, rel) =>
 
 const MAX_NEWS = 12;
 
+// An increment of this member's own plan that the parent authorized and that
+// has not started: said at every prompt until the first edit marks it
+// working, so a child whose await-go died (a crash, a restart) still hears
+// it. Not cursor-bound, on purpose: the news that matters is that it is still
+// waiting. A person's go is left out; they gave it in this session.
+function authorizedLine(me) {
+  const st = readState(me.slug);
+  const inc = ((st && st.increments) || []).find(i => i.status === "authorized" && i.by === "parent");
+  return inc ? `Increment ${inc.n} (${inc.title}) of ${me.slug} is authorized${inc.by ? ` by ${inc.by}` : ""} and not started: start it.` : "";
+}
+
 // What changed around a member since its cursor, as factual lines. A first
 // look (no cursor) is an orientation instead: who the family is and what
 // this member owns. Nothing here fetches: the base ref is as fresh as the
@@ -731,11 +742,15 @@ export function gatherNews(idx, me, seen, { git = true } = {}) {
       `Members: ${sib}. ${me.slug} claims ${mine}.`];
     const waits = waitingOn(me.slug);
     if (waits.length) lines.push(`Its next go waits on ${waitText(waits)}.`);
+    const go = authorizedLine(me);
+    if (go) lines.push(go);
     lines.push(`\`deep-plan family news ${me.slug}\` repeats what changed in the family; \`deep-plan family check ${idx.parent}\` lists overlaps.`);
     return { lines, seen: nextSeen };
   }
   const since = seen.at || 0;
   const lines = [];
+  const go = authorizedLine(me);
+  if (go) lines.push(go);
   // Increments finished anywhere else in the family.
   for (const m of others) {
     const st = readState(m.slug);

@@ -46,6 +46,15 @@ the shared contract first, check the whole once everything is in).
   re-render never hands it back quietly. Both are a person's: from a Claude
   Code session they need `--by human` on the person's word. Take-backs and
   holds live in `state/families/<parent>/control.json`.
+- **A delegated child waits with `await-go`.** After each `done`, run
+  `deep-plan await-go <slug>` in the background (a background Bash command)
+  and end the turn; nothing is typed into the session. Exit 0 prints the
+  authorized increment: start it. Exit 2 is its timeout (30 minutes by
+  default, wall-clock, so it may fire right after the machine wakes): run it
+  again. Exit 3 means there is nothing to wait for: the plan is done, or a
+  person took the go back, so ask them. If the wait died (a crash, a
+  restart), the news at the next prompt says an increment is authorized and
+  not started, until its first edit.
 - **News is pulled, not pushed.** At each prompt and session start, a member's
   session gets what changed since it last looked: sibling and parent
   increments done, a cleared wait, base-ref commits touching its claims, a
