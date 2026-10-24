@@ -30,7 +30,8 @@ The full shape of the spec JSON (discipline step 5); `examples/example.spec.json
                       "waiver": "only when nothing can prove it: why",
                       "commits": ["sha subject", { "sha": "...", "subject": "..." }] }],
   "review":        { "increments": [1, 3], "delivery": true,
-                     "agentMayClose": false, "quiz": false },
+                     "agentMayClose": false, "quiz": false,
+                     "family": false },
   "nonGoals":      ["what this plan deliberately does not do"],
   "verification":  ["runnable commands"],
   "commits":       ["plan-wide record of what landed (same two shapes)"],
@@ -58,8 +59,14 @@ A parent plan (see Families) adds one block, and a child plan adds nothing:
                       "owns": ["glob", { "repo": "other-repo", "glob": "..." }],
                       "shared": ["globs no one owns: lockfiles, CHANGELOG"],
                       "contracts": ["surfaces from this spec it owns"], "consumes": ["... it uses"],
-                      "after": [1] }]
+                      "after": [1], "go": "parent" }]
 ```
+
+`go: "parent"` delegates that child's go to the parent agent; leave it out
+and the child's go is a person's, as for any plan (see Families).
+
+`review.family: true` (a parent with `review.delivery: true` only) makes the
+parent's delivery one lookout review per member; see checks.md.
 
 ## Advisory and derived fields
 

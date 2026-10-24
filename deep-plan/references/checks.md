@@ -134,6 +134,17 @@ check and what it runs.
   what it finds, and run `deliver` again; it completes the plan once the
   human has closed every blocker and major. The gate stays open in this
   phase, so fixes need no `go`.
+- **The family review** (`review.family: true`, opt-in, on a parent with
+  `review.delivery: true`): the parent's delivery reviews every member
+  instead of only itself. `deep-plan deliver <parent>` is refused until
+  every member is done, naming the ones that are not. Then it opens one
+  review per member, `<parent>-family-<member>`, over that member's work
+  since its first start sha, at its root. Each brief carries the family's
+  members and the parent's contracts, so the reviewer looks at the seams.
+  Spawn one fresh reviewer per review it names, fix and `lookout address`
+  what they find, and run `deliver` again. The parent is done once every
+  member's review passes. It costs one reviewer per member, which is why it
+  is opt-in.
 - `done --force` overrides the whole gate and writes that to the log; use
   it only when the human says to, and say that you did. `deep-plan reset`
   on an increment returns every verdict to `pending` — a check passed

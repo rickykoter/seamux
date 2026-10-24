@@ -45,7 +45,9 @@ const opt = (n, d = null) => {
   return i >= 0 && rest[i + 1] !== undefined && !rest[i + 1].startsWith("--") ? rest[i + 1] : d;
 };
 // Options that take a value; every other --flag stands alone.
-const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file"]);
+// The most of a --context-file a review keeps for its reviewer brief.
+const CONTEXT_CAP = 8000;
+const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file"]);
 const positional = () => rest.filter((a, i) => !a.startsWith("--") && !(i > 0 && VALUED.has(rest[i - 1])));
 
 const say = s => process.stdout.write(s + "\n");
@@ -248,11 +250,23 @@ function cmdOpen() {
   scoring.providersFromConfig = Array.isArray(cfg.edgeProviders);
   if (found.unknown.length) scoring.unknownProviders = found.unknown;
 
+  // Context the opener wants the reviewer to read beside the plan, such as a
+  // deep-plan family's contracts for a review of one member's work. Taken in
+  // at open, so the brief reads what the review was opened with.
+  let context;
+  if (opt("context-file")) {
+    try {
+      const all = fs.readFileSync(path.resolve(opt("context-file")), "utf8");
+      context = all.length > CONTEXT_CAP ? all.slice(0, CONTEXT_CAP) + `\n[… cut: the context ran to ${all.length} characters; the rest is in ${opt("context-file")}]\n` : all;
+    }
+    catch (e) { die(`--context-file: cannot read ${opt("context-file")} (${e.code || e.message})`); }
+  }
   const p = S.paths(id);
   const fresh = {
     id, title: opt("title") || (o.plan ? (o.inc === "all" ? `${o.plan} · the full delivery` : `${o.plan} · increment ${o.inc}`) : src.label),
     source: { ...src, plan: o.plan || undefined, inc: o.inc === "all" ? "all" : o.inc ? Number(o.inc) : undefined },
     patchHash: hash,
+    ...(context !== undefined ? { context } : {}),
     stats: { files: meta.length, adds: meta.reduce((x, f) => x + f.adds, 0), dels: meta.reduce((x, f) => x + f.dels, 0) },
     files: meta,
     edges: found.edges,
@@ -489,6 +503,7 @@ function usage() {
 
   lookout open [--base REF | --worktree | --range A..B | --patch FILE]
                [--id ID] [--title T] [--plan SLUG --inc N|all] [--agent-may-close] [--quiz]
+               [--context-file F] (text the reviewer brief prints beside the plan)
                [--plain] [--no-jev] [--rescore] [--view-only] [--no-open] [--json]
         build the diff, store the review, draw the page and show it.
         Default: --base <origin's default branch, else main/master>, which

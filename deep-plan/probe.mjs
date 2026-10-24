@@ -2996,7 +2996,12 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     const plain = fs.mkdtempSync(path.join(TMP, "plain-"));
     p = prot(plain);
     ok("protects: a directory no plan or family holds is not", JSON.stringify(p) === '{"protected":false}');
-    ok("protects: a missing directory is refused", cli("protects", path.join(TMP, "no-such-dir"), "--json").status !== 0);
+    {
+    const gone = cli("protects", path.join(TMP, "no-such-dir"), "--json");
+    ok("protects: a directory that is gone still gets an answer", gone.status === 0 && JSON.parse(gone.stdout).protected === false);
+    const goneIn = cli("protects", path.join(UI, "gone", "deeper"), "--json");
+    ok("protects: …inside a live root, a gone directory is protected", goneIn.status === 0 && JSON.parse(goneIn.stdout).protected === true);
+  }
 
     // A finished member stays protected while its family is not done.
     const apiFile = path.join(ENV.DEEP_PLAN_STATE_DIR, "example-auth-api.json");
@@ -3031,6 +3036,15 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     solo.phase = "closed"; fs.writeFileSync(soloFile, JSON.stringify(solo));
     p = prot(SOLO);
     ok("protects: a closed plan holds nothing", JSON.stringify(p) === '{"protected":false}');
+    // Reached through the family index rather than the state scan, a closed
+    // member with open increments is still set aside.
+    const uiFile = path.join(ENV.DEEP_PLAN_STATE_DIR, "example-auth-ui.json");
+    const uiWas = fs.readFileSync(uiFile, "utf8");
+    fs.writeFileSync(uiFile, JSON.stringify({ ...JSON.parse(uiWas), phase: "closed" }));
+    p = prot(UI);
+    ok("protects: a closed member with open increments is not live as a plan",
+      p.protected === true && !/plan example-auth-ui is closed/.test(p.why) && /family, which is not done/.test(p.why), JSON.stringify(p));
+    fs.writeFileSync(uiFile, uiWas);
   }
 
   // family check: what a worktree actually touched, Bash writes included.
@@ -3066,6 +3080,196 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     !fs.existsSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "families", fam.slug, "index.json")) &&
     fs.existsSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "families", fam.slug, "index.dissolved.json")));
   for (const n of [fam.slug, "example-auth-api", "example-auth-ui", "example-docs"]) cli("close", n);
+}
+
+// -------------------------------------------------- delegated go
+// A workstream with go: "parent" lets the parent agent give that child's go.
+// Who gives a go is worked out from where it runs: inside the parent's root is
+// the parent, --by human or a shell outside Claude Code is a person, anything
+// else is the plan's own session (self). A delegated child's self-go is
+// refused, --force or not; a person can always step in.
+{
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const DR = path.join(TMP, "dlgrepo"), DW = path.join(TMP, "dlgrepo.worktrees");
+  fs.mkdirSync(DR, { recursive: true });
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: DR });
+  const KID = path.join(DW, "kid"), TWO = path.join(DW, "two");
+  execSync(`git worktree add -q -b kid ${KID} && git worktree add -q -b two ${TWO}`, { cwd: DR });
+  const NOCC = { ...ENV }; delete NOCC.CLAUDECODE;
+  // A command as some session would run it: from `cwd`, inside Claude Code or not.
+  const as = (cwd, agent, ...args) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...args],
+    { encoding: "utf8", cwd, env: agent ? { ...NOCC, CLAUDECODE: "1" } : NOCC });
+  const st = slug => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, slug + ".json"), "utf8"));
+  const lastLine = r => { const l = r.stderr.trim().split("\n"); return l[l.length - 1]; };
+  const gradeRight = slug => {
+    const k = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8"));
+    return cli("grade", slug, ...Object.entries(k.answers).map(([q, a]) => `${q}=${a.letter}`));
+  };
+  const kidSpec = slug => { const c = JSON.parse(JSON.stringify(spec)); c.slug = slug;
+    c.deliverables = c.deliverables.map(d => ({ ...d, files: [] })); return c; };
+  for (const [slug, root] of [["example-dlg-kid", KID], ["example-dlg-two", TWO]]) {
+    cli("render", tmpSpec(kidSpec(slug)), "--root", root); gradeRight(slug);
+  }
+  const fam = JSON.parse(fs.readFileSync(path.join(HERE, "examples", "example.family.spec.json"), "utf8"));
+  const parent = { ...fam, slug: "example-dlg",
+    workstreams: [{ slug: "example-dlg-kid", owns: ["kid/**"], go: "parent" }, { slug: "example-dlg-two", owns: ["two/**"] }] };
+  let r = cli("render", tmpSpec({ ...parent, workstreams: [{ slug: "example-dlg-kid", go: "parents" }] }), "--root", DR);
+  ok("delegation: a go other than \"parent\" is refused at render", r.status !== 0 && /\.go must be "parent"/.test(r.stderr));
+  r = cli("render", tmpSpec(parent), "--root", DR);
+  gradeRight("example-dlg");
+  const idx = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "families", "example-dlg", "index.json"), "utf8"));
+  ok("delegation: the index carries each child's go owner",
+    r.status === 0 && idx.members.find(m => m.slug === "example-dlg-kid").go === "parent" &&
+    idx.members.find(m => m.slug === "example-dlg-two").go === "");
+
+  // The child cannot authorize itself, and --force is no way past that.
+  r = as(KID, true, "go", "example-dlg-kid", "next");
+  ok("delegation: a delegated child's own go is refused, the reason on the last line",
+    r.status !== 0 && lastLine(r) === "go refused: self-go on a delegated child" && /a person can too/.test(r.stderr) && !/--by human/.test(r.stderr));
+  r = as(KID, true, "go", "example-dlg-kid", "next", "--force");
+  ok("delegation: …--force does not get past it", r.status !== 0 && st("example-dlg-kid").increments.every(i => i.status === "pending"));
+  const row = JSON.parse(cli("status", "--json").stdout).find(x => x.slug === "example-dlg-kid");
+  ok("delegation: the shut gate says the parent gives the go", row && /parent's to give \(example-dlg\)/.test(row.gate.why));
+  const e = spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")], { encoding: "utf8", env: ENV,
+    input: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: path.join(KID, "x.ts") }, cwd: KID, session_id: "dlg" }) });
+  ok("delegation: the edit refusal tells the child not to run go", e.status === 2 && /delegated to the parent \(example-dlg\): do not run deep-plan go here/.test(e.stderr));
+
+  // The parent gives it from its own root; the record says so.
+  r = as(DR, true, "go", "example-dlg-kid", "next");
+  ok("delegation: the parent's go from its own root goes, recorded by parent",
+    r.status === 0 && st("example-dlg-kid").increments[0].status === "authorized" && st("example-dlg-kid").increments[0].by === "parent" &&
+    st("example-dlg-kid").log.some(l => /authorized by parent/.test(l.what)));
+  const incRow = JSON.parse(cli("status", "--json").stdout).find(x => x.slug === "example-dlg-kid").increments[0];
+  ok("delegation: status rows carry who gave each go", incRow.by === "parent");
+  cli("done", "example-dlg-kid", "1", "--force");
+
+  // A hold: the parent's written reason, and its own go refused while it holds.
+  ok("delegation: the child cannot hold itself", as(KID, true, "family", "hold", "example-dlg-kid", "x").status !== 0);
+  r = as(DR, true, "family", "hold", "example-dlg-kid", "the session type is still moving");
+  ok("delegation: the parent holds a child, saying why", r.status === 0 && /holding example-dlg-kid/.test(r.stdout));
+  ok("delegation: a hold needs a reason", as(DR, true, "family", "hold", "example-dlg-kid").status !== 0);
+  r = as(DR, true, "go", "example-dlg-kid", "next");
+  ok("delegation: the parent's go is refused while it holds", r.status !== 0 && /family unhold example-dlg-kid/.test(r.stderr));
+  const held = JSON.parse(cli("status", "--json").stdout).find(x => x.slug === "example-dlg-kid");
+  ok("delegation: the gate reason shows the hold", /holding it: "the session type is still moving"/.test(held.gate.why));
+  r = as(KID, true, "go", "example-dlg-kid", "next", "--by", "human");
+  ok("delegation: a person's go passes a hold, recorded by human",
+    r.status === 0 && st("example-dlg-kid").increments[1].by === "human");
+  cli("reset", "example-dlg-kid", "2");
+  ok("delegation: --by takes only human", as(DR, true, "go", "example-dlg-kid", "next", "--by", "parent").status !== 0);
+  r = as(DR, true, "family", "unhold", "example-dlg-kid");
+  ok("delegation: the parent lifts its hold", r.status === 0 && !JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "families", "example-dlg", "control.json"), "utf8")).holds["example-dlg-kid"]);
+
+  // Take-back is a person's, and outlives a re-render.
+  r = as(DR, true, "family", "take-back", "example-dlg-kid");
+  ok("delegation: an agent cannot take a child's go back", r.status !== 0 && lastLine(r) === "family take-back refused: not a person");
+  r = as(DR, false, "family", "take-back", "example-dlg-kid");
+  ok("delegation: a person takes it back", r.status === 0 && /a person's until/.test(r.stdout));
+  cli("render", tmpSpec(parent), "--root", DR);
+  r = as(DR, true, "go", "example-dlg-kid", "next");
+  ok("delegation: after a take-back (and a re-render) the parent's go is refused", r.status !== 0 && /family give-back example-dlg-kid/.test(r.stderr));
+  r = as(KID, true, "go", "example-dlg-kid", "next");
+  ok("delegation: …and the child's go is ordinary again, recorded by self", r.status === 0 && st("example-dlg-kid").increments[1].by === "self");
+  cli("reset", "example-dlg-kid", "2");
+  r = as(DR, true, "family", "give-back", "example-dlg-kid", "--by", "human");
+  ok("delegation: give-back on a person's word returns it", r.status === 0 && as(KID, true, "go", "example-dlg-kid", "next").status !== 0);
+
+  // A child the spec does not delegate: the parent may not give its go.
+  r = as(DR, true, "go", "example-dlg-two", "next");
+  ok("delegation: the parent's go on an undelegated child is refused", r.status !== 0 && /does not delegate it/.test(r.stderr));
+  r = as(TWO, true, "go", "example-dlg-two", "next");
+  ok("delegation: an undelegated child's own go goes, as before", r.status === 0 && st("example-dlg-two").increments[0].by === "self");
+  r = as(TWO, true, "family", "take-back", "example-dlg-two", "--by", "human");
+  ok("delegation: nothing to take back on an undelegated child", r.status !== 0);
+  r = as(TMP, false, "go", "example-dlg", "next");
+  ok("delegation: a go from a shell outside Claude Code is a person's", r.status === 0 && st("example-dlg").increments[0].by === "human");
+  ok("delegation: the log says how a person was decided",
+    st("example-dlg").log.some(l => /authorized by human \(no Claude Code session\)/.test(l.what)) &&
+    st("example-dlg-kid").log.some(l => /authorized by human \(--by human\)/.test(l.what)));
+  const ctl = path.join(ENV.DEEP_PLAN_STATE_DIR, "families", "example-dlg", "control.json");
+  const c0 = JSON.parse(fs.readFileSync(ctl, "utf8"));
+  c0.holds["example-gone"] = { reason: "stale", at: 1, by: "parent" };
+  fs.writeFileSync(ctl, JSON.stringify(c0));
+  cli("render", tmpSpec(parent), "--root", DR);
+  ok("delegation: a render drops control entries for slugs no longer children",
+    !("example-gone" in JSON.parse(fs.readFileSync(ctl, "utf8")).holds));
+
+  // Family verdicts: who goes, what is held, and each increment's verdicts,
+  // on status rows, in `family status` and on the working page.
+  {
+    as(DR, true, "family", "hold", "example-dlg-two", "waiting on the contract");
+    const rows = JSON.parse(cli("status", "--json").stdout);
+    const kf = rows.find(x => x.slug === "example-dlg-kid").family;
+    const pf = rows.find(x => x.slug === "example-dlg").family;
+    ok("verdicts: a delegated child's row says the parent goes", kf.go === "parent" && pf.go === "human");
+    ok("verdicts: the row lists the parent's holds", pf.holds["example-dlg-two"] === "waiting on the contract");
+    const km = pf.members.find(m => m.slug === "example-dlg-kid"), tm = pf.members.find(m => m.slug === "example-dlg-two");
+    ok("verdicts: each member says who goes and what it is held on",
+      km.go === "parent" && km.held === "" && tm.go === "human" && tm.held === "waiting on the contract");
+    const k1 = km.increments[0];
+    ok("verdicts: each increment carries status, checks, review and who gave its go",
+      k1.n === 1 && k1.status === "done" && typeof k1.checks === "string" && k1.review === "" && k1.by === "parent" &&
+      km.increments.length === st("example-dlg-kid").increments.length);
+    const t = cli("family", "status", "example-dlg").stdout;
+    ok("verdicts: family status prints them per increment",
+      /example-dlg-kid .*· parent goes/.test(t) && /example-dlg-two .*· a person goes/.test(t) &&
+      /✓ 1 .*go by parent/.test(t) && /held by the parent: waiting on the contract/.test(t));
+    const page = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "example-dlg.working.html"), "utf8");
+    ok("verdicts: the parent's working page shows the go owner, the hold and each increment",
+      /parent goes/.test(page) && /held by the parent: waiting on the contract/.test(page) &&
+      /class="dp-fam-inc dp-fam-done"[^>]*>✓ 1 [\s\S]*?go by parent<\/span><\/span>/.test(page));
+    as(DR, true, "family", "unhold", "example-dlg-two");
+  }
+
+  // await-go: the child blocks until the parent's go, and nothing is typed into it.
+  r = as(KID, true, "await-go", "example-dlg-kid", "--timeout", "1");
+  ok("await-go: with no go, it exits 2 at its timeout", r.status === 2 && /run it again/.test(r.stderr));
+  ok("await-go: --timeout must be above 0", as(KID, true, "await-go", "example-dlg-kid", "--timeout", "0").status !== 0);
+  {
+    const { spawn } = await import("node:child_process");
+    const waiter = spawn("node", [path.join(HERE, "deep_plan.mjs"), "await-go", "example-dlg-kid", "--timeout", "30"],
+      { cwd: KID, env: { ...NOCC, CLAUDECODE: "1" } });
+    let out = "";
+    waiter.stdout.on("data", d => { out += d; });
+    const exited = new Promise(res => waiter.on("exit", code => res(code)));
+    await new Promise(res => setTimeout(res, 1500));
+    const g = as(DR, true, "go", "example-dlg-kid", "next");
+    const code = await Promise.race([exited, new Promise(res => setTimeout(() => res("timeout"), 10000))]);
+    if (code === "timeout") waiter.kill();
+    ok("await-go: the parent's go from another process wakes it, printing the number",
+      g.status === 0 && code === 0 && out.trim() === "2");
+  }
+  r = cli("family", "news", "example-dlg-kid");
+  ok("await-go: news says an authorized increment has not started, for a child whose wait died",
+    /Increment 2 \(.*\) of example-dlg-kid is authorized by parent and not started: start it\./.test(r.stdout));
+  r = as(KID, true, "await-go", "example-dlg-kid", "--timeout", "5");
+  ok("await-go: an increment already authorized returns at once", r.status === 0 && r.stdout.trim() === "2");
+  cli("reset", "example-dlg-kid", "2");
+  as(DR, false, "family", "take-back", "example-dlg-kid");
+  r = as(KID, true, "await-go", "example-dlg-kid", "--timeout", "5");
+  ok("await-go: a take-back ends the wait with exit 3", r.status === 3 && /took example-dlg-kid's go back/.test(r.stderr));
+  as(DR, false, "family", "give-back", "example-dlg-kid");
+  as(DR, true, "go", "example-dlg-kid", "next"); cli("done", "example-dlg-kid", "2", "--force");
+  r = as(KID, true, "await-go", "example-dlg-kid", "--timeout", "5");
+  ok("await-go: a plan with nothing left exits 3", r.status === 3 && /no increment left/.test(r.stderr));
+  ok("await-go: no such plan exits 3", as(KID, true, "await-go", "example-no-plan", "--timeout", "1").status === 3);
+  ok("await-go: a go not given by the parent is not repeated as news",
+    !/is authorized/.test(cli("family", "news", "example-dlg-two").stdout));
+  cli("reset", "example-dlg-two", "1");
+  {
+    const { spawn } = await import("node:child_process");
+    const waiter = spawn("node", [path.join(HERE, "deep_plan.mjs"), "await-go", "example-dlg-two", "--timeout", "30"],
+      { cwd: TWO, env: { ...NOCC, CLAUDECODE: "1" } });
+    let err = "";
+    waiter.stderr.on("data", d => { err += d; });
+    const exited = new Promise(res => waiter.on("exit", code => res(code)));
+    await new Promise(res => setTimeout(res, 1500));
+    cli("close", "example-dlg");
+    const code = await Promise.race([exited, new Promise(res => setTimeout(() => res("timeout"), 10000))]);
+    if (code === "timeout") waiter.kill();
+    ok("await-go: a parent closed mid-wait ends it with exit 3", code === 3 && /no longer in a family/.test(err));
+  }
+  for (const n of ["example-dlg", "example-dlg-kid", "example-dlg-two"]) cli("close", n);
 }
 
 // -------------------------------------------------- a new directory under a symlinked root
@@ -3342,6 +3546,78 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     r = lc(LENV, "deliver", "rv-bd");
     ok("…and the deliver re-run its hint names needs no --base",
       r.status === 1 && /lookout prompt rv-bd-delivery/.test(r.stdout) && !/no recorded start sha/.test(r.stderr), r.stdout + r.stderr);
+  }
+  // The opt-in family review: a parent with review.family closes its delivery
+  // only when every member is done and one lookout review per member passes,
+  // each opened at the member's root with the family's contracts as context.
+  {
+    const FR = path.join(TMP, "famrv"), KR = path.join(TMP, "famrv.worktrees", "kid");
+    fs.mkdirSync(FR, { recursive: true });
+    execSync(`git init -q && ${G} commit -q --allow-empty -m init && git worktree add -q -b kid ${KR}`, { cwd: FR });
+    const kid = JSON.parse(JSON.stringify(spec));
+    kid.slug = "frv-kid"; kid.deliverables = kid.deliverables.map(d => ({ ...d, files: [] }));
+    const fam = JSON.parse(fs.readFileSync(path.join(HERE, "examples", "example.family.spec.json"), "utf8"));
+    const par = { ...fam, slug: "frv-par", workstreams: [{ slug: "frv-kid", owns: ["kid/**"], consumes: ["POST /session"] }],
+      review: { increments: "none", delivery: true, family: true, agentMayClose: true } };
+    let r = lc(LENV, "render", tmpSpec({ ...kid, review: { ...kid.review, family: true } }), "--root", KR);
+    ok("family review: review.family on a plan with no workstreams is refused", r.status !== 0 && /only a parent plan/.test(r.stderr));
+    r = lc(LENV, "render", tmpSpec({ ...par, review: { ...par.review, delivery: false } }), "--root", FR);
+    ok("family review: review.family needs review.delivery", r.status !== 0 && /needs review\.delivery: true/.test(r.stderr));
+    ok("family review: review.family is a boolean",
+      /review\.family: true or false/.test(lc(LENV, "render", tmpSpec({ ...par, review: { ...par.review, family: "yes" } }), "--root", FR).stderr));
+    lc(LENV, "render", tmpSpec(kid), "--root", KR);
+    r = lc(LENV, "render", tmpSpec(par), "--root", FR);
+    ok("family review: a parent with review.family renders", r.status === 0, r.stderr);
+    const passAll = (slug, root) => {
+      const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8"));
+      lc(LENV, "grade", slug, ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+      for (const i of stOf(slug).increments) {
+        lc(LENV, "go", slug, String(i.n), "--force");
+        fs.writeFileSync(path.join(root, `${slug}-${i.n}.txt`), `work ${i.n}\n`);
+        execSync(`git add -A && ${G} commit -q -m "${slug} ${i.n}"`, { cwd: root });
+        lc(LENV, "done", slug, String(i.n), "--force");
+      }
+    };
+    passAll("frv-par", FR);
+    r = lc(LENV, "deliver", "frv-par");
+    ok("family review: deliver waits for every member, naming the ones not done",
+      r.status !== 0 && /deliver refused: family not done \(frv-kid\)/.test(r.stderr) && stOf("frv-par").phase === "delivery", r.stdout + r.stderr);
+    passAll("frv-kid", KR);
+    const kidFile = path.join(ENV.DEEP_PLAN_STATE_DIR, "frv-kid.json");
+    const kidWas = fs.readFileSync(kidFile, "utf8");
+    fs.writeFileSync(kidFile, JSON.stringify({ ...JSON.parse(kidWas), phase: "delivery" }));
+    r = lc(LENV, "deliver", "frv-par");
+    ok("family review: a child still in its own delivery review is not done yet",
+      r.status !== 0 && /family not done \(frv-kid\)/.test(r.stderr), r.stderr);
+    fs.writeFileSync(kidFile, kidWas);
+    r = lc(LENV, "deliver", "frv-par");
+    const ids = ["frv-par-family-frv-par", "frv-par-family-frv-kid"];
+    const store = id => JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, id + ".json"), "utf8"));
+    ok("family review: deliver opens one review per member and names a reviewer for each",
+      r.status === 1 && ids.every(id => fs.existsSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, id + ".json")) && r.stdout.includes(`lookout prompt ${id}`)) &&
+      r.stdout.trim().split("\n").pop() === `review: spawn a reviewer — lookout prompt ${ids[0]}`, r.stdout + r.stderr);
+    const ks = store(ids[1]);
+    ok("family review: each is the member's own work, at its root, with the plan's close policy",
+      ks.source.root && fs.realpathSync(ks.source.root) === fs.realpathSync(KR) && ks.files.some(f => f.path === "frv-kid-1.txt") &&
+      !ks.files.some(f => /frv-par/.test(f.path)) && ks.policy.agentMayClose === true, JSON.stringify(ks.source));
+    const brief = lk("prompt", ids[1]).stdout;
+    ok("family review: the reviewer's brief carries the family's members and contracts",
+      /## The context it was opened with/.test(brief) && /frv-kid: a workstream · owns kid\/\*\* · consumes POST \/session/.test(brief) &&
+      /POST \/session \[api, new\]/.test(brief), brief.slice(0, 400));
+    const empty = path.join(TMP, "frv-empty.json"); fs.writeFileSync(empty, "[]");
+    lk("findings", "add", ids[0], empty);
+    const kjson = path.join(TMP, "frv-kid-findings.json");
+    fs.writeFileSync(kjson, JSON.stringify([{ file: "frv-kid-1.txt", line: 1, severity: "major", summary: "the seam is off", failure_scenario: "the parent's session type changes" }]));
+    lk("findings", "add", ids[1], kjson);
+    r = lc(LENV, "deliver", "frv-par");
+    ok("family review: a major open on one member holds the parent", r.status === 1 && /✗ frv-par-family-frv-kid/.test(r.stdout) &&
+      /deliver refused: the family review is open on 1 member/.test(r.stderr) && stOf("frv-par").phase === "delivery", r.stdout + r.stderr);
+    const cl = store(ids[1]); cl.findings[0].status = "resolved"; cl.findings[0].statusBy = "human";
+    fs.writeFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, ids[1] + ".json"), JSON.stringify(cl));
+    r = lc(LENV, "deliver", "frv-par");
+    ok("family review: once every member's review passes, the parent is done",
+      r.status === 0 && /family review passed for all 2 members/.test(r.stdout) && stOf("frv-par").phase === "done", r.stdout + r.stderr);
+    for (const n of ["frv-par", "frv-kid"]) lc(LENV, "close", n);
   }
   for (const n of ["rv-1", "rv-2", "rv-q", "rv-pick", "rv-all", "rv-none", "rv-d", "rv-b", "rv-bd"]) lc(LENV, "close", n);
 }
