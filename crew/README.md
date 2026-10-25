@@ -1051,6 +1051,22 @@ husky or node_modules — and the "run npm install" warning now fires only when 
 repo *has* `.husky` but is missing its generated directory, which is the failure
 it was written for.
 
+### From the app's Dock
+
+The seamux app's Dock has a **New** button above the board (⌘N in the app).
+It asks for a repo, a branch and an optional first prompt for Claude, and
+then does what `crew-worktree` does without a terminal: it fetches, adds the
+worktree, copies the commit-hook fixups, opens a cmux workspace, starts
+Claude there as a native session (the terminal the app draws), and selects it
+in the Dock. Each step shows as it runs. If one fails,
+the form stays open with the reason, and a worktree that was already added is
+kept. A blank branch is named from the prompt. Base branch, Remote Control and
+the sandbox are under **More**. A sandboxed workspace doesn't take a first
+prompt yet.
+
+The rules are the same as above, ported to Rust in
+`app/crates/crew-core/src/worktree.rs`. A change to one belongs in the other.
+
 ## Sandboxed worktrees
 
 `crew-worktree --sandbox [branch] [base]` builds the worktree exactly as usual,

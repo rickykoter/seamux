@@ -237,13 +237,18 @@ fn tmux_ok(sock: &str, args: &[&str]) -> Result<(), String> {
 /// no tmux bar or prefix (Claude Code uses Ctrl-B), focus events on. Returns
 /// the new cmux pane's surface id.
 pub fn start_native(ws: &str, cwd: &str, resume: Option<&str>) -> Result<String, String> {
+    start_native_with(ws, cwd, &claude_line(resume)?)
+}
+
+/// start_native, running `claude` (a shell command line) as the session's
+/// program: a new workspace's Claude, with its first prompt.
+pub fn start_native_with(ws: &str, cwd: &str, claude: &str) -> Result<String, String> {
     if !cmux::is_uuid(ws) {
         return Err(format!("not a workspace UUID: {ws:?}"));
     }
     if !cwd.starts_with('/') || !std::path::Path::new(cwd).is_dir() {
         return Err(format!("not a directory: {cwd:?}"));
     }
-    let claude = claude_line(resume)?;
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros()).unwrap_or(0);
     let name = format!("claude-{:x}", stamp & 0xffff_ffff);
     let shell = std::env::var("SHELL").ok().filter(|s| s.starts_with('/')).unwrap_or_else(|| "/bin/zsh".into());
@@ -254,11 +259,39 @@ pub fn start_native(ws: &str, cwd: &str, resume: Option<&str>) -> Result<String,
         return Err(e);
     }
     // Anything that fails from here takes the half-made session with it.
-    let made = finish_native(&name, ws, &claude);
+    let made = finish_native(&name, ws, claude);
     if made.is_err() {
         let _ = cmux_ok(&["local-tmux", "close", &name]);
     }
     made
+}
+
+/// The workspace for `cwd`, with `cmd` (Claude and its first prompt) as a
+/// native session there in place of cmux's shell: the Dock draws it.
+pub fn open_native_workspace(cwd: &std::path::Path, cmd: &str) -> Result<(String, Option<String>), String> {
+    let (wref, id) = crew_core::worktree::create_workspace(cwd)?;
+    let id = id.ok_or_else(|| format!("cmux opened {wref} but did not list it, so Claude was not started there"))?;
+    let c = cmux::Cmux::connect().map_err(|e| format!("cmux: {e}"))?;
+    // cmux's own shell, closed once the native pane is there.
+    let shells = c.tree().map(|t| surfaces_in(&t, &id)).unwrap_or_default();
+    start_native_with(&id, &cwd.to_string_lossy(), cmd).map_err(|e| format!("{wref} is open, but Claude did not start natively ({e})"))?;
+    for s in shells {
+        let _ = c.cli(&["close-surface", "--surface", &s, "--workspace", &id, "--force"]);
+    }
+    Ok((wref, Some(id)))
+}
+
+/// The surface refs of workspace `ws` (a UUID) in cmux's `tree --json`.
+pub fn surfaces_in(tree: &Value, ws: &str) -> Vec<String> {
+    let arr = |v: &Value, k: &str| v.get(k).and_then(Value::as_array).cloned().unwrap_or_default();
+    arr(tree, "windows")
+        .iter()
+        .flat_map(|w| arr(w, "workspaces"))
+        .filter(|w| w.get("id").and_then(Value::as_str).is_some_and(|id| id.eq_ignore_ascii_case(ws)))
+        .flat_map(|w| arr(&w, "panes"))
+        .flat_map(|p| arr(&p, "surfaces"))
+        .filter_map(|s| s.get("ref").and_then(Value::as_str).map(str::to_string))
+        .collect()
 }
 
 /// The Claude that runs in a pane, by cmux's records: its session, the
@@ -489,6 +522,15 @@ impl Drop for Pty {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn surfaces_of_one_workspace_from_the_tree() {
+        let tree = serde_json::json!({"windows": [{"workspaces": [
+            {"id": "AB79E681-B8EF-45FA-90AD-1AE7CC0E2456", "panes": [{"surfaces": [{"ref": "surface:1"}, {"ref": "surface:2"}]}]},
+            {"id": "0E560759-0416-40C7-BC72-5AC8F6BE7C07", "panes": [{"surfaces": [{"ref": "surface:3"}]}]},
+        ]}]});
+        assert_eq!(super::surfaces_in(&tree, "ab79e681-b8ef-45fa-90ad-1ae7cc0e2456"), ["surface:1", "surface:2"]);
+        assert!(super::surfaces_in(&tree, "1E560759-0416-40C7-BC72-5AC8F6BE7C07").is_empty());
+    }
 
     /// Live: moves the Claude in MOVE_SURFACE (workspace MOVE_WS, both UUIDs)
     /// to a native session. It stops that Claude: point it at a throwaway.

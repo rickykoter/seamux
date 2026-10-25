@@ -7,6 +7,7 @@ import "./wall.css";
 import "./desk.css";
 import { DockView } from "./dock";
 import "./dock.css";
+import "./newws.css";
 import { Mosaic } from "./mosaic";
 import "./mosaic.css";
 import { Wake } from "./wake";

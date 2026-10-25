@@ -17,6 +17,9 @@
 #
 # Worktrees land in <repo>.worktrees, the convention already in use.
 #
+# The app's Dock makes worktrees with the same rules, ported to Rust in
+# app/crates/crew-core/src/worktree.rs: change one, change the other.
+#
 # With --sandbox and no --claude=, the wizard asks whether to carry your Claude
 # setup into the sandbox or start clean. See crew-sandbox for what each does.
 #
