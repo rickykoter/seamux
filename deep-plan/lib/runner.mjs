@@ -9,6 +9,8 @@
 //             every `interval` seconds, up to its `timeout`. Reads remote
 //             state; changes nothing.
 //   run       one shell command; non-zero, or past the timeout, is a fail.
+//   claim     acquisition the engine runs (claims.mjs): polled, maybe asked,
+//             maybe locked; released when the run ends.
 //   browser   a repo script driven through cmux's browser repl (browser.mjs);
 //             last, and judged by its exit code like a run.
 //
@@ -23,6 +25,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { runBrowser } from "./browser.mjs";
+import { runClaim, releaseClaims } from "./claims.mjs";
 
 export const TAIL_LINES = 20;
 
@@ -55,9 +58,13 @@ export function sh(cwd, command, opts = {}) {
   append(opts.log, full);
   const timedOut = !!(r.error && r.error.code === "ETIMEDOUT");
   const code = r.status === null ? -1 : r.status;
-  append(opts.log, timedOut ? `\n[timed out after ${secs}s]\n` : `\n[exit ${code}]\n`);
+  // A step killed by a person's signal (Ctrl-C reaches the whole process
+  // group) stops the run, so its claims are released rather than the next
+  // step started. SIGKILL is the timeout's own.
+  const signal = !timedOut && r.signal ? r.signal : "";
+  append(opts.log, timedOut ? `\n[timed out after ${secs}s]\n` : signal ? `\n[killed by ${signal}]\n` : `\n[exit ${code}]\n`);
   return {
-    command, ok: !timedOut && r.status === 0, code, timedOut,
+    command, ok: !timedOut && r.status === 0, code, timedOut, signal,
     ms: Date.now() - started,
     // The value a step hands on: its last non-empty line of stdout.
     value: stdout.split("\n").map(l => l.trim()).filter(Boolean).pop() || "",
@@ -73,24 +80,52 @@ export function acquireSteps(exec) {
 }
 
 // Run `exec` (a check's stored recipe: steps, cwd, timeout) under `root`.
-// Returns { status: pass|fail|needs-variant, note, ran } — what the caller
-// records as the verdict.
-export function runExec(exec, { root, from = "", log = "", env = {}, browser = {} } = {}) {
+// Returns { status: pass|fail|needs-variant|needs-value, note, ran } — what
+// the caller records as the verdict. `from` ("wait" or "claim") resumes past
+// the acquire steps, which a person has run. `claim` carries the caller's
+// hooks into its claim steps (state for the Dock, presets from --set).
+export function runExec(exec, { root, from = "", log = "", env = {}, browser = {}, claim = {} } = {}) {
   const started = Date.now();
   const cwd = path.resolve(root, exec.cwd || ".");
   const steps = exec.steps || [];
   const acquire = acquireSteps(exec);
-  if (acquire.length && from !== "wait")
+  if (acquire.length && !from)
     return { status: "needs-variant", acquire: acquire.map(s => ({ command: s.command, note: s.note || "" })),
       note: `a person runs: ${acquire.map(s => s.command).join(" && ")}` };
   const vars = { ...env };
-  const done = (status, note, extra = {}) =>
-    ({ status, note, ran: { ms: Date.now() - started, log, ...extra } });
+  const held = [];
+  let done = (status, note, extra = {}) => {
+    // Whatever was claimed is given back on every way out: pass, fail, a
+    // signal that stopped the step. What skips this: a SIGKILL, a crash, and
+    // a signal sent to the node process alone while a step runs (node takes
+    // it only when the step is over). `check release` covers those.
+    if (held.length) {
+      const { said, failed } = releaseClaims(held, { cwd, log, locksDir: claim.locksDir });
+      append(log, `[released: ${said.join("; ")}]\n`);
+      if (failed.length) {
+        if (claim.hooks && claim.hooks.held) claim.hooks.held(failed);
+        note += ` — release failed, still held: deep-plan check release`;
+      } else if (claim.hooks && claim.hooks.released) claim.hooks.released();
+    }
+    return { status, note, ran: { ms: Date.now() - started, log, ...extra } };
+  };
   if (!fs.existsSync(cwd)) return done("fail", `the recipe's cwd ${exec.cwd} does not exist`, { code: -1 });
+  const signalled = r => r && r.signal && ["SIGINT", "SIGTERM", "SIGHUP"].includes(r.signal) ? r.signal : "";
   for (let k = 0; k < steps.length; k++) {
     const s = steps[k];
     if (s.kind === "acquire") continue;
     const at = { step: k + 1, kind: s.kind, command: s.command };
+    if (s.kind === "claim") {
+      const c = runClaim(s, { cwd, vars, log, preset: claim.preset || {}, locksDir: claim.locksDir, owner: claim.owner || {},
+        hooks: { ...(claim.hooks || {}), held: x => { if (!held.includes(x)) held.push(x); if (claim.hooks && claim.hooks.held) claim.hooks.held(held); } } });
+      if (c.needsValue) {
+        const r = done("needs-value", c.note, { ...at });
+        return { ...r, status: "needs-value" };
+      }
+      if (!c.ok) return done("fail", c.note, { ...at, code: -1, tail: c.tail || "", ...(c.signal ? { signal: c.signal } : {}) });
+      if (s.export) vars[s.export] = c.value;
+      continue;
+    }
     if (s.kind === "wait") {
       const limit = (s.timeout || 1200) * 1000, every = (s.interval || 15) * 1000;
       const until = Date.now() + limit;
@@ -99,6 +134,7 @@ export function runExec(exec, { root, from = "", log = "", env = {}, browser = {
         polls++;
         const left = Math.max(1, Math.ceil((until - Date.now()) / 1000));
         last = sh(cwd, s.command, { timeout: left, log, env: vars });
+        if (signalled(last)) return done("fail", `terminated by ${last.signal} at step ${k + 1}: ${s.command}`, { ...at, code: -1, signal: last.signal });
         if (last.ok && (!s.export || last.value)) break;
         if (Date.now() + every >= until)
           return done("fail", `wait gave up after ${s.timeout || 1200}s (${polls} polls): ${s.command}`,
@@ -112,6 +148,7 @@ export function runExec(exec, { root, from = "", log = "", env = {}, browser = {
     const r = s.kind === "browser"
       ? runBrowser(s, { cwd, env: vars, log, timeout: s.timeout || exec.timeout || 900, browser: { ...browser, root } })
       : sh(cwd, s.command, { timeout: s.timeout || exec.timeout || 900, log, env: vars });
+    if (signalled(r)) return done("fail", `terminated by ${r.signal} at step ${k + 1}: ${s.command}`, { ...at, code: -1, signal: r.signal });
     if (s.kind === "browser" && !r.ok)
       return done("fail", r.timedOut ? `timed out after ${s.timeout || exec.timeout || 900}s in the browser script ${s.command}`
         : r.failedAt ? `${r.failedAt} (${s.command})` : `exit ${r.code} at step ${k + 1}: browser ${s.command}`,

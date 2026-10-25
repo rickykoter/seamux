@@ -33,10 +33,11 @@ import crypto from "node:crypto";
 export const VERIFY_REL = path.join(".seamux", "verify.json");
 export const RECIPE_KINDS = ["test", "e2e", "observability", "browser"];
 export const TIERS = ["cheap", "expensive"];
-// Order is part of the protocol: acquire steps (a person's) first; then wait
-// and run in any order (claim, deploy, watch the job); then at most one
-// browser step, last. See validateRecipe.
-export const STEP_KINDS = ["acquire", "wait", "run", "browser"];
+// Order is part of the protocol: acquire steps (a person's) first; then
+// claim, wait and run in any order (claim an env, deploy, watch the job);
+// then at most one browser step, last. See validateRecipe.
+export const STEP_KINDS = ["acquire", "claim", "wait", "run", "browser"];
+const LOCK_RE = /^[a-z0-9][a-z0-9:._/-]*$/i;
 const ID_RE = /^[a-z0-9][a-z0-9._-]*$/i;
 const ENV_RE = /^[A-Z_][A-Z0-9_]*$/;
 // Seconds. A recipe's timeout bounds each run step; a wait step has its own,
@@ -83,7 +84,7 @@ function normalizeRecipe(r) {
     : (r.run !== undefined ? [normalizeStep({ run: r.run })] : []);
   // A browser run drives a page while the Dock watches it, so it runs detached
   // like a remote one: the page's filmstrip fills while the run goes on.
-  const remote = steps.some(s => s.kind === "acquire" || s.kind === "wait" || s.kind === "browser");
+  const remote = steps.some(s => ["acquire", "claim", "wait", "browser"].includes(s.kind));
   return {
     id: r.id === undefined ? "" : String(r.id),
     kind: r.kind || "test",
@@ -111,9 +112,12 @@ function normalizeRecipe(r) {
 function normalizeStep(s) {
   const kinds = STEP_KINDS.filter(k => s && s[k] !== undefined);
   const kind = kinds.length === 1 ? kinds[0] : "";
-  const out = { kind, command: kind ? s[kind] : "", note: (s && s.note) || "" };
+  // A claim that only asks a person has no command: `"claim": null` (or "").
+  const out = { kind, command: kind ? (kind === "claim" && (s[kind] === null || s[kind] === "") ? "" : s[kind]) : "",
+    note: (s && s.note) || "" };
   if (s && s.export !== undefined) out.export = s.export;
-  if (kind === "wait") {
+  if (kind === "claim") for (const f of ["ask", "choices", "lock", "release"]) if (s[f] !== undefined) out[f] = s[f];
+  if (kind === "wait" || kind === "claim") {
     out.timeout = s.timeout === undefined ? DEFAULT_WAIT.timeout : s.timeout;
     out.interval = s.interval === undefined ? DEFAULT_WAIT.interval : s.interval;
   } else if (s && s.timeout !== undefined) out.timeout = s.timeout;
@@ -159,7 +163,17 @@ function validateRecipe(r, i) {
         (s._kinds && s._kinds.length ? ` (has ${s._kinds.join(" and ")})` : ""));
       return;
     }
-    if (typeof s.command !== "string" || !s.command.trim()) errs.push(`${at}: ${s.kind} must be a command string`);
+    const askOnly = s.kind === "claim" && s.command === "" && typeof s.ask === "string" && !!s.ask.trim();
+    if (!askOnly && (typeof s.command !== "string" || !s.command.trim()))
+      errs.push(`${at}: ${s.kind} must be a command string` + (s.kind === "claim" ? " (or null with an ask)" : ""));
+    if (s.kind === "claim") {
+      for (const f of ["ask", "choices", "release"])
+        if (s[f] !== undefined && (typeof s[f] !== "string" || !s[f].trim())) errs.push(`${at}: ${f} must be a non-empty string`);
+      if (s.lock !== undefined && !(typeof s.lock === "string" && LOCK_RE.test(s.lock)))
+        errs.push(`${at}: lock must be a name like port:5432 or qa-env`);
+      if (s.ask !== undefined && s.export === undefined) errs.push(`${at}: a claim that asks needs an export to name the answer`);
+      if (s.choices !== undefined && s.ask === undefined) errs.push(`${at}: choices are what a person picks from, so they need an ask`);
+    }
     if (s.kind === "acquire" && pastAcquire)
       errs.push(`${at}: acquire after ${r.steps[k - 1].kind} — a person's acquire steps come first`);
     if (s.kind !== "acquire") pastAcquire = true;
@@ -176,13 +190,13 @@ function validateRecipe(r, i) {
     }
     if (s.timeout !== undefined && !(typeof s.timeout === "number" && s.timeout > 0))
       errs.push(`${at}: timeout must be a positive number of seconds`);
-    if (s.kind === "wait" && !(typeof s.interval === "number" && s.interval > 0))
+    if ((s.kind === "wait" || s.kind === "claim") && !(typeof s.interval === "number" && s.interval > 0))
       errs.push(`${at}: interval must be a positive number of seconds`);
   });
   if (r.steps.length && !r.steps.some(s => s.kind === "run" || s.kind === "browser"))
     errs.push(`${label}: needs a run or browser step — waiting on a deploy proves nothing until something runs against it`);
-  if (r.tier === "cheap" && r.steps.some(s => s.kind === "acquire" || s.kind === "wait"))
-    errs.push(`${label}: a recipe with acquire or wait steps must be expensive — a deploy wait outlasts an inline run`);
+  if (r.tier === "cheap" && r.steps.some(s => s.kind === "acquire" || s.kind === "wait" || s.kind === "claim"))
+    errs.push(`${label}: a recipe with acquire, claim or wait steps must be expensive — a deploy wait outlasts an inline run`);
   return errs;
 }
 

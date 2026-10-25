@@ -147,14 +147,17 @@ export function log1(st, what) {
 // (lib/browser.mjs); its verdict is the exit code like any recipe's, and its
 // run leaves evidence (frames, trace, replay) the surfaces show.
 export const CHECK_KINDS = ["test", "e2e", "observability", "manual", "review", "browser"];
-export const CHECK_STATUSES = ["pending", "running", "needs-variant", "pass", "fail"];
+// needs-value: a claim step asks a person for a value and has nothing to poll.
+export const CHECK_STATUSES = ["pending", "running", "needs-variant", "needs-value", "pass", "fail"];
 // What a verdict is, as opposed to what the spec says the check is. Only these
 // survive a re-render; the description is always the spec's current one.
 // `at` is when the verdict last changed — every change stamps it, a reset
 // included, because concurrent writes are merged by it (writeState).
 // `runner` is a run in flight (token, pid, log); `acquire` what a person must run;
-// `evidence` the last browser run's frames, trace and replay (lib/browser.mjs).
-const VERDICT_FIELDS = ["status", "at", "note", "by", "ran", "tree", "runner", "acquire", "evidence"];
+// `evidence` the last browser run's frames, trace and replay (lib/browser.mjs);
+// `ask` a claim's open question, `answer` a person's reply to it, `claims`
+// what a run holds and must release (lib/claims.mjs).
+const VERDICT_FIELDS = ["status", "at", "note", "by", "ran", "tree", "runner", "acquire", "evidence", "ask", "answer", "claims"];
 const ID_PREFIX = { observability: "obs" };
 
 function checkSlug(kind, name) {

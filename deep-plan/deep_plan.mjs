@@ -26,6 +26,7 @@ import { checkEvidence } from "./lib/evidence.mjs";
 import { SURFACE_CSS, SURFACE_JS, surfaceOpen, surfaceClose, fileTreeHtml, diagramCardHtml, diagramsForValidation } from "./lib/surface.mjs";
 import { resolveFiles, resolver } from "./lib/verify.mjs";
 import { runExec, acquireSteps, alive, sleep, tail } from "./lib/runner.mjs";
+import { releaseClaims } from "./lib/claims.mjs";
 import { readEvidence, evidenceSummary, newEvidenceDir, pruneEvidence } from "./lib/browser.mjs";
 import { detect, draftFile } from "./lib/detect.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
@@ -1551,7 +1552,7 @@ const commitLine = c => typeof c === "string"
   ? `- \`${c}\``
   : `- ${c.sha ? "`" + String(c.sha).slice(0, 12) + "` " : ""}${c.subject || c.ref || ""}`;
 
-const CHECK_MARK = { pass: "✅", fail: "❌", pending: "⏳", running: "🔄", "needs-variant": "✋", stale: "⚠️" };
+const CHECK_MARK = { pass: "✅", fail: "❌", pending: "⏳", running: "🔄", "needs-variant": "✋", "needs-value": "✋", stale: "⚠️" };
 // The same verdicts drawn for the pages, which carry no emoji. The terminal
 // keeps CHECK_MARK.
 const glyphSvg = inner => `<svg class="dp-mark" viewBox="0 0 12 12" width="13" height="13" aria-hidden="true">${inner}</svg>`;
@@ -1562,6 +1563,7 @@ const CHECK_GLYPH = {
   pending: glyphSvg(RING("var(--faint)")),
   running: glyphSvg(RING("var(--accent)") + `<path d="M6 1.4a4.6 4.6 0 0 1 0 9.2z" fill="var(--accent)"/>`),
   "needs-variant": glyphSvg(RING("var(--warn)") + `<circle cx="6" cy="6" r="1.8" fill="var(--warn)"/>`),
+  "needs-value": glyphSvg(RING("var(--warn)") + `<circle cx="6" cy="6" r="1.8" fill="var(--warn)"/>`),
   stale: glyphSvg(`<path d="M6 1.2l5 9.3H1z" fill="var(--warn)"/><path d="M6 4.6v2.6M6 8.9v.1" stroke="var(--bg)" stroke-width="1.4" stroke-linecap="round"/>`),
 };
 
@@ -1591,7 +1593,7 @@ function checksRow(inc, slug = "") {
 // and the working page's strip: its status, then its checks and its lookout
 // review as glyphs, then who gave its go.
 const FAM_STATUS = { done: "✓", working: "●", authorized: "▶", pending: "·", blocked: "✗" };
-const FAM_VERDICT = { pass: "✓", fail: "✗", pending: "…", running: "…", "needs-variant": "…" };
+const FAM_VERDICT = { pass: "✓", fail: "✗", pending: "…", running: "…", "needs-variant": "…", "needs-value": "…" };
 function famIncParts(i) {
   return {
     status: FAM_STATUS[i.status] || "·",
@@ -2901,6 +2903,9 @@ function statusRows() {
           // A browser check's frames, step and replay, for the board's
           // thumbnail and the plan page; absent for every other check.
           ...((ev => ev ? { evidence: ev } : {})(evidenceOf(st.slug, v))),
+          // A claim's open question (the Dock's picker) and what a run holds.
+          ...(v.ask && (status === "running" || status === "needs-value") ? { ask: v.ask } : {}),
+          ...(v.claims && v.claims.length ? { held: v.claims.map(c => ({ lock: c.lock || "", name: c.name || "", value: c.value || "", release: c.release || "" })) } : {}),
         };
       }),
     })),
@@ -3052,6 +3057,38 @@ function runsDir(slug) {
 }
 const fileSafe = s => String(s).replace(/[^a-z0-9._-]+/gi, "_");
 const hasBrowserStep = exec => !!(exec && (exec.steps || []).some(s => s.kind === "browser"));
+const hasClaimStep = exec => !!(exec && (exec.steps || []).some(s => s.kind === "claim"));
+const locksDir = () => path.join(PLANS_DIR, "locks");
+
+// The shell a detached claiming run lives under ($1 node, $2 engine, $3-$6
+// slug n id token, the rest the run's own argv). On SIGTERM/INT/HUP it stops
+// the step in flight, gives the run three seconds to release and record its
+// verdict, then stops it and runs `check release` for whatever is left.
+const CLAIM_RUNNER = `n="$1"; e="$2"; s="$3"; i="$4"; c="$5"; t="$6"; shift 6
+"$n" "$e" "$@" & child=$!
+trap 'trap - TERM INT HUP; pkill -TERM -P $child 2>/dev/null; (sleep 3; kill -TERM $child 2>/dev/null) & wait $child 2>/dev/null; "$n" "$e" check release "$s" "$i" "$c" --terminated --token "$t"; exit 143' TERM INT HUP
+wait $child`;
+
+// What a claim step tells the check while it runs: the question it asks a
+// person (for the Dock's picker), the answer if one came in, and what it holds.
+// Every write is the runner's own (token) and stamped, for the merge.
+function claimHooks(slug, n, id, token) {
+  const update = f => {
+    const s2 = readState(slug), c2 = checksOf(findInc(s2, n))[id];
+    if (!c2 || !c2.runner || c2.runner.token !== token) return;
+    f(c2); c2.at = Date.now(); writeState(s2);
+  };
+  return {
+    ask: q => update(c => { if (q) c.ask = q; else delete c.ask; }),
+    answer: () => {
+      const c = checksOf(findInc(readState(slug), n))[id];
+      if (!c || !c.answer) return null;
+      return !c.ask || !c.ask.name || c.answer.name === c.ask.name ? c.answer.value : null;
+    },
+    held: list => update(c => { c.claims = list.map(x => ({ release: x.release, lock: x.lock, name: x.name, value: x.value, env: x.env })); }),
+    released: () => update(c => { delete c.claims; }),
+  };
+}
 // One repl session per check, so its tabs outlive a run (for `open tab`) and
 // a re-run lands in the same tab group rather than a new one each time.
 const replSession = (slug, n, id) => fileSafe(`dp-${slug}-${n}-${id}`).slice(0, 80);
@@ -3076,7 +3113,8 @@ function reapLost(slug) {
       if (v.status !== "running" || !runnerGone(v)) continue;
       const { runner, ...rest } = v;
       inc.checks[id] = { ...rest, status: "fail", at: Date.now(), by: "runner",
-        note: `runner lost: pid ${runner.pid || "?"} exited without a verdict (log: ${runner.log})`,
+        note: `runner lost: pid ${runner.pid || "?"} exited without a verdict (log: ${runner.log})` +
+          (v.claims && v.claims.length ? ` — it holds ${v.claims.map(c => c.lock || c.release || c.name).join(", ")}: deep-plan check release ${slug} ${inc.n} ${id}` : ""),
         ran: { log: runner.log, code: -1 } };
       try { fs.rmSync(pidFile(slug, inc.n, id), { force: true }); } catch { /* gone */ }
       log1(st, `check fail: increment ${inc.n} ${id} — runner lost (pid ${runner.pid || "?"})`);
@@ -3135,9 +3173,31 @@ function checkRun(slug, n, ids, opts) {
     st = readState(slug);
     const cur = checksOf(findInc(st, n))[id];
     const own = opts.token && cur.runner && cur.runner.token === opts.token;
+    // A person's answer to a running claim's question: handed to the run,
+    // which takes it on its next poll. Whichever lands first wins.
+    if (cur.status === "running" && cur.runner && !own && alive(cur.runner.pid) && opts.set) {
+      const [name, value] = Object.entries(opts.set)[0];
+      if (!cur.ask) die(`${id} is running but asks for nothing right now — there is no claim to answer`);
+      if (cur.ask.name && cur.ask.name !== name)
+        die(`${id} is asking for ${cur.ask.name}, not ${name}: --set ${cur.ask.name}=<value>`);
+      const s2 = readState(slug), c2 = checksOf(findInc(s2, n))[id];
+      c2.answer = { name, value, at: Date.now() }; c2.at = Date.now();
+      log1(s2, `check answer: increment ${inc.n} ${id} — ${name}=${value}`);
+      writeState(s2);
+      say(`✋ handed ${name}=${value} to the running ${id} — it takes it on its next poll`);
+      lines.push(`${id} answered`);
+      continue;
+    }
     if (cur.status === "running" && cur.runner && !own && alive(cur.runner.pid)) {
       say(`🔄 ${id} is already running (pid ${cur.runner.pid}) — deep-plan check wait ${slug} ${n} ${id}`);
       lines.push(`${id} already running`);
+      continue;
+    }
+    // A lost run's claims are still out there; a new run would forget them.
+    if (!own && cur.claims && cur.claims.length && cur.status !== "running") {
+      say(`✋ ${id} still holds ${cur.claims.map(c => c.lock || c.release || c.name).join(", ")} from its last run — ` +
+        `give it back first: deep-plan check release ${slug} ${n} ${id}`);
+      lines.push(`${id} holds claims`); failed++;
       continue;
     }
     const drift = recipeDrift(st, cur);
@@ -3146,7 +3206,7 @@ function checkRun(slug, n, ids, opts) {
     // An acquire step is a person's: stop before anything runs, and say what
     // to run and how to resume. Never executed here, not even with a `go`.
     const acquire = acquireSteps(cur.exec);
-    if (acquire.length && opts.from !== "wait") {
+    if (acquire.length && !opts.from) {
       const { runner, ...rest } = cur;
       checksOf(findInc(st, n))[id] = { ...rest, status: "needs-variant", at: Date.now(), by: "runner",
         note: `a person runs: ${acquire.map(s => s.command).join(" && ")}`,
@@ -3170,7 +3230,18 @@ function checkRun(slug, n, ids, opts) {
       const startedAt = Date.now();
       const set = pid => {
         const s2 = readState(slug), c2 = checksOf(findInc(s2, n));
-        const { ran, ...rest } = c2[id];
+        // Once the child exists it may already have written (its evidence
+        // directory, a claim's question): the pid is patched in, stamped, and
+        // nothing of the child's is replaced.
+        if (pid) {
+          const cur2 = c2[id];
+          if (cur2 && cur2.runner && cur2.runner.token === token) {
+            cur2.runner = { ...cur2.runner, pid }; cur2.at = Math.max(Date.now(), (cur2.at || 0) + 1); writeState(s2);
+          }
+          return;
+        }
+        // A new run starts with no question, answer or claim of the last one's.
+        const { ran, ask, answer, claims, ...rest } = c2[id];
         c2[id] = { ...rest, status: "running", at: startedAt, by: "runner",
           note: `running since ${new Date(startedAt).toISOString().slice(11, 19)}Z`,
           runner: { token, pid, log, startedAt, from: opts.from || "" } };
@@ -3179,9 +3250,19 @@ function checkRun(slug, n, ids, opts) {
       };
       set(0);
       const fd = fs.openSync(log, "a");
-      const child = spawn(process.execPath, [path.join(HERE, "deep_plan.mjs"), "check", "run", slug, String(n), id,
-        "--inline", "--log", log, "--token", token, ...(opts.from ? ["--from", opts.from] : [])],
-        { detached: true, stdio: ["ignore", fd, fd], cwd: st.root, env: { ...process.env } });
+      const runArgs = ["check", "run", slug, String(n), id, "--inline", "--log", log, "--token", token,
+        ...(opts.from ? ["--from", opts.from] : []),
+        ...Object.entries(opts.set || {}).flatMap(([k, v]) => ["--set", `${k}=${v}`])];
+      // A run that claims something runs under a shell that traps SIGTERM,
+      // SIGINT and SIGHUP: the step in flight is stopped, the run releases
+      // what it holds as it ends, and `check release` sweeps up after it.
+      // Only a SIGKILL or a crash leaves a claim held.
+      const child = hasClaimStep(cur.exec)
+        ? spawn("sh", ["-c", CLAIM_RUNNER, "dp-runner", process.execPath, path.join(HERE, "deep_plan.mjs"),
+            slug, String(n), id, token, ...runArgs],
+          { detached: true, stdio: ["ignore", fd, fd], cwd: st.root, env: { ...process.env } })
+        : spawn(process.execPath, [path.join(HERE, "deep_plan.mjs"), ...runArgs],
+          { detached: true, stdio: ["ignore", fd, fd], cwd: st.root, env: { ...process.env } });
       child.unref(); fs.closeSync(fd);
       set(child.pid);
       fs.writeFileSync(pidFile(slug, n, id), JSON.stringify({ pid: child.pid, token, log, startedAt }) + "\n");
@@ -3198,7 +3279,7 @@ function checkRun(slug, n, ids, opts) {
     // runner while it goes so the surfaces can follow it live.
     const evidence = hasBrowserStep(cur.exec) ? newEvidenceDir(runsDir(slug), n, id) : "";
     if (!own) {
-      const { ran, ...rest } = cur;
+      const { ran, ask, answer, claims, ...rest } = cur;
       checksOf(findInc(st, n))[id] = { ...rest, status: "running", at: Date.now(), by: "runner",
         note: "running in the foreground", runner: { token, pid: process.pid, log, startedAt: Date.now(), from: opts.from || "",
           ...(evidence ? { evidence } : {}) } };
@@ -3208,12 +3289,18 @@ function checkRun(slug, n, ids, opts) {
       // Stamped: writeState merges concurrent writes by each check's `at`.
       if (c2 && c2.runner && c2.runner.token === token) { c2.runner = { ...c2.runner, evidence }; c2.at = Date.now(); writeState(s2); }
     }
+    // A claiming run outlives a Ctrl-C long enough to release: the signal
+    // reaches the step (same process group), the step dies, and the run's
+    // way out releases. Without a listener node would die first.
+    if (hasClaimStep(cur.exec)) for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) if (!process.listenerCount(sig)) process.on(sig, () => {});
     const tree = treeOf(st.root);
     const exec = cur.synth === "review" ? reviewExec(cur, slug, n) : cur.exec;
     const res = runExec(exec, { root: st.root, from: opts.from || "", log,
       env: { DEEP_PLAN_SLUG: slug, DEEP_PLAN_INCREMENT: String(n), DEEP_PLAN_CHECK: id,
              DEEP_PLAN_ROOT: st.root || "", DEEP_PLAN_START_SHA: findInc(st, n).startSha || "" },
-      browser: { runsDir: runsDir(slug), evidence, session: replSession(slug, n, id) } });
+      browser: { runsDir: runsDir(slug), evidence, session: replSession(slug, n, id) },
+      claim: { preset: opts.set || {}, locksDir: locksDir(), owner: { slug, n: String(n), id },
+        hooks: claimHooks(slug, n, id, token) } });
     if (cur.synth === "review" && res.status === "fail") {
       const code = res.ran && res.ran.code;
       if (code === 3) {
@@ -3239,8 +3326,13 @@ function checkRun(slug, n, ids, opts) {
     }
     // A run's evidence replaces the last one's, and a browser run that left
     // none (it failed before the browser step) clears it.
-    const { runner, ...rest } = now;
+    // `claims` stays: the run's release hook cleared it, unless a release
+    // failed and the claim is still held for `check release`.
+    const { runner, ask, answer, ...rest } = now;
     if (evidence) delete rest.evidence;
+    // A parked claim keeps its question for the Dock's picker; anything else
+    // is over.
+    if (res.status === "needs-value" && ask) rest.ask = ask;
     const ev = evidence ? evidenceSummary(readEvidence(runsDir(slug), evidence)) : null;
     if (evidence) pruneEvidence(runsDir(slug), n, id);
     checksOf(findInc(fresh, n))[id] = { ...rest, status: res.status, at: Date.now(), by: "runner",
@@ -3254,7 +3346,14 @@ function checkRun(slug, n, ids, opts) {
     try { if (own) fs.rmSync(pidFile(slug, n, id), { force: true }); } catch { /* gone */ }
     writeState(fresh); rerenderWorking(slug);
     if (res.status === "pass") say(`✅ ${id} pass — ${res.note} (log: ${log})`);
-    else {
+    else if (res.status === "needs-value") {
+      const q = ask || {};
+      say(`✋ ${id} needs a value — ${q.question || res.note}`);
+      if (q.choices && q.choices.length) say(`   choices: ${q.choices.join(", ")}`);
+      say(`   then: deep-plan check run ${slug} ${n} ${id} --from claim --set ${q.name || "NAME"}=<value>   (or pick it on the Dock)`);
+      lines.push(`${id} needs a value`);
+      continue;
+    } else {
       failed++;
       say(`❌ ${id} fail — ${res.note} (log: ${log})`);
       if (res.ran.tail) say(res.ran.tail.split("\n").map(l => "     " + l).join("\n"));
@@ -3276,6 +3375,38 @@ function checkRun(slug, n, ids, opts) {
 
 // Where each check stands; a running one with its elapsed time, pid and the
 // tail of its log, so "is it stuck?" has an answer without opening anything.
+// Give back what a run claimed and never released: a runner killed with
+// SIGKILL, or one the claim runner's trap stopped (--terminated). Runs each
+// claim's release with the env it claimed under and drops its lock. Refused
+// while the run is alive, unless it is the trap's own call (--terminated).
+function checkRelease(slug, n, id, { terminated = false, token = "", force = false } = {}) {
+  const st = readState(slug) || die("no plan " + slug);
+  const inc = findInc(st, n);
+  const v = checksOf(inc)[id] || die(`increment ${n} has no check "${id}"`);
+  const mine = token && v.runner && v.runner.token === token;
+  if (v.status === "running" && v.runner && alive(v.runner.pid) && !(terminated && mine) && !force)
+    die(`${id} is still running (pid ${v.runner.pid}); it releases its claims when it ends. Stop it first, or --force`);
+  if (terminated && token && v.runner && !mine) return 0;         // a newer run owns the check now
+  const claims = v.claims || [];
+  const log = (v.runner && v.runner.log) || (v.ran && v.ran.log) || path.join(runsDir(slug), `inc${n}-${fileSafe(id)}-release-${Date.now()}.log`);
+  const cwd = path.resolve(st.root || ".", (v.exec && v.exec.cwd) || ".");
+  const { said, failed } = claims.length ? releaseClaims(claims, { cwd, log, locksDir: locksDir(), pid: -1 }) : { said: [], failed: [] };
+  const fresh = readState(slug), c = checksOf(findInc(fresh, n))[id];
+  const { runner, claims: _c, ask, answer, ...rest } = c;
+  if (failed.length) rest.claims = failed;
+  const wasRunning = c.status === "running";
+  checksOf(findInc(fresh, n))[id] = { ...rest, at: Date.now(),
+    ...(wasRunning ? { status: "fail", by: "runner", note: `terminated${said.length ? `; released: ${said.join("; ")}` : ""}`,
+      ran: { log, code: -1, signal: terminated ? "SIGTERM" : "" } } : {}),
+    ...(!wasRunning && said.length ? { note: `${c.note || ""}${c.note ? " — " : ""}released: ${said.join("; ")}` } : {}) };
+  log1(fresh, `check release: increment ${inc.n} ${id}${said.length ? ` — ${said.join("; ")}` : " — nothing held"}`);
+  try { fs.rmSync(pidFile(slug, n, id), { force: true }); } catch { /* gone */ }
+  writeState(fresh); rerenderWorking(slug);
+  say(said.length ? `released for ${id}: ${said.join("; ")}` : `${id} holds nothing to release`);
+  if (failed.length) { say(`   still held (its release failed): ${failed.map(x => x.release).join(", ")} — fix it and run check release again`); return 1; }
+  return 0;
+}
+
 // A check's browser evidence: the running run's (synced from the recorder as
 // it is read, so the Dock's filmstrip fills while it goes) or the last one's.
 function evidenceOf(slug, v, { full = false } = {}) {
@@ -3310,7 +3441,10 @@ function checkStatus(slug, n, ids, json) {
     process.stdout.write(JSON.stringify(all.map(([id, v]) => ({ id, kind: v.kind, status: v.status, note: v.note || "",
       at: v.at || 0, ...(v.runner ? { runner: v.runner } : {}), ...(v.ran ? { ran: v.ran } : {}),
       ...(v.acquire ? { acquire: v.acquire } : {}),
-      ...((ev => ev ? { evidence: ev } : {})(evidenceOf(slug, v))) })), null, 2) + "\n");
+      ...((ev => ev ? { evidence: ev } : {})(evidenceOf(slug, v))),
+      ...(v.ask ? { ask: v.ask } : {}),
+      // What is held, without the env it was claimed under (earlier exports).
+      ...(v.claims ? { claims: v.claims.map(({ env, ...c }) => c) } : {}) })), null, 2) + "\n");
     return;
   }
   say(`${slug} increment ${inc.n}: ${inc.title}`);
@@ -3321,6 +3455,14 @@ function checkStatus(slug, n, ids, json) {
     if (v.status === "running" && v.runner) {
       say(`      ${secs(Date.now() - v.runner.startedAt)} so far · pid ${v.runner.pid || "starting"} · log ${v.runner.log}`);
       try { say(tail(fs.readFileSync(v.runner.log, "utf8"), 5).split("\n").map(l => "      | " + l).join("\n")); } catch { /* not yet */ }
+    }
+    if (v.ask && (v.status === "running" || v.status === "needs-value")) {
+      say(`      asks: ${v.ask.question}${v.ask.choices && v.ask.choices.length ? ` — choices: ${v.ask.choices.join(", ")}` : ""}`);
+      say(`      answer: deep-plan check run ${slug} ${n} ${id} --from claim --set ${v.ask.name || "NAME"}=<value>`);
+    }
+    if (v.claims && v.claims.length) {
+      for (const c of v.claims) say(`      holds: ${[c.name && c.value ? `${c.name}=${c.value}` : "", c.lock ? `lock ${c.lock}` : "", c.release ? `release ${c.release}` : ""].filter(Boolean).join(" · ")}`);
+      if (v.status !== "running") say(`      give it back: deep-plan check release ${slug} ${n} ${id}`);
     }
     if (v.status === "needs-variant" && v.acquire) {
       for (const a of v.acquire) say(`      a person runs: ${a.command}`);
@@ -3676,6 +3818,13 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--out") flags.out = rest[++i];
   else if (rest[i] === "--template") (flags.templates = flags.templates || []).push(rest[++i]);
   else if (rest[i] === "--from") flags.from = rest[++i];
+  else if (rest[i] === "--set") {
+    // NAME=value for a claim that asks; one per run.
+    const m = /^([A-Z_][A-Z0-9_]*)=(.+)$/s.exec(rest[++i] || "");
+    if (!m) die("--set takes NAME=value (NAME an env var name, as the claim's export; the value not empty)");
+    flags.set = { ...(flags.set || {}), [m[1]]: m[2] };
+  }
+  else if (rest[i] === "--terminated") flags.terminated = true;
   else if (rest[i] === "--log") flags.log = rest[++i];
   else if (rest[i] === "--token") flags.token = rest[++i];
   else if (rest[i] === "--timeout") flags.timeout = Number(rest[++i]);
@@ -3759,11 +3908,17 @@ switch (cmd) {
       checkRecord(slug, n, [args[3] || die(use)], sub, args.slice(4).join(" "), flags.force);
     } else if (sub === "reset") { need("check reset <slug> <n> [id]"); checkReset(slug, n, args[3]); }
     else if (sub === "run") {
-      need("check run <slug> <n> [id...] [--from wait] [--inline]");
-      if (flags.from && flags.from !== "wait") die("--from takes one value: wait");
+      need("check run <slug> <n> [id...] [--from wait|claim] [--set NAME=value] [--inline]");
+      if (flags.from && !["wait", "claim"].includes(flags.from)) die("--from takes wait or claim");
+      if (flags.set && args.length !== 4) die("--set answers one check: check run <slug> <n> <id> --from claim --set NAME=value");
       process.exitCode = checkRun(slug, n, args.slice(3),
-        { from: flags.from, inline: flags.inline, log: flags.log, token: flags.token });
+        { from: flags.from || "", inline: flags.inline, log: flags.log, token: flags.token, set: flags.set });
     } else if (sub === "status") { need("check status <slug> <n> [id...] [--json]"); checkStatus(slug, n, args.slice(3), flags.json); }
+    else if (sub === "release") {
+      const use = "check release <slug> <n> <id>";
+      need(use);
+      process.exitCode = checkRelease(slug, n, args[3] || die(use), { terminated: flags.terminated, token: flags.token, force: flags.force });
+    }
     else if (sub === "evidence") {
       const use = "check evidence <slug> <n> <id> [--json]";
       need(use);
@@ -3773,7 +3928,7 @@ switch (cmd) {
       need("check wait <slug> <n> [id...] [--timeout s]");
       process.exitCode = checkWait(slug, n, args.slice(3), flags.timeout > 0 ? flags.timeout : 540);
     }
-    else die('check list|run|status|evidence|wait|pass|fail|reset <slug> <n> [<id>] ["<what you saw>"]');
+    else die('check list|run|status|evidence|release|wait|pass|fail|reset <slug> <n> [<id>] ["<what you saw>"]');
     break;
   }
   case "obs": {

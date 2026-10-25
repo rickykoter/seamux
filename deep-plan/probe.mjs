@@ -1684,7 +1684,7 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     ["an unknown kind", { id: "a", kind: "manual", run: "x" }, /kind must be/],
     ["run and steps both", { id: "a", run: "x", steps: [{ run: "y" }] }, /not both/],
     ["nothing to run", { id: "a" }, /nothing to run/],
-    ["a step with two kinds", { id: "a", tier: "expensive", steps: [{ run: "x", wait: "y" }] }, /needs exactly one of acquire\|wait\|run\|browser \(has wait and run\)/],
+    ["a step with two kinds", { id: "a", tier: "expensive", steps: [{ run: "x", wait: "y" }] }, /needs exactly one of acquire\|claim\|wait\|run\|browser \(has wait and run\)/],
     ["an acquire after a run", { id: "a", tier: "expensive", steps: [{ run: "x" }, { acquire: "y" }, { run: "z" }] }, /acquire after run/],
     ["a browser step that is not last", { id: "a", kind: "browser", steps: [{ browser: "t/a.js" }, { run: "y" }] }, /browser step comes last/],
     ["two browser steps", { id: "a", kind: "browser", steps: [{ browser: "t/a.js" }, { browser: "t/b.js" }] }, /at most one browser step/],
@@ -1694,6 +1694,11 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     ["a browser script that is not .js", { id: "a", kind: "browser", steps: [{ browser: "t/a.py" }] }, /names a \.js script/],
     ["scripts outside the project", { id: "a", kind: "browser", scripts: ["/etc/x"], steps: [{ browser: "t/a.js" }] }, /scripts must be a list of paths inside/],
     ["a brief that is not a string", { id: "a", kind: "browser", brief: 3, steps: [{ browser: "t/a.js" }] }, /brief must be a string/],
+    ["a claim that asks with no export", { id: "a", steps: [{ claim: "x", ask: "Which?" }, { run: "y" }] }, /needs an export to name the answer/],
+    ["claim choices with no ask", { id: "a", steps: [{ claim: "x", choices: "y", export: "V" }, { run: "y" }] }, /choices are what a person picks from/],
+    ["a claim lock with a bad name", { id: "a", steps: [{ claim: "x", lock: "a b" }, { run: "y" }] }, /lock must be a name/],
+    ["a null claim with no ask", { id: "a", steps: [{ claim: null }, { run: "y" }] }, /claim must be a command string/],
+    ["a claim in the cheap tier", { id: "a", tier: "cheap", steps: [{ claim: "x" }, { run: "y" }] }, /must be expensive/],
     ["an export on an acquire step", { id: "a", steps: [{ acquire: "x", export: "V" }, { run: "y" }] }, /cannot export/],
     ["an export that is not an env var name", { id: "a", steps: [{ run: "x", export: "base-url" }] }, /env var name/],
     ["a remote recipe with no run step", { id: "a", steps: [{ wait: "x" }] }, /needs a run or browser step/],
@@ -2216,6 +2221,161 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   ok("with no workspace for the root the run still goes, and its log says where the tabs land",
     r.status === 0 && /no cmux workspace found/.test(fs.readFileSync(bck("flow").ran.log, "utf8")));
   fs.writeFileSync(TARGETS, JSON.stringify(ws0));
+}
+
+// -------------------------------------------------- claim steps: engine-run acquisition
+//
+// A claim polls a command until it prints the resource, may ask a person at
+// the same time (first to land wins), may hold a machine-wide lock, and
+// releases what it took when the run ends: pass, fail or a trapped signal.
+// Only a SIGKILL leaves it held, for `check release`.
+{
+  const CR = path.join(TMP, "claim-root");
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  fs.mkdirSync(path.join(CR, ".seamux"), { recursive: true });
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: CR });
+  const REL = path.join(CR, "released.txt");
+  const recipes = [
+    { id: "poll", kind: "e2e", steps: [
+      { claim: "test -f env.free && cat env.free", export: "QA_ENV", interval: 0.1, timeout: 10,
+        release: `echo released-$QA_ENV >> ${JSON.stringify(REL)}` },
+      { run: "echo deploy-to-$QA_ENV" }] },
+    { id: "askonly", kind: "e2e", steps: [
+      { claim: null, ask: "Which variant?", export: "VARIANT" }, { run: "echo using-$VARIANT" }] },
+    { id: "both", kind: "e2e", steps: [
+      { claim: "test -f never-there && echo x", ask: "Pick a QA env", choices: "printf 'qa-1\\nqa-2\\n'",
+        export: "QA_ENV", interval: 0.2, timeout: 20 },
+      { run: "echo on-$QA_ENV" }] },
+    { id: "lock", kind: "e2e", steps: [{ claim: "true", lock: "port:5432", interval: 0.2, timeout: 10 }, { run: "echo locked-run" }] },
+    { id: "fails", kind: "e2e", steps: [
+      { claim: "echo qa-5", export: "QA_ENV", release: `echo released-$QA_ENV >> ${JSON.stringify(REL)}` }, { run: "exit 4" }] },
+    { id: "badrel", kind: "e2e", steps: [{ claim: "echo qa-4", export: "QA_ENV", lock: "qa-lock-3", release: "exit 9" }, { run: "true" }] },
+    { id: "term", kind: "e2e", steps: [
+      { claim: "echo qa-9", export: "QA_ENV", lock: "qa-lock", release: `echo rel-$QA_ENV >> ${JSON.stringify(REL)}` },
+      { run: "sleep 30" }] },
+    { id: "kill", kind: "e2e", steps: [
+      { claim: "echo qa-7", export: "QA_ENV", lock: "qa-lock-2", release: `echo rel-$QA_ENV >> ${JSON.stringify(REL)}` },
+      { run: "sleep 30" }] },
+  ];
+  fs.writeFileSync(path.join(CR, ".seamux", "verify.json"), JSON.stringify({ recipes }, null, 2));
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "cl-1";
+  s.deliverables[0] = { title: "QA flow", body: "A claim.", files: ["src/a.ts"],
+    checks: recipes.map(r => ({ id: r.id, kind: "e2e", name: r.id, recipe: r.id })) };
+  cli("render", tmpSpec(s), "--root", CR);
+  const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "cl-1.key.json"), "utf8"));
+  cli("grade", "cl-1", ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+  cli("go", "cl-1", "1"); cli("start", "cl-1", "1");
+  const cst = () => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "cl-1.json"), "utf8"));
+  const cck = id => cst().increments[0].checks[id];
+  const pause = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  const until = (cond, ms = 10000) => { const t = Date.now() + ms; while (Date.now() < t) { if (cond()) return true; pause(100); } return cond(); };
+  const LOCKS = path.join(ENV.DEEP_PLAN_PLANS_DIR, "locks");
+
+  ok("render stores a claim step with its ask, lock and release",
+    cck("both").exec.steps[0].kind === "claim" && cck("both").exec.steps[0].ask === "Pick a QA env" &&
+    cck("lock").exec.steps[0].lock === "port:5432" && cck("poll").exec.tier === "expensive" &&
+    cck("askonly").exec.steps[0].command === "");
+
+  let r = cli("check", "run", "cl-1", "1", "poll");
+  ok("a claim runs detached and polls", r.status === 0 && /started detached/.test(r.stdout));
+  pause(400);
+  fs.writeFileSync(path.join(CR, "env.free"), "qa-3\n");
+  cli("check", "wait", "cl-1", "1", "poll", "--timeout", "20");
+  ok("…until its command prints a value, exported to the steps after it",
+    cck("poll").status === "pass" && /deploy-to-qa-3/.test(fs.readFileSync(cck("poll").ran.log, "utf8")));
+  ok("…and its release runs when the run ends, with the claimed value",
+    /released-qa-3/.test(fs.readFileSync(REL, "utf8")) && !cck("poll").claims);
+
+  r = cli("check", "run", "cl-1", "1", "askonly", "--inline");
+  ok("a claim that only asks parks the check at needs-value, keeping its question",
+    r.status === 0 && cck("askonly").status === "needs-value" && cck("askonly").ask.question === "Which variant?" &&
+    /--from claim --set VARIANT=<value>/.test(r.stdout));
+  const srow = JSON.parse(cli("status", "--json").stdout).find(p => p.slug === "cl-1");
+  ok("status --json carries the question for the Dock, and lists the check outstanding",
+    srow.increments[0].checks.find(c => c.id === "askonly").ask.name === "VARIANT" &&
+    srow.checksOutstanding.some(c => c.id === "askonly" && c.status === "needs-value"));
+  ok("done is refused while a check needs a value", /askonly needs-value/.test(cli("done", "cl-1", "1").stderr));
+  r = cli("check", "run", "cl-1", "1", "askonly", "--set", "VARIANT=v2", "--inline");
+  ok("--set answers it and the run goes on with the value",
+    r.status === 0 && cck("askonly").status === "pass" && !cck("askonly").ask &&
+    /using-v2/.test(fs.readFileSync(cck("askonly").ran.log, "utf8")));
+  ok("--set takes NAME=value, the value not empty", cli("check", "run", "cl-1", "1", "askonly", "--set", "nope").status === 1 &&
+    cli("check", "run", "cl-1", "1", "askonly", "--set", "VARIANT=").status === 1);
+
+  r = cli("check", "run", "cl-1", "1", "both");
+  ok("a claim that polls and asks stays running while it asks",
+    until(() => { const c = cck("both"); return c.status === "running" && c.ask && c.ask.choices.join(",") === "qa-1,qa-2"; }));
+  r = cli("check", "run", "cl-1", "1", "both", "--set", "QA_ENV=qa-2");
+  ok("…a person's answer is handed to the running claim", r.status === 0 && /handed QA_ENV=qa-2 to the running both/.test(r.stdout));
+  cli("check", "wait", "cl-1", "1", "both", "--timeout", "20");
+  ok("…and the first to land wins: the run goes on with the person's value",
+    cck("both").status === "pass" && /on-qa-2/.test(fs.readFileSync(cck("both").ran.log, "utf8")));
+  ok("an answer naming the wrong variable is refused while it asks", (() => {
+    cli("check", "run", "cl-1", "1", "both");
+    until(() => cck("both").ask);
+    const x = cli("check", "run", "cl-1", "1", "both", "--set", "OTHER=1");
+    cli("check", "run", "cl-1", "1", "both", "--set", "QA_ENV=qa-1");
+    cli("check", "wait", "cl-1", "1", "both", "--timeout", "20");
+    return x.status === 1 && /asking for QA_ENV, not OTHER/.test(x.stderr) && cck("both").status === "pass";
+  })());
+
+  // Not the probe's own child: one it never waits on would linger as a zombie
+  // that kill(pid, 0) still finds, and the lock would never look free.
+  const holder = { pid: Number(execSync("sh -c 'sleep 2 >/dev/null 2>&1 & echo $!'", { encoding: "utf8" }).trim()) };
+  fs.mkdirSync(LOCKS, { recursive: true });
+  fs.writeFileSync(path.join(LOCKS, "port_5432.lock"), JSON.stringify({ name: "port:5432", pid: holder.pid, slug: "other", n: "1", id: "db" }));
+  r = cli("check", "run", "cl-1", "1", "lock");
+  cli("check", "wait", "cl-1", "1", "lock", "--timeout", "20");
+  const llog = fs.readFileSync(cck("lock").ran.log, "utf8");
+  ok("a lock held by a live process is waited on, naming who holds it",
+    cck("lock").status === "pass" && new RegExp(`waiting on pid ${holder.pid} \\(other 1 db\\)`).test(llog) && /locked-run/.test(llog));
+  ok("…and released when the run ends", !fs.existsSync(path.join(LOCKS, "port_5432.lock")));
+  fs.writeFileSync(path.join(LOCKS, "port_5432.lock"), JSON.stringify({ name: "port:5432", pid: 999999 }));
+  cli("check", "run", "cl-1", "1", "lock");
+  cli("check", "wait", "cl-1", "1", "lock", "--timeout", "20");
+  ok("a lock whose pid is dead is broken at once",
+    cck("lock").status === "pass" && /pid 999999 is gone, breaking it/.test(fs.readFileSync(cck("lock").ran.log, "utf8")));
+
+  cli("check", "run", "cl-1", "1", "fails");
+  cli("check", "wait", "cl-1", "1", "fails", "--timeout", "20");
+  ok("a run that fails still releases its claim", cck("fails").status === "fail" && /released-qa-5/.test(fs.readFileSync(REL, "utf8")));
+
+  cli("check", "run", "cl-1", "1", "badrel");
+  cli("check", "wait", "cl-1", "1", "badrel", "--timeout", "20");
+  ok("a release that fails keeps the claim and its lock, and says so",
+    /release failed, still held/.test(cck("badrel").note) && (cck("badrel").claims || [])[0].release === "exit 9" &&
+    fs.existsSync(path.join(LOCKS, "qa-lock-3.lock")));
+  r = cli("check", "release", "cl-1", "1", "badrel");
+  ok("…and check release tries it again, keeping it while it still fails",
+    r.status === 1 && /still held/.test(r.stdout) && (cck("badrel").claims || []).length === 1);
+  r = cli("check", "status", "cl-1", "1", "badrel", "--json");
+  ok("check status --json lists held claims without the env they were claimed under",
+    JSON.parse(r.stdout)[0].claims[0].release === "exit 9" && !("env" in JSON.parse(r.stdout)[0].claims[0]));
+  cli("check", "run", "cl-1", "1", "term");
+  ok("a claiming run records what it holds", until(() => (cck("term").claims || []).some(c => c.value === "qa-9")));
+  process.kill(cck("term").runner.pid, "SIGTERM");
+  ok("SIGTERM to its runner fails the check as terminated",
+    until(() => cck("term").status === "fail", 15000) && /terminated/.test(cck("term").note));
+  ok("…and releases the claim and its lock",
+    until(() => /rel-qa-9/.test(fs.readFileSync(REL, "utf8"))) && !fs.existsSync(path.join(LOCKS, "qa-lock.lock")) && !cck("term").claims);
+
+  cli("check", "run", "cl-1", "1", "kill");
+  until(() => (cck("kill").claims || []).some(c => c.value === "qa-7"));
+  const kpid = cck("kill").runner.pid;
+  try { process.kill(-kpid, "SIGKILL"); } catch { process.kill(kpid, "SIGKILL"); }
+  until(() => { try { process.kill(kpid, 0); return false; } catch { return true; } });
+  r = cli("check", "status", "cl-1", "1", "kill");
+  ok("a SIGKILL leaves the claim held: the check is lost and names it",
+    cck("kill").status === "fail" && /runner lost/.test(cck("kill").note) && /check release cl-1 1 kill/.test(cck("kill").note) &&
+    /holds: QA_ENV=qa-7 · lock qa-lock-2/.test(r.stdout) && !/rel-qa-7/.test(fs.readFileSync(REL, "utf8")));
+  r = cli("check", "run", "cl-1", "1", "kill");
+  ok("a new run is refused while the last one's claims are held", r.status === 1 && /still holds qa-lock-2 .*check release cl-1 1 kill/.test(r.stdout));
+  r = cli("check", "release", "cl-1", "1", "kill");
+  ok("check release gives it back: the release runs and the dead pid's lock goes",
+    r.status === 0 && /rel-qa-7/.test(fs.readFileSync(REL, "utf8")) && !fs.existsSync(path.join(LOCKS, "qa-lock-2.lock")) &&
+    !cck("kill").claims);
+  ok("…and a check holding nothing says so", /holds nothing to release/.test(cli("check", "release", "cl-1", "1", "kill").stdout));
 }
 
 // -------------------------------------------------- verify init: detector, templates, setup prompt
