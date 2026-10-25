@@ -9,6 +9,8 @@
 //             every `interval` seconds, up to its `timeout`. Reads remote
 //             state; changes nothing.
 //   run       one shell command; non-zero, or past the timeout, is a fail.
+//   browser   a repo script driven through cmux's browser repl (browser.mjs);
+//             last, and judged by its exit code like a run.
 //
 // A step's `export` puts the last line it printed into the environment of
 // every step after it — how a preview URL reaches the e2e run.
@@ -20,6 +22,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { runBrowser } from "./browser.mjs";
 
 export const TAIL_LINES = 20;
 
@@ -72,7 +75,7 @@ export function acquireSteps(exec) {
 // Run `exec` (a check's stored recipe: steps, cwd, timeout) under `root`.
 // Returns { status: pass|fail|needs-variant, note, ran } — what the caller
 // records as the verdict.
-export function runExec(exec, { root, from = "", log = "", env = {} } = {}) {
+export function runExec(exec, { root, from = "", log = "", env = {}, browser = {} } = {}) {
   const started = Date.now();
   const cwd = path.resolve(root, exec.cwd || ".");
   const steps = exec.steps || [];
@@ -106,7 +109,13 @@ export function runExec(exec, { root, from = "", log = "", env = {} } = {}) {
       append(log, s.export ? `[${s.export}=${last.value}]\n` : "");
       continue;
     }
-    const r = sh(cwd, s.command, { timeout: s.timeout || exec.timeout || 900, log, env: vars });
+    const r = s.kind === "browser"
+      ? runBrowser(s, { cwd, env: vars, log, timeout: s.timeout || exec.timeout || 900, browser: { ...browser, root } })
+      : sh(cwd, s.command, { timeout: s.timeout || exec.timeout || 900, log, env: vars });
+    if (s.kind === "browser" && !r.ok)
+      return done("fail", r.timedOut ? `timed out after ${s.timeout || exec.timeout || 900}s in the browser script ${s.command}`
+        : r.failedAt ? `${r.failedAt} (${s.command})` : `exit ${r.code} at step ${k + 1}: browser ${s.command}`,
+      { ...at, code: r.code, timedOut: r.timedOut, tail: r.out });
     if (!r.ok)
       return done("fail", r.timedOut
         ? `timed out after ${s.timeout || exec.timeout || 900}s at step ${k + 1}: ${s.command}`

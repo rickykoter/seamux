@@ -51,8 +51,13 @@ export function checkLinesMd(c) {
     else if (s.kind === "wait")
       lines.push(`wait — polls \`${s.command}\` until it prints a value or exits 0, up to ${s.timeout}s${out}` +
         (s.note ? ` (${s.note})` : ""));
+    else if (s.kind === "browser")
+      lines.push(`browser — drives cmux's browser with \`${s.command}\` (record, step, expect)` + (s.note ? ` (${s.note})` : ""));
     else lines.push(`run — \`${s.command}\`${out}` + (s.note ? ` (${s.note})` : ""));
   }
+  if (c.exec && c.exec.scripts && c.exec.scripts.length)
+    lines.push(`scripts: ${c.exec.scripts.map(f => `\`${f}\``).join(", ")}`);
+  if (c.exec && c.exec.brief) lines.push(`brief: ${c.exec.brief}`);
   if (c.run) lines.push(`run: \`${c.run}\``);
   if (c.query) lines.push(`query: \`${c.query}\``);
   if (c.expect) lines.push(`expect: ${c.expect}`);

@@ -26,6 +26,7 @@ import { checkEvidence } from "./lib/evidence.mjs";
 import { SURFACE_CSS, SURFACE_JS, surfaceOpen, surfaceClose, fileTreeHtml, diagramCardHtml, diagramsForValidation } from "./lib/surface.mjs";
 import { resolveFiles, resolver } from "./lib/verify.mjs";
 import { runExec, acquireSteps, alive, sleep, tail } from "./lib/runner.mjs";
+import { readEvidence, evidenceSummary, newEvidenceDir, pruneEvidence } from "./lib/browser.mjs";
 import { detect, draftFile } from "./lib/detect.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
@@ -520,7 +521,9 @@ function resolvePlanChecks(spec, root) {
   const R = resolver(root);
   const errs = [];
   const bind = (c, r) => ({ ...c, recipe: r.key, hash: r.hash, source: r.source,
-    exec: { tier: r.tier, cwd: path.posix.join(r.project || ".", r.cwd), timeout: r.timeout, steps: r.steps } });
+    exec: { tier: r.tier, cwd: path.posix.join(r.project || ".", r.cwd), timeout: r.timeout, steps: r.steps,
+      ...(r.brief ? { brief: r.brief } : {}),
+      ...(r.scripts && r.scripts.length ? { scripts: r.scripts.map(f => path.posix.join(r.project || ".", r.cwd, f)) } : {}) } });
   const lists = (spec.deliverables || []).map((d, i) => {
     const label = `deliverable ${i + 1} ("${d.title}")`;
     const rows = (d.files || []).map(f => R.file(f)).filter(r => !r.outside);
@@ -2473,7 +2476,7 @@ function repend(inc, ids, why) {
     if (v.retired) continue;
     if (ids ? !ids.includes(id) : (v.status || "pending") === "pending") continue;
     const was = v.status || "pending";
-    const { ran, tree, by, runner, acquire, ...rest } = v;
+    const { ran, tree, by, runner, acquire, evidence, ...rest } = v;
     checks[id] = { ...rest, status: "pending", at: Date.now(),
       note: `was ${was}${v.note ? `: ${v.note}` : ""} (${why})` };
     moved.push(id);
@@ -2895,6 +2898,9 @@ function statusRows() {
           id, kind: v.kind || "", name: v.name || "", status,
           note: status === "lost" ? `runner lost: pid ${v.runner.pid || "?"} exited without a verdict` : v.note || "",
           at: v.at || 0, ...(v.recipe ? { recipe: v.recipe } : {}),
+          // A browser check's frames, step and replay, for the board's
+          // thumbnail and the plan page; absent for every other check.
+          ...((ev => ev ? { evidence: ev } : {})(evidenceOf(st.slug, v))),
         };
       }),
     })),
@@ -2962,6 +2968,10 @@ function checkList(slug, n) {
     say(`\n  ${CHECK_MARK[stale.has(id) ? "stale" : v.status] || "·"} ${id}  [${v.kind}${v.system ? " · " + v.system : ""}] ${s}`);
     say(`    ${v.name}`);
     if (v.recipe) say(`    recipe: ${v.recipe}  (its verdict comes from running it; a hand pass needs --force)`);
+    const browserStep = ((v.exec && v.exec.steps) || []).find(x => x.kind === "browser");
+    if (browserStep) say(`    script: ${browserStep.command}`);
+    if (v.exec && v.exec.scripts && v.exec.scripts.length) say(`    setup:  ${v.exec.scripts.join(", ")}`);
+    if (v.exec && v.exec.brief) say(`    brief:  ${v.exec.brief}`);
     if (v.run) say(`    run:    ${v.run}`);
     if (v.query) say(`    query:  ${v.query}`);
     if (v.expect) say(`    expect: ${v.expect}`);
@@ -3041,6 +3051,10 @@ function runsDir(slug) {
   return d;
 }
 const fileSafe = s => String(s).replace(/[^a-z0-9._-]+/gi, "_");
+const hasBrowserStep = exec => !!(exec && (exec.steps || []).some(s => s.kind === "browser"));
+// One repl session per check, so its tabs outlive a run (for `open tab`) and
+// a re-run lands in the same tab group rather than a new one each time.
+const replSession = (slug, n, id) => fileSafe(`dp-${slug}-${n}-${id}`).slice(0, 80);
 const pidFile = (slug, n, id) => path.join(runsDir(slug), `inc${n}-${fileSafe(id)}.pid`);
 const secs = ms => ms >= 60000 ? `${Math.floor(ms / 60000)}m${Math.round(ms % 60000 / 1000)}s` : `${(ms / 1000).toFixed(1)}s`;
 
@@ -3180,17 +3194,26 @@ function checkRun(slug, n, ids, opts) {
     // In the foreground (or this IS the detached runner): mark it running,
     // run, then record — unless the check was reset or re-run meanwhile, in
     // which case this verdict belongs to an attempt nobody is waiting on.
+    // A browser run leaves its frames in a directory of its own, named on the
+    // runner while it goes so the surfaces can follow it live.
+    const evidence = hasBrowserStep(cur.exec) ? newEvidenceDir(runsDir(slug), n, id) : "";
     if (!own) {
       const { ran, ...rest } = cur;
       checksOf(findInc(st, n))[id] = { ...rest, status: "running", at: Date.now(), by: "runner",
-        note: "running in the foreground", runner: { token, pid: process.pid, log, startedAt: Date.now(), from: opts.from || "" } };
+        note: "running in the foreground", runner: { token, pid: process.pid, log, startedAt: Date.now(), from: opts.from || "",
+          ...(evidence ? { evidence } : {}) } };
       writeState(st);
+    } else if (evidence) {
+      const s2 = readState(slug), c2 = checksOf(findInc(s2, n))[id];
+      // Stamped: writeState merges concurrent writes by each check's `at`.
+      if (c2 && c2.runner && c2.runner.token === token) { c2.runner = { ...c2.runner, evidence }; c2.at = Date.now(); writeState(s2); }
     }
     const tree = treeOf(st.root);
     const exec = cur.synth === "review" ? reviewExec(cur, slug, n) : cur.exec;
     const res = runExec(exec, { root: st.root, from: opts.from || "", log,
       env: { DEEP_PLAN_SLUG: slug, DEEP_PLAN_INCREMENT: String(n), DEEP_PLAN_CHECK: id,
-             DEEP_PLAN_ROOT: st.root || "", DEEP_PLAN_START_SHA: findInc(st, n).startSha || "" } });
+             DEEP_PLAN_ROOT: st.root || "", DEEP_PLAN_START_SHA: findInc(st, n).startSha || "" },
+      browser: { runsDir: runsDir(slug), evidence, session: replSession(slug, n, id) } });
     if (cur.synth === "review" && res.status === "fail") {
       const code = res.ran && res.ran.code;
       if (code === 3) {
@@ -3214,9 +3237,15 @@ function checkRun(slug, n, ids, opts) {
       say(`${id}: finished ${res.status}, but the check changed while it ran — verdict discarded`);
       continue;
     }
+    // A run's evidence replaces the last one's, and a browser run that left
+    // none (it failed before the browser step) clears it.
     const { runner, ...rest } = now;
+    if (evidence) delete rest.evidence;
+    const ev = evidence ? evidenceSummary(readEvidence(runsDir(slug), evidence)) : null;
+    if (evidence) pruneEvidence(runsDir(slug), n, id);
     checksOf(findInc(fresh, n))[id] = { ...rest, status: res.status, at: Date.now(), by: "runner",
-      note: res.note, ran: res.ran, ...(res.status === "pass" && tree ? { tree } : {}) };
+      note: res.note, ran: res.ran, ...(res.status === "pass" && tree ? { tree } : {}),
+      ...(ev ? { evidence: ev } : {}) };
     log1(fresh, `check ${res.status}: increment ${inc.n} ${id} — ${res.note}`);
     // The pidfile goes before the verdict lands: whoever waits on the verdict
     // (check wait, the pane) must never find a finished run's pidfile, and the
@@ -3229,6 +3258,10 @@ function checkRun(slug, n, ids, opts) {
       failed++;
       say(`❌ ${id} fail — ${res.note} (log: ${log})`);
       if (res.ran.tail) say(res.ran.tail.split("\n").map(l => "     " + l).join("\n"));
+      // What the developer wrote for whoever repairs it: the suite it runs
+      // against and how to extend it. The agent reads this before a fix.
+      if (cur.exec && cur.exec.brief) say(`   brief: ${cur.exec.brief}`);
+      if (ev) say(`   evidence: ${path.join(runsDir(slug), ev.dir)} (${ev.frames} frame(s)) — deep-plan check evidence ${slug} ${n} ${id}`);
     }
     lines.push(`${id} ${res.status}`);
   }
@@ -3243,6 +3276,32 @@ function checkRun(slug, n, ids, opts) {
 
 // Where each check stands; a running one with its elapsed time, pid and the
 // tail of its log, so "is it stuck?" has an answer without opening anything.
+// A check's browser evidence: the running run's (synced from the recorder as
+// it is read, so the Dock's filmstrip fills while it goes) or the last one's.
+function evidenceOf(slug, v, { full = false } = {}) {
+  if (!v) return null;
+  const liveRel = v.status === "running" && v.runner && v.runner.evidence;
+  const rel = liveRel || (v.evidence && v.evidence.dir);
+  if (!rel) return null;
+  const ev = readEvidence(path.join(PLANS_DIR, slug + ".runs"), rel, { live: !!liveRel });
+  if (!ev) return null;
+  return full ? { ...ev, root: path.join(PLANS_DIR, slug + ".runs") } : evidenceSummary(ev);
+}
+
+function checkEvidenceCmd(slug, n, id, json) {
+  const st = readState(slug) || die("no plan " + slug);
+  const inc = findInc(st, n);
+  const v = checksOf(inc)[id] || die(`increment ${n} has no check "${id}"`);
+  const ev = evidenceOf(slug, v, { full: true });
+  if (json) { process.stdout.write(JSON.stringify(ev ? { id, status: v.status, ...ev } : { id, status: v.status, frames: 0 }, null, 2) + "\n"); return; }
+  if (!ev) { say(`${id}: no browser evidence yet${v.kind === "browser" ? ` — deep-plan check run ${slug} ${n} ${id}` : ""}`); return; }
+  say(`${id}  ${v.status}${ev.live ? " (live)" : ""} — ${ev.frames} frame(s) in ${path.join(ev.root, ev.dir)}`);
+  for (const s of ev.steps) say(`  ${s.status === "pass" ? "✓" : s.status === "fail" ? "✗" : "●"} ${s.label}  frames ${s.from}–${s.to ?? "…"}`);
+  if (ev.error) say(`  failed in "${ev.label}": ${ev.error.split("\n")[0]}`);
+  if (ev.animation) say(`  replay: ${path.join(ev.root, ev.dir, ev.animation)}`);
+  if (ev.trace) say(`  trace:  ${path.join(ev.root, ev.dir, ev.trace)}`);
+}
+
 function checkStatus(slug, n, ids, json) {
   const st = reapLost(slug);
   const inc = findInc(st, n);
@@ -3250,7 +3309,8 @@ function checkStatus(slug, n, ids, json) {
   if (json) {
     process.stdout.write(JSON.stringify(all.map(([id, v]) => ({ id, kind: v.kind, status: v.status, note: v.note || "",
       at: v.at || 0, ...(v.runner ? { runner: v.runner } : {}), ...(v.ran ? { ran: v.ran } : {}),
-      ...(v.acquire ? { acquire: v.acquire } : {}) })), null, 2) + "\n");
+      ...(v.acquire ? { acquire: v.acquire } : {}),
+      ...((ev => ev ? { evidence: ev } : {})(evidenceOf(slug, v))) })), null, 2) + "\n");
     return;
   }
   say(`${slug} increment ${inc.n}: ${inc.title}`);
@@ -3704,11 +3764,16 @@ switch (cmd) {
       process.exitCode = checkRun(slug, n, args.slice(3),
         { from: flags.from, inline: flags.inline, log: flags.log, token: flags.token });
     } else if (sub === "status") { need("check status <slug> <n> [id...] [--json]"); checkStatus(slug, n, args.slice(3), flags.json); }
+    else if (sub === "evidence") {
+      const use = "check evidence <slug> <n> <id> [--json]";
+      need(use);
+      checkEvidenceCmd(slug, n, args[3] || die(use), flags.json);
+    }
     else if (sub === "wait") {
       need("check wait <slug> <n> [id...] [--timeout s]");
       process.exitCode = checkWait(slug, n, args.slice(3), flags.timeout > 0 ? flags.timeout : 540);
     }
-    else die('check list|run|status|wait|pass|fail|reset <slug> <n> [<id>] ["<what you saw>"]');
+    else die('check list|run|status|evidence|wait|pass|fail|reset <slug> <n> [<id>] ["<what you saw>"]');
     break;
   }
   case "obs": {

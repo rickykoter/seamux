@@ -10,6 +10,7 @@ import { execSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { verdict } from "./lib/evidence.mjs";
 import { resolver, resolveFiles, matchesGlob, recipeHash, load as loadVerify } from "./lib/verify.mjs";
+import { pruneEvidence, readEvidence } from "./lib/browser.mjs";
 import { classifyScript } from "./lib/detect.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -1683,15 +1684,37 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     ["an unknown kind", { id: "a", kind: "manual", run: "x" }, /kind must be/],
     ["run and steps both", { id: "a", run: "x", steps: [{ run: "y" }] }, /not both/],
     ["nothing to run", { id: "a" }, /nothing to run/],
-    ["a step with two kinds", { id: "a", tier: "expensive", steps: [{ run: "x", wait: "y" }] }, /needs exactly one of acquire\|wait\|run \(has wait and run\)/],
-    ["a wait after a run", { id: "a", tier: "expensive", steps: [{ run: "x" }, { wait: "y" }] }, /wait after run/],
+    ["a step with two kinds", { id: "a", tier: "expensive", steps: [{ run: "x", wait: "y" }] }, /needs exactly one of acquire\|wait\|run\|browser \(has wait and run\)/],
+    ["an acquire after a run", { id: "a", tier: "expensive", steps: [{ run: "x" }, { acquire: "y" }, { run: "z" }] }, /acquire after run/],
+    ["a browser step that is not last", { id: "a", kind: "browser", steps: [{ browser: "t/a.js" }, { run: "y" }] }, /browser step comes last/],
+    ["two browser steps", { id: "a", kind: "browser", steps: [{ browser: "t/a.js" }, { browser: "t/b.js" }] }, /at most one browser step/],
+    ["a browser recipe with no browser step", { id: "a", kind: "browser", run: "x" }, /ends with a browser step/],
+    ["a browser step in a test recipe", { id: "a", tier: "expensive", steps: [{ browser: "t/a.js" }] }, /belongs in a recipe of kind browser/],
+    ["a browser script outside the project", { id: "a", kind: "browser", steps: [{ browser: "../x.js" }] }, /names a \.js script by its path inside/],
+    ["a browser script that is not .js", { id: "a", kind: "browser", steps: [{ browser: "t/a.py" }] }, /names a \.js script/],
+    ["scripts outside the project", { id: "a", kind: "browser", scripts: ["/etc/x"], steps: [{ browser: "t/a.js" }] }, /scripts must be a list of paths inside/],
+    ["a brief that is not a string", { id: "a", kind: "browser", brief: 3, steps: [{ browser: "t/a.js" }] }, /brief must be a string/],
     ["an export on an acquire step", { id: "a", steps: [{ acquire: "x", export: "V" }, { run: "y" }] }, /cannot export/],
     ["an export that is not an env var name", { id: "a", steps: [{ run: "x", export: "base-url" }] }, /env var name/],
-    ["a remote recipe with no run step", { id: "a", steps: [{ wait: "x" }] }, /needs a run step/],
+    ["a remote recipe with no run step", { id: "a", steps: [{ wait: "x" }] }, /needs a run or browser step/],
     ["a wait in the cheap tier", { id: "a", tier: "cheap", steps: [{ wait: "x" }, { run: "y" }] }, /must be expensive/],
     ["a cwd outside the project", { id: "a", run: "x", cwd: "../other" }, /cwd must be a path inside/],
     ["a non-positive timeout", { id: "a", run: "x", timeout: 0 }, /timeout must be a positive/],
   ]) ok(`a recipe with ${label} is refused`, re.test(errsOf({ recipes: [recipe] })));
+  {
+    const H = path.join(TMP, "hash-pin");
+    fs.mkdirSync(path.join(H, ".seamux"), { recursive: true });
+    fs.writeFileSync(path.join(H, ".seamux", "verify.json"),
+      JSON.stringify({ recipes: [{ id: "unit", run: "npm test", match: ["src/**"], default: true }] }));
+    ok("a recipe with no brief or scripts keeps the hash it had before they existed (no pass resets)",
+      recipeHash(loadVerify(H).recipes[0], "") === "f30577dbe35b");
+  }
+  ok("a wait after a run is accepted (claim, deploy, watch the job)",
+    errsOf({ recipes: [{ id: "a", tier: "expensive", steps: [{ run: "x" }, { wait: "y" }, { run: "z" }] }] }) === "");
+  ok("a browser recipe with setup steps, a brief and scripts is accepted, and runs detached",
+    errsOf({ recipes: [{ id: "b", kind: "browser", brief: "QA suite", scripts: ["e2e/seed.spec.ts"],
+      steps: [{ run: "npx playwright test e2e/seed.spec.ts", export: "STORAGE_STATE" }, { browser: "e2e/flow.js" }] }] }) === "" &&
+    loadVerify(BAD).recipes[0].tier === "expensive" && loadVerify(BAD).recipes[0].brief === "QA suite");
   ok("two recipes with one id are refused",
     /share the id "a"/.test(errsOf({ recipes: [{ id: "a", run: "x" }, { id: "a", run: "y" }] })));
 
@@ -2061,6 +2084,138 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     cli("close", n);
     fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), { force: true });
   }
+}
+
+// -------------------------------------------------- browser checks: a repo script through cmux's repl
+//
+// A browser recipe's last step names a script; the engine wraps it in the
+// prelude and runs it through `cmux browser repl --eval -` in the plan root's
+// workspace, with the repl's cwd in the check's evidence directory. The
+// verdict is the exit code; the frames, trace and replay are kept, and
+// status --json carries a summary. tools/fake-cmux stands in for cmux.
+{
+  const BR = path.join(TMP, "browser-root");
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  fs.mkdirSync(path.join(BR, ".seamux"), { recursive: true });
+  fs.mkdirSync(path.join(BR, "e2e"), { recursive: true });
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: BR });
+  fs.writeFileSync(path.join(BR, "e2e", "flow.js"),
+    'await step("open the page", async () => { await page.goto(env.BASE_URL); });\n' +
+    'await step("sign in", async () => { await expect(page.getByRole("button")).toBeVisible(); });\n');
+  fs.writeFileSync(path.join(BR, "e2e", "broken.js"),
+    'await step("open the page", async () => {});\nawait step("find the alert", async () => { /* FAKE_FAIL */ });\n');
+  fs.writeFileSync(path.join(BR, "e2e", "slow.js"),
+    '// FAKE_SLEEP_MS=700\nawait step("one", async () => {});\nawait step("two", async () => {});\nawait step("three", async () => {});\n');
+  fs.writeFileSync(path.join(BR, "e2e", "seed.sh"), 'mkdir -p .auth && echo "{\\"cookies\\":[]}" > .auth/user.json && echo .auth/user.json\n');
+  fs.writeFileSync(path.join(BR, ".seamux", "verify.json"), JSON.stringify({ recipes: [
+    { id: "flow", kind: "browser", brief: "the sign-in suite; extend a step per new screen",
+      scripts: ["e2e/seed.sh"], steps: [
+        { run: "echo http://shop.local", export: "BASE_URL" },
+        { run: "sh e2e/seed.sh", export: "STORAGE_STATE" },
+        { browser: "e2e/flow.js" }] },
+    { id: "broken", kind: "browser", steps: [{ browser: "e2e/broken.js" }] },
+    { id: "missing", kind: "browser", steps: [{ browser: "e2e/nope.js" }] },
+    { id: "slow", kind: "browser", steps: [{ browser: "e2e/slow.js" }] },
+  ] }, null, 2));
+  const FAKE = path.join(HERE, "tools", "fake-cmux");
+  const CLOG = path.join(TMP, "fake-cmux.log");
+  const TARGETS = path.join(TMP, "board-targets.json");
+  fs.writeFileSync(TARGETS, JSON.stringify({ "WS-1": { id: "WS-1", ref: "workspace:7", cwd: BR } }));
+  const BENV = { ...ENV, CREW_CMUX: FAKE, FAKE_CMUX_LOG: CLOG, DEEP_PLAN_BOARD_TARGETS: TARGETS };
+  const bcli = (...args) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...args], { encoding: "utf8", env: BENV, cwd: REPO });
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "br-1";
+  s.deliverables[0] = { title: "Sign-in flow", body: "A page.", files: ["src/a.ts"],
+    checks: ["flow", "broken", "missing", "slow"].map(id => ({ id, kind: "browser", name: id, recipe: id })) };
+  bcli("render", tmpSpec(s), "--root", BR);
+  const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "br-1.key.json"), "utf8"));
+  bcli("grade", "br-1", ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+  bcli("go", "br-1", "1"); bcli("start", "br-1", "1");
+  const bst = () => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "br-1.json"), "utf8"));
+  const bck = id => bst().increments[0].checks[id];
+  const runs = path.join(ENV.DEEP_PLAN_PLANS_DIR, "br-1.runs");
+
+  ok("render stores a browser check's steps, brief and setup scripts",
+    bck("flow").kind === "browser" && bck("flow").exec.tier === "expensive" &&
+    bck("flow").exec.steps[2].kind === "browser" && /sign-in suite/.test(bck("flow").exec.brief) &&
+    bck("flow").exec.scripts[0] === "e2e/seed.sh");
+  let r = bcli("check", "list", "br-1", "1");
+  ok("check list shows the script, its setup and the brief",
+    /script: e2e\/flow\.js/.test(r.stdout) && /setup:  e2e\/seed\.sh/.test(r.stdout) && /brief:  the sign-in suite/.test(r.stdout));
+
+  r = bcli("check", "run", "br-1", "1", "flow", "--inline");
+  const flow = bck("flow");
+  ok("a browser check passes on the repl's exit 0", r.status === 0 && flow.status === "pass" && !!flow.tree);
+  const call = fs.readFileSync(CLOG, "utf8").trim().split("\n").map(l => JSON.parse(l)).pop();
+  ok("…run through cmux browser repl in the plan root's workspace, in its own session",
+    call.argv.join(" ").includes("browser repl") && call.argv.includes("--workspace") &&
+    call.argv[call.argv.indexOf("--workspace") + 1] === "WS-1" &&
+    call.argv[call.argv.indexOf("--session") + 1] === "dp-br-1-1-flow" && call.argv.includes("--eval"));
+  ok("…with its cwd in the check's evidence directory under <slug>.runs",
+    call.cwd.startsWith(fs.realpathSync(runs)) || call.cwd.startsWith(runs));
+  ok("…and earlier exports reach the script's env, the seed's storage state copied in",
+    /storage state loaded from .*storage-state\.json/.test(fs.readFileSync(flow.ran.log, "utf8")) &&
+    fs.existsSync(path.join(runs, flow.evidence.dir, "storage-state.json")));
+  ok("the verdict carries the run's evidence: frames, replay and trace",
+    flow.evidence && flow.evidence.frames === 2 && flow.evidence.animation === "run.png" &&
+    flow.evidence.trace === "trace.jsonl" && flow.evidence.result === "pass" &&
+    fs.existsSync(path.join(runs, flow.evidence.dir, "frame-0002.png")));
+  r = bcli("check", "evidence", "br-1", "1", "flow", "--json");
+  const fev = JSON.parse(r.stdout);
+  ok("check evidence --json lists each frame and each step with its frames",
+    fev.framesList.length === 2 && fev.steps.map(x => x.label).join("|") === "open the page|sign in" &&
+    fev.steps.every(x => x.status === "pass"));
+  r = bcli("status", "--json");
+  const row = JSON.parse(r.stdout).find(p => p.slug === "br-1").increments[0].checks.find(c => c.id === "flow");
+  ok("status --json carries the evidence summary, without the frame list",
+    row.evidence && row.evidence.frames === 2 && row.evidence.latest === "frame-0002.png" &&
+    !("framesList" in row.evidence) && row.evidence.steps === 2);
+  ok("…and a check that is not a browser check carries none",
+    !("evidence" in (JSON.parse(r.stdout).find(p => p.slug === "br-1").increments[0].checks.find(c => c.kind === "review") || {})));
+
+  r = bcli("check", "run", "br-1", "1", "broken", "--inline");
+  ok("a script that throws fails the check, naming the step it failed in",
+    r.status === 1 && bck("broken").status === "fail" &&
+    /^step "find the alert": expect\(locator\)\.toBeVisible\(\) failed/.test(bck("broken").note) &&
+    bck("broken").evidence.result === "fail" && bck("broken").evidence.label === "find the alert");
+  r = bcli("check", "run", "br-1", "1", "missing", "--inline");
+  ok("a browser script that does not exist fails without calling cmux",
+    r.status === 1 && /e2e\/nope\.js does not exist/.test(fs.readFileSync(bck("missing").ran.log, "utf8")));
+  r = bcli("check", "run", "br-1", "1", "flow", "--inline");
+  bcli("check", "run", "br-1", "1", "flow", "--inline");
+  bcli("check", "run", "br-1", "1", "flow", "--inline");
+  ok("evidence is kept for the latest three runs of a check",
+    fs.readdirSync(runs).filter(d => /^inc1-flow-\d+$/.test(d)).length === 3);
+
+  r = bcli("check", "run", "br-1", "1", "slow");
+  ok("a browser check runs detached by default", r.status === 0 && /started detached/.test(r.stdout));
+  const until = Date.now() + 8000;
+  let mid = null;
+  while (Date.now() < until) {
+    const ev = JSON.parse(bcli("check", "evidence", "br-1", "1", "slow", "--json").stdout);
+    if (ev.live && ev.frames >= 1) { mid = ev; break; }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+  }
+  ok("…and its evidence fills while it runs (the Dock's filmstrip)", !!mid && mid.live && mid.frames >= 1 && mid.frames < 3);
+  bcli("check", "wait", "br-1", "1", "slow", "--timeout", "20");
+  ok("…landing its verdict with every frame", bck("slow").status === "pass" && bck("slow").evidence.frames === 3);
+
+  {
+    const PR = path.join(TMP, "prune-runs");
+    for (const d of ["inc1-flow-1", "inc1-flow-2", "inc1-flow-3", "inc1-flow-4", "inc1-flow-x-1", "inc1-flow-x-2"])
+      fs.mkdirSync(path.join(PR, d), { recursive: true });
+    pruneEvidence(PR, 1, "flow");
+    ok("pruning one check's evidence never touches a check whose id extends it",
+      fs.readdirSync(PR).sort().join(" ") === "inc1-flow-2 inc1-flow-3 inc1-flow-4 inc1-flow-x-1 inc1-flow-x-2");
+    ok("a run with no pass or fail event is live only when read as the run in flight",
+      readEvidence(PR, "inc1-flow-2").live === false && readEvidence(PR, "inc1-flow-2", { live: true }).live === true);
+  }
+  const ws0 = JSON.parse(fs.readFileSync(TARGETS, "utf8"));
+  fs.writeFileSync(TARGETS, "{}");
+  r = bcli("check", "run", "br-1", "1", "flow", "--inline");
+  ok("with no workspace for the root the run still goes, and its log says where the tabs land",
+    r.status === 0 && /no cmux workspace found/.test(fs.readFileSync(bck("flow").ran.log, "utf8")));
+  fs.writeFileSync(TARGETS, JSON.stringify(ws0));
 }
 
 // -------------------------------------------------- verify init: detector, templates, setup prompt

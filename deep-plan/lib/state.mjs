@@ -143,14 +143,18 @@ export function log1(st, what) {
 // `review` is opt-in: a deliverable that declares one is gated on lookout's
 // verdict (`lookout gate`), which passes when no blocker or major finding is
 // open. deep-plan synthesizes its command; no recipe names it.
-export const CHECK_KINDS = ["test", "e2e", "observability", "manual", "review"];
+// `browser` is a recipe-backed check whose last step drives cmux's browser
+// (lib/browser.mjs); its verdict is the exit code like any recipe's, and its
+// run leaves evidence (frames, trace, replay) the surfaces show.
+export const CHECK_KINDS = ["test", "e2e", "observability", "manual", "review", "browser"];
 export const CHECK_STATUSES = ["pending", "running", "needs-variant", "pass", "fail"];
 // What a verdict is, as opposed to what the spec says the check is. Only these
 // survive a re-render; the description is always the spec's current one.
 // `at` is when the verdict last changed — every change stamps it, a reset
 // included, because concurrent writes are merged by it (writeState).
-// `runner` is a run in flight (token, pid, log); `acquire` what a person must run.
-const VERDICT_FIELDS = ["status", "at", "note", "by", "ran", "tree", "runner", "acquire"];
+// `runner` is a run in flight (token, pid, log); `acquire` what a person must run;
+// `evidence` the last browser run's frames, trace and replay (lib/browser.mjs).
+const VERDICT_FIELDS = ["status", "at", "note", "by", "ran", "tree", "runner", "acquire", "evidence"];
 const ID_PREFIX = { observability: "obs" };
 
 function checkSlug(kind, name) {
@@ -243,7 +247,7 @@ export function reconcileChecks(prev, checks) {
     }
     let verdict = was ? verdictOf(was) : { status: "pending", at: 0, note: "" };
     if (was && was.hash && meta.hash && was.hash !== meta.hash && verdict.status !== "pending") {
-      const { ran, tree, by, runner, acquire, ...rest } = verdict;
+      const { ran, tree, by, runner, acquire, evidence, ...rest } = verdict;
       verdict = { ...rest, status: "pending", at: Date.now(),
         note: `was ${was.status}${was.note ? `: ${was.note}` : ""} (recipe changed since — re-run)` };
     }
