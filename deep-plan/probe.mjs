@@ -2048,7 +2048,7 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   cli("check", "run", "run-1", "1", "exp");
   cli("check", "reset", "run-1", "1", "exp");
   ok("a verdict from a run that was reset meanwhile is discarded",
-    waitFor(() => stOf("run-1").log.some(l => /exp finished pass, but the check was reset/.test(l.what))) &&
+    waitFor(() => stOf("run-1").log.some(l => /exp finished pass, but the check was reset|exp — a runner started after its attempt was reset/.test(l.what))) &&
     ck("run-1", "exp").status === "pending");
 
   // No ids: every recipe-backed check not yet passed against this tree.
@@ -2178,6 +2178,25 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   ok("…and a check that is not a browser check carries none",
     !("evidence" in (JSON.parse(r.stdout).find(p => p.slug === "br-1").increments[0].checks.find(c => c.kind === "review") || {})));
 
+  const work = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "br-1.working.html"), "utf8");
+  ok("the working page marks a browser check's row for the Dock, with its brief",
+    /<li class="dp-check" data-n="1" data-id="flow" data-status="pass" data-browser="1">/.test(work) &&
+    /<span class="dp-brief">brief: the sign-in suite; extend a step per new screen<\/span>/.test(work));
+  ok("…and leaves other checks' rows plain", !/data-id="review-code-review"/.test(work));
+  r = bcli("check", "evidence", "br-1", "1", "flow", "--json");
+  const fj = JSON.parse(r.stdout);
+  ok("check evidence --json carries the run's tab, the brief, and which of its scripts changed in the increment",
+    fj.tab === "TAB-1" && /sign-in suite/.test(fj.brief) && Array.isArray(fj.changed));
+  fs.writeFileSync(path.join(BR, "e2e", "seed.sh"), fs.readFileSync(path.join(BR, "e2e", "seed.sh"), "utf8") + "# edited\n");
+  ok("…an edited setup script or a new script is listed as changed",
+    (c => c.includes("e2e/seed.sh") && c.includes("e2e/flow.js"))(JSON.parse(bcli("check", "evidence", "br-1", "1", "flow", "--json").stdout).changed));
+  r = bcli("check", "tab", "br-1", "1", "flow");
+  const tcall = fs.readFileSync(CLOG, "utf8").trim().split("\n").map(l => JSON.parse(l)).pop();
+  ok("check tab brings the run's own tab forward, in its session and workspace",
+    r.status === 0 && /its tab is in front/.test(r.stdout) && /tabs\.get\("TAB-1"\)/.test(tcall.argv[tcall.argv.length - 1]) &&
+    tcall.argv[tcall.argv.indexOf("--session") + 1] === "dp-br-1-1-flow" && tcall.argv[tcall.argv.indexOf("--workspace") + 1] === "WS-1");
+  ok("check tab on a check with no run says so", bcli("check", "tab", "br-1", "1", "missing").status === 1);
+
   r = bcli("check", "run", "br-1", "1", "broken", "--inline");
   ok("a script that throws fails the check, naming the step it failed in",
     r.status === 1 && bck("broken").status === "fail" &&
@@ -2296,6 +2315,17 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     srow.increments[0].checks.find(c => c.id === "askonly").ask.name === "VARIANT" &&
     srow.checksOutstanding.some(c => c.id === "askonly" && c.status === "needs-value"));
   ok("done is refused while a check needs a value", /askonly needs-value/.test(cli("done", "cl-1", "1").stderr));
+  r = cli("check", "run", "cl-1", "1", "askonly", "--set", "VARIANT=v2", "--detach");
+  ok("--detach runs even a run-to-completion as a detached runner (the Dock's buttons)",
+    r.status === 0 && /started detached/.test(r.stdout));
+  cli("check", "wait", "cl-1", "1", "askonly", "--timeout", "20");
+  ok("…and an answer to a parked claim resumes from it, the value reaching the steps after",
+    cck("askonly").status === "pass" && /using-v2/.test(fs.readFileSync(cck("askonly").ran.log, "utf8")));
+  const cwork = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "cl-1.working.html"), "utf8");
+  ok("the working page marks a claim that asks for the Dock's picker",
+    /<li class="dp-check" data-n="1" data-id="askonly" data-status="pass" data-asks="1">/.test(cwork));
+  cli("check", "reset", "cl-1", "1", "askonly");
+  cli("check", "run", "cl-1", "1", "askonly", "--inline");
   r = cli("check", "run", "cl-1", "1", "askonly", "--set", "VARIANT=v2", "--inline");
   ok("--set answers it and the run goes on with the value",
     r.status === 0 && cck("askonly").status === "pass" && !cck("askonly").ask &&
@@ -3659,7 +3689,10 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   ok("review check: renders with no recipe in the repo, its command synthesized",
     r0.status === 0 && v0 && v0.kind === "review" && v0.synth === "review" && v0.recipe === "lookout:gate" &&
     v0.exec.steps[0].command === "lookout gate --plan rv-1 --inc 1", JSON.stringify(v0));
-  let r = lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
+  let r = lc(LENV, "check", "run", "rv-1", "1", "review-code-review", "--detach");
+  ok("a review check is not the Dock's to run detached: its reviewer is spawned from the session",
+    r.status === 1 && /run it from the session/.test(r.stderr));
+  r = lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
   ok("review check: with no review yet, check run opens it and says to spawn the reviewer",
     r.status === 1 && ck("rv-1", "review-code-review").status === "fail" &&
     fs.existsSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-1-inc1.json")) &&

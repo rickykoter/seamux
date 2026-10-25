@@ -90,11 +90,9 @@ export function syncEvidence(dir) {
   for (const f of files) {
     if (!/^(frame-\d+\.png|trace\.jsonl|run\.png)$/.test(f)) continue;
     const to = path.join(dir, f);
-    // The trace grows while the run goes on; a frame or the replay may have
-    // been copied while still being written, so a size that differs is re-copied.
-    if (f !== "trace.jsonl") {
-      try { if (fs.statSync(to).size === fs.statSync(path.join(rec, f)).size) continue; } catch { /* not copied yet */ }
-    }
+    // A frame or the replay may have been copied while still being written,
+    // and the trace grows while the run goes on: a size that differs is re-copied.
+    try { if (fs.statSync(to).size === fs.statSync(path.join(rec, f)).size) continue; } catch { /* not copied yet */ }
     try { fs.copyFileSync(path.join(rec, f), to); n++; } catch { /* still being written */ }
   }
   return n;
@@ -119,6 +117,7 @@ export function readEvidence(runsDir, rel, { live = false } = {}) {
     }
   }
   const end = events.find(e => e.event === "pass" || e.event === "fail");
+  const start = events.find(e => e.event === "start");
   const open = [...steps].reverse().find(s => s.status === "running");
   return {
     // Live only for the run in flight: a finished run that never reached its
@@ -130,6 +129,7 @@ export function readEvidence(runsDir, rel, { live = false } = {}) {
     steps,
     result: end ? end.event : "",
     error: end && end.event === "fail" ? end.error || "" : "",
+    tab: (end && end.tab) || (start && start.tab) || "",
     animation: names.includes("run.png") ? "run.png" : "",
     trace: names.includes("trace.jsonl") ? "trace.jsonl" : "",
   };
@@ -139,7 +139,7 @@ export function readEvidence(runsDir, rel, { live = false } = {}) {
 // `check evidence --json`.
 export function evidenceSummary(ev) {
   if (!ev) return null;
-  const { framesList, steps, ...rest } = ev;
+  const { framesList, steps, tab, ...rest } = ev;
   return { ...rest, steps: steps.length };
 }
 
@@ -163,6 +163,20 @@ export function pruneEvidence(runsDir, n, id, keep = KEEP_RUNS) {
     try { if (fs.statSync(p).isDirectory()) fs.rmSync(p, { recursive: true, force: true }); } catch { /* gone */ }
   }
   return gone;
+}
+
+// Bring a run's tab to the front of its workspace, in the check's own repl
+// session (whose tabs outlive a run). Returns { ok, out }.
+export function showTab(tab, { session, root } = {}) {
+  const bin = cmuxBin(process.env);
+  if (!bin) return { ok: false, out: "no cmux CLI found" };
+  if (!tab) return { ok: false, out: "the run recorded no tab" };
+  const ws = root ? workspaceFor(root) : "";
+  const r = spawnSync(bin, ["browser", "repl", "--timeout", "20000", ...(session ? ["--session", session] : []),
+    ...(ws ? ["--workspace", ws] : []),
+    `const t = await tabs.get(${JSON.stringify(tab)}); if (!t) throw new Error("the run's tab is gone"); await t.bringToFront(); "shown"`],
+  { encoding: "utf8", timeout: 30000 });
+  return { ok: r.status === 0, out: ((r.stdout || "") + (r.stderr || "")).trim() };
 }
 
 // Run one browser step. Returns the shape runner.mjs's sh() does (ok, code,

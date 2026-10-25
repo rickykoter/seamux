@@ -15,6 +15,12 @@ const argv = process.argv.slice(2);
 if (process.env.FAKE_CMUX_LOG) fs.appendFileSync(process.env.FAKE_CMUX_LOG, JSON.stringify({ argv, cwd: process.cwd() }) + "\n");
 if (argv[0] !== "browser" || argv[1] !== "repl") { console.error("fake-cmux: only `browser repl` is faked"); process.exit(2); }
 
+// `check tab` sends a one-liner naming the tab, not a prelude.
+const inline = argv[argv.length - 1];
+if (!argv.includes("--eval")) {
+  if (/tabs\.get\("TAB-1"\)/.test(inline)) { console.log("shown"); process.exit(0); }
+  console.log("Error: no such tab"); process.exit(1);
+}
 const prog = fs.readFileSync(0, "utf8");
 const envLine = prog.split("\n").find(l => l.includes("const env = Object.freeze("));
 const env = JSON.parse(envLine.trim().replace(/^const env = Object\.freeze\(/, "").replace(/\);$/, ""));
@@ -38,7 +44,7 @@ for (let k = 0; k < labels.length; k++) {
   fs.appendFileSync(path.join(rec, "trace.jsonl"), JSON.stringify({ method: "fake.step", label: labels[k] }) + "\n");
   if (pause) sleep(pause);
   if (fail && k === labels.length - 1) {
-    log({ event: "fail", label: labels[k], error: `expect(locator).toBeVisible() failed after 5000ms: got false`, frame });
+    log({ event: "fail", label: labels[k], error: `expect(locator).toBeVisible() failed after 5000ms: got false`, frame, tab: "TAB-1" });
     fs.writeFileSync(path.join(rec, "run.png"), PNG);
     log({ event: "stop", dir: rec, frames: frame });
     console.log("Error: expect(locator).toBeVisible() failed after 5000ms: got false\n[error | 12ms]");
@@ -47,6 +53,6 @@ for (let k = 0; k < labels.length; k++) {
   log({ event: "done", label: labels[k], frame });
 }
 fs.writeFileSync(path.join(rec, "run.png"), PNG);
-log({ event: "pass", frame });
+log({ event: "pass", frame, tab: "TAB-1" });
 log({ event: "stop", dir: rec, frames: frame });
 console.log(`[ok | ${labels.length * 10}ms]`);

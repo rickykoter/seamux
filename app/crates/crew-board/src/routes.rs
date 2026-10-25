@@ -1,7 +1,7 @@
 //! The intent server's routes (crew-board-intent's do_GET and do_POST).
 //!
 //! Every request first passes the Host check. The routes that act (/do,
-//! /open, /answer, /inc, a review's record and its POST) need the token;
+//! /open, /answer, /inc, /check/*, a review's record and its POST) need the token;
 //! pages this server serves carry it injected, and their data routes answer
 //! without an open CORS header.
 
@@ -135,6 +135,29 @@ pub fn get(req: &mut Request) {
             log(&format!("{} artifacts open {id}: {detail}", if ok { "OK  " } else { "FAIL" }));
             return req.json(if ok { 200 } else { 400 }, &json!({"ok": ok, "detail": detail}));
         }
+        // A browser or claiming check, from the plan page: run it, answer
+        // its claim, bring its tab forward, or read its evidence. Token-checked
+        // like /inc; none of them can pass a check.
+        "/check/run" | "/check/answer" | "/check/tab" | "/check/evidence" => {
+            let verb = path.trim_start_matches("/check/").to_string();
+            if !token_ok(req, &req.one("t")) {
+                log(&format!("DENY bad token on /check/{verb} from 127.0.0.1"));
+                return req.reply(403, br#"{"error":"bad token"}"#);
+            }
+            let (slug, n, id) = (req.one("slug"), req.one("n"), req.one("id"));
+            return match plans::check_action(&verb, &slug, &n, &id, &req.one("name"), &req.one("value")) {
+                Ok(out) if verb == "evidence" => match serde_json::from_str::<Value>(&out) {
+                    Ok(v) => req.reply_json(200, &v),
+                    Err(_) => req.reply_json(500, &json!({"ok": false, "detail": "deep-plan's evidence was not JSON"})),
+                },
+                Ok(out) => {
+                    let detail: String = out.trim().lines().last().unwrap_or("").chars().take(200).collect();
+                    log(&format!("OK   check {verb} {slug} {n} {id}"));
+                    req.reply_json(200, &json!({"ok": true, "detail": detail}))
+                }
+                Err(e) => req.reply_json(400, &json!({"ok": false, "detail": e})),
+            };
+        }
         "/do" => return do_action(req),
         "/board" => return board_page(req),
         "/board/events" => return board_events(req),
@@ -142,6 +165,20 @@ pub fn get(req: &mut Request) {
     }
     if let Some(rest) = path.strip_prefix("/plan/") {
         return plan(req, rest);
+    }
+    // A browser run's frames, replay and trace, for the plan page's filmstrip
+    // and the board's thumbnails. Read-only and confined to the plan's runs
+    // directory, like the plan pages themselves; no token.
+    if let Some(rest) = path.strip_prefix("/plan-evidence/") {
+        let Some((slug, rel)) = rest.split_once('/') else { return req.reply(404, br#"{"error":"no such evidence"}"#) };
+        let Some(file) = plans::evidence_file(slug, rel) else { return req.reply(404, br#"{"error":"no such evidence"}"#) };
+        let ctype = if rel.ends_with(".png") { "image/png" } else { "text/plain; charset=utf-8" };
+        return match std::fs::read(&file) {
+            // Not cached: a frame copied while the recorder was still writing it
+            // is copied again, and the trace grows while a run goes on.
+            Ok(body) => req.send(200, ctype, "no-store", &body),
+            Err(e) => req.reply_json(500, &json!({"error": os_err(&e, &file)})),
+        };
     }
     if let Some(rest) = path.strip_prefix("/review/") {
         return review_get(req, rest);

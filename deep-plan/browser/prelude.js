@@ -89,9 +89,15 @@ await (async () => {
   } catch (e) { __err = e; }
   let __out = null;
   try { if (__rec) __out = await __rec.stop(); } catch { /* a run that crashed its tab may have nothing to stop */ }
+  // The tab's stable id, read once the script has used the page: before its
+  // first use `page.id` is only a placeholder ("lazy:1"). `check tab` brings
+  // this very tab forward.
+  let __tab = "";
+  try { __tab = String(page.id || ""); } catch { /* no tab was opened */ }
+  if (/^lazy:/.test(__tab)) __tab = "";
   __dpLog(__err
-    ? { event: "fail", label: __failedIn || __label, error: String((__err && __err.message) || __err).slice(0, 2000), frame: __frames() }
-    : { event: "pass", frame: __frames() });
+    ? { event: "fail", label: __failedIn || __label, error: String((__err && __err.message) || __err).slice(0, 2000), frame: __frames(), tab: __tab }
+    : { event: "pass", frame: __frames(), tab: __tab });
   __dpLog({ event: "stop", ...(__out || {}) });
   if (__err) {
     // Kept so the Dock's `open tab` can show the page as it failed.
