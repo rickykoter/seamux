@@ -1,0 +1,77 @@
+/* The Dock's New workspace bar and form (newws.ts). */
+/* A thin strip across the top of the Dock column. */
+.dock-new {
+  display: flex; align-items: center; gap: 6px; width: 100%; height: 24px; padding: 0 12px; flex: none;
+  font: inherit; font-size: 11.5px; color: #859289; background: none; cursor: pointer; text-align: left;
+  border: 0; border-bottom: 1px solid #343e44;
+}
+.dock-new span { flex: 1; }
+.dock-new kbd { font: 10.5px ui-monospace, Menlo, monospace; color: #6c7a72; opacity: 0; transition: opacity 0.12s; }
+.dock-new:hover, .dock-new:focus-visible { color: #d3c6aa; background: #2d353b; outline: none; }
+.dock-new:hover kbd, .dock-new:focus-visible kbd { opacity: 1; }
+.dock-new svg { width: 9px; height: 9px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+
+.newws {
+  position: fixed; inset: 0; z-index: 46; display: flex; justify-content: center; align-items: flex-start; padding-top: 12vh;
+  background: color-mix(in srgb, var(--bg) 35%, transparent); backdrop-filter: blur(2px);
+}
+.newws[hidden] { display: none; }
+.newws-card {
+  width: min(560px, calc(100vw - 32px)); max-height: 76vh; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
+  padding: 14px 16px; margin: 0;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 18px 50px var(--shade);
+}
+.newws-head { display: flex; align-items: baseline; gap: 10px; }
+.newws-head b { font-size: 14px; }
+.newws-hint { color: var(--muted); font-size: 12px; }
+.newws-row { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: center; gap: 10px; }
+.newws-row[hidden] { display: none; }
+.newws-row.newws-top { align-items: start; }
+.newws-row.newws-top .newws-label { padding-top: 6px; }
+.newws-label { color: var(--muted); font-size: 12px; }
+.newws select, .newws input[type="text"], .newws textarea {
+  font: inherit; font-size: 13px; color: var(--fg); background: var(--term); border: 1px solid var(--line); border-radius: 7px;
+  padding: 5px 8px; min-width: 0; outline: none;
+}
+.newws textarea { resize: vertical; min-height: 64px; line-height: 1.4; }
+.newws textarea:disabled { opacity: 0.6; }
+.newws select:focus, .newws input:focus, .newws textarea:focus { border-color: var(--accent); }
+.newws-branchbox {
+  display: flex; align-items: center; min-width: 0;
+  background: var(--term); border: 1px solid var(--line); border-radius: 7px;
+}
+.newws-branchbox:focus-within { border-color: var(--accent); }
+.newws-prefix { padding-left: 8px; color: var(--muted); font: 12.5px ui-monospace, Menlo, monospace; }
+.newws-prefix[hidden] { display: none; }
+.newws .newws-branchbox input { flex: 1; border: 0; background: none; padding-left: 1px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
+.newws-more { border-top: 1px solid var(--line); padding-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+.newws-more summary { cursor: pointer; color: var(--muted); font-size: 12px; list-style: none; }
+.newws-more summary::before { content: "▸ "; }
+.newws-more[open] summary::before { content: "▾ "; }
+.newws-more[open] > .newws-row { margin-top: 8px; }
+.newws-check input { justify-self: start; accent-color: var(--accent); }
+.newws .newws-base { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
+
+.newws-steps { list-style: none; margin: 0; padding: 8px 10px; background: var(--term); border-radius: 8px; display: flex; flex-direction: column; gap: 5px; }
+.newws-steps[hidden] { display: none; }
+.newws-step { display: grid; grid-template-columns: 14px auto minmax(0, 1fr); align-items: center; gap: 8px; font-size: 12.5px; }
+.newws-step.wait { color: var(--muted); }
+.newws-step-detail { color: var(--muted); font: 11px ui-monospace, Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.newws-step.failed .newws-step-detail { color: var(--bad); white-space: normal; }
+.newws-step.warn .newws-step-detail { white-space: normal; }
+.newws-mark { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.newws-mark.wait { opacity: 0.35; }
+.newws-mark.start { color: var(--accent); animation: newws-turn 0.9s linear infinite; }
+.newws-mark.done { color: var(--good); }
+.newws-mark.warn { color: var(--accent); }
+.newws-mark.failed { color: var(--bad); }
+@keyframes newws-turn { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .newws-mark.start { animation: none; } }
+
+.newws-say { margin: 0; font-size: 12.5px; color: var(--fg); }
+.newws-say.bad { color: var(--bad); }
+.newws-say[hidden] { display: none; }
+.newws-foot { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.newws-keys { flex: 1; color: var(--muted); font-size: 11.5px; }
+.newws-go { border-color: var(--accent); }
+.newws .sheet-btn:disabled { opacity: 0.55; cursor: default; }

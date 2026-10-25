@@ -20,6 +20,7 @@ pub mod pyjson;
 pub mod typesafe;
 pub mod upgrade;
 pub mod workspaces;
+pub mod worktree;
 
 pub use home::{crew_home, crew_local};
 

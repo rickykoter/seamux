@@ -5,6 +5,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod desk_app;
+mod newws_app;
 mod pty_app;
 mod review_app;
 mod shell;
@@ -203,7 +204,9 @@ fn main() {
             wake_app::wake_file,
             tuck_app::tuck_set,
             tuck_app::tuck_restore,
-            tuck_app::tuck_unmute_all
+            tuck_app::tuck_unmute_all,
+            newws_app::new_ws_options,
+            newws_app::new_ws_create
         ])
         .run(tauri::generate_context!())
         .expect("seamux app failed to start");

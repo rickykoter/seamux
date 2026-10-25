@@ -8,6 +8,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Decision } from "./desk";
+import { NewWorkspace } from "./newws";
 import { Sheet } from "./sheet";
 import { splitter } from "./splitter";
 import { setLevel, type Levels } from "./tuck";
@@ -33,13 +34,38 @@ export class DockView {
   /** Muted and tucked workspaces, for the board's ⋯ menu (its Undo). */
   private levels: Levels = {};
   private empty = document.createElement("p");
+  /** The New workspace form, opened from the bar above the board (or ⌘N). */
+  private newws = new NewWorkspace();
+  /** A workspace just made here, and until when it is kept while cmux's
+   *  frames catch up (it is not in them for a second or two). */
+  private fresh: { ws: string; until: number } | null = null;
 
   constructor(private root: HTMLElement) {
     root.classList.add("dockview");
     this.board.className = "dock-board";
     this.note.className = "note";
     this.note.hidden = true;
-    this.board.append(this.note);
+    // A thin strip across the top of the Dock: the New workspace form.
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "dock-new";
+    add.title = "New worktree and workspace, with Claude running";
+    const plus = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    plus.setAttribute("viewBox", "0 0 10 10");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", "M5 1.5v7M1.5 5h7");
+    plus.append(path);
+    const label = document.createElement("span");
+    label.textContent = "New workspace";
+    const key = document.createElement("kbd");
+    key.textContent = "⌘N";
+    add.append(plus, label, key);
+    add.addEventListener("click", () => void this.newws.open());
+    this.board.append(add, this.note);
+    this.newws.onMade = (ws) => {
+      this.fresh = { ws, until: Date.now() + 20_000 };
+      this.select(ws, true);
+    };
     const grip = document.createElement("div");
     grip.className = "dock-grip";
     this.empty.className = "dock-empty";
@@ -130,6 +156,9 @@ export class DockView {
     // What is shown stays while its workspace lives, picked or not: choosing
     // again on every frame flips between whichever is waiting or working now.
     if (this.ws && this.tiles.some((t) => t.workspace === this.ws)) return;
+    // One just made here stays while the frames catch up to it.
+    if (this.fresh && this.fresh.ws === this.ws && Date.now() < this.fresh.until) return;
+    this.fresh = null;
     this.picked = false;
     const waiting = this.decisions.filter((d) => d.kind === "question" || d.kind === "asked").map((d) => d.ws);
     const agents = this.tiles.filter((t) => t.agent && t.state !== "ended");
