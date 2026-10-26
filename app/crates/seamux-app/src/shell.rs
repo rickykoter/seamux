@@ -8,9 +8,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewWindow};
+use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 /// The chat sheet's keys while the window has focus: ⌘E shows the Wake (or
@@ -27,6 +28,35 @@ fn sheet_keys() -> Vec<(Shortcut, &'static str)> {
 /// shows them: Option-Space, the easy one, and Control-Option-Space for when
 /// another app (a launcher, a chat app) already holds Option-Space.
 pub const HOTKEYS: [(&str, &str); 2] = [("Alt+Space", "⌥Space"), ("Control+Alt+Space", "⌃⌥Space")];
+
+/// The argument the login item starts the app with: it then stays in the
+/// tray until the hotkey, rather than filling the screen at every login.
+const AT_LOGIN: &str = "--at-login";
+
+/// Whether this start is the first from an installed bundle with no login
+/// item choice made yet. A `cargo run` binary is not in a bundle and never
+/// registers itself; the marker keeps a later "off" from being undone.
+fn first_bundled_start(exe: &std::path::Path, marker: &std::path::Path) -> bool {
+    exe.to_string_lossy().contains(".app/Contents/MacOS/") && !marker.exists()
+}
+
+/// Opens at login by default: the hotkeys exist only while the app runs, so
+/// without a login item they stop working after every restart. Once, on the
+/// first bundled start; the tray's "Open at login" turns it off.
+fn default_login_item<R: Runtime>(app: &tauri::App<R>) {
+    let (Ok(exe), Ok(dir)) = (std::env::current_exe(), app.path().app_config_dir()) else { return };
+    let marker = dir.join("login-item-chosen");
+    if !first_bundled_start(&exe, &marker) {
+        return;
+    }
+    match app.autolaunch().enable() {
+        Ok(()) => {
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(&marker, "");
+        }
+        Err(e) => eprintln!("seamux: could not add the login item: {e}"),
+    }
+}
 
 /// Where crew-board-intent writes its port (crew/board/crew-board-intent:60).
 fn port_file() -> Option<PathBuf> {
@@ -389,8 +419,20 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
         join_full_screen_spaces(&w);
         // The window starts hidden (tauri.conf.json) so its first placement
         // already carries the Space flags; macOS reads them only on placement.
-        show(&w);
+        // A login start leaves it hidden; the hotkey places it later.
+        if !std::env::args().any(|a| a == AT_LOGIN) {
+            show(&w);
+        }
     }
+
+    app.handle().plugin(
+        tauri_plugin_autostart::Builder::new()
+            // The LaunchAgent's label and file name (~/Library/LaunchAgents).
+            .app_name(app.config().identifier.clone())
+            .arg(AT_LOGIN)
+            .build(),
+    )?;
+    default_login_item(app);
 
     let shortcuts: Vec<(Shortcut, &str)> =
         HOTKEYS.iter().map(|(k, label)| (k.parse::<Shortcut>().expect("HOTKEYS parse"), *label)).collect();
@@ -428,8 +470,16 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
 
     let show_item = MenuItemBuilder::with_id("show", "Show seamux").build(app)?;
     let key_item = MenuItemBuilder::with_id("hotkey", hotkey_label).enabled(false).build(app)?;
+    let login_on = app.autolaunch().is_enabled().unwrap_or(false);
+    let login_item = CheckMenuItemBuilder::with_id("login", "Open at login").checked(login_on).build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "Quit seamux").build(app)?;
-    let menu = MenuBuilder::new(app).items(&[&show_item, &key_item]).separator().item(&quit_item).build()?;
+    let menu = MenuBuilder::new(app)
+        .items(&[&show_item, &key_item])
+        .separator()
+        .item(&login_item)
+        .separator()
+        .item(&quit_item)
+        .build()?;
     // Closing the window (Cmd+W, or a close from the system) hides it: the
     // app lives in the tray, and the hotkey needs the window to exist.
     if let Some(w) = app.get_webview_window("main") {
@@ -451,8 +501,22 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
             _ => {}
         });
     }
-    let mut tray = TrayIconBuilder::with_id("seamux").tooltip("seamux").menu(&menu).on_menu_event(|app, e| {
+    let mut tray = TrayIconBuilder::with_id("seamux").tooltip("seamux").menu(&menu).on_menu_event(move |app, e| {
         match e.id().as_ref() {
+            "login" => {
+                // The check has already flipped; make the login item match it,
+                // and show what holds if that failed.
+                let al = app.autolaunch();
+                let want = login_item.is_checked().unwrap_or(false);
+                if let Err(e) = if want { al.enable() } else { al.disable() } {
+                    eprintln!("seamux: could not change the login item: {e}");
+                }
+                let _ = login_item.set_checked(al.is_enabled().unwrap_or(false));
+                if let Ok(dir) = app.path().app_config_dir() {
+                    let _ = std::fs::create_dir_all(&dir);
+                    let _ = std::fs::write(dir.join("login-item-chosen"), "");
+                }
+            }
             "show" => {
                 if let Some(w) = app.get_webview_window("main") {
                     show(&w);
@@ -475,6 +539,19 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn login_item_only_from_a_bundle_and_only_once() {
+        let dir = std::env::temp_dir().join(format!("seamux-login-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("login-item-chosen");
+        let bundled = std::path::Path::new("/Users/x/Applications/seamux.app/Contents/MacOS/seamux-app");
+        assert!(first_bundled_start(bundled, &marker));
+        assert!(!first_bundled_start(std::path::Path::new("/repo/app/target/debug/seamux-app"), &marker));
+        std::fs::write(&marker, "").unwrap();
+        assert!(!first_bundled_start(bundled, &marker));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn sheet_keys_all_parse() {

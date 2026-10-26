@@ -36,6 +36,8 @@ serde_json.workspace = true
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2.11", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
+# A login item, so the hotkey works after a restart without opening the app.
+tauri-plugin-autostart = "2"
 
 # The overlay joins other apps' full-screen Spaces (FullScreenAuxiliary),
 # which Tauri's visible-on-all-workspaces does not set. Same versions Tauri
