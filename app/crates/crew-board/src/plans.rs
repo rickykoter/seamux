@@ -229,7 +229,7 @@ pub fn check_record(slug: &str, n: &str, id: &str, verdict: &str, note: &str) ->
 /// What the plan page may ask of a browser or claiming check. Each is one
 /// deep-plan verb; none of them can pass a check (the verdict stays the
 /// run's exit code).
-pub const CHECK_VERBS: [&str; 4] = ["run", "answer", "tab", "evidence"];
+pub const CHECK_VERBS: [&str; 6] = ["run", "answer", "tab", "evidence", "proof", "attach"];
 
 /// A claim's export name, as the engine's --set takes it.
 pub fn env_name_ok(s: &str) -> bool {
@@ -259,6 +259,10 @@ pub fn check_action_args(verb: &str, slug: &str, n: &str, id: &str, name: &str, 
         "run" => a.extend(["run", slug, n, id, "--detach"].map(String::from)),
         "tab" => a.extend(["tab", slug, n, id].map(String::from)),
         "evidence" => a.extend(["evidence", slug, n, id, "--json"].map(String::from)),
+        // PR proof is its own verb, not a `check` one. `attach` uploads to the
+        // PR, so the page asks the person first; their click is the --yes.
+        "proof" => a = [script.as_str(), "proof", slug, n, id, "--json"].map(String::from).to_vec(),
+        "attach" => a = [script.as_str(), "proof", slug, n, id, "--attach", "--yes"].map(String::from).to_vec(),
         _ => {
             if !env_name_ok(name) {
                 return Err("the answer needs the claim's variable name".into());
@@ -285,9 +289,11 @@ pub fn check_action(verb: &str, slug: &str, n: &str, id: &str, name: &str, value
         return Err("node is not on this server's PATH, so deep-plan cannot run".into());
     }
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-    let Some((code, out, err)) = crew_core::py::run("node", &argv, Duration::from_secs(60)) else {
+    // A proof may convert a replay and upload to GitHub; everything else returns at once.
+    let limit = if verb == "proof" || verb == "attach" { 300 } else { 60 };
+    let Some((code, out, err)) = crew_core::py::run("node", &argv, Duration::from_secs(limit)) else {
         log(&format!("FAIL check {verb} {slug} {n} {id}: node did not finish"));
-        return Err("deep-plan did not finish in 60s".into());
+        return Err(format!("deep-plan did not finish in {limit}s"));
     };
     if code != 0 {
         let detail: String = format!("{out}{err}").trim().lines().last().unwrap_or("").chars().take(200).collect();
@@ -332,6 +338,8 @@ mod tests {
         assert_eq!(&a[1..], ["check", "run", "p", "2", "qa", "--detach", "--set", "QA_ENV=qa-2"]);
         assert_eq!(&check_action_args("tab", "p", "2", "qa", "", "").unwrap()[1..], ["check", "tab", "p", "2", "qa"]);
         assert_eq!(&check_action_args("evidence", "p", "2", "qa", "", "").unwrap()[1..], ["check", "evidence", "p", "2", "qa", "--json"]);
+        assert_eq!(&check_action_args("proof", "p", "2", "flow", "", "").unwrap()[1..], ["proof", "p", "2", "flow", "--json"]);
+        assert_eq!(&check_action_args("attach", "p", "2", "flow", "", "").unwrap()[1..], ["proof", "p", "2", "flow", "--attach", "--yes"]);
         assert!(check_action_args("pass", "p", "2", "qa", "", "").is_err(), "nothing here can pass a check");
         assert!(check_action_args("run", "../p", "2", "qa", "", "").is_err());
         assert!(check_action_args("run", "p", "2a", "qa", "", "").is_err());

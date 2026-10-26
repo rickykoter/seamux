@@ -27,6 +27,7 @@ import { SURFACE_CSS, SURFACE_JS, surfaceOpen, surfaceClose, fileTreeHtml, diagr
 import { resolveFiles, resolver } from "./lib/verify.mjs";
 import { runExec, acquireSteps, alive, sleep, tail } from "./lib/runner.mjs";
 import { releaseClaims } from "./lib/claims.mjs";
+import { buildProof, withProof, ghCanAttach, gh } from "./lib/proof.mjs";
 import { readEvidence, evidenceSummary, newEvidenceDir, pruneEvidence, showTab } from "./lib/browser.mjs";
 import { detect, draftFile } from "./lib/detect.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
@@ -3484,6 +3485,62 @@ function checkEvidenceCmd(slug, n, id, json) {
   if (ev.trace) say(`  trace:  ${path.join(ev.root, ev.dir, ev.trace)}`);
 }
 
+// PR proof from passed browser runs (lib/proof.mjs): one check, or every
+// passed browser check in the plan. Built locally; never committed or pushed.
+// --attach puts it in the PR description through gh 2.99+'s --attach, and
+// only with --yes: it sends files off the machine, so a person says ok each
+// time (the Dock's button asks, then passes --yes).
+function proof(slug, n, id, { attach = false, pr = "", yes = false, json = false } = {}) {
+  const st = readState(slug) || die("no plan " + slug);
+  // The proof (its directory and the PR's section) always covers every
+  // passed browser check in the plan: proving one never drops the others'.
+  // A named check must be one of them.
+  if (id) {
+    const v = checksOf(findInc(st, n))[id] || die(`increment ${n} has no check "${id}"`);
+    if (!hasBrowserStep(v.exec)) die(`${id} is not a browser check`);
+    if (v.status !== "pass" || !v.evidence || !v.evidence.dir) die(`${id} has no passed run to prove — deep-plan check run ${slug} ${n} ${id}`);
+  }
+  const runs = [];
+  for (const inc of st.increments || []) {
+    for (const [cid, v] of Object.entries(checksOf(inc))) {
+      if (v.retired || !hasBrowserStep(v.exec) || v.status !== "pass" || !v.evidence || !v.evidence.dir) continue;
+      const ev = readEvidence(runsDir(slug), v.evidence.dir);
+      if (ev) runs.push({ n: inc.n, id: cid, name: v.name || cid, dir: path.join(runsDir(slug), v.evidence.dir), ev });
+    }
+  }
+  if (!runs.length) die(`${slug} has no passed browser check to prove`);
+  const out = path.join(PLANS_DIR, slug + ".proof");
+  const built = buildProof(slug, out, runs, { title: st.title || slug });
+  if (!attach) {
+    if (json) process.stdout.write(JSON.stringify({ ok: true, dir: built.dir, md: path.join(built.dir, "proof.md"), files: built.files }) + "\n");
+    else {
+      say(`proof for ${runs.map(r => `${r.n} ${r.id}`).join(", ")}: ${path.join(built.dir, "proof.md")} (${built.files.length} file(s))`);
+      say(`   put it on the PR (uploads the files; asks first): deep-plan proof ${slug}${n ? ` ${n} ${id}` : ""} --attach [<pr>]`);
+    }
+    return 0;
+  }
+  if (!built.files.length) die(`the proof has no replay or key frames to upload (${built.dir}) — re-run the check so its run records them`);
+  if (!ghCanAttach()) die("this gh cannot upload files to a PR (gh pr edit --attach arrived in 2.99) — upgrade gh, or drag the files into the PR from " + built.dir);
+  const cwd = st.root || process.cwd();
+  const num = pr || gh(["pr", "view", "--json", "number", "-q", ".number"], { cwd }).out;
+  if (!num) die("no PR for this branch — pass one: deep-plan proof " + slug + " --attach <pr>");
+  const body = gh(["pr", "view", num, "--json", "body", "-q", ".body"], { cwd });
+  if (!body.ok) die(`gh could not read PR ${num}: ${body.err.split("\n")[0]}`);
+  if (!yes) {
+    say(`would update PR ${num}'s description with ${built.files.length} file(s) from ${built.dir}: ${built.files.join(", ")}`);
+    say("   it uploads them to GitHub. Once a person has said ok: re-run with --yes");
+    return 2;
+  }
+  const next = path.join(built.dir, "pr-body.md");
+  fs.writeFileSync(next, withProof(body.out, built.md));
+  const r = gh(["pr", "edit", num, "-F", next, ...built.files.flatMap(f => ["--attach", f])], { cwd: built.dir });
+  if (!r.ok) die(`gh pr edit failed: ${(r.err || r.out).split("\n").slice(-1)[0]}`);
+  log1(st, `proof: attached ${built.files.length} file(s) to PR ${num}`);
+  writeState(st);
+  say(`proof is on PR ${num}: ${built.files.length} file(s) uploaded, its proof section ${body.out.includes("<!-- deep-plan proof -->") ? "replaced" : "added"}`);
+  return 0;
+}
+
 // Bring the tab a check's last browser run drove to the front of its
 // workspace (the Dock's `open tab`). The repl session keeps it for 30 idle
 // minutes, and a failed run keeps its tab regardless.
@@ -3890,6 +3947,15 @@ for (let i = 0; i < rest.length; i++) {
   }
   else if (rest[i] === "--terminated") flags.terminated = true;
   else if (rest[i] === "--detach") flags.detach = true;
+  else if (rest[i] === "--yes") flags.yes = true;
+  else if (rest[i] === "--attach") {
+    // An optional PR: a number or a URL. Without one, the branch's own PR.
+    flags.attach = true;
+    // A number only when nothing positional follows it, so `--attach 2 flow`
+    // never reads an increment as the PR.
+    const nx = rest[i + 1] || "", after = rest[i + 2];
+    if (/^https?:\/\/\S+$/.test(nx) || (/^\d+$/.test(nx) && (after === undefined || after.startsWith("--")))) flags.pr = rest[++i];
+  }
   else if (rest[i] === "--log") flags.log = rest[++i];
   else if (rest[i] === "--token") flags.token = rest[++i];
   else if (rest[i] === "--timeout") flags.timeout = Number(rest[++i]);
@@ -3954,6 +4020,11 @@ switch (cmd) {
   case "attach-artifact": attachArtifact(args[0], args[1] || die("attach-artifact <slug> <url>")); break;
   case "grade": await grade(args[0] || die("grade <slug> [q1=a …]"), args.slice(1)); break;
   case "status": status(flags.json); break;
+  case "proof": {
+    const use = "proof <slug> [<n> <id>] [--attach [<pr>]] [--yes]";
+    process.exitCode = proof(args[0] || die(use), args[1], args[2], { attach: flags.attach, pr: flags.pr, yes: flags.yes, json: flags.json });
+    break;
+  }
   case "go": {
     let slug = args[0], n = args[1];
     if (flags.at) { slug = resolveSlugAt(flags.at) || die("no plan tracks " + flags.at); n = args[0] || "next"; }

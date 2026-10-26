@@ -179,6 +179,25 @@
       var tr = el("a", "", "trace"); tr.href = evUrl(ev, ev.trace); tr.target = "_blank";
       row.appendChild(tr);
     }
+    // PR proof from a passed run: built locally first, then, on a person's
+    // ok, uploaded into the PR's description (gh pr edit --attach).
+    if (!running && ev.status === "pass" && ev.frames && li.hasAttribute("data-browser")) {
+      var pf = el("button", "", "proof");
+      pf.title = "build the replay, key frames and proof.md for the PR";
+      pf.addEventListener("click", function(){ act(pf, "/check/proof", li, "", function(){
+        pf.textContent = "proof built";
+        var a = el("a", "", "proof.md"); a.href = "/plan/" + encodeURIComponent(SLUG) + ".proof/proof.md"; a.target = "_blank";
+        pf.after(a);
+      }); });
+      row.appendChild(pf);
+      var up = el("button", "", "attach to PR");
+      up.title = "upload the proof into this branch's PR description";
+      up.addEventListener("click", function(){
+        if (!window.confirm("Upload this check's replay and key frames to the PR's description on GitHub?")) return;
+        act(up, "/check/proof", li, "&attach=1", function(j){ up.textContent = "on the PR"; up.title = j.detail || ""; });
+      });
+      row.appendChild(up);
+    }
     box.appendChild(row);
     if (ev.error) box.appendChild(el("div", "dp-err", ev.error.split("\n")[0]));
     var frames = ev.framesList || [];

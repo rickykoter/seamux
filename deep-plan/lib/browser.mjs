@@ -113,7 +113,12 @@ export function readEvidence(runsDir, rel, { live = false } = {}) {
     if (e.event === "step") steps.push({ label: e.label, from: e.frame, to: null, status: "running" });
     if (e.event === "done" || e.event === "fail") {
       const s = [...steps].reverse().find(x => x.label === e.label && x.to === null);
-      if (s) { s.to = e.frame; s.status = e.event === "done" ? "pass" : "fail"; }
+      if (s) { s.to = e.frame; s.status = e.event === "done" ? "pass" : "fail"; if (e.key) s.key = e.key; }
+    }
+    // The failing step's key frame is logged before its fail event.
+    if (e.event === "key" && e.key) {
+      const s = [...steps].reverse().find(x => x.label === e.label && !x.key);
+      if (s) s.key = e.key;
     }
   }
   const end = events.find(e => e.event === "pass" || e.event === "fail");

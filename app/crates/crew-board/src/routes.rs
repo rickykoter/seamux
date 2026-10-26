@@ -138,15 +138,20 @@ pub fn get(req: &mut Request) {
         // A browser or claiming check, from the plan page: run it, answer
         // its claim, bring its tab forward, or read its evidence. Token-checked
         // like /inc; none of them can pass a check.
-        "/check/run" | "/check/answer" | "/check/tab" | "/check/evidence" => {
-            let verb = path.trim_start_matches("/check/").to_string();
+        "/check/run" | "/check/answer" | "/check/tab" | "/check/evidence" | "/check/proof" => {
+            let mut verb = path.trim_start_matches("/check/").to_string();
+            // Proof is built locally; with attach=1 it goes on the PR (the page
+            // asked the person first).
+            if verb == "proof" && req.one("attach") == "1" {
+                verb = "attach".into();
+            }
             if !token_ok(req, &req.one("t")) {
                 log(&format!("DENY bad token on /check/{verb} from 127.0.0.1"));
                 return req.reply(403, br#"{"error":"bad token"}"#);
             }
             let (slug, n, id) = (req.one("slug"), req.one("n"), req.one("id"));
             return match plans::check_action(&verb, &slug, &n, &id, &req.one("name"), &req.one("value")) {
-                Ok(out) if verb == "evidence" => match serde_json::from_str::<Value>(&out) {
+                Ok(out) if verb == "evidence" || verb == "proof" => match serde_json::from_str::<Value>(&out) {
                     Ok(v) => req.reply_json(200, &v),
                     Err(_) => req.reply_json(500, &json!({"ok": false, "detail": "deep-plan's evidence was not JSON"})),
                 },

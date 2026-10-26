@@ -28,17 +28,29 @@ await (async () => {
     try { return __rec ? fs.readdirSync(__rec.dir).filter(f => /^frame-\d+\.png$/.test(f)).length : 0; }
     catch { return 0; }
   };
-  let __label = "", __failedIn = "";
+  let __label = "", __failedIn = "", __keys = 0;
+  // A key frame for PR proof: the page as the step left it, every control
+  // boxed and labelled (record() frames carry no annotation). Best effort.
+  const __key = async () => {
+    try {
+      // Bounded: a hung page must not hold up the run's verdict.
+      const img = await Promise.race([screenshot({ annotate: true }), sleep(5000).then(() => null)]);
+      if (!img) return "";
+      const name = "key-" + String(++__keys).padStart(2, "0") + ".png";
+      fs.writeFileSync(__dpDir + "/" + name, img.buffer);
+      return name;
+    } catch { return ""; }
+  };
   const step = async (label, fn) => {
     const outer = __label;
     __label = String(label);
     __dpLog({ event: "step", label: __label, frame: __frames() });
     try {
       const v = await fn();
-      __dpLog({ event: "done", label: __label, frame: __frames() });
+      __dpLog({ event: "done", label: __label, frame: __frames(), key: await __key() });
       return v;
     } catch (e) {
-      if (!__failedIn) __failedIn = __label;
+      if (!__failedIn) { __failedIn = __label; __dpLog({ event: "key", label: __label, key: await __key() }); }
       throw e;
     } finally { __label = outer; }
   };

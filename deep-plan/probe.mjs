@@ -2244,6 +2244,68 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     ok("a run with no pass or fail event is live only when read as the run in flight",
       readEvidence(PR, "inc1-flow-2").live === false && readEvidence(PR, "inc1-flow-2", { live: true }).live === true);
   }
+  // PR proof: built locally from the last passed run; --attach goes through gh.
+  {
+    bcli("check", "run", "br-1", "1", "flow", "--inline");
+    const FB = path.join(TMP, "fake-bin");
+    fs.mkdirSync(FB, { recursive: true });
+    const BODY = path.join(TMP, "pr-body.txt"), GLOG = path.join(TMP, "gh.log");
+    fs.writeFileSync(BODY, "What this PR does.\n");
+    fs.writeFileSync(path.join(FB, "gh"), `#!/bin/sh
+echo "$*" >> ${JSON.stringify(GLOG)}
+case "$*" in
+  "pr edit --help") [ -n "$FAKE_GH_ATTACH" ] && echo "  --attach file   Upload a file"; echo "  -F, --body-file"; exit 0;;
+  "pr view --json number -q .number") echo 42; exit 0;;
+  "pr view 42 --json body -q .body") cat ${JSON.stringify(BODY)}; exit 0;;
+  "pr edit 42 -F "*) f="$5"; cp "$f" ${JSON.stringify(BODY)}; exit 0;;
+esac
+exit 1
+`);
+    fs.writeFileSync(path.join(FB, "ffmpeg"), '#!/bin/sh\nfor a; do last="$a"; done\necho fake > "$last"\n');
+    fs.chmodSync(path.join(FB, "gh"), 0o755); fs.chmodSync(path.join(FB, "ffmpeg"), 0o755);
+    const pcli = (extra, ...args) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...args],
+      { encoding: "utf8", env: { ...BENV, ...extra }, cwd: REPO });
+    const PROOF = path.join(ENV.DEEP_PLAN_PLANS_DIR, "br-1.proof");
+    let pr = pcli({}, "proof", "br-1", "1", "flow");
+    const md = fs.readFileSync(path.join(PROOF, "proof.md"), "utf8");
+    ok("proof builds the replay, a key frame per step and proof.md, locally",
+      pr.status === 0 && md.startsWith("<!-- deep-plan proof -->") && md.trim().endsWith("<!-- /deep-plan proof -->") &&
+      /!\[flow: the whole run\]\(\.\/1-flow-replay\.png\)/.test(md) && /1\. \*\*open the page\*\*/.test(md) &&
+      /!\[sign in\]\(\.\/1-flow-02\.png\)/.test(md) && fs.existsSync(path.join(PROOF, "1-flow-01.png")));
+    pr = pcli({ PATH: FB + path.delimiter + process.env.PATH }, "proof", "br-1", "1", "flow");
+    ok("…and a GIF of the replay when ffmpeg is on PATH, which the markdown shows",
+      fs.existsSync(path.join(PROOF, "1-flow.gif")) && /\(\.\/1-flow\.gif\)/.test(fs.readFileSync(path.join(PROOF, "proof.md"), "utf8")));
+    pr = pcli({}, "proof", "br-1", "1", "broken");
+    ok("proof refuses a check with no passed run", pr.status === 1 && /no passed run to prove/.test(pr.stderr));
+    const GH = { PATH: FB + path.delimiter + process.env.PATH, FAKE_GH_ATTACH: "1" };
+    pr = pcli({ PATH: FB + path.delimiter + process.env.PATH }, "proof", "br-1", "1", "flow", "--attach");
+    ok("--attach with a gh that cannot upload says to upgrade", pr.status === 1 && /gh pr edit --attach arrived in 2\.99/.test(pr.stderr));
+    fs.writeFileSync(GLOG, "");
+    pr = pcli(GH, "proof", "br-1", "1", "flow", "--attach");
+    ok("--attach without --yes says what it would send and sends nothing",
+      pr.status === 2 && /would update PR 42/.test(pr.stdout) && !/pr edit 42/.test(fs.readFileSync(GLOG, "utf8")));
+    pr = pcli(GH, "proof", "br-1", "1", "flow", "--attach", "--yes");
+    const sent = fs.readFileSync(GLOG, "utf8").split("\n").find(l => l.startsWith("pr edit 42 -F")) || "";
+    const body1 = fs.readFileSync(BODY, "utf8");
+    ok("--attach --yes edits the PR body through gh, uploading every file the markdown names",
+      pr.status === 0 && /--attach 1-flow\.gif/.test(sent) && /--attach 1-flow-01\.png --attach 1-flow-02\.png/.test(sent) &&
+      body1.startsWith("What this PR does.") && body1.includes("<!-- deep-plan proof -->"));
+    {
+      const dir = path.join(TMP, "md-esc"); fs.mkdirSync(path.join(dir, "ev"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "ev", "key-01.png"), "x");
+      const { buildProof } = await import(path.join(HERE, "lib", "proof.mjs"));
+      const b = buildProof("x", path.join(dir, "out"), [{ n: 1, id: "f", name: "a [link](http://x) *b*", dir: path.join(dir, "ev"),
+        ev: { steps: [{ label: "![img](http://evil) <b>", key: "key-01.png", status: "pass" }] } }]);
+      ok("proof escapes the repo's labels and names in its markdown",
+        !/[^\\]\]\(http:\/\/evil\)/.test(b.md) && /\\!\\\[img\\\]\(http:\/\/evil\) \\<b\\>/.test(b.md) && /a \\\[link\\\]/.test(b.md));
+    }
+    pr = pcli(GH, "proof", "br-1", "1", "flow", "--attach", "42", "--yes");
+    const body2 = fs.readFileSync(BODY, "utf8");
+    ok("…and a second attach replaces its section instead of adding another",
+      pr.status === 0 && /section replaced/.test(pr.stdout) && body2.split("<!-- deep-plan proof -->").length === 2 &&
+      body2.startsWith("What this PR does."));
+  }
+
   const ws0 = JSON.parse(fs.readFileSync(TARGETS, "utf8"));
   fs.writeFileSync(TARGETS, "{}");
   r = bcli("check", "run", "br-1", "1", "flow", "--inline");

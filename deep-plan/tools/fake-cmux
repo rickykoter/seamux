@@ -50,7 +50,9 @@ for (let k = 0; k < labels.length; k++) {
     console.log("Error: expect(locator).toBeVisible() failed after 5000ms: got false\n[error | 12ms]");
     process.exit(1);
   }
-  log({ event: "done", label: labels[k], frame });
+  const key = `key-${String(k + 1).padStart(2, "0")}.png`;
+  fs.writeFileSync(path.join(dir, key), PNG);
+  log({ event: "done", label: labels[k], frame, key });
 }
 fs.writeFileSync(path.join(rec, "run.png"), PNG);
 log({ event: "pass", frame, tab: "TAB-1" });
