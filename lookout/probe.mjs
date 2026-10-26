@@ -544,6 +544,8 @@ const R1 = repo("r1");
   ok("prompt: carries the patch, the plan increment, the rubric, the schema and the ingest command",
      br.includes(S.paths(pid).patch) && br.includes("The increment sets b to 3.") && /security —/.test(br) &&
      br.includes('"failure_scenario"') && br.includes(`lookout findings add ${pid} `));
+  ok("prompt: the reviewer writes its findings outside ~/.claude, where agent writes are refused",
+     br.includes(path.join(os.tmpdir(), "lookout", pid + ".incoming.json")) && !/\.claude\/[^\s]*\.incoming\.json/.test(br));
   ok("prompt: a review opened without --context-file has no context section", !/## The context it was opened with/.test(br));
   // --context-file: text the opener wants beside the plan (a deep-plan family's
   // contracts), taken in at open and printed in the brief.

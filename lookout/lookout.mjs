@@ -350,8 +350,13 @@ function cmdPrompt() {
   const id = reviewArg();
   const r = S.read(id);
   const p = S.paths(id);
+  // The reviewer writes its JSON outside ~/.claude: Claude Code refuses agent
+  // writes there as a sensitive path, so an incoming file beside the store
+  // could never be saved.
+  const inbox = path.join(os.tmpdir(), "lookout");
+  fs.mkdirSync(inbox, { recursive: true });
   process.stdout.write(brief(r, { patchPath: p.patch, plansDir: path.dirname(S.REVIEWS_DIR),
-                                  outPath: path.join(S.REVIEWS_DIR, id + ".incoming.json") }));
+                                  outPath: path.join(inbox, id + ".incoming.json") }));
 }
 
 function cmdFindings() {
