@@ -143,9 +143,10 @@ or ask a person which variant to use.
 - `lock` holds a machine-wide lock while the run goes on, so two checks that
   both need port 5432 take turns.
 - `release` runs when the run ends, pass or fail, and on SIGTERM, SIGINT or
-  SIGHUP. A SIGKILL or a crash leaves the claim held: `check status` names
-  it, a new run is refused, and `deep-plan check release <slug> <n> <id>`
-  gives it back. A release that fails stays held too.
+  SIGHUP sent to a detached run. A SIGKILL, a crash, or a Ctrl-C on a run
+  started by hand with `--inline` leaves the claim held: `check status` and
+  the plan page name it, a new run is refused, and `deep-plan check release
+  <slug> <n> <id>` gives it back. A release that fails stays held too.
 
 ## PR proof
 

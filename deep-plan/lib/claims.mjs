@@ -84,7 +84,9 @@ export function runClaim(s, { cwd, vars, log, preset = {}, hooks = {}, locksDir,
   const until = Date.now() + limit;
   const name = s.export || "";
   append(`\n$ claim ${s.command || "(asks a person)"}${s.ask ? `  — asks: ${s.ask}` : ""}${s.lock ? `  — lock ${s.lock}` : ""}\n`);
-  const claim = { release: s.release || "", lock: s.lock || "", name, value: "", env: { ...vars } };
+  // Registered for release only once something is claimed; until then, a
+  // taken lock is all it holds (and its release is not run).
+  const claim = { release: "", lock: s.lock || "", name, value: "", env: { ...vars } };
   if (s.lock) {
     const l = takeLock(locksDir, s.lock, { owner, until, every, log: append });
     if (!l.ok) return { ok: false, note: `claim gave up waiting on lock ${s.lock}` +
@@ -93,7 +95,7 @@ export function runClaim(s, { cwd, vars, log, preset = {}, hooks = {}, locksDir,
     if (hooks.held) hooks.held(claim);
   }
   const got = value => {
-    claim.value = value; claim.env = { ...vars, ...(name ? { [name]: value } : {}) };
+    claim.value = value; claim.release = s.release || ""; claim.env = { ...vars, ...(name ? { [name]: value } : {}) };
     if (hooks.held) hooks.held(claim);
     // Answered, by the command or a person: the Dock stops offering a picker.
     if (s.ask && hooks.ask) hooks.ask(null);

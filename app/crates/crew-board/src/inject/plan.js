@@ -220,6 +220,14 @@
       ev.changed.forEach(function(f){ var p = el("span", "dp-path", f); p.setAttribute("data-file", f); ch.appendChild(p); });
       box.appendChild(ch);
     }
+    // What a run left held (a SIGKILL, a crash, a failed release): named, with
+    // the command that gives it back. A new run is refused until then.
+    if (!running && ev.claims && ev.claims.length) {
+      var held = el("div", "dp-bc-row dp-err");
+      held.textContent = "holds " + ev.claims.map(function(c){ return c.lock ? "lock " + c.lock : (c.name ? c.name + "=" + c.value : c.release); }).join(", ") +
+        " · give it back: deep-plan check release " + SLUG + " " + li.getAttribute("data-n") + " " + li.getAttribute("data-id");
+      box.appendChild(held);
+    }
     if (ev.ask && (running || ev.status === "needs-value")) {
       var ask = el("div", "dp-bc-row");
       ask.appendChild(el("span", "", ev.ask.question + (ev.ask.name ? " (" + ev.ask.name + ")" : "")));

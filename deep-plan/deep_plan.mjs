@@ -2916,7 +2916,7 @@ function statusRows() {
           ...((ev => ev ? { evidence: ev } : {})(evidenceOf(st.slug, v))),
           // A claim's open question (the Dock's picker) and what a run holds.
           ...(v.ask && (status === "running" || status === "needs-value") ? { ask: v.ask } : {}),
-          ...(v.claims && v.claims.length ? { held: v.claims.map(c => ({ lock: c.lock || "", name: c.name || "", value: c.value || "", release: c.release || "" })) } : {}),
+          ...(v.claims && v.claims.length ? { claims: v.claims.map(({ env, ...c }) => c) } : {}),
         };
       }),
     })),
@@ -3086,7 +3086,9 @@ wait $child`;
 function claimHooks(slug, n, id, token) {
   const update = f => {
     const s2 = readState(slug), c2 = checksOf(findInc(s2, n))[id];
-    if (!c2 || !c2.runner || c2.runner.token !== token) return;
+    // Another run's check is not this run's to write; a check reset under a
+    // run (no runner now) still is, so what it holds and gives back is told.
+    if (!c2 || (c2.runner && c2.runner.token !== token)) return;
     f(c2); c2.at = Date.now(); writeState(s2);
   };
   return {
@@ -3319,10 +3321,12 @@ function checkRun(slug, n, ids, opts) {
       // Stamped: writeState merges concurrent writes by each check's `at`.
       if (c2 && c2.runner && c2.runner.token === token) { c2.runner = { ...c2.runner, evidence }; c2.at = Date.now(); writeState(s2); }
     }
-    // A claiming run outlives a Ctrl-C long enough to release: the signal
-    // reaches the step (same process group), the step dies, and the run's
-    // way out releases. Without a listener node would die first.
-    if (hasClaimStep(cur.exec)) for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) if (!process.listenerCount(sig)) process.on(sig, () => {});
+    // No signal listeners here: node cannot run one while a step or a poll's
+    // sleep holds the thread, so a listener would only swallow the signal. A
+    // detached claiming run lives under CLAIM_RUNNER, whose trap stops the
+    // step (the run then releases on its way out) or, failing that, the run,
+    // and then runs `check release`. A claim left by an --inline run killed
+    // by hand is held, named by check status, and given back by check release.
     const tree = treeOf(st.root);
     const exec = cur.synth === "review" ? reviewExec(cur, slug, n) : cur.exec;
     const res = runExec(exec, { root: st.root, from: opts.from || "", log,
@@ -3471,6 +3475,7 @@ function checkEvidenceCmd(slug, n, id, json) {
   const ev = evidenceOf(slug, v, { full: true });
   if (json) {
     const extra = { id, status: shownStatus(v) || "pending", ...(v.ask ? { ask: v.ask } : {}),
+      ...(v.claims && v.claims.length ? { claims: v.claims.map(({ env, ...c }) => c) } : {}),
       // Not while a run goes on: the page polls every second and the scripts
       // do not change under a run; it reads them once the run is over.
       changed: v.status === "running" ? [] : scriptsChanged(st, inc, v), ...(v.exec && v.exec.brief ? { brief: v.exec.brief } : {}) };
@@ -3495,15 +3500,22 @@ function proof(slug, n, id, { attach = false, pr = "", yes = false, json = false
   // The proof (its directory and the PR's section) always covers every
   // passed browser check in the plan: proving one never drops the others'.
   // A named check must be one of them.
+  // A pass against other content than the tree now proves an older tree.
+  const tree = treeOf(st.root);
+  const stale = new Set();
+  for (const inc of st.increments || [])
+    for (const c of checksBlock(inc, tree)) if (c.status === "stale") stale.add(`${inc.n}/${c.id}`);
   if (id) {
     const v = checksOf(findInc(st, n))[id] || die(`increment ${n} has no check "${id}"`);
     if (!hasBrowserStep(v.exec)) die(`${id} is not a browser check`);
     if (v.status !== "pass" || !v.evidence || !v.evidence.dir) die(`${id} has no passed run to prove — deep-plan check run ${slug} ${n} ${id}`);
+    if (stale.has(`${n}/${id}`)) die(`${id} passed against an older tree — run it again first: deep-plan check run ${slug} ${n} ${id}`);
   }
   const runs = [];
   for (const inc of st.increments || []) {
     for (const [cid, v] of Object.entries(checksOf(inc))) {
       if (v.retired || !hasBrowserStep(v.exec) || v.status !== "pass" || !v.evidence || !v.evidence.dir) continue;
+      if (stale.has(`${inc.n}/${cid}`)) continue;
       const ev = readEvidence(runsDir(slug), v.evidence.dir);
       if (ev) runs.push({ n: inc.n, id: cid, name: v.name || cid, dir: path.join(runsDir(slug), v.evidence.dir), ev });
     }

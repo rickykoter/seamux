@@ -2340,6 +2340,9 @@ exit 1
     { id: "lock", kind: "e2e", steps: [{ claim: "true", lock: "port:5432", interval: 0.2, timeout: 10 }, { run: "echo locked-run" }] },
     { id: "fails", kind: "e2e", steps: [
       { claim: "echo qa-5", export: "QA_ENV", release: `echo released-$QA_ENV >> ${JSON.stringify(REL)}` }, { run: "exit 4" }] },
+    { id: "sleeper", kind: "e2e", steps: [
+      { claim: "test -f never-there && echo x", export: "QA_ENV", lock: "qa-lock-4", interval: 2, timeout: 60,
+        release: `echo rel-sleeper >> ${JSON.stringify(REL)}` }, { run: "true" }] },
     { id: "badrel", kind: "e2e", steps: [{ claim: "echo qa-4", export: "QA_ENV", lock: "qa-lock-3", release: "exit 9" }, { run: "true" }] },
     { id: "term", kind: "e2e", steps: [
       { claim: "echo qa-9", export: "QA_ENV", lock: "qa-lock", release: `echo rel-$QA_ENV >> ${JSON.stringify(REL)}` },
@@ -2443,6 +2446,13 @@ exit 1
   cli("check", "wait", "cl-1", "1", "fails", "--timeout", "20");
   ok("a run that fails still releases its claim", cck("fails").status === "fail" && /released-qa-5/.test(fs.readFileSync(REL, "utf8")));
 
+  cli("check", "run", "cl-1", "1", "sleeper");
+  ok("a claim polling (asleep between polls) holds its lock", until(() => fs.existsSync(path.join(LOCKS, "qa-lock-4.lock")) && cck("sleeper").status === "running"));
+  process.kill(cck("sleeper").runner.pid, "SIGTERM");
+  ok("…and a SIGTERM then still stops the run, as terminated",
+    until(() => cck("sleeper").status === "fail", 15000) && /terminated/.test(cck("sleeper").note));
+  ok("…dropping its lock and not running a release for a claim that never landed",
+    !fs.existsSync(path.join(LOCKS, "qa-lock-4.lock")) && !/rel-sleeper/.test(fs.readFileSync(REL, "utf8")) && !cck("sleeper").claims);
   cli("check", "run", "cl-1", "1", "badrel");
   cli("check", "wait", "cl-1", "1", "badrel", "--timeout", "20");
   ok("a release that fails keeps the claim and its lock, and says so",
