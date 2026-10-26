@@ -34,9 +34,12 @@ These survive a compaction; everything below them is how.
   worktree, after reading the child's verdicts. The child never runs `go`
   itself, and no agent passes `--by human` except on a person's word.
 - **An acquire step is the human's.** Never run one, even with a `go` in hand.
+  A claim step is the engine's: the developer wrote it into the recipe, and
+  `check run` polls, asks, locks and releases it.
 - **Recipe files are the developer's** to review and commit.
 - **Publishing a plan sends it off the machine:** confirm with the human every
-  time, even after an earlier "share".
+  time, even after an earlier "share". So does `deep-plan proof --attach`,
+  which uploads a run's frames to the PR: pass `--yes` only on a person's ok.
 - **Only the human closes lookout findings**, unless the plan set
   `review.agentMayClose`.
 
@@ -144,7 +147,11 @@ These survive a compaction; everything below them is how.
     `deep-plan check pass|fail <slug> <n> <id> "<what you saw>"` records a
     manual or observability check — what you observed, not that you looked.
     Review checks, acquire steps, detached runs and the delivery review:
-    [checks.md](references/checks.md).
+    [checks.md](references/checks.md). A browser check's script and its
+    setup scripts are repo code: when one fails, read the recipe's `brief`
+    (`check list` shows it), then fix the feature or the script, and never
+    weaken an assertion to get a pass. Browser checks, claim steps and PR
+    proof: [checks.md](references/checks.md#browser-checks).
 
 Also read, when they apply: [observability.md](references/observability.md)
 on a project with `.seamux/observability.json`;

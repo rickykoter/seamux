@@ -7,6 +7,9 @@ Read this while deciding how each increment is proven (discipline step 4) and be
 - [Choosing checks](#choosing-checks)
 - [What counts as a deliverable's checks](#what-counts-as-a-deliverables-checks)
 - [Recipe format](#recipe-format)
+- [Browser checks](#browser-checks)
+- [Claim steps](#claim-steps)
+- [PR proof](#pr-proof)
 - [Review checks and the delivery review](#review-checks-and-the-delivery-review)
 - [Proving an increment before done](#proving-an-increment-before-done)
 
@@ -62,9 +65,97 @@ A recipe in `.seamux/verify.json` (in the project directory; `match` and
     { "run": "npx playwright test" } ] } ] }
 ```
 
-Steps go acquire, then wait, then run. A wait polls until it exits 0 (and
-prints a value when it exports one); an export reaches every later step. A
-recipe with acquire or wait steps must be `expensive`.
+Acquire steps come first. Claim, wait and run steps follow in any order (claim
+an environment, deploy it, wait on the deploy job), and a browser step, if
+there is one, comes last. A wait polls until it exits 0 (and prints a value
+when it exports one); an export reaches every later step. A recipe with
+acquire, claim or wait steps must be `expensive`. `check run --from wait` (or
+`--from claim`) resumes after the acquire steps.
+
+## Browser checks
+
+A recipe of kind `browser` ends with a `browser` step naming a script in the
+repo. The engine runs it through `cmux browser repl`, whose API is
+Playwright's, against the cmux workspace the plan root lives in. The exit
+code is the verdict: the script passes by finishing and fails by throwing.
+Browser checks run where cmux runs, so not in CI.
+
+```json
+{ "id": "sign-in", "kind": "browser",
+  "brief": "The shop's sign-in flow on a local dev server. Add a step per new screen.",
+  "scripts": ["e2e/seed-user.spec.ts"],
+  "match": ["web/src/auth/**"], "default": true,
+  "steps": [
+    { "run": "npm run dev:bg && npx wait-on http://localhost:5173" },
+    { "run": "npx playwright test e2e/seed-user.spec.ts && echo .auth/user.json", "export": "STORAGE_STATE" },
+    { "browser": "e2e/sign-in.js" } ] }
+```
+
+- **`brief`** is for the agent: what the check runs against and how to
+  extend or repair its scripts. `check list` shows it, and a failure prints
+  it.
+- **`scripts`** lists the setup files the steps depend on (a repo's existing
+  Playwright or Hurl scripts). Seed state with them rather than driving every
+  step through the page: it is faster and more deterministic. The plan page
+  flags edits to them, and to the browser script, made in the increment.
+- **The script** runs inside a prelude that gives it `env` (earlier exports
+  and `DEEP_PLAN_*`; the repl has no `process.env`), `step(label, fn)` (labels
+  the frames, names the step a failure happened in, and saves an annotated key
+  frame), and a small `expect` for locators and the page (`toBeVisible`,
+  `toBeHidden`, `toHaveText`, `toContainText`, `toHaveCount`, `toHaveValue`,
+  `toHaveURL`, `toHaveTitle`, each with `.not`). When an earlier step exported
+  `STORAGE_STATE`, that session is loaded first. The repl reads files only in
+  the run's own evidence directory, so a script cannot read other repo files.
+
+```js
+await step("open the shop", async () => { await page.goto(env.BASE_URL); });
+await step("sign in", async () => {
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByText("Signed in")).toBeVisible();
+});
+```
+
+Each run keeps its frames, `trace.jsonl` and an animated `run.png` under
+`~/.claude/plans/<slug>.runs/`, for the last three runs of each check.
+`deep-plan check evidence <slug> <n> <id>` lists them, and `check tab` brings
+the run's tab to the front. On the served plan page a browser check gets run
+and open-tab buttons and a filmstrip that fills while the run goes on.
+
+## Claim steps
+
+A claim acquires something the run needs, and the engine runs it because the
+developer wrote it into the recipe. What it does is each repo's own config:
+poll a bot for a free QA environment, wait for another test to free port 5432,
+or ask a person which variant to use.
+
+```json
+{ "claim": "scripts/qa-claim.sh", "export": "QA_ENV",
+  "ask": "Which QA env?", "choices": "scripts/qa-free.sh",
+  "lock": "qa-env", "release": "scripts/qa-release.sh $QA_ENV",
+  "interval": 15, "timeout": 1800 }
+```
+
+- The `claim` command is polled until it exits 0 and prints a value.
+- With `ask`, a person may answer while polling goes on (on the plan page's
+  picker, or `check run <slug> <n> <id> --set QA_ENV=qa-2`); whichever lands
+  first wins. A claim with `"claim": null` and an `ask` has nothing to poll:
+  the check parks at `needs-value` until someone answers.
+- `lock` holds a machine-wide lock while the run goes on, so two checks that
+  both need port 5432 take turns.
+- `release` runs when the run ends, pass or fail, and on SIGTERM, SIGINT or
+  SIGHUP. A SIGKILL or a crash leaves the claim held: `check status` names
+  it, a new run is refused, and `deep-plan check release <slug> <n> <id>`
+  gives it back. A release that fails stays held too.
+
+## PR proof
+
+`deep-plan proof <slug>` builds `~/.claude/plans/<slug>.proof/` from every
+passed browser check in the plan: each run's replay, one captioned key frame
+per step, and `proof.md`. Nothing is committed. `--attach [<pr>]` puts it in
+the PR description through `gh pr edit --attach` (gh 2.99 or newer), which
+uploads the files; running it again replaces its own section. It sends files
+off the machine, so it runs only with `--yes`, which you pass only on a
+person's ok. The plan page's "attach to PR" button asks first.
 
 ## Review checks and the delivery review
 
@@ -95,6 +186,8 @@ check and what it runs.
   command) — follow them with `check status`, block on them with `check
   wait` (exits 2 if still running at its timeout; wait again). The
   verdict is the exit code, and the log is kept.
+- **A check parked on a person** (`needs-value`) blocks `done` like any
+  other: answer it with `--set`, or ask the person to pick on the plan page.
 - **An acquire step is the human's.** A remote check stops at
   `needs-variant` and prints what to run (a push, a channel deploy).
   Never run it yourself, even with a `go` in hand: ask the human to, then
