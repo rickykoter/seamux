@@ -10,6 +10,7 @@ import { execSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { verdict } from "./lib/evidence.mjs";
 import { resolver, resolveFiles, matchesGlob, recipeHash, load as loadVerify } from "./lib/verify.mjs";
+import { pruneEvidence, readEvidence } from "./lib/browser.mjs";
 import { classifyScript } from "./lib/detect.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -1683,15 +1684,42 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     ["an unknown kind", { id: "a", kind: "manual", run: "x" }, /kind must be/],
     ["run and steps both", { id: "a", run: "x", steps: [{ run: "y" }] }, /not both/],
     ["nothing to run", { id: "a" }, /nothing to run/],
-    ["a step with two kinds", { id: "a", tier: "expensive", steps: [{ run: "x", wait: "y" }] }, /needs exactly one of acquire\|wait\|run \(has wait and run\)/],
-    ["a wait after a run", { id: "a", tier: "expensive", steps: [{ run: "x" }, { wait: "y" }] }, /wait after run/],
+    ["a step with two kinds", { id: "a", tier: "expensive", steps: [{ run: "x", wait: "y" }] }, /needs exactly one of acquire\|claim\|wait\|run\|browser \(has wait and run\)/],
+    ["an acquire after a run", { id: "a", tier: "expensive", steps: [{ run: "x" }, { acquire: "y" }, { run: "z" }] }, /acquire after run/],
+    ["a browser step that is not last", { id: "a", kind: "browser", steps: [{ browser: "t/a.js" }, { run: "y" }] }, /browser step comes last/],
+    ["two browser steps", { id: "a", kind: "browser", steps: [{ browser: "t/a.js" }, { browser: "t/b.js" }] }, /at most one browser step/],
+    ["a browser recipe with no browser step", { id: "a", kind: "browser", run: "x" }, /ends with a browser step/],
+    ["a browser step in a test recipe", { id: "a", tier: "expensive", steps: [{ browser: "t/a.js" }] }, /belongs in a recipe of kind browser/],
+    ["a browser script outside the project", { id: "a", kind: "browser", steps: [{ browser: "../x.js" }] }, /names a \.js script by its path inside/],
+    ["a browser script that is not .js", { id: "a", kind: "browser", steps: [{ browser: "t/a.py" }] }, /names a \.js script/],
+    ["scripts outside the project", { id: "a", kind: "browser", scripts: ["/etc/x"], steps: [{ browser: "t/a.js" }] }, /scripts must be a list of paths inside/],
+    ["a brief that is not a string", { id: "a", kind: "browser", brief: 3, steps: [{ browser: "t/a.js" }] }, /brief must be a string/],
+    ["a claim that asks with no export", { id: "a", steps: [{ claim: "x", ask: "Which?" }, { run: "y" }] }, /needs an export to name the answer/],
+    ["claim choices with no ask", { id: "a", steps: [{ claim: "x", choices: "y", export: "V" }, { run: "y" }] }, /choices are what a person picks from/],
+    ["a claim lock with a bad name", { id: "a", steps: [{ claim: "x", lock: "a b" }, { run: "y" }] }, /lock must be a name/],
+    ["a null claim with no ask", { id: "a", steps: [{ claim: null }, { run: "y" }] }, /claim must be a command string/],
+    ["a claim in the cheap tier", { id: "a", tier: "cheap", steps: [{ claim: "x" }, { run: "y" }] }, /must be expensive/],
     ["an export on an acquire step", { id: "a", steps: [{ acquire: "x", export: "V" }, { run: "y" }] }, /cannot export/],
     ["an export that is not an env var name", { id: "a", steps: [{ run: "x", export: "base-url" }] }, /env var name/],
-    ["a remote recipe with no run step", { id: "a", steps: [{ wait: "x" }] }, /needs a run step/],
+    ["a remote recipe with no run step", { id: "a", steps: [{ wait: "x" }] }, /needs a run or browser step/],
     ["a wait in the cheap tier", { id: "a", tier: "cheap", steps: [{ wait: "x" }, { run: "y" }] }, /must be expensive/],
     ["a cwd outside the project", { id: "a", run: "x", cwd: "../other" }, /cwd must be a path inside/],
     ["a non-positive timeout", { id: "a", run: "x", timeout: 0 }, /timeout must be a positive/],
   ]) ok(`a recipe with ${label} is refused`, re.test(errsOf({ recipes: [recipe] })));
+  {
+    const H = path.join(TMP, "hash-pin");
+    fs.mkdirSync(path.join(H, ".seamux"), { recursive: true });
+    fs.writeFileSync(path.join(H, ".seamux", "verify.json"),
+      JSON.stringify({ recipes: [{ id: "unit", run: "npm test", match: ["src/**"], default: true }] }));
+    ok("a recipe with no brief or scripts keeps the hash it had before they existed (no pass resets)",
+      recipeHash(loadVerify(H).recipes[0], "") === "f30577dbe35b");
+  }
+  ok("a wait after a run is accepted (claim, deploy, watch the job)",
+    errsOf({ recipes: [{ id: "a", tier: "expensive", steps: [{ run: "x" }, { wait: "y" }, { run: "z" }] }] }) === "");
+  ok("a browser recipe with setup steps, a brief and scripts is accepted, and runs detached",
+    errsOf({ recipes: [{ id: "b", kind: "browser", brief: "QA suite", scripts: ["e2e/seed.spec.ts"],
+      steps: [{ run: "npx playwright test e2e/seed.spec.ts", export: "STORAGE_STATE" }, { browser: "e2e/flow.js" }] }] }) === "" &&
+    loadVerify(BAD).recipes[0].tier === "expensive" && loadVerify(BAD).recipes[0].brief === "QA suite");
   ok("two recipes with one id are refused",
     /share the id "a"/.test(errsOf({ recipes: [{ id: "a", run: "x" }, { id: "a", run: "y" }] })));
 
@@ -2020,7 +2048,7 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   cli("check", "run", "run-1", "1", "exp");
   cli("check", "reset", "run-1", "1", "exp");
   ok("a verdict from a run that was reset meanwhile is discarded",
-    waitFor(() => stOf("run-1").log.some(l => /exp finished pass, but the check was reset/.test(l.what))) &&
+    waitFor(() => stOf("run-1").log.some(l => /exp finished pass, but the check was reset|exp — a runner started after its attempt was reset/.test(l.what))) &&
     ck("run-1", "exp").status === "pending");
 
   // No ids: every recipe-backed check not yet passed against this tree.
@@ -2061,6 +2089,405 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
     cli("close", n);
     fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), { force: true });
   }
+}
+
+// -------------------------------------------------- browser checks: a repo script through cmux's repl
+//
+// A browser recipe's last step names a script; the engine wraps it in the
+// prelude and runs it through `cmux browser repl --eval -` in the plan root's
+// workspace, with the repl's cwd in the check's evidence directory. The
+// verdict is the exit code; the frames, trace and replay are kept, and
+// status --json carries a summary. tools/fake-cmux stands in for cmux.
+{
+  const BR = path.join(TMP, "browser-root");
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  fs.mkdirSync(path.join(BR, ".seamux"), { recursive: true });
+  fs.mkdirSync(path.join(BR, "e2e"), { recursive: true });
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: BR });
+  fs.writeFileSync(path.join(BR, "e2e", "flow.js"),
+    'await step("open the page", async () => { await page.goto(env.BASE_URL); });\n' +
+    'await step("sign in", async () => { await expect(page.getByRole("button")).toBeVisible(); });\n');
+  fs.writeFileSync(path.join(BR, "e2e", "broken.js"),
+    'await step("open the page", async () => {});\nawait step("find the alert", async () => { /* FAKE_FAIL */ });\n');
+  fs.writeFileSync(path.join(BR, "e2e", "slow.js"),
+    '// FAKE_SLEEP_MS=700\nawait step("one", async () => {});\nawait step("two", async () => {});\nawait step("three", async () => {});\n');
+  fs.writeFileSync(path.join(BR, "e2e", "seed.sh"), 'mkdir -p .auth && echo "{\\"cookies\\":[]}" > .auth/user.json && echo .auth/user.json\n');
+  fs.writeFileSync(path.join(BR, ".seamux", "verify.json"), JSON.stringify({ recipes: [
+    { id: "flow", kind: "browser", brief: "the sign-in suite; extend a step per new screen",
+      scripts: ["e2e/seed.sh"], steps: [
+        { run: "echo http://shop.local", export: "BASE_URL" },
+        { run: "sh e2e/seed.sh", export: "STORAGE_STATE" },
+        { browser: "e2e/flow.js" }] },
+    { id: "broken", kind: "browser", steps: [{ browser: "e2e/broken.js" }] },
+    { id: "missing", kind: "browser", steps: [{ browser: "e2e/nope.js" }] },
+    { id: "slow", kind: "browser", steps: [{ browser: "e2e/slow.js" }] },
+  ] }, null, 2));
+  const FAKE = path.join(HERE, "tools", "fake-cmux");
+  const CLOG = path.join(TMP, "fake-cmux.log");
+  const TARGETS = path.join(TMP, "board-targets.json");
+  fs.writeFileSync(TARGETS, JSON.stringify({ "WS-1": { id: "WS-1", ref: "workspace:7", cwd: BR } }));
+  const BENV = { ...ENV, CREW_CMUX: FAKE, FAKE_CMUX_LOG: CLOG, DEEP_PLAN_BOARD_TARGETS: TARGETS };
+  const bcli = (...args) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...args], { encoding: "utf8", env: BENV, cwd: REPO });
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "br-1";
+  s.deliverables[0] = { title: "Sign-in flow", body: "A page.", files: ["src/a.ts"],
+    checks: ["flow", "broken", "missing", "slow"].map(id => ({ id, kind: "browser", name: id, recipe: id })) };
+  bcli("render", tmpSpec(s), "--root", BR);
+  const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "br-1.key.json"), "utf8"));
+  bcli("grade", "br-1", ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+  bcli("go", "br-1", "1"); bcli("start", "br-1", "1");
+  const bst = () => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "br-1.json"), "utf8"));
+  const bck = id => bst().increments[0].checks[id];
+  const runs = path.join(ENV.DEEP_PLAN_PLANS_DIR, "br-1.runs");
+
+  ok("render stores a browser check's steps, brief and setup scripts",
+    bck("flow").kind === "browser" && bck("flow").exec.tier === "expensive" &&
+    bck("flow").exec.steps[2].kind === "browser" && /sign-in suite/.test(bck("flow").exec.brief) &&
+    bck("flow").exec.scripts[0] === "e2e/seed.sh");
+  let r = bcli("check", "list", "br-1", "1");
+  ok("check list shows the script, its setup and the brief",
+    /script: e2e\/flow\.js/.test(r.stdout) && /setup:  e2e\/seed\.sh/.test(r.stdout) && /brief:  the sign-in suite/.test(r.stdout));
+
+  r = bcli("check", "run", "br-1", "1", "flow", "--inline");
+  const flow = bck("flow");
+  ok("a browser check passes on the repl's exit 0", r.status === 0 && flow.status === "pass" && !!flow.tree);
+  const call = fs.readFileSync(CLOG, "utf8").trim().split("\n").map(l => JSON.parse(l)).pop();
+  ok("…run through cmux browser repl in the plan root's workspace, in its own session",
+    call.argv.join(" ").includes("browser repl") && call.argv.includes("--workspace") &&
+    call.argv[call.argv.indexOf("--workspace") + 1] === "WS-1" &&
+    call.argv[call.argv.indexOf("--session") + 1] === "dp-br-1-1-flow" && call.argv.includes("--eval"));
+  ok("…with its cwd in the check's evidence directory under <slug>.runs",
+    call.cwd.startsWith(fs.realpathSync(runs)) || call.cwd.startsWith(runs));
+  ok("…and earlier exports reach the script's env, the seed's storage state copied in",
+    /storage state loaded from .*storage-state\.json/.test(fs.readFileSync(flow.ran.log, "utf8")) &&
+    fs.existsSync(path.join(runs, flow.evidence.dir, "storage-state.json")));
+  ok("the verdict carries the run's evidence: frames, replay and trace",
+    flow.evidence && flow.evidence.frames === 2 && flow.evidence.animation === "run.png" &&
+    flow.evidence.trace === "trace.jsonl" && flow.evidence.result === "pass" &&
+    fs.existsSync(path.join(runs, flow.evidence.dir, "frame-0002.png")));
+  r = bcli("check", "evidence", "br-1", "1", "flow", "--json");
+  const fev = JSON.parse(r.stdout);
+  ok("check evidence --json lists each frame and each step with its frames",
+    fev.framesList.length === 2 && fev.steps.map(x => x.label).join("|") === "open the page|sign in" &&
+    fev.steps.every(x => x.status === "pass"));
+  r = bcli("status", "--json");
+  const row = JSON.parse(r.stdout).find(p => p.slug === "br-1").increments[0].checks.find(c => c.id === "flow");
+  ok("status --json carries the evidence summary, without the frame list",
+    row.evidence && row.evidence.frames === 2 && row.evidence.latest === "frame-0002.png" &&
+    !("framesList" in row.evidence) && row.evidence.steps === 2);
+  ok("…and a check that is not a browser check carries none",
+    !("evidence" in (JSON.parse(r.stdout).find(p => p.slug === "br-1").increments[0].checks.find(c => c.kind === "review") || {})));
+
+  const work = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "br-1.working.html"), "utf8");
+  ok("the working page marks a browser check's row for the Dock, with its brief",
+    /<li class="dp-check" data-n="1" data-id="flow" data-status="pass" data-browser="1">/.test(work) &&
+    /<span class="dp-brief">brief: the sign-in suite; extend a step per new screen<\/span>/.test(work));
+  ok("…and leaves other checks' rows plain", !/data-id="review-code-review"/.test(work));
+  r = bcli("check", "evidence", "br-1", "1", "flow", "--json");
+  const fj = JSON.parse(r.stdout);
+  ok("check evidence --json carries the run's tab, the brief, and which of its scripts changed in the increment",
+    fj.tab === "TAB-1" && /sign-in suite/.test(fj.brief) && Array.isArray(fj.changed));
+  fs.writeFileSync(path.join(BR, "e2e", "seed.sh"), fs.readFileSync(path.join(BR, "e2e", "seed.sh"), "utf8") + "# edited\n");
+  ok("…an edited setup script or a new script is listed as changed",
+    (c => c.includes("e2e/seed.sh") && c.includes("e2e/flow.js"))(JSON.parse(bcli("check", "evidence", "br-1", "1", "flow", "--json").stdout).changed));
+  r = bcli("check", "tab", "br-1", "1", "flow");
+  const tcall = fs.readFileSync(CLOG, "utf8").trim().split("\n").map(l => JSON.parse(l)).pop();
+  ok("check tab brings the run's own tab forward, in its session and workspace",
+    r.status === 0 && /its tab is in front/.test(r.stdout) && /tabs\.get\("TAB-1"\)/.test(tcall.argv[tcall.argv.length - 1]) &&
+    tcall.argv[tcall.argv.indexOf("--session") + 1] === "dp-br-1-1-flow" && tcall.argv[tcall.argv.indexOf("--workspace") + 1] === "WS-1");
+  ok("check tab on a check with no run says so", bcli("check", "tab", "br-1", "1", "missing").status === 1);
+
+  r = bcli("check", "run", "br-1", "1", "broken", "--inline");
+  ok("a script that throws fails the check, naming the step it failed in",
+    r.status === 1 && bck("broken").status === "fail" &&
+    /^step "find the alert": expect\(locator\)\.toBeVisible\(\) failed/.test(bck("broken").note) &&
+    bck("broken").evidence.result === "fail" && bck("broken").evidence.label === "find the alert");
+  r = bcli("check", "run", "br-1", "1", "missing", "--inline");
+  ok("a browser script that does not exist fails without calling cmux",
+    r.status === 1 && /e2e\/nope\.js does not exist/.test(fs.readFileSync(bck("missing").ran.log, "utf8")));
+  r = bcli("check", "run", "br-1", "1", "flow", "--inline");
+  bcli("check", "run", "br-1", "1", "flow", "--inline");
+  bcli("check", "run", "br-1", "1", "flow", "--inline");
+  ok("evidence is kept for the latest three runs of a check",
+    fs.readdirSync(runs).filter(d => /^inc1-flow-\d+$/.test(d)).length === 3);
+
+  const until2 = (cond, ms = 10000) => { const t = Date.now() + ms; while (Date.now() < t) { if (cond()) return true; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); } return cond(); };
+  r = bcli("check", "run", "br-1", "1", "slow");
+  ok("a browser check runs detached by default", r.status === 0 && /started detached/.test(r.stdout));
+  const until = Date.now() + 8000;
+  let mid = null;
+  while (Date.now() < until) {
+    const ev = JSON.parse(bcli("check", "evidence", "br-1", "1", "slow", "--json").stdout);
+    if (ev.live && ev.frames >= 1) { mid = ev; break; }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+  }
+  ok("…and its evidence fills while it runs (the Dock's filmstrip)", !!mid && mid.live && mid.frames >= 1 && mid.frames < 3);
+  bcli("check", "wait", "br-1", "1", "slow", "--timeout", "20");
+  ok("…landing its verdict with every frame", bck("slow").status === "pass" && bck("slow").evidence.frames === 3);
+  bcli("check", "run", "br-1", "1", "slow");
+  until2(() => { const e = JSON.parse(bcli("check", "evidence", "br-1", "1", "slow", "--json").stdout); return e.live && e.frames >= 1; });
+  const spid = bck("slow").runner.pid;
+  try { process.kill(-spid, "SIGKILL"); } catch { process.kill(spid, "SIGKILL"); }
+  until2(() => { try { process.kill(spid, 0); return false; } catch { return true; } });
+  bcli("check", "status", "br-1", "1", "slow");
+  ok("a lost browser run keeps its own evidence, not the last run's",
+    bck("slow").status === "fail" && /runner lost/.test(bck("slow").note) &&
+    bck("slow").evidence.frames < 3 && bck("slow").evidence.dir !== undefined && bck("slow").evidence.live === false);
+
+  {
+    const PR = path.join(TMP, "prune-runs");
+    for (const d of ["inc1-flow-1", "inc1-flow-2", "inc1-flow-3", "inc1-flow-4", "inc1-flow-x-1", "inc1-flow-x-2"])
+      fs.mkdirSync(path.join(PR, d), { recursive: true });
+    pruneEvidence(PR, 1, "flow");
+    ok("pruning one check's evidence never touches a check whose id extends it",
+      fs.readdirSync(PR).sort().join(" ") === "inc1-flow-2 inc1-flow-3 inc1-flow-4 inc1-flow-x-1 inc1-flow-x-2");
+    ok("a run with no pass or fail event is live only when read as the run in flight",
+      readEvidence(PR, "inc1-flow-2").live === false && readEvidence(PR, "inc1-flow-2", { live: true }).live === true);
+  }
+  // PR proof: built locally from the last passed run; --attach goes through gh.
+  {
+    bcli("check", "run", "br-1", "1", "flow", "--inline");
+    const FB = path.join(TMP, "fake-bin");
+    fs.mkdirSync(FB, { recursive: true });
+    const BODY = path.join(TMP, "pr-body.txt"), GLOG = path.join(TMP, "gh.log");
+    fs.writeFileSync(BODY, "What this PR does.\n");
+    fs.writeFileSync(path.join(FB, "gh"), `#!/bin/sh
+echo "$*" >> ${JSON.stringify(GLOG)}
+case "$*" in
+  "pr edit --help") [ -n "$FAKE_GH_ATTACH" ] && echo "  --attach file   Upload a file"; echo "  -F, --body-file"; exit 0;;
+  "pr view --json number -q .number") echo 42; exit 0;;
+  "pr view 42 --json body -q .body") cat ${JSON.stringify(BODY)}; exit 0;;
+  "pr edit 42 -F "*) f="$5"; cp "$f" ${JSON.stringify(BODY)}; exit 0;;
+esac
+exit 1
+`);
+    fs.writeFileSync(path.join(FB, "ffmpeg"), '#!/bin/sh\nfor a; do last="$a"; done\necho fake > "$last"\n');
+    fs.chmodSync(path.join(FB, "gh"), 0o755); fs.chmodSync(path.join(FB, "ffmpeg"), 0o755);
+    const pcli = (extra, ...args) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...args],
+      { encoding: "utf8", env: { ...BENV, ...extra }, cwd: REPO });
+    const PROOF = path.join(ENV.DEEP_PLAN_PLANS_DIR, "br-1.proof");
+    let pr = pcli({}, "proof", "br-1", "1", "flow");
+    const md = fs.readFileSync(path.join(PROOF, "proof.md"), "utf8");
+    ok("proof builds the replay, a key frame per step and proof.md, locally",
+      pr.status === 0 && md.startsWith("<!-- deep-plan proof -->") && md.trim().endsWith("<!-- /deep-plan proof -->") &&
+      /!\[flow: the whole run\]\(\.\/1-flow-replay\.png\)/.test(md) && /1\. \*\*open the page\*\*/.test(md) &&
+      /!\[sign in\]\(\.\/1-flow-02\.png\)/.test(md) && fs.existsSync(path.join(PROOF, "1-flow-01.png")));
+    pr = pcli({ PATH: FB + path.delimiter + process.env.PATH }, "proof", "br-1", "1", "flow");
+    ok("…and a GIF of the replay when ffmpeg is on PATH, which the markdown shows",
+      fs.existsSync(path.join(PROOF, "1-flow.gif")) && /\(\.\/1-flow\.gif\)/.test(fs.readFileSync(path.join(PROOF, "proof.md"), "utf8")));
+    pr = pcli({}, "proof", "br-1", "1", "broken");
+    ok("proof refuses a check with no passed run", pr.status === 1 && /no passed run to prove/.test(pr.stderr));
+    const GH = { PATH: FB + path.delimiter + process.env.PATH, FAKE_GH_ATTACH: "1" };
+    pr = pcli({ PATH: FB + path.delimiter + process.env.PATH }, "proof", "br-1", "1", "flow", "--attach");
+    ok("--attach with a gh that cannot upload says to upgrade", pr.status === 1 && /gh pr edit --attach arrived in 2\.99/.test(pr.stderr));
+    fs.writeFileSync(GLOG, "");
+    pr = pcli(GH, "proof", "br-1", "1", "flow", "--attach");
+    ok("--attach without --yes says what it would send and sends nothing",
+      pr.status === 2 && /would update PR 42/.test(pr.stdout) && !/pr edit 42/.test(fs.readFileSync(GLOG, "utf8")));
+    pr = pcli(GH, "proof", "br-1", "1", "flow", "--attach", "--yes");
+    const sent = fs.readFileSync(GLOG, "utf8").split("\n").find(l => l.startsWith("pr edit 42 -F")) || "";
+    const body1 = fs.readFileSync(BODY, "utf8");
+    ok("--attach --yes edits the PR body through gh, uploading every file the markdown names",
+      pr.status === 0 && /--attach 1-flow\.gif/.test(sent) && /--attach 1-flow-01\.png --attach 1-flow-02\.png/.test(sent) &&
+      body1.startsWith("What this PR does.") && body1.includes("<!-- deep-plan proof -->"));
+    {
+      const dir = path.join(TMP, "md-esc"); fs.mkdirSync(path.join(dir, "ev"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "ev", "key-01.png"), "x");
+      const { buildProof } = await import(path.join(HERE, "lib", "proof.mjs"));
+      const b = buildProof("x", path.join(dir, "out"), [{ n: 1, id: "f", name: "a [link](http://x) *b*", dir: path.join(dir, "ev"),
+        ev: { steps: [{ label: "![img](http://evil) <b>", key: "key-01.png", status: "pass" }] } }]);
+      ok("proof escapes the repo's labels and names in its markdown",
+        !/[^\\]\]\(http:\/\/evil\)/.test(b.md) && /\\!\\\[img\\\]\(http:\/\/evil\) \\<b\\>/.test(b.md) && /a \\\[link\\\]/.test(b.md));
+    }
+    pr = pcli(GH, "proof", "br-1", "1", "flow", "--attach", "42", "--yes");
+    const body2 = fs.readFileSync(BODY, "utf8");
+    ok("…and a second attach replaces its section instead of adding another",
+      pr.status === 0 && /section replaced/.test(pr.stdout) && body2.split("<!-- deep-plan proof -->").length === 2 &&
+      body2.startsWith("What this PR does."));
+  }
+
+  const ws0 = JSON.parse(fs.readFileSync(TARGETS, "utf8"));
+  fs.writeFileSync(TARGETS, "{}");
+  r = bcli("check", "run", "br-1", "1", "flow", "--inline");
+  ok("with no workspace for the root the run still goes, and its log says where the tabs land",
+    r.status === 0 && /no cmux workspace found/.test(fs.readFileSync(bck("flow").ran.log, "utf8")));
+  fs.writeFileSync(TARGETS, JSON.stringify(ws0));
+}
+
+// -------------------------------------------------- claim steps: engine-run acquisition
+//
+// A claim polls a command until it prints the resource, may ask a person at
+// the same time (first to land wins), may hold a machine-wide lock, and
+// releases what it took when the run ends: pass, fail or a trapped signal.
+// Only a SIGKILL leaves it held, for `check release`.
+{
+  const CR = path.join(TMP, "claim-root");
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  fs.mkdirSync(path.join(CR, ".seamux"), { recursive: true });
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: CR });
+  const REL = path.join(CR, "released.txt");
+  const recipes = [
+    { id: "poll", kind: "e2e", steps: [
+      { claim: "test -f env.free && cat env.free", export: "QA_ENV", interval: 0.1, timeout: 10,
+        release: `echo released-$QA_ENV >> ${JSON.stringify(REL)}` },
+      { run: "echo deploy-to-$QA_ENV" }] },
+    { id: "askonly", kind: "e2e", steps: [
+      { claim: null, ask: "Which variant?", export: "VARIANT" }, { run: "echo using-$VARIANT" }] },
+    { id: "both", kind: "e2e", steps: [
+      { claim: "test -f never-there && echo x", ask: "Pick a QA env", choices: "printf 'qa-1\\nqa-2\\n'",
+        export: "QA_ENV", interval: 0.2, timeout: 20 },
+      { run: "echo on-$QA_ENV" }] },
+    { id: "lock", kind: "e2e", steps: [{ claim: "true", lock: "port:5432", interval: 0.2, timeout: 10 }, { run: "echo locked-run" }] },
+    { id: "fails", kind: "e2e", steps: [
+      { claim: "echo qa-5", export: "QA_ENV", release: `echo released-$QA_ENV >> ${JSON.stringify(REL)}` }, { run: "exit 4" }] },
+    { id: "sleeper", kind: "e2e", steps: [
+      { claim: "test -f never-there && echo x", export: "QA_ENV", lock: "qa-lock-4", interval: 2, timeout: 60,
+        release: `echo rel-sleeper >> ${JSON.stringify(REL)}` }, { run: "true" }] },
+    { id: "badrel", kind: "e2e", steps: [{ claim: "echo qa-4", export: "QA_ENV", lock: "qa-lock-3", release: "exit 9" }, { run: "true" }] },
+    { id: "term", kind: "e2e", steps: [
+      { claim: "echo qa-9", export: "QA_ENV", lock: "qa-lock", release: `echo rel-$QA_ENV >> ${JSON.stringify(REL)}` },
+      { run: "sleep 30" }] },
+    { id: "kill", kind: "e2e", steps: [
+      { claim: "echo qa-7", export: "QA_ENV", lock: "qa-lock-2", release: `echo rel-$QA_ENV >> ${JSON.stringify(REL)}` },
+      { run: "sleep 30" }] },
+  ];
+  fs.writeFileSync(path.join(CR, ".seamux", "verify.json"), JSON.stringify({ recipes }, null, 2));
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "cl-1";
+  s.deliverables[0] = { title: "QA flow", body: "A claim.", files: ["src/a.ts"],
+    checks: recipes.map(r => ({ id: r.id, kind: "e2e", name: r.id, recipe: r.id })) };
+  cli("render", tmpSpec(s), "--root", CR);
+  const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "cl-1.key.json"), "utf8"));
+  cli("grade", "cl-1", ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+  cli("go", "cl-1", "1"); cli("start", "cl-1", "1");
+  const cst = () => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "cl-1.json"), "utf8"));
+  const cck = id => cst().increments[0].checks[id];
+  const pause = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  const until = (cond, ms = 10000) => { const t = Date.now() + ms; while (Date.now() < t) { if (cond()) return true; pause(100); } return cond(); };
+  const LOCKS = path.join(ENV.DEEP_PLAN_PLANS_DIR, "locks");
+
+  ok("render stores a claim step with its ask, lock and release",
+    cck("both").exec.steps[0].kind === "claim" && cck("both").exec.steps[0].ask === "Pick a QA env" &&
+    cck("lock").exec.steps[0].lock === "port:5432" && cck("poll").exec.tier === "expensive" &&
+    cck("askonly").exec.steps[0].command === "");
+
+  let r = cli("check", "run", "cl-1", "1", "poll");
+  ok("a claim runs detached and polls", r.status === 0 && /started detached/.test(r.stdout));
+  pause(400);
+  fs.writeFileSync(path.join(CR, "env.free"), "qa-3\n");
+  cli("check", "wait", "cl-1", "1", "poll", "--timeout", "20");
+  ok("…until its command prints a value, exported to the steps after it",
+    cck("poll").status === "pass" && /deploy-to-qa-3/.test(fs.readFileSync(cck("poll").ran.log, "utf8")));
+  ok("…and its release runs when the run ends, with the claimed value",
+    /released-qa-3/.test(fs.readFileSync(REL, "utf8")) && !cck("poll").claims);
+
+  r = cli("check", "run", "cl-1", "1", "askonly", "--inline");
+  ok("a claim that only asks parks the check at needs-value, keeping its question",
+    r.status === 0 && cck("askonly").status === "needs-value" && cck("askonly").ask.question === "Which variant?" &&
+    /--from claim --set VARIANT=<value>/.test(r.stdout));
+  const srow = JSON.parse(cli("status", "--json").stdout).find(p => p.slug === "cl-1");
+  ok("status --json carries the question for the Dock, and lists the check outstanding",
+    srow.increments[0].checks.find(c => c.id === "askonly").ask.name === "VARIANT" &&
+    srow.checksOutstanding.some(c => c.id === "askonly" && c.status === "needs-value"));
+  ok("done is refused while a check needs a value", /askonly needs-value/.test(cli("done", "cl-1", "1").stderr));
+  r = cli("check", "run", "cl-1", "1", "askonly", "--set", "VARIANT=v2", "--detach");
+  ok("--detach runs even a run-to-completion as a detached runner (the Dock's buttons)",
+    r.status === 0 && /started detached/.test(r.stdout));
+  cli("check", "wait", "cl-1", "1", "askonly", "--timeout", "20");
+  ok("…and an answer to a parked claim resumes from it, the value reaching the steps after",
+    cck("askonly").status === "pass" && /using-v2/.test(fs.readFileSync(cck("askonly").ran.log, "utf8")));
+  const cwork = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "cl-1.working.html"), "utf8");
+  ok("the working page marks a claim that asks for the Dock's picker",
+    /<li class="dp-check" data-n="1" data-id="askonly" data-status="pass" data-asks="1">/.test(cwork));
+  cli("check", "reset", "cl-1", "1", "askonly");
+  cli("check", "run", "cl-1", "1", "askonly", "--inline");
+  r = cli("check", "run", "cl-1", "1", "askonly", "--set", "VARIANT=v2", "--inline");
+  ok("--set answers it and the run goes on with the value",
+    r.status === 0 && cck("askonly").status === "pass" && !cck("askonly").ask &&
+    /using-v2/.test(fs.readFileSync(cck("askonly").ran.log, "utf8")));
+  ok("--set takes NAME=value, the value not empty", cli("check", "run", "cl-1", "1", "askonly", "--set", "nope").status === 1 &&
+    cli("check", "run", "cl-1", "1", "askonly", "--set", "VARIANT=").status === 1);
+
+  r = cli("check", "run", "cl-1", "1", "both");
+  ok("a claim that polls and asks stays running while it asks",
+    until(() => { const c = cck("both"); return c.status === "running" && c.ask && c.ask.choices.join(",") === "qa-1,qa-2"; }));
+  r = cli("check", "run", "cl-1", "1", "both", "--set", "QA_ENV=qa-2");
+  ok("…a person's answer is handed to the running claim", r.status === 0 && /handed QA_ENV=qa-2 to the running both/.test(r.stdout));
+  cli("check", "wait", "cl-1", "1", "both", "--timeout", "20");
+  ok("…and the first to land wins: the run goes on with the person's value",
+    cck("both").status === "pass" && /on-qa-2/.test(fs.readFileSync(cck("both").ran.log, "utf8")));
+  ok("an answer naming the wrong variable is refused while it asks", (() => {
+    cli("check", "run", "cl-1", "1", "both");
+    until(() => cck("both").ask);
+    const x = cli("check", "run", "cl-1", "1", "both", "--set", "OTHER=1");
+    cli("check", "run", "cl-1", "1", "both", "--set", "QA_ENV=qa-1");
+    cli("check", "wait", "cl-1", "1", "both", "--timeout", "20");
+    return x.status === 1 && /asking for QA_ENV, not OTHER/.test(x.stderr) && cck("both").status === "pass";
+  })());
+
+  // Not the probe's own child: one it never waits on would linger as a zombie
+  // that kill(pid, 0) still finds, and the lock would never look free.
+  const holder = { pid: Number(execSync("sh -c 'sleep 2 >/dev/null 2>&1 & echo $!'", { encoding: "utf8" }).trim()) };
+  fs.mkdirSync(LOCKS, { recursive: true });
+  fs.writeFileSync(path.join(LOCKS, "port_5432.lock"), JSON.stringify({ name: "port:5432", pid: holder.pid, slug: "other", n: "1", id: "db" }));
+  r = cli("check", "run", "cl-1", "1", "lock");
+  cli("check", "wait", "cl-1", "1", "lock", "--timeout", "20");
+  const llog = fs.readFileSync(cck("lock").ran.log, "utf8");
+  ok("a lock held by a live process is waited on, naming who holds it",
+    cck("lock").status === "pass" && new RegExp(`waiting on pid ${holder.pid} \\(other 1 db\\)`).test(llog) && /locked-run/.test(llog));
+  ok("…and released when the run ends", !fs.existsSync(path.join(LOCKS, "port_5432.lock")));
+  fs.writeFileSync(path.join(LOCKS, "port_5432.lock"), JSON.stringify({ name: "port:5432", pid: 999999 }));
+  cli("check", "run", "cl-1", "1", "lock");
+  cli("check", "wait", "cl-1", "1", "lock", "--timeout", "20");
+  ok("a lock whose pid is dead is broken at once",
+    cck("lock").status === "pass" && /pid 999999 is gone, breaking it/.test(fs.readFileSync(cck("lock").ran.log, "utf8")));
+
+  cli("check", "run", "cl-1", "1", "fails");
+  cli("check", "wait", "cl-1", "1", "fails", "--timeout", "20");
+  ok("a run that fails still releases its claim", cck("fails").status === "fail" && /released-qa-5/.test(fs.readFileSync(REL, "utf8")));
+
+  cli("check", "run", "cl-1", "1", "sleeper");
+  ok("a claim polling (asleep between polls) holds its lock", until(() => fs.existsSync(path.join(LOCKS, "qa-lock-4.lock")) && cck("sleeper").status === "running"));
+  process.kill(cck("sleeper").runner.pid, "SIGTERM");
+  ok("…and a SIGTERM then still stops the run, as terminated",
+    until(() => cck("sleeper").status === "fail", 15000) && /terminated/.test(cck("sleeper").note));
+  ok("…dropping its lock and not running a release for a claim that never landed",
+    !fs.existsSync(path.join(LOCKS, "qa-lock-4.lock")) && !/rel-sleeper/.test(fs.readFileSync(REL, "utf8")) && !cck("sleeper").claims);
+  cli("check", "run", "cl-1", "1", "badrel");
+  cli("check", "wait", "cl-1", "1", "badrel", "--timeout", "20");
+  ok("a release that fails keeps the claim and its lock, and says so",
+    /release failed, still held/.test(cck("badrel").note) && (cck("badrel").claims || [])[0].release === "exit 9" &&
+    fs.existsSync(path.join(LOCKS, "qa-lock-3.lock")));
+  r = cli("check", "release", "cl-1", "1", "badrel");
+  ok("…and check release tries it again, keeping it while it still fails",
+    r.status === 1 && /still held/.test(r.stdout) && (cck("badrel").claims || []).length === 1);
+  r = cli("check", "status", "cl-1", "1", "badrel", "--json");
+  ok("check status --json lists held claims without the env they were claimed under",
+    JSON.parse(r.stdout)[0].claims[0].release === "exit 9" && !("env" in JSON.parse(r.stdout)[0].claims[0]));
+  cli("check", "run", "cl-1", "1", "term");
+  ok("a claiming run records what it holds", until(() => (cck("term").claims || []).some(c => c.value === "qa-9")));
+  process.kill(cck("term").runner.pid, "SIGTERM");
+  ok("SIGTERM to its runner fails the check as terminated",
+    until(() => cck("term").status === "fail", 15000) && /terminated/.test(cck("term").note));
+  ok("…and releases the claim and its lock",
+    until(() => /rel-qa-9/.test(fs.readFileSync(REL, "utf8"))) && !fs.existsSync(path.join(LOCKS, "qa-lock.lock")) && !cck("term").claims);
+
+  cli("check", "run", "cl-1", "1", "kill");
+  until(() => (cck("kill").claims || []).some(c => c.value === "qa-7"));
+  const kpid = cck("kill").runner.pid;
+  try { process.kill(-kpid, "SIGKILL"); } catch { process.kill(kpid, "SIGKILL"); }
+  until(() => { try { process.kill(kpid, 0); return false; } catch { return true; } });
+  r = cli("check", "status", "cl-1", "1", "kill");
+  ok("a SIGKILL leaves the claim held: the check is lost and names it",
+    cck("kill").status === "fail" && /runner lost/.test(cck("kill").note) && /check release cl-1 1 kill/.test(cck("kill").note) &&
+    /holds: QA_ENV=qa-7 · lock qa-lock-2/.test(r.stdout) && !/rel-qa-7/.test(fs.readFileSync(REL, "utf8")));
+  r = cli("check", "run", "cl-1", "1", "kill");
+  ok("a new run is refused while the last one's claims are held", r.status === 1 && /still holds qa-lock-2 .*check release cl-1 1 kill/.test(r.stdout));
+  r = cli("check", "release", "cl-1", "1", "kill");
+  ok("check release gives it back: the release runs and the dead pid's lock goes",
+    r.status === 0 && /rel-qa-7/.test(fs.readFileSync(REL, "utf8")) && !fs.existsSync(path.join(LOCKS, "qa-lock-2.lock")) &&
+    !cck("kill").claims);
+  ok("…and a check holding nothing says so", /holds nothing to release/.test(cli("check", "release", "cl-1", "1", "kill").stdout));
 }
 
 // -------------------------------------------------- verify init: detector, templates, setup prompt
@@ -3344,7 +3771,10 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   ok("review check: renders with no recipe in the repo, its command synthesized",
     r0.status === 0 && v0 && v0.kind === "review" && v0.synth === "review" && v0.recipe === "lookout:gate" &&
     v0.exec.steps[0].command === "lookout gate --plan rv-1 --inc 1", JSON.stringify(v0));
-  let r = lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
+  let r = lc(LENV, "check", "run", "rv-1", "1", "review-code-review", "--detach");
+  ok("a review check is not the Dock's to run detached: its reviewer is spawned from the session",
+    r.status === 1 && /run it from the session/.test(r.stderr));
+  r = lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
   ok("review check: with no review yet, check run opens it and says to spawn the reviewer",
     r.status === 1 && ck("rv-1", "review-code-review").status === "fail" &&
     fs.existsSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-1-inc1.json")) &&

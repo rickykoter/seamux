@@ -151,6 +151,9 @@ pub fn state(r: &Value) -> String {
             let br = plain(get(r, "branch"));
             if br.is_empty() { "is red on CI".into() } else { format!("is red on CI on `{br}`") }
         }
+        "needs a value" => {
+            if subj.is_empty() { "is asking for a value".into() } else { format!("is asking for a value ({subj})") }
+        }
         "check failed" => {
             if subj.is_empty() { "failed a check".into() } else { format!("failed a check ({subj})") }
         }

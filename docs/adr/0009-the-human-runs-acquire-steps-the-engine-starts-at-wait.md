@@ -4,7 +4,7 @@ Date: 2026-10-07
 
 ## Status
 
-Accepted
+Accepted. Superseded in part by [0035](0035-claim-is-an-engine-run-acquisition-step-polled-optionally-as.md): a claim step acquires unattended because the developer wrote it into the recipe. Acquire steps are unchanged and still the human's.
 
 ## Context
 

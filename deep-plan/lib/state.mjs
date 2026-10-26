@@ -143,14 +143,21 @@ export function log1(st, what) {
 // `review` is opt-in: a deliverable that declares one is gated on lookout's
 // verdict (`lookout gate`), which passes when no blocker or major finding is
 // open. deep-plan synthesizes its command; no recipe names it.
-export const CHECK_KINDS = ["test", "e2e", "observability", "manual", "review"];
-export const CHECK_STATUSES = ["pending", "running", "needs-variant", "pass", "fail"];
+// `browser` is a recipe-backed check whose last step drives cmux's browser
+// (lib/browser.mjs); its verdict is the exit code like any recipe's, and its
+// run leaves evidence (frames, trace, replay) the surfaces show.
+export const CHECK_KINDS = ["test", "e2e", "observability", "manual", "review", "browser"];
+// needs-value: a claim step asks a person for a value and has nothing to poll.
+export const CHECK_STATUSES = ["pending", "running", "needs-variant", "needs-value", "pass", "fail"];
 // What a verdict is, as opposed to what the spec says the check is. Only these
 // survive a re-render; the description is always the spec's current one.
 // `at` is when the verdict last changed — every change stamps it, a reset
 // included, because concurrent writes are merged by it (writeState).
-// `runner` is a run in flight (token, pid, log); `acquire` what a person must run.
-const VERDICT_FIELDS = ["status", "at", "note", "by", "ran", "tree", "runner", "acquire"];
+// `runner` is a run in flight (token, pid, log); `acquire` what a person must run;
+// `evidence` the last browser run's frames, trace and replay (lib/browser.mjs);
+// `ask` a claim's open question, `answer` a person's reply to it, `claims`
+// what a run holds and must release (lib/claims.mjs).
+const VERDICT_FIELDS = ["status", "at", "note", "by", "ran", "tree", "runner", "acquire", "evidence", "ask", "answer", "claims"];
 const ID_PREFIX = { observability: "obs" };
 
 function checkSlug(kind, name) {
@@ -243,7 +250,7 @@ export function reconcileChecks(prev, checks) {
     }
     let verdict = was ? verdictOf(was) : { status: "pending", at: 0, note: "" };
     if (was && was.hash && meta.hash && was.hash !== meta.hash && verdict.status !== "pending") {
-      const { ran, tree, by, runner, acquire, ...rest } = verdict;
+      const { ran, tree, by, runner, acquire, evidence, ...rest } = verdict;
       verdict = { ...rest, status: "pending", at: Date.now(),
         note: `was ${was.status}${was.note ? `: ${was.note}` : ""} (recipe changed since — re-run)` };
     }

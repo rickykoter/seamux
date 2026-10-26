@@ -226,9 +226,151 @@ pub fn check_record(slug: &str, n: &str, id: &str, verdict: &str, note: &str) ->
     (true, format!("recorded {verdict} for {id}"))
 }
 
+/// What the plan page may ask of a browser or claiming check. Each is one
+/// deep-plan verb; none of them can pass a check (the verdict stays the
+/// run's exit code).
+pub const CHECK_VERBS: [&str; 6] = ["run", "answer", "tab", "evidence", "proof", "attach"];
+
+/// A claim's export name, as the engine's --set takes it.
+pub fn env_name_ok(s: &str) -> bool {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r"^[A-Z_][A-Z0-9_]{0,63}$").unwrap()).is_match(s)
+}
+
+/// The argv for one check action, or why not. `run` and `answer` detach, so
+/// the request returns as soon as the run has started (or the answer has
+/// been handed to the run in flight).
+pub fn check_action_args(verb: &str, slug: &str, n: &str, id: &str, name: &str, value: &str) -> Result<Vec<String>, String> {
+    if !CHECK_VERBS.contains(&verb) {
+        return Err("bad check action".into());
+    }
+    if !slug_ok(slug) {
+        return Err("bad slug".into());
+    }
+    if n.is_empty() || !n.chars().all(|c| c.is_ascii_digit()) {
+        return Err("bad increment".into());
+    }
+    if !check_id_ok(id) {
+        return Err("bad check id".into());
+    }
+    let script = crew_core::dp_engine::script().to_string_lossy().into_owned();
+    let mut a: Vec<String> = [script.as_str(), "check"].iter().map(|s| s.to_string()).collect();
+    match verb {
+        "run" => a.extend(["run", slug, n, id, "--detach"].map(String::from)),
+        "tab" => a.extend(["tab", slug, n, id].map(String::from)),
+        "evidence" => a.extend(["evidence", slug, n, id, "--json"].map(String::from)),
+        // PR proof is its own verb, not a `check` one. `attach` uploads to the
+        // PR, so the page asks the person first; their click is the --yes.
+        "proof" => a = [script.as_str(), "proof", slug, n, id, "--json"].map(String::from).to_vec(),
+        "attach" => a = [script.as_str(), "proof", slug, n, id, "--attach", "--yes"].map(String::from).to_vec(),
+        _ => {
+            if !env_name_ok(name) {
+                return Err("the answer needs the claim's variable name".into());
+            }
+            let value = value.trim();
+            if value.is_empty() {
+                return Err("an empty answer is no answer".into());
+            }
+            if value.chars().count() > 200 || value.chars().any(char::is_control) {
+                return Err("the answer is too long or carries control characters".into());
+            }
+            a.extend(["run", slug, n, id, "--detach", "--set"].map(String::from));
+            a.push(format!("{name}={value}"));
+        }
+    }
+    Ok(a)
+}
+
+/// Run one check action. Ok carries the engine's stdout (the evidence JSON,
+/// for `evidence`); Err its last line, or why it never ran.
+pub fn check_action(verb: &str, slug: &str, n: &str, id: &str, name: &str, value: &str) -> Result<String, String> {
+    let args = check_action_args(verb, slug, n, id, name, value)?;
+    if crate::act::which("node").is_none() {
+        return Err("node is not on this server's PATH, so deep-plan cannot run".into());
+    }
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    // A proof may convert a replay and upload to GitHub; everything else returns at once.
+    let limit = if verb == "proof" || verb == "attach" { 300 } else { 60 };
+    let Some((code, out, err)) = crew_core::py::run("node", &argv, Duration::from_secs(limit)) else {
+        log(&format!("FAIL check {verb} {slug} {n} {id}: node did not finish"));
+        return Err(format!("deep-plan did not finish in {limit}s"));
+    };
+    if code != 0 {
+        let detail: String = format!("{out}{err}").trim().lines().last().unwrap_or("").chars().take(200).collect();
+        log(&format!("FAIL check {verb} {slug} {n} {id}: {detail}"));
+        return Err(if detail.is_empty() { "deep-plan refused it".into() } else { detail });
+    }
+    Ok(out)
+}
+
+/// One file of a check's browser evidence: `<run dir>/<frame|replay|trace>`
+/// inside the plan's runs directory, and nothing else. The run dir is named
+/// inc<n>-<id>-<ms>, as the engine makes it.
+pub fn evidence_file(slug: &str, rel: &str) -> Option<PathBuf> {
+    evidence_file_in(&plans_dir(), slug, rel)
+}
+
+/// evidence_file against a given plans directory (tests pass their own).
+pub fn evidence_file_in(plans: &Path, slug: &str, rel: &str) -> Option<PathBuf> {
+    if !slug_ok(slug) {
+        return None;
+    }
+    static R: OnceLock<Regex> = OnceLock::new();
+    let r = R.get_or_init(|| Regex::new(r"^inc\d+-[A-Za-z0-9._-]+-\d+/(frame-\d{1,6}\.png|run\.png|trace\.jsonl)$").unwrap());
+    let rel = unquote(rel);
+    if !r.is_match(&rel) {
+        return None;
+    }
+    let base = realpath(&plans.join(format!("{slug}.runs")));
+    let target = realpath(&base.join(&rel));
+    (within(&target, &base) && target.is_file()).then_some(target)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn check_actions_name_one_engine_verb_and_refuse_bad_input() {
+        let a = check_action_args("run", "browser-checks", "3", "flow", "", "").unwrap();
+        assert_eq!(&a[1..], ["check", "run", "browser-checks", "3", "flow", "--detach"]);
+        let a = check_action_args("answer", "p", "2", "qa", "QA_ENV", " qa-2 ").unwrap();
+        assert_eq!(&a[1..], ["check", "run", "p", "2", "qa", "--detach", "--set", "QA_ENV=qa-2"]);
+        assert_eq!(&check_action_args("tab", "p", "2", "qa", "", "").unwrap()[1..], ["check", "tab", "p", "2", "qa"]);
+        assert_eq!(&check_action_args("evidence", "p", "2", "qa", "", "").unwrap()[1..], ["check", "evidence", "p", "2", "qa", "--json"]);
+        assert_eq!(&check_action_args("proof", "p", "2", "flow", "", "").unwrap()[1..], ["proof", "p", "2", "flow", "--json"]);
+        assert_eq!(&check_action_args("attach", "p", "2", "flow", "", "").unwrap()[1..], ["proof", "p", "2", "flow", "--attach", "--yes"]);
+        assert!(check_action_args("pass", "p", "2", "qa", "", "").is_err(), "nothing here can pass a check");
+        assert!(check_action_args("run", "../p", "2", "qa", "", "").is_err());
+        assert!(check_action_args("run", "p", "2a", "qa", "", "").is_err());
+        assert!(check_action_args("run", "p", "2", "Q A", "", "").is_err());
+        assert!(check_action_args("answer", "p", "2", "qa", "qa_env", "x").is_err());
+        assert!(check_action_args("answer", "p", "2", "qa", "QA_ENV", "   ").is_err());
+        assert!(check_action_args("answer", "p", "2", "qa", "QA_ENV", "a\u{1b}[2J").is_err());
+        assert!(check_action_args("answer", "p", "2", "qa", "QA_ENV", &"x".repeat(201)).is_err());
+    }
+
+    #[test]
+    fn evidence_files_stay_inside_the_plans_runs_dir() {
+        let plans = std::env::temp_dir().join(format!("crew-board-ev-{}", std::process::id()));
+        let runs = plans.join("p1.runs/inc1-flow-123");
+        std::fs::create_dir_all(&runs).unwrap();
+        std::fs::write(runs.join("frame-0001.png"), b"png").unwrap();
+        std::fs::write(runs.join("progress.jsonl"), b"{}").unwrap();
+        std::fs::write(plans.join("p1.runs/inc1-flow-123.log"), b"log").unwrap();
+        std::fs::write(plans.join("p1.json"), b"{}").unwrap();
+        let found = evidence_file_in(&plans, "p1", "inc1-flow-123/frame-0001.png");
+        let log = evidence_file_in(&plans, "p1", "inc1-flow-123.log");
+        let up = evidence_file_in(&plans, "p1", "inc1-flow-123/../../p1.json");
+        let other = evidence_file_in(&plans, "p1", "inc1-flow-123/progress.jsonl");
+        let missing = evidence_file_in(&plans, "p1", "inc1-flow-123/run.png");
+        let bad_slug = evidence_file_in(&plans, "../p1", "inc1-flow-123/frame-0001.png");
+        std::fs::remove_dir_all(&plans).ok();
+        assert!(found.is_some(), "a frame of a run is served");
+        assert!(log.is_none() && up.is_none() && other.is_none(), "only frames, the replay and the trace");
+        assert!(missing.is_none(), "a file that is not there is not served");
+        assert!(bad_slug.is_none());
+    }
 
     #[test]
     fn a_check_record_names_the_engine_verb_and_refuses_bad_input() {

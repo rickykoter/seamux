@@ -140,10 +140,19 @@ fn polls_every_terminal_at_the_interval() {
     std::thread::sleep(Duration::from_millis(520));
     drop(tx);
     runner.join().unwrap();
-    // ~11 ticks in 520ms at 50ms; allow for scheduling slack either way.
+    // What the poll promises: every terminal is read on every tick, ticks keep
+    // coming, and none comes sooner than the interval. Not a tick count by
+    // the wall clock: macOS stretches short timers (Low Power Mode makes a
+    // 50ms sleep take ~125ms), so 520ms may hold 4 ticks or 11.
+    let (a, b) = (fake.reads_of(A), fake.reads_of(B));
+    assert!(a.len() >= 3, "{A} read only {} times in 520ms", a.len());
+    assert!(a.len().abs_diff(b.len()) <= 1, "{A} read {} times, {B} {}", a.len(), b.len());
     for s in [A, B] {
-        let n = fake.reads_of(s).len();
-        assert!((7..=13).contains(&n), "{s} read {n} times");
+        let ts = fake.reads_of(s);
+        for w in ts.windows(2) {
+            let gap = w[1] - w[0];
+            assert!(gap >= Duration::from_millis(45), "{s} read again after {gap:?}, sooner than the 50ms interval");
+        }
     }
 }
 

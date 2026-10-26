@@ -550,9 +550,9 @@ mod tests {
     fn the_baked_monolith_is_read_and_the_placeholder_is_not() {
         let d = std::env::temp_dir().join(format!("crew-worktree-baked-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(d.join("a"), "MONOLITH=\"${CREW_MONOLITH:-/Users/x/code/big}\"\n").unwrap();
+        std::fs::write(d.join("a"), "MONOLITH=\"${CREW_MONOLITH:-/opt/code/big}\"\n").unwrap();
         std::fs::write(d.join("b"), "MONOLITH=\"${CREW_MONOLITH:-__MAIN_REPO__}\"\n").unwrap();
-        assert_eq!(baked_monolith(&d.join("a")).unwrap(), PathBuf::from("/Users/x/code/big"));
+        assert_eq!(baked_monolith(&d.join("a")).unwrap(), PathBuf::from("/opt/code/big"));
         assert!(baked_monolith(&d.join("b")).is_none());
         let _ = std::fs::remove_dir_all(d);
     }

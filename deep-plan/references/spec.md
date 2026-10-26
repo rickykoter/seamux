@@ -21,7 +21,7 @@ The full shape of the spec JSON (discipline step 5); `examples/example.spec.json
   "diagrams":      [{ "question": "the heading, phrased as a question", "mermaid": "...",
                       "simple": "optional: the same idea in plain words, the page opens on it" }],
   "deliverables":  [{ "title": "...", "body": "...", "files": ["relative/paths"],
-                      "checks": [{ "kind": "test|e2e|observability|manual|review", "name": "...",
+                      "checks": [{ "kind": "test|e2e|observability|manual|review|browser", "name": "...",
                         "id": "optional; derived from kind + name",
                         "recipe": "a recipe id (or id@project) from .seamux/verify.json",
                         "run": "a command shown, not run (no recipe)",

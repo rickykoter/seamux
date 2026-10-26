@@ -103,6 +103,8 @@ def state(r):
     if b == "ci failed":
         br = _plain(r.get("branch"))
         return "is red on CI on `%s`" % br if br else "is red on CI"
+    if b == "needs a value":
+        return "is asking for a value (%s)" % subj if subj else "is asking for a value"
     if b == "check failed":
         return "failed a check (%s)" % subj if subj else "failed a check"
     if b == "conflicts":

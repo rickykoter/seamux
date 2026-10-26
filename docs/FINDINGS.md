@@ -1942,3 +1942,39 @@ swap), as tauri-nspanel does. After the swap, Tauri's `hide()` no longer takes
 the window off screen, so the app orders it out through AppKit, and the
 hotkey brings a window that is visible on another Space to this one instead of
 hiding it.
+
+## Driving cmux's browser from a check (2026-10-26)
+
+Probed against cmux 0.64 nightly while building deep-plan's browser checks.
+
+- **Playwright cannot attach to cmux's browser.** The panes are WebKit
+  (WKWebView; the binary links WebKit.framework) and expose no CDP port.
+  Playwright MCP would drive a separate Chromium with its own cookies.
+- **`cmux browser repl` is the way in.** It runs Playwright-style JavaScript
+  (`page`, locators, `keyboard`) against the workspace's panes with native
+  input, and nothing it does takes the person's focus. `--workspace <id>`
+  pins it to one workspace; without it a session binds to the focused one.
+- **The verdict is usable as is.** A thrown error or a locator timeout exits 1;
+  a script that finishes exits 0.
+- **No `process.env`, and no streaming.** The repl has no `process`; values
+  have to be written into the program. Its output, `console.log` included,
+  arrives only when the call ends.
+- **Files only under its cwd and a temp dir of its own.** Writing anywhere
+  else is refused with EACCES, `$TMPDIR` included. deep-plan runs the repl
+  with its cwd in the check's evidence directory for this reason.
+- **`session.record()` writes as it goes.** Each action's frame and
+  `trace.jsonl` land while the run is still going; only the animated
+  `run.png` waits for `stop()`. It ignores an `annotate` option.
+- **`screenshot({ annotate: true })` boxes and labels every control,** and the
+  image it returns has a `.buffer` that `fs.writeFileSync` can save.
+- **`page.id` is a placeholder until the page is used.** Read before the
+  first navigation it is `lazy:1`, which `tabs.get()` cannot find; read after,
+  it is the tab's UUID.
+- **Low Power Mode stretches short timers.** A 50ms `sleep` or
+  `recv_timeout` takes about 125ms, which broke a seamux-app test that
+  counted poll ticks by the wall clock.
+- **`gh pr edit --attach` (gh 2.99+) uploads into a PR description** and
+  rewrites the body's `![alt](./file)` references to
+  `github.com/user-attachments/assets/...` links. Those links return 404 to
+  an anonymous request even on a public repo; the PR page shows them to a
+  signed-in viewer through a signed `private-user-images` URL.

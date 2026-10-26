@@ -1,0 +1,60 @@
+#!/usr/bin/env node
+// A stand-in for `cmux browser repl --eval -`, for probe.mjs: no cmux, no
+// browser. It reads the program lib/browser.mjs built, finds the env the
+// prelude was given and the step() labels in the script, and behaves as the
+// prelude would against a page: progress.jsonl in the evidence directory, a
+// frame per step in a record dir of its own, trace.jsonl and run.png at the
+// end. A script containing FAKE_FAIL fails in its last step; FAKE_SLEEP_MS=<n>
+// pauses that long after each step, so a reader can watch it live.
+// Every argv is appended to $FAKE_CMUX_LOG when it is set.
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+const argv = process.argv.slice(2);
+if (process.env.FAKE_CMUX_LOG) fs.appendFileSync(process.env.FAKE_CMUX_LOG, JSON.stringify({ argv, cwd: process.cwd() }) + "\n");
+if (argv[0] !== "browser" || argv[1] !== "repl") { console.error("fake-cmux: only `browser repl` is faked"); process.exit(2); }
+
+// `check tab` sends a one-liner naming the tab, not a prelude.
+const inline = argv[argv.length - 1];
+if (!argv.includes("--eval")) {
+  if (/tabs\.get\("TAB-1"\)/.test(inline)) { console.log("shown"); process.exit(0); }
+  console.log("Error: no such tab"); process.exit(1);
+}
+const prog = fs.readFileSync(0, "utf8");
+const envLine = prog.split("\n").find(l => l.includes("const env = Object.freeze("));
+const env = JSON.parse(envLine.trim().replace(/^const env = Object\.freeze\(/, "").replace(/\);$/, ""));
+const dir = env.DEEP_PLAN_EVIDENCE;
+const script = prog.slice(prog.indexOf("try {") + 5, prog.indexOf("} catch (e) { __err = e; }"));
+const labels = [...script.matchAll(/step\(\s*["'`]([^"'`]+)["'`]/g)].map(m => m[1]);
+const fail = script.includes("FAKE_FAIL");
+const pause = Number((script.match(/FAKE_SLEEP_MS=(\d+)/) || [])[1] || 0);
+const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const log = o => fs.appendFileSync(path.join(dir, "progress.jsonl"), JSON.stringify({ t: Date.now(), ...o }) + "\n");
+
+if (env.STORAGE_STATE && !fs.existsSync(env.STORAGE_STATE)) { console.error("Error: storage state missing"); process.exit(1); }
+if (env.STORAGE_STATE) console.log(`[fake] storage state loaded from ${env.STORAGE_STATE}`);
+const rec = fs.mkdtempSync(path.join(os.tmpdir(), "fake-cmux-rec-"));
+log({ event: "start", record: rec });
+const PNG = Buffer.from("89504e470d0a1a0a", "hex");
+let frame = 0;
+for (let k = 0; k < labels.length; k++) {
+  log({ event: "step", label: labels[k], frame });
+  fs.writeFileSync(path.join(rec, `frame-${String(++frame).padStart(4, "0")}.png`), PNG);
+  fs.appendFileSync(path.join(rec, "trace.jsonl"), JSON.stringify({ method: "fake.step", label: labels[k] }) + "\n");
+  if (pause) sleep(pause);
+  if (fail && k === labels.length - 1) {
+    log({ event: "fail", label: labels[k], error: `expect(locator).toBeVisible() failed after 5000ms: got false`, frame, tab: "TAB-1" });
+    fs.writeFileSync(path.join(rec, "run.png"), PNG);
+    log({ event: "stop", dir: rec, frames: frame });
+    console.log("Error: expect(locator).toBeVisible() failed after 5000ms: got false\n[error | 12ms]");
+    process.exit(1);
+  }
+  const key = `key-${String(k + 1).padStart(2, "0")}.png`;
+  fs.writeFileSync(path.join(dir, key), PNG);
+  log({ event: "done", label: labels[k], frame, key });
+}
+fs.writeFileSync(path.join(rec, "run.png"), PNG);
+log({ event: "pass", frame, tab: "TAB-1" });
+log({ event: "stop", dir: rec, frames: frame });
+console.log(`[ok | ${labels.length * 10}ms]`);

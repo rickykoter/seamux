@@ -31,9 +31,13 @@ import path from "node:path";
 import crypto from "node:crypto";
 
 export const VERIFY_REL = path.join(".seamux", "verify.json");
-export const RECIPE_KINDS = ["test", "e2e", "observability"];
+export const RECIPE_KINDS = ["test", "e2e", "observability", "browser"];
 export const TIERS = ["cheap", "expensive"];
-export const STEP_KINDS = ["acquire", "wait", "run"];
+// Order is part of the protocol: acquire steps (a person's) first; then
+// claim, wait and run in any order (claim an env, deploy, watch the job);
+// then at most one browser step, last. See validateRecipe.
+export const STEP_KINDS = ["acquire", "claim", "wait", "run", "browser"];
+const LOCK_RE = /^[a-z0-9][a-z0-9:._/-]*$/i;
 const ID_RE = /^[a-z0-9][a-z0-9._-]*$/i;
 const ENV_RE = /^[A-Z_][A-Z0-9_]*$/;
 // Seconds. A recipe's timeout bounds each run step; a wait step has its own,
@@ -78,7 +82,9 @@ const posix = p => p.split(path.sep).join("/");
 function normalizeRecipe(r) {
   const steps = Array.isArray(r.steps) ? r.steps.map(normalizeStep)
     : (r.run !== undefined ? [normalizeStep({ run: r.run })] : []);
-  const remote = steps.some(s => s.kind === "acquire" || s.kind === "wait");
+  // A browser run drives a page while the Dock watches it, so it runs detached
+  // like a remote one: the page's filmstrip fills while the run goes on.
+  const remote = steps.some(s => ["acquire", "claim", "wait", "browser"].includes(s.kind));
   return {
     id: r.id === undefined ? "" : String(r.id),
     kind: r.kind || "test",
@@ -93,6 +99,12 @@ function normalizeRecipe(r) {
     timeout: r.timeout === undefined ? DEFAULT_TIMEOUT : r.timeout,
     steps,
     note: r.note || "",
+    // For the agent, not the runner: what the check runs against and how to
+    // extend or repair its scripts. Shown by check list and with a failure.
+    brief: typeof r.brief === "string" ? r.brief : (r.brief === undefined ? "" : r.brief),
+    // The setup files the recipe's steps depend on (a Playwright seed, a Hurl
+    // file), so the surfaces can flag edits to them as they flag the script's.
+    scripts: r.scripts === undefined ? [] : r.scripts,
     _raw: r,
   };
 }
@@ -100,15 +112,22 @@ function normalizeRecipe(r) {
 function normalizeStep(s) {
   const kinds = STEP_KINDS.filter(k => s && s[k] !== undefined);
   const kind = kinds.length === 1 ? kinds[0] : "";
-  const out = { kind, command: kind ? s[kind] : "", note: (s && s.note) || "" };
+  // A claim that only asks a person has no command: `"claim": null` (or "").
+  const out = { kind, command: kind ? (kind === "claim" && (s[kind] === null || s[kind] === "") ? "" : s[kind]) : "",
+    note: (s && s.note) || "" };
   if (s && s.export !== undefined) out.export = s.export;
-  if (kind === "wait") {
+  if (kind === "claim") for (const f of ["ask", "choices", "lock", "release"]) if (s[f] !== undefined) out[f] = s[f];
+  if (kind === "wait" || kind === "claim") {
     out.timeout = s.timeout === undefined ? DEFAULT_WAIT.timeout : s.timeout;
     out.interval = s.interval === undefined ? DEFAULT_WAIT.interval : s.interval;
   } else if (s && s.timeout !== undefined) out.timeout = s.timeout;
   if (kinds.length !== 1) out._kinds = kinds;
   return out;
 }
+
+// A relative path that stays inside the directory it is read from.
+const insideProject = p => typeof p === "string" && !!p.trim() && !path.isAbsolute(p) &&
+  !posix(path.normalize(p)).startsWith("..");
 
 function validateRecipe(r, i) {
   const errs = [];
@@ -125,10 +144,18 @@ function validateRecipe(r, i) {
   if (typeof r.cwd !== "string" || path.isAbsolute(r.cwd) || posix(path.normalize(r.cwd)).startsWith(".."))
     errs.push(`${label}: cwd must be a path inside the project`);
   if (!(typeof r.timeout === "number" && r.timeout > 0)) errs.push(`${label}: timeout must be a positive number of seconds`);
-  // Order is the protocol: what the human does (acquire), what the engine
-  // waits for (wait), what it then runs (run). `check run --from wait`
-  // resumes at the first wait, which only means something in this order.
-  let stage = 0;
+  // Order is the protocol: what the human does (acquire) comes first, so
+  // `check run --from wait` resumes right after it; then waits and runs in
+  // any order (claim an env, deploy, watch the job); then one browser step,
+  // last, because it is what proves the change.
+  let pastAcquire = false;
+  const browsers = r.steps.filter(s => s.kind === "browser").length;
+  if (browsers > 1) errs.push(`${label}: at most one browser step`);
+  if (r.kind === "browser" && !browsers) errs.push(`${label}: a browser recipe ends with a browser step`);
+  if (browsers && r.kind !== "browser") errs.push(`${label}: a browser step belongs in a recipe of kind browser`);
+  if (raw.brief !== undefined && typeof raw.brief !== "string") errs.push(`${label}: brief must be a string`);
+  if (raw.scripts !== undefined && !(Array.isArray(raw.scripts) && raw.scripts.every(insideProject)))
+    errs.push(`${label}: scripts must be a list of paths inside the project`);
   r.steps.forEach((s, k) => {
     const at = `${label} step ${k + 1}`;
     if (!s.kind) {
@@ -136,10 +163,26 @@ function validateRecipe(r, i) {
         (s._kinds && s._kinds.length ? ` (has ${s._kinds.join(" and ")})` : ""));
       return;
     }
-    if (typeof s.command !== "string" || !s.command.trim()) errs.push(`${at}: ${s.kind} must be a command string`);
-    const st = STEP_KINDS.indexOf(s.kind);
-    if (st < stage) errs.push(`${at}: ${s.kind} after ${STEP_KINDS[stage]} — steps go acquire, then wait, then run`);
-    stage = Math.max(stage, st);
+    const askOnly = s.kind === "claim" && s.command === "" && typeof s.ask === "string" && !!s.ask.trim();
+    if (!askOnly && (typeof s.command !== "string" || !s.command.trim()))
+      errs.push(`${at}: ${s.kind} must be a command string` + (s.kind === "claim" ? " (or null with an ask)" : ""));
+    if (s.kind === "claim") {
+      for (const f of ["ask", "choices", "release"])
+        if (s[f] !== undefined && (typeof s[f] !== "string" || !s[f].trim())) errs.push(`${at}: ${f} must be a non-empty string`);
+      if (s.lock !== undefined && !(typeof s.lock === "string" && LOCK_RE.test(s.lock)))
+        errs.push(`${at}: lock must be a name like port:5432 or qa-env`);
+      if (s.ask !== undefined && s.export === undefined) errs.push(`${at}: a claim that asks needs an export to name the answer`);
+      if (s.choices !== undefined && s.ask === undefined) errs.push(`${at}: choices are what a person picks from, so they need an ask`);
+    }
+    if (s.kind === "acquire" && pastAcquire)
+      errs.push(`${at}: acquire after ${r.steps[k - 1].kind} — a person's acquire steps come first`);
+    if (s.kind !== "acquire") pastAcquire = true;
+    if (s.kind === "browser") {
+      if (k !== r.steps.length - 1) errs.push(`${at}: the browser step comes last`);
+      if (typeof s.command === "string" && s.command.trim() && !(insideProject(s.command) && /\.[cm]?js$/.test(s.command)))
+        errs.push(`${at}: browser names a .js script by its path inside the project`);
+      if (s.export !== undefined) errs.push(`${at}: a browser step is last, so there is nothing to export to`);
+    }
     if (s.export !== undefined) {
       if (s.kind === "acquire") errs.push(`${at}: an acquire step is run by a person, so it cannot export`);
       else if (typeof s.export !== "string" || !ENV_RE.test(s.export))
@@ -147,13 +190,13 @@ function validateRecipe(r, i) {
     }
     if (s.timeout !== undefined && !(typeof s.timeout === "number" && s.timeout > 0))
       errs.push(`${at}: timeout must be a positive number of seconds`);
-    if (s.kind === "wait" && !(typeof s.interval === "number" && s.interval > 0))
+    if ((s.kind === "wait" || s.kind === "claim") && !(typeof s.interval === "number" && s.interval > 0))
       errs.push(`${at}: interval must be a positive number of seconds`);
   });
-  if (r.steps.length && !r.steps.some(s => s.kind === "run"))
-    errs.push(`${label}: needs a run step — waiting on a deploy proves nothing until something runs against it`);
-  if (r.tier === "cheap" && r.steps.some(s => s.kind === "acquire" || s.kind === "wait"))
-    errs.push(`${label}: a recipe with acquire or wait steps must be expensive — a deploy wait outlasts an inline run`);
+  if (r.steps.length && !r.steps.some(s => s.kind === "run" || s.kind === "browser"))
+    errs.push(`${label}: needs a run or browser step — waiting on a deploy proves nothing until something runs against it`);
+  if (r.tier === "cheap" && r.steps.some(s => s.kind === "acquire" || s.kind === "wait" || s.kind === "claim"))
+    errs.push(`${label}: a recipe with acquire, claim or wait steps must be expensive — a deploy wait outlasts an inline run`);
   return errs;
 }
 
@@ -183,7 +226,11 @@ export function load(dir) {
 // what runs and where. A check records this at render; a recipe edited after
 // the plan was reviewed then no longer matches what was reviewed.
 export function recipeHash(r, dir) {
-  const { _raw, ...rest } = r;
+  const { _raw, brief, scripts, ...rest } = r;
+  // brief and scripts arrived after recipes had hashes: left out while empty,
+  // so a recipe that has neither keeps the hash its checks passed under.
+  if (brief) rest.brief = brief;
+  if (scripts && scripts.length) rest.scripts = scripts;
   const steps = rest.steps.map(({ _kinds, ...s }) => s);
   return crypto.createHash("sha256")
     .update(JSON.stringify({ ...rest, steps, dir })).digest("hex").slice(0, 12);

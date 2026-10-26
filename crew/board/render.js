@@ -542,7 +542,15 @@ function __boardRender(d) {
   // Everything under a card's head: what was said, the reply window, the
   // buttons, the footer.
   function body(a) {
-    return (a.said ? '<p class="said">' + said(a.said) + "</p>" : "") + feed(a) + buttons(a) + foot(a);
+    return (a.said ? '<p class="said">' + said(a.said) + "</p>" : "") + thumb(a) + feed(a) + buttons(a) + foot(a);
+  }
+  // A failed browser check's last frame (the intent server serves it, so a
+  // board read from disk shows none). Styled inline: the card has no slot
+  // for it in board.html, and one image is not worth a stylesheet rule.
+  function thumb(a) {
+    if (!a.thumb || !/^\/plan-evidence\//.test(a.thumb)) return "";
+    return '<img class="thumb" alt="the failed check\u2019s last frame" loading="lazy" src="' + esc(a.thumb) +
+      '" style="display:block;height:56px;margin:6px 0 2px;border-radius:4px;border:1px solid rgba(127,127,127,.35)">';
   }
 
   // A quiet row is one line and the whole of it is the target, which jumps.
