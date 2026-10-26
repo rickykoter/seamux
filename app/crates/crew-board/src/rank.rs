@@ -224,6 +224,53 @@ pub fn hold_bits(plan: Option<&Value>) -> Vec<String> {
     out.into_iter().map(|(k, r)| format!("held {k}: {r}")).collect()
 }
 
+/// Every increment's checks as status --json lists them: (n, check).
+fn check_rows(plan: &Value) -> Vec<(&Value, &Value)> {
+    get(plan, "increments").as_array().map(|incs| incs.iter()
+        .flat_map(|i| get(i, "checks").as_array().map(|cs| cs.iter().map(|c| (get(i, "n"), c)).collect::<Vec<_>>()).unwrap_or_default())
+        .collect()).unwrap_or_default()
+}
+
+/// The first check whose claim waits on a person (crew-board's asking_check):
+/// parked at needs-value, or running with its question open.
+pub fn asking_check(plan: Option<&Value>) -> Option<Value> {
+    let plan = plan.filter(|p| truthy(p))?;
+    if get(plan, "phase") == "done" {
+        return None;
+    }
+    check_rows(plan).into_iter().find_map(|(n, c)| {
+        let st = get(c, "status").as_str().unwrap_or("");
+        let ask = get(c, "ask");
+        ((st == "needs-value" || st == "running") && truthy(ask)).then(|| json!({
+            "n": n.clone(), "id": c.get("id").cloned().unwrap_or(json!("?")),
+            "question": ask.get("question").cloned().unwrap_or(json!("")),
+            "name": ask.get("name").cloned().unwrap_or(json!("")),
+        }))
+    })
+}
+
+/// The last frame of a failed browser check, as the intent server serves it.
+pub fn check_thumb(plan: Option<&Value>, f: &Value) -> String {
+    let Some(plan) = plan else { return String::new() };
+    for (n, c) in check_rows(plan) {
+        if py_str(n) == py_str(get(f, "n")) && get(c, "id") == get(f, "id") {
+            let ev = get(c, "evidence");
+            let (dir, latest) = (py_str(get(ev, "dir")), py_str(get(ev, "latest")));
+            if truthy(get(ev, "dir")) && truthy(get(ev, "latest")) {
+                return format!("/plan-evidence/{}/{dir}/{latest}", py_str(get(plan, "slug")));
+            }
+        }
+    }
+    String::new()
+}
+
+/// The question a needs-value card says.
+fn ask_said(a: &Value) -> String {
+    let q = py_str(get(a, "question"));
+    format!("{{{{Increment {}'s check `{}` asks: {}}}}}", py_str(get(a, "n")), py_str(get(a, "id")),
+            if q.is_empty() { "a value".to_string() } else { q })
+}
+
 /// The first outstanding check whose verdict is fail or lost.
 pub fn failed_check(plan: Option<&Value>) -> Option<&Value> {
     let plan = plan.filter(|p| truthy(p))?;
@@ -400,6 +447,8 @@ pub fn rank(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool) -> 
         let d = get(w, "desc").as_str().unwrap_or("");
         let plan = get(w, "cwd").as_str().and_then(|c| plan_for(plan_by_root, c, &cwds)).filter(|p| truthy(p));
         let failed = failed_check(plan);
+        let asking = asking_check(plan);
+        let mut thumb = String::new();
         let running = truthy(get(w, "running"));
         let branch = get(w, "branch");
         let pr = get(w, "pr");
@@ -435,6 +484,11 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
             said = go_said(plan, &get_s(&nxt, "title", "The next increment"),
                            Some(&py_str(get(get(p, "gate"), "why"))));
             chips = vec![go_chip(plan, &get_s(&nxt, "n", "?")), "diff".into(), "jump".into()];
+        } else if let Some(a) = &asking {
+            (kind, badge) = (Some("attend"), "needs a value");
+            subject = json!(failed_subject(a));
+            said = format!("{} Pick it on the plan.", ask_said(a));
+            chips = vec!["plan".into(), "jump".into()];
         } else if has(d, "ci:fail") {
             (kind, badge) = (Some("wilt"), "ci failed");
             said = if is_none_str(branch) { "Checks are red.".into() }
@@ -447,6 +501,7 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
             said = format!("{{{{Increment {}'s check `{}` {}.}}}} It cannot close until the check passes.",
                            py_str(get(f, "n")), py_str(get(f, "id")), how);
             chips = vec!["plan".into(), "jump".into()];
+            thumb = check_thumb(plan, f);
         } else if has(d, "pr:conflict") {
             (kind, badge) = (Some("wilt"), "conflicts");
             said = "This branch conflicts with its base.".into();
@@ -506,6 +561,10 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
             r.insert("pr_url".into(), w.get("pr_url").cloned().unwrap_or(json!("")));
             r.insert("slug".into(), plan.and_then(|p| p.get("slug")).cloned().unwrap_or(json!("")));
             r.insert("subject".into(), subject);
+            // A failed browser check's last frame, for the card.
+            if !thumb.is_empty() {
+                r.insert("thumb".into(), json!(thumb));
+            }
             let commits = get(w, "commits");
             r.insert("commits".into(), if truthy(commits) { commits.clone() } else { json!([]) });
             for (k, v) in fam_fields(plan) {
@@ -615,6 +674,7 @@ pub fn rank_plans_only(plan_by_root: &Map<String, Value>) -> Vec<Value> {
         let mut r = Map::new();
         r.insert("id".into(), get(plan, "slug").clone());
         r.insert("name".into(), name);
+        let mut thumb = String::new();
         let mut put = |kind: &str, badge: &str, said: String, subject: Option<Value>, chips: Vec<String>| {
             r.insert("kind".into(), json!(kind));
             r.insert("badge".into(), json!(badge));
@@ -638,10 +698,13 @@ pub fn rank_plans_only(plan_by_root: &Map<String, Value>) -> Vec<Value> {
                 go_said(Some(plan), &get_s(&nxt, "title", "The next increment"), None),
                 Some(nxt.get("title").cloned().unwrap_or(json!(""))),
                 vec![go_chip(Some(plan), &get_s(&nxt, "n", "?")), "plan".into()]);
+        } else if let Some(a) = asking_check(Some(plan)) {
+            put("attend", "needs a value", ask_said(&a), Some(json!(failed_subject(&a))), vec!["plan".into()]);
         } else if let Some(f) = failed_check(Some(plan)) {
             put("wilt", "check failed",
                 format!("{{{{Increment {}'s check `{}` failed.}}}}", py_str(get(f, "n")), py_str(get(f, "id"))),
                 Some(json!(failed_subject(f))), vec!["plan".into()]);
+            thumb = check_thumb(Some(plan), f);
         } else if truthy(blocked) {
             let b = &blocked[0];
             put("wilt", "blocked",
@@ -673,6 +736,10 @@ pub fn rank_plans_only(plan_by_root: &Map<String, Value>) -> Vec<Value> {
             if !r.contains_key(k) {
                 r.insert(k.into(), v);
             }
+        }
+        // A failed browser check's last frame, last as crew-board puts it.
+        if !thumb.is_empty() {
+            r.insert("thumb".into(), json!(thumb));
         }
         rows.push(Value::Object(r));
     }

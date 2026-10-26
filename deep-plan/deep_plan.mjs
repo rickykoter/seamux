@@ -3121,7 +3121,11 @@ function reapLost(slug) {
   for (const inc of st.increments || []) {
     for (const [id, v] of Object.entries(checksOf(inc))) {
       if (v.status !== "running" || !runnerGone(v)) continue;
-      const { runner, ...rest } = v;
+      // A lost browser run's evidence is its own (what it got to before it
+      // died), never the previous run's: the board's thumbnail reads it.
+      const { runner, evidence: _old, ...rest } = v;
+      const ev = runner.evidence ? evidenceSummary(readEvidence(runsDir(slug), runner.evidence, { live: true })) : null;
+      if (ev) rest.evidence = { ...ev, live: false };
       inc.checks[id] = { ...rest, status: "fail", at: Date.now(), by: "runner",
         note: `runner lost: pid ${runner.pid || "?"} exited without a verdict (log: ${runner.log})` +
           (v.claims && v.claims.length ? ` — it holds ${v.claims.map(c => c.lock || c.release || c.name).join(", ")}: deep-plan check release ${slug} ${inc.n} ${id}` : ""),

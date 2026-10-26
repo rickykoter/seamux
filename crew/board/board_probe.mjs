@@ -1745,7 +1745,7 @@ if (crewImpl.isRust("news") || crewImpl.isRust("judgments")) {
     return [py, rs];
   };
   const NOW = 1790000000.25;
-  const badges = ["asked you", "review", "gate shut", "ci failed", "check failed", "conflicts", "changes",
+  const badges = ["asked you", "review", "gate shut", "needs a value", "ci failed", "check failed", "conflicts", "changes",
     "blocked", "stuck", "working", "merged", "plan done", "something else", ""];
   const rows = badges.flatMap((b, i) => [
     { id: "b" + i, name: "név {{" + i + "}}", kind: i % 3 ? "attend" : "running", badge: b,
@@ -1895,6 +1895,41 @@ if (crewImpl.isRust("crew-board")) {
     Object.keys(out.chips).length === 5 && Object.values(out.chips).every(c => c[c.length - 1] === "wake") &&
     out.chips.q[0] === "jump" && out.chips.f[0] !== "wake"]);
   checks.push(["rank: a row carries its workspace's commits for the news", out.commits.length === 1 && out.commits[0].s === "x"]);
+}
+
+// ---- browser and claiming checks: a card for a person's answer, a thumbnail for a failure ----
+{
+  const P = (s, chk, incChecks) => ({ slug: s, root: "/w/" + s, phase: "implementing", gate: { allow: true, why: "" },
+    progress: { total: 3, done: 1, blocked: [], open: [{ n: 2, title: "t" }], next: null },
+    checksOutstanding: chk, increments: [{ n: 2, title: "t", status: "working", checks: incChecks }] });
+  const pb = {
+    "/w/a": P("a", [{ n: 2, id: "qa", kind: "e2e", status: "needs-value" }],
+      [{ id: "qa", kind: "e2e", status: "needs-value", ask: { question: "Which QA env?", name: "QA_ENV", choices: ["qa-1"] } }]),
+    "/w/r": P("r", [{ n: 2, id: "qa", kind: "e2e", status: "running" }],
+      [{ id: "qa", kind: "e2e", status: "running", ask: { question: "Pick a variant", name: "V", choices: [] } }]),
+    "/w/b": P("b", [{ n: 2, id: "flow", kind: "browser", status: "fail" }],
+      [{ id: "flow", kind: "browser", status: "fail", evidence: { dir: "inc2-flow-17", latest: "frame-0004.png", frames: 4 } }]),
+    "/w/t": P("t", [{ n: 2, id: "unit", kind: "test", status: "fail" }], [{ id: "unit", kind: "test", status: "fail" }]),
+  };
+  const W = s => ({ id: s, title: s, cwd: "/w/" + s, desc: "", running: true, branch: "none", pr: "none", dirty: false, commits: [] });
+  const live = Object.fromEntries(stateFrom({ plans: pb, workspaces: ["a", "r", "b", "t"].map(W) }).rows.map(r => [r.id, r]));
+  const off = Object.fromEntries(stateFrom({ plans: pb }).rows.map(r => [r.id, r]));
+  for (const [path, rows] of [["", live], [" (cmux down)", off]]) {
+    checks.push(["claims: a check parked on a person's answer is an attend card naming its question" + path,
+      rows.a.kind === "attend" && rows.a.badge === "needs a value" && rows.a.subject === "increment 2 \u00b7 qa" &&
+      rows.a.said.startsWith("{{Increment 2's check `qa` asks: Which QA env?}}") && rows.a.chips[0] === "plan"]);
+    checks.push(["claims: so is a running claim with its question open" + path,
+      rows.r.badge === "needs a value" && /asks: Pick a variant/.test(rows.r.said)]);
+    checks.push(["browser: a failed browser check keeps its card and carries its last frame" + path,
+      rows.b.badge === "check failed" && rows.b.thumb === "/plan-evidence/b/inc2-flow-17/frame-0004.png"]);
+    checks.push(["browser: a failed check with no frames carries no thumbnail" + path,
+      rows.t.badge === "check failed" && !("thumb" in rows.t)]);
+  }
+  render({ rows: [live.b], quiet: "" });
+  checks.push(["browser: the card draws the frame from the intent server",
+    els.rows.innerHTML.includes('<img class="thumb"') && els.rows.innerHTML.includes('src="/plan-evidence/b/inc2-flow-17/frame-0004.png"')]);
+  render({ rows: [{ ...live.b, thumb: "javascript:alert(1)" }], quiet: "" });
+  checks.push(["browser: a thumb that is not an evidence path is not drawn", !els.rows.innerHTML.includes('<img class="thumb"')]);
 }
 
 // ---- muted and tucked (the app's tucked.json, marked by crew-board) -------

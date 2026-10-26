@@ -582,6 +582,39 @@ def group_families(rows, quiet):
         return rows, quiet
 
 
+def _check_rows(plan):
+    """Every increment's checks, as status --json lists them: (n, check)."""
+    for inc in (plan or {}).get("increments") or []:
+        for c in inc.get("checks") or []:
+            yield inc.get("n"), c
+
+
+def asking_check(plan):
+    """The first check whose claim waits on a person, or None.
+
+    A claim that only asks parks at needs-value; one that polls and asks stays
+    running with its question open. Either way it is a person's to answer,
+    from the plan page's picker.
+    """
+    if not plan or plan.get("phase") == "done":
+        return None
+    for n, c in _check_rows(plan):
+        if c.get("status") in ("needs-value", "running") and c.get("ask"):
+            return {"n": n, "id": c.get("id", "?"), "question": c["ask"].get("question", ""),
+                    "name": c["ask"].get("name", "")}
+    return None
+
+
+def check_thumb(plan, f):
+    """The last frame of a failed browser check, as the intent server serves it."""
+    for n, c in _check_rows(plan):
+        if str(n) == str(f.get("n")) and c.get("id") == f.get("id"):
+            ev = c.get("evidence") or {}
+            if ev.get("dir") and ev.get("latest"):
+                return "/plan-evidence/%s/%s/%s" % (plan.get("slug", ""), ev["dir"], ev["latest"])
+    return ""
+
+
 def failed_check(plan):
     """The first outstanding check whose verdict is fail or lost, or None.
 
@@ -681,6 +714,8 @@ def rank(wss, plan_by_root, screens=False):
         # under --screens, and the news must not quote a terminal.
         subject = ""
         failed = failed_check(plan)
+        asking = asking_check(plan)
+        thumb = ""
 
         if plan:
             total = plan["progress"]["total"]
@@ -704,6 +739,12 @@ def rank(wss, plan_by_root, screens=False):
             subject = nxt.get("title", "")
             said = go_said(plan, nxt.get("title", "The next increment"), plan["gate"]["why"])
             chips = [go_chip(plan, nxt.get("n", "?")), "diff", "jump"]
+        elif asking:
+            kind, badge = "attend", "needs a value"
+            subject = failed_subject(asking)
+            said = ("{{Increment %s's check `%s` asks: %s}} Pick it on the plan."
+                    % (asking["n"], asking["id"], asking["question"] or "a value"))
+            chips = ["plan", "jump"]
 
         # --- tier 2: broken -------------------------------------------------
         elif has(d, "ci:fail"):
@@ -721,6 +762,7 @@ def rank(wss, plan_by_root, screens=False):
                     % (failed["n"], failed["id"], "lost its runner" if failed["status"] == "lost"
                        else "failed"))
             chips = ["plan", "jump"]
+            thumb = check_thumb(plan, failed)
         elif has(d, "pr:conflict"):
             kind, badge = "wilt", "conflicts"
             said = "This branch conflicts with its base."
@@ -863,6 +905,8 @@ def rank(wss, plan_by_root, screens=False):
                      "pr_url": w.get("pr_url", ""),
                      "slug": (plan or {}).get("slug", ""),
                      "subject": subject, "commits": w.get("commits") or [],
+                     # A failed browser check's last frame, for the card.
+                     **({"thumb": thumb} if thumb else {}),
                      **fam_fields(plan)})
 
     order = {"attend": 0, "wilt": 1, "running": 2, "done": 3, "quiet": 4}
@@ -902,12 +946,20 @@ def rank_plans_only(plan_by_root):
                          "said": go_said(plan, nxt.get("title", "The next increment"), None),
                          "subject": nxt.get("title", ""),
                          "chips": [go_chip(plan, nxt.get("n", "?")), "plan"], "frac": frac, "meta": meta})
+        elif asking_check(plan):
+            a = asking_check(plan)
+            rows.append({"id": plan["slug"], "name": name, "kind": "attend", "badge": "needs a value",
+                         "said": "{{Increment %s's check `%s` asks: %s}}" % (a["n"], a["id"], a["question"] or "a value"),
+                         "subject": failed_subject(a),
+                         "chips": ["plan"], "frac": frac, "meta": meta})
         elif failed_check(plan):
             f = failed_check(plan)
+            thumb = check_thumb(plan, f)
             rows.append({"id": plan["slug"], "name": name, "kind": "wilt", "badge": "check failed",
                          "said": "{{Increment %s's check `%s` failed.}}" % (f["n"], f["id"]),
                          "subject": failed_subject(f),
-                         "chips": ["plan"], "frac": frac, "meta": meta})
+                         "chips": ["plan"], "frac": frac, "meta": meta,
+                         **({"thumb": thumb} if thumb else {})})
         elif plan["progress"].get("blocked"):
             b = plan["progress"]["blocked"][0]
             rows.append({"id": plan["slug"], "name": name, "kind": "wilt", "badge": "blocked",

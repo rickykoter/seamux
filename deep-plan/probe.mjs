@@ -2211,6 +2211,7 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   ok("evidence is kept for the latest three runs of a check",
     fs.readdirSync(runs).filter(d => /^inc1-flow-\d+$/.test(d)).length === 3);
 
+  const until2 = (cond, ms = 10000) => { const t = Date.now() + ms; while (Date.now() < t) { if (cond()) return true; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); } return cond(); };
   r = bcli("check", "run", "br-1", "1", "slow");
   ok("a browser check runs detached by default", r.status === 0 && /started detached/.test(r.stdout));
   const until = Date.now() + 8000;
@@ -2223,6 +2224,15 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   ok("…and its evidence fills while it runs (the Dock's filmstrip)", !!mid && mid.live && mid.frames >= 1 && mid.frames < 3);
   bcli("check", "wait", "br-1", "1", "slow", "--timeout", "20");
   ok("…landing its verdict with every frame", bck("slow").status === "pass" && bck("slow").evidence.frames === 3);
+  bcli("check", "run", "br-1", "1", "slow");
+  until2(() => { const e = JSON.parse(bcli("check", "evidence", "br-1", "1", "slow", "--json").stdout); return e.live && e.frames >= 1; });
+  const spid = bck("slow").runner.pid;
+  try { process.kill(-spid, "SIGKILL"); } catch { process.kill(spid, "SIGKILL"); }
+  until2(() => { try { process.kill(spid, 0); return false; } catch { return true; } });
+  bcli("check", "status", "br-1", "1", "slow");
+  ok("a lost browser run keeps its own evidence, not the last run's",
+    bck("slow").status === "fail" && /runner lost/.test(bck("slow").note) &&
+    bck("slow").evidence.frames < 3 && bck("slow").evidence.dir !== undefined && bck("slow").evidence.live === false);
 
   {
     const PR = path.join(TMP, "prune-runs");
