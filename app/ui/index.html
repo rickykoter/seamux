@@ -168,7 +168,7 @@
       /* The terminal's place (native.ts): the native one or the snapshot one. */
       .term-slot { flex: 1; min-height: 0; display: flex; flex-direction: column; }
       .term-slot[hidden] { display: none; }
-      .native-term { flex: 1; min-height: 0; padding: var(--term-pad); background: var(--pane-bg-or); }
+      .native-term { flex: 1; min-height: 0; padding: var(--term-pad); background: var(--pane-bg-or); position: relative; }
       .native-term.focused { box-shadow: inset 0 0 0 2px var(--accent); }
       .native-term .xterm { height: 100%; }
       .term {

@@ -3,6 +3,7 @@
 
 pub mod actions;
 pub mod ghostty;
+pub mod pane;
 pub mod pty;
 pub mod review;
 pub mod sessions;

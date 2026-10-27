@@ -105,6 +105,24 @@ pub async fn pty_leave_scroll(id: u32) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || leave_scroll(&live.target)).await.map_err(|e| e.to_string())?
 }
 
+/// Of `paths` (path-like text in the pane), each as the existing absolute
+/// path it names from the pane's folder, or null.
+#[tauri::command]
+pub async fn pty_paths(id: u32, paths: Vec<String>) -> Result<Vec<Option<String>>, String> {
+    if paths.len() > 200 {
+        return Err("too many paths".into());
+    }
+    let live = get(id)?;
+    tauri::async_runtime::spawn_blocking(move || crate::pane_app::existing(&live.target, &paths)).await.map_err(|e| e.to_string())
+}
+
+/// The cmux workspace the terminal's session belongs to, if cmux says.
+#[tauri::command]
+pub async fn pty_workspace(id: u32) -> Result<Option<String>, String> {
+    let live = get(id)?;
+    tauri::async_runtime::spawn_blocking(move || crate::pane_app::workspace(&live.target)).await.map_err(|e| e.to_string())
+}
+
 /// Every terminal a page left behind: called when a page starts, so a
 /// reloaded window does not keep its old tmux clients (and their sizes).
 #[tauri::command]

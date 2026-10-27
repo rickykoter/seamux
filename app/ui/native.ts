@@ -10,7 +10,9 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { ClipboardAddon, type ClipboardSelectionType } from "@xterm/addon-clipboard";
 import "@xterm/xterm/css/xterm.css";
+import "./pane.css";
 import { Term } from "./term";
+import { follow, HoverCard, pathLinks, type Hovered } from "./panelinks";
 
 // A page that starts (or reloads) owns no terminal yet: any its last life
 // left attached would keep its tmux client, and its size, for nothing.
@@ -75,9 +77,9 @@ export class NativeTerm {
    *  attach that made it, so the exit a detach provokes, or bytes a killed
    *  client left in flight, are never taken for this one's. */
   private gen = 0;
-  /** The link under the pointer: where it goes, its buffer row (1-based),
-   *  and the text it shows there, if any. */
-  private link: { uri: string; y: number; label: string } | null = null;
+  /** The link under the pointer, if any. */
+  private link: Hovered | null = null;
+  private card: HoverCard;
   /** The wheel went to tmux since the last key: it may be in copy mode. */
   private scrolled = false;
   /** Wheel travel not yet sent, in pixels, and when the wheel last moved. */
@@ -87,8 +89,17 @@ export class NativeTerm {
   private keys: Promise<unknown> = Promise.resolve();
 
   constructor() {
-    const open = (uri: string) => void invoke("open_url", { url: uri }).catch(() => {});
+    const open = (uri: string) => void follow(uri, this.id);
+    const hovered = (e: MouseEvent, uri: string, y: number, label: string) => {
+      this.link = { uri, y, label, go: () => open(uri) };
+      this.card.hover(uri, e);
+    };
+    const left = () => {
+      this.link = null;
+      this.card.hide();
+    };
     this.el.className = "native-term";
+    this.card = new HoverCard(this.el);
     this.term = new Terminal({
       fontFamily: FONT,
       fontSize: 12,
@@ -103,8 +114,8 @@ export class NativeTerm {
       // them on (the client says it can), and a click opens them as below.
       linkHandler: {
         activate: (_e, uri) => open(uri),
-        hover: (_e, uri, range) => (this.link = { uri, y: range.start.y, label: this.textAt(range) }),
-        leave: () => (this.link = null),
+        hover: (e, uri, range) => hovered(e, uri, range.start.y, this.textAt(range)),
+        leave: left,
       },
     });
     this.term.loadAddon(this.fit);
@@ -121,10 +132,12 @@ export class NativeTerm {
     // before tmux sees the click.
     this.term.loadAddon(
       new WebLinksAddon((_e, uri) => open(uri), {
-        hover: (_e, uri, range) => (this.link = { uri, y: range?.start.y ?? 0, label: uri }),
-        leave: () => (this.link = null),
+        hover: (e, uri, range) => hovered(e, uri, range?.start.y ?? 0, uri),
+        leave: left,
       }),
     );
+    // File paths: those on disk, from the pane's folder, open in VS Code.
+    this.term.registerLinkProvider(pathLinks(this.term, () => this.id, (h) => (this.link = h)));
     this.el.addEventListener(
       "mousedown",
       (e) => {
@@ -138,7 +151,8 @@ export class NativeTerm {
         }
         e.preventDefault();
         e.stopPropagation();
-        open(this.link.uri);
+        this.card.hide();
+        this.link.go();
       },
       true,
     );

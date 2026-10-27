@@ -6,6 +6,7 @@
 
 mod desk_app;
 mod newws_app;
+mod pane_app;
 mod pty_app;
 mod review_app;
 mod shell;
@@ -192,6 +193,10 @@ fn main() {
             pty_app::pty_resize,
             pty_app::pty_detach,
             pty_app::pty_leave_scroll,
+            pty_app::pty_paths,
+            pty_app::pty_workspace,
+            pane_app::open_in_editor,
+            pane_app::gh_card,
             pty_app::pty_reset,
             pty_app::native_session,
             views_app::views_frame,

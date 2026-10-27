@@ -1,0 +1,22 @@
+/* What sits over a native pane (native.ts, panelinks.ts): the GitHub hover card. */
+
+.pane-card {
+  position: absolute; z-index: 5; pointer-events: none;
+  display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 10px;
+  background: var(--card); color: var(--fg); border: 1px solid var(--line); box-shadow: 0 6px 24px var(--shade);
+  font: 12px/1.4 -apple-system, system-ui, sans-serif;
+}
+.pane-card[hidden] { display: none; }
+.pc-head { display: flex; align-items: center; gap: 8px; }
+.pc-state { font-size: 11px; font-weight: 600; padding: 0 7px; border-radius: 8px; background: var(--strip); color: var(--muted); text-transform: lowercase; }
+.pc-state.open { color: var(--good); }
+.pc-state.merged { color: #8e6fd8; }
+.pc-state.closed { color: var(--bad); }
+.pc-num { color: var(--muted); font-variant-numeric: tabular-nums; }
+.pc-title { font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.pc-who { color: var(--muted); font: 11px ui-monospace, Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pc-facts { color: var(--muted); }
+.pc-facts.bad { color: var(--bad); }
+.pc-body { color: var(--muted); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.pc-labels { display: flex; flex-wrap: wrap; gap: 4px; }
+.pc-label { font-size: 10.5px; padding: 0 6px; border-radius: 8px; border: 1px solid var(--line); color: var(--muted); }
