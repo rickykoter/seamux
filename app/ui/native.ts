@@ -221,18 +221,20 @@ export class NativeTerm {
     });
     // tmux's copy (a drag, let go) comes as OSC 52: onto the clipboard. A
     // program never reads the clipboard back.
-    this.term.loadAddon(
-      new ClipboardAddon({
-        readText: () => "",
-        writeText: (_sel: ClipboardSelectionType, text: string) => {
-          if (performance.now() - this.touchedAt > COPY_AFTER_TOUCH_MS) return;
-          void invoke("copy_text", { text }).then(
-            () => this.say(copied(text)),
-            () => this.say("Couldn't copy"),
-          );
-        },
-      }),
-    );
+    // (0.1.0's constructor is (base64, provider), though its typings say
+    // (provider): the provider goes second, or it is never asked.)
+    const provider: { readText: () => string; writeText: (sel: ClipboardSelectionType, text: string) => void } = {
+      readText: () => "",
+      writeText: (_sel: ClipboardSelectionType, text: string) => {
+        if (performance.now() - this.touchedAt > COPY_AFTER_TOUCH_MS) return;
+        void invoke("copy_text", { text }).then(
+          () => this.say(copied(text)),
+          () => this.say("Couldn't copy"),
+        );
+      },
+    };
+    const makeClipboard = ClipboardAddon as unknown as new (base64: undefined, clipboard: typeof provider) => ClipboardAddon;
+    this.term.loadAddon(new makeClipboard(undefined, provider));
     // Links: tmux has the mouse, so xterm.js alone opens one only on a
     // Command-click; a plain click on the link under the pointer opens it too,
     // before tmux sees the click.
