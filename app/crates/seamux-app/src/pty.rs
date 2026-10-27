@@ -304,26 +304,61 @@ fn cmux_ok(argv: &[&str]) -> Result<String, String> {
     Ok(out.stdout)
 }
 
-/// Leave copy mode, where the wheel put the pane, so typed keys reach the
-/// program again. Nothing happens when the pane is not in a mode.
+/// Leave copy mode, where the wheel put a pane, so typed keys reach the
+/// program again: every pane of the session's window (with the companion
+/// shell shown, the wheel may have scrolled either). Nothing happens to a
+/// pane not in a mode.
 pub fn leave_scroll(t: &Target) -> Result<(), String> {
-    tmux_ok(&t.socket, &["copy-mode", "-q", "-t", &format!("={}:", t.session)])
+    let ids = tmux_out(&t.socket, &["list-panes", "-t", &format!("{}:", t.session), "-F", "#{pane_id}"])?;
+    for id in ids.lines().filter(|l| l.starts_with('%')) {
+        tmux_ok(&t.socket, &["copy-mode", "-q", "-t", id])?;
+    }
+    Ok(())
 }
 
-/// Where tmux's copy mode has the pane: (in it, lines up from the bottom,
-/// lines of history). None when tmux cannot say.
+/// Where tmux's copy mode has the session's panes: (one is in it, its lines
+/// up from the bottom, its lines of history), the furthest back of them.
+/// None when tmux cannot say.
 pub fn scroll_state(t: &Target) -> Option<(bool, u64, u64)> {
-    let o = Command::new(tmux_bin())
-        .args(["-S", &t.socket, "display-message", "-p", "-t", &format!("={}:", t.session), "#{pane_in_mode} #{scroll_position} #{history_size}"])
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    let s = String::from_utf8_lossy(&o.stdout);
-    let mut w = s.split_whitespace();
-    let mode = w.next()? == "1";
-    let pos = w.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-    let hist = w.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-    Some((mode, pos, hist))
+    let out = tmux_out(&t.socket, &["list-panes", "-t", &format!("{}:", t.session), "-F", "#{pane_in_mode} #{scroll_position} #{history_size}"]).ok()?;
+    Some(furthest_scroll(&out))
+}
+
+/// Of `list-panes` lines "<in mode> <scroll position> <history>", the pane
+/// scrolled furthest back; (false, 0, 0) when none is in copy mode.
+pub fn furthest_scroll(lines: &str) -> (bool, u64, u64) {
+    let mut best = (false, 0, 0);
+    for l in lines.lines() {
+        let mut w = l.split_whitespace();
+        if w.next() != Some("1") {
+            continue;
+        }
+        let pos = w.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let hist = w.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        if !best.0 || pos > best.1 {
+            best = (true, pos, hist);
+        }
+    }
+    best
+}
+
+/// The session's own pane: the one that is not the companion shell, where
+/// Claude runs. Its id ("%3").
+pub fn main_pane(t: &Target) -> Option<String> {
+    let out = tmux_out(&t.socket, &["list-panes", "-t", &format!("{}:", t.session), "-F", "#{pane_id}\t#{@seamux_role}"]).ok()?;
+    out.lines().find_map(|l| l.split_once('\t').filter(|(_, role)| *role != "shell").map(|(id, _)| id.to_string()))
+}
+
+/// Line-editing keys the pane's ⌘ keys stand for, sent with send-keys so
+/// a tmux prefix bound to one of them (C-a is common) never takes it.
+pub const LINE_KEYS: [&str; 3] = ["C-a", "C-e", "C-u"];
+
+/// Send one of LINE_KEYS to the pane that has the keys.
+pub fn send_line_key(t: &Target, key: &str) -> Result<(), String> {
+    if !LINE_KEYS.contains(&key) {
+        return Err(format!("not a line key: {key:?}"));
+    }
+    tmux_ok(&t.socket, &["send-keys", "-t", &format!("={}:", t.session), key])
 }
 
 /// A tmux command's output, trimmed.
@@ -334,6 +369,9 @@ fn tmux_out(sock: &str, args: &[&str]) -> Result<String, String> {
     }
     Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
+
+/// The alert-bell slot seamux's hook takes.
+pub const BELL_HOOK: &str = "alert-bell[87]";
 
 /// What the companion shell's border says: "shell · <what runs>". Other
 /// panes' borders say nothing.
@@ -575,13 +613,19 @@ impl Pty {
     pub fn attach(t: &Target, cols: u16, rows: u16) -> Result<Pty, String> {
         // History kept for the wheel to scroll back through: tmux sets it
         // when a pane is made, so this reaches sessions started from now on.
-        let _ = tmux_ok(&t.socket, &["set-option", "-g", "history-limit", "10000"]);
+        // Raised, never lowered: a tmux.conf may keep more.
+        let had = tmux_out(&t.socket, &["show-options", "-gv", "history-limit"]).ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+        if had < 10_000 {
+            let _ = tmux_ok(&t.socket, &["set-option", "-g", "history-limit", "10000"]);
+        }
         // Claude in fullscreen selects and copies itself, asking tmux (OSC 52)
         // to set the clipboard; "external", tmux's default, refuses programs.
         let _ = tmux_ok(&t.socket, &["set-option", "-s", "set-clipboard", "on"]);
         // A bell marks its session (even in the window a client shows, where
         // tmux sets no flag of its own) until the pane is looked at.
-        let _ = tmux_ok(&t.socket, &["set-hook", "-g", "alert-bell", "set-option @seamux_bell 1"]);
+        // A slot of its own in the hook's list, so a tmux.conf's own bell
+        // hooks keep running, and setting it again changes nothing.
+        let _ = tmux_ok(&t.socket, &["set-hook", "-g", BELL_HOOK, "set-option @seamux_bell 1"]);
         Self::spawn(&tmux_bin(), &["-T", "hyperlinks", "-S", &t.socket, "attach-session", "-t", &format!("={}", t.session)], cols, rows)
     }
 
@@ -848,6 +892,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn the_pane_scrolled_furthest_back_is_the_one_shown() {
+        assert_eq!(furthest_scroll("0 0 10\n1 40 900\n1 12 50\n"), (true, 40, 900));
+        assert_eq!(furthest_scroll("0 0 10\n0 0 3\n"), (false, 0, 0));
+    }
+
     /// Live: the companion shell splits once, then hides and shows by zoom.
     #[test]
     fn companion_shell_splits_then_hides_and_shows() {
@@ -866,6 +916,13 @@ mod tests {
         assert_eq!(look(), ":1:1\nshell:0:1");
         assert_eq!(toggle_shell(&t), Ok(true));
         assert_eq!(look(), ":0:0\nshell:1:0");
+        // Claude's pane is the main one; copy mode leaves both panes.
+        let main = main_pane(&t).unwrap();
+        assert_ne!(main, tmux(&sock, &["display-message", "-p", "-t", "c:", "#{pane_id}"]));
+        tmux(&sock, &["copy-mode", "-t", &main]);
+        assert!(scroll_state(&t).unwrap().0);
+        leave_scroll(&t).unwrap();
+        assert!(!scroll_state(&t).unwrap().0);
         tmux(&sock, &["kill-server"]);
         let _ = std::fs::remove_dir_all(&dir);
     }

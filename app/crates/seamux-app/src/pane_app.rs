@@ -6,13 +6,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use seamux_app::pane::{card, gh_ref, resolve, vscode_url, workspace_of, Card, ISSUE_FIELDS, PR_FIELDS};
-use seamux_app::pty::{tmux_bin, Target};
+use seamux_app::pty::{main_pane, tmux_bin, Target};
 use serde_json::Value;
 
-/// The folder the pane's program works in, as tmux knows it.
+/// The folder Claude works in, as tmux knows it: its own pane's, never the
+/// companion shell's, whichever has the keys.
 pub fn pane_cwd(t: &Target) -> Option<PathBuf> {
+    let id = main_pane(t)?;
     let o = Command::new(tmux_bin())
-        .args(["-S", &t.socket, "display-message", "-p", "-t", &format!("={}:", t.session), "#{pane_current_path}"])
+        .args(["-S", &t.socket, "display-message", "-p", "-t", &id, "#{pane_current_path}"])
         .stderr(Stdio::null())
         .output()
         .ok()?;

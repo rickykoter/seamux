@@ -29,7 +29,8 @@ function rowText(line: IBufferLine, cols: number): { text: string; col: number[]
 }
 
 /** What pty_paths said of a candidate, kept a little while (the pane's
- *  folder can change). */
+ *  folder can change). Keyed by terminal and text: two panes in different
+ *  folders read the same text differently. */
 const known = new Map<string, { abs: string | null; at: number }>();
 const KNOWN_MS = 15_000;
 
@@ -52,16 +53,17 @@ export function pathLinks(term: Terminal, id: () => number | null, hover: (h: Ho
       }
       if (!found.length) return callback(undefined);
       const now = performance.now();
-      const ask = [...new Set(found.map((f) => f.path))].filter((p) => !(known.get(p) && now - known.get(p)!.at < KNOWN_MS));
+      const key = (p: string) => `${tid}\u0000${p}`;
+      const ask = [...new Set(found.map((f) => f.path))].filter((p) => !(known.get(key(p)) && now - known.get(key(p))!.at < KNOWN_MS));
       const ready = ask.length
-        ? invoke<(string | null)[]>("pty_paths", { id: tid, paths: ask }).then((r) => ask.forEach((p, i) => known.set(p, { abs: r[i] ?? null, at: now })))
+        ? invoke<(string | null)[]>("pty_paths", { id: tid, paths: ask }).then((r) => ask.forEach((p, i) => known.set(key(p), { abs: r[i] ?? null, at: now })))
         : Promise.resolve();
       void ready
         .catch(() => {})
         .then(() => {
           const links: ILink[] = [];
           for (const f of found) {
-            const abs = known.get(f.path)?.abs;
+            const abs = known.get(key(f.path))?.abs;
             if (!abs) continue;
             const label = text.slice(f.start, f.end);
             const go = () => void invoke("open_in_editor", { path: abs, line: f.line ?? null, col: f.col ?? null }).catch(() => {});

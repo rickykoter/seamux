@@ -7,7 +7,7 @@ use std::io::Read;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use seamux_app::pty::{bell_seen, leave_scroll, scroll_state, start_native, target_for, toggle_shell, Pty, Target};
+use seamux_app::pty::{bell_seen, leave_scroll, scroll_state, send_line_key, start_native, target_for, toggle_shell, Pty, Target};
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 /// A terminal: its PTY (locked for resizes and closing), its client's pid
@@ -103,6 +103,13 @@ pub fn pty_write(id: u32, data: Option<String>, raw: Option<Vec<u8>>) -> Result<
 pub async fn pty_leave_scroll(id: u32) -> Result<(), String> {
     let live = get(id)?;
     tauri::async_runtime::spawn_blocking(move || leave_scroll(&live.target)).await.map_err(|e| e.to_string())?
+}
+
+/// A line-editing key (C-a, C-e, C-u) for the pane, past any tmux prefix.
+#[tauri::command]
+pub async fn pty_line_key(id: u32, key: String) -> Result<(), String> {
+    let live = get(id)?;
+    tauri::async_runtime::spawn_blocking(move || send_line_key(&live.target, &key)).await.map_err(|e| e.to_string())?
 }
 
 /// Show or hide the companion shell under Claude. Returns whether it shows.

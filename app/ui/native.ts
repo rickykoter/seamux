@@ -45,7 +45,14 @@ function cmuxLook(): Promise<Look | null> {
 
 /** Command keys a Mac terminal turns into line editing, as iTerm and
  *  Ghostty do: start and end of line, and delete to its start. */
-const CMD_KEYS: Record<string, string> = { ArrowLeft: "\x01", ArrowRight: "\x05", Backspace: "\x15" };
+/** Sent as tmux key names with send-keys, so a tmux prefix bound to C-a
+ *  never takes ⌘←. */
+const CMD_KEYS: Record<string, string> = { ArrowLeft: "C-a", ArrowRight: "C-e", Backspace: "C-u" };
+
+/** A program's copy (OSC 52) reaches the clipboard only this soon after a
+ *  click, drag or key in the pane: a copy the person made. Text a program
+ *  merely prints (a file, a web response) cannot replace the clipboard. */
+const COPY_AFTER_TOUCH_MS = 1500;
 
 /** One wheel report goes out per this many rows of wheel travel: the view
  *  keeps up with the finger, and a trackpad's trickle of tiny events (its
@@ -122,6 +129,8 @@ export class NativeTerm {
   private hiddenSince = 0;
   /** When Esc last went to the pane, so a second one leaves instead. */
   private escAt = 0;
+  /** When the person last clicked, let go or typed in the pane. */
+  private touchedAt = 0;
   private fitTimer = 0;
   /** Bumped by every attach and detach: a channel answers only for the
    *  attach that made it, so the exit a detach provokes, or bytes a killed
@@ -203,16 +212,25 @@ export class NativeTerm {
       },
     });
     this.term.loadAddon(this.fit);
+    for (const kind of ["mousedown", "mouseup", "keydown"]) this.el.addEventListener(kind, () => (this.touchedAt = performance.now()), true);
+    // A bell while the person is in the pane is heard: it never asks for
+    // them on the Wall. (A moment later, so tmux's hook has marked it.)
+    this.term.onBell(() => {
+      const id = this.id;
+      if (id !== null && this.el.classList.contains("focused")) window.setTimeout(() => void invoke("pty_seen", { id }).catch(() => {}), 300);
+    });
     // tmux's copy (a drag, let go) comes as OSC 52: onto the clipboard. A
     // program never reads the clipboard back.
     this.term.loadAddon(
       new ClipboardAddon({
         readText: () => "",
-        writeText: (_sel: ClipboardSelectionType, text: string) =>
+        writeText: (_sel: ClipboardSelectionType, text: string) => {
+          if (performance.now() - this.touchedAt > COPY_AFTER_TOUCH_MS) return;
           void invoke("copy_text", { text }).then(
             () => this.say(copied(text)),
             () => this.say("Couldn't copy"),
-          ),
+          );
+        },
       }),
     );
     // Links: tmux has the mouse, so xterm.js alone opens one only on a
@@ -332,6 +350,17 @@ export class NativeTerm {
     this.pill.hidden = true;
     if (id !== null) this.keys = this.keys.then(() => invoke("pty_leave_scroll", { id })).catch(() => {});
     this.term.focus();
+  }
+
+  /** A line-editing key, in order with typed keys, past any tmux prefix. */
+  private lineKey(key: string): void {
+    const id = this.id;
+    if (id === null) return;
+    if (this.scrolled) {
+      this.scrolled = false;
+      this.keys = this.keys.then(() => invoke("pty_leave_scroll", { id })).catch(() => {});
+    }
+    this.keys = this.keys.then(() => invoke("pty_line_key", { id, key })).catch(() => {});
   }
 
   /** The text a link range shows, on its first row. */
@@ -510,10 +539,10 @@ export class NativeTerm {
         if (id !== null) void invoke<boolean>("pty_shell", { id }).catch((err) => this.say(`No shell: ${err}`));
         return false;
       }
-      const seq = plain && !e.shiftKey ? CMD_KEYS[e.key] : undefined;
-      if (seq) {
+      const key = plain && !e.shiftKey ? CMD_KEYS[e.key] : undefined;
+      if (key) {
         e.preventDefault();
-        this.send({ data: seq }, true);
+        this.lineKey(key);
       }
       return false;
     }
