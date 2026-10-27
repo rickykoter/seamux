@@ -62,6 +62,8 @@ fn tile(surface: &str, ws: &str, cwd: &str, state: &str) -> Tile {
         error: None,
         color: None,
         since: 0,
+        running: None,
+        bell: false,
     }
 }
 

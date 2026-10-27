@@ -30,6 +30,10 @@ export type Tile = {
   color: string | null;
   /** When the pane entered its current state (ms since the epoch). */
   since: number;
+  /** What a native pane is running now ("cargo test"). */
+  running?: string | null;
+  /** A native pane rang the bell since it was last looked at. */
+  bell?: boolean;
 };
 export type Frame = { tiles: Tile[]; error: string | null };
 
@@ -100,7 +104,9 @@ function titleOf(t: Tile): string {
   return t.workspace_title || t.label || "terminal";
 }
 function subOf(t: Tile): string {
-  return t.workspace_title && t.label !== t.workspace_title ? t.label : t.cwd;
+  const base = t.workspace_title && t.label !== t.workspace_title ? t.label : t.cwd;
+  const extra = t.bell ? "bell" : t.running;
+  return extra ? `${base} · ${extra}` : base;
 }
 /** A #RRGGBB the page can trust in a style, or "". */
 function safeColor(c: string | null): string {

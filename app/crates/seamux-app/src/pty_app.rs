@@ -7,7 +7,7 @@ use std::io::Read;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use seamux_app::pty::{leave_scroll, scroll_state, start_native, target_for, Pty, Target};
+use seamux_app::pty::{bell_seen, leave_scroll, scroll_state, start_native, target_for, Pty, Target};
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 /// A terminal: its PTY (locked for resizes and closing), its client's pid
@@ -103,6 +103,13 @@ pub fn pty_write(id: u32, data: Option<String>, raw: Option<Vec<u8>>) -> Result<
 pub async fn pty_leave_scroll(id: u32) -> Result<(), String> {
     let live = get(id)?;
     tauri::async_runtime::spawn_blocking(move || leave_scroll(&live.target)).await.map_err(|e| e.to_string())?
+}
+
+/// The pane was looked at (attached on screen, or focused): its bell is heard.
+#[tauri::command]
+pub async fn pty_seen(id: u32) -> Result<(), String> {
+    let live = get(id)?;
+    tauri::async_runtime::spawn_blocking(move || bell_seen(&live.target)).await.map_err(|e| e.to_string())?
 }
 
 /// How far tmux's copy mode has the pane scrolled back:

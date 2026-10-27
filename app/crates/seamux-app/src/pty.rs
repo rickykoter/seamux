@@ -142,12 +142,74 @@ pub fn claude_in_panes(panes: &[(String, u32)], procs: &str) -> Vec<String> {
     out
 }
 
+/// What a native pane tells the Wall besides its text: the command its
+/// shell (or Claude's) is running, and whether it rang the bell since it was
+/// last looked at.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PaneSignals {
+    pub running: Option<String>,
+    pub bell: bool,
+}
+
+const SHELLS: [&str; 5] = ["zsh", "bash", "sh", "fish", "dash"];
+
+fn base(word: &str) -> &str {
+    word.trim_start_matches('-').rsplit('/').next().unwrap_or(word)
+}
+
+/// The command a shell under `root` is running now, newest first, as a
+/// short name ("cargo test"). Only a shell's children count: a program's
+/// own helpers (Claude's MCP servers, a compiler's workers) do not. `procs`
+/// is `ps -axo pid=,ppid=,command=`.
+pub fn running_under(root: u32, procs: &str) -> Option<String> {
+    let mut kids: std::collections::HashMap<u32, Vec<u32>> = Default::default();
+    let mut argv: std::collections::HashMap<u32, Vec<&str>> = Default::default();
+    for line in procs.lines() {
+        let mut f = line.split_whitespace();
+        let (Some(pid), Some(ppid)) = (f.next().and_then(|v| v.parse::<u32>().ok()), f.next().and_then(|v| v.parse::<u32>().ok())) else { continue };
+        kids.entry(ppid).or_default().push(pid);
+        argv.insert(pid, f.collect());
+    }
+    let name = |pid: u32| argv.get(&pid).and_then(|a| a.first()).map(|w| base(w)).unwrap_or("");
+    let is_shell = |pid: u32| SHELLS.contains(&name(pid));
+    let mut best: Option<u32> = None;
+    let mut stack = vec![root];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(pid) = stack.pop() {
+        if !seen.insert(pid) {
+            continue;
+        }
+        for &k in kids.get(&pid).map(Vec::as_slice).unwrap_or(&[]) {
+            let quiet = matches!(name(k), "claude" | "cmux" | "crew" | "tmux");
+            if is_shell(pid) && !is_shell(k) && !quiet {
+                best = best.max(Some(k));
+            } else {
+                stack.push(k);
+            }
+        }
+    }
+    let a = argv.get(&best?)?;
+    let mut out = base(a.first()?).to_string();
+    if let Some(arg) = a.get(1).filter(|w| !w.starts_with('-') && !w.contains('/') && w.len() <= 20) {
+        out.push(' ');
+        out.push_str(arg);
+    }
+    Some(out.chars().take(32).collect())
+}
+
 /// Which native panes have a Claude in them now: the registry's sessions, each
 /// session's pane process, and one look at the process table.
 pub fn native_claude_now() -> std::collections::HashSet<String> {
+    native_now().0
+}
+
+/// One look at every native pane: the surfaces with a Claude in them, and
+/// each surface's signals (what runs, a bell).
+pub fn native_now() -> (std::collections::HashSet<String>, std::collections::HashMap<String, PaneSignals>) {
     let file = crew_core::py::home().join(".cmux/local-tmux/sessions.json");
     let Some(reg) = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return Default::default() };
     let mut panes: Vec<(String, u32)> = Vec::new();
+    let mut bells: std::collections::HashSet<String> = Default::default();
     for s in reg.get("sessions").and_then(Value::as_array).into_iter().flatten() {
         let (Some(surface), Some(name), Some(sock)) = (
             s.get("surfaceID").and_then(Value::as_str),
@@ -156,8 +218,13 @@ pub fn native_claude_now() -> std::collections::HashSet<String> {
         ) else {
             continue;
         };
-        let Ok(o) = Command::new(tmux_bin()).args(["-S", sock, "list-panes", "-t", &format!("={name}"), "-F", "#{pane_pid}"]).stderr(Stdio::null()).output() else { continue };
-        for pid in String::from_utf8_lossy(&o.stdout).lines().filter_map(|l| l.trim().parse::<u32>().ok()) {
+        let Ok(o) = Command::new(tmux_bin()).args(["-S", sock, "list-panes", "-t", &format!("={name}"), "-F", "#{pane_pid} #{@seamux_bell}"]).stderr(Stdio::null()).output() else { continue };
+        for line in String::from_utf8_lossy(&o.stdout).lines() {
+            let mut w = line.split_whitespace();
+            let Some(pid) = w.next().and_then(|v| v.parse::<u32>().ok()) else { continue };
+            if w.next() == Some("1") {
+                bells.insert(surface.to_uppercase());
+            }
             panes.push((surface.to_string(), pid));
         }
     }
@@ -165,7 +232,20 @@ pub fn native_claude_now() -> std::collections::HashSet<String> {
         return Default::default();
     }
     let Ok(ps) = Command::new("ps").args(["-axo", "pid=,ppid=,command="]).output() else { return Default::default() };
-    claude_in_panes(&panes, &String::from_utf8_lossy(&ps.stdout)).into_iter().collect()
+    let procs = String::from_utf8_lossy(&ps.stdout);
+    let claude = claude_in_panes(&panes, &procs).into_iter().collect();
+    let mut signals: std::collections::HashMap<String, PaneSignals> = Default::default();
+    for (surface, pid) in &panes {
+        let s = signals.entry(surface.to_uppercase()).or_default();
+        s.running = s.running.take().or_else(|| running_under(*pid, &procs));
+        s.bell = bells.contains(&surface.to_uppercase());
+    }
+    (claude, signals)
+}
+
+/// The pane was looked at: its bell is heard.
+pub fn bell_seen(t: &Target) -> Result<(), String> {
+    tmux_ok(&t.socket, &["set-option", "-t", &t.session, "-u", "@seamux_bell"])
 }
 
 /// tmux, from PATH (the app adopts the login shell's at start) or Homebrew.
@@ -455,6 +535,9 @@ impl Pty {
         // Claude in fullscreen selects and copies itself, asking tmux (OSC 52)
         // to set the clipboard; "external", tmux's default, refuses programs.
         let _ = tmux_ok(&t.socket, &["set-option", "-s", "set-clipboard", "on"]);
+        // A bell marks its session (even in the window a client shows, where
+        // tmux sets no flag of its own) until the pane is looked at.
+        let _ = tmux_ok(&t.socket, &["set-hook", "-g", "alert-bell", "set-option @seamux_bell 1"]);
         Self::spawn(&tmux_bin(), &["-T", "hyperlinks", "-S", &t.socket, "attach-session", "-t", &format!("={}", t.session)], cols, rows)
     }
 
@@ -590,9 +673,23 @@ mod tests {
         assert_eq!(running_on(&recs, "S3"), None);
     }
     use super::*;
+
     use serde_json::json;
     use std::io::Read;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn running_is_what_a_shell_runs_not_a_programs_helpers() {
+        // pane shell 10 -> claude 11 -> MCP node 12, and zsh -c 13 -> cargo 14 -> rustc 15
+        let procs = "10 1 -zsh\n11 10 claude --resume x\n12 11 node /mcp/server.js\n13 11 /bin/zsh -c eval 'cargo test'\n14 13 cargo test --workspace\n15 14 rustc --crate-name x\n";
+        assert_eq!(running_under(10, procs).as_deref(), Some("cargo test"));
+        // Claude alone, between commands: nothing runs.
+        assert_eq!(running_under(10, "10 1 -zsh\n11 10 claude\n12 11 node /mcp/s.js\n"), None);
+        // A plain shell's foreground job; a path argument is left off.
+        assert_eq!(running_under(20, "20 1 -zsh\n21 20 /usr/bin/vim /tmp/x.rs\n").as_deref(), Some("vim"));
+        // cmux's own hooks are not news.
+        assert_eq!(running_under(20, "20 1 zsh\n21 20 cmux claude-hook stop\n"), None);
+    }
 
     #[test]
     fn pty_reads_live_sessions_and_their_client() {

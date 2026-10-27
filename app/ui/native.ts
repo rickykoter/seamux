@@ -400,7 +400,10 @@ export class NativeTerm {
       if (!this.opened) {
         this.term.open(this.el);
         // The textarea exists only once the terminal is open.
-        this.term.textarea?.addEventListener("focus", () => this.el.classList.add("focused"));
+        this.term.textarea?.addEventListener("focus", () => {
+          this.el.classList.add("focused");
+          if (this.id !== null) void invoke("pty_seen", { id: this.id }).catch(() => {});
+        });
         this.term.textarea?.addEventListener("blur", () => this.el.classList.remove("focused"));
         this.opened = true;
       }
@@ -457,6 +460,7 @@ export class NativeTerm {
         return;
       }
       this.id = id;
+      void invoke("pty_seen", { id }).catch(() => {});
       // Resized while it attached: tell tmux the size it has now.
       if (this.term.cols !== cols || this.term.rows !== rows) void invoke("pty_resize", { id, cols: this.term.cols, rows: this.term.rows }).catch(() => {});
     } catch {
