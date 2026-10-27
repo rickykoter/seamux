@@ -174,6 +174,8 @@ fn main() {
             review_app::review_post,
             review_app::review_push,
             review_app::review_remove,
+            review_app::review_suggest,
+            review_app::review_others,
             term_app::term_frame,
             term_app::term_input,
             term_app::term_key,

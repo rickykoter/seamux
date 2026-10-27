@@ -356,7 +356,7 @@ function cmdPrompt() {
   const inbox = path.join(os.tmpdir(), "lookout");
   fs.mkdirSync(inbox, { recursive: true });
   process.stdout.write(brief(r, { patchPath: p.patch, plansDir: path.dirname(S.REVIEWS_DIR),
-                                  outPath: path.join(inbox, id + ".incoming.json") }));
+                                  outPath: path.join(inbox, id + ".incoming.json"), reply: flag("reply") }));
 }
 
 function cmdFindings() {
@@ -519,6 +519,9 @@ function usage() {
         .seamux/lookout.json quiz: true) puts a question before each high
         group's note; it never gates, and is fixed when the review is created.
   lookout prompt <id>       the reviewer brief: give it to ONE fresh subagent
+        --reply: the reviewer answers with its JSON instead of writing a file,
+        and the caller pipes that to findings add (for a reviewer that has
+        no file-writing tool).
   lookout findings add <id> <file|->     validate and ingest a reviewer's JSON:
                             {findings, edges, notes}, or a bare array of findings
   lookout findings list <id> [--open] [--json]

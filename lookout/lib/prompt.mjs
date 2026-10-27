@@ -38,7 +38,7 @@ export function planContext(plansDir, slug, inc) {
   try { return fs.readFileSync(path.join(dir, f), "utf8").slice(0, PLAN_CAP); } catch { return ""; }
 }
 
-export function brief(review, { patchPath, plansDir, outPath }) {
+export function brief(review, { patchPath, plansDir, outPath, reply = false }) {
   const src = review.source || {};
   const where = src.kind === "patch" ? `the patch file ${src.file}`
     : src.kind === "range" ? `the commit range ${src.range} in ${src.root}`
@@ -179,7 +179,12 @@ decode; state the claim.
 
 ## Output
 
-Write ONE JSON object to ${outPath}, matching this schema:
+${reply ? replyOutput(review, quiz) : fileOutput(review, quiz, outPath)}`;
+}
+
+// The usual hand-over: the reviewer writes a file and ingests it itself.
+function fileOutput(review, quiz, outPath) {
+  return `Write ONE JSON object to ${outPath}, matching this schema:
 
 ${JSON.stringify(outputSchema(quiz), null, 2)}
 
@@ -192,5 +197,21 @@ owed a note${quiz ? " or a question" : ""}; fix those and run it again (accepted
 duplicated, and a note for the same files replaces the earlier one). Finish by
 replying with the number of findings per severity (${SEVERITIES.join(", ")}) and
 of notes, and nothing else — the review is where the human reads them.
+`;
+}
+
+// --reply: a reviewer with no file-writing tool (the seamux app's) answers
+// with the JSON, and whoever started it runs the ingest.
+function replyOutput(review, quiz) {
+  return `Your final reply is ONE JSON object matching this schema, and nothing
+else: no prose before or after it. Do not write a file or run the ingest;
+whoever started you passes your reply to \`lookout findings add ${review.id} -\`.
+
+${JSON.stringify(outputSchema(quiz), null, 2)}
+
+If it rejects anything, or a group is still owed a note${quiz ? " or a question" : ""}, you are sent
+its output; then reply with the whole corrected object again (accepted
+findings are not duplicated, and a note for the same files replaces the
+earlier one).
 `;
 }
