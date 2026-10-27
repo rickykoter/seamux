@@ -5,6 +5,7 @@
 // TermSlot puts it where a pane is tmux-backed and the snapshot terminal
 // (term.ts) everywhere else, so the sheet and the wall preview need not know.
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -56,6 +57,48 @@ const paced = new WeakSet<Event>();
 /** A mouse report xterm.js sends as text (SGR or X10 form). */
 const isMouseReport = (d: string) => d.startsWith("\x1b[<") || d.startsWith("\x1b[M");
 
+/** Every native terminal, for the drop that lands on one of them. */
+const live = new Set<NativeTerm>();
+let dropping = false;
+
+/** Files dropped on the window: Tauri catches the drop and says where. The
+ *  pane under it, if any, takes their paths. Listened for once, for all. */
+function listenForDrops(): void {
+  if (dropping) return;
+  dropping = true;
+  void getCurrentWebview()
+    .onDragDropEvent((ev) => {
+      const p = ev.payload;
+      const at = "position" in p ? { x: p.position.x / devicePixelRatio, y: p.position.y / devicePixelRatio } : null;
+      const under = at ? [...live].find((t) => t.contains(at.x, at.y)) : undefined;
+      for (const t of live) t.dropHint(p.type === "over" && t === under);
+      if (p.type === "drop" && under) under.drop(p.paths);
+    })
+    .catch(() => {});
+}
+
+/** `s` as one shell word, as a terminal pastes a dropped file. */
+const shellWord = (s: string) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`);
+
+/** The font size a pane was set to (⌘+ / ⌘-), kept per pane. */
+const FONT_KEY = (surface: string) => `seamux.paneFont.${surface}`;
+function savedFont(surface: string): number | null {
+  try {
+    const v = Number(localStorage.getItem(FONT_KEY(surface)));
+    return v >= 8 && v <= 28 ? v : null;
+  } catch {
+    return null;
+  }
+}
+function saveFont(surface: string, size: number | null): void {
+  try {
+    if (size === null) localStorage.removeItem(FONT_KEY(surface));
+    else localStorage.setItem(FONT_KEY(surface), String(size));
+  } catch {
+    /* kept for this session only */
+  }
+}
+
 /** What a copy says it took. */
 function copied(text: string): string {
   const lines = text.replace(/\n$/, "").split("\n").length;
@@ -92,6 +135,8 @@ export class NativeTerm {
   /** A short note over the pane ("Copied 3 lines"). */
   private note = document.createElement("div");
   private noteTimer = 0;
+  /** The font size cmux's look gives; a pane's own size overrides it. */
+  private baseFont = 12;
   /** The wheel went to tmux since the last key: it may be in copy mode. */
   private scrolled = false;
   /** Wheel travel not yet sent, in pixels, and when the wheel last moved. */
@@ -121,6 +166,23 @@ export class NativeTerm {
     this.note.setAttribute("role", "status");
     this.note.hidden = true;
     this.el.append(this.pill, this.note);
+    // An image on the clipboard has no text to paste: Claude reads the
+    // clipboard's image itself on Ctrl-V. (On the pane, captured, so it
+    // runs before xterm.js's own paste.)
+    this.el.addEventListener(
+      "paste",
+      (e) => {
+        const d = e.clipboardData;
+        if (!d || d.getData("text/plain")) return;
+        if (![...d.items].some((i) => i.type.startsWith("image/"))) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.send({ data: "\x16" }, true);
+      },
+      true,
+    );
+    live.add(this);
+    listenForDrops();
     this.term = new Terminal({
       fontFamily: FONT,
       fontSize: 12,
@@ -204,6 +266,35 @@ export class NativeTerm {
       this.keys = this.keys.then(() => invoke("pty_leave_scroll", { id })).catch(() => {});
     }
     this.keys = this.keys.then(() => invoke("pty_write", { id, ...k })).catch(() => {});
+  }
+
+  /** Whether the page point (x, y) is on this pane. */
+  contains(x: number, y: number): boolean {
+    if (!this.visible()) return false;
+    const r = this.el.getBoundingClientRect();
+    return x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+  }
+
+  /** Files are being dragged over this pane (or not). */
+  dropHint(on: boolean): void {
+    this.el.classList.toggle("drop-on", on);
+  }
+
+  /** Files dropped here: their paths, typed in as a paste. */
+  drop(paths: string[]): void {
+    if (!paths.length || this.id === null) return;
+    this.term.paste(paths.map(shellWord).join(" ") + " ");
+    this.term.focus();
+  }
+
+  /** ⌘+ / ⌘- / ⌘0: this pane's font size, kept for it. */
+  private zoom(by: number): void {
+    const now = this.term.options.fontSize ?? this.baseFont;
+    const size = by === 0 ? this.baseFont : Math.max(8, Math.min(28, now + by));
+    this.term.options.fontSize = size;
+    saveFont(this.surface, by === 0 ? null : size);
+    if (this.visible()) this.fit.fit();
+    this.say(`${size} pt`);
   }
 
   /** Show a short note over the pane for a moment. */
@@ -345,7 +436,8 @@ export class NativeTerm {
       this.term.options.theme = theme;
       this.el.style.background = theme.background;
       if (l.fontFamily) this.term.options.fontFamily = `"${l.fontFamily.replace(/"/g, "")}", ${FONT}`;
-      if (l.fontSize) this.term.options.fontSize = Math.min(l.fontSize, 13);
+      if (l.fontSize) this.baseFont = Math.min(l.fontSize, 13);
+      this.term.options.fontSize = savedFont(this.surface) ?? this.baseFont;
       if (this.visible()) this.fit.fit();
     });
   }
@@ -399,7 +491,13 @@ export class NativeTerm {
     if (e.type !== "keydown") return true;
     if (e.metaKey) {
       if (e.key === "Escape") this.term.blur();
-      const seq = !e.ctrlKey && !e.altKey && !e.shiftKey ? CMD_KEYS[e.key] : undefined;
+      const plain = !e.ctrlKey && !e.altKey;
+      if (plain && (e.key === "=" || e.key === "+" || e.key === "-" || e.key === "0")) {
+        e.preventDefault();
+        this.zoom(e.key === "-" ? -1 : e.key === "0" ? 0 : 1);
+        return false;
+      }
+      const seq = plain && !e.shiftKey ? CMD_KEYS[e.key] : undefined;
       if (seq) {
         e.preventDefault();
         this.send({ data: seq }, true);
