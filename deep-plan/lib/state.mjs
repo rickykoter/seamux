@@ -401,14 +401,16 @@ function inside(target, root) {
 // the real defect: decide.mjs surfaces them and `status` prints BROKEN ROOT.
 export function brokenRoots() {
   return allStates()
-    .filter(st => st && st.root && st.phase !== "closed" && !fs.existsSync(st.root))
+    .filter(st => st && st.root && st.phase !== "closed" && (!path.isAbsolute(st.root) || !fs.existsSync(st.root)))
     .map(st => ({ slug: st.slug, root: st.root }));
 }
 
+// A relative root is broken too: resolved against the hook's cwd, `.` would
+// claim whichever worktree the agent stands in.
 export function planFor(target) {
   for (const st of allStates()) {
     if (!st || !st.root) continue;
-    if (!fs.existsSync(st.root)) continue;
+    if (!path.isAbsolute(st.root) || !fs.existsSync(st.root)) continue;
     if (st.phase === "closed") continue;
     if (inside(target, st.root)) return st;
   }

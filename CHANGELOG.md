@@ -6,6 +6,15 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **deep-plan: `--root .` no longer takes over other worktrees.** `render
+  --root` stored the path exactly as it was typed, and the gate resolves a
+  root against the directory the hook runs in. A plan rendered with `--root .`
+  therefore claimed whatever worktree the agent was standing in, and its
+  closed gate refused edits there. The refusal named that plan, even when the
+  worktree belonged to another plan with an increment open. `--root` is now
+  stored as an absolute path. A relative root already in state is reported as
+  broken, and the gate fails open on it with its usual warning.
+
 - **humanize: a new plugin for readable prose.** A skill that removes AI
   writing tells and untangles hard-to-parse syntax, with seven reference
   files and `scripts/scan.py`, a scanner for the mechanical tells. Its
