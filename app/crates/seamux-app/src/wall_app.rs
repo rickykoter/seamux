@@ -274,5 +274,8 @@ pub async fn wall_jump(surface_id: String) -> Result<(), String> {
     let w = wall()?.clone();
     // A jump goes to the pane in cmux: it may come forward.
     crate::shell::allow_cmux_focus();
-    tauri::async_runtime::spawn_blocking(move || w.jump(&surface_id)).await.map_err(|e| e.to_string())?
+    let r = tauri::async_runtime::spawn_blocking(move || w.jump(&surface_id)).await.map_err(|e| e.to_string())?;
+    // Counted from when cmux has been asked, however long that took.
+    crate::shell::allow_cmux_focus();
+    r
 }
