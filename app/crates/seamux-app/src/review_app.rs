@@ -6,7 +6,7 @@
 //! -p`) briefed with exactly `lookout prompt`. What leaves the machine (a
 //! comment, a push) is a separate command the page calls after a click.
 
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -41,6 +41,7 @@ const NEVER: &str = "Read(~/.ssh/**),Read(~/.aws/**),Read(~/.gnupg/**),Read(~/.c
 const REPLY_ROUNDS: usize = 2;
 
 #[derive(Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct Job {
     pub id: String,
     pub input: String,
@@ -76,6 +77,10 @@ pub struct Job {
     pub pushed: bool,
     /// The URL of the GitHub review the comments went out in.
     pub posted: String,
+    /// When the current status began, for the tab's elapsed time.
+    pub stage_at: u64,
+    /// What a running agent did last ("reading shell.rs"), or "".
+    pub activity: String,
 }
 
 static JOBS: OnceLock<Mutex<Vec<Job>>> = OnceLock::new();
@@ -168,8 +173,12 @@ fn note(id: &str, text: &str) {
 
 fn stage(id: &str, status: &str, detail: &str) {
     update(id, |j| {
+        if j.status != status {
+            j.stage_at = now();
+        }
         j.status = status.into();
         j.detail = detail.into();
+        j.activity.clear();
     });
     note(id, detail);
 }
@@ -208,6 +217,9 @@ fn tool_path() -> String {
     dirs.join(":")
 }
 
+/// Called with each line of a program's stdout as it arrives.
+type LineFn = Box<dyn FnMut(&str) + Send>;
+
 struct Out {
     code: i32,
     out: String,
@@ -221,6 +233,18 @@ fn exec(
     cwd: Option<&Path>,
     stdin: Option<&str>,
     limit: Duration,
+) -> Result<Out, String> {
+    exec_lines(program, args, cwd, stdin, limit, None)
+}
+
+/// `exec`, with each line of stdout also handed to `on_line` as it arrives.
+fn exec_lines(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&Path>,
+    stdin: Option<&str>,
+    limit: Duration,
+    on_line: Option<LineFn>,
 ) -> Result<Out, String> {
     let mut c = Command::new(program);
     c.args(args)
@@ -244,7 +268,11 @@ fn exec(
             let _ = si.write_all(text.as_bytes());
         });
     }
-    let ho = drain(child.stdout.take().ok_or("no stdout")?);
+    let so = child.stdout.take().ok_or("no stdout")?;
+    let ho = match on_line {
+        Some(f) => drain_lines(so, f),
+        None => drain(so),
+    };
     let he = drain(child.stderr.take().ok_or("no stderr")?);
     let deadline = Instant::now() + limit;
     let status = loop {
@@ -265,6 +293,18 @@ fn exec(
         code: status.code().unwrap_or(-1),
         out: ho.join().unwrap_or_default(),
         err: he.join().unwrap_or_default(),
+    })
+}
+
+fn drain_lines<R: Read + Send + 'static>(r: R, mut f: LineFn) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut all = String::new();
+        for line in BufReader::new(r).lines().map_while(Result::ok) {
+            f(&line);
+            all.push_str(&line);
+            all.push('\n');
+        }
+        all
     })
 }
 
@@ -571,10 +611,12 @@ fn pipeline(id: &str, input: &str) -> Result<(), String> {
         Some(depth_guide(&job.depth)),
         None,
         REVIEW_TIME,
+        Some(id),
     )?;
     update(id, |j| j.session = session.clone());
     let mut round = 0;
     let heard = loop {
+        stage(id, "ingesting", "saving the reviewer's findings");
         let o = exec(
             "lookout",
             &["findings", "add", &rid, "-"],
@@ -582,7 +624,9 @@ fn pipeline(id: &str, input: &str) -> Result<(), String> {
             Some(&said),
             QUICK,
         )?;
-        let heard = format!("{}\n{}", o.out.trim(), o.err.trim()).trim().to_string();
+        let heard = format!("{}\n{}", o.out.trim(), o.err.trim())
+            .trim()
+            .to_string();
         note(id, &heard.chars().take(600).collect::<String>());
         let clean = o.code == 0
             && !heard.contains("rejected item")
@@ -610,6 +654,7 @@ fn pipeline(id: &str, input: &str) -> Result<(), String> {
             Some(depth_guide(&job.depth)),
             Some(&session),
             SLOW,
+            Some(id),
         )?
         .1;
     };
@@ -627,6 +672,7 @@ fn pipeline(id: &str, input: &str) -> Result<(), String> {
 }
 
 /// One headless Claude turn in `wt`. Returns its session id and final text.
+/// With `watch`, each tool call it makes is shown on that job as it happens.
 #[allow(clippy::too_many_arguments)]
 fn claude(
     wt: &Path,
@@ -637,11 +683,13 @@ fn claude(
     guide: Option<&str>,
     resume: Option<&str>,
     limit: Duration,
+    watch: Option<&str>,
 ) -> Result<(String, String), String> {
     let mut args: Vec<&str> = vec![
         "-p",
         "--output-format",
-        "json",
+        "stream-json",
+        "--verbose",
         "--allowedTools",
         tools,
         "--disallowedTools",
@@ -659,13 +707,35 @@ fn claude(
     if let Some(s) = resume {
         args.extend(["--resume", s]);
     }
-    let o = exec("claude", &args, Some(wt), Some(prompt), limit)?;
-    let v: Value = serde_json::from_str(o.out.trim()).map_err(|_| {
-        format!(
-            "claude said something unreadable: {}",
-            o.err.trim().chars().take(300).collect::<String>()
-        )
-    })?;
+    let on_line: Option<LineFn> = watch.map(|id| {
+        let id = id.to_string();
+        Box::new(move |line: &str| {
+            if let Some(a) = serde_json::from_str::<Value>(line)
+                .ok()
+                .as_ref()
+                .and_then(activity_of)
+            {
+                update(&id, |j| j.activity = a);
+            }
+        }) as LineFn
+    });
+    let o = exec_lines("claude", &args, Some(wt), Some(prompt), limit, on_line)?;
+    if let Some(id) = watch {
+        update(id, |j| j.activity.clear());
+    }
+    // The last event is the result: {"type":"result","result":..,"session_id":..}.
+    let v = o
+        .out
+        .lines()
+        .rev()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|v| v.get("type").and_then(Value::as_str) == Some("result"))
+        .ok_or_else(|| {
+            format!(
+                "claude said something unreadable: {}",
+                o.err.trim().chars().take(300).collect::<String>()
+            )
+        })?;
     let text = v
         .get("result")
         .and_then(Value::as_str)
@@ -684,6 +754,47 @@ fn claude(
             .to_string(),
         text,
     ))
+}
+
+/// A stream-json event's last tool call, in a few words: "reading shell.rs".
+fn activity_of(v: &Value) -> Option<String> {
+    if v.get("type").and_then(Value::as_str) != Some("assistant") {
+        return None;
+    }
+    let call = v
+        .pointer("/message/content")?
+        .as_array()?
+        .iter()
+        .rev()
+        .find(|c| c.get("type").and_then(Value::as_str) == Some("tool_use"))?;
+    let input = call.get("input").cloned().unwrap_or(Value::Null);
+    let arg = |k: &str| {
+        input
+            .get(k)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let base = |p: String| p.rsplit('/').next().unwrap_or("").to_string();
+    let short = |t: String| {
+        let t = t.lines().next().unwrap_or("").to_string();
+        if t.chars().count() > 70 {
+            format!("{}…", t.chars().take(70).collect::<String>())
+        } else {
+            t
+        }
+    };
+    Some(
+        match call.get("name").and_then(Value::as_str).unwrap_or("") {
+            "Read" => format!("reading {}", base(arg("file_path"))),
+            "Edit" | "MultiEdit" => format!("editing {}", base(arg("file_path"))),
+            "Write" => format!("writing {}", base(arg("file_path"))),
+            "Grep" => format!("searching for {}", short(arg("pattern"))),
+            "Glob" => format!("looking for {}", short(arg("pattern"))),
+            "Bash" => format!("running {}", short(arg("command"))),
+            other => format!("using {other}"),
+        },
+    )
 }
 
 /// Re-read what the worktree and the store now say.
@@ -758,13 +869,32 @@ pub fn review_start(input: String, depth: String, model: String) -> Result<Strin
     if !DEPTHS.contains(&depth.as_str()) || !MODELS.contains(&model.as_str()) {
         return Err("unknown depth or model".into());
     }
-    let id = format!(
-        "{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0)
-    );
+    // One card per branch or pull request: reviewing it again replaces the
+    // old run (its worktree too), unless that run has work not yet pushed.
+    let same: Vec<Job> = snapshot()
+        .into_iter()
+        .filter(|j| same_target(j, &t))
+        .collect();
+    for j in &same {
+        if !j.busy.is_empty() || !matches!(j.status.as_str(), "ready" | "failed") {
+            return Err("that one is still running".into());
+        }
+        if j.dirty || (j.ahead > 0 && !j.pushed) {
+            return Err("its last review has fixes that are not pushed: push them, or remove that review first".into());
+        }
+    }
+    for j in &same {
+        discard(j);
+    }
+    let id = same.last().map(|j| j.id.clone()).unwrap_or_else(|| {
+        format!(
+            "{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        )
+    });
     let job = Job {
         id: id.clone(),
         input: input.trim().to_string(),
@@ -773,10 +903,12 @@ pub fn review_start(input: String, depth: String, model: String) -> Result<Strin
         model,
         status: "resolving".into(),
         started: now(),
+        stage_at: now(),
         ..Default::default()
     };
     let all = {
         let mut g = jobs().lock().map_err(|e| e.to_string())?;
+        g.retain(|x| !same.iter().any(|o| o.id == x.id));
         g.push(job);
         g.clone()
     };
@@ -837,6 +969,7 @@ pub fn review_fix(id: String, ids: Vec<String>, commit: bool) -> Result<(), Stri
             None,
             resume,
             REVIEW_TIME,
+            Some(&j.id),
         ) {
             Ok((s, said)) => {
                 note(&j.id, &said.chars().take(600).collect::<String>());
@@ -970,6 +1103,33 @@ pub fn review_remove(id: String) -> Result<(), String> {
     if !j.busy.is_empty() || !matches!(j.status.as_str(), "ready" | "failed") {
         return Err("it is still running".into());
     }
+    discard(&j);
+    let all = {
+        let mut g = jobs().lock().map_err(|e| e.to_string())?;
+        g.retain(|x| x.id != id);
+        g.clone()
+    };
+    publish(&all);
+    Ok(())
+}
+
+/// Whether job `j` reviews what `t` names: the same pull request, or branch.
+fn same_target(j: &Job, t: &seamux_app::review::Target) -> bool {
+    if !j.repo.eq_ignore_ascii_case(&t.repo) {
+        return false;
+    }
+    match &t.what {
+        What::Pr(n) => j.pr == Some(*n),
+        What::Branch(b) => {
+            j.branch == *b
+                || (j.branch.is_empty() && parse_target(&j.input).is_ok_and(|o| o.what == t.what))
+        }
+        What::Default => false,
+    }
+}
+
+/// Delete a job's worktree, its fetched refs and its folder. Not the review.
+fn discard(j: &Job) {
     if !j.wt.is_empty() && !j.clone.is_empty() {
         let _ = git(
             Path::new(&j.clone),
@@ -985,11 +1145,321 @@ pub fn review_remove(id: String) -> Result<(), String> {
         }
     }
     let _ = std::fs::remove_dir_all(base_dir().join(&j.id));
-    let all = {
-        let mut g = jobs().lock().map_err(|e| e.to_string())?;
-        g.retain(|x| x.id != id);
-        g.clone()
+}
+
+/// Something to review, offered under the input.
+#[derive(Clone, Serialize)]
+pub struct Pick {
+    /// What goes in the input: owner/repo#12 or owner/repo@branch.
+    pub input: String,
+    pub repo: String,
+    pub title: String,
+    /// Unix seconds of the last change.
+    pub updated: u64,
+}
+
+#[derive(Serialize, Default)]
+pub struct Picks {
+    /// Open pull requests waiting on your review, newest five.
+    pub requested: Vec<Pick>,
+    /// Your own open pull requests, newest five.
+    pub mine: Vec<Pick>,
+    /// Pushed branches in local clones, newest five.
+    pub branches: Vec<Pick>,
+    /// Why GitHub could not be asked, when it could not.
+    pub problem: String,
+}
+
+/// Unix seconds of a UTC ISO time ("2026-10-26T12:21:17Z"; GitHub's and lookout's).
+fn iso_secs(t: &str) -> u64 {
+    crew_store::epoch19(t).map(|s| s.max(0) as u64).unwrap_or(0)
+}
+
+fn search_prs(who: &str) -> Result<Vec<Pick>, String> {
+    let s = gh(
+        &[
+            "search",
+            "prs",
+            who,
+            "--state=open",
+            "--sort=updated",
+            "--limit",
+            "5",
+            "--json",
+            "number,title,repository,updatedAt",
+        ],
+        None,
+    )?;
+    let v: Value = serde_json::from_str(&s).map_err(|e| e.to_string())?;
+    Ok(v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|p| {
+                    let repo = p
+                        .pointer("/repository/nameWithOwner")?
+                        .as_str()?
+                        .to_string();
+                    let n = p.get("number")?.as_u64()?;
+                    Some(Pick {
+                        input: format!("{repo}#{n}"),
+                        title: p
+                            .get("title")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        updated: iso_secs(p.get("updatedAt").and_then(Value::as_str).unwrap_or("")),
+                        repo,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// Branches with an upstream on a GitHub remote, across the local clones.
+fn recent_branches() -> Vec<Pick> {
+    let roots: Vec<PathBuf> = match std::env::var("SEAMUX_REVIEW_ROOTS") {
+        Ok(v) if !v.is_empty() => v.split(':').map(PathBuf::from).collect(),
+        _ => vec![crew_core::py::home().join("code")],
     };
-    publish(&all);
-    Ok(())
+    let mut out: Vec<Pick> = Vec::new();
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if !p.join(".git").is_dir() {
+                continue;
+            }
+            let Ok(remotes) = git(&p, &["remote", "-v"]) else {
+                continue;
+            };
+            let Ok(refs) = git(
+                &p,
+                &[
+                    "for-each-ref",
+                    "--sort=-committerdate",
+                    "--count=8",
+                    "--format=%(committerdate:unix)\t%(upstream:remotename)\t%(upstream:lstrip=3)\t%(subject)",
+                    "refs/heads",
+                ],
+            ) else {
+                continue;
+            };
+            for line in refs.lines() {
+                let f: Vec<&str> = line.splitn(4, '\t').collect();
+                let [when, remote, branch, subject] = f[..] else {
+                    continue;
+                };
+                if remote.is_empty() || branch.is_empty() || matches!(branch, "main" | "master") {
+                    continue;
+                }
+                let Some(repo) = github_repo(&remotes, remote) else {
+                    continue;
+                };
+                out.push(Pick {
+                    input: format!("{repo}@{branch}"),
+                    repo,
+                    title: subject.to_string(),
+                    updated: when.parse().unwrap_or(0),
+                });
+            }
+        }
+    }
+    out.sort_by_key(|o| std::cmp::Reverse(o.updated));
+    out.dedup_by(|a, b| a.input == b.input);
+    out.truncate(5);
+    out
+}
+
+/// owner/repo of `remote` in `git remote -v` output, when it is on GitHub.
+fn github_repo(remotes: &str, remote: &str) -> Option<String> {
+    remotes.lines().find_map(|l| {
+        let mut it = l.split_whitespace();
+        if it.next()? != remote {
+            return None;
+        }
+        let url = it.next()?;
+        let rest = url
+            .strip_prefix("https://github.com/")
+            .or_else(|| url.strip_prefix("git@github.com:"))
+            .or_else(|| url.strip_prefix("ssh://git@github.com/"))?;
+        let r = rest.trim_end_matches('/').trim_end_matches(".git");
+        (r.split('/').count() == 2).then(|| r.to_string())
+    })
+}
+
+#[tauri::command]
+pub async fn review_suggest() -> Picks {
+    tauri::async_runtime::spawn_blocking(|| {
+        let mut p = Picks::default();
+        match search_prs("--review-requested=@me") {
+            Ok(v) => p.requested = v,
+            Err(e) => p.problem = e,
+        }
+        if let Ok(v) = search_prs("--author=@me") {
+            p.mine = v;
+        }
+        p.branches = recent_branches();
+        p
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// A lookout review the app did not run: one opened from a terminal session.
+#[derive(Clone, Serialize)]
+pub struct Other {
+    pub id: String,
+    pub title: String,
+    /// The checkout it was opened in, and its branch.
+    pub root: String,
+    pub branch: String,
+    /// Unix seconds of its last change.
+    pub updated: u64,
+    /// Findings not resolved or dismissed, by severity.
+    pub open: std::collections::BTreeMap<String, u32>,
+}
+
+/// The newest terminal reviews. Each record is re-read only when it changes.
+#[tauri::command]
+pub async fn review_others() -> Vec<Other> {
+    tauri::async_runtime::spawn_blocking(others)
+        .await
+        .unwrap_or_default()
+}
+
+fn others() -> Vec<Other> {
+    type Seen = std::collections::HashMap<PathBuf, (std::time::SystemTime, Option<Other>)>;
+    static SEEN: OnceLock<Mutex<Seen>> = OnceLock::new();
+    let dir = crew_board::review::reviews_dir();
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mine: std::collections::HashSet<String> =
+        snapshot().into_iter().map(|j| j.review_id).collect();
+    let app_wts = base_dir().to_string_lossy().into_owned();
+    let mut cache = SEEN
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut out = Vec::new();
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(id) = name.strip_suffix(".json") else {
+            continue;
+        };
+        if id.ends_with(".rows")
+            || id.ends_with(".seen")
+            || id.ends_with(".incoming")
+            || id.starts_with("wake-")
+            || mine.contains(id)
+        {
+            continue;
+        }
+        let path = e.path();
+        let Ok(mtime) = e.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
+        if !matches!(cache.get(&path), Some((t, _)) if *t == mtime) {
+            let o = read_other(&path, id).filter(|o| !o.root.starts_with(&app_wts));
+            cache.insert(path.clone(), (mtime, o));
+        }
+        if let Some((_, Some(o))) = cache.get(&path) {
+            out.push(o.clone());
+        }
+    }
+    out.sort_by_key(|o| std::cmp::Reverse(o.updated));
+    out.truncate(12);
+    out
+}
+
+fn read_other(path: &Path, id: &str) -> Option<Other> {
+    let d: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let src = d.get("source")?;
+    let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let mut open = std::collections::BTreeMap::new();
+    for f in d
+        .get("findings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|f| is_open(f))
+    {
+        *open.entry(s(f, "severity")).or_insert(0) += 1;
+    }
+    let title = s(&d, "title");
+    Some(Other {
+        id: id.to_string(),
+        title: if title.is_empty() {
+            id.to_string()
+        } else {
+            title
+        },
+        root: s(src, "root"),
+        branch: s(src, "branch"),
+        updated: iso_secs(&s(&d, "updatedAt")),
+        open,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activity_names_the_last_tool_call() {
+        let v: Value = serde_json::from_str(
+            r#"{"type":"assistant","message":{"content":[
+                {"type":"text","text":"looking"},
+                {"type":"tool_use","name":"Read","input":{"file_path":"/w/app/src/shell.rs"}}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(activity_of(&v).as_deref(), Some("reading shell.rs"));
+        let bash: Value = serde_json::from_str(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff HEAD~1\nmore"}}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(activity_of(&bash).as_deref(), Some("running git diff HEAD~1"));
+        let text: Value = serde_json::from_str(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(activity_of(&text), None);
+        assert_eq!(activity_of(&serde_json::json!({"type": "result"})), None);
+    }
+
+    #[test]
+    fn github_repo_reads_https_and_ssh_remotes() {
+        let r = "origin\tgit@github.com:rickykoter/seamux.git (fetch)\n\
+                 fork\thttps://github.com/someone/seamux (fetch)\n\
+                 other\thttps://gitlab.com/a/b.git (fetch)\n";
+        assert_eq!(github_repo(r, "origin").as_deref(), Some("rickykoter/seamux"));
+        assert_eq!(github_repo(r, "fork").as_deref(), Some("someone/seamux"));
+        assert_eq!(github_repo(r, "other"), None);
+        assert_eq!(github_repo(r, "missing"), None);
+    }
+
+    #[test]
+    fn iso_secs_reads_github_and_lookout_times() {
+        assert_eq!(iso_secs("1970-01-02T00:00:00Z"), 86400);
+        assert_eq!(iso_secs("1970-01-02T00:00:00.500Z"), 86400);
+        assert_eq!(iso_secs("not a time"), 0);
+    }
+
+    #[test]
+    fn same_target_matches_a_pr_or_its_branch() {
+        let j = Job {
+            repo: "rickykoter/seamux".into(),
+            pr: Some(100),
+            branch: "app-open-at-login".into(),
+            ..Default::default()
+        };
+        let t = |s: &str| parse_target(s).unwrap();
+        assert!(same_target(&j, &t("rickykoter/seamux#100")));
+        assert!(same_target(&j, &t("RickyKoter/seamux@app-open-at-login")));
+        assert!(!same_target(&j, &t("rickykoter/seamux#101")));
+        assert!(!same_target(&j, &t("rickykoter/other#100")));
+    }
 }
