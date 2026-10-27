@@ -200,10 +200,14 @@ pub async fn open_in_cmux<R: Runtime>(window: WebviewWindow<R>, path: String, wo
         let c = cmux::Cmux::connect().map_err(|e| e.to_string())?;
         // The workspace comes forward first, so its companion is on screen
         // and sized; then the page opens there, focused: the person asked.
+        // The person asked for cmux here: it may come forward.
+        allow_cmux_focus();
         if let Some(w) = &ws {
             c.workspace_select(w).map_err(|e| e.to_string())?;
         }
         crew_board::companion::open(&url, &companion_key(&path), ws.as_deref().unwrap_or(""), "", true)?;
+        // Counted from when cmux has been asked, however long that took.
+        allow_cmux_focus();
         Ok::<(), String>(())
     })
     .await
@@ -309,9 +313,16 @@ fn toggle<R: Runtime>(app: &AppHandle<R>) {
     if let Some(w) = app.get_webview_window("main") {
         let visible = w.is_visible().unwrap_or(false);
         // The window is not kept above other apps, so a visible one can sit
-        // behind them: the hotkey hides it only when it is in front.
-        let in_front = w.is_focused().unwrap_or(false);
-        if visible && in_front && on_active_space(&w) {
+        // behind them: the hotkey hides it only when it is in front. A panel
+        // keeps its key status after another app is clicked, so "in front"
+        // also asks macOS which app is.
+        let in_front = w.is_focused().unwrap_or(false) && app_in_front();
+        // On another screen than the pointer's, it comes here instead.
+        let here = match (monitor_under_pointer(&w), w.current_monitor().ok().flatten()) {
+            (Some(p), Some(c)) => p.position() == c.position(),
+            _ => true,
+        };
+        if visible && in_front && here && on_active_space(&w) {
             hide(&w);
         } else {
             if visible {
@@ -324,20 +335,159 @@ fn toggle<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// The monitor the pointer is on. Each monitor's frame is physical, as the
+/// pointer is.
+fn monitor_under_pointer<R: Runtime>(w: &WebviewWindow<R>) -> Option<tauri::Monitor> {
+    let at = w.cursor_position().ok()?;
+    w.available_monitors().ok()?.into_iter().find(|m| {
+        let (p, s) = (m.position(), m.size());
+        at.x >= p.x as f64 && at.y >= p.y as f64 && at.x < p.x as f64 + s.width as f64 && at.y < p.y as f64 + s.height as f64
+    })
+}
+
+/// Whether this app is the one in front (not only its panel the key window).
+fn app_in_front() -> bool {
+    #[cfg(target_os = "macos")]
+    return front::we_are_front();
+    #[cfg(not(target_os = "macos"))]
+    true
+}
+
 /// The hotkey brings the window up filling the screen under the pointer
 /// (its work area: the menu bar and the Dock stay clear). Escape hides it.
 fn fill_screen<R: Runtime>(w: &WebviewWindow<R>) {
-    // Each monitor's frame is physical, as the pointer is.
-    let under = w.cursor_position().ok().and_then(|at| {
-        w.available_monitors().ok()?.into_iter().find(|m| {
-            let (p, s) = (m.position(), m.size());
-            at.x >= p.x as f64 && at.y >= p.y as f64 && at.x < p.x as f64 + s.width as f64 && at.y < p.y as f64 + s.height as f64
-        })
-    });
-    let Some(m) = under.or_else(|| w.current_monitor().ok().flatten()) else { return };
+    let Some(m) = monitor_under_pointer(w).or_else(|| w.current_monitor().ok().flatten()) else { return };
     let area = m.work_area();
     let _ = w.set_position(tauri::Position::Physical(area.position));
     let _ = w.set_size(tauri::Size::Physical(area.size));
+}
+
+// ---- cmux stays the backend ---------------------------------------------
+// cmux runs the terminals; the app is where the person works. cmux brings
+// itself to the front for some of what it is asked (selecting a workspace,
+// a browser surface, a notification), from the app or from crew's own
+// processes. While the window is up, a cmux that comes forward without the
+// person going there is sent back: the window takes the front again.
+
+/// Until when (ms since the epoch) cmux may come forward: the app's own
+/// handoffs (Open in cmux, the Wall's jump) open this for a moment.
+static CMUX_ALLOWED_UNTIL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// The person asked to go to cmux: let it come forward for the next 3 s.
+pub fn allow_cmux_focus() {
+    CMUX_ALLOWED_UNTIL.store(now_ms() + 3000, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// cmux's bundle ids: the release and the nightly.
+pub fn is_cmux_bundle(id: &str) -> bool {
+    id == "com.cmuxterm.app" || id.starts_with("com.cmuxterm.app.")
+}
+
+#[cfg(target_os = "macos")]
+mod front {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceSecondsSinceLastEventType(source: i32, event_type: u32) -> f64;
+    }
+    /// kCGEventSourceStateCombinedSessionState, kCGEventFlagsChanged, and
+    /// kCGEventLeftMouseDown / kCGEventRightMouseDown.
+    const COMBINED: i32 = 0;
+    const FLAGS_CHANGED: u32 = 12;
+    const LEFT_DOWN: u32 = 1;
+    const RIGHT_DOWN: u32 = 3;
+
+    /// When (ms since the epoch) this app last got a mouse click: in its own
+    /// page or in a page it frames, as AppKit hands them all to the window.
+    static OWN_CLICK_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    /// Note every click this app gets. Once, on the main thread, at setup.
+    pub fn watch_own_clicks() {
+        use objc2_app_kit::{NSEvent, NSEventMask};
+        let block = block2::RcBlock::new(|e: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
+            OWN_CLICK_AT.store(super::now_ms(), std::sync::atomic::Ordering::Relaxed);
+            e.as_ptr()
+        });
+        // SAFETY: the handler returns the event it was given, unchanged.
+        let monitor = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown, &block) };
+        // It watches for the whole life of the app.
+        std::mem::forget(monitor);
+    }
+
+    /// The last click anywhere was this recent, and it was not this app's:
+    /// the person clicked another app (cmux, its notification, the Dock).
+    pub fn clicked_elsewhere_within(secs: f64) -> bool {
+        // SAFETY: CoreGraphics queries with constant arguments.
+        let ago = unsafe { CGEventSourceSecondsSinceLastEventType(COMBINED, LEFT_DOWN).min(CGEventSourceSecondsSinceLastEventType(COMBINED, RIGHT_DOWN)) };
+        if ago >= secs {
+            return false;
+        }
+        let own_ago_ms = super::now_ms().saturating_sub(OWN_CLICK_AT.load(std::sync::atomic::Ordering::Relaxed));
+        // Ours if this app saw a click at about the same moment.
+        own_ago_ms as f64 > ago * 1000.0 + 150.0
+    }
+
+    /// Whether this process is the app in front.
+    pub fn we_are_front() -> bool {
+        let ws = objc2_app_kit::NSWorkspace::sharedWorkspace();
+        ws.frontmostApplication().is_some_and(|a| a.processIdentifier() as u32 == std::process::id())
+    }
+
+    /// The frontmost app's bundle id.
+    pub fn frontmost() -> Option<String> {
+        let ws = objc2_app_kit::NSWorkspace::sharedWorkspace();
+        let app = ws.frontmostApplication()?;
+        app.bundleIdentifier().map(|s| s.to_string())
+    }
+
+    /// A modifier key (Cmd, for Cmd-Tab) went down or up this recently: the
+    /// person switched apps by keyboard.
+    pub fn modifier_within(secs: f64) -> bool {
+        // SAFETY: a CoreGraphics query with constant arguments.
+        unsafe { CGEventSourceSecondsSinceLastEventType(COMBINED, FLAGS_CHANGED) < secs }
+    }
+
+    /// Whether the pointer is over `win`. The window fills its screen's work
+    /// area, so with the pointer on it the person cannot have clicked cmux.
+    pub fn pointer_over(win: &objc2_app_kit::NSWindow) -> bool {
+        let p = objc2_app_kit::NSEvent::mouseLocation();
+        let f = win.frame();
+        p.x >= f.origin.x && p.x <= f.origin.x + f.size.width && p.y >= f.origin.y && p.y <= f.origin.y + f.size.height
+    }
+}
+
+/// The window lost the focus: if cmux took it without being asked, take it
+/// back. Looked at a moment later, once macOS has said who is in front.
+fn guard_focus<R: Runtime>(w: &WebviewWindow<R>) {
+    #[cfg(target_os = "macos")]
+    {
+        let w = w.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            let w2 = w.clone();
+            let _ = w.run_on_main_thread(move || {
+                if !w2.is_visible().unwrap_or(false) || now_ms() < CMUX_ALLOWED_UNTIL.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                if !front::frontmost().is_some_and(|id| is_cmux_bundle(&id)) {
+                    return; // another app, which the person went to
+                }
+                let Ok(ptr) = w2.ns_window() else { return };
+                // SAFETY: as in join_full_screen_spaces; this runs on the main thread.
+                let win: &objc2_app_kit::NSWindow = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
+                if !front::pointer_over(win) || front::modifier_within(0.6) || front::clicked_elsewhere_within(0.6) {
+                    return; // a click on another app or screen, or Cmd-Tab: the person went there
+                }
+                win.orderFrontRegardless();
+                let _ = w2.set_focus();
+            });
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = w;
 }
 
 /// Tauri's hide does not take the window off screen once its class is the
@@ -387,6 +537,9 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
         // The hotkey and the tray bring this window back.
         #[cfg(target_os = "macos")]
         join_full_screen_spaces(&w);
+        // Clicks this app gets, to tell them from a click on cmux.
+        #[cfg(target_os = "macos")]
+        front::watch_own_clicks();
         // The window starts hidden (tauri.conf.json) so its first placement
         // already carries the Space flags; macOS reads them only on placement.
         show(&w);
@@ -443,6 +596,9 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
             // The sheet's keys work wherever focus is, a framed page
             // included, but only while this window has it.
             tauri::WindowEvent::Focused(on) => {
+                if !*on {
+                    guard_focus(&w2);
+                }
                 let gs = handle.global_shortcut();
                 for (k, _) in &sheet_keys {
                     let _ = if *on { gs.register(*k) } else { gs.unregister(*k) };
@@ -474,6 +630,14 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cmux_is_known_by_its_bundle_ids() {
+        assert!(super::is_cmux_bundle("com.cmuxterm.app"));
+        assert!(super::is_cmux_bundle("com.cmuxterm.app.nightly"));
+        assert!(!super::is_cmux_bundle("com.cmuxterm.apple"));
+        assert!(!super::is_cmux_bundle("com.mitchellh.ghostty"));
+    }
+
     use super::*;
 
     #[test]
