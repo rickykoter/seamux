@@ -83,7 +83,7 @@ export class ReviewView {
   /** Per job: the ticked findings, whether its page is open, and a pending confirm. */
   private ticked = new Map<string, Set<string>>();
   private framed = new Set<string>();
-  private confirm = new Map<string, "post" | "push">();
+  private confirm = new Map<string, "post" | "push" | "remove">();
   private origin: string | null = null;
 
   constructor(private root: HTMLElement) {
@@ -170,8 +170,17 @@ export class ReviewView {
     head.append(el("span", "r-name", this.title(j)), el("span", `r-chip ${j.status}`, j.busy || j.status), el("span", "r-meta", `${j.depth} · ${j.model || "default model"}`));
     const grow = el("span", "r-grow");
     head.append(grow);
-    if (!RUNNING.has(j.status) && !j.busy) head.append(btn("Remove", () => this.remove(j), "r-btn quiet"));
+    if (!RUNNING.has(j.status) && !j.busy)
+      head.append(btn("Remove", () => {
+        this.confirm.set(j.id, "remove");
+        this.redraw(j.id);
+      }, "r-btn quiet"));
     card.append(head);
+    // An in-card confirm: the webview shows no window.confirm dialog.
+    if (this.confirm.get(j.id) === "remove") {
+      const unpushed = j.ahead && !j.pushed ? ` Its ${j.ahead} unpushed commit${j.ahead === 1 ? " is" : "s are"} lost.` : "";
+      card.append(this.confirmBox(j, `Remove this review and its worktree?${unpushed}`, "Remove", () => void this.remove(j)));
+    }
 
     if (j.status !== "ready") {
       card.append(el("p", j.status === "failed" ? "r-detail bad" : "r-detail", j.detail || "starting"));
@@ -308,23 +317,28 @@ export class ReviewView {
     }
 
     const pending = this.confirm.get(j.id);
-    if (pending) {
-      const c = el("div", "r-confirm");
+    if (pending === "post" || pending === "push") {
       const say = pending === "post" ? `Post ${n} finding${n === 1 ? "" : "s"} as one review on ${j.repo} PR #${j.pr}? Everyone watching the pull request is notified, and the text is the reviewer's, not yours.` : `Push ${j.ahead} commit${j.ahead === 1 ? "" : "s"} to ${j.repo}:${j.branch}? It is never forced. Read the diff in the review first.`;
-      c.append(
-        el("span", "", say),
-        btn(pending === "post" ? "Post" : "Push", () => {
-          this.confirm.delete(j.id);
-          void this.run(j, pending === "post" ? "review_post" : "review_push", pending === "post" ? { ids: picked } : {});
-        }, "r-btn primary"),
-        btn("Cancel", () => {
-          this.confirm.delete(j.id);
-          this.redraw(j.id);
-        }, "r-btn quiet"),
-      );
-      box.append(c);
+      box.append(this.confirmBox(j, say, pending === "post" ? "Post" : "Push", () => void this.run(j, pending === "post" ? "review_post" : "review_push", pending === "post" ? { ids: picked } : {})));
     }
     return box;
+  }
+
+  /** A yes/cancel strip in the card; yes clears the pending confirm, then acts. */
+  private confirmBox(j: Job, say: string, yes: string, act: () => void): HTMLElement {
+    const c = el("div", "r-confirm");
+    c.append(
+      el("span", "", say),
+      btn(yes, () => {
+        this.confirm.delete(j.id);
+        act();
+      }, "r-btn primary"),
+      btn("Cancel", () => {
+        this.confirm.delete(j.id);
+        this.redraw(j.id);
+      }, "r-btn quiet"),
+    );
+    return c;
   }
 
   private async run(j: Job, cmd: string, args: Record<string, unknown>): Promise<void> {
@@ -338,12 +352,11 @@ export class ReviewView {
   }
 
   private async remove(j: Job): Promise<void> {
-    const unpushed = j.ahead && !j.pushed ? ` Its ${j.ahead} unpushed commit${j.ahead === 1 ? "" : "s"} will be lost.` : "";
-    if (!window.confirm(`Remove this review and its worktree?${unpushed}`)) return;
     try {
       await invoke("review_remove", { id: j.id });
     } catch (e) {
       this.err.textContent = String(e);
+      this.redraw(j.id);
     }
   }
 }
