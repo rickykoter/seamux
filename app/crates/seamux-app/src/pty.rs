@@ -224,6 +224,12 @@ fn cmux_ok(argv: &[&str]) -> Result<String, String> {
     Ok(out.stdout)
 }
 
+/// Leave copy mode, where the wheel put the pane, so typed keys reach the
+/// program again. Nothing happens when the pane is not in a mode.
+pub fn leave_scroll(t: &Target) -> Result<(), String> {
+    tmux_ok(&t.socket, &["copy-mode", "-q", "-t", &format!("={}:", t.session)])
+}
+
 fn tmux_ok(sock: &str, args: &[&str]) -> Result<(), String> {
     let o = Command::new(tmux_bin()).arg("-S").arg(sock).args(args).output().map_err(|e| e.to_string())?;
     if !o.status.success() {
@@ -424,8 +430,13 @@ fn winsize(cols: u16, rows: u16) -> libc::winsize {
 impl Pty {
     /// Attach to `t` at cols x rows. The child is the PTY's session leader,
     /// so a resize's SIGWINCH reaches it.
+    /// `-T hyperlinks`: xterm.js draws OSC 8 links, so tmux passes Claude's on
+    /// (it strips them for a client it thinks cannot).
     pub fn attach(t: &Target, cols: u16, rows: u16) -> Result<Pty, String> {
-        Self::spawn(&tmux_bin(), &["-S", &t.socket, "attach-session", "-t", &format!("={}", t.session)], cols, rows)
+        // History kept for the wheel to scroll back through: tmux sets it
+        // when a pane is made, so this reaches sessions started from now on.
+        let _ = tmux_ok(&t.socket, &["set-option", "-g", "history-limit", "10000"]);
+        Self::spawn(&tmux_bin(), &["-T", "hyperlinks", "-S", &t.socket, "attach-session", "-t", &format!("={}", t.session)], cols, rows)
     }
 
     /// Run `program args` with a new PTY as its controlling terminal.

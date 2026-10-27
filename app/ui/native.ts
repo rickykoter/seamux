@@ -8,6 +8,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { ClipboardAddon, type ClipboardSelectionType } from "@xterm/addon-clipboard";
 import "@xterm/xterm/css/xterm.css";
 import { Term } from "./term";
 
@@ -39,6 +40,20 @@ function cmuxLook(): Promise<Look | null> {
   return looks.get(dark)!;
 }
 
+/** Command keys a Mac terminal turns into line editing, as iTerm and
+ *  Ghostty do: start and end of line, and delete to its start. */
+const CMD_KEYS: Record<string, string> = { ArrowLeft: "\x01", ArrowRight: "\x05", Backspace: "\x15" };
+
+/** Each wheel report moves tmux's history 5 lines (and Claude's view a few):
+ *  one goes out per this many rows of wheel travel. */
+const ROWS_PER_REPORT = 4;
+
+/** Wheel events this page made itself, which xterm.js may turn into reports. */
+const paced = new WeakSet<Event>();
+
+/** A mouse report xterm.js sends as text (SGR or X10 form). */
+const isMouseReport = (d: string) => d.startsWith("\x1b[<") || d.startsWith("\x1b[M");
+
 /** How long an unseen terminal stays attached: a tab flick keeps it. */
 const DETACH_AFTER = 1500;
 
@@ -60,12 +75,19 @@ export class NativeTerm {
    *  attach that made it, so the exit a detach provokes, or bytes a killed
    *  client left in flight, are never taken for this one's. */
   private gen = 0;
-  /** The link under the pointer, and its buffer row (1-based), if any. */
-  private link: { uri: string; y: number } | null = null;
+  /** The link under the pointer: where it goes, its buffer row (1-based),
+   *  and the text it shows there, if any. */
+  private link: { uri: string; y: number; label: string } | null = null;
+  /** The wheel went to tmux since the last key: it may be in copy mode. */
+  private scrolled = false;
+  /** Wheel travel not yet sent, in pixels, and when the wheel last moved. */
+  private wheelLeft = 0;
+  private wheelAt = 0;
   /** Keys go out one after another: the next waits for the last. */
   private keys: Promise<unknown> = Promise.resolve();
 
   constructor() {
+    const open = (uri: string) => void invoke("open_url", { url: uri }).catch(() => {});
     this.el.className = "native-term";
     this.term = new Terminal({
       fontFamily: FONT,
@@ -77,15 +99,29 @@ export class NativeTerm {
       macOptionIsMeta: true,
       // tmux has the mouse: Option-drag selects here, as in other terminals.
       macOptionClickForcesSelection: true,
+      // Links a program marks (OSC 8, as Claude prints them): tmux passes
+      // them on (the client says it can), and a click opens them as below.
+      linkHandler: {
+        activate: (_e, uri) => open(uri),
+        hover: (_e, uri, range) => (this.link = { uri, y: range.start.y, label: this.textAt(range) }),
+        leave: () => (this.link = null),
+      },
     });
     this.term.loadAddon(this.fit);
+    // tmux's copy (a drag, let go) comes as OSC 52: onto the clipboard. A
+    // program never reads the clipboard back.
+    this.term.loadAddon(
+      new ClipboardAddon({
+        readText: () => "",
+        writeText: (_sel: ClipboardSelectionType, text: string) => void invoke("copy_text", { text }).catch(() => {}),
+      }),
+    );
     // Links: tmux has the mouse, so xterm.js alone opens one only on a
     // Command-click; a plain click on the link under the pointer opens it too,
     // before tmux sees the click.
-    const open = (uri: string) => void invoke("open_url", { url: uri }).catch(() => {});
     this.term.loadAddon(
       new WebLinksAddon((_e, uri) => open(uri), {
-        hover: (_e, uri, range) => (this.link = { uri, y: range?.start.y ?? 0 }),
+        hover: (_e, uri, range) => (this.link = { uri, y: range?.start.y ?? 0, label: uri }),
         leave: () => (this.link = null),
       }),
     );
@@ -96,7 +132,7 @@ export class NativeTerm {
         // The screen may have moved under a still pointer: only a link still
         // on its row opens; otherwise the click is tmux's.
         const row = this.term.buffer.active.getLine(this.link.y - 1)?.translateToString(true) ?? "";
-        if (!row.includes(this.link.uri.slice(0, 24))) {
+        if (!this.link.label || !row.includes(this.link.label.slice(0, 24))) {
           this.link = null;
           return;
         }
@@ -106,7 +142,8 @@ export class NativeTerm {
       },
       true,
     );
-    this.term.onData((d) => this.send({ data: d }));
+    this.term.onData((d) => this.send({ data: d }, !isMouseReport(d)));
+    this.term.attachCustomWheelEventHandler((e) => this.wheel(e));
     this.term.onBinary((b) => this.send({ raw: Array.from(b, (c) => c.charCodeAt(0)) }));
     this.term.onResize(({ cols, rows }) => this.id !== null && void invoke("pty_resize", { id: this.id, cols, rows }).catch(() => {}));
     this.term.attachCustomKeyEventHandler((e) => this.key(e));
@@ -118,10 +155,54 @@ export class NativeTerm {
     setInterval(() => this.check(), 400);
   }
 
-  private send(k: { data?: string; raw?: number[] }): void {
+  /** Bytes to the pane, in order. A typed key after a wheel scroll first
+   *  takes tmux out of copy mode, so it reaches Claude, not tmux. */
+  private send(k: { data?: string; raw?: number[] }, typed = false): void {
     const id = this.id;
     if (id === null) return;
+    if (typed && this.scrolled) {
+      this.scrolled = false;
+      this.keys = this.keys.then(() => invoke("pty_leave_scroll", { id })).catch(() => {});
+    }
     this.keys = this.keys.then(() => invoke("pty_write", { id, ...k })).catch(() => {});
+  }
+
+  /** The text a link range shows, on its first row. */
+  private textAt(r: { start: { x: number; y: number }; end: { x: number; y: number } }): string {
+    const row = this.term.buffer.active.getLine(r.start.y - 1)?.translateToString(true) ?? "";
+    return row.slice(r.start.x - 1, r.end.y === r.start.y ? r.end.x : undefined);
+  }
+
+  /** The wheel, paced: while the program (tmux) takes the mouse, a
+   *  trackpad's stream of events becomes one report per few rows of travel,
+   *  not one per event. A short flick still sends one. */
+  private wheel(e: WheelEvent): boolean {
+    if (paced.has(e)) return true;
+    if (this.term.modes.mouseTrackingMode === "none" || !e.deltaY) return true;
+    e.preventDefault();
+    this.scrolled = true;
+    const rowPx = this.el.clientHeight / Math.max(1, this.term.rows);
+    const dy = e.deltaMode === 1 ? e.deltaY * rowPx : e.deltaMode === 2 ? e.deltaY * this.el.clientHeight : e.deltaY;
+    const step = rowPx * ROWS_PER_REPORT;
+    const now = performance.now();
+    const fresh = now - this.wheelAt > 250 || Math.sign(dy) !== Math.sign(this.wheelLeft || dy);
+    this.wheelAt = now;
+    this.wheelLeft = fresh ? Math.sign(dy) * step : this.wheelLeft + dy;
+    let n = Math.trunc(this.wheelLeft / step);
+    this.wheelLeft -= n * step;
+    for (; n !== 0; n -= Math.sign(n)) {
+      const ev = new WheelEvent("wheel", {
+        deltaY: Math.sign(n),
+        deltaMode: WheelEvent.DOM_DELTA_LINE,
+        clientX: e.clientX,
+        clientY: e.clientY,
+        bubbles: true,
+        cancelable: true,
+      });
+      paced.add(ev);
+      e.target?.dispatchEvent(ev);
+    }
+    return false;
   }
 
   show(surface: string): void {
@@ -235,12 +316,18 @@ export class NativeTerm {
     this.hiddenSince = 0;
   }
 
-  /** The app's keys stay the app's: Command keys (⌘Esc leaves), and a
+  /** The app's keys stay the app's: Command keys (⌘Esc leaves) but the
+   *  line-editing ones (CMD_KEYS), and a
    *  second Esc within a moment (two would open Claude's Rewind). */
   private key(e: KeyboardEvent): boolean {
     if (e.type !== "keydown") return true;
     if (e.metaKey) {
       if (e.key === "Escape") this.term.blur();
+      const seq = !e.ctrlKey && !e.altKey && !e.shiftKey ? CMD_KEYS[e.key] : undefined;
+      if (seq) {
+        e.preventDefault();
+        this.send({ data: seq }, true);
+      }
       return false;
     }
     if (e.key === "Escape" && !e.ctrlKey && !e.altKey && !e.shiftKey) {
