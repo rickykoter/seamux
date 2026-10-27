@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# crew-reclaim [-n|--dry-run] [-y|--yes] [--family-ok] [<workspace-id>|<path>]
+# crew-reclaim [-n|--dry-run] [-y|--yes] [--family-ok] [--json] [<workspace-id>|<path>]
 #
 # The board's Merged bucket knows a worktree can go; this is the tap that
 # actually removes it. Invoked from the sidebar through the notification-hook
@@ -28,6 +28,12 @@
 # a yes. --yes skips the prompt, --dry-run stops after the report. Without a tty
 # there is nobody to ask, so it behaves as it always did and just proceeds —
 # that is the path a detached `fire()` from the hook still takes.
+#
+# --json is a dry run that prints the report as one JSON object instead (the
+# seamux app's reclaim wizard reads it): the worktree, branch, size and what
+# else it names, every check as {kind: pass|fail|skip|warn, text, hint}, the
+# blocker count, and what it would remove. Nothing is changed; the exit code
+# is the dry run's (1 with blockers).
 #
 # --family-ok turns the deep-plan guard from a blocker into a question: a y/N
 # that names the family, asked at a terminal only (refused without one, and
@@ -66,16 +72,48 @@ ws_tool() {
   fi
 }
 
+# Under --json the report is kept, not printed: each check as kind, text and
+# its note (the hint under it), each "would remove" line as what, target, note.
+json=""
+chk_kind=(); chk_text=(); chk_hint=()
+rm_what=(); rm_target=(); rm_note=()
+record() { chk_kind+=("$1"); chk_text+=("$2"); chk_hint+=(""); }
+
 die()  { printf '\033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 ok()   { printf '\033[32m✓\033[0m %s\n' "$*"; }
-say()  { printf '\033[2m→\033[0m %s\n' "$*"; }
-pass() { printf '  \033[32m✓\033[0m %s\n' "$*"; }
-fail() { printf '  \033[31m✗\033[0m %s\n' "$*"; blockers=$((blockers + 1)); }
-skip() { printf '  \033[2m·\033[0m %s\n' "$*"; }
-warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
-note() { printf '    \033[2m%s\033[0m\n' "$*"; }
-head2(){ printf '\n\033[1m%s\033[0m\n' "$*"; }
-kv()   { printf '  \033[2m%-9s\033[0m %s\n' "$1" "$2"; }
+say()  { [ -n "$json" ] && return 0; printf '\033[2m→\033[0m %s\n' "$*"; }
+pass() { if [ -n "$json" ]; then record pass "$*"; else printf '  \033[32m✓\033[0m %s\n' "$*"; fi; }
+fail() { if [ -n "$json" ]; then record fail "$*"; else printf '  \033[31m✗\033[0m %s\n' "$*"; fi; blockers=$((blockers + 1)); }
+skip() { if [ -n "$json" ]; then record skip "$*"; else printf '  \033[2m·\033[0m %s\n' "$*"; fi; }
+warn() { if [ -n "$json" ]; then record warn "$*"; else printf '  \033[33m!\033[0m %s\n' "$*"; fi; }
+note() { if [ -n "$json" ]; then [ "${#chk_hint[@]}" -gt 0 ] && chk_hint[${#chk_hint[@]}-1]="$*"; else printf '    \033[2m%s\033[0m\n' "$*"; fi; }
+head2(){ [ -n "$json" ] && return 0; printf '\n\033[1m%s\033[0m\n' "$*"; }
+kv()   { [ -n "$json" ] && return 0; printf '  \033[2m%-9s\033[0m %s\n' "$1" "$2"; }
+removes() { rm_what+=("$1"); rm_target+=("$2"); rm_note+=("$3")
+  [ -n "$json" ] || printf '  \033[2m·\033[0m %-10s %s \033[2m(%s)\033[0m\n' "$1" "$2" "$3"; }
+
+# The --json report: everything as arguments, one JSON object out.
+emit_json() {
+  python3 - "$top" "$branch" "${size:-}" "${ws_title:-$ws}" "$ws" "$plan_names" \
+    "${sandboxed:+registered${sb_state:+ ($sb_state)}}" "$blockers" "$base" \
+    "${#chk_kind[@]}" ${chk_kind[@]+"${chk_kind[@]}"} ${chk_text[@]+"${chk_text[@]}"} ${chk_hint[@]+"${chk_hint[@]}"} \
+    "${#rm_what[@]}" ${rm_what[@]+"${rm_what[@]}"} ${rm_target[@]+"${rm_target[@]}"} ${rm_note[@]+"${rm_note[@]}"} <<'EMIT'
+import json, sys
+a = sys.argv[1:]
+top, branch, size, ws_name, ws_id, plan, sandbox, blockers, base = a[:9]
+n = int(a[9]); kinds, texts, hints = a[10:10 + n], a[10 + n:10 + 2 * n], a[10 + 2 * n:10 + 3 * n]
+rest = a[10 + 3 * n:]
+m = int(rest[0]); what, target, note = rest[1:1 + m], rest[1 + m:1 + 2 * m], rest[1 + 2 * m:1 + 3 * m]
+print(json.dumps({
+    "worktree": top, "branch": branch or None, "size": size or None, "base": base or None,
+    "workspace": {"id": ws_id, "name": ws_name} if ws_id else None,
+    "plan": plan or None, "sandbox": sandbox or None,
+    "checks": [{"kind": k, "text": t, "hint": h or None} for k, t, h in zip(kinds, texts, hints)],
+    "blockers": int(blockers),
+    "remove": [{"what": w, "target": t, "note": o} for w, t, o in zip(what, target, note)],
+}))
+EMIT
+}
 
 dry=""
 assume_yes=""
@@ -86,7 +124,8 @@ while [ "$#" -gt 0 ]; do
     -n|--dry-run) dry=1 ;;
     -y|--yes)     assume_yes=1 ;;
     --family-ok)  family_ok=1 ;;
-    -h|--help)    sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --json)       json=1; dry=1 ;;
+    -h|--help)    sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --)           shift; arg="${1:-}"; break ;;
     -*)           die "unknown option: $1" ;;
     *)            arg="$1" ;;
@@ -416,18 +455,20 @@ case "$sb_state" in
   *)           pass "sandbox is not running ($sb_state)" ;;
 esac
 
-printf '\n'
+[ -n "$json" ] || printf '\n'
 if [ "$blockers" -gt 0 ]; then
+  if [ -n "$json" ]; then emit_json; exit 1; fi
   printf '\033[31m%s blocker(s) — nothing was changed.\033[0m\n' "$blockers"
   exit 1
 fi
 
-printf '\033[1mWould remove\033[0m\n'
-printf '  \033[2m·\033[0m worktree   %s \033[2m(%s)\033[0m\n' "$top" "${size:-?}"
-printf '  \033[2m·\033[0m branch     %s \033[2m(safe delete; kept if git declines)\033[0m\n' "$branch"
-[ -n "$ws" ] && printf '  \033[2m·\033[0m workspace  %s \033[2m(closed first, with whatever runs in it)\033[0m\n' "${ws_title:-$ws}"
-[ -n "$sandboxed" ] && printf '  \033[2m·\033[0m sandbox    the microVM and its image cache\n'
+[ -n "$json" ] || printf '\033[1mWould remove\033[0m\n'
+removes worktree "$top" "${size:-?}"
+removes branch "$branch" "safe delete; kept if git declines"
+[ -n "$ws" ] && removes workspace "${ws_title:-$ws}" "closed first, with whatever runs in it"
+[ -n "$sandboxed" ] && removes sandbox "the microVM and its image cache" "destroyed before the directory goes"
 
+if [ -n "$json" ]; then emit_json; exit 0; fi
 if [ -n "$dry" ]; then
   printf '\n\033[2mDry run — nothing was changed.\033[0m\n'
   exit 0

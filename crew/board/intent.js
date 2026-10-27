@@ -9,6 +9,7 @@
 //   CI chip              openURL(pr.url + "/checks")       -> a=checks
 //   branch text          cmux("notification.create" crew:code)  -> a=code
 //   reclaim chip         crew:reclaim (asks before deleting)    -> a=reclaim
+//                        (framed by an app that says it can: its own wizard)
 //   plan / review        openURL(file:// plan page)        -> a=plan
 //   go N                 crew:plan-go                      -> a=go&x=N
 //   parent goes · inc N  the same go, on a delegated child    -> a=go&x=N
@@ -52,7 +53,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "10";
+  var V = "11";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -226,7 +227,12 @@ function __boardIntent(cfg) {
     window.addEventListener("message", function (ev) {
       if (host.getAttribute("data-app-msg") !== V) return;
       var d = ev.data;
-      if (ev.source === window.parent && d && d.crew === "selected") mark(String(d.ws || ""));
+      if (ev.source === window.parent && d && d.crew === "selected") {
+        mark(String(d.ws || ""));
+        // What the app does itself instead of cmux (its reclaim wizard). An
+        // app that never says keeps every chip going to cmux.
+        if (Object.prototype.toString.call(d.can) === "[object Array]") host.setAttribute("data-app-can", d.can.join(" "));
+      }
     });
     host.setAttribute("data-app-msg", V);
     // Listening now: ask the app which workspace it shows.
@@ -289,6 +295,13 @@ function __boardIntent(cfg) {
       // plan (a card's body, its rail, Plan, the Wake) show it in the app:
       // its terminal and pages beside the board. cmux is not asked to jump.
       // Every other chip still does what it does in cmux's Dock.
+      // Reclaim, framed by an app with a wizard of its own: the app shows what
+      // would go and asks there. Anywhere else, crew:reclaim opens a terminal.
+      if (framed() && t.a === "reclaim" && (" " + (host.getAttribute("data-app-can") || "") + " ").indexOf(" reclaim ") >= 0) {
+        var rn = row.querySelector ? row.querySelector(".nm") : null;
+        window.parent.postMessage({ crew: "reclaim", ws: rid, name: rn ? rn.textContent : rid }, "*");
+        return;
+      }
       if (framed() && SHOWN[t.a]) {
         window.parent.postMessage({ crew: "select", ws: rid, show: SHOWN[t.a] }, "*");
         mark(rid);

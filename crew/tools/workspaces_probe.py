@@ -982,7 +982,28 @@ rc, out = reclaim("--dry-run", "ws-l")
 check("a dry run reports the idle agent as closed with the workspace",
       rc == 0 and "idle — it is closed with the workspace" in out, out)
 check("…and changes nothing", os.path.isdir(landed) and len(rows()) == 1)
+
+
+def reclaim_json(*argv):
+    rc, out = reclaim("--json", *argv)
+    try:
+        return rc, json.loads(out), out
+    except ValueError:
+        return rc, None, out
+
+
+rc, rep_, out = reclaim_json("ws-l")
+check("--json reports a clear worktree as one object: checks, no blockers, what it would remove",
+      rc == 0 and rep_ is not None and rep_["blockers"] == 0 and rep_["worktree"] == os.path.realpath(landed)
+      and rep_["workspace"]["id"] == "ws-l" and rep_["workspace"]["name"].startswith("landed")
+      and any(c["kind"] == "pass" and "closed with the workspace" in c["text"] for c in rep_["checks"])
+      and [r["what"] for r in rep_["remove"]] == ["worktree", "branch", "workspace"], out)
+check("…and changes nothing either", os.path.isdir(landed) and len(rows()) == 1)
 put_sessions([sess("ws-l", "s-l", "running")])
+rc, rep_, out = reclaim_json("ws-l")
+check("--json with a blocker: exit 1, the failed check named, nothing to remove",
+      rc == 1 and rep_ is not None and rep_["blockers"] >= 1 and rep_["remove"] == []
+      and any(c["kind"] == "fail" and "mid-turn" in c["text"] for c in rep_["checks"]), out)
 rc, out = reclaim("--yes", "ws-l")
 check("a mid-turn agent is a blocker", rc == 1 and "mid-turn" in out and os.path.isdir(landed), out)
 put_rows([ws("ws-l", landed, process=True, close_fails=True, title="landed")])
@@ -1001,6 +1022,10 @@ rc, out = reclaim("--yes", "ws-l")
 check("a worktree deep-plan protects is a blocker, even with --yes, naming the plan and the family",
       rc == 1 and "plan kid is implementing" in out and "the fam family" in out
       and "crew-reclaim --family-ok" in out and os.path.isdir(landed) and len(rows()) == 1, out)
+rc, rep_, out = reclaim_json("ws-l")
+check("--json carries a check's hint: the plan blocker says how to get past it",
+      rc == 1 and rep_ is not None and rep_["plan"] and "the fam family" in rep_["plan"]
+      and any(c["kind"] == "fail" and c["hint"] and "--family-ok" in c["hint"] for c in rep_["checks"]), out)
 rc, out = reclaim("--yes", "--family-ok", "ws-l")
 check("…and --family-ok without a terminal is still one", rc == 1
       and "--family-ok needs a person at a terminal" in out and os.path.isdir(landed), out)
