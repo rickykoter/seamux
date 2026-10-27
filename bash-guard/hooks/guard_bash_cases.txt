@@ -109,6 +109,46 @@ allow git push origin x | cat; rm -f y
 allow git push origin x\nrm -f stale.lock
 allow git push -o 'a;b' origin x
 
+# ---- the one opt-in force-push: a leased push to a branch BASH_GUARD_FORCE_PUSH_BRANCHES names (the probe sets it to deploy-1 .. deploy-20)
+allow git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin feature/x:deploy-5
+allow git push --force-with-lease=deploy-1:0123456789abcdef0123456789abcdef01234567 origin HEAD:deploy-1
+allow git push --force-with-lease=deploy-20:0123456789abcdef0123456789abcdef01234567 origin dev/a.b_c:deploy-20
+allow git push --force-with-lease=deploy-17:0123456789abcdef0123456789abcdef01234567 origin x:deploy-17 && git status
+allow git status; git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin x:deploy-5
+block git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin x:main
+block git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin x:master
+block git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin x:deploy-6
+block git push --force-with-lease=deploy-21:0123456789abcdef0123456789abcdef01234567 origin x:deploy-21
+block git push --force-with-lease=deploy-0:0123456789abcdef0123456789abcdef01234567 origin x:deploy-0
+block git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin x:deploy-55
+block git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin x:deploy-5-old
+block git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin x:refs/heads/main
+block git push --force-with-lease=deploy-5 origin x:deploy-5
+block git push --force-with-lease origin x:deploy-5
+block git push --force-with-lease=deploy-5:abc123 origin x:deploy-5
+block git push --force-with-lease=deploy-5:\"0123456789abcdef0123456789abcdef01234567\" origin x:deploy-5
+block git push --force-with-lease=deploy-5:0123456789ABCDEF0123456789ABCDEF01234567 origin x:deploy-5
+block git push --force-with-lease=DEPLOY-5:0123456789abcdef0123456789abcdef01234567 origin x:DEPLOY-5
+block git push --force origin x:deploy-5
+block git push -f origin x:deploy-5
+block git push origin +x:deploy-5
+block git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin +x:deploy-5
+block git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 upstream x:deploy-5
+block git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin x:deploy-5 --mirror
+block git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin x:deploy-5 -f
+block git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin x:deploy-5 origin y:main
+block git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 --force origin x:deploy-5
+block git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 -o ci.skip origin x:deploy-5
+block git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin x:deploy-5 && git push -f origin master
+block git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin x:deploy-5; git push --force origin master
+block git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin x:deploy-5 | git push -f
+block git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin -x:deploy-5
+block git -C /repo push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin x:deploy-5
+block git -c push.default=current push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin x:deploy-5
+block sh -c 'git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin x:deploy-5'
+block git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin \"x:deploy-5\"
+block git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin x:deploy-5$(git push -f)
+
 # ---- hard reset
 block git reset --hard
 block git reset --hard HEAD~1
