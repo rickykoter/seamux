@@ -20,3 +20,20 @@
 .pc-body { color: var(--muted); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .pc-labels { display: flex; flex-wrap: wrap; gap: 4px; }
 .pc-label { font-size: 10.5px; padding: 0 6px; border-radius: 8px; border: 1px solid var(--line); color: var(--muted); }
+
+/* Scrolled back in tmux: how far, and a way down. */
+.pane-pill {
+  position: absolute; z-index: 4; right: 14px; bottom: 12px;
+  font: 11.5px -apple-system, system-ui, sans-serif; padding: 4px 11px; border-radius: 12px; cursor: pointer;
+  background: var(--card); color: var(--fg); border: 1px solid var(--line); box-shadow: 0 2px 10px var(--shade);
+}
+.pane-pill:hover { border-color: var(--accent); }
+.pane-pill[hidden] { display: none; }
+
+/* A moment's note: what a copy took. */
+.pane-note {
+  position: absolute; z-index: 4; left: 50%; bottom: 14px; transform: translateX(-50%); pointer-events: none;
+  font: 11.5px -apple-system, system-ui, sans-serif; padding: 4px 11px; border-radius: 12px;
+  background: var(--fg); color: var(--bg); opacity: 0.92;
+}
+.pane-note[hidden] { display: none; }

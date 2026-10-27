@@ -56,6 +56,12 @@ const paced = new WeakSet<Event>();
 /** A mouse report xterm.js sends as text (SGR or X10 form). */
 const isMouseReport = (d: string) => d.startsWith("\x1b[<") || d.startsWith("\x1b[M");
 
+/** What a copy says it took. */
+function copied(text: string): string {
+  const lines = text.replace(/\n$/, "").split("\n").length;
+  return lines > 1 ? `Copied ${lines} lines` : `Copied ${text.length.toLocaleString()} characters`;
+}
+
 /** How long an unseen terminal stays attached: a tab flick keeps it. */
 const DETACH_AFTER = 1500;
 
@@ -80,6 +86,12 @@ export class NativeTerm {
   /** The link under the pointer, if any. */
   private link: Hovered | null = null;
   private card: HoverCard;
+  /** "N lines up · back to bottom", while tmux has the pane scrolled back. */
+  private pill = document.createElement("button");
+  private pillTimer = 0;
+  /** A short note over the pane ("Copied 3 lines"). */
+  private note = document.createElement("div");
+  private noteTimer = 0;
   /** The wheel went to tmux since the last key: it may be in copy mode. */
   private scrolled = false;
   /** Wheel travel not yet sent, in pixels, and when the wheel last moved. */
@@ -100,6 +112,15 @@ export class NativeTerm {
     };
     this.el.className = "native-term";
     this.card = new HoverCard(this.el);
+    this.pill.className = "pane-pill";
+    this.pill.type = "button";
+    this.pill.hidden = true;
+    this.pill.addEventListener("mousedown", (e) => e.stopPropagation(), true);
+    this.pill.addEventListener("click", () => this.toBottom());
+    this.note.className = "pane-note";
+    this.note.setAttribute("role", "status");
+    this.note.hidden = true;
+    this.el.append(this.pill, this.note);
     this.term = new Terminal({
       fontFamily: FONT,
       fontSize: 12,
@@ -124,7 +145,11 @@ export class NativeTerm {
     this.term.loadAddon(
       new ClipboardAddon({
         readText: () => "",
-        writeText: (_sel: ClipboardSelectionType, text: string) => void invoke("copy_text", { text }).catch(() => {}),
+        writeText: (_sel: ClipboardSelectionType, text: string) =>
+          void invoke("copy_text", { text }).then(
+            () => this.say(copied(text)),
+            () => this.say("Couldn't copy"),
+          ),
       }),
     );
     // Links: tmux has the mouse, so xterm.js alone opens one only on a
@@ -181,6 +206,42 @@ export class NativeTerm {
     this.keys = this.keys.then(() => invoke("pty_write", { id, ...k })).catch(() => {});
   }
 
+  /** Show a short note over the pane for a moment. */
+  say(text: string): void {
+    this.note.textContent = text;
+    this.note.hidden = false;
+    clearTimeout(this.noteTimer);
+    this.noteTimer = window.setTimeout(() => (this.note.hidden = true), 1400);
+  }
+
+  /** While tmux may be scrolled back: the pill, kept up to date, until it
+   *  is not. Fullscreen Claude scrolls itself and never shows it. */
+  private watchScroll(): void {
+    if (this.pillTimer) return;
+    const tick = async () => {
+      const id = this.id;
+      const s = id === null ? null : await invoke<{ scrolled: boolean; up: number; history: number }>("pty_scroll", { id }).catch(() => null);
+      if (!s?.scrolled) {
+        this.pill.hidden = true;
+        this.pillTimer = 0;
+        return;
+      }
+      this.pill.textContent = `${s.up.toLocaleString()} of ${s.history.toLocaleString()} lines up · back to bottom`;
+      this.pill.hidden = false;
+      this.pillTimer = window.setTimeout(() => void tick(), 300);
+    };
+    this.pillTimer = window.setTimeout(() => void tick(), 120);
+  }
+
+  /** Out of tmux's copy mode, at the bottom again. */
+  private toBottom(): void {
+    const id = this.id;
+    this.scrolled = false;
+    this.pill.hidden = true;
+    if (id !== null) this.keys = this.keys.then(() => invoke("pty_leave_scroll", { id })).catch(() => {});
+    this.term.focus();
+  }
+
   /** The text a link range shows, on its first row. */
   private textAt(r: { start: { x: number; y: number }; end: { x: number; y: number } }): string {
     const row = this.term.buffer.active.getLine(r.start.y - 1)?.translateToString(true) ?? "";
@@ -195,6 +256,7 @@ export class NativeTerm {
     if (this.term.modes.mouseTrackingMode === "none" || !e.deltaY) return true;
     e.preventDefault();
     this.scrolled = true;
+    this.watchScroll();
     const rowPx = this.el.clientHeight / Math.max(1, this.term.rows);
     const dy = e.deltaMode === 1 ? e.deltaY * rowPx : e.deltaMode === 2 ? e.deltaY * this.el.clientHeight : e.deltaY;
     const step = rowPx * ROWS_PER_REPORT;

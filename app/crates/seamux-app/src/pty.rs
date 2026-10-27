@@ -230,6 +230,22 @@ pub fn leave_scroll(t: &Target) -> Result<(), String> {
     tmux_ok(&t.socket, &["copy-mode", "-q", "-t", &format!("={}:", t.session)])
 }
 
+/// Where tmux's copy mode has the pane: (in it, lines up from the bottom,
+/// lines of history). None when tmux cannot say.
+pub fn scroll_state(t: &Target) -> Option<(bool, u64, u64)> {
+    let o = Command::new(tmux_bin())
+        .args(["-S", &t.socket, "display-message", "-p", "-t", &format!("={}:", t.session), "#{pane_in_mode} #{scroll_position} #{history_size}"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let s = String::from_utf8_lossy(&o.stdout);
+    let mut w = s.split_whitespace();
+    let mode = w.next()? == "1";
+    let pos = w.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let hist = w.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    Some((mode, pos, hist))
+}
+
 fn tmux_ok(sock: &str, args: &[&str]) -> Result<(), String> {
     let o = Command::new(tmux_bin()).arg("-S").arg(sock).args(args).output().map_err(|e| e.to_string())?;
     if !o.status.success() {
@@ -436,6 +452,9 @@ impl Pty {
         // History kept for the wheel to scroll back through: tmux sets it
         // when a pane is made, so this reaches sessions started from now on.
         let _ = tmux_ok(&t.socket, &["set-option", "-g", "history-limit", "10000"]);
+        // Claude in fullscreen selects and copies itself, asking tmux (OSC 52)
+        // to set the clipboard; "external", tmux's default, refuses programs.
+        let _ = tmux_ok(&t.socket, &["set-option", "-s", "set-clipboard", "on"]);
         Self::spawn(&tmux_bin(), &["-T", "hyperlinks", "-S", &t.socket, "attach-session", "-t", &format!("={}", t.session)], cols, rows)
     }
 

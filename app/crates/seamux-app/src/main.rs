@@ -194,6 +194,7 @@ fn main() {
             pty_app::pty_detach,
             pty_app::pty_leave_scroll,
             pty_app::pty_paths,
+            pty_app::pty_scroll,
             pty_app::pty_workspace,
             pane_app::open_in_editor,
             pane_app::gh_card,
