@@ -3942,7 +3942,9 @@ const flags = {};
 const args = [];
 for (let i = 0; i < rest.length; i++) {
   if (rest[i] === "--force") flags.force = true;
-  else if (rest[i] === "--root") flags.root = rest[++i];
+  // Resolved here: state outlives this cwd, and the gate reads a relative root
+  // against whatever directory the hook happens to run in.
+  else if (rest[i] === "--root") flags.root = rest[++i] && path.resolve(rest[i]);
   else if (rest[i] === "--at") flags.at = rest[++i];
   else if (rest[i] === "--json") flags.json = true;
   else if (rest[i] === "--dry-run") flags.dry = true;

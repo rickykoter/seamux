@@ -1249,6 +1249,37 @@ ok("gate still allows but warns FAILING OPEN",
   bg.status === 0 && (bg.stdout || "").includes("FAILING OPEN"));
 fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "ghost.json"));
 
+// -------------------------------------------------- a relative root gates nothing
+// `render --root .` once stored the dot as typed. The hook resolves a root
+// against its own cwd, so that plan claimed whichever worktree the agent stood
+// in and refused edits there with its own shut gate.
+{
+  const LOOSE = path.join(TMP, "loose-worktree");
+  fs.mkdirSync(LOOSE, { recursive: true });
+  fs.writeFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "dot.json"), JSON.stringify(
+    { slug: "dot", root: ".", phase: "implementing", gate: "increment", increments: [{ n: 1, status: "pending" }] }));
+  ok("brokenRoots reports a relative root", lib.brokenRoots().some(b => b.slug === "dot"));
+  const dg = spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")], {
+    encoding: "utf8", env: ENV, cwd: LOOSE,
+    input: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: path.join(LOOSE, "a.txt") }, cwd: LOOSE }),
+  });
+  ok("a relative root does not claim the hook's cwd", dg.status === 0 && !/gate \[dot\]/.test(dg.stderr));
+  fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "dot.json"));
+
+  const RR = path.join(TMP, "root-relative");
+  fs.mkdirSync(RR, { recursive: true });
+  execSync("git init -q", { cwd: RR });
+  const rel = JSON.parse(JSON.stringify(spec));
+  rel.slug = "relative-root-plan";
+  const rr = cli("render", tmpSpec(rel), "--root", path.relative(REPO, RR));
+  const rst = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "relative-root-plan.json"), "utf8"));
+  // The CLI's cwd is the realpath, so /var and /private/var both name RR here.
+  ok("render stores --root as an absolute path",
+    rr.status === 0 && path.isAbsolute(rst.root) && fs.realpathSync(rst.root) === fs.realpathSync(RR));
+  cli("close", "relative-root-plan");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "relative-root-plan.json"), { force: true });
+}
+
 // -------------------------------------------------- single-writer state lock
 const staleLock = path.join(ENV.DEEP_PLAN_STATE_DIR, ".lock-lockee");
 fs.mkdirSync(staleLock, { recursive: true });
