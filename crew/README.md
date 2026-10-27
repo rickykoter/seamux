@@ -620,7 +620,7 @@ Otherwise a tap on row 3 would act on whichever row you happen to be standing on
 | `✗ CI` | that PR's checks page, in your default browser |
 | `▣ sandbox` / `▢ sandbox` | stops / starts the sandbox |
 | `allow` / `deny` / `read it →` / `jump →` | answer or escape a live Feed ask |
-| `shipped · reclaim this worktree` | opens a terminal where you are, dry-runs the reclaim in it, and asks |
+| `shipped · reclaim this worktree` | opens a terminal where you are, dry-runs the reclaim in it, and asks. In the seamux app's Dock it opens the reclaim wizard instead: the same report (`crew-reclaim --json`), every guard, what would go, and a Reclaim button that enables only once every guard passes |
 | `archive` on a quiet row | closes the workspace and remembers it, for `crew-resume` to bring back |
 | `↻` in the header | forces a full reconcile |
 | anywhere else on the row | selects the workspace |
