@@ -47,9 +47,10 @@ function cmuxLook(): Promise<Look | null> {
  *  Ghostty do: start and end of line, and delete to its start. */
 const CMD_KEYS: Record<string, string> = { ArrowLeft: "\x01", ArrowRight: "\x05", Backspace: "\x15" };
 
-/** Each wheel report moves tmux's history 5 lines (and Claude's view a few):
- *  one goes out per this many rows of wheel travel. */
-const ROWS_PER_REPORT = 4;
+/** One wheel report goes out per this many rows of wheel travel: the view
+ *  keeps up with the finger, and a trackpad's trickle of tiny events (its
+ *  momentum's tail) no longer sends a report each. */
+const ROWS_PER_REPORT = 1;
 
 /** Wheel events this page made itself, which xterm.js may turn into reports. */
 const paced = new WeakSet<Event>();
