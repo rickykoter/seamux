@@ -14,22 +14,28 @@ const READERS: usize = 4;
 
 static WALL: OnceLock<Arc<Wall>> = OnceLock::new();
 
-/// The surfaces holding a native Claude, looked up at most every 5 seconds
-/// (a tmux call per session and a process table); `fresh` looks now, for the
-/// moment before something is typed into a pane.
-fn native_surfaces(fresh: bool) -> std::collections::HashSet<String> {
-    static CACHE: std::sync::Mutex<Option<(std::time::Instant, std::collections::HashSet<String>)>> = std::sync::Mutex::new(None);
+/// One look at the native panes, kept at most 5 seconds (a tmux call per
+/// session and a process table); `fresh` looks now, for the moment before
+/// something is typed into a pane.
+type NativeLook = (std::collections::HashSet<String>, std::collections::HashMap<String, seamux_app::pty::PaneSignals>);
+fn native_look(fresh: bool) -> NativeLook {
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, NativeLook)>> = std::sync::Mutex::new(None);
     let mut c = CACHE.lock().unwrap();
     if !fresh {
-        if let Some((at, set)) = c.as_ref() {
+        if let Some((at, look)) = c.as_ref() {
             if at.elapsed() < Duration::from_secs(5) {
-                return set.clone();
+                return look.clone();
             }
         }
     }
-    let set = seamux_app::pty::native_claude_now();
-    *c = Some((std::time::Instant::now(), set.clone()));
-    set
+    let look = seamux_app::pty::native_now();
+    *c = Some((std::time::Instant::now(), look.clone()));
+    look
+}
+
+/// The surfaces holding a native Claude.
+fn native_surfaces(fresh: bool) -> std::collections::HashSet<String> {
+    native_look(fresh).0
 }
 
 /// Connect the pool and start polling. Until cmux answers, the wall stays
@@ -92,6 +98,7 @@ fn run_wall<R: Runtime>(app: AppHandle<R>, pool: Vec<Arc<dyn Source>>) {
         m
     }));
     wall.set_native_probe(Box::new(|| native_surfaces(false)));
+    wall.set_signals_probe(Box::new(|| native_look(false).1));
     let _ = WALL.set(wall.clone());
     let (tx, rx) = mpsc::channel::<String>();
 

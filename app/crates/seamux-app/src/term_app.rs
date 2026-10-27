@@ -96,6 +96,25 @@ pub async fn open_url(url: String) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Put `text` on the clipboard (macOS `pbcopy`, no shell): a terminal's copy,
+/// which tmux hands over after the mouse is let go, too late for the page's
+/// own clipboard (WebKit wants a click in progress).
+#[tauri::command]
+pub async fn copy_text(text: String) -> Result<(), String> {
+    if text.len() > 8 << 20 {
+        return Err("too much to copy".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::io::Write;
+        let mut c = std::process::Command::new("/usr/bin/pbcopy").stdin(std::process::Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+        c.stdin.take().ok_or("pbcopy has no stdin")?.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+        let st = c.wait().map_err(|e| e.to_string())?;
+        if st.success() { Ok(()) } else { Err(format!("pbcopy exited {st}")) }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// The worktree a pane's directory is in (git's top level), else the
 /// directory itself.
 fn worktree_of(dir: &str) -> String {

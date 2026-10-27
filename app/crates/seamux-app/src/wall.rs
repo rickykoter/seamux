@@ -207,6 +207,10 @@ pub struct Tile {
     /// When this pane entered its current state, as the wall first saw it
     /// (ms since the epoch): how long a needs-you agent has waited.
     pub since: u64,
+    /// What a native pane's shell (or Claude's) is running now ("cargo test").
+    pub running: Option<String>,
+    /// A native pane rang the bell since it was last looked at.
+    pub bell: bool,
 }
 
 /// The `wall:frame` payload: every tile, in current.list's order.
@@ -220,6 +224,8 @@ pub struct Frame {
 #[derive(Default)]
 struct State {
     terms: Vec<Terminal>,
+    /// The native panes' signals at the last tick.
+    signals: HashMap<String, crate::pty::PaneSignals>,
     titles: HashMap<String, String>,
     colors: HashMap<String, String>,
     /// Per surface: the state last seen, and when it was first seen.
@@ -244,6 +250,7 @@ pub struct Wall {
     /// The surfaces whose native (tmux) session has a Claude in it: cmux
     /// sees only the tmux client there, so reports a terminal.
     native: Mutex<Option<NativeProbe>>,
+    signals: Mutex<Option<SignalsProbe>>,
 }
 
 /// See `Wall::hint`.
@@ -251,6 +258,9 @@ pub type StateHint = Box<dyn Fn() -> HashMap<String, String> + Send + Sync>;
 
 /// See `Wall::native`: surface UUIDs, upper case.
 pub type NativeProbe = Box<dyn Fn() -> std::collections::HashSet<String> + Send + Sync>;
+
+/// Each native pane's signals (what runs, a bell), by upper-case surface.
+pub type SignalsProbe = Box<dyn Fn() -> std::collections::HashMap<String, crate::pty::PaneSignals> + Send + Sync>;
 
 impl Wall {
     /// `pool` holds one source per parallel reader; at least one.
@@ -263,10 +273,14 @@ impl Wall {
     /// As `new`, with a separate source for reply and jump.
     pub fn with_actions(pool: Vec<Arc<dyn Source>>, actions: Arc<dyn Source>, interval: Duration) -> Wall {
         assert!(!pool.is_empty(), "the wall needs a source");
-        Wall { pool, actions, interval, state: Mutex::new(State::default()), pulled: Mutex::default(), hint: Mutex::default(), native: Mutex::default() }
+        Wall { pool, actions, interval, state: Mutex::new(State::default()), pulled: Mutex::default(), hint: Mutex::default(), native: Mutex::default(), signals: Mutex::default() }
     }
 
     /// Name the terminals that hold a native Claude, asked once per poll.
+    pub fn set_signals_probe(&self, probe: SignalsProbe) {
+        *self.signals.lock().unwrap() = Some(probe);
+    }
+
     pub fn set_native_probe(&self, probe: NativeProbe) {
         *self.native.lock().unwrap() = Some(probe);
     }
@@ -311,7 +325,9 @@ impl Wall {
             t.state = "idle".into();
         }
         let reads = self.read_all(&terms);
+        let signals = self.signals.lock().unwrap().as_ref().map(|p| p()).unwrap_or_default();
         let mut st = self.state.lock().unwrap();
+        st.signals = signals;
         st.error = listed.err().map(|e| e.to_string());
         if let Some(t) = titles {
             st.titles = t;
@@ -444,11 +460,14 @@ impl Wall {
                     label: t.label.clone(),
                     cwd: t.cwd.clone(),
                     agent: t.agent.clone(),
-                    state: t.state.clone(),
+                    // A bell asks for you, as Claude's own question does.
+                    state: if st.signals.get(&t.surface.to_uppercase()).is_some_and(|s| s.bell) && t.state != "ended" { "needs_input".into() } else { t.state.clone() },
                     lines,
                     error,
                     color: st.colors.get(&t.workspace).cloned(),
                     since: st.since.get(&t.surface).map(|(_, at)| *at).unwrap_or(now),
+                    running: st.signals.get(&t.surface.to_uppercase()).and_then(|s| s.running.clone()),
+                    bell: st.signals.get(&t.surface.to_uppercase()).is_some_and(|s| s.bell),
                 }
             })
             .collect();

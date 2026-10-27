@@ -7,7 +7,7 @@ use std::io::Read;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use seamux_app::pty::{start_native, target_for, Pty};
+use seamux_app::pty::{bell_seen, leave_scroll, scroll_state, send_line_key, start_native, target_for, toggle_shell, Pty, Target};
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 /// A terminal: its PTY (locked for resizes and closing), its client's pid
@@ -16,6 +16,7 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 struct Live {
     pty: Mutex<Pty>,
     pid: u32,
+    target: Target,
     keys: Mutex<std::sync::mpsc::Sender<Vec<u8>>>,
 }
 
@@ -62,7 +63,7 @@ pub async fn pty_attach(surface_id: String, cols: u16, rows: u16, on_data: Chann
                 }
             }
         });
-        ptys().lock().unwrap().insert(id, Arc::new(Live { pty: Mutex::new(pty), pid, keys: Mutex::new(tx) }));
+        ptys().lock().unwrap().insert(id, Arc::new(Live { pty: Mutex::new(pty), pid, target: t, keys: Mutex::new(tx) }));
         std::thread::spawn(move || {
             let mut buf = vec![0u8; 64 * 1024];
             loop {
@@ -94,6 +95,66 @@ pub fn pty_write(id: u32, data: Option<String>, raw: Option<Vec<u8>>) -> Result<
     b.extend(raw.unwrap_or_default());
     let sent = live.keys.lock().unwrap().send(b);
     sent.map_err(|_| "the terminal is closing".to_string())
+}
+
+/// Out of tmux's copy mode, before the first key after a wheel scroll: in
+/// that mode tmux would take the keys instead of Claude.
+#[tauri::command]
+pub async fn pty_leave_scroll(id: u32) -> Result<(), String> {
+    let live = get(id)?;
+    tauri::async_runtime::spawn_blocking(move || leave_scroll(&live.target)).await.map_err(|e| e.to_string())?
+}
+
+/// A line-editing key (C-a, C-e, C-u) for the pane, past any tmux prefix.
+#[tauri::command]
+pub async fn pty_line_key(id: u32, key: String) -> Result<(), String> {
+    let live = get(id)?;
+    tauri::async_runtime::spawn_blocking(move || send_line_key(&live.target, &key)).await.map_err(|e| e.to_string())?
+}
+
+/// Show or hide the companion shell under Claude. Returns whether it shows.
+#[tauri::command]
+pub async fn pty_shell(id: u32) -> Result<bool, String> {
+    let live = get(id)?;
+    tauri::async_runtime::spawn_blocking(move || toggle_shell(&live.target)).await.map_err(|e| e.to_string())?
+}
+
+/// The pane was looked at (attached on screen, or focused): its bell is heard.
+#[tauri::command]
+pub async fn pty_seen(id: u32) -> Result<(), String> {
+    let live = get(id)?;
+    tauri::async_runtime::spawn_blocking(move || bell_seen(&live.target)).await.map_err(|e| e.to_string())?
+}
+
+/// How far tmux's copy mode has the pane scrolled back:
+/// `{"scrolled": bool, "up": lines, "history": lines}`.
+#[tauri::command]
+pub async fn pty_scroll(id: u32) -> Result<serde_json::Value, String> {
+    let live = get(id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let (on, up, history) = scroll_state(&live.target).unwrap_or((false, 0, 0));
+        serde_json::json!({ "scrolled": on, "up": up, "history": history })
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Of `paths` (path-like text in the pane), each as the existing absolute
+/// path it names from the pane's folder, or null.
+#[tauri::command]
+pub async fn pty_paths(id: u32, paths: Vec<String>) -> Result<Vec<Option<String>>, String> {
+    if paths.len() > 200 {
+        return Err("too many paths".into());
+    }
+    let live = get(id)?;
+    tauri::async_runtime::spawn_blocking(move || crate::pane_app::existing(&live.target, &paths)).await.map_err(|e| e.to_string())
+}
+
+/// The cmux workspace the terminal's session belongs to, if cmux says.
+#[tauri::command]
+pub async fn pty_workspace(id: u32) -> Result<Option<String>, String> {
+    let live = get(id)?;
+    tauri::async_runtime::spawn_blocking(move || crate::pane_app::workspace(&live.target)).await.map_err(|e| e.to_string())
 }
 
 /// Every terminal a page left behind: called when a page starts, so a

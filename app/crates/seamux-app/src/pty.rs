@@ -142,12 +142,74 @@ pub fn claude_in_panes(panes: &[(String, u32)], procs: &str) -> Vec<String> {
     out
 }
 
+/// What a native pane tells the Wall besides its text: the command its
+/// shell (or Claude's) is running, and whether it rang the bell since it was
+/// last looked at.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PaneSignals {
+    pub running: Option<String>,
+    pub bell: bool,
+}
+
+const SHELLS: [&str; 5] = ["zsh", "bash", "sh", "fish", "dash"];
+
+fn base(word: &str) -> &str {
+    word.trim_start_matches('-').rsplit('/').next().unwrap_or(word)
+}
+
+/// The command a shell under `root` is running now, newest first, as a
+/// short name ("cargo test"). Only a shell's children count: a program's
+/// own helpers (Claude's MCP servers, a compiler's workers) do not. `procs`
+/// is `ps -axo pid=,ppid=,command=`.
+pub fn running_under(root: u32, procs: &str) -> Option<String> {
+    let mut kids: std::collections::HashMap<u32, Vec<u32>> = Default::default();
+    let mut argv: std::collections::HashMap<u32, Vec<&str>> = Default::default();
+    for line in procs.lines() {
+        let mut f = line.split_whitespace();
+        let (Some(pid), Some(ppid)) = (f.next().and_then(|v| v.parse::<u32>().ok()), f.next().and_then(|v| v.parse::<u32>().ok())) else { continue };
+        kids.entry(ppid).or_default().push(pid);
+        argv.insert(pid, f.collect());
+    }
+    let name = |pid: u32| argv.get(&pid).and_then(|a| a.first()).map(|w| base(w)).unwrap_or("");
+    let is_shell = |pid: u32| SHELLS.contains(&name(pid));
+    let mut best: Option<u32> = None;
+    let mut stack = vec![root];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(pid) = stack.pop() {
+        if !seen.insert(pid) {
+            continue;
+        }
+        for &k in kids.get(&pid).map(Vec::as_slice).unwrap_or(&[]) {
+            let quiet = matches!(name(k), "claude" | "cmux" | "crew" | "tmux");
+            if is_shell(pid) && !is_shell(k) && !quiet {
+                best = best.max(Some(k));
+            } else {
+                stack.push(k);
+            }
+        }
+    }
+    let a = argv.get(&best?)?;
+    let mut out = base(a.first()?).to_string();
+    if let Some(arg) = a.get(1).filter(|w| !w.starts_with('-') && !w.contains('/') && w.len() <= 20) {
+        out.push(' ');
+        out.push_str(arg);
+    }
+    Some(out.chars().take(32).collect())
+}
+
 /// Which native panes have a Claude in them now: the registry's sessions, each
 /// session's pane process, and one look at the process table.
 pub fn native_claude_now() -> std::collections::HashSet<String> {
+    native_now().0
+}
+
+/// One look at every native pane: the surfaces with a Claude in them, and
+/// each surface's signals (what runs, a bell).
+pub fn native_now() -> (std::collections::HashSet<String>, std::collections::HashMap<String, PaneSignals>) {
     let file = crew_core::py::home().join(".cmux/local-tmux/sessions.json");
     let Some(reg) = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return Default::default() };
     let mut panes: Vec<(String, u32)> = Vec::new();
+    let mut bells: std::collections::HashSet<String> = Default::default();
     for s in reg.get("sessions").and_then(Value::as_array).into_iter().flatten() {
         let (Some(surface), Some(name), Some(sock)) = (
             s.get("surfaceID").and_then(Value::as_str),
@@ -156,8 +218,13 @@ pub fn native_claude_now() -> std::collections::HashSet<String> {
         ) else {
             continue;
         };
-        let Ok(o) = Command::new(tmux_bin()).args(["-S", sock, "list-panes", "-t", &format!("={name}"), "-F", "#{pane_pid}"]).stderr(Stdio::null()).output() else { continue };
-        for pid in String::from_utf8_lossy(&o.stdout).lines().filter_map(|l| l.trim().parse::<u32>().ok()) {
+        let Ok(o) = Command::new(tmux_bin()).args(["-S", sock, "list-panes", "-t", &format!("={name}"), "-F", "#{pane_pid} #{@seamux_bell}"]).stderr(Stdio::null()).output() else { continue };
+        for line in String::from_utf8_lossy(&o.stdout).lines() {
+            let mut w = line.split_whitespace();
+            let Some(pid) = w.next().and_then(|v| v.parse::<u32>().ok()) else { continue };
+            if w.next() == Some("1") {
+                bells.insert(surface.to_uppercase());
+            }
             panes.push((surface.to_string(), pid));
         }
     }
@@ -165,7 +232,20 @@ pub fn native_claude_now() -> std::collections::HashSet<String> {
         return Default::default();
     }
     let Ok(ps) = Command::new("ps").args(["-axo", "pid=,ppid=,command="]).output() else { return Default::default() };
-    claude_in_panes(&panes, &String::from_utf8_lossy(&ps.stdout)).into_iter().collect()
+    let procs = String::from_utf8_lossy(&ps.stdout);
+    let claude = claude_in_panes(&panes, &procs).into_iter().collect();
+    let mut signals: std::collections::HashMap<String, PaneSignals> = Default::default();
+    for (surface, pid) in &panes {
+        let s = signals.entry(surface.to_uppercase()).or_default();
+        s.running = s.running.take().or_else(|| running_under(*pid, &procs));
+        s.bell = bells.contains(&surface.to_uppercase());
+    }
+    (claude, signals)
+}
+
+/// The pane was looked at: its bell is heard.
+pub fn bell_seen(t: &Target) -> Result<(), String> {
+    tmux_ok(&t.socket, &["set-option", "-t", &t.session, "-u", "@seamux_bell"])
 }
 
 /// tmux, from PATH (the app adopts the login shell's at start) or Homebrew.
@@ -222,6 +302,110 @@ fn cmux_ok(argv: &[&str]) -> Result<String, String> {
         return Err(format!("cmux {}: {}", argv.join(" "), out.stderr.trim()));
     }
     Ok(out.stdout)
+}
+
+/// Leave copy mode, where the wheel put a pane, so typed keys reach the
+/// program again: every pane of the session's window (with the companion
+/// shell shown, the wheel may have scrolled either). Nothing happens to a
+/// pane not in a mode.
+pub fn leave_scroll(t: &Target) -> Result<(), String> {
+    let ids = tmux_out(&t.socket, &["list-panes", "-t", &format!("{}:", t.session), "-F", "#{pane_id}"])?;
+    for id in ids.lines().filter(|l| l.starts_with('%')) {
+        tmux_ok(&t.socket, &["copy-mode", "-q", "-t", id])?;
+    }
+    Ok(())
+}
+
+/// Where tmux's copy mode has the session's panes: (one is in it, its lines
+/// up from the bottom, its lines of history), the furthest back of them.
+/// None when tmux cannot say.
+pub fn scroll_state(t: &Target) -> Option<(bool, u64, u64)> {
+    let out = tmux_out(&t.socket, &["list-panes", "-t", &format!("{}:", t.session), "-F", "#{pane_in_mode} #{scroll_position} #{history_size}"]).ok()?;
+    Some(furthest_scroll(&out))
+}
+
+/// Of `list-panes` lines "<in mode> <scroll position> <history>", the pane
+/// scrolled furthest back; (false, 0, 0) when none is in copy mode.
+pub fn furthest_scroll(lines: &str) -> (bool, u64, u64) {
+    let mut best = (false, 0, 0);
+    for l in lines.lines() {
+        let mut w = l.split_whitespace();
+        if w.next() != Some("1") {
+            continue;
+        }
+        let pos = w.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let hist = w.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        if !best.0 || pos > best.1 {
+            best = (true, pos, hist);
+        }
+    }
+    best
+}
+
+/// The session's own pane: the one that is not the companion shell, where
+/// Claude runs. Its id ("%3").
+pub fn main_pane(t: &Target) -> Option<String> {
+    let out = tmux_out(&t.socket, &["list-panes", "-t", &format!("{}:", t.session), "-F", "#{pane_id}\t#{@seamux_role}"]).ok()?;
+    out.lines().find_map(|l| l.split_once('\t').filter(|(_, role)| *role != "shell").map(|(id, _)| id.to_string()))
+}
+
+/// Line-editing keys the pane's ⌘ keys stand for, sent with send-keys so
+/// a tmux prefix bound to one of them (C-a is common) never takes it.
+pub const LINE_KEYS: [&str; 3] = ["C-a", "C-e", "C-u"];
+
+/// Send one of LINE_KEYS to the pane that has the keys.
+pub fn send_line_key(t: &Target, key: &str) -> Result<(), String> {
+    if !LINE_KEYS.contains(&key) {
+        return Err(format!("not a line key: {key:?}"));
+    }
+    tmux_ok(&t.socket, &["send-keys", "-t", &format!("={}:", t.session), key])
+}
+
+/// A tmux command's output, trimmed.
+fn tmux_out(sock: &str, args: &[&str]) -> Result<String, String> {
+    let o = Command::new(tmux_bin()).arg("-S").arg(sock).args(args).output().map_err(|e| e.to_string())?;
+    if !o.status.success() {
+        return Err(format!("tmux {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+/// The alert-bell slot seamux's hook takes.
+pub const BELL_HOOK: &str = "alert-bell[87]";
+
+/// What the companion shell's border says: "shell · <what runs>". Other
+/// panes' borders say nothing.
+const SHELL_BORDER: &str = "#{?#{==:#{@seamux_role},shell}, shell · #{pane_current_command} ,}";
+
+/// Show or hide the session's companion shell: a split under Claude, in the
+/// same folder, made the first time. Hiding zooms Claude's pane, so the
+/// shell keeps running. Returns whether the shell shows now (and has the keys).
+pub fn toggle_shell(t: &Target) -> Result<bool, String> {
+    let win = format!("{}:", t.session);
+    let list = tmux_out(&t.socket, &["list-panes", "-t", &win, "-F", "#{pane_id}\t#{@seamux_role}\t#{window_zoomed_flag}\t#{pane_current_path}"])?;
+    let rows: Vec<Vec<&str>> = list.lines().map(|l| l.split('\t').collect()).filter(|r: &Vec<&str>| r.len() == 4).collect();
+    let main = rows.iter().find(|r| r[1] != "shell").ok_or("the session has no pane")?;
+    let shell = rows.iter().find(|r| r[1] == "shell");
+    let zoomed = main[2] == "1";
+    match shell {
+        None => {
+            let id = tmux_out(&t.socket, &["split-window", "-v", "-l", "30%", "-t", main[0], "-c", main[3], "-P", "-F", "#{pane_id}"])?;
+            tmux_ok(&t.socket, &["set-option", "-p", "-t", &id, "@seamux_role", "shell"])?;
+            tmux_ok(&t.socket, &["set-option", "-w", "-t", &win, "pane-border-status", "top"])?;
+            tmux_ok(&t.socket, &["set-option", "-w", "-t", &win, "pane-border-format", SHELL_BORDER])?;
+            Ok(true)
+        }
+        Some(sh) if zoomed => {
+            tmux_ok(&t.socket, &["resize-pane", "-Z", "-t", main[0]])?;
+            tmux_ok(&t.socket, &["select-pane", "-t", sh[0]])?;
+            Ok(true)
+        }
+        Some(_) => {
+            tmux_ok(&t.socket, &["select-pane", "-t", main[0]])?;
+            tmux_ok(&t.socket, &["resize-pane", "-Z", "-t", main[0]])?;
+            Ok(false)
+        }
+    }
 }
 
 fn tmux_ok(sock: &str, args: &[&str]) -> Result<(), String> {
@@ -424,8 +608,25 @@ fn winsize(cols: u16, rows: u16) -> libc::winsize {
 impl Pty {
     /// Attach to `t` at cols x rows. The child is the PTY's session leader,
     /// so a resize's SIGWINCH reaches it.
+    /// `-T hyperlinks`: xterm.js draws OSC 8 links, so tmux passes Claude's on
+    /// (it strips them for a client it thinks cannot).
     pub fn attach(t: &Target, cols: u16, rows: u16) -> Result<Pty, String> {
-        Self::spawn(&tmux_bin(), &["-S", &t.socket, "attach-session", "-t", &format!("={}", t.session)], cols, rows)
+        // History kept for the wheel to scroll back through: tmux sets it
+        // when a pane is made, so this reaches sessions started from now on.
+        // Raised, never lowered: a tmux.conf may keep more.
+        let had = tmux_out(&t.socket, &["show-options", "-gv", "history-limit"]).ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+        if had < 10_000 {
+            let _ = tmux_ok(&t.socket, &["set-option", "-g", "history-limit", "10000"]);
+        }
+        // Claude in fullscreen selects and copies itself, asking tmux (OSC 52)
+        // to set the clipboard; "external", tmux's default, refuses programs.
+        let _ = tmux_ok(&t.socket, &["set-option", "-s", "set-clipboard", "on"]);
+        // A bell marks its session (even in the window a client shows, where
+        // tmux sets no flag of its own) until the pane is looked at.
+        // A slot of its own in the hook's list, so a tmux.conf's own bell
+        // hooks keep running, and setting it again changes nothing.
+        let _ = tmux_ok(&t.socket, &["set-hook", "-g", BELL_HOOK, "set-option @seamux_bell 1"]);
+        Self::spawn(&tmux_bin(), &["-T", "hyperlinks", "-S", &t.socket, "attach-session", "-t", &format!("={}", t.session)], cols, rows)
     }
 
     /// Run `program args` with a new PTY as its controlling terminal.
@@ -560,9 +761,23 @@ mod tests {
         assert_eq!(running_on(&recs, "S3"), None);
     }
     use super::*;
+
     use serde_json::json;
     use std::io::Read;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn running_is_what_a_shell_runs_not_a_programs_helpers() {
+        // pane shell 10 -> claude 11 -> MCP node 12, and zsh -c 13 -> cargo 14 -> rustc 15
+        let procs = "10 1 -zsh\n11 10 claude --resume x\n12 11 node /mcp/server.js\n13 11 /bin/zsh -c eval 'cargo test'\n14 13 cargo test --workspace\n15 14 rustc --crate-name x\n";
+        assert_eq!(running_under(10, procs).as_deref(), Some("cargo test"));
+        // Claude alone, between commands: nothing runs.
+        assert_eq!(running_under(10, "10 1 -zsh\n11 10 claude\n12 11 node /mcp/s.js\n"), None);
+        // A plain shell's foreground job; a path argument is left off.
+        assert_eq!(running_under(20, "20 1 -zsh\n21 20 /usr/bin/vim /tmp/x.rs\n").as_deref(), Some("vim"));
+        // cmux's own hooks are not news.
+        assert_eq!(running_under(20, "20 1 zsh\n21 20 cmux claude-hook stop\n"), None);
+    }
 
     #[test]
     fn pty_reads_live_sessions_and_their_client() {
@@ -673,6 +888,41 @@ mod tests {
         });
         assert!(rx.recv_timeout(Duration::from_secs(5)).is_ok(), "the closed client's output never ended");
         drop(b);
+        tmux(&sock, &["kill-server"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_pane_scrolled_furthest_back_is_the_one_shown() {
+        assert_eq!(furthest_scroll("0 0 10\n1 40 900\n1 12 50\n"), (true, 40, 900));
+        assert_eq!(furthest_scroll("0 0 10\n0 0 3\n"), (false, 0, 0));
+    }
+
+    /// Live: the companion shell splits once, then hides and shows by zoom.
+    #[test]
+    fn companion_shell_splits_then_hides_and_shows() {
+        if Command::new(tmux_bin()).arg("-V").output().is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("seamux-sh-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let sock = dir.join("s.sock").to_string_lossy().into_owned();
+        tmux(&sock, &["-f", "/dev/null", "new-session", "-d", "-s", "c", "-x", "80", "-y", "30", "sh"]);
+        let t = Target { socket: sock.clone(), session: "c".into() };
+        let look = || tmux(&sock, &["list-panes", "-t", "c:", "-F", "#{@seamux_role}:#{pane_active}:#{window_zoomed_flag}"]);
+        assert_eq!(toggle_shell(&t), Ok(true));
+        assert_eq!(look(), ":0:0\nshell:1:0");
+        assert_eq!(toggle_shell(&t), Ok(false));
+        assert_eq!(look(), ":1:1\nshell:0:1");
+        assert_eq!(toggle_shell(&t), Ok(true));
+        assert_eq!(look(), ":0:0\nshell:1:0");
+        // Claude's pane is the main one; copy mode leaves both panes.
+        let main = main_pane(&t).unwrap();
+        assert_ne!(main, tmux(&sock, &["display-message", "-p", "-t", "c:", "#{pane_id}"]));
+        tmux(&sock, &["copy-mode", "-t", &main]);
+        assert!(scroll_state(&t).unwrap().0);
+        leave_scroll(&t).unwrap();
+        assert!(!scroll_state(&t).unwrap().0);
         tmux(&sock, &["kill-server"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
