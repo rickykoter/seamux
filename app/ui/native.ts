@@ -52,6 +52,17 @@ const CMD_KEYS: Record<string, string> = { ArrowLeft: "\x01", ArrowRight: "\x05"
  *  momentum's tail) no longer sends a report each. */
 const ROWS_PER_REPORT = 1;
 
+/** The speed curve, as a Mac's pointer has one: below SLOW_PX_MS (pixels of
+ *  travel per ms) the view moves a row per row of travel; faster, each row
+ *  counts for more, up to MAX_GAIN, so a quick swipe covers ground. */
+const SLOW_PX_MS = 0.4;
+const GAIN_PER_PX_MS = 0.6;
+const MAX_GAIN = 3;
+
+/** Queued reports go out one per frame; a backlog drains within this many
+ *  frames, so a long swipe glides rather than lags. */
+const DRAIN_FRAMES = 6;
+
 /** Wheel events this page made itself, which xterm.js may turn into reports. */
 const paced = new WeakSet<Event>();
 
@@ -143,6 +154,11 @@ export class NativeTerm {
   /** Wheel travel not yet sent, in pixels, and when the wheel last moved. */
   private wheelLeft = 0;
   private wheelAt = 0;
+  /** Reports waiting for a frame (signed: up is negative), and where the
+   *  pointer was for them. */
+  private wheelQueue = 0;
+  private wheelAim: { target: EventTarget | null; x: number; y: number } = { target: null, x: 0, y: 0 };
+  private wheelFrame = 0;
   /** Keys go out one after another: the next waits for the last. */
   private keys: Promise<unknown> = Promise.resolve();
 
@@ -340,9 +356,10 @@ export class NativeTerm {
     return row.slice(r.start.x - 1, r.end.y === r.start.y ? r.end.x : undefined);
   }
 
-  /** The wheel, paced: while the program (tmux) takes the mouse, a
-   *  trackpad's stream of events becomes one report per few rows of travel,
-   *  not one per event. A short flick still sends one. */
+  /** The wheel, paced and smoothed: while the program (tmux, or Claude
+   *  through it) takes the mouse, travel becomes reports by the row, scaled
+   *  up when the finger is fast, and the reports go out one per frame so a
+   *  burst glides instead of jumping. A short flick still sends one. */
   private wheel(e: WheelEvent): boolean {
     if (paced.has(e)) return true;
     if (this.term.modes.mouseTrackingMode === "none" || !e.deltaY) return true;
@@ -353,24 +370,41 @@ export class NativeTerm {
     const dy = e.deltaMode === 1 ? e.deltaY * rowPx : e.deltaMode === 2 ? e.deltaY * this.el.clientHeight : e.deltaY;
     const step = rowPx * ROWS_PER_REPORT;
     const now = performance.now();
-    const fresh = now - this.wheelAt > 250 || Math.sign(dy) !== Math.sign(this.wheelLeft || dy);
+    const dt = Math.max(1, now - this.wheelAt);
+    const turned = Math.sign(dy) !== Math.sign(this.wheelLeft || dy);
+    const fresh = now - this.wheelAt > 250 || turned;
     this.wheelAt = now;
-    this.wheelLeft = fresh ? Math.sign(dy) * step : this.wheelLeft + dy;
-    let n = Math.trunc(this.wheelLeft / step);
+    // A turn stops what was still gliding the other way.
+    if (turned || Math.sign(this.wheelQueue) === -Math.sign(dy)) this.wheelQueue = 0;
+    const speed = fresh ? 0 : Math.abs(dy) / dt;
+    const gain = Math.min(MAX_GAIN, 1 + GAIN_PER_PX_MS * Math.max(0, speed - SLOW_PX_MS));
+    this.wheelLeft = fresh ? Math.sign(dy) * step : this.wheelLeft + dy * gain;
+    const n = Math.trunc(this.wheelLeft / step);
     this.wheelLeft -= n * step;
-    for (; n !== 0; n -= Math.sign(n)) {
-      const ev = new WheelEvent("wheel", {
-        deltaY: Math.sign(n),
-        deltaMode: WheelEvent.DOM_DELTA_LINE,
-        clientX: e.clientX,
-        clientY: e.clientY,
-        bubbles: true,
-        cancelable: true,
-      });
-      paced.add(ev);
-      e.target?.dispatchEvent(ev);
-    }
+    this.wheelQueue += n;
+    this.wheelAim = { target: e.target, x: e.clientX, y: e.clientY };
+    if (this.wheelQueue && !this.wheelFrame) this.wheelFrame = requestAnimationFrame(() => this.wheelDrain());
     return false;
+  }
+
+  /** Send this frame's share of the queued reports: one, or more when a
+   *  backlog would otherwise trail behind the finger. */
+  private wheelDrain(): void {
+    this.wheelFrame = 0;
+    const q = this.wheelQueue;
+    if (!q || this.id === null) {
+      this.wheelQueue = 0;
+      return;
+    }
+    const take = Math.sign(q) * Math.max(1, Math.ceil(Math.abs(q) / DRAIN_FRAMES));
+    this.wheelQueue -= take;
+    const { target, x, y } = this.wheelAim;
+    for (let i = 0; i < Math.abs(take); i++) {
+      const ev = new WheelEvent("wheel", { deltaY: Math.sign(q), deltaMode: WheelEvent.DOM_DELTA_LINE, clientX: x, clientY: y, bubbles: true, cancelable: true });
+      paced.add(ev);
+      target?.dispatchEvent(ev);
+    }
+    if (this.wheelQueue) this.wheelFrame = requestAnimationFrame(() => this.wheelDrain());
   }
 
   show(surface: string): void {
