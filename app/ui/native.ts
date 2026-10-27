@@ -489,7 +489,8 @@ export class NativeTerm {
   }
 
   /** The app's keys stay the app's: Command keys (⌘Esc leaves) but the
-   *  line-editing ones (CMD_KEYS), and a
+   *  pane's own (line editing in CMD_KEYS, ⌘+/⌘- font size, ⌘J the
+   *  companion shell), and a
    *  second Esc within a moment (two would open Claude's Rewind). */
   private key(e: KeyboardEvent): boolean {
     if (e.type !== "keydown") return true;
@@ -499,6 +500,13 @@ export class NativeTerm {
       if (plain && (e.key === "=" || e.key === "+" || e.key === "-" || e.key === "0")) {
         e.preventDefault();
         this.zoom(e.key === "-" ? -1 : e.key === "0" ? 0 : 1);
+        return false;
+      }
+      if (plain && !e.shiftKey && e.key.toLowerCase() === "j") {
+        // ⌘J: the companion shell under Claude, shown or hidden.
+        e.preventDefault();
+        const id = this.id;
+        if (id !== null) void invoke<boolean>("pty_shell", { id }).catch((err) => this.say(`No shell: ${err}`));
         return false;
       }
       const seq = plain && !e.shiftKey ? CMD_KEYS[e.key] : undefined;

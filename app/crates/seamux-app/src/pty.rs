@@ -326,6 +326,50 @@ pub fn scroll_state(t: &Target) -> Option<(bool, u64, u64)> {
     Some((mode, pos, hist))
 }
 
+/// A tmux command's output, trimmed.
+fn tmux_out(sock: &str, args: &[&str]) -> Result<String, String> {
+    let o = Command::new(tmux_bin()).arg("-S").arg(sock).args(args).output().map_err(|e| e.to_string())?;
+    if !o.status.success() {
+        return Err(format!("tmux {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+/// What the companion shell's border says: "shell · <what runs>". Other
+/// panes' borders say nothing.
+const SHELL_BORDER: &str = "#{?#{==:#{@seamux_role},shell}, shell · #{pane_current_command} ,}";
+
+/// Show or hide the session's companion shell: a split under Claude, in the
+/// same folder, made the first time. Hiding zooms Claude's pane, so the
+/// shell keeps running. Returns whether the shell shows now (and has the keys).
+pub fn toggle_shell(t: &Target) -> Result<bool, String> {
+    let win = format!("{}:", t.session);
+    let list = tmux_out(&t.socket, &["list-panes", "-t", &win, "-F", "#{pane_id}\t#{@seamux_role}\t#{window_zoomed_flag}\t#{pane_current_path}"])?;
+    let rows: Vec<Vec<&str>> = list.lines().map(|l| l.split('\t').collect()).filter(|r: &Vec<&str>| r.len() == 4).collect();
+    let main = rows.iter().find(|r| r[1] != "shell").ok_or("the session has no pane")?;
+    let shell = rows.iter().find(|r| r[1] == "shell");
+    let zoomed = main[2] == "1";
+    match shell {
+        None => {
+            let id = tmux_out(&t.socket, &["split-window", "-v", "-l", "30%", "-t", main[0], "-c", main[3], "-P", "-F", "#{pane_id}"])?;
+            tmux_ok(&t.socket, &["set-option", "-p", "-t", &id, "@seamux_role", "shell"])?;
+            tmux_ok(&t.socket, &["set-option", "-w", "-t", &win, "pane-border-status", "top"])?;
+            tmux_ok(&t.socket, &["set-option", "-w", "-t", &win, "pane-border-format", SHELL_BORDER])?;
+            Ok(true)
+        }
+        Some(sh) if zoomed => {
+            tmux_ok(&t.socket, &["resize-pane", "-Z", "-t", main[0]])?;
+            tmux_ok(&t.socket, &["select-pane", "-t", sh[0]])?;
+            Ok(true)
+        }
+        Some(_) => {
+            tmux_ok(&t.socket, &["select-pane", "-t", main[0]])?;
+            tmux_ok(&t.socket, &["resize-pane", "-Z", "-t", main[0]])?;
+            Ok(false)
+        }
+    }
+}
+
 fn tmux_ok(sock: &str, args: &[&str]) -> Result<(), String> {
     let o = Command::new(tmux_bin()).arg("-S").arg(sock).args(args).output().map_err(|e| e.to_string())?;
     if !o.status.success() {
@@ -800,6 +844,28 @@ mod tests {
         });
         assert!(rx.recv_timeout(Duration::from_secs(5)).is_ok(), "the closed client's output never ended");
         drop(b);
+        tmux(&sock, &["kill-server"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Live: the companion shell splits once, then hides and shows by zoom.
+    #[test]
+    fn companion_shell_splits_then_hides_and_shows() {
+        if Command::new(tmux_bin()).arg("-V").output().is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("seamux-sh-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let sock = dir.join("s.sock").to_string_lossy().into_owned();
+        tmux(&sock, &["-f", "/dev/null", "new-session", "-d", "-s", "c", "-x", "80", "-y", "30", "sh"]);
+        let t = Target { socket: sock.clone(), session: "c".into() };
+        let look = || tmux(&sock, &["list-panes", "-t", "c:", "-F", "#{@seamux_role}:#{pane_active}:#{window_zoomed_flag}"]);
+        assert_eq!(toggle_shell(&t), Ok(true));
+        assert_eq!(look(), ":0:0\nshell:1:0");
+        assert_eq!(toggle_shell(&t), Ok(false));
+        assert_eq!(look(), ":1:1\nshell:0:1");
+        assert_eq!(toggle_shell(&t), Ok(true));
+        assert_eq!(look(), ":0:0\nshell:1:0");
         tmux(&sock, &["kill-server"]);
         let _ = std::fs::remove_dir_all(&dir);
     }

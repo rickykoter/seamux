@@ -196,6 +196,7 @@ fn main() {
             pty_app::pty_paths,
             pty_app::pty_scroll,
             pty_app::pty_seen,
+            pty_app::pty_shell,
             pty_app::pty_workspace,
             pane_app::open_in_editor,
             pane_app::gh_card,
