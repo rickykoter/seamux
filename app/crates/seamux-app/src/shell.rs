@@ -200,6 +200,8 @@ pub async fn open_in_cmux<R: Runtime>(window: WebviewWindow<R>, path: String, wo
         let c = cmux::Cmux::connect().map_err(|e| e.to_string())?;
         // The workspace comes forward first, so its companion is on screen
         // and sized; then the page opens there, focused: the person asked.
+        // The person asked for cmux here: it may come forward.
+        allow_cmux_focus();
         if let Some(w) = &ws {
             c.workspace_select(w).map_err(|e| e.to_string())?;
         }
@@ -340,6 +342,95 @@ fn fill_screen<R: Runtime>(w: &WebviewWindow<R>) {
     let _ = w.set_size(tauri::Size::Physical(area.size));
 }
 
+// ---- cmux stays the backend ---------------------------------------------
+// cmux runs the terminals; the app is where the person works. cmux brings
+// itself to the front for some of what it is asked (selecting a workspace,
+// a browser surface, a notification), from the app or from crew's own
+// processes. While the window is up, a cmux that comes forward without the
+// person going there is sent back: the window takes the front again.
+
+/// Until when (ms since the epoch) cmux may come forward: the app's own
+/// handoffs (Open in cmux, the Wall's jump) open this for a moment.
+static CMUX_ALLOWED_UNTIL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// The person asked to go to cmux: let it come forward for the next 3 s.
+pub fn allow_cmux_focus() {
+    CMUX_ALLOWED_UNTIL.store(now_ms() + 3000, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// cmux's bundle ids: the release and the nightly.
+pub fn is_cmux_bundle(id: &str) -> bool {
+    id == "com.cmuxterm.app" || id.starts_with("com.cmuxterm.app.")
+}
+
+#[cfg(target_os = "macos")]
+mod front {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceSecondsSinceLastEventType(source: i32, event_type: u32) -> f64;
+    }
+    /// kCGEventSourceStateCombinedSessionState, kCGEventFlagsChanged.
+    const COMBINED: i32 = 0;
+    const FLAGS_CHANGED: u32 = 12;
+
+    /// The frontmost app's bundle id.
+    pub fn frontmost() -> Option<String> {
+        let ws = objc2_app_kit::NSWorkspace::sharedWorkspace();
+        let app = ws.frontmostApplication()?;
+        app.bundleIdentifier().map(|s| s.to_string())
+    }
+
+    /// A modifier key (Cmd, for Cmd-Tab) went down or up this recently: the
+    /// person switched apps by keyboard.
+    pub fn modifier_within(secs: f64) -> bool {
+        // SAFETY: a CoreGraphics query with constant arguments.
+        unsafe { CGEventSourceSecondsSinceLastEventType(COMBINED, FLAGS_CHANGED) < secs }
+    }
+
+    /// Whether the pointer is over `win`. The window fills its screen's work
+    /// area, so with the pointer on it the person cannot have clicked cmux.
+    pub fn pointer_over(win: &objc2_app_kit::NSWindow) -> bool {
+        let p = objc2_app_kit::NSEvent::mouseLocation();
+        let f = win.frame();
+        p.x >= f.origin.x && p.x <= f.origin.x + f.size.width && p.y >= f.origin.y && p.y <= f.origin.y + f.size.height
+    }
+}
+
+/// The window lost the focus: if cmux took it without being asked, take it
+/// back. Looked at a moment later, once macOS has said who is in front.
+fn guard_focus<R: Runtime>(w: &WebviewWindow<R>) {
+    #[cfg(target_os = "macos")]
+    {
+        let w = w.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            let w2 = w.clone();
+            let _ = w.run_on_main_thread(move || {
+                if !w2.is_visible().unwrap_or(false) || now_ms() < CMUX_ALLOWED_UNTIL.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                if !front::frontmost().is_some_and(|id| is_cmux_bundle(&id)) {
+                    return; // another app, which the person went to
+                }
+                let Ok(ptr) = w2.ns_window() else { return };
+                // SAFETY: as in join_full_screen_spaces; this runs on the main thread.
+                let win: &objc2_app_kit::NSWindow = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
+                if !front::pointer_over(win) || front::modifier_within(0.6) {
+                    return; // a click elsewhere, or Cmd-Tab: the person went there
+                }
+                win.orderFrontRegardless();
+                let _ = w2.set_focus();
+            });
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = w;
+}
+
 /// Tauri's hide does not take the window off screen once its class is the
 /// panel subclass (seen: hide ran, the window stayed on screen), so order it
 /// out directly as well.
@@ -443,6 +534,9 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
             // The sheet's keys work wherever focus is, a framed page
             // included, but only while this window has it.
             tauri::WindowEvent::Focused(on) => {
+                if !*on {
+                    guard_focus(&w2);
+                }
                 let gs = handle.global_shortcut();
                 for (k, _) in &sheet_keys {
                     let _ = if *on { gs.register(*k) } else { gs.unregister(*k) };
@@ -474,6 +568,14 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cmux_is_known_by_its_bundle_ids() {
+        assert!(super::is_cmux_bundle("com.cmuxterm.app"));
+        assert!(super::is_cmux_bundle("com.cmuxterm.app.nightly"));
+        assert!(!super::is_cmux_bundle("com.cmuxterm.apple"));
+        assert!(!super::is_cmux_bundle("com.mitchellh.ghostty"));
+    }
+
     use super::*;
 
     #[test]
