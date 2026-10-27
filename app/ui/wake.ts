@@ -199,7 +199,7 @@ export class Wake {
     const sub = el("div", "w-sub");
     sub.append(this.stats, this.keepAllBtn);
     ttl.append(this.title, sub);
-    head.append(ttl, el("span", "grow"), this.picker);
+    head.append(ttl, this.picker);
     const bar = el("div", "w-bar");
     bar.append(this.q, keys);
     this.toastEl.setAttribute("role", "status");
