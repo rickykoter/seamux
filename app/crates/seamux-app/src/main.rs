@@ -8,6 +8,7 @@ mod desk_app;
 mod newws_app;
 mod pane_app;
 mod pty_app;
+mod reclaim_app;
 mod review_app;
 mod shell;
 mod term_app;
@@ -201,6 +202,8 @@ fn main() {
             pty_app::pty_workspace,
             pane_app::open_in_editor,
             pane_app::gh_card,
+            reclaim_app::reclaim_check,
+            reclaim_app::reclaim_run,
             pty_app::pty_reset,
             pty_app::native_session,
             views_app::views_frame,

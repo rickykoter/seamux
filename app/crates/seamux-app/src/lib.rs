@@ -5,6 +5,7 @@ pub mod actions;
 pub mod ghostty;
 pub mod pane;
 pub mod pty;
+pub mod reclaim;
 pub mod review;
 pub mod sessions;
 pub mod tuck;

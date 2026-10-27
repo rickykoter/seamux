@@ -1347,7 +1347,7 @@ if (live && Array.isArray(live.rows)) {
   const last = () => q(fetched[fetched.length - 1]);
 
   checks.push(["intent: an older page's click CSS is replaced on upgrade",
-    oldCss.getAttribute("data-v") === "10" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
+    oldCss.getAttribute("data-v") === "11" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
   checks.push(["intent: a delegated child's go chip is muted, never filled or breathing",
     /\.row \.chip\.chip\[title\^="parent goes"\]\{[^}]*background:transparent[^}]*animation:none/.test(oldCss.textContent)]);
   const fold = () => JSON.parse(host.getAttribute("data-fold"));
@@ -1408,6 +1408,60 @@ if (live && Array.isArray(live.rows)) {
     stampEl.listeners.length === 1 && fetched.length === n0 + 1]);
   checks.push(["intent: an inert row keeps its card ground (a shell card is inert)",
     !/\.row\.inert[^{]*\{[^}]*background/.test(oldCss.textContent) && /\.row:not\(\.inert\):hover/.test(oldCss.textContent)]);
+}
+
+// ---- intent.js, framed by the app: reclaim goes to the app's wizard -------
+// Only once the app says it can (its "selected" message carries can: [...]);
+// before that, and in cmux's own Dock, the chip still asks cmux.
+{
+  const mk = (tag, attrs = {}, kids = [], text = "") => {
+    const el = {
+      tagName: tag.toUpperCase(), attrs: { ...attrs }, children: [], parentElement: null, text, listeners: [],
+      getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
+      setAttribute(k, v) { this.attrs[k] = String(v); },
+      hasAttribute(k) { return k in this.attrs; },
+      get textContent() { return this.text + this.children.map((c) => c.textContent).join(""); },
+      get classList() {
+        const self = this, list = () => (self.attrs.class || "").split(/\s+/).filter(Boolean);
+        return { contains: (c) => list().includes(c), add: (c) => { if (!list().includes(c)) self.attrs.class = [...list(), c].join(" "); },
+          remove: (c) => { self.attrs.class = list().filter((x) => x !== c).join(" "); } };
+      },
+      matches(sel) {
+        return sel.split(",").map((x) => x.trim()).some((one) =>
+          one.startsWith(".") ? this.classList.contains(one.slice(1)) :
+          one.startsWith("[") ? this.hasAttribute(one.slice(1, -1)) : this.tagName === one.toUpperCase());
+      },
+      closest(sel) { for (let e = this; e; e = e.parentElement) if (e.matches(sel)) return e; return null; },
+      querySelector(sel) { for (const c of this.children) { if (c.matches(sel)) return c; const f = c.querySelector(sel); if (f) return f; } return null; },
+      addEventListener(type, fn) { this.listeners.push(fn); },
+      appendChild(c) { c.parentElement = this; this.children.push(c); return c; },
+    };
+    kids.forEach((k) => el.appendChild(k));
+    return el;
+  };
+  const chip = mk("span", { class: "chip" }, [], "reclaim");
+  const row = mk("div", { class: "row done open", "data-id": "WS-1" }, [mk("span", { class: "nm" }, [], "shipped-one"), mk("div", { class: "chips" }, [chip])]);
+  const host = mk("div", { id: "rows", "data-fold": "{}" }, [row]);
+  const fetched = [], posted = [], winListeners = [];
+  const parent = { postMessage: (m) => posted.push(m) };
+  const win = { parent, addEventListener: (t, fn) => winListeners.push(fn) };
+  const box = {
+    window: win, JSON, Math, encodeURIComponent, setTimeout: () => 0,
+    document: { head: mk("head"), getElementById: (id) => (id === "rows" ? host : null), createElement: (t) => mk(t) },
+    fetch: (url) => { fetched.push(url); return Promise.resolve({ json: () => ({ ok: true }) }); },
+  };
+  createContext(box);
+  runInContext(readFileSync(join(HERE, "intent.js"), "utf8"), box);
+  box.__boardIntent({ port: 4242, token: "t" });
+  const click = (el) => host.listeners.forEach((fn) => fn({ target: el, preventDefault() {}, stopPropagation() {} }));
+  click(chip);
+  checks.push(["intent: framed by an app that has not said it can, reclaim still asks cmux",
+    fetched.length === 1 && /a=reclaim/.test(fetched[0]) && !posted.some((m) => m.crew === "reclaim")]);
+  winListeners.forEach((fn) => fn({ source: parent, data: { crew: "selected", ws: "", can: ["reclaim"] } }));
+  click(chip);
+  const m = posted.find((x) => x.crew === "reclaim");
+  checks.push(["intent: once the app says can: [reclaim], the chip asks the app's wizard instead, naming the row",
+    fetched.length === 1 && m && m.ws === "WS-1" && m.name === "shipped-one"]);
 }
 
 // ---- deep-plan families: grouped, ordered by the most urgent member --------

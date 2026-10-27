@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Decision } from "./desk";
 import { NewWorkspace } from "./newws";
+import { ReclaimWizard } from "./reclaim";
 import { Sheet } from "./sheet";
 import { splitter } from "./splitter";
 import { setLevel, type Levels } from "./tuck";
@@ -36,6 +37,8 @@ export class DockView {
   private empty = document.createElement("p");
   /** The New workspace form, opened from the bar above the board (or ⌘N). */
   private newws = new NewWorkspace();
+  /** The board's reclaim chip, asked here rather than in a cmux terminal. */
+  private reclaim = new ReclaimWizard();
   /** A workspace just made here, and until when it is kept while cmux's
    *  frames catch up (it is not in them for a second or two). */
   private fresh: { ws: string; until: number } | null = null;
@@ -84,6 +87,13 @@ export class DockView {
       measure: () => this.board.getBoundingClientRect().width,
     });
     this.sheet.onPlace = (ws) => this.select(ws, true);
+    // A reclaimed workspace is gone: show another.
+    this.reclaim.onReclaimed = (ws) => {
+      if (this.ws !== ws) return;
+      this.ws = "";
+      this.picked = false;
+      this.fallback();
+    };
     window.addEventListener("message", (e) => {
       if (!this.frame || e.source !== this.frame.contentWindow || e.origin !== this.origin) return;
       const d = e.data as { crew?: string; ws?: unknown; show?: unknown } | null;
@@ -93,6 +103,9 @@ export class DockView {
       if (d?.crew === "tuck" && typeof d.ws === "string" && d.ws && (t?.level === "mute" || t?.level === "tuck" || t?.level === "none")) {
         void setLevel(d.ws, typeof t.name === "string" ? t.name : d.ws, t.level, this.levels[d.ws]);
       }
+      // The board's reclaim chip: what would go, and a yes, in the wizard.
+      const r = d as { name?: unknown } | null;
+      if (d?.crew === "reclaim" && typeof d.ws === "string" && d.ws) this.reclaim.open(d.ws, typeof r?.name === "string" ? r.name : d.ws);
       // The board's click handler is installed (its first push): mark ours.
       if (d?.crew === "ready") this.tell();
     });
@@ -181,9 +194,10 @@ export class DockView {
     this.tell();
   }
 
-  /** The board marks the workspace shown here. */
+  /** The board marks the workspace shown here, and learns what the app does
+   *  itself (its reclaim chip then asks here, not in a cmux terminal). */
   private tell(): void {
-    if (this.frame?.contentWindow && this.origin) this.frame.contentWindow.postMessage({ crew: "selected", ws: this.ws }, this.origin);
+    if (this.frame?.contentWindow && this.origin) this.frame.contentWindow.postMessage({ crew: "selected", ws: this.ws, can: ["reclaim"] }, this.origin);
   }
 
   private draw(): void {
