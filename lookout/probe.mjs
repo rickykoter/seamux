@@ -546,6 +546,10 @@ const R1 = repo("r1");
      br.includes('"failure_scenario"') && br.includes(`lookout findings add ${pid} `));
   ok("prompt: the reviewer writes its findings outside ~/.claude, where agent writes are refused",
      br.includes(path.join(os.tmpdir(), "lookout", pid + ".incoming.json")) && !/\.claude\/[^\s]*\.incoming\.json/.test(br));
+  const rb = cli(R4, "prompt", pid, "--reply").stdout;
+  ok("prompt --reply: the reviewer answers with the JSON, and writes no file and runs no ingest",
+     /Your final reply is ONE JSON object/.test(rb) && rb.includes('"failure_scenario"') &&
+     rb.includes(`lookout findings add ${pid} -`) && !rb.includes(".incoming.json") && !/^Write ONE JSON/m.test(rb));
   ok("prompt: a review opened without --context-file has no context section", !/## The context it was opened with/.test(br));
   // --context-file: text the opener wants beside the plan (a deep-plan family's
   // contracts), taken in at open and printed in the brief.
