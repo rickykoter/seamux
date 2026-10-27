@@ -6,6 +6,19 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **bash-guard: an opt-in exception for a leased force-push to named branches.**
+  The guard blocked every force-push, which is wrong for a branch that is
+  rewritten on every deploy. Setting `BASH_GUARD_FORCE_PUSH_BRANCHES` to an
+  extended regex of branch names (for example `deploy-[0-9]+`, in the
+  `settings.json` `env` block) now allows one form: `git push
+  --force-with-lease=<branch>:<40-hex sha> origin <ref>:<branch>`, where the
+  branch matches the regex and is the same on both sides. With the variable
+  unset or empty nothing changes. A bare lease, `-f`, a `+refspec`,
+  `--mirror`, a quoted or short sha, git global options (`-C`, `-c`), another
+  remote or another branch are still blocked, and so is a second command
+  chained after it. The guard cannot check who owns the branch; that stays
+  with whoever runs the push.
+
 - **deep-plan: `--root .` no longer takes over other worktrees.** `render
   --root` stored the path exactly as it was typed, and the gate resolves a
   root against the directory the hook runs in. A plan rendered with `--root .`

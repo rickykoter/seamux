@@ -14,6 +14,10 @@ hook="$here/guard_bash.sh"
 cases="$here/guard_bash_cases.txt"
 bash_bin="$(command -v bash)"
 
+# The opt-in force-push cases need this set; the checks below clear it.
+leased='git push --force-with-lease=deploy-5:0123456789abcdef0123456789abcdef01234567 origin x:deploy-5'
+export BASH_GUARD_FORCE_PUSH_BRANCHES='deploy-([1-9]|1[0-9]|20)'
+
 # A PATH with only what the guard needs besides builtins, and no python3.
 nopy="$(mktemp -d "${TMPDIR:-/tmp}/guard-probe.XXXXXX")"
 trap 'rm -r "$nopy"' EXIT
@@ -62,6 +66,28 @@ while IFS= read -r line || [ -n "$line" ]; do
     [ "$rc" = "$want" ] || fail "[$mode] want $expect, exit $rc: $body"
   done
 done <"$cases"
+
+# Without the opt-in variable, or with a pattern that does not name the branch,
+# the same leased push is blocked like any other force-push.
+for setting in "unset" "empty" "other"; do
+  for mode in $modes; do
+    case "$setting" in
+      unset) payload_env=(env -u BASH_GUARD_FORCE_PUSH_BRANCHES) ;;
+      empty) payload_env=(env BASH_GUARD_FORCE_PUSH_BRANCHES=) ;;
+      other) payload_env=(env 'BASH_GUARD_FORCE_PUSH_BRANCHES=release-[0-9]+') ;;
+    esac
+    if [ "$mode" = python3 ]; then
+      "${payload_env[@]}" CMUX_WORKSPACE_ID='' "$bash_bin" "$hook" >/dev/null 2>&1 \
+        <<<"{\"tool_input\":{\"command\":\"$leased\"}}"
+    else
+      "${payload_env[@]}" CMUX_WORKSPACE_ID='' PATH="$nopy" "$bash_bin" "$hook" >/dev/null 2>&1 \
+        <<<"{\"tool_input\":{\"command\":\"$leased\"}}"
+    fi
+    rc=$?
+    [ "$rc" = 2 ] || fail "[$mode] leased push with the variable $setting: want block, exit $rc"
+    runs=$((runs + 1))
+  done
+done
 
 # The fallback announces itself, and still blocks.
 hook shell '{"tool_input":{"command":"git status"}}'

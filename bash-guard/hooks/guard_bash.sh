@@ -224,6 +224,29 @@ git_args() {
 danger_target='(~[[:alnum:]_-]*|\$HOME|\$\{HOME\})[/.*]*|[/.*]+'
 rm_re="(^|[^[:alnum:]_.-])rm[\"${q}]?([[:space:]]|\$)"
 
+# The one force-push the guard can let through, and only when the person opts
+# in: BASH_GUARD_FORCE_PUSH_BRANCHES holds an extended regex for branch names
+# (for example `deploy-[0-9]+`; set it in the settings.json "env" block). With
+# it unset or empty, every force-push is blocked. When it is set, a leased push
+# to a matching branch passes if it is a plain `git push` with no global
+# options, the lease names that branch and a full 40-hex sha, the remote is
+# origin, and the pushed ref lands on the same branch. A bare lease, -f, a
+# +refspec, a quoted sha, another branch or extra arguments are still blocked.
+branch_re='[A-Za-z0-9_][A-Za-z0-9._/-]*'
+leased_push_re="^[[:space:]]*git[[:space:]]+push[[:space:]]+--force-with-lease=(${branch_re}):[0-9a-f]{40}[[:space:]]+origin[[:space:]]+${branch_re}:(${branch_re})[[:space:]]*\$"
+allowed_force_push() {
+  local ok=1 allow="${BASH_GUARD_FORCE_PUSH_BRANCHES-}"
+  [ -n "$allow" ] || return 1
+  # Case matters here: the lease and the branch name are git refs.
+  shopt -u nocasematch
+  if [[ "$1" =~ $leased_push_re ]] && [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ]; then
+    local dest="${BASH_REMATCH[2]}" full="^(${allow})\$"
+    [[ "$dest" =~ $full ]] && ok=0
+  fi
+  shopt -s nocasematch
+  return $ok
+}
+
 check_segment() {
   local seg="$1"
 
@@ -239,7 +262,7 @@ check_segment() {
   # --force-if-includes, -f alone or joined (-fu), a +refspec, --mirror.
   if git_args "$seg" push &&
     has "$args" '--force[-[:alnum:]]*(=[^[:space:]]*)?|--mir[a-z]*|-[[:alnum:]]*f[[:alnum:]]*|\+[^[:space:]]*'; then
-    block "git push --force"
+    allowed_force_push "$seg" || block "git push --force"
   fi
 
   # hard reset / destructive checkout that wipes uncommitted work
