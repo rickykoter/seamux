@@ -20,13 +20,15 @@
 .wake { display: flex; flex-direction: column; height: 100%; position: relative; }
 .wake .grow { flex: 1; }
 
-.w-head { display: flex; align-items: flex-end; gap: 12px; padding: 16px 26px 6px; }
-.w-title { margin: 0; font-size: 18px; font-weight: 600; }
+.w-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; padding: 16px 26px 6px; }
+/* The title block keeps a readable width; past that the picker drops to its own line. */
+.w-ttl { flex: 1 1 300px; min-width: 0; }
+.w-title { margin: 0; font-size: 18px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .w-dot { color: var(--muted); font-weight: 400; }
-.w-sub { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.w-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; color: var(--muted); font-size: 12px; margin-top: 2px; }
 .w-sub .risk { color: var(--bad); }
 .w-sub .kept { color: var(--good); }
-.w-ws { font: inherit; padding: 4px 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); max-width: 260px; }
+.w-ws { font: inherit; padding: 4px 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); max-width: 260px; min-width: 0; }
 
 .w-bar { display: flex; gap: 8px; padding: 6px 26px; }
 .w-q { flex: 1; font: inherit; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
@@ -65,7 +67,7 @@
 .w-acts { grid-column: 2 / 4; display: flex; flex-wrap: wrap; gap: 6px; }
 .w-act { font: inherit; font-size: 11.5px; padding: 2px 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
 .w-act.sure { border-color: var(--accent); color: var(--accent); }
-.w-act.keepall { color: var(--bad); }
+.w-act.keepall { color: var(--bad); white-space: nowrap; }
 .w-keys { padding: 4px 10px; }
 .w-row mark, .w-ph mark { background: color-mix(in srgb, var(--accent) 30%, transparent); color: inherit; border-radius: 2px; }
 .w-empty { margin: 14vh auto 0; max-width: 420px; text-align: center; color: var(--muted); }
