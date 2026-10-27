@@ -77,19 +77,27 @@ export class ReclaimWizard {
     this.el.append(this.card);
     // A click on the dimmed backdrop cancels, as Esc does (never mid-run).
     this.el.addEventListener("mousedown", (e) => e.target === this.el && this.cancel());
-    this.card.addEventListener("keydown", (e) => {
-      e.stopPropagation();
-      if (e.key === "Escape") {
+    // Keys stay in the card. Esc cancels wherever the focus is while it is
+    // open (a click on its text leaves the focus on the page, not the card).
+    this.card.addEventListener("keydown", (e) => e.stopPropagation());
+    window.addEventListener(
+      "keydown",
+      (e) => {
+        if (this.el.hidden || e.key !== "Escape") return;
         e.preventDefault();
+        e.stopPropagation();
         this.cancel();
-      }
-    });
+      },
+      true,
+    );
     document.body.append(this.el);
     void invoke<string>("home_dir").then((h) => (this.home = h), () => {});
   }
 
   /** Open for workspace `ws` (named `name` on the board): check it at once. */
   open(ws: string, name: string): void {
+    // A reclaim under way finishes, and says how it went, before another starts.
+    if (!this.el.hidden && this.stage === "run") return;
     this.ws = ws;
     this.name = name || ws;
     this.el.hidden = false;

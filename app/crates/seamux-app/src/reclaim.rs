@@ -42,7 +42,10 @@ pub struct Step {
 
 /// What a `crew-reclaim --yes` run did. Its report is printed again first
 /// (indented, and already shown by the wizard), so only its own top-level
-/// lines from "reclaiming …" on count, and any ✗ it died with.
+/// lines from "reclaiming …" on count, and any ✗ it died with. A run that
+/// never got that far was refused by a guard that failed since the check:
+/// its failed guards (the report's indented ✗ lines) and the blocker count
+/// say which.
 pub fn steps(stdout: &str, stderr: &str) -> Vec<Step> {
     let mut out = Vec::new();
     let mut acting = false;
@@ -62,11 +65,23 @@ pub fn steps(stdout: &str, stderr: &str) -> Vec<Step> {
         }
         out.push(Step { kind, text: text.trim().to_string() });
     };
+    let mut refused: Vec<Step> = Vec::new();
     for line in stdout.lines() {
-        if strip_ansi(line).starts_with("→ reclaiming ") {
+        let l = strip_ansi(line);
+        if l.starts_with("→ reclaiming ") {
             acting = true;
         }
+        if !acting {
+            if let Some(t) = l.trim_start().strip_prefix("✗ ").filter(|_| l.starts_with(' ')) {
+                refused.push(Step { kind: "error", text: t.trim().to_string() });
+            } else if l.contains("blocker(s)") {
+                refused.push(Step { kind: "note", text: l.trim().to_string() });
+            }
+        }
         take(line, &mut out, !acting);
+    }
+    if !acting {
+        out.extend(refused);
     }
     for line in stderr.lines() {
         take(line, &mut out, true);
@@ -114,5 +129,11 @@ mod tests {
         );
         let s = steps("\u{1b}[2m→\u{1b}[0m checking /w/x\n", "\u{1b}[31m✗\u{1b}[0m an agent started a turn in x while you were deciding — refusing\n");
         assert_eq!(s, vec![Step { kind: "error", text: "an agent started a turn in x while you were deciding — refusing".into() }]);
+        // A guard that failed since the check: the run stops at its report.
+        let s = steps("  \u{1b}[32m✓\u{1b}[0m clean tree, nothing uncommitted\n  \u{1b}[31m✗\u{1b}[0m an agent is mid-turn in x — let the turn end first\n\n\u{1b}[31m1 blocker(s) — nothing was changed.\u{1b}[0m\n", "");
+        assert_eq!(
+            s.iter().map(|x| (x.kind, x.text.as_str())).collect::<Vec<_>>(),
+            vec![("error", "an agent is mid-turn in x — let the turn end first"), ("note", "1 blocker(s) — nothing was changed.")]
+        );
     }
 }
