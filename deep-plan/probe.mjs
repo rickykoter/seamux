@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import http from "node:http";
 import { execSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { verdict } from "./lib/evidence.mjs";
@@ -51,7 +52,7 @@ delete ENV.CLAUDE_CODE_SESSION_ID;
 delete ENV.CLAUDE_SESSION_ID;
 delete ENV.CMUX_WORKSPACE_ID;
 // Host signals come from the session running the probe; each test sets its own.
-for (const k of ["SEAMUX_HOST", "CLAUDE_CODE_REMOTE", "CLAUDE_CODE_ENTRYPOINT"]) delete ENV[k];
+for (const k of ["SEAMUX_HOST", "CLAUDE_CODE_REMOTE", "CLAUDE_CODE_ENTRYPOINT", "DEEP_PLAN_SERVE_FILE", "LOOKOUT_SERVE_FILE"]) delete ENV[k];
 const MERMAID_VENDOR = path.join(ENV.DEEP_PLAN_VENDOR_DIR, "mermaid.min.js");
 // The real bundle to test with: where CI fetched it, where `deep-plan setup`
 // put it, a checkout's own vendor/, or the old skills copy. Copied, not moved.
@@ -1160,6 +1161,133 @@ ok("all increments done: Edit allowed, gate retired", edit(path.join(REPO, "a.tx
     phase() === "done" && edit(path.join(REPO, "a.txt")).status === 0);
   ok("a passing re-grade leaves a complete plan complete",
     cli("grade", spec.slug, ...right).status === 0 && phase() === "done");
+}
+
+// -------------------------------------------------- deep-plan serve: the plugin's own page server
+{
+  const SV = path.join(TMP, "serve");
+  fs.mkdirSync(SV, { recursive: true });
+  const screen = path.join(SV, "screen.txt");
+  const SENV = { ...ENV, DEEP_PLAN_SERVE_FILE: path.join(SV, "serve.json"), DEEP_PLAN_SERVE_IDLE_MS: "4000",
+    LOOKOUT_ENGINE_FILE: path.join(SV, "no-lookout.json"), LOOKOUT_SERVE_FILE: path.join(SV, "lk-serve.json"),
+    CREW_CMUX: path.join(HERE, "tools", "fake-cmux"), FAKE_CMUX_SCREEN: screen, DEEP_PLAN_CONFIRM_GAP_MS: "20",
+    DEEP_PLAN_OPENER: "true" };
+  const sv = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: SENV, cwd: REPO });
+  const rec = () => { try { return JSON.parse(fs.readFileSync(SENV.DEEP_PLAN_SERVE_FILE, "utf8")); } catch { return null; } };
+  const get = async (url, headers = {}) => {
+    const r = await fetch(url, { headers, redirect: "manual" });
+    const body = await r.text();
+    let json = null; try { json = JSON.parse(body); } catch { /* html */ }
+    return { status: r.status, body, json, headers: r.headers };
+  };
+  let r = sv("serve", "--url", `/plan/${spec.slug}`);
+  const R = rec();
+  ok("serve: --url starts a server and prints the page's URL",
+    r.status === 0 && R && r.stdout.trim() === `http://127.0.0.1:${R.port}/plan/${spec.slug}`);
+  ok("serve: serve.json is mode 0600 and records port, token, pid, version, started",
+    R && (fs.statSync(SENV.DEEP_PLAN_SERVE_FILE).mode & 0o777) === 0o600 &&
+    ["port", "token", "pid", "version", "started"].every(k => R[k]));
+  ok("serve: a second --url reuses the running server", sv("serve", "--url", "/x").status === 0 && rec().pid === R.pid);
+  const B = `http://127.0.0.1:${R.port}`, T = R.token;
+  let g = await get(B + "/health");
+  ok("serve: /health names the server and its pid", g.status === 200 && g.json.server === "deep-plan" && g.json.pid === R.pid &&
+    g.headers.get("server") === "deep-plan-serve");
+  // fetch will not send a Host of its choosing; a raw request will.
+  const rawHost = await new Promise(res => {
+    const q = http.request({ host: "127.0.0.1", port: R.port, path: "/health", headers: { Host: "evil.example:" + R.port } },
+      rs => { let b = ""; rs.on("data", c => b += c); rs.on("end", () => res({ status: rs.statusCode, body: b })); });
+    q.on("error", () => res({ status: 0, body: "" })); q.end();
+  });
+  ok("serve: a foreign Host is refused", rawHost.status === 403 && /unknown host/.test(rawHost.body));
+  g = await get(`http://localhost:${R.port}/health`);
+  ok("serve: localhost:<port> is its own name too", g.status === 200);
+  g = await get(`${B}/plan/${spec.slug}`);
+  ok("serve: the plan page is served with its token and slug injected, and mermaid swapped",
+    g.status === 200 && g.body.includes(`var T = "${T}", SLUG = "${spec.slug}"`) && !g.body.includes("__TOKEN__") &&
+    !/src="data:text\/javascript;base64/.test(g.body));
+  g = await get(`${B}/plan/${spec.slug}.md`);
+  ok("serve: a plan's markdown is plain text", g.status === 200 && /^text\/plain/.test(g.headers.get("content-type")));
+  g = await get(`${B}/plan/..%2F..%2Fetc%2Fpasswd.html`);
+  ok("serve: a /plan/ path cannot leave the plans directory", g.status === 404);
+  g = await get(`${B}/plan-stamp?slug=${spec.slug}`);
+  ok("serve: /plan-stamp answers the page's mtime", g.status === 200 && g.json.mtime > 0);
+  g = await get(`${B}/plan-evidence/${spec.slug}/inc1-x-1/../../${spec.slug}.json`);
+  ok("serve: /plan-evidence serves only a run's frames, replay and trace", g.status === 404);
+  for (const route of ["/inc", "/open", "/answer", "/check/run"]) {
+    g = await get(`${B}${route}?t=wrong&slug=${spec.slug}&n=1&a=go&id=x`);
+    ok(`serve: ${route} refuses a bad token`, g.status === 403 && g.json.error === "bad token");
+  }
+  g = await fetch(B + "/review/x", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  ok("serve: nothing here takes a POST", g.status === 404);
+  // /inc runs the engine: reset then go increment 2 from the page, as a person's click.
+  g = await get(`${B}/inc?t=${T}&slug=${spec.slug}&n=2&a=reset`);
+  const st2 = () => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"));
+  ok("serve: /inc runs a transition through the engine", g.status === 200 && g.json.ok && st2().increments[1].status === "pending");
+  g = await get(`${B}/inc?t=${T}&slug=${spec.slug}&n=2&a=go`);
+  ok("serve: a go from the page is recorded as the human's", g.status === 200 && g.json.ok &&
+    st2().increments[1].status === "authorized" && /human/.test(JSON.stringify(st2().log.slice(-1))));
+  g = await get(`${B}/inc?t=${T}&slug=${spec.slug}&n=2&a=pass`);
+  ok("serve: /inc refuses anything but a transition", g.status === 500 && g.json.detail === "bad transition");
+  passAll(spec.slug, 2); cli("done", spec.slug, "2");
+  fs.writeFileSync(path.join(REPO, "serve-open.txt"), "x\n");
+  g = await get(`${B}/open?t=${T}&slug=${spec.slug}&path=serve-open.txt:3`);
+  const g2 = await get(`${B}/open?t=${T}&slug=${spec.slug}&path=../../etc/passwd`);
+  ok("serve: /open opens a file in the plan's worktree, and nothing outside it",
+    g.json.ok && g.json.detail === "opened serve-open.txt:3" && !g2.json.ok && g2.json.detail === "outside the worktree");
+  fs.rmSync(path.join(REPO, "serve-open.txt"), { force: true });
+  g = await get(`${B}/check/run?t=${T}&slug=${spec.slug}&n=1&id=Not%20An%20Id`);
+  ok("serve: /check/* refuses a malformed check id", g.status === 400 && g.json.detail === "bad check id");
+  // Asks: typed only where a cmux surface was recorded, and then verified.
+  const askFile = path.join(HERE, "examples", "example.ask.json");
+  const mk = env => {
+    const a = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "ask", askFile], { encoding: "utf8", env, cwd: TMP });
+    return { id: (a.stdout.match(/ask (\S+):/) || [])[1], out: a.stdout };
+  };
+  const plain = mk(SENV);
+  ok("serve: an ask outside cmux prints its URL on deep-plan's server",
+    plain.id && plain.out.includes(`served at ${B}/ask/${plain.id}`), plain.out);
+  g = await get(`${B}/ask/${plain.id}`);
+  ok("serve: the ask page is served with its token and id", g.status === 200 && g.body.includes(`var T = "${T}", ID = "${plain.id}"`));
+  g = await get(`${B}/answer?t=${T}&id=${plain.id}&n=2`);
+  ok("serve: with no cmux surface a pick is recorded, not typed, and says to answer in the chat",
+    g.status === 200 && g.json.ok && g.json.delivered === false && /in the chat prompt/.test(g.json.detail));
+  g = await get(`${B}/answer?t=${T}&id=${plain.id}&n=1`);
+  ok("serve: an ask is answered once", g.status === 400 && /already answered: 2/.test(g.json.detail));
+  const typed = mk({ ...SENV, CMUX_SURFACE_ID: "SURF-9" });
+  fs.writeFileSync(screen, "something else entirely\n");
+  g = await get(`${B}/answer?t=${T}&id=${typed.id}&n=1`);
+  ok("serve: delivery looks before typing: a screen without the question gets nothing",
+    g.json.ok && g.json.delivered === false && /not showing this question/.test(g.json.detail));
+  const typed2 = mk({ ...SENV, CMUX_SURFACE_ID: "SURF-9" });
+  fs.writeFileSync(screen, "? For temporary share links\n❯ 1. Whole site, read-only\n  2. Day-of planner only\n");
+  g = await get(`${B}/answer?t=${T}&id=${typed2.id}&n=2`);
+  ok("serve: when the pointer never moves to the pick, Enter is not sent",
+    g.json.ok && g.json.delivered === false && /could not confirm/.test(g.json.detail));
+  // The server's own env carries no FAKE_CMUX_AFTER_SEND: restart it with one.
+  sv("serve", "--stop");
+  const AENV = { ...SENV, FAKE_CMUX_AFTER_SEND: "  1. Whole site, read-only\n❯ 2. Day-of planner only\n" };
+  spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "serve"], { encoding: "utf8", env: AENV });
+  const R2 = rec();
+  const typed3 = mk({ ...SENV, CMUX_SURFACE_ID: "SURF-9" });
+  fs.writeFileSync(screen, "? For temporary share links\n❯ 1. Whole site, read-only\n  2. Day-of planner only\n");
+  g = await get(`http://127.0.0.1:${R2.port}/answer?t=${R2.token}&id=${typed3.id}&n=2`);
+  ok("serve: the pointer moved to the pick, so Enter follows and it is delivered",
+    g.json.ok && g.json.delivered === true && g.json.detail === "delivered 2 — selected, then Enter");
+  ok("serve: the recorded answer says it was typed",
+    JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "asks", typed3.id + ".json"), "utf8")).answer.delivered === true);
+  g = await get(`http://127.0.0.1:${R2.port}/review/x-inc1`);
+  ok("serve: /review/ without lookout says so", g.status === 404 && /lookout is not installed/.test(g.json.error));
+  // A stale record (a dead pid) is replaced, not trusted.
+  sv("serve", "--stop");
+  fs.writeFileSync(SENV.DEEP_PLAN_SERVE_FILE, JSON.stringify({ port: R2.port, token: "x", pid: 999999, version: "0", started: "" }));
+  r = sv("serve", "--url", "/health");
+  ok("serve: a stale serve.json (dead pid) starts a fresh server", r.status === 0 && rec().pid !== 999999 && rec().token !== "x");
+  // Idle exit: the server goes after IDLE_MS without a request, and tidies its record.
+  const idlePid = rec().pid;
+  let gone = false;
+  for (let i = 0; i < 80 && !gone; i++) { await new Promise(res => setTimeout(res, 500)); gone = !rec() && !(() => { try { process.kill(idlePid, 0); return true; } catch { return false; } })(); }
+  ok("serve: an idle server exits and removes serve.json", gone);
+  sv("serve", "--stop");
 }
 
 // -------------------------------------------------- a parked plan must not deadlock a live one

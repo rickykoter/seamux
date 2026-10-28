@@ -31,6 +31,7 @@ import { buildProof, withProof, ghCanAttach, gh } from "./lib/proof.mjs";
 import { readEvidence, evidenceSummary, newEvidenceDir, pruneEvidence, showTab } from "./lib/browser.mjs";
 import { detect, draftFile } from "./lib/detect.mjs";
 import { detectHost, hostLine } from "./lib/host.mjs";
+import * as SERVE from "./lib/serve.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
   FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
@@ -2625,7 +2626,10 @@ function transition(action, slug, n, why, force = false, { byHuman = false } = {
   reopenPhase(st);
   writeState(st); rerenderWorking(slug);
   say(`${action} ${slug} ${n}`);
-  if (action === "go") openWorkingSurface(st);
+  if (action === "go") {
+    const url = openWorkingSurface(st);
+    if (url) say(`  served at ${url} (host: ${detectHost().host})`);
+  }
 }
 
 // The go-ahead opens the plan's working surface in the Dock, so the page you
@@ -2734,6 +2738,40 @@ function askShow(id) {
   say(`ask ${id}: ${ask.answer.n} — ${o.label || ""}${ask.answer.delivered ? "" : " (shown on the page, not typed)"}`);
 }
 
+// A page's URL on deep-plan's own server, started if nothing answers. Used on
+// every host but cmux, which keeps crew's URL. Empty when there is no page a
+// person can reach: on the remote host (the sandbox's localhost is out of
+// reach), inside a request the server itself is running, or in a probe that
+// did not ask for a server.
+function servedUrl(rel) {
+  if (process.env.DEEP_PLAN_FROM_SERVE) return "";
+  if (detectHost().host === "remote") return "";
+  if (process.env.DEEP_PLAN_STATE_DIR && !process.env.DEEP_PLAN_SERVE_FILE) return "";
+  const rec = SERVE.ensureServer({ script: path.join(HERE, "deep_plan.mjs"), root: HERE });
+  return rec ? SERVE.urlFor(rec, rel) : "";
+}
+
+// `deep-plan serve`: start the server if needed and print a page's URL, or
+// run it in the foreground (what the detached start runs), or stop it.
+function serveCmd(flags, args) {
+  if (flags.foreground) {
+    SERVE.serveForeground({ script: path.join(HERE, "deep_plan.mjs"), version: engineVersion(), root: HERE });
+    return true; // keep the process alive
+  }
+  if (flags.stop) { say(SERVE.stopServer() ? "stopped deep-plan serve" : "deep-plan serve was not running"); return false; }
+  if (flags.status) {
+    const rec = SERVE.liveServer(HERE);
+    if (flags.json) process.stdout.write(JSON.stringify(rec ? { running: true, port: rec.port, pid: rec.pid, root: rec.root, version: rec.version, started: rec.started } : { running: false }) + "\n");
+    else say(rec ? `deep-plan serve on 127.0.0.1:${rec.port} (pid ${rec.pid}${rec.foreign ? ", another engine copy: " + rec.root : ""})` : "deep-plan serve is not running");
+    return false;
+  }
+  const rel = flags.url || args[0] || "/health";
+  const rec = SERVE.ensureServer({ script: path.join(HERE, "deep_plan.mjs"), root: HERE });
+  if (!rec) die(`deep-plan serve did not start — see ${SERVE.LOG_FILE}`);
+  say(SERVE.urlFor(rec, rel));
+  return false;
+}
+
 // The house's one way to show a page beside the chat: the workspace's
 // companion pane (crew-board companion.rs, `seamux companion open`). One tab
 // per key, reused; an agent's open gives the keyboard back to its terminal.
@@ -2764,6 +2802,7 @@ function companionOpen(url, key, ws, surface) {
 // caller with no workspace in its environment (a detached process).
 function openAskSurface(ask) {
   try {
+    if (detectHost().host !== "cmux") return servedUrl(`/ask/${ask.id}`);
     if (process.env.DEEP_PLAN_STATE_DIR) return "";
     const cache = path.join(os.homedir(), ".cache", "cmux-crew");
     const rd = f => fs.readFileSync(path.join(cache, f), "utf8").trim();
@@ -2792,6 +2831,7 @@ function openAskSurface(ask) {
 
 function openWorkingSurface(st) {
   try {
+    if (detectHost().host !== "cmux") return servedUrl(`/plan/${st.slug}`);
     // Probe/test runs override the state dir; they must never reach the
     // machine's real board, whatever this machine happens to be running.
     if (process.env.DEEP_PLAN_STATE_DIR) return;
@@ -3963,6 +4003,10 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--terminated") flags.terminated = true;
   else if (rest[i] === "--detach") flags.detach = true;
   else if (rest[i] === "--yes") flags.yes = true;
+  else if (rest[i] === "--foreground") flags.foreground = true;
+  else if (rest[i] === "--stop") flags.stop = true;
+  else if (rest[i] === "--status") flags.status = true;
+  else if (rest[i] === "--url") flags.url = rest[++i] || die("--url needs a path");
   else if (rest[i] === "--attach") {
     // An optional PR: a number or a URL. Without one, the branch's own PR.
     flags.attach = true;
@@ -3997,6 +4041,7 @@ switch (cmd) {
     process.stdout.write(pointerBody || JSON.stringify({ root: HERE, version: engineVersion(), pointer: "not written" }, null, 2) + "\n");
     break;
   }
+  case "serve": serveCmd(flags, args); break;
   case "doctor": {
     // Which host this run thinks it is in, and which engine copy answers.
     // Later verbs route pages by the same host.
@@ -4241,6 +4286,7 @@ switch (cmd) {
                                               pointer, install the ~/.local/bin shim
   engine                                      print the engine pointer (which copy runs)
   doctor [--json]                             print the host (cmux, desktop, terminal, remote) and the engine copy
+  serve [--url PATH] [--status|--stop]        start deep-plan's page server if needed and print a page's URL
   render <spec.json> [--root DIR] [--force]   spec -> md + review + working surfaces
   rehydrate <slug>                            re-render from the archived spec
   redraw <slug> | --all [--dry-run] [--json]  re-render plans with this engine (spec + state untouched)

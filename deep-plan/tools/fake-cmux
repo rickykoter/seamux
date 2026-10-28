@@ -13,7 +13,16 @@ import path from "node:path";
 
 const argv = process.argv.slice(2);
 if (process.env.FAKE_CMUX_LOG) fs.appendFileSync(process.env.FAKE_CMUX_LOG, JSON.stringify({ argv, cwd: process.cwd() }) + "\n");
-if (argv[0] !== "browser" || argv[1] !== "repl") { console.error("fake-cmux: only `browser repl` is faked"); process.exit(2); }
+// An ask's delivery (lib/serve.mjs deliver): the screen is $FAKE_CMUX_SCREEN;
+// a send replaces it with $FAKE_CMUX_AFTER_SEND when that is set, so a probe
+// can stage "the pointer moved" or "the prompt resolved".
+if (["read-screen", "send", "send-key"].includes(argv[0])) {
+  const screen = process.env.FAKE_CMUX_SCREEN;
+  if (argv[0] === "read-screen") { process.stdout.write(screen && fs.existsSync(screen) ? fs.readFileSync(screen, "utf8") : ""); process.exit(0); }
+  if (argv[0] === "send" && screen && process.env.FAKE_CMUX_AFTER_SEND) fs.writeFileSync(screen, process.env.FAKE_CMUX_AFTER_SEND);
+  console.log("OK"); process.exit(0);
+}
+if (argv[0] !== "browser" || argv[1] !== "repl") { console.error("fake-cmux: only `browser repl` and ask delivery are faked"); process.exit(2); }
 
 // `check tab` sends a one-liner naming the tab, not a prelude.
 const inline = argv[argv.length - 1];
