@@ -9,7 +9,10 @@
 //! the pane's own state file (crew-core's status). An event changes only its
 //! own pane's file; the workspace's lane, phase: token and question and asked
 //! markers then come from the roll-up of every pane in it, so one Claude's
-//! turn ending never clears another's ask.
+//! turn ending never clears another's ask. The bash and Python copies
+//! (crew-hook.sh, lib.sh, crew-sync) are frozen and still key everything by
+//! workspace: hooks_probe's two-pane cases run only under CREW_IMPL=rust
+//! (ADR 0036).
 //!
 //! crew/hooks/seamux-hook.sh is the hook command: it keeps pretool's
 //! lane-marker test in bash, so the common tool use never starts this

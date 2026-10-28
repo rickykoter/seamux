@@ -202,6 +202,14 @@ fact would teach them to ignore all of them. `$DEEP_PLAN_EVIDENCE_FLOOR`
   transition can lose an update. The flip re-reads before writing, which narrows
   but does not close the window.
 - `grade` accepts answers on the command line, so they land in shell history.
+- The plan owns its worktree, but **guests are allowed by design** (ADR 0038):
+  another Claude's write inside the root passes, warned once per session and
+  logged as a `guest:` line in the plan's log, and only the owner's pane or
+  session flips an increment to working. A guest's commits can still land in
+  an increment's range; the review sees them through the log, not the gate.
+- An owner stamped before panes were recorded matches by workspace, so two
+  Claudes in one workspace both count as the owner until a deep-plan command
+  restamps the plan from one pane.
 - The review page's quiz is display-only; grading is CLI. If a POST route is
   ever added to crew-board-intent, keep the key read server-side.
 - Annotation authorship is honor-system: no `user` capability in contract
