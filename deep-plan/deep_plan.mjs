@@ -32,6 +32,7 @@ import { readEvidence, evidenceSummary, newEvidenceDir, pruneEvidence, showTab, 
 import { detect, draftFile } from "./lib/detect.mjs";
 import { detectHost, hostLine } from "./lib/host.mjs";
 import * as SERVE from "./lib/serve.mjs";
+import { installRepo, checkRepo, targetRoot } from "./lib/install.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
   FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
@@ -2870,6 +2871,28 @@ function openWorkingSurface(st) {
   } catch { /* board offline or never installed — the go already succeeded */ }
 }
 
+// `deep-plan install-repo [--root DIR] [--check]`: the plugin into a repo's
+// own .claude/, for cloud sessions (lib/install.mjs). The pinned mermaid
+// goes with it, sha256-checked, since a cloud sandbox may not reach the CDN.
+function installRepoCmd(flags) {
+  const root = targetRoot(flags.root);
+  const m = mermaidPath();
+  const extra = m && sha256File(m) === MERMAID_SHA256 ? [{ from: m, rel: "vendor/mermaid.min.js" }] : [];
+  const opts = { pluginRoot: HERE, name: "deep-plan", version: engineVersion(), root, extra };
+  if (flags.check) {
+    const c = checkRepo(opts);
+    say(c.ok ? `deep-plan in ${root}/.claude/skills/deep-plan matches this plugin (${engineVersion()})` : c.lines.join("\n"));
+    if (!c.ok) process.exitCode = 1;
+    return;
+  }
+  let r;
+  try { r = installRepo(opts); } catch (e) { die(e.message); }
+  say(`installed deep-plan ${r.version} into ${r.dest} (${r.files} files)`);
+  say(`  hooks merged into ${r.settings}; they run on the remote host (CLAUDE_CODE_REMOTE=true) or with SEAMUX_REPO_HOOKS=1`);
+  if (!extra.length) say("  no pinned mermaid on this machine (deep-plan setup); cloud plan pages will draw diagrams only if the CDN is reachable");
+  say("  commit .claude/ yourself; deep-plan install-repo --check reports drift later");
+}
+
 // ---------------------------------------------------------------- state bundles
 // A plan's state moved between machines or sandboxes as one JSON file: its
 // state, spec and key, its rendered files (the approved snapshot cannot be
@@ -4150,6 +4173,7 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--yes") flags.yes = true;
   else if (rest[i] === "--foreground") flags.foreground = true;
   else if (rest[i] === "--review") flags.review = true;
+  else if (rest[i] === "--check") flags.check = true;
   else if (rest[i] === "--stop") flags.stop = true;
   else if (rest[i] === "--status") flags.status = true;
   else if (rest[i] === "--url") flags.url = rest[++i] || die("--url needs a path");
@@ -4190,6 +4214,7 @@ switch (cmd) {
   case "serve": serveCmd(flags, args); break;
   case "page": pageCmd(args[0], flags); break;
   case "export-state": exportState(args[0], flags); break;
+  case "install-repo": installRepoCmd(flags); break;
   case "import-state": importState(args[0], flags); break;
   case "doctor": {
     // Which host this run thinks it is in, and which engine copy answers.
@@ -4440,6 +4465,7 @@ switch (cmd) {
   engine                                      print the engine pointer (which copy runs)
   doctor [--json]                             print the host (cmux, desktop, terminal, remote) and the engine copy
   serve [--url PATH] [--status|--stop]        start deep-plan's page server if needed and print a page's URL
+  install-repo [--root DIR] [--check]        copy the plugin into a repo's .claude/ for cloud sessions
   export-state <slug> [--out FILE]            one file with the plan's state, spec, key, pages and reviews
   import-state <file> [--force] [--root DIR]  bring a bundle back (refuses an existing plan unless --force)
   page <slug> [--review]                      show the plan's working page (or its review) where this host can,

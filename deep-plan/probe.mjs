@@ -4491,6 +4491,62 @@ exit 1
   ok("remote: a worktree of the repo finds the main checkout's state", JSON.parse(ws.stdout || "[]").some(x => x.slug === "remote-plan"), ws.stdout + ws.stderr);
 }
 
+// -------------------------------------------------- install-repo: the plugin in a repo's own .claude/, for cloud sessions
+{
+  const IR = path.join(TMP, "install-repo");
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  fs.mkdirSync(path.join(IR, ".claude"), { recursive: true });
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: IR });
+  // A repo that already has a hook of its own.
+  fs.writeFileSync(path.join(IR, ".claude", "settings.json"), JSON.stringify({ hooks: { Stop: [{ matcher: "", hooks: [{ type: "command", command: "echo mine" }] }] }, model: "x" }));
+  const ir = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "install-repo", ...a], { encoding: "utf8", env: ENV, cwd: IR });
+  let r = ir();
+  const D = path.join(IR, ".claude", "skills", "deep-plan");
+  const set = () => JSON.parse(fs.readFileSync(path.join(IR, ".claude", "settings.json"), "utf8"));
+  ok("install-repo copies the plugin into .claude/skills/deep-plan, without its probe, evals or dev tools",
+    r.status === 0 && ["SKILL.md", "deep_plan.mjs", "hooks/gate.sh", "lib/state.mjs", "bin/deep-plan", ".claude-plugin/plugin.json", "references/checks.md"]
+      .every(f => fs.existsSync(path.join(D, f))) && !fs.existsSync(path.join(D, "probe.mjs")) && !fs.existsSync(path.join(D, "evals")) &&
+      !fs.existsSync(path.join(D, "tools")) && (fs.statSync(path.join(D, "bin", "deep-plan")).mode & 0o111) !== 0, r.stdout + r.stderr);
+  const s1 = set();
+  ok("install-repo merges its hooks into the repo's settings and keeps what was there",
+    s1.model === "x" && s1.hooks.Stop[0].hooks[0].command === "echo mine" &&
+    /\.claude\/skills\/deep-plan\/hooks\/gate\.sh/.test(s1.hooks.PreToolUse[0].hooks[0].command) && !JSON.stringify(s1).includes("CLAUDE_PLUGIN_ROOT"));
+  ir();
+  ok("install-repo again replaces its own hooks instead of adding a second set",
+    JSON.stringify(set()) === JSON.stringify(s1));
+  ok("install-repo --check: a fresh copy matches", ir("--check").status === 0);
+  fs.appendFileSync(path.join(D, "lib", "state.mjs"), "\n// edited\n");
+  r = ir("--check");
+  ok("install-repo --check reports drift from the plugin", r.status === 1 && /changed: lib\/state\.mjs/.test(r.stdout), r.stdout);
+  ir();
+  // The hooks as the repo's settings state them, run the way a cloud session runs them.
+  const nodeDir = path.dirname(process.execPath);
+  const cenv = (extra = {}) => {
+    const e = { ...ENV, HOME: path.join(TMP, "cloud-home"), CLAUDE_PROJECT_DIR: IR, PATH: `${nodeDir}:/usr/bin:/bin`, ...extra };
+    for (const k of ["DEEP_PLAN_STATE_DIR", "DEEP_PLAN_KEYS_DIR", "DEEP_PLAN_PLANS_DIR", "DEEP_PLAN_ANNOT_DIR", "SEAMUX_HOST"]) delete e[k];
+    return e;
+  };
+  fs.mkdirSync(path.join(TMP, "cloud-home"), { recursive: true });
+  const envFile = path.join(TMP, "claude-env");
+  const pathHook = set().hooks.SessionStart[0].hooks[0].command;
+  spawnSync("bash", ["-c", pathHook], { encoding: "utf8", env: cenv({ CLAUDE_CODE_REMOTE: "true", CLAUDE_ENV_FILE: envFile }) });
+  ok("the SessionStart hook puts the copy's bin on the Bash tool's PATH",
+    fs.readFileSync(envFile, "utf8").includes(`export PATH="${IR}/.claude/skills/deep-plan/bin:$PATH"`));
+  // A plan made with the copy itself, as a cloud session would.
+  const cs = { ...spec, slug: "cloud-plan" };
+  const copy = (...a) => spawnSync(path.join(D, "bin", "deep-plan"), a, { encoding: "utf8", env: cenv({ CLAUDE_CODE_REMOTE: "true" }), cwd: IR });
+  r = copy("render", tmpSpec(cs), "--root", IR);
+  const ck = JSON.parse(fs.readFileSync(path.join(IR, ".seamux", "state", "deep-plan", "keys", "cloud-plan.key.json"), "utf8"));
+  copy("grade", "cloud-plan", ...Object.entries(ck.answers).map(([q, v]) => `${q}=${v.letter}`));
+  const gateCmd = set().hooks.PreToolUse[0].hooks[0].command;
+  const call = JSON.stringify({ tool_name: "Edit", tool_input: { file_path: path.join(IR, "a.txt") }, cwd: IR });
+  const g1 = spawnSync("bash", ["-c", gateCmd], { encoding: "utf8", env: cenv({ CLAUDE_CODE_REMOTE: "true" }), input: call });
+  ok("in a cloud session the repo's gate hook runs the copy and refuses an edit the plan has not authorized",
+    r.status === 0 && g1.status === 2 && /deep-plan gate/.test(g1.stderr), r.stderr + g1.stderr);
+  const g2 = spawnSync("bash", ["-c", gateCmd], { encoding: "utf8", env: cenv(), input: call });
+  ok("…and does nothing in a local session, where the plugin's own hooks run", g2.status === 0 && g2.stderr === "");
+}
+
 // -------------------------------------------------- hot-path cost
 const t0 = process.hrtime.bigint();
 for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);

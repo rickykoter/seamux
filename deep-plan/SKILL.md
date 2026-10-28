@@ -159,6 +159,13 @@ These survive a compaction; everything below them is how.
     weaken an assertion to get a pass. Browser checks, claim steps and PR
     proof: [checks.md](references/checks.md#browser-checks).
 
+**In a cloud session** (claude.ai/code, `deep-plan doctor` says remote) the
+plugin runs from the repo's `.claude/skills/deep-plan`, put there by
+`deep-plan install-repo`; if it is missing, say so rather than planning
+without a gate. State lives in the repo's `.seamux/state/`; before the
+sandbox goes, offer `deep-plan export-state <slug>` so the next one can
+`import-state` it.
+
 Also read, when they apply: [observability.md](references/observability.md)
 on a project with `.seamux/observability.json`;
 [families.md](references/families.md) when one goal splits into parallel

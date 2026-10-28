@@ -34,6 +34,7 @@ import { brief } from "./lib/prompt.mjs";
 import { detectHost } from "./lib/host.mjs";
 import * as SV from "./lib/serve.mjs";
 import * as AR from "./lib/artifact.mjs";
+import { installRepo, checkRepo, targetRoot } from "./lib/install.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -50,7 +51,7 @@ const opt = (n, d = null) => {
 // Options that take a value; every other --flag stands alone.
 // The most of a --context-file a review keeps for its reviewer brief.
 const CONTEXT_CAP = 8000;
-const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file", "--url"]);
+const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file", "--url", "--root"]);
 const positional = () => rest.filter((a, i) => !a.startsWith("--") && !(i > 0 && VALUED.has(rest[i - 1])));
 
 const say = s => process.stdout.write(s + "\n");
@@ -555,6 +556,8 @@ function usage() {
                             the review as a page to publish with the Artifact tool (remote hosts)
   lookout pull <id> <rows.json|dir> [--json]
                             replay the published page's comments and closes into the review
+  lookout install-repo [--root DIR] [--check]
+                            copy the plugin into a repo's .claude/ for cloud sessions
   lookout serve [--url PATH] [--status|--stop]
                             start lookout's review server if needed and print a page's URL
 
@@ -587,6 +590,24 @@ function cmdPull() {
   say(`pulled ${applied.length} row(s) into ${id}` + (skipped.length ? `, skipped ${skipped.length}` : ""));
   for (const a of applied) say(`  ${a.op}${a.item ? " " + a.item : ""}`);
   for (const k of skipped) say(`  skipped ${k.rid}: ${k.why}`);
+}
+
+// `lookout install-repo [--root DIR] [--check]`: the plugin into a repo's own
+// .claude/, for cloud sessions (lib/install.mjs). highlight.js ships inside it.
+function cmdInstallRepo() {
+  const root = targetRoot(opt("root"));
+  const opts = { pluginRoot: HERE, name: "lookout", version: V.engineVersion(HERE), root };
+  if (flag("check")) {
+    const c = checkRepo(opts);
+    say(c.ok ? `lookout in ${root}/.claude/skills/lookout matches this plugin (${opts.version})` : c.lines.join("\n"));
+    if (!c.ok) process.exitCode = 1;
+    return;
+  }
+  let r;
+  try { r = installRepo(opts); } catch (e) { die(e.message); }
+  say(`installed lookout ${r.version} into ${r.dest} (${r.files} files)`);
+  say(`  hooks merged into ${r.settings}; they run on the remote host (CLAUDE_CODE_REMOTE=true) or with SEAMUX_REPO_HOOKS=1`);
+  say("  commit .claude/ yourself; lookout install-repo --check reports drift later");
 }
 
 // `lookout serve`: start the server if needed and print a page's URL, run it
@@ -630,6 +651,7 @@ switch (verb) {
   case "serve":  cmdServe(); break;
   case "export-artifact": cmdExportArtifact(); break;
   case "pull":   cmdPull(); break;
+  case "install-repo": cmdInstallRepo(); break;
   case "engine": {
     // The pointer as written by this run, plus the host it detected (not
     // stored in the pointer: the host belongs to the session, not the copy).

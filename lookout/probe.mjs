@@ -1192,6 +1192,30 @@ catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.n
     S.read(id).threads.filter(t => t.messages[0].text === "a second thread").length === 1, r.stdout);
 }
 
+// ---------------------------------------------------------------- install-repo
+{
+  const IR = repo("install");
+  const ir = (...a) => spawnSync("node", [path.join(HERE, "lookout.mjs"), "install-repo", ...a], { encoding: "utf8", env: ENV, cwd: IR });
+  let r = ir();
+  const D = path.join(IR, ".claude", "skills", "lookout");
+  const set = JSON.parse(fs.readFileSync(path.join(IR, ".claude", "settings.json"), "utf8"));
+  ok("install-repo copies lookout into .claude/skills/lookout, highlight.js included, without the probe or evals",
+    r.status === 0 && ["SKILL.md", "lookout.mjs", "hooks/comments.sh", "vendor/highlight.min.js", "bin/lookout", "page/review.js"]
+      .every(f => fs.existsSync(path.join(D, f))) && !fs.existsSync(path.join(D, "probe.mjs")) && !fs.existsSync(path.join(D, "evals")), r.stderr);
+  ok("install-repo merges the comments hooks behind the remote guard",
+    set.hooks.UserPromptSubmit[0].hooks[0].command.startsWith('[ "$CLAUDE_CODE_REMOTE" = true ]') &&
+    /\.claude\/skills\/lookout\/hooks\/comments\.sh/.test(set.hooks.UserPromptSubmit[0].hooks[0].command));
+  ir();
+  ok("install-repo again leaves one set of its hooks", JSON.stringify(JSON.parse(fs.readFileSync(path.join(IR, ".claude", "settings.json"), "utf8"))) === JSON.stringify(set));
+  ok("install-repo --check: a fresh copy matches", ir("--check").status === 0);
+  fs.rmSync(path.join(D, "page", "review.css"));
+  r = ir("--check");
+  ok("install-repo --check names what is missing", r.status === 1 && /missing: page\/review\.css/.test(r.stdout), r.stdout);
+  ok("the twin install.mjs files match apart from the line naming the other",
+    fs.readFileSync(path.join(HERE, "lib", "install.mjs"), "utf8").split("\n").filter((l, i) => i !== 18).join("\n") ===
+    fs.readFileSync(path.join(HERE, "..", "deep-plan", "lib", "install.mjs"), "utf8").split("\n").filter((l, i) => i !== 18).join("\n"));
+}
+
 // ---------------------------------------------------------------- page script
 {
   const r = spawnSync("node", ["--check", path.join(HERE, "page", "review.js")], { encoding: "utf8" });

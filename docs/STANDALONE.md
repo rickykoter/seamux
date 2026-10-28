@@ -58,14 +58,34 @@ could not be run from here. The official docs answer each question it asked
   cdnjs.cloudflare.com is not on the default list, so highlight.js is
   vendored rather than fetched.
 
-## What this means for increment 10
+## The cloud install
 
-The shape in the plan stands: `install-repo` copies the engine, the skill
-and the hooks into the target repo's `.claude/`, and merges hook entries
-that run `node "$CLAUDE_PROJECT_DIR"/.claude/<plugin>/<engine>.mjs` into its
-`.claude/settings.json`. It has to say that multi-repo sessions get no gate.
+`deep-plan install-repo` and `lookout install-repo` copy each plugin into
+the repo's `.claude/skills/<plugin>/`: the skill and its references where
+skills load from, and the engine, its hooks and `bin/` beside them. They
+merge the plugin's hooks into `.claude/settings.json` with the plugin's root
+rewritten to `$CLAUDE_PROJECT_DIR/.claude/skills/<plugin>`, plus a
+SessionStart hook that puts `bin/` on the Bash tool's PATH through
+`CLAUDE_ENV_FILE`. deep-plan's copy also carries the machine's pinned
+mermaid, since the cloud's default network level may not reach the CDN.
 
-The observation the spike could not make here (a repo hook running the
-engine and seeing `CLAUDE_CODE_REMOTE=true`) moves into increment 10's
-manual cloud check. That check needs a cloud environment set up at
-claude.ai/code and a person to start the session.
+Each hook command starts with a guard, so it runs only when
+`CLAUDE_CODE_REMOTE=true` or `SEAMUX_REPO_HOOKS=1`. A local session with the
+plugins installed runs their own hooks, not these. Multi-repo cloud sessions
+load no repo hooks, so they get no gate.
+
+The copy carries `.install.json` (the version and a hash per file);
+`install-repo --check` reports drift from the plugin it came from. Nothing is
+committed for you.
+
+On the remote host plan state and reviews live in the repo under
+`.seamux/state/`, kept out of git through `.git/info/exclude`. A fresh
+sandbox has none of that, so `deep-plan export-state <slug>` writes a bundle
+to commit or carry, and `import-state <file>` brings it back. A review is
+shared as an Artifact: `lookout export-artifact`, published only on the
+person's yes, then `lookout pull` to bring their comments and closes back.
+
+The live cloud observation the spike could not make (a repo hook running the
+engine and seeing `CLAUDE_CODE_REMOTE=true`) is increment 10's manual check.
+It needs a cloud environment set up at claude.ai/code and a person to start
+the session.

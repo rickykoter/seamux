@@ -136,7 +136,9 @@ starts collapsed: [references/page.md](references/page.md).
 ## On a remote host
 
 Nobody can reach a remote sandbox's localhost, so there is no live page, and
-the review's store lives in the repo (`.seamux/state/plans/reviews`). To let
+the review's store lives in the repo (`.seamux/state/plans/reviews`). In a
+claude.ai/code cloud session lookout runs from the repo's
+`.claude/skills/lookout`, put there by `lookout install-repo`. To let
 the person comment and close findings anyway:
 
 1. `lookout export-artifact <id> --json` writes the page with a small db
