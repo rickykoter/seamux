@@ -3189,7 +3189,71 @@ exit 1
   ok("a plan with no owner reports null and its state file's time",
     row2 && row2.owner === null && row2.session === "" && row2.touchedAt > 0);
 
-  for (const n of ["owner-1", "owner-2"]) cli("close", n);
+  // The owner is a pane. Only its writes flip an increment to working; any
+  // other Claude writing inside the root is a guest: let through, told once
+  // per session, and logged for the increment's review.
+  const ROOT3 = path.join(TMP, "owner-root");
+  fs.mkdirSync(ROOT3, { recursive: true });
+  const gateWho = (env, session, file) => spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")], {
+    encoding: "utf8", env: { ...ENV, ...env },
+    input: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: path.join(ROOT3, file) }, cwd: ROOT3, session_id: session }),
+  });
+  const P1 = { CLAUDE_CODE_SESSION_ID: "sess-a", CMUX_WORKSPACE_ID: "ws-1", CMUX_SURFACE_ID: "pane-1111aaaa" };
+  const s3 = JSON.parse(JSON.stringify(spec)); s3.slug = "owner-3";
+  as(P1, "render", tmpSpec(s3), "--root", ROOT3);
+  ok("render stamps the owner's pane from CMUX_SURFACE_ID", stOf("owner-3").owner.surface === "pane-1111aaaa");
+  ok("status --json carries the owner's pane", rowOf("owner-3").owner.surface === "pane-1111aaaa");
+  const key3 = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "owner-3.key.json"), "utf8"));
+  cli("grade", "owner-3", ...Object.entries(key3.answers).map(([q, v]) => `${q}=${v.letter}`));
+  cli("go", "owner-3", "1");
+
+  const guestEnv = { CMUX_WORKSPACE_ID: "ws-1", CMUX_SURFACE_ID: "pane-2222bbbb" };
+  let g = gateWho(guestEnv, "sess-guest", "a.txt");
+  let said = {}; try { said = JSON.parse(g.stdout || "{}"); } catch { /* checked below */ }
+  ok("a guest's write inside the root is let through", g.status === 0);
+  ok("…with a systemMessage naming the plan and the owner's pane",
+    /owner-3 is owned by pane pane-111/.test(said.systemMessage || "") && /guest/.test(said.systemMessage || ""));
+  ok("…which the model hears too", /owner-3 is owned by/.test((said.hookSpecificOutput || {}).additionalContext || ""));
+  ok("…and it does not flip the increment to working", stOf("owner-3").increments[0].status === "authorized");
+  ok("…nor take the plan's ownership",
+    stOf("owner-3").owner.surface === "pane-1111aaaa" && stOf("owner-3").owner.session === "sess-a");
+  ok("…and the plan's log names the guest's pane and the increment",
+    (stOf("owner-3").log || []).some(l => /^guest: pane pane-222 wrote inside the root during increment 1/.test(l.what)));
+  g = gateWho(guestEnv, "sess-guest", "b.txt");
+  ok("the warning is said once per session and plan",
+    g.status === 0 && !(g.stdout || "").includes("guest") &&
+    (stOf("owner-3").log || []).filter(l => /^guest:/.test(l.what)).length === 1);
+
+  // A /clear in the owner's pane: a new session id, the same pane.
+  g = gateWho({ CMUX_WORKSPACE_ID: "ws-1", CMUX_SURFACE_ID: "pane-1111aaaa" }, "sess-after-clear", "c.txt");
+  ok("the owner's pane after a /clear flips the increment to working, unwarned",
+    g.status === 0 && !(g.stdout || "").includes("guest") && stOf("owner-3").increments[0].status === "working");
+  ok("…and the gate's own write leaves the owner as it was", stOf("owner-3").owner.session === "sess-a");
+  const before3 = (stOf("owner-3").log || []).length;
+  g = gateWho({ CMUX_WORKSPACE_ID: "ws-9", CMUX_SURFACE_ID: "pane-9999ffff" }, "sess-a", "d.txt");
+  ok("the owner's session resumed in another pane is still the owner, unwarned",
+    g.status === 0 && !(g.stdout || "").includes("guest") && (stOf("owner-3").log || []).length === before3);
+
+  // Outside cmux the owner is its session.
+  const ROOT4 = path.join(TMP, "owner-root-4");
+  fs.mkdirSync(ROOT4, { recursive: true });
+  const s4 = JSON.parse(JSON.stringify(spec)); s4.slug = "owner-4";
+  const NOCMUX = { CMUX_SURFACE_ID: "", CMUX_WORKSPACE_ID: "" };
+  as({ ...NOCMUX, CLAUDE_CODE_SESSION_ID: "sess-solo" }, "render", tmpSpec(s4), "--root", ROOT4);
+  const key4 = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "owner-4.key.json"), "utf8"));
+  cli("grade", "owner-4", ...Object.entries(key4.answers).map(([q, v]) => `${q}=${v.letter}`));
+  cli("go", "owner-4", "1");
+  const gate4 = session => spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")], {
+    encoding: "utf8", env: { ...ENV, ...NOCMUX },
+    input: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: path.join(ROOT4, "x.txt") }, cwd: ROOT4, session_id: session }),
+  });
+  g = gate4("sess-other");
+  ok("outside cmux, another session is a guest", g.status === 0 && /guest/.test(g.stdout) &&
+    stOf("owner-4").increments[0].status === "authorized");
+  g = gate4("sess-solo");
+  ok("…and the owner's own session flips the increment", stOf("owner-4").increments[0].status === "working");
+
+  for (const n of ["owner-1", "owner-2", "owner-3", "owner-4"]) cli("close", n);
 }
 
 // -------------------------------------------------- families
