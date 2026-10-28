@@ -1665,7 +1665,7 @@ function workingHtml(spec, st, b64) {
     const files = fileTreeHtml(d.files);
     const acts = ["go", "start", "done", "block", "reset"].map(a =>
       `<button class="dp-act" data-a="${a}" data-n="${inc.n}" disabled ` +
-      `title="${a} increment ${inc.n} — available when served in the Dock">${a}</button>`).join("");
+      `title="${a} increment ${inc.n} — available when served">${a}</button>`).join("");
     // The verdict belongs beside the status, not in a section of its own: it is
     // a precondition on THIS increment's `done`, and a reader deciding whether
     // the increment is finished needs both in one glance.
@@ -2629,6 +2629,8 @@ function transition(action, slug, n, why, force = false, { byHuman = false } = {
   if (action === "go") {
     const url = openWorkingSurface(st);
     if (url) say(`  served at ${url} (host: ${detectHost().host})`);
+    else if (!process.env.DEEP_PLAN_FROM_SERVE && detectHost().host === "remote")
+      say(`  no live page on this host (host: remote); deep-plan export-artifact ${st.slug} shares one`);
   }
 }
 
@@ -2674,7 +2676,7 @@ function askHtml(ask, b64) {
   const opts = ask.options.map((o, i) => {
     const n = i + 1;
     return `<div class="inc dp-ask-opt" data-n="${n}">
-<h3><button type="button" class="dp-act dp-ask-pick" data-n="${n}" disabled title="pick ${n} — available when served in the Dock">${n}</button> ${esc(o.label)}</h3>
+<h3><button type="button" class="dp-act dp-ask-pick" data-n="${n}" disabled title="pick ${n} — available when served">${n}</button> ${esc(o.label)}</h3>
 ${o.description ? `<p>${esc(o.description)}</p>` : ""}
 ${o.mermaid ? `<pre class="mermaid">${esc(String(o.mermaid).trim())}</pre>` : ""}
 ${o.example ? `<pre class="dp-example"><code>${esc(String(o.example))}</code></pre>` : ""}
@@ -2693,7 +2695,7 @@ ${ask.mermaid ? `<pre class="mermaid">${esc(String(ask.mermaid).trim())}</pre>` 
 ${opts}
 <p id="dp-ask-status" class="dim" role="status" aria-live="polite">${ask.answer
   ? `answered: ${esc(String(ask.answer.n))} — ${esc(ask.options[ask.answer.n - 1]?.label || "")}`
-  : "Pick an option here to send it to the terminal, or answer in the terminal prompt as usual."}</p>
+  : "Answer in the prompt as usual. In cmux, a pick here is typed into the terminal for you."}</p>
 ${MERMAID_BOOT}
 </body></html>`;
 }
@@ -2722,10 +2724,13 @@ function askCreate(file) {
   };
   askWrite(ask);
   say(`ask ${ask.id}: ${path.join(ASKS_DIR, ask.id + ".html")}`);
-  if (!ask.surface) say("  (no CMUX_SURFACE_ID in the environment — the page will show the answer, not type it)");
+  if (!ask.surface) say("  (not in a cmux terminal: the page shows the options; the chat prompt takes the answer)");
   const url = openAskSurface(ask);
-  if (url) say(`  served at ${url}`);
-  else say("  intent server not reachable — open the file, or start the board (crew listen on)");
+  const host = detectHost().host;
+  if (url) say(`  served at ${url} (host: ${host})`);
+  else if (host === "remote") say("  no live page on this host (host: remote): answer in the chat prompt");
+  else if (host === "cmux") say("  intent server not reachable — open the file, or start the board (crew listen on) (host: cmux)");
+  else say(`  deep-plan serve did not start — open the file read-only (host: ${host})`);
   return ask;
 }
 
@@ -2846,8 +2851,9 @@ function openWorkingSurface(st) {
     // Run by an agent in cmux: the plan opens in its workspace's companion,
     // beside its terminal, which keeps the keyboard.
     const here = process.env.CMUX_WORKSPACE_ID;
-    if (here && companionOpen(`http://127.0.0.1:${port}/plan/${st.slug}`, companionKey("plan", st.slug), here,
-                              process.env.CMUX_SURFACE_ID || "")) return;
+    const page = `http://127.0.0.1:${port}/plan/${st.slug}`;
+    if (here && companionOpen(page, companionKey("plan", st.slug), here,
+                              process.env.CMUX_SURFACE_ID || "")) return page;
     const targets = JSON.parse(fs.readFileSync(path.join(cache, "board-targets.json"), "utf8"));
     const rid = Object.keys(targets).find(k => {
       const t = targets[k] || {};
@@ -2859,8 +2865,47 @@ function openWorkingSurface(st) {
     // sync behind and the first go on a fresh plan hit exactly that gap.
     const url = `http://127.0.0.1:${port}/do?a=plan&r=${encodeURIComponent(rid)}` +
       `&t=${encodeURIComponent(token)}&x=${encodeURIComponent(st.slug)}`;
-    spawnSync("curl", ["-fsS", "-m", "5", "-o", "/dev/null", url]);
+    const r = spawnSync("curl", ["-fsS", "-m", "5", "-o", "/dev/null", url]);
+    return r.status === 0 ? page : undefined;
   } catch { /* board offline or never installed — the go already succeeded */ }
+}
+
+// `deep-plan page <slug> [--review]`: show a plan's page where this host can,
+// and say where it went. One line, `served at <url> (host: <h>)`, when there
+// is a live page; otherwise what to use instead.
+function pageCmd(slug, flags) {
+  if (!slug) die("page <slug> [--review]");
+  const file = path.join(PLANS_DIR, slug + (flags.review ? ".review.html" : ".working.html"));
+  const any = fs.existsSync(file) ? file : path.join(PLANS_DIR, slug + ".review.html");
+  if (!fs.existsSync(any)) die(`no rendered plan ${slug} under ${PLANS_DIR}`);
+  const rel = `/plan/${slug}${flags.review ? ".review.html" : ""}`;
+  const { host } = detectHost();
+  const quiz = path.join(PLANS_DIR, slug + ".quiz.txt");
+  if (host === "remote") {
+    say(`no live page on this host (remote: nobody can reach the sandbox's localhost) (host: remote)`);
+    say(flags.review ? `  quiz: cat ${quiz}, then run the grade command it prints`
+                     : `  share it: deep-plan export-artifact ${slug} --json, published only with the person's ok`);
+    return;
+  }
+  if (host === "cmux") {
+    let url = "";
+    try {
+      const cache = path.join(os.homedir(), ".cache", "cmux-crew");
+      const port = parseInt(fs.readFileSync(path.join(cache, "board-intent.port"), "utf8").trim(), 10);
+      if (port) url = `http://127.0.0.1:${port}${rel}`;
+    } catch { /* crew's server is not running */ }
+    if (!url) { say(`not served: crew's intent server is down (crew listen on); the read-only file is ${any} (host: cmux)`); return; }
+    const ws = process.env.CMUX_WORKSPACE_ID;
+    if (!companionOpen(url, companionKey("plan", slug), ws, process.env.CMUX_SURFACE_ID || ""))
+      spawnSync("cmux", ["open", url, "--workspace", ws, "--focus", "false"], { encoding: "utf8", env: { ...process.env, CMUX_QUIET: "1" }, timeout: 10000 });
+    say(`served at ${url} (host: cmux)`);
+    return;
+  }
+  const url = servedUrl(rel);
+  if (!url) { say(`not served: deep-plan serve did not start (see ${SERVE.LOG_FILE}); the read-only file is ${any} (host: ${host})`); return; }
+  say(`served at ${url} (host: ${host})`);
+  if (host === "desktop") say("  open it in the app's browser pane (preview_start with this url)");
+  if (host === "terminal" && flags.review) say(`  or the text quiz: cat ${quiz}`);
 }
 
 // A patch of everything since the increment started — committed, uncommitted
@@ -4007,6 +4052,7 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--detach") flags.detach = true;
   else if (rest[i] === "--yes") flags.yes = true;
   else if (rest[i] === "--foreground") flags.foreground = true;
+  else if (rest[i] === "--review") flags.review = true;
   else if (rest[i] === "--stop") flags.stop = true;
   else if (rest[i] === "--status") flags.status = true;
   else if (rest[i] === "--url") flags.url = rest[++i] || die("--url needs a path");
@@ -4045,6 +4091,7 @@ switch (cmd) {
     break;
   }
   case "serve": serveCmd(flags, args); break;
+  case "page": pageCmd(args[0], flags); break;
   case "doctor": {
     // Which host this run thinks it is in, and which engine copy answers.
     // Later verbs route pages by the same host.
@@ -4290,6 +4337,8 @@ switch (cmd) {
   engine                                      print the engine pointer (which copy runs)
   doctor [--json]                             print the host (cmux, desktop, terminal, remote) and the engine copy
   serve [--url PATH] [--status|--stop]        start deep-plan's page server if needed and print a page's URL
+  page <slug> [--review]                      show the plan's working page (or its review) where this host can,
+                                              and print "served at <url> (host: …)"
   render <spec.json> [--root DIR] [--force]   spec -> md + review + working surfaces
   rehydrate <slug>                            re-render from the archived spec
   redraw <slug> | --all [--dry-run] [--json]  re-render plans with this engine (spec + state untouched)

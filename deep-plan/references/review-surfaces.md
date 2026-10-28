@@ -2,6 +2,20 @@
 
 Read this when the review page is not the right surface, or when the work needs to go into a ticket tracker.
 
+**Which surface, by host.** `deep-plan page <slug> [--review]` reports the
+host (`deep-plan doctor` explains how it was detected; `SEAMUX_HOST`
+overrides it):
+
+| Host | The plan page | The quiz |
+|---|---|---|
+| cmux | opens beside the terminal, served by crew | on the review page |
+| desktop | `served at <url>`: open it with `preview_start` in the browser pane | the inline widget, or the review page in the pane |
+| terminal | `served at <url>`: give the person the link | `<slug>.quiz.txt` |
+| remote | none: nobody can reach the sandbox's localhost | `<slug>.quiz.txt`; share the plan with `deep-plan export-artifact <slug>` only after the person agrees to publish it |
+
+deep-plan's own server starts on demand and stops after 30 idle minutes, so
+an old link can go dead; run `deep-plan page` again for a fresh one.
+
 **Two fallbacks when a browser is not the right surface**, both rendered for
 every plan and both lettered identically to the review page:
 `<slug>.widget.html` is a fragment for a rich client's inline widget (it

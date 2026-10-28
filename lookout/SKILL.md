@@ -32,10 +32,14 @@ lookout open --range A..B         # two commits; A...B diffs from their merge ba
 lookout open --patch FILE         # a patch file, no repository needed
 ```
 
-It prints the review id, the page and the store, and puts the page in a
-browser tab beside the terminal without taking focus (a second open of the
-same review refreshes that tab instead of adding one). `--no-open` skips the
-tab, `--json` prints the same as JSON, `--id` names the review yourself.
+It prints the review id, the page and the store, and shows the page where
+this session can. In cmux it is a browser tab beside the terminal, opened
+without taking focus (a second open of the same review refreshes that tab
+instead of adding one). Everywhere else the page line says `served at <url>
+(host: …)`, from lookout's own server: in Claude desktop open that URL in
+the browser pane with `preview_start`, and in a plain terminal give the
+person the link. A remote host has no live page. `--no-open` skips the
+page, `--json` prints the same as JSON, `--id` names the review yourself.
 
 The working tree is read through a scratch git index, never the real one:
 opening a review does not change what `git commit` would do.
@@ -97,8 +101,9 @@ marked addressed still holds the gate until the human closes it.
 **The quiz** (`lookout open --quiz`, a repo's `.seamux/lookout.json`
 `{"quiz": true}`, or a plan's `review.quiz`) is fixed when the review is
 created; a re-open neither adds nor removes it. On the served page each
-high group's question hides its note until the human answers, and crew's
-intent server records the answer once. It never gates. A wrong answer
+high group's question hides its note until the human answers, and the
+server that served the page (lookout's own, or crew's in cmux) records the
+answer once. It never gates. A wrong answer
 reaches you at the human's next prompt, beside their comments: if they
 ask, explain the gap from the code, not from the note. Never answer a
 question for them, and never quote a note's answer before they have

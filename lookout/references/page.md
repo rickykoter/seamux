@@ -1,6 +1,12 @@
 # The page
 
-What the human sees beside the terminal, and the keys that drive it. Read this when they ask how the page works.
+What the human sees on the review page, and the keys that drive it. Read this when they ask how the page works.
+
+The page is live when a server serves it: crew's in cmux, lookout's own
+(`lookout serve`, started on demand) everywhere else. Live, it takes
+comments and closes and polls for replies. Opened as a file it is
+read-only. lookout's server stops after 30 idle minutes; `lookout open`
+again (or `lookout serve --url /review/<id>`) gives a fresh link.
 
 VS Code's Source Control layout: changed files on the left as a directory
 tree (single-child folders folded together), one file's diff on the right.

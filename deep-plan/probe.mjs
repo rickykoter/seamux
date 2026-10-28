@@ -1220,6 +1220,16 @@ ok("all increments done: Edit allowed, gate retired", edit(path.join(REPO, "a.tx
   g = await fetch(B + "/review/x", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
   ok("serve: nothing here takes a POST", g.status === 404);
   // /inc runs the engine: reset then go increment 2 from the page, as a person's click.
+  const pg = (host, ...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "page", spec.slug, ...a],
+    { encoding: "utf8", env: { ...SENV, SEAMUX_HOST: host }, cwd: REPO }).stdout;
+  ok("page: on a terminal it prints the served URL with its host, and the text quiz",
+    pg("terminal", "--review").includes(`served at ${B}/plan/${spec.slug}.review.html (host: terminal)`) &&
+    /cat .*\.quiz\.txt/.test(pg("terminal", "--review")));
+  ok("page: on desktop it says to open the URL in the browser pane",
+    pg("desktop").includes(`served at ${B}/plan/${spec.slug} (host: desktop)`) && /preview_start/.test(pg("desktop")));
+  ok("page: on a remote host there is no live page, and the quiz is the text one",
+    /no live page on this host .*\(host: remote\)/.test(pg("remote", "--review")) && /quiz\.txt/.test(pg("remote", "--review")) &&
+    /export-artifact/.test(pg("remote")));
   g = await get(`${B}/inc?t=${T}&slug=${spec.slug}&n=2&a=reset`);
   const st2 = () => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"));
   ok("serve: /inc runs a transition through the engine", g.status === 200 && g.json.ok && st2().increments[1].status === "pending");

@@ -170,10 +170,12 @@ function showPage(id, file, cwd, { onlyIfOpen = false } = {}) {
   // Nobody can reach a remote sandbox's localhost, so remote gets no URL.
   const host = detectHost().host;
   if (host !== "cmux") {
-    if (onlyIfOpen || flag("no-open") || host === "remote") return "";
+    if (onlyIfOpen || flag("no-open")) return "";
+    if (host === "remote") return "no live page on this host (host: remote)";
     if (process.env.LOOKOUT_REVIEWS_DIR && !process.env.LOOKOUT_SERVE_FILE) return "";
     const rec = SV.ensureServer({ cli: path.join(HERE, "lookout.mjs"), root: HERE });
-    return rec ? `served at ${SV.urlFor(rec, "/review/" + id)}` : "";
+    return rec ? `served at ${SV.urlFor(rec, "/review/" + id)} (host: ${host})`
+               : `lookout serve did not start (see ${SV.LOG_FILE}) (host: ${host})`;
   }
   if (process.env.LOOKOUT_REVIEWS_DIR || flag("no-open")) return "";
   const ws = workspaceFor(cwd);
@@ -183,7 +185,7 @@ function showPage(id, file, cwd, { onlyIfOpen = false } = {}) {
   // A fresh open goes beside the chat, in the workspace's companion; a
   // refresh of a tab already open keeps the path below.
   if (!onlyIfOpen && companionOpen(url, id, ws)) {
-    return "opened beside the terminal" + (served ? "" : ", read-only: crew's intent server is not serving reviews");
+    return "opened beside the terminal" + (served ? `, served at ${served}` : ", read-only: crew's intent server is not serving reviews") + " (host: cmux)";
   }
   const env = { ...process.env, CMUX_QUIET: "1" };
   try {
