@@ -122,17 +122,26 @@ function planRoot(slug) {
 
 function lastLine(s, n) { return String(s).trim().split("\n").pop().slice(0, n); }
 
+// Asynchronous, so a slow engine call (a proof can take minutes) never stops
+// this server answering /health or another page. DEEP_PLAN_FROM_SERVE: the
+// page that asked is already open, so the engine must not open it again.
+// Resolves null on a timeout.
 function runEngine(script, args, secs) {
-  // DEEP_PLAN_FROM_SERVE: the page that asked is already open, and this
-  // server is busy waiting, so the engine must not try to open or reach it.
-  const r = spawnSync(process.execPath, [script, ...args],
-    { encoding: "utf8", timeout: secs * 1000, env: { ...process.env, DEEP_PLAN_FROM_SERVE: "1" } });
-  if (r.error && r.error.code === "ETIMEDOUT") return null;
-  if (r.error) return { code: 1, out: "", err: r.error.message };
-  return { code: r.status, out: r.stdout || "", err: r.stderr || "" };
+  return new Promise(resolve => {
+    let out = "", err = "", done = false;
+    const child = spawn(process.execPath, [script, ...args],
+      { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, DEEP_PLAN_FROM_SERVE: "1" } });
+    const timer = setTimeout(() => { if (!done) { done = true; child.kill("SIGKILL"); resolve(null); } }, secs * 1000);
+    child.stdout.on("data", c => out += c);
+    child.stderr.on("data", c => err += c);
+    child.on("error", e => { if (!done) { done = true; clearTimeout(timer); resolve({ code: 1, out: "", err: e.message }); } });
+    child.on("close", code => { if (!done) { done = true; clearTimeout(timer); resolve({ code: code ?? 1, out, err }); } });
+  });
 }
 
-export function increment(script, slug, n, action, why) {
+const runCli = (cli, args, secs) => runEngine(cli, args, secs);
+
+export async function increment(script, slug, n, action, why) {
   if (!SLUG_OK.test(slug)) return [false, "bad slug"];
   if (!/^\d+$/.test(n)) return [false, "bad increment"];
   if (!INC_ACTIONS.includes(action)) return [false, "bad transition"];
@@ -140,7 +149,7 @@ export function increment(script, slug, n, action, why) {
   if (action === "block") args.push(why || "blocked from the plan surface");
   // A go from the page is a person's click, as on crew's page.
   if (action === "go") args.push("--by", "human");
-  const r = runEngine(script, args, 90);
+  const r = await runEngine(script, args, 90);
   if (!r) { log(`FAIL inc ${action} ${slug} ${n}: timed out`); return [false, "deep-plan did not finish in 90s"]; }
   const detail = lastLine(r.out + r.err, 160);
   if (r.code !== 0) { log(`FAIL inc ${action} ${slug} ${n}: ${detail}`); return [false, detail || "deep-plan refused it"]; }
@@ -175,7 +184,8 @@ function openerFor(arg) {
   const onPath = b => String(process.env.PATH || "").split(path.delimiter).some(d => d && fs.existsSync(path.join(d, b)));
   if (onPath("code")) return ["code", ["--goto", arg]];
   const bare = arg.replace(/(:\d+){1,2}$/, "");
-  if (process.platform === "darwin") return ["open", [bare]];
+  // -t: as text in the default editor, so a .command or .app is shown, never run.
+  if (process.platform === "darwin") return ["open", ["-t", bare]];
   return ["xdg-open", [bare]];
 }
 
@@ -210,10 +220,14 @@ function cmuxRun(argv) {
 const squash = s => String(s).replace(/\s+/g, "");
 const reEscape = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // Python's `pattern % value`: the first %s or %d filled, %% a literal %.
+// Only the pattern's own %% are collapsed, never the value's.
 function fill(pat, slot, value) {
-  const i = pat.indexOf(slot);
-  const filled = i < 0 ? pat : pat.slice(0, i) + value + pat.slice(i + slot.length);
-  return filled.replace(/%%/g, "%");
+  let used = false;
+  return pat.replace(/%%|%[sd]/g, m => {
+    if (m === "%%") return "%";
+    if (m === slot && !used) { used = true; return value; }
+    return m;
+  });
 }
 function compile(name, pat, flags = "") {
   try { return new RegExp(pat, flags); } catch (e) { log(`FAIL ${name} does not compile: ${e.message}`); return null; }
@@ -293,12 +307,12 @@ function readJson(p) { try { return JSON.parse(fs.readFileSync(p, "utf8")); } ca
 
 // lookout serve's URL for a path, starting it through lookout's own CLI when
 // nothing answers. ADR 0004: never an import, only the CLI.
-export function lookoutUrl(rel) {
+export async function lookoutUrl(rel) {
   const eng = readJson(LOOKOUT_ENGINE_FILE);
   const cli = eng && eng.root && path.join(eng.root, "lookout.mjs");
   if (!cli || !fs.existsSync(cli)) return "";
-  const r = spawnSync(process.execPath, [cli, "serve", "--url", rel], { encoding: "utf8", timeout: 15000 });
-  const url = r.status === 0 && (r.stdout || "").trim().split("\n").pop();
+  const r = await runCli(cli, ["serve", "--url", rel], 15);
+  const url = r && r.code === 0 && r.out.trim().split("\n").pop();
   return url && /^http:\/\/127\.0\.0\.1:\d+\//.test(url) ? url : "";
 }
 
@@ -356,7 +370,7 @@ export function makeServer({ script, version, root, token, onRequest = () => {},
       }
       if (p === "/inc") {
         if (!tokenOk()) return deny("/inc");
-        const [ok, detail] = increment(script, one("slug"), one("n"), one("a"), one("why"));
+        const [ok, detail] = await increment(script, one("slug"), one("n"), one("a"), one("why"));
         log(`${ok ? "OK  " : "FAIL"} inc ${detail}`);
         return reply(res, ok ? 200 : 500, { ok, detail });
       }
@@ -369,7 +383,7 @@ export function makeServer({ script, version, root, token, onRequest = () => {},
         try { args = checkActionArgs(verb, one("slug"), one("n"), one("id"), one("name"), one("value")); }
         catch (e) { return reply(res, 400, { ok: false, detail: e.message }); }
         const limit = verb === "proof" || verb === "attach" ? 300 : 60;
-        const r = runEngine(script, args, limit);
+        const r = await runEngine(script, args, limit);
         if (!r) return reply(res, 400, { ok: false, detail: `deep-plan did not finish in ${limit}s` });
         if (r.code !== 0) return reply(res, 400, { ok: false, detail: lastLine(r.out + r.err, 200) || "deep-plan refused it" });
         if (verb === "evidence" || verb === "proof") {
@@ -403,7 +417,7 @@ export function makeServer({ script, version, root, token, onRequest = () => {},
       if (p.startsWith("/review/")) {
         // The working page links its increments' reviews here. They are
         // lookout's pages: send the browser to lookout's own server.
-        const to = lookoutUrl(p + u.search);
+        const to = await lookoutUrl(p + u.search);
         if (!to) return reply(res, 404, { error: "lookout is not installed, so there is no review server" });
         res.writeHead(302, { Location: to, "Content-Length": 0, "Server": SERVER_NAME });
         return res.end();
@@ -428,6 +442,12 @@ export function serveForeground({ script, version, root, port = 0 }) {
     if (cur && cur.pid === process.pid) fs.rmSync(SERVE_FILE, { force: true });
   };
   server.listen(port, "127.0.0.1", () => {
+    // A starter that lost a race: another server is recorded and healthy.
+    const other = readJson(SERVE_FILE);
+    if (other && other.pid !== process.pid && alive(other.pid) && (health(other.port) || {}).pid === other.pid) {
+      log(`another server (pid ${other.pid}) is already recorded; exiting`);
+      server.close(); process.exit(0);
+    }
     const rec = { port: server.address().port, token, pid: process.pid, version, root, started: new Date().toISOString() };
     fs.mkdirSync(path.dirname(SERVE_FILE), { recursive: true });
     const tmp = SERVE_FILE + ".tmp-" + process.pid;
@@ -456,38 +476,43 @@ function health(port) {
 
 // The live server's record, when it is ours: the pid in serve.json answers
 // /health on that port, from this engine's root. Anything else is stale.
+// A server from another copy of the engine (the kept checkout and a worktree)
+// is used as it is, not replaced: its open pages keep their port and token.
 export function liveServer(root) {
   const rec = readJson(SERVE_FILE);
   if (!rec || !rec.port || !rec.token || !alive(rec.pid)) return null;
   const h = health(rec.port);
   if (!h || h.server !== "deep-plan" || h.pid !== rec.pid) return null;
-  if (root && h.root !== root) return { ...rec, foreign: true };
-  return rec;
+  return root && h.root !== root ? { ...rec, foreign: true } : rec;
 }
 
 // Start a server unless one of ours answers; returns its record or null.
 export function ensureServer({ script, root }) {
   let rec = liveServer(root);
-  if (rec && !rec.foreign) return rec;
-  // Another copy of the engine serves: the one that ran last takes over, as
-  // with the engine pointer.
-  if (rec && rec.foreign) { try { process.kill(rec.pid, "SIGTERM"); } catch { /* gone */ } sleep(200); }
+  if (rec) return rec;
   fs.mkdirSync(path.dirname(SERVE_FILE), { recursive: true });
   const fd = fs.openSync(LOG_FILE, "a");
   const child = spawn(process.execPath, [script, "serve", "--foreground"], { detached: true, stdio: ["ignore", fd, fd], env: process.env });
   child.unref();
   fs.closeSync(fd);
+  // Two starters can race; whichever server's record lands, both use it, and
+  // a child that lost exits.
   for (let i = 0; i < 50; i++) {
     sleep(100);
     rec = readJson(SERVE_FILE);
-    if (rec && rec.pid === child.pid && health(rec.port)) return rec;
+    if (rec && rec.pid && alive(rec.pid) && (rec.pid === child.pid || liveServer(root))) {
+      if (rec.pid !== child.pid) { try { process.kill(child.pid, "SIGTERM"); } catch { /* gone */ } }
+      return rec;
+    }
   }
   return null;
 }
 
 export function stopServer() {
-  const rec = readJson(SERVE_FILE);
-  if (!rec || !alive(rec.pid)) { fs.rmSync(SERVE_FILE, { force: true }); return false; }
+  // Signal only a pid that answers /health as this server: a pid in a stale
+  // record may since belong to something else.
+  const rec = liveServer();
+  if (!rec) { fs.rmSync(SERVE_FILE, { force: true }); return false; }
   try { process.kill(rec.pid, "SIGTERM"); } catch { /* gone */ }
   for (let i = 0; i < 20 && alive(rec.pid); i++) sleep(100);
   return true;

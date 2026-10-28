@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
-import { execSync, spawnSync } from "node:child_process";
+import { execSync, spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { verdict } from "./lib/evidence.mjs";
 import { resolver, resolveFiles, matchesGlob, recipeHash, load as loadVerify } from "./lib/verify.mjs";
@@ -1287,6 +1287,16 @@ ok("all increments done: Edit allowed, gate retired", edit(path.join(REPO, "a.tx
   let gone = false;
   for (let i = 0; i < 80 && !gone; i++) { await new Promise(res => setTimeout(res, 500)); gone = !rec() && !(() => { try { process.kill(idlePid, 0); return true; } catch { return false; } })(); }
   ok("serve: an idle server exits and removes serve.json", gone);
+  // Two starters at once, nothing running: both get the one server that won.
+  const both = await Promise.all([0, 1].map(() => new Promise(res => {
+    const c = spawn("node", [path.join(HERE, "deep_plan.mjs"), "serve", "--url", "/health"], { env: SENV, cwd: REPO });
+    let o = ""; c.stdout.on("data", d => o += d); c.on("close", code => res({ code, url: o.trim() }));
+  })));
+  await new Promise(res => setTimeout(res, 600));
+  const alivePids = fs.readFileSync(SENV.DEEP_PLAN_SERVE_FILE, "utf8") && spawnSync("pgrep", ["-f", `${path.join(HERE, "deep_plan.mjs")} serve --foreground`]).stdout.toString().trim().split("\n").filter(Boolean);
+  ok("serve: two starters racing share one server, and the loser exits",
+    both.every(b => b.code === 0 && b.url === both[0].url && b.url.endsWith("/health")) && alivePids.includes(String(rec().pid)),
+    JSON.stringify(both));
   sv("serve", "--stop");
 }
 

@@ -10,6 +10,9 @@
     picks[i].disabled = false;
     picks[i].title = (picks[i].title || "").replace(/ \u2014 available when.*$/, "");
   }
+  // The server exits after 30 idle minutes; an open ask keeps it up, so a
+  // pick made after a long pause still lands.
+  setInterval(function(){ fetch("/health").catch(function(){}); }, 5 * 60 * 1000);
   var status = document.getElementById("dp-ask-status");
   function say(t, bad) { if (status) { status.textContent = t; status.style.color = bad ? "var(--warn)" : "var(--good)"; } }
   document.addEventListener("click", function(ev){

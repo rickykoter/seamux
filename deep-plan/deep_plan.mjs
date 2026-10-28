@@ -2762,7 +2762,7 @@ function serveCmd(flags, args) {
   if (flags.status) {
     const rec = SERVE.liveServer(HERE);
     if (flags.json) process.stdout.write(JSON.stringify(rec ? { running: true, port: rec.port, pid: rec.pid, root: rec.root, version: rec.version, started: rec.started } : { running: false }) + "\n");
-    else say(rec ? `deep-plan serve on 127.0.0.1:${rec.port} (pid ${rec.pid}${rec.foreign ? ", another engine copy: " + rec.root : ""})` : "deep-plan serve is not running");
+    else say(rec ? `deep-plan serve on 127.0.0.1:${rec.port} (pid ${rec.pid}${rec.foreign ? ", from another engine copy: " + rec.root : ""})` : "deep-plan serve is not running");
     return false;
   }
   const rel = flags.url || args[0] || "/health";
@@ -2802,6 +2802,7 @@ function companionOpen(url, key, ws, surface) {
 // caller with no workspace in its environment (a detached process).
 function openAskSurface(ask) {
   try {
+    if (process.env.DEEP_PLAN_FROM_SERVE) return "";
     if (detectHost().host !== "cmux") return servedUrl(`/ask/${ask.id}`);
     if (process.env.DEEP_PLAN_STATE_DIR) return "";
     const cache = path.join(os.homedir(), ".cache", "cmux-crew");
@@ -2831,6 +2832,8 @@ function openAskSurface(ask) {
 
 function openWorkingSurface(st) {
   try {
+    // A go clicked on a page: that page is open and reloads itself.
+    if (process.env.DEEP_PLAN_FROM_SERVE) return;
     if (detectHost().host !== "cmux") return servedUrl(`/plan/${st.slug}`);
     // Probe/test runs override the state dir; they must never reach the
     // machine's real board, whatever this machine happens to be running.
