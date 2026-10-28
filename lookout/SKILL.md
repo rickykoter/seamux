@@ -145,8 +145,8 @@ the person comment and close findings anyway:
    machine. Only on their yes, publish the file with the Artifact tool and
    those capabilities, and give them the link.
 3. When they say they are done, or at their next prompt, read the page's
-   `annotations` collection back with ArtifactData (`list`), save it to a
-   file, and run `lookout pull <id> <file>`. It replays their comments,
+   `annotations` collection back with ArtifactData (`list` with an
+   `out_dir`), and run `lookout pull <id> <that folder>`. It replays their comments,
    closes and quiz answers through the same rules as the live page, and
    names every row it skipped. Anyone the page was shared with as a
    contributor can write a row, and its `by` is what that page wrote, not a

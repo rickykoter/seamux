@@ -105,9 +105,20 @@ export function exportPage(id, pagePath) {
     note: `publish with the Artifact tool, only after the person agrees; then lookout pull ${id} <rows.json>` };
 }
 
-// Rows from whatever the agent saved: an array of rows, of {id, data}, or an
-// object holding one of those under docs, items, rows or documents.
+// Rows from whatever the agent saved: an ArtifactData out_dir folder, an
+// array of rows or of {id, data}, or an object holding one of those under
+// docs, items, rows or documents.
+// A folder is what ArtifactData's out_dir writes: one <doc id>.json per row,
+// under annotations/ when the folder given is its parent.
 export function readRows(file) {
+  if (fs.statSync(file).isDirectory()) {
+    const dir = fs.existsSync(path.join(file, "annotations")) ? path.join(file, "annotations") : file;
+    return fs.readdirSync(dir).filter(n => n.endsWith(".json")).sort().map(n => {
+      let row = null;
+      try { row = JSON.parse(fs.readFileSync(path.join(dir, n), "utf8")); } catch { /* reported as not a row */ }
+      return { rid: n.slice(0, -5), row: row && typeof row === "object" && !Array.isArray(row) ? row : null };
+    });
+  }
   const raw = JSON.parse(fs.readFileSync(file, "utf8"));
   const arr = Array.isArray(raw) ? raw : (raw && (raw.docs || raw.items || raw.rows || raw.documents)) || [];
   return arr.map((d, k) => {

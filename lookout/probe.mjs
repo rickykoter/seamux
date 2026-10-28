@@ -1182,6 +1182,12 @@ catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.n
     r.status === 0 && nt && nt.messages.some(m => m.text === "reply from a slow clock"), r.stdout);
   fs.writeFileSync(later, JSON.stringify([{ op: "comment", file: "a.js", line: 1, text: "first", by: "human", at: "2026-01-03T00:00:00.000Z" }, bare]));
   r = cli(R9, "pull", id, later, "--json");
+  const od = path.join(TMP, "r9-outdir", "annotations");
+  fs.mkdirSync(od, { recursive: true });
+  fs.writeFileSync(path.join(od, "rz.json"), JSON.stringify({ op: "comment", item: "f1", text: "from a folder", by: "human", at: "2026-01-04T00:00:00.000Z" }));
+  r = cli(R9, "pull", id, path.join(TMP, "r9-outdir"), "--json");
+  ok("pull: reads an ArtifactData out_dir folder, one row per file named by its doc id",
+    JSON.parse(r.stdout || "{}").applied?.[0]?.rid === "rz" && S.read(id).findings[0].thread.some(m => m.text === "from a folder"), r.stdout + r.stderr);
   ok("pull: a row saved without an id keeps one id however the list is ordered", JSON.parse(r.stdout).applied.length === 1 &&
     S.read(id).threads.filter(t => t.messages[0].text === "a second thread").length === 1, r.stdout);
 }

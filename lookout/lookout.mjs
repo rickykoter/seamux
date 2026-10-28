@@ -553,7 +553,7 @@ function usage() {
   lookout engine            print the engine pointer and the detected host
   lookout export-artifact <id> [--json]
                             the review as a page to publish with the Artifact tool (remote hosts)
-  lookout pull <id> <rows.json> [--json]
+  lookout pull <id> <rows.json|dir> [--json]
                             replay the published page's comments and closes into the review
   lookout serve [--url PATH] [--status|--stop]
                             start lookout's review server if needed and print a page's URL
@@ -576,7 +576,7 @@ function cmdExportArtifact() {
 // ArtifactData list of "annotations", saved to a file) into the review.
 function cmdPull() {
   const [id, file] = positional();
-  if (!id || !file) die("pull <id> <rows.json>  (the rows: an ArtifactData list of the page's annotations collection)");
+  if (!id || !file) die("pull <id> <rows.json|dir>  (the rows: an ArtifactData list of the page's annotations collection, or its out_dir folder)");
   if (!S.exists(id)) die("no review " + id);
   let rows;
   try { rows = AR.readRows(path.resolve(file)); } catch (e) { die(`cannot read ${file}: ${e.message}`); }
