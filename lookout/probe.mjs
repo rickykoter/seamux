@@ -1138,11 +1138,16 @@ catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.n
   ok("page: a comment is one annotations row, written as the human, with no token in it",
     writes.length === 1 && /^annotations\/r/.test(writes[0].p) && writes[0].row.op === "comment" && writes[0].row.by === "human" &&
     writes[0].row.line === 2 && !("t" in writes[0].row) && posted.review.threads.length === 1, JSON.stringify(writes));
+  await served.post({ op: "comment", item: "t1", text: "my own thread" });
+  ok("page: a reply to a thread made on this page names it by the row that made it, not its t-number",
+    writes.length === 2 && writes[1].row.item === "row:" + writes[0].p.split("/").pop(), JSON.stringify(writes[1]));
+  writes.pop();
   let refused = "";
   try { await served.post({ op: "resolve", item: "f99" }); } catch (e) { refused = e.message; }
   ok("page: an op the rules refuse is said on the page and never stored", refused === "no finding or thread f99" && writes.length === 1);
-  snap({ docs: [{ data: () => writes[0].row }, { data: () => ({ op: "resolve", item: "f1", text: "fine", by: "human", at: "2099-01-01T00:00:00.000Z" }) }] });
-  ok("page: every row from the db is applied, in order, to what it shows",
+  snap({ docs: [{ id: "x1", data: () => writes[0].row }, { id: "x2", data: () => ({ op: "resolve", item: "f1", text: "fine", by: "human", at: "2099-01-01T00:00:00.000Z" }) },
+    { id: "x3", data: () => ({ op: "comment", file: "a.js", line: 1, text: "not the human's", by: "agent", at: "2099-01-02T00:00:00.000Z" }) }] });
+  ok("page: every human row from the db is applied, in order, to what it shows, and no other",
     shown && shown.threads.length === 1 && shown.findings[0].status === "resolved" && shown.findings[0].statusBy === "human");
   // Pull: the rows as the agent saved them from ArtifactData.
   const rowsFile = path.join(TMP, "r9-rows.json");
@@ -1163,6 +1168,22 @@ catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.n
     res.skipped.find(k => k.rid === "rd").why === "unknown op" && after.findings[0].status === "resolved");
   r = cli(R9, "pull", id, rowsFile, "--json");
   ok("pull: a second pull applies nothing again", JSON.parse(r.stdout).applied.length === 0 && S.read(id).threads.length === 1);
+  // A reply that sorts before the thread it names (a slow clock), naming the
+  // thread by its row; and bare rows with no ids.
+  const later = path.join(TMP, "r9-rows2.json");
+  const bare = { op: "comment", file: "a.js", line: 1, text: "a second thread", by: "human", at: "2026-01-02T00:00:05.000Z" };
+  fs.writeFileSync(later, JSON.stringify([
+    { id: "re", data: { op: "comment", item: "row:rf", text: "reply from a slow clock", by: "human", at: "2026-01-02T00:00:00.000Z" } },
+    { id: "rf", data: { op: "comment", file: "a.js", line: 2, side: "new", text: "new thread", by: "human", at: "2026-01-02T00:00:09.000Z" } },
+    bare]));
+  r = cli(R9, "pull", id, later, "--json");
+  const v = S.read(id), nt = v.threads.find(t => t.messages[0].text === "new thread");
+  ok("pull: a reply that sorts before its thread is tried again after it, and lands on that thread",
+    r.status === 0 && nt && nt.messages.some(m => m.text === "reply from a slow clock"), r.stdout);
+  fs.writeFileSync(later, JSON.stringify([{ op: "comment", file: "a.js", line: 1, text: "first", by: "human", at: "2026-01-03T00:00:00.000Z" }, bare]));
+  r = cli(R9, "pull", id, later, "--json");
+  ok("pull: a row saved without an id keeps one id however the list is ordered", JSON.parse(r.stdout).applied.length === 1 &&
+    S.read(id).threads.filter(t => t.messages[0].text === "a second thread").length === 1, r.stdout);
 }
 
 // ---------------------------------------------------------------- page script

@@ -14,6 +14,7 @@
 // or that the ops refuse, is skipped and reported. Every row pulled, applied
 // or skipped, is remembered (review.pulled) and never looked at twice.
 import fs from "node:fs";
+import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -48,27 +49,42 @@ ${ops}
     var current = clone(base);
     // The review as exported, with every row applied in order: what the
     // author's \`lookout pull\` will replay.
+    // A thread made on this page is named by the row that made it
+    // ("row:<id>"), never by its t-number, which each viewer counts alone.
+    var made = {}, madeBy = {};
+    var resolve = function (row) {
+      var b = Object.assign({}, row);
+      if (typeof b.item === "string" && b.item.indexOf("row:") === 0) b.item = made[b.item.slice(4)] || b.item;
+      return b;
+    };
     var replay = function () {
       var r = clone(base);
-      rows.forEach(function (row) { applyOp(r, row, row.at); });
+      made = {}; madeBy = {};
+      rows.forEach(function (x) {
+        if (!x.row || x.row.by !== "human") return;   // as lookout pull does
+        var out = applyOp(r, resolve(x.row), x.row.at);
+        if (out[0] === 200 && x.row.op === "comment" && !x.row.item) { made[x.rid] = out[1].item; madeBy[out[1].item] = x.rid; }
+      });
       return r;
     };
     var live = window.lookout.serve({ id: ID, poll: false, post: async function (body) {
       var row = { by: "human", at: new Date().toISOString() };
       ${JSON.stringify(ROW_FIELDS)}.forEach(function (k) { if (body[k] !== undefined && k !== "by" && k !== "at") row[k] = body[k]; });
+      if (row.item && madeBy[row.item]) row.item = "row:" + madeBy[row.item];
       // Checked against the review as it stands, so a refused op is said
       // here and never stored.
       var trial = clone(current);
-      var out = applyOp(trial, row, row.at);
+      var out = applyOp(trial, resolve(row), row.at);
       if (out[0] !== 200) throw new Error(out[1].error || "refused");
       var rid = "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
       await db.doc("annotations/" + rid).set(row);
+      if (row.op === "comment" && !row.item) { made[rid] = out[1].item; madeBy[out[1].item] = rid; }
       current = trial;
       return { review: trial };
     } });
     db.collection("annotations").orderBy("at").onSnapshot(function (snap) {
       var docs = snap && snap.docs ? snap.docs : (snap || []);
-      rows = docs.map(function (d) { return d.data ? d.data() : d; });
+      rows = docs.map(function (d) { return { rid: String(d.id || ""), row: d.data ? d.data() : d }; });
       current = replay();
       if (live && live.take) live.take(current); else window.lookout.applyReview(current);
     });
@@ -96,31 +112,51 @@ export function readRows(file) {
   const arr = Array.isArray(raw) ? raw : (raw && (raw.docs || raw.items || raw.rows || raw.documents)) || [];
   return arr.map((d, k) => {
     const data = d && typeof d === "object" && d.data && typeof d.data === "object" ? d.data : d;
-    const rid = String((d && (d.id || d.doc_id || d.docId)) || (data && data.id) || `row${k}`).split("/").pop();
+    // A row saved without its id gets one from its content, which stays the
+    // same however the list is ordered next time.
+    const given = (d && (d.id || d.doc_id || d.docId)) || (data && data.id);
+    const rid = given ? String(given).split("/").pop()
+      : "h" + crypto.createHash("sha256").update(JSON.stringify(ROW_FIELDS.map(f => data && data[f]))).digest("hex").slice(0, 16);
     return { rid, row: data && typeof data === "object" ? data : null };
   });
 }
 
 // Replay rows into the review. Returns { applied, skipped: [{rid, why}] }.
+// Rows go in time order; one whose item does not exist yet (a reply that
+// sorted before its thread, from a viewer with a slow clock) is tried again
+// after the others, and only then skipped.
 export function pull(id, rows) {
   const applied = [], skipped = [];
   const sorted = [...rows].sort((a, b) => String((a.row || {}).at || "").localeCompare(String((b.row || {}).at || "")) || a.rid.localeCompare(b.rid));
   S.update(id, cur => {
     const seen = new Set(Array.isArray(cur.pulled) ? cur.pulled : []);
-    for (const { rid, row } of sorted) {
-      if (seen.has(rid)) continue;
-      // A skipped row is remembered too: replaying it later cannot help.
-      seen.add(rid);
-      if (!row) { skipped.push({ rid, why: "not a row" }); continue; }
-      if (row.by !== "human") { skipped.push({ rid, why: `written by ${JSON.stringify(row.by ?? null)}, not the page's human` }); continue; }
-      const body = {};
-      for (const k of ROW_FIELDS) if (row[k] !== undefined && k !== "by" && k !== "at") body[k] = row[k];
-      const at = typeof row.at === "string" && !Number.isNaN(Date.parse(row.at)) ? row.at : new Date().toISOString();
-      const out = applyOp(cur, body, at);
-      if (out[0] !== 200) { skipped.push({ rid, why: out[1].error || "refused" }); continue; }
-      applied.push({ rid, op: body.op, item: out[1].item || "" });
+    const made = Object.assign({}, cur.pulledThreads || {});
+    let todo = [];
+    for (const x of sorted) {
+      if (seen.has(x.rid)) continue;
+      seen.add(x.rid);
+      if (!x.row) { skipped.push({ rid: x.rid, why: "not a row" }); continue; }
+      if (x.row.by !== "human") { skipped.push({ rid: x.rid, why: `written by ${JSON.stringify(x.row.by ?? null)}, not the page's human` }); continue; }
+      todo.push(x);
+    }
+    for (let pass = 0; todo.length; pass++) {
+      const later = [];
+      for (const { rid, row } of todo) {
+        const body = {};
+        for (const k of ROW_FIELDS) if (row[k] !== undefined && k !== "by" && k !== "at") body[k] = row[k];
+        if (typeof body.item === "string" && body.item.startsWith("row:")) body.item = made[body.item.slice(4)] || body.item;
+        const at = typeof row.at === "string" && !Number.isNaN(Date.parse(row.at)) ? row.at : new Date().toISOString();
+        const out = applyOp(cur, body, at);
+        if (out[0] === 404 && pass === 0) { later.push({ rid, row }); continue; }
+        if (out[0] !== 200) { skipped.push({ rid, why: out[1].error || "refused" }); continue; }
+        if (body.op === "comment" && !row.item) made[rid] = out[1].item;
+        applied.push({ rid, op: body.op, item: out[1].item || "" });
+      }
+      if (later.length === todo.length && pass > 0) break;
+      todo = later;
     }
     cur.pulled = [...seen];
+    cur.pulledThreads = made;
     return cur;
   });
   return { applied, skipped };
