@@ -1,0 +1,15 @@
+/* The [plan] and [outside] marks a pane wears beside its name (panechips.ts). */
+.pane-chip {
+  flex: none; padding: 0 5px; border: 1px solid currentColor; border-radius: 4px;
+  background: none; font: inherit; font-size: 10px; line-height: 14px; cursor: pointer;
+}
+.pane-chip.plan { color: var(--t-go, var(--accent)); }
+.pane-chip.outside { color: var(--muted); border-style: dashed; }
+.pane-chip:hover { background: color-mix(in srgb, currentColor 14%, transparent); }
+.pane-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.preview .names .chips { display: flex; gap: 4px; margin-top: 2px; }
+.preview .names .chips:empty { display: none; }
+.working-row .pane-chip { margin-left: 6px; }
+.row .chips { display: flex; gap: 3px; flex: none; align-items: center; }
+.row .chips:empty { display: none; }
+span.pane-chip { display: inline-block; }

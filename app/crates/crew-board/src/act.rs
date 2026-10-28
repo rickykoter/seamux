@@ -19,8 +19,8 @@ use crate::plans::{plan_page, uuid_ok};
 use crate::server::{crew_file, current, log, quote};
 use crate::state::state_dir;
 
-pub const ACTIONS: [&str; 22] = [
-    "jump", "row", "diff", "pr", "issue", "jira", "checks", "plan", "take the check",
+pub const ACTIONS: [&str; 23] = [
+    "jump", "pane", "row", "diff", "pr", "issue", "jira", "checks", "plan", "take the check",
     "review", "code", "reclaim", "archive", "sync", "go", "close plan", "ask",
     "sandbox-up", "sandbox-down", "feed-allow", "feed-deny", "wake",
 ];
@@ -315,6 +315,21 @@ pub fn act(action: &str, row: &Map<String, Value>, extra: &str) -> (bool, String
                 return (true, format!("select {wsid}"));
             }
             (select(&r), format!("select {r}"))
+        }
+        // A pane chip ([plan], [outside]): focus that pane. Only a surface the
+        // row itself lists is focused, never one the request made up.
+        "pane" => {
+            let listed = row.get("panes").and_then(Value::as_array).into_iter().flatten()
+                .any(|p| p.get("surface").and_then(Value::as_str) == Some(extra));
+            if extra.is_empty() || !listed {
+                return (false, "that pane is not this row's".into());
+            }
+            let Some(c) = client() else { return (false, "cmux is not answering".into()) };
+            let ws = if uuid_ok(&wsid) { Some(wsid.as_str()) } else { None };
+            match c.surface_focus(extra, ws) {
+                Ok(()) => (true, format!("focus {extra}")),
+                Err(e) => (false, format!("could not focus {extra}: {e}")),
+            }
         }
         "diff" => {
             if cwd.is_empty() || !Path::new(&cwd).is_dir() {

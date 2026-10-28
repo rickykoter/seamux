@@ -334,6 +334,68 @@ pub fn load_fixture(path: &str) -> Result<(Map<String, Value>, Vec<Value>), Stri
     Ok((plans, wss))
 }
 
+/// Every live terminal pane as (workspace, surface, cwd), from cmux's
+/// current.list; empty when cmux does not answer.
+fn pane_cwds() -> Vec<(String, String, String)> {
+    let Some(c) = cmux_cli::client() else { return Vec::new() };
+    let Ok(v) = c.current_list(None) else { return Vec::new() };
+    let sv = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    get(&v, "items")
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|i| sv(i, "kind") == "terminal" && sv(i, "lifecycle") == "running")
+        .filter_map(|i| {
+            let p = i.get("projections")?.as_array()?.first()?;
+            Some((sv(p, "workspace_id"), sv(p, "panel_id"), sv(i, "cwd")))
+        })
+        .collect()
+}
+
+/// The pane marks a row wears: `{surface, mark: "plan", slug}` for an open
+/// plan whose owner pane sits in the row's workspace, and `{surface, mark:
+/// "outside"}` for each pane whose cwd has left the workspace's root: pin.
+/// A row with neither gets no `panes` key.
+pub fn mark_panes(rows: &mut [Value], plans: &Map<String, Value>, wss: &[Value], cwds: &[(String, String, String)]) {
+    let pins: std::collections::HashMap<String, String> =
+        wss.iter().filter_map(|w| Some((py_str(get(w, "id")), pin_of(w)?))).collect();
+    for r in rows.iter_mut() {
+        let id = py_str(get(r, "id"));
+        if id.is_empty() {
+            continue;
+        }
+        let mut marks: Vec<Value> = Vec::new();
+        // With cmux's pane list in hand, a closed owner pane is not marked.
+        let alive = |s: &str| cwds.is_empty() || cwds.iter().any(|(_, x, _)| x.eq_ignore_ascii_case(s));
+        for p in plans.values() {
+            let o = get(p, "owner");
+            let (ws, surface) = (get(o, "workspace").as_str().unwrap_or(""), get(o, "surface").as_str().unwrap_or(""));
+            let open = !matches!(get(p, "phase").as_str().unwrap_or(""), "done" | "closed");
+            if open && !surface.is_empty() && ws.eq_ignore_ascii_case(&id) && alive(surface) {
+                marks.push(json!({"surface": surface, "mark": "plan", "slug": get(p, "slug")}));
+            }
+        }
+        if let Some(pin) = pins.get(&id) {
+            // Compared as real paths: a symlinked spelling of the tree is inside.
+            let real = |p: &str| std::fs::canonicalize(p).map(|x| x.to_string_lossy().into_owned()).unwrap_or_else(|_| p.to_string());
+            let p = real(pin.trim_end_matches('/'));
+            let p = p.trim_end_matches('/');
+            for (ws, surface, cwd) in cwds {
+                let c = real(cwd);
+                let inside = c == p || c.starts_with(&format!("{p}/"));
+                if ws.eq_ignore_ascii_case(&id) && !cwd.is_empty() && !surface.is_empty() && !inside {
+                    marks.push(json!({"surface": surface, "mark": "outside"}));
+                }
+            }
+        }
+        if !marks.is_empty() {
+            if let Some(m) = r.as_object_mut() {
+                m.insert("panes".into(), Value::Array(marks));
+            }
+        }
+    }
+}
+
 pub fn build(o: &Opts) -> Value {
     let (plan_by_root, wss) = match &o.fixture {
         Some((p, w)) => (p.clone(), w.clone()),
@@ -349,6 +411,8 @@ pub fn build(o: &Opts) -> Value {
     // The app's muted and tucked worktrees (fixtures stay as given).
     if o.fixture.is_none() {
         crate::tucked::mark_live(&mut all);
+        // Which pane owns the plan, and which has wandered past the pin.
+        mark_panes(&mut all, &plan_by_root, &wss, &pane_cwds());
     }
     let news = news::compose_now(&all);
     let n = plan_by_root.len();
@@ -370,7 +434,7 @@ pub fn write_targets(d: &Value) {
     let mut targets = Map::new();
     for r in get(d, "rows").as_array().into_iter().flatten() {
         let mut t = Map::new();
-        for k in ["id", "ref", "cwd", "pr_url", "slug", "name", "issue_url"] {
+        for k in ["id", "ref", "cwd", "pr_url", "slug", "name", "issue_url", "panes"] {
             t.insert(k.into(), r.get(k).cloned().unwrap_or(json!("")));
         }
         let key = match get(r, "id") {
@@ -483,5 +547,31 @@ pub fn main(args: &[String]) -> i32 {
             println!("{DOC}");
             2
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_row_wears_its_owner_pane_and_its_wandered_panes() {
+        let mut rows = vec![json!({"id": "W1"}), json!({"id": "W2"})];
+        let mut plans = Map::new();
+        plans.insert("/w/one".into(), json!({"slug": "p", "phase": "implementing", "owner": {"workspace": "w1", "surface": "S-OWN"}}));
+        plans.insert("/w/old".into(), json!({"slug": "q", "phase": "done", "owner": {"workspace": "W2", "surface": "S-OLD"}}));
+        let wss = vec![json!({"id": "W1", "description": "ci:green root:/w/one"}), json!({"id": "W2", "description": ""})];
+        let cwds = vec![
+            ("W1".to_string(), "S-OWN".to_string(), "/w/one/sub".to_string()),
+            ("W1".to_string(), "S-TERM".to_string(), "/elsewhere".to_string()),
+            ("W2".to_string(), "S-X".to_string(), "/anywhere".to_string()),
+        ];
+        mark_panes(&mut rows, &plans, &wss, &cwds);
+        assert_eq!(
+            rows[0]["panes"],
+            json!([{"surface": "S-OWN", "mark": "plan", "slug": "p"}, {"surface": "S-TERM", "mark": "outside"}])
+        );
+        // A done plan marks nothing, and a workspace with no pin has no outside.
+        assert!(rows[1].get("panes").is_none());
     }
 }

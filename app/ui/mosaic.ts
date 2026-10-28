@@ -7,6 +7,7 @@ import { ago, WallView } from "./wall";
 import { levelOf, menu, toggle } from "./tuck";
 import { primeTheme } from "./term";
 import { familyOf, grouped, header as familyHeader, waitText } from "./family";
+import { paneChips } from "./panechips";
 
 type PlanBrief = { ws: string; slug: string; phase: string; done: number; total: number; n: number; open: boolean; title: string };
 type ReviewBrief = { ws: string; id: string; plan: string; inc: number; open: number; addressed: number; closed: number; since: number };
@@ -250,8 +251,13 @@ export class Mosaic {
     return last === t.state && start && start < t.since ? start : t.since;
   }
 
+  /** The wait this pane holds: matched by the pane that asked, so a second
+   *  Claude in the workspace does not wear the first one's question. A
+   *  decision that names no pane falls back to its workspace. */
   private decisionFor(t: Tile): Decision | undefined {
-    return this.views.decisions.find((d) => (d.kind === "question" || d.kind === "asked") && d.ws === t.workspace);
+    return this.views.decisions.find(
+      (d) => (d.kind === "question" || d.kind === "asked") && (d.surface ? d.surface === t.surface : d.ws === t.workspace),
+    );
   }
 
   /** A tile's state line: what it waits on and for how long. */
@@ -314,7 +320,7 @@ export class Mosaic {
     const name = t.workspace_title || t.label || "terminal";
 
     const head = el("header", "m-head");
-    head.append(el("span", "m-name", name));
+    head.append(el("span", "m-name", name), ...paneChips(t));
     const state = el("span", `m-state ${t.state}`, this.stateText(t));
     const d = this.decisionFor(t);
     head.append(state, el("span", "grow"));

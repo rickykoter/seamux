@@ -7,6 +7,7 @@ import { ago } from "./wall";
 import { levelOf, menu, toggle, type Levels, type TuckRow } from "./tuck";
 import { familyOf, goLabel, grouped, header as familyHeader, holdText, memberState, verdicts as famVerdicts, type FamilyBrief, type FamilyMember } from "./family";
 import { splitter } from "./splitter";
+import { paneChips } from "./panechips";
 
 // The shapes of views.rs's ViewsFrame.
 export type Opt = { label: string; description: string };
@@ -359,7 +360,10 @@ export class Desk {
     this.working.replaceChildren(
       ...working.slice(0, 4).map((t) => {
         const r = el("div", "working-row");
-        r.append(el("span", "dot"), document.createTextNode(`working: ${t.workspace_title || t.label}`));
+        // Two Claudes at work in one workspace: each is named by its pane.
+        const twin = working.some((o) => o !== t && o.workspace === t.workspace);
+        const name = twin ? `${t.workspace_title || t.workspace.slice(0, 8)} · ${t.label}` : t.workspace_title || t.label;
+        r.append(el("span", "dot"), document.createTextNode(`working: ${name}`), ...paneChips(t));
         return r;
       }),
     );
@@ -402,6 +406,10 @@ export class Desk {
     const chip = el("span", `chip ${d.kind}`, { question: "question", asked: "asked", gate: "deep-plan gate", review: "lookout", family: "family" }[d.kind]);
     const when = el("span", "d-when");
     head.append(mark, el("span", "d-name", d.kind === "family" ? d.parent : w.title), chip);
+    // The pane the card is about wears its marks: [plan] on the plan's
+    // owner, [outside] past the workspace's pin. Each opens that pane.
+    const pane = d.surface ? this.tiles.find((t) => t.surface === d.surface) : undefined;
+    if (pane) head.append(...paneChips(pane));
     if (level === "mute") head.append(el("span", "chip status", "muted"));
     const kin = d.kind === "family" ? undefined : familyOf(this.frame.families, d.ws);
     if (kin) head.append(el("span", "chip fam", `family · ${kin.fam.parent}`));

@@ -4,6 +4,7 @@ import { reflow, type Block } from "./reflow";
 import { TermSlot } from "./native";
 import { openInVSCode } from "./sheet";
 import { splitter } from "./splitter";
+import { paneChips } from "./panechips";
 
 /** One re-flowed paragraph: wraps at the window, hanging past its marker. */
 function flowLine(b: Block): HTMLElement {
@@ -34,6 +35,12 @@ export type Tile = {
   running?: string | null;
   /** A native pane rang the bell since it was last looked at. */
   bell?: boolean;
+  /** The workspace's pinned worktree (its root: token), "" without one. */
+  root?: string;
+  /** The plan this pane owns, by slug (deep-plan's owner pane). */
+  owner?: string | null;
+  /** The pane's cwd has left the workspace's pinned worktree. */
+  outside?: boolean;
 };
 export type Frame = { tiles: Tile[]; error: string | null };
 
@@ -120,6 +127,8 @@ class Row {
   private title = document.createElement("span");
   private sub = document.createElement("span");
   private wait = document.createElement("span");
+  /** The pane's [plan] and [outside] marks. */
+  private chips = document.createElement("span");
   tile!: Tile;
 
   constructor(surface: string, pick: (surface: string) => void) {
@@ -133,8 +142,9 @@ class Row {
     this.wait.className = "wait";
     const names = document.createElement("span");
     names.className = "names";
+    this.chips.className = "chips";
     names.append(this.title, this.sub);
-    this.el.append(this.mark, names, this.wait);
+    this.el.append(this.mark, names, this.chips, this.wait);
     this.el.addEventListener("click", () => pick(surface));
   }
 
@@ -147,6 +157,7 @@ class Row {
     this.mark.replaceChildren(stateMark(t.state));
     this.title.textContent = titleOf(t);
     this.sub.textContent = subOf(t);
+    this.chips.replaceChildren(...paneChips(t, true));
     this.tick(now);
     // Newly waiting on you: a seam stitches down the row's edge, once.
     if (before !== undefined && before !== "needs_input" && t.state === "needs_input") {
@@ -185,6 +196,8 @@ class Preview {
   /** The shown pane's folder: VS Code opens its worktree. */
   private cwd = "";
   private note = document.createElement("span");
+  /** The pane's [plan] and [outside] marks, beside its name. */
+  private chipsEl = document.createElement("span");
   private surface = "";
   private lastText = "";
   private lastState = "";
@@ -198,7 +211,8 @@ class Preview {
     names.className = "names";
     this.titleEl.className = "title";
     this.subEl.className = "sub";
-    names.append(this.titleEl, this.subEl);
+    this.chipsEl.className = "chips";
+    names.append(this.titleEl, this.subEl, this.chipsEl);
     this.stateEl.className = "state";
     head.append(names, this.stateEl, this.codeBtn, this.jumpBtn);
 
@@ -279,6 +293,7 @@ class Preview {
     this.el.style.setProperty("--ws", safeColor(t.color) || "var(--line)");
     this.titleEl.textContent = titleOf(t);
     this.subEl.textContent = subOf(t);
+    this.chipsEl.replaceChildren(...paneChips(t));
     const waited = t.state === "needs_input" ? ` · ${ago(now - t.since)}` : "";
     this.stateEl.replaceChildren(stateMark(t.state), document.createTextNode((STATE_WORDS[t.state] ?? t.state) + waited));
     this.term.show(t.surface);

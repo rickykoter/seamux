@@ -315,8 +315,11 @@ pub fn main(args: &[String]) -> i32 {
         let mut have_desc = field(w, "description");
         let root = roots.get(&ws).cloned().unwrap_or_default();
         let asking = Path::new(&join(&p.state, &format!("question-{ws}"))).exists();
+        // The hooks' own roll-up of the panes: a turn that ended on a question
+        // reads idle in cmux's store, but its pane file says it waits on you.
+        let pane_waits = crew_core::status::rollup(Path::new(&p.state), &ws).state == "needs_input";
         // One Claude waiting outranks another working, as the hooks' roll-up ranks them.
-        if live && (asking || any_needs) && have_desc.contains("phase:waiting") {
+        if live && (asking || any_needs || pane_waits) && have_desc.contains("phase:waiting") {
             tok.push("phase:waiting".into());
         } else if live && any_running {
             tok.push("phase:working".into());
@@ -545,6 +548,9 @@ pub fn main(args: &[String]) -> i32 {
     if !dry && !rows.is_empty() && Path::new(&p.state).is_dir() {
         let live_ws: HashSet<String> = rows.iter().map(|w| field(w, "id")).collect();
         let dir = Path::new(&p.state);
+        // The hooks' lock: a hook's fresh markers are never overwritten by
+        // this run's older roll-up.
+        let _lock = crew_core::status::lock(dir);
         let recs: HashMap<&str, &Value> = by_ws.values().flatten().map(|(s, r)| (s.as_str(), r)).collect();
         let day_ms = 86_400_000u64;
         let now_ms = crew_core::history::now_ms();

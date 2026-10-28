@@ -502,10 +502,14 @@ impl<'a> Panes<'a> {
 /// rendered a plan may sit elsewhere), else the owner's when it is live.
 fn plan_ws(panes: &Panes, p: &Value) -> Option<String> {
     let owner = p.get("owner").map(|o| s(o, "workspace")).unwrap_or_default();
+    let owner_pane = p.get("owner").map(|o| s(o, "surface")).unwrap_or_default();
     let root = s(p, "root");
-    panes
-        .live_ws(&owner)
-        .filter(|w| panes.ws_in_dir(w, &root))
+    // The owner's pane, where it lives; then a workspace pinned to the root.
+    let by_pane = panes.tiles.iter().find(|t| !owner_pane.is_empty() && t.surface.eq_ignore_ascii_case(&owner_pane)).map(|t| t.workspace.clone());
+    let pinned = || panes.tiles.iter().find(|t| !t.root.is_empty() && !root.is_empty() && canon(&t.root) == canon(&root)).map(|t| t.workspace.clone());
+    by_pane
+        .or_else(pinned)
+        .or_else(|| panes.live_ws(&owner).filter(|w| panes.ws_in_dir(w, &root)))
         .or_else(|| panes.ws_for_dir(&root))
         .or_else(|| panes.live_ws(&owner))
 }
@@ -565,7 +569,9 @@ fn hook_decisions(dir: &Path, panes: &Panes) -> Vec<Decision> {
         } else if let Some(named) = ws_of(&name, "asked-", "") {
             let Some(ws) = panes.live_ws(&named) else { continue };
             let question = std::fs::read_to_string(&path).unwrap_or_default().trim().to_string();
-            out.push(Decision::Asked { surface: panes.surface_in(&ws), ws, since: mtime_ms(&path), question });
+            // The pane that was asked: its own state file says so.
+            let asker = crew_core::status::panes(dir, &named).into_iter().filter(|p| p.asked.is_some()).max_by_key(|p| p.at).map(|p| p.surface).unwrap_or_default();
+            out.push(Decision::Asked { surface: panes.surface_or(&ws, &asker), ws, since: mtime_ms(&path), question });
         }
     }
     out
@@ -954,12 +960,12 @@ impl Feed {
         if entries.is_empty() {
             return (Vec::new(), Default::default());
         }
-        // A workspace's worktree is its first agent pane's, else its first
-        // pane's: the same pane tuck_set picks.
+        // A workspace's worktree is its root: pin; without one, its first
+        // agent pane's, else its first pane's: the same pane tuck_set picks.
         let mut root: HashMap<String, String> = HashMap::new();
-        for t in tiles.iter().filter(|t| t.agent.is_some()).chain(tiles.iter().filter(|t| t.agent.is_none())) {
+        for t in tiles.iter().filter(|t| !t.root.is_empty()).chain(tiles.iter().filter(|t| t.agent.is_some())).chain(tiles.iter().filter(|t| t.agent.is_none())) {
             if !root.contains_key(&t.workspace) {
-                root.insert(t.workspace.clone(), root_of(&t.cwd));
+                root.insert(t.workspace.clone(), if t.root.is_empty() { root_of(&t.cwd) } else { t.root.clone() });
             }
         }
         let under = |path: &str| -> Vec<String> {
@@ -1027,16 +1033,29 @@ impl Feed {
         wss.retain(|w| seen.insert(w.clone()));
         wss.into_iter()
             .map(|ws| {
-                let mut spans = spans_of(by_ws.get(&ws).map(Vec::as_slice).unwrap_or(&[]), start, now);
-                if spans.is_empty() {
-                    // No history yet (it began after this pane's state did):
-                    // the state the wall sees, from when it first saw it.
-                    if let Some(t) = panes.tiles.iter().find(|t| t.workspace == ws && t.agent.is_some()) {
-                        if history::STATES.contains(&t.state.as_str()) {
+                let entries = by_ws.get(&ws).map(Vec::as_slice).unwrap_or(&[]);
+                // One sub-row per Claude pane, from the history lines it wrote.
+                let rows: Vec<LanePane> = panes
+                    .tiles
+                    .iter()
+                    .filter(|t| t.workspace == ws && t.agent.is_some())
+                    .map(|t| {
+                        let mine: Vec<Entry> = entries.iter().filter(|e| e.surface.eq_ignore_ascii_case(&t.surface)).cloned().collect();
+                        let mut spans = spans_of(&mine, start, now);
+                        if spans.is_empty() && history::STATES.contains(&t.state.as_str()) {
+                            // No history yet (it began after this pane's state
+                            // did): the state the wall sees, since it first saw it.
                             spans.push(Span { state: t.state.clone(), start: t.since.clamp(start, now), end: now });
                         }
-                    }
-                }
+                        LanePane { surface: t.surface.clone(), label: t.label.clone(), spans, owner: t.owner.clone(), outside: t.outside }
+                    })
+                    .collect();
+                // The head is the panes' roll-up, with lines no pane named
+                // (written before hooks knew their surface) under them.
+                let unnamed: Vec<Entry> = entries.iter().filter(|e| !rows.iter().any(|r| e.surface.eq_ignore_ascii_case(&r.surface))).cloned().collect();
+                let mut all: Vec<Vec<Span>> = rows.iter().map(|r| r.spans.clone()).collect();
+                all.push(spans_of(&unnamed, start, now));
+                let spans = rollup_spans(&all);
                 let mut marks = Vec::new();
                 let plan = plans.iter().find(|p| p.ws == ws);
                 if let Some(p) = plan {
@@ -1052,7 +1071,7 @@ impl Feed {
                     marks.push(Mark { kind: "review".into(), at: r.since, n: r.inc, label: r.title.clone() });
                 }
                 marks.sort_by_key(|m| m.at);
-                Lane { ws, spans, marks }
+                Lane { ws, spans, marks, panes: rows }
             })
             .collect()
     }
@@ -1076,12 +1095,50 @@ pub struct Mark {
     pub label: String,
 }
 
-/// One workspace's row on Timeline.
+/// One workspace's row on Timeline: its head is the roll-up of its panes.
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct Lane {
     pub ws: String,
     pub spans: Vec<Span>,
     pub marks: Vec<Mark>,
+    /// One sub-row per Claude pane in the workspace.
+    pub panes: Vec<LanePane>,
+}
+
+/// One Claude pane's sub-row in a lane.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct LanePane {
+    pub surface: String,
+    pub label: String,
+    pub spans: Vec<Span>,
+    /// The plan this pane owns, by slug.
+    pub owner: Option<String>,
+    /// Its cwd has left the workspace's pinned worktree.
+    pub outside: bool,
+}
+
+/// The state rank a roll-up keeps: crew-core's status ranking.
+fn rank_of(state: &str) -> usize {
+    crew_core::status::RANK.iter().position(|s| *s == state).unwrap_or(crew_core::status::RANK.len())
+}
+
+/// Several rows of spans as one: at each moment the highest-ranked state any
+/// row is in (needs_input > working > idle > ended), runs of one state merged.
+pub fn rollup_spans(rows: &[Vec<Span>]) -> Vec<Span> {
+    let mut cuts: Vec<u64> = rows.iter().flatten().flat_map(|s| [s.start, s.end]).collect();
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut out: Vec<Span> = Vec::new();
+    for w in cuts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let best = rows.iter().flatten().filter(|s| s.start <= a && s.end >= b).min_by_key(|s| rank_of(&s.state));
+        let Some(best) = best else { continue };
+        match out.last_mut() {
+            Some(l) if l.state == best.state && l.end == a => l.end = b,
+            _ => out.push(Span { state: best.state.clone(), start: a, end: b }),
+        }
+    }
+    out
 }
 
 /// A workspace's history as runs of one state over [start, now): the state

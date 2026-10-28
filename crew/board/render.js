@@ -310,6 +310,15 @@ function __boardRender(d) {
         (e.x !== undefined && e.x !== null && e.x !== "" ? ' data-x="' + esc(e.x) + '"' : "") +
         ' title="' + esc(e.h) + '">' + esc(e.t) + "</span>");
     });
+    // The row's panes that wear a mark: [plan] on the plan's owner pane,
+    // [outside] on a pane past the workspace's pin. Each focuses its pane.
+    (a.panes || []).forEach(function (p) {
+      if (!p || !p.surface) return;
+      var plan = p.mark === "plan";
+      out.push('<span class="chip pane ' + (plan ? "plan" : "outside") + '" data-a="pane" data-x="' + esc(p.surface) + '"' +
+        ' title="' + esc(plan ? "This workspace's pane that owns plan " + (p.slug || "") + ": focus it"
+          : "A pane here has left the workspace's worktree: focus it") + '">' + (plan ? "plan" : "outside") + "</span>");
+    });
     return out.length ? '<div class="chips">' + out.join("") + "</div>" : "";
   }
 

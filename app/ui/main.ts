@@ -15,6 +15,7 @@ import { Wake } from "./wake";
 import "./wake.css";
 import { Timeline } from "./timeline";
 import "./timeline.css";
+import "./panechips.css";
 import { ReviewView } from "./review";
 import "./review.css";
 import { Palette } from "./palette";
