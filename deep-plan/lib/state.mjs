@@ -55,13 +55,37 @@ export function sessionId() {
 
 // Stamped on every write made from inside a session. A write with no session
 // in its environment (a board chip, a shell outside Claude) leaves the owner
-// as it was rather than clearing it.
+// as it was rather than clearing it. The owner is a pane: cmux's
+// CMUX_SURFACE_ID, which a /clear or a resume keeps while the session id
+// changes. A deep-plan write from another pane moves ownership there.
 export function stampOwner(st, now = Date.now()) {
   const session = sessionId();
   if (!session) return st;
-  st.owner = { session, workspace: process.env.CMUX_WORKSPACE_ID || "", at: now };
+  st.owner = { session, workspace: process.env.CMUX_WORKSPACE_ID || "", surface: process.env.CMUX_SURFACE_ID || "", at: now };
   st.session = session;
   return st;
+}
+
+// Whether `who` ({surface, session, workspace}) is the plan's owner: the same
+// pane in cmux (a /clear keeps it), or the same session (a resume in another
+// pane keeps that). An owner stamped before panes were recorded matches by
+// workspace. A plan with no owner is anyone's.
+export function isOwner(owner, who) {
+  if (!owner) return true;
+  if (owner.surface && who.surface && owner.surface === who.surface) return true;
+  if (owner.session && who.session && owner.session === who.session) return true;
+  if (owner.surface && who.surface) return false;
+  if (!owner.surface && owner.workspace && who.workspace) return owner.workspace === who.workspace;
+  return !owner.session && !owner.surface && !owner.workspace;
+}
+
+// How a person finds the owner: its pane (and workspace), else its session.
+export function ownerName(owner) {
+  if (!owner) return "nobody";
+  const short = s => String(s).slice(0, 8);
+  if (owner.surface) return `pane ${short(owner.surface)}` + (owner.workspace ? ` in workspace ${short(owner.workspace)}` : "");
+  if (owner.workspace) return `workspace ${short(owner.workspace)}`;
+  return `session ${short(owner.session)}`;
 }
 
 // Atomic: the gate reads this on every tool call, and a half-written JSON
@@ -73,8 +97,10 @@ export function stampOwner(st, now = Date.now()) {
 // is on disk under the lock and keeps what the writer never saw: a check
 // verdict stamped later than the writer's copy of it, and log lines it did
 // not have. Everything else is the writer's.
-export function writeState(st) {
-  stampOwner(st);
+export function writeState(st, { stamp = true } = {}) {
+  // The gate's own writes pass stamp: false: the hook runs in whichever
+  // session made the tool call, and a guest's edit must not take the plan.
+  if (stamp) stampOwner(st);
   fs.mkdirSync(STATE_DIR, { recursive: true });
   const lock = acquireLock(st.slug);
   try {
@@ -103,6 +129,8 @@ function mergeConcurrent(st, disk) {
       inc.checks[id] = { ...meta, ...verdictOf(dv) };
     }
   }
+  // Guests told by the gate while this writer held its copy stay told.
+  if (disk.guests && typeof disk.guests === "object") st.guests = { ...disk.guests, ...(st.guests || {}) };
   if ((disk.log || []).length) {
     const key = l => `${l.at}\u0000${l.what}`;
     const have = new Set((st.log || []).map(key));

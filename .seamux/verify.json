@@ -130,7 +130,7 @@
   { "id": "parity-both", "kind": "test",
     "run": "cargo build --manifest-path app/Cargo.toml -p seamux-cli && for m in '' rust; do CREW_IMPL=$m sh -c 'python3 crew/tools/family_sync_probe.py && python3 crew/tools/workspaces_probe.py && python3 crew/tools/wake_split_probe.py && python3 crew/tools/artifacts_probe.py && python3 crew/hooks/typesafe_probe.py && python3 crew/tools/core_probe.py && python3 crew/tools/cli_probe.py && python3 crew/tools/hooks_probe.py && node crew/board/board_probe.mjs' || exit 1; done",
     "match": [], "default": false,
-    "note": "the cutover's merge gate: every crew probe without CREW_IMPL and with CREW_IMPL=rust" },
+    "note": "the cutover's merge gate: every crew probe without CREW_IMPL and with CREW_IMPL=rust. Cases only seamux has (hooks_probe's two panes in one workspace) skip themselves without CREW_IMPL, so the two runs share only what both copies still do" },
   { "id": "parity-strict", "kind": "test",
     "run": "cargo build --manifest-path app/Cargo.toml -p seamux-cli && CREW_IMPL=rust-strict sh -c 'python3 crew/tools/family_sync_probe.py && python3 crew/tools/workspaces_probe.py && python3 crew/tools/wake_split_probe.py && python3 crew/tools/artifacts_probe.py && python3 crew/hooks/typesafe_probe.py && python3 crew/tools/core_probe.py && python3 crew/tools/cli_probe.py && python3 crew/tools/hooks_probe.py && node crew/board/board_probe.mjs'",
     "match": [], "default": false,

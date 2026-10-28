@@ -382,8 +382,9 @@ fn fixups(main: &Path, path: &Path) -> Result<String, String> {
 /// lists, its UUID. The caller starts Claude there.
 pub fn create_workspace(cwd: &Path) -> Result<(String, Option<String>), String> {
     let c = cmux::Cmux::connect().map_err(|e| format!("cmux: {e}"))?;
-    let cwd_s = cwd.to_string_lossy();
-    let out = c.cli(&["workspace", "create", "--cwd", &cwd_s, "--focus", "false"]).map_err(|e| format!("cmux: {e}"))?;
+    let argv = create_argv(cwd);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let out = c.cli(&argv).map_err(|e| format!("cmux: {e}"))?;
     if !out.ok() {
         let err = if out.stderr.trim().is_empty() { out.stdout.trim() } else { out.stderr.trim() };
         return Err(format!("cmux did not open the workspace: {}", err.lines().last().unwrap_or("?")));
@@ -403,6 +404,40 @@ pub fn create_workspace(cwd: &Path) -> Result<(String, Option<String>), String> 
     Ok((wref, id))
 }
 
+/// `cmux workspace create` for a worktree: in the background, and pinned to
+/// it by a root: token in its description.
+pub fn create_argv(cwd: &Path) -> Vec<String> {
+    let cwd_s = cwd.to_string_lossy().into_owned();
+    ["workspace", "create", "--cwd", &cwd_s, "--focus", "false", "--description", &root_tok(&cwd_s)].iter().map(|s| s.to_string()).collect()
+}
+
+// ---- the workspace's pinned worktree ------------------------------------------
+//
+// A workspace is pinned to one worktree by a `root:<path>` token in its cmux
+// description, written when the workspace is made (create_argv) or, for one
+// made elsewhere, by its first SessionStart; nothing overwrites it. Readers
+// take a workspace's worktree from it, and fall back to current_directory
+// (which follows the focused pane) only when it is missing. Description
+// tokens split on whitespace, so the path's spaces and percent signs are
+// escaped.
+
+/// The `root:<path>` token for a worktree path.
+pub fn root_tok(path: &str) -> String {
+    format!("root:{}", path.replace('%', "%25").replace(' ', "%20").replace('\t', "%09").replace('\n', "%0A"))
+}
+
+/// The pinned worktree in a description, if it has a root: token.
+pub fn root_of(desc: &str) -> Option<String> {
+    let t = desc.split_whitespace().find_map(|t| t.strip_prefix("root:")).filter(|v| !v.is_empty())?;
+    Some(t.replace("%20", " ").replace("%09", "\t").replace("%0A", "\n").replace("%25", "%"))
+}
+
+/// A workspace's worktree: its pin, else the directory cmux reports. A pin
+/// whose directory is gone (an archived worktree) is not followed.
+pub fn root_or(desc: &str, current_directory: &str) -> String {
+    root_of(desc).filter(|r| Path::new(r).is_dir()).unwrap_or_else(|| current_directory.to_string())
+}
+
 /// The UUID of the workspace `wref` (cmux's `workspace list --json`), else
 /// of the one whose directory is `cwd`.
 pub fn workspace_id(list: &serde_json::Value, wref: &str, cwd: &Path) -> Option<String> {
@@ -418,6 +453,23 @@ pub fn workspace_id(list: &serde_json::Value, wref: &str, cwd: &Path) -> Option<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_root_token_round_trips_and_pins_the_new_workspace() {
+        use super::*;
+        let p = "/home/dev/code/my repo%x.worktrees/a";
+        let t = root_tok(p);
+        assert!(!t.contains(' '));
+        assert_eq!(root_of(&format!("ci:green {t} phase:working")).as_deref(), Some(p));
+        assert_eq!(root_of("ci:green root:"), None);
+        assert_eq!(root_or("ci:green", "/cwd"), "/cwd");
+        // A pin whose directory is gone is not followed.
+        assert_eq!(root_or("root:/no/such/pin", "/cwd"), "/cwd");
+        let real = std::env::temp_dir().to_string_lossy().into_owned();
+        assert_eq!(root_or(&root_tok(&real), "/cwd"), real);
+        let argv = create_argv(Path::new("/w/t"));
+        assert_eq!(argv, ["workspace", "create", "--cwd", "/w/t", "--focus", "false", "--description", "root:/w/t"]);
+    }
+
     use super::*;
     use std::cell::RefCell;
 

@@ -23,7 +23,7 @@ use crew_core::{py, pyjson};
 use serde_json::{json, Map, Value};
 
 use crate::pypath::{self, join};
-use crate::pyval::{py_space, py_str, read_json, truthy};
+use crate::pyval::{py_space, py_str, truthy};
 use crate::{plugin_root, proc, pyerr};
 
 const KEYS: [&str; 5] = ["feed", "feedby", "feedgate", "feedreq", "feedws"];
@@ -87,16 +87,11 @@ fn workspace_cwd(ws: &str) -> String {
     row(ws).map(|w| or(&w, "current_directory", "")).unwrap_or_default()
 }
 
-/// Is a live agent in this workspace blocked right now?
+/// Is a live agent in this workspace blocked right now? Any of its Claudes,
+/// not only the active one: a second Claude's permission prompt counts.
 fn agent_waiting(c: &Ctx, ws: &str) -> bool {
-    let Some(d) = read_json(&join(&c.home, ".cmuxterm/claude-hook-sessions.json")) else { return false };
-    let sid = get(&d, "activeSessionsByWorkspace").and_then(|m| get(m, ws)).and_then(|s| s.get("sessionId"));
-    let sid = sid.filter(|v| truthy(Some(v))).map(py_str).unwrap_or_default();
-    let rec = get(&d, "sessions").and_then(|m| get(m, &sid)).cloned().unwrap_or(json!({}));
-    if rec.get("agentLifecycle") != Some(&json!("needsInput")) {
-        return false;
-    }
-    crate::sync::facts::kill0(rec.get("pid"))
+    let all = crate::sync::facts::sessions_in(&join(&c.home, ".cmuxterm/claude-hook-sessions.json"));
+    all.get(ws).into_iter().flatten().any(|(_, rec)| rec.get("agentLifecycle") == Some(&json!("needsInput")) && crate::sync::facts::kill0(rec.get("pid")))
 }
 
 /// Seconds since the ask was updated; 1e9 when that cannot be told (missing,

@@ -118,6 +118,82 @@ pub fn titles(workspaces: &Value) -> HashMap<String, String> {
         .unwrap_or_default()
 }
 
+/// Workspace UUID to its pinned worktree (the root: token in its
+/// description), from workspace.list; only workspaces that have one.
+pub fn pins(workspaces: &Value) -> HashMap<String, String> {
+    let rows = workspaces.get("workspaces").unwrap_or(workspaces);
+    rows.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|w| {
+                    let id = w.get("id")?.as_str()?.to_string();
+                    let root = crew_core::worktree::root_of(w.get("description").and_then(Value::as_str).unwrap_or("")).filter(|r| std::path::Path::new(r).is_dir())?;
+                    Some((id, root))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Each open plan's owner pane (deep-plan's owner.surface, upper-cased) to
+/// the plan's slug, from deep-plan's state files in `dir`.
+/// Each state file is parsed again only when its mtime moves: the wall
+/// ticks often and a plan's state rarely changes.
+pub fn owners(dir: &std::path::Path) -> HashMap<String, String> {
+    use std::sync::Mutex;
+    type Seen = HashMap<std::path::PathBuf, (std::time::SystemTime, Option<(String, String)>)>;
+    static CACHE: Mutex<Option<Seen>> = Mutex::new(None);
+    let Ok(rd) = std::fs::read_dir(dir) else { return HashMap::new() };
+    let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = guard.get_or_insert_with(HashMap::new);
+    let mut live = std::collections::HashSet::new();
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|x| x.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(mtime) = e.metadata().ok().and_then(|m| m.modified().ok()) else { continue };
+        live.insert(p.clone());
+        let fresh = cache.get(&p).is_some_and(|(t, _)| *t == mtime);
+        if !fresh {
+            let owner = std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).and_then(|v| {
+                let phase = v.get("phase").and_then(Value::as_str).unwrap_or("");
+                if matches!(phase, "done" | "closed" | "") {
+                    return None;
+                }
+                let surface = v.get("owner").and_then(|o| o.get("surface")).and_then(Value::as_str).unwrap_or("").to_string();
+                let slug = v.get("slug").and_then(Value::as_str).unwrap_or("").to_string();
+                (!surface.is_empty() && !slug.is_empty()).then_some((surface.to_uppercase(), slug))
+            });
+            cache.insert(p.clone(), (mtime, owner));
+        }
+        if let Some((_, Some((surface, slug)))) = cache.get(&p) {
+            // A pane that owns two open plans names both.
+            out.entry(surface.clone()).and_modify(|s: &mut Vec<String>| s.push(slug.clone())).or_insert_with(|| vec![slug.clone()]);
+        }
+    }
+    cache.retain(|p, _| live.contains(p));
+    out.into_iter()
+        .map(|(k, mut v)| {
+            v.sort();
+            (k, v.join(", "))
+        })
+        .collect()
+}
+
+/// Whether `cwd` is outside the pinned worktree `root`, compared as real
+/// paths (a symlinked spelling of the same tree is inside).
+pub fn is_outside(cwd: &str, root: &str) -> bool {
+    if cwd.is_empty() || root.is_empty() {
+        return false;
+    }
+    let real = |p: &str| std::fs::canonicalize(p).map(|x| x.to_string_lossy().into_owned()).unwrap_or_else(|_| p.to_string());
+    let (c, r) = (real(cwd), real(root.trim_end_matches('/')));
+    let r = r.trim_end_matches('/');
+    !(c == r || c.starts_with(&format!("{r}/")))
+}
+
 /// Workspace UUID to its cmux colour (custom_color), from workspace.list;
 /// only workspaces that have one.
 pub fn colors(workspaces: &Value) -> HashMap<String, String> {
@@ -211,6 +287,12 @@ pub struct Tile {
     pub running: Option<String>,
     /// A native pane rang the bell since it was last looked at.
     pub bell: bool,
+    /// The workspace's pinned worktree (its root: token), "" without one.
+    pub root: String,
+    /// The plan this pane owns (deep-plan's owner pane), by slug.
+    pub owner: Option<String>,
+    /// The pane's cwd has left the workspace's pinned worktree.
+    pub outside: bool,
 }
 
 /// The `wall:frame` payload: every tile, in current.list's order.
@@ -228,6 +310,8 @@ struct State {
     signals: HashMap<String, crate::pty::PaneSignals>,
     titles: HashMap<String, String>,
     colors: HashMap<String, String>,
+    pins: HashMap<String, String>,
+    owners: HashMap<String, String>,
     /// Per surface: the state last seen, and when it was first seen.
     since: HashMap<String, (String, u64)>,
     text: HashMap<String, Result<Vec<String>, String>>,
@@ -314,6 +398,8 @@ impl Wall {
         let listing = self.pool[0].workspaces().ok();
         let titles = listing.as_ref().map(titles);
         let colors = listing.as_ref().map(colors);
+        let pins = listing.as_ref().map(pins);
+        let owners = owners(&crew_board::server::dp_state());
         let mut terms = match &listed {
             Ok(v) => terminals(v),
             Err(_) => self.state.lock().unwrap().terms.clone(),
@@ -335,6 +421,10 @@ impl Wall {
         if let Some(c) = colors {
             st.colors = c;
         }
+        if let Some(p) = pins {
+            st.pins = p;
+        }
+        st.owners = owners;
         st.terms = terms;
         st.text = reads;
         self.frame_if_changed(&mut st)
@@ -468,6 +558,9 @@ impl Wall {
                     since: st.since.get(&t.surface).map(|(_, at)| *at).unwrap_or(now),
                     running: st.signals.get(&t.surface.to_uppercase()).and_then(|s| s.running.clone()),
                     bell: st.signals.get(&t.surface.to_uppercase()).is_some_and(|s| s.bell),
+                    root: st.pins.get(&t.workspace).cloned().unwrap_or_default(),
+                    owner: st.owners.get(&t.surface.to_uppercase()).cloned(),
+                    outside: st.pins.get(&t.workspace).is_some_and(|r| is_outside(&t.cwd, r)),
                 }
             })
             .collect();

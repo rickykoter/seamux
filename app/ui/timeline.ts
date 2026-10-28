@@ -5,10 +5,14 @@ import type { Frame as WallFrame, Tile } from "./wall";
 import { ago } from "./wall";
 import { levelOf, menu } from "./tuck";
 import { familyOf, grouped, header as familyHeader, waitText, type FamilyBrief } from "./family";
+import { jumpTo, paneChips } from "./panechips";
 
 type Span = { state: string; start: number; end: number };
 type Mark = { kind: "go" | "done" | "review"; at: number; n: number; label: string };
-type Lane = { ws: string; spans: Span[]; marks: Mark[] };
+/** One Claude pane's sub-row: its own spans, and its marks. */
+type LanePane = { surface: string; label: string; spans: Span[]; owner: string | null; outside: boolean };
+/** A workspace's lane: the head is the roll-up of its panes (views.rs). */
+type Lane = { ws: string; spans: Span[]; marks: Mark[]; panes?: LanePane[] };
 type PlanBrief = { ws: string; slug: string; phase: string; done: number; total: number; n: number; open: boolean };
 type Views = ViewsFrame & { lanes?: Lane[]; plans?: PlanBrief[]; families?: FamilyBrief[] };
 
@@ -38,6 +42,17 @@ export function active(l: Lane): boolean {
 }
 
 const WORDS: Record<string, string> = { working: "working", needs_input: "waiting on you", idle: "idle", ended: "ended" };
+
+/** The roll-up's ranking (crew-core's status): who waits, then who works. */
+const RANK = ["needs_input", "working", "idle", "ended"];
+
+/** A workspace's state from its agent panes, the highest-ranked one; a
+ *  workspace with only terminals is a shell. */
+export function rolledUp(tiles: Tile[], ws: string): string {
+  const states = tiles.filter((t) => t.workspace === ws && t.agent).map((t) => t.state);
+  const best = RANK.find((s) => states.includes(s));
+  return best ?? (states[0] || (tiles.some((t) => t.workspace === ws) ? "shell" : ""));
+}
 
 /** Timeline: who waited, and how long, over the last two hours. */
 export class Timeline {
@@ -133,7 +148,7 @@ export class Timeline {
     if (this.root.closest("[hidden]")) return;
     // Only what the lanes show, by the minute (the axis and the waits' clocks):
     // a frame that changes a pane's text alone redraws nothing.
-    const tiles = this.tiles.map((t) => [t.workspace, t.workspace_title, t.color, t.state]);
+    const tiles = this.tiles.map((t) => [t.workspace, t.surface, t.workspace_title, t.color, t.state, t.owner, t.outside]);
     const v = this.views;
     const shape = JSON.stringify([Math.floor(Date.now() / 60_000), tiles, v.lanes, v.decisions, v.levels, v.families, v.plans, v.wake?.slice(0, 40), this.picked]);
     if (shape === this.drawn) return;
@@ -151,7 +166,7 @@ export class Timeline {
     const lv = this.views.levels;
     const lanes = (this.views.lanes ?? []).filter((l) => levelOf(lv, l.ws) !== "tuck");
     const rank = (ws: string) => {
-      const s = this.tiles.find((t) => t.workspace === ws)?.state;
+      const s = rolledUp(this.tiles, ws);
       return s === "needs_input" ? 0 : s === "working" ? 1 : 2;
     };
     const muted = (ws: string) => (levelOf(lv, ws) === "mute" ? 10 : 0);
@@ -165,7 +180,7 @@ export class Timeline {
     // A family's lanes sit together under its header.
     const fams = this.views.families;
     const rows: HTMLElement[] = grouped(shown, (l) => familyOf(fams, l.ws)?.fam.parent ?? "").flatMap((g) => {
-      const lanes = g.items.map((l) => this.lane(l, start, now, waitWs.has(l.ws)));
+      const lanes = g.items.flatMap((l) => this.lane(l, start, now, waitWs.has(l.ws)));
       const fam = g.key ? fams?.find((f) => f.parent === g.key) : undefined;
       return fam ? [familyHeader(fam, "fam-head t-fam"), ...lanes] : lanes;
     });
@@ -182,11 +197,12 @@ export class Timeline {
     this.drawPop();
   }
 
-  private lane(l: Lane, start: number, now: number, waiting: boolean): HTMLElement {
+  private lane(l: Lane, start: number, now: number, waiting: boolean): HTMLElement[] {
     const level = levelOf(this.views.levels, l.ws);
     const row = el("div", `t-lane${level === "mute" ? " muted" : ""}`);
     const name = el("div", "t-name");
-    const tile = this.tiles.find((t) => t.workspace === l.ws);
+    // The workspace's state is its panes' roll-up, never its first pane's.
+    const tile = { state: rolledUp(this.tiles, l.ws) };
     const plan = (this.views.plans ?? []).find((p) => p.ws === l.ws);
     let sub = WORDS[tile?.state ?? ""] ?? "";
     const last = l.spans[l.spans.length - 1];
@@ -208,7 +224,11 @@ export class Timeline {
     open.title = `Open ${this.title(l.ws)}'s pane`;
     open.append(el("b", "", this.title(l.ws)));
     open.addEventListener("click", () => this.onOpen(l.ws));
-    top.append(mark, open, menu(l.ws, this.title(l.ws), level));
+    top.append(mark, open);
+    // One Claude: its marks sit on the lane itself; several get sub-rows.
+    const panes = l.panes ?? [];
+    if (panes.length === 1) top.append(...paneChips({ ...panes[0], root: this.root_of(l.ws) }));
+    top.append(menu(l.ws, this.title(l.ws), level));
     name.append(top, el("span", `t-sub ${asked ? "needs_input" : tile?.state ?? ""}`, sub));
     const track = el("div", "t-track");
     for (const [i, s0] of l.spans.entries()) {
@@ -259,6 +279,41 @@ export class Timeline {
       k.style.left = `${pct(w.at, start, now)}%`;
       k.title = `Wake: ${w.kind} · ${w.title} · ${hm(w.at)}`;
       track.append(k);
+    }
+    row.append(name, track);
+    if (panes.length < 2) return [row];
+    return [row, ...panes.map((p) => this.subRow(l.ws, p, start, now, level === "mute"))];
+  }
+
+  private root_of(ws: string): string {
+    return this.tiles.find((t) => t.workspace === ws && t.root)?.root ?? "";
+  }
+
+  /** One Claude pane under its workspace's lane: its name (a button that
+   *  focuses the pane), its marks, and its own spans. */
+  private subRow(ws: string, p: LanePane, start: number, now: number, muted: boolean): HTMLElement {
+    const row = el("div", `t-lane t-pane${muted ? " muted" : ""}`);
+    const name = el("div", "t-name");
+    const top = el("span", "t-name-top");
+    const open = el("button", "t-open");
+    (open as HTMLButtonElement).type = "button";
+    const live = this.tiles.find((t) => t.surface === p.surface);
+    const label = p.label || live?.label || p.surface.slice(0, 8);
+    open.title = `Open this pane (${label})`;
+    open.append(el("span", "t-pane-name", label));
+    open.addEventListener("click", () => void jumpTo(p.surface).catch(() => {}));
+    top.append(open, ...paneChips({ ...p, root: this.root_of(ws) }));
+    const state = live?.state ?? "";
+    name.append(top, el("span", `t-sub ${state}`, WORDS[state] ?? ""));
+    const track = el("div", "t-track thin");
+    for (const [i, s0] of p.spans.entries()) {
+      const s = i === p.spans.length - 1 && state === s0.state ? { ...s0, end: now } : s0;
+      if (s.state !== "working" && s.state !== "needs_input") continue;
+      const b = el("span", `t-span ${s.state === "working" ? "work" : "wait"}`);
+      b.style.left = `${pct(s.start, start, now)}%`;
+      b.style.width = `${Math.max(0.4, pct(s.end, start, now) - pct(s.start, start, now))}%`;
+      b.title = `${label}: ${WORDS[s.state]} ${ago(s.end - s.start)} (${hm(s.start)}–${hm(s.end)})`;
+      track.append(b);
     }
     row.append(name, track);
     return row;

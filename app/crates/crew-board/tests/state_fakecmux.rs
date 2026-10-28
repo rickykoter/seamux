@@ -73,7 +73,9 @@ fn state_through_fakecmux() {
     let fast = crew_board::state::build(&crew_board::state::Opts { fast: true, ..o });
     assert_eq!(fast["rows"], d["rows"]);
     let log = std::fs::read_to_string(dir.join("cmux.log")).unwrap();
-    assert_eq!(log.trim(), "workspace list --json", "{log}");
+    // No sidebar-state: only the list, and the one current list the pane
+    // marks read ([outside] needs each pane's cwd).
+    assert_eq!(log.trim(), "workspace list --json\ncurrent --json", "{log}");
 
     // The click table, as crew-board-intent reads it.
     crew_board::state::write_targets(&d);
@@ -83,6 +85,6 @@ fn state_through_fakecmux() {
     .unwrap();
     assert_eq!(t["W-1"]["ref"], "workspace:1");
     assert_eq!(t["W-1"].as_object().unwrap().keys().collect::<Vec<_>>(),
-               ["id", "ref", "cwd", "pr_url", "slug", "name", "issue_url"]);
+               ["id", "ref", "cwd", "pr_url", "slug", "name", "issue_url", "panes"]);
     let _ = std::fs::remove_dir_all(&dir);
 }

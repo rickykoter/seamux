@@ -13,8 +13,9 @@ What is asserted, per event (crew-hook.sh) and tool:
   - the guard: outside cmux, CREW_DISABLED, or the disabled file, nothing runs;
   - session: options rendered first (with CLAUDE_PLUGIN_ROOT), the session
     marker (never under CREW_ADOPT), workspace and tab names from the branch's
-    ticket, a colour only when there is none, phase:working, crew-listen
-    unless listen.off or a live pid;
+    ticket, a colour only when there is none, phase:working (seamux: an
+    idle pane and a history line instead), crew-listen unless listen.off or
+    a live pid;
   - pretool: no marker means no cmux call; a marker is released to auto,
     except for AskUserQuestion; an outstanding turn-end ask takes phase back;
   - ask / answered / notification: lane, phase, question marker, banner text,
@@ -29,7 +30,10 @@ What is asserted, per event (crew-hook.sh) and tool:
   - asked.sh: a judgment of "asked" sets the lane, phase, marker and banner;
     "not asked" only records the ranking; no judgment, or a transcript that
     grew, does nothing;
-  - options.py, merge_settings.py and statusline.py: their files and lines.
+  - options.py, merge_settings.py and statusline.py: their files and lines;
+  - two panes in one workspace (seamux only, skipped without CREW_IMPL):
+    each pane's own state file, and a workspace that is their roll-up, so
+    one Claude's stop, prompt or end never clears another's ask.
 
 With CREW_IMPL=rust (crew/tools/crew_impl.py) the same cases run each
 piece seamux registers as Rust: `seamux <tool>` for the three tools, and
@@ -73,6 +77,7 @@ T = os.path.realpath(tempfile.mkdtemp(prefix="hooks-probe-"))
 HOME = os.path.join(T, "home")
 CACHE = os.path.join(HOME, ".cache")
 STATE = os.path.join(CACHE, "cmux-crew")
+HISTORY = os.path.join(HOME, ".claude", "crew", "history")
 LIVE = os.path.join(T, "live")
 SPAWN = os.path.join(T, "spawn.log")
 BIN = os.path.join(T, "bin")
@@ -345,13 +350,27 @@ check("a blank colour is filled from crew-color assign",
       f"crew-color assign {WT}" in spawns()
       and "workspace-action --action set-color --color #1565C0" in L and color() == "#1565C0",
       "\n".join(L + spawns()))
-check("phase:working is merged into the description, keeping other tokens",
-      desc() == "ci:green phase:working", desc())
-check("names, then colour, then phase, in that order",
-      [l.split()[0] for l in L if l.split()[0] in ("rename-workspace", "rename-tab", "sidebar-state")]
-      == ["rename-workspace", "rename-tab", "sidebar-state"]
-      and L.index(next(l for l in L if l.startswith("sidebar-state")))
-      < L.index(next(l for l in L if "set-description" in l)), L)
+if RUST:
+    # seamux: a new session is idle until its first prompt (the frozen bash
+    # still says working).
+    pane = json.load(open(os.path.join(STATE, "pane-ws-1.json")))
+    check("a new session's pane is idle and no phase is published; the workspace is pinned to its worktree",
+          pane.get("state") == "idle" and pane.get("session") == "s-1" and desc() == f"ci:green root:{WT}"
+          and sum("set-description" in l for l in L) == 1, f"{pane} {desc()} {L}")
+    check("…and its idle start is a history line", any(
+        json.loads(l).get("state") == "idle" and json.loads(l).get("detail") == "session"
+        for f in os.listdir(HISTORY) for l in open(os.path.join(HISTORY, f))), os.listdir(HISTORY))
+    check("names, then colour, in that order",
+          [l.split()[0] for l in L if l.split()[0] in ("rename-workspace", "rename-tab", "sidebar-state")]
+          == ["rename-workspace", "rename-tab", "sidebar-state"], L)
+else:
+    check("phase:working is merged into the description, keeping other tokens",
+          desc() == "ci:green phase:working", desc())
+    check("names, then colour, then phase, in that order",
+          [l.split()[0] for l in L if l.split()[0] in ("rename-workspace", "rename-tab", "sidebar-state")]
+          == ["rename-workspace", "rename-tab", "sidebar-state"]
+          and L.index(next(l for l in L if l.startswith("sidebar-state")))
+          < L.index(next(l for l in L if "set-description" in l)), L)
 check("listen.off keeps crew-listen from starting", not any(s.startswith("crew-listen") for s in spawns()))
 
 reset([row(color="#922B21")])
@@ -624,6 +643,106 @@ hook("end")
 check("end releases the lane, clears the status and drops the phase",
       "workspace status set auto" in log() and "clear-status claude" in log()
       and desc() == "ci:green" and not marker("lane-ws-1"), f"{desc()} {log()}")
+
+# --- two panes in one workspace (seamux only) --------------------------------------
+# Each pane writes its own pane-<surface>.json and the workspace is their
+# roll-up. The bash keys everything by workspace and stays frozen, so these
+# cases run only under CREW_IMPL=rust.
+if RUST:
+    print("two panes in one workspace")
+
+    def pane_state(s):
+        f = os.path.join(STATE, f"pane-{s}.json")
+        return json.load(open(f)).get("state") if os.path.exists(f) else None
+
+    ASK = payload(tool_name="AskUserQuestion", tool_input={"questions": [{"question": "Which of the two?"}]})
+    reset([row(desc="ci:green")])
+    hook("prompt", CMUX_SURFACE_ID="SA")
+    hook("ask", stdin=ASK, CMUX_SURFACE_ID="SB")
+    open(CLOG, "w").close()
+    hook("stop", CMUX_SURFACE_ID="SA")
+    L = log()
+    q = json.load(open(os.path.join(STATE, "question-ws-1.json"))) if marker("question-ws-1.json") else {}
+    check("A's turn ending leaves B's ask: its question, the waiting phase and the lane",
+          marker("question-ws-1") and q.get("surface") == "SB" and desc() == "ci:green phase:waiting"
+          and marker("lane-ws-1") and not any(l == "workspace status set auto" for l in L),
+          f"{desc()} {q} {L}")
+    check("…and only A's pane went idle", pane_state("SA") == "idle" and pane_state("SB") == "needs_input",
+          f"{pane_state('SA')} {pane_state('SB')}")
+    check("…nor did it clear the workspace's claude status while B waits",
+          "clear-status claude" not in L, L)
+    check("B holds the pretool marker, A does not", marker("hold-SB") and not marker("hold-SA"))
+
+    open(CLOG, "w").close()
+    r = hook("pretool", stdin=payload(tool_name="Bash"), CMUX_SURFACE_ID="SA")
+    check("A's tool use while B waits starts no binary and calls no cmux",
+          r.returncode == 0 and not log() and pane_state("SA") == "idle", log())
+
+    hook("answered", stdin=payload(tool_name="AskUserQuestion"), CMUX_SURFACE_ID="SB")
+    check("B answered: the question goes, the lane is released, the phase is working",
+          not marker("question-ws-1") and not marker("question-ws-1.json") and not marker("lane-ws-1")
+          and "workspace status set auto" in log() and desc() == "ci:green phase:working",
+          f"{desc()} {log()}")
+
+    open(CLOG, "w").close()
+    hook("end", CMUX_SURFACE_ID="SA")
+    check("A's session ending while B works keeps phase:working and B's claude status",
+          desc() == "ci:green phase:working" and "clear-status claude" not in log()
+          and pane_state("SA") == "ended", f"{desc()} {log()}")
+    hook("end", CMUX_SURFACE_ID="SB")
+    check("the last pane ending drops the phase and clears the status",
+          desc() == "ci:green" and "clear-status claude" in log(), f"{desc()} {log()}")
+
+    # A turn-end ask in B survives A's prompt; B's own tool use takes it back.
+    reset([row(desc="phase:working")])
+    hook("prompt", CMUX_SURFACE_ID="SA")
+    hook("prompt", CMUX_SURFACE_ID="SB")
+    run(asked_argv(SIZE), payload(), env_for(PROBE_ASKED_RC="0", PROBE_ASKED_OUT='0.910\nShip it?\n{}',
+                                             CMUX_SURFACE_ID="SB"))
+    hook("prompt", CMUX_SURFACE_ID="SA")
+    check("A's prompt leaves B's turn-end ask and the waiting phase",
+          marker("asked-ws-1") and open(os.path.join(STATE, "asked-ws-1")).read() == "Ship it?"
+          and desc() == "phase:waiting" and marker("lane-ws-1"), f"{desc()} {log()}")
+    open(CLOG, "w").close()
+    hook("pretool", stdin=payload(tool_name="Edit"), CMUX_SURFACE_ID="SB")
+    check("B's next tool use takes its ask back: marker, hold and lane go, phase working",
+          not marker("asked-ws-1") and not marker("hold-SB") and not marker("lane-ws-1")
+          and desc() == "phase:working" and pane_state("SB") == "working", f"{desc()} {log()}")
+
+    # A permission wait in one pane, a review lane left by the other.
+    reset([row()])
+    hook("prompt", CMUX_SURFACE_ID="SA")
+    hook("notification", stdin=payload(message="Claude needs your permission to use Bash"),
+         CMUX_SURFACE_ID="SB")
+    open(os.path.join(WT, "dirty.txt"), "w").write("x\n")
+    open(CLOG, "w").close()
+    hook("stop", CMUX_SURFACE_ID="SA")
+    check("a review left by A waits behind B's permission prompt",
+          "workspace status set review" not in log() and marker("lane-ws-1") and desc() == "phase:waiting",
+          f"{desc()} {log()}")
+    open(CLOG, "w").close()
+    hook("pretool", stdin=payload(tool_name="Bash"), CMUX_SURFACE_ID="SB")
+    check("B approved and at work: the lane is released, the phase working",
+          "workspace status set auto" in log() and desc() == "phase:working", f"{desc()} {log()}")
+    hook("stop", CMUX_SURFACE_ID="SB")
+    check("…and once nobody works, A's review lane is pinned",
+          "workspace status set review" in log() and marker("lane-ws-1") and desc() == "", f"{desc()} {log()}")
+    os.remove(os.path.join(WT, "dirty.txt"))
+
+    # A pin is set once: a session in another checkout never moves it.
+    reset([row(desc="root:/the/pinned/tree")])
+    hook("session", stdin=payload(cwd=MAIN_WT))
+    check("an existing root: pin is never moved by a later session",
+          desc() == "root:/the/pinned/tree", desc())
+
+    # A compaction fires SessionStart mid-turn: the pane keeps working.
+    reset([row()])
+    hook("prompt", CMUX_SURFACE_ID="SA")
+    hook("session", stdin=payload(source="compact"), CMUX_SURFACE_ID="SA")
+    check("a compaction's SessionStart leaves the pane working and phase:working",
+          pane_state("SA") == "working" and desc() == f"phase:working root:{WT}", f"{pane_state('SA')} {desc()}")
+else:
+    print("two panes in one workspace: skipped (seamux only; run with CREW_IMPL=rust)")
 
 # --- options ---------------------------------------------------------------------------
 print("options")

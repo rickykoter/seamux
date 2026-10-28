@@ -5,8 +5,13 @@
 #
 # The same events as crew-hook.sh, with the work done by `seamux crew-hook`.
 # Only pretool's hot path stays here: it fires on every tool use, and almost
-# always there is no lane override to release, so a missing marker has to
-# exit from bash without starting a binary (crew-hook.sh explains the cost).
+# always this pane holds nothing to release, so it has to exit from bash
+# without starting a binary (crew-hook.sh explains the cost). A pane with a
+# state file is tested by its hold-<surface> marker, which crew-core's status
+# keeps while the pane waits, was asked or left work to review: another
+# pane's wait in the same workspace never sends this one to the binary.
+# A pane without one (state from before pane files) falls back to the
+# workspace's lane-<ws> marker.
 #
 # seamux is $SEAMUX_BIN, else ~/.local/bin/seamux, where the family's
 # install is to link it (the cutover makes the link before it points
@@ -20,9 +25,14 @@ seamux="${SEAMUX_BIN:-$HOME/.local/bin/seamux}"
 [ -x "$seamux" ] || exit 0
 
 if [ "$event" = "pretool" ]; then
-  _m="${XDG_CACHE_HOME:-$HOME/.cache}/cmux-crew/lane-${CMUX_WORKSPACE_ID:-none}"
-  [ -f "$_m" ] || exit 0
-  [ -f "${XDG_CACHE_HOME:-$HOME/.cache}/cmux-crew/disabled" ] && exit 0
+  _d="${XDG_CACHE_HOME:-$HOME/.cache}/cmux-crew"
+  _k="${CMUX_SURFACE_ID:-${CMUX_WORKSPACE_ID:-none}}"
+  if [ -f "$_d/pane-$_k.json" ]; then
+    [ -f "$_d/hold-$_k" ] || exit 0
+  else
+    [ -f "$_d/lane-${CMUX_WORKSPACE_ID:-none}" ] || exit 0
+  fi
+  [ -f "$_d/disabled" ] && exit 0
   # AskUserQuestion also fires the `ask` hook, in parallel with this one, and
   # that is no resumed work. A builtin read and match, so no fork.
   IFS= read -r -d '' _p || true

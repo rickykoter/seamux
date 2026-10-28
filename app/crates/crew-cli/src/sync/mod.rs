@@ -202,7 +202,9 @@ pub fn main(args: &[String]) -> i32 {
     };
 
     let out = Writer::connect(dry);
-    let (by_ws, sess) = facts::sessions(&p);
+    let by_ws = facts::sessions_by_ws(&p);
+    // A workspace's worktree is its root: pin, else its current_directory.
+    let dir_of = |w: &Value| crew_core::worktree::root_or(&field(w, "description"), &field(w, "current_directory"));
     let rows = out.workspaces();
     if let Some(bad) = rows.iter().find(|w| !w.is_object()) {
         return pyerr::crash(&format!("AttributeError: '{}' object has no attribute 'get'", py_str(bad)));
@@ -214,7 +216,7 @@ pub fn main(args: &[String]) -> i32 {
 
     let jira = facts::jira_status(
         &p,
-        &rows.iter().map(|w| facts::ticket_key(&facts::branch(&field(w, "current_directory")))).collect::<Vec<_>>(),
+        &rows.iter().map(|w| facts::ticket_key(&facts::branch(&dir_of(w)))).collect::<Vec<_>>(),
         jira_ttl,
     );
     let sb_roots = facts::sandbox_registry(&p);
@@ -230,16 +232,16 @@ pub fn main(args: &[String]) -> i32 {
 
     let mut roots: HashMap<String, String> = HashMap::new();
     for w in &rows {
-        let cwd = field(w, "current_directory");
+        let cwd = dir_of(w);
         roots.insert(field(w, "id"), if cwd.is_empty() { String::new() } else { facts::toplevel(&cwd) });
     }
     let targets: Vec<(String, String, bool)> = rows
         .iter()
-        .filter(|w| !field(w, "current_directory").is_empty())
+        .filter(|w| !dir_of(w).is_empty())
         .map(|w| {
             let id = field(w, "id");
             let repo = roots.get(&id).is_some_and(|r| !r.is_empty());
-            (id, field(w, "current_directory"), repo)
+            (id, dir_of(w), repo)
         })
         .collect();
     let probes = probe_all(&p, &targets, gh_ttl);
@@ -247,14 +249,30 @@ pub fn main(args: &[String]) -> i32 {
     for w in &rows {
         let ws = field(w, "id");
         let title = title_of(w);
-        let cwd = field(w, "current_directory");
+        let cwd = dir_of(w);
         let empty = SideState::default();
         let st = state_by_ws.get(&ws).unwrap_or(&empty);
 
-        let sid = by_ws.get(&ws).map(|v| field(v, "sessionId")).unwrap_or_default();
-        let rec = sess.get(&sid).cloned().filter(|v| truthy(Some(v))).unwrap_or(json!({}));
+        // Every Claude in the workspace, not only its active one: the
+        // workspace is live while any of them lives, and its state is theirs
+        // together (a waiting one first, then a working one).
+        let none = Vec::new();
+        let recs = by_ws.get(&ws).unwrap_or(&none);
+        let live_recs: Vec<&(String, Value)> = recs.iter().filter(|(_, r)| facts::alive(r.get("pid"))).collect();
+        let live = !live_recs.is_empty();
+        let in_state = |st: &str| live_recs.iter().find(|(_, r)| field(r, "agentLifecycle") == st);
+        let any_needs = in_state("needsInput").is_some();
+        let any_running = in_state("running").is_some();
+        // The session that speaks for the workspace: a working one, else a
+        // waiting one, else the first live one, else the active record.
+        let (sid, rec) = in_state("running")
+            .or_else(|| in_state("needsInput"))
+            .or_else(|| live_recs.first())
+            .map(|(s, r)| (s.clone(), r.clone()))
+            .or_else(|| recs.first().cloned())
+            .unwrap_or_else(|| (String::new(), json!({})));
         let lifecycle = field(&rec, "agentLifecycle");
-        let live = !sid.is_empty() && facts::alive(rec.get("pid"));
+        let sids: Vec<&String> = recs.iter().map(|(s, _)| s).collect();
 
         // --- name ---------------------------------------------------------------
         let want = if cwd.is_empty() { String::new() } else { facts::desired_name(&cwd) };
@@ -285,7 +303,7 @@ pub fn main(args: &[String]) -> i32 {
             out.clear_progress(&ws);
             note(&mut changes, &ws, "cleared stale progress (no plan)".into());
         }
-        let working = live && lifecycle == "running" && plan.as_ref().is_some_and(|pl| !pl.active.is_empty());
+        let working = live && any_running && plan.as_ref().is_some_and(|pl| !pl.active.is_empty());
         if st.pills.contains("claude") && !working {
             out.clear_status("claude", &ws);
             let who = if lifecycle.is_empty() { "no session" } else { &lifecycle };
@@ -297,12 +315,14 @@ pub fn main(args: &[String]) -> i32 {
         let mut have_desc = field(w, "description");
         let root = roots.get(&ws).cloned().unwrap_or_default();
         let asking = Path::new(&join(&p.state, &format!("question-{ws}"))).exists();
-        if live && asking && have_desc.contains("phase:waiting") {
+        // The hooks' own roll-up of the panes: a turn that ended on a question
+        // reads idle in cmux's store, but its pane file says it waits on you.
+        let pane_waits = crew_core::status::rollup(Path::new(&p.state), &ws).state == "needs_input";
+        // One Claude waiting outranks another working, as the hooks' roll-up ranks them.
+        if live && (asking || any_needs || pane_waits) && have_desc.contains("phase:waiting") {
             tok.push("phase:waiting".into());
-        } else if live && lifecycle == "running" {
+        } else if live && any_running {
             tok.push("phase:working".into());
-        } else if live && lifecycle == "needsInput" && have_desc.contains("phase:waiting") {
-            tok.push("phase:waiting".into());
         }
         // "I could not find out" is never published as "there is nothing".
         let probe = probes.get(&ws);
@@ -330,10 +350,10 @@ pub fn main(args: &[String]) -> i32 {
             }
         }
         // --- planning -----------------------------------------------------------
-        let tracked = plan_roots.get(&root).or_else(|| plan_sids.get(&sid));
+        let tracked = plan_roots.get(&root).or_else(|| sids.iter().find_map(|s| plan_sids.get(*s)));
         if let Some(t) = tracked {
             tok.extend(t.iter().cloned());
-        } else if (!root.is_empty() && deep_roots.contains(&root)) || (!sid.is_empty() && deep_sids.contains(&sid)) {
+        } else if (!root.is_empty() && deep_roots.contains(&root)) || sids.iter().any(|s| deep_sids.contains(*s)) {
             tok.push("plan:deep".into());
         } else if live && facts::permission_mode(&p, &sid) == "plan" {
             tok.push("plan:mode".into());
@@ -344,6 +364,10 @@ pub fn main(args: &[String]) -> i32 {
         let jt = facts::jira_token(jira.get(&facts::ticket_key(&facts::branch(&cwd))));
         if !jt.is_empty() {
             tok.push(jt);
+        }
+        // The pin rides through the rewrite: it is set once and never moved.
+        if let Some(pin) = crew_core::worktree::root_of(&have_desc) {
+            tok.push(crew_core::worktree::root_tok(&pin));
         }
         if !ws.is_empty() && ws == stamp_ws {
             tok.push(format!("synced:{stamp_now}"));
@@ -359,13 +383,22 @@ pub fn main(args: &[String]) -> i32 {
             }
         }
 
-        let joined = |feed: Vec<String>| tok.iter().cloned().chain(feed).collect::<Vec<_>>().join(" ");
-        let mut want_desc = joined(feed_tokens(&have_desc));
+        // The feed tokens, and a pin a SessionStart wrote since the rows were
+        // read, come from the description `d`.
+        let joined = |d: &str| {
+            let pin = if tok.iter().any(|t| t.starts_with("root:")) {
+                None
+            } else {
+                crew_core::worktree::root_of(d).map(|r| crew_core::worktree::root_tok(&r))
+            };
+            tok.iter().cloned().chain(pin).chain(feed_tokens(d)).collect::<Vec<_>>().join(" ")
+        };
+        let mut want_desc = joined(&have_desc);
         // A feed publish during this run must survive the write: take the feed
         // tokens from a fresh read, as crew-feed itself merges.
         if want_desc != have_desc && !dry {
             if let Some(fresh) = out.live_description(&ws) {
-                want_desc = joined(feed_tokens(&fresh));
+                want_desc = joined(&fresh);
                 have_desc = fresh;
             }
         }
@@ -420,7 +453,7 @@ pub fn main(args: &[String]) -> i32 {
     // --- transition notifications: only on change -----------------------------------
     for w in &rows {
         let ws = field(w, "id");
-        let cwd = field(w, "current_directory");
+        let cwd = dir_of(w);
         let Some((_, raw, _)) = probes.get(&ws) else { continue };
         if !truthy(raw.get("pr")) || dry {
             continue;
@@ -505,6 +538,57 @@ pub fn main(args: &[String]) -> i32 {
         }
         raw.insert("notified".into(), sig_v);
         facts::write_json(&facts::gh_cache_path(&p, &cwd), &Value::Object(raw));
+    }
+
+    // Pane state files whose workspace is gone, or whose Claude died without
+    // a session-end hook, would hold their workspace's roll-up: they go, and
+    // the workspace's question and asked markers are rolled up again.
+    // Not on a run where cmux listed nothing (it was restarting): that is no
+    // proof any workspace is gone.
+    if !dry && !rows.is_empty() && Path::new(&p.state).is_dir() {
+        let live_ws: HashSet<String> = rows.iter().map(|w| field(w, "id")).collect();
+        let dir = Path::new(&p.state);
+        // The hooks' lock: a hook's fresh markers are never overwritten by
+        // this run's older roll-up.
+        let _lock = crew_core::status::lock(dir);
+        let recs: HashMap<&str, &Value> = by_ws.values().flatten().map(|(s, r)| (s.as_str(), r)).collect();
+        let day_ms = 86_400_000u64;
+        let now_ms = crew_core::history::now_ms();
+        let mut touched: HashSet<String> = HashSet::new();
+        // cmux's list answers for one window: a workspace missing from it is
+        // gone only when no Claude of it is alive either.
+        let ws_alive = |ws: &str| by_ws.get(ws).is_some_and(|l| l.iter().any(|(_, r)| facts::alive(r.get("pid"))));
+        for pane in crew_core::status::all(dir) {
+            let why = if !live_ws.contains(&pane.ws) && !ws_alive(&pane.ws) {
+                Some("workspace gone")
+            } else if !live_ws.contains(&pane.ws) {
+                None
+            } else {
+                match recs.get(pane.session.as_str()) {
+                    Some(r) if pane.state != "ended" && truthy(r.get("pid")) && !facts::alive(r.get("pid")) => Some("its Claude is gone"),
+                    // An unreadable store lists no sessions at all: no proof either.
+                    None if !recs.is_empty() && now_ms.saturating_sub(pane.at) > day_ms => Some("no session for a day"),
+                    _ => None,
+                }
+            };
+            if let Some(why) = why {
+                crew_core::status::remove(dir, pane.key());
+                touched.insert(pane.ws.clone());
+                changes.push((crate::pyval::head(&pane.ws, 8), format!("pruned pane {} ({why})", crate::pyval::head(&pane.surface, 8))));
+            }
+        }
+        for ws in touched.iter().filter(|w| live_ws.contains(*w)) {
+            let r = crew_core::status::rollup(dir, ws);
+            crew_core::status::write_markers(dir, ws, &r);
+            // The pruned pane may have been what pinned the lane: with nothing
+            // left that pins it, the lane goes back to cmux's own.
+            let marker = Path::new(&p.state).join(format!("lane-{ws}"));
+            if r.lane == crew_core::status::Lane::Auto && marker.exists() {
+                let _ = fs::remove_file(&marker);
+                out.lane_auto(ws);
+                changes.push((crate::pyval::head(ws, 8), "released the lane its pruned pane held".into()));
+            }
+        }
     }
 
     if prune {

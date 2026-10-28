@@ -4,9 +4,15 @@
 //! seamux crew-hook <session|pretool|prompt|ask|answered|task|notification|stop|end>  < payload
 //! ```
 //!
-//! Beyond the bash: `prompt` (UserPromptSubmit) and the state history every
+//! Beyond the bash: `prompt` (UserPromptSubmit), the state history every
 //! event that changes an agent's state appends (crew-core's history), and
-//! the ask's questions kept in question-<ws>.json for the app.
+//! the pane's own state file (crew-core's status). An event changes only its
+//! own pane's file; the workspace's lane, phase: token and question and asked
+//! markers then come from the roll-up of every pane in it, so one Claude's
+//! turn ending never clears another's ask. The bash and Python copies
+//! (crew-hook.sh, lib.sh, crew-sync) are frozen and still key everything by
+//! workspace: hooks_probe's two-pane cases run only under CREW_IMPL=rust
+//! (ADR 0036).
 //!
 //! crew/hooks/seamux-hook.sh is the hook command: it keeps pretool's
 //! lane-marker test in bash, so the common tool use never starts this
@@ -20,6 +26,7 @@
 use std::path::{Path, PathBuf};
 
 use cmux::{Cmux, Transport, WorkspaceAction};
+use crew_core::status::{self, Lane, Pane, Rollup};
 use serde_json::Value;
 
 use crate::pyval;
@@ -140,6 +147,11 @@ fn git(dir: &str, args: &[&str]) -> (bool, String) {
     }
 }
 
+/// The git toplevel of `dir`, or "".
+pub fn toplevel(dir: &str) -> String {
+    git(dir, &["rev-parse", "--show-toplevel"]).1
+}
+
 pub fn branch(dir: &str) -> String {
     git(dir, &["branch", "--show-current"]).1
 }
@@ -236,17 +248,6 @@ impl Hook {
         crew_core::history::record(&self.ws, &surface(), state, "hook", detail);
     }
 
-    /// The ask's questions, beside the question-<ws> marker crew sync reads.
-    pub fn question_file(&self) -> PathBuf {
-        self.state.join(format!("question-{}.json", self.ws))
-    }
-
-    /// The ask is over: its marker and its questions go.
-    pub fn question_clear(&self) {
-        let _ = std::fs::remove_file(self.state.join(format!("question-{}", self.ws)));
-        let _ = std::fs::remove_file(self.question_file());
-    }
-
     pub fn lane_release(&self) {
         let m = self.lane_marker();
         if !m.exists() {
@@ -312,40 +313,66 @@ impl Hook {
         }
     }
 
-    /// crew_token_set: one token merged in, every other left alone.
-    pub fn token_set(&self, key: &str, val: &str) {
-        let cur = self.desc_get();
-        let prefix = format!("{key}:");
-        let mut toks: Vec<String> = split_tokens(&cur).into_iter().filter(|t| !t.starts_with(&prefix)).map(String::from).collect();
-        if !val.is_empty() {
-            toks.push(format!("{key}:{val}"));
-        }
-        self.desc_put(&toks.join(" "));
+    /// The phase: token set to `phase` ("" drops it) and the `clear` keys
+    /// dropped, in one read-modify-write, and no write when nothing changed.
+    /// The board matches phase:working and phase:waiting.
+    pub fn tokens(&self, phase: &str, clear: &[&str]) {
+        self.tokens_with(phase, clear, None);
     }
 
-    /// crew_token_clear: several keys in one read-modify-write, and no write
-    /// when nothing changed.
-    pub fn token_clear(&self, keys: &[&str]) {
+    /// `tokens`, and with `pin` (a directory) the root: token of its git
+    /// toplevel added when the description has none (a pin is never moved).
+    pub fn tokens_with(&self, phase: &str, clear: &[&str], pin: Option<&str>) {
         let cur = self.desc_get();
-        let new = split_tokens(&cur)
+        let mut toks: Vec<String> = split_tokens(&cur)
             .into_iter()
-            .filter(|t| !keys.iter().any(|k| t.starts_with(&format!("{k}:"))))
-            .collect::<Vec<_>>()
-            .join(" ");
+            .filter(|t| !t.starts_with("phase:") && !clear.iter().any(|k| t.starts_with(&format!("{k}:"))))
+            .map(String::from)
+            .collect();
+        if !phase.is_empty() {
+            toks.push(format!("phase:{phase}"));
+        }
+        if let Some(dir) = pin.filter(|d| !d.is_empty()) {
+            if crew_core::worktree::root_of(&cur).is_none() {
+                let root = toplevel(dir);
+                if !root.is_empty() {
+                    toks.push(crew_core::worktree::root_tok(&root));
+                }
+            }
+        }
+        let new = toks.join(" ");
         if new == cur {
             return;
         }
         self.desc_put(&new);
     }
 
-    /// crew_phase: the board matches phase:working and phase:waiting.
-    pub fn phase(&self, p: &str) {
-        let v = match p {
-            "working" => "working",
-            "waiting on you" => "waiting",
-            other => other,
+    // ---- this pane, and the workspace's roll-up -------------------------------
+
+    /// Change this pane's state file, roll the workspace up, and tell cmux:
+    /// the lane, then (with `phase`) the phase: token, `clear` dropped in the
+    /// same write. The roll-up is returned for what else the event decides.
+    pub fn settle(&mut self, phase: bool, clear: &[&str], change: impl FnOnce(&mut Pane)) -> Rollup {
+        let sid = self.json("session_id");
+        let (before, after, _pane) = status::update(&self.state, &self.ws, &surface(), &sid, crew_core::history::now_ms(), change);
+        self.lane_to(&before, &after, true);
+        if phase {
+            self.tokens(after.phase(), clear);
+        }
+        after
+    }
+
+    /// The lane the roll-up asks for. With `always` false a lane already
+    /// pinned to it is left alone (pretool's case: no cmux call per tool use).
+    fn lane_to(&self, before: &Rollup, after: &Rollup, always: bool) {
+        let want = match after.lane {
+            Lane::Attention => "needs-attention",
+            Lane::Review => "review",
+            Lane::Auto => return self.lane_release(),
         };
-        self.token_set("phase", v);
+        if always || before.lane != after.lane || !self.lane_marker().exists() {
+            self.lane_set(want);
+        }
     }
 
     pub fn notify(&mut self, subtitle: &str, body: &str) {
@@ -482,14 +509,6 @@ pub fn is_idle_reminder(kind: &str, message: &str) -> bool {
     kind == "idle_prompt" || (kind.is_empty() && message.trim_start().starts_with("Claude is waiting for your input"))
 }
 
-/// Write `text` to `path` whole: a reader never sees half a file.
-fn write_whole(path: &Path, text: &str) {
-    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
-    if std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, path).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-}
-
 /// The ask's first question, at most 160 characters, as the Python showed it.
 fn question(payload: &str) -> String {
     let Ok(Value::Object(d)) = pyval::loads(payload) else { return String::new() };
@@ -532,7 +551,24 @@ fn session(h: &mut Hook) {
     let tab = if br.is_empty() { dir.clone() } else { format!("{dir} · {br}") };
     h.cli(&["rename-tab", &tab]);
     h.color_ensure(&cwd);
-    h.phase("working");
+    // A new session is idle until its first prompt: it has not worked yet,
+    // and a sibling pane's state stays the workspace's. A compaction also
+    // fires SessionStart, often mid-turn: the pane keeps what it was.
+    let after = if h.json("source") == "compact" {
+        h.settle(false, &[], |_| {})
+    } else {
+        let r = h.settle(false, &[], |p| {
+            p.state = "idle".into();
+            p.question = None;
+            p.asked = None;
+            p.review = false;
+        });
+        h.history("idle", "session");
+        r
+    };
+    // A workspace made outside the Dock form has no pin yet: the first
+    // session pins it to its worktree, in the same write as the phase.
+    h.tokens_with(after.phase(), &[], Some(&cwd));
     h.listen_ensure();
 }
 
@@ -542,23 +578,31 @@ fn stop(h: &mut Hook) -> String {
     }
     let cwd = h.cwd();
     let br = branch(&cwd);
-    if has_unreviewed_work(&cwd) {
-        h.lane_set("review");
-    } else {
-        h.lane_release();
-    }
-    h.cli(&["clear-status", "claude"]);
+    let review = has_unreviewed_work(&cwd);
     // A turn cannot end with its AskUserQuestion still open: one cancelled
-    // with Esc fires no answered event, so its marker goes here.
-    h.question_clear();
+    // with Esc fires no answered event, so its question goes here. The
+    // turn-end judgment, spawned below, sets asked again if it finds one.
+    // Only this pane's: another Claude's ask in the workspace stays.
+    let sid = h.json("session_id");
+    let (before, after, _pane) = status::update(&h.state, &h.ws, &surface(), &sid, crew_core::history::now_ms(), |p| {
+        p.state = "idle".into();
+        p.question = None;
+        p.asked = None;
+        p.review = review;
+    });
+    h.lane_to(&before, &after, true);
+    if !after.busy() {
+        h.cli(&["clear-status", "claude"]);
+    }
     h.history("idle", "stop");
-    h.token_clear(&["phase", "feed", "feedby", "feedgate", "feedreq", "feedws"]);
+    // The feed's tokens describe the ask a pane waits on: they stay while one does.
+    let feed: &[&str] = if after.state == "needs_input" { &[] } else { &["feed", "feedby", "feedgate", "feedreq", "feedws"] };
+    h.tokens(after.phase(), feed);
     let body = if br.is_empty() { "Turn complete".to_string() } else { format!("Turn complete — {br}") };
     h.notify("crew:turn", &body);
     h.sync_maybe();
 
     // TypeSafe's turn-end judgment, detached so the turn never waits on it.
-    let _ = std::fs::remove_file(h.state.join(format!("asked-{}", h.ws)));
     let mut transcript = None;
     let avail = spawn::tool("asked", &["available"]);
     if spawn::run(&avail.argv, Some(""), None).is_some_and(|(rc, _)| rc == 0) {
@@ -595,29 +639,36 @@ fn stop(h: &mut Hook) -> String {
     out
 }
 
-/// pretool, past seamux-hook.sh's marker test: release the lane, and take
-/// the phase back from a turn-end ask.
+/// pretool, past seamux-hook.sh's hold test: this pane is at work again, so
+/// what it held (a wait, a turn-end ask, the review lane) is released, and
+/// the workspace's lane and phase follow the roll-up. A sibling pane that
+/// still waits keeps the workspace waiting.
 fn pretool() -> i32 {
     let state = state_dir();
-    let ws = std::env::var("CMUX_WORKSPACE_ID").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "none".into());
-    let _ = std::fs::remove_file(state.join(format!("lane-{ws}")));
-    let asked = state.join(format!("asked-{ws}"));
+    let in_ws = std::env::var("CMUX_WORKSPACE_ID").ok().filter(|v| !v.is_empty());
+    let ws = in_ws.clone().unwrap_or_else(|| "none".into());
+    // A marker left from before pane files (or written by the bash) still
+    // means a turn-end ask is taken back.
+    let legacy_ask = state.join(format!("asked-{ws}")).exists();
+    let (before, after, _pane) = status::update(&state, &ws, &surface(), "", crew_core::history::now_ms(), |p| {
+        p.state = "working".into();
+        p.asked = None;
+        p.review = false;
+    });
+    // Back from waiting on you: the phase is the roll-up's again.
+    let resumed = before.state == "needs_input" || before.asked.is_some() || legacy_ask;
     let Some(cmux) = spawn::connect() else {
-        // No cmux to tell, but the bash still takes the turn-end ask back.
-        let _ = std::fs::remove_file(&asked);
+        // No cmux to tell: the files are in step, and the lane marker goes
+        // when nothing in the workspace pins it.
+        if after.lane == Lane::Auto {
+            let _ = std::fs::remove_file(state.join(format!("lane-{ws}")));
+        }
         return 0;
     };
-    let h = Hook::new(cmux, ws.clone(), state.clone(), String::new());
-    if h.cli_transport() {
-        h.cli(&["workspace", "status", "set", "auto"]);
-    } else {
-        let _ = h.cmux.workspace_status_set(&ws, "auto");
-    }
-    if asked.exists() {
-        let _ = std::fs::remove_file(&asked);
-        if std::env::var("CMUX_WORKSPACE_ID").is_ok_and(|v| !v.is_empty()) {
-            h.phase("working");
-        }
+    let h = Hook::new(cmux, ws, state, String::new());
+    h.lane_to(&before, &after, false);
+    if resumed && in_ws.is_some() {
+        h.tokens(after.phase(), &[]);
     }
     0
 }
@@ -643,21 +694,17 @@ pub fn main(args: &[String]) -> i32 {
         }
         "task" => {
             crate::progress::publish(&h);
-            h.phase("working");
+            h.settle(true, &[], |p| p.state = "working".into());
             String::new()
         }
         "ask" => {
-            mkdir(&h.state);
-            touch(&h.state.join(format!("question-{}", h.ws)));
-            match question_record(&h.payload, &surface(), crew_core::history::now_ms()) {
-                Some(rec) => write_whole(&h.question_file(), &format!("{rec}\n")),
-                None => {
-                    let _ = std::fs::remove_file(h.question_file());
-                }
-            }
+            // The app's record of the questions; `{}` still marks an ask.
+            let rec = question_record(&h.payload, &surface(), crew_core::history::now_ms()).unwrap_or_else(|| serde_json::json!({}));
             h.history("needs_input", "ask");
-            h.lane_set("needs-attention");
-            h.phase("waiting on you");
+            h.settle(true, &[], |p| {
+                p.state = "needs_input".into();
+                p.question = Some(rec);
+            });
             let mut q = question(&h.payload);
             if q.is_empty() {
                 q = "Claude asked you a question".into();
@@ -666,20 +713,23 @@ pub fn main(args: &[String]) -> i32 {
             String::new()
         }
         "answered" => {
-            h.question_clear();
             h.history("working", "answered");
-            h.lane_release();
-            h.phase("working");
+            h.settle(true, &[], |p| {
+                p.state = "working".into();
+                p.question = None;
+            });
             String::new()
         }
         // UserPromptSubmit: the person typed into the pane, so whatever it
         // waited on is answered and the agent is at work again.
         "prompt" => {
-            let _ = std::fs::remove_file(h.state.join(format!("asked-{}", h.ws)));
-            h.question_clear();
             h.history("working", "prompt");
-            h.lane_release();
-            h.phase("working");
+            h.settle(true, &[], |p| {
+                p.state = "working".into();
+                p.question = None;
+                p.asked = None;
+                p.review = false;
+            });
             String::new()
         }
         "notification" => {
@@ -689,8 +739,7 @@ pub fn main(args: &[String]) -> i32 {
             if !is_idle_reminder(&h.json("notification_type"), &h.json("message")) {
                 h.history("needs_input", "notification");
             }
-            h.lane_set("needs-attention");
-            h.phase("waiting on you");
+            h.settle(true, &[], |p| p.state = "needs_input".into());
             let t = spawn::tool("crew-feed", &["publish", &h.ws]);
             let _ = spawn::detach(&t.argv, None, None);
             let mut message = h.json("message");
@@ -703,13 +752,20 @@ pub fn main(args: &[String]) -> i32 {
         "stop" => stop(&mut h),
         "end" => {
             // The session is over: nothing it asked waits any more.
-            let _ = std::fs::remove_file(h.state.join(format!("asked-{}", h.ws)));
-            h.question_clear();
             h.history("ended", "end");
-            h.lane_release();
-            h.cli(&["clear-status", "claude"]);
-            h.phase("");
-            String::new()
+            let sid = h.json("session_id");
+            let (before, after, _pane) = status::update(&h.state, &h.ws, &surface(), &sid, crew_core::history::now_ms(), |p| {
+                p.state = "ended".into();
+                p.question = None;
+                p.asked = None;
+                p.review = false;
+            });
+            h.lane_to(&before, &after, true);
+            if !after.busy() {
+                h.cli(&["clear-status", "claude"]);
+            }
+            h.tokens(after.phase(), &[]);
+                    String::new()
         }
         _ => String::new(),
     };

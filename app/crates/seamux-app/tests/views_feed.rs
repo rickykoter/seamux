@@ -64,6 +64,9 @@ fn tile(surface: &str, ws: &str, cwd: &str, state: &str) -> Tile {
         since: 0,
         running: None,
         bell: false,
+        root: String::new(),
+        owner: None,
+        outside: false,
     }
 }
 
@@ -607,4 +610,53 @@ fn pages_list_a_workspaces_plan_open_reviews_and_unanswered_asks() {
         ("ask", "/ask/open1", "waiting", true),
     ], "plan, then reviews newest first (a closed one left out), then the live unanswered ask");
     assert_eq!(of(WS_B), vec![("plan", "/plan/ux.review.html", "in review", true)], "a plan in review opens its review surface");
+}
+
+#[test]
+fn two_claudes_in_one_workspace_get_sub_rows_under_one_rolled_up_lane() {
+    let f = Fixture::new("two-panes");
+    let a = f.dir("work/a");
+    let m = 60_000;
+    let e = |at, surface: &str, state: &str| Entry { at, ws: WS_A.into(), surface: surface.into(), state: state.into(), source: "hook".into(), detail: "x".into() };
+    // A works throughout; B waits on you for the last ten minutes.
+    history::append(&f.p("history"), &e(NOW - 60 * m, SURF_A, "working")).unwrap();
+    history::append(&f.p("history"), &e(NOW - 60 * m, SURF_B, "idle")).unwrap();
+    history::append(&f.p("history"), &e(NOW - 10 * m, SURF_B, "needs_input")).unwrap();
+    let mut owner = tile(SURF_A, WS_A, &a, "working");
+    owner.owner = Some("p".into());
+    let mut wandered = tile(SURF_B, WS_A, &f.dir("work/b"), "needs_input");
+    wandered.outside = true;
+    let frame = primed(inputs(&f, json!([]), vec![])).build(&[owner, wandered], NOW);
+    assert_eq!(frame.lanes.len(), 1, "one lane per workspace");
+    let lane = &frame.lanes[0];
+    let rows: Vec<(&str, Option<&str>, bool)> = lane.panes.iter().map(|p| (p.surface.as_str(), p.owner.as_deref(), p.outside)).collect();
+    assert_eq!(rows, vec![(SURF_A, Some("p"), false), (SURF_B, None, true)]);
+    assert_eq!(lane.panes[0].spans.iter().map(|s| s.state.as_str()).collect::<Vec<_>>(), ["working"]);
+    assert_eq!(lane.panes[1].spans.iter().map(|s| s.state.as_str()).collect::<Vec<_>>(), ["idle", "needs_input"]);
+    // The head: working until B asks, then waiting on you.
+    assert_eq!(
+        lane.spans,
+        vec![
+            Span { state: "working".into(), start: NOW - 60 * m, end: NOW - 10 * m },
+            Span { state: "needs_input".into(), start: NOW - 10 * m, end: NOW },
+        ]
+    );
+}
+
+#[test]
+fn an_asked_card_points_at_the_pane_that_was_asked() {
+    let f = Fixture::new("asked-pane");
+    let a = f.dir("work/a");
+    f.write(&format!("state/asked-{WS_A}"), "Ship it?");
+    f.write(
+        &format!("state/pane-{SURF_B}.json"),
+        &json!({"ws": WS_A, "surface": SURF_B, "session": "s", "state": "needs_input", "question": null, "asked": "Ship it?", "review": false, "at": 5}).to_string(),
+    );
+    let tiles = [tile(SURF_A, WS_A, &a, "working"), tile(SURF_B, WS_A, &a, "needs_input")];
+    let frame = primed(inputs(&f, json!([]), vec![])).build(&tiles, NOW);
+    let surf = frame.decisions.iter().find_map(|d| match d {
+        Decision::Asked { surface, .. } => Some(surface.clone()),
+        _ => None,
+    });
+    assert_eq!(surf.as_deref(), Some(SURF_B), "not the workspace's first agent pane");
 }

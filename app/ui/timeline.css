@@ -48,6 +48,12 @@
 .t-fam { padding-top: 4px; }
 .t-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .t-empty { padding-left: 168px; color: var(--muted); }
+/* A Claude pane's sub-row under its workspace's lane. */
+.t-lane.t-pane { min-height: 26px; margin-top: -4px; }
+.t-pane .t-name { padding-left: 14px; }
+.t-pane-name { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.t-track.thin { height: 12px; border-radius: 6px; }
+.t-track.thin .t-span { top: 3px; height: 6px; border-radius: 3px; }
 
 .t-axis { position: relative; height: 16px; margin: 0 0 0 168px; font-size: 11px; color: var(--muted); }
 .t-axis span { position: absolute; transform: translateX(-50%); }

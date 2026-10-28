@@ -523,7 +523,14 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
             chips = vec!["jump".into(), "diff".into()];
         } else if running || has(d, "phase:working") {
             (kind, badge) = (Some("running"), "working");
-            let open = plan.map(|p| get(progress(p), "open")).filter(|o| truthy(o)).and_then(Value::as_array);
+            // The plan's progress is its owner pane's work: when that pane's
+            // own state file says it is not working, another Claude here is,
+            // and the increment is not credited with it.
+            let owner_idle = plan.is_some_and(|p| {
+                let surf = get(get(p, "owner"), "surface").as_str().unwrap_or("");
+                !surf.is_empty() && crew_core::status::read(&crate::state::state_dir(), surf).is_some_and(|pane| pane.state != "working")
+            });
+            let open = plan.filter(|_| !owner_idle).map(|p| get(progress(p), "open")).filter(|o| truthy(o)).and_then(Value::as_array);
             match open.and_then(|o| o.first()) {
                 Some(o0) => {
                     subject = o0["title"].clone();
