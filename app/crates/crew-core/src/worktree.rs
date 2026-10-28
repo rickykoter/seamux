@@ -432,9 +432,10 @@ pub fn root_of(desc: &str) -> Option<String> {
     Some(t.replace("%20", " ").replace("%09", "\t").replace("%0A", "\n").replace("%25", "%"))
 }
 
-/// A workspace's worktree: its pin, else the directory cmux reports.
+/// A workspace's worktree: its pin, else the directory cmux reports. A pin
+/// whose directory is gone (an archived worktree) is not followed.
 pub fn root_or(desc: &str, current_directory: &str) -> String {
-    root_of(desc).unwrap_or_else(|| current_directory.to_string())
+    root_of(desc).filter(|r| Path::new(r).is_dir()).unwrap_or_else(|| current_directory.to_string())
 }
 
 /// The UUID of the workspace `wref` (cmux's `workspace list --json`), else
@@ -461,7 +462,10 @@ mod tests {
         assert_eq!(root_of(&format!("ci:green {t} phase:working")).as_deref(), Some(p));
         assert_eq!(root_of("ci:green root:"), None);
         assert_eq!(root_or("ci:green", "/cwd"), "/cwd");
-        assert_eq!(root_or("root:/pin", "/cwd"), "/pin");
+        // A pin whose directory is gone is not followed.
+        assert_eq!(root_or("root:/no/such/pin", "/cwd"), "/cwd");
+        let real = std::env::temp_dir().to_string_lossy().into_owned();
+        assert_eq!(root_or(&root_tok(&real), "/cwd"), real);
         let argv = create_argv(Path::new("/w/t"));
         assert_eq!(argv, ["workspace", "create", "--cwd", "/w/t", "--focus", "false", "--description", "root:/w/t"]);
     }

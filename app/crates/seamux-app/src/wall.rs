@@ -127,7 +127,7 @@ pub fn pins(workspaces: &Value) -> HashMap<String, String> {
             a.iter()
                 .filter_map(|w| {
                     let id = w.get("id")?.as_str()?.to_string();
-                    let root = crew_core::worktree::root_of(w.get("description").and_then(Value::as_str).unwrap_or(""))?;
+                    let root = crew_core::worktree::root_of(w.get("description").and_then(Value::as_str).unwrap_or("")).filter(|r| std::path::Path::new(r).is_dir())?;
                     Some((id, root))
                 })
                 .collect()
@@ -147,7 +147,7 @@ pub fn owners(dir: &std::path::Path) -> HashMap<String, String> {
     let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let cache = guard.get_or_insert_with(HashMap::new);
     let mut live = std::collections::HashSet::new();
-    let mut out = HashMap::new();
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
     for e in rd.flatten() {
         let p = e.path();
         if p.extension().and_then(|x| x.to_str()) != Some("json") {
@@ -169,11 +169,17 @@ pub fn owners(dir: &std::path::Path) -> HashMap<String, String> {
             cache.insert(p.clone(), (mtime, owner));
         }
         if let Some((_, Some((surface, slug)))) = cache.get(&p) {
-            out.insert(surface.clone(), slug.clone());
+            // A pane that owns two open plans names both.
+            out.entry(surface.clone()).and_modify(|s: &mut Vec<String>| s.push(slug.clone())).or_insert_with(|| vec![slug.clone()]);
         }
     }
     cache.retain(|p, _| live.contains(p));
-    out
+    out.into_iter()
+        .map(|(k, mut v)| {
+            v.sort();
+            (k, v.join(", "))
+        })
+        .collect()
 }
 
 /// Whether `cwd` is outside the pinned worktree `root`, compared as real

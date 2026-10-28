@@ -37,7 +37,7 @@ pub fn targets_file() -> PathBuf {
 
 /// The workspace's root: pin (crew-core's worktree), if it has one.
 fn pin_of(w: &Value) -> Option<String> {
-    crew_core::worktree::root_of(get(w, "description").as_str().unwrap_or(""))
+    crew_core::worktree::root_of(get(w, "description").as_str().unwrap_or("")).filter(|r| std::path::Path::new(r).is_dir())
 }
 
 /// `git branch --show-current` ("none" when detached or not a repo) and
@@ -556,13 +556,17 @@ mod tests {
 
     #[test]
     fn a_row_wears_its_owner_pane_and_its_wandered_panes() {
+        // A pin whose directory exists: a dead one is not followed.
+        let one = std::env::temp_dir().join(format!("board-pin-{}", std::process::id()));
+        std::fs::create_dir_all(one.join("sub")).unwrap();
+        let one = std::fs::canonicalize(&one).unwrap().to_string_lossy().into_owned();
         let mut rows = vec![json!({"id": "W1"}), json!({"id": "W2"})];
         let mut plans = Map::new();
         plans.insert("/w/one".into(), json!({"slug": "p", "phase": "implementing", "owner": {"workspace": "w1", "surface": "S-OWN"}}));
         plans.insert("/w/old".into(), json!({"slug": "q", "phase": "done", "owner": {"workspace": "W2", "surface": "S-OLD"}}));
-        let wss = vec![json!({"id": "W1", "description": "ci:green root:/w/one"}), json!({"id": "W2", "description": ""})];
+        let wss = vec![json!({"id": "W1", "description": format!("ci:green root:{one}")}), json!({"id": "W2", "description": ""})];
         let cwds = vec![
-            ("W1".to_string(), "S-OWN".to_string(), "/w/one/sub".to_string()),
+            ("W1".to_string(), "S-OWN".to_string(), format!("{one}/sub")),
             ("W1".to_string(), "S-TERM".to_string(), "/elsewhere".to_string()),
             ("W2".to_string(), "S-X".to_string(), "/anywhere".to_string()),
         ];

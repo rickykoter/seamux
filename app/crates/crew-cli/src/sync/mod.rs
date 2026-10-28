@@ -555,9 +555,14 @@ pub fn main(args: &[String]) -> i32 {
         let day_ms = 86_400_000u64;
         let now_ms = crew_core::history::now_ms();
         let mut touched: HashSet<String> = HashSet::new();
+        // cmux's list answers for one window: a workspace missing from it is
+        // gone only when no Claude of it is alive either.
+        let ws_alive = |ws: &str| by_ws.get(ws).is_some_and(|l| l.iter().any(|(_, r)| facts::alive(r.get("pid"))));
         for pane in crew_core::status::all(dir) {
-            let why = if !live_ws.contains(&pane.ws) {
+            let why = if !live_ws.contains(&pane.ws) && !ws_alive(&pane.ws) {
                 Some("workspace gone")
+            } else if !live_ws.contains(&pane.ws) {
+                None
             } else {
                 match recs.get(pane.session.as_str()) {
                     Some(r) if pane.state != "ended" && truthy(r.get("pid")) && !facts::alive(r.get("pid")) => Some("its Claude is gone"),
@@ -573,7 +578,16 @@ pub fn main(args: &[String]) -> i32 {
             }
         }
         for ws in touched.iter().filter(|w| live_ws.contains(*w)) {
-            crew_core::status::write_markers(dir, ws, &crew_core::status::rollup(dir, ws));
+            let r = crew_core::status::rollup(dir, ws);
+            crew_core::status::write_markers(dir, ws, &r);
+            // The pruned pane may have been what pinned the lane: with nothing
+            // left that pins it, the lane goes back to cmux's own.
+            let marker = Path::new(&p.state).join(format!("lane-{ws}"));
+            if r.lane == crew_core::status::Lane::Auto && marker.exists() {
+                let _ = fs::remove_file(&marker);
+                out.lane_auto(ws);
+                changes.push((crate::pyval::head(ws, 8), "released the lane its pruned pane held".into()));
+            }
         }
     }
 

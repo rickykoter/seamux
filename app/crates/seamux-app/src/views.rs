@@ -1052,7 +1052,9 @@ impl Feed {
                     .collect();
                 // The head is the panes' roll-up, with lines no pane named
                 // (written before hooks knew their surface) under them.
-                let unnamed: Vec<Entry> = entries.iter().filter(|e| !rows.iter().any(|r| e.surface.eq_ignore_ascii_case(&r.surface))).cloned().collect();
+                // A closed pane's lines name a surface no tile has: they are
+                // left out, or its last state would hold the head to now.
+                let unnamed: Vec<Entry> = entries.iter().filter(|e| e.surface.is_empty()).cloned().collect();
                 let mut all: Vec<Vec<Span>> = rows.iter().map(|r| r.spans.clone()).collect();
                 all.push(spans_of(&unnamed, start, now));
                 let spans = rollup_spans(&all);
