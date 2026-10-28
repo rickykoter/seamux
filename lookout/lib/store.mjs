@@ -9,9 +9,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { remoteStateDir } from "./host.mjs";
 
+// On the remote host the reviews live in the repo, beside deep-plan's state
+// (<git root>/.seamux/state/plans/reviews), because the sandbox's home does
+// not survive it. The override still wins.
 export const REVIEWS_DIR = process.env.LOOKOUT_REVIEWS_DIR ||
-  path.join(os.homedir(), ".claude", "plans", "reviews");
+  path.join(remoteStateDir() || path.join(os.homedir(), ".claude"), "plans", "reviews");
 export const STORE_VERSION = 1;
 
 // The same rule crew's intent server applies to a slug from a URL

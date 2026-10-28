@@ -40,7 +40,7 @@ import {
   goOwner, goBy, goHow, goRefusal, updateControl, pruneControl, controlPath,
 } from "./lib/family.mjs";
 import {
-  STATE_DIR, KEYS_DIR, PLANS_DIR, statePath, sessionId,
+  STATE_DIR, KEYS_DIR, PLANS_DIR, DATA_ROOT, REMOTE_DIR, statePath, sessionId,
   readState, writeState, allStates, log1, progress, gateView,
   planFor, CHECK_KINDS, specChecks, reconcileChecks, checksOf, checksBlock,
   checksAggregate, needsTree, treeOf, checkMeta, canon,
@@ -1497,7 +1497,7 @@ ${surfaceClose()}${SURFACE_JS}</body></html>`;
 // fetches them (Artifact read_db --out_dir); this CLI only renders what is on
 // disk — the renderer keeps its no-network invariant.
 const ANNOT_DIR = process.env.DEEP_PLAN_ANNOT_DIR ||
-  path.join(os.homedir(), ".claude", "deep-plan", "annotations");
+  path.join(DATA_ROOT, "deep-plan", "annotations");
 
 function readAnnotations(slug) {
   const dir = path.join(ANNOT_DIR, slug, "annotations");
@@ -2870,6 +2870,69 @@ function openWorkingSurface(st) {
   } catch { /* board offline or never installed — the go already succeeded */ }
 }
 
+// ---------------------------------------------------------------- state bundles
+// A plan's state moved between machines or sandboxes as one JSON file: its
+// state, spec and key, its rendered files (the approved snapshot cannot be
+// rebuilt), and its lookout reviews. Paths are relative to the data root
+// (~/.claude, or the repo's .seamux/state on the remote host), so a bundle
+// from one host imports on another. Nothing here commits it; a person does.
+const BUNDLE_KIND = "deep-plan-state";
+const REVIEWS_DIR_DP = () => process.env.LOOKOUT_REVIEWS_DIR || path.join(PLANS_DIR, "reviews");
+
+function bundleFiles(slug) {
+  const out = [];
+  const add = (dir, rel, name) => { const p = path.join(dir, name); try { if (fs.statSync(p).isFile()) out.push([rel + "/" + name, p]); } catch { /* absent */ } };
+  add(STATE_DIR, "deep-plan/state", slug + ".json");
+  add(KEYS_DIR, "deep-plan/keys", slug + ".spec.json");
+  add(KEYS_DIR, "deep-plan/keys", slug + ".key.json");
+  for (const n of (() => { try { return fs.readdirSync(PLANS_DIR); } catch { return []; } })())
+    if (n.startsWith(slug + ".")) add(PLANS_DIR, "plans", n);
+  const rid = new RegExp("^" + slug.replace(/[.]/g, "\\.") + "-(inc\\d+|delivery)\\.");
+  for (const n of (() => { try { return fs.readdirSync(REVIEWS_DIR_DP()); } catch { return []; } })())
+    if (rid.test(n) && !n.includes(".tmp-")) add(REVIEWS_DIR_DP(), "plans/reviews", n);
+  return out;
+}
+
+function exportState(slug, flags) {
+  if (!slug || !readState(slug)) die(`no plan ${slug || "?"} (export-state <slug> [--out FILE])`);
+  const files = {};
+  for (const [rel, p] of bundleFiles(slug)) files[rel] = fs.readFileSync(p).toString("base64");
+  const bundle = { kind: BUNDLE_KIND, version: 1, slug, exportedAt: new Date().toISOString(), from: DATA_ROOT, files };
+  const out = path.resolve(flags.out || `${slug}.deep-plan-state.json`);
+  fs.writeFileSync(out, JSON.stringify(bundle, null, 2) + "\n");
+  say(`exported ${slug}: ${Object.keys(files).length} file(s) to ${out}`);
+  say("  commit it (or copy it) yourself; `deep-plan import-state <file>` brings it back");
+}
+
+function importState(file, flags) {
+  if (!file) die("import-state <file> [--force] [--root DIR]");
+  let b;
+  try { b = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) { die(`cannot read ${file}: ${e.message}`); }
+  if (!b || b.kind !== BUNDLE_KIND || !b.slug || typeof b.files !== "object") die(`${file} is not a deep-plan state bundle`);
+  if (!/^[a-z0-9][a-z0-9._-]{0,120}$/.test(b.slug)) die(`bad slug in the bundle: ${b.slug}`);
+  if (readState(b.slug) && !flags.force) die(`plan ${b.slug} already exists here; --force replaces it`);
+  const bases = { "deep-plan/state": STATE_DIR, "deep-plan/keys": KEYS_DIR, "plans/reviews": REVIEWS_DIR_DP(), "plans": PLANS_DIR };
+  let n = 0;
+  for (const [rel, b64] of Object.entries(b.files)) {
+    const dir = path.posix.dirname(rel), name = path.posix.basename(rel);
+    const base = bases[dir];
+    // Only the known folders, and a plain file name: a bundle names no path.
+    if (!base || name !== path.basename(name) || name.startsWith(".") || !(name.startsWith(b.slug + ".") || name.startsWith(b.slug + "-")))
+      die(`refused: the bundle names ${rel}, outside the plan's own files`);
+    fs.mkdirSync(base, { recursive: true });
+    fs.writeFileSync(path.join(base, name), Buffer.from(String(b64), "base64"));
+    n++;
+  }
+  // The root it guards: as given, else this checkout when the recorded one
+  // is not here (a fresh sandbox clones to its own path).
+  const st = readState(b.slug);
+  const here = (() => { const r = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }); return r.status === 0 ? r.stdout.trim() : ""; })();
+  const root = flags.root ? path.resolve(flags.root) : (st.root && fs.existsSync(st.root) ? st.root : here);
+  if (root && root !== st.root) { st.root = root; log1(st, `import-state: root is now ${root}`); writeState(st); }
+  rerenderWorking(b.slug);
+  say(`imported ${b.slug}: ${n} file(s); root ${st.root || "(none)"}`);
+}
+
 // `deep-plan page <slug> [--review]`: show a plan's page where this host can,
 // and say where it went. One line, `served at <url> (host: <h>)`, when there
 // is a live page; otherwise what to use instead.
@@ -3025,8 +3088,20 @@ function familyGate(st) {
   return why === g.why ? g : { ...g, why };
 }
 
+// On the remote host, state outside the repo goes with the sandbox: the next
+// one has no plan, and its gate is open. Said on every status.
+function remoteStateWarning() {
+  if (detectHost().host !== "remote") return "";
+  const top = REMOTE_DIR ? path.dirname(path.dirname(REMOTE_DIR)) : "";
+  if (top && STATE_DIR.startsWith(top + path.sep)) return "";
+  return `⚠ remote host, but plan state is at ${STATE_DIR}, outside the repo: a new sandbox starts without it and the gate fails open. ` +
+    "Unset DEEP_PLAN_STATE_DIR, or move it with deep-plan export-state / import-state.";
+}
+
 function status(json) {
   const rows = statusRows();
+  const warn = remoteStateWarning();
+  if (warn) console.error(warn);
   if (json) { process.stdout.write(JSON.stringify(rows)); return; }
   if (!rows.length) { say("no tracked plans"); return; }
   for (const r of rows) {
@@ -4092,6 +4167,8 @@ switch (cmd) {
   }
   case "serve": serveCmd(flags, args); break;
   case "page": pageCmd(args[0], flags); break;
+  case "export-state": exportState(args[0], flags); break;
+  case "import-state": importState(args[0], flags); break;
   case "doctor": {
     // Which host this run thinks it is in, and which engine copy answers.
     // Later verbs route pages by the same host.
@@ -4341,6 +4418,8 @@ switch (cmd) {
   engine                                      print the engine pointer (which copy runs)
   doctor [--json]                             print the host (cmux, desktop, terminal, remote) and the engine copy
   serve [--url PATH] [--status|--stop]        start deep-plan's page server if needed and print a page's URL
+  export-state <slug> [--out FILE]            one file with the plan's state, spec, key, pages and reviews
+  import-state <file> [--force] [--root DIR]  bring a bundle back (refuses an existing plan unless --force)
   page <slug> [--review]                      show the plan's working page (or its review) where this host can,
                                               and print "served at <url> (host: …)"
   render <spec.json> [--root DIR] [--force]   spec -> md + review + working surfaces

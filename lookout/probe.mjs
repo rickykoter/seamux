@@ -1074,6 +1074,34 @@ catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.n
   lk(RS, "serve", "--stop");
 }
 
+// ---------------------------------------------------------------- remote host: reviews in the repo
+{
+  const R8 = repo("r8");
+  write(R8, "a.js", "1\n"); sh(R8, `git add -A && ${G} commit -q -m base`);
+  write(R8, "a.js", "2\n");
+  const RH = path.join(TMP, "remote-home");
+  fs.mkdirSync(RH, { recursive: true });
+  const REnv = { ...ENV, HOME: RH, SEAMUX_HOST: "remote", CLAUDE_PROJECT_DIR: R8 };
+  delete REnv.LOOKOUT_REVIEWS_DIR;
+  const o = spawnSync("node", [path.join(HERE, "lookout.mjs"), "open", "--worktree", "--json"], { encoding: "utf8", env: REnv, cwd: R8 });
+  const rid = JSON.parse(o.stdout || "{}").id;
+  const RD = path.join(R8, ".seamux", "state", "plans", "reviews");
+  ok("remote: a review's store defaults into the repo's .seamux/state",
+    o.status === 0 && fs.existsSync(path.join(RD, rid + ".json")) && !fs.existsSync(path.join(RH, ".claude", "plans", "reviews")), o.stderr);
+  ok("remote: open says there is no live page on this host", JSON.parse(o.stdout).shown === "no live page on this host (host: remote)");
+  ok("remote: and keeps it out of git through info/exclude", /^\/\.seamux\/state\/$/m.test(fs.readFileSync(path.join(R8, ".git", "info", "exclude"), "utf8")));
+  // A comment from the human, written the way the page's server writes it.
+  spawnSync("node", ["--input-type=module", "-e", `
+    const S = await import(${JSON.stringify(path.join(HERE, "lib", "store.mjs"))});
+    const FD = await import(${JSON.stringify(path.join(HERE, "lib", "findings.mjs"))});
+    S.update(${JSON.stringify(rid)}, cur => { FD.comment(cur, { file: "a.js", line: 1, text: "from the remote page" }, "human"); return cur; });`],
+    { encoding: "utf8", env: REnv, cwd: R8 });
+  const h = spawnSync("bash", [path.join(HERE, "hooks", "comments.sh")],
+    { encoding: "utf8", env: REnv, cwd: R8, input: JSON.stringify({ cwd: R8, hook_event_name: "UserPromptSubmit" }) });
+  ok("remote: the comments hook reads reviews from the repo and passes the human's comment on",
+    /from the remote page/.test(h.stdout), h.stdout + h.stderr);
+}
+
 // ---------------------------------------------------------------- page script
 {
   const r = spawnSync("node", ["--check", path.join(HERE, "page", "review.js")], { encoding: "utf8" });

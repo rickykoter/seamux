@@ -4406,6 +4406,71 @@ exit 1
   ok("host: doctor prints a host line", /^host: desktop \(CLAUDE_CODE_ENTRYPOINT=claude-desktop\)$/m.test(t.stdout));
 }
 
+// -------------------------------------------------- remote host: state in the repo, export and import
+{
+  const RH = path.join(TMP, "remote-home");
+  fs.mkdirSync(RH, { recursive: true });
+  const RA = path.join(TMP, "remote-a"), RB = path.join(TMP, "remote-b");
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  fs.mkdirSync(RA); execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: RA });
+  // A remote session: no overrides, a home of its own, the repo as the project.
+  const REnv = (dir, extra = {}) => {
+    const e = { ...ENV, HOME: RH, SEAMUX_HOST: "remote", CLAUDE_PROJECT_DIR: dir, ...extra };
+    for (const k of ["DEEP_PLAN_STATE_DIR", "DEEP_PLAN_KEYS_DIR", "DEEP_PLAN_PLANS_DIR", "DEEP_PLAN_ANNOT_DIR"]) delete e[k];
+    return e;
+  };
+  const rc = (dir, ...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: REnv(dir), cwd: dir });
+  const rs = { ...spec, slug: "remote-plan" };
+  let r = rc(RA, "render", tmpSpec(rs), "--root", RA);
+  const SD = path.join(RA, ".seamux", "state");
+  ok("remote: state, keys and pages default into the repo's .seamux/state",
+    r.status === 0 && fs.existsSync(path.join(SD, "deep-plan", "state", "remote-plan.json")) &&
+    fs.existsSync(path.join(SD, "deep-plan", "keys", "remote-plan.key.json")) && fs.existsSync(path.join(SD, "plans", "remote-plan.md")) &&
+    !fs.existsSync(path.join(RH, ".claude", "deep-plan", "state", "remote-plan.json")), r.stderr);
+  ok("remote: the folder is kept out of git through info/exclude, not .gitignore",
+    /^\/\.seamux\/state\/$/m.test(fs.readFileSync(path.join(RA, ".git", "info", "exclude"), "utf8")) &&
+    !fs.existsSync(path.join(RA, ".gitignore")) && execSync("git status --porcelain", { cwd: RA, encoding: "utf8" }).trim() === "");
+  const key = JSON.parse(fs.readFileSync(path.join(SD, "deep-plan", "keys", "remote-plan.key.json"), "utf8"));
+  rc(RA, "grade", "remote-plan", ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+  const rgate = (dir, file) => spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")], { encoding: "utf8", env: REnv(dir),
+    input: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: file }, cwd: dir }) });
+  ok("remote: the gate (its bash fast path included) finds the plan in the repo and refuses an edit",
+    rgate(RA, path.join(RA, "a.txt")).status === 2);
+  ok("remote: an override still wins over the repo default",
+    spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "status", "--json"], { encoding: "utf8",
+      env: { ...REnv(RA), DEEP_PLAN_STATE_DIR: path.join(TMP, "elsewhere") }, cwd: RA }).stdout.trim() === "[]");
+  r = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "status"], { encoding: "utf8",
+    env: { ...REnv(RA), DEEP_PLAN_STATE_DIR: path.join(TMP, "elsewhere") }, cwd: RA });
+  ok("remote: status warns when state sits outside the repo", /outside the repo: a new sandbox starts without it/.test(r.stderr), r.stderr);
+  ok("remote: and says nothing when it is in the repo", !/outside the repo/.test(rc(RA, "status").stderr));
+  // Export, then import into a fresh clone at another path (a new sandbox).
+  const bundle = path.join(TMP, "remote-plan.bundle.json");
+  r = rc(RA, "export-state", "remote-plan", "--out", bundle);
+  const bj = JSON.parse(fs.readFileSync(bundle, "utf8"));
+  ok("export-state writes one bundle with state, spec, key, the approved snapshot and the pages",
+    r.status === 0 && bj.kind === "deep-plan-state" && ["deep-plan/state/remote-plan.json", "deep-plan/keys/remote-plan.spec.json",
+      "deep-plan/keys/remote-plan.key.json", "plans/remote-plan.approved.md", "plans/remote-plan.working.html"].every(k => k in bj.files),
+    Object.keys(bj.files).join(" "));
+  execSync(`git clone -q ${RA} ${RB}`);
+  r = rc(RB, "import-state", bundle);
+  const st = JSON.parse(fs.readFileSync(path.join(RB, ".seamux", "state", "deep-plan", "state", "remote-plan.json"), "utf8"));
+  ok("import-state brings the plan back in the new clone's repo, keeping the root it finds",
+    r.status === 0 && st.phase === "implementing" && st.root === RA, r.stdout + r.stderr);
+  r = rc(RB, "import-state", bundle);
+  ok("import-state refuses a plan that already exists", r.status !== 0 && /already exists here; --force/.test(r.stderr));
+  fs.renameSync(RA, RA + "-gone");
+  r = rc(RB, "import-state", bundle, "--force");
+  const st2 = JSON.parse(fs.readFileSync(path.join(RB, ".seamux", "state", "deep-plan", "state", "remote-plan.json"), "utf8"));
+  ok("…--force replaces it, and a root that is gone becomes this checkout", r.status === 0 && fs.realpathSync(st2.root) === fs.realpathSync(RB),
+    st2.root);
+  ok("…and the gate holds in the new sandbox", rgate(RB, path.join(RB, "a.txt")).status === 2);
+  const evil = path.join(TMP, "evil.bundle.json");
+  fs.writeFileSync(evil, JSON.stringify({ ...bj, files: { "deep-plan/state/../../../x.json": "e30=" } }));
+  ok("import-state refuses a bundle that names a path outside the plan's files",
+    rc(RB, "import-state", evil, "--force").status !== 0 && !fs.existsSync(path.join(RB, ".seamux", "x.json")));
+  fs.renameSync(RA + "-gone", RA);
+}
+
 // -------------------------------------------------- hot-path cost
 const t0 = process.hrtime.bigint();
 for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);

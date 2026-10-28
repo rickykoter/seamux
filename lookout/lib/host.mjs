@@ -10,6 +10,10 @@
 //   CLAUDE_CODE_ENTRYPOINT desktop values     desktop (undocumented; may move)
 //   anything else                             terminal
 
+import fs from "node:fs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+
 export const HOSTS = ["cmux", "desktop", "terminal", "remote"];
 export const DESKTOP_ENTRYPOINTS = ["claude-desktop", "claude-desktop-3p", "local-agent"];
 
@@ -30,4 +34,30 @@ export function detectHost(env = process.env) {
 export function hostLine(env = process.env) {
   const h = detectHost(env);
   return `host: ${h.host} (${h.why})`;
+}
+
+// Where state lives on the remote host: <git root>/.seamux/state, so it
+// survives in the repo when the sandbox's home does not. "" on any other
+// host, or outside a git repo. The repo is CLAUDE_PROJECT_DIR's when set,
+// else the cwd's. The folder is kept out of git through .git/info/exclude
+// (never .gitignore, which would be a change to the repo itself).
+export function remoteStateDir(env = process.env, cwd = process.cwd()) {
+  if (detectHost(env).host !== "remote") return "";
+  const from = env.CLAUDE_PROJECT_DIR || cwd;
+  const git = a => spawnSync("git", ["-C", from, ...a], { encoding: "utf8", timeout: 5000 });
+  const top = git(["rev-parse", "--show-toplevel"]);
+  if (top.status !== 0 || !top.stdout.trim()) return "";
+  const root = top.stdout.trim();
+  const common = git(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  if (common.status === 0 && common.stdout.trim()) {
+    const ex = path.join(common.stdout.trim(), "info", "exclude");
+    try {
+      const cur = fs.existsSync(ex) ? fs.readFileSync(ex, "utf8") : "";
+      if (!cur.split("\n").includes("/.seamux/state/")) {
+        fs.mkdirSync(path.dirname(ex), { recursive: true });
+        fs.appendFileSync(ex, (cur && !cur.endsWith("\n") ? "\n" : "") + "/.seamux/state/\n");
+      }
+    } catch { /* a read-only .git: the folder shows as untracked, nothing worse */ }
+  }
+  return path.join(root, ".seamux", "state");
 }

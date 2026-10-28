@@ -9,7 +9,20 @@
 # (~6ms bash vs ~52ms node, measured in ADAPTING.md; re-measured here by
 # probe.mjs). The real decision lives in lib/state.mjs — one definition of
 # "may I edit", shared with the CLI.
-STATE_DIR="${DEEP_PLAN_STATE_DIR:-$HOME/.claude/deep-plan/state}"
+# On the remote host state lives in the repo (<git root>/.seamux/state), the
+# rule lib/host.mjs states: SEAMUX_HOST wins, then cmux, then
+# CLAUDE_CODE_REMOTE=true. Only that host pays for the git call.
+seamux_data_root() {
+  case "${SEAMUX_HOST:-}" in
+    remote) ;;
+    cmux|desktop|terminal) return 1 ;;
+    *) [ -z "${CMUX_WORKSPACE_ID:-}" ] && [ "${CLAUDE_CODE_REMOTE:-}" = true ] || return 1 ;;
+  esac
+  top=$(git -C "${CLAUDE_PROJECT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null) || return 1
+  [ -n "$top" ] && printf '%s/.seamux/state' "$top"
+}
+DATA="$(seamux_data_root)" || DATA="$HOME/.claude"
+STATE_DIR="${DEEP_PLAN_STATE_DIR:-$DATA/deep-plan/state}"
 set -- "$STATE_DIR"/*.json
 [ -e "$1" ] || exit 0
 # decide.mjs sits beside this file wherever the plugin is installed; hooks.json

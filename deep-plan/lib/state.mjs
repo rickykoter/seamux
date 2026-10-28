@@ -3,17 +3,22 @@
 //
 // Env overrides exist for the probe, and only for the probe:
 //   DEEP_PLAN_STATE_DIR  DEEP_PLAN_KEYS_DIR  DEEP_PLAN_PLANS_DIR
+// On the remote host (lib/host.mjs) the defaults move into the repo, under
+// <git root>/.seamux/state, because the sandbox's home does not survive it
+// (ADR 0043). The overrides still win there.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { remoteStateDir } from "./host.mjs";
 
-export const STATE_DIR = process.env.DEEP_PLAN_STATE_DIR ||
-  path.join(os.homedir(), ".claude", "deep-plan", "state");
-export const KEYS_DIR = process.env.DEEP_PLAN_KEYS_DIR ||
-  path.join(os.homedir(), ".claude", "deep-plan", "keys");
-export const PLANS_DIR = process.env.DEEP_PLAN_PLANS_DIR ||
-  path.join(os.homedir(), ".claude", "plans");
+// The tree the defaults hang off: ~/.claude, or the repo's on the remote host.
+// Both have the same layout below it.
+export const REMOTE_DIR = remoteStateDir();
+export const DATA_ROOT = REMOTE_DIR || path.join(os.homedir(), ".claude");
+export const STATE_DIR = process.env.DEEP_PLAN_STATE_DIR || path.join(DATA_ROOT, "deep-plan", "state");
+export const KEYS_DIR = process.env.DEEP_PLAN_KEYS_DIR || path.join(DATA_ROOT, "deep-plan", "keys");
+export const PLANS_DIR = process.env.DEEP_PLAN_PLANS_DIR || path.join(DATA_ROOT, "plans");
 
 export function statePath(slug) { return path.join(STATE_DIR, slug + ".json"); }
 
