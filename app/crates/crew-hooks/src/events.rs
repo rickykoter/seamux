@@ -144,6 +144,11 @@ fn git(dir: &str, args: &[&str]) -> (bool, String) {
     }
 }
 
+/// The git toplevel of `dir`, or "".
+pub fn toplevel(dir: &str) -> String {
+    git(dir, &["rev-parse", "--show-toplevel"]).1
+}
+
 pub fn branch(dir: &str) -> String {
     git(dir, &["branch", "--show-current"]).1
 }
@@ -309,6 +314,12 @@ impl Hook {
     /// dropped, in one read-modify-write, and no write when nothing changed.
     /// The board matches phase:working and phase:waiting.
     pub fn tokens(&self, phase: &str, clear: &[&str]) {
+        self.tokens_with(phase, clear, None);
+    }
+
+    /// `tokens`, and with `pin` (a directory) the root: token of its git
+    /// toplevel added when the description has none (a pin is never moved).
+    pub fn tokens_with(&self, phase: &str, clear: &[&str], pin: Option<&str>) {
         let cur = self.desc_get();
         let mut toks: Vec<String> = split_tokens(&cur)
             .into_iter()
@@ -317,6 +328,14 @@ impl Hook {
             .collect();
         if !phase.is_empty() {
             toks.push(format!("phase:{phase}"));
+        }
+        if let Some(dir) = pin.filter(|d| !d.is_empty()) {
+            if crew_core::worktree::root_of(&cur).is_none() {
+                let root = toplevel(dir);
+                if !root.is_empty() {
+                    toks.push(crew_core::worktree::root_tok(&root));
+                }
+            }
         }
         let new = toks.join(" ");
         if new == cur {
@@ -532,17 +551,21 @@ fn session(h: &mut Hook) {
     // A new session is idle until its first prompt: it has not worked yet,
     // and a sibling pane's state stays the workspace's. A compaction also
     // fires SessionStart, often mid-turn: the pane keeps what it was.
-    if h.json("source") == "compact" {
-        h.settle(true, &[], |_| {});
+    let after = if h.json("source") == "compact" {
+        h.settle(false, &[], |_| {})
     } else {
-        h.settle(true, &[], |p| {
+        let r = h.settle(false, &[], |p| {
             p.state = "idle".into();
             p.question = None;
             p.asked = None;
             p.review = false;
         });
         h.history("idle", "session");
-    }
+        r
+    };
+    // A workspace made outside the Dock form has no pin yet: the first
+    // session pins it to its worktree, in the same write as the phase.
+    h.tokens_with(after.phase(), &[], Some(&cwd));
     h.listen_ensure();
 }
 

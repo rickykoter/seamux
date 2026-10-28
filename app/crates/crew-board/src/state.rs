@@ -35,6 +35,31 @@ pub fn targets_file() -> PathBuf {
     state_dir().join("board-targets.json")
 }
 
+/// The workspace's root: pin (crew-core's worktree), if it has one.
+fn pin_of(w: &Value) -> Option<String> {
+    crew_core::worktree::root_of(get(w, "description").as_str().unwrap_or(""))
+}
+
+/// `git branch --show-current` ("none" when detached or not a repo) and
+/// whether `git status --porcelain` lists anything, in `dir`.
+fn git_state(dir: &str) -> (String, bool) {
+    let run = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let branch = run(&["branch", "--show-current"]).filter(|b| !b.is_empty()).unwrap_or_else(|| "none".into());
+    let dirty = run(&["status", "--porcelain"]).is_some_and(|s| !s.is_empty());
+    (branch, dirty)
+}
+
 fn sidebar_cache_file() -> PathBuf {
     state_dir().join("board-sidebar.json")
 }
@@ -166,7 +191,10 @@ pub fn workspaces(fast: bool, forced: Option<&str>) -> Vec<Value> {
                 row.insert("id".into(), wid.clone());
                 row.insert("ref".into(), r.clone());
                 row.insert("title".into(), title);
-                row.insert("cwd".into(), s_or(get(w, "current_directory"), cached_cwd));
+                row.insert("cwd".into(), match pin_of(w) {
+                    Some(pin) => json!(pin),
+                    None => s_or(get(w, "current_directory"), cached_cwd),
+                });
                 row.insert("desc".into(), s_or(get(w, "description"), json!("")));
                 row.insert("color".into(), s_or(get(w, "custom_color"), json!("")));
                 let sel = match forced {
@@ -197,9 +225,23 @@ pub fn workspaces(fast: bool, forced: Option<&str>) -> Vec<Value> {
         let pr_state = pr_parts.get(1).copied().unwrap_or("").to_string();
         let pr_url_direct = pr_parts.iter().find(|t| t.starts_with("http")).map(|t| t.to_string()).unwrap_or_default();
         let br_raw: Vec<String> = f.get("git_branch").map(|b| b.split_whitespace().map(String::from).collect()).unwrap_or_default();
-        let branch = br_raw.first().cloned().unwrap_or_else(|| "none".into());
-        let dirty = br_raw.len() > 1 && br_raw[1] != "clean";
-        let cwd = s_or(get(w, "current_directory"), json!(f.get("cwd").cloned().unwrap_or_default()));
+        let mut branch = br_raw.first().cloned().unwrap_or_else(|| "none".into());
+        let mut dirty = br_raw.len() > 1 && br_raw[1] != "clean";
+        let mut cwd = s_or(get(w, "current_directory"), json!(f.get("cwd").cloned().unwrap_or_default()));
+        // A pinned workspace is about its pinned worktree, whatever pane has
+        // focus: cmux's directory and git state follow the focused pane, so
+        // when they point elsewhere the pin's own branch and status are read.
+        if let Some(pin) = pin_of(w) {
+            // A directory inside the pin is the same worktree: cmux's git
+            // state is right there, and no git runs.
+            let here = cwd.as_str().unwrap_or("");
+            if here != pin && !here.starts_with(&format!("{}/", pin.trim_end_matches('/'))) {
+                let (b, d) = git_state(&pin);
+                branch = b;
+                dirty = d;
+            }
+            cwd = json!(pin);
+        }
         let selected = match forced {
             Some(fd) => wid_s == fd,
             None => truthy(get(w, "selected")),

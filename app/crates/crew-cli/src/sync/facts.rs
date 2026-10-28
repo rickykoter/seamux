@@ -172,6 +172,58 @@ pub fn sessions(p: &Paths) -> (Value, Value) {
     (pick("activeSessionsByWorkspace"), pick("sessions"))
 }
 
+/// Every session of each workspace, as (session id, record), the
+/// workspace's active one first. cmux's store keeps one active session per
+/// surface (activeSessionsBySurface) and names each record's workspace, so a
+/// workspace with two Claudes has both; a store without those fields still
+/// gives activeSessionsByWorkspace's one.
+pub fn sessions_by_ws(p: &Paths) -> HashMap<String, Vec<(String, Value)>> {
+    sessions_in(&p.store)
+}
+
+/// `sessions_by_ws` from the store at `store`.
+pub fn sessions_in(store: &str) -> HashMap<String, Vec<(String, Value)>> {
+    let Some(d) = read_json(store).filter(Value::is_object) else { return HashMap::new() };
+    let sess = d.get("sessions").filter(|v| v.is_object()).cloned().unwrap_or(json!({}));
+    let rec = |sid: &str| sess.get(sid).cloned().filter(|v| truthy(Some(v))).unwrap_or(json!({}));
+    let sid_of = |v: &Value| v.get("sessionId").filter(|v| truthy(Some(v))).map(py_str).unwrap_or_default();
+    let mut out: HashMap<String, Vec<(String, Value)>> = HashMap::new();
+    if let Some(Value::Object(m)) = d.get("activeSessionsBySurface") {
+        let mut surfaces: Vec<(&String, &Value)> = m.iter().collect();
+        surfaces.sort_by(|a, b| a.0.cmp(b.0));
+        for (_, v) in surfaces {
+            let sid = sid_of(v);
+            if sid.is_empty() {
+                continue;
+            }
+            let r = rec(&sid);
+            let ws = r.get("workspaceId").map(py_str).unwrap_or_default();
+            if ws.is_empty() {
+                continue;
+            }
+            let list = out.entry(ws).or_default();
+            if !list.iter().any(|(s, _)| *s == sid) {
+                list.push((sid, r));
+            }
+        }
+    }
+    if let Some(Value::Object(m)) = d.get("activeSessionsByWorkspace") {
+        for (ws, v) in m {
+            let sid = sid_of(v);
+            if sid.is_empty() {
+                continue;
+            }
+            let list = out.entry(ws.clone()).or_default();
+            let r = match list.iter().position(|(s, _)| *s == sid) {
+                Some(i) => list.remove(i).1,
+                None => rec(&sid),
+            };
+            list.insert(0, (sid, r));
+        }
+    }
+    out
+}
+
 /// `os.kill(int(pid), 0)` succeeded.
 pub fn alive(pid: Option<&Value>) -> bool {
     truthy(pid) && kill0(pid)
@@ -1038,6 +1090,31 @@ pub fn plan(p: &Paths, sid: &str) -> Option<Plan> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_session_of_a_workspace_is_seen_the_active_one_first() {
+        let d = std::env::temp_dir().join(format!("crew-sessions-{}", std::process::id()));
+        let _ = fs::create_dir_all(&d);
+        let store = d.join("store.json");
+        let rec = |ws: &str, life: &str| json!({"workspaceId": ws, "agentLifecycle": life, "pid": 1});
+        fs::write(
+            &store,
+            json!({
+                "activeSessionsByWorkspace": {"W": {"sessionId": "b"}, "OLD": {"sessionId": "z"}},
+                "activeSessionsBySurface": {"S1": {"sessionId": "a"}, "S2": {"sessionId": "b"}, "S3": {"sessionId": "c"}},
+                "sessions": {"a": rec("W", "running"), "b": rec("W", "needsInput"), "c": rec("X", "idle"), "z": {"pid": 2}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let m = sessions_in(&store.to_string_lossy());
+        let ids = |ws: &str| m.get(ws).map(|l| l.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>()).unwrap_or_default();
+        assert_eq!(ids("W"), ["b", "a"]);
+        assert_eq!(ids("X"), ["c"]);
+        // A store with only the workspace map still gives its one session.
+        assert_eq!(ids("OLD"), ["z"]);
+        assert!(sessions_in("/nonexistent/store.json").is_empty());
+    }
 
     #[test]
     fn ticket_labels_match_the_python_regexes() {

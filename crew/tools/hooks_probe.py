@@ -354,9 +354,9 @@ if RUST:
     # seamux: a new session is idle until its first prompt (the frozen bash
     # still says working).
     pane = json.load(open(os.path.join(STATE, "pane-ws-1.json")))
-    check("a new session's pane is idle and no phase is published",
-          pane.get("state") == "idle" and pane.get("session") == "s-1" and desc() == "ci:green"
-          and not any("set-description" in l for l in L), f"{pane} {desc()} {L}")
+    check("a new session's pane is idle and no phase is published; the workspace is pinned to its worktree",
+          pane.get("state") == "idle" and pane.get("session") == "s-1" and desc() == f"ci:green root:{WT}"
+          and sum("set-description" in l for l in L) == 1, f"{pane} {desc()} {L}")
     check("…and its idle start is a history line", any(
         json.loads(l).get("state") == "idle" and json.loads(l).get("detail") == "session"
         for f in os.listdir(HISTORY) for l in open(os.path.join(HISTORY, f))), os.listdir(HISTORY))
@@ -729,12 +729,18 @@ if RUST:
           "workspace status set review" in log() and marker("lane-ws-1") and desc() == "", f"{desc()} {log()}")
     os.remove(os.path.join(WT, "dirty.txt"))
 
+    # A pin is set once: a session in another checkout never moves it.
+    reset([row(desc="root:/the/pinned/tree")])
+    hook("session", stdin=payload(cwd=MAIN_WT))
+    check("an existing root: pin is never moved by a later session",
+          desc() == "root:/the/pinned/tree", desc())
+
     # A compaction fires SessionStart mid-turn: the pane keeps working.
     reset([row()])
     hook("prompt", CMUX_SURFACE_ID="SA")
     hook("session", stdin=payload(source="compact"), CMUX_SURFACE_ID="SA")
     check("a compaction's SessionStart leaves the pane working and phase:working",
-          pane_state("SA") == "working" and desc() == "phase:working", f"{pane_state('SA')} {desc()}")
+          pane_state("SA") == "working" and desc() == f"phase:working root:{WT}", f"{pane_state('SA')} {desc()}")
 else:
     print("two panes in one workspace: skipped (seamux only; run with CREW_IMPL=rust)")
 
