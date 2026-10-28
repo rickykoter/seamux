@@ -235,7 +235,7 @@ export function makeServer({ version, root, token, onRequest = () => {}, sync })
 
 export function serveForeground({ version, root }) {
   const token = crypto.randomBytes(24).toString("hex");
-  let last = Date.now(), started = false;
+  let last = Date.now(), started = false, missing = 0;
   const server = makeServer({ version, root, token, onRequest: () => { last = Date.now(); } });
   const tidy = () => { const cur = readJson(SERVE_FILE); if (cur && cur.pid === process.pid) fs.rmSync(SERVE_FILE, { force: true }); };
   server.listen(0, "127.0.0.1", () => {
@@ -243,14 +243,17 @@ export function serveForeground({ version, root }) {
     // must not both find no record and both write one.
     fs.mkdirSync(path.dirname(SERVE_FILE), { recursive: true });
     const lock = SERVE_FILE + ".start";
-    for (let i = 0; i < 60; i++) {
-      try { fs.mkdirSync(lock); break; }
+    let held = false;
+    for (let i = 0; i < 60 && !held; i++) {
+      try { fs.mkdirSync(lock); held = true; break; }
       catch {
         try { if (Date.now() - fs.statSync(lock).mtimeMs > 10000) fs.rmdirSync(lock); } catch { /* raced */ }
         sleep(50);
       }
     }
-    const release = () => { try { fs.rmdirSync(lock); } catch { /* gone */ } };
+    // Only the holder removes the lock; a starter that waited it out goes on
+    // without it and leaves the holder's lock alone.
+    const release = () => { if (held) try { fs.rmdirSync(lock); } catch { /* gone */ } };
     // A starter that lost a race: another server is recorded and healthy.
     const other = readJson(SERVE_FILE);
     if (other && other.pid !== process.pid && alive(other.pid) && (health(other.port) || {}).pid === other.pid) {
@@ -270,8 +273,11 @@ export function serveForeground({ version, root }) {
   const timer = setInterval(() => {
     // No longer the recorded server (stopped, or replaced): nobody can find
     // this one, so it goes.
+    // Another live server recorded, or no record three checks running (a
+    // file being rewritten is never mistaken for a stop).
     const cur = readJson(SERVE_FILE);
-    if (started && (!cur || cur.pid !== process.pid)) {
+    missing = cur ? 0 : missing + 1;
+    if (started && ((cur && cur.pid !== process.pid && alive(cur.pid)) || missing >= 3)) {
       log("serve.json no longer names this server, exiting");
       clearInterval(timer); server.close(); process.exit(0);
     }

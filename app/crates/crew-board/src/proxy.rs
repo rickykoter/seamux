@@ -100,14 +100,24 @@ fn exchange(port: u16, method: &str, target: &str, headers: &[(&str, String)], b
 }
 
 /// The plugin's live server port: its record's pid answers /health as it.
+/// A server that accepts the connection but is slow to answer (busy under a
+/// review's lock) is still the live one: starting another would hand the
+/// open pages a new token.
 fn live_port(p: Plugin) -> Option<u16> {
     let rec: Value = serde_json::from_str(&std::fs::read_to_string(p.serve_file()).ok()?).ok()?;
     let port = rec.get("port").and_then(Value::as_u64)? as u16;
     let pid = rec.get("pid").and_then(Value::as_i64)?;
-    let (code, _, body) = exchange(port, "GET", "/health", &[], b"", Duration::from_secs(2)).ok()?;
-    let h: Value = serde_json::from_slice(&body).ok()?;
-    (code == 200 && h.get("server").and_then(Value::as_str) == Some(p.name())
-        && h.get("pid").and_then(Value::as_i64) == Some(pid)).then_some(port)
+    match exchange(port, "GET", "/health", &[], b"", Duration::from_secs(5)) {
+        Ok((code, _, body)) => {
+            let h: Value = serde_json::from_slice(&body).ok()?;
+            (code == 200 && h.get("server").and_then(Value::as_str) == Some(p.name())
+                && h.get("pid").and_then(Value::as_i64) == Some(pid)).then_some(port)
+        }
+        // Connected, then timed out: alive and busy, if the pid is.
+        Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
+            && pid > 0 && unsafe { libc::kill(pid as i32, 0) } == 0 => Some(port),
+        Err(_) => None,
+    }
 }
 
 /// The plugin's server, started through its CLI when none answers.
