@@ -7,6 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import http from "node:http";
 import { execSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -29,7 +30,7 @@ delete ENV.TYPESAFE_BASE_URL;
 delete ENV.LOOKOUT_ENGINE;
 delete ENV.CMUX_WORKSPACE_ID;
 // Host signals come from the session running the probe; each test sets its own.
-for (const k of ["SEAMUX_HOST", "CLAUDE_CODE_REMOTE", "CLAUDE_CODE_ENTRYPOINT"]) delete ENV[k];
+for (const k of ["SEAMUX_HOST", "CLAUDE_CODE_REMOTE", "CLAUDE_CODE_ENTRYPOINT", "LOOKOUT_SERVE_FILE"]) delete ENV[k];
 // The libs read their overrides at import time, so set them before importing.
 Object.assign(process.env, ENV);
 
@@ -949,6 +950,128 @@ catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.n
     { encoding: "utf8", env: { ...ENV, CMUX_WORKSPACE_ID: "W9" } });
   let j = {}; try { j = JSON.parse(r.stdout); } catch {}
   ok("host: engine reports the host beside the pointer", r.status === 0 && j.host === "cmux" && j.why === "CMUX_WORKSPACE_ID is set" && j.root === HERE);
+}
+
+// ---------------------------------------------------------------- the shipped highlight.js
+{
+  const shipped = path.join(HERE, "vendor", "highlight.min.js");
+  ok("vendor: the plugin ships highlight.js at the pinned sha256",
+    fs.existsSync(shipped) && sha(shipped) === VD.HLJS_SHA256);
+  const env = { ...ENV, LOOKOUT_VENDOR_DIR: path.join(TMP, "vendor-shipped") };
+  delete env.LOOKOUT_HLJS_SRC;
+  const r = spawnSync("node", [path.join(HERE, "lookout.mjs"), "setup"], { encoding: "utf8", env });
+  ok("vendor: setup installs the shipped copy, with no download",
+    /copied the plugin's highlight.js/.test(r.stdout) && sha(path.join(env.LOOKOUT_VENDOR_DIR, "highlight.min.js")) === VD.HLJS_SHA256,
+    r.stdout + r.stderr);
+}
+
+// ---------------------------------------------------------------- lookout serve
+{
+  const SV = path.join(TMP, "serve");
+  fs.mkdirSync(SV, { recursive: true });
+  const SENV = { ...ENV, LOOKOUT_SERVE_FILE: path.join(SV, "serve.json"), LOOKOUT_SERVE_IDLE_MS: "8000" };
+  const lk = (cwd, ...a) => spawnSync("node", [path.join(HERE, "lookout.mjs"), ...a], { encoding: "utf8", env: SENV, cwd });
+  const rec = () => { try { return JSON.parse(fs.readFileSync(SENV.LOOKOUT_SERVE_FILE, "utf8")); } catch { return null; } };
+  const RS = repo("rs");
+  write(RS, "a.txt", "one\ntwo\n");
+  sh(RS, `git add -A && ${G} commit -q -m base && git checkout -q -b dev/s`);
+  write(RS, "a.txt", "one\nTWO\nthree\n");
+  sh(RS, `git add -A && ${G} commit -q -m change`);
+  const o = JSON.parse(lk(RS, "open", "--json", "--no-open").stdout);
+  const id = o.id;
+  const fj = path.join(SV, "f.json");
+  fs.writeFileSync(fj, JSON.stringify([{ file: "a.txt", line: 2, severity: "major", summary: "two is shouted", failure_scenario: "a reader sees TWO" }]));
+  lk(RS, "findings", "add", id, fj);
+  const fid = S.read(id).findings[0].id;
+
+  let r = lk(RS, "serve", "--url", `/review/${id}`);
+  const R = rec();
+  ok("serve: --url starts lookout's server and prints the review's URL",
+    r.status === 0 && R && r.stdout.trim() === `http://127.0.0.1:${R.port}/review/${id}`, r.stdout + r.stderr);
+  ok("serve: serve.json is mode 0600 with port, token, pid, version, started",
+    R && (fs.statSync(SENV.LOOKOUT_SERVE_FILE).mode & 0o777) === 0o600 && ["port", "token", "pid", "version", "started"].every(k => R[k]));
+  ok("serve: a second --url reuses the server", lk(RS, "serve", "--url", "/health").status === 0 && rec().pid === R.pid);
+  const B = `http://127.0.0.1:${R.port}`, T = R.token, O = { Origin: B, "Content-Type": "application/json" };
+  const raw = (method, p, headers, body) => new Promise(res => {
+    const q = http.request({ host: "127.0.0.1", port: R.port, path: p, method, headers },
+      rs => { let b = ""; rs.on("data", c => b += c); rs.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} res({ status: rs.statusCode, body: b, json: j, headers: rs.headers }); }); });
+    q.on("error", e => res({ status: 0, body: e.message, json: null }));
+    if (body !== undefined) q.write(body);
+    q.end();
+  });
+  const post = (body, headers = O) => raw("POST", `/review/${id}`, { ...headers, "Content-Length": Buffer.byteLength(JSON.stringify(body)) }, JSON.stringify(body));
+  let g = await raw("GET", "/health", { Host: `127.0.0.1:${R.port}` });
+  ok("serve: /health names lookout and its pid", g.status === 200 && g.json.server === "lookout" && g.json.pid === R.pid &&
+    g.headers.server === "lookout-serve");
+  g = await raw("GET", "/health", { Host: `evil.example:${R.port}` });
+  ok("serve: a foreign Host is refused", g.status === 403 && g.json.error === "unknown host");
+  g = await raw("GET", `/review/${id}`, { Host: `localhost:${R.port}` });
+  ok("serve: the page is served with its token and id before the last </body>",
+    g.status === 200 && g.body.includes(`window.lookout.serve({ token: "${T}", id: "${id}" })`) &&
+    g.body.lastIndexOf("window.lookout.serve(") < g.body.lastIndexOf("</body>"));
+  g = await raw("GET", `/review/${id}.json?t=wrong`, {});
+  ok("serve: the record needs the token", g.status === 403 && g.json.error === "bad token");
+  g = await raw("GET", `/review/${id}.json?t=${T}`, {});
+  ok("serve: with it, the record is the stored JSON", g.status === 200 && g.json.id === id);
+  g = await raw("GET", `/review/..%2F..%2Fx.json?t=${T}`, {});
+  ok("serve: an id cannot leave the reviews directory", g.status === 404);
+  // POST guards, in crew's order.
+  g = await post({ t: T, op: "comment", item: fid, text: "hi" }, { Origin: "http://evil.example", "Content-Type": "application/json" });
+  ok("serve: a POST from another origin is refused", g.status === 403 && g.json.error === "cross-origin request refused");
+  g = await post({ t: T, op: "comment", item: fid, text: "hi" }, { Origin: B, "Content-Type": "text/plain" });
+  ok("serve: a POST that is not JSON is refused", g.status === 415);
+  g = await raw("POST", `/review/${id}`, { ...O, "Content-Length": String(70 * 1024) }, "");
+  ok("serve: a POST over 64KB is refused", g.status === 413);
+  g = await post({ t: "wrong", op: "comment", item: fid, text: "hi" });
+  ok("serve: a POST without the token is refused", g.status === 403 && g.json.error === "bad token", g.status + " " + g.body);
+  g = await post({ t: T, op: "launch" });
+  ok("serve: an unknown op is refused", g.status === 400 && g.json.error === "unknown op");
+  // The ops, each under lookout's lock.
+  g = await post({ t: T, op: "comment", item: fid, text: "  is it, though?  " });
+  const f0 = () => S.read(id).findings[0];
+  ok("serve: comment on a finding adds a human message to its thread",
+    g.status === 200 && g.json.ok && g.json.item === fid && f0().thread.some(m => m.by === "human" && m.text === "is it, though?"));
+  g = await post({ t: T, op: "comment", file: "a.txt", line: 3, side: "new", text: "new line" });
+  const t1 = g.json && g.json.item;
+  ok("serve: a comment on a line opens a thread", g.status === 200 && t1 === "t1" &&
+    S.read(id).threads.find(t => t.id === "t1" && t.line === 3 && t.status === "open"));
+  g = await post({ t: T, op: "comment", file: "nope.txt", line: 1, text: "x" });
+  ok("serve: a comment on a file outside the review is refused", g.status === 400 && g.json.error === "file is not in this review");
+  g = await post({ t: T, op: "comment", item: fid, text: "   " });
+  ok("serve: an empty comment is refused", g.status === 400);
+  g = await post({ t: T, op: "resolve", item: fid, text: "fixed" });
+  ok("serve: resolve closes a finding as the human, with a status message",
+    g.status === 200 && f0().status === "resolved" && f0().statusBy === "human" &&
+    f0().thread.slice(-1)[0].kind === "status" && f0().thread.slice(-1)[0].to === "resolved");
+  g = await post({ t: T, op: "reopen", item: fid });
+  ok("serve: reopen opens it again", g.status === 200 && f0().status === "open");
+  g = await post({ t: T, op: "dismiss", item: "t1" });
+  ok("serve: dismissing a thread resolves it", g.status === 200 && S.read(id).threads[0].status === "resolved");
+  g = await post({ t: T, op: "answer", item: "n1", pick: 0 });
+  ok("serve: answer on a review without a quiz is refused", g.status === 400 && g.json.error === "this review has no quiz");
+  g = await post({ t: T, op: "resolve", item: "f999" });
+  ok("serve: an op on a missing item is refused", g.status === 404);
+  // A writer holding the lock: the op waits, and is refused when it outlasts the deadline.
+  const lockDir = path.join(ENV.LOOKOUT_REVIEWS_DIR, id + ".lock");
+  fs.mkdirSync(lockDir);
+  g = await post({ t: T, op: "comment", item: fid, text: "while locked" });
+  ok("serve: a held lock refuses the op rather than writing past it", g.status === 409 && /locked/.test(g.json.error));
+  fs.rmdirSync(lockDir);
+  g = await raw("POST", "/elsewhere", { ...O, "Content-Length": "2" }, "{}");
+  ok("serve: a POST anywhere but /review/ is refused", g.status === 404, g.status + " " + g.body);
+  // Stale record, then idle exit.
+  lk(RS, "serve", "--stop");
+  fs.writeFileSync(SENV.LOOKOUT_SERVE_FILE, JSON.stringify({ port: R.port, token: "x", pid: 999999 }));
+  r = lk(RS, "serve", "--url", "/health");
+  ok("serve: a stale serve.json (dead pid) starts a fresh server", r.status === 0 && rec().pid !== 999999 && rec().token !== "x");
+  const idlePid = rec().pid;
+  let gone = false;
+  for (let i = 0; i < 80 && !gone; i++) {
+    await new Promise(res => setTimeout(res, 500));
+    gone = !rec() && !(() => { try { process.kill(idlePid, 0); return true; } catch { return false; } })();
+  }
+  ok("serve: an idle server exits and removes serve.json", gone);
+  lk(RS, "serve", "--stop");
 }
 
 // ---------------------------------------------------------------- page script

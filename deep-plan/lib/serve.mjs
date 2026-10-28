@@ -340,6 +340,7 @@ export function makeServer({ script, version, root, token, onRequest = () => {},
       const tokenOk = () => ctEq(one("t"), token);
       const deny = what => { log(`DENY bad token on ${what} from 127.0.0.1`); reply(res, 403, '{"error":"bad token"}'); };
       if (req.method === "POST") {
+        res.setHeader("Connection", "close"); // the body is never read
         // The plan and ask pages never POST; review POSTs belong to lookout's
         // server, whose page posts to its own origin.
         return reply(res, 404, { error: "no such path" });

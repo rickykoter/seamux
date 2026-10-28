@@ -15,6 +15,7 @@ import path from "node:path";
 import vm from "node:vm";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 export const HLJS_VERSION = "11.11.1";
 export const HLJS_SHA256 = "c4a399dd6f488bc97a3546e3476747b3e714c99c57b9473154c6fb8d259b9381";
@@ -25,6 +26,10 @@ export const HLJS_URL = `https://cdnjs.cloudflare.com/ajax/libs/highlight.js/${H
 export const LOOKOUT_HOME = path.join(os.homedir(), ".claude", "lookout");
 export const VENDOR_DIR = process.env.LOOKOUT_VENDOR_DIR || path.join(LOOKOUT_HOME, "vendor");
 export const HLJS_HOME = path.join(VENDOR_DIR, "highlight.min.js");
+// The copy the plugin ships (committed: the cloud's network allowlist leaves
+// out cdnjs). Setup checks it against the pin like a download.
+export const HLJS_PLUGIN = process.env.LOOKOUT_HLJS_PLUGIN ||
+  path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "vendor", "highlight.min.js");
 export const ENGINE_FILE = process.env.LOOKOUT_ENGINE_FILE || path.join(LOOKOUT_HOME, "engine.json");
 export const SHIM_DIR = process.env.LOOKOUT_BIN_DIR || path.join(os.homedir(), ".local", "bin");
 
@@ -39,7 +44,8 @@ export function fetchHljs() {
     return { ok: true, how: "already in place" };
   fs.mkdirSync(VENDOR_DIR, { recursive: true });
   const tmp = HLJS_HOME + ".part-" + process.pid;
-  const src = process.env.LOOKOUT_HLJS_SRC;
+  const shipped = fs.existsSync(HLJS_PLUGIN) && sha256File(HLJS_PLUGIN) === HLJS_SHA256;
+  const src = process.env.LOOKOUT_HLJS_SRC || (shipped ? HLJS_PLUGIN : "");
   if (src) {
     try { fs.copyFileSync(src, tmp); } catch { return { ok: false, why: "could not read " + src }; }
   } else {
@@ -55,7 +61,7 @@ export function fetchHljs() {
     return { ok: false, why: `the download failed the sha256 check (got ${got.slice(0, 12)}…, pinned ${HLJS_SHA256.slice(0, 12)}…); nothing installed` };
   }
   fs.renameSync(tmp, HLJS_HOME);
-  return { ok: true, how: "fetched highlight.js " + HLJS_VERSION };
+  return { ok: true, how: (src === HLJS_PLUGIN ? "copied the plugin's highlight.js " : "fetched highlight.js ") + HLJS_VERSION };
 }
 
 // ---------------------------------------------------------------- highlighting
@@ -82,7 +88,11 @@ export function loadHljs() {
   try {
     const ctx = {};
     vm.createContext(ctx);
-    vm.runInContext(fs.readFileSync(HLJS_HOME, "utf8"), ctx, { filename: HLJS_HOME });
+    // The home copy, else the plugin's own when it matches the pin (a fresh
+    // install that has not run setup, or a cloud session).
+    const file = fs.existsSync(HLJS_HOME) ? HLJS_HOME
+      : fs.existsSync(HLJS_PLUGIN) && sha256File(HLJS_PLUGIN) === HLJS_SHA256 ? HLJS_PLUGIN : HLJS_HOME;
+    vm.runInContext(fs.readFileSync(file, "utf8"), ctx, { filename: file });
     HL = ctx.hljs || null;
     if (!HL) HL_WHY = "the bundle defined no hljs";
   } catch (e) {

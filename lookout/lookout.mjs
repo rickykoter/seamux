@@ -32,6 +32,7 @@ import * as FD from "./lib/findings.mjs";
 import * as N from "./lib/notes.mjs";
 import { brief } from "./lib/prompt.mjs";
 import { detectHost } from "./lib/host.mjs";
+import * as SV from "./lib/serve.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -48,7 +49,7 @@ const opt = (n, d = null) => {
 // Options that take a value; every other --flag stands alone.
 // The most of a --context-file a review keeps for its reviewer brief.
 const CONTEXT_CAP = 8000;
-const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file"]);
+const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file", "--url"]);
 const positional = () => rest.filter((a, i) => !a.startsWith("--") && !(i > 0 && VALUED.has(rest[i - 1])));
 
 const say = s => process.stdout.write(s + "\n");
@@ -164,6 +165,16 @@ function companionOpen(url, id, ws) {
 // at the page again (a re-open refreshes, it does not stack tabs); otherwise a
 // new browser tab opens beside the terminal without taking focus.
 function showPage(id, file, cwd, { onlyIfOpen = false } = {}) {
+  // Every host but cmux: lookout's own server, and the caller prints the URL.
+  // A served page polls for changes itself, so a refresh has nothing to do.
+  // Nobody can reach a remote sandbox's localhost, so remote gets no URL.
+  const host = detectHost().host;
+  if (host !== "cmux") {
+    if (onlyIfOpen || flag("no-open") || host === "remote") return "";
+    if (process.env.LOOKOUT_REVIEWS_DIR && !process.env.LOOKOUT_SERVE_FILE) return "";
+    const rec = SV.ensureServer({ cli: path.join(HERE, "lookout.mjs"), root: HERE });
+    return rec ? `served at ${SV.urlFor(rec, "/review/" + id)}` : "";
+  }
   if (process.env.LOOKOUT_REVIEWS_DIR || flag("no-open")) return "";
   const ws = workspaceFor(cwd);
   if (!ws) return "";
@@ -537,8 +548,25 @@ function usage() {
   lookout list [--json]
   lookout setup             engine pointer, ~/.local/bin shim, pinned highlight.js
   lookout engine            print the engine pointer and the detected host
+  lookout serve [--url PATH] [--status|--stop]
+                            start lookout's review server if needed and print a page's URL
 
   store: ${S.REVIEWS_DIR}/<id>.json`);
+}
+
+// `lookout serve`: start the server if needed and print a page's URL, run it
+// in the foreground (what the detached start runs), or stop it.
+function cmdServe() {
+  if (flag("foreground")) { SV.serveForeground({ version: V.engineVersion(HERE), root: HERE }); return; }
+  if (flag("stop")) { say(SV.stopServer() ? "stopped lookout serve" : "lookout serve was not running"); return; }
+  if (flag("status")) {
+    const rec = SV.liveServer(HERE);
+    say(rec ? `lookout serve on 127.0.0.1:${rec.port} (pid ${rec.pid}${rec.foreign ? ", from another copy: " + rec.root : ""})` : "lookout serve is not running");
+    return;
+  }
+  const rec = SV.ensureServer({ cli: path.join(HERE, "lookout.mjs"), root: HERE });
+  if (!rec) die(`lookout serve did not start — see ${SV.LOG_FILE}`);
+  say(SV.urlFor(rec, opt("url") || "/health"));
 }
 
 // ---------------------------------------------------------------- dispatch
@@ -564,6 +592,7 @@ switch (verb) {
   case "show":   cmdShow(); break;
   case "list":   cmdList(); break;
   case "setup":  cmdSetup(); break;
+  case "serve":  cmdServe(); break;
   case "engine": {
     // The pointer as written by this run, plus the host it detected (not
     // stored in the pointer: the host belongs to the session, not the copy).
