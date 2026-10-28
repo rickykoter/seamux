@@ -30,6 +30,7 @@ import { releaseClaims } from "./lib/claims.mjs";
 import { buildProof, withProof, ghCanAttach, gh } from "./lib/proof.mjs";
 import { readEvidence, evidenceSummary, newEvidenceDir, pruneEvidence, showTab } from "./lib/browser.mjs";
 import { detect, draftFile } from "./lib/detect.mjs";
+import { detectHost, hostLine } from "./lib/host.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
   FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
@@ -3996,6 +3997,14 @@ switch (cmd) {
     process.stdout.write(pointerBody || JSON.stringify({ root: HERE, version: engineVersion(), pointer: "not written" }, null, 2) + "\n");
     break;
   }
+  case "doctor": {
+    // Which host this run thinks it is in, and which engine copy answers.
+    // Later verbs route pages by the same host.
+    if (flags.json) { process.stdout.write(JSON.stringify({ ...detectHost(), root: HERE, version: engineVersion() }, null, 2) + "\n"); break; }
+    say(hostLine());
+    say(`engine: ${HERE} (${engineVersion()})`);
+    break;
+  }
   case "render": {
     if (!args[0]) die("render <spec.json> [--root DIR] [--force]");
     await render(args[0], flags); break;
@@ -4231,6 +4240,7 @@ switch (cmd) {
   setup [--force]                             fetch the pinned mermaid, write the engine
                                               pointer, install the ~/.local/bin shim
   engine                                      print the engine pointer (which copy runs)
+  doctor [--json]                             print the host (cmux, desktop, terminal, remote) and the engine copy
   render <spec.json> [--root DIR] [--force]   spec -> md + review + working surfaces
   rehydrate <slug>                            re-render from the archived spec
   redraw <slug> | --all [--dry-run] [--json]  re-render plans with this engine (spec + state untouched)

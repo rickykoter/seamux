@@ -31,6 +31,7 @@ import { repoConfig } from "./lib/typesafe.mjs";
 import * as FD from "./lib/findings.mjs";
 import * as N from "./lib/notes.mjs";
 import { brief } from "./lib/prompt.mjs";
+import { detectHost } from "./lib/host.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -535,7 +536,7 @@ function usage() {
   lookout show <id> [--json]
   lookout list [--json]
   lookout setup             engine pointer, ~/.local/bin shim, pinned highlight.js
-  lookout engine            print the engine pointer
+  lookout engine            print the engine pointer and the detected host
 
   store: ${S.REVIEWS_DIR}/<id>.json`);
 }
@@ -563,7 +564,13 @@ switch (verb) {
   case "show":   cmdShow(); break;
   case "list":   cmdList(); break;
   case "setup":  cmdSetup(); break;
-  case "engine": process.stdout.write(pointerBody || JSON.stringify({ root: HERE, pointer: "not written" }, null, 2) + "\n"); break;
+  case "engine": {
+    // The pointer as written by this run, plus the host it detected (not
+    // stored in the pointer: the host belongs to the session, not the copy).
+    let o; try { o = JSON.parse(pointerBody); } catch { o = { root: HERE, pointer: "not written" }; }
+    process.stdout.write(JSON.stringify({ ...o, ...detectHost() }, null, 2) + "\n");
+    break;
+  }
   case "help":   usage(); break;
   default:       usage(); die("unknown verb: " + verb);
 }

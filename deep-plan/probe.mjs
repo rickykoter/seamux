@@ -12,6 +12,8 @@ import { verdict } from "./lib/evidence.mjs";
 import { resolver, resolveFiles, matchesGlob, recipeHash, load as loadVerify } from "./lib/verify.mjs";
 import { pruneEvidence, readEvidence } from "./lib/browser.mjs";
 import { classifyScript } from "./lib/detect.mjs";
+import * as HOST from "./lib/host.mjs";
+import * as HOST_TWIN from "../lookout/lib/host.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const V = process.argv.includes("-v");
@@ -48,6 +50,8 @@ delete ENV.DEEP_PLAN_ENGINE;
 delete ENV.CLAUDE_CODE_SESSION_ID;
 delete ENV.CLAUDE_SESSION_ID;
 delete ENV.CMUX_WORKSPACE_ID;
+// Host signals come from the session running the probe; each test sets its own.
+for (const k of ["SEAMUX_HOST", "CLAUDE_CODE_REMOTE", "CLAUDE_CODE_ENTRYPOINT"]) delete ENV[k];
 const MERMAID_VENDOR = path.join(ENV.DEEP_PLAN_VENDOR_DIR, "mermaid.min.js");
 // The real bundle to test with: where CI fetched it, where `deep-plan setup`
 // put it, a checkout's own vendor/, or the old skills copy. Copied, not moved.
@@ -4145,6 +4149,44 @@ exit 1
     for (const n of ["frv-par", "frv-kid"]) lc(LENV, "close", n);
   }
   for (const n of ["rv-1", "rv-2", "rv-q", "rv-pick", "rv-all", "rv-none", "rv-d", "rv-b", "rv-bd"]) lc(LENV, "close", n);
+}
+
+// ---------------------------------------------------------------- host detection
+{
+  const HOST_TABLE = [
+    [{}, "terminal"],
+    [{ CMUX_WORKSPACE_ID: "W1" }, "cmux"],
+    [{ CLAUDE_CODE_REMOTE: "true" }, "remote"],
+    [{ CLAUDE_CODE_REMOTE: "1" }, "terminal"],
+    [{ CLAUDE_CODE_ENTRYPOINT: "claude-desktop" }, "desktop"],
+    [{ CLAUDE_CODE_ENTRYPOINT: "claude-desktop-3p" }, "desktop"],
+    [{ CLAUDE_CODE_ENTRYPOINT: "local-agent" }, "desktop"],
+    [{ CLAUDE_CODE_ENTRYPOINT: "cli" }, "terminal"],
+    [{ CMUX_WORKSPACE_ID: "W1", CLAUDE_CODE_ENTRYPOINT: "claude-desktop" }, "cmux"],
+    [{ CMUX_WORKSPACE_ID: "W1", CLAUDE_CODE_REMOTE: "true" }, "cmux"],
+    [{ CLAUDE_CODE_REMOTE: "true", CLAUDE_CODE_ENTRYPOINT: "claude-desktop" }, "remote"],
+    [{ SEAMUX_HOST: "desktop", CMUX_WORKSPACE_ID: "W1" }, "desktop"],
+    [{ SEAMUX_HOST: "Terminal", CLAUDE_CODE_REMOTE: "true" }, "terminal"],
+    [{ SEAMUX_HOST: "remote" }, "remote"],
+    [{ SEAMUX_HOST: "cmux" }, "cmux"],
+    [{ SEAMUX_HOST: "bogus", CLAUDE_CODE_ENTRYPOINT: "claude-desktop" }, "desktop"],
+  ];
+  for (const [env, want] of HOST_TABLE) {
+    const got = HOST.detectHost(env), twin = HOST_TWIN.detectHost(env);
+    ok(`host: ${JSON.stringify(env)} is ${want}`, got.host === want);
+    ok(`host: the lookout copy agrees on ${JSON.stringify(env)}`, twin.host === got.host && twin.why === got.why);
+  }
+  ok("host: an ignored SEAMUX_HOST is named in why", /SEAMUX_HOST=bogus ignored/.test(HOST.detectHost({ SEAMUX_HOST: "bogus" }).why));
+  ok("host: the twin files match apart from the line naming the other copy",
+    fs.readFileSync(path.join(HERE, "lib", "host.mjs"), "utf8").split("\n").slice(3).join("\n") ===
+    fs.readFileSync(path.join(HERE, "..", "lookout", "lib", "host.mjs"), "utf8").split("\n").slice(3).join("\n"));
+  const r = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "doctor", "--json"],
+    { encoding: "utf8", env: { ...ENV, SEAMUX_HOST: "remote" }, cwd: REPO });
+  let j = {}; try { j = JSON.parse(r.stdout); } catch {}
+  ok("host: doctor --json reports the host and why", r.status === 0 && j.host === "remote" && j.why === "SEAMUX_HOST=remote" && j.root === HERE);
+  const t = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "doctor"],
+    { encoding: "utf8", env: { ...ENV, CLAUDE_CODE_ENTRYPOINT: "claude-desktop" }, cwd: REPO });
+  ok("host: doctor prints a host line", /^host: desktop \(CLAUDE_CODE_ENTRYPOINT=claude-desktop\)$/m.test(t.stdout));
 }
 
 // -------------------------------------------------- hot-path cost
