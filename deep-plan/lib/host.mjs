@@ -39,18 +39,21 @@ export function hostLine(env = process.env) {
 // Where state lives on the remote host: <git root>/.seamux/state, so it
 // survives in the repo when the sandbox's home does not. "" on any other
 // host, or outside a git repo. The repo is CLAUDE_PROJECT_DIR's when set,
-// else the cwd's. The folder is kept out of git through .git/info/exclude
-// (never .gitignore, which would be a change to the repo itself).
+// else the cwd's, and the folder hangs off its main checkout (the parent of
+// the shared .git), so every worktree and subfolder of one repo finds the
+// same state. It is kept out of git through .git/info/exclude (never
+// .gitignore, which would be a change to the repo itself).
 export function remoteStateDir(env = process.env, cwd = process.cwd()) {
   if (detectHost(env).host !== "remote") return "";
   const from = env.CLAUDE_PROJECT_DIR || cwd;
   const git = a => spawnSync("git", ["-C", from, ...a], { encoding: "utf8", timeout: 5000 });
-  const top = git(["rev-parse", "--show-toplevel"]);
-  if (top.status !== 0 || !top.stdout.trim()) return "";
-  const root = top.stdout.trim();
   const common = git(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
-  if (common.status === 0 && common.stdout.trim()) {
-    const ex = path.join(common.stdout.trim(), "info", "exclude");
+  const dotgit = common.status === 0 ? common.stdout.trim() : "";
+  const top = dotgit ? "" : (git(["rev-parse", "--show-toplevel"]).stdout || "").trim();
+  const root = dotgit && path.basename(dotgit) === ".git" ? path.dirname(dotgit) : top;
+  if (!root) return "";
+  if (dotgit) {
+    const ex = path.join(dotgit, "info", "exclude");
     try {
       const cur = fs.existsSync(ex) ? fs.readFileSync(ex, "utf8") : "";
       if (!cur.split("\n").includes("/.seamux/state/")) {

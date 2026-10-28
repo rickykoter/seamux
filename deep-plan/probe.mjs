@@ -4469,6 +4469,26 @@ exit 1
   ok("import-state refuses a bundle that names a path outside the plan's files",
     rc(RB, "import-state", evil, "--force").status !== 0 && !fs.existsSync(path.join(RB, ".seamux", "x.json")));
   fs.renameSync(RA + "-gone", RA);
+  // Only the plan's own file names: not another plan whose slug extends it.
+  const other = path.join(TMP, "other.bundle.json");
+  fs.writeFileSync(other, JSON.stringify({ ...bj, files: { ...bj.files, "deep-plan/state/remote-plan-x.json": "e30=" } }));
+  ok("import-state refuses a bundle that carries another plan's state (a slug that extends this one)",
+    /outside the plan's own files/.test(rc(RB, "import-state", other, "--force").stderr) &&
+    !fs.existsSync(path.join(RB, ".seamux", "state", "deep-plan", "state", "remote-plan-x.json")));
+  const nost = Object.fromEntries(Object.entries(bj.files).filter(([k]) => !k.startsWith("deep-plan/state/")));
+  fs.writeFileSync(other, JSON.stringify({ ...bj, slug: "remote-plan", files: nost }));
+  ok("import-state refuses a bundle with no state, before writing anything",
+    /has no deep-plan\/state\/remote-plan\.json/.test(rc(RB, "import-state", other, "--force").stderr));
+  // The bash fast path reads SEAMUX_HOST as host.mjs does.
+  ok("remote: SEAMUX_HOST=' Remote' still finds the repo's state in the gate's fast path",
+    spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")], { encoding: "utf8", env: { ...REnv(RB), SEAMUX_HOST: " Remote" },
+      input: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: path.join(RB, "a.txt") }, cwd: RB }) }).status === 2);
+  // A worktree of the same repo, with no CLAUDE_PROJECT_DIR: the same state.
+  const WT = path.join(TMP, "remote-b-wt");
+  execSync(`git worktree add -q ${WT} -b wt-probe`, { cwd: RB });
+  const wenv = REnv(WT); delete wenv.CLAUDE_PROJECT_DIR;
+  const ws = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "status", "--json"], { encoding: "utf8", env: wenv, cwd: WT });
+  ok("remote: a worktree of the repo finds the main checkout's state", JSON.parse(ws.stdout || "[]").some(x => x.slug === "remote-plan"), ws.stdout + ws.stderr);
 }
 
 // -------------------------------------------------- hot-path cost

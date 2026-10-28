@@ -2879,17 +2879,32 @@ function openWorkingSurface(st) {
 const BUNDLE_KIND = "deep-plan-state";
 const REVIEWS_DIR_DP = () => process.env.LOOKOUT_REVIEWS_DIR || path.join(PLANS_DIR, "reviews");
 
+// Exactly the names a plan's own files take, folder by folder: another
+// plan's files (a slug that extends this one, "v1" and "v1.2" or "foo" and
+// "foo-bar") never match.
+const reEsc = x => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function bundleNames(slug) {
+  const s = reEsc(slug);
+  return {
+    "deep-plan/state": new RegExp(`^${s}\\.json$`),
+    "deep-plan/keys": new RegExp(`^${s}\\.(spec|key)\\.json$`),
+    "plans": new RegExp(`^${s}\\.(md|review\\.html|working\\.html|widget\\.html|quiz\\.txt|approved\\.md|artifact\\.html|adr\\d+\\.md|inc\\d+\\.patch)$`),
+    "plans/reviews": new RegExp(`^${s}-(inc\\d+|delivery)\\.(json|patch|rows\\.json|html|seen\\.json)$`),
+  };
+}
+
 function bundleFiles(slug) {
+  const names = bundleNames(slug);
+  const dirs = { "deep-plan/state": STATE_DIR, "deep-plan/keys": KEYS_DIR, "plans": PLANS_DIR, "plans/reviews": REVIEWS_DIR_DP() };
   const out = [];
-  const add = (dir, rel, name) => { const p = path.join(dir, name); try { if (fs.statSync(p).isFile()) out.push([rel + "/" + name, p]); } catch { /* absent */ } };
-  add(STATE_DIR, "deep-plan/state", slug + ".json");
-  add(KEYS_DIR, "deep-plan/keys", slug + ".spec.json");
-  add(KEYS_DIR, "deep-plan/keys", slug + ".key.json");
-  for (const n of (() => { try { return fs.readdirSync(PLANS_DIR); } catch { return []; } })())
-    if (n.startsWith(slug + ".")) add(PLANS_DIR, "plans", n);
-  const rid = new RegExp("^" + slug.replace(/[.]/g, "\\.") + "-(inc\\d+|delivery)\\.");
-  for (const n of (() => { try { return fs.readdirSync(REVIEWS_DIR_DP()); } catch { return []; } })())
-    if (rid.test(n) && !n.includes(".tmp-")) add(REVIEWS_DIR_DP(), "plans/reviews", n);
+  for (const [rel, dir] of Object.entries(dirs)) {
+    let list = [];
+    try { list = fs.readdirSync(dir); } catch { /* absent */ }
+    for (const n of list) {
+      const p = path.join(dir, n);
+      try { if (names[rel].test(n) && fs.statSync(p).isFile()) out.push([rel + "/" + n, p]); } catch { /* gone */ }
+    }
+  }
   return out;
 }
 
@@ -2912,13 +2927,20 @@ function importState(file, flags) {
   if (!/^[a-z0-9][a-z0-9._-]{0,120}$/.test(b.slug)) die(`bad slug in the bundle: ${b.slug}`);
   if (readState(b.slug) && !flags.force) die(`plan ${b.slug} already exists here; --force replaces it`);
   const bases = { "deep-plan/state": STATE_DIR, "deep-plan/keys": KEYS_DIR, "plans/reviews": REVIEWS_DIR_DP(), "plans": PLANS_DIR };
+  const names = bundleNames(b.slug);
+  // Checked whole before anything is written: only the plan's own file names,
+  // in the known folders, and at least its state and spec.
+  for (const rel of Object.keys(b.files)) {
+    const dir = path.posix.dirname(rel), name = path.posix.basename(rel);
+    if (!bases[dir] || !names[dir].test(name))
+      die(`refused: the bundle names ${rel}, outside the plan's own files`);
+  }
+  for (const need of [`deep-plan/state/${b.slug}.json`, `deep-plan/keys/${b.slug}.spec.json`])
+    if (!(need in b.files)) die(`refused: the bundle has no ${need}`);
   let n = 0;
   for (const [rel, b64] of Object.entries(b.files)) {
     const dir = path.posix.dirname(rel), name = path.posix.basename(rel);
     const base = bases[dir];
-    // Only the known folders, and a plain file name: a bundle names no path.
-    if (!base || name !== path.basename(name) || name.startsWith(".") || !(name.startsWith(b.slug + ".") || name.startsWith(b.slug + "-")))
-      die(`refused: the bundle names ${rel}, outside the plan's own files`);
     fs.mkdirSync(base, { recursive: true });
     fs.writeFileSync(path.join(base, name), Buffer.from(String(b64), "base64"));
     n++;
@@ -2929,7 +2951,7 @@ function importState(file, flags) {
   const here = (() => { const r = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }); return r.status === 0 ? r.stdout.trim() : ""; })();
   const root = flags.root ? path.resolve(flags.root) : (st.root && fs.existsSync(st.root) ? st.root : here);
   if (root && root !== st.root) { st.root = root; log1(st, `import-state: root is now ${root}`); writeState(st); }
-  rerenderWorking(b.slug);
+  try { rerenderWorking(b.slug); } catch (e) { say(`  (the working page was not redrawn: ${e.message}; deep-plan rehydrate ${b.slug} redraws it)`); }
   say(`imported ${b.slug}: ${n} file(s); root ${st.root || "(none)"}`);
 }
 
