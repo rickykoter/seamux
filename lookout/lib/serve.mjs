@@ -20,6 +20,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import * as S from "./store.mjs";
+import { applyOp } from "./ops.mjs";
 
 export const SERVE_FILE = process.env.LOOKOUT_SERVE_FILE ||
   path.join(os.homedir(), ".claude", "lookout", "serve.json");
@@ -27,8 +28,6 @@ export const LOG_FILE = SERVE_FILE.replace(/\.json$/, "") + ".log";
 export const IDLE_MS = Number(process.env.LOOKOUT_SERVE_IDLE_MS) || 30 * 60 * 1000;
 export const SERVER_NAME = "lookout-serve";
 export const MAX_BODY = 64 * 1024;
-const MAX_TEXT = 4000;
-const OPS = ["comment", "resolve", "dismiss", "reopen", "answer"];
 
 const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, ms));
 const alive = pid => { if (!pid) return false; try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
@@ -56,29 +55,9 @@ export function reviewPath(id, ext) {
 
 // ---------------------------------------------------------------- ops
 
-function nextId(items, prefix) {
-  let n = 0;
-  for (const x of items) {
-    const id = x && typeof x.id === "string" ? x.id : "";
-    if (id.startsWith(prefix) && /^\d+$/.test(id.slice(prefix.length))) n = Math.max(n, Number(id.slice(prefix.length)));
-  }
-  return prefix + (n + 1);
-}
-
-const now = () => new Date().toISOString();
-const isInt = v => typeof v === "number" && Number.isInteger(v);
-const list = (o, k) => { if (!Array.isArray(o[k])) o[k] = []; return o[k]; };
-function message(msgs, text, extra = {}) {
-  msgs.push({ id: nextId(msgs, "m"), by: "human", at: now(), text, ...extra });
-}
-
-// One op from the page, as the human: [http code, reply]. The same rules as
-// crew-board's review.rs apply, under lookout's own lock.
+// One op from the page, as the human: [http code, reply]. The rules are
+// lib/ops.mjs's; this reads, applies and writes under lookout's own lock.
 export function apply(id, body, { sync = syncReview } = {}) {
-  const op = typeof body.op === "string" ? body.op : "";
-  if (!OPS.includes(op)) return [400, { error: "unknown op" }];
-  const text = [...String(body.text ?? "").trim()].slice(0, MAX_TEXT).join("");
-  let itemId = body.item == null ? "" : String(body.item);
   let result;
   try {
     result = S.withLock(id, () => {
@@ -86,55 +65,11 @@ export function apply(id, body, { sync = syncReview } = {}) {
       let review;
       try { review = JSON.parse(fs.readFileSync(file, "utf8")); }
       catch (e) { return e.code === "ENOENT" ? [404, { error: "no such review" }] : [409, { error: e.message }]; }
-      if (!review || typeof review !== "object" || Array.isArray(review)) return [409, { error: "the review record is not an object" }];
-      list(review, "findings"); list(review, "threads");
-      let item = null; // [listName, index]
-      if (op === "answer") {
-        if (!(review.policy && review.policy.quiz)) return [400, { error: "this review has no quiz" }];
-        const note = (Array.isArray(review.notes) ? review.notes : []).find(n => n && n.id === itemId);
-        const quiz = note && note.quiz && typeof note.quiz === "object" && !Array.isArray(note.quiz) ? note.quiz : null;
-        if (!quiz) return [404, { error: `no question on note ${itemId}` }];
-        const nOpts = Array.isArray(quiz.options) ? quiz.options.length : 0;
-        if (!isInt(body.pick) || body.pick < 0 || body.pick >= nOpts) return [400, { error: "pick is an option's index as written" }];
-        if (quiz.answered) return [409, { error: "already answered", review }];
-        quiz.answered = { pick: body.pick, correct: quiz.answer === body.pick, at: now(), by: "human" };
-      } else if (itemId) {
-        let i = review.findings.findIndex(f => f && f.id === itemId);
-        if (i >= 0) item = ["findings", i];
-        else if ((i = review.threads.findIndex(t => t && t.id === itemId)) >= 0) item = ["threads", i];
-        else return [404, { error: `no finding or thread ${itemId}` }];
-      }
-      if (op === "comment") {
-        if (!text) return [400, { error: "an empty comment says nothing" }];
-        if (item) {
-          const it = review[item[0]][item[1]];
-          if (!it || typeof it !== "object" || Array.isArray(it)) return [400, { error: "the item is not an object" }];
-          message(list(it, item[0] === "findings" ? "thread" : "messages"), text);
-        } else {
-          const f = body.file == null ? "" : String(body.file);
-          const side = body.side ? body.side : "new";
-          if (!(review.files || []).some(x => x && x.path === f)) return [400, { error: "file is not in this review" }];
-          if (!isInt(body.line) || body.line < 1 || (side !== "new" && side !== "old"))
-            return [400, { error: "a comment needs a line and a side" }];
-          const tid = nextId(review.threads, "t"), msgs = [];
-          message(msgs, text);
-          review.threads.push({ id: tid, file: f, line: body.line, side, status: "open", by: "human", createdAt: now(), messages: msgs });
-          itemId = tid;
-        }
-      } else if (op !== "answer") {
-        if (!item) return [400, { error: `${op} needs an item` }];
-        let to = op === "resolve" ? "resolved" : op === "dismiss" ? "dismissed" : "open";
-        if (item[0] === "threads" && to === "dismissed") to = "resolved";
-        const it = review[item[0]][item[1]];
-        if (!it || typeof it !== "object" || Array.isArray(it)) return [400, { error: "the item is not an object" }];
-        const from = it.status || "open";
-        Object.assign(it, { status: to, statusBy: "human", statusAt: now() });
-        message(list(it, item[0] === "findings" ? "thread" : "messages"), text, { kind: "status", from, to });
-      }
-      review.updatedAt = now();
+      const out = applyOp(review, body);
+      if (out[0] !== 200) return out;
       try { S.writeAtomic(file, JSON.stringify(review, null, 2) + "\n"); }
       catch (e) { return [409, { error: e.message }]; }
-      return [200, { ok: true, item: itemId, review }];
+      return out;
     });
   } catch (e) { return [409, { error: e.message }]; }
   if (result[0] === 200) sync(id);

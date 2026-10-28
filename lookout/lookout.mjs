@@ -33,6 +33,7 @@ import * as N from "./lib/notes.mjs";
 import { brief } from "./lib/prompt.mjs";
 import { detectHost } from "./lib/host.mjs";
 import * as SV from "./lib/serve.mjs";
+import * as AR from "./lib/artifact.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -550,10 +551,42 @@ function usage() {
   lookout list [--json]
   lookout setup             engine pointer, ~/.local/bin shim, pinned highlight.js
   lookout engine            print the engine pointer and the detected host
+  lookout export-artifact <id> [--json]
+                            the review as a page to publish with the Artifact tool (remote hosts)
+  lookout pull <id> <rows.json> [--json]
+                            replay the published page's comments and closes into the review
   lookout serve [--url PATH] [--status|--stop]
                             start lookout's review server if needed and print a page's URL
 
   store: ${S.REVIEWS_DIR}/<id>.json`);
+}
+
+// `lookout export-artifact <id> [--json]`: the review as a page to publish
+// with the Artifact tool, its comments and closes kept in the page's db.
+function cmdExportArtifact() {
+  const id = reviewArg();
+  const meta = AR.exportPage(id, renderPage(id));
+  if (flag("json")) { process.stdout.write(JSON.stringify(meta, null, 2) + "\n"); return; }
+  say(`exported ${meta.path}`);
+  say(`  publish it with the Artifact tool, capabilities ${JSON.stringify(meta.capabilities)}, only after the person agrees`);
+  say(`  then, to bring their comments and closes back: lookout pull ${id} <rows.json>`);
+}
+
+// `lookout pull <id> <rows.json>`: replay the published page's rows (an
+// ArtifactData list of "annotations", saved to a file) into the review.
+function cmdPull() {
+  const [id, file] = positional();
+  if (!id || !file) die("pull <id> <rows.json>  (the rows: an ArtifactData list of the page's annotations collection)");
+  if (!S.exists(id)) die("no review " + id);
+  let rows;
+  try { rows = AR.readRows(path.resolve(file)); } catch (e) { die(`cannot read ${file}: ${e.message}`); }
+  const { applied, skipped } = AR.pull(id, rows);
+  S.update(id, cur => arrange(cur));
+  renderPage(id);
+  if (flag("json")) { process.stdout.write(JSON.stringify({ id, applied, skipped }, null, 2) + "\n"); return; }
+  say(`pulled ${applied.length} row(s) into ${id}` + (skipped.length ? `, skipped ${skipped.length}` : ""));
+  for (const a of applied) say(`  ${a.op}${a.item ? " " + a.item : ""}`);
+  for (const k of skipped) say(`  skipped ${k.rid}: ${k.why}`);
 }
 
 // `lookout serve`: start the server if needed and print a page's URL, run it
@@ -595,6 +628,8 @@ switch (verb) {
   case "list":   cmdList(); break;
   case "setup":  cmdSetup(); break;
   case "serve":  cmdServe(); break;
+  case "export-artifact": cmdExportArtifact(); break;
+  case "pull":   cmdPull(); break;
   case "engine": {
     // The pointer as written by this run, plus the host it detected (not
     // stored in the pointer: the host belongs to the session, not the copy).

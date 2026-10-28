@@ -1102,6 +1102,69 @@ catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.n
     /from the remote page/.test(h.stdout), h.stdout + h.stderr);
 }
 
+// ---------------------------------------------------------------- Artifact export and pull
+{
+  const R9 = repo("r9");
+  write(R9, "a.js", "1\n"); sh(R9, `git add -A && ${G} commit -q -m base`);
+  write(R9, "a.js", "2\n3\n");
+  const id = JSON.parse(cli(R9, "open", "--worktree", "--json").stdout).id;
+  const fj = path.join(TMP, "r9-f.json");
+  fs.writeFileSync(fj, JSON.stringify([{ file: "a.js", line: 1, severity: "major", summary: "two", failure_scenario: "x" }]));
+  cli(R9, "findings", "add", id, fj);
+  let r = cli(R9, "export-artifact", id, "--json");
+  const meta = JSON.parse(r.stdout || "{}");
+  const page = meta.path ? fs.readFileSync(meta.path, "utf8") : "";
+  ok("export-artifact writes the review page with a db layer, and says what to publish with",
+    r.status === 0 && /\.artifact\.html$/.test(meta.path) && meta.capabilities.db.rules[0].path === "annotations" &&
+    page.includes('claude.use("db")') && page.includes("function applyOp(") && !/^export /m.test(page.slice(page.lastIndexOf("<script>"))), r.stderr);
+  // Run the page's db layer against a stand-in for the page and its db.
+  const boot = page.slice(page.lastIndexOf("<script>") + 8, page.lastIndexOf("</script>"));
+  const review = S.read(id);
+  let served = null, shown = null;
+  const writes = [];
+  let snap = null;
+  const db = {
+    doc: p => ({ set: async row => { writes.push({ p, row }); } }),
+    collection: () => ({ orderBy: () => ({ onSnapshot: fn => { snap = fn; } }) }),
+  };
+  const ctx = { window: { lookout: { review: JSON.parse(JSON.stringify(review)),
+      serve: o => { served = o; return { take: rv => { shown = rv; } }; }, applyReview: rv => { shown = rv; } } },
+    claude: { use: async n => n === "db" ? db : null }, document: { body: { insertBefore() {}, firstChild: null }, createElement: () => ({ style: {} }) },
+    JSON, Date, Math, Number, String, Array, Object, Error, Promise };
+  (await import("node:vm")).runInNewContext(boot, ctx);
+  await new Promise(res => setTimeout(res, 20));
+  ok("page: it serves through the db, not a server, and does not poll", served && served.poll === false && typeof served.post === "function");
+  const posted = await served.post({ op: "comment", file: "a.js", line: 2, side: "new", text: "why three?", t: "ignored" });
+  ok("page: a comment is one annotations row, written as the human, with no token in it",
+    writes.length === 1 && /^annotations\/r/.test(writes[0].p) && writes[0].row.op === "comment" && writes[0].row.by === "human" &&
+    writes[0].row.line === 2 && !("t" in writes[0].row) && posted.review.threads.length === 1, JSON.stringify(writes));
+  let refused = "";
+  try { await served.post({ op: "resolve", item: "f99" }); } catch (e) { refused = e.message; }
+  ok("page: an op the rules refuse is said on the page and never stored", refused === "no finding or thread f99" && writes.length === 1);
+  snap({ docs: [{ data: () => writes[0].row }, { data: () => ({ op: "resolve", item: "f1", text: "fine", by: "human", at: "2099-01-01T00:00:00.000Z" }) }] });
+  ok("page: every row from the db is applied, in order, to what it shows",
+    shown && shown.threads.length === 1 && shown.findings[0].status === "resolved" && shown.findings[0].statusBy === "human");
+  // Pull: the rows as the agent saved them from ArtifactData.
+  const rowsFile = path.join(TMP, "r9-rows.json");
+  fs.writeFileSync(rowsFile, JSON.stringify({ docs: [
+    { id: "annotations/rb", data: { op: "resolve", item: "f1", text: "fixed now", by: "human", at: "2026-01-01T00:00:02.000Z" } },
+    { id: "annotations/ra", data: { ...writes[0].row, at: "2026-01-01T00:00:01.000Z" } },
+    { id: "annotations/rc", data: { op: "dismiss", item: "f1", by: "agent", at: "2026-01-01T00:00:03.000Z" } },
+    { id: "annotations/rd", data: { op: "launch", by: "human", at: "2026-01-01T00:00:04.000Z" } },
+  ] }));
+  r = cli(R9, "pull", id, rowsFile, "--json");
+  const res = JSON.parse(r.stdout || "{}");
+  const after = S.read(id);
+  ok("pull: replays the human's rows in time order through the same ops",
+    r.status === 0 && res.applied.map(a => a.rid).join() === "ra,rb" && after.threads[0].messages[0].text === "why three?" &&
+    after.findings[0].status === "resolved" && after.findings[0].statusBy === "human", r.stdout + r.stderr);
+  ok("pull: a row not written by the page's human, and an op the rules refuse, are skipped and named",
+    res.skipped.length === 2 && /written by "agent"/.test(res.skipped.find(k => k.rid === "rc").why) &&
+    res.skipped.find(k => k.rid === "rd").why === "unknown op" && after.findings[0].status === "resolved");
+  r = cli(R9, "pull", id, rowsFile, "--json");
+  ok("pull: a second pull applies nothing again", JSON.parse(r.stdout).applied.length === 0 && S.read(id).threads.length === 1);
+}
+
 // ---------------------------------------------------------------- page script
 {
   const r = spawnSync("node", ["--check", path.join(HERE, "page", "review.js")], { encoding: "utf8" });
