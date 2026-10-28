@@ -2107,6 +2107,14 @@ if (crewImpl.isRust("crew-board")) {
     findings: [{ id: "f1", file: "a.js", line: 2, severity: "major", status: "open", thread: [] }],
     threads: [],
   };
+  // The Rust server forwards /review/ to lookout's own server, found through
+  // lookout's engine pointer: point it at this checkout's lookout.
+  fs.mkdirSync(join(HOME, ".claude", "lookout"), { recursive: true });
+  fs.writeFileSync(join(HOME, ".claude", "lookout", "engine.json"),
+    JSON.stringify({ root: join(HERE, "..", "..", "lookout"), version: "probe" }, null, 2) + "\n");
+  fs.mkdirSync(join(HOME, ".claude", "deep-plan"), { recursive: true });
+  fs.writeFileSync(join(HOME, ".claude", "deep-plan", "engine.json"),
+    JSON.stringify({ root: join(HERE, "..", "..", "deep-plan"), version: "probe" }, null, 2) + "\n");
   fs.writeFileSync(join(reviews, "demo.json"), JSON.stringify(review));
   fs.writeFileSync(join(reviews, "demo.html"), "<!doctype html><html><body><p>page</p></body></html>");
   // A review with the ownership quiz on: two notes with questions, answered
@@ -2151,7 +2159,7 @@ if (crewImpl.isRust("crew-board")) {
   // seconds to start. Never a fixed sleep.
   let port = 0;
   const ping = p => new Promise(res => {
-    const r = http.request({ host: "127.0.0.1", port: p, method: "GET", path: "/review/demo" }, resp => { resp.resume(); res(true); });
+    const r = http.request({ host: "127.0.0.1", port: p, method: "GET", path: "/health" }, resp => { resp.resume(); res(true); });
     r.on("error", () => res(false));
     r.setTimeout(1000, () => { r.destroy(); res(false); });
     r.end();
@@ -2191,11 +2199,21 @@ if (crewImpl.isRust("crew-board")) {
     checks.push(["intent token: a loose token file is replaced and made 0600",
       token !== "loose" && (fs.statSync(tokenFile).mode & 0o777) === 0o600]);
     const page = await req("GET", "/review/demo");
+    // The token the page carries is its server's: crew's for the Python
+    // server, lookout's behind the Rust one's proxy. The page's calls use it.
+    const rtoken = (page.body.match(/window\.lookout\.serve\(\{ token: "([^"]+)", id: "demo" \}\)/) || [])[1] || "";
     checks.push(["review route: the page is served with its token script before </body>",
-      page.status === 200 && page.body.includes(`window.lookout.serve({ token: "${token}", id: "demo" })`) &&
-      page.body.indexOf("window.lookout.serve") < page.body.indexOf("</body>")]);
+      page.status === 200 && !!rtoken && (process.env.CREW_IMPL === "rust" || rtoken === token) &&
+      page.body.indexOf("window.lookout.serve") < page.body.indexOf("</body>"), page.status + " " + page.body.slice(0, 200)]);
+    // The plan routes answer alike from either server (the Rust one forwards
+    // them to deep-plan's): a missing plan, and an act without its token.
+    const nope = await req("GET", "/plan/no-such-plan");
+    const badInc = await req("GET", "/inc?t=wrong&slug=x&n=1&a=go");
+    checks.push(["plan routes: a missing plan is 404, and /inc refuses a bad token",
+      nope.status === 404 && /no such plan page/.test(nope.body) && badInc.status === 403 && /bad token/.test(badInc.body),
+      nope.status + " " + nope.body + " | " + badInc.status + " " + badInc.body]);
     const noTok = await req("GET", "/review/demo.json");
-    const withTok = await req("GET", `/review/demo.json?t=${encodeURIComponent(token)}`);
+    const withTok = await req("GET", `/review/demo.json?t=${encodeURIComponent(rtoken)}`);
     checks.push(["review route: the record needs the token, and opens to no other origin",
       noTok.status === 403 && withTok.status === 200 && JSON.parse(withTok.body).id === "demo" &&
       !("access-control-allow-origin" in withTok.headers)]);
@@ -2284,7 +2302,7 @@ if (crewImpl.isRust("crew-board")) {
     checks.push(["wake: a plan surface is one of three names",
       (await wo(`id=${byTitle("a plan").id}&s=..%2F..%2Fetc`)).detail === "unknown plan surface"]);
 
-    const ok = { op: "comment", t: token, file: "a.js", line: 1, side: "new", text: "why?" };
+    const ok = { op: "comment", t: rtoken, file: "a.js", line: 1, side: "new", text: "why?" };
     checks.push(["review POST: no Origin is refused", (await post(ok, { origin: "" })).status === 403]);
     checks.push(["review POST: another origin is refused", (await post(ok, { origin: "https://evil.example" })).status === 403]);
     checks.push(["review POST: only JSON", (await post(ok, { type: "text/plain" })).status === 415]);
@@ -2300,15 +2318,15 @@ if (crewImpl.isRust("crew-board")) {
     checks.push(["review POST comment: a new thread, written as the human",
       c.status === 200 && JSON.parse(c.body).item === "t1" && s1.threads[0].messages[0].by === "human" &&
       s1.threads[0].messages[0].text === "why?" && s1.updatedAt !== review.updatedAt]);
-    await post({ op: "comment", t: token, item: "f1", text: "is this real?" });
-    await post({ op: "resolve", t: token, item: "f1", text: "fixed, thanks" });
+    await post({ op: "comment", t: rtoken, item: "f1", text: "is this real?" });
+    await post({ op: "resolve", t: rtoken, item: "f1", text: "fixed, thanks" });
     const s2 = store();
     const f1 = s2.findings[0];
     checks.push(["review POST: a reply and a resolve on a finding, both the human's",
       f1.thread.length === 2 && f1.thread[0].text === "is this real?" && f1.status === "resolved" &&
       f1.statusBy === "human" && f1.thread[1].kind === "status" && f1.thread[1].to === "resolved"]);
-    await post({ op: "reopen", t: token, item: "f1" });
-    await post({ op: "dismiss", t: token, item: "t1" });
+    await post({ op: "reopen", t: rtoken, item: "f1" });
+    await post({ op: "dismiss", t: rtoken, item: "t1" });
     const s3 = store();
     checks.push(["review POST: reopen; and a comment thread is resolved, never dismissed",
       s3.findings[0].status === "open" && s3.threads[0].status === "resolved"]);
@@ -2317,7 +2335,7 @@ if (crewImpl.isRust("crew-board")) {
     // The quiz's answer op: refused without a quiz, a question or a usable
     // pick; graded and recorded once, as the human's.
     const qstore = () => JSON.parse(fs.readFileSync(join(reviews, "quiz.json"), "utf8"));
-    const ans = (o, path = "/review/quiz") => post({ op: "answer", t: token, ...o }, { path });
+    const ans = (o, path = "/review/quiz") => post({ op: "answer", t: rtoken, ...o }, { path });
     checks.push(["review POST answer: a review without the quiz refuses it",
       (await ans({ item: "f1", pick: 0 }, "/review/demo")).status === 400]);
     checks.push(["review POST answer: a note without a question, or no such note, is 404",
@@ -2342,8 +2360,13 @@ if (crewImpl.isRust("crew-board")) {
     const old = new Date(Date.now() - 60000);
     fs.utimesSync(lock, old, old);
     checks.push(["review POST: a stale lock is broken, not waited on",
-      (await post({ op: "comment", t: token, item: "t1", text: "after a crash" })).status === 200 &&
+      (await post({ op: "comment", t: rtoken, item: "t1", text: "after a crash" })).status === 200 &&
       !fs.existsSync(lock) && !fs.existsSync(lock + "-break")]);
+    // Done with lookout's server (the Rust proxy's): stop it, and let the
+    // syncs its writes started finish, since each lookout run rewrites the
+    // engine pointer the button checks below replace with a fake.
+    try { process.kill(JSON.parse(fs.readFileSync(join(HOME, ".claude", "lookout", "serve.json"), "utf8")).pid); } catch { /* none */ }
+    await new Promise(r => setTimeout(r, 1500));
 
     // ---- row buttons, through /do ------------------------------------------
     // What the server actually sends for a row's buttons. cmux refuses
@@ -2460,6 +2483,9 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
     checks.push(["review routes ran to the end: " + e.message, false]);
   } finally {
     srv.kill();
+    // The lookout server the proxy started under this HOME, if any.
+    for (const plug of ["lookout", "deep-plan"])
+      try { process.kill(JSON.parse(fs.readFileSync(join(HOME, ".claude", plug, "serve.json"), "utf8")).pid); } catch { /* none */ }
     fs.rmSync(HOME, { recursive: true, force: true });
   }
 }
@@ -2569,6 +2595,6 @@ setInterval(() => { try { fs.mkdirSync(p); fs.utimesSync(p, old, old); } catch {
 }
 
 let bad = 0;
-for (const [n, ok] of checks) { if (!ok) bad++; console.log(`  ${ok ? "ok  " : "FAIL"} ${n}`); }
+for (const [n, ok, extra] of checks) { if (!ok) bad++; console.log(`  ${ok ? "ok  " : "FAIL"} ${n}${!ok && extra !== undefined ? "  :: " + String(extra).slice(0, 600) : ""}`); }
 console.log(`\n${bad ? "\x1b[31m" : "\x1b[32m"}board probe: ${checks.length - bad} passed, ${bad} failed\x1b[0m`);
 process.exit(bad ? 1 : 0);

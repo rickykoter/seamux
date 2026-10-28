@@ -226,8 +226,6 @@ pub fn run() -> i32 {
         None => std::env::remove_var("CREW_INTENT_PORT"),
     }
     t.check("ccusage is installed", crate::act::which("ccusage").is_some(), "npm i -g ccusage — the status line and /usage both need it");
-    let filled = crate::routes::PLAN_JS.replace("__TOKEN__", "x").replace("__SLUG__", "y");
-    t.check("the injected script leaves no placeholders", !filled.contains("__TOKEN__") && !filled.contains("__SLUG__"), "");
 
     // Asks: containment, then delivery through a fake terminal.
     in_temp_home(|_| {

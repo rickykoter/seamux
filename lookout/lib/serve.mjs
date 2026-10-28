@@ -235,13 +235,26 @@ export function makeServer({ version, root, token, onRequest = () => {}, sync })
 
 export function serveForeground({ version, root }) {
   const token = crypto.randomBytes(24).toString("hex");
-  let last = Date.now();
+  let last = Date.now(), started = false;
   const server = makeServer({ version, root, token, onRequest: () => { last = Date.now(); } });
   const tidy = () => { const cur = readJson(SERVE_FILE); if (cur && cur.pid === process.pid) fs.rmSync(SERVE_FILE, { force: true }); };
   server.listen(0, "127.0.0.1", () => {
+    // Look, then write, under a start lock: two servers starting at once
+    // must not both find no record and both write one.
+    fs.mkdirSync(path.dirname(SERVE_FILE), { recursive: true });
+    const lock = SERVE_FILE + ".start";
+    for (let i = 0; i < 60; i++) {
+      try { fs.mkdirSync(lock); break; }
+      catch {
+        try { if (Date.now() - fs.statSync(lock).mtimeMs > 10000) fs.rmdirSync(lock); } catch { /* raced */ }
+        sleep(50);
+      }
+    }
+    const release = () => { try { fs.rmdirSync(lock); } catch { /* gone */ } };
     // A starter that lost a race: another server is recorded and healthy.
     const other = readJson(SERVE_FILE);
     if (other && other.pid !== process.pid && alive(other.pid) && (health(other.port) || {}).pid === other.pid) {
+      release();
       log(`another server (pid ${other.pid}) is already recorded; exiting`);
       server.close(); process.exit(0);
     }
@@ -250,13 +263,22 @@ export function serveForeground({ version, root }) {
     const tmp = SERVE_FILE + ".tmp-" + process.pid;
     fs.writeFileSync(tmp, JSON.stringify(rec, null, 2) + "\n", { mode: 0o600 });
     fs.renameSync(tmp, SERVE_FILE);
+    release();
+    started = true;
     log(`listening on 127.0.0.1:${rec.port} (pid ${process.pid}, ${root})`);
   });
   const timer = setInterval(() => {
+    // No longer the recorded server (stopped, or replaced): nobody can find
+    // this one, so it goes.
+    const cur = readJson(SERVE_FILE);
+    if (started && (!cur || cur.pid !== process.pid)) {
+      log("serve.json no longer names this server, exiting");
+      clearInterval(timer); server.close(); process.exit(0);
+    }
     if (Date.now() - last < IDLE_MS) return;
     log(`idle for ${Math.round(IDLE_MS / 60000)} min, exiting`);
     clearInterval(timer); tidy(); server.close(); process.exit(0);
-  }, Math.min(IDLE_MS, 30000));
+  }, Math.min(IDLE_MS, 10000));
   for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => { tidy(); process.exit(0); });
   return server;
 }
