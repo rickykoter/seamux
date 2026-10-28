@@ -132,6 +132,11 @@ pub fn ensure(p: Plugin) -> Result<u16, String> {
         Some((0, _, _)) => {}
         Some((_, out, err)) => {
             let last: String = format!("{out}{err}").trim().lines().last().unwrap_or("").chars().take(160).collect();
+            // An engine from before `serve` existed answers with its unknown-
+            // verb message: say what that means rather than echo it.
+            if last.contains("extension verb") || last.contains("unknown verb") {
+                return Err(format!("{} at {cli} has no serve verb: the plugin is older than this app, so update it", p.name()));
+            }
             return Err(format!("{} serve did not start: {last}", p.name()));
         }
         None => return Err(format!("{} serve did not start in 20s", p.name())),
