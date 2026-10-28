@@ -2309,7 +2309,8 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   const CLOG = path.join(TMP, "fake-cmux.log");
   const TARGETS = path.join(TMP, "board-targets.json");
   fs.writeFileSync(TARGETS, JSON.stringify({ "WS-1": { id: "WS-1", ref: "workspace:7", cwd: BR } }));
-  const BENV = { ...ENV, CREW_CMUX: FAKE, FAKE_CMUX_LOG: CLOG, DEEP_PLAN_BOARD_TARGETS: TARGETS };
+  // The cmux driver is cmux's host; the Playwright driver's checks are at the end.
+  const BENV = { ...ENV, CREW_CMUX: FAKE, FAKE_CMUX_LOG: CLOG, DEEP_PLAN_BOARD_TARGETS: TARGETS, SEAMUX_HOST: "cmux" };
   const bcli = (...args) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...args], { encoding: "utf8", env: BENV, cwd: REPO });
   const s = JSON.parse(JSON.stringify(spec));
   s.slug = "br-1";
@@ -2495,6 +2496,60 @@ exit 1
   ok("with no workspace for the root the run still goes, and its log says where the tabs land",
     r.status === 0 && /no cmux workspace found/.test(fs.readFileSync(bck("flow").ran.log, "utf8")));
   fs.writeFileSync(TARGETS, JSON.stringify(ws0));
+  // ---- the Playwright driver: the same scripts where cmux is not the host.
+  // tools/fake-playwright stands in for the package and Chromium, and runs
+  // the real browser/prelude-node.js.
+  {
+    const PWLOG = path.join(TMP, "fake-pw.log");
+    fs.writeFileSync(path.join(BR, "e2e", "throws.js"),
+      'await step("open the page", async () => { await page.goto(env.BASE_URL || "http://x"); });\n' +
+      'await step("see the banner", async () => { await expect(page.locator("#banner")).toHaveText("Welcome", { timeout: 300 }); });\n');
+    const vj = JSON.parse(fs.readFileSync(path.join(BR, ".seamux", "verify.json"), "utf8"));
+    vj.recipes.push({ id: "throws", kind: "browser", steps: [{ browser: "e2e/throws.js" }] });
+    fs.writeFileSync(path.join(BR, ".seamux", "verify.json"), JSON.stringify(vj, null, 2));
+    const p2 = JSON.parse(JSON.stringify(spec));
+    p2.slug = "br-pw";
+    p2.deliverables[0] = { title: "Sign-in flow", body: "A page.", files: ["src/a.ts"],
+      checks: ["flow", "throws"].map(id => ({ id, kind: "browser", name: id, recipe: id })) };
+    const PENV = { ...ENV, DEEP_PLAN_BOARD_TARGETS: TARGETS, SEAMUX_HOST: "terminal",
+      DEEP_PLAN_PLAYWRIGHT: path.join(HERE, "tools", "fake-playwright"), FAKE_PW_LOG: PWLOG, CREW_CMUX: FAKE, FAKE_CMUX_LOG: CLOG };
+    const pcli = (env, ...args) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...args], { encoding: "utf8", env, cwd: REPO });
+    pcli(PENV, "render", tmpSpec(p2), "--root", BR);
+    const k2 = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "br-pw.key.json"), "utf8"));
+    pcli(PENV, "grade", "br-pw", ...Object.entries(k2.answers).map(([q, v]) => `${q}=${v.letter}`));
+    pcli(PENV, "go", "br-pw", "1"); pcli(PENV, "start", "br-pw", "1");
+    const pck = id => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "br-pw.json"), "utf8")).increments[0].checks[id];
+    const pruns = path.join(ENV.DEEP_PLAN_PLANS_DIR, "br-pw.runs");
+    const cmuxCalls = () => fs.existsSync(CLOG) ? fs.readFileSync(CLOG, "utf8").trim().split("\n").length : 0;
+    const before = cmuxCalls();
+    r = pcli(PENV, "check", "run", "br-pw", "1", "flow", "--inline");
+    const pf = pck("flow");
+    const pwlog = fs.readFileSync(PWLOG, "utf8").trim().split("\n").map(l => JSON.parse(l));
+    ok("playwright: outside cmux a browser check runs through Playwright, not cmux's repl",
+      r.status === 0 && pf.status === "pass" && cmuxCalls() === before && pwlog.some(e => e.launch) &&
+      /\[playwright: .*\(stand-in\)\]/.test(fs.readFileSync(pf.ran.log, "utf8")), r.stdout + r.stderr);
+    ok("playwright: earlier exports reach env, and the seed's storage state loads into the context",
+      pwlog.some(e => e.goto === "http://shop.local") && pwlog.some(e => e.context && /storage-state\.json$/.test(e.context.storageState || "")));
+    const pdir = path.join(pruns, pf.evidence.dir);
+    ok("playwright: the same evidence: progress, frames per step, key frames and a trace; no replay",
+      pf.evidence.result === "pass" && pf.evidence.frames >= 4 && pf.evidence.trace === "trace.jsonl" && pf.evidence.animation === "" &&
+      fs.existsSync(path.join(pdir, "key-01.png")) && fs.existsSync(path.join(pdir, "key-02.png")) &&
+      /"type":"navigate","url":"http:\/\/shop\.local"/.test(fs.readFileSync(path.join(pdir, "trace.jsonl"), "utf8")),
+      JSON.stringify(pf.evidence));
+    r = pcli(PENV, "check", "run", "br-pw", "1", "throws", "--inline");
+    const pt = pck("throws");
+    ok("playwright: a failed expect fails the check, named by its step, with a key frame",
+      pt.status === "fail" && /step "see the banner": expect\(locator\)\.toHaveText\("Welcome"\) failed/.test(pt.note) &&
+      pt.evidence.result === "fail" && pt.evidence.label === "see the banner" &&
+      fs.existsSync(path.join(pruns, pt.evidence.dir, "key-02.png")), pt.note);
+    r = pcli({ ...PENV, DEEP_PLAN_PLAYWRIGHT: "none" }, "check", "run", "br-pw", "1", "flow", "--inline");
+    ok("playwright: with neither cmux nor Playwright the check needs a variant and says what to install",
+      pck("flow").status === "needs-variant" && /no browser driver here/.test(pck("flow").note) && /npx playwright install chromium/.test(pck("flow").note),
+      JSON.stringify(pck("flow")));
+    r = pcli({ ...PENV, SEAMUX_HOST: "cmux" }, "check", "run", "br-pw", "1", "flow", "--inline");
+    ok("playwright: in cmux the repl still drives it", r.status === 0 && cmuxCalls() > before);
+    pcli(PENV, "close", "br-pw");
+  }
 }
 
 // -------------------------------------------------- claim steps: engine-run acquisition

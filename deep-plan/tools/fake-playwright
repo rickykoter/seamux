@@ -1,0 +1,46 @@
+#!/usr/bin/env node
+// A stand-in for Playwright and Chromium, for probe.mjs: lib/browser.mjs runs
+// it as DEEP_PLAN_PLAYWRIGHT=<this> <run.mjs>. It points the program at a
+// fake `playwright` package written beside it and runs the real
+// browser/prelude-node.js with node, so the prelude's step, expect, frames,
+// key frames, trace and verdict are all exercised. The fake page answers
+// goto, screenshot (a PNG header), locators that are visible with the text
+// FAKE_PW_TEXT (default "Sign in"), url and title. Every call is appended to
+// $FAKE_PW_LOG when it is set.
+import fs from "node:fs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+
+const prog = process.argv[2];
+const dir = path.dirname(prog);
+const pkg = path.join(dir, ".fake-playwright", "node_modules", "playwright");
+fs.mkdirSync(pkg, { recursive: true });
+fs.writeFileSync(path.join(pkg, "package.json"), JSON.stringify({ name: "playwright", main: "index.js" }));
+fs.writeFileSync(path.join(pkg, "index.js"), `
+const fs = require("node:fs");
+const log = o => { if (process.env.FAKE_PW_LOG) fs.appendFileSync(process.env.FAKE_PW_LOG, JSON.stringify(o) + "\\n"); };
+const PNG = Buffer.from("89504e470d0a1a0a", "hex");
+const text = process.env.FAKE_PW_TEXT || "Sign in";
+const loc = sel => ({ isVisible: async () => true, innerText: async () => text, count: async () => 1,
+  inputValue: async () => "", click: async () => log({ click: sel }), fill: async (v) => log({ fill: sel, v }) });
+let url = "about:blank";
+const handlers = {};
+const frame = { url: () => url };
+const page = {
+  goto: async u => { url = u; log({ goto: u }); (handlers.framenavigated || []).forEach(h => h(frame)); },
+  screenshot: async () => PNG, on: (ev, fn) => { (handlers[ev] = handlers[ev] || []).push(fn); },
+  mainFrame: () => frame, url: () => url, title: async () => "fake",
+  getByRole: (r, o) => loc("role=" + r), getByText: t => loc("text=" + t), locator: s => loc(s),
+  evaluate: async fn => { const m = { type: () => "log", text: () => "from the page" }; (handlers.console || []).forEach(h => h(m)); },
+};
+exports.chromium = { launch: async o => { log({ launch: o }); return {
+  newContext: async o => { if (o && o.storageState && !fs.existsSync(o.storageState)) throw new Error("storage state missing");
+    log({ context: o || {} }); return { newPage: async () => page }; },
+  close: async () => log({ close: true }) }; } };
+`);
+const src = fs.readFileSync(prog, "utf8").replace(/^const __pwFrom = .*;$/m,
+  `const __pwFrom = ${JSON.stringify(path.join(dir, ".fake-playwright", "noop.js"))};`);
+fs.writeFileSync(prog, src);
+const r = spawnSync(process.execPath, [prog], { stdio: "inherit", cwd: dir, env: process.env });
+fs.rmSync(path.join(dir, ".fake-playwright"), { recursive: true, force: true });
+process.exit(r.status === null ? 1 : r.status);
