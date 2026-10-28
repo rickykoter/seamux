@@ -18,6 +18,9 @@ const env = Object.freeze(/*__DP_ENV__*/);
 const __pwFrom = /*__DP_PLAYWRIGHT__*/;
 const __dpDir = env.DEEP_PLAN_EVIDENCE;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const READ_MS = 250;
+// Frames from the once-a-second timer stop here; a step still gets its two.
+const TIMER_FRAMES = 300;
 const __dpLog = o => {
   try { fs.appendFileSync(__dpDir + "/progress.jsonl", JSON.stringify({ t: Date.now(), ...o }) + "\n"); }
   catch { /* progress is for the plan page; the run does not depend on it */ }
@@ -27,14 +30,19 @@ const __trace = o => {
 };
 
 let __nFrames = 0, __keys = 0, __label = "", __failedIn = "";
-let page = null, __browser = null, __timer = null, __shooting = false;
+let page = null, __browser = null, __timer = null, __shooting = false, __lastShot = null, __timerShots = 0;
 const __frames = () => __nFrames;
 // One frame: the page as it is now. Never two at once, and never fatal.
-const __shoot = async () => {
+const __shoot = async (fromTimer = false) => {
   if (!page || __shooting) return;
+  if (fromTimer && __timerShots >= TIMER_FRAMES) return;
   __shooting = true;
   try {
     const buf = await Promise.race([page.screenshot(), sleep(5000).then(() => null)]);
+    // A page that has not changed adds no frame.
+    if (buf && fromTimer && __lastShot && buf.equals(__lastShot)) return;
+    if (buf && fromTimer) __timerShots++;
+    if (buf) __lastShot = buf;
     if (buf) fs.writeFileSync(__dpDir + "/frame-" + String(++__nFrames).padStart(4, "0") + ".png", buf);
   } catch { /* a page mid-navigation has nothing to show */ }
   finally { __shooting = false; }
@@ -86,10 +94,12 @@ const expect = (target, what) => {
     return {
       toBeVisible: o => check("toBeVisible", undefined, () => target.isVisible(), g => g === true, opt(o)),
       toBeHidden: o => check("toBeHidden", undefined, () => target.isVisible(), g => g === false, opt(o)),
-      toHaveText: (w, o) => check("toHaveText", w, () => target.innerText(), g => __match(g, w, false), opt(o)),
-      toContainText: (w, o) => check("toContainText", w, () => target.innerText(), g => __match(g, w, true), opt(o)),
+      // Each read waits at most READ_MS, so expect's own timeout is the one that holds
+      // (Playwright's innerText and inputValue would wait 30s for the element).
+      toHaveText: (w, o) => check("toHaveText", w, () => target.innerText({ timeout: READ_MS }), g => __match(g, w, false), opt(o)),
+      toContainText: (w, o) => check("toContainText", w, () => target.innerText({ timeout: READ_MS }), g => __match(g, w, true), opt(o)),
       toHaveCount: (w, o) => check("toHaveCount", w, () => target.count(), g => g === w, opt(o)),
-      toHaveValue: (w, o) => check("toHaveValue", w, () => target.inputValue(), g => __match(g, w, false), opt(o)),
+      toHaveValue: (w, o) => check("toHaveValue", w, () => target.inputValue({ timeout: READ_MS }), g => __match(g, w, false), opt(o)),
       toHaveURL: (w, o) => check("toHaveURL", w, () => target.url(), g => __match(g, w, false), opt(o)),
       toHaveTitle: (w, o) => check("toHaveTitle", w, () => target.title(), g => __match(g, w, false), opt(o)),
     };
@@ -98,6 +108,15 @@ const expect = (target, what) => {
 };
 
 let __err = null;
+// The engine kills this process 30s past the step's timeout; close Chromium
+// before that, so a hung script leaves no browser behind.
+const __limit = Number(env.DEEP_PLAN_BROWSER_TIMEOUT || 0) * 1000;
+if (__limit) setTimeout(async () => {
+  __dpLog({ event: "fail", label: __label || "setup", error: `timed out after ${__limit / 1000}s`, frame: __frames(), tab: "" });
+  try { if (__browser) await Promise.race([__browser.close(), sleep(5000)]); } catch { /* going anyway */ }
+  console.error(`Error: timed out after ${__limit / 1000}s`);
+  process.exit(124);
+}, __limit).unref();
 try {
   __label = "setup";
   const { chromium } = createRequire(__pwFrom)("playwright");
@@ -109,7 +128,7 @@ try {
   page.on("framenavigated", f => { if (f === page.mainFrame()) __trace({ type: "navigate", url: f.url() }); });
   __dpLog({ event: "start", record: __dpDir, driver: "playwright" });
   // A frame a second while the script runs, as cmux's recorder gives.
-  __timer = setInterval(() => { void __shoot(); }, 1000);
+  __timer = setInterval(() => { void __shoot(true); }, 1000);
   __label = "";
   await (async () => {
     /*__DP_SCRIPT__*/

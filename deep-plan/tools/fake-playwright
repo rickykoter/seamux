@@ -6,7 +6,8 @@
 // key frames, trace and verdict are all exercised. The fake page answers
 // goto, screenshot (a PNG header), locators that are visible with the text
 // FAKE_PW_TEXT (default "Sign in"), url and title. Every call is appended to
-// $FAKE_PW_LOG when it is set.
+// $FAKE_PW_LOG when it is set. FAKE_PW_NO_BROWSER makes launch fail the way a
+// missing Chromium does.
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -33,7 +34,9 @@ const page = {
   getByRole: (r, o) => loc("role=" + r), getByText: t => loc("text=" + t), locator: s => loc(s),
   evaluate: async fn => { const m = { type: () => "log", text: () => "from the page" }; (handlers.console || []).forEach(h => h(m)); },
 };
-exports.chromium = { launch: async o => { log({ launch: o }); return {
+exports.chromium = { launch: async o => { log({ launch: o });
+  if (process.env.FAKE_PW_NO_BROWSER) throw new Error("browserType.launch: Executable doesn't exist at /x/chromium — run npx playwright install");
+  return {
   newContext: async o => { if (o && o.storageState && !fs.existsSync(o.storageState)) throw new Error("storage state missing");
     log({ context: o || {} }); return { newPage: async () => page }; },
   close: async () => log({ close: true }) }; } };

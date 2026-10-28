@@ -28,7 +28,7 @@ import { resolveFiles, resolver } from "./lib/verify.mjs";
 import { runExec, acquireSteps, alive, sleep, tail } from "./lib/runner.mjs";
 import { releaseClaims } from "./lib/claims.mjs";
 import { buildProof, withProof, ghCanAttach, gh } from "./lib/proof.mjs";
-import { readEvidence, evidenceSummary, newEvidenceDir, pruneEvidence, showTab } from "./lib/browser.mjs";
+import { readEvidence, evidenceSummary, newEvidenceDir, pruneEvidence, showTab, browserDriver } from "./lib/browser.mjs";
 import { detect, draftFile } from "./lib/detect.mjs";
 import { detectHost, hostLine } from "./lib/host.mjs";
 import * as SERVE from "./lib/serve.mjs";
@@ -4098,6 +4098,10 @@ switch (cmd) {
     if (flags.json) { process.stdout.write(JSON.stringify({ ...detectHost(), root: HERE, version: engineVersion() }, null, 2) + "\n"); break; }
     say(hostLine());
     say(`engine: ${HERE} (${engineVersion()})`);
+    const drv = browserDriver(process.cwd());
+    say(`browser checks: ${drv.kind === "cmux" ? "cmux browser repl (" + drv.bin + ")"
+      : drv.kind === "playwright" ? "Playwright, headless Chromium" + (drv.fake ? " (stand-in " + drv.fake + ")" : " (from " + path.dirname(drv.from) + ")")
+      : drv.why}`);
     break;
   }
   case "render": {

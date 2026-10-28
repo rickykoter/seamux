@@ -39,7 +39,15 @@ export const PLAYWRIGHT_HINT = "npm i -D playwright && npx playwright install ch
 // Where `playwright` resolves from: a package.json path to createRequire
 // against, or "". The repo first (a repo with Playwright seeds has it), then
 // the global npm root, then a copy npx already holds.
+const pwSeen = new Map();
 export function playwrightFrom(root) {
+  if (pwSeen.has(root || "")) return pwSeen.get(root || "");
+  const found = findPlaywright(root);
+  pwSeen.set(root || "", found);
+  return found;
+}
+
+function findPlaywright(root) {
   const tries = [];
   if (root) tries.push(path.join(root, "package.json"));
   const g = spawnSync("npm", ["root", "-g"], { encoding: "utf8", timeout: 10000 });
@@ -299,7 +307,7 @@ export function runBrowser(step, { cwd, env = {}, log = "", timeout = 900, brows
 // directory as its cwd, the way the repl runs.
 function runPlaywright(step, scriptPath, vars, { dir, runsDir, evidence, driver, timeout, append, started }) {
   const prog = path.join(dir, "run.mjs");
-  fs.writeFileSync(prog, programNode(fs.readFileSync(scriptPath, "utf8"), vars, driver.from));
+  fs.writeFileSync(prog, programNode(fs.readFileSync(scriptPath, "utf8"), { ...vars, DEEP_PLAN_BROWSER_TIMEOUT: String(timeout) }, driver.from));
   const [cmd, args] = driver.fake ? [driver.fake, [prog]] : [process.execPath, [prog]];
   append(`[playwright: ${driver.fake ? driver.fake + " (stand-in)" : "chromium, headless"}]\n`);
   const r = spawnSync(cmd, args, {
@@ -313,6 +321,13 @@ function runPlaywright(step, scriptPath, vars, { dir, runsDir, evidence, driver,
   const ev = readEvidence(runsDir, evidence);
   const tailLines = full.replace(/\s+$/, "").split("\n").slice(-20).join("\n");
   const where = ev && ev.result === "fail" ? `step "${ev.label || "?"}": ${(ev.error || "").split("\n")[0]}` : "";
+  // Playwright is here but its Chromium is not: that is a missing driver,
+  // not a failed check.
+  if (ev && ev.result === "fail" && ev.label === "setup" && /Executable doesn't exist|playwright install/i.test(ev.error || "")) {
+    const why = `Playwright resolves but its Chromium is not installed — ${PLAYWRIGHT_HINT}`;
+    append(why + "\n");
+    return { command: step.command, ok: false, code, timedOut: false, ms: Date.now() - started, out: why, value: "", needsVariant: true };
+  }
   return {
     command: step.command, ok: !timedOut && code === 0, code, timedOut, ms: Date.now() - started,
     out: (where ? where + "\n" : "") + tailLines, value: "", evidence, failedAt: where, workspace: "", driver: "playwright",

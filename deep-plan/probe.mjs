@@ -2546,6 +2546,20 @@ exit 1
     ok("playwright: with neither cmux nor Playwright the check needs a variant and says what to install",
       pck("flow").status === "needs-variant" && /no browser driver here/.test(pck("flow").note) && /npx playwright install chromium/.test(pck("flow").note),
       JSON.stringify(pck("flow")));
+    r = pcli({ ...PENV, FAKE_PW_NO_BROWSER: "1" }, "check", "run", "br-pw", "1", "flow", "--inline");
+    ok("playwright: the package without its Chromium is a missing driver, not a failed check",
+      pck("flow").status === "needs-variant" && /Chromium is not installed/.test(pck("flow").note), JSON.stringify(pck("flow")));
+    fs.writeFileSync(path.join(BR, "e2e", "hangs.js"), 'await step("wait forever", async () => { await new Promise(() => {}); });\n');
+    vj.recipes.push({ id: "hangs", kind: "browser", steps: [{ browser: "e2e/hangs.js", timeout: 2 }] });
+    fs.writeFileSync(path.join(BR, ".seamux", "verify.json"), JSON.stringify(vj, null, 2));
+    p2.deliverables[0].checks.push({ id: "hangs", kind: "browser", name: "hangs", recipe: "hangs" });
+    pcli(PENV, "render", tmpSpec(p2), "--root", BR);
+    const t0 = Date.now();
+    r = pcli(PENV, "check", "run", "br-pw", "1", "hangs", "--inline");
+    const pl = fs.readFileSync(PWLOG, "utf8").trim().split("\n").map(l => JSON.parse(l));
+    ok("playwright: a script past its timeout fails in its step and closes the browser itself, well before the hard kill",
+      pck("hangs").status === "fail" && /timed out after 2s/.test(pck("hangs").note) && Date.now() - t0 < 20000 &&
+      pl[pl.length - 1].close === true, pck("hangs").note);
     r = pcli({ ...PENV, SEAMUX_HOST: "cmux" }, "check", "run", "br-pw", "1", "flow", "--inline");
     ok("playwright: in cmux the repl still drives it", r.status === 0 && cmuxCalls() > before);
     pcli(PENV, "close", "br-pw");
