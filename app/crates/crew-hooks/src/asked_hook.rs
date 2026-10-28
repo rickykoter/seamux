@@ -8,8 +8,9 @@
 //!
 //! Spawned detached by the stop event. It asks `asked judge` (TypeSafe), drops
 //! the answer if the transcript moved on since the stop, records the ranking
-//! extras through judgments --record, and on "asked" sets the lane, the
-//! phase, the marker the next tool use clears, and the banner.
+//! extras through judgments --record, and on "asked" marks the pane as
+//! waiting on you (the roll-up then sets the lane, the phase and the
+//! asked-<ws> marker the next tool use clears) and raises the banner.
 
 use crate::events::{self, line, Hook};
 use crate::spawn;
@@ -57,11 +58,14 @@ pub fn main(args: &[String]) -> i32 {
     if rc != 0 {
         return 0;
     }
-    h.lane_set("needs-attention");
-    h.phase("waiting on you");
-    // The marker's existence is what pretool and stop test; its text is the
-    // question, for the app's Desk.
-    let _ = std::fs::write(h.state.join(format!("asked-{}", h.ws)), &question);
+    // This pane waits on you: its asked text becomes the workspace's
+    // asked-<ws> marker (the app's Desk reads the question there), and the
+    // hold marker sends the next tool use here to take it back.
+    let q = question.clone();
+    h.settle(true, &[], move |p| {
+        p.state = "needs_input".into();
+        p.asked = Some(q);
+    });
     h.history("needs_input", "asked");
     let body = if question.is_empty() { "Claude is waiting on you".to_string() } else { question };
     h.notify("crew:blocked", &body);
