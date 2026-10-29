@@ -50,8 +50,8 @@ place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_D
   PLAN_JS strips exactly that suffix); `.dp-path[data-file]` spans; `#dp-auto`
   checkbox armed on its change event, polling `window.__dpChanged` — and
   skipping a tick while `window.dpBusy()` says someone is mid-comment.
-  Only the transitions an increment's status allows are drawn (`INC_VALID`;
-  plan.js holds the same table for older renders). `/plan/` injects the
+  Only the transitions an increment's status allows are drawn (`INC_ALLOWED`, the table applyTransition refuses by, carried into the page as `window.DP_INC_ALLOWED`;
+  plan.js falls back to its own copy only for older renders). `/plan/` injects the
   served file's stamp (`STAMP`, inode-size-mtimeMs) and its own segment
   (`PAGE`); `/plan-stamp?slug=<PAGE>` answers `{mtime, stamp}`, and the
   page reloads when `stamp` differs from the one it was served with. Only

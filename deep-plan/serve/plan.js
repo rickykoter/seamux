@@ -6,11 +6,11 @@
   // <slug>.review.html); STAMP: that file's stamp when it was read.
   var PAGE = "__PAGE__", STAMP = "__STAMP__";
 
-  // Which transitions each status allows (deep_plan.mjs applyTransition). A
-  // button the status makes pointless is not shown: an older render drew all
-  // five on every increment.
-  var VALID = { pending: ["go", "block"], blocked: ["go", "reset"],
-    authorized: ["start", "done", "block", "reset"], working: ["done", "block", "reset"], done: ["reset"] };
+  // Which transitions each status allows: the engine's INC_ALLOWED, which
+  // the page carries. A page rendered before it did gets this copy, so a
+  // button its status makes pointless (an older render drew all five) hides.
+  var VALID = window.DP_INC_ALLOWED || { pending: ["go", "block", "reset"], blocked: ["go", "block", "reset"],
+    authorized: ["start", "done", "block", "reset"], working: ["done", "block", "reset"], done: ["block", "reset"] };
   function allowed(b) {
     var inc = b.closest && b.closest(".inc[data-status]");
     var ok = inc && VALID[inc.getAttribute("data-status")];

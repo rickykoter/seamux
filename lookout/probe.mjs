@@ -871,6 +871,11 @@ const R1 = repo("r1");
   ok("page: drafts are kept per item in localStorage and put back after every redraw",
      page.includes('"lookout.drafts." + R.id') && /function drawFile\(\) \{[\s\S]{0,400}drawFileNow\(\);\s*afterDraw\(keep\);/.test(page) &&
      page.includes('"r:" + x.id') && page.includes("openComposer(tr, side, Number(line))"));
+  ok("page: a composer draft is placed only on its own diff or an unchanged line, else shown unplaced",
+     page.includes("return d.h === R.patchHash || (d.x != null && lineText(file, side, line) === d.x);") &&
+     page.includes("if (!placeable(k, file, side, Number(line))) { unplaced.push(") && page.includes('class: "outside unplaced"'));
+  ok("page: a send that reaches no server is told by the TypeError, not by its wording",
+     page.includes("live.down || e instanceof TypeError") && !page.includes("/fetch/i"));
   ok("page: a sent draft is cleared before the redraw that follows",
      /if \(key\) \{\s*saveDraft\(key, ""\); openComposers\.delete\(key\);/.test(page));
   ok("page: failed polls turn the header to disconnected, and a good one turns it back",

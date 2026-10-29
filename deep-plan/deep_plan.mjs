@@ -1726,17 +1726,23 @@ if (/^https?:/.test(location.protocol)) document.querySelectorAll(".dp-fam-link"
 </section>`;
 }
 
-const INC_VALID = { pending: ["go", "block"], blocked: ["go", "reset"],
-  authorized: ["start", "done", "block", "reset"], working: ["done", "block", "reset"], done: ["reset"] };
+// The one table of which transitions each increment status allows.
+// applyTransition refuses by it, the working page draws its buttons from it,
+// and /plan/ pages carry it (window.DP_INC_ALLOWED) for serve/plan.js.
+// block and reset are allowed from any status, as they always were.
+const INC_ALLOWED = {
+  pending: ["go", "block", "reset"], blocked: ["go", "block", "reset"],
+  authorized: ["start", "done", "block", "reset"], working: ["done", "block", "reset"], done: ["block", "reset"],
+};
+const allows = (status, action) => (INC_ALLOWED[status] || []).includes(action);
 
 function workingHtml(spec, st, b64) {
   const rows = (st.increments || []).map(inc => {
     const d = (spec.deliverables || [])[inc.n - 1] || {};
     const files = fileTreeHtml(d.files);
-    // Only the transitions this status allows (applyTransition): a go on a
-    // done increment is a button that can only be refused. serve/plan.js
-    // holds the same table for pages rendered before this.
-    const acts = (INC_VALID[inc.status] || ["go", "start", "done", "block", "reset"]).map(a =>
+    // Only the transitions this status allows (INC_ALLOWED, which
+    // applyTransition refuses by): a go on a done increment can only be refused.
+    const acts = (INC_ALLOWED[inc.status] || ["go", "start", "done", "block", "reset"]).map(a =>
       `<button class="dp-act" data-a="${a}" data-n="${inc.n}" disabled ` +
       `title="${a} increment ${inc.n} — available when served">${a}</button>`).join("");
     // The verdict belongs beside the status, not in a section of its own: it is
@@ -1758,6 +1764,7 @@ ${checks}
     `<li class="dim">${esc(new Date(l.at).toISOString().slice(0, 16).replace("T", " "))} — ${esc(l.what)}</li>`).join("");
   return htmlHead(spec.title, b64) + SURFACE_CSS + surfaceOpen(spec.slug, "working") + `
 <label class="auto"><input type="checkbox" id="dp-auto" checked> auto-refresh</label>
+<script>window.DP_INC_ALLOWED = ${JSON.stringify(INC_ALLOWED)};</script>
 <style>
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
   color:inherit;border:1px solid var(--dim,#888);border-radius:4px;padding:6px;font:inherit}
@@ -2685,7 +2692,7 @@ function applyTransition(st, action, slug, n, why, force, { byHuman = false, tre
       n = nxt.n;
     }
     const inc = incOf(n);
-    if (inc.status !== "pending" && inc.status !== "blocked")
+    if (!allows(inc.status, "go"))
       refuse(`increment ${n} is ${inc.status}, not pending/blocked`);
     // A family child waits on the parent increments its workstream names in
     // `after` (the shared contract lands first). The reason goes on the last
@@ -2710,14 +2717,14 @@ function applyTransition(st, action, slug, n, why, force, { byHuman = false, tre
       (beside ? ` (--force beside increment ${beside.n}, still ${beside.status})` : ""));
   } else if (action === "start") {
     const inc = incOf(n);
-    if (inc.status !== "authorized") refuse(`increment ${n} is ${inc.status}, not authorized`);
+    if (!allows(inc.status, "start")) refuse(`increment ${n} is ${inc.status}, not authorized`);
     inc.status = "working"; inc.startedAt = inc.changedAt = Date.now();
     // go records the base; this stamps only an increment authorized before it did.
     if (!inc.startSha) inc.startSha = headSha(st.root);
     log1(st, `start: increment ${n}`);
   } else if (action === "done") {
     const inc = incOf(n);
-    if (inc.status !== "working" && inc.status !== "authorized")
+    if (!allows(inc.status, "done"))
       refuse(`increment ${n} is ${inc.status}`);
     // An increment cannot be done until every check has passed against the
     // tree being closed. Declaring one is the whole point: a plan that promises
@@ -2741,10 +2748,12 @@ function applyTransition(st, action, slug, n, why, force, { byHuman = false, tre
     return { n: inc.n };
   } else if (action === "block") {
     const inc = incOf(n);
+    if (!allows(inc.status, "block")) refuse(`increment ${n} is ${inc.status}`);
     inc.status = "blocked"; inc.note = why || "no reason recorded"; inc.changedAt = Date.now();
     log1(st, `block: increment ${n} — ${inc.note}`);
   } else if (action === "reset") {
     const inc = incOf(n);
+    if (!allows(inc.status, "reset")) refuse(`increment ${n} is ${inc.status}`);
     inc.status = "pending"; inc.note = ""; inc.changedAt = Date.now();
     inc.startSha = "";                      // redone work gets a fresh base at its next go
     // Reset means the work is being redone, so a verdict recorded against the

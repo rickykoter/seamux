@@ -24,8 +24,13 @@
   // breakpoint, a reload) puts them back instead of dropping them.
   const DRAFTS = "lookout.drafts." + R.id;
   const drafts = (() => { try { return JSON.parse(store.get(DRAFTS, "{}")) || {}; } catch { return {}; } })();
-  const saveDraft = (k, v) => {
-    if (String(v || "").trim()) drafts[k] = v; else delete drafts[k];
+  // A reply draft is its text (its item keeps its id across diffs). A line
+  // composer's draft is { t, h, x }: its text, the patchHash it was written
+  // against, and the text of its line then, so a new diff never places it
+  // under different code.
+  const draftText = k => { const d = drafts[k]; return d == null ? "" : typeof d === "string" ? d : d.t || ""; };
+  const saveDraft = (k, v, meta) => {
+    if (String(v || "").trim()) drafts[k] = meta ? { t: v, ...meta } : v; else delete drafts[k];
     store.set(DRAFTS, JSON.stringify(drafts));
   };
   // Set by serve(): reopens composers and refills drafts after a redraw.
@@ -799,7 +804,9 @@
         if (j.review && j.review.patchHash !== R.patchHash) { take(j.review); return; }
         live.pending = null; applyReview(j.review);
       }).catch(e => {
-        status.textContent = live.down || /fetch/i.test(e.message) ? "not sent: the review server is not answering — run `lookout open`" : e.message;
+        // fetch rejects with a TypeError whatever the browser's wording when
+        // nothing answers; a refusal from the server is a plain Error.
+        status.textContent = live.down || e instanceof TypeError ? "not sent: the review server is not answering — run `lookout open`" : e.message;
         status.classList.add("bad"); throw e;
       });
     };
@@ -819,7 +826,7 @@
       const open = isOpen(x);
       const key = "r:" + x.id;
       const ta = el("textarea", { rows: 2, placeholder: open ? "Reply, or a note for a close…" : "Reply…", "data-draft": key });
-      ta.value = drafts[key] || "";
+      ta.value = draftText(key);
       ta.addEventListener("input", () => saveDraft(key, ta.value));
       const status = el("span", { class: "send-status" });
       const go = (op, needText) => () => {
@@ -837,13 +844,30 @@
 
     // A click on a line number opens a comment under that line.
     const composerKey = (file, side, line) => "c:" + JSON.stringify([file, side, line]);
+    // The plain text of a line as this page's diff draws it, or null.
+    const lineText = (file, side, line) => {
+      for (const h of ((ROWS[file] || {}).hunks || []))
+        for (const r of h.rows) if ((side === "old" ? r[1] : r[2]) === line) {
+          const d = document.createElement("div"); d.innerHTML = r[3]; return d.textContent;
+        }
+      return null;
+    };
+    // A saved composer goes back under its line only when it was written
+    // against this diff, or its line still reads the same; an empty composer
+    // opened on this page always does.
+    const placeable = (k, file, side, line) => {
+      const d = drafts[k];
+      if (d == null) return true;
+      if (typeof d !== "object") return false;
+      return d.h === R.patchHash || (d.x != null && lineText(file, side, line) === d.x);
+    };
     function openComposer(tr, side, line) {
       const file = current, key = composerKey(file, side, line);
       openComposers.add(key);
       const span = tr.children.length;
       const ta = el("textarea", { rows: 3, placeholder: `Comment on ${side === "old" ? "old " : ""}line ${line}…`, "data-draft": key });
-      ta.value = drafts[key] || "";
-      ta.addEventListener("input", () => saveDraft(key, ta.value));
+      ta.value = draftText(key);
+      ta.addEventListener("input", () => saveDraft(key, ta.value, { h: R.patchHash, x: lineText(file, side, line) }));
       const status = el("span", { class: "send-status" });
       const row = el("tr", { class: "composer", "data-draft": key }, el("td", { colspan: span },
         el("div", { class: "card comment" }, el("div", { class: "actions" }, ta, el("div", { class: "buttons" },
@@ -878,16 +902,32 @@
     // and drafts left from before a reload), refill reply boxes, and give the
     // box being typed in its focus and caret back.
     afterDraw = keep => {
+      const unplaced = [];
       for (const k of new Set([...openComposers, ...Object.keys(drafts)])) {
         if (!k.startsWith("c:")) continue;
         let file, side, line;
         try { [file, side, line] = JSON.parse(k.slice(2)); } catch { continue; }
         if (file !== current) continue;
+        if (!placeable(k, file, side, Number(line))) { unplaced.push([k, side, Number(line)]); continue; }
         const cell = document.querySelector(`#diff td.ln[data-side="${side === "old" ? "old" : "new"}"][data-line="${Number(line)}"]`);
         const tr = cell && cell.closest("tr");
         if (!tr || document.querySelector(`#diff tr.composer[data-draft="${CSS.escape(k)}"]`)) continue;
         openComposer(tr, side, Number(line));
       }
+      // Drafts whose line changed under them: kept and shown, never placed.
+      if (unplaced.length) $("diff").prepend(el("div", { class: "outside unplaced" },
+        el("div", { class: "outside-head" }, "Drafts written against an earlier diff — their lines changed, so they are not placed"),
+        unplaced.map(([k, side, line]) => {
+          const d = drafts[k] || {};
+          const ta = el("textarea", { rows: 2, "data-draft": k });
+          ta.value = draftText(k);
+          ta.addEventListener("input", () => saveDraft(k, ta.value, { h: d.h, x: d.x }));
+          const box = el("div", { class: "card comment" }, el("div", { class: "card-head" },
+            el("span", { class: "title" }, `${side === "old" ? "old " : ""}line ${line}` + (d.x != null ? ` — was “${String(d.x).trim().slice(0, 80)}”` : ""))),
+            el("div", { class: "actions" }, ta, el("div", { class: "buttons" },
+              el("button", { type: "button", onclick: () => { saveDraft(k, ""); openComposers.delete(k); box.remove(); } }, "Discard"))));
+          return box;
+        })));
       if (!keep) return;
       const t = document.querySelector(`#diff textarea[data-draft="${CSS.escape(keep.key)}"]`);
       if (!t) return;

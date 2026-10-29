@@ -901,14 +901,19 @@ ok("working surface has the auto-refresh checkbox", working.includes('id="dp-aut
 {
   // Each increment shows only the transitions its status allows: no go on a
   // done increment, no done on a pending one.
-  const VALID = { pending: "go,block", blocked: "go,reset", authorized: "start,done,block,reset",
-    working: "done,block,reset", done: "reset" };
+  const VALID = { pending: "go,block,reset", blocked: "go,block,reset", authorized: "start,done,block,reset",
+    working: "done,block,reset", done: "block,reset" };
   const incs = working.split('<div class="inc" id="inc-').slice(1).map(b => ({
     status: (b.match(/data-status="([a-z]+)"/) || [])[1],
     acts: [...b.split("</div>")[0].matchAll(/class="dp-act" data-a="([a-z]+)"/g)].map(m => m[1]).join(","),
   }));
   ok("working surface: each increment's buttons are the ones its status allows",
     incs.length > 0 && incs.every(i => VALID[i.status] === i.acts), JSON.stringify(incs));
+  const carried = (working.match(/window\.DP_INC_ALLOWED = (\{[^;]*\});/) || [])[1];
+  const eng = fs.readFileSync(path.join(HERE, "deep_plan.mjs"), "utf8");
+  ok("working surface: the page carries the engine's one table, and applyTransition refuses by it",
+    carried && Object.entries(JSON.parse(carried)).every(([k, v]) => VALID[k] === v.join(",")) &&
+    /allows\(inc\.status, "go"\)/.test(eng) && /allows\(inc\.status, "done"\)/.test(eng) && !/const INC_VALID/.test(eng));
 }
 ok("declared files are dp-path targets even before they exist",
   working.includes('data-file="app/workers/retry_sweep.rb"'));
