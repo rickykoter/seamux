@@ -1,0 +1,15 @@
+{
+  "name": "seamux-demo-reel",
+  "private": true,
+  "type": "module",
+  "description": "Scripted README Tour: testreel records the web scenes, cmux-cua the terminal ones, ffmpeg joins them.",
+  "scripts": {
+    "record": "node record.mjs"
+  },
+  "devDependencies": {
+    "@xterm/xterm": "^5.5.0",
+    "ffmpeg-static": "^5.3.0",
+    "playwright-core": "1.63.0",
+    "testreel": "^0.2.0"
+  }
+}
