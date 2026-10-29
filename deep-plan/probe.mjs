@@ -5402,6 +5402,26 @@ exit 1
     /deep-plan's own state/.test(hook(S2, "Bash", { command: `deep-plan status && python3 -c "open('${SD}/b1-gate.json','w')"` }, TMP).stderr));
   ok("b1: …nor is an interpreter beside it in a plan root", !lib.decideToolCall("Bash", { command: "deep-plan status; node -e 'x'" }, AR).why.includes("own tooling"));
   ok("b1: a cd before the CLI still is", lib.decideToolCall("Bash", { command: `cd ${AR} && deep-plan go b1-gate next` }, AR).why === "the plan's own tooling");
+  // Past the scan cap a tail that could hold a call fails closed; a read
+  // failure fails closed for a deep-plan command and passes any other.
+  {
+    const pad = "echo " + "x".repeat((1 << 20) + 10);
+    ok("b1: a lever past the scan cap is refused, not missed",
+      /command too long for the gate to check/.test(hook(S2, "Bash", { command: pad + "; deep-plan open-gate b1-gate" }, TMP).stderr));
+    const far = "echo " + "y ".repeat(200000) + "; deep-plan open-gate b1-gate";
+    ok("b1: a lever 400 KB in is still seen", /open-gate/.test(hook(S2, "Bash", { command: far }, TMP).stderr) &&
+      hook(S2, "Bash", { command: far }, TMP).status === 2);
+    ok("b1: …and a forged env that far in", /CLAUDECODE/.test(lib.trustOverride("echo " + "z ".repeat(200000) + "; CLAUDECODE= deep-plan go a next")));
+    const thr = c => spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")], { encoding: "utf8", env: { ...ENV, DEEP_PLAN_PROBE_THROW: "1" },
+      input: JSON.stringify({ session_id: S2, tool_name: "Bash", tool_input: { command: c }, cwd: TMP }) });
+    r = thr("deep-plan status");
+    ok("b1: a gate that cannot read a deep-plan command refuses it", r.status === 2 && /could not read this command/.test(r.stderr), r.stderr);
+    ok("b1: …and passes one that is no deep-plan call", thr("ls -la").status === 0);
+    const big = 'bash -c "' + "\\n".repeat(200000) + " " + 'a\\" '.repeat(100000);
+    const t1 = Date.now(); lib.deepPlanCalls(big); lib.trustOverride(big); lib.decideToolCall("Bash", { command: big }, TMP);
+    const took1 = Date.now() - t1;
+    ok(`b1: a ${Math.round(big.length / 1024)} KB pathological command decides in under a second (${took1} ms)`, took1 < 1000);
+  }
   // A pathological command (an unclosed quote full of escapes) decides fast.
   {
     const nasty = 'bash -c "' + "\\n".repeat(7000) + " " + 'a\\" '.repeat(2000);

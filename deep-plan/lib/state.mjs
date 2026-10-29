@@ -957,7 +957,14 @@ function quotedStrings(line) {
 
 // The scan reads at most this much of a command: a call past it is not seen,
 // and nothing here may stall the gate.
-const CALL_SCAN_MAX = 16384;
+const CALL_SCAN_MAX = 1 << 20;
+// Past the cap nothing is read, so a tail that could hold a call or a forged
+// env fails closed: the reason, or "".
+export function tooLongForGate(cmd) {
+  const c = String(cmd || "");
+  return c.length > CALL_SCAN_MAX && /deep-plan|deep_plan|DEEP_PLAN_|CLAUDECODE|CLAUDE_CODE_SESSION_ID/.test(c.slice(CALL_SCAN_MAX - 64))
+    ? "command too long for the gate to check; split it" : "";
+}
 
 export function deepPlanCalls(cmd, depth = 0) {
   const out = [];

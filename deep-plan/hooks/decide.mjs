@@ -9,7 +9,7 @@
 // one place a base comes from.
 import fs from "node:fs";
 import { decideToolCall, readState, writeState, log1, brokenRoots, isOwner, ownerName,
-  deepPlanCalls, humanLever, onHumansWord, trustOverride, humansWordCount, claimLever, markDenied, deniedThisTurn, promptApproves,
+  deepPlanCalls, tooLongForGate, humanLever, onHumansWord, trustOverride, humansWordCount, claimLever, markDenied, deniedThisTurn, promptApproves,
   actedThisTurn } from "../lib/state.mjs";
 import { trespass, waitingOn, waitText, goOwner } from "../lib/family.mjs";
 
@@ -36,8 +36,23 @@ const who = {
 let leverWord = "";
 if (tool === "Bash") {
   let calls = [];
-  try { calls = deepPlanCalls(input.command || ""); } catch { /* a parse failure refuses nothing */ }
+  const command = input.command || "";
   const slugOf = c => (c && c.words.find(w => !w.startsWith("-"))) || "?";
+  const long = tooLongForGate(command);
+  if (long) { process.stderr.write(`deep-plan gate [?]: ${long}.\n`); process.exit(2); }
+  // A failure to read the command fails closed when it could be a deep-plan
+  // call, and passes as before when it cannot. DEEP_PLAN_PROBE_THROW is the
+  // probe's way to reach this path.
+  try {
+    if (process.env.DEEP_PLAN_PROBE_THROW) throw new Error("probe-injected failure");
+    calls = deepPlanCalls(command);
+  } catch (e) {
+    if (/deep-plan|deep_plan/.test(command)) {
+      process.stderr.write(`deep-plan gate [?]: the gate could not read this command (${e && e.message || e}), ` +
+        `so it does not run from a session; split or simplify it.\n`);
+      process.exit(2);
+    }
+  }
   // What the CLI trusts about its caller is not the session's to change.
   const forged = calls.length ? trustOverride(input.command || "") : "";
   if (forged) {
