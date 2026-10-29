@@ -70,9 +70,7 @@ branch onto its moved base without hand-merging generated files, and on cmux
 the crew board shows every worktree on the line, ranked by which one needs
 you next.
 
-<!-- VIDEO v1 (one change, start to finish): drag ~/Movies/seamux-demo/seamux-v1.mp4 into a GitHub comment,
-     then paste the user-attachments URL it gives on its own line in place of this comment.
-     Made by docs/demo/reel/demo.mjs; see docs/demo/STORYBOARD.md. -->
+https://github.com/user-attachments/assets/380fe3fe-fbe7-4215-89e1-f3929e0b8720
 
 The plugins in detail: [deep-plan](deep-plan/README.md),
 [lookout](lookout/README.md), [restack](restack/README.md),
@@ -139,9 +137,9 @@ plugins, and `install-repo --check` says when the repo's copy is behind.
 [docs/ADOPTING.md](docs/ADOPTING.md) covers the rollout, including what a
 cloud session needs to push.
 
-<!-- VIDEO v3 (where it runs, and with whom): drag ~/Movies/seamux-demo/seamux-v3.mp4 into a GitHub comment,
-     then paste the user-attachments URL it gives on its own line in place of this comment.
-     Made by docs/demo/reel/demo.mjs; see docs/demo/STORYBOARD.md. -->
+
+https://github.com/user-attachments/assets/9f407b84-5f6d-451c-bb42-5b10d80b30af
+
 
 ## Working as a team
 
@@ -157,9 +155,7 @@ increment; you can still hold a child or take its go back. The parent
 checks the whole at the end, and one review reads every member's delivery.
 More in [deep-plan's README](deep-plan/README.md#families-parallel-workstreams-with-one-goal).
 
-<!-- VIDEO v2 (one goal, several agents): drag ~/Movies/seamux-demo/seamux-v2.mp4 into a GitHub comment,
-     then paste the user-attachments URL it gives on its own line in place of this comment.
-     Made by docs/demo/reel/demo.mjs; see docs/demo/STORYBOARD.md. -->
+https://github.com/user-attachments/assets/a8c303bd-6508-4683-a68f-5898d56974a3
 
 ### Shared plan state
 
@@ -205,9 +201,7 @@ its session.
 
 ![the crew board: a family card whose parent waits on an answer, with its two workstreams nested inside (auth-ui opened, its gate shut, with go chips; auth-api collapsed and done), and a quiet row below](docs/img/board.png)
 
-<!-- VIDEO v5 (the crew board): drag ~/Movies/seamux-demo/seamux-v5.mp4 into a GitHub comment,
-     then paste the user-attachments URL it gives on its own line in place of this comment.
-     Made by docs/demo/reel/demo.mjs; see docs/demo/STORYBOARD.md. -->
+https://github.com/user-attachments/assets/f692dd27-cedc-48f2-8510-f6e0fd9f5789
 
 #### News
 
@@ -302,9 +296,7 @@ Rewrites prose to remove AI writing tells and untangle sentences that are
 hard to parse. The other skills run it over the text they write for people.
 [humanize's README](humanize/README.md).
 
-<!-- VIDEO v4 (restack, bash-guard, humanize): drag ~/Movies/seamux-demo/seamux-v4.mp4 into a GitHub comment,
-     then paste the user-attachments URL it gives on its own line in place of this comment.
-     Made by docs/demo/reel/demo.mjs; see docs/demo/STORYBOARD.md. -->
+https://github.com/user-attachments/assets/4207e5f2-8a98-486f-9f18-3542f4edf82f
 
 ### seamux-mods: deep-plan in the terminal
 
@@ -345,9 +337,7 @@ tab says so until the server serves `/board`.
 Install it with `./install.sh --app` (see [Install](#install)). It needs cmux's
 socket in `automation` mode, which `crew apply` sets.
 
-<!-- VIDEO v6 (the seamux app): drag ~/Movies/seamux-demo/seamux-v6.mp4 into a GitHub comment,
-     then paste the user-attachments URL it gives on its own line in place of this comment.
-     Made by docs/demo/reel/demo.mjs; see docs/demo/STORYBOARD.md. -->
+https://github.com/user-attachments/assets/dec47bb2-e619-40ba-b40c-40477d8b37bc
 
 ## Setup
 
