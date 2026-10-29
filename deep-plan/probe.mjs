@@ -4716,12 +4716,16 @@ exit 1
   on(EA, SA, "state", "push", "shared-p");
   ok("state status: both moved", /both moved/.test(on(EB, SB, "state", "status", "shared-p").stdout));
   r = on(EB, SB, "state", "pull", "shared-p");
-  ok("state pull: refuses to drop changes made here", r.status !== 0 && /changes here that are not on/.test(r.stderr), r.stderr);
-  r = on(EB, SB, "state", "push", "shared-p");
-  ok("state push: refuses when the branch moved since this machine synced", r.status !== 0 && /moved since this machine last synced it/.test(r.stderr), r.stderr);
+  const stM = JSON.parse(fs.readFileSync(path.join(EB.DEEP_PLAN_STATE_DIR, "shared-p.json"), "utf8"));
+  ok("state pull: merges changes made here with the branch's instead of dropping them (the later start wins, both log lines stay)",
+    r.status === 0 && /merged shared-p with/.test(r.stdout) && stM.increments[0].status === "working" &&
+    stM.log.some(l => /^block: increment 1/.test(l.what)) && stM.log.some(l => /^start: increment 1/.test(l.what)), r.stdout + r.stderr);
+  ok("state status: the merge is ahead of the branch until pushed", /local changes to push/.test(on(EB, SB, "state", "status", "shared-p").stdout));
+  ok("state push: the merge lands", /pushed shared-p/.test(on(EB, SB, "state", "push", "shared-p").stdout));
+  on(EB, SB, "block", "shared-p", "1", "only here");
   r = on(EB, SB, "state", "pull", "shared-p", "--force");
-  ok("state pull --force: replaces them", r.status === 0 &&
-    JSON.parse(fs.readFileSync(path.join(EB.DEEP_PLAN_STATE_DIR, "shared-p.json"), "utf8")).increments[0].status !== "blocked");
+  ok("state pull --force: replaces changes made here", r.status === 0 &&
+    JSON.parse(fs.readFileSync(path.join(EB.DEEP_PLAN_STATE_DIR, "shared-p.json"), "utf8")).increments[0].status === "working");
   // A fresh machine whose recorded root is gone takes its own checkout.
   const EC = side("c");
   fs.renameSync(SA, SA + "-gone");
@@ -4763,6 +4767,87 @@ exit 1
   ok("state: export-state and import-state still work by hand",
     on(EA, SA, "export-state", "shared-p", "--out", path.join(TMP, "sp.bundle.json")).status === 0 &&
     on(side("e"), SB, "import-state", path.join(TMP, "sp.bundle.json")).status === 0);
+}
+
+// -------------------------------------------------- merge a race by rule
+{
+  const M = await import(new URL("lib/merge.mjs", import.meta.url));
+  const base = () => ({ slug: "m", root: "/r", phase: "implementing", log: [{ at: 1, what: "render" }],
+    increments: [
+      { n: 1, title: "one", status: "pending", checks: { t: { kind: "test", name: "t", status: "pending", at: 1 } } },
+      { n: 2, title: "two", status: "pending", checks: {} },
+    ] });
+  const a = base(), b = base();
+  a.increments[0] = { ...a.increments[0], status: "done", doneAt: 100, changedAt: 100,
+    checks: { t: { kind: "test", name: "t", status: "pass", at: 90, note: "a ran it" } } };
+  a.log.push({ at: 100, what: "done: increment 1" });
+  b.increments[0] = { ...b.increments[0], status: "pending", changedAt: 200,
+    checks: { t: { kind: "test", name: "t", status: "pending", at: 200, note: "reset — re-verify" } } };
+  b.log.push({ at: 200, what: "reset: increment 1" });
+  let m = M.mergeStates(a, b);
+  ok("merge: a reset after a done wins, and its re-pended check with it", m.increments[0].status === "pending" && m.increments[0].checks.t.status === "pending");
+  m = M.mergeStates(b, a);
+  ok("merge: …in either order", m.increments[0].status === "pending" && m.increments[0].checks.t.status === "pending");
+  b.increments[0].changedAt = 50; b.increments[0].checks.t.at = 50; b.log[1].at = 50;
+  m = M.mergeStates(b, a);
+  ok("merge: a done after a reset wins", m.increments[0].status === "done" && m.increments[0].checks.t.status === "pass");
+  ok("merge: the log is the union by time", m.log.map(l => l.at).join(",") === "1,50,100");
+  const c = base(), d = base();
+  c.increments[1] = { ...c.increments[1], status: "authorized", authorizedAt: 300, changedAt: 300 };
+  d.increments[0].checks.t = { kind: "test", name: "t", status: "pass", at: 400, note: "d ran it" };
+  m = M.mergeStates(c, d);
+  ok("merge: each increment from its own latest side, and each check its newest verdict",
+    m.increments[1].status === "authorized" && m.increments[0].checks.t.status === "pass" && m.increments[0].checks.t.note === "d ran it");
+  const e = base(); e.increments[0].startedAt = 500; e.increments[0].status = "working"; e.increments[0].changedAt = 10;
+  ok("merge: the gate's flip to working (startedAt) counts as a transition", M.mergeStates(base(), e).increments[0].status === "working");
+  const done = base(); done.increments.forEach(i => { i.status = "done"; i.changedAt = 10; }); done.phase = "delivery";
+  const reopened = base(); reopened.increments[1] = { ...reopened.increments[1], status: "pending", changedAt: 20 };
+  ok("merge: the phase follows the merged increments", M.mergeStates(done, reopened).phase === "implementing");
+
+  // Two machines on one plan, racing through the branch.
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const RO = path.join(TMP, "race-origin.git"), RA = path.join(TMP, "race-a"), RB = path.join(TMP, "race-b");
+  execSync(`git init -q --bare ${RO}`);
+  fs.mkdirSync(RA);
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init && git remote add origin ${RO} && git push -q origin HEAD:refs/heads/main`, { cwd: RA });
+  execSync(`git clone -q ${RO} ${RB}`);
+  const side = name => {
+    const dd = path.join(TMP, "race-data-" + name);
+    return { ...ENV, DEEP_PLAN_STATE_DIR: path.join(dd, "state"), DEEP_PLAN_KEYS_DIR: path.join(dd, "keys"),
+      DEEP_PLAN_PLANS_DIR: path.join(dd, "plans"), LOOKOUT_REVIEWS_DIR: path.join(dd, "plans", "reviews") };
+  };
+  const EA = side("a"), EB = side("b");
+  const on = (env, dir, ...x) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...x], { encoding: "utf8", env, cwd: dir });
+  const stOf = env => JSON.parse(fs.readFileSync(path.join(env.DEEP_PLAN_STATE_DIR, "race-p.json"), "utf8"));
+  on(EA, RA, "render", tmpSpec({ ...spec, slug: "race-p" }), "--root", RA);
+  const k = JSON.parse(fs.readFileSync(path.join(EA.DEEP_PLAN_KEYS_DIR, "race-p.key.json"), "utf8"));
+  on(EA, RA, "grade", "race-p", ...Object.entries(k.answers).map(([q, v]) => `${q}=${v.letter}`));
+  on(EA, RA, "state", "push", "race-p");
+  on(EB, RB, "state", "pull", "race-p", "--root", RB);
+  // A and B each move, neither having seen the other; A lands first.
+  on(EA, RA, "go", "race-p", "1");
+  on(EB, RB, "block", "race-p", "2", "B's reason");
+  ok("race: the first writer's push lands", /pushed race-p/.test(on(EA, RA, "state", "push", "race-p").stdout));
+  let r = on(EB, RB, "state", "push", "race-p");
+  ok("race: the second writer's push merges with the branch and lands", r.status === 0 && /merged with the branch first/.test(r.stdout), r.stdout + r.stderr);
+  on(EA, RA, "state", "pull", "race-p");
+  let sa = stOf(EA), sb = stOf(EB);
+  ok("race: nothing is lost — A has B's block and B has A's go",
+    sa.increments[0].status === "authorized" && sa.increments[1].status === "blocked" &&
+    sb.increments[0].status === "authorized" && sb.increments[1].status === "blocked", JSON.stringify([sa.increments.map(i => i.status), sb.increments.map(i => i.status)]));
+  ok("race: both logs are kept", sa.log.some(l => /^block: increment 2/.test(l.what)) && sa.log.some(l => /^go: increment 1/.test(l.what)));
+  ok("race: the root stays each machine's own", fs.realpathSync(sa.root) === fs.realpathSync(RA) && fs.realpathSync(sb.root) === fs.realpathSync(RB), sa.root + " " + sb.root);
+  // The other order, and a later reset: B resets 1 after A started it, and A pushes second.
+  on(EA, RA, "start", "race-p", "1");
+  on(EB, RB, "reset", "race-p", "1");
+  ok("race (other order): B lands first", /pushed race-p/.test(on(EB, RB, "state", "push", "race-p").stdout));
+  r = on(EA, RA, "state", "push", "race-p");
+  sa = stOf(EA);
+  ok("race (other order): A merges, and B's later reset wins over A's earlier start",
+    r.status === 0 && /merged with the branch first/.test(r.stdout) && sa.increments[0].status === "pending", r.stdout + r.stderr + JSON.stringify(sa.increments[0]));
+  on(EB, RB, "state", "pull", "race-p");
+  ok("race (other order): B pulls the same result", stOf(EB).increments[0].status === "pending" && stOf(EB).increments[1].status === "blocked");
+  ok("race: both machines end in sync", /in sync/.test(on(EA, RA, "state", "status", "race-p").stdout) || /branch ahead/.test(on(EA, RA, "state", "status", "race-p").stdout));
 }
 
 // -------------------------------------------------- hot-path cost

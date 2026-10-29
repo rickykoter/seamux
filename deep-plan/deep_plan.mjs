@@ -33,6 +33,7 @@ import { detect, draftFile } from "./lib/detect.mjs";
 import { detectHost, hostLine } from "./lib/host.mjs";
 import * as SERVE from "./lib/serve.mjs";
 import * as SYNC from "./lib/sync.mjs";
+import { mergeStates, mergeFiles } from "./lib/merge.mjs";
 import { installRepo, checkRepo, targetRoot } from "./lib/install.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
@@ -2566,14 +2567,14 @@ function transition(action, slug, n, why, force = false, { byHuman = false } = {
     // (which did not clear it) cannot become a stale base.
     if (inc.status === "pending" || !inc.startSha) inc.startSha = headSha(st.root);
     const how = by === "human" ? goHow({ byHuman }) : "";
-    inc.status = "authorized"; inc.authorizedAt = Date.now(); inc.note = ""; inc.by = by;
+    inc.status = "authorized"; inc.authorizedAt = inc.changedAt = Date.now(); inc.note = ""; inc.by = by;
     log1(st, `go: increment ${n} (${inc.title}) authorized by ${by}${how ? ` (${how})` : ""}` +
       (waits.length ? ` (--force past the family wait: ${waitText(waits)})` : "") +
       (beside ? ` (--force beside increment ${beside.n}, still ${beside.status})` : ""));
   } else if (action === "start") {
     const inc = findInc(st, n);
     if (inc.status !== "authorized") die(`increment ${n} is ${inc.status}, not authorized`);
-    inc.status = "working"; inc.startedAt = Date.now();
+    inc.status = "working"; inc.startedAt = inc.changedAt = Date.now();
     // go records the base; this stamps only an increment authorized before it did.
     if (!inc.startSha) inc.startSha = headSha(st.root);
     log1(st, `start: increment ${n}`);
@@ -2586,7 +2587,7 @@ function transition(action, slug, n, why, force = false, { byHuman = false } = {
     // a proof and ships without looking at it has promised nothing.
     const out = checksBlock(inc, needsTree(inc) ? treeOf(st.root) : null);
     if (out.length && !force) die(checksRefusal(slug, n, out));
-    inc.status = "done"; inc.doneAt = Date.now();
+    inc.status = "done"; inc.doneAt = inc.changedAt = Date.now();
     // An override is logged for the same reason the verdict is recorded: someone
     // reading the history has to be able to see that the proof was skipped.
     log1(st, `done: increment ${n}` + (out.length
@@ -2607,11 +2608,11 @@ function transition(action, slug, n, why, force = false, { byHuman = false } = {
     return;
   } else if (action === "block") {
     const inc = findInc(st, n);
-    inc.status = "blocked"; inc.note = why || "no reason recorded";
+    inc.status = "blocked"; inc.note = why || "no reason recorded"; inc.changedAt = Date.now();
     log1(st, `block: increment ${n} — ${inc.note}`);
   } else if (action === "reset") {
     const inc = findInc(st, n);
-    inc.status = "pending"; inc.note = "";
+    inc.status = "pending"; inc.note = ""; inc.changedAt = Date.now();
     inc.startSha = "";                      // redone work gets a fresh base at its next go
     // Reset means the work is being redone, so a verdict recorded against the
     // PREVIOUS attempt no longer proves anything — leaving it would let the
@@ -3074,22 +3075,70 @@ function syncState(slug, remote) {
   return "in sync";
 }
 
+// A branch's files merged into the plan here by lib/merge.mjs's rules, and
+// written back: the other files first, the state last and under its lock.
+// The root stays this machine's. "" when done, else why not.
+function mergeIn(slug, r) {
+  const bad = checkBundle(slug, r.files);
+  if (bad) return bad;
+  const rel = `deep-plan/state/${slug}.json`;
+  const ls = readState(slug);
+  let rs;
+  try { rs = JSON.parse(Buffer.from(r.files[rel]).toString("utf8")); } catch { return `the branch's ${rel} is not JSON`; }
+  const merged = mergeStates(ls, rs);
+  merged.root = ls.root;
+  const files = mergeFiles(bundleBuffers(slug), r.files, ls, rs, rel, merged);
+  delete files[rel];
+  writeBundle(files);
+  log1(merged, `state: merged ${r.version.slice(0, 8)} from the state branch`);
+  writeState(merged, { stamp: false });
+  try { rerenderWorking(slug); } catch { /* the pages are redrawn by the next write */ }
+  return "";
+}
+
+// Push a plan's files to its branch. When the branch moved since this
+// machine last synced, its files are merged in first; a push the remote
+// refuses because it moved again is merged and tried again, a few times.
+// Returns { ok, message } or { error }; never exits, so a transition can
+// call it and carry on.
+function pushPlan(slug, backend, tries = 3) {
+  const where = `${backend.branch(slug)} on ${backend.where}`;
+  for (let i = 0; i < tries; i++) {
+    const meta = syncMeta(slug);
+    const mine = meta && meta.where === backend.where ? meta.version : "";
+    let cur;
+    try { cur = backend.version(slug); } catch (e) { return { error: e.message }; }
+    let merged = false;
+    if (cur && cur !== mine) {
+      // Nothing changed here since the last sync: there is nothing to push,
+      // and the branch's state is simply newer.
+      if (meta && meta.where === backend.where && digestOf(bundleBuffers(slug)) === meta.digest)
+        return { ok: true, message: `${slug}: nothing to push; ${where} is ahead (deep-plan state pull ${slug})` };
+      let r;
+      try { r = backend.read(slug); } catch (e) { return { error: e.message }; }
+      if (r.version !== cur) continue;
+      const why = mergeIn(slug, r);
+      if (why) return { error: `cannot merge ${where}: ${why}` };
+      merged = true;
+    }
+    const files = bundleBuffers(slug), digest = digestOf(files);
+    if (cur && !merged && meta && meta.digest === digest) return { ok: true, message: `${slug} is in sync with ${backend.branch(slug)} (${cur.slice(0, 8)})` };
+    let w;
+    try { w = backend.write(slug, files, cur); } catch (e) { return { error: e.message }; }
+    if (!w.ok) continue;
+    writeSyncMeta(slug, { version: w.version, where: backend.where, branch: backend.branch(slug), digest, at: new Date().toISOString(), last: "push" });
+    return { ok: true, message: `pushed ${slug} to ${where} (${w.version.slice(0, 8)}): ${Object.keys(files).length} file(s)` +
+      (merged ? "; merged with the branch first" : "") };
+  }
+  return { error: `${where} kept moving; gave up after ${tries} tries` };
+}
+
 function statePush(slug) {
   const st = readState(slug) || die(`no plan ${slug || "?"} (state push <slug>)`);
   const { backend } = openSync(st);
-  const files = bundleBuffers(slug), digest = digestOf(files);
-  const meta = syncMeta(slug);
-  let cur;
-  try { cur = backend.version(slug); } catch (e) { die(e.message); }
-  const mine = meta && meta.where === backend.where ? meta.version : "";
-  if (cur && cur !== mine)
-    die(`${backend.branch(slug)} on ${backend.where} moved since this machine last synced it; deep-plan state pull ${slug} first`);
-  if (cur && meta && meta.digest === digest) { say(`${slug} is in sync with ${backend.branch(slug)} (${cur.slice(0, 8)})`); return; }
-  let w;
-  try { w = backend.write(slug, files, cur); } catch (e) { die(e.message); }
-  if (!w.ok) die(`${backend.branch(slug)} on ${backend.where} moved while pushing; deep-plan state pull ${slug} first`);
-  writeSyncMeta(slug, { version: w.version, where: backend.where, branch: backend.branch(slug), digest, at: new Date().toISOString(), last: "push" });
-  say(`pushed ${slug} to ${backend.branch(slug)} on ${backend.where} (${w.version.slice(0, 8)}): ${Object.keys(files).length} file(s)`);
+  const r = pushPlan(slug, backend);
+  if (r.error) die(r.error);
+  say(r.message);
 }
 
 function statePull(slug, flags) {
@@ -3100,18 +3149,27 @@ function statePull(slug, flags) {
   try { r = backend.read(slug); } catch (e) { die(e.message); }
   if (!r.version) die(`no branch ${backend.branch(slug)} on ${backend.where}`);
   const meta = syncMeta(slug);
+  const where = `${backend.branch(slug)} on ${backend.where}`;
+  const record = digest => writeSyncMeta(slug, { version: r.version, where: backend.where, branch: backend.branch(slug), digest, at: new Date().toISOString(), last: "pull" });
   if (local && meta && meta.version === r.version && meta.where === backend.where && !flags.force) {
     say(`${slug} is up to date with ${backend.branch(slug)} (${r.version.slice(0, 8)})`); return;
   }
-  if (local && !flags.force && (!meta || digestOf(bundleBuffers(slug)) !== meta.digest))
-    die(`${slug} has changes here that are not on ${backend.branch(slug)}; deep-plan state push ${slug}, or --force to replace them`);
+  // Changes here the branch does not have: merged with it, not dropped.
+  // The result is ahead of the branch until the next push.
+  if (local && !flags.force && (!meta || digestOf(bundleBuffers(slug)) !== meta.digest)) {
+    const why = mergeIn(slug, r);
+    if (why) die(why);
+    record(digestOf(r.files));
+    say(`merged ${slug} with ${where} (${r.version.slice(0, 8)}); deep-plan state push ${slug} shares the result`);
+    return;
+  }
   const bad = checkBundle(slug, r.files);
   if (bad) die(bad);
   const n = writeBundle(r.files);
   const st = settleRoot(slug, flags, "state pull", local && local.root);
   try { rerenderWorking(slug); } catch (e) { say(`  (the working page was not redrawn: ${e.message}; deep-plan rehydrate ${slug} redraws it)`); }
-  writeSyncMeta(slug, { version: r.version, where: backend.where, branch: backend.branch(slug), digest: digestOf(bundleBuffers(slug)), at: new Date().toISOString(), last: "pull" });
-  say(`pulled ${slug} from ${backend.branch(slug)} on ${backend.where} (${r.version.slice(0, 8)}): ${n} file(s); root ${st.root || "(none)"}` +
+  record(digestOf(bundleBuffers(slug)));
+  say(`pulled ${slug} from ${where} (${r.version.slice(0, 8)}): ${n} file(s); root ${st.root || "(none)"}` +
     (r.meta && r.meta.writer ? `; last written by ${r.meta.writer} at ${r.meta.at}` : ""));
 }
 
