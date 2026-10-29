@@ -33,6 +33,7 @@ const who = {
 // The go is the human's (ADR 0029). This hook runs only for a Claude Code
 // session's own tool calls, so whatever it refuses here stays open to the
 // human's shell, the board and the plan pane, which never pass through it.
+let leverWord = "";
 if (tool === "Bash") {
   let calls = [];
   try { calls = deepPlanCalls(input.command || ""); } catch { /* a parse failure refuses nothing */ }
@@ -80,17 +81,21 @@ if (tool === "Bash") {
       `ask the human, and run ${word} only after they answer.\n`);
     process.exit(2);
   }
-  // Claimed atomically before it runs, so parallel calls cannot all pass. The
-  // CLI records it once the call succeeds (deep_plan.mjs) and gives the claim
-  // back either way, so a go it refused, or a typo, does not use up the turn's one.
-  if (word && !claimLever(who.session)) {
-    process.stderr.write(`deep-plan gate [${slugOf(calls[0])}]: another ${word} from this session is already running in this turn: ` +
-      `ask the human, and run ${word} only after they answer.\n`);
-    process.exit(2);
-  }
+  // Claimed once the rest of the gate allows it (below), so a refusal here
+  // never takes the turn's one.
+  leverWord = word;
 }
 
 const d = decideToolCall(tool, input, cwd);
+// A lever the gate allows is claimed atomically as it goes, so parallel calls
+// cannot all pass. The claim is pending: the CLI turns it into the turn's
+// `.acted` on success and gives it back either way (deep_plan.mjs), and one
+// never acted on (a declined permission prompt) lapses after two minutes.
+if (d.allow && leverWord && !claimLever(who.session)) {
+  process.stderr.write(`deep-plan gate [?]: another ${leverWord} from this session is already running in this turn: ` +
+    `ask the human, and run ${leverWord} only after they answer.\n`);
+  process.exit(2);
+}
 if (d.allow) {
   const st = d.plan;
   // The plan owns its worktree: only its owner's write is the plan's

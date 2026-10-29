@@ -5373,6 +5373,20 @@ exit 1
   ok("b1: a lever is claimed before it runs", hook(S2, "Bash", { command: "deep-plan go b1-gate next" }, TMP).status === 0);
   r = hook(S2, "Bash", { command: "deep-plan go b1-gate 2" }, TMP);
   ok("b1: …so a parallel second one is refused while it runs", r.status === 2 && /already running in this turn/.test(r.stderr), r.stderr);
+  // A claim never acted on (a declined permission prompt) lapses.
+  {
+    const cl = path.join(ENV.DEEP_PLAN_STATE_DIR, "turns", S2 + ".claimed"), old = new Date(Date.now() - 180000);
+    fs.utimesSync(cl, old, old);
+    ok("b1: a pending claim older than two minutes is taken back", hook(S2, "Bash", { command: "deep-plan go b1-gate 2" }, TMP).status === 0);
+  }
+  said(S2);
+  // A lever the gate refuses for another reason does not take the claim.
+  hook(S2, "Bash", { command: `deep-plan status && python3 -c "open('${ENV.DEEP_PLAN_STATE_DIR}/x','w')"` }, TMP);
+  ok("b1: a command the gate refuses claims nothing", !fs.existsSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "turns", S2 + ".claimed")));
+  ok("b1: a heredoc or a quoted string piped into a shell is code",
+    lib.deepPlanCalls("cat <<EOF | sh\ndeep-plan open-gate a\nEOF").length === 1 &&
+    lib.deepPlanCalls('echo "deep-plan go a next" | bash').length === 1 &&
+    lib.deepPlanCalls('echo "deep-plan go a next" > notes.md').length === 0);
   said(S2);
   // A session the gate has refused before keeps its prompts wherever it stands.
   {

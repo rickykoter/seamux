@@ -865,11 +865,16 @@ const SHELLS = /^(bash|sh|zsh|dash|ksh|eval|xargs)$/;
 // Heredoc bodies fed to anything but a shell (cat, tee, git, gh, grep…) are
 // text, not commands: blanked, length kept, so `cat <<EOF > notes` holding
 // the words "deep-plan open-gate" is no call.
+// A line that pipes into a shell (`| sh`, `| bash`, `| xargs`, `| eval`) runs
+// what is fed to it: its heredoc body and its quoted strings are code there.
+const PIPES_TO_SHELL = /\|\s*(\S*\/)?(sh|bash|zsh|dash|ksh|eval|xargs)\b/;
 function blankHeredocs(cmd) {
   const re = /<<-?[ \t]*(['"]?)(\w+)\1[^\n]*\n/g;
   let out = cmd, m;
   while ((m = re.exec(cmd))) {
     const lineStart = cmd.lastIndexOf("\n", m.index) + 1;
+    const lineEnd = cmd.indexOf("\n", m.index);
+    const piped = PIPES_TO_SHELL.test(cmd.slice(lineStart, lineEnd < 0 ? cmd.length : lineEnd));
     const head = cmd.slice(lineStart, m.index).split(/[;&|(]/).pop().trim().split(/\s+/);
     const first = path.basename(head.find(x => !/^\w+=/.test(x)) || "");
     const bodyStart = m.index + m[0].length;
@@ -877,7 +882,7 @@ function blankHeredocs(cmd) {
     const rest = cmd.slice(bodyStart);
     const em = endRe.exec(rest);
     const bodyEnd = em ? bodyStart + em.index : cmd.length;
-    if (!SHELLS.test(first)) out = out.slice(0, bodyStart) + out.slice(bodyStart, bodyEnd).replace(/[^\n]/g, " ") + out.slice(bodyEnd);
+    if (!SHELLS.test(first) && !piped) out = out.slice(0, bodyStart) + out.slice(bodyStart, bodyEnd).replace(/[^\n]/g, " ") + out.slice(bodyEnd);
     re.lastIndex = bodyEnd;
   }
   return out;
@@ -934,6 +939,22 @@ function shellStrings(text) {
   return out;
 }
 
+// Every quoted string's body in `line`, one linear pass.
+function quotedStrings(line) {
+  const out = [];
+  for (let i = 0; i < line.length; i++) {
+    const q = line[i];
+    if (q === "\\") { i++; continue; }
+    if (q !== '"' && q !== "'") continue;
+    let e = i + 1;
+    while (e < line.length && line[e] !== q) e += (q === '"' && line[e] === "\\") ? 2 : 1;
+    if (e >= line.length) break;
+    out.push(line.slice(i + 1, e));
+    i = e;
+  }
+  return out;
+}
+
 // The scan reads at most this much of a command: a call past it is not seen,
 // and nothing here may stall the gate.
 const CALL_SCAN_MAX = 16384;
@@ -949,6 +970,8 @@ export function deepPlanCalls(cmd, depth = 0) {
   const ref = bare || text;
   // A quoted string a shell runs (bash -c "…", eval '…') is a command line of its own.
   for (const body of shellStrings(text)) out.push(...deepPlanCalls(body, depth + 1));
+  // On a line piped into a shell, every quoted string may be what it runs.
+  for (const line of text.split("\n")) if (PIPES_TO_SHELL.test(line)) for (const body of quotedStrings(line)) out.push(...deepPlanCalls(body, depth + 1));
   const sep = from => { let e = from; while (e < text.length && !/[;&|\n)`]/.test(ref[e])) e++; return e; };
   for (const m of text.matchAll(PROG_RE)) {
     const i = m.index, after = i + m[0].length;
@@ -1080,11 +1103,23 @@ export function markActed(session, what) {
 // before letting it run, so parallel calls cannot all pass; the CLI turns the
 // claim into `.acted` on success, or gives it back on failure.
 const claimDir = session => { const f = turnFile(session); return f ? f.replace(/\.denied$/, ".claimed") : ""; };
+// The claim is pending until the CLI turns it into `.acted`: one older than
+// two minutes is a call that never ran (the person declined the permission
+// prompt, or another hook refused it) and is taken back.
+const CLAIM_TTL_MS = 120000;
 export function claimLever(session) {
   const d = claimDir(session);
   if (!d) return true;
-  try { fs.mkdirSync(TURNS_DIR, { recursive: true }); fs.mkdirSync(d); return true; }
-  catch (e) { return e.code !== "EEXIST"; }
+  for (let tries = 0; tries < 2; tries++) {
+    try { fs.mkdirSync(TURNS_DIR, { recursive: true }); fs.mkdirSync(d); return true; }
+    catch (e) {
+      if (e.code !== "EEXIST") return true;
+      try { if (Date.now() - fs.statSync(d).mtimeMs > CLAIM_TTL_MS) { fs.rmSync(d, { recursive: true, force: true }); continue; } }
+      catch { continue; }
+      return false;
+    }
+  }
+  return false;
 }
 export function releaseLever(session) {
   const d = claimDir(session);
