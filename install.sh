@@ -307,20 +307,27 @@ PLIST
   fi
   run "codesign --force --deep --sign - $(q "$bundle") >/dev/null 2>&1" \
     || die "codesign failed for $bundle; the installed app is unchanged"
-  # Swap it in. A previous bundle is moved aside, never deleted, and comes
-  # back if the copy fails.
-  local aside=""
+  # Swap it in. A previous bundle is moved aside and comes back if the copy
+  # fails. Aside is ~/.cache/seamux/replaced-apps, not $TMPDIR, which macOS
+  # purges; the newest three stay there and older ones are pruned.
+  local aside="" keep="$HOME/.cache/seamux/replaced-apps"
   if [ -d "$APPDIR" ]; then
-    local tmp="${TMPDIR:-/tmp}"
-    aside="${tmp%/}/seamux.app.replaced.$(date +%Y%m%d%H%M%S)"
-    run "mv $(q "$APPDIR") $(q "$aside")" || die "could not move the old seamux.app aside; nothing changed"
-    did "the previous seamux.app moved to $aside"
+    aside="$keep/seamux.app.replaced.$(date +%Y%m%d%H%M%S)"
+    run "mkdir -p $(q "$keep") && mv $(q "$APPDIR") $(q "$aside")" || die "could not move the old seamux.app aside; nothing changed"
+    did "the previous seamux.app moved to ${aside/#$HOME/~}"
   fi
   if ! run "mkdir -p $(q "$HOME/Applications") && cp -R $(q "$bundle") $(q "$APPDIR")"; then
     [ -n "$aside" ] && mv "$APPDIR" "$aside.failed" 2>/dev/null; [ -n "$aside" ] && mv "$aside" "$APPDIR"
     die "copying the bundle to $APPDIR failed; the previous app is back in place"
   fi
   did "installed $APPDIR"
+  if [ "$DRY" != 1 ] && [ -d "$keep" ]; then
+    local old
+    # Names end in a timestamp, so a name sort is oldest first.
+    ls -1d "$keep"/seamux.app.replaced.* 2>/dev/null | sort \
+      | awk '{a[NR]=$0} END {for (i = 1; i <= NR - 3; i++) print a[i]}' \
+      | while IFS= read -r old; do rm -rf -- "$old"; done
+  fi
   # The CLI the hook shims call, linked into ~/.local/bin. A file that is
   # not a link at that name is someone else's, and is left alone.
   local target="$APPDIR/Contents/Resources/bin/seamux"
@@ -344,6 +351,20 @@ if [ "$APP" = 1 ]; then
   printf '\n\033[1mseamux app install\033[0m  %s\n' "$([ "$DRY" = 1 ] && echo '(dry run: nothing changes)')"
   install_app
   exit 0
+fi
+
+# Never from a git worktree. The marketplace add below points every plugin at
+# this folder, so a worktree removed later leaves them all broken. --github
+# reads the published repo and --uninstall points nothing here, so both may run
+# from anywhere. --dry-run and --check refuse the same way, so a preview says so.
+abs_git_dir() { (cd "$HERE" && cd "$(git rev-parse "$1" 2>/dev/null)" 2>/dev/null && pwd -P); }
+if [ "$GITHUB" = 0 ] && [ "$UNINSTALL" = 0 ] && command -v git >/dev/null; then
+  GD="$(abs_git_dir --git-dir)" GCD="$(abs_git_dir --git-common-dir)"
+  if [ -n "$GD" ] && [ -n "$GCD" ] && [ "$GD" != "$GCD" ]; then
+    MAIN_CHECKOUT="$(git -C "$HERE" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
+    printf '\n\033[1mseamux install\033[0m\n'
+    die "$HERE is a git worktree: the plugins would run from it and break when it is removed. Install from the main checkout instead: ${MAIN_CHECKOUT:-the checkout you keep}/install.sh  (./install.sh --app --from $HERE still tries an app build from here)"
+  fi
 fi
 
 # ---------------------------------------------------------------- preflight

@@ -948,6 +948,88 @@ step("push prints and never pushes");
   const refs = spawnSync("git", ["--git-dir", bare, "for-each-ref"], { encoding: "utf8", env: ENV }).stdout.trim();
   ok("the remote is untouched — nothing was pushed", refs === "", refs);
   ok("and it says so in the payload", (p.json.note || "").includes("never run"));
+  // Never pushed, so the lease expects nothing there: git accepts it once,
+  // and refuses the same line when the branch already exists.
+  ok("a never-pushed branch leases on an empty expectation",
+    p.json.push[0] === "git push --force-with-lease=feat1: origin feat1:feat1", p.json.push[0]);
+  const first = git(r, ...p.json.push[0].split(" ").slice(1));
+  ok("git accepts that line for a new branch", first.ok, first.err);
+  git(r, "commit", "-q", "--amend", "-m", "feat: b, reworded");
+  const again = git(r, ...p.json.push[0].split(" ").slice(1));
+  ok("and refuses a rewrite with it once the branch is there", !again.ok, again.err);
+}
+
+// ---------------------------------------------------------------- the lease is pinned
+// A bare --force-with-lease trusts the remote-tracking ref, which any fetch
+// moves; the printed line names the tip recorded when the walk was planned.
+step("push lines pin the lease to the remote tip the walk recorded");
+{
+  const bare = path.join(TMP, "lease-remote.git");
+  spawnSync("git", ["init", "-q", "--bare", bare], { env: ENV });
+  const r = newRepo("lease", cheapCfg);
+  git(r, "remote", "add", "origin", bare);
+  git(r, "push", "-q", "origin", "master");
+  git(r, "checkout", "-q", "-b", "feat1");
+  addDef(r, "b", "bravo\n", "feat: b");
+  git(r, "push", "-q", "origin", "feat1");
+  const pushed = git(r, "rev-parse", "feat1").out;
+  git(r, "checkout", "-q", "master");
+  addDef(r, "c", "charlie\n", "master: c");
+  git(r, "checkout", "-q", "feat1");
+  const run = cli(r, "run", "--json", "--no-fetch");
+  const line = run.json?.push?.[0] || "";
+  ok("the walk restacks feat1", run.status === 0 && run.json.push.length === 1, run.out + run.err);
+  ok("the lease names the remote tip recorded at plan time",
+    line === `git push --force-with-lease=feat1:${pushed} origin feat1:feat1`, line);
+  ok("in the shape bash-guard's opt-in exception accepts",
+    /^git push --force-with-lease=([\w./-]+):[0-9a-f]{40} origin [\w./-]+:([\w./-]+)$/.test(line)
+      && line.match(/=([\w./-]+):/)[1] === line.match(/:([\w./-]+)$/)[1], line);
+  ok("restack push prints the same line from the recorded state", cli(r, "push", "--json").json?.push?.[0] === line);
+
+  // Someone else pushes feat1 after the plan, and a fetch moves origin/feat1:
+  // a bare lease would now pass and clobber their commit. The pinned one fails.
+  const other = path.join(TMP, "lease-other");
+  spawnSync("git", ["clone", "-q", "-b", "feat1", bare, other], { env: ENV });
+  addDef(other, "d", "delta\n", "feat: d from elsewhere");
+  git(other, "push", "-q", "origin", "feat1");
+  const theirs = git(other, "rev-parse", "HEAD").out;
+  git(r, "fetch", "-q", "origin");
+  const res = git(r, ...line.split(" ").slice(1));
+  ok("git refuses the pinned lease once the remote moved", !res.ok, res.err);
+  ok("and the other commit is still on the remote",
+    spawnSync("git", ["--git-dir", bare, "rev-parse", "feat1"], { encoding: "utf8", env: ENV }).stdout.trim() === theirs);
+}
+
+// ---------------------------------------------------------------- a stale local base
+// `"base": "master"` is the local branch; a fetch moves only origin/master. A
+// local base behind its upstream is refused with the fix, not walked onto.
+step("a local base behind its upstream");
+{
+  const bare = path.join(TMP, "stalebase-remote.git");
+  spawnSync("git", ["init", "-q", "--bare", bare], { env: ENV });
+  const r = newRepo("stalebase", cheapCfg);
+  git(r, "remote", "add", "origin", bare);
+  git(r, "push", "-q", "-u", "origin", "master");
+  const other = path.join(TMP, "stalebase-other");
+  spawnSync("git", ["clone", "-q", "-b", "master", bare, other], { env: ENV });
+  addDef(other, "e", "echo\n", "master: e elsewhere");
+  git(other, "push", "-q", "origin", "master");
+  git(r, "fetch", "-q", "origin");
+  git(r, "checkout", "-q", "-b", "feat1");
+  addDef(r, "b", "bravo\n", "feat: b");
+  const tip = git(r, "rev-parse", "feat1").out;
+  const plan = cli(r, "plan", "--json", "--no-fetch");
+  ok("plan reports the base behind its upstream",
+    plan.status === 0 && plan.json?.base?.staleAgainst?.upstream === "origin/master" && plan.json.base.staleAgainst.behind === 1, plan.out + plan.err);
+  const run = cli(r, "run", "--json", "--no-fetch");
+  ok("run refuses it", run.status === 1 && /behind origin\/master/.test(run.json?.error || ""), run.out + run.err);
+  ok("with the fix in the message", (run.json?.error || "").includes(`"base": "origin/master"`), run.json?.error);
+  ok("and nothing moved", git(r, "rev-parse", "feat1").out === tip);
+  const fetched = cli(r, "run", "--json");
+  ok("a fetching run refuses the same way", fetched.status === 1 && fetched.json?.staleBase?.behind === 1, fetched.out + fetched.err);
+  git(r, "branch", "-f", "master", "origin/master");
+  const fixed = cli(r, "run", "--json", "--no-fetch");
+  ok("once the local base is current, the walk runs", fixed.status === 0, fixed.out + fixed.err);
 }
 
 // ---------------------------------------------------------------- doctor / init

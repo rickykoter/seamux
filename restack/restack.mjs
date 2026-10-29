@@ -119,12 +119,53 @@ function baseFacts(ctx) {
   };
 }
 
+// The push line for one branch. A bare --force-with-lease checks against the
+// remote-tracking ref, which any background fetch moves, so it can wave through
+// a push that clobbers work landed since the plan. The lease here names the
+// remote tip recorded when the walk was planned: if the remote moved since,
+// git refuses. It is also the one force-push form bash-guard's opt-in
+// exception accepts (`--force-with-lease=<b>:<sha> origin <b>:<b>`). With no
+// tip recorded (the branch was never pushed) the expectation is empty, which
+// git reads as "the remote must not have this branch yet".
+function remoteTip(ctx, branch) {
+  return revParse(ctx.cwd, `refs/remotes/${ctx.cfg.remote}/${branch}`);
+}
+function pushLine(ctx, branch, tip) {
+  if (ctx.cfg.push.command) return `${ctx.cfg.push.command} ${ctx.cfg.remote} ${branch}`;
+  return `git push --force-with-lease=${branch}:${tip || ""} ${ctx.cfg.remote} ${branch}:${branch}`;
+}
+
 function fetchBase(ctx, base) {
   if (OPTS.noFetch || OPTS.dryRun) return { skipped: true };
-  const name = base.ref.startsWith(ctx.cfg.remote + "/")
-    ? base.ref.slice(ctx.cfg.remote.length + 1) : base.ref;
-  const r = git(ctx.cwd, ["fetch", "--quiet", ctx.cfg.remote, name]);
+  // A local base with an upstream is fetched from that upstream, so the
+  // staleness check below compares it with the remote as it is now.
+  const up = localUpstream(ctx, base.ref);
+  const [remote, name] = up ? [up.remote, up.merge.replace(/^refs\/heads\//, "")]
+    : [ctx.cfg.remote, base.ref.startsWith(ctx.cfg.remote + "/") ? base.ref.slice(ctx.cfg.remote.length + 1) : base.ref];
+  const r = git(ctx.cwd, ["fetch", "--quiet", remote, name]);
   return { skipped: false, ok: r.ok, err: r.err };
+}
+
+// `"base": "main"` names the local branch, and a fetch moves only origin/main:
+// the walk would rebase onto a main that is behind its remote. That is
+// refused rather than quietly swapped for the upstream, because a local base
+// can be deliberate (an integration branch with commits of its own), and only
+// the person knows which they meant. Ahead or diverged passes: those commits
+// are theirs. Null when the base is not a local branch with an upstream.
+function localUpstream(ctx, ref) {
+  if (!ref || !revParse(ctx.cwd, `refs/heads/${ref}`)) return null;
+  const remote = git(ctx.cwd, ["config", "--get", `branch.${ref}.remote`]);
+  const merge = git(ctx.cwd, ["config", "--get", `branch.${ref}.merge`]);
+  if (!remote.ok || !merge.ok || !remote.out || !merge.out || remote.out === ".") return null;
+  const up = git(ctx.cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", `${ref}@{upstream}`]);
+  return up.ok && up.out ? { remote: remote.out, merge: merge.out, ref: up.out } : null;
+}
+function staleLocalBase(ctx, base) {
+  const up = localUpstream(ctx, base.ref);
+  if (!up || !revParse(ctx.cwd, up.ref)) return null;
+  const behind = countRange(ctx.cwd, `refs/heads/${base.ref}..${up.ref}`);
+  return behind > 0 ? { upstream: up.ref, behind,
+    hint: `update it (\`git fetch ${up.remote} && git branch -f ${base.ref} ${up.ref}\`, or \`git pull\` on it), or set "base": "${up.ref}" in .seamux/restack.json` } : null;
 }
 
 // What the base moved under you, intersected with what this repo generates.
@@ -374,12 +415,16 @@ function cmdPlan(ctx) {
   const f = fetchBase(ctx, base);
   if (f.ok === false) say(`  warn: could not fetch ${ctx.cfg.remote} — planning against the ref as it is on disk`);
   const base2 = baseFacts(ctx);
+  const staleBase = staleLocalBase(ctx, base2);
+  if (staleBase)
+    say(`  warn: base ${base2.ref} is ${staleBase.behind} commit(s) behind ${staleBase.upstream}; \`restack run\` will refuse until you ${staleBase.hint}`);
   const stack = discover(ctx.cwd, ctx.cfg, ctx.branch, base2, ctx.gitDirPath);
   const steps = planWalk(ctx.cwd, stack.chain, base2);
   const drift = driftReport(ctx, base2);
   const out = {
     verb: "plan", status: "ok", repo: ctx.cwd, branch: ctx.branch,
-    base: { ref: base2.ref, sha: base2.sha.slice(0, 12), behind: base2.behind },
+    base: { ref: base2.ref, sha: base2.sha.slice(0, 12), behind: base2.behind,
+            ...(staleBase ? { staleAgainst: { upstream: staleBase.upstream, behind: staleBase.behind, hint: staleBase.hint } } : {}) },
     stack: { tool: stack.tool, source: stack.source, driver: stack.driver },
     steps: steps.map(s => ({ branch: s.branch, ahead: s.ahead, onto: s.onto, upstream: s.upstream && s.upstream.slice(0, 12), pr: s.pr, error: s.error || null })),
     drift,
@@ -417,6 +462,10 @@ function cmdRun(ctx) {
   const f = fetchBase(ctx, base0);
   if (f.ok === false) die(`could not fetch ${ctx.cfg.remote}: ${f.err}`);
   const base = baseFacts(ctx);
+  const staleBase = staleLocalBase(ctx, base);
+  if (staleBase)
+    die(`the base ${base.ref} is a local branch ${staleBase.behind} commit(s) behind ${staleBase.upstream}, so the stack would land on an old base; nothing was restacked.\n` +
+      `fix: ${staleBase.hint}`, { staleBase: { upstream: staleBase.upstream, behind: staleBase.behind } });
 
   const stack = discover(ctx.cwd, ctx.cfg, ctx.branch, base, ctx.gitDirPath);
   // `--branch` is planned against the whole chain and filtered after, so a
@@ -441,7 +490,9 @@ function cmdRun(ctx) {
       { unresolved: names });
   }
 
-  const steps = planned.map(s => ({ ...s, status: "pending", newTip: null }));
+  // remoteTip is the lease each push line pins (pushLine): the remote branch as
+  // this repo saw it when the walk was planned, before anything moved.
+  const steps = planned.map(s => ({ ...s, status: "pending", newTip: null, remoteTip: remoteTip(ctx, s.branch) }));
   ctx.st = { ...S.fresh(), stale: ctx.st.stale || [], phase: "walking",
              startedAt: new Date().toISOString(), base: { ref: base.ref, sha: base.sha },
              driver: stack.driver, steps, index: 0, returnTo: ctx.branch };
@@ -684,7 +735,7 @@ function finish(ctx) {
     git(ctx.cwd, ["checkout", "--quiet", st.returnTo]);
 
   const pushes = broken.length ? [] : st.steps.filter(s => s.status === "done")
-    .map(s => `${ctx.cfg.push.command} ${ctx.cfg.remote} ${s.branch}`);
+    .map(s => pushLine(ctx, s.branch, "remoteTip" in s ? s.remoteTip : remoteTip(ctx, s.branch)));
   const escalatedDrops = (st.dropped || []).filter(d => d.escalated);
   const out = {
     verb, status: broken.length ? "error" : escalatedDrops.length ? "needs-human" : st.stale.length ? "stale" : "ok", repo: ctx.cwd,
@@ -909,9 +960,12 @@ function cmdPush(ctx) {
     if (base.error) return null;
     return discover(ctx.cwd, ctx.cfg, ctx.branch, base, ctx.gitDirPath);
   })();
-  const branches = (ctx.st.steps || []).filter(s => s.status === "done").map(s => s.branch);
-  const names = branches.length ? branches : (stack ? stack.chain.map(c => c.name) : [ctx.branch].filter(Boolean));
-  const lines = names.map(b => `${ctx.cfg.push.command} ${ctx.cfg.remote} ${b}`);
+  // The tips the walk recorded; with no walk on record (or state written
+  // before tips were recorded), the remote-tracking ref as it is now.
+  const done = (ctx.st.steps || []).filter(s => s.status === "done");
+  const recorded = new Map(done.filter(s => "remoteTip" in s).map(s => [s.branch, s.remoteTip]));
+  const names = done.length ? done.map(s => s.branch) : (stack ? stack.chain.map(c => c.name) : [ctx.branch].filter(Boolean));
+  const lines = names.map(b => pushLine(ctx, b, recorded.has(b) ? recorded.get(b) : remoteTip(ctx, b)));
   const blocked = (ctx.st.stale || []).length > 0;
   emit({
     verb: "push", status: blocked ? "stale" : "ok",

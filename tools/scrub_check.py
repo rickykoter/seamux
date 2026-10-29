@@ -15,7 +15,9 @@ So: tracked files only, every push, fails closed. Patterns are specific rather
 than clever -- a false positive here costs a minute, a false negative costs a
 force-push.
 """
+import getpass
 import re
+import socket
 import subprocess
 import sys
 
@@ -31,8 +33,7 @@ import sys
 FORBIDDEN = [
     (r"lending[h]ome",               "company repo/org/database name"),
     (r"\bkia[v]i\b",                 "company name"),
-    (r"rickyk[o]termanski",          "the author's username"),
-    (r"/Users/[a-z]",                "an absolute home path (use ~ or __HOME__)"),
+    (r"ricky[._-]?k[o]termanski",    "the author's username"),
     (r"\bA[O]-\d",                    "internal Jira key"),
     (r"\bDAT[A]-\d",                  "internal Jira key"),
     (r"\bBO[X]-\d",                   "internal Jira key"),
@@ -43,6 +44,77 @@ FORBIDDEN = [
     (r"lh[-]data-workflow",          "internal repo name"),
     (r"rik[i]pedia",                 "internal repo name"),
 ]
+
+# Home paths, in every form a real one leaks in: macOS and Linux homes, a
+# Windows profile, and the dash-joined form Claude Code names a project's
+# directory with (also the root of its scratch dirs under /private/tmp). Each
+# names its user in the `name` group, and a name in PLACEHOLDERS passes: docs
+# and tests are full of /home/demo and its kin, which are the point.
+HOME_FORMS = [
+    (r"/Users/(?P<name>[A-Za-z0-9_][\w.-]*)",            "an absolute home path (use ~ or __HOME__)"),
+    (r"/home/(?P<name>[A-Za-z0-9_][\w.-]*)",             "an absolute home path (use ~ or __HOME__)"),
+    (r"\b[A-Za-z]:[\\/]+Users[\\/]+(?P<name>[\w.-]+)", "a Windows profile path (use %USERPROFILE%)"),
+    (r"-(?:Users|home)-(?P<name>[A-Za-z0-9_]+)-",       "a Claude projects-dir path, which embeds a home"),
+    (r"\b(?P<name>[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*?)-(?:mbp|mba|macbook[\w-]*|imac|mac-?mini)\.local\b",
+                                                        "a machine's .local hostname"),
+]
+
+# Names that stand for "some user" rather than being one. Lowercased.
+PLACEHOLDERS = {
+    "alice", "bob", "carol", "dave", "eve", "mallory", "you", "your", "yourname", "your-name",
+    "me", "demo", "user", "username", "name", "someone", "somebody", "dev", "agent", "test",
+    "tester", "example", "x", "t", "john", "jane", "jdoe", "shared", "guest", "runner",
+    "__home__", "home", "foo", "bar", "nobody",
+}
+
+# Account names that say nothing about who ran the check (CI runners, root).
+SYSTEM_USERS = {"runner", "root", "ubuntu", "vsts", "ec2-user", "admin", "user", "nobody", "github"}
+
+
+def _sep_pattern(name):
+    """`first.last` -> a pattern for first.last, first-last, first_last and firstlast."""
+    parts = [re.escape(p) for p in re.split(r"[._\- ]+", name) if p]
+    return r"\b" + r"[._\- ]?".join(parts) + r"\b"
+
+
+def env_patterns(user=None, host=None):
+    """Patterns for this machine's own identity: the account name in its
+    separator variants and the machine's .local hostname. Built at run time so
+    the real values never appear in this file."""
+    out = []
+    if user is None:
+        try:
+            user = getpass.getuser()
+        except Exception:
+            user = ""
+    u = (user or "").strip()
+    if len(u) >= 3 and u.lower() not in SYSTEM_USERS | PLACEHOLDERS:
+        out.append((_sep_pattern(u), "this machine's username"))
+    if host is None:
+        host = socket.gethostname()
+    label = (host or "").split(".")[0]
+    if len(label) >= 3 and label.lower() not in {"localhost"}:
+        out.append((r"\b" + re.escape(label) + r"(?:\.[\w-]+)*\.local\b", "this machine's .local hostname"))
+    return out
+
+
+def build_patterns(user=None, host=None):
+    pats = [(re.compile(p, re.IGNORECASE), why, False) for p, why in FORBIDDEN]
+    pats += [(re.compile(p, re.IGNORECASE), why, False) for p, why in env_patterns(user, host)]
+    pats += [(re.compile(p, re.IGNORECASE), why, True) for p, why in HOME_FORMS]
+    return pats
+
+
+def scan_line(line, pats):
+    """Every (match, why) in one line; a home form whose user is a placeholder passes."""
+    hits = []
+    for pat, why, placeholder_ok in pats:
+        for m in pat.finditer(line):
+            if placeholder_ok and m.group("name").lower().rstrip(".-") in PLACEHOLDERS:
+                continue
+            hits.append((m.group(0), why))
+            break
+    return hits
 
 
 def tracked_files():
@@ -63,7 +135,7 @@ def is_text(path):
 
 
 def main():
-    pats = [(re.compile(p, re.IGNORECASE), why) for p, why in FORBIDDEN]
+    pats = build_patterns()
     hits = []
     scanned = 0
     for path in tracked_files():
@@ -72,10 +144,8 @@ def main():
         scanned += 1
         with open(path, encoding="utf-8") as fh:
             for n, line in enumerate(fh, 1):
-                for pat, why in pats:
-                    m = pat.search(line)
-                    if m:
-                        hits.append((path, n, m.group(0), why))
+                for found, why in scan_line(line, pats):
+                    hits.append((path, n, found, why))
 
     if hits:
         print("scrub check FAILED — %d internal identifier(s) in tracked files:\n" % len(hits))

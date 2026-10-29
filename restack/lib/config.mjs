@@ -24,8 +24,10 @@ export const DEFAULTS = {
   stack: { tool: "auto" }, // auto | graphite | git
   artifacts: [],
   checks: [],
-  // Printed, never run — see PUSH in restack.mjs.
-  push: { command: "git push --force-with-" + "lease" },
+  // Printed, never run — see PUSH in restack.mjs. Unset, each line pins its
+  // lease to the remote tip the walk recorded (pushLine in restack.mjs); a
+  // command set here is printed as `<command> <remote> <branch>` instead.
+  push: { command: null },
 };
 
 export const RESOLUTIONS = ["regen", "take-base", "take-branch", "union", "manual"];
