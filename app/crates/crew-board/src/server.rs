@@ -538,7 +538,12 @@ pub fn health_body() -> String {
 /// whatever the status, so a busy server answering 503 at its connection cap
 /// still counts. Up to ~3s for the answer. Err says what is there instead.
 pub fn identify(port: u16) -> Result<(), String> {
-    let (code, headers, body) = health_head(port, IDENTIFY_WAIT, IDENTIFY_CAP)
+    identify_within(port, IDENTIFY_WAIT)
+}
+
+/// identify(), waiting at most `wait` in all.
+pub fn identify_within(port: u16, wait: Duration) -> Result<(), String> {
+    let (code, headers, body) = health_head(port, wait, IDENTIFY_CAP)
         .map_err(|e| format!("nothing answers /health on {port} ({e})"))?;
     let server = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("server")).map(|(_, v)| v.as_str()).unwrap_or("");
     let named = serde_json::from_slice::<Value>(&body).ok()
@@ -591,9 +596,14 @@ fn health_head(port: u16, wait: Duration, cap: usize) -> std::io::Result<(u16, V
 /// A connect alone is not enough: another program on the recorded port would
 /// be sent the token with every click.
 pub fn current() -> Option<(u16, String)> {
+    current_within(IDENTIFY_WAIT)
+}
+
+/// current(), waiting at most `wait` for the server to answer.
+pub fn current_within(wait: Duration) -> Option<(u16, String)> {
     let port: u16 = std::fs::read_to_string(port_file()).ok()?.trim().parse().ok()?;
     let token = std::fs::read_to_string(token_file()).ok()?.trim().to_string();
-    identify(port).ok().map(|_| (port, token))
+    identify_within(port, wait).ok().map(|_| (port, token))
 }
 
 /// The pinned port (CREW_INTENT_PORT, default 7345), then last time's, then any:
@@ -692,9 +702,64 @@ fn handed_off(child: &mut std::process::Child, wait: Duration) -> bool {
     false
 }
 
+/// Whether `pid` is a running process. A zombie (exited, not yet reaped by
+/// its parent) answers kill(pid, 0) too, so it is asked of ps as well.
 fn alive(pid: u32) -> bool {
     // SAFETY: signal 0 only checks that the pid exists.
-    pid > 0 && unsafe { libc::kill(pid as i32, 0) } == 0
+    if pid == 0 || unsafe { libc::kill(pid as i32, 0) } != 0 {
+        return false;
+    }
+    match std::process::Command::new("/bin/ps").args(["-o", "stat=", "-p", &pid.to_string()]).output() {
+        Ok(o) => {
+            let st = String::from_utf8_lossy(&o.stdout);
+            !st.trim().is_empty() && !st.trim_start().starts_with('Z')
+        }
+        Err(_) => true,
+    }
+}
+
+/// Start the new binary as this server's successor and give it the lock: Ok
+/// once it has taken it (this process should then exit), else why not, with
+/// the lock held again where it can be.
+fn hand_off(cell: &std::sync::Mutex<Option<py::Flock>>) -> Result<(), String> {
+    let mut child = spawn_server(Some(std::process::id())).map_err(|e| format!("it would not start ({e})"))?;
+    let pid = child.id();
+    drop(cell.lock().unwrap_or_else(|e| e.into_inner()).take());
+    if handed_off(&mut child, Duration::from_secs(10)) {
+        log(&format!("a newer binary is installed: pid {pid} took over; exiting"));
+        return Ok(());
+    }
+    let why = match child.try_wait() {
+        Ok(Some(st)) => format!("it exited ({st})"),
+        _ => "it did not take the lock in 10s".to_string(),
+    };
+    match server_lock(false) {
+        Ok(Some(l)) => {
+            *cell.lock().unwrap_or_else(|e| e.into_inner()) = Some(l);
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(format!("pid {pid} did not take over ({why})"))
+        }
+        _ => {
+            // Someone has the lock now: if it is the successor, late, it is
+            // waiting for this process to go.
+            if handed_off(&mut child, Duration::from_millis(500)) {
+                log(&format!("a newer binary is installed: pid {pid} took over late; exiting"));
+                return Ok(());
+            }
+            Err(format!("pid {pid} did not take over ({why}), and the lock is another's"))
+        }
+    }
+}
+
+/// How long to wait before trying a failed upgrade handoff again: a minute,
+/// five, then every fifteen.
+fn handoff_backoff(failures: u32) -> Duration {
+    Duration::from_secs(match failures {
+        0 | 1 => 60,
+        2 => 300,
+        _ => 900,
+    })
 }
 
 /// The server lock: at once, or (taking over from a server that is about to
@@ -805,7 +870,7 @@ pub fn serve() -> i32 {
         }
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while alive(old) && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(Duration::from_millis(100));
         }
         let _ = std::fs::remove_file(takeover_file());
         if alive(old) {
@@ -856,44 +921,23 @@ pub fn serve() -> i32 {
     let started = std::time::SystemTime::now();
     let held = std::sync::Arc::new(std::sync::Mutex::new(Some(lock)));
     let cell = held.clone();
-    std::thread::spawn(move || loop {
-        std::thread::sleep(upgrade_check());
-        if !crew_core::upgrade::replaced_since(started) {
-            continue;
-        }
-        let mut child = match spawn_server(Some(std::process::id())) {
-            Ok(c) => c,
-            Err(e) => {
-                log(&format!("a newer binary is installed, but it would not start ({e}): serving on with this one"));
-                return;
+    std::thread::spawn(move || {
+        // A handoff that fails is tried again, later each time, so a server
+        // never stays on old code for good; each failure is logged.
+        let mut failures = 0u32;
+        loop {
+            let wait = if failures == 0 { upgrade_check() } else { handoff_backoff(failures) };
+            std::thread::sleep(wait);
+            if !crew_core::upgrade::replaced_since(started) {
+                continue;
             }
-        };
-        let pid = child.id();
-        drop(cell.lock().unwrap_or_else(|e| e.into_inner()).take());
-        if handed_off(&mut child, Duration::from_secs(10)) {
-            log(&format!("a newer binary is installed: pid {pid} took over; exiting"));
-            std::process::exit(0);
-        }
-        let why = match child.try_wait() {
-            Ok(Some(st)) => format!("it exited ({st})"),
-            _ => "it did not take the lock in 10s".to_string(),
-        };
-        match server_lock(false) {
-            Ok(Some(l)) => {
-                *cell.lock().unwrap_or_else(|e| e.into_inner()) = Some(l);
-                let _ = child.kill();
-                log(&format!("a newer binary is installed, but pid {pid} did not take over ({why}): serving on with this one"));
-                return;
-            }
-            _ => {
-                // Someone has the lock now: if it is the successor, late, it is
-                // waiting for this process to go.
-                if handed_off(&mut child, Duration::from_millis(500)) {
-                    log(&format!("a newer binary is installed: pid {pid} took over late; exiting"));
-                    std::process::exit(0);
+            match hand_off(&cell) {
+                Ok(()) => std::process::exit(0),
+                Err(why) => {
+                    failures += 1;
+                    log(&format!("a newer binary is installed, but {why}: serving on with this one; trying again in {}s",
+                        handoff_backoff(failures).as_secs()));
                 }
-                log(&format!("a newer binary is installed, but pid {pid} did not take over ({why}); the lock is another's: serving on"));
-                return;
             }
         }
     });
@@ -1112,6 +1156,34 @@ mod tests {
         assert!(read_capped(&mut r).is_err());
         assert!(t.elapsed() < Duration::from_millis(600), "held for {:?}", t.elapsed());
         client.join().unwrap();
+    }
+
+    #[test]
+    fn an_exited_unreaped_process_is_not_alive() {
+        let mut c = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let pid = c.id();
+        std::thread::sleep(Duration::from_millis(300)); // exited, not yet reaped: a zombie
+        assert!(unsafe { libc::kill(pid as i32, 0) } == 0, "the zombie should still answer kill(0)");
+        assert!(!alive(pid));
+        let _ = c.wait();
+        assert!(alive(std::process::id()));
+    }
+
+    #[test]
+    fn a_failed_handoff_is_tried_again_later_each_time() {
+        let s: Vec<u64> = (1..6).map(|n| handoff_backoff(n).as_secs()).collect();
+        assert_eq!(s, vec![60, 300, 900, 900, 900]);
+    }
+
+    #[test]
+    fn identify_within_keeps_to_its_wait() {
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        // Accepts (the backlog) but never answers.
+        let t = std::time::Instant::now();
+        assert!(identify_within(port, Duration::from_millis(300)).is_err());
+        assert!(t.elapsed() < Duration::from_millis(700), "{:?}", t.elapsed());
+        drop(l);
     }
 
     #[test]

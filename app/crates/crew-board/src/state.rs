@@ -564,10 +564,17 @@ fn ensure_server() -> bool {
     if crate::server::spawn_server(None).is_err() {
         return false;
     }
-    (0..30).any(|_| {
+    // One deadline for the whole wait; each look gets a short timeout of its
+    // own, so a slow answer cannot stretch it.
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(100));
-        crate::server::current().is_some()
-    })
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if crate::server::current_within(left.min(Duration::from_millis(300)).max(Duration::from_millis(50))).is_some() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Open a served page (/board, /usage) in a cmux browser tab.

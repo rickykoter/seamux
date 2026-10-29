@@ -2707,7 +2707,7 @@ if (crewImpl.isRust("crew-board-intent")) {
       !!h1 && !!h2 && gone && /pid \d+ took over; exiting/.test(logOf()), logOf().slice(-500)]);
     // A new binary that will not start: the server keeps serving, and says why.
     fs.writeFileSync(fresh, "#!/bin/sh\nexit 3\n", { mode: 0o755 }); fs.renameSync(fresh, BIN);
-    const said = await until(() => /did not take over \(it exited/.test(logOf()), 15000);
+    const said = await until(() => /did not take over \(it exited.*trying again in 60s/.test(logOf()), 15000);
     const h3 = await health();
     checks.push(["intent server: a new binary that will not start leaves the old one serving, and logged",
       !!said && !!h2 && h3?.pid === h2.pid, logOf().slice(-500)]);
