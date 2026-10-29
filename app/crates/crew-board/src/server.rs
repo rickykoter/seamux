@@ -483,7 +483,10 @@ pub fn serve() -> i32 {
     // port and rewrites the port and token files under the winner's pages.
     let _lock = match py::Flock::try_exclusive(&state_dir().join("board-intent.lock")) {
         Ok(Some(l)) => l,
-        Ok(None) => return 0,
+        Ok(None) => {
+            eprintln!("crew-board-intent: another server holds board-intent.lock; not starting a second");
+            return 0;
+        }
         Err(e) => {
             eprintln!("crew-board-intent: cannot take the server lock: {e}");
             return 1;
