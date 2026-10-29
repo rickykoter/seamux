@@ -132,6 +132,56 @@ seg_re="^([^;&|\"\\${q}]|${esc}|${dqs}|${sqs})*"
 dq_close='^([^"\\]|\\.)*"'
 sq_close="^([^${q}]*)${q}(.*)\$"
 
+# unquoted TEXT: sets bare to TEXT with each closed quoted string and each
+# backslash escape replaced by a space. An unclosed quote and what follows it
+# stay as written. Only used on short text: one line, or one command's words.
+bare=""
+unq_re="^([^\"${q}\\\\]*)(${esc}|${dqs}|${sqs})(.*)\$"
+unquoted() {
+  local s="$1"
+  bare=""
+  while [[ "$s" =~ $unq_re ]]; do
+    bare="$bare${BASH_REMATCH[1]} "
+    s="${BASH_REMATCH[${#BASH_REMATCH[@]}-1]}"
+  done
+  bare="$bare$s"
+}
+
+# A heredoc's body is data unless a shell reads it. `cat > notes.md <<'EOF'`,
+# `python3 - <<EOF` and a commit message built with `$(cat <<'EOF' ...)` only
+# carry text, so their bodies are dropped before the per-command checks; a
+# body fed to sh, bash, zsh, ssh, eval or su is kept and checked line by line.
+# The whole-command checks further down still read every line. `code` is the
+# command with those bodies taken out.
+heredoc_re="(^|[^<])<<(-?)[[:space:]]*\\\\?[\"${q}]?([A-Za-z_][A-Za-z0-9_.-]*)"
+shell_reader_re="(^|[^[:alnum:]_.-])((ba|z|da|k|fi)?sh|ssh|eval|su)([[:space:]]|\$)"
+code="$cmd"
+drop_data_heredocs() {
+  local line delim="" dash="" keep=() d
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ -n "$delim" ]; then
+      # Inside a data body: skip it, up to the line that ends it.
+      if [ "$line" = "$delim" ] || { [ -n "$dash" ] && [[ "$line" =~ ^$'\t'*"$delim"$ ]]; }; then
+        delim=""
+        keep[${#keep[@]}]="$line"
+      fi
+      continue
+    fi
+    keep[${#keep[@]}]="$line"
+    case "$line" in *"<<"*) ;; *) continue ;; esac
+    # The << must be outside quotes, or it is only text (`echo "use <<EOF"`).
+    unquoted "$line"
+    case "$bare" in *"<<"*) ;; *) continue ;; esac
+    [[ "$line" =~ $heredoc_re ]] || continue
+    d="${BASH_REMATCH[3]}"
+    dash="${BASH_REMATCH[2]}"
+    [[ "$bare" =~ $shell_reader_re ]] || delim="$d"
+  done <<<"$cmd"
+  local IFS=$'\n'
+  code="${keep[*]-}"
+}
+case "$cmd" in *"<<"*) drop_data_heredocs ;; esac
+
 segments=()
 # The command being read: `held` keeps the lines it already spans (an array,
 # joined once at its end: appending each line to one string was quadratic),
@@ -176,18 +226,33 @@ split_commands() {
       esac
       rest="${rest:1}"
     done
-  done <<<"$cmd"
+  done <<<"$code"
   [ -z "${held[*]-}$cur" ] || emit
 }
-case "$cmd" in
+case "$code" in
   *[\;\&\|]* | *"$NL"*) split_commands ;;
-  *) segments=("$cmd") ;;
+  *) segments=("$code") ;;
 esac
 
 # A shell word inside one simple command, and git's global options before the
 # subcommand (`git -C repo push`, `git -c k=v clean`).
 word="([^[:space:]\"\\${q}]|${esc}|${dqs}|${sqs})+"
-gitpre="git([[:space:]]+(-[Cc]|--git-dir|--work-tree|--namespace|--exec-path|--config-env)[[:space:]]+${word}|[[:space:]]+-${word})*[[:space:]]+"
+gitopts="([[:space:]]+(-[Cc]|--git-dir|--work-tree|--namespace|--exec-path|--config-env)[[:space:]]+${word}|[[:space:]]+-${word})*[[:space:]]+"
+
+# Where a command starts inside one simple command: its first word, or the
+# first word of a $( ), ` `, ( ), { } or find -exec, after any VAR=value
+# assignments and wrappers that run the next word (sudo, env, xargs, timeout,
+# if/then/do ...). So `echo "git push -f"` and `git commit -m "why git reset
+# --hard is refused"` name git without running it, and go through.
+wrap="([A-Za-z_][A-Za-z0-9_]*=(${word})?|(sudo|command|builtin|exec|env|nohup|nice|time|timeout|xargs|if|then|else|elif|do|while|until)([[:space:]]+-${word}([[:space:]]+${word})?)*|[0-9]+(\\.[0-9]+)?[smhd]?)"
+lead="(^|\\\$\\(|\`|[({!]|-exec(dir)?[[:space:]])[[:space:]]*(${wrap}[[:space:]]+)*([^[:space:]\"${q}\`]*/)?\\\\?[\"${q}]?"
+# A command that runs a string as shell code: in it, git and rm are looked
+# for anywhere, as they always were (`sh -c 'git push -f'`, `eval "..."`).
+shell_runner_re="${lead}(eval|ssh|su|watch|(ba|z|da|k|fi)?sh)[\"${q}]?([[:space:]]|\$)"
+
+gitpre_at="${lead}git[\"${q}]?${gitopts}"
+gitpre_any="git${gitopts}"
+gitpre="$gitpre_at"
 
 # has ARGS REGEX: ARGS holds a whole word matching REGEX, quoted or not, or
 # the last word of a $( ) or ` `.
@@ -222,7 +287,9 @@ git_args() {
 # `${HOME}/*`, `..`, `../..`, `*`, `./*`, `.*`. `/tmp/x`, `~/proj/build` and
 # `../sibling` name something, so they go through.
 danger_target='(~[[:alnum:]_-]*|\$HOME|\$\{HOME\})[/.*]*|[/.*]+'
-rm_re="(^|[^[:alnum:]_.-])rm[\"${q}]?([[:space:]]|\$)"
+rm_at="${lead}rm[\"${q}]?([[:space:]]|\$)"
+rm_any="(^|[^[:alnum:]_.-])rm[\"${q}]?([[:space:]]|\$)"
+rm_re="$rm_at"
 
 # The one force-push the guard can let through, and only when the person opts
 # in: BASH_GUARD_FORCE_PUSH_BRANCHES holds an extended regex for branch names
@@ -249,6 +316,11 @@ allowed_force_push() {
 
 check_segment() {
   local seg="$1"
+  if [[ "$seg" =~ $shell_runner_re ]]; then
+    gitpre="$gitpre_any" rm_re="$rm_any"
+  else
+    gitpre="$gitpre_at" rm_re="$rm_at"
+  fi
 
   # rm -r on the root / home / parent / everything: recursive flag anywhere
   # among its words, joined (-rf, -Rfv) or split (-r -f), with or without -f.
@@ -304,6 +376,18 @@ check_segment() {
     fi
     shopt -s nocasematch
   fi
+
+  # commit -n is --no-verify. Only in commit: on merge -n is --no-stat, on
+  # push it is --dry-run. Words inside quotes are the message, not flags.
+  if git_args "$seg" commit; then
+    shopt -u nocasematch
+    unquoted "$args"
+    if has "$bare" '-[aeiopqsvzS]*n[[:alnum:]]*'; then
+      shopt -s nocasematch
+      block "--no-verify / signing bypass (git commit -n)"
+    fi
+    shopt -s nocasematch
+  fi
 }
 
 # Case-insensitive by default, as the guard always was: SQL needs it, and on
@@ -320,8 +404,24 @@ done
 # These look at the whole string on purpose: a pipe spans commands, and a
 # bypass flag is refused even inside a heredoc or a commit message.
 
-# bypass hooks / signing
-if [[ "$cmd" =~ (--no-verify|--no-gpg-sign|commit\.gpgsign=false) ]]; then
+# bypass hooks / signing. git takes any unambiguous prefix of a long option
+# (`--no-verif`); `--no-ver` alone is ambiguous with --no-verbose. A quote or
+# backslash between the letters (`--no-"verify"`) is still the same flag.
+# Also refused: pointing core.hooksPath away for one command (or at nothing),
+# husky's off switch, and turning commit signing off.
+qb="[\"${q}\\\\]*"
+spell() {
+  local s="$1" out="" i
+  for ((i = 0; i < ${#s}; i++)); do out="$out${s:i:1}$qb"; done
+  printf '%s' "$out"
+}
+no_verify_re="$(spell '--no-veri')"
+no_gpg_re="$(spell '--no-gpg')"
+hookspath_re="-c[[:space:]]+[\"${q}]?core\\.hookspath=|core\\.hookspath[[:space:]=]+([\"${q}]?/dev/null|\"\"|${q}${q})"
+husky_re="(^|[^[:alnum:]_])HUSKY(_SKIP_HOOKS)?=[\"${q}]?(0|1|true)([^[:alnum:]_]|\$)"
+gpgsign_re="commit\\.gpgsign[[:space:]=]+[\"${q}]?(false|no|off|0)"
+if [[ "$cmd" =~ $no_verify_re || "$cmd" =~ $no_gpg_re || "$cmd" =~ $gpgsign_re ||
+  "$cmd" =~ $hookspath_re || "$cmd" =~ $husky_re ]]; then
   block "--no-verify / signing bypass"
 fi
 

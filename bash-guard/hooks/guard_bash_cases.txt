@@ -237,6 +237,73 @@ block git commit --no-verify -m x
 block git commit --no-gpg-sign -m x
 block git -c commit.gpgsign=false commit -m x
 block git commit -m \"note: never pass --no-verify\"
+block git commit -n -m x
+block git commit -nm x
+block git commit -an -m x
+block git commit -a -n
+block git commit --no-verif -m x
+block git commit --no-veri -m x
+block git commit --no-\"verify\" -m x
+block git commit --no-\\verify -m x
+block git commit --no-gpg-sig -m x
+block git -c core.hooksPath=/dev/null commit -m x
+block git -c core.hooksPath=.nohooks commit -m x
+block git config core.hooksPath /dev/null
+block git config core.hooksPath \"\"
+block HUSKY=0 git commit -m x
+block HUSKY_SKIP_HOOKS=1 git commit -m x
+block git config --global commit.gpgsign false
+block git config commit.gpgSign=false
+allow git commit -m \"fix -n handling in the parser\"
+allow git commit -m x --no-edit
+allow git commit --amend --no-edit
+allow git merge -n main
+allow git push -n origin x
+allow git config core.hooksPath .husky
+allow git config core.hooksPath
+allow git config commit.gpgsign true
+
+# ---- a command only named in text is not run: per-command checks look where a command starts
+allow echo \"remember: git push --force is blocked\"
+allow echo 'never rm -rf ~'
+allow git commit -m \"docs: explain why git reset --hard is refused\"
+allow git commit -m \"Restack, then git push --force-with-lease\"
+allow gh pr create --title x --body \"Restack then git push --force-with-lease origin x\"
+allow grep -rn \"git push --force\" docs/
+allow rg 'git checkout --' .
+allow git log --grep=\"git push -f\"
+allow printf '%s\\n' 'git branch -D old'
+allow cat > notes.md <<'EOF'\nRun git push --force-with-lease, never git reset --hard.\nrm -rf ~ is refused too.\nEOF
+allow cat <<EOF > notes.md\nit's fine: git clean -fdx\nEOF\ngit status
+allow python3 - <<'EOF'\nprompt = \"never run git push -f\"\nEOF
+allow git commit -F - <<'EOF'\nfix: stop suggesting git reset --hard\nEOF
+allow git commit -m \"$(cat <<'EOF'\nfix: avoid git push --force in setup\n\nNo rm -rf ~ either.\nEOF\n)\"
+allow cat <<-EOF > x.md\n\tgit push -f\n\tEOF
+allow echo \"use <<EOF here\"; git status
+block cat <<'EOF' > notes.md\nplain text\nEOF\ngit push -f
+block bash <<'EOF'\ngit push -f\nEOF
+block sh <<EOF\nrm -rf ~\nEOF
+block cat <<EOF | sh\ngit reset --hard\nEOF
+block ssh host <<'EOF'\ngit push --force\nEOF
+block cat <<-EOF > x.md\n\tnotes\n\tEOF\ngit reset --hard
+block eval \"git push -f\"
+block bash -c \"git reset --hard\"
+block zsh -c 'rm -rf ~'
+block timeout 30 git push -f
+block env FOO=1 git push --force
+block FOO=1 git push -f
+block FOO=\"a b\" git reset --hard
+block sudo -u me git push -f
+block nohup git push -f
+block if true; then git reset --hard; fi
+block for b in a; do git branch -D $b; done
+block echo \"$(git push -f)\"
+block echo \"`git reset --hard`\"
+block find . -name x -exec rm -rf ~ \\;
+block /usr/bin/git push -f
+block \\git push -f
+block { git push -f; }
+block ! git reset --hard
 
 # ---- database destruction
 block psql -c \"DROP TABLE users\"
