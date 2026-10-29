@@ -213,9 +213,12 @@ function sq(s) {
 }
 // A commit subject as safe terminal text: no C0 controls but tab, no DEL, no
 // C1 controls, so an escape sequence in someone's subject never reaches the
-// terminal as one.
+// terminal as one; and no bidi overrides or line/paragraph separators, which
+// can reorder or split the printed line.
 function plainText(s) {
-  return String(s ?? "").replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/g, "");
+  return String(s ?? "")
+    .replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/g, "")
+    .replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\u2028\u2029]/g, "");
 }
 
 function fetchBase(ctx, base) {
