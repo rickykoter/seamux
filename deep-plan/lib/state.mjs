@@ -590,7 +590,9 @@ const MUTATORS = [
   // Anything that moves the work tree or the index, as checkout does: restore
   // --staged and add write the index, which is the next commit.
   /\bgit\s+(commit|checkout|reset|clean|apply|stash|merge|rebase|cherry-pick|rm|mv|restore|switch|pull|add|am|revert)\b/,
-  /\bperl\s+(-[a-zA-Z]+\S*\s+)*-[a-zA-Z]*i/,  // perl -pi -e, perl -i.bak
+  // perl -pi -e, perl -i.bak, perl -lni: -i in a cluster of perl's argument-free
+  // switches only, so -Mstrict, -MList::Util and -I lib are not it.
+  /\bperl\b[^;&|\n]*?\s-[acnplsTtuUwWX]*i(\.\S*)?(\s|$)/,
   // Formatters and fixers in their writing form: --write, --fix, -w, or the
   // ones that write unless told to --check.
   /\s--(write|fix)(=\S*)?(\s|$)/,
@@ -601,7 +603,8 @@ const MUTATORS = [
   // Downloads and unpacking into files.
   // -o/-O on its own or ending a short cluster (-sSLo f), never an option
   // that merely holds the letter (-XPOST).
-  /\bcurl\b[^;&|\n]*\s(-[a-zA-Z]*[oO](\s|$)|--output\b|--remote-name)/,
+  // -o/--output to /dev/null or - (stdout) writes no file.
+  /\bcurl\b[^;&|\n]*\s(-[a-zA-Z]*o(\s+|$)(?!\/dev\/null(\s|$)|-(\s|$))|-[a-zA-Z]*O(\s|$)|--output(\s+|=)(?!\/dev\/null(\s|$)|-(\s|$))|--remote-name)/,
   /\btar\s+(-?[a-zA-Z]*[xc][a-zA-Z]*(\s|$)|([^;&|\n]*\s)?-[a-zA-Z]*[xc][a-zA-Z]*(\s|$)|[^;&|\n]*\s--(extract|create|get)\b)/,
   /\bunzip(?![^;&|\n]*\s-[a-zA-Z]*[lptvZ]\b)\s/,
   /\brsync(?![^;&|\n]*\s(--dry-run|-[a-zA-Z]*n)\b)\s/,

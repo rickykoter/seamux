@@ -44,7 +44,20 @@ if [ -e "$1" ]; then
   if [ "$ev" != SessionStart ] && [ -n "$sid" ]; then
     rm -f "$STATE_DIR/turns/$sid.denied"
     case $head in *'"prompt":"'*) prompt=${head#*\"prompt\":\"} ;; *'"prompt": "'*) prompt=${head#*\"prompt\": \"} ;; esac
-    prompt=${prompt:0:300}; prompt=${prompt%%\"[,\}]*}; prompt=${prompt//\\n/ }; prompt=${prompt//\\t/ }
+    # The JSON string up to its closing quote (an escaped quote is content) or
+    # its first 300 characters. No end found in the scanned head: keep nothing,
+    # so no approval is read from a fragment.
+    raw=$prompt; prompt=""; found=""; k=0; n=${#raw}
+    while [ $k -lt $n ] && [ ${#prompt} -lt 300 ]; do
+      c=${raw:$k:1}
+      if [ "$c" = '\' ]; then
+        e=${raw:$((k+1)):1}; k=$((k+2))
+        case $e in n|t|r) prompt+=" " ;; '') break ;; *) prompt+=$e ;; esac
+      elif [ "$c" = '"' ]; then found=1; break
+      else prompt+=$c; k=$((k+1)); fi
+    done
+    [ ${#prompt} -ge 300 ] && found=1
+    [ -n "$found" ] || prompt=""
     mkdir -p "$STATE_DIR/turns" 2>/dev/null && printf '%s\n' "$prompt" > "$STATE_DIR/turns/$sid.prompt" 2>/dev/null
   fi
 fi

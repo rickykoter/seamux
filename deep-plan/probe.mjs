@@ -5309,6 +5309,12 @@ exit 1
     ok(`b1: a prompt that is no plain go does not let the go through ("${p.slice(0, 24)}")`,
       hook(S3, "Bash", { command: "deep-plan go b1-gate next" }).status === 2);
   }
+  // An escaped quote in the prompt does not cut it short: the negation after it still counts.
+  said(S3, "UserPromptSubmit", 'go ahead with "the sweep", but wait, not yet');
+  hook(S3, "Edit", { file_path: path.join(AR, "src", "a.ts") });
+  ok("b1: a quote inside the prompt does not drop what follows it (its negation holds)",
+    hook(S3, "Bash", { command: "deep-plan go b1-gate next" }).status === 2 &&
+    /not yet/.test(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "turns", S3 + ".prompt"), "utf8")));
   for (const p of ["go", "go 2", "lgtm", "That reads well. Go next please, and keep the diff small."]) {
     said(S3, "UserPromptSubmit", p);
     hook(S3, "Edit", { file_path: path.join(AR, "src", "a.ts") });
@@ -5530,11 +5536,13 @@ exit 1
 
   // ---- the write heuristic covers more writers, and still not their read-only forms
   for (const c of ["git restore src/a.ts", "git restore --staged src/a.ts", "git switch main", "git pull", "git add -A",
-    "perl -pi -e 's/a/b/' f", "perl -i.bak -pe 's/a/b/' f", "npx prettier --write src", "eslint --fix .", "cargo fmt",
+    "perl -pi -e 's/a/b/' f", "perl -i.bak -pe 's/a/b/' f", "perl -lni -e 'print' f", "curl -o out.html http://x", "npx prettier --write src", "eslint --fix .", "cargo fmt",
     "black .", "gofmt -w main.go", "rustfmt src/lib.rs", "curl -sSLo out.tgz https://x", "curl -O https://x/f",
     "tar xzf a.tgz", "tar -C out -xf a.tar", "unzip a.zip", "rsync -a src/ dst/", "dd if=/dev/zero of=f bs=1 count=1"])
     ok(`b1: reads as a write: ${c}`, lib.bashMutates(c));
-  for (const c of ["curl -XPOST http://127.0.0.1:1/x", "curl -sS -H 'Origin: x' http://x", "cargo fmt --check", "black --check .", "npx prettier --check src", "curl -s https://x/health",
+  for (const c of ["perl -Mstrict -e 'print 1'", "perl -MList::Util=sum -le 'print sum(1,2)'", "perl -I lib t.pl",
+    "curl -s -o /dev/null -w '%{http_code}' http://x", "curl -sSo - http://x", "curl --output /dev/null http://x",
+    "curl -XPOST http://127.0.0.1:1/x", "curl -sS -H 'Origin: x' http://x", "cargo fmt --check", "black --check .", "npx prettier --check src", "curl -s https://x/health",
     "tar -tzf a.tgz", "unzip -l a.zip", "rsync -an src/ dst/", "gofmt -l .", "git status"])
     ok(`b1: still a read: ${c}`, !lib.bashMutates(c));
 }
