@@ -4660,6 +4660,90 @@ exit 1
   ok("git backend: a remote that cannot be reached throws, naming it", threw.includes("no-such.git"), threw);
 }
 
+// -------------------------------------------------- state push, pull, status and list
+{
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const SO = path.join(TMP, "st-origin.git"), SA = path.join(TMP, "st-a"), SB = path.join(TMP, "st-b");
+  execSync(`git init -q --bare ${SO}`);
+  fs.mkdirSync(SA);
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init && git remote add origin ${SO} && git push -q origin HEAD:refs/heads/main`, { cwd: SA });
+  execSync(`git clone -q ${SO} ${SB}`);
+  // Two machines: each its own data root, each its own clone.
+  const side = name => {
+    const d = path.join(TMP, "st-data-" + name);
+    return { ...ENV, DEEP_PLAN_STATE_DIR: path.join(d, "state"), DEEP_PLAN_KEYS_DIR: path.join(d, "keys"),
+      DEEP_PLAN_PLANS_DIR: path.join(d, "plans"), LOOKOUT_REVIEWS_DIR: path.join(d, "plans", "reviews") };
+  };
+  const EA = side("a"), EB = side("b");
+  const on = (env, dir, ...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env, cwd: dir });
+  let r = on(EA, SA, "render", tmpSpec({ ...spec, slug: "shared-p" }), "--root", SA);
+  ok("state: a plan renders on machine A", r.status === 0, r.stderr);
+  const skey = JSON.parse(fs.readFileSync(path.join(EA.DEEP_PLAN_KEYS_DIR, "shared-p.key.json"), "utf8"));
+  on(EA, SA, "grade", "shared-p", ...Object.entries(skey.answers).map(([q, v]) => `${q}=${v.letter}`));
+  r = on(EA, SA, "state", "status", "shared-p");
+  ok("state status: a plan with no branch says so, and that it is not shared", /shared-p  not shared  seamux-state\/shared-p on remote origin: no branch/.test(r.stdout), r.stdout + r.stderr);
+  r = on(EA, SA, "state", "push", "shared-p");
+  const tip = () => spawnSync("git", ["--git-dir", SO, "rev-parse", "refs/heads/seamux-state/shared-p"], { encoding: "utf8" }).stdout.trim();
+  const tree = execSync(`git --git-dir ${SO} ls-tree -r --name-only refs/heads/seamux-state/shared-p`, { encoding: "utf8" });
+  ok("state push: writes the plan's bundle files and meta.json to seamux-state/<slug> on the repo's remote",
+    r.status === 0 && /pushed shared-p to seamux-state\/shared-p on remote origin/.test(r.stdout) &&
+    ["deep-plan/state/shared-p.json", "deep-plan/keys/shared-p.spec.json", "deep-plan/keys/shared-p.key.json", "plans/shared-p.md", "meta.json"]
+      .every(f => tree.split("\n").includes(f)), r.stdout + r.stderr + tree);
+  const first = tip();
+  r = on(EA, SA, "state", "push", "shared-p");
+  ok("state push: nothing new is nothing written", r.status === 0 && /in sync/.test(r.stdout) && tip() === first, r.stdout);
+  ok("state status: in sync after a push", /: in sync \(branch /.test(on(EA, SA, "state", "status", "shared-p").stdout));
+  r = on(EB, SB, "state", "list");
+  ok("state list: names the branch, and that the plan is not on this machine", /^shared-p  [0-9a-f]{8}  not here$/m.test(r.stdout), r.stdout + r.stderr);
+
+  // B pulls into its own clone; A's root is still on this machine, so it stays.
+  r = on(EB, SB, "state", "pull", "shared-p");
+  const stB = JSON.parse(fs.readFileSync(path.join(EB.DEEP_PLAN_STATE_DIR, "shared-p.json"), "utf8"));
+  ok("state pull: brings the plan to another data root", r.status === 0 && /pulled shared-p from seamux-state\/shared-p/.test(r.stdout) &&
+    stB.slug === "shared-p" && fs.existsSync(path.join(EB.DEEP_PLAN_KEYS_DIR, "shared-p.key.json")) && stB.root === SA, r.stdout + r.stderr);
+  ok("state pull: a second pull of the same version is a no-op", /up to date/.test(on(EB, SB, "state", "pull", "shared-p").stdout));
+  // A moves on and pushes; B, unchanged, pulls it.
+  on(EA, SA, "go", "shared-p", "next");
+  r = on(EA, SA, "state", "push", "shared-p");
+  ok("state status: B sees the branch ahead", /branch ahead: pull/.test(on(EB, SB, "state", "status", "shared-p").stdout));
+  r = on(EB, SB, "state", "pull", "shared-p");
+  ok("state pull: B picks up A's go", r.status === 0 &&
+    JSON.parse(fs.readFileSync(path.join(EB.DEEP_PLAN_STATE_DIR, "shared-p.json"), "utf8")).increments[0].status === "authorized", r.stdout + r.stderr);
+  // B changes something locally; a pull would lose it.
+  on(EB, SB, "block", "shared-p", "1", "waiting on a reply");
+  ok("state status: local changes are named", /local changes to push/.test(on(EB, SB, "state", "status", "shared-p").stdout));
+  on(EA, SA, "start", "shared-p", "1");
+  on(EA, SA, "state", "push", "shared-p");
+  ok("state status: both moved", /both moved/.test(on(EB, SB, "state", "status", "shared-p").stdout));
+  r = on(EB, SB, "state", "pull", "shared-p");
+  ok("state pull: refuses to drop changes made here", r.status !== 0 && /changes here that are not on/.test(r.stderr), r.stderr);
+  r = on(EB, SB, "state", "push", "shared-p");
+  ok("state push: refuses when the branch moved since this machine synced", r.status !== 0 && /moved since this machine last synced it/.test(r.stderr), r.stderr);
+  r = on(EB, SB, "state", "pull", "shared-p", "--force");
+  ok("state pull --force: replaces them", r.status === 0 &&
+    JSON.parse(fs.readFileSync(path.join(EB.DEEP_PLAN_STATE_DIR, "shared-p.json"), "utf8")).increments[0].status !== "blocked");
+  // A fresh machine whose recorded root is gone takes its own checkout.
+  const EC = side("c");
+  fs.renameSync(SA, SA + "-gone");
+  r = on(EC, SB, "state", "pull", "shared-p");
+  ok("state pull: a root that is gone becomes this checkout",
+    r.status === 0 && fs.realpathSync(JSON.parse(fs.readFileSync(path.join(EC.DEEP_PLAN_STATE_DIR, "shared-p.json"), "utf8")).root) === fs.realpathSync(SB), r.stdout + r.stderr);
+  fs.renameSync(SA + "-gone", SA);
+  // A branch is checked like a bundle: nothing outside the plan's own files.
+  const SYNC = await import(new URL("lib/sync.mjs", import.meta.url));
+  const be = new SYNC.GitBackend(SYNC.loadConfig(true, SA, {}), { cacheDir: path.join(TMP, "st-cache") });
+  const cur = be.read("shared-p");
+  be.write("shared-p", { ...cur.files, "deep-plan/state/other-plan.json": "{}" }, cur.version);
+  const ED = side("d");
+  r = on(ED, SB, "state", "pull", "shared-p");
+  ok("state pull: refuses a branch that carries another plan's files, writing nothing", r.status !== 0 &&
+    /outside the plan's own files/.test(r.stderr) && !fs.existsSync(path.join(ED.DEEP_PLAN_STATE_DIR, "shared-p.json")), r.stderr);
+  ok("state pull: a plan with no branch is named", /no branch seamux-state\/nope on remote origin/.test(on(EB, SB, "state", "pull", "nope").stderr));
+  ok("state: export-state and import-state still work by hand",
+    on(EA, SA, "export-state", "shared-p", "--out", path.join(TMP, "sp.bundle.json")).status === 0 &&
+    on(side("e"), SB, "import-state", path.join(TMP, "sp.bundle.json")).status === 0);
+}
+
 // -------------------------------------------------- hot-path cost
 const t0 = process.hrtime.bigint();
 for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);
