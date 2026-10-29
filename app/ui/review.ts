@@ -24,6 +24,8 @@ type Job = {
   open: Record<string, number>;
   ahead: number;
   dirty: boolean;
+  /** Files with uncommitted edits. */
+  changed: number;
   pushed: boolean;
   posted: string;
 };
@@ -168,7 +170,7 @@ export class ReviewView {
   private pickerOpen = new Set<string>();
   /** Logs the reader opened or closed, so a redraw keeps them that way. */
   private logOpen = new Map<string, boolean>();
-  private confirm = new Map<string, "post" | "push" | "remove">();
+  private confirm = new Map<string, "post" | "push" | "remove" | "remove-unreadable">();
   private origin: string | null = null;
 
   constructor(private root: HTMLElement) {
@@ -298,12 +300,22 @@ export class ReviewView {
     this.render(true);
   }
 
-  private async remove(j: Job): Promise<void> {
+  /**
+   * `files` and `commits`: the uncommitted files and unpushed commits the
+   * confirm named. `unreadable`: it said git couldn't read the worktree.
+   */
+  private async remove(j: Job, files: number, commits: number, unreadable: boolean): Promise<void> {
+    this.err.textContent = "";
     try {
-      await invoke("review_remove", { id: j.id });
+      await invoke("review_remove", { id: j.id, files, commits, unreadable });
       if (this.selected === `job:${j.id}`) this.pick(null);
     } catch (e) {
-      this.err.textContent = String(e);
+      // Git found more than the confirm named (the card now has it), or
+      // couldn't read the worktree: ask again, saying so.
+      const why = String(e);
+      this.err.textContent = why;
+      if (why.includes("nothing was removed")) this.confirm.set(j.id, "remove");
+      else if (why.includes("couldn't read its worktree")) this.confirm.set(j.id, "remove-unreadable");
       this.render(true);
     }
   }
@@ -443,8 +455,13 @@ export class ReviewView {
 
     const parts: HTMLElement[] = [];
     if (this.confirm.get(j.id) === "remove") {
-      const unpushed = j.ahead && !j.pushed ? ` Its ${j.ahead} unpushed commit${j.ahead === 1 ? " is" : "s are"} lost.` : "";
-      parts.push(this.confirmBox(j, `Remove this review and its worktree?${unpushed}`, "Remove", () => void this.remove(j)));
+      const changed = j.dirty ? Math.max(j.changed ?? 0, 1) : 0;
+      const commits = j.ahead > 0 && !j.pushed ? j.ahead : 0;
+      const edits = changed ? ` Uncommitted edits to ${changed} file${changed === 1 ? "" : "s"} are deleted.` : "";
+      const unpushed = commits ? ` Its ${commits} unpushed commit${commits === 1 ? " is" : "s are"} lost.` : "";
+      parts.push(this.confirmBox(j, `Remove this review and its worktree?${edits}${unpushed}`, "Remove", () => void this.remove(j, changed, commits, false)));
+    } else if (this.confirm.get(j.id) === "remove-unreadable") {
+      parts.push(this.confirmBox(j, "Git couldn't read this review's worktree, so what it holds is unknown. Remove the review and delete the worktree anyway, with whatever is in it?", "Delete anyway", () => void this.remove(j, 0, 0, true)));
     }
     if (running) parts.push(this.progress(j));
     else if (j.status === "failed") {

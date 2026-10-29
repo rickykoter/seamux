@@ -12,6 +12,9 @@
 #   * HEAD is an ancestor of the default branch (origin/HEAD, else origin/main
 #     or origin/master), i.e. the work really did land
 #   * the tree is clean and there are no unpushed commits
+#   * no ignored file would be lost with it (.env, local settings, databases):
+#     git status does not show them and git worktree remove deletes them;
+#     build output, caches, symlinks and copies of the primary checkout's aside
 #   * nothing live is standing in it — not this shell, not another workspace
 #   * the workspace being closed has no agent mid-turn (an idle Claude is
 #     closed with it: cmux needs --force for any running process, and this
@@ -48,6 +51,9 @@ CMUX="${CREW_CMUX:-$(command -v cmux || true)}"
 # version skew that fails silently, because the old bundle is still on disk.
 [ -n "$CMUX" ] || CMUX="$("$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/crew-cmux-bin" 2>/dev/null || true)"
 [ -n "$CMUX" ] || CMUX=cmux
+# A bare name (CREW_CMUX=cmux) is resolved on PATH once, so the -x checks below
+# test the command that runs, not a file of that name in the current directory.
+case "$CMUX" in */*) ;; *) CMUX="$(command -v "$CMUX" 2>/dev/null || printf '%s' "$CMUX")" ;; esac
 
 # The real path, not the one it was run by: ~/.local/bin holds a link to it, and
 # workspaces.py lives beside the real bin/, in hooks/.
@@ -125,7 +131,7 @@ while [ "$#" -gt 0 ]; do
     -y|--yes)     assume_yes=1 ;;
     --family-ok)  family_ok=1 ;;
     --json)       json=1; dry=1 ;;
-    -h|--help)    sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)    sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --)           shift; arg="${1:-}"; break ;;
     -*)           die "unknown option: $1" ;;
     *)            arg="$1" ;;
@@ -184,7 +190,94 @@ fi
 dirty_n="$(git -C "$top" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
 caller_top="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)"
 
-others=0
+# Ignored files are the hole in "clean tree": `status --porcelain` leaves them
+# out, and `git worktree remove` deletes them without asking. That is where a
+# worktree's .env, .claude/settings.local.json, local databases and scratch notes
+# live. Prints one path per line (relative to the worktree) of every ignored file
+# that would be lost, leaving out what is not lost: build output and caches that
+# regenerate, symlinks (only the link goes; crew-worktree links node_modules to
+# the primary checkout), and a file byte-identical to the primary checkout's copy
+# (crew-worktree copies .husky/_ in). Exits 2 when git cannot list them, which
+# the report treats as a blocker: "could not tell" is not "none".
+lost_ignored() {
+  python3 - "$top" "$common" <<'IGNORED'
+import filecmp, fnmatch, os, subprocess, sys
+top, common = sys.argv[1], sys.argv[2]
+main = os.path.dirname(common.rstrip("/")) if os.path.basename(common.rstrip("/")) == ".git" else ""
+REGEN = {"node_modules", "target", "dist", "build", ".next", ".nuxt", ".turbo", ".parcel-cache",
+         ".svelte-kit", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox",
+         ".venv", "venv", ".cache", "coverage", ".nyc_output", ".gradle", ".terraform", ".eggs"}
+# Matched on any component, wherever it sits: these names are never kept by hand.
+GLOBS = (".DS_Store", "*.pyc", "*.pyo", "*.egg-info")
+try:
+    out = subprocess.run(["git", "-C", top, "ls-files", "-z", "-o", "-i", "--exclude-standard",
+                          "--directory"], capture_output=True, check=True).stdout
+except Exception:
+    sys.exit(2)
+
+# A REGEN name is build output only when that directory is itself ignored (by its
+# own pattern or a parent's), which check-ignore answers. docs/build/notes.md
+# ignored by `*.md`, in a docs/build that is not ignored, is somebody's notes.
+# Not the ls-files entry: --directory also lists a directory that merely holds
+# only ignored files.
+_ign = {}
+def dir_ignored(rel):
+    if rel not in _ign:
+        _ign[rel] = subprocess.run(["git", "-C", top, "check-ignore", "-q", "--", rel],
+                                   capture_output=True).returncode == 0
+    return _ign[rel]
+
+def regen(rel):
+    parts = rel.split("/")
+    if rel == ".husky/_" or rel.startswith(".husky/_/"):
+        return True     # husky's generated dir; crew-worktree copies it in
+    if any(fnmatch.fnmatch(p, g) for p in parts for g in GLOBS):
+        return True
+    for i, p in enumerate(parts):
+        d = "/".join(parts[:i + 1])
+        if p in REGEN and os.path.isdir(os.path.join(top, d)) and dir_ignored(d):
+            return True
+    return False
+
+def kept(rel):
+    full = os.path.join(top, rel)
+    if os.path.islink(full) or regen(rel):
+        return True
+    twin = os.path.join(main, rel) if main else ""
+    try:
+        return bool(twin) and os.path.isfile(twin) and filecmp.cmp(full, twin, shallow=False)
+    except OSError:
+        return False
+
+# --directory can name a directory and then what is in it, so print each once.
+seen = set()
+def lost(rel):
+    if rel not in seen:
+        seen.add(rel)
+        print(rel)
+
+for raw in out.split(b"\0"):
+    rel = os.fsdecode(raw).rstrip("/")
+    if not rel or kept(rel):
+        continue
+    full = os.path.join(top, rel)
+    if os.path.isdir(full) and not os.path.islink(full):
+        for d, dirs, files in os.walk(full):
+            r = os.path.relpath(d, top)
+            dirs[:] = [x for x in dirs if not kept(os.path.join(r, x))]
+            for f in files:
+                if not kept(os.path.join(r, f)):
+                    lost(os.path.join(r, f))
+    else:
+        lost(rel)
+IGNORED
+}
+ignored_list="$(lost_ignored)"; ignored_rc=$?
+ignored_n="$(printf '%s' "$ignored_list" | grep -c . || true)"
+
+# Unknown until cmux answers: no cmux at all is the same "could not tell" as a
+# cmux that does not answer, and both block below. Never a default of 0.
+others=""
 ws_id=""
 others_desc=""
 ws_title=""
@@ -385,6 +478,20 @@ else
   fail "$dirty_n uncommitted change(s)"
 fi
 
+# Ignored files `git status` does not show and `git worktree remove` deletes.
+# There is no flag past this one, as there is none past uncommitted changes:
+# nothing on disk is ever forced.
+if [ "$ignored_rc" -ne 0 ]; then
+  fail "git could not list the ignored files — could not tell what would be lost with it"
+elif [ "$ignored_n" -eq 0 ]; then
+  pass "no ignored files that would be lost (build output and caches aside)"
+else
+  ignored_names="$(printf '%s\n' "$ignored_list" | head -5 | paste -sd, - | sed 's/,/, /g')"
+  [ "$ignored_n" -gt 5 ] && ignored_names="$ignored_names, +$((ignored_n - 5)) more"
+  fail "$ignored_n ignored file(s) would be deleted with it: $ignored_names"
+  note "git status does not show these and git worktree remove does not ask — move them out of $top (or delete them) first"
+fi
+
 # Planning is unfinished work that does not show up in `git status`. A deep-plan
 # lives in ~/.claude/deep-plan and points back at this root; plan mode means a
 # session here is still deciding what to do. Deleting the tree under either one
@@ -432,7 +539,10 @@ if [ -n "$ws" ]; then
   fi
 fi
 
-if [ -z "$others" ]; then
+if [ ! -x "$CMUX" ]; then
+  fail "cmux not found ($CMUX) — could not tell whether another workspace is open here"
+  note "put cmux on PATH, or point CREW_CMUX at it"
+elif [ -z "$others" ]; then
   fail "cmux did not list its workspaces — could not tell whether another is open here"
 elif [ "$others" -eq 0 ]; then
   pass "no other cmux workspace is open here"
@@ -493,6 +603,8 @@ fi
 # ---------------------------------------------------------------------------
 [ -z "$(git -C "$top" status --porcelain 2>/dev/null | head -1)" ] \
   || die "$top picked up uncommitted changes while you were deciding — refusing"
+ignored_now="$(lost_ignored)" && [ -z "$ignored_now" ] \
+  || die "$top picked up ignored files that would be lost while you were deciding — refusing"
 if [ -n "$ws" ]; then
   case "$(ws_tool lifecycle "$ws" 2>/dev/null)" in
     idle|none) ;;

@@ -556,6 +556,34 @@ step("--branch on a branch mid-stack lifts it off its parent, never the base");
     git(r, "log", "--oneline", "master..feat2").out);
 }
 
+// ---------------------------------------------------------------- a branch with no local ref
+step("a chain naming a branch with no local ref refuses, never 'already-current'");
+{
+  const cfg = { ...cheapCfg, stack: { tool: "git", branches: ["feat/a", "feat/x-missing", "feat/c"] } };
+  const r = newRepo("missingmiddle", cfg);
+  git(r, "checkout", "-q", "-b", "feat/a");
+  addDef(r, "b", "bravo\n", "feat/a: b");
+  git(r, "checkout", "-q", "-b", "feat/c");
+  addDef(r, "d", "delta\n", "feat/c: d");
+  git(r, "checkout", "-q", "master");
+  addDef(r, "c", "charlie\n", "master: c");
+  git(r, "checkout", "-q", "feat/c");
+  const before = ["feat/a", "feat/c"].map(b => git(r, "rev-parse", b).out);
+
+  const run = cli(r, "run", "--json", "--no-fetch");
+  ok("the run fails, exit 1, status error", run.status === 1 && run.json?.status === "error", run.out + run.err);
+  ok("naming the missing branch and how to fix it",
+    /feat\/x-missing/.test(run.json?.error || "") && /stack\.branches/.test(run.json?.error || "")
+      && (run.json?.unresolved || []).includes("feat/x-missing"), run.out);
+  ok("with no push line and no 'already-current' step", !run.json?.push && !/already-current/.test(run.out), run.out);
+  ok("and nothing moved: refs and run state untouched",
+    git(r, "rev-parse", "feat/a").out === before[0] && git(r, "rev-parse", "feat/c").out === before[1]
+      && !fs.existsSync(path.join(r, ".git", "seamux-restack.json")), git(r, "log", "--oneline", "--graph", "--all").out);
+
+  const human = cli(r, "run", "--no-fetch");
+  ok("the human output says so too", human.status === 1 && /feat\/x-missing/.test(human.err) && !/already-current/.test(human.out), human.out + human.err);
+}
+
 // ---------------------------------------------------------------- a checkout that fails
 step("a branch that cannot be checked out fails the walk, not finishes it");
 {
