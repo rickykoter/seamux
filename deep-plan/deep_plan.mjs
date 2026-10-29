@@ -3230,7 +3230,10 @@ function statePull(slug, flags) {
 // remote host, where a new sandbox starts with nothing, also pull every plan
 // with a branch on this repo's remote that is not here yet. Quiet unless
 // something came in; a failure is one line; never exits non-zero.
-const SESSION_TIMEOUT_MS = Number(process.env.DEEP_PLAN_SYNC_TIMEOUT_MS) || 5000, SESSION_BUDGET_MS = 20000;
+// The hook is killed at 60 s (hooks.json). Each network call may take 25 s,
+// which a cloud sandbox's git proxy has needed; the budget stops new pulls
+// in time for the summary line.
+const SESSION_TIMEOUT_MS = Number(process.env.DEEP_PLAN_SYNC_TIMEOUT_MS) || 25000, SESSION_BUDGET_MS = 45000;
 function stateSessionPull() {
   const dir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const common = d => {
@@ -3239,7 +3242,7 @@ function stateSessionPull() {
   };
   const repo = common(dir);
   if (!repo) return;
-  // The hook is killed at 30 s; what does not fit in the budget waits for
+  // What does not fit in the budget waits for
   // the next session or a state pull by hand, and is named.
   const t0 = Date.now(), late = [];
   const lines = [], failed = [];
@@ -4573,7 +4576,9 @@ try { pointerBody = writeEnginePointer(); } catch { /* read-only home, full disk
 // here and is never pushed; the next transition carries it.
 const SYNC_CMDS = new Set(["go", "start", "done", "block", "reset", "check", "obs", "grade", "import-state", "family", "await-go", "deliver", "close"]);
 // DEEP_PLAN_SYNC_TIMEOUT_MS is for the probe, whose machine may be loaded.
-const TRANSITION_PUSH_MS = Number(process.env.DEEP_PLAN_SYNC_TIMEOUT_MS) || 8000;
+// Long enough for a cloud sandbox's git proxy, which can take seconds per
+// call where a laptop takes a fraction of one.
+const TRANSITION_PUSH_MS = Number(process.env.DEEP_PLAN_SYNC_TIMEOUT_MS) || 20000;
 function stateFileDigests() {
   const out = new Map();
   let names = [];

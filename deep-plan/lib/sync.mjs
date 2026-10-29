@@ -189,7 +189,10 @@ export class GitBackend {
     const has = () => this.git(["cat-file", "-e", version + "^{commit}"]).status === 0;
     if (!has()) {
       const b = this.branch(slug);
-      const r = this.git(["fetch", "-q", "--no-tags", "--no-write-fetch-head", this.target, `+refs/heads/${b}:${this.track(b)}`], { net: true });
+      // Only the branch, and none of a fetch's housekeeping: the state is a
+      // few small files, and a cloud sandbox's git proxy makes every second count.
+      const r = this.git(["fetch", "-q", "--no-tags", "--no-write-fetch-head", "--no-auto-gc", "--no-auto-maintenance",
+        "--no-write-commit-graph", "--no-recurse-submodules", this.target, `+refs/heads/${b}:${this.track(b)}`], { net: true });
       if (r.status !== 0 || r.error) throw this.netFail("fetching from", r);
       if (!has()) return false;
     }
