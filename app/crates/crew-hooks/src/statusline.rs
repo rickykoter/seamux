@@ -454,13 +454,18 @@ fn ccusage_cached(exe: &Path, args: &[String], key: &str, timeout: Duration) -> 
         return ccusage(exe, args, key, timeout);
     }
     let file = home().join(".claude/cache").join(format!("ccusage-{key}.json"));
-    let id = ccusage_key(exe, args, std::env::vars(), std::env::current_dir().ok().as_deref());
+    // vars_os: a variable that is not UTF-8 must not panic the line.
+    let id = ccusage_key(exe, args, std::env::vars_os(), std::env::current_dir().ok().as_deref());
     let t = now();
     if let Some(v) = cache_get(&file, &id, ttl, t) {
         return Ok(v);
     }
     match crew_core::py::Flock::try_exclusive(&file.with_extension("lock")) {
         Ok(Some(_held)) => {
+            // Another render may have refreshed it between the miss and the lock.
+            if let Some(v) = cache_get(&file, &id, ttl, now()) {
+                return Ok(v);
+            }
             let got = ccusage(exe, args, key, timeout);
             if let Ok(v) = &got {
                 cache_put(&file, &id, now(), v);
@@ -476,9 +481,17 @@ fn ccusage_cached(exe: &Path, args: &[String], key: &str, timeout: Duration) -> 
 /// every CCUSAGE_ setting; read from the strings in ccusage 20's binary) and
 /// a project config in the cwd. Sessions that differ in any of it never
 /// share an answer.
-fn ccusage_key(exe: &Path, args: &[String], env: impl Iterator<Item = (String, String)>, cwd: Option<&Path>) -> String {
+fn ccusage_key(
+    exe: &Path,
+    args: &[String],
+    env: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    cwd: Option<&Path>,
+) -> String {
     const READS: [&str; 6] = ["HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "TZ", "LOG_LEVEL"];
-    let mut vars: Vec<(String, String)> = env.filter(|(k, _)| READS.contains(&k.as_str()) || k.starts_with("CCUSAGE_")).collect();
+    let mut vars: Vec<(String, String)> = env
+        .map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned()))
+        .filter(|(k, _)| READS.contains(&k.as_str()) || k.starts_with("CCUSAGE_"))
+        .collect();
     vars.sort();
     let mut id = format!("{}\0{}", exe.display(), args.join("\0"));
     for (k, v) in vars {
@@ -857,7 +870,7 @@ mod tests {
     fn ccusage_key_tells_environments_apart() {
         let exe = Path::new("/bin/ccusage");
         let args = vec!["blocks".to_string(), "--json".to_string()];
-        let env = |kv: &[(&str, &str)]| kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>().into_iter();
+        let env = |kv: &[(&str, &str)]| kv.iter().map(|(k, v)| (k.into(), v.into())).collect::<Vec<(std::ffi::OsString, std::ffi::OsString)>>().into_iter();
         let base = ccusage_key(exe, &args, env(&[("HOME", "/h"), ("PATH", "/a")]), None);
         // Variables ccusage does not read change nothing; order never does.
         assert_eq!(base, ccusage_key(exe, &args, env(&[("PATH", "/b"), ("HOME", "/h")]), None));
@@ -869,6 +882,11 @@ mod tests {
         ] {
             assert_ne!(base, ccusage_key(exe, &args, other.into_iter(), None));
         }
+        // A value that is not UTF-8 is keyed lossily, never a panic.
+        use std::os::unix::ffi::OsStringExt;
+        let odd = vec![("HOME".into(), std::ffi::OsString::from_vec(vec![b'/', 0xff])), ("X".into(), std::ffi::OsString::from_vec(vec![0xfe]))];
+        let k = ccusage_key(exe, &args, odd.into_iter(), None);
+        assert!(k.ends_with("HOME=/\u{fffd}"), "{k:?}");
         let d = std::env::temp_dir().join(format!("statusline-key-{}", std::process::id()));
         std::fs::create_dir_all(d.join(".ccusage")).unwrap();
         assert_eq!(base, ccusage_key(exe, &args, env(&[("HOME", "/h")]), Some(&d)));

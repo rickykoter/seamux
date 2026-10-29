@@ -503,7 +503,7 @@ def apply(root, hexv, name):
 
 def unapply(root):
     path = os.path.join(root, ".vscode", "settings.json")
-    cur, _ = load_settings(path)
+    cur, had_comments = load_settings(path)
     if not cur:
         return False
     merged = dict(cur)
@@ -517,6 +517,10 @@ def unapply(root):
         merged.pop("workbench.colorCustomizations", None)
     if merged == cur:
         return False
+    # As in apply: rewriting (or removing) it would lose its comments.
+    if had_comments:
+        die(f"{path} has comments, which rewriting it would drop, so the window "
+            f"was left colored (remove the comments, or Peacock's keys by hand)")
     if merged:
         write_atomic(path, json.dumps(merged, indent=2, sort_keys=True) + "\n")
     else:
