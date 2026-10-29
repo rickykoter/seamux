@@ -42,6 +42,13 @@ export function readState(slug) {
 const LOCK_WAIT_MS = Number(process.env.DEEP_PLAN_LOCK_WAIT_MS) || 10000;
 const nap = ms => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* no SAB: spin */ const u = Date.now() + ms; while (Date.now() < u) { /* spin */ } } };
 export class LockBusy extends Error {}
+// Who holds a lock dir and since when: {pid, mtime}; throws when it is gone.
+function lockOwner(dir) {
+  const mtime = fs.statSync(dir).mtimeMs;
+  let pid = 0;
+  try { pid = Number(fs.readFileSync(path.join(dir, "pid"), "utf8")) || 0; } catch { /* none written yet */ }
+  return { pid, mtime };
+}
 function acquireLock(slug) {
   const dir = path.join(STATE_DIR, ".lock-" + slug);
   const deadline = Date.now() + LOCK_WAIT_MS;
@@ -53,11 +60,16 @@ function acquireLock(slug) {
     }
     catch {
       try {
-        const age = Date.now() - fs.statSync(dir).mtimeMs;
-        let pid = 0;
-        try { pid = Number(fs.readFileSync(path.join(dir, "pid"), "utf8")) || 0; } catch { /* none written */ }
-        const live = pid && (() => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } })();
-        if ((age > 5000 && !live) || age > 120000) { fs.rmSync(dir, { recursive: true, force: true }); continue; }
+        const seen = lockOwner(dir);
+        const age = Date.now() - seen.mtime;
+        const live = seen.pid && (() => { try { process.kill(seen.pid, 0); return true; } catch (e) { return e.code === "EPERM"; } })();
+        if ((age > 5000 && !live) || age > 120000) {
+          // Owner-checked: removed only if it is still the lock judged stale
+          // (same holder, same time), never one another writer just took.
+          const now = lockOwner(dir);
+          if (now.pid === seen.pid && now.mtime === seen.mtime) fs.rmSync(dir, { recursive: true, force: true });
+          continue;
+        }
       } catch { continue; }
       nap(10);
     }
@@ -838,10 +850,13 @@ function blankHeredocs(cmd) {
 
 // Whether the word starting at `w` is where a command starts: nothing before
 // it since the last separator, or only wrappers, their options and VAR=value.
+// Shell keywords that start a command after them: `then deep-plan go`.
+const KEYWORDS = new Set(["then", "do", "else", "elif", "if", "while", "until", "!", "{", "time"]);
 function commandPosition(ref, w) {
   let s = w;
   while (s > 0 && !/[;&|(`\n]/.test(ref[s - 1])) s--;
   const before = ref.slice(s, w).trim().split(/\s+/).filter(Boolean);
+  while (before.length && KEYWORDS.has(before[0])) before.shift();
   if (!before.length) return true;
   const ok = x => WRAPPERS.has(path.basename(x)) || /^\w+=/.test(x);
   if (!ok(before[0])) return false;
@@ -861,7 +876,15 @@ function shellStrings(text) {
     if (i && !/\s/.test(text[i - 1])) continue;
     let j = i;
     if (text.startsWith("eval", i)) j = i + 4;
-    else if (text[i] === "-") { j = i + 1; while (j < n && /[a-zA-Z]/.test(text[j])) j++; if (text[j - 1] !== "c" || j === i + 1) continue; }
+    else if (text[i] === "-") {
+      j = i + 1; while (j < n && /[a-zA-Z]/.test(text[j])) j++;
+      if (text[j - 1] !== "c" || j === i + 1) continue;
+      // Only a shell's -c runs its argument (grep -c "…" counts lines): the
+      // program before this option and any others is sh, bash, zsh, dash or ksh.
+      const words = text.slice(Math.max(0, i - 400), i).split(/[;&|(\n]/).pop().trim().split(/\s+/).filter(Boolean);
+      while (words.length && words[words.length - 1].startsWith("-")) words.pop();
+      if (!/^(sh|bash|zsh|dash|ksh)$/.test(path.basename(words.length ? words[words.length - 1] : ""))) continue;
+    }
     else continue;
     let k = j;
     while (k < n && (text[k] === " " || text[k] === "\t")) k++;
@@ -916,6 +939,21 @@ export function deepPlanCalls(cmd, depth = 0) {
 // pane, never a Claude Code session: lifting the gate. A Bash call from a
 // session that pulls it is refused with this reason ("" when none does).
 // Outside a session (no hook runs) it works as before.
+// A command that would change what the CLI trusts about its caller: the
+// server's mark (DEEP_PLAN_FROM_SERVE), the session's identity
+// (CLAUDE_CODE_SESSION_ID / CLAUDE_SESSION_ID), or Claude Code's own CLAUDECODE
+// unset or emptied (env -u, env -i, VAR=, unset). From a session, with a
+// deep-plan call in it, that is how the one-per-turn record is dodged. The
+// reason, or "".
+export function trustOverride(cmd) {
+  const c = String(cmd || "").slice(0, CALL_SCAN_MAX);
+  if (/\bDEEP_PLAN_FROM_SERVE\b/.test(c)) return "sets DEEP_PLAN_FROM_SERVE, the server's own mark";
+  if (/\bCLAUDE(_CODE)?_SESSION_ID\s*=|-u\s*CLAUDE(_CODE)?_SESSION_ID\b|\bunset\b[^;&|\n]*\bCLAUDE(_CODE)?_SESSION_ID\b/.test(c)) return "changes the session id";
+  if (/-u\s*CLAUDECODE\b|--unset[= ]CLAUDECODE\b|\bCLAUDECODE=(?!1\b)|\bunset\b[^;&|\n]*\bCLAUDECODE\b|\benv\s+(-\S+\s+)*-i\b|\benv\s+(-\S+\s+)*--ignore-environment\b/.test(c))
+    return "unsets or empties CLAUDECODE";
+  return "";
+}
+
 export function humanLever(calls) {
   for (const c of calls) if (c.verb === "open-gate") return "`deep-plan open-gate` lifts the gate; it is the human's lever";
   return "";

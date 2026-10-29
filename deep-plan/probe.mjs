@@ -5278,7 +5278,7 @@ exit 1
   ok("b1: the gate refuses an edit with no go", r.status === 2 && /^deep-plan gate \[b1-gate\]: /.test(r.stderr), r.stderr);
   ok("b1: …and its refusal no longer offers open-gate to the agent", !/open-gate/.test(r.stderr), r.stderr);
   for (const c of [`deep-plan go b1-gate next`, `cd ${AR} && deep-plan go b1-gate next`,
-    `node ${path.join(HERE, "deep_plan.mjs")} go b1-gate 1`, `env -u CLAUDECODE deep-plan go --at ${AR} next`]) {
+    `node ${path.join(HERE, "deep_plan.mjs")} go b1-gate 1`, `X=1 deep-plan go --at ${AR} next`, `if true; then deep-plan go b1-gate next; fi`]) {
     r = hook(S1, "Bash", { command: c });
     ok(`b1: a go in the same turn as the refusal is refused (${c.split(" ").slice(0, 2).join(" ")}…)`,
       r.status === 2 && /the gate refused an edit in this turn: ask the human/.test(r.stderr), r.stderr);
@@ -5352,6 +5352,18 @@ exit 1
     ok(`b1: a session's Bash write into the state or keys dir is refused (${c.split(" ")[0]})`,
       /deep-plan's own state/.test(hook(S2, "Bash", { command: c }, TMP).stderr) && fs.existsSync(path.join(SD, "b1-gate.json")));
   ok("b1: reading them still passes", hook(S2, "Bash", { command: `cat ${SD}/b1-gate.json` }, TMP).status === 0);
+  // What the CLI trusts about its caller is not a session's to change.
+  for (const c of ["DEEP_PLAN_FROM_SERVE=1 deep-plan go b1-gate next", "env -u CLAUDECODE deep-plan go b1-gate next",
+    "CLAUDECODE= deep-plan close b1-gate", "unset CLAUDECODE; deep-plan go b1-gate 2", "env -i PATH=$PATH deep-plan go b1-gate next",
+    "CLAUDE_CODE_SESSION_ID=x deep-plan go b1-gate next"])
+    ok(`b1: a session's ${c.split(" ")[0]}… on a deep-plan call is refused`, /from a Claude Code session, run deep-plan as it is/.test(hook(S2, "Bash", { command: c }, TMP).stderr));
+  ok("b1: …but CLAUDECODE=1 or no deep-plan call is fine",
+    hook(S2, "Bash", { command: "env -u CLAUDECODE printenv HOME" }, TMP).status === 0 && !lib.trustOverride("CLAUDECODE=1 deep-plan status"));
+  // Calls after shell keywords count; only a shell's -c runs its argument.
+  ok("b1: a call after then/do/!/{ is a call", ["if x; then deep-plan open-gate a; fi", "for i in 1; do deep-plan close a; done",
+    "! deep-plan go a next", "{ deep-plan go a next; }", "while true; do deep-plan go a 2; done"].every(c => lib.deepPlanCalls(c).length === 1));
+  ok("b1: grep -c's pattern is no shell string", lib.deepPlanCalls('grep -c "deep-plan open-gate" notes.md').length === 0 &&
+    lib.deepPlanCalls('/bin/bash -e -c "deep-plan open-gate a"').length === 1);
   ok("b1: a write chained after the CLI is not the CLI's own tooling",
     /deep-plan's own state/.test(hook(S2, "Bash", { command: `deep-plan status && python3 -c "open('${SD}/b1-gate.json','w')"` }, TMP).stderr));
   ok("b1: …nor is an interpreter beside it in a plan root", !lib.decideToolCall("Bash", { command: "deep-plan status; node -e 'x'" }, AR).why.includes("own tooling"));
@@ -5615,6 +5627,15 @@ exit 1
     r = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "block", "b1-cc", "2", "x"],
       { encoding: "utf8", env: { ...ENV, DEEP_PLAN_LOCK_WAIT_MS: "300" }, cwd: AR });
     ok("b1: …one whose holder died is", r.status === 0 && stOf("b1-cc").increments[1].status === "blocked" && !fs.existsSync(lock), r.stderr);
+    // A lock retaken by a live writer between the stale judgment and the
+    // removal is not removed: the removal re-reads the owner (simulated by a
+    // live holder with an old time, which is never judged stale under 2 min).
+    fs.mkdirSync(lock); fs.writeFileSync(path.join(lock, "pid"), String(process.pid)); fs.utimesSync(lock, tenAgo, tenAgo);
+    spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "block", "b1-cc", "2", "y"],
+      { encoding: "utf8", env: { ...ENV, DEEP_PLAN_LOCK_WAIT_MS: "300" }, cwd: AR });
+    ok("b1: …and a live writer's lock stays where it is", fs.existsSync(path.join(lock, "pid")) &&
+      fs.readFileSync(path.join(lock, "pid"), "utf8") === String(process.pid));
+    fs.rmSync(lock, { recursive: true, force: true });
     cli("close", "b1-cc");
   }
 

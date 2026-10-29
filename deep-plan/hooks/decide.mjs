@@ -9,7 +9,7 @@
 // one place a base comes from.
 import fs from "node:fs";
 import { decideToolCall, readState, writeState, log1, brokenRoots, isOwner, ownerName,
-  deepPlanCalls, humanLever, onHumansWord, markDenied, deniedThisTurn, promptApproves,
+  deepPlanCalls, humanLever, onHumansWord, trustOverride, markDenied, deniedThisTurn, promptApproves,
   actedThisTurn } from "../lib/state.mjs";
 import { trespass, waitingOn, waitText, goOwner } from "../lib/family.mjs";
 
@@ -37,6 +37,13 @@ if (tool === "Bash") {
   let calls = [];
   try { calls = deepPlanCalls(input.command || ""); } catch { /* a parse failure refuses nothing */ }
   const slugOf = c => (c && c.words.find(w => !w.startsWith("-"))) || "?";
+  // What the CLI trusts about its caller is not the session's to change.
+  const forged = calls.length ? trustOverride(input.command || "") : "";
+  if (forged) {
+    process.stderr.write(`deep-plan gate [${slugOf(calls[0])}]: this command ${forged} on a deep-plan call; ` +
+      `from a Claude Code session, run deep-plan as it is. A person runs it otherwise from their own shell.\n`);
+    process.exit(2);
+  }
   // The human's levers, refused outright from a session.
   const lever = humanLever(calls);
   if (lever) {

@@ -463,6 +463,9 @@ human turn required in between:
 
 All of it is a heuristic over the command text, like the write test: `eval
 "$X"` or a curl to the intent server is not seen. It closes the easy path.
+These Bash checks are a best-effort text filter (dynamic paths, `eval "$X"`,
+a curl to the server are out of reach); the human's levers on the board and
+the plan pane are the real boundary.
 
 Passes record a tree of what their check covers (`scope`, set at render from
 the recipe's `match`, setup files and browser script; the plan root for a
