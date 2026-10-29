@@ -4718,6 +4718,8 @@ exit 1
   const stB = JSON.parse(fs.readFileSync(path.join(EB.DEEP_PLAN_STATE_DIR, "shared-p.json"), "utf8"));
   ok("state pull: brings the plan to another data root", r.status === 0 && /pulled shared-p from seamux-state\/shared-p/.test(r.stdout) &&
     stB.slug === "shared-p" && fs.existsSync(path.join(EB.DEEP_PLAN_KEYS_DIR, "shared-p.key.json")) && stB.root === SA, r.stdout + r.stderr);
+  ok("state pull: the approved snapshot's path is this machine's copy", stB.approved && stB.approved.path === path.join(EB.DEEP_PLAN_PLANS_DIR, "shared-p.approved.md") &&
+    fs.existsSync(stB.approved.path), stB.approved && stB.approved.path);
   ok("state pull: a second pull of the same version is a no-op", /up to date/.test(on(EB, SB, "state", "pull", "shared-p").stdout));
   // A moves on and pushes; B, unchanged, pulls it.
   on(EA, SA, "go", "shared-p", "next");

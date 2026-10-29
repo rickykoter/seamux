@@ -3006,7 +3006,13 @@ function settleRoot(slug, flags, how, before = "") {
   const here = (() => { const r = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }); return r.status === 0 ? r.stdout.trim() : ""; })();
   const root = flags.root ? path.resolve(flags.root) : before && fs.existsSync(before) ? before
     : st.root && fs.existsSync(st.root) ? st.root : here;
-  if (root && root !== st.root) { st.root = root; log1(st, `${how}: root is now ${root}`); writeState(st); }
+  let changed = false;
+  if (root && root !== st.root) { st.root = root; log1(st, `${how}: root is now ${root}`); changed = true; }
+  // The approved snapshot came with the plan's files; its recorded path is
+  // the machine's that cut it.
+  const ap = path.join(PLANS_DIR, slug + ".approved.md");
+  if (st.approved && st.approved.path && st.approved.path !== ap && fs.existsSync(ap)) { st.approved.path = ap; changed = true; }
+  if (changed) writeState(st);
   return st;
 }
 
