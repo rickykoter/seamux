@@ -5401,6 +5401,20 @@ exit 1
   ok("b1: a write chained after the CLI is not the CLI's own tooling",
     /deep-plan's own state/.test(hook(S2, "Bash", { command: `deep-plan status && python3 -c "open('${SD}/b1-gate.json','w')"` }, TMP).stderr));
   ok("b1: …nor is an interpreter beside it in a plan root", !lib.decideToolCall("Bash", { command: "deep-plan status; node -e 'x'" }, AR).why.includes("own tooling"));
+  ok("b1: the CLI's arguments beside another link are its own, not writes",
+    lib.decideToolCall("Bash", { command: 'deep-plan check fail b1-gate 1 look "rm left > 5 rows"; ls -la' }, AR).allow);
+  ok("b1: …while a write beside it still is one", !lib.decideToolCall("Bash", { command: 'deep-plan status; rm -rf src' }, AR).allow);
+  // A lock dir that cannot be made fails at once, not after the whole wait.
+  {
+    const RO = path.join(TMP, "ro-state");
+    fs.mkdirSync(RO, { recursive: true }); fs.chmodSync(RO, 0o555);
+    const t0 = Date.now();
+    const rr = spawnSync("node", ["-e", `import(${JSON.stringify(path.join(HERE, "lib", "state.mjs"))}).then(m => { try { m.writeState({ slug: "zz" }); } catch (e) { console.log(e.message); } })`],
+      { encoding: "utf8", env: { ...ENV, DEEP_PLAN_STATE_DIR: RO } });
+    ok("b1: a lock that cannot be taken (not EEXIST) fails at once, saying why",
+      Date.now() - t0 < 3000 && /cannot take zz's state lock/.test(rr.stdout), rr.stdout + rr.stderr);
+    fs.chmodSync(RO, 0o755);
+  }
   ok("b1: a cd before the CLI still is", lib.decideToolCall("Bash", { command: `cd ${AR} && deep-plan go b1-gate next` }, AR).why === "the plan's own tooling");
   // Past the scan cap a tail that could hold a call fails closed; a read
   // failure fails closed for a deep-plan command and passes any other.
@@ -5697,7 +5711,8 @@ exit 1
   for (const c of ["git restore src/a.ts", "git restore --staged src/a.ts", "git switch main", "git pull", "git add -A",
     "perl -pi -e 's/a/b/' f", "perl -i.bak -pe 's/a/b/' f", "perl -lni -e 'print' f", "curl -o out.html http://x", "curl -D headers.txt http://x", "npx prettier --write src", "eslint --fix .", "cargo fmt",
     "black .", "gofmt -w main.go", "rustfmt src/lib.rs", "curl -sSLo out.tgz https://x", "curl -O https://x/f",
-    "tar xzf a.tgz", "tar -C out -xf a.tar", "unzip a.zip", "rsync -a src/ dst/", "dd if=/dev/zero of=f bs=1 count=1"])
+    "tar xzf a.tgz", "tar -C out -xf a.tar", "unzip a.zip", "rsync -a src/ dst/", "dd if=/dev/zero of=f bs=1 count=1",
+    "unlink f", "rmdir d", "shred -u f", "chgrp staff f", "ln -sf a b"])
     ok(`b1: reads as a write: ${c}`, lib.bashMutates(c));
   for (const c of ["perl -Mstrict -e 'print 1'", "perl -MList::Util=sum -le 'print sum(1,2)'", "perl -I lib t.pl",
     "curl -s -o /dev/null -w '%{http_code}' http://x", "curl -s -o  /dev/null http://x", "curl -D - http://x", "curl -sSo - http://x", "curl --output /dev/null http://x",

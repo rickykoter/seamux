@@ -58,7 +58,10 @@ function acquireLock(slug) {
       try { fs.writeFileSync(path.join(dir, "pid"), String(process.pid)); } catch { /* an unnamed holder ages out */ }
       return dir;
     }
-    catch {
+    catch (e) {
+      // Only "it exists" is contention; anything else (no permission, no
+      // parent) will not clear by waiting.
+      if (e.code !== "EEXIST") throw new LockBusy(`deep-plan: cannot take ${slug}'s state lock (${dir}): ${e.message}`);
       try {
         const seen = lockOwner(dir);
         const age = Date.now() - seen.mtime;
@@ -70,7 +73,7 @@ function acquireLock(slug) {
           if (now.pid === seen.pid && now.mtime === seen.mtime) fs.rmSync(dir, { recursive: true, force: true });
           continue;
         }
-      } catch { continue; }
+      } catch { nap(1); continue; }        // it went away under us: try again
       nap(10);
     }
   }
@@ -696,7 +699,8 @@ const MUTATORS = [
   /\bunzip(?![^;&|\n]*\s-[a-zA-Z]*[lptvZ]\b)\s/,
   /\brsync(?![^;&|\n]*\s(--dry-run|-[a-zA-Z]*n)\b)\s/,
   /\bdd\b[^;&|\n]*\bof=/,
-  /\btouch\s+/, /\bmkdir\s+/, /\bln\s+/, /\bchmod\s+/, /\bchown\s+/,
+  /\btouch\s+/, /\bmkdir\s+/, /\bln\s+/, /\bchmod\s+/, /\bchown\s+/, /\bchgrp\s+/,
+  /\b(unlink|rmdir|shred)(\s|$)/,
   /\btruncate\s+/, /\binstall\s+/, /\bpatch\b/,
   /\bnpm\s+(install|i|uninstall|update)\b/, /\bpip3?\s+install\b/,
 ];
@@ -846,6 +850,27 @@ function ownTooling(cmd, OWN) {
     else if (!/^\s*(cd(\s+[^\s;&|<>]+)?)?\s*$/.test(b) && !plainReader(raw)) return false;
   }
   return own;
+}
+
+// The command with each link that is the CLI replaced by `true` (same
+// separators around it), so a note like "rm the cache > 5 rows" in its
+// arguments is not read as a write while the links beside it still are. A CLI
+// link that redirects into a file keeps its text: that write is the shell's.
+// Null when the command cannot be split safely (a quote that never closes, a
+// substitution): it is then read as written.
+function cliBlanked(cmd, OWN) {
+  const bare = blankQuotes(cmd);
+  if (bare === null || /\$\(|`|[<>]\(/.test(bare)) return null;
+  let out = "", at = 0, any = false;
+  const take = (end, sepText) => {
+    const raw = cmd.slice(at, end), b = bare.slice(at, end);
+    if (ownCli(raw, OWN) && !REDIRECT.test(scrub(b))) { out += " true "; any = true; }
+    else out += raw;
+    out += sepText;
+  };
+  for (const m of bare.matchAll(/&&|\|\||[;\n|]|(?<![<>&])&(?![>&])/g)) { take(m.index, m[0]); at = m.index + m[0].length; }
+  take(cmd.length, "");
+  return any ? out : cmd;
 }
 
 // ------------------------------------------------- the human's levers
@@ -1189,11 +1214,14 @@ export function decideToolCall(toolName, input, cwd) {
   const OWN = path.join(os.homedir(), ".claude", "skills", "deep-plan");
   if (toolName === "Bash") {
     const cmd = (input && input.command) || "";
-    if (bashTouchesRecords(cmd, cwd) && !ownTooling(cmd, OWN))
+    // The CLI's own links are taken out (their arguments are the CLI's, not
+    // the shell's), and the write and records tests read what is left.
+    const scan = cliBlanked(cmd, OWN) ?? cmd;
+    if (bashTouchesRecords(scan, cwd))
       return { allow: false, records: true, plan: null,
         why: "this command writes into deep-plan's own state; it changes only through the deep-plan CLI, the board or the plan pane." };
     if (ownTooling(cmd, OWN)) return { allow: true, why: "the plan's own tooling" };
-    if (!bashMutates(cmd)) return { allow: true, why: "not a write" };
+    if (!bashMutates(scan)) return { allow: true, why: "not a write" };
     return mayEdit(cwd || process.cwd());
   }
   // Edit | Write | MultiEdit | NotebookEdit
