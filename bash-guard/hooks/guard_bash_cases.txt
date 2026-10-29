@@ -260,12 +260,25 @@ allow git commit --amend --no-edit
 allow git merge -n main
 allow git push -n origin x
 allow git config core.hooksPath .husky
+allow git config core.hooksPath .husky/_
+allow git config core.hooksPath .githooks
 allow git config core.hooksPath
+allow git config --get core.hooksPath
+allow git config --unset core.hooksPath
+allow git config core.hooksPath && echo set
 allow git config commit.gpgsign true
+allow HUSKY=1 git commit -m x
+allow HUSKY=true npm install
+block git config core.hooksPath /tmp/empty
+block git config core.hooksPath=.nohooks
+block git config --local core.hooksPath empty-dir
+block HUSKY='0' git commit -m x
 
-# ---- a command only named in text is not run: per-command checks look where a command starts
+# ---- a command only named in quoted text is not run: quoted text is set aside unless something runs it
 allow echo \"remember: git push --force is blocked\"
 allow echo 'never rm -rf ~'
+allow echo \"rm -rf / is refused\"
+allow git push origin x -o \"note: git push -f is refused\"
 allow git commit -m \"docs: explain why git reset --hard is refused\"
 allow git commit -m \"Restack, then git push --force-with-lease\"
 allow gh pr create --title x --body \"Restack then git push --force-with-lease origin x\"
@@ -275,7 +288,6 @@ allow git log --grep=\"git push -f\"
 allow printf '%s\\n' 'git branch -D old'
 allow cat > notes.md <<'EOF'\nRun git push --force-with-lease, never git reset --hard.\nrm -rf ~ is refused too.\nEOF
 allow cat <<EOF > notes.md\nit's fine: git clean -fdx\nEOF\ngit status
-allow python3 - <<'EOF'\nprompt = \"never run git push -f\"\nEOF
 allow git commit -F - <<'EOF'\nfix: stop suggesting git reset --hard\nEOF
 allow git commit -m \"$(cat <<'EOF'\nfix: avoid git push --force in setup\n\nNo rm -rf ~ either.\nEOF\n)\"
 allow cat <<-EOF > x.md\n\tgit push -f\n\tEOF
@@ -304,6 +316,28 @@ block /usr/bin/git push -f
 block \\git push -f
 block { git push -f; }
 block ! git reset --hard
+block stdbuf -o0 git push -f
+block flock /tmp/l git reset --hard
+block caffeinate -i git push --force
+block doas git push -f
+block chronic git clean -fd
+block npx -y some-tool && git push -f
+block nice -n 5 rm -rf ~
+
+# ---- a heredoc body or string argument that a program runs is code, wherever the command sits
+block python3 - <<'EOF'\nimport os\nos.system('git push -f')\nEOF
+block python3 - <<'EOF'\nprompt = \"never run git push -f\"\nEOF
+block node <<'EOF'\nrequire('child_process').execSync('git reset --hard')\nEOF
+block perl <<'EOF'\nsystem(\"rm -rf ~\");\nEOF
+block ruby <<EOF\n`git push --force`\nEOF
+block cat <<'EOF' | python3\nimport os; os.system('git push -f')\nEOF
+block python3 -c 'import os; os.system(\"git push -f\")'
+block python -c \"import subprocess; subprocess.run('git reset --hard', shell=True)\"
+block node -e \"require('child_process').execSync('git push -f')\"
+block docker exec app sh -c 'rm -rf ~'
+block docker exec app bash -lc \"git push --force\"
+block kubectl exec pod -- sh -c 'git reset --hard'
+block some-tool <<'EOF'\ngit push -f\nEOF
 
 # ---- database destruction
 block psql -c \"DROP TABLE users\"
