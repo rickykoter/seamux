@@ -1882,6 +1882,13 @@ if (crewImpl.isRust("crew-board")) {
     return "exit 0"; } catch (e) { return `exit ${e.status}\n${e.stdout}`; } };
   const up = usage([join(HERE, "crew-board")]), ur = usage(crewImpl.argv("crew-board", join(HERE, "crew-board")));
   checks.push(["parity: an unknown subcommand prints the same usage and exits 2", up === ur && up.startsWith("exit 2\n")]);
+  // A retired Dock verb points at the served board, never at the Python,
+  // which the live tree no longer has.
+  const retired = (() => { const r = crewImpl.argv("crew-board", join(HERE, "crew-board"));
+    try { execFileSync(r[0], [...r.slice(1), "push"], { encoding: "utf8", stdio: "pipe", env: toolEnv(process.env) }); return "exit 0"; }
+    catch (e) { return `exit ${e.status}\n${e.stderr}`; } })();
+  checks.push(["the Rust's retired push points at /board, not the Python",
+    retired.startsWith("exit 2\n") && /\/board\b/.test(retired) && !retired.includes("crew/board/crew-board"), retired]);
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 

@@ -4,9 +4,10 @@
 //!
 //! Each module with a Python CLI is a `seamux <basename>` tool with the
 //! Python's args, stdin, stdout, exit codes and files written, so the board's
-//! probes drive either implementation. crew-board-diag, cat_from_swift.py
-//! and crew-board's Dock commands are not ported: the family's cutover
-//! deletes them with the Dock board.
+//! probes drive either implementation. crew-board-diag and cat_from_swift.py
+//! are not ported: the family's cutover deletes them with the Dock board.
+//! crew-board's Dock commands are not ported either: `open` and `usage` open
+//! the served pages instead, and the rest point at /board (state.rs).
 
 pub mod act;
 pub mod ask;

@@ -19,6 +19,11 @@ inert to clicks — deliberately: these workspaces don't exist.
 Restore is just a normal collector push; nothing here writes anything the next
 real push doesn't overwrite.
 
+This drives the retired Dock board, so it runs the checkout's Python
+(crew/board/crew-board): the live tree no longer has it, and
+~/.local/bin/crew-board is the Rust, which has no push. Open the surface first
+with `crew/board/crew-board open`.
+
 Demoing the ADR / contracts flow (needs the plan rendered as above, with
 --root at a repo that has a docs/adr tree):
   1. open the plan chip — the review page now shows Contracts, a draft ADR
@@ -35,10 +40,11 @@ applied docs/adr file if you don't want it, `--restore` for the board.
 import importlib.machinery
 import importlib.util
 import os
+import subprocess
 import sys
 import time
 
-BOARD = os.path.expanduser("~/.config/cmux/crew/board/crew-board")
+BOARD = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "crew", "board", "crew-board")
 loader = importlib.machinery.SourceFileLoader("crew_board", BOARD)
 spec = importlib.util.spec_from_loader("crew_board", loader)
 cb = importlib.util.module_from_spec(spec)
@@ -211,7 +217,7 @@ def hold_off():
 def main():
     if "--restore" in sys.argv:
         hold_off()
-        sys.exit(os.system(os.path.expanduser("~/.local/bin/crew-board") + " push"))
+        sys.exit(subprocess.call([sys.executable, BOARD, "push"]))
     if "--loop" in sys.argv:
         print("cycling demo scenes until ^C — real pushes are held off; record now")
         try:

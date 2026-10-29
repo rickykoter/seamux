@@ -8,10 +8,12 @@
     "shared database. `spec` runs crew-spec, which detects the repo's test",
     "runner (npm/pytest/cargo/go) instead of assuming one stack.",
     "",
-    "The web Dock (beta) seeds the usage dashboard as a chromeless browser",
-    "control. The board is the seamux app's tab (the intent server's /board),",
-    "no longer a Dock control. __INTENT_PORT__ is substituted by `crew apply`",
-    "and must match the intent server's pin (CREW_INTENT_PORT, default 7345)."
+    "The web Dock (beta) seeds the board and the usage dashboard as",
+    "chromeless browser controls: the intent server's /board and /usage, the",
+    "same pages the seamux app shows as tabs. /board feeds itself over",
+    "server-sent events, so nothing pushes into it and no surface id is kept.",
+    "__INTENT_PORT__ is substituted by `crew apply` and must match the intent",
+    "server's pin (CREW_INTENT_PORT, default 7345)."
   ],
   "controls": [
     {
@@ -21,6 +23,14 @@
       "chrome": false,
       "url": "http://127.0.0.1:__INTENT_PORT__/usage",
       "height": 320
+    },
+    {
+      "id": "board",
+      "title": "Board",
+      "type": "browser",
+      "chrome": false,
+      "url": "http://127.0.0.1:__INTENT_PORT__/board",
+      "height": 520
     },
     {
       "id": "checks",
