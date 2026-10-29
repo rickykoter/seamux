@@ -207,6 +207,21 @@ r = sb("rm", E)
 check("…and once one root is left, rm destroys it",
       r.returncode == 0 and "crew-shared" not in sbx_names(), r.stdout + r.stderr)
 
+G, GONE = os.path.join(T, "g.worktrees", "stale"), os.path.join(T, "gone.worktrees", "stale")
+os.makedirs(G)
+register(G, "crew-stale")
+register(GONE, "crew-stale")       # a legacy entry whose worktree was removed
+json.dump(dict(json.load(open(SBX_STATE)), **{"crew-stale": "running"}), open(SBX_STATE, "w"))
+r = sb("exec", G, "--", "true")
+check("a claimant whose worktree is gone does not block exec, and its entry is dropped with a note",
+      r.returncode == 0 and not os.path.exists(os.path.join(REG, md5(GONE))) and "stale registry entry" in r.stderr,
+      r.stdout + r.stderr)
+register(GONE, "crew-stale")
+r = sb("rm", G)
+check("…nor keeps rm from destroying the sandbox",
+      r.returncode == 0 and "crew-stale" not in sbx_names() and not os.path.exists(os.path.join(REG, md5(GONE))),
+      r.stdout + r.stderr)
+
 # --- crew-sandbox: prune -----------------------------------------------------
 CFG = os.path.join(STATE, "sandbox", "claude")
 for n in ("crew-orphan", na):
@@ -304,6 +319,55 @@ r = run(["bash", os.path.join(HOME, ".config", "cmux", "crew", "bin", "crew"), "
 check("a second apply takes no new Dock backup",
       len(glob.glob(GDOCK + ".pre-crew.*bak")) == 1 and len(glob.glob(PDOCK + ".pre-crew.*bak")) == 1,
       r.stdout + r.stderr)
+
+
+def newest_backup_kept(out):
+    # The backup this apply took is the one its "moved the live tree aside" line names.
+    line = next((l for l in out.splitlines() if "moved the live tree aside" in l), "")
+    return line and os.path.basename(line.split("-> ")[-1].strip()) in os.listdir(BACKUPS)
+
+
+for bad_keep in ("0", "abc"):
+    time.sleep(1.05)               # a fresh timestamp for the backup name
+    r = run(["bash", os.path.join(CREW, "bin", "crew"), "apply"], env=dict(APPLY_ENV, CREW_KEEP_BACKUPS=bad_keep))
+    out = r.stdout + r.stderr
+    check(f"CREW_KEEP_BACKUPS={bad_keep}: a warning, five kept, the backup just taken among them, apply finishes",
+          "not a positive whole number" in out and len(os.listdir(BACKUPS)) == 5 and newest_backup_kept(out)
+          and "rendered cmux.json" in out, out)
+time.sleep(1.05)
+r = run(["bash", os.path.join(CREW, "bin", "crew"), "apply"], env=dict(APPLY_ENV, CREW_KEEP_BACKUPS="1"))
+check("CREW_KEEP_BACKUPS=1 keeps exactly the backup just taken",
+      len(os.listdir(BACKUPS)) == 1 and newest_backup_kept(r.stdout), r.stdout + r.stderr)
+
+
+def intent_pids():
+    try:
+        return [int(x) for x in open(os.path.join(FAKE, "intent.pids")).read().split()]
+    except OSError:
+        return []
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+# lsof failing, then missing: the running server is left alone and apply says how to restart it.
+BADLSOF = os.path.join(FAKE, "badlsof")
+write(os.path.join(BADLSOF, "lsof"), "#!/bin/sh\nexit 2\n", 0o755)
+NOSBIN = ":".join(p for p in PATH.split(":") if p not in ("/usr/sbin", "/sbin"))
+for label, path in (("failing", BADLSOF + ":" + PATH), ("missing", NOSBIN)):
+    os.utime(os.path.join(STATE, "board-intent.port"), (past, past))
+    running, started = [p for p in intent_pids() if alive(p)], len(intent_pids())
+    r = run(["bash", os.path.join(CREW, "bin", "crew"), "apply"], env=dict(APPLY_ENV, PATH=path))
+    out = r.stdout + r.stderr
+    time.sleep(0.3)
+    check(f"lsof {label}: the intent server is not killed, apply says how to restart it, and finishes",
+          running and all(alive(p) for p in running) and len(intent_pids()) == started
+          and "was not restarted" in out and "rendered cmux.json" in out and listening(PORT), out)
 
 s = json.load(open(SETTINGS))
 s["enabledPlugins"] = {"crew@seamux": True}

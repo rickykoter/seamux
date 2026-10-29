@@ -137,13 +137,21 @@ reg_field() { [ -f "$1" ] && ( unset NAME ROOT; . "$1" 2>/dev/null; eval "printf
 
 # Every registered root other than $ROOT whose entry names sandbox <name>.
 # Sandboxes were once named by basename alone, so two worktrees could share one.
+# An entry whose worktree is gone claims nothing: it is dropped here (what
+# prune would do), so a stale one cannot block exec/down or keep rm from
+# destroying the sandbox. Notes go to stderr; callers read stdout.
 other_claimants() {
-  local f own; own="$(reg_file "$ROOT")"
+  local f own r; own="$(reg_file "$ROOT")"
   [ -d "$REG" ] || return 0
   for f in "$REG"/*; do
     [ -f "$f" ] && [ "$f" != "$own" ] || continue
     [ "$(reg_field "$f" NAME)" = "$1" ] || continue
-    reg_field "$f" ROOT; printf '\n'
+    r="$(reg_field "$f" ROOT)"
+    if [ -z "$r" ] || [ ! -d "$r" ]; then
+      rm -f "$f" && warn "dropped the stale registry entry for ${r:-<unreadable>} (worktree gone), which also named $1"
+      continue
+    fi
+    printf '%s\n' "$r"
   done
 }
 
