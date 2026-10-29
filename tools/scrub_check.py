@@ -50,9 +50,14 @@ FORBIDDEN = [
 # directory with (also the root of its scratch dirs under /private/tmp). Each
 # names its user in the `name` group, and a name in PLACEHOLDERS passes: docs
 # and tests are full of /home/demo and its kin, which are the point.
+HOME_START = r"(?:^|(?<=[\s\"'`=:(~])|(?<=file://))"
 HOME_FORMS = [
-    (r"(?<![A-Za-z]:)/Users/(?P<name>[A-Za-z0-9_][\w.-]*)",            "an absolute home path (use ~ or __HOME__)"),
-    (r"/home/(?P<name>[A-Za-z0-9_][\w.-]*)",             "an absolute home path (use ~ or __HOME__)"),
+    # A path's own start: the line's start, a space, a quote, = : ( ~, or a
+    # file:// scheme. Not after a word, a dot or another segment, so URL paths
+    # (example.com/home/settings, /api/users/list) pass. macOS spells Users
+    # with a capital, so that one is matched case-sensitively.
+    (HOME_START + r"(?<![A-Za-z]:)(?-i:/Users/)(?P<name>[A-Za-z0-9_][\w.-]*)", "an absolute home path (use ~ or __HOME__)"),
+    (HOME_START + r"/home/(?P<name>[A-Za-z0-9_][\w.-]*)",        "an absolute home path (use ~ or __HOME__)"),
     (r"\b[A-Za-z]:[\\/]+Users[\\/]+(?P<name>(?:Default|All) Users?|[\w.-]+)", "a Windows profile path (use %USERPROFILE%)"),
     # Only as a path segment: a leading dash right after a slash, a quote or
     # the start of a line, then the name and at least one more segment.

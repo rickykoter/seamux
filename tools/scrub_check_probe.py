@@ -23,6 +23,10 @@ pats = sc.build_patterns(user="jo.example", host="jo-mbp" + ".local")
 
 must_flag = {
     "a dotted macOS home": U + "sam.rivera/code/x",
+    "a home path in quotes": 'cwd = "' + U + 'sam.rivera/x"',
+    "a home path after =": "HOME=" + H + "srivera",
+    "a home path after ~ and (": "(" + U + "srivera)",
+    "a home path in a file:// URL": "file://" + U + "srivera/notes.md",
     "a hyphenated macOS home": U + "sam-rivera/code/x",
     "a Linux home": H + "srivera/code",
     "a Windows profile": W + "srivera\\AppData",
@@ -82,6 +86,10 @@ must_pass = {
     "a placeholder hostname": "your-name-" + "mbp.local",
     "the public GitHub handle": "github.com/rickykoter/seamux",
     "a plain users word": "for users of the app",
+    "a lowercase API path": "GET /us" + "ers/list",
+    "a URL path with /home/": "https://example.com/ho" + "me/settings",
+    "a nested path segment": "/srv/data/ho" + "me/srivera",
+    "a path after a dot": "x./ho" + "me/srivera",
     "the env username in prose": "jo" + ".example wrote this",
     "a -Users- word inside prose": "the-Us" + "ers-guide-text",
     "a -home- word inside prose": "a well-ho" + "me-grown-tool",
