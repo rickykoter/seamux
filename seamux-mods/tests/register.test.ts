@@ -395,6 +395,43 @@ describe('seamux-mods', () => {
     await band.unmount()
   })
 
+  test("a refusal stays up while the pane shows another plan whose gate is open", async ($, on) => {
+    // demo's gate is shut; `other`, in the same root, is newer and open, so
+    // it is the plan the pane picks. The refusal is demo's, and stays.
+    const w = world(on, { extra: [{ ...plan('other', ROOT, 'implementing', 5), gate: { allow: true, why: 'increment authorized' } }] })
+    on('classic.PreToolUse', () => ({ deny: DENY }))
+    await $.tool.call({ tool: 'Edit', file_path: `${ROOT}/a.txt`, old_string: 'a', new_string: 'b' } as never)
+    const v = await $.command.run({ command: 'plan-pane', args: '' } as never)
+    expect(v.text).toBe('Plan pane opened.')
+    const ui = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'Pane', requestId: 'plan', props: PANE_PROPS as never })
+    expect((await ui.find({ key: 'plan' }))?.text).toMatch(/^other/)
+    await ui.unmount()
+    const band = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'AbovePrompt',
+      props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100 } as never })
+    expect((await band.find({ key: 'gate-band' }))?.text).toMatch(/deep-plan gate \[demo\]/)
+    // Once demo itself is authorized, the band goes.
+    w.incs[1]!.status = 'authorized'
+    await $.command.run({ command: 'plan-pane', args: '' } as never)
+    expect(await band.find({ key: 'gate-band' })).toBeUndefined()
+    await band.unmount()
+  })
+
+  test('a failed Bash whose output quotes a refusal raises no band; the hook-error result of a refused call does', async ($, on) => {
+    world(on)
+    let text = `Error: Exit code 1\nassert failed: got ${DENY}`
+    on('tool.call', { tool: 'Bash' }, () => ({ isError: true, result: text, text }) as never)
+    await $.tool.call({ tool: 'Bash', command: 'node probe.mjs' } as never)
+    await $.command.run({ command: 'plan-pane', args: '' } as never)
+    const band = await $.ui.mount({ plugin: 'seamux-mods', surface: 'terminal', component: 'AbovePrompt',
+      props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100 } as never })
+    expect(await band.find({ key: 'gate-band' })).toBeUndefined()
+    text = `PreToolUse:Bash hook error: [bash "${ENGINE}/hooks/gate.sh"]: ${DENY}`
+    await $.tool.call({ tool: 'Bash', command: 'echo hi > a.txt' } as never)
+    await $.command.run({ command: 'plan-pane', args: '' } as never)
+    expect((await band.find({ key: 'gate-band' }))?.text).toMatch(/deep-plan gate \[demo\]: No increment is authorized/)
+    await band.unmount()
+  })
+
   test('outside any plan root, the pane says no plan tracks the directory', async ($, on) => {
     world(on, { cwd: '/elsewhere' })
     await $.command.run({ command: 'plan-pane', args: '' } as never)

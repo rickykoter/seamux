@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { answerable, type Decision, type ViewsFrame } from "./desk";
+import { answerable, type Decision, type ViewsFrame } from "./decisions";
 import { reflow } from "./reflow";
 import type { Frame as WallFrame, Tile } from "./wall";
 import { ago, WallView } from "./wall";
