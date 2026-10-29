@@ -27,6 +27,12 @@ must_flag = {
     "a home path after =": "HOME=" + H + "srivera",
     "a home path after ~ and (": "(" + U + "srivera)",
     "a home path in a file:// URL": "file://" + U + "srivera/notes.md",
+    "a WSL mount of a Windows profile": "/mnt/c" + U + "srivera/x",
+    "a home on another volume": "/Volumes/Disk" + U + "srivera/x",
+    "the Data volume's home": "/System/Volumes/Data" + U + "srivera/x",
+    "a home path in brackets": "[" + U + "srivera/x]",
+    "a home path after a comma": "a," + H + "srivera",
+    "a home path after a pipe": "x|" + H + "srivera",
     "a hyphenated macOS home": U + "sam-rivera/code/x",
     "a Linux home": H + "srivera/code",
     "a Windows profile": W + "srivera\\AppData",
@@ -87,6 +93,9 @@ must_pass = {
     "the public GitHub handle": "github.com/rickykoter/seamux",
     "a plain users word": "for users of the app",
     "a lowercase API path": "GET /us" + "ers/list",
+    "a tilde path in brackets": "[~/x]",
+    "a lowercase users path at a boundary": "see /us" + "ers/srivera",
+    "a home path after a dash": "foo-" + H + "srivera",
     "a URL path with /home/": "https://example.com/ho" + "me/settings",
     "a nested path segment": "/srv/data/ho" + "me/srivera",
     "a path after a dot": "x./ho" + "me/srivera",
@@ -102,7 +111,7 @@ for name, line in must_pass.items():
 for host in ("MacBookPro", "MacBook-Pro", "laptop", "ip-10-0-0-1", "fv-az123-456", "localhost", "dev", "Mac-mini"):
     check(f"a generic hostname ({host}) adds no hostname pattern",
           not [w for _, w in sc.env_patterns(user="runner", host=host + ".local")], repr(sc.env_patterns(user="runner", host=host)))
-for host in ("srivera-mbp", "sriveras-MacBook-Pro", "kestrel-7"):
+for host in ("srivera-mbp", "sriveras-MacBook-Pro", "kestrel-7", "zed", "kim-mbp"):
     check(f"a distinctive hostname ({host}) adds a pattern",
           bool(sc.env_patterns(user="runner", host=host + ".local")))
 for acct in ("runner", "build", "admin", "dev", "test", "user", "pat"):

@@ -50,13 +50,15 @@ FORBIDDEN = [
 # directory with (also the root of its scratch dirs under /private/tmp). Each
 # names its user in the `name` group, and a name in PLACEHOLDERS passes: docs
 # and tests are full of /home/demo and its kin, which are the point.
-HOME_START = r"(?:^|(?<=[\s\"'`=:(~])|(?<=file://))"
+# A path's own start: not right after a word character, a dot or a dash, so
+# URL and API paths (example.com/home/settings, /api/users/list) pass while
+# brackets, quotes, commas, pipes, = and file:// all count as a start. A mount
+# prefix (WSL's /mnt/c, /Volumes/<disk>, /System/Volumes/Data) may come first.
+# A drive letter is the Windows form's below. macOS spells Users with a
+# capital, so that one is matched case-sensitively.
+HOME_START = r"(?<![\w.-])(?<![A-Za-z]:)(?:/mnt/[A-Za-z]|/Volumes/[^/\s]+|/System/Volumes/Data)?"
 HOME_FORMS = [
-    # A path's own start: the line's start, a space, a quote, = : ( ~, or a
-    # file:// scheme. Not after a word, a dot or another segment, so URL paths
-    # (example.com/home/settings, /api/users/list) pass. macOS spells Users
-    # with a capital, so that one is matched case-sensitively.
-    (HOME_START + r"(?<![A-Za-z]:)(?-i:/Users/)(?P<name>[A-Za-z0-9_][\w.-]*)", "an absolute home path (use ~ or __HOME__)"),
+    (HOME_START + r"(?-i:/Users/)(?P<name>[A-Za-z0-9_][\w.-]*)", "an absolute home path (use ~ or __HOME__)"),
     (HOME_START + r"/home/(?P<name>[A-Za-z0-9_][\w.-]*)",        "an absolute home path (use ~ or __HOME__)"),
     (r"\b[A-Za-z]:[\\/]+Users[\\/]+(?P<name>(?:Default|All) Users?|[\w.-]+)", "a Windows profile path (use %USERPROFILE%)"),
     # Only as a path segment: a leading dash right after a slash, a quote or
@@ -128,13 +130,13 @@ def distinctive_host(label):
     """A hostname label worth hunting for. `jdoe-MacBook-Pro` is (it carries a
     name); `MacBookPro`, `laptop` and `ip-10-0-0-1` are not."""
     label = (label or "").strip()
-    if len(label) < 3 or GENERATED_HOST.match(label) or label.lower() in HOST_WORDS:
+    if GENERATED_HOST.match(label):
         return False
     rest = MODEL_SUFFIX.sub("", label)
-    if rest != label:
-        rest = re.sub(r"(?i)s$", "", rest) if rest.lower().endswith("s") and len(rest) > 3 else rest
-        return bool(rest) and distinctive(rest)
-    return distinctive(label)
+    if rest != label and rest.lower().endswith("s") and len(rest) > 3:
+        rest = rest[:-1]   # "<name>s-MacBook-Pro"
+    rest = rest.strip("-_")
+    return len(rest) >= 3 and rest.lower() not in HOST_WORDS | SYSTEM_USERS | PLACEHOLDERS
 
 
 def machine_user(user=None):
