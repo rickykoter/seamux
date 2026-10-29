@@ -378,18 +378,25 @@ export function treeOf(root, scope = null) {
       const tree = git(["add", "-A"], env).status === 0 ? git(["write-tree"], env) : null;
       return { head: head.stdout.trim(), content: tree && tree.status === 0 ? tree.stdout.trim() : "" };
     }
-    const specs = pathspecs(scope);
+    // A scope entry outside the root (`../x` once normalized) is no pathspec
+    // git takes: dropped, and said on the tree.
+    const inRoot = scope.filter(g => !path.posix.normalize(String(g).replace(/^\.\//, "") || ".").startsWith(".."));
+    const dropped = scope.filter(g => !inRoot.includes(g));
+    const specs = pathspecs(inRoot.length ? inRoot : ["."]);
+    const failed = why => ({ head: head.stdout.trim(), content: "", scope, error: why });
     // add refuses the whole list when one pathspec matches nothing (a glob
     // whose files do not exist yet); then each is added on its own.
     if (git(["add", "-A", "--", ...specs], env).status !== 0)
       for (const p of specs) git(["add", "-A", "--", p], env);
     // Only the scope's entries, into an index of their own, make the tree.
     const ls = git(["ls-files", "-s", "-z", "--", ...specs], env);
-    if (ls.status !== 0) return { head: head.stdout.trim(), content: "", scope };
-    if (git(["update-index", "-z", "--index-info"], { GIT_INDEX_FILE: only }, ls.stdout).status !== 0)
-      return { head: head.stdout.trim(), content: "", scope };
+    if (ls.status !== 0) return failed(`git could not list the scope: ${(ls.stderr || "").trim().split("\n")[0]}`);
+    const ui = git(["update-index", "-z", "--index-info"], { GIT_INDEX_FILE: only }, ls.stdout);
+    if (ui.status !== 0) return failed(`git could not index the scope: ${(ui.stderr || "").trim().split("\n")[0]}`);
     const tree = git(["write-tree"], { GIT_INDEX_FILE: only });
-    return { head: head.stdout.trim(), content: tree.status === 0 ? tree.stdout.trim() : "", scope };
+    if (tree.status !== 0) return failed(`git could not write the scope's tree: ${(tree.stderr || "").trim().split("\n")[0]}`);
+    return { head: head.stdout.trim(), content: tree.stdout.trim(), scope,
+      ...(dropped.length ? { dropped } : {}) };
   } finally {
     for (const f of [tmp, tmp + ".lock", only, only + ".lock"]) try { fs.rmSync(f, { force: true }); } catch { /* gone */ }
   }
@@ -441,7 +448,7 @@ export function treeDiff(root, was, now) {
 // recorded one to compare against.
 export function needsTree(inc) {
   return Object.values(checksOf(inc))
-    .some(v => !v.retired && v.status === "pass" && v.tree && v.tree.content);
+    .some(v => !v.retired && v.status === "pass" && v.tree && (v.tree.content || v.tree.error));
 }
 
 // The checks standing in the way of `done`: everything not passed, and a pass
@@ -456,14 +463,20 @@ export function checksBlock(inc, tree = null) {
     if (v.retired) continue;
     let status = CHECK_STATUSES.includes(v.status) ? v.status : "pending";
     let was = "", now = "";
+    let note = v.note || "";
     if (status === "pass") {
       was = v.tree && v.tree.content;
-      const t = typeof tree === "function" ? (was ? tree(v.tree.scope || null) : null) : tree;
+      // A pass whose tree git could not take proves nothing it can be held
+      // to: stale, with the reason, rather than standing because "" matches nothing.
+      const unverifiable = v.tree && v.tree.error;
+      const t = typeof tree === "function" ? (was || unverifiable ? tree(v.tree.scope || null) : null) : tree;
       now = t && t.content;
-      if (!(was && now && was !== now)) continue;
+      if (unverifiable && tree) note = `unverifiable: ${v.tree.error}`;
+      else if (was && t && t.error) note = `unverifiable now: ${t.error}`;
+      else if (!(was && now && was !== now)) continue;
       status = "stale";
     }
-    out.push({ id, kind: v.kind || "", name: v.name || "", status, note: v.note || "",
+    out.push({ id, kind: v.kind || "", name: v.name || "", status, note,
       ...(v.recipe ? { recipe: v.recipe } : {}), ...(status === "stale" ? { was, now } : {}) });
   }
   return out;
@@ -887,7 +900,8 @@ const SHORT_APPROVAL = /^(yes[,.!]?\s+|ok[,.!]?\s+|okay[,.!]?\s+)?(go(\s+ahead|\
 const GO_PHRASE = /(\bdeep-plan\s+go\b|\bgo\s+(ahead|next)\b|\bgo\s+\d+\b)/i;
 const DOUBTS = /\b(don'?t|do not|not|no|never|stop|wait|hold)\b/i;
 export function approvesGo(prompt) {
-  const p = String(prompt || "").slice(0, 300).replace(/\\"/g, '"').trim();
+  // Curly and modifier apostrophes read as the straight one: "don’t" is a no.
+  const p = String(prompt || "").slice(0, 300).replace(/\\"/g, '"').replace(/[\u2018\u2019\u02bc]/g, "'").toLowerCase().trim();
   if (!p || DOUBTS.test(p)) return false;
   if (p.length <= 60 && SHORT_APPROVAL.test(p)) return true;
   return GO_PHRASE.test(p);
@@ -896,6 +910,22 @@ export function promptApproves(session) {
   const f = turnFile(session);
   if (!f) return false;
   try { return approvesGo(fs.readFileSync(f.replace(/\.denied$/, ".prompt"), "utf8")); } catch { return false; }
+}
+
+// The session already ran a go (or --force, --by human, close) this turn: a
+// second one waits for the human's next prompt, which deletes the marker
+// (news.sh), as it does the refusal's.
+const actedFile = session => { const f = turnFile(session); return f ? f.replace(/\.denied$/, ".acted") : ""; };
+export function markActed(session, what) {
+  const f = actedFile(session);
+  if (!f) return;
+  try { fs.mkdirSync(TURNS_DIR, { recursive: true }); fs.writeFileSync(f, JSON.stringify({ at: Date.now(), what }) + "\n"); }
+  catch { /* best-effort */ }
+}
+export function actedThisTurn(session) {
+  const f = actedFile(session);
+  if (!f) return null;
+  try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return f && fs.existsSync(f) ? { what: "?" } : null; }
 }
 
 export function deniedThisTurn(session) {
@@ -915,10 +945,22 @@ export function ownRecords(target) {
 // spelling an agent would type (as set, resolved, ~/…, $HOME/…), or that runs
 // from inside one. Reading them (cat, jq, grep) still passes.
 const INTERP = /(^|[\s;&|(`])(python3?|node|ruby|perl|deno|bun)\b/;
+//
+// Where the command runs counts too: the payload's cwd, and each `cd X` in it
+// (resolved in order, ~ expanded), so `cd ~/.claude/deep-plan/state && rm x`
+// is caught. A path built at run time ($(…), variables, a script's own logic)
+// stays out of reach of a text test, as every other Bash rule here does.
 export function bashTouchesRecords(cmd, cwd) {
   if (!cmd) return false;
   const writes = () => bashMutates(cmd) || INTERP.test(cmd);
   if (cwd && ownRecords(cwd) && writes()) return true;
+  let at = cwd || process.cwd();
+  for (const m of cmd.matchAll(/(?:^|[;&|(]\s*)cd\s+(['"]?)([^\s;&|'"()]+)\1/g)) {
+    const to = m[2].replace(/^~(?=\/|$)/, os.homedir()).replace(/^\$\{?HOME\}?(?=\/|$)/, os.homedir());
+    if (to === "-" || /[$`*?]/.test(to)) continue;
+    at = path.resolve(at, to);
+    if (ownRecords(at) && writes()) return true;
+  }
   const home = os.homedir();
   const names = new Set();
   for (const d of [STATE_DIR, KEYS_DIR]) for (const p of [d, canon(d)]) {

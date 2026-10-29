@@ -41,8 +41,25 @@ if [ -e "$1" ]; then
   head=${payload:0:16384}
   [[ $head =~ $re_ev ]] && ev=${BASH_REMATCH[1]}
   [[ $head =~ $re_sid ]] && sid=${BASH_REMATCH[1]}
+  re_cwd='"cwd"[[:space:]]*:[[:space:]]*"([^"]*)"'
+  pcwd=""; [[ $head =~ $re_cwd ]] && pcwd=${BASH_REMATCH[1]}
   if [ "$ev" != SessionStart ] && [ -n "$sid" ]; then
-    rm -f "$STATE_DIR/turns/$sid.denied"
+    rm -f "$STATE_DIR/turns/$sid.denied" "$STATE_DIR/turns/$sid.acted"
+    # The prompt is kept only for a session inside a tracked plan's root (the
+    # roots, read with one grep), and turns/ files older than a day go.
+    tracked=""
+    if [ -n "$pcwd" ]; then
+      phys=$(cd "$pcwd" 2>/dev/null && pwd -P) || phys=$pcwd
+      while IFS= read -r line; do
+        [[ $line =~ \"root\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]] || continue
+        r=${BASH_REMATCH[1]}
+        case "$pcwd/" in "$r"/*) tracked=1; break ;; esac
+        case "$phys/" in "$r"/*) tracked=1; break ;; esac
+      done < <(grep -h '"root"' "$STATE_DIR"/*.json 2>/dev/null)
+    fi
+    [ -n "$tracked" ] || rm -f "$STATE_DIR/turns/$sid.prompt"
+  fi
+  if [ "$ev" != SessionStart ] && [ -n "$sid" ] && [ -n "$tracked" ]; then
     case $head in *'"prompt":"'*) prompt=${head#*\"prompt\":\"} ;; *'"prompt": "'*) prompt=${head#*\"prompt\": \"} ;; esac
     # The JSON string up to its closing quote (an escaped quote is content) or
     # its first 300 characters. No end found in the scanned head: keep nothing,
@@ -59,6 +76,7 @@ if [ -e "$1" ]; then
     [ ${#prompt} -ge 300 ] && found=1
     [ -n "$found" ] || prompt=""
     mkdir -p "$STATE_DIR/turns" 2>/dev/null && printf '%s\n' "$prompt" > "$STATE_DIR/turns/$sid.prompt" 2>/dev/null
+    find "$STATE_DIR/turns" -type f -mtime +0 -delete 2>/dev/null
   fi
 fi
 set -- "$STATE_DIR"/families/*/index.json

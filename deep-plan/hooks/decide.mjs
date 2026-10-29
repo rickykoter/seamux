@@ -9,7 +9,8 @@
 // one place a base comes from.
 import fs from "node:fs";
 import { decideToolCall, readState, writeState, log1, brokenRoots, isOwner, ownerName,
-  deepPlanCalls, humanLever, onHumansWord, markDenied, deniedThisTurn, promptApproves } from "../lib/state.mjs";
+  deepPlanCalls, humanLever, onHumansWord, markDenied, deniedThisTurn, promptApproves,
+  markActed, actedThisTurn } from "../lib/state.mjs";
 import { trespass, waitingOn, waitText, goOwner } from "../lib/family.mjs";
 
 let raw = "";
@@ -56,6 +57,17 @@ if (tool === "Bash") {
       `and run ${word} only after they answer. (Their reply starts a new turn; it goes through then.)\n`);
     process.exit(2);
   }
+  // One per human turn: the documented flow is the human says go and the
+  // agent runs it once. A second go (or --force, --by human, close) before the
+  // human speaks again is the agent going on its own.
+  const acted = word ? actedThisTurn(who.session) : null;
+  if (acted) {
+    const c = calls.find(x => onHumansWord([x])) || calls[0];
+    process.stderr.write(`deep-plan gate [${slugOf(c)}]: this session already ran ${acted.what || "a go"} in this turn: ` +
+      `ask the human, and run ${word} only after they answer.\n`);
+    process.exit(2);
+  }
+  if (word) markActed(who.session, word);
 }
 
 const d = decideToolCall(tool, input, cwd);

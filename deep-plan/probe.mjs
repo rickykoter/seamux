@@ -5309,6 +5309,19 @@ exit 1
     ok(`b1: a prompt that is no plain go does not let the go through ("${p.slice(0, 24)}")`,
       hook(S3, "Bash", { command: "deep-plan go b1-gate next" }).status === 2);
   }
+  ok("b1: a curly apostrophe is a negation too", !lib.approvesGo("go ahead? don\u2019t, not yet") && !lib.approvesGo("go 2 \u2014 actually DON\u2019T"));
+  // The prompt is kept only for a session inside a tracked root; old turn files go.
+  {
+    const S4 = "5b1c0000-0000-4000-8000-000000000004", T = path.join(ENV.DEEP_PLAN_STATE_DIR, "turns");
+    const old = path.join(T, "5b1c0000-0000-4000-8000-0000000000ff.prompt");
+    fs.writeFileSync(old, "go\n"); const past = new Date(Date.now() - 3 * 86400e3); fs.utimesSync(old, past, past);
+    spawnSync("bash", [path.join(HERE, "hooks", "news.sh")], { encoding: "utf8", env: ENV,
+      input: JSON.stringify({ session_id: S4, hook_event_name: "UserPromptSubmit", cwd: TMP, prompt: "go" }) });
+    ok("b1: a prompt from outside every plan root is not kept", !fs.existsSync(path.join(T, S4 + ".prompt")));
+    said(S4, "UserPromptSubmit", "go");
+    ok("b1: one from inside a root is", fs.readFileSync(path.join(T, S4 + ".prompt"), "utf8").trim() === "go");
+    ok("b1: …and writing it prunes turn files older than a day", !fs.existsSync(old));
+  }
   // An escaped quote in the prompt does not cut it short: the negation after it still counts.
   said(S3, "UserPromptSubmit", 'go ahead with "the sweep", but wait, not yet');
   hook(S3, "Edit", { file_path: path.join(AR, "src", "a.ts") });
@@ -5340,6 +5353,9 @@ exit 1
       /deep-plan's own state/.test(hook(S2, "Bash", { command: c }, TMP).stderr) && fs.existsSync(path.join(SD, "b1-gate.json")));
   ok("b1: reading them still passes", hook(S2, "Bash", { command: `cat ${SD}/b1-gate.json` }, TMP).status === 0);
   ok("b1: a write from inside the state dir is refused too", hook(S2, "Bash", { command: "rm -f b1-gate.json" }, SD).status === 2);
+  ok("b1: …and one after a cd into it", hook(S2, "Bash", { command: `cd ${path.dirname(SD)} && cd state && rm -f b1-gate.json` }, TMP).status === 2 &&
+    fs.existsSync(path.join(SD, "b1-gate.json")));
+  ok("b1: …but a read after a cd there passes", hook(S2, "Bash", { command: `cd ${SD} && ls` }, TMP).status === 0);
   said(S2);
 
   // ---- open-gate is refused from a session outright; what runs on the
@@ -5359,8 +5375,16 @@ exit 1
     ok(`b1: ${c} in the turn the gate refused is refused`, r.status === 2 &&
       r.stderr.includes(`ask the human, and run ${word} only after they answer`), r.stderr);
   }
+  for (const [c] of WORD) { said(S2); ok(`b1: …and after the human's next prompt it goes through (${c})`, hook(S2, "Bash", { command: c }, TMP).status === 0); }
+  // One per human turn, refusal or not: a second go before the human speaks again is refused.
   said(S2);
-  for (const [c] of WORD) ok(`b1: …and after the human's next prompt it goes through (${c})`, hook(S2, "Bash", { command: c }, TMP).status === 0);
+  ok("b1: the first go in a turn goes through", hook(S2, "Bash", { command: "deep-plan go b1-gate next" }, TMP).status === 0);
+  r = hook(S2, "Bash", { command: "deep-plan go b1-gate 3" }, TMP);
+  ok("b1: …a second one in the same turn is refused", r.status === 2 && /already ran go in this turn: ask the human/.test(r.stderr), r.stderr);
+  ok("b1: …and so is a close after it", hook(S2, "Bash", { command: "deep-plan close b1-gate" }, TMP).status === 2);
+  said(S2);
+  ok("b1: …until the human's next prompt", hook(S2, "Bash", { command: "deep-plan go b1-gate 3" }, TMP).status === 0);
+  said(S2);
   for (const c of [`git commit -m "deep-plan close: say why"`, `rg "deep-plan open-gate" docs`, "deep-plan status", "deep-plan check run b1-gate 1",
     "echo deep-plan open-gate b1-gate >> notes.md", "cat <<'EOF' > notes.md\nrun deep-plan open-gate b1-gate\ndeep-plan open-gate b1-gate\nEOF",
     "printf '%s\\n' x | tee notes.md; ls deep-plan open-gate"])
@@ -5403,6 +5427,16 @@ exit 1
   ok("b1: an untracked file inside the match stales the pass", r.status === 1 && /test-unit-suite stale/.test(last(r)), r.stderr);
   ok("b1: the stale refusal names the changed file", /changed since: .*src\/b\.ts/.test(r.stderr), r.stderr);
   ok("b1: …and the command that re-runs only the stale ones", r.stderr.includes("re-run the stale:    deep-plan check run b1-tree 1"), r.stderr);
+  // A scope entry outside the root is dropped, not a git failure; a tree git
+  // could not take makes the pass unverifiable (stale with why), never fresh.
+  {
+    const t2 = lib.treeOf(AR, ["../elsewhere/**", "src/**"]);
+    ok("b1: a scope entry outside the root is dropped and said", t2 && /^[0-9a-f]{40}$/.test(t2.content) && JSON.stringify(t2.dropped) === '["../elsewhere/**"]', JSON.stringify(t2));
+    const inc = { checks: { a: { kind: "test", status: "pass", tree: { head: "x", content: "", scope: ["src/**"], error: "git could not list the scope" } } } };
+    const b = lib.checksBlock(inc, lib.treesAt(AR));
+    ok("b1: a pass whose tree git could not take is stale, with the reason", b.length === 1 && b[0].status === "stale" && /unverifiable/.test(b[0].note), JSON.stringify(b));
+    ok("b1: …and done hashes for it", lib.needsTree(inc));
+  }
   // A pass recorded before scopes compares the whole tree, as it did.
   {
     const st = stOf("b1-tree"), v = st.increments[0].checks["test-unit-suite"];
