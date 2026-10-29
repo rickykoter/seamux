@@ -943,15 +943,15 @@ step("push prints and never pushes");
   addDef(r, "b", "bravo\n", "feat: b");
   const p = cli(r, "push", "--json");
   ok("it exits 0 with lines to run", p.status === 0 && p.json.push[0].includes("feat1"), p.out);
-  ok("the line is a lease-guarded force push, not a bare one",
-    /--force-with-lease/.test(p.json.push[0]) && !/--force(\s|$)/.test(p.json.push[0]), p.json.push[0]);
+  ok("the line never force-pushes without a lease",
+    !/--force(\s|$)/.test(p.json.push[0]) && !/--force-with-lease(\s|$)/.test(p.json.push[0]), p.json.push[0]);
   const refs = spawnSync("git", ["--git-dir", bare, "for-each-ref"], { encoding: "utf8", env: ENV }).stdout.trim();
   ok("the remote is untouched — nothing was pushed", refs === "", refs);
   ok("and it says so in the payload", (p.json.note || "").includes("never run"));
-  // Never pushed, so the lease expects nothing there: git accepts it once,
-  // and refuses the same line when the branch already exists.
-  ok("a never-pushed branch leases on an empty expectation",
-    p.json.push[0] === "git push --force-with-lease=feat1: origin feat1:feat1", p.json.push[0]);
+  // Never pushed: no force needed, so a plain push sets the upstream, and
+  // the same line cannot overwrite the branch once it is there.
+  ok("a never-pushed branch gets a plain push -u",
+    p.json.push[0] === "git push -u origin feat1", p.json.push[0]);
   const first = git(r, ...p.json.push[0].split(" ").slice(1));
   ok("git accepts that line for a new branch", first.ok, first.err);
   git(r, "commit", "-q", "--amend", "-m", "feat: b, reworded");
@@ -1015,6 +1015,35 @@ step("push lines pin the lease to the remote tip the walk recorded");
   ok("and says to remove the setting", /bare lease.*remove the setting/.test(noted.stderr), noted.stderr);
   const custom = withCmd("pushcmd-custom", "gt submit --branch", "--json");
   ok("a custom push.command is printed as configured", custom.json?.push?.[0] === "gt submit --branch origin feat1", custom.stdout);
+}
+
+// ---------------------------------------------------------------- a teammate's commit fetched before the plan
+// The recorded tip already holds their commit, so the lease would pass and
+// drop it. The walk sees the branch never had it and prints no push line.
+step("a remote branch with commits the local one lacks gets no push line");
+{
+  const bare = path.join(TMP, "held-remote.git");
+  spawnSync("git", ["init", "-q", "--bare", bare], { env: ENV });
+  const r = newRepo("held", cheapCfg);
+  git(r, "remote", "add", "origin", bare);
+  git(r, "push", "-q", "origin", "master");
+  git(r, "checkout", "-q", "-b", "feat1");
+  addDef(r, "b", "bravo\n", "feat: b");
+  git(r, "push", "-q", "origin", "feat1");
+  const other = path.join(TMP, "held-other");
+  spawnSync("git", ["clone", "-q", "-b", "feat1", bare, other], { env: ENV });
+  addDef(other, "g", "golf\n", "feat: g from a teammate");
+  git(other, "push", "-q", "origin", "feat1");
+  git(r, "fetch", "-q", "origin");   // before the plan: origin/feat1 now has g
+  git(r, "checkout", "-q", "master");
+  addDef(r, "c", "charlie\n", "master: c");
+  git(r, "checkout", "-q", "feat1");
+  const run = cli(r, "run", "--json", "--no-fetch");
+  ok("the walk finishes but needs a human", run.status === 2 && run.json?.status === "needs-human", run.out + run.err);
+  ok("with no push line for feat1", (run.json?.push || []).length === 0, JSON.stringify(run.json?.push));
+  ok("and says why", /origin\/feat1 has commits this branch doesn't/.test(run.json?.held?.[0]?.why || ""), JSON.stringify(run.json?.held));
+  const p = cli(r, "push", "--json");
+  ok("restack push holds it back too", p.status === 2 && (p.json?.push || []).length === 0 && p.json?.held?.[0]?.branch === "feat1", p.out);
 }
 
 // ---------------------------------------------------------------- a stale local base

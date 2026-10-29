@@ -123,12 +123,32 @@ function baseFacts(ctx) {
 // remote-tracking ref, which any background fetch moves, so it can wave through
 // a push that clobbers work landed since the plan. The lease here names the
 // remote tip recorded when the walk was planned: if the remote moved since,
-// git refuses. It is also the one force-push form bash-guard's opt-in
-// exception accepts (`--force-with-lease=<b>:<sha> origin <b>:<b>`). With no
-// tip recorded (the branch was never pushed) the expectation is empty, which
-// git reads as "the remote must not have this branch yet".
+// git refuses. With the remote named origin, this is also the shape
+// bash-guard's opt-in exception accepts (`--force-with-lease=<b>:<sha> origin
+// <b>:<b>`); another remote name falls outside it. A branch with no remote tip
+// (never pushed) needs no force at all: it gets a plain `git push -u`.
+//
+// The lease alone does not save a teammate's commit that a fetch brought in
+// before the plan: the recorded tip already has it, so the push would pass and
+// drop it. So the walk also records whether that tip is in the branch as it
+// was before the rebase (remoteDiverged), and such a branch gets no push line.
 function remoteTip(ctx, branch) {
   return revParse(ctx.cwd, `refs/remotes/${ctx.cfg.remote}/${branch}`);
+}
+function remoteDiverged(ctx, branch, tip) {
+  const local = revParse(ctx.cwd, `refs/heads/${branch}`);
+  return !!(tip && local && !isAncestor(ctx.cwd, tip, local));
+}
+// The push lines for done branches, [{ branch, tip, diverged }], bottom first:
+// the safe ones in `lines`, the diverged ones in `held` with the reason.
+function pushPlan(ctx, entries) {
+  const lines = [], held = [];
+  for (const e of entries) {
+    if (e.diverged) held.push({ branch: e.branch,
+      why: `${ctx.cfg.remote}/${e.branch} has commits this branch doesn't: pull or rebase them in before pushing` });
+    else lines.push(pushLine(ctx, e.branch, e.tip));
+  }
+  return { lines, held };
 }
 // A push.command copied from the old default (a bare lease, no `=`) would
 // keep the unpinned form, so it gets the pinned line and a note instead.
@@ -143,6 +163,7 @@ function pushLine(ctx, branch, tip) {
     if (!JSONOUT) console.error(`restack: note: push.command "${cmd}" in ${ctx.cfg.path || ".seamux/restack.json"} is a bare lease; printing the pinned form instead (remove the setting to silence this)`);
   }
   if (cmd && !bareLeaseCommand(cmd)) return `${cmd} ${ctx.cfg.remote} ${branch}`;
+  if (!tip) return `git push -u ${ctx.cfg.remote} ${branch}`;
   return `git push --force-with-lease=${branch}:${tip || ""} ${ctx.cfg.remote} ${branch}:${branch}`;
 }
 
@@ -511,7 +532,11 @@ function cmdRun(ctx) {
 
   // remoteTip is the lease each push line pins (pushLine): the remote branch as
   // this repo saw it when the walk was planned, before anything moved.
-  const steps = planned.map(s => ({ ...s, status: "pending", newTip: null, remoteTip: remoteTip(ctx, s.branch) }));
+  // remoteDiverged: that tip has commits the branch never had (pushPlan).
+  const steps = planned.map(s => {
+    const tip = remoteTip(ctx, s.branch);
+    return { ...s, status: "pending", newTip: null, remoteTip: tip, remoteDiverged: remoteDiverged(ctx, s.branch, tip) };
+  });
   ctx.st = { ...S.fresh(), stale: ctx.st.stale || [], phase: "walking",
              startedAt: new Date().toISOString(), base: { ref: base.ref, sha: base.sha },
              driver: stack.driver, steps, index: 0, returnTo: ctx.branch };
@@ -753,11 +778,12 @@ function finish(ctx) {
   if (st.returnTo && currentBranch(ctx.cwd) !== st.returnTo && !OPTS.dryRun)
     git(ctx.cwd, ["checkout", "--quiet", st.returnTo]);
 
-  const pushes = broken.length ? [] : st.steps.filter(s => s.status === "done")
-    .map(s => pushLine(ctx, s.branch, "remoteTip" in s ? s.remoteTip : remoteTip(ctx, s.branch)));
+  const plan = broken.length ? { lines: [], held: [] } : pushPlan(ctx, st.steps.filter(s => s.status === "done")
+    .map(s => ({ branch: s.branch, tip: "remoteTip" in s ? s.remoteTip : remoteTip(ctx, s.branch), diverged: !!s.remoteDiverged })));
+  const pushes = plan.lines, held = plan.held;
   const escalatedDrops = (st.dropped || []).filter(d => d.escalated);
   const out = {
-    verb, status: broken.length ? "error" : escalatedDrops.length ? "needs-human" : st.stale.length ? "stale" : "ok", repo: ctx.cwd,
+    verb, status: broken.length ? "error" : escalatedDrops.length || held.length ? "needs-human" : st.stale.length ? "stale" : "ok", repo: ctx.cwd,
     steps: st.steps.map(s => ({ branch: s.branch, status: s.status, tip: s.newTip && s.newTip.slice(0, 12), ...(s.why ? { why: s.why } : {}) })),
     dropped: st.dropped || [],
     stale: st.stale,
@@ -770,7 +796,8 @@ function finish(ctx) {
       ...pushes,
     ],
     push: pushes,
-    exit: broken.length ? 1 : escalatedDrops.length ? NEEDS_HUMAN : 0,
+    ...(held.length ? { held } : {}),
+    exit: broken.length ? 1 : escalatedDrops.length || held.length ? NEEDS_HUMAN : 0,
   };
   emit(out, o => {
     say("");
@@ -793,6 +820,7 @@ function finish(ctx) {
     say("\n  then: restack verify");
     say("        restack check");
     for (const p of o.push) say(`        ${p}`);
+    for (const h of o.held || []) say(`        \x1b[33mno push line for ${h.branch}\x1b[0m — ${h.why}`);
     say("  (push lines are printed, never run — see PUSH in the skill)");
   });
 }
@@ -981,16 +1009,23 @@ function cmdPush(ctx) {
   })();
   // The tips the walk recorded; with no walk on record (or state written
   // before tips were recorded), the remote-tracking ref as it is now.
+  // With no walk on record the branch is as it is now, so divergence is
+  // checked against the local tip directly.
   const done = (ctx.st.steps || []).filter(s => s.status === "done");
-  const recorded = new Map(done.filter(s => "remoteTip" in s).map(s => [s.branch, s.remoteTip]));
+  const byBranch = new Map(done.map(s => [s.branch, s]));
   const names = done.length ? done.map(s => s.branch) : (stack ? stack.chain.map(c => c.name) : [ctx.branch].filter(Boolean));
-  const lines = names.map(b => pushLine(ctx, b, recorded.has(b) ? recorded.get(b) : remoteTip(ctx, b)));
+  const { lines, held } = pushPlan(ctx, names.map(b => {
+    const s = byBranch.get(b);
+    if (s && "remoteTip" in s) return { branch: b, tip: s.remoteTip, diverged: !!s.remoteDiverged };
+    const tip = remoteTip(ctx, b);
+    return { branch: b, tip, diverged: !s && remoteDiverged(ctx, b, tip) };
+  }));
   const blocked = (ctx.st.stale || []).length > 0;
   emit({
-    verb: "push", status: blocked ? "stale" : "ok",
-    push: lines, stale: ctx.st.stale || [],
+    verb: "push", status: blocked ? "stale" : held.length ? "needs-human" : "ok",
+    push: lines, stale: ctx.st.stale || [], ...(held.length ? { held } : {}),
     note: "printed, never run — a human runs these",
-    exit: blocked ? 1 : 0,
+    exit: blocked ? 1 : held.length ? NEEDS_HUMAN : 0,
   }, o => {
     if (o.stale.length) {
       say("  \x1b[33mstale artifacts — pushing now is the CI failure you are trying to avoid:\x1b[0m");
@@ -999,6 +1034,7 @@ function cmdPush(ctx) {
     }
     say("  run these yourself (the stack must go up bottom-first):");
     for (const l of o.push) say(`    ${l}`);
+    for (const h of o.held || []) say(`    \x1b[33mno push line for ${h.branch}\x1b[0m — ${h.why}`);
   });
 }
 
