@@ -723,7 +723,7 @@ PARENT, KID1, KID2 = (os.path.join(FAM, n) for n in ("parent", "kid1", "kid2"))
 for d in (PARENT, KID1, os.path.join(KID2, ".vscode")):
     os.makedirs(d)
 open(os.path.join(KID2, ".vscode", "settings.json"), "w").write(
-    '{\n  // mine\n  "peacock.color": "#C0392B", "editor.fontSize": 13,\n}\n')
+    '{\n  "peacock.color": "#C0392B", "editor.fontSize": 13\n}\n')
 REG = os.path.join(CACHE, "cmux-crew", "colors")
 os.makedirs(REG, exist_ok=True)
 open(os.path.join(REG, hashlib.md5(PARENT.encode()).hexdigest()), "w").write(
@@ -740,6 +740,14 @@ check("…a child already wearing Peacock follows its shade, keeping its own key
       and cc.get("activityBar.background") == "#104A8D" and cc.get("activityBarBadge.background") == "#3488E8"
       and cc.get("statusBar.foreground") == "#e7e7e7", str(k2))
 check("…and a child with no .vscode gets none", not os.path.exists(os.path.join(KID1, ".vscode")))
+K2S = os.path.join(KID2, ".vscode", "settings.json")
+kept = open(K2S).read()
+JSONC = '{\n  // mine\n  "peacock.color": "#C0392B", "editor.fontSize": 13,\n}\n'
+open(K2S, "w").write(JSONC)
+r = run("crew-color", "apply", KID2, env=COLOR_ENV)
+check("crew-color apply leaves a settings file with comments as it is, and says why",
+      r.returncode == 1 and open(K2S).read() == JSONC and "has comments" in r.stderr, r.stdout + r.stderr)
+open(K2S, "w").write(kept)
 r = run("crew-color", "list", env=COLOR_ENV)
 
 def color_block(out, hexv):

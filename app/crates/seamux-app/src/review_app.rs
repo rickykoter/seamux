@@ -7,9 +7,10 @@
 //! comment, a push) is a separate command the page calls after a click.
 
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,9 @@ const REVIEW_TIME: Duration = Duration::from_secs(45 * 60);
 const QUICK: Duration = Duration::from_secs(120);
 const SLOW: Duration = Duration::from_secs(15 * 60);
 const LOG_LINES: usize = 60;
+/// How long a program's output may stay open after it exits (a tool it
+/// started still holding the pipe) before its process group is killed.
+const DRAIN_GRACE: Duration = Duration::from_millis(if cfg!(test) { 300 } else { 5000 });
 
 /// The code under review is untrusted: a branch can carry text written to steer
 /// the agent. So the agents get no general shell (no cat, no sed, no curl),
@@ -86,6 +90,9 @@ pub struct Job {
     pub stage_at: u64,
     /// What a running agent did last ("reading shell.rs"), or "".
     pub activity: String,
+    /// The process group of the agent running for this job now, or 0. Saved,
+    /// so a group left running by a crashed app is not discarded under.
+    pub pgid: i32,
 }
 
 static JOBS: OnceLock<Mutex<Vec<Job>>> = OnceLock::new();
@@ -102,21 +109,34 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
+fn jobs_file() -> PathBuf {
+    base_dir().join("jobs.json")
+}
+
 fn jobs() -> &'static Mutex<Vec<Job>> {
     JOBS.get_or_init(|| {
-        let mut v: Vec<Job> = std::fs::read_to_string(base_dir().join("jobs.json"))
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
-        // A job that was mid-flight when the app quit has no process left.
-        for j in v
-            .iter_mut()
-            .filter(|j| !matches!(j.status.as_str(), "ready" | "failed"))
-        {
-            j.status = "failed".into();
-            j.detail = "the app quit while this was running".into();
-        }
+        let file = jobs_file();
+        let text = std::fs::read_to_string(&file).ok();
+        let mut v: Vec<Job> = match text.as_deref().map(serde_json::from_str) {
+            Some(Ok(v)) => v,
+            Some(Err(_)) => {
+                // Kept aside, not overwritten by the next save: it names
+                // worktrees that are still registered.
+                let _ = std::fs::rename(&file, file.with_extension(format!("json.unreadable-{}", now())));
+                Vec::new()
+            }
+            None => Vec::new(),
+        };
+        // A job that was mid-flight when the app quit: its agent was stopped
+        // at quit, or, after a crash, may still run (its group is kept).
         for j in v.iter_mut() {
+            if !group_alive(j.pgid) {
+                j.pgid = 0;
+            }
+            if !matches!(j.status.as_str(), "ready" | "failed") {
+                j.status = "failed".into();
+                j.detail = "the app quit while this was running".into();
+            }
             j.busy.clear();
         }
         Mutex::new(v)
@@ -134,26 +154,28 @@ fn snapshot() -> Vec<Job> {
     v
 }
 
+/// Save and show the jobs. Called with the jobs' lock held, so the last
+/// change made is the last one saved and sent (never an older snapshot).
 fn publish(all: &[Job]) {
-    let _ = std::fs::create_dir_all(base_dir());
-    let _ = std::fs::write(
-        base_dir().join("jobs.json"),
-        serde_json::to_string(all).unwrap_or_default(),
-    );
+    save_jobs(&jobs_file(), all);
     if let Some(app) = APP.get() {
         let _ = app.emit("review:frame", all);
     }
 }
 
+/// Written whole or not at all: a quit mid-write keeps the last save.
+fn save_jobs(file: &Path, all: &[Job]) {
+    if let Ok(text) = serde_json::to_string(all) {
+        let _ = crew_core::py::write_atomic(file, text.as_bytes());
+    }
+}
+
 fn update(id: &str, f: impl FnOnce(&mut Job)) {
-    let all = {
-        let Ok(mut g) = jobs().lock() else { return };
-        if let Some(j) = g.iter_mut().find(|j| j.id == id) {
-            f(j);
-        }
-        g.clone()
-    };
-    publish(&all);
+    let Ok(mut g) = jobs().lock() else { return };
+    if let Some(j) = g.iter_mut().find(|j| j.id == id) {
+        f(j);
+    }
+    publish(&g);
 }
 
 fn get(id: &str) -> Result<Job, String> {
@@ -190,20 +212,18 @@ fn stage(id: &str, status: &str, detail: &str) {
 
 /// Mark `id` busy with `what`, or say what already is.
 fn claim(id: &str, what: &str) -> Result<Job, String> {
-    let all = {
-        let mut g = jobs().lock().map_err(|e| e.to_string())?;
-        let j = g.iter_mut().find(|j| j.id == id).ok_or("no such review")?;
-        if j.status != "ready" {
-            return Err("the review isn't ready yet".into());
-        }
-        if !j.busy.is_empty() {
-            return Err(format!("still {}", j.busy));
-        }
-        j.busy = what.into();
-        g.clone()
-    };
-    publish(&all);
-    get(id)
+    let mut g = jobs().lock().map_err(|e| e.to_string())?;
+    let j = g.iter_mut().find(|j| j.id == id).ok_or("no such review")?;
+    if j.status != "ready" {
+        return Err("the review isn't ready yet".into());
+    }
+    if !j.busy.is_empty() {
+        return Err(format!("still {}", j.busy));
+    }
+    j.busy = what.into();
+    let mine = j.clone();
+    publish(&g);
+    Ok(mine)
 }
 
 fn release(id: &str) {
@@ -239,10 +259,90 @@ fn exec(
     stdin: Option<&str>,
     limit: Duration,
 ) -> Result<Out, String> {
-    exec_lines(program, args, cwd, stdin, limit, None)
+    exec_lines(program, args, cwd, stdin, limit, None, None)
 }
 
-/// `exec`, with each line of stdout also handed to `on_line` as it arrives.
+/// The process groups the reviews run now, each program in its own: what
+/// `stop_all` stops when the app quits.
+static RUNNING: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+
+/// A running program's process group, tracked while this lives, and saved on
+/// the job it runs for (`owner`) so a crash leaves a trace of it.
+struct Group {
+    pgid: i32,
+    owner: Option<String>,
+}
+
+impl Group {
+    fn track(pgid: i32, owner: Option<&str>) -> Group {
+        if let Ok(mut r) = RUNNING.lock() {
+            r.push(pgid);
+        }
+        if let Some(id) = owner {
+            update(id, |j| j.pgid = pgid);
+        }
+        Group { pgid, owner: owner.map(str::to_string) }
+    }
+}
+
+impl Drop for Group {
+    fn drop(&mut self) {
+        if let Ok(mut r) = RUNNING.lock() {
+            r.retain(|p| *p != self.pgid);
+        }
+        if let Some(id) = &self.owner {
+            let pgid = self.pgid;
+            update(id, |j| {
+                if j.pgid == pgid {
+                    j.pgid = 0;
+                }
+            });
+        }
+    }
+}
+
+/// Whether process group `pgid` has a process in it that we may signal.
+fn group_alive(pgid: i32) -> bool {
+    // SAFETY: signal 0 only asks whether the group exists.
+    pgid > 1 && unsafe { libc::killpg(pgid, 0) == 0 }
+}
+
+/// SIGTERM the groups, then SIGKILL whatever is left after `grace`.
+fn stop_groups(groups: &[i32], grace: Duration) {
+    for &g in groups.iter().filter(|g| **g > 1) {
+        // SAFETY: a group this app started (see Group).
+        unsafe { libc::killpg(g, libc::SIGTERM) };
+    }
+    let until = Instant::now() + grace;
+    while groups.iter().any(|g| group_alive(*g)) && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    for &g in groups.iter().filter(|g| group_alive(**g)) {
+        // SAFETY: as above.
+        unsafe { libc::killpg(g, libc::SIGKILL) };
+    }
+}
+
+/// Stop every program the reviews are running: the app is quitting, and an
+/// agent left behind would go on editing a worktree no card owns.
+pub fn stop_all() {
+    let groups = RUNNING.lock().map(|r| r.clone()).unwrap_or_default();
+    stop_groups(&groups, Duration::from_millis(1500));
+}
+
+/// Why job `j`'s worktree may not be discarded: an agent from before the
+/// app last quit (a crash) still runs in its process group.
+fn orphan(j: &Job) -> Option<String> {
+    group_alive(j.pgid).then(|| {
+        format!(
+            "an agent from before the app last quit may still be working in its worktree (process group {}, see `ps -g {}`); wait for it to finish, then try again",
+            j.pgid, j.pgid
+        )
+    })
+}
+
+/// `exec`, with each line of stdout also handed to `on_line` as it arrives,
+/// and the process group recorded on job `owner` while it runs.
 fn exec_lines(
     program: &str,
     args: &[&str],
@@ -250,6 +350,7 @@ fn exec_lines(
     stdin: Option<&str>,
     limit: Duration,
     on_line: Option<LineFn>,
+    owner: Option<&str>,
 ) -> Result<Out, String> {
     let mut c = Command::new(program);
     c.args(args)
@@ -260,32 +361,33 @@ fn exec_lines(
             Stdio::null()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        // Its own group: a timeout or a quit stops what it started too.
+        .process_group(0);
     if let Some(d) = cwd {
         c.current_dir(d);
     }
     let mut child = c
         .spawn()
         .map_err(|e| format!("couldn't start {program}: {e}"))?;
+    let pgid = child.id() as i32;
+    let _group = Group::track(pgid, owner);
     if let (Some(text), Some(mut si)) = (stdin, child.stdin.take()) {
         let text = text.to_string();
         std::thread::spawn(move || {
             let _ = si.write_all(text.as_bytes());
         });
     }
-    let so = child.stdout.take().ok_or("no stdout")?;
-    let ho = match on_line {
-        Some(f) => drain_lines(so, f),
-        None => drain(so),
-    };
-    let he = drain(child.stderr.take().ok_or("no stderr")?);
+    let (out, err) = (Arc::new(Mutex::new(String::new())), Arc::new(Mutex::new(String::new())));
+    let ho = drain(child.stdout.take().ok_or("no stdout")?, out.clone(), on_line);
+    let he = drain(child.stderr.take().ok_or("no stderr")?, err.clone(), None);
     let deadline = Instant::now() + limit;
     let status = loop {
         if let Ok(Some(s)) = child.try_wait() {
             break s;
         }
         if Instant::now() > deadline {
-            let _ = child.kill();
+            stop_groups(&[pgid], Duration::from_secs(2));
             let _ = child.wait();
             return Err(format!(
                 "{program} took longer than {} minutes and was stopped",
@@ -294,30 +396,55 @@ fn exec_lines(
         }
         std::thread::sleep(Duration::from_millis(100));
     };
+    // It exited; something it started may still hold its output open. Give
+    // that a moment, then stop the group so the card is not busy forever.
+    let drained = || ho.is_finished() && he.is_finished();
+    let until = Instant::now() + DRAIN_GRACE;
+    while !drained() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if !drained() {
+        stop_groups(&[pgid], Duration::from_secs(1));
+        let until = Instant::now() + Duration::from_secs(1);
+        while !drained() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    // Whatever was read by now (a pipe held by a process outside the group
+    // is left to its reader thread).
+    let take = |b: &Arc<Mutex<String>>| b.lock().map(|s| s.clone()).unwrap_or_default();
     Ok(Out {
         code: status.code().unwrap_or(-1),
-        out: ho.join().unwrap_or_default(),
-        err: he.join().unwrap_or_default(),
+        out: take(&out),
+        err: take(&err),
     })
 }
 
-fn drain_lines<R: Read + Send + 'static>(r: R, mut f: LineFn) -> std::thread::JoinHandle<String> {
+/// Read `r` into `buf` a line at a time, handing each line (without its end)
+/// to `on_line` as it arrives.
+fn drain<R: Read + Send + 'static>(
+    r: R,
+    buf: Arc<Mutex<String>>,
+    mut on_line: Option<LineFn>,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        let mut all = String::new();
-        for line in BufReader::new(r).lines().map_while(Result::ok) {
-            f(&line);
-            all.push_str(&line);
-            all.push('\n');
+        let mut r = BufReader::new(r);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            match r.read_until(b'\n', &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let text = String::from_utf8_lossy(&line);
+                    if let Some(f) = on_line.as_mut() {
+                        f(text.trim_end_matches(['\n', '\r']));
+                    }
+                    if let Ok(mut b) = buf.lock() {
+                        b.push_str(&text);
+                    }
+                }
+            }
         }
-        all
-    })
-}
-
-fn drain<R: Read + Send + 'static>(mut r: R) -> std::thread::JoinHandle<String> {
-    std::thread::spawn(move || {
-        let mut b = Vec::new();
-        let _ = r.read_to_end(&mut b);
-        String::from_utf8_lossy(&b).into_owned()
     })
 }
 
@@ -724,7 +851,7 @@ fn claude(
             }
         }) as LineFn
     });
-    let o = exec_lines("claude", &args, Some(wt), Some(prompt), limit, on_line)?;
+    let o = exec_lines("claude", &args, Some(wt), Some(prompt), limit, on_line, watch)?;
     if let Some(id) = watch {
         update(id, |j| j.activity.clear());
     }
@@ -989,6 +1116,9 @@ fn start_review(input: String, depth: String, model: String) -> Result<String, S
         if !j.busy.is_empty() || !matches!(j.status.as_str(), "ready" | "failed") {
             return Err("that one is still running".into());
         }
+        if let Some(why) = orphan(j) {
+            return Err(why);
+        }
     }
     for j in &same {
         let (changed, lost) = at_stake(j).map_err(|e| {
@@ -1024,13 +1154,12 @@ fn start_review(input: String, depth: String, model: String) -> Result<String, S
         stage_at: now(),
         ..Default::default()
     };
-    let all = {
+    {
         let mut g = jobs().lock().map_err(|e| e.to_string())?;
         g.retain(|x| !same.iter().any(|o| o.id == x.id));
         g.push(job);
-        g.clone()
-    };
-    publish(&all);
+        publish(&g);
+    }
     let (jid, text) = (id.clone(), input);
     std::thread::spawn(move || {
         if let Err(e) = pipeline(&jid, &text) {
@@ -1244,16 +1373,16 @@ fn remove_review(id: &str, files: u32, commits: u32, unreadable: bool) -> Result
     if !j.busy.is_empty() || !matches!(j.status.as_str(), "ready" | "failed") {
         return Err("it is still running".into());
     }
+    if let Some(why) = orphan(&j) {
+        return Err(why);
+    }
     if let Some(why) = refuse_remove(&at_stake(&j), files, commits, unreadable) {
         return Err(why);
     }
     discard(&j);
-    let all = {
-        let mut g = jobs().lock().map_err(|e| e.to_string())?;
-        g.retain(|x| x.id != id);
-        g.clone()
-    };
-    publish(&all);
+    let mut g = jobs().lock().map_err(|e| e.to_string())?;
+    g.retain(|x| x.id != id);
+    publish(&g);
     Ok(())
 }
 
@@ -1551,6 +1680,80 @@ fn read_other(path: &Path, id: &str) -> Option<Other> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("seamux-review-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn pid_alive(pid: i32) -> bool {
+        // SAFETY: signal 0 only asks.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[test]
+    fn jobs_are_saved_whole_with_no_temp_file_left() {
+        let d = scratch("save");
+        let file = d.join("jobs.json");
+        std::fs::write(&file, "[{\"id\":\"old\"}]").unwrap();
+        let jobs = vec![Job { id: "a".into(), pgid: 42, ..Default::default() }, Job { id: "b".into(), ..Default::default() }];
+        save_jobs(&file, &jobs);
+        let back: Vec<Job> = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(back.iter().map(|j| (j.id.as_str(), j.pgid)).collect::<Vec<_>>(), [("a", 42), ("b", 0)]);
+        let names: Vec<String> = std::fs::read_dir(&d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["jobs.json"]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_tool_left_holding_the_output_does_not_hold_the_run() {
+        let d = scratch("linger");
+        let pidf = d.join("pid");
+        let script = format!("sleep 30 & echo $! > {}; echo hi", pidf.display());
+        let t = Instant::now();
+        let o = exec_lines("sh", &["-c", &script], None, None, Duration::from_secs(20), None, None).unwrap();
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+        assert_eq!((o.code, o.out.as_str()), (0, "hi\n"));
+        let pid: i32 = std::fs::read_to_string(&pidf).unwrap().trim().parse().unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!pid_alive(pid), "the lingering sleep was stopped with its group");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_timeout_stops_the_whole_process_group() {
+        let d = scratch("timeout");
+        let pidf = d.join("pid");
+        let script = format!("sleep 30 & echo $! > {}; wait", pidf.display());
+        let e = exec_lines("sh", &["-c", &script], None, None, Duration::from_millis(400), None, None).err().unwrap();
+        assert!(e.contains("was stopped"), "{e}");
+        let pid: i32 = std::fs::read_to_string(&pidf).unwrap().trim().parse().unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!pid_alive(pid), "the agent's tool died with it");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn lines_reach_the_watcher_without_their_ends() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s2 = seen.clone();
+        let f: LineFn = Box::new(move |l: &str| s2.lock().unwrap().push(l.to_string()));
+        let o = exec_lines("printf", &["a\\r\\nb\\nc"], None, None, Duration::from_secs(5), Some(f), None).unwrap();
+        assert_eq!(o.out, "a\r\nb\nc");
+        assert_eq!(*seen.lock().unwrap(), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn a_dead_group_is_no_orphan() {
+        assert!(orphan(&Job::default()).is_none());
+        assert!(orphan(&Job { pgid: 1, ..Default::default() }).is_none());
+        // Our own group is alive: a card naming it is refused.
+        // SAFETY: getpgrp has no preconditions.
+        let me = unsafe { libc::getpgrp() };
+        assert!(orphan(&Job { pgid: me, ..Default::default() }).is_some_and(|w| w.contains("still be working")));
+    }
 
     #[test]
     fn activity_names_the_last_tool_call() {

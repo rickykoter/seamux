@@ -77,6 +77,7 @@ pub fn set_quiet(q: bool) {
     QUIET.store(q, std::sync::atomic::Ordering::Relaxed);
 }
 
+#[allow(dead_code)] // nothing warns since apply refuses JSONC; kept with QUIET for crew-sync
 fn warn(msg: &str) {
     if !QUIET.load(std::sync::atomic::Ordering::Relaxed) {
         eprint!("{msg}");
@@ -641,11 +642,15 @@ fn apply(root: &str, hexv: &str) -> R<bool> {
     if merged == cur {
         return Ok(false);
     }
+    // Rewriting is a json.dumps of what was read: a comment (or a trailing
+    // comma) would be lost, so a file that has them is left as it is.
+    if had_comments {
+        return Err(die(&format!(
+            "{path} has comments, which rewriting it would drop, so the window was left uncolored (remove them, or add Peacock's keys by hand)"
+        )));
+    }
     fs::create_dir_all(&vsdir).map_err(|e| crash(&format!("OSError: {}", pyerr::os_error(&e, Path::new(&vsdir)))))?;
     write_atomic(&path, &dumps_settings(&merged))?;
-    if had_comments {
-        warn(&format!("\x1b[33m!\x1b[0m {path} had comments; they were dropped when the file was rewritten\n"));
-    }
     Ok(true)
 }
 
@@ -1074,6 +1079,29 @@ mod tests {
         assert!(has_wide_int(r#"{"n": -9223372036854775809}"#));
         assert!(!has_wide_int(r#"{"n": 18446744073709551615, "f": 1e400, "s": "99999999999999999999"}"#));
         assert!(!has_wide_int(r#"{"s": "a\"99999999999999999999"}"#));
+    }
+
+    #[test]
+    fn apply_leaves_a_settings_file_with_comments_alone() {
+        let d = std::env::temp_dir().join(format!("crew-color-jsonc-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join(".vscode")).unwrap();
+        let root = d.to_string_lossy().into_owned();
+        let file = d.join(".vscode/settings.json");
+        let jsonc = "{\n  // keep me\n  \"editor.tabSize\": 2,\n}\n";
+        fs::write(&file, jsonc).unwrap();
+        match apply(&root, "#196F3D") {
+            Err(Stop::Die(m)) => assert!(m.contains("has comments"), "{m}"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert_eq!(fs::read_to_string(&file).unwrap(), jsonc);
+        // Plain JSON is still merged.
+        fs::write(&file, "{\"editor.tabSize\": 2}\n").unwrap();
+        assert!(apply(&root, "#196F3D").unwrap());
+        let v: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(v["peacock.color"], "#196F3D");
+        assert_eq!(v["editor.tabSize"], 2);
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

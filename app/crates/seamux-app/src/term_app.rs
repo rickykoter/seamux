@@ -176,8 +176,30 @@ fn paint(root: &str) -> Result<(), String> {
     if out.status.success() {
         Ok(())
     } else {
-        Err(format!("crew-color: {}", String::from_utf8_lossy(&out.stderr).trim()))
+        Err(crew_color_why(&String::from_utf8_lossy(&out.stderr)))
     }
+}
+
+/// crew-color's refusal as a note for the page: its last line, without the
+/// terminal colors and the red cross it prints it with.
+fn crew_color_why(stderr: &str) -> String {
+    let line = stderr.lines().rev().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    let mut plain = String::new();
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // CSI: ESC [ ... final byte in @..~
+            for d in chars.by_ref() {
+                if ('@'..='~').contains(&d) && d != '[' {
+                    break;
+                }
+            }
+        } else {
+            plain.push(c);
+        }
+    }
+    let plain = plain.trim().trim_start_matches('✗').trim();
+    if plain.is_empty() { "crew-color failed".into() } else { plain.to_string() }
 }
 
 /// What opening a worktree in VS Code did: the folder, and why it is not
@@ -213,6 +235,13 @@ pub async fn open_in_vscode(dir: String) -> Result<Opened, String> {
 #[cfg(test)]
 mod url_tests {
     use super::url_ok;
+
+    #[test]
+    fn crew_color_refusal_reads_plainly() {
+        let err = "\x1b[31m✗\x1b[0m /w/.vscode/settings.json has comments, which rewriting it would drop\n";
+        assert_eq!(super::crew_color_why(err), "/w/.vscode/settings.json has comments, which rewriting it would drop");
+        assert_eq!(super::crew_color_why(""), "crew-color failed");
+    }
 
     #[test]
     fn open_url_takes_web_links_only() {

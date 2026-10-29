@@ -224,8 +224,14 @@ fn main() {
             newws_app::new_ws_options,
             newws_app::new_ws_create
         ])
-        .run(tauri::generate_context!())
-        .expect("seamux app failed to start");
+        .build(tauri::generate_context!())
+        .expect("seamux app failed to start")
+        .run(|_, e| {
+            // However the app quits, a review's agents do not outlive it.
+            if let tauri::RunEvent::Exit = e {
+                review_app::stop_all();
+            }
+        });
 }
 
 #[cfg(test)]

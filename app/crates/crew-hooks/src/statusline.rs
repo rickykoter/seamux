@@ -9,7 +9,8 @@
 //! The same line, byte for byte: the workspace colour from cmux (cached 300 s
 //! in the same file, the miss cached too), lifted for dark terminals with
 //! Python's colorsys arithmetic; the window or month line from ccusage with
-//! crew-core's pricing args; the cache segment from cache-facts or
+//! crew-core's pricing args (its answer cached 45 s, which the Python does
+//! not do: ccusage costs most of a second per render); the cache segment from cache-facts or
 //! crew-core's read_facts. Where the Python would raise, this prints nothing
 //! and exits 1, as the Python's traceback does.
 //!
@@ -26,6 +27,11 @@ use serde_json::{json, Map, Value};
 use crate::pyval::{self, str_of, strip, truthy};
 
 const COLOR_TTL: f64 = 300.0;
+/// How long one ccusage answer serves every session's status line: it costs
+/// most of a second of CPU per run. CREW_CCUSAGE_TTL overrides (0: no cache).
+const CCUSAGE_TTL: f64 = 45.0;
+/// How old an answer may still be shown while another render refreshes it.
+const CCUSAGE_STALE: f64 = 600.0;
 
 /// What the Python would have raised: stderr gets it, stdout nothing, exit 1.
 #[derive(Debug)]
@@ -437,6 +443,45 @@ fn ccusage(exe: &Path, args: &[String], key: &str, timeout: Duration) -> Result<
     Ok(o.get(key).filter(|x| truthy(x)).cloned().unwrap_or_else(|| json!([])))
 }
 
+/// ccusage's answer for `args`, from the cache while it is young. When it
+/// has expired, one render (the one holding the lock) asks ccusage again and
+/// the others keep showing the last answer meanwhile. A cache that is
+/// unreadable, from other args, or from the future is simply a miss.
+fn ccusage_cached(exe: &Path, args: &[String], key: &str, timeout: Duration) -> Result<Value, String> {
+    let ttl = env_or("CREW_CCUSAGE_TTL").and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(CCUSAGE_TTL);
+    if ttl.is_nan() || ttl <= 0.0 {
+        return ccusage(exe, args, key, timeout);
+    }
+    let file = home().join(".claude/cache").join(format!("ccusage-{key}.json"));
+    let id = format!("{}\0{}", exe.display(), args.join("\0"));
+    let t = now();
+    if let Some(v) = cache_get(&file, &id, ttl, t) {
+        return Ok(v);
+    }
+    match crew_core::py::Flock::try_exclusive(&file.with_extension("lock")) {
+        Ok(Some(_held)) => {
+            let got = ccusage(exe, args, key, timeout);
+            if let Ok(v) = &got {
+                cache_put(&file, &id, now(), v);
+            }
+            got
+        }
+        _ => cache_get(&file, &id, CCUSAGE_STALE, t).map_or_else(|| ccusage(exe, args, key, timeout), Ok),
+    }
+}
+
+/// The cached answer in `file` for `id`, if it is younger than `ttl` at `t`.
+fn cache_get(file: &Path, id: &str, ttl: f64, t: f64) -> Option<Value> {
+    let v = pyval::loads(&std::fs::read_to_string(file).ok()?).ok()?;
+    let at = v.get("at")?.as_f64()?;
+    (v.get("id")?.as_str()? == id && at <= t && t - at < ttl).then(|| v.get("value").cloned()).flatten()
+}
+
+fn cache_put(file: &Path, id: &str, at: f64, value: &Value) {
+    let body = pyval::dumps(&json!({"id": id, "at": at, "value": value}), None);
+    let _ = crew_core::py::write_atomic(file, body.as_bytes());
+}
+
 /// What `for x in v` walks, for a value ccusage handed back.
 fn items(v: Value) -> R<Vec<Value>> {
     match v {
@@ -457,7 +502,7 @@ fn window_line() -> R<String> {
     let Some(exe) = which("ccusage") else { return Ok(NO_CCUSAGE.into()) };
     let mut args = vec!["blocks".to_string(), "--json".to_string()];
     args.extend(pricing_args());
-    let blocks = match ccusage(&exe, &args, "blocks", Duration::from_secs(10)) {
+    let blocks = match ccusage_cached(&exe, &args, "blocks", Duration::from_secs(10)) {
         Ok(b) => items(b)?,
         Err(name) => return Ok(format!("ccusage: {name}")),
     };
@@ -582,7 +627,7 @@ fn month_line() -> R<String> {
     let Some(exe) = which("ccusage") else { return Ok(NO_CCUSAGE.into()) };
     let mut args = vec!["monthly".to_string(), "--json".to_string()];
     args.extend(pricing_args());
-    let rows = match ccusage(&exe, &args, "monthly", Duration::from_secs(15)) {
+    let rows = match ccusage_cached(&exe, &args, "monthly", Duration::from_secs(15)) {
         Ok(r) => items(r)?,
         Err(name) => return Ok(format!("ccusage: {name}")),
     };
@@ -761,6 +806,31 @@ mod tests {
         assert_eq!(hex_pair("-f"), Some(-15));
         assert_eq!(hex_pair("zz"), None);
         assert_eq!(hex_pair("+ "), None);
+    }
+
+    #[test]
+    fn ccusage_cache_hits_while_young_and_misses_after() {
+        let d = std::env::temp_dir().join(format!("statusline-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let file = d.join("ccusage-blocks.json");
+        // Nothing cached, or a file that is not ours to read: a miss.
+        assert_eq!(cache_get(&file, "id", 45.0, 100.0), None);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(&file, "{not json").unwrap();
+        assert_eq!(cache_get(&file, "id", 45.0, 100.0), None);
+        std::fs::write(&file, r#"{"id": "id", "at": "soon", "value": []}"#).unwrap();
+        assert_eq!(cache_get(&file, "id", 45.0, 100.0), None);
+        let v = json!([{"isActive": true, "totalTokens": 420000, "costUSD": 1.2345678901234567}]);
+        cache_put(&file, "id", 100.0, &v);
+        assert_eq!(cache_get(&file, "id", 45.0, 100.0), Some(v.clone()));
+        assert_eq!(cache_get(&file, "id", 45.0, 144.9), Some(v.clone()));
+        // Expired, asked with other args, or written in the future.
+        assert_eq!(cache_get(&file, "id", 45.0, 145.0), None);
+        assert_eq!(cache_get(&file, "other", 45.0, 120.0), None);
+        assert_eq!(cache_get(&file, "id", 45.0, 99.0), None);
+        // Still young enough to show while another render refreshes it.
+        assert_eq!(cache_get(&file, "id", CCUSAGE_STALE, 300.0), Some(v));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

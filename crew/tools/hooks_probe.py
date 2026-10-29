@@ -591,8 +591,9 @@ check("TypeSafe available: asked.sh judges the turn in the background",
       "\n".join(spawns() + log()))
 check("…and publishes phase:waiting once the judgment lands",
       wait_for(lambda: desc() == "phase:waiting"), desc())
-check("…with the payload handed over in a file",
-      open(os.path.join(STATE, "asked-payload-ws-1")).read() == payload())
+check("…with the payload handed over in a file of the session's own, removed after",
+      wait_for(lambda: not [f for f in os.listdir(STATE) if f.startswith("asked-payload-")]),
+      os.listdir(STATE))
 
 # --- asked.sh -------------------------------------------------------------------------
 print("asked.sh")
@@ -935,6 +936,8 @@ def blocks(*bs):
 
 
 def statusline(stdin="{}", ws=None, path=BIN, **env):
+    # Each case changes ccusage's answer: the Rust line's 45 s cache is off.
+    env.setdefault("CREW_CCUSAGE_TTL", "0")
     return run(tool_argv("statusline"), stdin,
                env_for(ws=ws, path=path, PROBE_CCUSAGE_BLOCKS=BLOCKS, PROBE_CCUSAGE_MONTHLY=MONTHLY,
                        **env), settle=False)

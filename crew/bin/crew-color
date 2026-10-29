@@ -491,12 +491,13 @@ def apply(root, hexv, name):
 
     if merged == cur:
         return False
+    # Rewriting is a json.dumps of what was read: a comment (or a trailing
+    # comma) would be lost, so a file that has them is left as it is.
+    if had_comments:
+        die(f"{path} has comments, which rewriting it would drop, so the window "
+            f"was left uncolored (remove them, or add Peacock's keys by hand)")
     os.makedirs(vsdir, exist_ok=True)
     write_atomic(path, json.dumps(merged, indent=2, sort_keys=True) + "\n")
-    if had_comments:
-        sys.stderr.write(
-            f"\033[33m!\033[0m {path} had comments; they were dropped when "
-            f"the file was rewritten\n")
     return True
 
 

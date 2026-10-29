@@ -609,12 +609,15 @@ fn stop(h: &mut Hook) -> String {
         let tp = h.json("transcript_path");
         let size = std::fs::metadata(&tp).map(|m| m.len().to_string()).unwrap_or_default();
         transcript = Some(tp);
-        // A file, not a pipe: the detached job reads it as stdin.
-        let pl = h.state.join(format!("asked-payload-{}", h.ws));
+        // A file, not a pipe: the detached job reads it as stdin. One per
+        // session (two stopping at once in a workspace never share it), and
+        // unlinked once the job holds it open.
+        let pl = h.state.join(payload_name(&h.ws, &sid));
         mkdir(&h.state);
         if std::fs::write(&pl, &h.payload).is_ok() {
             let t = spawn::tool("asked-hook", &[&size]);
             let _ = spawn::detach(&t.argv, Some(&pl), None);
+            let _ = std::fs::remove_file(&pl);
         }
     }
 
@@ -775,9 +778,27 @@ pub fn main(args: &[String]) -> i32 {
     0
 }
 
+/// The stop hook's payload file for the asked job: the workspace, then the
+/// session (or, without a usable one, this process).
+fn payload_name(ws: &str, sid: &str) -> String {
+    let who: String = sid.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(64).collect();
+    let who = if who.is_empty() { std::process::id().to_string() } else { who };
+    format!("asked-payload-{ws}-{who}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_session_gets_its_own_payload_file() {
+        let a = payload_name("ws-1", "f845cb03-378e-4332-8f2f-cef27e50e0c4");
+        assert_eq!(a, "asked-payload-ws-1-f845cb03-378e-4332-8f2f-cef27e50e0c4");
+        assert_ne!(a, payload_name("ws-1", "0b7c1f00-0000-4000-8000-000000000000"));
+        // Nothing of a path gets in; no session id falls back to the pid.
+        assert_eq!(payload_name("ws-1", "../x/y"), "asked-payload-ws-1-xy");
+        assert_eq!(payload_name("ws-1", ""), format!("asked-payload-ws-1-{}", std::process::id()));
+    }
 
     #[test]
     fn ticket_labels_match_lib_sh() {
