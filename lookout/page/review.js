@@ -899,8 +899,28 @@
       return Array.isArray(d.x) && /\w/.test(d.x[1] || "") &&
         JSON.stringify(lineCtx(file, side, line)) === JSON.stringify(d.x);
     };
+    // A saved draft that does not belong under this line (placeable says no)
+    // moves to a key of its own, so it stays in the unplaced list and the
+    // new composer starts empty instead of inheriting it.
+    function setAside(key, file, side, line) {
+      const d = drafts[key];
+      const alt = "c:" + JSON.stringify([file, side, line, (d && d.h) || "earlier"]);
+      const all = readDrafts();
+      all[alt] = drafts[alt] = d; delete all[key]; delete drafts[key];
+      if (edited.delete(key)) edited.add(alt);
+      store.set(DRAFTS, JSON.stringify(all));
+    }
     function openComposer(tr, side, line) {
       const file = current, key = composerKey(file, side, line);
+      if (drafts[key] != null && !placeable(key, file, side, line)) {
+        setAside(key, file, side, line);
+        // Redraw so the unplaced list shows it under its new key, then open
+        // on the same line of the redrawn diff.
+        drawFile();
+        const cell = document.querySelector(`#diff td.ln[data-side="${side === "old" ? "old" : "new"}"][data-line="${Number(line)}"]`);
+        if (!cell) return null;
+        tr = cell.closest("tr");
+      }
       openComposers.add(key);
       const span = tr.children.length;
       const ta = el("textarea", { rows: 3, placeholder: `Comment on ${side === "old" ? "old " : ""}line ${line}…`, "data-draft": key });
@@ -934,7 +954,8 @@
         if (t && t.value.trim()) { t.focus(); return; }
         openComposers.delete(next.dataset.draft); next.remove(); return;
       }
-      openComposer(tr, cell.dataset.side, Number(cell.dataset.line)).focus();
+      const ta = openComposer(tr, cell.dataset.side, Number(cell.dataset.line));
+      if (ta) ta.focus();
     });
     // After any redraw of the diff: reopen this file's composers (open ones,
     // and drafts left from before a reload), refill reply boxes, and give the

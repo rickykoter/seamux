@@ -880,6 +880,9 @@ const R1 = repo("r1");
      !page.includes("/fetch/i") && !page.includes("e instanceof TypeError"));
   ok("page: a draft is saved by one key over what storage holds now, and other tabs' writes are taken in",
      /const saveDraft = \(k, v, meta\) => \{\s*const all = readDrafts\(\);/.test(page) && page.includes('addEventListener("storage"'));
+  ok("page: a composer opened on a line whose saved draft does not fit starts empty; the draft stays apart",
+     page.includes("if (drafts[key] != null && !placeable(key, file, side, line)) {\n        setAside(key, file, side, line);") &&
+     /function setAside\(key, file, side, line\)/.test(page));
   ok("page: the reload banner clears when the page's own diff comes back",
      /\/\/ The page's own diff again[^\n]*\n\s*if \(live\.stale\) \{ live\.stale = false; drawHeader\(\); \}/.test(page));
   ok("page: a restored draft does not hold fresher reviews back; one focused or typed in since load does",
