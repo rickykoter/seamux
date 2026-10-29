@@ -1,0 +1,16 @@
+{
+  "header": "Bad code",
+  "question": "When a customer types a code that doesn't work, what should checkout do?",
+  "mermaid": "flowchart LR\n  C[customer types a code] --> S{server checks it}\n  S -- good --> D[discount shown]\n  S -- bad --> X[?]",
+  "options": [
+    { "label": "Say why, keep the cart",
+      "description": "The form shows 'expired' or 'not found' under the field. Nothing else changes.",
+      "example": "POST /checkout {coupon: 'SPRING'}\n-> 422 {error: 'coupon expired'}" },
+    { "label": "Ignore it quietly",
+      "description": "Checkout goes ahead at full price and the code is dropped.",
+      "example": "POST /checkout {coupon: 'SPRING'}\n-> 200 {total: 2160, coupon: null}" },
+    { "label": "Ask before paying",
+      "description": "A confirm step offers full price or another code.",
+      "mermaid": "flowchart LR\n  B[bad code] --> Q{pay full price?}\n  Q -- yes --> P[pay]\n  Q -- no --> E[enter another]" }
+  ]
+}

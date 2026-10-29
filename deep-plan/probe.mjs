@@ -2656,9 +2656,11 @@ exit 1
   cli("check", "wait", "cl-1", "1", "askonly", "--timeout", "20");
   ok("…and an answer to a parked claim resumes from it, the value reaching the steps after",
     cck("askonly").status === "pass" && /using-v2/.test(fs.readFileSync(cck("askonly").ran.log, "utf8")));
-  const cwork = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "cl-1.working.html"), "utf8");
+  // The detached runner records its verdict before it redraws the page, so a
+  // read straight after `check wait` can still see "running" on a slow machine.
+  const askPicker = /<li class="dp-check" data-n="1" data-id="askonly" data-status="pass" data-asks="1">/;
   ok("the working page marks a claim that asks for the Dock's picker",
-    /<li class="dp-check" data-n="1" data-id="askonly" data-status="pass" data-asks="1">/.test(cwork));
+    until(() => askPicker.test(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "cl-1.working.html"), "utf8")), 5000));
   cli("check", "reset", "cl-1", "1", "askonly");
   cli("check", "run", "cl-1", "1", "askonly", "--inline");
   r = cli("check", "run", "cl-1", "1", "askonly", "--set", "VARIANT=v2", "--inline");

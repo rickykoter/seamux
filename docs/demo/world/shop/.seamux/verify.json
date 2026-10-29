@@ -1,0 +1,10 @@
+{ "recipes": [
+  { "id": "lint", "kind": "test", "run": "npm run -s lint", "match": ["src/**"], "default": true },
+  { "id": "unit", "kind": "test", "run": "npm test -s", "match": ["src/**", "test/**"], "default": true },
+  { "id": "e2e", "kind": "e2e", "tier": "expensive", "run": "sleep 45 && npm run -s test:e2e",
+    "match": ["src/checkout/**"], "default": true },
+  { "id": "preview", "kind": "e2e", "tier": "expensive", "steps": [
+    { "acquire": "git push -u origin HEAD", "note": "a person runs this" },
+    { "wait": "test -f .preview-url && cat .preview-url", "export": "BASE_URL", "timeout": 600, "interval": 5 },
+    { "run": "npm run -s test:e2e" } ] }
+] }

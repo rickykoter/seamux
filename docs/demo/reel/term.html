@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>terminal</title>
+<!-- A terminal for the demo: plays a recorded cast (`[{t, d}]`, seconds and
+     raw bytes) in xterm.js, off-screen in Playwright. record.mjs loads it with
+     ?xterm=<dir of @xterm/xterm> and calls window.play(cast, speed). -->
+<style>
+  html, body { margin: 0; height: 100%; background: #1f292d; }
+  #t { position: absolute; inset: 18px 22px; }
+</style>
+<div id="t"></div>
+<script>
+  const dir = new URLSearchParams(location.search).get('xterm')
+  const css = document.createElement('link')
+  css.rel = 'stylesheet'; css.href = dir + '/css/xterm.css'
+  document.head.appendChild(css)
+  const s = document.createElement('script')
+  s.src = dir + '/lib/xterm.js'
+  s.onload = () => {
+    const fontSize = +(new URLSearchParams(location.search).get('size') || 17)
+    const term = new Terminal({
+      fontFamily: 'Menlo, "SF Mono", monospace', fontSize, lineHeight: 1.18,
+      cursorBlink: false, convertEol: true, scrollback: 2000,
+      theme: { background: '#1f292d', foreground: '#d3c6aa', cursor: '#a7c080',
+               black: '#414b50', red: '#e67e80', green: '#a7c080', yellow: '#dbbc7f',
+               blue: '#7fbbb3', magenta: '#d699b6', cyan: '#83c092', white: '#d3c6aa' },
+    })
+    const el = document.getElementById('t')
+    term.open(el)
+    const cw = term._core._renderService.dimensions.css.cell.width || fontSize * 0.6
+    const ch = term._core._renderService.dimensions.css.cell.height || fontSize * 1.2
+    term.resize(Math.floor(el.clientWidth / cw), Math.floor(el.clientHeight / ch))
+    window.term = term
+    // Plays a cast; resolves when the last chunk is written.
+    window.play = (cast, speed = 1) => new Promise((done) => {
+      let i = 0
+      const t0 = performance.now()
+      const step = () => {
+        const now = (performance.now() - t0) / 1000 * speed
+        while (i < cast.length && cast[i].t <= now) term.write(cast[i++].d)
+        if (i < cast.length) requestAnimationFrame(step)
+        else term.write('', done)
+      }
+      step()
+    })
+    window.ready = true
+  }
+  document.head.appendChild(s)
+</script>

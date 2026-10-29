@@ -1,0 +1,10 @@
+{
+  "name": "shop",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "node scripts/lint.mjs",
+    "test": "node --test \"test/*.test.js\"",
+    "test:e2e": "node --test \"e2e/*.test.js\""
+  }
+}

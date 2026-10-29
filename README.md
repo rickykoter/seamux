@@ -70,6 +70,8 @@ branch onto its moved base without hand-merging generated files, and on cmux
 the crew board shows every worktree on the line, ranked by which one needs
 you next.
 
+https://github.com/user-attachments/assets/380fe3fe-fbe7-4215-89e1-f3929e0b8720
+
 The plugins in detail: [deep-plan](deep-plan/README.md),
 [lookout](lookout/README.md), [restack](restack/README.md),
 [humanize](humanize/README.md), [crew](crew/README.md) and
@@ -135,6 +137,8 @@ plugins, and `install-repo --check` says when the repo's copy is behind.
 [docs/ADOPTING.md](docs/ADOPTING.md) covers the rollout, including what a
 cloud session needs to push.
 
+https://github.com/user-attachments/assets/9f407b84-5f6d-451c-bb42-5b10d80b30af
+
 ## Working as a team
 
 ### Families: one goal, parallel workstreams
@@ -148,6 +152,8 @@ child its go once the child's checks pass, so you are not needed for every
 increment; you can still hold a child or take its go back. The parent
 checks the whole at the end, and one review reads every member's delivery.
 More in [deep-plan's README](deep-plan/README.md#families-parallel-workstreams-with-one-goal).
+
+https://github.com/user-attachments/assets/a8c303bd-6508-4683-a68f-5898d56974a3
 
 ### Shared plan state
 
@@ -192,6 +198,8 @@ its `go` chip. Click a bar to open the workstream's full card and jump to
 its session.
 
 ![the crew board: a family card whose parent waits on an answer, with its two workstreams nested inside (auth-ui opened, its gate shut, with go chips; auth-api collapsed and done), and a quiet row below](docs/img/board.png)
+
+https://github.com/user-attachments/assets/f692dd27-cedc-48f2-8510-f6e0fd9f5789
 
 #### News
 
@@ -286,6 +294,8 @@ Rewrites prose to remove AI writing tells and untangle sentences that are
 hard to parse. The other skills run it over the text they write for people.
 [humanize's README](humanize/README.md).
 
+https://github.com/user-attachments/assets/4207e5f2-8a98-486f-9f18-3542f4edf82f
+
 ### seamux-mods: deep-plan in the terminal
 
 An optional plugin that draws deep-plan inside Claude Code, so you can steer
@@ -324,6 +334,8 @@ tab says so until the server serves `/board`.
 
 Install it with `./install.sh --app` (see [Install](#install)). It needs cmux's
 socket in `automation` mode, which `crew apply` sets.
+
+https://github.com/user-attachments/assets/dec47bb2-e619-40ba-b40c-40477d8b37bc
 
 ## Setup
 

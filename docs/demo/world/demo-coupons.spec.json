@@ -1,0 +1,205 @@
+{
+  "slug": "demo-coupons",
+  "title": "Take coupon codes at checkout",
+  "context": "Customers ask support for discounts by email today, and support refunds the difference by hand. The checkout total already takes a discount (it is zero everywhere), so a coupon only has to supply that number.\n\nOut of frame: an admin screen for making coupons, and gift cards. This plan seeds coupons from a migration.",
+  "decisions": [
+    {
+      "decision": "Check the code on the server, not in the form",
+      "why": "a code checked only in the browser can be replayed with any discount the client sends",
+      "adr": {
+        "consequences": "every coupon costs one lookup per checkout; the form shows the discount only after the server answers",
+        "alternatives": [
+          "validate in the form and trust the posted discount",
+          "sign the discount into the cart"
+        ]
+      }
+    },
+    {
+      "decision": "Keep coupons in their own table",
+      "why": "orders keep their shape, and a coupon can be turned off without touching any order"
+    },
+    {
+      "decision": "One coupon per order",
+      "why": "stacking rules were not asked for, and one code keeps the total easy to explain on the receipt"
+    }
+  ],
+  "contracts": [
+    {
+      "surface": "POST /checkout body: optional coupon",
+      "kind": "api",
+      "scope": "internal",
+      "change": "modify",
+      "reach": "the web checkout form is the only caller (src/checkout/route.js); the field is optional, so old carts still check out",
+      "decisionRef": "Check the code on the server, not in the form"
+    },
+    {
+      "surface": "coupons table (code, percent_off, expires_at)",
+      "kind": "db-schema",
+      "scope": "internal",
+      "change": "new",
+      "reach": "read by the coupon lookup only; nothing else queries it",
+      "decisionRef": "Keep coupons in their own table"
+    }
+  ],
+  "verifiedFacts": [
+    {
+      "claim": "the checkout total already takes a discount",
+      "evidence": "src/checkout/total.js:9"
+    },
+    {
+      "claim": "checkout is the only caller of total()",
+      "evidence": "src/checkout/route.js:2"
+    },
+    {
+      "claim": "orders store only the final total",
+      "evidence": "db/migrate/001_orders.sql:3"
+    }
+  ],
+  "risks": [
+    {
+      "risk": "whether codes are case-sensitive was never decided",
+      "disposition": "promote"
+    },
+    {
+      "risk": "an expired coupon could stay in a browser tab and fail at the last step",
+      "disposition": "mitigate",
+      "deliverableRef": "Apply the coupon at checkout"
+    },
+    {
+      "risk": "the support team may already hand out codes that clash with new ones",
+      "disposition": "spike",
+      "note": "ask support for last month's codes and diff them against the seed"
+    },
+    {
+      "risk": "percent-off rounding may differ from what support refunds by hand today",
+      "disposition": "accept"
+    }
+  ],
+  "diagrams": [
+    {
+      "question": "What happens when a customer enters a code?",
+      "simple": "flowchart LR\n  A[Customer types a code] --> B[Shop checks it]\n  B --> C[Discount shown]\n  C --> D[Pays the lower total]",
+      "mermaid": "flowchart LR\n  F[checkout form] -->|POST /checkout + coupon| R[route.js]\n  R --> L[coupons/lookup.js]\n  L --> T[(coupons)]\n  L -->|percent_off| R\n  R --> X[total.js discount]\n  X --> F"
+    },
+    {
+      "question": "Which states can a coupon be in?",
+      "simple": "flowchart LR\n  A[New] --> B[Usable] --> C[Expired]",
+      "mermaid": "stateDiagram-v2\n  [*] --> active\n  active --> expired: expires_at passes\n  active --> disabled: turned off\n  expired --> [*]\n  disabled --> active: turned on"
+    }
+  ],
+  "deliverables": [
+    {
+      "title": "Coupon lookup",
+      "body": "lookup(code) returns the percent off for a live coupon, or null for an unknown or expired one.",
+      "files": [
+        "src/coupons/lookup.js",
+        "test/coupons.test.js"
+      ],
+      "checks": [
+        {
+          "kind": "observability",
+          "name": "coupon_applied counter climbs in dev",
+          "system": "datadog",
+          "query": "sum:shop.coupon_applied{env:dev}.as_count()",
+          "expect": "above zero after a test checkout"
+        },
+        {
+          "kind": "e2e",
+          "name": "preview checkout",
+          "recipe": "preview"
+        }
+      ]
+    },
+    {
+      "title": "Apply the coupon at checkout",
+      "body": "POST /checkout takes an optional coupon, looks it up, and passes the discount to total(). An expired code gets a 422 with a message the form can show.",
+      "files": [
+        "src/checkout/route.js",
+        "test/checkout.test.js"
+      ],
+      "checks": [
+        {
+          "kind": "review",
+          "name": "code review"
+        }
+      ]
+    },
+    {
+      "title": "Coupons table",
+      "body": "A migration that creates the coupons table and seeds WELCOME10.",
+      "files": [
+        "db/migrate/002_coupons.sql"
+      ],
+      "waiver": "the lookup tests in increment 1 read the seeded rows; a migration has nothing of its own to prove"
+    }
+  ],
+  "review": {
+    "increments": [
+      2
+    ],
+    "delivery": true,
+    "agentMayClose": false,
+    "quiz": true
+  },
+  "nonGoals": [
+    "an admin screen for coupons",
+    "gift cards",
+    "stacking two coupons"
+  ],
+  "quiz": [
+    {
+      "id": "q1",
+      "prompt": "A customer edits the page to send 90% off along with a real code. What do they pay?",
+      "options": [
+        "the 90% they sent",
+        "the code's own percent",
+        "full price, order fails",
+        "the form's last total"
+      ],
+      "answer": 1,
+      "why": "the server looks the code up and ignores any discount the client sends",
+      "decisionRef": "Check the code on the server, not in the form"
+    },
+    {
+      "id": "q2",
+      "prompt": "Support turns a coupon off. What changes for orders already placed?",
+      "options": [
+        "totals are recomputed",
+        "nothing, totals stay",
+        "they are flagged",
+        "refunds lose it"
+      ],
+      "answer": 1,
+      "why": "coupons live in their own table and orders store only the final total",
+      "decisionRef": "Keep coupons in their own table"
+    },
+    {
+      "id": "q3",
+      "prompt": "A customer has two codes. What can they do?",
+      "options": [
+        "apply both codes",
+        "the larger one wins",
+        "one code per item",
+        "one code per order"
+      ],
+      "answer": 3,
+      "why": "one coupon per order; stacking is a non-goal",
+      "decisionRef": "One coupon per order"
+    },
+    {
+      "id": "q4",
+      "prompt": "A customer types welcome10 for the code WELCOME10. What happens?",
+      "options": [
+        "it is accepted",
+        "it is rejected",
+        "support is asked",
+        "the form fixes it"
+      ],
+      "answer": 0,
+      "why": "promoted risk, decided here: codes match without regard to case",
+      "riskRef": "whether codes are case-sensitive was never decided",
+      "decisionRef": "Check the code on the server, not in the form"
+    }
+  ],
+  "share": true
+}
