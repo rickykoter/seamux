@@ -130,14 +130,22 @@ function baseFacts(ctx) {
 //
 // The lease alone does not save a teammate's commit that a fetch brought in
 // before the plan: the recorded tip already has it, so the push would pass and
-// drop it. So the walk also records whether that tip is in the branch as it
-// was before the rebase (remoteDiverged), and such a branch gets no push line.
+// drop it. So the walk also records whether the remote tip carries a commit
+// with no patch-equivalent on the branch as it was before the rebase
+// (remoteDiverged), and such a branch gets no push line. By patch, not
+// ancestry: a branch rebased by hand or by gt has rewritten every commit, and
+// is still not missing any of them.
 function remoteTip(ctx, branch) {
   return revParse(ctx.cwd, `refs/remotes/${ctx.cfg.remote}/${branch}`);
 }
 function remoteDiverged(ctx, branch, tip) {
   const local = revParse(ctx.cwd, `refs/heads/${branch}`);
-  return !!(tip && local && !isAncestor(ctx.cwd, tip, local));
+  if (!tip || !local || isAncestor(ctx.cwd, tip, local)) return false;
+  // `git cherry <branch> <tip>`: tip's commits not on the branch, "+" when
+  // none of the branch's commits carries the same patch.
+  const c = git(ctx.cwd, ["cherry", local, tip]);
+  if (!c.ok) return true;   // cannot tell: hold it rather than risk the drop
+  return c.out.split("\n").some(l => l.startsWith("+"));
 }
 // The push lines for done branches, [{ branch, tip, diverged }], bottom first:
 // the safe ones in `lines`, the diverged ones in `held` with the reason.
@@ -1010,7 +1018,8 @@ function cmdPush(ctx) {
   // The tips the walk recorded; with no walk on record (or state written
   // before tips were recorded), the remote-tracking ref as it is now.
   // With no walk on record the branch is as it is now, so divergence is
-  // checked against the local tip directly.
+  // checked against the local tip directly (by patch, so a branch rebased
+  // outside restack still passes).
   const done = (ctx.st.steps || []).filter(s => s.status === "done");
   const byBranch = new Map(done.map(s => [s.branch, s]));
   const names = done.length ? done.map(s => s.branch) : (stack ? stack.chain.map(c => c.name) : [ctx.branch].filter(Boolean));

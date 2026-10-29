@@ -51,9 +51,9 @@ FORBIDDEN = [
 # names its user in the `name` group, and a name in PLACEHOLDERS passes: docs
 # and tests are full of /home/demo and its kin, which are the point.
 HOME_FORMS = [
-    (r"/Users/(?P<name>[A-Za-z0-9_][\w.-]*)",            "an absolute home path (use ~ or __HOME__)"),
+    (r"(?<![A-Za-z]:)/Users/(?P<name>[A-Za-z0-9_][\w.-]*)",            "an absolute home path (use ~ or __HOME__)"),
     (r"/home/(?P<name>[A-Za-z0-9_][\w.-]*)",             "an absolute home path (use ~ or __HOME__)"),
-    (r"\b[A-Za-z]:[\\/]+Users[\\/]+(?P<name>[\w.-]+)", "a Windows profile path (use %USERPROFILE%)"),
+    (r"\b[A-Za-z]:[\\/]+Users[\\/]+(?P<name>(?:Default|All) Users?|[\w.-]+)", "a Windows profile path (use %USERPROFILE%)"),
     # Only as a path segment: a leading dash right after a slash, a quote or
     # the start of a line, then the name and at least one more segment.
     (r"(?:^|(?<=[/\\\s\"'`(=:]))-(?:Users|home)-(?P<name>[A-Za-z0-9_]+)-(?P<next>[\w.]+)",
@@ -74,6 +74,8 @@ PLACEHOLDERS = {
     "me", "demo", "user", "username", "name", "someone", "somebody", "dev", "agent", "test",
     "tester", "example", "x", "t", "john", "jane", "jdoe", "shared", "guest", "runner",
     "__home__", "home", "foo", "bar", "nobody",
+    # Windows' shared profiles, named the same on every machine.
+    "public", "default", "default user", "all users", "administrator",
 }
 
 # Account names that say nothing about who ran the check, or are ordinary

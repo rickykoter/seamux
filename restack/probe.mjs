@@ -1046,6 +1046,38 @@ step("a remote branch with commits the local one lacks gets no push line");
   ok("restack push holds it back too", p.status === 2 && (p.json?.push || []).length === 0 && p.json?.held?.[0]?.branch === "feat1", p.out);
 }
 
+// ---------------------------------------------------------------- no walk on record: judged by patch
+// `restack push` with no walk compares the remote with the branch as it is
+// now. A branch rebased by hand rewrote every commit but lacks none of them;
+// a teammate's commit on the remote is still caught.
+step("with no walk on record, divergence is by patch, not ancestry");
+{
+  const bare = path.join(TMP, "patch-remote.git");
+  spawnSync("git", ["init", "-q", "--bare", bare], { env: ENV });
+  const r = newRepo("patch", cheapCfg);
+  git(r, "remote", "add", "origin", bare);
+  git(r, "push", "-q", "origin", "master");
+  git(r, "checkout", "-q", "-b", "feat1");
+  write(r, "notes.txt", "one\n"); commit(r, "feat: notes");
+  git(r, "push", "-q", "origin", "feat1");
+  const pushed = git(r, "rev-parse", "feat1").out;
+  git(r, "checkout", "-q", "master");
+  write(r, "other.txt", "master\n"); commit(r, "master: other");
+  git(r, "checkout", "-q", "feat1");
+  const reb = git(r, "rebase", "-q", "master");
+  ok("the branch is rebased by hand", reb.ok && git(r, "rev-parse", "feat1").out !== pushed, reb.err);
+  const p = cli(r, "push", "--json");
+  ok("its push line is printed, not held", p.status === 0 && (p.json?.push || [])[0] === `git push --force-with-lease=feat1:${pushed} origin feat1:feat1`, p.out);
+
+  const other = path.join(TMP, "patch-other");
+  spawnSync("git", ["clone", "-q", "-b", "feat1", bare, other], { env: ENV });
+  write(other, "team.txt", "teammate\n"); commit(other, "feat: teammate");
+  git(other, "push", "-q", "origin", "feat1");
+  git(r, "fetch", "-q", "origin");
+  const h = cli(r, "push", "--json");
+  ok("a teammate's commit on the remote holds it", h.status === 2 && h.json?.held?.[0]?.branch === "feat1", h.out);
+}
+
 // ---------------------------------------------------------------- a stale local base
 // `"base": "master"` is the local branch; a fetch moves only origin/master. A
 // local base behind its upstream is refused with the fix, not walked onto.
