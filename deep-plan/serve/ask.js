@@ -12,7 +12,9 @@
   }
   // The server exits after 30 idle minutes; an open ask keeps it up, so a
   // pick made after a long pause still lands.
-  setInterval(function(){ fetch("/health").catch(function(){}); }, 5 * 60 * 1000);
+  // /plan-stamp, not /health: crew-board answers /health itself, but forwards
+  // /plan-stamp to deep-plan serve, so the ping reaches the server that matters.
+  setInterval(function(){ fetch("/plan-stamp?slug=").catch(function(){}); }, 5 * 60 * 1000);
   var status = document.getElementById("dp-ask-status");
   function say(t, bad) { if (status) { status.textContent = t; status.style.color = bad ? "var(--warn)" : "var(--good)"; } }
   document.addEventListener("click", function(ev){

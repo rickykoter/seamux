@@ -126,11 +126,14 @@ function lastLine(s, n) { return String(s).trim().split("\n").pop().slice(0, n);
 // this server answering /health or another page. DEEP_PLAN_FROM_SERVE: the
 // page that asked is already open, so the engine must not open it again.
 // Resolves null on a timeout.
-function runEngine(script, args, secs) {
+// Only a transition marks the call as the page's own (fromServe): a check
+// run detaches a runner whose recipe commands must see a normal environment.
+function runEngine(script, args, secs, { fromServe = false } = {}) {
   return new Promise(resolve => {
     let out = "", err = "", done = false;
-    const child = spawn(process.execPath, [script, ...args],
-      { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, DEEP_PLAN_FROM_SERVE: "1" } });
+    const env = { ...process.env };
+    if (fromServe) env.DEEP_PLAN_FROM_SERVE = "1"; else delete env.DEEP_PLAN_FROM_SERVE;
+    const child = spawn(process.execPath, [script, ...args], { stdio: ["ignore", "pipe", "pipe"], env });
     const timer = setTimeout(() => { if (!done) { done = true; child.kill("SIGKILL"); resolve(null); } }, secs * 1000);
     child.stdout.on("data", c => out += c);
     child.stderr.on("data", c => err += c);
@@ -149,7 +152,7 @@ export async function increment(script, slug, n, action, why) {
   if (action === "block") args.push(why || "blocked from the plan surface");
   // A go from the page is a person's click, as on crew's page.
   if (action === "go") args.push("--by", "human");
-  const r = await runEngine(script, args, 90);
+  const r = await runEngine(script, args, 90, { fromServe: true });
   if (!r) { log(`FAIL inc ${action} ${slug} ${n}: timed out`); return [false, "deep-plan did not finish in 90s"]; }
   const detail = lastLine(r.out + r.err, 160);
   if (r.code !== 0) { log(`FAIL inc ${action} ${slug} ${n}: ${detail}`); return [false, detail || "deep-plan refused it"]; }
@@ -496,9 +499,12 @@ export function serveForeground({ script, version, root, port = 0 }) {
 // ---------------------------------------------------------------- client
 
 // GET /health on a recorded port, synchronously (verbs are synchronous).
+// /health's reply, or { busy: true } when the port took the connection but
+// did not answer in time (a server held up under a review's lock), or null.
 function health(port) {
-  const js = `fetch("http://127.0.0.1:${port}/health",{signal:AbortSignal.timeout(2000)}).then(r=>r.text()).then(t=>process.stdout.write(t)).catch(()=>process.exit(1))`;
-  const r = spawnSync(process.execPath, ["-e", js], { encoding: "utf8", timeout: 4000 });
+  const js = `fetch("http://127.0.0.1:${port}/health",{signal:AbortSignal.timeout(5000)}).then(r=>r.text()).then(t=>process.stdout.write(t)).catch(e=>process.exit(e&&e.name==="TimeoutError"?3:1))`;
+  const r = spawnSync(process.execPath, ["-e", js], { encoding: "utf8", timeout: 8000 });
+  if (r.status === 3) return { busy: true };
   if (r.status !== 0) return null;
   try { return JSON.parse(r.stdout); } catch { return null; }
 }
@@ -511,6 +517,9 @@ export function liveServer(root) {
   const rec = readJson(SERVE_FILE);
   if (!rec || !rec.port || !rec.token || !alive(rec.pid)) return null;
   const h = health(rec.port);
+  // Busy and its pid alive: still the live server; another would change the
+  // open pages' token.
+  if (h && h.busy) return root && rec.root && rec.root !== root ? { ...rec, foreign: true } : rec;
   if (!h || h.server !== "deep-plan" || h.pid !== rec.pid) return null;
   return root && h.root !== root ? { ...rec, foreign: true } : rec;
 }

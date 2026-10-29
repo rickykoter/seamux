@@ -226,9 +226,12 @@ export function serveForeground({ version, root }) {
 
 // ---------------------------------------------------------------- client
 
+// /health's reply, or { busy: true } when the port took the connection but
+// did not answer in time (a server held up under a review's lock), or null.
 function health(port) {
-  const js = `fetch("http://127.0.0.1:${port}/health",{signal:AbortSignal.timeout(2000)}).then(r=>r.text()).then(t=>process.stdout.write(t)).catch(()=>process.exit(1))`;
-  const r = spawnSync(process.execPath, ["-e", js], { encoding: "utf8", timeout: 4000 });
+  const js = `fetch("http://127.0.0.1:${port}/health",{signal:AbortSignal.timeout(5000)}).then(r=>r.text()).then(t=>process.stdout.write(t)).catch(e=>process.exit(e&&e.name==="TimeoutError"?3:1))`;
+  const r = spawnSync(process.execPath, ["-e", js], { encoding: "utf8", timeout: 8000 });
+  if (r.status === 3) return { busy: true };
   if (r.status !== 0) return null;
   try { return JSON.parse(r.stdout); } catch { return null; }
 }
@@ -239,6 +242,9 @@ export function liveServer(root) {
   const rec = readJson(SERVE_FILE);
   if (!rec || !rec.port || !rec.token || !alive(rec.pid)) return null;
   const h = health(rec.port);
+  // Busy and its pid alive: still the live server; another would change the
+  // open pages' token.
+  if (h && h.busy) return root && rec.root && rec.root !== root ? { ...rec, foreign: true } : rec;
   if (!h || h.server !== "lookout" || h.pid !== rec.pid) return null;
   return root && h.root !== root ? { ...rec, foreign: true } : rec;
 }

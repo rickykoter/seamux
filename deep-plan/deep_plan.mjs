@@ -2840,7 +2840,19 @@ function openWorkingSurface(st) {
   try {
     // A go clicked on a page: that page is open and reloads itself.
     if (process.env.DEEP_PLAN_FROM_SERVE) return;
-    if (detectHost().host !== "cmux") return servedUrl(`/plan/${st.slug}`);
+    const host = detectHost().host;
+    // A go from outside any Claude session (the seamux app's Desk, a person's
+    // shell) still goes to crew's board when there is one, as before; only a
+    // session on another host is sent to deep-plan's own server.
+    const board = host === "cmux" || (host === "terminal" && process.env.CLAUDECODE !== "1");
+    if (!board) return servedUrl(`/plan/${st.slug}`);
+    const viaBoard = openOnBoard(st);
+    return viaBoard || (host === "cmux" ? undefined : servedUrl(`/plan/${st.slug}`));
+  } catch { return undefined; }
+}
+
+function openOnBoard(st) {
+  try {
     // Probe/test runs override the state dir; they must never reach the
     // machine's real board, whatever this machine happens to be running.
     if (process.env.DEEP_PLAN_STATE_DIR) return;
@@ -2959,8 +2971,11 @@ function importState(file, flags) {
     if (!bases[dir] || !names[dir].test(name))
       die(`refused: the bundle names ${rel}, outside the plan's own files`);
   }
-  for (const need of [`deep-plan/state/${b.slug}.json`, `deep-plan/keys/${b.slug}.spec.json`])
+  for (const need of [`deep-plan/state/${b.slug}.json`, `deep-plan/keys/${b.slug}.spec.json`]) {
     if (!(need in b.files)) die(`refused: the bundle has no ${need}`);
+    try { JSON.parse(Buffer.from(String(b.files[need]), "base64").toString("utf8")); }
+    catch { die(`refused: the bundle's ${need} is not JSON`); }
+  }
   let n = 0;
   for (const [rel, b64] of Object.entries(b.files)) {
     const dir = path.posix.dirname(rel), name = path.posix.basename(rel);
@@ -3004,7 +3019,8 @@ function pageCmd(slug, flags) {
       if (port) url = `http://127.0.0.1:${port}${rel}`;
     } catch { /* crew's server is not running */ }
     if (!url) { say(`not served: crew's intent server is down (crew listen on); the read-only file is ${any} (host: cmux)`); return; }
-    const ws = process.env.CMUX_WORKSPACE_ID;
+    const ws = process.env.CMUX_WORKSPACE_ID || "";
+    if (!ws) { say(`served at ${url} (host: cmux, but no CMUX_WORKSPACE_ID to open it in)`); return; }
     if (!companionOpen(url, companionKey("plan", slug), ws, process.env.CMUX_SURFACE_ID || ""))
       spawnSync("cmux", ["open", url, "--workspace", ws, "--focus", "false"], { encoding: "utf8", env: { ...process.env, CMUX_QUIET: "1" }, timeout: 10000 });
     say(`served at ${url} (host: cmux)`);
@@ -3596,6 +3612,11 @@ function checkRun(slug, n, ids, opts) {
       if (q.choices && q.choices.length) say(`   choices: ${q.choices.join(", ")}`);
       say(`   then: deep-plan check run ${slug} ${n} ${id} --from claim --set ${q.name || "NAME"}=<value>   (or pick it on the Dock)`);
       lines.push(`${id} needs a value`);
+      continue;
+    } else if (res.status === "needs-variant") {
+      // No browser driver here: a person installs one, or records it by hand.
+      say(`✋ ${id} needs a variant — ${res.note}`);
+      lines.push(`${id} needs a variant`);
       continue;
     } else {
       failed++;

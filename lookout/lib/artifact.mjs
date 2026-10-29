@@ -132,6 +132,12 @@ export function readRows(file) {
   });
 }
 
+function tagLast(review, item, rid) {
+  const it = (review.findings || []).find(x => x && x.id === item) || (review.threads || []).find(x => x && x.id === item);
+  const msgs = it && (Array.isArray(it.thread) ? it.thread : Array.isArray(it.messages) ? it.messages : null);
+  if (msgs && msgs.length) Object.assign(msgs[msgs.length - 1], { via: "artifact", row: rid });
+}
+
 // Replay rows into the review. Returns { applied, skipped: [{rid, why}] }.
 // Rows go in time order; one whose item does not exist yet (a reply that
 // sorted before its thread, from a viewer with a slow clock) is tried again
@@ -160,6 +166,9 @@ export function pull(id, rows) {
         const out = applyOp(cur, body, at);
         if (out[0] === 404 && pass === 0) { later.push({ rid, row }); continue; }
         if (out[0] !== 200) { skipped.push({ rid, why: out[1].error || "refused" }); continue; }
+        // Marked as from the shared page: its author is whoever could write
+        // there, which the comments hook says when it passes the text on.
+        tagLast(cur, out[1].item || body.item, rid);
         if (body.op === "comment" && !row.item) made[rid] = out[1].item;
         applied.push({ rid, op: body.op, item: out[1].item || "" });
       }

@@ -2544,7 +2544,8 @@ exit 1
       fs.existsSync(path.join(pruns, pt.evidence.dir, "key-02.png")), pt.note);
     r = pcli({ ...PENV, DEEP_PLAN_PLAYWRIGHT: "none" }, "check", "run", "br-pw", "1", "flow", "--inline");
     ok("playwright: with neither cmux nor Playwright the check needs a variant and says what to install",
-      pck("flow").status === "needs-variant" && /no browser driver here/.test(pck("flow").note) && /npx playwright install chromium/.test(pck("flow").note),
+      pck("flow").status === "needs-variant" && /no browser driver here/.test(pck("flow").note) && /npx playwright install chromium/.test(pck("flow").note) &&
+      /✋ flow needs a variant/.test(r.stdout) && !/❌ flow/.test(r.stdout),
       JSON.stringify(pck("flow")));
     r = pcli({ ...PENV, FAKE_PW_NO_BROWSER: "1" }, "check", "run", "br-pw", "1", "flow", "--inline");
     ok("playwright: the package without its Chromium is a missing driver, not a failed check",

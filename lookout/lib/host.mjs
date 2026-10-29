@@ -49,8 +49,10 @@ export function remoteStateDir(env = process.env, cwd = process.cwd()) {
   const git = a => spawnSync("git", ["-C", from, ...a], { encoding: "utf8", timeout: 5000 });
   const common = git(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
   const dotgit = common.status === 0 ? common.stdout.trim() : "";
-  const top = dotgit ? "" : (git(["rev-parse", "--show-toplevel"]).stdout || "").trim();
-  const root = dotgit && path.basename(dotgit) === ".git" ? path.dirname(dotgit) : top;
+  // A git dir not named .git (a submodule, a separate git dir): the
+  // checkout's own top, as the hooks' bash rule takes it.
+  const main = dotgit && path.basename(dotgit) === ".git";
+  const root = main ? path.dirname(dotgit) : (git(["rev-parse", "--show-toplevel"]).stdout || "").trim();
   if (!root) return "";
   if (dotgit) {
     const ex = path.join(dotgit, "info", "exclude");

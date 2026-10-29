@@ -1162,7 +1162,8 @@ catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.n
   const after = S.read(id);
   ok("pull: replays the human's rows in time order through the same ops",
     r.status === 0 && res.applied.map(a => a.rid).join() === "ra,rb" && after.threads[0].messages[0].text === "why three?" &&
-    after.findings[0].status === "resolved" && after.findings[0].statusBy === "human", r.stdout + r.stderr);
+    after.findings[0].status === "resolved" && after.findings[0].statusBy === "human" &&
+    after.threads[0].messages[0].via === "artifact", r.stdout + r.stderr);
   ok("pull: a row not written by the page's human, and an op the rules refuse, are skipped and named",
     res.skipped.length === 2 && /written by "agent"/.test(res.skipped.find(k => k.rid === "rc").why) &&
     res.skipped.find(k => k.rid === "rd").why === "unknown op" && after.findings[0].status === "resolved");
