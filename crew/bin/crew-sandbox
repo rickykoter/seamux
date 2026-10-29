@@ -127,11 +127,38 @@ ROOT="$(git -C "${target:-${WS_CWD:-$PWD}}" rev-parse --show-toplevel 2>/dev/nul
 BRANCH="$(git -C "$ROOT" branch --show-current 2>/dev/null || true)"
 WS="${CMUX_WORKSPACE_ID:-}"
 
+root_hash() { printf '%s' "$1" | md5 -q 2>/dev/null || printf '%s' "$1" | md5sum | cut -d' ' -f1; }
+reg_file() { printf '%s/%s' "$REG" "$(root_hash "$1")"; }
+
+# A field of one registry file, read in a subshell with the name unset first
+# (see reg_template for why the unset is load-bearing).
+# shellcheck disable=SC1090
+reg_field() { [ -f "$1" ] && ( unset NAME ROOT; . "$1" 2>/dev/null; eval "printf '%s' \"\${$2:-}\"" ); }
+
+# Every registered root other than $ROOT whose entry names sandbox <name>.
+# Sandboxes were once named by basename alone, so two worktrees could share one.
+other_claimants() {
+  local f own; own="$(reg_file "$ROOT")"
+  [ -d "$REG" ] || return 0
+  for f in "$REG"/*; do
+    [ -f "$f" ] && [ "$f" != "$own" ] || continue
+    [ "$(reg_field "$f" NAME)" = "$1" ] || continue
+    reg_field "$f" ROOT; printf '\n'
+  done
+}
+
 # sbx names allow letters, numbers, hyphens, periods, plus and minus only —
 # no underscores, so a branch like foo_bar cannot be passed through verbatim.
-NAME="crew-$(printf '%s' "${ROOT##*/}" | tr -c 'A-Za-z0-9.+-' '-' | sed 's/-\{2,\}/-/g; s/^-//; s/-$//')"
-
-reg_file() { printf '%s/%s' "$REG" "$(printf '%s' "$1" | md5 -q 2>/dev/null || printf '%s' "$1" | md5sum | cut -d' ' -f1)"; }
+# The basename alone is not unique (a.worktrees/fix and b.worktrees/fix;
+# foo_bar and foo-bar once sanitised), so a short hash of the whole root goes
+# on the end: crew-<base>-<8 hex>.
+_base="$(printf '%s' "${ROOT##*/}" | tr -c 'A-Za-z0-9.+-' '-' | cut -c1-40 | sed 's/-\{2,\}/-/g; s/^-//; s/-$//')"
+_hash="$(root_hash "$ROOT")"
+NEW_NAME="crew-${_base:+$_base-}${_hash:0:8}"
+# A sandbox already registered for this root keeps the name it was created
+# under, so an upgrade does not orphan one made before the hash was added.
+NAME="$(reg_field "$(reg_file "$ROOT")" NAME)"
+[ -n "$NAME" ] || NAME="$NEW_NAME"
 
 reg_write() {
   mkdir -p "$REG"
@@ -348,9 +375,28 @@ seed_env() {
 }
 
 # --- commands ----------------------------------------------------------------
+# For the commands that act on an existing sandbox without creating one: a
+# sandbox another root is also registered to is not this root's to drive.
+refuse_shared() {
+  local others; others="$(other_claimants "$NAME" | paste -sd, -)"
+  [ -z "$others" ] || die "$NAME is also registered to $others — run: crew-sandbox up $ROOT (gives this worktree its own)"
+}
+
 cmd_up() {
   ensure_daemon; ensure_auth
   [ -d "$ROOT" ] || die "no directory at $ROOT"
+
+  # Reuse a sandbox only when no other root is registered to it. One that
+  # another worktree also claims (the old basename-only names) has that
+  # worktree's mounts, or is about to be destroyed by its reclaim: leave it to
+  # them and give this root its own.
+  local others; others="$(other_claimants "$NAME" | paste -sd, -)"
+  if [ -n "$others" ]; then
+    [ "$NAME" != "$NEW_NAME" ] || die "$NAME is registered to another worktree too ($others) — refusing to share it"
+    warn "$NAME is also registered to $others; leaving it there and using $NEW_NAME for $ROOT"
+    NAME="$NEW_NAME"
+    rm -f "$(reg_file "$ROOT")"
+  fi
 
   if exists; then
     # There is no `sbx start`; attaching is what resumes a stopped sandbox, so
@@ -425,13 +471,16 @@ reg_claude_mode() {
 # as the workspace's process, and the terminal is the agent's UI.
 cmd_attach() {
   ensure_daemon; ensure_auth
-  exists || cmd_up || die "could not create the sandbox"
+  if ! exists || [ -n "$(other_claimants "$NAME")" ]; then
+    cmd_up || die "could not create the sandbox"
+  fi
   exec "$SBX" run --name "$NAME" "$@"
 }
 
 cmd_exec() {
   ensure_daemon; ensure_auth
   exists || die "no sandbox for $ROOT — run: crew-sandbox up"
+  refuse_shared
   # Drop a leading -- so `crew-sandbox exec <path> -- cmd` and
   # `crew-sandbox exec <path> cmd` both work.
   [ "${1:-}" = "--" ] && shift
@@ -448,6 +497,7 @@ cmd_exec() {
 cmd_down() {
   ensure_daemon
   exists || { say "no sandbox for $ROOT"; return 0; }
+  refuse_shared
   "$SBX" stop "$NAME" >/dev/null 2>&1 || die "sbx stop failed for $NAME"
   printf '\033[32m✓\033[0m stopped %s\n' "$NAME"
 }
@@ -460,6 +510,15 @@ cmd_down() {
 # collects them once the worktree itself is gone.
 cmd_rm() {
   ensure_daemon
+  local others; others="$(other_claimants "$NAME" | paste -sd, -)"
+  if [ -n "$others" ]; then
+    # Named by basename before the hash was added, and another worktree is
+    # registered to the same sandbox: destroying it would take theirs. Drop
+    # only this root's entry; the sandbox goes when its last claimant's does.
+    warn "$NAME is also registered to $others — not destroying it; dropped only this worktree's entry"
+    rm -f "$(reg_file "$ROOT")"
+    return 0
+  fi
   if exists; then
     "$SBX" rm --force "$NAME" >/dev/null 2>&1 || die "sbx rm failed for $NAME"
     printf '\033[32m✓\033[0m removed %s\n' "$NAME"
@@ -543,19 +602,31 @@ cmd_prune() {
   # directories themselves and keep only those still referenced by a registry
   # entry or by a sandbox that really exists.
   [ -d "$STATE/claude" ] || { [ "$pruned" -eq 0 ] && printf '  nothing to prune\n'; return 0; }
+  # Without a real answer from sbx there is no telling which config dirs belong
+  # to a live sandbox: an empty list would read as "none are live" and delete
+  # them all. sbx ls --json prints invalid JSON when the daemon is stopped
+  # (FINDINGS.md), so a failed parse skips the pass rather than empties the list.
+  local live_ok=""
   if [ -x "$SBX" ]; then
     live="$("$SBX" ls --json 2>/dev/null | python3 -c '
 import json, sys
 try:
     d = json.load(sys.stdin)
 except Exception:
-    sys.exit(0)
+    sys.exit(3)
 rows = d.get("sandboxes", d) if isinstance(d, dict) else d
-if isinstance(rows, list):
-    for r in rows:
-        if isinstance(r, dict) and r.get("name"):
-            print(r["name"])
-' 2>/dev/null)"
+if not isinstance(rows, list):
+    sys.exit(3)
+print("ok")
+for r in rows:
+    if isinstance(r, dict) and r.get("name"):
+        print(r["name"])
+' 2>/dev/null)" && [ "$(printf '%s\n' "$live" | head -1)" = ok ] && live_ok=1
+  fi
+  if [ -z "$live_ok" ]; then
+    warn "sbx did not list its sandboxes (not installed, or the daemon is stopped) — kept every config dir; start it and prune again"
+    [ "$pruned" -eq 0 ] && printf '  nothing pruned\n'
+    return 0
   fi
   for cfg in "$STATE/claude"/*; do
     [ -d "$cfg" ] || continue
