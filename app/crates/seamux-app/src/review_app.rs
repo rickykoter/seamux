@@ -404,7 +404,10 @@ fn stop_groups(groups: &[(i32, String)], grace: Duration, mut leader: Leader) {
                 leader = Leader::Reaped;
             }
         }
-        if !mine.iter().any(|(g, _)| group_alive(*g)) || Instant::now() >= until {
+        // A held leader counts until it is reaped: a process on its way out
+        // is already skipped by killpg(0) but not yet a zombie to collect.
+        let held = matches!(leader, Leader::Held(_));
+        if (!held && !mine.iter().any(|(g, _)| group_alive(*g))) || Instant::now() >= until {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
