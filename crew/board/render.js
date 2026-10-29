@@ -776,9 +776,13 @@ function __boardRender(d) {
   }
   $("src").textContent = d.src || "";
   var st = $("stamp");
+  st.textContent = d.stamp || "";
   // The time of the last change, not of the last look: a quiet board is not
-  // pushed again (nothing changed), so a bare clock read as a frozen one.
-  st.textContent = d.stamp ? "last change " + d.stamp : "";
+  // pushed again (nothing changed), so a bare clock read as a frozen one. The
+  // label is its own element, so #stamp stays a bare HH:MM:SS (crew-board-diag
+  // parses it).
+  var sl = $("stamp-label");
+  if (sl) sl.textContent = d.stamp ? "last change " : "";
   st.className = d.stale ? "stale" : "";
   return rows.length;
 }

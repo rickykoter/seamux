@@ -208,7 +208,15 @@ impl Request {
         self.query.get(k).and_then(|v| v.first()).cloned().unwrap_or_default()
     }
 
+    /// The body, under one deadline (BODY_WAIT) however slowly it arrives.
     pub fn read_body(&mut self, n: usize) -> Vec<u8> {
+        self.reader.get_mut().deadline = Some(std::time::Instant::now() + BODY_WAIT);
+        let b = self.read_body_inner(n);
+        self.reader.get_mut().deadline = None;
+        b
+    }
+
+    fn read_body_inner(&mut self, n: usize) -> Vec<u8> {
         let mut b = vec![0u8; n];
         let mut got = 0;
         while got < n {
@@ -247,6 +255,7 @@ impl Request {
     fn finish(&mut self) {
         let _ = self.reader.get_ref().shutdown(std::net::Shutdown::Write);
         let _ = self.reader.get_ref().set_read_timeout(Some(Duration::from_secs(1)));
+        self.reader.get_mut().deadline = Some(std::time::Instant::now() + Duration::from_secs(1));
         let mut sink = [0u8; 8192];
         let mut total = 0usize;
         while total < 1 << 20 {
@@ -435,6 +444,9 @@ pub fn target_path(target: &str) -> &str {
 /// all: short, so sockets that send nothing (or a byte now and then) do not
 /// hold the connection cap.
 const HEAD_WAIT: Duration = Duration::from_secs(5);
+
+/// How long a request body (at most review::MAX_BODY) may take, in all.
+const BODY_WAIT: Duration = Duration::from_secs(10);
 
 /// A connection whose reads share one deadline while it is set: every read
 /// waits only for what is left of it, and fails once it has passed.
@@ -1222,6 +1234,31 @@ mod tests {
         drop(other);
         assert!(retake(&p, Duration::from_millis(300)).is_some());
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn a_trickled_body_is_cut_off_at_one_deadline() {
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        let client = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            for _ in 0..40 {
+                if c.write_all(b"b").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let (s, _) = l.accept().unwrap();
+        let _ = s.set_read_timeout(Some(Duration::from_secs(30)));
+        let mut req = Request { method: "POST".into(), path: "/".into(), query: HashMap::new(), raw_query: String::new(),
+            headers: Vec::new(), reader: BufReader::new(Conn { s, deadline: None }), port, token: String::new() };
+        // The read under test: its deadline, shortened for the test.
+        req.reader.get_mut().deadline = Some(std::time::Instant::now() + Duration::from_millis(300));
+        let t = std::time::Instant::now();
+        let got = req.read_body_inner(10_000);
+        assert!(got.len() < 20 && t.elapsed() < Duration::from_millis(700), "{} bytes in {:?}", got.len(), t.elapsed());
+        client.join().unwrap();
     }
 
     #[test]

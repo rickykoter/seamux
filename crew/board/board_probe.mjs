@@ -1347,7 +1347,7 @@ if (live && Array.isArray(live.rows)) {
   const last = () => q(fetched[fetched.length - 1]);
 
   checks.push(["intent: an older page's click CSS is replaced on upgrade",
-    oldCss.getAttribute("data-v") === "15" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
+    oldCss.getAttribute("data-v") === "16" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
   checks.push(["intent: a delegated child's go chip is muted, never filled or breathing",
     /\.row \.chip\.chip\[title\^="parent goes"\]\{[^}]*background:transparent[^}]*animation:none/.test(oldCss.textContent)]);
   const fold = () => JSON.parse(host.getAttribute("data-fold"));
@@ -1506,6 +1506,10 @@ if (live && Array.isArray(live.rows)) {
   await settle(); await settle();
   checks.push(["intent: a click the server never answers says the server is not reachable",
     chip2.title === "server not reachable" && toast.text === "server not reachable", chip2.title]);
+  // The 4s restores: the title from before both failures, not the first one's.
+  timers.splice(0).forEach((fn) => fn());
+  checks.push(["intent: after two failures, the chip's title goes back to what it was before either",
+    chip2.title === "" && chip2.getAttribute("data-why") === null, chip2.title]);
   // An app that never names its origin: after a while the held message is
   // dropped, and the toast says so.
   {

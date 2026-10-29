@@ -53,7 +53,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "15";
+  var V = "16";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -197,9 +197,17 @@ function __boardIntent(cfg) {
   // seconds. The toast is outside #rows, so a push does not wipe it.
   var toastTimer = 0;
   function say(el, why) {
-    var prev = el.getAttribute ? el.getAttribute("title") : null;
+    // The title from before any failure is kept once, so a second failure
+    // inside the 4s restores it, not the first failure's text.
+    if (el.getAttribute("data-why") === null) el.setAttribute("data-title0", el.title || "");
+    el.setAttribute("data-why", why);
     el.title = why;
-    setTimeout(function () { if (el.title === why) el.title = prev || ""; }, 4000);
+    setTimeout(function () {
+      if (el.getAttribute("data-why") !== why) return;
+      el.title = el.getAttribute("data-title0") || "";
+      el.removeAttribute("data-why");
+      el.removeAttribute("data-title0");
+    }, 4000);
     toast(why);
   }
   function toast(why) {
