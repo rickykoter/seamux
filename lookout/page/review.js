@@ -845,7 +845,7 @@
       }, e => {
         // Marked by post() when fetch itself rejected (nothing answered),
         // whatever the browser's wording; a refusal is a plain Error.
-        status.textContent = live.down || e.unreachable ? "not sent: the review server is not answering — run `lookout open`" : e.message;
+        status.textContent = e.unreachable ? "not sent: the review server is not answering — run `lookout open`" : e.message;
         status.classList.add("bad"); throw e;
       });
     };

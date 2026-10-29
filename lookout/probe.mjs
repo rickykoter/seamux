@@ -876,7 +876,7 @@ const R1 = repo("r1");
      page.includes('/\\w/.test(d.x[1] || "") &&\n        JSON.stringify(lineCtx(file, side, line)) === JSON.stringify(d.x);') &&
      page.includes("if (!placeable(k, file, side, Number(line))) { unplaced.push(") && page.includes('class: "outside unplaced"'));
   ok("page: a send that reaches no server is told by the TypeError, not by its wording",
-     page.includes("}).catch(e => { e.unreachable = true; throw e; })") && page.includes("live.down || e.unreachable") &&
+     page.includes("}).catch(e => { e.unreachable = true; throw e; })") && page.includes("status.textContent = e.unreachable ? \"not sent") && !page.includes("live.down || e.unreachable") &&
      !page.includes("/fetch/i") && !page.includes("e instanceof TypeError"));
   ok("page: a draft is saved by one key over what storage holds now, and other tabs' writes are taken in",
      /const saveDraft = \(k, v, meta\) => \{\s*const all = readDrafts\(\);/.test(page) && page.includes('addEventListener("storage"') &&
