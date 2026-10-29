@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { remoteStateDir } from "./host.mjs";
+import { matchesGlob } from "./verify.mjs";
 
 // The tree the defaults hang off: ~/.claude, or the repo's on the remote host.
 // Both have the same layout below it.
@@ -30,7 +31,9 @@ export function readState(slug) {
 // Single-writer lock: mkdir is atomic on every filesystem we care about, and
 // the writers (the CLI, the board's transitions through it, a detached check
 // runner and the gate hook's flip-to-working) can race. A holder that died
-// leaves a stale dir; anything older than 5s is reclaimed. Holds are short:
+// leaves a stale dir; one older than 5s whose holder (its pid, in the dir) is
+// gone is reclaimed, and a live holder's only past 2 minutes, so a writer still
+// at work is never robbed. Holds are short:
 // every writer does its slow work (hashing a tree, running a recipe) before it
 // takes the lock. On sustained contention the write fails, loudly, rather
 // than proceeding unlocked: an unlocked write is how a person's click on the
@@ -43,10 +46,18 @@ function acquireLock(slug) {
   const dir = path.join(STATE_DIR, ".lock-" + slug);
   const deadline = Date.now() + LOCK_WAIT_MS;
   while (Date.now() < deadline) {
-    try { fs.mkdirSync(dir, { recursive: false }); return dir; }
+    try {
+      fs.mkdirSync(dir, { recursive: false });
+      try { fs.writeFileSync(path.join(dir, "pid"), String(process.pid)); } catch { /* an unnamed holder ages out */ }
+      return dir;
+    }
     catch {
       try {
-        if (Date.now() - fs.statSync(dir).mtimeMs > 5000) { fs.rmdirSync(dir); continue; }
+        const age = Date.now() - fs.statSync(dir).mtimeMs;
+        let pid = 0;
+        try { pid = Number(fs.readFileSync(path.join(dir, "pid"), "utf8")) || 0; } catch { /* none written */ }
+        const live = pid && (() => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } })();
+        if ((age > 5000 && !live) || age > 120000) { fs.rmSync(dir, { recursive: true, force: true }); continue; }
       } catch { continue; }
       nap(10);
     }
@@ -54,7 +65,11 @@ function acquireLock(slug) {
   throw new LockBusy(`deep-plan: ${slug}'s state is locked by another writer (${dir}) and stayed locked for ` +
     `${Math.round(LOCK_WAIT_MS / 1000)}s; nothing was written. Try again; if no deep-plan command is running, remove that directory.`);
 }
-const releaseLock = lock => { try { fs.rmdirSync(lock); } catch { /* already reclaimed */ } };
+const releaseLock = lock => {
+  // Only our own: a lock reclaimed from us and taken by another is theirs.
+  try { if (Number(fs.readFileSync(path.join(lock, "pid"), "utf8")) !== process.pid) return; } catch { /* unnamed: ours */ }
+  try { fs.rmSync(lock, { recursive: true, force: true }); } catch { /* already reclaimed */ }
+};
 
 function writeFileAtomic(st) {
   const p = statePath(st.slug);
@@ -382,16 +397,33 @@ export function treeOf(root, scope = null) {
     // git takes: dropped, and said on the tree.
     const inRoot = scope.filter(g => !path.posix.normalize(String(g).replace(/^\.\//, "") || ".").startsWith(".."));
     const dropped = scope.filter(g => !inRoot.includes(g));
-    const specs = pathspecs(inRoot.length ? inRoot : ["."]);
+    // The scope's files are chosen by deep-plan's own matcher (lib/verify.mjs),
+    // the one that decided what the recipe covers, and handed to git as
+    // literal paths: git's glob magic reads [..] as a class and has its own
+    // ** rules, so the same glob would mean another set of files.
+    const whole = !inRoot.length || inRoot.some(g => g === "." || g === "" || g === "./");
+    const globs = inRoot.map(g => path.posix.normalize(String(g).replace(/^\.\//, "")));
+    const covered = f => whole || globs.some(g => matchesGlob(f, g));
+    let specs = ["."];
+    if (!whole) {
+      const all = git(["ls-files", "-z", "-c", "-o", "--exclude-standard"], env);
+      if (all.status !== 0) return { head: head.stdout.trim(), content: "", scope, error: `git could not list files: ${(all.stderr || "").trim().split("\n")[0]}` };
+      specs = [...new Set(all.stdout.split("\0").filter(f => f && covered(f)))];
+    }
     const failed = why => ({ head: head.stdout.trim(), content: "", scope, error: why });
-    // add refuses the whole list when one pathspec matches nothing (a glob
-    // whose files do not exist yet); then each is added on its own.
-    if (git(["add", "-A", "--", ...specs], env).status !== 0)
-      for (const p of specs) git(["add", "-A", "--", p], env);
+    // Literal paths, fed on stdin (no argv limit). A tracked file deleted from
+    // the work tree is still listed, and add records its removal.
+    if (whole) { if (git(["add", "-A"], env).status !== 0) return failed("git could not stage the work tree"); }
+    else if (specs.length) {
+      const add = spawnSync("git", ["--literal-pathspecs", "-C", root, "add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        { encoding: "utf8", env: { ...process.env, ...env }, input: specs.join("\0") });
+      if (add.status !== 0) return failed(`git could not stage the scope: ${(add.stderr || "").trim().split("\n")[0]}`);
+    }
     // Only the scope's entries, into an index of their own, make the tree.
-    const ls = git(["ls-files", "-s", "-z", "--", ...specs], env);
+    const ls = git(["ls-files", "-s", "-z"], env);
     if (ls.status !== 0) return failed(`git could not list the scope: ${(ls.stderr || "").trim().split("\n")[0]}`);
-    const ui = git(["update-index", "-z", "--index-info"], { GIT_INDEX_FILE: only }, ls.stdout);
+    const entries = ls.stdout.split("\0").filter(e => e && covered(e.slice(e.indexOf("\t") + 1)));
+    const ui = git(["update-index", "-z", "--index-info"], { GIT_INDEX_FILE: only }, entries.map(e => e + "\0").join(""));
     if (ui.status !== 0) return failed(`git could not index the scope: ${(ui.stderr || "").trim().split("\n")[0]}`);
     const tree = git(["write-tree"], { GIT_INDEX_FILE: only });
     if (tree.status !== 0) return failed(`git could not write the scope's tree: ${(tree.stderr || "").trim().split("\n")[0]}`);
@@ -402,11 +434,6 @@ export function treeOf(root, scope = null) {
   }
 }
 
-// deep-plan's globs (lib/verify.mjs) as git pathspecs: `*`, `**`, `?` and a
-// bare directory mean the same under git's glob magic.
-function pathspecs(scope) {
-  return scope.map(g => g === "." || g === "" ? "." : `:(glob)${g.replace(/^\.\//, "")}`);
-}
 
 // A memo of treeOf by scope, for judging every pass of an increment (or a
 // plan) against the tree now while hashing each scope once. Old passes (no
@@ -943,7 +970,9 @@ export function ownRecords(target) {
 // The same for Bash: a command that writes (the write test, or an interpreter
 // that can: python, node, ruby, perl) and names the state or keys dir, in any
 // spelling an agent would type (as set, resolved, ~/…, $HOME/…), or that runs
-// from inside one. Reading them (cat, jq, grep) still passes.
+// from inside one. Reading them with a plain reader (cat, jq, grep) still
+// passes; an interpreter (python, node, ruby, perl, deno, bun) naming them is
+// treated as a write whatever its script does, since its text cannot say.
 const INTERP = /(^|[\s;&|(`])(python3?|node|ruby|perl|deno|bun)\b/;
 //
 // Where the command runs counts too: the payload's cwd, and each `cd X` in it

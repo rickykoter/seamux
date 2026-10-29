@@ -47,7 +47,7 @@ import {
   readState, writeState, allStates, log1, progress, gateView,
   planFor, CHECK_KINDS, specChecks, reconcileChecks, checksOf, checksBlock,
   checksAggregate, needsTree, treeOf, treesAt, scopeOf, treeChanges, treeDiff, checkMeta, canon,
-  updateState, LockBusy,
+  updateState, LockBusy, onHumansWord, markActed,
 } from "./lib/state.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -529,6 +529,8 @@ function familyDeliver(st, spec) {
     const sha = ms ? recordedSha(ms, "all") : "";
     if (!m.root || !fs.existsSync(m.root)) { problems.push(`${m.slug}: its root is gone (${m.root || "none"})`); continue; }
     if (!sha) { problems.push(`${m.slug}: its first increment has no recorded start sha to review from`); continue; }
+    const bad = shaProblem(m.root, sha);
+    if (bad) { problems.push(`${m.slug}: its recorded start sha ${sha.slice(0, 8)} cannot be a base: ${bad}`); continue; }
     let g = runLookout(["gate", id], { cwd: m.root });
     if (g.missing) die(LOOKOUT_MISSING);
     if (g.code === 3) {
@@ -4708,6 +4710,17 @@ for (const ev of ["uncaughtException", "unhandledRejection"])
   process.on(ev, e => { console.error(e instanceof LockBusy ? e.message : (e && e.stack) || String(e)); process.exit(1); });
 
 const [, , cmd, ...rest] = process.argv;
+
+// A Claude Code session's lever that succeeded (a go, a --force, --by human,
+// close) is recorded for the gate hook's one-per-human-turn rule
+// (turns/<session>.acted); the hook only reads it. Recorded on success, so a
+// refused go or a typo does not use up the turn. Not for the board's calls
+// through deep-plan's server, which may have inherited a session's env.
+{
+  const word = onHumansWord([{ verb: cmd || "", words: rest }]);
+  if (word && process.env.CLAUDECODE && sessionId() && !process.env.DEEP_PLAN_FROM_SERVE)
+    process.on("exit", code => { if (code === 0 && !process.exitCode) markActed(sessionId(), word); });
+}
 const flags = {};
 const args = [];
 for (let i = 0; i < rest.length; i++) {

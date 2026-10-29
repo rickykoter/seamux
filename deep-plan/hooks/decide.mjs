@@ -10,7 +10,7 @@
 import fs from "node:fs";
 import { decideToolCall, readState, writeState, log1, brokenRoots, isOwner, ownerName,
   deepPlanCalls, humanLever, onHumansWord, markDenied, deniedThisTurn, promptApproves,
-  markActed, actedThisTurn } from "../lib/state.mjs";
+  actedThisTurn } from "../lib/state.mjs";
 import { trespass, waitingOn, waitText, goOwner } from "../lib/family.mjs";
 
 let raw = "";
@@ -67,7 +67,8 @@ if (tool === "Bash") {
       `ask the human, and run ${word} only after they answer.\n`);
     process.exit(2);
   }
-  if (word) markActed(who.session, word);
+  // The CLI records it once the call succeeds (deep_plan.mjs), so a go it
+  // refused, or a typo, does not use up the turn's one.
 }
 
 const d = decideToolCall(tool, input, cwd);

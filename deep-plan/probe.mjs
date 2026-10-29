@@ -5376,9 +5376,19 @@ exit 1
       r.stderr.includes(`ask the human, and run ${word} only after they answer`), r.stderr);
   }
   for (const [c] of WORD) { said(S2); ok(`b1: …and after the human's next prompt it goes through (${c})`, hook(S2, "Bash", { command: c }, TMP).status === 0); }
-  // One per human turn, refusal or not: a second go before the human speaks again is refused.
+  // One per human turn, refusal or not: a second go before the human speaks
+  // again is refused. The CLI records a lever once it succeeds, so a go it
+  // refused does not use up the turn.
   said(S2);
-  ok("b1: the first go in a turn goes through", hook(S2, "Bash", { command: "deep-plan go b1-gate next" }, TMP).status === 0);
+  const inS2 = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a],
+    { encoding: "utf8", env: { ...NOCC, CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: S2 }, cwd: AR });
+  r = inS2("go", "b1-gate", "9");
+  ok("b1: a go the CLI refuses does not use up the turn", r.status === 1 &&
+    !fs.existsSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "turns", S2 + ".acted")) &&
+    hook(S2, "Bash", { command: "deep-plan go b1-gate next" }, TMP).status === 0, r.stderr);
+  r = inS2("go", "b1-gate", "next");
+  ok("b1: the first go in a turn goes through, and is recorded once it has", r.status === 0 &&
+    fs.existsSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "turns", S2 + ".acted")), r.stderr);
   r = hook(S2, "Bash", { command: "deep-plan go b1-gate 3" }, TMP);
   ok("b1: …a second one in the same turn is refused", r.status === 2 && /already ran go in this turn: ask the human/.test(r.stderr), r.stderr);
   ok("b1: …and so is a close after it", hook(S2, "Bash", { command: "deep-plan close b1-gate" }, TMP).status === 2);
@@ -5436,6 +5446,24 @@ exit 1
     const b = lib.checksBlock(inc, lib.treesAt(AR));
     ok("b1: a pass whose tree git could not take is stale, with the reason", b.length === 1 && b[0].status === "stale" && /unverifiable/.test(b[0].note), JSON.stringify(b));
     ok("b1: …and done hashes for it", lib.needsTree(inc));
+  }
+  // The scope means what deep-plan's matcher means: [ is literal (git's glob
+  // would read a class), ? is one character.
+  {
+    fs.writeFileSync(path.join(AR, "src", "[x].ts"), "1\n"); fs.writeFileSync(path.join(AR, "src", "x.ts"), "1\n");
+    fs.writeFileSync(path.join(AR, "src", "q.ts"), "1\n"); fs.writeFileSync(path.join(AR, "src", "qq.ts"), "1\n");
+    const br = () => lib.treeOf(AR, ["src/[x].ts"]).content, qm = () => lib.treeOf(AR, ["src/?.ts"]).content;
+    const b0 = br(), q0 = qm();
+    fs.writeFileSync(path.join(AR, "src", "x.ts"), "2\n");
+    ok("b1: a scope glob with [ ] does not cover the file git's class would (src/x.ts)", br() === b0);
+    fs.writeFileSync(path.join(AR, "src", "[x].ts"), "2\n");
+    ok("b1: …and does cover the file named with brackets", br() !== b0);
+    const q1 = qm();                         // x.ts (one letter) moved it above
+    fs.writeFileSync(path.join(AR, "src", "qq.ts"), "2\n");
+    ok("b1: a scope glob with ? does not cover a two-letter name", qm() === q1 && q1 !== q0);
+    fs.writeFileSync(path.join(AR, "src", "q.ts"), "2\n");
+    ok("b1: …and covers a one-letter one", qm() !== q1);
+    for (const f of ["[x].ts", "x.ts", "q.ts", "qq.ts"]) fs.rmSync(path.join(AR, "src", f), { force: true });
   }
   // A pass recorded before scopes compares the whole tree, as it did.
   {
@@ -5565,6 +5593,16 @@ exit 1
     ok("b1: a lock held past the wait refuses the write and says so",
       r.status === 1 && /stayed locked/.test(r.stderr) && stOf("b1-cc").increments[1].status === "pending", r.stderr);
     fs.rmdirSync(lock);
+    // A live holder is never robbed, however old its lock; a dead one's is reclaimed.
+    fs.mkdirSync(lock); fs.writeFileSync(path.join(lock, "pid"), String(process.pid));
+    const tenAgo = new Date(Date.now() - 10000); fs.utimesSync(lock, tenAgo, tenAgo);
+    r = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "block", "b1-cc", "2", "x"],
+      { encoding: "utf8", env: { ...ENV, DEEP_PLAN_LOCK_WAIT_MS: "300" }, cwd: AR });
+    ok("b1: a lock whose holder is alive is not reclaimed after 5s", r.status === 1 && /stayed locked/.test(r.stderr), r.stderr);
+    fs.writeFileSync(path.join(lock, "pid"), String(spawnSync("true").pid)); fs.utimesSync(lock, tenAgo, tenAgo);
+    r = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "block", "b1-cc", "2", "x"],
+      { encoding: "utf8", env: { ...ENV, DEEP_PLAN_LOCK_WAIT_MS: "300" }, cwd: AR });
+    ok("b1: …one whose holder died is", r.status === 0 && stOf("b1-cc").increments[1].status === "blocked" && !fs.existsSync(lock), r.stderr);
     cli("close", "b1-cc");
   }
 
