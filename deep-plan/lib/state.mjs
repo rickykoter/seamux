@@ -764,28 +764,72 @@ function ownTooling(cmd, OWN) {
 // argument that nothing runs (a commit message, a grep pattern) is no call.
 // Heuristic, like the write test: it reads the command, it cannot run it.
 const PROG_RE = /(deep-plan|deep_plan\.mjs)(?=['"]?[ \t])/g;
-export function deepPlanCalls(cmd) {
+// Words that run the next word as a command, so a deep-plan word after them
+// is still in command position (with their options and VAR=value).
+const WRAPPERS = new Set(["env", "sudo", "command", "exec", "xargs", "npx", "nohup", "time", "nice", "node", "bash", "sh", "zsh", "dash"]);
+const SHELLS = /^(bash|sh|zsh|dash|ksh|eval|xargs)$/;
+
+// Heredoc bodies fed to anything but a shell (cat, tee, git, gh, grep…) are
+// text, not commands: blanked, length kept, so `cat <<EOF > notes` holding
+// the words "deep-plan open-gate" is no call.
+function blankHeredocs(cmd) {
+  const re = /<<-?[ \t]*(['"]?)(\w+)\1[^\n]*\n/g;
+  let out = cmd, m;
+  while ((m = re.exec(cmd))) {
+    const lineStart = cmd.lastIndexOf("\n", m.index) + 1;
+    const head = cmd.slice(lineStart, m.index).split(/[;&|(]/).pop().trim().split(/\s+/);
+    const first = path.basename(head.find(x => !/^\w+=/.test(x)) || "");
+    const bodyStart = m.index + m[0].length;
+    const endRe = new RegExp(`^[ \\t]*${m[2]}[ \\t]*$`, "m");
+    const rest = cmd.slice(bodyStart);
+    const em = endRe.exec(rest);
+    const bodyEnd = em ? bodyStart + em.index : cmd.length;
+    if (!SHELLS.test(first)) out = out.slice(0, bodyStart) + out.slice(bodyStart, bodyEnd).replace(/[^\n]/g, " ") + out.slice(bodyEnd);
+    re.lastIndex = bodyEnd;
+  }
+  return out;
+}
+
+// Whether the word starting at `w` is where a command starts: nothing before
+// it since the last separator, or only wrappers, their options and VAR=value.
+function commandPosition(ref, w) {
+  let s = w;
+  while (s > 0 && !/[;&|(`\n]/.test(ref[s - 1])) s--;
+  const before = ref.slice(s, w).trim().split(/\s+/).filter(Boolean);
+  if (!before.length) return true;
+  const ok = x => WRAPPERS.has(path.basename(x)) || /^\w+=/.test(x);
+  if (!ok(before[0])) return false;
+  for (let j = 1; j < before.length; j++)
+    if (!(ok(before[j]) || before[j].startsWith("-") || before[j - 1].startsWith("-"))) return false;
+  return true;
+}
+
+export function deepPlanCalls(cmd, depth = 0) {
   const out = [];
-  if (!cmd) return out;
-  const bare = blankQuotes(cmd);
-  for (const m of cmd.matchAll(PROG_RE)) {
-    const i = m.index;
-    if (i && !/[\s;&|(`'"/]/.test(cmd[i - 1])) continue;
-    let end = cmd.length;
-    const sep = (ref, from) => { let e = from; while (e < cmd.length && !/[;&|\n)`]/.test(ref[e])) e++; return e; };
-    if (bare && bare[i] !== cmd[i]) {
-      // Inside a quoted string: find it, and take it only when it is run.
-      let q = i - 1;
-      while (q >= 0 && !(bare[q] === cmd[q] && (cmd[q] === '"' || cmd[q] === "'"))) q--;
-      if (q < 0) continue;
-      let c = i + m[0].length;
-      while (c < cmd.length && !(bare[c] === cmd[c] && cmd[c] === cmd[q])) c++;
-      const body = cmd.slice(q + 1, c);
-      if (/^\s*(\S*\/)?(deep-plan|deep_plan\.mjs)\s*$/.test(body)) end = sep(bare, c + 1);  // "deep-plan" go …
-      else if (/(^|\s)(-[a-zA-Z]*c|eval)\s*$/.test(cmd.slice(0, q))) end = Math.min(c, sep(cmd, i + m[0].length));  // bash -c "…"
-      else continue;
-    } else end = sep(bare || cmd, i + m[0].length);
-    const words = cmd.slice(i + m[0].length, end).replace(/['"]/g, " ").trim().split(/\s+/).filter(Boolean);
+  if (!cmd || depth > 3) return out;
+  const text = blankHeredocs(cmd);
+  const bare = blankQuotes(text);
+  const ref = bare || text;
+  // A quoted string a shell runs (bash -c "…", eval '…') is a command line of its own.
+  for (const m of text.matchAll(/(?:^|\s)(?:-[a-zA-Z]*c|eval)\s+(['"])((?:\\.|(?!\1)[\s\S])*)\1/g))
+    out.push(...deepPlanCalls(m[2], depth + 1));
+  const sep = from => { let e = from; while (e < text.length && !/[;&|\n)`]/.test(ref[e])) e++; return e; };
+  for (const m of text.matchAll(PROG_RE)) {
+    const i = m.index, after = i + m[0].length;
+    if (i && !/[\s;&|(`'"/]/.test(text[i - 1])) continue;
+    // The whole word: a path to the program, or the program name in quotes.
+    let w = i;
+    while (w > 0 && !/[\s;&|(`]/.test(text[w - 1])) w--;
+    let next = after;
+    if (bare && bare[i] !== text[i]) {
+      // Inside quotes: only a quoted program name ("deep-plan" go) runs here.
+      const q = text[w];
+      if (!(q === '"' || q === "'") || text[after] !== q) continue;
+      next = after + 1;
+    }
+    if (!/^['"]?(\S*\/)?(deep-plan|deep_plan\.mjs)$/.test(text.slice(w, after))) continue;
+    if (!commandPosition(ref, w)) continue;
+    const words = text.slice(next, sep(next)).replace(/['"]/g, " ").trim().split(/\s+/).filter(Boolean);
     const verb = words.shift() || "";
     if (/^[a-z][a-z-]*$/.test(verb)) out.push({ verb, words });
   }
@@ -831,15 +875,24 @@ export function markDenied(session, slug = "") {
 // Whether this turn's human prompt (its first 300 characters, kept by
 // news.sh) plainly says go: then a refusal earlier in the same turn (the agent
 // tried an edit before running the go it was given) does not hold the go
-// back. A negation anywhere ("don't go yet", "no", "wait") reads as no.
-const APPROVES = /\b(go|go ahead|proceed|approved?|yes|do it|lgtm|ship it|continue)\b/i;
+// back. A short prompt must be essentially an approval ("go", "go 2", "yes
+// go", "lgtm"); a longer one must carry an explicit go phrase tied to the plan
+// ("go next", "go 3", "go ahead", "deep-plan go"). A plain "yes", "ok" or
+// "continue" in a longer prompt is not one. A negation anywhere ("don't go
+// yet", "no", "wait") reads as no.
+const SHORT_APPROVAL = /^(yes[,.!]?\s+|ok[,.!]?\s+|okay[,.!]?\s+)?(go(\s+ahead|\s+next|\s+\d+)?|approved?|lgtm|ship\s+it|proceed|yes|do\s+it)(\s+(please|now|thanks))?[.!]*$/i;
+const GO_PHRASE = /(\bdeep-plan\s+go\b|\bgo\s+(ahead|next)\b|\bgo\s+\d+\b)/i;
 const DOUBTS = /\b(don'?t|do not|not|no|never|stop|wait|hold)\b/i;
+export function approvesGo(prompt) {
+  const p = String(prompt || "").slice(0, 300).replace(/\\"/g, '"').trim();
+  if (!p || DOUBTS.test(p)) return false;
+  if (p.length <= 60 && SHORT_APPROVAL.test(p)) return true;
+  return GO_PHRASE.test(p);
+}
 export function promptApproves(session) {
   const f = turnFile(session);
   if (!f) return false;
-  let p = "";
-  try { p = fs.readFileSync(f.replace(/\.denied$/, ".prompt"), "utf8").slice(0, 300); } catch { return false; }
-  return APPROVES.test(p) && !DOUBTS.test(p);
+  try { return approvesGo(fs.readFileSync(f.replace(/\.denied$/, ".prompt"), "utf8")); } catch { return false; }
 }
 
 export function deniedThisTurn(session) {

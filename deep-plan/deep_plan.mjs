@@ -4064,17 +4064,16 @@ function checkRun(slug, n, ids, opts) {
         : code === 1 ? "a blocker or major finding is open — the human closes it on the review page"
         : res.note;
     }
-    // The tree the pass is recorded against, over what the check covers: the
-    // one after the run when all it added was new files (a report, a
-    // snapshot), so its own outputs do not stale it; the one before it when a
-    // file that existed changed meanwhile, so the pass reads stale until the
-    // check runs again on the tree as it is.
+    // The tree the pass is recorded against, over what the check covers, is
+    // the one after the run: its own outputs (a report, a formatter's or a
+    // codegen check's rewrite) are part of what passed, or such a check could
+    // never stay passed. A file that existed and changed while it ran is
+    // named, said and logged, so an edit made under a run is not silent.
     let tree = null, movedUnder = [];
     if (res.status === "pass") {
-      const after = treeOf(st.root, scopeOf(cur));
-      const diff = before && after ? treeDiff(st.root, before.content, after.content) : [];
+      tree = treeOf(st.root, scopeOf(cur));
+      const diff = before && tree ? treeDiff(st.root, before.content, tree.content) : [];
       movedUnder = diff.filter(d => d.status !== "A").map(d => d.path);
-      tree = movedUnder.length ? before : after;
     }
     const fresh = readState(slug);
     const now = checksOf(findInc(fresh, n))[id];
@@ -4099,7 +4098,8 @@ function checkRun(slug, n, ids, opts) {
     checksOf(findInc(fresh, n))[id] = { ...rest, status: res.status, at: Date.now(), by: "runner",
       note: res.note, ran: res.ran, ...(res.status === "pass" && tree ? { tree } : {}),
       ...(ev ? { evidence: ev } : {}) };
-    log1(fresh, `check ${res.status}: increment ${inc.n} ${id} — ${res.note}`);
+    log1(fresh, `check ${res.status}: increment ${inc.n} ${id} — ${res.note}` +
+      (movedUnder.length ? ` (changed while it ran: ${movedUnder.slice(0, 10).join(", ")}${movedUnder.length > 10 ? ", …" : ""})` : ""));
     // The pidfile goes before the verdict lands: whoever waits on the verdict
     // (check wait, the pane) must never find a finished run's pidfile, and the
     // re-render after the write is slow on a busy machine. A lost runner is
@@ -4109,7 +4109,7 @@ function checkRun(slug, n, ids, opts) {
     if (res.status === "pass") {
       say(`✅ ${id} pass — ${res.note} (log: ${log})`);
       if (movedUnder.length) say(`   ⚠ ${movedUnder.length} file(s) it covers changed while it ran (${movedUnder.slice(0, 10).join(", ")}${movedUnder.length > 10 ? ", …" : ""}); ` +
-        `the pass is recorded against the tree before the run, so it reads stale until: deep-plan check run ${slug} ${n} ${id}`);
+        `the pass is recorded against the tree after the run — look at what changed`);
     }
     else if (res.status === "needs-value") {
       const q = ask || {};
@@ -5010,12 +5010,12 @@ switch (cmd) {
   }
   case "open-gate": {
     const st = readState(args[0]) || die("no plan " + args[0]);
-    // Who lifted it, as a go records who gave it: a person (their shell, the
-    // board, the plan pane) or a Claude Code session, whose gate hook refuses
-    // this verb, so one here means the hook was not in the way.
-    const by = flags.byHuman || !process.env.CLAUDECODE ? "human" : "a Claude Code session";
-    const how = by === "human" ? goHow({ byHuman: !!flags.byHuman }) : (sessionId() ? `session ${sessionId().slice(0, 8)}` : "");
-    st.gate = "open"; log1(st, `gate opened by ${by}${how ? ` (${how})` : ""} — the one lever, logged`);
+    // Where it came from, without claiming who: the board and the plan pane run
+    // the CLI through deep-plan's server, which marks its calls; anything else
+    // is the CLI. (CLAUDECODE says nothing here: the server can inherit it.)
+    // A session's own call is refused by the gate hook before it gets here.
+    const via = process.env.DEEP_PLAN_FROM_SERVE ? "board" : "cli";
+    st.gate = "open"; log1(st, `gate opened (via ${via}) — the human's lever, logged`);
     writeState(st); rerenderWorking(st.slug);
     say("gate open for " + st.slug + " (close it again with `deep-plan shut-gate`)"); break;
   }

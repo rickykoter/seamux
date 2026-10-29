@@ -36,13 +36,15 @@ if [ -e "$1" ]; then
   ev=""; sid=""; prompt=""
   re_ev='"hook_event_name"[[:space:]]*:[[:space:]]*"([A-Za-z]+)"'
   re_sid='"session_id"[[:space:]]*:[[:space:]]*"([A-Za-z0-9_-]+)"'
-  re_prompt='"prompt"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)"'
-  [[ $payload =~ $re_ev ]] && ev=${BASH_REMATCH[1]}
-  [[ $payload =~ $re_sid ]] && sid=${BASH_REMATCH[1]}
+  # Only the head of the payload is scanned: a prompt can be long, and only its
+  # first 300 characters are kept. Claude Code writes compact JSON.
+  head=${payload:0:16384}
+  [[ $head =~ $re_ev ]] && ev=${BASH_REMATCH[1]}
+  [[ $head =~ $re_sid ]] && sid=${BASH_REMATCH[1]}
   if [ "$ev" != SessionStart ] && [ -n "$sid" ]; then
     rm -f "$STATE_DIR/turns/$sid.denied"
-    [[ $payload =~ $re_prompt ]] && prompt=${BASH_REMATCH[1]}
-    prompt=${prompt:0:300}; prompt=${prompt//\\n/ }; prompt=${prompt//\\t/ }
+    case $head in *'"prompt":"'*) prompt=${head#*\"prompt\":\"} ;; *'"prompt": "'*) prompt=${head#*\"prompt\": \"} ;; esac
+    prompt=${prompt:0:300}; prompt=${prompt%%\"[,\}]*}; prompt=${prompt//\\n/ }; prompt=${prompt//\\t/ }
     mkdir -p "$STATE_DIR/turns" 2>/dev/null && printf '%s\n' "$prompt" > "$STATE_DIR/turns/$sid.prompt" 2>/dev/null
   fi
 fi

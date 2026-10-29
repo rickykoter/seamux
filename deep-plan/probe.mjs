@@ -5302,6 +5302,25 @@ exit 1
   hook(S3, "Edit", { file_path: path.join(AR, "src", "a.ts") });
   ok("b1: …but one after a prompt that says not yet does",
     hook(S3, "Bash", { command: "deep-plan go b1-gate next" }).status === 2);
+  // A long prompt that says yes or continue in passing is not a go.
+  for (const p of ["yes, that matches what I saw; continue looking at why the sweep skips rows", "ok", "continue"]) {
+    said(S3, "UserPromptSubmit", p);
+    hook(S3, "Edit", { file_path: path.join(AR, "src", "a.ts") });
+    ok(`b1: a prompt that is no plain go does not let the go through ("${p.slice(0, 24)}")`,
+      hook(S3, "Bash", { command: "deep-plan go b1-gate next" }).status === 2);
+  }
+  for (const p of ["go", "go 2", "lgtm", "That reads well. Go next please, and keep the diff small."]) {
+    said(S3, "UserPromptSubmit", p);
+    hook(S3, "Edit", { file_path: path.join(AR, "src", "a.ts") });
+    ok(`b1: a prompt that plainly says go lets it through ("${p.slice(0, 24)}")`,
+      hook(S3, "Bash", { command: "deep-plan go b1-gate next" }).status === 0);
+  }
+  // A long prompt: only its head is scanned, and the go at its start still counts.
+  said(S3, "UserPromptSubmit", "go ahead. " + "context ".repeat(4000));
+  hook(S3, "Edit", { file_path: path.join(AR, "src", "a.ts") });
+  ok("b1: a 32 KB prompt that opens with go ahead counts, read from its head",
+    hook(S3, "Bash", { command: "deep-plan go b1-gate next" }).status === 0 &&
+    fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "turns", S3 + ".prompt"), "utf8").length <= 302);
   said(S3, "UserPromptSubmit", "what is the gate?");
   hook(S3, "Edit", { file_path: path.join(AR, "src", "a.ts") });
   ok("b1: …and so does one after a prompt that says nothing of go",
@@ -5336,15 +5355,19 @@ exit 1
   }
   said(S2);
   for (const [c] of WORD) ok(`b1: …and after the human's next prompt it goes through (${c})`, hook(S2, "Bash", { command: c }, TMP).status === 0);
-  for (const c of [`git commit -m "deep-plan close: say why"`, `rg "deep-plan open-gate" docs`, "deep-plan status", "deep-plan check run b1-gate 1"])
+  for (const c of [`git commit -m "deep-plan close: say why"`, `rg "deep-plan open-gate" docs`, "deep-plan status", "deep-plan check run b1-gate 1",
+    "echo deep-plan open-gate b1-gate >> notes.md", "cat <<'EOF' > notes.md\nrun deep-plan open-gate b1-gate\ndeep-plan open-gate b1-gate\nEOF",
+    "printf '%s\\n' x | tee notes.md; ls deep-plan open-gate"])
     ok(`b1: a mention is not a lever (${c})`, hook(S2, "Bash", { command: c }, TMP).status === 0);
   r = human("open-gate", "b1-gate");
-  ok("b1: open-gate from the human's own shell works, and logs who", r.status === 0 &&
-    stOf("b1-gate").log.some(l => /gate opened by human \(no Claude Code session\)/.test(l.what)), r.stderr);
+  ok("b1: a heredoc a shell runs is still read for calls",
+    hook(S2, "Bash", { command: "bash <<'EOF'\ndeep-plan open-gate b1-gate\nEOF" }, TMP).status === 2);
+  ok("b1: open-gate from the human's own shell works, and logs where it came from (not who)", r.status === 0 &&
+    stOf("b1-gate").log.some(l => /gate opened \(via cli\)/.test(l.what)), r.stderr);
   human("shut-gate", "b1-gate");
-  agent("open-gate", "b1-gate");
-  ok("b1: …and one from a session (its hook not in the way) is logged as that",
-    stOf("b1-gate").log.some(l => /gate opened by a Claude Code session/.test(l.what)));
+  spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "open-gate", "b1-gate"], { encoding: "utf8", env: { ...NOCC, DEEP_PLAN_FROM_SERVE: "1" }, cwd: AR });
+  ok("b1: …and one through deep-plan's server is logged as the board's",
+    stOf("b1-gate").log.some(l => /gate opened \(via board\)/.test(l.what)));
   human("shut-gate", "b1-gate");
   for (const f of [path.join(ENV.DEEP_PLAN_STATE_DIR, "b1-gate.json"), path.join(ENV.DEEP_PLAN_KEYS_DIR, "b1-gate.key.json")]) {
     r = hook(S2, "Edit", { file_path: f });
@@ -5390,7 +5413,9 @@ exit 1
   arm("b1-touch", s => { s.deliverables[0].checks.push({ kind: "test", name: "touchy", recipe: "touchy" }); return s; });
   r = cli("check", "run", "b1-touch", "1", "test-touchy");
   ok("b1: a pass whose run changed a file it covers says so", r.status === 0 && /changed while it ran \(src\/a\.ts\)/.test(r.stdout), r.stdout + r.stderr);
-  ok("b1: …and reads stale, not passed", /test-touchy  \[test\] stale/.test(cli("check", "list", "b1-touch", "1").stdout));
+  ok("b1: …and logs it", stOf("b1-touch").log.some(l => /check pass: increment 1 test-touchy .*changed while it ran: src\/a\.ts/.test(l.what)));
+  ok("b1: …and stays passed (a formatter or codegen check rewrites what it covers)",
+    /test-touchy  \[test\] pass/.test(cli("check", "list", "b1-touch", "1").stdout));
   fs.writeFileSync(path.join(AR, "src", "a.ts"), "export const a = 1;\n");
   cli("close", "b1-touch");
 
@@ -5422,6 +5447,10 @@ exit 1
   r = human("go", "b1-run", "3", "--force");
   ok("b1: …and a person's --force opens it beside, logged", r.status === 0 && stOf("b1-run").increments[2].status === "authorized" &&
     stOf("b1-run").log.some(l => /go: increment 3 .*--force beside increment 1/.test(l.what)), r.stderr);
+  // A blocked increment is not open: it does not hold back another go.
+  cli("block", "b1-run", "1", "waiting"); cli("block", "b1-run", "3", "waiting too");
+  r = cli("go", "b1-run", "2");
+  ok("b1: a blocked increment does not block a go on another", r.status === 0 && stOf("b1-run").increments[1].status === "authorized", r.stderr);
   cli("close", "b1-run");
 
   // ---- a case-variant spelling of the root is the root
