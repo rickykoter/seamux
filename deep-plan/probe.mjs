@@ -5128,6 +5128,76 @@ exit 1
   ok("closing a plan that does not share touches no ref", ref("refs/tags/seamux-state-archive/sf-private") === "");
 }
 
+// -------------------------------------------------- await-go pulls the child's branch
+{
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const AO = path.join(TMP, "aw-origin.git"), AP = path.join(TMP, "aw-parent"), AK = path.join(TMP, "aw-parent.worktrees", "kid");
+  execSync(`git init -q --bare ${AO}`);
+  fs.mkdirSync(AP);
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init && git remote add origin ${AO} && git push -q origin HEAD:refs/heads/main`, { cwd: AP });
+  execSync(`git worktree add -q -b kid ${AK}`, { cwd: AP });
+  const machine = name => {
+    const dd = path.join(TMP, "aw-data-" + name);
+    return { ...ENV, DEEP_PLAN_STATE_DIR: path.join(dd, "state"), DEEP_PLAN_KEYS_DIR: path.join(dd, "keys"),
+      DEEP_PLAN_PLANS_DIR: path.join(dd, "plans"), LOOKOUT_REVIEWS_DIR: path.join(dd, "plans", "reviews"),
+      DEEP_PLAN_AWAIT_PULL_MS: "1000" };
+  };
+  const EP = machine("parent"), EK = machine("child");
+  const on = (env, dir, ...x) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...x], { encoding: "utf8", env, cwd: dir });
+  const gradeOn = (env, dir, slug) => {
+    const k = JSON.parse(fs.readFileSync(path.join(env.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8"));
+    return on(env, dir, "grade", slug, ...Object.entries(k.answers).map(([q, v]) => `${q}=${v.letter}`));
+  };
+  // Waits for a background await-go, up to ms; resolves { status, stdout, stderr }.
+  const awaitIn = (env, dir, slug, secs) => {
+    const ch = spawn("node", [path.join(HERE, "deep_plan.mjs"), "await-go", slug, "--timeout", String(secs)], { env, cwd: dir });
+    let out = "", err = "";
+    ch.stdout.on("data", d => { out += d; }); ch.stderr.on("data", d => { err += d; });
+    return new Promise(res => ch.on("exit", code => res({ status: code, stdout: out, stderr: err })));
+  };
+  // The parent machine: a child plan, then a shared parent that delegates the child's go.
+  const kid = JSON.parse(JSON.stringify(spec)); kid.slug = "aw-kid";
+  kid.deliverables = kid.deliverables.map((d, i) => ({ ...d, files: i === 0 ? ["kid/a.ts"] : [] }));
+  on(EP, AK, "render", tmpSpec(kid), "--root", AK);
+  const fam = JSON.parse(fs.readFileSync(path.join(HERE, "examples", "example.family.spec.json"), "utf8"));
+  const parent = { ...fam, slug: "aw-parent", share: true, workstreams: [{ slug: "aw-kid", owns: ["kid/**"], go: "parent" }] };
+  let r = on(EP, AP, "render", tmpSpec(parent), "--root", AP);
+  ok("await-go: a shared parent delegating its child's go renders", r.status === 0, r.stderr);
+  gradeOn(EP, AP, "aw-parent");
+  gradeOn(EP, AK, "aw-kid");
+  const kidTip = () => spawnSync("git", ["--git-dir", AO, "rev-parse", "--verify", "-q", "refs/heads/seamux-state/aw-kid"], { encoding: "utf8" }).stdout.trim();
+  ok("await-go: the child's grade pushes its own branch, shared through its parent", kidTip() !== "");
+  // The child machine: the family from the parent's branch, the child from its own.
+  on(EK, AK, "state", "pull", "aw-parent");
+  on(EK, AK, "state", "pull", "aw-kid");
+  ok("await-go: the child machine has the child plan and its family",
+    fs.existsSync(path.join(EK.DEEP_PLAN_STATE_DIR, "aw-kid.json")) && fs.existsSync(path.join(EK.DEEP_PLAN_STATE_DIR, "families", "aw-parent", "index.json")));
+  const waiting = awaitIn(EK, AK, "aw-kid", 30);
+  await new Promise(res => setTimeout(res, 1500));
+  r = on(EP, AP, "go", "aw-kid", "1");
+  ok("await-go: the parent agent gives the child its go on the parent machine", r.status === 0, r.stdout + r.stderr);
+  const t0 = Date.now();
+  const got = await waiting;
+  ok("await-go: the waiting child pulls the go from its branch and prints the increment",
+    got.status === 0 && got.stdout.trim() === "1" && /go arrived from the state branch \(written by /.test(got.stderr), JSON.stringify(got));
+  ok("await-go: …within the wait, not at its deadline", Date.now() - t0 < 25000);
+  // A pull that fails is said once, and the wait goes on to its deadline.
+  on(EK, AK, "done", "aw-kid", "1", "--force");
+  fs.renameSync(AO, AO + "-away");
+  const failed = await awaitIn(EK, AK, "aw-kid", 4);
+  fs.renameSync(AO + "-away", AO);
+  ok("await-go: a failed pull is said once and the wait goes on to its deadline",
+    failed.status === 2 && (failed.stderr.match(/could not pull aw-kid's state branch/g) || []).length === 1 &&
+    /no go for aw-kid after 4s/.test(failed.stderr), failed.stderr);
+  // A plan that does not share makes no network call: its repo has no remote at all.
+  const NR = path.join(TMP, "aw-noremote");
+  fs.mkdirSync(NR); execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: NR });
+  on(EK, NR, "render", tmpSpec({ ...spec, slug: "aw-private" }), "--root", NR);
+  gradeOn(EK, NR, "aw-private");
+  const quiet = await awaitIn(EK, NR, "aw-private", 3);
+  ok("await-go: a plan that does not share never reaches for a remote", quiet.status === 2 && !/could not pull|remote/.test(quiet.stderr), quiet.stderr);
+}
+
 // -------------------------------------------------- hot-path cost
 const t0 = process.hrtime.bigint();
 for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);

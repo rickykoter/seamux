@@ -3210,7 +3210,7 @@ function pullPlan(slug, backend, flags = {}) {
     if (why) return { error: why };
     if (flags.root) settleRoot(slug, flags, "state pull");
     record(digestOf(r.files), true);
-    return { message: `merged ${slug} with ${where} (${r.version.slice(0, 8)}); deep-plan state push ${slug} shares the result` };
+    return { writer: (r.meta && r.meta.writer) || "", message: `merged ${slug} with ${where} (${r.version.slice(0, 8)}); deep-plan state push ${slug} shares the result` };
   }
   const bad = checkBundle(slug, r.files);
   if (bad) return { error: bad };
@@ -3219,7 +3219,7 @@ function pullPlan(slug, backend, flags = {}) {
   let note = "";
   try { rerenderWorking(slug); } catch (e) { note = `\n  (the working page was not redrawn: ${e.message}; deep-plan rehydrate ${slug} redraws it)`; }
   record(digestOf(bundleBuffers(slug)));
-  return { message: `pulled ${slug} from ${where} (${r.version.slice(0, 8)}): ${n} file(s); root ${st.root || "(none)"}` +
+  return { writer: (r.meta && r.meta.writer) || "", message: `pulled ${slug} from ${where} (${r.version.slice(0, 8)}): ${n} file(s); root ${st.root || "(none)"}` +
     (r.meta && r.meta.writer ? `; last written by ${r.meta.writer} at ${r.meta.at}` : "") + note };
 }
 
@@ -4215,17 +4215,43 @@ function checkWait(slug, n, ids, timeoutSec) {
 // again. Exit 0 with the number, 2 at the deadline, 3 when there is nothing
 // left to wait for: the plan is done or closed, or a person took the go back
 // from the parent (the child's go is a person's again, so ask them).
+// A child in another sandbox learns of its parent's go only from its state
+// branch: the gate reads local state, and the news hook does not fetch. So a
+// shared plan's wait pulls the branch, at most every AWAIT_PULL_MS and with
+// the session timeout. A failed pull is said once; the wait goes on with
+// local state. A plan that does not share never touches the network.
+const AWAIT_PULL_MS = Number(process.env.DEEP_PLAN_AWAIT_PULL_MS) || 15000;
+function awaitPull(slug, w) {
+  if (Date.now() - w.last < AWAIT_PULL_MS) return;
+  w.last = Date.now();
+  const st = readState(slug);
+  if (!st || !planShare(st)) return;
+  const o = openSync(st, { soft: true, timeout: SESSION_TIMEOUT_MS });
+  const r = o.error ? { error: o.error } : o.cfg.sync !== "transitions" ? null : pullPlan(slug, o.backend);
+  if (!r) return;
+  if (r.error) {
+    if (!w.said) console.error(`await-go: could not pull ${slug}'s state branch (${r.error}); still waiting on the state here`);
+    w.said = true;
+    return;
+  }
+  if (!r.same) w.writer = r.writer || "another session";
+}
+
 function awaitGo(slug, timeoutSec) {
   const until = Date.now() + timeoutSec * 1000;
   // A child that starts waiting in a family and then is in none (its parent
   // closed or its family dissolved) has no parent left to give the go.
   const startedIn = !!goOwner(slug);
+  const w = { last: 0, said: false, writer: "" };
   for (;;) {
+    w.writer = "";
+    awaitPull(slug, w);
     const st = readState(slug);
     if (!st) { say(`await-go: no plan ${slug}`); return 3; }
     const incs = st.increments || [];
     const open = incs.find(i => i.status === "authorized" || i.status === "working");
     if (open) {
+      if (w.writer) console.error(`go arrived from the state branch (written by ${w.writer})`);
       say(String(open.n));
       console.error(`await-go: increment ${open.n} (${open.title}) of ${slug} is ${open.status}` +
         (open.by ? `, by ${open.by}` : "") + " — start it");

@@ -55,6 +55,14 @@ the shared contract first, check the whole once everything is in).
   person took the go back, so ask them. If the wait died (a crash, a
   restart), the news at the next prompt says an increment is authorized and
   not started, until its first edit.
+- **A remote child** sees its parent's go through its state branch, when the
+  parent's spec sets `share` (a child shares through its parent). The gate
+  and the news read only the state on the child's machine, so a waiting
+  `await-go` pulls the child's branch, at most every 15 seconds, and says
+  "go arrived from the state branch" when the go came that way. A failed
+  pull is said once and the wait goes on. A running child that is not
+  waiting sees a go at its next session start, or with `deep-plan state pull
+  <slug>`.
 - **News is pulled, not pushed.** At each prompt and session start, a member's
   session gets what changed since it last looked: sibling and parent
   increments done, a cleared wait, base-ref commits touching its claims, a
