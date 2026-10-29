@@ -447,7 +447,7 @@ fn ccusage(exe: &Path, args: &[String], key: &str, timeout: Duration) -> Result<
 /// ccusage's answer for `args`, from the cache while it is young. When it
 /// has expired, one render (the one holding the lock) asks ccusage again and
 /// the others keep showing the last answer meanwhile. A cache that is
-/// unreadable, from other args, or from the future is simply a miss.
+/// unreadable, from other args, or dated over a minute ahead is a miss.
 fn ccusage_cached(exe: &Path, args: &[String], key: &str, timeout: Duration) -> Result<Value, String> {
     let ttl = env_or("CREW_CCUSAGE_TTL").and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(CCUSAGE_TTL);
     if ttl.is_nan() || ttl <= 0.0 {
@@ -463,7 +463,7 @@ fn ccusage_cached(exe: &Path, args: &[String], key: &str, timeout: Duration) -> 
     match crew_core::py::Flock::try_exclusive(&file.with_extension("lock")) {
         Ok(Some(_held)) => {
             // Another render may have refreshed it between the miss and the lock.
-            if let Some(v) = cache_get(&file, &id, ttl, now()) {
+            if let Some(v) = cache_get(&file, &id, ttl, t) {
                 return Ok(v);
             }
             let got = ccusage(exe, args, key, timeout);
@@ -503,11 +503,16 @@ fn ccusage_key(
     id
 }
 
-/// The cached answer in `file` for `id`, if it is younger than `ttl` at `t`.
+/// How far past `t` a cached answer may be dated and still count as fresh:
+/// another render wrote it after this one started (or the clocks differ a little).
+const CCUSAGE_AHEAD: f64 = 60.0;
+
+/// The cached answer in `file` for `id`, if it is younger than `ttl` at `t`
+/// (this render's start). One dated up to CCUSAGE_AHEAD later counts as new.
 fn cache_get(file: &Path, id: &str, ttl: f64, t: f64) -> Option<Value> {
     let v = pyval::loads(&std::fs::read_to_string(file).ok()?).ok()?;
     let at = v.get("at")?.as_f64()?;
-    (v.get("id")?.as_str()? == id && at <= t && t - at < ttl).then(|| v.get("value").cloned()).flatten()
+    (v.get("id")?.as_str()? == id && at <= t + CCUSAGE_AHEAD && t - at < ttl).then(|| v.get("value").cloned()).flatten()
 }
 
 fn cache_put(file: &Path, id: &str, at: f64, value: &Value) {
@@ -860,7 +865,11 @@ mod tests {
         // Expired, asked with other args, or written in the future.
         assert_eq!(cache_get(&file, "id", 45.0, 145.0), None);
         assert_eq!(cache_get(&file, "other", 45.0, 120.0), None);
-        assert_eq!(cache_get(&file, "id", 45.0, 99.0), None);
+        // Written by another render after this one started: fresh.
+        assert_eq!(cache_get(&file, "id", 45.0, 99.0), Some(v.clone()));
+        assert_eq!(cache_get(&file, "id", 45.0, 40.0), Some(v.clone()));
+        // Dated more than a minute ahead: a bad clock, a miss.
+        assert_eq!(cache_get(&file, "id", 45.0, 39.0), None);
         // Still young enough to show while another render refreshes it.
         assert_eq!(cache_get(&file, "id", CCUSAGE_STALE, 300.0), Some(v));
         let _ = std::fs::remove_dir_all(&d);

@@ -438,8 +438,9 @@ fn exec_lines(
     // that a moment, then stop the group so the card is not busy forever.
     let drained = || ho.is_finished() && he.is_finished();
     let until = Instant::now() + DRAIN_GRACE;
+    // Polled finely: the readers usually see EOF a moment after the reap.
     while !drained() && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(5));
     }
     if !drained() {
         stop_groups(&[pgid], Duration::from_secs(1), None);
