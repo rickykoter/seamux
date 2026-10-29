@@ -161,7 +161,8 @@ export class GitBackend {
     }
     return spawnSync("git", [...this.gitArgs, ...args], {
       input, encoding: input && Buffer.isBuffer(input) ? "buffer" : "utf8",
-      timeout: net ? this.timeout : 10000, maxBuffer: 64 << 20,
+      // Local calls get a long limit: they only stop on a stalled machine.
+      timeout: net ? this.timeout : 60000, maxBuffer: 64 << 20,
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", ...env },
     });
   }
@@ -210,7 +211,7 @@ export class GitBackend {
       const tab = ent.indexOf("\t");
       const [, type, sha] = ent.slice(0, tab).split(" ");
       if (type !== "blob") continue;
-      const blob = spawnSync("git", [...this.gitArgs, "cat-file", "blob", sha], { maxBuffer: 64 << 20, timeout: 10000 });
+      const blob = spawnSync("git", [...this.gitArgs, "cat-file", "blob", sha], { maxBuffer: 64 << 20, timeout: 60000 });
       if (blob.status !== 0) throw new Error(`cannot read ${ent.slice(tab + 1)} from ${this.branch(slug)}`);
       files[ent.slice(tab + 1)] = blob.stdout;
     }
@@ -232,7 +233,7 @@ export class GitBackend {
       const lines = [];
       for (const [rel, data] of Object.entries(all)) {
         const h = this.git(["hash-object", "-w", "--stdin"], { input: Buffer.from(data) });
-        if (h.status !== 0) throw new Error(`cannot store ${rel}: ${String(h.stderr).trim()}`);
+        if (h.status !== 0) throw new Error(`cannot store ${rel}: ${h.error ? h.error.message : String(h.stderr).trim()}`);
         lines.push(`100644 blob ${String(h.stdout).trim()}\t${rel}`);
       }
       const u = this.git(["update-index", "--add", "--index-info"], { input: lines.join("\n") + "\n", env: ienv });
