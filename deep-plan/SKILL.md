@@ -82,7 +82,10 @@ These survive a compaction; everything below them is how.
    in the project? Set them up with the developer before drafting. Then ask
    the human which increments deserve a lookout review and whether the full
    delivery does, and record it as `review.increments` and
-   `review.delivery`. All of it: [checks.md](references/checks.md).
+   `review.delivery`. All of it: [checks.md](references/checks.md). Ask
+   too whether the plan's state should sync to a git branch other sessions
+   pull, and record the answer as `share`
+   ([sharing.md](references/sharing.md#state-branches)).
 5. **Write the spec**, a single JSON file in the scratchpad
    ([spec.md](references/spec.md); `examples/example.spec.json` is a worked
    one). `render` archives it. The prose in it (context, deliverable bodies,
@@ -162,9 +165,11 @@ These survive a compaction; everything below them is how.
 **In a cloud session** (claude.ai/code, `deep-plan doctor` says remote) the
 plugin runs from the repo's `.claude/skills/deep-plan`, put there by
 `deep-plan install-repo`; if it is missing, say so rather than planning
-without a gate. State lives in the repo's `.seamux/state/`; before the
-sandbox goes, offer `deep-plan export-state <slug>` so the next one can
-`import-state` it.
+without a gate. State lives in the repo's `.seamux/state/`. A plan whose
+spec sets `share` pushes its state branch on every transition, and the next
+session pulls it when it starts; `deep-plan state status` says whether it is
+in sync. A plan that does not share goes with the sandbox, so before it goes,
+offer `deep-plan export-state <slug>` for the next one to `import-state`.
 
 Also read, when they apply: [observability.md](references/observability.md)
 on a project with `.seamux/observability.json`;

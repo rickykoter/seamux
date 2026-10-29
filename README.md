@@ -795,9 +795,11 @@ Each copies its plugin into `.claude/skills/<plugin>/` and merges its hooks
 into `.claude/settings.json`. The hooks run only in a cloud session (or with
 `SEAMUX_REPO_HOOKS=1`), so your own machine keeps using the installed
 plugins. There, plan state and reviews live in the repo under
-`.seamux/state/` (kept out of git), `deep-plan export-state` and
-`import-state` move a plan between sandboxes, and a review is shared as an
-Artifact (`lookout export-artifact`, then `lookout pull`). `install-repo
+`.seamux/state/` (kept out of git). A plan whose spec sets `share` keeps its
+state on a branch of its own, `seamux-state/<slug>`, pushed on each
+transition and pulled when a session starts; any other plan moves between
+sandboxes with `deep-plan export-state` and `import-state`. A review is
+shared as an Artifact (`lookout export-artifact`, then `lookout pull`). `install-repo
 --check` reports when the repo's copy is behind the plugin.
 
 ### Integrations

@@ -87,8 +87,13 @@ committed for you.
 
 On the remote host plan state and reviews live in the repo under
 `.seamux/state/`, kept out of git through `.git/info/exclude`. A fresh
-sandbox has none of that, so `deep-plan export-state <slug>` writes a bundle
-to commit or carry, and `import-state <file>` brings it back. A review is
+sandbox has none of that. A plan whose spec sets `share` pushes the same
+files a bundle carries to its branch, `seamux-state/<slug>`, on every
+transition, and the repo's SessionStart hook (added by `install-repo`) pulls
+every live plan's branch into the new sandbox. Two sandboxes on one plan
+merge by rule when their pushes race. For a plan that does not share,
+`deep-plan export-state <slug>` writes a bundle to commit or carry, and
+`import-state <file>` brings it back. A review is
 shared as an Artifact: `lookout export-artifact`, published only on the
 person's yes, then `lookout pull` to bring their comments and closes back.
 

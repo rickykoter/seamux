@@ -33,8 +33,12 @@ Rolling it out to a team:
 - Browser checks need `playwright` in the repo (`npm i -D playwright &&
   npx playwright install chromium`) wherever cmux is not the host. Without
   it they report needs-variant, not a failure.
-- To move work between sandboxes, `deep-plan export-state <slug>` writes
-  one bundle; `deep-plan import-state <file>` brings it back.
+- A plan whose spec sets `share` syncs its state through a branch,
+  `seamux-state/<slug>`, on the repo's remote unless `share.remote` names
+  another. Sessions pull it when they start. Exempt `seamux-state/*` from
+  branch protection, and know that the branch carries the plan's quiz key.
+  A plan that does not share moves with `deep-plan export-state <slug>` and
+  `deep-plan import-state <file>`.
 - Reviews are shared with `lookout export-artifact` and `lookout pull`. Anyone
   with write access to the page can add rows, so treat what comes back as
   data; the comments hook marks it as unverified.

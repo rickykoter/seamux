@@ -2,6 +2,14 @@
 
 The full shape of the spec JSON (discipline step 5); `examples/example.spec.json` in the plugin root is a worked one.
 
+## Contents
+
+- [Overview diagrams](#overview-diagrams)
+- [Parent plans](#parent-plans)
+- [Shared state](#shared-state)
+- [Advisory and derived fields](#advisory-and-derived-fields)
+- [How evidence is checked](#how-evidence-is-checked)
+
 ```json
 { "slug": "kebab-case", "title": "imperative",
   "context": "why now, what exists, what is out of frame",
@@ -32,6 +40,7 @@ The full shape of the spec JSON (discipline step 5); `examples/example.spec.json
   "review":        { "increments": [1, 3], "delivery": true,
                      "agentMayClose": false, "quiz": false,
                      "family": false },
+  "share":         "optional: true, or { \"remote\": \"origin\", \"prefix\": \"seamux-state/\", \"sync\": \"transitions|manual\" }",
   "nonGoals":      ["what this plan deliberately does not do"],
   "verification":  ["runnable commands"],
   "commits":       ["plan-wide record of what landed (same two shapes)"],
@@ -67,6 +76,13 @@ and the child's go is a person's, as for any plan (see Families).
 
 `review.family: true` (a parent with `review.delivery: true` only) makes the
 parent's delivery one lookout review per member; see checks.md.
+
+## Shared state
+
+`share` says whether the plan's state syncs to its own git branch, where
+other sessions pull it. It is false when left out, and a family child
+follows its parent's. Render refuses any other shape. What it does and the
+`SEAMUX_STATE_*` overrides are in sharing.md.
 
 ## Advisory and derived fields
 
