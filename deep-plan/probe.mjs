@@ -4561,6 +4561,92 @@ exit 1
   ok("…and does nothing in a local session, where the plugin's own hooks run", g2.status === 0 && g2.stderr === "");
 }
 
+// -------------------------------------------------- shared state: config and the git backend
+{
+  const SYNC = await import(new URL("lib/sync.mjs", import.meta.url));
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const SR = path.join(TMP, "sync-repo"), ORIGIN = path.join(TMP, "sync-origin.git"), OUT = path.join(TMP, "sync-outside.git");
+  const CACHE = path.join(TMP, "sync-cache");
+  execSync(`git init -q --bare ${ORIGIN} && git init -q --bare ${OUT}`);
+  fs.mkdirSync(SR);
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init && git remote add origin ${ORIGIN} && git push -q origin HEAD:refs/heads/main`, { cwd: SR });
+  const noEnv = {};
+  let c = SYNC.loadConfig(SR, noEnv);
+  ok("sync config: defaults are origin, seamux-state/ and transitions",
+    c.remote === "origin" && c.prefix === "seamux-state/" && c.sync === "transitions" && !c.problems.length && fs.realpathSync(c.top) === fs.realpathSync(SR));
+  fs.mkdirSync(path.join(SR, ".seamux"));
+  fs.writeFileSync(path.join(SR, ".seamux", "state.json"), JSON.stringify({ remote: OUT, prefix: "plans/", sync: "manual" }));
+  c = SYNC.loadConfig(SR, noEnv);
+  ok("sync config: .seamux/state.json sets remote, prefix and sync", c.remote === OUT && c.prefix === "plans/" && c.sync === "manual");
+  c = SYNC.loadConfig(SR, { SEAMUX_STATE_REMOTE: "origin", SEAMUX_STATE_SYNC: "OFF" });
+  ok("sync config: SEAMUX_STATE_* beat the file", c.remote === "origin" && c.sync === "off" && c.prefix === "plans/" && c.source.remote === "SEAMUX_STATE_REMOTE");
+  c = SYNC.loadConfig(SR, { SEAMUX_STATE_SYNC: "of", SEAMUX_STATE_PREFIX: "bad..prefix/" });
+  ok("sync config: an unreadable sync mode becomes manual and a bad prefix the default, each reported",
+    c.sync === "manual" && c.prefix === "seamux-state/" && c.problems.length === 2, c.problems.join("; "));
+  fs.writeFileSync(path.join(SR, ".seamux", "state.json"), "{ nope");
+  c = SYNC.loadConfig(SR, noEnv);
+  ok("sync config: a file that does not parse falls back to the defaults, reported", c.remote === "origin" && /does not parse/.test(c.problems[0] || ""));
+  fs.rmSync(path.join(SR, ".seamux"), { recursive: true });
+
+  // What a checkout looks like; none of it may move.
+  const snap = () => ["rev-parse HEAD", "branch --list", "status --porcelain", "for-each-ref refs/heads refs/tags", "remote -v"]
+    .map(a => execSync("git " + a, { cwd: SR, encoding: "utf8" })).join("\n--\n");
+  const before = snap();
+  const files = { "deep-plan/state/p1.json": JSON.stringify({ slug: "p1", phase: "implementing" }), "plans/p1.md": "# p1\n" };
+
+  // Inside: the repo's own remote.
+  const inB = new SYNC.GitBackend(SYNC.loadConfig(SR, noEnv), { cacheDir: CACHE });
+  ok("git backend: the repo's own remote is inside", inB.inside && inB.where === "remote origin");
+  let r = inB.read("p1");
+  ok("git backend: a plan with no branch reads as version \"\"", r.version === "" && r.files === null);
+  const w1 = inB.write("p1", files, "");
+  r = inB.read("p1");
+  ok("git backend: a write makes seamux-state/<slug> holding the files at their data-root paths and a meta.json",
+    w1.ok && r.version === w1.version && r.files["plans/p1.md"].toString() === "# p1\n" &&
+    JSON.parse(r.files["deep-plan/state/p1.json"]).phase === "implementing" && r.meta && r.meta.slug === "p1" && r.meta.writer && r.meta.at &&
+    execSync(`git --git-dir ${ORIGIN} rev-parse refs/heads/seamux-state/p1`, { encoding: "utf8" }).trim() === w1.version, JSON.stringify(w1));
+  const stale = inB.write("p1", { ...files, "plans/p1.md": "# lost\n" }, "");
+  ok("git backend: a write pinned to an older version is refused and changes nothing",
+    stale.ok === false && stale.moved === true && inB.version("p1") === w1.version);
+  const w2 = inB.write("p1", { ...files, "plans/p1.md": "# p1 v2\n" }, w1.version);
+  ok("git backend: a write pinned to the current version lands, on top of it",
+    w2.ok && execSync(`git --git-dir ${ORIGIN} rev-parse ${w2.version}^`, { encoding: "utf8" }).trim() === w1.version);
+  inB.write("p10", files, "");
+  const lst = inB.list().map(x => x.slug).sort().join(",");
+  ok("git backend: list names the plans with a branch under the prefix", lst === "p1,p10", lst);
+  ok("git backend: the code checkout's HEAD, branches, status, tags and remotes never moved", snap() === before,
+    before + "\n====\n" + snap());
+  ok("git backend: a remove pinned to an older version is refused", inB.remove("p1", w1.version).moved === true && inB.version("p1") === w2.version);
+  ok("git backend: a remove pinned to the current version deletes the branch", inB.remove("p1", w2.version).ok && inB.version("p1") === "");
+
+  // Outside: any other git URL or path, through a bare cache.
+  const outB = new SYNC.GitBackend(SYNC.loadConfig(SR, { SEAMUX_STATE_REMOTE: OUT }), { cacheDir: CACHE });
+  const refsBefore = execSync("git for-each-ref", { cwd: SR, encoding: "utf8" });
+  const ow = outB.write("p2", files, "");
+  ok("git backend: a remote outside the repo is written through a bare cache under the data root",
+    !outB.inside && ow.ok && fs.existsSync(path.join(outB.cache, "HEAD")) && outB.cache.startsWith(CACHE) &&
+    execSync(`git --git-dir ${OUT} rev-parse refs/heads/seamux-state/p2`, { encoding: "utf8" }).trim() === ow.version);
+  ok("git backend: …and the code repo gains no refs or objects from it",
+    execSync("git for-each-ref", { cwd: SR, encoding: "utf8" }) === refsBefore &&
+    spawnSync("git", ["cat-file", "-e", ow.version], { cwd: SR }).status !== 0 && snap() === before);
+  const fresh = new SYNC.GitBackend(SYNC.loadConfig(SR, { SEAMUX_STATE_REMOTE: OUT }), { cacheDir: path.join(TMP, "sync-cache-2") });
+  r = fresh.read("p2");
+  ok("git backend: a fresh cache reads the branch back", r.version === ow.version && r.files["plans/p1.md"].toString() === "# p1\n");
+  const relB = new SYNC.GitBackend(SYNC.loadConfig(SR, { SEAMUX_STATE_REMOTE: "../sync-outside.git", SEAMUX_STATE_PREFIX: "team/state-" }), { cacheDir: CACHE });
+  const rw = relB.write("p3", files, "");
+  ok("git backend: a relative path resolves against the repo, and the prefix need not end in /",
+    rw.ok && execSync(`git --git-dir ${OUT} rev-parse refs/heads/team/state-p3`, { encoding: "utf8" }).trim() === rw.version &&
+    relB.list().map(x => x.slug).join(",") === "p3");
+
+  let threw = "";
+  try { new SYNC.GitBackend(SYNC.loadConfig(SR, { SEAMUX_STATE_REMOTE: "upstream" }), { cacheDir: CACHE }); } catch (e) { threw = e.message; }
+  ok("git backend: a remote name the repo does not have is refused by name", /no git remote named upstream/.test(threw), threw);
+  const gone = new SYNC.GitBackend(SYNC.loadConfig(SR, { SEAMUX_STATE_REMOTE: path.join(TMP, "no-such.git") }), { cacheDir: CACHE, timeout: 5000 });
+  threw = "";
+  try { gone.write("p4", files, ""); } catch (e) { threw = e.message; }
+  ok("git backend: a remote that cannot be reached throws, naming it", threw.includes("no-such.git"), threw);
+}
+
 // -------------------------------------------------- hot-path cost
 const t0 = process.hrtime.bigint();
 for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);
