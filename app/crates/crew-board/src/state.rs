@@ -4,8 +4,10 @@
 //!   seamux crew-board state --json --fixture FILE   rank {plans, workspaces} from a file
 //!   seamux crew-board write-targets [FILE]          the click table from a state
 //!
-//! Only these are ported. open, push, watch, tidy, close and usage drive the
-//! Dock surface the family's cutover retires, so they stay Python until then.
+//! open, push, watch, tidy, close and usage drove the Dock surface the cutover
+//! retired. The board is now the page the intent server serves at /board, live
+//! on its own: `open` and `usage` open the served pages in a cmux tab, and the
+//! others say where the board went rather than send anyone to the Python.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -532,15 +534,76 @@ fn cmd_write_targets(args: &[String]) -> i32 {
     }
 }
 
+/// A served page's URL: the running server's port, else the pin it will take.
+fn page_url(path: &str) -> String {
+    let port = crate::server::current().map(|c| c.0).unwrap_or_else(|| {
+        std::env::var("CREW_INTENT_PORT").ok().and_then(|s| s.trim().parse().ok()).unwrap_or(7345)
+    });
+    format!("http://127.0.0.1:{port}{path}")
+}
+
+/// What a Dock verb says now that the Dock board is gone.
+fn retired(sub: &str, url: &str) -> String {
+    format!(
+        "seamux crew-board: `{sub}` drove the Dock board, which the cutover retired. \
+         The board is served live at {url}: the seamux app's Board tab, cmux's \
+         \"Crew board\" command, or `crew-board open`. There is nothing to {sub}."
+    )
+}
+
+/// Start the intent server unless one answers, and wait briefly for it. It
+/// runs from $HOME, detached: a server left in a worktree's directory outlives
+/// the worktree, and every node child it starts then dies on a missing cwd.
+fn ensure_server() -> bool {
+    use std::os::unix::process::CommandExt;
+    if crate::server::current().is_some() {
+        return true;
+    }
+    let Some(exe) = crew_core::upgrade::exe() else { return false };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("crew-board-intent").current_dir(py::home())
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    // SAFETY: setsid is async-signal-safe and touches only the child.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    if cmd.spawn().is_err() {
+        return false;
+    }
+    (0..30).any(|_| {
+        std::thread::sleep(Duration::from_millis(100));
+        crate::server::current().is_some()
+    })
+}
+
+/// Open a served page (/board, /usage) in a cmux browser tab.
+fn open_page(path: &str) -> i32 {
+    if !ensure_server() {
+        eprintln!("seamux crew-board: the intent server did not start; see {}", crate::server::log_file().display());
+        return 1;
+    }
+    let url = page_url(path);
+    let (ok, text) = cmux(&["open", &url]);
+    if ok {
+        println!("{url}");
+        0
+    } else {
+        eprintln!("seamux crew-board: cmux could not open {url}: {text}");
+        1
+    }
+}
+
 pub fn main(args: &[String]) -> i32 {
     match args.first().map(String::as_str).unwrap_or("state") {
         "state" => cmd_state(args),
         "write-targets" => cmd_write_targets(args),
-        sub @ ("open" | "push" | "watch" | "close" | "tidy" | "usage") => {
-            eprintln!(
-                "seamux crew-board: `{sub}` drives the Dock board, which is not ported \
-                 (the cutover retires it); run the Python: crew/board/crew-board {sub}"
-            );
+        "open" => open_page("/board"),
+        "usage" => open_page("/usage"),
+        sub @ ("push" | "watch" | "close" | "tidy") => {
+            eprintln!("{}", retired(sub, &page_url("/board")));
             2
         }
         _ => {

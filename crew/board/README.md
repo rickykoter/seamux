@@ -1,16 +1,24 @@
 # crew board — who needs you, ranked
 
-A browser surface in the cmux Dock showing one ordered list: the agents blocked on a human
-decision first, then the broken ones, then the working ones. Everything calm collapses to
-a count.
+One ordered list: the agents blocked on a human decision first, then the broken ones,
+then the working ones. Everything calm collapses to a count.
+
+The board is the page the intent server serves at `http://127.0.0.1:7345/board`, fed
+live over server-sent events. Open it as the seamux app's Board tab, with cmux's
+"Crew board" command (cmd+k c), as the Board control in the Dock, or with:
 
 ```
-crew-board open              create the Dock surface and load the board
-crew-board push [--screens]  gather, rank, push one update
-crew-board watch [secs]      push on a loop (default 4s)
+crew-board open              open /board in a cmux browser tab (starts the server if needed)
+crew-board usage             open /usage the same way
 crew-board state [--json]    the ranked state, without touching cmux
-crew-board close             close the surface
 ```
+
+`~/.local/bin/crew-board` is `seamux crew-board`. `push`, `watch`, `tidy` and `close`
+drove the Dock surface this README describes below; the cutover retired that surface,
+and those verbs now only say where the board went. The Python `crew-board` in this
+directory still has them, for the probes and `docs/demo/board-demo.py`. The live tree
+does not install it. Most of what follows was written for the Dock board. The ranking,
+the rendering and the click routes still apply to the served page.
 
 ## Why a browser surface
 

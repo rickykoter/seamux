@@ -86,10 +86,10 @@ def run(tool, *args, env, crew_home=CREW, stdin=None, timeout=60, cwd=None):
                           timeout=timeout, cwd=cwd)
 
 
-def spawn(tool, *args, env, crew_home=CREW):
+def spawn(tool, *args, env, crew_home=CREW, cwd=None):
     argv, env = _cmd(tool, args, env, crew_home)
     return subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, start_new_session=True)
+                            text=True, start_new_session=True, cwd=cwd)
 
 
 # --- the throwaway machine ------------------------------------------------------------
@@ -348,11 +348,22 @@ open(CMUX_JSON, "w").write(FRAME_SRC)
 if os.path.exists(SYNC_LOCK):
     os.remove(SYNC_LOCK)
 clear_log()
-p = spawn("crew-listen", env=LENV, crew_home=STUB_HOME)
+# Started from a worktree, as a SessionStart hook starts it: it must not stay
+# there, or the intent server it starts inherits a directory that is later
+# reclaimed, and every node under that server dies on uv_cwd.
+LAUNCH_DIR = os.path.join(T, "a-worktree")
+os.makedirs(LAUNCH_DIR, exist_ok=True)
+p = spawn("crew-listen", env=LENV, crew_home=STUB_HOME, cwd=LAUNCH_DIR)
 waited(sync_started)
 time.sleep(1.0)
 pid = open(os.path.join(LSTATE, "listen.pid")).read().strip() if os.path.exists(
     os.path.join(LSTATE, "listen.pid")) else ""
+if RUST_LISTEN:
+    lc = subprocess.run(["lsof", "-a", "-p", pid or "0", "-d", "cwd", "-Fn"],
+                        capture_output=True, text=True).stdout
+    listen_cwd = next((l[1:] for l in lc.splitlines() if l.startswith("n")), "")
+    check("started from a worktree, the listener runs from $HOME",
+          os.path.realpath(listen_cwd) == os.path.realpath(HOME), listen_cwd or lc)
 second = run("crew-listen", env=LENV, crew_home=STUB_HOME)
 p.send_signal(__import__("signal").SIGINT)      # ^C, as a person stops it
 try:

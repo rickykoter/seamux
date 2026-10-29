@@ -489,6 +489,10 @@ pub fn serve() -> i32 {
         }
     };
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+    // Serve from $HOME whoever started it: deep-plan serve, lookout serve and
+    // deep-plan status run under this directory, and node dies at startup
+    // (uv_cwd ENOENT) when it is a worktree that has since been reclaimed.
+    let _ = std::env::set_current_dir(py::home());
     if let Err(e) = write_token(&token_file(), &token) {
         eprintln!("crew-board-intent: cannot write the token: {e}");
         return 1;

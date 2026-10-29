@@ -466,7 +466,7 @@ cmd_apply() {
     ok "backed up dock.json -> dock.json.pre-crew.bak"
   fi
   if render_to "$CREW_HOME/config/dock.global.json" dock.global.json "$HOME/.config/cmux/dock.json"; then
-    ok "installed global Dock -> ~/.config/cmux/dock.json (usage, sessions, sweep)"
+    ok "installed global Dock -> ~/.config/cmux/dock.json (board, usage, sessions, sweep)"
   else
     bad "could not render the global Dock (check $CREW_LOCAL/dock.global.json) — left unchanged"
   fi

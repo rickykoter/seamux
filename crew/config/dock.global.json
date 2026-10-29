@@ -9,8 +9,10 @@
     "replaces this one wholesale (precedence, not merge), which is why the",
     "project template carries these controls as well.",
     "",
-    "The board is the seamux app's tab (the intent server's /board), no",
-    "longer a Dock control.",
+    "The board is the intent server's /board, the same page the seamux app",
+    "shows as a tab. It feeds itself over server-sent events, so nothing",
+    "pushes into it. `crew apply` also reads its `board` id as the sign",
+    "that this file is crew's own, not one to back up.",
     "__INTENT_PORT__ must match the intent server's pin (CREW_INTENT_PORT,",
     "default 7345)."
   ],
@@ -22,6 +24,14 @@
       "chrome": false,
       "url": "http://127.0.0.1:__INTENT_PORT__/usage",
       "height": 320
+    },
+    {
+      "id": "board",
+      "title": "Board",
+      "type": "browser",
+      "chrome": false,
+      "url": "http://127.0.0.1:__INTENT_PORT__/board",
+      "height": 520
     },
     {
       "id": "sessions",

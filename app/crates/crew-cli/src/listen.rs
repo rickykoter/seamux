@@ -292,6 +292,10 @@ pub fn main(args: &[String]) -> i32 {
         log(&format!("already running as pid {other}"));
         return 0;
     }
+    // Live in $HOME, not wherever the SessionStart that started it was: this
+    // outlives that worktree, and the children it starts (the intent server,
+    // and node under it) inherit the directory and die once it is reclaimed.
+    let _ = std::env::set_current_dir(crew_core::py::home());
     let _ = std::fs::write(c.pidfile(), std::process::id().to_string());
     if let Ok(p) = std::ffi::CString::new(c.pidfile().as_os_str().as_encoded_bytes()) {
         let _ = PIDFILE_C.set(p);
