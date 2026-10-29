@@ -84,11 +84,46 @@ export function mergeStates(a, b) {
   return out;
 }
 
+// A family's control.json from two machines: each hold and take-back is
+// decided per child, the newer of the two entries, unless it was released
+// (unhold, give-back) later than it was made.
+export function mergeControl(a, b) {
+  const out = { takenBack: {}, holds: {}, released: { ...(a.released || {}) } };
+  for (const [k, at] of Object.entries(b.released || {})) out.released[k] = Math.max(out.released[k] || 0, at || 0);
+  for (const kind of ["takenBack", "holds"]) {
+    const A = a[kind] || {}, B = b[kind] || {};
+    for (const slug of new Set([...Object.keys(A), ...Object.keys(B)])) {
+      const e = [A[slug], B[slug]].filter(Boolean).sort((x, y) => (y.at || 0) - (x.at || 0))[0];
+      if ((e.at || 0) > (out.released[`${kind}/${slug}`] || 0)) out[kind][slug] = e;
+    }
+  }
+  return out;
+}
+
+// An append-only log (a family's trespass.jsonl): both machines' lines, once.
+function mergeLines(a, b) {
+  const seen = new Set(), out = [];
+  for (const l of [...String(a).split("\n"), ...String(b).split("\n")]) if (l.trim() && !seen.has(l)) { seen.add(l); out.push(l); }
+  return out.join("\n") + (out.length ? "\n" : "");
+}
+
 // The plan's other files: the union, and on a clash the side whose state
-// leads. The state file itself is the merged one.
+// leads, except a family's control (merged per child) and trespass log
+// (merged by line). The state file itself is the merged one.
 export function mergeFiles(aFiles, bFiles, aState, bState, stateRel, merged) {
   const lead = lastActivity(bState) > lastActivity(aState) ? bFiles : aFiles;
   const out = { ...(lead === aFiles ? bFiles : aFiles), ...lead };
+  for (const rel of Object.keys(out)) {
+    if (!(rel in aFiles) || !(rel in bFiles)) continue;
+    if (/^deep-plan\/state\/families\/[^/]+\/control\.json$/.test(rel)) {
+      try {
+        const c = mergeControl(JSON.parse(Buffer.from(aFiles[rel]).toString("utf8")), JSON.parse(Buffer.from(bFiles[rel]).toString("utf8")));
+        out[rel] = Buffer.from(JSON.stringify(c, null, 2) + "\n");
+      } catch { /* one side does not parse: the leading side's stands */ }
+    } else if (/^deep-plan\/state\/families\/[^/]+\/trespass\.jsonl$/.test(rel)) {
+      out[rel] = Buffer.from(mergeLines(Buffer.from(aFiles[rel]).toString("utf8"), Buffer.from(bFiles[rel]).toString("utf8")));
+    }
+  }
   out[stateRel] = Buffer.from(JSON.stringify(merged, null, 2) + "\n");
   return out;
 }

@@ -230,15 +230,19 @@ export class GitBackend {
   write(slug, files, expected = "", meta = {}) {
     const b = this.branch(slug);
     const idx = path.join(os.tmpdir(), `deep-plan-sync-${process.pid}-${crypto.randomBytes(4).toString("hex")}.index`);
+    const tmpd = idx.replace(/\.index$/, ".files");
     const ienv = { GIT_INDEX_FILE: idx };
     try {
       const all = { ...files, "meta.json": JSON.stringify({ slug, writer: writerName(), at: new Date().toISOString(), ...meta }, null, 2) + "\n" };
-      const lines = [];
-      for (const [rel, data] of Object.entries(all)) {
-        const h = this.git(["hash-object", "-w", "--stdin"], { input: Buffer.from(data) });
-        if (h.status !== 0) throw new Error(`cannot store ${rel}: ${h.error ? h.error.message : String(h.stderr).trim()}`);
-        lines.push(`100644 blob ${String(h.stdout).trim()}\t${rel}`);
-      }
+      // Every blob in one git call: a spawn per file is slow, and each one
+      // can stall on a loaded machine. The bytes go in as they are.
+      const rels = Object.keys(all);
+      fs.mkdirSync(tmpd, { recursive: true });
+      const paths = rels.map((rel, i) => { const f = path.join(tmpd, String(i)); fs.writeFileSync(f, Buffer.from(all[rel])); return f; });
+      const h = this.git(["hash-object", "-w", "--no-filters", "--stdin-paths"], { input: paths.join("\n") + "\n" });
+      const shas = h.status === 0 ? h.stdout.trim().split("\n") : [];
+      if (shas.length !== rels.length) throw new Error(`cannot store the plan's files: ${h.error ? h.error.message : String(h.stderr).trim()}`);
+      const lines = rels.map((rel, i) => `100644 blob ${shas[i]}\t${rel}`);
       const u = this.git(["update-index", "--add", "--index-info"], { input: lines.join("\n") + "\n", env: ienv });
       if (u.status !== 0) throw new Error(`cannot build the state tree: ${u.stderr.trim()}`);
       const t = this.git(["write-tree"], { env: ienv });
@@ -254,7 +258,7 @@ export class GitBackend {
       if (p.status === 0 && !p.error) { this.git(["update-ref", this.track(b), sha]); return { ok: true, version: sha }; }
       if (refused(p)) return { ok: false, moved: true };
       throw this.netFail("pushing to", p);
-    } finally { try { fs.rmSync(idx, { force: true }); } catch { /* gone */ } }
+    } finally { for (const x of [idx, tmpd]) { try { fs.rmSync(x, { force: true, recursive: true }); } catch { /* gone */ } } }
   }
 
   list() {
@@ -277,6 +281,14 @@ export class GitBackend {
     if (p.status === 0 && !p.error) { this.git(["update-ref", "-d", this.track(b)]); return { ok: true, tag }; }
     if (refused(p)) return { ok: false, moved: true };
     throw this.netFail("archiving on", p);
+  }
+
+  // Whether a plan's branch was archived: its tag is on the remote.
+  archived(slug) {
+    const tag = `refs/tags/${ARCHIVE_PREFIX}${slug}`;
+    const r = this.git(["ls-remote", "--tags", this.target, tag], { net: true });
+    if (r.status !== 0 || r.error) throw this.netFail("reading", r);
+    return r.stdout.split("\n").some(l => l.endsWith("\t" + tag));
   }
 
   remove(slug, expected) {

@@ -5079,6 +5079,37 @@ exit 1
       JSON.parse(execSync(`git --git-dir ${FO} show refs/tags/seamux-state-archive/sf-deliver:deep-plan/state/sf-deliver.json`, { encoding: "utf8" })).phase === "done",
       r.stdout + r.stderr);
   }
+  // Two machines' family control merge per child: a later unhold beats an earlier hold, a later hold beats both.
+  {
+    const M = await import(new URL("lib/merge.mjs", import.meta.url));
+    const held = { holds: { kid: { reason: "wait", at: 10 } }, takenBack: {}, released: {} };
+    const freed = { holds: {}, takenBack: { other: { at: 5 } }, released: { "holds/kid": 20 } };
+    let c = M.mergeControl(held, freed);
+    ok("family control merge: a later unhold wins over an earlier hold, and the other side's take-back stays",
+      !c.holds.kid && c.takenBack.other && c.released["holds/kid"] === 20);
+    c = M.mergeControl({ ...held, holds: { kid: { reason: "again", at: 30 } } }, freed);
+    ok("family control merge: a hold made after the release stands", c.holds.kid && c.holds.kid.reason === "again");
+    const rel = "deep-plan/state/families/p/trespass.jsonl", srel = "deep-plan/state/p.json";
+    const f = M.mergeFiles({ [rel]: Buffer.from('{"a":1}\n{"b":2}\n') }, { [rel]: Buffer.from('{"a":1}\n{"c":3}\n') },
+      { slug: "p", increments: [], log: [] }, { slug: "p", increments: [], log: [] }, srel, { slug: "p" });
+    ok("family trespass log merge: both machines' lines, once", f[rel].toString() === '{"a":1}\n{"b":2}\n{"c":3}\n', f[rel].toString());
+  }
+  // A machine still holding a plan that ended elsewhere is told once at session start, then left alone.
+  {
+    const d3 = path.join(TMP, "sf-data-3");
+    const E3 = { ...ENV, DEEP_PLAN_STATE_DIR: path.join(d3, "state"), DEEP_PLAN_KEYS_DIR: path.join(d3, "keys"),
+      DEEP_PLAN_PLANS_DIR: path.join(d3, "plans"), LOOKOUT_REVIEWS_DIR: path.join(d3, "plans", "reviews"), CLAUDE_PROJECT_DIR: FR };
+    const o3 = (...x) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...x], { encoding: "utf8", env: E3, cwd: FR });
+    on(FR, "render", tmpSpec({ ...spec, slug: "sf-ends", share: true }), "--root", FR);
+    const ek = JSON.parse(fs.readFileSync(path.join(EF.DEEP_PLAN_KEYS_DIR, "sf-ends.key.json"), "utf8"));
+    on(FR, "grade", "sf-ends", ...Object.entries(ek.answers).map(([q, v]) => `${q}=${v.letter}`));
+    o3("state", "pull", "sf-ends");
+    on(FR, "close", "sf-ends");
+    r = o3("state", "pull", "--session");
+    ok("session start says once that a plan's branch was archived elsewhere", r.status === 0 && /sf-ends ended elsewhere: .* archived as seamux-state-archive\/sf-ends/.test(r.stdout), r.stdout + r.stderr);
+    r = o3("state", "pull", "--session");
+    ok("…and says nothing about it after that", r.status === 0 && !/sf-ends/.test(r.stdout), r.stdout);
+  }
   // A plan that does not share is never archived (nothing was pushed for it).
   on(FR, "render", tmpSpec({ ...spec, slug: "sf-private" }), "--root", FR);
   on(FR, "close", "sf-private");

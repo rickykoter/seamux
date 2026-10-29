@@ -3061,7 +3061,9 @@ function planShare(st) {
   if (!st) return false;
   if (st.share) return st.share;
   // A family child follows its parent, with no flag of its own.
-  const idx = familyOf(st.slug);
+  if (!planShare.fams) planShare.fams = new Map();
+  if (!planShare.fams.has(st.slug)) planShare.fams.set(st.slug, familyOf(st.slug));
+  const idx = planShare.fams.get(st.slug);
   if (idx && idx.parent !== st.slug) { const p = readState(idx.parent); return (p && p.share) || false; }
   return false;
 }
@@ -3170,7 +3172,17 @@ function pullPlan(slug, backend, flags = {}) {
   let r;
   try { r = backend.read(slug); } catch (e) { return { error: e.message }; }
   const where = `${backend.branch(slug)} on ${backend.where}`;
-  if (!r.version) return { error: `no branch ${where}` };
+  if (!r.version) {
+    // The plan ended elsewhere: its branch became an archive tag.
+    let tag = false;
+    try { tag = backend.archived(slug); } catch { /* unreachable: said as no branch */ }
+    const m0 = syncMeta(slug);
+    if (tag && m0) {
+      if (!m0.archived) writeSyncMeta(slug, { ...m0, archived: { tag: SYNC.ARCHIVE_PREFIX + slug, at: new Date().toISOString(), seen: "pull" } });
+      return { error: `${slug} ended elsewhere: ${backend.branch(slug)} was archived as ${SYNC.ARCHIVE_PREFIX}${slug}`, archived: true, told: !!m0.archived };
+    }
+    return { error: `no branch ${where}` };
+  }
   const meta = syncMeta(slug);
   // A failed push stays recorded through a merge: the result still is not
   // on the branch. A plain pull replaces the plan, so it clears.
@@ -3234,11 +3246,14 @@ function stateSessionPull() {
   const run = (slug, backend, flags = {}) => {
     if (Date.now() - t0 > SESSION_BUDGET_MS) { late.push(slug); return; }
     const r = pullPlan(slug, backend, flags);
-    if (r.error) failed.push(`${slug}: ${r.error}`);
+    if (r.archived) { if (!r.told) lines.push(r.error); }
+    else if (r.error) failed.push(`${slug}: ${r.error}`);
     else if (!r.same) lines.push(r.message.split("\n")[0]);
   };
   for (const st of allStates()) {
     if (st.phase === "closed" || !planShare(st) || !st.root || !fs.existsSync(st.root) || common(st.root) !== repo) continue;
+    const sm = syncMeta(st.slug);
+    if (sm && sm.archived) continue;
     const o = openSync(st, { soft: true, timeout: SESSION_TIMEOUT_MS });
     if (o.error) { failed.push(`${st.slug}: ${o.error}`); continue; }
     // sync manual or off: nothing automatic, the pull included.
@@ -4453,7 +4468,7 @@ function familyCmd(args, flags) {
         die(`family ${sub} is a person's lever, and this is a Claude Code session (${by}). ` +
           `A person runs it from their own shell.\nfamily ${sub} refused: not a person`);
       if (!own.declared) die(`${slug}'s go is not delegated in the ${own.parent} spec; there is nothing to ${sub === "take-back" ? "take back" : "give back"}`);
-      try { updateControl(own.parent, c => { if (sub === "take-back") c.takenBack[slug] = { at: Date.now(), by }; else delete c.takenBack[slug]; }); }
+      try { updateControl(own.parent, c => { if (sub === "take-back") c.takenBack[slug] = { at: Date.now(), by }; else { delete c.takenBack[slug]; c.released["takenBack/" + slug] = Date.now(); } }); }
       catch (e) { die(`family ${sub}: ${e.message}`); }
       note(`family ${sub}: ${slug}'s go is ${sub === "take-back" ? "a person's again" : "the parent's again"} (by ${by})`);
       say(sub === "take-back"
@@ -4463,7 +4478,7 @@ function familyCmd(args, flags) {
       if (by === "self") die(`family ${sub} is the parent's (or a person's), not the child's own\nfamily ${sub} refused: self`);
       const reason = sub === "hold" ? more.slice(1).join(" ").trim() || die(`family hold ${slug} "<reason>": a hold says why`) : "";
       if (sub === "unhold" && !own.hold) die(`${slug} is not held`);
-      try { updateControl(own.parent, c => { if (sub === "hold") c.holds[slug] = { reason, at: Date.now(), by }; else delete c.holds[slug]; }); }
+      try { updateControl(own.parent, c => { if (sub === "hold") c.holds[slug] = { reason, at: Date.now(), by }; else { delete c.holds[slug]; c.released["holds/" + slug] = Date.now(); } }); }
       catch (e) { die(`family ${sub}: ${e.message}`); }
       note(`family ${sub}: ${slug}${reason ? ` — ${reason}` : ""} (by ${by})`);
       say(sub === "hold" ? `holding ${slug}: ${reason}` : `${slug} is no longer held`);
@@ -4611,13 +4626,17 @@ function syncFailed(slug, why) {
 }
 if (SYNC_CMDS.has(cmd) && !process.env.DEEP_PLAN_NO_SYNC) {
   const before = stateFileDigests();
+  const phaseBefore = new Map(allStates().map(st => [st.slug, st.phase]));
   process.on("exit", () => {
     try {
       for (const [slug, d] of stateFileDigests()) {
         if (before.get(slug) === d) continue;
         const st = readState(slug);
         if (!st) continue;
-        if ((cmd === "deliver" || cmd === "close") && (st.phase === "closed" || st.phase === "done")) autoArchive(slug);
+        // Archived only when this command ended the plan (a family deliver
+        // may end several); one that was already done just pushes.
+        const ended = st.phase === "closed" || st.phase === "done";
+        if ((cmd === "deliver" || cmd === "close") && ended && phaseBefore.get(slug) !== st.phase) autoArchive(slug);
         else autoPush(slug);
       }
     } catch (e) { console.error(`deep-plan: state sync skipped: ${e.message}`); }

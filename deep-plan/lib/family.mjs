@@ -528,14 +528,16 @@ export function familyDone(idx) {
 // What a person and the parent agent have said about each child's go, beside
 // the index rather than in it: rendering rebuilds the index from the spec, and
 // a take-back or a hold must outlive that. {takenBack: {slug: {at, by}},
-// holds: {slug: {reason, at, by}}}.
+// holds: {slug: {reason, at, by}}, released: {"holds/<slug>": at, ...}}.
+// `released` says when a hold or take-back was lifted, so a merge of two
+// machines' copies (lib/merge.mjs) keeps a later unhold over an earlier hold.
 export function controlPath(parent) { return path.join(FAMILIES_DIR, parent, "control.json"); }
 
 export function readControl(parent) {
   try {
     const c = JSON.parse(fs.readFileSync(controlPath(parent), "utf8")) || {};
-    return { takenBack: c.takenBack || {}, holds: c.holds || {} };
-  } catch { return { takenBack: {}, holds: {} }; }
+    return { takenBack: c.takenBack || {}, holds: c.holds || {}, released: c.released || {} };
+  } catch { return { takenBack: {}, holds: {}, released: {} }; }
 }
 
 export function writeControl(parent, c) {
@@ -580,6 +582,7 @@ export function pruneControl(idx) {
   const kids = new Set(idx.members.filter(m => m.role === "child").map(m => m.slug));
   updateControl(idx.parent, c => {
     for (const k of ["takenBack", "holds"]) for (const s of Object.keys(c[k])) if (!kids.has(s)) delete c[k][s];
+    for (const k of Object.keys(c.released || {})) if (!kids.has(k.split("/")[1])) delete c.released[k];
   });
 }
 
