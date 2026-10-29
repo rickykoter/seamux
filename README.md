@@ -70,6 +70,10 @@ branch onto its moved base without hand-merging generated files, and on cmux
 the crew board shows every worktree on the line, ranked by which one needs
 you next.
 
+<!-- VIDEO v1 (one change, start to finish): drag ~/Movies/seamux-demo/seamux-v1.mp4 into a GitHub comment,
+     then paste the user-attachments URL it gives on its own line in place of this comment.
+     Made by docs/demo/reel/demo.mjs; see docs/demo/STORYBOARD.md. -->
+
 The plugins in detail: [deep-plan](deep-plan/README.md),
 [lookout](lookout/README.md), [restack](restack/README.md),
 [humanize](humanize/README.md), [crew](crew/README.md) and
@@ -135,6 +139,10 @@ plugins, and `install-repo --check` says when the repo's copy is behind.
 [docs/ADOPTING.md](docs/ADOPTING.md) covers the rollout, including what a
 cloud session needs to push.
 
+<!-- VIDEO v3 (where it runs, and with whom): drag ~/Movies/seamux-demo/seamux-v3.mp4 into a GitHub comment,
+     then paste the user-attachments URL it gives on its own line in place of this comment.
+     Made by docs/demo/reel/demo.mjs; see docs/demo/STORYBOARD.md. -->
+
 ## Working as a team
 
 ### Families: one goal, parallel workstreams
@@ -148,6 +156,10 @@ child its go once the child's checks pass, so you are not needed for every
 increment; you can still hold a child or take its go back. The parent
 checks the whole at the end, and one review reads every member's delivery.
 More in [deep-plan's README](deep-plan/README.md#families-parallel-workstreams-with-one-goal).
+
+<!-- VIDEO v2 (one goal, several agents): drag ~/Movies/seamux-demo/seamux-v2.mp4 into a GitHub comment,
+     then paste the user-attachments URL it gives on its own line in place of this comment.
+     Made by docs/demo/reel/demo.mjs; see docs/demo/STORYBOARD.md. -->
 
 ### Shared plan state
 
@@ -192,6 +204,10 @@ its `go` chip. Click a bar to open the workstream's full card and jump to
 its session.
 
 ![the crew board: a family card whose parent waits on an answer, with its two workstreams nested inside (auth-ui opened, its gate shut, with go chips; auth-api collapsed and done), and a quiet row below](docs/img/board.png)
+
+<!-- VIDEO v5 (the crew board): drag ~/Movies/seamux-demo/seamux-v5.mp4 into a GitHub comment,
+     then paste the user-attachments URL it gives on its own line in place of this comment.
+     Made by docs/demo/reel/demo.mjs; see docs/demo/STORYBOARD.md. -->
 
 #### News
 
@@ -286,6 +302,10 @@ Rewrites prose to remove AI writing tells and untangle sentences that are
 hard to parse. The other skills run it over the text they write for people.
 [humanize's README](humanize/README.md).
 
+<!-- VIDEO v4 (restack, bash-guard, humanize): drag ~/Movies/seamux-demo/seamux-v4.mp4 into a GitHub comment,
+     then paste the user-attachments URL it gives on its own line in place of this comment.
+     Made by docs/demo/reel/demo.mjs; see docs/demo/STORYBOARD.md. -->
+
 ### seamux-mods: deep-plan in the terminal
 
 An optional plugin that draws deep-plan inside Claude Code, so you can steer
@@ -324,6 +344,10 @@ tab says so until the server serves `/board`.
 
 Install it with `./install.sh --app` (see [Install](#install)). It needs cmux's
 socket in `automation` mode, which `crew apply` sets.
+
+<!-- VIDEO v6 (the seamux app): drag ~/Movies/seamux-demo/seamux-v6.mp4 into a GitHub comment,
+     then paste the user-attachments URL it gives on its own line in place of this comment.
+     Made by docs/demo/reel/demo.mjs; see docs/demo/STORYBOARD.md. -->
 
 ## Setup
 
