@@ -168,7 +168,7 @@ function pushPlan(ctx, entries) {
 // The warning printed above a push line, as lines of text.
 function warningLines(w, gap) {
   return [`${gap}\x1b[33mwarn\x1b[0m ${w.branch}: the remote has commits this branch doesn't:`,
-    ...w.commits.map(c => `${gap}       ${c.sha} ${c.subject}`),
+    ...w.commits.map(c => `${gap}       ${c.sha} ${plainText(c.subject)}`),
     ...(w.more ? [`${gap}       … and ${w.more} more`] : []),
     `${gap}     ${w.note}`];
 }
@@ -194,14 +194,28 @@ function pushLine(ctx, branch, tip) {
     bareLeaseNoted = true;
     if (!JSONOUT) console.error(`restack: note: push.command "${cmd}" in ${ctx.cfg.path || ".seamux/restack.json"} is a bare lease; pinning it to the recorded tip (remove the setting to silence this)`);
   }
-  if (cmd && !bareLeaseCommand(cmd)) return `${cmd} ${ctx.cfg.remote} ${branch}`;
+  // The lines are pasted into a shell: a name with anything outside the plain
+  // set is single-quoted, so the common case keeps bash-guard's exact form.
+  const b = sq(branch), rem = sq(ctx.cfg.remote);
+  if (cmd && !bareLeaseCommand(cmd)) return `${cmd} ${rem} ${b}`;
   if (cmd && cmd.trim() !== OLD_DEFAULT_PUSH) {
-    const head = tip ? cmd.replace(BARE_LEASE, `--force-with-lease=${branch}:${tip}`)
+    const head = tip ? cmd.replace(BARE_LEASE, () => `--force-with-lease=${b}:${tip}`)
       : cmd.replace(BARE_LEASE, "").replace(/\s+/g, " ").trim();
-    return `${head} ${ctx.cfg.remote} ${branch}:${branch}`;
+    return `${head} ${rem} ${b}:${b}`;
   }
-  if (!tip) return `git push -u ${ctx.cfg.remote} ${branch}`;
-  return `git push --force-with-lease=${branch}:${tip || ""} ${ctx.cfg.remote} ${branch}:${branch}`;
+  if (!tip) return `git push -u ${rem} ${b}`;
+  return `git push --force-with-lease=${b}:${tip} ${rem} ${b}:${b}`;
+}
+// Shell-quote a word only when it needs it.
+function sq(s) {
+  s = String(s);
+  return /^[A-Za-z0-9._\/-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
+}
+// A commit subject as safe terminal text: no C0 controls but tab, no DEL, no
+// C1 controls, so an escape sequence in someone's subject never reaches the
+// terminal as one.
+function plainText(s) {
+  return String(s ?? "").replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/g, "");
 }
 
 function fetchBase(ctx, base) {

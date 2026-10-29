@@ -178,6 +178,13 @@ step("config: refuses the shapes that would lie");
   ok("a valid config passes",
     at({ artifacts: [{ name: "x", paths: ["gen/**"], resolve: "regen", regen: "true" }] }).errors.length === 0);
   ok("no config at all is not an error", load(path.join(TMP, "nowhere")).errors.length === 0);
+{
+  const pc = path.join(TMP, "pushcmd-num.json");
+  fs.writeFileSync(pc, JSON.stringify({ push: { command: 5 } }));
+  const prev = process.env.RESTACK_CONFIG; process.env.RESTACK_CONFIG = pc;
+  const errs = load(TMP).errors; if (prev === undefined) delete process.env.RESTACK_CONFIG; else process.env.RESTACK_CONFIG = prev;
+  ok("a non-string push.command is a config error", errs.some(e => /push\.command must be a non-empty string/.test(e)), errs.join("; "));
+}
 }
 
 // ---------------------------------------------------------------- the core case
@@ -1040,6 +1047,8 @@ step("a remote branch with commits the local one lacks is warned about");
   addDef(other, "g", "golf\n", "feat: g from a teammate");
   git(other, "push", "-q", "origin", "feat1");
   const theirs = git(other, "rev-parse", "HEAD").out.slice(0, 12);
+  write(other, "esc.txt", "x\n"); commit(other, "feat: \x1b[31mred\x1b[0m\x07 subject");
+  git(other, "push", "-q", "origin", "feat1");
   git(r, "fetch", "-q", "origin");   // before the plan: origin/feat1 now has g
   git(r, "checkout", "-q", "master");
   addDef(r, "c", "charlie\n", "master: c");
@@ -1055,6 +1064,7 @@ step("a remote branch with commits the local one lacks is warned about");
   ok("and the advice", /someone else's, pull them in first.*old versions of yours, push as shown/.test(w?.note || ""));
   ok("and none for feat2", (run.json?.warnings || []).length === 1);
   const human = cli(r, "push");
+  ok("a subject's terminal escapes are stripped", !human.out.includes("\x1b[31m") && !human.out.includes("\x07") && human.out.includes("[31mred[0m subject"), JSON.stringify(human.out));
   ok("the human output puts the warning above the line",
     /warn.*feat1[\s\S]*feat: g from a teammate[\s\S]*push as shown\n\s+git push/.test(human.out), human.out);
   const p = cli(r, "push", "--json");
@@ -1140,6 +1150,26 @@ step("a local base behind its upstream");
   git(r, "branch", "-f", "master", "origin/master");
   const fixed = cli(r, "run", "--json", "--no-fetch");
   ok("once the local base is current, the walk runs", fixed.status === 0, fixed.out + fixed.err);
+}
+
+// ---------------------------------------------------------------- quoting
+// The lines are pasted into a shell, so a branch name with shell syntax in it
+// is single-quoted; a plain one is left alone (bash-guard's exact form).
+step("push lines quote a branch name that needs it");
+{
+  const bare = path.join(TMP, "quote-remote.git");
+  spawnSync("git", ["init", "-q", "--bare", bare], { env: ENV });
+  const r = newRepo("quote", cheapCfg);
+  git(r, "remote", "add", "origin", bare);
+  const odd = "feat/it's$(echo)";
+  git(r, "checkout", "-q", "-b", odd);
+  addDef(r, "q", "quebec\n", "feat: q");
+  const p = cli(r, "push", "--json");
+  const line = p.json?.push?.[0] || "";
+  ok("the odd name is single-quoted", line === `git push -u origin 'feat/it'\\''s$(echo)'`, line);
+  const ran = spawnSync("sh", ["-c", line], { cwd: r, encoding: "utf8", env: ENV });
+  ok("and the line pushes exactly that branch", ran.status === 0 &&
+    spawnSync("git", ["--git-dir", bare, "rev-parse", "--verify", `refs/heads/${odd}`], { encoding: "utf8", env: ENV }).status === 0, ran.stderr);
 }
 
 // ---------------------------------------------------------------- doctor / init

@@ -56,7 +56,7 @@ FORBIDDEN = [
 # prefix (WSL's /mnt/c, /Volumes/<disk>, /System/Volumes/Data) may come first.
 # A drive letter is the Windows form's below. macOS spells Users with a
 # capital, so that one is matched case-sensitively.
-HOME_START = r"(?<![\w.-])(?<![A-Za-z]:)(?:/mnt/[A-Za-z]|/Volumes/[^/\s]+|/System/Volumes/Data)?"
+HOME_START = r"(?<![\w.-])(?<![A-Za-z]:)(?:/mnt/[A-Za-z]|/Volumes/[^/\n]+|/System/Volumes/Data)?"
 HOME_FORMS = [
     (HOME_START + r"(?-i:/Users/)(?P<name>[A-Za-z0-9_][\w.-]*)", "an absolute home path (use ~ or __HOME__)"),
     (HOME_START + r"/home/(?P<name>[A-Za-z0-9_][\w.-]*)",        "an absolute home path (use ~ or __HOME__)"),

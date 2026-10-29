@@ -29,6 +29,7 @@ must_flag = {
     "a home path in a file:// URL": "file://" + U + "srivera/notes.md",
     "a WSL mount of a Windows profile": "/mnt/c" + U + "srivera/x",
     "a home on another volume": "/Volumes/Disk" + U + "srivera/x",
+    "a home on a volume with a space": "/Volumes/Macintosh HD" + U + "srivera/x",
     "the Data volume's home": "/System/Volumes/Data" + U + "srivera/x",
     "a home path in brackets": "[" + U + "srivera/x]",
     "a home path after a comma": "a," + H + "srivera",
