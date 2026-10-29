@@ -212,6 +212,8 @@ except Exception:
       mkdir -p "$CREW_STATE" 2>/dev/null
       if printf '%s' "$CREW_PAYLOAD" >"$pl" 2>/dev/null; then
         ( { nohup "$CREW_DIR/asked.sh" "$size" <"$pl" >/dev/null 2>&1; rm -f "$pl"; } & ) >/dev/null 2>&1
+      else
+        rm -f "$pl" 2>/dev/null
       fi
     fi
 

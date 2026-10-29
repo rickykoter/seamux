@@ -614,11 +614,12 @@ fn stop(h: &mut Hook) -> String {
         // unlinked once the job holds it open.
         let pl = h.state.join(payload_name(&h.ws, &sid));
         mkdir(&h.state);
+        // Removed whatever happens: after the job opened it, or half written.
         if std::fs::write(&pl, &h.payload).is_ok() {
             let t = spawn::tool("asked-hook", &[&size]);
             let _ = spawn::detach(&t.argv, Some(&pl), None);
-            let _ = std::fs::remove_file(&pl);
         }
+        let _ = std::fs::remove_file(&pl);
     }
 
     // Cache facts: --stop in the foreground (its stdout is the hook's), the
