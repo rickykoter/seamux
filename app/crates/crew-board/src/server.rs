@@ -719,8 +719,9 @@ fn alive(pid: u32) -> bool {
 }
 
 /// Start the new binary as this server's successor and give it the lock: Ok
-/// once it has taken it (this process should then exit), else why not, with
-/// the lock held again where it can be.
+/// when this process should exit (the successor took it, or the lock stays
+/// another's and this one must not serve unlocked), else why not, with the
+/// lock held again.
 fn hand_off(cell: &std::sync::Mutex<Option<py::Flock>>) -> Result<(), String> {
     let mut child = spawn_server(Some(std::process::id())).map_err(|e| format!("it would not start ({e})"))?;
     let pid = child.id();
@@ -747,9 +748,30 @@ fn hand_off(cell: &std::sync::Mutex<Option<py::Flock>>) -> Result<(), String> {
                 log(&format!("a newer binary is installed: pid {pid} took over late; exiting"));
                 return Ok(());
             }
-            Err(format!("pid {pid} did not take over ({why}), and the lock is another's"))
+            // Never serve without the lock: wait for it, and if it stays
+            // another's, leave (its holder serves, or starts to once this
+            // process has gone).
+            match retake(&state_dir().join("board-intent.lock"), Duration::from_secs(15)) {
+                Some(l) => {
+                    *cell.lock().unwrap_or_else(|e| e.into_inner()) = Some(l);
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    Err(format!("pid {pid} did not take over ({why}); the lock came back"))
+                }
+                None => {
+                    log(&format!("a newer binary is installed; pid {pid} did not take over ({why}), and the lock stays \
+                                  another's: exiting rather than serve without it"));
+                    Ok(())
+                }
+            }
         }
     }
+}
+
+/// The server lock back within `wait`, else None: the caller must then stop
+/// serving, since another process holds it.
+fn retake(path: &Path, wait: Duration) -> Option<py::Flock> {
+    lock_at(path, wait).ok().flatten()
 }
 
 /// How long to wait before trying a failed upgrade handoff again: a minute,
@@ -765,12 +787,16 @@ fn handoff_backoff(failures: u32) -> Duration {
 /// The server lock: at once, or (taking over from a server that is about to
 /// exit) waiting up to 15s for it to go.
 fn server_lock(wait: bool) -> std::io::Result<Option<py::Flock>> {
-    let path = state_dir().join("board-intent.lock");
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    lock_at(&state_dir().join("board-intent.lock"), if wait { Duration::from_secs(15) } else { Duration::ZERO })
+}
+
+/// The lock at `path`, waiting up to `wait` for it.
+fn lock_at(path: &Path, wait: Duration) -> std::io::Result<Option<py::Flock>> {
+    let deadline = std::time::Instant::now() + wait;
     loop {
-        match py::Flock::try_exclusive(&path)? {
+        match py::Flock::try_exclusive(path)? {
             Some(l) => return Ok(Some(l)),
-            None if wait && std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
+            None if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
             None => return Ok(None),
         }
     }
@@ -1184,6 +1210,18 @@ mod tests {
         assert!(identify_within(port, Duration::from_millis(300)).is_err());
         assert!(t.elapsed() < Duration::from_millis(700), "{:?}", t.elapsed());
         drop(l);
+    }
+
+    #[test]
+    fn a_lock_held_elsewhere_is_not_retaken_and_a_free_one_is() {
+        let p = std::env::temp_dir().join(format!("crew-retake-{}.lock", std::process::id()));
+        let other = py::Flock::try_exclusive(&p).unwrap().unwrap();
+        let t = std::time::Instant::now();
+        assert!(retake(&p, Duration::from_millis(300)).is_none());
+        assert!(t.elapsed() >= Duration::from_millis(300) && t.elapsed() < Duration::from_secs(1));
+        drop(other);
+        assert!(retake(&p, Duration::from_millis(300)).is_some());
+        let _ = std::fs::remove_file(&p);
     }
 
     #[test]
