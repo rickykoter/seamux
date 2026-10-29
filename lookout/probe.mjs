@@ -879,7 +879,9 @@ const R1 = repo("r1");
      page.includes("}).catch(e => { e.unreachable = true; throw e; })") && page.includes("live.down || e.unreachable") &&
      !page.includes("/fetch/i") && !page.includes("e instanceof TypeError"));
   ok("page: a draft is saved by one key over what storage holds now, and other tabs' writes are taken in",
-     /const saveDraft = \(k, v, meta\) => \{\s*const all = readDrafts\(\);/.test(page) && page.includes('addEventListener("storage"'));
+     /const saveDraft = \(k, v, meta\) => \{\s*const all = readDrafts\(\);/.test(page) && page.includes('addEventListener("storage"') &&
+     page.includes("for (const k of Object.keys(before)) if (!(k in now)) delete drafts[k];") &&
+     !page.includes("for (const k of Object.keys(drafts)) if (!(k in all)) delete drafts[k];"));
   ok("page: a composer opened on a line whose saved draft does not fit starts empty; the draft stays apart",
      page.includes("if (drafts[key] != null && !placeable(key, file, side, line)) {\n        setAside(key, file, side, line);") &&
      /function setAside\(key, file, side, line\)/.test(page));

@@ -43,11 +43,15 @@
   };
   // Another tab's writes: taken into this tab's copy (not redrawn under the
   // reader), so the next redraw here places them.
+  // Only keys the other tab removed (in its old value, not its new one) leave
+  // this tab's copy: a draft this tab could not save is not in storage
+  // either, and must not be dropped for it.
   window.addEventListener("storage", e => {
     if (e.key !== DRAFTS) return;
-    const all = readDrafts();
-    for (const k of Object.keys(drafts)) if (!(k in all)) delete drafts[k];
-    Object.assign(drafts, all);
+    const parse = v => { try { return JSON.parse(v || "{}") || {}; } catch { return {}; } };
+    const before = parse(e.oldValue), now = parse(e.newValue);
+    for (const k of Object.keys(before)) if (!(k in now)) delete drafts[k];
+    Object.assign(drafts, now);
   });
   // Set by serve(): reopens composers and refills drafts after a redraw.
   let afterDraw = () => {};

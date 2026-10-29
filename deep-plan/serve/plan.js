@@ -169,10 +169,13 @@
   };
   // Reload now if the file moved, unless the reader turned auto-refresh off
   // or is mid-comment.
-  function reloadIfMoved() {
+  // cb(moved), when given: false while the reader is mid-comment (ask again
+  // later); never called with auto-refresh off.
+  function reloadIfMoved(cb) {
     var auto = document.getElementById("dp-auto");
-    if ((auto && !auto.checked) || (window.dpBusy && window.dpBusy())) return;
-    window.__dpChanged(function(moved){ if (moved) location.reload(); });
+    if (auto && !auto.checked) return;
+    if (window.dpBusy && window.dpBusy()) { if (cb) cb(false); return; }
+    window.__dpChanged(function(moved){ if (moved) location.reload(); if (cb) cb(moved); });
   }
 
   // ---------------------------------------------- browser and claiming checks
@@ -334,16 +337,32 @@
   // the run's status moves on, say so in the row, and reload the page if the
   // engine has rewritten it since (its verdict and the increment's aggregate
   // live in the file, not here).
+  //
+  // data-status stays what the file says: the run can finish before the
+  // engine rewrites the page, so the reload check is retried for a while
+  // rather than asked once and forgotten.
   function restatus(li, status) {
-    var was = li.getAttribute("data-status");
+    var was = li.__dpShown || li.getAttribute("data-status");
     if (!status || status === was) return;
-    li.setAttribute("data-status", status);
+    li.__dpShown = status;
     var mark = li.firstElementChild;
     if (mark && mark.classList && mark.classList.contains("dp-mark")) mark.style.visibility = "hidden";
     for (var c = li.firstChild; c; c = c.nextSibling) {
       if (c.nodeType === 3 && c.data.indexOf(was + " \u00b7") >= 0) { c.data = c.data.replace(was + " \u00b7", status + " \u00b7"); break; }
     }
-    reloadIfMoved();
+    if (status !== li.getAttribute("data-status")) awaitRewrite(li, 15);
+  }
+  // Until the file moves (then the page reloads), or tries run out, or the
+  // row's status settles back on what the file says.
+  function awaitRewrite(li, tries) {
+    if (li.__dpWaiting) return;
+    li.__dpWaiting = true;
+    (function again(left) {
+      reloadIfMoved(function(moved){
+        if (moved || left <= 1 || li.__dpShown === li.getAttribute("data-status")) { li.__dpWaiting = false; return; }
+        setTimeout(function(){ again(left - 1); }, 1000);
+      });
+    })(tries);
   }
 
   function poll(li, box) {

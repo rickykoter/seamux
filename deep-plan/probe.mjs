@@ -1280,6 +1280,9 @@ ok("all increments done: Edit allowed, gate retired", edit(path.join(REPO, "a.tx
       pj.includes(".dp-act.dp-busy{") && pj.includes(".dp-act.dp-bad{") && pj.includes(".dp-act.dp-ok{") &&
       pj.includes('m = el("span", "dp-act-msg")') && !/window\.(prompt|confirm)\(/.test(pj) &&
       pj.includes('input: "why is increment " + n + " blocked?"'));
+    ok("plan.js: a check's new status leaves data-status alone and retries the reload check until the file moves",
+      pj.includes("li.__dpShown = status;") && !pj.includes('li.setAttribute("data-status", status)') &&
+      pj.includes("awaitRewrite(li, 15)") && pj.includes("setTimeout(function(){ again(left - 1); }, 1000);"));
     ok("plan.js: the probe's baseline is the served stamp, not the first answer",
       pj.includes("var seen = /^__/.test(STAMP) ? null : STAMP;") && pj.includes("cb(now !== seen);"));
   }
