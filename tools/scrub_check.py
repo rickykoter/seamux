@@ -108,6 +108,30 @@ def _sep_pattern(name):
             r"|\b" + core + r"(?=[\w-]*(?:\.[\w-]+)*\.local\b))")
 
 
+# Hostname labels every machine of a kind shares: a model name, a role, a
+# cloud runner's generated name. None of them says whose machine it is.
+HOST_WORDS = {
+    "localhost", "local", "home", "dev", "server", "laptop", "desktop", "workstation", "pc",
+    "mac", "macbook", "macbookpro", "macbookair", "imac", "macmini", "macstudio", "macpro",
+    "ubuntu", "debian", "fedora", "raspberrypi", "runner", "box", "vm", "host", "computer",
+}
+MODEL_SUFFIX = re.compile(r"[-_]?(?:macbook[-_]?(?:pro|air)?|imac|mac[-_]?(?:mini|studio|pro)|mbp|mba)(?:[-_]?\d+)?$", re.I)
+GENERATED_HOST = re.compile(r"^(?:ip-\d|fv-az|runner-|ghost-|codespaces-|ec2-|localhost)", re.I)
+
+
+def distinctive_host(label):
+    """A hostname label worth hunting for. `jdoe-MacBook-Pro` is (it carries a
+    name); `MacBookPro`, `laptop` and `ip-10-0-0-1` are not."""
+    label = (label or "").strip()
+    if len(label) < 3 or GENERATED_HOST.match(label) or label.lower() in HOST_WORDS:
+        return False
+    rest = MODEL_SUFFIX.sub("", label)
+    if rest != label:
+        rest = re.sub(r"(?i)s$", "", rest) if rest.lower().endswith("s") and len(rest) > 3 else rest
+        return bool(rest) and distinctive(rest)
+    return distinctive(label)
+
+
 def machine_user(user=None):
     if user is None:
         try:
@@ -128,7 +152,7 @@ def env_patterns(user=None, host=None):
     if host is None:
         host = socket.gethostname()
     label = (host or "").split(".")[0]
-    if len(label) >= 3 and label.lower() not in {"localhost"}:
+    if distinctive_host(label):
         out.append((r"\b" + re.escape(label) + r"(?:\.[\w-]+)*\.local\b", "this machine's .local hostname"))
     return out
 

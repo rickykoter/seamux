@@ -130,43 +130,54 @@ function baseFacts(ctx) {
 //
 // The lease alone does not save a teammate's commit that a fetch brought in
 // before the plan: the recorded tip already has it, so the push would pass and
-// drop it. So the walk also records whether the remote tip carries a commit
-// with no patch-equivalent on the branch as it was before the rebase
-// (remoteDiverged), and such a branch gets no push line. By patch, not
-// ancestry: a branch rebased by hand or by gt has rewritten every commit, and
-// is still not missing any of them.
+// drop it. So the walk also records the remote tip's commits that have no
+// patch-equivalent on the branch as it was before the rebase (remoteOnly), and
+// the push line for such a branch comes with a warning naming them. By patch,
+// not ancestry: a branch rebased by hand or by gt has rewritten every commit
+// and is still not missing any of them. A warning, not a hold: a commit
+// amended or squashed before the restack looks the same as a teammate's, and
+// only the person can tell which it is.
 function remoteTip(ctx, branch) {
   return revParse(ctx.cwd, `refs/remotes/${ctx.cfg.remote}/${branch}`);
 }
-function remoteDiverged(ctx, branch, tip) {
+function remoteOnly(ctx, branch, tip) {
   const local = revParse(ctx.cwd, `refs/heads/${branch}`);
-  if (!tip || !local || isAncestor(ctx.cwd, tip, local)) return false;
-  // `git cherry <branch> <tip>`: tip's commits not on the branch, "+" when
+  if (!tip || !local || isAncestor(ctx.cwd, tip, local)) return [];
+  // `git cherry -v <branch> <tip>`: tip's commits not on the branch, "+" when
   // none of the branch's commits carries the same patch.
-  const c = git(ctx.cwd, ["cherry", local, tip]);
-  if (!c.ok) return true;   // cannot tell: hold it rather than risk the drop
-  return c.out.split("\n").some(l => l.startsWith("+"));
+  const c = git(ctx.cwd, ["cherry", "-v", local, tip]);
+  if (!c.ok) return [{ sha: tip.slice(0, 12), subject: "(could not compare with the branch)" }];
+  return c.out.split("\n").filter(l => l.startsWith("+ ")).map(l => {
+    const [sha, ...subj] = l.slice(2).split(" ");
+    return { sha: sha.slice(0, 12), subject: subj.join(" ") };
+  });
 }
-// The push lines for done branches, [{ branch, tip, diverged, onto }], bottom
-// first: the safe ones in `lines`, the rest in `held` with the reason. A
-// branch stacked on a held one is held too: it was rebased onto a version of
-// its parent the remote does not have. With no `onto`, the chain is linear,
-// so everything above a held branch is held.
+// The push lines for done branches, [{ branch, tip, remoteOnly }], bottom
+// first, and a warning for each branch whose remote has commits it lacks.
 function pushPlan(ctx, entries) {
-  const lines = [], held = [];
-  const heldNames = new Set();
-  let lowest = null;
+  const lines = [], warnings = [];
   for (const e of entries) {
-    const under = e.onto !== undefined ? (heldNames.has(e.onto) ? e.onto : null) : lowest;
-    if (e.diverged || under) {
-      held.push({ branch: e.branch, why: e.diverged
-        ? `${ctx.cfg.remote}/${e.branch} has commits this branch doesn't: pull or rebase them in before pushing`
-        : `held: ${under} is held` });
-      heldNames.add(e.branch);
-      if (!lowest) lowest = e.branch;
-    } else lines.push(pushLine(ctx, e.branch, e.tip));
+    const line = pushLine(ctx, e.branch, e.tip);
+    lines.push(line);
+    if (e.remoteOnly && e.remoteOnly.length) warnings.push({ branch: e.branch, line,
+      commits: e.remoteOnly.slice(0, 5), more: Math.max(0, e.remoteOnly.length - 5),
+      note: "if these are someone else's, pull them in first; if they're old versions of yours, push as shown" });
   }
-  return { lines, held };
+  return { lines, warnings };
+}
+// The warning printed above a push line, as lines of text.
+function warningLines(w, gap) {
+  return [`${gap}\x1b[33mwarn\x1b[0m ${w.branch}: the remote has commits this branch doesn't:`,
+    ...w.commits.map(c => `${gap}       ${c.sha} ${c.subject}`),
+    ...(w.more ? [`${gap}       … and ${w.more} more`] : []),
+    `${gap}     ${w.note}`];
+}
+// The tip to lease on and the remote-only commits for one step: as recorded
+// by the walk, else (state from before they were recorded) read now.
+function pushEntry(ctx, branch, s) {
+  const tip = s && "remoteTip" in s ? s.remoteTip : remoteTip(ctx, branch);
+  const only = s && Array.isArray(s.remoteOnly) ? s.remoteOnly : remoteOnly(ctx, branch, tip);
+  return { branch, tip, remoteOnly: only };
 }
 // A push.command with a bare lease (no `=`), such as a copy of the old
 // default, would keep the unpinned form: its lease token is swapped for the
@@ -558,10 +569,10 @@ function cmdRun(ctx) {
 
   // remoteTip is the lease each push line pins (pushLine): the remote branch as
   // this repo saw it when the walk was planned, before anything moved.
-  // remoteDiverged: that tip has commits the branch never had (pushPlan).
+  // remoteOnly: that tip's commits the branch never had (pushPlan warns).
   const steps = planned.map(s => {
     const tip = remoteTip(ctx, s.branch);
-    return { ...s, status: "pending", newTip: null, remoteTip: tip, remoteDiverged: remoteDiverged(ctx, s.branch, tip) };
+    return { ...s, status: "pending", newTip: null, remoteTip: tip, remoteOnly: remoteOnly(ctx, s.branch, tip) };
   });
   ctx.st = { ...S.fresh(), stale: ctx.st.stale || [], phase: "walking",
              startedAt: new Date().toISOString(), base: { ref: base.ref, sha: base.sha },
@@ -804,17 +815,12 @@ function finish(ctx) {
   if (st.returnTo && currentBranch(ctx.cwd) !== st.returnTo && !OPTS.dryRun)
     git(ctx.cwd, ["checkout", "--quiet", st.returnTo]);
 
-  const plan = broken.length ? { lines: [], held: [] } : pushPlan(ctx, st.steps.filter(s => s.status === "done")
-    .map(s => {
-      if ("remoteTip" in s) return { branch: s.branch, tip: s.remoteTip, diverged: !!s.remoteDiverged, onto: s.onto };
-      // State from before tips were recorded: the tracking ref, checked now.
-      const tip = remoteTip(ctx, s.branch);
-      return { branch: s.branch, tip, diverged: remoteDiverged(ctx, s.branch, tip), onto: s.onto };
-    }));
-  const pushes = plan.lines, held = plan.held;
+  const plan = broken.length ? { lines: [], warnings: [] } : pushPlan(ctx, st.steps.filter(s => s.status === "done")
+    .map(s => pushEntry(ctx, s.branch, s)));
+  const pushes = plan.lines, warnings = plan.warnings;
   const escalatedDrops = (st.dropped || []).filter(d => d.escalated);
   const out = {
-    verb, status: broken.length ? "error" : escalatedDrops.length || held.length ? "needs-human" : st.stale.length ? "stale" : "ok", repo: ctx.cwd,
+    verb, status: broken.length ? "error" : escalatedDrops.length ? "needs-human" : st.stale.length ? "stale" : "ok", repo: ctx.cwd,
     steps: st.steps.map(s => ({ branch: s.branch, status: s.status, tip: s.newTip && s.newTip.slice(0, 12), ...(s.why ? { why: s.why } : {}) })),
     dropped: st.dropped || [],
     stale: st.stale,
@@ -827,8 +833,8 @@ function finish(ctx) {
       ...pushes,
     ],
     push: pushes,
-    ...(held.length ? { held } : {}),
-    exit: broken.length ? 1 : escalatedDrops.length || held.length ? NEEDS_HUMAN : 0,
+    ...(warnings.length ? { warnings } : {}),
+    exit: broken.length ? 1 : escalatedDrops.length ? NEEDS_HUMAN : 0,
   };
   emit(out, o => {
     say("");
@@ -850,8 +856,10 @@ function finish(ctx) {
     }
     say("\n  then: restack verify");
     say("        restack check");
-    for (const p of o.push) say(`        ${p}`);
-    for (const h of o.held || []) say(`        \x1b[33mno push line for ${h.branch}\x1b[0m — ${h.why}`);
+    for (const p of o.push) {
+      for (const w of (o.warnings || []).filter(w => w.line === p)) for (const l of warningLines(w, "        ")) say(l);
+      say(`        ${p}`);
+    }
     say("  (push lines are printed, never run — see PUSH in the skill)");
   });
 }
@@ -1046,18 +1054,13 @@ function cmdPush(ctx) {
   const done = (ctx.st.steps || []).filter(s => s.status === "done");
   const byBranch = new Map(done.map(s => [s.branch, s]));
   const names = done.length ? done.map(s => s.branch) : (stack ? stack.chain.map(c => c.name) : [ctx.branch].filter(Boolean));
-  const { lines, held } = pushPlan(ctx, names.map(b => {
-    const s = byBranch.get(b);
-    if (s && "remoteTip" in s) return { branch: b, tip: s.remoteTip, diverged: !!s.remoteDiverged, onto: s.onto };
-    const tip = remoteTip(ctx, b);
-    return { branch: b, tip, diverged: remoteDiverged(ctx, b, tip), ...(s ? { onto: s.onto } : {}) };
-  }));
+  const { lines, warnings } = pushPlan(ctx, names.map(b => pushEntry(ctx, b, byBranch.get(b))));
   const blocked = (ctx.st.stale || []).length > 0;
   emit({
-    verb: "push", status: blocked ? "stale" : held.length ? "needs-human" : "ok",
-    push: lines, stale: ctx.st.stale || [], ...(held.length ? { held } : {}),
+    verb: "push", status: blocked ? "stale" : "ok",
+    push: lines, stale: ctx.st.stale || [], ...(warnings.length ? { warnings } : {}),
     note: "printed, never run — a human runs these",
-    exit: blocked ? 1 : held.length ? NEEDS_HUMAN : 0,
+    exit: blocked ? 1 : 0,
   }, o => {
     if (o.stale.length) {
       say("  \x1b[33mstale artifacts — pushing now is the CI failure you are trying to avoid:\x1b[0m");
@@ -1065,8 +1068,10 @@ function cmdPush(ctx) {
       say("");
     }
     say("  run these yourself (the stack must go up bottom-first):");
-    for (const l of o.push) say(`    ${l}`);
-    for (const h of o.held || []) say(`    \x1b[33mno push line for ${h.branch}\x1b[0m — ${h.why}`);
+    for (const l of o.push) {
+      for (const w of (o.warnings || []).filter(w => w.line === l)) for (const x of warningLines(w, "    ")) say(x);
+      say(`    ${l}`);
+    }
   });
 }
 

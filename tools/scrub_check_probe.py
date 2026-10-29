@@ -91,6 +91,12 @@ for name, line in must_pass.items():
     hits = sc.scan_line(line, pats)
     check("passes " + name, not hits, repr(hits))
 
+for host in ("MacBookPro", "MacBook-Pro", "laptop", "ip-10-0-0-1", "fv-az123-456", "localhost", "dev", "Mac-mini"):
+    check(f"a generic hostname ({host}) adds no hostname pattern",
+          not [w for _, w in sc.env_patterns(user="runner", host=host + ".local")], repr(sc.env_patterns(user="runner", host=host)))
+for host in ("srivera-mbp", "sriveras-MacBook-Pro", "kestrel-7"):
+    check(f"a distinctive hostname ({host}) adds a pattern",
+          bool(sc.env_patterns(user="runner", host=host + ".local")))
 for acct in ("runner", "build", "admin", "dev", "test", "user", "pat"):
     check(f"a common or short account ({acct}) adds no username pattern",
           not sc.env_patterns(user=acct, host="localhost"))

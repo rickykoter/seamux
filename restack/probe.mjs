@@ -1022,8 +1022,10 @@ step("push lines pin the lease to the remote tip the walk recorded");
 
 // ---------------------------------------------------------------- a teammate's commit fetched before the plan
 // The recorded tip already holds their commit, so the lease would pass and
-// drop it. The walk sees the branch never had it and prints no push line.
-step("a remote branch with commits the local one lacks gets no push line");
+// drop it. The walk sees the branch never had it and warns, naming the
+// commits, above a push line it still prints: an amended commit of one's own
+// looks the same, and only the person can tell.
+step("a remote branch with commits the local one lacks is warned about");
 {
   const bare = path.join(TMP, "held-remote.git");
   spawnSync("git", ["init", "-q", "--bare", bare], { env: ENV });
@@ -1037,35 +1039,41 @@ step("a remote branch with commits the local one lacks gets no push line");
   spawnSync("git", ["clone", "-q", "-b", "feat1", bare, other], { env: ENV });
   addDef(other, "g", "golf\n", "feat: g from a teammate");
   git(other, "push", "-q", "origin", "feat1");
+  const theirs = git(other, "rev-parse", "HEAD").out.slice(0, 12);
   git(r, "fetch", "-q", "origin");   // before the plan: origin/feat1 now has g
   git(r, "checkout", "-q", "master");
   addDef(r, "c", "charlie\n", "master: c");
-  // feat2 sits on feat1: rebased onto a feat1 the remote never gets.
   git(r, "checkout", "-q", "-b", "feat2", "feat1");
   addDef(r, "h", "hotel\n", "feat: h on top");
   const run = cli(r, "run", "--json", "--no-fetch");
-  ok("the walk finishes but needs a human", run.status === 2 && run.json?.status === "needs-human", run.out + run.err);
-  ok("with no push line for feat1", (run.json?.push || []).length === 0, JSON.stringify(run.json?.push));
-  ok("and says why", /origin\/feat1 has commits this branch doesn't/.test(run.json?.held?.[0]?.why || ""), JSON.stringify(run.json?.held));
-  ok("the branch above is held for its parent",
-    run.json?.held?.[1]?.branch === "feat2" && run.json.held[1].why === "held: feat1 is held", JSON.stringify(run.json?.held));
+  ok("the walk finishes ok: a warning is not a stop", run.status === 0 && run.json?.status === "ok", run.out + run.err);
+  ok("both push lines are printed", (run.json?.push || []).length === 2, JSON.stringify(run.json?.push));
+  const w = run.json?.warnings?.[0];
+  ok("with a warning for feat1 naming the remote-only commit",
+    w?.branch === "feat1" && w.commits?.[0]?.sha === theirs && w.commits[0].subject === "feat: g from a teammate" && w.line === run.json.push[0],
+    JSON.stringify(run.json?.warnings));
+  ok("and the advice", /someone else's, pull them in first.*old versions of yours, push as shown/.test(w?.note || ""));
+  ok("and none for feat2", (run.json?.warnings || []).length === 1);
+  const human = cli(r, "push");
+  ok("the human output puts the warning above the line",
+    /warn.*feat1[\s\S]*feat: g from a teammate[\s\S]*push as shown\n\s+git push/.test(human.out), human.out);
   const p = cli(r, "push", "--json");
-  ok("restack push holds it back too", p.status === 2 && (p.json?.push || []).length === 0 && p.json?.held?.[0]?.branch === "feat1", p.out);
+  ok("restack push warns the same way, exit 0", p.status === 0 && p.json?.push?.length === 2 && p.json?.warnings?.[0]?.branch === "feat1", p.out);
   // State written before tips were recorded: push falls back to the
   // tracking ref and still runs the same check.
   const sp = path.join(r, ".git", "seamux-restack.json");
   const st = JSON.parse(fs.readFileSync(sp, "utf8"));
-  for (const s of st.steps) { delete s.remoteTip; delete s.remoteDiverged; }
+  for (const s of st.steps) { delete s.remoteTip; delete s.remoteOnly; }
   fs.writeFileSync(sp, JSON.stringify(st));
   const old = cli(r, "push", "--json");
-  ok("state with no recorded tip still holds it", old.status === 2 && old.json?.held?.[0]?.branch === "feat1", old.out);
+  ok("state with no recorded tip still warns", old.status === 0 && old.json?.warnings?.[0]?.branch === "feat1", old.out);
 }
 
 // ---------------------------------------------------------------- no walk on record: judged by patch
 // `restack push` with no walk compares the remote with the branch as it is
 // now. A branch rebased by hand rewrote every commit but lacks none of them;
 // a teammate's commit on the remote is still caught.
-step("with no walk on record, divergence is by patch, not ancestry");
+step("with no walk on record, remote-only commits are found by patch");
 {
   const bare = path.join(TMP, "patch-remote.git");
   spawnSync("git", ["init", "-q", "--bare", bare], { env: ENV });
@@ -1082,7 +1090,7 @@ step("with no walk on record, divergence is by patch, not ancestry");
   const reb = git(r, "rebase", "-q", "master");
   ok("the branch is rebased by hand", reb.ok && git(r, "rev-parse", "feat1").out !== pushed, reb.err);
   const p = cli(r, "push", "--json");
-  ok("its push line is printed, not held", p.status === 0 && (p.json?.push || [])[0] === `git push --force-with-lease=feat1:${pushed} origin feat1:feat1`, p.out);
+  ok("its push line is printed with no warning", p.status === 0 && !p.json?.warnings && (p.json?.push || [])[0] === `git push --force-with-lease=feat1:${pushed} origin feat1:feat1`, p.out);
 
   const other = path.join(TMP, "patch-other");
   spawnSync("git", ["clone", "-q", "-b", "feat1", bare, other], { env: ENV });
@@ -1090,7 +1098,7 @@ step("with no walk on record, divergence is by patch, not ancestry");
   git(other, "push", "-q", "origin", "feat1");
   git(r, "fetch", "-q", "origin");
   const h = cli(r, "push", "--json");
-  ok("a teammate's commit on the remote holds it", h.status === 2 && h.json?.held?.[0]?.branch === "feat1", h.out);
+  ok("a teammate's commit on the remote is warned about", h.status === 0 && h.json?.warnings?.[0]?.commits?.[0]?.subject === "feat: teammate", h.out);
 }
 
 // ---------------------------------------------------------------- a stale local base
