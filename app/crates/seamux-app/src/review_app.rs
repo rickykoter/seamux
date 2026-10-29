@@ -432,10 +432,48 @@ pub fn stop_all() {
 fn orphan(j: &Job) -> Option<String> {
     still_running(j).then(|| {
         format!(
-            "an agent from before the app last quit may still be working in its worktree (process group {}, see `ps -g {}`); wait for it to finish, then try again",
+            "an agent from before the app last quit may still be working in its worktree (process group {}, see `ps -g {}`); wait for it to finish or stop it, then try again",
             j.pgid, j.pgid
         )
     })
+}
+
+/// The saved agent group of job `j`, if it is still the run that saved it
+/// (its leader's start time matches): the only group Stop may signal.
+fn verified_orphan(j: &Job) -> Option<(i32, String)> {
+    still_running(j).then(|| (j.pgid, j.pgid_start.clone()))
+}
+
+/// Stop the agent a crashed app left running in a review's worktree, which
+/// orphan() otherwise refuses every action over. Async: it waits on the stop.
+#[tauri::command]
+pub async fn review_stop_orphan(id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || stop_orphan(&id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn stop_orphan(id: &str) -> Result<(), String> {
+    let j = get(id)?;
+    if !j.busy.is_empty() || !matches!(j.status.as_str(), "ready" | "failed") {
+        return Err("this one is running now; it stops on its own".into());
+    }
+    if let Some(target) = verified_orphan(&j) {
+        stop_groups(&[target], Duration::from_secs(3), Leader::Saved);
+        if still_running(&j) {
+            return Err(format!("the old agent (process group {}) did not stop", j.pgid));
+        }
+        note(id, &format!("stopped the agent left from the last session (process group {})", j.pgid));
+    }
+    // Stopped now, or already gone (or the number is someone else's now).
+    update(id, |x| {
+        if x.pgid == j.pgid {
+            x.pgid = 0;
+            x.pgid_start.clear();
+        }
+    });
+    refresh(id);
+    Ok(())
 }
 
 /// `exec`, with each line of stdout also handed to `on_line` as it arrives,
@@ -1896,6 +1934,28 @@ mod tests {
         let _ = c.kill();
         let _ = c.wait();
         assert_eq!(claimable(&left), Ok(()));
+    }
+
+    #[test]
+    fn stop_signals_only_the_verified_old_agent() {
+        let mut c = Command::new("sleep").arg("30").process_group(0).spawn().unwrap();
+        let pgid = c.id() as i32;
+        let start = started_at(pgid);
+        // Another start time, or none saved: a number someone else holds now.
+        assert_eq!(verified_orphan(&Job { pgid, pgid_start: "Thu Jan  1 00:00:00 1970".into(), ..Default::default() }), None);
+        assert_eq!(verified_orphan(&Job { pgid, ..Default::default() }), None);
+        assert_eq!(verified_orphan(&Job::default()), None);
+        let j = Job { pgid, pgid_start: start.clone(), ..Default::default() };
+        let target = verified_orphan(&j).unwrap();
+        assert_eq!(target, (pgid, start));
+        // What stop_orphan does with it.
+        stop_groups(&[target], Duration::from_secs(3), Leader::Saved);
+        let t = Instant::now();
+        while c.try_wait().unwrap().is_none() && t.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(c.try_wait().unwrap().is_some(), "stopped");
+        assert_eq!(verified_orphan(&j), None);
     }
 
     #[test]

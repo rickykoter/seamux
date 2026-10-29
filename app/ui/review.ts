@@ -2,6 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 // A job as review_app.rs serves it.
+/** What review_app's orphan() refusal says: an agent from the last session still runs there. */
+const ORPHAN = "may still be working in its worktree";
+
 type Job = {
   id: string;
   input: string;
@@ -175,7 +178,7 @@ export class ReviewView {
   private pickerOpen = new Set<string>();
   /** Logs the reader opened or closed, so a redraw keeps them that way. */
   private logOpen = new Map<string, boolean>();
-  private confirm = new Map<string, "post" | "push" | "remove" | "remove-unreadable">();
+  private confirm = new Map<string, "post" | "push" | "remove" | "remove-unreadable" | "orphan" | "stop-orphan">();
   /** Per job: the run its ticks, findings, picker and confirm belong to. */
   private runs = new Map<string, string>();
 
@@ -304,7 +307,8 @@ export class ReviewView {
 
   // ---- actions ----
 
-  private async start(input: string, depth: string, model: string): Promise<void> {
+  /** `again`: the card being reviewed again, when it is a Re-review. */
+  private async start(input: string, depth: string, model: string, again?: Job): Promise<void> {
     this.err.textContent = "";
     if (!input) return;
     this.go.disabled = true;
@@ -316,6 +320,7 @@ export class ReviewView {
       this.pick(`job:${id}`);
     } catch (e) {
       this.err.textContent = String(e);
+      if (again) this.offerStop(again, e);
     } finally {
       this.go.disabled = false;
     }
@@ -325,6 +330,24 @@ export class ReviewView {
     this.err.textContent = "";
     try {
       await invoke(cmd, { id: j.id, ...args });
+    } catch (e) {
+      this.err.textContent = String(e);
+      this.offerStop(j, e);
+    }
+    this.render(true);
+  }
+
+  /** A refusal over an agent left running from the last session: offer to stop it. */
+  private offerStop(j: Job, e: unknown): void {
+    if (!String(e).includes(ORPHAN)) return;
+    this.confirm.set(j.id, "orphan");
+    this.render(true);
+  }
+
+  private async stopOrphan(j: Job): Promise<void> {
+    this.err.textContent = "";
+    try {
+      await invoke("review_stop_orphan", { id: j.id });
     } catch (e) {
       this.err.textContent = String(e);
     }
@@ -345,7 +368,8 @@ export class ReviewView {
       // couldn't read the worktree: ask again, saying so.
       const why = String(e);
       this.err.textContent = why;
-      if (why.includes("nothing was removed")) this.confirm.set(j.id, "remove");
+      if (why.includes(ORPHAN)) this.confirm.set(j.id, "orphan");
+      else if (why.includes("nothing was removed")) this.confirm.set(j.id, "remove");
       else if (why.includes("couldn't read its worktree")) this.confirm.set(j.id, "remove-unreadable");
       this.render(true);
     }
@@ -474,7 +498,7 @@ export class ReviewView {
     const chip = el("span", `r-chip ${running ? "running" : j.status}`, j.busy || (running ? "reviewing" : j.status));
     const buttons: HTMLElement[] = [];
     if (!running && !j.busy) {
-      const again = btn("Re-review", () => void this.start(j.input, j.depth, j.model));
+      const again = btn("Re-review", () => void this.start(j.input, j.depth, j.model, j));
       again.title = "Review it again from its latest commit. This replaces this run and its worktree.";
       buttons.push(again, btn("Remove", () => {
         this.confirm.set(j.id, "remove");
@@ -493,6 +517,22 @@ export class ReviewView {
       parts.push(this.confirmBox(j, `Remove this review and its worktree?${edits}${unpushed}`, "Remove", () => void this.remove(j, changed, commits, false)));
     } else if (this.confirm.get(j.id) === "remove-unreadable") {
       parts.push(this.confirmBox(j, "Git couldn't read this review's worktree, so what it holds is unknown. Remove the review and delete the worktree anyway, with whatever is in it?", "Delete anyway", () => void this.remove(j, 0, 0, true)));
+    } else if (this.confirm.get(j.id) === "orphan") {
+      const c = el("div", "r-confirm");
+      c.append(
+        el("span", "", "An agent from the last session is still running in this worktree."),
+        btn("Stop old agent", () => {
+          this.confirm.set(j.id, "stop-orphan");
+          this.render(true);
+        }, "r-btn primary"),
+        btn("Cancel", () => {
+          this.confirm.delete(j.id);
+          this.render(true);
+        }, "r-btn quiet"),
+      );
+      parts.push(c);
+    } else if (this.confirm.get(j.id) === "stop-orphan") {
+      parts.push(this.confirmBox(j, "Stop the agent still running from the last session in this worktree?", "Stop it", () => void this.stopOrphan(j)));
     }
     if (running) parts.push(this.progress(j));
     else if (j.status === "failed") {
