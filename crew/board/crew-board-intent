@@ -1550,11 +1550,25 @@ BOARD_WAKE_EVENTS = ["agent.hook.Notification", "agent.hook.Stop", "workspace.cr
                      "workspace.closed", "workspace.renamed", "workspace.selected"]
 BOARD_IDLE_STOP = 60.0
 
+# The origins that frame the board (the seamux app's webview and its dev
+# server), plus CREW_INTENT_FRAME_ANCESTORS: intent.js posts to and hears from
+# only these. The same list as parent_origins() in the Rust server.rs.
+_ORIGIN_OK = re.compile(r"^[a-z][a-z0-9+.-]*://[A-Za-z0-9.:\[\]-]+$")
+
+
+def parent_origins():
+    out = ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost", "http://localhost:5173"]
+    for o in os.environ.get("CREW_INTENT_FRAME_ANCESTORS", "").split():
+        if _ORIGIN_OK.match(o) and o not in out:
+            out.append(o)
+    return out
+
+
 BOARD_JS = """
 <style>html[data-feed="lost"] #stamp::after{content:" · reconnecting"}</style>
 <script>
 (function(){
-  var T = "__TOKEN__", PORT = __PORT__;
+  var T = "__TOKEN__", PORT = __PORT__, PARENTS = __PARENTS__;
   // EventSource reconnects by itself; the stamp says so while it is down.
   var es = new EventSource("/board/events?t=" + encodeURIComponent(T));
   es.addEventListener("state", function(ev){
@@ -1562,7 +1576,7 @@ BOARD_JS = """
     try { d = JSON.parse(ev.data); } catch (e) { return; }
     document.documentElement.removeAttribute("data-feed");
     __boardRender(d);
-    __boardIntent({ port: PORT, token: T });
+    __boardIntent({ port: PORT, token: T, parents: PARENTS });
   });
   es.onerror = function(){ document.documentElement.setAttribute("data-feed", "lost"); };
 })();
@@ -1960,7 +1974,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except OSError as exc:
                 return self._json(500, {"error": str(exc)})
             boot = scripts + BOARD_JS.replace("__TOKEN__", self.token).replace(
-                "__PORT__", str(self.server.server_address[1]))
+                "__PORT__", str(self.server.server_address[1])).replace(
+                "__PARENTS__", json.dumps(parent_origins()))
             html = html.replace("</body>", boot + "</body>", 1) if "</body>" in html else html + boot
             body = html.encode("utf-8")
             self.send_response(200)

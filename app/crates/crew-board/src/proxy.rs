@@ -131,6 +131,19 @@ fn start_lock(p: Plugin) -> std::sync::MutexGuard<'static, ()> {
     .unwrap_or_else(|e| e.into_inner())
 }
 
+/// A start that failed, and why: requests that waited on it (or come within
+/// FAILED_FOR) answer with it rather than each running `serve` again.
+const FAILED_FOR: Duration = Duration::from_secs(10);
+
+fn failed(p: Plugin) -> &'static std::sync::Mutex<Option<(std::time::Instant, String)>> {
+    static DEEP_PLAN: std::sync::Mutex<Option<(std::time::Instant, String)>> = std::sync::Mutex::new(None);
+    static LOOKOUT: std::sync::Mutex<Option<(std::time::Instant, String)>> = std::sync::Mutex::new(None);
+    match p {
+        Plugin::DeepPlan => &DEEP_PLAN,
+        Plugin::Lookout => &LOOKOUT,
+    }
+}
+
 /// The plugin's server, started through its CLI when none answers.
 pub fn ensure(p: Plugin) -> Result<u16, String> {
     if let Some(port) = live_port(p) {
@@ -141,6 +154,18 @@ pub fn ensure(p: Plugin) -> Result<u16, String> {
     if let Some(port) = live_port(p) {
         return Ok(port);
     }
+    if let Some((at, why)) = failed(p).lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if at.elapsed() < FAILED_FOR {
+            return Err(why.clone());
+        }
+    }
+    let out = start(p);
+    *failed(p).lock().unwrap_or_else(|e| e.into_inner()) = out.as_ref().err().map(|e| (std::time::Instant::now(), e.clone()));
+    out
+}
+
+/// One `<cli> serve`, and the port it then answers on.
+fn start(p: Plugin) -> Result<u16, String> {
     let Some((node, cli)) = p.cli() else {
         return Err(format!("{} is not installed here (no engine pointer, or no node)", p.name()));
     };

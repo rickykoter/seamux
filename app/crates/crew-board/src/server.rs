@@ -427,8 +427,12 @@ pub fn target_path(target: &str) -> &str {
     rel.split('#').next().unwrap_or("")
 }
 
+/// How long a connection may take to send its request line and headers: short,
+/// so sockets that send nothing do not hold the connection cap.
+const HEAD_WAIT: Duration = Duration::from_secs(5);
+
 fn handle(stream: TcpStream, port: u16, token: String) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    let _ = stream.set_read_timeout(Some(HEAD_WAIT));
     let mut reader = BufReader::new(stream);
     let line = match read_capped(&mut reader) {
         Ok(Some(l)) => l,
@@ -454,6 +458,8 @@ fn handle(stream: TcpStream, port: u16, token: String) {
             headers.push((k.trim().to_string(), v.trim().to_string()));
         }
     }
+    // The head is in: a body (a POST's) may take longer to arrive.
+    let _ = reader.get_ref().set_read_timeout(Some(Duration::from_secs(30)));
     let rel = target_path(parts.get(1).copied().unwrap_or(""));
     let (path, query) = rel.split_once('?').unwrap_or((rel, ""));
     let mut req = Request {
@@ -597,13 +603,27 @@ fn server_lock(wait: bool) -> std::io::Result<Option<py::Flock>> {
 const MAX_CONNS: usize = 256;
 static CONNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// Runs on the accept thread, so every wait is short: read what the client
+/// already sent, answer, shut the write side and drain briefly, so the close
+/// is not a reset that loses the 503 on the client's side.
 fn too_busy(mut s: TcpStream) {
     let _ = s.set_write_timeout(Some(Duration::from_secs(1)));
+    let _ = s.set_read_timeout(Some(Duration::from_millis(100)));
+    let mut sink = [0u8; 8192];
+    let _ = s.read(&mut sink);
     let body = b"too many connections";
     let head = format!("HTTP/1.0 503 {}\r\nServer: crew-board-intent\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n",
         reason(503), body.len());
     let _ = s.write_all(head.as_bytes());
     let _ = s.write_all(body);
+    let _ = s.shutdown(std::net::Shutdown::Write);
+    let mut total = 0;
+    while total < 64 * 1024 {
+        match s.read(&mut sink) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => total += n,
+        }
+    }
 }
 
 /// The token serve() would use now (for the selftest).

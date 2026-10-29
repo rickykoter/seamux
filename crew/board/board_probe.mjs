@@ -1347,7 +1347,7 @@ if (live && Array.isArray(live.rows)) {
   const last = () => q(fetched[fetched.length - 1]);
 
   checks.push(["intent: an older page's click CSS is replaced on upgrade",
-    oldCss.getAttribute("data-v") === "14" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
+    oldCss.getAttribute("data-v") === "15" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
   checks.push(["intent: a delegated child's go chip is muted, never filled or breathing",
     /\.row \.chip\.chip\[title\^="parent goes"\]\{[^}]*background:transparent[^}]*animation:none/.test(oldCss.textContent)]);
   const fold = () => JSON.parse(host.getAttribute("data-fold"));
@@ -2556,9 +2556,11 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
       const fa = String(bp.headers["content-security-policy"] || "");
       checks.push(["board page: frame-ancestors lets the app and this server frame it, and nothing else",
         /^frame-ancestors 'self' http:\/\/127\.0\.0\.1:\d+ http:\/\/localhost:\d+ tauri:\/\/localhost /.test(fa) && !fa.includes("*"), fa]);
-      checks.push(["board page: intent.js is told the app origins it may post to",
-        /PARENTS = \["tauri:\/\/localhost",/.test(bp.body) && bp.body.includes("parents: PARENTS")]);
     }
+    // Either server (the retired Python too) tells intent.js who may frame it:
+    // without the list, a framed board ignores every message from the app.
+    checks.push(["board page: intent.js is told the app origins it may post to",
+      /PARENTS = \["tauri:\/\/localhost",/.test(bp.body) && bp.body.includes("parents: PARENTS")]);
     checks.push(["board page: board.html with the renderer, the click targets and the feed, before </body>",
       bp.status === 200 && bp.body.includes('id="rows"') && bp.body.includes("function __boardRender") &&
       bp.body.includes("function __boardIntent") && bp.body.includes(`new EventSource("/board/events?t=" + encodeURIComponent(T))`) &&

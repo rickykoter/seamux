@@ -53,7 +53,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "14";
+  var V = "15";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -277,14 +277,20 @@ function __boardIntent(cfg) {
     if (Object.prototype.toString.call(q) !== "[object Array]") q = [];
     q.push(msg);
     host.setAttribute("data-app-pending", JSON.stringify(q.slice(-10)));
-    // An app that never names its origin: say so, and drop what waited.
-    if (q.length === 1) setTimeout(function () {
+    // An app that never names its origin: say so, and drop what waited. One
+    // timer, restarted by each message queued and cancelled by a flush.
+    clearTimeout(pendTimer);
+    pendTimer = setTimeout(function () {
+      pendTimer = 0;
       if (appOrigin() || !host.getAttribute("data-app-pending")) return;
       clearPending();
       toast("the app didn't answer");
     }, 3000);
   }
+  var pendTimer = 0;
   function clearPending() {
+    clearTimeout(pendTimer);
+    pendTimer = 0;
     if (host.removeAttribute) host.removeAttribute("data-app-pending");
     else host.setAttribute("data-app-pending", "");
   }
