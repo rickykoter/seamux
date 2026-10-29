@@ -29,10 +29,23 @@
   // against, and the text of its line then, so a new diff never places it
   // under different code.
   const draftText = k => { const d = drafts[k]; return d == null ? "" : typeof d === "string" ? d : d.t || ""; };
+  // Read-modify-write of one key: another tab on this review keeps its own
+  // drafts in the same entry, and writing this tab's whole copy would drop them.
+  const readDrafts = () => { try { return JSON.parse(store.get(DRAFTS, "{}")) || {}; } catch { return {}; } };
   const saveDraft = (k, v, meta) => {
-    if (String(v || "").trim()) drafts[k] = meta ? { t: v, ...meta } : v; else delete drafts[k];
-    store.set(DRAFTS, JSON.stringify(drafts));
+    const all = readDrafts();
+    if (String(v || "").trim()) drafts[k] = all[k] = meta ? { t: v, ...meta } : v;
+    else { delete drafts[k]; delete all[k]; }
+    store.set(DRAFTS, JSON.stringify(all));
   };
+  // Another tab's writes: taken into this tab's copy (not redrawn under the
+  // reader), so the next redraw here places them.
+  window.addEventListener("storage", e => {
+    if (e.key !== DRAFTS) return;
+    const all = readDrafts();
+    for (const k of Object.keys(drafts)) if (!(k in all)) delete drafts[k];
+    Object.assign(drafts, all);
+  });
   // Set by serve(): reopens composers and refills drafts after a redraw.
   let afterDraw = () => {};
 
@@ -746,11 +759,15 @@
     const post = postVia || (body => fetch("/review/" + encodeURIComponent(id), {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...body, t: token }),
-    }).then(r => r.json().then(j => { if (!r.ok) throw new Error(j.error || "refused"); return j; })));
+    }).catch(e => { e.unreachable = true; throw e; })     // only fetch itself: no server
+      .then(r => r.json().then(j => { if (!r.ok) throw new Error(j.error || "refused"); return j; })));
 
     // A composer with words in it is never redrawn away; a fresher review
     // waits until it is sent or cancelled.
-    const busy = () => [...document.querySelectorAll("textarea")].some(t => t.value.trim());
+    // The unplaced-drafts list does not count unless it is being typed in:
+    // shown after a reload, it would otherwise hold every fresher review back.
+    const busy = () => [...document.querySelectorAll("textarea")].some(t => t.value.trim() &&
+      (!t.closest(".unplaced") || t === document.activeElement));
     const take = next => {
       if (next.patchHash !== R.patchHash) {
         // A new diff means a new page; not under someone typing. The banner
@@ -793,6 +810,8 @@
     const send = (body, status, key) => {
       status.textContent = "sending…";
       status.classList.remove("bad");
+      // The success handler runs outside the failure one: an error drawing
+      // the reply is not a failed send, and never reads as a dead server.
       return post(body).then(j => {
         if (key) {
           saveDraft(key, ""); openComposers.delete(key);
@@ -803,10 +822,10 @@
         // offers the reload when another draft is open.
         if (j.review && j.review.patchHash !== R.patchHash) { take(j.review); return; }
         live.pending = null; applyReview(j.review);
-      }).catch(e => {
-        // fetch rejects with a TypeError whatever the browser's wording when
-        // nothing answers; a refusal from the server is a plain Error.
-        status.textContent = live.down || e instanceof TypeError ? "not sent: the review server is not answering — run `lookout open`" : e.message;
+      }, e => {
+        // Marked by post() when fetch itself rejected (nothing answered),
+        // whatever the browser's wording; a refusal is a plain Error.
+        status.textContent = live.down || e.unreachable ? "not sent: the review server is not answering — run `lookout open`" : e.message;
         status.classList.add("bad"); throw e;
       });
     };
