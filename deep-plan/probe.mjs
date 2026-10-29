@@ -4250,6 +4250,14 @@ exit 1
     lc(LENV, "check", "run", "rv-b", "1", "review-code-review");
     ok("a review check with no start sha says to give one with --base",
       /deep-plan review rv-b 1 --base <sha>/.test(ck("rv-b", "review-code-review").note), ck("rv-b", "review-code-review").note);
+    {
+      const st = stOf("rv-b"); st.increments[0].startSha = "0123456789abcdef0123456789abcdef01234567";
+      fs.writeFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "rv-b.json"), JSON.stringify(st));
+      lc(LENV, "check", "run", "rv-b", "1", "review-code-review");
+      ok("a review check whose recorded sha is gone says it cannot be a base, naming --base",
+        /cannot be a base: it is no longer a commit .*deep-plan review rv-b 1 --base <sha>/.test(ck("rv-b", "review-code-review").note), ck("rv-b", "review-code-review").note);
+      unsha("rv-b");
+    }
     for (const verb of ["review", "diff"]) {
       r = lc(LENV, verb, "rv-b", "1");
       ok(`${verb} with no start sha is refused, naming --base`,
@@ -5236,7 +5244,9 @@ exit 1
   fs.mkdirSync(path.join(AR, ".seamux"));
   fs.writeFileSync(path.join(AR, ".seamux", "verify.json"), JSON.stringify({ recipes: [
     // Writes a non-ignored artifact inside its own match, as a report or a snapshot would.
-    { id: "unit", kind: "test", run: "mkdir -p src/out && echo report > src/out/report.txt", match: ["src/**"] }] }));
+    { id: "unit", kind: "test", run: "mkdir -p src/out && echo report > src/out/report.txt", match: ["src/**"] },
+    // Edits a file it covers while it runs.
+    { id: "touchy", kind: "test", run: "echo more >> src/a.ts", match: ["src/**"] }] }));
   fs.writeFileSync(path.join(AR, "src", "a.ts"), "export const a = 1;\n");
   execSync(`git init -q && git add -A && ${G} commit -q -m init`, { cwd: AR });
   const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
@@ -5258,8 +5268,8 @@ exit 1
   // A tool call and a prompt from one Claude Code session, as the hooks see them.
   const hook = (sid, tool, input, cwd = AR) => spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")],
     { encoding: "utf8", env: ENV, input: JSON.stringify({ session_id: sid, tool_name: tool, tool_input: input, cwd }) });
-  const said = (sid, event = "UserPromptSubmit") => spawnSync("bash", [path.join(HERE, "hooks", "news.sh")],
-    { encoding: "utf8", env: ENV, input: JSON.stringify({ session_id: sid, hook_event_name: event, cwd: AR, prompt: "go" }) });
+  const said = (sid, event = "UserPromptSubmit", prompt = "carry on with the plan") => spawnSync("bash", [path.join(HERE, "hooks", "news.sh")],
+    { encoding: "utf8", env: ENV, input: JSON.stringify({ session_id: sid, hook_event_name: event, cwd: AR, prompt }) });
 
   // ---- a session cannot answer the gate itself
   arm("b1-gate", s => s, { go: false });
@@ -5282,6 +5292,30 @@ exit 1
     !fs.existsSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "turns", S1 + ".denied")));
   ok("b1: …and the go after it goes through", hook(S1, "Bash", { command: "deep-plan go b1-gate next" }).status === 0);
   ok("b1: a prompt in a session with no refusal on file is still answered", said(S2).status === 0);
+  // The human said go, then the agent tried an edit before running it: the go still goes.
+  const S3 = "5b1c0000-0000-4000-8000-000000000003";
+  said(S3, "UserPromptSubmit", "Looks right. Go ahead with increment 1");
+  hook(S3, "Edit", { file_path: path.join(AR, "src", "a.ts") });
+  ok("b1: a refusal after a prompt that plainly said go does not hold the go back",
+    hook(S3, "Bash", { command: "deep-plan go b1-gate next" }).status === 0);
+  said(S3, "UserPromptSubmit", "wait, don't go yet: what does increment 2 touch?");
+  hook(S3, "Edit", { file_path: path.join(AR, "src", "a.ts") });
+  ok("b1: …but one after a prompt that says not yet does",
+    hook(S3, "Bash", { command: "deep-plan go b1-gate next" }).status === 2);
+  said(S3, "UserPromptSubmit", "what is the gate?");
+  hook(S3, "Edit", { file_path: path.join(AR, "src", "a.ts") });
+  ok("b1: …and so does one after a prompt that says nothing of go",
+    hook(S3, "Bash", { command: "deep-plan go b1-gate next" }).status === 2);
+  said(S3);
+  // Bash into deep-plan's own records, from a session.
+  const SD = ENV.DEEP_PLAN_STATE_DIR;
+  for (const c of [`rm -f ${SD}/turns/${S1}.denied`, `sed -i '' s/x/y/ ${SD}/b1-gate.json`,
+    `python3 -c "open('${SD}/b1-gate.json','w').write('{}')"`, `echo '{}' > ${ENV.DEEP_PLAN_KEYS_DIR}/b1-gate.key.json`])
+    ok(`b1: a session's Bash write into the state or keys dir is refused (${c.split(" ")[0]})`,
+      /deep-plan's own state/.test(hook(S2, "Bash", { command: c }, TMP).stderr) && fs.existsSync(path.join(SD, "b1-gate.json")));
+  ok("b1: reading them still passes", hook(S2, "Bash", { command: `cat ${SD}/b1-gate.json` }, TMP).status === 0);
+  ok("b1: a write from inside the state dir is refused too", hook(S2, "Bash", { command: "rm -f b1-gate.json" }, SD).status === 2);
+  said(S2);
 
   // ---- open-gate is refused from a session outright; what runs on the
   // human's word (--force, --by human, close) only in a turn the gate refused
@@ -5351,6 +5385,14 @@ exit 1
   for (const f of ["notes.txt", "elsewhere.txt", "src/b.ts"]) fs.rmSync(path.join(AR, f), { force: true });
   fs.rmSync(path.join(AR, "src", "out"), { recursive: true, force: true });
   cli("close", "b1-tree");
+  // A recipe that edits a file it covers while it runs: its pass is recorded
+  // against the tree before the run, so it reads stale.
+  arm("b1-touch", s => { s.deliverables[0].checks.push({ kind: "test", name: "touchy", recipe: "touchy" }); return s; });
+  r = cli("check", "run", "b1-touch", "1", "test-touchy");
+  ok("b1: a pass whose run changed a file it covers says so", r.status === 0 && /changed while it ran \(src\/a\.ts\)/.test(r.stdout), r.stdout + r.stderr);
+  ok("b1: …and reads stale, not passed", /test-touchy  \[test\] stale/.test(cli("check", "list", "b1-touch", "1").stdout));
+  fs.writeFileSync(path.join(AR, "src", "a.ts"), "export const a = 1;\n");
+  cli("close", "b1-touch");
 
   // ---- a dead runner is reaped at done, and a reused pid does not keep one running
   arm("b1-run");
@@ -5403,6 +5445,16 @@ exit 1
     r = cli("deliver", "b1-dl", "--base", h1);
     ok("b1: the delivery's base is the oldest start sha, not the first increment's",
       r.status === 1 && r.stderr.includes(`(increment 2) has a recorded start sha (${h1.slice(0, 8)})`), r.stderr);
+    // An increment that never had a go (blocked from pending) has no work to lose.
+    {
+      const keep = stOf("b1-dl"), cp = JSON.parse(JSON.stringify(keep));
+      Object.assign(cp.increments[2], { status: "blocked", startSha: "", authorizedAt: 0, startedAt: 0, doneAt: 0 });
+      cp.log = cp.log.filter(l => !/increment 3\b/.test(l.what)); put(cp);
+      r = cli("deliver", "b1-dl", "--base", h1);
+      ok("b1: a never-started blocked increment does not make the delivery base unsafe",
+        r.status === 1 && r.stderr.includes(`(increment 2) has a recorded start sha`), r.stderr);
+      put(keep);
+    }
     st = stOf("b1-dl"); for (const i of st.increments) i.startSha = "0123456789abcdef0123456789abcdef01234567"; put(st);
     r = cli("deliver", "b1-dl");
     ok("b1: a recorded sha that is gone is no base, and the refusal says to give one",
@@ -5453,7 +5505,7 @@ exit 1
     "black .", "gofmt -w main.go", "rustfmt src/lib.rs", "curl -sSLo out.tgz https://x", "curl -O https://x/f",
     "tar xzf a.tgz", "tar -C out -xf a.tar", "unzip a.zip", "rsync -a src/ dst/", "dd if=/dev/zero of=f bs=1 count=1"])
     ok(`b1: reads as a write: ${c}`, lib.bashMutates(c));
-  for (const c of ["cargo fmt --check", "black --check .", "npx prettier --check src", "curl -s https://x/health",
+  for (const c of ["curl -XPOST http://127.0.0.1:1/x", "curl -sS -H 'Origin: x' http://x", "cargo fmt --check", "black --check .", "npx prettier --check src", "curl -s https://x/health",
     "tar -tzf a.tgz", "unzip -l a.zip", "rsync -an src/ dst/", "gofmt -l .", "git status"])
     ok(`b1: still a read: ${c}`, !lib.bashMutates(c));
 }

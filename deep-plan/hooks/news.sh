@@ -23,19 +23,28 @@ seamux_data_root() {
 DATA="$(seamux_data_root)" || DATA="$HOME/.claude"
 STATE_DIR="${DEEP_PLAN_STATE_DIR:-$DATA/deep-plan/state}"
 # The human spoke: the gate's refusal in the last turn (turns/<session>.denied,
-# written by decide.mjs) is answered, so a `deep-plan go` may run again. A
-# SessionStart is no human turn (a compaction fires one mid-turn). Paid only
-# while some session has a refusal on file: one glob otherwise.
+# written by decide.mjs) is answered, so a `deep-plan go` may run again. The
+# prompt's first 300 characters are kept beside it (turns/<session>.prompt):
+# when the gate refuses an edit later in the same turn, a go that this prompt
+# plainly asked for still goes through (decide.mjs). A SessionStart is no human
+# turn (a compaction fires one mid-turn). Paid only while some plan is
+# tracked: one glob otherwise, and no interpreter either way.
 payload=""; read_payload=""
-set -- "$STATE_DIR"/turns/*.denied
+set -- "$STATE_DIR"/*.json
 if [ -e "$1" ]; then
   payload=$(cat); read_payload=1
-  ev=""; sid=""
+  ev=""; sid=""; prompt=""
   re_ev='"hook_event_name"[[:space:]]*:[[:space:]]*"([A-Za-z]+)"'
   re_sid='"session_id"[[:space:]]*:[[:space:]]*"([A-Za-z0-9_-]+)"'
+  re_prompt='"prompt"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)"'
   [[ $payload =~ $re_ev ]] && ev=${BASH_REMATCH[1]}
   [[ $payload =~ $re_sid ]] && sid=${BASH_REMATCH[1]}
-  [ "$ev" != SessionStart ] && [ -n "$sid" ] && rm -f "$STATE_DIR/turns/$sid.denied"
+  if [ "$ev" != SessionStart ] && [ -n "$sid" ]; then
+    rm -f "$STATE_DIR/turns/$sid.denied"
+    [[ $payload =~ $re_prompt ]] && prompt=${BASH_REMATCH[1]}
+    prompt=${prompt:0:300}; prompt=${prompt//\\n/ }; prompt=${prompt//\\t/ }
+    mkdir -p "$STATE_DIR/turns" 2>/dev/null && printf '%s\n' "$prompt" > "$STATE_DIR/turns/$sid.prompt" 2>/dev/null
+  fi
 fi
 set -- "$STATE_DIR"/families/*/index.json
 [ -e "$1" ] || exit 0

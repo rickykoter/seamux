@@ -9,7 +9,7 @@
 // one place a base comes from.
 import fs from "node:fs";
 import { decideToolCall, readState, writeState, log1, brokenRoots, isOwner, ownerName,
-  deepPlanCalls, humanLever, onHumansWord, markDenied, deniedThisTurn } from "../lib/state.mjs";
+  deepPlanCalls, humanLever, onHumansWord, markDenied, deniedThisTurn, promptApproves } from "../lib/state.mjs";
 import { trespass, waitingOn, waitText, goOwner } from "../lib/family.mjs";
 
 let raw = "";
@@ -48,7 +48,9 @@ if (tool === "Bash") {
   // an edit is the agent answering the gate itself. The human's word in chat
   // starts a new turn, which clears it.
   const word = onHumansWord(calls);
-  if (word && deniedThisTurn(who.session)) {
+  // Unless the human's prompt this turn plainly said go: the agent then tried
+  // an edit before running the go it was given.
+  if (word && deniedThisTurn(who.session) && !promptApproves(who.session)) {
     const c = calls.find(x => onHumansWord([x])) || calls[0];
     process.stderr.write(`deep-plan gate [${slugOf(c)}]: the gate refused an edit in this turn: ask the human, ` +
       `and run ${word} only after they answer. (Their reply starts a new turn; it goes through then.)\n`);

@@ -46,7 +46,7 @@ import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, DATA_ROOT, REMOTE_DIR, statePath, sessionId,
   readState, writeState, allStates, log1, progress, gateView,
   planFor, CHECK_KINDS, specChecks, reconcileChecks, checksOf, checksBlock,
-  checksAggregate, needsTree, treeOf, treesAt, scopeOf, treeChanges, checkMeta, canon,
+  checksAggregate, needsTree, treeOf, treesAt, scopeOf, treeChanges, treeDiff, checkMeta, canon,
   updateState, LockBusy,
 } from "./lib/state.mjs";
 
@@ -380,7 +380,11 @@ function spawnHint(slug, n, pol = {}) {
 function baseInc(st, inc) {
   if (inc !== "all") return inc;
   const incs = st.increments || [];
-  const worked = incs.filter(i => i.status !== "pending");
+  // Started means it was ever authorized or worked on, not its status now: a
+  // blocked increment that never had a go has no work to lose.
+  const started = i => !!(i.authorizedAt || i.startedAt || i.doneAt) ||
+    (st.log || []).some(l => new RegExp(`^(go|start|start \\(via gate\\)): increment ${i.n}\\b`).test(l.what || ""));
+  const worked = incs.filter(started);
   const missing = worked.find(i => !i.startSha);
   if (missing) return missing;
   const withSha = incs.filter(i => i.startSha);
@@ -455,6 +459,10 @@ function openReview(st, inc, base = "") {
   // replaces one that no longer holds).
   const sha = base || recordedSha(st, inc);
   if (!sha) return { ok: false, out: noBase(all ? "deliver" : "review", st.slug, all || !inc ? "" : inc.n) };
+  // A recorded sha rebased away is no base, as baseFor judges it.
+  const bad = base ? "" : shaProblem(st.root, sha);
+  if (bad) return { ok: false, out: `the recorded start sha ${sha.slice(0, 8)} cannot be a base: ${bad} — give one: ` +
+    `deep-plan ${all ? `deliver ${st.slug}` : `review ${st.slug} ${inc.n}`} --base <sha>` };
   const pol = reviewPolicy(st.slug);
   const r = runLookout(["open", "--plan", st.slug, "--inc", all ? "all" : String(inc.n), "--base", sha, "--at", st.root,
     ...pol.flags], { cwd: st.root });
@@ -4032,6 +4040,9 @@ function checkRun(slug, n, ids, opts) {
     // step (the run then releases on its way out) or, failing that, the run,
     // and then runs `check release`. A claim left by an --inline run killed
     // by hand is held, named by check status, and given back by check release.
+    // The scoped tree before the run, to tell a recipe's new outputs (part of
+    // what passed) from an edit to a file the check covers made while it ran.
+    const before = treeOf(st.root, scopeOf(cur));
     const exec = cur.synth === "review" ? reviewExec(cur, slug, n) : cur.exec;
     const res = runExec(exec, { root: st.root, from: opts.from || "", log,
       env: { DEEP_PLAN_SLUG: slug, DEEP_PLAN_INCREMENT: String(n), DEEP_PLAN_CHECK: id,
@@ -4053,10 +4064,18 @@ function checkRun(slug, n, ids, opts) {
         : code === 1 ? "a blocker or major finding is open — the human closes it on the review page"
         : res.note;
     }
-    // The tree the pass is recorded against is taken after the run, over what
-    // the check covers: an artifact the recipe wrote (a report, a snapshot)
-    // is then part of what passed, not an edit that stales it.
-    const tree = res.status === "pass" ? treeOf(st.root, scopeOf(cur)) : null;
+    // The tree the pass is recorded against, over what the check covers: the
+    // one after the run when all it added was new files (a report, a
+    // snapshot), so its own outputs do not stale it; the one before it when a
+    // file that existed changed meanwhile, so the pass reads stale until the
+    // check runs again on the tree as it is.
+    let tree = null, movedUnder = [];
+    if (res.status === "pass") {
+      const after = treeOf(st.root, scopeOf(cur));
+      const diff = before && after ? treeDiff(st.root, before.content, after.content) : [];
+      movedUnder = diff.filter(d => d.status !== "A").map(d => d.path);
+      tree = movedUnder.length ? before : after;
+    }
     const fresh = readState(slug);
     const now = checksOf(findInc(fresh, n))[id];
     if (!now || !now.runner || now.runner.token !== token) {
@@ -4087,7 +4106,11 @@ function checkRun(slug, n, ids, opts) {
     // judged by its pid, not by this file.
     try { if (own) fs.rmSync(pidFile(slug, n, id), { force: true }); } catch { /* gone */ }
     writeState(fresh); rerenderWorking(slug);
-    if (res.status === "pass") say(`✅ ${id} pass — ${res.note} (log: ${log})`);
+    if (res.status === "pass") {
+      say(`✅ ${id} pass — ${res.note} (log: ${log})`);
+      if (movedUnder.length) say(`   ⚠ ${movedUnder.length} file(s) it covers changed while it ran (${movedUnder.slice(0, 10).join(", ")}${movedUnder.length > 10 ? ", …" : ""}); ` +
+        `the pass is recorded against the tree before the run, so it reads stale until: deep-plan check run ${slug} ${n} ${id}`);
+    }
     else if (res.status === "needs-value") {
       const q = ask || {};
       say(`✋ ${id} needs a value — ${q.question || res.note}`);

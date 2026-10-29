@@ -428,6 +428,15 @@ export function treeChanges(root, was, now, max = 10) {
   return r.stdout.split("\n").filter(Boolean).slice(0, max);
 }
 
+// Each path that differs between two recorded trees with git's status letter
+// (A added, M modified, D deleted, T type). [] when git cannot say.
+export function treeDiff(root, was, now) {
+  if (!root || !was || !now || was === now) return [];
+  const r = spawnSync("git", ["-C", root, "diff", "--name-status", "--no-renames", was, now], { encoding: "utf8" });
+  if (r.status !== 0) return [];
+  return r.stdout.split("\n").filter(Boolean).map(l => { const [status, ...p] = l.split("\t"); return { status: status[0], path: p.join("\t") }; });
+}
+
 // Does judging this increment's passes need the current tree? Only when a pass
 // recorded one to compare against.
 export function needsTree(inc) {
@@ -590,7 +599,9 @@ const MUTATORS = [
   /(^|[;&|(\n]\s*|\b(npx|bunx|uvx|exec|xargs|poetry\s+run|python3?\s+-m)\s+)(black|rustfmt|isort)\b(?![^;&|\n]*\s--(check|diff)\b)/,
   /\bruff\s+format\b(?![^;&|\n]*\s--(check|diff)\b)/,
   // Downloads and unpacking into files.
-  /\bcurl\b[^;&|\n]*\s(-[a-zA-Z]*[oO]|--output|--remote-name)/,
+  // -o/-O on its own or ending a short cluster (-sSLo f), never an option
+  // that merely holds the letter (-XPOST).
+  /\bcurl\b[^;&|\n]*\s(-[a-zA-Z]*[oO](\s|$)|--output\b|--remote-name)/,
   /\btar\s+(-?[a-zA-Z]*[xc][a-zA-Z]*(\s|$)|([^;&|\n]*\s)?-[a-zA-Z]*[xc][a-zA-Z]*(\s|$)|[^;&|\n]*\s--(extract|create|get)\b)/,
   /\bunzip(?![^;&|\n]*\s-[a-zA-Z]*[lptvZ]\b)\s/,
   /\brsync(?![^;&|\n]*\s(--dry-run|-[a-zA-Z]*n)\b)\s/,
@@ -817,6 +828,20 @@ export function markDenied(session, slug = "") {
   try { fs.mkdirSync(TURNS_DIR, { recursive: true }); fs.writeFileSync(f, JSON.stringify({ at: Date.now(), slug }) + "\n"); }
   catch { /* the refusal stands without it */ }
 }
+// Whether this turn's human prompt (its first 300 characters, kept by
+// news.sh) plainly says go: then a refusal earlier in the same turn (the agent
+// tried an edit before running the go it was given) does not hold the go
+// back. A negation anywhere ("don't go yet", "no", "wait") reads as no.
+const APPROVES = /\b(go|go ahead|proceed|approved?|yes|do it|lgtm|ship it|continue)\b/i;
+const DOUBTS = /\b(don'?t|do not|not|no|never|stop|wait|hold)\b/i;
+export function promptApproves(session) {
+  const f = turnFile(session);
+  if (!f) return false;
+  let p = "";
+  try { p = fs.readFileSync(f.replace(/\.denied$/, ".prompt"), "utf8").slice(0, 300); } catch { return false; }
+  return APPROVES.test(p) && !DOUBTS.test(p);
+}
+
 export function deniedThisTurn(session) {
   const f = turnFile(session);
   if (!f) return null;
@@ -829,6 +854,24 @@ export function ownRecords(target) {
   return [STATE_DIR, KEYS_DIR].some(d => inside(target, d));
 }
 
+// The same for Bash: a command that writes (the write test, or an interpreter
+// that can: python, node, ruby, perl) and names the state or keys dir, in any
+// spelling an agent would type (as set, resolved, ~/…, $HOME/…), or that runs
+// from inside one. Reading them (cat, jq, grep) still passes.
+const INTERP = /(^|[\s;&|(`])(python3?|node|ruby|perl|deno|bun)\b/;
+export function bashTouchesRecords(cmd, cwd) {
+  if (!cmd) return false;
+  const writes = () => bashMutates(cmd) || INTERP.test(cmd);
+  if (cwd && ownRecords(cwd) && writes()) return true;
+  const home = os.homedir();
+  const names = new Set();
+  for (const d of [STATE_DIR, KEYS_DIR]) for (const p of [d, canon(d)]) {
+    names.add(p);
+    if (p.startsWith(home + path.sep)) { const rest = p.slice(home.length); names.add("~" + rest); names.add("$HOME" + rest); names.add("${HOME}" + rest); }
+  }
+  return [...names].some(n => cmd.includes(n)) && writes();
+}
+
 // Where a bash command "lands": its cwd. We gate bash by cwd, not by parsing
 // paths out of the command — conservative in the false-negative direction.
 export function decideToolCall(toolName, input, cwd) {
@@ -836,6 +879,9 @@ export function decideToolCall(toolName, input, cwd) {
   if (toolName === "Bash") {
     const cmd = (input && input.command) || "";
     if (ownTooling(cmd, OWN)) return { allow: true, why: "the plan's own tooling" };
+    if (bashTouchesRecords(cmd, cwd))
+      return { allow: false, records: true, plan: null,
+        why: "this command writes into deep-plan's own state; it changes only through the deep-plan CLI, the board or the plan pane." };
     if (!bashMutates(cmd)) return { allow: true, why: "not a write" };
     return mayEdit(cwd || process.cwd());
   }
