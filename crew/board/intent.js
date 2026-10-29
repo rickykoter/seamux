@@ -53,7 +53,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "12";
+  var V = "13";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -262,12 +262,26 @@ function __boardIntent(cfg) {
     } catch (e) { /* no location */ }
     return null;
   }
-  // True when the message went to the app; false when its origin is unknown.
+  // To the app, at its origin. Before that is known (no ancestorOrigins, and
+  // no "selected" yet), the message waits on #rows (a push does not drop it)
+  // and goes when the app's first message names its origin: framed, a click
+  // meant for the app never falls through to cmux instead.
   function tell(msg) {
     var o = appOrigin();
-    if (!o) return false;
-    window.parent.postMessage(msg, o);
-    return true;
+    if (o) return window.parent.postMessage(msg, o);
+    var q = [];
+    try { q = JSON.parse(host.getAttribute("data-app-pending") || "[]"); } catch (e) { q = []; }
+    if (Object.prototype.toString.call(q) !== "[object Array]") q = [];
+    q.push(msg);
+    host.setAttribute("data-app-pending", JSON.stringify(q.slice(-10)));
+  }
+  function flush() {
+    var o = appOrigin(), q = [];
+    if (!o) return;
+    try { q = JSON.parse(host.getAttribute("data-app-pending") || "[]"); } catch (e) { q = []; }
+    host.removeAttribute ? host.removeAttribute("data-app-pending") : host.setAttribute("data-app-pending", "[]");
+    if (Object.prototype.toString.call(q) !== "[object Array]") return;
+    for (var i = 0; i < q.length; i++) window.parent.postMessage(q[i], o);
   }
   function mark(ws) {
     host.setAttribute("data-app-sel", ws || "");
@@ -290,6 +304,7 @@ function __boardIntent(cfg) {
       var d = ev.data;
       if (ev.source === window.parent && allowed(ev.origin) && d && d.crew === "selected") {
         host.setAttribute("data-app-origin", ev.origin);
+        flush();
         mark(String(d.ws || ""));
         // What the app does itself instead of cmux (its reclaim wizard). An
         // app that never says keeps every chip going to cmux.
@@ -362,10 +377,11 @@ function __boardIntent(cfg) {
       // would go and asks there. Anywhere else, crew:reclaim opens a terminal.
       if (framed() && t.a === "reclaim" && (" " + (host.getAttribute("data-app-can") || "") + " ").indexOf(" reclaim ") >= 0) {
         var rn = row.querySelector ? row.querySelector(".nm") : null;
-        if (tell({ crew: "reclaim", ws: rid, name: rn ? rn.textContent : rid })) return;
+        tell({ crew: "reclaim", ws: rid, name: rn ? rn.textContent : rid });
+        return;
       }
-      // An app whose origin is not known yet is not told; cmux does it instead.
-      if (framed() && SHOWN[t.a] && tell({ crew: "select", ws: rid, show: SHOWN[t.a] })) {
+      if (framed() && SHOWN[t.a]) {
+        tell({ crew: "select", ws: rid, show: SHOWN[t.a] });
         mark(rid);
         return;
       }

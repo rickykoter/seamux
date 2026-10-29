@@ -131,10 +131,24 @@ export function withLock(id, fn) {
   }
   try { fs.writeFileSync(path.join(lock, OWNER), nonce); }
   catch (e) { try { fs.rmdirSync(lock); } catch { /* gone */ } throw e; }
-  try { return fn(); } finally {
-    try { if (fs.readFileSync(path.join(lock, OWNER), "utf8") === nonce) removeLock(lock); }
-    catch { /* already gone, or broken and not ours */ }
+  try { return fn(); } finally { release(lock, nonce); }
+}
+
+// Release without a check-then-remove window: rename the lock to a name only
+// this holder uses (atomic), then check the owner inside it. Not ours (ours was
+// broken as stale and another writer took the path): put it back while the
+// lock path is free, else it is already superseded and goes. The same steps as
+// release() in app/crates/crew-board/src/review.rs.
+function release(lock, nonce) {
+  const held = lock + ".release-" + nonce;
+  try { fs.renameSync(lock, held); } catch { return; /* gone: broken, nobody holds it */ }
+  let ours = false;
+  try { ours = fs.readFileSync(path.join(held, OWNER), "utf8") === nonce; } catch { /* no owner */ }
+  if (!ours) {
+    // Renaming onto a lock with its owner file fails (ENOTEMPTY): never clobbered.
+    try { if (!fs.existsSync(lock)) { fs.renameSync(held, lock); return; } } catch { /* taken meanwhile */ }
   }
+  try { removeLock(held); } catch { /* not ours to remove */ }
 }
 
 // Read-modify-write under the lock. `fn` gets the current review (or null)

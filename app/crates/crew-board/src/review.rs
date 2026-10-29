@@ -149,10 +149,32 @@ impl Drop for Lock {
     /// Released only while it is still ours: a lock broken as stale and taken
     /// by another writer carries that writer's nonce, and stays.
     fn drop(&mut self) {
-        if still_ours(&self.path, &self.nonce) {
-            let _ = remove_lock(&self.path);
-        }
+        release(&self.path, &self.nonce);
     }
+}
+
+/// Release a lock without a check-then-remove window: the lock directory is
+/// first renamed to a name only this holder uses (atomic), so nobody can break
+/// and retake it between the owner check and the removal. If what was moved
+/// is not ours (ours was broken as stale and another writer took the path),
+/// it is put back while the lock path is still free; if a third writer has
+/// the path by then, the moved lock is already superseded and is removed.
+/// The same steps as release() in lookout/lib/store.mjs.
+fn release(lock: &Path, nonce: &str) {
+    let held = PathBuf::from(format!("{}.release-{nonce}", lock.display()));
+    if std::fs::rename(lock, &held).is_err() {
+        return; // gone: broken, and nobody holds it now
+    }
+    if still_ours(&held, nonce) {
+        let _ = remove_lock(&held);
+        return;
+    }
+    // Renaming onto a lock that has its owner file fails (ENOTEMPTY), so a
+    // writer that took the path is never clobbered once it has written it.
+    if std::fs::symlink_metadata(lock).is_err() && std::fs::rename(&held, lock).is_ok() {
+        return;
+    }
+    let _ = remove_lock(&held);
 }
 
 fn still_ours(lock: &Path, nonce: &str) -> bool {
@@ -213,6 +235,9 @@ mod tests {
         drop(first);
         assert!(lock.is_dir(), "the first holder removed the second writer's lock");
         assert!(still_ours(&lock, "second"));
+        let left = |d: &Path| std::fs::read_dir(d).unwrap().flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".release-")).count();
+        assert_eq!(left(&dir), 0, "a release left its moved lock behind");
         let second = Lock { path: lock.clone(), nonce: "second".into() };
         drop(second);
         assert!(!lock.exists());

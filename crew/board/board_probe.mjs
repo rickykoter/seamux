@@ -1347,7 +1347,7 @@ if (live && Array.isArray(live.rows)) {
   const last = () => q(fetched[fetched.length - 1]);
 
   checks.push(["intent: an older page's click CSS is replaced on upgrade",
-    oldCss.getAttribute("data-v") === "12" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
+    oldCss.getAttribute("data-v") === "13" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
   checks.push(["intent: a delegated child's go chip is muted, never filled or breathing",
     /\.row \.chip\.chip\[title\^="parent goes"\]\{[^}]*background:transparent[^}]*animation:none/.test(oldCss.textContent)]);
   const fold = () => JSON.parse(host.getAttribute("data-fold"));
@@ -1419,6 +1419,7 @@ if (live && Array.isArray(live.rows)) {
       tagName: tag.toUpperCase(), attrs: { ...attrs }, children: [], parentElement: null, text, listeners: [],
       getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
       setAttribute(k, v) { this.attrs[k] = String(v); },
+      removeAttribute(k) { delete this.attrs[k]; },
       hasAttribute(k) { return k in this.attrs; },
       get textContent() { return this.text + this.children.map((c) => c.textContent).join(""); },
       set textContent(v) { this.text = String(v); this.children = []; },
@@ -1467,12 +1468,21 @@ if (live && Array.isArray(live.rows)) {
   click(chip);
   checks.push(["intent: framed by an app that has not said it can, reclaim still asks cmux",
     fetched.length === 1 && /a=reclaim/.test(fetched[0]) && !posted.some(([m]) => m.crew === "reclaim")]);
+  // A row click before the app's origin is known waits for it: never to "*",
+  // and not sent to cmux instead.
+  const nf = fetched.length, np = posted.length;
+  click(row.children[0]);
+  checks.push(["intent: framed, a select before the app's origin is known is held, not sent to cmux",
+    fetched.length === nf && posted.length === np && /"select"/.test(host.getAttribute("data-app-pending") || "")]);
   // A page that is not the app (another origin, even as the parent) is not heard.
   winListeners.forEach((fn) => fn({ source: parent, origin: "https://evil.example", data: { crew: "selected", ws: "", can: ["reclaim"] } }));
   click(chip);
   checks.push(["intent: a selected message from an origin that is not the app's is ignored",
     fetched.length === 2 && !posted.some(([m]) => m.crew === "reclaim") && host.getAttribute("data-app-can") === null]);
   winListeners.forEach((fn) => fn({ source: parent, origin: APP, data: { crew: "selected", ws: "", can: ["reclaim"] } }));
+  const held = posted.slice(np).find(([x]) => x.crew === "select");
+  checks.push(["intent: ...and goes to the app's origin once the app names it",
+    !!held && held[0].ws === "WS-1" && held[1] === APP && !host.getAttribute("data-app-pending")]);
   click(chip);
   const m = posted.find(([x]) => x.crew === "reclaim");
   checks.push(["intent: once the app says can: [reclaim], the chip asks the app's wizard instead, naming the row",
