@@ -1,7 +1,8 @@
 #!/bin/bash
 # deep-plan family news — UserPromptSubmit and SessionStart. A family member's
 # session is told, as context, what changed in its family since it last
-# looked; everyone else pays one bash glob and no interpreter.
+# looked; everyone else pays one bash glob and no interpreter. It also marks a
+# human prompt for the gate's same-turn go rule (below).
 # On the remote host state lives in the repo (<git root>/.seamux/state), the
 # rule lib/host.mjs states: SEAMUX_HOST wins, then cmux, then
 # CLAUDE_CODE_REMOTE=true. Only that host pays for the git call.
@@ -21,9 +22,25 @@ seamux_data_root() {
 }
 DATA="$(seamux_data_root)" || DATA="$HOME/.claude"
 STATE_DIR="${DEEP_PLAN_STATE_DIR:-$DATA/deep-plan/state}"
+# The human spoke: the gate's refusal in the last turn (turns/<session>.denied,
+# written by decide.mjs) is answered, so a `deep-plan go` may run again. A
+# SessionStart is no human turn (a compaction fires one mid-turn). Paid only
+# while some session has a refusal on file: one glob otherwise.
+payload=""; read_payload=""
+set -- "$STATE_DIR"/turns/*.denied
+if [ -e "$1" ]; then
+  payload=$(cat); read_payload=1
+  ev=""; sid=""
+  re_ev='"hook_event_name"[[:space:]]*:[[:space:]]*"([A-Za-z]+)"'
+  re_sid='"session_id"[[:space:]]*:[[:space:]]*"([A-Za-z0-9_-]+)"'
+  [[ $payload =~ $re_ev ]] && ev=${BASH_REMATCH[1]}
+  [[ $payload =~ $re_sid ]] && sid=${BASH_REMATCH[1]}
+  [ "$ev" != SessionStart ] && [ -n "$sid" ] && rm -f "$STATE_DIR/turns/$sid.denied"
+fi
 set -- "$STATE_DIR"/families/*/index.json
 [ -e "$1" ] || exit 0
 if [ -n "${DEEP_PLAN_SKILL_DIR:-}" ]; then HOOKS="$DEEP_PLAN_SKILL_DIR/hooks"
 else case $0 in */*) HOOKS=${0%/*} ;; *) HOOKS=. ;; esac
 fi
+[ -n "$read_payload" ] && exec node "$HOOKS/news.mjs" <<<"$payload"
 exec node "$HOOKS/news.mjs"

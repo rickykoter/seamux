@@ -1129,7 +1129,10 @@ r = cli("go", "--at", REPO, "next");
 ok("go --at resolves a plan from a directory",
   r.status === 1 && /go refused: increment 1 is already working/.test(r.stderr));
 r = cli("go", "--at", REPO, "2");
-ok("…and authorizes the increment it names", r.status === 0 &&
+ok("…a number is refused by name too while increment 1 is open", r.status === 1 &&
+  r.stderr.trim().split("\n").pop() === "go refused: increment 1 is already working", r.stderr);
+r = cli("go", "--at", REPO, "2", "--force");
+ok("…and with a person's --force authorizes the increment it names", r.status === 0 &&
   JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8")).increments[1].status === "authorized");
 cli("reset", spec.slug, "2");
 r = cli("status", "--json");
@@ -3661,6 +3664,8 @@ exit 1
     // The parent lands increment 1; the wait clears for the next go.
     gradeRight(fam.slug);
     cli("go", fam.slug, "1"); cli("done", fam.slug, "1", "--force");
+    // Its forced increment 1 is set back first: a numbered go keeps the one-open rule too.
+    cli("reset", "example-auth-api", "1");
     g = cli("go", "example-auth-api", "2");
     ok("once the parent increment is done, go goes", g.status === 0 && apiState().increments[1].status === "authorized");
     ok("a workstream with no after never waits", cli("go", "example-docs", "next").stderr.indexOf("waits on") === -1);
@@ -5215,6 +5220,242 @@ exit 1
   gradeOn(EK, NR, "aw-private");
   const quiet = await awaitIn(EK, NR, "aw-private", 3);
   ok("await-go: a plan that does not share never reaches for a remote", quiet.status === 2 && !/could not pull|remote/.test(quiet.stderr), quiet.stderr);
+}
+
+// -------------------------------------------------- the go is the human's; what a pass covers; and friends
+// One block for a batch of gate and check fixes: a session cannot answer the
+// gate with its own go in the same turn, nor pull the human's levers; a pass
+// covers what its check covers, and its staleness says what changed; a dead
+// runner is reaped at done; a numbered go keeps the one-open rule; the
+// delivery base is the oldest start; a rebased-away sha yields to --base; a
+// case-variant path is gated; a person's transition survives a slow done.
+{
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const AR = path.join(TMP, "b1-root");
+  fs.mkdirSync(path.join(AR, "src"), { recursive: true });
+  fs.mkdirSync(path.join(AR, ".seamux"));
+  fs.writeFileSync(path.join(AR, ".seamux", "verify.json"), JSON.stringify({ recipes: [
+    // Writes a non-ignored artifact inside its own match, as a report or a snapshot would.
+    { id: "unit", kind: "test", run: "mkdir -p src/out && echo report > src/out/report.txt", match: ["src/**"] }] }));
+  fs.writeFileSync(path.join(AR, "src", "a.ts"), "export const a = 1;\n");
+  execSync(`git init -q && git add -A && ${G} commit -q -m init`, { cwd: AR });
+  const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
+  const put = st => fs.writeFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, st.slug + ".json"), JSON.stringify(st));
+  const last = r => r.stderr.trim().split("\n").pop();
+  const NOCC = { ...ENV }; delete NOCC.CLAUDECODE;
+  const human = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: NOCC, cwd: AR });
+  const agent = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: { ...NOCC, CLAUDECODE: "1" }, cwd: AR });
+  const arm = (slug, edit = s => s, { go = true } = {}) => {
+    const s = JSON.parse(JSON.stringify(spec)); s.slug = slug;
+    s.deliverables[0].checks = [{ kind: "test", name: "unit suite", recipe: "unit" }, { kind: "manual", name: "looked", id: "look" }];
+    s.deliverables = [s.deliverables[0], { ...s.deliverables[1], title: "Second step" }, { ...s.deliverables[1], title: "Third step" }];
+    const rr = cli("render", tmpSpec(edit(s)), "--root", AR);
+    if (rr.status !== 0) console.log("  (b1 arm render failed) " + rr.stderr.slice(0, 400));
+    const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8"));
+    cli("grade", slug, ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+    if (go) cli("go", slug, "1");
+  };
+  // A tool call and a prompt from one Claude Code session, as the hooks see them.
+  const hook = (sid, tool, input, cwd = AR) => spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")],
+    { encoding: "utf8", env: ENV, input: JSON.stringify({ session_id: sid, tool_name: tool, tool_input: input, cwd }) });
+  const said = (sid, event = "UserPromptSubmit") => spawnSync("bash", [path.join(HERE, "hooks", "news.sh")],
+    { encoding: "utf8", env: ENV, input: JSON.stringify({ session_id: sid, hook_event_name: event, cwd: AR, prompt: "go" }) });
+
+  // ---- a session cannot answer the gate itself
+  arm("b1-gate", s => s, { go: false });
+  const S1 = "5b1c0000-0000-4000-8000-000000000001", S2 = "5b1c0000-0000-4000-8000-000000000002";
+  let r = hook(S1, "Edit", { file_path: path.join(AR, "src", "a.ts") });
+  ok("b1: the gate refuses an edit with no go", r.status === 2 && /^deep-plan gate \[b1-gate\]: /.test(r.stderr), r.stderr);
+  ok("b1: …and its refusal no longer offers open-gate to the agent", !/open-gate/.test(r.stderr), r.stderr);
+  for (const c of [`deep-plan go b1-gate next`, `cd ${AR} && deep-plan go b1-gate next`,
+    `node ${path.join(HERE, "deep_plan.mjs")} go b1-gate 1`, `env -u CLAUDECODE deep-plan go --at ${AR} next`]) {
+    r = hook(S1, "Bash", { command: c });
+    ok(`b1: a go in the same turn as the refusal is refused (${c.split(" ").slice(0, 2).join(" ")}…)`,
+      r.status === 2 && /the gate refused an edit in this turn: ask the human/.test(r.stderr), r.stderr);
+  }
+  r = hook(S2, "Bash", { command: "deep-plan go b1-gate next" });
+  ok("b1: a go from a session the gate did not refuse goes through", r.status === 0, r.stderr);
+  said(S1, "SessionStart");
+  ok("b1: a SessionStart (a compaction) is no human turn", hook(S1, "Bash", { command: "deep-plan go b1-gate next" }).status === 2);
+  r = said(S1);
+  ok("b1: the human's next prompt clears it", r.status === 0 &&
+    !fs.existsSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "turns", S1 + ".denied")));
+  ok("b1: …and the go after it goes through", hook(S1, "Bash", { command: "deep-plan go b1-gate next" }).status === 0);
+  ok("b1: a prompt in a session with no refusal on file is still answered", said(S2).status === 0);
+
+  // ---- open-gate is refused from a session outright; what runs on the
+  // human's word (--force, --by human, close) only in a turn the gate refused
+  for (const c of ["deep-plan open-gate b1-gate", `bash -c "deep-plan open-gate b1-gate"`, `deep-plan "open-gate" b1-gate`]) {
+    r = hook(S2, "Bash", { command: c }, TMP);
+    ok(`b1: a session's ${c} is refused`, r.status === 2 && /open-gate/.test(r.stderr) &&
+      /from their own shell, the board or the plan pane/.test(r.stderr), r.stderr);
+  }
+  const WORD = [["deep-plan close b1-gate", "close"], ["deep-plan go b1-gate 2 --force", "go --force"],
+    ["deep-plan done b1-gate 1 --force", "done --force"], ["deep-plan check pass b1-gate 1 look x --force", "check --force"],
+    ["deep-plan render s.json --force", "render --force"], ["deep-plan family take-back x --by human", "--by human"],
+    [`deep-plan "close" b1-gate`, "close"]];
+  hook(S2, "Edit", { file_path: path.join(AR, "src", "a.ts") });   // the gate refuses: S2's turn now has a denial
+  for (const [c, word] of WORD) {
+    r = hook(S2, "Bash", { command: c }, TMP);
+    ok(`b1: ${c} in the turn the gate refused is refused`, r.status === 2 &&
+      r.stderr.includes(`ask the human, and run ${word} only after they answer`), r.stderr);
+  }
+  said(S2);
+  for (const [c] of WORD) ok(`b1: …and after the human's next prompt it goes through (${c})`, hook(S2, "Bash", { command: c }, TMP).status === 0);
+  for (const c of [`git commit -m "deep-plan close: say why"`, `rg "deep-plan open-gate" docs`, "deep-plan status", "deep-plan check run b1-gate 1"])
+    ok(`b1: a mention is not a lever (${c})`, hook(S2, "Bash", { command: c }, TMP).status === 0);
+  r = human("open-gate", "b1-gate");
+  ok("b1: open-gate from the human's own shell works, and logs who", r.status === 0 &&
+    stOf("b1-gate").log.some(l => /gate opened by human \(no Claude Code session\)/.test(l.what)), r.stderr);
+  human("shut-gate", "b1-gate");
+  agent("open-gate", "b1-gate");
+  ok("b1: …and one from a session (its hook not in the way) is logged as that",
+    stOf("b1-gate").log.some(l => /gate opened by a Claude Code session/.test(l.what)));
+  human("shut-gate", "b1-gate");
+  for (const f of [path.join(ENV.DEEP_PLAN_STATE_DIR, "b1-gate.json"), path.join(ENV.DEEP_PLAN_KEYS_DIR, "b1-gate.key.json")]) {
+    r = hook(S2, "Edit", { file_path: f });
+    ok(`b1: an Edit into deep-plan's own ${path.basename(path.dirname(f))} dir is refused`, r.status === 2 && /deep-plan's own state/.test(r.stderr), r.stderr);
+  }
+  ok("b1: a Write there is too", hook(S2, "Write", { file_path: path.join(ENV.DEEP_PLAN_STATE_DIR, "new.json") }).status === 2);
+  said(S2);
+  ok("b1: close from the human's own shell works", human("close", "b1-gate").status === 0 && stOf("b1-gate").phase === "closed");
+
+  // ---- a pass covers what its check covers
+  arm("b1-tree");
+  r = cli("check", "run", "b1-tree", "1", "test-unit-suite");
+  ok("b1: the recipe passes", r.status === 0 && stOf("b1-tree").increments[0].checks["test-unit-suite"].status === "pass", r.stdout + r.stderr);
+  const t = stOf("b1-tree").increments[0].checks["test-unit-suite"].tree;
+  ok("b1: its pass records a tree of its own scope", t && JSON.stringify(t.scope) === JSON.stringify(["src/**"]), JSON.stringify(t));
+  const list = () => cli("check", "list", "b1-tree", "1").stdout;
+  ok("b1: an artifact the recipe wrote inside its match does not stale its own pass",
+    fs.existsSync(path.join(AR, "src", "out", "report.txt")) && /test-unit-suite  \[test\] pass/.test(list()), list());
+  cli("check", "pass", "b1-tree", "1", "look", "looked");
+  fs.writeFileSync(path.join(AR, "notes.txt"), "an untracked file outside src\n");
+  ok("b1: an untracked file outside a check's match leaves its pass fresh",
+    /test-unit-suite  \[test\] pass/.test(list()), list());
+  ok("b1: …while a hand-recorded check (the plan root) goes stale", /look  \[manual\] stale/.test(list()), list());
+  cli("check", "pass", "b1-tree", "1", "look", "looked again");
+  fs.writeFileSync(path.join(AR, "src", "b.ts"), "export const b = 2;\n");
+  r = cli("done", "b1-tree", "1");
+  ok("b1: an untracked file inside the match stales the pass", r.status === 1 && /test-unit-suite stale/.test(last(r)), r.stderr);
+  ok("b1: the stale refusal names the changed file", /changed since: .*src\/b\.ts/.test(r.stderr), r.stderr);
+  ok("b1: …and the command that re-runs only the stale ones", r.stderr.includes("re-run the stale:    deep-plan check run b1-tree 1"), r.stderr);
+  // A pass recorded before scopes compares the whole tree, as it did.
+  {
+    const st = stOf("b1-tree"), v = st.increments[0].checks["test-unit-suite"];
+    v.tree = lib.treeOf(AR); v.at = Date.now(); put(st);
+    ok("b1: an old whole-tree pass stays fresh while nothing moved", /test-unit-suite  \[test\] pass/.test(list()), list());
+    fs.writeFileSync(path.join(AR, "elsewhere.txt"), "x\n");
+    ok("b1: …and compares the whole tree, the old way", /test-unit-suite  \[test\] stale/.test(list()), list());
+  }
+  for (const f of ["notes.txt", "elsewhere.txt", "src/b.ts"]) fs.rmSync(path.join(AR, f), { force: true });
+  fs.rmSync(path.join(AR, "src", "out"), { recursive: true, force: true });
+  cli("close", "b1-tree");
+
+  // ---- a dead runner is reaped at done, and a reused pid does not keep one running
+  arm("b1-run");
+  const setRun = (pid, startedAt) => { const st = stOf("b1-run"); const v = st.increments[0].checks.look;
+    v.status = "running"; v.at = Date.now(); v.note = "running in the foreground";
+    v.runner = { token: "t", pid, log: path.join(TMP, "b1-run.log"), startedAt }; put(st); };
+  const gone = spawnSync("true").pid;
+  setRun(gone, Date.now() - 1000);
+  r = cli("done", "b1-run", "1");
+  ok("b1: done after a killed runner records the check lost instead of running forever",
+    r.status === 1 && /look fail \(runner lost/.test(last(r)) && stOf("b1-run").increments[0].checks.look.status === "fail", r.stderr);
+  const sleeper = spawn("sleep", ["30"]);
+  setRun(sleeper.pid, Date.now());
+  r = cli("done", "b1-run", "1");
+  ok("b1: a still-running check's refusal says how to get unstuck",
+    r.status === 1 && /stuck\? deep-plan check status b1-run 1/.test(r.stderr) && /check reset b1-run 1 look/.test(r.stderr), r.stderr);
+  setRun(sleeper.pid, Date.now() - 3600e3);
+  cli("check", "list", "b1-run", "1");
+  ok("b1: a live pid that started after the run was recorded is a reused pid: lost",
+    stOf("b1-run").increments[0].checks.look.status === "fail", JSON.stringify(stOf("b1-run").increments[0].checks.look));
+  sleeper.kill();
+
+  // ---- a numbered go keeps the one-open rule
+  r = cli("go", "b1-run", "3");
+  ok("b1: go 3 while 1 is open is refused", r.status === 1 && last(r) === "go refused: increment 1 is already authorized" &&
+    stOf("b1-run").increments[2].status === "pending", r.stderr);
+  r = human("go", "b1-run", "3", "--force");
+  ok("b1: …and a person's --force opens it beside, logged", r.status === 0 && stOf("b1-run").increments[2].status === "authorized" &&
+    stOf("b1-run").log.some(l => /go: increment 3 .*--force beside increment 1/.test(l.what)), r.stderr);
+  cli("close", "b1-run");
+
+  // ---- a case-variant spelling of the root is the root
+  {
+    arm("b1-case", s => s, { go: false });
+    const variant = path.join(path.dirname(AR), "B1-ROOT", "src", "a.ts");
+    if (fs.existsSync(variant))
+      ok("b1: a case-variant path into the root is gated (case-insensitive volume)", edit(variant).status === 2, edit(variant).stderr);
+    else ok("b1: (case-sensitive volume: no case-variant path to gate)", true);
+    cli("close", "b1-case");
+  }
+
+  // ---- the delivery's base: the oldest start; a rebased-away sha yields to --base
+  {
+    arm("b1-dl", s => ({ ...s, review: { ...(s.review || {}), delivery: true } }), { go: false });
+    const commit = m => { execSync(`${G} commit -q --allow-empty -m ${m}`, { cwd: AR }); return execSync("git rev-parse HEAD", { cwd: AR, encoding: "utf8" }).trim(); };
+    for (const n of ["1", "2", "3"]) { cli("go", "b1-dl", n); passAll("b1-dl", n); cli("done", "b1-dl", n); commit("dl" + n); }
+    const h1 = commit("older"), h2 = commit("newer");
+    let st = stOf("b1-dl");
+    st.increments[0].startSha = h2; st.increments[1].startSha = h1; st.increments[2].startSha = h2; put(st);
+    r = cli("deliver", "b1-dl", "--base", h1);
+    ok("b1: the delivery's base is the oldest start sha, not the first increment's",
+      r.status === 1 && r.stderr.includes(`(increment 2) has a recorded start sha (${h1.slice(0, 8)})`), r.stderr);
+    st = stOf("b1-dl"); for (const i of st.increments) i.startSha = "0123456789abcdef0123456789abcdef01234567"; put(st);
+    r = cli("deliver", "b1-dl");
+    ok("b1: a recorded sha that is gone is no base, and the refusal says to give one",
+      r.status === 1 && /cannot be a base: it is no longer a commit/.test(r.stderr) && /deliver b1-dl --base <sha>/.test(r.stderr), r.stderr);
+    r = cli("deliver", "b1-dl", "--base", h1);
+    ok("b1: …then --base is taken, and logged with why",
+      stOf("b1-dl").increments[0].startSha === h1 &&
+      stOf("b1-dl").log.some(l => /--base: increment 1's start sha recorded as .* \(replacing 01234567: it is no longer a commit/.test(l.what)), r.stderr);
+    human("close", "b1-dl");
+  }
+
+  // ---- a person's transition survives an agent's slow done
+  {
+    arm("b1-cc");
+    cli("check", "run", "b1-cc", "1", "test-unit-suite"); cli("check", "pass", "b1-cc", "1", "look", "looked");
+    const lock = path.join(ENV.DEEP_PLAN_STATE_DIR, ".lock-b1-cc");
+    fs.mkdirSync(lock);
+    const done = spawn("node", [path.join(HERE, "deep_plan.mjs"), "done", "b1-cc", "1"], { env: ENV, cwd: AR });
+    let derr = ""; done.stderr.on("data", d => derr += d);
+    const exited = new Promise(res => done.on("close", res));
+    await new Promise(res => setTimeout(res, 1500));
+    // The board's block lands while done waits on the lock.
+    const st = stOf("b1-cc"); Object.assign(st.increments[1], { status: "blocked", note: "a person blocked it", changedAt: Date.now() }); put(st);
+    fs.rmdirSync(lock);
+    const code = await exited;
+    ok("b1: a block given while done waited survives the done",
+      code === 0 && stOf("b1-cc").increments[0].status === "done" && stOf("b1-cc").increments[1].status === "blocked",
+      JSON.stringify(stOf("b1-cc").increments.map(i => i.status)) + " " + derr);
+    // A writer holding an older copy keeps a transition stamped after it read.
+    const old = lib.readState("b1-cc");
+    cli("reset", "b1-cc", "2");
+    old.increments[0].note = "a writer that never saw the reset";
+    lib.writeState(old);
+    ok("b1: a stale writer does not undo a later transition", lib.readState("b1-cc").increments[1].status === "pending");
+    // A lock that never lets go fails the write, loudly, after its wait.
+    fs.mkdirSync(lock); const future = new Date(Date.now() + 3600e3); fs.utimesSync(lock, future, future);
+    r = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "block", "b1-cc", "2", "x"],
+      { encoding: "utf8", env: { ...ENV, DEEP_PLAN_LOCK_WAIT_MS: "300" }, cwd: AR });
+    ok("b1: a lock held past the wait refuses the write and says so",
+      r.status === 1 && /stayed locked/.test(r.stderr) && stOf("b1-cc").increments[1].status === "pending", r.stderr);
+    fs.rmdirSync(lock);
+    cli("close", "b1-cc");
+  }
+
+  // ---- the write heuristic covers more writers, and still not their read-only forms
+  for (const c of ["git restore src/a.ts", "git restore --staged src/a.ts", "git switch main", "git pull", "git add -A",
+    "perl -pi -e 's/a/b/' f", "perl -i.bak -pe 's/a/b/' f", "npx prettier --write src", "eslint --fix .", "cargo fmt",
+    "black .", "gofmt -w main.go", "rustfmt src/lib.rs", "curl -sSLo out.tgz https://x", "curl -O https://x/f",
+    "tar xzf a.tgz", "tar -C out -xf a.tar", "unzip a.zip", "rsync -a src/ dst/", "dd if=/dev/zero of=f bs=1 count=1"])
+    ok(`b1: reads as a write: ${c}`, lib.bashMutates(c));
+  for (const c of ["cargo fmt --check", "black --check .", "npx prettier --check src", "curl -s https://x/health",
+    "tar -tzf a.tgz", "unzip -l a.zip", "rsync -an src/ dst/", "gofmt -l .", "git status"])
+    ok(`b1: still a read: ${c}`, !lib.bashMutates(c));
 }
 
 // -------------------------------------------------- hot-path cost

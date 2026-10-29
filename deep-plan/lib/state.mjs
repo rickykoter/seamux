@@ -28,24 +28,57 @@ export function readState(slug) {
 }
 
 // Single-writer lock: mkdir is atomic on every filesystem we care about, and
-// the two writers (the CLI and the gate hook's flip-to-working) can race.
-// A holder that died leaves a stale dir; anything older than 5s is reclaimed.
-// On sustained contention we proceed unlocked — a lost log line beats a
-// deadlocked gate.
+// the writers (the CLI, the board's transitions through it, a detached check
+// runner and the gate hook's flip-to-working) can race. A holder that died
+// leaves a stale dir; anything older than 5s is reclaimed. Holds are short:
+// every writer does its slow work (hashing a tree, running a recipe) before it
+// takes the lock. On sustained contention the write fails, loudly, rather
+// than proceeding unlocked: an unlocked write is how a person's click on the
+// board was lost under an agent's slow `done`.
+// DEEP_PLAN_LOCK_WAIT_MS is for the probe.
+const LOCK_WAIT_MS = Number(process.env.DEEP_PLAN_LOCK_WAIT_MS) || 10000;
+const nap = ms => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* no SAB: spin */ const u = Date.now() + ms; while (Date.now() < u) { /* spin */ } } };
+export class LockBusy extends Error {}
 function acquireLock(slug) {
   const dir = path.join(STATE_DIR, ".lock-" + slug);
-  const deadline = Date.now() + 1000;
+  const deadline = Date.now() + LOCK_WAIT_MS;
   while (Date.now() < deadline) {
     try { fs.mkdirSync(dir, { recursive: false }); return dir; }
     catch {
       try {
         if (Date.now() - fs.statSync(dir).mtimeMs > 5000) { fs.rmdirSync(dir); continue; }
       } catch { continue; }
-      const until = Date.now() + 10;
-      while (Date.now() < until) { /* spin: hold times are single-digit ms */ }
+      nap(10);
     }
   }
-  return null;
+  throw new LockBusy(`deep-plan: ${slug}'s state is locked by another writer (${dir}) and stayed locked for ` +
+    `${Math.round(LOCK_WAIT_MS / 1000)}s; nothing was written. Try again; if no deep-plan command is running, remove that directory.`);
+}
+const releaseLock = lock => { try { fs.rmdirSync(lock); } catch { /* already reclaimed */ } };
+
+function writeFileAtomic(st) {
+  const p = statePath(st.slug);
+  const tmp = p + ".tmp." + process.pid;
+  fs.writeFileSync(tmp, JSON.stringify(st, null, 2) + "\n");
+  fs.renameSync(tmp, p);
+}
+
+// Read-modify-write under the lock: `fn` gets the state as it is on disk now
+// and changes it in place; it may throw, and then nothing is written. Returns
+// the state written. For a change that must not be built on a stale copy (a
+// transition: a person's board click and an agent's `done` can land together),
+// do the slow work first, then apply the change here.
+export function updateState(slug, fn, { stamp = true } = {}) {
+  fs.mkdirSync(STATE_DIR, { recursive: true });
+  const lock = acquireLock(slug);
+  try {
+    const st = readState(slug);
+    if (!st) throw new Error("no plan " + slug);
+    if (fn(st) === false) return st;
+    if (stamp) stampOwner(st);
+    writeFileAtomic(st);
+    return st;
+  } finally { releaseLock(lock); }
 }
 
 // Who is working on a plan. Claude Code exports CLAUDE_CODE_SESSION_ID (the
@@ -109,21 +142,26 @@ export function writeState(st, { stamp = true } = {}) {
   fs.mkdirSync(STATE_DIR, { recursive: true });
   const lock = acquireLock(st.slug);
   try {
-    const p = statePath(st.slug);
     mergeConcurrent(st, readState(st.slug));
-    const tmp = p + ".tmp." + process.pid;
-    fs.writeFileSync(tmp, JSON.stringify(st, null, 2) + "\n");
-    fs.renameSync(tmp, p);
-  } finally {
-    if (lock) { try { fs.rmdirSync(lock); } catch { /* already reclaimed */ } }
-  }
+    writeFileAtomic(st);
+  } finally { releaseLock(lock); }
 }
+
+// What an increment's status is, as opposed to what the spec says it is. A
+// transition stamps `changedAt`; a writer holding an older copy keeps the
+// newer status it never saw.
+const INC_STATUS_FIELDS = ["status", "note", "startSha", "authorizedAt", "startedAt", "doneAt", "by", "changedAt"];
 
 function mergeConcurrent(st, disk) {
   if (!disk) return;
   const dincs = new Map((disk.increments || []).map(i => [i.n, i]));
+  let tookStatus = false;
   for (const inc of st.increments || []) {
     const d = dincs.get(inc.n);
+    if (d && (d.changedAt || 0) > (inc.changedAt || 0)) {
+      for (const f of INC_STATUS_FIELDS) { if (d[f] === undefined) delete inc[f]; else inc[f] = d[f]; }
+      tookStatus = true;
+    }
     if (!d || !d.checks || !inc.checks || typeof inc.checks !== "object") continue;
     for (const [id, v] of Object.entries(inc.checks)) {
       const dv = d.checks[id];
@@ -133,6 +171,13 @@ function mergeConcurrent(st, disk) {
       const meta = Object.fromEntries(Object.entries(v).filter(([k]) => !VERDICT_FIELDS.includes(k)));
       inc.checks[id] = { ...meta, ...verdictOf(dv) };
     }
+  }
+  // A status kept from disk can make the writer's phase wrong: a complete plan
+  // with work again is implementing, and a plan disk completed is disk's.
+  if (tookStatus) {
+    const allDone = (st.increments || []).length > 0 && st.increments.every(i => i.status === "done");
+    if (allDone && (disk.phase === "done" || disk.phase === "delivery")) st.phase = disk.phase;
+    else if (!allDone && (st.phase === "done" || st.phase === "delivery")) st.phase = "implementing";
   }
   // Guests told by the gate while this writer held its copy stay told.
   if (disk.guests && typeof disk.guests === "object") st.guests = { ...disk.guests, ...(st.guests || {}) };
@@ -302,14 +347,22 @@ export function reconcileChecks(prev, checks) {
 // so untracked files count and ignored ones do not). A pass records this; a
 // commit after it leaves `content` unchanged, any edit changes it. Null outside
 // a git repository — there is then nothing to compare, and nothing goes stale.
-export function treeOf(root) {
+//
+// `scope` limits it to what a check covers: root-relative globs (a recipe's
+// `match` and setup files) or directories ("." is the root). The content is
+// then a tree of only those paths, so an edit or a stray untracked file
+// elsewhere does not stale the pass, and `add` never hashes files outside it.
+// The recorded tree carries its scope, so a later comparison hashes the same
+// paths. A pass recorded before scopes (no `scope`) compares the whole tree.
+export function treeOf(root, scope = null) {
   if (!root) return null;
-  const git = (args, env) => spawnSync("git", ["-C", root, ...args],
-    { encoding: "utf8", env: { ...process.env, ...env } });
+  const git = (args, env, input) => spawnSync("git", ["-C", root, ...args],
+    { encoding: "utf8", env: { ...process.env, ...env }, ...(input !== undefined ? { input } : {}) });
   const head = git(["rev-parse", "HEAD"]);
   if (head.status !== 0) return null;
   const index = git(["rev-parse", "--path-format=absolute", "--git-path", "index"]).stdout.trim();
-  const tmp = path.join(os.tmpdir(), `deep-plan-index-${process.pid}-${Date.now()}`);
+  const tmp = path.join(os.tmpdir(), `deep-plan-index-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  const only = tmp + ".scope";
   try {
     // Seeded from the real index so `add` only rehashes what changed. The copy
     // keeps the index's own mtime: git trusts an entry's cached stat only when
@@ -321,11 +374,58 @@ export function treeOf(root) {
       fs.utimesSync(tmp, s.atime, s.mtime);
     } catch { /* no index yet: add builds one */ }
     const env = { GIT_INDEX_FILE: tmp };
-    const tree = git(["add", "-A"], env).status === 0 ? git(["write-tree"], env) : null;
-    return { head: head.stdout.trim(), content: tree && tree.status === 0 ? tree.stdout.trim() : "" };
+    if (!scope) {
+      const tree = git(["add", "-A"], env).status === 0 ? git(["write-tree"], env) : null;
+      return { head: head.stdout.trim(), content: tree && tree.status === 0 ? tree.stdout.trim() : "" };
+    }
+    const specs = pathspecs(scope);
+    // add refuses the whole list when one pathspec matches nothing (a glob
+    // whose files do not exist yet); then each is added on its own.
+    if (git(["add", "-A", "--", ...specs], env).status !== 0)
+      for (const p of specs) git(["add", "-A", "--", p], env);
+    // Only the scope's entries, into an index of their own, make the tree.
+    const ls = git(["ls-files", "-s", "-z", "--", ...specs], env);
+    if (ls.status !== 0) return { head: head.stdout.trim(), content: "", scope };
+    if (git(["update-index", "-z", "--index-info"], { GIT_INDEX_FILE: only }, ls.stdout).status !== 0)
+      return { head: head.stdout.trim(), content: "", scope };
+    const tree = git(["write-tree"], { GIT_INDEX_FILE: only });
+    return { head: head.stdout.trim(), content: tree.status === 0 ? tree.stdout.trim() : "", scope };
   } finally {
-    for (const f of [tmp, tmp + ".lock"]) try { fs.rmSync(f, { force: true }); } catch { /* gone */ }
+    for (const f of [tmp, tmp + ".lock", only, only + ".lock"]) try { fs.rmSync(f, { force: true }); } catch { /* gone */ }
   }
+}
+
+// deep-plan's globs (lib/verify.mjs) as git pathspecs: `*`, `**`, `?` and a
+// bare directory mean the same under git's glob magic.
+function pathspecs(scope) {
+  return scope.map(g => g === "." || g === "" ? "." : `:(glob)${g.replace(/^\.\//, "")}`);
+}
+
+// A memo of treeOf by scope, for judging every pass of an increment (or a
+// plan) against the tree now while hashing each scope once. Old passes (no
+// scope) share the whole-tree entry.
+export function treesAt(root) {
+  const memo = new Map();
+  return scope => {
+    const key = scope ? JSON.stringify(scope) : "";
+    if (!memo.has(key)) memo.set(key, treeOf(root, scope));
+    return memo.get(key);
+  };
+}
+
+// What a check's pass covers, as a scope for treeOf: the scope render stored
+// with its recipe (match globs and setup files), else the plan root.
+export function scopeOf(v) {
+  return v && Array.isArray(v.scope) && v.scope.length ? v.scope : ["."];
+}
+
+// Paths that differ between two recorded trees (tree objects in the repo),
+// at most `max`. [] when either is gone or git cannot say.
+export function treeChanges(root, was, now, max = 10) {
+  if (!root || !was || !now || was === now) return [];
+  const r = spawnSync("git", ["-C", root, "diff", "--name-only", "--no-renames", was, now], { encoding: "utf8" });
+  if (r.status !== 0) return [];
+  return r.stdout.split("\n").filter(Boolean).slice(0, max);
 }
 
 // Does judging this increment's passes need the current tree? Only when a pass
@@ -336,20 +436,26 @@ export function needsTree(inc) {
 }
 
 // The checks standing in the way of `done`: everything not passed, and a pass
-// recorded against other content than `tree` (reported as "stale"). Without a
+// recorded against other content than the tree now (reported as "stale"). Without a
 // tree a pass stands — status runs every few seconds and cannot afford to hash
-// the working copy; `done` passes one.
+// the working copy; `done` passes one. `tree` is either one tree (compared
+// with every pass, the old way) or a treesAt() memo, which hashes each pass's
+// own scope. A stale row carries the two tree hashes (`was`, `now`).
 export function checksBlock(inc, tree = null) {
   const out = [];
   for (const [id, v] of Object.entries(checksOf(inc))) {
     if (v.retired) continue;
     let status = CHECK_STATUSES.includes(v.status) ? v.status : "pending";
+    let was = "", now = "";
     if (status === "pass") {
-      const was = v.tree && v.tree.content, now = tree && tree.content;
+      was = v.tree && v.tree.content;
+      const t = typeof tree === "function" ? (was ? tree(v.tree.scope || null) : null) : tree;
+      now = t && t.content;
       if (!(was && now && was !== now)) continue;
       status = "stale";
     }
-    out.push({ id, kind: v.kind || "", name: v.name || "", status, note: v.note || "" });
+    out.push({ id, kind: v.kind || "", name: v.name || "", status, note: v.note || "",
+      ...(v.recipe ? { recipe: v.recipe } : {}), ...(status === "stale" ? { was, now } : {}) });
   }
   return out;
 }
@@ -406,11 +512,15 @@ export function gateView(st) {
 // ancestor, however far up. Resolving only the parent left a new file in a new
 // directory spelled /var/…, outside a root recorded as /private/var/…, and the
 // gate let that write through as "no plan tracks this path".
+//
+// The native realpath: on a case-insensitive volume (macOS's default) it
+// returns the case on disk, where fs.realpathSync keeps the case it was given,
+// so ~/code/REPO/a.ts read as outside a root recorded as ~/code/repo.
 export function canon(p) {
   let head = path.resolve(p);
   const tail = [];
   for (;;) {
-    try { return path.join(fs.realpathSync(head), ...tail.reverse()); }
+    try { return path.join(fs.realpathSync.native(head), ...tail.reverse()); }
     catch {
       const up = path.dirname(head);
       if (up === head) return path.resolve(p);
@@ -468,7 +578,23 @@ const MUTATORS = [
   /\btee\s+(?!-a\s*$)/,
   /\brm(\s|$|[;&|)`])/, /\bmv\s+/, /\bcp\s+/, // rm last too: `xargs rm`
   /\bfind\b[^;&|]*\s['"]?-(delete|fprint\w*|fls)\b/, // find's own writes
-  /\bgit\s+(commit|checkout|reset|clean|apply|stash|merge|rebase|cherry-pick|rm|mv)\b/,
+  // Anything that moves the work tree or the index, as checkout does: restore
+  // --staged and add write the index, which is the next commit.
+  /\bgit\s+(commit|checkout|reset|clean|apply|stash|merge|rebase|cherry-pick|rm|mv|restore|switch|pull|add|am|revert)\b/,
+  /\bperl\s+(-[a-zA-Z]+\S*\s+)*-[a-zA-Z]*i/,  // perl -pi -e, perl -i.bak
+  // Formatters and fixers in their writing form: --write, --fix, -w, or the
+  // ones that write unless told to --check.
+  /\s--(write|fix)(=\S*)?(\s|$)/,
+  /\b(gofmt|goimports)\b[^;&|\n]*\s-[a-zA-Z]*w\b/,
+  /\bcargo\s+fmt\b(?![^;&|\n]*\s--check\b)/,
+  /(^|[;&|(\n]\s*|\b(npx|bunx|uvx|exec|xargs|poetry\s+run|python3?\s+-m)\s+)(black|rustfmt|isort)\b(?![^;&|\n]*\s--(check|diff)\b)/,
+  /\bruff\s+format\b(?![^;&|\n]*\s--(check|diff)\b)/,
+  // Downloads and unpacking into files.
+  /\bcurl\b[^;&|\n]*\s(-[a-zA-Z]*[oO]|--output|--remote-name)/,
+  /\btar\s+(-?[a-zA-Z]*[xc][a-zA-Z]*(\s|$)|([^;&|\n]*\s)?-[a-zA-Z]*[xc][a-zA-Z]*(\s|$)|[^;&|\n]*\s--(extract|create|get)\b)/,
+  /\bunzip(?![^;&|\n]*\s-[a-zA-Z]*[lptvZ]\b)\s/,
+  /\brsync(?![^;&|\n]*\s(--dry-run|-[a-zA-Z]*n)\b)\s/,
+  /\bdd\b[^;&|\n]*\bof=/,
   /\btouch\s+/, /\bmkdir\s+/, /\bln\s+/, /\bchmod\s+/, /\bchown\s+/,
   /\btruncate\s+/, /\binstall\s+/, /\bpatch\b/,
   /\bnpm\s+(install|i|uninstall|update)\b/, /\bpip3?\s+install\b/,
@@ -618,6 +744,91 @@ function ownTooling(cmd, OWN) {
   return own;
 }
 
+// ------------------------------------------------- the human's levers
+//
+// The deep-plan CLI calls a Bash command makes: [{verb, words}], `words` the
+// arguments after the verb, quotes stripped. The program is `deep-plan` or
+// deep_plan.mjs by any path, in command position or anywhere a shell would run
+// it (`xargs`, a heredoc, `bash -c "…"`, `eval '…'`). A mention inside a quoted
+// argument that nothing runs (a commit message, a grep pattern) is no call.
+// Heuristic, like the write test: it reads the command, it cannot run it.
+const PROG_RE = /(deep-plan|deep_plan\.mjs)(?=['"]?[ \t])/g;
+export function deepPlanCalls(cmd) {
+  const out = [];
+  if (!cmd) return out;
+  const bare = blankQuotes(cmd);
+  for (const m of cmd.matchAll(PROG_RE)) {
+    const i = m.index;
+    if (i && !/[\s;&|(`'"/]/.test(cmd[i - 1])) continue;
+    let end = cmd.length;
+    const sep = (ref, from) => { let e = from; while (e < cmd.length && !/[;&|\n)`]/.test(ref[e])) e++; return e; };
+    if (bare && bare[i] !== cmd[i]) {
+      // Inside a quoted string: find it, and take it only when it is run.
+      let q = i - 1;
+      while (q >= 0 && !(bare[q] === cmd[q] && (cmd[q] === '"' || cmd[q] === "'"))) q--;
+      if (q < 0) continue;
+      let c = i + m[0].length;
+      while (c < cmd.length && !(bare[c] === cmd[c] && cmd[c] === cmd[q])) c++;
+      const body = cmd.slice(q + 1, c);
+      if (/^\s*(\S*\/)?(deep-plan|deep_plan\.mjs)\s*$/.test(body)) end = sep(bare, c + 1);  // "deep-plan" go …
+      else if (/(^|\s)(-[a-zA-Z]*c|eval)\s*$/.test(cmd.slice(0, q))) end = Math.min(c, sep(cmd, i + m[0].length));  // bash -c "…"
+      else continue;
+    } else end = sep(bare || cmd, i + m[0].length);
+    const words = cmd.slice(i + m[0].length, end).replace(/['"]/g, " ").trim().split(/\s+/).filter(Boolean);
+    const verb = words.shift() || "";
+    if (/^[a-z][a-z-]*$/.test(verb)) out.push({ verb, words });
+  }
+  return out;
+}
+
+// The one lever a person pulls from their own shell, the board or the plan
+// pane, never a Claude Code session: lifting the gate. A Bash call from a
+// session that pulls it is refused with this reason ("" when none does).
+// Outside a session (no hook runs) it works as before.
+export function humanLever(calls) {
+  for (const c of calls) if (c.verb === "open-gate") return "`deep-plan open-gate` lifts the gate; it is the human's lever";
+  return "";
+}
+
+// What an agent may run only on the human's word: a go, a --force (go, done,
+// check pass, render), --by human, and close. Refused while the gate's refusal
+// in this turn is unanswered (deniedThisTurn); the human's next prompt clears
+// it. The reason names the first such call, "" when there is none.
+export function onHumansWord(calls) {
+  for (const c of calls) {
+    if (c.words.some((w, k) => (w === "--by" && c.words[k + 1] === "human") || w === "--by=human")) return "--by human";
+    if (["go", "done", "check", "render"].includes(c.verb) && c.words.includes("--force")) return `${c.verb} --force`;
+    if (c.verb === "go" || c.verb === "close") return c.verb;
+  }
+  return "";
+}
+
+// One small file per session under the state dir: the gate refused an edit
+// in this session's current turn. The UserPromptSubmit hook (news.sh) deletes
+// it when the human speaks, so "a refusal newer than the last human prompt" is
+// "the file exists". A `deep-plan go` while it does is the agent answering the
+// gate itself, and is refused. Session ids from the payload are uuids; any
+// other shape is not used as a file name.
+export const TURNS_DIR = path.join(STATE_DIR, "turns");
+const turnFile = session => /^[A-Za-z0-9_-]{1,128}$/.test(session || "") ? path.join(TURNS_DIR, session + ".denied") : "";
+export function markDenied(session, slug = "") {
+  const f = turnFile(session);
+  if (!f) return;
+  try { fs.mkdirSync(TURNS_DIR, { recursive: true }); fs.writeFileSync(f, JSON.stringify({ at: Date.now(), slug }) + "\n"); }
+  catch { /* the refusal stands without it */ }
+}
+export function deniedThisTurn(session) {
+  const f = turnFile(session);
+  if (!f) return null;
+  try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return f && fs.existsSync(f) ? { at: 0 } : null; }
+}
+
+// deep-plan's own records: plan state, keys and archived specs. An agent's
+// Edit or Write there is how a gate gets opened by hand-editing its JSON.
+export function ownRecords(target) {
+  return [STATE_DIR, KEYS_DIR].some(d => inside(target, d));
+}
+
 // Where a bash command "lands": its cwd. We gate bash by cwd, not by parsing
 // paths out of the command — conservative in the false-negative direction.
 export function decideToolCall(toolName, input, cwd) {
@@ -631,6 +842,9 @@ export function decideToolCall(toolName, input, cwd) {
   // Edit | Write | MultiEdit | NotebookEdit
   const target = (input && (input.file_path || input.notebook_path)) || "";
   if (!target) return { allow: true, why: "no target path" };
+  if (ownRecords(target))
+    return { allow: false, records: true, plan: null,
+      why: `${target} is deep-plan's own state; it changes only through the deep-plan CLI, the board or the plan pane.` };
   if (inside(target, OWN)) return { allow: true, why: "the plan's own tooling" };
   return mayEdit(target);
 }

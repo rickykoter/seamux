@@ -8,7 +8,8 @@
 // gate never sees a write its Bash heuristic misses and so cannot be the
 // one place a base comes from.
 import fs from "node:fs";
-import { decideToolCall, readState, writeState, log1, brokenRoots, isOwner, ownerName } from "../lib/state.mjs";
+import { decideToolCall, readState, writeState, log1, brokenRoots, isOwner, ownerName,
+  deepPlanCalls, humanLever, onHumansWord, markDenied, deniedThisTurn } from "../lib/state.mjs";
 import { trespass, waitingOn, waitText, goOwner } from "../lib/family.mjs";
 
 let raw = "";
@@ -20,7 +21,6 @@ const tool = payload.tool_name || "";
 const input = payload.tool_input || {};
 const cwd = payload.cwd || process.cwd();
 
-const d = decideToolCall(tool, input, cwd);
 // Who made this call: its pane, its session (the payload's, else the env's)
 // and its workspace.
 const who = {
@@ -28,6 +28,35 @@ const who = {
   session: payload.session_id || process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || "",
   workspace: process.env.CMUX_WORKSPACE_ID || "",
 };
+
+// The go is the human's (ADR 0029). This hook runs only for a Claude Code
+// session's own tool calls, so whatever it refuses here stays open to the
+// human's shell, the board and the plan pane, which never pass through it.
+if (tool === "Bash") {
+  let calls = [];
+  try { calls = deepPlanCalls(input.command || ""); } catch { /* a parse failure refuses nothing */ }
+  const slugOf = c => (c && c.words.find(w => !w.startsWith("-"))) || "?";
+  // The human's levers, refused outright from a session.
+  const lever = humanLever(calls);
+  if (lever) {
+    const c = calls.find(x => humanLever([x]));
+    process.stderr.write(`deep-plan gate [${slugOf(c)}]: ${lever}, from their own shell, the board or the plan pane — ` +
+      `not from a Claude Code session. Ask the human to do it.\n`);
+    process.exit(2);
+  }
+  // A go (or a --force, --by human, close) in the same turn the gate refused
+  // an edit is the agent answering the gate itself. The human's word in chat
+  // starts a new turn, which clears it.
+  const word = onHumansWord(calls);
+  if (word && deniedThisTurn(who.session)) {
+    const c = calls.find(x => onHumansWord([x])) || calls[0];
+    process.stderr.write(`deep-plan gate [${slugOf(c)}]: the gate refused an edit in this turn: ask the human, ` +
+      `and run ${word} only after they answer. (Their reply starts a new turn; it goes through then.)\n`);
+    process.exit(2);
+  }
+}
+
+const d = decideToolCall(tool, input, cwd);
 if (d.allow) {
   const st = d.plan;
   // The plan owns its worktree: only its owner's write is the plan's
@@ -40,13 +69,13 @@ if (d.allow) {
   if (st && owner && st.phase === "implementing") {
     const inc = (st.increments || []).find(i => i.status === "authorized");
     if (inc && !(st.increments || []).some(i => i.status === "working")) {
-      inc.status = "working"; inc.startedAt = Date.now();
-      log1(st, `start (via gate): increment ${inc.n}`);
       const fresh = readState(st.slug);           // re-read: never clobber a newer write
-      if (fresh) {
-        const fi = (fresh.increments || []).find(i => i.n === inc.n);
-        if (fi && fi.status === "authorized") { fi.status = "working"; fi.startedAt = inc.startedAt;
-          log1(fresh, `start (via gate): increment ${inc.n}`); writeState(fresh, { stamp: false }); }
+      const fi = fresh && (fresh.increments || []).find(i => i.n === inc.n);
+      if (fi && fi.status === "authorized") {
+        fi.status = "working"; fi.startedAt = fi.changedAt = Date.now();
+        log1(fresh, `start (via gate): increment ${inc.n}`);
+        // Cosmetic: a busy lock must never fail the edit it rides on.
+        try { writeState(fresh, { stamp: false }); } catch { /* the next edit flips it */ }
       }
     }
   }
@@ -107,6 +136,12 @@ function guestNote(st) {
 }
 
 const slug = d.plan ? d.plan.slug : "?";
+// This turn's refusal, so a `deep-plan go` later in the same turn is refused.
+markDenied(who.session, slug);
+if (d.records) {
+  process.stderr.write(`deep-plan gate [${slug}]: ${d.why} Ask the human.\n`);
+  process.exit(2);
+}
 // A family child whose next go is held by its parent: say so, or the agent
 // asks for a go-ahead that will only be refused.
 let waits = [];
@@ -125,6 +160,6 @@ process.stderr.write(
   (own && own.delegated
     ? `Its go is delegated to the parent (${own.parent}): do not run deep-plan go here. ` +
       `Wait for the parent's go (deep-plan await-go ${slug}); a person can also give it.\n`
-    : `Ask the human, then: deep-plan go ${slug} next   (or the board's "go" chip; ` +
-      `deep-plan open-gate ${slug} lifts the gate entirely.)\n`));
+    : `Ask the human. Only once they answer go: deep-plan go ${slug} next   ` +
+      `(or they press the board's "go" chip).\n`));
 process.exit(2);
