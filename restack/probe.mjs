@@ -998,6 +998,23 @@ step("push lines pin the lease to the remote tip the walk recorded");
   ok("git refuses the pinned lease once the remote moved", !res.ok, res.err);
   ok("and the other commit is still on the remote",
     spawnSync("git", ["--git-dir", bare, "rev-parse", "feat1"], { encoding: "utf8", env: ENV }).stdout.trim() === theirs);
+
+  // A config that copied the old default (a bare lease) still gets the pinned
+  // form, with a note; any other command is printed as configured.
+  const withCmd = (name, command, ...args) => {
+    const p = path.join(TMP, `${name}.json`);
+    fs.writeFileSync(p, JSON.stringify({ ...cheapCfg, push: { command } }));
+    const res = spawnSync("node", [path.join(HERE, "restack.mjs"), "push", ...args],
+      { cwd: r, encoding: "utf8", env: { ...ENV, RESTACK_CONFIG: p } });
+    let json = null; try { json = JSON.parse(res.stdout); } catch { /* left null */ }
+    return { ...res, json };
+  };
+  const oldDefault = withCmd("pushcmd-old", "git push --force-with-" + "lease", "--json");
+  ok("a copied old-default push.command still prints the pinned lease", oldDefault.json?.push?.[0] === line, oldDefault.stdout);
+  const noted = withCmd("pushcmd-old", "git push --force-with-" + "lease");
+  ok("and says to remove the setting", /bare lease.*remove the setting/.test(noted.stderr), noted.stderr);
+  const custom = withCmd("pushcmd-custom", "gt submit --branch", "--json");
+  ok("a custom push.command is printed as configured", custom.json?.push?.[0] === "gt submit --branch origin feat1", custom.stdout);
 }
 
 // ---------------------------------------------------------------- a stale local base

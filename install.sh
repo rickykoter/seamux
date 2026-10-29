@@ -324,10 +324,14 @@ PLIST
   did "installed $APPDIR"
   if [ "$DRY" != 1 ] && [ -d "$keep" ]; then
     local old
-    # Names end in a timestamp, so a name sort is oldest first.
-    ls -1d "$keep"/seamux.app.replaced.* 2>/dev/null | sort \
-      | awk '{a[NR]=$0} END {for (i = 1; i <= NR - 3; i++) print a[i]}' \
-      | while IFS= read -r old; do rm -rf -- "$old"; done
+    # Names carry a timestamp, so a name sort is oldest first. Good copies and
+    # failed ones (left by a copy that did not finish) are pruned apart, so a
+    # failed copy never pushes out a good one: the newest 3 good, 1 failed.
+    { ls -1d "$keep"/seamux.app.replaced.* 2>/dev/null | grep -v '\.failed$' | sort \
+        | awk '{a[NR]=$0} END {for (i = 1; i <= NR - 3; i++) print a[i]}'
+      ls -1d "$keep"/seamux.app.replaced.*.failed 2>/dev/null | sort \
+        | awk '{a[NR]=$0} END {for (i = 1; i <= NR - 1; i++) print a[i]}'
+    } | while IFS= read -r old; do rm -rf -- "$old"; done
   fi
   # The CLI the hook shims call, linked into ~/.local/bin. A file that is
   # not a link at that name is someone else's, and is left alone.

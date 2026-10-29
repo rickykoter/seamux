@@ -130,8 +130,19 @@ function baseFacts(ctx) {
 function remoteTip(ctx, branch) {
   return revParse(ctx.cwd, `refs/remotes/${ctx.cfg.remote}/${branch}`);
 }
+// A push.command copied from the old default (a bare lease, no `=`) would
+// keep the unpinned form, so it gets the pinned line and a note instead.
+function bareLeaseCommand(cmd) {
+  return !!cmd && /--force-with-lease(?![=\w-])/.test(cmd);
+}
+let bareLeaseNoted = false;
 function pushLine(ctx, branch, tip) {
-  if (ctx.cfg.push.command) return `${ctx.cfg.push.command} ${ctx.cfg.remote} ${branch}`;
+  const cmd = ctx.cfg.push.command;
+  if (bareLeaseCommand(cmd) && !bareLeaseNoted) {
+    bareLeaseNoted = true;
+    if (!JSONOUT) console.error(`restack: note: push.command "${cmd}" in ${ctx.cfg.path || ".seamux/restack.json"} is a bare lease; printing the pinned form instead (remove the setting to silence this)`);
+  }
+  if (cmd && !bareLeaseCommand(cmd)) return `${cmd} ${ctx.cfg.remote} ${branch}`;
   return `git push --force-with-lease=${branch}:${tip || ""} ${ctx.cfg.remote} ${branch}:${branch}`;
 }
 
