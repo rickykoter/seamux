@@ -561,7 +561,7 @@ fn ensure_server() -> bool {
     }
     // Its stderr goes to the server log, where a failure below sends people:
     // the reasons it cannot start (no port, no token file) are printed there.
-    if crate::server::spawn_server(false).is_err() {
+    if crate::server::spawn_server(None).is_err() {
         return false;
     }
     (0..30).any(|_| {

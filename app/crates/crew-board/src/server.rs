@@ -497,7 +497,7 @@ pub fn health_body() -> String {
 /// whatever the status, so a busy server answering 503 at its connection cap
 /// still counts. Up to ~3s for the answer. Err says what is there instead.
 pub fn identify(port: u16) -> Result<(), String> {
-    let (code, headers, body) = crate::proxy::exchange(port, "GET", "/health", &[], b"", Duration::from_secs(3))
+    let (code, headers, body) = health_head(port, IDENTIFY_WAIT, IDENTIFY_CAP)
         .map_err(|e| format!("nothing answers /health on {port} ({e})"))?;
     let server = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("server")).map(|(_, v)| v.as_str()).unwrap_or("");
     let named = serde_json::from_slice::<Value>(&body).ok()
@@ -506,6 +506,44 @@ pub fn identify(port: u16) -> Result<(), String> {
         return Ok(());
     }
     Err(format!("port {port} is held by something else ({code}, server {server:?})"))
+}
+
+/// identify()'s whole wait, and the most of the answer it reads: a program
+/// streaming on the recorded port must not hold it.
+const IDENTIFY_WAIT: Duration = Duration::from_secs(3);
+const IDENTIFY_CAP: usize = 8 * 1024;
+
+/// GET /health with one overall deadline and a size cap: (status, headers,
+/// body so far). Err when no header block arrived in time.
+fn health_head(port: u16, wait: Duration, cap: usize) -> std::io::Result<(u16, Vec<(String, String)>, Vec<u8>)> {
+    let deadline = std::time::Instant::now() + wait;
+    let left = || deadline.saturating_duration_since(std::time::Instant::now());
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let mut s = TcpStream::connect_timeout(&addr, left().min(Duration::from_millis(800)).max(Duration::from_millis(1)))?;
+    s.set_write_timeout(Some(left().max(Duration::from_millis(1))))?;
+    s.write_all(format!("GET /health HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").as_bytes())?;
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 2048];
+    while raw.len() < cap {
+        let rest = left();
+        if rest.is_zero() {
+            break;
+        }
+        s.set_read_timeout(Some(rest))?;
+        match s.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => raw.extend_from_slice(&buf[..n.min(cap - raw.len())]),
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => break,
+            Err(e) => return Err(e),
+        }
+    }
+    let bad = |m: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, m.to_string());
+    let split = raw.windows(4).position(|w| w == b"\r\n\r\n").ok_or_else(|| bad("no answer in time"))?;
+    let head = String::from_utf8_lossy(&raw[..split]).into_owned();
+    let mut lines = head.split("\r\n");
+    let code = lines.next().and_then(|l| l.split_whitespace().nth(1)).and_then(|c| c.parse().ok()).ok_or_else(|| bad("no status"))?;
+    let hdrs = lines.filter_map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))).collect();
+    Ok((code, hdrs, raw[split + 4..].to_vec()))
 }
 
 /// (port, token) of a crew-board-intent that is actually answering, else None.
@@ -558,9 +596,10 @@ fn write_token(path: &Path, token: &str) -> std::io::Result<()> {
 }
 
 /// Start `<this binary> crew-board-intent` detached, from $HOME, its stderr
-/// in the server log. `takeover` makes it wait for the server lock rather than
-/// leave at once: the server that spawns it on an upgrade still holds it.
-pub fn spawn_server(takeover: bool) -> std::io::Result<u32> {
+/// in the server log. `takeover` (the old server's pid) makes it a successor:
+/// it waits for the lock, names itself in board-intent.takeover, and binds
+/// only once that pid has gone (see serve()).
+pub fn spawn_server(takeover: Option<u32>) -> std::io::Result<std::process::Child> {
     use std::os::unix::process::CommandExt;
     let exe = crew_core::upgrade::exe().ok_or_else(|| std::io::Error::other("cannot find this binary"))?;
     let _ = std::fs::create_dir_all(state_dir());
@@ -569,8 +608,8 @@ pub fn spawn_server(takeover: bool) -> std::io::Result<u32> {
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("crew-board-intent").current_dir(py::home())
         .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(err);
-    if takeover {
-        cmd.env("CREW_INTENT_TAKEOVER", "1");
+    if let Some(pid) = takeover {
+        cmd.env("CREW_INTENT_TAKEOVER", pid.to_string());
     } else {
         cmd.env_remove("CREW_INTENT_TAKEOVER");
     }
@@ -581,7 +620,40 @@ pub fn spawn_server(takeover: bool) -> std::io::Result<u32> {
             Ok(())
         });
     }
-    cmd.spawn().map(|c| c.id())
+    cmd.spawn()
+}
+
+fn takeover_file() -> PathBuf {
+    state_dir().join("board-intent.takeover")
+}
+
+/// How often a server looks for an installed upgrade (CREW_INTENT_UPGRADE_CHECK
+/// seconds, 10 by default; the probe shortens it).
+fn upgrade_check() -> Duration {
+    let s = std::env::var("CREW_INTENT_UPGRADE_CHECK").ok().and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(10.0);
+    Duration::from_secs_f64(if s.is_finite() && s > 0.0 { s.clamp(0.2, 3600.0) } else { 10.0 })
+}
+
+/// Whether the successor took over within `wait`: it holds the lock and named
+/// itself in board-intent.takeover. False as soon as it exits.
+fn handed_off(child: &mut std::process::Child, wait: Duration) -> bool {
+    let deadline = std::time::Instant::now() + wait;
+    let me = child.id().to_string();
+    while std::time::Instant::now() < deadline {
+        if let Ok(Some(_)) = child.try_wait() {
+            return false;
+        }
+        if std::fs::read_to_string(takeover_file()).is_ok_and(|s| s.trim() == me) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+fn alive(pid: u32) -> bool {
+    // SAFETY: signal 0 only checks that the pid exists.
+    pid > 0 && unsafe { libc::kill(pid as i32, 0) } == 0
 }
 
 /// The server lock: at once, or (taking over from a server that is about to
@@ -650,8 +722,10 @@ pub fn serve() -> i32 {
     // and cmux's "Crew board" command can each start one at the same moment;
     // without the lock both pass the check below, the loser binds a random
     // port and rewrites the port and token files under the winner's pages.
-    let takeover = std::env::var_os("CREW_INTENT_TAKEOVER").is_some();
-    let _lock = match server_lock(takeover) {
+    // Read once and removed, so nothing this server starts inherits it.
+    let takeover: Option<u32> = std::env::var("CREW_INTENT_TAKEOVER").ok().and_then(|v| v.trim().parse().ok());
+    std::env::remove_var("CREW_INTENT_TAKEOVER");
+    let lock = match server_lock(takeover.is_some()) {
         Ok(Some(l)) => l,
         Ok(None) => {
             eprintln!("crew-board-intent: another server holds board-intent.lock; not starting a second");
@@ -664,6 +738,23 @@ pub fn serve() -> i32 {
             return 1;
         }
     };
+    // A successor: say so (the old server waits for this before it leaves),
+    // then wait for the old one to go, so its port is free to take.
+    if let Some(old) = takeover {
+        if let Err(e) = py::write_atomic(&takeover_file(), std::process::id().to_string().as_bytes()) {
+            log(&format!("not taking over: cannot write the takeover file: {e}"));
+            return 1;
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while alive(old) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = std::fs::remove_file(takeover_file());
+        if alive(old) {
+            log(&format!("not taking over: the old server (pid {old}) is still running"));
+            return 0;
+        }
+    }
     // One from before the lock existed may still serve: leave it be, but
     // only when it is one. Anything else on the recorded port is ignored and
     // a port bound afresh, so the port file never names another program.
@@ -673,7 +764,7 @@ pub fn serve() -> i32 {
                 log(&format!("not starting (pid {}): a crew-board-intent already answers on {port}", std::process::id()));
                 return 0;
             }
-            Err(why) if !takeover => log(&format!("the port file names {port}, but {why}: binding afresh")),
+            Err(why) if takeover.is_none() => log(&format!("the port file names {port}, but {why}: binding afresh")),
             Err(_) => {}
         }
     }
@@ -699,23 +790,52 @@ pub fn serve() -> i32 {
         return 1;
     }
     log(&format!("listening on 127.0.0.1:{port} (pid {})", std::process::id()));
-    // An install replaced this binary: start the new one and leave, so the new
-    // code serves. The successor waits for this server's lock, which goes
-    // with this process, then binds the same port (the token carries over).
-    // Without a successor, keep serving the old code rather than none.
+    // An install replaced this binary: start the new one, hand it the lock,
+    // and leave only once it has taken it (it then waits for this process to
+    // go and binds the same port; the token carries over). A successor that
+    // does not take over in 10s, or exits, leaves this one serving the old
+    // code rather than none.
     let started = std::time::SystemTime::now();
+    let held = std::sync::Arc::new(std::sync::Mutex::new(Some(lock)));
+    let cell = held.clone();
     std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(10));
-        if crew_core::upgrade::replaced_since(started) {
-            match spawn_server(true) {
-                Ok(pid) => {
-                    log(&format!("a newer binary is installed: started it (pid {pid}) and exiting so it can take over"));
+        std::thread::sleep(upgrade_check());
+        if !crew_core::upgrade::replaced_since(started) {
+            continue;
+        }
+        let mut child = match spawn_server(Some(std::process::id())) {
+            Ok(c) => c,
+            Err(e) => {
+                log(&format!("a newer binary is installed, but it would not start ({e}): serving on with this one"));
+                return;
+            }
+        };
+        let pid = child.id();
+        drop(cell.lock().unwrap_or_else(|e| e.into_inner()).take());
+        if handed_off(&mut child, Duration::from_secs(10)) {
+            log(&format!("a newer binary is installed: pid {pid} took over; exiting"));
+            std::process::exit(0);
+        }
+        let why = match child.try_wait() {
+            Ok(Some(st)) => format!("it exited ({st})"),
+            _ => "it did not take the lock in 10s".to_string(),
+        };
+        match server_lock(false) {
+            Ok(Some(l)) => {
+                *cell.lock().unwrap_or_else(|e| e.into_inner()) = Some(l);
+                let _ = child.kill();
+                log(&format!("a newer binary is installed, but pid {pid} did not take over ({why}): serving on with this one"));
+                return;
+            }
+            _ => {
+                // Someone has the lock now: if it is the successor, late, it is
+                // waiting for this process to go.
+                if handed_off(&mut child, Duration::from_millis(500)) {
+                    log(&format!("a newer binary is installed: pid {pid} took over late; exiting"));
                     std::process::exit(0);
                 }
-                Err(e) => {
-                    log(&format!("a newer binary is installed, but it would not start ({e}): serving on with this one"));
-                    return;
-                }
+                log(&format!("a newer binary is installed, but pid {pid} did not take over ({why}); the lock is another's: serving on"));
+                return;
             }
         }
     });
@@ -874,6 +994,37 @@ mod tests {
         too_busy(s);
         assert!(t.elapsed() < Duration::from_millis(400), "held for {:?}", t.elapsed());
         client.join().unwrap();
+    }
+
+    #[test]
+    fn a_program_streaming_on_the_port_cannot_hold_identify() {
+        // Headers that never end, a byte at a time: given up at the deadline.
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = l.accept() {
+                let _ = s.write_all(b"HTTP/1.0 200 OK\r\nX: ");
+                while s.write_all(b"y").is_ok() {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        });
+        let t = std::time::Instant::now();
+        assert!(health_head(port, Duration::from_millis(500), IDENTIFY_CAP).is_err());
+        assert!(t.elapsed() < Duration::from_millis(900), "held for {:?}", t.elapsed());
+        // A flood after the headers: read up to the cap, and still identified.
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = l.accept() {
+                let _ = s.write_all(b"HTTP/1.0 200 OK\r\nServer: crew-board-intent\r\n\r\n");
+                let junk = [b'z'; 4096];
+                while s.write_all(&junk).is_ok() {}
+            }
+        });
+        let t = std::time::Instant::now();
+        let (code, _, body) = health_head(port, Duration::from_secs(3), IDENTIFY_CAP).unwrap();
+        assert!(code == 200 && body.len() < IDENTIFY_CAP && t.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

@@ -2663,6 +2663,61 @@ if (crewImpl.isRust("crew-board-intent")) {
 }
 
 // ---------------------------------------------------------------------------
+// An install replaces the server's binary: it hands over to the new one on the
+// same port and leaves; a new binary that will not start leaves it serving.
+// On a copy of seamux in a temp HOME, so the real binary is never touched.
+if (crewImpl.isRust("crew-board-intent")) {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const http = await import("node:http");
+  const net = await import("node:net");
+  const { spawn } = await import("node:child_process");
+  const H = fs.mkdtempSync(join(os.tmpdir(), "board-probe-upgrade-"));
+  const SD = join(H, ".cache", "cmux-crew");
+  const BIN = join(H, "bin", "seamux");
+  fs.mkdirSync(join(H, "bin"), { recursive: true });
+  fs.copyFileSync(crewImpl.seamuxBin(), BIN);
+  fs.chmodSync(BIN, 0o755);
+  const free = await new Promise(res => { const v = net.createServer(); v.listen(0, "127.0.0.1", () => { const p = v.address().port; v.close(() => res(p)); }); });
+  const env = toolEnv({ ...process.env, HOME: H, CREW_INTENT_PORT: String(free), CREW_INTENT_UPGRADE_CHECK: "0.3",
+    CREW_CMUX: join(HERE, "..", "tools", "fakecmux.py"), FAKE_CMUX_DIR: H });
+  const health = () => new Promise(res => {
+    const r = http.request({ host: "127.0.0.1", port: free, path: "/health" }, resp => {
+      let d = ""; resp.on("data", c => (d += c)); resp.on("end", () => { try { res(JSON.parse(d)); } catch { res(null); } });
+    });
+    r.on("error", () => res(null)); r.setTimeout(1000, () => { r.destroy(); res(null); }); r.end();
+  });
+  const until = async (f, ms) => { for (const t = Date.now() + ms; Date.now() < t; await new Promise(r => setTimeout(r, 100))) { const v = await f(); if (v) return v; } return null; };
+  const pids = [];
+  const logOf = () => fs.existsSync(join(SD, "board-intent.log")) ? fs.readFileSync(join(SD, "board-intent.log"), "utf8") : "";
+  try {
+    const first = spawn(BIN, ["crew-board-intent"], { env, stdio: "ignore", detached: true });
+    pids.push(first.pid);
+    const h1 = await until(async () => { const h = await health(); return h && h.pid === first.pid && h; }, 10000);
+    // "Install" a new binary: a fresh file renamed over the old (as an install does).
+    const fresh = BIN + ".new";
+    fs.copyFileSync(crewImpl.seamuxBin(), fresh); fs.chmodSync(fresh, 0o755); fs.renameSync(fresh, BIN);
+    const h2 = await until(async () => { const h = await health(); return h && h.pid !== first.pid && h; }, 15000);
+    if (h2) pids.push(h2.pid);
+    let gone = false;
+    try { process.kill(first.pid, 0); } catch { gone = true; }
+    checks.push(["intent server: on an upgrade the new binary takes over on the same port, and the old one leaves",
+      !!h1 && !!h2 && gone && /pid \d+ took over; exiting/.test(logOf()), logOf().slice(-500)]);
+    // A new binary that will not start: the server keeps serving, and says why.
+    fs.writeFileSync(fresh, "#!/bin/sh\nexit 3\n", { mode: 0o755 }); fs.renameSync(fresh, BIN);
+    const said = await until(() => /did not take over \(it exited/.test(logOf()), 15000);
+    const h3 = await health();
+    checks.push(["intent server: a new binary that will not start leaves the old one serving, and logged",
+      !!said && !!h2 && h3?.pid === h2.pid, logOf().slice(-500)]);
+  } catch (e) {
+    checks.push(["intent server upgrade checks ran to the end: " + e.message, false]);
+  } finally {
+    for (const p of pids) try { process.kill(p); } catch { /* gone */ }
+    fs.rmSync(H, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // The review lock's two twins, review_lock here and withLock in lookout's
 // store, against each other: the file contract they share (<id>.lock, broken
 // through <id>.lock-break) has to hold from both sides. Each case runs in a
