@@ -71,7 +71,8 @@ fn sidebar_cache_file() -> PathBuf {
 /// deep-plan's tracked plans, keyed by worktree root. Works with cmux down.
 pub fn plans() -> Map<String, Value> {
     let script = dp_engine::script();
-    let (ok, out) = cmux_cli::run("node", &[&script.to_string_lossy(), "status", "--json"], Duration::from_secs(15));
+    let node = crate::act::node().unwrap_or_else(|| "node".into());
+    let (ok, out) = cmux_cli::run(&node, &[&script.to_string_lossy(), "status", "--json"], Duration::from_secs(15));
     if !ok || out.is_empty() {
         return Map::new();
     }
@@ -555,28 +556,12 @@ fn retired(sub: &str, url: &str) -> String {
 /// runs from $HOME, detached: a server left in a worktree's directory outlives
 /// the worktree, and every node child it starts then dies on a missing cwd.
 fn ensure_server() -> bool {
-    use std::os::unix::process::CommandExt;
     if crate::server::current().is_some() {
         return true;
     }
-    let Some(exe) = crew_core::upgrade::exe() else { return false };
     // Its stderr goes to the server log, where a failure below sends people:
     // the reasons it cannot start (no port, no token file) are printed there.
-    let log = crate::server::log_file();
-    let _ = std::fs::create_dir_all(state_dir());
-    let err = std::fs::OpenOptions::new().append(true).create(true).open(&log)
-        .map(std::process::Stdio::from).unwrap_or_else(|_| std::process::Stdio::null());
-    let mut cmd = std::process::Command::new(exe);
-    cmd.arg("crew-board-intent").current_dir(py::home())
-        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(err);
-    // SAFETY: setsid is async-signal-safe and touches only the child.
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
-    }
-    if cmd.spawn().is_err() {
+    if crate::server::spawn_server(false).is_err() {
         return false;
     }
     (0..30).any(|_| {

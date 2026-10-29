@@ -51,10 +51,7 @@ impl Plugin {
             Plugin::Lookout => crate::act::lookout_engine(),
             Plugin::DeepPlan => {
                 let script = crew_core::dp_engine::script();
-                let node = crate::act::which("node").or_else(|| {
-                    ["/opt/homebrew/bin/node", "/usr/local/bin/node"].iter()
-                        .find(|c| std::path::Path::new(c).exists()).map(|c| c.to_string())
-                })?;
+                let node = crate::act::node()?;
                 script.is_file().then(|| (node, script.to_string_lossy().into_owned()))
             }
         }
@@ -73,7 +70,7 @@ pub fn owner_get(path: &str) -> Option<Plugin> {
 }
 
 /// One plain HTTP/1.0 exchange with a plugin server: (status, headers, body).
-fn exchange(port: u16, method: &str, target: &str, headers: &[(&str, String)], body: &[u8], timeout: Duration)
+pub(crate) fn exchange(port: u16, method: &str, target: &str, headers: &[(&str, String)], body: &[u8], timeout: Duration)
     -> std::io::Result<(u16, Vec<(String, String)>, Vec<u8>)> {
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_millis(800))?;
@@ -120,8 +117,27 @@ fn live_port(p: Plugin) -> Option<u16> {
     }
 }
 
+/// One start at a time per plugin: requests that find no server while one is
+/// starting wait for that start instead of each running `serve` (these routes
+/// are reachable without a token, so a burst would otherwise be a fork bomb).
+fn start_lock(p: Plugin) -> std::sync::MutexGuard<'static, ()> {
+    static DEEP_PLAN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static LOOKOUT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    match p {
+        Plugin::DeepPlan => &DEEP_PLAN,
+        Plugin::Lookout => &LOOKOUT,
+    }
+    .lock()
+    .unwrap_or_else(|e| e.into_inner())
+}
+
 /// The plugin's server, started through its CLI when none answers.
 pub fn ensure(p: Plugin) -> Result<u16, String> {
+    if let Some(port) = live_port(p) {
+        return Ok(port);
+    }
+    let _start = start_lock(p);
+    // Whoever held the lock before us may have just started it.
     if let Some(port) = live_port(p) {
         return Ok(port);
     }
@@ -153,7 +169,7 @@ fn relay(req: &mut Request, p: Plugin, out: std::io::Result<(u16, Vec<(String, S
     match out {
         Ok((code, headers, body)) => {
             let keep: Vec<(&str, String)> = headers.iter()
-                .filter(|(k, _)| ["content-type", "cache-control", "location"].contains(&k.to_ascii_lowercase().as_str()))
+                .filter(|(k, _)| ["content-type", "cache-control", "location", "content-security-policy", "x-frame-options"].contains(&k.to_ascii_lowercase().as_str()))
                 .map(|(k, v)| (k.as_str(), v.clone()))
                 .collect();
             req.relay(code, &keep, &body);

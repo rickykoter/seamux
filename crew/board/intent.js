@@ -53,7 +53,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "11";
+  var V = "12";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -98,7 +98,11 @@ function __boardIntent(cfg) {
       // inert and is still a card.
       ".row.inert{cursor:default}" +
       // Framed by the seamux app: the workspace the app shows beside the board.
-      ".row.appsel{outline:2px solid #dbbc7f;outline-offset:-2px;background:#2f3639}";
+      ".row.appsel{outline:2px solid #dbbc7f;outline-offset:-2px;background:#2f3639}" +
+      // Why a click failed, for a few seconds: the red flash alone said nothing.
+      "#intent-toast{position:fixed;left:12px;right:12px;bottom:12px;z-index:50;padding:8px 12px;" +
+      "border-radius:6px;background:#3a2a2c;border:1px solid #e67e80;color:#f2d4d4;font:12px/1.4 system-ui,sans-serif;" +
+      "pointer-events:none}#intent-toast[hidden]{display:none}";
   }
 
   // ---- the chip vocabulary --------------------------------------------
@@ -167,18 +171,47 @@ function __boardIntent(cfg) {
       "&x=" + encodeURIComponent(t.x || "");
     var el = t.el;
     el.classList.add("hit");
-    function done(cls) {
+    function done(cls, why) {
       el.classList.remove("hit");
       if (!cls) return;
       el.classList.add(cls);
       // Long enough to see, short enough that the next push is not fighting it.
       setTimeout(function () { el.classList.remove(cls); }, 1200);
+      if (why) say(el, why);
     }
-    fetch(url).then(function (r) { return r.json(); })
-      .then(function (j) { done(j && j.ok ? "ok" : "bad"); })
-      // A failed fetch means the server is not up. Say so on the element the
-      // human just pressed; a silent no-op is the regression we are fixing.
-      .catch(function () { done("bad"); });
+    fetch(url).then(function (r) {
+      // A refusal is JSON too ({error}); anything else is said by its status.
+      return Promise.resolve().then(function () { return r.json(); }).then(function (j) { return j || {}; },
+        function () { return { ok: false, detail: "the server answered " + r.status }; });
+    }, function () { return null; })
+      .then(function (j) {
+        // No answer at all: the server is not up. Say so on the element the
+        // human just pressed; a silent no-op is the regression we are fixing.
+        if (!j) return done("bad", "server not reachable");
+        if (j.ok) return done("ok");
+        done("bad", String(j.detail || j.error || "that did not work"));
+      });
+  }
+
+  // Why a click failed: on the element (its title) and in a toast, for a few
+  // seconds. The toast is outside #rows, so a push does not wipe it.
+  var toastTimer = 0;
+  function say(el, why) {
+    var prev = el.getAttribute ? el.getAttribute("title") : null;
+    el.title = why;
+    setTimeout(function () { if (el.title === why) el.title = prev || ""; }, 4000);
+    if (!document.body || !document.createElement) return;
+    var box = document.getElementById("intent-toast");
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "intent-toast";
+      box.setAttribute("role", "status");
+      document.body.appendChild(box);
+    }
+    box.textContent = why;
+    box.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { box.hidden = true; }, 4000);
   }
 
   // Fold or unfold a card in place. The class flips now, so the card changes
@@ -212,6 +245,30 @@ function __boardIntent(cfg) {
         typeof window.parent.postMessage === "function";
     } catch (e) { return false; }
   }
+  // The origins allowed to frame the board (the server's frame-ancestors list).
+  // Messages go to the app's origin only, never "*": they name workspaces.
+  function allowed(o) {
+    var p = live().parents;
+    return typeof o === "string" && Object.prototype.toString.call(p) === "[object Array]" && p.indexOf(o) >= 0;
+  }
+  // The parent's origin: what its first message came from, else what the
+  // browser says framed this page. Null when neither is an allowed one.
+  function appOrigin() {
+    var o = host.getAttribute("data-app-origin");
+    if (o && allowed(o)) return o;
+    try {
+      var a = window.location && window.location.ancestorOrigins;
+      if (a && a.length && allowed(a[0])) return a[0];
+    } catch (e) { /* no location */ }
+    return null;
+  }
+  // True when the message went to the app; false when its origin is unknown.
+  function tell(msg) {
+    var o = appOrigin();
+    if (!o) return false;
+    window.parent.postMessage(msg, o);
+    return true;
+  }
   function mark(ws) {
     host.setAttribute("data-app-sel", ws || "");
     if (!host.querySelectorAll) return;
@@ -221,13 +278,18 @@ function __boardIntent(cfg) {
       else rows[i].classList.remove("appsel");
     }
   }
+  // Refreshed on every push; the listener below is installed only once.
+  host.setAttribute("data-intent-cfg", JSON.stringify({ port: cfg.port, token: cfg.token,
+    parents: Object.prototype.toString.call(cfg.parents) === "[object Array]" ? cfg.parents : [] }));
+
   // Every push redraws the rows: mark the app's workspace again.
   if (framed()) mark(host.getAttribute("data-app-sel") || "");
   if (framed() && host.getAttribute("data-app-msg") !== V) {
     window.addEventListener("message", function (ev) {
       if (host.getAttribute("data-app-msg") !== V) return;
       var d = ev.data;
-      if (ev.source === window.parent && d && d.crew === "selected") {
+      if (ev.source === window.parent && allowed(ev.origin) && d && d.crew === "selected") {
+        host.setAttribute("data-app-origin", ev.origin);
         mark(String(d.ws || ""));
         // What the app does itself instead of cmux (its reclaim wizard). An
         // app that never says keeps every chip going to cmux.
@@ -235,12 +297,14 @@ function __boardIntent(cfg) {
       }
     });
     host.setAttribute("data-app-msg", V);
-    // Listening now: ask the app which workspace it shows.
-    window.parent.postMessage({ crew: "ready" }, "*");
+    // Listening now: ask the app which workspace it shows. Where the browser
+    // does not say who framed it, the ask goes to each allowed origin (it
+    // carries nothing; the others drop it).
+    var ao = appOrigin(), ps = ao ? [ao] : (live().parents || []);
+    for (var pi = 0; pi < ps.length; pi++) {
+      try { window.parent.postMessage({ crew: "ready" }, ps[pi]); } catch (e) { /* a bad origin */ }
+    }
   }
-
-  // Refreshed on every push; the listener below is installed only once.
-  host.setAttribute("data-intent-cfg", JSON.stringify({ port: cfg.port, token: cfg.token }));
 
   if (host.getAttribute("data-intent") !== V) {
     host.addEventListener("click", function (ev) {
@@ -286,8 +350,7 @@ function __boardIntent(cfg) {
         shutMenu();
         if (framed()) {
           var nm = row.querySelector(".nm");
-          window.parent.postMessage({ crew: "tuck", ws: rid, level: t.x,
-            name: nm ? nm.textContent : rid }, "*");
+          tell({ crew: "tuck", ws: rid, level: t.x, name: nm ? nm.textContent : rid });
         }
         return;
       }
@@ -299,11 +362,10 @@ function __boardIntent(cfg) {
       // would go and asks there. Anywhere else, crew:reclaim opens a terminal.
       if (framed() && t.a === "reclaim" && (" " + (host.getAttribute("data-app-can") || "") + " ").indexOf(" reclaim ") >= 0) {
         var rn = row.querySelector ? row.querySelector(".nm") : null;
-        window.parent.postMessage({ crew: "reclaim", ws: rid, name: rn ? rn.textContent : rid }, "*");
-        return;
+        if (tell({ crew: "reclaim", ws: rid, name: rn ? rn.textContent : rid })) return;
       }
-      if (framed() && SHOWN[t.a]) {
-        window.parent.postMessage({ crew: "select", ws: rid, show: SHOWN[t.a] }, "*");
+      // An app whose origin is not known yet is not told; cmux does it instead.
+      if (framed() && SHOWN[t.a] && tell({ crew: "select", ws: rid, show: SHOWN[t.a] })) {
         mark(rid);
         return;
       }

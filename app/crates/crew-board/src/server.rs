@@ -225,6 +225,12 @@ impl Request {
         for (k, v) in headers {
             out.push_str(&format!("{k}: {v}\r\n"));
         }
+        // Every page, this server's own or a plugin's passed through, says who
+        // may frame it: a page that acts on a click must not be framed by any
+        // site (the Host check passes for a frame), only by the app and itself.
+        if is_html(headers) {
+            out.push_str(&format!("Content-Security-Policy: frame-ancestors {}\r\n", frame_ancestors(self.port)));
+        }
         out.push_str("\r\n");
         let s = self.reader.get_mut();
         let _ = s.write_all(out.as_bytes());
@@ -301,12 +307,60 @@ impl Request {
     }
 }
 
+/// Whether a response's Content-Type is a page.
+fn is_html(headers: &[(&str, String)]) -> bool {
+    headers.iter().any(|(k, v)| k.eq_ignore_ascii_case("content-type") && v.trim_start().to_ascii_lowercase().starts_with("text/html"))
+}
+
+/// The origins that frame these pages besides this server itself: the seamux
+/// app's webview (tauri://localhost on macOS and Linux, http(s)://tauri.localhost
+/// on Windows) and its Vite dev server, plus any CREW_INTENT_FRAME_ANCESTORS
+/// names (space-separated origins, for a demo harness on another port).
+/// cmux's browser pane loads a page top-level, which frame-ancestors does not
+/// touch. intent.js posts to and accepts messages from these same origins.
+pub fn parent_origins() -> Vec<String> {
+    let mut out: Vec<String> = ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost", "http://localhost:5173"]
+        .iter().map(|s| s.to_string()).collect();
+    for o in std::env::var("CREW_INTENT_FRAME_ANCESTORS").unwrap_or_default().split_whitespace() {
+        if origin_ok(o) && !out.iter().any(|x| x == o) {
+            out.push(o.to_string());
+        }
+    }
+    out
+}
+
+/// scheme://host[:port], nothing else: it goes into a header and a script.
+fn origin_ok(o: &str) -> bool {
+    let Some((scheme, rest)) = o.split_once("://") else { return false };
+    !scheme.is_empty() && scheme.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        && scheme.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "+.-".contains(c))
+        && !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric() || ".-:[]".contains(c))
+}
+
+/// CSP frame-ancestors for a page this server answers on `port`. 'self' and
+/// its two loopback names are for a page that frames another of these pages.
+/// No X-Frame-Options: SAMEORIGIN would refuse the app's frame in any engine
+/// that honoured it over CSP, and every engine the app and cmux use reads
+/// frame-ancestors.
+pub fn frame_ancestors(port: u16) -> String {
+    let mut v = vec!["'self'".to_string(), format!("http://127.0.0.1:{port}"), format!("http://localhost:{port}")];
+    // Both tauri://localhost and the scheme-source tauri: (a CSP-only form, so
+    // not in parent_origins, which intent.js posts to): WebKit may match a
+    // custom-scheme origin by scheme alone. If the app's origin is not in this
+    // list, the app's Dock (and every page it frames) goes blank.
+    let mut parents = parent_origins();
+    parents.insert(1, "tauri:".into());
+    v.extend(parents);
+    v.join(" ")
+}
+
 fn reason(code: u16) -> &'static str {
     match code {
         200 => "OK",
         302 => "Found",
         405 => "Method Not Allowed",
         502 => "Bad Gateway",
+        503 => "Service Unavailable",
         400 => "Bad Request",
         403 => "Forbidden",
         404 => "Not Found",
@@ -426,12 +480,34 @@ fn handle(stream: TcpStream, port: u16, token: String) {
 
 // ------------------------------------------------------------- port, token
 
-/// (port, token) of a server that is actually answering, else None.
+/// What /health answers: enough for a client to tell this server from
+/// another program that holds the port.
+pub fn health_body() -> String {
+    pyjson::dumps(&json!({"ok": true, "server": "crew-board-intent", "pid": std::process::id()}))
+}
+
+/// Ok when what answers on `port` is a crew-board-intent: /health is 200 and
+/// names it, in its Server header (the Python's too, and what the app checks)
+/// or its body. Err says what is there instead.
+pub fn identify(port: u16) -> Result<(), String> {
+    let (code, headers, body) = crate::proxy::exchange(port, "GET", "/health", &[], b"", Duration::from_millis(1500))
+        .map_err(|e| format!("nothing answers /health on {port} ({e})"))?;
+    let server = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("server")).map(|(_, v)| v.as_str()).unwrap_or("");
+    let named = serde_json::from_slice::<Value>(&body).ok()
+        .and_then(|v| v.get("server").and_then(Value::as_str).map(String::from)).unwrap_or_default();
+    if code == 200 && (server.starts_with("crew-board-intent") || named == "crew-board-intent") {
+        return Ok(());
+    }
+    Err(format!("port {port} is held by something else ({code}, server {server:?})"))
+}
+
+/// (port, token) of a crew-board-intent that is actually answering, else None.
+/// A connect alone is not enough: another program on the recorded port would
+/// be sent the token with every click.
 pub fn current() -> Option<(u16, String)> {
     let port: u16 = std::fs::read_to_string(port_file()).ok()?.trim().parse().ok()?;
     let token = std::fs::read_to_string(token_file()).ok()?.trim().to_string();
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    TcpStream::connect_timeout(&addr, Duration::from_millis(400)).ok().map(|_| (port, token))
+    identify(port).ok().map(|_| (port, token))
 }
 
 /// The pinned port (CREW_INTENT_PORT, default 7345), then last time's, then any:
@@ -443,8 +519,9 @@ fn bind() -> std::io::Result<TcpListener> {
         candidates.push(p);
     }
     for want in candidates {
-        if let Ok(l) = TcpListener::bind(("127.0.0.1", want)) {
-            return Ok(l);
+        match TcpListener::bind(("127.0.0.1", want)) {
+            Ok(l) => return Ok(l),
+            Err(e) => log(&format!("port {want} is not free ({e}); trying the next")),
         }
     }
     TcpListener::bind(("127.0.0.1", 0))
@@ -458,10 +535,74 @@ fn token() -> String {
     if old.is_empty() { token_urlsafe(24) } else { old }
 }
 
+/// Written to a 0600 temp file and renamed over: a reader never sees it empty.
 fn write_token(path: &Path, token: &str) -> std::io::Result<()> {
-    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
-    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    f.write_all(token.as_bytes())
+    let tmp = PathBuf::from(format!("{}.tmp.{}", path.display(), std::process::id()));
+    let res = (|| {
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        f.write_all(token.as_bytes())?;
+        std::fs::rename(&tmp, path)
+    })();
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
+}
+
+/// Start `<this binary> crew-board-intent` detached, from $HOME, its stderr
+/// in the server log. `takeover` makes it wait for the server lock rather than
+/// leave at once: the server that spawns it on an upgrade still holds it.
+pub fn spawn_server(takeover: bool) -> std::io::Result<u32> {
+    use std::os::unix::process::CommandExt;
+    let exe = crew_core::upgrade::exe().ok_or_else(|| std::io::Error::other("cannot find this binary"))?;
+    let _ = std::fs::create_dir_all(state_dir());
+    let err = std::fs::OpenOptions::new().append(true).create(true).open(log_file())
+        .map(std::process::Stdio::from).unwrap_or_else(|_| std::process::Stdio::null());
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("crew-board-intent").current_dir(py::home())
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(err);
+    if takeover {
+        cmd.env("CREW_INTENT_TAKEOVER", "1");
+    } else {
+        cmd.env_remove("CREW_INTENT_TAKEOVER");
+    }
+    // SAFETY: setsid is async-signal-safe and touches only the child.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    cmd.spawn().map(|c| c.id())
+}
+
+/// The server lock: at once, or (taking over from a server that is about to
+/// exit) waiting up to 15s for it to go.
+fn server_lock(wait: bool) -> std::io::Result<Option<py::Flock>> {
+    let path = state_dir().join("board-intent.lock");
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        match py::Flock::try_exclusive(&path)? {
+            Some(l) => return Ok(Some(l)),
+            None if wait && std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
+            None => return Ok(None),
+        }
+    }
+}
+
+/// The most connections served at once (each a thread; an open board's feed
+/// holds one): past it, a connection is answered 503 at once.
+const MAX_CONNS: usize = 256;
+static CONNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn too_busy(mut s: TcpStream) {
+    let _ = s.set_write_timeout(Some(Duration::from_secs(1)));
+    let body = b"too many connections";
+    let head = format!("HTTP/1.0 503 {}\r\nServer: crew-board-intent\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n",
+        reason(503), body.len());
+    let _ = s.write_all(head.as_bytes());
+    let _ = s.write_all(body);
 }
 
 /// The token serve() would use now (for the selftest).
@@ -481,19 +622,32 @@ pub fn serve() -> i32 {
     // and cmux's "Crew board" command can each start one at the same moment;
     // without the lock both pass the check below, the loser binds a random
     // port and rewrites the port and token files under the winner's pages.
-    let _lock = match py::Flock::try_exclusive(&state_dir().join("board-intent.lock")) {
+    let takeover = std::env::var_os("CREW_INTENT_TAKEOVER").is_some();
+    let _lock = match server_lock(takeover) {
         Ok(Some(l)) => l,
         Ok(None) => {
             eprintln!("crew-board-intent: another server holds board-intent.lock; not starting a second");
+            log(&format!("not starting (pid {}): another server holds board-intent.lock", std::process::id()));
             return 0;
         }
         Err(e) => {
             eprintln!("crew-board-intent: cannot take the server lock: {e}");
+            log(&format!("not starting: cannot take the server lock: {e}"));
             return 1;
         }
     };
-    if current().is_some() {
-        return 0;
+    // One from before the lock existed may still serve: leave it be, but
+    // only when it is one. Anything else on the recorded port is ignored and
+    // a port bound afresh, so the port file never names another program.
+    if let Some(port) = std::fs::read_to_string(port_file()).ok().and_then(|s| s.trim().parse::<u16>().ok()) {
+        match identify(port) {
+            Ok(()) => {
+                log(&format!("not starting (pid {}): a crew-board-intent already answers on {port}", std::process::id()));
+                return 0;
+            }
+            Err(why) if !takeover => log(&format!("the port file names {port}, but {why}: binding afresh")),
+            Err(_) => {}
+        }
     }
     let token = token();
     let listener = match bind() {
@@ -512,21 +666,52 @@ pub fn serve() -> i32 {
         eprintln!("crew-board-intent: cannot write the token: {e}");
         return 1;
     }
-    let _ = std::fs::write(port_file(), port.to_string());
-    log(&format!("listening on 127.0.0.1:{port}"));
-    // An install replaced this binary: leave, so the new code serves (crew-listen
-    // starts it again within seconds; the token and the port carry over).
+    if let Err(e) = py::write_atomic(&port_file(), port.to_string().as_bytes()) {
+        eprintln!("crew-board-intent: cannot write the port file: {e}");
+        return 1;
+    }
+    log(&format!("listening on 127.0.0.1:{port} (pid {})", std::process::id()));
+    // An install replaced this binary: start the new one and leave, so the new
+    // code serves. The successor waits for this server's lock, which goes
+    // with this process, then binds the same port (the token carries over).
+    // Without a successor, keep serving the old code rather than none.
     let started = std::time::SystemTime::now();
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(10));
         if crew_core::upgrade::replaced_since(started) {
-            log("a newer binary is installed: exiting so it can take over");
-            std::process::exit(0);
+            match spawn_server(true) {
+                Ok(pid) => {
+                    log(&format!("a newer binary is installed: started it (pid {pid}) and exiting so it can take over"));
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    log(&format!("a newer binary is installed, but it would not start ({e}): serving on with this one"));
+                    return;
+                }
+            }
         }
     });
     for stream in listener.incoming().flatten() {
+        use std::sync::atomic::Ordering;
+        if CONNS.fetch_add(1, Ordering::SeqCst) >= MAX_CONNS {
+            CONNS.fetch_sub(1, Ordering::SeqCst);
+            too_busy(stream);
+            continue;
+        }
         let token = token.clone();
-        std::thread::spawn(move || handle(stream, port, token));
+        let spawned = std::thread::Builder::new().spawn(move || {
+            struct Done;
+            impl Drop for Done {
+                fn drop(&mut self) {
+                    CONNS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            let _done = Done;
+            handle(stream, port, token)
+        });
+        if spawned.is_err() {
+            CONNS.fetch_sub(1, Ordering::SeqCst);
+        }
     }
     0
 }
@@ -595,6 +780,35 @@ mod tests {
         assert_eq!(target_path("/inc?why=see+https://example.com/x"), "/inc?why=see+https://example.com/x");
         assert_eq!(target_path("http://127.0.0.1:7345/do?a=jump"), "/do?a=jump");
         assert_eq!(target_path("/plan/x#frag"), "/plan/x");
+    }
+
+    #[test]
+    fn pages_name_who_may_frame_them() {
+        let fa = frame_ancestors(7345);
+        assert!(fa.starts_with("'self' http://127.0.0.1:7345 http://localhost:7345 tauri://localhost tauri: "), "{fa}");
+        assert!(!fa.contains('*'));
+        assert!(is_html(&[("Content-Type", "text/html; charset=utf-8".into())]));
+        assert!(!is_html(&[("Content-Type", "application/json".into())]));
+        assert!(origin_ok("http://127.0.0.1:5199") && origin_ok("tauri://localhost"));
+        for bad in ["*", "http://x\r\nSet-Cookie: a", "http://", "javascript:alert(1)", "http://a/b", "'self'", "\"x\""] {
+            assert!(!origin_ok(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn another_program_on_the_port_is_not_the_server() {
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        let t = std::thread::spawn(move || {
+            if let Ok((mut s, _)) = l.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(b"HTTP/1.0 200 OK\r\nServer: SimpleHTTP/0.6\r\nContent-Length: 2\r\n\r\nok");
+            }
+        });
+        let e = identify(port).unwrap_err();
+        assert!(e.contains("held by something else"), "{e}");
+        t.join().unwrap();
     }
 
     #[test]

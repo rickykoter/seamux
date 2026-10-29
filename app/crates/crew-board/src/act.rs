@@ -213,10 +213,16 @@ pub fn lookout_engine() -> Option<(String, String)> {
     let v: Value = serde_json::from_str(&std::fs::read_to_string(ptr).ok()?).ok()?;
     let root = v.get("root").and_then(Value::as_str).unwrap_or("");
     let engine = Path::new(root).join("lookout.mjs");
-    let node = which("node").or_else(|| {
-        ["/opt/homebrew/bin/node", "/usr/local/bin/node"].iter().find(|c| Path::new(c).exists()).map(|c| c.to_string())
-    })?;
+    let node = node()?;
     engine.is_file().then(|| (node, engine.to_string_lossy().into_owned()))
+}
+
+/// node from PATH, else where Homebrew puts it: a server started by launchd
+/// or the app has a PATH without either.
+pub fn node() -> Option<String> {
+    which("node").or_else(|| {
+        ["/opt/homebrew/bin/node", "/usr/local/bin/node"].iter().find(|c| Path::new(c).exists()).map(|c| c.to_string())
+    })
 }
 
 pub fn which(name: &str) -> Option<String> {
@@ -451,8 +457,9 @@ pub fn act(action: &str, row: &Map<String, Value>, extra: &str) -> (bool, String
             if slug.is_empty() {
                 return (false, "no plan on this row".into());
             }
+            let Some(node) = node() else { return (false, "node is not installed here".into()) };
             let script = crew_core::dp_engine::script().to_string_lossy().into_owned();
-            (run_ok("node", &[&script, "close", &slug], None), format!("close {slug}"))
+            (run_ok(&node, &[&script, "close", &slug], None), format!("close {slug}"))
         }
         _ => (false, format!("unknown action: {action}")),
     }
