@@ -5028,7 +5028,7 @@ exit 1
   on(FR, "family", "unhold", "example-auth-ui");
   ok("shared family: an unhold does too", ref(pb) !== t && !ctl().holds["example-auth-ui"]);
   // Another machine pulls the parent and sees the family.
-  const d2 = path.join(TMP, "sf-data-2");
+  const d2 = path.join(TMP, "sf-second");
   const E2 = { ...ENV, DEEP_PLAN_STATE_DIR: path.join(d2, "state"), DEEP_PLAN_KEYS_DIR: path.join(d2, "keys"),
     DEEP_PLAN_PLANS_DIR: path.join(d2, "plans"), LOOKOUT_REVIEWS_DIR: path.join(d2, "plans", "reviews") };
   r = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "state", "pull", fam.slug], { encoding: "utf8", env: E2, cwd: FR });
@@ -5096,7 +5096,7 @@ exit 1
   }
   // A machine still holding a plan that ended elsewhere is told once at session start, then left alone.
   {
-    const d3 = path.join(TMP, "sf-data-3");
+    const d3 = path.join(TMP, "sf-third");
     const E3 = { ...ENV, DEEP_PLAN_STATE_DIR: path.join(d3, "state"), DEEP_PLAN_KEYS_DIR: path.join(d3, "keys"),
       DEEP_PLAN_PLANS_DIR: path.join(d3, "plans"), LOOKOUT_REVIEWS_DIR: path.join(d3, "plans", "reviews"), CLAUDE_PROJECT_DIR: FR };
     const o3 = (...x) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...x], { encoding: "utf8", env: E3, cwd: FR });
