@@ -560,9 +560,15 @@ fn ensure_server() -> bool {
         return true;
     }
     let Some(exe) = crew_core::upgrade::exe() else { return false };
+    // Its stderr goes to the server log, where a failure below sends people:
+    // the reasons it cannot start (no port, no token file) are printed there.
+    let log = crate::server::log_file();
+    let _ = std::fs::create_dir_all(state_dir());
+    let err = std::fs::OpenOptions::new().append(true).create(true).open(&log)
+        .map(std::process::Stdio::from).unwrap_or_else(|_| std::process::Stdio::null());
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("crew-board-intent").current_dir(py::home())
-        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(err);
     // SAFETY: setsid is async-signal-safe and touches only the child.
     unsafe {
         cmd.pre_exec(|| {

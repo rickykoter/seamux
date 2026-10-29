@@ -477,6 +477,18 @@ pub(crate) fn selftest_bind_port() -> Option<u16> {
 /// Start the server, or leave a live one alone.
 pub fn serve() -> i32 {
     let _ = std::fs::create_dir_all(state_dir());
+    // One server at a time, held for its life. crew-listen, `crew-board open`
+    // and cmux's "Crew board" command can each start one at the same moment;
+    // without the lock both pass the check below, the loser binds a random
+    // port and rewrites the port and token files under the winner's pages.
+    let _lock = match py::Flock::try_exclusive(&state_dir().join("board-intent.lock")) {
+        Ok(Some(l)) => l,
+        Ok(None) => return 0,
+        Err(e) => {
+            eprintln!("crew-board-intent: cannot take the server lock: {e}");
+            return 1;
+        }
+    };
     if current().is_some() {
         return 0;
     }

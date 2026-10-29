@@ -257,6 +257,21 @@ impl Flock {
         }
         Ok(Flock(f))
     }
+
+    /// The same lock without waiting: None when another process holds it.
+    pub fn try_exclusive(path: &Path) -> std::io::Result<Option<Flock>> {
+        use std::os::unix::io::AsRawFd;
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        let f = fs::OpenOptions::new().append(true).create(true).open(path)?;
+        // SAFETY: flock on a descriptor we own; the kernel releases it on close.
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let e = std::io::Error::last_os_error();
+            return if e.kind() == std::io::ErrorKind::WouldBlock { Ok(None) } else { Err(e) };
+        }
+        Ok(Some(Flock(f)))
+    }
 }
 
 /// `os.path.expanduser("~")`: HOME, else the passwd entry's home directory
@@ -376,6 +391,17 @@ pub fn read_tail(path: &Path, tail: u64) -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn try_exclusive_refuses_a_held_lock_and_takes_a_released_one() {
+        let p = std::env::temp_dir().join(format!("flock-try-{}.lock", std::process::id()));
+        let held = Flock::try_exclusive(&p).unwrap();
+        assert!(held.is_some());
+        assert!(Flock::try_exclusive(&p).unwrap().is_none());
+        drop(held);
+        assert!(Flock::try_exclusive(&p).unwrap().is_some());
+        let _ = fs::remove_file(&p);
+    }
 
     #[test]
     fn percent_g_matches_python() {
