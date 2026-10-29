@@ -1550,14 +1550,15 @@ BOARD_WAKE_EVENTS = ["agent.hook.Notification", "agent.hook.Stop", "workspace.cr
                      "workspace.closed", "workspace.renamed", "workspace.selected"]
 BOARD_IDLE_STOP = 60.0
 
-# The origins that frame the board (the seamux app's webview and its dev
-# server), plus CREW_INTENT_FRAME_ANCESTORS: intent.js posts to and hears from
+# The origins that frame the board (the seamux app's webview), plus
+# CREW_INTENT_FRAME_ANCESTORS (a developer running the app under Vite adds
+# http://localhost:5173 there): intent.js posts to and hears from
 # only these. The same list as parent_origins() in the Rust server.rs.
 _ORIGIN_OK = re.compile(r"^[a-z][a-z0-9+.-]*://[A-Za-z0-9.:\[\]-]+$")
 
 
 def parent_origins():
-    out = ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost", "http://localhost:5173"]
+    out = ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"]
     for o in os.environ.get("CREW_INTENT_FRAME_ANCESTORS", "").split():
         if _ORIGIN_OK.match(o) and o not in out:
             out.append(o)

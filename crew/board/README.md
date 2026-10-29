@@ -13,6 +13,12 @@ crew-board usage             open /usage the same way
 crew-board state [--json]    the ranked state, without touching cmux
 ```
 
+Only the seamux app (`tauri://localhost`) and the server's own pages may frame
+these pages: every page carries a `frame-ancestors` policy, and the board talks
+by `postMessage` only to those origins. If you run the app's pages under Vite,
+start the intent server with `CREW_INTENT_FRAME_ANCESTORS=http://localhost:5173`,
+because the dev port is not trusted by default.
+
 `~/.local/bin/crew-board` is `seamux crew-board`. `push`, `watch`, `tidy` and `close`
 drove the Dock surface this README describes below; the cutover retired that surface,
 and those verbs now only say where the board went. The Python `crew-board` in this

@@ -191,7 +191,7 @@ pub struct Request {
     /// The query as it came, for forwarding it unchanged (proxy.rs).
     pub raw_query: String,
     headers: Vec<(String, String)>,
-    reader: BufReader<TcpStream>,
+    reader: BufReader<Conn>,
     pub port: u16,
     pub token: String,
 }
@@ -314,12 +314,15 @@ fn is_html(headers: &[(&str, String)]) -> bool {
 
 /// The origins that frame these pages besides this server itself: the seamux
 /// app's webview (tauri://localhost on macOS and Linux, http(s)://tauri.localhost
-/// on Windows) and its Vite dev server, plus any CREW_INTENT_FRAME_ANCESTORS
-/// names (space-separated origins, for a demo harness on another port).
+/// on Windows), plus any CREW_INTENT_FRAME_ANCESTORS names (space-separated
+/// origins). The app's Vite dev server is not trusted by default, since
+/// any local program could hold its port: a developer running the app under
+/// Vite sets CREW_INTENT_FRAME_ANCESTORS=http://localhost:5173 for the intent
+/// server (as does a demo harness on another port).
 /// cmux's browser pane loads a page top-level, which frame-ancestors does not
 /// touch. intent.js posts to and accepts messages from these same origins.
 pub fn parent_origins() -> Vec<String> {
-    let mut out: Vec<String> = ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost", "http://localhost:5173"]
+    let mut out: Vec<String> = ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"]
         .iter().map(|s| s.to_string()).collect();
     for o in std::env::var("CREW_INTENT_FRAME_ANCESTORS").unwrap_or_default().split_whitespace() {
         if origin_ok(o) && !out.iter().any(|x| x == o) {
@@ -393,7 +396,7 @@ const MAX_LINE: u64 = 65536;
 const MAX_HEADERS: usize = 100;
 
 /// One line of at most MAX_LINE bytes: Ok(None) at EOF, Err(()) when longer.
-fn read_capped(reader: &mut BufReader<TcpStream>) -> Result<Option<String>, ()> {
+fn read_capped(reader: &mut BufReader<Conn>) -> Result<Option<String>, ()> {
     let mut buf = Vec::new();
     let n = reader.by_ref().take(MAX_LINE + 1).read_until(b'\n', &mut buf).map_err(|_| ())?;
     if n == 0 {
@@ -405,7 +408,7 @@ fn read_capped(reader: &mut BufReader<TcpStream>) -> Result<Option<String>, ()> 
     Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
 }
 
-fn refuse(reader: BufReader<TcpStream>, code: u16, why: &str) {
+fn refuse(reader: BufReader<Conn>, code: u16, why: &str) {
     let mut s = reader.into_inner();
     let body = why.as_bytes();
     let head = format!("HTTP/1.0 {code} {}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n", reason(code), body.len());
@@ -427,13 +430,49 @@ pub fn target_path(target: &str) -> &str {
     rel.split('#').next().unwrap_or("")
 }
 
-/// How long a connection may take to send its request line and headers: short,
-/// so sockets that send nothing do not hold the connection cap.
+/// How long a connection may take to send its request line and headers, in
+/// all: short, so sockets that send nothing (or a byte now and then) do not
+/// hold the connection cap.
 const HEAD_WAIT: Duration = Duration::from_secs(5);
 
+/// A connection whose reads share one deadline while it is set: every read
+/// waits only for what is left of it, and fails once it has passed.
+pub struct Conn {
+    s: TcpStream,
+    deadline: Option<std::time::Instant>,
+}
+
+impl std::ops::Deref for Conn {
+    type Target = TcpStream;
+    fn deref(&self) -> &TcpStream {
+        &self.s
+    }
+}
+
+impl Read for Conn {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(d) = self.deadline {
+            let left = d.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "request head took too long"));
+            }
+            self.s.set_read_timeout(Some(left))?;
+        }
+        self.s.read(buf)
+    }
+}
+
+impl Write for Conn {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.s.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.s.flush()
+    }
+}
+
 fn handle(stream: TcpStream, port: u16, token: String) {
-    let _ = stream.set_read_timeout(Some(HEAD_WAIT));
-    let mut reader = BufReader::new(stream);
+    let mut reader = BufReader::new(Conn { s: stream, deadline: Some(std::time::Instant::now() + HEAD_WAIT) });
     let line = match read_capped(&mut reader) {
         Ok(Some(l)) => l,
         Ok(None) => return,
@@ -459,6 +498,7 @@ fn handle(stream: TcpStream, port: u16, token: String) {
         }
     }
     // The head is in: a body (a POST's) may take longer to arrive.
+    reader.get_mut().deadline = None;
     let _ = reader.get_ref().set_read_timeout(Some(Duration::from_secs(30)));
     let rel = target_path(parts.get(1).copied().unwrap_or(""));
     let (path, query) = rel.split_once('?').unwrap_or((rel, ""));
@@ -1025,6 +1065,35 @@ mod tests {
         let t = std::time::Instant::now();
         let (code, _, body) = health_head(port, Duration::from_secs(3), IDENTIFY_CAP).unwrap();
         assert!(code == 200 && body.len() < IDENTIFY_CAP && t.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn the_vite_dev_server_is_not_trusted_by_default() {
+        std::env::remove_var("CREW_INTENT_FRAME_ANCESTORS");
+        assert!(!parent_origins().iter().any(|o| o.contains("5173")));
+        assert!(!frame_ancestors(7345).contains("5173"));
+    }
+
+    #[test]
+    fn a_trickled_request_head_is_cut_off_at_one_deadline() {
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        let client = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            // A byte every 50ms, a request line that never ends.
+            for _ in 0..40 {
+                if c.write_all(b"G").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let (s, _) = l.accept().unwrap();
+        let mut r = BufReader::new(Conn { s, deadline: Some(std::time::Instant::now() + Duration::from_millis(300)) });
+        let t = std::time::Instant::now();
+        assert!(read_capped(&mut r).is_err());
+        assert!(t.elapsed() < Duration::from_millis(600), "held for {:?}", t.elapsed());
+        client.join().unwrap();
     }
 
     #[test]
