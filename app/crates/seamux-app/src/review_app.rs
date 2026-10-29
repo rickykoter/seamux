@@ -365,11 +365,45 @@ fn started_at(pid: i32) -> String {
         .unwrap_or_default()
 }
 
-/// Whether job `j`'s saved process group is still the run it saved: the group
-/// exists and its leader (the agent) started when the save says. A pid that
-/// was reused, or a group whose leader is gone, is not.
+/// Seconds since the epoch of a C-locale, UTC `lstart` ("Thu Oct 29 09:12:01 2026").
+fn lstart_secs(t: &str) -> Option<i64> {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let w: Vec<&str> = t.split_whitespace().collect();
+    let [_, mon, day, hms, year] = w.as_slice() else { return None };
+    let m = MONTHS.iter().position(|x| x == mon)? as u32 + 1;
+    let (d, y): (u32, i64) = (day.parse().ok()?, year.parse().ok()?);
+    let mut hms = hms.split(':').map(|x| x.parse::<i64>());
+    let (h, mi, sec) = (hms.next()?.ok()?, hms.next()?.ok()?, hms.next()?.ok()?);
+    Some(crew_core::py::days_from_civil(y, m, d) * 86400 + h * 3600 + mi * 60 + sec)
+}
+
+/// Whether some process in group `pgid` started at or after `since` (an
+/// lstart): with its leader gone, such a member is the old run's tool. The
+/// number cannot have been reused while the group still had members.
+fn members_since(pgid: i32, since: &str) -> bool {
+    let Some(since) = lstart_secs(since) else { return false };
+    let out = Command::new("/bin/ps")
+        .args(["-g", &pgid.to_string(), "-o", "lstart="])
+        .env("LC_ALL", "C")
+        .env("TZ", "UTC")
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    out.lines().filter_map(lstart_secs).any(|t| t >= since)
+}
+
+/// Whether job `j`'s saved process group is still the run it saved: its
+/// leader (the agent) started when the save says, or, with the leader gone,
+/// a member still runs that started after it did. A reused pid is not.
 fn still_running(j: &Job) -> bool {
-    group_alive(j.pgid) && !j.pgid_start.is_empty() && started_at(j.pgid) == j.pgid_start
+    if !group_alive(j.pgid) || j.pgid_start.is_empty() {
+        return false;
+    }
+    match started_at(j.pgid) {
+        now if now.is_empty() => members_since(j.pgid, &j.pgid_start),
+        now => now == j.pgid_start,
+    }
 }
 
 /// What this thread knows of a group's leader beyond its saved start time.
@@ -1986,6 +2020,36 @@ mod tests {
         }
         assert!(c.try_wait().unwrap().is_some(), "stopped");
         assert_eq!(verified_orphan(&j), None);
+    }
+
+    #[test]
+    fn lstart_reads_as_seconds() {
+        assert_eq!(lstart_secs("Thu Jan  1 00:00:00 1970"), Some(0));
+        assert_eq!(lstart_secs("Thu Oct 29 09:12:01 2026  "), Some(1_793_265_121));
+        assert_eq!(lstart_secs("jeu 29 oct 09:12:01 2026"), None);
+        assert_eq!(lstart_secs(""), None);
+    }
+
+    #[test]
+    fn an_old_run_whose_leader_exited_still_counts_while_its_tools_run() {
+        // The leader (sh) exits at once, leaving a tool (sleep) in its group.
+        let mut c = Command::new("sh").args(["-c", "sleep 30 & exit 0"]).process_group(0).spawn().unwrap();
+        let pgid = c.id() as i32;
+        let start = started_at(pgid);
+        c.wait().unwrap();
+        assert!(started_at(pgid).is_empty(), "leader gone");
+        let j = Job { pgid, pgid_start: start, ..Default::default() };
+        assert!(still_running(&j) && orphan(&j).is_some());
+        // Saved as starting after every member: some other run's number.
+        let later = Job { pgid, pgid_start: "Thu Jan  1 00:00:00 2099".into(), ..Default::default() };
+        assert!(!still_running(&later));
+        // SAFETY: the group this test made.
+        unsafe { libc::killpg(pgid, libc::SIGKILL) };
+        let t = Instant::now();
+        while group_alive(pgid) && t.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!still_running(&j));
     }
 
     #[test]
