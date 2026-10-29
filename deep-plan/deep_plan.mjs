@@ -4221,12 +4221,13 @@ function checkWait(slug, n, ids, timeoutSec) {
 // the session timeout. A failed pull is said once; the wait goes on with
 // local state. A plan that does not share never touches the network.
 const AWAIT_PULL_MS = Number(process.env.DEEP_PLAN_AWAIT_PULL_MS) || 15000;
-function awaitPull(slug, w) {
-  if (Date.now() - w.last < AWAIT_PULL_MS) return;
+function awaitPull(slug, w, leftMs) {
+  if (Date.now() - w.last < AWAIT_PULL_MS || leftMs < 1000) return;
   w.last = Date.now();
   const st = readState(slug);
   if (!st || !planShare(st)) return;
-  const o = openSync(st, { soft: true, timeout: SESSION_TIMEOUT_MS });
+  // Never past the wait's own deadline.
+  const o = openSync(st, { soft: true, timeout: Math.min(SESSION_TIMEOUT_MS, leftMs) });
   const r = o.error ? { error: o.error } : o.cfg.sync !== "transitions" ? null : pullPlan(slug, o.backend);
   if (!r) return;
   if (r.error) {
@@ -4244,8 +4245,6 @@ function awaitGo(slug, timeoutSec) {
   const startedIn = !!goOwner(slug);
   const w = { last: 0, said: false, writer: "" };
   for (;;) {
-    w.writer = "";
-    awaitPull(slug, w);
     const st = readState(slug);
     if (!st) { say(`await-go: no plan ${slug}`); return 3; }
     const incs = st.increments || [];
@@ -4274,6 +4273,10 @@ function awaitGo(slug, timeoutSec) {
       console.error(`await-go: no go for ${slug} after ${timeoutSec}s — run it again to keep waiting`);
       return 2;
     }
+    // Local state first, every second; the branch only when that shows no go.
+    w.writer = "";
+    awaitPull(slug, w, until - Date.now());
+    if (w.writer) continue;
     sleep(1000);
   }
 }
