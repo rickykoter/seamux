@@ -205,10 +205,10 @@ except Exception:
       transcript="$(crew_json transcript_path)"
       size="$(wc -c <"$transcript" 2>/dev/null | tr -d ' ')"
       # A file, not a pipe: bash gives a backgrounded job /dev/null for stdin.
-      # One per session (two stopping at once never share it), removed once
-      # asked.sh is done with it.
+      # One per stop (session and this hook's pid: no two stops share it),
+      # removed once asked.sh is done with it.
       who="$(crew_json session_id | tr -cd 'A-Za-z0-9-' | cut -c1-64)"
-      pl="$CREW_STATE/asked-payload-$CMUX_WORKSPACE_ID-${who:-$$}"
+      pl="$CREW_STATE/asked-payload-$CMUX_WORKSPACE_ID-${who:+$who-}$$"
       mkdir -p "$CREW_STATE" 2>/dev/null
       if printf '%s' "$CREW_PAYLOAD" >"$pl" 2>/dev/null; then
         ( { nohup "$CREW_DIR/asked.sh" "$size" <"$pl" >/dev/null 2>&1; rm -f "$pl"; } & ) >/dev/null 2>&1

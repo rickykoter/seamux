@@ -778,12 +778,12 @@ pub fn main(args: &[String]) -> i32 {
     0
 }
 
-/// The stop hook's payload file for the asked job: the workspace, then the
-/// session (or, without a usable one, this process).
+/// The stop hook's payload file for the asked job: the workspace, the
+/// session and this hook's pid, so no two stops (even of one session) share it.
 fn payload_name(ws: &str, sid: &str) -> String {
     let who: String = sid.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(64).collect();
-    let who = if who.is_empty() { std::process::id().to_string() } else { who };
-    format!("asked-payload-{ws}-{who}")
+    let pid = std::process::id();
+    if who.is_empty() { format!("asked-payload-{ws}-{pid}") } else { format!("asked-payload-{ws}-{who}-{pid}") }
 }
 
 #[cfg(test)]
@@ -792,11 +792,12 @@ mod tests {
 
     #[test]
     fn each_session_gets_its_own_payload_file() {
+        let pid = std::process::id();
         let a = payload_name("ws-1", "f845cb03-378e-4332-8f2f-cef27e50e0c4");
-        assert_eq!(a, "asked-payload-ws-1-f845cb03-378e-4332-8f2f-cef27e50e0c4");
+        assert_eq!(a, format!("asked-payload-ws-1-f845cb03-378e-4332-8f2f-cef27e50e0c4-{pid}"));
         assert_ne!(a, payload_name("ws-1", "0b7c1f00-0000-4000-8000-000000000000"));
-        // Nothing of a path gets in; no session id falls back to the pid.
-        assert_eq!(payload_name("ws-1", "../x/y"), "asked-payload-ws-1-xy");
+        // Nothing of a path gets in; no session id leaves just the pid.
+        assert_eq!(payload_name("ws-1", "../x/y"), format!("asked-payload-ws-1-xy-{pid}"));
         assert_eq!(payload_name("ws-1", ""), format!("asked-payload-ws-1-{}", std::process::id()));
     }
 
