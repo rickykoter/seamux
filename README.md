@@ -137,9 +137,7 @@ plugins, and `install-repo --check` says when the repo's copy is behind.
 [docs/ADOPTING.md](docs/ADOPTING.md) covers the rollout, including what a
 cloud session needs to push.
 
-
 https://github.com/user-attachments/assets/9f407b84-5f6d-451c-bb42-5b10d80b30af
-
 
 ## Working as a team
 
