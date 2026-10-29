@@ -3160,16 +3160,26 @@ function pullPlan(slug, backend, flags = {}) {
   const where = `${backend.branch(slug)} on ${backend.where}`;
   if (!r.version) return { error: `no branch ${where}` };
   const meta = syncMeta(slug);
-  const record = digest => writeSyncMeta(slug, { version: r.version, where: backend.where, branch: backend.branch(slug), digest, at: new Date().toISOString(), last: "pull" });
+  // A failed push stays recorded through a merge: the result still is not
+  // on the branch. A plain pull replaces the plan, so it clears.
+  const record = (digest, keepFailed = false) => writeSyncMeta(slug, { version: r.version, where: backend.where, branch: backend.branch(slug), digest,
+    at: new Date().toISOString(), last: "pull", ...(keepFailed && meta && meta.failed ? { failed: meta.failed } : {}) });
   if (local && meta && meta.version === r.version && meta.where === backend.where && !flags.force)
     return { message: `${slug} is up to date with ${backend.branch(slug)} (${r.version.slice(0, 8)})`, same: true };
+  // The session hook brings plans that are not here only while they are live.
+  if (!local && flags.liveOnly) {
+    try {
+      const ph = JSON.parse(Buffer.from(r.files[`deep-plan/state/${slug}.json`]).toString("utf8")).phase;
+      if (ph === "closed" || ph === "done") return { message: "", same: true };
+    } catch { /* checkBundle below names it */ }
+  }
   // Changes here the branch does not have: merged with it, not dropped.
   // The result is ahead of the branch until the next push.
   if (local && !flags.force && (!meta || digestOf(bundleBuffers(slug)) !== meta.digest)) {
     const why = mergeIn(slug, r);
     if (why) return { error: why };
     if (flags.root) settleRoot(slug, flags, "state pull");
-    record(digestOf(r.files));
+    record(digestOf(r.files), true);
     return { message: `merged ${slug} with ${where} (${r.version.slice(0, 8)}); deep-plan state push ${slug} shares the result` };
   }
   const bad = checkBundle(slug, r.files);
@@ -3196,7 +3206,7 @@ function statePull(slug, flags) {
 // remote host, where a new sandbox starts with nothing, also pull every plan
 // with a branch on this repo's remote that is not here yet. Quiet unless
 // something came in; a failure is one line; never exits non-zero.
-const SESSION_TIMEOUT_MS = 6000;
+const SESSION_TIMEOUT_MS = Number(process.env.DEEP_PLAN_SYNC_TIMEOUT_MS) || 5000, SESSION_BUDGET_MS = 20000;
 function stateSessionPull() {
   const dir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const common = d => {
@@ -3205,9 +3215,13 @@ function stateSessionPull() {
   };
   const repo = common(dir);
   if (!repo) return;
+  // The hook is killed at 30 s; what does not fit in the budget waits for
+  // the next session or a state pull by hand, and is named.
+  const t0 = Date.now(), late = [];
   const lines = [], failed = [];
-  const run = (slug, backend) => {
-    const r = pullPlan(slug, backend);
+  const run = (slug, backend, flags = {}) => {
+    if (Date.now() - t0 > SESSION_BUDGET_MS) { late.push(slug); return; }
+    const r = pullPlan(slug, backend, flags);
     if (r.error) failed.push(`${slug}: ${r.error}`);
     else if (!r.same) lines.push(r.message.split("\n")[0]);
   };
@@ -3215,19 +3229,22 @@ function stateSessionPull() {
     if (st.phase === "closed" || !planShare(st) || !st.root || !fs.existsSync(st.root) || common(st.root) !== repo) continue;
     const o = openSync(st, { soft: true, timeout: SESSION_TIMEOUT_MS });
     if (o.error) { failed.push(`${st.slug}: ${o.error}`); continue; }
+    // sync manual or off: nothing automatic, the pull included.
+    if (o.cfg.sync !== "transitions") continue;
     run(st.slug, o.backend);
   }
   if (detectHost().host === "remote") {
     let o;
     try { o = SYNC.openBackend(true, dir, { timeout: SESSION_TIMEOUT_MS }); } catch (e) { failed.push(e.message); }
-    if (o) {
+    if (o && o.cfg.sync === "transitions") {
       let list = [];
       try { list = o.backend.list(); } catch (e) { failed.push(e.message); }
-      for (const x of list) if (!readState(x.slug)) run(x.slug, o.backend);
+      for (const x of list) if (!readState(x.slug)) run(x.slug, o.backend, { liveOnly: true });
     }
   }
   for (const l of lines) say(`deep-plan: ${l}`);
   if (failed.length) say(`deep-plan: state pull at session start failed for ${failed.join("; ")}`);
+  if (late.length) say(`deep-plan: no time left at session start for ${late.join(", ")}; deep-plan state pull <slug> brings each`);
 }
 
 function stateStatus(slug, flags) {
@@ -4528,7 +4545,8 @@ try { pointerBody = writeEnginePointer(); } catch { /* read-only home, full disk
 // unsynced until a push lands. The gate's flip to working is not a command
 // here and is never pushed; the next transition carries it.
 const SYNC_CMDS = new Set(["go", "start", "done", "block", "reset", "check", "obs", "grade", "import-state", "family", "await-go"]);
-const TRANSITION_PUSH_MS = 8000;
+// DEEP_PLAN_SYNC_TIMEOUT_MS is for the probe, whose machine may be loaded.
+const TRANSITION_PUSH_MS = Number(process.env.DEEP_PLAN_SYNC_TIMEOUT_MS) || 8000;
 function stateFileDigests() {
   const out = new Map();
   let names = [];

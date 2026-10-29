@@ -42,6 +42,9 @@ const ENV = {
   // Authoritative and empty: no lookout, so `diff` falls back to cmux diff and
   // nothing reaches the machine's real reviews. The review block sets its own.
   LOOKOUT_ENGINE: "",
+  // State pushes on transitions give up after a few seconds; a loaded
+  // machine must not turn that into a flaky case.
+  DEEP_PLAN_SYNC_TIMEOUT_MS: "60000",
 };
 delete ENV.DEEP_PLAN_SKILL_DIR;
 delete ENV.DEEP_PLAN_ENGINE;
@@ -4955,6 +4958,14 @@ exit 1
   const gone = path.join(TMP, "tr-nowhere");
   r = on({ ...EB, CLAUDE_PROJECT_DIR: gone }, TMP, "state", "pull", "--session");
   ok("session start outside a repo does nothing and exits 0", r.status === 0 && r.stdout.trim() === "");
+  on(EA, TA, "block", "tr-p", "2", "once more");
+  r = on({ ...EB, CLAUDE_PROJECT_DIR: TA, SEAMUX_STATE_SYNC: "off" }, TA, "state", "pull", "--session");
+  ok("session start pulls nothing where SEAMUX_STATE_SYNC=off", r.stdout.trim() === "" &&
+    JSON.parse(fs.readFileSync(path.join(EB.DEEP_PLAN_STATE_DIR, "tr-p.json"), "utf8")).increments[1].note !== "once more");
+  on(EA, TA, "render", tmpSpec({ ...spec, slug: "tr-closed", share: true }), "--root", TA);
+  on(EA, TA, "close", "tr-closed"); on(EA, TA, "state", "push", "tr-closed");
+  r = on(REnv, TC, "state", "pull", "--session");
+  ok("session start on the remote host leaves a closed plan's branch alone", r.status === 0 && !fs.existsSync(path.join(SD, "tr-closed.json")), r.stdout + r.stderr);
   const hooks = JSON.parse(fs.readFileSync(path.join(HERE, "hooks", "hooks.json"), "utf8")).hooks;
   ok("the plugin's SessionStart hooks pull shared state", hooks.SessionStart.some(gr => gr.hooks.some(h => /state pull --session/.test(h.command))));
   const IRP = path.join(TMP, "tr-install");
