@@ -1071,6 +1071,28 @@ open(os.path.join(landed, "node_modules", "pkg", "index.js"), "w").write("x\n")
 rc, out = reclaim("--dry-run", "ws-l")
 check("an ignored node_modules alone is not a blocker",
       rc == 0 and "no ignored files that would be lost" in out, out)
+# A folder named build is build output only when it is ignored itself. Holding
+# only an ignored file, docs/build is not in git status either.
+os.makedirs(os.path.join(landed, "docs", "build"))
+with open(os.path.join(git(main, "rev-parse", "--path-format=absolute", "--git-common-dir"),
+                       "info", "exclude"), "a") as fh:
+    fh.write("*.md\ndist/\n")
+open(os.path.join(landed, "docs", "build", "notes.md"), "w").write("mine\n")
+rc, out = reclaim("--dry-run", "ws-l")
+check("an ignored file in a build folder that is not itself ignored is a blocker",
+      rc == 1 and "1 ignored file(s) would be deleted with it: docs/build/notes.md" in out, out)
+os.remove(os.path.join(landed, "docs", "build", "notes.md"))
+os.makedirs(os.path.join(landed, "dist"))
+open(os.path.join(landed, "dist", "app.js"), "w").write("x\n")
+rc, out = reclaim("--dry-run", "ws-l")
+check("…and a wholly ignored dist/ is not", rc == 0 and "no ignored files that would be lost" in out, out)
+bare_dir = os.path.join(T, "bare-bin")
+os.makedirs(bare_dir)
+os.symlink(FAKE, os.path.join(bare_dir, "fakecmux-bare"))
+rc, out = reclaim("--dry-run", "ws-l", CREW_CMUX="fakecmux-bare",
+                  PATH=bare_dir + os.pathsep + os.environ["PATH"])
+check("CREW_CMUX as a bare name on PATH is found, not 'cmux not found'",
+      rc == 0 and "no other cmux workspace is open here" in out and "cmux not found" not in out, out)
 rc, out = reclaim("--dry-run", landed, CREW_CMUX=os.path.join(T, "no-such-cmux"))
 check("a cmux that cannot be found is a blocker, not 'no other workspace'",
       rc == 1 and "cmux not found" in out and "no other cmux workspace" not in out

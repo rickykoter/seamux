@@ -51,6 +51,9 @@ CMUX="${CREW_CMUX:-$(command -v cmux || true)}"
 # version skew that fails silently, because the old bundle is still on disk.
 [ -n "$CMUX" ] || CMUX="$("$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/crew-cmux-bin" 2>/dev/null || true)"
 [ -n "$CMUX" ] || CMUX=cmux
+# A bare name (CREW_CMUX=cmux) is resolved on PATH once, so the -x checks below
+# test the command that runs, not a file of that name in the current directory.
+case "$CMUX" in */*) ;; *) CMUX="$(command -v "$CMUX" 2>/dev/null || printf '%s' "$CMUX")" ;; esac
 
 # The real path, not the one it was run by: ~/.local/bin holds a link to it, and
 # workspaces.py lives beside the real bin/, in hooks/.
@@ -203,20 +206,38 @@ top, common = sys.argv[1], sys.argv[2]
 main = os.path.dirname(common.rstrip("/")) if os.path.basename(common.rstrip("/")) == ".git" else ""
 REGEN = {"node_modules", "target", "dist", "build", ".next", ".nuxt", ".turbo", ".parcel-cache",
          ".svelte-kit", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox",
-         ".venv", "venv", ".cache", "coverage", ".nyc_output", ".gradle", ".terraform", ".eggs",
-         ".DS_Store"}
-GLOBS = ("*.pyc", "*.pyo", "*.egg-info")
+         ".venv", "venv", ".cache", "coverage", ".nyc_output", ".gradle", ".terraform", ".eggs"}
+# Matched on any component, wherever it sits: these names are never kept by hand.
+GLOBS = (".DS_Store", "*.pyc", "*.pyo", "*.egg-info")
 try:
     out = subprocess.run(["git", "-C", top, "ls-files", "-z", "-o", "-i", "--exclude-standard",
                           "--directory"], capture_output=True, check=True).stdout
 except Exception:
     sys.exit(2)
 
+# A REGEN name is build output only when that directory is itself ignored (by its
+# own pattern or a parent's), which check-ignore answers. docs/build/notes.md
+# ignored by `*.md`, in a docs/build that is not ignored, is somebody's notes.
+# Not the ls-files entry: --directory also lists a directory that merely holds
+# only ignored files.
+_ign = {}
+def dir_ignored(rel):
+    if rel not in _ign:
+        _ign[rel] = subprocess.run(["git", "-C", top, "check-ignore", "-q", "--", rel],
+                                   capture_output=True).returncode == 0
+    return _ign[rel]
+
 def regen(rel):
     parts = rel.split("/")
     if rel == ".husky/_" or rel.startswith(".husky/_/"):
         return True     # husky's generated dir; crew-worktree copies it in
-    return any(p in REGEN or any(fnmatch.fnmatch(p, g) for g in GLOBS) for p in parts)
+    if any(fnmatch.fnmatch(p, g) for p in parts for g in GLOBS):
+        return True
+    for i, p in enumerate(parts):
+        d = "/".join(parts[:i + 1])
+        if p in REGEN and os.path.isdir(os.path.join(top, d)) and dir_ignored(d):
+            return True
+    return False
 
 def kept(rel):
     full = os.path.join(top, rel)
@@ -228,20 +249,27 @@ def kept(rel):
     except OSError:
         return False
 
+# --directory can name a directory and then what is in it, so print each once.
+seen = set()
+def lost(rel):
+    if rel not in seen:
+        seen.add(rel)
+        print(rel)
+
 for raw in out.split(b"\0"):
     rel = os.fsdecode(raw).rstrip("/")
     if not rel or kept(rel):
         continue
     full = os.path.join(top, rel)
-    if os.path.isdir(full):
+    if os.path.isdir(full) and not os.path.islink(full):
         for d, dirs, files in os.walk(full):
             r = os.path.relpath(d, top)
             dirs[:] = [x for x in dirs if not kept(os.path.join(r, x))]
             for f in files:
                 if not kept(os.path.join(r, f)):
-                    print(os.path.join(r, f))
+                    lost(os.path.join(r, f))
     else:
-        print(rel)
+        lost(rel)
 IGNORED
 }
 ignored_list="$(lost_ignored)"; ignored_rc=$?
