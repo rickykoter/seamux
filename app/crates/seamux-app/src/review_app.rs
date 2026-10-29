@@ -337,15 +337,23 @@ fn still_running(j: &Job) -> bool {
     group_alive(j.pgid) && !j.pgid_start.is_empty() && started_at(j.pgid) == j.pgid_start
 }
 
-/// SIGTERM the groups, then SIGKILL whatever is left after `grace`.
-fn stop_groups(groups: &[i32], grace: Duration) {
+/// SIGTERM the groups, then SIGKILL whatever is left after `grace`. The
+/// `leader` (the one this thread spawned) is reaped while waiting: a zombie
+/// leader would keep its group "alive" through the whole grace.
+fn stop_groups(groups: &[i32], grace: Duration, mut leader: Option<&mut std::process::Child>) {
     for &g in groups.iter().filter(|g| **g > 1) {
         // SAFETY: a group this app started (see Group).
         unsafe { libc::killpg(g, libc::SIGTERM) };
     }
     let until = Instant::now() + grace;
-    while groups.iter().any(|g| group_alive(*g)) && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(50));
+    loop {
+        if let Some(c) = leader.as_mut() {
+            let _ = c.try_wait();
+        }
+        if !groups.iter().any(|g| group_alive(*g)) || Instant::now() >= until {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
     for &g in groups.iter().filter(|g| group_alive(**g)) {
         // SAFETY: as above.
@@ -357,7 +365,7 @@ fn stop_groups(groups: &[i32], grace: Duration) {
 /// agent left behind would go on editing a worktree no card owns.
 pub fn stop_all() {
     let groups = RUNNING.lock().map(|r| r.clone()).unwrap_or_default();
-    stop_groups(&groups, Duration::from_millis(1500));
+    stop_groups(&groups, Duration::from_millis(1500), None);
 }
 
 /// Why job `j`'s worktree may not be discarded: an agent from before the
@@ -417,7 +425,7 @@ fn exec_lines(
             break s;
         }
         if Instant::now() > deadline {
-            stop_groups(&[pgid], Duration::from_secs(2));
+            stop_groups(&[pgid], Duration::from_secs(2), Some(&mut child));
             let _ = child.wait();
             return Err(format!(
                 "{program} took longer than {} minutes and was stopped",
@@ -434,7 +442,7 @@ fn exec_lines(
         std::thread::sleep(Duration::from_millis(50));
     }
     if !drained() {
-        stop_groups(&[pgid], Duration::from_secs(1));
+        stop_groups(&[pgid], Duration::from_secs(1), None);
         let until = Instant::now() + Duration::from_secs(1);
         while !drained() && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(50));
@@ -1757,7 +1765,11 @@ mod tests {
         let d = scratch("timeout");
         let pidf = d.join("pid");
         let script = format!("sleep 30 & echo $! > {}; wait", pidf.display());
+        let t = Instant::now();
         let e = exec_lines("sh", &["-c", &script], None, None, Duration::from_millis(400), None, None).err().unwrap();
+        // Stopped at the deadline, not after the whole SIGTERM grace: the
+        // killed leader is reaped while its group is waited on.
+        assert!(t.elapsed() < Duration::from_millis(1500), "{:?}", t.elapsed());
         assert!(e.contains("was stopped"), "{e}");
         let pid: i32 = std::fs::read_to_string(&pidf).unwrap().trim().parse().unwrap();
         std::thread::sleep(Duration::from_millis(100));

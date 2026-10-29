@@ -501,6 +501,10 @@ def apply(root, hexv, name):
     return True
 
 
+class KeptComments(Exception):
+    """unapply's refusal to rewrite a settings file with comments."""
+
+
 def unapply(root):
     path = os.path.join(root, ".vscode", "settings.json")
     cur, had_comments = load_settings(path)
@@ -519,8 +523,9 @@ def unapply(root):
         return False
     # As in apply: rewriting (or removing) it would lose its comments.
     if had_comments:
-        die(f"{path} has comments, which rewriting it would drop, so the window "
-            f"was left colored (remove the comments, or Peacock's keys by hand)")
+        raise KeptComments(
+            f"{path} has comments, which rewriting it would drop, so the window was "
+            f"left colored: Peacock's keys are still in it, untouched (remove them by hand)")
     if merged:
         write_atomic(path, json.dumps(merged, indent=2, sort_keys=True) + "\n")
     else:
@@ -631,11 +636,18 @@ def cmd_apply(path):
 
 def cmd_free(path):
     root = resolve_root(path)
-    unapply(root)
+    # The color is released all the same; a file with comments is left as it is.
+    try:
+        unapply(root)
+        kept = None
+    except KeptComments as e:
+        kept = str(e)
     p = entry_path(root)
     if os.path.exists(p):
         os.remove(p)
     print(f"\033[32m✓\033[0m released {root.replace(os.path.expanduser('~'), '~')}")
+    if kept:
+        sys.stderr.write(f"\033[33m!\033[0m {kept}\n")
     return 0
 
 

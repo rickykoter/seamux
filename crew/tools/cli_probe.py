@@ -748,6 +748,18 @@ r = run("crew-color", "apply", KID2, env=COLOR_ENV)
 check("crew-color apply leaves a settings file with comments as it is, and says why",
       r.returncode == 1 and open(K2S).read() == JSONC and "has comments" in r.stderr, r.stdout + r.stderr)
 open(K2S, "w").write(kept)
+FREE = os.path.join(T, "free-jsonc")
+os.makedirs(os.path.join(FREE, ".vscode"))
+FREES = os.path.join(FREE, ".vscode", "settings.json")
+open(FREES, "w").write('{\n  // mine\n  "editor.fontSize": 13\n}\n')
+run("crew-color", "assign", FREE, env=COLOR_ENV)
+JSONC_PEACOCK = '{\n  // mine\n  "peacock.color": "#C0392B", "editor.fontSize": 13,\n}\n'
+open(FREES, "w").write(JSONC_PEACOCK)
+r = run("crew-color", "free", FREE, env=COLOR_ENV)
+peek = run("crew-color", "peek", FREE, env=COLOR_ENV)
+check("crew-color free releases the color even when the settings file has comments, and leaves the file",
+      r.returncode == 0 and "released" in r.stdout and "left colored" in r.stderr
+      and open(FREES).read() == JSONC_PEACOCK and peek.stdout == "", r.stdout + r.stderr + peek.stdout)
 r = run("crew-color", "list", env=COLOR_ENV)
 
 def color_block(out, hexv):

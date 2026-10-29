@@ -680,7 +680,7 @@ fn unapply(root: &str) -> R<bool> {
     }
     // As in apply: rewriting (or removing) it would lose its comments.
     if had_comments {
-        return Err(has_comments(&path, "left colored (remove the comments, or Peacock's keys by hand)"));
+        return Err(has_comments(&path, "left colored: Peacock's keys are still in it, untouched (remove them by hand)"));
     }
     if merged.is_empty() {
         // Nothing of ours and nothing of anyone else's: leave no empty file.
@@ -839,12 +839,21 @@ fn cmd_apply(path: Option<&str>) -> R<()> {
 
 fn cmd_free(path: Option<&str>) -> R<()> {
     let root = resolve_root(path)?;
-    unapply(&root)?;
+    // unapply's only refusal is a settings file with comments: the color is
+    // released all the same, and the file is left as it is, said so.
+    let kept = match unapply(&root) {
+        Ok(_) => None,
+        Err(Stop::Die(m)) => Some(m),
+        Err(e) => return Err(e),
+    };
     let p = entry_path(&root);
     if Path::new(&p).exists() {
         remove(&p)?;
     }
     println!("\x1b[32m✓\x1b[0m released {}", pypath::tilde(&root));
+    if let Some(m) = kept {
+        eprintln!("\x1b[33m!\x1b[0m {m}");
+    }
     Ok(())
 }
 
