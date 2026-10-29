@@ -2876,9 +2876,10 @@ function openWorkingSurface(st) {
 // goes with it, sha256-checked, since a cloud sandbox may not reach the CDN.
 function installRepoCmd(flags) {
   const root = targetRoot(flags.root);
-  const m = mermaidPath();
-  const extra = m && sha256File(m) === MERMAID_SHA256 ? [{ from: m, rel: "vendor/mermaid.min.js" }] : [];
-  const opts = { pluginRoot: HERE, name: "deep-plan", version: engineVersion(), root, extra };
+  // The first candidate that is the pinned build, not merely the first found.
+  const m = mermaidCandidates().find(p => { try { return fs.existsSync(p) && sha256File(p) === MERMAID_SHA256; } catch { return false; } });
+  const extra = m ? [{ from: m, rel: "vendor/mermaid.min.js" }] : [];
+  const opts = { pluginRoot: HERE, name: "deep-plan", version: engineVersion(), root, extra, optional: ["vendor/mermaid.min.js"] };
   if (flags.check) {
     const c = checkRepo(opts);
     say(c.ok ? `deep-plan in ${root}/.claude/skills/deep-plan matches this plugin (${engineVersion()})` : c.lines.join("\n"));

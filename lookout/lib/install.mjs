@@ -28,13 +28,15 @@ const GUARD = '[ "$CLAUDE_CODE_REMOTE" = true ] || [ "$SEAMUX_REPO_HOOKS" = 1 ] 
 
 const sha = buf => crypto.createHash("sha256").update(buf).digest("hex");
 
-// Every file the copy holds, relative to the plugin root.
+// Every file the copy holds, relative to the plugin root. A link that leads
+// nowhere is left out rather than ending the walk.
 function walk(root, rel = "") {
   const out = [];
   for (const n of fs.readdirSync(path.join(root, rel)).sort()) {
     if (SKIP.has(n)) continue;
     const r = rel ? rel + "/" + n : n;
-    const st = fs.statSync(path.join(root, r));
+    let st;
+    try { st = fs.statSync(path.join(root, r)); } catch { continue; }
     if (st.isDirectory()) out.push(...walk(root, r));
     else if (st.isFile()) out.push(r);
   }
@@ -68,6 +70,8 @@ export function mergeSettings(settings, hooks, name) {
   const mark = `/.claude/skills/${name}/`;
   const s = settings && typeof settings === "object" ? settings : {};
   s.hooks = s.hooks && typeof s.hooks === "object" ? s.hooks : {};
+  for (const [ev, v] of Object.entries(s.hooks))
+    if (!Array.isArray(v)) throw new Error(`.claude/settings.json: hooks.${ev} is not a list; fix it, then install again`);
   for (const ev of Object.keys(s.hooks)) {
     s.hooks[ev] = (s.hooks[ev] || []).filter(g => !(g.hooks || []).some(h => String(h.command || "").includes(mark)));
     if (!s.hooks[ev].length) delete s.hooks[ev];
@@ -81,35 +85,53 @@ export function mergeSettings(settings, hooks, name) {
 export function installRepo({ pluginRoot, name, version, root, extra = [] }) {
   if (!root || !fs.existsSync(root)) throw new Error("no repository to install into (run it inside one, or pass --root DIR)");
   const dest = path.join(root, ".claude", "skills", name);
-  fs.rmSync(dest, { recursive: true, force: true });
-  const files = {};
-  for (const rel of walk(pluginRoot)) {
-    const to = path.join(dest, rel);
-    fs.mkdirSync(path.dirname(to), { recursive: true });
-    fs.copyFileSync(path.join(pluginRoot, rel), to);
-    fs.chmodSync(to, fs.statSync(path.join(pluginRoot, rel)).mode & 0o777);
-    files[rel] = sha(fs.readFileSync(to));
-  }
-  for (const { from, rel } of extra) {
-    const to = path.join(dest, rel);
-    fs.mkdirSync(path.dirname(to), { recursive: true });
-    fs.copyFileSync(from, to);
-    files[rel] = sha(fs.readFileSync(to));
-  }
-  const stamp = { plugin: name, version, source: pluginRoot, installedAt: new Date().toISOString(), files };
-  fs.writeFileSync(path.join(dest, ".install.json"), JSON.stringify(stamp, null, 2) + "\n");
+  const real = p => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+  const src = real(pluginRoot), to0 = real(dest);
+  if (src === to0 || src.startsWith(to0 + path.sep) || to0.startsWith(src + path.sep))
+    throw new Error(`refused: this is the repo's own copy (${src}); run install-repo from the installed plugin`);
+  // Everything that could refuse is checked before the copy changes.
   const sp = path.join(root, ".claude", "settings.json");
   let settings = {};
   if (fs.existsSync(sp)) {
     try { settings = JSON.parse(fs.readFileSync(sp, "utf8")); }
     catch (e) { throw new Error(`${sp} is not JSON (${e.message}); fix it, then install again`); }
   }
-  fs.writeFileSync(sp, JSON.stringify(mergeSettings(settings, repoHooks(pluginRoot, name), name), null, 2) + "\n");
+  const merged = mergeSettings(settings, repoHooks(pluginRoot, name), name);
+  // Built beside the old copy and swapped in whole, so a failure halfway
+  // leaves the old copy as it was.
+  const stage = dest + ".installing-" + process.pid;
+  fs.rmSync(stage, { recursive: true, force: true });
+  const files = {};
+  for (const rel of walk(pluginRoot)) {
+    const to = path.join(stage, rel);
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.copyFileSync(path.join(pluginRoot, rel), to);
+    fs.chmodSync(to, fs.statSync(path.join(pluginRoot, rel)).mode & 0o777);
+    files[rel] = sha(fs.readFileSync(to));
+  }
+  for (const { from, rel } of extra) {
+    const to = path.join(stage, rel);
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.copyFileSync(from, to);
+    files[rel] = sha(fs.readFileSync(to));
+  }
+  // No machine path and no time: the file is committed, and an install of
+  // the same bytes writes the same stamp.
+  const stamp = { plugin: name, version, files };
+  fs.writeFileSync(path.join(stage, ".install.json"), JSON.stringify(stamp, null, 2) + "\n");
+  const old = dest + ".old-" + process.pid;
+  if (fs.existsSync(dest)) fs.renameSync(dest, old);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.renameSync(stage, dest);
+  fs.rmSync(old, { recursive: true, force: true });
+  fs.writeFileSync(sp, JSON.stringify(merged, null, 2) + "\n");
   return { dest, settings: sp, files: Object.keys(files).length, version };
 }
 
 // Drift between a repo's copy and this plugin: { ok, lines }.
-export function checkRepo({ pluginRoot, name, version, root, extra = [] }) {
+// `optional` names files a copy may carry that this machine cannot vouch for
+// (deep-plan's pinned mermaid when this machine has none): not drift.
+export function checkRepo({ pluginRoot, name, version, root, extra = [], optional = [] }) {
   const dest = path.join(root || "", ".claude", "skills", name);
   const lines = [];
   let stamp = null;
@@ -124,7 +146,7 @@ export function checkRepo({ pluginRoot, name, version, root, extra = [] }) {
     if (!fs.existsSync(p)) lines.push(`missing: ${rel}`);
     else if (sha(fs.readFileSync(p)) !== h) lines.push(`changed: ${rel}`);
   }
-  for (const rel of Object.keys(stamp.files || {})) if (!(rel in want)) lines.push(`no longer in the plugin: ${rel}`);
+  for (const rel of Object.keys(stamp.files || {})) if (!(rel in want) && !optional.includes(rel)) lines.push(`no longer in the plugin: ${rel}`);
   const sp = path.join(root, ".claude", "settings.json");
   let hooks = "";
   try { hooks = JSON.stringify(JSON.parse(fs.readFileSync(sp, "utf8")).hooks || {}); } catch { /* none */ }

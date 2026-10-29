@@ -72,7 +72,11 @@ mermaid, since the cloud's default network level may not reach the CDN.
 Each hook command starts with a guard, so it runs only when
 `CLAUDE_CODE_REMOTE=true` or `SEAMUX_REPO_HOOKS=1`. A local session with the
 plugins installed runs their own hooks, not these. Multi-repo cloud sessions
-load no repo hooks, so they get no gate.
+load no repo hooks, so they get no gate. Two things the guard cannot settle:
+a local session still sees the committed skill beside the plugin's own (the
+same text, so it does no harm), and a remote session that also loads the
+plugins would run both hook sets. Cloud sessions load no plugins, which is
+why the guard keys on the remote host.
 
 The copy carries `.install.json` (the version and a hash per file);
 `install-repo --check` reports drift from the plugin it came from. Nothing is

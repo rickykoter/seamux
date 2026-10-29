@@ -4515,6 +4515,19 @@ exit 1
   ok("install-repo again replaces its own hooks instead of adding a second set",
     JSON.stringify(set()) === JSON.stringify(s1));
   ok("install-repo --check: a fresh copy matches", ir("--check").status === 0);
+  const stamp = JSON.parse(fs.readFileSync(path.join(D, ".install.json"), "utf8"));
+  ok("the stamp names the version and a hash per file, and no machine path or time",
+    stamp.version && Object.keys(stamp.files).length > 10 && !("source" in stamp) && !("installedAt" in stamp) && !JSON.stringify(stamp).includes(HERE));
+  const self = spawnSync("node", [path.join(D, "deep_plan.mjs"), "install-repo"], { encoding: "utf8", env: ENV, cwd: IR });
+  ok("install-repo run from the repo's own copy refuses, and the copy stays whole",
+    self.status !== 0 && /this is the repo's own copy/.test(self.stderr) && fs.existsSync(path.join(D, "deep_plan.mjs")) &&
+    fs.existsSync(path.join(D, "hooks", "gate.sh")), self.stderr);
+  const sjson = fs.readFileSync(path.join(IR, ".claude", "settings.json"), "utf8");
+  fs.writeFileSync(path.join(IR, ".claude", "settings.json"), JSON.stringify({ hooks: { Stop: { matcher: "" } } }));
+  const bad = ir();
+  ok("a settings.json whose hooks are malformed is refused before the copy changes",
+    bad.status !== 0 && /hooks\.Stop is not a list/.test(bad.stderr) && fs.existsSync(path.join(D, "deep_plan.mjs")), bad.stderr);
+  fs.writeFileSync(path.join(IR, ".claude", "settings.json"), sjson);
   fs.appendFileSync(path.join(D, "lib", "state.mjs"), "\n// edited\n");
   r = ir("--check");
   ok("install-repo --check reports drift from the plugin", r.status === 1 && /changed: lib\/state\.mjs/.test(r.stdout), r.stdout);
