@@ -56,11 +56,17 @@ HOME_FORMS = [
     (r"\b[A-Za-z]:[\\/]+Users[\\/]+(?P<name>[\w.-]+)", "a Windows profile path (use %USERPROFILE%)"),
     # Only as a path segment: a leading dash right after a slash, a quote or
     # the start of a line, then the name and at least one more segment.
-    (r"(?:^|(?<=[/\\\s\"'`(=:]))-(?:Users|home)-(?P<name>[A-Za-z0-9_]+)-[\w.]+",
+    (r"(?:^|(?<=[/\\\s\"'`(=:]))-(?:Users|home)-(?P<name>[A-Za-z0-9_]+)-(?P<next>[\w.]+)",
                                                         "a Claude projects-dir path, which embeds a home"),
     (r"\b(?P<name>[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*?)-(?:mbp|mba|macbook[\w-]*|imac|mac-?mini)\.local\b",
                                                         "a machine's .local hostname"),
 ]
+
+# The dash-joined projects-dir form cannot say where the user name ends
+# (demo then smith may be the one user demo-smith), so a placeholder first
+# segment passes only when the next one is a directory, not more of a name.
+DIR_WORDS = {"code", "src", "projects", "project", "dev", "work", "documents", "desktop",
+             "repos", "repo", "tmp", "git", "workspace", "workspaces", "downloads"}
 
 # Names that stand for "some user" rather than being one. Lowercased.
 PLACEHOLDERS = {
@@ -132,7 +138,9 @@ def scan_line(line, pats):
     for pat, why, placeholder_ok in pats:
         for m in pat.finditer(line):
             if placeholder_ok and m.group("name").lower().rstrip(".-") in PLACEHOLDERS:
-                continue
+                nxt = m.groupdict().get("next")
+                if nxt is None or nxt.lower().rstrip(".") in DIR_WORDS:
+                    continue
             hits.append((m.group(0), why))
             break
     return hits
