@@ -4860,6 +4860,111 @@ exit 1
   ok("state pull --root: applies when the pull merges", /merged race-p/.test(r.stdout) && fs.realpathSync(stOf(EB).root) === fs.realpathSync(RB2), r.stdout + r.stderr);
 }
 
+// -------------------------------------------------- sync on transitions, and a pull at session start
+{
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const TO = path.join(TMP, "tr-origin.git"), TA = path.join(TMP, "tr-a");
+  execSync(`git init -q --bare ${TO}`);
+  fs.mkdirSync(TA);
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init && git remote add origin ${TO} && git push -q origin HEAD:refs/heads/main`, { cwd: TA });
+  const side = name => {
+    const dd = path.join(TMP, "tr-data-" + name);
+    return { ...ENV, DEEP_PLAN_STATE_DIR: path.join(dd, "state"), DEEP_PLAN_KEYS_DIR: path.join(dd, "keys"),
+      DEEP_PLAN_PLANS_DIR: path.join(dd, "plans"), LOOKOUT_REVIEWS_DIR: path.join(dd, "plans", "reviews") };
+  };
+  const EA = side("a");
+  const on = (env, dir, ...x) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...x], { encoding: "utf8", env, cwd: dir });
+  const tipOf = slug => spawnSync("git", ["--git-dir", TO, "rev-parse", "--verify", "-q", "refs/heads/seamux-state/" + slug], { encoding: "utf8" }).stdout.trim();
+  const branchState = slug => JSON.parse(execSync(`git --git-dir ${TO} show refs/heads/seamux-state/${slug}:deep-plan/state/${slug}.json`, { encoding: "utf8" }));
+  const gradeIt = (env, dir, slug) => {
+    const k = JSON.parse(fs.readFileSync(path.join(env.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8"));
+    return on(env, dir, "grade", slug, ...Object.entries(k.answers).map(([q, v]) => `${q}=${v.letter}`));
+  };
+
+  let r = on(EA, TA, "render", tmpSpec({ ...spec, slug: "tr-bad", share: { remote: "origin", sync: "always" } }), "--root", TA);
+  ok("render refuses a share it cannot read", r.status !== 0 && /share\.sync: transitions or manual/.test(r.stderr), r.stderr);
+  r = on(EA, TA, "render", tmpSpec({ ...spec, slug: "tr-p", share: true }), "--root", TA);
+  ok("render records the spec's share in the plan state", r.status === 0 &&
+    JSON.parse(fs.readFileSync(path.join(EA.DEEP_PLAN_STATE_DIR, "tr-p.json"), "utf8")).share === true, r.stderr);
+  ok("render itself does not push", tipOf("tr-p") === "");
+  gradeIt(EA, TA, "tr-p");
+  ok("grade pushes a shared plan", tipOf("tr-p") !== "" && branchState("tr-p").phase === "implementing");
+  let t = tipOf("tr-p");
+  on(EA, TA, "go", "tr-p", "1");
+  ok("go pushes", tipOf("tr-p") !== t && branchState("tr-p").increments[0].status === "authorized");
+  t = tipOf("tr-p");
+  const g = spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")], { encoding: "utf8", env: EA,
+    input: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: path.join(TA, "a.txt") }, cwd: TA }) });
+  ok("the gate's flip to working is not pushed", g.status === 0 &&
+    JSON.parse(fs.readFileSync(path.join(EA.DEEP_PLAN_STATE_DIR, "tr-p.json"), "utf8")).increments[0].status === "working" && tipOf("tr-p") === t, g.stderr);
+  on(EA, TA, "block", "tr-p", "2", "waiting");
+  ok("block pushes, and carries the earlier flip to working", tipOf("tr-p") !== t &&
+    branchState("tr-p").increments[0].status === "working" && branchState("tr-p").increments[1].status === "blocked");
+  t = tipOf("tr-p");
+  on(EA, TA, "reset", "tr-p", "2");
+  ok("reset pushes", tipOf("tr-p") !== t && branchState("tr-p").increments[1].status === "pending");
+  t = tipOf("tr-p");
+  r = on(EA, TA, "check", "pass", "tr-p", "1", "nope", "x");
+  ok("a refused command pushes nothing", r.status !== 0 && tipOf("tr-p") === t);
+
+  // A plan that does not share never pushes; one on sync manual or off does not either.
+  on(EA, TA, "render", tmpSpec({ ...spec, slug: "tr-private" }), "--root", TA);
+  gradeIt(EA, TA, "tr-private"); on(EA, TA, "go", "tr-private", "1");
+  ok("a plan that does not share is never pushed", tipOf("tr-private") === "");
+  ok("…and state push still works on it by hand", on(EA, TA, "state", "push", "tr-private").status === 0 && tipOf("tr-private") !== "");
+  on(EA, TA, "render", tmpSpec({ ...spec, slug: "tr-manual", share: { sync: "manual" } }), "--root", TA);
+  gradeIt(EA, TA, "tr-manual");
+  ok("share sync manual does not push on a transition", tipOf("tr-manual") === "");
+  t = tipOf("tr-p");
+  on({ ...EA, SEAMUX_STATE_SYNC: "off" }, TA, "block", "tr-p", "2", "offline here");
+  ok("SEAMUX_STATE_SYNC=off stops the pushes on this machine", tipOf("tr-p") === t);
+
+  // A push that fails: said once, the command still succeeds, status says unsynced until one lands.
+  fs.renameSync(TO, TO + "-away");
+  r = on(EA, TA, "reset", "tr-p", "2");
+  ok("a failed push leaves the transition done and says so once",
+    r.status === 0 && (r.stderr.match(/was not pushed to its state branch/g) || []).length === 1 &&
+    JSON.parse(fs.readFileSync(path.join(EA.DEEP_PLAN_STATE_DIR, "tr-p.json"), "utf8")).increments[1].status === "pending", r.stderr);
+  ok("status marks the plan unsynced", /unsynced: the last push to its state branch failed/.test(on(EA, TA, "status").stdout) &&
+    JSON.parse(on(EA, TA, "status", "--json").stdout).find(x => x.slug === "tr-p").unsynced);
+  fs.renameSync(TO + "-away", TO);
+  on(EA, TA, "block", "tr-p", "2", "back online");
+  ok("the next transition's push lands and clears it", branchState("tr-p").increments[1].status === "blocked" &&
+    !JSON.parse(on(EA, TA, "status", "--json").stdout).find(x => x.slug === "tr-p").unsynced);
+
+  // A session start pulls. Locally: the shared plans rooted in this repo.
+  const EB = side("b");
+  on(EB, TA, "state", "pull", "tr-p");
+  on(EA, TA, "block", "tr-p", "1", "moved on A");
+  r = on({ ...EB, CLAUDE_PROJECT_DIR: TA }, TA, "state", "pull", "--session");
+  ok("session start pulls a shared plan of this repo that moved", r.status === 0 && /deep-plan: pulled tr-p/.test(r.stdout) &&
+    JSON.parse(fs.readFileSync(path.join(EB.DEEP_PLAN_STATE_DIR, "tr-p.json"), "utf8")).increments[0].status === "blocked", r.stdout + r.stderr);
+  ok("…and says nothing when nothing moved", on({ ...EB, CLAUDE_PROJECT_DIR: TA }, TA, "state", "pull", "--session").stdout.trim() === "");
+  ok("…and does not bring plans that are not here, on a local machine", !fs.existsSync(path.join(EB.DEEP_PLAN_STATE_DIR, "tr-private.json")));
+  // On the remote host: a new sandbox gets every plan with a branch on this repo's remote.
+  const TC = path.join(TMP, "tr-c");
+  execSync(`git clone -q ${TO} ${TC}`);
+  const RH = path.join(TMP, "tr-remote-home");
+  const REnv = { ...ENV, HOME: RH, SEAMUX_HOST: "remote", CLAUDE_PROJECT_DIR: TC };
+  for (const k of ["DEEP_PLAN_STATE_DIR", "DEEP_PLAN_KEYS_DIR", "DEEP_PLAN_PLANS_DIR", "DEEP_PLAN_ANNOT_DIR"]) delete REnv[k];
+  r = on(REnv, TC, "state", "pull", "--session");
+  const SD = path.join(TC, ".seamux", "state", "deep-plan", "state");
+  ok("session start on the remote host pulls the plans with a branch on the repo's remote, rooted in the new clone",
+    r.status === 0 && fs.existsSync(path.join(SD, "tr-p.json")) && fs.existsSync(path.join(SD, "tr-private.json")) &&
+    fs.realpathSync(JSON.parse(fs.readFileSync(path.join(SD, "tr-p.json"), "utf8")).root) === fs.realpathSync(TA), r.stdout + r.stderr);
+  const gone = path.join(TMP, "tr-nowhere");
+  r = on({ ...EB, CLAUDE_PROJECT_DIR: gone }, TMP, "state", "pull", "--session");
+  ok("session start outside a repo does nothing and exits 0", r.status === 0 && r.stdout.trim() === "");
+  const hooks = JSON.parse(fs.readFileSync(path.join(HERE, "hooks", "hooks.json"), "utf8")).hooks;
+  ok("the plugin's SessionStart hooks pull shared state", hooks.SessionStart.some(gr => gr.hooks.some(h => /state pull --session/.test(h.command))));
+  const IRP = path.join(TMP, "tr-install");
+  fs.mkdirSync(IRP); execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: IRP });
+  r = on(ENV, IRP, "install-repo", "--root", IRP);
+  const rs = r.status === 0 ? JSON.parse(fs.readFileSync(path.join(IRP, ".claude", "settings.json"), "utf8")) : {};
+  ok("install-repo gives a cloud repo the same session-start pull", r.status === 0 &&
+    (rs.hooks.SessionStart || []).some(gr => gr.hooks.some(h => /skills\/deep-plan\/deep_plan\.mjs" state pull --session/.test(h.command))), r.stderr);
+}
+
 // -------------------------------------------------- hot-path cost
 const t0 = process.hrtime.bigint();
 for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);
