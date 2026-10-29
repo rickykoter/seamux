@@ -52,8 +52,10 @@ export function repoTop(dir) {
 }
 
 // A prefix is a run of ref path parts; it may end in "/" or not. It is never
-// empty, so a state branch can never be named like a code branch, and with a
-// slug after it it must make a ref name git accepts.
+// empty, so a state branch is never the bare slug, and with a slug after it it
+// must make a ref name git accepts. A prefix without a trailing "/" also
+// matches code branches that start with it (list() shows them too): the
+// default, seamux-state/, is a folder of its own.
 const PREFIX_RE = /^(?:[A-Za-z0-9_][A-Za-z0-9._-]*\/)*(?:[A-Za-z0-9_][A-Za-z0-9._-]*)?$/;
 const prefixOk = p => !!p && PREFIX_RE.test(p) &&
   spawnSync("git", ["check-ref-format", `refs/heads/${p}a`], { timeout: 5000 }).status === 0;
@@ -68,6 +70,8 @@ export function shareProblems(share) {
   for (const k of Object.keys(share)) if (!(k in DEFAULTS)) out.push(`share.${k}: not a share setting (remote, prefix, sync)`);
   for (const k of Object.keys(DEFAULTS))
     if (share[k] !== undefined && (typeof share[k] !== "string" || !share[k].trim())) out.push(`share.${k}: a non-empty string`);
+  if (typeof share.remote === "string" && share.remote.trim().startsWith("-"))
+    out.push("share.remote: a remote name, URL or path, not something that starts with -");
   if (typeof share.sync === "string" && !["transitions", "manual"].includes(share.sync.trim().toLowerCase()))
     out.push("share.sync: transitions or manual");
   if (typeof share.prefix === "string" && share.prefix.trim() && !prefixOk(share.prefix.trim()))
@@ -94,6 +98,11 @@ export function loadConfig(share, dir = process.cwd(), env = process.env) {
     if (typeof plan[k] === "string" && plan[k].trim()) { cfg[k] = plan[k].trim(); source[k] = "plan"; }
     const e = env[ENV_KEYS[k]];
     if (e !== undefined && (e.trim() || k === "prefix")) { cfg[k] = e.trim(); source[k] = ENV_KEYS[k]; }
+  }
+  // git would read a leading "-" as one of its own options.
+  if (cfg.remote.startsWith("-")) {
+    problems.push(`remote "${cfg.remote}" (from ${source.remote}) starts with -; using ${DEFAULTS.remote}`);
+    cfg.remote = DEFAULTS.remote; source.remote = "default";
   }
   cfg.sync = cfg.sync.toLowerCase();
   if (!SYNC_MODES.includes(cfg.sync)) {
@@ -131,6 +140,7 @@ export class GitBackend {
     this.prefix = cfg.prefix;
     this.remote = cfg.remote;
     this.timeout = timeout;
+    if (String(cfg.remote).startsWith("-")) throw new Error(`refused: the state remote "${cfg.remote}" starts with -`);
     const top = cfg.top || "";
     const names = top ? (spawnSync("git", ["-C", top, "remote"], { encoding: "utf8", timeout: 5000 }).stdout || "").split("\n").filter(Boolean) : [];
     const cfgOf = k => (spawnSync("git", ["-C", top, "config", "--get", k], { encoding: "utf8", timeout: 5000 }).stdout || "").trim();

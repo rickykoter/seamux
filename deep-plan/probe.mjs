@@ -4596,6 +4596,9 @@ exit 1
   fs.rmSync(path.join(SR, ".seamux"), { recursive: true });
   ok("share: true, false and a well-formed object pass render's check",
     [true, false, undefined, { remote: "origin" }, { remote: OUT, prefix: "team/state-", sync: "manual" }].every(x => !SYNC.shareProblems(x).length));
+  c = SYNC.loadConfig(true, SR, { SEAMUX_STATE_REMOTE: "--upload-pack=touch /tmp/x" });
+  ok("sync config: a remote that starts with - is refused (git would take it as an option)", c.remote === "origin" && c.problems.length === 1);
+  ok("share: a remote that starts with - is named", SYNC.shareProblems({ remote: "-oProxyCommand=x" }).length === 1);
   ok("share: anything else is named", SYNC.shareProblems("yes").length === 1 && SYNC.shareProblems({ remot: "x" }).length === 1 &&
     SYNC.shareProblems({ sync: "off" }).length === 1 && SYNC.shareProblems({ prefix: "" }).length === 1 && SYNC.shareProblems({ prefix: "a/." }).length === 1);
 
@@ -4822,6 +4825,8 @@ exit 1
   const done = base(); done.increments.forEach(i => { i.status = "done"; i.changedAt = 10; }); done.phase = "delivery";
   const reopened = base(); reopened.increments[1] = { ...reopened.increments[1], status: "pending", changedAt: 20 };
   ok("merge: the phase follows the merged increments", M.mergeStates(done, reopened).phase === "implementing");
+  const trimmed = base(); trimmed.increments = [trimmed.increments[0]]; trimmed.log.push({ at: 999, what: "render: increment 2 dropped" });
+  ok("merge: an increment a re-render dropped on the leading side stays out", M.mergeStates(trimmed, base()).increments.map(i => i.n).join(",") === "1");
 
   // Two machines on one plan, racing through the branch.
   const G = "git -c user.email=probe@deep-plan -c user.name=probe";
@@ -4968,8 +4973,8 @@ exit 1
   for (const k of ["DEEP_PLAN_STATE_DIR", "DEEP_PLAN_KEYS_DIR", "DEEP_PLAN_PLANS_DIR", "DEEP_PLAN_ANNOT_DIR"]) delete REnv[k];
   r = on(REnv, TC, "state", "pull", "--session");
   const SD = path.join(TC, ".seamux", "state", "deep-plan", "state");
-  ok("session start on the remote host pulls the plans with a branch on the repo's remote, rooted in the new clone",
-    r.status === 0 && fs.existsSync(path.join(SD, "tr-p.json")) && fs.existsSync(path.join(SD, "tr-private.json")) &&
+  ok("session start on the remote host pulls the shared plans with a branch on the repo's remote, rooted in the new clone, and leaves a plan pushed by hand",
+    r.status === 0 && fs.existsSync(path.join(SD, "tr-p.json")) && !fs.existsSync(path.join(SD, "tr-private.json")) &&
     fs.realpathSync(JSON.parse(fs.readFileSync(path.join(SD, "tr-p.json"), "utf8")).root) === fs.realpathSync(TA), r.stdout + r.stderr);
   const gone = path.join(TMP, "tr-nowhere");
   r = on({ ...EB, CLAUDE_PROJECT_DIR: gone }, TMP, "state", "pull", "--session");
@@ -5121,6 +5126,9 @@ exit 1
     ok("session start says once that a plan's branch was archived elsewhere", r.status === 0 && /sf-ends ended elsewhere: .* archived as seamux-state-archive\/sf-ends/.test(r.stdout), r.stdout + r.stderr);
     r = o3("state", "pull", "--session");
     ok("…and says nothing about it after that", r.status === 0 && !/sf-ends/.test(r.stdout), r.stdout);
+    r = o3("state", "push", "sf-ends");
+    ok("a push of a plan whose branch was archived elsewhere is refused, and nothing is recreated",
+      r.status !== 0 && /ended elsewhere/.test(r.stderr) && ref("refs/heads/seamux-state/sf-ends") === "", r.stderr);
   }
   // A plan that does not share is never archived (nothing was pushed for it).
   on(FR, "render", tmpSpec({ ...spec, slug: "sf-private" }), "--root", FR);
@@ -5189,6 +5197,15 @@ exit 1
   ok("await-go: a failed pull is said once and the wait goes on to its deadline",
     failed.status === 2 && (failed.stderr.match(/could not pull aw-kid's state branch/g) || []).length === 1 &&
     /no go for aw-kid after 4s/.test(failed.stderr), failed.stderr);
+  // A fresh cloud sandbox brings the shared parent, and then its child, which has no share of its own.
+  const AC = path.join(TMP, "aw-cloud");
+  execSync(`git clone -q ${AO} ${AC}`);
+  const CE = { ...ENV, HOME: path.join(TMP, "aw-cloud-home"), SEAMUX_HOST: "remote", CLAUDE_PROJECT_DIR: AC };
+  for (const k of ["DEEP_PLAN_STATE_DIR", "DEEP_PLAN_KEYS_DIR", "DEEP_PLAN_PLANS_DIR", "DEEP_PLAN_ANNOT_DIR"]) delete CE[k];
+  r = on(CE, AC, "state", "pull", "--session");
+  const CS = path.join(AC, ".seamux", "state", "deep-plan", "state");
+  ok("await-go: a fresh cloud sandbox brings the shared parent and its child through it",
+    r.status === 0 && fs.existsSync(path.join(CS, "aw-parent.json")) && fs.existsSync(path.join(CS, "aw-kid.json")), r.stdout + r.stderr);
   // A plan that does not share makes no network call: its repo has no remote at all.
   const NR = path.join(TMP, "aw-noremote");
   fs.mkdirSync(NR); execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: NR });

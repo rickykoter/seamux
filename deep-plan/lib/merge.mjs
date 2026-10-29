@@ -6,6 +6,7 @@
 //   checks      each check keeps its newest verdict, from either side
 //   log         the union, by time
 //   guests      the union
+//   the list    the leading side's increments, in its order
 //   the rest    the side with the latest activity (its phase, owner, share);
 //               a field only the other side has is kept
 //
@@ -62,8 +63,8 @@ export function mergeStates(a, b) {
     if (base.checks || rest.checks) inc.checks = structuredClone(mergeChecks(base, rest));
     return inc;
   });
-  for (const oi of other.increments || [])
-    if (!out.increments.some(i => i.n === oi.n)) out.increments.push(structuredClone(oi));
+  // The leading side's list is the plan's shape: an increment only the other
+  // side has was dropped or renumbered by a re-render, and stays out.
   const key = l => `${l.at}\u0000${l.what}`;
   const seen = new Set();
   out.log = [...(a.log || []), ...(b.log || [])].filter(l => !seen.has(key(l)) && seen.add(key(l)))

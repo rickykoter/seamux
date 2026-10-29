@@ -3137,6 +3137,13 @@ function pushPlan(slug, backend, tries = 3) {
     const mine = meta && meta.where === backend.where ? meta.version : "";
     let cur;
     try { cur = backend.version(slug); } catch (e) { return { error: e.message }; }
+    // A branch this machine synced that is gone now was archived elsewhere:
+    // the plan ended there, and a push must not bring it back.
+    if (!cur && mine) {
+      let gone = false;
+      try { gone = backend.archived(slug); } catch { /* unreachable: the write below says so */ }
+      if (gone) return { error: `${slug} ended elsewhere: ${backend.branch(slug)} was archived as ${SYNC.ARCHIVE_PREFIX}${slug}; it is not pushed again` };
+    }
     let merged = false;
     if (cur && cur !== mine) {
       // Nothing changed here since the last sync: there is nothing to push,
@@ -3196,11 +3203,17 @@ function pullPlan(slug, backend, flags = {}) {
     at: new Date().toISOString(), last: "pull", ...(keepFailed && meta && meta.failed ? { failed: meta.failed } : {}) });
   if (local && meta && meta.version === r.version && meta.where === backend.where && !flags.force)
     return { message: `${slug} is up to date with ${backend.branch(slug)} (${r.version.slice(0, 8)})`, same: true };
-  // The session hook brings plans that are not here only while they are live.
+  // The session hook brings a plan that is not here only while it is live,
+  // and only when it shares: its own share, or a family parent's that is
+  // here already. A plan someone pushed by hand stays on its branch.
   if (!local && flags.liveOnly) {
     try {
-      const ph = JSON.parse(Buffer.from(r.files[`deep-plan/state/${slug}.json`]).toString("utf8")).phase;
-      if (ph === "closed" || ph === "done") return { message: "", same: true };
+      const bst = JSON.parse(Buffer.from(r.files[`deep-plan/state/${slug}.json`]).toString("utf8"));
+      if (bst.phase === "closed" || bst.phase === "done") return { message: "", same: true };
+      if (!bst.share) {
+        const idx = familyOf(slug), p = idx && idx.parent !== slug ? readState(idx.parent) : null;
+        if (!(p && p.share)) return { message: "", same: true };
+      }
     } catch { /* checkBundle below names it */ }
   }
   // Changes here the branch does not have: merged with it, not dropped.
@@ -3252,8 +3265,12 @@ function stateSessionPull() {
   // the next session or a state pull by hand, and is named.
   const t0 = Date.now(), late = [];
   const lines = [], failed = [];
+  // A pull makes up to three network calls, so each gets a third of what is
+  // left of the budget at most: the whole stays inside the hook's limit.
+  const callMs = () => Math.max(1000, Math.min(SESSION_TIMEOUT_MS, Math.floor((SESSION_BUDGET_MS - (Date.now() - t0)) / 3)));
   const run = (slug, backend, flags = {}) => {
-    if (Date.now() - t0 > SESSION_BUDGET_MS) { late.push(slug); return; }
+    if (Date.now() - t0 > SESSION_BUDGET_MS - 3000) { late.push(slug); return; }
+    backend.timeout = callMs();
     const r = pullPlan(slug, backend, flags);
     if (r.archived) { if (!r.told) lines.push(r.error); }
     else if (r.error) failed.push(`${slug}: ${r.error}`);
@@ -3263,7 +3280,7 @@ function stateSessionPull() {
     if (st.phase === "closed" || !planShare(st) || !st.root || !fs.existsSync(st.root) || common(st.root) !== repo) continue;
     const sm = syncMeta(st.slug);
     if (sm && sm.archived) continue;
-    const o = openSync(st, { soft: true, timeout: SESSION_TIMEOUT_MS });
+    const o = openSync(st, { soft: true, timeout: callMs() });
     if (o.error) { failed.push(`${st.slug}: ${o.error}`); continue; }
     // sync manual or off: nothing automatic, the pull included.
     if (o.cfg.sync !== "transitions") continue;
@@ -3275,7 +3292,10 @@ function stateSessionPull() {
     if (o && o.cfg.sync === "transitions") {
       let list = [];
       try { list = o.backend.list(); } catch (e) { failed.push(e.message); }
-      for (const x of list) if (!readState(x.slug)) run(x.slug, o.backend, { liveOnly: true });
+      // Twice: a family child is brought once its parent's branch, which
+      // carries the family, is here.
+      for (let pass = 0; pass < 2; pass++)
+        for (const x of list) if (!readState(x.slug)) run(x.slug, o.backend, { liveOnly: true });
     }
   }
   for (const l of lines) say(`deep-plan: ${l}`);
