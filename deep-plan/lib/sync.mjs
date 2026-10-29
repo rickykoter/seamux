@@ -7,10 +7,12 @@
 // {slug, writer, at}. What a branch may hold is import-state's rule
 // (bundleNames in deep_plan.mjs); this file moves bytes and checks nothing.
 //
-// Config, later sources winning:
+// The plan holds its own config. Its spec says share: true (the defaults) or
+// share: {remote, prefix, sync}; render records it in the plan state, and a
+// family child uses its parent's. Later sources win:
 //   defaults                 remote origin, prefix seamux-state/, sync transitions
-//   <repo>/.seamux/state.json {remote, prefix, sync}
-//   SEAMUX_STATE_REMOTE  SEAMUX_STATE_PREFIX  SEAMUX_STATE_SYNC
+//   the plan's share         {remote, prefix, sync}
+//   SEAMUX_STATE_REMOTE  SEAMUX_STATE_PREFIX  SEAMUX_STATE_SYNC (this machine only)
 //
 // The remote is a remote name of the repo ("inside": the repo's own object
 // store, remote-tracking refs only), or any other git URL or path
@@ -46,33 +48,47 @@ export function repoTop(dir) {
   return r.status === 0 ? r.stdout.trim() : "";
 }
 
-// A prefix is a run of ref path parts; it may end in "/" or not.
-const PREFIX_RE = /^(?:[A-Za-z0-9_][A-Za-z0-9._-]*\/)*[A-Za-z0-9._-]*$/;
-const prefixOk = p => PREFIX_RE.test(p) && !p.includes("..") && !/\.lock(\/|$)/.test(p);
+// A prefix is a run of ref path parts; it may end in "/" or not. It is never
+// empty, so a state branch can never be named like a code branch, and with a
+// slug after it it must make a ref name git accepts.
+const PREFIX_RE = /^(?:[A-Za-z0-9_][A-Za-z0-9._-]*\/)*(?:[A-Za-z0-9_][A-Za-z0-9._-]*)?$/;
+const prefixOk = p => !!p && PREFIX_RE.test(p) &&
+  spawnSync("git", ["check-ref-format", `refs/heads/${p}a`], { timeout: 5000 }).status === 0;
 
-// The config for the repo holding `dir`. Never throws: a bad file or value is
-// reported in `problems` and its key falls back. A sync mode that cannot be
-// read becomes manual, so a typo never starts pushing.
-export function loadConfig(dir = process.cwd(), env = process.env) {
+// What a spec's share may be: true, false, or an object of these keys. Render
+// refuses anything else, so a plan's recorded share is always one of them.
+export function shareProblems(share) {
+  if (share === undefined || typeof share === "boolean") return [];
+  if (!share || typeof share !== "object" || Array.isArray(share))
+    return ['share: true, false, or { "remote": "...", "prefix": "...", "sync": "transitions|manual" }'];
+  const out = [];
+  for (const k of Object.keys(share)) if (!(k in DEFAULTS)) out.push(`share.${k}: not a share setting (remote, prefix, sync)`);
+  for (const k of Object.keys(DEFAULTS))
+    if (share[k] !== undefined && (typeof share[k] !== "string" || !share[k].trim())) out.push(`share.${k}: a non-empty string`);
+  if (typeof share.sync === "string" && !["transitions", "manual"].includes(share.sync.trim().toLowerCase()))
+    out.push("share.sync: transitions or manual");
+  if (typeof share.prefix === "string" && share.prefix.trim() && !prefixOk(share.prefix.trim()))
+    out.push(`share.prefix: "${share.prefix}" does not make a branch name with a slug after it`);
+  return out;
+}
+
+// Where a plan's state branch lives, from the plan's share (its spec's
+// share, recorded at render) and the SEAMUX_STATE_* overrides, for the repo
+// holding `dir`. `shared` says whether the plan asked to sync at all; the
+// remote, prefix and sync mode are resolved either way, so a person can
+// still push or pull a plan by hand. The overrides are for a machine or
+// sandbox that must reach the branch some other way; SEAMUX_STATE_SYNC=off
+// stops the automatic pushes there. Never throws: a bad value is reported
+// in `problems` and its key falls back, and a sync mode that cannot be read
+// becomes manual, so a typo never starts pushing.
+export function loadConfig(share, dir = process.cwd(), env = process.env) {
   const top = dir ? repoTop(dir) : "";
-  const file = top ? path.join(top, ".seamux", "state.json") : "";
   const problems = [];
-  let fromFile = {};
-  if (file && fs.existsSync(file)) {
-    try {
-      const j = JSON.parse(fs.readFileSync(file, "utf8"));
-      if (j && typeof j === "object" && !Array.isArray(j)) fromFile = j;
-      else problems.push(`${file} is not a JSON object; using the defaults`);
-    } catch (e) { problems.push(`${file} does not parse (${e.message}); using the defaults`); }
-  }
+  const plan = share && typeof share === "object" && !Array.isArray(share) ? share : {};
   const cfg = { ...DEFAULTS }, source = {};
   for (const k of Object.keys(DEFAULTS)) {
     source[k] = "default";
-    const f = fromFile[k];
-    if (f !== undefined) {
-      if (typeof f === "string" && (f.trim() || k === "prefix")) { cfg[k] = f.trim(); source[k] = file; }
-      else problems.push(`${file}: ${k} must be a string`);
-    }
+    if (typeof plan[k] === "string" && plan[k].trim()) { cfg[k] = plan[k].trim(); source[k] = "plan"; }
     const e = env[ENV_KEYS[k]];
     if (e !== undefined && (e.trim() || k === "prefix")) { cfg[k] = e.trim(); source[k] = ENV_KEYS[k]; }
   }
@@ -85,10 +101,11 @@ export function loadConfig(dir = process.cwd(), env = process.env) {
     problems.push(`prefix "${cfg.prefix}" (from ${source.prefix}) is not a branch name prefix; using ${DEFAULTS.prefix}`);
     cfg.prefix = DEFAULTS.prefix; source.prefix = "default";
   }
-  return { ...cfg, source, file, top, problems };
+  return { ...cfg, shared: !!share, source, top, problems };
 }
 
-const isUrl = r => /^[a-z][a-z0-9+.-]*:\/\//i.test(r) || /^[^/\s]+@[^/\s:]+:/.test(r);
+// A URL with a scheme, or scp's [user@]host:path (no slash before the colon).
+const isUrl = r => /^[a-z][a-z0-9+.-]*:\/\//i.test(r) || /^(?:[^/\s@]+@)?[^/\s:@]+:/.test(r);
 const isPath = r => /^(\/|\.\.?(\/|$)|~\/)/.test(r) || r.includes("/");
 
 // The identity a state commit carries: the person's, when git knows it.
@@ -130,7 +147,7 @@ export class GitBackend {
       this.track = b => `refs/heads/${b}`;
     } else {
       throw new Error(`no git remote named ${cfg.remote}` + (top ? ` in ${top}` : " (not in a git repo)") +
-        `; set remote in .seamux/state.json or SEAMUX_STATE_REMOTE to a remote name, URL or path`);
+        `; set the plan's share.remote, or SEAMUX_STATE_REMOTE, to a remote name, URL or path`);
     }
   }
 
@@ -162,21 +179,30 @@ export class GitBackend {
     return line ? line.split("\t")[0] : "";
   }
 
-  // Fetch a version into the local store, unless it is already here.
+  // Fetch a version into the local store, unless it is already here. False
+  // when the branch has moved past it and it never reached this store.
   ensure(slug, version) {
-    const have = this.git(["cat-file", "-e", version + "^{commit}"]);
-    if (have.status !== 0) {
+    const has = () => this.git(["cat-file", "-e", version + "^{commit}"]).status === 0;
+    if (!has()) {
       const b = this.branch(slug);
       const r = this.git(["fetch", "-q", "--no-tags", "--no-write-fetch-head", this.target, `+refs/heads/${b}:${this.track(b)}`], { net: true });
       if (r.status !== 0 || r.error) throw this.netFail("fetching from", r);
+      if (!has()) return false;
     }
-    this.git(["update-ref", this.track(this.branch(slug)), version]);
+    const u = this.git(["update-ref", this.track(this.branch(slug)), version]);
+    if (u.status !== 0) throw new Error(`cannot record ${this.track(this.branch(slug))}: ${u.stderr.trim()}`);
+    return true;
   }
 
   read(slug) {
-    const version = this.version(slug);
+    let version = this.version(slug);
     if (!version) return { version: "", files: null, meta: null };
-    this.ensure(slug, version);
+    // A branch that moves between the listing and the fetch is read again.
+    if (!this.ensure(slug, version)) {
+      version = this.version(slug);
+      if (!version) return { version: "", files: null, meta: null };
+      if (!this.ensure(slug, version)) throw new Error(`${this.branch(slug)} on ${this.where} kept moving while it was read; run it again`);
+    }
     const ls = this.git(["ls-tree", "-r", "-z", version]);
     if (ls.status !== 0) throw new Error(`cannot list ${this.branch(slug)} at ${version}: ${ls.stderr.trim()}`);
     const files = {};
@@ -213,7 +239,8 @@ export class GitBackend {
       if (u.status !== 0) throw new Error(`cannot build the state tree: ${u.stderr.trim()}`);
       const t = this.git(["write-tree"], { env: ienv });
       if (t.status !== 0) throw new Error(`cannot write the state tree: ${t.stderr.trim()}`);
-      if (expected) this.ensure(slug, expected);
+      // A parent this store cannot get is a branch that moved on without it.
+      if (expected && !this.ensure(slug, expected)) return { ok: false, moved: true };
       const c = this.git(["commit-tree", t.stdout.trim(), ...(expected ? ["-p", expected] : []), "-m", `deep-plan state: ${slug}`],
         { env: identityEnv(this.gitArgs) });
       if (c.status !== 0) throw new Error(`cannot commit the state: ${c.stderr.trim()}`);
@@ -251,9 +278,9 @@ function refused(p) {
   return !p.error && /stale info|\[rejected\]|fetch first|non-fast-forward|already exists/.test(out);
 }
 
-// The backend for the repo holding `dir`, with its config. Throws only when
+// The backend for a plan with this share, in the repo holding `dir`, with its config. Throws only when
 // the remote names nothing; callers that must not fail catch it.
-export function openBackend(dir = process.cwd(), opts = {}) {
-  const cfg = opts.config || loadConfig(dir, opts.env || process.env);
+export function openBackend(share, dir = process.cwd(), opts = {}) {
+  const cfg = opts.config || loadConfig(share, dir, opts.env || process.env);
   return { cfg, backend: new GitBackend(cfg, opts) };
 }

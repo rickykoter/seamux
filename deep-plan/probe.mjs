@@ -4571,22 +4571,26 @@ exit 1
   fs.mkdirSync(SR);
   execSync(`git init -q && ${G} commit -q --allow-empty -m init && git remote add origin ${ORIGIN} && git push -q origin HEAD:refs/heads/main`, { cwd: SR });
   const noEnv = {};
-  let c = SYNC.loadConfig(SR, noEnv);
-  ok("sync config: defaults are origin, seamux-state/ and transitions",
-    c.remote === "origin" && c.prefix === "seamux-state/" && c.sync === "transitions" && !c.problems.length && fs.realpathSync(c.top) === fs.realpathSync(SR));
-  fs.mkdirSync(path.join(SR, ".seamux"));
-  fs.writeFileSync(path.join(SR, ".seamux", "state.json"), JSON.stringify({ remote: OUT, prefix: "plans/", sync: "manual" }));
-  c = SYNC.loadConfig(SR, noEnv);
-  ok("sync config: .seamux/state.json sets remote, prefix and sync", c.remote === OUT && c.prefix === "plans/" && c.sync === "manual");
-  c = SYNC.loadConfig(SR, { SEAMUX_STATE_REMOTE: "origin", SEAMUX_STATE_SYNC: "OFF" });
-  ok("sync config: SEAMUX_STATE_* beat the file", c.remote === "origin" && c.sync === "off" && c.prefix === "plans/" && c.source.remote === "SEAMUX_STATE_REMOTE");
-  c = SYNC.loadConfig(SR, { SEAMUX_STATE_SYNC: "of", SEAMUX_STATE_PREFIX: "bad..prefix/" });
+  let c = SYNC.loadConfig(true, SR, noEnv);
+  ok("sync config: share: true is origin, seamux-state/ and transitions",
+    c.shared && c.remote === "origin" && c.prefix === "seamux-state/" && c.sync === "transitions" && !c.problems.length && fs.realpathSync(c.top) === fs.realpathSync(SR));
+  c = SYNC.loadConfig(undefined, SR, noEnv);
+  ok("sync config: a plan with no share is not shared, and still resolves where its branch would go", !c.shared && c.remote === "origin");
+  c = SYNC.loadConfig({ remote: OUT, prefix: "plans/", sync: "manual" }, SR, noEnv);
+  ok("sync config: the plan's share sets remote, prefix and sync", c.shared && c.remote === OUT && c.prefix === "plans/" && c.sync === "manual" && c.source.remote === "plan");
+  c = SYNC.loadConfig({ remote: OUT, prefix: "plans/" }, SR, { SEAMUX_STATE_REMOTE: "origin", SEAMUX_STATE_SYNC: "OFF" });
+  ok("sync config: SEAMUX_STATE_* beat the plan on this machine", c.remote === "origin" && c.sync === "off" && c.prefix === "plans/" && c.source.remote === "SEAMUX_STATE_REMOTE");
+  c = SYNC.loadConfig(true, SR, { SEAMUX_STATE_SYNC: "of", SEAMUX_STATE_PREFIX: "bad..prefix/" });
   ok("sync config: an unreadable sync mode becomes manual and a bad prefix the default, each reported",
     c.sync === "manual" && c.prefix === "seamux-state/" && c.problems.length === 2, c.problems.join("; "));
-  fs.writeFileSync(path.join(SR, ".seamux", "state.json"), "{ nope");
-  c = SYNC.loadConfig(SR, noEnv);
-  ok("sync config: a file that does not parse falls back to the defaults, reported", c.remote === "origin" && /does not parse/.test(c.problems[0] || ""));
+  fs.mkdirSync(path.join(SR, ".seamux"));
+  fs.writeFileSync(path.join(SR, ".seamux", "state.json"), JSON.stringify({ remote: OUT }));
+  ok("sync config: nothing in the repo is read, so a cloned repo cannot point a plan's state elsewhere", SYNC.loadConfig(true, SR, noEnv).remote === "origin");
   fs.rmSync(path.join(SR, ".seamux"), { recursive: true });
+  ok("share: true, false and a well-formed object pass render's check",
+    [true, false, undefined, { remote: "origin" }, { remote: OUT, prefix: "team/state-", sync: "manual" }].every(x => !SYNC.shareProblems(x).length));
+  ok("share: anything else is named", SYNC.shareProblems("yes").length === 1 && SYNC.shareProblems({ remot: "x" }).length === 1 &&
+    SYNC.shareProblems({ sync: "off" }).length === 1 && SYNC.shareProblems({ prefix: "" }).length === 1 && SYNC.shareProblems({ prefix: "a/." }).length === 1);
 
   // What a checkout looks like; none of it may move.
   const snap = () => ["rev-parse HEAD", "branch --list", "status --porcelain", "for-each-ref refs/heads refs/tags", "remote -v"]
@@ -4595,7 +4599,7 @@ exit 1
   const files = { "deep-plan/state/p1.json": JSON.stringify({ slug: "p1", phase: "implementing" }), "plans/p1.md": "# p1\n" };
 
   // Inside: the repo's own remote.
-  const inB = new SYNC.GitBackend(SYNC.loadConfig(SR, noEnv), { cacheDir: CACHE });
+  const inB = new SYNC.GitBackend(SYNC.loadConfig(true, SR, noEnv), { cacheDir: CACHE });
   ok("git backend: the repo's own remote is inside", inB.inside && inB.where === "remote origin");
   let r = inB.read("p1");
   ok("git backend: a plan with no branch reads as version \"\"", r.version === "" && r.files === null);
@@ -4620,7 +4624,7 @@ exit 1
   ok("git backend: a remove pinned to the current version deletes the branch", inB.remove("p1", w2.version).ok && inB.version("p1") === "");
 
   // Outside: any other git URL or path, through a bare cache.
-  const outB = new SYNC.GitBackend(SYNC.loadConfig(SR, { SEAMUX_STATE_REMOTE: OUT }), { cacheDir: CACHE });
+  const outB = new SYNC.GitBackend(SYNC.loadConfig(true, SR, { SEAMUX_STATE_REMOTE: OUT }), { cacheDir: CACHE });
   const refsBefore = execSync("git for-each-ref", { cwd: SR, encoding: "utf8" });
   const ow = outB.write("p2", files, "");
   ok("git backend: a remote outside the repo is written through a bare cache under the data root",
@@ -4629,19 +4633,28 @@ exit 1
   ok("git backend: …and the code repo gains no refs or objects from it",
     execSync("git for-each-ref", { cwd: SR, encoding: "utf8" }) === refsBefore &&
     spawnSync("git", ["cat-file", "-e", ow.version], { cwd: SR }).status !== 0 && snap() === before);
-  const fresh = new SYNC.GitBackend(SYNC.loadConfig(SR, { SEAMUX_STATE_REMOTE: OUT }), { cacheDir: path.join(TMP, "sync-cache-2") });
+  const fresh = new SYNC.GitBackend(SYNC.loadConfig(true, SR, { SEAMUX_STATE_REMOTE: OUT }), { cacheDir: path.join(TMP, "sync-cache-2") });
   r = fresh.read("p2");
   ok("git backend: a fresh cache reads the branch back", r.version === ow.version && r.files["plans/p1.md"].toString() === "# p1\n");
-  const relB = new SYNC.GitBackend(SYNC.loadConfig(SR, { SEAMUX_STATE_REMOTE: "../sync-outside.git", SEAMUX_STATE_PREFIX: "team/state-" }), { cacheDir: CACHE });
+  const relB = new SYNC.GitBackend(SYNC.loadConfig(true, SR, { SEAMUX_STATE_REMOTE: "../sync-outside.git", SEAMUX_STATE_PREFIX: "team/state-" }), { cacheDir: CACHE });
   const rw = relB.write("p3", files, "");
   ok("git backend: a relative path resolves against the repo, and the prefix need not end in /",
     rw.ok && execSync(`git --git-dir ${OUT} rev-parse refs/heads/team/state-p3`, { encoding: "utf8" }).trim() === rw.version &&
     relB.list().map(x => x.slug).join(",") === "p3");
 
+  c = SYNC.loadConfig(true, SR, { SEAMUX_STATE_PREFIX: "" });
+  ok("sync config: an empty prefix is refused, so a state branch is never a bare slug", c.prefix === "seamux-state/" && c.problems.length === 1);
+  c = SYNC.loadConfig(true, SR, { SEAMUX_STATE_PREFIX: "state/." });
+  ok("sync config: a prefix that makes a bad ref name with a slug after it is refused", c.prefix === "seamux-state/" && c.problems.length === 1);
+  let scp = "";
+  try { scp = new SYNC.GitBackend(SYNC.loadConfig(true, SR, { SEAMUX_STATE_REMOTE: "example.com:org/state.git" }), { cacheDir: CACHE }).target; } catch (e) { scp = e.message; }
+  ok("git backend: scp's host:path without a user is a URL, not a relative path", scp === "example.com:org/state.git", scp);
+  const ghost = inB.write("p10", files, "0123456789abcdef0123456789abcdef01234567");
+  ok("git backend: a write pinned to a commit the remote no longer has reads as moved", ghost.ok === false && ghost.moved === true);
   let threw = "";
-  try { new SYNC.GitBackend(SYNC.loadConfig(SR, { SEAMUX_STATE_REMOTE: "upstream" }), { cacheDir: CACHE }); } catch (e) { threw = e.message; }
+  try { new SYNC.GitBackend(SYNC.loadConfig(true, SR, { SEAMUX_STATE_REMOTE: "upstream" }), { cacheDir: CACHE }); } catch (e) { threw = e.message; }
   ok("git backend: a remote name the repo does not have is refused by name", /no git remote named upstream/.test(threw), threw);
-  const gone = new SYNC.GitBackend(SYNC.loadConfig(SR, { SEAMUX_STATE_REMOTE: path.join(TMP, "no-such.git") }), { cacheDir: CACHE, timeout: 5000 });
+  const gone = new SYNC.GitBackend(SYNC.loadConfig(true, SR, { SEAMUX_STATE_REMOTE: path.join(TMP, "no-such.git") }), { cacheDir: CACHE, timeout: 5000 });
   threw = "";
   try { gone.write("p4", files, ""); } catch (e) { threw = e.message; }
   ok("git backend: a remote that cannot be reached throws, naming it", threw.includes("no-such.git"), threw);
