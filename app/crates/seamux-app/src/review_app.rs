@@ -218,16 +218,23 @@ fn stage(id: &str, status: &str, detail: &str) {
 fn claim(id: &str, what: &str) -> Result<Job, String> {
     let mut g = jobs().lock().map_err(|e| e.to_string())?;
     let j = g.iter_mut().find(|j| j.id == id).ok_or("no such review")?;
+    claimable(j)?;
+    j.busy = what.into();
+    let mine = j.clone();
+    publish(&g);
+    Ok(mine)
+}
+
+/// Whether job `j` may start something now: ready, idle, and no agent from
+/// before the app last quit still working in its worktree.
+fn claimable(j: &Job) -> Result<(), String> {
     if j.status != "ready" {
         return Err("the review isn't ready yet".into());
     }
     if !j.busy.is_empty() {
         return Err(format!("still {}", j.busy));
     }
-    j.busy = what.into();
-    let mine = j.clone();
-    publish(&g);
-    Ok(mine)
+    orphan(j).map_or(Ok(()), Err)
 }
 
 fn release(id: &str) {
@@ -1868,6 +1875,24 @@ mod tests {
         // Reaped by us with no process left on that pid: our remnant.
         assert!(still_ours(pgid, "", true));
         assert!(!still_ours(pgid, "", false));
+    }
+
+    #[test]
+    fn nothing_starts_beside_an_agent_left_from_a_crash() {
+        let ready = Job { status: "ready".into(), ..Default::default() };
+        assert_eq!(claimable(&ready), Ok(()));
+        assert!(claimable(&Job { busy: "fixing".into(), ..ready.clone() }).is_err());
+        assert!(claimable(&Job { status: "failed".into(), ..ready.clone() }).is_err());
+        // A fix agent from before a crash, still in its group: refused as
+        // Remove and Re-review refuse.
+        let mut c = Command::new("sleep").arg("30").process_group(0).spawn().unwrap();
+        let pgid = c.id() as i32;
+        let left = Job { pgid, pgid_start: started_at(pgid), ..ready.clone() };
+        let why = claimable(&left).unwrap_err();
+        assert_eq!(Some(why), orphan(&left));
+        let _ = c.kill();
+        let _ = c.wait();
+        assert_eq!(claimable(&left), Ok(()));
     }
 
     #[test]
