@@ -6,7 +6,8 @@
 //   checks      each check keeps its newest verdict, from either side
 //   log         the union, by time
 //   guests      the union
-//   the rest    the side with the latest activity (its phase, owner, share)
+//   the rest    the side with the latest activity (its phase, owner, share);
+//               a field only the other side has is kept
 //
 // A transition's time is the latest of inc.changedAt, which every transition
 // stamps (block and reset had no time of their own), and the authorizedAt,
@@ -70,9 +71,16 @@ export function mergeStates(a, b) {
   if (a.guests || b.guests) out.guests = { ...(other.guests || {}), ...(lead.guests || {}) };
   // The phase follows the merged increments: a plan is not finished while
   // one is open, and is when both sides' work together finishes it.
-  const allDone = out.increments.length && out.increments.every(i => i.status === "done");
-  if (!allDone && (out.phase === "delivery" || out.phase === "done")) out.phase = "implementing";
-  if (allDone && out.phase === "implementing" && ["delivery", "done"].includes(other.phase)) out.phase = other.phase;
+  if (out.increments.length) {
+    const allDone = out.increments.every(i => i.status === "done");
+    if (!allDone && (out.phase === "delivery" || out.phase === "done")) out.phase = "implementing";
+    if (allDone && out.phase === "implementing" && ["delivery", "done"].includes(other.phase)) out.phase = other.phase;
+  }
+  // A plan-level record only one side has (an approved snapshot cut at grade,
+  // an applied ADR list, a published artifact) is kept, whichever side leads.
+  for (const [k, v] of Object.entries(other))
+    if (!["increments", "log", "guests", "phase"].includes(k) && (out[k] === undefined || out[k] === null || out[k] === "") && v !== undefined)
+      out[k] = structuredClone(v);
   return out;
 }
 

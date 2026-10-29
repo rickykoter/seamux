@@ -4847,7 +4847,17 @@ exit 1
     r.status === 0 && /merged with the branch first/.test(r.stdout) && sa.increments[0].status === "pending", r.stdout + r.stderr + JSON.stringify(sa.increments[0]));
   on(EB, RB, "state", "pull", "race-p");
   ok("race (other order): B pulls the same result", stOf(EB).increments[0].status === "pending" && stOf(EB).increments[1].status === "blocked");
-  ok("race: both machines end in sync", /in sync/.test(on(EA, RA, "state", "status", "race-p").stdout) || /branch ahead/.test(on(EA, RA, "state", "status", "race-p").stdout));
+  ok("race: both machines end in sync", /: in sync/.test(on(EA, RA, "state", "status", "race-p").stdout) && /: in sync/.test(on(EB, RB, "state", "status", "race-p").stdout));
+  ok("merge: a plan with no increments keeps its phase", M.mergeStates({ slug: "e", phase: "done", increments: [] }, { slug: "e", phase: "done", increments: [] }).phase === "done");
+  const ap = base(); ap.approved = { path: "/p.approved.md" }; ap.log.push({ at: 5, what: "grade" });
+  const later = base(); later.log.push({ at: 900, what: "block" });
+  ok("merge: a plan-level record only the trailing side has is kept", M.mergeStates(later, ap).approved && M.mergeStates(later, ap).approved.path === "/p.approved.md");
+  // --root still applies when a pull merges.
+  on(EB, RB, "block", "race-p", "1", "here");
+  on(EA, RA, "block", "race-p", "2", "there again"); on(EA, RA, "state", "push", "race-p");
+  const RB2 = path.join(TMP, "race-b2"); execSync(`git clone -q ${RO} ${RB2}`);
+  r = on(EB, RB, "state", "pull", "race-p", "--root", RB2);
+  ok("state pull --root: applies when the pull merges", /merged race-p/.test(r.stdout) && fs.realpathSync(stOf(EB).root) === fs.realpathSync(RB2), r.stdout + r.stderr);
 }
 
 // -------------------------------------------------- hot-path cost

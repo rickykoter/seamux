@@ -2988,14 +2988,15 @@ function writeBundle(files) {
   }
   return n;
 }
-// The root a written plan guards: as given, else the recorded one when it is
-// here, else the root this machine had for the plan before the write, else
-// this checkout (a fresh sandbox clones to its own path).
+// The root a written plan guards: as given, else the root this machine had
+// for the plan before the write (another machine's root is not this one's,
+// even when the same path exists here), else the recorded one when it is
+// here, else this checkout (a fresh sandbox clones to its own path).
 function settleRoot(slug, flags, how, before = "") {
   const st = readState(slug);
   const here = (() => { const r = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }); return r.status === 0 ? r.stdout.trim() : ""; })();
-  const root = flags.root ? path.resolve(flags.root) : st.root && fs.existsSync(st.root) ? st.root
-    : before && fs.existsSync(before) ? before : here;
+  const root = flags.root ? path.resolve(flags.root) : before && fs.existsSync(before) ? before
+    : st.root && fs.existsSync(st.root) ? st.root : here;
   if (root && root !== st.root) { st.root = root; log1(st, `${how}: root is now ${root}`); writeState(st); }
   return st;
 }
@@ -3085,11 +3086,15 @@ function mergeIn(slug, r) {
   const ls = readState(slug);
   let rs;
   try { rs = JSON.parse(Buffer.from(r.files[rel]).toString("utf8")); } catch { return `the branch's ${rel} is not JSON`; }
-  const merged = mergeStates(ls, rs);
-  merged.root = ls.root;
-  const files = mergeFiles(bundleBuffers(slug), r.files, ls, rs, rel, merged);
+  const files = mergeFiles(bundleBuffers(slug), r.files, ls, rs, rel, mergeStates(ls, rs));
   delete files[rel];
   writeBundle(files);
+  // The state is merged again from a fresh read right before it is written,
+  // so a write here since the first read is in it; writeState's own merge
+  // then keeps any verdict or log line that lands in the last moment.
+  const now = readState(slug) || ls;
+  const merged = mergeStates(now, rs);
+  merged.root = now.root;
   log1(merged, `state: merged ${r.version.slice(0, 8)} from the state branch`);
   writeState(merged, { stamp: false });
   try { rerenderWorking(slug); } catch { /* the pages are redrawn by the next write */ }
@@ -3159,6 +3164,7 @@ function statePull(slug, flags) {
   if (local && !flags.force && (!meta || digestOf(bundleBuffers(slug)) !== meta.digest)) {
     const why = mergeIn(slug, r);
     if (why) die(why);
+    if (flags.root) settleRoot(slug, flags, "state pull");
     record(digestOf(r.files));
     say(`merged ${slug} with ${where} (${r.version.slice(0, 8)}); deep-plan state push ${slug} shares the result`);
     return;

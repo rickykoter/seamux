@@ -6,7 +6,7 @@
     "run": "claude plugin validate . && for p in deep-plan restack bash-guard crew seamux-mods lookout humanize; do claude plugin validate \"$p\" || exit 1; done",
     "match": [".claude-plugin/**", "*/.claude-plugin/**", "*/hooks/hooks.json", "*/hooks/*.tsx"], "default": true },
   { "id": "deep-plan-probe", "kind": "test",
-    "run": "node deep-plan/probe.mjs",
+    "run": "node deep-plan/probe.mjs", "timeout": 3600,
     "match": ["deep-plan/*.mjs", "deep-plan/lib/**", "deep-plan/hooks/**", "deep-plan/bin/**",
               "deep-plan/examples/**", "deep-plan/verify/**"], "default": true },
   { "id": "restack-probe", "kind": "test",
