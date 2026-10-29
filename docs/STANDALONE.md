@@ -50,7 +50,10 @@ could not be run from here. The official docs answer each question it asked
   cloud session. Multi-repo sessions and project threads do not load them.
   User-level `~/.claude/settings.json` does not reach the cloud.
 - `CLAUDE_CODE_REMOTE` is `true` there, and hook commands inherit it.
-  `$CLAUDE_PROJECT_DIR` is set to the repository root.
+  `$CLAUDE_PROJECT_DIR` is set to the repository root for hooks. Seen in a
+  real cloud session (2026-10-28): it is empty in the Bash tool's shell, so
+  nothing a session runs by hand may rely on it; the engine falls back to
+  the cwd's repo.
 - Node 22 is on PATH in the default image.
 - Skills in the repo's `.claude/skills/` load. Plugins named in the repo's
   `enabledPlugins` or `extraKnownMarketplaces` do not install.
