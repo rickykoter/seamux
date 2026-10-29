@@ -227,7 +227,8 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("seamux app failed to start")
         .run(|_, e| {
-            // However the app quits, a review's agents do not outlive it.
+            // A clean quit stops a review's agents. A crash or SIGKILL skips
+            // this; the saved pgid and its start time catch that next launch.
             if let tauri::RunEvent::Exit = e {
                 review_app::stop_all();
             }
