@@ -163,8 +163,9 @@ function fetchBase(ctx, base) {
 // can be deliberate (an integration branch with commits of its own), and only
 // the person knows which they meant. Only strictly behind is refused: ahead
 // passes, and diverged passes with a warning, because those commits are
-// theirs. Null when the base is not a local branch with an upstream, or is
-// not behind it.
+// theirs. This returns the upstream of a local base branch, or null when the
+// base is not a local branch with an upstream; the callers decide behind,
+// ahead or diverged.
 function localUpstream(ctx, ref) {
   if (!ref || !revParse(ctx.cwd, `refs/heads/${ref}`)) return null;
   const remote = git(ctx.cwd, ["config", "--get", `branch.${ref}.remote`]);
