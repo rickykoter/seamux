@@ -220,6 +220,10 @@ tr.thread-row > td { padding: 6px 12px 10px 60px; background: var(--side); borde
 .mode { font-size: 11px; color: var(--muted); }
 .mode.live { color: var(--st-a); }
 .mode.live::before { content: "● "; }
+.mode.down { color: var(--sev-major); }
+.mode.down::before { content: "○ "; }
+#banner .stale button { font: inherit; padding: 1px 8px; border-radius: 5px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--fg); cursor: pointer; }
 body.served td.ln[data-line] { cursor: pointer; }
 body.served td.ln[data-line]:hover { color: var(--accent); text-decoration: underline; }
 tr.composer > td { padding: 6px 12px 10px 60px; background: var(--side); font: 13px/1.45 var(--sans); white-space: normal; }

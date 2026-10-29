@@ -898,6 +898,18 @@ const working = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + "
 ok("working surface renders controls disabled on disk",
   working.includes('class="dp-act"') && working.includes("disabled"));
 ok("working surface has the auto-refresh checkbox", working.includes('id="dp-auto"'));
+{
+  // Each increment shows only the transitions its status allows: no go on a
+  // done increment, no done on a pending one.
+  const VALID = { pending: "go,block", blocked: "go,reset", authorized: "start,done,block,reset",
+    working: "done,block,reset", done: "reset" };
+  const incs = working.split('<div class="inc" id="inc-').slice(1).map(b => ({
+    status: (b.match(/data-status="([a-z]+)"/) || [])[1],
+    acts: [...b.split("</div>")[0].matchAll(/class="dp-act" data-a="([a-z]+)"/g)].map(m => m[1]).join(","),
+  }));
+  ok("working surface: each increment's buttons are the ones its status allows",
+    incs.length > 0 && incs.every(i => VALID[i.status] === i.acts), JSON.stringify(incs));
+}
 ok("declared files are dp-path targets even before they exist",
   working.includes('data-file="app/workers/retry_sweep.rb"'));
 // The amend channel: a box per plan section and per ADR card, one copy
@@ -1221,6 +1233,48 @@ ok("all increments done: Edit allowed, gate retired", edit(path.join(REPO, "a.tx
   ok("serve: a /plan/ path cannot leave the plans directory", g.status === 404);
   g = await get(`${B}/plan-stamp?slug=${spec.slug}`);
   ok("serve: /plan-stamp answers the page's mtime", g.status === 200 && g.json.mtime > 0);
+  {
+    // The page carries the stamp of the file it was served from, so a write
+    // before the first probe is still seen; and the stamp is exact, so two
+    // writes inside one second differ.
+    const pageG = await get(`${B}/plan/${spec.slug}`);
+    const injected = (pageG.body.match(/var PAGE = "([^"]*)", STAMP = "([^"]*)"/) || []).slice(1);
+    const s1 = (await get(`${B}/plan-stamp?slug=${spec.slug}`)).json;
+    ok("serve: the plan page is served with its own stamp, the one /plan-stamp answers",
+      injected[0] === spec.slug && injected[1] && injected[1] === s1.stamp, JSON.stringify([injected, s1]));
+    const wf = path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html");
+    const keep = fs.readFileSync(wf, "utf8"), at = fs.statSync(wf);
+    fs.writeFileSync(wf, keep + "<!-- one -->");
+    const sa = (await get(`${B}/plan-stamp?slug=${spec.slug}`)).json;
+    fs.writeFileSync(wf, keep + "<!-- two -->");
+    // Same whole second, same size: only the precise mtime tells them apart.
+    fs.utimesSync(wf, at.atime, new Date(Math.floor(sa.mtime) * 1000 + 700));
+    const sb = (await get(`${B}/plan-stamp?slug=${spec.slug}`)).json;
+    ok("serve: two writes in one second have different stamps",
+      sa.stamp && sb.stamp && sa.stamp !== s1.stamp && sb.stamp !== sa.stamp && sa.mtime === sb.mtime, JSON.stringify([s1, sa, sb]));
+    fs.writeFileSync(wf, keep);
+    // A .review.html link: the slug is the plan's, the stamp probe the file's own.
+    const rv = await get(`${B}/plan/${spec.slug}.review.html`);
+    ok("serve: a /plan/<slug>.review.html page acts for <slug>, and probes its own file",
+      rv.status === 200 && rv.body.includes(`SLUG = "${spec.slug}"`) && rv.body.includes(`var PAGE = "${spec.slug}.review.html"`));
+    // Not a plan page: lookout's reviews and any other .html under the plans
+    // directory are not served here, so nothing else gets the token.
+    fs.mkdirSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "reviews"), { recursive: true });
+    fs.writeFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "reviews", "probe-x.html"), "<html><body>x</body></html>");
+    fs.writeFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "loose.html"), "<html><body>x</body></html>");
+    const r1 = await get(`${B}/plan/reviews/probe-x.html`), r2 = await get(`${B}/plan/loose.html`);
+    ok("serve: only a plan's own .working/.review.html is a plan page; other .html is not served",
+      r1.status === 404 && r2.status === 404 && !r1.body.includes(T) && !r2.body.includes(T));
+    fs.rmSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "reviews", "probe-x.html"), { force: true });
+    fs.rmSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "loose.html"), { force: true });
+    const pj = fs.readFileSync(path.join(HERE, "serve", "plan.js"), "utf8");
+    ok("plan.js: increment buttons say what happened inline, show busy, and ask for a block reason in the page",
+      pj.includes(".dp-act.dp-busy{") && pj.includes(".dp-act.dp-bad{") && pj.includes(".dp-act.dp-ok{") &&
+      pj.includes('m = el("span", "dp-act-msg")') && !/window\.(prompt|confirm)\(/.test(pj) &&
+      pj.includes('input: "why is increment " + n + " blocked?"'));
+    ok("plan.js: the probe's baseline is the served stamp, not the first answer",
+      pj.includes("var seen = /^__/.test(STAMP) ? null : STAMP;") && pj.includes("cb(now !== seen);"));
+  }
   g = await get(`${B}/plan-evidence/${spec.slug}/inc1-x-1/../../${spec.slug}.json`);
   ok("serve: /plan-evidence serves only a run's frames, replay and trace", g.status === 404);
   for (const route of ["/inc", "/open", "/answer", "/check/run"]) {
@@ -1277,7 +1331,13 @@ ok("all increments done: Edit allowed, gate retired", edit(path.join(REPO, "a.tx
   fs.writeFileSync(screen, "something else entirely\n");
   g = await get(`${B}/answer?t=${T}&id=${typed.id}&n=1`);
   ok("serve: delivery looks before typing: a screen without the question gets nothing",
-    g.json.ok && g.json.delivered === false && /not showing this question/.test(g.json.detail));
+    g.json.ok === false && g.json.delivered === false && /not showing this question/.test(g.json.detail));
+  const askJson = id => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "asks", id + ".json"), "utf8"));
+  ok("serve: a pick that reached nothing is not recorded, so it can be made again", askJson(typed.id).answer === null);
+  fs.writeFileSync(screen, "? For temporary share links\n❯ 1. Whole site, read-only\n  2. Day-of planner only\n");
+  g = await get(`${B}/answer?t=${T}&id=${typed.id}&n=1`);
+  ok("serve: once the question is on screen the same pick goes through",
+    g.json.ok && !/already answered/.test(g.json.detail) && askJson(typed.id).answer && askJson(typed.id).answer.n === 1, JSON.stringify(g.json));
   const typed2 = mk({ ...SENV, CMUX_SURFACE_ID: "SURF-9" });
   fs.writeFileSync(screen, "? For temporary share links\n❯ 1. Whole site, read-only\n  2. Day-of planner only\n");
   g = await get(`${B}/answer?t=${T}&id=${typed2.id}&n=2`);

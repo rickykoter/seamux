@@ -19,6 +19,18 @@
   const closedDirs = new Set(JSON.parse(store.get("lookout.closed." + R.id, "[]")));
   const narrow = () => window.matchMedia("(max-width: 760px)").matches;
 
+  // Drafts: every reply box and line composer keeps its words here, per
+  // review, so a redraw (a fresher review, the layout toggle, the 760px
+  // breakpoint, a reload) puts them back instead of dropping them.
+  const DRAFTS = "lookout.drafts." + R.id;
+  const drafts = (() => { try { return JSON.parse(store.get(DRAFTS, "{}")) || {}; } catch { return {}; } })();
+  const saveDraft = (k, v) => {
+    if (String(v || "").trim()) drafts[k] = v; else delete drafts[k];
+    store.set(DRAFTS, JSON.stringify(drafts));
+  };
+  // Set by serve(): reopens composers and refills drafts after a redraw.
+  let afterDraw = () => {};
+
   const el = (tag, attrs, ...kids) => {
     const e = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs || {})) {
@@ -562,7 +574,16 @@
     return t;
   }
 
+  // Every redraw of the diff goes through here, so drafts survive it and the
+  // box being typed in keeps its focus and caret.
   function drawFile() {
+    const a = document.activeElement;
+    const keep = a && a.tagName === "TEXTAREA" && a.dataset.draft
+      ? { key: a.dataset.draft, from: a.selectionStart, to: a.selectionEnd } : null;
+    drawFileNow();
+    afterDraw(keep);
+  }
+  function drawFileNow() {
     const f = (R.files || []).find(x => x.path === current);
     if (!f && current && ghosts().includes(current)) {
       $("file-head").replaceChildren(el("span", { class: "path" }, current), el("span", { class: "from" }, "no longer in the diff"));
@@ -670,9 +691,11 @@
     $("label").textContent = [where !== R.title ? where : null,
       `${s.files || 0} files`, `+${s.adds || 0} −${s.dels || 0}`].filter(Boolean).join(" · ");
     const g = gateText();
-    $("mode").textContent = live ? "live" : "read-only";
-    $("mode").className = "mode " + (live ? "live" : "file");
-    $("mode").title = live ? "Comments and closes go to the agent at its next prompt."
+    const down = live && live.down;
+    $("mode").textContent = down ? "disconnected — run `lookout open` to reconnect" : live ? "live" : "read-only";
+    $("mode").className = "mode " + (down ? "down" : live ? "live" : "file");
+    $("mode").title = down ? "The review server stopped answering. Your drafts are kept in this browser; `lookout open` starts a server and opens a fresh page."
+      : live ? "Comments and closes go to the agent at its next prompt."
       : "Opened as a file: comments need crew's intent server (lookout open shows the served page when it is up).";
     $("gate").className = "gate " + g.cls;
     $("gate").textContent = g.text;
@@ -684,8 +707,13 @@
       notes.push("Drawn without syntax highlighting: " + R.highlight);
     if (R.scoring && !R.scoring.ok)
       notes.push("Risk from signals only — " + (R.scoring.why || "no Jev scores") + ".");
-    $("banner").textContent = notes.join("  ");
-    $("banner").hidden = !notes.length;
+    const stale = live && live.stale;
+    $("banner").replaceChildren(
+      stale ? el("span", { class: "stale" }, "The diff changed while you were typing. ",
+        el("button", { type: "button", onclick: () => location.reload() }, "Reload when ready"),
+        " (drafts are kept)") : "",
+      stale && notes.length ? "  " : "", notes.join("  "));
+    $("banner").hidden = !notes.length && !stale;
   }
 
   // Swap in a fresher review (the served page polls for one) and redraw what
@@ -719,30 +747,61 @@
     // waits until it is sent or cancelled.
     const busy = () => [...document.querySelectorAll("textarea")].some(t => t.value.trim());
     const take = next => {
-      if (next.patchHash !== R.patchHash) { location.reload(); return; }
+      if (next.patchHash !== R.patchHash) {
+        // A new diff means a new page; not under someone typing. The banner
+        // offers the reload, and the next idle poll takes it.
+        if (!busy()) { location.reload(); return; }
+        live.pending = next;
+        if (!live.stale) { live.stale = true; drawHeader(); }
+        return;
+      }
       if (busy()) { live.pending = next; return; }
       live.pending = null;
       applyReview(next);
     };
     // Every 2.5s while visible; a background tab checks every 15s, so it is
     // current by the time someone looks, and catches up at once when shown.
-    let ticks = 0;
+    // A hidden tab's poll says so (bg=1): it does not keep the server from
+    // idling out. After DOWN_AFTER failed polls in a row the header says the
+    // server is gone, and goes back to live when one answers.
+    const DOWN_AFTER = 3;
+    let ticks = 0, fails = 0;
+    const setDown = d => { if (!!live.down !== d) { live.down = d; drawHeader(); } };
     const poll = (e) => {
       if (document.hidden && !e && ++ticks % 6) return;
-      fetch(`/review/${encodeURIComponent(id)}.json?t=${encodeURIComponent(token)}`, { cache: "no-store" })
-        .then(r => r.ok ? r.json() : null)
-        .then(j => { if (j && j.updatedAt !== R.updatedAt) take(j); else if (live.pending && !busy()) take(live.pending); })
-        .catch(() => { /* the server restarted; the next poll will tell */ });
+      fetch(`/review/${encodeURIComponent(id)}.json?t=${encodeURIComponent(token)}${document.hidden ? "&bg=1" : ""}`, { cache: "no-store" })
+        .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+        .then(j => {
+          fails = 0; setDown(false);
+          if (j && j.updatedAt !== R.updatedAt) take(j); else if (live.pending && !busy()) take(live.pending);
+        })
+        .catch(() => { if (++fails >= DOWN_AFTER) setDown(true); });
     };
     if (polls) {
       setInterval(() => poll(), 2500);
       document.addEventListener("visibilitychange", e => { if (!document.hidden) poll(e); });
     }
 
-    const send = (body, status) => {
+    // A sent draft is cleared before the redraw, so the redraw does not put
+    // it back; every other draft is restored by afterDraw.
+    const openComposers = new Set();
+    const send = (body, status, key) => {
       status.textContent = "sending…";
-      return post(body).then(j => { live.pending = null; applyReview(j.review); })
-        .catch(e => { status.textContent = e.message; status.classList.add("bad"); throw e; });
+      status.classList.remove("bad");
+      return post(body).then(j => {
+        if (key) {
+          saveDraft(key, ""); openComposers.delete(key);
+          const sent = document.querySelector(`textarea[data-draft="${CSS.escape(key)}"]`);
+          if (sent) sent.value = "";
+        }
+        // A reply that lands on a new diff is a new page: take() reloads, or
+        // offers the reload when another draft is open.
+        if (j.review && j.review.patchHash !== R.patchHash) { take(j.review); return; }
+        live.pending = null; applyReview(j.review);
+      }).catch(e => {
+        status.textContent = live.down || /fetch/i.test(e.message) ? "not sent: the review server is not answering — run `lookout open`" : e.message;
+        status.classList.add("bad"); throw e;
+      });
     };
 
     // A quiz answer: graded and recorded by the server, once; the redraw
@@ -758,11 +817,14 @@
     actions = x => {
       const finding = x.id.startsWith("f");
       const open = isOpen(x);
-      const ta = el("textarea", { rows: 2, placeholder: open ? "Reply, or a note for a close…" : "Reply…" });
+      const key = "r:" + x.id;
+      const ta = el("textarea", { rows: 2, placeholder: open ? "Reply, or a note for a close…" : "Reply…", "data-draft": key });
+      ta.value = drafts[key] || "";
+      ta.addEventListener("input", () => saveDraft(key, ta.value));
       const status = el("span", { class: "send-status" });
       const go = (op, needText) => () => {
         if (needText && !ta.value.trim()) { ta.focus(); return; }
-        send({ op, item: x.id, text: ta.value }, status).then(() => {}, () => {});
+        send({ op, item: x.id, text: ta.value }, status, key).then(() => {}, () => {});
       };
       ta.addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) go("comment", true)(); });
       return el("div", { class: "actions" }, ta, el("div", { class: "buttons" },
@@ -774,29 +836,64 @@
     };
 
     // A click on a line number opens a comment under that line.
+    const composerKey = (file, side, line) => "c:" + JSON.stringify([file, side, line]);
+    function openComposer(tr, side, line) {
+      const file = current, key = composerKey(file, side, line);
+      openComposers.add(key);
+      const span = tr.children.length;
+      const ta = el("textarea", { rows: 3, placeholder: `Comment on ${side === "old" ? "old " : ""}line ${line}…`, "data-draft": key });
+      ta.value = drafts[key] || "";
+      ta.addEventListener("input", () => saveDraft(key, ta.value));
+      const status = el("span", { class: "send-status" });
+      const row = el("tr", { class: "composer", "data-draft": key }, el("td", { colspan: span },
+        el("div", { class: "card comment" }, el("div", { class: "actions" }, ta, el("div", { class: "buttons" },
+          el("button", { type: "button", class: "primary", onclick: submit }, "Comment"),
+          el("button", { type: "button", onclick: () => {
+            openComposers.delete(key); saveDraft(key, ""); row.remove();
+            if (live.pending && !busy()) take(live.pending);
+          } }, "Cancel"),
+          status)))));
+      function submit() {
+        if (!ta.value.trim()) { ta.focus(); return; }
+        send({ op: "comment", file, line, side, text: ta.value }, status, key).then(() => {}, () => {});
+      }
+      ta.addEventListener("keydown", ev => { if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) submit(); });
+      tr.after(row);
+      return ta;
+    }
     $("diff").addEventListener("click", e => {
       const cell = e.target.closest && e.target.closest("td.ln[data-line]");
       if (!cell) return;
       const tr = cell.closest("tr");
       const next = tr.nextElementSibling;
-      if (next && next.classList.contains("composer")) { next.remove(); return; }
-      const side = cell.dataset.side, line = Number(cell.dataset.line);
-      const span = tr.children.length;
-      const ta = el("textarea", { rows: 3, placeholder: `Comment on ${side === "old" ? "old " : ""}line ${line}…` });
-      const status = el("span", { class: "send-status" });
-      const row = el("tr", { class: "composer" }, el("td", { colspan: span },
-        el("div", { class: "card comment" }, el("div", { class: "actions" }, ta, el("div", { class: "buttons" },
-          el("button", { type: "button", class: "primary", onclick: submit }, "Comment"),
-          el("button", { type: "button", onclick: () => { row.remove(); if (live.pending) take(live.pending); } }, "Cancel"),
-          status)))));
-      function submit() {
-        if (!ta.value.trim()) { ta.focus(); return; }
-        send({ op: "comment", file: current, line, side, text: ta.value }, status).then(() => {}, () => {});
+      if (next && next.classList.contains("composer")) {
+        // A second click closes an empty composer; one with words keeps them.
+        const t = next.querySelector("textarea");
+        if (t && t.value.trim()) { t.focus(); return; }
+        openComposers.delete(next.dataset.draft); next.remove(); return;
       }
-      ta.addEventListener("keydown", ev => { if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) submit(); });
-      tr.after(row);
-      ta.focus();
+      openComposer(tr, cell.dataset.side, Number(cell.dataset.line)).focus();
     });
+    // After any redraw of the diff: reopen this file's composers (open ones,
+    // and drafts left from before a reload), refill reply boxes, and give the
+    // box being typed in its focus and caret back.
+    afterDraw = keep => {
+      for (const k of new Set([...openComposers, ...Object.keys(drafts)])) {
+        if (!k.startsWith("c:")) continue;
+        let file, side, line;
+        try { [file, side, line] = JSON.parse(k.slice(2)); } catch { continue; }
+        if (file !== current) continue;
+        const cell = document.querySelector(`#diff td.ln[data-side="${side === "old" ? "old" : "new"}"][data-line="${Number(line)}"]`);
+        const tr = cell && cell.closest("tr");
+        if (!tr || document.querySelector(`#diff tr.composer[data-draft="${CSS.escape(k)}"]`)) continue;
+        openComposer(tr, side, Number(line));
+      }
+      if (!keep) return;
+      const t = document.querySelector(`#diff textarea[data-draft="${CSS.escape(keep.key)}"]`);
+      if (!t) return;
+      t.focus();
+      try { t.setSelectionRange(keep.from, keep.to); } catch { /* not a text box */ }
+    };
     drawSide();
     drawMain();
     // A caller with its own transport pushes fresher reviews through take,

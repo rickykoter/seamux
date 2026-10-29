@@ -78,14 +78,33 @@ export function planPage(slug) {
   return null;
 }
 
-// A /plan/ segment: a bare slug, or a link ending .html or .md inside PLANS_DIR.
+// A /plan/ segment: a bare slug, a plan's own page (<slug>.working.html or
+// <slug>.review.html), or a .md inside PLANS_DIR. No other .html: anything
+// else under PLANS_DIR (lookout's reviews/<id>.html, an export) is not a plan
+// page, and served from this origin it could read a token-bearing page.
+const PLAN_HTML = /^([a-z0-9][a-z0-9._-]{0,120})\.(working|review)\.html$/;
 export function planAsset(rel) {
   rel = unquote(rel).trim();
   if (!rel || rel.startsWith("/")) return null;
-  if (!(rel.endsWith(".html") || rel.endsWith(".md"))) return planPage(rel);
+  if (rel.endsWith(".html")) {
+    const m = rel.match(PLAN_HTML);
+    if (!m || !SLUG_OK.test(m[1])) return null;
+  } else if (!rel.endsWith(".md")) return planPage(rel);
   const base = realpath(PLANS_DIR), target = realpath(path.join(PLANS_DIR, rel));
   if (!within(target, base)) return null;
   try { return fs.statSync(target).isFile() ? target : null; } catch { return null; }
+}
+
+// The slug a served plan page belongs to, from the file it resolved to.
+export function planSlugOf(file) {
+  const m = path.basename(file).match(PLAN_HTML);
+  return m && realpath(path.dirname(file)) === realpath(PLANS_DIR) ? m[1] : null;
+}
+
+// A file's change stamp: inode, size and mtime to the sub-millisecond, so two
+// writes in one second, or a rename over it, never look the same.
+export function fileStamp(file) {
+  try { const s = fs.statSync(file); return `${s.ino}-${s.size}-${s.mtimeMs}`; } catch { return ""; }
 }
 
 export function evidenceFile(slug, rel) {
@@ -245,28 +264,30 @@ function selectedRe(n) {
 // Type option n into the ask's own cmux surface, and prove it landed. Looks
 // before typing, and sends Enter only when the pointer moved to n without the
 // prompt resolving. Never blind. (crew-board ask.rs deliver, ADR 0003.)
+// The third value says whether the digit reached the terminal at all: when
+// it did not, nothing changed there and the pick may be tried again.
 export async function deliver(surface, n, label, run = cmuxRun) {
-  if (!surface) return [false, `the ask recorded no terminal surface — press ${n} in the terminal`];
+  if (!surface) return [false, `the ask recorded no terminal surface — press ${n} in the terminal`, false];
   let [rc, screen] = run(["read-screen", "--surface", surface, "--lines", "60"]);
   if (label && (rc !== 0 || !squash(screen).includes(squash(label))))
-    return [false, `the terminal is not showing this question — switch to it, then press ${n}`];
+    return [false, `the terminal is not showing this question — switch to it, then press ${n}`, false];
   let out;
   [rc, out] = run(["send", "--surface", surface, String(n)]);
-  if (rc !== 0) return [false, `cmux send failed (${out.trim().slice(0, 80)}) — press ${n} in the terminal`];
+  if (rc !== 0) return [false, `cmux send failed (${out.trim().slice(0, 80)}) — press ${n} in the terminal`, false];
   for (let attempt = 0; attempt <= CONFIRM_TRIES; attempt++) {
     if (attempt > 0) await new Promise(r => setTimeout(r, CONFIRM_GAP));
     [rc, screen] = run(["read-screen", "--surface", surface, "--lines", "60"]);
     const lines = rc === 0 ? screen.split(/\r\n|\r|\n/) : [];
     const res = label && resolvedRe(label);
-    if (res && lines.some(l => res.test(l))) return [true, `delivered ${n} — the prompt took it`];
+    if (res && lines.some(l => res.test(l))) return [true, `delivered ${n} — the prompt took it`, true];
     const sel = selectedRe(n);
     if (sel && lines.some(l => sel.test(l))) {
       [rc, out] = run(["send-key", "--surface", surface, "enter"]);
-      if (rc !== 0) return [false, `${n} is selected; Enter did not send (${out.trim().slice(0, 80)}) — press Enter`];
-      return [true, `delivered ${n} — selected, then Enter`];
+      if (rc !== 0) return [false, `${n} is selected; Enter did not send (${out.trim().slice(0, 80)}) — press Enter`, true];
+      return [true, `delivered ${n} — selected, then Enter`, true];
     }
   }
-  return [false, `typed ${n} but could not confirm it on screen — check the terminal`];
+  return [false, `typed ${n} but could not confirm it on screen — check the terminal`, true];
 }
 
 function localTime() {
@@ -294,9 +315,16 @@ async function answerOne(id, nRaw, run) {
   const label = String(options[n - 1].label || "");
   // Typing happens only where the ask recorded a cmux surface. Anywhere else
   // the page records the pick and the chat prompt stays the answer of record.
-  const [delivered, detail] = ask.surface
+  const [delivered, detail, typed] = ask.surface
     ? await deliver(String(ask.surface), n, label, run)
-    : [false, `answer ${n} in the chat prompt — this page shows the options but cannot type there`];
+    : [false, `answer ${n} in the chat prompt — this page shows the options but cannot type there`, false];
+  // Nothing reached the terminal: record nothing, so the pick can be made
+  // again once the question is on screen. A digit that was typed (even
+  // unconfirmed) is recorded: typing it twice could answer the next prompt.
+  if (ask.surface && !typed) {
+    log(`ask ${id} not delivered (${detail}); left open`);
+    return [false, false, detail];
+  }
   ask.answer = { n, at: localTime(), delivered };
   try { fs.writeFileSync(jp, JSON.stringify(ask, null, 2) + "\n"); }
   catch (e) { return [false, delivered, `recorded nothing: ${e.message}`]; }
@@ -356,9 +384,11 @@ export function makeServer({ script, version, root, token, onRequest = () => {},
         return send(res, 200, "text/javascript; charset=utf-8", fs.readFileSync(m), "public, max-age=31536000, immutable");
       }
       if (p === "/plan-stamp") {
+        // `slug` is the served page's own segment (a slug or <slug>.review.html).
+        // `mtime` (whole seconds) is kept for an older page; `stamp` is exact.
         const a = planAsset(one("slug"));
         let mt = 0; try { mt = a ? Math.floor(fs.statSync(a).mtimeMs / 1000) : 0; } catch { /* gone */ }
-        return reply(res, 200, { mtime: mt });
+        return reply(res, 200, { mtime: mt, stamp: a ? fileStamp(a) : "" });
       }
       if (p === "/open") {
         if (!tokenOk()) return deny("/open");
@@ -398,12 +428,18 @@ export function makeServer({ script, version, root, token, onRequest = () => {},
         return reply(res, 200, { ok: true, detail: lastLine(r.out, 200) });
       }
       if (p.startsWith("/plan/")) {
-        const page = planAsset(p.slice("/plan/".length));
+        const seg = unquote(p.slice("/plan/".length)).trim();
+        const page = planAsset(seg);
         if (!page) return reply(res, 404, '{"error":"no such plan page"}');
+        // The stamp before the read: a write between the two shows as a change.
+        const stamp = fileStamp(page);
         const html = fs.readFileSync(page, "utf8");
         if (page.endsWith(".md")) return send(res, 200, "text/plain; charset=utf-8", html);
-        const slug = unquote(p.slice("/plan/".length));
-        const boot = asset("plan.js").replace("__TOKEN__", token).replace("__SLUG__", slug);
+        const slug = planSlugOf(page);
+        if (!slug) return reply(res, 404, '{"error":"no such plan page"}');
+        // Function replacers: a $& or $' in a value is text, not a pattern.
+        const boot = asset("plan.js").replace("__TOKEN__", () => token).replace("__SLUG__", () => slug)
+          .replace("__PAGE__", () => seg).replace("__STAMP__", () => stamp);
         return send(res, 200, "text/html; charset=utf-8", injectFirst(swapMermaid(html), boot));
       }
       if (p.startsWith("/plan-evidence/")) {
@@ -415,7 +451,7 @@ export function makeServer({ script, version, root, token, onRequest = () => {},
       if (p.startsWith("/ask/")) {
         const id = p.slice("/ask/".length), page = askPath(id, ".html");
         if (!page) return reply(res, 404, '{"error":"no such ask"}');
-        const boot = asset("ask.js").replace("__TOKEN__", token).replace("__ID__", id);
+        const boot = asset("ask.js").replace("__TOKEN__", () => token).replace("__ID__", () => id);
         return send(res, 200, "text/html; charset=utf-8", injectFirst(swapMermaid(fs.readFileSync(page, "utf8")), boot));
       }
       if (p.startsWith("/review/")) {

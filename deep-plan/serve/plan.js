@@ -2,6 +2,20 @@
 <script>
 (function(){
   var T = "__TOKEN__", SLUG = "__SLUG__";
+  // PAGE: the /plan/ segment this page was served at (a slug, or
+  // <slug>.review.html); STAMP: that file's stamp when it was read.
+  var PAGE = "__PAGE__", STAMP = "__STAMP__";
+
+  // Which transitions each status allows (deep_plan.mjs applyTransition). A
+  // button the status makes pointless is not shown: an older render drew all
+  // five on every increment.
+  var VALID = { pending: ["go", "block"], blocked: ["go", "reset"],
+    authorized: ["start", "done", "block", "reset"], working: ["done", "block", "reset"], done: ["reset"] };
+  function allowed(b) {
+    var inc = b.closest && b.closest(".inc[data-status]");
+    var ok = inc && VALID[inc.getAttribute("data-status")];
+    return !ok || ok.indexOf(b.getAttribute("data-a")) >= 0;
+  }
 
   // The generator renders every control disabled because on disk it cannot act.
   // Being served is exactly what changes that, so enabling them is the first
@@ -9,6 +23,7 @@
   var acts = document.querySelectorAll(".dp-act[data-a][data-n]");
   for (var i = 0; i < acts.length; i++) {
     var b = acts[i];
+    if (!allowed(b)) { b.hidden = true; continue; }
     b.disabled = false;
     b.title = (b.title || "").replace(/ — available when.*$/, "");
   }
@@ -37,31 +52,81 @@
       });
   }
 
-  function fire(b) {
-    var a = b.getAttribute("data-a"), n = b.getAttribute("data-n"), why = "";
-    if (a === "block") {
-      why = window.prompt("Why is increment " + n + " blocked?") || "";
-      if (!why) return;                      // cancelled: park nothing
+  // What a transition said, in words beside its buttons: a refusal's reason
+  // is the point of showing it, and a hover title is where nobody looks.
+  function msgFor(b) {
+    var p = b.parentNode, m = p.querySelector(".dp-act-msg");
+    if (!m) { m = el("span", "dp-act-msg"); m.setAttribute("role", "status"); m.setAttribute("aria-live", "polite"); p.appendChild(m); }
+    return m;
+  }
+  function say(b, text, bad) { var m = msgFor(b); m.textContent = text; m.classList.toggle("dp-bad", !!bad); }
+  function siblings(b) { return b.parentNode.querySelectorAll(".dp-act[data-a][data-n]"); }
+
+  // An inline question in place of window.prompt/confirm, which an embedded
+  // WebView without dialog delegates answers with null. `input`: ask for
+  // text (and refuse an empty one); `yes(text)` runs on the confirm.
+  function inlineAsk(after, opts, yes) {
+    var host = after.parentNode, old = host.querySelector(".dp-why");
+    if (old) { var f = old.querySelector("input,button"); if (f) f.focus(); return; }
+    var row = el("span", "dp-why");
+    if (opts.text) row.appendChild(el("span", "", opts.text));
+    var inp = null;
+    if (opts.input) { inp = el("input"); inp.placeholder = opts.input; inp.setAttribute("aria-label", opts.input); row.appendChild(inp); }
+    var ok = el("button", "dp-act", opts.ok), no = el("button", "dp-act", "cancel");
+    ok.type = no.type = "button";
+    function done() { row.remove(); after.focus(); }
+    function go() {
+      var v = inp ? inp.value.trim() : "";
+      if (inp && !v) { inp.focus(); return; }
+      row.remove(); yes(v);
     }
-    // One at a time. A double-click on `go` used to be two authorizations.
+    ok.addEventListener("click", go);
+    no.addEventListener("click", done);
+    row.addEventListener("keydown", function(e){
+      if (e.key === "Escape") { e.preventDefault(); done(); }
+      else if (e.key === "Enter" && inp && e.target === inp) { e.preventDefault(); go(); }
+    });
+    row.appendChild(ok); row.appendChild(no);
+    after.after(row);
+    (inp || ok).focus();
+  }
+
+  function fire(b, why) {
+    var a = b.getAttribute("data-a"), n = b.getAttribute("data-n");
+    if (a === "block" && why === undefined) {
+      return inlineAsk(b, { input: "why is increment " + n + " blocked?", ok: "block it" }, function(v){ fire(b, v); });
+    }
+    // One at a time, across the increment's buttons. A double-click on `go`
+    // used to be two authorizations.
     if (b.classList.contains("dp-busy")) return;
+    var all = siblings(b);
+    for (var i = 0; i < all.length; i++) { all[i].disabled = true; all[i].classList.remove("dp-bad", "dp-ok"); }
     b.classList.add("dp-busy");
+    b.setAttribute("aria-busy", "true");
+    var t0 = Date.now();
+    say(b, a + " " + n + "\u2026");
+    // The engine can take up to 90s; the count says it is still going.
+    var tick = setInterval(function(){ say(b, a + " " + n + "\u2026 " + Math.round((Date.now() - t0) / 1000) + "s"); }, 1000);
+    function settle(ok, text) {
+      clearInterval(tick);
+      b.classList.remove("dp-busy");
+      b.removeAttribute("aria-busy");
+      b.classList.add(ok ? "dp-ok" : "dp-bad");
+      say(b, text, !ok);
+      if (ok) return;
+      for (var i = 0; i < all.length; i++) if (!all[i].hidden) all[i].disabled = false;
+    }
     var q = "/inc?t=" + encodeURIComponent(T) + "&slug=" + encodeURIComponent(SLUG) +
             "&n=" + encodeURIComponent(n) + "&a=" + encodeURIComponent(a) +
-            "&why=" + encodeURIComponent(why);
+            "&why=" + encodeURIComponent(why || "");
     fetch(q).then(function(r){ return r.json(); }).then(function(j){
-      b.classList.remove("dp-busy");
-      b.classList.add(j && j.ok ? "dp-ok" : "dp-bad");
-      if (!j || !j.ok) { b.title = (j && j.detail) || "refused"; return; }
+      if (!j || !j.ok) return settle(false, (j && j.detail) || "refused");
+      settle(true, "\u2713 " + (j.detail || a) + " \u2014 reloading");
       // The transition rewrote this file. Reload rather than patch the DOM: the
       // page is a pure function of tracker state and guessing at the new state
       // here is how the two drift.
       setTimeout(function(){ location.reload(); }, 350);
-    }).catch(function(){
-      b.classList.remove("dp-busy");
-      b.classList.add("dp-bad");
-      b.title = "the deep-plan server did not answer";
-    });
+    }).catch(function(){ settle(false, "the deep-plan server did not answer"); });
   }
 
   document.addEventListener("click", function(ev){
@@ -83,18 +148,30 @@
   // "live" costs a 20-byte JSON every few seconds and the page only reloads when
   // the file actually moved. Without one it would be a blind reload under the
   // reader, which is what kept it opt-in before.
-  var seen = null;
+  //
+  // The baseline is the stamp of the file as it was served (injected), not
+  // whatever the first probe sees: a write between serving the page and that
+  // probe is a change too. And the answer is "has the file moved since this
+  // page was served?", so a skipped reload asks again and still hears yes.
+  var seen = /^__/.test(STAMP) ? null : STAMP;
+  if (/^__/.test(PAGE)) PAGE = SLUG;
   window.__dpChanged = function(cb){
-    fetch("/plan-stamp?slug=" + encodeURIComponent(SLUG))
+    fetch("/plan-stamp?slug=" + encodeURIComponent(PAGE))
       .then(function(r){ return r.json(); })
       .then(function(j){
-        if (!j || !j.mtime) return cb(false);
-        if (seen === null) { seen = j.mtime; return cb(false); }
-        var moved = j.mtime !== seen;
-        seen = j.mtime;
-        cb(moved);
+        var now = j && (j.stamp || (j.mtime ? String(j.mtime) : ""));
+        if (!now) return cb(false);
+        if (seen === null) { seen = now; return cb(false); }
+        cb(now !== seen);
       }).catch(function(){ cb(false); });
   };
+  // Reload now if the file moved, unless the reader turned auto-refresh off
+  // or is mid-comment.
+  function reloadIfMoved() {
+    var auto = document.getElementById("dp-auto");
+    if ((auto && !auto.checked) || (window.dpBusy && window.dpBusy())) return;
+    window.__dpChanged(function(moved){ if (moved) location.reload(); });
+  }
 
   // ---------------------------------------------- browser and claiming checks
   // Rows the engine marked (.dp-check: a browser run, or a claim that asks)
@@ -112,6 +189,13 @@
     ".dp-film img.dp-failed{outline:2px solid var(--bad,#c33)}" +
     ".dp-bc .dp-step{opacity:.85}.dp-bc .dp-err{color:var(--bad,#c33)}" +
     ".dp-bc input{font:inherit;padding:2px 6px;border-radius:5px;border:1px solid var(--line,#8884);background:transparent;color:inherit}" +
+    ".dp-act.dp-busy{opacity:.65;cursor:progress}.dp-act.dp-bad{border-color:var(--bad,#c33);color:var(--bad,#c33)}" +
+    ".dp-act.dp-ok{border-color:var(--good,#4a8);color:var(--good,#4a8)}" +
+    ".dp-bc button.dp-ok{border-color:var(--good,#4a8)}" +
+    ".dp-act-msg{font-size:12px;margin-left:4px;color:var(--dim,#888)}.dp-act-msg.dp-bad{color:var(--bad,#c33)}" +
+    ".dp-why{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;margin:4px 6px 4px 0;font-size:12px}" +
+    ".dp-why input{font:inherit;min-width:16em;padding:3px 6px;border-radius:5px;border:1px solid var(--line,#8884);background:transparent;color:inherit}" +
+    ".dp-why button.dp-act{padding:2px 10px}" +
     "#dp-lightbox{position:fixed;inset:0;background:#000c;display:flex;align-items:center;justify-content:center;z-index:99;cursor:zoom-out}" +
     "#dp-lightbox img{max-width:94vw;max-height:90vh;border-radius:6px}" +
     "#dp-lightbox span{position:absolute;bottom:14px;color:#fff;font-size:13px}";
@@ -193,8 +277,9 @@
       var up = el("button", "", "attach to PR");
       up.title = "upload the proof into this branch's PR description";
       up.addEventListener("click", function(){
-        if (!window.confirm("Upload this check's replay and key frames to the PR's description on GitHub?")) return;
-        act(up, "/check/proof", li, "&attach=1", function(j){ up.textContent = "on the PR"; up.title = j.detail || ""; });
+        inlineAsk(up, { text: "upload this check's replay and key frames to the PR's description on GitHub?", ok: "upload" }, function(){
+          act(up, "/check/proof", li, "&attach=1", function(j){ up.textContent = "on the PR"; up.title = j.detail || ""; });
+        });
       });
       row.appendChild(up);
     }
@@ -243,9 +328,26 @@
     }
   }
 
+  // The row's own words ("● running · ...") were drawn with the page. When
+  // the run's status moves on, say so in the row, and reload the page if the
+  // engine has rewritten it since (its verdict and the increment's aggregate
+  // live in the file, not here).
+  function restatus(li, status) {
+    var was = li.getAttribute("data-status");
+    if (!status || status === was) return;
+    li.setAttribute("data-status", status);
+    var mark = li.firstElementChild;
+    if (mark && mark.classList && mark.classList.contains("dp-mark")) mark.style.visibility = "hidden";
+    for (var c = li.firstChild; c; c = c.nextSibling) {
+      if (c.nodeType === 3 && c.data.indexOf(was + " \u00b7") >= 0) { c.data = c.data.replace(was + " \u00b7", status + " \u00b7"); break; }
+    }
+    reloadIfMoved();
+  }
+
   function poll(li, box) {
     fetch(q("/check/evidence", li)).then(function(r){ return r.json(); }).then(function(ev){
       if (!ev || ev.ok === false) return;
+      restatus(li, ev.status);
       // Redrawn only when something changed, and never under a person using
       // the picker; a filmstrip scrolled back stays where they left it.
       var key = JSON.stringify(ev);

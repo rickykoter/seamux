@@ -1726,11 +1726,17 @@ if (/^https?:/.test(location.protocol)) document.querySelectorAll(".dp-fam-link"
 </section>`;
 }
 
+const INC_VALID = { pending: ["go", "block"], blocked: ["go", "reset"],
+  authorized: ["start", "done", "block", "reset"], working: ["done", "block", "reset"], done: ["reset"] };
+
 function workingHtml(spec, st, b64) {
   const rows = (st.increments || []).map(inc => {
     const d = (spec.deliverables || [])[inc.n - 1] || {};
     const files = fileTreeHtml(d.files);
-    const acts = ["go", "start", "done", "block", "reset"].map(a =>
+    // Only the transitions this status allows (applyTransition): a go on a
+    // done increment is a button that can only be refused. serve/plan.js
+    // holds the same table for pages rendered before this.
+    const acts = (INC_VALID[inc.status] || ["go", "start", "done", "block", "reset"]).map(a =>
       `<button class="dp-act" data-a="${a}" data-n="${inc.n}" disabled ` +
       `title="${a} increment ${inc.n} — available when served">${a}</button>`).join("");
     // The verdict belongs beside the status, not in a section of its own: it is
