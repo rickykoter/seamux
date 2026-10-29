@@ -2979,17 +2979,22 @@ function writeBundle(files) {
   for (const [rel, data] of Object.entries(files)) {
     const base = bases[path.posix.dirname(rel)];
     fs.mkdirSync(base, { recursive: true });
-    fs.writeFileSync(path.join(base, path.posix.basename(rel)), data);
+    // Atomic, as writeState is: the gate reads the state file on every call.
+    const dest = path.join(base, path.posix.basename(rel)), tmp = dest + ".tmp." + process.pid;
+    fs.writeFileSync(tmp, data);
+    fs.renameSync(tmp, dest);
     n++;
   }
   return n;
 }
-// The root a written plan guards: as given, else this checkout when the
-// recorded one is not here (a fresh sandbox clones to its own path).
-function settleRoot(slug, flags, how) {
+// The root a written plan guards: as given, else the recorded one when it is
+// here, else the root this machine had for the plan before the write, else
+// this checkout (a fresh sandbox clones to its own path).
+function settleRoot(slug, flags, how, before = "") {
   const st = readState(slug);
   const here = (() => { const r = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }); return r.status === 0 ? r.stdout.trim() : ""; })();
-  const root = flags.root ? path.resolve(flags.root) : (st.root && fs.existsSync(st.root) ? st.root : here);
+  const root = flags.root ? path.resolve(flags.root) : st.root && fs.existsSync(st.root) ? st.root
+    : before && fs.existsSync(before) ? before : here;
   if (root && root !== st.root) { st.root = root; log1(st, `${how}: root is now ${root}`); writeState(st); }
   return st;
 }
@@ -3045,10 +3050,11 @@ function planShare(st) { return (st && st.share) || false; }
 
 // The backend for a plan: its root's repo when the root is here, else this
 // checkout's. Config problems are said, never fatal.
-function openSync(st) {
+function openSync(st, { soft = false } = {}) {
   const dir = st && st.root && fs.existsSync(st.root) ? st.root : process.cwd();
   let o;
-  try { o = SYNC.openBackend(planShare(st), dir); } catch (e) { die(e.message); }
+  try { o = SYNC.openBackend(planShare(st), dir); }
+  catch (e) { if (soft) return { error: e.message }; die(e.message); }
   for (const p of o.cfg.problems) console.error("deep-plan: " + p);
   return o;
 }
@@ -3102,7 +3108,7 @@ function statePull(slug, flags) {
   const bad = checkBundle(slug, r.files);
   if (bad) die(bad);
   const n = writeBundle(r.files);
-  const st = settleRoot(slug, flags, "state pull");
+  const st = settleRoot(slug, flags, "state pull", local && local.root);
   try { rerenderWorking(slug); } catch (e) { say(`  (the working page was not redrawn: ${e.message}; deep-plan rehydrate ${slug} redraws it)`); }
   writeSyncMeta(slug, { version: r.version, where: backend.where, branch: backend.branch(slug), digest: digestOf(bundleBuffers(slug)), at: new Date().toISOString(), last: "pull" });
   say(`pulled ${slug} from ${backend.branch(slug)} on ${backend.where} (${r.version.slice(0, 8)}): ${n} file(s); root ${st.root || "(none)"}` +
@@ -3112,11 +3118,25 @@ function statePull(slug, flags) {
 function stateStatus(slug, flags) {
   const slugs = slug ? [slug] : allStates().filter(s => s.phase !== "closed").map(s => s.slug);
   const rows = [];
+  // One listing per remote and prefix, not one round trip per plan.
+  const lists = new Map();
+  const versionOf = (backend, s) => {
+    const k = backend.where + "\0" + backend.prefix;
+    if (!lists.has(k)) {
+      try { lists.set(k, { map: new Map(backend.list().map(x => [x.slug, x.version])) }); }
+      catch (e) { lists.set(k, { error: e.message }); }
+    }
+    const l = lists.get(k);
+    if (l.error) throw new Error(l.error);
+    return l.map.get(s) || "";
+  };
   for (const s of slugs) {
     const st = readState(s);
-    const { backend } = openSync(st);
+    const o = openSync(st, { soft: true });
+    if (o.error) { rows.push({ slug: s, share: !!planShare(st), state: "misconfigured", error: o.error }); continue; }
+    const { backend } = o;
     let remote = "", error = "";
-    try { remote = backend.version(s); } catch (e) { error = e.message; }
+    try { remote = versionOf(backend, s); } catch (e) { error = e.message; }
     const meta = syncMeta(s);
     rows.push({ slug: s, share: !!planShare(st), branch: backend.branch(s), where: backend.where, remote,
       synced: meta ? meta.version : "", state: error ? "unreachable" : syncState(s, remote), ...(error ? { error } : {}) });
@@ -3124,7 +3144,7 @@ function stateStatus(slug, flags) {
   if (flags.json) { process.stdout.write(JSON.stringify(rows)); return; }
   if (!rows.length) { say("no tracked plans"); return; }
   for (const r of rows)
-    say(`${r.slug}  ${r.share ? "shared" : "not shared"}  ${r.branch} on ${r.where}: ${r.state}` +
+    say(`${r.slug}  ${r.share ? "shared" : "not shared"}  ` + (r.branch ? `${r.branch} on ${r.where}: ` : "") + r.state +
       (r.remote ? ` (branch ${r.remote.slice(0, 8)}` + (r.synced && r.synced !== r.remote ? `, synced here ${r.synced.slice(0, 8)})` : ")") : "") +
       (r.error ? `\n  ${r.error}` : ""));
 }

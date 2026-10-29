@@ -4729,6 +4729,27 @@ exit 1
   ok("state pull: a root that is gone becomes this checkout",
     r.status === 0 && fs.realpathSync(JSON.parse(fs.readFileSync(path.join(EC.DEEP_PLAN_STATE_DIR, "shared-p.json"), "utf8")).root) === fs.realpathSync(SB), r.stdout + r.stderr);
   fs.renameSync(SA + "-gone", SA);
+  // B's own root for the plan is kept when the branch's is not on this machine.
+  const SB2 = path.join(TMP, "st-b2");
+  execSync(`git clone -q ${SO} ${SB2}`);
+  const EF = side("f");
+  on(EF, SB, "state", "pull", "shared-p", "--root", SB);
+  on(EA, SA, "state", "pull", "shared-p", "--force");
+  on(EA, SA, "block", "shared-p", "2", "moved on A");
+  on(EA, SA, "state", "push", "shared-p");
+  fs.renameSync(SA, SA + "-gone");
+  r = on(EF, SB2, "state", "pull", "shared-p");
+  const stF = JSON.parse(fs.readFileSync(path.join(EF.DEEP_PLAN_STATE_DIR, "shared-p.json"), "utf8"));
+  ok("state pull: a machine keeps its own root for the plan over this checkout when the branch's is gone",
+    r.status === 0 && stF.root === SB && stF.increments[1].status === "blocked", r.stdout + r.stderr + stF.root);
+  fs.renameSync(SA + "-gone", SA);
+  // One plan whose share names no remote does not hide the others.
+  const sfile = path.join(EB.DEEP_PLAN_STATE_DIR, "zz-bad.json");
+  fs.writeFileSync(sfile, JSON.stringify({ slug: "zz-bad", root: SB, phase: "implementing", share: { remote: "nowhere" }, increments: [] }));
+  r = on(EB, SB, "state", "status");
+  ok("state status: a plan with a bad share is reported, and the rest still listed",
+    r.status === 0 && /zz-bad  shared  misconfigured/.test(r.stdout) && /shared-p  not shared/.test(r.stdout), r.stdout + r.stderr);
+  fs.rmSync(sfile);
   // A branch is checked like a bundle: nothing outside the plan's own files.
   const SYNC = await import(new URL("lib/sync.mjs", import.meta.url));
   const be = new SYNC.GitBackend(SYNC.loadConfig(true, SA, {}), { cacheDir: path.join(TMP, "st-cache") });
