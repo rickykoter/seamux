@@ -799,6 +799,7 @@
     // server is gone, and goes back to live when one answers.
     const DOWN_AFTER = 3;
     let ticks = 0, fails = 0;
+    const UNREACHED = {};
     const setDown = d => { if (!!live.down !== d) { live.down = d; drawHeader(); } };
     const setHttp = h => { if ((live.http || "") !== h) { live.http = h; drawHeader(); } };
     const poll = (e) => {
@@ -810,8 +811,10 @@
           fails = 0; setDown(false);
           setHttp(r.ok ? "" : "HTTP " + r.status);
           return r.ok ? r.json() : null;
-        }, () => { if (++fails >= DOWN_AFTER) setDown(true); return null; })
+        }, () => { if (++fails >= DOWN_AFTER) setDown(true); return UNREACHED; })
         .then(j => {
+          // Nothing answered: no take(), which could reload onto a dead server.
+          if (j === UNREACHED) return;
           if (j && j.updatedAt !== R.updatedAt) take(j); else if (live.pending && !busy()) take(live.pending);
         })
         .catch(() => { /* a bad body: the next poll asks again */ });

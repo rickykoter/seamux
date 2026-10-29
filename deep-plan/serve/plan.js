@@ -169,11 +169,12 @@
   };
   // Reload now if the file moved, unless the reader turned auto-refresh off
   // or is mid-comment.
-  // cb(moved), when given: false while the reader is mid-comment (ask again
-  // later); never called with auto-refresh off.
+  // cb(moved, off), when given, is always called: moved false while the
+  // reader is mid-comment (ask again later); off true when auto-refresh is
+  // off, so nothing will reload and there is no point asking again.
   function reloadIfMoved(cb) {
     var auto = document.getElementById("dp-auto");
-    if (auto && !auto.checked) return;
+    if (auto && !auto.checked) { if (cb) cb(false, true); return; }
     if (window.dpBusy && window.dpBusy()) { if (cb) cb(false); return; }
     window.__dpChanged(function(moved){ if (moved) location.reload(); if (cb) cb(moved); });
   }
@@ -358,8 +359,8 @@
     if (li.__dpWaiting) return;
     li.__dpWaiting = true;
     (function again(left) {
-      reloadIfMoved(function(moved){
-        if (moved || left <= 1 || li.__dpShown === li.getAttribute("data-status")) { li.__dpWaiting = false; return; }
+      reloadIfMoved(function(moved, off){
+        if (moved || off || left <= 1 || li.__dpShown === li.getAttribute("data-status")) { li.__dpWaiting = false; return; }
         setTimeout(function(){ again(left - 1); }, 1000);
       });
     })(tries);

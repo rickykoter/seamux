@@ -885,12 +885,14 @@ const R1 = repo("r1");
   ok("page: a composer opened on a line whose saved draft does not fit starts empty; the draft stays apart",
      page.includes("if (drafts[key] != null && !placeable(key, file, side, line)) {\n        setAside(key, file, side, line);") &&
      /function setAside\(key, file, side, line\)/.test(page));
+  ok("page: a poll that reached nothing takes nothing (no reload onto a dead server)",
+     page.includes("return UNREACHED; })") && page.includes("if (j === UNREACHED) return;"));
   ok("page: the reload banner clears when the page's own diff comes back",
      /\/\/ The page's own diff again[^\n]*\n\s*if \(live\.stale\) \{ live\.stale = false; drawHeader\(\); \}/.test(page));
   ok("page: a restored draft does not hold fresher reviews back; one focused or typed in since load does",
      page.includes("(t === document.activeElement || edited.has(t.dataset.draft))") && page.includes("edited.add(k);"));
   ok("page: only a poll that reached nothing counts toward disconnected; an HTTP error is a short note",
-     page.includes('setHttp(r.ok ? "" : "HTTP " + r.status);') && page.includes("}, () => { if (++fails >= DOWN_AFTER) setDown(true); return null; })") &&
+     page.includes('setHttp(r.ok ? "" : "HTTP " + r.status);') && page.includes("}, () => { if (++fails >= DOWN_AFTER) setDown(true); return UNREACHED; })") &&
      page.includes("`live · last poll ${live.http}`"));
   ok("page: a sent draft is cleared before the redraw that follows",
      /if \(key\) \{\s*saveDraft\(key, ""\); openComposers\.delete\(key\);/.test(page));
