@@ -153,24 +153,26 @@ impl Drop for Lock {
     }
 }
 
-/// Release a lock without a check-then-remove window: the lock directory is
-/// first renamed to a name only this holder uses (atomic), so nobody can break
-/// and retake it between the owner check and the removal. If what was moved
-/// is not ours (ours was broken as stale and another writer took the path),
-/// it is put back while the lock path is still free; if a third writer has
-/// the path by then, the moved lock is already superseded and is removed.
-/// The same steps as release() in lookout/lib/store.mjs.
+/// Release a lock, ours only, without a window where another writer's lock
+/// is moved: the owner is read first and a lock that is not ours is left
+/// alone. Ours is then renamed to a name only this holder uses (atomic) and
+/// checked again inside it; if a breaker swapped another writer's lock in at
+/// that instant, it is put back while the lock path is still free (renaming
+/// onto a lock that has its owner file fails, so none is clobbered), and
+/// otherwise removed as superseded. The same steps as release() in
+/// lookout/lib/store.mjs.
 fn release(lock: &Path, nonce: &str) {
+    if !still_ours(lock, nonce) {
+        return; // broken as stale, and another writer's now (or gone)
+    }
     let held = PathBuf::from(format!("{}.release-{nonce}", lock.display()));
     if std::fs::rename(lock, &held).is_err() {
-        return; // gone: broken, and nobody holds it now
+        return;
     }
     if still_ours(&held, nonce) {
         let _ = remove_lock(&held);
         return;
     }
-    // Renaming onto a lock that has its owner file fails (ENOTEMPTY), so a
-    // writer that took the path is never clobbered once it has written it.
     if std::fs::symlink_metadata(lock).is_err() && std::fs::rename(&held, lock).is_ok() {
         return;
     }

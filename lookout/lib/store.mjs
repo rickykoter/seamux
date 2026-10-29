@@ -134,18 +134,19 @@ export function withLock(id, fn) {
   try { return fn(); } finally { release(lock, nonce); }
 }
 
-// Release without a check-then-remove window: rename the lock to a name only
-// this holder uses (atomic), then check the owner inside it. Not ours (ours was
-// broken as stale and another writer took the path): put it back while the
-// lock path is free, else it is already superseded and goes. The same steps as
-// release() in app/crates/crew-board/src/review.rs.
+// Release a lock, ours only, without a window where another writer's lock is
+// moved: read the owner first and leave a lock that is not ours alone. Ours is
+// then renamed to a name only this holder uses (atomic) and checked again
+// inside it; if a breaker swapped another writer's lock in at that instant, it
+// is put back while the lock path is free (renaming onto a lock with its owner
+// file fails, so none is clobbered), else removed as superseded. The same
+// steps as release() in app/crates/crew-board/src/review.rs.
+const ownedBy = (dir, nonce) => { try { return fs.readFileSync(path.join(dir, OWNER), "utf8") === nonce; } catch { return false; } };
 function release(lock, nonce) {
+  if (!ownedBy(lock, nonce)) return; // broken as stale, and another writer's now (or gone)
   const held = lock + ".release-" + nonce;
-  try { fs.renameSync(lock, held); } catch { return; /* gone: broken, nobody holds it */ }
-  let ours = false;
-  try { ours = fs.readFileSync(path.join(held, OWNER), "utf8") === nonce; } catch { /* no owner */ }
-  if (!ours) {
-    // Renaming onto a lock with its owner file fails (ENOTEMPTY): never clobbered.
+  try { fs.renameSync(lock, held); } catch { return; }
+  if (!ownedBy(held, nonce)) {
     try { if (!fs.existsSync(lock)) { fs.renameSync(held, lock); return; } } catch { /* taken meanwhile */ }
   }
   try { removeLock(held); } catch { /* not ours to remove */ }

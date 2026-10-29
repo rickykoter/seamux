@@ -165,13 +165,31 @@ fn target(req: &Request) -> String {
     if req.raw_query.is_empty() { req.path.clone() } else { format!("{}?{}", req.path, req.raw_query) }
 }
 
+/// The plugin's headers passed through. Its X-Frame-Options and any
+/// frame-ancestors are dropped: this server's own frame-ancestors (added to
+/// every page by Request::write) is the one that applies, and X-Frame-Options
+/// would refuse the app's frame. The rest of a plugin's CSP is kept, as a
+/// second policy beside this server's.
+fn kept_headers(headers: &[(String, String)]) -> Vec<(&str, String)> {
+    headers.iter().filter_map(|(k, v)| match k.to_ascii_lowercase().as_str() {
+        "content-type" | "cache-control" | "location" => Some((k.as_str(), v.clone())),
+        "content-security-policy" => without_frame_ancestors(v).map(|c| (k.as_str(), c)),
+        _ => None,
+    }).collect()
+}
+
+/// A CSP with its frame-ancestors directive taken out; None when nothing is left.
+fn without_frame_ancestors(csp: &str) -> Option<String> {
+    let rest: Vec<&str> = csp.split(';').map(str::trim)
+        .filter(|d| !d.is_empty() && !d.split_whitespace().next().unwrap_or("").eq_ignore_ascii_case("frame-ancestors"))
+        .collect();
+    (!rest.is_empty()).then(|| rest.join("; "))
+}
+
 fn relay(req: &mut Request, p: Plugin, out: std::io::Result<(u16, Vec<(String, String)>, Vec<u8>)>) {
     match out {
         Ok((code, headers, body)) => {
-            let keep: Vec<(&str, String)> = headers.iter()
-                .filter(|(k, _)| ["content-type", "cache-control", "location", "content-security-policy", "x-frame-options"].contains(&k.to_ascii_lowercase().as_str()))
-                .map(|(k, v)| (k.as_str(), v.clone()))
-                .collect();
+            let keep = kept_headers(&headers);
             req.relay(code, &keep, &body);
         }
         Err(e) => {
@@ -229,6 +247,17 @@ pub fn post(req: &mut Request, p: Plugin, max_body: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plugins_framing_headers_give_way_to_this_servers() {
+        let h = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let headers = vec![h("Content-Type", "text/html"), h("X-Frame-Options", "SAMEORIGIN"),
+            h("Content-Security-Policy", "default-src 'self'; Frame-Ancestors 'none'; img-src data:"),
+            h("content-security-policy", "frame-ancestors *"), h("Set-Cookie", "a=b")];
+        let kept = kept_headers(&headers);
+        assert_eq!(kept, vec![("Content-Type", "text/html".to_string()),
+            ("Content-Security-Policy", "default-src 'self'; img-src data:".to_string())]);
+    }
 
     #[test]
     fn each_forwarded_route_has_one_owner() {
