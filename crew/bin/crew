@@ -629,6 +629,9 @@ cmd_apply() {
     # same reason crew-board does it that way, and there is no setsid on BSD.
     # It is started here rather than left to crew-listen, which is not running
     # when the daemon is off, in which case nothing would restart it at all.
+    case "$(cat "$STATE/board-intent.port" 2>/dev/null)" in
+      ""|*[!0-9]*) note "no recorded port; starting one, which backs off if a server already holds the lock" ;;
+    esac
     if python3 - "$SEAMUX" "$STATE/board-intent.port" <<'PY'
 import os, signal, socket, subprocess, sys, time
 
@@ -659,6 +662,9 @@ try:
         old_port = int(fh.read().strip())
 except (OSError, ValueError):
     old_port = 0
+# No readable port: there is no server to find, so none is killed, and one is
+# started anyway. That is harmless: the server takes board-intent.lock (one
+# server at a time), so if one is already running the new one backs off.
 found = listeners(old_port) if old_port else []
 if found is None:
     # The server writes no pidfile, so without lsof it cannot be found safely.
@@ -673,8 +679,9 @@ for pid in victims:
         pass
 for _ in range(20):                       # let the port come free
     time.sleep(0.05)
-    if not [p for p in victims if p in listeners(old_port)]:
-        break
+    now = listeners(old_port) if victims else []
+    if now is None or not [p for p in victims if p in now]:
+        break                             # gone, or lsof can no longer tell
 
 subprocess.Popen([seamux, "crew-board-intent"], stdout=subprocess.DEVNULL,
                  stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,

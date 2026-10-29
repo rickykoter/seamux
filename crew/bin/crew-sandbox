@@ -166,7 +166,50 @@ NEW_NAME="crew-${_base:+$_base-}${_hash:0:8}"
 # A sandbox already registered for this root keeps the name it was created
 # under, so an upgrade does not orphan one made before the hash was added.
 NAME="$(reg_field "$(reg_file "$ROOT")" NAME)"
-[ -n "$NAME" ] || NAME="$NEW_NAME"
+
+# With no entry (an old uninstall wiped the registry, say), a sandbox made
+# under the old basename-only name would be lost behind the hashed one. Adopt
+# it when sbx says it is mounted on this root; when sbx reports no mounts, only
+# if no other root claims that name. Bounded: sbx ls --json can wedge.
+legacy_sandbox() {
+  [ -x "$SBX" ] || return 0
+  python3 - "$SBX" "$1" "$ROOT" <<'PY' 2>/dev/null
+import json, subprocess, sys
+sbx, want, root = sys.argv[1:4]
+try:
+    d = json.loads(subprocess.run([sbx, "ls", "--json"], capture_output=True,
+                                  text=True, timeout=15).stdout)
+except Exception:
+    sys.exit(0)
+rows = d.get("sandboxes", d) if isinstance(d, dict) else d
+for r in rows if isinstance(rows, list) else []:
+    if not (isinstance(r, dict) and r.get("name") == want):
+        continue
+    paths = []
+    for k in ("workspaces", "workspace", "mounts", "paths"):
+        v = r.get(k)
+        for w in (v if isinstance(v, list) else [v] if v else []):
+            if isinstance(w, dict):
+                w = w.get("path") or w.get("source") or w.get("host_path") or ""
+            if isinstance(w, str) and w:
+                paths.append(w[:-3] if w.endswith(":ro") else w)
+    print("mounted" if root in paths else "elsewhere" if paths else "unknown")
+    break
+PY
+}
+if [ -z "$NAME" ]; then
+  NAME="$NEW_NAME"
+  case "$cmd" in
+    up|attach|exec|down|rm|status)
+      _legacy="crew-$(printf '%s' "${ROOT##*/}" | tr -c 'A-Za-z0-9.+-' '-' | sed 's/-\{2,\}/-/g; s/^-//; s/-$//')"
+      case "$(legacy_sandbox "$_legacy")" in
+        mounted) NAME="$_legacy" ;;
+        unknown) [ -z "$(other_claimants "$_legacy" 2>/dev/null)" ] && NAME="$_legacy" ;;
+      esac
+      [ "$NAME" = "$_legacy" ] && warn "no registry entry for $ROOT: adopting the sandbox $NAME, made under the old basename-only name"
+      ;;
+  esac
+fi
 
 reg_write() {
   mkdir -p "$REG"

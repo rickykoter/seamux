@@ -80,7 +80,8 @@ elif a[:1] == ["ls"]:
         if os.path.exists(p + ".broken"):
             print("{{not json")
         else:
-            print(json.dumps({{"sandboxes": [{{"name": n, "status": s}} for n, s in st.items()]}}))
+            print(json.dumps({{"sandboxes": [dict({{"name": n}}, **(s if isinstance(s, dict) else {{"status": s}}))
+                                             for n, s in st.items()]}}))
     else:
         print("ok")
 elif a[:1] == ["create"]:
@@ -221,6 +222,32 @@ r = sb("rm", G)
 check("…nor keeps rm from destroying the sandbox",
       r.returncode == 0 and "crew-stale" not in sbx_names() and not os.path.exists(os.path.join(REG, md5(GONE))),
       r.stdout + r.stderr)
+
+# No registry entry, but a sandbox under the old basename-only name.
+def add_sandbox(name, **row):
+    json.dump(dict(json.load(open(SBX_STATE)), **{name: dict({"status": "stopped"}, **row)}), open(SBX_STATE, "w"))
+
+
+H = os.path.join(T, "h.worktrees", "orphaned")
+os.makedirs(H)
+add_sandbox("crew-orphaned")
+r = sb("status", H, "--json")
+check("no entry, a legacy-named sandbox sbx reports no mounts for, no other claimant: adopted, with a note",
+      json.loads(r.stdout or "{}").get("name") == "crew-orphaned" and "adopting" in r.stderr, r.stdout + r.stderr)
+J, J2 = os.path.join(T, "j.worktrees", "mounted"), os.path.join(T, "j2.worktrees", "mounted")
+for d in (J, J2):
+    os.makedirs(d)
+add_sandbox("crew-mounted", workspaces=[J2, J2 + "/../x:ro"])
+check("…one sbx says is mounted on another root: not adopted, the hashed name",
+      status(J)["name"] == "crew-mounted-" + md5(J)[:8], repr(status(J)))
+check("…one sbx says is mounted on this root: adopted", status(J2)["name"] == "crew-mounted", repr(status(J2)))
+K, K2 = os.path.join(T, "k.worktrees", "claimed"), os.path.join(T, "k2.worktrees", "claimed")
+for d in (K, K2):
+    os.makedirs(d)
+register(K2, "crew-claimed")
+add_sandbox("crew-claimed")
+check("…no mounts reported but another root claims it: not adopted",
+      status(K)["name"] == "crew-claimed-" + md5(K)[:8], repr(status(K)))
 
 # --- crew-sandbox: prune -----------------------------------------------------
 CFG = os.path.join(STATE, "sandbox", "claude")
@@ -368,6 +395,34 @@ for label, path in (("failing", BADLSOF + ":" + PATH), ("missing", NOSBIN)):
     check(f"lsof {label}: the intent server is not killed, apply says how to restart it, and finishes",
           running and all(alive(p) for p in running) and len(intent_pids()) == started
           and "was not restarted" in out and "rendered cmux.json" in out and listening(PORT), out)
+
+# lsof answers the first time, then fails while apply waits for the port: the
+# wait reads that as "can't tell" and moves on, rather than crashing.
+FLAKY = os.path.join(FAKE, "flakylsof")
+write(os.path.join(FLAKY, "lsof"), f"""#!/bin/sh
+if [ -e {FAKE}/lsof.once ]; then exit 2; fi
+: > {FAKE}/lsof.once
+exec /usr/sbin/lsof "$@"
+""", 0o755)
+os.utime(os.path.join(STATE, "board-intent.port"), (past, past))
+running = [p for p in intent_pids() if alive(p)]
+r = run(["bash", os.path.join(CREW, "bin", "crew"), "apply"], env=dict(APPLY_ENV, PATH=FLAKY + ":" + PATH))
+out = r.stdout + r.stderr
+time.sleep(0.3)
+check("lsof failing mid-wait: the old server is stopped and a new one started, no traceback",
+      "restarted the intent server" in out and "Traceback" not in out and running
+      and not any(alive(p) for p in running) and listening(PORT), out)
+
+# No readable port: nothing is killed, one is started (it backs off on the lock), and apply says so.
+write(os.path.join(STATE, "board-intent.port"), "garbage")
+os.utime(os.path.join(STATE, "board-intent.port"), (past, past))
+running, started = [p for p in intent_pids() if alive(p)], len(intent_pids())
+r = run(["bash", os.path.join(CREW, "bin", "crew"), "apply"], env=APPLY_ENV, timeout=90)
+out = r.stdout + r.stderr
+check("no recorded port: says it starts one that backs off on the lock, kills nothing",
+      "no recorded port; starting one, which backs off if a server already holds the lock" in out
+      and running and all(alive(p) for p in running), out)
+write(os.path.join(STATE, "board-intent.port"), str(PORT))
 
 s = json.load(open(SETTINGS))
 s["enabledPlugins"] = {"crew@seamux": True}
