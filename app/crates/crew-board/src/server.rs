@@ -603,13 +603,19 @@ fn server_lock(wait: bool) -> std::io::Result<Option<py::Flock>> {
 const MAX_CONNS: usize = 256;
 static CONNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Runs on the accept thread, so every wait is short: read what the client
-/// already sent, answer, shut the write side and drain briefly, so the close
-/// is not a reset that loses the 503 on the client's side.
+/// How long too_busy may spend on one refused connection, all told.
+const BUSY_WAIT: Duration = Duration::from_millis(200);
+
+/// Runs on the accept thread, so it never blocks past BUSY_WAIT in all, however
+/// slowly the client sends: read what the client already sent, answer, shut
+/// the write side and drain, so the close is not a reset that loses the 503.
 fn too_busy(mut s: TcpStream) {
-    let _ = s.set_write_timeout(Some(Duration::from_secs(1)));
-    let _ = s.set_read_timeout(Some(Duration::from_millis(100)));
+    let deadline = std::time::Instant::now() + BUSY_WAIT;
+    // Each read waits only for what is left of the one deadline.
+    let left = || deadline.saturating_duration_since(std::time::Instant::now()).max(Duration::from_millis(1));
     let mut sink = [0u8; 8192];
+    let _ = s.set_write_timeout(Some(Duration::from_millis(100)));
+    let _ = s.set_read_timeout(Some(left()));
     let _ = s.read(&mut sink);
     let body = b"too many connections";
     let head = format!("HTTP/1.0 503 {}\r\nServer: crew-board-intent\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n",
@@ -618,7 +624,8 @@ fn too_busy(mut s: TcpStream) {
     let _ = s.write_all(body);
     let _ = s.shutdown(std::net::Shutdown::Write);
     let mut total = 0;
-    while total < 64 * 1024 {
+    while total < 64 * 1024 && std::time::Instant::now() < deadline {
+        let _ = s.set_read_timeout(Some(left()));
         match s.read(&mut sink) {
             Ok(0) | Err(_) => break,
             Ok(n) => total += n,
@@ -846,6 +853,27 @@ mod tests {
         });
         assert!(identify(port).is_ok());
         t.join().unwrap();
+    }
+
+    #[test]
+    fn a_trickling_client_cannot_hold_the_accept_thread() {
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        let client = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            // One byte every 50ms for 3s: each read alone would come back in time.
+            for _ in 0..60 {
+                if c.write_all(b"x").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let (s, _) = l.accept().unwrap();
+        let t = std::time::Instant::now();
+        too_busy(s);
+        assert!(t.elapsed() < Duration::from_millis(400), "held for {:?}", t.elapsed());
+        client.join().unwrap();
     }
 
     #[test]
