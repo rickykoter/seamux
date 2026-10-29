@@ -269,6 +269,20 @@ export function ensureServer({ cli, root }) {
   return null;
 }
 
+// The review's URL on crew's intent server (its port file in `dir`), when
+// that server answers for it, else "". The check asks for the page, which
+// needs no token: crew passes /review/ to lookout serve, whose token is not
+// the one in crew's token file, so asking for the .json with crew's token is
+// always refused. An older crew without the route answers 404.
+export function crewReviewUrl(id, dir, { timeout = 8 } = {}) {
+  let port;
+  try { port = parseInt(fs.readFileSync(path.join(dir, "board-intent.port"), "utf8").trim(), 10); } catch { return ""; }
+  if (!port) return "";
+  const base = `http://127.0.0.1:${port}/review/${id}`;
+  const r = spawnSync("curl", ["-fsS", "-m", String(timeout), "-o", "/dev/null", base]);
+  return r.status === 0 ? base : "";
+}
+
 export function stopServer() {
   // Signal only a pid that answers /health as this server.
   const rec = liveServer();
