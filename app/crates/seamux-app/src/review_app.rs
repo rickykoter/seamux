@@ -300,9 +300,15 @@ struct Group {
 
 impl Group {
     fn track(pgid: i32, owner: Option<&str>) -> (Group, String) {
-        // Read once more if ps did not answer; without it, a quit cannot
-        // stop this group (the Child handle still covers timeouts).
-        let start = Some(started_at(pgid)).filter(|s| !s.is_empty()).unwrap_or_else(|| started_at(pgid));
+        // Only an agent run (one with an owner, saved to jobs.json) gets its
+        // start time read: ps is a spawn, too dear for every git call. Read
+        // once more if ps did not answer. Without it a quit cannot stop the
+        // group; the Child handle still covers a timeout, and a short git or
+        // gh call ends on its own.
+        let start = match owner {
+            Some(_) => Some(started_at(pgid)).filter(|s| !s.is_empty()).unwrap_or_else(|| started_at(pgid)),
+            None => String::new(),
+        };
         if let Ok(mut r) = RUNNING.lock() {
             r.push((pgid, start.clone()));
         }
@@ -474,6 +480,11 @@ fn stop_orphan(id: &str) -> Result<(), String> {
     }
     if let Some(target) = verified_orphan(&j) {
         stop_groups(&[target], Duration::from_secs(3), Leader::Saved);
+        // A SIGKILLed group can take a moment to be gone.
+        let until = Instant::now() + Duration::from_secs(1);
+        while still_running(&j) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         if still_running(&j) {
             return Err(format!("the old agent (process group {}) did not stop", j.pgid));
         }
