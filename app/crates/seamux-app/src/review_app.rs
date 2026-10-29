@@ -279,7 +279,9 @@ struct Group {
 
 impl Group {
     fn track(pgid: i32, owner: Option<&str>) -> (Group, String) {
-        let start = started_at(pgid);
+        // Read once more if ps did not answer; without it, a quit cannot
+        // stop this group (the Child handle still covers timeouts).
+        let start = Some(started_at(pgid)).filter(|s| !s.is_empty()).unwrap_or_else(|| started_at(pgid));
         if let Ok(mut r) = RUNNING.lock() {
             r.push((pgid, start.clone()));
         }
@@ -338,40 +340,73 @@ fn still_running(j: &Job) -> bool {
     group_alive(j.pgid) && !j.pgid_start.is_empty() && started_at(j.pgid) == j.pgid_start
 }
 
+/// What this thread knows of a group's leader beyond its saved start time.
+enum Leader<'a> {
+    /// Nothing: a group read back from the list (or disk).
+    Saved,
+    /// The leader this thread spawned and still holds: its pid cannot have
+    /// been reused until it is reaped, so its group is ours outright.
+    Held(&'a mut std::process::Child),
+    /// The leader this thread spawned and has reaped.
+    Reaped,
+}
+
 /// Whether group `pgid` is still the one whose leader started at `start`.
 /// Its leader alive with another start time is a reused pid: not ours. No
-/// process with that pid at all is our group's remnant (its leader reaped):
-/// a pid is not reused while a group with that id still has members.
-fn still_ours(pgid: i32, start: &str) -> bool {
-    pgid > 1 && !start.is_empty() && {
-        let now = started_at(pgid);
-        now.is_empty() || now == start
+/// process with that pid at all, after we reaped our leader, is our group's
+/// remnant: a pid is not reused while a group with that id has members.
+fn still_ours(pgid: i32, start: &str, reaped: bool) -> bool {
+    if pgid <= 1 {
+        return false;
     }
+    let now = started_at(pgid);
+    if now.is_empty() {
+        return reaped || !start.is_empty();
+    }
+    !start.is_empty() && now == start
 }
 
 /// SIGTERM the groups (pgid, its leader's start), then SIGKILL whatever is
 /// left after `grace`; a group whose number now belongs to someone else is
-/// never signalled. The `leader` (the one this thread spawned) is reaped
-/// while waiting: a zombie leader would keep its group "alive" all along.
-fn stop_groups(groups: &[(i32, String)], grace: Duration, mut leader: Option<&mut std::process::Child>) {
-    let mine: Vec<i32> = groups.iter().filter(|(g, s)| still_ours(*g, s)).map(|(g, _)| *g).collect();
-    for &g in &mine {
-        // SAFETY: a group this app started, checked just above.
-        unsafe { libc::killpg(g, libc::SIGTERM) };
+/// never signalled. A `Held` leader is reaped while waiting: a zombie leader
+/// would keep its group "alive" all along.
+fn stop_groups(groups: &[(i32, String)], grace: Duration, mut leader: Leader) {
+    let ours = |leader: &mut Leader, g: i32, s: &str| match leader {
+        Leader::Held(c) if c.id() as i32 == g => match c.try_wait() {
+            Ok(None) => true,
+            _ => {
+                *leader = Leader::Reaped;
+                still_ours(g, s, true)
+            }
+        },
+        Leader::Reaped => still_ours(g, s, true),
+        _ => still_ours(g, s, false),
+    };
+    let mut mine = Vec::new();
+    for (g, s) in groups {
+        if ours(&mut leader, *g, s) {
+            // SAFETY: a group this app started, checked just above.
+            unsafe { libc::killpg(*g, libc::SIGTERM) };
+            mine.push((*g, s.clone()));
+        }
     }
     let until = Instant::now() + grace;
     loop {
-        if let Some(c) = leader.as_mut() {
-            let _ = c.try_wait();
+        if let Leader::Held(c) = &mut leader {
+            if let Ok(Some(_)) = c.try_wait() {
+                leader = Leader::Reaped;
+            }
         }
-        if !mine.iter().any(|g| group_alive(*g)) || Instant::now() >= until {
+        if !mine.iter().any(|(g, _)| group_alive(*g)) || Instant::now() >= until {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    for (g, _) in groups.iter().filter(|(g, s)| mine.contains(g) && group_alive(*g) && still_ours(*g, s)) {
-        // SAFETY: as above, checked again.
-        unsafe { libc::killpg(*g, libc::SIGKILL) };
+    for (g, s) in &mine {
+        if group_alive(*g) && ours(&mut leader, *g, s) {
+            // SAFETY: as above, checked again.
+            unsafe { libc::killpg(*g, libc::SIGKILL) };
+        }
     }
 }
 
@@ -379,7 +414,7 @@ fn stop_groups(groups: &[(i32, String)], grace: Duration, mut leader: Option<&mu
 /// agent left behind would go on editing a worktree no card owns.
 pub fn stop_all() {
     let groups = RUNNING.lock().map(|r| r.clone()).unwrap_or_default();
-    stop_groups(&groups, Duration::from_millis(1500), None);
+    stop_groups(&groups, Duration::from_millis(1500), Leader::Saved);
 }
 
 /// Why job `j`'s worktree may not be discarded: an agent from before the
@@ -440,7 +475,7 @@ fn exec_lines(
             break s;
         }
         if Instant::now() > deadline {
-            stop_groups(&me, Duration::from_secs(2), Some(&mut child));
+            stop_groups(&me, Duration::from_secs(2), Leader::Held(&mut child));
             let _ = child.wait();
             return Err(format!(
                 "{program} took longer than {} minutes and was stopped",
@@ -458,7 +493,7 @@ fn exec_lines(
         std::thread::sleep(Duration::from_millis(5));
     }
     if !drained() {
-        stop_groups(&me, Duration::from_secs(1), None);
+        stop_groups(&me, Duration::from_secs(1), Leader::Reaped);
         let until = Instant::now() + Duration::from_secs(1);
         while !drained() && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(50));
@@ -1809,14 +1844,30 @@ mod tests {
         let pgid = c.id() as i32;
         let start = started_at(pgid);
         // Recorded with another start time: someone else's group now.
-        stop_groups(&[(pgid, "Thu Jan  1 00:00:00 1970".into())], Duration::from_millis(100), None);
-        stop_groups(&[(pgid, String::new())], Duration::from_millis(100), None);
+        stop_groups(&[(pgid, "Thu Jan  1 00:00:00 1970".into())], Duration::from_millis(100), Leader::Saved);
+        stop_groups(&[(pgid, String::new())], Duration::from_millis(100), Leader::Saved);
         assert!(c.try_wait().unwrap().is_none(), "left alone");
-        assert!(still_ours(pgid, &start));
-        stop_groups(&[(pgid, start.clone())], Duration::from_secs(2), Some(&mut c));
+        assert!(still_ours(pgid, &start, false));
+        stop_groups(&[(pgid, start.clone())], Duration::from_secs(2), Leader::Saved);
+        let t = Instant::now();
+        while c.try_wait().unwrap().is_none() && t.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(c.try_wait().unwrap().is_some(), "ours: stopped");
         // Leader reaped and gone: a remnant, which counts as ours.
-        assert!(still_ours(pgid, &start));
+        assert!(still_ours(pgid, &start, false));
+    }
+
+    #[test]
+    fn a_held_child_is_stopped_without_a_start_time() {
+        // As when ps did not answer at spawn: no start time recorded.
+        let mut c = Command::new("sleep").arg("30").process_group(0).spawn().unwrap();
+        let pgid = c.id() as i32;
+        stop_groups(&[(pgid, String::new())], Duration::from_secs(2), Leader::Held(&mut c));
+        assert!(c.try_wait().unwrap().is_some(), "stopped and reaped");
+        // Reaped by us with no process left on that pid: our remnant.
+        assert!(still_ours(pgid, "", true));
+        assert!(!still_ours(pgid, "", false));
     }
 
     #[test]
