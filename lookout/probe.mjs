@@ -872,13 +872,16 @@ const R1 = repo("r1");
      page.includes('"lookout.drafts." + R.id') && /function drawFile\(\) \{[\s\S]{0,400}drawFileNow\(\);\s*afterDraw\(keep\);/.test(page) &&
      page.includes('"r:" + x.id') && page.includes("openComposer(tr, side, Number(line))"));
   ok("page: a composer draft is placed only on its own diff or an unchanged line, else shown unplaced",
-     page.includes("return d.h === R.patchHash || (d.x != null && lineText(file, side, line) === d.x);") &&
+     page.includes("if (d.h === R.patchHash) return true;") &&
+     page.includes('/\\w/.test(d.x[1] || "") &&\n        JSON.stringify(lineCtx(file, side, line)) === JSON.stringify(d.x);') &&
      page.includes("if (!placeable(k, file, side, Number(line))) { unplaced.push(") && page.includes('class: "outside unplaced"'));
   ok("page: a send that reaches no server is told by the TypeError, not by its wording",
      page.includes("}).catch(e => { e.unreachable = true; throw e; })") && page.includes("live.down || e.unreachable") &&
      !page.includes("/fetch/i") && !page.includes("e instanceof TypeError"));
   ok("page: a draft is saved by one key over what storage holds now, and other tabs' writes are taken in",
      /const saveDraft = \(k, v, meta\) => \{\s*const all = readDrafts\(\);/.test(page) && page.includes('addEventListener("storage"'));
+  ok("page: the reload banner clears when the page's own diff comes back",
+     /\/\/ The page's own diff again[^\n]*\n\s*if \(live\.stale\) \{ live\.stale = false; drawHeader\(\); \}/.test(page));
   ok("page: a restored draft does not hold fresher reviews back; one focused or typed in since load does",
      page.includes("(t === document.activeElement || edited.has(t.dataset.draft))") && page.includes("edited.add(k);"));
   ok("page: only a poll that reached nothing counts toward disconnected; an HTTP error is a short note",

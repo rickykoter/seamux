@@ -782,6 +782,8 @@
         if (!live.stale) { live.stale = true; drawHeader(); }
         return;
       }
+      // The page's own diff again: whatever new one was waiting is gone.
+      if (live.stale) { live.stale = false; drawHeader(); }
       if (busy()) { live.pending = next; return; }
       live.pending = null;
       applyReview(next);
@@ -882,14 +884,20 @@
         }
       return null;
     };
+    // A line with its neighbours above and below: what a draft remembers
+    // of where it was written.
+    const lineCtx = (file, side, line) => [line - 1, line, line + 1].map(n => lineText(file, side, n));
     // A saved composer goes back under its line only when it was written
-    // against this diff, or its line still reads the same; an empty composer
-    // opened on this page always does.
+    // against this diff, or on a new diff when the line and both neighbours
+    // still read the same and the line has words in it ("}" or a blank line
+    // matches anywhere). An empty composer opened on this page always does.
     const placeable = (k, file, side, line) => {
       const d = drafts[k];
       if (d == null) return true;
       if (typeof d !== "object") return false;
-      return d.h === R.patchHash || (d.x != null && lineText(file, side, line) === d.x);
+      if (d.h === R.patchHash) return true;
+      return Array.isArray(d.x) && /\w/.test(d.x[1] || "") &&
+        JSON.stringify(lineCtx(file, side, line)) === JSON.stringify(d.x);
     };
     function openComposer(tr, side, line) {
       const file = current, key = composerKey(file, side, line);
@@ -897,7 +905,7 @@
       const span = tr.children.length;
       const ta = el("textarea", { rows: 3, placeholder: `Comment on ${side === "old" ? "old " : ""}line ${line}…`, "data-draft": key });
       ta.value = draftText(key);
-      ta.addEventListener("input", () => saveDraft(key, ta.value, { h: R.patchHash, x: lineText(file, side, line) }));
+      ta.addEventListener("input", () => saveDraft(key, ta.value, { h: R.patchHash, x: lineCtx(file, side, line) }));
       const status = el("span", { class: "send-status" });
       const row = el("tr", { class: "composer", "data-draft": key }, el("td", { colspan: span },
         el("div", { class: "card comment" }, el("div", { class: "actions" }, ta, el("div", { class: "buttons" },
@@ -953,7 +961,7 @@
           ta.value = draftText(k);
           ta.addEventListener("input", () => saveDraft(k, ta.value, { h: d.h, x: d.x }));
           const box = el("div", { class: "card comment" }, el("div", { class: "card-head" },
-            el("span", { class: "title" }, `${side === "old" ? "old " : ""}line ${line}` + (d.x != null ? ` — was “${String(d.x).trim().slice(0, 80)}”` : ""))),
+            el("span", { class: "title" }, `${side === "old" ? "old " : ""}line ${line}` + ((Array.isArray(d.x) ? d.x[1] : d.x) != null ? ` — was “${String(Array.isArray(d.x) ? d.x[1] : d.x).trim().slice(0, 80)}”` : ""))),
             el("div", { class: "actions" }, ta, el("div", { class: "buttons" },
               el("button", { type: "button", onclick: () => { saveDraft(k, ""); openComposers.delete(k); box.remove(); } }, "Discard"))));
           return box;
