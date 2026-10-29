@@ -214,14 +214,14 @@ register(G, "crew-stale")
 register(GONE, "crew-stale")       # a legacy entry whose worktree was removed
 json.dump(dict(json.load(open(SBX_STATE)), **{"crew-stale": "running"}), open(SBX_STATE, "w"))
 r = sb("exec", G, "--", "true")
-check("a claimant whose worktree is gone does not block exec, and its entry is dropped with a note",
-      r.returncode == 0 and not os.path.exists(os.path.join(REG, md5(GONE))) and "stale registry entry" in r.stderr,
-      r.stdout + r.stderr)
-register(GONE, "crew-stale")
+check("a claimant whose worktree is not there does not block exec, and its entry is left alone",
+      r.returncode == 0 and os.path.exists(os.path.join(REG, md5(GONE))), r.stdout + r.stderr)
 r = sb("rm", G)
-check("…nor keeps rm from destroying the sandbox",
-      r.returncode == 0 and "crew-stale" not in sbx_names() and not os.path.exists(os.path.join(REG, md5(GONE))),
+check("…nor keeps rm from destroying the sandbox (the entry still left for prune)",
+      r.returncode == 0 and "crew-stale" not in sbx_names() and os.path.exists(os.path.join(REG, md5(GONE))),
       r.stdout + r.stderr)
+os.remove(os.path.join(REG, md5(GONE)))
+
 
 # No registry entry, but a sandbox under the old basename-only name.
 def add_sandbox(name, **row):
@@ -232,22 +232,23 @@ H = os.path.join(T, "h.worktrees", "orphaned")
 os.makedirs(H)
 add_sandbox("crew-orphaned")
 r = sb("status", H, "--json")
-check("no entry, a legacy-named sandbox sbx reports no mounts for, no other claimant: adopted, with a note",
-      json.loads(r.stdout or "{}").get("name") == "crew-orphaned" and "adopting" in r.stderr, r.stdout + r.stderr)
+check("no entry, a legacy-named sandbox with no mount data: not adopted, a note says how to adopt or remove it",
+      json.loads(r.stdout or "{}").get("name") == "crew-orphaned-" + md5(H)[:8]
+      and "CREW_SANDBOX_NAME=crew-orphaned crew-sandbox up" in r.stderr and "sbx rm crew-orphaned" in r.stderr,
+      r.stdout + r.stderr)
+r = run(["bash", SANDBOX, "up", H], env={"CREW_SANDBOX_NAME": "crew-orphaned"})
+check("…adopting it by hand reuses it and records it",
+      r.returncode == 0 and status(H)["name"] == "crew-orphaned" and "crew-orphaned-" + md5(H)[:8] not in sbx_names(),
+      r.stdout + r.stderr)
 J, J2 = os.path.join(T, "j.worktrees", "mounted"), os.path.join(T, "j2.worktrees", "mounted")
 for d in (J, J2):
     os.makedirs(d)
 add_sandbox("crew-mounted", workspaces=[J2, J2 + "/../x:ro"])
 check("…one sbx says is mounted on another root: not adopted, the hashed name",
       status(J)["name"] == "crew-mounted-" + md5(J)[:8], repr(status(J)))
-check("…one sbx says is mounted on this root: adopted", status(J2)["name"] == "crew-mounted", repr(status(J2)))
-K, K2 = os.path.join(T, "k.worktrees", "claimed"), os.path.join(T, "k2.worktrees", "claimed")
-for d in (K, K2):
-    os.makedirs(d)
-register(K2, "crew-claimed")
-add_sandbox("crew-claimed")
-check("…no mounts reported but another root claims it: not adopted",
-      status(K)["name"] == "crew-claimed-" + md5(K)[:8], repr(status(K)))
+r = sb("status", J2, "--json")
+check("…one sbx says is mounted on this root: adopted, with a note",
+      json.loads(r.stdout or "{}").get("name") == "crew-mounted" and "adopting" in r.stderr, r.stdout + r.stderr)
 
 # --- crew-sandbox: prune -----------------------------------------------------
 CFG = os.path.join(STATE, "sandbox", "claude")

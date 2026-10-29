@@ -137,9 +137,10 @@ reg_field() { [ -f "$1" ] && ( unset NAME ROOT; . "$1" 2>/dev/null; eval "printf
 
 # Every registered root other than $ROOT whose entry names sandbox <name>.
 # Sandboxes were once named by basename alone, so two worktrees could share one.
-# An entry whose worktree is gone claims nothing: it is dropped here (what
-# prune would do), so a stale one cannot block exec/down or keep rm from
-# destroying the sandbox. Notes go to stderr; callers read stdout.
+# An entry whose worktree is not there right now claims nothing, so a stale
+# one cannot block exec/down or keep rm from destroying the sandbox. Its file
+# is left alone: the directory may only be on an unmounted volume, and
+# `prune` is what drops entries.
 other_claimants() {
   local f own r; own="$(reg_file "$ROOT")"
   [ -d "$REG" ] || return 0
@@ -147,10 +148,7 @@ other_claimants() {
     [ -f "$f" ] && [ "$f" != "$own" ] || continue
     [ "$(reg_field "$f" NAME)" = "$1" ] || continue
     r="$(reg_field "$f" ROOT)"
-    if [ -z "$r" ] || [ ! -d "$r" ]; then
-      rm -f "$f" && warn "dropped the stale registry entry for ${r:-<unreadable>} (worktree gone), which also named $1"
-      continue
-    fi
+    [ -n "$r" ] && [ -d "$r" ] || continue
     printf '%s\n' "$r"
   done
 }
@@ -169,8 +167,10 @@ NAME="$(reg_field "$(reg_file "$ROOT")" NAME)"
 
 # With no entry (an old uninstall wiped the registry, say), a sandbox made
 # under the old basename-only name would be lost behind the hashed one. Adopt
-# it when sbx says it is mounted on this root; when sbx reports no mounts, only
-# if no other root claims that name. Bounded: sbx ls --json can wedge.
+# it only when sbx positively shows it mounted on this root; otherwise say it
+# is there and how to adopt it by hand (CREW_SANDBOX_NAME, which names the
+# sandbox for a root with no entry; `up` then records it). Bounded: sbx ls
+# --json can wedge.
 legacy_sandbox() {
   [ -x "$SBX" ] || return 0
   python3 - "$SBX" "$1" "$ROOT" <<'PY' 2>/dev/null
@@ -197,16 +197,21 @@ for r in rows if isinstance(rows, list) else []:
     break
 PY
 }
-if [ -z "$NAME" ]; then
+if [ -z "$NAME" ] && [ -n "${CREW_SANDBOX_NAME:-}" ]; then
+  NAME="$CREW_SANDBOX_NAME"
+elif [ -z "$NAME" ]; then
   NAME="$NEW_NAME"
   case "$cmd" in
     up|attach|exec|down|rm|status)
       _legacy="crew-$(printf '%s' "${ROOT##*/}" | tr -c 'A-Za-z0-9.+-' '-' | sed 's/-\{2,\}/-/g; s/^-//; s/-$//')"
       case "$(legacy_sandbox "$_legacy")" in
-        mounted) NAME="$_legacy" ;;
-        unknown) [ -z "$(other_claimants "$_legacy" 2>/dev/null)" ] && NAME="$_legacy" ;;
+        mounted)
+          NAME="$_legacy"
+          warn "no registry entry for $ROOT: adopting the sandbox $NAME (old basename-only name; sbx shows it mounted here)" ;;
+        unknown)
+          warn "a sandbox named $_legacy (the old basename-only name) exists, and sbx does not say what it mounts; using $NEW_NAME"
+          warn "  if it is this worktree's: CREW_SANDBOX_NAME=$_legacy crew-sandbox up $ROOT   — or remove it: sbx rm $_legacy" ;;
       esac
-      [ "$NAME" = "$_legacy" ] && warn "no registry entry for $ROOT: adopting the sandbox $NAME, made under the old basename-only name"
       ;;
   esac
 fi
