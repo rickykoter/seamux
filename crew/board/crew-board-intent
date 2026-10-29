@@ -479,6 +479,18 @@ def review_path(rid, ext):
     return target if os.path.isfile(target) else None
 
 
+LOCK_OWNER = "owner"
+
+
+def _remove_lock(lock):
+    """The owner file, then the directory; anything else in it keeps the lock."""
+    try:
+        os.remove(os.path.join(lock, LOCK_OWNER))
+    except FileNotFoundError:
+        pass
+    os.rmdir(lock)
+
+
 def _lock_stale(path):
     return time.time() - os.stat(path).st_mtime > LOCK_STALE
 
@@ -515,7 +527,7 @@ def _break_stale_lock(lock):
     try:
         if not _lock_stale(lock):
             return False
-        os.rmdir(lock)
+        _remove_lock(lock)
         return True
     except FileNotFoundError:
         return True
@@ -537,15 +549,26 @@ class review_lock:
 
     def __init__(self, rid):
         self.path = os.path.join(REVIEWS, rid + ".lock")
+        self.nonce = "%d-%s" % (os.getpid(), secrets.token_hex(8))
 
     def __enter__(self):
         deadline = time.time() + 5
         while True:
             try:
                 os.mkdir(self.path)
-                return self
             except FileExistsError:
                 pass
+            else:
+                try:
+                    with open(os.path.join(self.path, LOCK_OWNER), "w") as f:
+                        f.write(self.nonce)
+                except OSError:
+                    try:
+                        os.rmdir(self.path)
+                    except OSError:
+                        pass
+                    raise
+                return self
             gone = _break_stale_lock(self.path)
             if time.time() > deadline:
                 raise TimeoutError("the review is locked by another writer")
@@ -553,8 +576,14 @@ class review_lock:
                 time.sleep(0.025)
 
     def __exit__(self, *_):
+        # Ours only: a lock broken as stale and retaken carries another nonce.
+        # (The window between this read and the removal needs this holder
+        # past the 10s stale age; accepted, as in the Rust and JS twins.)
         try:
-            os.rmdir(self.path)
+            with open(os.path.join(self.path, LOCK_OWNER)) as f:
+                if f.read() != self.nonce:
+                    return
+            _remove_lock(self.path)
         except OSError:
             pass
 

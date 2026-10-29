@@ -134,22 +134,17 @@ export function withLock(id, fn) {
   try { return fn(); } finally { release(lock, nonce); }
 }
 
-// Release a lock, ours only, without a window where another writer's lock is
-// moved: read the owner first and leave a lock that is not ours alone. Ours is
-// then renamed to a name only this holder uses (atomic) and checked again
-// inside it; if a breaker swapped another writer's lock in at that instant, it
-// is put back while the lock path is free (renaming onto a lock with its owner
-// file fails, so none is clobbered), else removed as superseded. The same
-// steps as release() in app/crates/crew-board/src/review.rs.
-const ownedBy = (dir, nonce) => { try { return fs.readFileSync(path.join(dir, OWNER), "utf8") === nonce; } catch { return false; } };
+// Release a lock, ours only: read the owner, leave a lock that is not ours
+// (broken as stale and retaken), and remove ours (owner file, then the
+// directory). A tiny window remains: a breaker could break and retake the lock
+// between our read and our removal. Breaking needs the lock past STALE_MS, so it
+// means a holder that overran that by microseconds; accepted, since renaming
+// aside and back can replace a writer that has made the directory but not yet
+// written its owner. The same steps as release() in
+// app/crates/crew-board/src/review.rs and review_lock in crew/board/crew-board-intent.
 function release(lock, nonce) {
-  if (!ownedBy(lock, nonce)) return; // broken as stale, and another writer's now (or gone)
-  const held = lock + ".release-" + nonce;
-  try { fs.renameSync(lock, held); } catch { return; }
-  if (!ownedBy(held, nonce)) {
-    try { if (!fs.existsSync(lock)) { fs.renameSync(held, lock); return; } } catch { /* taken meanwhile */ }
-  }
-  try { removeLock(held); } catch { /* not ours to remove */ }
+  try { if (fs.readFileSync(path.join(lock, OWNER), "utf8") === nonce) removeLock(lock); }
+  catch { /* gone, or not ours to remove */ }
 }
 
 // Read-modify-write under the lock. `fn` gets the current review (or null)

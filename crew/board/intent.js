@@ -53,7 +53,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "13";
+  var V = "14";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -200,6 +200,9 @@ function __boardIntent(cfg) {
     var prev = el.getAttribute ? el.getAttribute("title") : null;
     el.title = why;
     setTimeout(function () { if (el.title === why) el.title = prev || ""; }, 4000);
+    toast(why);
+  }
+  function toast(why) {
     if (!document.body || !document.createElement) return;
     var box = document.getElementById("intent-toast");
     if (!box) {
@@ -274,12 +277,22 @@ function __boardIntent(cfg) {
     if (Object.prototype.toString.call(q) !== "[object Array]") q = [];
     q.push(msg);
     host.setAttribute("data-app-pending", JSON.stringify(q.slice(-10)));
+    // An app that never names its origin: say so, and drop what waited.
+    if (q.length === 1) setTimeout(function () {
+      if (appOrigin() || !host.getAttribute("data-app-pending")) return;
+      clearPending();
+      toast("the app didn't answer");
+    }, 3000);
+  }
+  function clearPending() {
+    if (host.removeAttribute) host.removeAttribute("data-app-pending");
+    else host.setAttribute("data-app-pending", "");
   }
   function flush() {
     var o = appOrigin(), q = [];
     if (!o) return;
     try { q = JSON.parse(host.getAttribute("data-app-pending") || "[]"); } catch (e) { q = []; }
-    host.removeAttribute ? host.removeAttribute("data-app-pending") : host.setAttribute("data-app-pending", "[]");
+    clearPending();
     if (Object.prototype.toString.call(q) !== "[object Array]") return;
     for (var i = 0; i < q.length; i++) window.parent.postMessage(q[i], o);
   }

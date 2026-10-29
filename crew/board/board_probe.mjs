@@ -1347,7 +1347,7 @@ if (live && Array.isArray(live.rows)) {
   const last = () => q(fetched[fetched.length - 1]);
 
   checks.push(["intent: an older page's click CSS is replaced on upgrade",
-    oldCss.getAttribute("data-v") === "13" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
+    oldCss.getAttribute("data-v") === "14" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
   checks.push(["intent: a delegated child's go chip is muted, never filled or breathing",
     /\.row \.chip\.chip\[title\^="parent goes"\]\{[^}]*background:transparent[^}]*animation:none/.test(oldCss.textContent)]);
   const fold = () => JSON.parse(host.getAttribute("data-fold"));
@@ -1506,6 +1506,28 @@ if (live && Array.isArray(live.rows)) {
   await settle(); await settle();
   checks.push(["intent: a click the server never answers says the server is not reachable",
     chip2.title === "server not reachable" && toast.text === "server not reachable", chip2.title]);
+  // An app that never names its origin: after a while the held message is
+  // dropped, and the toast says so.
+  {
+    const row3 = mk("div", { class: "row done open", "data-id": "WS-3" }, [mk("span", { class: "nm" }, [], "three")]);
+    const host3 = mk("div", { id: "rows", "data-fold": "{}" }, [row3]);
+    const t3 = [], b3 = mk("body"), ids3 = {};
+    b3.appendChild = (c) => { ids3[c.id] = c; return c; };
+    const box3 = {
+      window: { parent: { postMessage: () => {} }, addEventListener: () => {} }, JSON, Math, encodeURIComponent, Promise,
+      setTimeout: (fn, ms) => { t3.push([fn, ms]); return t3.length; }, clearTimeout: () => {},
+      document: { head: mk("head"), body: b3, getElementById: (id) => (id === "rows" ? host3 : ids3[id] || null), createElement: (t) => mk(t) },
+      fetch: () => Promise.reject(new Error("unused")),
+    };
+    createContext(box3);
+    runInContext(readFileSync(join(HERE, "intent.js"), "utf8"), box3);
+    box3.__boardIntent({ port: 4242, token: "t", parents: [APP] });
+    host3.listeners.forEach((fn) => fn({ target: row3.children[0], preventDefault() {}, stopPropagation() {} }));
+    const held3 = !!host3.getAttribute("data-app-pending");
+    t3.filter(([, ms]) => ms === 3000).forEach(([fn]) => fn());
+    checks.push(["intent: a held message the app never collects is dropped after 3s, with a toast saying so",
+      held3 && !host3.getAttribute("data-app-pending") && ids3["intent-toast"]?.text === "the app didn't answer"]);
+  }
 }
 
 // ---- deep-plan families: grouped, ordered by the most urgent member --------

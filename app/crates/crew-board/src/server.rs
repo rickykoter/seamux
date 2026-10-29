@@ -486,16 +486,17 @@ pub fn health_body() -> String {
     pyjson::dumps(&json!({"ok": true, "server": "crew-board-intent", "pid": std::process::id()}))
 }
 
-/// Ok when what answers on `port` is a crew-board-intent: /health is 200 and
-/// names it, in its Server header (the Python's too, and what the app checks)
-/// or its body. Err says what is there instead.
+/// Ok when what answers on `port` is a crew-board-intent: its Server header
+/// (the Python's too, and what the app checks) or /health's body names it,
+/// whatever the status, so a busy server answering 503 at its connection cap
+/// still counts. Up to ~3s for the answer. Err says what is there instead.
 pub fn identify(port: u16) -> Result<(), String> {
-    let (code, headers, body) = crate::proxy::exchange(port, "GET", "/health", &[], b"", Duration::from_millis(1500))
+    let (code, headers, body) = crate::proxy::exchange(port, "GET", "/health", &[], b"", Duration::from_secs(3))
         .map_err(|e| format!("nothing answers /health on {port} ({e})"))?;
     let server = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("server")).map(|(_, v)| v.as_str()).unwrap_or("");
     let named = serde_json::from_slice::<Value>(&body).ok()
         .and_then(|v| v.get("server").and_then(Value::as_str).map(String::from)).unwrap_or_default();
-    if code == 200 && (server.starts_with("crew-board-intent") || named == "crew-board-intent") {
+    if server.starts_with("crew-board-intent") || named == "crew-board-intent" {
         return Ok(());
     }
     Err(format!("port {port} is held by something else ({code}, server {server:?})"))
@@ -808,6 +809,22 @@ mod tests {
         });
         let e = identify(port).unwrap_err();
         assert!(e.contains("held by something else"), "{e}");
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn a_busy_server_at_its_cap_is_still_ours() {
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        let t = std::thread::spawn(move || {
+            if let Ok((s, _)) = l.accept() {
+                let mut buf = [0u8; 1024];
+                let mut s2 = s.try_clone().unwrap();
+                let _ = s2.read(&mut buf);
+                too_busy(s);
+            }
+        });
+        assert!(identify(port).is_ok());
         t.join().unwrap();
     }
 

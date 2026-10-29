@@ -153,30 +153,19 @@ impl Drop for Lock {
     }
 }
 
-/// Release a lock, ours only, without a window where another writer's lock
-/// is moved: the owner is read first and a lock that is not ours is left
-/// alone. Ours is then renamed to a name only this holder uses (atomic) and
-/// checked again inside it; if a breaker swapped another writer's lock in at
-/// that instant, it is put back while the lock path is still free (renaming
-/// onto a lock that has its owner file fails, so none is clobbered), and
-/// otherwise removed as superseded. The same steps as release() in
-/// lookout/lib/store.mjs.
+/// Release a lock, ours only: read the owner, leave a lock that is not ours
+/// (broken as stale and retaken), and remove ours (owner file, then the
+/// directory). A tiny window remains: a breaker could break and retake the
+/// lock between our read and our removal. Breaking needs the lock past the
+/// 10s stale age, so it means a holder that overran that by microseconds;
+/// accepted, since every other scheme (renaming aside and back) can replace a
+/// writer that has made the directory but not yet written its owner. The same
+/// steps as release() in lookout/lib/store.mjs and review_lock in
+/// crew/board/crew-board-intent.
 fn release(lock: &Path, nonce: &str) {
-    if !still_ours(lock, nonce) {
-        return; // broken as stale, and another writer's now (or gone)
+    if still_ours(lock, nonce) {
+        let _ = remove_lock(lock);
     }
-    let held = PathBuf::from(format!("{}.release-{nonce}", lock.display()));
-    if std::fs::rename(lock, &held).is_err() {
-        return;
-    }
-    if still_ours(&held, nonce) {
-        let _ = remove_lock(&held);
-        return;
-    }
-    if std::fs::symlink_metadata(lock).is_err() && std::fs::rename(&held, lock).is_ok() {
-        return;
-    }
-    let _ = remove_lock(&held);
 }
 
 fn still_ours(lock: &Path, nonce: &str) -> bool {
@@ -237,9 +226,6 @@ mod tests {
         drop(first);
         assert!(lock.is_dir(), "the first holder removed the second writer's lock");
         assert!(still_ours(&lock, "second"));
-        let left = |d: &Path| std::fs::read_dir(d).unwrap().flatten()
-            .filter(|e| e.file_name().to_string_lossy().contains(".release-")).count();
-        assert_eq!(left(&dir), 0, "a release left its moved lock behind");
         let second = Lock { path: lock.clone(), nonce: "second".into() };
         drop(second);
         assert!(!lock.exists());
