@@ -82,6 +82,7 @@ SYSTEM_USERS = {
     "runner", "root", "ubuntu", "vsts", "ec2-user", "admin", "administrator", "user", "users",
     "nobody", "github", "build", "builder", "buildkite", "jenkins", "deploy", "docker", "ci",
     "worker", "service", "default", "guest", "local", "staff", "developer", "travis", "circleci",
+    "node", "vscode", "codespace", "app",
 }
 
 
@@ -104,17 +105,21 @@ def _sep_pattern(name):
             r"|\b" + core + r"(?=[\w-]*(?:\.[\w-]+)*\.local\b))")
 
 
-def env_patterns(user=None, host=None):
-    """Patterns for this machine's own identity: the account name in its
-    separator variants and the machine's .local hostname. Built at run time so
-    the real values never appear in this file."""
-    out = []
+def machine_user(user=None):
     if user is None:
         try:
             user = getpass.getuser()
         except Exception:
             user = ""
-    u = (user or "").strip()
+    return (user or "").strip()
+
+
+def env_patterns(user=None, host=None):
+    """Patterns for this machine's own identity: the account name in its
+    separator variants and the machine's .local hostname. Built at run time so
+    the real values never appear in this file."""
+    out = []
+    u = machine_user(user)
     if distinctive(u):
         out.append((_sep_pattern(u), "this machine's username"))
     if host is None:
@@ -128,16 +133,21 @@ def env_patterns(user=None, host=None):
 def build_patterns(user=None, host=None):
     pats = [(re.compile(p, re.IGNORECASE), why, False) for p, why in FORBIDDEN]
     pats += [(re.compile(p, re.IGNORECASE), why, False) for p, why in env_patterns(user, host)]
-    pats += [(re.compile(p, re.IGNORECASE), why, True) for p, why in HOME_FORMS]
+    # A home form passes for a placeholder or a system account (/home/ubuntu,
+    # /Users/runner), never for this machine's own name when it is distinctive.
+    u = machine_user(user).lower()
+    passing = frozenset((PLACEHOLDERS | SYSTEM_USERS) - ({u} if distinctive(u) else set()))
+    pats += [(re.compile(p, re.IGNORECASE), why, passing) for p, why in HOME_FORMS]
     return pats
 
 
 def scan_line(line, pats):
-    """Every (match, why) in one line; a home form whose user is a placeholder passes."""
+    """Every (match, why) in one line; a home form whose user is a placeholder
+    or a system account passes."""
     hits = []
-    for pat, why, placeholder_ok in pats:
+    for pat, why, passing in pats:
         for m in pat.finditer(line):
-            if placeholder_ok and m.group("name").lower().rstrip(".-") in PLACEHOLDERS:
+            if passing and m.group("name").lower().rstrip(".-") in passing:
                 nxt = m.groupdict().get("next")
                 if nxt is None or nxt.lower().rstrip(".") in DIR_WORDS:
                     continue

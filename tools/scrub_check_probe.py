@@ -42,6 +42,12 @@ must_flag = {
 for name, line in must_flag.items():
     check("flags " + name, sc.scan_line(line, pats), line)
 
+# The machine's own distinctive name is never let through, even if it were
+# a listed account; a system account as the machine user stays allowed.
+check("the machine's own name in a home path flags", sc.scan_line(H + "jo.example/x", pats))
+check("a system machine user keeps its home allowed",
+      not sc.scan_line(H + "ubuntu/x", sc.build_patterns(user="ubuntu", host="localhost")))
+
 must_pass = {
     "a placeholder macOS home": U + "alice/code/x",
     "__HOME__": U + "__HOME__/x",
@@ -51,6 +57,12 @@ must_pass = {
     "an angle-bracket home": U + "<name>/code",
     "a placeholder Windows profile": W + "you\\x",
     "a placeholder projects dir": "-Us" + "ers-you-code-proj",
+    "a system account's Linux home": H + "ubuntu/app",
+    "a container's node home": H + "node/.npm",
+    "a devcontainer's vscode home": H + "vscode/.cache",
+    "an EC2 home": H + "ec2-user/x",
+    "a macOS runner's home": U + "runner/work",
+    "root's home as /home/root": H + "root/x",
     "a placeholder projects dir under Documents": "/x/-Us" + "ers-demo-Documents-notes",
     "a placeholder projects dir under tmp": "-ho" + "me-alice-tmp-scratch",
     "a placeholder hostname": "your-name-" + "mbp.local",
