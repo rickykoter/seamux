@@ -22,6 +22,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -715,6 +716,23 @@ fn server_lock(wait: bool) -> std::io::Result<Option<py::Flock>> {
 const MAX_CONNS: usize = 256;
 static CONNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// Hand a refused connection to one small worker, never waiting: the accept
+/// loop must not stall on a burst over the cap. Past a short queue the
+/// connection is just closed.
+fn refuse_busy(stream: TcpStream) {
+    static Q: OnceLock<std::sync::mpsc::SyncSender<TcpStream>> = OnceLock::new();
+    let tx = Q.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<TcpStream>(32);
+        std::thread::spawn(move || {
+            for s in rx {
+                too_busy(s);
+            }
+        });
+        tx
+    });
+    let _ = tx.try_send(stream);
+}
+
 /// How long too_busy may spend on one refused connection, all told.
 const BUSY_WAIT: Duration = Duration::from_millis(200);
 
@@ -883,7 +901,7 @@ pub fn serve() -> i32 {
         use std::sync::atomic::Ordering;
         if CONNS.fetch_add(1, Ordering::SeqCst) >= MAX_CONNS {
             CONNS.fetch_sub(1, Ordering::SeqCst);
-            too_busy(stream);
+            refuse_busy(stream);
             continue;
         }
         let token = token.clone();

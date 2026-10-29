@@ -2552,10 +2552,12 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
     const WS = (id, n, title) => ({ id, ref: "workspace:" + n, title, current_directory: HOME });
     fs.writeFileSync(join(FAKE_DIR, "workspaces.json"), JSON.stringify([WS("W-FEED-1", 5, "feed one")]));
     const bp = await req("GET", "/board");
-    if (crewImpl.isRust("crew-board-intent")) {
+    {
+      // Either server (the Python twin too).
       const fa = String(bp.headers["content-security-policy"] || "");
       checks.push(["board page: frame-ancestors lets the app and this server frame it, and nothing else",
-        /^frame-ancestors 'self' http:\/\/127\.0\.0\.1:\d+ http:\/\/localhost:\d+ tauri:\/\/localhost /.test(fa) && !fa.includes("*"), fa]);
+        /^frame-ancestors 'self' http:\/\/127\.0\.0\.1:\d+ http:\/\/localhost:\d+ tauri:\/\/localhost tauri: /.test(fa) &&
+        !fa.includes("*") && !fa.includes("5173"), fa]);
     }
     // Either server (the retired Python too) tells intent.js who may frame it:
     // without the list, a framed board ignores every message from the app.

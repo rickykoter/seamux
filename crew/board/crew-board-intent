@@ -1750,6 +1750,16 @@ ACTIONS = ("jump", "row", "diff", "pr", "issue", "jira", "checks", "plan", "take
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    def send_header(self, keyword, value):
+        super().send_header(keyword, value)
+        # Every page says who may frame it, as the Rust server's do: this
+        # server itself and the seamux app, not any site.
+        if keyword.lower() == "content-type" and str(value).lower().startswith("text/html"):
+            port = self.server.server_address[1]
+            super().send_header("Content-Security-Policy", "frame-ancestors " + " ".join(
+                ["'self'", "http://127.0.0.1:%d" % port, "http://localhost:%d" % port, "tauri://localhost", "tauri:"] +
+                parent_origins()[1:]))
+
     server_version = "crew-board-intent"
     token = ""
 
