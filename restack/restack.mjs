@@ -426,6 +426,20 @@ function cmdRun(ctx) {
   let planned = planWalk(ctx.cwd, stack.chain, base);
   if (only) planned = planned.filter(s => s.branch === only);
   if (!planned.length) die(`no branches to restack${only ? ` matching --branch ${only}` : ""}`);
+  // Refuse before anything moves. A branch with no local ref (named by the gh
+  // chain or stack.branches, never fetched) used to be "skipped", and the step
+  // above it compared two nulls and called itself already-current: the run
+  // said ok while that branch still sat on its parent's old tip.
+  const unresolved = planned.filter(s => s.error || !s.upstream);
+  if (unresolved.length) {
+    const why = unresolved.map(s => s.error
+      ? `${s.branch}: no local branch by that name`
+      : `${s.branch}: cannot find what it was built on (${s.parentIndex >= 0 ? `parent ${stack.chain[s.parentIndex].name} has no local ref` : `no merge base with ${base.ref}`})`);
+    const names = [...new Set(unresolved.map(s => s.error ? s.branch : s.parentIndex >= 0 ? stack.chain[s.parentIndex].name : s.branch))];
+    die(`the stack names branches this repo cannot resolve, so nothing was restacked:\n  ${why.join("\n  ")}\n` +
+      `fix: \`git fetch ${ctx.cfg.remote} ${names.join(" ")}\` and create the local branch(es), or drop them from stack.branches in .seamux/restack.json`,
+      { unresolved: names });
+  }
 
   const steps = planned.map(s => ({ ...s, status: "pending", newTip: null }));
   ctx.st = { ...S.fresh(), stale: ctx.st.stale || [], phase: "walking",
@@ -450,9 +464,14 @@ function walkGit(ctx) {
   const st = ctx.st;
   for (; st.index < st.steps.length; st.index++) {
     const step = st.steps[st.index];
-    if (step.error) { step.status = "skipped"; continue; }
-
-    const onto = ontoFor(ctx.cwd, st, step);
+    const onto = step.error ? null : ontoFor(ctx.cwd, st, step);
+    // cmdRun refuses these up front; this holds the line for a run resumed
+    // from older state. Two nulls are not "already current".
+    if (step.error || !step.upstream || !onto) {
+      step.status = "error";
+      step.why = step.error || `cannot resolve ${!step.upstream ? "what it was built on" : `the new tip of ${step.onto}`}`;
+      break;
+    }
     // Nothing to do: this branch already sits on the new parent.
     if (step.upstream === onto) {
       step.status = "already-current";
@@ -658,7 +677,7 @@ function finish(ctx) {
   // A step that broke the walk (a checkout that failed) leaves the branches
   // above it unrestacked: that is a failure, not a finish, and the phase keeps
   // the run abortable.
-  const broken = st.steps.filter(s => s.status === "error");
+  const broken = st.steps.filter(s => s.status === "error" || s.status === "skipped");
   st.phase = broken.length ? "error" : "done"; st.finishedAt = new Date().toISOString();
   if (!OPTS.dryRun) S.write(ctx.gitDirPath, st);
   if (st.returnTo && currentBranch(ctx.cwd) !== st.returnTo && !OPTS.dryRun)
