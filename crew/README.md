@@ -1166,6 +1166,11 @@ Claude restart. To go further back:
 crew uninstall     # restores the newest ~/.config/cmux/cmux.json.*.bak
 ```
 
+It also puts back the global and the repo's `.cmux/dock.json` from the
+`dock.json.pre-crew.<time>.bak` apply took (or removes a Dock crew wrote when
+there is none), and clears crew's state except `sandbox/`: the registry and
+the sandboxed agents' transcripts stay until `crew-sandbox rm` or `prune`.
+
 The destructive-command guard is **not** part of crew and neither command
 touches it: it is the separate `bash-guard` plugin (or, on a machine the old
 installer set up, `~/.claude/hooks/cmux/guard_bash.sh`). It blocks force-pushes, `--no-verify`, `rm -rf`, and destructive SQL,

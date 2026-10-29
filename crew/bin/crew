@@ -258,15 +258,38 @@ apply_from_source() {
     printf '  install the deep-plan and restack shims through their engine pointers\n'
     printf '  settings.json: no hook entries written (the crew plugin'"'"'s hooks.json wires them);\n'
     printf '  statusLine and the push flags merged (seamux merge_settings)\n'
-    printf '  %s legacy crew-hook.sh entr%s to remove\n' "$n_legacy" "$([ "$n_legacy" = 1 ] && echo y || echo ies)"
+    if plugin_enabled crew; then
+      printf '  %s legacy crew-hook.sh entr%s to remove\n' "$n_legacy" "$([ "$n_legacy" = 1 ] && echo y || echo ies)"
+    else
+      # Same rule as the real apply: stripping them with the plugin off leaves no hooks.
+      printf '  the crew plugin is not enabled: would keep the %s legacy crew-hook.sh entr%s\n' "$n_legacy" "$([ "$n_legacy" = 1 ] && echo y || echo ies)"
+      printf '  (enable it: claude plugin enable crew@seamux, then crew apply again)\n'
+    fi
     return 0
   fi
   local prev_integ=""
   [ -f "$LIVE/integrations.json" ] && prev_integ="$(cat "$LIVE/integrations.json")"
   if [ -d "$LIVE" ]; then
-    local bak="$(dirname "$LIVE")/crew-backups/crew.$(date +%Y%m%d-%H%M%S)"
-    mkdir -p "$(dirname "$bak")" && mv "$LIVE" "$bak" || { bad "could not move $LIVE aside"; return 1; }
+    local bdir bak
+    bdir="$(dirname "$LIVE")/crew-backups"
+    bak="$bdir/crew.$(date +%Y%m%d-%H%M%S)"
+    # Two applies in one second: never move the tree INTO the earlier backup.
+    [ -e "$bak" ] && bak="$bak.$$"
+    mkdir -p "$bdir" && mv "$LIVE" "$bak" || { bad "could not move $LIVE aside"; return 1; }
     ok "moved the live tree aside -> ${bak/#$HOME/~}"
+    # Every apply adds one, so keep the newest $CREW_KEEP_BACKUPS (5). The names
+    # are timestamps, so a reverse sort is newest first. The one just taken is
+    # never a candidate, whatever the setting says.
+    local keep="${CREW_KEEP_BACKUPS:-5}"
+    case "$keep" in
+      ""|*[!0-9]*|0*) warn "CREW_KEEP_BACKUPS='$keep' is not a positive whole number — keeping 5"; keep=5 ;;
+    esac
+    local old n=0
+    while IFS= read -r old; do
+      [ -n "$old" ] && [ "$old" != "$bak" ] || continue
+      rm -rf "$old" && n=$((n + 1))
+    done < <(ls -1d "$bdir"/crew.* 2>/dev/null | sort -r | tail -n +$((keep + 1)))
+    [ "$n" -gt 0 ] && ok "pruned $n older live-tree backup$([ "$n" = 1 ] || echo s) (keeping $keep)"
   fi
   mkdir -p "$LIVE" && cp -R "$src/." "$LIVE/" || { bad "could not copy $src -> $LIVE"; return 1; }
   ok "copied ${src/#$HOME/~} -> ${LIVE/#$HOME/~}"
@@ -329,6 +352,27 @@ strip_legacy_hooks() {
   cp "$SETTINGS" "$SETTINGS.pre-crew-plugin.$(date +%Y%m%d-%H%M%S).bak"
   python3 - "$SETTINGS" <<'PY'
 import json, sys
+def write_settings(path, data):
+    # Claude Code writes this file too: a temp file in the same directory and
+    # os.replace, so neither side ever reads a half-written one. Through a
+    # symlink to its target, keeping the mode.
+    import os, tempfile
+    path = os.path.realpath(path)
+    try:
+        mode = os.stat(path).st_mode & 0o7777
+    except OSError:
+        mode = 0o644
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".settings.json.crew-")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(data, fh, indent=2)
+            fh.write("\n")
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try: os.unlink(tmp)
+        except OSError: pass
+        raise
 p = sys.argv[1]
 with open(p) as fh:
     s = json.load(fh)
@@ -340,10 +384,38 @@ for event, matchers in list(hooks.items()):
     hooks[event] = [m for m in matchers if m.get("hooks")]
     if not hooks[event]:
         del hooks[event]
-with open(p, "w") as fh:
-    json.dump(s, fh, indent=2)
-    fh.write("\n")
+write_settings(p, s)
 PY
+}
+
+# ------------------------------------------------------------------ Dock ----
+# A Dock file crew rendered carries the board control; anything else is
+# someone's own, and is backed up before crew renders over it.
+dock_is_crews() { grep -q '"id": *"board"' "$1" 2>/dev/null; }
+
+# Back up <dock> as <dock>.pre-crew.<time>.bak unless it is crew's own output.
+# Timestamped, so a later apply never overwrites the original with something
+# newer; uninstall restores the newest.
+backup_dock() {
+  [ -f "$1" ] && ! dock_is_crews "$1" || return 0
+  local bak; bak="$1.pre-crew.$(date +%Y%m%d-%H%M%S).bak"
+  cp "$1" "$bak" && ok "backed up ${1/#$HOME/~} -> $(basename "$bak")"
+}
+
+# Undo backup_dock: put the newest backup back, or remove a dock crew
+# rendered when there is none. A dock that is not crew's is left alone.
+# (dock.json.pre-crew.bak, without a time, is what earlier applies wrote.)
+restore_dock() {
+  local dock="$1" bak
+  if [ -f "$dock" ] && ! dock_is_crews "$dock"; then
+    note "left ${dock/#$HOME/~} alone (not crew's)"; return 0
+  fi
+  bak="$(ls -t "$dock".pre-crew.*bak 2>/dev/null | head -1)"
+  if [ -n "$bak" ]; then
+    cp "$bak" "$dock" && ok "restored ${dock/#$HOME/~} from $(basename "$bak")"
+  elif dock_is_crews "$dock"; then
+    rm -f "$dock" && ok "removed crew's Dock ${dock/#$HOME/~}"
+  fi
 }
 
 # ---------------------------------------------------------------- apply -----
@@ -448,6 +520,7 @@ cmd_apply() {
     if ! grep -qx '.cmux/' "$ex" 2>/dev/null; then
       printf '\n# crew (local cmux Dock config)\n.cmux/\n' >> "$ex"
     fi
+    backup_dock "$MONOLITH/.cmux/dock.json"
     if render_to "$CREW_HOME/config/dock.json" dock.json "$MONOLITH/.cmux/dock.json"; then
       ok "installed Dock -> $MONOLITH/.cmux/dock.json (untracked)"
     else
@@ -461,10 +534,7 @@ cmd_apply() {
   #     config seeds every workspace's Dock; a repo's own .cmux/dock.json still
   #     wins wholesale in that repo (precedence, not merge — which is why the
   #     project copy above carries the same board/usage controls).
-  if [ -f "$HOME/.config/cmux/dock.json" ] && ! grep -q '"id": *"board"' "$HOME/.config/cmux/dock.json" 2>/dev/null; then
-    cp "$HOME/.config/cmux/dock.json" "$HOME/.config/cmux/dock.json.pre-crew.bak"
-    ok "backed up dock.json -> dock.json.pre-crew.bak"
-  fi
+  backup_dock "$HOME/.config/cmux/dock.json"
   if render_to "$CREW_HOME/config/dock.global.json" dock.global.json "$HOME/.config/cmux/dock.json"; then
     ok "installed global Dock -> ~/.config/cmux/dock.json (board, usage, sessions, sweep)"
   else
@@ -475,7 +545,18 @@ cmd_apply() {
   #    apply writes none, and removes the settings.json entries the old apply
   #    wrote (they would fire every hook twice). A machine on the old install,
   #    with no crew plugin, keeps the old wiring until the bootstrap migrates it.
-  if [ -n "${CREW_APPLY_FROM:-}" ] || plugin_enabled crew; then
+  #    Applied from the plugin but with the plugin not enabled, nothing would
+  #    wire them: stripping the old entries then leaves no hooks at all, so
+  #    they stay until the plugin is enabled and apply runs again.
+  if [ -n "${CREW_APPLY_FROM:-}" ] && ! plugin_enabled crew; then
+    local n_legacy; n_legacy="$(legacy_hook_count)"
+    if [ "$n_legacy" -gt 0 ] 2>/dev/null; then
+      warn "the crew plugin is not enabled, so its hooks do not run: kept the $n_legacy legacy crew-hook.sh entr$([ "$n_legacy" = 1 ] && echo y || echo ies) in settings.json"
+    else
+      warn "the crew plugin is not enabled and settings.json wires no crew hooks — no hooks run"
+    fi
+    warn "enable it (claude plugin enable crew@seamux), then crew apply again"
+  elif plugin_enabled crew; then
     local n_legacy; n_legacy="$(legacy_hook_count)"
     if [ "$n_legacy" -gt 0 ] 2>/dev/null; then
       if strip_legacy_hooks; then
@@ -548,18 +629,59 @@ cmd_apply() {
     # same reason crew-board does it that way, and there is no setsid on BSD.
     # It is started here rather than left to crew-listen, which is not running
     # when the daemon is off, in which case nothing would restart it at all.
+    case "$(cat "$STATE/board-intent.port" 2>/dev/null)" in
+      ""|*[!0-9]*) note "no recorded port; starting one, which backs off if a server already holds the lock" ;;
+    esac
     if python3 - "$SEAMUX" "$STATE/board-intent.port" <<'PY'
 import os, signal, socket, subprocess, sys, time
 
 seamux, portfile = sys.argv[1], sys.argv[2]
 
-# Match any generation, including one started with a relative path.
-subprocess.run(["pkill", "-f", "crew-board-intent"], capture_output=True)
+# Only the server this install recorded: the pid listening on its port, and
+# only when that pid's command line is an intent server. A pkill -f on the
+# name also hit editors, probe servers and servers under other HOMEs.
+# None when lsof cannot answer (not installed, or it failed): then there is
+# no telling which process is the server, and nothing is killed.
+def listeners(port):
+    try:
+        r = subprocess.run(["lsof", "-nP", "-t", "-iTCP:%d" % port, "-sTCP:LISTEN"],
+                           capture_output=True, text=True)
+    except OSError:
+        return None
+    if r.returncode not in (0, 1):        # 1 is "no such listener"
+        return None
+    return [int(x) for x in r.stdout.split() if x.isdigit()]
+
+def is_intent(pid):
+    r = subprocess.run(["ps", "-o", "command=", "-p", str(pid)],
+                       capture_output=True, text=True)
+    return "crew-board-intent" in r.stdout
+
+try:
+    with open(portfile) as fh:
+        old_port = int(fh.read().strip())
+except (OSError, ValueError):
+    old_port = 0
+# No readable port: there is no server to find, so none is killed, and one is
+# started anyway. That is harmless: the server takes board-intent.lock (one
+# server at a time), so if one is already running the new one backs off.
+found = listeners(old_port) if old_port else []
+if found is None:
+    # The server writes no pidfile, so without lsof it cannot be found safely.
+    # Starting another beside it would only fail to bind: leave it, and let the
+    # shell say how to restart it.
+    sys.exit(2)
+victims = [p for p in found if is_intent(p)]
+for pid in victims:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
 for _ in range(20):                       # let the port come free
     time.sleep(0.05)
-    if subprocess.run(["pgrep", "-f", "crew-board-intent"],
-                      capture_output=True).returncode != 0:
-        break
+    now = listeners(old_port) if victims else []
+    if now is None or not [p for p in victims if p in now]:
+        break                             # gone, or lsof can no longer tell
 
 subprocess.Popen([seamux, "crew-board-intent"], stdout=subprocess.DEVNULL,
                  stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
@@ -580,7 +702,11 @@ PY
     then
       ok "restarted the intent server on the new code"
     else
-      warn "intent server did not come back — crew-listen starts it again"
+      case $? in
+        2) warn "lsof could not list listeners, so the intent server was not restarted and still runs the old code"
+           warn "restart it: stop the process on port $(cat "$STATE/board-intent.port" 2>/dev/null), then crew listen on (or a new Claude session) starts it" ;;
+        *) warn "intent server did not come back — crew-listen starts it again" ;;
+      esac
     fi
   fi
 
@@ -594,6 +720,27 @@ wire_hooks() {
 import json, os, sys
 
 settings_path, hook = sys.argv[1], sys.argv[2]
+def write_settings(path, data):
+    # Claude Code writes this file too: a temp file in the same directory and
+    # os.replace, so neither side ever reads a half-written one. Through a
+    # symlink to its target, keeping the mode.
+    import os, tempfile
+    path = os.path.realpath(path)
+    try:
+        mode = os.stat(path).st_mode & 0o7777
+    except OSError:
+        mode = 0o644
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".settings.json.crew-")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(data, fh, indent=2)
+            fh.write("\n")
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try: os.unlink(tmp)
+        except OSError: pass
+        raise
 # A machine where Claude Code has never run has no settings.json, which is
 # exactly the case a fresh install is. Opening it blind crashed here, and
 # `apply` carried on reporting success -- a green install with no hooks wired.
@@ -652,9 +799,7 @@ add("PostToolUse", "AskUserQuestion", entry("answered", 3))
 add("PostToolUse", "TaskCreate|TaskUpdate|TodoWrite",
     entry("task", 5, "Publishing plan to cmux..."))
 
-with open(settings_path, "w") as fh:
-    json.dump(s, fh, indent=2)
-    fh.write("\n")
+write_settings(settings_path, s)
 PY
 }
 
@@ -696,20 +841,52 @@ cmd_uninstall() {
   done
   [ "$unlinked" -gt 0 ] && ok "unlinked $unlinked commands from $LOCALBIN"
 
-  launchctl unload "$PLIST" 2>/dev/null; rm -f "$PLIST" 2>/dev/null && ok "removed sync timer"
+  if [ -f "$PLIST" ]; then
+    launchctl unload "$PLIST" 2>/dev/null; rm -f "$PLIST" && ok "removed sync timer"
+  fi
   # Both launchd jobs are opt-in, so neither may survive an uninstall — a
   # KeepAlive listener left behind would keep respawning against a crew that is
   # no longer installed.
-  launchctl unload "$PLIST_LISTEN" 2>/dev/null; rm -f "$PLIST_LISTEN" 2>/dev/null && ok "removed event listener"
-  # The daemon is a plain detached process now, so uninstall has to stop it.
+  if [ -f "$PLIST_LISTEN" ]; then
+    launchctl unload "$PLIST_LISTEN" 2>/dev/null; rm -f "$PLIST_LISTEN" && ok "removed event listener"
+  fi
+  # The daemon is a plain detached process now, so uninstall has to stop it,
+  # but only while the recorded pid is still the reconciler: a stale pidfile
+  # names whatever process has since been given that number.
   if [ -f "$STATE/listen.pid" ]; then
     _p="$(cat "$STATE/listen.pid" 2>/dev/null || true)"
-    [ -n "$_p" ] && kill "$_p" 2>/dev/null && ok "stopped the reconciler (pid $_p)"
+    case "$_p" in *[!0-9]*) _p="" ;; esac
+    if [ -n "$_p" ] && ps -o command= -p "$_p" 2>/dev/null | grep -c crew-listen >/dev/null; then
+      kill "$_p" 2>/dev/null && ok "stopped the reconciler (pid $_p)"
+    elif [ -n "$_p" ]; then
+      note "pid $_p in listen.pid is not the reconciler any more — left it alone"
+    fi
     rm -f "$STATE/listen.pid"
   fi
-  rm -f "$SIDEBAR_DIR/crew.swift" && ok "removed sidebar"
-  rm -f "$MONOLITH/.cmux/dock.json" 2>/dev/null && ok "removed Dock config"
-  rm -rf "$STATE" && ok "cleared crew state"
+  if [ -f "$SIDEBAR_DIR/crew.swift" ]; then
+    rm -f "$SIDEBAR_DIR/crew.swift" && ok "removed sidebar"
+  fi
+  # The Docks: each back as it was before crew, or gone if crew wrote it.
+  [ -d "$MONOLITH/.git" ] && restore_dock "$MONOLITH/.cmux/dock.json"
+  restore_dock "$HOME/.config/cmux/dock.json"
+  # Crew's caches go, but not sandbox/: its registry is how crew-reclaim knows
+  # a worktree still has a microVM (without it a running one reads as "never
+  # sandboxed"), and its per-sandbox config dirs hold the agents' transcripts.
+  # crew-sandbox rm and prune are what clear those.
+  if [ -d "$STATE" ]; then
+    local e kept=""
+    for e in "$STATE"/* "$STATE"/.[!.]*; do
+      [ -e "$e" ] || [ -L "$e" ] || continue
+      if [ "$e" = "$STATE/sandbox" ]; then kept=1; continue; fi
+      rm -rf "$e"
+    done
+    rmdir "$STATE" 2>/dev/null
+    ok "cleared crew state"
+    if [ -n "$kept" ]; then
+      local n; n="$(ls -1 "$STATE/sandbox/roots" 2>/dev/null | grep -c .)"
+      note "kept ${STATE/#$HOME/~}/sandbox ($n registered sandbox$([ "$n" = 1 ] || echo es), and their transcripts): crew-sandbox rm <worktree> removes one"
+    fi
+  fi
 
   "$CMUX" reload-config >/dev/null 2>&1 && ok "reloaded cmux config"
 
