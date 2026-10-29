@@ -133,7 +133,21 @@ export class GitBackend {
     this.timeout = timeout;
     const top = cfg.top || "";
     const names = top ? (spawnSync("git", ["-C", top, "remote"], { encoding: "utf8", timeout: 5000 }).stdout || "").split("\n").filter(Boolean) : [];
-    if (names.includes(cfg.remote)) {
+    const cfgOf = k => (spawnSync("git", ["-C", top, "config", "--get", k], { encoding: "utf8", timeout: 5000 }).stdout || "").trim();
+    // A partial clone (a cloud sandbox's usually is) leaves fetched files to
+    // be fetched one by one when read, which a sandbox's git proxy cannot be
+    // relied on for. Its own remote then goes through the full cache, by URL.
+    const partial = names.includes(cfg.remote) && (cfgOf(`remote.${cfg.remote}.promisor`) === "true" || !!cfgOf(`remote.${cfg.remote}.partialclonefilter`));
+    if (partial) {
+      const url = cfgOf(`remote.${cfg.remote}.url`);
+      if (!url) throw new Error(`remote ${cfg.remote} in ${top} has no url`);
+      this.inside = false;
+      this.target = url;
+      this.where = `remote ${cfg.remote}`;
+      this.cache = path.join(cacheDir, crypto.createHash("sha1").update(url).digest("hex").slice(0, 16) + ".git");
+      this.gitArgs = ["--git-dir", this.cache];
+      this.track = b => `refs/heads/${b}`;
+    } else if (names.includes(cfg.remote)) {
       this.inside = true;
       this.gitArgs = ["-C", top];
       this.target = cfg.remote;
@@ -218,7 +232,8 @@ export class GitBackend {
       const [, type, sha] = ent.slice(0, tab).split(" ");
       if (type !== "blob") continue;
       const blob = spawnSync("git", [...this.gitArgs, "cat-file", "blob", sha], { maxBuffer: 64 << 20, timeout: 60000 });
-      if (blob.status !== 0) throw new Error(`cannot read ${ent.slice(tab + 1)} from ${this.branch(slug)}`);
+      if (blob.status !== 0) throw new Error(`cannot read ${ent.slice(tab + 1)} from ${this.branch(slug)}: ` +
+        (blob.error ? blob.error.message : String(blob.stderr || "").trim().split("\n").pop() || `git exited ${blob.status}`));
       files[ent.slice(tab + 1)] = blob.stdout;
     }
     let meta = null;

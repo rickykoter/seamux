@@ -4658,6 +4658,16 @@ exit 1
   ok("git backend: scp's host:path without a user is a URL, not a relative path", scp === "example.com:org/state.git", scp);
   const ghost = inB.write("p10", files, "0123456789abcdef0123456789abcdef01234567");
   ok("git backend: a write pinned to a commit the remote no longer has reads as moved", ghost.ok === false && ghost.moved === true);
+  // A partial clone (as a cloud sandbox's is) reads its own remote through the full cache.
+  execSync(`git --git-dir ${ORIGIN} config uploadpack.allowFilter true`);
+  const PC = path.join(TMP, "sync-partial");
+  execSync(`git clone -q --filter=blob:none file://${ORIGIN} ${PC}`);
+  const pcB = new SYNC.GitBackend(SYNC.loadConfig(true, PC, {}), { cacheDir: CACHE });
+  const pcRefs = execSync("git for-each-ref", { cwd: PC, encoding: "utf8" });
+  r = pcB.read("p10");
+  ok("git backend: a partial clone's own remote goes through the full cache, and every file reads",
+    !pcB.inside && pcB.where === "remote origin" && pcB.cache.startsWith(CACHE) && r.version !== "" &&
+    r.files["plans/p1.md"].toString() === "# p1\n" && execSync("git for-each-ref", { cwd: PC, encoding: "utf8" }) === pcRefs, pcB.where);
   let threw = "";
   try { new SYNC.GitBackend(SYNC.loadConfig(true, SR, { SEAMUX_STATE_REMOTE: "upstream" }), { cacheDir: CACHE }); } catch (e) { threw = e.message; }
   ok("git backend: a remote name the repo does not have is refused by name", /no git remote named upstream/.test(threw), threw);
