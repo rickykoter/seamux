@@ -77,7 +77,6 @@ pub fn set_quiet(q: bool) {
     QUIET.store(q, std::sync::atomic::Ordering::Relaxed);
 }
 
-#[allow(dead_code)] // nothing warns since apply refuses JSONC; kept with QUIET for crew-sync
 fn warn(msg: &str) {
     if !QUIET.load(std::sync::atomic::Ordering::Relaxed) {
         eprint!("{msg}");
@@ -694,7 +693,11 @@ fn peacock_follow(root: &str, hexv: &str) -> R<()> {
     };
     if truthy(o.get("peacock.color")) {
         match apply(root, hexv) {
-            Ok(_) | Err(Stop::Die(_)) => {}
+            Ok(_) => {}
+            // Not fatal to the family, but said, as the Python's die() says it
+            // on stderr before its SystemExit is caught (a file with comments,
+            // say, keeps its old color). crew-sync runs this quiet.
+            Err(Stop::Die(m)) => warn(&format!("\x1b[31m✗\x1b[0m {m}\n")),
             Err(e) => return Err(e),
         }
     }

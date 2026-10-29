@@ -548,6 +548,8 @@ pub fn move_native(ws: &str, surface: &str, run: &Running) -> Result<String, Str
     // Claude, and one on this pane's terminal.
     let c = cmux::Cmux::connect().map_err(|e| format!("cmux: {e}"))?;
     let tree = c.tree().map_err(|e| format!("cmux tree: {e}"))?;
+    // Surfaces carry `tty` in `cmux tree --json` (measured: docs/FINDINGS.md,
+    // "cmux tree lists each terminal surface's tty"). Without it, refuse.
     let tty = surface_tty(&tree, surface).ok_or("cmux did not say which terminal this pane is, so its Claude was left running")?;
     let out = Command::new("ps").args(["-o", "tty=,command=", "-p", &run.pid.to_string()]).output().map_err(|e| e.to_string())?;
     if !is_claude_on(&String::from_utf8_lossy(&out.stdout), &tty) {

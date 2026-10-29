@@ -1978,3 +1978,20 @@ Probed against cmux 0.64 nightly while building deep-plan's browser checks.
   `github.com/user-attachments/assets/...` links. Those links return 404 to
   an anonymous request even on a public repo; the PR page shows them to a
   signed-in viewer through a signed `private-user-images` URL.
+
+## cmux tree lists each terminal surface's tty (2026-10-29)
+
+Measured with `cmux 0.64.25-nightly.3721347154401 (3721347154401) [186cec7]`
+(cmux NIGHTLY.app):
+
+```
+$ cmux tree --json
+```
+
+Each surface under `windows[].workspaces[].panes[].surfaces[]` has a `tty` key
+next to its `id` and `ref`. The app's "move to a native session" uses it
+(`pty::surface_tty`) to check that the pid cmux recorded for the pane's Claude
+is still a Claude on that pane's terminal before it sends SIGTERM, because pids
+get reused. `crew_core::workspaces::busy` already read the same key. If a cmux
+build leaves the key out, the move is refused and Claude keeps running in its
+pane.

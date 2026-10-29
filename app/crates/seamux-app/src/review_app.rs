@@ -93,6 +93,9 @@ pub struct Job {
     /// The process group of the agent running for this job now, or 0. Saved,
     /// so a group left running by a crashed app is not discarded under.
     pub pgid: i32,
+    /// When that group's leader started (`ps -o lstart=`): a group with the
+    /// same number later is the old run's only if its leader matches.
+    pub pgid_start: String,
 }
 
 static JOBS: OnceLock<Mutex<Vec<Job>>> = OnceLock::new();
@@ -130,8 +133,9 @@ fn jobs() -> &'static Mutex<Vec<Job>> {
         // A job that was mid-flight when the app quit: its agent was stopped
         // at quit, or, after a crash, may still run (its group is kept).
         for j in v.iter_mut() {
-            if !group_alive(j.pgid) {
+            if !still_running(j) {
                 j.pgid = 0;
+                j.pgid_start.clear();
             }
             if !matches!(j.status.as_str(), "ready" | "failed") {
                 j.status = "failed".into();
@@ -279,7 +283,11 @@ impl Group {
             r.push(pgid);
         }
         if let Some(id) = owner {
-            update(id, |j| j.pgid = pgid);
+            let start = started_at(pgid);
+            update(id, |j| {
+                j.pgid = pgid;
+                j.pgid_start = start;
+            });
         }
         Group { pgid, owner: owner.map(str::to_string) }
     }
@@ -295,6 +303,7 @@ impl Drop for Group {
             update(id, |j| {
                 if j.pgid == pgid {
                     j.pgid = 0;
+                    j.pgid_start.clear();
                 }
             });
         }
@@ -305,6 +314,27 @@ impl Drop for Group {
 fn group_alive(pgid: i32) -> bool {
     // SAFETY: signal 0 only asks whether the group exists.
     pgid > 1 && unsafe { libc::killpg(pgid, 0) == 0 }
+}
+
+/// When process `pid` started, as ps says it ("Thu Oct 29 09:12:01 2026"),
+/// or "" when it is gone.
+fn started_at(pid: i32) -> String {
+    if pid <= 1 {
+        return String::new();
+    }
+    Command::new("/bin/ps")
+        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Whether job `j`'s saved process group is still the run it saved: the group
+/// exists and its leader (the agent) started when the save says. A pid that
+/// was reused, or a group whose leader is gone, is not.
+fn still_running(j: &Job) -> bool {
+    group_alive(j.pgid) && !j.pgid_start.is_empty() && started_at(j.pgid) == j.pgid_start
 }
 
 /// SIGTERM the groups, then SIGKILL whatever is left after `grace`.
@@ -333,7 +363,7 @@ pub fn stop_all() {
 /// Why job `j`'s worktree may not be discarded: an agent from before the
 /// app last quit (a crash) still runs in its process group.
 fn orphan(j: &Job) -> Option<String> {
-    group_alive(j.pgid).then(|| {
+    still_running(j).then(|| {
         format!(
             "an agent from before the app last quit may still be working in its worktree (process group {}, see `ps -g {}`); wait for it to finish, then try again",
             j.pgid, j.pgid
@@ -1746,13 +1776,23 @@ mod tests {
     }
 
     #[test]
-    fn a_dead_group_is_no_orphan() {
+    fn only_the_saved_run_is_an_orphan() {
         assert!(orphan(&Job::default()).is_none());
         assert!(orphan(&Job { pgid: 1, ..Default::default() }).is_none());
-        // Our own group is alive: a card naming it is refused.
-        // SAFETY: getpgrp has no preconditions.
-        let me = unsafe { libc::getpgrp() };
-        assert!(orphan(&Job { pgid: me, ..Default::default() }).is_some_and(|w| w.contains("still be working")));
+        // A live group led by an agent stand-in, started when the job says.
+        let mut c = Command::new("sleep").arg("30").process_group(0).spawn().unwrap();
+        let pgid = c.id() as i32;
+        let start = started_at(pgid);
+        assert!(!start.is_empty());
+        let j = Job { pgid, pgid_start: start, ..Default::default() };
+        assert!(orphan(&j).is_some_and(|w| w.contains("still be working")));
+        // The same number with another start time (a reused pid), or none
+        // saved: some other group, ignored.
+        assert!(orphan(&Job { pgid, pgid_start: "Thu Jan  1 00:00:00 1970".into(), ..Default::default() }).is_none());
+        assert!(orphan(&Job { pgid, ..Default::default() }).is_none());
+        let _ = c.kill();
+        let _ = c.wait();
+        assert!(orphan(&j).is_none());
     }
 
     #[test]

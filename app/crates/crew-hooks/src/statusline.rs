@@ -9,10 +9,11 @@
 //! The same line, byte for byte: the workspace colour from cmux (cached 300 s
 //! in the same file, the miss cached too), lifted for dark terminals with
 //! Python's colorsys arithmetic; the window or month line from ccusage with
-//! crew-core's pricing args (its answer cached 45 s, which the Python does
-//! not do: ccusage costs most of a second per render); the cache segment from cache-facts or
-//! crew-core's read_facts. Where the Python would raise, this prints nothing
-//! and exits 1, as the Python's traceback does.
+//! crew-core's pricing args (its answer cached 45 s per args and environment,
+//! which the Python does not do: ccusage costs most of a second per render);
+//! the cache segment from cache-facts or crew-core's read_facts. Where the
+//! Python would raise, this prints nothing and exits 1, as the Python's
+//! traceback does.
 //!
 //! One difference: the Python finds cmux through crew-cmux-bin or PATH; this
 //! goes through the cmux crate (the socket live, CREW_CMUX under the probes),
@@ -453,7 +454,7 @@ fn ccusage_cached(exe: &Path, args: &[String], key: &str, timeout: Duration) -> 
         return ccusage(exe, args, key, timeout);
     }
     let file = home().join(".claude/cache").join(format!("ccusage-{key}.json"));
-    let id = format!("{}\0{}", exe.display(), args.join("\0"));
+    let id = ccusage_key(exe, args, std::env::vars(), std::env::current_dir().ok().as_deref());
     let t = now();
     if let Some(v) = cache_get(&file, &id, ttl, t) {
         return Ok(v);
@@ -468,6 +469,25 @@ fn ccusage_cached(exe: &Path, args: &[String], key: &str, timeout: Duration) -> 
         }
         _ => cache_get(&file, &id, CCUSAGE_STALE, t).map_or_else(|| ccusage(exe, args, key, timeout), Ok),
     }
+}
+
+/// What ccusage's answer depends on besides its args: the environment it
+/// reads (where Claude's logs are, its config and caches, the time zone and
+/// every CCUSAGE_ setting; read from the strings in ccusage 20's binary) and
+/// a project config in the cwd. Sessions that differ in any of it never
+/// share an answer.
+fn ccusage_key(exe: &Path, args: &[String], env: impl Iterator<Item = (String, String)>, cwd: Option<&Path>) -> String {
+    const READS: [&str; 6] = ["HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "TZ", "LOG_LEVEL"];
+    let mut vars: Vec<(String, String)> = env.filter(|(k, _)| READS.contains(&k.as_str()) || k.starts_with("CCUSAGE_")).collect();
+    vars.sort();
+    let mut id = format!("{}\0{}", exe.display(), args.join("\0"));
+    for (k, v) in vars {
+        id += &format!("\0{k}={v}");
+    }
+    if let Some(local) = cwd.map(|d| d.join(".ccusage/ccusage.json")).filter(|p| p.is_file()) {
+        id += &format!("\0config={}", local.display());
+    }
+    id
 }
 
 /// The cached answer in `file` for `id`, if it is younger than `ttl` at `t`.
@@ -830,6 +850,30 @@ mod tests {
         assert_eq!(cache_get(&file, "id", 45.0, 99.0), None);
         // Still young enough to show while another render refreshes it.
         assert_eq!(cache_get(&file, "id", CCUSAGE_STALE, 300.0), Some(v));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn ccusage_key_tells_environments_apart() {
+        let exe = Path::new("/bin/ccusage");
+        let args = vec!["blocks".to_string(), "--json".to_string()];
+        let env = |kv: &[(&str, &str)]| kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>().into_iter();
+        let base = ccusage_key(exe, &args, env(&[("HOME", "/h"), ("PATH", "/a")]), None);
+        // Variables ccusage does not read change nothing; order never does.
+        assert_eq!(base, ccusage_key(exe, &args, env(&[("PATH", "/b"), ("HOME", "/h")]), None));
+        for other in [
+            env(&[("HOME", "/other")]).collect::<Vec<_>>(),
+            env(&[("HOME", "/h"), ("CLAUDE_CONFIG_DIR", "/work")]).collect(),
+            env(&[("HOME", "/h"), ("CCUSAGE_MODEL_ALIASES", "x")]).collect(),
+            env(&[("HOME", "/h"), ("TZ", "UTC")]).collect(),
+        ] {
+            assert_ne!(base, ccusage_key(exe, &args, other.into_iter(), None));
+        }
+        let d = std::env::temp_dir().join(format!("statusline-key-{}", std::process::id()));
+        std::fs::create_dir_all(d.join(".ccusage")).unwrap();
+        assert_eq!(base, ccusage_key(exe, &args, env(&[("HOME", "/h")]), Some(&d)));
+        std::fs::write(d.join(".ccusage/ccusage.json"), "{}").unwrap();
+        assert_ne!(base, ccusage_key(exe, &args, env(&[("HOME", "/h")]), Some(&d)));
         let _ = std::fs::remove_dir_all(&d);
     }
 
