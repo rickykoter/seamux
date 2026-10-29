@@ -1,5 +1,5 @@
 {
-  "description": "deep-plan: the per-increment edit gate, family news at the next prompt, and the engine pointer out-of-session callers read",
+  "description": "deep-plan: the per-increment edit gate, family news at the next prompt, the engine pointer out-of-session callers read, and a pull of shared plan state at session start",
   "hooks": {
     "PreToolUse": [
       {
@@ -25,6 +25,11 @@
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/news.sh\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/deep_plan.mjs\" state pull --session 2>/dev/null || true",
+            "timeout": 60
           }
         ]
       }

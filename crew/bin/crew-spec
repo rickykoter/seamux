@@ -48,7 +48,7 @@ Examples:
 
 An executable at $CREW_LOCAL/crew-spec (default
 ~/.config/cmux/crew-local/crew-spec) replaces all of the above, and survives
-every reinstall. See docs/ADOPTION.md, "Machine-local overlay".
+every reinstall. See docs/ADOPTING.md, "Machine-local overlay".
 HELP
 }
 

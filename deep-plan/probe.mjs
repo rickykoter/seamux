@@ -42,6 +42,9 @@ const ENV = {
   // Authoritative and empty: no lookout, so `diff` falls back to cmux diff and
   // nothing reaches the machine's real reviews. The review block sets its own.
   LOOKOUT_ENGINE: "",
+  // State pushes on transitions give up after a few seconds; a loaded
+  // machine must not turn that into a flaky case.
+  DEEP_PLAN_SYNC_TIMEOUT_MS: "60000",
 };
 delete ENV.DEEP_PLAN_SKILL_DIR;
 delete ENV.DEEP_PLAN_ENGINE;
@@ -79,9 +82,13 @@ execSync("git init -q && git -c user.email=probe@deep-plan -c user.name=probe " 
   "commit -q --allow-empty -m init", { cwd: REPO });
 
 let pass = 0, fail = 0;
-function ok(name, cond) {
+// The third argument, when given, is printed under a FAIL: what was seen.
+function ok(name, cond, detail) {
   if (cond) { pass++; if (V) console.log("  ok   " + name); }
-  else { fail++; console.log("  FAIL " + name); }
+  else {
+    fail++; console.log("  FAIL " + name);
+    if (detail !== undefined && String(detail).trim()) console.log("       " + String(detail).trim().slice(0, 600).replace(/\n/g, "\n       "));
+  }
 }
 function cli(...args) {
   return spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...args],
@@ -4559,6 +4566,653 @@ exit 1
     r.status === 0 && g1.status === 2 && /deep-plan gate/.test(g1.stderr), r.stderr + g1.stderr);
   const g2 = spawnSync("bash", ["-c", gateCmd], { encoding: "utf8", env: cenv(), input: call });
   ok("…and does nothing in a local session, where the plugin's own hooks run", g2.status === 0 && g2.stderr === "");
+}
+
+// -------------------------------------------------- shared state: config and the git backend
+{
+  const SYNC = await import(new URL("lib/sync.mjs", import.meta.url));
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const SR = path.join(TMP, "sync-repo"), ORIGIN = path.join(TMP, "sync-origin.git"), OUT = path.join(TMP, "sync-outside.git");
+  const CACHE = path.join(TMP, "sync-cache");
+  execSync(`git init -q --bare ${ORIGIN} && git init -q --bare ${OUT}`);
+  fs.mkdirSync(SR);
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init && git remote add origin ${ORIGIN} && git push -q origin HEAD:refs/heads/main`, { cwd: SR });
+  const noEnv = {};
+  let c = SYNC.loadConfig(true, SR, noEnv);
+  ok("sync config: share: true is origin, seamux-state/ and transitions",
+    c.shared && c.remote === "origin" && c.prefix === "seamux-state/" && c.sync === "transitions" && !c.problems.length && fs.realpathSync(c.top) === fs.realpathSync(SR));
+  c = SYNC.loadConfig(undefined, SR, noEnv);
+  ok("sync config: a plan with no share is not shared, and still resolves where its branch would go", !c.shared && c.remote === "origin");
+  c = SYNC.loadConfig({ remote: OUT, prefix: "plans/", sync: "manual" }, SR, noEnv);
+  ok("sync config: the plan's share sets remote, prefix and sync", c.shared && c.remote === OUT && c.prefix === "plans/" && c.sync === "manual" && c.source.remote === "plan");
+  c = SYNC.loadConfig({ remote: OUT, prefix: "plans/" }, SR, { SEAMUX_STATE_REMOTE: "origin", SEAMUX_STATE_SYNC: "OFF" });
+  ok("sync config: SEAMUX_STATE_* beat the plan on this machine", c.remote === "origin" && c.sync === "off" && c.prefix === "plans/" && c.source.remote === "SEAMUX_STATE_REMOTE");
+  c = SYNC.loadConfig(true, SR, { SEAMUX_STATE_SYNC: "of", SEAMUX_STATE_PREFIX: "bad..prefix/" });
+  ok("sync config: an unreadable sync mode becomes manual and a bad prefix the default, each reported",
+    c.sync === "manual" && c.prefix === "seamux-state/" && c.problems.length === 2, c.problems.join("; "));
+  fs.mkdirSync(path.join(SR, ".seamux"));
+  fs.writeFileSync(path.join(SR, ".seamux", "state.json"), JSON.stringify({ remote: OUT }));
+  ok("sync config: nothing in the repo is read, so a cloned repo cannot point a plan's state elsewhere", SYNC.loadConfig(true, SR, noEnv).remote === "origin");
+  fs.rmSync(path.join(SR, ".seamux"), { recursive: true });
+  ok("share: true, false and a well-formed object pass render's check",
+    [true, false, undefined, { remote: "origin" }, { remote: OUT, prefix: "team/state-", sync: "manual" }].every(x => !SYNC.shareProblems(x).length));
+  c = SYNC.loadConfig(true, SR, { SEAMUX_STATE_REMOTE: "--upload-pack=touch /tmp/x" });
+  ok("sync config: a remote that starts with - is refused (git would take it as an option)", c.remote === "origin" && c.problems.length === 1);
+  ok("share: a remote that starts with - is named", SYNC.shareProblems({ remote: "-oProxyCommand=x" }).length === 1);
+  ok("share: anything else is named", SYNC.shareProblems("yes").length === 1 && SYNC.shareProblems({ remot: "x" }).length === 1 &&
+    SYNC.shareProblems({ sync: "off" }).length === 1 && SYNC.shareProblems({ prefix: "" }).length === 1 && SYNC.shareProblems({ prefix: "a/." }).length === 1);
+
+  // What a checkout looks like; none of it may move.
+  const snap = () => ["rev-parse HEAD", "branch --list", "status --porcelain", "for-each-ref refs/heads refs/tags", "remote -v"]
+    .map(a => execSync("git " + a, { cwd: SR, encoding: "utf8" })).join("\n--\n");
+  const before = snap();
+  const files = { "deep-plan/state/p1.json": JSON.stringify({ slug: "p1", phase: "implementing" }), "plans/p1.md": "# p1\n" };
+
+  // Inside: the repo's own remote.
+  const inB = new SYNC.GitBackend(SYNC.loadConfig(true, SR, noEnv), { cacheDir: CACHE });
+  ok("git backend: the repo's own remote is inside", inB.inside && inB.where === "remote origin");
+  let r = inB.read("p1");
+  ok("git backend: a plan with no branch reads as version \"\"", r.version === "" && r.files === null);
+  const w1 = inB.write("p1", files, "");
+  r = inB.read("p1");
+  ok("git backend: a write makes seamux-state/<slug> holding the files at their data-root paths and a meta.json",
+    w1.ok && r.version === w1.version && r.files["plans/p1.md"].toString() === "# p1\n" &&
+    JSON.parse(r.files["deep-plan/state/p1.json"]).phase === "implementing" && r.meta && r.meta.slug === "p1" && r.meta.writer && r.meta.at &&
+    execSync(`git --git-dir ${ORIGIN} rev-parse refs/heads/seamux-state/p1`, { encoding: "utf8" }).trim() === w1.version, JSON.stringify(w1));
+  const stale = inB.write("p1", { ...files, "plans/p1.md": "# lost\n" }, "");
+  ok("git backend: a write pinned to an older version is refused and changes nothing",
+    stale.ok === false && stale.moved === true && inB.version("p1") === w1.version);
+  const w2 = inB.write("p1", { ...files, "plans/p1.md": "# p1 v2\n" }, w1.version);
+  ok("git backend: a write pinned to the current version lands, on top of it",
+    w2.ok && execSync(`git --git-dir ${ORIGIN} rev-parse ${w2.version}^`, { encoding: "utf8" }).trim() === w1.version);
+  inB.write("p10", files, "");
+  const lst = inB.list().map(x => x.slug).sort().join(",");
+  ok("git backend: list names the plans with a branch under the prefix", lst === "p1,p10", lst);
+  ok("git backend: the code checkout's HEAD, branches, status, tags and remotes never moved", snap() === before,
+    before + "\n====\n" + snap());
+  ok("git backend: a remove pinned to an older version is refused", inB.remove("p1", w1.version).moved === true && inB.version("p1") === w2.version);
+  ok("git backend: a remove pinned to the current version deletes the branch", inB.remove("p1", w2.version).ok && inB.version("p1") === "");
+
+  // Outside: any other git URL or path, through a bare cache.
+  const outB = new SYNC.GitBackend(SYNC.loadConfig(true, SR, { SEAMUX_STATE_REMOTE: OUT }), { cacheDir: CACHE });
+  const refsBefore = execSync("git for-each-ref", { cwd: SR, encoding: "utf8" });
+  const ow = outB.write("p2", files, "");
+  ok("git backend: a remote outside the repo is written through a bare cache under the data root",
+    !outB.inside && ow.ok && fs.existsSync(path.join(outB.cache, "HEAD")) && outB.cache.startsWith(CACHE) &&
+    execSync(`git --git-dir ${OUT} rev-parse refs/heads/seamux-state/p2`, { encoding: "utf8" }).trim() === ow.version);
+  ok("git backend: …and the code repo gains no refs or objects from it",
+    execSync("git for-each-ref", { cwd: SR, encoding: "utf8" }) === refsBefore &&
+    spawnSync("git", ["cat-file", "-e", ow.version], { cwd: SR }).status !== 0 && snap() === before);
+  const fresh = new SYNC.GitBackend(SYNC.loadConfig(true, SR, { SEAMUX_STATE_REMOTE: OUT }), { cacheDir: path.join(TMP, "sync-cache-2") });
+  r = fresh.read("p2");
+  ok("git backend: a fresh cache reads the branch back", r.version === ow.version && r.files["plans/p1.md"].toString() === "# p1\n");
+  const relB = new SYNC.GitBackend(SYNC.loadConfig(true, SR, { SEAMUX_STATE_REMOTE: "../sync-outside.git", SEAMUX_STATE_PREFIX: "team/state-" }), { cacheDir: CACHE });
+  const rw = relB.write("p3", files, "");
+  ok("git backend: a relative path resolves against the repo, and the prefix need not end in /",
+    rw.ok && execSync(`git --git-dir ${OUT} rev-parse refs/heads/team/state-p3`, { encoding: "utf8" }).trim() === rw.version &&
+    relB.list().map(x => x.slug).join(",") === "p3");
+
+  c = SYNC.loadConfig(true, SR, { SEAMUX_STATE_PREFIX: "" });
+  ok("sync config: an empty prefix is refused, so a state branch is never a bare slug", c.prefix === "seamux-state/" && c.problems.length === 1);
+  c = SYNC.loadConfig(true, SR, { SEAMUX_STATE_PREFIX: "state/." });
+  ok("sync config: a prefix that makes a bad ref name with a slug after it is refused", c.prefix === "seamux-state/" && c.problems.length === 1);
+  let scp = "";
+  try { scp = new SYNC.GitBackend(SYNC.loadConfig(true, SR, { SEAMUX_STATE_REMOTE: "example.com:org/state.git" }), { cacheDir: CACHE }).target; } catch (e) { scp = e.message; }
+  ok("git backend: scp's host:path without a user is a URL, not a relative path", scp === "example.com:org/state.git", scp);
+  const ghost = inB.write("p10", files, "0123456789abcdef0123456789abcdef01234567");
+  ok("git backend: a write pinned to a commit the remote no longer has reads as moved", ghost.ok === false && ghost.moved === true);
+  // A partial clone (as a cloud sandbox's is) reads its own remote through the full cache.
+  execSync(`git --git-dir ${ORIGIN} config uploadpack.allowFilter true`);
+  const PC = path.join(TMP, "sync-partial");
+  execSync(`git clone -q --filter=blob:none file://${ORIGIN} ${PC}`);
+  const pcB = new SYNC.GitBackend(SYNC.loadConfig(true, PC, {}), { cacheDir: CACHE });
+  const pcRefs = execSync("git for-each-ref", { cwd: PC, encoding: "utf8" });
+  r = pcB.read("p10");
+  ok("git backend: a partial clone's own remote goes through the full cache, and every file reads",
+    !pcB.inside && pcB.where === "remote origin" && pcB.cache.startsWith(CACHE) && r.version !== "" &&
+    r.files["plans/p1.md"].toString() === "# p1\n" && execSync("git for-each-ref", { cwd: PC, encoding: "utf8" }) === pcRefs, pcB.where);
+  let threw = "";
+  try { new SYNC.GitBackend(SYNC.loadConfig(true, SR, { SEAMUX_STATE_REMOTE: "upstream" }), { cacheDir: CACHE }); } catch (e) { threw = e.message; }
+  ok("git backend: a remote name the repo does not have is refused by name", /no git remote named upstream/.test(threw), threw);
+  const gone = new SYNC.GitBackend(SYNC.loadConfig(true, SR, { SEAMUX_STATE_REMOTE: path.join(TMP, "no-such.git") }), { cacheDir: CACHE, timeout: 5000 });
+  threw = "";
+  try { gone.write("p4", files, ""); } catch (e) { threw = e.message; }
+  ok("git backend: a remote that cannot be reached throws, naming it", threw.includes("no-such.git"), threw);
+}
+
+// -------------------------------------------------- state push, pull, status and list
+{
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const SO = path.join(TMP, "st-origin.git"), SA = path.join(TMP, "st-a"), SB = path.join(TMP, "st-b");
+  execSync(`git init -q --bare ${SO}`);
+  fs.mkdirSync(SA);
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init && git remote add origin ${SO} && git push -q origin HEAD:refs/heads/main`, { cwd: SA });
+  execSync(`git clone -q ${SO} ${SB}`);
+  // Two machines: each its own data root, each its own clone.
+  const side = name => {
+    const d = path.join(TMP, "st-data-" + name);
+    return { ...ENV, DEEP_PLAN_STATE_DIR: path.join(d, "state"), DEEP_PLAN_KEYS_DIR: path.join(d, "keys"),
+      DEEP_PLAN_PLANS_DIR: path.join(d, "plans"), LOOKOUT_REVIEWS_DIR: path.join(d, "plans", "reviews") };
+  };
+  const EA = side("a"), EB = side("b");
+  const on = (env, dir, ...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env, cwd: dir });
+  let r = on(EA, SA, "render", tmpSpec({ ...spec, slug: "shared-p" }), "--root", SA);
+  ok("state: a plan renders on machine A", r.status === 0, r.stderr);
+  const skey = JSON.parse(fs.readFileSync(path.join(EA.DEEP_PLAN_KEYS_DIR, "shared-p.key.json"), "utf8"));
+  on(EA, SA, "grade", "shared-p", ...Object.entries(skey.answers).map(([q, v]) => `${q}=${v.letter}`));
+  r = on(EA, SA, "state", "status", "shared-p");
+  ok("state status: a plan with no branch says so, and that it is not shared", /shared-p  not shared  seamux-state\/shared-p on remote origin: no branch/.test(r.stdout), r.stdout + r.stderr);
+  r = on(EA, SA, "state", "push", "shared-p");
+  const tip = () => spawnSync("git", ["--git-dir", SO, "rev-parse", "refs/heads/seamux-state/shared-p"], { encoding: "utf8" }).stdout.trim();
+  const tree = execSync(`git --git-dir ${SO} ls-tree -r --name-only refs/heads/seamux-state/shared-p`, { encoding: "utf8" });
+  ok("state push: writes the plan's bundle files and meta.json to seamux-state/<slug> on the repo's remote",
+    r.status === 0 && /pushed shared-p to seamux-state\/shared-p on remote origin/.test(r.stdout) &&
+    ["deep-plan/state/shared-p.json", "deep-plan/keys/shared-p.spec.json", "deep-plan/keys/shared-p.key.json", "plans/shared-p.md", "meta.json"]
+      .every(f => tree.split("\n").includes(f)), r.stdout + r.stderr + tree);
+  const first = tip();
+  r = on(EA, SA, "state", "push", "shared-p");
+  ok("state push: nothing new is nothing written", r.status === 0 && /in sync/.test(r.stdout) && tip() === first, r.stdout);
+  ok("state status: in sync after a push", /: in sync \(branch /.test(on(EA, SA, "state", "status", "shared-p").stdout));
+  r = on(EB, SB, "state", "list");
+  ok("state list: names the branch, and that the plan is not on this machine", /^shared-p  [0-9a-f]{8}  not here$/m.test(r.stdout), r.stdout + r.stderr);
+
+  // B pulls into its own clone; A's root is still on this machine, so it stays.
+  r = on(EB, SB, "state", "pull", "shared-p");
+  const stB = JSON.parse(fs.readFileSync(path.join(EB.DEEP_PLAN_STATE_DIR, "shared-p.json"), "utf8"));
+  ok("state pull: brings the plan to another data root", r.status === 0 && /pulled shared-p from seamux-state\/shared-p/.test(r.stdout) &&
+    stB.slug === "shared-p" && fs.existsSync(path.join(EB.DEEP_PLAN_KEYS_DIR, "shared-p.key.json")) && stB.root === SA, r.stdout + r.stderr);
+  ok("state pull: the approved snapshot's path is this machine's copy", stB.approved && stB.approved.path === path.join(EB.DEEP_PLAN_PLANS_DIR, "shared-p.approved.md") &&
+    fs.existsSync(stB.approved.path), stB.approved && stB.approved.path);
+  ok("state pull: a second pull of the same version is a no-op", /up to date/.test(on(EB, SB, "state", "pull", "shared-p").stdout));
+  // A moves on and pushes; B, unchanged, pulls it.
+  on(EA, SA, "go", "shared-p", "next");
+  r = on(EA, SA, "state", "push", "shared-p");
+  ok("state status: B sees the branch ahead", /branch ahead: pull/.test(on(EB, SB, "state", "status", "shared-p").stdout));
+  r = on(EB, SB, "state", "pull", "shared-p");
+  ok("state pull: B picks up A's go", r.status === 0 &&
+    JSON.parse(fs.readFileSync(path.join(EB.DEEP_PLAN_STATE_DIR, "shared-p.json"), "utf8")).increments[0].status === "authorized", r.stdout + r.stderr);
+  // B changes something locally; a pull would lose it.
+  on(EB, SB, "block", "shared-p", "1", "waiting on a reply");
+  ok("state status: local changes are named", /local changes to push/.test(on(EB, SB, "state", "status", "shared-p").stdout));
+  on(EA, SA, "start", "shared-p", "1");
+  on(EA, SA, "state", "push", "shared-p");
+  ok("state status: both moved", /both moved/.test(on(EB, SB, "state", "status", "shared-p").stdout));
+  r = on(EB, SB, "state", "pull", "shared-p");
+  const stM = JSON.parse(fs.readFileSync(path.join(EB.DEEP_PLAN_STATE_DIR, "shared-p.json"), "utf8"));
+  ok("state pull: merges changes made here with the branch's instead of dropping them (the later start wins, both log lines stay)",
+    r.status === 0 && /merged shared-p with/.test(r.stdout) && stM.increments[0].status === "working" &&
+    stM.log.some(l => /^block: increment 1/.test(l.what)) && stM.log.some(l => /^start: increment 1/.test(l.what)), r.stdout + r.stderr);
+  ok("state status: the merge is ahead of the branch until pushed", /local changes to push/.test(on(EB, SB, "state", "status", "shared-p").stdout));
+  ok("state push: the merge lands", /pushed shared-p/.test(on(EB, SB, "state", "push", "shared-p").stdout));
+  on(EB, SB, "block", "shared-p", "1", "only here");
+  r = on(EB, SB, "state", "pull", "shared-p", "--force");
+  ok("state pull --force: replaces changes made here", r.status === 0 &&
+    JSON.parse(fs.readFileSync(path.join(EB.DEEP_PLAN_STATE_DIR, "shared-p.json"), "utf8")).increments[0].status === "working");
+  // A fresh machine whose recorded root is gone takes its own checkout.
+  const EC = side("c");
+  fs.renameSync(SA, SA + "-gone");
+  r = on(EC, SB, "state", "pull", "shared-p");
+  ok("state pull: a root that is gone becomes this checkout",
+    r.status === 0 && fs.realpathSync(JSON.parse(fs.readFileSync(path.join(EC.DEEP_PLAN_STATE_DIR, "shared-p.json"), "utf8")).root) === fs.realpathSync(SB), r.stdout + r.stderr);
+  fs.renameSync(SA + "-gone", SA);
+  // B's own root for the plan is kept when the branch's is not on this machine.
+  const SB2 = path.join(TMP, "st-b2");
+  execSync(`git clone -q ${SO} ${SB2}`);
+  const EF = side("f");
+  on(EF, SB, "state", "pull", "shared-p", "--root", SB);
+  on(EA, SA, "state", "pull", "shared-p", "--force");
+  on(EA, SA, "block", "shared-p", "2", "moved on A");
+  on(EA, SA, "state", "push", "shared-p");
+  fs.renameSync(SA, SA + "-gone");
+  r = on(EF, SB2, "state", "pull", "shared-p");
+  const stF = JSON.parse(fs.readFileSync(path.join(EF.DEEP_PLAN_STATE_DIR, "shared-p.json"), "utf8"));
+  ok("state pull: a machine keeps its own root for the plan over this checkout when the branch's is gone",
+    r.status === 0 && stF.root === SB && stF.increments[1].status === "blocked", r.stdout + r.stderr + stF.root);
+  fs.renameSync(SA + "-gone", SA);
+  // One plan whose share names no remote does not hide the others.
+  const sfile = path.join(EB.DEEP_PLAN_STATE_DIR, "zz-bad.json");
+  fs.writeFileSync(sfile, JSON.stringify({ slug: "zz-bad", root: SB, phase: "implementing", share: { remote: "nowhere" }, increments: [] }));
+  r = on(EB, SB, "state", "status");
+  ok("state status: a plan with a bad share is reported, and the rest still listed",
+    r.status === 0 && /zz-bad  shared  misconfigured/.test(r.stdout) && /shared-p  not shared/.test(r.stdout), r.stdout + r.stderr);
+  fs.rmSync(sfile);
+  // A branch is checked like a bundle: nothing outside the plan's own files.
+  const SYNC = await import(new URL("lib/sync.mjs", import.meta.url));
+  const be = new SYNC.GitBackend(SYNC.loadConfig(true, SA, {}), { cacheDir: path.join(TMP, "st-cache") });
+  const cur = be.read("shared-p");
+  be.write("shared-p", { ...cur.files, "deep-plan/state/other-plan.json": "{}" }, cur.version);
+  const ED = side("d");
+  r = on(ED, SB, "state", "pull", "shared-p");
+  ok("state pull: refuses a branch that carries another plan's files, writing nothing", r.status !== 0 &&
+    /outside the plan's own files/.test(r.stderr) && !fs.existsSync(path.join(ED.DEEP_PLAN_STATE_DIR, "shared-p.json")), r.stderr);
+  ok("state pull: a plan with no branch is named", /no branch seamux-state\/nope on remote origin/.test(on(EB, SB, "state", "pull", "nope").stderr));
+  ok("state: export-state and import-state still work by hand",
+    on(EA, SA, "export-state", "shared-p", "--out", path.join(TMP, "sp.bundle.json")).status === 0 &&
+    on(side("e"), SB, "import-state", path.join(TMP, "sp.bundle.json")).status === 0);
+}
+
+// -------------------------------------------------- merge a race by rule
+{
+  const M = await import(new URL("lib/merge.mjs", import.meta.url));
+  const base = () => ({ slug: "m", root: "/r", phase: "implementing", log: [{ at: 1, what: "render" }],
+    increments: [
+      { n: 1, title: "one", status: "pending", checks: { t: { kind: "test", name: "t", status: "pending", at: 1 } } },
+      { n: 2, title: "two", status: "pending", checks: {} },
+    ] });
+  const a = base(), b = base();
+  a.increments[0] = { ...a.increments[0], status: "done", doneAt: 100, changedAt: 100,
+    checks: { t: { kind: "test", name: "t", status: "pass", at: 90, note: "a ran it" } } };
+  a.log.push({ at: 100, what: "done: increment 1" });
+  b.increments[0] = { ...b.increments[0], status: "pending", changedAt: 200,
+    checks: { t: { kind: "test", name: "t", status: "pending", at: 200, note: "reset — re-verify" } } };
+  b.log.push({ at: 200, what: "reset: increment 1" });
+  let m = M.mergeStates(a, b);
+  ok("merge: a reset after a done wins, and its re-pended check with it", m.increments[0].status === "pending" && m.increments[0].checks.t.status === "pending");
+  m = M.mergeStates(b, a);
+  ok("merge: …in either order", m.increments[0].status === "pending" && m.increments[0].checks.t.status === "pending");
+  b.increments[0].changedAt = 50; b.increments[0].checks.t.at = 50; b.log[1].at = 50;
+  m = M.mergeStates(b, a);
+  ok("merge: a done after a reset wins", m.increments[0].status === "done" && m.increments[0].checks.t.status === "pass");
+  ok("merge: the log is the union by time", m.log.map(l => l.at).join(",") === "1,50,100");
+  const c = base(), d = base();
+  c.increments[1] = { ...c.increments[1], status: "authorized", authorizedAt: 300, changedAt: 300 };
+  d.increments[0].checks.t = { kind: "test", name: "t", status: "pass", at: 400, note: "d ran it" };
+  m = M.mergeStates(c, d);
+  ok("merge: each increment from its own latest side, and each check its newest verdict",
+    m.increments[1].status === "authorized" && m.increments[0].checks.t.status === "pass" && m.increments[0].checks.t.note === "d ran it");
+  const e = base(); e.increments[0].startedAt = 500; e.increments[0].status = "working"; e.increments[0].changedAt = 10;
+  ok("merge: the gate's flip to working (startedAt) counts as a transition", M.mergeStates(base(), e).increments[0].status === "working");
+  const done = base(); done.increments.forEach(i => { i.status = "done"; i.changedAt = 10; }); done.phase = "delivery";
+  const reopened = base(); reopened.increments[1] = { ...reopened.increments[1], status: "pending", changedAt: 20 };
+  ok("merge: the phase follows the merged increments", M.mergeStates(done, reopened).phase === "implementing");
+  const trimmed = base(); trimmed.increments = [trimmed.increments[0]]; trimmed.log.push({ at: 999, what: "render: increment 2 dropped" });
+  ok("merge: an increment a re-render dropped on the leading side stays out", M.mergeStates(trimmed, base()).increments.map(i => i.n).join(",") === "1");
+
+  // Two machines on one plan, racing through the branch.
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const RO = path.join(TMP, "race-origin.git"), RA = path.join(TMP, "race-a"), RB = path.join(TMP, "race-b");
+  execSync(`git init -q --bare ${RO}`);
+  fs.mkdirSync(RA);
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init && git remote add origin ${RO} && git push -q origin HEAD:refs/heads/main`, { cwd: RA });
+  execSync(`git clone -q ${RO} ${RB}`);
+  const side = name => {
+    const dd = path.join(TMP, "race-data-" + name);
+    return { ...ENV, DEEP_PLAN_STATE_DIR: path.join(dd, "state"), DEEP_PLAN_KEYS_DIR: path.join(dd, "keys"),
+      DEEP_PLAN_PLANS_DIR: path.join(dd, "plans"), LOOKOUT_REVIEWS_DIR: path.join(dd, "plans", "reviews") };
+  };
+  const EA = side("a"), EB = side("b");
+  const on = (env, dir, ...x) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...x], { encoding: "utf8", env, cwd: dir });
+  const stOf = env => JSON.parse(fs.readFileSync(path.join(env.DEEP_PLAN_STATE_DIR, "race-p.json"), "utf8"));
+  on(EA, RA, "render", tmpSpec({ ...spec, slug: "race-p" }), "--root", RA);
+  const k = JSON.parse(fs.readFileSync(path.join(EA.DEEP_PLAN_KEYS_DIR, "race-p.key.json"), "utf8"));
+  on(EA, RA, "grade", "race-p", ...Object.entries(k.answers).map(([q, v]) => `${q}=${v.letter}`));
+  on(EA, RA, "state", "push", "race-p");
+  on(EB, RB, "state", "pull", "race-p", "--root", RB);
+  // A and B each move, neither having seen the other; A lands first.
+  on(EA, RA, "go", "race-p", "1");
+  on(EB, RB, "block", "race-p", "2", "B's reason");
+  ok("race: the first writer's push lands", /pushed race-p/.test(on(EA, RA, "state", "push", "race-p").stdout));
+  let r = on(EB, RB, "state", "push", "race-p");
+  ok("race: the second writer's push merges with the branch and lands", r.status === 0 && /merged with the branch first/.test(r.stdout), r.stdout + r.stderr);
+  on(EA, RA, "state", "pull", "race-p");
+  let sa = stOf(EA), sb = stOf(EB);
+  ok("race: nothing is lost — A has B's block and B has A's go",
+    sa.increments[0].status === "authorized" && sa.increments[1].status === "blocked" &&
+    sb.increments[0].status === "authorized" && sb.increments[1].status === "blocked", JSON.stringify([sa.increments.map(i => i.status), sb.increments.map(i => i.status)]));
+  ok("race: both logs are kept", sa.log.some(l => /^block: increment 2/.test(l.what)) && sa.log.some(l => /^go: increment 1/.test(l.what)));
+  ok("race: the root stays each machine's own", fs.realpathSync(sa.root) === fs.realpathSync(RA) && fs.realpathSync(sb.root) === fs.realpathSync(RB), sa.root + " " + sb.root);
+  // The other order, and a later reset: B resets 1 after A started it, and A pushes second.
+  on(EA, RA, "start", "race-p", "1");
+  on(EB, RB, "reset", "race-p", "1");
+  ok("race (other order): B lands first", /pushed race-p/.test(on(EB, RB, "state", "push", "race-p").stdout));
+  r = on(EA, RA, "state", "push", "race-p");
+  sa = stOf(EA);
+  ok("race (other order): A merges, and B's later reset wins over A's earlier start",
+    r.status === 0 && /merged with the branch first/.test(r.stdout) && sa.increments[0].status === "pending", r.stdout + r.stderr + JSON.stringify(sa.increments[0]));
+  on(EB, RB, "state", "pull", "race-p");
+  ok("race (other order): B pulls the same result", stOf(EB).increments[0].status === "pending" && stOf(EB).increments[1].status === "blocked");
+  ok("race: both machines end in sync", /: in sync/.test(on(EA, RA, "state", "status", "race-p").stdout) && /: in sync/.test(on(EB, RB, "state", "status", "race-p").stdout));
+  ok("merge: a plan with no increments keeps its phase", M.mergeStates({ slug: "e", phase: "done", increments: [] }, { slug: "e", phase: "done", increments: [] }).phase === "done");
+  const ap = base(); ap.approved = { path: "/p.approved.md" }; ap.log.push({ at: 5, what: "grade" });
+  const later = base(); later.log.push({ at: 900, what: "block" });
+  ok("merge: a plan-level record only the trailing side has is kept", M.mergeStates(later, ap).approved && M.mergeStates(later, ap).approved.path === "/p.approved.md");
+  // --root still applies when a pull merges.
+  on(EB, RB, "block", "race-p", "1", "here");
+  on(EA, RA, "block", "race-p", "2", "there again"); on(EA, RA, "state", "push", "race-p");
+  const RB2 = path.join(TMP, "race-b2"); execSync(`git clone -q ${RO} ${RB2}`);
+  r = on(EB, RB, "state", "pull", "race-p", "--root", RB2);
+  ok("state pull --root: applies when the pull merges", /merged race-p/.test(r.stdout) && fs.realpathSync(stOf(EB).root) === fs.realpathSync(RB2), r.stdout + r.stderr);
+}
+
+// -------------------------------------------------- sync on transitions, and a pull at session start
+{
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const TO = path.join(TMP, "tr-origin.git"), TA = path.join(TMP, "tr-a");
+  execSync(`git init -q --bare ${TO}`);
+  fs.mkdirSync(TA);
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init && git remote add origin ${TO} && git push -q origin HEAD:refs/heads/main`, { cwd: TA });
+  const side = name => {
+    const dd = path.join(TMP, "tr-data-" + name);
+    return { ...ENV, DEEP_PLAN_STATE_DIR: path.join(dd, "state"), DEEP_PLAN_KEYS_DIR: path.join(dd, "keys"),
+      DEEP_PLAN_PLANS_DIR: path.join(dd, "plans"), LOOKOUT_REVIEWS_DIR: path.join(dd, "plans", "reviews") };
+  };
+  const EA = side("a");
+  const on = (env, dir, ...x) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...x], { encoding: "utf8", env, cwd: dir });
+  const tipOf = slug => spawnSync("git", ["--git-dir", TO, "rev-parse", "--verify", "-q", "refs/heads/seamux-state/" + slug], { encoding: "utf8" }).stdout.trim();
+  const branchState = slug => JSON.parse(execSync(`git --git-dir ${TO} show refs/heads/seamux-state/${slug}:deep-plan/state/${slug}.json`, { encoding: "utf8" }));
+  const gradeIt = (env, dir, slug) => {
+    const k = JSON.parse(fs.readFileSync(path.join(env.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8"));
+    return on(env, dir, "grade", slug, ...Object.entries(k.answers).map(([q, v]) => `${q}=${v.letter}`));
+  };
+
+  let r = on(EA, TA, "render", tmpSpec({ ...spec, slug: "tr-bad", share: { remote: "origin", sync: "always" } }), "--root", TA);
+  ok("render refuses a share it cannot read", r.status !== 0 && /share\.sync: transitions or manual/.test(r.stderr), r.stderr);
+  r = on(EA, TA, "render", tmpSpec({ ...spec, slug: "tr-p", share: true }), "--root", TA);
+  ok("render records the spec's share in the plan state", r.status === 0 &&
+    JSON.parse(fs.readFileSync(path.join(EA.DEEP_PLAN_STATE_DIR, "tr-p.json"), "utf8")).share === true, r.stderr);
+  ok("render itself does not push", tipOf("tr-p") === "");
+  gradeIt(EA, TA, "tr-p");
+  ok("grade pushes a shared plan", tipOf("tr-p") !== "" && branchState("tr-p").phase === "implementing");
+  let t = tipOf("tr-p");
+  on(EA, TA, "go", "tr-p", "1");
+  ok("go pushes", tipOf("tr-p") !== t && branchState("tr-p").increments[0].status === "authorized");
+  t = tipOf("tr-p");
+  const g = spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")], { encoding: "utf8", env: EA,
+    input: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: path.join(TA, "a.txt") }, cwd: TA }) });
+  ok("the gate's flip to working is not pushed", g.status === 0 &&
+    JSON.parse(fs.readFileSync(path.join(EA.DEEP_PLAN_STATE_DIR, "tr-p.json"), "utf8")).increments[0].status === "working" && tipOf("tr-p") === t, g.stderr);
+  on(EA, TA, "block", "tr-p", "2", "waiting");
+  ok("block pushes, and carries the earlier flip to working", tipOf("tr-p") !== t &&
+    branchState("tr-p").increments[0].status === "working" && branchState("tr-p").increments[1].status === "blocked");
+  t = tipOf("tr-p");
+  on(EA, TA, "reset", "tr-p", "2");
+  ok("reset pushes", tipOf("tr-p") !== t && branchState("tr-p").increments[1].status === "pending");
+  t = tipOf("tr-p");
+  r = on(EA, TA, "check", "pass", "tr-p", "1", "nope", "x");
+  ok("a refused command pushes nothing", r.status !== 0 && tipOf("tr-p") === t);
+
+  // A plan that does not share never pushes; one on sync manual or off does not either.
+  on(EA, TA, "render", tmpSpec({ ...spec, slug: "tr-private" }), "--root", TA);
+  gradeIt(EA, TA, "tr-private"); on(EA, TA, "go", "tr-private", "1");
+  ok("a plan that does not share is never pushed", tipOf("tr-private") === "");
+  ok("…and state push still works on it by hand", on(EA, TA, "state", "push", "tr-private").status === 0 && tipOf("tr-private") !== "");
+  on(EA, TA, "render", tmpSpec({ ...spec, slug: "tr-manual", share: { sync: "manual" } }), "--root", TA);
+  gradeIt(EA, TA, "tr-manual");
+  ok("share sync manual does not push on a transition", tipOf("tr-manual") === "");
+  t = tipOf("tr-p");
+  on({ ...EA, SEAMUX_STATE_SYNC: "off" }, TA, "block", "tr-p", "2", "offline here");
+  ok("SEAMUX_STATE_SYNC=off stops the pushes on this machine", tipOf("tr-p") === t);
+
+  // A push that fails: said once, the command still succeeds, status says unsynced until one lands.
+  fs.renameSync(TO, TO + "-away");
+  r = on(EA, TA, "reset", "tr-p", "2");
+  ok("a failed push leaves the transition done and says so once",
+    r.status === 0 && (r.stderr.match(/was not pushed to its state branch/g) || []).length === 1 &&
+    JSON.parse(fs.readFileSync(path.join(EA.DEEP_PLAN_STATE_DIR, "tr-p.json"), "utf8")).increments[1].status === "pending", r.stderr);
+  ok("status marks the plan unsynced", /unsynced: the last push to its state branch failed/.test(on(EA, TA, "status").stdout) &&
+    JSON.parse(on(EA, TA, "status", "--json").stdout).find(x => x.slug === "tr-p").unsynced);
+  fs.renameSync(TO + "-away", TO);
+  on(EA, TA, "block", "tr-p", "2", "back online");
+  ok("the next transition's push lands and clears it", branchState("tr-p").increments[1].status === "blocked" &&
+    !JSON.parse(on(EA, TA, "status", "--json").stdout).find(x => x.slug === "tr-p").unsynced);
+
+  // A session start pulls. Locally: the shared plans rooted in this repo.
+  const EB = side("b");
+  on(EB, TA, "state", "pull", "tr-p");
+  on(EA, TA, "block", "tr-p", "1", "moved on A");
+  r = on({ ...EB, CLAUDE_PROJECT_DIR: TA }, TA, "state", "pull", "--session");
+  ok("session start pulls a shared plan of this repo that moved", r.status === 0 && /deep-plan: pulled tr-p/.test(r.stdout) &&
+    JSON.parse(fs.readFileSync(path.join(EB.DEEP_PLAN_STATE_DIR, "tr-p.json"), "utf8")).increments[0].status === "blocked", r.stdout + r.stderr);
+  ok("…and says nothing when nothing moved", on({ ...EB, CLAUDE_PROJECT_DIR: TA }, TA, "state", "pull", "--session").stdout.trim() === "");
+  ok("…and does not bring plans that are not here, on a local machine", !fs.existsSync(path.join(EB.DEEP_PLAN_STATE_DIR, "tr-private.json")));
+  // On the remote host: a new sandbox gets every plan with a branch on this repo's remote.
+  const TC = path.join(TMP, "tr-c");
+  execSync(`git clone -q ${TO} ${TC}`);
+  const RH = path.join(TMP, "tr-remote-home");
+  const REnv = { ...ENV, HOME: RH, SEAMUX_HOST: "remote", CLAUDE_PROJECT_DIR: TC };
+  for (const k of ["DEEP_PLAN_STATE_DIR", "DEEP_PLAN_KEYS_DIR", "DEEP_PLAN_PLANS_DIR", "DEEP_PLAN_ANNOT_DIR"]) delete REnv[k];
+  r = on(REnv, TC, "state", "pull", "--session");
+  const SD = path.join(TC, ".seamux", "state", "deep-plan", "state");
+  ok("session start on the remote host pulls the shared plans with a branch on the repo's remote, rooted in the new clone, and leaves a plan pushed by hand",
+    r.status === 0 && fs.existsSync(path.join(SD, "tr-p.json")) && !fs.existsSync(path.join(SD, "tr-private.json")) &&
+    fs.realpathSync(JSON.parse(fs.readFileSync(path.join(SD, "tr-p.json"), "utf8")).root) === fs.realpathSync(TA), r.stdout + r.stderr);
+  const gone = path.join(TMP, "tr-nowhere");
+  r = on({ ...EB, CLAUDE_PROJECT_DIR: gone }, TMP, "state", "pull", "--session");
+  ok("session start outside a repo does nothing and exits 0", r.status === 0 && r.stdout.trim() === "");
+  on(EA, TA, "block", "tr-p", "2", "once more");
+  r = on({ ...EB, CLAUDE_PROJECT_DIR: TA, SEAMUX_STATE_SYNC: "off" }, TA, "state", "pull", "--session");
+  ok("session start pulls nothing where SEAMUX_STATE_SYNC=off", r.stdout.trim() === "" &&
+    JSON.parse(fs.readFileSync(path.join(EB.DEEP_PLAN_STATE_DIR, "tr-p.json"), "utf8")).increments[1].note !== "once more");
+  on(EA, TA, "render", tmpSpec({ ...spec, slug: "tr-closed", share: true }), "--root", TA);
+  on(EA, TA, "close", "tr-closed"); on(EA, TA, "state", "push", "tr-closed");
+  r = on(REnv, TC, "state", "pull", "--session");
+  ok("session start on the remote host leaves a closed plan's branch alone", r.status === 0 && !fs.existsSync(path.join(SD, "tr-closed.json")), r.stdout + r.stderr);
+  const hooks = JSON.parse(fs.readFileSync(path.join(HERE, "hooks", "hooks.json"), "utf8")).hooks;
+  ok("the plugin's SessionStart hooks pull shared state", hooks.SessionStart.some(gr => gr.hooks.some(h => /state pull --session/.test(h.command))));
+  const IRP = path.join(TMP, "tr-install");
+  fs.mkdirSync(IRP); execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: IRP });
+  r = on(ENV, IRP, "install-repo", "--root", IRP);
+  const rs = r.status === 0 ? JSON.parse(fs.readFileSync(path.join(IRP, ".claude", "settings.json"), "utf8")) : {};
+  ok("install-repo gives a cloud repo the same session-start pull", r.status === 0 &&
+    (rs.hooks.SessionStart || []).some(gr => gr.hooks.some(h => /skills\/deep-plan\/deep_plan\.mjs" state pull --session/.test(h.command))), r.stderr);
+}
+
+// -------------------------------------------------- shared state: a family's branches, archive on deliver and close
+{
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const FO = path.join(TMP, "sf-origin.git"), FR = path.join(TMP, "sf-repo"), FW = path.join(TMP, "sf-repo.worktrees");
+  execSync(`git init -q --bare ${FO}`);
+  fs.mkdirSync(FR);
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init && git remote add origin ${FO} && git push -q origin HEAD:refs/heads/main`, { cwd: FR });
+  const API = path.join(FW, "api"), UI = path.join(FW, "ui");
+  execSync(`git worktree add -q -b api ${API} && git worktree add -q -b ui ${UI}`, { cwd: FR });
+  const dd = path.join(TMP, "sf-data");
+  const EF = { ...ENV, DEEP_PLAN_STATE_DIR: path.join(dd, "state"), DEEP_PLAN_KEYS_DIR: path.join(dd, "keys"),
+    DEEP_PLAN_PLANS_DIR: path.join(dd, "plans"), LOOKOUT_REVIEWS_DIR: path.join(dd, "plans", "reviews") };
+  const on = (dir, ...x) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...x], { encoding: "utf8", env: EF, cwd: dir });
+  const ref = r => spawnSync("git", ["--git-dir", FO, "rev-parse", "--verify", "-q", r], { encoding: "utf8" }).stdout.trim();
+  const tree = b => (spawnSync("git", ["--git-dir", FO, "ls-tree", "-r", "--name-only", b], { encoding: "utf8" }).stdout || "").split("\n");
+  const child = (slug, files) => {
+    const c = JSON.parse(JSON.stringify(spec));
+    c.slug = slug;
+    c.deliverables = c.deliverables.map((d, i) => ({ ...d, files: i === 0 ? files : [] }));
+    return c;
+  };
+  on(API, "render", tmpSpec(child("example-auth-api", ["api/auth/session.ts"])), "--root", API);
+  on(UI, "render", tmpSpec(child("example-auth-ui", ["web/login/form.tsx"])), "--root", UI);
+  const fam = JSON.parse(fs.readFileSync(path.join(HERE, "examples", "example.family.spec.json"), "utf8"));
+  let r = on(FR, "render", tmpSpec({ ...fam, share: true }), "--root", FR);
+  ok("shared family: the parent renders with share", r.status === 0, r.stderr);
+  const pk = JSON.parse(fs.readFileSync(path.join(EF.DEEP_PLAN_KEYS_DIR, fam.slug + ".key.json"), "utf8"));
+  on(FR, "grade", fam.slug, ...Object.entries(pk.answers).map(([q, v]) => `${q}=${v.letter}`));
+  const pb = "refs/heads/seamux-state/" + fam.slug;
+  ok("shared family: the parent's branch carries the family index", ref(pb) !== "" &&
+    tree(pb).includes(`deep-plan/state/families/${fam.slug}/index.json`), tree(pb).join(" "));
+  // A child shares through its parent, on a branch of its own.
+  on(API, "block", "example-auth-api", "1", "waiting on the parent");
+  const ab = "refs/heads/seamux-state/example-auth-api";
+  ok("shared family: a child with no share of its own pushes to its own branch, because its parent shares",
+    ref(ab) !== "" && tree(ab).includes("deep-plan/state/example-auth-api.json") &&
+    !tree(ab).some(f => f.startsWith("deep-plan/state/families/")), tree(ab).join(" "));
+  ok("shared family: …and status says it is shared", /example-auth-api  shared/.test(on(API, "state", "status", "example-auth-api").stdout));
+  // A hold is the family's control file: it rides on the parent's branch.
+  let t = ref(pb);
+  r = on(FR, "family", "hold", "example-auth-ui", "the contract is moving");
+  const ctl = () => JSON.parse(execSync(`git --git-dir ${FO} show ${pb}:deep-plan/state/families/${fam.slug}/control.json`, { encoding: "utf8" }));
+  ok("shared family: a hold pushes the parent's branch with the control file", r.status === 0 && ref(pb) !== t &&
+    ctl().holds["example-auth-ui"] && ctl().holds["example-auth-ui"].reason === "the contract is moving", r.stdout + r.stderr);
+  t = ref(pb);
+  on(FR, "family", "unhold", "example-auth-ui");
+  ok("shared family: an unhold does too", ref(pb) !== t && !ctl().holds["example-auth-ui"]);
+  // Another machine pulls the parent and sees the family.
+  const d2 = path.join(TMP, "sf-second");
+  const E2 = { ...ENV, DEEP_PLAN_STATE_DIR: path.join(d2, "state"), DEEP_PLAN_KEYS_DIR: path.join(d2, "keys"),
+    DEEP_PLAN_PLANS_DIR: path.join(d2, "plans"), LOOKOUT_REVIEWS_DIR: path.join(d2, "plans", "reviews") };
+  r = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "state", "pull", fam.slug], { encoding: "utf8", env: E2, cwd: FR });
+  ok("shared family: pulling the parent brings the family index and control", r.status === 0 &&
+    fs.existsSync(path.join(d2, "state", "families", fam.slug, "index.json")) && fs.existsSync(path.join(d2, "state", "families", fam.slug, "control.json")), r.stderr);
+  // The end of a plan: close archives the branch as a tag and deletes it.
+  r = on(UI, "close", "example-auth-ui");
+  const ub = "refs/heads/seamux-state/example-auth-ui", utag = "refs/tags/seamux-state-archive/example-auth-ui";
+  ok("close archives a shared plan's branch as seamux-state-archive/<slug> and deletes it", r.status === 0 &&
+    ref(ub) === "" && ref(utag) !== "" &&
+    JSON.parse(execSync(`git --git-dir ${FO} show ${utag}:deep-plan/state/example-auth-ui.json`, { encoding: "utf8" })).phase === "closed", r.stdout + r.stderr);
+  ok("…and state list no longer shows it", !/example-auth-ui/.test(on(FR, "state", "list").stdout));
+  // deliver: a plan with a delivery review, its last increment done by force (no checks run here).
+  const solo = { ...spec, slug: "sf-solo", share: true, review: { ...(spec.review || {}), increments: "none", delivery: false } };
+  on(FR, "render", tmpSpec(solo), "--root", FR);
+  const sk = JSON.parse(fs.readFileSync(path.join(EF.DEEP_PLAN_KEYS_DIR, "sf-solo.key.json"), "utf8"));
+  on(FR, "grade", "sf-solo", ...Object.entries(sk.answers).map(([q, v]) => `${q}=${v.letter}`));
+  ok("an unfinished plan keeps its branch", ref("refs/heads/seamux-state/sf-solo") !== "");
+  for (const inc of JSON.parse(fs.readFileSync(path.join(dd, "state", "sf-solo.json"), "utf8")).increments) {
+    on(FR, "go", "sf-solo", String(inc.n), "--force"); on(FR, "done", "sf-solo", String(inc.n), "--force");
+  }
+  ok("a plan that finishes without close or deliver keeps its branch", ref("refs/heads/seamux-state/sf-solo") !== "");
+  r = on(FR, "close", "sf-solo");
+  ok("…until it is closed", ref("refs/heads/seamux-state/sf-solo") === "" && ref("refs/tags/seamux-state-archive/sf-solo") !== "", r.stderr);
+  // deliver: a shared plan with a delivery review completes, and its branch is archived.
+  {
+    const LK = path.join(HERE, "..", "lookout");
+    const LENV = { ...EF, LOOKOUT_ENGINE: LK, LOOKOUT_TYPESAFE_CLIENT: "", LOOKOUT_VENDOR_DIR: path.join(TMP, "sf-lookout-vendor"),
+      LOOKOUT_ENGINE_FILE: path.join(TMP, "sf-lookout-engine.json"), LOOKOUT_BIN_DIR: path.join(TMP, "sf-lookout-bin") };
+    const lc = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: LENV, cwd: FR });
+    const dv = { ...spec, slug: "sf-deliver", share: true, review: { ...(spec.review || {}), increments: "none", delivery: true } };
+    dv.deliverables = [{ ...dv.deliverables[0], files: [] }];
+    lc("render", tmpSpec(dv), "--root", FR);
+    const dk = JSON.parse(fs.readFileSync(path.join(EF.DEEP_PLAN_KEYS_DIR, "sf-deliver.key.json"), "utf8"));
+    lc("grade", "sf-deliver", ...Object.entries(dk.answers).map(([q, v]) => `${q}=${v.letter}`));
+    lc("go", "sf-deliver", "1");
+    fs.writeFileSync(path.join(FR, "d.txt"), "delivered\n");
+    execSync(`git add d.txt && ${G} commit -q -m d`, { cwd: FR });
+    lc("done", "sf-deliver", "1", "--force");
+    lc("deliver", "sf-deliver");
+    const none = path.join(TMP, "sf-no-findings.json");
+    fs.writeFileSync(none, JSON.stringify({ findings: [] }));
+    spawnSync("node", [path.join(LK, "lookout.mjs"), "findings", "add", "sf-deliver-delivery", none], { encoding: "utf8", env: LENV, cwd: FR });
+    ok("a shared plan in its delivery phase keeps its branch", ref("refs/heads/seamux-state/sf-deliver") !== "");
+    r = lc("deliver", "sf-deliver");
+    ok("deliver archives a shared plan's branch once the plan is complete", r.status === 0 && /plan complete/.test(r.stdout) &&
+      ref("refs/heads/seamux-state/sf-deliver") === "" && ref("refs/tags/seamux-state-archive/sf-deliver") !== "" &&
+      JSON.parse(execSync(`git --git-dir ${FO} show refs/tags/seamux-state-archive/sf-deliver:deep-plan/state/sf-deliver.json`, { encoding: "utf8" })).phase === "done",
+      r.stdout + r.stderr);
+  }
+  // Two machines' family control merge per child: a later unhold beats an earlier hold, a later hold beats both.
+  {
+    const M = await import(new URL("lib/merge.mjs", import.meta.url));
+    const held = { holds: { kid: { reason: "wait", at: 10 } }, takenBack: {}, released: {} };
+    const freed = { holds: {}, takenBack: { other: { at: 5 } }, released: { "holds/kid": 20 } };
+    let c = M.mergeControl(held, freed);
+    ok("family control merge: a later unhold wins over an earlier hold, and the other side's take-back stays",
+      !c.holds.kid && c.takenBack.other && c.released["holds/kid"] === 20);
+    c = M.mergeControl({ ...held, holds: { kid: { reason: "again", at: 30 } } }, freed);
+    ok("family control merge: a hold made after the release stands", c.holds.kid && c.holds.kid.reason === "again");
+    const rel = "deep-plan/state/families/p/trespass.jsonl", srel = "deep-plan/state/p.json";
+    const f = M.mergeFiles({ [rel]: Buffer.from('{"a":1}\n{"b":2}\n') }, { [rel]: Buffer.from('{"a":1}\n{"c":3}\n') },
+      { slug: "p", increments: [], log: [] }, { slug: "p", increments: [], log: [] }, srel, { slug: "p" });
+    ok("family trespass log merge: both machines' lines, once", f[rel].toString() === '{"a":1}\n{"b":2}\n{"c":3}\n', f[rel].toString());
+  }
+  // A machine still holding a plan that ended elsewhere is told once at session start, then left alone.
+  {
+    const d3 = path.join(TMP, "sf-third");
+    const E3 = { ...ENV, DEEP_PLAN_STATE_DIR: path.join(d3, "state"), DEEP_PLAN_KEYS_DIR: path.join(d3, "keys"),
+      DEEP_PLAN_PLANS_DIR: path.join(d3, "plans"), LOOKOUT_REVIEWS_DIR: path.join(d3, "plans", "reviews"), CLAUDE_PROJECT_DIR: FR };
+    const o3 = (...x) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...x], { encoding: "utf8", env: E3, cwd: FR });
+    on(FR, "render", tmpSpec({ ...spec, slug: "sf-ends", share: true }), "--root", FR);
+    const ek = JSON.parse(fs.readFileSync(path.join(EF.DEEP_PLAN_KEYS_DIR, "sf-ends.key.json"), "utf8"));
+    on(FR, "grade", "sf-ends", ...Object.entries(ek.answers).map(([q, v]) => `${q}=${v.letter}`));
+    o3("state", "pull", "sf-ends");
+    on(FR, "close", "sf-ends");
+    r = o3("state", "pull", "--session");
+    ok("session start says once that a plan's branch was archived elsewhere", r.status === 0 && /sf-ends ended elsewhere: .* archived as seamux-state-archive\/sf-ends/.test(r.stdout), r.stdout + r.stderr);
+    r = o3("state", "pull", "--session");
+    ok("…and says nothing about it after that", r.status === 0 && !/sf-ends/.test(r.stdout), r.stdout);
+    r = o3("state", "push", "sf-ends");
+    ok("a push of a plan whose branch was archived elsewhere is refused, and nothing is recreated",
+      r.status !== 0 && /ended elsewhere/.test(r.stderr) && ref("refs/heads/seamux-state/sf-ends") === "", r.stderr);
+  }
+  // A plan that does not share is never archived (nothing was pushed for it).
+  on(FR, "render", tmpSpec({ ...spec, slug: "sf-private" }), "--root", FR);
+  on(FR, "close", "sf-private");
+  ok("closing a plan that does not share touches no ref", ref("refs/tags/seamux-state-archive/sf-private") === "");
+}
+
+// -------------------------------------------------- await-go pulls the child's branch
+{
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const AO = path.join(TMP, "aw-origin.git"), AP = path.join(TMP, "aw-parent"), AK = path.join(TMP, "aw-parent.worktrees", "kid");
+  execSync(`git init -q --bare ${AO}`);
+  fs.mkdirSync(AP);
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init && git remote add origin ${AO} && git push -q origin HEAD:refs/heads/main`, { cwd: AP });
+  execSync(`git worktree add -q -b kid ${AK}`, { cwd: AP });
+  const machine = name => {
+    const dd = path.join(TMP, "aw-data-" + name);
+    return { ...ENV, DEEP_PLAN_STATE_DIR: path.join(dd, "state"), DEEP_PLAN_KEYS_DIR: path.join(dd, "keys"),
+      DEEP_PLAN_PLANS_DIR: path.join(dd, "plans"), LOOKOUT_REVIEWS_DIR: path.join(dd, "plans", "reviews"),
+      DEEP_PLAN_AWAIT_PULL_MS: "1000" };
+  };
+  const EP = machine("parent"), EK = machine("child");
+  const on = (env, dir, ...x) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...x], { encoding: "utf8", env, cwd: dir });
+  const gradeOn = (env, dir, slug) => {
+    const k = JSON.parse(fs.readFileSync(path.join(env.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8"));
+    return on(env, dir, "grade", slug, ...Object.entries(k.answers).map(([q, v]) => `${q}=${v.letter}`));
+  };
+  // Waits for a background await-go, up to ms; resolves { status, stdout, stderr }.
+  const awaitIn = (env, dir, slug, secs) => {
+    const ch = spawn("node", [path.join(HERE, "deep_plan.mjs"), "await-go", slug, "--timeout", String(secs)], { env, cwd: dir });
+    let out = "", err = "";
+    ch.stdout.on("data", d => { out += d; }); ch.stderr.on("data", d => { err += d; });
+    return new Promise(res => ch.on("exit", code => res({ status: code, stdout: out, stderr: err })));
+  };
+  // The parent machine: a child plan, then a shared parent that delegates the child's go.
+  const kid = JSON.parse(JSON.stringify(spec)); kid.slug = "aw-kid";
+  kid.deliverables = kid.deliverables.map((d, i) => ({ ...d, files: i === 0 ? ["kid/a.ts"] : [] }));
+  on(EP, AK, "render", tmpSpec(kid), "--root", AK);
+  const fam = JSON.parse(fs.readFileSync(path.join(HERE, "examples", "example.family.spec.json"), "utf8"));
+  const parent = { ...fam, slug: "aw-parent", share: true, workstreams: [{ slug: "aw-kid", owns: ["kid/**"], go: "parent" }] };
+  let r = on(EP, AP, "render", tmpSpec(parent), "--root", AP);
+  ok("await-go: a shared parent delegating its child's go renders", r.status === 0, r.stderr);
+  gradeOn(EP, AP, "aw-parent");
+  gradeOn(EP, AK, "aw-kid");
+  const kidTip = () => spawnSync("git", ["--git-dir", AO, "rev-parse", "--verify", "-q", "refs/heads/seamux-state/aw-kid"], { encoding: "utf8" }).stdout.trim();
+  ok("await-go: the child's grade pushes its own branch, shared through its parent", kidTip() !== "");
+  // The child machine: the family from the parent's branch, the child from its own.
+  on(EK, AK, "state", "pull", "aw-parent");
+  on(EK, AK, "state", "pull", "aw-kid");
+  ok("await-go: the child machine has the child plan and its family",
+    fs.existsSync(path.join(EK.DEEP_PLAN_STATE_DIR, "aw-kid.json")) && fs.existsSync(path.join(EK.DEEP_PLAN_STATE_DIR, "families", "aw-parent", "index.json")));
+  const waiting = awaitIn(EK, AK, "aw-kid", 30);
+  await new Promise(res => setTimeout(res, 1500));
+  r = on(EP, AP, "go", "aw-kid", "1");
+  ok("await-go: the parent agent gives the child its go on the parent machine", r.status === 0, r.stdout + r.stderr);
+  const t0 = Date.now();
+  const got = await waiting;
+  ok("await-go: the waiting child pulls the go from its branch and prints the increment",
+    got.status === 0 && got.stdout.trim() === "1" && /go arrived from the state branch \(written by /.test(got.stderr), JSON.stringify(got));
+  ok("await-go: …within the wait, not at its deadline", Date.now() - t0 < 25000);
+  // A pull that fails is said once, and the wait goes on to its deadline.
+  on(EK, AK, "done", "aw-kid", "1", "--force");
+  fs.renameSync(AO, AO + "-away");
+  const failed = await awaitIn(EK, AK, "aw-kid", 4);
+  fs.renameSync(AO + "-away", AO);
+  ok("await-go: a failed pull is said once and the wait goes on to its deadline",
+    failed.status === 2 && (failed.stderr.match(/could not pull aw-kid's state branch/g) || []).length === 1 &&
+    /no go for aw-kid after 4s/.test(failed.stderr), failed.stderr);
+  // A fresh cloud sandbox brings the shared parent, and then its child, which has no share of its own.
+  const AC = path.join(TMP, "aw-cloud");
+  execSync(`git clone -q ${AO} ${AC}`);
+  const CE = { ...ENV, HOME: path.join(TMP, "aw-cloud-home"), SEAMUX_HOST: "remote", CLAUDE_PROJECT_DIR: AC };
+  for (const k of ["DEEP_PLAN_STATE_DIR", "DEEP_PLAN_KEYS_DIR", "DEEP_PLAN_PLANS_DIR", "DEEP_PLAN_ANNOT_DIR"]) delete CE[k];
+  r = on(CE, AC, "state", "pull", "--session");
+  const CS = path.join(AC, ".seamux", "state", "deep-plan", "state");
+  ok("await-go: a fresh cloud sandbox brings the shared parent and its child through it",
+    r.status === 0 && fs.existsSync(path.join(CS, "aw-parent.json")) && fs.existsSync(path.join(CS, "aw-kid.json")), r.stdout + r.stderr);
+  // A plan that does not share makes no network call: its repo has no remote at all.
+  const NR = path.join(TMP, "aw-noremote");
+  fs.mkdirSync(NR); execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: NR });
+  on(EK, NR, "render", tmpSpec({ ...spec, slug: "aw-private" }), "--root", NR);
+  gradeOn(EK, NR, "aw-private");
+  const quiet = await awaitIn(EK, NR, "aw-private", 3);
+  ok("await-go: a plan that does not share never reaches for a remote", quiet.status === 2 && !/could not pull|remote/.test(quiet.stderr), quiet.stderr);
 }
 
 // -------------------------------------------------- hot-path cost

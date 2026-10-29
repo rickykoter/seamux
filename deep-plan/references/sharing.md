@@ -1,4 +1,43 @@
-# Share for annotation (optional, confirm-first)
+# Sharing a plan
+
+Two kinds of sharing, for different readers: a plan's state on a git branch,
+for other sessions working the plan, and a published page, for people
+annotating it.
+
+## State branches
+
+A plan whose spec sets `share` keeps its state on a branch of its own,
+`seamux-state/<slug>`, so another machine or cloud sandbox can pick it up.
+Ask about it during planning, next to the review question: a plan shares
+only when its spec says so.
+
+- `"share": true` uses the repo's own remote (`origin`). `"share": { "remote":
+  "...", "prefix": "...", "sync": "transitions|manual" }` points it at another
+  remote name, a URL or a path (a separate state repo, say), changes the
+  branch prefix, or turns off the automatic pushes. `SEAMUX_STATE_REMOTE`,
+  `SEAMUX_STATE_PREFIX` and `SEAMUX_STATE_SYNC` (which also takes `off`)
+  override it on one machine.
+- Every transition (go, start, done, block, reset, a check verdict, grade,
+  import, the family verbs) pushes. A push that fails is said once, the
+  transition still stands, and `deep-plan status` shows the plan as unsynced
+  until a push lands. The gate's own flip to working is never pushed.
+- A session start pulls the shared plans rooted in the repo; in a cloud
+  sandbox it also pulls every live plan with a branch on the repo's remote.
+- When two sessions push at once, the later one merges and pushes again: each
+  increment keeps its latest transition, each check its newest verdict, and
+  the log keeps both sides.
+- A family child shares when its parent does, on its own branch. The
+  parent's branch carries the family's index and its holds and take-backs.
+- `deliver` and `close` archive the branch as the tag
+  `seamux-state-archive/<slug>` and delete it.
+- By hand: `deep-plan state push|pull|status|list`. They work on any plan,
+  shared or not.
+
+The branch carries the quiz's answer key, so anyone who can read the remote
+can read it. Branch protection on `seamux-state/*` refuses the pushes and the
+archive's delete: exempt the prefix, or set one that is not protected.
+
+## Publishing for annotation (optional, confirm-first)
 
 Publishing sends plan content off this machine — **never do it unprompted, and
 always confirm with the human first**, even when they asked to "share" earlier

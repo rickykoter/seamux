@@ -32,6 +32,8 @@ import { readEvidence, evidenceSummary, newEvidenceDir, pruneEvidence, showTab, 
 import { detect, draftFile } from "./lib/detect.mjs";
 import { detectHost, hostLine } from "./lib/host.mjs";
 import * as SERVE from "./lib/serve.mjs";
+import * as SYNC from "./lib/sync.mjs";
+import { mergeStates, mergeFiles } from "./lib/merge.mjs";
 import { installRepo, checkRepo, targetRoot } from "./lib/install.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
@@ -286,6 +288,8 @@ function validate(spec, force) {
         inc.every(x => Number.isInteger(x) && x >= 1 && x <= n) && new Set(inc).size === inc.length)))
       errs.push(`review.increments: "all", "none", or increment numbers from 1 to ${n}, each once`);
   }
+  // Whether the plan's state syncs to a branch, and where (lib/sync.mjs).
+  errs.push(...SYNC.shareProblems(spec.share));
   if (errs.length && !force) {
     console.error("deep-plan: spec refused —");
     for (const e of errs) console.error("  ✗ " + e);
@@ -1962,6 +1966,8 @@ async function render(specPath, opts) {
     return prev ? { ...a, number: prev.number, file: prev.file, dir: prev.dir,
       source: prev.source, applied: prev.applied || "" } : a;
   });
+  // The plan holds its own sync setting: the spec's share, false when unset.
+  st.share = spec.share === undefined ? false : spec.share;
   reopenPhase(st);
   writeState(st);
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".working.html"), workingHtml(spec, st, b64));
@@ -2565,14 +2571,14 @@ function transition(action, slug, n, why, force = false, { byHuman = false } = {
     // (which did not clear it) cannot become a stale base.
     if (inc.status === "pending" || !inc.startSha) inc.startSha = headSha(st.root);
     const how = by === "human" ? goHow({ byHuman }) : "";
-    inc.status = "authorized"; inc.authorizedAt = Date.now(); inc.note = ""; inc.by = by;
+    inc.status = "authorized"; inc.authorizedAt = inc.changedAt = Date.now(); inc.note = ""; inc.by = by;
     log1(st, `go: increment ${n} (${inc.title}) authorized by ${by}${how ? ` (${how})` : ""}` +
       (waits.length ? ` (--force past the family wait: ${waitText(waits)})` : "") +
       (beside ? ` (--force beside increment ${beside.n}, still ${beside.status})` : ""));
   } else if (action === "start") {
     const inc = findInc(st, n);
     if (inc.status !== "authorized") die(`increment ${n} is ${inc.status}, not authorized`);
-    inc.status = "working"; inc.startedAt = Date.now();
+    inc.status = "working"; inc.startedAt = inc.changedAt = Date.now();
     // go records the base; this stamps only an increment authorized before it did.
     if (!inc.startSha) inc.startSha = headSha(st.root);
     log1(st, `start: increment ${n}`);
@@ -2585,7 +2591,7 @@ function transition(action, slug, n, why, force = false, { byHuman = false } = {
     // a proof and ships without looking at it has promised nothing.
     const out = checksBlock(inc, needsTree(inc) ? treeOf(st.root) : null);
     if (out.length && !force) die(checksRefusal(slug, n, out));
-    inc.status = "done"; inc.doneAt = Date.now();
+    inc.status = "done"; inc.doneAt = inc.changedAt = Date.now();
     // An override is logged for the same reason the verdict is recorded: someone
     // reading the history has to be able to see that the proof was skipped.
     log1(st, `done: increment ${n}` + (out.length
@@ -2606,11 +2612,11 @@ function transition(action, slug, n, why, force = false, { byHuman = false } = {
     return;
   } else if (action === "block") {
     const inc = findInc(st, n);
-    inc.status = "blocked"; inc.note = why || "no reason recorded";
+    inc.status = "blocked"; inc.note = why || "no reason recorded"; inc.changedAt = Date.now();
     log1(st, `block: increment ${n} — ${inc.note}`);
   } else if (action === "reset") {
     const inc = findInc(st, n);
-    inc.status = "pending"; inc.note = "";
+    inc.status = "pending"; inc.note = ""; inc.changedAt = Date.now();
     inc.startSha = "";                      // redone work gets a fresh base at its next go
     // Reset means the work is being redone, so a verdict recorded against the
     // PREVIOUS attempt no longer proves anything — leaving it would let the
@@ -2926,12 +2932,18 @@ function bundleNames(slug) {
     "deep-plan/keys": new RegExp(`^${s}\\.(spec|key)\\.json$`),
     "plans": new RegExp(`^${s}\\.(md|review\\.html|working\\.html|widget\\.html|quiz\\.txt|approved\\.md|artifact\\.html|adr\\d+\\.md|inc\\d+\\.patch)$`),
     "plans/reviews": new RegExp(`^${s}-(inc\\d+|delivery)\\.(json|patch|rows\\.json|html|seen\\.json)$`),
+    // A family parent's: the index, the holds and take-backs, the trespass
+    // log. Each member's seen file is its own machine's, and stays.
+    [`deep-plan/state/families/${slug}`]: /^(index\.json|control\.json|trespass\.jsonl)$/,
   };
 }
 
+const BUNDLE_BASES = slug => ({ "deep-plan/state": STATE_DIR, "deep-plan/keys": KEYS_DIR, "plans/reviews": REVIEWS_DIR_DP(),
+  "plans": PLANS_DIR, [`deep-plan/state/families/${slug}`]: path.join(FAMILIES_DIR, slug) });
+
 function bundleFiles(slug) {
   const names = bundleNames(slug);
-  const dirs = { "deep-plan/state": STATE_DIR, "deep-plan/keys": KEYS_DIR, "plans": PLANS_DIR, "plans/reviews": REVIEWS_DIR_DP() };
+  const dirs = BUNDLE_BASES(slug);
   const out = [];
   for (const [rel, dir] of Object.entries(dirs)) {
     let list = [];
@@ -2955,6 +2967,55 @@ function exportState(slug, flags) {
   say("  commit it (or copy it) yourself; `deep-plan import-state <file>` brings it back");
 }
 
+// A bundle's files, checked whole before anything is written: only the
+// plan's own file names, in the known folders, and at least its state and
+// spec, both JSON. "" when it may be written, else why not.
+function checkBundle(slug, files) {
+  const bases = BUNDLE_BASES(slug), names = bundleNames(slug);
+  for (const rel of Object.keys(files)) {
+    const dir = path.posix.dirname(rel), name = path.posix.basename(rel);
+    if (!bases[dir] || !names[dir].test(name)) return `refused: the bundle names ${rel}, outside the plan's own files`;
+  }
+  for (const need of [`deep-plan/state/${slug}.json`, `deep-plan/keys/${slug}.spec.json`]) {
+    if (!(need in files)) return `refused: the bundle has no ${need}`;
+    try { JSON.parse(Buffer.from(files[need]).toString("utf8")); }
+    catch { return `refused: the bundle's ${need} is not JSON`; }
+  }
+  return "";
+}
+function writeBundle(slug, files) {
+  const bases = BUNDLE_BASES(slug);
+  let n = 0;
+  for (const [rel, data] of Object.entries(files)) {
+    const base = bases[path.posix.dirname(rel)];
+    fs.mkdirSync(base, { recursive: true });
+    // Atomic, as writeState is: the gate reads the state file on every call.
+    const dest = path.join(base, path.posix.basename(rel)), tmp = dest + ".tmp." + process.pid;
+    fs.writeFileSync(tmp, data);
+    fs.renameSync(tmp, dest);
+    n++;
+  }
+  return n;
+}
+// The root a written plan guards: as given, else the root this machine had
+// for the plan before the write (another machine's root is not this one's,
+// even when the same path exists here), else the recorded one when it is
+// here, else this checkout (a fresh sandbox clones to its own path).
+function settleRoot(slug, flags, how, before = "") {
+  const st = readState(slug);
+  const here = (() => { const r = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }); return r.status === 0 ? r.stdout.trim() : ""; })();
+  const root = flags.root ? path.resolve(flags.root) : before && fs.existsSync(before) ? before
+    : st.root && fs.existsSync(st.root) ? st.root : here;
+  let changed = false;
+  if (root && root !== st.root) { st.root = root; log1(st, `${how}: root is now ${root}`); changed = true; }
+  // The approved snapshot came with the plan's files; its recorded path is
+  // the machine's that cut it.
+  const ap = path.join(PLANS_DIR, slug + ".approved.md");
+  if (st.approved && st.approved.path && st.approved.path !== ap && fs.existsSync(ap)) { st.approved.path = ap; changed = true; }
+  if (changed) writeState(st);
+  return st;
+}
+
 function importState(file, flags) {
   if (!file) die("import-state <file> [--force] [--root DIR]");
   let b;
@@ -2962,36 +3023,336 @@ function importState(file, flags) {
   if (!b || b.kind !== BUNDLE_KIND || !b.slug || typeof b.files !== "object") die(`${file} is not a deep-plan state bundle`);
   if (!/^[a-z0-9][a-z0-9._-]{0,120}$/.test(b.slug)) die(`bad slug in the bundle: ${b.slug}`);
   if (readState(b.slug) && !flags.force) die(`plan ${b.slug} already exists here; --force replaces it`);
-  const bases = { "deep-plan/state": STATE_DIR, "deep-plan/keys": KEYS_DIR, "plans/reviews": REVIEWS_DIR_DP(), "plans": PLANS_DIR };
-  const names = bundleNames(b.slug);
-  // Checked whole before anything is written: only the plan's own file names,
-  // in the known folders, and at least its state and spec.
-  for (const rel of Object.keys(b.files)) {
-    const dir = path.posix.dirname(rel), name = path.posix.basename(rel);
-    if (!bases[dir] || !names[dir].test(name))
-      die(`refused: the bundle names ${rel}, outside the plan's own files`);
-  }
-  for (const need of [`deep-plan/state/${b.slug}.json`, `deep-plan/keys/${b.slug}.spec.json`]) {
-    if (!(need in b.files)) die(`refused: the bundle has no ${need}`);
-    try { JSON.parse(Buffer.from(String(b.files[need]), "base64").toString("utf8")); }
-    catch { die(`refused: the bundle's ${need} is not JSON`); }
-  }
-  let n = 0;
-  for (const [rel, b64] of Object.entries(b.files)) {
-    const dir = path.posix.dirname(rel), name = path.posix.basename(rel);
-    const base = bases[dir];
-    fs.mkdirSync(base, { recursive: true });
-    fs.writeFileSync(path.join(base, name), Buffer.from(String(b64), "base64"));
-    n++;
-  }
-  // The root it guards: as given, else this checkout when the recorded one
-  // is not here (a fresh sandbox clones to its own path).
-  const st = readState(b.slug);
-  const here = (() => { const r = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }); return r.status === 0 ? r.stdout.trim() : ""; })();
-  const root = flags.root ? path.resolve(flags.root) : (st.root && fs.existsSync(st.root) ? st.root : here);
-  if (root && root !== st.root) { st.root = root; log1(st, `import-state: root is now ${root}`); writeState(st); }
+  const files = Object.fromEntries(Object.entries(b.files).map(([rel, b64]) => [rel, Buffer.from(String(b64), "base64")]));
+  const bad = checkBundle(b.slug, files);
+  if (bad) die(bad);
+  const n = writeBundle(b.slug, files);
+  const st = settleRoot(b.slug, flags, "import-state");
   try { rerenderWorking(b.slug); } catch (e) { say(`  (the working page was not redrawn: ${e.message}; deep-plan rehydrate ${b.slug} redraws it)`); }
   say(`imported ${b.slug}: ${n} file(s); root ${st.root || "(none)"}`);
+}
+
+// ---------------------------------------------------------------- state branches
+// `deep-plan state push|pull|status|list`: a plan's bundle files on a branch
+// of its own (lib/sync.mjs), so another machine or sandbox can pull it. What
+// a branch may hold is the bundle's rule (checkBundle); pull checks it before
+// anything is written. What this machine last synced is kept beside the
+// state, outside the bundle, in <state>/.sync/<slug>.json: the version it
+// pushed or pulled, where, and a digest of the plan's files right after.
+const SYNC_META_DIR = () => path.join(STATE_DIR, ".sync");
+function syncMeta(slug) {
+  try { return JSON.parse(fs.readFileSync(path.join(SYNC_META_DIR(), slug + ".json"), "utf8")); } catch { return null; }
+}
+function writeSyncMeta(slug, m) {
+  fs.mkdirSync(SYNC_META_DIR(), { recursive: true });
+  const p = path.join(SYNC_META_DIR(), slug + ".json"), tmp = p + ".tmp." + process.pid;
+  fs.writeFileSync(tmp, JSON.stringify(m, null, 2) + "\n");
+  fs.renameSync(tmp, p);
+}
+function bundleBuffers(slug) {
+  const files = {};
+  for (const [rel, p] of bundleFiles(slug)) files[rel] = fs.readFileSync(p);
+  return files;
+}
+function digestOf(files) {
+  const h = crypto.createHash("sha256");
+  for (const rel of Object.keys(files).sort()) h.update(rel + "\0").update(files[rel]).update("\0");
+  return h.digest("hex").slice(0, 16);
+}
+
+// A plan's share setting, as render recorded it from the spec: false, true
+// or {remote, prefix, sync}. A plan that is not here has none, and its
+// branch is looked for where the defaults (and SEAMUX_STATE_*) say.
+function planShare(st) {
+  if (!st) return false;
+  if (st.share) return st.share;
+  // A family child follows its parent, with no flag of its own.
+  if (!planShare.fams) planShare.fams = new Map();
+  if (!planShare.fams.has(st.slug)) planShare.fams.set(st.slug, familyOf(st.slug));
+  const idx = planShare.fams.get(st.slug);
+  if (idx && idx.parent !== st.slug) { const p = readState(idx.parent); return (p && p.share) || false; }
+  return false;
+}
+
+// The backend for a plan: its root's repo when the root is here, else this
+// checkout's. Config problems are said, never fatal.
+function openSync(st, { soft = false, timeout } = {}) {
+  const dir = st && st.root && fs.existsSync(st.root) ? st.root : process.cwd();
+  let o;
+  try { o = SYNC.openBackend(planShare(st), dir, timeout ? { timeout } : {}); }
+  catch (e) { if (soft) return { error: e.message }; die(e.message); }
+  for (const p of o.cfg.problems) console.error("deep-plan: " + p);
+  return o;
+}
+
+// Where a plan stands against its branch, from the sync record, the files
+// on disk, and the branch's version on the remote ("" when it has none).
+function syncState(slug, remote) {
+  const meta = syncMeta(slug);
+  const local = readState(slug) ? digestOf(bundleBuffers(slug)) : "";
+  if (!local) return remote ? "not here" : "nothing";
+  if (!meta) return remote ? "never synced here; the branch exists" : "no branch";
+  const changed = local !== meta.digest, moved = remote !== meta.version;
+  if (!remote) return "no branch (it was removed)";
+  if (changed && moved) return "both moved";
+  if (changed) return "local changes to push";
+  if (moved) return "branch ahead: pull";
+  return "in sync";
+}
+
+// A branch's files merged into the plan here by lib/merge.mjs's rules, and
+// written back: the other files first, the state last and under its lock.
+// The root stays this machine's. "" when done, else why not.
+function mergeIn(slug, r) {
+  const bad = checkBundle(slug, r.files);
+  if (bad) return bad;
+  const rel = `deep-plan/state/${slug}.json`;
+  const ls = readState(slug);
+  let rs;
+  try { rs = JSON.parse(Buffer.from(r.files[rel]).toString("utf8")); } catch { return `the branch's ${rel} is not JSON`; }
+  const files = mergeFiles(bundleBuffers(slug), r.files, ls, rs, rel, mergeStates(ls, rs));
+  delete files[rel];
+  writeBundle(slug, files);
+  // The state is merged again from a fresh read right before it is written,
+  // so a write here since the first read is in it; writeState's own merge
+  // then keeps any verdict or log line that lands in the last moment.
+  const now = readState(slug) || ls;
+  const merged = mergeStates(now, rs);
+  merged.root = now.root;
+  log1(merged, `state: merged ${r.version.slice(0, 8)} from the state branch`);
+  writeState(merged, { stamp: false });
+  try { rerenderWorking(slug); } catch { /* the pages are redrawn by the next write */ }
+  return "";
+}
+
+// Push a plan's files to its branch. When the branch moved since this
+// machine last synced, its files are merged in first; a push the remote
+// refuses because it moved again is merged and tried again, a few times.
+// Returns { ok, message } or { error }; never exits, so a transition can
+// call it and carry on.
+function pushPlan(slug, backend, tries = 3) {
+  const where = `${backend.branch(slug)} on ${backend.where}`;
+  for (let i = 0; i < tries; i++) {
+    const meta = syncMeta(slug);
+    const mine = meta && meta.where === backend.where ? meta.version : "";
+    let cur;
+    try { cur = backend.version(slug); } catch (e) { return { error: e.message }; }
+    // A branch this machine synced that is gone now was archived elsewhere:
+    // the plan ended there, and a push must not bring it back.
+    if (!cur && mine) {
+      let gone = false;
+      try { gone = backend.archived(slug); } catch { /* unreachable: the write below says so */ }
+      if (gone) return { error: `${slug} ended elsewhere: ${backend.branch(slug)} was archived as ${SYNC.ARCHIVE_PREFIX}${slug}; it is not pushed again` };
+    }
+    let merged = false;
+    if (cur && cur !== mine) {
+      // Nothing changed here since the last sync: there is nothing to push,
+      // and the branch's state is simply newer.
+      if (meta && meta.where === backend.where && digestOf(bundleBuffers(slug)) === meta.digest)
+        return { ok: true, message: `${slug}: nothing to push; ${where} is ahead (deep-plan state pull ${slug})` };
+      let r;
+      try { r = backend.read(slug); } catch (e) { return { error: e.message }; }
+      if (r.version !== cur) continue;
+      const why = mergeIn(slug, r);
+      if (why) return { error: `cannot merge ${where}: ${why}` };
+      merged = true;
+    }
+    const files = bundleBuffers(slug), digest = digestOf(files);
+    if (cur && !merged && meta && meta.digest === digest) return { ok: true, message: `${slug} is in sync with ${backend.branch(slug)} (${cur.slice(0, 8)})` };
+    let w;
+    try { w = backend.write(slug, files, cur); } catch (e) { return { error: e.message }; }
+    if (!w.ok) continue;
+    writeSyncMeta(slug, { version: w.version, where: backend.where, branch: backend.branch(slug), digest, at: new Date().toISOString(), last: "push" });
+    return { ok: true, message: `pushed ${slug} to ${where} (${w.version.slice(0, 8)}): ${Object.keys(files).length} file(s)` +
+      (merged ? "; merged with the branch first" : "") };
+  }
+  return { error: `${where} kept moving; gave up after ${tries} tries` };
+}
+
+function statePush(slug) {
+  const st = readState(slug) || die(`no plan ${slug || "?"} (state push <slug>)`);
+  const { backend } = openSync(st);
+  const r = pushPlan(slug, backend);
+  if (r.error) die(r.error);
+  say(r.message);
+}
+
+// Pull a plan from its branch: write it when nothing changed here since the
+// last sync, merge it when something did (or --force replaces it). Returns
+// { message } or { error }; never exits, so the session hook can call it.
+function pullPlan(slug, backend, flags = {}) {
+  const local = readState(slug);
+  let r;
+  try { r = backend.read(slug); } catch (e) { return { error: e.message }; }
+  const where = `${backend.branch(slug)} on ${backend.where}`;
+  if (!r.version) {
+    // The plan ended elsewhere: its branch became an archive tag.
+    let tag = false;
+    try { tag = backend.archived(slug); } catch { /* unreachable: said as no branch */ }
+    const m0 = syncMeta(slug);
+    if (tag && m0) {
+      if (!m0.archived) writeSyncMeta(slug, { ...m0, archived: { tag: SYNC.ARCHIVE_PREFIX + slug, at: new Date().toISOString(), seen: "pull" } });
+      return { error: `${slug} ended elsewhere: ${backend.branch(slug)} was archived as ${SYNC.ARCHIVE_PREFIX}${slug}`, archived: true, told: !!m0.archived };
+    }
+    return { error: `no branch ${where}` };
+  }
+  const meta = syncMeta(slug);
+  // A failed push stays recorded through a merge: the result still is not
+  // on the branch. A plain pull replaces the plan, so it clears.
+  const record = (digest, keepFailed = false) => writeSyncMeta(slug, { version: r.version, where: backend.where, branch: backend.branch(slug), digest,
+    at: new Date().toISOString(), last: "pull", ...(keepFailed && meta && meta.failed ? { failed: meta.failed } : {}) });
+  if (local && meta && meta.version === r.version && meta.where === backend.where && !flags.force)
+    return { message: `${slug} is up to date with ${backend.branch(slug)} (${r.version.slice(0, 8)})`, same: true };
+  // The session hook brings a plan that is not here only while it is live,
+  // and only when it shares: its own share, or a family parent's that is
+  // here already. A plan someone pushed by hand stays on its branch.
+  if (!local && flags.liveOnly) {
+    try {
+      const bst = JSON.parse(Buffer.from(r.files[`deep-plan/state/${slug}.json`]).toString("utf8"));
+      if (bst.phase === "closed" || bst.phase === "done") return { message: "", same: true };
+      if (!bst.share) {
+        const idx = familyOf(slug), p = idx && idx.parent !== slug ? readState(idx.parent) : null;
+        if (!(p && p.share)) return { message: "", same: true };
+      }
+    } catch { /* checkBundle below names it */ }
+  }
+  // Changes here the branch does not have: merged with it, not dropped.
+  // The result is ahead of the branch until the next push.
+  if (local && !flags.force && (!meta || digestOf(bundleBuffers(slug)) !== meta.digest)) {
+    const why = mergeIn(slug, r);
+    if (why) return { error: why };
+    if (flags.root) settleRoot(slug, flags, "state pull");
+    record(digestOf(r.files), true);
+    return { writer: (r.meta && r.meta.writer) || "", message: `merged ${slug} with ${where} (${r.version.slice(0, 8)}); deep-plan state push ${slug} shares the result` };
+  }
+  const bad = checkBundle(slug, r.files);
+  if (bad) return { error: bad };
+  const n = writeBundle(slug, r.files);
+  const st = settleRoot(slug, flags, "state pull", local && local.root);
+  let note = "";
+  try { rerenderWorking(slug); } catch (e) { note = `\n  (the working page was not redrawn: ${e.message}; deep-plan rehydrate ${slug} redraws it)`; }
+  record(digestOf(bundleBuffers(slug)));
+  return { writer: (r.meta && r.meta.writer) || "", message: `pulled ${slug} from ${where} (${r.version.slice(0, 8)}): ${n} file(s); root ${st.root || "(none)"}` +
+    (r.meta && r.meta.writer ? `; last written by ${r.meta.writer} at ${r.meta.at}` : "") + note };
+}
+
+function statePull(slug, flags) {
+  if (flags.session) return stateSessionPull();
+  if (!slug) die("state pull <slug> [--force] [--root DIR] | state pull --session");
+  const { backend } = openSync(readState(slug));
+  const r = pullPlan(slug, backend, flags);
+  if (r.error) die(r.error);
+  say(r.message);
+}
+
+// The SessionStart hook: pull the shared plans rooted in this repo. On the
+// remote host, where a new sandbox starts with nothing, also pull every plan
+// with a branch on this repo's remote that is not here yet. Quiet unless
+// something came in; a failure is one line; never exits non-zero.
+// The hook is killed at 60 s (hooks.json). Each network call may take 25 s,
+// which a cloud sandbox's git proxy has needed; the budget stops new pulls
+// in time for the summary line.
+const SESSION_TIMEOUT_MS = Number(process.env.DEEP_PLAN_SYNC_TIMEOUT_MS) || 25000, SESSION_BUDGET_MS = 45000;
+function stateSessionPull() {
+  const dir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const common = d => {
+    const r = spawnSync("git", ["-C", d, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8", timeout: 5000 });
+    return r.status === 0 ? canon(r.stdout.trim()) : "";
+  };
+  const repo = common(dir);
+  if (!repo) return;
+  // What does not fit in the budget waits for
+  // the next session or a state pull by hand, and is named.
+  const t0 = Date.now(), late = [];
+  const lines = [], failed = [];
+  // A pull makes up to three network calls, so each gets a third of what is
+  // left of the budget at most: the whole stays inside the hook's limit.
+  const callMs = () => Math.max(1000, Math.min(SESSION_TIMEOUT_MS, Math.floor((SESSION_BUDGET_MS - (Date.now() - t0)) / 3)));
+  const run = (slug, backend, flags = {}) => {
+    if (Date.now() - t0 > SESSION_BUDGET_MS - 3000) { late.push(slug); return; }
+    backend.timeout = callMs();
+    const r = pullPlan(slug, backend, flags);
+    if (r.archived) { if (!r.told) lines.push(r.error); }
+    else if (r.error) failed.push(`${slug}: ${r.error}`);
+    else if (!r.same) lines.push(r.message.split("\n")[0]);
+  };
+  for (const st of allStates()) {
+    if (st.phase === "closed" || !planShare(st) || !st.root || !fs.existsSync(st.root) || common(st.root) !== repo) continue;
+    const sm = syncMeta(st.slug);
+    if (sm && sm.archived) continue;
+    const o = openSync(st, { soft: true, timeout: callMs() });
+    if (o.error) { failed.push(`${st.slug}: ${o.error}`); continue; }
+    // sync manual or off: nothing automatic, the pull included.
+    if (o.cfg.sync !== "transitions") continue;
+    run(st.slug, o.backend);
+  }
+  if (detectHost().host === "remote") {
+    let o;
+    try { o = SYNC.openBackend(true, dir, { timeout: SESSION_TIMEOUT_MS }); } catch (e) { failed.push(e.message); }
+    if (o && o.cfg.sync === "transitions") {
+      let list = [];
+      try { list = o.backend.list(); } catch (e) { failed.push(e.message); }
+      // Twice: a family child is brought once its parent's branch, which
+      // carries the family, is here.
+      for (let pass = 0; pass < 2; pass++)
+        for (const x of list) if (!readState(x.slug)) run(x.slug, o.backend, { liveOnly: true });
+    }
+  }
+  for (const l of lines) say(`deep-plan: ${l}`);
+  if (failed.length) say(`deep-plan: state pull at session start failed for ${failed.join("; ")}`);
+  if (late.length) say(`deep-plan: no time left at session start for ${late.join(", ")}; deep-plan state pull <slug> brings each`);
+}
+
+function stateStatus(slug, flags) {
+  const slugs = slug ? [slug] : allStates().filter(s => s.phase !== "closed").map(s => s.slug);
+  const rows = [];
+  // One listing per remote and prefix, not one round trip per plan.
+  const lists = new Map();
+  const versionOf = (backend, s) => {
+    const k = backend.where + "\0" + backend.prefix;
+    if (!lists.has(k)) {
+      try { lists.set(k, { map: new Map(backend.list().map(x => [x.slug, x.version])) }); }
+      catch (e) { lists.set(k, { error: e.message }); }
+    }
+    const l = lists.get(k);
+    if (l.error) throw new Error(l.error);
+    return l.map.get(s) || "";
+  };
+  for (const s of slugs) {
+    const st = readState(s);
+    const o = openSync(st, { soft: true });
+    if (o.error) { rows.push({ slug: s, share: !!planShare(st), state: "misconfigured", error: o.error }); continue; }
+    const { backend } = o;
+    let remote = "", error = "";
+    try { remote = versionOf(backend, s); } catch (e) { error = e.message; }
+    const meta = syncMeta(s);
+    rows.push({ slug: s, share: !!planShare(st), branch: backend.branch(s), where: backend.where, remote,
+      synced: meta ? meta.version : "", state: error ? "unreachable" : syncState(s, remote), ...(error ? { error } : {}) });
+  }
+  if (flags.json) { process.stdout.write(JSON.stringify(rows)); return; }
+  if (!rows.length) { say("no tracked plans"); return; }
+  for (const r of rows)
+    say(`${r.slug}  ${r.share ? "shared" : "not shared"}  ` + (r.branch ? `${r.branch} on ${r.where}: ` : "") + r.state +
+      (r.remote ? ` (branch ${r.remote.slice(0, 8)}` + (r.synced && r.synced !== r.remote ? `, synced here ${r.synced.slice(0, 8)})` : ")") : "") +
+      (r.error ? `\n  ${r.error}` : ""));
+}
+
+function stateList(flags) {
+  const { backend } = openSync(null);
+  let list;
+  try { list = backend.list(); } catch (e) { die(e.message); }
+  if (flags.json) { process.stdout.write(JSON.stringify(list.map(x => ({ ...x, here: !!readState(x.slug) })))); return; }
+  if (!list.length) { say(`no state branches under ${backend.prefix} on ${backend.where}`); return; }
+  for (const x of list) say(`${x.slug}  ${x.version.slice(0, 8)}  ${readState(x.slug) ? "here" : "not here"}`);
+}
+
+function stateCmd(args, flags) {
+  const [verb, slug] = args;
+  if (verb === "push") return statePush(slug);
+  if (verb === "pull") return statePull(slug, flags);
+  if (verb === "status") return stateStatus(slug, flags);
+  if (verb === "list") return stateList(flags);
+  die("state push <slug> | pull <slug> [--force] [--root DIR] | status [slug] [--json] | list [--json]");
 }
 
 // `deep-plan page <slug> [--review]`: show a plan's page where this host can,
@@ -3109,6 +3470,8 @@ function statusRows() {
     // --force, so a plan that looks one step from finished may not be — the
     // board reads this from --json. A pass is taken as recorded here; whether
     // it went stale is judged at `done`, which hashes the tree.
+    // A push that did not land: shown until one does (sync on transitions).
+    ...((m => m && m.failed ? { unsynced: m.failed } : {})(syncMeta(st.slug))),
     checksOutstanding: (st.increments || []).flatMap(i =>
       checksBlock(i).map(c => ({ n: i.n, id: c.id, kind: c.kind, status: shownStatus(checksOf(i)[c.id], c.status) }))),
     // The pre-checks shape, one entry per increment, kept for older readers.
@@ -3170,6 +3533,7 @@ function status(json) {
     say(`${r.slug}  [${r.phase}]  ${r.gate.allow ? "gate open" : "GATE SHUT"} — ${r.gate.why}`);
     say(`  root ${r.root}${r.rootBroken ? "  ⚠ BROKEN ROOT — gone; the gate FAILS OPEN here" : ""}`);
     if (r.approved) say(`  approved snapshot ${r.approved}`);
+    if (r.unsynced) say(`  ⚠ unsynced: the last push to its state branch failed (${r.unsynced.why}) — deep-plan state push ${r.slug}`);
     if (r.obsOutstanding.length)
       say("  checks outstanding: " +
         r.obsOutstanding.map(o => `${o.n} (${o.status})`).join(", ") +
@@ -3871,17 +4235,42 @@ function checkWait(slug, n, ids, timeoutSec) {
 // again. Exit 0 with the number, 2 at the deadline, 3 when there is nothing
 // left to wait for: the plan is done or closed, or a person took the go back
 // from the parent (the child's go is a person's again, so ask them).
+// A child in another sandbox learns of its parent's go only from its state
+// branch: the gate reads local state, and the news hook does not fetch. So a
+// shared plan's wait pulls the branch, at most every AWAIT_PULL_MS and with
+// the session timeout. A failed pull is said once; the wait goes on with
+// local state. A plan that does not share never touches the network.
+const AWAIT_PULL_MS = Number(process.env.DEEP_PLAN_AWAIT_PULL_MS) || 15000;
+function awaitPull(slug, w, leftMs) {
+  if (Date.now() - w.last < AWAIT_PULL_MS || leftMs < 1000) return;
+  w.last = Date.now();
+  const st = readState(slug);
+  if (!st || !planShare(st)) return;
+  // Never past the wait's own deadline.
+  const o = openSync(st, { soft: true, timeout: Math.min(SESSION_TIMEOUT_MS, leftMs) });
+  const r = o.error ? { error: o.error } : o.cfg.sync !== "transitions" ? null : pullPlan(slug, o.backend);
+  if (!r) return;
+  if (r.error) {
+    if (!w.said) console.error(`await-go: could not pull ${slug}'s state branch (${r.error}); still waiting on the state here`);
+    w.said = true;
+    return;
+  }
+  if (!r.same) w.writer = r.writer || "another session";
+}
+
 function awaitGo(slug, timeoutSec) {
   const until = Date.now() + timeoutSec * 1000;
   // A child that starts waiting in a family and then is in none (its parent
   // closed or its family dissolved) has no parent left to give the go.
   const startedIn = !!goOwner(slug);
+  const w = { last: 0, said: false, writer: "" };
   for (;;) {
     const st = readState(slug);
     if (!st) { say(`await-go: no plan ${slug}`); return 3; }
     const incs = st.increments || [];
     const open = incs.find(i => i.status === "authorized" || i.status === "working");
     if (open) {
+      if (w.writer) console.error(`go arrived from the state branch (written by ${w.writer})`);
       say(String(open.n));
       console.error(`await-go: increment ${open.n} (${open.title}) of ${slug} is ${open.status}` +
         (open.by ? `, by ${open.by}` : "") + " — start it");
@@ -3904,6 +4293,10 @@ function awaitGo(slug, timeoutSec) {
       console.error(`await-go: no go for ${slug} after ${timeoutSec}s — run it again to keep waiting`);
       return 2;
     }
+    // Local state first, every second; the branch only when that shows no go.
+    w.writer = "";
+    awaitPull(slug, w, until - Date.now());
+    if (w.writer) continue;
     sleep(1000);
   }
 }
@@ -4133,7 +4526,7 @@ function familyCmd(args, flags) {
         die(`family ${sub} is a person's lever, and this is a Claude Code session (${by}). ` +
           `A person runs it from their own shell.\nfamily ${sub} refused: not a person`);
       if (!own.declared) die(`${slug}'s go is not delegated in the ${own.parent} spec; there is nothing to ${sub === "take-back" ? "take back" : "give back"}`);
-      try { updateControl(own.parent, c => { if (sub === "take-back") c.takenBack[slug] = { at: Date.now(), by }; else delete c.takenBack[slug]; }); }
+      try { updateControl(own.parent, c => { if (sub === "take-back") c.takenBack[slug] = { at: Date.now(), by }; else { delete c.takenBack[slug]; c.released["takenBack/" + slug] = Date.now(); } }); }
       catch (e) { die(`family ${sub}: ${e.message}`); }
       note(`family ${sub}: ${slug}'s go is ${sub === "take-back" ? "a person's again" : "the parent's again"} (by ${by})`);
       say(sub === "take-back"
@@ -4143,7 +4536,7 @@ function familyCmd(args, flags) {
       if (by === "self") die(`family ${sub} is the parent's (or a person's), not the child's own\nfamily ${sub} refused: self`);
       const reason = sub === "hold" ? more.slice(1).join(" ").trim() || die(`family hold ${slug} "<reason>": a hold says why`) : "";
       if (sub === "unhold" && !own.hold) die(`${slug} is not held`);
-      try { updateControl(own.parent, c => { if (sub === "hold") c.holds[slug] = { reason, at: Date.now(), by }; else delete c.holds[slug]; }); }
+      try { updateControl(own.parent, c => { if (sub === "hold") c.holds[slug] = { reason, at: Date.now(), by }; else { delete c.holds[slug]; c.released["holds/" + slug] = Date.now(); } }); }
       catch (e) { die(`family ${sub}: ${e.message}`); }
       note(`family ${sub}: ${slug}${reason ? ` — ${reason}` : ""} (by ${by})`);
       say(sub === "hold" ? `holding ${slug}: ${reason}` : `${slug} is no longer held`);
@@ -4195,6 +4588,7 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--yes") flags.yes = true;
   else if (rest[i] === "--foreground") flags.foreground = true;
   else if (rest[i] === "--review") flags.review = true;
+  else if (rest[i] === "--session") flags.session = true;
   else if (rest[i] === "--check") flags.check = true;
   else if (rest[i] === "--stop") flags.stop = true;
   else if (rest[i] === "--status") flags.status = true;
@@ -4225,6 +4619,90 @@ for (let i = 0; i < rest.length; i++) {
 let pointerBody = null;
 try { pointerBody = writeEnginePointer(); } catch { /* read-only home, full disk: the verb still runs */ }
 
+// ---------------------------------------------------------------- sync on transitions
+// A command that changed a plan's state pushes that plan to its branch when
+// the plan shares and sync is transitions: go, start, done, block, reset, a
+// check verdict (a detached run's too: it re-enters as check run), grade,
+// import-state and the family verbs. It runs as the command exits, so every
+// path through a verb is covered, and only plans whose state file changed
+// are pushed. Best-effort with a short timeout: a failure is said once and
+// recorded, the command's own exit code stands, and status shows the plan
+// unsynced until a push lands. The gate's flip to working is not a command
+// here and is never pushed; the next transition carries it.
+const SYNC_CMDS = new Set(["go", "start", "done", "block", "reset", "check", "obs", "grade", "import-state", "family", "await-go", "deliver", "close"]);
+// DEEP_PLAN_SYNC_TIMEOUT_MS is for the probe, whose machine may be loaded.
+// Long enough for a cloud sandbox's git proxy, which can take seconds per
+// call where a laptop takes a fraction of one.
+const TRANSITION_PUSH_MS = Number(process.env.DEEP_PLAN_SYNC_TIMEOUT_MS) || 20000;
+function stateFileDigests() {
+  const out = new Map();
+  let names = [];
+  try { names = fs.readdirSync(STATE_DIR).filter(n => n.endsWith(".json")); } catch { return out; }
+  for (const n of names) {
+    try { out.set(n.slice(0, -5), crypto.createHash("sha1").update(fs.readFileSync(path.join(STATE_DIR, n))).digest("hex")); } catch { /* gone */ }
+  }
+  // A family's index and control files ride on its parent's branch, so a
+  // change to them (a hold, a take-back, a re-render) is the parent's.
+  let fams = [];
+  try { fams = fs.readdirSync(FAMILIES_DIR); } catch { /* none */ }
+  for (const f of fams) {
+    const h = crypto.createHash("sha1");
+    for (const n of ["index.json", "control.json"]) { try { h.update(fs.readFileSync(path.join(FAMILIES_DIR, f, n))); } catch { h.update("-"); } }
+    const prev = out.get(f) || "";
+    out.set(f, prev + ":" + h.digest("hex"));
+  }
+  return out;
+}
+function autoPush(slug) {
+  const st = readState(slug);
+  if (!st || !planShare(st)) return;
+  const o = openSync(st, { soft: true, timeout: TRANSITION_PUSH_MS });
+  if (o.error) return syncFailed(slug, o.error);
+  if (o.cfg.sync !== "transitions") return;
+  const r = pushPlan(slug, o.backend, 2);
+  if (r.error) return syncFailed(slug, r.error);
+  const m = syncMeta(slug);
+  if (m && m.failed) { delete m.failed; writeSyncMeta(slug, m); }
+}
+// The end of a plan: its last state is pushed, then its branch is archived
+// as a tag (seamux-state-archive/<slug>) and deleted, in one atomic push.
+function autoArchive(slug) {
+  const st = readState(slug);
+  if (!st || !planShare(st)) return;
+  autoPush(slug);
+  const m = syncMeta(slug);
+  if (!m || m.failed || !m.version) return;
+  const o = openSync(st, { soft: true, timeout: TRANSITION_PUSH_MS });
+  if (o.error || o.cfg.sync !== "transitions") return;
+  let r;
+  try { r = o.backend.archive(slug, m.version); } catch (e) { return syncFailed(slug, e.message); }
+  if (!r.ok) return syncFailed(slug, `${o.backend.branch(slug)} moved before it could be archived`);
+  writeSyncMeta(slug, { ...m, archived: { tag: r.tag, at: new Date().toISOString() } });
+  console.error(`deep-plan: ${slug}'s state branch is archived as ${r.tag} and deleted`);
+}
+function syncFailed(slug, why) {
+  writeSyncMeta(slug, { ...(syncMeta(slug) || {}), failed: { at: new Date().toISOString(), why } });
+  console.error(`deep-plan: ${slug} was not pushed to its state branch (${why}); deep-plan state push ${slug} tries again`);
+}
+if (SYNC_CMDS.has(cmd) && !process.env.DEEP_PLAN_NO_SYNC) {
+  const before = stateFileDigests();
+  const phaseBefore = new Map(allStates().map(st => [st.slug, st.phase]));
+  process.on("exit", () => {
+    try {
+      for (const [slug, d] of stateFileDigests()) {
+        if (before.get(slug) === d) continue;
+        const st = readState(slug);
+        if (!st) continue;
+        // Archived only when this command ended the plan (a family deliver
+        // may end several); one that was already done just pushes.
+        const ended = st.phase === "closed" || st.phase === "done";
+        if ((cmd === "deliver" || cmd === "close") && ended && phaseBefore.get(slug) !== st.phase) autoArchive(slug);
+        else autoPush(slug);
+      }
+    } catch (e) { console.error(`deep-plan: state sync skipped: ${e.message}`); }
+  });
+}
+
 switch (cmd) {
   case "setup": setup(flags.force); break;
   case "engine": {
@@ -4238,6 +4716,7 @@ switch (cmd) {
   case "export-state": exportState(args[0], flags); break;
   case "install-repo": installRepoCmd(flags); break;
   case "import-state": importState(args[0], flags); break;
+  case "state": stateCmd(args, flags); break;
   case "doctor": {
     // Which host this run thinks it is in, and which engine copy answers.
     // Later verbs route pages by the same host.

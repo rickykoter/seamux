@@ -190,7 +190,7 @@ export const CHECK_STATUSES = ["pending", "running", "needs-variant", "needs-val
 // `evidence` the last browser run's frames, trace and replay (lib/browser.mjs);
 // `ask` a claim's open question, `answer` a person's reply to it, `claims`
 // what a run holds and must release (lib/claims.mjs).
-const VERDICT_FIELDS = ["status", "at", "note", "by", "ran", "tree", "runner", "acquire", "evidence", "ask", "answer", "claims"];
+export const VERDICT_FIELDS = ["status", "at", "note", "by", "ran", "tree", "runner", "acquire", "evidence", "ask", "answer", "claims"];
 const ID_PREFIX = { observability: "obs" };
 
 function checkSlug(kind, name) {

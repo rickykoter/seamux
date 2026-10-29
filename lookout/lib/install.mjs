@@ -1,7 +1,7 @@
 // `install-repo`: put this plugin into a repository's own .claude/, for the
 // sessions that never load a repo's enabledPlugins (claude.ai/code cloud
 // sessions). What carries over there is the repo's .claude/settings.json
-// hooks and its .claude/skills (docs/STANDALONE.md), so:
+// hooks and its .claude/skills (docs/ADOPTING.md, "Cloud sessions"), so:
 //
 //   .claude/skills/<plugin>/   the plugin, minus its probes, evals and dev
 //                              tools: SKILL.md and references for the skill,

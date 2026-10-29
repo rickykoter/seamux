@@ -39,7 +39,7 @@ snapshot `installed_plugins.json` records (`crew/bin/crew-plugin-root`).
   from the crew plugin's options (`crew/hooks/options.py`) once one is set,
   and keeps every key it does not own.
 - `~/.config/cmux/crew-local/` — the overlay. Outside the live tree and
-  outside every comparison. See `docs/ADOPTION.md`.
+  outside every comparison. See `docs/ADOPTING.md`, "Machine-local overlay".
 - `~/.claude/deep-plan/{state,keys,active}` and `~/.claude/plans/` — your actual
   plans. `--uninstall` preserves these deliberately.
 - `~/.claude/deep-plan/vendor/mermaid.min.js` — the pinned diagram engine,
