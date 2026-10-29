@@ -5352,6 +5352,18 @@ exit 1
     ok(`b1: a session's Bash write into the state or keys dir is refused (${c.split(" ")[0]})`,
       /deep-plan's own state/.test(hook(S2, "Bash", { command: c }, TMP).stderr) && fs.existsSync(path.join(SD, "b1-gate.json")));
   ok("b1: reading them still passes", hook(S2, "Bash", { command: `cat ${SD}/b1-gate.json` }, TMP).status === 0);
+  ok("b1: a write chained after the CLI is not the CLI's own tooling",
+    /deep-plan's own state/.test(hook(S2, "Bash", { command: `deep-plan status && python3 -c "open('${SD}/b1-gate.json','w')"` }, TMP).stderr));
+  ok("b1: …nor is an interpreter beside it in a plan root", !lib.decideToolCall("Bash", { command: "deep-plan status; node -e 'x'" }, AR).why.includes("own tooling"));
+  ok("b1: a cd before the CLI still is", lib.decideToolCall("Bash", { command: `cd ${AR} && deep-plan go b1-gate next` }, AR).why === "the plan's own tooling");
+  // A pathological command (an unclosed quote full of escapes) decides fast.
+  {
+    const nasty = 'bash -c "' + "\\n".repeat(7000) + " " + 'a\\" '.repeat(2000);
+    const t0 = Date.now();
+    lib.deepPlanCalls(nasty); lib.decideToolCall("Bash", { command: nasty }, TMP);
+    const took = Date.now() - t0;
+    ok(`b1: a ${Math.round(nasty.length / 1024)} KB pathological command decides in well under 100ms (${took} ms)`, nasty.length >= 20000 && took < 100);
+  }
   ok("b1: a write from inside the state dir is refused too", hook(S2, "Bash", { command: "rm -f b1-gate.json" }, SD).status === 2);
   ok("b1: …and one after a cd into it", hook(S2, "Bash", { command: `cd ${path.dirname(SD)} && cd state && rm -f b1-gate.json` }, TMP).status === 2 &&
     fs.existsSync(path.join(SD, "b1-gate.json")));

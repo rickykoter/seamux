@@ -790,10 +790,13 @@ function ownTooling(cmd, OWN) {
     at = m.index + m[0].length;
   }
   links.push([cmd.slice(at), bare.slice(at)]);
+  // Every link is the CLI, a plain `cd`, or a plain reader (`| tail -1`):
+  // anything else beside it, an interpreter's one-liner included, goes
+  // through the ordinary checks.
   let own = false;
   for (const [raw, b] of links) {
     if (ownCli(raw, OWN)) { own = true; if (REDIRECT.test(scrub(b))) return false; }
-    else if (bashMutates(raw)) return false;
+    else if (!/^\s*(cd(\s+[^\s;&|<>]+)?)?\s*$/.test(b) && !plainReader(raw)) return false;
   }
   return own;
 }
@@ -847,15 +850,45 @@ function commandPosition(ref, w) {
   return true;
 }
 
+// The bodies of quoted strings handed to a shell: the argument after `-c`
+// (any short cluster ending in c) or `eval`. One linear pass with the quote
+// state tracked by hand; a regex here backtracked exponentially on an
+// unclosed quote full of escapes, and the gate runs this on every Bash call.
+function shellStrings(text) {
+  const out = [];
+  const n = text.length;
+  for (let i = 0; i < n; i++) {
+    if (i && !/\s/.test(text[i - 1])) continue;
+    let j = i;
+    if (text.startsWith("eval", i)) j = i + 4;
+    else if (text[i] === "-") { j = i + 1; while (j < n && /[a-zA-Z]/.test(text[j])) j++; if (text[j - 1] !== "c" || j === i + 1) continue; }
+    else continue;
+    let k = j;
+    while (k < n && (text[k] === " " || text[k] === "\t")) k++;
+    if (k === j || (text[k] !== '"' && text[k] !== "'")) continue;
+    const q = text[k];
+    let e = k + 1;
+    while (e < n && text[e] !== q) e += (q === '"' && text[e] === "\\") ? 2 : 1;
+    if (e >= n) continue;                     // never closes: nothing a shell would run
+    out.push(text.slice(k + 1, e));
+    i = e;
+  }
+  return out;
+}
+
+// The scan reads at most this much of a command: a call past it is not seen,
+// and nothing here may stall the gate.
+const CALL_SCAN_MAX = 16384;
+
 export function deepPlanCalls(cmd, depth = 0) {
   const out = [];
   if (!cmd || depth > 3) return out;
+  cmd = String(cmd).slice(0, CALL_SCAN_MAX);
   const text = blankHeredocs(cmd);
   const bare = blankQuotes(text);
   const ref = bare || text;
   // A quoted string a shell runs (bash -c "…", eval '…') is a command line of its own.
-  for (const m of text.matchAll(/(?:^|\s)(?:-[a-zA-Z]*c|eval)\s+(['"])((?:\\.|(?!\1)[\s\S])*)\1/g))
-    out.push(...deepPlanCalls(m[2], depth + 1));
+  for (const body of shellStrings(text)) out.push(...deepPlanCalls(body, depth + 1));
   const sep = from => { let e = from; while (e < text.length && !/[;&|\n)`]/.test(ref[e])) e++; return e; };
   for (const m of text.matchAll(PROG_RE)) {
     const i = m.index, after = i + m[0].length;
@@ -1005,10 +1038,10 @@ export function decideToolCall(toolName, input, cwd) {
   const OWN = path.join(os.homedir(), ".claude", "skills", "deep-plan");
   if (toolName === "Bash") {
     const cmd = (input && input.command) || "";
-    if (ownTooling(cmd, OWN)) return { allow: true, why: "the plan's own tooling" };
-    if (bashTouchesRecords(cmd, cwd))
+    if (bashTouchesRecords(cmd, cwd) && !ownTooling(cmd, OWN))
       return { allow: false, records: true, plan: null,
         why: "this command writes into deep-plan's own state; it changes only through the deep-plan CLI, the board or the plan pane." };
+    if (ownTooling(cmd, OWN)) return { allow: true, why: "the plan's own tooling" };
     if (!bashMutates(cmd)) return { allow: true, why: "not a write" };
     return mayEdit(cwd || process.cwd());
   }
