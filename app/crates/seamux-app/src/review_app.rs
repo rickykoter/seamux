@@ -215,25 +215,39 @@ fn stage(id: &str, status: &str, detail: &str) {
 }
 
 /// Mark `id` busy with `what`, or say what already is.
+/// The orphan check spawns ps, so it runs on a copy with the lock released;
+/// the claim then goes through only if the saved group is still the one checked.
 fn claim(id: &str, what: &str) -> Result<Job, String> {
+    let seen = get(id)?;
+    claimable(&seen)?;
     let mut g = jobs().lock().map_err(|e| e.to_string())?;
     let j = g.iter_mut().find(|j| j.id == id).ok_or("no such review")?;
-    claimable(j)?;
+    idle(j)?;
+    if (j.pgid, &j.pgid_start) != (seen.pgid, &seen.pgid_start) {
+        return Err("the review changed while it was being checked; try again".into());
+    }
     j.busy = what.into();
     let mine = j.clone();
     publish(&g);
     Ok(mine)
 }
 
-/// Whether job `j` may start something now: ready, idle, and no agent from
-/// before the app last quit still working in its worktree.
-fn claimable(j: &Job) -> Result<(), String> {
+/// Ready and not running anything: what may be read under the lock.
+fn idle(j: &Job) -> Result<(), String> {
     if j.status != "ready" {
         return Err("the review isn't ready yet".into());
     }
     if !j.busy.is_empty() {
         return Err(format!("still {}", j.busy));
     }
+    Ok(())
+}
+
+/// Whether job `j` may start something now: idle, and no agent from before
+/// the app last quit still working in its worktree (this runs ps: never
+/// under the jobs' lock).
+fn claimable(j: &Job) -> Result<(), String> {
+    idle(j)?;
     orphan(j).map_or(Ok(()), Err)
 }
 
