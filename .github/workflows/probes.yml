@@ -138,6 +138,9 @@ jobs:
       - name: CREW_IMPL helper probe
         run: python3 crew/tools/crew_impl_probe.py
 
+      - name: crew install probe (apply, uninstall, sandboxes)
+        run: python3 crew/tools/install_probe.py
+
   # The seamux app (app/): its pages, then every crate in the cargo workspace.
   # macOS only. It is the one platform the app ships for, the crates' macOS
   # paths (objc2, the overlay panel) only compile there, and the runner needs no
