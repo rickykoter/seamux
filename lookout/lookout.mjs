@@ -31,6 +31,10 @@ import { repoConfig } from "./lib/typesafe.mjs";
 import * as FD from "./lib/findings.mjs";
 import * as N from "./lib/notes.mjs";
 import { brief } from "./lib/prompt.mjs";
+import { detectHost } from "./lib/host.mjs";
+import * as SV from "./lib/serve.mjs";
+import * as AR from "./lib/artifact.mjs";
+import { installRepo, checkRepo, targetRoot } from "./lib/install.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -47,7 +51,7 @@ const opt = (n, d = null) => {
 // Options that take a value; every other --flag stands alone.
 // The most of a --context-file a review keeps for its reviewer brief.
 const CONTEXT_CAP = 8000;
-const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file"]);
+const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file", "--url", "--root"]);
 const positional = () => rest.filter((a, i) => !a.startsWith("--") && !(i > 0 && VALUED.has(rest[i - 1])));
 
 const say = s => process.stdout.write(s + "\n");
@@ -163,6 +167,18 @@ function companionOpen(url, id, ws) {
 // at the page again (a re-open refreshes, it does not stack tabs); otherwise a
 // new browser tab opens beside the terminal without taking focus.
 function showPage(id, file, cwd, { onlyIfOpen = false } = {}) {
+  // Every host but cmux: lookout's own server, and the caller prints the URL.
+  // A served page polls for changes itself, so a refresh has nothing to do.
+  // Nobody can reach a remote sandbox's localhost, so remote gets no URL.
+  const host = detectHost().host;
+  if (host !== "cmux") {
+    if (onlyIfOpen || flag("no-open")) return "";
+    if (host === "remote") return "no live page on this host (host: remote)";
+    if (process.env.LOOKOUT_REVIEWS_DIR && !process.env.LOOKOUT_SERVE_FILE) return "";
+    const rec = SV.ensureServer({ cli: path.join(HERE, "lookout.mjs"), root: HERE });
+    return rec ? `served at ${SV.urlFor(rec, "/review/" + id)} (host: ${host})`
+               : `lookout serve did not start (see ${SV.LOG_FILE}) (host: ${host})`;
+  }
   if (process.env.LOOKOUT_REVIEWS_DIR || flag("no-open")) return "";
   const ws = workspaceFor(cwd);
   if (!ws) return "";
@@ -171,7 +187,7 @@ function showPage(id, file, cwd, { onlyIfOpen = false } = {}) {
   // A fresh open goes beside the chat, in the workspace's companion; a
   // refresh of a tab already open keeps the path below.
   if (!onlyIfOpen && companionOpen(url, id, ws)) {
-    return "opened beside the terminal" + (served ? "" : ", read-only: crew's intent server is not serving reviews");
+    return "opened beside the terminal" + (served ? `, served at ${served}` : ", read-only: crew's intent server is not serving reviews") + " (host: cmux)";
   }
   const env = { ...process.env, CMUX_QUIET: "1" };
   try {
@@ -535,9 +551,78 @@ function usage() {
   lookout show <id> [--json]
   lookout list [--json]
   lookout setup             engine pointer, ~/.local/bin shim, pinned highlight.js
-  lookout engine            print the engine pointer
+  lookout engine            print the engine pointer and the detected host
+  lookout export-artifact <id> [--json]
+                            the review as a page to publish with the Artifact tool (remote hosts)
+  lookout pull <id> <rows.json|dir> [--json]
+                            replay the published page's comments and closes into the review
+  lookout install-repo [--root DIR] [--check]
+                            copy the plugin into a repo's .claude/ for cloud sessions
+  lookout serve [--url PATH] [--status|--stop]
+                            start lookout's review server if needed and print a page's URL
 
   store: ${S.REVIEWS_DIR}/<id>.json`);
+}
+
+// `lookout export-artifact <id> [--json]`: the review as a page to publish
+// with the Artifact tool, its comments and closes kept in the page's db.
+function cmdExportArtifact() {
+  const id = reviewArg();
+  const meta = AR.exportPage(id, renderPage(id));
+  if (flag("json")) { process.stdout.write(JSON.stringify(meta, null, 2) + "\n"); return; }
+  say(`exported ${meta.path}`);
+  say(`  publish it with the Artifact tool, capabilities ${JSON.stringify(meta.capabilities)}, only after the person agrees`);
+  say(`  then, to bring their comments and closes back: lookout pull ${id} <rows.json>`);
+}
+
+// `lookout pull <id> <rows.json>`: replay the published page's rows (an
+// ArtifactData list of "annotations", saved to a file) into the review.
+function cmdPull() {
+  const [id, file] = positional();
+  if (!id || !file) die("pull <id> <rows.json|dir>  (the rows: an ArtifactData list of the page's annotations collection, or its out_dir folder)");
+  if (!S.exists(id)) die("no review " + id);
+  let rows;
+  try { rows = AR.readRows(path.resolve(file)); } catch (e) { die(`cannot read ${file}: ${e.message}`); }
+  const { applied, skipped } = AR.pull(id, rows);
+  S.update(id, cur => arrange(cur));
+  renderPage(id);
+  if (flag("json")) { process.stdout.write(JSON.stringify({ id, applied, skipped }, null, 2) + "\n"); return; }
+  say(`pulled ${applied.length} row(s) into ${id}` + (skipped.length ? `, skipped ${skipped.length}` : ""));
+  for (const a of applied) say(`  ${a.op}${a.item ? " " + a.item : ""}`);
+  for (const k of skipped) say(`  skipped ${k.rid}: ${k.why}`);
+}
+
+// `lookout install-repo [--root DIR] [--check]`: the plugin into a repo's own
+// .claude/, for cloud sessions (lib/install.mjs). highlight.js ships inside it.
+function cmdInstallRepo() {
+  const root = targetRoot(opt("root"));
+  const opts = { pluginRoot: HERE, name: "lookout", version: V.engineVersion(HERE), root };
+  if (flag("check")) {
+    const c = checkRepo(opts);
+    say(c.ok ? `lookout in ${root}/.claude/skills/lookout matches this plugin (${opts.version})` : c.lines.join("\n"));
+    if (!c.ok) process.exitCode = 1;
+    return;
+  }
+  let r;
+  try { r = installRepo(opts); } catch (e) { die(e.message); }
+  say(`installed lookout ${r.version} into ${r.dest} (${r.files} files)`);
+  say(`  hooks merged into ${r.settings}; they run on the remote host (CLAUDE_CODE_REMOTE=true) or with SEAMUX_REPO_HOOKS=1`);
+  say("  commit .claude/ yourself; lookout install-repo --check reports drift later");
+}
+
+// `lookout serve`: start the server if needed and print a page's URL, run it
+// in the foreground (what the detached start runs), or stop it.
+function cmdServe() {
+  if (flag("foreground")) { SV.serveForeground({ version: V.engineVersion(HERE), root: HERE }); return; }
+  if (flag("stop")) { say(SV.stopServer() ? "stopped lookout serve" : "lookout serve was not running"); return; }
+  if (flag("status")) {
+    const rec = SV.liveServer(HERE);
+    say(rec ? `lookout serve on 127.0.0.1:${rec.port} (pid ${rec.pid}${rec.foreign ? ", from another copy: " + rec.root : ""})` : "lookout serve is not running");
+    return;
+  }
+  const rec = SV.ensureServer({ cli: path.join(HERE, "lookout.mjs"), root: HERE });
+  if (!rec) die(`lookout serve did not start — see ${SV.LOG_FILE}`);
+  say(SV.urlFor(rec, opt("url") || "/health"));
 }
 
 // ---------------------------------------------------------------- dispatch
@@ -563,7 +648,17 @@ switch (verb) {
   case "show":   cmdShow(); break;
   case "list":   cmdList(); break;
   case "setup":  cmdSetup(); break;
-  case "engine": process.stdout.write(pointerBody || JSON.stringify({ root: HERE, pointer: "not written" }, null, 2) + "\n"); break;
+  case "serve":  cmdServe(); break;
+  case "export-artifact": cmdExportArtifact(); break;
+  case "pull":   cmdPull(); break;
+  case "install-repo": cmdInstallRepo(); break;
+  case "engine": {
+    // The pointer as written by this run, plus the host it detected (not
+    // stored in the pointer: the host belongs to the session, not the copy).
+    let o; try { o = JSON.parse(pointerBody); } catch { o = { root: HERE, pointer: "not written" }; }
+    process.stdout.write(JSON.stringify({ ...o, ...detectHost() }, null, 2) + "\n");
+    break;
+  }
   case "help":   usage(); break;
   default:       usage(); die("unknown verb: " + verb);
 }

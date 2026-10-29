@@ -13,6 +13,9 @@ Symptoms keyed on the engine's real error strings.
 | `contract "…": external scope defaults toward ADR` | flag the owning decision `adr` (with consequences), or write a `waiver` and say so |
 | `alignment check FAILED — … no quiz question covers` | add a question whose `decisionRef` names that contract decision, re-render |
 | plan row on the board but no `plan →` chip | intent server down: `crew listen on`, or open the board once |
+| `not served: deep-plan serve did not start` | read the log it names; `deep-plan serve --status` says whether one is running |
+| a page's buttons say "the deep-plan server did not answer" | the server stopped after 30 idle minutes, or another copy restarted it: `deep-plan page <slug>` gives a fresh link |
+| `served at` names the wrong host | `deep-plan doctor` prints how the host was detected; set `SEAMUX_HOST=cmux\|desktop\|terminal\|remote` to override |
 | `go`/`done` buttons dead on the plan page | port moved; the next `crew sync` push re-injects it |
 | `rehydrate` says REWRITTEN (differs) | someone hand-edited a surface; the spec is the artifact, the rewrite is the fix |
 | `no recorded start sha — give one: deep-plan review\|diff\|deliver … --base <sha>` | the increment was authorized before `go` recorded a start sha; pass the commit its work started from as `--base` (for `deliver`, increment 1's); it is recorded, so later runs need no flag |

@@ -704,14 +704,16 @@
   // polls for the agent's replies. From a file it stays read-only: there is
   // nothing to send them to.
   let live = null;
-  function serve({ token, id }) {
+  // `post` and `poll: false` replace the server for a page that keeps its
+  // edits elsewhere (an exported Artifact writes them to its db, lib/artifact.mjs).
+  function serve({ token, id, post: postVia = null, poll: polls = true }) {
     live = { token, id, pending: null };
     document.body.classList.add("served");
     drawHeader();
-    const post = body => fetch("/review/" + encodeURIComponent(id), {
+    const post = postVia || (body => fetch("/review/" + encodeURIComponent(id), {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...body, t: token }),
-    }).then(r => r.json().then(j => { if (!r.ok) throw new Error(j.error || "refused"); return j; }));
+    }).then(r => r.json().then(j => { if (!r.ok) throw new Error(j.error || "refused"); return j; })));
 
     // A composer with words in it is never redrawn away; a fresher review
     // waits until it is sent or cancelled.
@@ -732,8 +734,10 @@
         .then(j => { if (j && j.updatedAt !== R.updatedAt) take(j); else if (live.pending && !busy()) take(live.pending); })
         .catch(() => { /* the server restarted; the next poll will tell */ });
     };
-    setInterval(() => poll(), 2500);
-    document.addEventListener("visibilitychange", e => { if (!document.hidden) poll(e); });
+    if (polls) {
+      setInterval(() => poll(), 2500);
+      document.addEventListener("visibilitychange", e => { if (!document.hidden) poll(e); });
+    }
 
     const send = (body, status) => {
       status.textContent = "sending…";
@@ -795,6 +799,9 @@
     });
     drawSide();
     drawMain();
+    // A caller with its own transport pushes fresher reviews through take,
+    // which never redraws away a composer that has words in it.
+    return { take };
   }
 
   window.lookout = { get review() { return R; }, applyReview, serve, el, current: () => current,

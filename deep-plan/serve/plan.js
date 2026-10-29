@@ -33,7 +33,7 @@
       .catch(function(){
         el.classList.remove("dp-busy");
         el.classList.add("dp-bad");
-        el.title = "the crew intent server did not answer";
+        el.title = "the deep-plan server did not answer";
       });
   }
 
@@ -60,7 +60,7 @@
     }).catch(function(){
       b.classList.remove("dp-busy");
       b.classList.add("dp-bad");
-      b.title = "the crew intent server did not answer";
+      b.title = "the deep-plan server did not answer";
     });
   }
 
@@ -141,7 +141,7 @@
       if (!j || !j.ok) { btn.classList.add("dp-bad"); btn.title = (j && j.detail) || "refused"; return; }
       btn.classList.remove("dp-bad"); btn.title = j.detail || "";
       if (after) after(j);
-    }).catch(function(){ btn.classList.remove("dp-busy"); btn.classList.add("dp-bad"); btn.title = "the crew intent server did not answer"; });
+    }).catch(function(){ btn.classList.remove("dp-busy"); btn.classList.add("dp-bad"); btn.title = "the deep-plan server did not answer"; });
   }
 
   // Which frame a step label belongs to, for the lightbox caption.

@@ -1,7 +1,9 @@
 __pycache__/
 *.pyc
 deep-plan/vendor/mermaid.min.js
-lookout/vendor/
+# lookout/vendor holds only the pinned highlight.js the plugin ships
+lookout/vendor/*
+!lookout/vendor/highlight.min.js
 *.bak
 .DS_Store
 .vscode/

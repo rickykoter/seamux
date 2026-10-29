@@ -149,6 +149,10 @@ export function runExec(exec, { root, from = "", log = "", env = {}, browser = {
       ? runBrowser(s, { cwd, env: vars, log, timeout: s.timeout || exec.timeout || 900, browser: { ...browser, root } })
       : sh(cwd, s.command, { timeout: s.timeout || exec.timeout || 900, log, env: vars });
     if (signalled(r)) return done("fail", `terminated by ${r.signal} at step ${k + 1}: ${s.command}`, { ...at, code: -1, signal: r.signal });
+    // No browser driver on this machine: the check needs a variant (a
+    // person installs Playwright, or records it as a manual check).
+    if (s.kind === "browser" && r.needsVariant)
+      return { ...done("needs-variant", r.out, { ...at, code: -1 }), status: "needs-variant" };
     if (s.kind === "browser" && !r.ok)
       return done("fail", r.timedOut ? `timed out after ${s.timeout || exec.timeout || 900}s in the browser script ${s.command}`
         : r.failedAt ? `${r.failedAt} (${s.command})` : `exit ${r.code} at step ${k + 1}: browser ${s.command}`,

@@ -1,5 +1,8 @@
 
 <script>
+// Served by deep-plan serve (lib/serve.mjs) and, through its proxy, by
+// crew-board. Ported from crew-board src/inject/; the token and the id are
+// filled in per request.
 (function(){
   var T = "__TOKEN__", ID = "__ID__";
   var picks = document.querySelectorAll(".dp-ask-pick[data-n]");
@@ -7,6 +10,11 @@
     picks[i].disabled = false;
     picks[i].title = (picks[i].title || "").replace(/ \u2014 available when.*$/, "");
   }
+  // The server exits after 30 idle minutes; an open ask keeps it up, so a
+  // pick made after a long pause still lands.
+  // /plan-stamp, not /health: crew-board answers /health itself, but forwards
+  // /plan-stamp to deep-plan serve, so the ping reaches the server that matters.
+  setInterval(function(){ fetch("/plan-stamp?slug=").catch(function(){}); }, 5 * 60 * 1000);
   var status = document.getElementById("dp-ask-status");
   function say(t, bad) { if (status) { status.textContent = t; status.style.color = bad ? "var(--warn)" : "var(--good)"; } }
   document.addEventListener("click", function(ev){
@@ -25,7 +33,7 @@
         say((j && j.detail) || "refused", true);
         for (var i = 0; i < picks.length; i++) picks[i].disabled = false;
       })
-      .catch(function(){ say("the crew intent server did not answer", true);
+      .catch(function(){ say("the deep-plan server did not answer", true);
         for (var i = 0; i < picks.length; i++) picks[i].disabled = false; });
   });
 })();

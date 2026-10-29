@@ -57,8 +57,10 @@ function describe(r, news) {
     const where = `${item.file}:${item.line}${item.side === "old" ? " (old side)" : ""}`;
     const what = item.id.startsWith("f") ? `${item.id} (${item.severity} finding, ${where})` : `${item.id} (comment on ${where})`;
     const text = String(msg.text || "").replace(/\s+/g, " ").trim().slice(0, MAX_TEXT);
-    if (msg.kind === "status") return `- ${what}: the human marked it ${msg.to}${text ? ` — "${text}"` : ""}`;
-    return `- ${what}: "${text}"`;
+    // From a shared Artifact page: whoever could write there, said so.
+    const from = msg.via === "artifact" ? " (from the shared page, author not verified)" : "";
+    if (msg.kind === "status") return `- ${what}: the human marked it ${msg.to}${text ? ` — "${text}"` : ""}${from}`;
+    return `- ${what}: "${text}"${from}`;
   });
   if (news.length > MAX_LINES) lines.push(`- …and ${news.length - MAX_LINES} more (lookout findings list ${r.id})`);
   return `[lookout ${r.id}] ${news.length} new from the human on the review page for ${r.title}:\n` +

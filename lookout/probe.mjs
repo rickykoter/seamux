@@ -7,6 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import http from "node:http";
 import { execSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -28,6 +29,8 @@ const ENV = {
 delete ENV.TYPESAFE_BASE_URL;
 delete ENV.LOOKOUT_ENGINE;
 delete ENV.CMUX_WORKSPACE_ID;
+// Host signals come from the session running the probe; each test sets its own.
+for (const k of ["SEAMUX_HOST", "CLAUDE_CODE_REMOTE", "CLAUDE_CODE_ENTRYPOINT", "LOOKOUT_SERVE_FILE"]) delete ENV[k];
 // The libs read their overrides at import time, so set them before importing.
 Object.assign(process.env, ENV);
 
@@ -911,6 +914,307 @@ catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.n
      crash?.took === true && !fs.existsSync(lk("crash")) && !fs.existsSync(lk("crash") + "-break"), JSON.stringify(crash));
   ok("lock: a stale lock that will not go (rmdir gets ENOTEMPTY) is a timeout, not a hang",
      waited(spin) && !fs.existsSync(lk("spin") + "-break"), JSON.stringify(spin));
+}
+
+// ---------------------------------------------------------------- host detection
+{
+  const HOST = (await import("./lib/host.mjs")), HOST_TWIN = (await import("../deep-plan/lib/host.mjs"));
+  const HOST_TABLE = [
+    [{}, "terminal"],
+    [{ CMUX_WORKSPACE_ID: "W1" }, "cmux"],
+    [{ CLAUDE_CODE_REMOTE: "true" }, "remote"],
+    [{ CLAUDE_CODE_REMOTE: "1" }, "terminal"],
+    [{ CLAUDE_CODE_ENTRYPOINT: "claude-desktop" }, "desktop"],
+    [{ CLAUDE_CODE_ENTRYPOINT: "claude-desktop-3p" }, "desktop"],
+    [{ CLAUDE_CODE_ENTRYPOINT: "local-agent" }, "desktop"],
+    [{ CLAUDE_CODE_ENTRYPOINT: "cli" }, "terminal"],
+    [{ CMUX_WORKSPACE_ID: "W1", CLAUDE_CODE_ENTRYPOINT: "claude-desktop" }, "cmux"],
+    [{ CMUX_WORKSPACE_ID: "W1", CLAUDE_CODE_REMOTE: "true" }, "cmux"],
+    [{ CLAUDE_CODE_REMOTE: "true", CLAUDE_CODE_ENTRYPOINT: "claude-desktop" }, "remote"],
+    [{ SEAMUX_HOST: "desktop", CMUX_WORKSPACE_ID: "W1" }, "desktop"],
+    [{ SEAMUX_HOST: "Terminal", CLAUDE_CODE_REMOTE: "true" }, "terminal"],
+    [{ SEAMUX_HOST: "remote" }, "remote"],
+    [{ SEAMUX_HOST: "cmux" }, "cmux"],
+    [{ SEAMUX_HOST: "bogus", CLAUDE_CODE_ENTRYPOINT: "claude-desktop" }, "desktop"],
+  ];
+  for (const [env, want] of HOST_TABLE) {
+    const got = HOST.detectHost(env), twin = HOST_TWIN.detectHost(env);
+    ok(`host: ${JSON.stringify(env)} is ${want}`, got.host === want);
+    ok(`host: the deep-plan copy agrees on ${JSON.stringify(env)}`, twin.host === got.host && twin.why === got.why);
+  }
+  ok("host: an ignored SEAMUX_HOST is named in why", /SEAMUX_HOST=bogus ignored/.test(HOST.detectHost({ SEAMUX_HOST: "bogus" }).why));
+  ok("host: the twin files match apart from the line naming the other copy",
+    fs.readFileSync(path.join(HERE, "lib", "host.mjs"), "utf8").split("\n").slice(3).join("\n") ===
+    fs.readFileSync(path.join(HERE, "..", "deep-plan", "lib", "host.mjs"), "utf8").split("\n").slice(3).join("\n"));
+  const r = spawnSync("node", [path.join(HERE, "lookout.mjs"), "engine"],
+    { encoding: "utf8", env: { ...ENV, CMUX_WORKSPACE_ID: "W9" } });
+  let j = {}; try { j = JSON.parse(r.stdout); } catch {}
+  ok("host: engine reports the host beside the pointer", r.status === 0 && j.host === "cmux" && j.why === "CMUX_WORKSPACE_ID is set" && j.root === HERE);
+}
+
+// ---------------------------------------------------------------- the shipped highlight.js
+{
+  const shipped = path.join(HERE, "vendor", "highlight.min.js");
+  ok("vendor: the plugin ships highlight.js at the pinned sha256",
+    fs.existsSync(shipped) && sha(shipped) === VD.HLJS_SHA256);
+  const env = { ...ENV, LOOKOUT_VENDOR_DIR: path.join(TMP, "vendor-shipped") };
+  delete env.LOOKOUT_HLJS_SRC;
+  const r = spawnSync("node", [path.join(HERE, "lookout.mjs"), "setup"], { encoding: "utf8", env });
+  ok("vendor: setup installs the shipped copy, with no download",
+    /copied the plugin's highlight.js/.test(r.stdout) && sha(path.join(env.LOOKOUT_VENDOR_DIR, "highlight.min.js")) === VD.HLJS_SHA256,
+    r.stdout + r.stderr);
+}
+
+// ---------------------------------------------------------------- lookout serve
+{
+  const SV = path.join(TMP, "serve");
+  fs.mkdirSync(SV, { recursive: true });
+  const SENV = { ...ENV, LOOKOUT_SERVE_FILE: path.join(SV, "serve.json"), LOOKOUT_SERVE_IDLE_MS: "8000" };
+  const lk = (cwd, ...a) => spawnSync("node", [path.join(HERE, "lookout.mjs"), ...a], { encoding: "utf8", env: SENV, cwd });
+  const rec = () => { try { return JSON.parse(fs.readFileSync(SENV.LOOKOUT_SERVE_FILE, "utf8")); } catch { return null; } };
+  const RS = repo("rs");
+  write(RS, "a.txt", "one\ntwo\n");
+  sh(RS, `git add -A && ${G} commit -q -m base && git checkout -q -b dev/s`);
+  write(RS, "a.txt", "one\nTWO\nthree\n");
+  sh(RS, `git add -A && ${G} commit -q -m change`);
+  const o = JSON.parse(lk(RS, "open", "--json", "--no-open").stdout);
+  const id = o.id;
+  const fj = path.join(SV, "f.json");
+  fs.writeFileSync(fj, JSON.stringify([{ file: "a.txt", line: 2, severity: "major", summary: "two is shouted", failure_scenario: "a reader sees TWO" }]));
+  lk(RS, "findings", "add", id, fj);
+  const fid = S.read(id).findings[0].id;
+
+  let r = lk(RS, "serve", "--url", `/review/${id}`);
+  const R = rec();
+  ok("serve: --url starts lookout's server and prints the review's URL",
+    r.status === 0 && R && r.stdout.trim() === `http://127.0.0.1:${R.port}/review/${id}`, r.stdout + r.stderr);
+  ok("serve: serve.json is mode 0600 with port, token, pid, version, started",
+    R && (fs.statSync(SENV.LOOKOUT_SERVE_FILE).mode & 0o777) === 0o600 && ["port", "token", "pid", "version", "started"].every(k => R[k]));
+  ok("serve: a second --url reuses the server", lk(RS, "serve", "--url", "/health").status === 0 && rec().pid === R.pid);
+  const B = `http://127.0.0.1:${R.port}`, T = R.token, O = { Origin: B, "Content-Type": "application/json" };
+  const raw = (method, p, headers, body) => new Promise(res => {
+    const q = http.request({ host: "127.0.0.1", port: R.port, path: p, method, headers },
+      rs => { let b = ""; rs.on("data", c => b += c); rs.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} res({ status: rs.statusCode, body: b, json: j, headers: rs.headers }); }); });
+    q.on("error", e => res({ status: 0, body: e.message, json: null }));
+    if (body !== undefined) q.write(body);
+    q.end();
+  });
+  const post = (body, headers = O) => raw("POST", `/review/${id}`, { ...headers, "Content-Length": Buffer.byteLength(JSON.stringify(body)) }, JSON.stringify(body));
+  let g = await raw("GET", "/health", { Host: `127.0.0.1:${R.port}` });
+  ok("serve: /health names lookout and its pid", g.status === 200 && g.json.server === "lookout" && g.json.pid === R.pid &&
+    g.headers.server === "lookout-serve");
+  g = await raw("GET", "/health", { Host: `evil.example:${R.port}` });
+  ok("serve: a foreign Host is refused", g.status === 403 && g.json.error === "unknown host");
+  g = await raw("GET", `/review/${id}`, { Host: `localhost:${R.port}` });
+  ok("serve: the page is served with its token and id before the last </body>",
+    g.status === 200 && g.body.includes(`window.lookout.serve({ token: "${T}", id: "${id}" })`) &&
+    g.body.lastIndexOf("window.lookout.serve(") < g.body.lastIndexOf("</body>"));
+  g = await raw("GET", `/review/${id}.json?t=wrong`, {});
+  ok("serve: the record needs the token", g.status === 403 && g.json.error === "bad token");
+  g = await raw("GET", `/review/${id}.json?t=${T}`, {});
+  ok("serve: with it, the record is the stored JSON", g.status === 200 && g.json.id === id);
+  g = await raw("GET", `/review/..%2F..%2Fx.json?t=${T}`, {});
+  ok("serve: an id cannot leave the reviews directory", g.status === 404);
+  // POST guards, in crew's order.
+  g = await post({ t: T, op: "comment", item: fid, text: "hi" }, { Origin: "http://evil.example", "Content-Type": "application/json" });
+  ok("serve: a POST from another origin is refused", g.status === 403 && g.json.error === "cross-origin request refused");
+  g = await post({ t: T, op: "comment", item: fid, text: "hi" }, { Origin: B, "Content-Type": "text/plain" });
+  ok("serve: a POST that is not JSON is refused", g.status === 415);
+  g = await raw("POST", `/review/${id}`, { ...O, "Content-Length": String(70 * 1024) }, "");
+  ok("serve: a POST over 64KB is refused", g.status === 413);
+  g = await post({ t: "wrong", op: "comment", item: fid, text: "hi" });
+  ok("serve: a POST without the token is refused", g.status === 403 && g.json.error === "bad token", g.status + " " + g.body);
+  g = await post({ t: T, op: "launch" });
+  ok("serve: an unknown op is refused", g.status === 400 && g.json.error === "unknown op");
+  // The ops, each under lookout's lock.
+  g = await post({ t: T, op: "comment", item: fid, text: "  is it, though?  " });
+  const f0 = () => S.read(id).findings[0];
+  ok("serve: comment on a finding adds a human message to its thread",
+    g.status === 200 && g.json.ok && g.json.item === fid && f0().thread.some(m => m.by === "human" && m.text === "is it, though?"));
+  g = await post({ t: T, op: "comment", file: "a.txt", line: 3, side: "new", text: "new line" });
+  const t1 = g.json && g.json.item;
+  ok("serve: a comment on a line opens a thread", g.status === 200 && t1 === "t1" &&
+    S.read(id).threads.find(t => t.id === "t1" && t.line === 3 && t.status === "open"));
+  g = await post({ t: T, op: "comment", file: "nope.txt", line: 1, text: "x" });
+  ok("serve: a comment on a file outside the review is refused", g.status === 400 && g.json.error === "file is not in this review");
+  g = await post({ t: T, op: "comment", item: fid, text: "   " });
+  ok("serve: an empty comment is refused", g.status === 400);
+  g = await post({ t: T, op: "resolve", item: fid, text: "fixed" });
+  ok("serve: resolve closes a finding as the human, with a status message",
+    g.status === 200 && f0().status === "resolved" && f0().statusBy === "human" &&
+    f0().thread.slice(-1)[0].kind === "status" && f0().thread.slice(-1)[0].to === "resolved");
+  g = await post({ t: T, op: "reopen", item: fid });
+  ok("serve: reopen opens it again", g.status === 200 && f0().status === "open");
+  g = await post({ t: T, op: "dismiss", item: "t1" });
+  ok("serve: dismissing a thread resolves it", g.status === 200 && S.read(id).threads[0].status === "resolved");
+  g = await post({ t: T, op: "answer", item: "n1", pick: 0 });
+  ok("serve: answer on a review without a quiz is refused", g.status === 400 && g.json.error === "this review has no quiz");
+  g = await post({ t: T, op: "resolve", item: "f999" });
+  ok("serve: an op on a missing item is refused", g.status === 404);
+  // A writer holding the lock: the op waits, and is refused when it outlasts the deadline.
+  const lockDir = path.join(ENV.LOOKOUT_REVIEWS_DIR, id + ".lock");
+  fs.mkdirSync(lockDir);
+  g = await post({ t: T, op: "comment", item: fid, text: "while locked" });
+  ok("serve: a held lock refuses the op rather than writing past it", g.status === 409 && /locked/.test(g.json.error));
+  fs.rmdirSync(lockDir);
+  g = await raw("POST", "/elsewhere", { ...O, "Content-Length": "2" }, "{}");
+  ok("serve: a POST anywhere but /review/ is refused", g.status === 404, g.status + " " + g.body);
+  // Stale record, then idle exit.
+  lk(RS, "serve", "--stop");
+  fs.writeFileSync(SENV.LOOKOUT_SERVE_FILE, JSON.stringify({ port: R.port, token: "x", pid: 999999 }));
+  r = lk(RS, "serve", "--url", "/health");
+  ok("serve: a stale serve.json (dead pid) starts a fresh server", r.status === 0 && rec().pid !== 999999 && rec().token !== "x");
+  const idlePid = rec().pid;
+  let gone = false;
+  for (let i = 0; i < 80 && !gone; i++) {
+    await new Promise(res => setTimeout(res, 500));
+    gone = !rec() && !(() => { try { process.kill(idlePid, 0); return true; } catch { return false; } })();
+  }
+  ok("serve: an idle server exits and removes serve.json", gone);
+  lk(RS, "serve", "--stop");
+}
+
+// ---------------------------------------------------------------- remote host: reviews in the repo
+{
+  const R8 = repo("r8");
+  write(R8, "a.js", "1\n"); sh(R8, `git add -A && ${G} commit -q -m base`);
+  write(R8, "a.js", "2\n");
+  const RH = path.join(TMP, "remote-home");
+  fs.mkdirSync(RH, { recursive: true });
+  const REnv = { ...ENV, HOME: RH, SEAMUX_HOST: "remote", CLAUDE_PROJECT_DIR: R8 };
+  delete REnv.LOOKOUT_REVIEWS_DIR;
+  const o = spawnSync("node", [path.join(HERE, "lookout.mjs"), "open", "--worktree", "--json"], { encoding: "utf8", env: REnv, cwd: R8 });
+  const rid = JSON.parse(o.stdout || "{}").id;
+  const RD = path.join(R8, ".seamux", "state", "plans", "reviews");
+  ok("remote: a review's store defaults into the repo's .seamux/state",
+    o.status === 0 && fs.existsSync(path.join(RD, rid + ".json")) && !fs.existsSync(path.join(RH, ".claude", "plans", "reviews")), o.stderr);
+  ok("remote: open says there is no live page on this host", JSON.parse(o.stdout).shown === "no live page on this host (host: remote)");
+  ok("remote: and keeps it out of git through info/exclude", /^\/\.seamux\/state\/$/m.test(fs.readFileSync(path.join(R8, ".git", "info", "exclude"), "utf8")));
+  // A comment from the human, written the way the page's server writes it.
+  spawnSync("node", ["--input-type=module", "-e", `
+    const S = await import(${JSON.stringify(path.join(HERE, "lib", "store.mjs"))});
+    const FD = await import(${JSON.stringify(path.join(HERE, "lib", "findings.mjs"))});
+    S.update(${JSON.stringify(rid)}, cur => { FD.comment(cur, { file: "a.js", line: 1, text: "from the remote page" }, "human"); return cur; });`],
+    { encoding: "utf8", env: REnv, cwd: R8 });
+  const h = spawnSync("bash", [path.join(HERE, "hooks", "comments.sh")],
+    { encoding: "utf8", env: REnv, cwd: R8, input: JSON.stringify({ cwd: R8, hook_event_name: "UserPromptSubmit" }) });
+  ok("remote: the comments hook reads reviews from the repo and passes the human's comment on",
+    /from the remote page/.test(h.stdout), h.stdout + h.stderr);
+}
+
+// ---------------------------------------------------------------- Artifact export and pull
+{
+  const R9 = repo("r9");
+  write(R9, "a.js", "1\n"); sh(R9, `git add -A && ${G} commit -q -m base`);
+  write(R9, "a.js", "2\n3\n");
+  const id = JSON.parse(cli(R9, "open", "--worktree", "--json").stdout).id;
+  const fj = path.join(TMP, "r9-f.json");
+  fs.writeFileSync(fj, JSON.stringify([{ file: "a.js", line: 1, severity: "major", summary: "two", failure_scenario: "x" }]));
+  cli(R9, "findings", "add", id, fj);
+  let r = cli(R9, "export-artifact", id, "--json");
+  const meta = JSON.parse(r.stdout || "{}");
+  const page = meta.path ? fs.readFileSync(meta.path, "utf8") : "";
+  ok("export-artifact writes the review page with a db layer, and says what to publish with",
+    r.status === 0 && /\.artifact\.html$/.test(meta.path) && meta.capabilities.db.rules[0].path === "annotations" &&
+    page.includes('claude.use("db")') && page.includes("function applyOp(") && !/^export /m.test(page.slice(page.lastIndexOf("<script>"))), r.stderr);
+  // Run the page's db layer against a stand-in for the page and its db.
+  const boot = page.slice(page.lastIndexOf("<script>") + 8, page.lastIndexOf("</script>"));
+  const review = S.read(id);
+  let served = null, shown = null;
+  const writes = [];
+  let snap = null;
+  const db = {
+    doc: p => ({ set: async row => { writes.push({ p, row }); } }),
+    collection: () => ({ orderBy: () => ({ onSnapshot: fn => { snap = fn; } }) }),
+  };
+  const ctx = { window: { lookout: { review: JSON.parse(JSON.stringify(review)),
+      serve: o => { served = o; return { take: rv => { shown = rv; } }; }, applyReview: rv => { shown = rv; } } },
+    claude: { use: async n => n === "db" ? db : null }, document: { body: { insertBefore() {}, firstChild: null }, createElement: () => ({ style: {} }) },
+    JSON, Date, Math, Number, String, Array, Object, Error, Promise };
+  (await import("node:vm")).runInNewContext(boot, ctx);
+  await new Promise(res => setTimeout(res, 20));
+  ok("page: it serves through the db, not a server, and does not poll", served && served.poll === false && typeof served.post === "function");
+  const posted = await served.post({ op: "comment", file: "a.js", line: 2, side: "new", text: "why three?", t: "ignored" });
+  ok("page: a comment is one annotations row, written as the human, with no token in it",
+    writes.length === 1 && /^annotations\/r/.test(writes[0].p) && writes[0].row.op === "comment" && writes[0].row.by === "human" &&
+    writes[0].row.line === 2 && !("t" in writes[0].row) && posted.review.threads.length === 1, JSON.stringify(writes));
+  await served.post({ op: "comment", item: "t1", text: "my own thread" });
+  ok("page: a reply to a thread made on this page names it by the row that made it, not its t-number",
+    writes.length === 2 && writes[1].row.item === "row:" + writes[0].p.split("/").pop(), JSON.stringify(writes[1]));
+  writes.pop();
+  let refused = "";
+  try { await served.post({ op: "resolve", item: "f99" }); } catch (e) { refused = e.message; }
+  ok("page: an op the rules refuse is said on the page and never stored", refused === "no finding or thread f99" && writes.length === 1);
+  snap({ docs: [{ id: "x1", data: () => writes[0].row }, { id: "x2", data: () => ({ op: "resolve", item: "f1", text: "fine", by: "human", at: "2099-01-01T00:00:00.000Z" }) },
+    { id: "x3", data: () => ({ op: "comment", file: "a.js", line: 1, text: "not the human's", by: "agent", at: "2099-01-02T00:00:00.000Z" }) }] });
+  ok("page: every human row from the db is applied, in order, to what it shows, and no other",
+    shown && shown.threads.length === 1 && shown.findings[0].status === "resolved" && shown.findings[0].statusBy === "human");
+  // Pull: the rows as the agent saved them from ArtifactData.
+  const rowsFile = path.join(TMP, "r9-rows.json");
+  fs.writeFileSync(rowsFile, JSON.stringify({ docs: [
+    { id: "annotations/rb", data: { op: "resolve", item: "f1", text: "fixed now", by: "human", at: "2026-01-01T00:00:02.000Z" } },
+    { id: "annotations/ra", data: { ...writes[0].row, at: "2026-01-01T00:00:01.000Z" } },
+    { id: "annotations/rc", data: { op: "dismiss", item: "f1", by: "agent", at: "2026-01-01T00:00:03.000Z" } },
+    { id: "annotations/rd", data: { op: "launch", by: "human", at: "2026-01-01T00:00:04.000Z" } },
+  ] }));
+  r = cli(R9, "pull", id, rowsFile, "--json");
+  const res = JSON.parse(r.stdout || "{}");
+  const after = S.read(id);
+  ok("pull: replays the human's rows in time order through the same ops",
+    r.status === 0 && res.applied.map(a => a.rid).join() === "ra,rb" && after.threads[0].messages[0].text === "why three?" &&
+    after.findings[0].status === "resolved" && after.findings[0].statusBy === "human" &&
+    after.threads[0].messages[0].via === "artifact", r.stdout + r.stderr);
+  ok("pull: a row not written by the page's human, and an op the rules refuse, are skipped and named",
+    res.skipped.length === 2 && /written by "agent"/.test(res.skipped.find(k => k.rid === "rc").why) &&
+    res.skipped.find(k => k.rid === "rd").why === "unknown op" && after.findings[0].status === "resolved");
+  r = cli(R9, "pull", id, rowsFile, "--json");
+  ok("pull: a second pull applies nothing again", JSON.parse(r.stdout).applied.length === 0 && S.read(id).threads.length === 1);
+  // A reply that sorts before the thread it names (a slow clock), naming the
+  // thread by its row; and bare rows with no ids.
+  const later = path.join(TMP, "r9-rows2.json");
+  const bare = { op: "comment", file: "a.js", line: 1, text: "a second thread", by: "human", at: "2026-01-02T00:00:05.000Z" };
+  fs.writeFileSync(later, JSON.stringify([
+    { id: "re", data: { op: "comment", item: "row:rf", text: "reply from a slow clock", by: "human", at: "2026-01-02T00:00:00.000Z" } },
+    { id: "rf", data: { op: "comment", file: "a.js", line: 2, side: "new", text: "new thread", by: "human", at: "2026-01-02T00:00:09.000Z" } },
+    bare]));
+  r = cli(R9, "pull", id, later, "--json");
+  const v = S.read(id), nt = v.threads.find(t => t.messages[0].text === "new thread");
+  ok("pull: a reply that sorts before its thread is tried again after it, and lands on that thread",
+    r.status === 0 && nt && nt.messages.some(m => m.text === "reply from a slow clock"), r.stdout);
+  fs.writeFileSync(later, JSON.stringify([{ op: "comment", file: "a.js", line: 1, text: "first", by: "human", at: "2026-01-03T00:00:00.000Z" }, bare]));
+  r = cli(R9, "pull", id, later, "--json");
+  const od = path.join(TMP, "r9-outdir", "annotations");
+  fs.mkdirSync(od, { recursive: true });
+  fs.writeFileSync(path.join(od, "rz.json"), JSON.stringify({ op: "comment", item: "f1", text: "from a folder", by: "human", at: "2026-01-04T00:00:00.000Z" }));
+  r = cli(R9, "pull", id, path.join(TMP, "r9-outdir"), "--json");
+  ok("pull: reads an ArtifactData out_dir folder, one row per file named by its doc id",
+    JSON.parse(r.stdout || "{}").applied?.[0]?.rid === "rz" && S.read(id).findings[0].thread.some(m => m.text === "from a folder"), r.stdout + r.stderr);
+  ok("pull: a row saved without an id keeps one id however the list is ordered", JSON.parse(r.stdout).applied.length === 1 &&
+    S.read(id).threads.filter(t => t.messages[0].text === "a second thread").length === 1, r.stdout);
+}
+
+// ---------------------------------------------------------------- install-repo
+{
+  const IR = repo("install");
+  const ir = (...a) => spawnSync("node", [path.join(HERE, "lookout.mjs"), "install-repo", ...a], { encoding: "utf8", env: ENV, cwd: IR });
+  let r = ir();
+  const D = path.join(IR, ".claude", "skills", "lookout");
+  const set = JSON.parse(fs.readFileSync(path.join(IR, ".claude", "settings.json"), "utf8"));
+  ok("install-repo copies lookout into .claude/skills/lookout, highlight.js included, without the probe or evals",
+    r.status === 0 && ["SKILL.md", "lookout.mjs", "hooks/comments.sh", "vendor/highlight.min.js", "bin/lookout", "page/review.js"]
+      .every(f => fs.existsSync(path.join(D, f))) && !fs.existsSync(path.join(D, "probe.mjs")) && !fs.existsSync(path.join(D, "evals")), r.stderr);
+  ok("install-repo merges the comments hooks behind the remote guard",
+    set.hooks.UserPromptSubmit[0].hooks[0].command.startsWith('[ "$CLAUDE_CODE_REMOTE" = true ]') &&
+    /\.claude\/skills\/lookout\/hooks\/comments\.sh/.test(set.hooks.UserPromptSubmit[0].hooks[0].command));
+  ir();
+  ok("install-repo again leaves one set of its hooks", JSON.stringify(JSON.parse(fs.readFileSync(path.join(IR, ".claude", "settings.json"), "utf8"))) === JSON.stringify(set));
+  ok("install-repo --check: a fresh copy matches", ir("--check").status === 0);
+  fs.rmSync(path.join(D, "page", "review.css"));
+  r = ir("--check");
+  ok("install-repo --check names what is missing", r.status === 1 && /missing: page\/review\.css/.test(r.stdout), r.stdout);
+  ok("the twin install.mjs files match apart from the line naming the other",
+    fs.readFileSync(path.join(HERE, "lib", "install.mjs"), "utf8").split("\n").filter((l, i) => i !== 18).join("\n") ===
+    fs.readFileSync(path.join(HERE, "..", "deep-plan", "lib", "install.mjs"), "utf8").split("\n").filter((l, i) => i !== 18).join("\n"));
 }
 
 // ---------------------------------------------------------------- page script

@@ -8,9 +8,13 @@ It is a set of Claude Code plugins. Take the one you came for, or all of them.
 | **crew** | A board in the [cmux](https://cmux.io) Dock that ranks your worktrees by which one needs you next. | macOS with cmux |
 | **deep-plan** | Turns "make a plan" into a page you review, with a short quiz. The agent can't edit until you approve each increment, and can't call an increment done until its checks pass. | anywhere Claude Code runs |
 | **restack** | Rebases a stack of branches onto a moved base and regenerates conflicting generated files instead of making you merge them. | anywhere Claude Code runs |
-| **lookout** | Opens a diff beside the terminal, riskiest files first, with a reviewer's findings on their lines for you and the agent to talk through. A plan can make an increment wait on its review. | anywhere Claude Code runs; comments need crew |
+| **lookout** | Opens a diff beside the terminal, riskiest files first, with a reviewer's findings on their lines for you and the agent to talk through. A plan can make an increment wait on its review. | anywhere Claude Code runs |
 | **humanize** | Rewrites prose so it reads like a careful human wrote it: strips AI writing tells and untangles sentences that are hard to parse. Other seamux skills use it on the text they write. | anywhere Claude Code runs |
 | **seamux-mods** *(optional)* | Draws deep-plan inside the terminal: a plan pane, a `go next` prompt when the gate blocks an edit, and the plan in the status line. | Claude Code 2.1.287+ |
+
+deep-plan and lookout don't need cmux: they serve their own pages in Claude
+desktop or a terminal, and a repo can carry them into claude.ai/code cloud
+sessions. See [Without cmux](#without-cmux-claude-desktop-a-terminal-the-cloud).
 
 Out of the box you only need git and GitHub. If your team uses Jira, GitHub
 Issues, Datadog, Splunk or Grafana, turn those on in the crew plugin's options and the
@@ -154,7 +158,16 @@ You ask for a plan. deep-plan makes the agent work through it in this order:
 4. **Render the plan as a page** with a short quiz (below).
 5. **Gate the work.** The agent can't edit the worktree until the quiz
    passes and you say `go`. Each `go` opens one increment, and each
-   increment must pass its checks before it can be marked done.
+   increment must pass its checks before it can be marked done. In a
+   family of plans, the parent agent gives its children their gos once
+   their checks pass, so you don't have to approve every increment.
+
+Where the pages go depends on where Claude runs. In Claude desktop and a
+terminal, deep-plan starts its own small server and prints `served at
+<url>`; in a cloud session there is no live page, and the plan's state
+lives in the repo. Browser checks run through Playwright and headless
+Chromium wherever cmux isn't the host. `deep-plan doctor` says what it
+detected.
 
 ### The review page
 
@@ -472,6 +485,12 @@ Ask Claude to "review this branch" and it opens the page, briefs a reviewer,
 and talks the findings through with you there. Opening a review never
 touches your git index.
 
+Outside cmux, lookout serves the page itself and prints `served at <url>`.
+In a cloud session, where nobody can reach the sandbox, `lookout
+export-artifact` turns the review into a private Artifact page (published
+only when you say yes) and `lookout pull` brings your comments and closes
+back.
+
 ### The page
 
 The layout is VS Code's Source Control view: the changed files on the left,
@@ -749,6 +768,37 @@ For scripted installs, `--main-repo PATH`, `--with-jira=SITE`,
 `--with-github-issues` and `--with-observability=STACK` set the crew plugin's
 options, and `--no-crew`, `--no-restack`, `--no-guard`, `--no-lookout` and
 `--no-humanize` skip plugins.
+
+### Without cmux: Claude desktop, a terminal, the cloud
+
+deep-plan and lookout serve their own pages when cmux is not there. Each
+starts a small server on 127.0.0.1 when a page is first wanted and stops it
+after 30 idle minutes. Every verb that opens a page prints `served at <url>
+(host: …)`: in Claude desktop, Claude opens it in the browser pane, and in a
+terminal you open the link. `deep-plan doctor` says which host it detected;
+`SEAMUX_HOST=cmux|desktop|terminal|remote` overrides it. Browser checks run
+through Playwright and headless Chromium where cmux is not the host. See
+[docs/STANDALONE.md](docs/STANDALONE.md).
+
+A claude.ai/code cloud session does not install the plugins a repo enables.
+To use them there, put them in the repo itself and commit the result:
+
+```bash
+deep-plan install-repo
+```
+
+```bash
+lookout install-repo
+```
+
+Each copies its plugin into `.claude/skills/<plugin>/` and merges its hooks
+into `.claude/settings.json`. The hooks run only in a cloud session (or with
+`SEAMUX_REPO_HOOKS=1`), so your own machine keeps using the installed
+plugins. There, plan state and reviews live in the repo under
+`.seamux/state/` (kept out of git), `deep-plan export-state` and
+`import-state` move a plan between sandboxes, and a review is shared as an
+Artifact (`lookout export-artifact`, then `lookout pull`). `install-repo
+--check` reports when the repo's copy is behind the plugin.
 
 ### Integrations
 

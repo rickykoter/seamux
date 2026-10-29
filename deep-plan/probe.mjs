@@ -6,12 +6,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { execSync, spawnSync } from "node:child_process";
+import http from "node:http";
+import { execSync, spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { verdict } from "./lib/evidence.mjs";
 import { resolver, resolveFiles, matchesGlob, recipeHash, load as loadVerify } from "./lib/verify.mjs";
 import { pruneEvidence, readEvidence } from "./lib/browser.mjs";
 import { classifyScript } from "./lib/detect.mjs";
+import * as HOST from "./lib/host.mjs";
+import * as HOST_TWIN from "../lookout/lib/host.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const V = process.argv.includes("-v");
@@ -48,6 +51,8 @@ delete ENV.DEEP_PLAN_ENGINE;
 delete ENV.CLAUDE_CODE_SESSION_ID;
 delete ENV.CLAUDE_SESSION_ID;
 delete ENV.CMUX_WORKSPACE_ID;
+// Host signals come from the session running the probe; each test sets its own.
+for (const k of ["SEAMUX_HOST", "CLAUDE_CODE_REMOTE", "CLAUDE_CODE_ENTRYPOINT", "DEEP_PLAN_SERVE_FILE", "LOOKOUT_SERVE_FILE"]) delete ENV[k];
 const MERMAID_VENDOR = path.join(ENV.DEEP_PLAN_VENDOR_DIR, "mermaid.min.js");
 // The real bundle to test with: where CI fetched it, where `deep-plan setup`
 // put it, a checkout's own vendor/, or the old skills copy. Copied, not moved.
@@ -1158,6 +1163,153 @@ ok("all increments done: Edit allowed, gate retired", edit(path.join(REPO, "a.tx
     cli("grade", spec.slug, ...right).status === 0 && phase() === "done");
 }
 
+// -------------------------------------------------- deep-plan serve: the plugin's own page server
+{
+  const SV = path.join(TMP, "serve");
+  fs.mkdirSync(SV, { recursive: true });
+  const screen = path.join(SV, "screen.txt");
+  const SENV = { ...ENV, DEEP_PLAN_SERVE_FILE: path.join(SV, "serve.json"), DEEP_PLAN_SERVE_IDLE_MS: "4000",
+    LOOKOUT_ENGINE_FILE: path.join(SV, "no-lookout.json"), LOOKOUT_SERVE_FILE: path.join(SV, "lk-serve.json"),
+    CREW_CMUX: path.join(HERE, "tools", "fake-cmux"), FAKE_CMUX_SCREEN: screen, DEEP_PLAN_CONFIRM_GAP_MS: "20",
+    DEEP_PLAN_OPENER: "true" };
+  const sv = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: SENV, cwd: REPO });
+  const rec = () => { try { return JSON.parse(fs.readFileSync(SENV.DEEP_PLAN_SERVE_FILE, "utf8")); } catch { return null; } };
+  const get = async (url, headers = {}) => {
+    const r = await fetch(url, { headers, redirect: "manual" });
+    const body = await r.text();
+    let json = null; try { json = JSON.parse(body); } catch { /* html */ }
+    return { status: r.status, body, json, headers: r.headers };
+  };
+  let r = sv("serve", "--url", `/plan/${spec.slug}`);
+  const R = rec();
+  ok("serve: --url starts a server and prints the page's URL",
+    r.status === 0 && R && r.stdout.trim() === `http://127.0.0.1:${R.port}/plan/${spec.slug}`);
+  ok("serve: serve.json is mode 0600 and records port, token, pid, version, started",
+    R && (fs.statSync(SENV.DEEP_PLAN_SERVE_FILE).mode & 0o777) === 0o600 &&
+    ["port", "token", "pid", "version", "started"].every(k => R[k]));
+  ok("serve: a second --url reuses the running server", sv("serve", "--url", "/x").status === 0 && rec().pid === R.pid);
+  const B = `http://127.0.0.1:${R.port}`, T = R.token;
+  let g = await get(B + "/health");
+  ok("serve: /health names the server and its pid", g.status === 200 && g.json.server === "deep-plan" && g.json.pid === R.pid &&
+    g.headers.get("server") === "deep-plan-serve");
+  // fetch will not send a Host of its choosing; a raw request will.
+  const rawHost = await new Promise(res => {
+    const q = http.request({ host: "127.0.0.1", port: R.port, path: "/health", headers: { Host: "evil.example:" + R.port } },
+      rs => { let b = ""; rs.on("data", c => b += c); rs.on("end", () => res({ status: rs.statusCode, body: b })); });
+    q.on("error", () => res({ status: 0, body: "" })); q.end();
+  });
+  ok("serve: a foreign Host is refused", rawHost.status === 403 && /unknown host/.test(rawHost.body));
+  g = await get(`http://localhost:${R.port}/health`);
+  ok("serve: localhost:<port> is its own name too", g.status === 200);
+  g = await get(`${B}/plan/${spec.slug}`);
+  ok("serve: the plan page is served with its token and slug injected, and mermaid swapped",
+    g.status === 200 && g.body.includes(`var T = "${T}", SLUG = "${spec.slug}"`) && !g.body.includes("__TOKEN__") &&
+    !/src="data:text\/javascript;base64/.test(g.body));
+  g = await get(`${B}/plan/${spec.slug}.md`);
+  ok("serve: a plan's markdown is plain text", g.status === 200 && /^text\/plain/.test(g.headers.get("content-type")));
+  g = await get(`${B}/plan/..%2F..%2Fetc%2Fpasswd.html`);
+  ok("serve: a /plan/ path cannot leave the plans directory", g.status === 404);
+  g = await get(`${B}/plan-stamp?slug=${spec.slug}`);
+  ok("serve: /plan-stamp answers the page's mtime", g.status === 200 && g.json.mtime > 0);
+  g = await get(`${B}/plan-evidence/${spec.slug}/inc1-x-1/../../${spec.slug}.json`);
+  ok("serve: /plan-evidence serves only a run's frames, replay and trace", g.status === 404);
+  for (const route of ["/inc", "/open", "/answer", "/check/run"]) {
+    g = await get(`${B}${route}?t=wrong&slug=${spec.slug}&n=1&a=go&id=x`);
+    ok(`serve: ${route} refuses a bad token`, g.status === 403 && g.json.error === "bad token");
+  }
+  g = await fetch(B + "/review/x", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  ok("serve: nothing here takes a POST", g.status === 404);
+  // /inc runs the engine: reset then go increment 2 from the page, as a person's click.
+  const pg = (host, ...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "page", spec.slug, ...a],
+    { encoding: "utf8", env: { ...SENV, SEAMUX_HOST: host }, cwd: REPO }).stdout;
+  ok("page: on a terminal it prints the served URL with its host, and the text quiz",
+    pg("terminal", "--review").includes(`served at ${B}/plan/${spec.slug}.review.html (host: terminal)`) &&
+    /cat .*\.quiz\.txt/.test(pg("terminal", "--review")));
+  ok("page: on desktop it says to open the URL in the browser pane",
+    pg("desktop").includes(`served at ${B}/plan/${spec.slug} (host: desktop)`) && /preview_start/.test(pg("desktop")));
+  ok("page: on a remote host there is no live page, and the quiz is the text one",
+    /no live page on this host .*\(host: remote\)/.test(pg("remote", "--review")) && /quiz\.txt/.test(pg("remote", "--review")) &&
+    /export-artifact/.test(pg("remote")));
+  g = await get(`${B}/inc?t=${T}&slug=${spec.slug}&n=2&a=reset`);
+  const st2 = () => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"));
+  ok("serve: /inc runs a transition through the engine", g.status === 200 && g.json.ok && st2().increments[1].status === "pending");
+  g = await get(`${B}/inc?t=${T}&slug=${spec.slug}&n=2&a=go`);
+  ok("serve: a go from the page is recorded as the human's", g.status === 200 && g.json.ok &&
+    st2().increments[1].status === "authorized" && /human/.test(JSON.stringify(st2().log.slice(-1))));
+  g = await get(`${B}/inc?t=${T}&slug=${spec.slug}&n=2&a=pass`);
+  ok("serve: /inc refuses anything but a transition", g.status === 500 && g.json.detail === "bad transition");
+  passAll(spec.slug, 2); cli("done", spec.slug, "2");
+  fs.writeFileSync(path.join(REPO, "serve-open.txt"), "x\n");
+  g = await get(`${B}/open?t=${T}&slug=${spec.slug}&path=serve-open.txt:3`);
+  const g2 = await get(`${B}/open?t=${T}&slug=${spec.slug}&path=../../etc/passwd`);
+  ok("serve: /open opens a file in the plan's worktree, and nothing outside it",
+    g.json.ok && g.json.detail === "opened serve-open.txt:3" && !g2.json.ok && g2.json.detail === "outside the worktree");
+  fs.rmSync(path.join(REPO, "serve-open.txt"), { force: true });
+  g = await get(`${B}/check/run?t=${T}&slug=${spec.slug}&n=1&id=Not%20An%20Id`);
+  ok("serve: /check/* refuses a malformed check id", g.status === 400 && g.json.detail === "bad check id");
+  // Asks: typed only where a cmux surface was recorded, and then verified.
+  const askFile = path.join(HERE, "examples", "example.ask.json");
+  const mk = env => {
+    const a = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "ask", askFile], { encoding: "utf8", env, cwd: TMP });
+    return { id: (a.stdout.match(/ask (\S+):/) || [])[1], out: a.stdout };
+  };
+  const plain = mk(SENV);
+  ok("serve: an ask outside cmux prints its URL on deep-plan's server",
+    plain.id && plain.out.includes(`served at ${B}/ask/${plain.id}`), plain.out);
+  g = await get(`${B}/ask/${plain.id}`);
+  ok("serve: the ask page is served with its token and id", g.status === 200 && g.body.includes(`var T = "${T}", ID = "${plain.id}"`));
+  g = await get(`${B}/answer?t=${T}&id=${plain.id}&n=2`);
+  ok("serve: with no cmux surface a pick is recorded, not typed, and says to answer in the chat",
+    g.status === 200 && g.json.ok && g.json.delivered === false && /in the chat prompt/.test(g.json.detail));
+  g = await get(`${B}/answer?t=${T}&id=${plain.id}&n=1`);
+  ok("serve: an ask is answered once", g.status === 400 && /already answered: 2/.test(g.json.detail));
+  const typed = mk({ ...SENV, CMUX_SURFACE_ID: "SURF-9" });
+  fs.writeFileSync(screen, "something else entirely\n");
+  g = await get(`${B}/answer?t=${T}&id=${typed.id}&n=1`);
+  ok("serve: delivery looks before typing: a screen without the question gets nothing",
+    g.json.ok && g.json.delivered === false && /not showing this question/.test(g.json.detail));
+  const typed2 = mk({ ...SENV, CMUX_SURFACE_ID: "SURF-9" });
+  fs.writeFileSync(screen, "? For temporary share links\n❯ 1. Whole site, read-only\n  2. Day-of planner only\n");
+  g = await get(`${B}/answer?t=${T}&id=${typed2.id}&n=2`);
+  ok("serve: when the pointer never moves to the pick, Enter is not sent",
+    g.json.ok && g.json.delivered === false && /could not confirm/.test(g.json.detail));
+  // The server's own env carries no FAKE_CMUX_AFTER_SEND: restart it with one.
+  sv("serve", "--stop");
+  const AENV = { ...SENV, FAKE_CMUX_AFTER_SEND: "  1. Whole site, read-only\n❯ 2. Day-of planner only\n" };
+  spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "serve"], { encoding: "utf8", env: AENV });
+  const R2 = rec();
+  const typed3 = mk({ ...SENV, CMUX_SURFACE_ID: "SURF-9" });
+  fs.writeFileSync(screen, "? For temporary share links\n❯ 1. Whole site, read-only\n  2. Day-of planner only\n");
+  g = await get(`http://127.0.0.1:${R2.port}/answer?t=${R2.token}&id=${typed3.id}&n=2`);
+  ok("serve: the pointer moved to the pick, so Enter follows and it is delivered",
+    g.json.ok && g.json.delivered === true && g.json.detail === "delivered 2 — selected, then Enter");
+  ok("serve: the recorded answer says it was typed",
+    JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "asks", typed3.id + ".json"), "utf8")).answer.delivered === true);
+  g = await get(`http://127.0.0.1:${R2.port}/review/x-inc1`);
+  ok("serve: /review/ without lookout says so", g.status === 404 && /lookout is not installed/.test(g.json.error));
+  // A stale record (a dead pid) is replaced, not trusted.
+  sv("serve", "--stop");
+  fs.writeFileSync(SENV.DEEP_PLAN_SERVE_FILE, JSON.stringify({ port: R2.port, token: "x", pid: 999999, version: "0", started: "" }));
+  r = sv("serve", "--url", "/health");
+  ok("serve: a stale serve.json (dead pid) starts a fresh server", r.status === 0 && rec().pid !== 999999 && rec().token !== "x");
+  // Idle exit: the server goes after IDLE_MS without a request, and tidies its record.
+  const idlePid = rec().pid;
+  let gone = false;
+  for (let i = 0; i < 80 && !gone; i++) { await new Promise(res => setTimeout(res, 500)); gone = !rec() && !(() => { try { process.kill(idlePid, 0); return true; } catch { return false; } })(); }
+  ok("serve: an idle server exits and removes serve.json", gone);
+  // Two starters at once, nothing running: both get the one server that won.
+  const both = await Promise.all([0, 1].map(() => new Promise(res => {
+    const c = spawn("node", [path.join(HERE, "deep_plan.mjs"), "serve", "--url", "/health"], { env: SENV, cwd: REPO });
+    let o = ""; c.stdout.on("data", d => o += d); c.on("close", code => res({ code, url: o.trim() }));
+  })));
+  await new Promise(res => setTimeout(res, 600));
+  const alivePids = fs.readFileSync(SENV.DEEP_PLAN_SERVE_FILE, "utf8") && spawnSync("pgrep", ["-f", `${path.join(HERE, "deep_plan.mjs")} serve --foreground`]).stdout.toString().trim().split("\n").filter(Boolean);
+  ok("serve: two starters racing share one server, and the loser exits",
+    both.every(b => b.code === 0 && b.url === both[0].url && b.url.endsWith("/health")) && alivePids.includes(String(rec().pid)),
+    JSON.stringify(both));
+  sv("serve", "--stop");
+}
+
 // -------------------------------------------------- a parked plan must not deadlock a live one
 const REPO2 = path.join(TMP, "repo2");
 fs.mkdirSync(REPO2); execSync("git init -q", { cwd: REPO2 });
@@ -2157,7 +2309,8 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   const CLOG = path.join(TMP, "fake-cmux.log");
   const TARGETS = path.join(TMP, "board-targets.json");
   fs.writeFileSync(TARGETS, JSON.stringify({ "WS-1": { id: "WS-1", ref: "workspace:7", cwd: BR } }));
-  const BENV = { ...ENV, CREW_CMUX: FAKE, FAKE_CMUX_LOG: CLOG, DEEP_PLAN_BOARD_TARGETS: TARGETS };
+  // The cmux driver is cmux's host; the Playwright driver's checks are at the end.
+  const BENV = { ...ENV, CREW_CMUX: FAKE, FAKE_CMUX_LOG: CLOG, DEEP_PLAN_BOARD_TARGETS: TARGETS, SEAMUX_HOST: "cmux" };
   const bcli = (...args) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...args], { encoding: "utf8", env: BENV, cwd: REPO });
   const s = JSON.parse(JSON.stringify(spec));
   s.slug = "br-1";
@@ -2343,6 +2496,75 @@ exit 1
   ok("with no workspace for the root the run still goes, and its log says where the tabs land",
     r.status === 0 && /no cmux workspace found/.test(fs.readFileSync(bck("flow").ran.log, "utf8")));
   fs.writeFileSync(TARGETS, JSON.stringify(ws0));
+  // ---- the Playwright driver: the same scripts where cmux is not the host.
+  // tools/fake-playwright stands in for the package and Chromium, and runs
+  // the real browser/prelude-node.js.
+  {
+    const PWLOG = path.join(TMP, "fake-pw.log");
+    fs.writeFileSync(path.join(BR, "e2e", "throws.js"),
+      'await step("open the page", async () => { await page.goto(env.BASE_URL || "http://x"); });\n' +
+      'await step("see the banner", async () => { await expect(page.locator("#banner")).toHaveText("Welcome", { timeout: 300 }); });\n');
+    const vj = JSON.parse(fs.readFileSync(path.join(BR, ".seamux", "verify.json"), "utf8"));
+    vj.recipes.push({ id: "throws", kind: "browser", steps: [{ browser: "e2e/throws.js" }] });
+    fs.writeFileSync(path.join(BR, ".seamux", "verify.json"), JSON.stringify(vj, null, 2));
+    const p2 = JSON.parse(JSON.stringify(spec));
+    p2.slug = "br-pw";
+    p2.deliverables[0] = { title: "Sign-in flow", body: "A page.", files: ["src/a.ts"],
+      checks: ["flow", "throws"].map(id => ({ id, kind: "browser", name: id, recipe: id })) };
+    const PENV = { ...ENV, DEEP_PLAN_BOARD_TARGETS: TARGETS, SEAMUX_HOST: "terminal",
+      DEEP_PLAN_PLAYWRIGHT: path.join(HERE, "tools", "fake-playwright"), FAKE_PW_LOG: PWLOG, CREW_CMUX: FAKE, FAKE_CMUX_LOG: CLOG };
+    const pcli = (env, ...args) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...args], { encoding: "utf8", env, cwd: REPO });
+    pcli(PENV, "render", tmpSpec(p2), "--root", BR);
+    const k2 = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "br-pw.key.json"), "utf8"));
+    pcli(PENV, "grade", "br-pw", ...Object.entries(k2.answers).map(([q, v]) => `${q}=${v.letter}`));
+    pcli(PENV, "go", "br-pw", "1"); pcli(PENV, "start", "br-pw", "1");
+    const pck = id => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "br-pw.json"), "utf8")).increments[0].checks[id];
+    const pruns = path.join(ENV.DEEP_PLAN_PLANS_DIR, "br-pw.runs");
+    const cmuxCalls = () => fs.existsSync(CLOG) ? fs.readFileSync(CLOG, "utf8").trim().split("\n").length : 0;
+    const before = cmuxCalls();
+    r = pcli(PENV, "check", "run", "br-pw", "1", "flow", "--inline");
+    const pf = pck("flow");
+    const pwlog = fs.readFileSync(PWLOG, "utf8").trim().split("\n").map(l => JSON.parse(l));
+    ok("playwright: outside cmux a browser check runs through Playwright, not cmux's repl",
+      r.status === 0 && pf.status === "pass" && cmuxCalls() === before && pwlog.some(e => e.launch) &&
+      /\[playwright: .*\(stand-in\)\]/.test(fs.readFileSync(pf.ran.log, "utf8")), r.stdout + r.stderr);
+    ok("playwright: earlier exports reach env, and the seed's storage state loads into the context",
+      pwlog.some(e => e.goto === "http://shop.local") && pwlog.some(e => e.context && /storage-state\.json$/.test(e.context.storageState || "")));
+    const pdir = path.join(pruns, pf.evidence.dir);
+    ok("playwright: the same evidence: progress, frames per step, key frames and a trace; no replay",
+      pf.evidence.result === "pass" && pf.evidence.frames >= 4 && pf.evidence.trace === "trace.jsonl" && pf.evidence.animation === "" &&
+      fs.existsSync(path.join(pdir, "key-01.png")) && fs.existsSync(path.join(pdir, "key-02.png")) &&
+      /"type":"navigate","url":"http:\/\/shop\.local"/.test(fs.readFileSync(path.join(pdir, "trace.jsonl"), "utf8")),
+      JSON.stringify(pf.evidence));
+    r = pcli(PENV, "check", "run", "br-pw", "1", "throws", "--inline");
+    const pt = pck("throws");
+    ok("playwright: a failed expect fails the check, named by its step, with a key frame",
+      pt.status === "fail" && /step "see the banner": expect\(locator\)\.toHaveText\("Welcome"\) failed/.test(pt.note) &&
+      pt.evidence.result === "fail" && pt.evidence.label === "see the banner" &&
+      fs.existsSync(path.join(pruns, pt.evidence.dir, "key-02.png")), pt.note);
+    r = pcli({ ...PENV, DEEP_PLAN_PLAYWRIGHT: "none" }, "check", "run", "br-pw", "1", "flow", "--inline");
+    ok("playwright: with neither cmux nor Playwright the check needs a variant and says what to install",
+      pck("flow").status === "needs-variant" && /no browser driver here/.test(pck("flow").note) && /npx playwright install chromium/.test(pck("flow").note) &&
+      /✋ flow needs a variant/.test(r.stdout) && !/❌ flow/.test(r.stdout),
+      JSON.stringify(pck("flow")));
+    r = pcli({ ...PENV, FAKE_PW_NO_BROWSER: "1" }, "check", "run", "br-pw", "1", "flow", "--inline");
+    ok("playwright: the package without its Chromium is a missing driver, not a failed check",
+      pck("flow").status === "needs-variant" && /Chromium is not installed/.test(pck("flow").note), JSON.stringify(pck("flow")));
+    fs.writeFileSync(path.join(BR, "e2e", "hangs.js"), 'await step("wait forever", async () => { await new Promise(() => {}); });\n');
+    vj.recipes.push({ id: "hangs", kind: "browser", steps: [{ browser: "e2e/hangs.js", timeout: 2 }] });
+    fs.writeFileSync(path.join(BR, ".seamux", "verify.json"), JSON.stringify(vj, null, 2));
+    p2.deliverables[0].checks.push({ id: "hangs", kind: "browser", name: "hangs", recipe: "hangs" });
+    pcli(PENV, "render", tmpSpec(p2), "--root", BR);
+    const t0 = Date.now();
+    r = pcli(PENV, "check", "run", "br-pw", "1", "hangs", "--inline");
+    const pl = fs.readFileSync(PWLOG, "utf8").trim().split("\n").map(l => JSON.parse(l));
+    ok("playwright: a script past its timeout fails in its step and closes the browser itself, well before the hard kill",
+      pck("hangs").status === "fail" && /timed out after 2s/.test(pck("hangs").note) && Date.now() - t0 < 20000 &&
+      pl[pl.length - 1].close === true, pck("hangs").note);
+    r = pcli({ ...PENV, SEAMUX_HOST: "cmux" }, "check", "run", "br-pw", "1", "flow", "--inline");
+    ok("playwright: in cmux the repl still drives it", r.status === 0 && cmuxCalls() > before);
+    pcli(PENV, "close", "br-pw");
+  }
 }
 
 // -------------------------------------------------- claim steps: engine-run acquisition
@@ -4145,6 +4367,198 @@ exit 1
     for (const n of ["frv-par", "frv-kid"]) lc(LENV, "close", n);
   }
   for (const n of ["rv-1", "rv-2", "rv-q", "rv-pick", "rv-all", "rv-none", "rv-d", "rv-b", "rv-bd"]) lc(LENV, "close", n);
+}
+
+// ---------------------------------------------------------------- host detection
+{
+  const HOST_TABLE = [
+    [{}, "terminal"],
+    [{ CMUX_WORKSPACE_ID: "W1" }, "cmux"],
+    [{ CLAUDE_CODE_REMOTE: "true" }, "remote"],
+    [{ CLAUDE_CODE_REMOTE: "1" }, "terminal"],
+    [{ CLAUDE_CODE_ENTRYPOINT: "claude-desktop" }, "desktop"],
+    [{ CLAUDE_CODE_ENTRYPOINT: "claude-desktop-3p" }, "desktop"],
+    [{ CLAUDE_CODE_ENTRYPOINT: "local-agent" }, "desktop"],
+    [{ CLAUDE_CODE_ENTRYPOINT: "cli" }, "terminal"],
+    [{ CMUX_WORKSPACE_ID: "W1", CLAUDE_CODE_ENTRYPOINT: "claude-desktop" }, "cmux"],
+    [{ CMUX_WORKSPACE_ID: "W1", CLAUDE_CODE_REMOTE: "true" }, "cmux"],
+    [{ CLAUDE_CODE_REMOTE: "true", CLAUDE_CODE_ENTRYPOINT: "claude-desktop" }, "remote"],
+    [{ SEAMUX_HOST: "desktop", CMUX_WORKSPACE_ID: "W1" }, "desktop"],
+    [{ SEAMUX_HOST: "Terminal", CLAUDE_CODE_REMOTE: "true" }, "terminal"],
+    [{ SEAMUX_HOST: "remote" }, "remote"],
+    [{ SEAMUX_HOST: "cmux" }, "cmux"],
+    [{ SEAMUX_HOST: "bogus", CLAUDE_CODE_ENTRYPOINT: "claude-desktop" }, "desktop"],
+  ];
+  for (const [env, want] of HOST_TABLE) {
+    const got = HOST.detectHost(env), twin = HOST_TWIN.detectHost(env);
+    ok(`host: ${JSON.stringify(env)} is ${want}`, got.host === want);
+    ok(`host: the lookout copy agrees on ${JSON.stringify(env)}`, twin.host === got.host && twin.why === got.why);
+  }
+  ok("host: an ignored SEAMUX_HOST is named in why", /SEAMUX_HOST=bogus ignored/.test(HOST.detectHost({ SEAMUX_HOST: "bogus" }).why));
+  ok("host: the twin files match apart from the line naming the other copy",
+    fs.readFileSync(path.join(HERE, "lib", "host.mjs"), "utf8").split("\n").slice(3).join("\n") ===
+    fs.readFileSync(path.join(HERE, "..", "lookout", "lib", "host.mjs"), "utf8").split("\n").slice(3).join("\n"));
+  const r = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "doctor", "--json"],
+    { encoding: "utf8", env: { ...ENV, SEAMUX_HOST: "remote" }, cwd: REPO });
+  let j = {}; try { j = JSON.parse(r.stdout); } catch {}
+  ok("host: doctor --json reports the host and why", r.status === 0 && j.host === "remote" && j.why === "SEAMUX_HOST=remote" && j.root === HERE);
+  const t = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "doctor"],
+    { encoding: "utf8", env: { ...ENV, CLAUDE_CODE_ENTRYPOINT: "claude-desktop" }, cwd: REPO });
+  ok("host: doctor prints a host line", /^host: desktop \(CLAUDE_CODE_ENTRYPOINT=claude-desktop\)$/m.test(t.stdout));
+}
+
+// -------------------------------------------------- remote host: state in the repo, export and import
+{
+  const RH = path.join(TMP, "remote-home");
+  fs.mkdirSync(RH, { recursive: true });
+  const RA = path.join(TMP, "remote-a"), RB = path.join(TMP, "remote-b");
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  fs.mkdirSync(RA); execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: RA });
+  // A remote session: no overrides, a home of its own, the repo as the project.
+  const REnv = (dir, extra = {}) => {
+    const e = { ...ENV, HOME: RH, SEAMUX_HOST: "remote", CLAUDE_PROJECT_DIR: dir, ...extra };
+    for (const k of ["DEEP_PLAN_STATE_DIR", "DEEP_PLAN_KEYS_DIR", "DEEP_PLAN_PLANS_DIR", "DEEP_PLAN_ANNOT_DIR"]) delete e[k];
+    return e;
+  };
+  const rc = (dir, ...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: REnv(dir), cwd: dir });
+  const rs = { ...spec, slug: "remote-plan" };
+  let r = rc(RA, "render", tmpSpec(rs), "--root", RA);
+  const SD = path.join(RA, ".seamux", "state");
+  ok("remote: state, keys and pages default into the repo's .seamux/state",
+    r.status === 0 && fs.existsSync(path.join(SD, "deep-plan", "state", "remote-plan.json")) &&
+    fs.existsSync(path.join(SD, "deep-plan", "keys", "remote-plan.key.json")) && fs.existsSync(path.join(SD, "plans", "remote-plan.md")) &&
+    !fs.existsSync(path.join(RH, ".claude", "deep-plan", "state", "remote-plan.json")), r.stderr);
+  ok("remote: the folder is kept out of git through info/exclude, not .gitignore",
+    /^\/\.seamux\/state\/$/m.test(fs.readFileSync(path.join(RA, ".git", "info", "exclude"), "utf8")) &&
+    !fs.existsSync(path.join(RA, ".gitignore")) && execSync("git status --porcelain", { cwd: RA, encoding: "utf8" }).trim() === "");
+  const key = JSON.parse(fs.readFileSync(path.join(SD, "deep-plan", "keys", "remote-plan.key.json"), "utf8"));
+  rc(RA, "grade", "remote-plan", ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+  const rgate = (dir, file) => spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")], { encoding: "utf8", env: REnv(dir),
+    input: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: file }, cwd: dir }) });
+  ok("remote: the gate (its bash fast path included) finds the plan in the repo and refuses an edit",
+    rgate(RA, path.join(RA, "a.txt")).status === 2);
+  ok("remote: an override still wins over the repo default",
+    spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "status", "--json"], { encoding: "utf8",
+      env: { ...REnv(RA), DEEP_PLAN_STATE_DIR: path.join(TMP, "elsewhere") }, cwd: RA }).stdout.trim() === "[]");
+  r = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "status"], { encoding: "utf8",
+    env: { ...REnv(RA), DEEP_PLAN_STATE_DIR: path.join(TMP, "elsewhere") }, cwd: RA });
+  ok("remote: status warns when state sits outside the repo", /outside the repo: a new sandbox starts without it/.test(r.stderr), r.stderr);
+  ok("remote: and says nothing when it is in the repo", !/outside the repo/.test(rc(RA, "status").stderr));
+  // Export, then import into a fresh clone at another path (a new sandbox).
+  const bundle = path.join(TMP, "remote-plan.bundle.json");
+  r = rc(RA, "export-state", "remote-plan", "--out", bundle);
+  const bj = JSON.parse(fs.readFileSync(bundle, "utf8"));
+  ok("export-state writes one bundle with state, spec, key, the approved snapshot and the pages",
+    r.status === 0 && bj.kind === "deep-plan-state" && ["deep-plan/state/remote-plan.json", "deep-plan/keys/remote-plan.spec.json",
+      "deep-plan/keys/remote-plan.key.json", "plans/remote-plan.approved.md", "plans/remote-plan.working.html"].every(k => k in bj.files),
+    Object.keys(bj.files).join(" "));
+  execSync(`git clone -q ${RA} ${RB}`);
+  r = rc(RB, "import-state", bundle);
+  const st = JSON.parse(fs.readFileSync(path.join(RB, ".seamux", "state", "deep-plan", "state", "remote-plan.json"), "utf8"));
+  ok("import-state brings the plan back in the new clone's repo, keeping the root it finds",
+    r.status === 0 && st.phase === "implementing" && st.root === RA, r.stdout + r.stderr);
+  r = rc(RB, "import-state", bundle);
+  ok("import-state refuses a plan that already exists", r.status !== 0 && /already exists here; --force/.test(r.stderr));
+  fs.renameSync(RA, RA + "-gone");
+  r = rc(RB, "import-state", bundle, "--force");
+  const st2 = JSON.parse(fs.readFileSync(path.join(RB, ".seamux", "state", "deep-plan", "state", "remote-plan.json"), "utf8"));
+  ok("…--force replaces it, and a root that is gone becomes this checkout", r.status === 0 && fs.realpathSync(st2.root) === fs.realpathSync(RB),
+    st2.root);
+  ok("…and the gate holds in the new sandbox", rgate(RB, path.join(RB, "a.txt")).status === 2);
+  const evil = path.join(TMP, "evil.bundle.json");
+  fs.writeFileSync(evil, JSON.stringify({ ...bj, files: { "deep-plan/state/../../../x.json": "e30=" } }));
+  ok("import-state refuses a bundle that names a path outside the plan's files",
+    rc(RB, "import-state", evil, "--force").status !== 0 && !fs.existsSync(path.join(RB, ".seamux", "x.json")));
+  fs.renameSync(RA + "-gone", RA);
+  // Only the plan's own file names: not another plan whose slug extends it.
+  const other = path.join(TMP, "other.bundle.json");
+  fs.writeFileSync(other, JSON.stringify({ ...bj, files: { ...bj.files, "deep-plan/state/remote-plan-x.json": "e30=" } }));
+  ok("import-state refuses a bundle that carries another plan's state (a slug that extends this one)",
+    /outside the plan's own files/.test(rc(RB, "import-state", other, "--force").stderr) &&
+    !fs.existsSync(path.join(RB, ".seamux", "state", "deep-plan", "state", "remote-plan-x.json")));
+  const nost = Object.fromEntries(Object.entries(bj.files).filter(([k]) => !k.startsWith("deep-plan/state/")));
+  fs.writeFileSync(other, JSON.stringify({ ...bj, slug: "remote-plan", files: nost }));
+  ok("import-state refuses a bundle with no state, before writing anything",
+    /has no deep-plan\/state\/remote-plan\.json/.test(rc(RB, "import-state", other, "--force").stderr));
+  // The bash fast path reads SEAMUX_HOST as host.mjs does.
+  ok("remote: SEAMUX_HOST=' Remote' still finds the repo's state in the gate's fast path",
+    spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")], { encoding: "utf8", env: { ...REnv(RB), SEAMUX_HOST: " Remote" },
+      input: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: path.join(RB, "a.txt") }, cwd: RB }) }).status === 2);
+  // A worktree of the same repo, with no CLAUDE_PROJECT_DIR: the same state.
+  const WT = path.join(TMP, "remote-b-wt");
+  execSync(`git worktree add -q ${WT} -b wt-probe`, { cwd: RB });
+  const wenv = REnv(WT); delete wenv.CLAUDE_PROJECT_DIR;
+  const ws = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "status", "--json"], { encoding: "utf8", env: wenv, cwd: WT });
+  ok("remote: a worktree of the repo finds the main checkout's state", JSON.parse(ws.stdout || "[]").some(x => x.slug === "remote-plan"), ws.stdout + ws.stderr);
+}
+
+// -------------------------------------------------- install-repo: the plugin in a repo's own .claude/, for cloud sessions
+{
+  const IR = path.join(TMP, "install-repo");
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  fs.mkdirSync(path.join(IR, ".claude"), { recursive: true });
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: IR });
+  // A repo that already has a hook of its own.
+  fs.writeFileSync(path.join(IR, ".claude", "settings.json"), JSON.stringify({ hooks: { Stop: [{ matcher: "", hooks: [{ type: "command", command: "echo mine" }] }] }, model: "x" }));
+  const ir = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "install-repo", ...a], { encoding: "utf8", env: ENV, cwd: IR });
+  let r = ir();
+  const D = path.join(IR, ".claude", "skills", "deep-plan");
+  const set = () => JSON.parse(fs.readFileSync(path.join(IR, ".claude", "settings.json"), "utf8"));
+  ok("install-repo copies the plugin into .claude/skills/deep-plan, without its probe, evals or dev tools",
+    r.status === 0 && ["SKILL.md", "deep_plan.mjs", "hooks/gate.sh", "lib/state.mjs", "bin/deep-plan", ".claude-plugin/plugin.json", "references/checks.md"]
+      .every(f => fs.existsSync(path.join(D, f))) && !fs.existsSync(path.join(D, "probe.mjs")) && !fs.existsSync(path.join(D, "evals")) &&
+      !fs.existsSync(path.join(D, "tools")) && (fs.statSync(path.join(D, "bin", "deep-plan")).mode & 0o111) !== 0, r.stdout + r.stderr);
+  const s1 = set();
+  ok("install-repo merges its hooks into the repo's settings and keeps what was there",
+    s1.model === "x" && s1.hooks.Stop[0].hooks[0].command === "echo mine" &&
+    /\.claude\/skills\/deep-plan\/hooks\/gate\.sh/.test(s1.hooks.PreToolUse[0].hooks[0].command) && !JSON.stringify(s1).includes("CLAUDE_PLUGIN_ROOT"));
+  ir();
+  ok("install-repo again replaces its own hooks instead of adding a second set",
+    JSON.stringify(set()) === JSON.stringify(s1));
+  ok("install-repo --check: a fresh copy matches", ir("--check").status === 0);
+  const stamp = JSON.parse(fs.readFileSync(path.join(D, ".install.json"), "utf8"));
+  ok("the stamp names the version and a hash per file, and no machine path or time",
+    stamp.version && Object.keys(stamp.files).length > 10 && !("source" in stamp) && !("installedAt" in stamp) && !JSON.stringify(stamp).includes(HERE));
+  const self = spawnSync("node", [path.join(D, "deep_plan.mjs"), "install-repo"], { encoding: "utf8", env: ENV, cwd: IR });
+  ok("install-repo run from the repo's own copy refuses, and the copy stays whole",
+    self.status !== 0 && /this is the repo's own copy/.test(self.stderr) && fs.existsSync(path.join(D, "deep_plan.mjs")) &&
+    fs.existsSync(path.join(D, "hooks", "gate.sh")), self.stderr);
+  const sjson = fs.readFileSync(path.join(IR, ".claude", "settings.json"), "utf8");
+  fs.writeFileSync(path.join(IR, ".claude", "settings.json"), JSON.stringify({ hooks: { Stop: { matcher: "" } } }));
+  const bad = ir();
+  ok("a settings.json whose hooks are malformed is refused before the copy changes",
+    bad.status !== 0 && /hooks\.Stop is not a list/.test(bad.stderr) && fs.existsSync(path.join(D, "deep_plan.mjs")), bad.stderr);
+  fs.writeFileSync(path.join(IR, ".claude", "settings.json"), sjson);
+  fs.appendFileSync(path.join(D, "lib", "state.mjs"), "\n// edited\n");
+  r = ir("--check");
+  ok("install-repo --check reports drift from the plugin", r.status === 1 && /changed: lib\/state\.mjs/.test(r.stdout), r.stdout);
+  ir();
+  // The hooks as the repo's settings state them, run the way a cloud session runs them.
+  const nodeDir = path.dirname(process.execPath);
+  const cenv = (extra = {}) => {
+    const e = { ...ENV, HOME: path.join(TMP, "cloud-home"), CLAUDE_PROJECT_DIR: IR, PATH: `${nodeDir}:/usr/bin:/bin`, ...extra };
+    for (const k of ["DEEP_PLAN_STATE_DIR", "DEEP_PLAN_KEYS_DIR", "DEEP_PLAN_PLANS_DIR", "DEEP_PLAN_ANNOT_DIR", "SEAMUX_HOST"]) delete e[k];
+    return e;
+  };
+  fs.mkdirSync(path.join(TMP, "cloud-home"), { recursive: true });
+  const envFile = path.join(TMP, "claude-env");
+  const pathHook = set().hooks.SessionStart[0].hooks[0].command;
+  spawnSync("bash", ["-c", pathHook], { encoding: "utf8", env: cenv({ CLAUDE_CODE_REMOTE: "true", CLAUDE_ENV_FILE: envFile }) });
+  ok("the SessionStart hook puts the copy's bin on the Bash tool's PATH",
+    fs.readFileSync(envFile, "utf8").includes(`export PATH="${IR}/.claude/skills/deep-plan/bin:$PATH"`));
+  // A plan made with the copy itself, as a cloud session would.
+  const cs = { ...spec, slug: "cloud-plan" };
+  const copy = (...a) => spawnSync(path.join(D, "bin", "deep-plan"), a, { encoding: "utf8", env: cenv({ CLAUDE_CODE_REMOTE: "true" }), cwd: IR });
+  r = copy("render", tmpSpec(cs), "--root", IR);
+  const ck = JSON.parse(fs.readFileSync(path.join(IR, ".seamux", "state", "deep-plan", "keys", "cloud-plan.key.json"), "utf8"));
+  copy("grade", "cloud-plan", ...Object.entries(ck.answers).map(([q, v]) => `${q}=${v.letter}`));
+  const gateCmd = set().hooks.PreToolUse[0].hooks[0].command;
+  const call = JSON.stringify({ tool_name: "Edit", tool_input: { file_path: path.join(IR, "a.txt") }, cwd: IR });
+  const g1 = spawnSync("bash", ["-c", gateCmd], { encoding: "utf8", env: cenv({ CLAUDE_CODE_REMOTE: "true" }), input: call });
+  ok("in a cloud session the repo's gate hook runs the copy and refuses an edit the plan has not authorized",
+    r.status === 0 && g1.status === 2 && /deep-plan gate/.test(g1.stderr), r.stderr + g1.stderr);
+  const g2 = spawnSync("bash", ["-c", gateCmd], { encoding: "utf8", env: cenv(), input: call });
+  ok("…and does nothing in a local session, where the plugin's own hooks run", g2.status === 0 && g2.stderr === "");
 }
 
 // -------------------------------------------------- hot-path cost

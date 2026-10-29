@@ -16,7 +16,6 @@ use crate::cmux_cli::client;
 use crate::plans::{realpath, slug_ok};
 use crate::server::{local_time, log, plans_dir};
 
-pub const ASK_JS: &str = include_str!("inject/ask.js");
 
 pub fn asks_dir() -> PathBuf {
     plans_dir().join("asks")

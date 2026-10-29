@@ -75,10 +75,15 @@ acquire, claim or wait steps must be `expensive`. `check run --from wait` (or
 ## Browser checks
 
 A recipe of kind `browser` ends with a `browser` step naming a script in the
-repo. The engine runs it through `cmux browser repl`, whose API is
-Playwright's, against the cmux workspace the plan root lives in. The exit
-code is the verdict: the script passes by finishing and fails by throwing.
-Browser checks run where cmux runs, so not in CI.
+repo. The exit code is the verdict: the script passes by finishing and fails
+by throwing. The engine picks a driver for the host (`deep-plan doctor`
+names it):
+
+| Where | Driver | Evidence |
+|---|---|---|
+| cmux | `cmux browser repl` (Playwright's API) in the workspace the plan root lives in | frames, key frames, trace, `run.png` replay, a tab to bring forward |
+| desktop, terminal, remote, CI | Playwright and headless Chromium, when `playwright` resolves from the repo, the global npm root or npx's cache | frames, key frames, trace (console, page errors, navigations); no replay, no tab |
+| neither | none: the check needs a variant, and says to `npm i -D playwright && npx playwright install chromium` or record it as a manual check | |
 
 ```json
 { "id": "sign-in", "kind": "browser",
@@ -104,8 +109,11 @@ Browser checks run where cmux runs, so not in CI.
   frame), and a small `expect` for locators and the page (`toBeVisible`,
   `toBeHidden`, `toHaveText`, `toContainText`, `toHaveCount`, `toHaveValue`,
   `toHaveURL`, `toHaveTitle`, each with `.not`). When an earlier step exported
-  `STORAGE_STATE`, that session is loaded first. The repl reads files only in
-  the run's own evidence directory, so a script cannot read other repo files.
+  `STORAGE_STATE`, that session is loaded first. Under cmux the repl reads
+  files only in the run's own evidence directory, so a script cannot read
+  other repo files; under Playwright it runs as node with that directory as
+  its cwd. Keep scripts to `page`, `env`, `step`, `expect`, `sleep` and `fs`,
+  so they run under either driver.
 
 ```js
 await step("open the shop", async () => { await page.goto(env.BASE_URL); });

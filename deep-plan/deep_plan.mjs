@@ -28,8 +28,11 @@ import { resolveFiles, resolver } from "./lib/verify.mjs";
 import { runExec, acquireSteps, alive, sleep, tail } from "./lib/runner.mjs";
 import { releaseClaims } from "./lib/claims.mjs";
 import { buildProof, withProof, ghCanAttach, gh } from "./lib/proof.mjs";
-import { readEvidence, evidenceSummary, newEvidenceDir, pruneEvidence, showTab } from "./lib/browser.mjs";
+import { readEvidence, evidenceSummary, newEvidenceDir, pruneEvidence, showTab, browserDriver } from "./lib/browser.mjs";
 import { detect, draftFile } from "./lib/detect.mjs";
+import { detectHost, hostLine } from "./lib/host.mjs";
+import * as SERVE from "./lib/serve.mjs";
+import { installRepo, checkRepo, targetRoot } from "./lib/install.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import {
   FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
@@ -38,7 +41,7 @@ import {
   goOwner, goBy, goHow, goRefusal, updateControl, pruneControl, controlPath,
 } from "./lib/family.mjs";
 import {
-  STATE_DIR, KEYS_DIR, PLANS_DIR, statePath, sessionId,
+  STATE_DIR, KEYS_DIR, PLANS_DIR, DATA_ROOT, REMOTE_DIR, statePath, sessionId,
   readState, writeState, allStates, log1, progress, gateView,
   planFor, CHECK_KINDS, specChecks, reconcileChecks, checksOf, checksBlock,
   checksAggregate, needsTree, treeOf, checkMeta, canon,
@@ -1495,7 +1498,7 @@ ${surfaceClose()}${SURFACE_JS}</body></html>`;
 // fetches them (Artifact read_db --out_dir); this CLI only renders what is on
 // disk — the renderer keeps its no-network invariant.
 const ANNOT_DIR = process.env.DEEP_PLAN_ANNOT_DIR ||
-  path.join(os.homedir(), ".claude", "deep-plan", "annotations");
+  path.join(DATA_ROOT, "deep-plan", "annotations");
 
 function readAnnotations(slug) {
   const dir = path.join(ANNOT_DIR, slug, "annotations");
@@ -1663,7 +1666,7 @@ function workingHtml(spec, st, b64) {
     const files = fileTreeHtml(d.files);
     const acts = ["go", "start", "done", "block", "reset"].map(a =>
       `<button class="dp-act" data-a="${a}" data-n="${inc.n}" disabled ` +
-      `title="${a} increment ${inc.n} — available when served in the Dock">${a}</button>`).join("");
+      `title="${a} increment ${inc.n} — available when served">${a}</button>`).join("");
     // The verdict belongs beside the status, not in a section of its own: it is
     // a precondition on THIS increment's `done`, and a reader deciding whether
     // the increment is finished needs both in one glance.
@@ -2624,7 +2627,12 @@ function transition(action, slug, n, why, force = false, { byHuman = false } = {
   reopenPhase(st);
   writeState(st); rerenderWorking(slug);
   say(`${action} ${slug} ${n}`);
-  if (action === "go") openWorkingSurface(st);
+  if (action === "go") {
+    const url = openWorkingSurface(st);
+    if (url) say(`  served at ${url} (host: ${detectHost().host})`);
+    else if (!process.env.DEEP_PLAN_FROM_SERVE && detectHost().host === "remote")
+      say(`  no live page on this host (host: remote); deep-plan export-artifact ${st.slug} shares one`);
+  }
 }
 
 // The go-ahead opens the plan's working surface in the Dock, so the page you
@@ -2669,7 +2677,7 @@ function askHtml(ask, b64) {
   const opts = ask.options.map((o, i) => {
     const n = i + 1;
     return `<div class="inc dp-ask-opt" data-n="${n}">
-<h3><button type="button" class="dp-act dp-ask-pick" data-n="${n}" disabled title="pick ${n} — available when served in the Dock">${n}</button> ${esc(o.label)}</h3>
+<h3><button type="button" class="dp-act dp-ask-pick" data-n="${n}" disabled title="pick ${n} — available when served">${n}</button> ${esc(o.label)}</h3>
 ${o.description ? `<p>${esc(o.description)}</p>` : ""}
 ${o.mermaid ? `<pre class="mermaid">${esc(String(o.mermaid).trim())}</pre>` : ""}
 ${o.example ? `<pre class="dp-example"><code>${esc(String(o.example))}</code></pre>` : ""}
@@ -2688,7 +2696,7 @@ ${ask.mermaid ? `<pre class="mermaid">${esc(String(ask.mermaid).trim())}</pre>` 
 ${opts}
 <p id="dp-ask-status" class="dim" role="status" aria-live="polite">${ask.answer
   ? `answered: ${esc(String(ask.answer.n))} — ${esc(ask.options[ask.answer.n - 1]?.label || "")}`
-  : "Pick an option here to send it to the terminal, or answer in the terminal prompt as usual."}</p>
+  : "Answer in the prompt as usual. In cmux, a pick here is typed into the terminal for you."}</p>
 ${MERMAID_BOOT}
 </body></html>`;
 }
@@ -2717,10 +2725,13 @@ function askCreate(file) {
   };
   askWrite(ask);
   say(`ask ${ask.id}: ${path.join(ASKS_DIR, ask.id + ".html")}`);
-  if (!ask.surface) say("  (no CMUX_SURFACE_ID in the environment — the page will show the answer, not type it)");
+  if (!ask.surface) say("  (not in a cmux terminal: the page shows the options; the chat prompt takes the answer)");
   const url = openAskSurface(ask);
-  if (url) say(`  served at ${url}`);
-  else say("  intent server not reachable — open the file, or start the board (crew listen on)");
+  const host = detectHost().host;
+  if (url) say(`  served at ${url} (host: ${host})`);
+  else if (host === "remote") say("  no live page on this host (host: remote): answer in the chat prompt");
+  else if (host === "cmux") say("  intent server not reachable — open the file, or start the board (crew listen on) (host: cmux)");
+  else say(`  deep-plan serve did not start — open the file read-only (host: ${host})`);
   return ask;
 }
 
@@ -2731,6 +2742,40 @@ function askShow(id) {
   if (!ask.answer) { say(`ask ${id}: unanswered`); return; }
   const o = ask.options[ask.answer.n - 1] || {};
   say(`ask ${id}: ${ask.answer.n} — ${o.label || ""}${ask.answer.delivered ? "" : " (shown on the page, not typed)"}`);
+}
+
+// A page's URL on deep-plan's own server, started if nothing answers. Used on
+// every host but cmux, which keeps crew's URL. Empty when there is no page a
+// person can reach: on the remote host (the sandbox's localhost is out of
+// reach), inside a request the server itself is running, or in a probe that
+// did not ask for a server.
+function servedUrl(rel) {
+  if (process.env.DEEP_PLAN_FROM_SERVE) return "";
+  if (detectHost().host === "remote") return "";
+  if (process.env.DEEP_PLAN_STATE_DIR && !process.env.DEEP_PLAN_SERVE_FILE) return "";
+  const rec = SERVE.ensureServer({ script: path.join(HERE, "deep_plan.mjs"), root: HERE });
+  return rec ? SERVE.urlFor(rec, rel) : "";
+}
+
+// `deep-plan serve`: start the server if needed and print a page's URL, or
+// run it in the foreground (what the detached start runs), or stop it.
+function serveCmd(flags, args) {
+  if (flags.foreground) {
+    SERVE.serveForeground({ script: path.join(HERE, "deep_plan.mjs"), version: engineVersion(), root: HERE });
+    return true; // keep the process alive
+  }
+  if (flags.stop) { say(SERVE.stopServer() ? "stopped deep-plan serve" : "deep-plan serve was not running"); return false; }
+  if (flags.status) {
+    const rec = SERVE.liveServer(HERE);
+    if (flags.json) process.stdout.write(JSON.stringify(rec ? { running: true, port: rec.port, pid: rec.pid, root: rec.root, version: rec.version, started: rec.started } : { running: false }) + "\n");
+    else say(rec ? `deep-plan serve on 127.0.0.1:${rec.port} (pid ${rec.pid}${rec.foreign ? ", from another engine copy: " + rec.root : ""})` : "deep-plan serve is not running");
+    return false;
+  }
+  const rel = flags.url || args[0] || "/health";
+  const rec = SERVE.ensureServer({ script: path.join(HERE, "deep_plan.mjs"), root: HERE });
+  if (!rec) die(`deep-plan serve did not start — see ${SERVE.LOG_FILE}`);
+  say(SERVE.urlFor(rec, rel));
+  return false;
 }
 
 // The house's one way to show a page beside the chat: the workspace's
@@ -2763,6 +2808,8 @@ function companionOpen(url, key, ws, surface) {
 // caller with no workspace in its environment (a detached process).
 function openAskSurface(ask) {
   try {
+    if (process.env.DEEP_PLAN_FROM_SERVE) return "";
+    if (detectHost().host !== "cmux") return servedUrl(`/ask/${ask.id}`);
     if (process.env.DEEP_PLAN_STATE_DIR) return "";
     const cache = path.join(os.homedir(), ".cache", "cmux-crew");
     const rd = f => fs.readFileSync(path.join(cache, f), "utf8").trim();
@@ -2791,6 +2838,21 @@ function openAskSurface(ask) {
 
 function openWorkingSurface(st) {
   try {
+    // A go clicked on a page: that page is open and reloads itself.
+    if (process.env.DEEP_PLAN_FROM_SERVE) return;
+    const host = detectHost().host;
+    // A go from outside any Claude session (the seamux app's Desk, a person's
+    // shell) still goes to crew's board when there is one, as before; only a
+    // session on another host is sent to deep-plan's own server.
+    const board = host === "cmux" || (host === "terminal" && process.env.CLAUDECODE !== "1");
+    if (!board) return servedUrl(`/plan/${st.slug}`);
+    const viaBoard = openOnBoard(st);
+    return viaBoard || (host === "cmux" ? undefined : servedUrl(`/plan/${st.slug}`));
+  } catch { return undefined; }
+}
+
+function openOnBoard(st) {
+  try {
     // Probe/test runs override the state dir; they must never reach the
     // machine's real board, whatever this machine happens to be running.
     if (process.env.DEEP_PLAN_STATE_DIR) return;
@@ -2802,8 +2864,9 @@ function openWorkingSurface(st) {
     // Run by an agent in cmux: the plan opens in its workspace's companion,
     // beside its terminal, which keeps the keyboard.
     const here = process.env.CMUX_WORKSPACE_ID;
-    if (here && companionOpen(`http://127.0.0.1:${port}/plan/${st.slug}`, companionKey("plan", st.slug), here,
-                              process.env.CMUX_SURFACE_ID || "")) return;
+    const page = `http://127.0.0.1:${port}/plan/${st.slug}`;
+    if (here && companionOpen(page, companionKey("plan", st.slug), here,
+                              process.env.CMUX_SURFACE_ID || "")) return page;
     const targets = JSON.parse(fs.readFileSync(path.join(cache, "board-targets.json"), "utf8"));
     const rid = Object.keys(targets).find(k => {
       const t = targets[k] || {};
@@ -2815,8 +2878,159 @@ function openWorkingSurface(st) {
     // sync behind and the first go on a fresh plan hit exactly that gap.
     const url = `http://127.0.0.1:${port}/do?a=plan&r=${encodeURIComponent(rid)}` +
       `&t=${encodeURIComponent(token)}&x=${encodeURIComponent(st.slug)}`;
-    spawnSync("curl", ["-fsS", "-m", "5", "-o", "/dev/null", url]);
+    const r = spawnSync("curl", ["-fsS", "-m", "5", "-o", "/dev/null", url]);
+    return r.status === 0 ? page : undefined;
   } catch { /* board offline or never installed — the go already succeeded */ }
+}
+
+// `deep-plan install-repo [--root DIR] [--check]`: the plugin into a repo's
+// own .claude/, for cloud sessions (lib/install.mjs). The pinned mermaid
+// goes with it, sha256-checked, since a cloud sandbox may not reach the CDN.
+function installRepoCmd(flags) {
+  const root = targetRoot(flags.root);
+  // The first candidate that is the pinned build, not merely the first found.
+  const m = mermaidCandidates().find(p => { try { return fs.existsSync(p) && sha256File(p) === MERMAID_SHA256; } catch { return false; } });
+  const extra = m ? [{ from: m, rel: "vendor/mermaid.min.js" }] : [];
+  const opts = { pluginRoot: HERE, name: "deep-plan", version: engineVersion(), root, extra, optional: ["vendor/mermaid.min.js"] };
+  if (flags.check) {
+    const c = checkRepo(opts);
+    say(c.ok ? `deep-plan in ${root}/.claude/skills/deep-plan matches this plugin (${engineVersion()})` : c.lines.join("\n"));
+    if (!c.ok) process.exitCode = 1;
+    return;
+  }
+  let r;
+  try { r = installRepo(opts); } catch (e) { die(e.message); }
+  say(`installed deep-plan ${r.version} into ${r.dest} (${r.files} files)`);
+  say(`  hooks merged into ${r.settings}; they run on the remote host (CLAUDE_CODE_REMOTE=true) or with SEAMUX_REPO_HOOKS=1`);
+  if (!extra.length) say("  no pinned mermaid on this machine (deep-plan setup); cloud plan pages will draw diagrams only if the CDN is reachable");
+  say("  commit .claude/ yourself; deep-plan install-repo --check reports drift later");
+}
+
+// ---------------------------------------------------------------- state bundles
+// A plan's state moved between machines or sandboxes as one JSON file: its
+// state, spec and key, its rendered files (the approved snapshot cannot be
+// rebuilt), and its lookout reviews. Paths are relative to the data root
+// (~/.claude, or the repo's .seamux/state on the remote host), so a bundle
+// from one host imports on another. Nothing here commits it; a person does.
+const BUNDLE_KIND = "deep-plan-state";
+const REVIEWS_DIR_DP = () => process.env.LOOKOUT_REVIEWS_DIR || path.join(PLANS_DIR, "reviews");
+
+// Exactly the names a plan's own files take, folder by folder: another
+// plan's files (a slug that extends this one, "v1" and "v1.2" or "foo" and
+// "foo-bar") never match.
+const reEsc = x => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function bundleNames(slug) {
+  const s = reEsc(slug);
+  return {
+    "deep-plan/state": new RegExp(`^${s}\\.json$`),
+    "deep-plan/keys": new RegExp(`^${s}\\.(spec|key)\\.json$`),
+    "plans": new RegExp(`^${s}\\.(md|review\\.html|working\\.html|widget\\.html|quiz\\.txt|approved\\.md|artifact\\.html|adr\\d+\\.md|inc\\d+\\.patch)$`),
+    "plans/reviews": new RegExp(`^${s}-(inc\\d+|delivery)\\.(json|patch|rows\\.json|html|seen\\.json)$`),
+  };
+}
+
+function bundleFiles(slug) {
+  const names = bundleNames(slug);
+  const dirs = { "deep-plan/state": STATE_DIR, "deep-plan/keys": KEYS_DIR, "plans": PLANS_DIR, "plans/reviews": REVIEWS_DIR_DP() };
+  const out = [];
+  for (const [rel, dir] of Object.entries(dirs)) {
+    let list = [];
+    try { list = fs.readdirSync(dir); } catch { /* absent */ }
+    for (const n of list) {
+      const p = path.join(dir, n);
+      try { if (names[rel].test(n) && fs.statSync(p).isFile()) out.push([rel + "/" + n, p]); } catch { /* gone */ }
+    }
+  }
+  return out;
+}
+
+function exportState(slug, flags) {
+  if (!slug || !readState(slug)) die(`no plan ${slug || "?"} (export-state <slug> [--out FILE])`);
+  const files = {};
+  for (const [rel, p] of bundleFiles(slug)) files[rel] = fs.readFileSync(p).toString("base64");
+  const bundle = { kind: BUNDLE_KIND, version: 1, slug, exportedAt: new Date().toISOString(), from: DATA_ROOT, files };
+  const out = path.resolve(flags.out || `${slug}.deep-plan-state.json`);
+  fs.writeFileSync(out, JSON.stringify(bundle, null, 2) + "\n");
+  say(`exported ${slug}: ${Object.keys(files).length} file(s) to ${out}`);
+  say("  commit it (or copy it) yourself; `deep-plan import-state <file>` brings it back");
+}
+
+function importState(file, flags) {
+  if (!file) die("import-state <file> [--force] [--root DIR]");
+  let b;
+  try { b = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) { die(`cannot read ${file}: ${e.message}`); }
+  if (!b || b.kind !== BUNDLE_KIND || !b.slug || typeof b.files !== "object") die(`${file} is not a deep-plan state bundle`);
+  if (!/^[a-z0-9][a-z0-9._-]{0,120}$/.test(b.slug)) die(`bad slug in the bundle: ${b.slug}`);
+  if (readState(b.slug) && !flags.force) die(`plan ${b.slug} already exists here; --force replaces it`);
+  const bases = { "deep-plan/state": STATE_DIR, "deep-plan/keys": KEYS_DIR, "plans/reviews": REVIEWS_DIR_DP(), "plans": PLANS_DIR };
+  const names = bundleNames(b.slug);
+  // Checked whole before anything is written: only the plan's own file names,
+  // in the known folders, and at least its state and spec.
+  for (const rel of Object.keys(b.files)) {
+    const dir = path.posix.dirname(rel), name = path.posix.basename(rel);
+    if (!bases[dir] || !names[dir].test(name))
+      die(`refused: the bundle names ${rel}, outside the plan's own files`);
+  }
+  for (const need of [`deep-plan/state/${b.slug}.json`, `deep-plan/keys/${b.slug}.spec.json`]) {
+    if (!(need in b.files)) die(`refused: the bundle has no ${need}`);
+    try { JSON.parse(Buffer.from(String(b.files[need]), "base64").toString("utf8")); }
+    catch { die(`refused: the bundle's ${need} is not JSON`); }
+  }
+  let n = 0;
+  for (const [rel, b64] of Object.entries(b.files)) {
+    const dir = path.posix.dirname(rel), name = path.posix.basename(rel);
+    const base = bases[dir];
+    fs.mkdirSync(base, { recursive: true });
+    fs.writeFileSync(path.join(base, name), Buffer.from(String(b64), "base64"));
+    n++;
+  }
+  // The root it guards: as given, else this checkout when the recorded one
+  // is not here (a fresh sandbox clones to its own path).
+  const st = readState(b.slug);
+  const here = (() => { const r = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }); return r.status === 0 ? r.stdout.trim() : ""; })();
+  const root = flags.root ? path.resolve(flags.root) : (st.root && fs.existsSync(st.root) ? st.root : here);
+  if (root && root !== st.root) { st.root = root; log1(st, `import-state: root is now ${root}`); writeState(st); }
+  try { rerenderWorking(b.slug); } catch (e) { say(`  (the working page was not redrawn: ${e.message}; deep-plan rehydrate ${b.slug} redraws it)`); }
+  say(`imported ${b.slug}: ${n} file(s); root ${st.root || "(none)"}`);
+}
+
+// `deep-plan page <slug> [--review]`: show a plan's page where this host can,
+// and say where it went. One line, `served at <url> (host: <h>)`, when there
+// is a live page; otherwise what to use instead.
+function pageCmd(slug, flags) {
+  if (!slug) die("page <slug> [--review]");
+  const file = path.join(PLANS_DIR, slug + (flags.review ? ".review.html" : ".working.html"));
+  const any = fs.existsSync(file) ? file : path.join(PLANS_DIR, slug + ".review.html");
+  if (!fs.existsSync(any)) die(`no rendered plan ${slug} under ${PLANS_DIR}`);
+  const rel = `/plan/${slug}${flags.review ? ".review.html" : ""}`;
+  const { host } = detectHost();
+  const quiz = path.join(PLANS_DIR, slug + ".quiz.txt");
+  if (host === "remote") {
+    say(`no live page on this host (remote: nobody can reach the sandbox's localhost) (host: remote)`);
+    say(flags.review ? `  quiz: cat ${quiz}, then run the grade command it prints`
+                     : `  share it: deep-plan export-artifact ${slug} --json, published only with the person's ok`);
+    return;
+  }
+  if (host === "cmux") {
+    let url = "";
+    try {
+      const cache = path.join(os.homedir(), ".cache", "cmux-crew");
+      const port = parseInt(fs.readFileSync(path.join(cache, "board-intent.port"), "utf8").trim(), 10);
+      if (port) url = `http://127.0.0.1:${port}${rel}`;
+    } catch { /* crew's server is not running */ }
+    if (!url) { say(`not served: crew's intent server is down (crew listen on); the read-only file is ${any} (host: cmux)`); return; }
+    const ws = process.env.CMUX_WORKSPACE_ID || "";
+    if (!ws) { say(`served at ${url} (host: cmux, but no CMUX_WORKSPACE_ID to open it in)`); return; }
+    if (!companionOpen(url, companionKey("plan", slug), ws, process.env.CMUX_SURFACE_ID || ""))
+      spawnSync("cmux", ["open", url, "--workspace", ws, "--focus", "false"], { encoding: "utf8", env: { ...process.env, CMUX_QUIET: "1" }, timeout: 10000 });
+    say(`served at ${url} (host: cmux)`);
+    return;
+  }
+  const url = servedUrl(rel);
+  if (!url) { say(`not served: deep-plan serve did not start (see ${SERVE.LOG_FILE}); the read-only file is ${any} (host: ${host})`); return; }
+  say(`served at ${url} (host: ${host})`);
+  if (host === "desktop") say("  open it in the app's browser pane (preview_start with this url)");
+  if (host === "terminal" && flags.review) say(`  or the text quiz: cat ${quiz}`);
 }
 
 // A patch of everything since the increment started — committed, uncommitted
@@ -2936,8 +3150,20 @@ function familyGate(st) {
   return why === g.why ? g : { ...g, why };
 }
 
+// On the remote host, state outside the repo goes with the sandbox: the next
+// one has no plan, and its gate is open. Said on every status.
+function remoteStateWarning() {
+  if (detectHost().host !== "remote") return "";
+  const top = REMOTE_DIR ? path.dirname(path.dirname(REMOTE_DIR)) : "";
+  if (top && STATE_DIR.startsWith(top + path.sep)) return "";
+  return `⚠ remote host, but plan state is at ${STATE_DIR}, outside the repo: a new sandbox starts without it and the gate fails open. ` +
+    "Unset DEEP_PLAN_STATE_DIR, or move it with deep-plan export-state / import-state.";
+}
+
 function status(json) {
   const rows = statusRows();
+  const warn = remoteStateWarning();
+  if (warn) console.error(warn);
   if (json) { process.stdout.write(JSON.stringify(rows)); return; }
   if (!rows.length) { say("no tracked plans"); return; }
   for (const r of rows) {
@@ -3386,6 +3612,11 @@ function checkRun(slug, n, ids, opts) {
       if (q.choices && q.choices.length) say(`   choices: ${q.choices.join(", ")}`);
       say(`   then: deep-plan check run ${slug} ${n} ${id} --from claim --set ${q.name || "NAME"}=<value>   (or pick it on the Dock)`);
       lines.push(`${id} needs a value`);
+      continue;
+    } else if (res.status === "needs-variant") {
+      // No browser driver here: a person installs one, or records it by hand.
+      say(`✋ ${id} needs a variant — ${res.note}`);
+      lines.push(`${id} needs a variant`);
       continue;
     } else {
       failed++;
@@ -3962,6 +4193,12 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--terminated") flags.terminated = true;
   else if (rest[i] === "--detach") flags.detach = true;
   else if (rest[i] === "--yes") flags.yes = true;
+  else if (rest[i] === "--foreground") flags.foreground = true;
+  else if (rest[i] === "--review") flags.review = true;
+  else if (rest[i] === "--check") flags.check = true;
+  else if (rest[i] === "--stop") flags.stop = true;
+  else if (rest[i] === "--status") flags.status = true;
+  else if (rest[i] === "--url") flags.url = rest[++i] || die("--url needs a path");
   else if (rest[i] === "--attach") {
     // An optional PR: a number or a URL. Without one, the branch's own PR.
     flags.attach = true;
@@ -3994,6 +4231,23 @@ switch (cmd) {
     // What the pointer says, as written by this very run. The SessionStart hook
     // calls this with stdout discarded; a human calls it to ask "which copy?".
     process.stdout.write(pointerBody || JSON.stringify({ root: HERE, version: engineVersion(), pointer: "not written" }, null, 2) + "\n");
+    break;
+  }
+  case "serve": serveCmd(flags, args); break;
+  case "page": pageCmd(args[0], flags); break;
+  case "export-state": exportState(args[0], flags); break;
+  case "install-repo": installRepoCmd(flags); break;
+  case "import-state": importState(args[0], flags); break;
+  case "doctor": {
+    // Which host this run thinks it is in, and which engine copy answers.
+    // Later verbs route pages by the same host.
+    if (flags.json) { process.stdout.write(JSON.stringify({ ...detectHost(), root: HERE, version: engineVersion() }, null, 2) + "\n"); break; }
+    say(hostLine());
+    say(`engine: ${HERE} (${engineVersion()})`);
+    const drv = browserDriver(process.cwd());
+    say(`browser checks: ${drv.kind === "cmux" ? "cmux browser repl (" + drv.bin + ")"
+      : drv.kind === "playwright" ? "Playwright, headless Chromium" + (drv.fake ? " (stand-in " + drv.fake + ")" : " (from " + path.dirname(drv.from) + ")")
+      : drv.why}`);
     break;
   }
   case "render": {
@@ -4231,6 +4485,13 @@ switch (cmd) {
   setup [--force]                             fetch the pinned mermaid, write the engine
                                               pointer, install the ~/.local/bin shim
   engine                                      print the engine pointer (which copy runs)
+  doctor [--json]                             print the host (cmux, desktop, terminal, remote) and the engine copy
+  serve [--url PATH] [--status|--stop]        start deep-plan's page server if needed and print a page's URL
+  install-repo [--root DIR] [--check]        copy the plugin into a repo's .claude/ for cloud sessions
+  export-state <slug> [--out FILE]            one file with the plan's state, spec, key, pages and reviews
+  import-state <file> [--force] [--root DIR]  bring a bundle back (refuses an existing plan unless --force)
+  page <slug> [--review]                      show the plan's working page (or its review) where this host can,
+                                              and print "served at <url> (host: …)"
   render <spec.json> [--root DIR] [--force]   spec -> md + review + working surfaces
   rehydrate <slug>                            re-render from the archived spec
   redraw <slug> | --all [--dry-run] [--json]  re-render plans with this engine (spec + state untouched)

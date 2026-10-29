@@ -14,6 +14,11 @@ For whoever changes this next. Built 2026-09-12 on this machine, from
 | `hooks/decide.mjs` | 43 | slow half: parse payload, decide, exit 2; flips authorized→working on first edit (status only: `go` records the start sha); the family guard's note on an allowed edit |
 | `lib/family.mjs` | — | families: repo identity from `.git`, the index, claims, the guard (`trespass`), sequencing (`waitingOn`), news (`gatherNews`), the status field (`familyRow`) |
 | `hooks/news.sh`, `hooks/news.mjs` | — | UserPromptSubmit + SessionStart: family news as `additionalContext`; a bash glob keeps sessions outside a family off node |
+| `lib/host.mjs` | — | the host rule (cmux, desktop, terminal, remote; `SEAMUX_HOST` wins) and `remoteStateDir`. Twin of `lookout/lib/host.mjs`: change both, the probes compare them |
+| `lib/serve.mjs` | — | `deep-plan serve`: the plan and ask routes crew-board used to serve, with its guards; started on demand, `serve.json` at 0600, exits when idle or no longer recorded. crew-board's `proxy.rs` forwards to it |
+| `serve/plan.js`, `serve/ask.js` | — | the scripts injected into served plan and ask pages (were crew-board's `inject/`) |
+| `lib/browser.mjs` + `browser/prelude-node.js` | — | the browser driver: cmux's repl in cmux, else Playwright and headless Chromium, else needs-variant. `tools/fake-playwright` stands in for the probe |
+| `lib/install.mjs` | — | `install-repo`: the plugin into a repo's `.claude/skills/deep-plan` with guarded hooks, for cloud sessions. Twin of `lookout/lib/install.mjs` |
 | `probe.mjs` | 563 | throwaway everything, `-v` walks it; prints its own count |
 | `examples/example.spec.json` | — | reference spec; the probe's fixture, so a broken example breaks the build |
 | `.claude-plugin/plugin.json` | — | the plugin manifest; its `version` is what `engine.json` reports |
@@ -22,7 +27,8 @@ For whoever changes this next. Built 2026-09-12 on this machine, from
 | `lib/deep-plan.shim` | — | what `deep-plan setup` installs at `~/.local/bin/deep-plan`: execs `$DEEP_PLAN_ENGINE`, else the root in `engine.json`, else the old skills copy |
 | `~/.claude/deep-plan/vendor/mermaid.min.js` | 3.4MB | not in the plugin: fetched by `deep-plan setup` or the first render, pinned by sha256. Inlined base64 into surfaces; the intent server swaps it for `/mermaid.min.js` |
 
-Trees: state `~/.claude/deep-plan/state/`, keys+archived specs
+On the remote host every tree below moves to `<git root>/.seamux/state/`
+(same layout), unless an override is set. Trees: state `~/.claude/deep-plan/state/`, keys+archived specs
 `~/.claude/deep-plan/keys/` (separate on purpose — never render from there),
 surfaces `~/.claude/plans/`, engine pointer `~/.claude/deep-plan/engine.json`,
 bundle `~/.claude/deep-plan/vendor/`. Probe overrides: `DEEP_PLAN_STATE_DIR`,

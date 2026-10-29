@@ -14,14 +14,73 @@
 //      goes on; syncEvidence copies them into the evidence directory, during
 //      the run (whoever reads the evidence calls it) and once at the end.
 // The verdict is the repl's exit code, as for a run step.
+//
+// Where cmux is not the host, the same script runs through Playwright and a
+// headless Chromium instead (ADR 0042): browser/prelude-node.js keeps the
+// contract and writes the same evidence files, with no run.png and no tab.
+// The driver, in order: cmux's repl when cmux is the host and its CLI
+// resolves; Playwright when the package resolves (the repo, the global npm
+// root, or npx's cache); otherwise the check needs a variant, and says what
+// to install. DEEP_PLAN_PLAYWRIGHT names a stand-in (the probe's fake) that
+// runs the program in place of node.
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { detectHost } from "./host.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const PRELUDE = path.join(HERE, "..", "browser", "prelude.js");
+export const PRELUDE_NODE = path.join(HERE, "..", "browser", "prelude-node.js");
+export const PLAYWRIGHT_HINT = "npm i -D playwright && npx playwright install chromium (in the repo), or run it as a manual check";
+
+// Where `playwright` resolves from: a package.json path to createRequire
+// against, or "". The repo first (a repo with Playwright seeds has it), then
+// the global npm root, then a copy npx already holds.
+const pwSeen = new Map();
+export function playwrightFrom(root) {
+  if (pwSeen.has(root || "")) return pwSeen.get(root || "");
+  const found = findPlaywright(root);
+  pwSeen.set(root || "", found);
+  return found;
+}
+
+function findPlaywright(root) {
+  const tries = [];
+  if (root) tries.push(path.join(root, "package.json"));
+  const g = spawnSync("npm", ["root", "-g"], { encoding: "utf8", timeout: 10000 });
+  if (g.status === 0 && g.stdout.trim()) tries.push(path.join(g.stdout.trim(), "noop.js"));
+  for (const from of tries) {
+    try { createRequire(from).resolve("playwright"); return from; } catch { /* not here */ }
+  }
+  const x = spawnSync("npx", ["--no-install", "-p", "playwright", "-c", "echo \"$PATH\""],
+    { encoding: "utf8", timeout: 20000, cwd: os.tmpdir() });
+  const bin = x.status === 0 && (x.stdout || "").split(":").find(d => /node_modules\/\.bin$/.test(d.trim()) && fs.existsSync(path.join(d.trim(), "..", "playwright")));
+  return bin ? path.join(bin.trim(), "..", "noop.js") : "";
+}
+
+// Which driver runs a browser step here: { kind: "cmux", bin } |
+// { kind: "playwright", from, fake } | { kind: "none", why }.
+export function browserDriver(root, env = process.env) {
+  const bin = cmuxBin(env);
+  if (detectHost(env).host === "cmux" && bin) return { kind: "cmux", bin };
+  if (env.DEEP_PLAN_PLAYWRIGHT && env.DEEP_PLAN_PLAYWRIGHT !== "none")
+    return { kind: "playwright", from: "", fake: env.DEEP_PLAN_PLAYWRIGHT };
+  const from = env.DEEP_PLAN_PLAYWRIGHT === "none" ? "" : playwrightFrom(root);
+  if (from) return { kind: "playwright", from };
+  return { kind: "none", why: `no browser driver here: cmux is not the host (${detectHost(env).why}) and playwright does not resolve — ${PLAYWRIGHT_HINT}` };
+}
+
+// The Playwright program: prelude-node.js with the env, the script and where
+// playwright resolves from.
+export function programNode(script, env, from) {
+  return fs.readFileSync(PRELUDE_NODE, "utf8")
+    .replace("/*__DP_ENV__*/", () => JSON.stringify(env))
+    .replace("/*__DP_PLAYWRIGHT__*/", () => JSON.stringify(from))
+    .replace("/*__DP_SCRIPT__*/", () => script);
+}
 export const KEEP_RUNS = 3;
 
 // The cmux CLI, in crew's order (app/crates/cmux/src/cli_seam.rs): CREW_CMUX,
@@ -196,9 +255,14 @@ export function runBrowser(step, { cwd, env = {}, log = "", timeout = 900, brows
   const scriptPath = path.resolve(cwd, step.command);
   append(`\n$ browser ${step.command}\n`);
   if (!fs.existsSync(scriptPath)) return fail(`the browser script ${step.command} does not exist (in ${cwd})`);
-  const bin = cmuxBin(process.env);
-  if (!bin) return fail("no cmux CLI found (CREW_CMUX, CMUX_BIN, PATH, /Applications/cmux*.app) — browser checks run where cmux runs");
   const { runsDir, evidence, session, root } = browser;
+  const driver = browserDriver(root);
+  if (driver.kind === "none") {
+    append(driver.why + "\n");
+    return { command: step.command, ok: false, code: -1, timedOut: false, ms: Date.now() - started, out: driver.why, value: "",
+      needsVariant: true };
+  }
+  const bin = driver.bin;
   if (!runsDir || !evidence) return fail("the browser step was run without an evidence directory");
   const dir = path.join(runsDir, evidence);
   const vars = { ...env, DEEP_PLAN_EVIDENCE: dir };
@@ -211,6 +275,7 @@ export function runBrowser(step, { cwd, env = {}, log = "", timeout = 900, brows
     fs.copyFileSync(from, to);
     vars.STORAGE_STATE = to;
   }
+  if (driver.kind === "playwright") return runPlaywright(step, scriptPath, vars, { dir, runsDir, evidence, driver, timeout, append, started });
   const ws = root ? workspaceFor(root) : "";
   if (!ws) append(`[no cmux workspace found for ${root || "this run"}; its tabs open in the focused workspace]\n`);
   const args = ["browser", "repl", "--timeout", String(timeout * 1000), "--max-output", "0",
@@ -234,5 +299,37 @@ export function runBrowser(step, { cwd, env = {}, log = "", timeout = 900, brows
     command: step.command, ok: !timedOut && code === 0, code, timedOut, ms: Date.now() - started,
     out: (where ? where + "\n" : "") + tailLines, value: "", evidence, failedAt: where,
     workspace: ws,
+  };
+}
+
+// The Playwright driver: the program is written into the evidence directory
+// as run.mjs and run with node (or the probe's stand-in), with the evidence
+// directory as its cwd, the way the repl runs.
+function runPlaywright(step, scriptPath, vars, { dir, runsDir, evidence, driver, timeout, append, started }) {
+  const prog = path.join(dir, "run.mjs");
+  fs.writeFileSync(prog, programNode(fs.readFileSync(scriptPath, "utf8"), { ...vars, DEEP_PLAN_BROWSER_TIMEOUT: String(timeout) }, driver.from));
+  const [cmd, args] = driver.fake ? [driver.fake, [prog]] : [process.execPath, [prog]];
+  append(`[playwright: ${driver.fake ? driver.fake + " (stand-in)" : "chromium, headless"}]\n`);
+  const r = spawnSync(cmd, args, {
+    cwd: dir, encoding: "utf8", timeout: (timeout + 30) * 1000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, env: process.env,
+  });
+  const full = (r.stdout || "") + (r.stderr || "") + (r.error && r.error.code !== "ETIMEDOUT" ? r.error.message : "");
+  append(full);
+  const timedOut = !!(r.error && r.error.code === "ETIMEDOUT");
+  const code = r.status === null ? -1 : r.status;
+  append(timedOut ? `\n[timed out after ${timeout}s]\n` : `\n[exit ${code}]\n`);
+  const ev = readEvidence(runsDir, evidence);
+  const tailLines = full.replace(/\s+$/, "").split("\n").slice(-20).join("\n");
+  const where = ev && ev.result === "fail" ? `step "${ev.label || "?"}": ${(ev.error || "").split("\n")[0]}` : "";
+  // Playwright is here but its Chromium is not: that is a missing driver,
+  // not a failed check.
+  if (ev && ev.result === "fail" && ev.label === "setup" && /Executable doesn't exist|playwright install/i.test(ev.error || "")) {
+    const why = `Playwright resolves but its Chromium is not installed — ${PLAYWRIGHT_HINT}`;
+    append(why + "\n");
+    return { command: step.command, ok: false, code, timedOut: false, ms: Date.now() - started, out: why, value: "", needsVariant: true };
+  }
+  return {
+    command: step.command, ok: !timedOut && code === 0, code, timedOut, ms: Date.now() - started,
+    out: (where ? where + "\n" : "") + tailLines, value: "", evidence, failedAt: where, workspace: "", driver: "playwright",
   };
 }

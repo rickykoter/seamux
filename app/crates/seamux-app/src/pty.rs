@@ -342,11 +342,15 @@ pub fn furthest_scroll(lines: &str) -> (bool, u64, u64) {
     best
 }
 
+/// The field separator in list-panes formats. Not a tab: tmux 3.8 prints a
+/// tab in -F output as "_". The path comes last, so a "|" in it is kept.
+const SEP: char = '|';
+
 /// The session's own pane: the one that is not the companion shell, where
 /// Claude runs. Its id ("%3").
 pub fn main_pane(t: &Target) -> Option<String> {
-    let out = tmux_out(&t.socket, &["list-panes", "-t", &format!("{}:", t.session), "-F", "#{pane_id}\t#{@seamux_role}"]).ok()?;
-    out.lines().find_map(|l| l.split_once('\t').filter(|(_, role)| *role != "shell").map(|(id, _)| id.to_string()))
+    let out = tmux_out(&t.socket, &["list-panes", "-t", &format!("{}:", t.session), "-F", "#{pane_id}|#{@seamux_role}"]).ok()?;
+    out.lines().find_map(|l| l.split_once(SEP).filter(|(_, role)| *role != "shell").map(|(id, _)| id.to_string()))
 }
 
 /// Line-editing keys the pane's ⌘ keys stand for, sent with send-keys so
@@ -382,8 +386,8 @@ const SHELL_BORDER: &str = "#{?#{==:#{@seamux_role},shell}, shell · #{pane_curr
 /// shell keeps running. Returns whether the shell shows now (and has the keys).
 pub fn toggle_shell(t: &Target) -> Result<bool, String> {
     let win = format!("{}:", t.session);
-    let list = tmux_out(&t.socket, &["list-panes", "-t", &win, "-F", "#{pane_id}\t#{@seamux_role}\t#{window_zoomed_flag}\t#{pane_current_path}"])?;
-    let rows: Vec<Vec<&str>> = list.lines().map(|l| l.split('\t').collect()).filter(|r: &Vec<&str>| r.len() == 4).collect();
+    let list = tmux_out(&t.socket, &["list-panes", "-t", &win, "-F", "#{pane_id}|#{@seamux_role}|#{window_zoomed_flag}|#{pane_current_path}"])?;
+    let rows: Vec<Vec<&str>> = list.lines().map(|l| l.splitn(4, SEP).collect()).filter(|r: &Vec<&str>| r.len() == 4).collect();
     let main = rows.iter().find(|r| r[1] != "shell").ok_or("the session has no pane")?;
     let shell = rows.iter().find(|r| r[1] == "shell");
     let zoomed = main[2] == "1";

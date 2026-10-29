@@ -17,6 +17,7 @@ pub mod companion;
 pub mod judgments;
 pub mod news;
 pub mod plans;
+pub mod proxy;
 pub mod pyval;
 pub mod rank;
 pub mod review;

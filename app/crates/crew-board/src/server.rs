@@ -188,6 +188,8 @@ pub struct Request {
     pub method: String,
     pub path: String,
     pub query: HashMap<String, Vec<String>>,
+    /// The query as it came, for forwarding it unchanged (proxy.rs).
+    pub raw_query: String,
     headers: Vec<(String, String)>,
     reader: BufReader<TcpStream>,
     pub port: u16,
@@ -284,6 +286,14 @@ impl Request {
         s.flush()
     }
 
+    /// A plugin server's reply passed through (proxy.rs): its status and the
+    /// headers it kept, with this server's length.
+    pub fn relay(&mut self, code: u16, headers: &[(&str, String)], body: &[u8]) {
+        let mut h: Vec<(&str, String)> = headers.to_vec();
+        h.push(("Content-Length", body.len().to_string()));
+        self.write(code, &h, body);
+    }
+
     /// A page or file, never cached unless `cache` says otherwise.
     pub fn send(&mut self, code: u16, ctype: &str, cache: &str, body: &[u8]) {
         self.write(code, &[("Content-Type", ctype.into()), ("Cache-Control", cache.into()),
@@ -294,6 +304,9 @@ impl Request {
 fn reason(code: u16) -> &'static str {
     match code {
         200 => "OK",
+        302 => "Found",
+        405 => "Method Not Allowed",
+        502 => "Bad Gateway",
         400 => "Bad Request",
         403 => "Forbidden",
         404 => "Not Found",
@@ -393,6 +406,7 @@ fn handle(stream: TcpStream, port: u16, token: String) {
         method: parts.first().copied().unwrap_or("").to_string(),
         path: path.to_string(),
         query: parse_qs(query),
+        raw_query: query.to_string(),
         headers,
         reader,
         port,

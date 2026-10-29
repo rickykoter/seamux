@@ -8,8 +8,9 @@ description: Plans a change as a reviewable artifact — spec → markdown plan 
 Plan as artifact, gate per increment. Every increment is gated on its checks
 (tests, e2e runs, observability signals, manual steps), run by the engine
 from per-project recipes where it can and recorded by hand where it cannot.
-The crew Dock reads `deep-plan status --json` and serves the plan surfaces at
-`/plan/<slug>`; the cutover bundle is how a plan reaches a ticket system.
+A plan's live pages are served at `/plan/<slug>`, by crew in cmux and by
+deep-plan's own server everywhere else; the cutover bundle is how a plan
+reaches a ticket system.
 
 ## Must hold
 
@@ -96,18 +97,22 @@ These survive a compaction; everything below them is how.
    the gate*. Render resolves each deliverable's checks against the recipe
    files and stores them, so what `check run` executes is what was reviewed.
 7. **The alignment check.** The review surface shows 3+ consequence
-   questions with per-slug shuffled options. Open it in the cmux workspace —
-   `cmux open "http://127.0.0.1:$(cat ~/.cache/cmux-crew/board-intent.port)/plan/<slug>.review.html" --workspace <ref>`
-   (ref from `~/.cache/cmux-crew/board-targets.json`, matched by cwd) — never
-   `open` on the file:// copy; fall back to the file only when the intent
-   server is down, and say so. For a terminal or an inline widget, and for
-   parking work in a tracker, see
+   questions with per-slug shuffled options. `deep-plan page <slug> --review`
+   shows it where this session can and prints `served at <url> (host: …)`.
+   In cmux it opens beside the terminal. In Claude desktop, open that URL in
+   the browser pane with `preview_start`, and prefer the inline widget for
+   the quiz itself. In a plain terminal, give the person the link or the
+   text quiz. On a remote host there is no live
+   page. Never `open` the file:// copy, and say so when the page is not
+   served. The inline widget, the text quiz, the remote route and parking
+   work in a tracker are in
    [review-surfaces.md](references/review-surfaces.md). The human answers;
    you run `deep-plan grade <slug> q1=a q2=c q3=b`. A non-zero exit names the
    decision to reopen: the plan and their model disagree, and **either may be
    the broken one** — fix whichever is wrong, re-render, re-check. Once the
-   grade passes, open only the suffix-less `/plan/<slug>` (the working
-   tracker); re-opening `.review.html` pins the quiz over increment progress.
+   grade passes, open only the working tracker (`deep-plan page <slug>`,
+   no `--review`); re-opening `.review.html` pins the quiz over increment
+   progress.
    A pass also cuts `~/.claude/plans/<slug>.approved.md`, the plan as agreed
    and immutable, to paste into tickets and PRs; amends change only the live
    surfaces, and the working page notes when the plan has drifted from it.
@@ -134,8 +139,9 @@ These survive a compaction; everything below them is how.
    When the human
    says "go" and an increment is already authorized, start that one. `go
    next` refuses while one is open; `--force` past it only on the human's
-   word. Each `go` opens or refocuses the working surface in the Dock,
-   best-effort. `go` records HEAD as the increment's start sha, the base of
+   word. Each `go` opens or refocuses the working surface, best-effort, and
+   prints `served at <url> (host: …)`; on desktop, open that URL in the
+   browser pane if it is not already showing. `go` records HEAD as the increment's start sha, the base of
    its patch and its review; the first edit inside the root marks it
    `working`. `deep-plan done <slug> <n>` closes it and writes its patch to
    `~/.claude/plans/<slug>.inc<n>.patch`. `deep-plan diff <slug> [n]` opens
@@ -152,6 +158,13 @@ These survive a compaction; everything below them is how.
     (`check list` shows it), then fix the feature or the script, and never
     weaken an assertion to get a pass. Browser checks, claim steps and PR
     proof: [checks.md](references/checks.md#browser-checks).
+
+**In a cloud session** (claude.ai/code, `deep-plan doctor` says remote) the
+plugin runs from the repo's `.claude/skills/deep-plan`, put there by
+`deep-plan install-repo`; if it is missing, say so rather than planning
+without a gate. State lives in the repo's `.seamux/state/`; before the
+sandbox goes, offer `deep-plan export-state <slug>` so the next one can
+`import-state` it.
 
 Also read, when they apply: [observability.md](references/observability.md)
 on a project with `.seamux/observability.json`;
