@@ -82,9 +82,13 @@ execSync("git init -q && git -c user.email=probe@deep-plan -c user.name=probe " 
   "commit -q --allow-empty -m init", { cwd: REPO });
 
 let pass = 0, fail = 0;
-function ok(name, cond) {
+// The third argument, when given, is printed under a FAIL: what was seen.
+function ok(name, cond, detail) {
   if (cond) { pass++; if (V) console.log("  ok   " + name); }
-  else { fail++; console.log("  FAIL " + name); }
+  else {
+    fail++; console.log("  FAIL " + name);
+    if (detail !== undefined && String(detail).trim()) console.log("       " + String(detail).trim().slice(0, 600).replace(/\n/g, "\n       "));
+  }
 }
 function cli(...args) {
   return spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...args],
@@ -4974,6 +4978,111 @@ exit 1
   const rs = r.status === 0 ? JSON.parse(fs.readFileSync(path.join(IRP, ".claude", "settings.json"), "utf8")) : {};
   ok("install-repo gives a cloud repo the same session-start pull", r.status === 0 &&
     (rs.hooks.SessionStart || []).some(gr => gr.hooks.some(h => /skills\/deep-plan\/deep_plan\.mjs" state pull --session/.test(h.command))), r.stderr);
+}
+
+// -------------------------------------------------- shared state: a family's branches, archive on deliver and close
+{
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const FO = path.join(TMP, "sf-origin.git"), FR = path.join(TMP, "sf-repo"), FW = path.join(TMP, "sf-repo.worktrees");
+  execSync(`git init -q --bare ${FO}`);
+  fs.mkdirSync(FR);
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init && git remote add origin ${FO} && git push -q origin HEAD:refs/heads/main`, { cwd: FR });
+  const API = path.join(FW, "api"), UI = path.join(FW, "ui");
+  execSync(`git worktree add -q -b api ${API} && git worktree add -q -b ui ${UI}`, { cwd: FR });
+  const dd = path.join(TMP, "sf-data");
+  const EF = { ...ENV, DEEP_PLAN_STATE_DIR: path.join(dd, "state"), DEEP_PLAN_KEYS_DIR: path.join(dd, "keys"),
+    DEEP_PLAN_PLANS_DIR: path.join(dd, "plans"), LOOKOUT_REVIEWS_DIR: path.join(dd, "plans", "reviews") };
+  const on = (dir, ...x) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...x], { encoding: "utf8", env: EF, cwd: dir });
+  const ref = r => spawnSync("git", ["--git-dir", FO, "rev-parse", "--verify", "-q", r], { encoding: "utf8" }).stdout.trim();
+  const tree = b => (spawnSync("git", ["--git-dir", FO, "ls-tree", "-r", "--name-only", b], { encoding: "utf8" }).stdout || "").split("\n");
+  const child = (slug, files) => {
+    const c = JSON.parse(JSON.stringify(spec));
+    c.slug = slug;
+    c.deliverables = c.deliverables.map((d, i) => ({ ...d, files: i === 0 ? files : [] }));
+    return c;
+  };
+  on(API, "render", tmpSpec(child("example-auth-api", ["api/auth/session.ts"])), "--root", API);
+  on(UI, "render", tmpSpec(child("example-auth-ui", ["web/login/form.tsx"])), "--root", UI);
+  const fam = JSON.parse(fs.readFileSync(path.join(HERE, "examples", "example.family.spec.json"), "utf8"));
+  let r = on(FR, "render", tmpSpec({ ...fam, share: true }), "--root", FR);
+  ok("shared family: the parent renders with share", r.status === 0, r.stderr);
+  const pk = JSON.parse(fs.readFileSync(path.join(EF.DEEP_PLAN_KEYS_DIR, fam.slug + ".key.json"), "utf8"));
+  on(FR, "grade", fam.slug, ...Object.entries(pk.answers).map(([q, v]) => `${q}=${v.letter}`));
+  const pb = "refs/heads/seamux-state/" + fam.slug;
+  ok("shared family: the parent's branch carries the family index", ref(pb) !== "" &&
+    tree(pb).includes(`deep-plan/state/families/${fam.slug}/index.json`), tree(pb).join(" "));
+  // A child shares through its parent, on a branch of its own.
+  on(API, "block", "example-auth-api", "1", "waiting on the parent");
+  const ab = "refs/heads/seamux-state/example-auth-api";
+  ok("shared family: a child with no share of its own pushes to its own branch, because its parent shares",
+    ref(ab) !== "" && tree(ab).includes("deep-plan/state/example-auth-api.json") &&
+    !tree(ab).some(f => f.startsWith("deep-plan/state/families/")), tree(ab).join(" "));
+  ok("shared family: …and status says it is shared", /example-auth-api  shared/.test(on(API, "state", "status", "example-auth-api").stdout));
+  // A hold is the family's control file: it rides on the parent's branch.
+  let t = ref(pb);
+  r = on(FR, "family", "hold", "example-auth-ui", "the contract is moving");
+  const ctl = () => JSON.parse(execSync(`git --git-dir ${FO} show ${pb}:deep-plan/state/families/${fam.slug}/control.json`, { encoding: "utf8" }));
+  ok("shared family: a hold pushes the parent's branch with the control file", r.status === 0 && ref(pb) !== t &&
+    ctl().holds["example-auth-ui"] && ctl().holds["example-auth-ui"].reason === "the contract is moving", r.stdout + r.stderr);
+  t = ref(pb);
+  on(FR, "family", "unhold", "example-auth-ui");
+  ok("shared family: an unhold does too", ref(pb) !== t && !ctl().holds["example-auth-ui"]);
+  // Another machine pulls the parent and sees the family.
+  const d2 = path.join(TMP, "sf-data-2");
+  const E2 = { ...ENV, DEEP_PLAN_STATE_DIR: path.join(d2, "state"), DEEP_PLAN_KEYS_DIR: path.join(d2, "keys"),
+    DEEP_PLAN_PLANS_DIR: path.join(d2, "plans"), LOOKOUT_REVIEWS_DIR: path.join(d2, "plans", "reviews") };
+  r = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "state", "pull", fam.slug], { encoding: "utf8", env: E2, cwd: FR });
+  ok("shared family: pulling the parent brings the family index and control", r.status === 0 &&
+    fs.existsSync(path.join(d2, "state", "families", fam.slug, "index.json")) && fs.existsSync(path.join(d2, "state", "families", fam.slug, "control.json")), r.stderr);
+  // The end of a plan: close archives the branch as a tag and deletes it.
+  r = on(UI, "close", "example-auth-ui");
+  const ub = "refs/heads/seamux-state/example-auth-ui", utag = "refs/tags/seamux-state-archive/example-auth-ui";
+  ok("close archives a shared plan's branch as seamux-state-archive/<slug> and deletes it", r.status === 0 &&
+    ref(ub) === "" && ref(utag) !== "" &&
+    JSON.parse(execSync(`git --git-dir ${FO} show ${utag}:deep-plan/state/example-auth-ui.json`, { encoding: "utf8" })).phase === "closed", r.stdout + r.stderr);
+  ok("…and state list no longer shows it", !/example-auth-ui/.test(on(FR, "state", "list").stdout));
+  // deliver: a plan with a delivery review, its last increment done by force (no checks run here).
+  const solo = { ...spec, slug: "sf-solo", share: true, review: { ...(spec.review || {}), increments: "none", delivery: false } };
+  on(FR, "render", tmpSpec(solo), "--root", FR);
+  const sk = JSON.parse(fs.readFileSync(path.join(EF.DEEP_PLAN_KEYS_DIR, "sf-solo.key.json"), "utf8"));
+  on(FR, "grade", "sf-solo", ...Object.entries(sk.answers).map(([q, v]) => `${q}=${v.letter}`));
+  ok("an unfinished plan keeps its branch", ref("refs/heads/seamux-state/sf-solo") !== "");
+  for (const inc of JSON.parse(fs.readFileSync(path.join(dd, "state", "sf-solo.json"), "utf8")).increments) {
+    on(FR, "go", "sf-solo", String(inc.n), "--force"); on(FR, "done", "sf-solo", String(inc.n), "--force");
+  }
+  ok("a plan that finishes without close or deliver keeps its branch", ref("refs/heads/seamux-state/sf-solo") !== "");
+  r = on(FR, "close", "sf-solo");
+  ok("…until it is closed", ref("refs/heads/seamux-state/sf-solo") === "" && ref("refs/tags/seamux-state-archive/sf-solo") !== "", r.stderr);
+  // deliver: a shared plan with a delivery review completes, and its branch is archived.
+  {
+    const LK = path.join(HERE, "..", "lookout");
+    const LENV = { ...EF, LOOKOUT_ENGINE: LK, LOOKOUT_TYPESAFE_CLIENT: "", LOOKOUT_VENDOR_DIR: path.join(TMP, "sf-lookout-vendor"),
+      LOOKOUT_ENGINE_FILE: path.join(TMP, "sf-lookout-engine.json"), LOOKOUT_BIN_DIR: path.join(TMP, "sf-lookout-bin") };
+    const lc = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: LENV, cwd: FR });
+    const dv = { ...spec, slug: "sf-deliver", share: true, review: { ...(spec.review || {}), increments: "none", delivery: true } };
+    dv.deliverables = [{ ...dv.deliverables[0], files: [] }];
+    lc("render", tmpSpec(dv), "--root", FR);
+    const dk = JSON.parse(fs.readFileSync(path.join(EF.DEEP_PLAN_KEYS_DIR, "sf-deliver.key.json"), "utf8"));
+    lc("grade", "sf-deliver", ...Object.entries(dk.answers).map(([q, v]) => `${q}=${v.letter}`));
+    lc("go", "sf-deliver", "1");
+    fs.writeFileSync(path.join(FR, "d.txt"), "delivered\n");
+    execSync(`git add d.txt && ${G} commit -q -m d`, { cwd: FR });
+    lc("done", "sf-deliver", "1", "--force");
+    lc("deliver", "sf-deliver");
+    const none = path.join(TMP, "sf-no-findings.json");
+    fs.writeFileSync(none, JSON.stringify({ findings: [] }));
+    spawnSync("node", [path.join(LK, "lookout.mjs"), "findings", "add", "sf-deliver-delivery", none], { encoding: "utf8", env: LENV, cwd: FR });
+    ok("a shared plan in its delivery phase keeps its branch", ref("refs/heads/seamux-state/sf-deliver") !== "");
+    r = lc("deliver", "sf-deliver");
+    ok("deliver archives a shared plan's branch once the plan is complete", r.status === 0 && /plan complete/.test(r.stdout) &&
+      ref("refs/heads/seamux-state/sf-deliver") === "" && ref("refs/tags/seamux-state-archive/sf-deliver") !== "" &&
+      JSON.parse(execSync(`git --git-dir ${FO} show refs/tags/seamux-state-archive/sf-deliver:deep-plan/state/sf-deliver.json`, { encoding: "utf8" })).phase === "done",
+      r.stdout + r.stderr);
+  }
+  // A plan that does not share is never archived (nothing was pushed for it).
+  on(FR, "render", tmpSpec({ ...spec, slug: "sf-private" }), "--root", FR);
+  on(FR, "close", "sf-private");
+  ok("closing a plan that does not share touches no ref", ref("refs/tags/seamux-state-archive/sf-private") === "");
 }
 
 // -------------------------------------------------- hot-path cost

@@ -25,6 +25,8 @@
 //   write(slug, files, expected, meta) -> { ok, version } | { ok: false, moved: true }
 //   list()                             -> [{ slug, version }]
 //   remove(slug, expected)             -> { ok } | { ok: false, moved: true }
+//   archive(slug, expected)            -> { ok, tag } | { ok: false, moved: true }  (git only:
+//                                         the branch becomes seamux-state-archive/<slug>)
 // A version is the branch's commit ("" when there is none). A write or
 // remove is pinned to the version its caller read and refused if the branch
 // moved since; a remote that cannot be reached throws.
@@ -36,6 +38,7 @@ import { spawnSync } from "node:child_process";
 import { STATE_DIR, sessionId } from "./state.mjs";
 
 export const SYNC_MODES = ["transitions", "manual", "off"];
+export const ARCHIVE_PREFIX = "seamux-state-archive/";
 export const DEFAULTS = Object.freeze({ remote: "origin", prefix: "seamux-state/", sync: "transitions" });
 const ENV_KEYS = { remote: "SEAMUX_STATE_REMOTE", prefix: "SEAMUX_STATE_PREFIX", sync: "SEAMUX_STATE_SYNC" };
 
@@ -261,6 +264,19 @@ export class GitBackend {
     return r.stdout.split("\n").filter(Boolean).map(l => l.split("\t"))
       .filter(([, ref]) => ref && ref.startsWith(head) && !ref.slice(head.length).includes("/"))
       .map(([version, ref]) => ({ slug: ref.slice(head.length), version }));
+  }
+
+  // A plan that ended: its branch becomes a tag and is deleted, in one atomic
+  // push leased on the version the caller read. A tag left by an earlier
+  // plan of the same slug is replaced.
+  archive(slug, expected) {
+    const b = this.branch(slug), tag = `${ARCHIVE_PREFIX}${slug}`;
+    if (!this.ensure(slug, expected)) return { ok: false, moved: true };
+    const p = this.git(["push", "--porcelain", "--atomic", `--force-with-lease=refs/heads/${b}:${expected}`, this.target,
+      `+${expected}:refs/tags/${tag}`, `:refs/heads/${b}`], { net: true });
+    if (p.status === 0 && !p.error) { this.git(["update-ref", "-d", this.track(b)]); return { ok: true, tag }; }
+    if (refused(p)) return { ok: false, moved: true };
+    throw this.netFail("archiving on", p);
   }
 
   remove(slug, expected) {

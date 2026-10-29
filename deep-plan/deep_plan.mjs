@@ -2932,12 +2932,18 @@ function bundleNames(slug) {
     "deep-plan/keys": new RegExp(`^${s}\\.(spec|key)\\.json$`),
     "plans": new RegExp(`^${s}\\.(md|review\\.html|working\\.html|widget\\.html|quiz\\.txt|approved\\.md|artifact\\.html|adr\\d+\\.md|inc\\d+\\.patch)$`),
     "plans/reviews": new RegExp(`^${s}-(inc\\d+|delivery)\\.(json|patch|rows\\.json|html|seen\\.json)$`),
+    // A family parent's: the index, the holds and take-backs, the trespass
+    // log. Each member's seen file is its own machine's, and stays.
+    [`deep-plan/state/families/${slug}`]: /^(index\.json|control\.json|trespass\.jsonl)$/,
   };
 }
 
+const BUNDLE_BASES = slug => ({ "deep-plan/state": STATE_DIR, "deep-plan/keys": KEYS_DIR, "plans/reviews": REVIEWS_DIR_DP(),
+  "plans": PLANS_DIR, [`deep-plan/state/families/${slug}`]: path.join(FAMILIES_DIR, slug) });
+
 function bundleFiles(slug) {
   const names = bundleNames(slug);
-  const dirs = { "deep-plan/state": STATE_DIR, "deep-plan/keys": KEYS_DIR, "plans": PLANS_DIR, "plans/reviews": REVIEWS_DIR_DP() };
+  const dirs = BUNDLE_BASES(slug);
   const out = [];
   for (const [rel, dir] of Object.entries(dirs)) {
     let list = [];
@@ -2964,9 +2970,8 @@ function exportState(slug, flags) {
 // A bundle's files, checked whole before anything is written: only the
 // plan's own file names, in the known folders, and at least its state and
 // spec, both JSON. "" when it may be written, else why not.
-const BUNDLE_BASES = () => ({ "deep-plan/state": STATE_DIR, "deep-plan/keys": KEYS_DIR, "plans/reviews": REVIEWS_DIR_DP(), "plans": PLANS_DIR });
 function checkBundle(slug, files) {
-  const bases = BUNDLE_BASES(), names = bundleNames(slug);
+  const bases = BUNDLE_BASES(slug), names = bundleNames(slug);
   for (const rel of Object.keys(files)) {
     const dir = path.posix.dirname(rel), name = path.posix.basename(rel);
     if (!bases[dir] || !names[dir].test(name)) return `refused: the bundle names ${rel}, outside the plan's own files`;
@@ -2978,8 +2983,8 @@ function checkBundle(slug, files) {
   }
   return "";
 }
-function writeBundle(files) {
-  const bases = BUNDLE_BASES();
+function writeBundle(slug, files) {
+  const bases = BUNDLE_BASES(slug);
   let n = 0;
   for (const [rel, data] of Object.entries(files)) {
     const base = bases[path.posix.dirname(rel)];
@@ -3015,7 +3020,7 @@ function importState(file, flags) {
   const files = Object.fromEntries(Object.entries(b.files).map(([rel, b64]) => [rel, Buffer.from(String(b64), "base64")]));
   const bad = checkBundle(b.slug, files);
   if (bad) die(bad);
-  const n = writeBundle(files);
+  const n = writeBundle(b.slug, files);
   const st = settleRoot(b.slug, flags, "import-state");
   try { rerenderWorking(b.slug); } catch (e) { say(`  (the working page was not redrawn: ${e.message}; deep-plan rehydrate ${b.slug} redraws it)`); }
   say(`imported ${b.slug}: ${n} file(s); root ${st.root || "(none)"}`);
@@ -3052,7 +3057,14 @@ function digestOf(files) {
 // A plan's share setting, as render recorded it from the spec: false, true
 // or {remote, prefix, sync}. A plan that is not here has none, and its
 // branch is looked for where the defaults (and SEAMUX_STATE_*) say.
-function planShare(st) { return (st && st.share) || false; }
+function planShare(st) {
+  if (!st) return false;
+  if (st.share) return st.share;
+  // A family child follows its parent, with no flag of its own.
+  const idx = familyOf(st.slug);
+  if (idx && idx.parent !== st.slug) { const p = readState(idx.parent); return (p && p.share) || false; }
+  return false;
+}
 
 // The backend for a plan: its root's repo when the root is here, else this
 // checkout's. Config problems are said, never fatal.
@@ -3092,7 +3104,7 @@ function mergeIn(slug, r) {
   try { rs = JSON.parse(Buffer.from(r.files[rel]).toString("utf8")); } catch { return `the branch's ${rel} is not JSON`; }
   const files = mergeFiles(bundleBuffers(slug), r.files, ls, rs, rel, mergeStates(ls, rs));
   delete files[rel];
-  writeBundle(files);
+  writeBundle(slug, files);
   // The state is merged again from a fresh read right before it is written,
   // so a write here since the first read is in it; writeState's own merge
   // then keeps any verdict or log line that lands in the last moment.
@@ -3184,7 +3196,7 @@ function pullPlan(slug, backend, flags = {}) {
   }
   const bad = checkBundle(slug, r.files);
   if (bad) return { error: bad };
-  const n = writeBundle(r.files);
+  const n = writeBundle(slug, r.files);
   const st = settleRoot(slug, flags, "state pull", local && local.root);
   let note = "";
   try { rerenderWorking(slug); } catch (e) { note = `\n  (the working page was not redrawn: ${e.message}; deep-plan rehydrate ${slug} redraws it)`; }
@@ -4544,7 +4556,7 @@ try { pointerBody = writeEnginePointer(); } catch { /* read-only home, full disk
 // recorded, the command's own exit code stands, and status shows the plan
 // unsynced until a push lands. The gate's flip to working is not a command
 // here and is never pushed; the next transition carries it.
-const SYNC_CMDS = new Set(["go", "start", "done", "block", "reset", "check", "obs", "grade", "import-state", "family", "await-go"]);
+const SYNC_CMDS = new Set(["go", "start", "done", "block", "reset", "check", "obs", "grade", "import-state", "family", "await-go", "deliver", "close"]);
 // DEEP_PLAN_SYNC_TIMEOUT_MS is for the probe, whose machine may be loaded.
 const TRANSITION_PUSH_MS = Number(process.env.DEEP_PLAN_SYNC_TIMEOUT_MS) || 8000;
 function stateFileDigests() {
@@ -4553,6 +4565,16 @@ function stateFileDigests() {
   try { names = fs.readdirSync(STATE_DIR).filter(n => n.endsWith(".json")); } catch { return out; }
   for (const n of names) {
     try { out.set(n.slice(0, -5), crypto.createHash("sha1").update(fs.readFileSync(path.join(STATE_DIR, n))).digest("hex")); } catch { /* gone */ }
+  }
+  // A family's index and control files ride on its parent's branch, so a
+  // change to them (a hold, a take-back, a re-render) is the parent's.
+  let fams = [];
+  try { fams = fs.readdirSync(FAMILIES_DIR); } catch { /* none */ }
+  for (const f of fams) {
+    const h = crypto.createHash("sha1");
+    for (const n of ["index.json", "control.json"]) { try { h.update(fs.readFileSync(path.join(FAMILIES_DIR, f, n))); } catch { h.update("-"); } }
+    const prev = out.get(f) || "";
+    out.set(f, prev + ":" + h.digest("hex"));
   }
   return out;
 }
@@ -4567,6 +4589,22 @@ function autoPush(slug) {
   const m = syncMeta(slug);
   if (m && m.failed) { delete m.failed; writeSyncMeta(slug, m); }
 }
+// The end of a plan: its last state is pushed, then its branch is archived
+// as a tag (seamux-state-archive/<slug>) and deleted, in one atomic push.
+function autoArchive(slug) {
+  const st = readState(slug);
+  if (!st || !planShare(st)) return;
+  autoPush(slug);
+  const m = syncMeta(slug);
+  if (!m || m.failed || !m.version) return;
+  const o = openSync(st, { soft: true, timeout: TRANSITION_PUSH_MS });
+  if (o.error || o.cfg.sync !== "transitions") return;
+  let r;
+  try { r = o.backend.archive(slug, m.version); } catch (e) { return syncFailed(slug, e.message); }
+  if (!r.ok) return syncFailed(slug, `${o.backend.branch(slug)} moved before it could be archived`);
+  writeSyncMeta(slug, { ...m, archived: { tag: r.tag, at: new Date().toISOString() } });
+  console.error(`deep-plan: ${slug}'s state branch is archived as ${r.tag} and deleted`);
+}
 function syncFailed(slug, why) {
   writeSyncMeta(slug, { ...(syncMeta(slug) || {}), failed: { at: new Date().toISOString(), why } });
   console.error(`deep-plan: ${slug} was not pushed to its state branch (${why}); deep-plan state push ${slug} tries again`);
@@ -4575,7 +4613,13 @@ if (SYNC_CMDS.has(cmd) && !process.env.DEEP_PLAN_NO_SYNC) {
   const before = stateFileDigests();
   process.on("exit", () => {
     try {
-      for (const [slug, d] of stateFileDigests()) if (before.get(slug) !== d) autoPush(slug);
+      for (const [slug, d] of stateFileDigests()) {
+        if (before.get(slug) === d) continue;
+        const st = readState(slug);
+        if (!st) continue;
+        if ((cmd === "deliver" || cmd === "close") && (st.phase === "closed" || st.phase === "done")) autoArchive(slug);
+        else autoPush(slug);
+      }
     } catch (e) { console.error(`deep-plan: state sync skipped: ${e.message}`); }
   });
 }
