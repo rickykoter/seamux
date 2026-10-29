@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
-import { execSync, spawnSync } from "node:child_process";
+import { execSync, spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -1215,6 +1215,33 @@ catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.n
   ok("the twin install.mjs files match apart from the line naming the other",
     fs.readFileSync(path.join(HERE, "lib", "install.mjs"), "utf8").split("\n").filter((l, i) => i !== 18).join("\n") ===
     fs.readFileSync(path.join(HERE, "..", "deep-plan", "lib", "install.mjs"), "utf8").split("\n").filter((l, i) => i !== 18).join("\n"));
+}
+
+// ------------------------------------------------- the page on crew's server
+// crew's intent server passes /review/ to lookout serve, which checks its own
+// token, never crew's. So whether crew serves a review is asked of the page,
+// which needs no token: a fake crew that refuses every .json (as lookout serve
+// refuses crew's token) must still count as serving the review.
+{
+  const SVM = await import("./lib/serve.mjs");
+  const dir = path.join(TMP, "crew-intent");
+  fs.mkdirSync(dir, { recursive: true });
+  const src = `const http = require("http");
+const s = http.createServer((q, r) => {
+  if (q.url === "/review/demo") { r.writeHead(200, {"Content-Type": "text/html"}); return r.end("<p>demo</p>"); }
+  if (q.url.startsWith("/review/demo.json")) { r.writeHead(403); return r.end('{"error":"bad token"}'); }
+  r.writeHead(404); r.end('{"error":"no such review"}');
+});
+s.listen(0, "127.0.0.1", () => console.log(s.address().port));`;
+  const fake = spawn(process.execPath, ["-e", src], { stdio: ["ignore", "pipe", "ignore"] });
+  const port = await new Promise(res => fake.stdout.once("data", d => res(parseInt(String(d), 10))));
+  fs.writeFileSync(path.join(dir, "board-intent.port"), String(port));
+  fs.writeFileSync(path.join(dir, "board-intent.token"), "crews-own-token");
+  ok("crew serving: a review crew serves is served, though its .json refuses crew's token",
+    SVM.crewReviewUrl("demo", dir) === `http://127.0.0.1:${port}/review/demo`);
+  ok("crew serving: a review crew does not have is not", SVM.crewReviewUrl("missing", dir) === "");
+  ok("crew serving: no port file, no URL", SVM.crewReviewUrl("demo", path.join(TMP, "no-crew")) === "");
+  fake.kill();
 }
 
 // ---------------------------------------------------------------- page script

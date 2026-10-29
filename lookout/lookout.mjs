@@ -135,20 +135,12 @@ function workspaceFor(cwd) {
   } catch { return ""; }
 }
 
-// The review's served URL when crew's intent server is up AND knows the
-// /review route (an older crew answers 404), else "". Served, the page takes
-// comments and polls for replies; from a file it is read-only.
+// The review's served URL when crew's intent server is up and serves it,
+// else "". Served, the page takes comments and polls for replies; from a file
+// it is read-only.
 function servedUrl(id) {
   if (process.env.LOOKOUT_REVIEWS_DIR && !process.env.LOOKOUT_INTENT_DIR) return "";
-  const dir = process.env.LOOKOUT_INTENT_DIR || path.join(os.homedir(), ".cache", "cmux-crew");
-  try {
-    const port = parseInt(fs.readFileSync(path.join(dir, "board-intent.port"), "utf8").trim(), 10);
-    const token = fs.readFileSync(path.join(dir, "board-intent.token"), "utf8").trim();
-    if (!port || !token) return "";
-    const base = `http://127.0.0.1:${port}/review/${id}`;
-    const r = spawnSync("curl", ["-fsS", "-m", "2", "-o", "/dev/null", `${base}.json?t=${encodeURIComponent(token)}`]);
-    return r.status === 0 ? base : "";
-  } catch { return ""; }
+  return SV.crewReviewUrl(id, process.env.LOOKOUT_INTENT_DIR || path.join(os.homedir(), ".cache", "cmux-crew"));
 }
 
 // The workspace's companion pane (crew-board companion.rs): one tab per
