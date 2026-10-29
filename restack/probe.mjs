@@ -1044,6 +1044,14 @@ step("a remote branch with commits the local one lacks gets no push line");
   ok("and says why", /origin\/feat1 has commits this branch doesn't/.test(run.json?.held?.[0]?.why || ""), JSON.stringify(run.json?.held));
   const p = cli(r, "push", "--json");
   ok("restack push holds it back too", p.status === 2 && (p.json?.push || []).length === 0 && p.json?.held?.[0]?.branch === "feat1", p.out);
+  // State written before tips were recorded: push falls back to the
+  // tracking ref and still runs the same check.
+  const sp = path.join(r, ".git", "seamux-restack.json");
+  const st = JSON.parse(fs.readFileSync(sp, "utf8"));
+  for (const s of st.steps) { delete s.remoteTip; delete s.remoteDiverged; }
+  fs.writeFileSync(sp, JSON.stringify(st));
+  const old = cli(r, "push", "--json");
+  ok("state with no recorded tip still holds it", old.status === 2 && old.json?.held?.[0]?.branch === "feat1", old.out);
 }
 
 // ---------------------------------------------------------------- no walk on record: judged by patch

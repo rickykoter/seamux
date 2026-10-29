@@ -787,7 +787,12 @@ function finish(ctx) {
     git(ctx.cwd, ["checkout", "--quiet", st.returnTo]);
 
   const plan = broken.length ? { lines: [], held: [] } : pushPlan(ctx, st.steps.filter(s => s.status === "done")
-    .map(s => ({ branch: s.branch, tip: "remoteTip" in s ? s.remoteTip : remoteTip(ctx, s.branch), diverged: !!s.remoteDiverged })));
+    .map(s => {
+      if ("remoteTip" in s) return { branch: s.branch, tip: s.remoteTip, diverged: !!s.remoteDiverged };
+      // State from before tips were recorded: the tracking ref, checked now.
+      const tip = remoteTip(ctx, s.branch);
+      return { branch: s.branch, tip, diverged: remoteDiverged(ctx, s.branch, tip) };
+    }));
   const pushes = plan.lines, held = plan.held;
   const escalatedDrops = (st.dropped || []).filter(d => d.escalated);
   const out = {
@@ -1027,7 +1032,7 @@ function cmdPush(ctx) {
     const s = byBranch.get(b);
     if (s && "remoteTip" in s) return { branch: b, tip: s.remoteTip, diverged: !!s.remoteDiverged };
     const tip = remoteTip(ctx, b);
-    return { branch: b, tip, diverged: !s && remoteDiverged(ctx, b, tip) };
+    return { branch: b, tip, diverged: remoteDiverged(ctx, b, tip) };
   }));
   const blocked = (ctx.st.stale || []).length > 0;
   emit({
