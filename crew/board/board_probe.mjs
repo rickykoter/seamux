@@ -2359,9 +2359,17 @@ if (crewImpl.isRust("crew-board")) {
     fs.mkdirSync(lock);
     const old = new Date(Date.now() - 60000);
     fs.utimesSync(lock, old, old);
-    checks.push(["review POST: a stale lock is broken, not waited on",
-      (await post({ op: "comment", t: rtoken, item: "t1", text: "after a crash" })).status === 200 &&
-      !fs.existsSync(lock) && !fs.existsSync(lock + "-break")]);
+    // The 200 is the proof: a lock that was waited on rather than broken would
+    // time the write out. The lock is then checked gone, but after a short wait:
+    // each write starts a detached `lookout sync`, which takes the same lock for
+    // a moment and, on a slow machine, can still hold it when the POST returns.
+    const after = await post({ op: "comment", t: rtoken, item: "t1", text: "after a crash" });
+    let clear = false;
+    for (const t = Date.now() + 5000; Date.now() < t && !clear;) {
+      clear = !fs.existsSync(lock) && !fs.existsSync(lock + "-break");
+      if (!clear) await new Promise(r => setTimeout(r, 100));
+    }
+    checks.push(["review POST: a stale lock is broken, not waited on", after.status === 200 && clear]);
     // Done with lookout's server (the Rust proxy's): stop it, and let the
     // syncs its writes started finish, since each lookout run rewrites the
     // engine pointer the button checks below replace with a fake.
