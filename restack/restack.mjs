@@ -147,30 +147,48 @@ function remoteDiverged(ctx, branch, tip) {
   if (!c.ok) return true;   // cannot tell: hold it rather than risk the drop
   return c.out.split("\n").some(l => l.startsWith("+"));
 }
-// The push lines for done branches, [{ branch, tip, diverged }], bottom first:
-// the safe ones in `lines`, the diverged ones in `held` with the reason.
+// The push lines for done branches, [{ branch, tip, diverged, onto }], bottom
+// first: the safe ones in `lines`, the rest in `held` with the reason. A
+// branch stacked on a held one is held too: it was rebased onto a version of
+// its parent the remote does not have. With no `onto`, the chain is linear,
+// so everything above a held branch is held.
 function pushPlan(ctx, entries) {
   const lines = [], held = [];
+  const heldNames = new Set();
+  let lowest = null;
   for (const e of entries) {
-    if (e.diverged) held.push({ branch: e.branch,
-      why: `${ctx.cfg.remote}/${e.branch} has commits this branch doesn't: pull or rebase them in before pushing` });
-    else lines.push(pushLine(ctx, e.branch, e.tip));
+    const under = e.onto !== undefined ? (heldNames.has(e.onto) ? e.onto : null) : lowest;
+    if (e.diverged || under) {
+      held.push({ branch: e.branch, why: e.diverged
+        ? `${ctx.cfg.remote}/${e.branch} has commits this branch doesn't: pull or rebase them in before pushing`
+        : `held: ${under} is held` });
+      heldNames.add(e.branch);
+      if (!lowest) lowest = e.branch;
+    } else lines.push(pushLine(ctx, e.branch, e.tip));
   }
   return { lines, held };
 }
-// A push.command copied from the old default (a bare lease, no `=`) would
-// keep the unpinned form, so it gets the pinned line and a note instead.
+// A push.command with a bare lease (no `=`), such as a copy of the old
+// default, would keep the unpinned form: its lease token is swapped for the
+// pinned one and the rest of the command kept, with a note.
+const BARE_LEASE = /--force-with-lease(?![=\w-])/;
+const OLD_DEFAULT_PUSH = "git push --force-with-" + "lease";
 function bareLeaseCommand(cmd) {
-  return !!cmd && /--force-with-lease(?![=\w-])/.test(cmd);
+  return !!cmd && BARE_LEASE.test(cmd);
 }
 let bareLeaseNoted = false;
 function pushLine(ctx, branch, tip) {
   const cmd = ctx.cfg.push.command;
   if (bareLeaseCommand(cmd) && !bareLeaseNoted) {
     bareLeaseNoted = true;
-    if (!JSONOUT) console.error(`restack: note: push.command "${cmd}" in ${ctx.cfg.path || ".seamux/restack.json"} is a bare lease; printing the pinned form instead (remove the setting to silence this)`);
+    if (!JSONOUT) console.error(`restack: note: push.command "${cmd}" in ${ctx.cfg.path || ".seamux/restack.json"} is a bare lease; pinning it to the recorded tip (remove the setting to silence this)`);
   }
   if (cmd && !bareLeaseCommand(cmd)) return `${cmd} ${ctx.cfg.remote} ${branch}`;
+  if (cmd && cmd.trim() !== OLD_DEFAULT_PUSH) {
+    const head = tip ? cmd.replace(BARE_LEASE, `--force-with-lease=${branch}:${tip}`)
+      : cmd.replace(BARE_LEASE, "").replace(/\s+/g, " ").trim();
+    return `${head} ${ctx.cfg.remote} ${branch}:${branch}`;
+  }
   if (!tip) return `git push -u ${ctx.cfg.remote} ${branch}`;
   return `git push --force-with-lease=${branch}:${tip || ""} ${ctx.cfg.remote} ${branch}:${branch}`;
 }
@@ -788,10 +806,10 @@ function finish(ctx) {
 
   const plan = broken.length ? { lines: [], held: [] } : pushPlan(ctx, st.steps.filter(s => s.status === "done")
     .map(s => {
-      if ("remoteTip" in s) return { branch: s.branch, tip: s.remoteTip, diverged: !!s.remoteDiverged };
+      if ("remoteTip" in s) return { branch: s.branch, tip: s.remoteTip, diverged: !!s.remoteDiverged, onto: s.onto };
       // State from before tips were recorded: the tracking ref, checked now.
       const tip = remoteTip(ctx, s.branch);
-      return { branch: s.branch, tip, diverged: remoteDiverged(ctx, s.branch, tip) };
+      return { branch: s.branch, tip, diverged: remoteDiverged(ctx, s.branch, tip), onto: s.onto };
     }));
   const pushes = plan.lines, held = plan.held;
   const escalatedDrops = (st.dropped || []).filter(d => d.escalated);
@@ -1030,9 +1048,9 @@ function cmdPush(ctx) {
   const names = done.length ? done.map(s => s.branch) : (stack ? stack.chain.map(c => c.name) : [ctx.branch].filter(Boolean));
   const { lines, held } = pushPlan(ctx, names.map(b => {
     const s = byBranch.get(b);
-    if (s && "remoteTip" in s) return { branch: b, tip: s.remoteTip, diverged: !!s.remoteDiverged };
+    if (s && "remoteTip" in s) return { branch: b, tip: s.remoteTip, diverged: !!s.remoteDiverged, onto: s.onto };
     const tip = remoteTip(ctx, b);
-    return { branch: b, tip, diverged: remoteDiverged(ctx, b, tip) };
+    return { branch: b, tip, diverged: remoteDiverged(ctx, b, tip), ...(s ? { onto: s.onto } : {}) };
   }));
   const blocked = (ctx.st.stale || []).length > 0;
   emit({

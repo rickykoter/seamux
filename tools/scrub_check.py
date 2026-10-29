@@ -85,6 +85,7 @@ SYSTEM_USERS = {
     "nobody", "github", "build", "builder", "buildkite", "jenkins", "deploy", "docker", "ci",
     "worker", "service", "default", "guest", "local", "staff", "developer", "travis", "circleci",
     "node", "vscode", "codespace", "app",
+    "linuxbrew", "vagrant", "pi", "git", "www-data", "gitpod",
 }
 
 

@@ -1015,6 +1015,9 @@ step("push lines pin the lease to the remote tip the walk recorded");
   ok("and says to remove the setting", /bare lease.*remove the setting/.test(noted.stderr), noted.stderr);
   const custom = withCmd("pushcmd-custom", "gt submit --branch", "--json");
   ok("a custom push.command is printed as configured", custom.json?.push?.[0] === "gt submit --branch origin feat1", custom.stdout);
+  const flagged = withCmd("pushcmd-flags", "git push --no-thin --force-with-" + "lease --atomic", "--json");
+  ok("a bare lease among other flags is pinned in place, the flags kept",
+    flagged.json?.push?.[0] === `git push --no-thin --force-with-lease=feat1:${pushed} --atomic origin feat1:feat1`, flagged.stdout);
 }
 
 // ---------------------------------------------------------------- a teammate's commit fetched before the plan
@@ -1037,11 +1040,15 @@ step("a remote branch with commits the local one lacks gets no push line");
   git(r, "fetch", "-q", "origin");   // before the plan: origin/feat1 now has g
   git(r, "checkout", "-q", "master");
   addDef(r, "c", "charlie\n", "master: c");
-  git(r, "checkout", "-q", "feat1");
+  // feat2 sits on feat1: rebased onto a feat1 the remote never gets.
+  git(r, "checkout", "-q", "-b", "feat2", "feat1");
+  addDef(r, "h", "hotel\n", "feat: h on top");
   const run = cli(r, "run", "--json", "--no-fetch");
   ok("the walk finishes but needs a human", run.status === 2 && run.json?.status === "needs-human", run.out + run.err);
   ok("with no push line for feat1", (run.json?.push || []).length === 0, JSON.stringify(run.json?.push));
   ok("and says why", /origin\/feat1 has commits this branch doesn't/.test(run.json?.held?.[0]?.why || ""), JSON.stringify(run.json?.held));
+  ok("the branch above is held for its parent",
+    run.json?.held?.[1]?.branch === "feat2" && run.json.held[1].why === "held: feat1 is held", JSON.stringify(run.json?.held));
   const p = cli(r, "push", "--json");
   ok("restack push holds it back too", p.status === 2 && (p.json?.push || []).length === 0 && p.json?.held?.[0]?.branch === "feat1", p.out);
   // State written before tips were recorded: push falls back to the
