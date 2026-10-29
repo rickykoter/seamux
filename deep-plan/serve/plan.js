@@ -13,8 +13,10 @@
     authorized: ["start", "done", "block", "reset"], working: ["done", "block", "reset"], done: ["block", "reset"] };
   function allowed(b) {
     var inc = b.closest && b.closest(".inc[data-status]");
-    var ok = inc && VALID[inc.getAttribute("data-status")];
-    return !ok || ok.indexOf(b.getAttribute("data-a")) >= 0;
+    if (!inc) return true;
+    // A status the table does not know: block and reset, as the engine allows.
+    var ok = VALID[inc.getAttribute("data-status")] || ["block", "reset"];
+    return ok.indexOf(b.getAttribute("data-a")) >= 0;
   }
 
   // The generator renders every control disabled because on disk it cannot act.

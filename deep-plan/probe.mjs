@@ -913,7 +913,10 @@ ok("working surface has the auto-refresh checkbox", working.includes('id="dp-aut
   const eng = fs.readFileSync(path.join(HERE, "deep_plan.mjs"), "utf8");
   ok("working surface: the page carries the engine's one table, and applyTransition refuses by it",
     carried && Object.entries(JSON.parse(carried)).every(([k, v]) => VALID[k] === v.join(",")) &&
-    /allows\(inc\.status, "go"\)/.test(eng) && /allows\(inc\.status, "done"\)/.test(eng) && !/const INC_VALID/.test(eng));
+    /allows\(inc\.status, "go"\)/.test(eng) && /allows\(inc\.status, "done"\)/.test(eng) && !/const INC_VALID/.test(eng) &&
+    // block and reset from any status, an unknown one included; nothing else for it
+    eng.includes('const allows = (status, action) => ALWAYS.includes(action) || incActions(status).includes(action);') &&
+    eng.includes("const incActions = status => INC_ALLOWED[status] || ALWAYS;"));
 }
 ok("declared files are dp-path targets even before they exist",
   working.includes('data-file="app/workers/retry_sweep.rb"'));

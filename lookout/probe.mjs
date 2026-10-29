@@ -879,8 +879,11 @@ const R1 = repo("r1");
      !page.includes("/fetch/i") && !page.includes("e instanceof TypeError"));
   ok("page: a draft is saved by one key over what storage holds now, and other tabs' writes are taken in",
      /const saveDraft = \(k, v, meta\) => \{\s*const all = readDrafts\(\);/.test(page) && page.includes('addEventListener("storage"'));
-  ok("page: the unplaced-drafts list does not hold fresher reviews back unless typed in",
-     page.includes('(!t.closest(".unplaced") || t === document.activeElement)'));
+  ok("page: a restored draft does not hold fresher reviews back; one focused or typed in since load does",
+     page.includes("(t === document.activeElement || edited.has(t.dataset.draft))") && page.includes("edited.add(k);"));
+  ok("page: only a poll that reached nothing counts toward disconnected; an HTTP error is a short note",
+     page.includes('setHttp(r.ok ? "" : "HTTP " + r.status);') && page.includes("}, () => { if (++fails >= DOWN_AFTER) setDown(true); return null; })") &&
+     page.includes("`live · last poll ${live.http}`"));
   ok("page: a sent draft is cleared before the redraw that follows",
      /if \(key\) \{\s*saveDraft\(key, ""\); openComposers\.delete\(key\);/.test(page));
   ok("page: failed polls turn the header to disconnected, and a good one turns it back",

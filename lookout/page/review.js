@@ -32,10 +32,13 @@
   // Read-modify-write of one key: another tab on this review keeps its own
   // drafts in the same entry, and writing this tab's whole copy would drop them.
   const readDrafts = () => { try { return JSON.parse(store.get(DRAFTS, "{}")) || {}; } catch { return {}; } };
+  // Keys typed in on this page since it loaded: a draft merely restored from
+  // storage is shown, but does not hold fresher reviews back (busy()).
+  const edited = new Set();
   const saveDraft = (k, v, meta) => {
     const all = readDrafts();
-    if (String(v || "").trim()) drafts[k] = all[k] = meta ? { t: v, ...meta } : v;
-    else { delete drafts[k]; delete all[k]; }
+    if (String(v || "").trim()) { drafts[k] = all[k] = meta ? { t: v, ...meta } : v; edited.add(k); }
+    else { delete drafts[k]; delete all[k]; edited.delete(k); }
     store.set(DRAFTS, JSON.stringify(all));
   };
   // Another tab's writes: taken into this tab's copy (not redrawn under the
@@ -710,7 +713,8 @@
       `${s.files || 0} files`, `+${s.adds || 0} −${s.dels || 0}`].filter(Boolean).join(" · ");
     const g = gateText();
     const down = live && live.down;
-    $("mode").textContent = down ? "disconnected — run `lookout open` to reconnect" : live ? "live" : "read-only";
+    $("mode").textContent = down ? "disconnected — run `lookout open` to reconnect"
+      : live ? (live.http ? `live · last poll ${live.http}` : "live") : "read-only";
     $("mode").className = "mode " + (down ? "down" : live ? "live" : "file");
     $("mode").title = down ? "The review server stopped answering. Your drafts are kept in this browser; `lookout open` starts a server and opens a fresh page."
       : live ? "Comments and closes go to the agent at its next prompt."
@@ -764,10 +768,11 @@
 
     // A composer with words in it is never redrawn away; a fresher review
     // waits until it is sent or cancelled.
-    // The unplaced-drafts list does not count unless it is being typed in:
-    // shown after a reload, it would otherwise hold every fresher review back.
+    // Only words someone is working on count: a box in focus, or one typed
+    // in since this page loaded. A restored draft (an unplaced one included)
+    // stays on screen but would otherwise hold every fresher review back.
     const busy = () => [...document.querySelectorAll("textarea")].some(t => t.value.trim() &&
-      (!t.closest(".unplaced") || t === document.activeElement));
+      (t === document.activeElement || edited.has(t.dataset.draft)));
     const take = next => {
       if (next.patchHash !== R.patchHash) {
         // A new diff means a new page; not under someone typing. The banner
@@ -789,15 +794,21 @@
     const DOWN_AFTER = 3;
     let ticks = 0, fails = 0;
     const setDown = d => { if (!!live.down !== d) { live.down = d; drawHeader(); } };
+    const setHttp = h => { if ((live.http || "") !== h) { live.http = h; drawHeader(); } };
     const poll = (e) => {
       if (document.hidden && !e && ++ticks % 6) return;
       fetch(`/review/${encodeURIComponent(id)}.json?t=${encodeURIComponent(token)}${document.hidden ? "&bg=1" : ""}`, { cache: "no-store" })
-        .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
-        .then(j => {
+        // Only a fetch that reached nothing counts toward disconnected; an
+        // HTTP error is a server that answered, said in a short note.
+        .then(r => {
           fails = 0; setDown(false);
+          setHttp(r.ok ? "" : "HTTP " + r.status);
+          return r.ok ? r.json() : null;
+        }, () => { if (++fails >= DOWN_AFTER) setDown(true); return null; })
+        .then(j => {
           if (j && j.updatedAt !== R.updatedAt) take(j); else if (live.pending && !busy()) take(live.pending);
         })
-        .catch(() => { if (++fails >= DOWN_AFTER) setDown(true); });
+        .catch(() => { /* a bad body: the next poll asks again */ });
     };
     if (polls) {
       setInterval(() => poll(), 2500);

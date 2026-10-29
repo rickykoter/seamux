@@ -1734,7 +1734,11 @@ const INC_ALLOWED = {
   pending: ["go", "block", "reset"], blocked: ["go", "block", "reset"],
   authorized: ["start", "done", "block", "reset"], working: ["done", "block", "reset"], done: ["block", "reset"],
 };
-const allows = (status, action) => (INC_ALLOWED[status] || []).includes(action);
+// block and reset are always allowed, whatever the status (one this table
+// does not know included); an unknown status allows nothing else.
+const ALWAYS = ["block", "reset"];
+const incActions = status => INC_ALLOWED[status] || ALWAYS;
+const allows = (status, action) => ALWAYS.includes(action) || incActions(status).includes(action);
 
 function workingHtml(spec, st, b64) {
   const rows = (st.increments || []).map(inc => {
@@ -1742,7 +1746,7 @@ function workingHtml(spec, st, b64) {
     const files = fileTreeHtml(d.files);
     // Only the transitions this status allows (INC_ALLOWED, which
     // applyTransition refuses by): a go on a done increment can only be refused.
-    const acts = (INC_ALLOWED[inc.status] || ["go", "start", "done", "block", "reset"]).map(a =>
+    const acts = incActions(inc.status).map(a =>
       `<button class="dp-act" data-a="${a}" data-n="${inc.n}" disabled ` +
       `title="${a} increment ${inc.n} — available when served">${a}</button>`).join("");
     // The verdict belongs beside the status, not in a section of its own: it is
