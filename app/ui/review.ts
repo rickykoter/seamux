@@ -24,6 +24,8 @@ type Job = {
   open: Record<string, number>;
   ahead: number;
   dirty: boolean;
+  /** Files with uncommitted edits. */
+  changed: number;
   pushed: boolean;
   posted: string;
 };
@@ -298,12 +300,16 @@ export class ReviewView {
     this.render(true);
   }
 
-  private async remove(j: Job): Promise<void> {
+  /** `edits` and `commits`: the confirm named uncommitted edits, unpushed commits. */
+  private async remove(j: Job, edits: boolean, commits: boolean): Promise<void> {
+    this.err.textContent = "";
     try {
-      await invoke("review_remove", { id: j.id });
+      await invoke("review_remove", { id: j.id, edits, commits });
       if (this.selected === `job:${j.id}`) this.pick(null);
     } catch (e) {
+      // Git found work the confirm didn't name; the card now has it, so ask again.
       this.err.textContent = String(e);
+      if (String(e).includes("nothing was removed")) this.confirm.set(j.id, "remove");
       this.render(true);
     }
   }
@@ -443,8 +449,11 @@ export class ReviewView {
 
     const parts: HTMLElement[] = [];
     if (this.confirm.get(j.id) === "remove") {
-      const unpushed = j.ahead && !j.pushed ? ` Its ${j.ahead} unpushed commit${j.ahead === 1 ? " is" : "s are"} lost.` : "";
-      parts.push(this.confirmBox(j, `Remove this review and its worktree?${unpushed}`, "Remove", () => void this.remove(j)));
+      const changed = j.dirty ? Math.max(j.changed ?? 0, 1) : 0;
+      const commits = j.ahead > 0 && !j.pushed;
+      const edits = changed ? ` Uncommitted edits to ${changed} file${changed === 1 ? "" : "s"} are deleted.` : "";
+      const unpushed = commits ? ` Its ${j.ahead} unpushed commit${j.ahead === 1 ? " is" : "s are"} lost.` : "";
+      parts.push(this.confirmBox(j, `Remove this review and its worktree?${edits}${unpushed}`, "Remove", () => void this.remove(j, changed > 0, commits)));
     }
     if (running) parts.push(this.progress(j));
     else if (j.status === "failed") {

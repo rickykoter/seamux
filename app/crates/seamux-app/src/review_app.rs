@@ -74,6 +74,8 @@ pub struct Job {
     /// Commits in the worktree beyond the reviewed one, and uncommitted edits.
     pub ahead: u32,
     pub dirty: bool,
+    /// How many files have uncommitted edits (untracked ones included).
+    pub changed: u32,
     pub pushed: bool,
     /// The URL of the GitHub review the comments went out in.
     pub posted: String,
@@ -797,20 +799,84 @@ fn activity_of(v: &Value) -> Option<String> {
     )
 }
 
+/// What a review's worktree holds beyond the reviewed commit, read from git.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct Work {
+    /// Commits after `head_sha`.
+    ahead: u32,
+    /// Files with uncommitted edits, untracked ones included.
+    changed: u32,
+}
+
+/// Read `wt`'s commits past `head_sha` and its uncommitted files. A worktree
+/// that is not there holds nothing; one git can't read is an error, so a
+/// caller about to delete it stops rather than guess.
+fn work_in(wt: &Path, head_sha: &str) -> Result<Work, String> {
+    if wt.as_os_str().is_empty() || !wt.join(".git").exists() {
+        return Ok(Work::default());
+    }
+    let ahead = if head_sha.is_empty() {
+        0
+    } else {
+        git(wt, &["rev-list", "--count", &format!("{head_sha}..HEAD")])
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0)
+    };
+    let changed = git(wt, &["status", "--porcelain", "--untracked-files=all"])?
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .count() as u32;
+    Ok(Work { ahead, changed })
+}
+
+/// Copy `w` onto the card. New commits since a push are not pushed.
+fn apply(x: &mut Job, w: Work) {
+    if w.ahead != x.ahead {
+        x.pushed = false;
+    }
+    x.ahead = w.ahead;
+    x.changed = w.changed;
+    x.dirty = w.changed > 0;
+}
+
+/// Commits in `w` that are not on the branch yet.
+fn unpushed(j: &Job, w: Work) -> u32 {
+    if j.pushed && w.ahead == j.ahead {
+        0
+    } else {
+        w.ahead
+    }
+}
+
+/// "3 files with uncommitted edits and 1 unpushed commit", or "" for none.
+fn at_stake_text(changed: u32, unpushed: u32) -> String {
+    let s = |n: u32| if n == 1 { "" } else { "s" };
+    let mut parts = Vec::new();
+    if changed > 0 {
+        parts.push(format!("{changed} file{} with uncommitted edits", s(changed)));
+    }
+    if unpushed > 0 {
+        parts.push(format!("{unpushed} unpushed commit{}", s(unpushed)));
+    }
+    parts.join(" and ")
+}
+
+/// What deleting `j`'s worktree would lose, read from git now rather than the
+/// card (which only a pipeline or a fix refreshes). The card is updated too,
+/// so the page shows it. Returns (changed files, unpushed commits).
+fn at_stake(j: &Job) -> Result<(u32, u32), String> {
+    let w = work_in(Path::new(&j.wt), &j.head_sha)
+        .map_err(|e| format!("couldn't read its worktree, so nothing was deleted: {e}"))?;
+    let lost = unpushed(j, w);
+    update(&j.id, |x| apply(x, w));
+    Ok((w.changed, lost))
+}
+
 /// Re-read what the worktree and the store now say.
 fn refresh(id: &str) {
     let Ok(j) = get(id) else { return };
-    let wt = PathBuf::from(&j.wt);
-    let ahead = git(
-        &wt,
-        &["rev-list", "--count", &format!("{}..HEAD", j.head_sha)],
-    )
-    .ok()
-    .and_then(|s| s.trim().parse().ok())
-    .unwrap_or(0);
-    let dirty = git(&wt, &["status", "--porcelain"])
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false);
+    let w = work_in(Path::new(&j.wt), &j.head_sha).unwrap_or_default();
     let mut open = std::collections::BTreeMap::new();
     if let Ok(v) = findings_of(&j) {
         for f in v.iter().filter(|f| is_open(f)) {
@@ -825,8 +891,7 @@ fn refresh(id: &str) {
         }
     }
     update(id, |j| {
-        j.ahead = ahead;
-        j.dirty = dirty;
+        apply(j, w);
         j.open = open;
     });
 }
@@ -860,8 +925,15 @@ pub fn review_jobs() -> Vec<Job> {
     snapshot()
 }
 
+/// Async: it reads and deletes worktrees, which is too slow for the main thread.
 #[tauri::command]
-pub fn review_start(input: String, depth: String, model: String) -> Result<String, String> {
+pub async fn review_start(input: String, depth: String, model: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || start_review(input, depth, model))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn start_review(input: String, depth: String, model: String) -> Result<String, String> {
     let t = parse_target(&input)?;
     if t.what == What::Default {
         return Err("name a branch or a pull request: owner/repo@branch, owner/repo#123, or a /tree/ or /pull/ URL".into());
@@ -870,7 +942,8 @@ pub fn review_start(input: String, depth: String, model: String) -> Result<Strin
         return Err("unknown depth or model".into());
     }
     // One card per branch or pull request: reviewing it again replaces the
-    // old run (its worktree too), unless that run has work not yet pushed.
+    // old run (its worktree too), unless that run has work not yet pushed,
+    // as git says now: edits made after the last fix are not on the card.
     let same: Vec<Job> = snapshot()
         .into_iter()
         .filter(|j| same_target(j, &t))
@@ -879,8 +952,14 @@ pub fn review_start(input: String, depth: String, model: String) -> Result<Strin
         if !j.busy.is_empty() || !matches!(j.status.as_str(), "ready" | "failed") {
             return Err("that one is still running".into());
         }
-        if j.dirty || (j.ahead > 0 && !j.pushed) {
-            return Err("its last review has fixes that are not pushed: push them, or remove that review first".into());
+    }
+    for j in &same {
+        let (changed, lost) = at_stake(j)?;
+        if changed > 0 || lost > 0 {
+            return Err(format!(
+                "its last review's worktree has {}. Commit and push them, or remove that review first (Remove asks before deleting them).",
+                at_stake_text(changed, lost)
+            ));
         }
     }
     for j in &same {
@@ -1096,12 +1175,32 @@ pub fn review_push(id: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Forget a review and delete its worktree. Unpushed commits go with it.
+/// Forget a review and delete its worktree. `edits` and `commits` say the
+/// person confirmed losing uncommitted edits and unpushed commits; whatever
+/// git finds that they did not confirm stops the removal, and the card is
+/// updated so they can confirm again with it named.
 #[tauri::command]
-pub fn review_remove(id: String) -> Result<(), String> {
-    let j = get(&id)?;
+pub async fn review_remove(id: String, edits: bool, commits: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || remove_review(&id, edits, commits))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn remove_review(id: &str, edits: bool, commits: bool) -> Result<(), String> {
+    let j = get(id)?;
     if !j.busy.is_empty() || !matches!(j.status.as_str(), "ready" | "failed") {
         return Err("it is still running".into());
+    }
+    let (changed, lost) = at_stake(&j)?;
+    let (changed, lost) = (
+        if edits { 0 } else { changed },
+        if commits { 0 } else { lost },
+    );
+    if changed > 0 || lost > 0 {
+        return Err(format!(
+            "nothing was removed: its worktree has {}. Remove again to delete them.",
+            at_stake_text(changed, lost)
+        ));
     }
     discard(&j);
     let all = {
@@ -1446,6 +1545,59 @@ mod tests {
         assert_eq!(iso_secs("1970-01-02T00:00:00Z"), 86400);
         assert_eq!(iso_secs("1970-01-02T00:00:00.500Z"), 86400);
         assert_eq!(iso_secs("not a time"), 0);
+    }
+
+    /// A repo with one commit and a worktree of it, like a review's.
+    fn repo_with_worktree(name: &str) -> (PathBuf, PathBuf, String) {
+        let d = std::env::temp_dir().join(format!("seamux-review-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (clone, wt) = (d.join("clone"), d.join("wt"));
+        std::fs::create_dir_all(&clone).unwrap();
+        let g = |dir: &Path, args: &[&str]| git(dir, args).unwrap();
+        g(&clone, &["init", "-q", "-b", "main"]);
+        std::fs::write(clone.join("a.txt"), "one\n").unwrap();
+        g(&clone, &["add", "a.txt"]);
+        g(&clone, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "one"]);
+        let head = g(&clone, &["rev-parse", "HEAD"]).trim().to_string();
+        g(&clone, &["worktree", "add", "-q", "--detach", wt.to_str().unwrap(), &head]);
+        (d, wt, head)
+    }
+
+    #[test]
+    fn work_in_reads_edits_and_commits_from_git_now() {
+        let (d, wt, head) = repo_with_worktree("work");
+        assert_eq!(work_in(&wt, &head).unwrap(), Work::default());
+        // Edits made by hand (say in an editor), never seen by refresh().
+        std::fs::write(wt.join("a.txt"), "two\n").unwrap();
+        std::fs::create_dir_all(wt.join("new")).unwrap();
+        std::fs::write(wt.join("new/b.txt"), "b\n").unwrap();
+        assert_eq!(work_in(&wt, &head).unwrap(), Work { ahead: 0, changed: 2 });
+        git(&wt, &["add", "-A"]).unwrap();
+        git(&wt, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "fix"]).unwrap();
+        assert_eq!(work_in(&wt, &head).unwrap(), Work { ahead: 1, changed: 0 });
+        // No worktree (never made, or already gone): nothing to lose.
+        assert_eq!(work_in(&d.join("missing"), &head).unwrap(), Work::default());
+        assert_eq!(work_in(Path::new(""), &head).unwrap(), Work::default());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn unpushed_counts_commits_made_after_a_push() {
+        let j = Job { ahead: 2, pushed: true, ..Default::default() };
+        assert_eq!(unpushed(&j, Work { ahead: 2, changed: 0 }), 0);
+        assert_eq!(unpushed(&j, Work { ahead: 3, changed: 0 }), 3);
+        let fresh = Job::default();
+        assert_eq!(unpushed(&fresh, Work { ahead: 1, changed: 0 }), 1);
+        let mut x = j.clone();
+        apply(&mut x, Work { ahead: 3, changed: 1 });
+        assert!(!x.pushed && x.dirty && x.changed == 1 && x.ahead == 3);
+    }
+
+    #[test]
+    fn at_stake_text_names_what_is_lost() {
+        assert_eq!(at_stake_text(0, 0), "");
+        assert_eq!(at_stake_text(1, 0), "1 file with uncommitted edits");
+        assert_eq!(at_stake_text(3, 2), "3 files with uncommitted edits and 2 unpushed commits");
     }
 
     #[test]
