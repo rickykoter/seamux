@@ -346,14 +346,19 @@ fn group_alive(pgid: i32) -> bool {
     pgid > 1 && unsafe { libc::killpg(pgid, 0) == 0 }
 }
 
-/// When process `pid` started, as ps says it ("Thu Oct 29 09:12:01 2026"),
+/// When process `pid` started, as ps says it in C locale and UTC
+/// ("Thu Oct 29 09:12:01 2026"),
 /// or "" when it is gone.
 fn started_at(pid: i32) -> String {
     if pid <= 1 {
         return String::new();
     }
+    // Fixed locale and zone: the text is compared with one saved by another
+    // launch, which may have run with different ones.
     Command::new("/bin/ps")
         .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .env("LC_ALL", "C")
+        .env("TZ", "UTC")
         .stderr(Stdio::null())
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
