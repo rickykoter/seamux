@@ -9,7 +9,7 @@
 // one place a base comes from.
 import fs from "node:fs";
 import { decideToolCall, readState, writeState, log1, brokenRoots, isOwner, ownerName,
-  deepPlanCalls, humanLever, onHumansWord, trustOverride, markDenied, deniedThisTurn, promptApproves,
+  deepPlanCalls, humanLever, onHumansWord, trustOverride, humansWordCount, claimLever, markDenied, deniedThisTurn, promptApproves,
   actedThisTurn } from "../lib/state.mjs";
 import { trespass, waitingOn, waitText, goOwner } from "../lib/family.mjs";
 
@@ -64,6 +64,12 @@ if (tool === "Bash") {
       `and run ${word} only after they answer. (Their reply starts a new turn; it goes through then.)\n`);
     process.exit(2);
   }
+  // Several in one command would spend the turn's one several times.
+  if (word && humansWordCount(calls) > 1) {
+    process.stderr.write(`deep-plan gate [${slugOf(calls[0])}]: one go, --force, --by human or close per command, ` +
+      `and per human turn: run one, then ask the human before the next.\n`);
+    process.exit(2);
+  }
   // One per human turn: the documented flow is the human says go and the
   // agent runs it once. A second go (or --force, --by human, close) before the
   // human speaks again is the agent going on its own.
@@ -74,8 +80,14 @@ if (tool === "Bash") {
       `ask the human, and run ${word} only after they answer.\n`);
     process.exit(2);
   }
-  // The CLI records it once the call succeeds (deep_plan.mjs), so a go it
-  // refused, or a typo, does not use up the turn's one.
+  // Claimed atomically before it runs, so parallel calls cannot all pass. The
+  // CLI records it once the call succeeds (deep_plan.mjs) and gives the claim
+  // back either way, so a go it refused, or a typo, does not use up the turn's one.
+  if (word && !claimLever(who.session)) {
+    process.stderr.write(`deep-plan gate [${slugOf(calls[0])}]: another ${word} from this session is already running in this turn: ` +
+      `ask the human, and run ${word} only after they answer.\n`);
+    process.exit(2);
+  }
 }
 
 const d = decideToolCall(tool, input, cwd);

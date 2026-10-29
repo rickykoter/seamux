@@ -5362,6 +5362,26 @@ exit 1
   // Calls after shell keywords count; only a shell's -c runs its argument.
   ok("b1: a call after then/do/!/{ is a call", ["if x; then deep-plan open-gate a; fi", "for i in 1; do deep-plan close a; done",
     "! deep-plan go a next", "{ deep-plan go a next; }", "while true; do deep-plan go a 2; done"].every(c => lib.deepPlanCalls(c).length === 1));
+  ok("b1: a backslash-newline after the program does not hide the verb",
+    JSON.stringify(lib.deepPlanCalls("deep-plan \\\n  open-gate b1-gate").map(c => c.verb)) === '["open-gate"]');
+  ok("b1: a question is no go", ["should we go next?", "what does go 3 do", "Can you go ahead? Explain first"].every(p => !lib.approvesGo(p)) &&
+    lib.approvesGo("Looks fine. Go next please."));
+  // Two levers in one command, and two parallel calls, cannot both pass.
+  said(S2);
+  r = hook(S2, "Bash", { command: "deep-plan go b1-gate next && deep-plan close b1-gate" }, TMP);
+  ok("b1: two levers in one command are refused", r.status === 2 && /one go, --force, --by human or close per command/.test(r.stderr), r.stderr);
+  ok("b1: a lever is claimed before it runs", hook(S2, "Bash", { command: "deep-plan go b1-gate next" }, TMP).status === 0);
+  r = hook(S2, "Bash", { command: "deep-plan go b1-gate 2" }, TMP);
+  ok("b1: …so a parallel second one is refused while it runs", r.status === 2 && /already running in this turn/.test(r.stderr), r.stderr);
+  said(S2);
+  // A session the gate has refused before keeps its prompts wherever it stands.
+  {
+    const S5 = "5b1c0000-0000-4000-8000-000000000005", T5 = path.join(ENV.DEEP_PLAN_STATE_DIR, "turns");
+    hook(S5, "Edit", { file_path: path.join(AR, "src", "a.ts") }, TMP);
+    spawnSync("bash", [path.join(HERE, "hooks", "news.sh")], { encoding: "utf8", env: ENV,
+      input: JSON.stringify({ session_id: S5, hook_event_name: "UserPromptSubmit", cwd: TMP, prompt: "go" }) });
+    ok("b1: a refused session's prompt is kept even from a cwd outside every root", fs.existsSync(path.join(T5, S5 + ".prompt")));
+  }
   ok("b1: grep -c's pattern is no shell string", lib.deepPlanCalls('grep -c "deep-plan open-gate" notes.md').length === 0 &&
     lib.deepPlanCalls('/bin/bash -e -c "deep-plan open-gate a"').length === 1);
   ok("b1: a write chained after the CLI is not the CLI's own tooling",
@@ -5641,12 +5661,12 @@ exit 1
 
   // ---- the write heuristic covers more writers, and still not their read-only forms
   for (const c of ["git restore src/a.ts", "git restore --staged src/a.ts", "git switch main", "git pull", "git add -A",
-    "perl -pi -e 's/a/b/' f", "perl -i.bak -pe 's/a/b/' f", "perl -lni -e 'print' f", "curl -o out.html http://x", "npx prettier --write src", "eslint --fix .", "cargo fmt",
+    "perl -pi -e 's/a/b/' f", "perl -i.bak -pe 's/a/b/' f", "perl -lni -e 'print' f", "curl -o out.html http://x", "curl -D headers.txt http://x", "npx prettier --write src", "eslint --fix .", "cargo fmt",
     "black .", "gofmt -w main.go", "rustfmt src/lib.rs", "curl -sSLo out.tgz https://x", "curl -O https://x/f",
     "tar xzf a.tgz", "tar -C out -xf a.tar", "unzip a.zip", "rsync -a src/ dst/", "dd if=/dev/zero of=f bs=1 count=1"])
     ok(`b1: reads as a write: ${c}`, lib.bashMutates(c));
   for (const c of ["perl -Mstrict -e 'print 1'", "perl -MList::Util=sum -le 'print sum(1,2)'", "perl -I lib t.pl",
-    "curl -s -o /dev/null -w '%{http_code}' http://x", "curl -sSo - http://x", "curl --output /dev/null http://x",
+    "curl -s -o /dev/null -w '%{http_code}' http://x", "curl -s -o  /dev/null http://x", "curl -D - http://x", "curl -sSo - http://x", "curl --output /dev/null http://x",
     "curl -XPOST http://127.0.0.1:1/x", "curl -sS -H 'Origin: x' http://x", "cargo fmt --check", "black --check .", "npx prettier --check src", "curl -s https://x/health",
     "tar -tzf a.tgz", "unzip -l a.zip", "rsync -an src/ dst/", "gofmt -l .", "git status"])
     ok(`b1: still a read: ${c}`, !lib.bashMutates(c));

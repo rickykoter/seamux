@@ -47,7 +47,7 @@ import {
   readState, writeState, allStates, log1, progress, gateView,
   planFor, CHECK_KINDS, specChecks, reconcileChecks, checksOf, checksBlock,
   checksAggregate, needsTree, treeOf, treesAt, scopeOf, treeChanges, treeDiff, checkMeta, canon,
-  updateState, LockBusy, onHumansWord, markActed,
+  updateState, LockBusy, onHumansWord, markActed, releaseLever,
 } from "./lib/state.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -4719,7 +4719,7 @@ const [, , cmd, ...rest] = process.argv;
 {
   const word = onHumansWord([{ verb: cmd || "", words: rest }]);
   if (word && process.env.CLAUDECODE && sessionId() && !process.env.DEEP_PLAN_FROM_SERVE)
-    process.on("exit", code => { if (code === 0 && !process.exitCode) markActed(sessionId(), word); });
+    process.on("exit", code => { if (code === 0 && !process.exitCode) markActed(sessionId(), word); releaseLever(sessionId()); });
 }
 const flags = {};
 const args = [];

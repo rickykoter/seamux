@@ -633,6 +633,41 @@ export function mayEdit(target) {
 // Mutating-Bash heuristic. False negatives are acceptable; false positives are
 // not — blocking `grep` makes the whole thing intolerable within an hour.
 const REDIRECT = /(^|[^>])>>?\s*[^&|;\s]/;  // redirect into a file (not >&2)
+// curl writes a file with -o/--output (unless to /dev/null or -), -O or
+// --remote-name, -D/--dump-header and -c/--cookie-jar. Read by its arguments,
+// short clusters included (-sSLo f), with the options that take a value
+// (-XPOST's POST is X's) stepped over.
+const CURL_ARG = new Set("AbcCdDeEFHKmorQtTuUwxXyYz".split(""));
+const CURL_FILE = { o: true, D: true, c: true };
+function curlWrites(cmd) {
+  for (const seg of cmd.split(/[;&|\n]/)) {
+    const toks = seg.trim().split(/\s+/).map(t => t.replace(/^['"]|['"]$/g, ""));
+    const at = toks.findIndex(t => path.basename(t) === "curl");
+    if (at < 0) continue;
+    const toFile = v => v !== undefined && v !== "/dev/null" && v !== "-";
+    for (let i = at + 1; i < toks.length; i++) {
+      const t = toks[i];
+      if (t.startsWith("--")) {
+        const [name, eq] = t.slice(2).split(/=(.*)/s);
+        if (name === "remote-name" || name === "remote-name-all") return true;
+        if (["output", "dump-header", "cookie-jar"].includes(name)) { if (toFile(eq !== undefined ? eq : toks[++i])) return true; }
+        continue;
+      }
+      if (!/^-[a-zA-Z]/.test(t)) continue;
+      for (let k = 1; k < t.length; k++) {
+        const c = t[k];
+        if (c === "O") return true;
+        if (CURL_ARG.has(c)) {
+          const v = k + 1 < t.length ? t.slice(k + 1) : toks[++i];
+          if (CURL_FILE[c] && toFile(v)) return true;
+          break;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 const MUTATORS = [
   /\bsed\s+(-[a-zA-Z]*\s+)*-i\b/,          // sed -i, sed -E -i
   /<<-?\s*['"]?\w+/,                        // heredoc
@@ -656,7 +691,7 @@ const MUTATORS = [
   // -o/-O on its own or ending a short cluster (-sSLo f), never an option
   // that merely holds the letter (-XPOST).
   // -o/--output to /dev/null or - (stdout) writes no file.
-  /\bcurl\b[^;&|\n]*\s(-[a-zA-Z]*o(\s+|$)(?!\/dev\/null(\s|$)|-(\s|$))|-[a-zA-Z]*O(\s|$)|--output(\s+|=)(?!\/dev\/null(\s|$)|-(\s|$))|--remote-name)/,
+  { test: s => curlWrites(s) },
   /\btar\s+(-?[a-zA-Z]*[xc][a-zA-Z]*(\s|$)|([^;&|\n]*\s)?-[a-zA-Z]*[xc][a-zA-Z]*(\s|$)|[^;&|\n]*\s--(extract|create|get)\b)/,
   /\bunzip(?![^;&|\n]*\s-[a-zA-Z]*[lptvZ]\b)\s/,
   /\brsync(?![^;&|\n]*\s(--dry-run|-[a-zA-Z]*n)\b)\s/,
@@ -906,7 +941,9 @@ const CALL_SCAN_MAX = 16384;
 export function deepPlanCalls(cmd, depth = 0) {
   const out = [];
   if (!cmd || depth > 3) return out;
-  cmd = String(cmd).slice(0, CALL_SCAN_MAX);
+  // A backslash-newline continues the line: joined first, so `deep-plan \
+  // go x` is read as the one call it is.
+  cmd = String(cmd).slice(0, CALL_SCAN_MAX).replace(/\\\r?\n/g, "  ");
   const text = blankHeredocs(cmd);
   const bare = blankQuotes(text);
   const ref = bare || text;
@@ -963,6 +1000,12 @@ export function humanLever(calls) {
 // check pass, render), --by human, and close. Refused while the gate's refusal
 // in this turn is unanswered (deniedThisTurn); the human's next prompt clears
 // it. The reason names the first such call, "" when there is none.
+// How many of a command's calls need the human's word: more than one in one
+// command is refused (it would spend the turn's one several times).
+export function humansWordCount(calls) {
+  return calls.filter(c => onHumansWord([c])).length;
+}
+
 export function onHumansWord(calls) {
   for (const c of calls) {
     if (c.words.some((w, k) => (w === "--by" && c.words[k + 1] === "human") || w === "--by=human")) return "--by human";
@@ -983,7 +1026,11 @@ const turnFile = session => /^[A-Za-z0-9_-]{1,128}$/.test(session || "") ? path.
 export function markDenied(session, slug = "") {
   const f = turnFile(session);
   if (!f) return;
-  try { fs.mkdirSync(TURNS_DIR, { recursive: true }); fs.writeFileSync(f, JSON.stringify({ at: Date.now(), slug }) + "\n"); }
+  try {
+    fs.mkdirSync(TURNS_DIR, { recursive: true }); fs.writeFileSync(f, JSON.stringify({ at: Date.now(), slug }) + "\n");
+    // The session has met the gate: news.sh keeps its prompts from now on.
+    fs.writeFileSync(f.replace(/\.denied$/, ".seen"), "");
+  }
   catch { /* the refusal stands without it */ }
 }
 // Whether this turn's human prompt (its first 300 characters, kept by
@@ -1002,7 +1049,16 @@ export function approvesGo(prompt) {
   const p = String(prompt || "").slice(0, 300).replace(/\\"/g, '"').replace(/[\u2018\u2019\u02bc]/g, "'").toLowerCase().trim();
   if (!p || DOUBTS.test(p)) return false;
   if (p.length <= 60 && SHORT_APPROVAL.test(p)) return true;
-  return GO_PHRASE.test(p);
+  // A question is not a go: "should we go next?", "what does go 3 do?".
+  if (/\?\s*$/.test(p)) return false;
+  for (const sentence of p.match(/[^.!?\n]+[.!?]?/g) || []) {
+    const m = GO_PHRASE.exec(sentence);
+    if (!m) continue;
+    if (/\?\s*$/.test(sentence)) continue;
+    if (/\b(should|can|could|would|what|why|how|does|do|is)\b/.test(sentence.slice(0, m.index))) continue;
+    return true;
+  }
+  return false;
 }
 export function promptApproves(session) {
   const f = turnFile(session);
@@ -1020,6 +1076,21 @@ export function markActed(session, what) {
   try { fs.mkdirSync(TURNS_DIR, { recursive: true }); fs.writeFileSync(f, JSON.stringify({ at: Date.now(), what }) + "\n"); }
   catch { /* best-effort */ }
 }
+// A lever call in flight: the gate claims the turn's one with an atomic mkdir
+// before letting it run, so parallel calls cannot all pass; the CLI turns the
+// claim into `.acted` on success, or gives it back on failure.
+const claimDir = session => { const f = turnFile(session); return f ? f.replace(/\.denied$/, ".claimed") : ""; };
+export function claimLever(session) {
+  const d = claimDir(session);
+  if (!d) return true;
+  try { fs.mkdirSync(TURNS_DIR, { recursive: true }); fs.mkdirSync(d); return true; }
+  catch (e) { return e.code !== "EEXIST"; }
+}
+export function releaseLever(session) {
+  const d = claimDir(session);
+  if (d) try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* gone */ }
+}
+
 export function actedThisTurn(session) {
   const f = actedFile(session);
   if (!f) return null;

@@ -44,11 +44,14 @@ if [ -e "$1" ]; then
   re_cwd='"cwd"[[:space:]]*:[[:space:]]*"([^"]*)"'
   pcwd=""; [[ $head =~ $re_cwd ]] && pcwd=${BASH_REMATCH[1]}
   if [ "$ev" != SessionStart ] && [ -n "$sid" ]; then
-    rm -f "$STATE_DIR/turns/$sid.denied" "$STATE_DIR/turns/$sid.acted"
-    # The prompt is kept only for a session inside a tracked plan's root (the
-    # roots, read with one grep), and turns/ files older than a day go.
+    # The prompt is kept for a session inside a tracked plan's root (the roots,
+    # read with one grep), or one the gate has refused before (turns/<sid>.seen,
+    # or a refusal still on file): the gate refuses by the edited file's path,
+    # which need not be under the session's cwd. turns/ files older than a day go.
     tracked=""
-    if [ -n "$pcwd" ]; then
+    [ -e "$STATE_DIR/turns/$sid.denied" ] || [ -e "$STATE_DIR/turns/$sid.seen" ] && tracked=1
+    rm -rf "$STATE_DIR/turns/$sid.denied" "$STATE_DIR/turns/$sid.acted" "$STATE_DIR/turns/$sid.claimed"
+    if [ -z "$tracked" ] && [ -n "$pcwd" ]; then
       phys=$(cd "$pcwd" 2>/dev/null && pwd -P) || phys=$pcwd
       while IFS= read -r line; do
         [[ $line =~ \"root\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]] || continue
