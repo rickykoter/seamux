@@ -34,6 +34,11 @@ const OTHERS_SHOWN = 5
 // pins it, deep-plan/probe.mjs asserts it). In a session the tool result reads
 // `PreToolUse:Edit hook error: [bash ".../gate.sh"]: deep-plan gate [slug]: why`.
 const DENIAL = /deep-plan gate \[([^\]\s]+)\]: ([^\n]*)/
+// The same refusal as the error result of the call it stopped: the text opens
+// with it, or with the hook-error prefix and then it. A Bash call that failed
+// while printing the message (a probe asserting it, a log read back) opens
+// with its own error, so it is not taken for a refusal.
+const HOOK_DENIAL = /^\s*(?:PreToolUse:\S+ hook error: \[[^\n]*?\]: )?(deep-plan gate \[[^\]\s]+\]: [^\n]*)/
 
 const GLYPH: Record<string, string> = {
   done: '✓', working: '▶', authorized: '●', blocked: '✗', pending: '·',
@@ -177,9 +182,9 @@ async function refresh($: EngineInterface): Promise<SeamuxView> {
   }
   const ran = await engine($, ['status', '--json'])
   let next: SeamuxView = { plan: null, others: [], problem: '', cwd: me.cwd }
+  let rows: SeamuxPlan[] | null = null
   if (!ran.ok) next = { ...next, problem: ran.out }
   else {
-    let rows: SeamuxPlan[] | null = null
     try {
       rows = JSON.parse(ran.out) as SeamuxPlan[]
     } catch {
@@ -196,9 +201,14 @@ async function refresh($: EngineInterface): Promise<SeamuxView> {
   // still gets this one's.
   if (mine !== refreshes) return next
   await update($, view, () => next)
-  // A refusal is moot once the gate lets this plan through (someone pressed go
-  // on the board, or typed it).
-  if (next.plan?.gate.allow) await update($, denied, () => null)
+  // A refusal is moot once the gate that refused lets its plan through
+  // (someone pressed go on the board, or typed it), or that plan is no longer
+  // tracked. Its own row decides, not the plan the pane happens to show.
+  const d = await read($, denied)
+  if (d && rows) {
+    const refused = rows.find(r => r.slug === d.slug)
+    if (!refused || refused.gate.allow) await update($, denied, () => null)
+  }
   await status($, next)
   return next
 }
@@ -414,7 +424,7 @@ export const register: Register = on => {
   // React to the classic gate's refusal; never refuse anything here.
   on('tool.call', async ($, e, next) => {
     const ran = await next(e)
-    const text = ran.deny ?? (ran.isError ? ran.text : undefined)
+    const text = ran.deny ?? (ran.isError && typeof ran.text === 'string' ? HOOK_DENIAL.exec(ran.text)?.[1] : undefined)
     const hit = typeof text === 'string' ? DENIAL.exec(text) : null
     if (hit) {
       const d: SeamuxDenial = { slug: hit[1] ?? '?', why: (hit[2] ?? '').trim() }

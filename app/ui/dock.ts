@@ -7,7 +7,7 @@
 // marks the workspace shown here ({crew: "selected", ws} back to it).
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { Decision } from "./desk";
+import type { Decision } from "./decisions";
 import { NewWorkspace } from "./newws";
 import { ReclaimWizard } from "./reclaim";
 import { Sheet } from "./sheet";

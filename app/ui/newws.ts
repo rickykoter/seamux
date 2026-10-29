@@ -102,6 +102,8 @@ export class NewWorkspace {
   private create = el("button", "sheet-btn newws-go", "Create");
   private opts: Options | null = null;
   private busy = false;
+  /** Made this opening, though not yet listed: Create (⌘↵, Enter) is done. */
+  private made = false;
 
   constructor() {
     this.el.hidden = true;
@@ -235,6 +237,7 @@ export class NewWorkspace {
     this.el.hidden = false;
     this.say.hidden = true;
     this.steps.hidden = true;
+    this.made = false;
     this.setBusy(false);
     try {
       this.opts = await invoke<Options>("new_ws_options");
@@ -316,7 +319,7 @@ export class NewWorkspace {
   }
 
   private async go(): Promise<void> {
-    if (this.busy || !this.opts) return;
+    if (this.busy || this.made || !this.opts) return;
     const branch = this.branchName();
     if (!this.repo.value) return this.tell("Pick a repo.", true);
     if (!branch) {
@@ -356,6 +359,7 @@ export class NewWorkspace {
       } else {
         // Made, but cmux's lists did not name it yet: say where it is.
         this.tell(`${made.branch} is open in cmux as ${made.workspaceRef || "a new workspace"}; pick it in the Dock when it shows.`);
+        this.made = true;
         this.create.textContent = "Done";
         this.create.disabled = true;
       }

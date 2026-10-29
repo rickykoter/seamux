@@ -117,6 +117,17 @@ function marked(text: string, q: string): DocumentFragment {
 }
 
 /** The Wake: what each workspace left behind, as /artifacts shows it, in the app. */
+/** A confirming click this soon after the one that asked is the same double-click. */
+const CONFIRM_AFTER_MS = 400;
+
+function arm(b: HTMLElement): void {
+  b.dataset.armedAt = String(Date.now());
+}
+
+function tooSoon(b: HTMLElement): boolean {
+  return Date.now() - Number(b.dataset.armedAt ?? 0) < CONFIRM_AFTER_MS;
+}
+
 export class Wake {
   private title = el("h1", "w-title");
   private stats = el("span", "w-stats");
@@ -527,6 +538,7 @@ export class Wake {
     if (b.disabled) return;
     const label = r.published ? "publish again" : "publish";
     if (!b.classList.contains("sure")) {
+      arm(b);
       b.classList.add("sure");
       b.textContent = `send ${r.path.split("/").pop()} to claude.ai?`;
       const t = window.setTimeout(() => {
@@ -538,6 +550,7 @@ export class Wake {
       b.dataset.timer = String(t);
       return;
     }
+    if (tooSoon(b)) return;
     clearTimeout(Number(b.dataset.timer));
     b.classList.remove("sure");
     b.disabled = true;
@@ -555,14 +568,20 @@ export class Wake {
   private async keepAll(): Promise<void> {
     const b = this.keepAllBtn;
     if (!b.classList.contains("sure")) {
+      arm(b);
       b.classList.add("sure");
       b.textContent = `sure? copy ${this.data.truncated ? "at least " : ""}${b.dataset.n} files`;
-      setTimeout(() => {
-        b.classList.remove("sure");
-        b.textContent = `keep all ${b.dataset.n}`;
-      }, 3500);
+      clearTimeout(Number(b.dataset.timer));
+      b.dataset.timer = String(
+        window.setTimeout(() => {
+          b.classList.remove("sure");
+          b.textContent = `keep all ${b.dataset.n}`;
+        }, 3500),
+      );
       return;
     }
+    if (tooSoon(b)) return;
+    clearTimeout(Number(b.dataset.timer));
     b.classList.remove("sure");
     try {
       const j = await invoke<{ results?: { ok: boolean; why?: string }[] }>("wake_keep_all", { ws: this.ws });

@@ -154,7 +154,7 @@ code. Each row names the shot that covers it: a screenshot in
 | Lookout tab: review jobs with live steps, findings | review.ts | S-app-lookout |
 | Tucked chip, ⌘K palette, undo toast | palette.ts, tuck.ts | V6.3 |
 | Pane chips `[plan]` / `[outside]`; links open in VS Code, Dock, PR hover cards | panechips.ts, panelinks.ts | S-app-dock (card) |
-| Decision cards, answer by digit, plan go/check from the desk | desk.ts | V6.1 |
+| Decision cards, answer by digit, plan go/check | mosaic.ts, decisions.ts | V6.1 |
 
 ## Team rollout (docs/ADOPTING.md)
 

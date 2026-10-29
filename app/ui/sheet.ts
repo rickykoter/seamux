@@ -362,7 +362,6 @@ export class Sheet {
   private back = "";
   private pages: NowPage[] = [];
   private wake: Wake | null = null;
-  private origin: string | null = null;
   /** Plan families, for the strip that gets from a parent to its children. */
   private families: FamilyBrief[] = [];
   private kin = document.createElement("div");
@@ -782,25 +781,28 @@ export class Sheet {
       }
       return;
     }
-    const frame = (origin: string) => {
+    // Asked each time a page is framed: the server can come back on a new port.
+    const down = (why: string) => {
+      const n = document.createElement("p");
+      n.className = "note";
+      n.textContent = `The intent server is down (${why}), so this page can't be shown here. Open in cmux may still work once it is back. `;
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "sheet-btn";
+      retry.textContent = "Retry";
+      // Selecting a page that failed builds it again (see select).
+      retry.addEventListener("click", () => this.select(t.key));
+      n.append(retry);
+      box.replaceChildren(n);
+      box.dataset.failed = "1";
+    };
+    invoke<IntentServer>("intent_server").then((server) => {
+      if (!server.up || !server.origin) return down(server.reason ?? "no answer");
       const f = document.createElement("iframe");
-      f.src = origin + t.key;
+      f.src = server.origin + t.key;
       f.title = t.label;
       box.append(f);
-    };
-    if (this.origin) return frame(this.origin);
-    void invoke<IntentServer>("intent_server").then((server) => {
-      if (!server.up || !server.origin) {
-        const n = document.createElement("p");
-        n.className = "note";
-        n.textContent = `The intent server is down (${server.reason ?? "no answer"}), so this page can't be shown here. Open in cmux may still work once it is back.`;
-        box.append(n);
-        box.dataset.failed = "1";
-        return;
-      }
-      this.origin = server.origin;
-      frame(server.origin);
-    });
+    }, (e) => down(String(e)));
   }
 
   close(): void {

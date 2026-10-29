@@ -136,6 +136,11 @@ function openSummary(open: Record<string, number>): string {
   return parts.length ? parts.join(" · ") : "no open findings";
 }
 
+/** Which run of a job this is: Re-review keeps the id and restarts the clock. */
+function runOf(j: Job): string {
+  return `${j.started}|${j.review_id}`;
+}
+
 function stepOf(status: string): number {
   return STEPS.findIndex(([ss]) => ss.includes(status));
 }
@@ -171,7 +176,8 @@ export class ReviewView {
   /** Logs the reader opened or closed, so a redraw keeps them that way. */
   private logOpen = new Map<string, boolean>();
   private confirm = new Map<string, "post" | "push" | "remove" | "remove-unreadable">();
-  private origin: string | null = null;
+  /** Per job: the run its ticks, findings, picker and confirm belong to. */
+  private runs = new Map<string, string>();
 
   constructor(private root: HTMLElement) {
     this.root.className = "review";
@@ -190,7 +196,12 @@ export class ReviewView {
     this.input.addEventListener("input", () => this.drawPicks());
     this.input.addEventListener("blur", () => (this.pickBox.hidden = true));
     this.input.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") this.pickBox.hidden = true;
+      if (e.key !== "Escape") return;
+      // Not the document's Escape, which hides the whole window: the first
+      // closes the suggestions, the next leaves the input.
+      e.stopPropagation();
+      if (this.pickBox.hidden) this.input.blur();
+      else this.pickBox.hidden = true;
     });
     this.pickBox.hidden = true;
     // Keep focus in the input while a pick is clicked.
@@ -234,7 +245,24 @@ export class ReviewView {
 
   private take(jobs: Job[]): void {
     this.jobs = jobs;
+    // Re-review keeps the job's id but starts a new run, and lookout numbers
+    // findings per review (f1, f2…): ticks kept from the last run would name
+    // other findings in this one.
+    for (const j of jobs) {
+      const run = runOf(j);
+      const was = this.runs.get(j.id);
+      if (was !== undefined && was !== run) this.forget(j.id);
+      this.runs.set(j.id, run);
+    }
     this.render();
+  }
+
+  /** Drops what the picker and confirms held for a job's last run. */
+  private forget(id: string): void {
+    this.ticked.delete(id);
+    this.findings.delete(id);
+    this.pickerOpen.delete(id);
+    this.confirm.delete(id);
   }
 
   private async loadOthers(): Promise<void> {
@@ -258,12 +286,14 @@ export class ReviewView {
   }
 
   private async loadFindings(j: Job): Promise<void> {
-    const key = `${JSON.stringify(j.open)}|${j.busy}|${j.ahead}`;
+    const key = `${runOf(j)}|${JSON.stringify(j.open)}|${j.busy}|${j.ahead}`;
     if (this.findings.get(j.id)?.key === key) return;
     this.findings.set(j.id, { key, rows: this.findings.get(j.id)?.rows ?? [] });
     try {
       const all = await invoke<Finding[]>("review_findings", { id: j.id });
       const rows = all.filter((f) => f.status !== "resolved" && f.status !== "dismissed");
+      // A newer run, or a newer state of this one, asked since: its answer stands.
+      if (this.findings.get(j.id)?.key !== key) return;
       this.findings.set(j.id, { key, rows });
       if (!this.ticked.has(j.id)) this.ticked.set(j.id, new Set(rows.filter((f) => f.severity === "blocker" || f.severity === "major").map((f) => f.id)));
       this.render();
@@ -280,6 +310,7 @@ export class ReviewView {
     this.go.disabled = true;
     try {
       const id = await invoke<string>("review_start", { input, depth, model });
+      this.forget(id);
       if (input === this.input.value.trim()) this.input.value = "";
       this.pickBox.hidden = true;
       this.pick(`job:${id}`);
@@ -503,22 +534,22 @@ export class ReviewView {
     return d;
   }
 
+  /** Asks where the intent server is each time: it can come back on a new port. */
   private showFrame(rid: string, title: string): void {
-    const put = (origin: string) => {
+    const down = (why: string) => {
+      if (this.framed !== rid) return;
+      const p = el("p", "r-detail bad", `The intent server is down (${why}), so the review page can't be shown here. `);
+      p.append(btn("Retry", () => this.showFrame(rid, title), "r-btn quiet"));
+      this.frameBox.replaceChildren(p);
+    };
+    invoke<IntentServer>("intent_server").then((s) => {
+      if (!s.up || !s.origin) return down(s.reason ?? "no answer");
       if (this.framed !== rid) return;
       const f = el("iframe");
-      f.src = `${origin}/review/${encodeURIComponent(rid)}`;
+      f.src = `${s.origin}/review/${encodeURIComponent(rid)}`;
       f.title = title;
       this.frameBox.replaceChildren(f);
-    };
-    if (this.origin) put(this.origin);
-    else
-      void invoke<IntentServer>("intent_server").then((s) => {
-        if (s.up && s.origin) {
-          this.origin = s.origin;
-          put(s.origin);
-        } else if (this.framed === rid) this.frameBox.replaceChildren(el("p", "r-detail bad", `The intent server is down (${s.reason ?? "no answer"}), so the review page can't be shown here.`));
-      });
+    }, (e) => down(String(e)));
   }
 
   /** Edit, fix, post and push, over the findings ticked in the picker. */
