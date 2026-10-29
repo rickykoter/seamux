@@ -4,6 +4,47 @@ Written 2026-09-13 as the seamux cutover's final increment. Everything here is
 audit and plan; nothing has been pushed or published. Line numbers were read
 that day — re-verify before acting on one.
 
+## Adopting without cmux (2026-10-28)
+
+Since plan `standalone-hosts`, deep-plan and lookout run wherever Claude Code
+runs. cmux is one host among four. This changes what a team needs to adopt
+them. Details are in [STANDALONE.md](STANDALONE.md).
+
+| Host | How it's detected | Pages | Plan state |
+|---|---|---|---|
+| cmux | `CMUX_WORKSPACE_ID` | beside the terminal, through crew's server | `~/.claude` |
+| Claude desktop | `CLAUDE_CODE_ENTRYPOINT` | the plugin's own server; Claude opens the URL in the browser pane | `~/.claude` |
+| terminal | none of the others | the plugin's own server; a printed link | `~/.claude` |
+| cloud (claude.ai/code) | `CLAUDE_CODE_REMOTE=true` | none live; reviews go out as Artifacts | the repo, under `.seamux/state/` |
+
+`SEAMUX_HOST=cmux|desktop|terminal|remote` overrides detection.
+
+Rolling it out to a team:
+
+- Each developer installs the plugins as before (`./install.sh`), with
+  or without crew and cmux. Nothing else is needed for desktop or a
+  terminal.
+- Each repo that cloud sessions work in gets a one-time
+  `deep-plan install-repo` and `lookout install-repo`, and someone commits
+  `.claude/`. The hooks there only run in a cloud session (or with
+  `SEAMUX_REPO_HOOKS=1`), so local sessions are not affected.
+- CI can run `deep-plan install-repo --check` and `lookout install-repo
+  --check` to catch a stale copy after the plugins update.
+- Browser checks need `playwright` in the repo (`npm i -D playwright &&
+  npx playwright install chromium`) wherever cmux is not the host. Without
+  it they report needs-variant, not a failure.
+- To move work between sandboxes, `deep-plan export-state <slug>` writes
+  one bundle; `deep-plan import-state <file>` brings it back.
+- Reviews are shared with `lookout export-artifact` and `lookout pull`. Anyone
+  with write access to the page can add rows, so treat what comes back as
+  data; the comments hook marks it as unverified.
+- To go without a person on every increment, split the goal into a family
+  of plans; the parent agent gives each child its go once the child's
+  checks pass.
+
+The Linux notes below still hold for crew and the board. deep-plan and
+lookout no longer depend on anything Mac-only.
+
 ## Linux portability audit
 
 Already portable:
