@@ -77,6 +77,9 @@ pub struct Job {
     /// How many files have uncommitted edits (untracked ones included).
     pub changed: u32,
     pub pushed: bool,
+    /// The worktree's HEAD when it was pushed; commits are pushed only while
+    /// HEAD is still this (an amend or rebase after a push is not).
+    pub pushed_sha: String,
     /// The URL of the GitHub review the comments went out in.
     pub posted: String,
     /// When the current status began, for the tab's elapsed time.
@@ -800,12 +803,14 @@ fn activity_of(v: &Value) -> Option<String> {
 }
 
 /// What a review's worktree holds beyond the reviewed commit, read from git.
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 struct Work {
     /// Commits after `head_sha`.
     ahead: u32,
     /// Files with uncommitted edits, untracked ones included.
     changed: u32,
+    /// The worktree's HEAD sha, or "" when there is no worktree.
+    head: String,
 }
 
 /// Read `wt`'s commits past `head_sha` and its uncommitted files. A worktree
@@ -815,24 +820,31 @@ fn work_in(wt: &Path, head_sha: &str) -> Result<Work, String> {
     if wt.as_os_str().is_empty() || !wt.join(".git").exists() {
         return Ok(Work::default());
     }
+    let head = git(wt, &["rev-parse", "HEAD"])?.trim().to_string();
     let ahead = if head_sha.is_empty() {
         0
     } else {
-        git(wt, &["rev-list", "--count", &format!("{head_sha}..HEAD")])
-            .ok()
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(0)
+        let n = git(wt, &["rev-list", "--count", &format!("{head_sha}..HEAD")])?;
+        n.trim()
+            .parse()
+            .map_err(|_| format!("git rev-list: not a count: {}", n.trim()))?
     };
     let changed = git(wt, &["status", "--porcelain", "--untracked-files=all"])?
         .lines()
         .filter(|l| !l.trim().is_empty())
         .count() as u32;
-    Ok(Work { ahead, changed })
+    Ok(Work { ahead, changed, head })
 }
 
-/// Copy `w` onto the card. New commits since a push are not pushed.
-fn apply(x: &mut Job, w: Work) {
-    if w.ahead != x.ahead {
+/// Whether `j`'s push still covers `head`.
+fn still_pushed(j: &Job, head: &str) -> bool {
+    j.pushed && !j.pushed_sha.is_empty() && j.pushed_sha == head
+}
+
+/// Copy `w` onto the card. Once HEAD moves off what was pushed (new commits,
+/// an amend, a rebase), it is not pushed any more.
+fn apply(x: &mut Job, w: &Work) {
+    if !w.head.is_empty() && !still_pushed(x, &w.head) {
         x.pushed = false;
     }
     x.ahead = w.ahead;
@@ -841,8 +853,8 @@ fn apply(x: &mut Job, w: Work) {
 }
 
 /// Commits in `w` that are not on the branch yet.
-fn unpushed(j: &Job, w: Work) -> u32 {
-    if j.pushed && w.ahead == j.ahead {
+fn unpushed(j: &Job, w: &Work) -> u32 {
+    if still_pushed(j, &w.head) {
         0
     } else {
         w.ahead
@@ -864,14 +876,39 @@ fn at_stake_text(changed: u32, unpushed: u32) -> String {
 
 /// What deleting `j`'s worktree would lose, read from git now rather than the
 /// card (which only a pipeline or a fix refreshes). The card is updated too,
-/// so the page shows it. Returns (changed files, unpushed commits).
+/// so the page shows it. Returns (changed files, unpushed commits), or why git
+/// couldn't read the worktree.
 fn at_stake(j: &Job) -> Result<(u32, u32), String> {
-    let w = work_in(Path::new(&j.wt), &j.head_sha)
-        .map_err(|e| format!("couldn't read its worktree, so nothing was deleted: {e}"))?;
-    let lost = unpushed(j, w);
-    update(&j.id, |x| apply(x, w));
+    let w = work_in(Path::new(&j.wt), &j.head_sha)?;
+    let lost = unpushed(j, &w);
+    update(&j.id, |x| apply(x, &w));
     Ok((w.changed, lost))
 }
+
+/// Why `remove_review` won't delete yet, given what git found (`found`: changed
+/// files and unpushed commits, or why it couldn't read the worktree) and what
+/// the person confirmed losing. None: go ahead.
+fn refuse_remove(
+    found: &Result<(u32, u32), String>,
+    files: u32,
+    commits: u32,
+    unreadable: bool,
+) -> Option<String> {
+    match found {
+        Err(e) if !unreadable => Some(format!(
+            "{UNREADABLE} ({e}), so nothing was deleted. Remove again to delete it and whatever it holds."
+        )),
+        Err(_) => None,
+        Ok((changed, lost)) if *changed > files || *lost > commits => Some(format!(
+            "nothing was removed: its worktree has {}. Remove again to delete them.",
+            at_stake_text(*changed, *lost)
+        )),
+        Ok(_) => None,
+    }
+}
+
+/// How an unreadable worktree's refusal starts; the page looks for it.
+const UNREADABLE: &str = "couldn't read its worktree";
 
 /// Re-read what the worktree and the store now say.
 fn refresh(id: &str) {
@@ -891,7 +928,7 @@ fn refresh(id: &str) {
         }
     }
     update(id, |j| {
-        apply(j, w);
+        apply(j, &w);
         j.open = open;
     });
 }
@@ -954,7 +991,9 @@ fn start_review(input: String, depth: String, model: String) -> Result<String, S
         }
     }
     for j in &same {
-        let (changed, lost) = at_stake(j)?;
+        let (changed, lost) = at_stake(j).map_err(|e| {
+            format!("couldn't read its last review's worktree ({e}). Remove that review first (Remove asks before deleting it).")
+        })?;
         if changed > 0 || lost > 0 {
             return Err(format!(
                 "its last review's worktree has {}. Commit and push them, or remove that review first (Remove asks before deleting them).",
@@ -1156,17 +1195,25 @@ pub fn review_push(id: String) -> Result<(), String> {
     }
     let j = claim(&id, "pushing")?;
     std::thread::spawn(move || {
-        let r = git(
-            Path::new(&j.wt),
-            &["push", &j.remote, &format!("HEAD:refs/heads/{}", j.branch)],
-        );
+        // Push the sha read here, so what is recorded is what went out.
+        let r = git(Path::new(&j.wt), &["rev-parse", "HEAD"]).and_then(|sha| {
+            let sha = sha.trim().to_string();
+            git(
+                Path::new(&j.wt),
+                &["push", &j.remote, &format!("{sha}:refs/heads/{}", j.branch)],
+            )
+            .map(|_| sha)
+        });
         match r {
-            Ok(_) => {
+            Ok(sha) => {
                 note(
                     &j.id,
                     &format!("pushed {} commit(s) to {}", j.ahead, j.branch),
                 );
-                update(&j.id, |x| x.pushed = true);
+                update(&j.id, |x| {
+                    x.pushed = true;
+                    x.pushed_sha = sha;
+                });
             }
             Err(e) => note(&j.id, &e),
         }
@@ -1175,32 +1222,30 @@ pub fn review_push(id: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Forget a review and delete its worktree. `edits` and `commits` say the
-/// person confirmed losing uncommitted edits and unpushed commits; whatever
-/// git finds that they did not confirm stops the removal, and the card is
-/// updated so they can confirm again with it named.
+/// Forget a review and delete its worktree. `files` and `commits` are the
+/// uncommitted files and unpushed commits the person's confirm named;
+/// `unreadable`, that they confirmed deleting a worktree git couldn't read.
+/// If git now finds more than they confirmed, nothing is removed and the card
+/// is updated so they can confirm again with it named.
 #[tauri::command]
-pub async fn review_remove(id: String, edits: bool, commits: bool) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || remove_review(&id, edits, commits))
+pub async fn review_remove(
+    id: String,
+    files: u32,
+    commits: u32,
+    unreadable: bool,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || remove_review(&id, files, commits, unreadable))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn remove_review(id: &str, edits: bool, commits: bool) -> Result<(), String> {
+fn remove_review(id: &str, files: u32, commits: u32, unreadable: bool) -> Result<(), String> {
     let j = get(id)?;
     if !j.busy.is_empty() || !matches!(j.status.as_str(), "ready" | "failed") {
         return Err("it is still running".into());
     }
-    let (changed, lost) = at_stake(&j)?;
-    let (changed, lost) = (
-        if edits { 0 } else { changed },
-        if commits { 0 } else { lost },
-    );
-    if changed > 0 || lost > 0 {
-        return Err(format!(
-            "nothing was removed: its worktree has {}. Remove again to delete them.",
-            at_stake_text(changed, lost)
-        ));
+    if let Some(why) = refuse_remove(&at_stake(&j), files, commits, unreadable) {
+        return Err(why);
     }
     discard(&j);
     let all = {
@@ -1566,15 +1611,20 @@ mod tests {
     #[test]
     fn work_in_reads_edits_and_commits_from_git_now() {
         let (d, wt, head) = repo_with_worktree("work");
-        assert_eq!(work_in(&wt, &head).unwrap(), Work::default());
+        let w = work_in(&wt, &head).unwrap();
+        assert_eq!((w.ahead, w.changed, w.head.as_str()), (0, 0, head.as_str()));
         // Edits made by hand (say in an editor), never seen by refresh().
         std::fs::write(wt.join("a.txt"), "two\n").unwrap();
         std::fs::create_dir_all(wt.join("new")).unwrap();
         std::fs::write(wt.join("new/b.txt"), "b\n").unwrap();
-        assert_eq!(work_in(&wt, &head).unwrap(), Work { ahead: 0, changed: 2 });
+        assert_eq!(work_in(&wt, &head).unwrap().changed, 2);
         git(&wt, &["add", "-A"]).unwrap();
         git(&wt, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "fix"]).unwrap();
-        assert_eq!(work_in(&wt, &head).unwrap(), Work { ahead: 1, changed: 0 });
+        let w = work_in(&wt, &head).unwrap();
+        assert_eq!((w.ahead, w.changed), (1, 0));
+        assert_ne!(w.head, head);
+        // A reviewed sha git doesn't have is an error, not "nothing ahead".
+        assert!(work_in(&wt, "0123456789abcdef0123456789abcdef01234567").is_err());
         // No worktree (never made, or already gone): nothing to lose.
         assert_eq!(work_in(&d.join("missing"), &head).unwrap(), Work::default());
         assert_eq!(work_in(Path::new(""), &head).unwrap(), Work::default());
@@ -1583,14 +1633,53 @@ mod tests {
 
     #[test]
     fn unpushed_counts_commits_made_after_a_push() {
-        let j = Job { ahead: 2, pushed: true, ..Default::default() };
-        assert_eq!(unpushed(&j, Work { ahead: 2, changed: 0 }), 0);
-        assert_eq!(unpushed(&j, Work { ahead: 3, changed: 0 }), 3);
-        let fresh = Job::default();
-        assert_eq!(unpushed(&fresh, Work { ahead: 1, changed: 0 }), 1);
-        let mut x = j.clone();
-        apply(&mut x, Work { ahead: 3, changed: 1 });
-        assert!(!x.pushed && x.dirty && x.changed == 1 && x.ahead == 3);
+        let (d, wt, head) = repo_with_worktree("push");
+        let commit = |args: &[&str]| {
+            let mut a = vec!["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q"];
+            a.extend_from_slice(args);
+            git(&wt, &a).unwrap();
+        };
+        std::fs::write(wt.join("a.txt"), "fix\n").unwrap();
+        git(&wt, &["add", "-A"]).unwrap();
+        commit(&["-m", "fix"]);
+        let w = work_in(&wt, &head).unwrap();
+        // As review_push leaves it.
+        let mut j = Job { ahead: 1, pushed: true, pushed_sha: w.head.clone(), ..Default::default() };
+        assert_eq!(unpushed(&j, &w), 0);
+        apply(&mut j, &w);
+        assert!(j.pushed);
+        // An amend keeps the count at 1 but is not what was pushed.
+        std::fs::write(wt.join("a.txt"), "fix, amended\n").unwrap();
+        git(&wt, &["add", "-A"]).unwrap();
+        commit(&["--amend", "-m", "fix"]);
+        let w = work_in(&wt, &head).unwrap();
+        assert_eq!(w.ahead, 1);
+        assert_eq!(unpushed(&j, &w), 1);
+        apply(&mut j, &w);
+        assert!(!j.pushed);
+        // A card pushed before pushed_sha existed counts as unpushed.
+        let old = Job { ahead: 1, pushed: true, ..Default::default() };
+        assert_eq!(unpushed(&old, &w), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn remove_refuses_more_than_was_confirmed() {
+        // Confirmed exactly what is there, or more: go ahead.
+        assert_eq!(refuse_remove(&Ok((0, 0)), 0, 0, false), None);
+        assert_eq!(refuse_remove(&Ok((2, 1)), 2, 1, false), None);
+        // Edits made after the confirm was drawn.
+        let why = refuse_remove(&Ok((3, 1)), 2, 1, false).unwrap();
+        assert!(why.starts_with("nothing was removed"), "{why}");
+        assert!(why.contains("3 files with uncommitted edits"), "{why}");
+        assert!(refuse_remove(&Ok((0, 2)), 0, 1, false).is_some());
+        // An unreadable worktree: refused until confirmed as such.
+        let bad: Result<(u32, u32), String> = Err("git status: corrupt".into());
+        let why = refuse_remove(&bad, 0, 0, false).unwrap();
+        assert!(why.starts_with(UNREADABLE) && why.contains("corrupt"), "{why}");
+        assert_eq!(refuse_remove(&bad, 0, 0, true), None);
+        // `unreadable` alone does not cover work git can read.
+        assert!(refuse_remove(&Ok((1, 0)), 0, 0, true).is_some());
     }
 
     #[test]
