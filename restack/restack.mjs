@@ -150,8 +150,10 @@ function fetchBase(ctx, base) {
 // the walk would rebase onto a main that is behind its remote. That is
 // refused rather than quietly swapped for the upstream, because a local base
 // can be deliberate (an integration branch with commits of its own), and only
-// the person knows which they meant. Ahead or diverged passes: those commits
-// are theirs. Null when the base is not a local branch with an upstream.
+// the person knows which they meant. Only strictly behind is refused: ahead
+// passes, and diverged passes with a warning, because those commits are
+// theirs. Null when the base is not a local branch with an upstream, or is
+// not behind it.
 function localUpstream(ctx, ref) {
   if (!ref || !revParse(ctx.cwd, `refs/heads/${ref}`)) return null;
   const remote = git(ctx.cwd, ["config", "--get", `branch.${ref}.remote`]);
@@ -164,7 +166,8 @@ function staleLocalBase(ctx, base) {
   const up = localUpstream(ctx, base.ref);
   if (!up || !revParse(ctx.cwd, up.ref)) return null;
   const behind = countRange(ctx.cwd, `refs/heads/${base.ref}..${up.ref}`);
-  return behind > 0 ? { upstream: up.ref, behind,
+  const ahead = countRange(ctx.cwd, `${up.ref}..refs/heads/${base.ref}`);
+  return behind > 0 ? { upstream: up.ref, behind, ahead, diverged: ahead > 0,
     hint: `update it (\`git fetch ${up.remote} && git branch -f ${base.ref} ${up.ref}\`, or \`git pull\` on it), or set "base": "${up.ref}" in .seamux/restack.json` } : null;
 }
 
@@ -417,14 +420,16 @@ function cmdPlan(ctx) {
   const base2 = baseFacts(ctx);
   const staleBase = staleLocalBase(ctx, base2);
   if (staleBase)
-    say(`  warn: base ${base2.ref} is ${staleBase.behind} commit(s) behind ${staleBase.upstream}; \`restack run\` will refuse until you ${staleBase.hint}`);
+    say(staleBase.diverged
+      ? `  warn: base ${base2.ref} has diverged from ${staleBase.upstream} (${staleBase.ahead} ahead, ${staleBase.behind} behind); the walk will use the local branch`
+      : `  warn: base ${base2.ref} is ${staleBase.behind} commit(s) behind ${staleBase.upstream}; \`restack run\` will refuse until you ${staleBase.hint}`);
   const stack = discover(ctx.cwd, ctx.cfg, ctx.branch, base2, ctx.gitDirPath);
   const steps = planWalk(ctx.cwd, stack.chain, base2);
   const drift = driftReport(ctx, base2);
   const out = {
     verb: "plan", status: "ok", repo: ctx.cwd, branch: ctx.branch,
     base: { ref: base2.ref, sha: base2.sha.slice(0, 12), behind: base2.behind,
-            ...(staleBase ? { staleAgainst: { upstream: staleBase.upstream, behind: staleBase.behind, hint: staleBase.hint } } : {}) },
+            ...(staleBase ? { staleAgainst: { upstream: staleBase.upstream, behind: staleBase.behind, ahead: staleBase.ahead, diverged: staleBase.diverged, hint: staleBase.hint } } : {}) },
     stack: { tool: stack.tool, source: stack.source, driver: stack.driver },
     steps: steps.map(s => ({ branch: s.branch, ahead: s.ahead, onto: s.onto, upstream: s.upstream && s.upstream.slice(0, 12), pr: s.pr, error: s.error || null })),
     drift,
@@ -463,7 +468,9 @@ function cmdRun(ctx) {
   if (f.ok === false) die(`could not fetch ${ctx.cfg.remote}: ${f.err}`);
   const base = baseFacts(ctx);
   const staleBase = staleLocalBase(ctx, base);
-  if (staleBase)
+  if (staleBase && staleBase.diverged)
+    say(`  warn: base ${base.ref} has diverged from ${staleBase.upstream} (${staleBase.ahead} ahead, ${staleBase.behind} behind); restacking onto the local branch`);
+  else if (staleBase)
     die(`the base ${base.ref} is a local branch ${staleBase.behind} commit(s) behind ${staleBase.upstream}, so the stack would land on an old base; nothing was restacked.\n` +
       `fix: ${staleBase.hint}`, { staleBase: { upstream: staleBase.upstream, behind: staleBase.behind } });
 

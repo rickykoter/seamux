@@ -54,7 +54,10 @@ HOME_FORMS = [
     (r"/Users/(?P<name>[A-Za-z0-9_][\w.-]*)",            "an absolute home path (use ~ or __HOME__)"),
     (r"/home/(?P<name>[A-Za-z0-9_][\w.-]*)",             "an absolute home path (use ~ or __HOME__)"),
     (r"\b[A-Za-z]:[\\/]+Users[\\/]+(?P<name>[\w.-]+)", "a Windows profile path (use %USERPROFILE%)"),
-    (r"-(?:Users|home)-(?P<name>[A-Za-z0-9_]+)-",       "a Claude projects-dir path, which embeds a home"),
+    # Only as a path segment: a leading dash right after a slash, a quote or
+    # the start of a line, then the name and at least one more segment.
+    (r"(?:^|(?<=[/\\\s\"'`(=:]))-(?:Users|home)-(?P<name>[A-Za-z0-9_]+)-[\w.]+",
+                                                        "a Claude projects-dir path, which embeds a home"),
     (r"\b(?P<name>[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*?)-(?:mbp|mba|macbook[\w-]*|imac|mac-?mini)\.local\b",
                                                         "a machine's .local hostname"),
 ]
@@ -67,14 +70,32 @@ PLACEHOLDERS = {
     "__home__", "home", "foo", "bar", "nobody",
 }
 
-# Account names that say nothing about who ran the check (CI runners, root).
-SYSTEM_USERS = {"runner", "root", "ubuntu", "vsts", "ec2-user", "admin", "user", "nobody", "github"}
+# Account names that say nothing about who ran the check, or are ordinary
+# words a check would trip on in prose (CI runners, root, build boxes).
+SYSTEM_USERS = {
+    "runner", "root", "ubuntu", "vsts", "ec2-user", "admin", "administrator", "user", "users",
+    "nobody", "github", "build", "builder", "buildkite", "jenkins", "deploy", "docker", "ci",
+    "worker", "service", "default", "guest", "local", "staff", "developer", "travis", "circleci",
+}
+
+
+def distinctive(name):
+    """A username worth hunting for: not a common word, and long enough or
+    shaped (a separator, a digit) that it will not match ordinary prose."""
+    n = name.lower()
+    if n in SYSTEM_USERS or n in PLACEHOLDERS:
+        return False
+    return len(n) >= 5 or (len(n) >= 3 and bool(re.search(r"[._\-\d]", n)))
 
 
 def _sep_pattern(name):
-    """`first.last` -> a pattern for first.last, first-last, first_last and firstlast."""
+    """`first.last` -> first.last, first-last, first_last or firstlast, but only
+    where a username sits in a path or a host: after /, \\, @, -Users- or
+    -home-, or ahead of a .local hostname."""
     parts = [re.escape(p) for p in re.split(r"[._\- ]+", name) if p]
-    return r"\b" + r"[._\- ]?".join(parts) + r"\b"
+    core = r"[._\- ]?".join(parts)
+    return (r"(?:(?:(?<=[/\\@])|(?<=-Users-)|(?<=-home-))" + core + r"(?![\w])"
+            r"|\b" + core + r"(?=[\w-]*(?:\.[\w-]+)*\.local\b))")
 
 
 def env_patterns(user=None, host=None):
@@ -88,7 +109,7 @@ def env_patterns(user=None, host=None):
         except Exception:
             user = ""
     u = (user or "").strip()
-    if len(u) >= 3 and u.lower() not in SYSTEM_USERS | PLACEHOLDERS:
+    if distinctive(u):
         out.append((_sep_pattern(u), "this machine's username"))
     if host is None:
         host = socket.gethostname()

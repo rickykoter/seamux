@@ -1027,6 +1027,15 @@ step("a local base behind its upstream");
   ok("and nothing moved", git(r, "rev-parse", "feat1").out === tip);
   const fetched = cli(r, "run", "--json");
   ok("a fetching run refuses the same way", fetched.status === 1 && fetched.json?.staleBase?.behind === 1, fetched.out + fetched.err);
+  // Diverged: the local base has a commit of its own. Warned, not refused.
+  git(r, "checkout", "-q", "master");
+  addDef(r, "f", "foxtrot\n", "master: f local only");
+  git(r, "checkout", "-q", "feat1");
+  const dplan = cli(r, "plan", "--json", "--no-fetch");
+  ok("plan marks a diverged base as diverged", dplan.json?.base?.staleAgainst?.diverged === true, dplan.out + dplan.err);
+  const drun = cli(r, "run", "--json", "--no-fetch");
+  ok("a diverged base runs (warned, not refused)", drun.status === 0, drun.out + drun.err);
+  git(r, "checkout", "-q", "-B", "feat1", tip);
   git(r, "branch", "-f", "master", "origin/master");
   const fixed = cli(r, "run", "--json", "--no-fetch");
   ok("once the local base is current, the walk runs", fixed.status === 0, fixed.out + fixed.err);

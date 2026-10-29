@@ -314,7 +314,8 @@ PLIST
   if [ -d "$APPDIR" ]; then
     aside="$keep/seamux.app.replaced.$(date +%Y%m%d%H%M%S)"
     run "mkdir -p $(q "$keep") && mv $(q "$APPDIR") $(q "$aside")" || die "could not move the old seamux.app aside; nothing changed"
-    did "the previous seamux.app moved to ${aside/#$HOME/~}"
+    local shown="$aside"; case "$aside" in "$HOME"/*) shown="~${aside#"$HOME"}" ;; esac
+    did "the previous seamux.app moved to $shown"
   fi
   if ! run "mkdir -p $(q "$HOME/Applications") && cp -R $(q "$bundle") $(q "$APPDIR")"; then
     [ -n "$aside" ] && mv "$APPDIR" "$aside.failed" 2>/dev/null; [ -n "$aside" ] && mv "$aside" "$APPDIR"

@@ -30,9 +30,10 @@ must_flag = {
     "a Claude projects dir": "~/.claude/projects/-Us" + "ers-sam-rivera-code-seamux/memory",
     "a Claude scratch dir": "/private/tmp/claude-501/-Us" + "ers-sam-rivera-code-seamux/abc",
     "an -mbp.local hostname": "ssh sam-rivera-" + "mbp.local",
-    "the env username, dotted": "jo" + ".example wrote this",
-    "the env username, joined": "jo" + "example wrote this",
-    "the env username, hyphenated": "by jo" + "-example",
+    "the env username in a path": "/srv/jo" + ".example/code",
+    "the env username, joined, after @": "mail @jo" + "example",
+    "the env username, hyphenated, in a projects dir": "x-Users-jo" + "-example-code",
+    "the env username ahead of .local": "jo" + "example-air.local",
     "the machine's hostname": "ping jo-mbp" + ".local",
     "the author's username": "ricky" + ".kotermanski",
 }
@@ -51,13 +52,19 @@ must_pass = {
     "a placeholder hostname": "your-name-" + "mbp.local",
     "the public GitHub handle": "github.com/rickykoter/seamux",
     "a plain users word": "for users of the app",
+    "the env username in prose": "jo" + ".example wrote this",
+    "a -Users- word inside prose": "the-Us" + "ers-guide-text",
+    "a -home- word inside prose": "a well-ho" + "me-grown-tool",
+    "a projects-dir form with no further segment": "/-Us" + "ers-sam-",
 }
 for name, line in must_pass.items():
     hits = sc.scan_line(line, pats)
     check("passes " + name, not hits, repr(hits))
 
-check("a CI runner's account adds no username pattern",
-      not [w for _, w in sc.env_patterns(user="runner", host="localhost")])
+for acct in ("runner", "build", "admin", "dev", "test", "user", "pat"):
+    check(f"a common or short account ({acct}) adds no username pattern",
+          not sc.env_patterns(user=acct, host="localhost"))
+check("a short account with a separator still counts", bool(sc.env_patterns(user="j.d", host="localhost")))
 
 print("\n%d failure(s)" % len(FAILS) if FAILS else "\nall scrub_check probes pass")
 sys.exit(1 if FAILS else 0)
