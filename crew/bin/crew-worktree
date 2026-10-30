@@ -261,7 +261,15 @@ if [ -n "$sandbox" ]; then
   command="$SANDBOX_BIN attach $path"
 fi
 
-if [ -x "$CMUX" ]; then
+# A native session (cmux local-tmux, which the seamux app draws too), as every
+# new session starts, through the seamux CLI. A plain cmux terminal only when
+# seamux is missing or opened no workspace; when its native start fails it runs
+# Claude in the workspace's own terminal and says so.
+SEAMUX_BIN="${SEAMUX_BIN:-$(command -v seamux 2>/dev/null || true)}"
+if [ -x "$CMUX" ] && [ -n "$SEAMUX_BIN" ] && CMUX_BIN="$CMUX" "$SEAMUX_BIN" crew-native workspace --cwd "$path" --command "$command" --focus >/dev/null; then
+  say "opened cmux workspace (native tmux)"
+  printf '\033[32m✓\033[0m %s\n' "$full ready at $path${sandbox:+ (sandboxed)}"
+elif [ -x "$CMUX" ]; then
   say "opening cmux workspace"
   "$CMUX" new-workspace --cwd "$path" --command "$command" --focus true
   printf '\033[32m✓\033[0m %s\n' "$full ready at $path${sandbox:+ (sandboxed)}"

@@ -14,6 +14,11 @@ use std::process::{Child, Command, Stdio};
 
 use serde_json::Value;
 
+// The native start lives in crew-core, so crew's own tools start sessions
+// the same way the app does.
+use crew_core::native::{cmux_json, cmux_ok, tmux_ok, tmux_out};
+pub use crew_core::native::{claude_line, field, open_native_workspace, sh_quote, start_native, start_native_with, surfaces_in, tmux_bin, PANE_VARS};
+
 /// A local-tmux session, as tmux addresses it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Target {
@@ -49,15 +54,6 @@ pub fn name_ok(name: &str) -> bool {
     !name.is_empty() && name.len() <= 64 && name.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
 }
 
-fn cmux_json(argv: &[&str]) -> Result<Value, String> {
-    let bin = cmux::resolve_cli_bin().map_err(|e| e.to_string())?;
-    let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
-    let out = cmux::run_cli(&bin, &argv).map_err(|e| e.to_string())?;
-    if !out.ok() {
-        return Err(format!("cmux {}: {}", argv.join(" "), out.stderr.trim()));
-    }
-    serde_json::from_str(&out.stdout).map_err(|e| format!("cmux {}: {e}", argv.join(" ")))
-}
 
 /// The session cmux's local-tmux registry (`sessions.json`) records for a
 /// client surface: its name and socket. The registry is cmux's own file;
@@ -248,61 +244,11 @@ pub fn bell_seen(t: &Target) -> Result<(), String> {
     tmux_ok(&t.socket, &["set-option", "-t", &t.session, "-u", "@seamux_bell"])
 }
 
-/// tmux, from PATH (the app adopts the login shell's at start) or Homebrew.
-pub fn tmux_bin() -> String {
-    for dir in std::env::var("PATH").unwrap_or_default().split(':').chain(["/opt/homebrew/bin", "/usr/local/bin"]) {
-        let p = std::path::Path::new(dir).join("tmux");
-        if p.is_file() {
-            return p.to_string_lossy().into_owned();
-        }
-    }
-    "tmux".into()
-}
 
-/// `s` as one shell word (tmux runs the command through a shell).
-pub fn sh_quote(s: &str) -> String {
-    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c)) {
-        return s.to_string();
-    }
-    format!("'{}'", s.replace('\'', r"'\''"))
-}
 
-/// A cmux pane's variables, as cmux's own client of a session has them: its
-/// IDs, socket and capability, Claude's hook settings, and PATH (led by the
-/// pane's claude shim). tmux copies these from the attaching client into the
-/// session (update-environment), so Claude started there is that pane's agent.
-pub const PANE_VARS: [&str; 25] = [
-    "CMUX_SURFACE_ID", "CMUX_PANEL_ID", "CMUX_TAB_ID", "CMUX_WORKSPACE_ID", "CMUX_SOCKET_PATH", "CMUX_SOCKET",
-    "CMUX_SOCKET_CAPABILITY", "CMUX_BUNDLE_ID", "CMUX_BUNDLED_CLI_PATH", "CMUX_CLAUDE_HOOK_CMUX_BIN",
-    "CMUX_CLAUDE_HOOK_SPOOL_DIR", "CMUX_CLAUDE_INTEGRATION_DISABLED", "CMUX_CLAUDE_HEADLESS", "CMUX_CLAUDE_WRAPPER_SHIM",
-    "CMUX_CLAUDE_WRAPPER_SHIM_ROOT", "CMUX_AGENT_COMMAND_SHIM_ROOT", "CMUX_TERMINAL_LIFECYCLE_ID",
-    "CMUX_SUPPRESS_SUBAGENT_NOTIFICATIONS", "CMUX_PORT", "CMUX_PORT_END", "CMUX_PORT_RANGE", "CMUX_SHELL_INTEGRATION",
-    "CMUX_SHELL_INTEGRATION_DIR", "CMUX_HISTORY_FILE", "PATH",
-];
 
-/// `key=value` out of a cmux CLI's `OK key=value ...` line.
-pub fn field(line: &str, key: &str) -> Option<String> {
-    line.split_whitespace().find_map(|w| w.strip_prefix(&format!("{key}=")).map(str::to_string)).filter(|v| !v.is_empty())
-}
 
-/// The claude command a native session runs: resuming `resume` when given.
-pub fn claude_line(resume: Option<&str>) -> Result<String, String> {
-    match resume {
-        None => Ok("claude".into()),
-        Some(id) if cmux::is_uuid(id) => Ok(format!("claude --resume {id}")),
-        Some(id) => Err(format!("not a session id: {id:?}")),
-    }
-}
 
-fn cmux_ok(argv: &[&str]) -> Result<String, String> {
-    let bin = cmux::resolve_cli_bin().map_err(|e| e.to_string())?;
-    let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
-    let out = cmux::run_cli(&bin, &argv).map_err(|e| e.to_string())?;
-    if !out.ok() {
-        return Err(format!("cmux {}: {}", argv.join(" "), out.stderr.trim()));
-    }
-    Ok(out.stdout)
-}
 
 /// Leave copy mode, where the wheel put a pane, so typed keys reach the
 /// program again: every pane of the session's window (with the companion
@@ -365,14 +311,6 @@ pub fn send_line_key(t: &Target, key: &str) -> Result<(), String> {
     tmux_ok(&t.socket, &["send-keys", "-t", &format!("={}:", t.session), key])
 }
 
-/// A tmux command's output, trimmed.
-fn tmux_out(sock: &str, args: &[&str]) -> Result<String, String> {
-    let o = Command::new(tmux_bin()).arg("-S").arg(sock).args(args).output().map_err(|e| e.to_string())?;
-    if !o.status.success() {
-        return Err(format!("tmux {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()));
-    }
-    Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
-}
 
 /// The alert-bell slot seamux's hook takes.
 pub const BELL_HOOK: &str = "alert-bell[87]";
@@ -412,75 +350,10 @@ pub fn toggle_shell(t: &Target) -> Result<bool, String> {
     }
 }
 
-fn tmux_ok(sock: &str, args: &[&str]) -> Result<(), String> {
-    let o = Command::new(tmux_bin()).arg("-S").arg(sock).args(args).output().map_err(|e| e.to_string())?;
-    if !o.status.success() {
-        return Err(format!("tmux {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()));
-    }
-    Ok(())
-}
 
-/// Start Claude as a native session in workspace `ws` (a UUID) at `cwd`:
-/// a local-tmux session, its pane's cmux variables copied in at attach,
-/// no tmux bar or prefix (Claude Code uses Ctrl-B), focus events on. Returns
-/// the new cmux pane's surface id.
-pub fn start_native(ws: &str, cwd: &str, resume: Option<&str>) -> Result<String, String> {
-    start_native_with(ws, cwd, &claude_line(resume)?)
-}
 
-/// start_native, running `claude` (a shell command line) as the session's
-/// program: a new workspace's Claude, with its first prompt.
-pub fn start_native_with(ws: &str, cwd: &str, claude: &str) -> Result<String, String> {
-    if !cmux::is_uuid(ws) {
-        return Err(format!("not a workspace UUID: {ws:?}"));
-    }
-    if !cwd.starts_with('/') || !std::path::Path::new(cwd).is_dir() {
-        return Err(format!("not a directory: {cwd:?}"));
-    }
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros()).unwrap_or(0);
-    let name = format!("claude-{:x}", stamp & 0xffff_ffff);
-    let shell = std::env::var("SHELL").ok().filter(|s| s.starts_with('/')).unwrap_or_else(|| "/bin/zsh".into());
-    // A login shell until cmux's client has attached and filled the variables in.
-    // A start that fails can still leave its tmux session behind, unrecorded.
-    if let Err(e) = cmux_ok(&["local-tmux", "start", &name, "--cwd", cwd, "--command", &format!("{} -l", sh_quote(&shell)), "--detached"]) {
-        let _ = cmux_ok(&["local-tmux", "close", &name]);
-        return Err(e);
-    }
-    // Anything that fails from here takes the half-made session with it.
-    let made = finish_native(&name, ws, claude);
-    if made.is_err() {
-        let _ = cmux_ok(&["local-tmux", "close", &name]);
-    }
-    made
-}
 
-/// The workspace for `cwd`, with `cmd` (Claude and its first prompt) as a
-/// native session there in place of cmux's shell: the Dock draws it.
-pub fn open_native_workspace(cwd: &std::path::Path, cmd: &str) -> Result<(String, Option<String>), String> {
-    let (wref, id) = crew_core::worktree::create_workspace(cwd)?;
-    let id = id.ok_or_else(|| format!("cmux opened {wref} but did not list it, so Claude was not started there"))?;
-    let c = cmux::Cmux::connect().map_err(|e| format!("cmux: {e}"))?;
-    // cmux's own shell, closed once the native pane is there.
-    let shells = c.tree().map(|t| surfaces_in(&t, &id)).unwrap_or_default();
-    start_native_with(&id, &cwd.to_string_lossy(), cmd).map_err(|e| format!("{wref} is open, but Claude did not start natively ({e})"))?;
-    for s in shells {
-        let _ = c.cli(&["close-surface", "--surface", &s, "--workspace", &id, "--force"]);
-    }
-    Ok((wref, Some(id)))
-}
 
-/// The surface refs of workspace `ws` (a UUID) in cmux's `tree --json`.
-pub fn surfaces_in(tree: &Value, ws: &str) -> Vec<String> {
-    let arr = |v: &Value, k: &str| v.get(k).and_then(Value::as_array).cloned().unwrap_or_default();
-    arr(tree, "windows")
-        .iter()
-        .flat_map(|w| arr(w, "workspaces"))
-        .filter(|w| w.get("id").and_then(Value::as_str).is_some_and(|id| id.eq_ignore_ascii_case(ws)))
-        .flat_map(|w| arr(&w, "panes"))
-        .flat_map(|p| arr(&p, "surfaces"))
-        .filter_map(|s| s.get("ref").and_then(Value::as_str).map(str::to_string))
-        .collect()
-}
 
 /// The terminal (`ttys003`, no /dev/) of surface `surface` (its id or ref)
 /// in cmux's `tree --json`.
@@ -574,57 +447,7 @@ pub fn move_native(ws: &str, surface: &str, run: &Running) -> Result<String, Str
     Ok(new)
 }
 
-/// The socket of a session cmux has just started: from its registry (a path
-/// may hold spaces, so never from the CLI's `key=value` line), else its status.
-fn socket_of(name: &str) -> Result<String, String> {
-    let file = crew_core::py::home().join(".cmux/local-tmux/sessions.json");
-    let from_registry = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).and_then(|reg| {
-        reg.get("sessions")?.as_array()?.iter().find_map(|s| {
-            (s.get("name")?.as_str()? == name).then(|| s.get("socketPath")?.as_str().map(str::to_string)).flatten()
-        })
-    });
-    if let Some(s) = from_registry.filter(|s| !s.is_empty()) {
-        return Ok(s);
-    }
-    let st = cmux_json(&["local-tmux", "status", name, "--json"])?;
-    st.get("socket_path").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string).ok_or_else(|| format!("cmux did not say {name}'s socket"))
-}
 
-fn finish_native(name: &str, ws: &str, claude: &str) -> Result<String, String> {
-    let sock = socket_of(name)?;
-    tmux_ok(&sock, &["set-option", "-t", name, "update-environment", &PANE_VARS.join(" ")])?;
-    tmux_ok(&sock, &["set-option", "-t", name, "status", "off"])?;
-    tmux_ok(&sock, &["set-option", "-t", name, "prefix", "None"])?;
-    tmux_ok(&sock, &["set-option", "-t", name, "prefix2", "None"])?;
-    tmux_ok(&sock, &["set-option", "-s", "focus-events", "on"])?;
-    let out = cmux_ok(&["local-tmux", "attach", name, "--workspace", ws, "--focus", "false"])?;
-    let surface = field(&out, "surface").ok_or_else(|| format!("cmux did not say the new pane: {}", out.trim()))?;
-    // cmux's attach returns before its client has connected: wait until tmux
-    // has copied the pane's variables in, or Claude would start without them.
-    let want = format!("CMUX_SURFACE_ID={surface}");
-    let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        let o = Command::new(tmux_bin()).args(["-S", &sock, "show-environment", "-t", name, "CMUX_SURFACE_ID"]).output();
-        if o.map(|o| String::from_utf8_lossy(&o.stdout).trim().eq_ignore_ascii_case(&want)).unwrap_or(false) {
-            break;
-        }
-        if std::time::Instant::now() > end {
-            return Err(format!("cmux's pane {surface} did not reach the session {name}: Claude was not started"));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    // From now on no client changes the session's variables: the app's own
-    // client (which has none of cmux's) must not wipe the pane's identity.
-    tmux_ok(&sock, &["set-option", "-t", name, "update-environment", ""])?;
-    // Claude starts now, from the session's environment: the pane's own.
-    // Every client of the session draws true color (cmux, and the app's own
-    // client says so), so Claude may use it as it does in a cmux pane: in
-    // tmux it keeps to 256 colors unless told otherwise.
-    tmux_ok(&sock, &["set-environment", "-t", name, "COLORTERM", "truecolor"])?;
-    tmux_ok(&sock, &["set-environment", "-t", name, "CLAUDE_CODE_TMUX_TRUECOLOR", "1"])?;
-    tmux_ok(&sock, &["respawn-pane", "-k", "-t", &format!("={name}:"), claude])?;
-    Ok(surface)
-}
 
 /// A tmux client in a PTY.
 pub struct Pty {
@@ -652,6 +475,8 @@ impl Pty {
         // Claude in fullscreen selects and copies itself, asking tmux (OSC 52)
         // to set the clipboard; "external", tmux's default, refuses programs.
         let _ = tmux_ok(&t.socket, &["set-option", "-s", "set-clipboard", "on"]);
+        // Shift+Enter a newline in Claude, for sessions made before it was set.
+        let _ = crew_core::native::keys_through(&t.socket);
         // A bell marks its session (even in the window a client shows, where
         // tmux sets no flag of its own) until the pane is looked at.
         // A slot of its own in the hook's list, so a tmux.conf's own bell

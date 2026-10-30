@@ -450,8 +450,17 @@ pub fn publish_artifact(rid: i64) -> (bool, String) {
     let prompt = format!("Publish the file {path} to claude.ai with the Artifact tool, exactly as it is: read it \
 first and do not edit or rewrite it. Then reply with only the URL.");
     let cmd = format!("claude --tools Artifact Read --strict-mcp-config {}", shlex_quote(&prompt));
-    let mut argv = vec!["new-surface", "--type", "terminal", "--working-directory", &cwd, "--command", &cmd, "--focus", "true"];
     let wid = workspace_for(&cwd);
+    let name = Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    // A native session in the row's workspace, as every new session starts;
+    // cmux's own terminal when there is none or the native start fails.
+    if cmux::is_uuid(&wid) {
+        if let Ok(surface) = crew_core::native::start_native_with(&wid, &cwd, &cmd) {
+            let _ = cmux_out(&["focus-panel", "--panel", &surface, "--workspace", &wid]);
+            return (true, format!("publishing {name} in a terminal; the URL lands here when it finishes"));
+        }
+    }
+    let mut argv = vec!["new-surface", "--type", "terminal", "--working-directory", &cwd, "--command", &cmd, "--focus", "true"];
     if !wid.is_empty() {
         argv.extend(["--workspace", wid.as_str()]);
     }
@@ -459,7 +468,6 @@ first and do not edit or rewrite it. Then reply with only the URL.");
     if rc != 0 {
         return (false, format!("could not open a terminal: {}", out.trim().chars().take(160).collect::<String>()));
     }
-    let name = Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     (true, format!("publishing {name} in a terminal; the URL lands here when it finishes"))
 }
 

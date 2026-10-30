@@ -40,3 +40,15 @@
 
 /* Files dragged over the pane: dropping types their paths in. */
 .native-term.drop-on { box-shadow: inset 0 0 0 2px var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--pane-bg-or)); }
+
+/* ⌘F: find in what the pane has shown. Top right, out of Claude's prompt. */
+.pane-find {
+  position: absolute; z-index: 5; top: 8px; right: 14px; display: flex; align-items: center; gap: 6px;
+  padding: 4px 6px 4px 10px; border-radius: 8px; font: 12px -apple-system, system-ui, sans-serif;
+  background: var(--bg); color: var(--fg); box-shadow: 0 2px 10px rgb(0 0 0 / 0.25), 0 0 0 1px color-mix(in srgb, var(--fg) 14%, transparent);
+}
+.pane-find[hidden] { display: none; }
+.pane-find input { width: 180px; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
+.pane-find-count { min-width: 4.5em; text-align: right; opacity: 0.6; font-variant-numeric: tabular-nums; }
+.pane-find-close { display: grid; place-items: center; width: 20px; height: 20px; border: 0; border-radius: 5px; background: transparent; color: inherit; opacity: 0.6; cursor: pointer; }
+.pane-find-close:hover { opacity: 1; background: color-mix(in srgb, var(--fg) 10%, transparent); }
