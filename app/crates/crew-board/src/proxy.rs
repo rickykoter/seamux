@@ -51,10 +51,7 @@ impl Plugin {
             Plugin::Lookout => crate::act::lookout_engine(),
             Plugin::DeepPlan => {
                 let script = crew_core::dp_engine::script();
-                let node = crate::act::which("node").or_else(|| {
-                    ["/opt/homebrew/bin/node", "/usr/local/bin/node"].iter()
-                        .find(|c| std::path::Path::new(c).exists()).map(|c| c.to_string())
-                })?;
+                let node = crate::act::node()?;
                 script.is_file().then(|| (node, script.to_string_lossy().into_owned()))
             }
         }
@@ -73,7 +70,7 @@ pub fn owner_get(path: &str) -> Option<Plugin> {
 }
 
 /// One plain HTTP/1.0 exchange with a plugin server: (status, headers, body).
-fn exchange(port: u16, method: &str, target: &str, headers: &[(&str, String)], body: &[u8], timeout: Duration)
+pub(crate) fn exchange(port: u16, method: &str, target: &str, headers: &[(&str, String)], body: &[u8], timeout: Duration)
     -> std::io::Result<(u16, Vec<(String, String)>, Vec<u8>)> {
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_millis(800))?;
@@ -120,11 +117,55 @@ fn live_port(p: Plugin) -> Option<u16> {
     }
 }
 
+/// One start at a time per plugin: requests that find no server while one is
+/// starting wait for that start instead of each running `serve` (these routes
+/// are reachable without a token, so a burst would otherwise be a fork bomb).
+fn start_lock(p: Plugin) -> std::sync::MutexGuard<'static, ()> {
+    static DEEP_PLAN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static LOOKOUT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    match p {
+        Plugin::DeepPlan => &DEEP_PLAN,
+        Plugin::Lookout => &LOOKOUT,
+    }
+    .lock()
+    .unwrap_or_else(|e| e.into_inner())
+}
+
+/// A start that failed, and why: requests that waited on it (or come within
+/// FAILED_FOR) answer with it rather than each running `serve` again.
+const FAILED_FOR: Duration = Duration::from_secs(10);
+
+fn failed(p: Plugin) -> &'static std::sync::Mutex<Option<(std::time::Instant, String)>> {
+    static DEEP_PLAN: std::sync::Mutex<Option<(std::time::Instant, String)>> = std::sync::Mutex::new(None);
+    static LOOKOUT: std::sync::Mutex<Option<(std::time::Instant, String)>> = std::sync::Mutex::new(None);
+    match p {
+        Plugin::DeepPlan => &DEEP_PLAN,
+        Plugin::Lookout => &LOOKOUT,
+    }
+}
+
 /// The plugin's server, started through its CLI when none answers.
 pub fn ensure(p: Plugin) -> Result<u16, String> {
     if let Some(port) = live_port(p) {
         return Ok(port);
     }
+    let _start = start_lock(p);
+    // Whoever held the lock before us may have just started it.
+    if let Some(port) = live_port(p) {
+        return Ok(port);
+    }
+    if let Some((at, why)) = failed(p).lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if at.elapsed() < FAILED_FOR {
+            return Err(why.clone());
+        }
+    }
+    let out = start(p);
+    *failed(p).lock().unwrap_or_else(|e| e.into_inner()) = out.as_ref().err().map(|e| (std::time::Instant::now(), e.clone()));
+    out
+}
+
+/// One `<cli> serve`, and the port it then answers on.
+fn start(p: Plugin) -> Result<u16, String> {
     let Some((node, cli)) = p.cli() else {
         return Err(format!("{} is not installed here (no engine pointer, or no node)", p.name()));
     };
@@ -149,13 +190,31 @@ fn target(req: &Request) -> String {
     if req.raw_query.is_empty() { req.path.clone() } else { format!("{}?{}", req.path, req.raw_query) }
 }
 
+/// The plugin's headers passed through. Its X-Frame-Options and any
+/// frame-ancestors are dropped: this server's own frame-ancestors (added to
+/// every page by Request::write) is the one that applies, and X-Frame-Options
+/// would refuse the app's frame. The rest of a plugin's CSP is kept, as a
+/// second policy beside this server's.
+fn kept_headers(headers: &[(String, String)]) -> Vec<(&str, String)> {
+    headers.iter().filter_map(|(k, v)| match k.to_ascii_lowercase().as_str() {
+        "content-type" | "cache-control" | "location" => Some((k.as_str(), v.clone())),
+        "content-security-policy" => without_frame_ancestors(v).map(|c| (k.as_str(), c)),
+        _ => None,
+    }).collect()
+}
+
+/// A CSP with its frame-ancestors directive taken out; None when nothing is left.
+fn without_frame_ancestors(csp: &str) -> Option<String> {
+    let rest: Vec<&str> = csp.split(';').map(str::trim)
+        .filter(|d| !d.is_empty() && !d.split_whitespace().next().unwrap_or("").eq_ignore_ascii_case("frame-ancestors"))
+        .collect();
+    (!rest.is_empty()).then(|| rest.join("; "))
+}
+
 fn relay(req: &mut Request, p: Plugin, out: std::io::Result<(u16, Vec<(String, String)>, Vec<u8>)>) {
     match out {
         Ok((code, headers, body)) => {
-            let keep: Vec<(&str, String)> = headers.iter()
-                .filter(|(k, _)| ["content-type", "cache-control", "location"].contains(&k.to_ascii_lowercase().as_str()))
-                .map(|(k, v)| (k.as_str(), v.clone()))
-                .collect();
+            let keep = kept_headers(&headers);
             req.relay(code, &keep, &body);
         }
         Err(e) => {
@@ -213,6 +272,17 @@ pub fn post(req: &mut Request, p: Plugin, max_body: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plugins_framing_headers_give_way_to_this_servers() {
+        let h = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let headers = vec![h("Content-Type", "text/html"), h("X-Frame-Options", "SAMEORIGIN"),
+            h("Content-Security-Policy", "default-src 'self'; Frame-Ancestors 'none'; img-src data:"),
+            h("content-security-policy", "frame-ancestors *"), h("Set-Cookie", "a=b")];
+        let kept = kept_headers(&headers);
+        assert_eq!(kept, vec![("Content-Type", "text/html".to_string()),
+            ("Content-Security-Policy", "default-src 'self'; img-src data:".to_string())]);
+    }
 
     #[test]
     fn each_forwarded_route_has_one_owner() {

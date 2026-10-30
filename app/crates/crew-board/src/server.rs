@@ -22,6 +22,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -191,7 +192,7 @@ pub struct Request {
     /// The query as it came, for forwarding it unchanged (proxy.rs).
     pub raw_query: String,
     headers: Vec<(String, String)>,
-    reader: BufReader<TcpStream>,
+    reader: BufReader<Conn>,
     pub port: u16,
     pub token: String,
 }
@@ -207,7 +208,15 @@ impl Request {
         self.query.get(k).and_then(|v| v.first()).cloned().unwrap_or_default()
     }
 
+    /// The body, under one deadline (BODY_WAIT) however slowly it arrives.
     pub fn read_body(&mut self, n: usize) -> Vec<u8> {
+        self.reader.get_mut().deadline = Some(std::time::Instant::now() + BODY_WAIT);
+        let b = self.read_body_inner(n);
+        self.reader.get_mut().deadline = None;
+        b
+    }
+
+    fn read_body_inner(&mut self, n: usize) -> Vec<u8> {
         let mut b = vec![0u8; n];
         let mut got = 0;
         while got < n {
@@ -225,6 +234,12 @@ impl Request {
         for (k, v) in headers {
             out.push_str(&format!("{k}: {v}\r\n"));
         }
+        // Every page, this server's own or a plugin's passed through, says who
+        // may frame it: a page that acts on a click must not be framed by any
+        // site (the Host check passes for a frame), only by the app and itself.
+        if is_html(headers) {
+            out.push_str(&format!("Content-Security-Policy: frame-ancestors {}\r\n", frame_ancestors(self.port)));
+        }
         out.push_str("\r\n");
         let s = self.reader.get_mut();
         let _ = s.write_all(out.as_bytes());
@@ -240,6 +255,7 @@ impl Request {
     fn finish(&mut self) {
         let _ = self.reader.get_ref().shutdown(std::net::Shutdown::Write);
         let _ = self.reader.get_ref().set_read_timeout(Some(Duration::from_secs(1)));
+        self.reader.get_mut().deadline = Some(std::time::Instant::now() + Duration::from_secs(1));
         let mut sink = [0u8; 8192];
         let mut total = 0usize;
         while total < 1 << 20 {
@@ -301,12 +317,63 @@ impl Request {
     }
 }
 
+/// Whether a response's Content-Type is a page.
+fn is_html(headers: &[(&str, String)]) -> bool {
+    headers.iter().any(|(k, v)| k.eq_ignore_ascii_case("content-type") && v.trim_start().to_ascii_lowercase().starts_with("text/html"))
+}
+
+/// The origins that frame these pages besides this server itself: the seamux
+/// app's webview (tauri://localhost on macOS and Linux, http(s)://tauri.localhost
+/// on Windows), plus any CREW_INTENT_FRAME_ANCESTORS names (space-separated
+/// origins). The app's Vite dev server is not trusted by default, since
+/// any local program could hold its port: a developer running the app under
+/// Vite sets CREW_INTENT_FRAME_ANCESTORS=http://localhost:5173 for the intent
+/// server (as does a demo harness on another port).
+/// cmux's browser pane loads a page top-level, which frame-ancestors does not
+/// touch. intent.js posts to and accepts messages from these same origins.
+pub fn parent_origins() -> Vec<String> {
+    let mut out: Vec<String> = ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"]
+        .iter().map(|s| s.to_string()).collect();
+    for o in std::env::var("CREW_INTENT_FRAME_ANCESTORS").unwrap_or_default().split_whitespace() {
+        if origin_ok(o) && !out.iter().any(|x| x == o) {
+            out.push(o.to_string());
+        }
+    }
+    out
+}
+
+/// scheme://host[:port], nothing else: it goes into a header and a script.
+fn origin_ok(o: &str) -> bool {
+    let Some((scheme, rest)) = o.split_once("://") else { return false };
+    !scheme.is_empty() && scheme.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        && scheme.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "+.-".contains(c))
+        && !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric() || ".-:[]".contains(c))
+}
+
+/// CSP frame-ancestors for a page this server answers on `port`. 'self' and
+/// its two loopback names are for a page that frames another of these pages.
+/// No X-Frame-Options: SAMEORIGIN would refuse the app's frame in any engine
+/// that honoured it over CSP, and every engine the app and cmux use reads
+/// frame-ancestors.
+pub fn frame_ancestors(port: u16) -> String {
+    let mut v = vec!["'self'".to_string(), format!("http://127.0.0.1:{port}"), format!("http://localhost:{port}")];
+    // Both tauri://localhost and the scheme-source tauri: (a CSP-only form, so
+    // not in parent_origins, which intent.js posts to): WebKit may match a
+    // custom-scheme origin by scheme alone. If the app's origin is not in this
+    // list, the app's Dock (and every page it frames) goes blank.
+    let mut parents = parent_origins();
+    parents.insert(1, "tauri:".into());
+    v.extend(parents);
+    v.join(" ")
+}
+
 fn reason(code: u16) -> &'static str {
     match code {
         200 => "OK",
         302 => "Found",
         405 => "Method Not Allowed",
         502 => "Bad Gateway",
+        503 => "Service Unavailable",
         400 => "Bad Request",
         403 => "Forbidden",
         404 => "Not Found",
@@ -339,7 +406,7 @@ const MAX_LINE: u64 = 65536;
 const MAX_HEADERS: usize = 100;
 
 /// One line of at most MAX_LINE bytes: Ok(None) at EOF, Err(()) when longer.
-fn read_capped(reader: &mut BufReader<TcpStream>) -> Result<Option<String>, ()> {
+fn read_capped(reader: &mut BufReader<Conn>) -> Result<Option<String>, ()> {
     let mut buf = Vec::new();
     let n = reader.by_ref().take(MAX_LINE + 1).read_until(b'\n', &mut buf).map_err(|_| ())?;
     if n == 0 {
@@ -351,7 +418,7 @@ fn read_capped(reader: &mut BufReader<TcpStream>) -> Result<Option<String>, ()> 
     Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
 }
 
-fn refuse(reader: BufReader<TcpStream>, code: u16, why: &str) {
+fn refuse(reader: BufReader<Conn>, code: u16, why: &str) {
     let mut s = reader.into_inner();
     let body = why.as_bytes();
     let head = format!("HTTP/1.0 {code} {}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n", reason(code), body.len());
@@ -373,9 +440,52 @@ pub fn target_path(target: &str) -> &str {
     rel.split('#').next().unwrap_or("")
 }
 
+/// How long a connection may take to send its request line and headers, in
+/// all: short, so sockets that send nothing (or a byte now and then) do not
+/// hold the connection cap.
+const HEAD_WAIT: Duration = Duration::from_secs(5);
+
+/// How long a request body (at most review::MAX_BODY) may take, in all.
+const BODY_WAIT: Duration = Duration::from_secs(10);
+
+/// A connection whose reads share one deadline while it is set: every read
+/// waits only for what is left of it, and fails once it has passed.
+pub struct Conn {
+    s: TcpStream,
+    deadline: Option<std::time::Instant>,
+}
+
+impl std::ops::Deref for Conn {
+    type Target = TcpStream;
+    fn deref(&self) -> &TcpStream {
+        &self.s
+    }
+}
+
+impl Read for Conn {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(d) = self.deadline {
+            let left = d.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "request head took too long"));
+            }
+            self.s.set_read_timeout(Some(left))?;
+        }
+        self.s.read(buf)
+    }
+}
+
+impl Write for Conn {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.s.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.s.flush()
+    }
+}
+
 fn handle(stream: TcpStream, port: u16, token: String) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-    let mut reader = BufReader::new(stream);
+    let mut reader = BufReader::new(Conn { s: stream, deadline: Some(std::time::Instant::now() + HEAD_WAIT) });
     let line = match read_capped(&mut reader) {
         Ok(Some(l)) => l,
         Ok(None) => return,
@@ -400,6 +510,9 @@ fn handle(stream: TcpStream, port: u16, token: String) {
             headers.push((k.trim().to_string(), v.trim().to_string()));
         }
     }
+    // The head is in: a body (a POST's) may take longer to arrive.
+    reader.get_mut().deadline = None;
+    let _ = reader.get_ref().set_read_timeout(Some(Duration::from_secs(30)));
     let rel = target_path(parts.get(1).copied().unwrap_or(""));
     let (path, query) = rel.split_once('?').unwrap_or((rel, ""));
     let mut req = Request {
@@ -426,12 +539,83 @@ fn handle(stream: TcpStream, port: u16, token: String) {
 
 // ------------------------------------------------------------- port, token
 
-/// (port, token) of a server that is actually answering, else None.
+/// What /health answers: enough for a client to tell this server from
+/// another program that holds the port.
+pub fn health_body() -> String {
+    pyjson::dumps(&json!({"ok": true, "server": "crew-board-intent", "pid": std::process::id()}))
+}
+
+/// Ok when what answers on `port` is a crew-board-intent: its Server header
+/// (the Python's too, and what the app checks) or /health's body names it,
+/// whatever the status, so a busy server answering 503 at its connection cap
+/// still counts. Up to ~3s for the answer. Err says what is there instead.
+pub fn identify(port: u16) -> Result<(), String> {
+    identify_within(port, IDENTIFY_WAIT)
+}
+
+/// identify(), waiting at most `wait` in all.
+pub fn identify_within(port: u16, wait: Duration) -> Result<(), String> {
+    let (code, headers, body) = health_head(port, wait, IDENTIFY_CAP)
+        .map_err(|e| format!("nothing answers /health on {port} ({e})"))?;
+    let server = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("server")).map(|(_, v)| v.as_str()).unwrap_or("");
+    let named = serde_json::from_slice::<Value>(&body).ok()
+        .and_then(|v| v.get("server").and_then(Value::as_str).map(String::from)).unwrap_or_default();
+    if server.starts_with("crew-board-intent") || named == "crew-board-intent" {
+        return Ok(());
+    }
+    Err(format!("port {port} is held by something else ({code}, server {server:?})"))
+}
+
+/// identify()'s whole wait, and the most of the answer it reads: a program
+/// streaming on the recorded port must not hold it.
+const IDENTIFY_WAIT: Duration = Duration::from_secs(3);
+const IDENTIFY_CAP: usize = 8 * 1024;
+
+/// GET /health with one overall deadline and a size cap: (status, headers,
+/// body so far). Err when no header block arrived in time.
+fn health_head(port: u16, wait: Duration, cap: usize) -> std::io::Result<(u16, Vec<(String, String)>, Vec<u8>)> {
+    let deadline = std::time::Instant::now() + wait;
+    let left = || deadline.saturating_duration_since(std::time::Instant::now());
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let mut s = TcpStream::connect_timeout(&addr, left().min(Duration::from_millis(800)).max(Duration::from_millis(1)))?;
+    s.set_write_timeout(Some(left().max(Duration::from_millis(1))))?;
+    s.write_all(format!("GET /health HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").as_bytes())?;
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 2048];
+    while raw.len() < cap {
+        let rest = left();
+        if rest.is_zero() {
+            break;
+        }
+        s.set_read_timeout(Some(rest))?;
+        match s.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => raw.extend_from_slice(&buf[..n.min(cap - raw.len())]),
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => break,
+            Err(e) => return Err(e),
+        }
+    }
+    let bad = |m: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, m.to_string());
+    let split = raw.windows(4).position(|w| w == b"\r\n\r\n").ok_or_else(|| bad("no answer in time"))?;
+    let head = String::from_utf8_lossy(&raw[..split]).into_owned();
+    let mut lines = head.split("\r\n");
+    let code = lines.next().and_then(|l| l.split_whitespace().nth(1)).and_then(|c| c.parse().ok()).ok_or_else(|| bad("no status"))?;
+    let hdrs = lines.filter_map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))).collect();
+    Ok((code, hdrs, raw[split + 4..].to_vec()))
+}
+
+/// (port, token) of a crew-board-intent that is actually answering, else None.
+/// A connect alone is not enough: another program on the recorded port would
+/// be sent the token with every click.
 pub fn current() -> Option<(u16, String)> {
+    current_within(IDENTIFY_WAIT)
+}
+
+/// current(), waiting at most `wait` for the server to answer.
+pub fn current_within(wait: Duration) -> Option<(u16, String)> {
     let port: u16 = std::fs::read_to_string(port_file()).ok()?.trim().parse().ok()?;
     let token = std::fs::read_to_string(token_file()).ok()?.trim().to_string();
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    TcpStream::connect_timeout(&addr, Duration::from_millis(400)).ok().map(|_| (port, token))
+    identify_within(port, wait).ok().map(|_| (port, token))
 }
 
 /// The pinned port (CREW_INTENT_PORT, default 7345), then last time's, then any:
@@ -443,8 +627,9 @@ fn bind() -> std::io::Result<TcpListener> {
         candidates.push(p);
     }
     for want in candidates {
-        if let Ok(l) = TcpListener::bind(("127.0.0.1", want)) {
-            return Ok(l);
+        match TcpListener::bind(("127.0.0.1", want)) {
+            Ok(l) => return Ok(l),
+            Err(e) => log(&format!("port {want} is not free ({e}); trying the next")),
         }
     }
     TcpListener::bind(("127.0.0.1", 0))
@@ -458,10 +643,227 @@ fn token() -> String {
     if old.is_empty() { token_urlsafe(24) } else { old }
 }
 
+/// Written to a 0600 temp file and renamed over: a reader never sees it empty.
 fn write_token(path: &Path, token: &str) -> std::io::Result<()> {
-    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
-    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    f.write_all(token.as_bytes())
+    let tmp = PathBuf::from(format!("{}.tmp.{}", path.display(), std::process::id()));
+    let res = (|| {
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        f.write_all(token.as_bytes())?;
+        std::fs::rename(&tmp, path)
+    })();
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
+}
+
+/// Start `<this binary> crew-board-intent` detached, from $HOME, its stderr
+/// in the server log. `takeover` (the old server's pid) makes it a successor:
+/// it waits for the lock, names itself in board-intent.takeover, and binds
+/// only once that pid has gone (see serve()).
+pub fn spawn_server(takeover: Option<u32>) -> std::io::Result<std::process::Child> {
+    use std::os::unix::process::CommandExt;
+    let exe = crew_core::upgrade::exe().ok_or_else(|| std::io::Error::other("cannot find this binary"))?;
+    let _ = std::fs::create_dir_all(state_dir());
+    let err = std::fs::OpenOptions::new().append(true).create(true).open(log_file())
+        .map(std::process::Stdio::from).unwrap_or_else(|_| std::process::Stdio::null());
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("crew-board-intent").current_dir(py::home())
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(err);
+    if let Some(pid) = takeover {
+        cmd.env("CREW_INTENT_TAKEOVER", pid.to_string());
+    } else {
+        cmd.env_remove("CREW_INTENT_TAKEOVER");
+    }
+    // SAFETY: setsid is async-signal-safe and touches only the child.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    cmd.spawn()
+}
+
+fn takeover_file() -> PathBuf {
+    state_dir().join("board-intent.takeover")
+}
+
+/// How often a server looks for an installed upgrade (CREW_INTENT_UPGRADE_CHECK
+/// seconds, 10 by default; the probe shortens it).
+fn upgrade_check() -> Duration {
+    let s = std::env::var("CREW_INTENT_UPGRADE_CHECK").ok().and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(10.0);
+    Duration::from_secs_f64(if s.is_finite() && s > 0.0 { s.clamp(0.2, 3600.0) } else { 10.0 })
+}
+
+/// Whether the successor took over within `wait`: it holds the lock and named
+/// itself in board-intent.takeover. False as soon as it exits.
+fn handed_off(child: &mut std::process::Child, wait: Duration) -> bool {
+    let deadline = std::time::Instant::now() + wait;
+    let me = child.id().to_string();
+    while std::time::Instant::now() < deadline {
+        if let Ok(Some(_)) = child.try_wait() {
+            return false;
+        }
+        if std::fs::read_to_string(takeover_file()).is_ok_and(|s| s.trim() == me) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+/// Whether `pid` is a running process. A zombie (exited, not yet reaped by
+/// its parent) answers kill(pid, 0) too, so it is asked of ps as well.
+fn alive(pid: u32) -> bool {
+    // SAFETY: signal 0 only checks that the pid exists.
+    if pid == 0 || unsafe { libc::kill(pid as i32, 0) } != 0 {
+        return false;
+    }
+    match std::process::Command::new("/bin/ps").args(["-o", "stat=", "-p", &pid.to_string()]).output() {
+        Ok(o) => {
+            let st = String::from_utf8_lossy(&o.stdout);
+            !st.trim().is_empty() && !st.trim_start().starts_with('Z')
+        }
+        Err(_) => true,
+    }
+}
+
+/// Start the new binary as this server's successor and give it the lock: Ok
+/// when this process should exit (the successor took it, or the lock stays
+/// another's and this one must not serve unlocked), else why not, with the
+/// lock held again.
+fn hand_off(cell: &std::sync::Mutex<Option<py::Flock>>) -> Result<(), String> {
+    let mut child = spawn_server(Some(std::process::id())).map_err(|e| format!("it would not start ({e})"))?;
+    let pid = child.id();
+    drop(cell.lock().unwrap_or_else(|e| e.into_inner()).take());
+    if handed_off(&mut child, Duration::from_secs(10)) {
+        log(&format!("a newer binary is installed: pid {pid} took over; exiting"));
+        return Ok(());
+    }
+    let why = match child.try_wait() {
+        Ok(Some(st)) => format!("it exited ({st})"),
+        _ => "it did not take the lock in 10s".to_string(),
+    };
+    match server_lock(false) {
+        Ok(Some(l)) => {
+            *cell.lock().unwrap_or_else(|e| e.into_inner()) = Some(l);
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(format!("pid {pid} did not take over ({why})"))
+        }
+        _ => {
+            // Someone has the lock now: if it is the successor, late, it is
+            // waiting for this process to go.
+            if handed_off(&mut child, Duration::from_millis(500)) {
+                log(&format!("a newer binary is installed: pid {pid} took over late; exiting"));
+                return Ok(());
+            }
+            // Never serve without the lock: wait for it, and if it stays
+            // another's, leave (its holder serves, or starts to once this
+            // process has gone).
+            match retake(&state_dir().join("board-intent.lock"), Duration::from_secs(15)) {
+                Some(l) => {
+                    *cell.lock().unwrap_or_else(|e| e.into_inner()) = Some(l);
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    Err(format!("pid {pid} did not take over ({why}); the lock came back"))
+                }
+                None => {
+                    log(&format!("a newer binary is installed; pid {pid} did not take over ({why}), and the lock stays \
+                                  another's: exiting rather than serve without it"));
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
+/// The server lock back within `wait`, else None: the caller must then stop
+/// serving, since another process holds it.
+fn retake(path: &Path, wait: Duration) -> Option<py::Flock> {
+    lock_at(path, wait).ok().flatten()
+}
+
+/// How long to wait before trying a failed upgrade handoff again: a minute,
+/// five, then every fifteen.
+fn handoff_backoff(failures: u32) -> Duration {
+    Duration::from_secs(match failures {
+        0 | 1 => 60,
+        2 => 300,
+        _ => 900,
+    })
+}
+
+/// The server lock: at once, or (taking over from a server that is about to
+/// exit) waiting up to 15s for it to go.
+fn server_lock(wait: bool) -> std::io::Result<Option<py::Flock>> {
+    lock_at(&state_dir().join("board-intent.lock"), if wait { Duration::from_secs(15) } else { Duration::ZERO })
+}
+
+/// The lock at `path`, waiting up to `wait` for it.
+fn lock_at(path: &Path, wait: Duration) -> std::io::Result<Option<py::Flock>> {
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match py::Flock::try_exclusive(path)? {
+            Some(l) => return Ok(Some(l)),
+            None if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
+            None => return Ok(None),
+        }
+    }
+}
+
+/// The most connections served at once (each a thread; an open board's feed
+/// holds one): past it, a connection is answered 503 at once.
+const MAX_CONNS: usize = 256;
+static CONNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Hand a refused connection to one small worker, never waiting: the accept
+/// loop must not stall on a burst over the cap. Past a short queue the
+/// connection is just closed.
+fn refuse_busy(stream: TcpStream) {
+    static Q: OnceLock<std::sync::mpsc::SyncSender<TcpStream>> = OnceLock::new();
+    let tx = Q.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<TcpStream>(32);
+        std::thread::spawn(move || {
+            for s in rx {
+                too_busy(s);
+            }
+        });
+        tx
+    });
+    let _ = tx.try_send(stream);
+}
+
+/// How long too_busy may spend on one refused connection, all told.
+const BUSY_WAIT: Duration = Duration::from_millis(200);
+
+/// Runs on the accept thread, so it never blocks past BUSY_WAIT in all, however
+/// slowly the client sends: read what the client already sent, answer, shut
+/// the write side and drain, so the close is not a reset that loses the 503.
+fn too_busy(mut s: TcpStream) {
+    let deadline = std::time::Instant::now() + BUSY_WAIT;
+    // Each read waits only for what is left of the one deadline.
+    let left = || deadline.saturating_duration_since(std::time::Instant::now()).max(Duration::from_millis(1));
+    let mut sink = [0u8; 8192];
+    let _ = s.set_write_timeout(Some(Duration::from_millis(100)));
+    let _ = s.set_read_timeout(Some(left()));
+    let _ = s.read(&mut sink);
+    let body = b"too many connections";
+    let head = format!("HTTP/1.0 503 {}\r\nServer: crew-board-intent\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n",
+        reason(503), body.len());
+    let _ = s.write_all(head.as_bytes());
+    let _ = s.write_all(body);
+    let _ = s.shutdown(std::net::Shutdown::Write);
+    let mut total = 0;
+    while total < 64 * 1024 && std::time::Instant::now() < deadline {
+        let _ = s.set_read_timeout(Some(left()));
+        match s.read(&mut sink) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => total += n,
+        }
+    }
 }
 
 /// The token serve() would use now (for the selftest).
@@ -481,19 +883,51 @@ pub fn serve() -> i32 {
     // and cmux's "Crew board" command can each start one at the same moment;
     // without the lock both pass the check below, the loser binds a random
     // port and rewrites the port and token files under the winner's pages.
-    let _lock = match py::Flock::try_exclusive(&state_dir().join("board-intent.lock")) {
+    // Read once and removed, so nothing this server starts inherits it.
+    let takeover: Option<u32> = std::env::var("CREW_INTENT_TAKEOVER").ok().and_then(|v| v.trim().parse().ok());
+    std::env::remove_var("CREW_INTENT_TAKEOVER");
+    let lock = match server_lock(takeover.is_some()) {
         Ok(Some(l)) => l,
         Ok(None) => {
             eprintln!("crew-board-intent: another server holds board-intent.lock; not starting a second");
+            log(&format!("not starting (pid {}): another server holds board-intent.lock", std::process::id()));
             return 0;
         }
         Err(e) => {
             eprintln!("crew-board-intent: cannot take the server lock: {e}");
+            log(&format!("not starting: cannot take the server lock: {e}"));
             return 1;
         }
     };
-    if current().is_some() {
-        return 0;
+    // A successor: say so (the old server waits for this before it leaves),
+    // then wait for the old one to go, so its port is free to take.
+    if let Some(old) = takeover {
+        if let Err(e) = py::write_atomic(&takeover_file(), std::process::id().to_string().as_bytes()) {
+            log(&format!("not taking over: cannot write the takeover file: {e}"));
+            return 1;
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while alive(old) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let _ = std::fs::remove_file(takeover_file());
+        if alive(old) {
+            log(&format!("not taking over: the old server (pid {old}) is still running"));
+            return 0;
+        }
+    }
+    // One from before the lock existed may still serve: leave it be, but
+    // only when it is one. Anything else on the recorded port is ignored and
+    // a port bound afresh, so the port file never names another program.
+    if let Some(port) = std::fs::read_to_string(port_file()).ok().and_then(|s| s.trim().parse::<u16>().ok()) {
+        match identify(port) {
+            Ok(()) => {
+                log(&format!("not starting (pid {}): a crew-board-intent already answers on {port}", std::process::id()));
+                return 0;
+            }
+            Err(why) if takeover.is_none() => log(&format!("the port file names {port}, but {why}: binding afresh")),
+            Err(_) => {}
+        }
     }
     let token = token();
     let listener = match bind() {
@@ -512,21 +946,60 @@ pub fn serve() -> i32 {
         eprintln!("crew-board-intent: cannot write the token: {e}");
         return 1;
     }
-    let _ = std::fs::write(port_file(), port.to_string());
-    log(&format!("listening on 127.0.0.1:{port}"));
-    // An install replaced this binary: leave, so the new code serves (crew-listen
-    // starts it again within seconds; the token and the port carry over).
+    if let Err(e) = py::write_atomic(&port_file(), port.to_string().as_bytes()) {
+        eprintln!("crew-board-intent: cannot write the port file: {e}");
+        return 1;
+    }
+    log(&format!("listening on 127.0.0.1:{port} (pid {})", std::process::id()));
+    // An install replaced this binary: start the new one, hand it the lock,
+    // and leave only once it has taken it (it then waits for this process to
+    // go and binds the same port; the token carries over). A successor that
+    // does not take over in 10s, or exits, leaves this one serving the old
+    // code rather than none.
     let started = std::time::SystemTime::now();
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(10));
-        if crew_core::upgrade::replaced_since(started) {
-            log("a newer binary is installed: exiting so it can take over");
-            std::process::exit(0);
+    let held = std::sync::Arc::new(std::sync::Mutex::new(Some(lock)));
+    let cell = held.clone();
+    std::thread::spawn(move || {
+        // A handoff that fails is tried again, later each time, so a server
+        // never stays on old code for good; each failure is logged.
+        let mut failures = 0u32;
+        loop {
+            let wait = if failures == 0 { upgrade_check() } else { handoff_backoff(failures) };
+            std::thread::sleep(wait);
+            if !crew_core::upgrade::replaced_since(started) {
+                continue;
+            }
+            match hand_off(&cell) {
+                Ok(()) => std::process::exit(0),
+                Err(why) => {
+                    failures += 1;
+                    log(&format!("a newer binary is installed, but {why}: serving on with this one; trying again in {}s",
+                        handoff_backoff(failures).as_secs()));
+                }
+            }
         }
     });
     for stream in listener.incoming().flatten() {
+        use std::sync::atomic::Ordering;
+        if CONNS.fetch_add(1, Ordering::SeqCst) >= MAX_CONNS {
+            CONNS.fetch_sub(1, Ordering::SeqCst);
+            refuse_busy(stream);
+            continue;
+        }
         let token = token.clone();
-        std::thread::spawn(move || handle(stream, port, token));
+        let spawned = std::thread::Builder::new().spawn(move || {
+            struct Done;
+            impl Drop for Done {
+                fn drop(&mut self) {
+                    CONNS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            let _done = Done;
+            handle(stream, port, token)
+        });
+        if spawned.is_err() {
+            CONNS.fetch_sub(1, Ordering::SeqCst);
+        }
     }
     0
 }
@@ -595,6 +1068,197 @@ mod tests {
         assert_eq!(target_path("/inc?why=see+https://example.com/x"), "/inc?why=see+https://example.com/x");
         assert_eq!(target_path("http://127.0.0.1:7345/do?a=jump"), "/do?a=jump");
         assert_eq!(target_path("/plan/x#frag"), "/plan/x");
+    }
+
+    #[test]
+    fn pages_name_who_may_frame_them() {
+        let fa = frame_ancestors(7345);
+        assert!(fa.starts_with("'self' http://127.0.0.1:7345 http://localhost:7345 tauri://localhost tauri: "), "{fa}");
+        assert!(!fa.contains('*'));
+        assert!(is_html(&[("Content-Type", "text/html; charset=utf-8".into())]));
+        assert!(!is_html(&[("Content-Type", "application/json".into())]));
+        assert!(origin_ok("http://127.0.0.1:5199") && origin_ok("tauri://localhost"));
+        for bad in ["*", "http://x\r\nSet-Cookie: a", "http://", "javascript:alert(1)", "http://a/b", "'self'", "\"x\""] {
+            assert!(!origin_ok(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn another_program_on_the_port_is_not_the_server() {
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        let t = std::thread::spawn(move || {
+            if let Ok((mut s, _)) = l.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf);
+                let _ = s.write_all(b"HTTP/1.0 200 OK\r\nServer: SimpleHTTP/0.6\r\nContent-Length: 2\r\n\r\nok");
+            }
+        });
+        let e = identify(port).unwrap_err();
+        assert!(e.contains("held by something else"), "{e}");
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn a_busy_server_at_its_cap_is_still_ours() {
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        let t = std::thread::spawn(move || {
+            if let Ok((s, _)) = l.accept() {
+                let mut buf = [0u8; 1024];
+                let mut s2 = s.try_clone().unwrap();
+                let _ = s2.read(&mut buf);
+                too_busy(s);
+            }
+        });
+        assert!(identify(port).is_ok());
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn a_trickling_client_cannot_hold_the_accept_thread() {
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        let client = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            // One byte every 50ms for 3s: each read alone would come back in time.
+            for _ in 0..60 {
+                if c.write_all(b"x").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let (s, _) = l.accept().unwrap();
+        let t = std::time::Instant::now();
+        too_busy(s);
+        assert!(t.elapsed() < Duration::from_millis(400), "held for {:?}", t.elapsed());
+        client.join().unwrap();
+    }
+
+    #[test]
+    fn a_program_streaming_on_the_port_cannot_hold_identify() {
+        // Headers that never end, a byte at a time: given up at the deadline.
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = l.accept() {
+                let _ = s.write_all(b"HTTP/1.0 200 OK\r\nX: ");
+                while s.write_all(b"y").is_ok() {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        });
+        let t = std::time::Instant::now();
+        assert!(health_head(port, Duration::from_millis(500), IDENTIFY_CAP).is_err());
+        assert!(t.elapsed() < Duration::from_millis(900), "held for {:?}", t.elapsed());
+        // A flood after the headers: read up to the cap, and still identified.
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = l.accept() {
+                let _ = s.write_all(b"HTTP/1.0 200 OK\r\nServer: crew-board-intent\r\n\r\n");
+                let junk = [b'z'; 4096];
+                while s.write_all(&junk).is_ok() {}
+            }
+        });
+        let t = std::time::Instant::now();
+        let (code, _, body) = health_head(port, Duration::from_secs(3), IDENTIFY_CAP).unwrap();
+        assert!(code == 200 && body.len() < IDENTIFY_CAP && t.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn the_vite_dev_server_is_not_trusted_by_default() {
+        std::env::remove_var("CREW_INTENT_FRAME_ANCESTORS");
+        assert!(!parent_origins().iter().any(|o| o.contains("5173")));
+        assert!(!frame_ancestors(7345).contains("5173"));
+    }
+
+    #[test]
+    fn a_trickled_request_head_is_cut_off_at_one_deadline() {
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        let client = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            // A byte every 50ms, a request line that never ends.
+            for _ in 0..40 {
+                if c.write_all(b"G").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let (s, _) = l.accept().unwrap();
+        let mut r = BufReader::new(Conn { s, deadline: Some(std::time::Instant::now() + Duration::from_millis(300)) });
+        let t = std::time::Instant::now();
+        assert!(read_capped(&mut r).is_err());
+        assert!(t.elapsed() < Duration::from_millis(600), "held for {:?}", t.elapsed());
+        client.join().unwrap();
+    }
+
+    #[test]
+    fn an_exited_unreaped_process_is_not_alive() {
+        let mut c = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let pid = c.id();
+        std::thread::sleep(Duration::from_millis(300)); // exited, not yet reaped: a zombie
+        assert!(unsafe { libc::kill(pid as i32, 0) } == 0, "the zombie should still answer kill(0)");
+        assert!(!alive(pid));
+        let _ = c.wait();
+        assert!(alive(std::process::id()));
+    }
+
+    #[test]
+    fn a_failed_handoff_is_tried_again_later_each_time() {
+        let s: Vec<u64> = (1..6).map(|n| handoff_backoff(n).as_secs()).collect();
+        assert_eq!(s, vec![60, 300, 900, 900, 900]);
+    }
+
+    #[test]
+    fn identify_within_keeps_to_its_wait() {
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        // Accepts (the backlog) but never answers.
+        let t = std::time::Instant::now();
+        assert!(identify_within(port, Duration::from_millis(300)).is_err());
+        assert!(t.elapsed() < Duration::from_millis(700), "{:?}", t.elapsed());
+        drop(l);
+    }
+
+    #[test]
+    fn a_lock_held_elsewhere_is_not_retaken_and_a_free_one_is() {
+        let p = std::env::temp_dir().join(format!("crew-retake-{}.lock", std::process::id()));
+        let other = py::Flock::try_exclusive(&p).unwrap().unwrap();
+        let t = std::time::Instant::now();
+        assert!(retake(&p, Duration::from_millis(300)).is_none());
+        assert!(t.elapsed() >= Duration::from_millis(300) && t.elapsed() < Duration::from_secs(1));
+        drop(other);
+        assert!(retake(&p, Duration::from_millis(300)).is_some());
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn a_trickled_body_is_cut_off_at_one_deadline() {
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        let client = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            for _ in 0..40 {
+                if c.write_all(b"b").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let (s, _) = l.accept().unwrap();
+        let _ = s.set_read_timeout(Some(Duration::from_secs(30)));
+        let mut req = Request { method: "POST".into(), path: "/".into(), query: HashMap::new(), raw_query: String::new(),
+            headers: Vec::new(), reader: BufReader::new(Conn { s, deadline: None }), port, token: String::new() };
+        // The read under test: its deadline, shortened for the test.
+        req.reader.get_mut().deadline = Some(std::time::Instant::now() + Duration::from_millis(300));
+        let t = std::time::Instant::now();
+        let got = req.read_body_inner(10_000);
+        assert!(got.len() < 20 && t.elapsed() < Duration::from_millis(700), "{} bytes in {:?}", got.len(), t.elapsed());
+        client.join().unwrap();
     }
 
     #[test]

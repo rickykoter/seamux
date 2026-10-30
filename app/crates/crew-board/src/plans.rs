@@ -155,11 +155,11 @@ pub fn increment(slug: &str, n: &str, action: &str, why: &str) -> (bool, String)
     if action == "go" {
         args.extend(["--by", "human"]);
     }
-    if crate::act::which("node").is_none() {
-        log(&format!("FAIL inc {action} {slug} {n}: node is not on PATH"));
-        return (false, "node is not on this server's PATH, so deep-plan cannot run".into());
-    }
-    let Some((code, out, err)) = crew_core::py::run("node", &args, Duration::from_secs(90)) else {
+    let Some(node) = crate::act::node() else {
+        log(&format!("FAIL inc {action} {slug} {n}: node is not installed here"));
+        return (false, "node is not on this server's PATH or in Homebrew's bin, so deep-plan cannot run".into());
+    };
+    let Some((code, out, err)) = crew_core::py::run(&node, &args, Duration::from_secs(90)) else {
         log(&format!("FAIL inc {action} {slug} {n}: timed out"));
         return (false, "deep-plan did not finish in 90s".into());
     };
@@ -214,7 +214,8 @@ pub fn check_record(slug: &str, n: &str, id: &str, verdict: &str, note: &str) ->
         Err(e) => return (false, e),
     };
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-    let Some((code, out, err)) = crew_core::py::run("node", &argv, Duration::from_secs(60)) else {
+    let node = crate::act::node().unwrap_or_else(|| "node".into());
+    let Some((code, out, err)) = crew_core::py::run(&node, &argv, Duration::from_secs(60)) else {
         log(&format!("FAIL check {verdict} {slug} {n} {id}: node did not finish"));
         return (false, "deep-plan did not run (no node, or it timed out)".into());
     };

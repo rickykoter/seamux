@@ -82,10 +82,16 @@ export function writeAtomic(file, text) {
 // node and from python alike. A lock older than STALE_MS is a crashed writer's.
 //
 // This lock is a file contract (ADR 0004) with a twin that must stay in step:
-// review_lock in crew/board/crew-board-intent takes the same <id>.lock, breaks
+// crew-board-intent's Lock (app/crates/crew-board/src/review.rs) takes the same <id>.lock, breaks
 // it through the same <id>.lock-break guard, with the same timings.
+// The holder writes a nonce to <id>.lock/owner and removes the lock only
+// while it still holds that nonce: a holder slower than STALE_MS has had its
+// lock broken, and the lock there now is another writer's.
 const STALE_MS = 10_000;
+const OWNER = "owner";
 const isStale = p => Date.now() - fs.statSync(p).mtimeMs > STALE_MS;
+// The owner file, then the directory; anything else in it keeps the lock.
+const removeLock = lock => { fs.rmSync(path.join(lock, OWNER), { force: true }); fs.rmdirSync(lock); };
 
 // Break a stale lock, one breaker at a time: two writers that both saw it stale
 // would otherwise both remove it, and the second would remove the lock the first
@@ -105,7 +111,7 @@ function breakStale(lock) {
   }
   try {
     if (!isStale(lock)) return false;
-    fs.rmdirSync(lock);
+    removeLock(lock);
     return true;
   } catch (e) { return e.code === "ENOENT"; }
   finally { try { fs.rmdirSync(guard); } catch { /* already gone */ } }
@@ -115,6 +121,7 @@ export function withLock(id, fn) {
   const { lock } = paths(id);
   fs.mkdirSync(REVIEWS_DIR, { recursive: true });
   const deadline = Date.now() + 5000;
+  const nonce = process.pid + "-" + crypto.randomBytes(8).toString("hex");
   for (;;) {
     try { fs.mkdirSync(lock); break; }
     catch (e) { if (e.code !== "EEXIST") throw e; }
@@ -122,7 +129,22 @@ export function withLock(id, fn) {
     if (Date.now() > deadline) throw new Error("review " + id + " is locked by another writer");
     if (!gone) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
   }
-  try { return fn(); } finally { try { fs.rmdirSync(lock); } catch { /* already gone */ } }
+  try { fs.writeFileSync(path.join(lock, OWNER), nonce); }
+  catch (e) { try { fs.rmdirSync(lock); } catch { /* gone */ } throw e; }
+  try { return fn(); } finally { release(lock, nonce); }
+}
+
+// Release a lock, ours only: read the owner, leave a lock that is not ours
+// (broken as stale and retaken), and remove ours (owner file, then the
+// directory). A tiny window remains: a breaker could break and retake the lock
+// between our read and our removal. Breaking needs the lock past STALE_MS, so it
+// means a holder that overran that by microseconds; accepted, since renaming
+// aside and back can replace a writer that has made the directory but not yet
+// written its owner. The same steps as release() in
+// app/crates/crew-board/src/review.rs and review_lock in crew/board/crew-board-intent.
+function release(lock, nonce) {
+  try { if (fs.readFileSync(path.join(lock, OWNER), "utf8") === nonce) removeLock(lock); }
+  catch { /* gone, or not ours to remove */ }
 }
 
 // Read-modify-write under the lock. `fn` gets the current review (or null)

@@ -5,7 +5,10 @@
 //!
 //! The lock (a file contract, ADR 0004, with withLock in
 //! lookout/lib/store.mjs): a <id>.lock directory made atomically, stale after
-//! 10s, broken through a <id>.lock-break guard, one breaker at a time.
+//! 10s, broken through a <id>.lock-break guard, one breaker at a time. The
+//! holder writes a nonce to <id>.lock/owner and removes the lock only while
+//! it is still its own: a holder slower than the stale window must not remove
+//! the lock the writer who broke its lock now holds.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -65,6 +68,16 @@ fn stale(p: &Path) -> std::io::Result<bool> {
     Ok(age > LOCK_STALE)
 }
 
+/// The file in a lock directory naming its holder.
+const OWNER: &str = "owner";
+
+/// Remove a lock directory: its owner file, then the directory. Anything else
+/// in it stays, and so does the lock (ENOTEMPTY): it is not one of ours.
+fn remove_lock(lock: &Path) -> std::io::Result<()> {
+    let _ = std::fs::remove_file(lock.join(OWNER));
+    std::fs::remove_dir(lock)
+}
+
 /// Remove a stale lock, one breaker at a time; true when it is gone.
 fn break_stale(lock: &Path) -> bool {
     let guard = PathBuf::from(format!("{}-break", lock.display()));
@@ -89,7 +102,7 @@ fn break_stale(lock: &Path) -> bool {
         Ok(false) => false,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
         Err(_) => false,
-        Ok(true) => match std::fs::remove_dir(lock) {
+        Ok(true) => match remove_lock(lock) {
             Ok(()) => true,
             Err(e) => e.kind() == std::io::ErrorKind::NotFound,
         },
@@ -99,7 +112,10 @@ fn break_stale(lock: &Path) -> bool {
 }
 
 /// lookout's lock, held until dropped.
-pub struct Lock(PathBuf);
+pub struct Lock {
+    path: PathBuf,
+    nonce: String,
+}
 
 impl Lock {
     pub fn take(rid: &str) -> Result<Lock, String> {
@@ -107,7 +123,14 @@ impl Lock {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             match std::fs::create_dir(&path) {
-                Ok(()) => return Ok(Lock(path)),
+                Ok(()) => {
+                    let nonce = format!("{}-{}", std::process::id(), crate::server::token_hex(8));
+                    if let Err(e) = std::fs::write(path.join(OWNER), &nonce) {
+                        let _ = std::fs::remove_dir(&path);
+                        return Err(e.to_string());
+                    }
+                    return Ok(Lock { path, nonce });
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(e) => return Err(e.to_string()),
             }
@@ -123,9 +146,30 @@ impl Lock {
 }
 
 impl Drop for Lock {
+    /// Released only while it is still ours: a lock broken as stale and taken
+    /// by another writer carries that writer's nonce, and stays.
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir(&self.0);
+        release(&self.path, &self.nonce);
     }
+}
+
+/// Release a lock, ours only: read the owner, leave a lock that is not ours
+/// (broken as stale and retaken), and remove ours (owner file, then the
+/// directory). A tiny window remains: a breaker could break and retake the
+/// lock between our read and our removal. Breaking needs the lock past the
+/// 10s stale age, so it means a holder that overran that by microseconds;
+/// accepted, since every other scheme (renaming aside and back) can replace a
+/// writer that has made the directory but not yet written its owner. The same
+/// steps as release() in lookout/lib/store.mjs and review_lock in
+/// crew/board/crew-board-intent.
+fn release(lock: &Path, nonce: &str) {
+    if still_ours(lock, nonce) {
+        let _ = remove_lock(lock);
+    }
+}
+
+fn still_ours(lock: &Path, nonce: &str) -> bool {
+    std::fs::read_to_string(lock.join(OWNER)).is_ok_and(|s| s == nonce)
 }
 
 /// `--lock-test RID N [--jitter]`: take the lock once (N=0), or N times
@@ -160,4 +204,35 @@ pub fn lock_test(rid: &str, n: i64, jitter: bool) -> i32 {
     JITTER.store(false, Ordering::Relaxed);
     println!("{}", pyjson::dumps(&json!({"took": true, "s": pyjson::float(t.elapsed().as_secs_f64())})));
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_lock_broken_and_retaken_is_not_released_by_its_first_holder() {
+        let dir = std::env::temp_dir().join(format!("crew-review-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join("r.lock");
+        let first = Lock { path: lock.clone(), nonce: "first".into() };
+        std::fs::create_dir(&lock).unwrap();
+        std::fs::write(lock.join(OWNER), "first").unwrap();
+        // Broken as stale, then taken by a second writer.
+        remove_lock(&lock).unwrap();
+        std::fs::create_dir(&lock).unwrap();
+        std::fs::write(lock.join(OWNER), "second").unwrap();
+        drop(first);
+        assert!(lock.is_dir(), "the first holder removed the second writer's lock");
+        assert!(still_ours(&lock, "second"));
+        let second = Lock { path: lock.clone(), nonce: "second".into() };
+        drop(second);
+        assert!(!lock.exists());
+        // A lock with anything else in it is not ours to remove.
+        std::fs::create_dir(&lock).unwrap();
+        std::fs::write(lock.join("x"), "").unwrap();
+        assert!(remove_lock(&lock).is_err() && lock.is_dir());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

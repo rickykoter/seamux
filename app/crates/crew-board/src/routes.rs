@@ -8,6 +8,8 @@
 
 use serde_json::{json, Value};
 
+use crew_core::pyjson;
+
 use crate::server::{ct_eq, crew_file, log, Request};
 use crate::{act, review, usage};
 
@@ -53,7 +55,7 @@ pub fn get(req: &mut Request) {
         return crate::proxy::get(req, p);
     }
     match path.as_str() {
-        "/health" => return req.reply(200, br#"{"ok":true}"#),
+        "/health" => return req.reply(200, crate::server::health_body().as_bytes()),
         "/usage" => {
             // Read per request: editing the dashboard needs no restart.
             let f = crew_file("board/usage.tmpl.html");
@@ -201,8 +203,12 @@ fn board_page(req: &mut Request) {
         (Ok(h), Ok(r), Ok(i)) => (h, r, i),
         (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => return req.json(500, &json!({"error": e})),
     };
+    // The origins intent.js may post to and hear from when framed: the same
+    // ones the page's frame-ancestors allows (checked to be plain origins).
+    let parents = pyjson::dumps(&json!(crate::server::parent_origins()));
     let boot = format!("<script>\n{render}\n</script>\n<script>\n{intent}\n</script>\n{}",
-        crate::board_feed::BOARD_JS.replace("__TOKEN__", &req.token).replace("__PORT__", &req.port.to_string()));
+        crate::board_feed::BOARD_JS.replace("__TOKEN__", &req.token).replace("__PORT__", &req.port.to_string())
+            .replace("__PARENTS__", &parents));
     req.send(200, "text/html; charset=utf-8", "no-store", inject_first(&html, &boot).as_bytes())
 }
 

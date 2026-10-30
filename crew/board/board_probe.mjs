@@ -1347,7 +1347,7 @@ if (live && Array.isArray(live.rows)) {
   const last = () => q(fetched[fetched.length - 1]);
 
   checks.push(["intent: an older page's click CSS is replaced on upgrade",
-    oldCss.getAttribute("data-v") === "11" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
+    oldCss.getAttribute("data-v") === "16" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
   checks.push(["intent: a delegated child's go chip is muted, never filled or breathing",
     /\.row \.chip\.chip\[title\^="parent goes"\]\{[^}]*background:transparent[^}]*animation:none/.test(oldCss.textContent)]);
   const fold = () => JSON.parse(host.getAttribute("data-fold"));
@@ -1419,8 +1419,10 @@ if (live && Array.isArray(live.rows)) {
       tagName: tag.toUpperCase(), attrs: { ...attrs }, children: [], parentElement: null, text, listeners: [],
       getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
       setAttribute(k, v) { this.attrs[k] = String(v); },
+      removeAttribute(k) { delete this.attrs[k]; },
       hasAttribute(k) { return k in this.attrs; },
       get textContent() { return this.text + this.children.map((c) => c.textContent).join(""); },
+      set textContent(v) { this.text = String(v); this.children = []; },
       get classList() {
         const self = this, list = () => (self.attrs.class || "").split(/\s+/).filter(Boolean);
         return { contains: (c) => list().includes(c), add: (c) => { if (!list().includes(c)) self.attrs.class = [...list(), c].join(" "); },
@@ -1442,26 +1444,94 @@ if (live && Array.isArray(live.rows)) {
   const chip = mk("span", { class: "chip" }, [], "reclaim");
   const row = mk("div", { class: "row done open", "data-id": "WS-1" }, [mk("span", { class: "nm" }, [], "shipped-one"), mk("div", { class: "chips" }, [chip])]);
   const host = mk("div", { id: "rows", "data-fold": "{}" }, [row]);
-  const fetched = [], posted = [], winListeners = [];
-  const parent = { postMessage: (m) => posted.push(m) };
+  const fetched = [], posted = [], winListeners = [], timers = [];
+  // Each post as [message, targetOrigin]: nothing that names a workspace may go to "*".
+  const parent = { postMessage: (m, o) => posted.push([m, o]) };
   const win = { parent, addEventListener: (t, fn) => winListeners.push(fn) };
+  const body = mk("body");
+  const byId = {};
+  body.appendChild = (c) => { byId[c.id] = c; c.parentElement = body; body.children.push(c); return c; };
+  let answer = () => Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: true }) });
   const box = {
-    window: win, JSON, Math, encodeURIComponent, setTimeout: () => 0,
-    document: { head: mk("head"), getElementById: (id) => (id === "rows" ? host : null), createElement: (t) => mk(t) },
-    fetch: (url) => { fetched.push(url); return Promise.resolve({ json: () => ({ ok: true }) }); },
+    window: win, JSON, Math, encodeURIComponent, setTimeout: (fn) => { timers.push(fn); return timers.length; }, clearTimeout: () => {},
+    document: { head: mk("head"), body, getElementById: (id) => (id === "rows" ? host : byId[id] || null), createElement: (t) => mk(t) },
+    fetch: (url) => { fetched.push(url); return answer(); },
   };
+  const APP = "tauri://localhost";
   createContext(box);
   runInContext(readFileSync(join(HERE, "intent.js"), "utf8"), box);
-  box.__boardIntent({ port: 4242, token: "t" });
+  box.__boardIntent({ port: 4242, token: "t", parents: [APP, "http://tauri.localhost"] });
   const click = (el) => host.listeners.forEach((fn) => fn({ target: el, preventDefault() {}, stopPropagation() {} }));
+  checks.push(["intent: framed, the ready ask goes to each allowed app origin, never to \"*\"",
+    posted.length === 2 && posted.every(([m, o]) => m.crew === "ready" && o !== "*") &&
+    posted.map((p) => p[1]).join(" ") === APP + " http://tauri.localhost", JSON.stringify(posted)]);
   click(chip);
   checks.push(["intent: framed by an app that has not said it can, reclaim still asks cmux",
-    fetched.length === 1 && /a=reclaim/.test(fetched[0]) && !posted.some((m) => m.crew === "reclaim")]);
-  winListeners.forEach((fn) => fn({ source: parent, data: { crew: "selected", ws: "", can: ["reclaim"] } }));
+    fetched.length === 1 && /a=reclaim/.test(fetched[0]) && !posted.some(([m]) => m.crew === "reclaim")]);
+  // A row click before the app's origin is known waits for it: never to "*",
+  // and not sent to cmux instead.
+  const nf = fetched.length, np = posted.length;
+  click(row.children[0]);
+  checks.push(["intent: framed, a select before the app's origin is known is held, not sent to cmux",
+    fetched.length === nf && posted.length === np && /"select"/.test(host.getAttribute("data-app-pending") || "")]);
+  // A page that is not the app (another origin, even as the parent) is not heard.
+  winListeners.forEach((fn) => fn({ source: parent, origin: "https://evil.example", data: { crew: "selected", ws: "", can: ["reclaim"] } }));
   click(chip);
-  const m = posted.find((x) => x.crew === "reclaim");
+  checks.push(["intent: a selected message from an origin that is not the app's is ignored",
+    fetched.length === 2 && !posted.some(([m]) => m.crew === "reclaim") && host.getAttribute("data-app-can") === null]);
+  winListeners.forEach((fn) => fn({ source: parent, origin: APP, data: { crew: "selected", ws: "", can: ["reclaim"] } }));
+  const held = posted.slice(np).find(([x]) => x.crew === "select");
+  checks.push(["intent: ...and goes to the app's origin once the app names it",
+    !!held && held[0].ws === "WS-1" && held[1] === APP && !host.getAttribute("data-app-pending")]);
+  click(chip);
+  const m = posted.find(([x]) => x.crew === "reclaim");
   checks.push(["intent: once the app says can: [reclaim], the chip asks the app's wizard instead, naming the row",
-    fetched.length === 1 && m && m.ws === "WS-1" && m.name === "shipped-one"]);
+    fetched.length === 2 && m && m[0].ws === "WS-1" && m[0].name === "shipped-one"]);
+  checks.push(["intent: what names a workspace goes to the app's origin only",
+    !!m && m[1] === APP && posted.every(([, o]) => o !== "*")]);
+  // A failed click says why: the detail on the element and in a toast; and a
+  // server that does not answer at all is said to be not reachable.
+  const settle = () => new Promise((r) => setImmediate(r));
+  const chip2 = mk("span", { class: "chip" }, [], "pr");
+  row.children[1].appendChild(chip2);
+  answer = () => Promise.resolve({ status: 500, json: () => Promise.resolve({ ok: false, detail: "no PR on this row" }) });
+  click(chip2);
+  await settle(); await settle();
+  const toast = byId["intent-toast"];
+  checks.push(["intent: a refused click shows its detail on the chip and in a toast",
+    chip2.title === "no PR on this row" && !!toast && toast.text === "no PR on this row" && toast.hidden === false &&
+    chip2.classList.contains("bad"), JSON.stringify({ title: chip2.title, toast: toast && toast.text })]);
+  answer = () => Promise.reject(new Error("connection refused"));
+  click(chip2);
+  await settle(); await settle();
+  checks.push(["intent: a click the server never answers says the server is not reachable",
+    chip2.title === "server not reachable" && toast.text === "server not reachable", chip2.title]);
+  // The 4s restores: the title from before both failures, not the first one's.
+  timers.splice(0).forEach((fn) => fn());
+  checks.push(["intent: after two failures, the chip's title goes back to what it was before either",
+    chip2.title === "" && chip2.getAttribute("data-why") === null, chip2.title]);
+  // An app that never names its origin: after a while the held message is
+  // dropped, and the toast says so.
+  {
+    const row3 = mk("div", { class: "row done open", "data-id": "WS-3" }, [mk("span", { class: "nm" }, [], "three")]);
+    const host3 = mk("div", { id: "rows", "data-fold": "{}" }, [row3]);
+    const t3 = [], b3 = mk("body"), ids3 = {};
+    b3.appendChild = (c) => { ids3[c.id] = c; return c; };
+    const box3 = {
+      window: { parent: { postMessage: () => {} }, addEventListener: () => {} }, JSON, Math, encodeURIComponent, Promise,
+      setTimeout: (fn, ms) => { t3.push([fn, ms]); return t3.length; }, clearTimeout: () => {},
+      document: { head: mk("head"), body: b3, getElementById: (id) => (id === "rows" ? host3 : ids3[id] || null), createElement: (t) => mk(t) },
+      fetch: () => Promise.reject(new Error("unused")),
+    };
+    createContext(box3);
+    runInContext(readFileSync(join(HERE, "intent.js"), "utf8"), box3);
+    box3.__boardIntent({ port: 4242, token: "t", parents: [APP] });
+    host3.listeners.forEach((fn) => fn({ target: row3.children[0], preventDefault() {}, stopPropagation() {} }));
+    const held3 = !!host3.getAttribute("data-app-pending");
+    t3.filter(([, ms]) => ms === 3000).forEach(([fn]) => fn());
+    checks.push(["intent: a held message the app never collects is dropped after 3s, with a toast saying so",
+      held3 && !host3.getAttribute("data-app-pending") && ids3["intent-toast"]?.text === "the app didn't answer"]);
+  }
 }
 
 // ---- deep-plan families: grouped, ordered by the most urgent member --------
@@ -2233,6 +2303,25 @@ if (crewImpl.isRust("crew-board")) {
       rebound.status === 403 && !rebound.body.includes(token) && localhost.status === 200 &&
       (await req("GET", "/health", { headers: { Host: "127.0.0.1:1" } })).status === 403]);
 
+    if (crewImpl.isRust("crew-board-intent")) {
+      // /health names the server, so a client can tell it from whatever else
+      // holds a recorded port.
+      const h = await req("GET", "/health");
+      let hj = {}; try { hj = JSON.parse(h.body); } catch {}
+      checks.push(["intent server: /health names it, with its pid",
+        h.status === 200 && hj.ok === true && hj.server === "crew-board-intent" && Number.isInteger(hj.pid),
+        h.body]);
+      // Every page says who may frame it: itself and the app, not any site.
+      const fa = r => String(r.headers["content-security-policy"] || "");
+      const framed = r => /frame-ancestors /.test(fa(r)) && fa(r).includes("'self'") && fa(r).includes("tauri://localhost") &&
+        !/\*/.test(fa(r)) && !/https?:\/\/evil/.test(fa(r));
+      const rv = await req("GET", "/review/demo");
+      checks.push(["intent server: a review page passed through says frame-ancestors (the app and itself)",
+        rv.status === 200 && framed(rv), fa(rv)]);
+      checks.push(["intent server: a JSON answer carries no page policy",
+        !("content-security-policy" in (await req("GET", "/health")).headers)]);
+    }
+
     // The Wake's routes, against a store seeded under the temp HOME. The page
     // names row ids; nothing it sends is a path.
     const kept = join(HOME, "notes.md");
@@ -2361,22 +2450,37 @@ if (crewImpl.isRust("crew-board")) {
       again.status === 409 && qstore().notes[0].quiz.answered.pick === 2]);
     checks.push(["review POST answer: a right pick is graded right",
       (await ans({ item: "n2", pick: 2 })).status === 200 && qstore().notes[1].quiz.answered.correct === true]);
-    // A lock left by a crashed writer is broken once stale.
-    const lock = join(reviews, "demo.lock");
-    fs.mkdirSync(lock);
-    const old = new Date(Date.now() - 60000);
-    fs.utimesSync(lock, old, old);
-    // The 200 is the proof: a lock that was waited on rather than broken would
-    // time the write out. The lock is then checked gone, but after a short wait:
-    // each write starts a detached `lookout sync`, which takes the same lock for
-    // a moment and, on a slow machine, can still hold it when the POST returns.
-    const after = await post({ op: "comment", t: rtoken, item: "t1", text: "after a crash" });
-    let clear = false;
-    for (const t = Date.now() + 5000; Date.now() < t && !clear;) {
-      clear = !fs.existsSync(lock) && !fs.existsSync(lock + "-break");
-      if (!clear) await new Promise(r => setTimeout(r, 100));
+    // A lock left by a crashed writer is broken once stale. Its own try: a
+    // failure here must not skip the button and feed checks below.
+    try {
+      const lock = join(reviews, "demo.lock");
+      // Each write above starts a detached `lookout sync`, which takes this
+      // same lock for a moment: wait for it to go before planting one, or
+      // mkdir meets the sync's lock (EEXIST).
+      const gone = async () => {
+        for (const t = Date.now() + 5000; Date.now() < t;) {
+          if (!fs.existsSync(lock) && !fs.existsSync(lock + "-break")) return true;
+          await new Promise(r => setTimeout(r, 50));
+        }
+        return false;
+      };
+      let planted = false;
+      for (let i = 0; i < 20 && !planted; i++) {
+        await gone();
+        try { fs.mkdirSync(lock); planted = true; } catch (e) { if (e.code !== "EEXIST") throw e; }
+      }
+      const old = new Date(Date.now() - 60000);
+      if (planted) fs.utimesSync(lock, old, old);
+      // The 200 is the proof: a lock that was waited on rather than broken would
+      // time the write out. The lock is then checked gone, after a wait for the
+      // sync this write starts.
+      const after = await post({ op: "comment", t: rtoken, item: "t1", text: "after a crash" });
+      const clear = await gone();
+      checks.push(["review POST: a stale lock is broken, not waited on", planted && after.status === 200 && clear,
+        JSON.stringify({ planted, status: after.status, clear })]);
+    } catch (e) {
+      checks.push(["review POST stale-lock check ran to the end: " + e.message, false]);
     }
-    checks.push(["review POST: a stale lock is broken, not waited on", after.status === 200 && clear]);
     // Done with lookout's server (the Rust proxy's): stop it, and let the
     // syncs its writes started finish, since each lookout run rewrites the
     // engine pointer the button checks below replace with a fake.
@@ -2452,10 +2556,21 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
     const WS = (id, n, title) => ({ id, ref: "workspace:" + n, title, current_directory: HOME });
     fs.writeFileSync(join(FAKE_DIR, "workspaces.json"), JSON.stringify([WS("W-FEED-1", 5, "feed one")]));
     const bp = await req("GET", "/board");
+    {
+      // Either server (the Python twin too).
+      const fa = String(bp.headers["content-security-policy"] || "");
+      checks.push(["board page: frame-ancestors lets the app and this server frame it, and nothing else",
+        /^frame-ancestors 'self' http:\/\/127\.0\.0\.1:\d+ http:\/\/localhost:\d+ tauri:\/\/localhost tauri: /.test(fa) &&
+        !fa.includes("*") && !fa.includes("5173"), fa]);
+    }
+    // Either server (the retired Python too) tells intent.js who may frame it:
+    // without the list, a framed board ignores every message from the app.
+    checks.push(["board page: intent.js is told the app origins it may post to",
+      /PARENTS = \["tauri:\/\/localhost",/.test(bp.body) && bp.body.includes("parents: PARENTS")]);
     checks.push(["board page: board.html with the renderer, the click targets and the feed, before </body>",
       bp.status === 200 && bp.body.includes('id="rows"') && bp.body.includes("function __boardRender") &&
       bp.body.includes("function __boardIntent") && bp.body.includes(`new EventSource("/board/events?t=" + encodeURIComponent(T))`) &&
-      bp.body.includes(`var T = "${token}", PORT = ${port};`) &&
+      (bp.body.includes(`var T = "${token}", PORT = ${port};`) || bp.body.includes(`var T = "${token}", PORT = ${port}, PARENTS = `)) &&
       bp.body.lastIndexOf("EventSource") < bp.body.lastIndexOf("</body>")]);
     checks.push(["board page: the feed needs the token", (await req("GET", "/board/events")).status === 403 &&
       (await req("GET", "/board/events?t=nope")).status === 403]);
@@ -2502,6 +2617,109 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
     for (const plug of ["lookout", "deep-plan"])
       try { process.kill(JSON.parse(fs.readFileSync(join(HOME, ".claude", plug, "serve.json"), "utf8")).pid); } catch { /* none */ }
     fs.rmSync(HOME, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Another program on the recorded port is not the intent server: --status
+// says not running, and serve binds afresh (and says why) instead of leaving
+// the other program to be sent the board's clicks. The Rust server only.
+if (crewImpl.isRust("crew-board-intent")) {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const http = await import("node:http");
+  const net = await import("node:net");
+  const { spawn } = await import("node:child_process");
+  const H = fs.mkdtempSync(join(os.tmpdir(), "board-probe-squat-"));
+  const SD = join(H, ".cache", "cmux-crew");
+  fs.mkdirSync(SD, { recursive: true });
+  const other = http.createServer((q, r) => { r.writeHead(200, { "Content-Type": "application/json", Server: "someone-else" }); r.end('{"ok":true}'); });
+  await new Promise(r => other.listen(0, "127.0.0.1", r));
+  const squat = other.address().port;
+  fs.writeFileSync(join(SD, "board-intent.port"), String(squat));
+  fs.writeFileSync(join(SD, "board-intent.token"), "tok", { mode: 0o600 });
+  const free = await new Promise(res => { const v = net.createServer(); v.listen(0, "127.0.0.1", () => { const p = v.address().port; v.close(() => res(p)); }); });
+  const env = toolEnv({ ...process.env, HOME: H, CREW_INTENT_PORT: String(free),
+    CREW_CMUX: join(HERE, "..", "tools", "fakecmux.py"), FAKE_CMUX_DIR: H });
+  const [cmd, ...pre] = tool("crew-board-intent");
+  let srv = null;
+  try {
+    const st = JSON.parse(await new Promise(res => {
+      let o = ""; const c = spawn(cmd, [...pre, "--status"], { env, stdio: ["ignore", "pipe", "ignore"] });
+      c.stdout.on("data", d => (o += d)); c.on("exit", () => res(o || "{}"));
+    }));
+    checks.push(["intent server: --status does not take another program on the recorded port for it",
+      st.running === false && st.port === null, JSON.stringify(st)]);
+    srv = spawn(cmd, pre, { env, stdio: ["ignore", "ignore", "ignore"] });
+    let port = 0;
+    for (const t = Date.now() + 10000; Date.now() < t && !port; await new Promise(r => setTimeout(r, 100))) {
+      const p = parseInt(fs.readFileSync(join(SD, "board-intent.port"), "utf8"), 10);
+      if (p && p !== squat) port = p;
+    }
+    const log = fs.existsSync(join(SD, "board-intent.log")) ? fs.readFileSync(join(SD, "board-intent.log"), "utf8") : "";
+    checks.push(["intent server: serve binds afresh past a port another program holds, and logs why",
+      port === free && /names \d+, but port \d+ is held by something else.*binding afresh/.test(log), log.slice(-400)]);
+  } catch (e) {
+    checks.push(["intent server squatter checks ran to the end: " + e.message, false]);
+  } finally {
+    srv?.kill();
+    other.close();
+    fs.rmSync(H, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// An install replaces the server's binary: it hands over to the new one on the
+// same port and leaves; a new binary that will not start leaves it serving.
+// On a copy of seamux in a temp HOME, so the real binary is never touched.
+if (crewImpl.isRust("crew-board-intent")) {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const http = await import("node:http");
+  const net = await import("node:net");
+  const { spawn } = await import("node:child_process");
+  const H = fs.mkdtempSync(join(os.tmpdir(), "board-probe-upgrade-"));
+  const SD = join(H, ".cache", "cmux-crew");
+  const BIN = join(H, "bin", "seamux");
+  fs.mkdirSync(join(H, "bin"), { recursive: true });
+  fs.copyFileSync(crewImpl.seamuxBin(), BIN);
+  fs.chmodSync(BIN, 0o755);
+  const free = await new Promise(res => { const v = net.createServer(); v.listen(0, "127.0.0.1", () => { const p = v.address().port; v.close(() => res(p)); }); });
+  const env = toolEnv({ ...process.env, HOME: H, CREW_INTENT_PORT: String(free), CREW_INTENT_UPGRADE_CHECK: "0.3",
+    CREW_CMUX: join(HERE, "..", "tools", "fakecmux.py"), FAKE_CMUX_DIR: H });
+  const health = () => new Promise(res => {
+    const r = http.request({ host: "127.0.0.1", port: free, path: "/health" }, resp => {
+      let d = ""; resp.on("data", c => (d += c)); resp.on("end", () => { try { res(JSON.parse(d)); } catch { res(null); } });
+    });
+    r.on("error", () => res(null)); r.setTimeout(1000, () => { r.destroy(); res(null); }); r.end();
+  });
+  const until = async (f, ms) => { for (const t = Date.now() + ms; Date.now() < t; await new Promise(r => setTimeout(r, 100))) { const v = await f(); if (v) return v; } return null; };
+  const pids = [];
+  const logOf = () => fs.existsSync(join(SD, "board-intent.log")) ? fs.readFileSync(join(SD, "board-intent.log"), "utf8") : "";
+  try {
+    const first = spawn(BIN, ["crew-board-intent"], { env, stdio: "ignore", detached: true });
+    pids.push(first.pid);
+    const h1 = await until(async () => { const h = await health(); return h && h.pid === first.pid && h; }, 10000);
+    // "Install" a new binary: a fresh file renamed over the old (as an install does).
+    const fresh = BIN + ".new";
+    fs.copyFileSync(crewImpl.seamuxBin(), fresh); fs.chmodSync(fresh, 0o755); fs.renameSync(fresh, BIN);
+    const h2 = await until(async () => { const h = await health(); return h && h.pid !== first.pid && h; }, 15000);
+    if (h2) pids.push(h2.pid);
+    let gone = false;
+    try { process.kill(first.pid, 0); } catch { gone = true; }
+    checks.push(["intent server: on an upgrade the new binary takes over on the same port, and the old one leaves",
+      !!h1 && !!h2 && gone && /pid \d+ took over; exiting/.test(logOf()), logOf().slice(-500)]);
+    // A new binary that will not start: the server keeps serving, and says why.
+    fs.writeFileSync(fresh, "#!/bin/sh\nexit 3\n", { mode: 0o755 }); fs.renameSync(fresh, BIN);
+    const said = await until(() => /did not take over \(it exited.*trying again in 60s/.test(logOf()), 15000);
+    const h3 = await health();
+    checks.push(["intent server: a new binary that will not start leaves the old one serving, and logged",
+      !!said && !!h2 && h3?.pid === h2.pid, logOf().slice(-500)]);
+  } catch (e) {
+    checks.push(["intent server upgrade checks ran to the end: " + e.message, false]);
+  } finally {
+    for (const p of pids) try { process.kill(p); } catch { /* gone */ }
+    fs.rmSync(H, { recursive: true, force: true });
   }
 }
 

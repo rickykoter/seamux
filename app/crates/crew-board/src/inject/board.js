@@ -2,7 +2,7 @@
 <style>html[data-feed="lost"] #stamp::after{content:" · reconnecting"}</style>
 <script>
 (function(){
-  var T = "__TOKEN__", PORT = __PORT__;
+  var T = "__TOKEN__", PORT = __PORT__, PARENTS = __PARENTS__;
   // EventSource reconnects by itself; the stamp says so while it is down.
   var es = new EventSource("/board/events?t=" + encodeURIComponent(T));
   es.addEventListener("state", function(ev){
@@ -10,7 +10,7 @@
     try { d = JSON.parse(ev.data); } catch (e) { return; }
     document.documentElement.removeAttribute("data-feed");
     __boardRender(d);
-    __boardIntent({ port: PORT, token: T });
+    __boardIntent({ port: PORT, token: T, parents: PARENTS });
   });
   // A server that restarted has a new token and refuses this one, and a
   // refused EventSource never retries: if the stream stays down while the

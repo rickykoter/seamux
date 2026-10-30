@@ -479,6 +479,18 @@ def review_path(rid, ext):
     return target if os.path.isfile(target) else None
 
 
+LOCK_OWNER = "owner"
+
+
+def _remove_lock(lock):
+    """The owner file, then the directory; anything else in it keeps the lock."""
+    try:
+        os.remove(os.path.join(lock, LOCK_OWNER))
+    except FileNotFoundError:
+        pass
+    os.rmdir(lock)
+
+
 def _lock_stale(path):
     return time.time() - os.stat(path).st_mtime > LOCK_STALE
 
@@ -515,7 +527,7 @@ def _break_stale_lock(lock):
     try:
         if not _lock_stale(lock):
             return False
-        os.rmdir(lock)
+        _remove_lock(lock)
         return True
     except FileNotFoundError:
         return True
@@ -537,15 +549,26 @@ class review_lock:
 
     def __init__(self, rid):
         self.path = os.path.join(REVIEWS, rid + ".lock")
+        self.nonce = "%d-%s" % (os.getpid(), secrets.token_hex(8))
 
     def __enter__(self):
         deadline = time.time() + 5
         while True:
             try:
                 os.mkdir(self.path)
-                return self
             except FileExistsError:
                 pass
+            else:
+                try:
+                    with open(os.path.join(self.path, LOCK_OWNER), "w") as f:
+                        f.write(self.nonce)
+                except OSError:
+                    try:
+                        os.rmdir(self.path)
+                    except OSError:
+                        pass
+                    raise
+                return self
             gone = _break_stale_lock(self.path)
             if time.time() > deadline:
                 raise TimeoutError("the review is locked by another writer")
@@ -553,8 +576,14 @@ class review_lock:
                 time.sleep(0.025)
 
     def __exit__(self, *_):
+        # Ours only: a lock broken as stale and retaken carries another nonce.
+        # (The window between this read and the removal needs this holder
+        # past the 10s stale age; accepted, as in the Rust and JS twins.)
         try:
-            os.rmdir(self.path)
+            with open(os.path.join(self.path, LOCK_OWNER)) as f:
+                if f.read() != self.nonce:
+                    return
+            _remove_lock(self.path)
         except OSError:
             pass
 
@@ -1521,11 +1550,26 @@ BOARD_WAKE_EVENTS = ["agent.hook.Notification", "agent.hook.Stop", "workspace.cr
                      "workspace.closed", "workspace.renamed", "workspace.selected"]
 BOARD_IDLE_STOP = 60.0
 
+# The origins that frame the board (the seamux app's webview), plus
+# CREW_INTENT_FRAME_ANCESTORS (a developer running the app under Vite adds
+# http://localhost:5173 there): intent.js posts to and hears from
+# only these. The same list as parent_origins() in the Rust server.rs.
+_ORIGIN_OK = re.compile(r"^[a-z][a-z0-9+.-]*://[A-Za-z0-9.:\[\]-]+$")
+
+
+def parent_origins():
+    out = ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"]
+    for o in os.environ.get("CREW_INTENT_FRAME_ANCESTORS", "").split():
+        if _ORIGIN_OK.match(o) and o not in out:
+            out.append(o)
+    return out
+
+
 BOARD_JS = """
 <style>html[data-feed="lost"] #stamp::after{content:" · reconnecting"}</style>
 <script>
 (function(){
-  var T = "__TOKEN__", PORT = __PORT__;
+  var T = "__TOKEN__", PORT = __PORT__, PARENTS = __PARENTS__;
   // EventSource reconnects by itself; the stamp says so while it is down.
   var es = new EventSource("/board/events?t=" + encodeURIComponent(T));
   es.addEventListener("state", function(ev){
@@ -1533,7 +1577,7 @@ BOARD_JS = """
     try { d = JSON.parse(ev.data); } catch (e) { return; }
     document.documentElement.removeAttribute("data-feed");
     __boardRender(d);
-    __boardIntent({ port: PORT, token: T });
+    __boardIntent({ port: PORT, token: T, parents: PARENTS });
   });
   es.onerror = function(){ document.documentElement.setAttribute("data-feed", "lost"); };
 })();
@@ -1706,6 +1750,16 @@ ACTIONS = ("jump", "row", "diff", "pr", "issue", "jira", "checks", "plan", "take
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    def send_header(self, keyword, value):
+        super().send_header(keyword, value)
+        # Every page says who may frame it, as the Rust server's do: this
+        # server itself and the seamux app, not any site.
+        if keyword.lower() == "content-type" and str(value).lower().startswith("text/html"):
+            port = self.server.server_address[1]
+            super().send_header("Content-Security-Policy", "frame-ancestors " + " ".join(
+                ["'self'", "http://127.0.0.1:%d" % port, "http://localhost:%d" % port, "tauri://localhost", "tauri:"] +
+                parent_origins()[1:]))
+
     server_version = "crew-board-intent"
     token = ""
 
@@ -1931,7 +1985,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except OSError as exc:
                 return self._json(500, {"error": str(exc)})
             boot = scripts + BOARD_JS.replace("__TOKEN__", self.token).replace(
-                "__PORT__", str(self.server.server_address[1]))
+                "__PORT__", str(self.server.server_address[1])).replace(
+                "__PARENTS__", json.dumps(parent_origins()))
             html = html.replace("</body>", boot + "</body>", 1) if "</body>" in html else html + boot
             body = html.encode("utf-8")
             self.send_response(200)
