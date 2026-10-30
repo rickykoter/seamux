@@ -3834,10 +3834,19 @@ function runnerGone(v) {
 // seen dead: a runner writes its verdict before it exits, so a check still
 // "running" once its pid is gone never got one. Writes and returns the state.
 function reapLost(slug) {
-  const st = readState(slug) || die("no plan " + slug);
+  let st = readState(slug) || die("no plan " + slug);
   let lost = 0;
+  // Candidates from one read; each is judged again on a fresh read once its
+  // pid is seen gone, since a runner records its verdict just before it exits.
+  const gone = [];
+  for (const inc of st.increments || [])
+    for (const [id, v] of Object.entries(checksOf(inc)))
+      if (v.status === "running" && runnerGone(v)) gone.push({ n: inc.n, id, token: v.runner && v.runner.token });
+  if (!gone.length) return st;
+  st = readState(slug) || st;
   for (const inc of st.increments || []) {
     for (const [id, v] of Object.entries(checksOf(inc))) {
+      if (!gone.some(g => g.n === inc.n && g.id === id && g.token === (v.runner && v.runner.token))) continue;
       if (v.status !== "running" || !runnerGone(v)) continue;
       // A lost browser run's evidence is its own (what it got to before it
       // died), never the previous run's: the board's thumbnail reads it.

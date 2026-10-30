@@ -883,69 +883,170 @@ function cliBlanked(cmd, OWN) {
 // argument that nothing runs (a commit message, a grep pattern) is no call.
 // Heuristic, like the write test: it reads the command, it cannot run it.
 const PROG_RE = /(deep-plan|deep_plan\.mjs)(?=['"]?[ \t])/g;
-// Words that run the next word as a command, so a deep-plan word after them
-// is still in command position (with their options and VAR=value).
-const WRAPPERS = new Set(["env", "sudo", "command", "exec", "xargs", "npx", "nohup", "time", "nice", "node", "bash", "sh", "zsh", "dash"]);
-const SHELLS = /^(bash|sh|zsh|dash|ksh|eval|xargs)$/;
-
-// Heredoc bodies fed to anything but a shell (cat, tee, git, gh, grep…) are
-// text, not commands: blanked, length kept, so `cat <<EOF > notes` holding
-// the words "deep-plan open-gate" is no call.
 // A line that pipes into a shell (`| sh`, `| bash`, `| xargs`, `| eval`) runs
 // what is fed to it: its heredoc body and its quoted strings are code there.
 const PIPES_TO_SHELL = /\|\s*(\S*\/)?(sh|bash|zsh|dash|ksh|eval|xargs)\b/;
-// Only a real heredoc: `<<` or `<<-`, not a here-string (`<<<`), not a shift
-// inside $(( )), (( )) or [[ ]]. One with no terminator line blanks nothing:
-// the rest is read as code.
-function blankHeredocs(cmd) {
-  const re = /(?<!<)<<(?!<)-?[ \t]*(['"]?)(\w+)\1[^\n]*\n/g;
-  let out = cmd, m;
-  while ((m = re.exec(cmd))) {
-    const lineStart = cmd.lastIndexOf("\n", m.index) + 1;
-    const pre = cmd.slice(lineStart, m.index);
-    if (/\(\((?:(?!\)\)).)*$/.test(pre) || /\[\[(?:(?!\]\]).)*$/.test(pre)) { re.lastIndex = m.index + 2; continue; }
-    const lineEnd = cmd.indexOf("\n", m.index);
-    const piped = PIPES_TO_SHELL.test(cmd.slice(lineStart, lineEnd < 0 ? cmd.length : lineEnd));
-    const head = cmd.slice(lineStart, m.index).split(/[;&|(]/).pop().trim().split(/\s+/);
-    const first = path.basename(head.find(x => !/^\w+=/.test(x)) || "");
-    const bodyStart = m.index + m[0].length;
-    const endRe = new RegExp(`^[ \\t]*${m[2]}[ \\t]*$`, "m");
-    const rest = cmd.slice(bodyStart);
-    const em = endRe.exec(rest);
-    if (!em) { re.lastIndex = bodyStart; continue; }
-    const bodyEnd = bodyStart + em.index;
-    if (!SHELLS.test(first) && !piped) out = out.slice(0, bodyStart) + out.slice(bodyStart, bodyEnd).replace(/[^\n]/g, " ") + out.slice(bodyEnd);
-    re.lastIndex = bodyEnd;
-  }
-  return out;
-}
-
-// Whether the word starting at `w` is where a command starts: nothing before
-// it since the last separator, or only wrappers, their options and VAR=value.
+// Words that run the next word as a command, so a deep-plan word after them
+// is still in command position (with their options, a duration, and VAR=value).
+const WRAPPERS = new Set(["env", "sudo", "command", "exec", "xargs", "npx", "nohup", "time", "timeout", "nice", "eval",
+  "node", "bash", "sh", "zsh", "dash"]);
+const SHELLS = /^(bash|sh|zsh|dash|ksh|eval|xargs)$/;
 // Shell keywords that start a command after them: `then deep-plan go`.
 const KEYWORDS = new Set(["then", "do", "else", "elif", "if", "while", "until", "!", "{", "time"]);
-function commandPosition(ref, w) {
-  let s = w;
-  while (s > 0 && !/[;&|(`\n]/.test(ref[s - 1])) s--;
-  const before = ref.slice(s, w).trim().split(/\s+/).filter(Boolean);
-  while (before.length && KEYWORDS.has(before[0])) before.shift();
-  if (!before.length) return true;
-  const ok = x => WRAPPERS.has(path.basename(x)) || /^\w+=/.test(x);
-  if (!ok(before[0])) return false;
-  for (let j = 1; j < before.length; j++)
-    if (!(ok(before[j]) || before[j].startsWith("-") || before[j - 1].startsWith("-"))) return false;
-  return true;
+
+// One forward pass over a command line, linear in its length. It tracks quote
+// state (with $( … ) and backticks inside double quotes as code), comments,
+// (( )) and [[ ]], and which word starts are in command position. With
+// `heredocs`, it also finds real heredocs (an operator outside quotes,
+// comments and (( / [[, not `<<<`) and steps over their bodies, returning
+// each as {op, lineStart, start, end}; one with no terminator line is not a
+// heredoc, and what follows is read as code.
+//   code[i]     1 where char i is shell code (not quoted, not a comment, not arithmetic)
+//   cmdPos[i]   1 at the first char of a word in command position
+//   wordAt[i]   the index the word holding char i starts at, or -1
+//   nextSep[i]  the first separator at or after i (or the length)
+function scanShell(t, { heredocs = false } = {}) {
+  const n = t.length;
+  const code = new Uint8Array(n), cmdPos = new Uint8Array(n);
+  const wordAt = new Int32Array(n).fill(-1), sepAt = new Uint8Array(n);
+  const bodies = [];
+  const stack = [];          // contexts: '"', "'", "$(", "`"
+  let arith = 0, bracket = 0, w = -1;
+  let canCmd = true, wrap = false, prevFlag = false, wordIsCmd = false;
+  let pending = [];          // heredocs whose body starts after this line
+  let lineStart = 0;
+  const top = () => stack[stack.length - 1];
+  const inCode = () => !stack.length || top() === "$(" || top() === "`";
+  const endWord = end => {
+    if (w < 0) return;
+    if (wordIsCmd) {
+      const word = t.slice(w, end).replace(/['"]/g, "");
+      const base = word.slice(word.lastIndexOf("/") + 1);
+      if (word === "[[") bracket++;
+      if (KEYWORDS.has(word) && !wrap) { canCmd = true; }
+      else if (WRAPPERS.has(base) || /^\w+=/.test(word)) { canCmd = true; wrap = true; prevFlag = false; }
+      else if (wrap && word.startsWith("-")) { canCmd = true; prevFlag = true; }
+      else if (wrap && (prevFlag || /^\d+(\.\d+)?[smhd]?$/.test(word))) { canCmd = true; prevFlag = false; }
+      else { canCmd = false; wrap = false; prevFlag = false; }
+    } else if (t.slice(w, end) === "]]" && bracket) bracket--;
+    w = -1; wordIsCmd = false;
+  };
+  const separate = () => { canCmd = true; wrap = false; prevFlag = false; };
+  for (let i = 0; i < n; i++) {
+    const c = t[i];
+    const ctx = top();
+    if (ctx === "'") { if (c === "'") stack.pop(); if (w >= 0) wordAt[i] = w; continue; }
+    if (ctx === '"') {
+      if (w >= 0) wordAt[i] = w;
+      if (c === "\\") { i++; if (i < n && w >= 0) wordAt[i] = w; continue; }
+      if (c === '"') { stack.pop(); continue; }
+      if (c === "$" && t[i + 1] === "(" && t[i + 2] !== "(") { stack.push("$("); i++; separate(); w = -1; continue; }
+      if (c === "`") { stack.push("`"); separate(); w = -1; continue; }
+      continue;
+    }
+    // Code context (top level, or inside $( … ) / backticks).
+    if (arith) {
+      if (c === ")" && t[i + 1] === ")") { arith--; i++; }
+      else if (c === "(" && t[i + 1] === "(") { arith++; i++; }
+      continue;
+    }
+    if (c === "\\") { if (w < 0) { w = i; wordIsCmd = canCmd; if (canCmd) cmdPos[i] = 1; } wordAt[i] = w; code[i] = 1; i++; if (i < n) { wordAt[i] = w; } continue; }
+    if (c === "\n" || c === " " || c === "\t") {
+      endWord(i);
+      if (c === "\n") {
+        sepAt[i] = 1; code[i] = 1; separate();
+        if (pending.length && stack.length === 0) {
+          // The bodies, one after another, each up to its terminator line.
+          let at = i + 1, ok = true;
+          for (const h of pending) {
+            const re = new RegExp(`^[ \\t]*${h.tag}[ \\t]*$`, "m");
+            re.lastIndex = 0;
+            const m = re.exec(t.slice(at));
+            if (!m) { ok = false; break; }
+            const end = at + m.index;
+            bodies.push({ op: h.op, lineStart: h.lineStart, start: at, end });
+            const nl = t.indexOf("\n", end);
+            at = nl < 0 ? n : nl + 1;
+          }
+          pending = [];
+          if (ok) { i = at - 1; }
+        }
+        lineStart = i + 1;
+      }
+      continue;
+    }
+    if (c === "#" && w < 0) { const nl = t.indexOf("\n", i); i = (nl < 0 ? n : nl) - 1; continue; }
+    if (c === "'" || c === '"') { if (w < 0) { w = i; wordIsCmd = canCmd; if (canCmd) cmdPos[i] = 1; } wordAt[i] = w; stack.push(c); continue; }
+    if (c === "(" && t[i + 1] === "(" && w < 0 || (c === "$" && t[i + 1] === "(" && t[i + 2] === "(")) {
+      endWord(i); arith++; i += c === "$" ? 2 : 1; continue;
+    }
+    if (c === "$" && t[i + 1] === "(") { endWord(i); stack.push("$("); i++; sepAt[i] = 1; separate(); continue; }
+    if (c === "`") {
+      endWord(i); sepAt[i] = 1;
+      if (ctx === "`") stack.pop(); else stack.push("`");
+      separate(); continue;
+    }
+    if (c === ")" && ctx === "$(") { endWord(i); sepAt[i] = 1; stack.pop(); canCmd = false; wrap = false; continue; }
+    if (c === ";" || c === "&" || c === "|" || c === "(" || c === ")") {
+      endWord(i); sepAt[i] = 1; code[i] = 1;
+      if (c === ")") { canCmd = false; wrap = false; } else separate();
+      continue;
+    }
+    if (heredocs && c === "<" && t[i + 1] === "<" && t[i + 2] !== "<" && t[i - 1] !== "<" && !bracket && !stack.length) {
+      const m = /^<<-?[ \t]*(['"]?)(\w+)\1/.exec(t.slice(i, i + 200));
+      if (m) { endWord(i); pending.push({ tag: m[2], op: i, lineStart }); i += m[0].length - 1; continue; }
+    }
+    if (w < 0) { w = i; wordIsCmd = canCmd; if (canCmd) cmdPos[i] = 1; }
+    wordAt[i] = w; code[i] = 1;
+  }
+  endWord(n);
+  const nextSep = new Int32Array(n + 1);
+  nextSep[n] = n;
+  for (let i = n - 1; i >= 0; i--) nextSep[i] = sepAt[i] ? i : nextSep[i + 1];
+  return { code, cmdPos, wordAt, nextSep, bodies };
 }
 
-// The bodies of quoted strings handed to a shell: the argument after `-c`
-// (any short cluster ending in c) or `eval`. One linear pass with the quote
-// state tracked by hand; a regex here backtracked exponentially on an
-// unclosed quote full of escapes, and the gate runs this on every Bash call.
+// Heredoc bodies fed to anything but a shell (cat, tee, git, gh, grep…) are
+// text, not commands: blanked, length kept, so `cat <<EOF > notes` holding
+// the words "deep-plan open-gate" is no call. A shell (after any wrappers:
+// `sudo bash <<EOF`), or a line piped into one, keeps its body.
+function blankHeredocs(cmd) {
+  if (!cmd.includes("<<")) return cmd;
+  const { bodies } = scanShell(cmd, { heredocs: true });
+  if (!bodies.length) return cmd;
+  let out = "", at = 0;
+  for (const b of bodies) {
+    const lineEnd = cmd.indexOf("\n", b.op);
+    const line = cmd.slice(b.lineStart, lineEnd < 0 ? cmd.length : lineEnd);
+    const head = cmd.slice(b.lineStart, b.op).split(/[;&|(]/).pop().trim().split(/\s+/).filter(Boolean);
+    let k = 0;
+    while (k < head.length) {
+      const x = head[k], base = path.basename(x);
+      if (/^\w+=/.test(x) || (WRAPPERS.has(base) && !SHELLS.test(base)) || x.startsWith("-") ||
+        (k && head[k - 1] === "timeout" && /^\d/.test(x))) { k++; continue; }
+      break;
+    }
+    const first = path.basename(head[k] || "");
+    if (SHELLS.test(first) || PIPES_TO_SHELL.test(line)) continue;
+    out += cmd.slice(at, b.start) + cmd.slice(b.start, b.end).replace(/[^\n]/g, " ");
+    at = b.end;
+  }
+  return out + cmd.slice(at);
+}
+
+// The bodies of quoted strings handed to a shell: the argument after a
+// shell's `-c` (any short cluster ending in c) or `eval`, at a word start (after
+// whitespace or ; & | ( ` and $( ). One linear pass with the quote state
+// tracked by hand; a regex here backtracked exponentially on an unclosed
+// quote full of escapes, and the gate runs this on every Bash call.
 function shellStrings(text) {
   const out = [];
   const n = text.length;
-  for (let i = 0; i < n; i++) {
-    if (i && !/\s/.test(text[i - 1])) continue;
+  // Candidates found by a simple, linear regex; each is then read by hand.
+  const cand = /(?:^|[\s;&|(`])(?=eval|-[a-zA-Z]*c[\s])/g;
+  for (let mm; (mm = cand.exec(text));) {
+    const i = mm.index + mm[0].length;
+    if (cand.lastIndex === mm.index) cand.lastIndex++;
     let j = i;
     if (text.startsWith("eval", i)) j = i + 4;
     else if (text[i] === "-") {
@@ -966,7 +1067,7 @@ function shellStrings(text) {
     while (e < n && text[e] !== q) e += (q === '"' && text[e] === "\\") ? 2 : 1;
     if (e >= n) continue;                     // never closes: nothing a shell would run
     out.push(text.slice(k + 1, e));
-    i = e;
+    cand.lastIndex = Math.max(cand.lastIndex, e + 1);
   }
   return out;
 }
@@ -1005,29 +1106,28 @@ export function deepPlanCalls(cmd, depth = 0) {
   // go x` is read as the one call it is.
   cmd = String(cmd).slice(0, CALL_SCAN_MAX).replace(/\\\r?\n/g, "  ");
   const text = blankHeredocs(cmd);
-  const bare = blankQuotes(text);
-  const ref = bare || text;
+  const sc = scanShell(text);
   // A quoted string a shell runs (bash -c "…", eval '…') is a command line of its own.
   for (const body of shellStrings(text)) out.push(...deepPlanCalls(body, depth + 1));
   // On a line piped into a shell, every quoted string may be what it runs.
   for (const line of text.split("\n")) if (PIPES_TO_SHELL.test(line)) for (const body of quotedStrings(line)) out.push(...deepPlanCalls(body, depth + 1));
-  const sep = from => { let e = from; while (e < text.length && !/[;&|\n)`]/.test(ref[e])) e++; return e; };
   for (const m of text.matchAll(PROG_RE)) {
     const i = m.index, after = i + m[0].length;
     if (i && !/[\s;&|(`'"/]/.test(text[i - 1])) continue;
-    // The whole word: a path to the program, or the program name in quotes.
-    let w = i;
-    while (w > 0 && !/[\s;&|(`]/.test(text[w - 1])) w--;
+    // The whole word (from the scan): a path to the program, or the program
+    // name in quotes, at a command position.
+    const w = sc.wordAt[i];
+    if (w < 0 || !sc.cmdPos[w]) continue;
     let next = after;
-    if (bare && bare[i] !== text[i]) {
+    if (!sc.code[i]) {
       // Inside quotes: only a quoted program name ("deep-plan" go) runs here.
       const q = text[w];
       if (!(q === '"' || q === "'") || text[after] !== q) continue;
       next = after + 1;
     }
     if (!/^['"]?(\S*\/)?(deep-plan|deep_plan\.mjs)$/.test(text.slice(w, after))) continue;
-    if (!commandPosition(ref, w)) continue;
-    const words = text.slice(next, sep(next)).replace(/['"]/g, " ").trim().split(/\s+/).filter(Boolean);
+    const end = Math.min(next >= text.length ? text.length : sc.nextSep[next], next + 4096);
+    const words = text.slice(next, end).replace(/['"]/g, " ").trim().split(/\s+/).filter(Boolean);
     const verb = words.shift() || "";
     if (/^[a-z][a-z-]*$/.test(verb)) out.push({ verb, words });
   }
@@ -1222,7 +1322,23 @@ export function bashTouchesRecords(cmd, cwd) {
     names.add(p);
     if (p.startsWith(home + path.sep)) { const rest = p.slice(home.length); names.add("~" + rest); names.add("$HOME" + rest); names.add("${HOME}" + rest); }
   }
-  return [...names].some(n => cmd.includes(n)) && writes();
+  if ([...names].some(n => cmd.includes(n)) && writes()) return true;
+  // A write aimed at a directory holding them (rm -rf ~/.claude/deep-plan,
+  // mv ~/.claude x, or `rm -rf deep-plan` after a cd into ~/.claude). Only
+  // ancestors at or below the data root (or a dir's own parent, for an
+  // override) count, so a write at the repo root or $HOME is not caught up in it.
+  const dirs = [STATE_DIR, KEYS_DIR, EXT_DIR].flatMap(d => [d, canon(d)]);
+  const floor = [DATA_ROOT, canon(DATA_ROOT), ...dirs.map(d => path.dirname(d))];
+  const holds = p => dirs.some(d => d.startsWith(p + path.sep)) &&
+    floor.some(f => p === f || p.startsWith(f + path.sep));
+  if (!writes()) return false;
+  const within = p => dirs.some(d => p === d || p.startsWith(d + path.sep));
+  for (const tok of cmd.slice(0, 1 << 20).split(/[\s;&|()<>'"=]+/)) {
+    if (!tok || tok.startsWith("-") || /[$`*?]/.test(tok.replace(/^\$\{?HOME\}?(?=\/|$)/, ""))) continue;
+    const p = path.resolve(at, tok.replace(/^~(?=\/|$)/, home).replace(/^\$\{?HOME\}?(?=\/|$)/, home)).replace(/\/+$/, "") || "/";
+    if (holds(p) || within(p)) return true;
+  }
+  return false;
 }
 
 // Where a bash command "lands": its cwd. We gate bash by cwd, not by parsing

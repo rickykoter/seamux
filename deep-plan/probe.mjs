@@ -5411,6 +5411,24 @@ exit 1
     ok("b1: …and import-state over existing state is still the CLI's refusal", r.status === 1 && /already exists here; --force replaces it/.test(r.stderr), r.stderr);
   }
   ok("b1: an Edit into the extension dir is refused", hook(S2, "Write", { file_path: path.join(os.homedir(), ".claude", "deep-plan", "ext", "x.mjs") }).status === 2);
+  // Round 13: what the scanner reads, and writes at what holds the records.
+  {
+    const SDp = ENV.DEEP_PLAN_STATE_DIR, up = path.dirname(SDp);
+    ok("b1: a write at a dir holding the records is refused (rm -rf its parent)", lib.bashTouchesRecords(`rm -rf ${up}`, TMP));
+    ok("b1: …and a relative one after a cd into that parent", lib.bashTouchesRecords(`cd ${up} && rm -rf state`, "/"));
+    ok("b1: …while one elsewhere is not", !lib.bashTouchesRecords(`rm -rf ${path.join(TMP, "b1-root", "src", "out")}`, TMP));
+    const v = c => JSON.stringify(lib.deepPlanCalls(c).map(x => x.verb));
+    ok("b1: << inside quotes or a comment is no heredoc", v('echo "a <<EOF"\ndeep-plan open-gate x') === '["open-gate"]' &&
+      v("echo hi # <<EOF\ndeep-plan open-gate x") === '["open-gate"]');
+    ok("b1: a wrapped shell's heredoc body is code (sudo bash, env bash)",
+      v("sudo bash <<EOF\ndeep-plan open-gate x\nEOF") === '["open-gate"]' && v("env X=1 bash <<EOF\ndeep-plan open-gate x\nEOF") === '["open-gate"]');
+    ok("b1: timeout, nice and eval are wrappers", v("timeout 5 deep-plan go a next") === '["go"]' &&
+      v("nice -n 5 deep-plan go a next") === '["go"]' && v("eval deep-plan close a") === '["close"]');
+    ok("b1: eval after ; or ( is read", v('x;eval "deep-plan close a"') === '["close"]' && v('(eval "deep-plan close a")') === '["close"]');
+    const mb = "echo " + "y ".repeat(500000) + "; deep-plan open-gate x";
+    const t2 = Date.now(); const got = lib.deepPlanCalls(mb); const took2 = Date.now() - t2;
+    ok(`b1: a 1 MB command is read in one pass, well under 100ms (${took2} ms)`, got.length === 1 && took2 < 100);
+  }
   ok("b1: grep -c's pattern is no shell string", lib.deepPlanCalls('grep -c "deep-plan open-gate" notes.md').length === 0 &&
     lib.deepPlanCalls('/bin/bash -e -c "deep-plan open-gate a"').length === 1);
   ok("b1: a write chained after the CLI is not the CLI's own tooling",
