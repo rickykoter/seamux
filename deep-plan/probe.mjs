@@ -5497,9 +5497,19 @@ exit 1
     ok("b1: timeout, nice and eval are wrappers", v("timeout 5 deep-plan go a next") === '["go"]' &&
       v("nice -n 5 deep-plan go a next") === '["go"]' && v("eval deep-plan close a") === '["close"]');
     ok("b1: eval after ; or ( is read", v('x;eval "deep-plan close a"') === '["close"]' && v('(eval "deep-plan close a")') === '["close"]');
-    const mb = "echo " + "y ".repeat(500000) + "; deep-plan open-gate x";
-    const t2 = Date.now(); const got = lib.deepPlanCalls(mb); const took2 = Date.now() - t2;
-    ok(`b1: a 1 MB command is read in one pass, well under 100ms (${took2} ms)`, got.length === 1 && took2 < 100);
+    // One pass means time grows with the length, not its square. A shared CI
+    // runner's clock is too noisy for a fixed bound (main saw 101 ms, a PR
+    // 154 ms), so: best of three after a warm-up, 1 MB against 100 KB. Linear
+    // is ~10x; a quadratic scan would be ~100x. The loose ceiling still
+    // catches a scan gone badly wrong.
+    const cmdOf = n => "echo " + "y ".repeat(n) + "; deep-plan open-gate x";
+    const best = c => { let b = Infinity; for (let i = 0; i < 3; i++) { const t = performance.now(); lib.deepPlanCalls(c); b = Math.min(b, performance.now() - t); } return b; };
+    const mb = cmdOf(500000), kb = cmdOf(50000);
+    lib.deepPlanCalls(kb);
+    const got = lib.deepPlanCalls(mb);
+    const tMb = best(mb), tKb = Math.max(best(kb), 0.5);
+    const took2 = Math.round(tMb), ratio = tMb / tKb;
+    ok(`b1: a 1 MB command is read in one pass (${took2} ms, ${ratio.toFixed(1)}x the 100 KB one)`, got.length === 1 && ratio < 40 && tMb < 1000);
   }
   ok("b1: grep -c's pattern is no shell string", lib.deepPlanCalls('grep -c "deep-plan open-gate" notes.md').length === 0 &&
     lib.deepPlanCalls('/bin/bash -e -c "deep-plan open-gate a"').length === 1);
