@@ -48,6 +48,23 @@ const ageOf = (secs: number): string => {
   return d < 3600 ? `${Math.floor(d / 60)}m` : d < 86400 ? `${Math.floor(d / 3600)}h` : `${Math.floor(d / 86400)}d`;
 };
 
+/** What a pane's tab says: a Claude by its state (and how long it has
+ *  waited), a terminal by what it runs. */
+function tabView(p: Tile): { cls: string; name: string; state: string; tip: string } {
+  if (p.agent && p.state !== "ended") {
+    const who = p.agent === "claude" ? "Claude" : p.agent;
+    const waiting = p.state === "needs_input";
+    const wait = waiting && p.since > 0 ? ageOf(p.since / 1000) : "";
+    const st = waiting ? (wait ? `waiting ${wait}` : "waiting") : "";
+    const said = p.state === "needs_input" ? "waiting on you" : p.state.replace("_", " ");
+    return { cls: `agent ${p.state}`, name: who, state: st, tip: `${who} · ${said}${wait ? " for " + wait : ""}${p.topic ? " · " + p.topic : ""}` };
+  }
+  // cmux's stock title says nothing; the folder it is in does.
+  const dir = p.cwd.replace(/\/+$/, "").split("/").pop() || "";
+  const runs = p.running || (p.label && p.label !== "Terminal" ? p.label : "") || dir || "terminal";
+  return { cls: `term${p.bell ? " bell" : ""}`, name: runs, state: "", tip: `Terminal · ${runs}${p.cwd ? " · " + p.cwd : ""}` };
+}
+
 /** The agent's chat beside a page: its pane, live, with Jump (and a reply
  *  box when the live pane fails). */
 class Chat {
@@ -72,11 +89,29 @@ class Chat {
   private starting = false;
   /** The tile last shown, to redraw the session bar when the pane's kind is known. */
   private shown: Tile | null = null;
+  /** One tab per live pane in the workspace, in the order they first showed up. */
+  private tabsEl = document.createElement("div");
+  private panes: Tile[] = [];
+  private order: string[] = [];
+  private tabSig = "";
+  /** A tab was opened: the sheet shows that pane. */
+  onPick: (surface: string) => void = () => {};
 
   constructor() {
     this.el.className = "sheet-chat";
     this.bar.className = "sheet-chat-sessions";
     this.bar.hidden = true;
+    this.tabsEl.className = "sheet-chat-tabs";
+    this.tabsEl.setAttribute("role", "tablist");
+    this.tabsEl.setAttribute("aria-label", "Panes in this workspace");
+    this.tabsEl.addEventListener("keydown", (e) => this.tabKey(e));
+    this.tabsEl.addEventListener("scroll", () => this.clip(), { passive: true });
+    // A mouse wheel scrolls the row sideways: it has no other way to.
+    this.tabsEl.addEventListener("wheel", (e) => {
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX) || this.tabsEl.scrollWidth <= this.tabsEl.clientWidth) return;
+      this.tabsEl.scrollLeft += e.deltaY;
+      e.preventDefault();
+    });
     const head = document.createElement("header");
     this.body.className = "sheet-chat-body";
     const form = document.createElement("form");
@@ -208,89 +243,193 @@ class Chat {
     this.drawSessions(t);
   }
 
+  /** The pane tabs: each Claude with its state dot (and how long it has
+   *  waited), each terminal with what it runs. Redrawn only when one of them
+   *  changes, so a tab keeps focus across frames. */
+  private drawTabs(): void {
+    for (const p of this.panes) if (!this.order.includes(p.surface)) this.order.push(p.surface);
+    const live = new Set(this.panes.map((p) => p.surface));
+    this.order = this.order.filter((s) => live.has(s));
+    const panes = [...this.panes].sort((a, b) => this.order.indexOf(a.surface) - this.order.indexOf(b.surface));
+    const views = panes.map((p) => ({ p, ...tabView(p) }));
+    const sig = JSON.stringify([this.surface, views.map((v) => [v.p.surface, v.cls, v.name, v.state, v.tip])]);
+    if (sig === this.tabSig) return;
+    this.tabSig = sig;
+    const focused = (document.activeElement as HTMLElement | null)?.closest?.(".sheet-chat-tab") as HTMLElement | null;
+    const keep = focused && this.tabsEl.contains(focused) ? focused.dataset.surface : null;
+    this.tabsEl.replaceChildren(
+      ...views.map((v) => {
+        const on = v.p.surface === this.surface;
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = `sheet-chat-tab ${v.cls}` + (on ? " on" : "");
+        b.dataset.surface = v.p.surface;
+        b.setAttribute("role", "tab");
+        b.setAttribute("aria-selected", String(on));
+        b.tabIndex = on ? 0 : -1;
+        b.title = v.tip;
+        if (v.cls.startsWith("term")) b.append(mark("M3.5 2.5 6 5 3.5 7.5"));
+        else {
+          const dot = document.createElement("i");
+          dot.className = "sheet-chat-tab-dot";
+          b.append(dot);
+        }
+        const name = document.createElement("span");
+        name.className = "sheet-chat-tab-name";
+        name.textContent = v.name;
+        b.append(name);
+        if (v.state) {
+          const st = document.createElement("span");
+          st.className = "sheet-chat-tab-state";
+          st.textContent = v.state;
+          b.append(st);
+        }
+        b.addEventListener("click", () => this.onPick(v.p.surface));
+        return b;
+      }),
+    );
+    if (keep) this.tabsEl.querySelector<HTMLElement>(`[data-surface="${CSS.escape(keep)}"]`)?.focus();
+    // Many panes scroll rather than crush; the shown one stays in view.
+    this.tabsEl.querySelector(".on")?.scrollIntoView({ inline: "nearest", block: "nearest" });
+    this.clip();
+  }
+
+  /** Arrows move between tabs, Home and End to the ends; Return or Space opens one. */
+  private tabKey(e: KeyboardEvent): void {
+    const tabs = [...this.tabsEl.querySelectorAll<HTMLButtonElement>(".sheet-chat-tab")];
+    const i = tabs.indexOf(document.activeElement as HTMLButtonElement);
+    if (i < 0) return;
+    const to = e.key === "ArrowRight" ? (i + 1) % tabs.length : e.key === "ArrowLeft" ? (i - 1 + tabs.length) % tabs.length
+      : e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 : -1;
+    if (to < 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    tabs[i].tabIndex = -1;
+    tabs[to].tabIndex = 0;
+    tabs[to].focus();
+    tabs[to].scrollIntoView({ inline: "nearest", block: "nearest" });
+  }
+
+  /** Fade the edge the row runs past, so a clipped tab reads as more to scroll to. */
+  private clip(): void {
+    const el = this.tabsEl;
+    el.classList.toggle("clip-l", el.scrollLeft > 1);
+    el.classList.toggle("clip-r", el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+  }
+
+  /** The tab row's tools: + (a new native session), History ▾ (the workspace's
+   *  stored conversations), and Resume Claude on a shell with one to resume. */
   private drawSessions(t: Tile): void {
     const inShell = !t.agent || t.state === "ended";
     const rows = this.sessions;
     const name = (r: SessionRow) => `${r.label || r.id.slice(0, 8)} · ${ageOf(r.updated)}`;
-    const parts: HTMLElement[] = [];
+    this.bar.hidden = false;
     // A native session (a real terminal here, in tmux) can always be started.
     const fresh = document.createElement("button");
     fresh.type = "button";
-    fresh.className = "sheet-btn";
-    fresh.textContent = "New native session";
-    fresh.title = "Start Claude in a local-tmux session in this workspace: a real terminal here and a pane in cmux";
+    fresh.className = "sheet-btn icon sheet-chat-new";
+    fresh.title = "New native session: Claude in local tmux, a real terminal here and a pane in cmux";
+    fresh.setAttribute("aria-label", fresh.title);
+    fresh.append(mark("M5 2v6M2 5h6"));
     fresh.addEventListener("click", () => void this.native(t));
     // A start takes seconds: one at a time.
     fresh.disabled = this.starting;
-    this.bar.hidden = false;
+    const tools: HTMLElement[] = [fresh];
+    // What the history menu holds besides the conversations.
+    const items: HTMLButtonElement[] = [];
+    const item = (label: string, title: string, run: () => void, off = false) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "sheet-chat-sess act";
+      b.setAttribute("role", "menuitem");
+      b.textContent = label;
+      b.title = title;
+      b.disabled = off;
+      b.addEventListener("click", run);
+      items.push(b);
+    };
     // A running Claude drawn from snapshots can move to a native session.
     if (t.agent === "claude" && t.state !== "ended" && !this.term.isNative() && this.term.ready()) {
-      const mv = document.createElement("button");
-      mv.type = "button";
-      mv.className = "sheet-btn";
-      mv.textContent = "Move to native";
-      mv.title = "Stop Claude here and resume this conversation in a native session (a real terminal here); this pane closes";
-      mv.addEventListener("click", () => void this.moveNative(t));
-      mv.disabled = this.starting || t.state === "working";
-      if (t.state === "working") mv.title = "Claude is mid-turn: move it when it is idle";
-      parts.push(mv);
+      const busy = t.state === "working";
+      item("Move to native", busy ? "Claude is mid-turn: move it when it is idle"
+        : "Stop Claude here and resume this conversation in a native session (a real terminal here); this pane closes",
+        () => void this.moveNative(t), this.starting || busy);
     }
-    if (rows.length === 0) {
-      this.bar.replaceChildren(...parts, fresh);
-      return;
-    }
-    if (inShell) {
+    if (inShell && rows.length) {
       const go = document.createElement("button");
       go.type = "button";
-      go.className = "sheet-btn primary";
+      go.className = "sheet-btn primary sheet-chat-resume";
       go.textContent = "Resume Claude";
-      go.title = `claude --resume ${rows[0].id}`;
+      go.title = `claude --resume ${rows[0].id} (${name(rows[0])})`;
       go.addEventListener("click", () => void this.resume(t, rows[0]));
-      const nat = document.createElement("button");
-      nat.type = "button";
-      nat.className = "sheet-btn";
-      nat.textContent = "Resume natively";
-      nat.title = `claude --resume ${rows[0].id}, in a local-tmux session: a real terminal here`;
-      nat.addEventListener("click", () => void this.native(t, rows[0]));
-      nat.disabled = this.starting;
-      const what = document.createElement("span");
-      what.className = "sheet-chat-sess-what";
-      what.textContent = name(rows[0]);
-      parts.push(go, nat, what);
+      tools.push(go);
+      item(`Resume natively · ${name(rows[0])}`, `claude --resume ${rows[0].id}, in a local-tmux session: a real terminal here`,
+        () => void this.native(t, rows[0]), this.starting);
     }
-    if (rows.length > 1 || !inShell) {
-      const more = document.createElement("button");
-      more.type = "button";
-      more.className = "sheet-btn";
-      more.textContent = `${inShell ? "Other sessions" : "Swap session"} (${rows.length}) ▾`;
-      more.addEventListener("click", () => {
-        this.pickOpen = !this.pickOpen;
-        this.drawSessions(t);
-      });
-      parts.push(more);
-    }
-    if (this.pickOpen) {
+    const hist = document.createElement("button");
+    hist.type = "button";
+    hist.className = "sheet-btn sheet-chat-hist";
+    hist.setAttribute("aria-haspopup", "menu");
+    hist.setAttribute("aria-expanded", String(this.pickOpen));
+    hist.append(document.createTextNode(rows.length ? `History (${rows.length})` : "History"), mark("M2.5 4 5 6.5 7.5 4"));
+    hist.title = rows.length ? "This workspace's Claude conversations: resume one in the shown pane" : "No stored conversations in this workspace yet";
+    hist.disabled = !rows.length && !items.length;
+    hist.addEventListener("click", () => {
+      this.pickOpen = !this.pickOpen;
+      this.drawSessions(t);
+      // The redraw replaced this button: focus goes to the menu, or back to History.
+      (this.pickOpen && this.bar.querySelector<HTMLButtonElement>(".sheet-chat-sess-list button:not(:disabled)") ||
+        this.bar.querySelector<HTMLButtonElement>(".sheet-chat-hist"))?.focus();
+    });
+    tools.push(hist);
+    const parts: HTMLElement[] = [...tools];
+    if (this.pickOpen && !hist.disabled) {
       const list = document.createElement("div");
       list.className = "sheet-chat-sess-list";
+      list.setAttribute("role", "menu");
+      list.append(...items);
+      const busy = !inShell && t.state === "working";
       for (const r of rows) {
         const b = document.createElement("button");
         b.type = "button";
         b.className = "sheet-chat-sess" + (r.active ? " active" : "");
+        b.setAttribute("role", "menuitem");
         b.textContent = (r.active ? "● " : "") + name(r);
-        b.title = `${r.id}\n${r.cwd}`;
-        b.disabled = !inShell && t.state === "working";
+        b.title = busy ? "Claude is mid-turn in this pane: resume another when it is idle" : `${r.id}\n${r.cwd}`;
+        b.disabled = busy;
         b.addEventListener("click", () => void this.resume(t, r));
         list.append(b);
       }
+      // Escape closes the menu and goes back to its button; arrows walk it.
+      list.addEventListener("keydown", (e) => {
+        const its = [...list.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+        const i = its.indexOf(document.activeElement as HTMLButtonElement);
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          this.pickOpen = false;
+          this.drawSessions(t);
+          this.bar.querySelector<HTMLButtonElement>(".sheet-chat-hist")?.focus();
+        } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && its.length) {
+          e.preventDefault();
+          its[(i + (e.key === "ArrowDown" ? 1 : -1) + its.length) % its.length].focus();
+        }
+      });
       parts.push(list);
     }
-    parts.push(fresh);
-    this.bar.replaceChildren(...parts);
+    // The tab row stays attached: moving it would drop a tab's focus and scroll.
+    if (this.tabsEl.parentElement !== this.bar) this.bar.prepend(this.tabsEl);
+    while (this.tabsEl.nextSibling) this.tabsEl.nextSibling.remove();
+    this.bar.append(...parts);
+    this.drawTabs();
   }
 
-  show(t: Tile): void {
+  /** Show `t`, with a tab for each of `panes`, the workspace's live panes. */
+  show(t: Tile, panes: Tile[] = [t]): void {
     this.shown = t;
     this.surface = t.surface;
+    this.panes = panes.some((p) => p.surface === t.surface) ? panes : [t, ...panes];
+    if (!this.bar.hidden) this.drawTabs();
     this.term.show(t.surface);
     this.term.agentState(t.state, t.since);
     this.loadSessions(t);
@@ -355,6 +494,8 @@ export class Sheet {
   private page: Page | null = null;
   private toCmuxFn: (() => Promise<unknown>) | null = null;
   private tiles: Tile[] = [];
+  /** The pane picked in the chat's tabs; "" is the default (an agent's). */
+  private picked = "";
   /** The page's workspace and directory, for the chat beside it. */
   private place: { workspace?: string; dir?: string } = {};
   private tabsEl = document.createElement("div");
@@ -408,6 +549,10 @@ export class Sheet {
     this.stack.className = "sheet-stack";
     this.pageEl.append(this.tabsEl, this.stack);
     this.divider.className = "sheet-divider";
+    this.chat.onPick = (surface) => {
+      this.picked = surface;
+      this.drawChat();
+    };
     this.body.append(this.chat.el, this.divider, this.pageEl);
     // The chat's share of the width, beside the page.
     splitter(this.divider, {
@@ -532,7 +677,14 @@ export class Sheet {
     const agents = this.tiles.filter((t) => t.agent && t.state !== "ended");
     const d = (dir ?? "").replace(/\/+$/, "");
     const here = (t: Tile) => (workspace ? t.workspace === workspace : !!d && (t.cwd === d || t.cwd.startsWith(d + "/")));
-    return agents.find(here) ?? this.tiles.find(here);
+    const picked = this.picked ? this.tiles.find((t) => t.surface === this.picked && here(t)) : undefined;
+    return picked ?? agents.find(here) ?? this.tiles.find(here);
+  }
+
+  /** Every live pane of the page's workspace, for the chat's tabs. */
+  private paneTiles(): Tile[] {
+    const t = this.tile();
+    return t ? this.tiles.filter((x) => x.workspace === t.workspace) : [];
   }
 
   /** The cmux workspace the sheet is for: named, or the agent's in its directory. */
@@ -582,7 +734,7 @@ export class Sheet {
   private drawChat(): void {
     const t = this.tile();
     this.body.classList.toggle("with-chat", !!t);
-    if (t) this.chat.show(t);
+    if (t) this.chat.show(t, this.paneTiles());
   }
 
   /** Show a file's content: images as an image, HTML with scripts off, PDFs framed. */
@@ -638,6 +790,7 @@ export class Sheet {
     this.tabs = this.tabs.filter((t) => t.key === WAKE);
     this.active = "";
     this.back = "";
+    this.picked = "";
   }
 
   /** The tabs: the Wake, this workspace's open pages, then the rest opened here. */
