@@ -3227,8 +3227,12 @@ function noteCmd(args, flags) {
   const use = `note "<text>" [--plan <slug>] [--inc <n>]`;
   const text = args.join(" ").trim();
   if (!text) die(use);
-  const slug = flags.plan || resolveSlugAt(process.cwd())
-    || die(`no plan tracks ${process.cwd()}; --plan <slug> names the plan the note belongs to`);
+  // The live plan at the cwd: a done plan still has its root, and is skipped.
+  const here = canon(process.cwd());
+  const atCwd = () => (allStates().find(s => s.root && !LIVE_PHASES_GONE.has(s.phase) &&
+    (here === canon(s.root) || here.startsWith(canon(s.root) + path.sep))) || {}).slug;
+  const slug = flags.plan || atCwd()
+    || die(`no live plan tracks ${process.cwd()}; --plan <slug> names the plan the note belongs to`);
   const st = readState(slug) || die("no plan " + slug);
   if (LIVE_PHASES_GONE.has(st.phase)) die(`${slug} is ${st.phase}; file the note on a live plan with --plan`);
   let inc = null;
@@ -5175,8 +5179,9 @@ switch (cmd) {
   }
   case "family": familyCmd(args, flags); break;
   // `note close <id> …` only with an id after it, so a note that starts with
-  // the word ("note close the socket on exit") is still a note.
-  case "note": args[0] === "close" && /^n[0-9a-f]{6,8}$/.test(args[1] || "") ? noteCloseCmd(args.slice(1), flags) : noteCmd(args, flags); break;
+  // the word ("note close the socket on exit") is still a note. Any n-and-hex
+  // word counts, so a mistyped id is refused as no note, not filed as one.
+  case "note": args[0] === "close" && /^n[0-9a-f]{1,16}$/i.test(args[1] || "") ? noteCloseCmd(args.slice(1), flags) : noteCmd(args, flags); break;
   case "notes": notesCmd(args, flags); break;
   case "await-go": {
     const slug = args[0] || die("await-go <slug> [--timeout S]");

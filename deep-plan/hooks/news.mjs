@@ -16,6 +16,9 @@ import { notedSlugs, foldNotes } from "../lib/notes.mjs";
 // Each note's text is cut here: it was written by another session, and the
 // block must stay small and plainly quoted.
 const NOTE_CAP = 500;
+// And at most this many new notes in one block; the rest are listed by
+// `deep-plan notes`, and count as heard.
+const NEW_CAP = 20;
 const cut = (s, n = NOTE_CAP) => { s = String(s || "").replace(/\s+/g, " ").trim(); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
 
 function commonDir(dir, memo) {
@@ -50,12 +53,15 @@ function notesNews(cwd, sid) {
   const memo = new Map();
   const here = commonDir(cwd, memo);
   if (!here) return "";
-  const rows = [];
+  const rows = [], heard = readCursor(f);
   for (const slug of slugs) {
+    // A plan with nothing open and nothing this session heard has no news,
+    // and costs no git call; nor does a root that is gone.
+    const mine = foldNotes(slug).filter(sane);
+    if (!mine.some(r => !r.closed || heard.has(r.id))) continue;
     const st = readState(slug);
-    // A root that is gone has no repo to match, and costs no git call.
     if (!st || !st.root || !fs.existsSync(st.root) || commonDir(st.root, memo) !== here) continue;
-    rows.push(...foldNotes(slug).filter(sane));
+    rows.push(...mine);
   }
   // One entry per id: a note moved --into another plan is closed in one file
   // and open in the other, and is open.
@@ -65,7 +71,7 @@ function notesNews(cwd, sid) {
     if (r.closed) e.closed.push(r); else e.open = e.open || r;
     byId.set(r.id, e);
   }
-  const heard = readCursor(f), fresh = [], closed = [];
+  const fresh = [], closed = [];
   for (const [id, e] of byId) {
     const was = heard.get(id);
     if (e.open) {
@@ -93,7 +99,8 @@ function notesNews(cwd, sid) {
     out.push("New open notes:");
     // Quoted as JSON strings, so a note's own quotes and newlines cannot end
     // the quote it sits in.
-    for (const r of fresh) out.push(`  ${r.id} (${where(r)}): ${JSON.stringify(cut(r.text))}`);
+    for (const r of fresh.slice(0, NEW_CAP)) out.push(`  ${r.id} (${where(r)}): ${JSON.stringify(cut(r.text))}`);
+    if (fresh.length > NEW_CAP) out.push(`  …and ${fresh.length - NEW_CAP} more (deep-plan notes)`);
   }
   if (closed.length) {
     out.push("Closed:");
