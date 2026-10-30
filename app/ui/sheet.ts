@@ -377,10 +377,12 @@ class Chat {
     hist.addEventListener("click", () => {
       this.pickOpen = !this.pickOpen;
       this.drawSessions(t);
-      if (this.pickOpen) this.bar.querySelector<HTMLButtonElement>(".sheet-chat-sess-list button:not(:disabled)")?.focus();
+      // The redraw replaced this button: focus goes to the menu, or back to History.
+      (this.pickOpen && this.bar.querySelector<HTMLButtonElement>(".sheet-chat-sess-list button:not(:disabled)") ||
+        this.bar.querySelector<HTMLButtonElement>(".sheet-chat-hist"))?.focus();
     });
     tools.push(hist);
-    const parts: HTMLElement[] = [this.tabsEl, ...tools];
+    const parts: HTMLElement[] = [...tools];
     if (this.pickOpen && !hist.disabled) {
       const list = document.createElement("div");
       list.className = "sheet-chat-sess-list";
@@ -415,7 +417,10 @@ class Chat {
       });
       parts.push(list);
     }
-    this.bar.replaceChildren(...parts);
+    // The tab row stays attached: moving it would drop a tab's focus and scroll.
+    if (this.tabsEl.parentElement !== this.bar) this.bar.prepend(this.tabsEl);
+    while (this.tabsEl.nextSibling) this.tabsEl.nextSibling.remove();
+    this.bar.append(...parts);
     this.drawTabs();
   }
 
