@@ -1167,7 +1167,7 @@ export function humanLever(calls) {
 }
 
 // What an agent may run only on the human's word: a go, a --force (go, done,
-// check pass, render), --by human, and close. Refused while the gate's refusal
+// check pass, render, deliver past open notes), --by human, and close. Refused while the gate's refusal
 // in this turn is unanswered (deniedThisTurn); the human's next prompt clears
 // it. The reason names the first such call, "" when there is none.
 // How many of a command's calls need the human's word: more than one in one
@@ -1179,7 +1179,7 @@ export function humansWordCount(calls) {
 export function onHumansWord(calls) {
   for (const c of calls) {
     if (c.words.some((w, k) => (w === "--by" && c.words[k + 1] === "human") || w === "--by=human")) return "--by human";
-    if (["go", "done", "check", "render"].includes(c.verb) && c.words.includes("--force")) return `${c.verb} --force`;
+    if (["go", "done", "check", "render", "deliver"].includes(c.verb) && c.words.includes("--force")) return `${c.verb} --force`;
     if (c.verb === "go" || c.verb === "close") return c.verb;
   }
   return "";

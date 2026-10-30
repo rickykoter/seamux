@@ -4309,6 +4309,13 @@ exit 1
     const cl = JSON.parse(fs.readFileSync(dstore, "utf8"));
     cl.findings[0].status = "resolved"; cl.findings[0].statusBy = "human";
     fs.writeFileSync(dstore, JSON.stringify(cl));
+    // An ending deliver archives the branch, so it settles open notes first.
+    const nid = (/noted (n[0-9a-f]{8})/.exec(lc(LENV, "note", "--plan", "rv-d", "retry loop hides the timeout").stdout) || [])[1];
+    d = lc(LENV, "deliver", "rv-d");
+    ok("notes: an ending deliver refuses while the plan has open notes, listing each and both ways out",
+      d.status === 1 && stOf("rv-d").phase === "delivery" && d.stderr.includes(nid) && /retry loop hides the timeout/.test(d.stderr) &&
+      /note close <id> "<why>" --into/.test(d.stderr) && d.stderr.trim().split("\n").pop() === "deliver refused: 1 open note(s) on rv-d", d.stderr);
+    lc(LENV, "note", "close", nid, "fixed in the delivery review");
     d = lc(LENV, "deliver", "rv-d");
     ok("once the human closed it, deliver completes the plan", d.status === 0 && /delivered rv-d — plan complete/.test(d.stdout) &&
       stOf("rv-d").phase === "done", d.stdout + d.stderr);
@@ -5952,7 +5959,22 @@ exit 1
   ok("notes: import-state writes the notes file back byte for byte",
     r.status === 0 && fs.readFileSync(path.join(IENV.DEEP_PLAN_STATE_DIR, "notes-a.notes.jsonl"), "utf8") === fs.readFileSync(nfile("notes-a"), "utf8"), r.stdout + r.stderr);
   ok("notes: a notes file is never taken for a plan", !/notes-a\.notes/.test(cli("status", "--json").stdout));
-  cli("close", "notes-a"); cli("close", "notes-b");
+
+  // close archives the plan's branch, so it settles open notes first.
+  const openA = njson(NA, "--plan", "notes-a");
+  r = cli("close", "notes-a");
+  ok("notes: close refuses while the plan has open notes, naming each",
+    r.status !== 0 && openA.length > 0 && openA.every(x => r.stderr.includes(x.id)) &&
+    r.stderr.trim().split("\n").pop() === `close refused: ${openA.length} open note(s) on notes-a` &&
+    JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "notes-a.json"), "utf8")).phase !== "closed", r.stderr);
+  for (const x of openA.slice(1)) ncli(NA, "note", "close", x.id, "probe settles it");
+  r = ncli(NA, "note", "close", openA[0].id, "goes on", "--into", "notes-b");
+  ok("notes: a note moved into a live plan no longer holds its origin open", r.status === 0 && cli("close", "notes-a").status === 0, r.stderr);
+  r = cli("close", "notes-b");
+  ok("notes: close --force goes past open notes and logs it", r.status !== 0 && cli("close", "notes-b", "--force").status === 0 &&
+    JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "notes-b.json"), "utf8")).log.some(l => /close --force: 2 open note\(s\) left/.test(JSON.stringify(l))));
+  ok("notes: deliver --force is on the human's word, as close is",
+    lib.onHumansWord([{ verb: "deliver", words: ["x", "--force"] }]) === "deliver --force" && lib.onHumansWord([{ verb: "deliver", words: ["x"] }]) === "");
 }
 
 // -------------------------------------------------- hot-path cost

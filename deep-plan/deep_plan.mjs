@@ -36,7 +36,7 @@ import * as SYNC from "./lib/sync.mjs";
 import { mergeStates, mergeFiles } from "./lib/merge.mjs";
 import { installRepo, checkRepo, targetRoot } from "./lib/install.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
-import { NOTES_SUFFIX, readNoteLines, foldNotes, notedSlugs, fileNote, closeNote } from "./lib/notes.mjs";
+import { NOTES_SUFFIX, readNoteLines, foldNotes, notedSlugs, fileNote, closeNote, openNotes } from "./lib/notes.mjs";
 import {
   FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
   familyOf, refreshFamilyFor, overlaps, checkFamily, draftParent, waitingOn, waitText,
@@ -557,6 +557,7 @@ function familyDeliver(st, spec) {
     else console.error(`deliver refused: the family review is open on ${problems.length + blocked.length} member(s)`);
     return 1;
   }
+  settleNotes(st, "deliver");
   st.phase = "done";
   log1(st, `deliver: the family review passed for every member (${passed.join(", ")}); the gate retires`);
   writeState(st); rerenderWorking(slug);
@@ -3262,6 +3263,24 @@ function noteCloseCmd(args, flags) {
   closeNote(row, { why, by: noteBy(), into });
   say(`closed ${id} on ${row.file}` + (into ? `; it is open on ${into} now` : ""));
 }
+// A verb that archives a plan's branch (close, an ending deliver) settles its
+// open notes first: an archived branch is a tag no new sandbox pulls, so a
+// note left open there would be on no live plan. Refused with each note and
+// both ways out; --force (the human's: lib/state.mjs onHumansWord) goes past
+// and is logged. The last line is the reason, for the board.
+function settleNotes(st, verb) {
+  const open = openNotes(st.slug);
+  if (!open.length) return;
+  if (flags.force) {
+    log1(st, `${verb} --force: ${open.length} open note(s) left on the plan (${open.map(r => r.id).join(", ")})`);
+    writeState(st);
+    return;
+  }
+  die(`${st.slug} has ${open.length} open note(s); settle each before ${verb} archives the plan:\n` +
+    open.map(r => `  ${r.id}${r.inc == null ? "" : ` (inc ${r.inc})`}  ${r.text.length > 100 ? r.text.slice(0, 97) + "…" : r.text}`).join("\n") +
+    `\n  close one:  deep-plan note close <id> "<why>"\n  move one:   deep-plan note close <id> "<why>" --into <live slug>\n` +
+    `${verb} refused: ${open.length} open note(s) on ${st.slug}`);
+}
 function notesCmd(args, flags) {
   const all = args.includes("--all");
   let rows = allNoteRows();
@@ -5196,6 +5215,8 @@ switch (cmd) {
   }
   case "close": {
     const st = readState(args[0]) || die("no plan " + args[0]);
+    // A done plan's branch was archived when it ended.
+    if (st.phase !== "closed" && st.phase !== "done") settleNotes(st, "close");
     st.phase = "closed"; log1(st, "plan closed");
     writeState(st);
     say("closed " + st.slug + " — it leaves the board; surfaces stay in " + PLANS_DIR); break;
@@ -5249,6 +5270,7 @@ switch (cmd) {
     }
     if (g.code !== 0) die(`the delivery review holds the plan open — ${g.out.split("\n")[0]}\n` +
       `deliver refused: a blocker or major is open on ${reviewId(slug, "all")}`);
+    settleNotes(st, "deliver");
     st.phase = "done";
     log1(st, `deliver: the delivery review passed (${g.out.split("\n")[0]}); the gate retires`);
     writeState(st); rerenderWorking(slug);
@@ -5337,7 +5359,10 @@ switch (cmd) {
                                               open, then pass, the full delivery's lookout review
                                               (--base: only where no start sha is recorded;
                                               it is recorded as the start sha)
-  close <slug>                                retire a finished plan
+                                              (refused while the plan has open notes;
+                                              --force is the human's)
+  close <slug> [--force]                      retire a finished plan (refused while it has
+                                              open notes; --force is the human's)
   note "<text>" [--plan <slug>] [--inc <n>]   file a side finding under the plan at the cwd (or
                                               --plan) and its open increment (or --inc)
   note close <id> "<why>" [--into <slug>]     close a note, or move it into a live plan
