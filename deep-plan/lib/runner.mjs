@@ -170,8 +170,29 @@ export function runExec(exec, { root, from = "", log = "", env = {}, browser = {
 
 // Is this process alive? Signal 0 checks without sending anything. EPERM means
 // it exists but is not ours — alive, for this purpose.
-export function alive(pid) {
+//
+// With `startedAt` (when the run was recorded), a live pid must also be a
+// process that started by then: pids are reused, and a run whose pid now
+// names some later process would otherwise read as running forever. A
+// detached runner is spawned just after its record, so 30s of slack; when ps
+// cannot say, the pid is trusted as before.
+export function alive(pid, startedAt = 0) {
   if (!pid) return false;
-  try { process.kill(pid, 0); return true; }
-  catch (e) { return e.code === "EPERM"; }
+  try { process.kill(pid, 0); }
+  catch (e) { if (e.code !== "EPERM") return false; }
+  if (!startedAt) return true;
+  const began = processStart(pid);
+  return !(began && began > startedAt + 30000);
+}
+
+// When `pid` started, in ms, or 0 when ps cannot say. lstart is whole seconds
+// in the C locale ("Thu Oct 29 17:00:09 2026"), which Date reads.
+function processStart(pid) {
+  try {
+    const r = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)],
+      { encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, timeout: 2000 });
+    if (r.status !== 0) return 0;
+    const t = Date.parse(r.stdout.trim());
+    return Number.isFinite(t) ? t : 0;
+  } catch { return 0; }
 }

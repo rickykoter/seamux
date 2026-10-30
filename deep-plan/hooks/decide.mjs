@@ -8,7 +8,9 @@
 // gate never sees a write its Bash heuristic misses and so cannot be the
 // one place a base comes from.
 import fs from "node:fs";
-import { decideToolCall, readState, writeState, log1, brokenRoots, isOwner, ownerName } from "../lib/state.mjs";
+import { decideToolCall, readState, writeState, log1, brokenRoots, isOwner, ownerName,
+  deepPlanCalls, tooLongForGate, humanLever, onHumansWord, trustOverride, humansWordCount, claimLever, markDenied, deniedThisTurn, promptApproves,
+  actedThisTurn } from "../lib/state.mjs";
 import { trespass, waitingOn, waitText, goOwner } from "../lib/family.mjs";
 
 let raw = "";
@@ -20,7 +22,6 @@ const tool = payload.tool_name || "";
 const input = payload.tool_input || {};
 const cwd = payload.cwd || process.cwd();
 
-const d = decideToolCall(tool, input, cwd);
 // Who made this call: its pane, its session (the payload's, else the env's)
 // and its workspace.
 const who = {
@@ -28,6 +29,88 @@ const who = {
   session: payload.session_id || process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || "",
   workspace: process.env.CMUX_WORKSPACE_ID || "",
 };
+
+// The go is the human's (ADR 0029). This hook runs only for a Claude Code
+// session's own tool calls, so whatever it refuses here stays open to the
+// human's shell, the board and the plan pane, which never pass through it.
+let leverWord = "";
+if (tool === "Bash") {
+  let calls = [];
+  const command = input.command || "";
+  const slugOf = c => (c && c.words.find(w => !w.startsWith("-"))) || "?";
+  const long = tooLongForGate(command);
+  if (long) { process.stderr.write(`deep-plan gate [?]: ${long}.\n`); process.exit(2); }
+  // A failure to read the command fails closed when it could be a deep-plan
+  // call, and passes as before when it cannot. DEEP_PLAN_PROBE_THROW is the
+  // probe's way to reach this path.
+  try {
+    if (process.env.DEEP_PLAN_PROBE_THROW) throw new Error("probe-injected failure");
+    calls = deepPlanCalls(command);
+  } catch (e) {
+    if (/deep-plan|deep_plan/.test(command)) {
+      process.stderr.write(`deep-plan gate [?]: the gate could not read this command (${e && e.message || e}), ` +
+        `so it does not run from a session; split or simplify it.\n`);
+      process.exit(2);
+    }
+  }
+  // What the CLI trusts about its caller is not the session's to change.
+  const forged = calls.length ? trustOverride(input.command || "") : "";
+  if (forged) {
+    process.stderr.write(`deep-plan gate [${slugOf(calls[0])}]: this command ${forged} on a deep-plan call; ` +
+      `from a Claude Code session, run deep-plan as it is. A person runs it otherwise from their own shell.\n`);
+    process.exit(2);
+  }
+  // The human's levers, refused outright from a session.
+  const lever = humanLever(calls);
+  if (lever) {
+    const c = calls.find(x => humanLever([x]));
+    process.stderr.write(`deep-plan gate [${slugOf(c)}]: ${lever}, from their own shell, the board or the plan pane — ` +
+      `not from a Claude Code session. Ask the human to do it.\n`);
+    process.exit(2);
+  }
+  // A go (or a --force, --by human, close) in the same turn the gate refused
+  // an edit is the agent answering the gate itself. The human's word in chat
+  // starts a new turn, which clears it.
+  const word = onHumansWord(calls);
+  // Unless the human's prompt this turn plainly said go: the agent then tried
+  // an edit before running the go it was given.
+  if (word && deniedThisTurn(who.session) && !promptApproves(who.session)) {
+    const c = calls.find(x => onHumansWord([x])) || calls[0];
+    process.stderr.write(`deep-plan gate [${slugOf(c)}]: the gate refused an edit in this turn: ask the human, ` +
+      `and run ${word} only after they answer. (Their reply starts a new turn; it goes through then.)\n`);
+    process.exit(2);
+  }
+  // Several in one command would spend the turn's one several times.
+  if (word && humansWordCount(calls) > 1) {
+    process.stderr.write(`deep-plan gate [${slugOf(calls[0])}]: one go, --force, --by human or close per command, ` +
+      `and per human turn: run one, then ask the human before the next.\n`);
+    process.exit(2);
+  }
+  // One per human turn: the documented flow is the human says go and the
+  // agent runs it once. A second go (or --force, --by human, close) before the
+  // human speaks again is the agent going on its own.
+  const acted = word ? actedThisTurn(who.session) : null;
+  if (acted) {
+    const c = calls.find(x => onHumansWord([x])) || calls[0];
+    process.stderr.write(`deep-plan gate [${slugOf(c)}]: this session already ran ${acted.what || "a go"} in this turn: ` +
+      `ask the human, and run ${word} only after they answer.\n`);
+    process.exit(2);
+  }
+  // Claimed once the rest of the gate allows it (below), so a refusal here
+  // never takes the turn's one.
+  leverWord = word;
+}
+
+const d = decideToolCall(tool, input, cwd);
+// A lever the gate allows is claimed atomically as it goes, so parallel calls
+// cannot all pass. The claim is pending: the CLI turns it into the turn's
+// `.acted` on success and gives it back either way (deep_plan.mjs), and one
+// never acted on (a declined permission prompt) lapses after two minutes.
+if (d.allow && leverWord && !claimLever(who.session)) {
+  process.stderr.write(`deep-plan gate [?]: another ${leverWord} from this session is already running in this turn: ` +
+    `ask the human, and run ${leverWord} only after they answer.\n`);
+  process.exit(2);
+}
 if (d.allow) {
   const st = d.plan;
   // The plan owns its worktree: only its owner's write is the plan's
@@ -40,13 +123,13 @@ if (d.allow) {
   if (st && owner && st.phase === "implementing") {
     const inc = (st.increments || []).find(i => i.status === "authorized");
     if (inc && !(st.increments || []).some(i => i.status === "working")) {
-      inc.status = "working"; inc.startedAt = Date.now();
-      log1(st, `start (via gate): increment ${inc.n}`);
       const fresh = readState(st.slug);           // re-read: never clobber a newer write
-      if (fresh) {
-        const fi = (fresh.increments || []).find(i => i.n === inc.n);
-        if (fi && fi.status === "authorized") { fi.status = "working"; fi.startedAt = inc.startedAt;
-          log1(fresh, `start (via gate): increment ${inc.n}`); writeState(fresh, { stamp: false }); }
+      const fi = fresh && (fresh.increments || []).find(i => i.n === inc.n);
+      if (fi && fi.status === "authorized") {
+        fi.status = "working"; fi.startedAt = fi.changedAt = Date.now();
+        log1(fresh, `start (via gate): increment ${inc.n}`);
+        // Cosmetic: a busy lock must never fail the edit it rides on.
+        try { writeState(fresh, { stamp: false }); } catch { /* the next edit flips it */ }
       }
     }
   }
@@ -107,6 +190,12 @@ function guestNote(st) {
 }
 
 const slug = d.plan ? d.plan.slug : "?";
+// This turn's refusal, so a `deep-plan go` later in the same turn is refused.
+markDenied(who.session, slug);
+if (d.records) {
+  process.stderr.write(`deep-plan gate [${slug}]: ${d.why} Ask the human.\n`);
+  process.exit(2);
+}
 // A family child whose next go is held by its parent: say so, or the agent
 // asks for a go-ahead that will only be refused.
 let waits = [];
@@ -125,6 +214,6 @@ process.stderr.write(
   (own && own.delegated
     ? `Its go is delegated to the parent (${own.parent}): do not run deep-plan go here. ` +
       `Wait for the parent's go (deep-plan await-go ${slug}); a person can also give it.\n`
-    : `Ask the human, then: deep-plan go ${slug} next   (or the board's "go" chip; ` +
-      `deep-plan open-gate ${slug} lifts the gate entirely.)\n`));
+    : `Ask the human. Only once they answer go: deep-plan go ${slug} next   ` +
+      `(or they press the board's "go" chip).\n`));
 process.exit(2);

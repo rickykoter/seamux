@@ -46,7 +46,8 @@ import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, DATA_ROOT, REMOTE_DIR, statePath, sessionId,
   readState, writeState, allStates, log1, progress, gateView,
   planFor, CHECK_KINDS, specChecks, reconcileChecks, checksOf, checksBlock,
-  checksAggregate, needsTree, treeOf, checkMeta, canon,
+  checksAggregate, needsTree, treeOf, treesAt, scopeOf, treeChanges, treeDiff, checkMeta, canon,
+  updateState, LockBusy, onHumansWord, markActed, releaseLever,
 } from "./lib/state.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -369,25 +370,66 @@ function spawnHint(slug, n, pol = {}) {
 }
 
 // The increment whose start sha a review or diff is based on: the increment
-// itself, or (inc "all") the plan's first. Never a later one standing in for a
-// first that has none: a delivery review based there silently drops the
-// earlier increments' work.
-const baseInc = (st, inc) => inc === "all" ? (st.increments || [])[0] : inc;
+// itself, or (inc "all") the one whose sha is oldest. Increments are not
+// always started in order (a reset re-stamps increment 1 after 2 began; a
+// forced go opens 3 beside 1), so the first increment's sha can be newer
+// than another's and a delivery review based there drops that work. Oldest
+// is by git ancestry, then by when each was authorized. An increment that was
+// worked on but has no sha (authorized before go recorded one) means there is
+// no safe base: none is returned, and --base gives one, recorded on it.
+function baseInc(st, inc) {
+  if (inc !== "all") return inc;
+  const incs = st.increments || [];
+  // Started means it was ever authorized or worked on, not its status now: a
+  // blocked increment that never had a go has no work to lose.
+  const started = i => !!(i.authorizedAt || i.startedAt || i.doneAt) ||
+    (st.log || []).some(l => new RegExp(`^(go|start|start \\(via gate\\)): increment ${i.n}\\b`).test(l.what || ""));
+  const worked = incs.filter(started);
+  const missing = worked.find(i => !i.startSha);
+  if (missing) return missing;
+  const withSha = incs.filter(i => i.startSha);
+  if (!withSha.length) return incs[0];
+  const isAnc = (a, b) => a === b || spawnSync("git", ["-C", st.root, "merge-base", "--is-ancestor", a, b]).status === 0;
+  let best = null;
+  for (const i of [...withSha].sort((a, b) => (a.authorizedAt || 0) - (b.authorizedAt || 0)))
+    if (!best || (isAnc(i.startSha, best.startSha) && i.startSha !== best.startSha)) best = i;
+  return best;
+}
 const recordedSha = (st, inc) => (baseInc(st, inc) || {}).startSha || "";
+
+// Whether a recorded start sha can still be a base: a commit here, and an
+// ancestor of HEAD. A rebase or a squash after the go leaves it dangling or
+// off the branch, and a review based there shows the wrong diff. "" when it
+// is fine, else why not.
+function shaProblem(root, sha) {
+  if (!sha || !root) return "";
+  const v = spawnSync("git", ["-C", root, "rev-parse", "--verify", "--quiet", `${sha}^{commit}`], { encoding: "utf8" });
+  if (v.status !== 0) return `it is no longer a commit in ${root} (a rebase or squash since?)`;
+  const a = spawnSync("git", ["-C", root, "merge-base", "--is-ancestor", sha, "HEAD"]);
+  if (a.status === 1) return "it is no longer an ancestor of HEAD (a rebase or squash since?)";
+  return "";
+}
 
 // The base a review or diff opens at: the recorded start sha, else the --base
 // given for a plan that has none (an increment authorized before go recorded
 // one). A --base is recorded as that start sha, logged, so the check run and
-// the deliver re-run that follow open the same review. A recorded sha always
-// wins, and --base beside one is refused rather than ignored, so the flag
-// cannot quietly move a base. Dies on a refusal.
+// the deliver re-run that follow open the same review. A recorded sha that
+// still holds always wins, and --base beside one is refused rather than
+// ignored, so the flag cannot quietly move a base; one that no longer holds
+// (rebased away) gives way to a --base, logged with why. Dies on a refusal.
 function baseFor(st, inc, base) {
   const rec = recordedSha(st, inc);
   const bi = baseInc(st, inc);
-  const what = inc === "all" ? `${st.slug}'s first increment` : `increment ${inc.n}`;
-  if (rec && base) die(`${what} has a recorded start sha (${rec.slice(0, 8)}), which is its base; drop --base\n` +
+  const what = inc === "all" ? `${st.slug}'s delivery (increment ${bi ? bi.n : "?"})` : `increment ${inc.n}`;
+  const bad = rec ? shaProblem(st.root, rec) : "";
+  if (rec && base && !bad) die(`${what} has a recorded start sha (${rec.slice(0, 8)}), which is its base; drop --base\n` +
     `--base refused: a start sha is recorded`);
-  if (!base) return rec;
+  if (!base) {
+    if (bad) die(`${what}'s recorded start sha ${rec.slice(0, 8)} cannot be a base: ${bad}.\n` +
+      `  give one: deep-plan ${inc === "all" ? `deliver ${st.slug}` : `review ${st.slug} ${inc.n}`} --base <sha>\n` +
+      `no base: the recorded start sha ${rec.slice(0, 8)} is gone from this branch`);
+    return rec;
+  }
   const r = spawnSync("git", ["-C", st.root, "rev-parse", "--verify", "--quiet", `${base}^{commit}`], { encoding: "utf8" });
   if (r.status !== 0) die(`--base ${base} is not a commit in ${st.root}`);
   const sha = r.stdout.trim();
@@ -395,8 +437,10 @@ function baseFor(st, inc, base) {
     const fresh = readState(st.slug);         // re-read: never clobber a newer write
     const fi = findInc(fresh, bi.n);
     fi.startSha = bi.startSha = sha;
-    log1(fresh, `--base: increment ${bi.n}'s start sha recorded as ${sha.slice(0, 8)}`);
+    log1(fresh, `--base: increment ${bi.n}'s start sha recorded as ${sha.slice(0, 8)}` +
+      (bad ? ` (replacing ${rec.slice(0, 8)}: ${bad})` : ""));
     writeState(fresh);
+    if (bad) console.error(`deep-plan: the recorded start sha ${rec.slice(0, 8)} ${bad.replace(/^it /, "")}; using --base ${sha.slice(0, 8)}, logged`);
   }
   return sha;
 }
@@ -411,8 +455,14 @@ const noBase = (verb, slug, n) => `no recorded start sha — give one: deep-plan
 // vetted it). { ok, out, agent, quiz } — never throws.
 function openReview(st, inc, base = "") {
   const all = inc === "all";
-  const sha = recordedSha(st, inc) || base;
+  // A base given here was vetted by baseFor (and is the recorded one, or
+  // replaces one that no longer holds).
+  const sha = base || recordedSha(st, inc);
   if (!sha) return { ok: false, out: noBase(all ? "deliver" : "review", st.slug, all || !inc ? "" : inc.n) };
+  // A recorded sha rebased away is no base, as baseFor judges it.
+  const bad = base ? "" : shaProblem(st.root, sha);
+  if (bad) return { ok: false, out: `the recorded start sha ${sha.slice(0, 8)} cannot be a base: ${bad} — give one: ` +
+    `deep-plan ${all ? `deliver ${st.slug}` : `review ${st.slug} ${inc.n}`} --base <sha>` };
   const pol = reviewPolicy(st.slug);
   const r = runLookout(["open", "--plan", st.slug, "--inc", all ? "all" : String(inc.n), "--base", sha, "--at", st.root,
     ...pol.flags], { cwd: st.root });
@@ -476,9 +526,11 @@ function familyDeliver(st, spec) {
   for (const m of idx.members.filter(x => !closed.includes(x.slug))) {
     const id = `${slug}-family-${m.slug}`;
     const ms = readState(m.slug);
-    const sha = (((ms && ms.increments) || [])[0] || {}).startSha || "";
+    const sha = ms ? recordedSha(ms, "all") : "";
     if (!m.root || !fs.existsSync(m.root)) { problems.push(`${m.slug}: its root is gone (${m.root || "none"})`); continue; }
     if (!sha) { problems.push(`${m.slug}: its first increment has no recorded start sha to review from`); continue; }
+    const bad = shaProblem(m.root, sha);
+    if (bad) { problems.push(`${m.slug}: its recorded start sha ${sha.slice(0, 8)} cannot be a base: ${bad}`); continue; }
     let g = runLookout(["gate", id], { cwd: m.root });
     if (g.missing) die(LOOKOUT_MISSING);
     if (g.code === 3) {
@@ -529,7 +581,17 @@ function runLookout(args, { cwd } = {}) {
 function resolvePlanChecks(spec, root) {
   const R = resolver(root);
   const errs = [];
-  const bind = (c, r) => ({ ...c, recipe: r.key, hash: r.hash, source: r.source,
+  // `scope` is what a pass covers (state.mjs treeOf): the recipe's match
+  // globs, or its whole project, plus the setup files and browser script it
+  // runs; all root-relative.
+  const scopeFor = r => {
+    const at = f => path.posix.normalize(path.posix.join(r.project || ".", f));
+    const browser = (r.steps || []).filter(x => x.kind === "browser" && typeof x.command === "string")
+      .map(x => at(path.posix.join(r.cwd || ".", x.command)));
+    const scripts = (r.scripts || []).filter(f => typeof f === "string").map(f => at(path.posix.join(r.cwd || ".", f)));
+    return [...new Set([...(r.match.length ? r.match.filter(g => typeof g === "string").map(at) : [at(".")]), ...scripts, ...browser])];
+  };
+  const bind = (c, r) => ({ ...c, recipe: r.key, hash: r.hash, source: r.source, scope: scopeFor(r),
     exec: { tier: r.tier, cwd: path.posix.join(r.project || ".", r.cwd), timeout: r.timeout, steps: r.steps,
       ...(r.brief ? { brief: r.brief } : {}),
       ...(r.scripts && r.scripts.length ? { scripts: r.scripts.map(f => path.posix.join(r.project || ".", r.cwd, f)) } : {}) } });
@@ -2474,18 +2536,31 @@ function resolveSlugAt(dir) {
 // The refusal reads top-down for a person and bottom-up for a machine: crew's
 // board shows only the LAST line of a refused command, so the reason goes
 // there, never a hint.
-function checksRefusal(slug, n, out) {
+// A stale pass names what changed since it (up to ten paths, from the two
+// recorded trees) and the one command that re-runs only the stale ones.
+function checksRefusal(slug, n, out, root = "") {
   const short = s => s.length > 60 ? s.slice(0, 57) + "…" : s;
   const review = out.find(c => c.synth === "review" || c.kind === "review");
-  const lines = out.map(c => `  ${CHECK_MARK[c.status] || "·"} ${c.id}  [${c.kind}] ${c.status}` +
-    (c.status === "stale" ? " — passed against other content than the tree now" : "") +
-    (c.note ? ` — ${c.note}` : ""));
+  const lines = out.map(c => {
+    let l = `  ${CHECK_MARK[c.status] || "·"} ${c.id}  [${c.kind}] ${c.status}` +
+      (c.status === "stale" ? " — passed against other content than the tree now" : "") +
+      (c.note ? ` — ${c.note}` : "");
+    if (c.status === "stale") {
+      const changed = treeChanges(root, c.was, c.now, 11);
+      if (changed.length) l += `\n      changed since: ${changed.slice(0, 10).join(", ")}${changed.length > 10 ? ", …" : ""}`;
+    }
+    if (c.status === "running") l += `\n      stuck? deep-plan check status ${slug} ${n} records a dead runner; deep-plan check reset ${slug} ${n} ${c.id} clears it`;
+    return l;
+  });
+  const stale = out.filter(c => c.status === "stale");
   return `increment ${n} has ${out.length} check(s) outstanding:\n${lines.join("\n")}` +
     `\n\n  what each one runs:  deep-plan check list ${slug} ${n}` +
+    (stale.length ? `\n  re-run the stale:    deep-plan check run ${slug} ${n}` +
+      (stale.some(c => !c.recipe) ? `   (a check with no recipe: check pass it again after looking)` : "") : "") +
     `\n  record a verdict:    deep-plan check pass|fail ${slug} ${n} <id> "<what you saw>"` +
     (review ? `\n  the review:          deep-plan check run ${slug} ${n} opens it; then spawn ONE fresh reviewer ` +
       `subagent whose prompt is the output of \`lookout prompt ${reviewId(slug, n)}\`` : "") +
-    `\n  override, logged:    deep-plan done ${slug} ${n} --force` +
+    `\n  override (a person's, logged): deep-plan done ${slug} ${n} --force` +
     `\n\ndone refused: ${out.map(c => `${c.id} ${c.status}${c.note ? ` (${short(c.note)})` : ""}`).join("; ")}`;
 }
 
@@ -2523,44 +2598,96 @@ function reopenPhase(st) {
   }
 }
 
+// A refusal found while applying a transition; die()s once the lock is let go.
+class Refused extends Error {}
+const refuse = msg => { throw new Refused(msg); };
+
+// The transition is worked out twice: once on a copy read up front, where
+// every refusal is found and the slow work is done (hashing the tree for
+// `done`), then again under the state's lock on the state as it is on disk
+// at that moment, which is what gets written. A person's click on the board
+// that lands while an agent's `done` hashes the tree is then kept, not
+// overwritten by the agent's older copy; and a change that makes this
+// transition wrong meanwhile (the increment was reset) refuses it.
 function transition(action, slug, n, why, force = false, { byHuman = false } = {}) {
-  const st = readState(slug) || die("no plan " + slug);
+  const pre = readState(slug) || die("no plan " + slug);
+  const trees = action === "done" ? treesAt(pre.root) : null;
+  // Before the transition is judged, a dead runner's check is recorded as
+  // lost: otherwise `done` reads it as running forever (a Ctrl-C'd
+  // foreground run never writes its verdict).
+  if (action === "done") reapLost(slug);
+  const spec = action === "done" ? planSpec(slug) : null;
+  let plan = null;
+  const apply = st => {
+    plan = applyTransition(st, action, slug, n, why, force, { byHuman, trees, spec });
+  };
+  try {
+    apply(readState(slug) || pre);           // the dry run: refusals and slow work
+    updateState(slug, st => { apply(st); });
+  } catch (e) {
+    if (e instanceof Refused) die(e.message);
+    if (e instanceof LockBusy) die(e.message.replace(/^deep-plan: /, ""));
+    throw e;
+  }
+  const st = readState(slug);
+  rerenderWorking(slug);
+  if (action === "done") {
+    const inc = findInc(st, plan.n);
+    incrementDiff(st, inc);
+    say(`done ${slug} ${plan.n}` + (st.phase === "done" ? " — plan complete"
+      : st.phase === "delivery" ? `\nevery increment is done; the full delivery is reviewed next: deep-plan deliver ${slug}` : ""));
+    return;
+  }
+  say(`${action} ${slug} ${plan.n}`);
+  if (action === "go") {
+    const url = openWorkingSurface(st);
+    if (url) say(`  served at ${url} (host: ${detectHost().host})`);
+    else if (!process.env.DEEP_PLAN_FROM_SERVE && detectHost().host === "remote")
+      say(`  no live page on this host (host: remote); deep-plan export-artifact ${st.slug} shares one`);
+  }
+}
+
+// The transition itself, applied to `st` in place. Refusals throw (refuse).
+// Returns { n }: the increment it acted on (`next` resolved).
+function applyTransition(st, action, slug, n, why, force, { byHuman = false, trees = null, spec = null } = {}) {
+  const incOf = k => (st.increments || []).find(i => i.n === Number(k)) || refuse(`no increment ${k} in ${st.slug}`);
   let by = "";
   if (action === "go") {
-    if (st.phase === "review") die("the alignment check has not passed — `deep-plan grade` first");
+    if (st.phase === "review") refuse("the alignment check has not passed — `deep-plan grade` first");
     // Who is giving this go, and whether they may. A delegated child cannot
     // authorize itself; --force is not a way past that (a person's go is:
     // --by human). The reason goes on the last line, for the chip and pane.
     by = goBy(slug, { byHuman });
     const refusal = goRefusal(slug, by);
-    if (refusal) die(`${refusal}\ngo refused: ${by === "self" ? "self-go on a delegated child" : "not the parent's go to give"}`);
-    let beside = null;
+    if (refusal) refuse(`${refusal}\ngo refused: ${by === "self" ? "self-go on a delegated child" : "not the parent's go to give"}`);
+    // A go already given and not yet acted on (the pane's or the board's
+    // button, then the human typing "go" to the session) must not open a
+    // second increment: `next` would skip past the one waiting to start, and
+    // a number would open one beside it. The reason goes on the last line,
+    // which is what the chip and the pane show.
+    const nxt = n === "next" ? (st.increments || []).find(i => i.status === "pending") : null;
+    const target = n === "next" ? (nxt ? nxt.n : null) : Number(n);
+    const open = (st.increments || []).find(i => (i.status === "authorized" || i.status === "working") && i.n !== target);
+    if (open && !force)
+      refuse(`increment ${open.n} (${open.title}) is already ${open.status}: start it, or close it with ` +
+        `\`deep-plan done ${slug} ${open.n}\` before the next go.\n` +
+        `  another increment beside it (a person's override, logged):  deep-plan go ${slug} ${n} --force\n` +
+        `go refused: increment ${open.n} is already ${open.status}`);
+    const beside = open || null;
     if (n === "next") {
-      // A go already given and not yet acted on (the pane's or the board's
-      // button, then the human typing "go" to the session) must not open a
-      // second increment: `next` would skip past the one waiting to start.
-      // The reason goes on the last line, which is what the chip and the pane show.
-      const open = (st.increments || []).find(i => i.status === "authorized" || i.status === "working");
-      if (open && !force)
-        die(`increment ${open.n} (${open.title}) is already ${open.status}: start it, or close it with ` +
-          `\`deep-plan done ${slug} ${open.n}\` before the next go.\n` +
-          `  another increment beside it, logged:  deep-plan go ${slug} next --force\n` +
-          `go refused: increment ${open.n} is already ${open.status}`);
-      beside = open || null;
-      const nxt = (st.increments || []).find(i => i.status === "pending");
-      if (!nxt) die("no pending increment in " + slug);
+      if (!nxt) refuse("no pending increment in " + slug);
       n = nxt.n;
     }
-    const inc = findInc(st, n);
+    const inc = incOf(n);
     if (inc.status !== "pending" && inc.status !== "blocked")
-      die(`increment ${n} is ${inc.status}, not pending/blocked`);
+      refuse(`increment ${n} is ${inc.status}, not pending/blocked`);
     // A family child waits on the parent increments its workstream names in
     // `after` (the shared contract lands first). The reason goes on the last
     // line: the board's chip and the pane show only that.
     const waits = waitingOn(slug);
     if (waits.length && !force)
-      die(`${slug} waits on its family's parent: ${waitText(waits)}.\n` +
-        `  override, logged:  deep-plan go ${slug} ${n} --force\n` +
+      refuse(`${slug} waits on its family's parent: ${waitText(waits)}.\n` +
+        `  override (a person's, logged):  deep-plan go ${slug} ${n} --force\n` +
         `go refused: waits on ${waits.map(w => `${w.parent} increment ${w.n}`).join(", ")}`);
     // The increment's base is HEAD at authorization, recorded here rather than
     // at the first edit: the gate sees only Edit/Write and the Bash writes its
@@ -2576,21 +2703,21 @@ function transition(action, slug, n, why, force = false, { byHuman = false } = {
       (waits.length ? ` (--force past the family wait: ${waitText(waits)})` : "") +
       (beside ? ` (--force beside increment ${beside.n}, still ${beside.status})` : ""));
   } else if (action === "start") {
-    const inc = findInc(st, n);
-    if (inc.status !== "authorized") die(`increment ${n} is ${inc.status}, not authorized`);
+    const inc = incOf(n);
+    if (inc.status !== "authorized") refuse(`increment ${n} is ${inc.status}, not authorized`);
     inc.status = "working"; inc.startedAt = inc.changedAt = Date.now();
     // go records the base; this stamps only an increment authorized before it did.
     if (!inc.startSha) inc.startSha = headSha(st.root);
     log1(st, `start: increment ${n}`);
   } else if (action === "done") {
-    const inc = findInc(st, n);
+    const inc = incOf(n);
     if (inc.status !== "working" && inc.status !== "authorized")
-      die(`increment ${n} is ${inc.status}`);
+      refuse(`increment ${n} is ${inc.status}`);
     // An increment cannot be done until every check has passed against the
     // tree being closed. Declaring one is the whole point: a plan that promises
     // a proof and ships without looking at it has promised nothing.
-    const out = checksBlock(inc, needsTree(inc) ? treeOf(st.root) : null);
-    if (out.length && !force) die(checksRefusal(slug, n, out));
+    const out = checksBlock(inc, needsTree(inc) ? trees : null);
+    if (out.length && !force) refuse(checksRefusal(slug, n, out, st.root));
     inc.status = "done"; inc.doneAt = inc.changedAt = Date.now();
     // An override is logged for the same reason the verdict is recorded: someone
     // reading the history has to be able to see that the proof was skipped.
@@ -2600,22 +2727,18 @@ function transition(action, slug, n, why, force = false, { byHuman = false } = {
     if ((st.increments || []).every(i => i.status === "done")) {
       // A plan whose human asked for a review of the full delivery is not
       // complete until that review passes: `deep-plan deliver` closes it.
-      const delivery = !!(planSpec(slug).review || {}).delivery;
+      const delivery = !!((spec || planSpec(slug)).review || {}).delivery;
       st.phase = delivery ? "delivery" : "done";
       log1(st, delivery ? `every increment done; the delivery review closes the plan — deep-plan deliver ${slug}`
                         : "every increment done; the gate retires");
     }
-    writeState(st); rerenderWorking(slug);
-    incrementDiff(st, inc);
-    say(`done ${slug} ${n}` + (st.phase === "done" ? " — plan complete"
-      : st.phase === "delivery" ? `\nevery increment is done; the full delivery is reviewed next: deep-plan deliver ${slug}` : ""));
-    return;
+    return { n: inc.n };
   } else if (action === "block") {
-    const inc = findInc(st, n);
+    const inc = incOf(n);
     inc.status = "blocked"; inc.note = why || "no reason recorded"; inc.changedAt = Date.now();
     log1(st, `block: increment ${n} — ${inc.note}`);
   } else if (action === "reset") {
-    const inc = findInc(st, n);
+    const inc = incOf(n);
     inc.status = "pending"; inc.note = ""; inc.changedAt = Date.now();
     inc.startSha = "";                      // redone work gets a fresh base at its next go
     // Reset means the work is being redone, so a verdict recorded against the
@@ -2629,16 +2752,9 @@ function transition(action, slug, n, why, force = false, { byHuman = false } = {
     const back = repend(inc, null, "reset — re-verify");
     log1(st, `reset: increment ${n}` + (back.length
       ? ` — ${back.length} check verdict(s) returned to pending (${back.join(", ")})` : ""));
-  } else die("unknown transition " + action);
+  } else refuse("unknown transition " + action);
   reopenPhase(st);
-  writeState(st); rerenderWorking(slug);
-  say(`${action} ${slug} ${n}`);
-  if (action === "go") {
-    const url = openWorkingSurface(st);
-    if (url) say(`  served at ${url} (host: ${detectHost().host})`);
-    else if (!process.env.DEEP_PLAN_FROM_SERVE && detectHost().host === "remote")
-      say(`  no live page on this host (host: remote); deep-plan export-artifact ${st.slug} shares one`);
-  }
+  return { n };
 }
 
 // The go-ahead opens the plan's working surface in the Dock, so the page you
@@ -3524,6 +3640,10 @@ function remoteStateWarning() {
 }
 
 function status(json) {
+  // The plain listing is a person's look: a check whose runner died is
+  // recorded as lost here. --json stays a read (the pane polls it) and only
+  // shows it as lost.
+  if (!json) for (const st of allStates()) if (st && st.slug && st.phase !== "closed") { try { reapLost(st.slug); } catch { /* a row still prints */ } }
   const rows = statusRows();
   const warn = remoteStateWarning();
   if (warn) console.error(warn);
@@ -3557,7 +3677,7 @@ function status(json) {
 // from the spec: what each one is, what it runs, and where its verdict stands.
 // A pass is judged against the tree as it is now, the way `done` will judge it.
 function checkList(slug, n) {
-  const st = readState(slug) || die("no plan " + slug);
+  const st = reapLost(slug);
   const inc = findInc(st, n);
   const all = Object.entries(checksOf(inc)).filter(([, v]) => !v.retired);
   say(`${slug} increment ${inc.n}: ${inc.title}`);
@@ -3566,7 +3686,7 @@ function checkList(slug, n) {
     say(`to gate it, add "checks" to deliverables[${inc.n - 1}] and re-render.`);
     return;
   }
-  const stale = new Set(checksBlock(inc, needsTree(inc) ? treeOf(st.root) : null)
+  const stale = new Set(checksBlock(inc, needsTree(inc) ? treesAt(st.root) : null)
     .filter(c => c.status === "stale").map(c => c.id));
   say(`\n${all.length} check(s):`);
   for (const [id, v] of all) {
@@ -3583,7 +3703,9 @@ function checkList(slug, n) {
     if (v.expect) say(`    expect: ${v.expect}`);
     if (v.hint) say(`    about:  ${v.hint}`);
     if (v.note) say(`    seen:   ${v.note}`);
+    if (v.status === "running") say(`    stuck?  deep-plan check status ${slug} ${inc.n} records a dead runner; deep-plan check reset ${slug} ${inc.n} ${id} clears it`);
   }
+  if (stale.size) say(`\nre-run the stale ones:  deep-plan check run ${slug} ${inc.n}`);
   say(`\nrecord one:  deep-plan check pass|fail ${slug} ${inc.n} <id> "<what you saw>"`);
 }
 
@@ -3610,8 +3732,11 @@ function checkRecord(slug, n, ids, verdict, note, force) {
       `comes from running it (\`deep-plan check run\`), not from a note.\n` +
       `  pass by hand anyway, logged:  deep-plan check pass ${slug} ${n} ${recipes[0]} "<why>" --force\n\n` +
       `refused: ${recipes.join(", ")} recipe-backed — a hand pass needs --force`);
-  const tree = verdict === "pass" ? treeOf(st.root) : null;
+  // Each pass records the tree of what it covers: a recipe's own scope, else
+  // the plan root.
+  const trees = verdict === "pass" ? treesAt(st.root) : null;
   for (const id of ids) {
+    const tree = trees ? trees(scopeOf(checks[id])) : null;
     const { ran, tree: _t, runner, acquire, ...rest } = checks[id];
     const forced = verdict === "pass" && !!checks[id].recipe;
     checks[id] = { ...rest, status: verdict, at: Date.now(), note: note || "",
@@ -3702,17 +3827,26 @@ const secs = ms => ms >= 60000 ? `${Math.floor(ms / 60000)}m${Math.round(ms % 60
 // spawned, so a missing pid gets a grace period rather than an instant verdict.
 function runnerGone(v) {
   if (!v.runner) return false;
-  return v.runner.pid ? !alive(v.runner.pid) : Date.now() - (v.runner.startedAt || 0) > 30000;
+  return v.runner.pid ? !alive(v.runner.pid, v.runner.startedAt) : Date.now() - (v.runner.startedAt || 0) > 30000;
 }
 
 // Running checks whose runner is gone. Judged on a FRESH read after the pid is
 // seen dead: a runner writes its verdict before it exits, so a check still
 // "running" once its pid is gone never got one. Writes and returns the state.
 function reapLost(slug) {
-  const st = readState(slug) || die("no plan " + slug);
+  let st = readState(slug) || die("no plan " + slug);
   let lost = 0;
+  // Candidates from one read; each is judged again on a fresh read once its
+  // pid is seen gone, since a runner records its verdict just before it exits.
+  const gone = [];
+  for (const inc of st.increments || [])
+    for (const [id, v] of Object.entries(checksOf(inc)))
+      if (v.status === "running" && runnerGone(v)) gone.push({ n: inc.n, id, token: v.runner && v.runner.token });
+  if (!gone.length) return st;
+  st = readState(slug) || st;
   for (const inc of st.increments || []) {
     for (const [id, v] of Object.entries(checksOf(inc))) {
+      if (!gone.some(g => g.n === inc.n && g.id === id && g.token === (v.runner && v.runner.token))) continue;
       if (v.status !== "running" || !runnerGone(v)) continue;
       // A lost browser run's evidence is its own (what it got to before it
       // died), never the previous run's: the board's thumbnail reads it.
@@ -3763,7 +3897,7 @@ function checkRun(slug, n, ids, opts) {
   }
   let want = ids;
   if (!ids.length) {
-    const tree = needsTree(inc) ? treeOf(st.root) : null;
+    const tree = needsTree(inc) ? treesAt(st.root) : null;
     const stale = new Set(checksBlock(inc, tree).filter(c => c.status === "stale").map(c => c.id));
     want = active.filter(id => checks[id].recipe && checks[id].exec &&
       checks[id].status !== "running" && (checks[id].status !== "pass" || stale.has(id)));
@@ -3794,7 +3928,7 @@ function checkRun(slug, n, ids, opts) {
     if (opts.detach && cur.synth === "review") die(`${id} is a review check: run it from the session, where its reviewer is spawned`);
     // A person's answer to a running claim's question: handed to the run,
     // which takes it on its next poll. Whichever lands first wins.
-    if (cur.status === "running" && cur.runner && !own && alive(cur.runner.pid) && opts.set) {
+    if (cur.status === "running" && cur.runner && !own && alive(cur.runner.pid, cur.runner.startedAt) && opts.set) {
       const [name, value] = Object.entries(opts.set)[0];
       if (!cur.ask) die(`${id} is running but asks for nothing right now — there is no claim to answer`);
       if (cur.ask.name && cur.ask.name !== name)
@@ -3807,7 +3941,7 @@ function checkRun(slug, n, ids, opts) {
       lines.push(`${id} answered`);
       continue;
     }
-    if (cur.status === "running" && cur.runner && !own && alive(cur.runner.pid)) {
+    if (cur.status === "running" && cur.runner && !own && alive(cur.runner.pid, cur.runner.startedAt)) {
       say(`🔄 ${id} is already running (pid ${cur.runner.pid}) — deep-plan check wait ${slug} ${n} ${id}`);
       lines.push(`${id} already running`);
       continue;
@@ -3917,7 +4051,9 @@ function checkRun(slug, n, ids, opts) {
     // step (the run then releases on its way out) or, failing that, the run,
     // and then runs `check release`. A claim left by an --inline run killed
     // by hand is held, named by check status, and given back by check release.
-    const tree = treeOf(st.root);
+    // The scoped tree before the run, to tell a recipe's new outputs (part of
+    // what passed) from an edit to a file the check covers made while it ran.
+    const before = treeOf(st.root, scopeOf(cur));
     const exec = cur.synth === "review" ? reviewExec(cur, slug, n) : cur.exec;
     const res = runExec(exec, { root: st.root, from: opts.from || "", log,
       env: { DEEP_PLAN_SLUG: slug, DEEP_PLAN_INCREMENT: String(n), DEEP_PLAN_CHECK: id,
@@ -3938,6 +4074,17 @@ function checkRun(slug, n, ids, opts) {
       } else res.note = code === 127 ? LOOKOUT_MISSING
         : code === 1 ? "a blocker or major finding is open — the human closes it on the review page"
         : res.note;
+    }
+    // The tree the pass is recorded against, over what the check covers, is
+    // the one after the run: its own outputs (a report, a formatter's or a
+    // codegen check's rewrite) are part of what passed, or such a check could
+    // never stay passed. A file that existed and changed while it ran is
+    // named, said and logged, so an edit made under a run is not silent.
+    let tree = null, movedUnder = [];
+    if (res.status === "pass") {
+      tree = treeOf(st.root, scopeOf(cur));
+      const diff = before && tree ? treeDiff(st.root, before.content, tree.content) : [];
+      movedUnder = diff.filter(d => d.status !== "A").map(d => d.path);
     }
     const fresh = readState(slug);
     const now = checksOf(findInc(fresh, n))[id];
@@ -3962,14 +4109,19 @@ function checkRun(slug, n, ids, opts) {
     checksOf(findInc(fresh, n))[id] = { ...rest, status: res.status, at: Date.now(), by: "runner",
       note: res.note, ran: res.ran, ...(res.status === "pass" && tree ? { tree } : {}),
       ...(ev ? { evidence: ev } : {}) };
-    log1(fresh, `check ${res.status}: increment ${inc.n} ${id} — ${res.note}`);
+    log1(fresh, `check ${res.status}: increment ${inc.n} ${id} — ${res.note}` +
+      (movedUnder.length ? ` (changed while it ran: ${movedUnder.slice(0, 10).join(", ")}${movedUnder.length > 10 ? ", …" : ""})` : ""));
     // The pidfile goes before the verdict lands: whoever waits on the verdict
     // (check wait, the pane) must never find a finished run's pidfile, and the
     // re-render after the write is slow on a busy machine. A lost runner is
     // judged by its pid, not by this file.
     try { if (own) fs.rmSync(pidFile(slug, n, id), { force: true }); } catch { /* gone */ }
     writeState(fresh); rerenderWorking(slug);
-    if (res.status === "pass") say(`✅ ${id} pass — ${res.note} (log: ${log})`);
+    if (res.status === "pass") {
+      say(`✅ ${id} pass — ${res.note} (log: ${log})`);
+      if (movedUnder.length) say(`   ⚠ ${movedUnder.length} file(s) it covers changed while it ran (${movedUnder.slice(0, 10).join(", ")}${movedUnder.length > 10 ? ", …" : ""}); ` +
+        `the pass is recorded against the tree after the run — look at what changed`);
+    }
     else if (res.status === "needs-value") {
       const q = ask || {};
       say(`✋ ${id} needs a value — ${q.question || res.note}`);
@@ -4013,7 +4165,7 @@ function checkRelease(slug, n, id, { terminated = false, token = "", force = fal
   const inc = findInc(st, n);
   const v = checksOf(inc)[id] || die(`increment ${n} has no check "${id}"`);
   const mine = token && v.runner && v.runner.token === token;
-  if (v.status === "running" && v.runner && alive(v.runner.pid) && !(terminated && mine) && !force)
+  if (v.status === "running" && v.runner && alive(v.runner.pid, v.runner.startedAt) && !(terminated && mine) && !force)
     die(`${id} is still running (pid ${v.runner.pid}); it releases its claims when it ends. Stop it first, or --force`);
   if (terminated && token && v.runner && !mine) return 0;         // a newer run owns the check now
   const claims = v.claims || [];
@@ -4096,7 +4248,7 @@ function proof(slug, n, id, { attach = false, pr = "", yes = false, json = false
   // passed browser check in the plan: proving one never drops the others'.
   // A named check must be one of them.
   // A pass against other content than the tree now proves an older tree.
-  const tree = treeOf(st.root);
+  const tree = treesAt(st.root);
   const stale = new Set();
   for (const inc of st.increments || [])
     for (const c of checksBlock(inc, tree)) if (c.status === "stale") stale.add(`${inc.n}/${c.id}`);
@@ -4561,7 +4713,23 @@ const BUILTIN_VERBS = new Set([
   "family", "redraw", "overviews", "protects", "await-go",
 ]);
 
+// A state lock held past its wait refuses the write (lib/state.mjs): said in
+// one line, not as a stack trace.
+for (const ev of ["uncaughtException", "unhandledRejection"])
+  process.on(ev, e => { console.error(e instanceof LockBusy ? e.message : (e && e.stack) || String(e)); process.exit(1); });
+
 const [, , cmd, ...rest] = process.argv;
+
+// A Claude Code session's lever that succeeded (a go, a --force, --by human,
+// close) is recorded for the gate hook's one-per-human-turn rule
+// (turns/<session>.acted); the hook only reads it. Recorded on success, so a
+// refused go or a typo does not use up the turn. Not for the board's calls
+// through deep-plan's server, which may have inherited a session's env.
+{
+  const word = onHumansWord([{ verb: cmd || "", words: rest }]);
+  if (word && process.env.CLAUDECODE && sessionId() && !process.env.DEEP_PLAN_FROM_SERVE)
+    process.on("exit", code => { if (code === 0 && !process.exitCode) markActed(sessionId(), word); releaseLever(sessionId()); });
+}
 const flags = {};
 const args = [];
 for (let i = 0; i < rest.length; i++) {
@@ -4864,7 +5032,12 @@ switch (cmd) {
   }
   case "open-gate": {
     const st = readState(args[0]) || die("no plan " + args[0]);
-    st.gate = "open"; log1(st, "gate opened by the human — the one lever, logged");
+    // Where it came from, without claiming who: the board and the plan pane run
+    // the CLI through deep-plan's server, which marks its calls; anything else
+    // is the CLI. (CLAUDECODE says nothing here: the server can inherit it.)
+    // A session's own call is refused by the gate hook before it gets here.
+    const via = process.env.DEEP_PLAN_FROM_SERVE ? "board" : "cli";
+    st.gate = "open"; log1(st, `gate opened (via ${via}) — the human's lever, logged`);
     writeState(st); rerenderWorking(st.slug);
     say("gate open for " + st.slug + " (close it again with `deep-plan shut-gate`)"); break;
   }

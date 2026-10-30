@@ -438,6 +438,52 @@ News never fetches and runs one `git log` per prompt for a member; the status
 row's `news` count leaves git out entirely, because the pane polls status
 every few seconds.
 
+## The go needs a human turn (added 2026-10-29)
+
+In a demo, a session that hit the gate ran `deep-plan go` itself in the same
+turn, and the gate let it through: `ownTooling` allows any Bash whose links
+are all the CLI, and `goBy` only refuses a self-go for a delegated child. The
+documented flow stays (the human says go in chat, the agent runs `go`), with a
+human turn required in between:
+
+- On a refusal, `decide.mjs` writes `state/turns/<session_id>.denied`. The
+  UserPromptSubmit run of `news.sh` deletes it (a bash glob first, so a session
+  with no refusal on file pays nothing more). SessionStart does not: a
+  compaction fires one mid-turn. While the file exists, a Bash call that runs
+  what an agent may do only on the human's word is refused (`onHumansWord`
+  in lib/state.mjs): `go`, `--force` on `go`/`done`/`check`/`render`,
+  `--by human`, and `close`. After the human's next prompt they go through,
+  which keeps SKILL.md's "on the human's word" true.
+- `humanLever` refuses `open-gate` outright from a session. The hook only sees
+  a session's own tool calls, so the human's shell, the board and the plan
+  pane are untouched. The CLI does not test `CLAUDECODE` for any of this: the
+  intent server can inherit it from the session that started it.
+- Edit/Write/MultiEdit/NotebookEdit into the state or keys dir are refused
+  (`ownRecords`).
+
+All of it is a heuristic over the command text, like the write test: `eval
+"$X"` or a curl to the intent server is not seen. It closes the easy path.
+From a session, by verb (lib/state.mjs `humanLever`, `onHumansWord`):
+
+| class | verbs |
+|---|---|
+| human-only (refused outright) | `open-gate`, `import-state --force`; Edit/Write/Bash writes into the state, keys and ext dirs |
+| one per human turn, and not in a turn the gate refused unless the prompt said go | `go`, `close`, `--force` on `go`/`done`/`check`/`render`, `--by human` (so `family take-back`/`give-back` from a session) |
+| allowed, the skill's own steps | `import-state` without `--force` (the CLI refuses it over existing state, so it only brings a plan into a fresh session), `state pull` (reads the plan's own state branch: a branch someone pushed by hand is out of the gate's reach) |
+| safe (they tighten, read, or are gated on their own) | `shut-gate`, `start`, `done` (gated on checks), `block`, `reset`, `check`/`obs` verdicts and runs, `deliver` (gated on the review), `state push`/`status`/`list`, `export-*`, `render` without `--force`, `grade`, the rest |
+
+These Bash checks are a best-effort text filter (dynamic paths, `eval "$X"`,
+a curl to the server are out of reach); the human's levers on the board and
+the plan pane are the real boundary.
+
+Passes record a tree of what their check covers (`scope`, set at render from
+the recipe's `match`, setup files and browser script; the plan root for a
+check with no recipe), taken after the run. A pass recorded before scopes
+carries none and compares the whole tree, as it did. Transitions are applied
+under the state lock on a fresh read (`updateState`); the lock now waits up to
+10s and then fails instead of writing unlocked, and `writeState` keeps an
+increment's status from disk when disk's `changedAt` is newer.
+
 ## Verifying a change
 
 ```bash

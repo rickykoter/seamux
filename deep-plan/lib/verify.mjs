@@ -65,8 +65,12 @@ export function globToRegExp(glob) {
   return new RegExp("^" + re + "$");
 }
 
+// Compiled once per glob: a scope is matched against every file in a repo.
+const GLOB_RES = new Map();
 export function matchesGlob(p, glob) {
-  if (globToRegExp(glob).test(p)) return true;
+  let re = GLOB_RES.get(glob);
+  if (!re) { re = globToRegExp(glob); if (GLOB_RES.size > 4096) GLOB_RES.clear(); GLOB_RES.set(glob, re); }
+  if (re.test(p)) return true;
   // A directory named on its own covers its contents: "protobuf" == "protobuf/**".
   if (!glob.includes("*") && p.startsWith(glob.replace(/\/$/, "") + "/")) return true;
   return false;
