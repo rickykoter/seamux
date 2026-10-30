@@ -386,8 +386,29 @@ def alive(pid):
 # lsof failing, then missing: the running server is left alone and apply says how to restart it.
 BADLSOF = os.path.join(FAKE, "badlsof")
 write(os.path.join(BADLSOF, "lsof"), "#!/bin/sh\nexit 2\n", 0o755)
-NOSBIN = ":".join(p for p in PATH.split(":") if p not in ("/usr/sbin", "/sbin"))
-for label, path in (("failing", BADLSOF + ":" + PATH), ("missing", NOSBIN)):
+# lsof is /usr/sbin/lsof on macOS and /usr/bin/lsof on Linux. To hide it, the
+# directory that holds it gives way to a copy of that directory, as links,
+# without it: dropping /usr/bin outright would take bash with it.
+REAL_LSOF = shutil.which("lsof", path=PATH) or "/usr/sbin/lsof"
+
+
+def without(cmd, path):
+    out = []
+    for d in path.split(":"):
+        if d and os.path.isfile(os.path.join(d, cmd)):
+            shadow = os.path.join(FAKE, "no-" + cmd + d.replace("/", "_"))
+            os.makedirs(shadow, exist_ok=True)
+            for name in os.listdir(d):
+                link = os.path.join(shadow, name)
+                if name != cmd and not os.path.lexists(link):
+                    os.symlink(os.path.join(d, name), link)
+            d = shadow
+        out.append(d)
+    return ":".join(out)
+
+
+NOLSOF = without("lsof", PATH)
+for label, path in (("failing", BADLSOF + ":" + PATH), ("missing", NOLSOF)):
     os.utime(os.path.join(STATE, "board-intent.port"), (past, past))
     running, started = [p for p in intent_pids() if alive(p)], len(intent_pids())
     r = run(["bash", os.path.join(CREW, "bin", "crew"), "apply"], env=dict(APPLY_ENV, PATH=path))
@@ -403,7 +424,7 @@ FLAKY = os.path.join(FAKE, "flakylsof")
 write(os.path.join(FLAKY, "lsof"), f"""#!/bin/sh
 if [ -e {FAKE}/lsof.once ]; then exit 2; fi
 : > {FAKE}/lsof.once
-exec /usr/sbin/lsof "$@"
+exec {REAL_LSOF} "$@"
 """, 0o755)
 os.utime(os.path.join(STATE, "board-intent.port"), (past, past))
 running = [p for p in intent_pids() if alive(p)]
