@@ -77,27 +77,6 @@ The plugins in detail: [deep-plan](deep-plan/README.md),
 [humanize](humanize/README.md), [crew](crew/README.md) and
 [seamux-mods](seamux-mods/README.md).
 
-## Tour
-
-One change to a throwaway shop app, made by three Claude Code sessions: a
-parent plan and two workstreams, one for the API and one for the web form.
-Each session plans its part with deep-plan, and you check every plan on its
-review page before any code is written. That means a short quiz, a
-disposition for each risk, and a question answered with a picture. The gate
-refuses edits until you say `go`, and the ui's `go` waits on the parent. The
-crew board shows the family as one card, with each workstream's own `go`
-inside it. The plan pane tracks increments and their checks in the
-terminal. restack moves the API branch onto the parent's work and
-regenerates the route table instead of merging it. lookout reviews the
-diff beside the terminal, and its quiz was answered wrong on purpose to
-show what happens: the note puts your answer next to what the code does.
-The parent merges both workstreams, proves sign-in end to end, and the
-whole family reads done.
-
-https://github.com/user-attachments/assets/cb23e079-9b94-466c-8e8b-fd278c0c2155
-
-_Note: The sessions, plans, checks, and commits are real, on a throwaway repo. 
-Portions are sped up for convenience._
 
 ## Where it runs
 
