@@ -310,16 +310,54 @@ function __boardRender(d) {
         (e.x !== undefined && e.x !== null && e.x !== "" ? ' data-x="' + esc(e.x) + '"' : "") +
         ' title="' + esc(e.h) + '">' + esc(e.t) + "</span>");
     });
-    // The row's panes that wear a mark: [plan] on the plan's owner pane,
-    // [outside] on a pane past the workspace's pin. Each focuses its pane.
+    // A muted card keeps its compact look: no pane list, so the panes that
+    // wear a tag keep it here as a chip, [plan] on the plan's owner pane and
+    // [outside] on one past the workspace's pin. Each focuses its pane.
+    if (!isMuted(a)) return out.length ? '<div class="chips">' + out.join("") + "</div>" : "";
     (a.panes || []).forEach(function (p) {
-      if (!p || !p.surface) return;
-      var plan = p.mark === "plan";
+      if (!p || !p.surface || !(p.plan || p.outside)) return;
+      var plan = !!p.plan;
       out.push('<span class="chip pane ' + (plan ? "plan" : "outside") + '" data-a="pane" data-x="' + esc(p.surface) + '"' +
-        ' title="' + esc(plan ? "This workspace's pane that owns plan " + (p.slug || "") + ": focus it"
+        ' title="' + esc(plan ? "This workspace's pane that owns plan " + p.plan + ": focus it"
           : "A pane here has left the workspace's worktree: focus it") + '">' + (plan ? "plan" : "outside") + "</span>");
+      if (plan && p.outside) out.push('<span class="chip pane outside" data-a="pane" data-x="' + esc(p.surface) + '"' +
+        ' title="A pane here has left the workspace\'s worktree: focus it">outside</span>');
     });
     return out.length ? '<div class="chips">' + out.join("") + "</div>" : "";
+  }
+
+  // Every pane in the workspace, one thin row each under what the card said:
+  // a Claude with its state and how long it has been in it, a terminal with
+  // what it is running. The [plan] and [outside] tags sit on the pane they
+  // belong to. A row is the pane's target: clicking it focuses that pane.
+  function isMuted(a) { return a.tuck === "mute" && a.kind !== "attend"; }
+  // How long ago, in the largest unit that fits: "4m", "2h", "3d".
+  function ago(ms) {
+    var s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+    return s < 60 ? "<1m" : s < 3600 ? Math.floor(s / 60) + "m" : s < 86400 ? Math.floor(s / 3600) + "h" : Math.floor(s / 86400) + "d";
+  }
+  var PST = { needs_input: ["wait", "waiting"], working: ["work", "working"], idle: ["idle", "idle"], ended: ["end", "ended"] };
+  var CHEV = '<svg class="pg" viewBox="0 0 8 8" width="8" height="8" aria-hidden="true"><path d="M2.5 1.5 5.5 4 2.5 6.5"/></svg>';
+  function paneList(a) {
+    if (isMuted(a)) return "";
+    var ps = (a.panes || []).filter(function (p) { return p && p.surface; });
+    if (!ps.length) return "";
+    return '<div class="pns">' + ps.map(function (p) {
+      var term = p.kind === "term";
+      var st = term ? ["sh", ""] : p.asked ? ["wait", "asked you"] : (PST[p.state] || ["unk", ""]);
+      var who = term ? "term" : p.kind === "claude" || !p.kind ? "Claude" : String(p.kind);
+      var when = !term && st[0] !== "work" && typeof p.since === "number" && p.since > 0 ? " " + ago(p.since) : "";
+      // cmux's stock title says nothing a terminal's chevron does not.
+      var what = term ? (p.what === "Terminal" ? "" : String(p.what || "")) : st[1] + when;
+      var tip = (term ? "Terminal" + (p.what ? " running " + p.what : "") : who + (st[1] ? ", " + st[1] + when : "")) +
+        ": focus this pane";
+      return '<div class="pn ' + (term ? "term " : "agent ") + st[0] + '" data-a="pane" data-x="' + esc(p.surface) +
+        '" title="' + esc(tip) + '">' + (term ? CHEV : '<span class="pg"></span>') +
+        '<span class="pk">' + esc(who) + "</span>" + (what ? '<span class="pw">' + esc(what) + "</span>" : "") +
+        (p.plan ? '<span class="ptag plan" title="' + esc("Owns plan " + p.plan) + '">plan</span>' : "") +
+        (p.outside ? '<span class="ptag outside" title="Has left the workspace\'s worktree">outside</span>' : "") +
+        "</div>";
+    }).join("") + "</div>";
   }
 
   // Today's spend, when known and non-zero. Dimmer under a dollar: the point
@@ -524,7 +562,7 @@ function __boardRender(d) {
     var inert = !a.ref && !a.slug ? " inert" : "";
     var hex = /^#[0-9a-f]{3,8}$/i.test(a.color || "") ? a.color : "";
     // Muted: dimmed until it needs you again.
-    var muted = a.tuck === "mute" && a.kind !== "attend" ? " muted" : "";
+    var muted = isMuted(a) ? " muted" : "";
     // Its ⋯ menu was open before this push: it stays open (intent.js keeps which).
     if (tkOpen && a.id === tkOpen) muted += " tkopen" + (tkUp ? " tkup" : "");
     return '<div class="row ' + a.kind + ripple + inert + muted + (a.selected ? " here" : "") + cls +
@@ -551,7 +589,7 @@ function __boardRender(d) {
   // Everything under a card's head: what was said, the reply window, the
   // buttons, the footer.
   function body(a) {
-    return (a.said ? '<p class="said">' + said(a.said) + "</p>" : "") + thumb(a) + feed(a) + buttons(a) + foot(a);
+    return (a.said ? '<p class="said">' + said(a.said) + "</p>" : "") + thumb(a) + feed(a) + paneList(a) + buttons(a) + foot(a);
   }
   // A failed browser check's last frame (the intent server serves it, so a
   // board read from disk shows none). Styled inline: the card has no slot

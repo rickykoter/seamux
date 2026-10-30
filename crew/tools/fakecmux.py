@@ -251,6 +251,9 @@ def panes_cmd():
 
 if panes_cmd():
     pass
+elif args[:2] == ["current", "--json"] and os.path.exists(os.path.join(T, "current.json")):
+    # current.list, as a probe wrote it: the live panes with their agents.
+    print(open(os.path.join(T, "current.json")).read())
 elif args[:3] == ["workspace", "list", "--json"]:
     print(json.dumps({"window_ref": "window:1", "workspaces": rows}))
 elif args[:2] == ["list-windows", "--json"]:

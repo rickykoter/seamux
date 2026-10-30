@@ -2070,6 +2070,58 @@ if (crewImpl.isRust("crew-board")) {
   checks.push(["browser: a thumb that is not an evidence path is not drawn", !els.rows.innerHTML.includes('<img class="thumb"')]);
 }
 
+// ---- a card's panes: two Claudes and a terminal ----------------------------
+{
+  const ago4 = Date.now() - 4 * 60 * 1000 - 5000;
+  const panes = [
+    { surface: "S-A", kind: "claude", state: "needs_input", since: ago4, asked: false, what: "Claude Code", plan: "pl" },
+    { surface: "S-B", kind: "claude", state: "working", since: Date.now() - 1000, asked: false, what: "Claude Code" },
+    { surface: "S-T", kind: "term", state: "shell", since: 0, asked: false, what: "cargo <test>", outside: true },
+  ];
+  const R = (id, extra) => ({ id, name: id, kind: "attend", badge: "asked you", said: "Waiting on an answer.",
+    chips: ["jump", "plan"], frac: null, meta: "", ref: "workspace:1", cwd: "/w/" + id, panes, ...extra });
+  render({ rows: [R("pc"), R("pm", { kind: "running", tuck: "mute" }), R("pq", { kind: "quiet", chips: ["jump"] })], quiet: "" });
+  const h = els.rows.innerHTML;
+  const cardOf = (id) => { const at = h.indexOf('data-id="' + id + '"'), nx = h.indexOf('<div class="row ', at + 1);
+    return h.slice(at, nx > 0 ? nx : undefined); };
+  const pc = cardOf("pc"), pm = cardOf("pm"), pq = cardOf("pq");
+  const rowsOf = (c) => [...c.matchAll(/<div class="pn ([^"]*)" data-a="pane" data-x="([^"]*)"[^>]*>(.*?)<\/div>/g)];
+  const pr = rowsOf(pc);
+  checks.push(["panes: a card lists every pane as a thin row, in the order given, each focusing its own surface",
+    pr.length === 3 && pr.map((m) => m[2]).join() === "S-A,S-B,S-T", pc.slice(0, 900)]);
+  checks.push(["panes: a waiting Claude says so and for how long; a working one says working, with no clock",
+    /^agent wait$/.test(pr[0][1]) && />Claude<\/span><span class="pw">waiting 4m</.test(pr[0][3]) &&
+    /^agent work$/.test(pr[1][1]) && />working</.test(pr[1][3]) && !/\dm</.test(pr[1][3]), pr.map((m) => m[0]).join("\n")]);
+  checks.push(["panes: a terminal shows what it is running, escaped, behind a chevron",
+    /^term sh$/.test(pr[2][1]) && /<svg class="pg"/.test(pr[2][3]) && /cargo &lt;test&gt;/.test(pr[2][3])]);
+  checks.push(["panes: [plan] and [outside] sit on their own pane, not in the button row",
+    /class="ptag plan"/.test(pr[0][3]) && !/ptag/.test(pr[1][3]) && /class="ptag outside"/.test(pr[2][3]) &&
+    !/chip pane/.test(pc)]);
+  checks.push(["panes: the list sits between what was said and the buttons",
+    pc.indexOf('class="said"') < pc.indexOf('class="pns"') && pc.indexOf('class="pns"') < pc.indexOf('class="chips"')]);
+  checks.push(["panes: a muted card keeps its compact look: no list, its tags as chips",
+    !/class="pns"/.test(pm) && /chip pane plan" data-a="pane" data-x="S-A"/.test(pm) &&
+    /chip pane outside" data-a="pane" data-x="S-T"/.test(pm), pm.slice(0, 900)]);
+  checks.push(["panes: a quiet row stays one line, with no pane list", !/class="pns"|chip pane/.test(pq)]);
+  render({ rows: [R("pa", { panes: [{ surface: "S-Q", kind: "claude", state: "idle", since: ago4, asked: true, what: "" }] })], quiet: "" });
+  checks.push(["panes: a Claude that asked you at turn end reads as waiting",
+    /class="pn agent wait"[^>]*>.*?asked you 4m</.test(els.rows.innerHTML), els.rows.innerHTML.slice(0, 900)]);
+}
+// The Rust board lists them from cmux's pane list and crew's pane files.
+if (crewImpl.isRust("crew-board")) {
+  const t = (s, label, agents) => ({ kind: "terminal", lifecycle: "running", cwd: "/w/a", label, agents,
+    projections: [{ workspace_id: "W-A", panel_id: s }] });
+  const st = stateFrom({ plans: {}, workspaces: [{ id: "W-A", title: "a", cwd: "/w/a", desc: "", running: true,
+      branch: "a", pr: "none", dirty: false }],
+    current: { items: [t("S-T", "cargo test", []), t("S-1", "Claude Code", [{ kind: "claude", state: "working" }]),
+      t("S-2", "Claude Code", [{ kind: "claude", state: "idle" }])] },
+    pane_files: [{ ws: "W-A", surface: "S-2", state: "needs_input", at: 1000 }] });
+  const ps = (st.rows.find((r) => r.id === "W-A") || {}).panes || [];
+  checks.push(["panes (rust): two Claudes and a terminal, the one that asked first, its state from crew's pane file",
+    ps.map((p) => p.surface + ":" + p.kind + ":" + p.state).join() === "S-2:claude:needs_input,S-1:claude:working,S-T:term:shell" &&
+    ps[0].since === 1000 && ps[2].what === "cargo test", JSON.stringify(ps)]);
+}
+
 // ---- muted and tucked (the app's tucked.json, marked by crew-board) -------
 {
   const rowsT = [
@@ -2503,7 +2555,8 @@ if (crewImpl.isRust("crew-board")) {
     // each run and, while `slow` exists, takes a second over it.
     const U = "8B5F643D-E94F-41B8-945C-EBCB4DF64FB1";
     runTool("crew-board", ["write-targets"], { env: ienv, input: JSON.stringify({ rows: [
-      { id: U, ref: "workspace:9", cwd: HERE, name: "n", slug: "s" },
+      { id: U, ref: "workspace:9", cwd: HERE, name: "n", slug: "s",
+        panes: [{ surface: "S-PANE-A", kind: "claude" }, { surface: "S-PANE-T", kind: "term" }] },
       { id: "not-a-uuid", ref: "workspace:9", cwd: HERE, name: "n", slug: "s" }] }) });
     const LK = join(HOME, "fake-lookout"), lkLog = join(HOME, "lookout.jsonl"), slow = join(HOME, "slow");
     fs.mkdirSync(LK);
@@ -2551,6 +2604,14 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
     checks.push(["buttons: a diff pressed while its lookout build runs does not start another",
       builds === 1 && both.filter(d => d.startsWith("lookout already opening")).length === 1 &&
       third.lookout.length === 1, JSON.stringify({ both, builds, third: third.lookout.length })]);
+    // A pane row focuses its pane, a terminal's as much as a Claude's, and
+    // only a pane the row lists.
+    if (crewImpl.isRust("crew-board-intent")) {
+      const term = await press("pane", U, "S-PANE-T"), stray = await press("pane", U, "S-ELSEWHERE");
+      checks.push(["panes: a pane row focuses that pane; one the row does not list is refused, cmux untouched",
+        term.res.ok === true && JSON.stringify(term.cmux).includes("S-PANE-T") &&
+        stray.res.ok === false && stray.cmux.length === 0, JSON.stringify({ term, stray })]);
+    }
     const unk = await req("GET", `/do?a=rm&r=${U}&t=${encodeURIComponent(token)}`);
     checks.push(["buttons: an action outside the allowlist is refused, and archive is in it",
       unk.status === 400 && sent.archive.res.ok === true]);

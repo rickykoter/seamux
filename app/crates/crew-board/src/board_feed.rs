@@ -153,7 +153,7 @@ impl Feed {
                 std::thread::sleep(Duration::from_millis(150));
                 self.clear_dirty();
             }
-            let built = std::panic::catch_unwind(|| state::build(&Opts { screens: false, fast: false, selected: None, fixture: None }));
+            let built = std::panic::catch_unwind(|| state::build(&Opts { screens: false, fast: false, selected: None, fixture: None, fixture_panes: None }));
             let Ok(d) = built else {
                 log("FAIL board feed build: it panicked; trying again on the next wake");
                 continue;

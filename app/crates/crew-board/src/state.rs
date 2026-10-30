@@ -2,6 +2,7 @@
 //!
 //!   seamux crew-board state [--json] [--fast] [--screens] [--selected ID]
 //!   seamux crew-board state --json --fixture FILE   rank {plans, workspaces} from a file
+//!                                                   (+ current, pane_files: the cards' panes)
 //!   seamux crew-board write-targets [FILE]          the click table from a state
 //!
 //! open, push, watch, tidy, close and usage drove the Dock surface the cutover
@@ -320,6 +321,20 @@ pub struct Opts {
     pub fast: bool,
     pub selected: Option<String>,
     pub fixture: Option<(Map<String, Value>, Vec<Value>)>,
+    /// A fixture's panes: cmux's current.list and crew's pane files. Rows
+    /// from a fixture list panes only when it has them.
+    pub fixture_panes: Option<(Vec<LivePane>, Vec<crew_core::status::Pane>)>,
+}
+
+/// A fixture's `current` (a current.list result) and `pane_files` (crew's
+/// pane files, as written), when it has either.
+pub fn load_fixture_panes(path: &str) -> Option<(Vec<LivePane>, Vec<crew_core::status::Pane>)> {
+    let fx: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    if fx.get("current").is_none() && fx.get("pane_files").is_none() {
+        return None;
+    }
+    let files = get(&fx, "pane_files").as_array().into_iter().flatten().filter_map(crew_core::status::Pane::from_json).collect();
+    Some((live_panes_of(get(&fx, "current")), files))
 }
 
 /// `{"plans": {root: plan} or [plan], "workspaces": [...]}` from a file.
@@ -337,63 +352,144 @@ pub fn load_fixture(path: &str) -> Result<(Map<String, Value>, Vec<Value>), Stri
     Ok((plans, wss))
 }
 
-/// Every live terminal pane as (workspace, surface, cwd), from cmux's
-/// current.list; empty when cmux does not answer.
-fn pane_cwds() -> Vec<(String, String, String)> {
-    let Some(c) = cmux_cli::client() else { return Vec::new() };
-    let Ok(v) = c.current_list(None) else { return Vec::new() };
+/// A running terminal pane, as cmux's current.list describes it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LivePane {
+    pub ws: String,
+    pub surface: String,
+    pub cwd: String,
+    /// The pane's title: what the terminal says it is running.
+    pub label: String,
+    /// The agent cmux sees in the pane (`claude`, ...), if any.
+    pub agent: Option<String>,
+    /// That agent's state as cmux reports it (`unknown` when it gets no
+    /// lifecycle hooks from the agent).
+    pub state: String,
+}
+
+/// The running terminal panes in a current.list result, in its order.
+pub fn live_panes_of(v: &Value) -> Vec<LivePane> {
     let sv = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-    get(&v, "items")
+    get(v, "items")
         .as_array()
         .into_iter()
         .flatten()
         .filter(|i| sv(i, "kind") == "terminal" && sv(i, "lifecycle") == "running")
         .filter_map(|i| {
             let p = i.get("projections")?.as_array()?.first()?;
-            Some((sv(p, "workspace_id"), sv(p, "panel_id"), sv(i, "cwd")))
+            let agent = i.get("agents").and_then(Value::as_array).and_then(|a| a.first());
+            Some(LivePane {
+                ws: sv(p, "workspace_id"),
+                surface: sv(p, "panel_id"),
+                cwd: sv(i, "cwd"),
+                label: sv(i, "label"),
+                agent: agent.map(|a| sv(a, "kind")).filter(|k| !k.is_empty()),
+                state: agent.map(|a| sv(a, "state")).unwrap_or_default(),
+            })
         })
+        .filter(|p| !p.surface.is_empty())
         .collect()
 }
 
-/// The pane marks a row wears: `{surface, mark: "plan", slug}` for an open
-/// plan whose owner pane sits in the row's workspace, and `{surface, mark:
-/// "outside"}` for each pane whose cwd has left the workspace's root: pin.
-/// A row with neither gets no `panes` key.
-pub fn mark_panes(rows: &mut [Value], plans: &Map<String, Value>, wss: &[Value], cwds: &[(String, String, String)]) {
+/// Every running terminal pane, from cmux's current.list; empty when cmux
+/// does not answer.
+fn live_panes() -> Vec<LivePane> {
+    let Some(c) = cmux_cli::client() else { return Vec::new() };
+    c.current_list(None).map(|v| live_panes_of(&v)).unwrap_or_default()
+}
+
+/// Each workspace's panes, as its card lists them. A row gets `panes`, one
+/// entry per running terminal in its workspace:
+///
+/// ```text
+/// {"surface", "kind": "claude"|<agent>|"term", "state", "since": ms|0,
+///  "asked": bool, "what": <title>, "plan": <slug>?, "outside": true?}
+/// ```
+///
+/// A pane's state is what crew's hooks last wrote for it (`files`, the same
+/// pane files the card's roll-up reads), else what cmux sees, else `shell`
+/// for a terminal with no agent. `since` is when the hooks last wrote, so
+/// "waiting 4m" means four minutes since the pane asked. Agents come first,
+/// the one that needs you on top, then terminals in cmux's order.
+///
+/// Without cmux's list (`live` empty) a row lists only its open plans'
+/// owner panes, with no state. A row with no panes gets no `panes` key.
+pub fn mark_panes(rows: &mut [Value], plans: &Map<String, Value>, wss: &[Value], live: &[LivePane], files: &[crew_core::status::Pane]) {
+    let same = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
     let pins: std::collections::HashMap<String, String> =
-        wss.iter().filter_map(|w| Some((py_str(get(w, "id")), pin_of(w)?))).collect();
+        wss.iter().filter_map(|w| Some((py_str(get(w, "id")).to_uppercase(), pin_of(w)?))).collect();
+    let real = |p: &str| std::fs::canonicalize(p).map(|x| x.to_string_lossy().into_owned()).unwrap_or_else(|_| p.to_string());
+    // Open plans' owner panes: (workspace, surface, slug).
+    let owners: Vec<(String, String, String)> = plans
+        .values()
+        .filter(|p| !matches!(get(p, "phase").as_str().unwrap_or(""), "done" | "closed"))
+        .filter_map(|p| {
+            let o = get(p, "owner");
+            let (ws, surface) = (get(o, "workspace").as_str()?, get(o, "surface").as_str()?);
+            (!surface.is_empty()).then(|| (ws.to_string(), surface.to_string(), py_str(get(p, "slug"))))
+        })
+        .collect();
+    // A pane's surface is unique, so its plans are found by surface alone.
+    let slugs = |surface: &str| -> Option<String> {
+        let mut s: Vec<&str> = owners.iter().filter(|(_, x, _)| same(x, surface)).map(|(_, _, g)| g.as_str()).collect();
+        s.sort();
+        (!s.is_empty()).then(|| s.join(", "))
+    };
     for r in rows.iter_mut() {
         let id = py_str(get(r, "id"));
         if id.is_empty() {
             continue;
         }
-        let mut marks: Vec<Value> = Vec::new();
-        // With cmux's pane list in hand, a closed owner pane is not marked.
-        let alive = |s: &str| cwds.is_empty() || cwds.iter().any(|(_, x, _)| x.eq_ignore_ascii_case(s));
-        for p in plans.values() {
-            let o = get(p, "owner");
-            let (ws, surface) = (get(o, "workspace").as_str().unwrap_or(""), get(o, "surface").as_str().unwrap_or(""));
-            let open = !matches!(get(p, "phase").as_str().unwrap_or(""), "done" | "closed");
-            if open && !surface.is_empty() && ws.eq_ignore_ascii_case(&id) && alive(surface) {
-                marks.push(json!({"surface": surface, "mark": "plan", "slug": get(p, "slug")}));
+        let mut out: Vec<(usize, Value)> = Vec::new();
+        if live.is_empty() {
+            for (_, surface, _) in owners.iter().filter(|(w, _, _)| same(w, &id)) {
+                if out.iter().any(|(_, v)| same(v["surface"].as_str().unwrap_or(""), surface)) {
+                    continue;
+                }
+                let mut m = json!({"surface": surface, "kind": "claude", "state": "", "since": 0, "asked": false, "what": ""});
+                if let Some(s) = slugs(surface) {
+                    m["plan"] = json!(s);
+                }
+                out.push((0, m));
             }
         }
-        if let Some(pin) = pins.get(&id) {
-            // Compared as real paths: a symlinked spelling of the tree is inside.
-            let real = |p: &str| std::fs::canonicalize(p).map(|x| x.to_string_lossy().into_owned()).unwrap_or_else(|_| p.to_string());
-            let p = real(pin.trim_end_matches('/'));
-            let p = p.trim_end_matches('/');
-            for (ws, surface, cwd) in cwds {
-                let c = real(cwd);
-                let inside = c == p || c.starts_with(&format!("{p}/"));
-                if ws.eq_ignore_ascii_case(&id) && !cwd.is_empty() && !surface.is_empty() && !inside {
-                    marks.push(json!({"surface": surface, "mark": "outside"}));
+        // The pin as a real path: a symlinked spelling of the tree is inside.
+        let pin = pins.get(&id.to_uppercase()).map(|p| real(p.trim_end_matches('/')).trim_end_matches('/').to_string());
+        for p in live.iter().filter(|p| same(&p.ws, &id)) {
+            // A pane whose hooks say its Claude ended is a terminal again,
+            // unless cmux still sees an agent there.
+            let file = files.iter().find(|f| same(&f.surface, &p.surface));
+            let (kind, state, since, asked) = match (file, &p.agent) {
+                (Some(f), _) if f.state != "ended" => {
+                    (p.agent.clone().unwrap_or_else(|| "claude".into()), f.state.clone(), f.at, f.asked.is_some())
+                }
+                (_, Some(a)) => (a.clone(), if p.state == "unknown" { String::new() } else { p.state.clone() }, 0, false),
+                _ => ("term".to_string(), "shell".to_string(), 0, false),
+            };
+            let mut m = json!({"surface": p.surface, "kind": kind, "state": state, "since": since, "asked": asked, "what": p.label});
+            if let Some(s) = slugs(&p.surface) {
+                m["plan"] = json!(s);
+            }
+            if let Some(pin) = &pin {
+                let c = real(&p.cwd);
+                if !p.cwd.is_empty() && !(c == *pin || c.starts_with(&format!("{pin}/"))) {
+                    m["outside"] = json!(true);
                 }
             }
+            // needs_input, or asked, first; then working, idle, ended; terminals last.
+            let rank = if kind == "term" {
+                9
+            } else if asked {
+                0
+            } else {
+                crew_core::status::RANK.iter().position(|x| *x == state).unwrap_or(4)
+            };
+            out.push((rank, m));
         }
-        if !marks.is_empty() {
+        out.sort_by_key(|(k, _)| *k);
+        if !out.is_empty() {
             if let Some(m) = r.as_object_mut() {
-                m.insert("panes".into(), Value::Array(marks));
+                m.insert("panes".into(), Value::Array(out.into_iter().map(|(_, v)| v).collect()));
             }
         }
     }
@@ -414,8 +510,12 @@ pub fn build(o: &Opts) -> Value {
     // The app's muted and tucked worktrees (fixtures stay as given).
     if o.fixture.is_none() {
         crate::tucked::mark_live(&mut all);
-        // Which pane owns the plan, and which has wandered past the pin.
-        mark_panes(&mut all, &plan_by_root, &wss, &pane_cwds());
+        // Each workspace's panes: what each is doing, which owns the plan,
+        // which has wandered past the pin.
+        let files = crew_core::status::all(&state_dir());
+        mark_panes(&mut all, &plan_by_root, &wss, &live_panes(), &files);
+    } else if let Some((live, files)) = &o.fixture_panes {
+        mark_panes(&mut all, &plan_by_root, &wss, live, files);
     }
     let news = news::compose_now(&all);
     let n = plan_by_root.len();
@@ -502,6 +602,7 @@ fn cmd_state(args: &[String]) -> i32 {
         fast: flag(args, "--fast"),
         // Python's `if forced`: an empty id is no override.
         selected: after(args, "--selected").filter(|s| !s.is_empty()),
+        fixture_panes: after(args, "--fixture").filter(|_| fixture.is_some()).and_then(|p| load_fixture_panes(&p)),
         fixture,
     };
     let d = build(&o);
@@ -615,28 +716,107 @@ pub fn main(args: &[String]) -> i32 {
 mod tests {
     use super::*;
 
+    fn live(ws: &str, surface: &str, cwd: &str, label: &str, agent: Option<(&str, &str)>) -> LivePane {
+        LivePane {
+            ws: ws.into(),
+            surface: surface.into(),
+            cwd: cwd.into(),
+            label: label.into(),
+            agent: agent.map(|a| a.0.to_string()),
+            state: agent.map(|a| a.1.to_string()).unwrap_or_default(),
+        }
+    }
+
+    fn file(ws: &str, surface: &str, state: &str, at: u64) -> crew_core::status::Pane {
+        crew_core::status::Pane { state: state.into(), at, ..crew_core::status::Pane::new(ws, surface) }
+    }
+
     #[test]
-    fn a_row_wears_its_owner_pane_and_its_wandered_panes() {
+    fn a_row_lists_two_claudes_and_a_terminal() {
         // A pin whose directory exists: a dead one is not followed.
         let one = std::env::temp_dir().join(format!("board-pin-{}", std::process::id()));
         std::fs::create_dir_all(one.join("sub")).unwrap();
         let one = std::fs::canonicalize(&one).unwrap().to_string_lossy().into_owned();
-        let mut rows = vec![json!({"id": "W1"}), json!({"id": "W2"})];
+        let mut rows = vec![json!({"id": "W1"}), json!({"id": "W2"}), json!({"id": "W3"})];
         let mut plans = Map::new();
-        plans.insert("/w/one".into(), json!({"slug": "p", "phase": "implementing", "owner": {"workspace": "w1", "surface": "S-OWN"}}));
-        plans.insert("/w/old".into(), json!({"slug": "q", "phase": "done", "owner": {"workspace": "W2", "surface": "S-OLD"}}));
+        plans.insert("/w/one".into(), json!({"slug": "p", "phase": "implementing", "owner": {"workspace": "w1", "surface": "s-own"}}));
+        plans.insert("/w/old".into(), json!({"slug": "q", "phase": "done", "owner": {"workspace": "W2", "surface": "S-X"}}));
         let wss = vec![json!({"id": "W1", "description": format!("ci:green root:{one}")}), json!({"id": "W2", "description": ""})];
-        let cwds = vec![
-            ("W1".to_string(), "S-OWN".to_string(), format!("{one}/sub")),
-            ("W1".to_string(), "S-TERM".to_string(), "/elsewhere".to_string()),
-            ("W2".to_string(), "S-X".to_string(), "/anywhere".to_string()),
+        let live = vec![
+            live("W1", "S-TERM", "/elsewhere", "cargo test", None),
+            live("W1", "S-OWN", &format!("{one}/sub"), "Claude Code", Some(("claude", "idle"))),
+            live("W1", "S-TWO", &one, "Claude Code", Some(("claude", "working"))),
+            live("W2", "S-X", "/anywhere", "Claude Code", Some(("claude", "unknown"))),
         ];
-        mark_panes(&mut rows, &plans, &wss, &cwds);
+        // The owner's hooks say it waits on you, and cmux's idle loses to them;
+        // S-TWO has no file, so cmux's working stands.
+        let files = vec![file("W1", "S-OWN", "needs_input", 1_000), file("W9", "S-GONE", "working", 5)];
+        mark_panes(&mut rows, &plans, &wss, &live, &files);
         assert_eq!(
             rows[0]["panes"],
-            json!([{"surface": "S-OWN", "mark": "plan", "slug": "p"}, {"surface": "S-TERM", "mark": "outside"}])
+            json!([
+                {"surface": "S-OWN", "kind": "claude", "state": "needs_input", "since": 1000, "asked": false,
+                 "what": "Claude Code", "plan": "p"},
+                {"surface": "S-TWO", "kind": "claude", "state": "working", "since": 0, "asked": false, "what": "Claude Code"},
+                {"surface": "S-TERM", "kind": "term", "state": "shell", "since": 0, "asked": false, "what": "cargo test",
+                 "outside": true},
+            ])
         );
-        // A done plan marks nothing, and a workspace with no pin has no outside.
-        assert!(rows[1].get("panes").is_none());
+        // A done plan tags nothing, and a workspace with no pin has no outside.
+        assert_eq!(
+            rows[1]["panes"],
+            json!([{"surface": "S-X", "kind": "claude", "state": "", "since": 0, "asked": false, "what": "Claude Code"}])
+        );
+        // A workspace with no running pane lists none.
+        assert!(rows[2].get("panes").is_none());
+    }
+
+    #[test]
+    fn an_asked_pane_leads_and_an_ended_claude_is_a_terminal() {
+        let mut rows = vec![json!({"id": "W1"})];
+        let live = vec![
+            live("W1", "A", "", "Claude Code", Some(("claude", "working"))),
+            live("W1", "B", "", "zsh", None),
+            live("W1", "C", "", "Claude Code", Some(("claude", "idle"))),
+        ];
+        let mut asked = file("W1", "C", "idle", 7);
+        asked.asked = Some("Ship it?".into());
+        // B's Claude exited; its pane is a shell now.
+        let files = vec![asked, file("W1", "B", "ended", 3)];
+        mark_panes(&mut rows, &Map::new(), &[], &live, &files);
+        let got: Vec<(&str, &str, &str)> = rows[0]["panes"].as_array().unwrap().iter()
+            .map(|p| (p["surface"].as_str().unwrap(), p["kind"].as_str().unwrap(), p["state"].as_str().unwrap()))
+            .collect();
+        assert_eq!(got, [("C", "claude", "idle"), ("A", "claude", "working"), ("B", "term", "shell")]);
+        assert_eq!(rows[0]["panes"][0]["asked"], true);
+    }
+
+    #[test]
+    fn without_cmux_a_row_lists_its_plan_owners() {
+        let mut rows = vec![json!({"id": "W1"})];
+        let mut plans = Map::new();
+        plans.insert("/w/a".into(), json!({"slug": "a", "phase": "implementing", "owner": {"workspace": "W1", "surface": "S"}}));
+        plans.insert("/w/b".into(), json!({"slug": "b", "phase": "planning", "owner": {"workspace": "W1", "surface": "S"}}));
+        mark_panes(&mut rows, &plans, &[], &[], &[]);
+        assert_eq!(
+            rows[0]["panes"],
+            json!([{"surface": "S", "kind": "claude", "state": "", "since": 0, "asked": false, "what": "", "plan": "a, b"}])
+        );
+    }
+
+    #[test]
+    fn live_panes_come_from_running_terminals() {
+        let v = json!({"items": [
+            {"kind": "terminal", "lifecycle": "running", "cwd": "/w", "label": "cargo test",
+             "projections": [{"workspace_id": "W", "panel_id": "S1"}], "agents": []},
+            {"kind": "terminal", "lifecycle": "running", "cwd": "/w", "label": "Claude Code",
+             "projections": [{"workspace_id": "W", "panel_id": "S2"}], "agents": [{"kind": "claude", "state": "unknown"}]},
+            {"kind": "terminal", "lifecycle": "exited", "projections": [{"workspace_id": "W", "panel_id": "S3"}]},
+            {"kind": "browser", "lifecycle": "running", "projections": [{"workspace_id": "W", "panel_id": "S4"}]},
+        ]});
+        let got = live_panes_of(&v);
+        assert_eq!(got.len(), 2);
+        assert_eq!((got[0].label.as_str(), got[0].agent.clone()), ("cargo test", None));
+        assert_eq!((got[1].agent.as_deref(), got[1].state.as_str()), (Some("claude"), "unknown"));
     }
 }
