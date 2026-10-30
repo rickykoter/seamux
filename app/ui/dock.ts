@@ -96,8 +96,11 @@ export class DockView {
     };
     window.addEventListener("message", (e) => {
       if (!this.frame || e.source !== this.frame.contentWindow || e.origin !== this.origin) return;
-      const d = e.data as { crew?: string; ws?: unknown; show?: unknown } | null;
-      if (d?.crew === "select" && typeof d.ws === "string" && d.ws) this.select(d.ws, true, typeof d.show === "string" ? d.show : "any");
+      const d = e.data as { crew?: string; ws?: unknown; show?: unknown; pane?: unknown } | null;
+      // A pane row names its pane: the sheet shows that pane's terminal.
+      if (d?.crew === "select" && typeof d.ws === "string" && d.ws) {
+        this.select(d.ws, true, typeof d.show === "string" ? d.show : "any", typeof d.pane === "string" ? d.pane : "");
+      }
       // The board's ⋯ menu: mute, tuck away or bring back, as the views do.
       const t = d as { level?: unknown; name?: unknown } | null;
       if (d?.crew === "tuck" && typeof d.ws === "string" && d.ws && (t?.level === "mute" || t?.level === "tuck" || t?.level === "none")) {
@@ -186,10 +189,10 @@ export class DockView {
     else if (!ws) this.draw();
   }
 
-  private select(ws: string, picked: boolean, show = "any"): void {
+  private select(ws: string, picked: boolean, show = "any", pane = ""): void {
     if (picked) this.picked = true;
     this.ws = ws;
-    this.sheet.focusWorkspace(ws, show);
+    this.sheet.focusWorkspace(ws, show, pane);
     this.draw();
     this.tell();
   }

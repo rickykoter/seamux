@@ -332,6 +332,13 @@ pub fn act(action: &str, row: &Map<String, Value>, extra: &str) -> (bool, String
             }
             let Some(c) = client() else { return (false, "cmux is not answering".into()) };
             let ws = if uuid_ok(&wsid) { Some(wsid.as_str()) } else { None };
+            // Its workspace first: a pane in another workspace than the one
+            // shown is focused out of sight otherwise.
+            match ws {
+                Some(w) => { select(w); }
+                None if !r.is_empty() => { select(&r); }
+                None => {}
+            }
             match c.surface_focus(extra, ws) {
                 Ok(()) => (true, format!("focus {extra}")),
                 Err(e) => (false, format!("could not focus {extra}: {e}")),

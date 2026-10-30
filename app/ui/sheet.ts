@@ -606,11 +606,16 @@ export class Sheet {
     return { ...this.place };
   }
 
-  /** `show`: "wake" or "plan" go to that tab even when the workspace is already up. */
-  focusWorkspace(ws: string, show = "any"): void {
+  /** `show`: "wake" or "plan" go to that tab even when the workspace is
+   *  already up. `pane`: show that pane's terminal (a pane row on the board). */
+  focusWorkspace(ws: string, show = "any", pane = ""): void {
     if (ws !== this.workspace() || !this.active) {
       this.enter({ workspace: ws });
       if (!this.active) this.select(WAKE);
+    }
+    if (pane) {
+      this.picked = pane;
+      this.drawChat();
     }
     if (show === "wake") this.select(WAKE);
     else if (show === "plan") {

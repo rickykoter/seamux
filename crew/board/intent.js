@@ -53,7 +53,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "16";
+  var V = "17";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -405,6 +405,13 @@ function __boardIntent(cfg) {
       if (framed() && t.a === "reclaim" && (" " + (host.getAttribute("data-app-can") || "") + " ").indexOf(" reclaim ") >= 0) {
         var rn = row.querySelector ? row.querySelector(".nm") : null;
         tell({ crew: "reclaim", ws: rid, name: rn ? rn.textContent : rid });
+        return;
+      }
+      // A pane row, framed by the app: show that workspace there with the
+      // pane's own terminal up, as a card's body shows the workspace.
+      if (framed() && t.a === "pane" && t.x) {
+        tell({ crew: "select", ws: rid, show: "any", pane: t.x });
+        mark(rid);
         return;
       }
       if (framed() && SHOWN[t.a]) {
