@@ -97,6 +97,20 @@ fn run_wall<R: Runtime>(app: AppHandle<R>, pool: Vec<Arc<dyn Source>>) {
         *c = Some((std::time::Instant::now(), m.clone()));
         m
     }));
+    // Each pane's own status (crew's pane files and the session store), over
+    // cmux's: read at most every 3 seconds, one store read each time.
+    let truth: std::sync::Mutex<Option<(std::time::Instant, std::collections::HashMap<String, String>)>> = Default::default();
+    wall.set_truth_probe(Box::new(move || {
+        let mut c = truth.lock().unwrap();
+        if let Some((at, m)) = c.as_ref() {
+            if at.elapsed() < Duration::from_secs(3) {
+                return m.clone();
+            }
+        }
+        let m = crew_core::status::live_states_now(&crew_board::state::state_dir());
+        *c = Some((std::time::Instant::now(), m.clone()));
+        m
+    }));
     wall.set_native_probe(Box::new(|| native_surfaces(false)));
     wall.set_signals_probe(Box::new(|| native_look(false).1));
     let _ = WALL.set(wall.clone());

@@ -160,6 +160,55 @@ pub fn panes(dir: &Path, ws: &str) -> Vec<Pane> {
     all(dir).into_iter().filter(|p| p.ws == ws).collect()
 }
 
+/// The store cmux's Claude hooks keep: which session each surface runs, and
+/// each session's record (its pid among them).
+pub fn store_path() -> PathBuf {
+    crate::py::home().join(".cmuxterm").join("claude-hook-sessions.json")
+}
+
+/// Whether process `pid` exists (kill 0; EPERM still means it exists).
+pub fn pid_alive(pid: i64) -> bool {
+    if pid <= 0 || pid > i32::MAX as i64 {
+        return false;
+    }
+    // SAFETY: signal 0 sends nothing; it only asks whether the pid exists.
+    let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// The panes whose own Claude is alive, by upper-case surface, with the state
+/// their hooks last wrote. A pane counts when its file is not "ended", the
+/// store names the file's session as the surface's active one, and that
+/// session's pid is alive. This is the pane's status as crew knows it, and
+/// it wins over cmux's: cmux keys lifecycle by session, so a session resumed
+/// in a second pane reads "ended" in both once the first copy ends.
+pub fn live_states(panes: &[Pane], store: &Value, alive: impl Fn(i64) -> bool) -> std::collections::HashMap<String, String> {
+    let by_surface = store.get("activeSessionsBySurface").and_then(Value::as_object);
+    let sessions = store.get("sessions").and_then(Value::as_object);
+    let mut out = std::collections::HashMap::new();
+    let (Some(by_surface), Some(sessions)) = (by_surface, sessions) else { return out };
+    for p in panes.iter().filter(|p| p.state != "ended" && !p.surface.is_empty() && !p.session.is_empty()) {
+        let active = by_surface
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(&p.surface))
+            .and_then(|(_, v)| v.get("sessionId").and_then(Value::as_str));
+        if active != Some(p.session.as_str()) {
+            continue;
+        }
+        let pid = sessions.get(&p.session).and_then(|r| r.get("pid")).and_then(Value::as_i64).unwrap_or(0);
+        if alive(pid) {
+            out.insert(p.surface.to_uppercase(), p.state.clone());
+        }
+    }
+    out
+}
+
+/// `live_states` over the pane files in `dir` and the store on disk.
+pub fn live_states_now(dir: &Path) -> std::collections::HashMap<String, String> {
+    let store = fs::read_to_string(store_path()).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(Value::Null);
+    live_states(&all(dir), &store, pid_alive)
+}
+
 /// What the workspace's lane should say.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lane {
@@ -409,4 +458,20 @@ mod tests {
         fs::write(path(&d, "junk"), "{not json").unwrap();
         assert_eq!(all(&d).len(), 3);
     }
+
+    #[test]
+    fn a_live_pane_file_names_its_state_and_a_dead_or_stale_one_does_not() {
+        let f = |surface: &str, session: &str, state: &str| Pane { session: session.into(), state: state.into(), ..Pane::new("W", surface) };
+        let panes = vec![f("S-LIVE", "s1", "working"), f("S-DEAD", "s2", "idle"), f("S-MOVED", "s3", "working"), f("S-ENDED", "s4", "ended")];
+        let store = json!({
+            "activeSessionsBySurface": {"s-live": {"sessionId": "s1"}, "S-DEAD": {"sessionId": "s2"},
+                                        "S-MOVED": {"sessionId": "other"}, "S-ENDED": {"sessionId": "s4"}},
+            "sessions": {"s1": {"pid": 10}, "s2": {"pid": 20}, "s3": {"pid": 10}, "s4": {"pid": 10}},
+        });
+        let got = live_states(&panes, &store, |pid| pid == 10);
+        assert_eq!(got, std::collections::HashMap::from([("S-LIVE".to_string(), "working".to_string())]));
+        assert!(live_states(&panes, &Value::Null, |_| true).is_empty(), "no store, no claim");
+        assert!(pid_alive(std::process::id() as i64) && !pid_alive(0) && !pid_alive(-1));
+    }
+
 }
