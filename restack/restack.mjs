@@ -119,12 +119,143 @@ function baseFacts(ctx) {
   };
 }
 
+// The push line for one branch. A bare --force-with-lease checks against the
+// remote-tracking ref, which any background fetch moves, so it can wave through
+// a push that clobbers work landed since the plan. The lease here names the
+// remote tip recorded when the walk was planned: if the remote moved since,
+// git refuses. With the remote named origin, this is also the shape
+// bash-guard's opt-in exception accepts (`--force-with-lease=<b>:<sha> origin
+// <b>:<b>`); another remote name falls outside it. A branch with no remote tip
+// (never pushed) needs no force at all: it gets a plain `git push -u`.
+//
+// The lease alone does not save a teammate's commit that a fetch brought in
+// before the plan: the recorded tip already has it, so the push would pass and
+// drop it. So the walk also records the remote tip's commits that have no
+// patch-equivalent on the branch as it was before the rebase (remoteOnly), and
+// the push line for such a branch comes with a warning naming them. By patch,
+// not ancestry: a branch rebased by hand or by gt has rewritten every commit
+// and is still not missing any of them. A warning, not a hold: a commit
+// amended or squashed before the restack looks the same as a teammate's, and
+// only the person can tell which it is.
+function remoteTip(ctx, branch) {
+  return revParse(ctx.cwd, `refs/remotes/${ctx.cfg.remote}/${branch}`);
+}
+function remoteOnly(ctx, branch, tip) {
+  const local = revParse(ctx.cwd, `refs/heads/${branch}`);
+  if (!tip || !local || isAncestor(ctx.cwd, tip, local)) return [];
+  // `git cherry -v <branch> <tip>`: tip's commits not on the branch, "+" when
+  // none of the branch's commits carries the same patch.
+  const c = git(ctx.cwd, ["cherry", "-v", local, tip]);
+  if (!c.ok) return [{ sha: tip.slice(0, 12), subject: "(could not compare with the branch)" }];
+  return c.out.split("\n").filter(l => l.startsWith("+ ")).map(l => {
+    const [sha, ...subj] = l.slice(2).split(" ");
+    return { sha: sha.slice(0, 12), subject: subj.join(" ") };
+  });
+}
+// The push lines for done branches, [{ branch, tip, remoteOnly }], bottom
+// first, and a warning for each branch whose remote has commits it lacks.
+function pushPlan(ctx, entries) {
+  const lines = [], warnings = [];
+  for (const e of entries) {
+    const line = pushLine(ctx, e.branch, e.tip);
+    lines.push(line);
+    if (e.remoteOnly && e.remoteOnly.length) warnings.push({ branch: e.branch, line,
+      commits: e.remoteOnly.slice(0, 5), more: Math.max(0, e.remoteOnly.length - 5),
+      note: "if these are someone else's, pull them in first; if they're old versions of yours, push as shown" });
+  }
+  return { lines, warnings };
+}
+// The warning printed above a push line, as lines of text.
+function warningLines(w, gap) {
+  return [`${gap}\x1b[33mwarn\x1b[0m ${w.branch}: the remote has commits this branch doesn't:`,
+    ...w.commits.map(c => `${gap}       ${c.sha} ${plainText(c.subject)}`),
+    ...(w.more ? [`${gap}       … and ${w.more} more`] : []),
+    `${gap}     ${w.note}`];
+}
+// The tip to lease on and the remote-only commits for one step: as recorded
+// by the walk, else (state from before they were recorded) read now.
+function pushEntry(ctx, branch, s) {
+  const tip = s && "remoteTip" in s ? s.remoteTip : remoteTip(ctx, branch);
+  const only = s && Array.isArray(s.remoteOnly) ? s.remoteOnly : remoteOnly(ctx, branch, tip);
+  return { branch, tip, remoteOnly: only };
+}
+// A push.command with a bare lease (no `=`), such as a copy of the old
+// default, would keep the unpinned form: its lease token is swapped for the
+// pinned one and the rest of the command kept, with a note.
+const BARE_LEASE = /--force-with-lease(?![=\w-])/;
+const OLD_DEFAULT_PUSH = "git push --force-with-" + "lease";
+function bareLeaseCommand(cmd) {
+  return !!cmd && BARE_LEASE.test(cmd);
+}
+let bareLeaseNoted = false;
+function pushLine(ctx, branch, tip) {
+  const cmd = ctx.cfg.push.command;
+  if (bareLeaseCommand(cmd) && !bareLeaseNoted) {
+    bareLeaseNoted = true;
+    if (!JSONOUT) console.error(`restack: note: push.command "${cmd}" in ${ctx.cfg.path || ".seamux/restack.json"} is a bare lease; pinning it to the recorded tip (remove the setting to silence this)`);
+  }
+  // The lines are pasted into a shell: a name with anything outside the plain
+  // set is single-quoted, so the common case keeps bash-guard's exact form.
+  const b = sq(branch), rem = sq(ctx.cfg.remote);
+  if (cmd && !bareLeaseCommand(cmd)) return `${cmd} ${rem} ${b}`;
+  if (cmd && cmd.trim() !== OLD_DEFAULT_PUSH) {
+    const head = tip ? cmd.replace(BARE_LEASE, () => `--force-with-lease=${b}:${tip}`)
+      : cmd.replace(BARE_LEASE, "").replace(/\s+/g, " ").trim();
+    return `${head} ${rem} ${b}:${b}`;
+  }
+  if (!tip) return `git push -u ${rem} ${b}`;
+  return `git push --force-with-lease=${b}:${tip} ${rem} ${b}:${b}`;
+}
+// Shell-quote a word only when it needs it.
+function sq(s) {
+  s = String(s);
+  return /^[A-Za-z0-9._\/-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
+}
+// A commit subject as safe terminal text: no C0 controls but tab, no DEL, no
+// C1 controls, so an escape sequence in someone's subject never reaches the
+// terminal as one; and no bidi overrides or line/paragraph separators, which
+// can reorder or split the printed line.
+function plainText(s) {
+  return String(s ?? "")
+    .replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/g, "")
+    .replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\u2028\u2029]/g, "");
+}
+
 function fetchBase(ctx, base) {
   if (OPTS.noFetch || OPTS.dryRun) return { skipped: true };
-  const name = base.ref.startsWith(ctx.cfg.remote + "/")
-    ? base.ref.slice(ctx.cfg.remote.length + 1) : base.ref;
-  const r = git(ctx.cwd, ["fetch", "--quiet", ctx.cfg.remote, name]);
+  // A local base with an upstream is fetched from that upstream, so the
+  // staleness check below compares it with the remote as it is now.
+  const up = localUpstream(ctx, base.ref);
+  const [remote, name] = up ? [up.remote, up.merge.replace(/^refs\/heads\//, "")]
+    : [ctx.cfg.remote, base.ref.startsWith(ctx.cfg.remote + "/") ? base.ref.slice(ctx.cfg.remote.length + 1) : base.ref];
+  const r = git(ctx.cwd, ["fetch", "--quiet", remote, name]);
   return { skipped: false, ok: r.ok, err: r.err };
+}
+
+// `"base": "main"` names the local branch, and a fetch moves only origin/main:
+// the walk would rebase onto a main that is behind its remote. That is
+// refused rather than quietly swapped for the upstream, because a local base
+// can be deliberate (an integration branch with commits of its own), and only
+// the person knows which they meant. Only strictly behind is refused: ahead
+// passes, and diverged passes with a warning, because those commits are
+// theirs. This returns the upstream of a local base branch, or null when the
+// base is not a local branch with an upstream; the callers decide behind,
+// ahead or diverged.
+function localUpstream(ctx, ref) {
+  if (!ref || !revParse(ctx.cwd, `refs/heads/${ref}`)) return null;
+  const remote = git(ctx.cwd, ["config", "--get", `branch.${ref}.remote`]);
+  const merge = git(ctx.cwd, ["config", "--get", `branch.${ref}.merge`]);
+  if (!remote.ok || !merge.ok || !remote.out || !merge.out || remote.out === ".") return null;
+  const up = git(ctx.cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", `${ref}@{upstream}`]);
+  return up.ok && up.out ? { remote: remote.out, merge: merge.out, ref: up.out } : null;
+}
+function staleLocalBase(ctx, base) {
+  const up = localUpstream(ctx, base.ref);
+  if (!up || !revParse(ctx.cwd, up.ref)) return null;
+  const behind = countRange(ctx.cwd, `refs/heads/${base.ref}..${up.ref}`);
+  const ahead = countRange(ctx.cwd, `${up.ref}..refs/heads/${base.ref}`);
+  return behind > 0 ? { upstream: up.ref, behind, ahead, diverged: ahead > 0,
+    hint: `update it (\`git fetch ${up.remote} && git branch -f ${base.ref} ${up.ref}\`, or \`git pull\` on it), or set "base": "${up.ref}" in .seamux/restack.json` } : null;
 }
 
 // What the base moved under you, intersected with what this repo generates.
@@ -374,12 +505,18 @@ function cmdPlan(ctx) {
   const f = fetchBase(ctx, base);
   if (f.ok === false) say(`  warn: could not fetch ${ctx.cfg.remote} — planning against the ref as it is on disk`);
   const base2 = baseFacts(ctx);
+  const staleBase = staleLocalBase(ctx, base2);
+  if (staleBase)
+    say(staleBase.diverged
+      ? `  warn: base ${base2.ref} has diverged from ${staleBase.upstream} (${staleBase.ahead} ahead, ${staleBase.behind} behind); the walk will use the local branch`
+      : `  warn: base ${base2.ref} is ${staleBase.behind} commit(s) behind ${staleBase.upstream}; \`restack run\` will refuse until you ${staleBase.hint}`);
   const stack = discover(ctx.cwd, ctx.cfg, ctx.branch, base2, ctx.gitDirPath);
   const steps = planWalk(ctx.cwd, stack.chain, base2);
   const drift = driftReport(ctx, base2);
   const out = {
     verb: "plan", status: "ok", repo: ctx.cwd, branch: ctx.branch,
-    base: { ref: base2.ref, sha: base2.sha.slice(0, 12), behind: base2.behind },
+    base: { ref: base2.ref, sha: base2.sha.slice(0, 12), behind: base2.behind,
+            ...(staleBase ? { staleAgainst: { upstream: staleBase.upstream, behind: staleBase.behind, ahead: staleBase.ahead, diverged: staleBase.diverged, hint: staleBase.hint } } : {}) },
     stack: { tool: stack.tool, source: stack.source, driver: stack.driver },
     steps: steps.map(s => ({ branch: s.branch, ahead: s.ahead, onto: s.onto, upstream: s.upstream && s.upstream.slice(0, 12), pr: s.pr, error: s.error || null })),
     drift,
@@ -417,6 +554,12 @@ function cmdRun(ctx) {
   const f = fetchBase(ctx, base0);
   if (f.ok === false) die(`could not fetch ${ctx.cfg.remote}: ${f.err}`);
   const base = baseFacts(ctx);
+  const staleBase = staleLocalBase(ctx, base);
+  if (staleBase && staleBase.diverged)
+    say(`  warn: base ${base.ref} has diverged from ${staleBase.upstream} (${staleBase.ahead} ahead, ${staleBase.behind} behind); restacking onto the local branch`);
+  else if (staleBase)
+    die(`the base ${base.ref} is a local branch ${staleBase.behind} commit(s) behind ${staleBase.upstream}, so the stack would land on an old base; nothing was restacked.\n` +
+      `fix: ${staleBase.hint}`, { staleBase: { upstream: staleBase.upstream, behind: staleBase.behind } });
 
   const stack = discover(ctx.cwd, ctx.cfg, ctx.branch, base, ctx.gitDirPath);
   // `--branch` is planned against the whole chain and filtered after, so a
@@ -441,7 +584,13 @@ function cmdRun(ctx) {
       { unresolved: names });
   }
 
-  const steps = planned.map(s => ({ ...s, status: "pending", newTip: null }));
+  // remoteTip is the lease each push line pins (pushLine): the remote branch as
+  // this repo saw it when the walk was planned, before anything moved.
+  // remoteOnly: that tip's commits the branch never had (pushPlan warns).
+  const steps = planned.map(s => {
+    const tip = remoteTip(ctx, s.branch);
+    return { ...s, status: "pending", newTip: null, remoteTip: tip, remoteOnly: remoteOnly(ctx, s.branch, tip) };
+  });
   ctx.st = { ...S.fresh(), stale: ctx.st.stale || [], phase: "walking",
              startedAt: new Date().toISOString(), base: { ref: base.ref, sha: base.sha },
              driver: stack.driver, steps, index: 0, returnTo: ctx.branch };
@@ -683,8 +832,9 @@ function finish(ctx) {
   if (st.returnTo && currentBranch(ctx.cwd) !== st.returnTo && !OPTS.dryRun)
     git(ctx.cwd, ["checkout", "--quiet", st.returnTo]);
 
-  const pushes = broken.length ? [] : st.steps.filter(s => s.status === "done")
-    .map(s => `${ctx.cfg.push.command} ${ctx.cfg.remote} ${s.branch}`);
+  const plan = broken.length ? { lines: [], warnings: [] } : pushPlan(ctx, st.steps.filter(s => s.status === "done")
+    .map(s => pushEntry(ctx, s.branch, s)));
+  const pushes = plan.lines, warnings = plan.warnings;
   const escalatedDrops = (st.dropped || []).filter(d => d.escalated);
   const out = {
     verb, status: broken.length ? "error" : escalatedDrops.length ? "needs-human" : st.stale.length ? "stale" : "ok", repo: ctx.cwd,
@@ -700,6 +850,7 @@ function finish(ctx) {
       ...pushes,
     ],
     push: pushes,
+    ...(warnings.length ? { warnings } : {}),
     exit: broken.length ? 1 : escalatedDrops.length ? NEEDS_HUMAN : 0,
   };
   emit(out, o => {
@@ -722,7 +873,10 @@ function finish(ctx) {
     }
     say("\n  then: restack verify");
     say("        restack check");
-    for (const p of o.push) say(`        ${p}`);
+    for (const p of o.push) {
+      for (const w of (o.warnings || []).filter(w => w.line === p)) for (const l of warningLines(w, "        ")) say(l);
+      say(`        ${p}`);
+    }
     say("  (push lines are printed, never run — see PUSH in the skill)");
   });
 }
@@ -909,13 +1063,19 @@ function cmdPush(ctx) {
     if (base.error) return null;
     return discover(ctx.cwd, ctx.cfg, ctx.branch, base, ctx.gitDirPath);
   })();
-  const branches = (ctx.st.steps || []).filter(s => s.status === "done").map(s => s.branch);
-  const names = branches.length ? branches : (stack ? stack.chain.map(c => c.name) : [ctx.branch].filter(Boolean));
-  const lines = names.map(b => `${ctx.cfg.push.command} ${ctx.cfg.remote} ${b}`);
+  // The tips the walk recorded; with no walk on record (or state written
+  // before tips were recorded), the remote-tracking ref as it is now.
+  // With no walk on record the branch is as it is now, so divergence is
+  // checked against the local tip directly (by patch, so a branch rebased
+  // outside restack still passes).
+  const done = (ctx.st.steps || []).filter(s => s.status === "done");
+  const byBranch = new Map(done.map(s => [s.branch, s]));
+  const names = done.length ? done.map(s => s.branch) : (stack ? stack.chain.map(c => c.name) : [ctx.branch].filter(Boolean));
+  const { lines, warnings } = pushPlan(ctx, names.map(b => pushEntry(ctx, b, byBranch.get(b))));
   const blocked = (ctx.st.stale || []).length > 0;
   emit({
     verb: "push", status: blocked ? "stale" : "ok",
-    push: lines, stale: ctx.st.stale || [],
+    push: lines, stale: ctx.st.stale || [], ...(warnings.length ? { warnings } : {}),
     note: "printed, never run — a human runs these",
     exit: blocked ? 1 : 0,
   }, o => {
@@ -925,7 +1085,10 @@ function cmdPush(ctx) {
       say("");
     }
     say("  run these yourself (the stack must go up bottom-first):");
-    for (const l of o.push) say(`    ${l}`);
+    for (const l of o.push) {
+      for (const w of (o.warnings || []).filter(w => w.line === l)) for (const x of warningLines(w, "    ")) say(x);
+      say(`    ${l}`);
+    }
   });
 }
 

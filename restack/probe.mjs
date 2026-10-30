@@ -178,6 +178,13 @@ step("config: refuses the shapes that would lie");
   ok("a valid config passes",
     at({ artifacts: [{ name: "x", paths: ["gen/**"], resolve: "regen", regen: "true" }] }).errors.length === 0);
   ok("no config at all is not an error", load(path.join(TMP, "nowhere")).errors.length === 0);
+{
+  const pc = path.join(TMP, "pushcmd-num.json");
+  fs.writeFileSync(pc, JSON.stringify({ push: { command: 5 } }));
+  const prev = process.env.RESTACK_CONFIG; process.env.RESTACK_CONFIG = pc;
+  const errs = load(TMP).errors; if (prev === undefined) delete process.env.RESTACK_CONFIG; else process.env.RESTACK_CONFIG = prev;
+  ok("a non-string push.command is a config error", errs.some(e => /push\.command must be a non-empty string/.test(e)), errs.join("; "));
+}
 }
 
 // ---------------------------------------------------------------- the core case
@@ -943,11 +950,226 @@ step("push prints and never pushes");
   addDef(r, "b", "bravo\n", "feat: b");
   const p = cli(r, "push", "--json");
   ok("it exits 0 with lines to run", p.status === 0 && p.json.push[0].includes("feat1"), p.out);
-  ok("the line is a lease-guarded force push, not a bare one",
-    /--force-with-lease/.test(p.json.push[0]) && !/--force(\s|$)/.test(p.json.push[0]), p.json.push[0]);
+  ok("the line never force-pushes without a lease",
+    !/--force(\s|$)/.test(p.json.push[0]) && !/--force-with-lease(\s|$)/.test(p.json.push[0]), p.json.push[0]);
   const refs = spawnSync("git", ["--git-dir", bare, "for-each-ref"], { encoding: "utf8", env: ENV }).stdout.trim();
   ok("the remote is untouched — nothing was pushed", refs === "", refs);
   ok("and it says so in the payload", (p.json.note || "").includes("never run"));
+  // Never pushed: no force needed, so a plain push sets the upstream, and
+  // the same line cannot overwrite the branch once it is there.
+  ok("a never-pushed branch gets a plain push -u",
+    p.json.push[0] === "git push -u origin feat1", p.json.push[0]);
+  const first = git(r, ...p.json.push[0].split(" ").slice(1));
+  ok("git accepts that line for a new branch", first.ok, first.err);
+  git(r, "commit", "-q", "--amend", "-m", "feat: b, reworded");
+  const again = git(r, ...p.json.push[0].split(" ").slice(1));
+  ok("and refuses a rewrite with it once the branch is there", !again.ok, again.err);
+}
+
+// ---------------------------------------------------------------- the lease is pinned
+// A bare --force-with-lease trusts the remote-tracking ref, which any fetch
+// moves; the printed line names the tip recorded when the walk was planned.
+step("push lines pin the lease to the remote tip the walk recorded");
+{
+  const bare = path.join(TMP, "lease-remote.git");
+  spawnSync("git", ["init", "-q", "--bare", bare], { env: ENV });
+  const r = newRepo("lease", cheapCfg);
+  git(r, "remote", "add", "origin", bare);
+  git(r, "push", "-q", "origin", "master");
+  git(r, "checkout", "-q", "-b", "feat1");
+  addDef(r, "b", "bravo\n", "feat: b");
+  git(r, "push", "-q", "origin", "feat1");
+  const pushed = git(r, "rev-parse", "feat1").out;
+  git(r, "checkout", "-q", "master");
+  addDef(r, "c", "charlie\n", "master: c");
+  git(r, "checkout", "-q", "feat1");
+  const run = cli(r, "run", "--json", "--no-fetch");
+  const line = run.json?.push?.[0] || "";
+  ok("the walk restacks feat1", run.status === 0 && run.json.push.length === 1, run.out + run.err);
+  ok("the lease names the remote tip recorded at plan time",
+    line === `git push --force-with-lease=feat1:${pushed} origin feat1:feat1`, line);
+  ok("in the shape bash-guard's opt-in exception accepts",
+    /^git push --force-with-lease=([\w./-]+):[0-9a-f]{40} origin [\w./-]+:([\w./-]+)$/.test(line)
+      && line.match(/=([\w./-]+):/)[1] === line.match(/:([\w./-]+)$/)[1], line);
+  ok("restack push prints the same line from the recorded state", cli(r, "push", "--json").json?.push?.[0] === line);
+
+  // Someone else pushes feat1 after the plan, and a fetch moves origin/feat1:
+  // a bare lease would now pass and clobber their commit. The pinned one fails.
+  const other = path.join(TMP, "lease-other");
+  spawnSync("git", ["clone", "-q", "-b", "feat1", bare, other], { env: ENV });
+  addDef(other, "d", "delta\n", "feat: d from elsewhere");
+  git(other, "push", "-q", "origin", "feat1");
+  const theirs = git(other, "rev-parse", "HEAD").out;
+  git(r, "fetch", "-q", "origin");
+  const res = git(r, ...line.split(" ").slice(1));
+  ok("git refuses the pinned lease once the remote moved", !res.ok, res.err);
+  ok("and the other commit is still on the remote",
+    spawnSync("git", ["--git-dir", bare, "rev-parse", "feat1"], { encoding: "utf8", env: ENV }).stdout.trim() === theirs);
+
+  // A config that copied the old default (a bare lease) still gets the pinned
+  // form, with a note; any other command is printed as configured.
+  const withCmd = (name, command, ...args) => {
+    const p = path.join(TMP, `${name}.json`);
+    fs.writeFileSync(p, JSON.stringify({ ...cheapCfg, push: { command } }));
+    const res = spawnSync("node", [path.join(HERE, "restack.mjs"), "push", ...args],
+      { cwd: r, encoding: "utf8", env: { ...ENV, RESTACK_CONFIG: p } });
+    let json = null; try { json = JSON.parse(res.stdout); } catch { /* left null */ }
+    return { ...res, json };
+  };
+  const oldDefault = withCmd("pushcmd-old", "git push --force-with-" + "lease", "--json");
+  ok("a copied old-default push.command still prints the pinned lease", oldDefault.json?.push?.[0] === line, oldDefault.stdout);
+  const noted = withCmd("pushcmd-old", "git push --force-with-" + "lease");
+  ok("and says to remove the setting", /bare lease.*remove the setting/.test(noted.stderr), noted.stderr);
+  const custom = withCmd("pushcmd-custom", "gt submit --branch", "--json");
+  ok("a custom push.command is printed as configured", custom.json?.push?.[0] === "gt submit --branch origin feat1", custom.stdout);
+  const flagged = withCmd("pushcmd-flags", "git push --no-thin --force-with-" + "lease --atomic", "--json");
+  ok("a bare lease among other flags is pinned in place, the flags kept",
+    flagged.json?.push?.[0] === `git push --no-thin --force-with-lease=feat1:${pushed} --atomic origin feat1:feat1`, flagged.stdout);
+}
+
+// ---------------------------------------------------------------- a teammate's commit fetched before the plan
+// The recorded tip already holds their commit, so the lease would pass and
+// drop it. The walk sees the branch never had it and warns, naming the
+// commits, above a push line it still prints: an amended commit of one's own
+// looks the same, and only the person can tell.
+step("a remote branch with commits the local one lacks is warned about");
+{
+  const bare = path.join(TMP, "held-remote.git");
+  spawnSync("git", ["init", "-q", "--bare", bare], { env: ENV });
+  const r = newRepo("held", cheapCfg);
+  git(r, "remote", "add", "origin", bare);
+  git(r, "push", "-q", "origin", "master");
+  git(r, "checkout", "-q", "-b", "feat1");
+  addDef(r, "b", "bravo\n", "feat: b");
+  git(r, "push", "-q", "origin", "feat1");
+  const other = path.join(TMP, "held-other");
+  spawnSync("git", ["clone", "-q", "-b", "feat1", bare, other], { env: ENV });
+  addDef(other, "g", "golf\n", "feat: g from a teammate");
+  git(other, "push", "-q", "origin", "feat1");
+  const theirs = git(other, "rev-parse", "HEAD").out.slice(0, 12);
+  write(other, "esc.txt", "x\n"); commit(other, "feat: \x1b[31mred\x1b[0m\x07 subject");
+  git(other, "push", "-q", "origin", "feat1");
+  git(r, "fetch", "-q", "origin");   // before the plan: origin/feat1 now has g
+  git(r, "checkout", "-q", "master");
+  addDef(r, "c", "charlie\n", "master: c");
+  git(r, "checkout", "-q", "-b", "feat2", "feat1");
+  addDef(r, "h", "hotel\n", "feat: h on top");
+  const run = cli(r, "run", "--json", "--no-fetch");
+  ok("the walk finishes ok: a warning is not a stop", run.status === 0 && run.json?.status === "ok", run.out + run.err);
+  ok("both push lines are printed", (run.json?.push || []).length === 2, JSON.stringify(run.json?.push));
+  const w = run.json?.warnings?.[0];
+  ok("with a warning for feat1 naming the remote-only commit",
+    w?.branch === "feat1" && w.commits?.[0]?.sha === theirs && w.commits[0].subject === "feat: g from a teammate" && w.line === run.json.push[0],
+    JSON.stringify(run.json?.warnings));
+  ok("and the advice", /someone else's, pull them in first.*old versions of yours, push as shown/.test(w?.note || ""));
+  ok("and none for feat2", (run.json?.warnings || []).length === 1);
+  const human = cli(r, "push");
+  ok("a subject's terminal escapes are stripped", !human.out.includes("\x1b[31m") && !human.out.includes("\x07") && human.out.includes("[31mred[0m subject"), JSON.stringify(human.out));
+  ok("the human output puts the warning above the line",
+    /warn.*feat1[\s\S]*feat: g from a teammate[\s\S]*push as shown\n\s+git push/.test(human.out), human.out);
+  const p = cli(r, "push", "--json");
+  ok("restack push warns the same way, exit 0", p.status === 0 && p.json?.push?.length === 2 && p.json?.warnings?.[0]?.branch === "feat1", p.out);
+  // State written before tips were recorded: push falls back to the
+  // tracking ref and still runs the same check.
+  const sp = path.join(r, ".git", "seamux-restack.json");
+  const st = JSON.parse(fs.readFileSync(sp, "utf8"));
+  for (const s of st.steps) { delete s.remoteTip; delete s.remoteOnly; }
+  fs.writeFileSync(sp, JSON.stringify(st));
+  const old = cli(r, "push", "--json");
+  ok("state with no recorded tip still warns", old.status === 0 && old.json?.warnings?.[0]?.branch === "feat1", old.out);
+}
+
+// ---------------------------------------------------------------- no walk on record: judged by patch
+// `restack push` with no walk compares the remote with the branch as it is
+// now. A branch rebased by hand rewrote every commit but lacks none of them;
+// a teammate's commit on the remote is still caught.
+step("with no walk on record, remote-only commits are found by patch");
+{
+  const bare = path.join(TMP, "patch-remote.git");
+  spawnSync("git", ["init", "-q", "--bare", bare], { env: ENV });
+  const r = newRepo("patch", cheapCfg);
+  git(r, "remote", "add", "origin", bare);
+  git(r, "push", "-q", "origin", "master");
+  git(r, "checkout", "-q", "-b", "feat1");
+  write(r, "notes.txt", "one\n"); commit(r, "feat: notes");
+  git(r, "push", "-q", "origin", "feat1");
+  const pushed = git(r, "rev-parse", "feat1").out;
+  git(r, "checkout", "-q", "master");
+  write(r, "other.txt", "master\n"); commit(r, "master: other");
+  git(r, "checkout", "-q", "feat1");
+  const reb = git(r, "rebase", "-q", "master");
+  ok("the branch is rebased by hand", reb.ok && git(r, "rev-parse", "feat1").out !== pushed, reb.err);
+  const p = cli(r, "push", "--json");
+  ok("its push line is printed with no warning", p.status === 0 && !p.json?.warnings && (p.json?.push || [])[0] === `git push --force-with-lease=feat1:${pushed} origin feat1:feat1`, p.out);
+
+  const other = path.join(TMP, "patch-other");
+  spawnSync("git", ["clone", "-q", "-b", "feat1", bare, other], { env: ENV });
+  write(other, "team.txt", "teammate\n"); commit(other, "feat: teammate");
+  git(other, "push", "-q", "origin", "feat1");
+  git(r, "fetch", "-q", "origin");
+  const h = cli(r, "push", "--json");
+  ok("a teammate's commit on the remote is warned about", h.status === 0 && h.json?.warnings?.[0]?.commits?.[0]?.subject === "feat: teammate", h.out);
+}
+
+// ---------------------------------------------------------------- a stale local base
+// `"base": "master"` is the local branch; a fetch moves only origin/master. A
+// local base behind its upstream is refused with the fix, not walked onto.
+step("a local base behind its upstream");
+{
+  const bare = path.join(TMP, "stalebase-remote.git");
+  spawnSync("git", ["init", "-q", "--bare", bare], { env: ENV });
+  const r = newRepo("stalebase", cheapCfg);
+  git(r, "remote", "add", "origin", bare);
+  git(r, "push", "-q", "-u", "origin", "master");
+  const other = path.join(TMP, "stalebase-other");
+  spawnSync("git", ["clone", "-q", "-b", "master", bare, other], { env: ENV });
+  addDef(other, "e", "echo\n", "master: e elsewhere");
+  git(other, "push", "-q", "origin", "master");
+  git(r, "fetch", "-q", "origin");
+  git(r, "checkout", "-q", "-b", "feat1");
+  addDef(r, "b", "bravo\n", "feat: b");
+  const tip = git(r, "rev-parse", "feat1").out;
+  const plan = cli(r, "plan", "--json", "--no-fetch");
+  ok("plan reports the base behind its upstream",
+    plan.status === 0 && plan.json?.base?.staleAgainst?.upstream === "origin/master" && plan.json.base.staleAgainst.behind === 1, plan.out + plan.err);
+  const run = cli(r, "run", "--json", "--no-fetch");
+  ok("run refuses it", run.status === 1 && /behind origin\/master/.test(run.json?.error || ""), run.out + run.err);
+  ok("with the fix in the message", (run.json?.error || "").includes(`"base": "origin/master"`), run.json?.error);
+  ok("and nothing moved", git(r, "rev-parse", "feat1").out === tip);
+  const fetched = cli(r, "run", "--json");
+  ok("a fetching run refuses the same way", fetched.status === 1 && fetched.json?.staleBase?.behind === 1, fetched.out + fetched.err);
+  // Diverged: the local base has a commit of its own. Warned, not refused.
+  git(r, "checkout", "-q", "master");
+  addDef(r, "f", "foxtrot\n", "master: f local only");
+  git(r, "checkout", "-q", "feat1");
+  const dplan = cli(r, "plan", "--json", "--no-fetch");
+  ok("plan marks a diverged base as diverged", dplan.json?.base?.staleAgainst?.diverged === true, dplan.out + dplan.err);
+  const drun = cli(r, "run", "--json", "--no-fetch");
+  ok("a diverged base runs (warned, not refused)", drun.status === 0, drun.out + drun.err);
+  git(r, "checkout", "-q", "-B", "feat1", tip);
+  git(r, "branch", "-f", "master", "origin/master");
+  const fixed = cli(r, "run", "--json", "--no-fetch");
+  ok("once the local base is current, the walk runs", fixed.status === 0, fixed.out + fixed.err);
+}
+
+// ---------------------------------------------------------------- quoting
+// The lines are pasted into a shell, so a branch name with shell syntax in it
+// is single-quoted; a plain one is left alone (bash-guard's exact form).
+step("push lines quote a branch name that needs it");
+{
+  const bare = path.join(TMP, "quote-remote.git");
+  spawnSync("git", ["init", "-q", "--bare", bare], { env: ENV });
+  const r = newRepo("quote", cheapCfg);
+  git(r, "remote", "add", "origin", bare);
+  const odd = "feat/it's$(echo)";
+  git(r, "checkout", "-q", "-b", odd);
+  addDef(r, "q", "quebec\n", "feat: q");
+  const p = cli(r, "push", "--json");
+  const line = p.json?.push?.[0] || "";
+  ok("the odd name is single-quoted", line === `git push -u origin 'feat/it'\\''s$(echo)'`, line);
+  const ran = spawnSync("sh", ["-c", line], { cwd: r, encoding: "utf8", env: ENV });
+  ok("and the line pushes exactly that branch", ran.status === 0 &&
+    spawnSync("git", ["--git-dir", bare, "rev-parse", "--verify", `refs/heads/${odd}`], { encoding: "utf8", env: ENV }).status === 0, ran.stderr);
 }
 
 // ---------------------------------------------------------------- doctor / init

@@ -72,9 +72,12 @@ $ restack check
 
 $ restack push
   run these yourself (the stack must go up bottom-first):
-    git push --force-with-lease origin feat/invoices
-    git push --force-with-lease origin feat/invoice-emails
+    git push --force-with-lease=feat/invoices:9c41e2a07b5d3f86e1a4c0d97b2f5e8a3d6c1b04 origin feat/invoices:feat/invoices
+    git push --force-with-lease=feat/invoice-emails:e07d5b3a91c4f2e6d8a0b7c35f19e4a2c6d8b031 origin feat/invoice-emails:feat/invoice-emails
 ```
+
+Each lease names the remote tip restack recorded when it planned the walk, so
+the push fails if someone pushed to that branch since.
 
 If you use Graphite, restack leaves the rebase to `gt restack` and does its
 resolving between Graphite's stops. Without Graphite, it finds the chain from

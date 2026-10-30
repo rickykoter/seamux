@@ -38,8 +38,11 @@ jobs:
       - name: skill lint
         run: python3 tools/skill_lint.py
 
-      - name: skill lint and eval-harness probes
-        run: python3 tools/skill_lint_probe.py && python3 tools/skill_evals_probe.py
+      - name: skill lint, eval-harness and scrub-check probes
+        run: python3 tools/skill_lint_probe.py && python3 tools/skill_evals_probe.py && python3 tools/scrub_check_probe.py
+
+      - name: install.sh parses
+        run: bash -n install.sh
 
       # The pointer and the shim land in the runner's temp dir, never in a
       # home the job does not own.
@@ -63,10 +66,18 @@ jobs:
       - name: Validate the marketplace and every plugin
         run: |
           claude plugin validate .
-          for p in deep-plan restack bash-guard crew seamux-mods lookout; do claude plugin validate "$p"; done
+          for p in deep-plan restack bash-guard crew seamux-mods lookout humanize; do claude plugin validate "$p" || exit 1; done
 
       - name: seamux-mods tests
         run: claude plugin test seamux-mods
+
+      # The whole plugin install, previewed under a throwaway HOME: nothing is
+      # written, no network, and the claude CLI is only looked up. Without
+      # cargo and the Xcode tools it says crew is skipped, which is fine here.
+      - name: install.sh --dry-run
+        run: |
+          home="$(mktemp -d)"
+          HOME="$home" ./install.sh --dry-run
 
       # Every must-block and must-allow command, read by python3 and by the
       # plain-shell fallback; macOS runs it under its own bash.
@@ -106,3 +117,56 @@ jobs:
       # throwaway HOME; the same run proves the Rust with CREW_IMPL=rust.
       - name: cli probe
         run: python3 crew/tools/cli_probe.py
+
+      # The default probes in .seamux/verify.json that CI did not run. Each
+      # works in a throwaway HOME against fakecmux, with no app and no network.
+      - name: hooks probe
+        run: python3 crew/tools/hooks_probe.py
+
+      - name: workspaces probe
+        run: python3 crew/tools/workspaces_probe.py
+
+      - name: artifacts probe
+        run: python3 crew/tools/artifacts_probe.py
+
+      - name: wake split probe
+        run: python3 crew/tools/wake_split_probe.py
+
+      - name: core probe
+        run: python3 crew/tools/core_probe.py
+
+      - name: CREW_IMPL helper probe
+        run: python3 crew/tools/crew_impl_probe.py
+
+      - name: crew install probe (apply, uninstall, sandboxes)
+        run: python3 crew/tools/install_probe.py
+
+  # The seamux app (app/): its pages, then every crate in the cargo workspace.
+  # macOS only. It is the one platform the app ships for, the crates' macOS
+  # paths (objc2, the overlay panel) only compile there, and the runner needs no
+  # system packages. Ubuntu would need webkit2gtk-4.1, ayatana-appindicator,
+  # librsvg and libxdo for Tauri, and would test code paths nobody runs.
+  app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app
+
+      # Before cargo: the Tauri crate's build script reads app/dist.
+      - name: app pages (tsc and vite build)
+        working-directory: app
+        run: npm ci && npm run build
+
+      - name: cargo test, every crate
+        run: cargo test --manifest-path app/Cargo.toml --workspace
