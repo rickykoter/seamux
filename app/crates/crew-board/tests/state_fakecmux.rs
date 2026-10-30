@@ -33,13 +33,31 @@ fn state_through_fakecmux() {
         .to_string(),
     )
     .unwrap();
+    // W-1 holds two Claudes and a terminal: cmux's pane list, and the pane
+    // file crew's hooks wrote for the one that asked.
+    let term = |ws: &str, s: &str, label: &str, agent: Value| json!({"kind": "terminal", "lifecycle": "running",
+        "cwd": wt, "label": label, "agents": agent, "projections": [{"workspace_id": ws, "panel_id": s}]});
+    std::fs::write(
+        dir.join("current.json"),
+        json!({"items": [
+            term("W-1", "S-TERM", "cargo test", json!([])),
+            term("W-1", "S-A", "Claude Code", json!([{"kind": "claude", "state": "idle"}])),
+            term("W-1", "S-B", "Claude Code", json!([{"kind": "claude", "state": "working"}])),
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let crew = home.join(".cache/cmux-crew");
+    std::fs::create_dir_all(&crew).unwrap();
+    std::fs::write(crew.join("pane-S-A.json"),
+        json!({"ws": "W-1", "surface": "S-A", "state": "needs_input", "at": 1_000}).to_string()).unwrap();
     std::env::set_var("HOME", &home);
     std::env::set_var("FAKE_CMUX_DIR", &dir);
     std::env::set_var("CREW_CMUX", fakecmux());
     std::env::set_var("CREW_COSTS_TTL", "0");
     std::env::set_var("PATH", "/usr/bin:/bin"); // no ccusage, no node: costs and plans come back empty
 
-    let o = crew_board::state::Opts { screens: false, fast: false, selected: None, fixture: None };
+    let o = crew_board::state::Opts { screens: false, fast: false, selected: None, fixture: None, fixture_panes: None };
     let d = crew_board::state::build(&o);
     let rows = d["rows"].as_array().unwrap();
     let ids: Vec<&str> = rows.iter().map(|r| r["id"].as_str().unwrap()).collect();
@@ -50,6 +68,12 @@ fn state_through_fakecmux() {
     assert_eq!(rows[1]["name"], "workspace:2");
     assert_eq!(rows[2]["kind"], "quiet");
     assert_eq!(rows[2]["chips"], json!(["jump", "archive", "wake"]));
+    let panes: Vec<(&str, &str, &str)> = rows[0]["panes"].as_array().unwrap().iter()
+        .map(|p| (p["surface"].as_str().unwrap(), p["kind"].as_str().unwrap(), p["state"].as_str().unwrap()))
+        .collect();
+    assert_eq!(panes, [("S-A", "claude", "needs_input"), ("S-B", "claude", "working"), ("S-TERM", "term", "shell")], "{d}");
+    assert_eq!(rows[0]["panes"][2]["what"], "cargo test");
+    assert!(rows[1].get("panes").is_none(), "no running pane in W-2");
     assert_eq!(d["stale"], false);
     assert_eq!(d["src"], "0 plans");
 
@@ -84,6 +108,7 @@ fn state_through_fakecmux() {
     )
     .unwrap();
     assert_eq!(t["W-1"]["ref"], "workspace:1");
+    assert_eq!(t["W-1"]["panes"].as_array().unwrap().len(), 3, "a click on any listed pane is honoured");
     assert_eq!(t["W-1"].as_object().unwrap().keys().collect::<Vec<_>>(),
                ["id", "ref", "cwd", "pr_url", "slug", "name", "issue_url", "panes"]);
     let _ = std::fs::remove_dir_all(&dir);
