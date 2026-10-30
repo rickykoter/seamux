@@ -167,7 +167,10 @@ with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
     faketmp = os.path.join(t, "faketmp")
     scratch_base = os.path.join(faketmp, "claude-501")
     env = dict(os.environ, HOME=home, CREW_SCRATCH_BASE=scratch_base,
-               CREW_TEMP_ROOTS=faketmp + "/:/private/tmp/",
+               # The real /tmp counts only for the probe's own redirect target:
+               # on Linux /tmp is not /private/tmp, and this fixture itself sits
+               # under /tmp, so a bare /tmp/ root would make every file temp.
+               CREW_TEMP_ROOTS=faketmp + "/:" + os.path.realpath("/tmp") + "/artprobe-",
                GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
     env.pop("CREW_DURABLE_DIR", None)
     os.environ.clear()

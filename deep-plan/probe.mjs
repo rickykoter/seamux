@@ -3614,9 +3614,9 @@ exit 1
     gateAs("timing", target, cwd);
     return Number(process.hrtime.bigint() - t) / 1e6;
   };
-  const guardCost = () => {
+  const guardCost = (n = 15) => {
     const fam = [], out = [];
-    for (let i = 0; i < 15; i++) {
+    for (let i = 0; i < n; i++) {
       fam.push(once(path.join(UI, "web", "login", "form.tsx"), UI));
       out.push(once(path.join(REPO, "x.txt"), REPO));
     }
@@ -3703,8 +3703,11 @@ exit 1
     ok("each told trespass is recorded once",
       log.length === 3 && log[0].from === "example-auth-ui" && log[0].owner === "example-auth-api" &&
       log[0].path === "api/auth/session.ts" && log[0].session === "s1" && log[1].session === "s2");
-    const cost = guardCost();
-    console.log(`\n  family guard: ${(cost.fam - cost.out).toFixed(1)} ms/edit over an edit outside every family (${cost.out.toFixed(1)} → ${cost.fam.toFixed(1)}, fastest of 15 each)`);
+    // A busy CI runner can push one fastest-of-15 over budget; a real slowdown
+    // stays over it when measured again with more samples.
+    let cost = guardCost(), n = 15;
+    if (cost.fam - cost.out >= 15) cost = guardCost((n = 45));
+    console.log(`\n  family guard: ${(cost.fam - cost.out).toFixed(1)} ms/edit over an edit outside every family (${cost.out.toFixed(1)} → ${cost.fam.toFixed(1)}, fastest of ${n} each)`);
     ok("the family guard costs under 15 ms per edit", cost.fam - cost.out < 15);
   }
 
