@@ -148,7 +148,10 @@ These survive a compaction; everything below them is how.
    its patch and its review; the first edit inside the root marks it
    `working`. `deep-plan done <slug> <n>` closes it and writes its patch to
    `~/.claude/plans/<slug>.inc<n>.patch`. `deep-plan diff <slug> [n]` opens
-   it in lookout (or `cmux diff`) when someone wants to look.
+   it in lookout (or `cmux diff`) when someone wants to look. A bug or idea
+   found outside the current increment's plan goes into `deep-plan note
+   "<what you found>"`, not into the spec or the code; `deep-plan notes`
+   lists the repo's open ones ([sharing.md](references/sharing.md#notes)).
 10. **Prove the increment before `done`.** `done` is refused while any check
     is pending, running, needs a variant, failed, or passed against other
     content than the tree now. `deep-plan check list <slug> <n>` shows each
