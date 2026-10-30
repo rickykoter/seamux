@@ -398,6 +398,32 @@ fn live_panes() -> Vec<LivePane> {
     c.current_list(None).map(|v| live_panes_of(&v)).unwrap_or_default()
 }
 
+/// A pane file left by a Claude that is gone (it crashed, or was killed,
+/// before its hooks wrote "ended") becomes "ended", so its pane reads as the
+/// shell it is. Only a pane cmux sees no agent in is a suspect, and only
+/// then are cmux's session records read: gone means a record for that
+/// surface and that same session whose process no longer exists, with no
+/// live record for the surface. A native pane's record names an old
+/// process too, but its own Claude writes a newer session into the file.
+pub fn drop_gone(files: &mut [crew_core::status::Pane], live: &[LivePane], records: impl FnOnce() -> Option<Vec<Value>>) {
+    let same = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
+    let suspect = |f: &crew_core::status::Pane| {
+        f.state != "ended" && !f.session.is_empty() && live.iter().any(|p| same(&p.surface, &f.surface) && p.agent.is_none())
+    };
+    if !files.iter().any(suspect) {
+        return;
+    }
+    let Some(records) = records() else { return };
+    let sv = |r: &Value, k: &str| r.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    for f in files.iter_mut().filter(|f| suspect(f)) {
+        let mine: Vec<&Value> = records.iter().filter(|r| same(&sv(r, "surface_id"), &f.surface)).collect();
+        let dead = |r: &&Value| r.get("stored_pid_exists") == Some(&Value::Bool(false));
+        if mine.iter().any(|r| dead(r) && sv(r, "session_id") == f.session) && !mine.iter().any(|r| !dead(r)) {
+            f.state = "ended".into();
+        }
+    }
+}
+
 /// Each workspace's panes, as its card lists them. A row gets `panes`, one
 /// entry per running terminal in its workspace:
 ///
@@ -512,8 +538,10 @@ pub fn build(o: &Opts) -> Value {
         crate::tucked::mark_live(&mut all);
         // Each workspace's panes: what each is doing, which owns the plan,
         // which has wandered past the pin.
-        let files = crew_core::status::all(&state_dir());
-        mark_panes(&mut all, &plan_by_root, &wss, &live_panes(), &files);
+        let live = live_panes();
+        let mut files = crew_core::status::all(&state_dir());
+        drop_gone(&mut files, &live, crew_core::workspaces::agent_sessions);
+        mark_panes(&mut all, &plan_by_root, &wss, &live, &files);
     } else if let Some((live, files)) = &o.fixture_panes {
         mark_panes(&mut all, &plan_by_root, &wss, live, files);
     }
@@ -789,6 +817,24 @@ mod tests {
             .collect();
         assert_eq!(got, [("C", "claude", "idle"), ("A", "claude", "working"), ("B", "term", "shell")]);
         assert_eq!(rows[0]["panes"][0]["asked"], true);
+    }
+
+    #[test]
+    fn a_crashed_claudes_pane_file_reads_as_a_shell() {
+        let live = vec![live("W", "S-DEAD", "", "zsh", None), live("W", "S-NAT", "", "zsh", None), live("W", "S-CMUX", "", "", Some(("claude", "idle")))];
+        let f = |s: &str, sess: &str| crew_core::status::Pane { session: sess.into(), ..file("W", s, "working", 1) };
+        let mut files = vec![f("S-DEAD", "old"), f("S-NAT", "new"), f("S-CMUX", "x")];
+        let recs = vec![
+            json!({"surface_id": "s-dead", "session_id": "old", "stored_pid_exists": false}),
+            // A native pane: its record is an older session's, gone; the file's is live in tmux.
+            json!({"surface_id": "S-NAT", "session_id": "older", "stored_pid_exists": false}),
+        ];
+        drop_gone(&mut files, &live, || Some(recs));
+        let st: Vec<&str> = files.iter().map(|f| f.state.as_str()).collect();
+        assert_eq!(st, ["ended", "working", "working"]);
+        // With no suspect, cmux's records are not asked for.
+        let mut files = vec![f("S-CMUX", "x")];
+        drop_gone(&mut files, &live, || panic!("no suspect, no sessions list"));
     }
 
     #[test]
