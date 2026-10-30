@@ -156,6 +156,35 @@
       .sheet-kin-chip.done { opacity: 0.6; }
       .sheet-kin-chip:disabled:not(.here) { opacity: 0.4; cursor: default; border-style: dashed; }
       .sheet-chat-sessions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 12px; }
+      /* One tab per live pane: they scroll sideways when they do not fit, and
+         the edge they run past fades. + and History stay put at the end. */
+      .sheet-chat-tabs { flex: 1 1 0; min-width: 0; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+      .sheet-chat-tabs::-webkit-scrollbar { display: none; }
+      .sheet-chat-tabs.clip-r { mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent); }
+      .sheet-chat-tabs.clip-l { mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent); }
+      .sheet-chat-tabs.clip-l.clip-r { mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent); }
+      .sheet-chat-tab {
+        display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; max-width: 200px; font: inherit; font-size: 12px;
+        padding: 4px 9px; border-radius: 7px; border: 1px solid transparent; background: none; color: var(--muted); cursor: pointer;
+      }
+      .sheet-chat-tab:hover { background: var(--card); color: var(--fg); }
+      .sheet-chat-tab.on { background: var(--card); border-color: var(--line); color: var(--fg); }
+      .sheet-chat-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+      .sheet-chat-tab svg { flex: none; width: 9px; height: 9px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+      .sheet-chat-tab-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+      .sheet-chat-tab.needs_input .sheet-chat-tab-dot { background: var(--accent); }
+      .sheet-chat-tab.working .sheet-chat-tab-dot { background: var(--good); }
+      .sheet-chat-tab.term.bell svg { color: var(--accent); }
+      .sheet-chat-tab-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 3ch; }
+      .sheet-chat-tab.term .sheet-chat-tab-name { font: 11.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .sheet-chat-tab.agent .sheet-chat-tab-name { font-weight: 600; flex: none; }
+      .sheet-chat-tab-state { white-space: nowrap; color: var(--accent); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+      .sheet-chat-tab-state::before { content: "·"; margin-right: 6px; color: var(--muted); }
+      .sheet-chat-new, .sheet-chat-hist, .sheet-chat-resume { flex: none; }
+      .sheet-chat-sessions .sheet-btn:disabled { opacity: 0.5; cursor: default; }
+      .sheet-chat-sessions .sheet-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--ef-ink); }
+      .sheet-chat-sess.act { color: var(--accent); }
+      .sheet-chat-sess.act + .sheet-chat-sess:not(.act) { margin-top: 3px; border-top-color: var(--line); border-radius: 0 0 6px 6px; }
       .sheet-chat-sess-what { color: var(--muted, inherit); opacity: 0.75; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
       .sheet-chat-sess-list { flex-basis: 100%; display: flex; flex-direction: column; gap: 2px; max-height: 180px; overflow-y: auto; }
       .sheet-chat-sess { text-align: left; font: inherit; padding: 4px 8px; border-radius: 6px; border: 1px solid transparent; background: transparent; color: var(--fg); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
