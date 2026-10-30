@@ -35,6 +35,8 @@ export type Tile = {
   running?: string | null;
   /** A native pane rang the bell since it was last looked at. */
   bell?: boolean;
+  /** What a native Claude says the conversation is about, once it has read the first prompt. */
+  topic?: string | null;
   /** The workspace's pinned worktree (its root: token), "" without one. */
   root?: string;
   /** The plan this pane owns, by slug (deep-plan's owner pane). */
@@ -297,6 +299,7 @@ class Preview {
     const waited = t.state === "needs_input" ? ` · ${ago(now - t.since)}` : "";
     this.stateEl.replaceChildren(stateMark(t.state), document.createTextNode((STATE_WORDS[t.state] ?? t.state) + waited));
     this.term.show(t.surface);
+    this.term.agentState(t.state, t.since);
     // Live, keys go to the terminal itself; the reply box is the fallback's.
     // Wall::reply refuses a pane without a running agent; so does the page.
     this.form.hidden = this.live || !t.agent || t.state === "ended";

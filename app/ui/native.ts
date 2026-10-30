@@ -16,6 +16,7 @@ import "@xterm/xterm/css/xterm.css";
 import "./pane.css";
 import { Term } from "./term";
 import { follow, HoverCard, pathLinks, type Hovered } from "./panelinks";
+import { PaneCat } from "./panecat";
 
 // A page that starts (or reloads) owns no terminal yet: any its last life
 // left attached would keep its tmux client, and its size, for nothing.
@@ -171,6 +172,8 @@ export class NativeTerm {
   private find = document.createElement("div");
   private findInput = document.createElement("input");
   private findCount = document.createElement("span");
+  /** The Dock's cat, peeking in while Claude waits for you. */
+  private cat = new PaneCat();
 
   constructor() {
     const open = (uri: string) => void follow(uri, this.id);
@@ -192,7 +195,7 @@ export class NativeTerm {
     this.note.className = "pane-note";
     this.note.setAttribute("role", "status");
     this.note.hidden = true;
-    this.el.append(this.pill, this.note);
+    this.el.append(this.pill, this.note, this.cat.el);
     // An image on the clipboard has no text to paste: Claude reads the
     // clipboard's image itself on Ctrl-V. (On the pane, captured, so it
     // runs before xterm.js's own paste.)
@@ -503,6 +506,8 @@ export class NativeTerm {
     if (surface === this.surface) return;
     this.detach();
     this.surface = surface;
+    this.cat.reset();
+    delete this.el.dataset.agent;
     if (this.opened) this.term.reset();
     this.check();
   }
@@ -510,6 +515,15 @@ export class NativeTerm {
   stop(): void {
     this.detach();
     this.surface = "";
+    this.cat.reset();
+    delete this.el.dataset.agent;
+  }
+
+  /** Claude's state in this pane (wall.rs's Tile.state) and when it began:
+   *  the cursor breathes while it works, the cat peeks while it waits. */
+  agentState(state: string, since: number): void {
+    this.el.dataset.agent = state;
+    this.cat.update(state, since);
   }
 
   focus(): void {
@@ -730,6 +744,11 @@ export class TermSlot {
     this.native.stop();
     this.mode = "";
     this.surface = "";
+  }
+
+  /** The pane's Claude state, for the native terminal's cursor and cat. */
+  agentState(state: string, since: number): void {
+    this.native.agentState(state, since);
   }
 
   /** Whether the pane is drawn natively (a tmux-backed session). */

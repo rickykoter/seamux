@@ -148,8 +148,21 @@ fn run_wall<R: Runtime>(app: AppHandle<R>, pool: Vec<Arc<dyn Source>>) {
     }
 
     // run_wall is already on its own thread; poll here.
+    // A native Claude's cmux tab takes its name (worktree · topic) once
+    // Claude has given the conversation a topic: the Dock and the Wall
+    // read the tab's title.
+    let named: std::sync::Mutex<std::collections::HashMap<String, String>> = Default::default();
     wall.run(rx, move |f: Frame| {
         crate::views_app::observe(&f);
+        let renames = seamux_app::wall::tab_renames(&f.tiles, &mut named.lock().unwrap());
+        if !renames.is_empty() {
+            std::thread::spawn(move || {
+                let Ok(c) = cmux::Cmux::connect() else { return };
+                for (surface, ws, name) in renames {
+                    let _ = c.cli(&["rename-tab", "--surface", &surface, "--workspace", &ws, &name]);
+                }
+            });
+        }
         match app.emit("wall:frame", f) {
             Ok(()) => true,
             Err(e) => {

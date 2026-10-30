@@ -52,3 +52,30 @@
 .pane-find-count { min-width: 4.5em; text-align: right; opacity: 0.6; font-variant-numeric: tabular-nums; }
 .pane-find-close { display: grid; place-items: center; width: 20px; height: 20px; border: 0; border-radius: 5px; background: transparent; color: inherit; opacity: 0.6; cursor: pointer; }
 .pane-find-close:hover { opacity: 1; background: color-mix(in srgb, var(--fg) 10%, transparent); }
+
+/* The Dock's cat (panecat.ts): peeks in at the bottom right while Claude
+   waits for you, hops with a heart when a long turn ends. Never takes the
+   mouse. */
+.native-term { position: relative; }
+.pane-cat-box { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 3; }
+.pane-cat { position: absolute; right: 18px; bottom: -42px; line-height: 0; transition: bottom 0.35s ease; }
+.pane-cat[data-at="peek"] { bottom: -12px; }
+.pane-cat[data-at="up"] { bottom: 2px; transition-duration: 0.12s; }
+.pane-cat[data-at="air"] { bottom: 14px; transition-duration: 0.12s; }
+.pane-cat-heart { position: absolute; right: 26px; bottom: 34px; line-height: 0; opacity: 0; }
+.pane-cat-heart.up { animation: pane-heart 1.5s ease-out forwards; }
+@keyframes pane-heart { 0% { opacity: 0; transform: translateY(0); } 15% { opacity: 1; } 100% { opacity: 0; transform: translateY(-44px); } }
+
+/* The cursor shows Claude's state: it breathes while Claude works and is a
+   steady amber while Claude waits for you (data-agent, from the pane's tile). */
+@keyframes pane-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.2; } }
+.native-term[data-agent="working"] .xterm-cursor { animation: pane-breathe 2.4s ease-in-out infinite !important; }
+.native-term[data-agent="needs_input"] .xterm-cursor { animation: none !important; }
+.native-term[data-agent="needs_input"] .xterm-cursor.xterm-cursor-block { background-color: #e69875 !important; color: #1e2326 !important; }
+.native-term[data-agent="needs_input"] .xterm-cursor.xterm-cursor-outline { outline-color: #e69875 !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pane-cat { transition: none; }
+  .pane-cat-heart.up { animation: none; opacity: 1; }
+  .native-term[data-agent="working"] .xterm-cursor { animation: none !important; opacity: 0.45; }
+}
