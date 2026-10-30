@@ -14,7 +14,7 @@
 .timeline { display: flex; flex-direction: column; height: 100%; padding: 14px 18px 12px; box-sizing: border-box; gap: 6px; overflow: auto; }
 .timeline .grow { flex: 1; }
 .t-top { display: flex; align-items: baseline; }
-.t-top h2 { margin: 0; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.t-top h2 { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--section); }
 .t-now { font-size: 12px; color: var(--muted); }
 
 .t-legend { display: flex; flex-wrap: wrap; gap: 16px; padding-left: var(--t-left); font-size: 11px; color: var(--muted); }

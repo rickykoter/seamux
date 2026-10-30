@@ -29,11 +29,25 @@
   esc() or text nodes before it reaches the DOM.
 -->
 <style>
+/* everforest:start */
+:root {
+  --ef-bg-dim: #232a2e; --ef-bg: #2d353b; --ef-bg1: #343f44; --ef-bg2: #3d484d; --ef-bg3: #475258;
+  --ef-fg: #d3c6aa; --ef-dim: #859289; --ef-faint: #5c6a72; --ef-grey0: #7a8478; --ef-grey2: #9da9a0;
+  --ef-line: #3d484d; --ef-line2: #4f5b58; --ef-card: #3a464c; --ef-card2: #343f44; --ef-card3: #424e54;
+  --ef-red: #e67e80; --ef-orange: #e69875; --ef-yellow: #dbbc7f; --ef-green: #a7c080;
+  --ef-aqua: #83c092; --ef-blue: #7fbbb3; --ef-purple: #d699b6;
+  --ef-accent: #7fbbb3; --ef-good: #a7c080; --ef-warn: #dbbc7f; --ef-bad: #e67e80; --ef-mark: #dbbc7f;
+  --ef-bg-red: #514045; --ef-bg-green: #425047; --ef-bg-yellow: #4d4c43; --ef-bg-blue: #3a515d; --ef-bg-visual: #543a48;
+  --ef-ink: #1e2326;
+  --ef-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+/* everforest:end */
+/* The board's names for seamux's palette (theme/everforest.css). */
 :root{
-  --bg:#2d353b; --card:#343f44; --card2:#3a464c; --line:#2f3639; --line2:#3d484d;
-  --ink:#d3c6aa; --muted:#859289; --faint:#5c6a72;
-  --risk:#e69875; --kept:#a7c080; --pub:#83c092; --mark:#dbbc7f; --bad:#e67e80;
-  --shell:#d699b6; --shell2:#a8738f; --crab:#e67e80;
+  --bg:var(--ef-bg); --card:var(--ef-bg1); --card2:var(--ef-card); --line:#2f3639; --line2:var(--ef-bg2);
+  --ink:var(--ef-fg); --muted:var(--ef-dim); --faint:var(--ef-faint);
+  --risk:var(--ef-orange); --kept:var(--ef-green); --pub:var(--ef-aqua); --mark:var(--ef-yellow); --bad:var(--ef-red);
+  --shell:var(--ef-purple); --shell2:#a8738f; --crab:var(--ef-red);
   --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
 }
 *{box-sizing:border-box}

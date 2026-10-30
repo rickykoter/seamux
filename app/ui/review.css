@@ -16,8 +16,7 @@
 .r-btn { font: inherit; font-size: 12.5px; padding: 5px 11px; border-radius: 8px; cursor: pointer; border: 1px solid var(--line); background: var(--card); color: var(--fg); white-space: nowrap; }
 .r-btn:hover:not(:disabled) { border-color: var(--accent); }
 .r-btn:disabled { opacity: 0.45; cursor: default; }
-.r-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-@media (prefers-color-scheme: dark) { .r-btn.primary { color: #1c1c1e; } }
+.r-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--ef-ink); }
 .r-btn.quiet { border-color: transparent; color: var(--muted); background: none; }
 .r-btn.quiet:hover:not(:disabled) { color: var(--fg); border-color: var(--line); }
 .r-input:focus-visible, .r-select:focus-visible, .r-btn:focus-visible, .r-item:focus-visible, .r-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -27,7 +26,7 @@
 /* suggestions under the input */
 .r-picks { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; width: max(100%, 340px); max-height: 60vh; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px var(--shade, rgba(0, 0, 0, 0.18)); padding: 4px; }
 .r-picks[hidden] { display: none; }
-.r-pick-sec { margin: 8px 8px 2px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+.r-pick-sec { margin: 8px 8px 2px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--section); }
 .r-pick { display: flex; flex-direction: column; gap: 1px; width: 100%; text-align: left; font: inherit; padding: 6px 8px; border: 0; border-radius: 7px; background: none; color: var(--fg); cursor: pointer; }
 .r-pick:hover { background: var(--term); }
 .r-pick-title { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -35,7 +34,7 @@
 
 /* the list */
 .r-list { flex: 1; overflow-y: auto; padding: 6px 8px 16px; display: flex; flex-direction: column; gap: 2px; }
-.r-sec { margin: 12px 8px 4px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+.r-sec { margin: 12px 8px 4px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--section); }
 .r-none { margin: 4px 8px; font-size: 12px; color: var(--muted); }
 .r-item { display: flex; flex-direction: column; gap: 2px; text-align: left; font: inherit; padding: 7px 10px 7px 12px; border: 0; border-radius: 9px; background: none; color: var(--fg); cursor: pointer; position: relative; }
 .r-item:hover { background: var(--term); }

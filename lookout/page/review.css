@@ -1,48 +1,58 @@
+/* everforest:start */
 :root {
-  --bg: #ffffff; --fg: #1f2328; --muted: #59636e; --border: #d1d9e0;
-  --side: #f6f8fa; --hover: #eef1f4; --sel: #ddeafc; --accent: #0969da;
-  --add: #dafbe1; --add-mark: #a2e8b2; --add-ln: #ccf3d6;
-  --del: #ffebe9; --del-mark: #ffc1bc; --del-ln: #ffdcd8;
-  --hunk: #ddf4ff; --hunk-fg: #59636e; --empty: #f6f8fa;
-  --st-m: #9a6700; --st-a: #1a7f37; --st-d: #cf222e; --st-r: #0969da;
-  --risk-high: #cf222e; --risk-medium: #bf8700; --risk-low: #8c959f; --rail: #afb8c1;
-  --card: #ffffff; --card-border: #d1d9e0; --flash: #fff8c5;
-  --sev-blocker: #a40e26; --sev-major: #cf222e; --sev-minor: #bf8700; --sev-nit: #59636e; --sev-comment: #0969da;
-  --hl-comment: #6e7781; --hl-keyword: #cf222e; --hl-string: #0a3069; --hl-number: #0550ae;
-  --hl-title: #8250df; --hl-built: #953800; --hl-attr: #0550ae; --hl-tag: #116329;
-  --hl-meta: #6639ba; --hl-var: #953800;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --ef-bg-dim: #232a2e; --ef-bg: #2d353b; --ef-bg1: #343f44; --ef-bg2: #3d484d; --ef-bg3: #475258;
+  --ef-fg: #d3c6aa; --ef-dim: #859289; --ef-faint: #5c6a72; --ef-grey0: #7a8478; --ef-grey2: #9da9a0;
+  --ef-line: #3d484d; --ef-line2: #4f5b58; --ef-card: #3a464c; --ef-card2: #343f44; --ef-card3: #424e54;
+  --ef-red: #e67e80; --ef-orange: #e69875; --ef-yellow: #dbbc7f; --ef-green: #a7c080;
+  --ef-aqua: #83c092; --ef-blue: #7fbbb3; --ef-purple: #d699b6;
+  --ef-accent: #7fbbb3; --ef-good: #a7c080; --ef-warn: #dbbc7f; --ef-bad: #e67e80; --ef-mark: #dbbc7f;
+  --ef-bg-red: #514045; --ef-bg-green: #425047; --ef-bg-yellow: #4d4c43; --ef-bg-blue: #3a515d; --ef-bg-visual: #543a48;
+  --ef-ink: #1e2326;
+  --ef-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --border: #3d444d;
-    --side: #151b23; --hover: #1f2630; --sel: #1c2d45; --accent: #4493f8;
-    --add: rgba(46,160,67,.15); --add-mark: rgba(46,160,67,.45); --add-ln: rgba(46,160,67,.25);
-    --del: rgba(248,81,73,.15); --del-mark: rgba(248,81,73,.45); --del-ln: rgba(248,81,73,.25);
-    --hunk: rgba(56,139,253,.12); --hunk-fg: #9198a1; --empty: #151b23;
-    --st-m: #d29922; --st-a: #3fb950; --st-d: #f85149; --st-r: #4493f8;
-    --risk-high: #f85149; --risk-medium: #d29922; --risk-low: #6e7681; --rail: #3d444d;
-    --card: #161b22; --card-border: #3d444d; --flash: #3b2e00;
-    --sev-blocker: #ff6a69; --sev-major: #f85149; --sev-minor: #d29922; --sev-nit: #9198a1; --sev-comment: #4493f8;
-    --hl-comment: #9198a1; --hl-keyword: #ff7b72; --hl-string: #a5d6ff; --hl-number: #79c0ff;
-    --hl-title: #d2a8ff; --hl-built: #ffa657; --hl-attr: #79c0ff; --hl-tag: #7ee787;
-    --hl-meta: #d2a8ff; --hl-var: #ffa657;
+/* light */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --ef-bg-dim: #efebd4; --ef-bg: #fdf6e3; --ef-bg1: #f4f0d9; --ef-bg2: #efebd4; --ef-bg3: #e6e2cc;
+    --ef-fg: #5c6a72; --ef-dim: #829181; --ef-faint: #a6b0a0; --ef-grey0: #a6b0a0; --ef-grey2: #829181;
+    --ef-line: #e6e2cc; --ef-line2: #c9cdb6; --ef-card: #efebd4; --ef-card2: #f4f0d9; --ef-card3: #e6e2cc;
+    --ef-red: #f85552; --ef-orange: #f57d26; --ef-yellow: #dfa000; --ef-green: #8da101;
+    --ef-aqua: #35a77c; --ef-blue: #3a94c5; --ef-purple: #df69ba;
+    --ef-accent: #3a94c5; --ef-good: #8da101; --ef-warn: #c08000; --ef-bad: #f85552; --ef-mark: #a77c00;
+    --ef-bg-red: #fde3da; --ef-bg-green: #f0f1d2; --ef-bg-yellow: #faedcd; --ef-bg-blue: #e9f0e9; --ef-bg-visual: #eaedc8;
+    --ef-ink: #fffbef;
   }
 }
-:root[data-theme="dark"] {
-  --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --border: #3d444d;
-  --side: #151b23; --hover: #1f2630; --sel: #1c2d45; --accent: #4493f8;
-  --add: rgba(46,160,67,.15); --add-mark: rgba(46,160,67,.45); --add-ln: rgba(46,160,67,.25);
-  --del: rgba(248,81,73,.15); --del-mark: rgba(248,81,73,.45); --del-ln: rgba(248,81,73,.25);
-  --hunk: rgba(56,139,253,.12); --hunk-fg: #9198a1; --empty: #151b23;
-  --st-m: #d29922; --st-a: #3fb950; --st-d: #f85149; --st-r: #4493f8;
-  --risk-high: #f85149; --risk-medium: #d29922; --risk-low: #6e7681; --rail: #3d444d;
-  --card: #161b22; --card-border: #3d444d; --flash: #3b2e00;
-  --sev-blocker: #ff6a69; --sev-major: #f85149; --sev-minor: #d29922; --sev-nit: #9198a1; --sev-comment: #4493f8;
-  --hl-comment: #9198a1; --hl-keyword: #ff7b72; --hl-string: #a5d6ff; --hl-number: #79c0ff;
-  --hl-title: #d2a8ff; --hl-built: #ffa657; --hl-attr: #79c0ff; --hl-tag: #7ee787;
-  --hl-meta: #d2a8ff; --hl-var: #ffa657;
+:root[data-theme="light"] {
+  --ef-bg-dim: #efebd4; --ef-bg: #fdf6e3; --ef-bg1: #f4f0d9; --ef-bg2: #efebd4; --ef-bg3: #e6e2cc;
+  --ef-fg: #5c6a72; --ef-dim: #829181; --ef-faint: #a6b0a0; --ef-grey0: #a6b0a0; --ef-grey2: #829181;
+  --ef-line: #e6e2cc; --ef-line2: #c9cdb6; --ef-card: #efebd4; --ef-card2: #f4f0d9; --ef-card3: #e6e2cc;
+  --ef-red: #f85552; --ef-orange: #f57d26; --ef-yellow: #dfa000; --ef-green: #8da101;
+  --ef-aqua: #35a77c; --ef-blue: #3a94c5; --ef-purple: #df69ba;
+  --ef-accent: #3a94c5; --ef-good: #8da101; --ef-warn: #c08000; --ef-bad: #f85552; --ef-mark: #a77c00;
+  --ef-bg-red: #fde3da; --ef-bg-green: #f0f1d2; --ef-bg-yellow: #faedcd; --ef-bg-blue: #e9f0e9; --ef-bg-visual: #eaedc8;
+  --ef-ink: #fffbef;
+}
+/* everforest:end */
+/* The review page in seamux's palette (theme/everforest.css), as
+   deep-plan's pages are: one mapping, both modes. Syntax colours follow
+   Everforest's own (keywords red, strings aqua, functions green, types
+   yellow). */
+:root {
+  --bg: var(--ef-bg); --fg: var(--ef-fg); --muted: var(--ef-dim); --border: var(--ef-line2);
+  --side: var(--ef-bg-dim); --hover: var(--ef-bg1); --sel: var(--ef-bg-blue); --accent: var(--ef-accent);
+  --add: var(--ef-bg-green); --add-mark: color-mix(in srgb, var(--ef-green) 38%, transparent); --add-ln: color-mix(in srgb, var(--ef-green) 22%, transparent);
+  --del: var(--ef-bg-red); --del-mark: color-mix(in srgb, var(--ef-red) 38%, transparent); --del-ln: color-mix(in srgb, var(--ef-red) 22%, transparent);
+  --hunk: var(--ef-bg-blue); --hunk-fg: var(--ef-dim); --empty: var(--ef-bg-dim);
+  --st-m: var(--ef-yellow); --st-a: var(--ef-green); --st-d: var(--ef-red); --st-r: var(--ef-blue);
+  --risk-high: var(--ef-red); --risk-medium: var(--ef-yellow); --risk-low: var(--ef-grey0); --rail: var(--ef-line2);
+  --card: var(--ef-bg1); --card-border: var(--ef-line2); --flash: var(--ef-bg-yellow);
+  --sev-blocker: var(--ef-red); --sev-major: var(--ef-orange); --sev-minor: var(--ef-yellow); --sev-nit: var(--ef-dim); --sev-comment: var(--ef-blue);
+  --hl-comment: var(--ef-grey0); --hl-keyword: var(--ef-red); --hl-string: var(--ef-aqua); --hl-number: var(--ef-purple);
+  --hl-title: var(--ef-green); --hl-built: var(--ef-yellow); --hl-attr: var(--ef-blue); --hl-tag: var(--ef-orange);
+  --hl-meta: var(--ef-purple); --hl-var: var(--ef-blue);
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
 * { box-sizing: border-box; }

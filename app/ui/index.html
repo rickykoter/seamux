@@ -7,20 +7,20 @@
     <style>
       :root {
         color-scheme: light dark;
-        --fg: #1d1d1f; --muted: #6e6e73; --bg: #fbfbfd; --strip: #ececf0; --line: #d8d8de;
-        --on: #ffffff; --accent: #b7791f; --bad: #c0392b; --good: #2f855a;
-        --card: #ffffff; --shade: rgba(0, 0, 0, 0.06); --term: #f3f3f6; --term-fg: #2b2b30;
+        /* seamux's palette (everforest.css, from theme/everforest.css), as
+           deep-plan's pages wear it; both modes come from there. */
+        --fg: var(--ef-fg); --muted: var(--ef-dim); --bg: var(--ef-bg); --strip: var(--ef-bg-dim); --line: var(--ef-line);
+        --on: var(--ef-bg1); --accent: var(--ef-mark); --bad: var(--ef-bad); --good: var(--ef-good);
+        --card: var(--ef-bg1); --shade: rgba(0, 0, 0, 0.06); --term: var(--ef-bg-dim); --term-fg: var(--ef-fg);
+        /* Section labels: deep-plan's amber small caps. */
+        --section: var(--ef-mark);
         /* Every drawing of a pane, live or text, shares these; --pane-bg and
            --pane-fg are the terminal theme cmux reports (term.ts sets them). */
         --term-font: 12px/15px ui-monospace, Menlo, monospace; --term-pad: 8px;
         --pane-bg-or: var(--pane-bg, var(--term)); --pane-fg-or: var(--pane-fg, var(--term-fg));
       }
       @media (prefers-color-scheme: dark) {
-        :root {
-          --fg: #f5f5f7; --muted: #a1a1a6; --bg: #1c1c1e; --strip: #121214; --line: #2c2c30;
-          --on: #2a2a2e; --accent: #f2c462; --bad: #ff6b5b; --good: #68d391;
-          --card: #232326; --shade: rgba(0, 0, 0, 0.4); --term: #161618; --term-fg: #d8d8dc;
-        }
+        :root { --shade: rgba(0, 0, 0, 0.4); }
       }
       html, body { height: 100%; }
       body {
