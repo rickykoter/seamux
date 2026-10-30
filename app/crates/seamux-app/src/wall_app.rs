@@ -107,7 +107,7 @@ fn run_wall<R: Runtime>(app: AppHandle<R>, pool: Vec<Arc<dyn Source>>) {
                 return m.clone();
             }
         }
-        let m = crew_core::status::live_states_now(&crew_board::state::state_dir());
+        let m = crew_core::status::live_states_now(&crew_board::state::state_dir()).unwrap_or_default();
         *c = Some((std::time::Instant::now(), m.clone()));
         m
     }));

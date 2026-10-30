@@ -400,12 +400,13 @@ fn live_panes() -> Vec<LivePane> {
 
 /// A pane file left by a Claude that is gone (it crashed, or was killed,
 /// before its hooks wrote "ended") becomes "ended", so its pane reads as the
-/// shell it is. Only a pane cmux sees no agent in is a suspect, and only
-/// then are cmux's session records read: gone means a record for that
-/// surface and that same session whose process no longer exists, with no
-/// live record for the surface. A native pane's record names an old
-/// process too, but its own Claude writes a newer session into the file.
-pub fn drop_gone(files: &mut [crew_core::status::Pane], live: &[LivePane], records: impl FnOnce() -> Option<Vec<Value>>) {
+/// shell it is. Only a pane cmux sees no agent in is a suspect. `alive` is
+/// crew_core::status::live_states: the panes whose file names the session
+/// the session store has active on that surface, with a live pid. A suspect
+/// it lists (a native pane's Claude, which cmux cannot see) stays; one it
+/// does not is gone. It is a file read and a kill(0) per pane, never a cmux
+/// call, and None (no readable store) leaves every file as it is.
+pub fn drop_gone(files: &mut [crew_core::status::Pane], live: &[LivePane], alive: impl FnOnce() -> Option<std::collections::HashMap<String, String>>) {
     let same = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
     let suspect = |f: &crew_core::status::Pane| {
         f.state != "ended" && !f.session.is_empty() && live.iter().any(|p| same(&p.surface, &f.surface) && p.agent.is_none())
@@ -413,12 +414,9 @@ pub fn drop_gone(files: &mut [crew_core::status::Pane], live: &[LivePane], recor
     if !files.iter().any(suspect) {
         return;
     }
-    let Some(records) = records() else { return };
-    let sv = |r: &Value, k: &str| r.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let Some(alive) = alive() else { return };
     for f in files.iter_mut().filter(|f| suspect(f)) {
-        let mine: Vec<&Value> = records.iter().filter(|r| same(&sv(r, "surface_id"), &f.surface)).collect();
-        let dead = |r: &&Value| r.get("stored_pid_exists") == Some(&Value::Bool(false));
-        if mine.iter().any(|r| dead(r) && sv(r, "session_id") == f.session) && !mine.iter().any(|r| !dead(r)) {
+        if !alive.contains_key(&f.surface.to_uppercase()) {
             f.state = "ended".into();
         }
     }
@@ -540,7 +538,7 @@ pub fn build(o: &Opts) -> Value {
         // which has wandered past the pin.
         let live = live_panes();
         let mut files = crew_core::status::all(&state_dir());
-        drop_gone(&mut files, &live, crew_core::workspaces::agent_sessions);
+        drop_gone(&mut files, &live, || crew_core::status::live_states_now(&state_dir()));
         mark_panes(&mut all, &plan_by_root, &wss, &live, &files);
     } else if let Some((live, files)) = &o.fixture_panes {
         mark_panes(&mut all, &plan_by_root, &wss, live, files);
@@ -824,17 +822,19 @@ mod tests {
         let live = vec![live("W", "S-DEAD", "", "zsh", None), live("W", "S-NAT", "", "zsh", None), live("W", "S-CMUX", "", "", Some(("claude", "idle")))];
         let f = |s: &str, sess: &str| crew_core::status::Pane { session: sess.into(), ..file("W", s, "working", 1) };
         let mut files = vec![f("S-DEAD", "old"), f("S-NAT", "new"), f("S-CMUX", "x")];
-        let recs = vec![
-            json!({"surface_id": "s-dead", "session_id": "old", "stored_pid_exists": false}),
-            // A native pane: its record is an older session's, gone; the file's is live in tmux.
-            json!({"surface_id": "S-NAT", "session_id": "older", "stored_pid_exists": false}),
-        ];
-        drop_gone(&mut files, &live, || Some(recs));
+        // S-NAT is a native pane: cmux sees no agent, but the store has its
+        // session active there with a live pid. S-DEAD's is not listed.
+        let alive = std::collections::HashMap::from([("S-NAT".to_string(), "working".to_string())]);
+        drop_gone(&mut files, &live, || Some(alive));
         let st: Vec<&str> = files.iter().map(|f| f.state.as_str()).collect();
         assert_eq!(st, ["ended", "working", "working"]);
-        // With no suspect, cmux's records are not asked for.
+        // With no suspect, the store is not read.
         let mut files = vec![f("S-CMUX", "x")];
-        drop_gone(&mut files, &live, || panic!("no suspect, no sessions list"));
+        drop_gone(&mut files, &live, || panic!("no suspect, no store read"));
+        // No readable store proves nothing: the file stands.
+        let mut files = vec![f("S-DEAD", "old")];
+        drop_gone(&mut files, &live, || None);
+        assert_eq!(files[0].state, "working");
     }
 
     #[test]

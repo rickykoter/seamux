@@ -94,6 +94,8 @@ class Chat {
   private panes: Tile[] = [];
   private order: string[] = [];
   private tabSig = "";
+  /** The pane the row last scrolled to, so a redraw for another pane's state leaves the scroll alone. */
+  private scrolledTo = "";
   /** A tab was opened: the sheet shows that pane. */
   onPick: (surface: string) => void = () => {};
 
@@ -289,8 +291,12 @@ class Chat {
       }),
     );
     if (keep) this.tabsEl.querySelector<HTMLElement>(`[data-surface="${CSS.escape(keep)}"]`)?.focus();
-    // Many panes scroll rather than crush; the shown one stays in view.
-    this.tabsEl.querySelector(".on")?.scrollIntoView({ inline: "nearest", block: "nearest" });
+    // Many panes scroll rather than crush. The shown one is brought into view
+    // when it changes, not on every redraw: a row scrolled sideways by hand stays put.
+    if (this.scrolledTo !== this.surface) {
+      this.scrolledTo = this.surface;
+      this.tabsEl.querySelector(".on")?.scrollIntoView({ inline: "nearest", block: "nearest" });
+    }
     this.clip();
   }
 

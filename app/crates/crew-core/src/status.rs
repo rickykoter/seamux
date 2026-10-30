@@ -203,10 +203,11 @@ pub fn live_states(panes: &[Pane], store: &Value, alive: impl Fn(i64) -> bool) -
     out
 }
 
-/// `live_states` over the pane files in `dir` and the store on disk.
-pub fn live_states_now(dir: &Path) -> std::collections::HashMap<String, String> {
-    let store = fs::read_to_string(store_path()).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(Value::Null);
-    live_states(&all(dir), &store, pid_alive)
+/// `live_states` over the pane files in `dir` and the store on disk; None
+/// when the store cannot be read, which proves nothing either way.
+pub fn live_states_now(dir: &Path) -> Option<std::collections::HashMap<String, String>> {
+    let store = fs::read_to_string(store_path()).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok())?;
+    Some(live_states(&all(dir), &store, pid_alive))
 }
 
 /// What the workspace's lane should say.
