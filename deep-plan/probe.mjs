@@ -5064,6 +5064,34 @@ exit 1
     JSON.parse(fs.readFileSync(path.join(EB.DEEP_PLAN_STATE_DIR, "tr-p.json"), "utf8")).increments[0].status === "blocked", r.stdout + r.stderr);
   ok("…and says nothing when nothing moved", on({ ...EB, CLAUDE_PROJECT_DIR: TA }, TA, "state", "pull", "--session").stdout.trim() === "");
   ok("…and does not bring plans that are not here, on a local machine", !fs.existsSync(path.join(EB.DEEP_PLAN_STATE_DIR, "tr-private.json")));
+  // Notes ride the plan's branch: a note alone pushes, and two machines that
+  // each note before either pulls end up with every line once.
+  const notesOnBranch = slug => spawnSync("git", ["--git-dir", TO, "show", `refs/heads/seamux-state/${slug}:deep-plan/state/${slug}.notes.jsonl`], { encoding: "utf8" }).stdout;
+  t = tipOf("tr-p");
+  r = on(EA, TA, "note", "--plan", "tr-p", "noted on a");
+  ok("notes: a note alone pushes a shared plan, with its notes file", r.status === 0 && tipOf("tr-p") !== t && /noted on a/.test(notesOnBranch("tr-p")), r.stdout + r.stderr);
+  r = on(EB, TA, "note", "--plan", "tr-p", "noted on b");
+  ok("notes: the other machine's note merges with the moved branch before it pushes", r.status === 0 &&
+    /noted on a/.test(notesOnBranch("tr-p")) && /noted on b/.test(notesOnBranch("tr-p")), r.stdout + r.stderr);
+  on(EA, TA, "state", "pull", "tr-p");
+  const nA = fs.readFileSync(path.join(EA.DEEP_PLAN_STATE_DIR, "tr-p.notes.jsonl"), "utf8").trim().split("\n");
+  const nB = fs.readFileSync(path.join(EB.DEEP_PLAN_STATE_DIR, "tr-p.notes.jsonl"), "utf8").trim().split("\n");
+  ok("notes: after a pull both machines hold every line once", nA.length === 2 && new Set(nA).size === 2 &&
+    [...nA].sort().join("\n") === [...nB].sort().join("\n"), nA.join("\n") + "\n--\n" + nB.join("\n"));
+  const nid = JSON.parse(nB.find(l => /noted on b/.test(l))).id;
+  on(EA, TA, "note", "close", nid, "seen on a");
+  on(EB, TA, "state", "pull", "tr-p");
+  ok("notes: a close on one machine reaches the other", JSON.parse(on(EB, TA, "notes", "--json", "--plan", "tr-p").stdout).length === 1);
+  t = tipOf("tr-private");
+  on(EA, TA, "note", "--plan", "tr-private", "stays here");
+  ok("notes: a note on a plan that does not share is not pushed", tipOf("tr-private") === t &&
+    fs.existsSync(path.join(EA.DEEP_PLAN_STATE_DIR, "tr-private.notes.jsonl")));
+  {
+    const { mergeFiles } = await import(new URL("lib/merge.mjs", import.meta.url));
+    const rel = "deep-plan/state/m.notes.jsonl", st = { slug: "m", log: [] };
+    const out = mergeFiles({ [rel]: Buffer.from('{"id":"a"}\n{"id":"b"}\n') }, { [rel]: Buffer.from('{"id":"a"}\n{"id":"c"}\n') }, st, st, "deep-plan/state/m.json", st);
+    ok("notes: mergeFiles merges a notes file by line, not by the leading side", String(out[rel]) === '{"id":"a"}\n{"id":"b"}\n{"id":"c"}\n', String(out[rel]));
+  }
   // On the remote host: a new sandbox gets every plan with a branch on this repo's remote.
   const TC = path.join(TMP, "tr-c");
   execSync(`git clone -q ${TO} ${TC}`);

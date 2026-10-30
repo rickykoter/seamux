@@ -4953,13 +4953,13 @@ try { pointerBody = writeEnginePointer(); } catch { /* read-only home, full disk
 // A command that changed a plan's state pushes that plan to its branch when
 // the plan shares and sync is transitions: go, start, done, block, reset, a
 // check verdict (a detached run's too: it re-enters as check run), grade,
-// import-state and the family verbs. It runs as the command exits, so every
+// import-state, the family verbs, and note (a plan's notes ride its branch). It runs as the command exits, so every
 // path through a verb is covered, and only plans whose state file changed
 // are pushed. Best-effort with a short timeout: a failure is said once and
 // recorded, the command's own exit code stands, and status shows the plan
 // unsynced until a push lands. The gate's flip to working is not a command
 // here and is never pushed; the next transition carries it.
-const SYNC_CMDS = new Set(["go", "start", "done", "block", "reset", "check", "obs", "grade", "import-state", "family", "await-go", "deliver", "close"]);
+const SYNC_CMDS = new Set(["go", "start", "done", "block", "reset", "check", "obs", "grade", "import-state", "family", "await-go", "deliver", "close", "note"]);
 // DEEP_PLAN_SYNC_TIMEOUT_MS is for the probe, whose machine may be loaded.
 // Long enough for a cloud sandbox's git proxy, which can take seconds per
 // call where a laptop takes a fraction of one.
@@ -4967,9 +4967,14 @@ const TRANSITION_PUSH_MS = Number(process.env.DEEP_PLAN_SYNC_TIMEOUT_MS) || 2000
 function stateFileDigests() {
   const out = new Map();
   let names = [];
-  try { names = fs.readdirSync(STATE_DIR).filter(n => n.endsWith(".json")); } catch { return out; }
-  for (const n of names) {
-    try { out.set(n.slice(0, -5), crypto.createHash("sha1").update(fs.readFileSync(path.join(STATE_DIR, n))).digest("hex")); } catch { /* gone */ }
+  try { names = fs.readdirSync(STATE_DIR).filter(n => n.endsWith(".json") || n.endsWith(NOTES_SUFFIX)); } catch { return out; }
+  // A plan's notes file is its own, so a note alone changes its digest.
+  for (const n of names.sort()) {
+    const notes = n.endsWith(NOTES_SUFFIX), slug = n.slice(0, -(notes ? NOTES_SUFFIX.length : 5));
+    try {
+      const h = crypto.createHash("sha1").update(fs.readFileSync(path.join(STATE_DIR, n))).digest("hex");
+      out.set(slug, (out.get(slug) || "") + (notes ? "+notes:" : "") + h);
+    } catch { /* gone */ }
   }
   // A family's index and control files ride on its parent's branch, so a
   // change to them (a hold, a take-back, a re-render) is the parent's.
