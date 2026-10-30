@@ -39,6 +39,7 @@ interpreter has no @State and therefore no TextField. See FINDINGS.md.
 import curses
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -406,9 +407,20 @@ def resume(mode, s):
         os.chdir(cwd)
         return subprocess.call(["claude", "--resume", s["id"]])
 
-    rc = subprocess.call([
-        CMUX, "new-workspace", "--cwd", cwd, "--command", cmd, "--focus", "true"
-    ], stdout=subprocess.DEVNULL, env=dict(os.environ, CMUX_QUIET="1"))
+    # A native session (cmux local-tmux, which the seamux app draws too), as
+    # every new session starts; cmux's own terminal when seamux is missing or
+    # opened no workspace.
+    seamux = shutil.which("seamux")
+    rc = 1
+    if seamux:
+        rc = subprocess.call([seamux, "crew-native", "workspace", "--cwd", cwd,
+                              "--command", cmd, "--focus"],
+                             stdout=subprocess.DEVNULL,
+                             env=dict(os.environ, **({"CMUX_BIN": CMUX} if CMUX else {})))
+    if rc != 0:
+        rc = subprocess.call([
+            CMUX, "new-workspace", "--cwd", cwd, "--command", cmd, "--focus", "true"
+        ], stdout=subprocess.DEVNULL, env=dict(os.environ, CMUX_QUIET="1"))
     if rc == 0:
         print(f"✓ resumed {s['id'][:8]} in a new workspace — {label(s)[:60]}")
         close_ephemeral()      # ("here" never closes: Claude has taken this very tab)

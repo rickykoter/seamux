@@ -515,12 +515,36 @@ fn resume(mode: &str, s: &Value) -> i32 {
         let _ = std::env::set_current_dir(&cwd);
         return std::process::Command::new("claude").args(["--resume", &id]).status().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
     }
-    // The cmux CLI itself, waited on for as long as it takes (no kill that
-    // could leave a half-made workspace), stdout dropped, stderr shown.
+    // A native session (cmux local-tmux, which the seamux app draws too), as
+    // every new session starts; a plain cmux terminal only if that fails.
+    let rc = match crew_core::native::open_workspace(Path::new(&cwd), &cmd) {
+        Ok((wref, id, how)) => {
+            let _ = crew_core::native::cmux_ok(&["select-workspace", "--workspace", id.as_deref().unwrap_or(&wref)]);
+            if let crew_core::native::Started::Plain(why) = how {
+                eprintln!("crew-resume: not started natively ({why}); it runs in the workspace's cmux terminal");
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("crew-resume: no new workspace ({e}); trying cmux's own");
+            open_plain(&cwd, &cmd)
+        }
+    };
+    if rc == 0 {
+        println!("✓ resumed {} in a new workspace — {}", head(&id, 8), head(&w::label(s), 60));
+        close_ephemeral(); // "here" never closes: Claude has taken this very tab
+    }
+    rc
+}
+
+/// `cmd` in a new plain cmux workspace at `cwd`: the CLI itself, waited on
+/// for as long as it takes (no kill that could leave a half-made workspace),
+/// stdout dropped, stderr shown.
+fn open_plain(cwd: &str, cmd: &str) -> i32 {
     let bin = cmux().and_then(|c| c.cli_bin().ok()).or_else(|| cmux::resolve_cli_bin().ok());
-    let rc = match bin {
+    match bin {
         Some(bin) => std::process::Command::new(&bin)
-            .args(["new-workspace", "--cwd", &cwd, "--command", &cmd, "--focus", "true"])
+            .args(["new-workspace", "--cwd", cwd, "--command", cmd, "--focus", "true"])
             .env("CMUX_QUIET", "1")
             .stdout(std::process::Stdio::null())
             .status()
@@ -533,12 +557,7 @@ fn resume(mode: &str, s: &Value) -> i32 {
             eprintln!("crew-resume: no cmux to open a workspace with");
             1
         }
-    };
-    if rc == 0 {
-        println!("✓ resumed {} in a new workspace — {}", head(&id, 8), head(&w::label(s), 60));
-        close_ephemeral(); // "here" never closes: Claude has taken this very tab
     }
-    rc
 }
 
 /// ⏎ on a workspace row, by its state.

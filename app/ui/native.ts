@@ -10,6 +10,8 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { ClipboardAddon, type ClipboardSelectionType } from "@xterm/addon-clipboard";
+import { SearchAddon } from "@xterm/addon-search";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 import "./pane.css";
 import { Term } from "./term";
@@ -48,6 +50,16 @@ function cmuxLook(): Promise<Look | null> {
 /** Sent as tmux key names with send-keys, so a tmux prefix bound to C-a
  *  never takes ⌘←. */
 const CMD_KEYS: Record<string, string> = { ArrowLeft: "C-a", ArrowRight: "C-e", Backspace: "C-u" };
+
+/** What Enter with Shift or Ctrl sends: the CSI u form (`ESC [ 13 ; m u`),
+ *  which tmux (extended-keys on) passes to Claude, so Shift+Enter makes a
+ *  newline there instead of sending the prompt. xterm.js alone sends a bare
+ *  CR for both. A program that did not ask for modified keys (a shell) gets
+ *  tmux's plain Enter. Null for every other key, plain Enter included. */
+export function enterSequence(e: { key: string; shiftKey: boolean; ctrlKey: boolean; altKey: boolean; metaKey: boolean }): string | null {
+  if (e.key !== "Enter" || e.metaKey || e.altKey || !(e.shiftKey || e.ctrlKey)) return null;
+  return `\x1b[13;${1 + (e.shiftKey ? 1 : 0) + (e.ctrlKey ? 4 : 0)}u`;
+}
 
 /** A program's copy (OSC 52) reaches the clipboard only this soon after a
  *  click, drag or key in the pane: a copy the person made. Text a program
@@ -154,6 +166,11 @@ export class NativeTerm {
   private wheelAt = 0;
   /** Keys go out one after another: the next waits for the last. */
   private keys: Promise<unknown> = Promise.resolve();
+  private search = new SearchAddon();
+  /** ⌘F's bar: what this pane has shown since it opened, searched. */
+  private find = document.createElement("div");
+  private findInput = document.createElement("input");
+  private findCount = document.createElement("span");
 
   constructor() {
     const open = (uri: string) => void follow(uri, this.id);
@@ -203,6 +220,8 @@ export class NativeTerm {
       macOptionIsMeta: true,
       // tmux has the mouse: Option-drag selects here, as in other terminals.
       macOptionClickForcesSelection: true,
+      // Unicode 11 widths (below) are a proposed API.
+      allowProposedApi: true,
       // Links a program marks (OSC 8, as Claude prints them): tmux passes
       // them on (the client says it can), and a click opens them as below.
       linkHandler: {
@@ -212,6 +231,12 @@ export class NativeTerm {
       },
     });
     this.term.loadAddon(this.fit);
+    // Emoji and CJK two cells wide, as tmux counts them, so Claude's boxes
+    // and columns line up.
+    this.term.loadAddon(new Unicode11Addon());
+    this.term.unicode.activeVersion = "11";
+    this.term.loadAddon(this.search);
+    this.buildFind();
     for (const kind of ["mousedown", "mouseup", "keydown"]) this.el.addEventListener(kind, () => (this.touchedAt = performance.now()), true);
     // A bell while the person is in the pane is heard: it never asks for
     // them on the Wall. (A moment later, so tmux's hook has marked it.)
@@ -316,6 +341,76 @@ export class NativeTerm {
     saveFont(this.surface, by === 0 ? null : size);
     if (this.visible()) this.fit.fit();
     this.say(`${size} pt`);
+  }
+
+  /** The find bar's parts, hidden until ⌘F. */
+  private buildFind(): void {
+    this.find.className = "pane-find";
+    this.find.hidden = true;
+    this.find.setAttribute("role", "search");
+    this.findInput.type = "search";
+    this.findInput.placeholder = "Find in pane";
+    this.findInput.setAttribute("aria-label", "Find in this pane");
+    this.findCount.className = "pane-find-count";
+    this.findCount.setAttribute("aria-live", "polite");
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "pane-find-close";
+    close.setAttribute("aria-label", "Close find");
+    close.innerHTML = '<svg viewBox="0 0 10 10" width="9" height="9" aria-hidden="true"><path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+    close.addEventListener("click", () => this.closeFind());
+    this.find.append(this.findInput, this.findCount, close);
+    // The bar's keys are its own: never the pane's, never the window's.
+    this.find.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        this.closeFind();
+      } else if (e.key === "Enter" || (e.metaKey && e.key.toLowerCase() === "g")) {
+        e.preventDefault();
+        this.findStep(!e.shiftKey);
+      }
+    });
+    this.findInput.addEventListener("input", () => this.findStep(true, true));
+    this.search.onDidChangeResults(({ resultIndex, resultCount }) => {
+      const q = this.findInput.value;
+      this.findCount.textContent = !q ? "" : resultCount === 0 ? "none" : resultIndex < 0 ? `${resultCount}` : `${resultIndex + 1} of ${resultCount}`;
+    });
+    this.el.append(this.find);
+  }
+
+  private openFind(): void {
+    const picked = this.term.getSelection();
+    if (picked && !picked.includes("\n")) this.findInput.value = picked;
+    this.find.hidden = false;
+    this.findInput.focus();
+    this.findInput.select();
+    if (this.findInput.value) this.findStep(true, true);
+  }
+
+  private closeFind(): void {
+    this.find.hidden = true;
+    this.search.clearDecorations();
+    this.findCount.textContent = "";
+    this.term.focus();
+  }
+
+  /** The next (or previous) match; `fresh` starts over from the bottom. */
+  private findStep(next: boolean, fresh = false): void {
+    const q = this.findInput.value;
+    if (!q) {
+      this.search.clearDecorations();
+      this.findCount.textContent = "";
+      return;
+    }
+    const css = getComputedStyle(this.el);
+    const accent = css.getPropertyValue("--accent").trim() || "#d9a441";
+    const opts = {
+      incremental: fresh && next,
+      decorations: { matchOverviewRuler: accent, activeMatchColorOverviewRuler: accent, matchBackground: "#d9a44155", activeMatchBackground: "#d9a441" },
+    };
+    if (next) this.search.findNext(q, opts);
+    else this.search.findPrevious(q, opts);
   }
 
   /** Show a short note over the pane for a moment. */
@@ -526,9 +621,26 @@ export class NativeTerm {
    *  second Esc within a moment (two would open Claude's Rewind). */
   private key(e: KeyboardEvent): boolean {
     if (e.type !== "keydown") return true;
+    const enter = enterSequence(e);
+    if (enter) {
+      e.preventDefault();
+      this.send({ data: enter }, true);
+      return false;
+    }
     if (e.metaKey) {
       if (e.key === "Escape") this.term.blur();
       const plain = !e.ctrlKey && !e.altKey;
+      if (plain && !e.shiftKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        this.openFind();
+        return false;
+      }
+      if (plain && e.key.toLowerCase() === "g" && !this.find.hidden) {
+        // ⌘G / ⇧⌘G: the next or previous match, as in other Mac apps.
+        e.preventDefault();
+        this.findStep(!e.shiftKey);
+        return false;
+      }
       if (plain && (e.key === "=" || e.key === "+" || e.key === "-" || e.key === "0")) {
         e.preventDefault();
         this.zoom(e.key === "-" ? -1 : e.key === "0" ? 0 : 1);

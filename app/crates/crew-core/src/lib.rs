@@ -14,6 +14,7 @@ pub mod dp_engine;
 pub mod families;
 pub mod history;
 pub mod home;
+pub mod native;
 pub mod pricing;
 pub mod py;
 pub mod pyjson;
@@ -30,6 +31,7 @@ pub const TOOLS: &[(&str, fn(&[String]) -> i32)] = &[
     ("asked", asked::main),
     ("cachefacts", cachefacts::main),
     ("costs", costs::main),
+    ("crew-native", native::main),
     ("families", families::main),
     ("pricing", pricing::main),
     ("typesafe", typesafe::main),
