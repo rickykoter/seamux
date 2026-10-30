@@ -320,8 +320,15 @@ const lumOf = (h) => {
 };
 const ratio = (a, b) => { const x = lumOf(a), y = lumOf(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
 const css = (pageHtml.match(/<style>([\s\S]*?)<\/style>/) || ["", ""])[1].replace(/\/\*[\s\S]*?\*\//g, "");
+// Every :root block: the palette's (theme/everforest.css, synced in) and the
+// board's own names, which are hex or var(--ef-…) pointing into it.
 const TOK = {};
-for (const m of (css.match(/:root\{([^}]*)\}/) || ["", ""])[1].matchAll(/--([\w-]+):\s*(#[0-9a-fA-F]{6})/g)) TOK[m[1]] = m[2];
+const REF = {};
+for (const root of css.matchAll(/:root\s*\{([^}]*)\}/g)) {
+  for (const m of root[1].matchAll(/--([\w-]+):\s*(#[0-9a-fA-F]{6})/g)) TOK[m[1]] = m[2];
+  for (const m of root[1].matchAll(/--([\w-]+):\s*var\(--([\w-]+)\)/g)) REF[m[1]] = m[2];
+}
+for (let pass = 0; pass < 4; pass++) for (const [k, v] of Object.entries(REF)) if (TOK[v]) TOK[k] = TOK[v];
 const GROUNDS = ["bg", "bg1", "bg-attend"].map((k) => TOK[k]);
 const FILLS = ["attend", "running", "wilt", "done"].map((k) => TOK[k]);
 const lows = [];

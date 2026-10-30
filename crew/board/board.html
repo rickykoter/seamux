@@ -65,22 +65,36 @@
    board_probe.mjs measures each one against every ground: 4.5:1 or the probe
    fails. The old board lost its meta line this way -- #5c6a72 on a card is
    1.9:1 -- and nothing noticed. */
+/* everforest:start */
+:root {
+  --ef-bg-dim: #232a2e; --ef-bg: #2d353b; --ef-bg1: #343f44; --ef-bg2: #3d484d; --ef-bg3: #475258;
+  --ef-fg: #d3c6aa; --ef-dim: #859289; --ef-faint: #5c6a72; --ef-grey0: #7a8478; --ef-grey2: #9da9a0;
+  --ef-line: #3d484d; --ef-line2: #4f5b58; --ef-card: #3a464c; --ef-card2: #343f44; --ef-card3: #424e54;
+  --ef-red: #e67e80; --ef-orange: #e69875; --ef-yellow: #dbbc7f; --ef-green: #a7c080;
+  --ef-aqua: #83c092; --ef-blue: #7fbbb3; --ef-purple: #d699b6;
+  --ef-accent: #7fbbb3; --ef-good: #a7c080; --ef-warn: #dbbc7f; --ef-bad: #e67e80; --ef-mark: #dbbc7f;
+  --ef-bg-red: #514045; --ef-bg-green: #425047; --ef-bg-yellow: #4d4c43; --ef-bg-blue: #3a515d; --ef-bg-visual: #543a48;
+  --ef-ink: #1e2326;
+  --ef-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+/* everforest:end */
+/* The board's names for seamux's palette (theme/everforest.css). */
 :root{
   /* Grounds: the page, a card, an attend card, a family's well of children. */
-  --bg:#2d353b; --bg1:#343f44; --bg-attend:#3b4136; --bg-kids:#2a3135;
-  --bg2:#3d484d; --line:#414b50; --edge:#56636a;
+  --bg:var(--ef-bg); --bg1:var(--ef-bg1); --bg-attend:#3b4136; --bg-kids:#2a3135;
+  --bg2:var(--ef-bg2); --line:#414b50; --edge:#56636a;
   /* Text. fg names things, fg2 is what an agent said, grey is everything around it. */
-  --fg:#d3c6aa; --fg2:#b8b0a0; --grey:#a3ada5;
+  --fg:var(--ef-fg); --fg2:#b8b0a0; --grey:#a3ada5;
   /* Tiers. The rail, the dial and the filled button wear these. Wilt's red is
      3.9:1 on a card, so where it is text it uses its lighter twin. */
-  --attend:#dfa000; --running:#7fbbb3; --wilt:#e67e80; --done:#a7c080; --quiet:#7a8478;
+  --attend:#dfa000; --running:var(--ef-blue); --wilt:var(--ef-red); --done:var(--ef-green); --quiet:var(--ef-grey0);
   --wilt-tx:#f0a0a0;
   /* The footer's own colours: an open PR, a linked issue, uncommitted work. */
   --pr-open:#4ADE80; --issue:#b9a5fb; --dirty:#F5A524;
   /* The Wake's icon: an aqua no tier wears, on a tint of itself. */
-  --wake:#83c092; --wake-bg:rgba(131,192,146,.14);
+  --wake:var(--ef-aqua); --wake-bg:rgba(131,192,146,.14);
   /* Text on a filled button, measured against each tier colour instead. */
-  --ink:#1e2326;
+  --ink:var(--ef-ink);
 }
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--fg)}

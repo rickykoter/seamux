@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { DEFAULT_TAB, Tabs } from "./tabs";
 import { WallView } from "./wall";
+import "./everforest.css";
 import "./wall.css";
 // Desk's styles stay: Mosaic's cards and buttons wear them.
 import "./desk.css";

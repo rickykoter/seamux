@@ -38,6 +38,10 @@ jobs:
       - name: skill lint
         run: python3 tools/skill_lint.py
 
+      # Every page's copy of the palette matches theme/everforest.css.
+      - name: theme sync
+        run: python3 tools/theme_sync.py --check
+
       - name: skill lint, eval-harness and scrub-check probes
         run: python3 tools/skill_lint_probe.py && python3 tools/skill_evals_probe.py && python3 tools/scrub_check_probe.py
 
