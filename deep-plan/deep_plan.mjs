@@ -36,6 +36,7 @@ import * as SYNC from "./lib/sync.mjs";
 import { mergeStates, mergeFiles } from "./lib/merge.mjs";
 import { installRepo, checkRepo, targetRoot } from "./lib/install.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
+import { NOTES_SUFFIX, readNoteLines, foldNotes, notedSlugs, fileNote, closeNote } from "./lib/notes.mjs";
 import {
   FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
   familyOf, refreshFamilyFor, overlaps, checkFamily, draftParent, waitingOn, waitText,
@@ -3097,7 +3098,8 @@ const reEsc = x => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 function bundleNames(slug) {
   const s = reEsc(slug);
   return {
-    "deep-plan/state": new RegExp(`^${s}\\.json$`),
+    // Its state, and its notes (lib/notes.mjs), which travel with it.
+    "deep-plan/state": new RegExp(`^${s}(\\.json|${reEsc(NOTES_SUFFIX)})$`),
     "deep-plan/keys": new RegExp(`^${s}\\.(spec|key)\\.json$`),
     "plans": new RegExp(`^${s}\\.(md|review\\.html|working\\.html|widget\\.html|quiz\\.txt|approved\\.md|artifact\\.html|adr\\d+\\.md|inc\\d+\\.patch)$`),
     "plans/reviews": new RegExp(`^${s}-(inc\\d+|delivery)\\.(json|patch|rows\\.json|html|seen\\.json)$`),
@@ -3199,6 +3201,91 @@ function importState(file, flags) {
   const st = settleRoot(b.slug, flags, "import-state");
   try { rerenderWorking(b.slug); } catch (e) { say(`  (the working page was not redrawn: ${e.message}; deep-plan rehydrate ${b.slug} redraws it)`); }
   say(`imported ${b.slug}: ${n} file(s); root ${st.root || "(none)"}`);
+}
+
+// ---------------------------------------------------------------- notes
+// `deep-plan note`, `note close`, `notes`: side findings filed under the plan
+// and increment they came from (lib/notes.mjs, ADR 0044). A note is readable
+// from any plan in the same repo, so "this repo" is the git common dir, which
+// a repo's worktrees share.
+const LIVE_PHASES_GONE = new Set(["closed", "done"]);
+const commonDirs = new Map();
+function gitCommonDir(dir) {
+  if (!dir) return "";
+  if (commonDirs.has(dir)) return commonDirs.get(dir);
+  const r = spawnSync("git", ["-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" });
+  const d = r.status === 0 ? canon(r.stdout.trim()) : "";
+  commonDirs.set(dir, d);
+  return d;
+}
+const noteBy = () => sessionId() || "shell";
+function allNoteRows() {
+  return notedSlugs().flatMap(slug => foldNotes(slug));
+}
+function noteCmd(args, flags) {
+  const use = `note "<text>" [--plan <slug>] [--inc <n>]`;
+  const text = args.join(" ").trim();
+  if (!text) die(use);
+  const slug = flags.plan || resolveSlugAt(process.cwd())
+    || die(`no plan tracks ${process.cwd()}; --plan <slug> names the plan the note belongs to`);
+  const st = readState(slug) || die("no plan " + slug);
+  if (LIVE_PHASES_GONE.has(st.phase)) die(`${slug} is ${st.phase}; file the note on a live plan with --plan`);
+  let inc = null;
+  if (flags.inc !== undefined) inc = findInc(st, flags.inc).n;
+  else {
+    const open = (st.increments || []).find(i => i.status === "working" || i.status === "authorized");
+    if (open) inc = open.n;
+  }
+  const taken = new Set(allNoteRows().map(r => r.id));
+  const line = fileNote({ slug, inc, text, by: noteBy(), taken });
+  say(`noted ${line.id} on ${slug}${inc == null ? "" : " increment " + inc}`);
+}
+function noteCloseCmd(args, flags) {
+  const use = `note close <id> "<why>" [--into <slug>] [--plan <slug>]`;
+  const id = args[0], why = args.slice(1).join(" ").trim();
+  if (!id || !why) die(use);
+  const rows = allNoteRows().filter(r => r.id === id && (!flags.plan || r.file === flags.plan));
+  if (!rows.length) die(`no note ${id}`);
+  const open = rows.filter(r => !r.closed);
+  if (!open.length) die(`note ${id} is already closed (${rows[0].closed.why})`);
+  if (open.length > 1) die(`note ${id} is open on more than one plan (${open.map(r => r.file).join(", ")}); close it with --plan`);
+  const row = open[0];
+  const into = flags.into || "";
+  if (into) {
+    const t = readState(into) || die(`no plan ${into} to move the note into`);
+    if (LIVE_PHASES_GONE.has(t.phase)) die(`${into} is ${t.phase}; move the note into a live plan`);
+    if (into === row.file) die(`note ${id} is already on ${into}`);
+    // An id is one note: a file that already holds it (it was moved out
+    // before) would fold the copy into its old, closed row.
+    if (readNoteLines(into).some(l => l.id === id)) die(`${into} already holds note ${id}; close it here with a reason instead`);
+  }
+  closeNote(row, { why, by: noteBy(), into });
+  say(`closed ${id} on ${row.file}` + (into ? `; it is open on ${into} now` : ""));
+}
+function notesCmd(args, flags) {
+  const all = args.includes("--all");
+  let rows = allNoteRows();
+  if (flags.plan) rows = rows.filter(r => r.file === flags.plan);
+  else {
+    // This repo's plans. Outside any repo there is no "this repo", so every
+    // plan's notes are listed. A plan whose root is gone has no repo to match.
+    const here = gitCommonDir(process.cwd());
+    if (here) {
+      const roots = new Map();
+      for (const st of allStates()) roots.set(st.slug, st.root || "");
+      rows = rows.filter(r => gitCommonDir(roots.get(r.file)) === here);
+    }
+  }
+  if (!all) rows = rows.filter(r => !r.closed);
+  if (flags.json) { say(JSON.stringify(rows, null, 2)); return; }
+  if (!rows.length) { say(all ? "no notes" : "no open notes"); return; }
+  for (const r of rows) {
+    const where = r.plan && r.plan !== r.file ? `${r.file} (found in ${r.plan}${r.inc == null ? "" : " inc " + r.inc})`
+      : `${r.file}${r.inc == null ? "" : " inc " + r.inc}`;
+    say(`${r.id}  ${where}  ${String(r.at || "").slice(0, 10)}${r.closed ? "  [closed]" : ""}`);
+    say(`  ${r.text}`);
+    if (r.closed) say(`  closed: ${r.closed.why}${r.closed.into ? ` (moved into ${r.closed.into})` : ""}`);
+  }
 }
 
 // ---------------------------------------------------------------- state branches
@@ -4763,7 +4850,7 @@ const BUILTIN_VERBS = new Set([
   "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
   "grade", "status", "go", "start", "done", "reset", "block", "check", "obs",
   "open-gate", "shut-gate", "close", "diff", "review", "deliver", "ask", "help", "setup", "engine", "verify",
-  "family", "redraw", "overviews", "protects", "await-go",
+  "family", "redraw", "overviews", "protects", "await-go", "note", "notes",
 ]);
 
 // A state lock held past its wait refuses the write (lib/state.mjs): said in
@@ -4822,6 +4909,9 @@ for (let i = 0; i < rest.length; i++) {
     const nx = rest[i + 1] || "", after = rest[i + 2];
     if (/^https?:\/\/\S+$/.test(nx) || (/^\d+$/.test(nx) && (after === undefined || after.startsWith("--")))) flags.pr = rest[++i];
   }
+  else if (rest[i] === "--plan") flags.plan = rest[++i] || die("--plan needs a slug");
+  else if (rest[i] === "--inc") flags.inc = rest[++i] || die("--inc needs an increment number");
+  else if (rest[i] === "--into") flags.into = rest[++i] || die("--into needs a slug");
   else if (rest[i] === "--log") flags.log = rest[++i];
   else if (rest[i] === "--token") flags.token = rest[++i];
   else if (rest[i] === "--timeout") flags.timeout = Number(rest[++i]);
@@ -5060,6 +5150,10 @@ switch (cmd) {
     break;
   }
   case "family": familyCmd(args, flags); break;
+  // `note close <id> …` only with an id after it, so a note that starts with
+  // the word ("note close the socket on exit") is still a note.
+  case "note": args[0] === "close" && /^n[0-9a-f]{6,8}$/.test(args[1] || "") ? noteCloseCmd(args.slice(1), flags) : noteCmd(args, flags); break;
+  case "notes": notesCmd(args, flags); break;
   case "await-go": {
     const slug = args[0] || die("await-go <slug> [--timeout S]");
     if (flags.timeout !== undefined && !(flags.timeout > 0)) die("--timeout takes a number of seconds above 0");
@@ -5244,6 +5338,12 @@ switch (cmd) {
                                               (--base: only where no start sha is recorded;
                                               it is recorded as the start sha)
   close <slug>                                retire a finished plan
+  note "<text>" [--plan <slug>] [--inc <n>]   file a side finding under the plan at the cwd (or
+                                              --plan) and its open increment (or --inc)
+  note close <id> "<why>" [--into <slug>]     close a note, or move it into a live plan
+             [--plan <slug>]                  (--plan: the plan whose file holds it)
+  notes [--all] [--plan <slug>] [--json]      open notes of every plan in this repo
+                                              (--all adds closed ones)
   ask <ask.json>                              render a question with diagrams/examples
                                               (served at /ask/<id>; a pick on the page
                                               types the number into this terminal)

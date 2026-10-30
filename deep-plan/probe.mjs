@@ -54,6 +54,8 @@ delete ENV.DEEP_PLAN_ENGINE;
 delete ENV.CLAUDE_CODE_SESSION_ID;
 delete ENV.CLAUDE_SESSION_ID;
 delete ENV.CMUX_WORKSPACE_ID;
+// The pane's surface too: with it, an ask made "outside cmux" is typed into this pane.
+delete ENV.CMUX_SURFACE_ID;
 // Host signals come from the session running the probe; each test sets its own.
 for (const k of ["SEAMUX_HOST", "CLAUDE_CODE_REMOTE", "CLAUDE_CODE_ENTRYPOINT", "DEEP_PLAN_SERVE_FILE", "LOOKOUT_SERVE_FILE"]) delete ENV[k];
 const MERMAID_VENDOR = path.join(ENV.DEEP_PLAN_VENDOR_DIR, "mermaid.min.js");
@@ -3289,9 +3291,9 @@ exit 1
   // `_metric_matrix.mjs`. Listing those as verbs would advertise commands that
   // cannot dispatch, since a leading underscore is not a legal verb name.
   write("_helper.mjs", "export const x = 1;\n");
-  write("notes.txt", "not a module\n");
+  write("jotted.txt", "not a module\n");
   ok("helper modules and non-modules are not listed as verbs",
-    !/_helper/.test(ecli("--help").stdout) && !/notes/.test(ecli("--help").stdout) &&
+    !/_helper/.test(ecli("--help").stdout) && !/jotted/.test(ecli("--help").stdout) &&
     /hello\s+from hello\.mjs/.test(ecli("--help").stdout));
   ok("…and a helper module cannot be invoked as a verb",
     ecli("_helper").status === 1 && ecli("_helper").stdout.includes("plan as artifact"));
@@ -5837,6 +5839,120 @@ exit 1
     "curl -XPOST http://127.0.0.1:1/x", "curl -sS -H 'Origin: x' http://x", "cargo fmt --check", "black --check .", "npx prettier --check src", "curl -s https://x/health",
     "tar -tzf a.tgz", "unzip -l a.zip", "rsync -an src/ dst/", "gofmt -l .", "git status"])
     ok(`b1: still a read: ${c}`, !lib.bashMutates(c));
+}
+
+// -------------------------------------------------- notes: side findings beside a plan's state
+{
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const NA = path.join(TMP, "notes-repo"), NB = path.join(TMP, "notes-other");
+  for (const d of [NA, NB]) { fs.mkdirSync(d, { recursive: true }); execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: d }); }
+  const ncli = (cwd, ...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: ENV, cwd });
+  const gradeRight = slug => {
+    const k = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8"));
+    return cli("grade", slug, ...Object.entries(k.answers).map(([q, a]) => `${q}=${a.letter}`));
+  };
+  const nfile = slug => path.join(ENV.DEEP_PLAN_STATE_DIR, slug + ".notes.jsonl");
+  const nlines = slug => fs.readFileSync(nfile(slug), "utf8").trim().split("\n").map(l => JSON.parse(l));
+  const njson = (cwd, ...a) => { const r = ncli(cwd, "notes", "--json", ...a); try { return JSON.parse(r.stdout); } catch { return { err: r.stdout + r.stderr }; } };
+  cli("render", tmpSpec({ ...spec, slug: "notes-a" }), "--root", NA);
+  gradeRight("notes-a");
+  cli("render", tmpSpec({ ...spec, slug: "notes-b" }), "--root", NB);
+  gradeRight("notes-b");
+
+  // The gate passes a note from a session inside the root while no increment
+  // is authorized: filing a note is not an edit.
+  const g = spawnSync("bash", [path.join(HERE, "hooks", "gate.sh")], { encoding: "utf8", env: ENV,
+    input: JSON.stringify({ tool_name: "Bash", tool_input: { command: `deep-plan note "the login test is flaky"` }, cwd: NA, session_id: "notes-s1" }) });
+  ok("notes: the gate passes a note inside a root with nothing authorized", g.status === 0, g.stderr);
+
+  let r = ncli(NA, "note", "found before any go");
+  ok("notes: a note before any go is on the plan at the cwd, with no increment",
+    r.status === 0 && /^noted n[0-9a-f]{8} on notes-a$/m.test(r.stdout), r.stdout + r.stderr);
+  cli("go", "notes-a", "next");
+  r = ncli(path.join(NA), "note", "the", "login", "test", "is", "flaky");
+  const id1 = (/noted (n[0-9a-f]{8})/.exec(r.stdout) || [])[1];
+  ok("notes: a note picks the authorized increment", r.status === 0 && /on notes-a increment 1$/m.test(r.stdout), r.stdout + r.stderr);
+  r = ncli(NB, "note", "--plan", "notes-a", "--inc", "2", "cache key misses the locale");
+  const id2 = (/noted (n[0-9a-f]{8})/.exec(r.stdout) || [])[1];
+  ok("notes: --plan and --inc name the plan and increment from anywhere", r.status === 0 && /on notes-a increment 2$/m.test(r.stdout), r.stdout + r.stderr);
+  ok("notes: --inc must be one of the plan's increments", ncli(NA, "note", "--inc", "99", "x").status !== 0);
+  ok("notes: a note with no plan at the cwd and no --plan is refused",
+    /no plan tracks .*--plan <slug>/.test(ncli(TMP, "note", "stray").stderr));
+  ok("notes: an empty note is refused", ncli(NA, "note").status !== 0);
+  const L = nlines("notes-a");
+  ok("notes: open lines are {id, at, by, plan, inc, text}",
+    L.length === 3 && L.every(l => Object.keys(l).sort().join() === "at,by,id,inc,plan,text") &&
+    L[1].id === id1 && L[1].inc === 1 && L[1].text === "the login test is flaky" && L[0].inc === null && L[2].inc === 2);
+
+  let rows = njson(NA);
+  ok("notes: notes --json lists the repo's open notes", Array.isArray(rows) && rows.length === 3 && rows.every(x => x.file === "notes-a" && !x.closed), JSON.stringify(rows));
+  ok("notes: another repo's notes are not listed there", Array.isArray(njson(NB)) && njson(NB).length === 0);
+  ok("notes: a worktree of the same repo shares its notes", (() => {
+    const WT = path.join(TMP, "notes-wt");
+    execSync(`git worktree add -q ${WT}`, { cwd: NA });
+    const w = njson(WT);
+    return Array.isArray(w) && w.length === 3;
+  })());
+
+  r = ncli(NA, "note", "close", id1, "fixed", "in", "inc", "1");
+  ok("notes: note close appends a close line and the note leaves the open list",
+    r.status === 0 && njson(NA).length === 2 && nlines("notes-a").length === 4 &&
+    JSON.stringify(Object.keys(nlines("notes-a")[3]).sort()) === JSON.stringify(["at", "by", "closed", "id"]), r.stdout + r.stderr);
+  rows = njson(NA, "--all");
+  ok("notes: --all adds closed notes, with why", rows.length === 3 && rows.find(x => x.id === id1).closed.why === "fixed in inc 1");
+  ok("notes: closing a closed note is refused", /already closed/.test(ncli(NA, "note", "close", id1, "again").stderr));
+  ok("notes: closing an unknown note is refused", /no note n000000/.test(ncli(NA, "note", "close", "n000000", "x").stderr));
+  ok("notes: a close needs a reason", ncli(NA, "note", "close", id2).status !== 0);
+  r = ncli(NA, "note", "close", "the", "socket", "on", "exit");
+  ok("notes: a note that starts with the word close is a note", r.status === 0 && /^noted n[0-9a-f]{8} on notes-a/m.test(r.stdout), r.stdout + r.stderr);
+  ncli(NA, "note", "close", (/noted (n[0-9a-f]{8})/.exec(r.stdout) || [])[1], "probe tidy");
+  ok("notes: note close --plan looks only in that plan's file", /no note/.test(ncli(NA, "note", "close", id2, "x", "--plan", "notes-b").stderr));
+
+  // --into: the open line, as filed, goes to the live target; a close line
+  // naming it stays here. The text list shows where it was found.
+  r = ncli(NA, "note", "close", id2, "fits", "notes-b", "--into", "notes-b");
+  const B = nlines("notes-b"), last = nlines("notes-a").pop();
+  ok("notes: --into copies the open line into the target and closes it here",
+    r.status === 0 && B.length === 1 && B[0].id === id2 && B[0].plan === "notes-a" && B[0].inc === 2 &&
+    last.id === id2 && last.into === "notes-b" && last.closed === "fits notes-b", r.stdout + r.stderr);
+  ok("notes: the moved note is open in the target's repo, found in its origin",
+    njson(NB).length === 1 && /found in notes-a inc 2/.test(ncli(NB, "notes").stdout));
+  ok("notes: --plan lists one plan's notes from anywhere", njson(NA, "--plan", "notes-b").length === 1);
+  r = ncli(NB, "note", "close", id2, "back", "--into", "notes-a");
+  ok("notes: --into a plan that already holds the id is refused", r.status !== 0 && /already holds note/.test(r.stderr), r.stderr);
+  cli("render", tmpSpec({ ...spec, slug: "notes-c" }), "--root", NB);
+  gradeRight("notes-c");
+  cli("close", "notes-c");
+  ok("notes: --into a closed plan is refused", /notes-c is closed/.test(ncli(NA, "note", "close", rows[0].id, "x", "--into", "notes-c").stderr));
+  ok("notes: a note on a closed plan is refused", /notes-c is closed/.test(ncli(NA, "note", "--plan", "notes-c", "x").stderr));
+
+  // A torn last line (a crash mid-write) is skipped, and the next note is not glued to it.
+  fs.appendFileSync(nfile("notes-a"), '{"id":"torn","te');
+  r = ncli(NA, "note", "after a torn line");
+  ok("notes: a torn line is skipped and the next note starts on its own line",
+    r.status === 0 && njson(NA).some(x => x.text === "after a torn line"), r.stdout + r.stderr);
+
+  // Ids are random, not a counter, so two machines noting at once do not
+  // collide (the merge of their copies is the state-branch block's).
+  const notesLib = await import(new URL("lib/notes.mjs", import.meta.url));
+  const ids = new Set(Array.from({ length: 500 }, () => notesLib.newNoteId()));
+  ok("notes: ids are random hex (500 drawn, none repeat)", ids.size === 500 && [...ids].every(x => /^n[0-9a-f]{8}$/.test(x)));
+  const fold = notesLib.foldNotes("x", [{ id: "a", closed: "early" }, { id: "a", at: "t", text: "t" }, { id: "b", at: "t", text: "u" }]);
+  ok("notes: a close merged in before its open line still closes it", fold[0].closed.why === "early" && !fold[1].closed);
+
+  // export-state carries the notes file; import-state brings it back as it was.
+  const bundle = path.join(TMP, "notes-a.bundle.json");
+  r = cli("export-state", "notes-a", "--out", bundle);
+  const bj = JSON.parse(fs.readFileSync(bundle, "utf8"));
+  ok("notes: export-state carries the plan's notes file", r.status === 0 && "deep-plan/state/notes-a.notes.jsonl" in bj.files, Object.keys(bj.files).join(" "));
+  ok("notes: …and not another plan's", !Object.keys(bj.files).some(k => /notes-b|notes-c/.test(k)));
+  const IENV = { ...ENV, DEEP_PLAN_STATE_DIR: path.join(TMP, "notes-import", "state"), DEEP_PLAN_KEYS_DIR: path.join(TMP, "notes-import", "keys"),
+    DEEP_PLAN_PLANS_DIR: path.join(TMP, "notes-import", "plans") };
+  r = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "import-state", bundle], { encoding: "utf8", env: IENV, cwd: NA });
+  ok("notes: import-state writes the notes file back byte for byte",
+    r.status === 0 && fs.readFileSync(path.join(IENV.DEEP_PLAN_STATE_DIR, "notes-a.notes.jsonl"), "utf8") === fs.readFileSync(nfile("notes-a"), "utf8"), r.stdout + r.stderr);
+  ok("notes: a notes file is never taken for a plan", !/notes-a\.notes/.test(cli("status", "--json").stdout));
+  cli("close", "notes-a"); cli("close", "notes-b");
 }
 
 // -------------------------------------------------- hot-path cost
