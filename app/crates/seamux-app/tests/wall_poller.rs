@@ -149,6 +149,27 @@ fn a_live_pane_file_beats_cmux_ended() {
 }
 
 #[test]
+fn a_live_cmux_state_is_kept_over_the_pane_file() {
+    let fake = Fake::new();
+    let w = wall(&fake, Duration::from_secs(1));
+    // A's file is older: cmux says it waits on you now, and that stands.
+    w.set_truth_probe(Box::new(|| HashMap::from([(A.to_uppercase(), "working".to_string())])));
+    let f = w.tick().unwrap();
+    assert_eq!(f.tiles[0].state, "needs_input");
+}
+
+#[test]
+fn the_pane_file_comes_before_the_history_hint() {
+    let fake = Fake::new();
+    *fake.unknown.lock().unwrap() = true;
+    let w = wall(&fake, Duration::from_secs(1));
+    w.set_truth_probe(Box::new(|| HashMap::from([(A.to_uppercase(), "needs_input".to_string())])));
+    w.set_state_hint(Box::new(|| HashMap::from([(A.to_uppercase(), "working".to_string()), (B.to_uppercase(), "idle".to_string())])));
+    let f = w.tick().unwrap();
+    assert_eq!((f.tiles[0].state.as_str(), f.tiles[1].state.as_str()), ("needs_input", "idle"));
+}
+
+#[test]
 fn a_native_pane_cmux_sees_no_agent_in_is_claude_when_its_file_is_live() {
     let fake = Fake::new();
     fake.live.lock().unwrap().push(C);

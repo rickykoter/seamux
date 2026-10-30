@@ -436,13 +436,18 @@ impl Wall {
         *self.truth.lock().unwrap() = Some(probe);
     }
 
-    /// A pane whose own Claude is alive takes the state crew recorded for it,
-    /// over whatever cmux said: "ended", "unknown" or no agent at all.
+    /// A pane whose own Claude is alive takes the state crew recorded for it
+    /// where cmux has none worth keeping: "ended", "unknown" or no agent at
+    /// all. A live cmux state (needs_input, working, idle) stays cmux's, so a
+    /// fresh permission prompt is never hidden behind an older file.
     fn apply_truth(&self, terms: &mut [Terminal]) {
+        if !terms.iter().any(|t| t.agent.is_none() || matches!(t.state.as_str(), "ended" | "unknown")) {
+            return;
+        }
         let guard = self.truth.lock().unwrap();
         let Some(probe) = guard.as_ref() else { return };
         let live = probe();
-        for t in terms.iter_mut() {
+        for t in terms.iter_mut().filter(|t| t.agent.is_none() || matches!(t.state.as_str(), "ended" | "unknown")) {
             if let Some(s) = live.get(&t.surface.to_uppercase()) {
                 t.agent.get_or_insert_with(|| "claude".into());
                 t.state = s.clone();
@@ -480,8 +485,9 @@ impl Wall {
             Err(_) => self.state.lock().unwrap().terms.clone(),
         };
         let native = self.apply_native(&mut terms);
-        self.apply_hint(&mut terms);
+        // The pane's own file before history: the hint fills only what is left unknown.
         self.apply_truth(&mut terms);
+        self.apply_hint(&mut terms);
         // A native Claude nothing has reported on yet is at least up.
         for t in terms.iter_mut().filter(|t| native.contains(&t.surface.to_uppercase()) && t.state == "unknown") {
             t.state = "idle".into();

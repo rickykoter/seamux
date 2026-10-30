@@ -255,7 +255,7 @@ class Chat {
     const panes = [...this.panes].sort((a, b) => this.order.indexOf(a.surface) - this.order.indexOf(b.surface));
     const views = panes.map((p) => ({ p, ...tabView(p) }));
     const sig = JSON.stringify([this.surface, views.map((v) => [v.p.surface, v.cls, v.name, v.state, v.tip])]);
-    if (sig === this.tabSig) return;
+    if (sig === this.tabSig) return this.scrollShown();
     this.tabSig = sig;
     const focused = (document.activeElement as HTMLElement | null)?.closest?.(".sheet-chat-tab") as HTMLElement | null;
     const keep = focused && this.tabsEl.contains(focused) ? focused.dataset.surface : null;
@@ -291,13 +291,19 @@ class Chat {
       }),
     );
     if (keep) this.tabsEl.querySelector<HTMLElement>(`[data-surface="${CSS.escape(keep)}"]`)?.focus();
-    // Many panes scroll rather than crush. The shown one is brought into view
-    // when it changes, not on every redraw: a row scrolled sideways by hand stays put.
-    if (this.scrolledTo !== this.surface) {
-      this.scrolledTo = this.surface;
-      this.tabsEl.querySelector(".on")?.scrollIntoView({ inline: "nearest", block: "nearest" });
-    }
+    this.scrollShown();
     this.clip();
+  }
+
+  /** Many panes scroll rather than crush. The shown tab is brought into view
+   *  once when it changes, not on every redraw (a row scrolled sideways by
+   *  hand stays put), and only once it exists in a row that is laid out. */
+  private scrollShown(): void {
+    if (this.scrolledTo === this.surface) return;
+    const on = this.tabsEl.querySelector(".on");
+    if (!on || this.tabsEl.clientWidth === 0) return;
+    this.scrolledTo = this.surface;
+    on.scrollIntoView({ inline: "nearest", block: "nearest" });
   }
 
   /** Arrows move between tabs, Home and End to the ends; Return or Space opens one. */
