@@ -292,8 +292,11 @@ class Chat {
     this.shown = t;
     this.surface = t.surface;
     this.term.show(t.surface);
+    this.term.agentState(t.state, t.since);
     this.loadSessions(t);
-    this.name.textContent = t.workspace_title || t.label;
+    // The workspace, then what Claude says the conversation is about.
+    const base = t.workspace_title || t.label;
+    this.name.textContent = t.topic ? `${base} · ${t.topic}` : base;
     this.state.textContent = t.state.replace("_", " ");
     this.state.className = `sheet-chat-state ${t.state}`;
     const text = t.lines.join("\n");

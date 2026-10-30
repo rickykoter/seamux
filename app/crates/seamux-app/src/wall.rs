@@ -287,12 +287,63 @@ pub struct Tile {
     pub running: Option<String>,
     /// A native pane rang the bell since it was last looked at.
     pub bell: bool,
+    /// What a native Claude says the conversation is about ("Fix Dock
+    /// button sizes"), once it has read the first prompt.
+    pub topic: Option<String>,
     /// The workspace's pinned worktree (its root: token), "" without one.
     pub root: String,
     /// The plan this pane owns (deep-plan's owner pane), by slug.
     pub owner: Option<String>,
     /// The pane's cwd has left the workspace's pinned worktree.
     pub outside: bool,
+}
+
+/// A native Claude's name: its worktree's folder, then the topic Claude
+/// gave the conversation ("board-buttons · Fix Dock button sizes"). None
+/// until there is a topic: crew's SessionStart hook named the tab already.
+pub fn pane_name(t: &Tile) -> Option<String> {
+    let topic = t.topic.as_deref().filter(|s| !s.is_empty())?;
+    let from = if t.root.is_empty() { t.cwd.as_str() } else { t.root.as_str() };
+    let dir = std::path::Path::new(from).file_name().map(|n| n.to_string_lossy().into_owned()).filter(|d| !d.is_empty())?;
+    Some(format!("{dir} · {topic}"))
+}
+
+/// A rename the app asked cmux for: the name, the tab's title when it
+/// asked, and when (ms since the epoch).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Asked {
+    pub name: String,
+    pub label: String,
+    pub at: u64,
+}
+
+/// A rename that has not shown up in the tab after this long is asked again:
+/// the call failed, or cmux shows the title differently.
+pub const RENAME_RETRY_MS: u64 = 60_000;
+
+/// The cmux tabs to rename, as (surface, workspace, name): each pane whose
+/// tab does not show its name yet. A name already asked for is asked again
+/// only when the tab was renamed since (crew's SessionStart hook names it
+/// again after a compaction) or RENAME_RETRY_MS has passed, so a tab cmux
+/// shows differently is not asked every tick. Panes no longer on the wall
+/// are forgotten.
+pub fn tab_renames(tiles: &[Tile], applied: &mut HashMap<String, Asked>, now: u64) -> Vec<(String, String, String)> {
+    applied.retain(|surface, _| tiles.iter().any(|t| &t.surface == surface && t.state != "ended"));
+    let mut out = Vec::new();
+    for t in tiles.iter().filter(|t| t.state != "ended") {
+        let Some(name) = pane_name(t) else { continue };
+        if t.label == name {
+            continue;
+        }
+        if let Some(a) = applied.get(&t.surface) {
+            if a.name == name && a.label == t.label && now.saturating_sub(a.at) < RENAME_RETRY_MS {
+                continue;
+            }
+        }
+        applied.insert(t.surface.clone(), Asked { name: name.clone(), label: t.label.clone(), at: now });
+        out.push((t.surface.clone(), t.workspace.clone(), name));
+    }
+    out
 }
 
 /// The `wall:frame` payload: every tile, in current.list's order.
@@ -558,6 +609,7 @@ impl Wall {
                     since: st.since.get(&t.surface).map(|(_, at)| *at).unwrap_or(now),
                     running: st.signals.get(&t.surface.to_uppercase()).and_then(|s| s.running.clone()),
                     bell: st.signals.get(&t.surface.to_uppercase()).is_some_and(|s| s.bell),
+                    topic: st.signals.get(&t.surface.to_uppercase()).and_then(|s| s.topic.clone()),
                     root: st.pins.get(&t.workspace).cloned().unwrap_or_default(),
                     owner: st.owners.get(&t.surface.to_uppercase()).cloned(),
                     outside: st.pins.get(&t.workspace).is_some_and(|r| is_outside(&t.cwd, r)),

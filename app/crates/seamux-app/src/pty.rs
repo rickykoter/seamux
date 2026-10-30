@@ -145,6 +145,31 @@ pub fn claude_in_panes(panes: &[(String, u32)], procs: &str) -> Vec<String> {
 pub struct PaneSignals {
     pub running: Option<String>,
     pub bell: bool,
+    /// What Claude says the conversation is about: the short topic Claude
+    /// Code puts in the terminal title once it has read the first prompt.
+    pub topic: Option<String>,
+}
+
+/// The topic in a Claude pane's title ("✳ Fix Dock button sizes"): its
+/// spinner or mark taken off, None while it is still Claude Code's own
+/// name (no prompt read yet). The mark is one character and a space (tmux
+/// may print it as "_" when it has no UTF-8 client); a topic's own leading
+/// punctuation, "(WIP) fix", stays.
+pub fn topic_of(title: &str) -> Option<String> {
+    let t = title.trim();
+    let mut cs = t.chars();
+    let t = match (cs.next(), cs.next()) {
+        (Some(m), Some(' ')) if !m.is_alphanumeric() => cs.as_str().trim(),
+        _ => t,
+    };
+    if t.is_empty() || t == "Claude Code" || t.eq_ignore_ascii_case("claude") {
+        return None;
+    }
+    let mut out: String = t.chars().filter(|c| !c.is_control()).take(60).collect();
+    if t.chars().count() > 60 {
+        out.push('…');
+    }
+    Some(out)
 }
 
 const SHELLS: [&str; 5] = ["zsh", "bash", "sh", "fish", "dash"];
@@ -206,6 +231,7 @@ pub fn native_now() -> (std::collections::HashSet<String>, std::collections::Has
     let Some(reg) = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return Default::default() };
     let mut panes: Vec<(String, u32)> = Vec::new();
     let mut bells: std::collections::HashSet<String> = Default::default();
+    let mut titles: std::collections::HashMap<String, String> = Default::default();
     for s in reg.get("sessions").and_then(Value::as_array).into_iter().flatten() {
         let (Some(surface), Some(name), Some(sock)) = (
             s.get("surfaceID").and_then(Value::as_str),
@@ -214,12 +240,18 @@ pub fn native_now() -> (std::collections::HashSet<String>, std::collections::Has
         ) else {
             continue;
         };
-        let Ok(o) = Command::new(tmux_bin()).args(["-S", sock, "list-panes", "-t", &format!("={name}"), "-F", "#{pane_pid} #{@seamux_bell}"]).stderr(Stdio::null()).output() else { continue };
+        let Ok(o) = Command::new(tmux_bin()).args(["-S", sock, "list-panes", "-t", &format!("={name}"), "-F", "#{pane_pid}|#{@seamux_bell}|#{@seamux_role}|#{pane_title}"]).stderr(Stdio::null()).output() else { continue };
         for line in String::from_utf8_lossy(&o.stdout).lines() {
-            let mut w = line.split_whitespace();
-            let Some(pid) = w.next().and_then(|v| v.parse::<u32>().ok()) else { continue };
+            let mut w = line.splitn(4, SEP);
+            let Some(pid) = w.next().and_then(|v| v.trim().parse::<u32>().ok()) else { continue };
             if w.next() == Some("1") {
                 bells.insert(surface.to_uppercase());
+            }
+            // Claude's pane, not the companion shell: its title is the topic.
+            if w.next() != Some("shell") {
+                if let Some(title) = w.next() {
+                    titles.insert(surface.to_uppercase(), title.to_string());
+                }
             }
             panes.push((surface.to_string(), pid));
         }
@@ -229,12 +261,16 @@ pub fn native_now() -> (std::collections::HashSet<String>, std::collections::Has
     }
     let Ok(ps) = Command::new("ps").args(["-axo", "pid=,ppid=,command="]).output() else { return Default::default() };
     let procs = String::from_utf8_lossy(&ps.stdout);
-    let claude = claude_in_panes(&panes, &procs).into_iter().collect();
+    let claude: std::collections::HashSet<String> = claude_in_panes(&panes, &procs).into_iter().collect();
     let mut signals: std::collections::HashMap<String, PaneSignals> = Default::default();
     for (surface, pid) in &panes {
         let s = signals.entry(surface.to_uppercase()).or_default();
         s.running = s.running.take().or_else(|| running_under(*pid, &procs));
         s.bell = bells.contains(&surface.to_uppercase());
+        // A topic only where Claude runs: a shell's title is the host's name.
+        if claude.iter().any(|c| c.eq_ignore_ascii_case(surface)) {
+            s.topic = titles.get(&surface.to_uppercase()).and_then(|t| topic_of(t));
+        }
     }
     (claude, signals)
 }
@@ -677,6 +713,13 @@ mod tests {
         assert_eq!(claude_line(Some("21b4ad73-7b2a-4926-a7dc-33f10ebfac32")).unwrap(), "claude --resume 21b4ad73-7b2a-4926-a7dc-33f10ebfac32");
         assert!(claude_line(Some("x; rm -rf /")).is_err());
         assert!(PANE_VARS.contains(&"CMUX_SURFACE_ID") && PANE_VARS.contains(&"PATH"));
+        assert_eq!(topic_of("✳ Fix Dock button sizes").as_deref(), Some("Fix Dock button sizes"));
+        assert_eq!(topic_of("_ Workspace status reporting bugs").as_deref(), Some("Workspace status reporting bugs"));
+        assert_eq!(topic_of("⠂ Claude Code"), None);
+        assert_eq!(topic_of("  "), None);
+        assert_eq!(topic_of("✳ (WIP) fix the gate").as_deref(), Some("(WIP) fix the gate"));
+        assert_eq!(topic_of("Plain topic").as_deref(), Some("Plain topic"));
+        assert_eq!(topic_of(&format!("✳ {}", "a".repeat(80))).map(|t| t.chars().count()), Some(61));
         assert_eq!(sh_quote("/bin/zsh"), "/bin/zsh");
         assert_eq!(sh_quote("/opt/a b/bin/fish"), "'/opt/a b/bin/fish'");
         assert_eq!(sh_quote("/x/it's"), r"'/x/it'\''s'");
