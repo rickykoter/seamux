@@ -66,7 +66,10 @@ function describe(r, news) {
   return `[lookout ${r.id}] ${news.length} new from the human on the review page for ${r.title}:\n` +
     lines.join("\n") + "\n" +
     `Answer in the page's thread with \`lookout reply ${r.id} <f#|t#> "<text>"\`; after fixing a finding, ` +
-    `\`lookout address ${r.id} <f#> "<what changed>"\`. Only the human resolves or dismisses.` +
+    `\`lookout address ${r.id} <f#> "<what changed>"\`. ` +
+    ((r.policy || {}).agentMayClose
+      ? `This review was opened with --agent-may-close: you may also \`lookout resolve|dismiss ${r.id} <f#> "<why>"\`.`
+      : "Only the human resolves or dismisses.") +
     (news.some(x => x.quiz) ? " A wrong quiz answer is a gap between the human's model and the code: " +
       "if they ask, explain it from the code, not from the note." : "");
 }

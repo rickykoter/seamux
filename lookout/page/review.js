@@ -19,6 +19,43 @@
   const closedDirs = new Set(JSON.parse(store.get("lookout.closed." + R.id, "[]")));
   const narrow = () => window.matchMedia("(max-width: 760px)").matches;
 
+  // Drafts: every reply box and line composer keeps its words here, per
+  // review, so a redraw (a fresher review, the layout toggle, the 760px
+  // breakpoint, a reload) puts them back instead of dropping them.
+  const DRAFTS = "lookout.drafts." + R.id;
+  const drafts = (() => { try { return JSON.parse(store.get(DRAFTS, "{}")) || {}; } catch { return {}; } })();
+  // A reply draft is its text (its item keeps its id across diffs). A line
+  // composer's draft is { t, h, x }: its text, the patchHash it was written
+  // against, and the text of its line then, so a new diff never places it
+  // under different code.
+  const draftText = k => { const d = drafts[k]; return d == null ? "" : typeof d === "string" ? d : d.t || ""; };
+  // Read-modify-write of one key: another tab on this review keeps its own
+  // drafts in the same entry, and writing this tab's whole copy would drop them.
+  const readDrafts = () => { try { return JSON.parse(store.get(DRAFTS, "{}")) || {}; } catch { return {}; } };
+  // Keys typed in on this page since it loaded: a draft merely restored from
+  // storage is shown, but does not hold fresher reviews back (busy()).
+  const edited = new Set();
+  const saveDraft = (k, v, meta) => {
+    const all = readDrafts();
+    if (String(v || "").trim()) { drafts[k] = all[k] = meta ? { t: v, ...meta } : v; edited.add(k); }
+    else { delete drafts[k]; delete all[k]; edited.delete(k); }
+    store.set(DRAFTS, JSON.stringify(all));
+  };
+  // Another tab's writes: taken into this tab's copy (not redrawn under the
+  // reader), so the next redraw here places them.
+  // Only keys the other tab removed (in its old value, not its new one) leave
+  // this tab's copy: a draft this tab could not save is not in storage
+  // either, and must not be dropped for it.
+  window.addEventListener("storage", e => {
+    if (e.key !== DRAFTS) return;
+    const parse = v => { try { return JSON.parse(v || "{}") || {}; } catch { return {}; } };
+    const before = parse(e.oldValue), now = parse(e.newValue);
+    for (const k of Object.keys(before)) if (!(k in now)) delete drafts[k];
+    Object.assign(drafts, now);
+  });
+  // Set by serve(): reopens composers and refills drafts after a redraw.
+  let afterDraw = () => {};
+
   const el = (tag, attrs, ...kids) => {
     const e = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs || {})) {
@@ -562,7 +599,16 @@
     return t;
   }
 
+  // Every redraw of the diff goes through here, so drafts survive it and the
+  // box being typed in keeps its focus and caret.
   function drawFile() {
+    const a = document.activeElement;
+    const keep = a && a.tagName === "TEXTAREA" && a.dataset.draft
+      ? { key: a.dataset.draft, from: a.selectionStart, to: a.selectionEnd } : null;
+    drawFileNow();
+    afterDraw(keep);
+  }
+  function drawFileNow() {
     const f = (R.files || []).find(x => x.path === current);
     if (!f && current && ghosts().includes(current)) {
       $("file-head").replaceChildren(el("span", { class: "path" }, current), el("span", { class: "from" }, "no longer in the diff"));
@@ -670,9 +716,12 @@
     $("label").textContent = [where !== R.title ? where : null,
       `${s.files || 0} files`, `+${s.adds || 0} −${s.dels || 0}`].filter(Boolean).join(" · ");
     const g = gateText();
-    $("mode").textContent = live ? "live" : "read-only";
-    $("mode").className = "mode " + (live ? "live" : "file");
-    $("mode").title = live ? "Comments and closes go to the agent at its next prompt."
+    const down = live && live.down;
+    $("mode").textContent = down ? "disconnected — run `lookout open` to reconnect"
+      : live ? (live.http ? `live · last poll ${live.http}` : "live") : "read-only";
+    $("mode").className = "mode " + (down ? "down" : live ? "live" : "file");
+    $("mode").title = down ? "The review server stopped answering. Your drafts are kept in this browser; `lookout open` starts a server and opens a fresh page."
+      : live ? "Comments and closes go to the agent at its next prompt."
       : "Opened as a file: comments need crew's intent server (lookout open shows the served page when it is up).";
     $("gate").className = "gate " + g.cls;
     $("gate").textContent = g.text;
@@ -684,8 +733,13 @@
       notes.push("Drawn without syntax highlighting: " + R.highlight);
     if (R.scoring && !R.scoring.ok)
       notes.push("Risk from signals only — " + (R.scoring.why || "no Jev scores") + ".");
-    $("banner").textContent = notes.join("  ");
-    $("banner").hidden = !notes.length;
+    const stale = live && live.stale;
+    $("banner").replaceChildren(
+      stale ? el("span", { class: "stale" }, "The diff changed while you were typing. ",
+        el("button", { type: "button", onclick: () => location.reload() }, "Reload when ready"),
+        " (drafts are kept)") : "",
+      stale && notes.length ? "  " : "", notes.join("  "));
+    $("banner").hidden = !notes.length && !stale;
   }
 
   // Swap in a fresher review (the served page polls for one) and redraw what
@@ -713,36 +767,87 @@
     const post = postVia || (body => fetch("/review/" + encodeURIComponent(id), {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...body, t: token }),
-    }).then(r => r.json().then(j => { if (!r.ok) throw new Error(j.error || "refused"); return j; })));
+    }).catch(e => { e.unreachable = true; throw e; })     // only fetch itself: no server
+      .then(r => r.json().then(j => { if (!r.ok) throw new Error(j.error || "refused"); return j; })));
 
     // A composer with words in it is never redrawn away; a fresher review
     // waits until it is sent or cancelled.
-    const busy = () => [...document.querySelectorAll("textarea")].some(t => t.value.trim());
+    // Only words someone is working on count: a box in focus, or one typed
+    // in since this page loaded. A restored draft (an unplaced one included)
+    // stays on screen but would otherwise hold every fresher review back.
+    const busy = () => [...document.querySelectorAll("textarea")].some(t => t.value.trim() &&
+      (t === document.activeElement || edited.has(t.dataset.draft)));
     const take = next => {
-      if (next.patchHash !== R.patchHash) { location.reload(); return; }
+      if (next.patchHash !== R.patchHash) {
+        // A new diff means a new page; not under someone typing. The banner
+        // offers the reload, and the next idle poll takes it.
+        if (!busy()) { location.reload(); return; }
+        live.pending = next;
+        if (!live.stale) { live.stale = true; drawHeader(); }
+        return;
+      }
+      // The page's own diff again: whatever new one was waiting is gone.
+      if (live.stale) { live.stale = false; drawHeader(); }
       if (busy()) { live.pending = next; return; }
       live.pending = null;
       applyReview(next);
     };
     // Every 2.5s while visible; a background tab checks every 15s, so it is
     // current by the time someone looks, and catches up at once when shown.
-    let ticks = 0;
+    // A hidden tab's poll says so (bg=1): it does not keep the server from
+    // idling out. After DOWN_AFTER failed polls in a row the header says the
+    // server is gone, and goes back to live when one answers.
+    const DOWN_AFTER = 3;
+    let ticks = 0, fails = 0;
+    const UNREACHED = {};
+    const setDown = d => { if (!!live.down !== d) { live.down = d; drawHeader(); } };
+    const setHttp = h => { if ((live.http || "") !== h) { live.http = h; drawHeader(); } };
     const poll = (e) => {
       if (document.hidden && !e && ++ticks % 6) return;
-      fetch(`/review/${encodeURIComponent(id)}.json?t=${encodeURIComponent(token)}`, { cache: "no-store" })
-        .then(r => r.ok ? r.json() : null)
-        .then(j => { if (j && j.updatedAt !== R.updatedAt) take(j); else if (live.pending && !busy()) take(live.pending); })
-        .catch(() => { /* the server restarted; the next poll will tell */ });
+      fetch(`/review/${encodeURIComponent(id)}.json?t=${encodeURIComponent(token)}${document.hidden ? "&bg=1" : ""}`, { cache: "no-store" })
+        // Only a fetch that reached nothing counts toward disconnected; an
+        // HTTP error is a server that answered, said in a short note.
+        .then(r => {
+          fails = 0; setDown(false);
+          setHttp(r.ok ? "" : "HTTP " + r.status);
+          return r.ok ? r.json() : null;
+        }, () => { if (++fails >= DOWN_AFTER) setDown(true); return UNREACHED; })
+        .then(j => {
+          // Nothing answered: no take(), which could reload onto a dead server.
+          if (j === UNREACHED) return;
+          if (j && j.updatedAt !== R.updatedAt) take(j); else if (live.pending && !busy()) take(live.pending);
+        })
+        .catch(() => { /* a bad body: the next poll asks again */ });
     };
     if (polls) {
       setInterval(() => poll(), 2500);
       document.addEventListener("visibilitychange", e => { if (!document.hidden) poll(e); });
     }
 
-    const send = (body, status) => {
+    // A sent draft is cleared before the redraw, so the redraw does not put
+    // it back; every other draft is restored by afterDraw.
+    const openComposers = new Set();
+    const send = (body, status, key) => {
       status.textContent = "sending…";
-      return post(body).then(j => { live.pending = null; applyReview(j.review); })
-        .catch(e => { status.textContent = e.message; status.classList.add("bad"); throw e; });
+      status.classList.remove("bad");
+      // The success handler runs outside the failure one: an error drawing
+      // the reply is not a failed send, and never reads as a dead server.
+      return post(body).then(j => {
+        if (key) {
+          saveDraft(key, ""); openComposers.delete(key);
+          const sent = document.querySelector(`textarea[data-draft="${CSS.escape(key)}"]`);
+          if (sent) sent.value = "";
+        }
+        // A reply that lands on a new diff is a new page: take() reloads, or
+        // offers the reload when another draft is open.
+        if (j.review && j.review.patchHash !== R.patchHash) { take(j.review); return; }
+        live.pending = null; applyReview(j.review);
+      }, e => {
+        // Marked by post() when fetch itself rejected (nothing answered),
+        // whatever the browser's wording; a refusal is a plain Error.
+        status.textContent = e.unreachable ? "not sent: the review server is not answering — run `lookout open`" : e.message;
+        status.classList.add("bad"); throw e;
+      });
     };
 
     // A quiz answer: graded and recorded by the server, once; the redraw
@@ -758,11 +863,14 @@
     actions = x => {
       const finding = x.id.startsWith("f");
       const open = isOpen(x);
-      const ta = el("textarea", { rows: 2, placeholder: open ? "Reply, or a note for a close…" : "Reply…" });
+      const key = "r:" + x.id;
+      const ta = el("textarea", { rows: 2, placeholder: open ? "Reply, or a note for a close…" : "Reply…", "data-draft": key });
+      ta.value = draftText(key);
+      ta.addEventListener("input", () => saveDraft(key, ta.value));
       const status = el("span", { class: "send-status" });
       const go = (op, needText) => () => {
         if (needText && !ta.value.trim()) { ta.focus(); return; }
-        send({ op, item: x.id, text: ta.value }, status).then(() => {}, () => {});
+        send({ op, item: x.id, text: ta.value }, status, key).then(() => {}, () => {});
       };
       ta.addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) go("comment", true)(); });
       return el("div", { class: "actions" }, ta, el("div", { class: "buttons" },
@@ -774,29 +882,124 @@
     };
 
     // A click on a line number opens a comment under that line.
+    const composerKey = (file, side, line) => "c:" + JSON.stringify([file, side, line]);
+    // The plain text of a line as this page's diff draws it, or null.
+    const lineText = (file, side, line) => {
+      for (const h of ((ROWS[file] || {}).hunks || []))
+        for (const r of h.rows) if ((side === "old" ? r[1] : r[2]) === line) {
+          const d = document.createElement("div"); d.innerHTML = r[3]; return d.textContent;
+        }
+      return null;
+    };
+    // A line with its neighbours above and below: what a draft remembers
+    // of where it was written.
+    const lineCtx = (file, side, line) => [line - 1, line, line + 1].map(n => lineText(file, side, n));
+    // A saved composer goes back under its line only when it was written
+    // against this diff, or on a new diff when the line and both neighbours
+    // still read the same and the line has words in it ("}" or a blank line
+    // matches anywhere). An empty composer opened on this page always does.
+    const placeable = (k, file, side, line) => {
+      const d = drafts[k];
+      if (d == null) return true;
+      if (typeof d !== "object") return false;
+      if (d.h === R.patchHash) return true;
+      return Array.isArray(d.x) && /\w/.test(d.x[1] || "") &&
+        JSON.stringify(lineCtx(file, side, line)) === JSON.stringify(d.x);
+    };
+    // A saved draft that does not belong under this line (placeable says no)
+    // moves to a key of its own, so it stays in the unplaced list and the
+    // new composer starts empty instead of inheriting it.
+    function setAside(key, file, side, line) {
+      const d = drafts[key];
+      const alt = "c:" + JSON.stringify([file, side, line, (d && d.h) || "earlier"]);
+      const all = readDrafts();
+      all[alt] = drafts[alt] = d; delete all[key]; delete drafts[key];
+      if (edited.delete(key)) edited.add(alt);
+      store.set(DRAFTS, JSON.stringify(all));
+    }
+    function openComposer(tr, side, line) {
+      const file = current, key = composerKey(file, side, line);
+      if (drafts[key] != null && !placeable(key, file, side, line)) {
+        setAside(key, file, side, line);
+        // Redraw so the unplaced list shows it under its new key, then open
+        // on the same line of the redrawn diff.
+        drawFile();
+        const cell = document.querySelector(`#diff td.ln[data-side="${side === "old" ? "old" : "new"}"][data-line="${Number(line)}"]`);
+        if (!cell) return null;
+        tr = cell.closest("tr");
+      }
+      openComposers.add(key);
+      const span = tr.children.length;
+      const ta = el("textarea", { rows: 3, placeholder: `Comment on ${side === "old" ? "old " : ""}line ${line}…`, "data-draft": key });
+      ta.value = draftText(key);
+      ta.addEventListener("input", () => saveDraft(key, ta.value, { h: R.patchHash, x: lineCtx(file, side, line) }));
+      const status = el("span", { class: "send-status" });
+      const row = el("tr", { class: "composer", "data-draft": key }, el("td", { colspan: span },
+        el("div", { class: "card comment" }, el("div", { class: "actions" }, ta, el("div", { class: "buttons" },
+          el("button", { type: "button", class: "primary", onclick: submit }, "Comment"),
+          el("button", { type: "button", onclick: () => {
+            openComposers.delete(key); saveDraft(key, ""); row.remove();
+            if (live.pending && !busy()) take(live.pending);
+          } }, "Cancel"),
+          status)))));
+      function submit() {
+        if (!ta.value.trim()) { ta.focus(); return; }
+        send({ op: "comment", file, line, side, text: ta.value }, status, key).then(() => {}, () => {});
+      }
+      ta.addEventListener("keydown", ev => { if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) submit(); });
+      tr.after(row);
+      return ta;
+    }
     $("diff").addEventListener("click", e => {
       const cell = e.target.closest && e.target.closest("td.ln[data-line]");
       if (!cell) return;
       const tr = cell.closest("tr");
       const next = tr.nextElementSibling;
-      if (next && next.classList.contains("composer")) { next.remove(); return; }
-      const side = cell.dataset.side, line = Number(cell.dataset.line);
-      const span = tr.children.length;
-      const ta = el("textarea", { rows: 3, placeholder: `Comment on ${side === "old" ? "old " : ""}line ${line}…` });
-      const status = el("span", { class: "send-status" });
-      const row = el("tr", { class: "composer" }, el("td", { colspan: span },
-        el("div", { class: "card comment" }, el("div", { class: "actions" }, ta, el("div", { class: "buttons" },
-          el("button", { type: "button", class: "primary", onclick: submit }, "Comment"),
-          el("button", { type: "button", onclick: () => { row.remove(); if (live.pending) take(live.pending); } }, "Cancel"),
-          status)))));
-      function submit() {
-        if (!ta.value.trim()) { ta.focus(); return; }
-        send({ op: "comment", file: current, line, side, text: ta.value }, status).then(() => {}, () => {});
+      if (next && next.classList.contains("composer")) {
+        // A second click closes an empty composer; one with words keeps them.
+        const t = next.querySelector("textarea");
+        if (t && t.value.trim()) { t.focus(); return; }
+        openComposers.delete(next.dataset.draft); next.remove(); return;
       }
-      ta.addEventListener("keydown", ev => { if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) submit(); });
-      tr.after(row);
-      ta.focus();
+      const ta = openComposer(tr, cell.dataset.side, Number(cell.dataset.line));
+      if (ta) ta.focus();
     });
+    // After any redraw of the diff: reopen this file's composers (open ones,
+    // and drafts left from before a reload), refill reply boxes, and give the
+    // box being typed in its focus and caret back.
+    afterDraw = keep => {
+      const unplaced = [];
+      for (const k of new Set([...openComposers, ...Object.keys(drafts)])) {
+        if (!k.startsWith("c:")) continue;
+        let file, side, line;
+        try { [file, side, line] = JSON.parse(k.slice(2)); } catch { continue; }
+        if (file !== current) continue;
+        if (!placeable(k, file, side, Number(line))) { unplaced.push([k, side, Number(line)]); continue; }
+        const cell = document.querySelector(`#diff td.ln[data-side="${side === "old" ? "old" : "new"}"][data-line="${Number(line)}"]`);
+        const tr = cell && cell.closest("tr");
+        if (!tr || document.querySelector(`#diff tr.composer[data-draft="${CSS.escape(k)}"]`)) continue;
+        openComposer(tr, side, Number(line));
+      }
+      // Drafts whose line changed under them: kept and shown, never placed.
+      if (unplaced.length) $("diff").prepend(el("div", { class: "outside unplaced" },
+        el("div", { class: "outside-head" }, "Drafts written against an earlier diff — their lines changed, so they are not placed"),
+        unplaced.map(([k, side, line]) => {
+          const d = drafts[k] || {};
+          const ta = el("textarea", { rows: 2, "data-draft": k });
+          ta.value = draftText(k);
+          ta.addEventListener("input", () => saveDraft(k, ta.value, { h: d.h, x: d.x }));
+          const box = el("div", { class: "card comment" }, el("div", { class: "card-head" },
+            el("span", { class: "title" }, `${side === "old" ? "old " : ""}line ${line}` + ((Array.isArray(d.x) ? d.x[1] : d.x) != null ? ` — was “${String(Array.isArray(d.x) ? d.x[1] : d.x).trim().slice(0, 80)}”` : ""))),
+            el("div", { class: "actions" }, ta, el("div", { class: "buttons" },
+              el("button", { type: "button", onclick: () => { saveDraft(k, ""); openComposers.delete(k); box.remove(); } }, "Discard"))));
+          return box;
+        })));
+      if (!keep) return;
+      const t = document.querySelector(`#diff textarea[data-draft="${CSS.escape(keep.key)}"]`);
+      if (!t) return;
+      t.focus();
+      try { t.setSelectionRange(keep.from, keep.to); } catch { /* not a text box */ }
+    };
     drawSide();
     drawMain();
     // A caller with its own transport pushes fresher reviews through take,

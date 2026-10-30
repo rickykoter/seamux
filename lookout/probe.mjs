@@ -813,7 +813,17 @@ const R1 = repo("r1");
      ctx.includes(`[lookout ${id}] 2 new`) && ctx.includes('t1 (comment on a.js:1): "why 2 and not 3?"') &&
      ctx.includes("f1 (major finding, a.js:1): the human marked it dismissed") && ctx.includes(`lookout reply ${id}`), ctx);
   ok("hook: the agent's own words are not echoed back", !ctx.includes("agent words"));
+  ok("hook: on a review the agent may not close, it says only the human resolves",
+     ctx.includes("Only the human resolves or dismisses.") && !ctx.includes("--agent-may-close"), ctx);
   ok("hook: each message is delivered once", hook(R7).stdout === "");
+  {
+    // Opened with --agent-may-close: the hook must not tell the agent otherwise.
+    S.update(id, cur => { cur.policy = { ...(cur.policy || {}), agentMayClose: true }; FD.reply(cur, "t1", "you may close it", "human"); return cur; });
+    const may = hook(R7).stdout;
+    ok("hook: on an --agent-may-close review it names the agent's resolve and dismiss",
+       may.includes("opened with --agent-may-close") && may.includes(`lookout resolve|dismiss ${id}`) && !may.includes("Only the human"), may);
+    S.update(id, cur => { cur.policy = { ...(cur.policy || {}), agentMayClose: false }; return cur; });
+  }
   S.update(id, cur => { FD.reply(cur, "t1", "and also this", "human"); return cur; });
   const again = hook(R7, "SessionStart").stdout;
   ok("hook: only what is new since the last prompt", again.includes("1 new") && again.includes("and also this") && !again.includes("why 2"));
@@ -855,6 +865,42 @@ const R1 = repo("r1");
   ok("page: a served page answers through op answer", page.includes('send({ op: "answer", item: n.id, pick }, status)'));
   ok("page: has the served mode (serve, polling, POST)", /function serve\(/.test(page) && page.includes('method: "POST"') &&
      page.includes(".json?t="));
+  ok("page: a new diff reloads only when nothing is being typed, else a banner offers the reload",
+     /if \(next\.patchHash !== R\.patchHash\) \{\s*\/\/[^\n]*\n[^\n]*\n\s*if \(!busy\(\)\) \{ location\.reload\(\); return; \}/.test(page) &&
+     page.includes("live.stale = true") && page.includes("Reload when ready"));
+  ok("page: drafts are kept per item in localStorage and put back after every redraw",
+     page.includes('"lookout.drafts." + R.id') && /function drawFile\(\) \{[\s\S]{0,400}drawFileNow\(\);\s*afterDraw\(keep\);/.test(page) &&
+     page.includes('"r:" + x.id') && page.includes("openComposer(tr, side, Number(line))"));
+  ok("page: a composer draft is placed only on its own diff or an unchanged line, else shown unplaced",
+     page.includes("if (d.h === R.patchHash) return true;") &&
+     page.includes('/\\w/.test(d.x[1] || "") &&\n        JSON.stringify(lineCtx(file, side, line)) === JSON.stringify(d.x);') &&
+     page.includes("if (!placeable(k, file, side, Number(line))) { unplaced.push(") && page.includes('class: "outside unplaced"'));
+  ok("page: a send that reaches no server is told by the TypeError, not by its wording",
+     page.includes("}).catch(e => { e.unreachable = true; throw e; })") && page.includes("status.textContent = e.unreachable ? \"not sent") && !page.includes("live.down || e.unreachable") &&
+     !page.includes("/fetch/i") && !page.includes("e instanceof TypeError"));
+  ok("page: a draft is saved by one key over what storage holds now, and other tabs' writes are taken in",
+     /const saveDraft = \(k, v, meta\) => \{\s*const all = readDrafts\(\);/.test(page) && page.includes('addEventListener("storage"') &&
+     page.includes("for (const k of Object.keys(before)) if (!(k in now)) delete drafts[k];") &&
+     !page.includes("for (const k of Object.keys(drafts)) if (!(k in all)) delete drafts[k];"));
+  ok("page: a composer opened on a line whose saved draft does not fit starts empty; the draft stays apart",
+     page.includes("if (drafts[key] != null && !placeable(key, file, side, line)) {\n        setAside(key, file, side, line);") &&
+     /function setAside\(key, file, side, line\)/.test(page));
+  ok("page: a poll that reached nothing takes nothing (no reload onto a dead server)",
+     page.includes("return UNREACHED; })") && page.includes("if (j === UNREACHED) return;"));
+  ok("page: the reload banner clears when the page's own diff comes back",
+     /\/\/ The page's own diff again[^\n]*\n\s*if \(live\.stale\) \{ live\.stale = false; drawHeader\(\); \}/.test(page));
+  ok("page: a restored draft does not hold fresher reviews back; one focused or typed in since load does",
+     page.includes("(t === document.activeElement || edited.has(t.dataset.draft))") && page.includes("edited.add(k);"));
+  ok("page: only a poll that reached nothing counts toward disconnected; an HTTP error is a short note",
+     page.includes('setHttp(r.ok ? "" : "HTTP " + r.status);') && page.includes("}, () => { if (++fails >= DOWN_AFTER) setDown(true); return UNREACHED; })") &&
+     page.includes("`live · last poll ${live.http}`"));
+  ok("page: a sent draft is cleared before the redraw that follows",
+     /if \(key\) \{\s*saveDraft\(key, ""\); openComposers\.delete\(key\);/.test(page));
+  ok("page: failed polls turn the header to disconnected, and a good one turns it back",
+     page.includes("if (++fails >= DOWN_AFTER) setDown(true)") && page.includes("fails = 0; setDown(false);") &&
+     page.includes("disconnected — run `lookout open` to reconnect"));
+  ok("page: a hidden tab's poll says so (bg=1), so it does not keep the server up",
+     page.includes('document.hidden ? "&bg=1" : ""'));
 }
 
 // ---------------------------------------------------------------- setup
@@ -1064,13 +1110,15 @@ catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.n
   fs.writeFileSync(SENV.LOOKOUT_SERVE_FILE, JSON.stringify({ port: R.port, token: "x", pid: 999999 }));
   r = lk(RS, "serve", "--url", "/health");
   ok("serve: a stale serve.json (dead pid) starts a fresh server", r.status === 0 && rec().pid !== 999999 && rec().token !== "x");
-  const idlePid = rec().pid;
+  const idlePid = rec().pid, idlePort = rec().port;
   let gone = false;
+  // A hidden tab's poll (bg=1) keeps coming the whole time: it is not activity.
   for (let i = 0; i < 80 && !gone; i++) {
     await new Promise(res => setTimeout(res, 500));
+    if (i % 2 === 0) await fetch(`http://127.0.0.1:${idlePort}/review/x.json?t=x&bg=1`).catch(() => {});
     gone = !rec() && !(() => { try { process.kill(idlePid, 0); return true; } catch { return false; } })();
   }
-  ok("serve: an idle server exits and removes serve.json", gone);
+  ok("serve: an idle server exits and removes serve.json, background polls or not", gone);
   lk(RS, "serve", "--stop");
 }
 

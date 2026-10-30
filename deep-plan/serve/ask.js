@@ -29,7 +29,9 @@
       .then(function(r){ return r.json(); })
       .then(function(j){
         if (j && j.ok && j.delivered) { say("\u2713 " + j.detail + " \u2014 the terminal has your answer"); return; }
-        if (j && j.ok) { say("recorded, not typed: " + j.detail, true); return; }
+        if (j && j.ok) { say("recorded: " + j.detail, true); return; }
+        // Not delivered and not recorded (the terminal was not showing the
+        // question, say): nothing changed, so the picks come back.
         say((j && j.detail) || "refused", true);
         for (var i = 0; i < picks.length; i++) picks[i].disabled = false;
       })

@@ -104,7 +104,7 @@ function readBody(req, limit) {
 export function makeServer({ version, root, token, onRequest = () => {}, sync }) {
   let port = 0;
   const server = http.createServer(async (req, res) => {
-    onRequest();
+    onRequest(req);
     try {
       const host = req.headers.host;
       if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) {
@@ -171,7 +171,11 @@ export function makeServer({ version, root, token, onRequest = () => {}, sync })
 export function serveForeground({ version, root }) {
   const token = crypto.randomBytes(24).toString("hex");
   let last = Date.now(), started = false, missing = 0;
-  const server = makeServer({ version, root, token, onRequest: () => { last = Date.now(); } });
+  // A hidden tab's background poll (bg=1) is not activity: an open tab left
+  // behind must not keep the server up forever.
+  const server = makeServer({ version, root, token, onRequest: req => {
+    if (!/[?&]bg=1(&|$)/.test(req.url || "")) last = Date.now();
+  } });
   const tidy = () => { const cur = readJson(SERVE_FILE); if (cur && cur.pid === process.pid) fs.rmSync(SERVE_FILE, { force: true }); };
   server.listen(0, "127.0.0.1", () => {
     // Look, then write, under a start lock: two servers starting at once

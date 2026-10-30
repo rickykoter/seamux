@@ -50,6 +50,12 @@ place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_D
   PLAN_JS strips exactly that suffix); `.dp-path[data-file]` spans; `#dp-auto`
   checkbox armed on its change event, polling `window.__dpChanged` — and
   skipping a tick while `window.dpBusy()` says someone is mid-comment.
+  Only the transitions an increment's status allows are drawn (`INC_ALLOWED`, the table applyTransition refuses by, carried into the page as `window.DP_INC_ALLOWED`;
+  plan.js falls back to its own copy only for older renders). `/plan/` injects the
+  served file's stamp (`STAMP`, inode-size-mtimeMs) and its own segment
+  (`PAGE`); `/plan-stamp?slug=<PAGE>` answers `{mtime, stamp}`, and the
+  page reloads when `stamp` differs from the one it was served with. Only
+  `<slug>.working.html` / `<slug>.review.html` are served as HTML there.
 - `redraw <slug>|--all` loops `rehydrate` over archived specs (one failure
   does not stop the rest); `overviews` is the only writer of
   `diagrams[].simple` into an archived spec, and `specHash` strips `simple`
@@ -67,7 +73,9 @@ place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_D
   by `deep-plan ask`; the page's `.dp-ask-pick[data-n]` buttons render disabled
   and `crew-board-intent` serves `/ask/<id>` with ASK_JS injected, `/answer`
   records into the json and types into `surface` only, and only after
-  read-screen shows that ask's option label on the prompt. `deep-plan ask`
+  read-screen shows that ask's option label on the prompt. A pick that typed
+  nothing (question not on screen, send failed) is not recorded, so it can
+  be made again. `deep-plan ask`
   opens the page with `cmux open <url> --workspace $CMUX_WORKSPACE_ID
   --focus false` (one tab per ask, beside the terminal) and falls back to
   `/do?a=ask&r=<workspace>&x=<id>`, the Dock tab, when no workspace is known.
