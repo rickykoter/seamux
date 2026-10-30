@@ -463,6 +463,15 @@ human turn required in between:
 
 All of it is a heuristic over the command text, like the write test: `eval
 "$X"` or a curl to the intent server is not seen. It closes the easy path.
+From a session, by verb (lib/state.mjs `humanLever`, `onHumansWord`):
+
+| class | verbs |
+|---|---|
+| human-only (refused outright) | `open-gate`, `import-state --force`; Edit/Write/Bash writes into the state, keys and ext dirs |
+| one per human turn, and not in a turn the gate refused unless the prompt said go | `go`, `close`, `--force` on `go`/`done`/`check`/`render`, `--by human` (so `family take-back`/`give-back` from a session) |
+| allowed, the skill's own steps | `import-state` without `--force` (the CLI refuses it over existing state, so it only brings a plan into a fresh session), `state pull` (reads the plan's own state branch: a branch someone pushed by hand is out of the gate's reach) |
+| safe (they tighten, read, or are gated on their own) | `shut-gate`, `start`, `done` (gated on checks), `block`, `reset`, `check`/`obs` verdicts and runs, `deliver` (gated on the review), `state push`/`status`/`list`, `export-*`, `render` without `--force`, `grade`, the rest |
+
 These Bash checks are a best-effort text filter (dynamic paths, `eval "$X"`,
 a curl to the server are out of reach); the human's levers on the board and
 the plan pane are the real boundary.

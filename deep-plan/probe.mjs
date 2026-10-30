@@ -5396,6 +5396,21 @@ exit 1
       input: JSON.stringify({ session_id: S5, hook_event_name: "UserPromptSubmit", cwd: TMP, prompt: "go" }) });
     ok("b1: a refused session's prompt is kept even from a cwd outside every root", fs.existsSync(path.join(T5, S5 + ".prompt")));
   }
+  // A here-string or a shift is no heredoc; a heredoc with no end blanks nothing.
+  ok("b1: <<< and $((1<<3)) do not hide a later call", ["cat <<< hi\ndeep-plan open-gate a", "echo $((1<<3))\ndeep-plan open-gate a",
+    "(( x <<= 2 ))\ndeep-plan open-gate a", "cat <<EOF\nno end here\ndeep-plan open-gate a"].every(c => lib.deepPlanCalls(c).length === 1));
+  // Verbs that replace state from content the agent could write are the human's.
+  r = hook(S2, "Bash", { command: "deep-plan import-state b.json --force" }, TMP);
+  ok("b1: a session's import-state --force is refused outright", r.status === 2 && /it is the human's to do/.test(r.stderr), r.stderr);
+  for (const c of ["deep-plan import-state b.json", "deep-plan state pull b1-gate", "deep-plan state status b1-gate"])
+    ok(`b1: …but ${c.split(" ").slice(1, 3).join(" ")} from a session is not (the skill's own steps)`, hook(S2, "Bash", { command: c }, TMP).status === 0);
+  {
+    const bundle = path.join(TMP, "b1-gate.bundle.json");
+    human("export-state", "b1-gate", "--out", bundle);
+    r = agent("import-state", bundle);
+    ok("b1: …and import-state over existing state is still the CLI's refusal", r.status === 1 && /already exists here; --force replaces it/.test(r.stderr), r.stderr);
+  }
+  ok("b1: an Edit into the extension dir is refused", hook(S2, "Write", { file_path: path.join(os.homedir(), ".claude", "deep-plan", "ext", "x.mjs") }).status === 2);
   ok("b1: grep -c's pattern is no shell string", lib.deepPlanCalls('grep -c "deep-plan open-gate" notes.md').length === 0 &&
     lib.deepPlanCalls('/bin/bash -e -c "deep-plan open-gate a"').length === 1);
   ok("b1: a write chained after the CLI is not the CLI's own tooling",

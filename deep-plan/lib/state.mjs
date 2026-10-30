@@ -12,6 +12,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { remoteStateDir } from "./host.mjs";
 import { matchesGlob } from "./verify.mjs";
+import { EXT_DIR } from "./ext.mjs";
 
 // The tree the defaults hang off: ~/.claude, or the repo's on the remote host.
 // Both have the same layout below it.
@@ -893,11 +894,16 @@ const SHELLS = /^(bash|sh|zsh|dash|ksh|eval|xargs)$/;
 // A line that pipes into a shell (`| sh`, `| bash`, `| xargs`, `| eval`) runs
 // what is fed to it: its heredoc body and its quoted strings are code there.
 const PIPES_TO_SHELL = /\|\s*(\S*\/)?(sh|bash|zsh|dash|ksh|eval|xargs)\b/;
+// Only a real heredoc: `<<` or `<<-`, not a here-string (`<<<`), not a shift
+// inside $(( )), (( )) or [[ ]]. One with no terminator line blanks nothing:
+// the rest is read as code.
 function blankHeredocs(cmd) {
-  const re = /<<-?[ \t]*(['"]?)(\w+)\1[^\n]*\n/g;
+  const re = /(?<!<)<<(?!<)-?[ \t]*(['"]?)(\w+)\1[^\n]*\n/g;
   let out = cmd, m;
   while ((m = re.exec(cmd))) {
     const lineStart = cmd.lastIndexOf("\n", m.index) + 1;
+    const pre = cmd.slice(lineStart, m.index);
+    if (/\(\((?:(?!\)\)).)*$/.test(pre) || /\[\[(?:(?!\]\]).)*$/.test(pre)) { re.lastIndex = m.index + 2; continue; }
     const lineEnd = cmd.indexOf("\n", m.index);
     const piped = PIPES_TO_SHELL.test(cmd.slice(lineStart, lineEnd < 0 ? cmd.length : lineEnd));
     const head = cmd.slice(lineStart, m.index).split(/[;&|(]/).pop().trim().split(/\s+/);
@@ -906,7 +912,8 @@ function blankHeredocs(cmd) {
     const endRe = new RegExp(`^[ \\t]*${m[2]}[ \\t]*$`, "m");
     const rest = cmd.slice(bodyStart);
     const em = endRe.exec(rest);
-    const bodyEnd = em ? bodyStart + em.index : cmd.length;
+    if (!em) { re.lastIndex = bodyStart; continue; }
+    const bodyEnd = bodyStart + em.index;
     if (!SHELLS.test(first) && !piped) out = out.slice(0, bodyStart) + out.slice(bodyStart, bodyEnd).replace(/[^\n]/g, " ") + out.slice(bodyEnd);
     re.lastIndex = bodyEnd;
   }
@@ -1046,8 +1053,16 @@ export function trustOverride(cmd) {
   return "";
 }
 
+// Human-only from a session (refused outright): what lifts the gate, or
+// replaces existing state with a file the agent could have written
+// (import-state --force). A plain import-state is the CLI's to refuse over
+// existing state, so from a session it only brings a plan into a fresh one;
+// state pull reads the plan's own branch. See DEVELOPING.md for the table.
 export function humanLever(calls) {
-  for (const c of calls) if (c.verb === "open-gate") return "`deep-plan open-gate` lifts the gate; it is the human's lever";
+  for (const c of calls) {
+    if (c.verb === "open-gate") return "`deep-plan open-gate` lifts the gate; it is the human's lever";
+    if (c.verb === "import-state" && c.words.includes("--force")) return "`deep-plan import-state --force` replaces a plan's state from a file; it is the human's to do";
+  }
   return "";
 }
 
@@ -1172,8 +1187,10 @@ export function deniedThisTurn(session) {
 
 // deep-plan's own records: plan state, keys and archived specs. An agent's
 // Edit or Write there is how a gate gets opened by hand-editing its JSON.
+// Extension verbs (EXT_DIR) run with the state dirs in hand, so they are
+// deep-plan's own too: an agent's file there would be a verb that writes state.
 export function ownRecords(target) {
-  return [STATE_DIR, KEYS_DIR].some(d => inside(target, d));
+  return [STATE_DIR, KEYS_DIR, EXT_DIR].some(d => inside(target, d));
 }
 
 // The same for Bash: a command that writes (the write test, or an interpreter
@@ -1201,7 +1218,7 @@ export function bashTouchesRecords(cmd, cwd) {
   }
   const home = os.homedir();
   const names = new Set();
-  for (const d of [STATE_DIR, KEYS_DIR]) for (const p of [d, canon(d)]) {
+  for (const d of [STATE_DIR, KEYS_DIR, EXT_DIR]) for (const p of [d, canon(d)]) {
     names.add(p);
     if (p.startsWith(home + path.sep)) { const rest = p.slice(home.length); names.add("~" + rest); names.add("$HOME" + rest); names.add("${HOME}" + rest); }
   }
