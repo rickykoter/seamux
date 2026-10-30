@@ -24,6 +24,8 @@ struct Fake {
     live: Mutex<Vec<&'static str>>,
     /// cmux has no lifecycle hooks from these sessions: every agent is `unknown`.
     unknown: Mutex<bool>,
+    /// cmux calls every agent `ended` (another copy of its session ended).
+    ended: Mutex<bool>,
 }
 
 impl Fake {
@@ -49,6 +51,7 @@ impl Source for Fake {
             .map(|s| {
                 let agents = match *s {
                     _ if *self.unknown.lock().unwrap() => json!([{"kind": "claude", "state": "unknown"}]),
+                    _ if *self.ended.lock().unwrap() => json!([{"kind": "claude", "state": "ended"}]),
                     A => json!([{"kind": "claude", "state": "needs_input"}]),
                     C => json!([]),
                     _ => json!([{"kind": "claude", "state": "working"}]),
@@ -126,6 +129,55 @@ fn a_terminal_holding_a_native_claude_is_an_agent() {
     let f = w.tick().expect("the probe changes the frame");
     let c = f.tiles.iter().find(|t| t.surface == C).unwrap();
     assert_eq!((c.agent.as_deref(), c.state.as_str()), (Some("claude"), "idle"));
+}
+
+/// The truth probe stands in for crew_core::status::live_states: the panes
+/// whose pane file names a session with a live pid. A dead pid is not in it.
+#[test]
+fn a_live_pane_file_beats_cmux_ended() {
+    let fake = Fake::new();
+    *fake.ended.lock().unwrap() = true;
+    let w = wall(&fake, Duration::from_secs(1));
+    let f = w.tick().unwrap();
+    assert_eq!(f.tiles[1].state, "ended", "cmux keys lifecycle by session: a resumed copy ended");
+    // B's pane file says working and its pid is alive; A's pid is dead, so A is not listed.
+    w.set_truth_probe(Box::new(|| HashMap::from([(B.to_uppercase(), "working".to_string())])));
+    let f = w.tick().expect("the pane file changes the frame");
+    assert_eq!((f.tiles[0].state.as_str(), f.tiles[1].state.as_str()), ("ended", "working"));
+    assert_eq!(f.tiles[1].agent.as_deref(), Some("claude"));
+    assert_eq!(w.state_of(B).unwrap().0, "working", "a fresh look judges it the same way");
+}
+
+#[test]
+fn a_live_cmux_state_is_kept_over_the_pane_file() {
+    let fake = Fake::new();
+    let w = wall(&fake, Duration::from_secs(1));
+    // A's file is older: cmux says it waits on you now, and that stands.
+    w.set_truth_probe(Box::new(|| HashMap::from([(A.to_uppercase(), "working".to_string())])));
+    let f = w.tick().unwrap();
+    assert_eq!(f.tiles[0].state, "needs_input");
+}
+
+#[test]
+fn the_pane_file_comes_before_the_history_hint() {
+    let fake = Fake::new();
+    *fake.unknown.lock().unwrap() = true;
+    let w = wall(&fake, Duration::from_secs(1));
+    w.set_truth_probe(Box::new(|| HashMap::from([(A.to_uppercase(), "needs_input".to_string())])));
+    w.set_state_hint(Box::new(|| HashMap::from([(A.to_uppercase(), "working".to_string()), (B.to_uppercase(), "idle".to_string())])));
+    let f = w.tick().unwrap();
+    assert_eq!((f.tiles[0].state.as_str(), f.tiles[1].state.as_str()), ("needs_input", "idle"));
+}
+
+#[test]
+fn a_native_pane_cmux_sees_no_agent_in_is_claude_when_its_file_is_live() {
+    let fake = Fake::new();
+    fake.live.lock().unwrap().push(C);
+    let w = wall(&fake, Duration::from_secs(1));
+    w.set_truth_probe(Box::new(|| HashMap::from([(C.to_uppercase(), "needs_input".to_string())])));
+    let f = w.tick().unwrap();
+    let c = f.tiles.iter().find(|t| t.surface == C).unwrap();
+    assert_eq!((c.agent.as_deref(), c.state.as_str()), (Some("claude"), "needs_input"));
 }
 
 #[test]

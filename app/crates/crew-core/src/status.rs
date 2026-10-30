@@ -160,6 +160,110 @@ pub fn panes(dir: &Path, ws: &str) -> Vec<Pane> {
     all(dir).into_iter().filter(|p| p.ws == ws).collect()
 }
 
+/// The store cmux's Claude hooks keep: which session each surface runs, and
+/// each session's record (its pid among them).
+pub fn store_path() -> PathBuf {
+    crate::py::home().join(".cmuxterm").join("claude-hook-sessions.json")
+}
+
+/// Whether process `pid` exists (kill 0; EPERM still means it exists).
+pub fn pid_alive(pid: i64) -> bool {
+    if pid <= 0 || pid > i32::MAX as i64 {
+        return false;
+    }
+    // SAFETY: signal 0 sends nothing; it only asks whether the pid exists.
+    let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// When process `pid` started, as (seconds, microseconds) since the epoch,
+/// where the OS tells it (macOS); None elsewhere or when it cannot.
+pub fn pid_start(pid: i64) -> Option<(u64, u64)> {
+    #[cfg(target_os = "macos")]
+    {
+        if pid <= 0 || pid > i32::MAX as i64 {
+            return None;
+        }
+        // SAFETY: proc_pidinfo writes at most `size` bytes into `info`, a
+        // zeroed proc_bsdinfo of exactly that size.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        let n = unsafe { libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDTBSDINFO, 0, &mut info as *mut _ as *mut libc::c_void, size) };
+        (n == size).then_some((info.pbi_start_tvsec, info.pbi_start_tvusec))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// Whether the process the store recorded is the one running: its pid is
+/// alive and, when both the store and the OS give a start time, it started
+/// then. A pid reused by a later process has a different start.
+pub fn proc_alive(pid: i64, recorded: Option<(u64, u64)>) -> bool {
+    if !pid_alive(pid) {
+        return false;
+    }
+    match (recorded, pid_start(pid)) {
+        (Some((rs, ru)), Some((s, u))) => rs == s && ru.abs_diff(u) < 1000,
+        _ => true,
+    }
+}
+
+/// What the store says about the Claude a pane file names: its session's
+/// record, found by session id, with that process alive or not. A pane is
+/// absent when its file is ended, the store has no record of its session,
+/// or the record puts the session on another surface: none of that proves
+/// the pane alive or dead.
+pub fn liveness(
+    panes: &[Pane],
+    store: &Value,
+    alive: impl Fn(i64, Option<(u64, u64)>) -> bool,
+) -> std::collections::HashMap<String, (bool, String)> {
+    let mut out = std::collections::HashMap::new();
+    let Some(sessions) = store.get("sessions").and_then(Value::as_object) else { return out };
+    for p in panes.iter().filter(|p| p.state != "ended" && !p.surface.is_empty() && !p.session.is_empty()) {
+        let Some(rec) = sessions.get(&p.session) else { continue };
+        let on = rec.get("surfaceId").and_then(Value::as_str).unwrap_or("");
+        if !on.is_empty() && !on.eq_ignore_ascii_case(&p.surface) {
+            continue;
+        }
+        let pid = rec.get("pid").and_then(Value::as_i64).unwrap_or(0);
+        if pid <= 0 {
+            continue;
+        }
+        let start = rec.get("pidStartSeconds").and_then(Value::as_u64)
+            .map(|s| (s, rec.get("pidStartMicroseconds").and_then(Value::as_u64).unwrap_or(0)));
+        out.insert(p.surface.to_uppercase(), (alive(pid, start), p.state.clone()));
+    }
+    out
+}
+
+/// The panes whose own Claude is alive, by upper-case surface, with the state
+/// their hooks last wrote (see `liveness`). This is the pane's status as crew
+/// knows it: cmux keys lifecycle by session, so a session resumed in a
+/// second pane reads "ended" in both once the first copy ends.
+pub fn live_states(panes: &[Pane], store: &Value, alive: impl Fn(i64, Option<(u64, u64)>) -> bool) -> std::collections::HashMap<String, String> {
+    liveness(panes, store, alive).into_iter().filter(|(_, (a, _))| *a).map(|(k, (_, s))| (k, s)).collect()
+}
+
+fn read_store() -> Option<Value> {
+    fs::read_to_string(store_path()).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok())
+}
+
+/// `live_states` over the pane files in `dir` and the store on disk; None
+/// when the store cannot be read.
+pub fn live_states_now(dir: &Path) -> Option<std::collections::HashMap<String, String>> {
+    Some(live_states(&all(dir), &read_store()?, proc_alive))
+}
+
+/// `liveness` over the pane files in `dir` and the store on disk; None when
+/// the store cannot be read, which proves nothing either way.
+pub fn liveness_now(dir: &Path) -> Option<std::collections::HashMap<String, (bool, String)>> {
+    Some(liveness(&all(dir), &read_store()?, proc_alive))
+}
+
 /// What the workspace's lane should say.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lane {
@@ -408,5 +512,42 @@ mod tests {
         assert_eq!(read(&d, "S1").unwrap().session, "s");
         fs::write(path(&d, "junk"), "{not json").unwrap();
         assert_eq!(all(&d).len(), 3);
+    }
+
+    #[test]
+    fn liveness_goes_by_the_files_own_session() {
+        let f = |surface: &str, session: &str, state: &str| Pane { session: session.into(), state: state.into(), ..Pane::new("W", surface) };
+        let panes = vec![
+            f("S-LIVE", "s1", "working"),
+            f("S-DEAD", "s2", "idle"),
+            f("S-MOVED", "s3", "working"),
+            f("S-ENDED", "s4", "ended"),
+            f("S-NOREC", "s5", "working"),
+            // A native pane: the surface's active session is an older one, the file's is live.
+            f("S-NAT", "s6", "needs_input"),
+            f("S-REUSED", "s7", "working"),
+        ];
+        let store = json!({
+            "activeSessionsBySurface": {"S-NAT": {"sessionId": "s-old"}},
+            "sessions": {"s1": {"pid": 10, "surfaceId": "s-live"}, "s2": {"pid": 20, "surfaceId": "S-DEAD"},
+                         "s3": {"pid": 10, "surfaceId": "S-ELSEWHERE"}, "s4": {"pid": 10},
+                         "s6": {"pid": 10, "surfaceId": "S-NAT"}, "s-old": {"pid": 20, "surfaceId": "S-NAT"},
+                         "s7": {"pid": 10, "pidStartSeconds": 5, "pidStartMicroseconds": 0}},
+        });
+        // pid 10 runs, started at second 1; pid 20 is gone.
+        let alive = |pid: i64, start: Option<(u64, u64)>| pid == 10 && start.is_none_or(|s| s == (1, 0));
+        let got = liveness(&panes, &store, alive);
+        let want: std::collections::HashMap<String, (bool, String)> = [
+            ("S-LIVE", true, "working"), ("S-DEAD", false, "idle"), ("S-NAT", true, "needs_input"), ("S-REUSED", false, "working"),
+        ].into_iter().map(|(k, a, s)| (k.to_string(), (a, s.to_string()))).collect();
+        assert_eq!(got, want, "moved, ended and unrecorded panes prove nothing");
+        assert_eq!(live_states(&panes, &store, alive).len(), 2);
+        assert!(liveness(&panes, &Value::Null, |_, _| true).is_empty(), "no store, no claim");
+        let me = std::process::id() as i64;
+        assert!(pid_alive(me) && !pid_alive(0) && !pid_alive(-1));
+        assert!(proc_alive(me, None));
+        if let Some((s, u)) = pid_start(me) {
+            assert!(proc_alive(me, Some((s, u))) && !proc_alive(me, Some((s - 100, u))), "a reused pid started at another time");
+        }
     }
 }

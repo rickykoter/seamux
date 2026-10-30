@@ -386,6 +386,10 @@ pub struct Wall {
     /// sees only the tmux client there, so reports a terminal.
     native: Mutex<Option<NativeProbe>>,
     signals: Mutex<Option<SignalsProbe>>,
+    /// The panes whose own Claude is alive, with the state crew's hooks last
+    /// wrote for them (crew_core::status::live_states). This wins over cmux,
+    /// which keys lifecycle by session and so can call a live pane "ended".
+    truth: Mutex<Option<StateHint>>,
 }
 
 /// See `Wall::hint`.
@@ -408,7 +412,7 @@ impl Wall {
     /// As `new`, with a separate source for reply and jump.
     pub fn with_actions(pool: Vec<Arc<dyn Source>>, actions: Arc<dyn Source>, interval: Duration) -> Wall {
         assert!(!pool.is_empty(), "the wall needs a source");
-        Wall { pool, actions, interval, state: Mutex::new(State::default()), pulled: Mutex::default(), hint: Mutex::default(), native: Mutex::default(), signals: Mutex::default() }
+        Wall { pool, actions, interval, state: Mutex::new(State::default()), pulled: Mutex::default(), hint: Mutex::default(), native: Mutex::default(), signals: Mutex::default(), truth: Mutex::default() }
     }
 
     /// Name the terminals that hold a native Claude, asked once per poll.
@@ -424,6 +428,31 @@ impl Wall {
     /// session) from `hint`, which is asked once per poll and only then.
     pub fn set_state_hint(&self, hint: StateHint) {
         *self.hint.lock().unwrap() = Some(hint);
+    }
+
+    /// The panes whose Claude is alive, by upper-case surface, with their
+    /// state; asked once per poll and on each fresh look at one pane.
+    pub fn set_truth_probe(&self, probe: StateHint) {
+        *self.truth.lock().unwrap() = Some(probe);
+    }
+
+    /// A pane whose own Claude is alive takes the state crew recorded for it
+    /// where cmux has none worth keeping: "ended", "unknown" or no agent at
+    /// all. A live cmux state (needs_input, working, idle) stays cmux's, so a
+    /// fresh permission prompt is never hidden behind an older file.
+    fn apply_truth(&self, terms: &mut [Terminal]) {
+        if !terms.iter().any(|t| t.agent.is_none() || matches!(t.state.as_str(), "ended" | "unknown")) {
+            return;
+        }
+        let guard = self.truth.lock().unwrap();
+        let Some(probe) = guard.as_ref() else { return };
+        let live = probe();
+        for t in terms.iter_mut().filter(|t| t.agent.is_none() || matches!(t.state.as_str(), "ended" | "unknown")) {
+            if let Some(s) = live.get(&t.surface.to_uppercase()) {
+                t.agent.get_or_insert_with(|| "claude".into());
+                t.state = s.clone();
+            }
+        }
     }
 
     /// Forget the last frame sent, so the next poll sends it again (the page
@@ -456,6 +485,8 @@ impl Wall {
             Err(_) => self.state.lock().unwrap().terms.clone(),
         };
         let native = self.apply_native(&mut terms);
+        // The pane's own file before history: the hint fills only what is left unknown.
+        self.apply_truth(&mut terms);
         self.apply_hint(&mut terms);
         // A native Claude nothing has reported on yet is at least up.
         for t in terms.iter_mut().filter(|t| native.contains(&t.surface.to_uppercase()) && t.state == "unknown") {
@@ -632,10 +663,14 @@ impl Wall {
             return Err(format!("reply and jump take a surface UUID, not {surface:?}"));
         }
         let now = self.actions.current().map_err(|e| e.to_string())?;
-        terminals(&now)
+        let mut t = terminals(&now)
             .into_iter()
             .find(|t| t.surface == surface)
-            .ok_or_else(|| format!("{surface} is not a live terminal"))
+            .ok_or_else(|| format!("{surface} is not a live terminal"))?;
+        // Read fresh, judged as the wall judges it: a live Claude cmux calls
+        // ended is still mid-turn when it works.
+        self.apply_truth(std::slice::from_mut(&mut t));
+        Ok(t)
     }
 
     /// A live pane's state and workspace, read fresh.
