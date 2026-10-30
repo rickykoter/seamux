@@ -152,10 +152,16 @@ pub struct PaneSignals {
 
 /// The topic in a Claude pane's title ("✳ Fix Dock button sizes"): its
 /// spinner or mark taken off, None while it is still Claude Code's own
-/// name (no prompt read yet). tmux may print the mark as "_" when it has
-/// no UTF-8 client, so any leading run of non-alphanumerics goes.
+/// name (no prompt read yet). The mark is one character and a space (tmux
+/// may print it as "_" when it has no UTF-8 client); a topic's own leading
+/// punctuation, "(WIP) fix", stays.
 pub fn topic_of(title: &str) -> Option<String> {
-    let t = title.trim_start_matches(|c: char| !c.is_alphanumeric()).trim();
+    let t = title.trim();
+    let mut cs = t.chars();
+    let t = match (cs.next(), cs.next()) {
+        (Some(m), Some(' ')) if !m.is_alphanumeric() => cs.as_str().trim(),
+        _ => t,
+    };
     if t.is_empty() || t == "Claude Code" || t.eq_ignore_ascii_case("claude") {
         return None;
     }
@@ -711,6 +717,8 @@ mod tests {
         assert_eq!(topic_of("_ Workspace status reporting bugs").as_deref(), Some("Workspace status reporting bugs"));
         assert_eq!(topic_of("⠂ Claude Code"), None);
         assert_eq!(topic_of("  "), None);
+        assert_eq!(topic_of("✳ (WIP) fix the gate").as_deref(), Some("(WIP) fix the gate"));
+        assert_eq!(topic_of("Plain topic").as_deref(), Some("Plain topic"));
         assert_eq!(topic_of(&format!("✳ {}", "a".repeat(80))).map(|t| t.chars().count()), Some(61));
         assert_eq!(sh_quote("/bin/zsh"), "/bin/zsh");
         assert_eq!(sh_quote("/opt/a b/bin/fish"), "'/opt/a b/bin/fish'");

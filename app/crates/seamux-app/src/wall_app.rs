@@ -151,15 +151,23 @@ fn run_wall<R: Runtime>(app: AppHandle<R>, pool: Vec<Arc<dyn Source>>) {
     // A native Claude's cmux tab takes its name (worktree · topic) once
     // Claude has given the conversation a topic: the Dock and the Wall
     // read the tab's title.
-    let named: std::sync::Mutex<std::collections::HashMap<String, String>> = Default::default();
+    let named: std::sync::Mutex<std::collections::HashMap<String, seamux_app::wall::Asked>> = Default::default();
     wall.run(rx, move |f: Frame| {
         crate::views_app::observe(&f);
-        let renames = seamux_app::wall::tab_renames(&f.tiles, &mut named.lock().unwrap());
+        let renames = seamux_app::wall::tab_renames(&f.tiles, &mut named.lock().unwrap(), crew_core::history::now_ms());
         if !renames.is_empty() {
             std::thread::spawn(move || {
-                let Ok(c) = cmux::Cmux::connect() else { return };
+                // A failed rename is asked again after RENAME_RETRY_MS; say why here.
+                let c = match cmux::Cmux::connect() {
+                    Ok(c) => c,
+                    Err(e) => return eprintln!("seamux: tab names not set: {e}"),
+                };
                 for (surface, ws, name) in renames {
-                    let _ = c.cli(&["rename-tab", "--surface", &surface, "--workspace", &ws, &name]);
+                    match c.cli(&["rename-tab", "--surface", &surface, "--workspace", &ws, &name]) {
+                        Ok(out) if out.ok() => {}
+                        Ok(out) => eprintln!("seamux: rename-tab {surface}: {}", out.stderr.trim()),
+                        Err(e) => eprintln!("seamux: rename-tab {surface}: {e}"),
+                    }
                 }
             });
         }

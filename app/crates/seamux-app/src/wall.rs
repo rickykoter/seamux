@@ -308,18 +308,39 @@ pub fn pane_name(t: &Tile) -> Option<String> {
     Some(format!("{dir} · {topic}"))
 }
 
+/// A rename the app asked cmux for: the name, the tab's title when it
+/// asked, and when (ms since the epoch).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Asked {
+    pub name: String,
+    pub label: String,
+    pub at: u64,
+}
+
+/// A rename that has not shown up in the tab after this long is asked again:
+/// the call failed, or cmux shows the title differently.
+pub const RENAME_RETRY_MS: u64 = 60_000;
+
 /// The cmux tabs to rename, as (surface, workspace, name): each pane whose
-/// name has changed since `applied` last gave it one, and which cmux does
-/// not show already. `applied` remembers what was asked, so a tab cmux
-/// shows differently is not asked again every tick.
-pub fn tab_renames(tiles: &[Tile], applied: &mut HashMap<String, String>) -> Vec<(String, String, String)> {
+/// tab does not show its name yet. A name already asked for is asked again
+/// only when the tab was renamed since (crew's SessionStart hook names it
+/// again after a compaction) or RENAME_RETRY_MS has passed, so a tab cmux
+/// shows differently is not asked every tick. Panes no longer on the wall
+/// are forgotten.
+pub fn tab_renames(tiles: &[Tile], applied: &mut HashMap<String, Asked>, now: u64) -> Vec<(String, String, String)> {
+    applied.retain(|surface, _| tiles.iter().any(|t| &t.surface == surface && t.state != "ended"));
     let mut out = Vec::new();
     for t in tiles.iter().filter(|t| t.state != "ended") {
         let Some(name) = pane_name(t) else { continue };
-        if t.label == name || applied.get(&t.surface) == Some(&name) {
+        if t.label == name {
             continue;
         }
-        applied.insert(t.surface.clone(), name.clone());
+        if let Some(a) = applied.get(&t.surface) {
+            if a.name == name && a.label == t.label && now.saturating_sub(a.at) < RENAME_RETRY_MS {
+                continue;
+            }
+        }
+        applied.insert(t.surface.clone(), Asked { name: name.clone(), label: t.label.clone(), at: now });
         out.push((t.surface.clone(), t.workspace.clone(), name));
     }
     out

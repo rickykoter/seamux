@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use seamux_app::wall::{pane_name, tab_renames, Tile};
+use seamux_app::wall::{pane_name, tab_renames, Tile, RENAME_RETRY_MS};
 
 fn tile(surface: &str, cwd: &str, root: &str, label: &str, topic: Option<&str>) -> Tile {
     Tile {
@@ -37,16 +37,32 @@ fn the_name_is_the_worktree_then_the_topic() {
 }
 
 #[test]
-fn each_name_is_asked_once() {
+fn each_name_is_asked_once_until_the_tab_changes() {
     let mut applied = HashMap::new();
     let t = tile("S", "/w/a", "", "a · main", Some("Topic"));
-    assert_eq!(tab_renames(&[t.clone()], &mut applied), vec![("S".into(), "WS".into(), "a · Topic".into())]);
-    assert!(tab_renames(&[t.clone()], &mut applied).is_empty(), "asked already");
-    let shown = tile("S", "/w/a", "", "a · New", Some("New"));
-    assert!(tab_renames(&[shown], &mut applied).is_empty(), "cmux shows it already");
-    let moved = tile("S", "/w/a", "", "a · Topic", Some("Other"));
-    assert_eq!(tab_renames(&[moved], &mut applied).len(), 1, "a new topic renames again");
-    let mut ended = tile("E", "/w/a", "", "x", Some("T"));
+    assert_eq!(tab_renames(std::slice::from_ref(&t), &mut applied, 0), vec![("S".into(), "WS".into(), "a · Topic".into())]);
+    assert!(tab_renames(std::slice::from_ref(&t), &mut applied, 1_000).is_empty(), "asked already");
+    let shown = tile("S", "/w/a", "", "a · Topic", Some("Topic"));
+    assert!(tab_renames(&[shown], &mut applied, 2_000).is_empty(), "cmux shows it");
+    // crew's SessionStart hook (a compaction) names the tab again: ask again.
+    let renamed = tile("S", "/w/a", "", "a · main again", Some("Topic"));
+    assert_eq!(tab_renames(std::slice::from_ref(&renamed), &mut applied, 3_000).len(), 1);
+    assert!(tab_renames(std::slice::from_ref(&renamed), &mut applied, 4_000).is_empty());
+    // A rename that never showed up is asked again after the retry time.
+    assert_eq!(tab_renames(&[renamed], &mut applied, 3_000 + RENAME_RETRY_MS).len(), 1);
+    let moved = tile("S", "/w/a", "", "a · main again", Some("Other"));
+    assert_eq!(tab_renames(&[moved], &mut applied, 70_000).len(), 1, "a new topic renames again");
+}
+
+#[test]
+fn ended_and_gone_panes_are_skipped_and_forgotten() {
+    let mut applied = HashMap::new();
+    assert_eq!(tab_renames(&[tile("S", "/w/a", "", "x", Some("T"))], &mut applied, 0).len(), 1);
+    let mut ended = tile("S", "/w/a", "", "x", Some("T"));
     ended.state = "ended".into();
-    assert!(tab_renames(&[ended], &mut applied).is_empty());
+    assert!(tab_renames(&[ended], &mut applied, 1).is_empty());
+    assert!(applied.is_empty(), "an ended pane is forgotten");
+    tab_renames(&[tile("S", "/w/a", "", "x", Some("T"))], &mut applied, 2);
+    tab_renames(&[], &mut applied, 3);
+    assert!(applied.is_empty(), "a pane gone from the wall is forgotten");
 }
