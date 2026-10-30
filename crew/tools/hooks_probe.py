@@ -97,7 +97,11 @@ with open(os.environ["PROBE_SPAWN_LOG"], "a") as fh:
 if name == "crew-color" and sys.argv[1:2] == ["assign"]:
     print("#1565C0")
 elif name == "asked.py":
-    sys.stdin.read()
+    seen = sys.stdin.read()
+    if sys.argv[1:2] == ["judge"] and os.environ.get("PROBE_ASKED_SEEN"):
+        # What the stop hook's payload file held when the judge read it.
+        with open(os.environ["PROBE_ASKED_SEEN"], "w") as fh:
+            fh.write(seen)
     if sys.argv[1:2] == ["available"]:
         sys.exit(int(os.environ.get("PROBE_ASKED_AVAILABLE", "1")))
     out = os.environ.get("PROBE_ASKED_OUT", "")
@@ -584,15 +588,20 @@ check("pushed and clean again: an outstanding lane is released",
 
 reset([row(desc="phase:working")])
 touch("asked-ws-1")
-hook("stop", PROBE_ASKED_AVAILABLE="0", PROBE_ASKED_RC="0",
+SEEN = os.path.join(T, "asked-seen")
+hook("stop", PROBE_ASKED_AVAILABLE="0", PROBE_ASKED_RC="0", PROBE_ASKED_SEEN=SEEN,
      PROBE_ASKED_OUT='0.910\nWhich of the two?\n{"stuck": 0.1}')
 check("TypeSafe available: asked.sh judges the turn in the background",
       wait_for(lambda: marker("asked-ws-1") and any("--subtitle crew:blocked" in l for l in log())),
       "\n".join(spawns() + log()))
 check("…and publishes phase:waiting once the judgment lands",
       wait_for(lambda: desc() == "phase:waiting"), desc())
-check("…with the payload handed over in a file",
-      open(os.path.join(STATE, "asked-payload-ws-1")).read() == payload())
+check("…with this session's payload handed over in a file",
+      wait_for(lambda: os.path.exists(SEEN)) and open(SEEN).read() == payload(),
+      open(SEEN).read() if os.path.exists(SEEN) else "never judged")
+check("…which is removed once it was read",
+      wait_for(lambda: not [f for f in os.listdir(STATE) if f.startswith("asked-payload-")]),
+      os.listdir(STATE))
 
 # --- asked.sh -------------------------------------------------------------------------
 print("asked.sh")
@@ -935,6 +944,8 @@ def blocks(*bs):
 
 
 def statusline(stdin="{}", ws=None, path=BIN, **env):
+    # Each case changes ccusage's answer: the Rust line's 45 s cache is off.
+    env.setdefault("CREW_CCUSAGE_TTL", "0")
     return run(tool_argv("statusline"), stdin,
                env_for(ws=ws, path=path, PROBE_CCUSAGE_BLOCKS=BLOCKS, PROBE_CCUSAGE_MONTHLY=MONTHLY,
                        **env), settle=False)

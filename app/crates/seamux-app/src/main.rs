@@ -176,6 +176,7 @@ fn main() {
             review_app::review_post,
             review_app::review_push,
             review_app::review_remove,
+            review_app::review_stop_orphan,
             review_app::review_suggest,
             review_app::review_others,
             term_app::term_frame,
@@ -224,8 +225,15 @@ fn main() {
             newws_app::new_ws_options,
             newws_app::new_ws_create
         ])
-        .run(tauri::generate_context!())
-        .expect("seamux app failed to start");
+        .build(tauri::generate_context!())
+        .expect("seamux app failed to start")
+        .run(|_, e| {
+            // A clean quit stops a review's agents. A crash or SIGKILL skips
+            // this; the saved pgid and its start time catch that next launch.
+            if let tauri::RunEvent::Exit = e {
+                review_app::stop_all();
+            }
+        });
 }
 
 #[cfg(test)]

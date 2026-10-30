@@ -7,9 +7,10 @@
 //! comment, a push) is a separate command the page calls after a click.
 
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,9 @@ const REVIEW_TIME: Duration = Duration::from_secs(45 * 60);
 const QUICK: Duration = Duration::from_secs(120);
 const SLOW: Duration = Duration::from_secs(15 * 60);
 const LOG_LINES: usize = 60;
+/// How long a program's output may stay open after it exits (a tool it
+/// started still holding the pipe) before its process group is killed.
+const DRAIN_GRACE: Duration = Duration::from_millis(if cfg!(test) { 300 } else { 5000 });
 
 /// The code under review is untrusted: a branch can carry text written to steer
 /// the agent. So the agents get no general shell (no cat, no sed, no curl),
@@ -86,6 +90,12 @@ pub struct Job {
     pub stage_at: u64,
     /// What a running agent did last ("reading shell.rs"), or "".
     pub activity: String,
+    /// The process group of the agent running for this job now, or 0. Saved,
+    /// so a group left running by a crashed app is not discarded under.
+    pub pgid: i32,
+    /// When that group's leader started (`ps -o lstart=`): a group with the
+    /// same number later is the old run's only if its leader matches.
+    pub pgid_start: String,
 }
 
 static JOBS: OnceLock<Mutex<Vec<Job>>> = OnceLock::new();
@@ -102,21 +112,35 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
+fn jobs_file() -> PathBuf {
+    base_dir().join("jobs.json")
+}
+
 fn jobs() -> &'static Mutex<Vec<Job>> {
     JOBS.get_or_init(|| {
-        let mut v: Vec<Job> = std::fs::read_to_string(base_dir().join("jobs.json"))
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
-        // A job that was mid-flight when the app quit has no process left.
-        for j in v
-            .iter_mut()
-            .filter(|j| !matches!(j.status.as_str(), "ready" | "failed"))
-        {
-            j.status = "failed".into();
-            j.detail = "the app quit while this was running".into();
-        }
+        let file = jobs_file();
+        let text = std::fs::read_to_string(&file).ok();
+        let mut v: Vec<Job> = match text.as_deref().map(serde_json::from_str) {
+            Some(Ok(v)) => v,
+            Some(Err(_)) => {
+                // Kept aside, not overwritten by the next save: it names
+                // worktrees that are still registered.
+                let _ = std::fs::rename(&file, file.with_extension(format!("json.unreadable-{}", now())));
+                Vec::new()
+            }
+            None => Vec::new(),
+        };
+        // A job that was mid-flight when the app quit: its agent was stopped
+        // at quit, or, after a crash, may still run (its group is kept).
         for j in v.iter_mut() {
+            if !still_running(j) {
+                j.pgid = 0;
+                j.pgid_start.clear();
+            }
+            if !matches!(j.status.as_str(), "ready" | "failed") {
+                j.status = "failed".into();
+                j.detail = "the app quit while this was running".into();
+            }
             j.busy.clear();
         }
         Mutex::new(v)
@@ -134,26 +158,28 @@ fn snapshot() -> Vec<Job> {
     v
 }
 
+/// Save and show the jobs. Called with the jobs' lock held, so the last
+/// change made is the last one saved and sent (never an older snapshot).
 fn publish(all: &[Job]) {
-    let _ = std::fs::create_dir_all(base_dir());
-    let _ = std::fs::write(
-        base_dir().join("jobs.json"),
-        serde_json::to_string(all).unwrap_or_default(),
-    );
+    save_jobs(&jobs_file(), all);
     if let Some(app) = APP.get() {
         let _ = app.emit("review:frame", all);
     }
 }
 
+/// Written whole or not at all: a quit mid-write keeps the last save.
+fn save_jobs(file: &Path, all: &[Job]) {
+    if let Ok(text) = serde_json::to_string(all) {
+        let _ = crew_core::py::write_atomic(file, text.as_bytes());
+    }
+}
+
 fn update(id: &str, f: impl FnOnce(&mut Job)) {
-    let all = {
-        let Ok(mut g) = jobs().lock() else { return };
-        if let Some(j) = g.iter_mut().find(|j| j.id == id) {
-            f(j);
-        }
-        g.clone()
-    };
-    publish(&all);
+    let Ok(mut g) = jobs().lock() else { return };
+    if let Some(j) = g.iter_mut().find(|j| j.id == id) {
+        f(j);
+    }
+    publish(&g);
 }
 
 fn get(id: &str) -> Result<Job, String> {
@@ -189,21 +215,40 @@ fn stage(id: &str, status: &str, detail: &str) {
 }
 
 /// Mark `id` busy with `what`, or say what already is.
+/// The orphan check spawns ps, so it runs on a copy with the lock released;
+/// the claim then goes through only if the saved group is still the one checked.
 fn claim(id: &str, what: &str) -> Result<Job, String> {
-    let all = {
-        let mut g = jobs().lock().map_err(|e| e.to_string())?;
-        let j = g.iter_mut().find(|j| j.id == id).ok_or("no such review")?;
-        if j.status != "ready" {
-            return Err("the review isn't ready yet".into());
-        }
-        if !j.busy.is_empty() {
-            return Err(format!("still {}", j.busy));
-        }
-        j.busy = what.into();
-        g.clone()
-    };
-    publish(&all);
-    get(id)
+    let seen = get(id)?;
+    claimable(&seen)?;
+    let mut g = jobs().lock().map_err(|e| e.to_string())?;
+    let j = g.iter_mut().find(|j| j.id == id).ok_or("no such review")?;
+    idle(j)?;
+    if (j.pgid, &j.pgid_start) != (seen.pgid, &seen.pgid_start) {
+        return Err("the review changed while it was being checked; try again".into());
+    }
+    j.busy = what.into();
+    let mine = j.clone();
+    publish(&g);
+    Ok(mine)
+}
+
+/// Ready and not running anything: what may be read under the lock.
+fn idle(j: &Job) -> Result<(), String> {
+    if j.status != "ready" {
+        return Err("the review isn't ready yet".into());
+    }
+    if !j.busy.is_empty() {
+        return Err(format!("still {}", j.busy));
+    }
+    Ok(())
+}
+
+/// Whether job `j` may start something now: idle, and no agent from before
+/// the app last quit still working in its worktree (this runs ps: never
+/// under the jobs' lock).
+fn claimable(j: &Job) -> Result<(), String> {
+    idle(j)?;
+    orphan(j).map_or(Ok(()), Err)
 }
 
 fn release(id: &str) {
@@ -239,10 +284,264 @@ fn exec(
     stdin: Option<&str>,
     limit: Duration,
 ) -> Result<Out, String> {
-    exec_lines(program, args, cwd, stdin, limit, None)
+    exec_lines(program, args, cwd, stdin, limit, None, None)
 }
 
-/// `exec`, with each line of stdout also handed to `on_line` as it arrives.
+/// The process groups the reviews run now, each program in its own: what
+/// `stop_all` stops when the app quits.
+static RUNNING: Mutex<Vec<(i32, String)>> = Mutex::new(Vec::new());
+
+/// A running program's process group, tracked while this lives, and saved on
+/// the job it runs for (`owner`) so a crash leaves a trace of it.
+struct Group {
+    pgid: i32,
+    owner: Option<String>,
+}
+
+impl Group {
+    fn track(pgid: i32, owner: Option<&str>) -> (Group, String) {
+        // Only an agent run (one with an owner, saved to jobs.json) gets its
+        // start time read: ps is a spawn, too dear for every git call. Read
+        // once more if ps did not answer. Without it a quit cannot stop the
+        // group; the Child handle still covers a timeout, and a short git or
+        // gh call ends on its own.
+        let start = match owner {
+            Some(_) => Some(started_at(pgid)).filter(|s| !s.is_empty()).unwrap_or_else(|| started_at(pgid)),
+            None => String::new(),
+        };
+        if let Ok(mut r) = RUNNING.lock() {
+            r.push((pgid, start.clone()));
+        }
+        if let Some(id) = owner {
+            let start = start.clone();
+            update(id, |j| {
+                j.pgid = pgid;
+                j.pgid_start = start;
+            });
+        }
+        (Group { pgid, owner: owner.map(str::to_string) }, start)
+    }
+}
+
+impl Drop for Group {
+    fn drop(&mut self) {
+        if let Ok(mut r) = RUNNING.lock() {
+            r.retain(|(p, _)| *p != self.pgid);
+        }
+        if let Some(id) = &self.owner {
+            let pgid = self.pgid;
+            update(id, |j| {
+                if j.pgid == pgid {
+                    j.pgid = 0;
+                    j.pgid_start.clear();
+                }
+            });
+        }
+    }
+}
+
+/// Whether process group `pgid` has a process in it that we may signal.
+fn group_alive(pgid: i32) -> bool {
+    // SAFETY: signal 0 only asks whether the group exists.
+    pgid > 1 && unsafe { libc::killpg(pgid, 0) == 0 }
+}
+
+/// When process `pid` started, as ps says it in C locale and UTC
+/// ("Thu Oct 29 09:12:01 2026"),
+/// or "" when it is gone.
+fn started_at(pid: i32) -> String {
+    if pid <= 1 {
+        return String::new();
+    }
+    // Fixed locale and zone: the text is compared with one saved by another
+    // launch, which may have run with different ones.
+    Command::new("/bin/ps")
+        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .env("LC_ALL", "C")
+        .env("TZ", "UTC")
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Seconds since the epoch of a C-locale, UTC `lstart` ("Thu Oct 29 09:12:01 2026").
+fn lstart_secs(t: &str) -> Option<i64> {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let w: Vec<&str> = t.split_whitespace().collect();
+    let [_, mon, day, hms, year] = w.as_slice() else { return None };
+    let m = MONTHS.iter().position(|x| x == mon)? as u32 + 1;
+    let (d, y): (u32, i64) = (day.parse().ok()?, year.parse().ok()?);
+    let mut hms = hms.split(':').map(|x| x.parse::<i64>());
+    let (h, mi, sec) = (hms.next()?.ok()?, hms.next()?.ok()?, hms.next()?.ok()?);
+    Some(crew_core::py::days_from_civil(y, m, d) * 86400 + h * 3600 + mi * 60 + sec)
+}
+
+/// Whether some process in group `pgid` started at or after `since` (an
+/// lstart): with its leader gone, such a member is the old run's tool. The
+/// number cannot have been reused while the group still had members.
+fn members_since(pgid: i32, since: &str) -> bool {
+    let Some(since) = lstart_secs(since) else { return false };
+    let out = Command::new("/bin/ps")
+        .args(["-g", &pgid.to_string(), "-o", "lstart="])
+        .env("LC_ALL", "C")
+        .env("TZ", "UTC")
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    out.lines().filter_map(lstart_secs).any(|t| t >= since)
+}
+
+/// Whether job `j`'s saved process group is still the run it saved: its
+/// leader (the agent) started when the save says, or, with the leader gone,
+/// a member still runs that started after it did. A reused pid is not.
+fn still_running(j: &Job) -> bool {
+    if !group_alive(j.pgid) || j.pgid_start.is_empty() {
+        return false;
+    }
+    match started_at(j.pgid) {
+        now if now.is_empty() => members_since(j.pgid, &j.pgid_start),
+        now => now == j.pgid_start,
+    }
+}
+
+/// What this thread knows of a group's leader beyond its saved start time.
+enum Leader<'a> {
+    /// Nothing: a group read back from the list (or disk).
+    Saved,
+    /// The leader this thread spawned and still holds: its pid cannot have
+    /// been reused until it is reaped, so its group is ours outright.
+    Held(&'a mut std::process::Child),
+    /// The leader this thread spawned and has reaped.
+    Reaped,
+}
+
+/// Whether group `pgid` is still the one whose leader started at `start`.
+/// Its leader alive with another start time is a reused pid: not ours. No
+/// process with that pid at all, after we reaped our leader, is our group's
+/// remnant: a pid is not reused while a group with that id has members.
+fn still_ours(pgid: i32, start: &str, reaped: bool) -> bool {
+    if pgid <= 1 {
+        return false;
+    }
+    let now = started_at(pgid);
+    if now.is_empty() {
+        return reaped || !start.is_empty();
+    }
+    !start.is_empty() && now == start
+}
+
+/// SIGTERM the groups (pgid, its leader's start), then SIGKILL whatever is
+/// left after `grace`; a group whose number now belongs to someone else is
+/// never signalled. A `Held` leader is reaped while waiting: a zombie leader
+/// would keep its group "alive" all along.
+fn stop_groups(groups: &[(i32, String)], grace: Duration, mut leader: Leader) {
+    let ours = |leader: &mut Leader, g: i32, s: &str| match leader {
+        Leader::Held(c) if c.id() as i32 == g => match c.try_wait() {
+            Ok(None) => true,
+            _ => {
+                *leader = Leader::Reaped;
+                still_ours(g, s, true)
+            }
+        },
+        Leader::Reaped => still_ours(g, s, true),
+        _ => still_ours(g, s, false),
+    };
+    let mut mine = Vec::new();
+    for (g, s) in groups {
+        if ours(&mut leader, *g, s) {
+            // SAFETY: a group this app started, checked just above.
+            unsafe { libc::killpg(*g, libc::SIGTERM) };
+            mine.push((*g, s.clone()));
+        }
+    }
+    let until = Instant::now() + grace;
+    loop {
+        if let Leader::Held(c) = &mut leader {
+            if let Ok(Some(_)) = c.try_wait() {
+                leader = Leader::Reaped;
+            }
+        }
+        // A held leader counts until it is reaped: a process on its way out
+        // is already skipped by killpg(0) but not yet a zombie to collect.
+        let held = matches!(leader, Leader::Held(_));
+        if (!held && !mine.iter().any(|(g, _)| group_alive(*g))) || Instant::now() >= until {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    for (g, s) in &mine {
+        if group_alive(*g) && ours(&mut leader, *g, s) {
+            // SAFETY: as above, checked again.
+            unsafe { libc::killpg(*g, libc::SIGKILL) };
+        }
+    }
+}
+
+/// Stop every program the reviews are running: the app is quitting, and an
+/// agent left behind would go on editing a worktree no card owns.
+pub fn stop_all() {
+    let groups = RUNNING.lock().map(|r| r.clone()).unwrap_or_default();
+    stop_groups(&groups, Duration::from_millis(1500), Leader::Saved);
+}
+
+/// Why job `j`'s worktree may not be discarded: an agent from before the
+/// app last quit (a crash) still runs in its process group.
+fn orphan(j: &Job) -> Option<String> {
+    still_running(j).then(|| {
+        format!(
+            "an agent from before the app last quit may still be working in its worktree (process group {}, see `ps -g {}`); wait for it to finish or stop it, then try again",
+            j.pgid, j.pgid
+        )
+    })
+}
+
+/// The saved agent group of job `j`, if it is still the run that saved it
+/// (its leader's start time matches): the only group Stop may signal.
+fn verified_orphan(j: &Job) -> Option<(i32, String)> {
+    still_running(j).then(|| (j.pgid, j.pgid_start.clone()))
+}
+
+/// Stop the agent a crashed app left running in a review's worktree, which
+/// orphan() otherwise refuses every action over. Async: it waits on the stop.
+#[tauri::command]
+pub async fn review_stop_orphan(id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || stop_orphan(&id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn stop_orphan(id: &str) -> Result<(), String> {
+    let j = get(id)?;
+    if !j.busy.is_empty() || !matches!(j.status.as_str(), "ready" | "failed") {
+        return Err("this one is running now; it stops on its own".into());
+    }
+    if let Some(target) = verified_orphan(&j) {
+        stop_groups(&[target], Duration::from_secs(3), Leader::Saved);
+        // A SIGKILLed group can take a moment to be gone.
+        let until = Instant::now() + Duration::from_secs(1);
+        while still_running(&j) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if still_running(&j) {
+            return Err(format!("the old agent (process group {}) did not stop", j.pgid));
+        }
+        note(id, &format!("stopped the agent left from the last session (process group {})", j.pgid));
+    }
+    // Stopped now, or already gone (or the number is someone else's now).
+    update(id, |x| {
+        if x.pgid == j.pgid {
+            x.pgid = 0;
+            x.pgid_start.clear();
+        }
+    });
+    refresh(id);
+    Ok(())
+}
+
+/// `exec`, with each line of stdout also handed to `on_line` as it arrives,
+/// and the process group recorded on job `owner` while it runs.
 fn exec_lines(
     program: &str,
     args: &[&str],
@@ -250,6 +549,7 @@ fn exec_lines(
     stdin: Option<&str>,
     limit: Duration,
     on_line: Option<LineFn>,
+    owner: Option<&str>,
 ) -> Result<Out, String> {
     let mut c = Command::new(program);
     c.args(args)
@@ -260,32 +560,34 @@ fn exec_lines(
             Stdio::null()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        // Its own group: a timeout or a quit stops what it started too.
+        .process_group(0);
     if let Some(d) = cwd {
         c.current_dir(d);
     }
     let mut child = c
         .spawn()
         .map_err(|e| format!("couldn't start {program}: {e}"))?;
+    let pgid = child.id() as i32;
+    let (_group, start) = Group::track(pgid, owner);
+    let me = [(pgid, start)];
     if let (Some(text), Some(mut si)) = (stdin, child.stdin.take()) {
         let text = text.to_string();
         std::thread::spawn(move || {
             let _ = si.write_all(text.as_bytes());
         });
     }
-    let so = child.stdout.take().ok_or("no stdout")?;
-    let ho = match on_line {
-        Some(f) => drain_lines(so, f),
-        None => drain(so),
-    };
-    let he = drain(child.stderr.take().ok_or("no stderr")?);
+    let (out, err) = (Arc::new(Mutex::new(String::new())), Arc::new(Mutex::new(String::new())));
+    let ho = drain(child.stdout.take().ok_or("no stdout")?, out.clone(), on_line);
+    let he = drain(child.stderr.take().ok_or("no stderr")?, err.clone(), None);
     let deadline = Instant::now() + limit;
     let status = loop {
         if let Ok(Some(s)) = child.try_wait() {
             break s;
         }
         if Instant::now() > deadline {
-            let _ = child.kill();
+            stop_groups(&me, Duration::from_secs(2), Leader::Held(&mut child));
             let _ = child.wait();
             return Err(format!(
                 "{program} took longer than {} minutes and was stopped",
@@ -294,30 +596,56 @@ fn exec_lines(
         }
         std::thread::sleep(Duration::from_millis(100));
     };
+    // It exited; something it started may still hold its output open. Give
+    // that a moment, then stop the group so the card is not busy forever.
+    let drained = || ho.is_finished() && he.is_finished();
+    let until = Instant::now() + DRAIN_GRACE;
+    // Polled finely: the readers usually see EOF a moment after the reap.
+    while !drained() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    if !drained() {
+        stop_groups(&me, Duration::from_secs(1), Leader::Reaped);
+        let until = Instant::now() + Duration::from_secs(1);
+        while !drained() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    // Whatever was read by now (a pipe held by a process outside the group
+    // is left to its reader thread).
+    let take = |b: &Arc<Mutex<String>>| b.lock().map(|s| s.clone()).unwrap_or_default();
     Ok(Out {
         code: status.code().unwrap_or(-1),
-        out: ho.join().unwrap_or_default(),
-        err: he.join().unwrap_or_default(),
+        out: take(&out),
+        err: take(&err),
     })
 }
 
-fn drain_lines<R: Read + Send + 'static>(r: R, mut f: LineFn) -> std::thread::JoinHandle<String> {
+/// Read `r` into `buf` a line at a time, handing each line (without its end)
+/// to `on_line` as it arrives.
+fn drain<R: Read + Send + 'static>(
+    r: R,
+    buf: Arc<Mutex<String>>,
+    mut on_line: Option<LineFn>,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        let mut all = String::new();
-        for line in BufReader::new(r).lines().map_while(Result::ok) {
-            f(&line);
-            all.push_str(&line);
-            all.push('\n');
+        let mut r = BufReader::new(r);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            match r.read_until(b'\n', &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let text = String::from_utf8_lossy(&line);
+                    if let Some(f) = on_line.as_mut() {
+                        f(text.trim_end_matches(['\n', '\r']));
+                    }
+                    if let Ok(mut b) = buf.lock() {
+                        b.push_str(&text);
+                    }
+                }
+            }
         }
-        all
-    })
-}
-
-fn drain<R: Read + Send + 'static>(mut r: R) -> std::thread::JoinHandle<String> {
-    std::thread::spawn(move || {
-        let mut b = Vec::new();
-        let _ = r.read_to_end(&mut b);
-        String::from_utf8_lossy(&b).into_owned()
     })
 }
 
@@ -724,7 +1052,7 @@ fn claude(
             }
         }) as LineFn
     });
-    let o = exec_lines("claude", &args, Some(wt), Some(prompt), limit, on_line)?;
+    let o = exec_lines("claude", &args, Some(wt), Some(prompt), limit, on_line, watch)?;
     if let Some(id) = watch {
         update(id, |j| j.activity.clear());
     }
@@ -989,6 +1317,9 @@ fn start_review(input: String, depth: String, model: String) -> Result<String, S
         if !j.busy.is_empty() || !matches!(j.status.as_str(), "ready" | "failed") {
             return Err("that one is still running".into());
         }
+        if let Some(why) = orphan(j) {
+            return Err(why);
+        }
     }
     for j in &same {
         let (changed, lost) = at_stake(j).map_err(|e| {
@@ -1024,13 +1355,12 @@ fn start_review(input: String, depth: String, model: String) -> Result<String, S
         stage_at: now(),
         ..Default::default()
     };
-    let all = {
+    {
         let mut g = jobs().lock().map_err(|e| e.to_string())?;
         g.retain(|x| !same.iter().any(|o| o.id == x.id));
         g.push(job);
-        g.clone()
-    };
-    publish(&all);
+        publish(&g);
+    }
     let (jid, text) = (id.clone(), input);
     std::thread::spawn(move || {
         if let Err(e) = pipeline(&jid, &text) {
@@ -1244,16 +1574,16 @@ fn remove_review(id: &str, files: u32, commits: u32, unreadable: bool) -> Result
     if !j.busy.is_empty() || !matches!(j.status.as_str(), "ready" | "failed") {
         return Err("it is still running".into());
     }
+    if let Some(why) = orphan(&j) {
+        return Err(why);
+    }
     if let Some(why) = refuse_remove(&at_stake(&j), files, commits, unreadable) {
         return Err(why);
     }
     discard(&j);
-    let all = {
-        let mut g = jobs().lock().map_err(|e| e.to_string())?;
-        g.retain(|x| x.id != id);
-        g.clone()
-    };
-    publish(&all);
+    let mut g = jobs().lock().map_err(|e| e.to_string())?;
+    g.retain(|x| x.id != id);
+    publish(&g);
     Ok(())
 }
 
@@ -1551,6 +1881,196 @@ fn read_other(path: &Path, id: &str) -> Option<Other> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("seamux-review-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn pid_alive(pid: i32) -> bool {
+        // SAFETY: signal 0 only asks.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[test]
+    fn jobs_are_saved_whole_with_no_temp_file_left() {
+        let d = scratch("save");
+        let file = d.join("jobs.json");
+        std::fs::write(&file, "[{\"id\":\"old\"}]").unwrap();
+        let jobs = vec![Job { id: "a".into(), pgid: 42, ..Default::default() }, Job { id: "b".into(), ..Default::default() }];
+        save_jobs(&file, &jobs);
+        let back: Vec<Job> = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(back.iter().map(|j| (j.id.as_str(), j.pgid)).collect::<Vec<_>>(), [("a", 42), ("b", 0)]);
+        let names: Vec<String> = std::fs::read_dir(&d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["jobs.json"]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_tool_left_holding_the_output_does_not_hold_the_run() {
+        let d = scratch("linger");
+        let pidf = d.join("pid");
+        let script = format!("sleep 30 & echo $! > {}; echo hi", pidf.display());
+        let t = Instant::now();
+        let o = exec_lines("sh", &["-c", &script], None, None, Duration::from_secs(20), None, None).unwrap();
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+        assert_eq!((o.code, o.out.as_str()), (0, "hi\n"));
+        let pid: i32 = std::fs::read_to_string(&pidf).unwrap().trim().parse().unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!pid_alive(pid), "the lingering sleep was stopped with its group");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_timeout_stops_the_whole_process_group() {
+        let d = scratch("timeout");
+        let pidf = d.join("pid");
+        let script = format!("sleep 30 & echo $! > {}; wait", pidf.display());
+        let t = Instant::now();
+        let e = exec_lines("sh", &["-c", &script], None, None, Duration::from_millis(400), None, None).err().unwrap();
+        // Stopped at the deadline, not after the whole SIGTERM grace: the
+        // killed leader is reaped while its group is waited on.
+        assert!(t.elapsed() < Duration::from_millis(1500), "{:?}", t.elapsed());
+        assert!(e.contains("was stopped"), "{e}");
+        let pid: i32 = std::fs::read_to_string(&pidf).unwrap().trim().parse().unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!pid_alive(pid), "the agent's tool died with it");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn lines_reach_the_watcher_without_their_ends() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s2 = seen.clone();
+        let f: LineFn = Box::new(move |l: &str| s2.lock().unwrap().push(l.to_string()));
+        let o = exec_lines("printf", &["a\\r\\nb\\nc"], None, None, Duration::from_secs(5), Some(f), None).unwrap();
+        assert_eq!(o.out, "a\r\nb\nc");
+        assert_eq!(*seen.lock().unwrap(), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn a_reused_group_number_is_never_signalled() {
+        let mut c = Command::new("sleep").arg("30").process_group(0).spawn().unwrap();
+        let pgid = c.id() as i32;
+        let start = started_at(pgid);
+        // Recorded with another start time: someone else's group now.
+        stop_groups(&[(pgid, "Thu Jan  1 00:00:00 1970".into())], Duration::from_millis(100), Leader::Saved);
+        stop_groups(&[(pgid, String::new())], Duration::from_millis(100), Leader::Saved);
+        assert!(c.try_wait().unwrap().is_none(), "left alone");
+        assert!(still_ours(pgid, &start, false));
+        stop_groups(&[(pgid, start.clone())], Duration::from_secs(2), Leader::Saved);
+        let t = Instant::now();
+        while c.try_wait().unwrap().is_none() && t.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(c.try_wait().unwrap().is_some(), "ours: stopped");
+        // Leader reaped and gone: a remnant, which counts as ours.
+        assert!(still_ours(pgid, &start, false));
+    }
+
+    #[test]
+    fn a_held_child_is_stopped_without_a_start_time() {
+        // As when ps did not answer at spawn: no start time recorded.
+        let mut c = Command::new("sleep").arg("30").process_group(0).spawn().unwrap();
+        let pgid = c.id() as i32;
+        stop_groups(&[(pgid, String::new())], Duration::from_secs(2), Leader::Held(&mut c));
+        assert!(c.try_wait().unwrap().is_some(), "stopped and reaped");
+        // Reaped by us with no process left on that pid: our remnant.
+        assert!(still_ours(pgid, "", true));
+        assert!(!still_ours(pgid, "", false));
+    }
+
+    #[test]
+    fn nothing_starts_beside_an_agent_left_from_a_crash() {
+        let ready = Job { status: "ready".into(), ..Default::default() };
+        assert_eq!(claimable(&ready), Ok(()));
+        assert!(claimable(&Job { busy: "fixing".into(), ..ready.clone() }).is_err());
+        assert!(claimable(&Job { status: "failed".into(), ..ready.clone() }).is_err());
+        // A fix agent from before a crash, still in its group: refused as
+        // Remove and Re-review refuse.
+        let mut c = Command::new("sleep").arg("30").process_group(0).spawn().unwrap();
+        let pgid = c.id() as i32;
+        let left = Job { pgid, pgid_start: started_at(pgid), ..ready.clone() };
+        let why = claimable(&left).unwrap_err();
+        assert_eq!(Some(why), orphan(&left));
+        let _ = c.kill();
+        let _ = c.wait();
+        assert_eq!(claimable(&left), Ok(()));
+    }
+
+    #[test]
+    fn stop_signals_only_the_verified_old_agent() {
+        let mut c = Command::new("sleep").arg("30").process_group(0).spawn().unwrap();
+        let pgid = c.id() as i32;
+        let start = started_at(pgid);
+        // Another start time, or none saved: a number someone else holds now.
+        assert_eq!(verified_orphan(&Job { pgid, pgid_start: "Thu Jan  1 00:00:00 1970".into(), ..Default::default() }), None);
+        assert_eq!(verified_orphan(&Job { pgid, ..Default::default() }), None);
+        assert_eq!(verified_orphan(&Job::default()), None);
+        let j = Job { pgid, pgid_start: start.clone(), ..Default::default() };
+        let target = verified_orphan(&j).unwrap();
+        assert_eq!(target, (pgid, start));
+        // What stop_orphan does with it.
+        stop_groups(&[target], Duration::from_secs(3), Leader::Saved);
+        let t = Instant::now();
+        while c.try_wait().unwrap().is_none() && t.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(c.try_wait().unwrap().is_some(), "stopped");
+        assert_eq!(verified_orphan(&j), None);
+    }
+
+    #[test]
+    fn lstart_reads_as_seconds() {
+        assert_eq!(lstart_secs("Thu Jan  1 00:00:00 1970"), Some(0));
+        assert_eq!(lstart_secs("Thu Oct 29 09:12:01 2026  "), Some(1_793_265_121));
+        assert_eq!(lstart_secs("jeu 29 oct 09:12:01 2026"), None);
+        assert_eq!(lstart_secs(""), None);
+    }
+
+    #[test]
+    fn an_old_run_whose_leader_exited_still_counts_while_its_tools_run() {
+        // The leader (sh) exits at once, leaving a tool (sleep) in its group.
+        let mut c = Command::new("sh").args(["-c", "sleep 30 & exit 0"]).process_group(0).spawn().unwrap();
+        let pgid = c.id() as i32;
+        let start = started_at(pgid);
+        c.wait().unwrap();
+        assert!(started_at(pgid).is_empty(), "leader gone");
+        let j = Job { pgid, pgid_start: start, ..Default::default() };
+        assert!(still_running(&j) && orphan(&j).is_some());
+        // Saved as starting after every member: some other run's number.
+        let later = Job { pgid, pgid_start: "Thu Jan  1 00:00:00 2099".into(), ..Default::default() };
+        assert!(!still_running(&later));
+        // SAFETY: the group this test made.
+        unsafe { libc::killpg(pgid, libc::SIGKILL) };
+        let t = Instant::now();
+        while group_alive(pgid) && t.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!still_running(&j));
+    }
+
+    #[test]
+    fn only_the_saved_run_is_an_orphan() {
+        assert!(orphan(&Job::default()).is_none());
+        assert!(orphan(&Job { pgid: 1, ..Default::default() }).is_none());
+        // A live group led by an agent stand-in, started when the job says.
+        let mut c = Command::new("sleep").arg("30").process_group(0).spawn().unwrap();
+        let pgid = c.id() as i32;
+        let start = started_at(pgid);
+        assert!(!start.is_empty());
+        let j = Job { pgid, pgid_start: start, ..Default::default() };
+        assert!(orphan(&j).is_some_and(|w| w.contains("still be working")));
+        // The same number with another start time (a reused pid), or none
+        // saved: some other group, ignored.
+        assert!(orphan(&Job { pgid, pgid_start: "Thu Jan  1 00:00:00 1970".into(), ..Default::default() }).is_none());
+        assert!(orphan(&Job { pgid, ..Default::default() }).is_none());
+        let _ = c.kill();
+        let _ = c.wait();
+        assert!(orphan(&j).is_none());
+    }
 
     #[test]
     fn activity_names_the_last_tool_call() {

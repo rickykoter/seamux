@@ -482,6 +482,28 @@ pub fn surfaces_in(tree: &Value, ws: &str) -> Vec<String> {
         .collect()
 }
 
+/// The terminal (`ttys003`, no /dev/) of surface `surface` (its id or ref)
+/// in cmux's `tree --json`.
+pub fn surface_tty(tree: &Value, surface: &str) -> Option<String> {
+    let arr = |v: &Value, k: &str| v.get(k).and_then(Value::as_array).cloned().unwrap_or_default();
+    arr(tree, "windows")
+        .iter()
+        .flat_map(|w| arr(w, "workspaces"))
+        .flat_map(|w| arr(&w, "panes"))
+        .flat_map(|p| arr(&p, "surfaces"))
+        .find(|s| ["id", "ref"].iter().any(|k| s.get(*k).and_then(Value::as_str).is_some_and(|v| v.eq_ignore_ascii_case(surface))))
+        .and_then(|s| s.get("tty").and_then(Value::as_str).map(|t| t.trim_start_matches("/dev/").to_string()))
+        .filter(|t| !t.is_empty())
+}
+
+/// Whether `ps -o tty=,command=` of one pid shows a Claude on terminal `tty`.
+pub fn is_claude_on(ps: &str, tty: &str) -> bool {
+    let Some(line) = ps.lines().find(|l| !l.trim().is_empty()) else { return false };
+    let line = line.trim_start();
+    let (t, cmd) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+    !tty.is_empty() && t.trim_start_matches("/dev/") == tty.trim_start_matches("/dev/") && cmd.contains("claude")
+}
+
 /// The Claude that runs in a pane, by cmux's records: its session, the
 /// directory it runs in, and its process.
 #[derive(Debug, PartialEq)]
@@ -522,11 +544,16 @@ pub fn move_native(ws: &str, surface: &str, run: &Running) -> Result<String, Str
     if target_for(surface)?.is_some() {
         return Err("this pane is already a native session".into());
     }
-    // The pid is cmux's record: make sure it is still that Claude.
-    let out = Command::new("ps").args(["-o", "command=", "-p", &run.pid.to_string()]).output().map_err(|e| e.to_string())?;
-    let cmd = String::from_utf8_lossy(&out.stdout);
-    if !cmd.contains("claude") {
-        return Err(format!("process {} is no longer Claude", run.pid));
+    // The pid is cmux's record, and pids are reused: make sure it is still a
+    // Claude, and one on this pane's terminal.
+    let c = cmux::Cmux::connect().map_err(|e| format!("cmux: {e}"))?;
+    let tree = c.tree().map_err(|e| format!("cmux tree: {e}"))?;
+    // Surfaces carry `tty` in `cmux tree --json` (measured: docs/FINDINGS.md,
+    // "cmux tree lists each terminal surface's tty"). Without it, refuse.
+    let tty = surface_tty(&tree, surface).ok_or("cmux did not say which terminal this pane is, so its Claude was left running")?;
+    let out = Command::new("ps").args(["-o", "tty=,command=", "-p", &run.pid.to_string()]).output().map_err(|e| e.to_string())?;
+    if !is_claude_on(&String::from_utf8_lossy(&out.stdout), &tty) {
+        return Err(format!("process {} is no longer this pane's Claude", run.pid));
     }
     // SAFETY: kill(2) on the pane's Claude, checked just above.
     unsafe {
@@ -749,6 +776,23 @@ mod tests {
         assert!(!alive(run.pid));
         assert!(target_for(&new).unwrap().is_some());
         println!("moved {} to {new}", run.session);
+    }
+
+    #[test]
+    fn a_reused_pid_is_not_the_panes_claude() {
+        let tree = serde_json::json!({"windows": [{"workspaces": [{"panes": [{"surfaces": [
+            {"id": "AB-1", "ref": "surface:1", "tty": "/dev/ttys003"},
+            {"id": "AB-2", "ref": "surface:2"}]}]}]}]});
+        assert_eq!(super::surface_tty(&tree, "ab-1").as_deref(), Some("ttys003"));
+        assert_eq!(super::surface_tty(&tree, "surface:1").as_deref(), Some("ttys003"));
+        assert_eq!(super::surface_tty(&tree, "AB-2"), None);
+        assert!(super::is_claude_on("ttys003  claude --resume x\n", "ttys003"));
+        assert!(super::is_claude_on("ttys003 node /opt/lib/claude-code/cli.js\n", "/dev/ttys003"));
+        // Same name, another terminal (or none): a different process now.
+        assert!(!super::is_claude_on("ttys007 claude\n", "ttys003"));
+        assert!(!super::is_claude_on("??       /usr/local/bin/claude-helper\n", "ttys003"));
+        assert!(!super::is_claude_on("ttys003 -zsh\n", "ttys003"));
+        assert!(!super::is_claude_on("", "ttys003"));
     }
 
     #[test]

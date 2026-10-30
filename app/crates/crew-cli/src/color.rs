@@ -641,17 +641,24 @@ fn apply(root: &str, hexv: &str) -> R<bool> {
     if merged == cur {
         return Ok(false);
     }
+    // Rewriting is a json.dumps of what was read: a comment (or a trailing
+    // comma) would be lost, so a file that has them is left as it is.
+    if had_comments {
+        return Err(has_comments(&path, "left uncolored (remove them, or add Peacock's keys by hand)"));
+    }
     fs::create_dir_all(&vsdir).map_err(|e| crash(&format!("OSError: {}", pyerr::os_error(&e, Path::new(&vsdir)))))?;
     write_atomic(&path, &dumps_settings(&merged))?;
-    if had_comments {
-        warn(&format!("\x1b[33m!\x1b[0m {path} had comments; they were dropped when the file was rewritten\n"));
-    }
     Ok(true)
+}
+
+/// apply's and unapply's refusal to rewrite a file with comments.
+fn has_comments(path: &str, so: &str) -> Stop {
+    die(&format!("{path} has comments, which rewriting it would drop, so the window was {so}"))
 }
 
 fn unapply(root: &str) -> R<bool> {
     let path = pypath::join(root, ".vscode/settings.json");
-    let (cur, _) = load_settings(&path)?;
+    let (cur, had_comments) = load_settings(&path)?;
     let Some(cur) = cur.filter(|c| truthy(Some(c))) else { return Ok(false) };
     let mut merged = as_dict(&cur)?;
     merged.shift_remove("peacock.color");
@@ -671,6 +678,10 @@ fn unapply(root: &str) -> R<bool> {
     if merged_v == cur {
         return Ok(false);
     }
+    // As in apply: rewriting (or removing) it would lose its comments.
+    if had_comments {
+        return Err(has_comments(&path, "left colored: Peacock's keys are still in it, untouched (remove them by hand)"));
+    }
     if merged.is_empty() {
         // Nothing of ours and nothing of anyone else's: leave no empty file.
         remove(&path)?;
@@ -689,7 +700,11 @@ fn peacock_follow(root: &str, hexv: &str) -> R<()> {
     };
     if truthy(o.get("peacock.color")) {
         match apply(root, hexv) {
-            Ok(_) | Err(Stop::Die(_)) => {}
+            Ok(_) => {}
+            // Not fatal to the family, but said, as the Python's die() says it
+            // on stderr before its SystemExit is caught (a file with comments,
+            // say, keeps its old color). crew-sync runs this quiet.
+            Err(Stop::Die(m)) => warn(&format!("\x1b[31m✗\x1b[0m {m}\n")),
             Err(e) => return Err(e),
         }
     }
@@ -824,12 +839,21 @@ fn cmd_apply(path: Option<&str>) -> R<()> {
 
 fn cmd_free(path: Option<&str>) -> R<()> {
     let root = resolve_root(path)?;
-    unapply(&root)?;
+    // unapply's only refusal is a settings file with comments: the color is
+    // released all the same, and the file is left as it is, said so.
+    let kept = match unapply(&root) {
+        Ok(_) => None,
+        Err(Stop::Die(m)) => Some(m),
+        Err(e) => return Err(e),
+    };
     let p = entry_path(&root);
     if Path::new(&p).exists() {
         remove(&p)?;
     }
     println!("\x1b[32m✓\x1b[0m released {}", pypath::tilde(&root));
+    if let Some(m) = kept {
+        eprintln!("\x1b[33m!\x1b[0m {m}");
+    }
     Ok(())
 }
 
@@ -1074,6 +1098,55 @@ mod tests {
         assert!(has_wide_int(r#"{"n": -9223372036854775809}"#));
         assert!(!has_wide_int(r#"{"n": 18446744073709551615, "f": 1e400, "s": "99999999999999999999"}"#));
         assert!(!has_wide_int(r#"{"s": "a\"99999999999999999999"}"#));
+    }
+
+    #[test]
+    fn apply_leaves_a_settings_file_with_comments_alone() {
+        let d = std::env::temp_dir().join(format!("crew-color-jsonc-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join(".vscode")).unwrap();
+        let root = d.to_string_lossy().into_owned();
+        let file = d.join(".vscode/settings.json");
+        let jsonc = "{\n  // keep me\n  \"editor.tabSize\": 2,\n}\n";
+        fs::write(&file, jsonc).unwrap();
+        match apply(&root, "#196F3D") {
+            Err(Stop::Die(m)) => assert!(m.contains("has comments"), "{m}"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert_eq!(fs::read_to_string(&file).unwrap(), jsonc);
+        // Plain JSON is still merged.
+        fs::write(&file, "{\"editor.tabSize\": 2}\n").unwrap();
+        assert!(apply(&root, "#196F3D").unwrap());
+        let v: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(v["peacock.color"], "#196F3D");
+        assert_eq!(v["editor.tabSize"], 2);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn unapply_leaves_a_settings_file_with_comments_alone() {
+        let d = std::env::temp_dir().join(format!("crew-color-unjsonc-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join(".vscode")).unwrap();
+        let root = d.to_string_lossy().into_owned();
+        let file = d.join(".vscode/settings.json");
+        let jsonc = "{\n  // keep me\n  \"peacock.color\": \"#196F3D\", \"editor.tabSize\": 2,\n}\n";
+        fs::write(&file, jsonc).unwrap();
+        match unapply(&root) {
+            Err(Stop::Die(m)) => assert!(m.contains("has comments") && m.contains("left colored"), "{m}"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert_eq!(fs::read_to_string(&file).unwrap(), jsonc);
+        // Nothing of Peacock's in it: nothing to rewrite, no refusal.
+        let mine = "{\n  // keep me\n  \"editor.tabSize\": 2\n}\n";
+        fs::write(&file, mine).unwrap();
+        assert!(!unapply(&root).unwrap());
+        // Plain JSON is still cleaned.
+        fs::write(&file, "{\"peacock.color\": \"#196F3D\", \"editor.tabSize\": 2}\n").unwrap();
+        assert!(unapply(&root).unwrap());
+        let v: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(v, serde_json::json!({"editor.tabSize": 2}));
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
