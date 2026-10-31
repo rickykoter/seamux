@@ -59,6 +59,32 @@ pub struct PaneRow {
     pub label: String,
 }
 
+/// cmux's current.list shape for a backend's panes: running terminals, each
+/// with one Claude agent in the state `state(pane id)` says. What reads
+/// current.list (the app's wall, the board) reads these the same way.
+pub fn current_list_of(panes: &[PaneRow], state: &dyn Fn(&str) -> String) -> serde_json::Value {
+    let items: Vec<serde_json::Value> = panes
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "kind": "terminal",
+                "lifecycle": "running",
+                "label": p.label,
+                "cwd": p.cwd,
+                "projections": [{"panel_id": p.id, "workspace_id": p.workspace}],
+                "agents": [{"kind": "claude", "state": state(&p.id)}],
+            })
+        })
+        .collect();
+    serde_json::json!({ "items": items })
+}
+
+/// What a pane's agent is doing, from its pane file in crew's `state_dir`:
+/// the hooks' last word, `idle` until they have written one.
+pub fn pane_state(state_dir: &Path, pane: &str) -> String {
+    crate::status::read(state_dir, pane).map(|p| p.state).filter(|s| !s.is_empty()).unwrap_or_else(|| "idle".into())
+}
+
 /// What the app asks of wherever its sessions live.
 pub trait Backend: Send + Sync {
     fn kind(&self) -> Kind;

@@ -13,6 +13,8 @@
 //                                  keeps serving the demo board)
 //   &board=intent                  take /board from that server too
 //   ?intent=none                   no intent server at all: the down states
+//   &backend=tmux                  the app's own tmux, not cmux: cmux-only
+//                                  controls hide
 //   &plain=checkout,api            those workspaces' panes are not native: the
 //                                  Dock shows Move to native for them
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
@@ -29,6 +31,7 @@ const iso = (ms) => new Date(ms).toISOString();
 const params = new URLSearchParams(location.search);
 const intentArg = params.get("intent") ?? "";
 const boardFromIntent = params.get("board") === "intent";
+const backend = params.get("backend") === "tmux" ? "tmux" : "cmux";
 /** Surfaces of the panes that are not native (?plain=<workspace keys>). */
 const plainPanes = new Set((params.get("plain") ?? "").split(",").filter(Boolean).map((k) => byKey[k]?.surface).filter(Boolean));
 const demoCfg = window.__SEAMUX_DEMO__ ?? { intentPort: 0 };
@@ -691,7 +694,7 @@ const CARD = {
 };
 
 const handlers = {
-  backend_status: () => ({ state: "connected", backend: "cmux", transport: "socket", access_mode: null, workspaces: ws.map((w) => ({ id: w.id, ref: w.ref, title: w.title })) }),
+  backend_status: () => ({ state: "connected", backend, transport: backend === "cmux" ? "socket" : "tmux", access_mode: null, workspaces: ws.map((w) => ({ id: w.id, ref: w.ref, title: w.title })) }),
   wall_frame: wallFrame,
   views_frame: viewsFrame,
   wall_reply: ({ surfaceId, text }) => reply(surfaceId, text),

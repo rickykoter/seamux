@@ -169,6 +169,10 @@ fn main() {
     tauri::Builder::default()
         .setup(|app| {
             shell::install(app)?;
+            // The board's server, on this app's backend.
+            std::thread::spawn(|| {
+                shell::ensure_intent();
+            });
             wall_app::start(app.handle().clone());
             views_app::start(app.handle().clone());
             review_app::start(app.handle().clone());

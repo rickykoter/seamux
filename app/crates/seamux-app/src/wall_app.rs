@@ -38,12 +38,26 @@ fn native_surfaces(fresh: bool) -> std::collections::HashSet<String> {
     native_look(fresh).0
 }
 
-/// Connect the pool and start polling. Until cmux answers, the wall stays
-/// empty and the page shows cmux_status's named error.
+/// Connect the pool and start polling. Until the backend answers, the wall
+/// stays empty and the page shows backend_status's named error.
 pub fn start<R: Runtime>(app: AppHandle<R>) {
-    // cmux may start after the app (a login item, or a cmux restart): keep
-    // trying, with a growing pause, until the readers connect.
     std::thread::spawn(move || {
+        // The tmux backend: the registry and pane files feed the same poller.
+        if seamux_app::backend::kind() == crew_core::backend::Kind::Tmux {
+            let mut pause = Duration::from_secs(1);
+            let b = loop {
+                match seamux_app::backend::get() {
+                    Ok(b) => break b,
+                    Err(e) => eprintln!("seamux: wall: no backend yet, retrying in {pause:?}: {e}"),
+                }
+                std::thread::sleep(pause);
+                pause = (pause * 2).min(Duration::from_secs(30));
+            };
+            let src: Arc<dyn Source> = Arc::new(seamux_app::tmux_feed::TmuxSource::new(b, crew_board::state::state_dir()));
+            return run_wall(app, vec![src], false);
+        }
+        // cmux may start after the app (a login item, or a cmux restart): keep
+        // trying, with a growing pause, until the readers connect.
         let mut pause = Duration::from_secs(1);
         let pool = loop {
             let pool: Vec<Arc<dyn Source>> = (0..READERS)
@@ -55,16 +69,18 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
             std::thread::sleep(pause);
             pause = (pause * 2).min(Duration::from_secs(30));
         };
-        run_wall(app, pool);
+        run_wall(app, pool, true);
     });
 }
 
-fn run_wall<R: Runtime>(app: AppHandle<R>, pool: Vec<Arc<dyn Source>>) {
+/// The poller over `pool`. `on_cmux` adds what only cmux has: its session
+/// store's hints, native-pane probes, its event stream and tab names.
+fn run_wall<R: Runtime>(app: AppHandle<R>, pool: Vec<Arc<dyn Source>>, on_cmux: bool) {
     // Reply and jump get a connection of their own, so a click never waits
     // behind a tick's reads.
-    let actions: Arc<dyn Source> = match cmux::Cmux::connect() {
-        Ok(c) => Arc::new(c),
-        Err(_) => pool[0].clone(),
+    let actions: Arc<dyn Source> = match on_cmux.then(cmux::Cmux::connect) {
+        Some(Ok(c)) => Arc::new(c),
+        _ => pool[0].clone(),
     };
     let wall = Arc::new(Wall::with_actions(pool, actions, Duration::from_secs(1)));
     // cmux reports a session's state as `unknown` when it gets no lifecycle
@@ -72,7 +88,7 @@ fn run_wall<R: Runtime>(app: AppHandle<R>, pool: Vec<Arc<dyn Source>>) {
     // it) is a terminal now; one that runs takes the last hook state crew
     // recorded for its pane.
     let cache: std::sync::Mutex<Option<(std::time::Instant, std::collections::HashMap<String, String>)>> = Default::default();
-    wall.set_state_hint(Box::new(move || {
+    if on_cmux { wall.set_state_hint(Box::new(move || {
         let mut c = cache.lock().unwrap();
         if let Some((at, m)) = c.as_ref() {
             if at.elapsed() < Duration::from_secs(5) {
@@ -96,7 +112,7 @@ fn run_wall<R: Runtime>(app: AppHandle<R>, pool: Vec<Arc<dyn Source>>) {
         }
         *c = Some((std::time::Instant::now(), m.clone()));
         m
-    }));
+    })); }
     // Each pane's own status (crew's pane files and the session store), over
     // cmux's: read at most every 3 seconds, one store read each time.
     let truth: std::sync::Mutex<Option<(std::time::Instant, std::collections::HashMap<String, String>)>> = Default::default();
@@ -111,15 +127,18 @@ fn run_wall<R: Runtime>(app: AppHandle<R>, pool: Vec<Arc<dyn Source>>) {
         *c = Some((std::time::Instant::now(), m.clone()));
         m
     }));
-    wall.set_native_probe(Box::new(|| native_surfaces(false)));
-    wall.set_signals_probe(Box::new(|| native_look(false).1));
+    if on_cmux {
+        wall.set_native_probe(Box::new(|| native_surfaces(false)));
+        wall.set_signals_probe(Box::new(|| native_look(false).1));
+    }
     let _ = WALL.set(wall.clone());
     let (tx, rx) = mpsc::channel::<String>();
 
     // Events that name a terminal on the wall pull its read forward. The
     // stream reconnects by itself; when it cannot start or ends, try again
     // with a growing pause, so pull-forward comes back after cmux restarts.
-    {
+    // Without cmux, the tick alone reads (the tx end simply stays unused).
+    if on_cmux {
         let wall = wall.clone();
         std::thread::spawn(move || {
             let mut pause = Duration::from_secs(1);
@@ -168,7 +187,7 @@ fn run_wall<R: Runtime>(app: AppHandle<R>, pool: Vec<Arc<dyn Source>>) {
     let named: std::sync::Mutex<std::collections::HashMap<String, seamux_app::wall::Asked>> = Default::default();
     wall.run(rx, move |f: Frame| {
         crate::views_app::observe(&f);
-        let renames = seamux_app::wall::tab_renames(&f.tiles, &mut named.lock().unwrap(), crew_core::history::now_ms());
+        let renames = if on_cmux { seamux_app::wall::tab_renames(&f.tiles, &mut named.lock().unwrap(), crew_core::history::now_ms()) } else { Vec::new() };
         if !renames.is_empty() {
             std::thread::spawn(move || {
                 // A failed rename is asked again after RENAME_RETRY_MS; say why here.
@@ -220,11 +239,30 @@ pub async fn wall_reply(surface_id: String, text: String) -> Result<(), String> 
 #[tauri::command]
 pub async fn workspace_sessions(workspace: String) -> Result<Vec<seamux_app::sessions::SessionRow>, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        if seamux_app::backend::kind() == crew_core::backend::Kind::Tmux {
+            return tmux_sessions(&workspace);
+        }
         let records = crew_core::workspaces::agent_sessions().ok_or("cmux did not list its sessions")?;
         Ok(seamux_app::sessions::rows(&records, &workspace))
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// A tmux-backend workspace's conversations: its folder's transcripts, the
+/// ones its live panes run (by their pane files) marked active.
+fn tmux_sessions(workspace: &str) -> Result<Vec<seamux_app::sessions::SessionRow>, String> {
+    let b = seamux_app::backend::get()?;
+    let ws = b.workspaces()?.into_iter().find(|w| w.id.eq_ignore_ascii_case(workspace)).ok_or_else(|| format!("no workspace {workspace}"))?;
+    let dir = crew_board::state::state_dir();
+    let live: Vec<String> = b
+        .panes(Some(workspace))?
+        .iter()
+        .filter_map(|p| crew_core::status::read(&dir, &p.id).map(|f| f.session))
+        .filter(|s| !s.is_empty())
+        .collect();
+    let records = seamux_app::tmux_feed::session_records(&crew_core::py::home(), &ws.id, &ws.cwd, &live);
+    Ok(seamux_app::sessions::rows(&records, &ws.id))
 }
 
 /// The dead sessions Desk's cleanup would bring back, one per terminal.

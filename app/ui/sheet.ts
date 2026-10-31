@@ -118,14 +118,15 @@ class Chat {
     const head = document.createElement("header");
     this.body.className = "sheet-chat-body";
     const form = document.createElement("form");
-    form.className = "sheet-chat-reply";
+    // Replies and jumps go through cmux: hidden on the tmux backend (index.html).
+    form.className = "sheet-chat-reply cmux-only";
     this.input.type = "text";
     this.input.placeholder = "Reply…";
     this.input.spellcheck = false;
     this.input.addEventListener("keydown", (e) => e.stopPropagation());
     const jump = document.createElement("button");
     jump.type = "button";
-    jump.className = "sheet-btn icon sheet-chat-jump";
+    jump.className = "sheet-btn icon sheet-chat-jump cmux-only";
     jump.title = "Jump to this pane in cmux";
     jump.setAttribute("aria-label", jump.title);
     jump.append(mark("M3 7 7 3M4 3h3v3"));
@@ -192,7 +193,8 @@ class Chat {
       const busy = t.state === "working";
       const move = document.createElement("button");
       move.type = "button";
-      move.className = "sheet-btn primary";
+      // Moves a Claude out of a cmux pane: cmux only.
+      move.className = "sheet-btn primary cmux-only";
       move.textContent = "Move to native";
       move.title = busy ? "Claude is mid-turn: move it when it is idle"
         : "Stop Claude here and resume this conversation in a native session; this pane closes";
@@ -204,6 +206,7 @@ class Chat {
     cmux.type = "button";
     cmux.className = "sheet-btn";
     cmux.textContent = "Open in cmux";
+    cmux.classList.add("cmux-only");
     cmux.addEventListener("click", async () => {
       try {
         await invoke("wall_jump", { surfaceId: t.surface });
@@ -589,7 +592,7 @@ export class Sheet {
     this.say.className = "sheet-say";
     const cmux = document.createElement("button");
     cmux.type = "button";
-    cmux.className = "sheet-btn";
+    cmux.className = "sheet-btn cmux-only";
     cmux.title = "Open beside its terminal in cmux (⌘-click does this too)";
     cmux.append(document.createTextNode("Open in cmux "), mark("M3 7 7 3M4 3h3v3"));
     cmux.addEventListener("click", () => void this.toCmux());

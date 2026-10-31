@@ -139,6 +139,13 @@ pub(crate) fn front() -> String {
 /// a tab for what it opens. Focused and widened; a second click navigates,
 /// never stacks.
 pub fn wake_tab(keep_name: &str, url: &str, select: &str) -> (bool, String) {
+    // No cmux to hold the tab: the default browser.
+    if crate::backend::tmux().is_some() {
+        return match crate::companion::open_in_browser(url) {
+            Ok(_) => (true, format!("opened {url} in the browser")),
+            Err(e) => (false, e),
+        };
+    }
     let ws = if !select.is_empty() {
         let (rc, out) = cmux_out(&["--id-format", "uuids", "workspace", "select", select]);
         let target = out.split_whitespace().find(|t| is_uuid_token(t)).unwrap_or("").to_string();

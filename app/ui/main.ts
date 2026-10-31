@@ -41,6 +41,8 @@ function show(s: Status): void {
     return;
   }
   const n = s.workspaces.length;
+  // What only cmux can do (reply, jump, Open in cmux) hides on another backend.
+  document.body.dataset.backend = s.backend;
   conn.className = "good";
   conn.title = s.backend === "cmux"
     ? `cmux, over the ${s.transport}${s.access_mode ? `, ${s.access_mode} mode` : ""}`

@@ -9,6 +9,7 @@ pub mod pty;
 pub mod reclaim;
 pub mod review;
 pub mod sessions;
+pub mod tmux_feed;
 pub mod tuck;
 pub mod views;
 pub mod wall;

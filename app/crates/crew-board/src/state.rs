@@ -163,8 +163,32 @@ fn s_or(v: &Value, default: Value) -> Value {
     if truthy(v) { v.clone() } else { default }
 }
 
-/// [{id, title, cwd, desc, running, branch, pr, ...}]. Empty when cmux is down.
+/// The rows for the tmux backend's workspaces: its registry, each folder's
+/// git state and commits. No sidebar there, so no PR yet (crew-sync's facts
+/// fill the chips) and no colour.
+pub fn tmux_rows(rows: &[crew_core::backend::WorkspaceRow], live: &[crew_core::backend::PaneRow], forced: Option<&str>) -> Vec<Value> {
+    rows.iter()
+        .map(|w| {
+            let (branch, dirty) = if w.cwd.is_empty() { ("none".to_string(), false) } else { git_state(&w.cwd) };
+            let running = live.iter().any(|p| p.workspace.eq_ignore_ascii_case(&w.id));
+            json!({
+                "id": w.id, "ref": w.id, "title": if w.title.is_empty() { w.id.clone() } else { w.title.clone() },
+                "cwd": w.cwd, "desc": "", "branch": branch, "pr": "none", "dirty": dirty, "running": running,
+                "raw": "", "color": "", "selected": forced.is_some_and(|f| f.eq_ignore_ascii_case(&w.id)),
+                "pr_state": "", "pr_url": "", "commits": Value::Array(recent_commits(&w.cwd)),
+            })
+        })
+        .collect()
+}
+
+/// [{id, title, cwd, desc, running, branch, pr, ...}]. Empty when the
+/// backend is down: cmux's list, or the app's tmux registry.
 pub fn workspaces(fast: bool, forced: Option<&str>) -> Vec<Value> {
+    if let Some(b) = crate::backend::tmux() {
+        let rows = b.workspaces().unwrap_or_default();
+        let live = b.panes(None).unwrap_or_default();
+        return tmux_rows(&rows, &live, forced);
+    }
     let Some(c) = cmux_cli::client() else { return Vec::new() };
     let listed = match c.workspace_list(None) {
         Ok(v) => get(&v, "workspaces").as_array().cloned().unwrap_or_default(),
@@ -394,6 +418,11 @@ pub fn live_panes_of(v: &Value) -> Vec<LivePane> {
 /// Every running terminal pane, from cmux's current.list; empty when cmux
 /// does not answer.
 fn live_panes() -> Vec<LivePane> {
+    if let Some(b) = crate::backend::tmux() {
+        let panes = b.panes(None).unwrap_or_default();
+        let dir = state_dir();
+        return live_panes_of(&crew_core::backend::current_list_of(&panes, &|p| crew_core::backend::pane_state(&dir, p)));
+    }
     let Some(c) = cmux_cli::client() else { return Vec::new() };
     c.current_list(None).map(|v| live_panes_of(&v)).unwrap_or_default()
 }
@@ -550,6 +579,7 @@ pub fn build(o: &Opts) -> Value {
     d.insert("rows".into(), Value::Array(all));
     d.insert("quietCount".into(), json!(quiet.len()));
     d.insert("quiet".into(), json!(if !quiet.is_empty() { "" }
+        else if stale && crate::backend::kind() == crew_core::backend::Kind::Tmux { "no workspaces on the app's tmux yet — plan state only" }
         else if stale { "cmux unreachable — plan state only, no workspaces" }
         else { "nothing else in flight" }));
     d.insert("stamp".into(), json!(local_hms()));
@@ -742,6 +772,28 @@ pub fn main(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tmux_rows_come_from_the_registry_with_git_state_and_no_pr() {
+        use crew_core::backend::{PaneRow, WorkspaceRow};
+        let here = env!("CARGO_MANIFEST_DIR").to_string();
+        let rows = vec![
+            WorkspaceRow { id: "W1".into(), title: "shop".into(), cwd: here.clone() },
+            WorkspaceRow { id: "W2".into(), title: "".into(), cwd: "".into() },
+        ];
+        let live = vec![PaneRow { id: "P1".into(), workspace: "w1".into(), cwd: here.clone(), label: "Claude".into() }];
+        let out = tmux_rows(&rows, &live, Some("W2"));
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0]["id"], "W1");
+        assert_eq!(out[0]["title"], "shop");
+        assert_eq!(out[0]["cwd"], here.as_str());
+        assert_eq!(out[0]["running"], true, "a live pane in it, matched in any case");
+        assert_eq!(out[0]["pr"], "none");
+        assert_ne!(out[0]["branch"], "none", "this checkout has a branch");
+        assert!(out[0]["commits"].as_array().is_some());
+        assert_eq!(out[1]["title"], "W2", "no title: its id");
+        assert_eq!((out[1]["running"].clone(), out[1]["selected"].clone(), out[1]["branch"].clone()), (json!(false), json!(true), json!("none")));
+    }
 
     fn live(ws: &str, surface: &str, cwd: &str, label: &str, agent: Option<(&str, &str)>) -> LivePane {
         LivePane {
