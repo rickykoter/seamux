@@ -1043,6 +1043,11 @@ code{background:var(--card);border-radius:4px;padding:1px 5px;font:12.5px var(--
 .dp-act{margin-right:6px;background:var(--card3);color:var(--fg);border:1px solid var(--line);
 border-radius:6px;padding:3px 12px;cursor:pointer}
 .dp-act[disabled]{opacity:.45;cursor:default}
+.dp-act[data-kind="primary"]{background:var(--accent-t);border-color:var(--accent-t);color:var(--bg);font-weight:600}
+.dp-act[data-kind="quiet"]{background:none;border-color:transparent;color:var(--dim);padding:3px 6px}
+.dp-act[data-kind="quiet"]:not([disabled]):hover{color:var(--fg);text-decoration:underline}
+details.dp-run{display:block;margin:2px 0 4px;padding-left:14px}
+details.dp-run>summary{cursor:pointer;width:fit-content;font-size:12.5px;margin-left:-14px}
 .dp-path{color:var(--fg);cursor:default}
 .dp-live .dp-path{color:var(--accent-t);text-decoration:underline;cursor:pointer}
 .dp-path.dp-bad{color:var(--bad-t)}
@@ -1695,8 +1700,15 @@ function checksRow(inc, slug = "") {
   const agg = checksAggregate(inc);
   const items = all.map(([id, v]) => {
     const st = v.status || "pending";
-    const detail = st === "pass" ? "" :
-      checkLinesMd({ id, ...v }).lines.map(l => `<br>${mdInline(l)}`).join("");
+    // How the engine runs a check (recipe, commands, polls) folds away under
+    // its status line: the verdict is what a reader scans for. What a person
+    // must do or know -- an acquire step, a claim that asks, the expectation,
+    // a note -- stays in view.
+    const lines = st === "pass" ? [] : checkLinesMd({ id, ...v }).lines;
+    const HOW = /^(recipe |run — |run: |wait — |browser — |scripts: |query: )/;
+    const shown = lines.filter(l => !HOW.test(l)), how = lines.filter(l => HOW.test(l));
+    const detail = shown.map(l => `<br>${mdInline(l)}`).join("") +
+      (how.length ? `<details class="dp-run"><summary>how it runs</summary>` + how.map(l => mdInline(l)).join("<br>") + "</details>" : "");
     // A check the Dock can act on (a browser run, a claim that asks) carries
     // its address; the served page's plan.js adds run, open tab, the live
     // filmstrip and the picker. On disk the row is just text.
@@ -1791,13 +1803,19 @@ const incActions = status => INC_ALLOWED[status] || ALWAYS;
 const allows = (status, action) => ALWAYS.includes(action) || incActions(status).includes(action);
 
 function workingHtml(spec, st, b64) {
+  // The plan's next step: the lowest increment not done, and its first allowed
+  // move (go, start or done). That one button is primary; block and reset are
+  // quiet everywhere, so five equal buttons no longer hide which one matters.
+  const next = (st.increments || []).find(i => i.status !== "done");
+  const nextAct = next && incActions(next.status).find(a => !ALWAYS.includes(a));
+  const kindOf = (inc, a) => ALWAYS.includes(a) ? "quiet" : inc === next && a === nextAct ? "primary" : "";
   const rows = (st.increments || []).map(inc => {
     const d = (spec.deliverables || [])[inc.n - 1] || {};
     const files = fileTreeHtml(d.files);
     // Only the transitions this status allows (INC_ALLOWED, which
     // applyTransition refuses by): a go on a done increment can only be refused.
     const acts = incActions(inc.status).map(a =>
-      `<button class="dp-act" data-a="${a}" data-n="${inc.n}" disabled ` +
+      `<button class="dp-act" data-a="${a}" data-n="${inc.n}"${kindOf(inc, a) ? ` data-kind="${kindOf(inc, a)}"` : ""} disabled ` +
       `title="${a} increment ${inc.n} — available when served">${a}</button>`).join("");
     // The verdict belongs beside the status, not in a section of its own: it is
     // a precondition on THIS increment's `done`, and a reader deciding whether
@@ -1817,7 +1835,7 @@ ${checks}
   const logRows = (st.log || []).slice(-12).reverse().map(l =>
     `<li class="dim">${esc(new Date(l.at).toISOString().slice(0, 16).replace("T", " "))} — ${esc(l.what)}</li>`).join("");
   return htmlHead(spec.title, b64) + SURFACE_CSS + surfaceOpen(spec.slug, "working") + `
-<label class="auto"><input type="checkbox" id="dp-auto" checked> auto-refresh</label>
+<label class="auto"><input type="checkbox" id="dp-auto" checked> <span class="auto-long">auto-refresh</span><span class="auto-short">auto</span></label>
 <script>window.DP_INC_ALLOWED = ${JSON.stringify(INC_ALLOWED)};</script>
 <style>
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;

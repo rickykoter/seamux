@@ -115,6 +115,9 @@ export const SURFACE_CSS = `<style>
 body{max-width:none;margin:0;padding:0}
 #dp-shell{position:relative;display:grid;grid-template-columns:minmax(0,1fr)}
 #dp-main{min-width:0;width:100%;max-width:820px;margin:0 auto;padding:22px 22px 120px 28px;box-sizing:border-box}
+/* Prose stops near 70 characters a line; diagrams, tables, code and a check
+   row carrying its live filmstrip keep the column. */
+#dp-main :is(p,blockquote,dd,li:not(.dp-check)):not(td *,th *){max-width:70ch}
 .dp-sec{scroll-margin-top:64px}
 .dp-sec>h2{display:flex;align-items:center;gap:6px}
 .dp-fold{background:none;border:0;color:var(--faint);padding:2px;margin-left:-22px;width:20px;height:20px;
@@ -151,7 +154,9 @@ body{max-width:none;margin:0;padding:0}
 .dp-tbtn:hover{color:var(--fg);border-color:var(--dim)}
 #dp-rail #dp-mode{position:static;min-height:28px;height:28px;padding:0 8px;border-color:var(--line2);background:none;color:var(--dim)}
 #dp-rail label.auto{position:static;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;font-size:11.5px}
-@media (max-width:979px){#dp-rail label.auto{font-size:0;gap:0}#dp-rail label.auto input{margin:0 4px}}
+/* Narrow, the rail is one row: the checkbox keeps a short label, not none. */
+#dp-rail label.auto .auto-short{display:none}
+@media (max-width:979px){#dp-rail label.auto .auto-long{display:none}#dp-rail label.auto .auto-short{display:inline}}
 @media (min-width:980px){
   #dp-shell{grid-template-columns:236px minmax(0,1fr)}
   #dp-rail{height:100vh;box-sizing:border-box;flex-direction:column;align-items:stretch;gap:10px;
