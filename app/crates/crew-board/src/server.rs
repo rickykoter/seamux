@@ -542,7 +542,17 @@ fn handle(stream: TcpStream, port: u16, token: String) {
 /// What /health answers: enough for a client to tell this server from
 /// another program that holds the port.
 pub fn health_body() -> String {
-    pyjson::dumps(&json!({"ok": true, "server": "crew-board-intent", "pid": std::process::id()}))
+    pyjson::dumps(&json!({"ok": true, "server": "crew-board-intent", "pid": std::process::id(), "backend": crate::backend::kind().name()}))
+}
+
+/// What the intent server on `port` says of itself on /health: its pid and
+/// its backend ("cmux" for a server from before backends existed).
+pub fn running_backend(port: u16) -> Option<(u32, String)> {
+    let (_, _, body) = health_head(port, IDENTIFY_WAIT, IDENTIFY_CAP).ok()?;
+    let v: Value = serde_json::from_slice(&body).ok()?;
+    let pid = v.get("pid")?.as_u64()? as u32;
+    let backend = v.get("backend").and_then(Value::as_str).unwrap_or("cmux").to_string();
+    Some((pid, backend))
 }
 
 /// Ok when what answers on `port` is a crew-board-intent: its Server header
@@ -663,8 +673,29 @@ fn write_token(path: &Path, token: &str) -> std::io::Result<()> {
 /// it waits for the lock, names itself in board-intent.takeover, and binds
 /// only once that pid has gone (see serve()).
 pub fn spawn_server(takeover: Option<u32>) -> std::io::Result<std::process::Child> {
-    use std::os::unix::process::CommandExt;
+    spawn_server_on(takeover, None)
+}
+
+/// spawn_server on a given backend (SEAMUX_BACKEND in the server's
+/// environment), run from this binary. Only the seamux CLI serves; the app
+/// passes the CLI's path to spawn_server_with.
+pub fn spawn_server_on(takeover: Option<u32>, backend: Option<&str>) -> std::io::Result<std::process::Child> {
     let exe = crew_core::upgrade::exe().ok_or_else(|| std::io::Error::other("cannot find this binary"))?;
+    spawn_server_with(&exe, takeover, backend)
+}
+
+/// Whether `exe` can serve crew-board-intent: not the app's binary, which
+/// would open another app (that starts its own server, and so on).
+pub fn serves(exe: &std::path::Path) -> bool {
+    exe.file_name().and_then(|n| n.to_str()).is_some_and(|n| !n.starts_with("seamux-app"))
+}
+
+/// spawn_server_on, running `exe crew-board-intent`. Refuses an app binary.
+pub fn spawn_server_with(exe: &std::path::Path, takeover: Option<u32>, backend: Option<&str>) -> std::io::Result<std::process::Child> {
+    use std::os::unix::process::CommandExt;
+    if !serves(exe) {
+        return Err(std::io::Error::other(format!("{} is the app, not the seamux CLI", exe.display())));
+    }
     let _ = std::fs::create_dir_all(state_dir());
     let err = std::fs::OpenOptions::new().append(true).create(true).open(log_file())
         .map(std::process::Stdio::from).unwrap_or_else(|_| std::process::Stdio::null());
@@ -675,6 +706,9 @@ pub fn spawn_server(takeover: Option<u32>) -> std::io::Result<std::process::Chil
         cmd.env("CREW_INTENT_TAKEOVER", pid.to_string());
     } else {
         cmd.env_remove("CREW_INTENT_TAKEOVER");
+    }
+    if let Some(b) = backend {
+        cmd.env("SEAMUX_BACKEND", b);
     }
     // SAFETY: setsid is async-signal-safe and touches only the child.
     unsafe {
@@ -879,6 +913,9 @@ pub(crate) fn selftest_bind_port() -> Option<u16> {
 /// Start the server, or leave a live one alone.
 pub fn serve() -> i32 {
     let _ = std::fs::create_dir_all(state_dir());
+    // The backend, picked before the first request: a pick can wait for cmux,
+    // and /health must answer at once.
+    let _ = crate::backend::kind();
     // One server at a time, held for its life. crew-listen, `crew-board open`
     // and cmux's "Crew board" command can each start one at the same moment;
     // without the lock both pass the check below, the loser binds a random
@@ -1052,6 +1089,15 @@ pub fn main(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_app_binary_never_serves() {
+        let app = std::path::Path::new("/Applications/seamux.app/Contents/MacOS/seamux-app");
+        assert!(!serves(app));
+        assert!(serves(std::path::Path::new("/Applications/seamux.app/Contents/Resources/bin/seamux")));
+        let err = spawn_server_with(app, None, Some("tmux")).unwrap_err();
+        assert!(err.to_string().contains("is the app"), "{err}");
+    }
 
     #[test]
     fn queries_parse_as_python_does() {

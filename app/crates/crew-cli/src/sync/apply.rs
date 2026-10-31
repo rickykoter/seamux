@@ -1,9 +1,16 @@
 //! crew-sync's writes to cmux, every one through crates/cmux and every one a
 //! no-op under --dry-run. A failed write is ignored, as the Python's `cmux()`
 //! ignored it: the next sync sees the same wrong value and tries again.
+//!
+//! With no cmux, the app's tmux backend stands in when its registry has
+//! workspaces: they are the rows, and the description and pull request are
+//! written to their registry records, where the board reads them. Every
+//! other write is cmux's sidebar and has nowhere to go there.
 
 use cmux::{Cmux, Notify, Transport, WorkspaceAction};
-use serde_json::Value;
+use crew_core::backend::tmux::TmuxBackend;
+use crew_core::backend::Backend;
+use serde_json::{json, Value};
 
 use crate::pyval::truthy;
 
@@ -13,15 +20,19 @@ pub struct Writer {
     /// The client for `workspace list`, which the Python ran with CMUX_QUIET=1.
     pub quiet: Option<Cmux>,
     pub dry: bool,
+    /// The app's tmux backend, when there is no cmux and it has workspaces.
+    pub tmux: Option<TmuxBackend>,
 }
 
 impl Writer {
     pub fn connect(dry: bool) -> Writer {
-        Writer {
-            c: Cmux::connect().ok(),
-            quiet: Cmux::connect().ok().map(|c| c.with_cli_env("CMUX_QUIET", "1")),
-            dry,
-        }
+        // SEAMUX_BACKEND=tmux (a tmux pane's hooks) wins over a cmux that answers.
+        let c = if crew_core::backend::tmux::chosen() { None } else { Cmux::connect().ok() };
+        // Only a tmux backend in use (tmux::in_play): a registry left from an
+        // earlier run is not synced while cmux restarts.
+        let tmux = if c.is_some() { None } else { crew_core::backend::tmux::in_play().filter(|b| b.facts().is_ok_and(|f| !f.is_empty())) };
+        let quiet = c.as_ref().and_then(|_| Cmux::connect().ok()).map(|c| c.with_cli_env("CMUX_QUIET", "1"));
+        Writer { c, quiet, dry, tmux }
     }
 
     fn write(&self, f: impl FnOnce(&Cmux) -> Result<(), cmux::Error>) {
@@ -35,8 +46,12 @@ impl Writer {
 
     // --- reads (made under --dry-run too) -------------------------------------
 
-    /// `workspace list --json`'s rows; [] when cmux does not answer.
+    /// `workspace list --json`'s rows; [] when cmux does not answer. On the
+    /// tmux backend, its registry's workspaces in that shape.
     pub fn workspaces(&self) -> Vec<Value> {
+        if let (None, Some(t)) = (&self.quiet, &self.tmux) {
+            return tmux_rows(t);
+        }
         let Some(c) = &self.quiet else { return vec![] };
         match c.workspace_list(None) {
             Ok(v) => match v.get("workspaces") {
@@ -111,7 +126,46 @@ impl Writer {
     }
 
     pub fn action(&self, ws: &str, a: WorkspaceAction) {
+        if let (None, Some(t), false) = (&self.c, &self.tmux, self.dry) {
+            match &a {
+                WorkspaceAction::SetDescription(d) => {
+                    if self.tmux_fact(ws).map(|(d, _)| d) != Some(d.clone()) {
+                        let _ = t.set_facts(ws, Some(d), None);
+                    }
+                }
+                WorkspaceAction::ClearDescription => {
+                    if self.tmux_fact(ws).is_some_and(|(d, _)| !d.is_empty()) {
+                        let _ = t.set_facts(ws, Some(""), None);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         self.write(|c| c.workspace_action(ws, &a));
+    }
+
+    /// The workspace's pull request from its probe ({n, state, url}, or
+    /// null with none), for the board's PR chip on the tmux backend. cmux
+    /// shows its own, so this writes only there.
+    pub fn pr(&self, ws: &str, raw: &serde_json::Map<String, Value>) {
+        let (Some(t), false) = (&self.tmux, self.dry) else { return };
+        let pr = match raw.get("pr").filter(|v| truthy(Some(v))) {
+            Some(n) => json!({"n": n, "state": raw.get("prState").cloned().unwrap_or(Value::Null),
+                              "url": raw.get("url").cloned().unwrap_or(Value::Null)}),
+            None => Value::Null,
+        };
+        // Unchanged: no write, so the registry's mtime (which wakes the
+        // board) moves only when something did.
+        if self.tmux_fact(ws).map(|(_, p)| p) != Some(pr.clone()) {
+            let _ = t.set_facts(ws, None, Some(pr));
+        }
+    }
+
+    /// The registry's (description, pr) for `ws` now, read without a write.
+    fn tmux_fact(&self, ws: &str) -> Option<(String, Value)> {
+        let t = self.tmux.as_ref()?;
+        t.facts().ok()?.into_iter().find(|(id, _, _)| id.eq_ignore_ascii_case(ws)).map(|(_, d, p)| (d, p))
     }
 
     pub fn lane_auto(&self, ws: &str) {
@@ -121,6 +175,19 @@ impl Writer {
     pub fn notify(&self, n: Notify) {
         self.write(|c| c.notify(&n));
     }
+}
+
+/// The tmux registry's workspaces in workspace.list's shape, each with the
+/// description crew-sync last wrote. Their titles are the app's own, never
+/// renamed here.
+fn tmux_rows(t: &TmuxBackend) -> Vec<Value> {
+    let desc: std::collections::HashMap<String, String> = t.facts().unwrap_or_default().into_iter().map(|(id, d, _)| (id, d)).collect();
+    t.workspaces()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|w| json!({"id": w.id, "title": w.title, "current_directory": w.cwd,
+                        "description": desc.get(&w.id).cloned().unwrap_or_default(), "has_custom_title": true}))
+        .collect()
 }
 
 /// `re.search(r"override:\s*(\S+)", out)`'s group, or "".
@@ -139,7 +206,39 @@ fn override_in(out: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::override_in;
+    use super::*;
+
+    #[test]
+    fn on_tmux_rows_come_from_the_registry_and_only_facts_are_written() {
+        let dir = std::path::PathBuf::from(format!("/tmp/sx-sync-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("workspaces.json"),
+            r#"{"version":1,"workspaces":[{"id":"W1","title":"shop","cwd":"/w","description":"ci:run"}],"panes":[]}"#).unwrap();
+        let w = Writer { c: None, quiet: None, dry: false, tmux: Some(TmuxBackend::at(dir.clone())) };
+        let rows = w.workspaces();
+        assert_eq!(rows, vec![json!({"id": "W1", "title": "shop", "current_directory": "/w", "description": "ci:run", "has_custom_title": true})]);
+        assert_eq!(w.live_description("W1").as_deref(), Some("ci:run"));
+        // Sidebar writes have nowhere to go; the description and the PR do.
+        w.rename("W1", "other");
+        w.action("W1", WorkspaceAction::SetColor("#FF0000".into()));
+        w.action("W1", WorkspaceAction::SetDescription("ci:fail pr:draft".into()));
+        let mut raw = serde_json::Map::new();
+        raw.insert("pr".into(), json!(9));
+        raw.insert("prState".into(), json!("OPEN"));
+        raw.insert("url".into(), json!("https://x/9"));
+        w.pr("W1", &raw);
+        let t = TmuxBackend::at(dir.clone());
+        let f = t.facts().unwrap();
+        assert_eq!(f[0].1, "ci:fail pr:draft");
+        assert_eq!(f[0].2, json!({"n": 9, "state": "OPEN", "url": "https://x/9"}));
+        assert_eq!(t.workspaces().unwrap()[0].title, "shop", "no rename on tmux");
+        // A dry run writes nothing.
+        let dry = Writer { dry: true, ..w };
+        dry.action("W1", WorkspaceAction::ClearDescription);
+        assert_eq!(t.facts().unwrap()[0].1, "ci:fail pr:draft");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn override_is_found_anywhere() {

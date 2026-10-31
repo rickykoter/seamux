@@ -139,6 +139,13 @@ pub(crate) fn front() -> String {
 /// a tab for what it opens. Focused and widened; a second click navigates,
 /// never stacks.
 pub fn wake_tab(keep_name: &str, url: &str, select: &str) -> (bool, String) {
+    // No cmux to hold the tab: the default browser.
+    if crate::backend::tmux().is_some() {
+        return match crate::companion::open_in_browser(url) {
+            Ok(_) => (true, format!("opened {url} in the browser")),
+            Err(e) => (false, e),
+        };
+    }
     let ws = if !select.is_empty() {
         let (rc, out) = cmux_out(&["--id-format", "uuids", "workspace", "select", select]);
         let target = out.split_whitespace().find(|t| is_uuid_token(t)).unwrap_or("").to_string();
@@ -396,10 +403,29 @@ pub fn open_target(t: &Target, port: u16) -> (bool, String) {
     let base = format!("http://127.0.0.1:{port}");
     match t {
         Target::Page(p) => wake_tab(WAKE_VIEW, &format!("{base}{p}"), ""),
+        // No cmux tab to hold a local file: its default app (a browser for HTML).
+        Target::File(f) if crate::backend::tmux().is_some() => open_local(f),
         Target::File(f) => wake_tab(WAKE_VIEW, &format!("file://{}", quote(f, "/")), ""),
         Target::Browser(u) => browser(u),
         Target::Editor(f) => open_in_editor(f),
     }
+}
+
+/// `open <path>` for a file a Wake row names: an absolute path to a file
+/// that is there, so `open` never reads it as a flag or a URL.
+fn open_local(f: &str) -> (bool, String) {
+    if !local_ok(f) {
+        return (false, format!("not a file to open: {f:?}"));
+    }
+    if crate::act::run_ok("open", &[f], None) {
+        (true, format!("opened {f}"))
+    } else {
+        (false, format!("could not open {f}"))
+    }
+}
+
+fn local_ok(f: &str) -> bool {
+    f.starts_with('/') && !f.chars().any(|c| c.is_control()) && Path::new(f).is_file()
 }
 
 /// Open the row an id names, by kind.
@@ -522,6 +548,17 @@ pub fn for_row(cwd: &str, wsid: &str, r: &str, port: u16) -> (bool, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_absolute_existing_file_opens_locally() {
+        let here = file!();
+        let abs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/wake.rs");
+        assert!(local_ok(abs.to_str().unwrap()));
+        assert!(!local_ok(here), "relative");
+        assert!(!local_ok("/no/such/file.html"));
+        assert!(!local_ok(env!("CARGO_MANIFEST_DIR")), "a directory");
+        assert!(!local_ok("/tmp/a\nb"));
+    }
 
     #[test]
     fn only_plain_claude_and_github_urls_open() {

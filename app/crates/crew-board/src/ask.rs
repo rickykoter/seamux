@@ -61,6 +61,46 @@ impl Runner for Cmux {
     }
 }
 
+/// A pane of the app's own tmux: the same verbs, answered by tmux on the
+/// pane's session. Only the session the backend records for the ask's own
+/// pane is ever read or typed into.
+pub struct Tmux {
+    pub target: crew_core::backend::Target,
+}
+
+impl Tmux {
+    /// The pane `surface` on this server's tmux backend, when it has one.
+    pub fn for_pane(surface: &str) -> Option<Tmux> {
+        let b = crate::backend::tmux()?;
+        b.target(surface).ok().flatten().map(|target| Tmux { target })
+    }
+
+    /// The tmux arguments for one of cmux's verbs, or None for one tmux
+    /// does not do.
+    pub fn args(&self, argv: &[&str]) -> Option<Vec<String>> {
+        let t = format!("={}", self.target.session);
+        let own = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        match argv {
+            ["read-screen", "--surface", _, "--lines", n] => Some(own(&["capture-pane", "-p", "-t", &t, "-S", &format!("-{n}")])),
+            ["send", "--surface", _, text] => Some(own(&["send-keys", "-t", &t, "-l", text])),
+            ["send-key", "--surface", _, "enter"] => Some(own(&["send-keys", "-t", &t, "Enter"])),
+            _ => None,
+        }
+    }
+}
+
+impl Runner for Tmux {
+    fn run(&self, argv: &[&str]) -> (i32, String) {
+        let Some(args) = self.args(argv) else { return (1, format!("tmux has no {}", argv.first().unwrap_or(&""))) };
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        match crew_core::backend::tmux::tmux(&self.target.socket, &args) {
+            Ok(o) => (if o.status.success() { 0 } else { 1 },
+                      format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))),
+            Err(e) => (1, e.to_string()),
+        }
+    }
+}
+
 /// Is the option label visible? Whitespace-insensitive: prompts wrap labels.
 fn on_screen(label: &str, screen: &str) -> bool {
     let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
@@ -180,4 +220,41 @@ pub fn answer(ask_id: &str, n_raw: &str, runner: &dyn Runner) -> (bool, bool, St
     }
     log(&format!("ask {ask_id} answered {n} ({})", if delivered { "typed" } else { "shown" }));
     (true, delivered, detail)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pane() -> Tmux {
+        Tmux { target: crew_core::backend::Target { socket: "/s/tmux.sock".into(), session: "seamux-P1".into() } }
+    }
+
+    #[test]
+    fn tmux_answers_cmuxs_verbs_on_the_recorded_session() {
+        let t = pane();
+        assert_eq!(t.args(&["read-screen", "--surface", "P1", "--lines", "60"]).unwrap(),
+                   ["capture-pane", "-p", "-t", "=seamux-P1", "-S", "-60"]);
+        assert_eq!(t.args(&["send", "--surface", "P1", "2"]).unwrap(), ["send-keys", "-t", "=seamux-P1", "-l", "2"]);
+        assert_eq!(t.args(&["send-key", "--surface", "P1", "enter"]).unwrap(), ["send-keys", "-t", "=seamux-P1", "Enter"]);
+        assert!(t.args(&["send-key", "--surface", "P1", "escape"]).is_none());
+    }
+
+    #[test]
+    fn the_tmux_runner_refuses_when_the_question_is_not_on_screen() {
+        // The screen read through tmux shows another prompt: nothing is typed.
+        struct Screen(std::cell::RefCell<Vec<String>>);
+        impl Runner for Screen {
+            fn run(&self, argv: &[&str]) -> (i32, String) {
+                let args = pane().args(argv).expect("a verb tmux does");
+                self.0.borrow_mut().push(args.join(" "));
+                (0, "Pick one\n  1. Apples\n  2. Pears\n".into())
+            }
+        }
+        let s = Screen(Default::default());
+        let (ok, detail) = deliver("P1", 3, "Bananas", &s);
+        assert!(!ok);
+        assert!(detail.contains("not showing this question"), "{detail}");
+        assert_eq!(s.0.borrow().len(), 1, "read once, typed nothing: {:?}", s.0.borrow());
+    }
 }

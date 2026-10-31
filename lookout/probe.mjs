@@ -988,11 +988,28 @@ if (want("host detection")) {
     [{ SEAMUX_HOST: "remote" }, "remote"],
     [{ SEAMUX_HOST: "cmux" }, "cmux"],
     [{ SEAMUX_HOST: "bogus", CLAUDE_CODE_ENTRYPOINT: "claude-desktop" }, "desktop"],
+    [{ SEAMUX_PANE_ID: "P1" }, "seamux"],
+    [{ SEAMUX_PANE_ID: "P1", CMUX_WORKSPACE_ID: "W1" }, "cmux"],
+    [{ SEAMUX_PANE_ID: "P1", CMUX_WORKSPACE_ID: "W1", SEAMUX_BACKEND: "tmux" }, "seamux"],
+    [{ CMUX_WORKSPACE_ID: "W1", SEAMUX_BACKEND: "tmux" }, "terminal"],
+    [{ SEAMUX_PANE_ID: "P1", CLAUDE_CODE_REMOTE: "true" }, "seamux"],
+    [{ SEAMUX_HOST: "seamux" }, "seamux"],
   ];
   for (const [env, want] of HOST_TABLE) {
     const got = HOST.detectHost(env), twin = HOST_TWIN.detectHost(env);
     ok(`host: ${JSON.stringify(env)} is ${want}`, got.host === want);
     ok(`host: the deep-plan copy agrees on ${JSON.stringify(env)}`, twin.host === got.host && twin.why === got.why);
+  }
+  const IDS = [
+    [{}, { workspace: "", pane: "" }],
+    [{ CMUX_WORKSPACE_ID: "W1", CMUX_SURFACE_ID: "S1" }, { workspace: "W1", pane: "S1" }],
+    [{ SEAMUX_WORKSPACE_ID: "W2", SEAMUX_PANE_ID: "P2", CMUX_WORKSPACE_ID: "W1", CMUX_SURFACE_ID: "S1" }, { workspace: "W2", pane: "P2" }],
+    [{ CMUX_WORKSPACE_ID: "W1", CMUX_SURFACE_ID: "S1", SEAMUX_BACKEND: "tmux" }, { workspace: "", pane: "" }],
+  ];
+  for (const [env, want] of IDS) {
+    const got = HOST.sessionIds(env), twin = HOST_TWIN.sessionIds(env);
+    ok(`host: sessionIds of ${JSON.stringify(env)}`, got.workspace === want.workspace && got.pane === want.pane);
+    ok(`host: the deep-plan copy's sessionIds agree on ${JSON.stringify(env)}`, twin.workspace === got.workspace && twin.pane === got.pane);
   }
   ok("host: an ignored SEAMUX_HOST is named in why", /SEAMUX_HOST=bogus ignored/.test(HOST.detectHost({ SEAMUX_HOST: "bogus" }).why));
   ok("host: the twin files match apart from the line naming the other copy",

@@ -4,7 +4,7 @@
 // wear nothing. Each mark is a button that focuses its pane in cmux.
 import { invoke } from "@tauri-apps/api/core";
 
-/** What a pane's marks are drawn from: a wall tile or a timeline sub-row. */
+/** What a pane's marks are drawn from: a Dock tile. */
 export type Marked = { surface: string; owner?: string | null; outside?: boolean; root?: string };
 
 /** Focus the pane in cmux and put the overlay away, as the wall's Jump does. */

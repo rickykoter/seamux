@@ -96,12 +96,54 @@ if [ -z "$read_by" ]; then
 fi
 [ -n "$cmd" ] || exit 0
 
+# A JSON string of $1: backslash, quote and control characters escaped, so
+# the file below needs no python.
+json_str() {
+  local s="$1" out="" c i
+  for ((i = 0; i < ${#s}; i++)); do
+    c="${s:i:1}"
+    case "$c" in
+      '\') out+='\\' ;;
+      '"') out+='\"' ;;
+      $'\n') out+='\n' ;;
+      $'\t') out+='\t' ;;
+      $'\r') out+='\r' ;;
+      *) if [[ "$c" < ' ' ]]; then out+="$(printf '\\u%04x' "'$c")"; else out+="$c"; fi ;;
+    esac
+  done
+  printf '"%s"' "$out"
+}
+
+# How a block reaches the person. In cmux, cmux notify. In a pane of the
+# seamux app's own tmux (SEAMUX_BACKEND=tmux), a file in crew's state folder,
+# blocked-<pane>.json, which the app posts and deletes: bash-guard never
+# calls the app (ADR 0004).
+tell_block() {
+  local reason="$1" body key dir tmp
+  body="$(printf '%s' "$cmd" | head -c 200)"
+  if [ "${SEAMUX_BACKEND:-}" = tmux ]; then
+    key="${SEAMUX_PANE_ID:-${SEAMUX_WORKSPACE_ID:-}}"
+    [[ "$key" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || return 0
+    dir="${HOME}/.cache/cmux-crew"
+    mkdir -p "$dir" 2>/dev/null || return 0
+    tmp="$dir/.blocked-$key.$$"
+    if printf '{"pane": %s, "workspace": %s, "reason": %s, "command": %s, "at": %s}\n' \
+      "$(json_str "${SEAMUX_PANE_ID:-}")" "$(json_str "${SEAMUX_WORKSPACE_ID:-}")" \
+      "$(json_str "$reason")" "$(json_str "$body")" "$(date +%s)" >"$tmp" 2>/dev/null; then
+      mv -f "$tmp" "$dir/blocked-$key.json" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+    else
+      rm -f "$tmp" 2>/dev/null
+    fi
+    return 0
+  fi
+  if command -v cmux >/dev/null 2>&1 && [ -n "${CMUX_WORKSPACE_ID:-}" ]; then
+    cmux notify --title "Claude · blocked" --subtitle "$reason" --body "$body" >/dev/null 2>&1 || true
+  fi
+}
+
 block() {
   reason="$1"
-  if command -v cmux >/dev/null 2>&1 && [ -n "${CMUX_WORKSPACE_ID:-}" ]; then
-    cmux notify --title "Claude · blocked" --subtitle "$reason" \
-      --body "$(printf '%s' "$cmd" | head -c 200)" >/dev/null 2>&1 || true
-  fi
+  tell_block "$reason"
   printf 'Blocked by cmux guard: %s\nCommand: %s\nIf this is intentional, ask the user to run it manually.\n' \
     "$reason" "$cmd" >&2
   exit 2

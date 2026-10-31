@@ -135,10 +135,65 @@ pub fn intent_server_at(port_text: Option<String>) -> IntentServer {
     }
 }
 
+/// The intent server on this app's backend, on either backend: started when
+/// nothing answers, replaced (a takeover) when what answers reads another
+/// backend. At most one start every 15 seconds. True when it started one.
+pub fn ensure_intent() -> bool {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|p| p.into_inner());
+    if last.is_some_and(|t| t.elapsed() < Duration::from_secs(15)) {
+        return false;
+    }
+    let kind = seamux_app::backend::kind().name();
+    let port = port_file().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| parse_port(&t));
+    let takeover = match port.map(|p| (p, health(p))) {
+        Some((p, Ok(()))) => match crew_board::server::running_backend(p) {
+            Some((_, b)) if b == kind => return false,
+            Some((pid, _)) => Some(pid),
+            None => return false,
+        },
+        _ => None,
+    };
+    *last = Some(std::time::Instant::now());
+    match crew_board::server::spawn_server_with(&crate::pane_app::seamux_cli(), takeover, Some(kind)) {
+        Ok(mut child) => {
+            // A server on the other backend holds the lock for its life and
+            // lets go only when it starts its own successor (an upgrade).
+            // Ask it to leave: the successor waits up to 15s for the lock.
+            if let Some(old) = takeover.filter(|&p| p > 1 && p != std::process::id()) {
+                // SAFETY: a signal to the pid the server named on /health.
+                unsafe { libc::kill(old as i32, libc::SIGTERM) };
+            }
+            // Reaped when it exits (it outlives the app as a rule: setsid).
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            true
+        }
+        Err(e) => {
+            eprintln!("seamux: crew-board-intent did not start: {e}");
+            false
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn intent_server() -> IntentServer {
     tauri::async_runtime::spawn_blocking(|| {
-        intent_server_at(port_file().and_then(|p| std::fs::read_to_string(p).ok()))
+        let read = || intent_server_at(port_file().and_then(|p| std::fs::read_to_string(p).ok()));
+        let s = read();
+        if s.up || !ensure_intent() {
+            return s;
+        }
+        // Started just now: give it a moment to bind and write its port.
+        let end = std::time::Instant::now() + Duration::from_secs(4);
+        loop {
+            std::thread::sleep(Duration::from_millis(250));
+            let s = read();
+            if s.up || std::time::Instant::now() > end {
+                return s;
+            }
+        }
     })
     .await
     .unwrap_or(IntentServer { origin: None, up: false, reason: Some("check failed".into()) })
@@ -494,8 +549,6 @@ fn guard_focus<R: Runtime>(w: &WebviewWindow<R>) {
 /// panel subclass (seen: hide ran, the window stayed on screen), so order it
 /// out directly as well.
 fn hide<R: Runtime>(w: &WebviewWindow<R>) {
-    // A pane held at the app's size goes back to its own once the app is away.
-    std::thread::spawn(crate::term_app::release_all);
     let _ = w.hide();
     #[cfg(target_os = "macos")]
     if let Ok(ptr) = w.ns_window() {
@@ -615,7 +668,6 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
                 }
             }
             "quit" => {
-                crate::term_app::release_all_briefly();
                 app.exit(0)
             }
             _ => {}

@@ -2,8 +2,8 @@
 // xterm.js from its own tmux client in a PTY (pty_app.rs). tmux owns the
 // session and its history; cmux and the app are both clients of it.
 //
-// TermSlot puts it where a pane is tmux-backed and the snapshot terminal
-// (term.ts) everywhere else, so the sheet and the wall preview need not know.
+// TermSlot puts it where a pane is tmux-backed. Any other pane is "plain":
+// the slot draws nothing, and the sheet offers Move to native instead.
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Terminal } from "@xterm/xterm";
@@ -14,7 +14,6 @@ import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 import "./pane.css";
-import { Term } from "./term";
 import { follow, HoverCard, pathLinks, type Hovered } from "./panelinks";
 import { PaneCat } from "./panecat";
 
@@ -701,33 +700,32 @@ async function isNative(surface: string): Promise<boolean> {
   return v;
 }
 
-/** One pane's terminal: native where it is tmux-backed, the snapshot
- *  terminal otherwise. Term's surface, so callers swap it in as is. */
+/** One pane's terminal: native where it is tmux-backed, "plain" otherwise
+ *  (nothing drawn; the caller says why and offers Move to native). */
 export class TermSlot {
+  /** The live terminal failed (true) or came back (false). */
   onTrouble: (bad: boolean) => void = () => {};
-  /** It switched between native and snapshots. */
+  /** It switched between native and plain. */
   onMode: () => void = () => {};
   el = document.createElement("div");
-  private snap = new Term();
   private native = new NativeTerm();
-  private mode: "" | "snap" | "native" = "";
+  private mode: "" | "plain" | "native" = "";
   private surface = "";
   private gen = 0;
 
   constructor() {
     this.el.className = "term-slot";
-    // On snapshots, look again now and then: a pane can become tmux-backed
+    // On a plain pane, look again now and then: a pane can become tmux-backed
     // (a session attached there) or come back from a failed attach.
     setInterval(() => {
-      if (this.mode !== "snap" || !this.surface || this.el.offsetParent === null) return;
-      const g = this.gen;
-      void isNative(this.surface).then((v) => v && g === this.gen && this.mode === "snap" && this.use("native"));
+      // The slot is hidden while plain, so ask whether it is still on the page.
+      if (this.mode !== "plain" || !this.surface || !this.el.isConnected) return;
+      this.recheck();
     }, CACHE_MS);
-    this.snap.onTrouble = (bad) => this.mode === "snap" && this.onTrouble(bad);
-    // The client ended (the session closed): the snapshot terminal takes over.
+    // The client ended (the session closed): the pane is plain now.
     this.native.onExit = () => {
       nativeCache.set(this.surface, { v: false, at: performance.now() });
-      if (this.mode === "native") this.use("snap");
+      if (this.mode === "native") this.use("plain");
     };
   }
 
@@ -735,12 +733,19 @@ export class TermSlot {
     if (surface === this.surface) return;
     this.surface = surface;
     const g = ++this.gen;
-    void isNative(surface).then((v) => g === this.gen && this.use(v ? "native" : "snap"));
+    void isNative(surface).then((v) => g === this.gen && this.use(v ? "native" : "plain"));
+  }
+
+  /** Look again now whether the pane is tmux-backed (after Move to native, say). */
+  recheck(): void {
+    if (!this.surface) return;
+    nativeCache.delete(this.surface);
+    const g = this.gen;
+    void isNative(this.surface).then((v) => v && g === this.gen && this.mode !== "native" && this.use("native"));
   }
 
   stop(): void {
     this.gen++;
-    this.snap.stop();
     this.native.stop();
     this.mode = "";
     this.surface = "";
@@ -763,19 +768,18 @@ export class TermSlot {
 
   focus(): void {
     if (this.mode === "native") this.native.focus();
-    else this.snap.el.focus();
   }
 
-  private use(mode: "snap" | "native"): void {
+  private use(mode: "plain" | "native"): void {
     if (mode === "native") {
-      this.snap.stop();
       if (this.mode !== "native") this.el.replaceChildren(this.native.el);
       this.native.show(this.surface);
       this.onTrouble(false);
     } else {
       this.native.stop();
-      if (this.mode !== "snap") this.el.replaceChildren(this.snap.el);
-      this.snap.show(this.surface);
+      this.el.replaceChildren();
+      // Nothing live to show: the caller falls back to the pane's last lines.
+      this.onTrouble(true);
     }
     const was = this.mode;
     this.mode = mode;

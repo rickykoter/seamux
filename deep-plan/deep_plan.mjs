@@ -30,7 +30,7 @@ import { releaseClaims } from "./lib/claims.mjs";
 import { buildProof, withProof, ghCanAttach, gh } from "./lib/proof.mjs";
 import { readEvidence, evidenceSummary, newEvidenceDir, pruneEvidence, showTab, browserDriver } from "./lib/browser.mjs";
 import { detect, draftFile } from "./lib/detect.mjs";
-import { detectHost, hostLine } from "./lib/host.mjs";
+import { detectHost, hostLine, sessionIds } from "./lib/host.mjs";
 import * as SERVE from "./lib/serve.mjs";
 import * as SYNC from "./lib/sync.mjs";
 import { mergeStates, mergeFiles } from "./lib/merge.mjs";
@@ -2929,17 +2929,21 @@ function askCreate(file) {
       mermaid: o.mermaid || "", example: o.example || "" })),
     // The one legitimate delivery target: the terminal this verb ran in. The
     // intent server types only here, never into a surface a request names.
-    surface: process.env.CMUX_SURFACE_ID || "", workspace: process.env.CMUX_WORKSPACE_ID || "",
+    surface: sessionIds().pane, workspace: sessionIds().workspace,
     cwd, slug: plan ? plan.slug : "", answer: null,
   };
+  // In a pane of the seamux app's tmux, the answer is typed through tmux into
+  // this very pane: its socket ($TMUX's first field) and pane id.
+  if (detectHost().host === "seamux" && process.env.TMUX && /^%\d+$/.test(process.env.TMUX_PANE || ""))
+    ask.tmux = { socket: process.env.TMUX.split(",")[0], pane: process.env.TMUX_PANE };
   askWrite(ask);
   say(`ask ${ask.id}: ${path.join(ASKS_DIR, ask.id + ".html")}`);
-  if (!ask.surface) say("  (not in a cmux terminal: the page shows the options; the chat prompt takes the answer)");
+  if (!ask.surface) say("  (not in a cmux or seamux terminal: the page shows the options; the chat prompt takes the answer)");
   const url = openAskSurface(ask);
   const host = detectHost().host;
   if (url) say(`  served at ${url} (host: ${host})`);
   else if (host === "remote") say("  no live page on this host (host: remote): answer in the chat prompt");
-  else if (host === "cmux") say("  intent server not reachable — open the file, or start the board (crew listen on) (host: cmux)");
+  else if (host === "cmux" || host === "seamux") say(`  intent server not reachable — open the file, or start the board (crew listen on) (host: ${host})`);
   else say(`  deep-plan serve did not start — open the file read-only (host: ${host})`);
   return ask;
 }
@@ -2953,8 +2957,22 @@ function askShow(id) {
   say(`ask ${id}: ${ask.answer.n} — ${o.label || ""}${ask.answer.delivered ? "" : " (shown on the page, not typed)"}`);
 }
 
+// A page's URL on crew's intent server, where cmux and seamux serve pages,
+// or "" when it is not running. A port file outlives the server that wrote
+// it, so the server must answer /health as crew-board-intent first. Nothing
+// is opened.
+function crewUrl(rel) {
+  if (process.env.DEEP_PLAN_STATE_DIR) return "";
+  try {
+    const port = parseInt(fs.readFileSync(path.join(os.homedir(), ".cache", "cmux-crew", "board-intent.port"), "utf8").trim(), 10);
+    if (!port) return "";
+    const h = spawnSync("curl", ["-fsS", "-m", "2", `http://127.0.0.1:${port}/health`], { encoding: "utf8", timeout: 4000 });
+    return h.status === 0 && /crew-board-intent/.test(h.stdout || "") ? `http://127.0.0.1:${port}${rel}` : "";
+  } catch { return ""; }
+}
+
 // A page's URL on deep-plan's own server, started if nothing answers. Used on
-// every host but cmux, which keeps crew's URL. Empty when there is no page a
+// every host but cmux and seamux, which keep crew's URL. Empty when there is no page a
 // person can reach: on the remote host (the sandbox's localhost is out of
 // reach), inside a request the server itself is running, or in a probe that
 // did not ask for a server.
@@ -3018,7 +3036,10 @@ function companionOpen(url, key, ws, surface) {
 function openAskSurface(ask) {
   try {
     if (process.env.DEEP_PLAN_FROM_SERVE) return "";
-    if (detectHost().host !== "cmux") return servedUrl(`/ask/${ask.id}`);
+    const host = detectHost().host;
+    // seamux: the Dock lists the workspace's asks beside its terminal.
+    if (host === "seamux") return crewUrl(`/ask/${ask.id}`);
+    if (host !== "cmux") return servedUrl(`/ask/${ask.id}`);
     if (process.env.DEEP_PLAN_STATE_DIR) return "";
     const cache = path.join(os.homedir(), ".cache", "cmux-crew");
     const rd = f => fs.readFileSync(path.join(cache, f), "utf8").trim();
@@ -3050,6 +3071,8 @@ function openWorkingSurface(st) {
     // A go clicked on a page: that page is open and reloads itself.
     if (process.env.DEEP_PLAN_FROM_SERVE) return;
     const host = detectHost().host;
+    // seamux: the Dock lists the plan beside the workspace's terminal.
+    if (host === "seamux") return crewUrl(`/plan/${st.slug}`) || undefined;
     // A go from outside any Claude session (the seamux app's Desk, a person's
     // shell) still goes to crew's board when there is one, as before; only a
     // session on another host is sent to deep-plan's own server.
@@ -3696,6 +3719,15 @@ function pageCmd(slug, flags) {
     if (!companionOpen(url, companionKey("plan", slug), ws, process.env.CMUX_SURFACE_ID || ""))
       spawnSync("cmux", ["open", url, "--workspace", ws, "--focus", "false"], { encoding: "utf8", env: { ...process.env, CMUX_QUIET: "1" }, timeout: 10000 });
     say(`served at ${url} (host: cmux)`);
+    return;
+  }
+  if (host === "seamux") {
+    // The Dock shows the workspace's plan and reviews beside its terminal:
+    // nothing to open, only the link to say.
+    const url = crewUrl(rel);
+    if (!url) { say(`not served: crew's intent server is down (the seamux app starts it); the read-only file is ${any} (host: seamux)`); return; }
+    say(`served at ${url} (host: seamux)`);
+    say("  the Dock shows it beside this workspace's terminal");
     return;
   }
   const url = servedUrl(rel);

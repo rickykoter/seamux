@@ -1,9 +1,8 @@
 //! The Dock's New workspace form: what it can offer, and making one with no
 //! terminal (crew_core::worktree), each step streamed back over a Channel.
-//! Claude starts as a native session (pty.rs), as the Dock's own button does.
+//! Claude starts as a native session on the app's backend, as the Dock's own button does.
 
 use crew_core::worktree::{self, Phase, Request, SandboxMode, Settings, Step};
-use seamux_app::pty::open_native_workspace;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 
@@ -90,7 +89,10 @@ pub async fn new_ws_create(form: Form, on_step: Channel<StepMsg>) -> Result<Made
             };
             let _ = on_step.send(StepMsg { step: st.key(), phase, detail: detail.to_string() });
         };
-        worktree::create(&s, &req, &open_native_workspace, &mut tell).map(|m| Made {
+        // The app's backend opens the workspace: cmux's, or the app's own tmux.
+        let b = seamux_app::backend::get()?;
+        let open = |cwd: &std::path::Path, cmd: &str| b.open_workspace(cwd, cmd);
+        worktree::create(&s, &req, &open, &mut tell).map(|m| Made {
             path: m.path.to_string_lossy().into_owned(),
             branch: m.branch,
             workspace_ref: m.workspace_ref,

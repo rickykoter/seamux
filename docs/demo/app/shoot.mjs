@@ -3,7 +3,7 @@
 //
 //   node docs/demo/app/shoot.mjs                      every view, to docs/demo/media
 //   node docs/demo/app/shoot.mjs --out DIR            somewhere else
-//   node docs/demo/app/shoot.mjs mosaic wall          just these
+//   node docs/demo/app/shoot.mjs dock wake            just these
 //   node docs/demo/app/shoot.mjs --intent http://127.0.0.1:PORT
 //                         frame plans, reviews and asks from that intent server
 //   node docs/demo/app/shoot.mjs --scale 2            2x pixels (2880x1800)
@@ -15,7 +15,7 @@
 //   import { startServer, launch, openApp, VIEWS } from "./shoot.mjs";
 //   const srv = await startServer();
 //   const { browser, page } = await launch({ url: srv.url });
-//   await openApp(page, "mosaic", { url: srv.url });   // ...film it...
+//   await openApp(page, "dock", { url: srv.url });     // ...film it...
 //   await browser.close(); await srv.close();
 import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -63,7 +63,7 @@ async function load(page, url, query = "") {
 /** Each view: how to get there from a fresh load. */
 export const VIEWS = {
   async dock(page) {
-    await page.locator(".dockview .sheet .term-row").first().waitFor();
+    await page.locator(".dockview .sheet .native-term .xterm-rows").first().waitFor();
     // The board frame, rendered.
     await page.frameLocator(".dock-board iframe").locator("#rows .row").first().waitFor();
     await settle(page, 1500);
@@ -86,22 +86,6 @@ export const VIEWS = {
     await page.locator(".reclaim .rc-checks").waitFor();
     await settle(page, 600);
   },
-  async mosaic(page) {
-    await tab(page, "Mosaic");
-    await page.locator(".m-tile.large").first().waitFor();
-    await settle(page, 1200);
-  },
-  async wall(page) {
-    await VIEWS.mosaic(page);
-    await page.locator(".m-tile.medium").first().click();
-    await page.locator(".mosaic-detail .preview .term-row").first().waitFor();
-    await settle(page, 1500);
-  },
-  async timeline(page) {
-    await tab(page, "Timeline");
-    await page.locator(".t-lane").first().waitFor();
-    await settle(page);
-  },
   async wake(page) {
     await tab(page, "Wake");
     await page.locator("#wake .w-list li").first().waitFor();
@@ -115,7 +99,7 @@ export const VIEWS = {
     await settle(page);
   },
   async palette(page) {
-    await VIEWS.mosaic(page);
+    await VIEWS.dock(page);
     await page.keyboard.press("Meta+k");
     await page.locator(".palette-row").first().waitFor();
     await settle(page, 500);

@@ -968,8 +968,11 @@ RECLAIM = os.path.join(CREW, "bin", "crew-reclaim")
 def renv():
     # workspaces through the implementation under test: the Python unless
     # CREW_IMPL says rust, never whatever seamux this machine has installed.
-    return dict(os.environ, SEAMUX_BIN=(crew_impl.seamux_bin() if crew_impl.is_rust("workspaces")
-                                        else os.path.join(T, "no-seamux")))
+    # Its own state folder: the seamux app's tmux registry on this machine
+    # must never answer for the fake cmux's workspaces.
+    return dict(os.environ, XDG_STATE_HOME=os.path.join(T, "state"),
+                SEAMUX_BIN=(crew_impl.seamux_bin() if crew_impl.is_rust("workspaces")
+                            else os.path.join(T, "no-seamux")))
 
 
 def reclaim(*argv, **extra):
@@ -1092,11 +1095,30 @@ os.symlink(FAKE, os.path.join(bare_dir, "fakecmux-bare"))
 rc, out = reclaim("--dry-run", "ws-l", CREW_CMUX="fakecmux-bare",
                   PATH=bare_dir + os.pathsep + os.environ["PATH"])
 check("CREW_CMUX as a bare name on PATH is found, not 'cmux not found'",
-      rc == 0 and "no other cmux workspace is open here" in out and "cmux not found" not in out, out)
+      rc == 0 and "no other workspace is open here" in out and "could not tell whether another" not in out, out)
 rc, out = reclaim("--dry-run", landed, CREW_CMUX=os.path.join(T, "no-such-cmux"))
 check("a cmux that cannot be found is a blocker, not 'no other workspace'",
-      rc == 1 and "cmux not found" in out and "no other cmux workspace" not in out
+      rc == 1 and "could not tell whether another workspace is open here" in out and "no other workspace is open" not in out
       and os.path.isdir(landed), out)
+if crew_impl.is_rust("workspaces"):
+    # The seamux app's own tmux as the backend (no cmux): reclaim finds the
+    # folder, and who else stands in the worktree, in the app's registry.
+    reg_dir = os.path.join(T, "state", "seamux")
+    os.makedirs(reg_dir, exist_ok=True)
+    W1, W2 = "1A000000-0000-4000-8000-000000000001", "1A000000-0000-4000-8000-000000000002"
+    def put_registry(wss):
+        with open(os.path.join(reg_dir, "workspaces.json"), "w") as f:
+            json.dump({"version": 1, "workspaces": [{"id": i, "title": t, "cwd": c} for i, t, c in wss], "panes": []}, f)
+    tmux_env = dict(CREW_CMUX=os.path.join(T, "no-such-cmux"), SEAMUX_BACKEND="tmux")
+    put_registry([(W1, "landed", landed), (W2, "landed too", landed)])
+    rc, out = reclaim("--dry-run", W1, **tmux_env)
+    check("on the tmux backend, another registry workspace in the worktree is a blocker",
+          rc == 1 and "1 other workspace(s) still open here" in out and W2 in out and os.path.isdir(landed), out)
+    put_registry([(W1, "landed", landed)])
+    rc, out = reclaim("--dry-run", W1, **tmux_env)
+    check("…and alone in it, the folder comes from the registry and nothing else is open",
+          "no other workspace is open here" in out and "no directory for" not in out and os.path.isdir(landed), out)
+    os.remove(os.path.join(reg_dir, "workspaces.json"))
 rc, out = reclaim("--yes", "ws-l")
 check("an idle agent is force-closed and the worktree removed",
       rc == 0 and "workspace close ws-l --force" in log() and not rows() and not os.path.isdir(landed), out)

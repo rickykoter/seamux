@@ -7,8 +7,8 @@
 //! ~/.cache/cmux-crew/hold-<key>     while the pane holds something a tool use releases
 //! ```
 //!
-//! `<key>` is the pane's surface (CMUX_SURFACE_ID), or the workspace id when
-//! a hook runs without one. A pane's hooks write only its own file, so two
+//! `<key>` is the pane (crew_core::ident: SEAMUX_PANE_ID, else
+//! CMUX_SURFACE_ID), or the workspace id when a hook runs without one. A pane's hooks write only its own file, so two
 //! Claudes in one workspace never clear each other's state.
 //!
 //! `rollup` is the only code that turns a workspace's panes into one state,
@@ -382,8 +382,13 @@ impl Drop for Lock {
 }
 
 pub fn lock(dir: &Path) -> Lock {
+    lock_file(dir, "panes.lock")
+}
+
+/// An exclusive lock on `dir/name`, held until the Lock drops.
+pub fn lock_file(dir: &Path, name: &str) -> Lock {
     let _ = fs::create_dir_all(dir);
-    let f = fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("panes.lock")).ok();
+    let f = fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(name)).ok();
     if let Some(f) = &f {
         use std::os::fd::AsRawFd;
         // SAFETY: flock on a descriptor we just opened; it blocks until held.

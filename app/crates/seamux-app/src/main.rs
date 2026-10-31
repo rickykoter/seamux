@@ -1,17 +1,18 @@
-//! The seamux app. cmux is the engine behind its socket; every call goes
-//! through crates/cmux. Increment 1: connect at start and list the open
-//! workspaces, or name why it can't, so a dead cmux never means a blank window.
+//! The seamux app. Its sessions live in a backend picked at launch
+//! (seamux_app::backend): cmux behind its socket, or the app's own tmux. At
+//! start it lists the backend's workspaces, or names why it can't, so a
+//! dead backend never means a blank window.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod desk_app;
 mod newws_app;
+mod notify_app;
+mod migrate_app;
 mod pane_app;
 mod pty_app;
 mod reclaim_app;
 mod review_app;
 mod shell;
-mod term_app;
 mod tuck_app;
 mod views_app;
 mod wake_app;
@@ -25,6 +26,8 @@ use serde_json::Value;
 #[serde(tag = "state", rename_all = "snake_case")]
 enum Status {
     Connected {
+        /// The backend the app picked at launch: "cmux" or "tmux".
+        backend: String,
         transport: String,
         access_mode: Option<String>,
         workspaces: Vec<Workspace>,
@@ -77,6 +80,7 @@ fn status_of(conn: Result<cmux::Cmux, cmux::Error>) -> Status {
     };
     match c.workspace_list(None) {
         Ok(v) => Status::Connected {
+            backend: "cmux".into(),
             transport: match c.transport() {
                 cmux::Transport::Socket(_) => "socket".into(),
                 cmux::Transport::Cli(_) => "cli".into(),
@@ -88,11 +92,28 @@ fn status_of(conn: Result<cmux::Cmux, cmux::Error>) -> Status {
     }
 }
 
+/// The status of a backend other than cmux: its workspaces, or why not.
+fn backend_status_of(kind: crew_core::backend::Kind, b: Result<&dyn crew_core::backend::Backend, String>) -> Status {
+    match b.and_then(|b| b.workspaces()) {
+        Ok(rows) => Status::Connected {
+            backend: kind.name().into(),
+            transport: kind.name().into(),
+            access_mode: None,
+            workspaces: rows.into_iter().map(|w| Workspace { r#ref: w.id.clone(), id: w.id, title: w.title }).collect(),
+        },
+        Err(message) => Status::Failed { kind: "backend".into(), message },
+    }
+}
+
 /// Async so Tauri runs it off the main thread, and the socket I/O goes to a
-/// blocking worker: a hung cmux must not freeze the window it would report on.
+/// blocking worker: a hung backend must not freeze the window it would report on.
 #[tauri::command]
-async fn cmux_status() -> Status {
-    tauri::async_runtime::spawn_blocking(|| status_of(cmux::Cmux::connect()))
+async fn backend_status() -> Status {
+    use crew_core::backend::Kind;
+    tauri::async_runtime::spawn_blocking(|| match seamux_app::backend::kind() {
+        Kind::Cmux => status_of(cmux::Cmux::connect()),
+        k => backend_status_of(k, seamux_app::backend::get()),
+    })
         .await
         .unwrap_or_else(|e| Status::Failed { kind: "app".into(), message: e.to_string() })
 }
@@ -144,20 +165,39 @@ fn adopt_utf8_locale() {
     }
 }
 
+/// A subcommand the app was started with (`seamux-app crew-board-intent`),
+/// if any. The app takes only flags (--at-login, macOS's -psn_*): a
+/// subcommand belongs to the seamux CLI, and opening a window for it would
+/// start another app.
+fn subcommand(args: &[String]) -> Option<&str> {
+    args.get(1).map(String::as_str).filter(|a| !a.starts_with('-'))
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(sub) = subcommand(&args) {
+        eprintln!("seamux-app: {sub:?} is a seamux CLI command; the app does not run it");
+        std::process::exit(2);
+    }
     adopt_login_path();
     adopt_utf8_locale();
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             shell::install(app)?;
+            // The board's server, on this app's backend.
+            std::thread::spawn(|| {
+                shell::ensure_intent();
+            });
+            // Notifications on the tmux backend; cmux posts its own.
+            notify_app::start(app.handle().clone());
             wall_app::start(app.handle().clone());
             views_app::start(app.handle().clone());
             review_app::start(app.handle().clone());
-            term_app::restore_at_start();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            cmux_status,
+            backend_status,
             shell::intent_server,
             shell::intent_page,
             shell::hide_overlay,
@@ -179,16 +219,10 @@ fn main() {
             review_app::review_stop_orphan,
             review_app::review_suggest,
             review_app::review_others,
-            term_app::term_frame,
-            term_app::term_input,
-            term_app::term_key,
-            term_app::term_paste,
-            term_app::term_hold,
-            term_app::term_release,
-            term_app::open_url,
-            term_app::copy_text,
-            term_app::open_in_vscode,
-            term_app::term_look,
+            pane_app::open_url,
+            pane_app::copy_text,
+            pane_app::open_in_vscode,
+            pane_app::term_look,
             pty_app::pty_native,
             pty_app::pty_attach,
             pty_app::pty_write,
@@ -202,6 +236,9 @@ fn main() {
             pty_app::pty_line_key,
             pty_app::pty_workspace,
             pane_app::open_in_editor,
+            migrate_app::migrate_offers,
+            migrate_app::migrate_apply,
+            migrate_app::migrate_forget,
             pane_app::gh_card,
             reclaim_app::reclaim_check,
             reclaim_app::reclaim_run,
@@ -209,9 +246,6 @@ fn main() {
             pty_app::native_session,
             views_app::views_frame,
             shell::open_in_cmux,
-            desk_app::desk_answer,
-            desk_app::plan_go,
-            desk_app::plan_check,
             wake_app::wake_data,
             wake_app::wake_open,
             wake_app::wake_keep,
@@ -242,6 +276,15 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn a_subcommand_is_refused_and_flags_are_not() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(subcommand(&a(&["seamux-app", "crew-board-intent"])), Some("crew-board-intent"));
+        assert_eq!(subcommand(&a(&["seamux-app"])), None);
+        assert_eq!(subcommand(&a(&["seamux-app", "--at-login"])), None);
+        assert_eq!(subcommand(&a(&["seamux-app", "-psn_0_12345"])), None);
+    }
+
+    #[test]
     fn rows_from_the_socket_shape() {
         let v = json!({"workspaces": [{"id": "A-1", "ref": "workspace:1", "title": "one", "extra": 1}]});
         assert_eq!(
@@ -266,6 +309,13 @@ mod tests {
     }
 
     #[test]
+    fn a_backend_with_no_workspaces_or_none_at_all_says_so() {
+        use crew_core::backend::Kind;
+        let none = backend_status_of(Kind::Tmux, Err("the tmux backend is not built yet".into()));
+        assert!(matches!(none, Status::Failed { ref kind, ref message } if kind == "backend" && message.contains("tmux")));
+    }
+
+    #[test]
     fn status_through_fakecmux() {
         // The CLI transport, handed fakecmux directly: the whole
         // connect-and-list path with no cmux app and no process-wide env.
@@ -277,7 +327,10 @@ mod tests {
         let s = status_of(conn);
         let _ = std::fs::remove_dir_all(&dir);
         match s {
-            Status::Connected { transport, .. } => assert_eq!(transport, "cli"),
+            Status::Connected { backend, transport, .. } => {
+                assert_eq!(backend, "cmux");
+                assert_eq!(transport, "cli");
+            }
             Status::Failed { kind, message } => panic!("fakecmux status failed: {kind}: {message}"),
         }
     }

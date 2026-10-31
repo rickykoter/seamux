@@ -206,8 +206,10 @@ impl Feed {
     }
 
     fn watch_plans(&self) {
-        // Plan state files, and the app's tucked.json: a tuck shows at once.
-        let print = || (plan_fingerprint(), crate::tucked::stamp());
+        // Plan state files, the app's tucked.json (a tuck shows at once), and
+        // on the tmux backend's side the pane-status files and the registry:
+        // a Claude that asks there is no cmux event, only a pane file write.
+        let print = || (plan_fingerprint(), crate::tucked::stamp(), pane_fingerprint());
         let mut last = print();
         loop {
             std::thread::sleep(Duration::from_millis(250));
@@ -220,14 +222,33 @@ impl Feed {
     }
 }
 
+type Print = Vec<(String, Option<SystemTime>, u64)>;
+
 /// mtime and size of every plan state file: deep-plan writes a file, and that
 /// is the whole signal of an increment moving.
-fn plan_fingerprint() -> Vec<(String, Option<SystemTime>, u64)> {
-    let mut out: Vec<(String, Option<SystemTime>, u64)> = std::fs::read_dir(dp_state())
+fn plan_fingerprint() -> Print {
+    fingerprint(&dp_state(), &|n| n.ends_with(".json"))
+}
+
+/// The hooks' pane-<key>.json files in crew's state folder, and the tmux
+/// backend's workspace registry (a pane started or closed, a sync's facts).
+/// Only on the tmux backend: under cmux its events already wake the board.
+fn pane_fingerprint() -> Print {
+    if crate::backend::tmux().is_none() {
+        return Vec::new();
+    }
+    let mut out = fingerprint(&crate::state::state_dir(), &|n| n.starts_with("pane-") && n.ends_with(".json"));
+    out.extend(fingerprint(&crew_core::backend::tmux::state_dir(), &|n| n == "workspaces.json"));
+    out
+}
+
+/// (name, mtime, size) of the files in `dir` whose names pass `keep`, by name.
+fn fingerprint(dir: &std::path::Path, keep: &dyn Fn(&str) -> bool) -> Print {
+    let mut out: Print = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| e.file_name().to_string_lossy().ends_with(".json"))
+        .filter(|e| keep(&e.file_name().to_string_lossy()))
         .map(|e| {
             let m = e.metadata().ok();
             (e.file_name().to_string_lossy().into_owned(), m.as_ref().and_then(|m| m.modified().ok()),
@@ -236,4 +257,24 @@ fn plan_fingerprint() -> Vec<(String, Option<SystemTime>, u64)> {
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pane_file_write_changes_the_fingerprint() {
+        let dir = std::env::temp_dir().join(format!("crew-feed-print-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let panes = |n: &str| n.starts_with("pane-") && n.ends_with(".json");
+        std::fs::write(dir.join("pane-P1.json"), r#"{"state":"working"}"#).unwrap();
+        std::fs::write(dir.join("asked-payload-X"), "x").unwrap();
+        let a = fingerprint(&dir, &panes);
+        assert_eq!(a.len(), 1, "only pane files: {a:?}");
+        std::fs::write(dir.join("pane-P1.json"), r#"{"state":"needs_input"}"#).unwrap();
+        assert_ne!(fingerprint(&dir, &panes), a, "a state change is a different size");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

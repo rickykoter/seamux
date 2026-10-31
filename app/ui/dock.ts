@@ -8,12 +8,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Decision } from "./decisions";
+import { MigrateBanner } from "./migrate";
 import { NewWorkspace } from "./newws";
 import { ReclaimWizard } from "./reclaim";
 import { Sheet } from "./sheet";
 import { splitter } from "./splitter";
 import { setLevel, type Levels } from "./tuck";
-import type { Frame as WallFrame, Tile } from "./wall";
+import type { Frame as WallFrame, Tile } from "./tiles";
 
 type IntentServer = { origin: string | null; up: boolean; reason: string | null };
 
@@ -39,6 +40,8 @@ export class DockView {
   private newws = new NewWorkspace();
   /** The board's reclaim chip, asked here rather than in a cmux terminal. */
   private reclaim = new ReclaimWizard();
+  /** Sessions on the other backend that can move here, asked at launch. */
+  private migrate = new MigrateBanner();
   /** A workspace just made here, and until when it is kept while cmux's
    *  frames catch up (it is not in them for a second or two). */
   private fresh: { ws: string; until: number } | null = null;
@@ -64,7 +67,7 @@ export class DockView {
     key.textContent = "⌘N";
     add.append(plus, label, key);
     add.addEventListener("click", () => void this.newws.open());
-    this.board.append(add, this.note);
+    this.board.append(add, this.migrate.el, this.note);
     this.newws.onMade = (ws) => {
       this.fresh = { ws, until: Date.now() + 20_000 };
       this.select(ws, true);
@@ -116,6 +119,7 @@ export class DockView {
   }
 
   async start(): Promise<void> {
+    void this.migrate.start();
     await this.sheet.start();
     await listen<WallFrame>("wall:frame", (e) => {
       this.tiles = e.payload.tiles;

@@ -110,7 +110,7 @@ fn get_or_empty(v: &Value, key: &str) -> R<Value> {
 
 /// (hex, title) for the workspace this session runs in.
 fn workspace_color() -> R<(Option<Value>, Option<Value>)> {
-    let Some(wsid) = env_or("CMUX_WORKSPACE_ID") else { return Ok((None, None)) };
+    let Some(wsid) = crew_core::ident::workspace_id() else { return Ok((None, None)) };
     let path = colors_file();
     let mut cache = match pyval::read_text(&path) {
         Ok(Ok(t)) => pyval::loads(&t).unwrap_or_else(|_| json!({})),
@@ -129,6 +129,10 @@ fn workspace_color() -> R<(Option<Value>, Option<Value>)> {
 
     // No cmux at all is (None, None), uncached, as the Python's "no cmux"
     // is; a cmux that is there but does not answer is a cached miss below.
+    // A pane outside cmux (the tmux backend) has no cmux colour to ask for.
+    if !crew_core::ident::in_cmux() {
+        return Ok((None, None));
+    }
     let Some(cmux) = crate::spawn::connect() else { return Ok((None, None)) };
     // Cache the miss too, or a cmux that is down costs a timeout per render.
     let listed = match cmux.workspace_list(None) {

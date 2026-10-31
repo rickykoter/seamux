@@ -144,17 +144,13 @@ code. Each row names the shot that covers it: a screenshot in
 |---|---|---|
 | ⌥Space overlay over any app, tray icon, no Dock icon | README, shell.rs | V6 (card) |
 | Header: `cmux · N workspaces` pill, ⋯ menu | app/ui/main.ts | S-app-dock |
-| Dock tab: board, the selected agent's terminal, Wake and open pages, splitters | dock.ts | S-app-dock, V6.1 |
+| Dock tab: board, the selected agent's terminal, Wake and open pages, splitters; Move to native for a pane it cannot draw | dock.ts, sheet.ts | S-app-dock, V6.1 |
 | New workspace form (⌘N): repo, branch, first prompt, live steps | newws.ts | S-app-newws, V6.2 |
 | Reclaim wizard: guard checks, what goes, Reclaim | reclaim.ts | S-app-reclaim |
-| Mosaic: every pane a tile sized by urgency, reply, mute/tuck | mosaic.ts, wall.ts | S-app-mosaic, V6.3 |
-| Wall: ranked panes, reply box, Jump, `j`/`k` | wall.ts | S-app-wall, V6.3 |
-| Timeline: two-hour lanes of who waited, families grouped, reply inline | timeline.ts | S-app-timeline |
 | Wake tab | wake.ts | S-app-wake |
 | Lookout tab: review jobs with live steps, findings | review.ts | S-app-lookout |
-| Tucked chip, ⌘K palette, undo toast | palette.ts, tuck.ts | V6.3 |
+| Tucked chip, ⌘K palette, undo toast | palette.ts, tuck.ts | S-app-palette |
 | Pane chips `[plan]` / `[outside]`; links open in VS Code, Dock, PR hover cards | panechips.ts, panelinks.ts | S-app-dock (card) |
-| Decision cards, answer by digit, plan go/check | mosaic.ts, decisions.ts | V6.1 |
 
 ## Team rollout (docs/ADOPTING.md)
 

@@ -172,5 +172,12 @@ jobs:
         working-directory: app
         run: npm ci && npm run build
 
+      # The tmux backend's tests run a real tmux; here a missing one fails
+      # them instead of skipping.
+      - name: tmux
+        run: command -v tmux || brew install tmux
+
       - name: cargo test, every crate
+        env:
+          SEAMUX_REQUIRE_TMUX: "1"
         run: cargo test --manifest-path app/Cargo.toml --workspace

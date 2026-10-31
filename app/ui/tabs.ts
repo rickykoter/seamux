@@ -13,11 +13,9 @@ export type Tab = {
   missing?: string;
 };
 
-/** The views, in the strip, Command-1 to Command-5. */
+/** The views, in the strip, Command-1 to Command-3. */
 export const TABS: Tab[] = [
   { id: "dock", label: "Dock" },
-  { id: "mosaic", label: "Mosaic" },
-  { id: "timeline", label: "Timeline" },
   { id: "wake", label: "Wake" },
   { id: "review", label: "Lookout" },
 ];
@@ -145,7 +143,7 @@ export class Tabs {
     this.onSelect(id);
   }
 
-  /** Command-1 to Command-5 pick the views. */
+  /** Command-1 to Command-3 pick the views. */
   selectIndex(i: number): void {
     const tab = TABS[i];
     if (tab) this.select(tab.id);

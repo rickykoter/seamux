@@ -2,12 +2,14 @@
 //! share. The window and its commands live in main.rs and shell.rs.
 
 pub mod actions;
+pub mod backend;
 pub mod ghostty;
 pub mod pane;
 pub mod pty;
 pub mod reclaim;
 pub mod review;
 pub mod sessions;
+pub mod tmux_feed;
 pub mod tuck;
 pub mod views;
 pub mod wall;

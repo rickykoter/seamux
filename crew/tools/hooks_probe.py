@@ -750,6 +750,30 @@ if RUST:
     hook("session", stdin=payload(source="compact"), CMUX_SURFACE_ID="SA")
     check("a compaction's SessionStart leaves the pane working and phase:working",
           pane_state("SA") == "working" and desc() == f"phase:working root:{WT}", f"{pane_state('SA')} {desc()}")
+
+    # A pane on the tmux backend: SEAMUX_* ids, no CMUX_* at all. Its hooks
+    # write the pane file and never call cmux or start crew-listen.
+    print("a pane with no cmux (SEAMUX_* only)")
+    reset([row()])
+    tmux = dict(ws=None, SEAMUX_WORKSPACE_ID="ws-t", SEAMUX_PANE_ID="PT")
+    open(CLOG, "w").close()
+    r = hook("session", **tmux)
+    check("SessionStart with only SEAMUX_* runs, calls no cmux and starts no crew-listen",
+          r.returncode == 0 and not log() and not any("crew-listen" in s for s in spawns())
+          and marker("session-s-1"), f"{log()} {spawns()}")
+    hook("prompt", **tmux)
+    check("…its prompt marks pane-PT.json working", pane_state("PT") == "working", pane_state("PT"))
+    hook("ask", stdin=ASK, **tmux)
+    check("…its ask marks it needs_input and records the question for ws-t",
+          pane_state("PT") == "needs_input" and marker("question-ws-t") and marker("hold-PT"),
+          pane_state("PT"))
+    r = run([BASH, os.path.join(CREW, "hooks", "seamux-hook.sh"), "pretool"],
+            payload(tool_name="Bash"), env_for(**tmux))
+    check("…the pretool fast path finds pane-PT's hold and releases it, with no cmux",
+          r.returncode == 0 and pane_state("PT") == "working" and not marker("hold-PT") and not log(),
+          f"{pane_state('PT')} {log()}")
+    hook("stop", **tmux)
+    check("…and its stop marks it idle, still without cmux", pane_state("PT") == "idle" and not log(), log())
 else:
     print("two panes in one workspace: skipped (seamux only; run with CREW_IMPL=rust)")
 

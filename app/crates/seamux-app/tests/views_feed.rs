@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crew_core::history::{self, Entry};
-use seamux_app::views::{spans_of, Decision, Feed, GapFill, Inputs, Span, GAP_GRACE};
+use seamux_app::views::{Decision, Feed, GapFill, Inputs, GAP_GRACE};
 use seamux_app::wall::Tile;
 use serde_json::json;
 
@@ -98,7 +98,6 @@ fn inputs(f: &Fixture, plans: serde_json::Value, wake: Vec<crew_store::Row>) -> 
         state_dir: f.p("state"),
         reviews_dir: f.p("reviews"),
         history_dir: f.p("history"),
-        dp_state_dir: f.p("dp-state"),
         tuck_file: f.p("tucked.json"),
         asks_dir: f.p("asks"),
         plans: Box::new(move || Ok(plans.as_array().cloned().unwrap_or_default())),
@@ -348,76 +347,6 @@ fn another_panes_hook_line_does_not_hide_this_panes_change() {
     assert_eq!(poll[0].surface, SURF_B);
 }
 
-fn at(at: u64, state: &str, source: &str) -> Entry {
-    Entry { at, ws: WS_A.into(), surface: SURF_A.into(), state: state.into(), source: source.into(), detail: String::new() }
-}
-
-#[test]
-fn spans_start_from_the_state_before_the_window_and_merge_repeats() {
-    let m = 60_000;
-    let start = NOW - 40 * m;
-    let entries = vec![
-        at(start - 10 * m, "working", "hook"),
-        at(start + 5 * m, "needs_input", "hook"),
-        at(start + 5 * m + 12_000, "needs_input", "poll"), // the poll saw the same ask
-        at(start + 20 * m, "working", "hook"),
-        at(start + 30 * m, "idle", "hook"),
-    ];
-    let span = |state: &str, a: u64, b: u64| Span { state: state.into(), start: a, end: b };
-    assert_eq!(
-        spans_of(&entries, start, NOW),
-        vec![
-            span("working", start, start + 5 * m),
-            span("needs_input", start + 5 * m, start + 20 * m),
-            span("working", start + 20 * m, start + 30 * m),
-            span("idle", start + 30 * m, NOW),
-        ]
-    );
-    // Nothing recorded: no spans. Everything before the window: one span of the last state.
-    assert!(spans_of(&[], start, NOW).is_empty());
-    assert_eq!(spans_of(&entries[..1], start, NOW), vec![span("working", start, NOW)]);
-}
-
-#[test]
-fn lanes_carry_spans_increment_marks_and_reviews() {
-    let f = Fixture::new("lanes");
-    let a = f.dir("work/a");
-    let m = 60_000;
-    history::append(&f.p("history"), &at(NOW - 3 * 3600_000, "working", "hook")).unwrap();
-    history::append(&f.p("history"), &at(NOW - 30 * m, "needs_input", "hook")).unwrap();
-    f.write(
-        "dp-state/inv.json",
-        &json!({"increments": [
-            {"n": 2, "title": "Old", "authorizedAt": NOW - 5 * 3600_000, "doneAt": NOW - 4 * 3600_000},
-            {"n": 3, "title": "Cutover", "authorizedAt": NOW - 50 * m}]}).to_string(),
-    );
-    f.write(
-        "reviews/inv-inc3.json",
-        &json!({"id": "inv-inc3", "title": "inc 3", "updatedAt": "2026-10-21T19:19:35.194Z", "source": {"root": a, "inc": 3}, "findings": []}).to_string(),
-    );
-    let plans = json!([{"slug": "inv", "root": a, "phase": "implementing", "touchedAt": 1, "owner": {"workspace": WS_A},
-        "progress": {"open": [{"n": 3, "title": "Cutover"}]}, "increments": []}]);
-    let mut shell = tile(SURF_B, WS_B, &a, "shell");
-    shell.agent = None;
-    let frame = primed(inputs(&f, plans, vec![])).build(&[tile(SURF_A, WS_A, &a, "needs_input"), shell], NOW);
-    assert_eq!(frame.lanes.len(), 1, "a shell gets no lane");
-    let lane = &frame.lanes[0];
-    let states: Vec<&str> = lane.spans.iter().map(|s| s.state.as_str()).collect();
-    assert_eq!(states, vec!["working", "needs_input"]);
-    assert_eq!(lane.spans[0].start, NOW - 2 * 3600_000, "clipped to the window");
-    let kinds: Vec<(&str, u64)> = lane.marks.iter().map(|k| (k.kind.as_str(), k.n)).collect();
-    // Increment 2 went and finished before the window; the review's updatedAt
-    // (2026-10-21T19:19Z) is outside it too. Only increment 3's go is in.
-    assert_eq!(kinds, vec![("go", 3)]);
-
-    // An agent with no history in the window still gets a lane span: the
-    // wall's state from when it first saw it.
-    let mut b = tile(SURF_B, WS_B, &f.dir("work/b"), "needs_input");
-    b.since = NOW - 10 * m;
-    let frame = primed(inputs(&f, json!([]), vec![])).build(&[b], NOW);
-    assert_eq!(frame.lanes[0].spans, vec![Span { state: "needs_input".into(), start: NOW - 10 * m, end: NOW }]);
-}
-
 #[test]
 fn tuck_two_workspaces_in_one_worktree_go_together_and_a_tucked_ask_marks_waiting() {
     use seamux_app::tuck::{Level, Store};
@@ -611,37 +540,6 @@ fn pages_list_a_workspaces_plan_open_reviews_and_unanswered_asks() {
         ("ask", "/ask/open1", "waiting", true),
     ], "plan, then reviews newest first (a closed one left out), then the live unanswered ask");
     assert_eq!(of(WS_B), vec![("plan", "/plan/ux.review.html", "in review", true)], "a plan in review opens its review surface");
-}
-
-#[test]
-fn two_claudes_in_one_workspace_get_sub_rows_under_one_rolled_up_lane() {
-    let f = Fixture::new("two-panes");
-    let a = f.dir("work/a");
-    let m = 60_000;
-    let e = |at, surface: &str, state: &str| Entry { at, ws: WS_A.into(), surface: surface.into(), state: state.into(), source: "hook".into(), detail: "x".into() };
-    // A works throughout; B waits on you for the last ten minutes.
-    history::append(&f.p("history"), &e(NOW - 60 * m, SURF_A, "working")).unwrap();
-    history::append(&f.p("history"), &e(NOW - 60 * m, SURF_B, "idle")).unwrap();
-    history::append(&f.p("history"), &e(NOW - 10 * m, SURF_B, "needs_input")).unwrap();
-    let mut owner = tile(SURF_A, WS_A, &a, "working");
-    owner.owner = Some("p".into());
-    let mut wandered = tile(SURF_B, WS_A, &f.dir("work/b"), "needs_input");
-    wandered.outside = true;
-    let frame = primed(inputs(&f, json!([]), vec![])).build(&[owner, wandered], NOW);
-    assert_eq!(frame.lanes.len(), 1, "one lane per workspace");
-    let lane = &frame.lanes[0];
-    let rows: Vec<(&str, Option<&str>, bool)> = lane.panes.iter().map(|p| (p.surface.as_str(), p.owner.as_deref(), p.outside)).collect();
-    assert_eq!(rows, vec![(SURF_A, Some("p"), false), (SURF_B, None, true)]);
-    assert_eq!(lane.panes[0].spans.iter().map(|s| s.state.as_str()).collect::<Vec<_>>(), ["working"]);
-    assert_eq!(lane.panes[1].spans.iter().map(|s| s.state.as_str()).collect::<Vec<_>>(), ["idle", "needs_input"]);
-    // The head: working until B asks, then waiting on you.
-    assert_eq!(
-        lane.spans,
-        vec![
-            Span { state: "working".into(), start: NOW - 60 * m, end: NOW - 10 * m },
-            Span { state: "needs_input".into(), start: NOW - 10 * m, end: NOW },
-        ]
-    );
 }
 
 #[test]

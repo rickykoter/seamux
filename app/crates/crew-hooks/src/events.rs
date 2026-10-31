@@ -32,9 +32,10 @@ use serde_json::Value;
 use crate::pyval;
 use crate::spawn;
 
-/// What a hook knows: its cmux, its workspace, its state dir, its payload.
+/// What a hook knows: its cmux (None outside cmux: the pane files are still
+/// written, the sidebar is not), its workspace, its state dir, its payload.
 pub struct Hook {
-    pub cmux: Cmux,
+    pub cmux: Option<Cmux>,
     pub ws: String,
     pub state: PathBuf,
     pub payload: String,
@@ -46,12 +47,14 @@ pub fn state_dir() -> PathBuf {
     crew_core::home::xdg_cache()
 }
 
-/// crew_guard: outside cmux, with no workspace, or with crew disabled, a
-/// hook does nothing. None means exit 0 now.
-pub fn guard() -> Option<(Cmux, String, PathBuf)> {
-    // The cheap tests first, so a hook outside cmux or with crew disabled
-    // never opens a connection.
-    let ws = crew_core::py::env_or("CMUX_WORKSPACE_ID")?;
+/// crew_guard: with no workspace (no SEAMUX_WORKSPACE_ID or
+/// CMUX_WORKSPACE_ID) or with crew disabled, a hook does nothing. None means
+/// exit 0 now. The cmux client is there only in a cmux pane: a session on
+/// the tmux backend writes its pane file and leaves cmux alone.
+pub fn guard() -> Option<(Option<Cmux>, String, PathBuf)> {
+    // The cheap tests first, so a hook with crew disabled never opens a
+    // connection.
+    let ws = crew_core::ident::workspace_id()?;
     if crew_core::py::env_or("CREW_DISABLED").is_some() {
         return None;
     }
@@ -59,7 +62,8 @@ pub fn guard() -> Option<(Cmux, String, PathBuf)> {
     if state.join("disabled").exists() {
         return None;
     }
-    let cmux = spawn::connect()?;
+    // In cmux and cmux not answering at all: nothing to do, as before.
+    let cmux = if crew_core::ident::in_cmux() { Some(spawn::connect()?) } else { None };
     Some((cmux, ws, state))
 }
 
@@ -176,17 +180,19 @@ fn split_tokens(s: &str) -> Vec<&str> {
 }
 
 impl Hook {
-    pub fn new(cmux: Cmux, ws: String, state: PathBuf, payload: String) -> Hook {
+    pub fn new(cmux: Option<Cmux>, ws: String, state: PathBuf, payload: String) -> Hook {
         Hook { cmux, ws, state, payload, cwd: None }
     }
 
     fn cli_transport(&self) -> bool {
-        matches!(self.cmux.transport(), Transport::Cli(_))
+        self.cmux.as_ref().is_some_and(|c| matches!(c.transport(), Transport::Cli(_)))
     }
 
     /// crew_cmux: fire and forget, never failing the turn.
     fn cli(&self, argv: &[&str]) {
-        let _ = self.cmux.cli(argv);
+        if let Some(c) = &self.cmux {
+            let _ = c.cli(argv);
+        }
     }
 
     /// crew_json <key>: a top-level field as Python's print would show it.
@@ -228,8 +234,8 @@ impl Hook {
     fn status_set(&self, lane: &str) {
         if self.cli_transport() {
             self.cli(&["workspace", "status", "set", lane]);
-        } else {
-            let _ = self.cmux.workspace_status_set(&self.ws, lane);
+        } else if let Some(c) = &self.cmux {
+            let _ = c.workspace_status_set(&self.ws, lane);
         }
     }
 
@@ -261,9 +267,10 @@ impl Hook {
 
     /// This workspace's row in cmux's list, if cmux lists it.
     fn row(&self) -> Option<Value> {
+        let c = self.cmux.as_ref()?;
         let rows: Vec<Value> = if self.cli_transport() {
             // The bash's own read: one `workspace list --json`.
-            match self.cmux.cli(&["workspace", "list", "--json"]) {
+            match c.cli(&["workspace", "list", "--json"]) {
                 Ok(o) => match pyval::loads(&o.stdout) {
                     Ok(Value::Object(d)) => d.get("workspaces").and_then(Value::as_array).cloned().unwrap_or_default(),
                     _ => Vec::new(),
@@ -272,14 +279,14 @@ impl Hook {
             }
         } else {
             // On the socket, every window: workspace.list answers for one.
-            let wins = self.cmux.window_list().unwrap_or_default();
+            let wins = c.window_list().unwrap_or_default();
             let ids: Vec<Option<String>> = if wins.is_empty() {
                 vec![None]
             } else {
                 wins.iter().map(|w| w.get("id").and_then(Value::as_str).map(String::from)).collect()
             };
             ids.iter()
-                .filter_map(|id| self.cmux.workspace_list(id.as_deref()).ok())
+                .filter_map(|id| c.workspace_list(id.as_deref()).ok())
                 .flat_map(|d| d.get("workspaces").and_then(Value::as_array).cloned().unwrap_or_default())
                 .collect()
         };
@@ -309,7 +316,9 @@ impl Hook {
             } else {
                 WorkspaceAction::SetDescription(new.to_string())
             };
-            let _ = self.cmux.workspace_action(&self.ws, &a);
+            if let Some(c) = &self.cmux {
+                let _ = c.workspace_action(&self.ws, &a);
+            }
         }
     }
 
@@ -426,7 +435,7 @@ impl Hook {
         }
         let cur = if self.cli_transport() {
             // The bash's read: sidebar-state's color= line.
-            let state = self.cmux.sidebar_state(&self.ws).unwrap_or_default();
+            let state = self.cmux.as_ref().and_then(|c| c.sidebar_state(&self.ws).ok()).unwrap_or_default();
             let cur: Vec<&str> = state.lines().filter_map(|l| l.strip_prefix("color=")).collect();
             strip_newlines(&cur.join("\n")).to_string()
         } else {
@@ -443,14 +452,18 @@ impl Hook {
         if hex.starts_with('#') {
             if self.cli_transport() {
                 self.cli(&["workspace-action", "--action", "set-color", "--color", &hex]);
-            } else {
-                let _ = self.cmux.workspace_action(&self.ws, &WorkspaceAction::SetColor(hex));
+            } else if let Some(c) = &self.cmux {
+                let _ = c.workspace_action(&self.ws, &WorkspaceAction::SetColor(hex));
             }
         }
     }
 
     /// crew_listen_ensure: the singleton reconciler, started from SessionStart.
     fn listen_ensure(&self) {
+        // crew-listen follows cmux's events: without cmux it has nothing to follow.
+        if self.cmux.is_none() {
+            return;
+        }
         let t = spawn::tool("crew-listen", &[]);
         if !t.runnable() || self.state.join("listen.off").exists() {
             return;
@@ -471,7 +484,7 @@ impl Hook {
 
 /// The pane this hook runs in, as cmux tells Claude Code, or "".
 pub fn surface() -> String {
-    crew_core::py::env_or("CMUX_SURFACE_ID").unwrap_or_default()
+    crew_core::ident::pane_id()
 }
 
 /// What the app reads back to show and answer an ask:
@@ -545,8 +558,8 @@ fn session(h: &mut Hook) {
     }
     if h.cli_transport() {
         h.cli(&["rename-workspace", &label]);
-    } else {
-        let _ = h.cmux.rename_workspace(&h.ws, &label);
+    } else if let Some(c) = &h.cmux {
+        let _ = c.rename_workspace(&h.ws, &label);
     }
     let tab = if br.is_empty() { dir.clone() } else { format!("{dir} · {br}") };
     h.cli(&["rename-tab", &tab]);
@@ -649,7 +662,7 @@ fn stop(h: &mut Hook) -> String {
 /// still waits keeps the workspace waiting.
 fn pretool() -> i32 {
     let state = state_dir();
-    let in_ws = std::env::var("CMUX_WORKSPACE_ID").ok().filter(|v| !v.is_empty());
+    let in_ws = crew_core::ident::workspace_id();
     let ws = in_ws.clone().unwrap_or_else(|| "none".into());
     // A marker left from before pane files (or written by the bash) still
     // means a turn-end ask is taken back.
@@ -661,7 +674,8 @@ fn pretool() -> i32 {
     });
     // Back from waiting on you: the phase is the roll-up's again.
     let resumed = before.state == "needs_input" || before.asked.is_some() || legacy_ask;
-    let Some(cmux) = spawn::connect() else {
+    let cmux = if crew_core::ident::in_cmux() { spawn::connect() } else { None };
+    let Some(cmux) = cmux else {
         // No cmux to tell: the files are in step, and the lane marker goes
         // when nothing in the workspace pins it.
         if after.lane == Lane::Auto {
@@ -669,7 +683,7 @@ fn pretool() -> i32 {
         }
         return 0;
     };
-    let h = Hook::new(cmux, ws, state, String::new());
+    let h = Hook::new(Some(cmux), ws, state, String::new());
     h.lane_to(&before, &after, false);
     if resumed && in_ws.is_some() {
         h.tokens(after.phase(), &[]);
@@ -790,6 +804,27 @@ fn payload_name(ws: &str, sid: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pane on the tmux backend: no cmux client. Its lane and tokens touch
+    /// no sidebar, and its pane file is written all the same.
+    #[test]
+    fn a_hook_without_cmux_writes_its_pane_file_and_no_sidebar() {
+        let dir = std::env::temp_dir().join(format!("crew-hooks-nocmux-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let h = Hook::new(None, "ws-t".into(), dir.clone(), "{}".into());
+        assert!(!h.cli_transport());
+        h.lane_set("waiting");
+        assert!(h.lane_marker().exists(), "the lane marker is crew's own file");
+        h.tokens("waiting", &[]);
+        assert_eq!(h.desc_get(), "", "no cmux, no description to read");
+        h.lane_release();
+        assert!(!h.lane_marker().exists());
+        let (_, after, pane) = status::update(&dir, "ws-t", "PT", "s-1", 1, |p| p.state = "needs_input".into());
+        assert_eq!(pane.state, "needs_input");
+        assert_eq!(after.state, "needs_input");
+        assert!(status::path(&dir, "PT").exists(), "pane-PT.json");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn each_session_gets_its_own_payload_file() {

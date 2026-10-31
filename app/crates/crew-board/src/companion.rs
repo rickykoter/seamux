@@ -191,12 +191,29 @@ fn new_id(out: &str) -> String {
     out.split_whitespace().find(|t| is_uuid_token(t)).unwrap_or("").to_string()
 }
 
+/// On the tmux backend there is no cmux pane to hold a page: one of this
+/// server's own pages (loopback http only) goes to the default browser.
+pub fn open_in_browser(url: &str) -> Result<String, String> {
+    let loopback = ["http://127.0.0.1:", "http://localhost:"].iter().any(|p| url.starts_with(p));
+    if !loopback || url.chars().any(|c| c.is_whitespace() || c.is_control() || c == '\\') || url.contains('@') {
+        return Err(format!("not one of this server's pages: {url:?}"));
+    }
+    if crate::act::run_ok("open", &[url], None) {
+        Ok("browser".into())
+    } else {
+        Err("the browser did not open".into())
+    }
+}
+
 /// Show `url` in `ws`'s companion under `key`. `caller` is the surface the
 /// open came from (it gets the keyboard back unless `focus`). Returns the
-/// tab's surface id.
+/// tab's surface id, or "browser" on the tmux backend.
 pub fn open(url: &str, key: &str, ws: &str, caller: &str, focus: bool) -> Result<String, String> {
     if !key_ok(key) {
         return Err(format!("not a companion key: {key:?}"));
+    }
+    if crate::backend::tmux().is_some() {
+        return open_in_browser(url);
     }
     let ws = if ws.is_empty() { front() } else { ws.to_string() };
     if ws.is_empty() {

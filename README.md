@@ -5,7 +5,7 @@ It is a set of Claude Code plugins. Take the one you came for, or all of them.
 
 | plugin | what it does | runs on |
 |---|---|---|
-| **crew** | A board in the [cmux](https://cmux.io) Dock that ranks your worktrees by which one needs you next. | macOS with cmux |
+| **crew** | A board in the [cmux](https://cmux.io) Dock that ranks your worktrees by which one needs you next. | macOS, with cmux or the seamux app |
 | **deep-plan** | Turns "make a plan" into a page you review, with a short quiz. The agent can't edit until you approve each increment, and can't call an increment done until its checks pass. | anywhere Claude Code runs |
 | **restack** | Rebases a stack of branches onto a moved base and regenerates conflicting generated files instead of making you merge them. | anywhere Claude Code runs |
 | **lookout** | Opens a diff beside the terminal, riskiest files first, with a reviewer's findings on their lines for you and the agent to talk through. A plan can make an increment wait on its review. | anywhere Claude Code runs |
@@ -85,16 +85,17 @@ that host can show it.
 
 | host | detected by | pages | plan state |
 |---|---|---|---|
-| cmux | `CMUX_WORKSPACE_ID` | a pane beside the terminal, through crew's server | `~/.claude` |
+| cmux | `CMUX_WORKSPACE_ID`, unless `SEAMUX_BACKEND=tmux` | a pane beside the terminal, through crew's server | `~/.claude` |
+| the seamux app's own tmux | `SEAMUX_PANE_ID` | crew's server; the app's Dock lists the plan, reviews and questions beside the terminal, so nothing opens, and a pick on a question page is typed into the pane through tmux | `~/.claude` |
 | Claude desktop | `CLAUDE_CODE_ENTRYPOINT` | the plugin's own server; Claude opens it in the app's browser pane | `~/.claude` |
 | a terminal | none of the others | the plugin's own server; you open the printed link | `~/.claude` |
 | claude.ai/code cloud | `CLAUDE_CODE_REMOTE=true` | no live page; a review is shared as an Artifact | the repo, under `.seamux/state/` (kept out of git) |
 | CI | no signal, or `SEAMUX_HOST=terminal` | none; checks and verdicts are the output | whatever the job restores |
 
-Outside cmux, deep-plan and lookout each start a small server on 127.0.0.1
+Outside cmux and the seamux app, deep-plan and lookout each start a small server on 127.0.0.1
 when a page is first wanted and stop it after 30 idle minutes. Every verb
 that opens a page prints `served at <url> (host: …)`. `deep-plan doctor`
-says which host it detected, and `SEAMUX_HOST=cmux|desktop|terminal|remote`
+says which host it detected, and `SEAMUX_HOST=cmux|seamux|desktop|terminal|remote`
 overrides it. Browser checks run through Playwright and headless Chromium
 wherever cmux is not the host.
 
@@ -305,25 +306,38 @@ away.
 
 ![the gate band above the prompt after a blocked edit: the reason, go next, open plan and dismiss](docs/img/gate-band.png)
 
-### The seamux app: everything over cmux, on a hotkey
+### The seamux app: your agents on a hotkey, with or without cmux
 
-A small Mac app that lives outside cmux and drives it over its socket. Press
+A small Mac app for running your Claude sessions. When cmux is running, the
+app drives it over its socket. When it isn't, the app runs each session in
+its own tmux server and keeps a list of workspaces and panes itself. It
+chooses once at launch, and the chip at the top right says which (`cmux` or
+`tmux`); `SEAMUX_BACKEND=cmux|tmux` sets it. Press
 ⌥Space (or ⌃⌥Space) from anywhere, a full-screen cmux included, and an overlay drops in
 over whatever you're doing; press it again, or Esc, and it's gone. Click
 another app and that app comes in front; the hotkey brings the overlay back.
 It has no Dock icon; a tray icon carries Show, Quit and the hotkey.
 
-The first tab is the **wall**: every terminal pane in cmux as a card, showing
-its last lines live (within about a second and a half of new output). Agents
-waiting on you float to the top with an amber edge, then the working ones,
-the idle ones and plain shells. Each agent's card has a reply box and a Jump
-button. A reply types your line into that agent's pane and presses Enter;
-Jump brings the pane to the front in cmux. The other tabs (Wake, Usage and
-Board) frame the intent server's own pages until they're ported. The board
-tab says so until the server serves `/board`.
+The first tab is the **Dock**: the crew board on the left, the chosen
+workspace's Claude in the middle, and its Wake and open pages (its plan,
+reviews and questions) on the right. The middle is a real terminal for a
+native pane, one whose session lives in tmux: click into it and type. A pane
+that isn't native shows its last lines and a reply box, with **Move to
+native** to restart its Claude in a native session and **Open in cmux** to go
+there. The other tabs are the Wake and Lookout; Usage and the Board sit
+behind the ⋯ menu.
 
-Install it with `./install.sh --app` (see [Install](#install)). It needs cmux's
-socket in `automation` mode, which `crew apply` sets.
+On its own tmux, the app also does what cmux did for it. It posts a
+notification when a Claude waits on you, finishes a turn, or is blocked by
+bash-guard. crew-sync keeps PR, CI and Jira chips on the board's rows. When
+the app starts on one backend while sessions are still running on the other,
+a strip at the top of the Dock offers to move them over, and after a restart
+it offers to bring back each session that was running in its tmux, with the
+same conversation.
+
+Install it with `./install.sh --app` (see [Install](#install)). On cmux it
+needs cmux's socket in `automation` mode, which `crew apply` sets. Without
+cmux it needs `tmux` on your PATH.
 
 https://github.com/user-attachments/assets/dec47bb2-e619-40ba-b40c-40477d8b37bc
 
@@ -373,7 +387,8 @@ environment), or push anything.
 | | why | without it |
 |---|---|---|
 | macOS | cmux, the Dock and the seamux app are Mac-only | no crew or app; the other plugins still run |
-| [cmux](https://cmux.io) nightly | the terminals, workspaces and socket crew drives | files install, nothing shows |
+| [cmux](https://cmux.io) nightly | the terminals, workspaces and socket crew drives | the seamux app runs your sessions in its own tmux instead; without cmux or the app, files install and nothing shows |
+| `tmux` | the seamux app's sessions when cmux isn't running | the app needs cmux |
 | `cargo`, `node` + Xcode CLT | build the seamux app and its `seamux` CLI, which every crew tool and hook runs as | install refuses |
 | `python3` | crew apply's and the bash tools' JSON helpers, and the probes | install refuses |
 | Claude Code | the agents this is all for | not much point |
@@ -383,7 +398,7 @@ environment), or push anything.
 | Rust (`cargo`) + Xcode command line tools *(optional)* | building the seamux app with `./install.sh --app` | no app; everything else works |
 
 deep-plan, lookout, restack and humanize need only Claude Code and `node`;
-the macOS and cmux rows are for crew and the app.
+the macOS, cmux and tmux rows are for crew and the app.
 
 ### Install
 
@@ -456,10 +471,16 @@ For scripted installs, `--main-repo PATH`, `--with-jira=SITE`,
 options, and `--no-crew`, `--no-restack`, `--no-guard`, `--no-lookout` and
 `--no-humanize` skip plugins.
 
-### Without cmux: Claude desktop, a terminal, the cloud
+### Without cmux: the seamux app, Claude desktop, a terminal, the cloud
 
-Nothing more to install: deep-plan and lookout serve their own pages, as
-[Where it runs](#where-it-runs) describes. A repo that cloud sessions work in
+The seamux app runs without cmux on its own tmux, as
+[The seamux app](#the-seamux-app-your-agents-on-a-hotkey-with-or-without-cmux)
+describes: start sessions from its Dock, and crew, deep-plan and lookout work
+in them as they do in cmux. `crew doctor` says which backend is in use, and
+cmux being missing is fine when it is the app's tmux.
+
+Elsewhere there is nothing more to install: deep-plan and lookout serve their
+own pages, as [Where it runs](#where-it-runs) describes. A repo that cloud sessions work in
 runs `deep-plan install-repo` and `lookout install-repo` once and commits
 `.claude/`; [docs/ADOPTING.md](docs/ADOPTING.md) walks through it.
 

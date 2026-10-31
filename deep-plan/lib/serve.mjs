@@ -239,6 +239,37 @@ function cmuxRun(argv) {
   return [r.status === 0 ? 0 : 1, (r.stdout || "") + (r.stderr || "") + (r.error ? r.error.message : "")];
 }
 
+// A pane of the seamux app's own tmux, as the ask recorded it ({socket, pane}
+// from the asking session's $TMUX and $TMUX_PANE): an absolute socket path and
+// a %N pane id, or null. Only what the ask recorded is ever typed into.
+export function tmuxTarget(t) {
+  if (!t || typeof t !== "object") return null;
+  const socket = String(t.socket || ""), pane = String(t.pane || "");
+  if (!path.isAbsolute(socket) || /[\0\n]/.test(socket) || !/^%\d+$/.test(pane)) return null;
+  return { socket, pane };
+}
+
+function tmuxBin() {
+  const known = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"].find(f => fs.existsSync(f));
+  return known || "tmux";
+}
+
+// cmuxRun's verbs, answered by tmux for one recorded pane: read-screen is
+// capture-pane, send types the text literally, send-key enter is Enter.
+export function tmuxRun(target) {
+  return argv => {
+    const tm = args => {
+      const r = spawnSync(tmuxBin(), ["-S", target.socket, ...args], { encoding: "utf8", timeout: 10000 });
+      return [r.status === 0 ? 0 : 1, (r.stdout || "") + (r.stderr || "") + (r.error ? r.error.message : "")];
+    };
+    const [verb] = argv;
+    if (verb === "read-screen") return tm(["capture-pane", "-p", "-t", target.pane, "-S", "-60"]);
+    if (verb === "send") return tm(["send-keys", "-t", target.pane, "-l", argv[argv.length - 1]]);
+    if (verb === "send-key" && argv[argv.length - 1] === "enter") return tm(["send-keys", "-t", target.pane, "Enter"]);
+    return [1, `tmux has no ${verb}`];
+  };
+}
+
 const squash = s => String(s).replace(/\s+/g, "");
 const reEscape = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // Python's `pattern % value`: the first %s or %d filled, %% a literal %.
@@ -313,10 +344,13 @@ async function answerOne(id, nRaw, run) {
   if (n < 1 || n > options.length) return [false, false, `option ${n} is not one of ${options.length}`];
   if (ask.answer) return [false, false, `already answered: ${ask.answer.n ?? 0}`];
   const label = String(options[n - 1].label || "");
-  // Typing happens only where the ask recorded a cmux surface. Anywhere else
+  // Typing happens only where the ask recorded a cmux surface or tmux pane. Anywhere else
   // the page records the pick and the chat prompt stays the answer of record.
+  // An ask from a pane of the app's tmux is typed through tmux, into the
+  // pane it recorded; any other through cmux. A probe's fake runner wins.
+  const tm = tmuxTarget(ask.tmux);
   const [delivered, detail, typed] = ask.surface
-    ? await deliver(String(ask.surface), n, label, run)
+    ? await deliver(String(ask.surface), n, label, run || (tm ? tmuxRun(tm) : cmuxRun))
     : [false, `answer ${n} in the chat prompt — this page shows the options but cannot type there`, false];
   // Nothing reached the terminal: record nothing, so the pick can be made
   // again once the question is on screen. A digit that was typed (even

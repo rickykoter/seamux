@@ -3,7 +3,7 @@
 // events so the panes look live. Loaded by vite.config.mjs before main.ts.
 //
 // The shapes are the Rust side's (app/crates/seamux-app/src): wall.rs Frame
-// and Tile, views.rs ViewsFrame, term_app.rs's terminal.replay frame,
+// and Tile, views.rs ViewsFrame, pty_app.rs's native terminal (bytes over a Channel),
 // crew-board wake.rs wake_data, review_app.rs jobs, reclaim.rs Report,
 // newws_app.rs Options, sessions.rs SessionRow, shell.rs IntentServer.
 //
@@ -13,6 +13,10 @@
 //                                  keeps serving the demo board)
 //   &board=intent                  take /board from that server too
 //   ?intent=none                   no intent server at all: the down states
+//   &backend=tmux                  the app's own tmux, not cmux: cmux-only
+//                                  controls hide
+//   &plain=checkout,api            those workspaces' panes are not native: the
+//                                  Dock shows Move to native for them
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { QUESTION, HOME, REPO, TREES, GH, WORKSPACES, byKey, treeOf } from "./world.mjs";
 
@@ -27,6 +31,9 @@ const iso = (ms) => new Date(ms).toISOString();
 const params = new URLSearchParams(location.search);
 const intentArg = params.get("intent") ?? "";
 const boardFromIntent = params.get("board") === "intent";
+const backend = params.get("backend") === "tmux" ? "tmux" : "cmux";
+/** Surfaces of the panes that are not native (?plain=<workspace keys>). */
+const plainPanes = new Set((params.get("plain") ?? "").split(",").filter(Boolean).map((k) => byKey[k]?.surface).filter(Boolean));
 const demoCfg = window.__SEAMUX_DEMO__ ?? { intentPort: 0 };
 const STUB = demoCfg.intentPort ? `http://127.0.0.1:${demoCfg.intentPort}` : "";
 /** Pages beyond the board exist only when a real intent server is given. */
@@ -95,7 +102,7 @@ const footer = (input, mode) => [RULE, `${C.dim("❯")} ${input}`, RULE, `  ${C.
 const panes = new Map();
 
 function pane(surface, o) {
-  panes.set(surface, { surface, input: "", extra: [], size: null, ...o });
+  panes.set(surface, { surface, input: "", extra: [], ...o });
 }
 
 function questionBox(sel) {
@@ -232,74 +239,7 @@ pane(W.api.shell.surface, {
   prompt: () => null,
 });
 
-// The SGR subset Claude Code and a shell print, to terminal.replay's cells.
-const BASIC = ["#1d1f21", "#ff6b80", "#4eba65", "#e5c07b", "#7aa2f7", "#d699b6", "#7fbbb3", "#d8d8dc"];
-function cells(line) {
-  const out = [];
-  let st = {};
-  const re = /\x1b\[([0-9;]*)m/g;
-  let at = 0;
-  const push = (text) => {
-    for (const ch of text) out.push({ ch, st });
-  };
-  for (let m; (m = re.exec(line)); ) {
-    push(line.slice(at, m.index));
-    at = re.lastIndex;
-    const p = m[1] === "" ? [0] : m[1].split(";").map(Number);
-    st = { ...st };
-    for (let i = 0; i < p.length; i++) {
-      const n = p[i];
-      if (n === 0) st = {};
-      else if (n === 1) st.bold = true;
-      else if (n === 2) st.faint = true;
-      else if (n === 3) st.italic = true;
-      else if (n === 4) st.underline = true;
-      else if (n === 7) st.inverse = true;
-      else if (n === 9) st.strike = true;
-      else if (n === 22) st.bold = st.faint = false;
-      else if (n === 39) delete st.fg;
-      else if (n === 49) delete st.bg;
-      else if (n >= 30 && n <= 37) st.fg = BASIC[n - 30];
-      else if (n >= 90 && n <= 97) st.fg = BASIC[n - 90];
-      else if (n >= 40 && n <= 47) st.bg = BASIC[n - 40];
-      else if ((n === 38 || n === 48) && p[i + 1] === 2) {
-        const hex = "#" + p.slice(i + 2, i + 5).map((v) => v.toString(16).padStart(2, "0")).join("");
-        st[n === 38 ? "fg" : "bg"] = hex;
-        i += 4;
-      }
-    }
-  }
-  push(line.slice(at));
-  return out;
-}
-
-/** Wrapped at the word, hanging past the line's marker, as Claude reflows. */
-function wrap(cs, cols) {
-  if (cs.length <= cols) return [cs];
-  let lead = 0;
-  while (lead < cs.length && cs[lead].ch === " ") lead++;
-  const text = cs.map((c) => c.ch).join("");
-  const marker = /^(⏺ |⎿  |❯ |> |\d+\. |• )/.exec(text.slice(lead));
-  const hang = Math.min(cols - 10, lead + (marker ? marker[0].length : 0));
-  const rows = [];
-  let cur = cs;
-  let first = true;
-  while (cur.length > cols) {
-    let brk = -1;
-    for (let i = cols; i > (first ? lead : hang) + 4; i--) if (cur[i]?.ch === " ") { brk = i; break; }
-    if (brk < 0) brk = cols;
-    rows.push(cur.slice(0, brk));
-    let rest = cur.slice(brk);
-    while (rest.length && rest[0].ch === " ") rest = rest.slice(1);
-    cur = [...Array.from({ length: hang }, () => ({ ch: " ", st: {} })), ...rest];
-    first = false;
-  }
-  rows.push(cur);
-  return rows;
-}
-
 const THEME = { background: "#17181b", foreground: "#d8d8dc", cursor: "#d8d8dc" };
-const DEFAULT_SIZE = { cols: 150, rows: 42 };
 
 function screenLines(p) {
   if (p.shell) {
@@ -308,85 +248,6 @@ function screenLines(p) {
   }
   const tail = p.question !== undefined && p.question !== null ? questionBox(p.question) : [...(p.spin ? p.spin() : []), ...footer(p.input, p.mode)];
   return [...p.body(), ...p.extra, ...tail];
-}
-
-/** terminal.replay's frame for a pane, at its size (or the one a view holds). */
-function frame(surface) {
-  const p = panes.get(surface);
-  if (!p) throw new Error("no such surface");
-  const { cols, rows } = p.size ?? DEFAULT_SIZE;
-  const styles = new Map();
-  const styleId = (st) => {
-    const key = JSON.stringify(st);
-    let s = styles.get(key);
-    if (!s) {
-      s = {
-        id: styles.size,
-        foreground: st.fg ?? "",
-        background: st.bg ?? "",
-        background_source: st.bg ? "explicit" : "default",
-        bold: !!st.bold,
-        faint: !!st.faint,
-        italic: !!st.italic,
-        underline: !!st.underline,
-        strikethrough: !!st.strike,
-        inverse: !!st.inverse,
-        invisible: false,
-      };
-      styles.set(key, s);
-    }
-    return s.id;
-  };
-  styleId({});
-  const all = [];
-  for (const l of screenLines(p)) {
-    if (l === RULE) all.push(cells(C.faint("─".repeat(cols))));
-    else all.push(...wrap(cells(l), cols));
-  }
-  const screen = all.slice(-rows);
-  const back = all.slice(0, Math.max(0, all.length - rows)).slice(-400);
-  const spans = (list) => {
-    const out = [];
-    list.forEach((row, r) => {
-      // A blank row still holds its place (rowsOf counts rows by their spans).
-      if (!row.length) out.push({ row: r, column: 0, cell_width: 1, style_id: 0, text: " " });
-      let i = 0;
-      while (i < row.length) {
-        const sid = styleId(row[i].st);
-        let j = i;
-        let text = "";
-        while (j < row.length && styleId(row[j].st) === sid) text += row[j++].ch;
-        out.push({ row: r, column: i, cell_width: j - i, style_id: sid, text });
-        i = j;
-      }
-    });
-    return out;
-  };
-  // The cursor: at the prompt's input, or hidden while a question is up.
-  let cursor = { row: 0, column: 0, visible: false, style: "block" };
-  if (p.shell) {
-    if (p.prompt() !== null) cursor = { row: screen.length - 1, column: screen[screen.length - 1]?.length ?? 0, visible: true, style: "block" };
-  } else if (p.question === undefined || p.question === null) {
-    const at = screen.length - 3;
-    cursor = { row: at, column: 2 + [...p.input].length, visible: true, style: "block" };
-  }
-  const grid = {
-    row_spans: spans(screen),
-    scrollback_spans: spans(back),
-    styles: [...styles.values()],
-    cursor,
-    terminal_theme: THEME,
-    active_screen: "primary",
-    modes: [],
-  };
-  const stamp = String(hash(JSON.stringify(grid.row_spans) + cols + "x" + rows + back.length));
-  return { stamp, rows, columns: cols, grid };
-}
-
-function hash(s) {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
-  return h >>> 0;
 }
 
 const plain = (l) => l.replace(/\x1b\[[0-9;]*m/g, "");
@@ -458,35 +319,13 @@ const LABELS = { checkout: "Expired coupon status", api: "Apply coupon at checko
 
 const wallFrame = () => ({ tiles: tiles(), error: null });
 
-// Timeline: two hours of spans per agent workspace (minutes ago).
+// Two hours of state spans per agent workspace (minutes ago), for the history.
 const SPANS = {
   checkout: [["working", 96, 81], ["needs_input", 81, 77], ["working", 77, 52], ["idle", 52, 49], ["working", 49, 4], ["needs_input", 4, 0]],
   api: [["working", 112, 72], ["idle", 72, 64], ["needs_input", 64, 57], ["working", 57, 0]],
   ui: [["working", 40, 26], ["needs_input", 26, 21], ["working", 21, 0]],
   search: [["working", 124, 62], ["needs_input", 62, 58], ["working", 58, 41], ["idle", 41, 0]],
 };
-const MARKS = {
-  checkout: [["go", 94, 1, "Make the lookup say why"], ["done", 52, 1, "Make the lookup say why"], ["go", 48, 2, "Clear errors in the route"]],
-  api: [["go", 110, 1, "Coupon lookup"], ["done", 73, 1, "Coupon lookup"], ["review", 66, 1, "inc 1 review"], ["go", 56, 2, "Apply the coupon at checkout"]],
-  ui: [["go", 39, 1, "Coupon field"]],
-  search: [["go", 122, 2, "Reindex job"], ["done", 80, 2, "Reindex job"], ["go", 78, 3, "Worker"], ["done", 46, 3, "Worker"], ["review", 43, 3, "inc 3 review"]],
-};
-const span = ([state, a, b]) => ({ state, start: ago(a), end: ago(b) });
-function lanes() {
-  return ws
-    .filter((w) => w.agent && SPANS[w.key])
-    .map((w) => {
-      const spans = SPANS[w.key].map(span);
-      const last = spans[spans.length - 1];
-      if (last.state !== w.state) spans.push({ state: w.state, start: w.since, end: Date.now() });
-      return {
-        ws: w.id,
-        spans,
-        marks: MARKS[w.key].map(([kind, m, n, label]) => ({ kind, at: ago(m), n, label })),
-        panes: [{ surface: w.surface, label: LABELS[w.key], spans, owner: w.plan?.slug ?? null, outside: false }],
-      };
-    });
-}
 function history() {
   const out = [];
   for (const w of ws) for (const s of SPANS[w.key] ?? []) out.push({ at: ago(s[1]), ws: w.id, surface: w.surface, state: s[0], source: "hook", detail: "" });
@@ -583,7 +422,6 @@ function viewsFrame() {
     history: history(),
     plans: plans(),
     reviews: reviews(),
-    lanes: lanes(),
     tucked,
     families: families(),
     pages: pages(),
@@ -753,6 +591,60 @@ function input(surface, text) {
   p.input += text.replace(/[\x00-\x1f]/g, "");
 }
 
+// ── native terminals: a pane's screen as bytes for xterm.js ─────────────────
+
+const ptys = new Map();
+let nextPty = 1;
+const enc = new TextEncoder();
+
+/** The pane's whole screen, scrollback cleared first, as xterm.js writes it. */
+function screenBytes(p, cols) {
+  const lines = screenLines(p).map((l) => (l === RULE ? C.faint("─".repeat(cols)) : l));
+  return "\x1b[H\x1b[2J\x1b[3J" + lines.join("\r\n");
+}
+
+function attach(surface, cols, ch) {
+  const p = panes.get(surface);
+  if (!p) throw "no such surface";
+  const id = nextPty++;
+  const t = { surface, cols, ch, last: "", timer: 0 };
+  const draw = () => {
+    const s = screenBytes(panes.get(surface), t.cols);
+    if (s === t.last) return;
+    t.last = s;
+    ch?.onmessage?.(enc.encode(s));
+  };
+  t.draw = draw;
+  t.timer = setInterval(draw, 300);
+  ptys.set(id, t);
+  setTimeout(draw, 0);
+  return id;
+}
+
+function detach(id) {
+  const t = ptys.get(id);
+  if (t) clearInterval(t.timer);
+  ptys.delete(id);
+}
+
+function resize(id, cols) {
+  const t = ptys.get(id);
+  if (!t) return;
+  t.cols = cols;
+  t.last = "";
+  t.draw();
+}
+
+/** Keys from xterm.js, to the fake pane's keys and typing. */
+function write(id, data) {
+  const t = ptys.get(id);
+  if (!t) return;
+  const keys = { "\r": "enter", "\x7f": "backspace", "\x1b[A": "up", "\x1b[B": "down" };
+  if (keys[data]) key(t.surface, keys[data]);
+  else input(t.surface, data);
+  t.draw();
+}
+
 /** The New workspace form's Create: the steps, then a working agent. */
 async function create(form, ch) {
   const step = (s, phase, detail = "") => ch?.onmessage?.({ step: s, phase, detail });
@@ -802,16 +694,13 @@ const CARD = {
 };
 
 const handlers = {
-  cmux_status: () => ({ state: "connected", transport: "socket", access_mode: null, workspaces: ws.map((w) => ({ id: w.id, ref: w.ref, title: w.title })) }),
+  backend_status: () => ({ state: "connected", backend, transport: backend === "cmux" ? "socket" : "tmux", access_mode: null, workspaces: ws.map((w) => ({ id: w.id, ref: w.ref, title: w.title })) }),
   wall_frame: wallFrame,
   views_frame: viewsFrame,
   wall_reply: ({ surfaceId, text }) => reply(surfaceId, text),
   wall_jump: () => null,
-  desk_answer: ({ n }) => answer(n),
   desk_cleanup_plan: () => [],
   desk_cleanup_run: () => ({ ok: true, steps: [] }),
-  plan_go: () => "go sent",
-  plan_check: () => "recorded",
   hide_overlay: () => null,
   home_dir: () => HOME,
   intent_server: () => INTENT,
@@ -828,36 +717,15 @@ const handlers = {
   copy_text: () => null,
   gh_card: ({ url }) => (/\/pull\/41\b/.test(url) ? CARD : null),
 
-  term_frame: ({ surfaceId, seen }) => {
-    const f = frame(surfaceId);
-    return f.stamp === seen ? null : f;
-  },
-  term_hold: ({ surfaceId, cols, rows }) => {
-    const p = panes.get(surfaceId);
-    if (!p) throw "no such surface";
-    if (cols < 20 || rows < 5) throw "too small";
-    p.size = { cols, rows };
-    return null;
-  },
-  term_release: ({ surfaceId }) => {
-    const p = panes.get(surfaceId);
-    if (p) p.size = null;
-    return null;
-  },
-  term_input: ({ surfaceId, text }) => (input(surfaceId, text), null),
-  term_key: ({ surfaceId, key: k }) => (key(surfaceId, k), null),
-  term_paste: ({ surfaceId, text }) => (input(surfaceId, text), null),
   term_look: () => LOOK,
 
-  // Native (local-tmux) panes: none in the demo, so every pane is drawn from snapshots.
-  pty_native: () => false,
+  // Native panes: every demo pane is one, its ANSI lines redrawn as they change.
+  pty_native: ({ surfaceId }) => panes.has(surfaceId) && !plainPanes.has(surfaceId),
   pty_reset: () => null,
-  pty_attach: () => {
-    throw "no native panes in the demo";
-  },
-  pty_detach: () => null,
-  pty_write: () => null,
-  pty_resize: () => null,
+  pty_attach: ({ surfaceId, cols, onData }) => attach(surfaceId, cols, onData),
+  pty_detach: ({ id }) => (detach(id), null),
+  pty_write: ({ id, data }) => (write(id, data ?? ""), null),
+  pty_resize: ({ id, cols }) => (resize(id, cols), null),
   pty_scroll: () => null,
   pty_leave_scroll: () => null,
   pty_line_key: () => null,
@@ -879,8 +747,10 @@ const handlers = {
   native_session: () => {
     throw "native sessions need a real cmux";
   },
-  move_native: () => {
-    throw "native sessions need a real cmux";
+  // The pane becomes native; the real one resumes Claude in a new pane.
+  move_native: ({ surfaceId }) => {
+    if (!plainPanes.delete(surfaceId)) throw "this pane is native already";
+    return surfaceId;
   },
 
   tuck_set: ({ path, level }) => {
