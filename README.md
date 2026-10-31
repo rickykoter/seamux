@@ -310,10 +310,7 @@ groups related files and says why. Then one prompt that has the agent loop
 review, fix, test and review again with a fresh reviewer each round, until a
 round comes back clean. Only you close the findings, and the gate passes.
 
-<!-- VIDEO: seamux-lookout.mp4 goes here. Drag the file into GitHub's
-editor on this line and replace the poster image below with the
-user-attachments link it gives you. -->
-![The lookout video: a file's diff header reading high risk, Jev 96%, auth or secrets](docs/img/video-lookout-poster.jpg)
+Uploading seamux-lookout-2.mp4…
 
 ### restack: rebase without merging generated files
 
