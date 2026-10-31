@@ -269,7 +269,7 @@ checks.push(["fold: waiting and broken cards start unfolded; working and done st
   /class="row attend fd open" data-id="attend" data-k="attend"/.test(fo) && /class="row wilt fd open" data-id="wilt"/.test(fo) &&
   /class="row running fd" data-id="running"/.test(fo) && /class="row done fd" data-id="done"/.test(fo)]);
 checks.push(["fold: the header jumps, the caret folds, and the body is what folds away",
-  /data-id="running"[^>]*><div class="top jumps" data-a="jump" title="Switch to this workspace"><button type="button" class="caret" data-a="fold"[^>]*><\/button>[^]*?<span class="go"[^]*?<\/svg><\/span><\/div><div class="fold"><p class="said">/.test(fo) &&
+  /data-id="running"[^>]*><div class="top jumps" data-a="jump" title="running · Switch to this workspace"><button type="button" class="caret" data-a="fold"[^>]*><\/button>[^]*?<span class="go"[^]*?<\/svg><\/span><\/div><div class="fold"><p class="said">/.test(fo) &&
   !fo.includes('class="jmp"')]);
 checks.push(["fold: a loud card carries its first chip on the header for when it is folded",
   /data-id="wilt"[^]*?<div class="top loud jumps" data-a="jump"[^>]*>[^]*?<span class="chip pri fq"[^>]*>first<\/span><span class="go"/.test(fo) &&

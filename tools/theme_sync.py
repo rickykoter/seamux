@@ -41,11 +41,12 @@ TARGETS = [
 
 
 FLOOR = 4.5
-# Grounds a word can sit on: page, side bars, raised rows and cards, and the
-# green and red tints (diff lines, badges).
+# Grounds a word can sit on: page, side bars, raised rows and cards, the
+# selected row (card3), and the tints: green and red (diff lines, badges) and
+# blue (a selected file, a hunk header).
 GROUNDS = {
-    "dark": ["bg-dim", "bg", "bg1", "card", "bg-green", "bg-red"],
-    "light": ["bg-dim", "bg", "bg1", "bg3", "bg-green", "bg-red"],
+    "dark": ["bg-dim", "bg", "bg1", "card", "card3", "bg-green", "bg-red", "bg-blue"],
+    "light": ["bg-dim", "bg", "bg1", "bg3", "card3", "bg-green", "bg-red", "bg-blue"],
 }
 FAINT_GROUNDS = {"dark": ["bg-dim", "bg", "bg1"], "light": ["bg-dim", "bg", "bg1"]}
 

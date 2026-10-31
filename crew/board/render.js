@@ -546,7 +546,9 @@ function __boardRender(d) {
   var CARET = '<button type="button" class="caret" data-a="fold" aria-label="Fold or unfold"></button>';
   // The opening of a card's header: what a click on it does, then the caret.
   function topOpen(a, cls, foldable) {
-    var does = a.ref ? ' data-a="jump" title="' + esc(TIP.jump) + '"' : foldable ? ' data-a="fold"' : "";
+    // The header's tooltip replaces the row's, so it leads with the name: a
+    // name cut short at Dock width is still readable on hover.
+    var does = a.ref ? ' data-a="jump" title="' + esc(a.name) + " \u00b7 " + esc(TIP.jump) + '"' : foldable ? ' data-a="fold"' : "";
     return '<div class="top' + cls + (a.ref ? " jumps" : "") + '"' + does + ">" + (foldable ? CARET : "");
   }
   function topClose(a) { return (a.ref ? ARROW : "") + "</div>"; }

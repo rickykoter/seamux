@@ -466,7 +466,15 @@ export class Wake {
       label: pubLabel,
       title: pubTitle,
       run: () => {
-        const b = acts.querySelector<HTMLButtonElement>(".w-act.pub") ?? shown(pubLabel, pubTitle, (x) => void this.publish(r, x));
+        let b = acts.querySelector<HTMLButtonElement>(".w-act.pub");
+        if (!b) {
+          const made = shown(pubLabel, pubTitle, (x) => void this.publish(r, x));
+          // Made only to confirm: gone again once its 4s ask lapses unanswered.
+          window.setTimeout(() => {
+            if (made.isConnected && !made.disabled && !made.classList.contains("sure")) made.remove();
+          }, 4100);
+          b = made;
+        }
         b.classList.add("pub");
         void this.publish(r, b);
       },
