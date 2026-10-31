@@ -75,3 +75,21 @@
 .newws-keys { flex: 1; color: var(--muted); font-size: 11.5px; }
 .newws-go { border-color: var(--accent); }
 .newws .sheet-btn:disabled { opacity: 0.55; cursor: default; }
+
+/* The launch banner under New workspace (migrate.ts). */
+.migrate { flex: none; display: flex; flex-direction: column; gap: 6px; padding: 7px 12px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--fg); }
+.migrate[hidden] { display: none; }
+.migrate-head { display: flex; align-items: center; gap: 6px; }
+.migrate-line { flex: 1; min-width: 0; }
+.migrate-list { display: flex; flex-direction: column; gap: 4px; }
+.migrate-list[hidden] { display: none; }
+.migrate-row { display: flex; align-items: center; gap: 8px; min-height: 26px; }
+.migrate-row b { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.migrate-state, .migrate-where, .migrate-wait { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+.migrate-state.busy { color: var(--accent); }
+.migrate-go, .migrate-all { border-color: var(--accent); }
+.migrate-all { align-self: flex-end; margin-top: 2px; }
+.migrate-no { padding: 0 7px; }
+.migrate-say { margin: 0; font-size: 11.5px; color: var(--muted); }
+.migrate-say.bad { color: var(--bad); }
+.migrate-say[hidden] { display: none; }
