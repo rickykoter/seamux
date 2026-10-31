@@ -163,7 +163,20 @@ fn adopt_utf8_locale() {
     }
 }
 
+/// A subcommand the app was started with (`seamux-app crew-board-intent`),
+/// if any. The app takes only flags (--at-login, macOS's -psn_*): a
+/// subcommand belongs to the seamux CLI, and opening a window for it would
+/// start another app.
+fn subcommand(args: &[String]) -> Option<&str> {
+    args.get(1).map(String::as_str).filter(|a| !a.starts_with('-'))
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(sub) = subcommand(&args) {
+        eprintln!("seamux-app: {sub:?} is a seamux CLI command; the app does not run it");
+        std::process::exit(2);
+    }
     adopt_login_path();
     adopt_utf8_locale();
     tauri::Builder::default()
@@ -253,6 +266,15 @@ fn main() {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_subcommand_is_refused_and_flags_are_not() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(subcommand(&a(&["seamux-app", "crew-board-intent"])), Some("crew-board-intent"));
+        assert_eq!(subcommand(&a(&["seamux-app"])), None);
+        assert_eq!(subcommand(&a(&["seamux-app", "--at-login"])), None);
+        assert_eq!(subcommand(&a(&["seamux-app", "-psn_0_12345"])), None);
+    }
 
     #[test]
     fn rows_from_the_socket_shape() {

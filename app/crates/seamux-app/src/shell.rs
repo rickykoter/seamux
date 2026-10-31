@@ -155,7 +155,7 @@ pub fn ensure_intent() -> bool {
         _ => None,
     };
     *last = Some(std::time::Instant::now());
-    match crew_board::server::spawn_server_on(takeover, Some(kind)) {
+    match crew_board::server::spawn_server_with(&crate::pane_app::seamux_cli(), takeover, Some(kind)) {
         Ok(mut child) => {
             // Reaped when it exits (it outlives the app as a rule: setsid).
             std::thread::spawn(move || {

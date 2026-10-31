@@ -178,7 +178,9 @@ fn settings_ok(root: &str) -> Result<(), String> {
 }
 
 /// The seamux CLI beside this app (in its bundle), else the one on the usual path.
-fn seamux_cli() -> std::path::PathBuf {
+/// The seamux CLI: the one in the bundle, else ~/.local/bin/seamux. Never
+/// this app's own binary (see crew_board::server::serves).
+pub(crate) fn seamux_cli() -> std::path::PathBuf {
     let bundled = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.parent()?.join("Resources/bin/seamux")));
     bundled.filter(|p| p.is_file()).unwrap_or_else(|| crew_core::py::home().join(".local/bin/seamux"))
 }
