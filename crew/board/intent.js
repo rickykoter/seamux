@@ -17,12 +17,13 @@
 //   feed allow / deny    crew:feed-allow / crew:feed-deny  -> a=feed-allow|-deny
 //   the sync clock       crew:sync-now                     -> a=sync
 //
-// One verb never leaves the page: a=fold, on every card's header. It folds or
+// One verb never leaves the page: a=fold, on a card's caret. It folds or
 // unfolds the card in place and sends nothing. Where a click lands decides
 // what it does:
 //
-//   the rail (left edge)    jump, folded or not          -> a=jump
-//   the header              fold / unfold                -> a=fold
+//   the caret               fold / unfold                -> a=fold
+//   the header              jump, folded or not          -> a=jump
+//     (no workspace: fold / unfold instead)              -> a=fold
 //   a folded card, anywhere unfold
 //   an unfolded card's body select the workspace         -> a=row
 //
@@ -53,7 +54,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "17";
+  var V = "18";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -91,8 +92,6 @@ function __boardIntent(cfg) {
       ".kidhd.hit{opacity:.6}" +
       // A fold header is a target even on an inert card: a family's shell.
       "[data-a=fold]{cursor:pointer}" +
-      ".jmp.hit{opacity:.6}" +
-      ".jmp.ok{box-shadow:inset 0 0 0 2px #a7c080}.jmp.bad{box-shadow:inset 0 0 0 2px #e67e80}" +
       // A row that cannot be acted on must not pretend otherwise: no pointer
       // and no hover. It keeps its card ground -- a family's shell card is
       // inert and is still a card.
@@ -127,13 +126,14 @@ function __boardIntent(cfg) {
     // in render.js rather than a new entry in the table above, and it cannot
     // drift, because there is no label to match.
     var hit = el.closest && el.closest("[data-a], .chip");
+    // The open ⋯ menu sits inside the header, which jumps: a click on its
+    // padding, between items, does nothing rather than switch workspace.
+    var menu = el.closest && el.closest(".tkm");
+    if (menu && !(hit && hit.closest(".tkm") === menu)) return null;
     if (hit && hit.getAttribute("data-a")) {
       return { a: hit.getAttribute("data-a"),
                x: hit.getAttribute("data-x") || "", el: hit };
     }
-    // A rail with nowhere to jump is colour, not a target: it neither jumps
-    // nor stands in for the card around it.
-    if (el.closest && el.closest(".jmp")) return null;
     var chip = hit;
     if (chip) {
       var label = (chip.textContent || "").trim();
@@ -145,7 +145,7 @@ function __boardIntent(cfg) {
     var row = el.closest && el.closest(".row");
     if (!row) return null;
     // Folded, the whole card opens; unfolded, its body is the card itself and
-    // selects the workspace -- the header above it is what folds it again.
+    // selects the workspace -- the caret is what folds it again.
     if (row.classList.contains("fd") && !row.classList.contains("open")) return { a: "fold", x: "", el: row };
     if (!row.classList.contains("inert")) return { a: "row", x: "", el: row };
     return null;
@@ -228,7 +228,7 @@ function __boardIntent(cfg) {
   // Fold or unfold a card in place. The class flips now, so the card changes
   // under the pointer instead of on the next push; data-fold is what the next
   // push reads, with the tier the card had, so render.js can drop the choice
-  // when the card moves tier. Sends nothing: the rail is the jump.
+  // when the card moves tier. Sends nothing: the header is the jump.
   function fold(row, rid) {
     var f = {};
     try { f = JSON.parse(host.getAttribute("data-fold") || "{}"); } catch (e) { f = {}; }
@@ -397,7 +397,7 @@ function __boardIntent(cfg) {
         return;
       }
       // Framed by the seamux app, the clicks that go to a workspace or its
-      // plan (a card's body, its rail, Plan, the Wake) show it in the app:
+      // plan (a card's body, its header, Plan, the Wake) show it in the app:
       // its terminal and pages beside the board. cmux is not asked to jump.
       // Every other chip still does what it does in cmux's Dock.
       // Reclaim, framed by an app with a wizard of its own: the app shows what

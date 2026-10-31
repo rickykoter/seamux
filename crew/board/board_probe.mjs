@@ -268,10 +268,11 @@ const fo = els.rows.innerHTML;
 checks.push(["fold: waiting and broken cards start unfolded; working and done start folded",
   /class="row attend fd open" data-id="attend" data-k="attend"/.test(fo) && /class="row wilt fd open" data-id="wilt"/.test(fo) &&
   /class="row running fd" data-id="running"/.test(fo) && /class="row done fd" data-id="done"/.test(fo)]);
-checks.push(["fold: the header folds, the rail jumps, and the body is what folds away",
-  /data-id="running"[^>]*><span class="jmp" data-a="jump" title="Switch to this workspace"><svg[^]*?<\/svg><\/span><div class="top" data-a="fold"><span class="caret"><\/span>[^]*?<\/div><div class="fold"><p class="said">/.test(fo)]);
+checks.push(["fold: the header jumps, the caret folds, and the body is what folds away",
+  /data-id="running"[^>]*><div class="top jumps" data-a="jump" title="running · Switch to this workspace"><button type="button" class="caret" data-a="fold"[^>]*><\/button>[^]*?<span class="go"[^]*?<\/svg><\/span><\/div><div class="fold"><p class="said">/.test(fo) &&
+  !fo.includes('class="jmp"')]);
 checks.push(["fold: a loud card carries its first chip on the header for when it is folded",
-  /data-id="wilt"[^]*?<div class="top loud" data-a="fold">[^]*?<span class="chip pri fq"[^>]*>first<\/span><\/div>/.test(fo) &&
+  /data-id="wilt"[^]*?<div class="top loud jumps" data-a="jump"[^>]*>[^]*?<span class="chip pri fq"[^>]*>first<\/span><span class="go"/.test(fo) &&
   !/data-id="running"[^]*?class="chip pri fq/.test(fo.split('data-id="done"')[0])]);
 els.rows.attrs["data-fold"] = JSON.stringify({ running: [1, "running"], attend: [0, "attend"] });
 render({ rows: [{ id: "running", name: "r", kind: "running", said: "s", chips: [], ref: "w" },
@@ -407,16 +408,16 @@ const qo = els.rows.innerHTML;
 // Its footer is there, folded: unfolding a quiet row shows its branch and PR.
 // One with no footer has nothing to fold, and its line selects it.
 checks.push(["a quiet row is one line: no dial, said, or footer until unfolded",
-  !/class="(dial|said|feed)/.test(qo) && (qo.match(/class="top"/g) || []).length === 2 &&
+  !/class="(dial|said|feed)/.test(qo) && (qo.match(/class="top jumps"/g) || []).length === 2 &&
   !/<div class="chips">/.test(qo) && !/ open"/.test(qo) &&
-  /class="row quiet owned fd"[^]*<div class="top" data-a="fold"><span class="caret"><\/span>[^]*<div class="fold"><div class="foot"><span class="branch"/.test(qo) &&
+  /class="row quiet owned fd"[^]*<div class="top jumps" data-a="jump"[^>]*><button type="button" class="caret" data-a="fold"[^]*<div class="fold"><div class="foot"><span class="branch"/.test(qo) &&
   !/class="cost|class="wk/.test((qo.match(/<div class="fold">[^]*?<\/div><\/div>/) || [""])[0]) &&
-  /class="row quiet" data-id="q2"[^]*?<div class="top">/.test(qo) && !qo.split('data-id="q2"')[1].includes("fold")]);
+  /class="row quiet" data-id="q2"[^]*?<div class="top jumps" data-a="jump"/.test(qo) && !qo.split('data-id="q2"')[1].includes("fold")]);
 // Its chips stay, as ghosts on that line -- except jump, which the row itself
 // does. Buttons say what the badge would, so the badge steps aside for them.
 const q1 = qo.split('data-id="q2"')[0];
 checks.push(["a quiet row keeps its chips as ghost buttons on its one line",
-  /<div class="top"[^>]*>.*<span class="chips"><span class="chip"[^>]*>pr<\/span><\/span><\/div>/.test(q1) &&
+  /<div class="top[^"]*"[^>]*>.*<span class="chips"><span class="chip"[^>]*>pr<\/span><\/span>/.test(q1) &&
   !/>jump</.test(qo) && !/chip pri/.test(qo)]);
 checks.push(["...with the badge only when there are none, and no empty badge",
   !q1.includes('class="badge"') && (qo.match(/class="badge"/g) || []).length === 0]);
@@ -461,7 +462,7 @@ render({ rows: [
 checks.push(["tier rules style a row's own head, never its children's",
   !/\.(attend|running|wilt|done|quiet) \.(badge|top|nm|cost|chips|dial)\b/.test(css)]);
 
-// One rail. The worktree colour is a dot by the name, not a second stripe.
+// No edge stripe at all. The worktree colour is a dot by the name.
 checks.push(["the worktree colour is a dot, not a second stripe",
   qo.includes('<span class="own"></span>') && !/inset\s+\d+px\s+0\s+0\s+0\s+var\(--own\)/.test(css)]);
 
@@ -615,7 +616,7 @@ checks.push(["and it has something to say about each",
   render({ rows: famRows("done", "done"), quiet: "" });
   const fd = els.rows.innerHTML;
   checks.push(["family: the push its last child turns done, the whole card celebrates",
-    /class="row running fam famdone fd"[^>]*data-id="FP"[^>]*><span class="jmp"[^]*?<\/span><span class="confetti" aria-hidden="true">(<i [^>]+><\/i>){22}/.test(fd)]);
+    /class="row running fam famdone fd"[^>]*data-id="FP"[^>]*><span class="confetti" aria-hidden="true">(<i [^>]+><\/i>){22}/.test(fd)]);
   render({ rows: famRows("done", "done"), quiet: "" });
   checks.push(["family: ...once", !els.rows.innerHTML.includes("famdone")]);
   render({ rows: [R4("S1", "done", { family: "S", famrole: "child", famkid: true, famlabel: "S" }),
@@ -1296,32 +1297,38 @@ if (live && Array.isArray(live.rows)) {
     return el;
   };
   const span = (cls, text = "", attrs = {}) => mkEl("span", { class: cls, ...attrs }, [], text);
-  // Every row has a rail; one with a workspace makes it the jump, and the
-  // click lands on the arrow inside it.
-  const railOf = (on = true) => on ? mkEl("span", { class: "jmp", "data-a": "jump" }, [mkEl("svg")]) : span("jmp");
+  // A header with a workspace is the jump and ends in the arrow; its caret, a
+  // button of its own, folds. With no workspace the header folds instead.
+  const caretOf = () => mkEl("button", { class: "caret", "data-a": "fold" });
+  const goArrow = () => mkEl("span", { class: "go" }, [mkEl("svg")]);
   const goA = span("chip pri", "go 2");
-  const hdA = mkEl("div", { class: "top kidhd loud", "data-a": "fold" }, [span("caret"), span("nm", "A"), goA]);
+  const caretA = caretOf(), arrowA = goArrow();
+  const hdA = mkEl("div", { class: "top kidhd loud jumps", "data-a": "jump" }, [caretA, span("nm", "A"), goA, arrowA]);
   const diffA = span("chip", "diff");
   const saidA = mkEl("p", { class: "said" }, [], "Inc 2 needs you");
   // A delegated child's go, as crew-board labels it: still a go a person can press.
   const ownA = span("chip", "parent goes \u00b7 inc 3", { title: "parent goes \u00b7 inc 3" });
   const bodyA = mkEl("div", { class: "kbody" }, [saidA, mkEl("div", { class: "chips" }, [span("chip pri", "go 2"), diffA, ownA])]);
-  const railA = railOf();
-  const kidA = mkEl("div", { class: "row attend fam kid fd", "data-id": "A", "data-k": "attend", "data-in": "P" }, [railA, hdA, bodyA]);
-  const hdW = mkEl("div", { class: "top kidhd", "data-a": "fold" }, [span("caret"), span("nm", "W")]);
-  // A plan child with no workspace: its rail is colour only.
-  const hdN = mkEl("div", { class: "top kidhd", "data-a": "fold" }, [span("caret"), span("nm", "N")]);
-  const railN = railOf(false);
-  const kidN = mkEl("div", { class: "row quiet fam kid fd", "data-id": "N", "data-k": "quiet", "data-in": "P" }, [railN, hdN]);
-  const kidW = mkEl("div", { class: "row running fam kid fd", "data-id": "W", "data-k": "running", "data-in": "P" }, [railOf(), hdW]);
+  const kidA = mkEl("div", { class: "row attend fam kid fd", "data-id": "A", "data-k": "attend", "data-in": "P" }, [hdA, bodyA]);
+  const caretW = caretOf();
+  const hdW = mkEl("div", { class: "top kidhd jumps", "data-a": "jump" }, [caretW, span("nm", "W"), goArrow()]);
+  // A plan child with no workspace: nothing to jump to, so its header folds.
+  const caretN = caretOf();
+  const hdN = mkEl("div", { class: "top kidhd", "data-a": "fold" }, [caretN, span("nm", "N")]);
+  const kidN = mkEl("div", { class: "row quiet fam kid fd", "data-id": "N", "data-k": "quiet", "data-in": "P" }, [hdN]);
+  const kidW = mkEl("div", { class: "row running fam kid fd", "data-id": "W", "data-k": "running", "data-in": "P" }, [hdW]);
   const jumpP = span("chip", "jump");
   // The Wake's icon, as render.js draws it: the click lands on the svg inside.
   const wakeSvg = mkEl("svg", { "aria-hidden": "true" });
   const wakeP = mkEl("span", { class: "wk", "data-a": "wake" }, [wakeSvg]);
-  const hdP = mkEl("div", { class: "top", "data-a": "fold" }, [span("caret"), span("nm", "P")]);
+  const caretP = caretOf();
+  // An open ⋯ menu lives inside the header: its padding must not jump.
+  const tkiP = span("tki", "Mute", { "data-a": "tuck", "data-x": "mute" });
+  const tkmP = mkEl("span", { class: "tkm" }, [tkiP]);
+  const hdP = mkEl("div", { class: "top jumps", "data-a": "jump" }, [caretP, span("nm", "P"), goArrow(), tkmP]);
   const saidP = mkEl("p", { class: "said" }, [], "Mid-turn.");
   const card = mkEl("div", { class: "row running fam fd open", "data-id": "P", "data-k": "running" },
-    [railOf(), hdP, mkEl("div", { class: "fold" }, [saidP, mkEl("div", { class: "chips" }, [jumpP]),
+    [hdP, mkEl("div", { class: "fold" }, [saidP, mkEl("div", { class: "chips" }, [jumpP]),
      mkEl("div", { class: "foot" }, [wakeP]), mkEl("div", { class: "kids" }, [kidA, kidW, kidN])])]);
   const host = mkEl("div", { id: "rows", "data-fold": "{}" }, [card]);
   const oldCss = mkEl("style", { id: "intent-css" }, [], ".chip{cursor:pointer}");
@@ -1359,18 +1366,18 @@ if (live && Array.isArray(live.rows)) {
     /\.row \.chip\.chip\[title\^="parent goes"\]\{[^}]*background:transparent[^}]*animation:none/.test(oldCss.textContent)]);
   const fold = () => JSON.parse(host.getAttribute("data-fold"));
 
-  click(hdA.children[1]);                            // the name, inside the header
-  checks.push(["intent: a child's header unfolds it in place, and sends nothing",
+  click(caretA);
+  checks.push(["intent: a child's caret unfolds it in place, and sends nothing",
     fetched.length === 0 && kidA.classList.contains("open") && JSON.stringify(fold()) === '{"A":[1,"attend"]}']);
-  click(hdA);
+  click(caretA);
   checks.push(["intent: ...and folds it again, remembering the choice and its tier",
     fetched.length === 0 && !kidA.classList.contains("open") && JSON.stringify(fold()) === '{"A":[0,"attend"]}']);
   click(goA);
   checks.push(["intent: a child's inline button fires its own verb for the child, not the fold",
     fetched.length === 1 && last().a === "go" && last().x === "2" && last().r === "A" &&
     !kidA.classList.contains("open")]);
-  click(railA.children[0]);
-  checks.push(["intent: the rail jumps to the child's workspace, folded",
+  click(hdA.children[1]);                            // the name, inside the header
+  checks.push(["intent: the header jumps to the child's workspace, folded",
     fetched.length === 2 && last().a === "jump" && last().r === "A" && !kidA.classList.contains("open")]);
   click(kidA);
   checks.push(["intent: a click anywhere on a folded child unfolds it",
@@ -1378,8 +1385,8 @@ if (live && Array.isArray(live.rows)) {
   click(saidA);
   checks.push(["intent: a click on an unfolded child's body selects its workspace",
     fetched.length === 3 && last().a === "row" && last().r === "A"]);
-  click(railA);
-  checks.push(["intent: ...and the rail still jumps, unfolded",
+  click(arrowA.children[0]);                         // the arrow's svg, at the header's end
+  checks.push(["intent: ...and the header still jumps, unfolded",
     fetched.length === 4 && last().a === "jump" && last().r === "A" && kidA.classList.contains("open")]);
   click(diffA);
   checks.push(["intent: a chip inside an opened child fires with the child's row id",
@@ -1397,19 +1404,29 @@ if (live && Array.isArray(live.rows)) {
   click(saidP);
   checks.push(["intent: an unfolded card's body selects its workspace",
     fetched.length === 8 && last().a === "row" && last().r === "P"]);
-  click(hdP);
-  checks.push(["intent: a card's header folds it, and sends nothing",
+  click(caretP);
+  checks.push(["intent: a card's caret folds it, and sends nothing",
     fetched.length === 8 && !card.classList.contains("open") && fold().P[0] === 0]);
   click(saidP);
   checks.push(["intent: a click on a folded card unfolds it instead of selecting",
     fetched.length === 8 && card.classList.contains("open") && fold().P[0] === 1]);
-  click(hdW);
+  click(caretW);
   checks.push(["intent: two children can be open at once",
     kidA.classList.contains("open") && kidW.classList.contains("open") && fold().W[0] === 1]);
   const n0 = fetched.length;
-  click(railN); click(hdN);
-  checks.push(["intent: a child with no workspace has a rail that sends nothing, and still folds",
+  click(hdN.children[1]);
+  checks.push(["intent: a child with no workspace folds from its header, and sends nothing",
     fetched.length === n0 && kidN.classList.contains("open")]);
+  click(caretN);
+  checks.push(["intent: ...and from its caret",
+    fetched.length === n0 && !kidN.classList.contains("open")]);
+  click(hdP.children[1]);
+  checks.push(["intent: a card's header jumps to its workspace",
+    fetched.length === n0 + 1 && last().a === "jump" && last().r === "P"]);
+  fetched.pop();
+  click(tkmP);
+  checks.push(["intent: a click on the open ⋯ menu's padding, inside the header, does not jump",
+    fetched.length === n0]);
   stampEl.listeners.forEach((fn) => fn({}));
   checks.push(["intent: an upgrade does not add a second sync listener to the stamp",
     stampEl.listeners.length === 1 && fetched.length === n0 + 1]);
@@ -1619,7 +1636,7 @@ if (live && Array.isArray(live.rows)) {
     /<div class="sect">quiet · 3<\/div>/.test(html) && html.indexOf('class="sect"') > html.indexOf('data-id="k3"')]);
   const gc = cardOf(html, "fam:G");
   checks.push(["families: a family with no parent row gets a shell card named by its label",
-    /<div class="row quiet fam shell inert fd" data-id="fam:G" data-k="quiet" title="G"><span class="jmp"><\/span><div class="top" data-a="fold"><span class="caret"><\/span><span class="nm">G<\/span><span class="pips">.*?<\/span><span class="badge">2 plans<\/span>/.test(html) &&
+    /<div class="row quiet fam shell inert fd" data-id="fam:G" data-k="quiet" title="G"><div class="top" data-a="fold"><button type="button" class="caret" data-a="fold"[^>]*><\/button><span class="nm">G<\/span><span class="pips">.*?<\/span><span class="badge">2 plans<\/span>/.test(html) &&
     /data-id="g1"[^>]*data-in="fam:G"/.test(gc) && /data-id="g2"[^>]*data-in="fam:G"/.test(gc)]);
 
   // A child is one line until opened. One that needs you or is broken also
@@ -1638,11 +1655,12 @@ if (live && Array.isArray(live.rows)) {
   render({ rows: fr(), quiet: "" });
   const fh = els.rows.innerHTML;
   const kA = cardOf(fh, "A").split('data-id="W"')[0], kW = cardOf(fh, "W");
-  checks.push(["families: a child's header is its fold, with a caret, and its rail is the jump",
-    /<span class="jmp" data-a="jump"[^>]*><svg[^]*?<\/svg><\/span><div class="top kidhd loud" data-a="fold"><span class="caret"><\/span>/.test(kA) &&
-    /<div class="top kidhd" data-a="fold">/.test(kW) && !/data-x="select"/.test(fh)]);
+  checks.push(["families: a child's header is its jump, and its caret the fold",
+    /<div class="top kidhd loud jumps" data-a="jump"[^>]*><button type="button" class="caret" data-a="fold"/.test(kA) &&
+    /<div class="top kidhd jumps" data-a="jump"[^>]*><button type="button" class="caret" data-a="fold"/.test(kW) &&
+    !/data-x="select"/.test(fh) && !fh.includes('class="jmp"')]);
   checks.push(["families: a child that needs you shows its line and its filled button inline",
-    /<div class="top kidhd loud"[^]*<span class="chip pri"[^>]*>go 2<\/span><\/div><p class="said nest" data-a="fold">/.test(kA)]);
+    /<div class="top kidhd loud[^"]*"[^]*<span class="chip pri"[^>]*>go 2<\/span><span class="go"[^]*?<\/span><\/div><p class="said nest" data-a="fold">/.test(kA)]);
   checks.push(["families: a working child is one line: no inline button, no line",
     !/kidhd[^]*chip[^]*<\/div><div class="kbody"/.test(kW.split('<div class="kbody">')[0] + '<div class="kbody">') &&
     !kW.includes("said nest")]);
@@ -1675,8 +1693,9 @@ if (live && Array.isArray(live.rows)) {
     /data-id="P4"[^]*?<span class="badge">gate shut<\/span>/.test(els.rows.innerHTML) && !els.rows.innerHTML.includes("roll")]);
   render({ rows: [R("P5", "running", { family: "L", famrole: "parent", famkid: false, ref: "w" }),
     R("NR", "quiet", { family: "L", famrole: "child", famkid: true, slug: "nr" })], quiet: "" });
-  checks.push(["families: a child with no workspace ref gets a colour-only rail, and still folds",
-    /data-id="NR"[^>]*><span class="jmp"><\/span><div class="top kidhd" data-a="fold"><span class="caret">/.test(els.rows.innerHTML)]);
+  checks.push(["families: a child with no workspace ref folds from its header, with no arrow",
+    /data-id="NR"[^>]*><div class="top kidhd" data-a="fold"><button type="button" class="caret" data-a="fold"/.test(els.rows.innerHTML) &&
+    !/data-id="NR"[^>]*><div class="top kidhd" data-a="fold">(?:(?!<\/div>)[^])*class="go"/.test(els.rows.innerHTML)]);
   render({ rows: [R("P3", "running", { family: "J", famrole: "parent", famkid: false, ref: "w", badge: "working" }),
     R("Z", "running", { family: "J", famrole: "child", famkid: true, ref: "z" })], quiet: "" });
   checks.push(["families: with nothing to report, the parent keeps its own badge",

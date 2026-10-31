@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { sheet, type Sheet, type Shown } from "./sheet";
-import type { TuckRow } from "./tuck";
+import { dotsMenu, type MenuItem, type TuckRow } from "./tuck";
 
 // A row as crew-board's wake_data serves it (wake.rs's wake_row).
 export type Row = {
@@ -209,7 +209,9 @@ export class Wake {
     const ttl = el("div", "w-ttl");
     const sub = el("div", "w-sub");
     sub.append(this.stats, this.keepAllBtn);
-    ttl.append(this.title, sub);
+    // In the Dock the sheet's tab already says "the wake · ws".
+    if (this.embedded) ttl.append(sub);
+    else ttl.append(this.title, sub);
     head.append(ttl, this.picker);
     const bar = el("div", "w-bar");
     bar.append(this.q, keys);
@@ -326,7 +328,9 @@ export class Wake {
     this.chipsEl.replaceChildren(
       all,
       ...KINDS.map((k) => {
-        const b = button("", `w-chip k-${k}${this.kinds.has(k) ? " on" : ""}${n.get(k) ? "" : " zero"}`);
+        const b = button("", `w-chip k-${k}${this.kinds.has(k) ? " on" : ""}`);
+        // A kind with nothing in it is no filter: hidden, unless it is the one picked.
+        b.hidden = !n.get(k) && !this.kinds.has(k);
         b.dataset.k = k;
         b.append(el("i"), document.createTextNode(`${k} `), el("span", "", String(n.get(k) ?? 0)));
         return b;
@@ -438,34 +442,75 @@ export class Wake {
       p.append(el("bdi", "", `was ${r.was_path}`));
       li.append(p);
     }
+    // At most one button, the one thing this row asks for: keep a file at
+    // risk, or publish one that is not out yet. The rest is in the ⋯ menu.
     const acts = el("span", "w-acts");
-    const act = (label: string, f: (e: MouseEvent, b: HTMLButtonElement) => void, title = "") => {
-      const b = button(label);
-      if (title) b.title = title;
+    const items: MenuItem[] = [];
+    // "main", not "sure": publish() reads .sure as the confirming second click.
+    const shown = (label: string, title: string, run: (b: HTMLButtonElement) => void) => {
+      const b = button(label, "w-act main");
+      b.title = title;
       b.addEventListener("click", (e) => {
         e.stopPropagation();
-        f(e, b);
+        run(b);
       });
-      acts.append(b);
+      acts.prepend(b);
+      return b;
     };
+    const pubLabel = r.published ? "publish again" : "publish";
+    const pubTitle = "publish this file to claude.ai";
+    const keep: MenuItem = { label: "keep", hint: "K", title: "copy it into ~/.claude/crew/kept and point this row there", run: () => void this.keep(r) };
+    // From the menu, publishing still asks first: its confirm needs a button
+    // that stays on screen, so the row gets one, already asking.
+    const publish: MenuItem = {
+      label: pubLabel,
+      title: pubTitle,
+      run: () => {
+        let b = acts.querySelector<HTMLButtonElement>(".w-act.pub");
+        if (!b) {
+          const made = shown(pubLabel, pubTitle, (x) => void this.publish(r, x));
+          // Made only to confirm: gone again once its 4s ask lapses unanswered.
+          window.setTimeout(() => {
+            if (made.isConnected && !made.disabled && !made.classList.contains("sure")) made.remove();
+          }, 4100);
+          b = made;
+        }
+        b.classList.add("pub");
+        void this.publish(r, b);
+      },
+    };
+    const primary = r.state === "risk" ? keep : r.publishable && !r.published ? publish : null;
+    if (primary === keep) shown(keep.label, keep.title ?? "", () => void this.keep(r));
+    else if (primary === publish) shown(pubLabel, pubTitle, (b) => void this.publish(r, b)).classList.add("pub");
     if (r.kind === "plan") {
-      act("working", (e) => void this.open(r, "working", e), "in the sheet; ⌘-click in cmux");
-      act("review", (e) => void this.open(r, "review", e));
-      act("markdown", (e) => void this.open(r, "md", e));
-    } else if (r.state !== "gone" || r.url || r.kind === "commit") {
-      act("open", (e) => void this.open(r, "", e), "pages in the sheet; ⌘-click opens in cmux");
+      items.push(
+        { label: "working", title: "in the sheet; ⌘-click in cmux", run: (e) => void this.open(r, "working", e) },
+        { label: "review", run: (e) => void this.open(r, "review", e) },
+        { label: "markdown", run: (e) => void this.open(r, "md", e) },
+      );
+    } else if (this.openable(r)) {
+      items.push({ label: "open", hint: "↵", title: "pages in the sheet; ⌘-click opens in cmux", run: (e) => void this.open(r, "", e) });
     }
-    if (r.state === "risk") act("keep", () => void this.keep(r), "copy it into ~/.claude/crew/kept and point this row there");
-    if (r.publishable) act(r.published ? "publish again" : "publish", (_, b) => void this.publish(r, b), "publish this file to claude.ai");
-    if (r.path) act("copy path", () => void this.copy(r.path, "the path"));
-    if (r.session_id) act("copy resume", () => void this.copy(resumeCmd(r), "the resume command"));
+    if (r.publishable && primary !== publish) items.push(publish);
+    if (r.path) items.push({ label: "copy path", hint: "c", run: () => void this.copy(r.path, "the path") });
+    if (r.session_id) items.push({ label: "copy resume", hint: "r", run: () => void this.copy(resumeCmd(r), "the resume command") });
+    if (items.length) acts.append(dotsMenu(`${title}: more`, items));
     li.append(acts);
-    li.addEventListener("click", () => this.select(i));
-    li.addEventListener("dblclick", (e) => {
-      if ((e.target as HTMLElement).closest("button")) return; // a double click on an action is that action's
-      void this.open(r, "", e);
+    // A click opens the row, as Enter does; the arrows still only select.
+    li.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement).closest("button, a, .tuck-wrap")) return;
+      // A drag that selected some text ends in a click: that is a copy, not an open.
+      const s = window.getSelection();
+      if (s && !s.isCollapsed && li.contains(s.anchorNode)) return;
+      this.select(i);
+      if (this.openable(r)) void this.open(r, "", e);
     });
     return li;
+  }
+
+  /** Whether the row has anything to open: a gone file has nothing, unless a URL or commit stands in. */
+  private openable(r: Row): boolean {
+    return r.kind === "plan" || r.state !== "gone" || !!r.url || r.kind === "commit";
   }
 
   private chip(e: MouseEvent): void {

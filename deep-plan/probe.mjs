@@ -19,8 +19,11 @@ import * as HOST_TWIN from "../lookout/lib/host.mjs";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const V = process.argv.includes("-v");
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "dp-probe-"));
+// A run from a cmux pane must not hand the probe that pane: tests that want
+// a surface or workspace set their own, as CI (which has none) needs.
+const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("CMUX_")));
 const ENV = {
-  ...process.env,
+  ...HOST_ENV,
   DEEP_PLAN_STATE_DIR: path.join(TMP, "state"),
   DEEP_PLAN_KEYS_DIR: path.join(TMP, "keys"),
   DEEP_PLAN_PLANS_DIR: path.join(TMP, "plans"),
@@ -915,7 +918,9 @@ ok("validate: a freshly rendered plan is clean",
 const working = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
 ok("working surface renders controls disabled on disk",
   working.includes('class="dp-act"') && working.includes("disabled"));
-ok("working surface has the auto-refresh checkbox", working.includes('id="dp-auto"'));
+ok("working surface has the auto-refresh checkbox, with a short label for a narrow rail",
+  working.includes('id="dp-auto"') && working.includes('<span class="auto-short">auto</span>') &&
+  !/label\.auto\{font-size:0/.test(working));
 {
   // Each increment shows only the transitions its status allows: no go on a
   // done increment, no done on a pending one.
@@ -927,6 +932,28 @@ ok("working surface has the auto-refresh checkbox", working.includes('id="dp-aut
   }));
   ok("working surface: each increment's buttons are the ones its status allows",
     incs.length > 0 && incs.every(i => VALID[i.status] === i.acts), JSON.stringify(incs));
+  // One primary: the first allowed move of the lowest increment not done.
+  // block and reset are quiet on every increment.
+  const blocks = working.split('<div class="inc" id="inc-').slice(1).map(b => b.split("</div>")[0]);
+  const nextI = incs.findIndex(i => i.status !== "done");
+  const prim = [...working.matchAll(/data-a="([a-z]+)" data-n="(\d+)" data-kind="primary"/g)];
+  ok("working surface: only the plan's next step is a primary button",
+    nextI >= 0 && prim.length === 1 && Number(prim[0][2]) === nextI + 1 &&
+    prim[0][1] === incs[nextI].acts.split(",").find(a => a !== "block" && a !== "reset"), JSON.stringify(prim.map(m => m.slice(1))));
+  ok("working surface: block and reset are quiet on every increment",
+    blocks.every(b => [...b.matchAll(/data-a="(block|reset)" data-n="\d+"( data-kind="quiet")?/g)].every(m => m[2])));
+  // A check that has not passed folds its recipe and run lines under its
+  // status line; a passed one has none to fold.
+  const w2 = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
+  const pend = w2.split("<li").map(x => x.split("</li>")[0]).filter(x => / pending · \[/.test(x));
+  ok("working surface: an outstanding check's recipe and run fold into <details>",
+    pend.length > 0 && pend.every(li => !/<br>(recipe|run —) /.test(li)) && pend.some(li => li.includes('<details class="dp-run"><summary>how it runs</summary>')),
+    pend.slice(0, 1).join(""));
+  // ...but what a person must do stays in view: an acquire step is never folded.
+  // (the example has no acquire step, so the fold's own pattern is what is held)
+  const HOW = (fs.readFileSync(path.join(HERE, "deep_plan.mjs"), "utf8").match(/const HOW = (\/.*\/);/) || [])[1] || "";
+  ok("working surface: what a person must do (acquire, claim, expect, note) stays outside the fold",
+    /recipe /.test(HOW) && /run — /.test(HOW) && !/acquire|claim|expect|note|brief/.test(HOW), HOW);
   const carried = (working.match(/window\.DP_INC_ALLOWED = (\{[^;]*\});/) || [])[1];
   const eng = fs.readFileSync(path.join(HERE, "deep_plan.mjs"), "utf8");
   ok("working surface: the page carries the engine's one table, and applyTransition refuses by it",

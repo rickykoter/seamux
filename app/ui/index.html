@@ -9,11 +9,13 @@
         color-scheme: light dark;
         /* seamux's palette (everforest.css, from theme/everforest.css), as
            deep-plan's pages wear it; both modes come from there. */
-        --fg: var(--ef-fg); --muted: var(--ef-dim); --bg: var(--ef-bg); --strip: var(--ef-bg-dim); --line: var(--ef-line);
+        --fg: var(--ef-text); --muted: var(--ef-text-dim); --bg: var(--ef-bg); --strip: var(--ef-bg-dim); --line: var(--ef-line);
         --on: var(--ef-bg1); --accent: var(--ef-mark); --bad: var(--ef-bad); --good: var(--ef-good);
-        --card: var(--ef-bg1); --shade: rgba(0, 0, 0, 0.06); --term: var(--ef-bg-dim); --term-fg: var(--ef-fg);
+        --card: var(--ef-bg1); --shade: rgba(0, 0, 0, 0.06);
+        /* Word colours: the hues above are for fills and dots. */
+        --accent-t: var(--ef-text-mark); --bad-t: var(--ef-text-bad); --good-t: var(--ef-text-good); --term: var(--ef-bg-dim); --term-fg: var(--ef-fg);
         /* Section labels: deep-plan's amber small caps. */
-        --section: var(--ef-mark);
+        --section: var(--ef-text-mark);
         /* Every drawing of a pane, live or text, shares these; --pane-bg and
            --pane-fg are the terminal theme cmux reports (term.ts sets them). */
         --term-font: 12px/15px ui-monospace, Menlo, monospace; --term-pad: 8px;
@@ -108,8 +110,8 @@
       .sheet-tab.on { background: var(--card); border-color: var(--line); color: var(--fg); flex-shrink: 0; }
       .sheet-tab kbd, .sheet-tab-kind, .sheet-tab-dot { flex: none; }
       .sheet-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-      .sheet-tab kbd { font: 10.5px ui-monospace, Menlo, monospace; color: var(--muted); padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; }
-      .sheet-tab-kind { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--kc, var(--muted)); }
+      .sheet-tab kbd { font: 11px ui-monospace, Menlo, monospace; color: var(--muted); padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; }
+      .sheet-tab-kind { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--kc, var(--muted)); }
       .sheet-tab.tk-plan { --kc: var(--k-plan); } .sheet-tab.tk-review { --kc: var(--k-review); } .sheet-tab.tk-ask { --kc: var(--k-ask); }
       .sheet-tab-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 4ch; flex: 0 1 auto; }
       /* The state gives way first, then the name. */

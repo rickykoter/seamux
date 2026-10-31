@@ -982,6 +982,11 @@ function htmlHead(title, b64) {
   --ef-accent: #7fbbb3; --ef-good: #a7c080; --ef-warn: #dbbc7f; --ef-bad: #e67e80; --ef-mark: #dbbc7f;
   --ef-bg-red: #514045; --ef-bg-green: #425047; --ef-bg-yellow: #4d4c43; --ef-bg-blue: #3a515d; --ef-bg-visual: #543a48;
   --ef-ink: #1e2326;
+  /* text: words only, each 4.5:1 or better on the grounds it sits on (theme_sync.py --check) */
+  --ef-text: #d3c6aa; --ef-text-dim: #bac2bc; --ef-text-faint: #a0a9ad;
+  --ef-text-red: #f0b0b1; --ef-text-orange: #ecb398; --ef-text-yellow: #dbbc7f; --ef-text-green: #b1c88e;
+  --ef-text-aqua: #98cca5; --ef-text-blue: #97c9c2; --ef-text-purple: #e1b3c8;
+  --ef-text-accent: #97c9c2; --ef-text-good: #b1c88e; --ef-text-warn: #dbbc7f; --ef-text-bad: #f0b0b1; --ef-text-mark: #dbbc7f;
   --ef-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 /* light */
@@ -995,6 +1000,10 @@ function htmlHead(title, b64) {
     --ef-accent: #3a94c5; --ef-good: #8da101; --ef-warn: #c08000; --ef-bad: #f85552; --ef-mark: #a77c00;
     --ef-bg-red: #fde3da; --ef-bg-green: #f0f1d2; --ef-bg-yellow: #faedcd; --ef-bg-blue: #e9f0e9; --ef-bg-visual: #eaedc8;
     --ef-ink: #fffbef;
+    --ef-text: #3e4a51; --ef-text-dim: #4f5b51; --ef-text-faint: #5c6a72;
+    --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
+    --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
+    --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
   }
 }
 :root[data-theme="light"] {
@@ -1006,35 +1015,45 @@ function htmlHead(title, b64) {
   --ef-accent: #3a94c5; --ef-good: #8da101; --ef-warn: #c08000; --ef-bad: #f85552; --ef-mark: #a77c00;
   --ef-bg-red: #fde3da; --ef-bg-green: #f0f1d2; --ef-bg-yellow: #faedcd; --ef-bg-blue: #e9f0e9; --ef-bg-visual: #eaedc8;
   --ef-ink: #fffbef;
+  --ef-text: #3e4a51; --ef-text-dim: #4f5b51; --ef-text-faint: #5c6a72;
+  --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
+  --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
+  --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
 }
 /* everforest:end */
-:root{--bg:var(--ef-bg);--fg:var(--ef-fg);--dim:var(--ef-dim);--faint:var(--ef-faint);--line:var(--ef-line);--line2:var(--ef-line2);--accent:var(--ef-accent);
---good:var(--ef-good);--warn:var(--ef-warn);--bad:var(--ef-bad);--mark:var(--ef-mark);--card:var(--ef-card);--card2:var(--ef-card2);--card3:var(--ef-card3);
+:root{--bg:var(--ef-bg);--fg:var(--ef-text);--dim:var(--ef-text-dim);--faint:var(--ef-text-faint);--line:var(--ef-line);--line2:var(--ef-line2);--accent:var(--ef-accent);
+--good:var(--ef-good);--warn:var(--ef-warn);--bad:var(--ef-bad);--mark:var(--ef-mark);
+--good-t:var(--ef-text-good);--warn-t:var(--ef-text-warn);--bad-t:var(--ef-text-bad);--mark-t:var(--ef-text-mark);--accent-t:var(--ef-text-accent);--card:var(--ef-card);--card2:var(--ef-card2);--card3:var(--ef-card3);
 --hl:rgba(167,192,128,.26);--hl-on:rgba(167,192,128,.5);--find:rgba(219,188,127,.32);--find-on:var(--ef-orange);
 --mono:var(--ef-mono)}
 :root[data-theme="light"]{--hl:rgba(141,161,1,.2);--hl-on:rgba(141,161,1,.38);--find:rgba(223,160,0,.28)}
 body{background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
 -webkit-font-smoothing:antialiased;max-width:860px;margin:0 auto;padding:28px 20px 80px}
 h1{font:600 22px/1.2 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;letter-spacing:-.01em}
-h2{font:700 12.5px/1.3 system-ui;letter-spacing:.12em;text-transform:uppercase;color:var(--mark);
+h2{font:700 12.5px/1.3 system-ui;letter-spacing:.12em;text-transform:uppercase;color:var(--mark-t);
 margin-top:2.4em;border-bottom:1px solid var(--line);padding-bottom:7px}
 h3{font-size:15px}
-a{color:var(--accent)}
+a{color:var(--accent-t)}
 code{background:var(--card);border-radius:4px;padding:1px 5px;font:12.5px var(--mono)}
 .dim{color:var(--dim)}.mermaid{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:12px;margin:12px 0}
 .inc{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:10px 0}
 .inc .st{float:right;font-size:12px;padding:2px 8px;border-radius:10px;border:1px solid var(--line)}
-.st-done{color:var(--good)}.st-working{color:var(--accent)}.st-authorized{color:var(--warn)}
-.st-blocked{color:var(--bad)}.st-pending{color:var(--dim)}
+.st-done{color:var(--good-t)}.st-working{color:var(--accent-t)}.st-authorized{color:var(--warn-t)}
+.st-blocked{color:var(--bad-t)}.st-pending{color:var(--dim)}
 .dp-act{margin-right:6px;background:var(--card3);color:var(--fg);border:1px solid var(--line);
 border-radius:6px;padding:3px 12px;cursor:pointer}
 .dp-act[disabled]{opacity:.45;cursor:default}
+.dp-act[data-kind="primary"]{background:var(--accent-t);border-color:var(--accent-t);color:var(--bg);font-weight:600}
+.dp-act[data-kind="quiet"]{background:none;border-color:transparent;color:var(--dim);padding:3px 6px}
+.dp-act[data-kind="quiet"]:not([disabled]):hover{color:var(--fg);text-decoration:underline}
+details.dp-run{display:block;margin:2px 0 4px;padding-left:14px}
+details.dp-run>summary{cursor:pointer;width:fit-content;font-size:12.5px;margin-left:-14px}
 .dp-path{color:var(--fg);cursor:default}
-.dp-live .dp-path{color:var(--accent);text-decoration:underline;cursor:pointer}
-.dp-path.dp-bad{color:var(--bad)}
+.dp-live .dp-path{color:var(--accent-t);text-decoration:underline;cursor:pointer}
+.dp-path.dp-bad{color:var(--bad-t)}
 .dp-adr-edit,.dp-adr-promote{background:var(--card3);color:var(--fg);border:1px solid var(--line);
 border-radius:6px;padding:2px 10px;cursor:pointer;font:inherit;font-size:12px}
-.dp-adr-promote[data-staged="1"]{color:var(--good);border-color:var(--good)}
+.dp-adr-promote[data-staged="1"]{color:var(--good-t);border-color:var(--good)}
 .dp-adr-editor{border:1px dashed var(--line);border-radius:8px;padding:10px;margin:8px 0}
 .dp-adr-editor label{display:block;font-size:12px;color:var(--dim);margin:6px 0}
 .dp-adr-editor input,.dp-adr-editor textarea{display:block;width:100%;box-sizing:border-box;
@@ -1632,8 +1651,8 @@ function annotationsSection(spec, st) {
   if (st.artifact && st.artifact.url) {
     const stale = st.artifact.spec_hash && st.artifact.spec_hash !== specHash(spec);
     bits.push(`<h2>Shared for annotation</h2>
-<p class="dim">artifact: <a href="${esc(st.artifact.url)}" style="color:var(--accent)">${esc(st.artifact.url)}</a>${
-      stale ? ' · <span style="color:var(--warn)">published copy is STALE — spec changed since publish; re-export and republish</span>' : ""}</p>`);
+<p class="dim">artifact: <a href="${esc(st.artifact.url)}" style="color:var(--accent-t)">${esc(st.artifact.url)}</a>${
+      stale ? ' · <span style="color:var(--warn-t)">published copy is STALE — spec changed since publish; re-export and republish</span>' : ""}</p>`);
   }
   if (anns.length) {
     const open = anns.filter(a => !a.resolved);
@@ -1681,8 +1700,15 @@ function checksRow(inc, slug = "") {
   const agg = checksAggregate(inc);
   const items = all.map(([id, v]) => {
     const st = v.status || "pending";
-    const detail = st === "pass" ? "" :
-      checkLinesMd({ id, ...v }).lines.map(l => `<br>${mdInline(l)}`).join("");
+    // How the engine runs a check (recipe, commands, polls) folds away under
+    // its status line: the verdict is what a reader scans for. What a person
+    // must do or know -- an acquire step, a claim that asks, the expectation,
+    // a note -- stays in view.
+    const lines = st === "pass" ? [] : checkLinesMd({ id, ...v }).lines;
+    const HOW = /^(recipe |run — |run: |wait — |browser — |scripts: |query: )/;
+    const shown = lines.filter(l => !HOW.test(l)), how = lines.filter(l => HOW.test(l));
+    const detail = shown.map(l => `<br>${mdInline(l)}`).join("") +
+      (how.length ? `<details class="dp-run"><summary>how it runs</summary>` + how.map(l => mdInline(l)).join("<br>") + "</details>" : "");
     // A check the Dock can act on (a browser run, a claim that asks) carries
     // its address; the served page's plan.js adds run, open tab, the live
     // filmstrip and the picker. On disk the row is just text.
@@ -1777,13 +1803,19 @@ const incActions = status => INC_ALLOWED[status] || ALWAYS;
 const allows = (status, action) => ALWAYS.includes(action) || incActions(status).includes(action);
 
 function workingHtml(spec, st, b64) {
+  // The plan's next step: the lowest increment not done, and its first allowed
+  // move (go, start or done). That one button is primary; block and reset are
+  // quiet everywhere, so five equal buttons no longer hide which one matters.
+  const next = (st.increments || []).find(i => i.status !== "done");
+  const nextAct = next && incActions(next.status).find(a => !ALWAYS.includes(a));
+  const kindOf = (inc, a) => ALWAYS.includes(a) ? "quiet" : inc === next && a === nextAct ? "primary" : "";
   const rows = (st.increments || []).map(inc => {
     const d = (spec.deliverables || [])[inc.n - 1] || {};
     const files = fileTreeHtml(d.files);
     // Only the transitions this status allows (INC_ALLOWED, which
     // applyTransition refuses by): a go on a done increment can only be refused.
     const acts = incActions(inc.status).map(a =>
-      `<button class="dp-act" data-a="${a}" data-n="${inc.n}" disabled ` +
+      `<button class="dp-act" data-a="${a}" data-n="${inc.n}"${kindOf(inc, a) ? ` data-kind="${kindOf(inc, a)}"` : ""} disabled ` +
       `title="${a} increment ${inc.n} — available when served">${a}</button>`).join("");
     // The verdict belongs beside the status, not in a section of its own: it is
     // a precondition on THIS increment's `done`, and a reader deciding whether
@@ -1803,7 +1835,7 @@ ${checks}
   const logRows = (st.log || []).slice(-12).reverse().map(l =>
     `<li class="dim">${esc(new Date(l.at).toISOString().slice(0, 16).replace("T", " "))} — ${esc(l.what)}</li>`).join("");
   return htmlHead(spec.title, b64) + SURFACE_CSS + surfaceOpen(spec.slug, "working") + `
-<label class="auto"><input type="checkbox" id="dp-auto" checked> auto-refresh</label>
+<label class="auto"><input type="checkbox" id="dp-auto" checked> <span class="auto-long">auto-refresh</span><span class="auto-short">auto</span></label>
 <script>window.DP_INC_ALLOWED = ${JSON.stringify(INC_ALLOWED)};</script>
 <style>
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
@@ -1815,7 +1847,7 @@ ${DP_RISK_CSS}
 </style>` +
     commonBody(spec, st.adrs || [], true).replace(/(<p class="dim">plan <code>[^\n]*<\/p>)/, (m) => m + "\n" + familyStripHtml(spec.slug)) + `
 ${st.approved ? `<p class="dim">approved snapshot: <span class="dp-path" data-file="${esc(st.approved.path)}"><code>${esc(st.approved.path)}</code></span>${
-      st.approved.spec_hash !== specHash(spec) ? ' · <span style="color:var(--warn)">the live plan has DRIFTED from the approved snapshot (spec amended since grade-pass)</span>' : ""}</p>` : ""}
+      st.approved.spec_hash !== specHash(spec) ? ' · <span style="color:var(--warn-t)">the live plan has DRIFTED from the approved snapshot (spec amended since grade-pass)</span>' : ""}</p>` : ""}
 <h2>Gate</h2><p>${g.allow ? CHECK_GLYPH.pass + " open" : CHECK_GLYPH.fail + " shut"} <span class="dim">— ${esc(g.why)}</span>
 <span class="dim">· root <code>${esc(st.root || "?")}</code> · phase ${esc(st.phase)}</span></p>
 <h2>Increments</h2>${rows}
@@ -2332,8 +2364,8 @@ font:600 13px system-ui;cursor:pointer}
 .annot button:focus-visible,.annot input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 ul.alist{padding-left:0;list-style:none}
 ul.alist li{border-top:1px solid var(--line);padding:7px 0;font-size:13px}
-ul.alist li b{color:var(--accent)}
-.ro{color:var(--warn);font-size:13px}
+ul.alist li b{color:var(--accent-t)}
+.ro{color:var(--warn-t);font-size:13px}
 </style>
 <h1>${esc(spec.title)}</h1>
 <p class="dim">plan <code>${esc(spec.slug)}</code> — shared for annotation; the plan itself

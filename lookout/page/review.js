@@ -259,12 +259,12 @@
       finding ? el("span", { class: "sev sev-" + x.severity }, x.severity) : el("span", { class: "sev sev-comment" }, "comment"),
       el("span", { class: "fid" }, x.id),
       finding ? el("span", { class: "cat" }, x.category + " · " + (x.verdict === "CONFIRMED" ? "confirmed" : "plausible")) : null,
-      el("span", { class: "title" }, finding ? x.short_summary || x.summary : ((x.messages || [])[0] || {}).text || ""),
+      // Folded, a finding shows its short summary; open, the full one, once.
+      el("span", { class: "title" }, finding ? (body ? x.summary : x.short_summary || x.summary) : ((x.messages || [])[0] || {}).text || ""),
       el("span", { class: "status st-" + (x.status || "open") }, x.status || "open"));
     return el("div", { class: "card" + (closed ? " closed" : "") + (finding ? "" : " comment"), "data-item": x.id },
       head,
       body && finding ? el("div", { class: "card-body" },
-        el("div", { class: "summary" }, x.summary),
         el("div", { class: "failure" }, el("b", null, "Fails when: "), x.failure_scenario)) : null,
       body ? el("div", { class: "msgs" }, (finding ? x.thread || [] : (x.messages || []).slice(1)).map(message)) : null,
       body ? actions(x) : null);
@@ -687,6 +687,8 @@
     select(ORDER[Math.max(0, Math.min(ORDER.length - 1, (i < 0 ? 0 : i + d)))]);
   }
   document.addEventListener("keydown", e => {
+    // Esc closes the key list from anywhere, a reply box included.
+    if (e.key === "Escape" && !$("keys").hidden) { toggleKeys(false); e.preventDefault(); return; }
     if (e.metaKey || e.ctrlKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
     if (e.key === "j") { step(1); e.preventDefault(); }
     else if (e.key === "k") { step(-1); e.preventDefault(); }
@@ -694,6 +696,16 @@
     else if (e.key === "n") { stepFinding(1); e.preventDefault(); }
     else if (e.key === "p") { stepFinding(-1); e.preventDefault(); }
     else if (e.key === "o") { toggleOverview(); e.preventDefault(); }
+    else if (e.key === "?") { toggleKeys(); e.preventDefault(); }
+  });
+  // The key list sits behind a ? button; ?, Esc or a click elsewhere closes it.
+  function toggleKeys(show = $("keys").hidden) {
+    $("keys").hidden = !show;
+    $("keys-btn").setAttribute("aria-expanded", String(show));
+  }
+  $("keys-btn").addEventListener("click", e => { e.stopPropagation(); toggleKeys(); });
+  document.addEventListener("click", e => {
+    if (!$("keys").hidden && !$("keys").contains(e.target)) toggleKeys(false);
   });
   let wasNarrow = narrow();
   window.addEventListener("resize", () => { if (narrow() !== wasNarrow) { wasNarrow = narrow(); drawMain(); } });
@@ -731,8 +743,11 @@
     const notes = [];
     if (R.highlight && !/^highlight\.js/.test(R.highlight) && R.highlight !== "off")
       notes.push("Drawn without syntax highlighting: " + R.highlight);
-    if (R.scoring && !R.scoring.ok)
-      notes.push("Risk from signals only — " + (R.scoring.why || "no Jev scores") + ".");
+    // Scoring without Jev is a fact about the ranking, not an alarm: a quiet
+    // line under the list it ranks, opened (click, tap or Enter) for the reason.
+    const signalsOnly = !!(R.scoring && !R.scoring.ok);
+    $("side-why").textContent = signalsOnly ? (R.scoring.why || "no Jev scores") + "." : "";
+    $("side-note").hidden = !signalsOnly;
     const stale = live && live.stale;
     $("banner").replaceChildren(
       stale ? el("span", { class: "stale" }, "The diff changed while you were typing. ",

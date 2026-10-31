@@ -85,51 +85,79 @@ export function toggle(ws: string, name: string, key: "m" | "t", was: Level | un
   void setLevel(ws, name, was === want ? "none" : want, was);
 }
 
-/** The ⋯ button and its menu for one workspace's card, tile or lane. */
-export function menu(ws: string, name: string, level: Level | undefined): HTMLElement {
+/** One entry of a ⋯ menu: its words, an optional key hint, what it does. */
+export type MenuItem = { label: string; hint?: string; title?: string; run: (e: MouseEvent, b: HTMLButtonElement) => void };
+
+/** A ⋯ button and its menu. One click elsewhere or Esc closes it (below). */
+export function dotsMenu(label: string, items: MenuItem[]): HTMLElement {
   const wrap = document.createElement("span");
   wrap.className = "tuck-wrap";
   const b = document.createElement("button");
   b.type = "button";
   b.className = "tuck-btn";
-  b.setAttribute("aria-label", `${name}: mute or tuck away`);
+  b.setAttribute("aria-label", label);
   b.setAttribute("aria-haspopup", "menu");
+  b.setAttribute("aria-expanded", "false");
   b.append(dots());
   const m = document.createElement("div");
   m.className = "tuck-menu";
   m.setAttribute("role", "menu");
   m.hidden = true;
-  const item = (label: string, hint: string, to: Level | "none") => {
+  for (const it of items) {
     const i = document.createElement("button");
     i.type = "button";
     i.className = "tuck-item";
     i.setAttribute("role", "menuitem");
-    i.append(document.createTextNode(label));
-    const k = document.createElement("kbd");
-    k.textContent = hint;
-    i.append(k);
+    if (it.title) i.title = it.title;
+    i.append(document.createTextNode(it.label));
+    if (it.hint) {
+      const k = document.createElement("kbd");
+      k.textContent = it.hint;
+      i.append(k);
+    }
     i.addEventListener("click", (e) => {
       e.stopPropagation();
       m.hidden = true;
-      void setLevel(ws, name, to, level);
+      b.setAttribute("aria-expanded", "false");
+      it.run(e, i);
     });
     m.append(i);
-  };
-  if (level === "mute") item("Unmute", "m", "none");
-  else item("Mute", "m", "mute");
-  if (level === "tuck") item("Bring back", "t", "none");
-  else item("Tuck away", "t", "tuck");
+  }
   b.addEventListener("click", (e) => {
     e.stopPropagation();
     document.querySelectorAll<HTMLElement>(".tuck-menu").forEach((x) => x !== m && (x.hidden = true));
     m.hidden = !m.hidden;
+    b.setAttribute("aria-expanded", String(!m.hidden));
+    if (!m.hidden) flip(m);
   });
   wrap.append(b, m);
   return wrap;
 }
 
+/** Open upward when the menu would run past the bottom of what scrolls it. */
+function flip(m: HTMLElement): void {
+  m.classList.remove("up");
+  let box: HTMLElement | null = m.parentElement;
+  while (box && !/(auto|scroll|hidden)/.test(getComputedStyle(box).overflowY)) box = box.parentElement;
+  const floor = box ? box.getBoundingClientRect().bottom : window.innerHeight;
+  if (m.getBoundingClientRect().bottom > floor) m.classList.add("up");
+}
+
+/** The ⋯ button and its menu for one workspace's card, tile or lane. */
+export function menu(ws: string, name: string, level: Level | undefined): HTMLElement {
+  const to = (t: Level | "none") => () => void setLevel(ws, name, t, level);
+  return dotsMenu(`${name}: mute or tuck away`, [
+    level === "mute" ? { label: "Unmute", hint: "m", run: to("none") } : { label: "Mute", hint: "m", run: to("mute") },
+    level === "tuck" ? { label: "Bring back", hint: "t", run: to("none") } : { label: "Tuck away", hint: "t", run: to("tuck") },
+  ]);
+}
+
 // One click anywhere closes an open menu.
-document.addEventListener("click", () => document.querySelectorAll<HTMLElement>(".tuck-menu").forEach((m) => (m.hidden = true)));
+const shut = (m: HTMLElement) => {
+  m.hidden = true;
+  m.parentElement?.querySelector(".tuck-btn")?.setAttribute("aria-expanded", "false");
+};
+document.addEventListener("click", () => document.querySelectorAll<HTMLElement>(".tuck-menu:not([hidden])").forEach(shut));
 // Esc closes an open menu (and only that: the window stays), focus back on its button.
 document.addEventListener(
   "keydown",
@@ -137,7 +165,7 @@ document.addEventListener(
     if (e.key !== "Escape") return;
     const open = document.querySelector<HTMLElement>(".tuck-menu:not([hidden])");
     if (!open) return;
-    open.hidden = true;
+    shut(open);
     open.parentElement?.querySelector<HTMLElement>(".tuck-btn")?.focus();
     e.stopImmediatePropagation();
     e.preventDefault();

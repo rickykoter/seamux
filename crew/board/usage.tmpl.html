@@ -42,13 +42,18 @@
   --ef-accent: #7fbbb3; --ef-good: #a7c080; --ef-warn: #dbbc7f; --ef-bad: #e67e80; --ef-mark: #dbbc7f;
   --ef-bg-red: #514045; --ef-bg-green: #425047; --ef-bg-yellow: #4d4c43; --ef-bg-blue: #3a515d; --ef-bg-visual: #543a48;
   --ef-ink: #1e2326;
+  /* text: words only, each 4.5:1 or better on the grounds it sits on (theme_sync.py --check) */
+  --ef-text: #d3c6aa; --ef-text-dim: #bac2bc; --ef-text-faint: #a0a9ad;
+  --ef-text-red: #f0b0b1; --ef-text-orange: #ecb398; --ef-text-yellow: #dbbc7f; --ef-text-green: #b1c88e;
+  --ef-text-aqua: #98cca5; --ef-text-blue: #97c9c2; --ef-text-purple: #e1b3c8;
+  --ef-text-accent: #97c9c2; --ef-text-good: #b1c88e; --ef-text-warn: #dbbc7f; --ef-text-bad: #f0b0b1; --ef-text-mark: #dbbc7f;
   --ef-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 /* everforest:end */
 /* The board's names for seamux's palette (theme/everforest.css). */
 :root{
   --bg:var(--ef-bg); --card:var(--ef-bg1); --line:#2f3639; --line2:var(--ef-bg2);
-  --ink:var(--ef-fg); --muted:var(--ef-dim); --faint:var(--ef-faint);
+  --ink:var(--ef-text); --muted:var(--ef-text-dim); --faint:var(--ef-text-faint);
   --data:var(--ef-orange);
 }
 *{box-sizing:border-box}
