@@ -239,6 +239,25 @@ impl TmuxBackend {
         .map_err(|e| self.unmake(made.take(), e))
     }
 
+    /// A workspace with the id `ws` (another backend's, kept so what is
+    /// keyed by it carries on) at `cwd`, with one pane running `claude`.
+    /// Refuses an id the registry already has.
+    pub fn revive(&self, ws: &str, title: &str, cwd: &str, claude: &str) -> Result<String, String> {
+        if !::cmux::is_uuid(ws) {
+            return Err(format!("not a workspace id: {ws:?}"));
+        }
+        let mut made = None;
+        self.update(|reg| {
+            if list(reg, "workspaces").iter().any(|w| s(w, "id").eq_ignore_ascii_case(ws)) {
+                return Err(format!("workspace {ws} is already here"));
+            }
+            reg["workspaces"].as_array_mut().ok_or("the registry has no workspaces list")?
+                .push(json!({"id": ws, "title": title, "cwd": cwd, "created": now_secs()}));
+            self.start(reg, ws, cwd, claude, &mut made)
+        })
+        .map_err(|e| self.unmake(made.take(), e))
+    }
+
     /// Close workspace `ws`: every pane's session ends, and its record and
     /// its panes' go. Err when the registry has no such workspace.
     pub fn close_workspace(&self, ws: &str) -> Result<(), String> {
@@ -539,6 +558,25 @@ mod tests {
         let _ = b.panes(None);
         b.forget(&id).unwrap();
         assert!(b.gone().unwrap().is_empty(), "a declined restart is forgotten");
+    }
+
+    #[test]
+    fn a_revived_workspace_keeps_its_id_and_runs_one_pane() {
+        if !have_tmux() {
+            return;
+        }
+        let f = Fixture::new("revive");
+        let b = &f.0;
+        let ws = "C2D4A7B2-568F-4F00-9E7D-2370D7200176";
+        let cwd = f.1.to_string_lossy().into_owned();
+        let pane = b.revive(ws, "shop", &cwd, "sleep 600").unwrap();
+        let w = b.workspaces().unwrap();
+        assert_eq!((w.len(), w[0].id.as_str(), w[0].title.as_str()), (1, ws, "shop"));
+        let p = b.panes(Some(ws)).unwrap();
+        assert_eq!(p.iter().map(|p| p.id.clone()).collect::<Vec<_>>(), vec![pane.clone()]);
+        assert!(b.target(&pane).unwrap().is_some(), "its session runs");
+        assert!(b.revive(ws, "shop", &cwd, "sleep 600").is_err(), "once");
+        assert!(b.revive("not-a-uuid", "x", &cwd, "sleep 1").is_err());
     }
 
     #[test]
