@@ -6,6 +6,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod newws_app;
+mod notify_app;
 mod migrate_app;
 mod pane_app;
 mod pty_app;
@@ -181,12 +182,15 @@ fn main() {
     adopt_login_path();
     adopt_utf8_locale();
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             shell::install(app)?;
             // The board's server, on this app's backend.
             std::thread::spawn(|| {
                 shell::ensure_intent();
             });
+            // Notifications on the tmux backend; cmux posts its own.
+            notify_app::start(app.handle().clone());
             wall_app::start(app.handle().clone());
             views_app::start(app.handle().clone());
             review_app::start(app.handle().clone());

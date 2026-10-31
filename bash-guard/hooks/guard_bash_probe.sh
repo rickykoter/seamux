@@ -21,7 +21,7 @@ export BASH_GUARD_FORCE_PUSH_BRANCHES='deploy-([1-9]|1[0-9]|20)'
 # A PATH with only what the guard needs besides builtins, and no python3.
 nopy="$(mktemp -d "${TMPDIR:-/tmp}/guard-probe.XXXXXX")"
 trap 'rm -r "$nopy"' EXIT
-for t in cat head; do ln -s "$(command -v "$t")" "$nopy/$t"; done
+for t in cat head mkdir mv rm date; do ln -s "$(command -v "$t")" "$nopy/$t"; done
 
 modes="shell"
 if command -v python3 >/dev/null 2>&1; then
@@ -152,6 +152,34 @@ for big in "$quoted\\nEOF\\nrm -rf ~" "$stray\\nEOF\\nrm -rf ~" "echo $oneline; 
     [ "$took" -le 2 ] || fail "[$mode] ${#big}-char command took ${took}s"
     runs=$((runs + 1))
   done
+done
+
+# How a block is told. In a pane of the seamux app's tmux (SEAMUX_BACKEND=tmux)
+# it writes blocked-<pane>.json into crew's state folder, a JSON object with
+# the reason and the command; anywhere else (cmux, a plain terminal) no file.
+for mode in $modes; do
+  bh="$(mktemp -d "${TMPDIR:-/tmp}/guard-home.XXXXXX")"
+  payload='{"tool_input":{"command":"git push --force origin \"main\"\tx"}}'
+  (export HOME="$bh" SEAMUX_BACKEND=tmux SEAMUX_PANE_ID=P-1 SEAMUX_WORKSPACE_ID=W-1; hook "$mode" "$payload"; exit "$rc")
+  got=$?
+  f="$bh/.cache/cmux-crew/blocked-P-1.json"
+  [ "$got" = 2 ] || fail "[$mode] tmux block: want exit 2, got $got"
+  if [ ! -f "$f" ]; then
+    fail "[$mode] a block under tmux wrote no blocked-P-1.json"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - "$f" <<'PY' || fail "[$mode] blocked-P-1.json is not the block: $(cat "$f")"
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["pane"] == "P-1" and d["workspace"] == "W-1", d
+assert d["reason"] == "git push --force", d
+assert d["command"] == 'git push --force origin "main"\tx', d
+PY
+  fi
+  rm -rf "$bh"; bh="$(mktemp -d "${TMPDIR:-/tmp}/guard-home.XXXXXX")"
+  (export HOME="$bh"; unset SEAMUX_BACKEND; hook "$mode" "$payload"; exit "$rc")
+  [ -z "$(ls -A "$bh" 2>/dev/null)" ] || fail "[$mode] a block outside tmux wrote a file: $(ls -R "$bh")"
+  rm -rf "$bh"
+  runs=$((runs + 2))
 done
 
 if [ "$fails" -gt 0 ]; then
