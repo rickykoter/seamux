@@ -564,6 +564,8 @@ export class Sheet {
   private stack = document.createElement("div");
   private tabs: Tab[] = [];
   private active = "";
+  /** The directory the Wake tab was last pointed at. */
+  private wakeDir = "";
   /** The tab before the Wake, for ⌘E to go back to. */
   private back = "";
   private pages: NowPage[] = [];
@@ -691,7 +693,10 @@ export class Sheet {
   async start(): Promise<void> {
     await listen<WallFrame>("wall:frame", (e) => {
       this.tiles = e.payload.tiles;
-      if (!this.el.hidden) this.drawChat();
+      if (!this.el.hidden) {
+        this.drawChat();
+        this.followDir();
+      }
     });
     await listen<{ pages?: NowPage[]; families?: FamilyBrief[] }>("views:frame", (e) => {
       const fams = e.payload.families ?? [];
@@ -953,8 +958,22 @@ export class Sheet {
     }
     if (!t.el) this.build(t);
     for (const x of this.tabs) if (x.el) x.el.hidden = x.key !== key;
-    if (key === WAKE) this.wakeView().showDir(this.dir());
+    if (key === WAKE) {
+      this.wakeDir = this.dir();
+      this.wakeView().showDir(this.wakeDir);
+    }
     this.drawTabs();
+  }
+
+  /** A workspace picked before its first tile came (a new one) has no
+   *  directory yet: once a frame brings it, the Wake shown moves there. */
+  private followDir(): void {
+    if (this.active !== WAKE || !this.wake) return;
+    const d = this.dir();
+    if (!d || d === this.wakeDir) return;
+    this.wakeDir = d;
+    this.titleEl.textContent = `the wake · ${d.split("/").pop() ?? ""}`;
+    this.wake.showDir(d);
   }
 
   private wakeView(): Wake {

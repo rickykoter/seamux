@@ -112,7 +112,7 @@ export class NewWorkspace {
     this.card.noValidate = true;
 
     const head = el("header", "newws-head");
-    head.append(el("b", "", "New workspace"), el("span", "newws-hint", "a worktree, a cmux workspace, Claude running"));
+    head.append(el("b", "", "New workspace"), el("span", "newws-hint", "a worktree, a workspace, Claude running"));
 
     this.repo.setAttribute("aria-label", "Repo");
     this.repo.addEventListener("change", () => this.drawMore());

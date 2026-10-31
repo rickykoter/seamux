@@ -89,7 +89,13 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-invoke<Status>("backend_status").then(show, (e) => show({ state: "failed", kind: "app", message: String(e) }));
+// The count moves as workspaces come and go: asked again on a timer and on
+// each summon, not only at launch.
+const refreshStatus = () =>
+  invoke<Status>("backend_status").then(show, (e) => show({ state: "failed", kind: "app", message: String(e) }));
+void refreshStatus();
+setInterval(() => void refreshStatus(), 10_000);
+void listen("app:summoned", () => void refreshStatus());
 dockView.start().catch((e) => console.error("dock", e));
 wakeView.start().catch((e) => console.error("wake", e));
 reviewView.begin().catch((e) => console.error("review", e));

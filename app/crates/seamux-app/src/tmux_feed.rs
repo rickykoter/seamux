@@ -161,8 +161,8 @@ mod tests {
 
     #[test]
     fn project_dirs_follow_claude_codes_naming() {
-        let home = Path::new("/Users/u");
-        assert_eq!(project_dir(home, "/Users/u/code/my.repo"), Path::new("/Users/u/.claude/projects/-Users-u-code-my-repo"));
+        let home = Path::new("/h");
+        assert_eq!(project_dir(home, "/w/code/my.repo"), Path::new("/h/.claude/projects/-w-code-my-repo"));
     }
 
     #[test]
