@@ -157,6 +157,13 @@ pub fn ensure_intent() -> bool {
     *last = Some(std::time::Instant::now());
     match crew_board::server::spawn_server_with(&crate::pane_app::seamux_cli(), takeover, Some(kind)) {
         Ok(mut child) => {
+            // A server on the other backend holds the lock for its life and
+            // lets go only when it starts its own successor (an upgrade).
+            // Ask it to leave: the successor waits up to 15s for the lock.
+            if let Some(old) = takeover.filter(|&p| p > 1 && p != std::process::id()) {
+                // SAFETY: a signal to the pid the server named on /health.
+                unsafe { libc::kill(old as i32, libc::SIGTERM) };
+            }
             // Reaped when it exits (it outlives the app as a rule: setsid).
             std::thread::spawn(move || {
                 let _ = child.wait();
