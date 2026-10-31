@@ -49,11 +49,12 @@
   .kids > .row.kid for each child, holding .top.kidhd > .caret, an optional
   .said.nest, and .kbody (the child's full card); .badge.roll on the card that
   counts them; .row.shell for a family whose parent has no row.
-  Every row also carries .jmp, its rail and jump target (data-a="jump" when it
-  has a workspace), and data-k, its tier. A row with something to fold is .fd
-  (+ .open when unfolded): its .top is data-a="fold" and starts with .caret,
-  and what folds away is .fold (.kbody on a child); .top > .chip.fq is the
-  filled chip a folded loud card keeps on its header.
+  Every row carries data-k, its tier. A row with a workspace has a .top.jumps,
+  data-a="jump", ending in .go (the arrow); a row with none has a plain .top.
+  A row with something to fold is .fd (+ .open when unfolded): its .top starts
+  with button.caret (data-a="fold"), and with no workspace the .top is
+  data-a="fold" too; what folds away is .fold (.kbody on a child);
+  .top > .chip.fq is the filled chip a folded loud card keeps on its header.
 
   #rows also carries data-fold, id -> [open, tier] for the cards folded or
   unfolded by hand. intent.js writes it on a click; render.js reads it and
@@ -90,9 +91,11 @@
   /* Grounds: the page, a card, an attend card, a family's well of children. */
   --bg:var(--ef-bg); --bg1:var(--ef-bg1); --bg-attend:#3b4136; --bg-kids:#2a3135;
   --bg2:var(--ef-bg2); --line:#414b50; --edge:#56636a;
-  /* Text. fg names things, fg2 is what an agent said, grey is everything around it. */
-  --fg:var(--ef-text); --fg2:#b8b0a0; --grey:#a3ada5;
-  /* Tiers. The rail, the dial and the filled button wear these. Wilt's red is
+  /* Text. fg names things, fg2 is what an agent said, grey is everything around
+     it. fg and fg2 are the palette's text tiers; grey stays the board's own,
+     a touch lighter than --ef-text-faint, which is 4.4:1 on the attend ground. */
+  --fg:var(--ef-text); --fg2:var(--ef-text-dim); --grey:#a3ada5;
+  /* Tiers. The badge, the dial and the filled button wear these. Wilt's red is
      3.9:1 on a card, so where it is text it uses its lighter twin. */
   --attend:#dfa000; --running:var(--ef-blue); --wilt:var(--ef-red); --done:var(--ef-green); --quiet:var(--ef-grey0);
   --wilt-tx:#f0a0a0;
@@ -310,22 +313,22 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
   min-width:0;overflow:hidden;text-overflow:ellipsis}
 
 /* --- a card ------------------------------------------------------------ */
-/* One rail, and it says the tier. The worktree's own colour used to be a second
-   stripe beside it; two stripes read as one thick smudge at Dock width, so the
-   identity colour is a dot beside the name now (.own). --c is the tier colour
-   the rail, the badge and the filled button all read.
-   The rail is also the jump (.jmp, render.js): wide enough to hit without
-   looking, 14px, and the same target folded or not. Hover brightens it and
-   shows the arrow; a row with nowhere to jump keeps the colour only. */
+/* A card. No edge stripe: the tier is on the badge, the dial and the filled
+   button (--c), and the card that needs you keeps its tinted ground, the
+   page's one loud thing. The worktree's own colour is a dot beside the name
+   (.own).
+   The header is the jump (.top.jumps, render.js): the same target folded or
+   not, with an arrow at its end that brightens on hover; a pressed header
+   says how it went (.hit/.ok/.bad, intent.js). The caret folds. */
 .row{--c:var(--quiet);position:relative;background:var(--bg1);
-  border-radius:9px;padding:9px 10px 9px 23px;margin-bottom:7px}
-.jmp{position:absolute;left:0;top:0;bottom:0;width:14px;border-radius:9px 0 0 9px;
-  background:var(--c);display:flex;align-items:center;justify-content:center}
-.jmp svg{display:block;fill:none;stroke:var(--ink);stroke-width:1.8;stroke-linecap:round;
-  stroke-linejoin:round;opacity:0;transition:opacity .12s}
-.jmp[data-a]{cursor:pointer}
-.jmp[data-a]:hover{filter:brightness(1.2)}
-.jmp[data-a]:hover svg{opacity:1}
+  border-radius:9px;padding:9px 10px;margin-bottom:7px}
+.top.jumps{cursor:pointer;border-radius:6px;margin:-3px -4px;padding:3px 4px}
+.top.jumps:hover{background:rgba(255,255,255,.05)}
+.top>.go{flex:none;display:flex;margin-left:2px}
+.top>.go svg{display:block;fill:none;stroke:var(--edge);stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;transition:stroke .12s}
+.top.jumps:hover>.go svg{stroke:var(--fg)}
+.top.jumps.hit{background:rgba(255,255,255,.1)}
+.top.jumps.ok{box-shadow:inset 0 0 0 1px var(--done)}.top.jumps.bad{box-shadow:inset 0 0 0 1px var(--wilt)}
 
 /* Folding. Every card's header (data-a="fold") folds it in place; .fold holds
    what goes away. Folded, a card that needs you keeps its first chip, filled,
@@ -471,9 +474,8 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
    its badge -- and no badge at all when it has none. No dial, no said, no
    footer: the whole row is the target and it selects the workspace. Recessed by losing the card's fill, not by fading: an opacity
    dim took the name under 4.5:1. */
-.row.quiet{background:transparent;border:1px solid var(--line);border-left:0;
-  padding:5px 10px 5px 23px;margin-bottom:5px}
-.row.quiet>.jmp{top:-1px;bottom:-1px}
+.row.quiet{background:transparent;border:1px solid var(--line);
+  padding:5px 10px;margin-bottom:5px}
 .row.quiet>.fold>.foot{margin-top:2px}
 .row.quiet>.top{min-height:22px}
 .row.quiet>.top>.chips{display:inline-flex;flex:none;flex-wrap:nowrap;gap:5px;margin:0}
@@ -511,14 +513,11 @@ details.tucked[open]>summary::before{content:"\25BE  "}
    sub-rows on a darker well. A child is one line -- caret, dial, dot, name,
    badge -- until it is opened, and then it is its whole card, in place. A child
    that needs you or is broken also shows its line and its filled button while
-   closed. The whole header is the toggle and is at least 34px tall. A family
+   closed. Its header (at least 34px tall) jumps; its caret folds. A family
    with no parent row gets a shell card named by its label (.shell). */
 .kids{margin-top:9px;background:var(--bg-kids);border-radius:8px;padding:0 7px}
 .kids>.row.kid{background:transparent;border:0;border-top:1px solid var(--line);border-radius:0;
-  margin:0;padding:0 0 0 18px}
-/* A child's rail is a pill inside its line, dimmer than a card's until hovered. */
-.kids>.row.kid>.jmp{top:6px;bottom:6px;width:12px;border-radius:4px;filter:brightness(.7)}
-.kids>.row.kid>.jmp[data-a]:hover{filter:none}
+  margin:0;padding:0 2px}
 .kids>.row.kid:first-child{border-top:0}
 .kids>.row.kid.here{box-shadow:inset 0 0 0 2px var(--own,var(--grey));border-radius:6px}
 /* Specific enough to beat .row.quiet>.top, which would clamp a quiet child to 22px. */
@@ -527,7 +526,11 @@ details.tucked[open]>summary::before{content:"\25BE  "}
 .kid .kidhd .nm{font-size:13px;font-weight:500}
 .kid.attend .kidhd .nm,.kid.wilt .kidhd .nm{font-weight:600}
 .kidhd .chip{flex:none;padding:0 9px}
-.caret{flex:none;width:9px;color:var(--grey);font-size:10px;line-height:1}
+/* The fold: a real button with a 24px target, though the mark is small. */
+.caret{flex:none;width:24px;height:24px;margin:-4px -6px -4px -8px;padding:0;border:0;border-radius:5px;
+  background:none;color:var(--grey);font-size:11px;line-height:24px;text-align:center;cursor:pointer}
+.caret:hover{background:rgba(255,255,255,.07);color:var(--fg)}
+.caret:focus-visible{outline:2px solid var(--running);outline-offset:-2px}
 .caret::before{content:"\25B8"}
 .row.open>.top>.caret::before{content:"\25BE"}
 .said.nest{margin:0 0 8px 35px;cursor:pointer}

@@ -57,15 +57,16 @@ actually last said. It costs a socket call per row, which is why it is opt-in.
 ## Reading a card
 
 ```
-┃ ◔ ● checkout-flow                    GATE SHUT    rail = tier · dot = worktree colour
-┃ Coupon at capture needs your go-ahead.            what was said, 2 lines at most
-┃ [ go 3 ] ( diff ) ( jump ) ( ● CI )               28px buttons; the first is filled
-┃ dev/checkout-flow ● #142 ✓ approved   $4.20      mono footer: links, status, spend
+▾ ◔ ● checkout-flow                GATE SHUT  →     header = jump · ▾ = fold · dot = worktree colour
+  Coupon at capture needs your go-ahead.            what was said, 2 lines at most
+  [ go 3 ] ( diff ) ( jump ) ( ● CI )               28px buttons; the first is filled
+  dev/checkout-flow ● #142 ✓ approved   $4.20      mono footer: links, status, spend
 ```
 
-One rail, in the tier's colour. The worktree's own colour, the hex Peacock paints
-its VS Code window with, is the dot beside the name; it used to be a second stripe
-beside the rail, and two stripes read as one smudge at Dock width.
+No edge stripe. The tier is on the badge, the dial and the filled button, and the
+card that needs you keeps a tinted ground, the board's one loud thing. The
+worktree's own colour, the hex Peacock paints its VS Code window with, is the dot
+beside the name.
 
 The **button row** is everything you can do. The first chip is the verb that
 resolves the row (the collector orders them that way), and on the tiers that ask
@@ -80,14 +81,15 @@ mono line that wraps. Branch, PR and issue are links, at least 24px tall.
 
 A **quiet row** is one line: the dot, the name, then its `diff` / `pr` chips as
 ghost buttons, or, with none, its badge (and no badge when it has none). Its
-rail is the jump, which is why `jump` is not repeated there. Unfolded, it shows
-its footer -- branch, PR, issue -- under the line; a quiet row with no footer has
-nothing to fold, and its line selects the workspace.
+line is the jump, which is why `jump` is not repeated there. Unfolded, it shows
+its footer -- branch, PR, issue -- under the line; its caret folds it.
 
-**Every card folds in place, and its rail is the jump.** The tier-coloured strip
-down a card's left edge is 14px wide and switches to the workspace whether the
-card is folded or not; hover shows an arrow on it. The header line (with a caret)
-folds and unfolds. A click anywhere on a folded card unfolds it; on an unfolded
+**Every card folds in place, and its header is the jump.** A click on the header
+line (`.top.jumps`, `data-a="jump"`) switches to the workspace whether the card is
+folded or not; it lightens on hover, and the arrow at its right end brightens.
+The caret at its left is a button of its own (`data-a="fold"`, a 24px target)
+that folds and unfolds; a card with no workspace has nothing to jump to, so its
+header folds too. A click elsewhere on a folded card unfolds it; on an unfolded
 card, a click on its body (not a chip or link) selects the workspace. Cards that
 wait on you or are broken start unfolded, everything else folded; a folded card
 that needs you keeps its first chip, filled, on its header. What you fold by hand
@@ -115,9 +117,9 @@ it, on a darker well:
 ```
 
 Each child is still a `.row` with its own `data-id`, so every button inside it
-acts on the child. It folds like any card -- its header is `data-a="fold"`, which
-only `intent.js` knows, and its rail (a pill inside the well) is its jump -- and
-it starts folded. Unfolding sends nothing. The parent's
+acts on the child. It folds like any card -- its caret is `data-a="fold"`, which
+only `intent.js` knows, and its header is its jump (or its fold, with no
+workspace) -- and it starts folded. Unfolding sends nothing. The parent's
 badge says the children's most urgent tier, counted (`1 needs you`, `2 broken`),
 when that is more urgent than the parent itself; otherwise it keeps its own. A family whose
 parent has no row gets a shell card named by its label, which carries no actions
@@ -347,7 +349,7 @@ not reach them, and nothing checks them against it. `python3 cat_poses.py
 in the probe.
 
 `pace` covers broken as well as working because the sidebar's `catMood()` does
-(`bucket == 1 || bucket == 5`) — the row rails already say which, and the cat is
+(`bucket == 1 || bucket == 5`) — the row badges already say which, and the cat is
 only there to answer "is anyone waiting on me".
 
 The walk animates `left`, not `transform`: the distance is "the width of the shelf
@@ -749,8 +751,8 @@ list is the sixteen call sites of `onTapGesture` / `openURL` / `chipRPC` /
 | `allow` / `deny` (:682, :687) | `.chip.sig` `data-a=feed-allow/-deny` | answers a blocked ask |
 | `read it →` / `jump →` (:690, :695) | `jump` chip | goes to the workspace |
 | reclaim (:736) | `reclaim` chip | dry-runs the reclaim, asks first |
-| whole row (:803) | `.jmp` rail, `data-a=jump`; an unfolded card's body | selects the workspace |
-| — | a card's header, `data-a=fold`; a folded card | folds / unfolds in place; sends nothing |
+| whole row (:803) | a card's header, `.top.jumps` `data-a=jump`; an unfolded card's body | selects the workspace |
+| — | a card's caret, `button.caret` `data-a=fold` (the header too, with no workspace); a folded card | folds / unfolds in place; sends nothing |
 | sync clock (:1020) | `#stamp` | forces a reconcile |
 
 Also carried over, though not clickable: the dirty dot, the whole signals
