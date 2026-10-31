@@ -1,4 +1,4 @@
-//! Moving sessions between backends at launch (ADR 6), and restarting tmux
+//! Moving sessions between backends at launch (docs/adr/0051), and restarting tmux
 //! panes lost with their server.
 //!
 //! The app picks one backend. Sessions still running on the other one are

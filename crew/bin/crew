@@ -1141,8 +1141,11 @@ cmd_doctor() {
     ok "cmux: $CMUX"
   elif [ "$_backend" = tmux ]; then
     ok "cmux not installed: fine, the seamux app runs its own tmux"
+  elif [ -x "$SEAMUX" ] && command -v tmux >/dev/null 2>&1; then
+    # The app with tmux, before its first session: nothing is wrong yet.
+    warn "cmux not installed: the seamux app will run its own tmux once you start a session from its Dock"
   else
-    bad "cmux not found, and the seamux app's tmux is not in use: install cmux, or start sessions from the app"
+    bad "cmux not found, and no seamux app with tmux to run without it: install cmux, or tmux and the app (./install.sh --app)"
   fi
   case "$_backend" in
     cmux|tmux) ok "backend: $_backend" ;;

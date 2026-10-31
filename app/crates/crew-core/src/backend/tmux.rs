@@ -48,7 +48,7 @@ pub fn in_play() -> Option<TmuxBackend> {
 }
 
 /// Whether SEAMUX_BACKEND names tmux: it wins over a cmux that answers, as
-/// it does at the app's launch (ADR 2), so a caller does not ask cmux.
+/// it does at the app's launch (docs/adr/0047), so a caller does not ask cmux.
 pub fn chosen() -> bool {
     crate::py::env_or("SEAMUX_BACKEND").as_deref() == Some("tmux")
 }

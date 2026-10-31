@@ -1,4 +1,4 @@
-//! Notifications on the tmux backend (ADR 5). Under cmux, cmux posts them
+//! Notifications on the tmux backend (docs/adr/0050). Under cmux, cmux posts them
 //! from the hooks; here nothing would, since hooks are separate processes
 //! that cannot reach the app. So once a second the app reads the pane-status
 //! files and posts when a pane starts waiting on you, or finishes a turn
