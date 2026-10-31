@@ -19,6 +19,9 @@
 // shows two sources side by side, each with its "tag" above it.
 // Top-level "name" names the output, "intro" and "outro" the cards' words:
 //   "intro": { "line": "…" }, "outro": { "items": ["…"], "url": "…" }
+// { "side": true, "crop": [x, y, w, h], "label", "title", "line" } shows a
+// tall crop on the right with large type on the left (a page section's name
+// and why it is there).
 // --stills writes one PNG per shot (its middle frame) to ROOT/cut/stills and
 // stops: look at those before the full render.
 // Output: ROOT/cut/seamux-app-demo.mp4, its poster ROOT/cut/poster.jpg.
@@ -45,6 +48,10 @@ const W = 1920, H = 1080
 const FRAME = { x: 192, y: 34, w: 1536, h: 864 }
 const CLOUD_CROP = [16, 28, 1230, 692] // the cloud window without its title bar (it names your user)
 const SPLIT = { w: 912, h: 513, y: 236, xs: [36, 972] }
+// A side shot: a tall part of the window (the page pane) on the right, at
+// this height, and the section's name and intent in large type on the left.
+const SIDE = { h: 900, right: 1850, y: 90, textX: 100, textW: 760 }
+const sideSize = (s) => { const w = Math.round((SIDE.h * s.crop[2]) / s.crop[3] / 2) * 2; return { w, h: SIDE.h, x: SIDE.right - w } }
 const XF = BEAT / 2 // the dip between shots
 
 const edit = edit0
@@ -83,6 +90,11 @@ const caption = (label, line) => page(`<div class="cap"><div class="lb">${esc(la
   `.cap { position: absolute; left: ${FRAME.x}px; top: ${FRAME.y + FRAME.h + 30}px; width: ${FRAME.w}px; font-family: ${FONT}; }
    .lb { font: 700 21px/1 ${FONT}; letter-spacing: 3px; text-transform: uppercase; color: ${C.green}; margin-bottom: 14px; }
    .ln { font: 600 40px/1.15 ${FONT}; color: ${C.sand}; letter-spacing: -.3px; }`)
+const sideCard = (label, title, line) => page(`<div class="sd"><div class="lb">${esc(label)}</div><h2>${esc(title)}</h2><p>${esc(line)}</p></div>`,
+  `.sd { position: absolute; left: ${SIDE.textX}px; top: 0; bottom: 0; width: ${SIDE.textW}px; display: flex; flex-direction: column; justify-content: center; font-family: ${FONT}; }
+   .lb { font: 700 24px/1 ${FONT}; letter-spacing: 3px; text-transform: uppercase; color: ${C.green}; margin-bottom: 22px; }
+   h2 { margin: 0 0 26px; font: 800 76px/1.02 ${FONT}; letter-spacing: -2px; color: ${C.sand}; }
+   p { margin: 0; font: 500 40px/1.3 ${FONT}; color: ${C.grey}; max-width: 760px; }`)
 const word = `<span style="color:${C.sand}">sea</span><span style="color:${C.green}">mux</span>`
 const CARDS = {
   intro: page(`<div class="c"><h1>${word}</h1><p>${esc(edit0.intro?.line ?? 'Every Claude Code session, in one window.')}</p></div>`,
@@ -117,7 +129,15 @@ async function renderPngs() {
     `.t { position: absolute; top: ${SPLIT.y - 46}px; font: 700 21px/1 ${FONT}; letter-spacing: 3px; text-transform: uppercase; color: ${C.grey}; }
      .s { position: absolute; top: ${SPLIT.y}px; width: ${SPLIT.w}px; height: ${SPLIT.h}px; border-radius: 14px;
           box-shadow: 0 24px 60px rgba(0,0,0,.55), 0 0 0 1px rgba(211,198,170,.10); }`), `split-${i}.png`)
-  for (const [i, s] of edit.shots.entries()) if (s.label || s.line) await shoot(caption(s.label || '', s.line || ''), `cap-${i}.png`)
+  for (const [i, s] of edit.shots.entries()) {
+    if (s.side) {
+      const z = sideSize(s)
+      await shoot(sideCard(s.label || '', s.title || '', s.line || ''), `cap-${i}.png`)
+      await shoot(page(`<div class="s"></div>`, `.s { position: absolute; left: ${z.x}px; top: ${SIDE.y}px; width: ${z.w}px; height: ${z.h}px;
+        border-radius: 14px; box-shadow: 0 30px 80px rgba(0,0,0,.55), 0 0 0 1px rgba(211,198,170,.10); }`), `shadow-${i}.png`)
+      await shoot(PNG.mask.replaceAll(`${FRAME.w}px`, `${z.w}px`).replaceAll(`${FRAME.h}px`, `${z.h}px`), `mask-${i}.png`, { width: z.w, height: z.h })
+    } else if (s.label || s.line) await shoot(caption(s.label || '', s.line || ''), `cap-${i}.png`)
+  }
   await browser.close()
 }
 
@@ -154,7 +174,12 @@ function shot(i, s, file) {
   }
   const loop = (f) => ['-loop', '1', '-t', String(dur), '-i', png(f)]
   let inputs, fc
-  if (s.split) {
+  if (s.side) {
+    const z = sideSize(s), a = src(s, 0, z.w, z.h, 'app')
+    inputs = [...a.input, ...loop('bg.png'), ...loop(`shadow-${i}.png`), ...loop(`mask-${i}.png`), ...loop(`cap-${i}.png`)]
+    fc = [a.fc, `[3:v]format=gray[m]`, `[app][m]alphamerge[am]`, `[1:v][2:v]overlay=0:0[b0]`,
+      `[b0][am]overlay=${z.x}:${SIDE.y}:shortest=1[b1]`, `[4:v]format=rgba,fade=t=in:st=${XF}:d=0.35:alpha=1[c]`, `[b1][c]overlay=0:0,format=yuv420p[v]`]
+  } else if (s.split) {
     const a = src(s.split[0], 0, SPLIT.w, SPLIT.h, 'a'), b = src(s.split[1], 1, SPLIT.w, SPLIT.h, 'b')
     inputs = [...a.input, ...b.input, ...loop('bg.png'), ...loop(`split-${i}.png`), ...loop('mask-split.png')]
     fc = [a.fc, b.fc, `[4:v]format=gray,split[m1][m2]`, `[a][m1]alphamerge[am]`, `[b][m2]alphamerge[bm]`,

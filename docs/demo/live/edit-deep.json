@@ -1,0 +1,222 @@
+{
+ "name": "seamux-deep-plan",
+ "take": "take-deep",
+ "poster": 7,
+ "intro": {
+  "line": "deep-plan: a plan you read before any code."
+ },
+ "outro": {
+  "items": [
+   "Forks you decide.",
+   "Sections with a reason.",
+   "Checks that actually run."
+  ]
+ },
+ "shots": [
+  {
+   "card": "intro",
+   "beats": 6
+  },
+  {
+   "side": true,
+   "at": "ask",
+   "from": 0,
+   "beats": 6,
+   "speed": 2.4,
+   "crop": [
+    442,
+    150,
+    352,
+    730
+   ],
+   "label": "deep-plan",
+   "title": "Ask for a deep plan",
+   "line": "It reads the code first, then questions the goal."
+  },
+  {
+   "side": true,
+   "at": "fork-1",
+   "from": 0.5,
+   "beats": 8,
+   "speed": 1.2,
+   "crop": [
+    442,
+    150,
+    352,
+    730
+   ],
+   "label": "deep-plan",
+   "title": "You answer the forks",
+   "line": "Every hard-to-undo choice comes to you, with a recommendation."
+  },
+  {
+   "side": true,
+   "at": "sec-Non-goals",
+   "from": 0.6,
+   "beats": 6,
+   "crop": [
+    800,
+    120,
+    800,
+    780
+   ],
+   "label": "The plan",
+   "title": "Non-goals",
+   "line": "What it won't do comes first, before you argue with what it will."
+  },
+  {
+   "side": true,
+   "at": "sec-Decisions",
+   "from": 0.6,
+   "beats": 6,
+   "crop": [
+    800,
+    120,
+    800,
+    780
+   ],
+   "label": "The plan",
+   "title": "Decisions",
+   "line": "Each fork you answered, with its reason. Nothing decided quietly."
+  },
+  {
+   "side": true,
+   "at": "sec-Contracts",
+   "from": 0.6,
+   "beats": 6,
+   "crop": [
+    800,
+    120,
+    800,
+    780
+   ],
+   "label": "The plan",
+   "title": "Contracts",
+   "line": "Every API or table shape that changes. Reach is scouted; the call is yours."
+  },
+  {
+   "side": true,
+   "at": "sec-Verified facts",
+   "from": 0.6,
+   "beats": 6,
+   "crop": [
+    800,
+    120,
+    800,
+    780
+   ],
+   "label": "The plan",
+   "title": "Verified facts",
+   "line": "Claims cite path:line. A file it hasn't read is a file it can't plan."
+  },
+  {
+   "side": true,
+   "at": "sec-Risks",
+   "from": 0.6,
+   "beats": 7,
+   "crop": [
+    800,
+    120,
+    800,
+    780
+   ],
+   "label": "The plan",
+   "title": "Risks",
+   "line": "A claim nobody could cite. You settle each one: accept, mitigate, spike or promote."
+  },
+  {
+   "side": true,
+   "at": "sec-Diagrams",
+   "from": 0.6,
+   "beats": 6,
+   "crop": [
+    800,
+    120,
+    800,
+    780
+   ],
+   "label": "The plan",
+   "title": "Diagrams",
+   "line": "Each answers a question, in plain words first, with detail one tab away."
+  },
+  {
+   "side": true,
+   "at": "sec-Increments",
+   "from": 0.6,
+   "beats": 6,
+   "crop": [
+    800,
+    120,
+    800,
+    780
+   ],
+   "label": "The plan",
+   "title": "Increments",
+   "line": "Small steps, each listing the exact checks that will run."
+  },
+  {
+   "side": true,
+   "at": "quiz",
+   "from": 0,
+   "beats": 6,
+   "speed": 1.2,
+   "crop": [
+    442,
+    150,
+    352,
+    730
+   ],
+   "label": "Alignment check",
+   "title": "A short quiz",
+   "line": "Before any code, it checks the plan says what you think it says."
+  },
+  {
+   "side": true,
+   "at": "recipes",
+   "from": 0.5,
+   "beats": 8,
+   "crop": [
+    442,
+    150,
+    352,
+    730
+   ],
+   "label": ".seamux/verify.json",
+   "title": "Checks are recipes",
+   "line": "Unit tests, a real browser, and lookout reviews, matched to the files a step touches."
+  },
+  {
+   "at": "go",
+   "from": -3,
+   "beats": 6,
+   "crop": [
+    0,
+    40,
+    800,
+    450
+   ],
+   "label": "The board",
+   "line": "You press go. One increment opens; the gate refuses the rest."
+  },
+  {
+   "side": true,
+   "at": "build",
+   "from": 0,
+   "beats": 10,
+   "speed": 4.5,
+   "crop": [
+    442,
+    150,
+    352,
+    730
+   ],
+   "label": "deep-plan check run",
+   "title": "The checks run",
+   "line": "Lint and unit tests pass, and the checkout page passes in headless Chromium."
+  },
+  {
+   "card": "outro",
+   "beats": 8
+  }
+ ]
+}

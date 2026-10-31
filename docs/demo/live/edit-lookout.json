@@ -1,0 +1,127 @@
+{
+ "name": "seamux-lookout",
+ "take": "take-lookout2",
+ "poster": 3,
+ "intro": {
+  "line": "lookout: review a diff with the agent."
+ },
+ "outro": {
+  "items": [
+   "Riskiest files first.",
+   "Findings on their lines.",
+   "You close what matters."
+  ]
+ },
+ "shots": [
+  {
+   "card": "intro",
+   "beats": 6
+  },
+  {
+   "side": true,
+   "at": "lo-risk",
+   "from": 1,
+   "beats": 9,
+   "crop": [
+    800,
+    120,
+    800,
+    780
+   ],
+   "label": "lookout",
+   "title": "Answer first",
+   "line": "A fresh reviewer has read the diff. Before its notes, a quiz asks what the code does."
+  },
+  {
+   "side": true,
+   "at": "lo-path",
+   "from": 0.5,
+   "beats": 5,
+   "crop": [
+    800,
+    120,
+    800,
+    780
+   ],
+   "label": "The review",
+   "title": "Or by path",
+   "line": "The same files as a folder tree."
+  },
+  {
+   "side": true,
+   "at": "lo-overview",
+   "from": 1,
+   "beats": 9,
+   "crop": [
+    800,
+    120,
+    800,
+    780
+   ],
+   "label": "The review",
+   "title": "Riskiest first",
+   "line": "Files sit in risk bands, each group saying why. Findings sit on their lines: blocker, major, minor, nit."
+  },
+  {
+   "side": true,
+   "at": "resolved-f2",
+   "from": 0.3,
+   "beats": 9,
+   "crop": [
+    800,
+    120,
+    800,
+    780
+   ],
+   "label": "Back and forth",
+   "title": "Fixed, then addressed",
+   "line": "The agent fixes a finding and says what changed. Only you close it."
+  },
+  {
+   "take": "take-lookout3",
+   "at": "f1",
+   "from": 0.5,
+   "beats": 10,
+   "crop": [
+    800,
+    440,
+    800,
+    450
+   ],
+   "label": "Back and forth",
+   "line": "On a major it won't fix, the agent replies why and leaves the call to you."
+  },
+  {
+   "take": "take-lookout3",
+   "at": "dismissed",
+   "from": -0.5,
+   "beats": 5,
+   "crop": [
+    800,
+    440,
+    800,
+    450
+   ],
+   "label": "Back and forth",
+   "line": "You dismiss it, on the page."
+  },
+  {
+   "take": "take-lookout3",
+   "at": "gate",
+   "from": -3,
+   "beats": 9,
+   "crop": [
+    440,
+    60,
+    1160,
+    652
+   ],
+   "label": "lookout gate",
+   "line": "No blocker or major left open: the gate passes, and done can follow."
+  },
+  {
+   "card": "outro",
+   "beats": 8
+  }
+ ]
+}

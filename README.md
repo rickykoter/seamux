@@ -60,8 +60,6 @@ edit until you say go. bash-guard stopping a force push.
 
 https://github.com/user-attachments/assets/b45343f9-43f6-404b-976e-616984387993
 
-_The seamux app demo: a deep-plan question in the Dock, its options beside the live terminal_
-
 **Families and the cloud** (62 s). One goal split into a parent plan and two
 workstreams, one of them running in a cloud session. The parent gives that
 workstream its go, the go travels on the plan's git branch, and the laptop
@@ -70,8 +68,6 @@ sees the work land. The cloud here is a fresh clone of the same remote with
 
 
 https://github.com/user-attachments/assets/eef04f9b-a2b5-46ee-ab01-7fa3dbddcaea
-
-_The families demo: a family card on the board, the parent's gate shut and its workstream waiting_
 
 | | |
 |---|---|
@@ -102,7 +98,12 @@ branch onto its moved base without hand-merging generated files, and on cmux
 the crew board shows every worktree on the line, ranked by which one needs
 you next.
 
-https://github.com/user-attachments/assets/380fe3fe-fbe7-4215-89e1-f3929e0b8720
+**deep-plan up close** (63 s). A live agent plans a coupon feature from
+scratch: it reads the code, asks the forks, and renders the plan. Then each
+section of the page and why it is there, the recipes in
+`.seamux/verify.json`, and `check run` with unit tests and a real browser.
+
+https://github.com/user-attachments/assets/7642ab86-3596-49a1-a098-c140456c8e22
 
 The plugins in detail: [deep-plan](deep-plan/README.md),
 [lookout](lookout/README.md), [restack](restack/README.md),
@@ -302,6 +303,13 @@ ranked by risk. A fresh reviewer agent files findings on their lines, each
 with a failure scenario, and you and the agent talk them through in
 threads. A plan can make an increment wait on its review.
 [lookout's README](lookout/README.md).
+
+**lookout up close** (44 s). A fresh reviewer's findings on a live branch:
+the quiz before its notes, files in risk bands, and the back and forth. The
+agent fixes what fits and marks it addressed, replies on what it won't fix,
+and only you close a finding before the gate passes.
+
+https://github.com/user-attachments/assets/dbe7e26c-c3de-4002-83c3-8bbd5f341db4
 
 ### restack: rebase without merging generated files
 

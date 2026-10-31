@@ -72,3 +72,43 @@ newws() {
 # PATH is the panes' own (.zshenv): your shell's node may be a version
 # manager's shim, which finds nothing under the demo HOME.
 demo_env() { env HOME="$DEMO_HOME" PATH="$(. "$DEMO_HOME/.zshenv"; echo "$PATH")" SEAMUX_BIN="$DEMO_HOME/.local/bin/seamux" "$@"; }
+
+# Answer whatever question Claude has up with its first (recommended)
+# option: a single choice takes "1" and moves on, a multi-select ticks 1
+# and tabs on, and the review page submits with "1". Prints what it did, or
+# nothing when no question is up.
+answer() {
+  local s; s=$(screen "$1" 2>/dev/null) || return 1
+  if printf '%s' "$s" | grep -q 'Ready to submit'; then keys "$1" 1; echo submit
+  elif printf '%s' "$s" | grep -q 'Enter to select'; then
+    if printf '%s' "$s" | grep -qE '\[[ x✔]\]'; then
+      printf '%s' "$s" | grep -qE '\[(x|✔)\]' || keys "$1" 1
+      keys "$1" Tab; echo multi
+    else keys "$1" 1; echo pick; fi
+  fi
+}
+
+# tap TEXT [SECS]   press the control named TEXT (^TEXT: starting with it)
+#                   through accessibility, scrolled into view first,
+#                   retrying until it shows up.
+# hand TEXT [SECS]  the same with a real click: the cursor moves there and the
+#                   demo app comes to the front (for web content that takes no
+#                   accessibility press, like the board's chips).
+_where() {
+  local end=$((SECONDS + ${2:-10})) p
+  while [ $SECONDS -lt $end ]; do
+    p=$("$DEMO_TOOLS/axfind" "$(app_pid)" "$1" 2>/dev/null) && { echo "$p"; return 0; }
+    sleep 0.5
+  done
+  echo "no control: $1" >&2; return 1
+}
+tap() {
+  local end=$((SECONDS + ${2:-10}))
+  while [ $SECONDS -lt $end ]; do
+    "$DEMO_TOOLS/axfind" --press "$(app_pid)" "$1" >/dev/null 2>&1 && return 0
+    sleep 0.5
+  done
+  echo "no control: $1" >&2; return 1
+}
+front() { osascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $(app_pid)) to true"; sleep 0.3; }
+hand() { local p; p=$(_where "$1" "${2:-10}") || return 1; set -- $p; front; "$DEMO_TOOLS/click" "$1" "$2" >/dev/null; }
