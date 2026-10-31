@@ -2958,12 +2958,16 @@ function askShow(id) {
 }
 
 // A page's URL on crew's intent server, where cmux and seamux serve pages,
-// or "" when it is not running. Nothing is opened.
+// or "" when it is not running. A port file outlives the server that wrote
+// it, so the server must answer /health as crew-board-intent first. Nothing
+// is opened.
 function crewUrl(rel) {
   if (process.env.DEEP_PLAN_STATE_DIR) return "";
   try {
     const port = parseInt(fs.readFileSync(path.join(os.homedir(), ".cache", "cmux-crew", "board-intent.port"), "utf8").trim(), 10);
-    return port ? `http://127.0.0.1:${port}${rel}` : "";
+    if (!port) return "";
+    const h = spawnSync("curl", ["-fsS", "-m", "2", `http://127.0.0.1:${port}/health`], { encoding: "utf8", timeout: 4000 });
+    return h.status === 0 && /crew-board-intent/.test(h.stdout || "") ? `http://127.0.0.1:${port}${rel}` : "";
   } catch { return ""; }
 }
 
