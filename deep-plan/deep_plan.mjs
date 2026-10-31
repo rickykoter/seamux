@@ -982,6 +982,11 @@ function htmlHead(title, b64) {
   --ef-accent: #7fbbb3; --ef-good: #a7c080; --ef-warn: #dbbc7f; --ef-bad: #e67e80; --ef-mark: #dbbc7f;
   --ef-bg-red: #514045; --ef-bg-green: #425047; --ef-bg-yellow: #4d4c43; --ef-bg-blue: #3a515d; --ef-bg-visual: #543a48;
   --ef-ink: #1e2326;
+  /* text: words only, each 4.5:1 or better on the grounds it sits on (theme_sync.py --check) */
+  --ef-text: #d3c6aa; --ef-text-dim: #b8c0ba; --ef-text-faint: #a0a9ad;
+  --ef-text-red: #efadae; --ef-text-orange: #ecb196; --ef-text-yellow: #dbbc7f; --ef-text-green: #afc68b;
+  --ef-text-aqua: #95caa2; --ef-text-blue: #96c8c1; --ef-text-purple: #e0b1c7;
+  --ef-text-accent: #96c8c1; --ef-text-good: #afc68b; --ef-text-warn: #dbbc7f; --ef-text-bad: #efadae; --ef-text-mark: #dbbc7f;
   --ef-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 /* light */
@@ -995,6 +1000,10 @@ function htmlHead(title, b64) {
     --ef-accent: #3a94c5; --ef-good: #8da101; --ef-warn: #c08000; --ef-bad: #f85552; --ef-mark: #a77c00;
     --ef-bg-red: #fde3da; --ef-bg-green: #f0f1d2; --ef-bg-yellow: #faedcd; --ef-bg-blue: #e9f0e9; --ef-bg-visual: #eaedc8;
     --ef-ink: #fffbef;
+    --ef-text: #3e4a51; --ef-text-dim: #4f5b51; --ef-text-faint: #5c6a72;
+    --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
+    --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
+    --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
   }
 }
 :root[data-theme="light"] {
@@ -1006,35 +1015,40 @@ function htmlHead(title, b64) {
   --ef-accent: #3a94c5; --ef-good: #8da101; --ef-warn: #c08000; --ef-bad: #f85552; --ef-mark: #a77c00;
   --ef-bg-red: #fde3da; --ef-bg-green: #f0f1d2; --ef-bg-yellow: #faedcd; --ef-bg-blue: #e9f0e9; --ef-bg-visual: #eaedc8;
   --ef-ink: #fffbef;
+  --ef-text: #3e4a51; --ef-text-dim: #4f5b51; --ef-text-faint: #5c6a72;
+  --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
+  --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
+  --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
 }
 /* everforest:end */
-:root{--bg:var(--ef-bg);--fg:var(--ef-fg);--dim:var(--ef-dim);--faint:var(--ef-faint);--line:var(--ef-line);--line2:var(--ef-line2);--accent:var(--ef-accent);
---good:var(--ef-good);--warn:var(--ef-warn);--bad:var(--ef-bad);--mark:var(--ef-mark);--card:var(--ef-card);--card2:var(--ef-card2);--card3:var(--ef-card3);
+:root{--bg:var(--ef-bg);--fg:var(--ef-text);--dim:var(--ef-text-dim);--faint:var(--ef-text-faint);--line:var(--ef-line);--line2:var(--ef-line2);--accent:var(--ef-accent);
+--good:var(--ef-good);--warn:var(--ef-warn);--bad:var(--ef-bad);--mark:var(--ef-mark);
+--good-t:var(--ef-text-good);--warn-t:var(--ef-text-warn);--bad-t:var(--ef-text-bad);--mark-t:var(--ef-text-mark);--accent-t:var(--ef-text-accent);--card:var(--ef-card);--card2:var(--ef-card2);--card3:var(--ef-card3);
 --hl:rgba(167,192,128,.26);--hl-on:rgba(167,192,128,.5);--find:rgba(219,188,127,.32);--find-on:var(--ef-orange);
 --mono:var(--ef-mono)}
 :root[data-theme="light"]{--hl:rgba(141,161,1,.2);--hl-on:rgba(141,161,1,.38);--find:rgba(223,160,0,.28)}
 body{background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
 -webkit-font-smoothing:antialiased;max-width:860px;margin:0 auto;padding:28px 20px 80px}
 h1{font:600 22px/1.2 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;letter-spacing:-.01em}
-h2{font:700 12.5px/1.3 system-ui;letter-spacing:.12em;text-transform:uppercase;color:var(--mark);
+h2{font:700 12.5px/1.3 system-ui;letter-spacing:.12em;text-transform:uppercase;color:var(--mark-t);
 margin-top:2.4em;border-bottom:1px solid var(--line);padding-bottom:7px}
 h3{font-size:15px}
-a{color:var(--accent)}
+a{color:var(--accent-t)}
 code{background:var(--card);border-radius:4px;padding:1px 5px;font:12.5px var(--mono)}
 .dim{color:var(--dim)}.mermaid{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:12px;margin:12px 0}
 .inc{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:10px 0}
 .inc .st{float:right;font-size:12px;padding:2px 8px;border-radius:10px;border:1px solid var(--line)}
-.st-done{color:var(--good)}.st-working{color:var(--accent)}.st-authorized{color:var(--warn)}
-.st-blocked{color:var(--bad)}.st-pending{color:var(--dim)}
+.st-done{color:var(--good-t)}.st-working{color:var(--accent-t)}.st-authorized{color:var(--warn-t)}
+.st-blocked{color:var(--bad-t)}.st-pending{color:var(--dim)}
 .dp-act{margin-right:6px;background:var(--card3);color:var(--fg);border:1px solid var(--line);
 border-radius:6px;padding:3px 12px;cursor:pointer}
 .dp-act[disabled]{opacity:.45;cursor:default}
 .dp-path{color:var(--fg);cursor:default}
-.dp-live .dp-path{color:var(--accent);text-decoration:underline;cursor:pointer}
-.dp-path.dp-bad{color:var(--bad)}
+.dp-live .dp-path{color:var(--accent-t);text-decoration:underline;cursor:pointer}
+.dp-path.dp-bad{color:var(--bad-t)}
 .dp-adr-edit,.dp-adr-promote{background:var(--card3);color:var(--fg);border:1px solid var(--line);
 border-radius:6px;padding:2px 10px;cursor:pointer;font:inherit;font-size:12px}
-.dp-adr-promote[data-staged="1"]{color:var(--good);border-color:var(--good)}
+.dp-adr-promote[data-staged="1"]{color:var(--good-t);border-color:var(--good)}
 .dp-adr-editor{border:1px dashed var(--line);border-radius:8px;padding:10px;margin:8px 0}
 .dp-adr-editor label{display:block;font-size:12px;color:var(--dim);margin:6px 0}
 .dp-adr-editor input,.dp-adr-editor textarea{display:block;width:100%;box-sizing:border-box;
@@ -1632,8 +1646,8 @@ function annotationsSection(spec, st) {
   if (st.artifact && st.artifact.url) {
     const stale = st.artifact.spec_hash && st.artifact.spec_hash !== specHash(spec);
     bits.push(`<h2>Shared for annotation</h2>
-<p class="dim">artifact: <a href="${esc(st.artifact.url)}" style="color:var(--accent)">${esc(st.artifact.url)}</a>${
-      stale ? ' · <span style="color:var(--warn)">published copy is STALE — spec changed since publish; re-export and republish</span>' : ""}</p>`);
+<p class="dim">artifact: <a href="${esc(st.artifact.url)}" style="color:var(--accent-t)">${esc(st.artifact.url)}</a>${
+      stale ? ' · <span style="color:var(--warn-t)">published copy is STALE — spec changed since publish; re-export and republish</span>' : ""}</p>`);
   }
   if (anns.length) {
     const open = anns.filter(a => !a.resolved);
@@ -1815,7 +1829,7 @@ ${DP_RISK_CSS}
 </style>` +
     commonBody(spec, st.adrs || [], true).replace(/(<p class="dim">plan <code>[^\n]*<\/p>)/, (m) => m + "\n" + familyStripHtml(spec.slug)) + `
 ${st.approved ? `<p class="dim">approved snapshot: <span class="dp-path" data-file="${esc(st.approved.path)}"><code>${esc(st.approved.path)}</code></span>${
-      st.approved.spec_hash !== specHash(spec) ? ' · <span style="color:var(--warn)">the live plan has DRIFTED from the approved snapshot (spec amended since grade-pass)</span>' : ""}</p>` : ""}
+      st.approved.spec_hash !== specHash(spec) ? ' · <span style="color:var(--warn-t)">the live plan has DRIFTED from the approved snapshot (spec amended since grade-pass)</span>' : ""}</p>` : ""}
 <h2>Gate</h2><p>${g.allow ? CHECK_GLYPH.pass + " open" : CHECK_GLYPH.fail + " shut"} <span class="dim">— ${esc(g.why)}</span>
 <span class="dim">· root <code>${esc(st.root || "?")}</code> · phase ${esc(st.phase)}</span></p>
 <h2>Increments</h2>${rows}
@@ -2332,8 +2346,8 @@ font:600 13px system-ui;cursor:pointer}
 .annot button:focus-visible,.annot input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 ul.alist{padding-left:0;list-style:none}
 ul.alist li{border-top:1px solid var(--line);padding:7px 0;font-size:13px}
-ul.alist li b{color:var(--accent)}
-.ro{color:var(--warn);font-size:13px}
+ul.alist li b{color:var(--accent-t)}
+.ro{color:var(--warn-t);font-size:13px}
 </style>
 <h1>${esc(spec.title)}</h1>
 <p class="dim">plan <code>${esc(spec.slug)}</code> — shared for annotation; the plan itself

@@ -77,6 +77,11 @@
   --ef-accent: #7fbbb3; --ef-good: #a7c080; --ef-warn: #dbbc7f; --ef-bad: #e67e80; --ef-mark: #dbbc7f;
   --ef-bg-red: #514045; --ef-bg-green: #425047; --ef-bg-yellow: #4d4c43; --ef-bg-blue: #3a515d; --ef-bg-visual: #543a48;
   --ef-ink: #1e2326;
+  /* text: words only, each 4.5:1 or better on the grounds it sits on (theme_sync.py --check) */
+  --ef-text: #d3c6aa; --ef-text-dim: #b8c0ba; --ef-text-faint: #a0a9ad;
+  --ef-text-red: #efadae; --ef-text-orange: #ecb196; --ef-text-yellow: #dbbc7f; --ef-text-green: #afc68b;
+  --ef-text-aqua: #95caa2; --ef-text-blue: #96c8c1; --ef-text-purple: #e0b1c7;
+  --ef-text-accent: #96c8c1; --ef-text-good: #afc68b; --ef-text-warn: #dbbc7f; --ef-text-bad: #efadae; --ef-text-mark: #dbbc7f;
   --ef-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 /* everforest:end */
@@ -86,7 +91,7 @@
   --bg:var(--ef-bg); --bg1:var(--ef-bg1); --bg-attend:#3b4136; --bg-kids:#2a3135;
   --bg2:var(--ef-bg2); --line:#414b50; --edge:#56636a;
   /* Text. fg names things, fg2 is what an agent said, grey is everything around it. */
-  --fg:var(--ef-fg); --fg2:#b8b0a0; --grey:#a3ada5;
+  --fg:var(--ef-text); --fg2:#b8b0a0; --grey:#a3ada5;
   /* Tiers. The rail, the dial and the filled button wear these. Wilt's red is
      3.9:1 on a card, so where it is text it uses its lighter twin. */
   --attend:#dfa000; --running:var(--ef-blue); --wilt:var(--ef-red); --done:var(--ef-green); --quiet:var(--ef-grey0);

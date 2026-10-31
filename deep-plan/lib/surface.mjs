@@ -124,7 +124,7 @@ body{max-width:none;margin:0;padding:0}
 .dp-folded .dp-fold svg{transform:rotate(-90deg)}
 .dp-folded>.dp-sec-body{display:none}
 .dp-folded>h2{opacity:.75}
-.dp-badge{font:600 10.5px/1 var(--mono);color:var(--bg);background:var(--good);border-radius:999px;padding:2px 6px;margin-left:auto}
+.dp-badge{font:600 11px/1 var(--mono);color:var(--good-t);background:var(--ef-bg-green);border-radius:999px;padding:2px 6px;margin-left:auto}
 
 /* ---- rail: a column when wide, a sticky top bar when narrow ---- */
 #dp-rail{position:sticky;top:0;z-index:30;background:var(--bg);border-bottom:1px solid var(--line);
@@ -157,7 +157,7 @@ body{max-width:none;margin:0;padding:0}
   #dp-rail{height:100vh;box-sizing:border-box;flex-direction:column;align-items:stretch;gap:10px;
     border-bottom:0;border-right:1px solid var(--line);padding:14px 10px 24px;overflow-y:auto}
   .dp-rail-head{order:0;flex-wrap:wrap}
-  .dp-rail-label{display:block;font:700 11px/1 system-ui;letter-spacing:.12em;text-transform:uppercase;color:var(--mark);padding:8px 8px 0}
+  .dp-rail-label{display:block;font:700 11px/1 system-ui;letter-spacing:.12em;text-transform:uppercase;color:var(--mark-t);padding:8px 8px 0}
   .dp-toc{flex-direction:column;overflow:visible;gap:1px}
   .dp-toc li{display:block}
   .dp-toc a{white-space:normal}
@@ -188,7 +188,7 @@ body{max-width:none;margin:0;padding:0}
   #dp-margin .dp-quote.dp-q-hidden{display:none}
   .dp-dot{display:none}
 }
-.dp-quote{background:var(--card2);border:1px solid var(--line2);border-left:3px solid var(--good);border-radius:8px;
+.dp-quote{background:var(--card2);border:1px solid var(--line2);border-left-color:var(--good);border-radius:8px;
   padding:8px 10px 6px;margin:8px 0;box-shadow:0 4px 14px rgba(0,0,0,.18);box-sizing:border-box}
 .dp-quote.dp-on{border-color:var(--good);box-shadow:0 4px 18px rgba(0,0,0,.3)}
 .dp-q-jump{display:block;width:100%;text-align:left;background:none;border:0;color:var(--dim);font:italic 12.5px/1.4 system-ui;
@@ -213,7 +213,7 @@ body{max-width:none;margin:0;padding:0}
 .dp-x:hover{opacity:1}
 #dp-clear{background:none;border:1px solid var(--line2);color:var(--dim);border-radius:6px;padding:8px 12px;
   font:inherit;font-size:13px;cursor:pointer;margin-left:8px;min-height:40px}
-#dp-clear.sure{border-color:var(--bad);color:var(--bad)}
+#dp-clear.sure{border-color:var(--bad);color:var(--bad-t)}
 
 /* ---- file trees ---- */
 .dp-files{margin:8px 0;font-size:13.5px}
@@ -281,12 +281,12 @@ body.dp-lb-open{overflow:hidden}
 .dp-f-opt[data-o="w"]{text-decoration:underline;text-underline-offset:3px}
 .dp-f-opt:focus-visible,.dp-f-btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 #dp-f-n{font:500 11.5px/1 var(--mono);color:var(--faint);min-width:64px;text-align:center;white-space:nowrap}
-#dp-f-err{color:var(--bad);font:12px/1.4 var(--mono);padding:4px 6px 0}
+#dp-f-err{color:var(--bad-t);font:12px/1.4 var(--mono);padding:4px 6px 0}
 #dp-f-list{list-style:none;margin:6px 0 0;padding:0;max-height:min(50vh,360px);overflow-y:auto;border-top:1px solid var(--line)}
 #dp-f-list li{padding:5px 8px;border-radius:6px;cursor:pointer;font-size:13px;line-height:1.4}
 #dp-f-list li[aria-selected="true"]{background:var(--card3)}
 #dp-f-list li:hover{background:var(--card)}
-#dp-f-list .where{display:block;font:500 10.5px/1.3 var(--mono);color:var(--faint);text-transform:uppercase;letter-spacing:.06em}
+#dp-f-list .where{display:block;font:500 11px/1.3 var(--mono);color:var(--faint);text-transform:uppercase;letter-spacing:.06em}
 #dp-f-list mark{background:var(--find);color:inherit;border-radius:2px}
 #dp-f-ticks{position:fixed;top:0;right:0;bottom:0;width:7px;z-index:45;pointer-events:none}
 #dp-f-ticks i{position:absolute;right:0;width:7px;height:3px;background:var(--find-on);opacity:.85}
@@ -297,7 +297,7 @@ body.dp-lb-open{overflow:hidden}
 #dp-help[hidden]{display:none}
 .dp-help-box{background:var(--card2);border:1px solid var(--line2);border-radius:12px;padding:16px 20px;max-width:520px;width:100%;
   max-height:80vh;overflow:auto;box-sizing:border-box}
-.dp-help-box h3{margin:10px 0 6px;font:700 11px system-ui;letter-spacing:.12em;text-transform:uppercase;color:var(--mark)}
+.dp-help-box h3{margin:10px 0 6px;font:700 11px system-ui;letter-spacing:.12em;text-transform:uppercase;color:var(--mark-t)}
 .dp-help-box h3:first-child{margin-top:0}
 .dp-help-box dl{display:grid;grid-template-columns:max-content 1fr;gap:5px 14px;margin:0;font-size:13.5px}
 .dp-help-box dt{font:600 12px/1.6 var(--mono);color:var(--fg)}

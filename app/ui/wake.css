@@ -26,8 +26,8 @@
 .w-title { margin: 0; font-size: 18px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .w-dot { color: var(--muted); font-weight: 400; }
 .w-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; color: var(--muted); font-size: 12px; margin-top: 2px; }
-.w-sub .risk { color: var(--bad); }
-.w-sub .kept { color: var(--good); }
+.w-sub .risk { color: var(--bad-t); }
+.w-sub .kept { color: var(--good-t); }
 .w-ws { font: inherit; padding: 4px 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); max-width: 260px; min-width: 0; }
 
 /* The bar and a prompt's head wrap rather than run past a narrow column (the
@@ -70,15 +70,15 @@
 .w-k { font-size: 11px; color: var(--kc, var(--muted)); font-weight: 600; }
 .w-t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .w-badges { display: flex; gap: 4px; }
-.w-st { font-size: 10.5px; padding: 0 6px; border-radius: 8px; background: var(--term); color: var(--muted); }
-.w-st.risk { color: var(--bad); }
-.w-st.kept { color: var(--good); }
+.w-st { font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--term); color: var(--muted); }
+.w-st.risk { color: var(--bad-t); }
+.w-st.kept { color: var(--good-t); }
 .w-p { grid-column: 2 / 4; font: 11px ui-monospace, Menlo, monospace; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .w-p.was { opacity: 0.7; }
 .w-acts { grid-column: 2 / 4; display: flex; flex-wrap: wrap; gap: 6px; }
 .w-act { font: inherit; font-size: 11.5px; padding: 2px 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
-.w-act.sure { border-color: var(--accent); color: var(--accent); }
-.w-act.keepall { color: var(--bad); white-space: nowrap; }
+.w-act.sure { border-color: var(--accent); color: var(--accent-t); }
+.w-act.keepall { color: var(--bad-t); white-space: nowrap; }
 .w-keys { padding: 4px 10px; }
 .w-row mark, .w-ph mark { background: color-mix(in srgb, var(--accent) 30%, transparent); color: inherit; border-radius: 2px; }
 .w-empty { margin: 14vh auto 0; max-width: 420px; text-align: center; color: var(--muted); }
@@ -95,5 +95,8 @@
 .w-help b { display: inline-block; min-width: 46px; font-family: ui-monospace, Menlo, monospace; }
 .w-toast { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); padding: 6px 14px; border-radius: 9px; background: var(--card); border: 1px solid var(--line); box-shadow: 0 8px 24px var(--shade); font-size: 12px; opacity: 0; pointer-events: none; transition: opacity 0.2s; }
 .w-toast.on { opacity: 1; }
-.w-toast.bad { color: var(--bad); }
+.w-toast.bad { color: var(--bad-t); }
+
+/* A keyboard ring on everything the Wake lets you Tab to. */
+.wake :is(button, input, select, a, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 @media (prefers-reduced-motion: reduce) { .w-toast { transition: none; } }

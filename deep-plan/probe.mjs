@@ -19,8 +19,11 @@ import * as HOST_TWIN from "../lookout/lib/host.mjs";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const V = process.argv.includes("-v");
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "dp-probe-"));
+// A run from a cmux pane must not hand the probe that pane: tests that want
+// a surface or workspace set their own, as CI (which has none) needs.
+const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("CMUX_")));
 const ENV = {
-  ...process.env,
+  ...HOST_ENV,
   DEEP_PLAN_STATE_DIR: path.join(TMP, "state"),
   DEEP_PLAN_KEYS_DIR: path.join(TMP, "keys"),
   DEEP_PLAN_PLANS_DIR: path.join(TMP, "plans"),
