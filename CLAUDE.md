@@ -26,6 +26,12 @@ guessing, preview with `./install.sh --dry-run`, verify with
   `cargo test --manifest-path app/Cargo.toml --workspace` and
   `cd app && npm ci && npm run build`. `.seamux/verify.json` holds each as a
   recipe matched to the files it tests, so `deep-plan check run` picks them.
+- `python3 tools/probes.py` runs the quick probes side by side (about 1.5
+  minutes, where one after another takes over 10); `--changed` runs only
+  the ones whose files your branch touched, and words pick by recipe id. The
+  deep-plan, restack and lookout probes run their own sections side by side
+  too, and take `--only <word>` to run just the matching ones; each section
+  stands alone, so a new one must not lean on another's state.
 - `app/` is the seamux app (Tauri: Rust in `app/crates`, Vite + TypeScript
   pages in `app/ui`). Unlike the plugins it is not live from the checkout:
   `./install.sh --app` builds it and copies the bundle to `~/Applications`.

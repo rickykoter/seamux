@@ -50,22 +50,48 @@ fail() {
   printf 'FAIL %s\n' "$*"
 }
 
-while IFS= read -r line || [ -n "$line" ]; do
-  case "$line" in '' | '#'*) continue ;; esac
-  expect="${line%% *}"
-  body="${line#* }"
-  case "$expect" in
-    block) want=2 ;;
-    allow) want=0 ;;
-    *) fail "bad case line: $line"; continue ;;
-  esac
-  payload="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$body\",\"description\":\"probe\"}}"
-  for mode in $modes; do
-    runs=$((runs + 1))
-    hook "$mode" "$payload"
-    [ "$rc" = "$want" ] || fail "[$mode] want $expect, exit $rc: $body"
-  done
-done <"$cases"
+# The cases are independent, so they run in shards side by side, one per CPU
+# (GUARD_PROBE_JOBS to change it): shard k takes every case line n with
+# n % shards == k, prints its FAIL lines, and ends with its counts.
+shards="${GUARD_PROBE_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
+case_shard() {
+  local n=-1 line expect body want payload mode
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in '' | '#'*) continue ;; esac
+    n=$((n + 1))
+    [ $((n % shards)) = "$1" ] || continue
+    expect="${line%% *}"
+    body="${line#* }"
+    case "$expect" in
+      block) want=2 ;;
+      allow) want=0 ;;
+      *) fail "bad case line: $line"; continue ;;
+    esac
+    payload="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$body\",\"description\":\"probe\"}}"
+    for mode in $modes; do
+      runs=$((runs + 1))
+      hook "$mode" "$payload"
+      [ "$rc" = "$want" ] || fail "[$mode] want $expect, exit $rc: $body"
+    done
+  done <"$cases"
+  printf 'counts %d %d\n' "$runs" "$fails"
+}
+k=0
+while [ $k -lt "$shards" ]; do
+  case_shard "$k" >"$nopy/shard-$k.out" &
+  k=$((k + 1))
+done
+wait
+k=0
+while [ $k -lt "$shards" ]; do
+  while IFS= read -r line; do
+    case "$line" in
+      counts\ *) set -- $line; runs=$((runs + $2)); fails=$((fails + $3)) ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done <"$nopy/shard-$k.out"
+  k=$((k + 1))
+done
 
 # Without the opt-in variable, or with a pattern that does not name the branch,
 # the same leased push is blocked like any other force-push.

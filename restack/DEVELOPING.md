@@ -192,9 +192,10 @@ bugs found here were the check LYING in the safe direction:
 ## Verifying a change
 
 ```bash
-node restack/probe.mjs          # must print 0 failed
-node restack/probe.mjs -v       # the walkthrough, when you want to see it
-node restack/probe.mjs --keep   # leaves the throwaway repos to poke at
+node restack/probe.mjs          # must print 0 failed; sections run side by side
+node restack/probe.mjs --only lease   # only the sections whose name has "lease"
+node restack/probe.mjs -v --serial    # the walkthrough, in order, when you want to see it
+node restack/probe.mjs -v --keep      # leaves the throwaway repos to poke at
 python3 tools/scrub_check.py    # no internal identifiers, same as CI
 ```
 

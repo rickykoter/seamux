@@ -523,6 +523,8 @@ increment's status from disk when disk's `changedAt` is newer.
 
 ```bash
 node deep-plan/probe.mjs                         # from the repo; must print 0 failed
+node deep-plan/probe.mjs --only families         # one section, for a test-fix-test loop
+python3 tools/probes.py --changed                # every probe your branch's files touch
 node crew/board/board_probe.mjs                  # the board still renders plan rows
 python3 crew/tools/family_sync_probe.py          # families through crew-sync, fake cmux
 crew doctor                                      # intent routes + mermaid swap

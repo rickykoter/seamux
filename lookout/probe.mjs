@@ -10,9 +10,13 @@ import crypto from "node:crypto";
 import http from "node:http";
 import { execSync, spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { sections } from "../tools/probe_sections.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const V = process.argv.includes("-v");
+// Each section below runs in its own child with its own TMP, several at once;
+// `--only <word>` picks sections, `--serial` runs them here (tools/probe_sections.mjs).
+const { want } = await sections(import.meta.url, { label: "lookout probe" });
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "lookout-probe-"));
 const HOME = path.join(TMP, "home");
 const ENV = {
@@ -73,7 +77,7 @@ const sh = (d, c) => execSync(c, { cwd: d, encoding: "utf8" });
 const sha = f => crypto.createHash("sha256").update(fs.readFileSync(f)).digest("hex");
 
 // ---------------------------------------------------------------- parse
-{
+if (want("parse")) {
   const text = [
     "diff --git a/src/a.js b/src/a.js",
     "index 111..222 100644",
@@ -123,7 +127,7 @@ const sha = f => crypto.createHash("sha256").update(fs.readFileSync(f)).digest("
 }
 
 // ---------------------------------------------------------------- intraline
-{
+if (want("intraline")) {
   const w = P.wordRanges("const total = price * qty;", "const total = price * quantity;");
   ok("intraline: only the changed word is marked", w && w.a.length === 1 && w.b.length === 1 &&
      "const total = price * quantity;".slice(...w.b[0]) === "quantity", JSON.stringify(w));
@@ -136,7 +140,7 @@ const sha = f => crypto.createHash("sha256").update(fs.readFileSync(f)).digest("
 }
 
 // ---------------------------------------------------------------- highlighting
-{
+if (want("highlighting")) {
   const lines = VD.splitHighlighted('<span class="hljs-comment">/* a\nb */</span>\nx');
   ok("highlight: a span across lines is closed and reopened", lines.length === 3 &&
      lines[0] === '<span class="hljs-comment">/* a</span>' && lines[1] === '<span class="hljs-comment">b */</span>', JSON.stringify(lines));
@@ -148,6 +152,7 @@ const sha = f => crypto.createHash("sha256").update(fs.readFileSync(f)).digest("
 }
 
 // ---------------------------------------------------------------- a real repo
+if (want("a real repo")) {
 const R1 = repo("r1");
 {
   // A block comment whose middle changes: the hunk starts INSIDE the comment,
@@ -257,9 +262,10 @@ const R1 = repo("r1");
     ok("a closed pipe ends output quietly", piped.status === 0 && !/EPIPE|Unhandled/.test(piped.stderr), piped.stderr);
   }
 }
+}
 
 // ---------------------------------------------------------------- big and plain
-{
+if (want("big and plain")) {
   const R2 = repo("r2");
   write(R2, "big.txt", Array.from({ length: 1700 }, (_, i) => "line " + i).join("\n") + "\n");
   write(R2, ".gitattributes", "gen/** linguist-generated\n");
@@ -273,7 +279,7 @@ const R1 = repo("r1");
 }
 
 // ---------------------------------------------------------------- risk + groups
-{
+if (want("risk + groups")) {
   const SC = await import("./lib/score.mjs");
   const GR = await import("./lib/group.mjs");
   const T = await import("./lib/typesafe.mjs");
@@ -414,7 +420,7 @@ const R1 = repo("r1");
 }
 
 // ---------------------------------------------------------------- findings + gate
-{
+if (want("findings + gate")) {
   const FD = await import("./lib/findings.mjs");
   const one = { file: "a.js", line: 2, severity: "major", summary: "s", failure_scenario: "f" };
   ok("input: a bare array, {findings}, and a fenced block with prose all parse",
@@ -589,7 +595,7 @@ const R1 = repo("r1");
 }
 
 // ---------------------------------------------------------------- notes, edges, quiz
-{
+if (want("notes, edges, quiz")) {
   const FD = await import("./lib/findings.mjs");
   const N = await import("./lib/notes.mjs");
   const one = { file: "a.js", line: 2, severity: "major", summary: "s", failure_scenario: "f" };
@@ -786,7 +792,7 @@ const R1 = repo("r1");
 }
 
 // ---------------------------------------------------------------- comments hook
-{
+if (want("comments hook")) {
   const R7 = repo("r7");
   write(R7, "a.js", "1\n"); sh(R7, `git add -A && ${G} commit -q -m base`);
   write(R7, "a.js", "2\n");
@@ -904,7 +910,7 @@ const R1 = repo("r1");
 }
 
 // ---------------------------------------------------------------- setup
-{
+if (want("setup")) {
   const bad = path.join(TMP, "bad.js");
   fs.writeFileSync(bad, "var hljs = 0;");
   fs.rmSync(path.join(ENV.LOOKOUT_VENDOR_DIR, "highlight.min.js"));
@@ -930,7 +936,7 @@ const R1 = repo("r1");
 // runs in a child with a hard timeout (the failure guarded against is a writer
 // that never returns), and the two that wait out the deadline run side by side.
 // crew/board/board_probe.mjs runs the same cases against crew's python twin.
-{
+if (want("the review lock")) {
   const { spawn } = await import("node:child_process");
   const dir = path.join(TMP, "lock-reviews");
   fs.mkdirSync(dir, { recursive: true });
@@ -963,7 +969,7 @@ catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.n
 }
 
 // ---------------------------------------------------------------- host detection
-{
+if (want("host detection")) {
   const HOST = (await import("./lib/host.mjs")), HOST_TWIN = (await import("../deep-plan/lib/host.mjs"));
   const HOST_TABLE = [
     [{}, "terminal"],
@@ -999,7 +1005,7 @@ catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.n
 }
 
 // ---------------------------------------------------------------- the shipped highlight.js
-{
+if (want("the shipped highlight.js")) {
   const shipped = path.join(HERE, "vendor", "highlight.min.js");
   ok("vendor: the plugin ships highlight.js at the pinned sha256",
     fs.existsSync(shipped) && sha(shipped) === VD.HLJS_SHA256);
@@ -1012,7 +1018,7 @@ catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.n
 }
 
 // ---------------------------------------------------------------- lookout serve
-{
+if (want("lookout serve")) {
   const SV = path.join(TMP, "serve");
   fs.mkdirSync(SV, { recursive: true });
   const SENV = { ...ENV, LOOKOUT_SERVE_FILE: path.join(SV, "serve.json"), LOOKOUT_SERVE_IDLE_MS: "8000" };
@@ -1098,8 +1104,13 @@ catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.n
   g = await post({ t: T, op: "resolve", item: "f999" });
   ok("serve: an op on a missing item is refused", g.status === 404);
   // A writer holding the lock: the op waits, and is refused when it outlasts the deadline.
+  // Each op that wrote started a background `lookout sync`, which takes the
+  // same lock; on a busy machine one may still hold it, so wait our turn.
   const lockDir = path.join(ENV.LOOKOUT_REVIEWS_DIR, id + ".lock");
-  fs.mkdirSync(lockDir);
+  for (const until = Date.now() + 15000; ;) {
+    try { fs.mkdirSync(lockDir); break; }
+    catch (e) { if (e.code !== "EEXIST" || Date.now() > until) throw e; await new Promise(res => setTimeout(res, 25)); }
+  }
   g = await post({ t: T, op: "comment", item: fid, text: "while locked" });
   ok("serve: a held lock refuses the op rather than writing past it", g.status === 409 && /locked/.test(g.json.error));
   fs.rmdirSync(lockDir);
@@ -1123,7 +1134,7 @@ catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.n
 }
 
 // ---------------------------------------------------------------- remote host: reviews in the repo
-{
+if (want("remote host: reviews in the repo")) {
   const R8 = repo("r8");
   write(R8, "a.js", "1\n"); sh(R8, `git add -A && ${G} commit -q -m base`);
   write(R8, "a.js", "2\n");
@@ -1151,7 +1162,7 @@ catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.n
 }
 
 // ---------------------------------------------------------------- Artifact export and pull
-{
+if (want("Artifact export and pull")) {
   const R9 = repo("r9");
   write(R9, "a.js", "1\n"); sh(R9, `git add -A && ${G} commit -q -m base`);
   write(R9, "a.js", "2\n3\n");
@@ -1242,7 +1253,7 @@ catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.n
 }
 
 // ---------------------------------------------------------------- install-repo
-{
+if (want("install-repo")) {
   const IR = repo("install");
   const ir = (...a) => spawnSync("node", [path.join(HERE, "lookout.mjs"), "install-repo", ...a], { encoding: "utf8", env: ENV, cwd: IR });
   let r = ir();
@@ -1270,7 +1281,7 @@ catch (e) { console.log(JSON.stringify({ took: false, err: e.message, s: (Date.n
 // token, never crew's. So whether crew serves a review is asked of the page,
 // which needs no token: a fake crew that refuses every .json (as lookout serve
 // refuses crew's token) must still count as serving the review.
-{
+if (want("the page on crew's server")) {
   const SVM = await import("./lib/serve.mjs");
   const dir = path.join(TMP, "crew-intent");
   fs.mkdirSync(dir, { recursive: true });
@@ -1293,7 +1304,7 @@ s.listen(0, "127.0.0.1", () => console.log(s.address().port));`;
 }
 
 // ---------------------------------------------------------------- page script
-{
+if (want("page script")) {
   const r = spawnSync("node", ["--check", path.join(HERE, "page", "review.js")], { encoding: "utf8" });
   ok("page: review.js parses", r.status === 0, r.stderr);
 }
