@@ -232,7 +232,11 @@ fn plan_fingerprint() -> Print {
 
 /// The hooks' pane-<key>.json files in crew's state folder, and the tmux
 /// backend's workspace registry (a pane started or closed, a sync's facts).
+/// Only on the tmux backend: under cmux its events already wake the board.
 fn pane_fingerprint() -> Print {
+    if crate::backend::tmux().is_none() {
+        return Vec::new();
+    }
     let mut out = fingerprint(&crate::state::state_dir(), &|n| n.starts_with("pane-") && n.ends_with(".json"));
     out.extend(fingerprint(&crew_core::backend::tmux::state_dir(), &|n| n == "workspaces.json"));
     out

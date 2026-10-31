@@ -327,11 +327,13 @@ pub fn main(args: &[String]) -> i32 {
         // "I could not find out" is never published as "there is nothing".
         let probe = probes.get(&ws);
         let mut probed: Vec<String> = probe.map(|(t, _, _)| t.clone()).unwrap_or_default();
-        if let Some((_, raw, true)) = probe {
-            out.pr(&ws, raw);
-        }
         let fresh_false = probe.and_then(|(_, raw, _)| raw.get("fresh")) == Some(&Value::Bool(false));
         let blind = probe.is_some_and(|(_, _, ok)| !ok) || (!root.is_empty() && fresh_false);
+        // The PR, on the tmux backend: like the signals, only what a probe
+        // found out, never a blind one's "no PR".
+        if let (Some((_, raw, _)), false) = (probe, blind) {
+            out.pr(&ws, raw);
+        }
         if blind {
             let carried: Vec<String> = words(&have_desc)
                 .filter(|t| SIGNAL_PREFIXES.iter().any(|p| t.starts_with(p)) && !probed.iter().any(|x| x == t))
