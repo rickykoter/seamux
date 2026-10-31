@@ -151,6 +151,16 @@ see them. Exempt `seamux-state/*` from branch protection, and in cloud
 sessions make sure the Claude GitHub App has access to the repo: without it
 the sandbox can pull but not push. Details: [deep-plan's README](deep-plan/README.md#sharing-a-plans-state).
 
+### Notes: side findings that outlive the increment
+
+A bug or idea found mid-increment that belongs to no part of the plan goes
+into `deep-plan note "..."`, filed under the plan and increment it came
+from. Notes travel with the plan's state (its branch, or `export-state`),
+every session in the repo hears new ones once at its next prompt, and
+`deep-plan notes` lists the open ones. A plan cannot end while it has open
+notes: each is closed with a reason or moved into a live plan. Details:
+[deep-plan's README](deep-plan/README.md#notes-side-findings).
+
 ### Reviews across machines
 
 lookout's review page works the same in cmux, desktop and a terminal. A
@@ -245,7 +255,8 @@ undo, and checks what it isn't sure of before it writes a plan. The plan
 opens as a page with a short quiz. The agent can't edit until the quiz
 passes and you say `go`, one increment at a time, and can't call an
 increment done until its checks pass. Plans split into families of
-workstreams and can sync through git.
+workstreams, sync through git, and keep notes of side findings for any
+plan in the repo to read.
 [deep-plan's README](deep-plan/README.md) has the pages, checks, contracts,
 risks, ADRs and families.
 

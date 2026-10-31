@@ -275,7 +275,7 @@ or name where it goes:
 The plan then keeps its state on a git branch of its own,
 `seamux-state/<slug>`, on the repo's own remote unless `share.remote` names
 another. Every transition pushes it: go, start, done, block, reset, a check
-verdict, grade, and the family verbs. A session pulls it when it starts, and a
+verdict, grade, the family verbs, and a note. A session pulls it when it starts, and a
 family child waiting on `await-go` pulls it while it waits. When two sessions
 push at the same moment, the later one merges and pushes again: each
 increment keeps its latest transition, each check its newest verdict, and the
@@ -294,3 +294,35 @@ choose one that is not protected. `SEAMUX_STATE_REMOTE`,
 `SEAMUX_STATE_PREFIX` and `SEAMUX_STATE_SYNC` (which also takes `off`)
 override a plan's setting on one machine. More in
 [references/sharing.md](references/sharing.md#state-branches).
+
+## Notes: side findings
+
+Work on one increment often turns up a bug or an idea that belongs to no
+part of the plan. Rather than go into the spec or be lost, it becomes a
+note:
+
+```sh
+deep-plan note "the retry loop hides the timeout"   # files it under the plan at the cwd
+deep-plan notes                                     # the repo's open notes
+deep-plan note close n3fa2c1b0 "fixed in #142"       # close one with a reason
+deep-plan note close n3fa2c1b0 "fits there" --into auth-revamp   # or move it to a live plan
+```
+
+A note is filed under the plan and increment it was found in, and any plan
+in the same repo can read it. It is kept in `<slug>.notes.jsonl` beside the
+plan's state, so it goes where the state goes: the plan's branch when it
+shares, merged line by line when two machines note at once, and the
+`export-state` bundle. A plan that does not share keeps its notes on its
+machine.
+
+Every session in the repo hears a new note, a move and a close once, at its
+next prompt. The text is shown as data written by other sessions, never as
+instructions, with each note cut at 500 characters. A repo with no notes
+pays nothing for it.
+
+A plan cannot be closed, or delivered to its end, while it has open notes:
+an ended plan's branch becomes an archive tag that new sandboxes never pull.
+Close each note or move it into a live plan first. `--force` gets past this,
+and it is yours to give, not the agent's. `notes --all` still lists a closed
+plan's notes on the machine that has them. More in
+[references/sharing.md](references/sharing.md#notes).
