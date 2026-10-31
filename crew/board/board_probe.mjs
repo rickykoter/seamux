@@ -1354,7 +1354,7 @@ if (live && Array.isArray(live.rows)) {
   const last = () => q(fetched[fetched.length - 1]);
 
   checks.push(["intent: an older page's click CSS is replaced on upgrade",
-    oldCss.getAttribute("data-v") === "16" && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
+    oldCss.getAttribute("data-v") === /var V = "(\d+)"/.exec(readFileSync(join(HERE, "intent.js"), "utf8"))[1] && oldCss.textContent.includes(".kids>.row.kid:not(.inert):hover")]);
   checks.push(["intent: a delegated child's go chip is muted, never filled or breathing",
     /\.row \.chip\.chip\[title\^="parent goes"\]\{[^}]*background:transparent[^}]*animation:none/.test(oldCss.textContent)]);
   const fold = () => JSON.parse(host.getAttribute("data-fold"));
@@ -1496,6 +1496,15 @@ if (live && Array.isArray(live.rows)) {
     fetched.length === 2 && m && m[0].ws === "WS-1" && m[0].name === "shipped-one"]);
   checks.push(["intent: what names a workspace goes to the app's origin only",
     !!m && m[1] === APP && posted.every(([, o]) => o !== "*")]);
+  // A pane row, framed: the app shows that workspace with the pane's terminal
+  // up, and cmux is not asked to focus anything.
+  const pn = mk("div", { class: "pn agent work", "data-a": "pane", "data-x": "S-PANE-B" }, [mk("span", { class: "pk" }, [], "Claude")]);
+  row.appendChild(pn);
+  const nf2 = fetched.length;
+  click(pn.children[0]);
+  const ps = posted.filter(([x]) => x.crew === "select").pop();
+  checks.push(["intent: framed, a pane row asks the app to show its workspace with that pane up, not cmux",
+    fetched.length === nf2 && !!ps && ps[0].ws === "WS-1" && ps[0].pane === "S-PANE-B" && ps[1] === APP, JSON.stringify(ps)]);
   // A failed click says why: the detail on the element and in a toast; and a
   // server that does not answer at all is said to be not reachable.
   const settle = () => new Promise((r) => setImmediate(r));
@@ -2608,8 +2617,9 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
     // only a pane the row lists.
     if (crewImpl.isRust("crew-board-intent")) {
       const term = await press("pane", U, "S-PANE-T"), stray = await press("pane", U, "S-ELSEWHERE");
-      checks.push(["panes: a pane row focuses that pane; one the row does not list is refused, cmux untouched",
-        term.res.ok === true && JSON.stringify(term.cmux).includes("S-PANE-T") &&
+      checks.push(["panes: a pane row selects its workspace, then focuses that pane; one the row does not list is refused, cmux untouched",
+        term.res.ok === true && JSON.stringify(term.cmux[0]) === JSON.stringify(["workspace", "select", U]) &&
+        JSON.stringify(term.cmux.slice(1)).includes("S-PANE-T") &&
         stray.res.ok === false && stray.cmux.length === 0, JSON.stringify({ term, stray })]);
     }
     const unk = await req("GET", `/do?a=rm&r=${U}&t=${encodeURIComponent(token)}`);
