@@ -101,7 +101,8 @@ export function mergeControl(a, b) {
   return out;
 }
 
-// An append-only log (a family's trespass.jsonl): both machines' lines, once.
+// An append-only log (a family's trespass.jsonl, a plan's notes): both
+// machines' lines, once.
 function mergeLines(a, b) {
   const seen = new Set(), out = [];
   for (const l of [...String(a).split("\n"), ...String(b).split("\n")]) if (l.trim() && !seen.has(l)) { seen.add(l); out.push(l); }
@@ -109,8 +110,8 @@ function mergeLines(a, b) {
 }
 
 // The plan's other files: the union, and on a clash the side whose state
-// leads, except a family's control (merged per child) and trespass log
-// (merged by line). The state file itself is the merged one.
+// leads, except a family's control (merged per child), and its trespass log
+// and a plan's notes (lib/notes.mjs), both merged by line. The state file itself is the merged one.
 export function mergeFiles(aFiles, bFiles, aState, bState, stateRel, merged) {
   const lead = lastActivity(bState) > lastActivity(aState) ? bFiles : aFiles;
   const out = { ...(lead === aFiles ? bFiles : aFiles), ...lead };
@@ -121,7 +122,7 @@ export function mergeFiles(aFiles, bFiles, aState, bState, stateRel, merged) {
         const c = mergeControl(JSON.parse(Buffer.from(aFiles[rel]).toString("utf8")), JSON.parse(Buffer.from(bFiles[rel]).toString("utf8")));
         out[rel] = Buffer.from(JSON.stringify(c, null, 2) + "\n");
       } catch { /* one side does not parse: the leading side's stands */ }
-    } else if (/^deep-plan\/state\/families\/[^/]+\/trespass\.jsonl$/.test(rel)) {
+    } else if (/^deep-plan\/state\/families\/[^/]+\/trespass\.jsonl$/.test(rel) || /^deep-plan\/state\/[^/]+\.notes\.jsonl$/.test(rel)) {
       out[rel] = Buffer.from(mergeLines(Buffer.from(aFiles[rel]).toString("utf8"), Buffer.from(bFiles[rel]).toString("utf8")));
     }
   }

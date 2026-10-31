@@ -1,7 +1,9 @@
 #!/bin/bash
-# deep-plan family news — UserPromptSubmit and SessionStart. A family member's
-# session is told, as context, what changed in its family since it last
-# looked; everyone else pays one bash glob and no interpreter. It also marks a
+# deep-plan family news and notes — UserPromptSubmit and SessionStart. A
+# family member's session is told, as context, what changed in its family
+# since it last looked, and a session in a repo with plan notes hears new and
+# closed ones (hooks/news.mjs); everyone else pays bash globs and no
+# interpreter. It also marks a
 # human prompt for the gate's same-turn go rule (below).
 # On the remote host state lives in the repo (<git root>/.seamux/state), the
 # rule lib/host.mjs states: SEAMUX_HOST wins, then cmux, then
@@ -82,8 +84,13 @@ if [ -e "$1" ]; then
     find "$STATE_DIR/turns" -type f -mtime +0 -delete 2>/dev/null
   fi
 fi
+# Family news and plan notes are node's to tell; with neither on disk, the
+# hook ends here on two globs.
 set -- "$STATE_DIR"/families/*/index.json
-[ -e "$1" ] || exit 0
+if [ ! -e "$1" ]; then
+  set -- "$STATE_DIR"/*.notes.jsonl
+  [ -e "$1" ] || exit 0
+fi
 if [ -n "${DEEP_PLAN_SKILL_DIR:-}" ]; then HOOKS="$DEEP_PLAN_SKILL_DIR/hooks"
 else case $0 in */*) HOOKS=${0%/*} ;; *) HOOKS=. ;; esac
 fi

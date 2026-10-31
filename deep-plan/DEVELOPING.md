@@ -41,8 +41,14 @@ place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_D
 ## Integration seams (change these and the board breaks)
 
 - `status --json` rows: `{slug, root, phase, gate:{allow,why}, progress:{total,
-  done, next:{n,title}, blocked:[{title,note}], open:[{title}]}}` — consumed by
-  `~/.config/cmux/crew/board/crew-board` (plans(), ranking tiers).
+  done, next:{n,title}, blocked:[{title,note}], open:[{title}]}, increments:[{n,
+  title, status, obs, by, checks:[{id, kind, name, status, note, at, recipe}]}]}`
+  — consumed by `~/.config/cmux/crew/board/crew-board` (plans(), ranking
+  tiers); `increments[]` is what scripts read for one increment's state.
+- `notes --json [--all] [--plan <slug>]`: an array of `{id, at, by, plan, inc,
+  text, file, closed?:{at, by, why, into?}}`, where `plan` and `inc` are where
+  the note was found and `file` is the plan whose notes file holds it now.
+  Nothing reads it yet; the board may.
 - Surfaces named `<slug>.md`, `<slug>.review.html`, `<slug>.working.html` —
   `crew-board-intent` serves working over review at `/plan/<slug>`.
 - Working surface markup: `.dp-act[data-a][data-n]` buttons rendered disabled
@@ -115,6 +121,27 @@ place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_D
   roots) and/or `hookSpecificOutput.additionalContext` (the family note).
   `permissionDecision` is never set: `allow` would skip the session's own
   permission prompts.
+
+## Notes seam
+
+- File: `<state>/<slug>.notes.jsonl` (lib/notes.mjs), append-only, one JSON
+  object a line. Open `{id, at, by, plan, inc, text}`, close `{id, at, by,
+  closed, into?}`. Ids are `n` plus 8 random hex digits. A close is appended,
+  never rewritten; `note close --into` copies the open line, same id, into
+  the target first, and refuses a target that already holds that id.
+- `allStates()` and news.sh's state glob match `*.json` only, so a notes file
+  is never taken for a plan. `bundleNames` lets it into the export bundle and
+  the state branch; `mergeFiles` merges it by line, as it does the trespass
+  log; `stateFileDigests` hashes it with its plan, so a note alone pushes.
+- `close` and an ending `deliver` call `settleNotes` and refuse while the
+  plan has open notes. `--force` is logged; `deliver --force` is on
+  `onHumansWord` with close.
+- The news hook: news.sh starts node only when a family index or some
+  `*.notes.jsonl` exists. news.mjs then runs one git call per distinct plan
+  root (cached) to match plans to the cwd's git common dir, and keeps the
+  session's cursor in `turns/<session>.notes` (aged out with turns/ after a
+  day). With no notes file the cost is unchanged: 19.26 vs 19.29 ms median
+  per prompt, old and new, on 2026-10-30.
 
 ## Measured on this machine (2026-09-12)
 
