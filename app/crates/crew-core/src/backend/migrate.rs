@@ -17,6 +17,11 @@
 //! On tmux, a pane lost with its tmux server (a reboot) is offered a restart:
 //! `claude --resume` in a new session that keeps the pane's id.
 //!
+//! Also on tmux, a cmux workspace whose Claude ended in the last day (cmux
+//! quit and took its sessions with it) is offered a revive: its newest
+//! conversation resumes in the app's tmux, in its folder, under cmux's
+//! workspace id, so its plans and asks stay attached.
+//!
 //! A session that is working or waiting on an answer is offered but marked
 //! busy: the move waits until it is idle, and `apply` refuses it until then.
 
@@ -37,6 +42,8 @@ pub enum Move {
     Resume,
     /// A tmux pane lost with its server, started again with its id.
     Restart,
+    /// A cmux workspace whose Claude has ended, resumed in the app's tmux.
+    Revive,
 }
 
 /// One session the app can move or restart.
@@ -64,6 +71,7 @@ impl Move {
             Move::Adopt => "adopt",
             Move::Resume => "resume",
             Move::Restart => "restart",
+            Move::Revive => "revive",
         }
     }
 }
@@ -161,6 +169,86 @@ pub fn restart_offers(gone: &[(String, String, String)], titles: &dyn Fn(&str) -
         .collect()
 }
 
+/// How far back a cmux session's end is still offered a revive.
+pub const REVIVE_WINDOW_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// cmux workspaces to bring back into the app's tmux: from crew's pane files,
+/// each workspace the registry lacks whose newest pane with a Claude session
+/// was written in the last day, resumed in the folder its transcript names
+/// (`cwd_of`, None when there is no transcript or the folder is gone).
+/// `running` says a Claude session already runs in the registry. With
+/// `only_ended` (cmux still answers, so its Claudes may be alive) a pane must
+/// say it ended; without it (cmux is gone), a pane cmux took down without
+/// a last write counts too.
+pub fn revive_offers(
+    panes: &[Pane],
+    now_ms: u64,
+    only_ended: bool,
+    known_ws: &dyn Fn(&str) -> bool,
+    running: &dyn Fn(&str) -> bool,
+    cwd_of: &dyn Fn(&str) -> Option<String>,
+) -> Vec<Offer> {
+    let mut newest: std::collections::BTreeMap<String, &Pane> = std::collections::BTreeMap::new();
+    for p in panes {
+        let ws = p.ws.to_ascii_uppercase();
+        if !::cmux::is_uuid(&ws) || !::cmux::is_uuid(&p.session) || known_ws(&ws) {
+            continue;
+        }
+        if now_ms.saturating_sub(p.at) > REVIVE_WINDOW_MS || (only_ended && p.state != "ended") {
+            continue;
+        }
+        if newest.get(&ws).is_none_or(|q| p.at > q.at) {
+            newest.insert(ws, p);
+        }
+    }
+    // One conversation comes back once: when it was resumed in more than one
+    // cmux workspace, in the one it ran in last.
+    let mut by_session: std::collections::BTreeMap<String, (String, &Pane)> = std::collections::BTreeMap::new();
+    for (ws, p) in newest {
+        let key = p.session.to_ascii_lowercase();
+        if by_session.get(&key).is_none_or(|(_, q)| p.at > q.at) {
+            by_session.insert(key, (ws, p));
+        }
+    }
+    let mut out: Vec<Offer> = by_session
+        .into_values()
+        .filter(|(_, p)| !running(&p.session))
+        .filter_map(|(ws, p)| {
+            let cwd = cwd_of(&p.session)?;
+            let title = Path::new(&cwd).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| cwd.clone());
+            Some(Offer {
+                kind: Move::Revive,
+                pane: p.surface.clone(),
+                ws,
+                title,
+                cwd,
+                claude: p.session.clone(),
+                state: "ended".into(),
+                busy: false,
+                target: None,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.title.cmp(&b.title));
+    out
+}
+
+/// The folder a Claude session ran in, from its transcript under `projects`
+/// (`~/.claude/projects/*/<id>.jsonl`, the last line that names a cwd), when
+/// that folder still exists.
+pub fn transcript_cwd(projects: &Path, session: &str) -> Option<String> {
+    if !::cmux::is_uuid(session) {
+        return None;
+    }
+    let file = std::fs::read_dir(projects).ok()?.flatten().map(|d| d.path().join(format!("{session}.jsonl"))).find(|f| f.is_file())?;
+    let text = std::fs::read_to_string(file).ok()?;
+    let cwd = text
+        .lines()
+        .rev()
+        .find_map(|l| serde_json::from_str::<Value>(l).ok()?.get("cwd")?.as_str().map(String::from))?;
+    Path::new(&cwd).is_dir().then_some(cwd)
+}
+
 /// The `claude --resume` line for an offer, refusing an id that is not one.
 pub fn resume_line(o: &Offer) -> Result<String, String> {
     crate::native::claude_line(Some(&o.claude))
@@ -199,6 +287,10 @@ pub fn apply(t: &TmuxBackend, o: &Offer) -> Result<String, String> {
             t.restart(&o.pane, &resume_line(o)?)?;
             Ok(format!("restarted {}", o.title))
         }
+        Move::Revive => {
+            t.revive(&o.ws, &o.title, &o.cwd, &resume_line(o)?)?;
+            Ok(format!("brought back {}", o.title))
+        }
     }
 }
 
@@ -211,6 +303,7 @@ mod tests {
     const S2: &str = "0AEE75E6-5F6B-4515-B674-AF22A01CE166";
     const W1: &str = "C2D4A7B2-568F-4F00-9E7D-2370D7200176";
     const C1: &str = "68223d51-cb14-450c-b001-044899829c24";
+    const W2: &str = "B2D4A7B2-568F-4F00-9E7D-2370D7200176";
 
     fn pane(state: &str) -> Pane {
         Pane::from_json(&json!({"ws": W1, "surface": S1, "session": C1, "state": state})).unwrap()
@@ -316,6 +409,60 @@ mod tests {
         assert_eq!(apply(&t, &o).unwrap(), "handed shop back to cmux");
         let reg: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("workspaces.json")).unwrap()).unwrap();
         assert_eq!(reg["panes"], json!([]), "the record went; the session was not touched");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn ended(ws: &str, surface: &str, session: &str, at: u64) -> Pane {
+        let mut p = Pane::from_json(&json!({"ws": ws, "surface": surface, "session": session, "state": "ended"})).unwrap();
+        p.at = at;
+        p
+    }
+
+    #[test]
+    fn a_recent_cmux_workspace_is_revived_once_with_its_newest_conversation() {
+        const C2: &str = "78223d51-cb14-450c-b001-044899829c24";
+        const C3: &str = "88223d51-cb14-450c-b001-044899829c24";
+        let now = 10 * REVIVE_WINDOW_MS;
+        let panes = vec![
+            ended(W1, S1, C1, now - 1000),
+            ended(W1, S2, C2, now - 500),                          // newer, same workspace
+            ended(W2, S1, C3, now - REVIVE_WINDOW_MS - 1),         // too old
+            ended("not-a-uuid", S1, C1, now),
+        ];
+        let cwd = |s: &str| Some(format!("/w/{}", &s[..2]));
+        let o = revive_offers(&panes, now, false, &|_| false, &|_| false, &cwd);
+        assert_eq!(o.len(), 1);
+        assert_eq!((o[0].kind, o[0].ws.as_str(), o[0].claude.as_str(), o[0].cwd.as_str(), o[0].title.as_str()),
+                   (Move::Revive, W1, C2, "/w/78", "78"));
+        assert!(!o[0].busy);
+        assert!(revive_offers(&panes, now, false, &|w| w == W1, &|_| false, &cwd).is_empty(), "already in the registry");
+        assert!(revive_offers(&panes, now, false, &|_| false, &|s| s == C2, &cwd).is_empty(), "its Claude already runs here");
+        assert!(revive_offers(&panes, now, false, &|_| false, &|_| false, &|_| None).is_empty(), "no folder: nothing to offer");
+        assert_eq!(resume_line(&o[0]).unwrap(), format!("claude --resume {C2}"));
+        let mut live = panes.clone();
+        live[1].state = "working".into();
+        let o = revive_offers(&live, now, true, &|_| false, &|_| false, &cwd);
+        assert_eq!(o[0].claude, C1, "cmux still answers: a working Claude is not revived, the ended one is");
+        // The same conversation resumed in two workspaces comes back once, where it ran last.
+        let twice = vec![ended(W1, S1, C1, now - 2000), ended(W2, S2, C1, now - 1000)];
+        let o = revive_offers(&twice, now, false, &|_| false, &|_| false, &cwd);
+        assert_eq!(o.iter().map(|o| o.ws.as_str()).collect::<Vec<_>>(), vec![W2]);
+    }
+
+    #[test]
+    fn a_transcripts_last_cwd_is_its_folder_when_that_still_exists() {
+        let dir = std::path::PathBuf::from(format!("/tmp/sx-mig-tr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let proj = dir.join("-w-shop");
+        std::fs::create_dir_all(&proj).unwrap();
+        let here = dir.to_string_lossy().into_owned();
+        std::fs::write(proj.join(format!("{C1}.jsonl")),
+            format!("{{\"cwd\":\"/no/such\"}}\nnot json\n{{\"type\":\"user\",\"cwd\":\"{here}\"}}\n")).unwrap();
+        assert_eq!(transcript_cwd(&dir, C1), Some(here.clone()));
+        assert_eq!(transcript_cwd(&dir, "78223d51-cb14-450c-b001-044899829c24"), None, "no transcript");
+        assert_eq!(transcript_cwd(&dir, "../x"), None, "only a session id");
+        std::fs::write(proj.join(format!("{C1}.jsonl")), "{\"cwd\":\"/no/such\"}\n").unwrap();
+        assert_eq!(transcript_cwd(&dir, C1), None, "its folder is gone");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

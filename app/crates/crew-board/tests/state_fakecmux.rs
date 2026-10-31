@@ -54,6 +54,11 @@ fn state_through_fakecmux() {
     std::env::set_var("HOME", &home);
     std::env::set_var("FAKE_CMUX_DIR", &dir);
     std::env::set_var("CREW_CMUX", fakecmux());
+    // cmux, whatever terminal runs the tests: one in the app's tmux passes
+    // SEAMUX_BACKEND=tmux on, and the board would read its registry instead.
+    std::env::set_var("SEAMUX_BACKEND", "cmux");
+    std::env::remove_var("SEAMUX_PANE_ID");
+    std::env::remove_var("SEAMUX_WORKSPACE_ID");
     std::env::set_var("CREW_COSTS_TTL", "0");
     std::env::set_var("PATH", "/usr/bin:/bin"); // no ccusage, no node: costs and plans come back empty
 

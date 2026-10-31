@@ -31,6 +31,20 @@ fn offers() -> Vec<Offer> {
             let known: Vec<String> = t.panes(None).unwrap_or_default().into_iter().map(|p| p.id.to_ascii_uppercase()).collect();
             let mut o = migrate::adopt_offers(&sessions, &pane, &crew_core::backend::cmux::live, &|s| known.contains(&s.to_ascii_uppercase()));
             o.extend(migrate::restart_offers(&t.gone().unwrap_or_default(), &title, &pane));
+            // cmux workspaces whose Claude ended (cmux quit): brought back
+            // here. One with a live session above is offered that move only.
+            let moving: Vec<String> = o.iter().map(|x| x.ws.to_ascii_uppercase()).collect();
+            let running: Vec<String> = known.iter().filter_map(|id| pane(id)).map(|p| p.session).collect();
+            let projects = crew_core::py::home().join(".claude/projects");
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+            o.extend(migrate::revive_offers(
+                &crew_core::status::all(&state),
+                now,
+                cmux::Cmux::connect().is_ok(),
+                &|ws| titles.contains_key(ws) || moving.contains(&ws.to_string()),
+                &|sid| running.iter().any(|r| r == sid),
+                &|sid| migrate::transcript_cwd(&projects, sid),
+            ));
             o
         }
         Kind::Cmux => migrate::resume_offers(&t, &title, &pane),

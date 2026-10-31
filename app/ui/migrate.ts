@@ -8,7 +8,7 @@
 // next launch.
 import { invoke } from "@tauri-apps/api/core";
 
-type Kind = "adopt" | "resume" | "restart";
+type Kind = "adopt" | "resume" | "restart" | "revive";
 type Offer = { kind: Kind; pane: string; ws: string; title: string; cwd: string; claude: string; state: string; busy: boolean };
 
 /** How often a queued busy session is looked at again. */
@@ -45,11 +45,12 @@ export function summary(offers: Offer[]): string {
   if (n("adopt")) parts.push(s(n("adopt"), "1 cmux session can move here", "# cmux sessions can move here"));
   if (n("resume")) parts.push(s(n("resume"), "1 session can move to cmux", "# sessions can move to cmux"));
   if (n("restart")) parts.push(s(n("restart"), "1 session stopped with tmux", "# sessions stopped with tmux"));
+  if (n("revive")) parts.push(s(n("revive"), "1 cmux workspace can come back here", "# cmux workspaces can come back here"));
   return parts.join(" · ");
 }
 
 function verb(o: Offer): string {
-  return o.kind === "restart" ? "Restart" : "Move";
+  return o.kind === "restart" ? "Restart" : o.kind === "revive" ? "Bring back" : "Move";
 }
 
 export class MigrateBanner {
@@ -126,8 +127,8 @@ export class MigrateBanner {
     this.list.replaceChildren(...offers.map((o) => this.row(o)));
     const idle = offers.filter((o) => !o.busy && !this.running.has(key(o)));
     if (this.open && idle.length > 1) {
-      const all = button(`${verb(idle[0])} all idle`, "migrate-all");
-      if (idle.some((o) => verb(o) !== verb(idle[0]))) all.textContent = "Move and restart all idle";
+      const all = button(idle[0].kind === "revive" ? "Bring back all" : `${verb(idle[0])} all idle`, "migrate-all");
+      if (idle.some((o) => verb(o) !== verb(idle[0]))) all.textContent = "Do all of them";
       all.addEventListener("click", () => {
         for (const o of idle) void this.apply(o);
       });
@@ -141,10 +142,11 @@ export class MigrateBanner {
     const name = el("b", "", o.title || o.cwd.split("/").pop() || o.pane.slice(0, 8));
     name.title = o.cwd;
     const state = el("span", `migrate-state${o.busy ? " busy" : ""}`, STATE[o.state] ?? o.state);
-    const where = el("span", "migrate-where", o.kind === "resume" ? "to cmux" : o.kind === "adopt" ? "from cmux" : "after a restart");
+    const where = el("span", "migrate-where", o.kind === "resume" ? "to cmux" : o.kind === "adopt" || o.kind === "revive" ? "from cmux" : "after a restart");
+    where.title = o.kind === "revive" ? "Resumes its last conversation in this app's own terminal" : "";
     r.append(name, state, where);
     if (this.running.has(k)) {
-      r.append(el("span", "migrate-wait", `${verb(o) === "Restart" ? "restarting" : "moving"}…`));
+      r.append(el("span", "migrate-wait", `${o.kind === "restart" ? "restarting" : o.kind === "revive" ? "bringing back" : "moving"}…`));
     } else if (o.busy && this.queued.has(k)) {
       r.append(el("span", "migrate-wait", "moves when idle"));
     } else if (o.busy) {
@@ -161,7 +163,7 @@ export class MigrateBanner {
       r.append(go);
     }
     const no = button("×", "migrate-no");
-    no.title = o.kind === "restart" ? "Don't restart it, and forget it" : "Leave it where it is";
+    no.title = o.kind === "restart" ? "Don't restart it, and forget it" : o.kind === "revive" ? "Leave it in cmux" : "Leave it where it is";
     no.setAttribute("aria-label", no.title);
     no.addEventListener("click", () => void this.decline(o));
     r.append(no);
