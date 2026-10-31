@@ -814,7 +814,15 @@ mod tests {
     #[test]
     fn tmux_rows_come_from_the_registry_with_git_state_and_no_pr() {
         use crew_core::backend::{PaneRow, WorkspaceRow};
-        let here = env!("CARGO_MANIFEST_DIR").to_string();
+        // A repo of its own on a named branch: CI checks a pull request out
+        // on a detached HEAD, where this checkout has no branch.
+        let dir = std::env::temp_dir().join(format!("crew-board-rows-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap();
+        git(&["init", "-q", "-b", "dev/rows"]);
+        git(&["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "first"]);
+        let here = dir.to_string_lossy().into_owned();
         let rows = vec![
             WorkspaceRow { id: "W1".into(), title: "shop".into(), cwd: here.clone() },
             WorkspaceRow { id: "W2".into(), title: "".into(), cwd: "".into() },
@@ -827,11 +835,12 @@ mod tests {
         assert_eq!(out[0]["cwd"], here.as_str());
         assert_eq!(out[0]["running"], true, "a live pane in it, matched in any case");
         assert_eq!(out[0]["pr"], "none");
-        assert_ne!(out[0]["branch"], "none", "this checkout has a branch");
+        assert_eq!(out[0]["branch"], "dev/rows", "the repo's branch");
         assert!(out[0]["commits"].as_array().is_some());
         assert_eq!(out[1]["title"], "W2", "no title: its id");
         assert_eq!((out[1]["running"].clone(), out[1]["selected"].clone(), out[1]["branch"].clone()), (json!(false), json!(true), json!("none")));
         assert_eq!(out[0]["desc"], "", "no pane file: no phase");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
