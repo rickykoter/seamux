@@ -12,6 +12,7 @@ import { decideToolCall, readState, writeState, log1, brokenRoots, isOwner, owne
   deepPlanCalls, tooLongForGate, humanLever, onHumansWord, trustOverride, humansWordCount, claimLever, markDenied, deniedThisTurn, promptApproves,
   actedThisTurn } from "../lib/state.mjs";
 import { trespass, waitingOn, waitText, goOwner } from "../lib/family.mjs";
+import { sessionIds } from "../lib/host.mjs";
 
 let raw = "";
 try { raw = fs.readFileSync(0, "utf8"); } catch { process.exit(0); }
@@ -24,10 +25,11 @@ const cwd = payload.cwd || process.cwd();
 
 // Who made this call: its pane, its session (the payload's, else the env's)
 // and its workspace.
+const ids = sessionIds();
 const who = {
-  surface: process.env.CMUX_SURFACE_ID || "",
+  surface: ids.pane,
   session: payload.session_id || process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || "",
-  workspace: process.env.CMUX_WORKSPACE_ID || "",
+  workspace: ids.workspace,
 };
 
 // The go is the human's (ADR 0029). This hook runs only for a Claude Code

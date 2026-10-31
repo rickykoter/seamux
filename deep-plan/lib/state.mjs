@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { remoteStateDir } from "./host.mjs";
+import { remoteStateDir, sessionIds } from "./host.mjs";
 import { matchesGlob } from "./verify.mjs";
 import { EXT_DIR } from "./ext.mjs";
 
@@ -113,7 +113,8 @@ export function updateState(slug, fn, { stamp = true } = {}) {
 }
 
 // Who is working on a plan. Claude Code exports CLAUDE_CODE_SESSION_ID (the
-// older CLAUDE_SESSION_ID is still read); cmux exports CMUX_WORKSPACE_ID. The
+// older CLAUDE_SESSION_ID is still read); the workspace is SEAMUX_WORKSPACE_ID,
+// else cmux's CMUX_WORKSPACE_ID (host.mjs sessionIds). The
 // session id changes on /clear, the workspace does not, so both are kept: a
 // pane can then find the plan its session or workspace touched last even when
 // that plan's root is another repo, and back-to-back plans in one workspace
@@ -124,13 +125,14 @@ export function sessionId() {
 
 // Stamped on every write made from inside a session. A write with no session
 // in its environment (a board chip, a shell outside Claude) leaves the owner
-// as it was rather than clearing it. The owner is a pane: cmux's
-// CMUX_SURFACE_ID, which a /clear or a resume keeps while the session id
+// as it was rather than clearing it. The owner is a pane: SEAMUX_PANE_ID,
+// else cmux's CMUX_SURFACE_ID, which a /clear or a resume keeps while the session id
 // changes. A deep-plan write from another pane moves ownership there.
 export function stampOwner(st, now = Date.now()) {
   const session = sessionId();
   if (!session) return st;
-  st.owner = { session, workspace: process.env.CMUX_WORKSPACE_ID || "", surface: process.env.CMUX_SURFACE_ID || "", at: now };
+  const ids = sessionIds();
+  st.owner = { session, workspace: ids.workspace, surface: ids.pane, at: now };
   st.session = session;
   return st;
 }

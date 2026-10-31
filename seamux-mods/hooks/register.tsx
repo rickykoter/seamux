@@ -171,6 +171,16 @@ async function tick($: EngineInterface): Promise<void> {
 // state from before a button press, nor clear a pin set since it started.
 let refreshes = 0
 
+// This session's workspace: SEAMUX_WORKSPACE_ID (every backend sets it), else
+// cmux's own. A pane of the app's tmux (SEAMUX_BACKEND=tmux) may have
+// inherited a CMUX_WORKSPACE_ID that is not its own, so it never reads that.
+async function workspaceId($: EngineInterface): Promise<string> {
+  const seamux = await $.env.get('SEAMUX_WORKSPACE_ID')
+  if (seamux) return seamux
+  if ((await $.env.get('SEAMUX_BACKEND')) === 'tmux') return ''
+  return (await $.env.get('CMUX_WORKSPACE_ID')) ?? ''
+}
+
 // Runs `deep-plan status --json`, keeps what it found, and redraws the status
 // entry. Called by the timer, after every button, and after a refusal.
 async function refresh($: EngineInterface): Promise<SeamuxView> {
@@ -178,7 +188,7 @@ async function refresh($: EngineInterface): Promise<SeamuxView> {
   const me: Me = {
     cwd: await $.session.cwd(),
     session: await $.session.id(),
-    workspace: (await $.env.get('CMUX_WORKSPACE_ID')) ?? '',
+    workspace: await workspaceId($),
   }
   const ran = await engine($, ['status', '--json'])
   let next: SeamuxView = { plan: null, others: [], problem: '', cwd: me.cwd }
@@ -372,9 +382,14 @@ async function planPage($: EngineInterface, p: SeamuxPlan): Promise<string> {
 }
 
 // Opens the page as a tab in this cmux workspace (cmux targets the caller's
-// $CMUX_WORKSPACE_ID); without cmux the URL goes to a toast, and the pane's
-// link stays clickable either way.
+// $CMUX_WORKSPACE_ID). In a pane of the seamux app's tmux the Dock already
+// shows the plan beside the terminal, so nothing opens; without cmux the URL
+// goes to a toast, and the pane's link stays clickable either way.
 async function openPage($: EngineInterface, url: string): Promise<void> {
+  if ((await $.env.get('SEAMUX_BACKEND')) === 'tmux') {
+    await update($, note, () => `the Dock shows ${url}`)
+    return
+  }
   try {
     const r = await $.process.run(['cmux', 'open', url], { timeoutMs: 10000 })
     if (r.exitCode === 0) {

@@ -31,7 +31,7 @@ import { repoConfig } from "./lib/typesafe.mjs";
 import * as FD from "./lib/findings.mjs";
 import * as N from "./lib/notes.mjs";
 import { brief } from "./lib/prompt.mjs";
-import { detectHost } from "./lib/host.mjs";
+import { detectHost, sessionIds } from "./lib/host.mjs";
 import * as SV from "./lib/serve.mjs";
 import * as AR from "./lib/artifact.mjs";
 import { installRepo, checkRepo, targetRoot } from "./lib/install.mjs";
@@ -124,10 +124,11 @@ export function arrange(review) {
 
 // ---------------------------------------------------------------- open
 
-// The cmux workspace to put the page in: the caller's own, else the one the
-// board lists for this directory.
+// The workspace to put the page in: the caller's own (SEAMUX_WORKSPACE_ID,
+// else cmux's), else the one the board lists for this directory.
 function workspaceFor(cwd) {
-  if (process.env.CMUX_WORKSPACE_ID) return process.env.CMUX_WORKSPACE_ID;
+  const own = sessionIds().workspace;
+  if (own) return own;
   try {
     const t = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".cache", "cmux-crew", "board-targets.json"), "utf8"));
     const real = p => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
@@ -159,10 +160,18 @@ function companionOpen(url, id, ws) {
 // at the page again (a re-open refreshes, it does not stack tabs); otherwise a
 // new browser tab opens beside the terminal without taking focus.
 function showPage(id, file, cwd, { onlyIfOpen = false } = {}) {
-  // Every host but cmux: lookout's own server, and the caller prints the URL.
-  // A served page polls for changes itself, so a refresh has nothing to do.
-  // Nobody can reach a remote sandbox's localhost, so remote gets no URL.
   const host = detectHost().host;
+  // seamux: the Dock lists the workspace's reviews beside its terminal, so
+  // nothing opens; crew's served link is all there is to say.
+  if (host === "seamux") {
+    if (onlyIfOpen || flag("no-open")) return "";
+    const served = servedUrl(id);
+    return served ? `served at ${served} (host: seamux); the Dock shows it beside this workspace's terminal`
+                  : "read-only: crew's intent server is not serving reviews (the seamux app starts it) (host: seamux)";
+  }
+  // Every other host but cmux: lookout's own server, and the caller prints
+  // the URL. A served page polls for changes itself, so a refresh has nothing
+  // to do. Nobody can reach a remote sandbox's localhost, so remote gets no URL.
   if (host !== "cmux") {
     if (onlyIfOpen || flag("no-open")) return "";
     if (host === "remote") return "no live page on this host (host: remote)";

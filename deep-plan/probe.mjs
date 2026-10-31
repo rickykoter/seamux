@@ -737,6 +737,16 @@ ok("mermaid theme follows the page theme",
     html.includes("amounts redacted") && html.includes('class="dp-act dp-ask-pick" data-n="3" disabled'));
   ok("the id passes the intent server's slug pattern", /^[a-z0-9][a-z0-9._-]{0,120}$/.test(id || "!"));
   ok("ask show reports unanswered", /unanswered/.test(cli("ask", "show", id || "x").stdout));
+  // In a pane of the seamux app's tmux: the SEAMUX ids, not an inherited
+  // CMUX one, and the pane's own tmux socket and pane for typing the answer.
+  const rs = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "ask", askFile],
+    { encoding: "utf8", cwd: TMP, env: { ...ENV, SEAMUX_PANE_ID: "P-1", SEAMUX_WORKSPACE_ID: "W-1", SEAMUX_BACKEND: "tmux",
+      CMUX_WORKSPACE_ID: "WS-STALE", CMUX_SURFACE_ID: "SURF-STALE", TMUX: "/s/tmux.sock,123,0", TMUX_PANE: "%4" } });
+  const ids = (rs.stdout.match(/ask (\d{8}-\d{6}-[0-9a-f]{4}):/) || [])[1];
+  const sk = ids ? JSON.parse(fs.readFileSync(path.join(asksDir, ids + ".json"), "utf8")) : {};
+  ok("a seamux ask records the SEAMUX ids and its tmux pane",
+    sk.surface === "P-1" && sk.workspace === "W-1" && sk.tmux && sk.tmux.socket === "/s/tmux.sock" && sk.tmux.pane === "%4");
+  ok("a seamux ask names its host and opens nothing", /\(host: seamux\)/.test(rs.stdout) && !/served at http:\/\/127\.0\.0\.1:\d+\/ask\/.*\(host: terminal\)/.test(rs.stdout));
   // Inside a tracked plan root: the slug is recorded.
   const r2 = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "ask", askFile],
     { encoding: "utf8", env: ENV, cwd: REPO });
@@ -1366,6 +1376,8 @@ ok("all increments done: Edit allowed, gate retired", edit(path.join(REPO, "a.tx
     /cat .*\.quiz\.txt/.test(pg("terminal", "--review")));
   ok("page: on desktop it says to open the URL in the browser pane",
     pg("desktop").includes(`served at ${B}/plan/${spec.slug} (host: desktop)`) && /preview_start/.test(pg("desktop")));
+  ok("page: on seamux it names the host and opens nothing (crew's server is the Dock's)",
+    /\(host: seamux\)/.test(pg("seamux")) && !pg("seamux").includes(`${B}/plan/`));
   ok("page: on a remote host there is no live page, and the quiz is the text one",
     /no live page on this host .*\(host: remote\)/.test(pg("remote", "--review")) && /quiz\.txt/.test(pg("remote", "--review")) &&
     /export-artifact/.test(pg("remote")));
@@ -4557,11 +4569,28 @@ if (want("host detection")) {
     [{ SEAMUX_HOST: "remote" }, "remote"],
     [{ SEAMUX_HOST: "cmux" }, "cmux"],
     [{ SEAMUX_HOST: "bogus", CLAUDE_CODE_ENTRYPOINT: "claude-desktop" }, "desktop"],
+    [{ SEAMUX_PANE_ID: "P1" }, "seamux"],
+    [{ SEAMUX_PANE_ID: "P1", CMUX_WORKSPACE_ID: "W1" }, "cmux"],
+    [{ SEAMUX_PANE_ID: "P1", CMUX_WORKSPACE_ID: "W1", SEAMUX_BACKEND: "tmux" }, "seamux"],
+    [{ CMUX_WORKSPACE_ID: "W1", SEAMUX_BACKEND: "tmux" }, "terminal"],
+    [{ SEAMUX_PANE_ID: "P1", CLAUDE_CODE_REMOTE: "true" }, "seamux"],
+    [{ SEAMUX_HOST: "seamux" }, "seamux"],
   ];
   for (const [env, want] of HOST_TABLE) {
     const got = HOST.detectHost(env), twin = HOST_TWIN.detectHost(env);
     ok(`host: ${JSON.stringify(env)} is ${want}`, got.host === want);
     ok(`host: the lookout copy agrees on ${JSON.stringify(env)}`, twin.host === got.host && twin.why === got.why);
+  }
+  const IDS = [
+    [{}, { workspace: "", pane: "" }],
+    [{ CMUX_WORKSPACE_ID: "W1", CMUX_SURFACE_ID: "S1" }, { workspace: "W1", pane: "S1" }],
+    [{ SEAMUX_WORKSPACE_ID: "W2", SEAMUX_PANE_ID: "P2", CMUX_WORKSPACE_ID: "W1", CMUX_SURFACE_ID: "S1" }, { workspace: "W2", pane: "P2" }],
+    [{ CMUX_WORKSPACE_ID: "W1", CMUX_SURFACE_ID: "S1", SEAMUX_BACKEND: "tmux" }, { workspace: "", pane: "" }],
+  ];
+  for (const [env, want] of IDS) {
+    const got = HOST.sessionIds(env), twin = HOST_TWIN.sessionIds(env);
+    ok(`host: sessionIds of ${JSON.stringify(env)}`, got.workspace === want.workspace && got.pane === want.pane);
+    ok(`host: the lookout copy's sessionIds agree on ${JSON.stringify(env)}`, twin.workspace === got.workspace && twin.pane === got.pane);
   }
   ok("host: an ignored SEAMUX_HOST is named in why", /SEAMUX_HOST=bogus ignored/.test(HOST.detectHost({ SEAMUX_HOST: "bogus" }).why));
   ok("host: the twin files match apart from the line naming the other copy",

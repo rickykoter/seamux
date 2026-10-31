@@ -4,17 +4,22 @@
 // importing each other, so each carries a copy, and both probes check that
 // the two copies agree. Change both together.
 //
-//   SEAMUX_HOST=cmux|desktop|terminal|remote  beats every signal below
-//   CMUX_WORKSPACE_ID set                     cmux
-//   CLAUDE_CODE_REMOTE=true                   remote (documented)
-//   CLAUDE_CODE_ENTRYPOINT desktop values     desktop (undocumented; may move)
-//   anything else                             terminal
+//   SEAMUX_HOST=cmux|seamux|desktop|terminal|remote  beats every signal below
+//   CMUX_WORKSPACE_ID set, SEAMUX_BACKEND not tmux    cmux
+//   SEAMUX_PANE_ID set                                seamux (the app's own tmux)
+//   CLAUDE_CODE_REMOTE=true                           remote (documented)
+//   CLAUDE_CODE_ENTRYPOINT desktop values             desktop (undocumented; may move)
+//   anything else                                     terminal
+//
+// A session the app's tmux started says SEAMUX_BACKEND=tmux: a
+// CMUX_WORKSPACE_ID it inherited (the app was launched from a cmux terminal)
+// is not a cmux pane. crew_core::ident::in_cmux draws the same line.
 
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-export const HOSTS = ["cmux", "desktop", "terminal", "remote"];
+export const HOSTS = ["cmux", "seamux", "desktop", "terminal", "remote"];
 export const DESKTOP_ENTRYPOINTS = ["claude-desktop", "claude-desktop-3p", "local-agent"];
 
 // Returns { host, why }. An unknown SEAMUX_HOST is reported and ignored, so a
@@ -23,11 +28,23 @@ export function detectHost(env = process.env) {
   const o = (env.SEAMUX_HOST || "").trim().toLowerCase();
   const note = o && !HOSTS.includes(o) ? ` (SEAMUX_HOST=${env.SEAMUX_HOST} ignored: not one of ${HOSTS.join(", ")})` : "";
   if (HOSTS.includes(o)) return { host: o, why: "SEAMUX_HOST=" + o };
-  if (env.CMUX_WORKSPACE_ID) return { host: "cmux", why: "CMUX_WORKSPACE_ID is set" + note };
+  if (env.CMUX_WORKSPACE_ID && env.SEAMUX_BACKEND !== "tmux") return { host: "cmux", why: "CMUX_WORKSPACE_ID is set" + note };
+  if (env.SEAMUX_PANE_ID) return { host: "seamux", why: "SEAMUX_PANE_ID is set" + note };
   if (env.CLAUDE_CODE_REMOTE === "true") return { host: "remote", why: "CLAUDE_CODE_REMOTE=true" + note };
   const ep = env.CLAUDE_CODE_ENTRYPOINT || "";
   if (DESKTOP_ENTRYPOINTS.includes(ep)) return { host: "desktop", why: "CLAUDE_CODE_ENTRYPOINT=" + ep + note };
   return { host: "terminal", why: "no cmux, remote or desktop signal" + note };
+}
+
+// The workspace and pane this session runs in: SEAMUX_* first (set by every
+// backend, cmux's own ids for a native session there), then cmux's. "" for
+// none. A tmux-backend session's inherited CMUX_* ids are not read.
+export function sessionIds(env = process.env) {
+  const cmux = env.SEAMUX_BACKEND !== "tmux";
+  return {
+    workspace: env.SEAMUX_WORKSPACE_ID || (cmux && env.CMUX_WORKSPACE_ID) || "",
+    pane: env.SEAMUX_PANE_ID || (cmux && env.CMUX_SURFACE_ID) || "",
+  };
 }
 
 // One line for doctor-style output.
