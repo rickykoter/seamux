@@ -1,0 +1,3 @@
+.preview-url
+# node_modules is a folder here and a link in a worktree: match both.
+node_modules

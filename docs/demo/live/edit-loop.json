@@ -1,0 +1,242 @@
+{
+ "name": "seamux-lookout",
+ "take": "take-loopB",
+ "poster": 3,
+ "intro": {
+  "line": "lookout: review, fix, test, and review again."
+ },
+ "outro": {
+  "items": [
+   "Risk from signals and System-1.",
+   "Groups that say why.",
+   "Review, fix, test, until clean."
+  ]
+ },
+ "shots": [
+  {
+   "card": "intro",
+   "beats": 6
+  },
+  {
+   "side": true,
+   "take": "take-loopA",
+   "at": "opened",
+   "from": -1.5,
+   "beats": 7,
+   "crop": [
+    442,
+    150,
+    352,
+    730
+   ],
+   "label": "lookout open",
+   "title": "Scored before any reviewer",
+   "line": "lookout ranks every changed file the moment the review opens."
+  },
+  {
+   "at": "page",
+   "from": 1,
+   "beats": 8,
+   "crop": [
+    300,
+    50,
+    1300,
+    731
+   ],
+   "label": "Risk",
+   "line": "Files in risk bands. Related files form groups, each saying why it belongs together."
+  },
+  {
+   "at": "file-admin.js",
+   "from": 0.5,
+   "beats": 8,
+   "crop": [
+    560,
+    130,
+    1000,
+    562
+   ],
+   "label": "System-1",
+   "line": "Half of each file's risk is Jev's judgment: how likely this change breaks something, and how badly."
+  },
+  {
+   "at": "file-route.js",
+   "from": 0.5,
+   "beats": 7,
+   "crop": [
+    560,
+    130,
+    1000,
+    562
+   ],
+   "label": "Signals",
+   "line": "The other half is signals: what the path is (auth, migration, route) and how much changed."
+  },
+  {
+   "at": "file-coupons.md",
+   "from": 0.5,
+   "beats": 5,
+   "crop": [
+    560,
+    130,
+    1000,
+    562
+   ],
+   "label": "Signals",
+   "line": "Docs land in the low band. Tests count for half."
+  },
+  {
+   "at": "groups",
+   "from": 1,
+   "beats": 8,
+   "crop": [
+    300,
+    50,
+    1300,
+    731
+   ],
+   "label": "Grouping",
+   "line": "Groups come from imports, tests, shared folders and findings, six files at most."
+  },
+  {
+   "at": "path",
+   "from": 0.5,
+   "beats": 5,
+   "crop": [
+    300,
+    50,
+    1300,
+    731
+   ],
+   "label": "Grouping",
+   "line": "Or read the same change by path."
+  },
+  {
+   "side": true,
+   "at": "loop",
+   "from": 0,
+   "beats": 8,
+   "speed": 1.4,
+   "crop": [
+    442,
+    150,
+    352,
+    730
+   ],
+   "label": "The loop",
+   "title": "One prompt",
+   "line": "Fresh reviewer, fix, run the tests, re-open. Until a round comes back clean."
+  },
+  {
+   "side": true,
+   "at": "findings-7",
+   "from": 2,
+   "beats": 8,
+   "crop": [
+    900,
+    80,
+    700,
+    820
+   ],
+   "label": "Round 1",
+   "title": "Seven findings",
+   "line": "A blocker, three majors, three minors, each on its line."
+  },
+  {
+   "side": true,
+   "at": "round-2",
+   "from": -1.5,
+   "beats": 8,
+   "speed": 1,
+   "crop": [
+    242,
+    150,
+    652,
+    740
+   ],
+   "label": "Round 1",
+   "title": "Fixed, tested, addressed",
+   "line": "The agent fixes each, runs npm test, and says what changed."
+  },
+  {
+   "side": true,
+   "at": "findings-9",
+   "from": 1.5,
+   "beats": 7,
+   "crop": [
+    900,
+    80,
+    700,
+    820
+   ],
+   "label": "Round 2",
+   "title": "A fresh reviewer",
+   "line": "It reads the fixed code and skips what was already filed. Two new findings."
+  },
+  {
+   "side": true,
+   "at": "findings-11",
+   "from": 1.5,
+   "beats": 6,
+   "crop": [
+    900,
+    80,
+    700,
+    820
+   ],
+   "label": "Round 3",
+   "title": "Two more, then the cap",
+   "line": "Two new minors. The loop stops after three rounds."
+  },
+  {
+   "side": true,
+   "at": "looped",
+   "from": -3,
+   "beats": 8,
+   "crop": [
+    242,
+    150,
+    652,
+    740
+   ],
+   "label": "Back and forth",
+   "title": "One it won't fix",
+   "line": "A minor it declines, with its reason in the thread."
+  },
+  {
+   "side": true,
+   "at": "resolved-f2",
+   "from": -1,
+   "beats": 7,
+   "speed": 5,
+   "crop": [
+    900,
+    80,
+    700,
+    820
+   ],
+   "label": "You",
+   "title": "You close the fixes",
+   "line": "Ten resolved on the page. Only a person closes a finding."
+  },
+  {
+   "side": true,
+   "at": "gate",
+   "from": -3,
+   "beats": 8,
+   "crop": [
+    242,
+    150,
+    652,
+    740
+   ],
+   "label": "lookout gate",
+   "title": "The gate passes",
+   "line": "No blocker or major open. One minor stays, with its reason."
+  },
+  {
+   "card": "outro",
+   "beats": 8
+  }
+ ]
+}

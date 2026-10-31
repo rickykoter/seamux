@@ -84,6 +84,29 @@ chip with a real click, so the demo app comes to the front for a moment.
 name and intent beside it. `LOOKOUT_PART2=1` picks a lookout take up from a
 review whose findings are filed.
 
+## lookout up close: risk, groups and the loop
+
+The lookout video now goes deeper than the deep-dive take: lookout's own
+risk scoring with System-1, its groups, and an agent looping review → fix →
+test → review. `system-one-setup.sh` links your TypeSafe key file into the
+demo HOME (read when lookout scores, never copied or filmed), and the shop's
+`.seamux/lookout.json` sends the demo code's changed lines to Jev.
+
+```bash
+bash docs/demo/live/setup.sh && bash docs/demo/live/deep-dive-setup.sh
+bash docs/demo/live/system-one-setup.sh && bash docs/demo/live/app.sh
+bash docs/demo/live/take-lookout-loop.sh
+node docs/demo/live/cut.mjs docs/demo/live/edit-loop.json
+```
+
+A live agent first builds a coupon feature across separate clusters
+(checkout, admin and auth, a migration, config, docs), so the review has
+several groups in different bands. Until a reviewer reports, the Dock lists
+no review (it shows a review only with open or addressed findings), so the
+risk tour runs in the app's Lookout tab, full width. One prompt then runs up
+to three rounds, each with a fresh reviewer. `LOOP_RESUME=1` picks the take
+up from an open review with no reviewer yet.
+
 ## What stays yours
 
 The demo app, its tmux server, its intent server (port 7445) and every Claude
@@ -108,7 +131,8 @@ into another app, but the window has to stay on screen while it records.
 | `family-setup.sh`, `family-stage.sh`, `cloud.sh` | the family's specs, the simulated cloud and its window |
 | `take-family.sh`, `edit-family.json` | the families + cloud take and its edit |
 | `deep-dive-setup.sh`, `take-deep.sh`, `take-lookout.sh`, `answers.sh` | the deep-plan and lookout videos' world and takes |
-| `edit-deep.json`, `edit-lookout.json` | their edits |
+| `edit-deep.json`, `edit-lookout.json` | their edits (`edit-lookout.json` is the shorter first cut) |
+| `system-one-setup.sh`, `take-lookout-loop.sh`, `edit-loop.json` | the deeper lookout video: System-1, groups, the loop |
 | `axfind.swift`, `click.swift` | find a control through accessibility (`--press` presses it, scrolled into view); a real click or drag |
 | `axpress.swift`, `pidclick.swift` | experiments: neither reaches the board's chips (see below) |
 | `cut.mjs`, `edit.json` | the edit: shots by beat name, crops, speed, captions, poster |
