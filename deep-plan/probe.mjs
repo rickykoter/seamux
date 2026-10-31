@@ -2,6 +2,12 @@
 // deep-plan probe — one command, no arguments, throwaway everything.
 // Asserts both directions: blocks what it should, and NEVER what it should not.
 // `-v` walks it step by step (the probe is also the demo).
+//
+// The probe is a list of sections, each guarded by `if (want(name))`. By default
+// every section runs in its own child process with its own TMP, several at once
+// (`-j N`, default one per CPU). `--only <word>` runs the sections whose name
+// contains the word, for a quick test-fix-test loop; `--serial` runs them in
+// this one process, one after another. See tools/probe_sections.mjs.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -15,9 +21,11 @@ import { pruneEvidence, readEvidence } from "./lib/browser.mjs";
 import { classifyScript } from "./lib/detect.mjs";
 import * as HOST from "./lib/host.mjs";
 import * as HOST_TWIN from "../lookout/lib/host.mjs";
+import { sections } from "../tools/probe_sections.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const V = process.argv.includes("-v");
+const { want } = await sections(import.meta.url, { label: "deep-plan probe" });
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "dp-probe-"));
 const ENV = {
   ...process.env,
@@ -106,7 +114,8 @@ function gate(tool, input, cwd = REPO) {
 const edit = p => gate("Edit", { file_path: p });
 const bash = c => gate("Bash", { command: c });
 
-// -------------------------------------------------- renderer refuses bad specs
+// Shared by every section. Each section runs on its own (in its own process
+// and TMP by default), so nothing a section needs may come from another one.
 const spec = JSON.parse(fs.readFileSync(path.join(HERE, "examples", "example.spec.json"), "utf8"));
 const tmpSpec = obj => { const p = path.join(TMP, "s.json"); fs.writeFileSync(p, JSON.stringify(obj)); return p; };
 // Record a pass on every check of increment n, the way a person who has seen
@@ -116,7 +125,16 @@ const passAll = (slug, n, run = cli) => {
   for (const id of Object.keys(st.increments[n - 1].checks || {}))
     run("check", "pass", slug, String(n), id, "seen in the probe", "--force");
 };
+// The lib reads its dirs from process.env at import time; mirror ENV first.
+Object.assign(process.env, ENV);
+const lib = await import(new URL("lib/state.mjs", import.meta.url));
+// The last command's result, reused by most sections.
+let r;
 
+// The story: one plan from render to done. Its steps build on one another,
+// so it is one section; every section after it stands alone.
+if (want("story")) {
+// -------------------------------------------------- renderer refuses bad specs
 let bad = { ...spec, diagrams: [] };
 ok("refuses a spec with no diagram", cli("render", tmpSpec(bad)).status !== 0);
 bad = { ...spec, verifiedFacts: [{ claim: "x" }] };
@@ -154,7 +172,7 @@ ok("refuses an overview that is not mermaid source", cli("render", tmpSpec(bad))
 
 // -------------------------------------------------- a good spec renders
 ok("gate with no plan: Edit allowed (fast path)", edit(path.join(REPO, "a.txt")).status === 0);
-let r = cli("render", tmpSpec(spec));
+r = cli("render", tmpSpec(spec));
 ok("example spec renders", r.status === 0);
 ok("md + review + working surfaces exist",
   ["md", "review.html", "working.html"].every(s =>
@@ -1422,9 +1440,6 @@ ok("close retires a plan from status", cli("close", "parked-plan").status === 0 
   !JSON.parse(cli("status", "--json").stdout).some(p => p.slug === "parked-plan"));
 
 // -------------------------------------------------- bashMutates: /dev/null redirects are reads
-// The lib reads its dirs from process.env at import time; mirror ENV first.
-Object.assign(process.env, ENV);
-const lib = await import(new URL("lib/state.mjs", import.meta.url));
 ok("2>/dev/null does not read as a write (lsof)",
   !lib.bashMutates("lsof -a -p 1 -iTCP 2>/dev/null"));
 ok("2>/dev/null does not read as a write (json.tool + pipe)",
@@ -1576,6 +1591,8 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   fs.rmSync(sp, { force: true });
 }
 
+}
+
 // -------------------------------------------------- observability checks gate `done`
 //
 // Per-DELIVERABLE observability, which is a different thing from the top-level
@@ -1583,7 +1600,7 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
 // deliverable means its `done` is refused until they pass. The legacy
 // `observability.checks` field still reads, as observability-kind checks, and
 // the `obs` verb still drives them; this block holds both to their old meaning.
-{
+if (want("observability checks gate `done`")) {
   const CHECK = { checks: [{ system: "datadog", name: "retry counter climbs",
     query: "sum:outbox.retry{env:qa}", expect: "non-zero within 15m" }] };
   const ID = "obs-retry-counter-climbs";
@@ -1750,7 +1767,7 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
 // `done` treats a pass against other content as stale. A check backed by a
 // recipe takes its verdict from running it, so passing one by hand needs
 // --force, which is logged.
-{
+if (want("checks: one model, every kind")) {
   const ROOT = path.join(TMP, "checks-root");
   fs.mkdirSync(ROOT, { recursive: true });
   const G = "git -c user.email=probe@deep-plan -c user.name=probe";
@@ -1874,7 +1891,7 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
 // nearest ancestor's config; the root's recipes are inherited unless that
 // config redefines the id, and configs in between are not. `match` and `cwd`
 // are relative to the project directory holding the config.
-{
+if (want("recipe files: load, inherit, resolve")) {
   const VR = path.join(TMP, "verify-root");
   const put = (rel, obj) => {
     const p = path.join(VR, rel, ".seamux", "verify.json");
@@ -2032,7 +2049,7 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
 // match covers its files, then the legacy fields. An increment with none is
 // refused unless it carries a waiver. The resolved list lives in state, with
 // each recipe's steps and hash, and every surface shows it.
-{
+if (want("render infers checks and refuses gaps")) {
   // The example as shipped renders; stripped of its checks and waiver, it is
   // refused, and the refusal says how to get past it.
   const stripped = JSON.parse(JSON.stringify(spec));
@@ -2119,10 +2136,13 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   }
   ok("an inferred check says where it came from",
     surfaces.md.includes("inferred: a default recipe in `web/.seamux/verify.json` covers"));
+  // The example as shipped carries the waiver; its own copy, so this section
+  // does not need the story's plan.
+  cli("render", tmpSpec({ ...spec, slug: "inf-waived" }), "--force");
   ok("a waiver is shown where checks would be",
-    rd(spec.slug)("md").includes("Checks: none — waived: the retry sweep spec") &&
-    rd(spec.slug)("review.html").includes("waived: the retry sweep spec") &&
-    rd(spec.slug)("working.html").includes("waived: the retry sweep spec"));
+    rd("inf-waived")("md").includes("Checks: none — waived: the retry sweep spec") &&
+    rd("inf-waived")("review.html").includes("waived: the retry sweep spec") &&
+    rd("inf-waived")("working.html").includes("waived: the retry sweep spec"));
 
   // What was reviewed is what runs: rehydrate reads the stored resolution, so
   // a config edited after render changes no surface until the next render —
@@ -2177,7 +2197,7 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
   ok("a broken recipe config refuses the render",
     r.status === 1 && /recipe config web\/\.seamux\/verify\.json: not valid JSON/.test(r.stderr));
 
-  for (const n of ["inf-stripped", "inf-1", "inf-bad", "inf-key", "inf-id"]) {
+  for (const n of ["inf-stripped", "inf-waived", "inf-1", "inf-bad", "inf-key", "inf-id"]) {
     cli("close", n);
     fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), { force: true });
   }
@@ -2190,7 +2210,7 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
 // detached runner that outlives the CLI and lands its own verdict. An acquire
 // step is never executed: the check waits for a person, then `--from wait`.
 // A runner that dies without a verdict is found and failed as lost.
-{
+if (want("check run: inline, detached, from wait")) {
   const RR = path.join(TMP, "run-root");
   const G = "git -c user.email=probe@deep-plan -c user.name=probe";
   fs.mkdirSync(path.join(RR, ".seamux"), { recursive: true });
@@ -2381,7 +2401,7 @@ fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lockee.json"));
 // workspace, with the repl's cwd in the check's evidence directory. The
 // verdict is the exit code; the frames, trace and replay are kept, and
 // status --json carries a summary. tools/fake-cmux stands in for cmux.
-{
+if (want("browser checks: a repo script through cmux's repl")) {
   const BR = path.join(TMP, "browser-root");
   const G = "git -c user.email=probe@deep-plan -c user.name=probe";
   fs.mkdirSync(path.join(BR, ".seamux"), { recursive: true });
@@ -2673,7 +2693,7 @@ exit 1
 // the same time (first to land wins), may hold a machine-wide lock, and
 // releases what it took when the run ends: pass, fail or a trapped signal.
 // Only a SIGKILL leaves it held, for `check release`.
-{
+if (want("claim steps: engine-run acquisition")) {
   const CR = path.join(TMP, "claim-root");
   const G = "git -c user.email=probe@deep-plan -c user.name=probe";
   fs.mkdirSync(path.join(CR, ".seamux"), { recursive: true });
@@ -2851,7 +2871,7 @@ exit 1
 // steps cited as path:line, runner and host configs — and drafts a
 // .seamux/verify.json per project, a TODO on every gap. Dry run unless
 // --write, which never overwrites. Templates are copied in by name.
-{
+if (want("verify init: detector, templates, setup prompt")) {
   const DR = path.join(TMP, "detect-root");
   const put = (rel, body) => {
     const p = path.join(DR, rel);
@@ -3009,7 +3029,7 @@ exit 1
 // nonGoals, commits (top-level and per-deliverable) and per-deliverable
 // verification were present on real specs and had ZERO references in this
 // engine: authored, archived, and silently never shown.
-{
+if (want("spec fields that used to be dropped")) {
   const s = JSON.parse(JSON.stringify(spec));
   s.slug = "fields-plan";
   s.nonGoals = ["Rewriting the scheduler", "Touching the billing path"];
@@ -3056,7 +3076,7 @@ exit 1
 // `rehydrate`, because two call sites emitting different subsets is the bug
 // shape this engine keeps finding in itself — and `rehydrate` is the only
 // re-render available for a plan whose spec cannot pass the floors.
-{
+if (want("quiz.txt, widget, cutover bundle")) {
   const s = JSON.parse(JSON.stringify(spec));
   s.slug = "art-plan";
   s.nonGoals = ["Rewriting the scheduler"];
@@ -3250,7 +3270,7 @@ exit 1
 // optional module fails at load time on every machine that lacks it, which is
 // how the older engine wired its private modules and why they could not be
 // deleted from it.
-{
+if (want("extension verbs")) {
   const EXT = path.join(TMP, "ext");
   fs.mkdirSync(EXT, { recursive: true });
   // SKILL_DIR and the older spellings are deliberately STRIPPED from the parent
@@ -3358,7 +3378,7 @@ exit 1
 //
 // Tested by putting a fake `cmux` first on PATH that records its arguments, so
 // "does not open" is observed rather than assumed.
-{
+if (want("`done` writes the patch, never opens it")) {
   const BIN = path.join(TMP, "fakebin");
   fs.mkdirSync(BIN, { recursive: true });
   const LOG = path.join(TMP, "cmux-calls.log");
@@ -3418,7 +3438,7 @@ exit 1
 // increment built by a script or a `cp` was never flipped to working and closed
 // with no base: no patch, nothing for a review to open. go records the base, so
 // every increment has one however its writes were made.
-{
+if (want("the start sha comes from go")) {
   const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
   const sha = n => stOf("sha-plan").increments[n - 1].startSha;
   const head = () => execSync("git rev-parse HEAD", { cwd: REPO, encoding: "utf8" }).trim();
@@ -3473,7 +3493,7 @@ exit 1
 // back-to-back plans in one workspace. Claude Code exports
 // CLAUDE_CODE_SESSION_ID; the older CLAUDE_SESSION_ID name was read before and
 // never set, which left every plan's session empty.
-{
+if (want("owner: session and workspace")) {
   const as = (env, ...args) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...args],
     { encoding: "utf8", env: { ...ENV, ...env }, cwd: REPO });
   const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
@@ -3584,7 +3604,7 @@ exit 1
 // A parent plan names child plans that already exist; membership lives only in
 // the parent's index, claims compare as (repo, repo-relative path) across
 // worktrees, and render refuses what would leave a path with two owners plans.
-{
+if (want("families")) {
   const G = "git -c user.email=probe@deep-plan -c user.name=probe";
   const FR = path.join(TMP, "famrepo");
   const FW = path.join(TMP, "famrepo.worktrees");
@@ -3939,7 +3959,7 @@ exit 1
 // the parent, --by human or a shell outside Claude Code is a person, anything
 // else is the plan's own session (self). A delegated child's self-go is
 // refused, --force or not; a person can always step in.
-{
+if (want("delegated go")) {
   const G = "git -c user.email=probe@deep-plan -c user.name=probe";
   const DR = path.join(TMP, "dlgrepo"), DW = path.join(TMP, "dlgrepo.worktrees");
   fs.mkdirSync(DR, { recursive: true });
@@ -4127,7 +4147,7 @@ exit 1
 // macOS spells the temp tree /var/… and resolves it to /private/var/…. A file
 // in a directory that does not exist yet has to resolve through its nearest
 // existing ancestor, or the gate reads it as outside every root.
-{
+if (want("a new directory under a symlinked root")) {
   const SR = fs.mkdtempSync(path.join(os.tmpdir(), "dp-symroot-"));
   execSync("git init -q", { cwd: SR });
   const sym = { ...JSON.parse(JSON.stringify(spec)), slug: "symlinked-root" };
@@ -4144,7 +4164,7 @@ exit 1
 // its increment. deep-plan synthesizes the command and runs it through
 // lookout's engine; nothing names a recipe. The spike: a synthesized command
 // must never trip the recipe-drift warning, however often it runs.
-{
+if (want("review checks (lookout)")) {
   const LK = path.join(HERE, "..", "lookout");
   const RV = path.join(TMP, "review-root");
   const G = "git -c user.email=probe@deep-plan -c user.name=probe";
@@ -4492,7 +4512,7 @@ exit 1
 }
 
 // ---------------------------------------------------------------- host detection
-{
+if (want("host detection")) {
   const HOST_TABLE = [
     [{}, "terminal"],
     [{ CMUX_WORKSPACE_ID: "W1" }, "cmux"],
@@ -4530,7 +4550,7 @@ exit 1
 }
 
 // -------------------------------------------------- remote host: state in the repo, export and import
-{
+if (want("remote host: state in the repo, export and import")) {
   const RH = path.join(TMP, "remote-home");
   fs.mkdirSync(RH, { recursive: true });
   const RA = path.join(TMP, "remote-a"), RB = path.join(TMP, "remote-b");
@@ -4615,7 +4635,7 @@ exit 1
 }
 
 // -------------------------------------------------- install-repo: the plugin in a repo's own .claude/, for cloud sessions
-{
+if (want("install-repo: the plugin in a repo's own .claude/, for cloud sessions")) {
   const IR = path.join(TMP, "install-repo");
   const G = "git -c user.email=probe@deep-plan -c user.name=probe";
   fs.mkdirSync(path.join(IR, ".claude"), { recursive: true });
@@ -4684,7 +4704,7 @@ exit 1
 }
 
 // -------------------------------------------------- shared state: config and the git backend
-{
+if (want("shared state: config and the git backend")) {
   const SYNC = await import(new URL("lib/sync.mjs", import.meta.url));
   const G = "git -c user.email=probe@deep-plan -c user.name=probe";
   const SR = path.join(TMP, "sync-repo"), ORIGIN = path.join(TMP, "sync-origin.git"), OUT = path.join(TMP, "sync-outside.git");
@@ -4796,7 +4816,7 @@ exit 1
 }
 
 // -------------------------------------------------- state push, pull, status and list
-{
+if (want("state push, pull, status and list")) {
   const G = "git -c user.email=probe@deep-plan -c user.name=probe";
   const SO = path.join(TMP, "st-origin.git"), SA = path.join(TMP, "st-a"), SB = path.join(TMP, "st-b");
   execSync(`git init -q --bare ${SO}`);
@@ -4907,7 +4927,7 @@ exit 1
 }
 
 // -------------------------------------------------- merge a race by rule
-{
+if (want("merge a race by rule")) {
   const M = await import(new URL("lib/merge.mjs", import.meta.url));
   const base = () => ({ slug: "m", root: "/r", phase: "implementing", log: [{ at: 1, what: "render" }],
     increments: [
@@ -5000,7 +5020,7 @@ exit 1
 }
 
 // -------------------------------------------------- sync on transitions, and a pull at session start
-{
+if (want("sync on transitions, and a pull at session start")) {
   const G = "git -c user.email=probe@deep-plan -c user.name=probe";
   const TO = path.join(TMP, "tr-origin.git"), TA = path.join(TMP, "tr-a");
   execSync(`git init -q --bare ${TO}`);
@@ -5141,7 +5161,7 @@ exit 1
 }
 
 // -------------------------------------------------- shared state: a family's branches, archive on deliver and close
-{
+if (want("shared state: a family's branches, archive on deliver and close")) {
   const G = "git -c user.email=probe@deep-plan -c user.name=probe";
   const FO = path.join(TMP, "sf-origin.git"), FR = path.join(TMP, "sf-repo"), FW = path.join(TMP, "sf-repo.worktrees");
   execSync(`git init -q --bare ${FO}`);
@@ -5280,7 +5300,7 @@ exit 1
 }
 
 // -------------------------------------------------- await-go pulls the child's branch
-{
+if (want("await-go pulls the child's branch")) {
   const G = "git -c user.email=probe@deep-plan -c user.name=probe";
   const AO = path.join(TMP, "aw-origin.git"), AP = path.join(TMP, "aw-parent"), AK = path.join(TMP, "aw-parent.worktrees", "kid");
   execSync(`git init -q --bare ${AO}`);
@@ -5365,7 +5385,7 @@ exit 1
 // runner is reaped at done; a numbered go keeps the one-open rule; the
 // delivery base is the oldest start; a rebased-away sha yields to --base; a
 // case-variant path is gated; a person's transition survives a slow done.
-{
+if (want("the go is the human's; what a pass covers; and friends")) {
   const G = "git -c user.email=probe@deep-plan -c user.name=probe";
   const AR = path.join(TMP, "b1-root");
   fs.mkdirSync(path.join(AR, "src"), { recursive: true });
@@ -5559,11 +5579,18 @@ exit 1
     // is ~10x; a quadratic scan would be ~100x. The loose ceiling still
     // catches a scan gone badly wrong.
     const cmdOf = n => "echo " + "y ".repeat(n) + "; deep-plan open-gate x";
-    const best = c => { let b = Infinity; for (let i = 0; i < 3; i++) { const t = performance.now(); lib.deepPlanCalls(c); b = Math.min(b, performance.now() - t); } return b; };
+    // The 100 KB one is timed as ten calls in a row, so both timings are about
+    // as long and a busy machine (CI, or the probe's sections side by side)
+    // interrupts them alike; a lone 5 ms call fits between interruptions that
+    // a 50 ms one does not.
+    const best = (c, n = 3, k = 1) => { let b = Infinity; for (let i = 0; i < n; i++) { const t = performance.now(); for (let j = 0; j < k; j++) lib.deepPlanCalls(c); b = Math.min(b, (performance.now() - t) / k); } return b; };
     const mb = cmdOf(500000), kb = cmdOf(50000);
     lib.deepPlanCalls(kb);
     const got = lib.deepPlanCalls(mb);
-    const tMb = best(mb), tKb = Math.max(best(kb), 0.5);
+    let tMb = best(mb), tKb = Math.max(best(kb, 3, 10), 0.5);
+    // A stall can still land in one best-of-3; a real quadratic scan stays
+    // over when measured again with more samples.
+    if (tMb / tKb >= 40 || tMb >= 1000) { tMb = best(mb, 15); tKb = Math.max(best(kb, 15, 10), 0.5); }
     const took2 = Math.round(tMb), ratio = tMb / tKb;
     ok(`b1: a 1 MB command is read in one pass (${took2} ms, ${ratio.toFixed(1)}x the 100 KB one)`, got.length === 1 && ratio < 40 && tMb < 1000);
   }
@@ -5893,7 +5920,7 @@ exit 1
 }
 
 // -------------------------------------------------- notes: side findings beside a plan's state
-{
+if (want("notes: side findings beside a plan's state")) {
   const G = "git -c user.email=probe@deep-plan -c user.name=probe";
   const NA = path.join(TMP, "notes-repo"), NB = path.join(TMP, "notes-other");
   for (const d of [NA, NB]) { fs.mkdirSync(d, { recursive: true }); execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: d }); }
@@ -6091,10 +6118,12 @@ exit 1
 }
 
 // -------------------------------------------------- hot-path cost
-const t0 = process.hrtime.bigint();
-for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);
-const ms = Number(process.hrtime.bigint() - t0) / 20e6;
-console.log(`\n  hot path (state files present, path untracked): ${ms.toFixed(1)} ms/call over 20`);
+if (want("hot-path cost")) {
+  const t0 = process.hrtime.bigint();
+  for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);
+  const ms = Number(process.hrtime.bigint() - t0) / 20e6;
+  console.log(`\n  hot path (state files present, path untracked): ${ms.toFixed(1)} ms/call over 20`);
+}
 
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(`\ndeep-plan probe: ${pass} passed, ${fail} failed`);

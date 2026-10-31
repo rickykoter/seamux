@@ -19,9 +19,13 @@ import { matchesGlob, detect, load, summarize } from "./lib/config.mjs";
 import { markStale, clearStale, fresh } from "./lib/state.mjs";
 import { parseRangeDiff, classify } from "./lib/verify.mjs";
 import { contentAllowed, generatedBanner } from "./lib/judge.mjs";
+import { sections } from "../tools/probe_sections.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const V = process.argv.includes("-v");
+// Each section below runs in its own child with its own TMP, several at once;
+// `--only <word>` picks sections, `--serial` runs them here (tools/probe_sections.mjs).
+const SECTIONS = await sections(import.meta.url, { label: "restack probe" });
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "restack-probe-"));
 const ENV = {
   ...process.env,
@@ -49,6 +53,8 @@ function ok(name, cond, detail) {
   else { fail++; console.log("  FAIL " + name + (detail ? "\n       " + String(detail).replace(/\n/g, "\n       ") : "")); }
 }
 function step(s) { if (V) console.log("\n\x1b[1m" + s + "\x1b[0m"); }
+// A section runs when picked, under its step heading.
+function want(s) { if (!SECTIONS.want(s)) return false; step(s); return true; }
 
 function git(cwd, ...args) {
   const r = spawnSync("git", args, { cwd, encoding: "utf8", env: ENV });
@@ -105,7 +111,7 @@ const cheapCfg = {
 };
 
 // ---------------------------------------------------------------- pure units
-step("pure units: the ours/theirs inversion, globs, config, state");
+if (want("pure units: the ours/theirs inversion, globs, config, state")) {
 
 ok("rebase: base side is --ours", sideFlag("rebase", "base") === "--ours");
 ok("rebase: branch side is --theirs", sideFlag("rebase", "branch") === "--theirs");
@@ -155,10 +161,10 @@ ok("detect ignores ordinary source", !detected.some(d => d.paths.includes("src/t
   clearStale(st, "schema");
   ok("a successful regen clears it", st.stale.length === 0);
 }
+}
 
 // ---------------------------------------------------------------- config refusals
-step("config: refuses the shapes that would lie");
-{
+if (want("config: refuses the shapes that would lie")) {
   const dir = path.join(TMP, "cfgrepo"); fs.mkdirSync(dir, { recursive: true });
   const at = obj => {
     fs.mkdirSync(path.join(dir, ".seamux"), { recursive: true });
@@ -188,8 +194,7 @@ step("config: refuses the shapes that would lie");
 }
 
 // ---------------------------------------------------------------- the core case
-step("one branch, a generated conflict, a cheap generator");
-{
+if (want("one branch, a generated conflict, a cheap generator")) {
   const r = newRepo("cheap", cheapCfg);
   git(r, "checkout", "-q", "-b", "feat1");
   addDef(r, "b", "bravo\n", "feat: b");
@@ -216,8 +221,7 @@ step("one branch, a generated conflict, a cheap generator");
 }
 
 // ---------------------------------------------------------------- a clean merge is not a right one
-step("both sides touched the artifact, git merged it cleanly: regenerated anyway");
-{
+if (want("both sides touched the artifact, git merged it cleanly: regenerated anyway")) {
   // A header that counts the blocks under it, as real schema dumps do. Both
   // sides add one block, far enough apart for git to merge them, and both
   // headers move to the same count, so the merge is clean and wrong.
@@ -280,8 +284,7 @@ step("both sides touched the artifact, git merged it cleanly: regenerated anyway
 }
 
 // ---------------------------------------------------------------- expensive tier
-step("the same conflict with an expensive generator: stale, not silent");
-{
+if (want("the same conflict with an expensive generator: stale, not silent")) {
   const cfg = JSON.parse(JSON.stringify(cheapCfg));
   cfg.artifacts[0].tier = "expensive";
   const r = newRepo("expensive", cfg);
@@ -317,8 +320,7 @@ step("the same conflict with an expensive generator: stale, not silent");
 }
 
 // ---------------------------------------------------------------- take-base
-step("take-base drops your copy — and says so, and can be signed off");
-{
+if (want("take-base drops your copy — and says so, and can be signed off")) {
   const cfg = { base: "master", remote: "origin",
     artifacts: [{ name: "db", paths: ["gen/**"], resolve: "take-base", tier: "expensive",
                   note: "re-run your migration" }], checks: [] };
@@ -349,8 +351,7 @@ step("take-base drops your copy — and says so, and can be signed off");
 }
 
 // ---------------------------------------------------------------- union
-step("union keeps both sides' lines and the file's own whitespace");
-{
+if (want("union keeps both sides' lines and the file's own whitespace")) {
   const cfg = { base: "master", remote: "origin", checks: [],
     artifacts: [{ name: "set", paths: ["lists/**"], resolve: "union", tier: "cheap" }] };
   const r = newRepo("union", cfg);
@@ -368,8 +369,7 @@ step("union keeps both sides' lines and the file's own whitespace");
 }
 
 // ---------------------------------------------------------------- check --dry-run
-step("check --dry-run runs nothing, so it passes nothing");
-{
+if (want("check --dry-run runs nothing, so it passes nothing")) {
   const cfg = { ...cheapCfg, checks: [{ name: "breaking", run: "exit 1", tier: "cheap" }] };
   const r = newRepo("checkdry", cfg);
   // The checked-in file is stale: a real check would catch it.
@@ -386,8 +386,7 @@ step("check --dry-run runs nothing, so it passes nothing");
 }
 
 // ---------------------------------------------------------------- dropped commits
-step("a commit that becomes empty is reported, never silently dropped");
-{
+if (want("a commit that becomes empty is reported, never silently dropped")) {
   const r = newRepo("empty", cheapCfg);
   git(r, "checkout", "-q", "-b", "feat1");
   // A commit that only edits the generated file: once the artifact is
@@ -408,8 +407,7 @@ step("a commit that becomes empty is reported, never silently dropped");
 }
 
 // ---------------------------------------------------------------- human conflict
-step("a conflict in hand-written code: stops, and resolves nothing for you");
-{
+if (want("a conflict in hand-written code: stops, and resolves nothing for you")) {
   const r = newRepo("human", cheapCfg);
   git(r, "checkout", "-q", "-b", "feat1");
   addDef(r, "b", "bravo\n", "feat: b");
@@ -446,8 +444,7 @@ step("a conflict in hand-written code: stops, and resolves nothing for you");
 }
 
 // ---------------------------------------------------------------- a real stack
-step("two stacked branches: order, no duplicated commits, one pass");
-{
+if (want("two stacked branches: order, no duplicated commits, one pass")) {
   const r = newRepo("stack", cheapCfg);
   git(r, "checkout", "-q", "-b", "feat1");
   addDef(r, "b", "bravo\n", "feat1: b");
@@ -477,8 +474,7 @@ step("two stacked branches: order, no duplicated commits, one pass");
 }
 
 // ---------------------------------------------------------------- abort mid-stack
-step("abort mid-stack puts back the branches already restacked");
-{
+if (want("abort mid-stack puts back the branches already restacked")) {
   const r = newRepo("abortstack", cheapCfg);
   git(r, "checkout", "-q", "-b", "feat1");
   addDef(r, "b", "bravo\n", "feat1: b");
@@ -526,8 +522,7 @@ step("abort mid-stack puts back the branches already restacked");
 }
 
 // ---------------------------------------------------------------- --branch mid-stack
-step("--branch on a branch mid-stack lifts it off its parent, never the base");
-{
+if (want("--branch on a branch mid-stack lifts it off its parent, never the base")) {
   const cfg = { ...cheapCfg, stack: { tool: "git", branches: ["feat1", "feat2"] } };
   const r = newRepo("onebranch", cfg);
   git(r, "checkout", "-q", "-b", "feat1");
@@ -564,8 +559,7 @@ step("--branch on a branch mid-stack lifts it off its parent, never the base");
 }
 
 // ---------------------------------------------------------------- a branch with no local ref
-step("a chain naming a branch with no local ref refuses, never 'already-current'");
-{
+if (want("a chain naming a branch with no local ref refuses, never 'already-current'")) {
   const cfg = { ...cheapCfg, stack: { tool: "git", branches: ["feat/a", "feat/x-missing", "feat/c"] } };
   const r = newRepo("missingmiddle", cfg);
   git(r, "checkout", "-q", "-b", "feat/a");
@@ -592,8 +586,7 @@ step("a chain naming a branch with no local ref refuses, never 'already-current'
 }
 
 // ---------------------------------------------------------------- a checkout that fails
-step("a branch that cannot be checked out fails the walk, not finishes it");
-{
+if (want("a branch that cannot be checked out fails the walk, not finishes it")) {
   const r = newRepo("cofail", cheapCfg);
   git(r, "checkout", "-q", "-b", "feat1");
   addDef(r, "b", "bravo\n", "feat1: b");
@@ -618,8 +611,7 @@ step("a branch that cannot be checked out fails the walk, not finishes it");
 }
 
 // ---------------------------------------------------------------- verify
-step("verify: did the restack change anything of yours?");
-{
+if (want("verify: did the restack change anything of yours?")) {
   // The parser and the classifier are unit-tested against real range-diff
   // output, because the interesting cases (a commit that vanished, a file
   // section that disappeared from a patch) are tedious to stage end to end
@@ -664,8 +656,7 @@ step("verify: did the restack change anything of yours?");
     owned.unexplained.length === 0 && owned.resolved.length === 1);
 }
 
-step("verify end to end: a clean restack has nothing to explain");
-{
+if (want("verify end to end: a clean restack has nothing to explain")) {
   const r = newRepo("verify", cheapCfg);
   git(r, "checkout", "-q", "-b", "feat1");
   addDef(r, "b", "bravo\n", "feat: b");
@@ -683,8 +674,7 @@ step("verify end to end: a clean restack has nothing to explain");
     cli(newRepo("verify-none", cheapCfg), "verify", "--json").status === 1);
 }
 
-step("verify: the two ways a check can be a lie");
-{
+if (want("verify: the two ways a check can be a lie")) {
   // 1. Every commit on the branch became empty and was dropped. git
   // range-diff REFUSES an empty range, so this is the case that reported
   // "could not check" and then printed the all-clear under it.
@@ -719,8 +709,7 @@ step("verify: the two ways a check can be a lie");
 }
 
 // ---------------------------------------------------------------- the judgment layer
-step("the judgment layer escalates, and can never authorize");
-{
+if (want("the judgment layer escalates, and can never authorize")) {
   // A stand-in for crew/hooks/typesafe.py: same two subcommands, same JSON
   // contract, an answer chosen by env. CI must never need a model server, and
   // a probe must never reach the machine's real one.
@@ -895,8 +884,7 @@ step("the judgment layer escalates, and can never authorize");
 }
 
 // ---------------------------------------------------------------- refusals
-step("refusals: dirty tree, a rebase already in flight, a bad base");
-{
+if (want("refusals: dirty tree, a rebase already in flight, a bad base")) {
   const r = newRepo("refuse", cheapCfg);
   git(r, "checkout", "-q", "-b", "feat1");
   addDef(r, "b", "bravo\n", "feat: b");
@@ -940,8 +928,7 @@ step("refusals: dirty tree, a rebase already in flight, a bad base");
 }
 
 // ---------------------------------------------------------------- push is print-only
-step("push prints and never pushes");
-{
+if (want("push prints and never pushes")) {
   const bare = path.join(TMP, "remote.git");
   spawnSync("git", ["init", "-q", "--bare", bare], { env: ENV });
   const r = newRepo("pushonly", cheapCfg);
@@ -969,8 +956,7 @@ step("push prints and never pushes");
 // ---------------------------------------------------------------- the lease is pinned
 // A bare --force-with-lease trusts the remote-tracking ref, which any fetch
 // moves; the printed line names the tip recorded when the walk was planned.
-step("push lines pin the lease to the remote tip the walk recorded");
-{
+if (want("push lines pin the lease to the remote tip the walk recorded")) {
   const bare = path.join(TMP, "lease-remote.git");
   spawnSync("git", ["init", "-q", "--bare", bare], { env: ENV });
   const r = newRepo("lease", cheapCfg);
@@ -1032,8 +1018,7 @@ step("push lines pin the lease to the remote tip the walk recorded");
 // drop it. The walk sees the branch never had it and warns, naming the
 // commits, above a push line it still prints: an amended commit of one's own
 // looks the same, and only the person can tell.
-step("a remote branch with commits the local one lacks is warned about");
-{
+if (want("a remote branch with commits the local one lacks is warned about")) {
   const bare = path.join(TMP, "held-remote.git");
   spawnSync("git", ["init", "-q", "--bare", bare], { env: ENV });
   const r = newRepo("held", cheapCfg);
@@ -1083,8 +1068,7 @@ step("a remote branch with commits the local one lacks is warned about");
 // `restack push` with no walk compares the remote with the branch as it is
 // now. A branch rebased by hand rewrote every commit but lacks none of them;
 // a teammate's commit on the remote is still caught.
-step("with no walk on record, remote-only commits are found by patch");
-{
+if (want("with no walk on record, remote-only commits are found by patch")) {
   const bare = path.join(TMP, "patch-remote.git");
   spawnSync("git", ["init", "-q", "--bare", bare], { env: ENV });
   const r = newRepo("patch", cheapCfg);
@@ -1114,8 +1098,7 @@ step("with no walk on record, remote-only commits are found by patch");
 // ---------------------------------------------------------------- a stale local base
 // `"base": "master"` is the local branch; a fetch moves only origin/master. A
 // local base behind its upstream is refused with the fix, not walked onto.
-step("a local base behind its upstream");
-{
+if (want("a local base behind its upstream")) {
   const bare = path.join(TMP, "stalebase-remote.git");
   spawnSync("git", ["init", "-q", "--bare", bare], { env: ENV });
   const r = newRepo("stalebase", cheapCfg);
@@ -1155,8 +1138,7 @@ step("a local base behind its upstream");
 // ---------------------------------------------------------------- quoting
 // The lines are pasted into a shell, so a branch name with shell syntax in it
 // is single-quoted; a plain one is left alone (bash-guard's exact form).
-step("push lines quote a branch name that needs it");
-{
+if (want("push lines quote a branch name that needs it")) {
   const bare = path.join(TMP, "quote-remote.git");
   spawnSync("git", ["init", "-q", "--bare", bare], { env: ENV });
   const r = newRepo("quote", cheapCfg);
@@ -1173,8 +1155,7 @@ step("push lines quote a branch name that needs it");
 }
 
 // ---------------------------------------------------------------- doctor / init
-step("doctor and init");
-{
+if (want("doctor and init")) {
   const r = newRepo("doc", null);
   const init = cli(r, "init", "--json");
   ok("init writes a config", init.status === 0 && fs.existsSync(path.join(r, ".seamux", "restack.json")));
@@ -1193,8 +1174,7 @@ step("doctor and init");
 }
 
 // ---------------------------------------------------------------- status shape
-step("the status payload the board and an agent read");
-{
+if (want("the status payload the board and an agent read")) {
   const r = newRepo("shape", cheapCfg);
   git(r, "checkout", "-q", "-b", "feat1");
   addDef(r, "b", "bravo\n", "feat: b");
@@ -1210,8 +1190,7 @@ step("the status payload the board and an agent read");
 // ---------------------------------------------------------------- plugin: pointer, setup, shim, bin
 // Callers outside Claude find the engine through engine.json, so a run must
 // leave it naming this copy. The one file restack keeps under ~.
-step("plugin: engine pointer, setup, shim, bin");
-{
+if (want("plugin: engine pointer, setup, shim, bin")) {
   const manifest = JSON.parse(fs.readFileSync(path.join(HERE, ".claude-plugin", "plugin.json"), "utf8"));
   // Under a temp HOME with no override, as a plugin install runs it.
   const H = path.join(TMP, "home");
