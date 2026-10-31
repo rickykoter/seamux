@@ -104,15 +104,17 @@ pub fn publish(h: &Hook) {
     if frac.is_empty() {
         return;
     }
-    let _ = h.cmux.cli(&["set-progress", &frac, "--label", &label]);
+    // The sidebar's progress is cmux's alone.
+    let Some(c) = &h.cmux else { return };
+    let _ = c.cli(&["set-progress", &frac, "--label", &label]);
     if !todos.is_empty() {
-        let _ = h.cmux.cli(&["todo", "set", &todos]);
+        let _ = c.cli(&["todo", "set", &todos]);
     }
     // The pill: everything after the first "N/M · ".
     if let Some(i) = label.find(" · ") {
         let active = &label[i + " · ".len()..];
         if !active.is_empty() {
-            let _ = h.cmux.cli(&["set-status", "claude", active, "--icon", "list.bullet", "--color", "#4C8DFF"]);
+            let _ = c.cli(&["set-status", "claude", active, "--icon", "list.bullet", "--color", "#4C8DFF"]);
         }
     }
 }

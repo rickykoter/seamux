@@ -225,16 +225,19 @@ pub fn finish_native(name: &str, ws: &str, claude: &str) -> Result<String, Strin
     // has copied the pane's variables in, or Claude would start without them.
     let want = format!("CMUX_SURFACE_ID={surface}");
     let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
+    // The pane's id exactly as the session has it, case and all: its pane
+    // file is keyed by it.
+    let pane_id = loop {
         let o = Command::new(tmux_bin()).args(["-S", &sock, "show-environment", "-t", name, "CMUX_SURFACE_ID"]).output();
-        if o.map(|o| String::from_utf8_lossy(&o.stdout).trim().eq_ignore_ascii_case(&want)).unwrap_or(false) {
-            break;
+        let line = o.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+        if line.eq_ignore_ascii_case(&want) {
+            break line["CMUX_SURFACE_ID=".len()..].to_string();
         }
         if std::time::Instant::now() > end {
             return Err(format!("cmux's pane {surface} did not reach the session {name}: Claude was not started"));
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    };
     // From now on no client changes the session's variables: the app's own
     // client (which has none of cmux's) must not wipe the pane's identity.
     tmux_ok(&sock, &["set-option", "-t", name, "update-environment", ""])?;
@@ -244,6 +247,10 @@ pub fn finish_native(name: &str, ws: &str, claude: &str) -> Result<String, Strin
     // tmux it keeps to 256 colors unless told otherwise.
     tmux_ok(&sock, &["set-environment", "-t", name, "COLORTERM", "truecolor"])?;
     tmux_ok(&sock, &["set-environment", "-t", name, "CLAUDE_CODE_TMUX_TRUECOLOR", "1"])?;
+    // The backend's ids (crew_core::ident): cmux's own, so the hooks key the
+    // pane as they always have.
+    tmux_ok(&sock, &["set-environment", "-t", name, "SEAMUX_WORKSPACE_ID", ws])?;
+    tmux_ok(&sock, &["set-environment", "-t", name, "SEAMUX_PANE_ID", &pane_id])?;
     tmux_ok(&sock, &["respawn-pane", "-k", "-t", &format!("={name}:"), claude])?;
     Ok(surface)
 }

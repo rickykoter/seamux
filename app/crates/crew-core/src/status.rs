@@ -7,8 +7,8 @@
 //! ~/.cache/cmux-crew/hold-<key>     while the pane holds something a tool use releases
 //! ```
 //!
-//! `<key>` is the pane's surface (CMUX_SURFACE_ID), or the workspace id when
-//! a hook runs without one. A pane's hooks write only its own file, so two
+//! `<key>` is the pane (crew_core::ident: SEAMUX_PANE_ID, else
+//! CMUX_SURFACE_ID), or the workspace id when a hook runs without one. A pane's hooks write only its own file, so two
 //! Claudes in one workspace never clear each other's state.
 //!
 //! `rollup` is the only code that turns a workspace's panes into one state,

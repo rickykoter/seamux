@@ -26,11 +26,14 @@ seamux="${SEAMUX_BIN:-$HOME/.local/bin/seamux}"
 
 if [ "$event" = "pretool" ]; then
   _d="${XDG_CACHE_HOME:-$HOME/.cache}/cmux-crew"
-  _k="${CMUX_SURFACE_ID:-${CMUX_WORKSPACE_ID:-none}}"
+  # The pane and workspace as crew_core::ident reads them: a backend's
+  # SEAMUX_* first, then a plain cmux pane's CMUX_*.
+  _w="${SEAMUX_WORKSPACE_ID:-${CMUX_WORKSPACE_ID:-none}}"
+  _k="${SEAMUX_PANE_ID:-${CMUX_SURFACE_ID:-$_w}}"
   if [ -f "$_d/pane-$_k.json" ]; then
     [ -f "$_d/hold-$_k" ] || exit 0
   else
-    [ -f "$_d/lane-${CMUX_WORKSPACE_ID:-none}" ] || exit 0
+    [ -f "$_d/lane-$_w" ] || exit 0
   fi
   [ -f "$_d/disabled" ] && exit 0
   # AskUserQuestion also fires the `ask` hook, in parallel with this one, and

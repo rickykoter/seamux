@@ -14,6 +14,7 @@ pub mod dp_engine;
 pub mod families;
 pub mod history;
 pub mod home;
+pub mod ident;
 pub mod native;
 pub mod pricing;
 pub mod py;
