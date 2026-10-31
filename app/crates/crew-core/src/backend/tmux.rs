@@ -181,9 +181,65 @@ impl TmuxBackend {
         tmux(&t.socket, &["has-session", "-t", &format!("={}", t.session)]).map(|o| o.status.success()).unwrap_or(false)
     }
 
+    /// Drop panes whose session has gone. One lost with its whole tmux
+    /// server (a reboot, a kill-server) moves to `gone`, where the app offers
+    /// to restart it; one that ended while its server ran (its shell exited)
+    /// is simply dropped.
     fn prune(&self, reg: &mut Value) {
-        let panes: Vec<Value> = list(reg, "panes").into_iter().filter(|p| self.alive(&self.pane_target(p))).collect();
-        reg["panes"] = Value::Array(panes);
+        let (live, dead): (Vec<Value>, Vec<Value>) = list(reg, "panes").into_iter().partition(|p| self.alive(&self.pane_target(p)));
+        if dead.is_empty() {
+            return;
+        }
+        let mut gone = list(reg, "gone");
+        for p in dead {
+            let sock = self.pane_target(&p).socket;
+            let server_up = tmux(&sock, &["list-sessions"]).map(|o| o.status.success()).unwrap_or(false);
+            if !server_up && !gone.iter().any(|g| s(g, "id").eq_ignore_ascii_case(&s(&p, "id"))) {
+                gone.push(p);
+            }
+        }
+        reg["panes"] = Value::Array(live);
+        reg["gone"] = Value::Array(gone);
+    }
+
+    /// Panes lost with their tmux server, kept for a restart: (pane id,
+    /// workspace id, cwd).
+    pub fn gone(&self) -> Result<Vec<(String, String, String)>, String> {
+        let reg = self.snapshot()?;
+        Ok(list(&reg, "gone").iter().map(|p| (s(p, "id"), s(p, "ws"), s(p, "cwd"))).collect())
+    }
+
+    /// Start a gone pane again, running `claude` in a new session that keeps
+    /// the pane's id (so its pane file and SEAMUX ids carry on).
+    pub fn restart(&self, pane: &str, claude: &str) -> Result<(), String> {
+        let mut made = None;
+        self.update(|reg| {
+            let gone = list(reg, "gone");
+            let p = gone.iter().find(|g| s(g, "id").eq_ignore_ascii_case(pane)).ok_or_else(|| format!("no gone pane {pane:?}"))?.clone();
+            self.start_as(reg, &s(&p, "ws"), &s(&p, "cwd"), claude, &s(&p, "id"), &mut made)?;
+            reg["gone"] = Value::Array(gone.into_iter().filter(|g| !s(g, "id").eq_ignore_ascii_case(pane)).collect());
+            Ok(())
+        })
+        .map_err(|e| self.unmake(made.take(), e))
+    }
+
+    /// Drop pane `pane`'s record and leave its session running: an adopted
+    /// cmux session handed back to cmux.
+    pub fn release(&self, pane: &str) -> Result<(), String> {
+        self.update(|reg| {
+            let panes = list(reg, "panes");
+            reg["panes"] = Value::Array(panes.into_iter().filter(|p| !s(p, "id").eq_ignore_ascii_case(pane)).collect());
+            Ok(())
+        })
+    }
+
+    /// Forget a gone pane: its restart was declined.
+    pub fn forget(&self, pane: &str) -> Result<(), String> {
+        self.update(|reg| {
+            let gone = list(reg, "gone");
+            reg["gone"] = Value::Array(gone.into_iter().filter(|g| !s(g, "id").eq_ignore_ascii_case(pane)).collect());
+            Ok(())
+        })
     }
 
     /// The server's own settings, once a session exists: no bar or prefix
@@ -207,6 +263,14 @@ impl TmuxBackend {
     /// recorded. `$SHELL -l` runs it, so PATH is a login shell's, and stays
     /// after it so the pane outlives Claude.
     fn start(&self, reg: &mut Value, ws: &str, cwd: &str, claude: &str, made: &mut Option<String>) -> Result<String, String> {
+        self.start_as(reg, ws, cwd, claude, &new_id(), made)
+    }
+
+    /// `start`, for a pane whose id is `id` (a restart keeps it).
+    fn start_as(&self, reg: &mut Value, ws: &str, cwd: &str, claude: &str, id: &str, made: &mut Option<String>) -> Result<String, String> {
+        if !::cmux::is_uuid(id) {
+            return Err(format!("not a pane id: {id:?}"));
+        }
         if !list(reg, "workspaces").iter().any(|w| s(w, "id").eq_ignore_ascii_case(ws)) {
             return Err(format!("no workspace {ws:?} in {}", self.registry_path().display()));
         }
@@ -214,7 +278,7 @@ impl TmuxBackend {
             return Err(format!("not a directory: {cwd:?}"));
         }
         fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
-        let id = new_id();
+        let id = id.to_string();
         let session = format!("seamux-{id}");
         let shell = std::env::var("SHELL").ok().filter(|s| s.starts_with('/')).unwrap_or_else(|| "/bin/zsh".into());
         let run = format!("{claude}; exec {} -l", sh_quote(&shell));
@@ -404,6 +468,37 @@ mod tests {
             let _ = tmux(&self.0.socket(), &["kill-server"]);
             let _ = fs::remove_dir_all(&self.1);
         }
+    }
+
+    #[test]
+    fn a_killed_server_keeps_its_panes_for_a_restart_with_the_same_id() {
+        if !have_tmux() {
+            return;
+        }
+        let f = Fixture::new("gone");
+        let b = &f.0;
+        let (ws, _) = b.open_workspace(&f.1, "sleep 600").unwrap();
+        let cwd = f.1.to_string_lossy().into_owned();
+        let p1 = b.start_session(&ws, &cwd, "sleep 600").unwrap();
+        // One session ends while its server runs: dropped, not kept.
+        let ended = b.target(&p1).unwrap().unwrap();
+        tmux(&ended.socket, &["kill-session", "-t", &format!("={}", ended.session)]).unwrap();
+        assert_eq!(b.panes(None).unwrap().len(), 1);
+        assert!(b.gone().unwrap().is_empty(), "a session that ended is not offered a restart");
+        let id = b.panes(None).unwrap()[0].id.clone();
+        // The whole server goes (a reboot): its pane is kept as gone.
+        tmux(&b.socket(), &["kill-server"]).unwrap();
+        assert!(b.panes(None).unwrap().is_empty());
+        let gone = b.gone().unwrap();
+        assert_eq!(gone, vec![(id.clone(), ws.clone(), cwd.clone())]);
+        b.restart(&id, "sleep 600").unwrap();
+        assert_eq!(b.panes(None).unwrap().iter().map(|p| p.id.clone()).collect::<Vec<_>>(), vec![id.clone()], "same pane id");
+        assert!(b.gone().unwrap().is_empty());
+        assert!(b.restart(&id, "sleep 600").is_err(), "no longer gone");
+        tmux(&b.socket(), &["kill-server"]).unwrap();
+        let _ = b.panes(None);
+        b.forget(&id).unwrap();
+        assert!(b.gone().unwrap().is_empty(), "a declined restart is forgotten");
     }
 
     #[test]

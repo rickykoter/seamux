@@ -7,6 +7,7 @@
 //! them the same way: `target` names the socket and session to attach to.
 
 pub mod cmux;
+pub mod migrate;
 pub mod tmux;
 
 use std::path::Path;

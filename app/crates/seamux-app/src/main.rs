@@ -6,6 +6,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod newws_app;
+mod migrate_app;
 mod pane_app;
 mod pty_app;
 mod reclaim_app;
@@ -231,6 +232,9 @@ fn main() {
             pty_app::pty_line_key,
             pty_app::pty_workspace,
             pane_app::open_in_editor,
+            migrate_app::migrate_offers,
+            migrate_app::migrate_apply,
+            migrate_app::migrate_forget,
             pane_app::gh_card,
             reclaim_app::reclaim_check,
             reclaim_app::reclaim_run,
