@@ -243,13 +243,18 @@ impl TmuxBackend {
     }
 
     /// The server's own settings, once a session exists: no bar or prefix
-    /// (Claude Code uses Ctrl-B), focus events, modified keys through.
+    /// (Claude Code uses Ctrl-B), focus events, modified keys through, and
+    /// no exit when the last session ends.
     fn configure(&self, session: &str) -> Result<(), String> {
         let sock = self.socket();
         tmux_ok(&sock, &["set-option", "-t", session, "status", "off"])?;
         tmux_ok(&sock, &["set-option", "-t", session, "prefix", "None"])?;
         tmux_ok(&sock, &["set-option", "-t", session, "prefix2", "None"])?;
         tmux_ok(&sock, &["set-option", "-s", "focus-events", "on"])?;
+        // The server outlives its last session, so a server that is gone was
+        // killed or the machine restarted: prune keeps those panes for a
+        // restart, and drops one whose own session ended.
+        tmux_ok(&sock, &["set-option", "-s", "exit-empty", "off"])?;
         tmux_ok(&sock, &["set-option", "-s", "extended-keys", "on"])?;
         tmux_ok(&sock, &["set-option", "-s", "extended-keys-format", "csi-u"])?;
         let features = tmux_ok(&sock, &["show-options", "-s", "terminal-features"]).unwrap_or_default();

@@ -239,7 +239,7 @@ mod tests {
     fn a_working_session_is_offered_busy_and_apply_leaves_it_alone() {
         let o = adopt_offers(&sessions(), &|s| (s == S1).then(|| pane("working")), &|_| true, &|_| false);
         assert!(o[0].busy);
-        let dir = std::path::PathBuf::from(format!("/tmp/sx-mig-{}", std::process::id()));
+        let dir = std::path::PathBuf::from(format!("/tmp/sx-mig-busy-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let t = TmuxBackend::at(dir.clone());
         assert!(apply(&t, &o[0]).unwrap_err().contains("busy"));
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn adopt_records_the_session_where_it_runs() {
-        let dir = std::path::PathBuf::from(format!("/tmp/sx-adopt-{}", std::process::id()));
+        let dir = std::path::PathBuf::from(format!("/tmp/sx-mig-adopt-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let t = TmuxBackend::at(dir.clone());
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn an_adopted_session_is_handed_back_to_cmux_not_resumed_twice() {
-        let dir = std::path::PathBuf::from(format!("/tmp/sx-back-{}", std::process::id()));
+        let dir = std::path::PathBuf::from(format!("/tmp/sx-mig-back-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let t = TmuxBackend::at(dir.clone());
