@@ -5,13 +5,21 @@
 //! that could not open one is not: the next call picks again, so a backend
 //! that comes up later is still found.
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use crew_core::backend::{Backend, Kind};
 
 static PICKED: OnceLock<(Kind, &'static dyn Backend)> = OnceLock::new();
 
+/// One pick at a time: a pick can wait for cmux, and callers that come
+/// meanwhile share its result instead of each waiting.
+static PICKING: Mutex<()> = Mutex::new(());
+
 fn picked() -> Result<&'static (Kind, &'static dyn Backend), (Kind, String)> {
+    if let Some(p) = PICKED.get() {
+        return Ok(p);
+    }
+    let _one = PICKING.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(p) = PICKED.get() {
         return Ok(p);
     }

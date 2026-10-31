@@ -382,8 +382,13 @@ impl Drop for Lock {
 }
 
 pub fn lock(dir: &Path) -> Lock {
+    lock_file(dir, "panes.lock")
+}
+
+/// An exclusive lock on `dir/name`, held until the Lock drops.
+pub fn lock_file(dir: &Path, name: &str) -> Lock {
     let _ = fs::create_dir_all(dir);
-    let f = fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("panes.lock")).ok();
+    let f = fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(name)).ok();
     if let Some(f) = &f {
         use std::os::fd::AsRawFd;
         // SAFETY: flock on a descriptor we just opened; it blocks until held.
