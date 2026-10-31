@@ -1,0 +1,158 @@
+{
+ "name": "seamux-family-demo",
+ "take": "take-family",
+ "poster": 2,
+ "intro": {
+  "line": "One goal, several agents. One of them in the cloud."
+ },
+ "outro": {
+  "items": [
+   "A plan for each workstream.",
+   "Waits the gate enforces.",
+   "State that travels on git."
+  ]
+ },
+ "shots": [
+  {
+   "card": "intro",
+   "beats": 6
+  },
+  {
+   "at": "start",
+   "from": 0.5,
+   "beats": 10,
+   "label": "deep-plan families",
+   "line": "One goal, three plans: a parent and two workstreams."
+  },
+  {
+   "at": "start",
+   "from": 4,
+   "beats": 6,
+   "crop": [
+    0,
+    40,
+    800,
+    450
+   ],
+   "label": "The Dock",
+   "line": "The family is one card. Each member says what it waits on."
+  },
+  {
+   "win": "cloud",
+   "at": "cloud-ask",
+   "from": 0,
+   "beats": 10,
+   "speed": 1.6,
+   "crop": [
+    8,
+    28,
+    1060,
+    596
+   ],
+   "label": "Cloud sandbox (simulated)",
+   "line": "One workstream runs in the cloud. Its plan came down a git branch."
+  },
+  {
+   "at": "ui-refused",
+   "from": -1.5,
+   "beats": 8,
+   "speed": 1,
+   "crop": [
+    440,
+    170,
+    690,
+    388
+   ],
+   "label": "Sequencing",
+   "line": "A workstream can't start before the parent's step."
+  },
+  {
+   "at": "parent-asks",
+   "from": 0,
+   "beats": 8,
+   "speed": 2,
+   "crop": [
+    440,
+    180,
+    690,
+    388
+   ],
+   "label": "The parent",
+   "line": "The parent checks its gate and asks. You say go."
+  },
+  {
+   "at": "go",
+   "from": 0.5,
+   "beats": 10,
+   "speed": 4,
+   "label": "The parent",
+   "line": "It lands the shared step, then asks about the cloud."
+  },
+  {
+   "split": [
+    {
+     "at": "child-go",
+     "from": 2,
+     "speed": 4,
+     "crop": [
+      440,
+      420,
+      690,
+      388
+     ],
+     "tag": "Laptop \u00b7 seamux app"
+    },
+    {
+     "win": "cloud",
+     "at": "child-go",
+     "from": 2,
+     "speed": 4,
+     "crop": [
+      8,
+      180,
+      1060,
+      596
+     ],
+     "tag": "Cloud sandbox"
+    }
+   ],
+   "beats": 10,
+   "label": "Delegated go",
+   "line": "A second yes. The go travels on the state branch."
+  },
+  {
+   "win": "cloud",
+   "at": "cloud-go",
+   "from": -1,
+   "beats": 10,
+   "speed": 2.5,
+   "crop": [
+    8,
+    28,
+    1060,
+    596
+   ],
+   "label": "Cloud sandbox",
+   "line": "The go arrives from the branch. The cloud agent builds."
+  },
+  {
+   "take": "take-family-home",
+   "at": "home",
+   "from": 0,
+   "beats": 12,
+   "speed": 1.4,
+   "label": "Back on the laptop",
+   "line": "The laptop pulls the branch and sees the work land.",
+   "crop": [
+    440,
+    200,
+    690,
+    388
+   ]
+  },
+  {
+   "card": "outro",
+   "beats": 8
+  }
+ ]
+}

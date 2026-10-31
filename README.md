@@ -38,8 +38,8 @@ Read [docs/ADOPTING.md](docs/ADOPTING.md).
 [Install or update with an agent](#install-or-update-with-an-agent). It
 covers a first install and an update, and what to ask you along the way.
 
-**Contents:** [How a change runs](#how-a-change-runs) ·
-[Tour](#tour) ·
+**Contents:** [Tour](#tour) ·
+[How a change runs](#how-a-change-runs) ·
 [Where it runs](#where-it-runs) ·
 [Working as a team](#working-as-a-team) ·
 [Plugins](#plugins) ·
@@ -47,6 +47,38 @@ covers a first install and an update, and what to ask you along the way.
 [Configuration](#configuration) ·
 [Security notes](#security-notes) ·
 [Layout](#layout)
+
+## Tour
+
+Two short videos of the seamux app. Every Claude in them is a live session
+(Sonnet, low effort) working in a small demo shop repo. Only the prompts are
+scripted.
+
+**The app** (68 s). A workspace made from one form. A deep-plan question
+that arrives with pictures beside the terminal. A plan whose gate holds every
+edit until you say go. bash-guard stopping a force push.
+
+https://github.com/user-attachments/assets/b45343f9-43f6-404b-976e-616984387993
+
+_The seamux app demo: a deep-plan question in the Dock, its options beside the live terminal_
+
+**Families and the cloud** (62 s). One goal split into a parent plan and two
+workstreams, one of them running in a cloud session. The parent gives that
+workstream its go, the go travels on the plan's git branch, and the laptop
+sees the work land. The cloud here is a fresh clone of the same remote with
+`CLAUDE_CODE_REMOTE=true`.
+
+
+https://github.com/user-attachments/assets/eef04f9b-a2b5-46ee-ab01-7fa3dbddcaea
+
+_The families demo: a family card on the board, the parent's gate shut and its workstream waiting_
+
+| | |
+|---|---|
+| ![the Dock with a deep-plan question: the workspace's card asks you, the terminal shows the question and the ask page beside it shows each option's diagram and sample](docs/img/app-ask.png) | ![the Dock with a planned workspace: its card says GATE SHUT with a go 1 chip, and the terminal shows the gate refusing a write](docs/img/app-gate.png) |
+| A question finds you: the card moves to *needs you*, and the options open beside the terminal. | No edits until you say go. The card says what the workspace waits on. |
+| ![a deep-plan family in the Dock: one card holding the parent and auth-ui, the family strip naming each member's state, and the parent's plan open at its Workstreams section](docs/img/app-family.png) | ![the cloud session: the background wait for the parent's go completes, and the agent writes api/auth/session.js and its test](docs/img/cloud-go.png) |
+| A family is one card. Each member says what it waits on. | In the cloud session the go arrives from the state branch, and the agent builds. |
 
 ## How a change runs
 

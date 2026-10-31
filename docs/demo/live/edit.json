@@ -1,0 +1,31 @@
+{
+  "poster": 4,
+  "shots": [
+    { "card": "intro", "beats": 6 },
+    { "at": "form-ask", "from": -0.4, "beats": 8, "speed": 1.2,
+      "label": "New workspace", "line": "One form: a worktree, a branch, and Claude already at work." },
+    { "at": "created-ask", "from": 0.5, "beats": 8, "speed": 1.6,
+      "label": "deep-plan", "line": "A hard choice comes back to you as a question." },
+    { "at": "asked", "from": 0.8, "beats": 6, "crop": [0, 40, 800, 450],
+      "label": "The Dock", "line": "Whoever needs you moves to the top." },
+    { "at": "ask-page", "from": 1.0, "beats": 10,
+      "label": "deep-plan ask", "line": "Each option shows what it would do." },
+    { "at": "answered", "from": -1.2, "beats": 6, "crop": [440, 230, 690, 388],
+      "label": "deep-plan ask", "line": "Pick on the page. The answer is typed into Claude." },
+    { "take": "take1", "at": "plan-page", "from": 0.6, "beats": 8,
+      "label": "deep-plan", "line": "The plan is a page you read before any code." },
+    { "at": "try-edit", "from": 0.5, "beats": 8, "speed": 1.5, "crop": [380, 200, 1000, 562],
+      "label": "The gate", "line": "No edits until you say go." },
+    { "at": "gate-shut", "from": 0.5, "beats": 6, "crop": [0, 40, 820, 461],
+      "label": "The Dock", "line": "Each card says what it is waiting on." },
+    { "at": "go", "from": 0.3, "beats": 12, "speed": 2,
+      "label": "go", "line": "You say go. One increment opens, and Claude builds it." },
+    { "at": "built", "from": -1.5, "beats": 6, "crop": [440, 440, 690, 388],
+      "label": "go", "line": "Increment 1 is built, and its tests pass." },
+    { "at": "blocked", "from": -2.5, "beats": 8, "speed": 1.2, "crop": [440, 150, 690, 388],
+      "label": "bash-guard", "line": "A force push stops at the guard." },
+    { "at": "wake", "from": 1.0, "beats": 8, "crop": [0, 40, 800, 450],
+      "label": "The Wake", "line": "What each agent left behind, in one timeline." },
+    { "card": "outro", "beats": 8 }
+  ]
+}
