@@ -58,6 +58,32 @@ Things the takes ran into:
   no command for it. `deep-plan state pull <slug>` is that command; the take
   names it.
 
+## deep-plan and lookout up close
+
+Two shorter videos from one world. `deep-dive-setup.sh` lays
+`docs/demo/world/shop-web` over the shop: a checkout page, a small static
+server, a browser-check script, and a `verify.json` with lint, unit and
+browser recipes. Browser checks run in headless Chromium through a one-line
+`playwright` that loads the reel's playwright-core, with your Playwright
+browser cache, so nothing is downloaded.
+
+```bash
+bash docs/demo/live/setup.sh && bash docs/demo/live/deep-dive-setup.sh && bash docs/demo/live/app.sh
+bash docs/demo/live/take-deep.sh        # a plan made live, its sections toured, go, check run
+bash docs/demo/live/take-lookout.sh     # then, in the same world: a lookout review worked through
+node docs/demo/live/cut.mjs docs/demo/live/edit-deep.json
+node docs/demo/live/cut.mjs docs/demo/live/edit-lookout.json
+```
+
+The plan is made from scratch by the agent, so its sections and forks vary
+from take to take; `answer` in `lib.sh` takes each fork's first
+(recommended) option, and `answers.sh` reads the quiz key. The take widens
+the Dock's page pane with a drag on its splitter and presses the board's go
+chip with a real click, so the demo app comes to the front for a moment.
+`cut.mjs`'s side layout shows a pane tall on the right with the section's
+name and intent beside it. `LOOKOUT_PART2=1` picks a lookout take up from a
+review whose findings are filed.
+
 ## What stays yours
 
 The demo app, its tmux server, its intent server (port 7445) and every Claude
@@ -81,7 +107,9 @@ into another app, but the window has to stay on screen while it records.
 | `winrec.swift` | records one window with ScreenCaptureKit |
 | `family-setup.sh`, `family-stage.sh`, `cloud.sh` | the family's specs, the simulated cloud and its window |
 | `take-family.sh`, `edit-family.json` | the families + cloud take and its edit |
-| `axfind.swift`, `click.swift` | find text on screen through accessibility; a real click (unused: the family strip's chips take AX presses) |
+| `deep-dive-setup.sh`, `take-deep.sh`, `take-lookout.sh`, `answers.sh` | the deep-plan and lookout videos' world and takes |
+| `edit-deep.json`, `edit-lookout.json` | their edits |
+| `axfind.swift`, `click.swift` | find a control through accessibility (`--press` presses it, scrolled into view); a real click or drag |
 | `axpress.swift`, `pidclick.swift` | experiments: neither reaches the board's chips (see below) |
 | `cut.mjs`, `edit.json` | the edit: shots by beat name, crops, speed, captions, poster |
 | `music.mjs` | the soundtrack, 96 BPM, cuts on the beat grid |

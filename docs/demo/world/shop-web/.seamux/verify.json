@@ -1,0 +1,10 @@
+{ "recipes": [
+  { "id": "lint", "kind": "test", "run": "npm run -s lint", "match": ["src/**"], "default": true },
+  { "id": "unit", "kind": "test", "run": "npm test -s", "match": ["src/**", "test/**"], "default": true },
+  { "id": "checkout-page", "kind": "browser",
+    "brief": "The checkout page in headless Chromium, served by scripts/serve.mjs. A change to checkout adds a step to e2e/checkout.js for what the customer now sees.",
+    "match": ["web/**", "src/checkout/**"], "default": true,
+    "steps": [
+      { "run": "node scripts/serve.mjs --bg", "export": "BASE_URL" },
+      { "browser": "e2e/checkout.js" } ] }
+] }
