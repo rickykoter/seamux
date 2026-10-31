@@ -47,6 +47,41 @@ pub fn in_play() -> Option<TmuxBackend> {
     Some(TmuxBackend::default()).filter(|b| said || b.in_use())
 }
 
+/// Whether a Claude runs in the tmux session `t`: a `claude` process on its
+/// pane's terminal. tmux's own pane_current_command can name the shell that
+/// started Claude, so the terminal's processes are asked instead.
+pub fn runs_claude(t: &Target) -> bool {
+    let Ok(o) = tmux(&t.socket, &["display-message", "-p", "-t", &pane_of(t), "#{pane_tty}"]) else { return false };
+    let tty = String::from_utf8_lossy(&o.stdout).trim().trim_start_matches("/dev/").to_string();
+    if !o.status.success() || tty.is_empty() || !tty.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return false;
+    }
+    let Ok(ps) = Command::new("/bin/ps").args(["-t", &tty, "-o", "comm="]).output() else { return false };
+    String::from_utf8_lossy(&ps.stdout).lines().any(is_claude)
+}
+
+/// The target for a command on `t`'s pane: `=name:`, the session by its exact
+/// name, then its window. A bare `=name` is a session target only, and
+/// pane commands (send-keys, capture-pane, display-message) refuse it.
+pub fn pane_of(t: &Target) -> String {
+    format!("={}:", t.session)
+}
+
+/// A `ps -o comm=` line that is Claude Code: its name, or a path ending in it.
+pub fn is_claude(comm: &str) -> bool {
+    comm.trim().rsplit('/').next() == Some("claude")
+}
+
+/// Type `text` into the tmux session `t`, as is (a trailing \r is Enter).
+pub fn send_text(t: &Target, text: &str) -> Result<(), String> {
+    let o = tmux(&t.socket, &["send-keys", "-t", &pane_of(t), "-l", text]).map_err(|e| e.to_string())?;
+    if o.status.success() {
+        Ok(())
+    } else {
+        Err(format!("tmux send-keys: {}", String::from_utf8_lossy(&o.stderr).trim()))
+    }
+}
+
 /// Whether SEAMUX_BACKEND names tmux: it wins over a cmux that answers, as
 /// it does at the app's launch (docs/adr/0047), so a caller does not ask cmux.
 pub fn chosen() -> bool {
@@ -558,6 +593,39 @@ mod tests {
         let _ = b.panes(None);
         b.forget(&id).unwrap();
         assert!(b.gone().unwrap().is_empty(), "a declined restart is forgotten");
+    }
+
+    #[test]
+    fn claude_is_told_from_a_shell_by_the_terminals_processes() {
+        assert!(is_claude("claude"));
+        assert!(is_claude("/opt/homebrew/bin/claude"));
+        assert!(!is_claude("/bin/zsh"));
+        assert!(!is_claude("claude-helper"));
+        if !have_tmux() {
+            return;
+        }
+        let f = Fixture::new("runs");
+        let b = &f.0;
+        let cwd = f.1.to_string_lossy().into_owned();
+        let (ws, _) = b.open_workspace(&f.1, "sleep 600").unwrap();
+        let t = b.target(&b.panes(Some(&ws)).unwrap()[0].id).unwrap().unwrap();
+        assert!(!runs_claude(&t), "sleep is not Claude");
+        let _ = cwd;
+        // Typing reaches the session: a file the shell writes.
+        let mark = f.1.join("typed");
+        // `true` ends at once and leaves the pane's login shell waiting, as a
+        // pane is after its Claude exits.
+        let p2 = b.start_session(&ws, &f.1.to_string_lossy(), "true").unwrap();
+        let t2 = b.target(&p2).unwrap().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        send_text(&t2, &format!("touch {}\r", mark.display())).unwrap();
+        for _ in 0..50 {
+            if mark.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(mark.exists(), "the typed line ran in the pane's shell");
     }
 
     #[test]
