@@ -166,11 +166,16 @@ fn s_or(v: &Value, default: Value) -> Value {
 /// The rows for the tmux backend's workspaces: its registry, each folder's
 /// git state and commits. No sidebar there, so no PR yet (crew-sync's facts
 /// fill the chips) and no colour.
+/// What crew-sync last published for a tmux workspace: its description
+/// tokens and its pull request ({n, state, url}, or null).
+pub type Facts = HashMap<String, (String, Value)>;
+
 pub fn tmux_rows(
     rows: &[crew_core::backend::WorkspaceRow],
     live: &[crew_core::backend::PaneRow],
     forced: Option<&str>,
     pane: &dyn Fn(&str) -> Option<crew_core::status::Pane>,
+    facts: &Facts,
 ) -> Vec<Value> {
     rows.iter()
         .map(|w| {
@@ -181,12 +186,27 @@ pub fn tmux_rows(
             // panes' own files, rolled up as the hook rolls them up for cmux.
             let panes: Vec<crew_core::status::Pane> = mine.iter().filter_map(|p| pane(&p.id)).collect();
             let phase = crew_core::status::rollup_of(&panes).phase();
-            let desc = if phase.is_empty() { String::new() } else { format!("phase:{phase}") };
+            // crew-sync's tokens (CI, review, Jira, plan), with the phase
+            // always the panes' own: a synced one is as old as the last sync.
+            let (synced, pr) = facts.get(&w.id.to_ascii_uppercase()).cloned().unwrap_or_default();
+            let desc = synced
+                .split_whitespace()
+                .filter(|t| !t.starts_with("phase:"))
+                .map(String::from)
+                .chain((!phase.is_empty()).then(|| format!("phase:{phase}")))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let pr_n = match pr.get("n") {
+                Some(Value::Number(n)) => n.to_string(),
+                Some(Value::String(n)) if !n.is_empty() => n.clone(),
+                _ => "none".to_string(),
+            };
+            let pr_str = |k: &str| pr.get(k).and_then(Value::as_str).unwrap_or("").to_string();
             json!({
                 "id": w.id, "ref": w.id, "title": if w.title.is_empty() { w.id.clone() } else { w.title.clone() },
-                "cwd": w.cwd, "desc": desc, "branch": branch, "pr": "none", "dirty": dirty, "running": running,
+                "cwd": w.cwd, "desc": desc, "branch": branch, "pr": pr_n, "dirty": dirty, "running": running,
                 "raw": "", "color": "", "selected": forced.is_some_and(|f| f.eq_ignore_ascii_case(&w.id)),
-                "pr_state": "", "pr_url": "", "commits": Value::Array(recent_commits(&w.cwd)),
+                "pr_state": pr_str("state").to_ascii_lowercase(), "pr_url": pr_str("url"), "commits": Value::Array(recent_commits(&w.cwd)),
             })
         })
         .collect()
@@ -199,7 +219,13 @@ pub fn workspaces(fast: bool, forced: Option<&str>) -> Vec<Value> {
         let rows = b.workspaces().unwrap_or_default();
         let live = b.panes(None).unwrap_or_default();
         let dir = state_dir();
-        return tmux_rows(&rows, &live, forced, &|p| crew_core::status::read(&dir, p));
+        let facts: Facts = crew_core::backend::tmux::TmuxBackend::default()
+            .facts()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, d, pr)| (id.to_ascii_uppercase(), (d, pr)))
+            .collect();
+        return tmux_rows(&rows, &live, forced, &|p| crew_core::status::read(&dir, p), &facts);
     }
     let Some(c) = cmux_cli::client() else { return Vec::new() };
     let listed = match c.workspace_list(None) {
@@ -794,7 +820,7 @@ mod tests {
             WorkspaceRow { id: "W2".into(), title: "".into(), cwd: "".into() },
         ];
         let live = vec![PaneRow { id: "P1".into(), workspace: "w1".into(), cwd: here.clone(), label: "Claude".into() }];
-        let out = tmux_rows(&rows, &live, Some("W2"), &|_| None);
+        let out = tmux_rows(&rows, &live, Some("W2"), &|_| None, &Facts::new());
         assert_eq!(out.len(), 2);
         assert_eq!(out[0]["id"], "W1");
         assert_eq!(out[0]["title"], "shop");
@@ -822,9 +848,15 @@ mod tests {
                 crew_core::status::Pane::from_json(&json!({"ws": "W1", "surface": id, "state": st}))
             }
         };
-        assert_eq!(tmux_rows(&rows, &live, None, &at("working", "needs_input"))[0]["desc"], "phase:waiting");
-        assert_eq!(tmux_rows(&rows, &live, None, &at("working", "idle"))[0]["desc"], "phase:working");
-        assert_eq!(tmux_rows(&rows, &live, None, &at("idle", "idle"))[0]["desc"], "");
+        assert_eq!(tmux_rows(&rows, &live, None, &at("working", "needs_input"), &Facts::new())[0]["desc"], "phase:waiting");
+        assert_eq!(tmux_rows(&rows, &live, None, &at("working", "idle"), &Facts::new())[0]["desc"], "phase:working");
+        assert_eq!(tmux_rows(&rows, &live, None, &at("idle", "idle"), &Facts::new())[0]["desc"], "");
+        // crew-sync's tokens and PR ride along; its stale phase gives way to the panes'.
+        let mut facts = Facts::new();
+        facts.insert("W1".into(), ("ci:fail phase:working jira:x".into(), json!({"n": 12, "state": "OPEN", "url": "https://x/12"})));
+        let r = &tmux_rows(&rows, &live, None, &at("needs_input", "idle"), &facts)[0];
+        assert_eq!(r["desc"], "ci:fail jira:x phase:waiting");
+        assert_eq!((r["pr"].clone(), r["pr_state"].clone(), r["pr_url"].clone()), (json!("12"), json!("open"), json!("https://x/12")));
     }
 
     fn live(ws: &str, surface: &str, cwd: &str, label: &str, agent: Option<(&str, &str)>) -> LivePane {

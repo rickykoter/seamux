@@ -248,6 +248,37 @@ impl TmuxBackend {
         e
     }
 
+    /// What crew-sync last published for each workspace, by id: its
+    /// description tokens and its pull request ({n, state, url}, or null).
+    /// They live in the registry because there is no cmux sidebar to hold them.
+    pub fn facts(&self) -> Result<Vec<(String, String, Value)>, String> {
+        let reg = self.read()?;
+        Ok(list(&reg, "workspaces")
+            .iter()
+            .map(|w| (s(w, "id"), s(w, "description"), w.get("pr").cloned().unwrap_or(Value::Null)))
+            .collect())
+    }
+
+    /// Set workspace `ws`'s description ("" clears it) and/or pull request
+    /// (Null clears it); None leaves that one as it is. Unknown workspaces
+    /// are an error.
+    pub fn set_facts(&self, ws: &str, description: Option<&str>, pr: Option<Value>) -> Result<(), String> {
+        self.update(|reg| {
+            let all = reg["workspaces"].as_array_mut().ok_or("the registry has no workspaces list")?;
+            let w = all
+                .iter_mut()
+                .find(|w| s(w, "id").eq_ignore_ascii_case(ws))
+                .ok_or_else(|| format!("no workspace {ws:?}"))?;
+            if let Some(d) = description {
+                w["description"] = json!(d);
+            }
+            if let Some(p) = pr {
+                w["pr"] = p;
+            }
+            Ok(())
+        })
+    }
+
     /// Whether the registry holds a live pane: someone uses this backend now.
     pub fn in_use(&self) -> bool {
         self.panes(None).map(|p| !p.is_empty()).unwrap_or(false)
@@ -373,6 +404,23 @@ mod tests {
             let _ = tmux(&self.0.socket(), &["kill-server"]);
             let _ = fs::remove_dir_all(&self.1);
         }
+    }
+
+    #[test]
+    fn facts_round_trip_through_the_registry_without_tmux() {
+        let dir = PathBuf::from(format!("/tmp/sx-facts-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let b = TmuxBackend::at(dir.clone());
+        fs::write(dir.join("workspaces.json"), r#"{"version":1,"workspaces":[{"id":"W1","title":"shop","cwd":"/w"}],"panes":[]}"#).unwrap();
+        assert_eq!(b.facts().unwrap(), vec![("W1".into(), String::new(), Value::Null)]);
+        b.set_facts("w1", Some("ci:fail pr:draft"), Some(json!({"n": 7, "state": "OPEN", "url": "https://x/7"}))).unwrap();
+        b.set_facts("W1", Some("ci:fail pr:draft"), None).unwrap();
+        let f = b.facts().unwrap();
+        assert_eq!((f[0].1.as_str(), &f[0].2["n"]), ("ci:fail pr:draft", &json!(7)));
+        assert_eq!(b.workspaces().unwrap()[0].title, "shop", "the record keeps its other fields");
+        assert!(b.set_facts("W9", Some(""), None).is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
