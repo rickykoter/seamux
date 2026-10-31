@@ -5890,8 +5890,10 @@ if (want("the go is the human's; what a pass covers; and friends")) {
       { encoding: "utf8", env: { ...ENV, DEEP_PLAN_LOCK_WAIT_MS: "300" }, cwd: AR });
     ok("b1: a lock whose holder is alive is not reclaimed after 5s", r.status === 1 && /stayed locked/.test(r.stderr), r.stderr);
     fs.writeFileSync(path.join(lock, "pid"), String(spawnSync("true").pid)); fs.utimesSync(lock, tenAgo, tenAgo);
+    // A long wait: the reclaim needs none, but on a busy runner a 300 ms one
+    // could run out between removing the dead lock and taking it afresh.
     r = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "block", "b1-cc", "2", "x"],
-      { encoding: "utf8", env: { ...ENV, DEEP_PLAN_LOCK_WAIT_MS: "300" }, cwd: AR });
+      { encoding: "utf8", env: { ...ENV, DEEP_PLAN_LOCK_WAIT_MS: "10000" }, cwd: AR });
     ok("b1: …one whose holder died is", r.status === 0 && stOf("b1-cc").increments[1].status === "blocked" && !fs.existsSync(lock), r.stderr);
     // A lock retaken by a live writer between the stale judgment and the
     // removal is not removed: the removal re-reads the owner (simulated by a
