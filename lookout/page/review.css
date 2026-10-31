@@ -91,7 +91,17 @@ button { font: inherit; color: inherit; }
 #title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #label { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tools { display: flex; align-items: center; gap: 12px; }
-.keys { color: var(--muted); font-size: 12px; }
+.keys-btn { width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--border); background: var(--bg);
+  color: var(--muted); font: 600 12px var(--sans); cursor: pointer; padding: 0; }
+.keys-btn[aria-expanded="true"] { color: var(--fg); background: var(--sel); }
+#top { position: relative; }
+.keys-panel { position: absolute; right: 16px; top: calc(100% + 4px); z-index: 30; padding: 8px 12px;
+  background: var(--card); border: 1px solid var(--card-border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .2); font-size: 12px; line-height: 1.9; }
+.keys-panel kbd { font: 11px var(--mono); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
+.side-note { padding: 0 12px 4px; color: var(--muted); font-size: 11px; }
+.side-note summary { cursor: pointer; width: fit-content; }
+.side-note > div { padding: 2px 0 2px 12px; }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .seg button { background: var(--bg); border: 0; padding: 3px 10px; cursor: pointer; }
 .seg button + button { border-left: 1px solid var(--border); }
@@ -191,7 +201,6 @@ td.del mark { background: var(--del-mark); color: inherit; border-radius: 2px; }
     grid-template-areas: "top" "banner" "side" "main"; }
   #side { max-height: 32vh; border-right: 0; border-bottom: 1px solid var(--border); }
   #top { flex-wrap: wrap; padding: 8px 16px; }
-  .keys { display: none; }
   #layout { display: none; }
   #file-head, tr.hunk td { padding-left: 16px; padding-right: 16px; }
   table.diff td.ln { width: 40px; padding: 0 4px; }

@@ -19,7 +19,14 @@
         <button type="button" data-layout="split">Split</button>
         <button type="button" data-layout="unified">Unified</button>
       </div>
-      <span class="keys" title="Keyboard">o overview · j/k files · n/p findings · v layout</span>
+      <button type="button" id="keys-btn" class="keys-btn" aria-expanded="false" aria-controls="keys" title="Keyboard shortcuts (?)">?</button>
+    </div>
+    <div id="keys" class="keys-panel" role="dialog" aria-label="Keyboard shortcuts" hidden>
+      <div><kbd>j</kbd> <kbd>k</kbd> next and previous file</div>
+      <div><kbd>n</kbd> <kbd>p</kbd> next and previous finding</div>
+      <div><kbd>o</kbd> overview</div>
+      <div><kbd>v</kbd> split or unified</div>
+      <div><kbd>?</kbd> this list</div>
     </div>
   </header>
   <div id="banner" hidden></div>
@@ -32,6 +39,7 @@
       </div>
       <span id="side-count"></span>
     </div>
+    <details id="side-note" class="side-note" hidden><summary>Risk from signals only</summary><div id="side-why"></div></details>
     <nav id="tree" aria-label="Changed files"></nav>
   </aside>
   <main id="main">
