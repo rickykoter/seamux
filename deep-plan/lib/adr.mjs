@@ -34,6 +34,11 @@ export const ADR_DEFAULT_DIR = "docs/adr";
 // means such a folder is found whatever the house style; the previous
 // 4-digit-only test recognised only one of the three.
 const ADR_DISCOVERY = /^(?:adr[-_])?\d{1,4}[-_].+\.md$/i;
+// A name that starts with a date (2026-10-30-handoff.md) is a dated note, not
+// a numbered ADR: its year would read as ADR 2026, so a folder of handoffs
+// or meeting notes would be found as an ADR home, numbered from 2027.
+const DATED = /^\d{4}-\d{2}-\d{2}(?:[-_.]|$)/;
+const adrLike = name => ADR_DISCOVERY.test(name) && !DATED.test(name);
 
 export const ADR_DEFAULT_PATTERN = "{nnnn}-{kebab}.md";
 export const ADR_DEFAULT_SCAN = "^(\\d{4})-.+\\.md$";
@@ -103,6 +108,7 @@ export function nextNumber(dir, scan) {
   const re = compileScan(scan);
   let max = 0;
   for (const n of names) {
+    if (DATED.test(n)) continue;
     const m = re.exec(n);
     if (m && m[1] !== undefined) max = Math.max(max, parseInt(m[1], 10));
   }
@@ -123,7 +129,7 @@ export function adrScanReport(dir, scan) {
   const mds = names.filter(n => n.endsWith(".md"));
   if (!mds.length) return null;
   const re = compileScan(scan);
-  const seen = mds.filter(n => { const m = re.exec(n); return m && m[1] !== undefined; });
+  const seen = mds.filter(n => { if (DATED.test(n)) return false; const m = re.exec(n); return m && m[1] !== undefined; });
   if (seen.length) return null;
   return { total: mds.length, examples: mds.slice(0, 3) };
 }
@@ -155,7 +161,7 @@ function adrCandidates(root, dir = root, depth = 0, out = []) {
   if (depth > 6) return out;
   let entries = [];
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
-  const hasAdrFiles = entries.some(e => e.isFile() && ADR_DISCOVERY.test(e.name));
+  const hasAdrFiles = entries.some(e => e.isFile() && adrLike(e.name));
   const namedAdr = /(^|\/)adrs?$/i.test(dir.replace(/\\/g, "/"));
   if (hasAdrFiles || (namedAdr && dir !== root)) out.push(dir);
   for (const e of entries) {

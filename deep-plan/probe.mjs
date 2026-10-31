@@ -816,6 +816,22 @@ ok("mermaid theme follows the page theme",
   fs.writeFileSync(path.join(named, "README.md"), "x\n");
   ok("a folder named adrs is found by name even with no ADR files in it",
     alib.resolveAdrDir(path.join(TMP, "disco2"), { dir: null }).dir === "docs/adrs");
+  // A dated file (a handoff, meeting notes) is not ADR 2026: its folder is no
+  // ADR home, even for a plan whose files sit in it, and it does not move the
+  // next number in a real one.
+  const dated = path.join(TMP, "disco3");
+  fs.mkdirSync(path.join(dated, "docs", "handoffs"), { recursive: true });
+  fs.mkdirSync(path.join(dated, "docs", "adr"), { recursive: true });
+  fs.writeFileSync(path.join(dated, "docs", "handoffs", "2026-10-30-logbook.md"), "x\n");
+  fs.writeFileSync(path.join(dated, "docs", "adr", "0043-last.md"), "x\n");
+  ok("a folder holding only dated files is not found as an ADR home",
+    alib.resolveAdrDir(dated, { dir: null }, ["docs/handoffs/2026-10-30-logbook.md", "src/x.mjs"]).dir === "docs/adr");
+  fs.writeFileSync(path.join(dated, "docs", "adr", "2026-10-31-review-notes.md"), "x\n");
+  ok("a dated file in the ADR folder does not move the next number",
+    alib.nextNumber(path.join(dated, "docs", "adr"), alib.ADR_DEFAULT_SCAN) === 44);
+  fs.rmSync(path.join(dated, "docs", "adr", "0043-last.md"));
+  ok("a folder of only dated files reports that the scan recognised none of them",
+    (alib.adrScanReport(path.join(dated, "docs", "adr"), alib.ADR_DEFAULT_SCAN) || {}).total === 1);
 
   // The number widths a house template needs in its heading.
   const rendered = alib.renderAdr(
