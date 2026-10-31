@@ -5385,6 +5385,11 @@ switch (cmd) {
   install-repo [--root DIR] [--check]        copy the plugin into a repo's .claude/ for cloud sessions
   export-state <slug> [--out FILE]            one file with the plan's state, spec, key, pages and reviews
   import-state <file> [--force] [--root DIR]  bring a bundle back (refuses an existing plan unless --force)
+  state push <slug>                           push the plan's state to its seamux-state/<slug> branch
+  state pull <slug> [--force] [--root DIR]    bring that branch's state here (a family member's progress,
+                                              a go given on another machine)
+  state status [slug] [--json]                whether each plan's state matches its branch
+  state list [--json]                         the state branches on the remote, and which plans are here
   page <slug> [--review]                      show the plan's working page (or its review) where this host can,
                                               and print "served at <url> (host: …)"
   render <spec.json> [--root DIR] [--force]   spec -> md + review + working surfaces
