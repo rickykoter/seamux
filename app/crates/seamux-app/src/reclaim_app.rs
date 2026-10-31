@@ -29,7 +29,13 @@ fn run(args: &[&str], ws: &str) -> Result<std::process::Output, String> {
         .arg("--")
         .arg(ws)
         .current_dir(crew_core::py::home())
+        // The app is in no workspace: ids it inherited must not trip the
+        // "this terminal is in the workspace it closes" guard.
         .env_remove("CMUX_WORKSPACE_ID")
+        .env_remove("SEAMUX_WORKSPACE_ID")
+        .env_remove("SEAMUX_PANE_ID")
+        // The backend the app runs on is the one whose workspaces it reads.
+        .env("SEAMUX_BACKEND", seamux_app::backend::kind().name())
         .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("crew-reclaim: {e}"))

@@ -687,7 +687,7 @@ reclaim dev/auto-reconnect-db-failover
   ✓ clean tree, nothing uncommitted
   ✓ no plan is open on this worktree
   ✓ this shell is not inside it
-  ✓ no other cmux workspace is open here
+  ✓ no other workspace is open here
   ✓ sandbox is not running (absent)
 
 Would remove

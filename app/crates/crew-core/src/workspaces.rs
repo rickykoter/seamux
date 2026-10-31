@@ -73,9 +73,16 @@ fn integrations() -> PathBuf {
 
 // --- cmux ------------------------------------------------------------------------
 
+/// cmux, unless SEAMUX_BACKEND=tmux chose the app's tmux over it.
 fn cmux() -> Option<&'static cmux::Cmux> {
     static C: OnceLock<Option<cmux::Cmux>> = OnceLock::new();
-    C.get_or_init(|| cmux::Cmux::connect().ok().map(|c| c.with_cli_env("CMUX_QUIET", "1"))).as_ref()
+    C.get_or_init(|| {
+        if crate::backend::tmux::chosen() {
+            return None;
+        }
+        cmux::Cmux::connect().ok().map(|c| c.with_cli_env("CMUX_QUIET", "1"))
+    })
+    .as_ref()
 }
 
 /// A live workspace, in workspaces.py's field names.
@@ -112,7 +119,7 @@ fn sval(v: Option<&Value>) -> String {
 /// Every open workspace in every window, or None when cmux did not answer.
 /// None and [] are different sentences: "could not tell" is never "nothing open".
 pub fn live_workspaces() -> Option<Vec<Ws>> {
-    let c = cmux()?;
+    let Some(c) = cmux() else { return tmux_workspaces() };
     let ids: Vec<String> = c
         .window_list()
         .map(|wins| wins.iter().filter_map(|w| w.get("id").filter(|i| !is_falsy(i)).map(|i| sval(Some(i)))).collect())
@@ -337,6 +344,31 @@ fn last_line(s: &str) -> Option<String> {
     splitlines(s).last().map(|l| l.to_string())
 }
 
+/// With no cmux, the app's tmux backend's workspaces when it is in play
+/// (tmux::in_play), with crew-sync's description; None otherwise.
+fn tmux_workspaces() -> Option<Vec<Ws>> {
+    use crate::backend::Backend;
+    let t = crate::backend::tmux::in_play()?;
+    let desc: std::collections::HashMap<String, String> = t.facts().ok()?.into_iter().map(|(id, d, _)| (id, d)).collect();
+    Some(
+        t.workspaces()
+            .ok()?
+            .into_iter()
+            .map(|w| Ws {
+                description: desc.get(&w.id).cloned().unwrap_or_default(),
+                r#ref: w.id.clone(),
+                id: w.id,
+                title: w.title,
+                cwd: w.cwd,
+                color: String::new(),
+                selected: false,
+                window: String::new(),
+                last_message: String::new(),
+            })
+            .collect(),
+    )
+}
+
 /// Force-close a workspace and check it went, refusing one whose directory
 /// holds live plan or family work unless a person overrides (guard()).
 pub fn close(handle: &str, family_ok: bool) -> (bool, String) {
@@ -357,7 +389,15 @@ pub fn close(handle: &str, family_ok: bool) -> (bool, String) {
 /// believed only once it is gone from the list (or the list does not answer),
 /// within ~1.5 s.
 fn close_unguarded(handle: &str) -> (bool, String) {
-    let Some(c) = cmux() else { return (false, "cmux unavailable".into()) };
+    let Some(c) = cmux() else {
+        return match crate::backend::tmux::in_play() {
+            Some(t) => match t.close_workspace(handle) {
+                Ok(()) => (true, String::new()),
+                Err(e) => (false, e),
+            },
+            None => (false, "cmux unavailable".into()),
+        };
+    };
     match c.workspace_close(handle, true) {
         Err(e) => return (false, e.to_string()),
         Ok(out) if !out.ok() => {
@@ -986,6 +1026,9 @@ const DOC: &str = "crew — where workspaces are: live, archived, past or gone. 
     workspaces.py dormant-days            the sweep's threshold, default 5
     workspaces.py list-json               every window's workspaces, in `workspace list
                                           --json`'s field names; exit 1 if cmux is silent
+                                          (the app's tmux backend answers when it is in use)
+    workspaces.py dir <ws>                a live workspace's folder; exit 1 if it is not open
+    workspaces.py backend                 cmux, tmux (the app's own) or none; exit 1 for none
 ";
 
 pub fn main(args: &[String]) -> i32 {
@@ -1010,6 +1053,22 @@ pub fn main(args: &[String]) -> i32 {
             }
             if ok { 0 } else { 1 }
         }
+        // Which backend answers for workspaces here: cmux, else the app's
+        // tmux when it is in play, else none (exit 1). crew doctor names it.
+        ("backend", _) => {
+            let b = if cmux().is_some() { "cmux" } else if crate::backend::tmux::in_play().is_some() { "tmux" } else { "none" };
+            println!("{b}");
+            if b == "none" { 1 } else { 0 }
+        }
+        // A live workspace's folder, by id or ref: reclaim's way to it on
+        // either backend. Exit 1 when it is not open.
+        ("dir", false) => match live_workspaces().and_then(|l| find_live(arg, Some(&l))).filter(|w| !w.cwd.is_empty()) {
+            Some(w) => {
+                println!("{}", w.cwd);
+                0
+            }
+            None => 1,
+        },
         ("list-json", _) => {
             let Some(live) = live_workspaces() else { return 1 };
             let rows: Vec<Value> = live

@@ -145,7 +145,10 @@ if [ -n "$arg" ] && [ -d "$arg" ]; then
   path="$arg"
 elif [ -n "$arg" ]; then
   ws="$arg"
-  path="$("$CMUX" sidebar-state --workspace "$ws" 2>/dev/null | sed -n 's/^cwd=//p')"
+  # Its folder from the active backend (cmux, or the seamux app's tmux),
+  # else cmux's sidebar as before seamux answered it.
+  path="$(ws_tool dir "$ws" 2>/dev/null)"
+  [ -n "$path" ] || path="$("$CMUX" sidebar-state --workspace "$ws" 2>/dev/null | sed -n 's/^cwd=//p')"
 else
   path="$PWD"
 fi
@@ -275,14 +278,16 @@ IGNORED
 ignored_list="$(lost_ignored)"; ignored_rc=$?
 ignored_n="$(printf '%s' "$ignored_list" | grep -c . || true)"
 
-# Unknown until cmux answers: no cmux at all is the same "could not tell" as a
-# cmux that does not answer, and both block below. Never a default of 0.
+# Unknown until the backend answers: no backend at all is the same "could not
+# tell" as one that does not answer, and both block below. Never a default of 0.
+# The backend is cmux, or the seamux app's tmux when it is in use without cmux
+# (`seamux workspaces list-json` answers from whichever is).
 others=""
 ws_id=""
 others_desc=""
 ws_title=""
 planmode_desc=""
-if [ -x "$CMUX" ]; then
+if [ -x "$CMUX" ] || [ -x "$SEAMUX" ]; then
   # One call answers three questions: who else is standing in this worktree,
   # what the workspace we are about to close is actually called, and whether any
   # session in here is in plan mode. `plan:mode` is crew-sync's token, read off
@@ -532,20 +537,21 @@ fi
 # the close, before the removal. Same reason the board opens its reclaim
 # terminal anywhere but the workspace being reclaimed.
 if [ -n "$ws" ]; then
-  if [ -n "${CMUX_WORKSPACE_ID:-}" ] && [ "$CMUX_WORKSPACE_ID" = "${ws_id:-$ws}" ]; then
+  here_ws="${SEAMUX_WORKSPACE_ID:-${CMUX_WORKSPACE_ID:-}}"
+  if [ -n "$here_ws" ] && [ "$here_ws" = "${ws_id:-$ws}" ]; then
     fail "this terminal is in ${ws_title:-$ws}, the workspace it would close — run it from another"
   else
     pass "this terminal is not in the workspace it closes"
   fi
 fi
 
-if [ ! -x "$CMUX" ]; then
-  fail "cmux not found ($CMUX) — could not tell whether another workspace is open here"
-  note "put cmux on PATH, or point CREW_CMUX at it"
+if [ ! -x "$CMUX" ] && [ ! -x "$SEAMUX" ]; then
+  fail "neither cmux ($CMUX) nor seamux ($SEAMUX) found — could not tell whether another workspace is open here"
+  note "put cmux on PATH, or install the seamux app (./install.sh --app)"
 elif [ -z "$others" ]; then
-  fail "cmux did not list its workspaces — could not tell whether another is open here"
+  fail "no backend listed its workspaces (cmux, or the seamux app's tmux) — could not tell whether another workspace is open here"
 elif [ "$others" -eq 0 ]; then
-  pass "no other cmux workspace is open here"
+  pass "no other workspace is open here"
 else
   fail "$others other workspace(s) still open here${others_desc:+: $others_desc}"
 fi
@@ -652,7 +658,7 @@ if [ -n "$ws" ] && [ -n "$family_ask" ]; then
   ok "closed workspace ${ws_title:-$ws}"
 elif [ -n "$ws" ]; then
   why="$(ws_tool close "$ws" 2>&1 >/dev/null)" \
-    || die "cmux did not close ${ws_title:-$ws} (${why:-no answer}) — nothing was removed"
+    || die "${ws_title:-$ws} did not close (${why:-no answer}) — nothing was removed"
   ok "closed workspace ${ws_title:-$ws}"
 fi
 

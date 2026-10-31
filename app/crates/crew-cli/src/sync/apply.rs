@@ -26,16 +26,13 @@ pub struct Writer {
 
 impl Writer {
     pub fn connect(dry: bool) -> Writer {
-        let c = Cmux::connect().ok();
-        // Only a tmux backend in use: SEAMUX_BACKEND=tmux, or live panes. A
-        // registry left from an earlier run is not synced while cmux restarts.
-        let tmux = if c.is_some() {
-            None
-        } else {
-            let said = crew_core::py::env_or("SEAMUX_BACKEND").as_deref() == Some("tmux");
-            Some(TmuxBackend::default()).filter(|b| b.facts().is_ok_and(|f| !f.is_empty()) && (said || b.in_use()))
-        };
-        Writer { c, quiet: Cmux::connect().ok().map(|c| c.with_cli_env("CMUX_QUIET", "1")), dry, tmux }
+        // SEAMUX_BACKEND=tmux (a tmux pane's hooks) wins over a cmux that answers.
+        let c = if crew_core::backend::tmux::chosen() { None } else { Cmux::connect().ok() };
+        // Only a tmux backend in use (tmux::in_play): a registry left from an
+        // earlier run is not synced while cmux restarts.
+        let tmux = if c.is_some() { None } else { crew_core::backend::tmux::in_play().filter(|b| b.facts().is_ok_and(|f| !f.is_empty())) };
+        let quiet = c.as_ref().and_then(|_| Cmux::connect().ok()).map(|c| c.with_cli_env("CMUX_QUIET", "1"));
+        Writer { c, quiet, dry, tmux }
     }
 
     fn write(&self, f: impl FnOnce(&Cmux) -> Result<(), cmux::Error>) {

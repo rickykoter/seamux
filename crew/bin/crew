@@ -1133,7 +1133,21 @@ cmd_status() {
 cmd_doctor() {
   FAIL=0
   head_ "binaries"
-  [ -x "$CMUX" ] && ok "cmux: $CMUX" || bad "cmux not found"
+  # The backend the app and crew read workspaces from: cmux, or the seamux
+  # app's own tmux, with which cmux is fine to be missing.
+  local _backend=""
+  [ -x "$SEAMUX" ] && _backend="$("$SEAMUX" workspaces backend 2>/dev/null)"
+  if [ -x "$CMUX" ]; then
+    ok "cmux: $CMUX"
+  elif [ "$_backend" = tmux ]; then
+    ok "cmux not installed: fine, the seamux app runs its own tmux"
+  else
+    bad "cmux not found, and the seamux app's tmux is not in use: install cmux, or start sessions from the app"
+  fi
+  case "$_backend" in
+    cmux|tmux) ok "backend: $_backend" ;;
+    *) warn "backend: none answers (cmux is not running and the app's tmux has no sessions)" ;;
+  esac
   if [ -x "$SEAMUX" ]; then
     ok "seamux: ${SEAMUX/#$HOME/~} ($("$SEAMUX" --version 2>/dev/null))"
     # Every tool crew runs live, the hooks included: a missing one would make

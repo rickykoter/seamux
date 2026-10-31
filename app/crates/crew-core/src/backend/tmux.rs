@@ -37,6 +37,22 @@ pub fn state_dir() -> PathBuf {
         .join("seamux")
 }
 
+/// The tmux backend, when it stands in for a cmux that is not there: the
+/// caller found no cmux, and either SEAMUX_BACKEND=tmux or the registry has
+/// live panes. A registry left from an earlier run does not count, so a
+/// cmux that is only restarting is never mistaken for none.
+pub fn in_play() -> Option<TmuxBackend> {
+    // (SEAMUX_BACKEND=tmux also keeps callers off cmux: see chosen().)
+    let said = crate::py::env_or("SEAMUX_BACKEND").as_deref() == Some("tmux");
+    Some(TmuxBackend::default()).filter(|b| said || b.in_use())
+}
+
+/// Whether SEAMUX_BACKEND names tmux: it wins over a cmux that answers, as
+/// it does at the app's launch (ADR 2), so a caller does not ask cmux.
+pub fn chosen() -> bool {
+    crate::py::env_or("SEAMUX_BACKEND").as_deref() == Some("tmux")
+}
+
 impl Default for TmuxBackend {
     fn default() -> Self {
         TmuxBackend::at(state_dir())
@@ -221,6 +237,25 @@ impl TmuxBackend {
             Ok(())
         })
         .map_err(|e| self.unmake(made.take(), e))
+    }
+
+    /// Close workspace `ws`: every pane's session ends, and its record and
+    /// its panes' go. Err when the registry has no such workspace.
+    pub fn close_workspace(&self, ws: &str) -> Result<(), String> {
+        self.update(|reg| {
+            if !list(reg, "workspaces").iter().any(|w| s(w, "id").eq_ignore_ascii_case(ws)) {
+                return Err(format!("no workspace {ws:?}"));
+            }
+            let (mine, rest): (Vec<Value>, Vec<Value>) = list(reg, "panes").into_iter().partition(|p| s(p, "ws").eq_ignore_ascii_case(ws));
+            for p in &mine {
+                let t = self.pane_target(p);
+                let _ = tmux(&t.socket, &["kill-session", "-t", &format!("={}", t.session)]);
+            }
+            reg["panes"] = Value::Array(rest);
+            reg["gone"] = Value::Array(list(reg, "gone").into_iter().filter(|p| !s(p, "ws").eq_ignore_ascii_case(ws)).collect());
+            reg["workspaces"] = Value::Array(list(reg, "workspaces").into_iter().filter(|w| !s(w, "id").eq_ignore_ascii_case(ws)).collect());
+            Ok(())
+        })
     }
 
     /// Drop pane `pane`'s record and leave its session running: an adopted
@@ -504,6 +539,23 @@ mod tests {
         let _ = b.panes(None);
         b.forget(&id).unwrap();
         assert!(b.gone().unwrap().is_empty(), "a declined restart is forgotten");
+    }
+
+    #[test]
+    fn closing_a_workspace_ends_its_sessions_and_drops_its_records() {
+        if !have_tmux() {
+            return;
+        }
+        let f = Fixture::new("closews");
+        let b = &f.0;
+        let (a, _) = b.open_workspace(&f.1, "sleep 600").unwrap();
+        let (keep, _) = b.open_workspace(&f.1, "sleep 600").unwrap();
+        let t = b.target(&b.panes(Some(&a)).unwrap()[0].id).unwrap().unwrap();
+        b.close_workspace(&a).unwrap();
+        assert!(!b.alive(&t), "its session ended");
+        assert_eq!(b.workspaces().unwrap().iter().map(|w| w.id.clone()).collect::<Vec<_>>(), vec![keep.clone()]);
+        assert_eq!(b.panes(None).unwrap().len(), 1, "the other workspace's pane stays");
+        assert!(b.close_workspace(&a).is_err(), "already gone");
     }
 
     #[test]
