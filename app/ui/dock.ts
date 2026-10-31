@@ -13,7 +13,7 @@ import { ReclaimWizard } from "./reclaim";
 import { Sheet } from "./sheet";
 import { splitter } from "./splitter";
 import { setLevel, type Levels } from "./tuck";
-import type { Frame as WallFrame, Tile } from "./wall";
+import type { Frame as WallFrame, Tile } from "./tiles";
 
 type IntentServer = { origin: string | null; up: boolean; reason: string | null };
 

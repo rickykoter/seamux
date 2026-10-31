@@ -1,21 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { DEFAULT_TAB, Tabs } from "./tabs";
-import { WallView } from "./wall";
 import "./everforest.css";
-import "./wall.css";
-// Desk's styles stay: Mosaic's cards and buttons wear them.
+// The sheet's and the decision cards' styles.
 import "./desk.css";
 import { DockView } from "./dock";
 import "./dock.css";
 import "./newws.css";
 import "./reclaim.css";
-import { Mosaic } from "./mosaic";
-import "./mosaic.css";
 import { Wake } from "./wake";
 import "./wake.css";
-import { Timeline } from "./timeline";
-import "./timeline.css";
 import "./panechips.css";
 import { ReviewView } from "./review";
 import "./review.css";
@@ -37,14 +31,12 @@ const why: Record<string, string> = {
   app: "The app couldn't run its cmux check.",
 };
 
-const wall = new WallView(document.getElementById("wall")!);
-
 function show(s: Status): void {
   const conn = document.getElementById("conn")!;
   if (s.state === "failed") {
     conn.className = "bad";
     conn.textContent = "cmux unreachable";
-    wall.problem(`${why[s.kind] ?? "Couldn't reach cmux."} (${s.message})`);
+    conn.title = `${why[s.kind] ?? "Couldn't reach cmux."} (${s.message})`;
     return;
   }
   const n = s.workspaces.length;
@@ -54,12 +46,8 @@ function show(s: Status): void {
 }
 
 const dockEl = document.getElementById("dock")!;
-const timeline = document.getElementById("timeline")!;
 const wakeEl = document.getElementById("wake")!;
 const dockView = new DockView(dockEl);
-const mosaicEl = document.getElementById("mosaic")!;
-const mosaic = new Mosaic(mosaicEl, document.getElementById("wall")!, wall);
-const timelineView = new Timeline(timeline);
 const wakeView = new Wake(wakeEl);
 const reviewEl = document.getElementById("review")!;
 const reviewView = new ReviewView(reviewEl);
@@ -69,8 +57,6 @@ const tabs = new Tabs(
   document.getElementById("stage")!,
   new Map([
     ["dock", dockEl],
-    ["mosaic", mosaicEl],
-    ["timeline", timeline],
     ["wake", wakeEl],
     ["review", reviewEl],
   ]),
@@ -78,12 +64,6 @@ const tabs = new Tabs(
 tabs.onSelect = (id) => {
   if (id === "dock") dockView.shown();
   if (id === "wake") wakeView.shown();
-  if (id === "timeline") timelineView.shown();
-};
-// A Timeline lane's name opens its pane in Mosaic.
-timelineView.onOpen = (ws) => {
-  tabs.select("mosaic");
-  mosaic.openWorkspace(ws);
 };
 // The Tucked chip sits at the end of the strip; Command-K opens the same palette.
 const palette = new Palette();
@@ -97,7 +77,7 @@ void listen("app:summoned", () => tabs.select(DEFAULT_TAB));
 const hide = () => void invoke("hide_overlay");
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") hide();
-  // ⌘1…⌘5 pick the views, while focus is in the shell rather than a framed page.
+  // ⌘1…⌘3 pick the views, while focus is in the shell rather than a framed page.
   if (e.metaKey && e.key >= "1" && e.key <= "9") {
     tabs.selectIndex(Number(e.key) - 1);
     e.preventDefault();
@@ -105,10 +85,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 invoke<Status>("cmux_status").then(show, (e) => show({ state: "failed", kind: "app", message: String(e) }));
-wall.start().catch((e) => wall.problem(`The wall couldn't start: ${String(e)}`));
 dockView.start().catch((e) => console.error("dock", e));
-mosaic.start().catch((e) => console.error("mosaic", e));
 wakeView.start().catch((e) => console.error("wake", e));
-timelineView.start().catch((e) => console.error("timeline", e));
 reviewView.begin().catch((e) => console.error("review", e));
 palette.start().catch((e) => console.error("palette", e));

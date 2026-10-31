@@ -104,8 +104,6 @@ The "how" column says how each scene is captured:
 |---|---|---|---|
 | 6.1 | Every agent, one hotkey away. | the Dock: board, the agent's terminal, its Wake | app |
 | 6.2 | Start a workspace in one form. | New workspace, then it appears | app |
-| 6.3 | Reply without switching. | Mosaic: answer a question from its tile | app |
-| | See who waited, and how long. | Timeline | app |
 
 ## Screenshots (`docs/demo/media/`)
 
@@ -117,7 +115,7 @@ The "how" column says how each scene is captured:
 | dp-ask, dp-family | ask page, parent plan | page |
 | lo-quiz, lo-overview, lo-risk, lo-findings, lo-diff | lookout review | page |
 | crew-board, crew-family, crew-news, crew-usage, crew-usage-billing, crew-cache, crew-statusline | crew | page, still |
-| app-dock, app-newws, app-reclaim, app-mosaic, app-wall, app-timeline, app-wake, app-lookout, app-palette | the app | app |
+| app-dock, app-newws, app-reclaim, app-wake, app-lookout, app-palette | the app | app |
 | plan-pane, gate-band (in `docs/img/`) | seamux-mods in Claude Code | kept from a real session |
 
 ## Not filmed

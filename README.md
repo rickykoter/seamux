@@ -313,14 +313,14 @@ over whatever you're doing; press it again, or Esc, and it's gone. Click
 another app and that app comes in front; the hotkey brings the overlay back.
 It has no Dock icon; a tray icon carries Show, Quit and the hotkey.
 
-The first tab is the **wall**: every terminal pane in cmux as a card, showing
-its last lines live (within about a second and a half of new output). Agents
-waiting on you float to the top with an amber edge, then the working ones,
-the idle ones and plain shells. Each agent's card has a reply box and a Jump
-button. A reply types your line into that agent's pane and presses Enter;
-Jump brings the pane to the front in cmux. The other tabs (Wake, Usage and
-Board) frame the intent server's own pages until they're ported. The board
-tab says so until the server serves `/board`.
+The first tab is the **Dock**: the crew board on the left, the chosen
+workspace's Claude in the middle, and its Wake and open pages (its plan,
+reviews and questions) on the right. The middle is a real terminal for a
+native pane, one whose session lives in tmux: click into it and type. A pane
+that isn't native shows its last lines and a reply box, with **Move to
+native** to restart its Claude in a native session and **Open in cmux** to go
+there. The other tabs are the Wake and Lookout; Usage and the Board sit
+behind the ⋯ menu.
 
 Install it with `./install.sh --app` (see [Install](#install)). It needs cmux's
 socket in `automation` mode, which `crew apply` sets.

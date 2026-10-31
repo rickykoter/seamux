@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { reflow } from "./reflow";
-import type { Frame as WallFrame, Tile } from "./wall";
+import type { Frame as WallFrame, Tile } from "./tiles";
 import { Wake } from "./wake";
 import { TermSlot } from "./native";
 import { splitter } from "./splitter";
@@ -72,9 +72,10 @@ class Chat {
   private name = document.createElement("b");
   private state = document.createElement("span");
   private body = document.createElement("div");
-  /** The pane itself, live: click into it and keys go to the agent. */
-  /** The pane, live: native where it is tmux-backed, snapshots otherwise. */
+  /** The pane, live where it is tmux-backed: click into it and keys go to the agent. */
   private term = new TermSlot();
+  /** For a pane the app cannot draw (not tmux-backed): why, Move to native, Open in cmux. */
+  private plain = document.createElement("div");
   private input = document.createElement("input");
   private note = document.createElement("span");
   surface = "";
@@ -168,8 +169,51 @@ class Chat {
     };
     live(true);
     this.term.onTrouble = (bad) => live(!bad);
-    this.term.onMode = () => this.shown && this.drawSessions(this.shown);
-    this.el.append(head, this.bar, this.term.el, this.body, form, this.note);
+    this.term.onMode = () => {
+      if (!this.shown) return;
+      this.drawSessions(this.shown);
+      this.drawPlain(this.shown);
+    };
+    this.plain.className = "sheet-chat-plain";
+    this.plain.hidden = true;
+    this.el.append(head, this.bar, this.term.el, this.plain, this.body, form, this.note);
+  }
+
+  /** A pane that is not tmux-backed has no live terminal here: say so, and
+   *  offer to move its Claude to a native session or to open it in cmux. */
+  private drawPlain(t: Tile): void {
+    const on = this.term.ready() && !this.term.isNative();
+    this.plain.hidden = !on;
+    if (!on) return;
+    const say = document.createElement("p");
+    say.textContent = "This pane isn't a native session, so it can't be drawn here.";
+    const parts: HTMLElement[] = [say];
+    if (t.agent === "claude" && t.state !== "ended") {
+      const busy = t.state === "working";
+      const move = document.createElement("button");
+      move.type = "button";
+      move.className = "sheet-btn primary";
+      move.textContent = "Move to native";
+      move.title = busy ? "Claude is mid-turn: move it when it is idle"
+        : "Stop Claude here and resume this conversation in a native session; this pane closes";
+      move.disabled = busy || this.starting;
+      move.addEventListener("click", () => void this.moveNative(t));
+      parts.push(move);
+    }
+    const cmux = document.createElement("button");
+    cmux.type = "button";
+    cmux.className = "sheet-btn";
+    cmux.textContent = "Open in cmux";
+    cmux.addEventListener("click", async () => {
+      try {
+        await invoke("wall_jump", { surfaceId: t.surface });
+        await invoke("hide_overlay");
+      } catch (e) {
+        this.note.textContent = String(e);
+      }
+    });
+    parts.push(cmux);
+    this.plain.replaceChildren(...parts);
   }
 
   stopTerm(): void {
@@ -238,11 +282,13 @@ class Chat {
       await invoke<string>("move_native", { surfaceId: t.surface });
       this.note.textContent = "Moved to a native session";
       this.sessAt = 0;
+      this.term.recheck();
     } catch (e) {
       this.note.textContent = String(e);
     }
     this.starting = false;
     this.drawSessions(t);
+    this.drawPlain(t);
   }
 
   /** The pane tabs: each Claude with its state dot (and how long it has
@@ -360,7 +406,7 @@ class Chat {
       b.addEventListener("click", run);
       items.push(b);
     };
-    // A running Claude drawn from snapshots can move to a native session.
+    // A running Claude in a pane the app cannot draw can move to a native session.
     if (t.agent === "claude" && t.state !== "ended" && !this.term.isNative() && this.term.ready()) {
       const busy = t.state === "working";
       item("Move to native", busy ? "Claude is mid-turn: move it when it is idle"
@@ -444,6 +490,7 @@ class Chat {
     if (!this.bar.hidden) this.drawTabs();
     this.term.show(t.surface);
     this.term.agentState(t.state, t.since);
+    this.drawPlain(t);
     this.loadSessions(t);
     // The workspace, then what Claude says the conversation is about.
     const base = t.workspace_title || t.label;

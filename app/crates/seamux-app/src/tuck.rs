@@ -8,7 +8,7 @@
 //! One entry per worktree root: every workspace whose pane works in that
 //! worktree is muted or tucked with it, across cmux restarts. Mute dims a
 //! workspace until it asks (an ask newer than the mute clears it); tuck hides
-//! it from Desk, Mosaic and Timeline until it is restored. Nothing here
+//! it from the Dock until it is restored. Nothing here
 //! touches cmux: the workspace and its agent keep running.
 
 use std::collections::HashMap;

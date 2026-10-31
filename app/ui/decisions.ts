@@ -1,5 +1,5 @@
 // The decisions the views feed carries (views.rs's ViewsFrame), shared by the
-// Dock, Mosaic and Timeline views.
+// Dock and the sheet.
 import type { FamilyBrief, FamilyMember } from "./family";
 import type { Levels, TuckRow } from "./tuck";
 
@@ -39,8 +39,3 @@ export type Decision =
 export type WakeRow = { id: number; kind: string; title: string; dir: string; ws: string | null; at: number };
 export type Change = { at: number; ws: string; surface: string; state: string; source: string; detail: string };
 export type ViewsFrame = { decisions: Decision[]; wake: WakeRow[]; history: Change[]; problems: string[]; levels?: Levels; tucked?: TuckRow[]; families?: FamilyBrief[] };
-
-/** One question a single digit can answer in place. */
-export function answerable(d: Decision): boolean {
-  return d.kind === "question" && d.questions.length === 1 && !d.questions[0].multiSelect && d.questions[0].options.length > 0;
-}

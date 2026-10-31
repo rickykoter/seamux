@@ -494,8 +494,6 @@ fn guard_focus<R: Runtime>(w: &WebviewWindow<R>) {
 /// panel subclass (seen: hide ran, the window stayed on screen), so order it
 /// out directly as well.
 fn hide<R: Runtime>(w: &WebviewWindow<R>) {
-    // A pane held at the app's size goes back to its own once the app is away.
-    std::thread::spawn(crate::term_app::release_all);
     let _ = w.hide();
     #[cfg(target_os = "macos")]
     if let Ok(ptr) = w.ns_window() {
@@ -615,7 +613,6 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
                 }
             }
             "quit" => {
-                crate::term_app::release_all_briefly();
                 app.exit(0)
             }
             _ => {}

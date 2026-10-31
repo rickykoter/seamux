@@ -4,14 +4,12 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod desk_app;
 mod newws_app;
 mod pane_app;
 mod pty_app;
 mod reclaim_app;
 mod review_app;
 mod shell;
-mod term_app;
 mod tuck_app;
 mod views_app;
 mod wake_app;
@@ -153,7 +151,6 @@ fn main() {
             wall_app::start(app.handle().clone());
             views_app::start(app.handle().clone());
             review_app::start(app.handle().clone());
-            term_app::restore_at_start();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -179,16 +176,10 @@ fn main() {
             review_app::review_stop_orphan,
             review_app::review_suggest,
             review_app::review_others,
-            term_app::term_frame,
-            term_app::term_input,
-            term_app::term_key,
-            term_app::term_paste,
-            term_app::term_hold,
-            term_app::term_release,
-            term_app::open_url,
-            term_app::copy_text,
-            term_app::open_in_vscode,
-            term_app::term_look,
+            pane_app::open_url,
+            pane_app::copy_text,
+            pane_app::open_in_vscode,
+            pane_app::term_look,
             pty_app::pty_native,
             pty_app::pty_attach,
             pty_app::pty_write,
@@ -209,9 +200,6 @@ fn main() {
             pty_app::native_session,
             views_app::views_frame,
             shell::open_in_cmux,
-            desk_app::desk_answer,
-            desk_app::plan_go,
-            desk_app::plan_check,
             wake_app::wake_data,
             wake_app::wake_open,
             wake_app::wake_keep,
