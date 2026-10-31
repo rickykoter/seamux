@@ -315,9 +315,15 @@ pub async fn desk_cleanup_run(picks: Vec<(String, String, String)>) -> Result<Ve
 pub async fn session_resume(surface_id: String, session_id: String, cwd: String) -> Result<(), String> {
     let w = wall()?.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        // Asked fresh: the answer decides whether `/resume` or a shell command is typed.
-        let records = crew_core::workspaces::agent_sessions().ok_or("cmux did not list its sessions")?;
-        let alive = seamux_app::sessions::claude_alive(&records, &surface_id) || native_surfaces(true).contains(&surface_id.to_uppercase());
+        // Asked fresh: the answer decides whether `/resume` or a shell command
+        // is typed. On tmux, the pane's terminal says whether Claude runs.
+        let alive = if seamux_app::backend::kind() == crew_core::backend::Kind::Tmux {
+            let t = seamux_app::backend::get()?.target(&surface_id)?.ok_or("that pane's tmux session is gone")?;
+            crew_core::backend::tmux::runs_claude(&t)
+        } else {
+            let records = crew_core::workspaces::agent_sessions().ok_or("cmux did not list its sessions")?;
+            seamux_app::sessions::claude_alive(&records, &surface_id) || native_surfaces(true).contains(&surface_id.to_uppercase())
+        };
         w.resume(&surface_id, &session_id, &cwd, alive)
     })
     .await

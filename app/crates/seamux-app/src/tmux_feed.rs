@@ -49,8 +49,12 @@ impl Source for TmuxSource {
     fn read(&self, _surface: &str, _lines: u32) -> Result<String, cmux::Error> {
         Ok(String::new())
     }
-    fn send_raw(&self, _surface: &str, _text: &str) -> Result<(), cmux::Error> {
-        Err(no_cmux("a reply from the Dock"))
+    /// Typed into the pane's own tmux session (Resume Claude's line). The
+    /// Dock hides its reply box here; its terminal is the pane itself.
+    fn send_raw(&self, surface: &str, text: &str) -> Result<(), cmux::Error> {
+        let t = self.backend.target(surface).map_err(cmux::Error::Unavailable)?
+            .ok_or_else(|| cmux::Error::Unavailable(format!("no tmux session for {surface}")))?;
+        crew_core::backend::tmux::send_text(&t, text).map_err(cmux::Error::Unavailable)
     }
     fn select_workspace(&self, _workspace: &str) -> Result<(), cmux::Error> {
         Err(no_cmux("jumping to a workspace"))

@@ -78,7 +78,7 @@ impl Tmux {
     /// The tmux arguments for one of cmux's verbs, or None for one tmux
     /// does not do.
     pub fn args(&self, argv: &[&str]) -> Option<Vec<String>> {
-        let t = format!("={}", self.target.session);
+        let t = crew_core::backend::tmux::pane_of(&self.target);
         let own = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         match argv {
             ["read-screen", "--surface", _, "--lines", n] => Some(own(&["capture-pane", "-p", "-t", &t, "-S", &format!("-{n}")])),
@@ -234,9 +234,9 @@ mod tests {
     fn tmux_answers_cmuxs_verbs_on_the_recorded_session() {
         let t = pane();
         assert_eq!(t.args(&["read-screen", "--surface", "P1", "--lines", "60"]).unwrap(),
-                   ["capture-pane", "-p", "-t", "=seamux-P1", "-S", "-60"]);
-        assert_eq!(t.args(&["send", "--surface", "P1", "2"]).unwrap(), ["send-keys", "-t", "=seamux-P1", "-l", "2"]);
-        assert_eq!(t.args(&["send-key", "--surface", "P1", "enter"]).unwrap(), ["send-keys", "-t", "=seamux-P1", "Enter"]);
+                   ["capture-pane", "-p", "-t", "=seamux-P1:", "-S", "-60"]);
+        assert_eq!(t.args(&["send", "--surface", "P1", "2"]).unwrap(), ["send-keys", "-t", "=seamux-P1:", "-l", "2"]);
+        assert_eq!(t.args(&["send-key", "--surface", "P1", "enter"]).unwrap(), ["send-keys", "-t", "=seamux-P1:", "Enter"]);
         assert!(t.args(&["send-key", "--surface", "P1", "escape"]).is_none());
     }
 
