@@ -303,6 +303,62 @@ fn jira_key_ok(k: &str) -> bool {
 }
 
 /// One click. Returns (ok, detail) for the reply and the log.
+/// What the verbs cmux carries do on the app's own tmux. On cmux they are
+/// notifications that cmux's triage hook runs; on tmux nothing would run
+/// them, so go and sync run here and the rest say they need cmux. None
+/// leaves the verb to its cmux route.
+fn on_tmux(kind: crew_core::backend::Kind, action: &str) -> Option<(bool, String)> {
+    if kind != crew_core::backend::Kind::Tmux {
+        return None;
+    }
+    match action {
+        "sync" => Some((spawn_seamux(&["crew-sync"]), "sync".into())),
+        "jump" | "row" | "pane" | "code" | "reclaim" | "archive" | "sandbox-up" | "sandbox-down" | "feed-allow" | "feed-deny" => {
+            Some((false, format!("{action} needs cmux: this board reads the seamux app's tmux")))
+        }
+        _ => None,
+    }
+}
+
+/// A person's go for increment `n` of `slug`: what triage runs for the
+/// board's go chip on cmux, run in the row's workspace.
+fn go_args(script: &str, slug: &str, n: &str) -> Vec<String> {
+    [script, "go", slug, n, "--by", "human"].iter().map(|a| a.to_string()).collect()
+}
+
+fn run_go(node: &str, script: &str, slug: &str, n: &str, cwd: &str) -> bool {
+    let args = go_args(script, slug, n);
+    run_ok(node, &args.iter().map(String::as_str).collect::<Vec<_>>(), Some(cwd))
+}
+
+/// `seamux <tool> args…` in a session of its own, not waited on (crew-sync
+/// after a go, as triage runs it on cmux).
+fn spawn_seamux(args: &[&str]) -> bool {
+    use std::os::unix::process::CommandExt;
+    let Some(exe) = crew_core::upgrade::exe() else { return false };
+    let mut cmd = Command::new(exe);
+    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    // SAFETY: setsid is async-signal-safe and touches only the child.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    match cmd.spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            true
+        }
+        Err(e) => {
+            log(&format!("FAIL seamux {} {e}", args.join(" ")));
+            false
+        }
+    }
+}
+
 pub fn act(action: &str, row: &Map<String, Value>, extra: &str) -> (bool, String) {
     let r = s(row, "ref");
     let wsid = s(row, "id");
@@ -310,6 +366,9 @@ pub fn act(action: &str, row: &Map<String, Value>, extra: &str) -> (bool, String
     let pr_url = s(row, "pr_url");
     let mut slug = s(row, "slug");
     let title = s(row, "name");
+    if let Some(done) = on_tmux(crate::backend::kind(), action) {
+        return done;
+    }
 
     match action {
         "jump" | "row" => {
@@ -458,6 +517,15 @@ pub fn act(action: &str, row: &Map<String, Value>, extra: &str) -> (bool, String
             if n.is_empty() {
                 return (false, "no increment number".into());
             }
+            if crate::backend::kind() == crew_core::backend::Kind::Tmux {
+                let Some(node) = node() else { return (false, "node is not installed here".into()) };
+                let script = crew_core::dp_engine::script().to_string_lossy().into_owned();
+                let ok = run_go(&node, &script, &slug, &n, &cwd);
+                if ok {
+                    spawn_seamux(&["crew-sync"]);
+                }
+                return (ok, format!("go {slug} {n}"));
+            }
             (notify("crew:plan-go", &format!("{slug} {n}"), Some(&wsid)), format!("go {slug} {n}"))
         }
         "close plan" => {
@@ -480,6 +548,50 @@ pub fn q(x: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn on_cmux_every_verb_keeps_its_cmux_route() {
+        for a in ["go", "sync", "jump", "archive", "feed-allow", "close plan"] {
+            assert!(on_tmux(crew_core::backend::Kind::Cmux, a).is_none(), "{a}");
+        }
+    }
+
+    #[test]
+    fn on_tmux_the_cmux_only_verbs_say_so_and_the_rest_are_left_alone() {
+        let k = crew_core::backend::Kind::Tmux;
+        for a in ["jump", "row", "pane", "code", "reclaim", "archive", "sandbox-up", "sandbox-down", "feed-allow", "feed-deny"] {
+            let (ok, why) = on_tmux(k, a).expect(a);
+            assert!(!ok && why.contains("needs cmux"), "{a}: {why}");
+        }
+        // go is checked in act's own arm (it needs the row); these never touch cmux.
+        for a in ["go", "plan", "wake", "ask", "diff", "pr", "close plan"] {
+            assert!(on_tmux(k, a).is_none(), "{a}");
+        }
+    }
+
+    #[test]
+    fn a_go_on_tmux_is_a_persons_numbered_go() {
+        assert_eq!(go_args("/e/deep_plan.mjs", "coupons", "2"), ["/e/deep_plan.mjs", "go", "coupons", "2", "--by", "human"]);
+    }
+
+    #[test]
+    fn a_go_on_tmux_runs_the_engine_in_the_rows_workspace() {
+        let Some(node) = node() else { return };
+        let dir = std::env::temp_dir().join(format!("act-go-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("deep_plan.mjs");
+        // A stand-in engine: writes its arguments and its cwd, and fails a slug named "nope".
+        std::fs::write(&script, "import fs from 'node:fs';\n\
+            fs.writeFileSync('ran.json', JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd() }));\n\
+            process.exit(process.argv[3] === 'nope' ? 1 : 0);\n").unwrap();
+        let s = script.to_string_lossy();
+        assert!(run_go(&node, &s, "coupons", "1", &dir.to_string_lossy()));
+        let ran: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("ran.json")).unwrap()).unwrap();
+        assert_eq!(ran["args"], json!(["go", "coupons", "1", "--by", "human"]));
+        assert_eq!(std::fs::canonicalize(ran["cwd"].as_str().unwrap()).unwrap(), std::fs::canonicalize(&dir).unwrap());
+        assert!(!run_go(&node, &s, "nope", "1", &dir.to_string_lossy()), "a refused go is reported, not swallowed");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn jira_keys_are_checked_like_the_python() {

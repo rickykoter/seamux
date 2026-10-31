@@ -3406,6 +3406,10 @@ if (want("extension verbs")) {
   ok("…and says so, rather than leaving the seam invisible",
     ncli("--help").stdout.includes("no extension verbs installed"));
   ok("help still exits 0 with no extensions", ncli("--help").status === 0);
+  // An agent reads the help to learn the verbs: a family's parent was told
+  // nothing pulls a member's state when state pull is there.
+  ok("help lists the state branch verbs",
+    ["state push <slug>", "state pull <slug>", "state status", "state list"].every(v => ncli("--help").stdout.includes(v)));
 }
 
 // -------------------------------------------------- `done` writes the patch, never opens it
