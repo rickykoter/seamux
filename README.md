@@ -304,12 +304,16 @@ with a failure scenario, and you and the agent talk them through in
 threads. A plan can make an increment wait on its review.
 [lookout's README](lookout/README.md).
 
-**lookout up close** (44 s). A fresh reviewer's findings on a live branch:
-the quiz before its notes, files in risk bands, and the back and forth. The
-agent fixes what fits and marks it addressed, replies on what it won't fix,
-and only you close a finding before the gate passes.
+**lookout up close** (77 s). How lookout scores risk before any reviewer:
+path and churn signals, plus a System-1 judgment from TypeSafe's Jev. How it
+groups related files and says why. Then one prompt that has the agent loop
+review, fix, test and review again with a fresh reviewer each round, until a
+round comes back clean. Only you close the findings, and the gate passes.
 
-https://github.com/user-attachments/assets/dbe7e26c-c3de-4002-83c3-8bbd5f341db4
+<!-- VIDEO: seamux-lookout.mp4 goes here. Drag the file into GitHub's
+editor on this line and replace the poster image below with the
+user-attachments link it gives you. -->
+![The lookout video: a file's diff header reading high risk, Jev 96%, auth or secrets](docs/img/video-lookout-poster.jpg)
 
 ### restack: rebase without merging generated files
 
