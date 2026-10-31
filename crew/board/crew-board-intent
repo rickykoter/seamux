@@ -2711,8 +2711,13 @@ def selftest():
         tmpl = open(USAGE_TMPL, encoding="utf-8").read()
         check("the usage template has its data placeholder", USAGE_SLOT in tmpl)
         check("...and a table twin for the chart", 'id="tbl"' in tmpl)
+        # The synced palette block names every hue, the board's gold and red
+        # included; what the page itself paints with is what follows it.
+        own = re.sub(r"/\* everforest:start \*/.*?/\* everforest:end \*/", "", tmpl, flags=re.S)
         check("...and does not reuse a board status colour for the series",
-              "#e69875" in tmpl and "#dfa000" not in tmpl and "#e67e80" not in tmpl,
+              ("#e69875" in own or "--data:var(--ef-orange)" in own) and
+              not any(c in own for c in ("#dfa000", "#e67e80", "var(--ef-red)", "var(--ef-bad)",
+                                         "var(--ef-yellow)", "var(--ef-warn)")),
               "gold and red are 'needs you' and 'broken' on the board")
         # The window card has two views and a 60s reload, so the choice has to
         # round-trip through storage or it resets under the viewer every minute.
