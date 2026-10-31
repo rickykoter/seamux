@@ -7,7 +7,7 @@ use std::io::Read;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use seamux_app::pty::{bell_seen, leave_scroll, scroll_state, send_line_key, start_native, target_for, toggle_shell, Pty, Target};
+use seamux_app::pty::{bell_seen, leave_scroll, scroll_state, send_line_key, target_for, toggle_shell, Pty, Target};
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 /// A terminal: its PTY (locked for resizes and closing), its client's pid
@@ -35,7 +35,8 @@ fn get(id: u32) -> Result<Arc<Live>, String> {
 /// can draw it natively.
 #[tauri::command]
 pub async fn pty_native(surface_id: String) -> Result<bool, String> {
-    tauri::async_runtime::spawn_blocking(move || target_for(&surface_id).map(|t| t.is_some()))
+    // No backend yet is no native pane, not an error.
+    tauri::async_runtime::spawn_blocking(move || Ok(target_for(&surface_id).ok().flatten().is_some()))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -200,10 +201,13 @@ pub async fn pty_detach(id: u32) {
 }
 
 /// Start Claude as a native session in a workspace (resuming `resume` when
-/// given): returns the new cmux pane's surface id.
+/// given), on the app's backend: returns the new pane's id.
 #[tauri::command]
 pub async fn native_session(workspace_id: String, cwd: String, resume: Option<String>) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || start_native(&workspace_id, &cwd, resume.as_deref()))
+    tauri::async_runtime::spawn_blocking(move || {
+        let claude = seamux_app::pty::claude_line(resume.as_deref())?;
+        seamux_app::backend::get()?.start_session(&workspace_id, &cwd, &claude)
+    })
         .await
         .map_err(|e| e.to_string())?
 }

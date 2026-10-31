@@ -1,6 +1,7 @@
-//! The seamux app. cmux is the engine behind its socket; every call goes
-//! through crates/cmux. Increment 1: connect at start and list the open
-//! workspaces, or name why it can't, so a dead cmux never means a blank window.
+//! The seamux app. Its sessions live in a backend picked at launch
+//! (seamux_app::backend): cmux behind its socket, or the app's own tmux. At
+//! start it lists the backend's workspaces, or names why it can't, so a
+//! dead backend never means a blank window.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -23,6 +24,8 @@ use serde_json::Value;
 #[serde(tag = "state", rename_all = "snake_case")]
 enum Status {
     Connected {
+        /// The backend the app picked at launch: "cmux" or "tmux".
+        backend: String,
         transport: String,
         access_mode: Option<String>,
         workspaces: Vec<Workspace>,
@@ -75,6 +78,7 @@ fn status_of(conn: Result<cmux::Cmux, cmux::Error>) -> Status {
     };
     match c.workspace_list(None) {
         Ok(v) => Status::Connected {
+            backend: "cmux".into(),
             transport: match c.transport() {
                 cmux::Transport::Socket(_) => "socket".into(),
                 cmux::Transport::Cli(_) => "cli".into(),
@@ -86,11 +90,28 @@ fn status_of(conn: Result<cmux::Cmux, cmux::Error>) -> Status {
     }
 }
 
+/// The status of a backend other than cmux: its workspaces, or why not.
+fn backend_status_of(kind: crew_core::backend::Kind, b: Result<&dyn crew_core::backend::Backend, String>) -> Status {
+    match b.and_then(|b| b.workspaces()) {
+        Ok(rows) => Status::Connected {
+            backend: kind.name().into(),
+            transport: kind.name().into(),
+            access_mode: None,
+            workspaces: rows.into_iter().map(|w| Workspace { r#ref: w.id.clone(), id: w.id, title: w.title }).collect(),
+        },
+        Err(message) => Status::Failed { kind: "backend".into(), message },
+    }
+}
+
 /// Async so Tauri runs it off the main thread, and the socket I/O goes to a
-/// blocking worker: a hung cmux must not freeze the window it would report on.
+/// blocking worker: a hung backend must not freeze the window it would report on.
 #[tauri::command]
-async fn cmux_status() -> Status {
-    tauri::async_runtime::spawn_blocking(|| status_of(cmux::Cmux::connect()))
+async fn backend_status() -> Status {
+    use crew_core::backend::Kind;
+    tauri::async_runtime::spawn_blocking(|| match seamux_app::backend::kind() {
+        Kind::Cmux => status_of(cmux::Cmux::connect()),
+        k => backend_status_of(k, seamux_app::backend::get()),
+    })
         .await
         .unwrap_or_else(|e| Status::Failed { kind: "app".into(), message: e.to_string() })
 }
@@ -154,7 +175,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            cmux_status,
+            backend_status,
             shell::intent_server,
             shell::intent_page,
             shell::hide_overlay,
@@ -254,6 +275,13 @@ mod tests {
     }
 
     #[test]
+    fn a_backend_with_no_workspaces_or_none_at_all_says_so() {
+        use crew_core::backend::Kind;
+        let none = backend_status_of(Kind::Tmux, Err("the tmux backend is not built yet".into()));
+        assert!(matches!(none, Status::Failed { ref kind, ref message } if kind == "backend" && message.contains("tmux")));
+    }
+
+    #[test]
     fn status_through_fakecmux() {
         // The CLI transport, handed fakecmux directly: the whole
         // connect-and-list path with no cmux app and no process-wide env.
@@ -265,7 +293,10 @@ mod tests {
         let s = status_of(conn);
         let _ = std::fs::remove_dir_all(&dir);
         match s {
-            Status::Connected { transport, .. } => assert_eq!(transport, "cli"),
+            Status::Connected { backend, transport, .. } => {
+                assert_eq!(backend, "cmux");
+                assert_eq!(transport, "cli");
+            }
             Status::Failed { kind, message } => panic!("fakecmux status failed: {kind}: {message}"),
         }
     }

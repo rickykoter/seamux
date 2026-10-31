@@ -15,10 +15,10 @@ import { ReviewView } from "./review";
 import "./review.css";
 import { Palette } from "./palette";
 
-// The shape of `cmux_status` in crates/seamux-app/src/main.rs.
+// The shape of `backend_status` in crates/seamux-app/src/main.rs.
 type Workspace = { id: string; ref: string; title: string };
 type Status =
-  | { state: "connected"; transport: string; access_mode: string | null; workspaces: Workspace[] }
+  | { state: "connected"; backend: string; transport: string; access_mode: string | null; workspaces: Workspace[] }
   | { state: "failed"; kind: string; message: string };
 
 const why: Record<string, string> = {
@@ -28,21 +28,24 @@ const why: Record<string, string> = {
   cli: "The cmux CLI ran but failed.",
   protocol: "cmux answered with something the app couldn't read.",
   bad_handle: "The app asked cmux about a handle it doesn't recognize.",
-  app: "The app couldn't run its cmux check.",
+  app: "The app couldn't run its backend check.",
+  backend: "The app's backend isn't available.",
 };
 
 function show(s: Status): void {
   const conn = document.getElementById("conn")!;
   if (s.state === "failed") {
     conn.className = "bad";
-    conn.textContent = "cmux unreachable";
+    conn.textContent = s.kind === "backend" ? "backend unavailable" : "cmux unreachable";
     conn.title = `${why[s.kind] ?? "Couldn't reach cmux."} (${s.message})`;
     return;
   }
   const n = s.workspaces.length;
   conn.className = "good";
-  conn.title = `Connected over the ${s.transport}${s.access_mode ? `, ${s.access_mode} mode` : ""}`;
-  conn.textContent = `cmux · ${n} workspace${n === 1 ? "" : "s"}`;
+  conn.title = s.backend === "cmux"
+    ? `cmux, over the ${s.transport}${s.access_mode ? `, ${s.access_mode} mode` : ""}`
+    : `The app's own ${s.backend} sessions`;
+  conn.textContent = `${s.backend} · ${n} workspace${n === 1 ? "" : "s"}`;
 }
 
 const dockEl = document.getElementById("dock")!;
@@ -84,7 +87,7 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-invoke<Status>("cmux_status").then(show, (e) => show({ state: "failed", kind: "app", message: String(e) }));
+invoke<Status>("backend_status").then(show, (e) => show({ state: "failed", kind: "app", message: String(e) }));
 dockView.start().catch((e) => console.error("dock", e));
 wakeView.start().catch((e) => console.error("wake", e));
 reviewView.begin().catch((e) => console.error("review", e));

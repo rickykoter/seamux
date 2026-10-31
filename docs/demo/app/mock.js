@@ -691,7 +691,7 @@ const CARD = {
 };
 
 const handlers = {
-  cmux_status: () => ({ state: "connected", transport: "socket", access_mode: null, workspaces: ws.map((w) => ({ id: w.id, ref: w.ref, title: w.title })) }),
+  backend_status: () => ({ state: "connected", backend: "cmux", transport: "socket", access_mode: null, workspaces: ws.map((w) => ({ id: w.id, ref: w.ref, title: w.title })) }),
   wall_frame: wallFrame,
   views_frame: viewsFrame,
   wall_reply: ({ surfaceId, text }) => reply(surfaceId, text),

@@ -8,6 +8,7 @@
 //! stays until the family's cutover; the probes run either implementation.
 
 pub mod asked;
+pub mod backend;
 pub mod cachefacts;
 pub mod costs;
 pub mod dp_engine;
