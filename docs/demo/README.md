@@ -56,6 +56,7 @@ title card and the cue cards from `cards.mjs`.
 | `reel/record.mjs`, `take.md` | the README Tour's own scenes |
 | `app/` | the seamux app's pages in a browser with a mocked Tauri backend |
 | `board-preview.py` | the crew board from this checkout on a fixed cast |
+| `live/` | the README Tour's two videos: the real seamux app, filmed with live Claude sessions ([live/README.md](live/README.md)) |
 
 ## What is not filmed
 
