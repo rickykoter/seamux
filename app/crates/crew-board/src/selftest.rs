@@ -145,8 +145,13 @@ pub fn run() -> i32 {
         Ok(tmpl) => {
             t.check("the usage template has its data placeholder", tmpl.contains(USAGE_SLOT), "");
             t.check("...and a table twin for the chart", tmpl.contains(r#"id="tbl""#), "");
+            // The synced palette block names every hue, the board's gold and
+            // red included; what the page itself paints with is what follows it.
+            let own = without_palette(&tmpl);
             t.check("...and does not reuse a board status colour for the series",
-                    tmpl.contains("#e69875") && !tmpl.contains("#dfa000") && !tmpl.contains("#e67e80"),
+                    (own.contains("#e69875") || own.contains("--data:var(--ef-orange)"))
+                        && !["#dfa000", "#e67e80", "var(--ef-red)", "var(--ef-bad)", "var(--ef-yellow)", "var(--ef-warn)"]
+                            .iter().any(|c| own.contains(c)),
                     "gold and red are 'needs you' and 'broken' on the board");
             t.check("...and the window card offers both views", tmpl.contains(r#"id="vtoggle""#) && tmpl.contains(r#"id="blockbody""#), "");
             t.check("...and remembers which one, across the 60s reload",
@@ -317,4 +322,36 @@ pub fn run() -> i32 {
     let color = if t.bad > 0 { "\x1b[31m" } else { "\x1b[32m" };
     println!("\n{color} intent selftest: {} passed, {} failed\x1b[0m", t.ok, t.bad);
     i32::from(t.bad > 0)
+}
+
+/// A page with its synced Everforest block (tools/theme_sync.py) cut out.
+fn without_palette(page: &str) -> String {
+    const START: &str = "/* everforest:start */";
+    const END: &str = "/* everforest:end */";
+    match (page.find(START), page.find(END)) {
+        (Some(a), Some(b)) if b > a => format!("{}{}", &page[..a], &page[b + END.len()..]),
+        _ => page.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::without_palette;
+
+    #[test]
+    fn the_palette_block_is_cut_and_the_page_kept() {
+        let page = "a{color:#e69875}\n/* everforest:start */\n:root{--ef-red:#e67e80}\n/* everforest:end */\nb{x:1}";
+        let own = without_palette(page);
+        assert!(!own.contains("#e67e80"));
+        assert!(own.contains("#e69875") && own.contains("b{x:1}"));
+        assert_eq!(without_palette("no block"), "no block");
+    }
+
+    #[test]
+    fn the_shipped_usage_template_paints_its_series_orange_only() {
+        let t = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../crew/board/usage.tmpl.html")).unwrap();
+        let own = without_palette(&t);
+        assert!(own.contains("--data:var(--ef-orange)"));
+        assert!(!["#dfa000", "#e67e80", "var(--ef-red)", "var(--ef-yellow)"].iter().any(|c| own.contains(c)));
+    }
 }
