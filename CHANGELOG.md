@@ -14,7 +14,8 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
   option button answers. A click that activated seamux without showing its
   window also made the hotkey hide that unseen window, so it took two presses.
   The hotkey now hides the window only when some of it is on screen, and a
-  click always brings it forward. ADR 0055.
+  click always brings it forward. A covered window on the current Space is
+  raised in place instead of blinking out and back. ADR 0055.
 
 - **app: tmux notifications show more and interrupt less.** On the tmux
   backend the app's banners now show the open question, or whether a finished

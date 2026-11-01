@@ -20,4 +20,4 @@ A notification click and the hotkey both count the window as in front only when 
 
 The first launch of this build asks whether seamux may send notifications. If you decline, no banners appear until you allow seamux in System Settings → Notifications.
 
-The hotkey's hide now needs the window visibly in front. A window that is open but covered comes forward on the first press.
+The hotkey's hide now needs the window visibly in front. A window that is open but covered comes forward on the first press. It is raised in place. Ordering it out and back in, which makes it blink, happens only when it is hidden, on another Space, or on another screen.

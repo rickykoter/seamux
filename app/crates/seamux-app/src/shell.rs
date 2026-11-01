@@ -353,17 +353,61 @@ fn join_full_screen_spaces<R: Runtime>(w: &WebviewWindow<R>) {
 /// activates the app without raising its window, so focus and "app in front"
 /// alone can name a window the person cannot see. The hotkey must bring such
 /// a window here, not hide it.
-#[cfg(target_os = "macos")]
 fn seen<R: Runtime>(w: &WebviewWindow<R>) -> bool {
+    on_active_space(w) && uncovered(w)
+}
+
+/// Whether the window is on the Space in front.
+#[cfg(target_os = "macos")]
+fn on_active_space<R: Runtime>(w: &WebviewWindow<R>) -> bool {
     let Ok(ptr) = w.ns_window() else { return true };
     // SAFETY: as in join_full_screen_spaces; callers run on the main thread.
     let win: &objc2_app_kit::NSWindow = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
-    win.isOnActiveSpace() && win.occlusionState().contains(objc2_app_kit::NSWindowOcclusionState::Visible)
+    win.isOnActiveSpace()
+}
+
+/// Whether some of the window is not covered by other windows.
+#[cfg(target_os = "macos")]
+fn uncovered<R: Runtime>(w: &WebviewWindow<R>) -> bool {
+    let Ok(ptr) = w.ns_window() else { return true };
+    // SAFETY: as in join_full_screen_spaces; callers run on the main thread.
+    let win: &objc2_app_kit::NSWindow = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
+    win.occlusionState().contains(objc2_app_kit::NSWindowOcclusionState::Visible)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn seen<R: Runtime>(_: &WebviewWindow<R>) -> bool {
+fn on_active_space<R: Runtime>(_: &WebviewWindow<R>) -> bool {
     true
+}
+
+#[cfg(not(target_os = "macos"))]
+fn uncovered<R: Runtime>(_: &WebviewWindow<R>) -> bool {
+    true
+}
+
+/// Whether the window is on the screen the pointer is on.
+fn here<R: Runtime>(w: &WebviewWindow<R>) -> bool {
+    match (monitor_under_pointer(w), w.current_monitor().ok().flatten()) {
+        (Some(p), Some(c)) => p.position() == c.position(),
+        _ => true,
+    }
+}
+
+/// Bring the window forward and make the app the active one. Ordering the
+/// window out and in is what makes macOS place it again on the Space and
+/// screen in front, but it blinks, so it is done only when the window is
+/// hidden or elsewhere. A window that is merely covered is raised in place.
+fn bring_forward<R: Runtime>(w: &WebviewWindow<R>) {
+    let visible = w.is_visible().unwrap_or(false);
+    if !(visible && here(w) && on_active_space(w)) {
+        if visible {
+            hide(w);
+        }
+        fill_screen(w);
+    }
+    show(w);
+    #[cfg(target_os = "macos")]
+    front::activate();
 }
 
 fn toggle<R: Runtime>(app: &AppHandle<R>) {
@@ -375,19 +419,10 @@ fn toggle<R: Runtime>(app: &AppHandle<R>) {
         // also asks macOS which app is.
         let in_front = w.is_focused().unwrap_or(false) && app_in_front();
         // On another screen than the pointer's, it comes here instead.
-        let here = match (monitor_under_pointer(&w), w.current_monitor().ok().flatten()) {
-            (Some(p), Some(c)) => p.position() == c.position(),
-            _ => true,
-        };
-        if visible && in_front && here && seen(&w) {
+        if visible && in_front && here(&w) && seen(&w) {
             hide(&w);
         } else {
-            if visible {
-                // Order it out so macOS re-places it on the Space in front.
-                hide(&w);
-            }
-            fill_screen(&w);
-            show(&w);
+            bring_forward(&w);
         }
     }
 }
@@ -585,25 +620,15 @@ fn show<R: Runtime>(w: &WebviewWindow<R>) {
     let _ = w.set_focus();
 }
 
-/// Bring the window forward from any thread, as the hotkey does: one not
-/// already in front is ordered out and placed again on the screen and Space
-/// in front, and the app is activated. A notification click is not a key
-/// press, so nothing activates the app unless this asks.
+/// Bring the window forward from any thread, as the hotkey does, and never
+/// hide it. A notification click is not a key press, so nothing activates
+/// the app unless this asks.
 pub fn summon<R: Runtime>(app: &AppHandle<R>) {
     let a = app.clone();
     let _ = app.run_on_main_thread(move || {
-        let Some(w) = a.get_webview_window("main") else { return };
-        let visible = w.is_visible().unwrap_or(false);
-        let in_front = visible && w.is_focused().unwrap_or(false) && app_in_front() && seen(&w);
-        if !in_front {
-            if visible {
-                hide(&w);
-            }
-            fill_screen(&w);
+        if let Some(w) = a.get_webview_window("main") {
+            bring_forward(&w);
         }
-        show(&w);
-        #[cfg(target_os = "macos")]
-        front::activate();
     });
 }
 
