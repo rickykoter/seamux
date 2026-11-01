@@ -16,7 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { STATE_DIR, KEYS_DIR, readState, allStates, canon, checksOf, checksAggregate } from "./state.mjs";
+import { STATE_DIR, KEYS_DIR, readState, allStates, canon, checksOf, checksAggregate, planPaths } from "./state.mjs";
 import { matchesGlob } from "./verify.mjs";
 
 export const FAMILIES_DIR = path.join(STATE_DIR, "families");
@@ -180,7 +180,7 @@ function archivedSpec(slug) {
 function derivedOf(spec, root) {
   const out = [];
   (spec && spec.deliverables || []).forEach((d, i) => {
-    for (const f of d.files || []) {
+    for (const f of planPaths(d)) {
       const abs = path.resolve(root, f);
       const repo = repoOf(abs);
       const rel = repo && relInRepo(repo, abs);

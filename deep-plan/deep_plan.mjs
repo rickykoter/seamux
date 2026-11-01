@@ -47,7 +47,7 @@ import {
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, DATA_ROOT, REMOTE_DIR, statePath, sessionId,
   readState, writeState, allStates, log1, progress, gateView,
-  planFor, CHECK_KINDS, specChecks, reconcileChecks, checksOf, checksBlock,
+  planFor, CHECK_KINDS, specChecks, planFiles, planPaths, reconcileChecks, checksOf, checksBlock,
   checksAggregate, needsTree, treeOf, treesAt, scopeOf, treeChanges, treeDiff, checkMeta, canon,
   updateState, LockBusy, onHumansWord, markActed, releaseLever,
 } from "./lib/state.mjs";
@@ -188,6 +188,49 @@ function validate(spec, force) {
       errs.push(`contract "${name}": decisionRef must name a decision in the spec`);
     else if (c.scope === "external" && !dec.adr && !(c.waiver && String(c.waiver).trim()))
       errs.push(`contract "${name}": external scope defaults toward ADR — flag the decision, or write a waiver`);
+  }
+
+  // Files: a path, or {path, change} where change is null or "remove". The
+  // map draws a removal; new or modify is inferred at render, never written.
+  const touched = new Set();
+  (spec.deliverables || []).forEach((d, i) => {
+    if (d.files === undefined) return;
+    if (!Array.isArray(d.files)) { errs.push(`deliverable ${i + 1}: files must be an array`); return; }
+    d.files.forEach((f, k) => {
+      const where = `deliverable ${i + 1} files[${k}]`;
+      if (typeof f === "string") { if (f.trim()) touched.add(f); else errs.push(`${where}: an empty path`); return; }
+      if (!f || typeof f !== "object" || Array.isArray(f)) { errs.push(`${where}: a path string or {path, change}`); return; }
+      if (typeof f.path !== "string" || !f.path.trim()) errs.push(`${where}: path must be a non-empty string`);
+      else touched.add(f.path);
+      if (f.change != null && f.change !== "remove")
+        errs.push(`${where} (${f.path}): change is "remove" or absent; new or modify is inferred`);
+      for (const key of Object.keys(f)) if (key !== "path" && key !== "change")
+        errs.push(`${where} (${f.path}): unknown field "${key}" (only path and change)`);
+    });
+  });
+  // contracts[].at places a contract on the map: each path must be one the
+  // plan touches or a fact cites, or the card it names would not be drawn.
+  // "Cited" means what the read-before-plan floor means by it: the evidence
+  // is the path, or starts with the path and a colon.
+  const cites = p => (spec.verifiedFacts || []).some(v => {
+    const ev = String(v && v.evidence || "");
+    return ev === p || ev.startsWith(p + ":");
+  });
+  // A removal is always read first, and the file is gone once the increment
+  // lands, so its citation is the check (and it catches a mistyped path).
+  (spec.deliverables || []).forEach((d, i) => {
+    for (const f of Array.isArray(d.files) ? d.files : [])
+      if (f && typeof f === "object" && f.change === "remove" && typeof f.path === "string" && f.path.trim() && !cites(f.path))
+        errs.push(`deliverable ${i + 1}: removes ${f.path}, which no verifiedFact cites (read it before planning its removal)`);
+  });
+  for (const c of spec.contracts || []) {
+    if (c.at === undefined) continue;
+    const name = c.surface || "(unnamed surface)";
+    if (!Array.isArray(c.at) || c.at.some(p => typeof p !== "string" || !p.trim())) {
+      errs.push(`contract "${name}": at is a list of repo-relative paths`); continue;
+    }
+    for (const p of c.at) if (!touched.has(p) && !cites(p))
+      errs.push(`contract "${name}": at names ${p}, which no deliverable lists and no fact cites`);
   }
 
   // Checks: `done` is gated on them, so one the engine cannot read must refuse
@@ -602,7 +645,7 @@ function resolvePlanChecks(spec, root) {
       ...(r.scripts && r.scripts.length ? { scripts: r.scripts.map(f => path.posix.join(r.project || ".", r.cwd, f)) } : {}) } });
   const lists = (spec.deliverables || []).map((d, i) => {
     const label = `deliverable ${i + 1} ("${d.title}")`;
-    const rows = (d.files || []).map(f => R.file(f)).filter(r => !r.outside);
+    const rows = planPaths(d).map(f => R.file(f)).filter(r => !r.outside);
     // A check may name any recipe available where the deliverable's files
     // land, match aside — naming one is the author choosing it. With no
     // config under any of its files, the root's.
@@ -699,7 +742,7 @@ function planAdrs(spec, root) {
   const entries = adrEntries(spec);
   if (!entries.length) return [];
   const config = loadAdrConfig(root);
-  const files = (spec.deliverables || []).flatMap(d => d.files || []);
+  const files = (spec.deliverables || []).flatMap(planPaths);
   const { dir, source } = resolveAdrDir(root, config, files);
   const dirAbs = path.join(root, dir);
   const base = nextNumber(dirAbs, config.numberScan);
@@ -798,7 +841,7 @@ function mdPlan(spec, adrs = []) {
       (pol.between === "draft-pr" ? "; between increments the branch is pushed to a draft PR." : "."), "");
   (spec.deliverables || []).forEach((d, i) => {
     L.push(`### ${i + 1}. ${d.title}`, "", d.body || "");
-    if ((d.files || []).length) L.push("", "Files: " + d.files.map(f => "`" + f + "`").join(", "));
+    if (planFiles(d).length) L.push("", "Files: " + planFiles(d).map(f => "`" + f.path + "`" + (f.change ? ` (${f.change})` : "")).join(", "));
     if (pol.auto && humanStop(spec, i + 1)) L.push("", `Go: a person's — ${humanStop(spec, i + 1)}`);
     // Per-deliverable verification is not a duplicate of the plan-wide list: it
     // is how you check THIS increment, which is what someone reviewing one
@@ -1544,7 +1587,7 @@ function reviewHtml(spec, b64, adrs = []) {
   const verif = (spec.verification || []).map(v => `<li><code>${esc(v)}</code></li>`).join("");
   const incs = (spec.deliverables || []).map((d, i) =>
     `<div class="inc" id="inc-${i + 1}"><b>${i + 1}. ${esc(d.title)}</b><p>${esc(d.body || "")}</p>
-${fileTreeHtml(d.files)}
+${fileTreeHtml(planPaths(d))}
 ${checksHtml(planChecks(spec, i), d.waiver)}
 ${(d.commits || []).length ? `<ul class="dim">${d.commits.map(c => commitLi(c)).join("")}</ul>` : ""}
 <textarea class="dp-note" data-section="increment ${i + 1}" rows="1" placeholder="comment on this increment (optional)" aria-label="comment on increment ${i + 1}"></textarea></div>`).join("\n");
@@ -1819,7 +1862,7 @@ function workingHtml(spec, st, b64) {
   const kindOf = (inc, a) => ALWAYS.includes(a) ? "quiet" : inc === next && a === nextAct ? "primary" : "";
   const rows = (st.increments || []).map(inc => {
     const d = (spec.deliverables || [])[inc.n - 1] || {};
-    const files = fileTreeHtml(d.files);
+    const files = fileTreeHtml(planPaths(d));
     // Only the transitions this status allows (INC_ALLOWED, which
     // applyTransition refuses by): a go on a done increment can only be refused.
     const acts = incActions(inc.status).map(a =>
@@ -1954,6 +1997,10 @@ function renderFamily(spec, family) {
 async function render(specPath, opts) {
   const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
   const violations = validate(spec, opts.force);
+  // The archive holds one shape: every files[] entry as {path, change}, with
+  // change null unless the author declared it. The author's file is not
+  // touched; what render infers about each path lives in st.map.
+  for (const d of spec.deliverables || []) if (Array.isArray(d.files)) d.files = planFiles(d);
   // Read-before-plan floor: a deliverable that names an EXISTING file must
   // have a verifiedFact citing it — you cannot plan to edit a file you have
   // not read. Born of the crew-integrations retro: a spec planned "deepen
@@ -1975,7 +2022,7 @@ async function render(specPath, opts) {
     });
     const unread = [];
     (spec.deliverables || []).forEach((d, i) => {
-      for (const f of d.files || [])
+      for (const f of planPaths(d))
         if (fs.existsSync(path.join(root, f)) && !cited(f))
           unread.push(`deliverable ${i + 1} ("${d.title}") edits ${f} — no verifiedFact cites it`);
     });
@@ -2332,7 +2379,7 @@ function exportArtifact(slug, asJson) {
   checksFromState(spec, st);
   const incs = (spec.deliverables || []).map((d, i) =>
     `<div class="inc" id="inc-${i + 1}"><b>${i + 1}. ${esc(d.title)}</b><p>${esc(d.body || "")}</p>
-${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${esc(f)}</code>`).join(" ")}</p>` : ""}
+${planFiles(d).length ? `<p class="dim">files: ${planFiles(d).map(f => `<code>${esc(f.path)}</code>${f.change ? ` (${esc(f.change)})` : ""}`).join(" ")}</p>` : ""}
 ${checksHtml(planChecks(spec, i), d.waiver)}</div>`).join("\n");
   const diagrams = (spec.diagrams || []).map(dg =>
     `<h2>${esc(dg.question)}</h2>` +

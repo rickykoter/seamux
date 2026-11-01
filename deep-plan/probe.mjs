@@ -296,6 +296,10 @@ ok("mermaid inlined as base64 (the swap regex's shape)",
   fs.writeFileSync(path.join(EVREPO, ".seamux", "verify.json"), "{\n  \"recipes\": []\n}\n");
   const ev = JSON.parse(JSON.stringify(spec));
   ev.slug = "evidence-probe";
+  // These facts replace the example's, so its contract's at and its declared
+  // removal would name paths nothing cites any more.
+  for (const c of ev.contracts || []) delete c.at;
+  for (const d of ev.deliverables) d.files = (d.files || []).filter(f => typeof f === "string");
   ev.verifiedFacts = [
     { claim: "a fine citation", evidence: "src/real.txt:3-5" },
     { claim: "line out of range", evidence: "src/real.txt:99" },
@@ -3103,6 +3107,81 @@ if (want("spec fields that used to be dropped")) {
     !(bare.deliverables || []).some(d => d.verification || d.commits) &&
     cli("render", tmpSpec({ ...bare, slug: "bare-plan" })).status === 0);
   for (const n of ["fields-plan", "bare-plan"]) {
+    cli("close", n);
+    fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), { force: true });
+  }
+}
+
+// -------------------------------------------------- spec files: strings, removals, contracts placed with at
+//
+// A files[] entry is a path or {path, change: "remove"}. The archive holds one
+// shape, {path, change} with change null unless declared; the author's own
+// file is never rewritten, and what render infers stays out of the spec.
+if (want("spec files: strings, removals, contracts placed with at")) {
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "files-plan";
+  const authorPath = path.join(TMP, "files-plan.spec.json");
+  const authorText = JSON.stringify(s, null, 2);
+  fs.writeFileSync(authorPath, authorText);
+  r = cli("render", authorPath);
+  ok("a spec mixing strings and a removal renders", r.status === 0, r.stderr);
+  ok("the author's spec file is left byte for byte", fs.readFileSync(authorPath, "utf8") === authorText);
+  const arch = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "files-plan.spec.json"), "utf8"));
+  const all = arch.deliverables.flatMap(d => d.files);
+  ok("the archive holds every entry as {path, change}",
+    all.length === 3 && all.every(f => f && typeof f === "object" && Object.keys(f).sort().join() === "change,path"), JSON.stringify(all));
+  ok("a plain string is archived with a null change",
+    all.find(f => f.path === "app/workers/retry_sweep.rb")?.change === null &&
+    all.find(f => f.path === "db/migrate/add_retry_columns.rb")?.change === null);
+  ok("a declared removal keeps its change", all.find(f => f.path === "app/workers/inline_retry.rb")?.change === "remove");
+  ok("nothing inferred lands in the archive", !/"(new|modify)"/.test(JSON.stringify(arch.deliverables)));
+  ok("contracts[].at survives into the archive", JSON.stringify(arch.contracts[0].at) === '["db/schema.rb"]');
+  const md = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "files-plan.md"), "utf8");
+  ok("the markdown names the removal", md.includes("`app/workers/inline_retry.rb` (remove)"));
+  const rv = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "files-plan.review.html"), "utf8");
+  ok("the review page's file tree shows an object entry by its path", rv.includes("inline_retry.rb") && !rv.includes("[object Object]"));
+  r = cli("rehydrate", "files-plan");
+  ok("rehydrate reads the object-shaped archive byte-identically", r.status === 0 && /byte-identical/.test(r.stdout + r.stderr), r.stdout + r.stderr);
+
+  // An existing file is read-before-plan whichever shape names it.
+  fs.mkdirSync(path.join(REPO, "lib"), { recursive: true });
+  fs.writeFileSync(path.join(REPO, "lib", "old.rb"), "x\n");
+  let bad = JSON.parse(JSON.stringify(s));
+  bad.deliverables[0].files.push({ path: "lib/old.rb", change: "remove" });
+  r = cli("render", tmpSpec(bad));
+  ok("an uncited existing file is refused in object form too", r.status !== 0 && /lib\/old\.rb/.test(r.stderr), r.stderr);
+
+  const refuses = (label, mutate, re) => {
+    const b = JSON.parse(JSON.stringify(s));
+    mutate(b);
+    const rr = cli("render", tmpSpec(b));
+    ok(label, rr.status !== 0 && re.test(rr.stderr), rr.stderr);
+  };
+  refuses("refuses a change other than remove", b => { b.deliverables[0].files[0] = { path: "a.rb", change: "modify" }; }, /change is "remove"/);
+  refuses("refuses an entry that is neither a path nor an object", b => { b.deliverables[0].files.push(7); }, /path string or \{path, change\}/);
+  refuses("refuses an object with no path", b => { b.deliverables[0].files.push({ change: "remove" }); }, /path must be a non-empty string/);
+  refuses("refuses an unknown field on an entry", b => { b.deliverables[0].files[0] = { path: "a.rb", kind: "new" }; }, /unknown field "kind"/);
+  refuses("refuses files that are not a list", b => { b.deliverables[0].files = "a.rb"; }, /files must be an array/);
+  refuses("refuses an at naming a path nothing touches", b => { b.contracts[0].at = ["db/elsewhere.rb"]; }, /at names db\/elsewhere\.rb/);
+  refuses("refuses a removal no fact cites (a mistyped path)", b => { b.deliverables[1].files[1] = { path: "app/workers/inline_rety.rb", change: "remove" }; }, /removes app\/workers\/inline_rety\.rb, which no verifiedFact cites/);
+  {
+    const b = JSON.parse(JSON.stringify(s));
+    b.slug = "files-plan-ev";
+    b.verifiedFacts.push({ claim: "two refs in one citation", evidence: "lib/two.rb:3, lib/three.rb:9" });
+    b.contracts[0].at = ["lib/two.rb"];
+    ok("an at matches a citation the way read-before-plan does (path and a colon)", cli("render", tmpSpec(b)).status === 0);
+  }
+  refuses("refuses an at that is not a list of paths", b => { b.contracts[0].at = "db/schema.rb"; }, /at is a list/);
+  {
+    const b = JSON.parse(JSON.stringify(s));
+    b.slug = "files-plan-at";
+    b.contracts[0].at = ["app/workers/retry_sweep.rb", "db/schema.rb"];
+    ok("an at naming a planned file or a cited one renders", cli("render", tmpSpec(b)).status === 0);
+    delete b.contracts[0].at;
+    b.slug = "files-plan-noat";
+    ok("a contract with no at renders", cli("render", tmpSpec(b)).status === 0);
+  }
+  for (const n of ["files-plan", "files-plan-at", "files-plan-noat", "files-plan-ev"]) {
     cli("close", n);
     fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), { force: true });
   }

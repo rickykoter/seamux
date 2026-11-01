@@ -11,11 +11,13 @@
   "contracts": [
     { "surface": "outbox table (attempt_count, next_try_at)", "kind": "db-schema", "scope": "internal", "change": "modify",
       "reach": "the delivery worker is the single consumer; the timer sweep reads both new columns",
-      "decisionRef": "Track retries on the outbox row" }
+      "decisionRef": "Track retries on the outbox row",
+      "at": ["db/schema.rb"] }
   ],
   "verifiedFacts": [
     { "claim": "outbox rows carry a status column", "evidence": "db/schema.rb:42" },
-    { "claim": "the delivery worker is the single consumer", "evidence": "app/workers/deliver.rb:10" }
+    { "claim": "the delivery worker is the single consumer", "evidence": "app/workers/deliver.rb:10" },
+    { "claim": "the inline retry loop the sweep replaces", "evidence": "app/workers/inline_retry.rb:7" }
   ],
   "risks": [
     { "risk": "backoff cap has not been agreed; starting at 5 tries", "disposition": "accept" }
@@ -30,7 +32,7 @@
       "checks": [
         { "kind": "test", "name": "retry sweep spec", "run": "bundle exec rspec spec/workers/retry_sweep_spec.rb" },
         { "kind": "manual", "name": "a failed row in a dev outbox is re-queued on the next sweep" } ] },
-    { "title": "Backoff bookkeeping", "body": "Attempt count and next-try-at on the outbox row.", "files": ["db/migrate/add_retry_columns.rb"],
+    { "title": "Backoff bookkeeping", "body": "Attempt count and next-try-at on the outbox row.", "files": ["db/migrate/add_retry_columns.rb", { "path": "app/workers/inline_retry.rb", "change": "remove" }],
       "waiver": "the retry sweep spec in increment 1 exercises both new columns; a migration has nothing of its own to prove" }
   ],
   "review": { "increments": "none", "delivery": false },

@@ -277,6 +277,19 @@ function checkSlug(kind, name) {
   return `${ID_PREFIX[kind] || kind}-${kebab || "check"}`;
 }
 
+// A deliverable's files as {path, change}. An entry is a plain path or an
+// object; change is null unless the author declared it ("remove" is the only
+// value). Every reader of deliverables[].files goes through this, because the
+// archived spec holds objects and older archives hold strings.
+export function planFiles(d) {
+  return (d && d.files || []).map(f => typeof f === "string"
+    ? { path: f, change: null }
+    : { path: String(f && f.path || ""), change: f && f.change || null });
+}
+
+// Just the paths, for readers that only ever wanted strings.
+export const planPaths = d => planFiles(d).map(f => f.path);
+
 // The spec's checks for one deliverable, normalized: declared first, then the
 // legacy fields. An id is the author's when given, else derived from kind and
 // name — stable across re-renders, so a verdict follows its check, and a
