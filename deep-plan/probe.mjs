@@ -3444,6 +3444,19 @@ if (want("end state map: on both plan pages")) {
   ok("an open folder's header folds it again", secHead.length === 1 && secHead[0].getAttribute("aria-expanded") === "true");
   secHead[0].fire("click");
   ok("…and does", !doc.querySelectorAll("g.pm-card").length && doc.querySelectorAll("g.pm-fold").length === folders.size);
+  // A neighbour beside a folded row names the plan's files, never the row's id.
+  const nbBox = doc.querySelectorAll("g.pm-nb").find(g => !/\bmore\b/.test(g.className));
+  if (nbBox) {
+    nbBox.fire("click");
+    const t = doc.querySelector("div.pm-panel").textContent;
+    ok("a neighbour of a folded row lists the plan files it links to, not the row's id",
+      !/fold:/.test(t) && data.map.cards.some(c => t.includes(c.path)), t);
+  }
+  // A selected card whose folder is folded is shown by that folder's row.
+  foldsDrawn[0].fire("click");
+  doc.querySelectorAll("g.pm-card")[0].fire("click");
+  doc.querySelectorAll("g.pm-sec")[0].fire("click");
+  ok("a selected card folded away marks its folder's row", doc.querySelectorAll("g.pm-fold").some(g => /\bsel\b/.test(g.className)));
   const allBtn = () => doc.querySelectorAll("button.pm-all")[0];
   ok("the bar offers Expand all", !!allBtn() && /Expand all/.test(allBtn().textContent));
   allBtn().fire("click");
@@ -3481,6 +3494,11 @@ if (want("end state map: on both plan pages")) {
     const keepS = {};
     const api = winG.PlanMap.mount(hostG, data.map, { keep: keepS });
     api.select(data.map.cards[0].path);
+    const keepN = {};
+    winG.PlanMap.mount(hostG, { ...data.map, cards: [] }, { keep: keepN });
+    winG.PlanMap.mount(hostG, data.map, { keep: keepN, folded: false });
+    ok("a kept empty selection gives way to the first card once there are cards to show",
+      docG.querySelector("div.pm-panel").textContent.includes(data.map.cards[0].path));
     ok("select() opens the folder of the card it shows",
       docG.querySelectorAll("g.pm-card").some(g => g.getAttribute("aria-label").startsWith(data.map.cards[0].path)) &&
       /pm-panel/.test(docG.querySelector("div.pm-panel").className) && docG.querySelector("div.pm-panel").textContent.includes(data.map.cards[0].path));

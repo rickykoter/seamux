@@ -49,14 +49,16 @@
     ".pm-canvas{overflow-x:auto;border:1px solid var(--ef-line2);border-radius:8px;background:var(--ef-bg1)}",
     ".pm-canvas svg{display:block;width:100%;min-width:640px;height:auto}",
     ".pm-panel{border:1px solid var(--ef-line2);border-radius:8px;padding:10px 14px 12px;display:grid;gap:8px;background:var(--ef-bg);" +
-      "position:sticky;bottom:0;z-index:5;max-height:42vh;overflow:auto;box-shadow:0 -8px 18px -12px rgba(0,0,0,.55)}",
+      "position:sticky;bottom:0;z-index:5;max-height:calc(var(--pm-view, 100vh) * .42);overflow:auto;box-shadow:0 -8px 18px -12px rgba(0,0,0,.55)}",
     ".pm-head{display:flex;gap:8px;align-items:flex-start;position:sticky;top:-10px;margin-top:-10px;padding-top:10px;background:var(--ef-bg)}",
     ".pm-head h3{flex:1;min-width:0}",
     ".pm-min{appearance:none;border:1px solid var(--ef-line2);background:var(--ef-bg1);color:var(--ef-text-dim);font:inherit;font-size:12px;line-height:1;padding:3px 8px;border-radius:6px;cursor:pointer;flex:none}",
     ".pm-min:hover{color:var(--ef-text)}.pm-min:focus-visible{outline:2px solid var(--ef-accent);outline-offset:2px}",
-    ".pm-panel.min>:not(.pm-head){display:none}",
-    "@container (min-width:960px){.pm-body{grid-template-columns:minmax(0,1fr) 320px}" +
-      ".pm-panel{bottom:auto;top:12px;max-height:calc(100vh - 24px);box-shadow:none}.pm-min{display:none}.pm-panel.min>:not(.pm-head){display:revert}}",
+    // Side by side needs the svg's 640px, the panel's 320 and the 10px gap.
+    // A page whose scroller is not the viewport sets --pm-view to its height.
+    "@container (max-width:979.98px){.pm-panel.min>:not(.pm-head){display:none}}",
+    "@container (min-width:980px){.pm-body{grid-template-columns:minmax(0,1fr) 320px}" +
+      ".pm-panel{bottom:auto;top:12px;max-height:calc(var(--pm-view, 100vh) - 24px);box-shadow:none}.pm-min{display:none}}",
     ".pm-panel>.pm-chip{justify-self:start}",
     ".pm-panel h3{margin:0;font:600 14px var(--ef-mono);word-break:break-all}",
     ".pm-panel h4{margin:4px 0 0;font:600 11px var(--ef-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ef-text-faint)}",
@@ -186,7 +188,7 @@
     if (state.picked === undefined) state.picked = null;
     if (!state.open) state.open = {};
     state.hover = null;
-    if (state.sel === undefined || (state.sel !== null && !byPath[state.sel])) {
+    if (state.sel === undefined || (state.sel === null && !foldFirst) || (state.sel !== null && !byPath[state.sel])) {
       // With the cards folded away, the panel waits for a click.
       state.sel = foldFirst || !cards.length ? null : cards[0].path;
       state.picked = null;
@@ -283,11 +285,17 @@
         seen[k] = e;
         out.push(e);
       };
-      var nb = function (p, side, more, of) {
+      // of: the drawn ids it links to (a card or a folded row), for placing
+      // it; cards: the plan files behind them; hidden: the paths a folded
+      // row counts instead of drawing.
+      var nb = function (p, side, more, of, card, hidden) {
         var id = more ? "more:" + side + ":" + of : p;
-        if (!nbs[id]) nbs[id] = { id: id, path: more ? "" : p, side: side, more: 0, of: [] };
-        nbs[id].more += more || 0;
-        if (nbs[id].of.indexOf(of) < 0) nbs[id].of.push(of);
+        if (!nbs[id]) nbs[id] = { id: id, path: more ? "" : p, side: side, more: 0, of: [], cards: [], hidden: [] };
+        var n = nbs[id];
+        n.more += more || 0;
+        if (n.of.indexOf(of) < 0) n.of.push(of);
+        if (card && n.cards.indexOf(card) < 0) n.cards.push(card);
+        (hidden || []).forEach(function (h) { if (n.hidden.indexOf(h) < 0) n.hidden.push(h); });
         return id;
       };
       var cap = {};
@@ -305,23 +313,23 @@
         // file as one) keeps its line, drawn as a link inside the lane.
         var linked = c.links || [];
         ((c.usedBy && c.usedBy.paths) || []).forEach(function (p) {
-          if (!ids[p]) { if (room(me, "left", p)) push({ from: nb(p, "left", 0, me), to: me, planned: fresh }); }
+          if (!ids[p]) { if (room(me, "left", p)) push({ from: nb(p, "left", 0, me, c.path), to: me, planned: fresh }); }
           else if (linked.indexOf(p) < 0) push({ from: A(p), to: me, planned: fresh, inner: true });
         });
-        if (c.usedBy && c.usedBy.more) push({ from: nb("", "left", c.usedBy.more, me), to: me, planned: fresh });
+        if (c.usedBy && c.usedBy.more) push({ from: nb("", "left", c.usedBy.more, me, c.path), to: me, planned: fresh });
         ((c.uses && c.uses.paths) || []).forEach(function (p) {
-          if (!ids[p]) { if (room(me, "right", p)) push({ from: me, to: nb(p, "right", 0, me), planned: fresh }); }
+          if (!ids[p]) { if (room(me, "right", p)) push({ from: me, to: nb(p, "right", 0, me, c.path), planned: fresh }); }
           else if (linked.indexOf(p) < 0) push({ from: me, to: A(p), planned: fresh, inner: true });
         });
-        if (c.uses && c.uses.more) push({ from: me, to: nb("", "right", c.uses.more, me), planned: fresh });
+        if (c.uses && c.uses.more) push({ from: me, to: nb("", "right", c.uses.more, me, c.path), planned: fresh });
         (c.links || []).forEach(function (p) {
           if (ids[p] && c.path < p) push({ from: me, to: A(p), planned: fresh || ids[p].change === "new", inner: true });
         });
       });
       Object.keys(cap).forEach(function (k) {
-        var r = cap[k], n = Object.keys(r.hidden).length;
-        if (!n) return;
-        var id = nb("", r.side, n, r.me);
+        var r = cap[k], hid = Object.keys(r.hidden);
+        if (!hid.length) return;
+        var id = nb("", r.side, hid.length, r.me, null, hid);
         push(r.side === "left" ? { from: id, to: r.me, planned: false } : { from: r.me, to: id, planned: false });
       });
       return { edges: out, nbs: Object.keys(nbs).map(function (k) { return nbs[k]; }) };
@@ -416,7 +424,7 @@
         g._id = id;
         gCards.appendChild(g);
       });
-      cur = { svg: svg, pos: pos, edges: E.edges };
+      cur = { svg: svg, pos: pos, edges: E.edges, alias: alias };
       canvas.replaceChildren(svg);
       paint();
     }
@@ -531,7 +539,7 @@
       g.appendChild(S("rect", { "class": "box", width: it.w, height: it.h, rx: 5 }));
       g.appendChild(T({ x: 8, y: 16, "class": "name" }, n.more ? "+" + n.more + " more" : clip(n.path, 30)));
       var title = S("title");
-      title.textContent = n.more ? n.more + " more files, past the cap of six" : n.path;
+      title.textContent = n.more ? n.more + " more files, not drawn" : n.path;
       g.appendChild(title);
       wire(g, n.id);
       return g;
@@ -539,7 +547,9 @@
 
     function paint() {
       if (!cur) return;
-      var hot = state.hover || state.sel, linked = {};
+      // A card folded away is shown by its folder's row.
+      var selId = (state.sel && cur.alias[state.sel]) || state.sel;
+      var hot = state.hover || selId, linked = {};
       linked[hot] = true;
       cur.edges.forEach(function (e) { if (e.from === hot) linked[e.to] = true; if (e.to === hot) linked[e.from] = true; });
       var inInc = function (id) {
@@ -557,7 +567,7 @@
       });
       cur.svg.querySelectorAll("g.pm-card, g.pm-nb, g.pm-fold").forEach(function (g) {
         var id = g._id;
-        g.classList.toggle("sel", id === state.sel);
+        g.classList.toggle("sel", id === selId);
         g.classList.toggle("dim", (!!state.hover && !linked[id]) || !inInc(id));
       });
     }
@@ -599,10 +609,24 @@
         meta.appendChild(H("span", "pm-tag", "not in the plan"));
         meta.appendChild(H("span", "pm-tag", n.side === "left" ? "uses a planned file" : "used by a planned file"));
         panel.appendChild(meta);
-        panel.appendChild(H("h4", "", n.more ? "Past the cap, beside" : "Linked plan files"));
-        var ul = H("ul");
-        n.of.forEach(function (p) { ul.appendChild(li([codeEl(p)])); });
-        panel.appendChild(ul);
+        var list = function (title, paths) {
+          if (!paths.length) return;
+          panel.appendChild(H("h4", "", title));
+          var ul = H("ul");
+          paths.forEach(function (p) { ul.appendChild(li([codeEl(p)])); });
+          panel.appendChild(ul);
+        };
+        // A folded row stands for its files: name the files, not the row.
+        var beside = n.cards.length && !n.more ? n.cards : n.of.reduce(function (acc, id) {
+          var q = cur.pos[id];
+          return acc.concat(q && q.f ? q.f.list.map(function (c) { return c.path; }) : [id]);
+        }, []);
+        if (n.more) {
+          list("Not drawn", n.hidden);
+          if (n.more > n.hidden.length)
+            panel.appendChild(H("p", "pm-note", (n.more - n.hidden.length) + " more past the six each card names."));
+          list("Beside", beside);
+        } else list("Linked plan files", beside);
         panel.appendChild(H("p", "pm-note", "Found when the plan rendered and kept in its state; a re-render looks again."));
         return;
       }
