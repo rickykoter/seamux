@@ -34,6 +34,11 @@ These survive a compaction; everything below them is how.
   `go: "parent"`, the parent agent gives that child's go from its own
   worktree, after reading the child's verdicts. The child never runs `go`
   itself, and no agent passes `--by human` except on a person's word.
+- **An auto plan's go is `done`'s.** When the spec sets `go: "auto"` (the
+  human's call at planning time), a `done` whose checks all passed
+  authorizes the next increment itself (`by: auto`). Do the between step
+  `done` names, then start it. Where `done` says the chain stops, ask the
+  human, as for any go. The agent still never runs `go` on its own word.
 - **An acquire step is the human's.** Never run one, even with a `go` in hand.
   A claim step is the engine's: the developer wrote it into the recipe, and
   `check run` polls, asks, locks and releases it.
@@ -83,6 +88,14 @@ These survive a compaction; everything below them is how.
    the human which increments deserve a lookout review and whether the full
    delivery does, and record it as `review.increments` and
    `review.delivery`. All of it: [checks.md](references/checks.md). Ask
+   whether increments should follow each other without a person's go once
+   their checks pass, and record it as `go`: `"human"`, or `{ "mode":
+   "auto", "between": "commit" | "draft-pr" }`. Under auto, ask which
+   increments need a person first (a migration, a prod switch, anything
+   past "commit, open a draft PR, carry on") and give each a `go: {
+   "human": "<why>" }`. An increment that auto-goes after a reviewed one
+   needs `review.agentMayClose`; render says so
+   ([spec.md](references/spec.md#auto-go)). Ask
    too whether the plan's state should sync to a git branch other sessions
    pull, and record the answer as `share`
    ([sharing.md](references/sharing.md#state-branches)).
@@ -138,7 +151,8 @@ These survive a compaction; everything below them is how.
 9. **Implement increment by increment.** `deep-plan go <slug> next` is the
    human's go-ahead (also the board's `go` chip, and the plan pane's `go
    next`, which then tells you which increment is authorized), or the parent
-   agent's for a delegated family child ([families.md](references/families.md)).
+   agent's for a delegated family child ([families.md](references/families.md)),
+   or `done`'s own on an auto plan.
    When the human
    says "go" and an increment is already authorized, start that one. `go
    next` refuses while one is open; `--force` past it only on the human's

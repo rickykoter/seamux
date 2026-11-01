@@ -46,6 +46,9 @@ the shared contract first, check the whole once everything is in).
   re-render never hands it back quietly. Both are a person's: from a Claude
   Code session they need `--by human` on the person's word. Take-backs and
   holds live in `state/families/<parent>/control.json`.
+- **A child's spec may set `go: "auto"`** (spec.md, Auto-go). It applies
+  only where the child's go is a person's: on a delegated child, held or
+  waiting, `done` stops the chain and the parent's go still decides.
 - **A delegated child waits with `await-go`.** After each `done`, run
   `deep-plan await-go <slug>` in the background (a background Bash command)
   and end the turn; nothing is typed into the session. Exit 0 prints the

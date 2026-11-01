@@ -5,6 +5,7 @@ The full shape of the spec JSON (discipline step 5); `examples/example.spec.json
 ## Contents
 
 - [Overview diagrams](#overview-diagrams)
+- [Auto-go](#auto-go)
 - [Parent plans](#parent-plans)
 - [Shared state](#shared-state)
 - [Advisory and derived fields](#advisory-and-derived-fields)
@@ -36,10 +37,12 @@ The full shape of the spec JSON (discipline step 5); `examples/example.spec.json
                         "system": "datadog|splunk|...", "query": "...", "expect": "what proves it",
                         "note": "optional" }],
                       "waiver": "only when nothing can prove it: why",
+                      "go": { "human": "auto plans only: why a person gives this increment's go" },
                       "commits": ["sha subject", { "sha": "...", "subject": "..." }] }],
   "review":        { "increments": [1, 3], "delivery": true,
                      "agentMayClose": false, "quiz": false,
                      "family": false },
+  "go":            "optional: \"human\" (the default), \"auto\", or { \"mode\": \"auto\", \"between\": \"commit|draft-pr\" }",
   "share":         "optional: true, or { \"remote\": \"origin\", \"prefix\": \"seamux-state/\", \"sync\": \"transitions|manual\" }",
   "nonGoals":      ["what this plan deliberately does not do"],
   "verification":  ["runnable commands"],
@@ -58,6 +61,26 @@ who has not read the code: four to six boxes, plain words, no file, function
 or table names. The review and working pages show it first, with the
 detailed diagram one tab away, and it is parsed like any other diagram. It
 does not count toward the diagram floor.
+
+## Auto-go
+
+`go` says who gives each increment's go after the first. `"human"`, or left
+out, is the usual: a person gives every one. With `"auto"`, a `done` whose
+checks all passed authorizes the next pending increment in the same write,
+logged and shown as `by: auto`, and prints what to do before starting it.
+`between` is that step: `"commit"` (the default; the increment is committed
+before `done`) or `"draft-pr"` (also push the branch and open or update a
+draft PR).
+
+The first go, after the alignment check, is always a person's. The chain
+stops, and `done` says why, at an increment with `go: { "human": "<why>" }`,
+after a `done --force` (a skipped proof), while another increment is open
+or blocked,
+and on a family child whose go is its parent's, held, or waiting. Render
+refuses an auto plan where a reviewed increment is followed by one that
+auto-goes unless `review.agentMayClose` is true, since otherwise the chain
+waits on a person closing findings that nobody asked them to close. A
+`go.human` on increment 1 or on a plan that is not auto is refused too.
 
 ## Parent plans
 
