@@ -503,6 +503,10 @@
     for (const f of R.files || []) { diffOf.set(f.path, f.path); if (f.oldPath) diffOf.set(f.oldPath, f.path); }
     const mountAt = el("div");
     box.append(mountAt);
+    // #main scrolls, not the window: the map's sticky panel sizes itself to it.
+    const fitView = () => mountAt.style.setProperty("--pm-view", $("main").clientHeight + "px");
+    fitView();
+    if (!drawMap.fit) { drawMap.fit = true; window.addEventListener("resize", () => { const m = document.querySelector("#main .pm"); if (m) m.parentNode.style.setProperty("--pm-view", $("main").clientHeight + "px"); }); }
     window.PlanMap.mount(mountAt, { ...R.planMap, cards: PV.cards }, {
       extra: PV.extra,
       status: c => c.status || "",
