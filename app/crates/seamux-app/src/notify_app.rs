@@ -96,7 +96,8 @@ pub struct Note {
     /// The pane a click goes to.
     pub pane: String,
     pub ws: String,
-    /// A single-choice question's option labels, offered as buttons.
+    /// A single-choice question's option labels, whole: the buttons clip
+    /// them, but the answer looks for the whole label on screen.
     pub options: Vec<String>,
     /// When the question was asked (its record's `at`), so a late pick can
     /// tell the question it answers is still the open one.
@@ -137,7 +138,7 @@ fn options_of(p: &PaneView) -> (Vec<String>, Option<u64>) {
     let labels: Vec<String> = only
         .get("options")
         .and_then(Value::as_array)
-        .map(|o| o.iter().map(|o| clip(o.get("label").and_then(Value::as_str).unwrap_or("").trim(), 60)).collect())
+        .map(|o| o.iter().map(|o| o.get("label").and_then(Value::as_str).unwrap_or("").trim().to_string()).collect())
         .unwrap_or_default();
     (if labels.iter().any(String::is_empty) { Vec::new() } else { labels }, at)
 }
@@ -289,6 +290,10 @@ impl Notifier {
                 }
             } else {
                 self.waits.remove(&p.id);
+                // Back at work before its finish was posted: that turn is old news.
+                if p.state == "working" {
+                    self.held.retain(|n| n.pane != p.id);
+                }
                 if p.state == "idle" && was == Some("working") && !seen(&p.id) {
                     if self.held.is_empty() {
                         self.held_first = now;
@@ -326,7 +331,7 @@ pub fn actions_of(n: &Note) -> Vec<Action> {
     let mut v = vec![Action::builder("open", "Open").build()];
     for (i, l) in n.options.iter().enumerate() {
         let id = (i + 1).to_string();
-        v.push(Action::builder(id.clone(), format!("{id}. {l}")).build());
+        v.push(Action::builder(id.clone(), format!("{id}. {}", clip(l, 60))).build());
     }
     v
 }
@@ -402,7 +407,9 @@ fn post(app: &AppHandle, n: &Note) {
     }
     let mut b = app.notification().builder().id(id).title(&n.title).body(&n.body).sound(n.kind.sound());
     if !n.options.is_empty() {
-        let ty = format!("ask-{id}");
+        // One type per pane, replaced each time: a banner reads its type's
+        // actions when it is shown, and the plugin never forgets a type.
+        let ty = format!("ask-{}", n.pane);
         let _ = app.notification().register_action_types(vec![ActionType::builder(ty.clone()).actions(actions_of(n)).build()]);
         b = b.action_type_id(ty);
     }
@@ -456,7 +463,9 @@ fn dot_for(cwd: &str) -> String {
     if cwd.is_empty() {
         return String::new();
     }
-    let hex = crew_cli::color::peek(cwd).unwrap_or_else(|| crew_cli::color::hashed(cwd).to_string());
+    // crew-color keys a worktree by its git top-level, not the folder it was opened in.
+    let root = crew_cli::color::resolve_root(Some(cwd)).unwrap_or_else(|_| cwd.to_string());
+    let hex = crew_cli::color::peek(&root).unwrap_or_else(|| crew_cli::color::hashed(&root).to_string());
     dot(&hex).to_string()
 }
 
@@ -504,7 +513,8 @@ pub fn start(app: AppHandle) {
             let on_screen = looking().lock().unwrap_or_else(|p| p.into_inner()).clone().filter(|_| crate::shell::in_front(&app));
             let mut notes = n.tick(crew_core::history::now_ms(), &views, on_screen.as_deref());
             let find = |id: &str| views.iter().find(|v| v.id.eq_ignore_ascii_case(id)).cloned();
-            notes.extend(take_blocked(&state, &find));
+            let here = |n: &Note| on_screen.as_deref().is_some_and(|l| l.eq_ignore_ascii_case(&n.pane));
+            notes.extend(take_blocked(&state, &find).into_iter().filter(|n| !here(n)));
             for note in merge(notes) {
                 post(&app, &note);
             }
@@ -604,14 +614,17 @@ mod tests {
 
     #[test]
     fn a_steady_stream_of_finishes_still_posts_by_the_cap() {
-        let mut n = primed(&[pane("P1", "working"), pane("P2", "working")]);
+        let ids: Vec<String> = (0..12).map(|i| format!("P{i:02}")).collect();
+        let mut n = primed(&ids.iter().map(|i| pane(i, "working")).collect::<Vec<_>>());
         let mut posted = Vec::new();
-        for t in 0..12u64 {
-            // P1 and P2 take turns finishing and starting again every second.
-            let (a, b) = if t % 2 == 0 { ("idle", "working") } else { ("working", "idle") };
-            posted.extend(n.tick(1_000 + t * 1_000, &[pane("P1", a), pane("P2", b)], None));
+        for t in 0..12usize {
+            // One more pane finishes every second, so the settle never runs out.
+            let now: Vec<PaneView> = ids.iter().enumerate().map(|(i, id)| pane(id, if i <= t { "idle" } else { "working" })).collect();
+            posted.push((t, n.tick(1_000 + t as u64 * 1_000, &now, None)));
         }
-        assert!(!posted.is_empty(), "posted by SETTLE_MAX_MS though finishes kept coming");
+        let first = posted.iter().find(|(_, out)| !out.is_empty()).expect("posted by SETTLE_MAX_MS");
+        assert_eq!(first.0, 10, "ten seconds after the first finish");
+        assert_eq!(first.1.len(), 11, "all of them, in one go");
     }
 
     #[test]
@@ -660,6 +673,24 @@ mod tests {
         n.tick(2_000, &[pane("P1", "needs_input")], None);
         assert!(n.tick(REMIND_MS + 1_000, &[pane("P1", "needs_input")], None).is_empty(), "counted from the new ask");
         assert_eq!(n.tick(REMIND_MS + 2_000, &[pane("P1", "needs_input")], None).len(), 1);
+    }
+
+    #[test]
+    fn a_long_label_is_clipped_on_its_button_but_kept_whole_for_the_answer() {
+        let long = "x".repeat(80);
+        let q = json!({"at": 1, "questions": [{"question": "Q?", "options": [{"label": long}, {"label": "b"}]}]});
+        let w = waiting(&ask(pane("P1", "needs_input"), q));
+        assert_eq!(w.options[0], long, "deliver looks for this on screen");
+        let title = actions_of(&w)[1].title().to_string();
+        assert!(title.ends_with('…') && title.chars().count() == 63, "{title}");
+    }
+
+    #[test]
+    fn back_at_work_inside_the_settle_drops_the_finish() {
+        let mut n = primed(&[pane("P1", "working")]);
+        assert!(n.tick(1_000, &[pane("P1", "idle")], None).is_empty());
+        assert!(n.tick(2_000, &[pane("P1", "working")], None).is_empty());
+        assert!(n.tick(9_000, &[pane("P1", "working")], None).is_empty(), "never posted");
     }
 
     #[test]

@@ -508,11 +508,14 @@ export class NativeTerm {
     this.cat.reset();
     delete this.el.dataset.agent;
     if (this.opened) this.term.reset();
+    // Focus stays on the same terminal when it changes panes: say which.
+    if (this.el.classList.contains("focused")) void invoke("notify_looking", { pane: surface }).catch(() => {});
     this.check();
   }
 
   stop(): void {
     this.detach();
+    if (this.el.classList.contains("focused")) void invoke("notify_looking", { pane: null }).catch(() => {});
     this.surface = "";
     this.cat.reset();
     delete this.el.dataset.agent;
