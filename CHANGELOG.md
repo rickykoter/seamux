@@ -6,6 +6,16 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **app: banner clicks work, and the hotkey shows a covered window.** Clicks
+  on the tmux backend's banners never reached the app: notify-rust's
+  NSUserNotificationCenter path reported each banner dismissed about 0.7 s
+  after posting. The app now posts through UNUserNotificationCenter (it asks
+  for permission once), so a click brings the app forward on the pane and an
+  option button answers. A click that activated seamux without showing its
+  window also made the hotkey hide that unseen window, so it took two presses.
+  The hotkey now hides the window only when some of it is on screen, and a
+  click always brings it forward. ADR 0055.
+
 - **app: tmux notifications show more and interrupt less.** On the tmux
   backend the app's banners now show the open question, or whether a finished
   turn left changes to review. Each title starts with the workspace's

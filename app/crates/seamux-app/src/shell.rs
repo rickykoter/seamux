@@ -347,20 +347,22 @@ fn join_full_screen_spaces<R: Runtime>(w: &WebviewWindow<R>) {
     );
 }
 
-/// Whether the window is on the Space in front. A visible window can sit on
-/// another Space (the desktop, while a full-screen app is in front); the
-/// hotkey must bring it here then, not hide it.
+/// Whether some of the window is on screen: on the Space in front and not
+/// covered by other windows. A visible window can sit on another Space (the
+/// desktop, while a full-screen app is in front), and a notification click
+/// activates the app without raising its window, so focus and "app in front"
+/// alone can name a window the person cannot see. The hotkey must bring such
+/// a window here, not hide it.
 #[cfg(target_os = "macos")]
-fn on_active_space<R: Runtime>(w: &WebviewWindow<R>) -> bool {
+fn seen<R: Runtime>(w: &WebviewWindow<R>) -> bool {
     let Ok(ptr) = w.ns_window() else { return true };
-    // SAFETY: as in join_full_screen_spaces; the shortcut handler runs on the
-    // main thread.
+    // SAFETY: as in join_full_screen_spaces; callers run on the main thread.
     let win: &objc2_app_kit::NSWindow = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
-    win.isOnActiveSpace()
+    win.isOnActiveSpace() && win.occlusionState().contains(objc2_app_kit::NSWindowOcclusionState::Visible)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn on_active_space<R: Runtime>(_: &WebviewWindow<R>) -> bool {
+fn seen<R: Runtime>(_: &WebviewWindow<R>) -> bool {
     true
 }
 
@@ -377,7 +379,7 @@ fn toggle<R: Runtime>(app: &AppHandle<R>) {
             (Some(p), Some(c)) => p.position() == c.position(),
             _ => true,
         };
-        if visible && in_front && here && on_active_space(&w) {
+        if visible && in_front && here && seen(&w) {
             hide(&w);
         } else {
             if visible {
@@ -485,6 +487,12 @@ mod front {
         own_ago_ms as f64 > ago * 1000.0 + 150.0
     }
 
+    /// Make this app the active one, its windows in front.
+    pub fn activate() {
+        use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+        NSRunningApplication::currentApplication().activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
+    }
+
     /// Whether this process is the app in front.
     pub fn we_are_front() -> bool {
         let ws = objc2_app_kit::NSWorkspace::sharedWorkspace();
@@ -577,20 +585,44 @@ fn show<R: Runtime>(w: &WebviewWindow<R>) {
     let _ = w.set_focus();
 }
 
-/// Bring the window forward, as the tray's Show does, from any thread.
+/// Bring the window forward from any thread, as the hotkey does: one not
+/// already in front is ordered out and placed again on the screen and Space
+/// in front, and the app is activated. A notification click is not a key
+/// press, so nothing activates the app unless this asks.
 pub fn summon<R: Runtime>(app: &AppHandle<R>) {
     let a = app.clone();
     let _ = app.run_on_main_thread(move || {
-        if let Some(w) = a.get_webview_window("main") {
-            show(&w);
+        let Some(w) = a.get_webview_window("main") else { return };
+        let visible = w.is_visible().unwrap_or(false);
+        let in_front = visible && w.is_focused().unwrap_or(false) && app_in_front() && seen(&w);
+        if !in_front {
+            if visible {
+                hide(&w);
+            }
+            fill_screen(&w);
         }
+        show(&w);
+        #[cfg(target_os = "macos")]
+        front::activate();
     });
 }
 
-/// Whether the window is the one in front: it has focus and its app is
-/// macOS's frontmost (a panel keeps focus after another app is clicked).
+
+/// Whether the window is the one in front: it has focus, its app is
+/// macOS's frontmost (a panel keeps focus after another app is clicked),
+/// and some of it is on screen (`seen`).
+/// Asked on the main thread, where the window's state is read; false when
+/// the main thread does not answer within 200 ms.
 pub fn in_front<R: Runtime>(app: &AppHandle<R>) -> bool {
-    app.get_webview_window("main").is_some_and(|w| w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false)) && app_in_front()
+    let (tx, rx) = std::sync::mpsc::channel();
+    let a = app.clone();
+    let asked = app.run_on_main_thread(move || {
+        let yes = a.get_webview_window("main").is_some_and(|w| {
+            w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false) && app_in_front() && seen(&w)
+        });
+        let _ = tx.send(yes);
+    });
+    asked.is_ok() && rx.recv_timeout(Duration::from_millis(200)).unwrap_or(false)
 }
 
 /// Window behaviour, the hotkey and the tray. Called once from setup.

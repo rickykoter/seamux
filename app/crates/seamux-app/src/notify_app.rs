@@ -476,6 +476,12 @@ pub fn start(app: AppHandle) {
         if seamux_app::backend::kind() != Kind::Tmux {
             return;
         }
+        // UNUserNotificationCenter posts nothing until the person allows it:
+        // the first launch asks once; later launches return the saved answer.
+        #[cfg(target_os = "macos")]
+        if let Err(e) = notify_rust::request_auth_blocking() {
+            eprintln!("seamux: notifications not authorized: {e}");
+        }
         let handle = app.clone();
         let _ = app.notification().on_action(move |a| {
             let (h, id, action) = (handle.clone(), a.notification().map(|n| n.id()), a.action_id().to_string());
