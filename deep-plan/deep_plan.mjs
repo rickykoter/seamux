@@ -1391,7 +1391,32 @@ const DP_RISK_CSS = `.dp-risk-ctl{display:flex;flex-wrap:wrap;gap:6px 12px;align
 .dp-risk-deliv,.dp-risk-ticket{display:none}
 .dp-risk-mitigate .dp-risk-deliv,.dp-risk-mitigate .dp-risk-ticket{display:inline-block}`;
 
-function commonBody(spec, adrs = [], withNotes = false) {
+// The End state map: the model render stored (st.map) as JSON in the page,
+// then the renderer (lib/plan-map.js, a copy of shared/plan-map.js) in a
+// script of its own, since SURFACE_JS cannot hold it. Every "<" in the JSON
+// is escaped, so no text in a plan can close the script early. "" when the
+// plan has no map (rendered before maps existed) or no files.
+let PLAN_MAP_JS = null;
+function planMapJs() {
+  if (PLAN_MAP_JS === null) {
+    try { PLAN_MAP_JS = fs.readFileSync(path.join(HERE, "lib", "plan-map.js"), "utf8"); }
+    catch { PLAN_MAP_JS = ""; }
+  }
+  return PLAN_MAP_JS;
+}
+function endStateHtml(map, increments) {
+  if (!map || !(map.cards || []).length) return "";
+  const data = JSON.stringify({ map, increments })
+    .replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+  const js = planMapJs();
+  const n = map.cards.length;
+  return `<h2>End state</h2>
+<p class="dim">The ${n} file${n === 1 ? "" : "s"} this plan touches, what uses them and what they use, as found when it rendered. Hover a card to light its links; click it for its facts and contracts.</p>
+<div class="pm-mount">${js ? "" : `<p class="dim">The map's renderer (lib/plan-map.js) is missing from this install.</p>`}<script type="application/json" class="pm-data">${data}</script></div>
+${js ? `<script>${js}</script>` : ""}`;
+}
+
+function commonBody(spec, adrs = [], withNotes = false, endState = "") {
   // Evidence that reads as a repo path becomes a click target: the served
   // working surface opens it in VS Code at that line (same handler and same
   // crew-code-open hand-off as the increments' file lists and the Dock's
@@ -1438,6 +1463,7 @@ ${obGaps ? `<p class="dim">gaps this plan fills:</p><ul>${obGaps}</ul>` : ""}` :
   const commits = (spec.commits || []).map(c => commitLi(c)).join("");
   return `<h1>${esc(spec.title)}</h1>
 <p class="dim">plan <code>${esc(spec.slug)}</code></p>
+${endState}
 <h2>Context</h2><p>${esc(spec.context).replace(/\n\s*\n/g, "</p><p>")}</p>
 ${nonGoals ? `<h2>Non-goals</h2><ul>${nonGoals}</ul>` : ""}
 ${decs ? `<h2>Decisions</h2><ul>${decs}</ul>` : ""}
@@ -1572,7 +1598,7 @@ go.addEventListener("click",function(){
 `;
 }
 
-function reviewHtml(spec, b64, adrs = []) {
+function reviewHtml(spec, b64, adrs = [], map = null) {
   // Quiz options shuffled per-slug; the shuffled correct position lives in the
   // key file, never in this page.
   const qs = (spec.quiz || []).map((q, qi) => {
@@ -1654,7 +1680,8 @@ ${DP_RISK_CSS}
 kbd{font:inherit;font-size:.85em;border:1px solid var(--dim,#888);border-radius:3px;padding:0 4px}
 .opt input:focus-visible,#dp-copyback:focus-visible,#dp-hl-add:focus-visible,
 .dp-note:focus-visible,.dp-x:focus-visible{outline:2px solid var(--accent,#46f);outline-offset:2px}
-</style>` + commonBody(spec, adrs, true) + `
+</style>` + commonBody(spec, adrs, true,
+    endStateHtml(map, (spec.deliverables || []).map((d, i) => ({ n: i + 1, title: d.title })))) + `
 <h2>Increments</h2>${incs}
 ${verif ? `<h2>Verification</h2><ul>${verif}</ul>` : ""}
 <h2>Alignment check</h2>
@@ -1897,7 +1924,8 @@ ${DP_RISK_CSS}
   padding:10px 16px;font:inherit;cursor:pointer;min-height:44px}
 #dp-amend-copy:focus-visible,.dp-note:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </style>` +
-    commonBody(spec, st.adrs || [], true).replace(/(<p class="dim">plan <code>[^\n]*<\/p>)/, (m) => m + "\n" + familyStripHtml(spec.slug)) + `
+    commonBody(spec, st.adrs || [], true,
+      endStateHtml(st.map, (st.increments || []).map(i => ({ n: i.n, title: i.title, status: i.status })))).replace(/(<p class="dim">plan <code>[^\n]*<\/p>)/, (m) => m + "\n" + familyStripHtml(spec.slug)) + `
 ${st.approved ? `<p class="dim">approved snapshot: <span class="dp-path" data-file="${esc(st.approved.path)}"><code>${esc(st.approved.path)}</code></span>${
       st.approved.spec_hash !== specHash(spec) ? ' · <span style="color:var(--warn-t)">the live plan has DRIFTED from the approved snapshot (spec amended since grade-pass)</span>' : ""}</p>` : ""}
 <h2>Gate</h2><p>${g.allow ? CHECK_GLYPH.pass + " open" : CHECK_GLYPH.fail + " shut"} <span class="dim">— ${esc(g.why)}</span>
@@ -2129,7 +2157,7 @@ async function render(specPath, opts) {
 
   const b64 = mermaidB64();
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".md"), mdPlan(spec, adrs));
-  fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".review.html"), reviewHtml(spec, b64, adrs));
+  fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".review.html"), reviewHtml(spec, b64, adrs, map));
   const extras = writeSpecArtifacts(spec, b64);
   adrs.forEach((a, i) => fs.writeFileSync(
     path.join(PLANS_DIR, `${spec.slug}.adr${a.n}.md`), adrDrafts[i]));
@@ -2252,7 +2280,7 @@ function rehydrate(slug, { quiet = false } = {}) {
   checksFromState(spec, st0);
   const adrs = (st0 && st0.adrs) || [];
   fs.mkdirSync(PLANS_DIR, { recursive: true });
-  const md = mdPlan(spec, adrs), rv = reviewHtml(spec, b64, adrs);
+  const md = mdPlan(spec, adrs), rv = reviewHtml(spec, b64, adrs, (st0 && st0.map) || null);
   const mdP = path.join(PLANS_DIR, slug + ".md"), rvP = path.join(PLANS_DIR, slug + ".review.html");
   const same = (p, s) => fs.existsSync(p) && fs.readFileSync(p, "utf8") === s;
   const okMd = same(mdP, md), okRv = same(rvP, rv);

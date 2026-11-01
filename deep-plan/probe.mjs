@@ -3293,6 +3293,109 @@ if (want("end state map: model, neighbours, frozen in state")) {
   fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "map-plan.json"), { force: true });
 }
 
+// -------------------------------------------------- the End state map on the plan pages
+//
+// Both pages open on an End state section: the model as escaped JSON, then
+// the renderer (lib/plan-map.js, a copy of shared/plan-map.js) in its own
+// script. The renderer is run here against a small stand-in DOM, the way a
+// file:// page would run it, so a script error fails the probe.
+if (want("end state map: on both plan pages")) {
+  const vm = await import("node:vm");
+  // Just enough DOM for PlanMap.mount: elements with attributes, children,
+  // classes, listeners and selectors by tag and class.
+  const fakeDoc = () => {
+    const mk = (tag) => {
+      const e = { tagName: tag, attrs: {}, children: [], listeners: {}, style: {}, _text: "", parent: null,
+        set textContent(v) { this._text = String(v); this.children = []; }, get textContent() { return this._text + this.children.map(c => c.textContent).join(""); },
+        set className(v) { this.attrs.class = v; }, get className() { return this.attrs.class || ""; },
+        setAttribute(k, v) { this.attrs[k] = String(v); }, getAttribute(k) { return this.attrs[k] ?? null; },
+        appendChild(c) { c.parent = this; this.children.push(c); return c; }, append(...cs) { cs.forEach(c => this.appendChild(c)); },
+        replaceChildren(...cs) { this.children = []; this._text = ""; cs.forEach(c => this.appendChild(c)); },
+        addEventListener(t, f) { (this.listeners[t] ||= []).push(f); },
+        fire(t) { (this.listeners[t] || []).forEach(f => f({ key: "Enter", preventDefault() {} })); },
+        get classList() { const el = this; const list = () => (el.attrs.class || "").split(/\s+/).filter(Boolean);
+          return { contains: c => list().includes(c), toggle: (c, on) => { const l = list().filter(x => x !== c); if (on) l.push(c); el.attrs.class = l.join(" "); } }; },
+        all() { return this.children.flatMap(c => [c, ...c.all()]); },
+        querySelectorAll(sel) { return this.all().filter(n => match(n, sel)); },
+        querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+      };
+      return e;
+    };
+    // "g.pm-card, g.pm-nb", "path.pm-edge", ".pm-mount", "script.pm-data"
+    const match = (n, sel) => sel.split(",").some(one => {
+      const [tag, ...cls] = one.trim().split(".");
+      return (!tag || n.tagName === tag) && cls.every(c => (n.attrs.class || "").split(/\s+/).includes(c));
+    });
+    const doc = mk("#document");
+    doc.head = doc.appendChild(mk("head"));
+    doc.body = doc.appendChild(mk("body"));
+    doc.readyState = "complete";
+    doc.createElement = mk; doc.createElementNS = (_, t) => mk(t);
+    doc.createTextNode = t => { const n = mk("#text"); n._text = String(t); return n; };
+    doc.getElementById = id => doc.all().find(n => n.attrs.id === id) || null;
+    return doc;
+  };
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "pm-page-plan";
+  // Text that would close a script early if the JSON were not escaped.
+  s.verifiedFacts.push({ claim: "a claim with </script><b>tags</b> and \u2028 in it", evidence: "app/workers/retry_sweep.rb:1" });
+  r = cli("render", tmpSpec(s));
+  ok("a plan with a map renders", r.status === 0, r.stderr);
+  const rvP = path.join(ENV.DEEP_PLAN_PLANS_DIR, "pm-page-plan.review.html");
+  const wkP = path.join(ENV.DEEP_PLAN_PLANS_DIR, "pm-page-plan.working.html");
+  const rv = fs.readFileSync(rvP, "utf8"), wk = fs.readFileSync(wkP, "utf8");
+  for (const [name, page] of [["review", rv], ["working", wk]]) {
+    const at = page.indexOf("<h2>End state</h2>");
+    ok(`${name} page: End state is the first section`, at > 0 && at < page.indexOf("<h2>Context</h2>"));
+    ok(`${name} page: the renderer ships in a script of its own, outside SURFACE_JS`,
+      page.includes("<script>" + fs.readFileSync(path.join(HERE, "lib", "plan-map.js"), "utf8") + "</script>"));
+  }
+  const dataOf = page => page.match(/<script type="application\/json" class="pm-data">([\s\S]*?)<\/script>/)[1];
+  const raw = dataOf(rv);
+  ok("the embedded JSON escapes every < and the line separators", !raw.includes("<") && !raw.includes("\u2028") && raw.includes("\\u003c/script>"));
+  const data = JSON.parse(raw);
+  ok("…and parses back to the stored map", JSON.stringify(data.map) ===
+    JSON.stringify(JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "pm-page-plan.json"), "utf8")).map));
+  ok("the working page carries each increment's status", JSON.parse(dataOf(wk)).increments.every(i => typeof i.status === "string"));
+  r = cli("validate", "pm-page-plan");
+  ok("both pages pass the surface lint with the map in them", r.status === 0, r.stdout + r.stderr);
+  ok("the copy in lib/ is shared/plan-map.js byte for byte",
+    fs.readFileSync(path.join(HERE, "lib", "plan-map.js"), "utf8") === fs.readFileSync(path.join(HERE, "..", "shared", "plan-map.js"), "utf8"));
+
+  // Run it the way a file:// page does: auto-mount from the embedded data.
+  const doc = fakeDoc();
+  const mount = doc.createElement("div"); mount.className = "pm-mount";
+  const script = doc.createElement("script"); script.className = "pm-data"; script.textContent = raw;
+  mount.appendChild(script); doc.body.appendChild(mount);
+  const win = { document: doc };
+  let threw = null;
+  try { vm.runInNewContext(fs.readFileSync(path.join(HERE, "lib", "plan-map.js"), "utf8"), { window: win, document: doc, console }); }
+  catch (e) { threw = e; }
+  ok("the renderer runs without a browser error", !threw && !!win.PlanMap, threw && threw.stack);
+  const cardsDrawn = doc.querySelectorAll("g.pm-card");
+  ok("it draws one card per planned file", cardsDrawn.length === data.map.cards.length, cardsDrawn.length);
+  ok("a new file's card is marked new, a removal remove",
+    cardsDrawn.some(g => /\bnew\b/.test(g.className) && /retry_sweep/.test(g.getAttribute("aria-label"))) &&
+    cardsDrawn.some(g => /\bremove\b/.test(g.className)));
+  ok("the contract with no place shows in the tray", /Unplaced contracts/.test(doc.querySelector("div.pm-tray").textContent));
+  const target = cardsDrawn.find(g => /retry_sweep/.test(g.getAttribute("aria-label")));
+  target.fire("click");
+  ok("a click fills the panel with the card's facts", /retry_sweep\.rb/.test(doc.querySelector("div.pm-panel").textContent) &&
+    /Facts that cite it/.test(doc.querySelector("div.pm-panel").textContent));
+  const chip = doc.querySelectorAll("button.pm-chip").find(b => /^2\./.test(b.textContent));
+  chip.fire("click");
+  ok("an increment chip dims the cards outside it", doc.querySelectorAll("g.pm-card").filter(g => /\bdim\b/.test(g.className)).length === 1);
+
+  // A plan with no map (rendered before maps): no section, nothing broken.
+  const st = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "pm-page-plan.json"), "utf8"));
+  delete st.map;
+  fs.writeFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "pm-page-plan.json"), JSON.stringify(st, null, 2) + "\n");
+  cli("rehydrate", "pm-page-plan");
+  ok("a plan with no stored map has no End state section", !fs.readFileSync(rvP, "utf8").includes("End state") && !fs.readFileSync(wkP, "utf8").includes("pm-mount"));
+  cli("close", "pm-page-plan");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "pm-page-plan.json"), { force: true });
+}
+
 // -------------------------------------------------- quiz.txt, widget, cutover bundle
 //
 // All three are pure functions of the spec, and all three were on 13/13 real
