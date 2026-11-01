@@ -34,6 +34,7 @@ import { brief } from "./lib/prompt.mjs";
 import { detectHost, sessionIds } from "./lib/host.mjs";
 import * as SV from "./lib/serve.mjs";
 import * as AR from "./lib/artifact.mjs";
+import { comparePlan } from "./lib/planmap.mjs";
 import { installRepo, checkRepo, targetRoot } from "./lib/install.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -51,7 +52,7 @@ const opt = (n, d = null) => {
 // Options that take a value; every other --flag stands alone.
 // The most of a --context-file a review keeps for its reviewer brief.
 const CONTEXT_CAP = 8000;
-const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file", "--url", "--root"]);
+const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file", "--plan-map", "--url", "--root"]);
 const positional = () => rest.filter((a, i) => !a.startsWith("--") && !(i > 0 && VALUED.has(rest[i - 1])));
 
 const say = s => process.stdout.write(s + "\n");
@@ -82,15 +83,20 @@ export function renderPage(id) {
   const tpl = fs.readFileSync(path.join(HERE, "page", "review.html"), "utf8");
   const css = fs.readFileSync(path.join(HERE, "page", "review.css"), "utf8");
   const js = fs.readFileSync(path.join(HERE, "page", "review.js"), "utf8");
+  // The Map view's renderer: a copy of shared/plan-map.js (tools/map_sync.py).
+  let mapJs = "";
+  try { mapJs = fs.readFileSync(path.join(HERE, "page", "plan-map.js"), "utf8"); } catch { /* the view says it is missing */ }
   // One pass over the template, so a placeholder that appears INSIDE the
   // substituted content (a review of this very file does) is never rescanned.
   const fill = {
     "__TITLE__": () => V.escapeHtml(pageTitle(id)),
     "/*__CSS__*/": () => css,
-    "__DATA__": () => scriptJson({ review: r, rows }),
+    "__DATA__": () => scriptJson({ review: r, rows,
+      planView: r.planMap ? comparePlan(r.planMap, r.files, (r.source || {}).inc) : null }),
     "/*__JS__*/": () => js.replace(/<\/script/gi, "<\\/script"),
+    "/*__MAP_JS__*/": () => mapJs.replace(/<\/script/gi, "<\\/script"),
   };
-  const html = tpl.replace(/__TITLE__|\/\*__CSS__\*\/|__DATA__|\/\*__JS__\*\//g, m => fill[m]());
+  const html = tpl.replace(/__TITLE__|\/\*__CSS__\*\/|__DATA__|\/\*__JS__\*\/|\/\*__MAP_JS__\*\//g, m => fill[m]());
   S.writeAtomic(p.html, html);
   return p.html;
 }
@@ -278,12 +284,25 @@ function cmdOpen() {
     }
     catch (e) { die(`--context-file: cannot read ${opt("context-file")} (${e.code || e.message})`); }
   }
+  // A deep-plan End state map (deep-plan's <slug>.map.json): the files the
+  // plan named, for the page's Map view to hold against the diff. Read once
+  // at open and kept in the review, like --context-file; a re-open without
+  // it keeps the one the review has.
+  // --no-plan-map: the plan has no map any more, so the review drops its old one.
+  let planMap = flag("no-plan-map") ? null : undefined;
+  if (opt("plan-map")) {
+    try { planMap = JSON.parse(fs.readFileSync(path.resolve(opt("plan-map")), "utf8")); }
+    catch (e) { die(`--plan-map: cannot read ${opt("plan-map")} as JSON (${e.code || e.message})`); }
+    if (!planMap || typeof planMap !== "object" || !Array.isArray(planMap.cards))
+      die(`--plan-map: ${opt("plan-map")} is not a deep-plan map (no cards list)`);
+  }
   const p = S.paths(id);
   const fresh = {
     id, title: opt("title") || (o.plan ? (o.inc === "all" ? `${o.plan} · the full delivery` : `${o.plan} · increment ${o.inc}`) : src.label),
     source: { ...src, plan: o.plan || undefined, inc: o.inc === "all" ? "all" : o.inc ? Number(o.inc) : undefined },
     patchHash: hash,
     ...(context !== undefined ? { context } : {}),
+    ...(planMap ? { planMap } : planMap === null ? { planMap: undefined } : {}),
     stats: { files: meta.length, adds: meta.reduce((x, f) => x + f.adds, 0), dels: meta.reduce((x, f) => x + f.dels, 0) },
     files: meta,
     edges: found.edges,
@@ -526,6 +545,7 @@ function usage() {
   lookout open [--base REF | --worktree | --range A..B | --patch FILE]
                [--id ID] [--title T] [--plan SLUG --inc N|all] [--agent-may-close] [--quiz]
                [--context-file F] (text the reviewer brief prints beside the plan)
+               [--plan-map F | --no-plan-map] (a deep-plan End state map for the page's Map view, or drop the one kept)
                [--plain] [--no-jev] [--rescore] [--view-only] [--no-open] [--json]
         build the diff, store the review, draw the page and show it.
         Default: --base <origin's default branch, else main/master>, which

@@ -219,7 +219,7 @@
       }));
   }
   for (const b of document.querySelectorAll("#view button"))
-    b.addEventListener("click", () => { view = b.dataset.view; store.set("lookout.view", view); drawSide(); if (!overview) select(current); });
+    b.addEventListener("click", () => { view = b.dataset.view; store.set("lookout.view", view); drawSide(); if (!overview && !mapOn) select(current); });
 
   const countsText = f => f.binary ? "bin" : `+${f.adds} −${f.dels}`;
 
@@ -462,7 +462,70 @@
     $("diff").replaceChildren(box);
   }
 
+  // The Map view: the plan's End state map (lookout open --plan-map) against
+  // what this diff touched, drawn by page/plan-map.js (shared/plan-map.js).
+  // The comparison is the CLI's (lib/planmap.mjs), made when the page was
+  // drawn, so it matches the diff this page shows.
+  let mapOn = false;
+  const PV = D.planView || null;
+  const STATUS_NOTE = {
+    ok: "The plan named this file and the diff touched it. A click opens its diff.",
+    miss: "The plan named this file for this work, and the diff never touched it.",
+  };
+  function drawMap() {
+    const head = [el("span", { class: "path" }, "Map")];
+    if (PV) head.push(el("span", { class: "from" },
+      `${PV.counts.ok} as planned · ${PV.counts.miss} planned, not touched · ${PV.counts.extra} touched, not planned`));
+    $("file-head").replaceChildren(...head);
+    const box = el("div", { class: "ov map-view" });
+    $("diff").replaceChildren(box);
+    if (!R.planMap || !PV) {
+      box.append(el("div", { class: "ov-line" }, "No plan map was passed to this review. deep-plan passes its plan's map " +
+        "when it opens a review (lookout open --plan-map ~/.claude/plans/<slug>.map.json); a re-open from deep-plan adds it."));
+      return;
+    }
+    if (!window.PlanMap) { box.append(el("div", { class: "ov-line" }, "The map's renderer (page/plan-map.js) is missing from this install.")); return; }
+    // A card names a file by its planned path; a rename's diff is under its
+    // new path, so both lead to it.
+    const diffOf = new Map();
+    for (const f of R.files || []) { diffOf.set(f.path, f.path); if (f.oldPath) diffOf.set(f.oldPath, f.path); }
+    const mountAt = el("div");
+    box.append(mountAt);
+    window.PlanMap.mount(mountAt, { ...R.planMap, cards: PV.cards }, {
+      extra: PV.extra,
+      status: c => c.status || "",
+      planLabel: PV.inc === "all" ? "the plan vs the diff" : `increment ${PV.inc} vs the diff`,
+      groups: cards => [
+        ["as planned", cards.filter(c => c.status === "ok")],
+        ["planned, not touched", cards.filter(c => c.status === "miss")],
+        ["touched, not planned", cards.filter(c => c.status === "extra")],
+      ],
+      statusNote: (c, st) => st === "extra"
+        ? (c.plannedIn && c.plannedIn.length ? `The plan names this file for increment ${c.plannedIn.join(", ")}, not this one.`
+          : "The diff changed this file, but no part of the plan names it. That may be plan drift.") + " A click opens its diff."
+        : STATUS_NOTE[st] || "",
+      onOpen: p => { if (diffOf.has(p)) select(diffOf.get(p)); },
+      trayNote: "The plan's map was frozen when the plan rendered; this view holds it against the current diff.",
+    });
+  }
+  function openMap() {
+    mapOn = true;
+    overview = false;
+    current = null;
+    try { history.replaceState(null, "", "#map"); } catch { /* file:// in some hosts */ }
+    for (const r of document.querySelectorAll("#tree .row")) r.classList.remove("sel");
+    drawOverviewChrome();
+    drawMap();
+    $("main").scrollTop = 0;
+  }
+  function toggleMap() {
+    if (mapOn) select(lastFile && (R.files || []).some(f => f.path === lastFile) ? lastFile : ORDER[0] || null);
+    else openMap();
+  }
+  $("map-btn").addEventListener("click", toggleMap);
+
   function openOverview(noteId) {
+    mapOn = false;
     overview = true;
     current = null;
     try { history.replaceState(null, "", "#overview"); } catch { /* file:// in some hosts */ }
@@ -475,6 +538,7 @@
   }
   function drawOverviewChrome() {
     $("ov-btn").setAttribute("aria-pressed", String(overview));
+    $("map-btn").setAttribute("aria-pressed", String(mapOn));
     const row = document.querySelector("#tree .ov-row");
     if (row) row.classList.toggle("sel", overview);
   }
@@ -483,7 +547,7 @@
     else openOverview();
   }
   $("ov-btn").addEventListener("click", toggleOverview);
-  const drawMain = () => overview ? drawOverview() : drawFile();
+  const drawMain = () => mapOn ? drawMap() : overview ? drawOverview() : drawFile();
 
   // A watch item's line: its file, uncollapsed, scrolled to the row.
   function goToLine(p, side, line) {
@@ -504,6 +568,7 @@
     current = p;
     if (p) lastFile = p;
     overview = false;
+    mapOn = false;
     drawOverviewChrome();
     if (!p) { drawFile(); return; }
     try { history.replaceState(null, "", "#file=" + encodeURIComponent(p)); } catch { /* file:// in some hosts */ }
@@ -696,6 +761,7 @@
     else if (e.key === "n") { stepFinding(1); e.preventDefault(); }
     else if (e.key === "p") { stepFinding(-1); e.preventDefault(); }
     else if (e.key === "o") { toggleOverview(); e.preventDefault(); }
+    else if (e.key === "m") { toggleMap(); e.preventDefault(); }
     else if (e.key === "?") { toggleKeys(); e.preventDefault(); }
   });
   // The key list sits behind a ? button; ?, Esc or a click elsewhere closes it.
@@ -1023,7 +1089,7 @@
   }
 
   window.lookout = { get review() { return R; }, applyReview, serve, el, current: () => current,
-                     overview: () => overview, openOverview, goToLine };
+                     overview: () => overview, openOverview, goToLine, mapView: () => mapOn, openMap };
 
   drawHeader();
   drawLayout();
@@ -1032,6 +1098,7 @@
   // link names a file.
   const want = decodeURIComponent((location.hash.match(/file=([^&]+)/) || [])[1] || "");
   if ((R.files || []).some(f => f.path === want)) select(want);
+  else if (location.hash === "#map") openMap();
   else if (location.hash === "#overview" || notesOf().length) openOverview();
   else select(ORDER[0] || null);
 })();

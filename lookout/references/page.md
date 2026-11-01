@@ -17,6 +17,14 @@ tree (single-child folders folded together), one file's diff on the right.
   or partial notes are marked. Each file shows its group's note as a strip
   above the diff that expands.
 
+- **Map** (`m`, or the header button): the plan's End state map held
+  against the diff, when the review was opened with `--plan-map` (deep-plan
+  passes its plan's `~/.claude/plans/<slug>.map.json` on every review it
+  opens). Each file the plan named for this increment is marked as planned
+  and touched, or planned but not touched. Each file the diff touched that
+  the plan never named is marked touched but not planned. A click on a
+  touched file opens its diff. Without a map the view says so.
+
 - **Split or Unified** (header toggle, or `v`). Narrow panes and one-sided
   files (added, deleted) draw unified.
 - **`j` / `k`** step through files in the side list's order; **`n` / `p`**

@@ -16,6 +16,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "shared" / "plan-map.js"
 TARGETS = [
     "deep-plan/lib/plan-map.js",
+    "lookout/page/plan-map.js",
 ]
 
 

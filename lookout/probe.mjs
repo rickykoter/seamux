@@ -206,9 +206,12 @@ const R1 = repo("r1");
   const html = fs.readFileSync(out.page, "utf8");
   ok("page: every placeholder is filled exactly once", !/^<title>__TITLE__/m.test(html) &&
      html.includes("<title>lookout · r1-dev-feature</title>") && !html.includes("<style>/*__CSS__*/") &&
-     (html.match(/<script>/g) || []).length === 1);
+     !html.includes("/*__MAP_JS__*/") &&
+     // Two plain scripts: the Map view's renderer (page/plan-map.js), then review.js.
+     (html.match(/<script>/g) || []).length === 2);
+  // The template's three script elements close, and nothing from the diff does.
   ok("page: data from the diff cannot close the script element",
-     (html.match(/<\/script/gi) || []).length === 2, (html.match(/<\/script/gi) || []).length);
+     (html.match(/<\/script/gi) || []).length === 3, (html.match(/<\/script/gi) || []).length);
   const data = JSON.parse(html.match(/<script type="application\/json" id="lookout-data">([\s\S]*?)<\/script>/)[1]);
   ok("page: the embedded data round-trips", data.review.id === out.id && data.rows["page.html"].hunks.length === 1);
 
@@ -1318,6 +1321,75 @@ s.listen(0, "127.0.0.1", () => console.log(s.address().port));`;
   ok("crew serving: a review crew does not have is not", SVM.crewReviewUrl("missing", dir) === "");
   ok("crew serving: no port file, no URL", SVM.crewReviewUrl("demo", path.join(TMP, "no-crew")) === "");
   fake.kill();
+}
+
+// ---------------------------------------------------------------- the plan's map
+// lookout open --plan-map keeps a deep-plan End state map in the review; the
+// page's Map view holds it against the diff (lib/planmap.mjs) and draws it
+// with page/plan-map.js, a copy of shared/plan-map.js.
+if (want("plan map: --plan-map, the three-way compare, the Map view")) {
+  const RM = repo("rmap");
+  write(RM, "src/a.mjs", "export const a = 1;\n");
+  write(RM, "src/b.mjs", "export const b = 1;\n");
+  write(RM, "src/old.mjs", "export const old = 1;\n");
+  sh(RM, `git add -A && ${G} commit -q -m base`);
+  const base = sh(RM, "git rev-parse HEAD").trim();
+  write(RM, "src/a.mjs", "export const a = 2;\n");          // planned for 1, touched
+  write(RM, "src/stray.mjs", "export const s = 1;\n");      // touched, planned nowhere
+  write(RM, "src/later.mjs", "export const l = 1;\n");      // touched, planned for 2
+  sh(RM, "git rm -q src/old.mjs");                           // a planned removal, touched
+  const card = (p, incs, change) => ({ id: p, path: p, increments: incs, change, facts: [], contracts: [],
+    usedBy: { paths: [], more: 0 }, uses: { paths: [], more: 0 }, links: [] });
+  const map = { version: 1, slug: "map-demo", base, neighbours: true, why: "", unplaced: [],
+    cards: [card("src/a.mjs", [1], "modify"), card("src/b.mjs", [1], "modify"), card("src/old.mjs", [1], "remove"),
+            card("src/later.mjs", [2], "new")] };
+  const mf = path.join(TMP, "map-demo.map.json");
+  fs.writeFileSync(mf, JSON.stringify(map));
+  let r = cli(RM, "open", "--plan", "map-demo", "--inc", "1", "--base", base, "--plan-map", mf, "--json");
+  ok("--plan-map: open takes it", r.status === 0, r.stderr);
+  const id = JSON.parse(r.stdout).id;
+  ok("--plan-map: kept in the review as planMap", JSON.stringify(S.read(id).planMap) === JSON.stringify(map));
+  r = cli(RM, "open", "--plan", "map-demo", "--inc", "1", "--base", base, "--json");
+  ok("--plan-map: a re-open without it keeps the review's map", r.status === 0 && JSON.stringify(S.read(id).planMap) === JSON.stringify(map));
+  fs.writeFileSync(path.join(TMP, "not-a-map.json"), '{"files": []}');
+  ok("--plan-map: a file with no cards list is refused",
+    cli(RM, "open", "--id", "map-bad", "--base", base, "--plan-map", path.join(TMP, "not-a-map.json"), "--json").status !== 0);
+  ok("--plan-map: an unreadable file is refused",
+    cli(RM, "open", "--id", "map-bad2", "--base", base, "--plan-map", path.join(TMP, "no-such.json"), "--json").status !== 0);
+
+  const PM = await import("./lib/planmap.mjs");
+  const v = PM.comparePlan(map, S.read(id).files, 1);
+  const st = p => (v.cards.find(c => c.path === p) || v.extra.find(c => c.path === p) || {}).status;
+  ok("compare: a planned file the diff touched is ok", st("src/a.mjs") === "ok" && st("src/old.mjs") === "ok");
+  ok("compare: a planned file the diff did not touch is miss", st("src/b.mjs") === "miss");
+  ok("compare: a touched file no card in scope names is extra", st("src/stray.mjs") === "extra" && st("src/later.mjs") === "extra");
+  ok("compare: an extra planned for another increment says which",
+    JSON.stringify(v.extra.find(c => c.path === "src/later.mjs").plannedIn) === "[2]" &&
+    JSON.stringify(v.extra.find(c => c.path === "src/stray.mjs").plannedIn) === "[]");
+  ok("compare: an increment's scope leaves out the other increments' cards", !v.cards.some(c => c.path === "src/later.mjs"));
+  ok("compare: counts", JSON.stringify(v.counts) === JSON.stringify({ ok: 2, miss: 1, extra: 2 }), JSON.stringify(v.counts));
+  const all = PM.comparePlan(map, S.read(id).files, "all");
+  ok("compare: the full delivery scopes every card", all.inc === "all" && all.cards.length === 4 &&
+    all.cards.find(c => c.path === "src/later.mjs").status === "ok" && all.extra.length === 1 && all.extra[0].path === "src/stray.mjs");
+  ok("compare: no map, no comparison", PM.comparePlan(undefined, [], 1) === null);
+  const renamed = PM.comparePlan({ cards: [card("src/was.mjs", [1], "modify")] }, [{ path: "src/now.mjs", oldPath: "src/was.mjs", status: "R" }], 1);
+  ok("compare: a planned file the diff renamed counts as touched, and is no extra", renamed.cards[0].status === "ok" && renamed.extra.length === 0);
+  r = cli(RM, "open", "--plan", "map-demo", "--inc", "1", "--base", base, "--no-plan-map", "--json");
+  ok("--no-plan-map: a plan that has no map any more drops the review's old one", r.status === 0 && S.read(id).planMap === undefined, r.stderr);
+  cli(RM, "open", "--plan", "map-demo", "--inc", "1", "--base", base, "--plan-map", mf, "--json");
+
+  // The page: the renderer inlined in its own script, the comparison in its data.
+  const page = fs.readFileSync(S.paths(id).html, "utf8");
+  ok("page: the renderer ships inlined, a copy of shared/plan-map.js",
+    page.includes(fs.readFileSync(path.join(HERE, "..", "shared", "plan-map.js"), "utf8").replace(/<\/script/gi, "<\\/script")) &&
+    fs.readFileSync(path.join(HERE, "page", "plan-map.js"), "utf8") === fs.readFileSync(path.join(HERE, "..", "shared", "plan-map.js"), "utf8"));
+  const data = JSON.parse(page.match(/<script type="application\/json" id="lookout-data">([\s\S]*?)<\/script>/)[1]);
+  ok("page: its data carries the comparison", data.planView && data.planView.counts.extra === 2);
+  ok("page: a Map button and the m key", /id="map-btn"/.test(page) && /<kbd>m<\/kbd>/.test(page) && /e\.key === "m"/.test(page));
+  r = cli(RM, "open", "--id", "no-map", "--base", base, "--json");
+  const bare = JSON.parse(fs.readFileSync(S.paths("no-map").html, "utf8").match(/<script type="application\/json" id="lookout-data">([\s\S]*?)<\/script>/)[1]);
+  ok("page: a review with no map has no comparison, and the view says so", bare.planView === null && !S.read("no-map").planMap &&
+    /No plan map was passed to this review/.test(fs.readFileSync(path.join(HERE, "page", "review.js"), "utf8")));
 }
 
 // ---------------------------------------------------------------- page script

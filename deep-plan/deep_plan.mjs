@@ -513,7 +513,7 @@ function openReview(st, inc, base = "") {
     `deep-plan ${all ? `deliver ${st.slug}` : `review ${st.slug} ${inc.n}`} --base <sha>` };
   const pol = reviewPolicy(st.slug);
   const r = runLookout(["open", "--plan", st.slug, "--inc", all ? "all" : String(inc.n), "--base", sha, "--at", st.root,
-    ...pol.flags], { cwd: st.root });
+    ...planMapFlag(st.slug), ...pol.flags], { cwd: st.root });
   return { ...r, agent: pol.agent, quiz: pol.quiz };
 }
 
@@ -584,7 +584,7 @@ function familyDeliver(st, spec) {
     if (g.code === 3) {
       const r = runLookout(["open", "--id", id, "--title", `${slug} family review · ${m.slug}`,
         "--plan", m.slug, "--inc", "all", "--base", sha, "--at", m.root, "--context-file", ctx, "--no-open",
-        ...pol.flags], { cwd: m.root });
+        ...planMapFlag(m.slug), ...pol.flags], { cwd: m.root });
       if (!r.ok) { problems.push(`${m.slug}: lookout open failed — ${r.out.split("\n")[0]}`); continue; }
       spawn.push(id);
     } else if (g.code === 0) passed.push(id);
@@ -2215,6 +2215,13 @@ async function render(specPath, opts) {
   say(`  also: ${extras.join(", ")}`);
   say(`spec + key archived under ${KEYS_DIR} (separate tree, on purpose)`);
   if (st.phase === "review") say("phase: review — the alignment check gates everything.");
+}
+
+// lookout's Map view: the plan's map, when render made one; otherwise the
+// review drops any map an earlier open gave it.
+function planMapFlag(slug) {
+  const f = path.join(PLANS_DIR, slug + ".map.json");
+  return fs.existsSync(f) ? ["--plan-map", f] : ["--no-plan-map"];
 }
 
 // <slug>.map.json beside the surfaces: the file lookout open --plan-map reads.
@@ -5440,7 +5447,7 @@ switch (cmd) {
     // policy too: lookout fixes it when the review is created, and a diff
     // viewed first must not create it without the quiz or the close rule.
     const r = runLookout(["open", "--plan", st.slug, "--inc", String(inc.n), "--base", base,
-      "--at", st.root, "--view-only", ...pol.flags], { cwd: st.root });
+      "--at", st.root, "--view-only", ...planMapFlag(st.slug), ...pol.flags], { cwd: st.root });
     if (r.ok) { say(r.out); break; }
     if (!r.missing) say(`lookout could not open it (${r.out.split("\n").pop()}); falling back to cmux diff`);
     incrementDiff(st, inc, { open: true, base }); break;

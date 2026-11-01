@@ -4648,6 +4648,12 @@ if (want("review checks (lookout)")) {
     fs.existsSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-1-inc1.json")) &&
     /spawn ONE fresh reviewer subagent with lookout prompt rv-1-inc1/.test(ck("rv-1", "review-code-review").note) &&
     /lookout prompt rv-1-inc1\nthen: deep-plan check run rv-1 1/.test(r.stdout), ck("rv-1", "review-code-review").note + r.stdout);
+  {
+    const opened = JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-1-inc1.json"), "utf8"));
+    const mapJson = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "rv-1.map.json"), "utf8"));
+    ok("review check: the review it opens carries the plan's map (--plan-map)",
+      !!opened.planMap && JSON.stringify(opened.planMap) === JSON.stringify(mapJson) && JSON.stringify(stOf("rv-1").map) === JSON.stringify(mapJson));
+  }
   ok("review check: the last line is the board's: spawn a reviewer",
     r.stdout.trim().split("\n").pop() === "review: spawn a reviewer — lookout prompt rv-1-inc1", r.stdout);
   const r2 = lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
@@ -4704,6 +4710,9 @@ if (want("review checks (lookout)")) {
   // A diff viewed first creates the review: with the plan's quiz, since a
   // re-open cannot add it later.
   lc(LENV, "diff", "rv-q", "1");
+  ok("deep-plan diff passes the plan's map to the review it opens",
+    JSON.stringify(JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-q-inc1.json"), "utf8")).planMap) ===
+    JSON.stringify(stOf("rv-q").map));
   ok("deep-plan diff opened first still creates the review with the plan's quiz",
     JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-q-inc1.json"), "utf8")).policy.quiz === true);
   r = lc(LENV, "review", "rv-q", "1");
