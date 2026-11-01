@@ -577,6 +577,22 @@ fn show<R: Runtime>(w: &WebviewWindow<R>) {
     let _ = w.set_focus();
 }
 
+/// Bring the window forward, as the tray's Show does, from any thread.
+pub fn summon<R: Runtime>(app: &AppHandle<R>) {
+    let a = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(w) = a.get_webview_window("main") {
+            show(&w);
+        }
+    });
+}
+
+/// Whether the window is the one in front: it has focus and its app is
+/// macOS's frontmost (a panel keeps focus after another app is clicked).
+pub fn in_front<R: Runtime>(app: &AppHandle<R>) -> bool {
+    app.get_webview_window("main").is_some_and(|w| w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false)) && app_in_front()
+}
+
 /// Window behaviour, the hotkey and the tray. Called once from setup.
 pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
     // An accessory app has no Dock icon and may draw over other apps'

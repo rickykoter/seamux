@@ -78,6 +78,13 @@ tabs.select(DEFAULT_TAB);
 // Every summon (the hotkey, the tray) lands on the Dock view.
 void listen("app:summoned", () => tabs.select(DEFAULT_TAB));
 
+// A click on a notification (crates/seamux-app/src/notify_app.rs) lands on
+// its pane in the Dock.
+void listen<{ ws: string; pane: string }>("notify:jump", (e) => {
+  tabs.select("dock");
+  dockView.jump(e.payload.ws, e.payload.pane);
+});
+
 // The window's own red button hides it too (shell.rs turns a close into a hide).
 const hide = () => void invoke("hide_overlay");
 document.addEventListener("keydown", (e) => {

@@ -198,6 +198,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             backend_status,
+            notify_app::notify_looking,
             shell::intent_server,
             shell::intent_page,
             shell::hide_overlay,
