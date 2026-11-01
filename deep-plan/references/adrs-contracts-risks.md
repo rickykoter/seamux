@@ -79,6 +79,10 @@ changes shape on.
    before reading any answers, if a contract decision has no quiz question
    whose `decisionRef` matches — the review cannot pass around a contract
    change. Render stays permissive so authoring is not blocked.
+5. **Placed with `at`.** A contract's optional `at` lists the repo-relative
+   paths where the surface lives. The End state map pins it on those files'
+   cards; one without `at` waits in the map's unplaced tray. Each path must
+   be one a deliverable lists or a fact cites, or render refuses it.
 
 ### Risks — dispositioned at review, and the review cannot pass around one
 

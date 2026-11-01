@@ -2297,9 +2297,11 @@ function rehydrate(slug, { quiet = false } = {}) {
   const extras = writeSpecArtifacts(spec, b64);
   writeMapFile(slug, st0 && st0.map);
   rerenderWorking(slug);
-  if (quiet) return { md: okMd, review: okRv, missing: missingOverviews(spec).length };
+  const noMap = !(st0 && st0.map);
+  if (quiet) return { md: okMd, review: okRv, missing: missingOverviews(spec).length, noMap };
   say(`rehydrated ${slug} — md ${okMd ? "byte-identical" : "REWRITTEN (differs)"}, review ${okRv ? "byte-identical" : "REWRITTEN (differs)"}`);
   say(`  also rewritten: ${extras.join(", ")}`);
+  if (noMap) say(`  no End state map yet (rendered before maps): \`deep-plan map ${slug}\` builds one`);
 }
 
 // ---------------------------------------------------------------- redraw
@@ -2331,7 +2333,7 @@ function redraw(target, { json = false, dry = false } = {}) {
     if (!fs.existsSync(specPath)) { rows.push({ slug, ok: false, error: "no archived spec" }); continue; }
     try {
       const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
-      if (dry) { rows.push({ slug, ok: true, dry: true, missing: missingOverviews(spec).length }); continue; }
+      if (dry) { rows.push({ slug, ok: true, dry: true, missing: missingOverviews(spec).length, noMap: !(readState(slug) || {}).map }); continue; }
       rows.push({ slug, ok: true, ...rehydrate(slug, { quiet: true }) });
     } catch (e) {
       rows.push({ slug, ok: false, error: String(e && e.message || e).split("\n")[0] });
@@ -2340,14 +2342,53 @@ function redraw(target, { json = false, dry = false } = {}) {
   if (json) { say(JSON.stringify(rows, null, 2)); return rows; }
   for (const r of rows) {
     if (!r.ok) { say(`  ✗ ${r.slug}: ${r.error}`); continue; }
-    const tail = r.missing ? ` · ${r.missing} diagram${r.missing === 1 ? "" : "s"} without an overview` : "";
+    const tail = (r.missing ? ` · ${r.missing} diagram${r.missing === 1 ? "" : "s"} without an overview` : "") +
+      (r.noMap ? " · no End state map" : "");
     say(`  ${r.dry ? "would redraw" : "redrew"} ${r.slug}${tail}`);
   }
   const need = rows.filter(r => r.ok && r.missing);
   say(`${dry ? "would redraw" : "redrew"} ${rows.filter(r => r.ok).length}/${rows.length} plan(s)` +
     (need.length ? `; ${need.length} lack overview diagrams — \`deep-plan overviews <slug>\` lists them` : ""));
+  const unmapped = rows.filter(r => r.ok && r.noMap).length;
+  if (unmapped) say(`${unmapped} plan(s) have no End state map yet — \`deep-plan map --all\` builds them`);
   if (rows.some(r => !r.ok)) process.exitCode = 1;
   return rows;
+}
+
+// ---------------------------------------------------------------- map
+//
+// Build (or rebuild) a plan's End state map without a re-render: for a plan
+// rendered before maps existed, or to refresh neighbours on a finished plan.
+// It reads the archived spec and the plan's root, the one repo read a render
+// would do, stores st.map, and rehydrates so every page carries the map.
+// Nothing else in state or the spec moves.
+function mapCmd(target, flags) {
+  if (!target) die("map <slug> | --all [--json]");
+  const slugs = target === "--all" || target === "all"
+    ? archivedSlugs().filter(s => { const st = readState(s); return st && st.phase !== "done"; }) : [target];
+  const rows = [];
+  for (const slug of slugs) {
+    const specPath = path.join(KEYS_DIR, slug + ".spec.json");
+    const st = readState(slug);
+    if (!fs.existsSync(specPath) || !st) { rows.push({ slug, ok: false, error: "no archived spec or no state" }); continue; }
+    if (!st.root || !fs.existsSync(st.root)) { rows.push({ slug, ok: false, error: `its root is gone (${st.root || "none"})` }); continue; }
+    try {
+      const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
+      const firstSha = (st.increments || []).map(i => i.startSha).find(Boolean) || "";
+      st.map = buildMap(spec, st.root, st.map || null, firstSha);
+      writeState(st);
+      rehydrate(slug, { quiet: true });
+      rows.push({ slug, ok: true, cards: st.map.cards.length, neighbours: st.map.neighbours, why: st.map.why });
+    } catch (e) {
+      rows.push({ slug, ok: false, error: String(e && e.message || e).split("\n")[0] });
+    }
+  }
+  if (flags.json) { say(JSON.stringify(rows, null, 2)); return; }
+  for (const r of rows) say(r.ok
+    ? `  mapped ${r.slug}: ${r.cards} file(s)` + (r.neighbours ? "" : ` · no neighbours: ${r.why}`)
+    : `  ✗ ${r.slug}: ${r.error}`);
+  if (!rows.length) say("no live plans to map");
+  if (rows.some(r => !r.ok)) process.exitCode = 1;
 }
 
 // ---------------------------------------------------------------- overviews
@@ -5075,7 +5116,7 @@ const BUILTIN_VERBS = new Set([
   "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
   "grade", "status", "go", "start", "done", "reset", "block", "check", "obs",
   "open-gate", "shut-gate", "close", "diff", "review", "deliver", "ask", "help", "setup", "engine", "verify",
-  "family", "redraw", "overviews", "protects", "await-go", "note", "notes",
+  "family", "redraw", "map", "overviews", "protects", "await-go", "note", "notes",
 ]);
 
 // A state lock held past its wait refuses the write (lib/state.mjs): said in
@@ -5264,6 +5305,7 @@ switch (cmd) {
     if (flags.json) { process.stdout.write(JSON.stringify({ ...detectHost(), root: HERE, version: engineVersion() }, null, 2) + "\n"); break; }
     say(hostLine());
     say(`engine: ${HERE} (${engineVersion()})`);
+    say(`end state map: ${planMapJs() ? "renderer present (lib/plan-map.js)" : "renderer MISSING (lib/plan-map.js): plan pages draw no map; reinstall the plugin"}`);
     const drv = browserDriver(process.cwd());
     say(`browser checks: ${drv.kind === "cmux" ? "cmux browser repl (" + drv.bin + ")"
       : drv.kind === "playwright" ? "Playwright, headless Chromium" + (drv.fake ? " (stand-in " + drv.fake + ")" : " (from " + path.dirname(drv.from) + ")")
@@ -5275,6 +5317,7 @@ switch (cmd) {
     await render(args[0], flags); break;
   }
   case "rehydrate": rehydrate(args[0] || die("rehydrate <slug>")); break;
+  case "map": mapCmd(args[0], flags); break;
   case "redraw": redraw(args[0] || die("redraw <slug> | --all [--dry-run] [--json]"), flags); break;
   case "overviews": await overviews(args[0] || die("overviews <slug> [file.json] [--force] [--json]"), args[1], flags); break;
   case "ask": {
@@ -5533,6 +5576,7 @@ switch (cmd) {
   render <spec.json> [--root DIR] [--force]   spec -> md + review + working surfaces
   rehydrate <slug>                            re-render from the archived spec
   redraw <slug> | --all [--dry-run] [--json]  re-render plans with this engine (spec + state untouched)
+  map <slug> | --all [--json]                 build a plan's End state map from its archived spec and root, and redraw
   overviews <slug> [file.json] [--force]      list diagrams, or add plain-words overviews {"<n>": "<mermaid>"}
   validate <slug|file>                        mermaid + formatting lint of rendered surfaces
   adr apply <slug>                            write flagged ADRs into the repo (refused in review phase)

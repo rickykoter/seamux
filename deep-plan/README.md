@@ -29,7 +29,16 @@ detected.
 
 ## The review page
 
-The page has the plan's context, decisions, cited evidence, diagrams and
+The page opens on the **End state map**: the plan's files in the middle,
+grouped by folder and marked new (dashed), changed (~) or removed (struck
+through), with what uses them on the left and what they use on the right.
+Each card shows its increments and how many facts cite it and contracts
+sit on it; hover lights its links, and a click lists them. The map is built
+when the plan renders and kept with the plan, so it never shifts under you
+as the code lands. On the working page the increment numbers on each card
+take their status colour.
+
+Below it the page has the plan's context, decisions, cited evidence, diagrams and
 increments, with a rail of its sections down the side. Highlight any text
 and press ⌘M to comment on it: the text stays marked, and the comment sits
 beside it in the margin. Click the marked text to edit what you wrote.
@@ -75,6 +84,7 @@ the spec and re-renders, and increment progress carries over.
 
 Plans made before an engine update get the current pages with
 `deep-plan redraw --all`; their specs and progress are left as they are.
+Plans made before the End state map get one with `deep-plan map --all`.
 Older diagrams have no overview yet. Ask the agent to add them:
 `deep-plan overviews <slug>` lists each diagram, and adding an overview
 doesn't count as a change to the approved plan.

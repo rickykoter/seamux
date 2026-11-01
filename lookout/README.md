@@ -78,6 +78,13 @@ page shows the notes in full.
 
 ![the Overview of a quizzed review: the checkout group's question with four options, waiting for an answer, and below it the session group answered right, with its reason and the note: why it is risky, the direction, and what to watch at which lines](../docs/img/lookout-overview.png)
 
+A review deep-plan opened also has a **Map** view (`m`, or the header
+button): the plan's End state map held against the diff. Files the plan
+named and the diff touched get a tick; files it named but the diff never
+touched, and files the diff touched but the plan never named, are flagged,
+the second with the increment that does plan them. A click on a touched
+file opens its diff.
+
 Inside a plan, a group that heads somewhere the increment's description
 does not is filed as a `plan-drift` finding, always major or worse. It
 holds the review check until you close it; dismissing it records that the

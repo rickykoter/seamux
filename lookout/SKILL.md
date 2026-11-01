@@ -32,6 +32,11 @@ lookout open --range A..B         # two commits; A...B diffs from their merge ba
 lookout open --patch FILE         # a patch file, no repository needed
 ```
 
+deep-plan adds `--plan-map ~/.claude/plans/<slug>.map.json` to every review
+it opens, which gives the page a **Map** view (`m`): the plan's files held
+against the diff, as planned, planned but untouched, or touched but never
+planned. Pass it yourself only for a plan review deep-plan did not open.
+
 It prints the review id, the page and the store, and shows the page where
 this session can. In cmux it is a browser tab beside the terminal, opened
 without taking focus (a second open of the same review refreshes that tab

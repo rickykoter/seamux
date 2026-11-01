@@ -3396,6 +3396,46 @@ if (want("end state map: on both plan pages")) {
   fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "pm-page-plan.json"), { force: true });
 }
 
+// -------------------------------------------------- an older plan gets its map
+//
+// A plan rendered before maps has no st.map, and rehydrate and redraw never
+// read the repo, so they say so and name `deep-plan map`, which builds it.
+if (want("end state map: older plans, the map verb, doctor")) {
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "old-plan";
+  r = cli("render", tmpSpec(s));
+  ok("a plan renders", r.status === 0, r.stderr);
+  const stP = path.join(ENV.DEEP_PLAN_STATE_DIR, "old-plan.json");
+  const rvP = path.join(ENV.DEEP_PLAN_PLANS_DIR, "old-plan.review.html");
+  const mapP = path.join(ENV.DEEP_PLAN_PLANS_DIR, "old-plan.map.json");
+  // Make it look like a plan from before maps.
+  const st = JSON.parse(fs.readFileSync(stP, "utf8")); delete st.map;
+  fs.writeFileSync(stP, JSON.stringify(st, null, 2) + "\n");
+  r = cli("rehydrate", "old-plan");
+  ok("rehydrate says a plan has no map, and names the verb that builds one",
+    /no End state map yet .*deep-plan map old-plan/.test(r.stdout) && !fs.readFileSync(rvP, "utf8").includes("<h2>End state</h2>"), r.stdout);
+  r = cli("redraw", "old-plan", "--dry-run");
+  ok("redraw --dry-run marks it", /would redraw old-plan.* · no End state map/.test(r.stdout), r.stdout);
+  r = cli("redraw", "old-plan");
+  ok("redraw counts the unmapped plans and names map --all", /1 plan\(s\) have no End state map yet — `deep-plan map --all` builds them/.test(r.stdout), r.stdout);
+  r = cli("map", "old-plan");
+  const after = JSON.parse(fs.readFileSync(stP, "utf8"));
+  ok("map builds the plan's map and stores it", r.status === 0 && /mapped old-plan: \d+ file\(s\)/.test(r.stdout) &&
+    after.map && after.map.cards.length === 3 && fs.existsSync(mapP), r.stdout + r.stderr);
+  ok("…and redraws the pages with it", fs.readFileSync(rvP, "utf8").includes("<h2>End state</h2>"));
+  ok("…leaving the increments and the rest of state as they were",
+    JSON.stringify(after.increments) === JSON.stringify(st.increments) && after.phase === st.phase && after.root === st.root);
+  r = cli("rehydrate", "old-plan");
+  ok("rehydrate is quiet about a plan that has a map", !/no End state map/.test(r.stdout));
+  ok("map on an unknown plan says why and fails", cli("map", "no-such-plan").status !== 0);
+  ok("map with no argument shows its usage", /map <slug> \| --all/.test(cli("map").stderr));
+  r = cli("doctor");
+  ok("doctor says the map's renderer shipped", /end state map: renderer present \(lib\/plan-map\.js\)/.test(r.stdout), r.stdout);
+  ok("help lists the map verb", /map <slug> \| --all \[--json\]/.test(cli("help").stdout + cli("help").stderr));
+  cli("close", "old-plan");
+  fs.rmSync(stP, { force: true });
+}
+
 // -------------------------------------------------- quiz.txt, widget, cutover bundle
 //
 // All three are pure functions of the spec, and all three were on 13/13 real

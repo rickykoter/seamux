@@ -106,7 +106,9 @@ These survive a compaction; everything below them is how.
    those strings before rendering, editing them in place with Edit rather
    than rewriting the file. Leave ids, `path:line` citations, check
    commands and quiz options alone: the renderer and the quiz linter measure
-   those.
+   those. Write a file an increment deletes as `{"path": …, "change":
+   "remove"}`, and give each contract `at`, the paths it lives in: the End
+   state map draws the removal and pins the contract on its file.
 6. **`deep-plan render <spec.json> --root <worktree>`**, the refuse-first
    renderer. Always pass `--root` when working outside the target worktree:
    an inferred root outside it does not gate the wrong thing, it *disarms
@@ -122,7 +124,9 @@ These survive a compaction; everything below them is how.
    page. Never `open` the file:// copy, and say so when the page is not
    served. The inline widget, the text quiz, the remote route and parking
    work in a tracker are in
-   [review-surfaces.md](references/review-surfaces.md). The human answers;
+   [review-surfaces.md](references/review-surfaces.md). The page opens on
+   the End state map: point the human at it first (what is new, changed or
+   removed, and what uses it), then the quiz. The human answers;
    you run `deep-plan grade <slug> q1=a q2=c q3=b`. A non-zero exit names the
    decision to reopen: the plan and their model disagree, and **either may be
    the broken one** — fix whichever is wrong, re-render, re-check. Once the
