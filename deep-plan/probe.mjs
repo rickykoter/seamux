@@ -1210,6 +1210,27 @@ ok("the denial opens with `deep-plan gate [<slug>]: ` (seamux-mods keys off it)"
   ok("working surface flips the ADR chip to applied",
     fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8")
       .includes(">applied</span>"));
+  // Renumbered on disk since (a rebase moved it past ADRs that landed first):
+  // render and apply follow the file, not the number they stored.
+  const adrDir = path.join(REPO, "docs", "adr");
+  fs.renameSync(path.join(adrDir, "0002-sweep-on-a-timer-not-on-write.md"), path.join(adrDir, "0005-sweep-on-a-timer-not-on-write.md"));
+  const rr5 = cli("render", tmpSpec(spec));
+  const st5 = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"));
+  ok("a re-render follows an applied ADR renumbered on disk",
+    rr5.status === 0 && /0002-sweep-on-a-timer-not-on-write\.md is now docs\/adr\/0005-/.test(rr5.stdout) &&
+    st5.adrs[0].number === 5 && st5.adrs[0].applied === "docs/adr/0005-sweep-on-a-timer-not-on-write.md", rr5.stdout + rr5.stderr);
+  ok("…and the working page links the file now there",
+    fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8").includes("0005-sweep-on-a-timer-not-on-write.md"));
+  fs.renameSync(path.join(adrDir, "0005-sweep-on-a-timer-not-on-write.md"), path.join(adrDir, "0006-sweep-on-a-timer-not-on-write.md"));
+  const ap3 = cli("adr", "apply", spec.slug);
+  ok("apply follows one renumbered since, and rewrites it where it is",
+    ap3.status === 0 && /0006-.*\(rewritten\)/.test(ap3.stdout) &&
+    !fs.existsSync(path.join(adrDir, "0005-sweep-on-a-timer-not-on-write.md")) &&
+    !fs.existsSync(path.join(adrDir, "0002-sweep-on-a-timer-not-on-write.md")) &&
+    /^# 0*6\. /.test(fs.readFileSync(path.join(adrDir, "0006-sweep-on-a-timer-not-on-write.md"), "utf8").split("\n")[0]), ap3.stdout + ap3.stderr);
+  // Back to 0002, so the cases after this see the ADR they always did.
+  fs.renameSync(path.join(adrDir, "0006-sweep-on-a-timer-not-on-write.md"), path.join(adrDir, "0002-sweep-on-a-timer-not-on-write.md"));
+  cli("render", tmpSpec(spec));
 }
 
 // -------------------------------------------------- go / working / done

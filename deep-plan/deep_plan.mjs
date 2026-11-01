@@ -20,7 +20,7 @@ import crypto from "node:crypto";
 import { execSync, execFileSync, spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { validateDiagrams, validateSurface, mermaidPath, mermaidCandidates, VENDOR_DIR, MERMAID_HOME } from "./lib/validate.mjs";
-import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries, adrScanReport } from "./lib/adr.mjs";
+import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries, adrScanReport, followRenamed } from "./lib/adr.mjs";
 import { epicHtml, incrementMd, bundleReadme, incrementFileNames, checkLinesMd } from "./lib/cutover.mjs";
 import { checkEvidence } from "./lib/evidence.mjs";
 import { buildMap } from "./lib/map.mjs";
@@ -2215,6 +2215,18 @@ async function render(specPath, opts) {
     return prev ? { ...a, number: prev.number, file: prev.file, dir: prev.dir,
       source: prev.source, applied: prev.applied || "" } : a;
   });
+  // An applied ADR renumbered on disk since (a rebase moved it past ADRs that
+  // landed first): follow it, so the pages link the file that is there.
+  {
+    const adrCfg = loadAdrConfig(planRoot);
+    for (const a of st.adrs) {
+      const mv = followRenamed(planRoot, a, adrCfg);
+      if (!mv) continue;
+      log1(st, `adr ${a.n}: followed a renumber on disk, ${a.applied} -> ${mv.applied}`);
+      say(`adr ${a.n}: ${a.applied} is now ${mv.applied} on disk; following it`);
+      Object.assign(a, mv);
+    }
+  }
   // The plan holds its own sync setting: the spec's share, false when unset.
   st.share = spec.share === undefined ? false : spec.share;
   st.map = map;
@@ -2639,6 +2651,14 @@ function adrApply(slug) {
     const entry = entries[a.n - 1];
     if (!entry) continue;
     const dirAbs = path.join(st.root, a.dir);
+    // Renumbered on disk since it was applied: rewrite it where it is now,
+    // not as a second copy under the old number.
+    const mv = followRenamed(st.root, a, config);
+    if (mv) {
+      say(`adr ${a.n}: ${a.applied} is now ${mv.applied} on disk; following it`);
+      log1(st, `adr ${a.n}: followed a renumber on disk, ${a.applied} -> ${mv.applied}`);
+      Object.assign(a, mv);
+    }
     if (!a.applied) {
       const miss = adrScanReport(dirAbs, config.numberScan);
       if (miss)

@@ -149,6 +149,26 @@ export function adrFileName(number, title, pattern) {
   });
 }
 
+// An applied ADR whose file is gone because someone renumbered it on disk
+// (0054-x.md is now 0056-x.md, say after a rebase): the same title under
+// another number in its folder. `a` is a state entry ({dir, file, applied,
+// decision}). Returns {number, file, applied} to adopt, else null: the file
+// is still there, nothing was applied, or no file matches.
+export function followRenamed(root, a, config) {
+  if (!a || !a.applied || fs.existsSync(path.join(root, a.applied))) return null;
+  let names = [];
+  try { names = fs.readdirSync(path.join(root, a.dir)); } catch { return null; }
+  const re = compileScan(config && config.numberScan);
+  for (const n of names.sort()) {
+    const m = re.exec(n);
+    if (!m || m[1] === undefined || n === a.file) continue;
+    const number = parseInt(m[1], 10);
+    if (adrFileName(number, a.decision, config && config.filePattern) === n)
+      return { number, file: n, applied: path.join(a.dir, n) };
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------- discovery
 
 const SKIP_DIRS = new Set(["node_modules", "vendor", ".git", ".hg", "dist", "build"]);
