@@ -15,7 +15,7 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
   plan renders and kept with the plan, so it doesn't shift as the code
   lands. A spec can now declare a removal (`{"path": …, "change":
   "remove"}`) and place a contract on its files with `at`. Plans made before
-  this get a map with `deep-plan map --all`. ADRs 0056-0059.
+  this get a map with `deep-plan map --all`. ADRs 0057-0060.
 
 - **lookout: a Map view for plan reviews.** A review deep-plan opens carries
   the plan's map (`lookout open --plan-map`), and `m` shows it against the

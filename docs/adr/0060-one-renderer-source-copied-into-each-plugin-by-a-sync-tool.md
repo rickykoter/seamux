@@ -1,4 +1,4 @@
-# 0059. One renderer source, copied into each plugin by a sync tool
+# 0060. One renderer source, copied into each plugin by a sync tool
 
 Date: 2026-11-01
 

@@ -1,4 +1,4 @@
-# 0056. Draw the map from the spec plus one hop of neighbours, frozen at render
+# 0057. Draw the map from the spec plus one hop of neighbours, frozen at render
 
 Date: 2026-11-01
 
