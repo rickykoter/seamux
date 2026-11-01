@@ -520,7 +520,7 @@ class Chat {
 }
 
 /** views.rs NowPage: a page a workspace has open now. */
-export type NowPage = { ws: string; kind: string; path: string; label: string; state: string; waiting: boolean; since: number };
+export type NowPage = { ws: string; kind: string; path: string; label: string; state: string; waiting: boolean; since: number; root: string };
 
 /** One tab on the sheet's page side: the Wake, a page, or a file shown here. */
 type Tab = {
@@ -566,6 +566,8 @@ export class Sheet {
   private active = "";
   /** The directory the Wake tab was last pointed at. */
   private wakeDir = "";
+  /** The page roots the Wake was last shown with (pageRoots). */
+  private wakeRoots: string[] = [];
   /** The tab before the Wake, for ⌘E to go back to. */
   private back = "";
   private pages: NowPage[] = [];
@@ -709,6 +711,8 @@ export class Sheet {
       this.pages = pages;
       if (!this.el.hidden) {
         this.syncTabs();
+        // A page opened or closed: the Wake reads its root, or stops.
+        this.followDir();
         // The sheet was entered before its pages were known: start on one now.
         if (!this.active) this.pickTab();
       }
@@ -960,7 +964,8 @@ export class Sheet {
     for (const x of this.tabs) if (x.el) x.el.hidden = x.key !== key;
     if (key === WAKE) {
       this.wakeDir = this.dir();
-      this.wakeView().showDir(this.wakeDir);
+      this.wakeRoots = this.pageRoots();
+      this.wakeView().showDir(this.wakeDir, this.wakeRoots);
     }
     this.drawTabs();
   }
@@ -970,10 +975,26 @@ export class Sheet {
   private followDir(): void {
     if (this.active !== WAKE || !this.wake) return;
     const d = this.dir();
-    if (!d || d === this.wakeDir) return;
+    const roots = this.pageRoots();
+    if (!d) return;
+    if (d === this.wakeDir) {
+      // Only the pages changed: their roots join the rows, the view stays.
+      if (roots.join("\n") === this.wakeRoots.join("\n")) return;
+      this.wakeRoots = roots;
+      this.wake.setAlso(d, roots);
+      return;
+    }
     this.wakeDir = d;
+    this.wakeRoots = roots;
     this.titleEl.textContent = `the wake · ${d.split("/").pop() ?? ""}`;
-    this.wake.showDir(d);
+    this.wake.showDir(d, roots);
+  }
+
+  /** Where this workspace's open pages are filed in the Wake: a plan's or a
+   *  review's root, an ask's cwd. A pane may work outside them. */
+  private pageRoots(): string[] {
+    const ws = this.workspace();
+    return [...new Set(this.pages.filter((p) => p.ws === ws && p.root).map((p) => p.root))].sort();
   }
 
   private wakeView(): Wake {

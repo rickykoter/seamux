@@ -18,6 +18,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+// The seamux app's tmux panes set these for the session running the probe;
+// every case builds its env from process.env, so they go before any does.
+for (const k of ["SEAMUX_PANE_ID", "SEAMUX_WORKSPACE_ID", "TMUX", "TMUX_PANE"]) delete process.env[k];
+// Pinned, not cleared: the cases drive a fake cmux, and a tmux backend
+// (inherited, or picked because no real cmux answers) opens Wake clicks in
+// the person's own browser.
+process.env.SEAMUX_BACKEND = "cmux";
 // A crew tool by name, through the CREW_IMPL helper: `seamux <name>` when
 // CREW_IMPL=rust and seamux registers it, else python3 <file> as always.
 const crewImpl = await import("../tools/crew_impl.mjs");

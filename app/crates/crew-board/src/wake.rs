@@ -295,7 +295,16 @@ fn wake_row(r: &crew_store::Row) -> Value {
 }
 
 pub fn wake_data(ws: &str, q: &str, kind: &str) -> Result<Value, String> {
-    let rows = crew_store::search(q, (!ws.is_empty()).then_some(ws), (!kind.is_empty()).then_some(kind), WAKE_LIMIT)
+    wake_data_in(ws, &[], q, kind)
+}
+
+/// `wake_data` for `ws` together with more directories (`also`): the app's
+/// Wake reads a workspace's cwd with its pages' roots. `ws` stays the one
+/// directory the answer names and the picker selects. The board's
+/// /artifacts/data route calls `wake_data`, which searches `ws` alone.
+pub fn wake_data_in(ws: &str, also: &[String], q: &str, kind: &str) -> Result<Value, String> {
+    let dirs: Vec<&str> = if ws.is_empty() { Vec::new() } else { std::iter::once(ws).chain(also.iter().map(String::as_str)).collect() };
+    let rows = crew_store::search_in(q, &dirs, (!kind.is_empty()).then_some(kind), WAKE_LIMIT)
         .map_err(|e| e.to_string())?;
     let wss = crew_store::workspaces().map_err(|e| e.to_string())?;
     let key = if ws.is_empty() { String::new() } else { crew_store::wskey(ws) };

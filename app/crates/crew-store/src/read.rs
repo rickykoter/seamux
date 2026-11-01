@@ -124,15 +124,31 @@ pub fn fts_query(q: &str) -> String {
 /// Rows newest first. `q` is matched over title, path, URL and prompt; an
 /// empty `ws` or `kind` filters nothing, as in the Python.
 pub fn search(q: &str, ws: Option<&str>, kind: Option<&str>, limit: usize) -> Result<Vec<Row>> {
+    search_in(q, ws.as_slice(), kind, limit)
+}
+
+/// `search` over several workspaces at once: rows filed under any of `dirs`
+/// (each keyed as `wskey` keys it; empty ones and repeats dropped). No
+/// directory at all filters nothing. The app's Wake reads a workspace's cwd
+/// and its pages' roots together through it.
+pub fn search_in(q: &str, dirs: &[&str], kind: Option<&str>, limit: usize) -> Result<Vec<Row>> {
     let db = connect()?;
-    let mut wheres: Vec<&str> = Vec::new();
+    let mut wheres: Vec<String> = Vec::new();
     let mut args: Vec<String> = Vec::new();
-    if let Some(w) = ws.filter(|w| !w.is_empty()) {
-        wheres.push("a.ws = ?");
-        args.push(wskey(w));
+    let mut keys: Vec<String> = Vec::new();
+    for k in dirs.iter().filter(|w| !w.is_empty()).map(|w| wskey(w)) {
+        if !keys.contains(&k) {
+            keys.push(k);
+        }
     }
+    if keys.len() == 1 {
+        wheres.push("a.ws = ?".into());
+    } else if !keys.is_empty() {
+        wheres.push(format!("a.ws IN ({})", vec!["?"; keys.len()].join(", ")));
+    }
+    args.extend(keys);
     if let Some(k) = kind.filter(|k| !k.is_empty()) {
-        wheres.push("a.kind = ?");
+        wheres.push("a.kind = ?".into());
         args.push(k.to_string());
     }
     let fq = fts_query(q);

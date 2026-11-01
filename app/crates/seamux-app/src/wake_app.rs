@@ -18,10 +18,11 @@ fn port() -> Option<u16> {
 }
 
 /// Rows, workspaces and the truncation flag for `ws` (a worktree path, or
-/// "" for every workspace), matching `q`.
+/// "" for every workspace), matching `q`. `dirs` adds directories read
+/// together with `ws`: the sheet passes its workspace's page roots.
 #[tauri::command]
-pub async fn wake_data(ws: String, q: String) -> Result<Value, String> {
-    blocking(move || wake::wake_data(&ws, &q, "")).await
+pub async fn wake_data(ws: String, q: String, dirs: Option<Vec<String>>) -> Result<Value, String> {
+    blocking(move || wake::wake_data_in(&ws, &dirs.unwrap_or_default(), &q, "")).await
 }
 
 /// What opening a row did: a page for the app's sheet, or what cmux did.

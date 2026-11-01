@@ -295,6 +295,8 @@ pub struct PlanBrief {
     pub open: bool,
     pub title: String,
     pub touched: u64,
+    /// The plan's root, for the Wake's directories.
+    pub root: String,
 }
 
 /// A workspace's newest lookout review, in brief.
@@ -326,6 +328,9 @@ pub struct NowPage {
     /// It waits on the person: an ask, or a review with addressed findings.
     pub waiting: bool,
     pub since: u64,
+    /// The directory its Wake rows are filed under: a plan's or review's
+    /// root, an ask's cwd.
+    pub root: String,
 }
 
 /// The `views:frame` payload.
@@ -509,6 +514,17 @@ fn plan_ws(panes: &Panes, p: &Value) -> Option<String> {
         .or_else(|| panes.live_ws(&owner))
 }
 
+/// The live workspace a review shows in: the pane that opened it, else the
+/// workspace it was opened in, else its plan's, else a pane working in its
+/// root. Asks match the same way, by what they recorded.
+fn review_ws(panes: &Panes, r: &ReviewSummary, plan_wss: &HashMap<String, String>) -> Option<String> {
+    let by_pane = panes.tiles.iter().find(|t| !r.pane.is_empty() && t.surface.eq_ignore_ascii_case(&r.pane)).map(|t| t.workspace.clone());
+    by_pane
+        .or_else(|| panes.live_ws(&r.workspace))
+        .or_else(|| plan_wss.get(&r.plan).filter(|_| !r.plan.is_empty()).cloned())
+        .or_else(|| panes.ws_for_dir(&r.root))
+}
+
 /// The workspace a hook file names: `<prefix><ws>`, the rest a UUID.
 fn ws_of(name: &str, prefix: &str, suffix: &str) -> Option<String> {
     let ws = name.strip_prefix(prefix)?.strip_suffix(suffix)?;
@@ -630,6 +646,10 @@ struct ReviewSummary {
     id: String,
     title: String,
     root: String,
+    /// The workspace and pane that opened it (lookout's source.workspace and
+    /// source.pane), "" for a review opened before lookout recorded them.
+    workspace: String,
+    pane: String,
     plan: String,
     inc: u64,
     addressed: u64,
@@ -649,6 +669,8 @@ fn summarize_review(text: &str, path: &Path) -> Option<ReviewSummary> {
         id: s(&v, "id"),
         title: s(&v, "title"),
         root: s(&src, "root"),
+        workspace: s(&src, "workspace"),
+        pane: s(&src, "pane"),
         plan: s(&src, "plan"),
         inc: u(&src, "inc"),
         addressed: count("addressed"),
@@ -753,8 +775,10 @@ impl Feed {
         self.wake.settle(limit);
     }
 
-    /// Every review whose worktree has a live pane, with that workspace.
-    fn live_reviews(&self, panes: &Panes) -> Vec<(String, ReviewSummary)> {
+    /// Every review with a live workspace to show it in: the pane that opened
+    /// it, else the workspace it was opened in, else its plan's (`plan_wss`,
+    /// by slug), else a pane working in its root.
+    fn live_reviews(&self, panes: &Panes, plan_wss: &HashMap<String, String>) -> Vec<(String, ReviewSummary)> {
         let Ok(rd) = std::fs::read_dir(&self.reviews_dir) else { return Vec::new() };
         let mut cache = self.reviews.lock().unwrap();
         let mut seen = Vec::new();
@@ -774,7 +798,7 @@ impl Feed {
                 cache.insert(path.clone(), (mtime, sum));
             }
             let Some((_, Some(r))) = cache.get(&path) else { continue };
-            let Some(ws) = panes.ws_for_dir(&r.root) else { continue };
+            let Some(ws) = review_ws(panes, r, plan_wss) else { continue };
             out.push((ws, r.clone()));
         }
         cache.retain(|p, _| seen.contains(p));
@@ -788,6 +812,7 @@ impl Feed {
         let mut decisions = hook_decisions(&self.state_dir, &panes);
         let mut plans = Vec::new();
         let mut fams = Vec::new();
+        let mut plan_wss = HashMap::new();
         match self.plans.get() {
             Some(Ok(rows)) => {
                 fams = families(&rows, tiles);
@@ -815,11 +840,12 @@ impl Feed {
                     decisions.push(Decision::Family { surface: panes.surface_in(&home), ws: home, since, parent: f.parent.clone(), members: f.members.clone() });
                 }
                 plans = plan_briefs(&rows, &panes);
+                plan_wss = rows.iter().filter_map(|p| plan_ws(&panes, p).map(|w| (s(p, "slug"), w))).collect();
             }
             Some(Err(e)) => problems.push(e),
             None => {} // the first answer is on its way
         }
-        let live_reviews = self.live_reviews(&panes);
+        let live_reviews = self.live_reviews(&panes, &plan_wss);
         for (ws, r) in live_reviews.iter().filter(|(_, r)| r.addressed > 0) {
             decisions.push(Decision::Review {
                 surface: panes.surface_in(ws),
@@ -890,6 +916,7 @@ impl Feed {
                 state,
                 waiting: review,
                 since: p.touched,
+                root: p.root.clone(),
             });
         }
         let mut revs: Vec<&(String, ReviewSummary)> = reviews.iter().filter(|(_, r)| r.open + r.addressed > 0).collect();
@@ -908,6 +935,7 @@ impl Feed {
                 state,
                 waiting: r.addressed > 0,
                 since: r.since,
+                root: r.root.clone(),
             });
         }
         let mut asks = Vec::new();
@@ -937,6 +965,7 @@ impl Feed {
                 state: "waiting".into(),
                 waiting: true,
                 since,
+                root: s(&v, "cwd"),
             });
         }
         asks.sort_by(|a, b| b.since.cmp(&a.since));
@@ -1036,6 +1065,7 @@ fn plan_briefs(rows: &[Value], panes: &Panes) -> Vec<PlanBrief> {
             open: open.is_some(),
             title,
             touched: u(p, "touchedAt"),
+            root: s(p, "root"),
         };
         if by_ws.get(&ws).is_none_or(|was| was.touched <= b.touched) {
             by_ws.insert(ws, b);
