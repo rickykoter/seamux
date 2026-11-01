@@ -3398,6 +3398,65 @@ if (want("end state map: on both plan pages")) {
   target.fire("click");
   ok("a click fills the panel with the card's facts", /retry_sweep\.rb/.test(doc.querySelector("div.pm-panel").textContent) &&
     /Facts that cite it/.test(doc.querySelector("div.pm-panel").textContent));
+  // The findings option (lookout's Map view uses it): a flag on the card in
+  // the worst open severity's class, a list in the panel, a click handed back.
+  {
+    const doc2 = fakeDoc();
+    const host = doc2.createElement("div"); doc2.body.appendChild(host);
+    const win2 = { document: doc2 };
+    vm.runInNewContext(fs.readFileSync(path.join(HERE, "lib", "plan-map.js"), "utf8"), { window: win2, document: doc2, console });
+    const fd = { "app/workers/retry_sweep.rb": [
+      { id: "f1", severity: "minor", status: "open", summary: "a minor one", line: 3 },
+      { id: "f2", severity: "major", status: "addressed", summary: "a major one", line: 9 },
+      { id: "f3", severity: "blocker", status: "resolved", summary: "a closed one", line: 1 }],
+      "db/migrate/add_retry_columns.rb": [{ id: "f4", severity: "nit", status: "dismissed", summary: "closed", line: 2 }] };
+    let picked = null;
+    win2.PlanMap.mount(host, data.map, { findings: c => fd[c.path] || [], onFinding: (c, f) => { picked = c.path + "#" + f.id; } });
+    const flagOf = p => doc2.querySelectorAll("g.pm-card").find(g => g.getAttribute("aria-label").startsWith(p))
+      .all().find(n => /\bpm-flag\b/.test(n.className));
+    const hot = flagOf("app/workers/retry_sweep.rb"), done = flagOf("db/migrate/add_retry_columns.rb");
+    ok("findings: a card's flag counts the open ones in the worst open severity's colour",
+      hot && /k-bad/.test(hot.className) && /\u2691 2$/.test(hot.textContent), hot && hot.className + " " + hot.textContent);
+    ok("findings: a card whose findings are all closed gets a faint tick",
+      done && /k-done/.test(done.className) && /\u2713/.test(done.textContent));
+    ok("findings: a card with none has no flag", !flagOf("app/workers/inline_retry.rb"));
+    doc2.querySelectorAll("g.pm-card").find(g => /retry_sweep/.test(g.getAttribute("aria-label"))).fire("click");
+    const pan = doc2.querySelector("div.pm-panel");
+    ok("findings: the panel lists them, open first and by severity", /Findings \(2 open of 3\)/.test(pan.textContent) &&
+      pan.textContent.indexOf("f2 major") < pan.textContent.indexOf("f1 minor") && pan.textContent.indexOf("f1 minor") < pan.textContent.indexOf("f3 blocker"));
+    pan.querySelectorAll("span.pm-fd")[0].fire("click");
+    ok("findings: a click on one hands it back", picked === "app/workers/retry_sweep.rb#f2", picked);
+    // Opening: the first click shows the card, a second (or the panel's button) opens it.
+    const doc3 = fakeDoc();
+    const host3 = doc3.createElement("div"); doc3.body.appendChild(host3);
+    const win3 = { document: doc3 };
+    vm.runInNewContext(fs.readFileSync(path.join(HERE, "lib", "plan-map.js"), "utf8"), { window: win3, document: doc3, console });
+    const opened = [];
+    win3.PlanMap.mount(host3, data.map, { onOpen: p => opened.push(p), canOpen: c => c.path !== "app/workers/inline_retry.rb", openLabel: "Open its diff" });
+    const cardOf = p => doc3.querySelectorAll("g.pm-card").find(g => g.getAttribute("aria-label").startsWith(p));
+    cardOf(data.map.cards[0].path).fire("click");
+    ok("open: the first click on a card shows it, even the one shown at the start", opened.length === 0);
+    cardOf(data.map.cards[0].path).fire("click");
+    ok("open: a second click opens it", opened.join() === data.map.cards[0].path, opened.join());
+    cardOf("db/migrate/add_retry_columns.rb").fire("click");
+    const btn = doc3.querySelector("div.pm-panel").querySelectorAll("button").find(b => /Open its diff/.test(b.textContent));
+    btn && btn.fire("click");
+    ok("open: the panel's button opens the card shown", !!btn && opened[1] === "db/migrate/add_retry_columns.rb");
+    cardOf("app/workers/inline_retry.rb").fire("click"); cardOf("app/workers/inline_retry.rb").fire("click");
+    ok("open: a card that cannot open has no button and opens nothing",
+      opened.length === 2 && !doc3.querySelector("div.pm-panel").querySelectorAll("button").length);
+    // A redraw (lookout's fresher review) with the same keep object: the
+    // reader's card stays shown and a click on it still opens.
+    const keep = {};
+    const opened2 = [];
+    const mnt = () => win3.PlanMap.mount(host3, data.map, { onOpen: p => opened2.push(p), keep });
+    mnt();
+    cardOf("db/migrate/add_retry_columns.rb").fire("click");
+    mnt();
+    ok("keep: a redraw keeps the reader's card in the panel", /add_retry_columns\.rb/.test(doc3.querySelector("div.pm-panel").querySelector("h3").textContent));
+    cardOf("db/migrate/add_retry_columns.rb").fire("click");
+    ok("keep: …and a click on it after the redraw opens it", opened2.join() === "db/migrate/add_retry_columns.rb", opened2.join());
+  }
   const chip = doc.querySelectorAll("button.pm-chip").find(b => /^2\./.test(b.textContent));
   chip.fire("click");
   ok("an increment chip dims the cards outside it", doc.querySelectorAll("g.pm-card").filter(g => /\bdim\b/.test(g.className)).length === 1);

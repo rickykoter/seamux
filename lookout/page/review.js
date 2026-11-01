@@ -469,13 +469,25 @@
   let mapOn = false;
   const PV = D.planView || null;
   const STATUS_NOTE = {
-    ok: "The plan named this file and the diff touched it. A click opens its diff.",
+    ok: "The plan named this file and the diff touched it.",
     miss: "The plan named this file for this work, and the diff never touched it.",
   };
+  // A card's file as the diff names it: extras carry it, planned cards are
+  // relative to the plan root.
+  // A planned file the diff renamed is filed (findings included) under its
+  // new path: follow the rename.
+  const renamedTo = p => { const f = (R.files || []).find(x => x.oldPath === p); return f ? f.path : p; };
+  const diffPathOf = c => c.diffPath || renamedTo(((R.planMap && R.planMap.prefix) || "") + c.path);
+  // The reader's place on the map, kept across redraws of a fresher review.
+  const mapKeep = {};
+  const findingsOn = c => (R.findings || []).filter(f => f.file === diffPathOf(c));
   function drawMap() {
     const head = [el("span", { class: "path" }, "Map")];
+    const live = (R.findings || []).filter(isOpen);
+    const onFiles = new Set(live.map(f => f.file)).size;
     if (PV) head.push(el("span", { class: "from" },
-      `${PV.counts.ok} as planned · ${PV.counts.miss} planned, not touched · ${PV.counts.extra} touched, not planned`));
+      `${PV.counts.ok} as planned · ${PV.counts.miss} planned, not touched · ${PV.counts.extra} touched, not planned` +
+      (live.length ? ` · ${live.length} open finding(s) on ${onFiles} file(s)` : "")));
     $("file-head").replaceChildren(...head);
     const box = el("div", { class: "ov map-view" });
     $("diff").replaceChildren(box);
@@ -502,11 +514,22 @@
       ],
       statusNote: (c, st) => st === "extra"
         ? (c.plannedIn && c.plannedIn.length ? `The plan names this file for increment ${c.plannedIn.join(", ")}, not this one.`
-          : "The diff changed this file, but no part of the plan names it. That may be plan drift.") + " A click opens its diff."
+          : "The diff changed this file, but no part of the plan names it. That may be plan drift.")
         : c.undone ? "The plan removes this file, and the diff edited it instead of deleting it."
         : STATUS_NOTE[st] || "",
       // Card paths are relative to the plan root; the diff's to the repo top.
       onOpen: p => { const k = diffOf.has(p) ? p : (R.planMap.prefix || "") + p; if (diffOf.has(k)) select(diffOf.get(k)); },
+      canOpen: c => diffOf.has(diffPathOf(c)),
+      keep: mapKeep,
+      openLabel: "Open its diff",
+      // The review's findings on each card's file, live: a close on the page
+      // redraws the map with it.
+      findings: c => findingsOn(c).map(f => ({ id: f.id, severity: f.severity, status: f.status || "open",
+        summary: f.short_summary || f.summary, line: f.line })),
+      onFinding: (c, f) => {
+        const x = (R.findings || []).find(y => y.id === f.id);
+        if (x) goToLine(x.file, x.side === "old" ? "old" : "new", x.line);
+      },
       trayNote: "The plan's map was frozen when the plan rendered; this view holds it against the current diff.",
     });
   }

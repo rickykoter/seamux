@@ -22,8 +22,12 @@ tree (single-child folders folded together), one file's diff on the right.
   passes its plan's `~/.claude/plans/<slug>.map.json` on every review it
   opens). Each file the plan named for this increment is marked as planned
   and touched, or planned but not touched. Each file the diff touched that
-  the plan never named is marked touched but not planned. A click on a
-  touched file opens its diff. Without a map the view says so.
+  the plan never named is marked touched but not planned. A click shows a
+  card's details; a second click, or **Open its diff**, opens a touched
+  file's diff. Each card with findings carries a flag: the
+  count still open, in the worst one's severity colour, or a faint tick
+  when all are closed. The panel lists them, and a click on one jumps to
+  its line. Without a map the view says so.
 
 - **Split or Unified** (header toggle, or `v`). Narrow panes and one-sided
   files (added, deleted) draw unified.

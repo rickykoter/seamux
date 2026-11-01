@@ -1393,6 +1393,10 @@ if (want("plan map: --plan-map, the three-way compare, the Map view")) {
   const data = JSON.parse(page.match(/<script type="application\/json" id="lookout-data">([\s\S]*?)<\/script>/)[1]);
   ok("page: its data carries the comparison", data.planView && data.planView.counts.extra === 2);
   ok("page: a Map button and the m key", /id="map-btn"/.test(page) && /<kbd>m<\/kbd>/.test(page) && /e\.key === "m"/.test(page));
+  ok("page: the Map view hands the review's findings to the map and jumps to a finding's line",
+    /findings: c => findingsOn\(c\)/.test(page) && /onFinding: \(c, f\) =>/.test(page) && /goToLine\(x\.file/.test(page) &&
+    // a renamed planned file's findings sit under its new path; the map keeps the reader's place
+    /renamedTo\(/.test(page) && /keep: mapKeep/.test(page));
   r = cli(RM, "open", "--id", "no-map", "--base", base, "--json");
   const bare = JSON.parse(fs.readFileSync(S.paths("no-map").html, "utf8").match(/<script type="application\/json" id="lookout-data">([\s\S]*?)<\/script>/)[1]);
   ok("page: a review with no map has no comparison, and the view says so", bare.planView === null && !S.read("no-map").planMap &&

@@ -82,8 +82,10 @@ A review deep-plan opened also has a **Map** view (`m`, or the header
 button): the plan's End state map held against the diff. Files the plan
 named and the diff touched get a tick; files it named but the diff never
 touched, and files the diff touched but the plan never named, are flagged,
-the second with the increment that does plan them. A click on a touched
-file opens its diff.
+the second with the increment that does plan them. A card with findings
+carries a flag with how many are still open, coloured by the worst; its
+panel lists them, and a click on one jumps to the line. Click a card again,
+or use **Open its diff**, to open a touched file's diff.
 
 Inside a plan, a group that heads somewhere the increment's description
 does not is filed as a `plan-drift` finding, always major or worse. It

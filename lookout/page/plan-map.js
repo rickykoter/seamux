@@ -13,7 +13,12 @@
 //     status: card => "ok" | "miss" | "extra" | "",  // lookout's compare
 //     extra: [card],                        // cards the plan never named
 //     groups: cards => [[label, cards]],    // the plan lane's sections
-//     onOpen: path => {},                   // a click on a plan card
+//     onOpen: path => {},                   // a second click on a card, or its panel button
+//     canOpen: card => true,                // whether that card can be opened
+//     openLabel: "Open",                    // the panel button's words
+//     keep: {},                             // the reader's state, kept across mounts
+//     findings: card => [{ id, severity, status, summary, line }],
+//     onFinding: (card, finding) => {},     // a click on a finding in the panel
 //   })
 //
 // Hover lights a card's links (classes only, no redraw); a click or Enter
@@ -38,6 +43,7 @@
     ".pm-canvas{overflow-x:auto;border:1px solid var(--ef-line2);border-radius:8px;background:var(--ef-bg1)}",
     ".pm-canvas svg{display:block;width:100%;min-width:640px;height:auto}",
     ".pm-panel{border:1px solid var(--ef-line2);border-radius:8px;padding:12px 14px;display:grid;gap:8px}",
+    ".pm-panel>.pm-chip{justify-self:start}",
     ".pm-panel h3{margin:0;font:600 14px var(--ef-mono);word-break:break-all}",
     ".pm-panel h4{margin:4px 0 0;font:600 11px var(--ef-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ef-text-faint)}",
     ".pm-panel ul{margin:0;padding-left:18px;display:grid;gap:4px}",
@@ -68,6 +74,10 @@
     ".pm-card.st-done .box{fill:var(--ef-bg-green)}",
     ".pm-card.st-working .box{fill:var(--ef-bg-blue)}",
     ".pm-badge{font:600 10.5px var(--ef-mono)}.pm-badge.f{fill:var(--ef-text-orange)}.pm-badge.c{fill:var(--ef-text-purple)}",
+    ".pm-badge.k-bad{fill:var(--ef-text-bad)}.pm-badge.k-warn{fill:var(--ef-text-warn)}.pm-badge.k-nit{fill:var(--ef-text-dim)}.pm-badge.k-done{fill:var(--ef-text-faint)}",
+    ".pm-fd{display:flex;gap:6px;align-items:baseline;flex-wrap:wrap;cursor:pointer;border-radius:4px;padding:1px 3px;margin-left:-3px}",
+    ".pm-fd:hover,.pm-fd:focus-visible{background:var(--ef-card);outline:none}",
+    ".pm-fd.done{opacity:.6}.pm-sev{font:600 11px var(--ef-mono)}.pm-sev.k-bad{color:var(--ef-text-bad)}.pm-sev.k-warn{color:var(--ef-text-warn)}.pm-sev.k-nit{color:var(--ef-text-dim)}",
     ".pm-nb .box{fill:var(--ef-bg1);stroke:var(--ef-line)}.pm-nb .name{font:11px var(--ef-mono);fill:var(--ef-text-dim)}",
     ".pm-nb.more .box{stroke-dasharray:3 3}.pm-nb.more .name{fill:var(--ef-text-faint)}",
     ".pm-fold .box{fill:var(--ef-bg);stroke:var(--ef-line2);stroke-dasharray:2 3}.pm-fold .name{font:600 11.5px var(--ef-mono);fill:var(--ef-text-dim)}",
@@ -102,6 +112,16 @@
   var clip = function (s, n) { return s.length > n ? "…" + s.slice(s.length - n + 1) : s; };
   var GLYPH = { "new": "+", modify: "~", remove: "−" };
   var WORD = { "new": "new file", modify: "modified", remove: "removed" };
+  // Findings: open until resolved or dismissed; the flag takes the worst open
+  // severity's colour.
+  var SEV = ["blocker", "major", "minor", "nit"];
+  var KIND = { blocker: "k-bad", major: "k-bad", minor: "k-warn", nit: "k-nit" };
+  var isOpenF = function (f) { return f.status !== "resolved" && f.status !== "dismissed"; };
+  function worst(list) {
+    var best = 99;
+    list.forEach(function (f) { var i = SEV.indexOf(f.severity); if (i >= 0 && i < best) best = i; });
+    return best === 99 ? "nit" : SEV[best];
+  }
 
   function styleOnce(doc) {
     if (doc.getElementById("pm-style")) return;
@@ -132,7 +152,19 @@
     var statusOf = opts.status || function () { return ""; };
     var cards = (model.cards || []).concat(opts.extra || []);
     var grouping = opts.groups || byFolder;
-    var state = { inc: 0, sel: cards.length ? cards[0].path : null, hover: null, open: {} };
+    // sel is shown from the start; picked is only what the reader clicked.
+    // A caller that redraws (lookout, on a fresher review) passes the same
+    // keep object each time, so the selection, a first click and an unfolded
+    // folder survive the redraw.
+    var state = opts.keep || {};
+    if (state.inc === undefined) state.inc = 0;
+    if (state.picked === undefined) state.picked = null;
+    if (!state.open) state.open = {};
+    state.hover = null;
+    if (!state.sel || !cards.some(function (c) { return c.path === state.sel; })) {
+      state.sel = cards.length ? cards[0].path : null;
+      state.picked = null;
+    }
     var dense = cards.length > DENSE;
 
     var wrap = H("div", "pm");
@@ -306,15 +338,24 @@
       g.addEventListener("mouseleave", function () { state.hover = null; paint(); });
       g.addEventListener("focus", function () { state.hover = id; paint(); });
       g.addEventListener("blur", function () { state.hover = null; paint(); });
+      // The first click selects a card and shows what the plan says about it
+      // (its findings too); a click on the card already selected opens it.
       var pick = function () {
-        state.sel = id;
+        var again = state.picked === id;
+        state.sel = state.picked = id;
         paint();
         fill();
-        if (opts.onOpen && cur.pos[id] && cur.pos[id].c) opts.onOpen(id);
+        if (again) openCard(id);
       };
       g.addEventListener("click", pick);
       g.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); pick(); } });
     }
+
+    function openable(id) {
+      var q = cur && cur.pos[id];
+      return !!(opts.onOpen && q && q.c && (!opts.canOpen || opts.canOpen(q.c)));
+    }
+    function openCard(id) { if (openable(id)) opts.onOpen(id); }
 
     function cardNode(it) {
       var c = it.c, st = statusOf(c);
@@ -337,10 +378,18 @@
           T({ x: bx + 6, y: 16, "text-anchor": "middle" }, String(n))]));
       });
       var bx2 = it.w - 10;
+      var fs = opts.findings ? opts.findings(c) || [] : [];
+      if (fs.length) {
+        var live = fs.filter(isOpenF);
+        var k = live.length ? KIND[worst(live)] : "k-done";
+        g.appendChild(T({ x: bx2, y: 31, "class": "pm-badge pm-flag " + k, "text-anchor": "end" },
+          "\u2691 " + (live.length || fs.length) + (live.length ? "" : "\u2713")));
+        bx2 -= 34;
+      }
       if ((c.contracts || []).length) { g.appendChild(T({ x: bx2, y: 31, "class": "pm-badge c", "text-anchor": "end" }, "◆ " + c.contracts.length)); bx2 -= 30; }
       if ((c.facts || []).length) g.appendChild(T({ x: bx2, y: 31, "class": "pm-badge f", "text-anchor": "end" }, "● " + c.facts.length));
       var title = S("title");
-      title.textContent = c.path;
+      title.textContent = c.path + (fs.length ? " \u00b7 " + fs.filter(isOpenF).length + " open finding(s) of " + fs.length : "");
       g.appendChild(title);
       wire(g, c.path);
       return g;
@@ -411,6 +460,13 @@
       }
       var c = it.c, st = statusOf(c);
       panel.appendChild(H("h3", "", c.path));
+      if (openable(id)) {
+        var ob = H("button", "pm-chip", (opts.openLabel || "Open") + " \u2192");
+        ob.type = "button";
+        ob.title = "or click the card again";
+        ob.addEventListener("click", function () { openCard(id); });
+        panel.appendChild(ob);
+      }
       var m = H("div", "pm-meta");
       if (st) m.appendChild(H("span", "pm-tag", { ok: "touched as planned", miss: "planned, not touched", extra: "touched, not planned" }[st] || st));
       if (c.change) m.appendChild(H("span", "pm-tag " + c.change, (GLYPH[c.change] || "") + " " + (WORD[c.change] || c.change)));
@@ -421,6 +477,29 @@
         var i = incs.filter(function (x) { return x.n === k; })[0];
         if (i && i.title) panel.appendChild(H("p", "pm-note", k + ". " + i.title));
       });
+      var fl = opts.findings ? opts.findings(c) || [] : [];
+      if (fl.length) {
+        var nOpen = fl.filter(isOpenF).length;
+        panel.appendChild(H("h4", "", "Findings (" + nOpen + " open of " + fl.length + ")"));
+        var ufd = H("ul");
+        fl.slice().sort(function (a, b) {
+          return (isOpenF(b) - isOpenF(a)) || SEV.indexOf(a.severity) - SEV.indexOf(b.severity);
+        }).forEach(function (f) {
+          var row = H("li");
+          var line = H("span", "pm-fd" + (isOpenF(f) ? "" : " done"));
+          line.setAttribute("role", "button");
+          line.setAttribute("tabindex", "0");
+          line.appendChild(H("span", "pm-sev " + (KIND[f.severity] || ""), f.id + " " + f.severity));
+          line.appendChild(document.createTextNode((f.line ? "line " + f.line + " \u00b7 " : "") + (f.summary || "") +
+            (f.status && f.status !== "open" ? " (" + f.status + ")" : "")));
+          var go = function () { if (opts.onFinding) opts.onFinding(c, f); };
+          line.addEventListener("click", go);
+          line.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); go(); } });
+          row.appendChild(line);
+          ufd.appendChild(row);
+        });
+        panel.appendChild(ufd);
+      }
       if ((c.facts || []).length) {
         panel.appendChild(H("h4", "", "Facts that cite it (" + c.facts.length + ")"));
         var uf = H("ul");
