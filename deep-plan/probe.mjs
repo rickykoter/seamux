@@ -296,6 +296,10 @@ ok("mermaid inlined as base64 (the swap regex's shape)",
   fs.writeFileSync(path.join(EVREPO, ".seamux", "verify.json"), "{\n  \"recipes\": []\n}\n");
   const ev = JSON.parse(JSON.stringify(spec));
   ev.slug = "evidence-probe";
+  // These facts replace the example's, so its contract's at and its declared
+  // removal would name paths nothing cites any more.
+  for (const c of ev.contracts || []) delete c.at;
+  for (const d of ev.deliverables) d.files = (d.files || []).filter(f => typeof f === "string");
   ev.verifiedFacts = [
     { claim: "a fine citation", evidence: "src/real.txt:3-5" },
     { claim: "line out of range", evidence: "src/real.txt:99" },
@@ -3108,6 +3112,405 @@ if (want("spec fields that used to be dropped")) {
   }
 }
 
+// -------------------------------------------------- spec files: strings, removals, contracts placed with at
+//
+// A files[] entry is a path or {path, change: "remove"}. The archive holds one
+// shape, {path, change} with change null unless declared; the author's own
+// file is never rewritten, and what render infers stays out of the spec.
+if (want("spec files: strings, removals, contracts placed with at")) {
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "files-plan";
+  const authorPath = path.join(TMP, "files-plan.spec.json");
+  const authorText = JSON.stringify(s, null, 2);
+  fs.writeFileSync(authorPath, authorText);
+  r = cli("render", authorPath);
+  ok("a spec mixing strings and a removal renders", r.status === 0, r.stderr);
+  ok("the author's spec file is left byte for byte", fs.readFileSync(authorPath, "utf8") === authorText);
+  const arch = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "files-plan.spec.json"), "utf8"));
+  const all = arch.deliverables.flatMap(d => d.files);
+  ok("the archive holds every entry as {path, change}",
+    all.length === 3 && all.every(f => f && typeof f === "object" && Object.keys(f).sort().join() === "change,path"), JSON.stringify(all));
+  ok("a plain string is archived with a null change",
+    all.find(f => f.path === "app/workers/retry_sweep.rb")?.change === null &&
+    all.find(f => f.path === "db/migrate/add_retry_columns.rb")?.change === null);
+  ok("a declared removal keeps its change", all.find(f => f.path === "app/workers/inline_retry.rb")?.change === "remove");
+  ok("nothing inferred lands in the archive", !/"(new|modify)"/.test(JSON.stringify(arch.deliverables)));
+  ok("contracts[].at survives into the archive", JSON.stringify(arch.contracts[0].at) === '["db/schema.rb"]');
+  const md = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "files-plan.md"), "utf8");
+  ok("the markdown names the removal", md.includes("`app/workers/inline_retry.rb` (remove)"));
+  const rv = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "files-plan.review.html"), "utf8");
+  ok("the review page's file tree shows an object entry by its path", rv.includes("inline_retry.rb") && !rv.includes("[object Object]"));
+  {
+    // A plan approved by an older engine hashed its files as plain strings;
+    // the object-shaped archive must hash the same, or the page cries drift.
+    const stP = path.join(ENV.DEEP_PLAN_STATE_DIR, "files-plan.json");
+    const st = JSON.parse(fs.readFileSync(stP, "utf8"));
+    const old = JSON.parse(JSON.stringify(arch));
+    for (const d of old.deliverables) d.files = d.files.map(f => f.change ? f : f.path);
+    if (old.diagrams) old.diagrams = old.diagrams.map(({ simple, ...d }) => d);
+    st.approved = { spec_hash: crypto.createHash("sha256").update(JSON.stringify(old)).digest("hex").slice(0, 16), path: "/x.approved.md" };
+    fs.writeFileSync(stP, JSON.stringify(st, null, 2) + "\n");
+    cli("rehydrate", "files-plan");
+    const wk = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "files-plan.working.html"), "utf8");
+    ok("a plan approved with plain-string files is not reported as drifted after the archive changed shape",
+      wk.includes("approved snapshot") && !wk.includes("DRIFTED"));
+  }
+  r = cli("rehydrate", "files-plan");
+  ok("rehydrate reads the object-shaped archive byte-identically", r.status === 0 && /byte-identical/.test(r.stdout + r.stderr), r.stdout + r.stderr);
+
+  // An existing file is read-before-plan whichever shape names it.
+  fs.mkdirSync(path.join(REPO, "lib"), { recursive: true });
+  fs.writeFileSync(path.join(REPO, "lib", "old.rb"), "x\n");
+  let bad = JSON.parse(JSON.stringify(s));
+  bad.deliverables[0].files.push({ path: "lib/old.rb", change: "remove" });
+  r = cli("render", tmpSpec(bad));
+  ok("an uncited existing file is refused in object form too", r.status !== 0 && /lib\/old\.rb/.test(r.stderr), r.stderr);
+
+  const refuses = (label, mutate, re) => {
+    const b = JSON.parse(JSON.stringify(s));
+    mutate(b);
+    const rr = cli("render", tmpSpec(b));
+    ok(label, rr.status !== 0 && re.test(rr.stderr), rr.stderr);
+  };
+  refuses("refuses a change other than remove", b => { b.deliverables[0].files[0] = { path: "a.rb", change: "modify" }; }, /change is "remove"/);
+  refuses("refuses an entry that is neither a path nor an object", b => { b.deliverables[0].files.push(7); }, /path string or \{path, change\}/);
+  refuses("refuses an object with no path", b => { b.deliverables[0].files.push({ change: "remove" }); }, /path must be a non-empty string/);
+  refuses("refuses an unknown field on an entry", b => { b.deliverables[0].files[0] = { path: "a.rb", kind: "new" }; }, /unknown field "kind"/);
+  refuses("refuses files that are not a list", b => { b.deliverables[0].files = "a.rb"; }, /files must be an array/);
+  refuses("refuses an at naming a path nothing touches", b => { b.contracts[0].at = ["db/elsewhere.rb"]; }, /at names db\/elsewhere\.rb/);
+  refuses("refuses a removal no fact cites (a mistyped path)", b => { b.deliverables[1].files[1] = { path: "app/workers/inline_rety.rb", change: "remove" }; }, /removes app\/workers\/inline_rety\.rb, which no verifiedFact cites/);
+  {
+    const b = JSON.parse(JSON.stringify(s));
+    b.slug = "files-plan-ev";
+    b.verifiedFacts.push({ claim: "two refs in one citation", evidence: "lib/two.rb:3, lib/three.rb:9" });
+    b.contracts[0].at = ["lib/two.rb"];
+    ok("an at matches a citation the way read-before-plan does (path and a colon)", cli("render", tmpSpec(b)).status === 0);
+  }
+  refuses("refuses an at that is not a list of paths", b => { b.contracts[0].at = "db/schema.rb"; }, /at is a list/);
+  {
+    const b = JSON.parse(JSON.stringify(s));
+    b.slug = "files-plan-at";
+    b.contracts[0].at = ["app/workers/retry_sweep.rb", "db/schema.rb"];
+    ok("an at naming a planned file or a cited one renders", cli("render", tmpSpec(b)).status === 0);
+    delete b.contracts[0].at;
+    b.slug = "files-plan-noat";
+    ok("a contract with no at renders", cli("render", tmpSpec(b)).status === 0);
+  }
+  for (const n of ["files-plan", "files-plan-at", "files-plan-noat", "files-plan-ev"]) {
+    cli("close", n);
+    fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), { force: true });
+  }
+}
+
+// -------------------------------------------------- the End state map's model
+//
+// Built once at render into st.map and <slug>.map.json; rehydrate reads only
+// st.map. Neighbours come from git grep over the plan root, capped per side.
+if (want("end state map: model, neighbours, frozen in state")) {
+  const MR = path.join(TMP, "maprepo");
+  const w = (rel, text) => { fs.mkdirSync(path.dirname(path.join(MR, rel)), { recursive: true }); fs.writeFileSync(path.join(MR, rel), text); };
+  w("src/core.mjs", 'import { dep } from "./dep.mjs";\nimport { ghost } from "./ghost.mjs";\nexport const core = dep;\n');
+  w("src/dep.mjs", "export const dep = 1;\n");
+  for (let i = 1; i <= 8; i++) w(`src/users/u${i}.mjs`, `import { core } from "../core.mjs";\n`);
+  w("README.md", "See src/core.mjs for the core.\n");
+  // A tracked user whose name git would quote without -z.
+  w("src/café.mjs", `import { core } from "./core.mjs";\n`);
+  w("pkg/src/a.mjs", "export const a = 1;\n");
+  execSync("git init -q && git add -A && git -c user.email=probe@deep-plan -c user.name=probe commit -q -m fixture", { cwd: MR });
+  // An untracked scratch file is not a neighbour.
+  w("scratch.mjs", `import { core } from "./src/core.mjs";\n`);
+  const m = JSON.parse(JSON.stringify(spec));
+  m.slug = "map-plan";
+  m.deliverables[0].files = ["src/core.mjs", "src/new.mjs"];
+  m.verifiedFacts.push({ claim: "core re-exports dep", evidence: "src/core.mjs:3" });
+  m.contracts[0].at = ["src/core.mjs"];
+  m.contracts.push({ ...m.contracts[0], surface: "a contract with no place", at: undefined });
+  // A fact cites src/dep.mjs but no deliverable lists it: no card, so the tray.
+  m.verifiedFacts.push({ claim: "dep is one", evidence: "src/dep.mjs:1" });
+  m.contracts.push({ ...m.contracts[0], surface: "placed on a cited file", at: ["src/dep.mjs"] });
+  r = cli("render", tmpSpec(m), "--root", MR);
+  ok("a plan with neighbours renders", r.status === 0, r.stderr);
+  const stOf = () => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "map-plan.json"), "utf8"));
+  const mapFile = path.join(ENV.DEEP_PLAN_PLANS_DIR, "map-plan.map.json");
+  const st1 = stOf();
+  const card = p => (st1.map.cards || []).find(c => c.path === p) || {};
+  ok("the model is stored in state as st.map", st1.map && st1.map.version === 1 && st1.map.slug === "map-plan" && st1.map.neighbours === true);
+  ok("<slug>.map.json holds the same model", fs.existsSync(mapFile) && JSON.stringify(JSON.parse(fs.readFileSync(mapFile, "utf8"))) === JSON.stringify(st1.map));
+  ok("one card per planned path, its id the path", st1.map.cards.map(c => c.id).join() ===
+    "src/core.mjs,src/new.mjs,db/migrate/add_retry_columns.rb,app/workers/inline_retry.rb", st1.map.cards.map(c => c.id).join());
+  ok("each card names its increments", JSON.stringify(card("src/core.mjs").increments) === "[1]" && JSON.stringify(card("app/workers/inline_retry.rb").increments) === "[2]");
+  ok("an existing file is modify, a missing one new, a declared removal remove",
+    card("src/core.mjs").change === "modify" && card("src/new.mjs").change === "new" && card("app/workers/inline_retry.rb").change === "remove");
+  ok("a fact citing the path is pinned on its card", card("src/core.mjs").facts.some(f => f.evidence === "src/core.mjs:3"));
+  ok("a contract whose at names the path sits on its card", card("src/core.mjs").contracts.length === 1 && card("src/core.mjs").contracts[0].i === 0);
+  ok("a contract with no at goes to the unplaced tray", st1.map.unplaced.some(k => k.surface === "a contract with no place" && !k.at));
+  ok("a contract placed on a file with no card goes to the tray, its at kept",
+    st1.map.unplaced.some(k => k.surface === "placed on a cited file" && JSON.stringify(k.at) === '["src/dep.mjs"]') && st1.map.unplaced.length === 2, JSON.stringify(st1.map.unplaced));
+  const by = card("src/core.mjs").usedBy;
+  ok("used by is capped at six, the rest counted", by.paths.length === 6 && by.more === 3, JSON.stringify(by));
+  ok("a tracked user with a non-ASCII name is found (git grep -z)", by.paths.includes("src/café.mjs"), JSON.stringify(by));
+  ok("an untracked scratch file is not a neighbour", !by.paths.includes("scratch.mjs") && by.paths.length + by.more === 9);
+  ok("docs are not references: the README is not a neighbour", !by.paths.includes("README.md"));
+  ok("uses comes from the file's own imports, a missing file dropped",
+    JSON.stringify(card("src/core.mjs").uses) === JSON.stringify({ paths: ["src/dep.mjs"], more: 0 }), JSON.stringify(card("src/core.mjs").uses));
+
+  // A planned file appears on disk: rehydrate draws the same map, and a
+  // re-render keeps the change the first render inferred.
+  w("src/new.mjs", 'import { core } from "./core.mjs";\n');
+  const mdBefore = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "map-plan.md"), "utf8");
+  r = cli("rehydrate", "map-plan");
+  ok("rehydrate is byte-identical after a planned file is created", /md byte-identical, review byte-identical/.test(r.stdout), r.stdout + r.stderr);
+  ok("…and rewrites map.json from st.map alone", JSON.stringify(JSON.parse(fs.readFileSync(mapFile, "utf8"))) === JSON.stringify(st1.map) &&
+    fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "map-plan.md"), "utf8") === mdBefore);
+  // Now on disk, it is read before planning like any file: cite it.
+  m.verifiedFacts.push({ claim: "new imports core", evidence: "src/new.mjs:1" });
+  r = cli("render", tmpSpec(m), "--root", MR);
+  const st2 = stOf();
+  const c2 = st2.map.cards.find(c => c.path === "src/new.mjs");
+  ok("a re-render keeps the inferred new for a file the plan has since created", r.status === 0 && c2.change === "new", JSON.stringify(c2));
+  ok("…while it now finds the new file's links inside the plan", c2.links.includes("src/core.mjs"));
+
+  // With a start commit (the first go), that commit answers: a path absent
+  // from it is new whatever the disk or an earlier map says.
+  const MAP = await import(new URL("lib/map.mjs", import.meta.url));
+  const head = execSync("git rev-parse HEAD", { cwd: MR, encoding: "utf8" }).trim();
+  const lied = { cards: [{ path: "src/new.mjs", change: "modify" }, { path: "src/core.mjs", change: "new" }] };
+  const fromBase = MAP.buildMap(m, MR, lied, head);
+  ok("the start commit decides new or modify once a plan is under way",
+    fromBase.cards.find(c => c.path === "src/new.mjs").change === "new" && fromBase.cards.find(c => c.path === "src/core.mjs").change === "modify");
+  ok("…and is kept in the model", fromBase.base === head);
+  // A later go (a reset, increments out of order) must not move the base.
+  execSync("git add -A && git -c user.email=probe@deep-plan -c user.name=probe commit -q -m later", { cwd: MR });
+  const later = execSync("git rev-parse HEAD", { cwd: MR, encoding: "utf8" }).trim();
+  const again = MAP.buildMap(m, MR, fromBase, later);
+  ok("a later start commit does not move the base a map recorded",
+    again.base === head && again.cards.find(c => c.path === "src/new.mjs").change === "new");
+  // A plan rooted in a subfolder: rev:path must resolve from that folder.
+  const sub = JSON.parse(JSON.stringify(m));
+  sub.deliverables = [{ ...sub.deliverables[0], files: ["src/a.mjs", "src/b.mjs"] }];
+  const inSub = MAP.buildMap(sub, path.join(MR, "pkg"), null, head);
+  ok("a plan rooted in a repo subfolder reads the start commit from that folder",
+    inSub.cards.find(c => c.path === "src/a.mjs").change === "modify" && inSub.cards.find(c => c.path === "src/b.mjs").change === "new", JSON.stringify(inSub.cards.map(c => c.change)));
+  ok("…and records where that root sits in the repo, for lookout's paths", inSub.prefix === "pkg/" && fromBase.prefix === "");
+
+  // Outside git: cards, no neighbours, and the reason.
+  const NG = path.join(TMP, "notgit");
+  fs.mkdirSync(NG, { recursive: true });
+  const ng = MAP.buildMap(m, NG, null, "");
+  ok("outside git the model has cards, no neighbours and says why",
+    ng.cards.length === 4 && ng.neighbours === false && /not a git work tree/.test(ng.why) && ng.cards.every(c => c.usedBy.paths.length === 0));
+
+  // A plan rendered before the map existed has no st.map: rehydrate leaves no map.json.
+  const bare = stOf(); delete bare.map;
+  fs.writeFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "map-plan.json"), JSON.stringify(bare, null, 2) + "\n");
+  cli("rehydrate", "map-plan");
+  ok("rehydrate of a plan with no st.map writes no map.json and builds none", !fs.existsSync(mapFile) && !stOf().map);
+  cli("close", "map-plan");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "map-plan.json"), { force: true });
+}
+
+// -------------------------------------------------- the End state map on the plan pages
+//
+// Both pages open on an End state section: the model as escaped JSON, then
+// the renderer (lib/plan-map.js, a copy of shared/plan-map.js) in its own
+// script. The renderer is run here against a small stand-in DOM, the way a
+// file:// page would run it, so a script error fails the probe.
+if (want("end state map: on both plan pages")) {
+  const vm = await import("node:vm");
+  // Just enough DOM for PlanMap.mount: elements with attributes, children,
+  // classes, listeners and selectors by tag and class.
+  const fakeDoc = () => {
+    const mk = (tag) => {
+      const e = { tagName: tag, attrs: {}, children: [], listeners: {}, style: {}, _text: "", parent: null,
+        set textContent(v) { this._text = String(v); this.children = []; }, get textContent() { return this._text + this.children.map(c => c.textContent).join(""); },
+        set className(v) { this.attrs.class = v; }, get className() { return this.attrs.class || ""; },
+        setAttribute(k, v) { this.attrs[k] = String(v); }, getAttribute(k) { return this.attrs[k] ?? null; },
+        appendChild(c) { c.parent = this; this.children.push(c); return c; }, append(...cs) { cs.forEach(c => this.appendChild(c)); },
+        replaceChildren(...cs) { this.children = []; this._text = ""; cs.forEach(c => this.appendChild(c)); },
+        addEventListener(t, f) { (this.listeners[t] ||= []).push(f); },
+        fire(t) { (this.listeners[t] || []).forEach(f => f({ key: "Enter", preventDefault() {} })); },
+        get classList() { const el = this; const list = () => (el.attrs.class || "").split(/\s+/).filter(Boolean);
+          return { contains: c => list().includes(c), toggle: (c, on) => { const l = list().filter(x => x !== c); if (on) l.push(c); el.attrs.class = l.join(" "); } }; },
+        all() { return this.children.flatMap(c => [c, ...c.all()]); },
+        querySelectorAll(sel) { return this.all().filter(n => match(n, sel)); },
+        querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+      };
+      return e;
+    };
+    // "g.pm-card, g.pm-nb", "path.pm-edge", ".pm-mount", "script.pm-data"
+    const match = (n, sel) => sel.split(",").some(one => {
+      const [tag, ...cls] = one.trim().split(".");
+      return (!tag || n.tagName === tag) && cls.every(c => (n.attrs.class || "").split(/\s+/).includes(c));
+    });
+    const doc = mk("#document");
+    doc.head = doc.appendChild(mk("head"));
+    doc.body = doc.appendChild(mk("body"));
+    doc.readyState = "complete";
+    doc.createElement = mk; doc.createElementNS = (_, t) => mk(t);
+    doc.createTextNode = t => { const n = mk("#text"); n._text = String(t); return n; };
+    doc.getElementById = id => doc.all().find(n => n.attrs.id === id) || null;
+    return doc;
+  };
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "pm-page-plan";
+  // Text that would close a script early if the JSON were not escaped.
+  s.verifiedFacts.push({ claim: "a claim with </script><b>tags</b> and \u2028 in it", evidence: "app/workers/retry_sweep.rb:1" });
+  r = cli("render", tmpSpec(s));
+  ok("a plan with a map renders", r.status === 0, r.stderr);
+  const rvP = path.join(ENV.DEEP_PLAN_PLANS_DIR, "pm-page-plan.review.html");
+  const wkP = path.join(ENV.DEEP_PLAN_PLANS_DIR, "pm-page-plan.working.html");
+  const rv = fs.readFileSync(rvP, "utf8"), wk = fs.readFileSync(wkP, "utf8");
+  for (const [name, page] of [["review", rv], ["working", wk]]) {
+    const at = page.indexOf("<h2>End state</h2>");
+    ok(`${name} page: End state is the first section`, at > 0 && at < page.indexOf("<h2>Context</h2>"));
+    ok(`${name} page: the renderer ships in a script of its own, outside SURFACE_JS`,
+      page.includes("<script>" + fs.readFileSync(path.join(HERE, "lib", "plan-map.js"), "utf8") + "</script>"));
+  }
+  const dataOf = page => page.match(/<script type="application\/json" class="pm-data">([\s\S]*?)<\/script>/)[1];
+  const raw = dataOf(rv);
+  ok("the embedded JSON escapes every < and the line separators", !raw.includes("<") && !raw.includes("\u2028") && raw.includes("\\u003c/script>"));
+  const data = JSON.parse(raw);
+  ok("…and parses back to the stored map", JSON.stringify(data.map) ===
+    JSON.stringify(JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "pm-page-plan.json"), "utf8")).map));
+  ok("the working page carries each increment's status", JSON.parse(dataOf(wk)).increments.every(i => typeof i.status === "string"));
+  r = cli("validate", "pm-page-plan");
+  ok("both pages pass the surface lint with the map in them", r.status === 0, r.stdout + r.stderr);
+  ok("the copy in lib/ is shared/plan-map.js byte for byte",
+    fs.readFileSync(path.join(HERE, "lib", "plan-map.js"), "utf8") === fs.readFileSync(path.join(HERE, "..", "shared", "plan-map.js"), "utf8"));
+
+  // Run it the way a file:// page does: auto-mount from the embedded data.
+  const doc = fakeDoc();
+  const mount = doc.createElement("div"); mount.className = "pm-mount";
+  const script = doc.createElement("script"); script.className = "pm-data"; script.textContent = raw;
+  mount.appendChild(script); doc.body.appendChild(mount);
+  const win = { document: doc };
+  let threw = null;
+  try { vm.runInNewContext(fs.readFileSync(path.join(HERE, "lib", "plan-map.js"), "utf8"), { window: win, document: doc, console }); }
+  catch (e) { threw = e; }
+  ok("the renderer runs without a browser error", !threw && !!win.PlanMap, threw && threw.stack);
+  const cardsDrawn = doc.querySelectorAll("g.pm-card");
+  ok("it draws one card per planned file", cardsDrawn.length === data.map.cards.length, cardsDrawn.length);
+  ok("a new file's card is marked new, a removal remove",
+    cardsDrawn.some(g => /\bnew\b/.test(g.className) && /retry_sweep/.test(g.getAttribute("aria-label"))) &&
+    cardsDrawn.some(g => /\bremove\b/.test(g.className)));
+  ok("the contract with no place shows in the tray", /Unplaced contracts/.test(doc.querySelector("div.pm-tray").textContent));
+  const target = cardsDrawn.find(g => /retry_sweep/.test(g.getAttribute("aria-label")));
+  target.fire("click");
+  ok("a click fills the panel with the card's facts", /retry_sweep\.rb/.test(doc.querySelector("div.pm-panel").textContent) &&
+    /Facts that cite it/.test(doc.querySelector("div.pm-panel").textContent));
+  // The findings option (lookout's Map view uses it): a flag on the card in
+  // the worst open severity's class, a list in the panel, a click handed back.
+  {
+    const doc2 = fakeDoc();
+    const host = doc2.createElement("div"); doc2.body.appendChild(host);
+    const win2 = { document: doc2 };
+    vm.runInNewContext(fs.readFileSync(path.join(HERE, "lib", "plan-map.js"), "utf8"), { window: win2, document: doc2, console });
+    const fd = { "app/workers/retry_sweep.rb": [
+      { id: "f1", severity: "minor", status: "open", summary: "a minor one", line: 3 },
+      { id: "f2", severity: "major", status: "addressed", summary: "a major one", line: 9 },
+      { id: "f3", severity: "blocker", status: "resolved", summary: "a closed one", line: 1 }],
+      "db/migrate/add_retry_columns.rb": [{ id: "f4", severity: "nit", status: "dismissed", summary: "closed", line: 2 }] };
+    let picked = null;
+    win2.PlanMap.mount(host, data.map, { findings: c => fd[c.path] || [], onFinding: (c, f) => { picked = c.path + "#" + f.id; } });
+    const flagOf = p => doc2.querySelectorAll("g.pm-card").find(g => g.getAttribute("aria-label").startsWith(p))
+      .all().find(n => /\bpm-flag\b/.test(n.className));
+    const hot = flagOf("app/workers/retry_sweep.rb"), done = flagOf("db/migrate/add_retry_columns.rb");
+    ok("findings: a card's flag counts the open ones in the worst open severity's colour",
+      hot && /k-bad/.test(hot.className) && /\u2691 2$/.test(hot.textContent), hot && hot.className + " " + hot.textContent);
+    ok("findings: a card whose findings are all closed gets a faint tick",
+      done && /k-done/.test(done.className) && /\u2713/.test(done.textContent));
+    ok("findings: a card with none has no flag", !flagOf("app/workers/inline_retry.rb"));
+    doc2.querySelectorAll("g.pm-card").find(g => /retry_sweep/.test(g.getAttribute("aria-label"))).fire("click");
+    const pan = doc2.querySelector("div.pm-panel");
+    ok("findings: the panel lists them, open first and by severity", /Findings \(2 open of 3\)/.test(pan.textContent) &&
+      pan.textContent.indexOf("f2 major") < pan.textContent.indexOf("f1 minor") && pan.textContent.indexOf("f1 minor") < pan.textContent.indexOf("f3 blocker"));
+    pan.querySelectorAll("span.pm-fd")[0].fire("click");
+    ok("findings: a click on one hands it back", picked === "app/workers/retry_sweep.rb#f2", picked);
+    // Opening: the first click shows the card, a second (or the panel's button) opens it.
+    const doc3 = fakeDoc();
+    const host3 = doc3.createElement("div"); doc3.body.appendChild(host3);
+    const win3 = { document: doc3 };
+    vm.runInNewContext(fs.readFileSync(path.join(HERE, "lib", "plan-map.js"), "utf8"), { window: win3, document: doc3, console });
+    const opened = [];
+    win3.PlanMap.mount(host3, data.map, { onOpen: p => opened.push(p), canOpen: c => c.path !== "app/workers/inline_retry.rb", openLabel: "Open its diff" });
+    const cardOf = p => doc3.querySelectorAll("g.pm-card").find(g => g.getAttribute("aria-label").startsWith(p));
+    cardOf(data.map.cards[0].path).fire("click");
+    ok("open: the first click on a card shows it, even the one shown at the start", opened.length === 0);
+    cardOf(data.map.cards[0].path).fire("click");
+    ok("open: a second click opens it", opened.join() === data.map.cards[0].path, opened.join());
+    cardOf("db/migrate/add_retry_columns.rb").fire("click");
+    const btn = doc3.querySelector("div.pm-panel").querySelectorAll("button").find(b => /Open its diff/.test(b.textContent));
+    btn && btn.fire("click");
+    ok("open: the panel's button opens the card shown", !!btn && opened[1] === "db/migrate/add_retry_columns.rb");
+    cardOf("app/workers/inline_retry.rb").fire("click"); cardOf("app/workers/inline_retry.rb").fire("click");
+    ok("open: a card that cannot open has no button and opens nothing",
+      opened.length === 2 && !doc3.querySelector("div.pm-panel").querySelectorAll("button").length);
+    // A redraw (lookout's fresher review) with the same keep object: the
+    // reader's card stays shown and a click on it still opens.
+    const keep = {};
+    const opened2 = [];
+    const mnt = () => win3.PlanMap.mount(host3, data.map, { onOpen: p => opened2.push(p), keep });
+    mnt();
+    cardOf("db/migrate/add_retry_columns.rb").fire("click");
+    mnt();
+    ok("keep: a redraw keeps the reader's card in the panel", /add_retry_columns\.rb/.test(doc3.querySelector("div.pm-panel").querySelector("h3").textContent));
+    cardOf("db/migrate/add_retry_columns.rb").fire("click");
+    ok("keep: …and a click on it after the redraw opens it", opened2.join() === "db/migrate/add_retry_columns.rb", opened2.join());
+  }
+  const chip = doc.querySelectorAll("button.pm-chip").find(b => /^2\./.test(b.textContent));
+  chip.fire("click");
+  ok("an increment chip dims the cards outside it", doc.querySelectorAll("g.pm-card").filter(g => /\bdim\b/.test(g.className)).length === 1);
+
+  // A plan with no map (rendered before maps): no section, nothing broken.
+  const st = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "pm-page-plan.json"), "utf8"));
+  delete st.map;
+  fs.writeFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "pm-page-plan.json"), JSON.stringify(st, null, 2) + "\n");
+  cli("rehydrate", "pm-page-plan");
+  ok("a plan with no stored map has no End state section", !fs.readFileSync(rvP, "utf8").includes("End state") && !fs.readFileSync(wkP, "utf8").includes("pm-mount"));
+  cli("close", "pm-page-plan");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "pm-page-plan.json"), { force: true });
+}
+
+// -------------------------------------------------- an older plan gets its map
+//
+// A plan rendered before maps has no st.map, and rehydrate and redraw never
+// read the repo, so they say so and name `deep-plan map`, which builds it.
+if (want("end state map: older plans, the map verb, doctor")) {
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "old-plan";
+  r = cli("render", tmpSpec(s));
+  ok("a plan renders", r.status === 0, r.stderr);
+  const stP = path.join(ENV.DEEP_PLAN_STATE_DIR, "old-plan.json");
+  const rvP = path.join(ENV.DEEP_PLAN_PLANS_DIR, "old-plan.review.html");
+  const mapP = path.join(ENV.DEEP_PLAN_PLANS_DIR, "old-plan.map.json");
+  // Make it look like a plan from before maps.
+  const st = JSON.parse(fs.readFileSync(stP, "utf8")); delete st.map;
+  fs.writeFileSync(stP, JSON.stringify(st, null, 2) + "\n");
+  r = cli("rehydrate", "old-plan");
+  ok("rehydrate says a plan has no map, and names the verb that builds one",
+    /no End state map yet .*deep-plan map old-plan/.test(r.stdout) && !fs.readFileSync(rvP, "utf8").includes("<h2>End state</h2>"), r.stdout);
+  r = cli("redraw", "old-plan", "--dry-run");
+  ok("redraw --dry-run marks it", /would redraw old-plan.* · no End state map/.test(r.stdout), r.stdout);
+  r = cli("redraw", "old-plan");
+  ok("redraw counts the unmapped plans and names map --all", /1 plan\(s\) have no End state map yet — `deep-plan map --all` builds them/.test(r.stdout), r.stdout);
+  r = cli("map", "old-plan");
+  const after = JSON.parse(fs.readFileSync(stP, "utf8"));
+  ok("map builds the plan's map and stores it", r.status === 0 && /mapped old-plan: \d+ file\(s\)/.test(r.stdout) &&
+    after.map && after.map.cards.length === 3 && fs.existsSync(mapP), r.stdout + r.stderr);
+  ok("…and redraws the pages with it", fs.readFileSync(rvP, "utf8").includes("<h2>End state</h2>"));
+  ok("…leaving the increments and the rest of state as they were",
+    JSON.stringify(after.increments) === JSON.stringify(st.increments) && after.phase === st.phase && after.root === st.root);
+  r = cli("rehydrate", "old-plan");
+  ok("rehydrate is quiet about a plan that has a map", !/no End state map/.test(r.stdout));
+  ok("map on an unknown plan says why and fails", cli("map", "no-such-plan").status !== 0);
+  ok("map with no argument shows its usage", /map <slug> \| --all/.test(cli("map").stderr));
+  r = cli("doctor");
+  ok("doctor says the map's renderer shipped", /end state map: renderer present \(lib\/plan-map\.js\)/.test(r.stdout), r.stdout);
+  ok("help lists the map verb", /map <slug> \| --all \[--json\]/.test(cli("help").stdout + cli("help").stderr));
+  cli("close", "old-plan");
+  fs.rmSync(stP, { force: true });
+}
+
 // -------------------------------------------------- quiz.txt, widget, cutover bundle
 //
 // All three are pure functions of the spec, and all three were on 13/13 real
@@ -4360,6 +4763,12 @@ if (want("review checks (lookout)")) {
     fs.existsSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-1-inc1.json")) &&
     /spawn ONE fresh reviewer subagent with lookout prompt rv-1-inc1/.test(ck("rv-1", "review-code-review").note) &&
     /lookout prompt rv-1-inc1\nthen: deep-plan check run rv-1 1/.test(r.stdout), ck("rv-1", "review-code-review").note + r.stdout);
+  {
+    const opened = JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-1-inc1.json"), "utf8"));
+    const mapJson = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "rv-1.map.json"), "utf8"));
+    ok("review check: the review it opens carries the plan's map (--plan-map)",
+      !!opened.planMap && JSON.stringify(opened.planMap) === JSON.stringify(mapJson) && JSON.stringify(stOf("rv-1").map) === JSON.stringify(mapJson));
+  }
   ok("review check: the last line is the board's: spawn a reviewer",
     r.stdout.trim().split("\n").pop() === "review: spawn a reviewer — lookout prompt rv-1-inc1", r.stdout);
   const r2 = lc(LENV, "check", "run", "rv-1", "1", "review-code-review");
@@ -4416,6 +4825,9 @@ if (want("review checks (lookout)")) {
   // A diff viewed first creates the review: with the plan's quiz, since a
   // re-open cannot add it later.
   lc(LENV, "diff", "rv-q", "1");
+  ok("deep-plan diff passes the plan's map to the review it opens",
+    JSON.stringify(JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-q-inc1.json"), "utf8")).planMap) ===
+    JSON.stringify(stOf("rv-q").map));
   ok("deep-plan diff opened first still creates the review with the plan's quiz",
     JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rv-q-inc1.json"), "utf8")).policy.quiz === true);
   r = lc(LENV, "review", "rv-q", "1");

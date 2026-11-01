@@ -16,7 +16,7 @@
 // A probe assertion holds that line, because the bundle is built from the same
 // spec that contains the quiz — the exclusion is a choice, not a side effect.
 
-import { specChecks } from "./state.mjs";
+import { specChecks, planFiles } from "./state.mjs";
 
 const esc = s => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
   .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -157,9 +157,9 @@ export function incrementMd({ spec, index, total, checks }) {
 
   out.push(`## This increment — ${d.title || ""}`, "");
   if (d.body) out.push(String(d.body).trim(), "");
-  if ((d.files || []).length) {
+  if (planFiles(d).length) {
     out.push("### Files", "");
-    for (const f of d.files) out.push(`- \`${f}\``);
+    for (const f of planFiles(d)) out.push(`- \`${f.path}\`` + (f.change ? ` (${f.change})` : ""));
     out.push("");
   }
   // Only when the spec attributes commits to THIS increment. Absent, the

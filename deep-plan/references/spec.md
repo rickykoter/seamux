@@ -21,7 +21,8 @@ The full shape of the spec JSON (discipline step 5); `examples/example.spec.json
   "contracts":     [{ "surface": "table/endpoint/signature", "kind": "db-schema|api|method-signature|event|config",
                       "scope": "internal|external", "change": "new|modify|remove",
                       "reach": "who consumes it (scouted)", "decisionRef": "the owning decision",
-                      "waiver": "external-scope escape hatch: why no ADR" }],
+                      "waiver": "external-scope escape hatch: why no ADR",
+                      "at": ["optional: repo-relative paths where it lives, for the map"] }],
   "verifiedFacts": [{ "claim": "...", "evidence": "path:line" }],
   "risks":         ["uncited claims live here, not in verifiedFacts",
                     { "risk": "…", "disposition": "accept|mitigate|spike|promote",
@@ -29,7 +30,7 @@ The full shape of the spec JSON (discipline step 5); `examples/example.spec.json
                       "note": "spike: the check that settles it; ticket: its context" }],
   "diagrams":      [{ "question": "the heading, phrased as a question", "mermaid": "...",
                       "simple": "optional: the same idea in plain words, the page opens on it" }],
-  "deliverables":  [{ "title": "...", "body": "...", "files": ["relative/paths"],
+  "deliverables":  [{ "title": "...", "body": "...", "files": ["relative/path", { "path": "relative/path", "change": "remove" }],
                       "checks": [{ "kind": "test|e2e|observability|manual|review|browser", "name": "...",
                         "id": "optional; derived from kind + name",
                         "recipe": "a recipe id (or id@project) from .seamux/verify.json",
@@ -112,6 +113,14 @@ follows its parent's. Render refuses any other shape. What it does and the
 The top-level `observability` block is optional and **advisory** — the
 renderer shows it but never refuses a spec for lacking it. See the
 observability discipline below for when it is expected.
+
+A `files` entry is a path, or `{ "path", "change": "remove" }` for a file the
+increment deletes (a removed file is still read and cited). Render archives
+every entry as `{ path, change }`, with `change` null unless you declared it;
+whether a path is new or modified is inferred at render and kept in plan
+state, never written into the spec. Your own spec file is left as you wrote
+it. `contracts[].at` places a contract on the End state map: each path must
+be one a deliverable lists or a fact cites, or render refuses it.
 
 `quiz.answer` indexes options **as written**; rendering shuffles per-slug and the
 key stores the shuffled letter — the two cannot drift.

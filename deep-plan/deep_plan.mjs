@@ -23,6 +23,7 @@ import { validateDiagrams, validateSurface, mermaidPath, mermaidCandidates, VEND
 import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries, adrScanReport } from "./lib/adr.mjs";
 import { epicHtml, incrementMd, bundleReadme, incrementFileNames, checkLinesMd } from "./lib/cutover.mjs";
 import { checkEvidence } from "./lib/evidence.mjs";
+import { buildMap } from "./lib/map.mjs";
 import { SURFACE_CSS, SURFACE_JS, surfaceOpen, surfaceClose, fileTreeHtml, diagramCardHtml, diagramsForValidation } from "./lib/surface.mjs";
 import { resolveFiles, resolver } from "./lib/verify.mjs";
 import { runExec, acquireSteps, alive, sleep, tail } from "./lib/runner.mjs";
@@ -47,7 +48,7 @@ import {
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, DATA_ROOT, REMOTE_DIR, statePath, sessionId,
   readState, writeState, allStates, log1, progress, gateView,
-  planFor, CHECK_KINDS, specChecks, reconcileChecks, checksOf, checksBlock,
+  planFor, CHECK_KINDS, specChecks, planFiles, planPaths, reconcileChecks, checksOf, checksBlock,
   checksAggregate, needsTree, treeOf, treesAt, scopeOf, treeChanges, treeDiff, checkMeta, canon,
   updateState, LockBusy, onHumansWord, markActed, releaseLever,
 } from "./lib/state.mjs";
@@ -188,6 +189,49 @@ function validate(spec, force) {
       errs.push(`contract "${name}": decisionRef must name a decision in the spec`);
     else if (c.scope === "external" && !dec.adr && !(c.waiver && String(c.waiver).trim()))
       errs.push(`contract "${name}": external scope defaults toward ADR — flag the decision, or write a waiver`);
+  }
+
+  // Files: a path, or {path, change} where change is null or "remove". The
+  // map draws a removal; new or modify is inferred at render, never written.
+  const touched = new Set();
+  (spec.deliverables || []).forEach((d, i) => {
+    if (d.files === undefined) return;
+    if (!Array.isArray(d.files)) { errs.push(`deliverable ${i + 1}: files must be an array`); return; }
+    d.files.forEach((f, k) => {
+      const where = `deliverable ${i + 1} files[${k}]`;
+      if (typeof f === "string") { if (f.trim()) touched.add(f); else errs.push(`${where}: an empty path`); return; }
+      if (!f || typeof f !== "object" || Array.isArray(f)) { errs.push(`${where}: a path string or {path, change}`); return; }
+      if (typeof f.path !== "string" || !f.path.trim()) errs.push(`${where}: path must be a non-empty string`);
+      else touched.add(f.path);
+      if (f.change != null && f.change !== "remove")
+        errs.push(`${where} (${f.path}): change is "remove" or absent; new or modify is inferred`);
+      for (const key of Object.keys(f)) if (key !== "path" && key !== "change")
+        errs.push(`${where} (${f.path}): unknown field "${key}" (only path and change)`);
+    });
+  });
+  // contracts[].at places a contract on the map: each path must be one the
+  // plan touches or a fact cites, or the card it names would not be drawn.
+  // "Cited" means what the read-before-plan floor means by it: the evidence
+  // is the path, or starts with the path and a colon.
+  const cites = p => (spec.verifiedFacts || []).some(v => {
+    const ev = String(v && v.evidence || "");
+    return ev === p || ev.startsWith(p + ":");
+  });
+  // A removal is always read first, and the file is gone once the increment
+  // lands, so its citation is the check (and it catches a mistyped path).
+  (spec.deliverables || []).forEach((d, i) => {
+    for (const f of Array.isArray(d.files) ? d.files : [])
+      if (f && typeof f === "object" && f.change === "remove" && typeof f.path === "string" && f.path.trim() && !cites(f.path))
+        errs.push(`deliverable ${i + 1}: removes ${f.path}, which no verifiedFact cites (read it before planning its removal)`);
+  });
+  for (const c of spec.contracts || []) {
+    if (c.at === undefined) continue;
+    const name = c.surface || "(unnamed surface)";
+    if (!Array.isArray(c.at) || c.at.some(p => typeof p !== "string" || !p.trim())) {
+      errs.push(`contract "${name}": at is a list of repo-relative paths`); continue;
+    }
+    for (const p of c.at) if (!touched.has(p) && !cites(p))
+      errs.push(`contract "${name}": at names ${p}, which no deliverable lists and no fact cites`);
   }
 
   // Checks: `done` is gated on them, so one the engine cannot read must refuse
@@ -469,7 +513,7 @@ function openReview(st, inc, base = "") {
     `deep-plan ${all ? `deliver ${st.slug}` : `review ${st.slug} ${inc.n}`} --base <sha>` };
   const pol = reviewPolicy(st.slug);
   const r = runLookout(["open", "--plan", st.slug, "--inc", all ? "all" : String(inc.n), "--base", sha, "--at", st.root,
-    ...pol.flags], { cwd: st.root });
+    ...planMapFlag(st.slug), ...pol.flags], { cwd: st.root });
   return { ...r, agent: pol.agent, quiz: pol.quiz };
 }
 
@@ -540,7 +584,7 @@ function familyDeliver(st, spec) {
     if (g.code === 3) {
       const r = runLookout(["open", "--id", id, "--title", `${slug} family review · ${m.slug}`,
         "--plan", m.slug, "--inc", "all", "--base", sha, "--at", m.root, "--context-file", ctx, "--no-open",
-        ...pol.flags], { cwd: m.root });
+        ...planMapFlag(m.slug), ...pol.flags], { cwd: m.root });
       if (!r.ok) { problems.push(`${m.slug}: lookout open failed — ${r.out.split("\n")[0]}`); continue; }
       spawn.push(id);
     } else if (g.code === 0) passed.push(id);
@@ -602,7 +646,7 @@ function resolvePlanChecks(spec, root) {
       ...(r.scripts && r.scripts.length ? { scripts: r.scripts.map(f => path.posix.join(r.project || ".", r.cwd, f)) } : {}) } });
   const lists = (spec.deliverables || []).map((d, i) => {
     const label = `deliverable ${i + 1} ("${d.title}")`;
-    const rows = (d.files || []).map(f => R.file(f)).filter(r => !r.outside);
+    const rows = planPaths(d).map(f => R.file(f)).filter(r => !r.outside);
     // A check may name any recipe available where the deliverable's files
     // land, match aside — naming one is the author choosing it. With no
     // config under any of its files, the root's.
@@ -699,7 +743,7 @@ function planAdrs(spec, root) {
   const entries = adrEntries(spec);
   if (!entries.length) return [];
   const config = loadAdrConfig(root);
-  const files = (spec.deliverables || []).flatMap(d => d.files || []);
+  const files = (spec.deliverables || []).flatMap(planPaths);
   const { dir, source } = resolveAdrDir(root, config, files);
   const dirAbs = path.join(root, dir);
   const base = nextNumber(dirAbs, config.numberScan);
@@ -798,7 +842,7 @@ function mdPlan(spec, adrs = []) {
       (pol.between === "draft-pr" ? "; between increments the branch is pushed to a draft PR." : "."), "");
   (spec.deliverables || []).forEach((d, i) => {
     L.push(`### ${i + 1}. ${d.title}`, "", d.body || "");
-    if ((d.files || []).length) L.push("", "Files: " + d.files.map(f => "`" + f + "`").join(", "));
+    if (planFiles(d).length) L.push("", "Files: " + planFiles(d).map(f => "`" + f.path + "`" + (f.change ? ` (${f.change})` : "")).join(", "));
     if (pol.auto && humanStop(spec, i + 1)) L.push("", `Go: a person's — ${humanStop(spec, i + 1)}`);
     // Per-deliverable verification is not a duplicate of the plan-wide list: it
     // is how you check THIS increment, which is what someone reviewing one
@@ -1347,7 +1391,32 @@ const DP_RISK_CSS = `.dp-risk-ctl{display:flex;flex-wrap:wrap;gap:6px 12px;align
 .dp-risk-deliv,.dp-risk-ticket{display:none}
 .dp-risk-mitigate .dp-risk-deliv,.dp-risk-mitigate .dp-risk-ticket{display:inline-block}`;
 
-function commonBody(spec, adrs = [], withNotes = false) {
+// The End state map: the model render stored (st.map) as JSON in the page,
+// then the renderer (lib/plan-map.js, a copy of shared/plan-map.js) in a
+// script of its own, since SURFACE_JS cannot hold it. Every "<" in the JSON
+// is escaped, so no text in a plan can close the script early. "" when the
+// plan has no map (rendered before maps existed) or no files.
+let PLAN_MAP_JS = null;
+function planMapJs() {
+  if (PLAN_MAP_JS === null) {
+    try { PLAN_MAP_JS = fs.readFileSync(path.join(HERE, "lib", "plan-map.js"), "utf8"); }
+    catch { PLAN_MAP_JS = ""; }
+  }
+  return PLAN_MAP_JS;
+}
+function endStateHtml(map, increments) {
+  if (!map || !(map.cards || []).length) return "";
+  const data = JSON.stringify({ map, increments })
+    .replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+  const js = planMapJs();
+  const n = map.cards.length;
+  return `<h2>End state</h2>
+<p class="dim">The ${n} file${n === 1 ? "" : "s"} this plan touches, what uses them and what they use, as found when it rendered. Hover a card to light its links; click it for its facts and contracts.</p>
+<div class="pm-mount">${js ? "" : `<p class="dim">The map's renderer (lib/plan-map.js) is missing from this install.</p>`}<script type="application/json" class="pm-data">${data}</script></div>
+${js ? `<script>${js}</script>` : ""}`;
+}
+
+function commonBody(spec, adrs = [], withNotes = false, endState = "") {
   // Evidence that reads as a repo path becomes a click target: the served
   // working surface opens it in VS Code at that line (same handler and same
   // crew-code-open hand-off as the increments' file lists and the Dock's
@@ -1394,6 +1463,7 @@ ${obGaps ? `<p class="dim">gaps this plan fills:</p><ul>${obGaps}</ul>` : ""}` :
   const commits = (spec.commits || []).map(c => commitLi(c)).join("");
   return `<h1>${esc(spec.title)}</h1>
 <p class="dim">plan <code>${esc(spec.slug)}</code></p>
+${endState}
 <h2>Context</h2><p>${esc(spec.context).replace(/\n\s*\n/g, "</p><p>")}</p>
 ${nonGoals ? `<h2>Non-goals</h2><ul>${nonGoals}</ul>` : ""}
 ${decs ? `<h2>Decisions</h2><ul>${decs}</ul>` : ""}
@@ -1528,7 +1598,7 @@ go.addEventListener("click",function(){
 `;
 }
 
-function reviewHtml(spec, b64, adrs = []) {
+function reviewHtml(spec, b64, adrs = [], map = null) {
   // Quiz options shuffled per-slug; the shuffled correct position lives in the
   // key file, never in this page.
   const qs = (spec.quiz || []).map((q, qi) => {
@@ -1544,7 +1614,7 @@ function reviewHtml(spec, b64, adrs = []) {
   const verif = (spec.verification || []).map(v => `<li><code>${esc(v)}</code></li>`).join("");
   const incs = (spec.deliverables || []).map((d, i) =>
     `<div class="inc" id="inc-${i + 1}"><b>${i + 1}. ${esc(d.title)}</b><p>${esc(d.body || "")}</p>
-${fileTreeHtml(d.files)}
+${fileTreeHtml(planPaths(d))}
 ${checksHtml(planChecks(spec, i), d.waiver)}
 ${(d.commits || []).length ? `<ul class="dim">${d.commits.map(c => commitLi(c)).join("")}</ul>` : ""}
 <textarea class="dp-note" data-section="increment ${i + 1}" rows="1" placeholder="comment on this increment (optional)" aria-label="comment on increment ${i + 1}"></textarea></div>`).join("\n");
@@ -1610,7 +1680,8 @@ ${DP_RISK_CSS}
 kbd{font:inherit;font-size:.85em;border:1px solid var(--dim,#888);border-radius:3px;padding:0 4px}
 .opt input:focus-visible,#dp-copyback:focus-visible,#dp-hl-add:focus-visible,
 .dp-note:focus-visible,.dp-x:focus-visible{outline:2px solid var(--accent,#46f);outline-offset:2px}
-</style>` + commonBody(spec, adrs, true) + `
+</style>` + commonBody(spec, adrs, true,
+    endStateHtml(map, (spec.deliverables || []).map((d, i) => ({ n: i + 1, title: d.title })))) + `
 <h2>Increments</h2>${incs}
 ${verif ? `<h2>Verification</h2><ul>${verif}</ul>` : ""}
 <h2>Alignment check</h2>
@@ -1649,7 +1720,12 @@ function readAnnotations(slug) {
 // overviews) neither drifts the approved snapshot nor stales a published copy.
 // A spec without any hashes exactly as it did before overviews existed.
 function specHash(spec) {
-  const plain = spec.diagrams ? { ...spec, diagrams: spec.diagrams.map(({ simple, ...d }) => d) } : spec;
+  let plain = spec.diagrams ? { ...spec, diagrams: spec.diagrams.map(({ simple, ...d }) => d) } : spec;
+  // A files[] entry with no declared change hashes as its path, the shape
+  // older engines archived: re-rendering an unchanged spec is not drift.
+  if (Array.isArray(plain.deliverables))
+    plain = { ...plain, deliverables: plain.deliverables.map(d => Array.isArray(d.files)
+      ? { ...d, files: d.files.map(f => f && typeof f === "object" && !f.change ? f.path : f) } : d) };
   return crypto.createHash("sha256").update(JSON.stringify(plain)).digest("hex").slice(0, 16);
 }
 
@@ -1819,7 +1895,7 @@ function workingHtml(spec, st, b64) {
   const kindOf = (inc, a) => ALWAYS.includes(a) ? "quiet" : inc === next && a === nextAct ? "primary" : "";
   const rows = (st.increments || []).map(inc => {
     const d = (spec.deliverables || [])[inc.n - 1] || {};
-    const files = fileTreeHtml(d.files);
+    const files = fileTreeHtml(planPaths(d));
     // Only the transitions this status allows (INC_ALLOWED, which
     // applyTransition refuses by): a go on a done increment can only be refused.
     const acts = incActions(inc.status).map(a =>
@@ -1853,7 +1929,8 @@ ${DP_RISK_CSS}
   padding:10px 16px;font:inherit;cursor:pointer;min-height:44px}
 #dp-amend-copy:focus-visible,.dp-note:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </style>` +
-    commonBody(spec, st.adrs || [], true).replace(/(<p class="dim">plan <code>[^\n]*<\/p>)/, (m) => m + "\n" + familyStripHtml(spec.slug)) + `
+    commonBody(spec, st.adrs || [], true,
+      endStateHtml(st.map, (st.increments || []).map(i => ({ n: i.n, title: i.title, status: i.status })))).replace(/(<p class="dim">plan <code>[^\n]*<\/p>)/, (m) => m + "\n" + familyStripHtml(spec.slug)) + `
 ${st.approved ? `<p class="dim">approved snapshot: <span class="dp-path" data-file="${esc(st.approved.path)}"><code>${esc(st.approved.path)}</code></span>${
       st.approved.spec_hash !== specHash(spec) ? ' · <span style="color:var(--warn-t)">the live plan has DRIFTED from the approved snapshot (spec amended since grade-pass)</span>' : ""}</p>` : ""}
 <h2>Gate</h2><p>${g.allow ? CHECK_GLYPH.pass + " open" : CHECK_GLYPH.fail + " shut"} <span class="dim">— ${esc(g.why)}</span>
@@ -1954,6 +2031,10 @@ function renderFamily(spec, family) {
 async function render(specPath, opts) {
   const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
   const violations = validate(spec, opts.force);
+  // The archive holds one shape: every files[] entry as {path, change}, with
+  // change null unless the author declared it. The author's file is not
+  // touched; what render infers about each path lives in st.map.
+  for (const d of spec.deliverables || []) if (Array.isArray(d.files)) d.files = planFiles(d);
   // Read-before-plan floor: a deliverable that names an EXISTING file must
   // have a verifiedFact citing it — you cannot plan to edit a file you have
   // not read. Born of the crew-integrations retro: a spec planned "deepen
@@ -1975,7 +2056,7 @@ async function render(specPath, opts) {
     });
     const unread = [];
     (spec.deliverables || []).forEach((d, i) => {
-      for (const f of d.files || [])
+      for (const f of planPaths(d))
         if (fs.existsSync(path.join(root, f)) && !cited(f))
           unread.push(`deliverable ${i + 1} ("${d.title}") edits ${f} — no verifiedFact cites it`);
     });
@@ -2073,9 +2154,15 @@ async function render(specPath, opts) {
   fs.writeFileSync(path.join(KEYS_DIR, spec.slug + ".spec.json"), JSON.stringify(spec, null, 2) + "\n");
   fs.writeFileSync(path.join(KEYS_DIR, spec.slug + ".key.json"), JSON.stringify(key, null, 2) + "\n");
 
+  // The End state map reads the repo here and only here: built once at
+  // render and kept in state, so rehydrate (and every later page) draws the
+  // same map after the planned files appear on disk.
+  const firstSha = ((prior0 && prior0.increments) || []).map(i => i.startSha).find(Boolean) || "";
+  const map = buildMap(spec, planRoot, (prior0 && prior0.map) || null, firstSha);
+
   const b64 = mermaidB64();
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".md"), mdPlan(spec, adrs));
-  fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".review.html"), reviewHtml(spec, b64, adrs));
+  fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".review.html"), reviewHtml(spec, b64, adrs, map));
   const extras = writeSpecArtifacts(spec, b64);
   adrs.forEach((a, i) => fs.writeFileSync(
     path.join(PLANS_DIR, `${spec.slug}.adr${a.n}.md`), adrDrafts[i]));
@@ -2123,14 +2210,32 @@ async function render(specPath, opts) {
   });
   // The plan holds its own sync setting: the spec's share, false when unset.
   st.share = spec.share === undefined ? false : spec.share;
+  st.map = map;
   reopenPhase(st);
   writeState(st);
+  writeMapFile(spec.slug, map);
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".working.html"), workingHtml(spec, st, b64));
   say(`rendered ${spec.slug}: ${PLANS_DIR}/${spec.slug}.md, .review.html, .working.html`);
   renderFamily(spec, family);
   say(`  also: ${extras.join(", ")}`);
   say(`spec + key archived under ${KEYS_DIR} (separate tree, on purpose)`);
   if (st.phase === "review") say("phase: review — the alignment check gates everything.");
+}
+
+// lookout's Map view: the plan's map, when render made one; otherwise the
+// review drops any map an earlier open gave it.
+function planMapFlag(slug) {
+  const f = path.join(PLANS_DIR, slug + ".map.json");
+  return fs.existsSync(f) ? ["--plan-map", f] : ["--no-plan-map"];
+}
+
+// <slug>.map.json beside the surfaces: the file lookout open --plan-map reads.
+// Written from st.map only, by render and by rehydrate.
+function writeMapFile(slug, map) {
+  const p = path.join(PLANS_DIR, slug + ".map.json");
+  if (!map) { fs.rmSync(p, { force: true }); return; }
+  fs.mkdirSync(PLANS_DIR, { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(map, null, 2) + "\n");
 }
 
 function rerenderWorking(slug, kin = true) {
@@ -2187,7 +2292,7 @@ function rehydrate(slug, { quiet = false } = {}) {
   checksFromState(spec, st0);
   const adrs = (st0 && st0.adrs) || [];
   fs.mkdirSync(PLANS_DIR, { recursive: true });
-  const md = mdPlan(spec, adrs), rv = reviewHtml(spec, b64, adrs);
+  const md = mdPlan(spec, adrs), rv = reviewHtml(spec, b64, adrs, (st0 && st0.map) || null);
   const mdP = path.join(PLANS_DIR, slug + ".md"), rvP = path.join(PLANS_DIR, slug + ".review.html");
   const same = (p, s) => fs.existsSync(p) && fs.readFileSync(p, "utf8") === s;
   const okMd = same(mdP, md), okRv = same(rvP, rv);
@@ -2195,10 +2300,13 @@ function rehydrate(slug, { quiet = false } = {}) {
   if (st0 && st0.root) adrs.forEach(a => fs.writeFileSync(
     path.join(PLANS_DIR, `${slug}.adr${a.n}.md`), adrDraftText(spec, st0.root, a)));
   const extras = writeSpecArtifacts(spec, b64);
+  writeMapFile(slug, st0 && st0.map);
   rerenderWorking(slug);
-  if (quiet) return { md: okMd, review: okRv, missing: missingOverviews(spec).length };
+  const noMap = !(st0 && st0.map);
+  if (quiet) return { md: okMd, review: okRv, missing: missingOverviews(spec).length, noMap };
   say(`rehydrated ${slug} — md ${okMd ? "byte-identical" : "REWRITTEN (differs)"}, review ${okRv ? "byte-identical" : "REWRITTEN (differs)"}`);
   say(`  also rewritten: ${extras.join(", ")}`);
+  if (noMap) say(`  no End state map yet (rendered before maps): \`deep-plan map ${slug}\` builds one`);
 }
 
 // ---------------------------------------------------------------- redraw
@@ -2230,7 +2338,7 @@ function redraw(target, { json = false, dry = false } = {}) {
     if (!fs.existsSync(specPath)) { rows.push({ slug, ok: false, error: "no archived spec" }); continue; }
     try {
       const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
-      if (dry) { rows.push({ slug, ok: true, dry: true, missing: missingOverviews(spec).length }); continue; }
+      if (dry) { rows.push({ slug, ok: true, dry: true, missing: missingOverviews(spec).length, noMap: !(readState(slug) || {}).map }); continue; }
       rows.push({ slug, ok: true, ...rehydrate(slug, { quiet: true }) });
     } catch (e) {
       rows.push({ slug, ok: false, error: String(e && e.message || e).split("\n")[0] });
@@ -2239,14 +2347,53 @@ function redraw(target, { json = false, dry = false } = {}) {
   if (json) { say(JSON.stringify(rows, null, 2)); return rows; }
   for (const r of rows) {
     if (!r.ok) { say(`  ✗ ${r.slug}: ${r.error}`); continue; }
-    const tail = r.missing ? ` · ${r.missing} diagram${r.missing === 1 ? "" : "s"} without an overview` : "";
+    const tail = (r.missing ? ` · ${r.missing} diagram${r.missing === 1 ? "" : "s"} without an overview` : "") +
+      (r.noMap ? " · no End state map" : "");
     say(`  ${r.dry ? "would redraw" : "redrew"} ${r.slug}${tail}`);
   }
   const need = rows.filter(r => r.ok && r.missing);
   say(`${dry ? "would redraw" : "redrew"} ${rows.filter(r => r.ok).length}/${rows.length} plan(s)` +
     (need.length ? `; ${need.length} lack overview diagrams — \`deep-plan overviews <slug>\` lists them` : ""));
+  const unmapped = rows.filter(r => r.ok && r.noMap).length;
+  if (unmapped) say(`${unmapped} plan(s) have no End state map yet — \`deep-plan map --all\` builds them`);
   if (rows.some(r => !r.ok)) process.exitCode = 1;
   return rows;
+}
+
+// ---------------------------------------------------------------- map
+//
+// Build (or rebuild) a plan's End state map without a re-render: for a plan
+// rendered before maps existed, or to refresh neighbours on a finished plan.
+// It reads the archived spec and the plan's root, the one repo read a render
+// would do, stores st.map, and rehydrates so every page carries the map.
+// Nothing else in state or the spec moves.
+function mapCmd(target, flags) {
+  if (!target) die("map <slug> | --all [--json]");
+  const slugs = target === "--all" || target === "all"
+    ? archivedSlugs().filter(s => { const st = readState(s); return st && st.phase !== "done"; }) : [target];
+  const rows = [];
+  for (const slug of slugs) {
+    const specPath = path.join(KEYS_DIR, slug + ".spec.json");
+    const st = readState(slug);
+    if (!fs.existsSync(specPath) || !st) { rows.push({ slug, ok: false, error: "no archived spec or no state" }); continue; }
+    if (!st.root || !fs.existsSync(st.root)) { rows.push({ slug, ok: false, error: `its root is gone (${st.root || "none"})` }); continue; }
+    try {
+      const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
+      const firstSha = (st.increments || []).map(i => i.startSha).find(Boolean) || "";
+      st.map = buildMap(spec, st.root, st.map || null, firstSha);
+      writeState(st);
+      rehydrate(slug, { quiet: true });
+      rows.push({ slug, ok: true, cards: st.map.cards.length, neighbours: st.map.neighbours, why: st.map.why });
+    } catch (e) {
+      rows.push({ slug, ok: false, error: String(e && e.message || e).split("\n")[0] });
+    }
+  }
+  if (flags.json) { say(JSON.stringify(rows, null, 2)); return; }
+  for (const r of rows) say(r.ok
+    ? `  mapped ${r.slug}: ${r.cards} file(s)` + (r.neighbours ? "" : ` · no neighbours: ${r.why}`)
+    : `  ✗ ${r.slug}: ${r.error}`);
+  if (!rows.length) say("no live plans to map");
+  if (rows.some(r => !r.ok)) process.exitCode = 1;
 }
 
 // ---------------------------------------------------------------- overviews
@@ -2332,7 +2479,7 @@ function exportArtifact(slug, asJson) {
   checksFromState(spec, st);
   const incs = (spec.deliverables || []).map((d, i) =>
     `<div class="inc" id="inc-${i + 1}"><b>${i + 1}. ${esc(d.title)}</b><p>${esc(d.body || "")}</p>
-${(d.files || []).length ? `<p class="dim">files: ${d.files.map(f => `<code>${esc(f)}</code>`).join(" ")}</p>` : ""}
+${planFiles(d).length ? `<p class="dim">files: ${planFiles(d).map(f => `<code>${esc(f.path)}</code>${f.change ? ` (${esc(f.change)})` : ""}`).join(" ")}</p>` : ""}
 ${checksHtml(planChecks(spec, i), d.waiver)}</div>`).join("\n");
   const diagrams = (spec.diagrams || []).map(dg =>
     `<h2>${esc(dg.question)}</h2>` +
@@ -4974,7 +5121,7 @@ const BUILTIN_VERBS = new Set([
   "render", "rehydrate", "validate", "adr", "export-artifact", "attach-artifact",
   "grade", "status", "go", "start", "done", "reset", "block", "check", "obs",
   "open-gate", "shut-gate", "close", "diff", "review", "deliver", "ask", "help", "setup", "engine", "verify",
-  "family", "redraw", "overviews", "protects", "await-go", "note", "notes",
+  "family", "redraw", "map", "overviews", "protects", "await-go", "note", "notes",
 ]);
 
 // A state lock held past its wait refuses the write (lib/state.mjs): said in
@@ -5163,6 +5310,7 @@ switch (cmd) {
     if (flags.json) { process.stdout.write(JSON.stringify({ ...detectHost(), root: HERE, version: engineVersion() }, null, 2) + "\n"); break; }
     say(hostLine());
     say(`engine: ${HERE} (${engineVersion()})`);
+    say(`end state map: ${planMapJs() ? "renderer present (lib/plan-map.js)" : "renderer MISSING (lib/plan-map.js): plan pages draw no map; reinstall the plugin"}`);
     const drv = browserDriver(process.cwd());
     say(`browser checks: ${drv.kind === "cmux" ? "cmux browser repl (" + drv.bin + ")"
       : drv.kind === "playwright" ? "Playwright, headless Chromium" + (drv.fake ? " (stand-in " + drv.fake + ")" : " (from " + path.dirname(drv.from) + ")")
@@ -5174,6 +5322,7 @@ switch (cmd) {
     await render(args[0], flags); break;
   }
   case "rehydrate": rehydrate(args[0] || die("rehydrate <slug>")); break;
+  case "map": mapCmd(args[0], flags); break;
   case "redraw": redraw(args[0] || die("redraw <slug> | --all [--dry-run] [--json]"), flags); break;
   case "overviews": await overviews(args[0] || die("overviews <slug> [file.json] [--force] [--json]"), args[1], flags); break;
   case "ask": {
@@ -5346,7 +5495,7 @@ switch (cmd) {
     // policy too: lookout fixes it when the review is created, and a diff
     // viewed first must not create it without the quiz or the close rule.
     const r = runLookout(["open", "--plan", st.slug, "--inc", String(inc.n), "--base", base,
-      "--at", st.root, "--view-only", ...pol.flags], { cwd: st.root });
+      "--at", st.root, "--view-only", ...planMapFlag(st.slug), ...pol.flags], { cwd: st.root });
     if (r.ok) { say(r.out); break; }
     if (!r.missing) say(`lookout could not open it (${r.out.split("\n").pop()}); falling back to cmux diff`);
     incrementDiff(st, inc, { open: true, base }); break;
@@ -5432,6 +5581,7 @@ switch (cmd) {
   render <spec.json> [--root DIR] [--force]   spec -> md + review + working surfaces
   rehydrate <slug>                            re-render from the archived spec
   redraw <slug> | --all [--dry-run] [--json]  re-render plans with this engine (spec + state untouched)
+  map <slug> | --all [--json]                 build a plan's End state map from its archived spec and root, and redraw
   overviews <slug> [file.json] [--force]      list diagrams, or add plain-words overviews {"<n>": "<mermaid>"}
   validate <slug|file>                        mermaid + formatting lint of rendered surfaces
   adr apply <slug>                            write flagged ADRs into the repo (refused in review phase)

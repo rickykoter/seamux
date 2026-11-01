@@ -36,6 +36,9 @@ worst place for them.
 asks to redraw or replan them): `deep-plan redraw --all --dry-run` lists
 every plan and how many diagrams lack an overview, and `deep-plan redraw
 --all` (or one slug) re-renders their surfaces with spec and state untouched.
+A plan rendered before End state maps has none, and redraw cannot add one
+(it never reads the repo): `deep-plan map --all` (or one slug) builds each
+live plan's map from its archived spec and root, then redraws it.
 Overviews need an author: `deep-plan overviews <slug>` prints each diagram's
 mermaid; draft a plain-words version of each (four to six boxes, no code
 names), write them as `{"<n>": "<mermaid>"}` to a file, and run `deep-plan

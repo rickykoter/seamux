@@ -15,6 +15,7 @@
       <span id="mode" class="mode"></span>
       <span id="gate" class="gate"></span>
       <button type="button" id="ov-btn" class="ov-btn" aria-pressed="false" title="What each group of changes means (o)">Overview</button>
+      <button type="button" id="map-btn" class="ov-btn" aria-pressed="false" title="The plan's files against the diff (m)">Map</button>
       <div class="seg" id="layout" role="group" aria-label="Diff layout">
         <button type="button" data-layout="split">Split</button>
         <button type="button" data-layout="unified">Unified</button>
@@ -25,6 +26,7 @@
       <div><kbd>j</kbd> <kbd>k</kbd> next and previous file</div>
       <div><kbd>n</kbd> <kbd>p</kbd> next and previous finding</div>
       <div><kbd>o</kbd> overview</div>
+      <div><kbd>m</kbd> the plan's map against the diff</div>
       <div><kbd>v</kbd> split or unified</div>
       <div><kbd>?</kbd> this list</div>
     </div>
@@ -48,6 +50,7 @@
   </main>
 </div>
 <script type="application/json" id="lookout-data">__DATA__</script>
+<script>/*__MAP_JS__*/</script>
 <script>/*__JS__*/</script>
 </body>
 </html>
