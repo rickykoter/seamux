@@ -4099,6 +4099,23 @@ if (want("owner: session and workspace")) {
   as(P1, "render", tmpSpec(s3), "--root", ROOT3);
   ok("render stamps the owner's pane from CMUX_SURFACE_ID", stOf("owner-3").owner.surface === "pane-1111aaaa");
   ok("status --json carries the owner's pane", rowOf("owner-3").owner.surface === "pane-1111aaaa");
+  // A write with a session but no pane ids (a hook, a plain shell) has no
+  // better pane to name: the owner keeps its workspace and pane.
+  as({ CLAUDE_CODE_SESSION_ID: "sess-a" }, "render", tmpSpec(s3), "--root", ROOT3);
+  ok("a write with a session but no pane ids keeps the owner's workspace and pane",
+    stOf("owner-3").owner.surface === "pane-1111aaaa" && stOf("owner-3").owner.workspace === "ws-1" &&
+    stOf("owner-3").owner.session === "sess-a");
+  as({ CLAUDE_CODE_SESSION_ID: "sess-a", CMUX_WORKSPACE_ID: "ws-1" }, "render", tmpSpec(s3), "--root", ROOT3);
+  ok("a write with the same workspace but no pane id keeps the owner's pane",
+    stOf("owner-3").owner.surface === "pane-1111aaaa" && stOf("owner-3").owner.workspace === "ws-1");
+  {
+    const { keptPane } = lib;
+    const was = { workspace: "ws-1", surface: "pane-1" };
+    const kp = keptPane(was, { workspace: "ws-2", pane: "" });
+    ok("a write from another workspace with no pane id drops the earlier pane", kp.workspace === "ws-2" && kp.surface === "");
+    const kq = keptPane(was, { workspace: "", pane: "pane-9" });
+    ok("a write with a pane id but no workspace keeps the workspace and takes the pane", kq.workspace === "ws-1" && kq.surface === "pane-9");
+  }
   const key3 = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "owner-3.key.json"), "utf8"));
   cli("grade", "owner-3", ...Object.entries(key3.answers).map(([q, v]) => `${q}=${v.letter}`));
   cli("go", "owner-3", "1");

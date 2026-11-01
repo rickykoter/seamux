@@ -297,9 +297,19 @@ function cmdOpen() {
       die(`--plan-map: ${opt("plan-map")} is not a deep-plan map (no cards list)`);
   }
   const p = S.paths(id);
+  // The workspace and pane that opened the review, so the seamux Dock finds
+  // it in that pane when the pane works outside the review's root. A re-open
+  // without an id (a plain shell) keeps the one the review has; the earlier
+  // pane is kept only while the workspace is the same.
+  const ids = sessionIds();
+  const was = (prior && prior.source) || {};
+  const sameWs = !ids.workspace || ids.workspace === was.workspace;
+  const opener = { workspace: ids.workspace || was.workspace || "",
+                   pane: ids.pane || (sameWs ? was.pane || "" : "") };
   const fresh = {
     id, title: opt("title") || (o.plan ? (o.inc === "all" ? `${o.plan} · the full delivery` : `${o.plan} · increment ${o.inc}`) : src.label),
-    source: { ...src, plan: o.plan || undefined, inc: o.inc === "all" ? "all" : o.inc ? Number(o.inc) : undefined },
+    source: { ...src, plan: o.plan || undefined, inc: o.inc === "all" ? "all" : o.inc ? Number(o.inc) : undefined,
+              workspace: opener.workspace || undefined, pane: opener.pane || undefined },
     patchHash: hash,
     ...(context !== undefined ? { context } : {}),
     ...(planMap ? { planMap } : planMap === null ? { planMap: undefined } : {}),

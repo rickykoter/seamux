@@ -1027,6 +1027,36 @@ if (want("host detection")) {
   ok("host: engine reports the host beside the pointer", r.status === 0 && j.host === "cmux" && j.why === "CMUX_WORKSPACE_ID is set" && j.root === HERE);
 }
 
+// ---------------------------------------------------------------- the opener's pane
+// A review records the workspace and pane that opened it, so the seamux Dock
+// finds it there when that pane works outside the review's root.
+if (want("opener: the review keeps its pane")) {
+  const RO = repo("ropener");
+  write(RO, "a.txt", "one\n");
+  sh(RO, `git add -A && ${G} commit -q -m base`);
+  write(RO, "a.txt", "two\n");
+  const openAs = env => spawnSync("node", [path.join(HERE, "lookout.mjs"), "open", "--worktree", "--json", "--id", "opener-1"],
+    { encoding: "utf8", env: { ...ENV, ...env }, cwd: RO });
+  let r = openAs({ SEAMUX_WORKSPACE_ID: "W-open", SEAMUX_PANE_ID: "P-open" });
+  ok("opener: an open from a pane records its workspace and pane",
+    r.status === 0 && S.read("opener-1").source.workspace === "W-open" && S.read("opener-1").source.pane === "P-open", r.stderr);
+  r = openAs({});
+  ok("opener: a re-open with no ids keeps the ones the review has",
+    r.status === 0 && S.read("opener-1").source.workspace === "W-open" && S.read("opener-1").source.pane === "P-open", r.stderr);
+  r = openAs({ SEAMUX_WORKSPACE_ID: "W-next", SEAMUX_PANE_ID: "P-next" });
+  ok("opener: a re-open from another pane records that pane",
+    r.status === 0 && S.read("opener-1").source.workspace === "W-next" && S.read("opener-1").source.pane === "P-next", r.stderr);
+  r = openAs({ CMUX_WORKSPACE_ID: "W-cmux", CMUX_SURFACE_ID: "S-cmux", SEAMUX_BACKEND: "tmux" });
+  ok("opener: a tmux pane's inherited cmux ids are not recorded",
+    r.status === 0 && S.read("opener-1").source.workspace === "W-next" && S.read("opener-1").source.pane === "P-next", r.stderr);
+  r = openAs({ SEAMUX_WORKSPACE_ID: "W-next" });
+  ok("opener: a re-open from the same workspace with no pane id keeps the pane",
+    r.status === 0 && S.read("opener-1").source.workspace === "W-next" && S.read("opener-1").source.pane === "P-next", r.stderr);
+  r = openAs({ SEAMUX_WORKSPACE_ID: "W-other" });
+  ok("opener: a re-open from another workspace with no pane id drops the earlier pane",
+    r.status === 0 && S.read("opener-1").source.workspace === "W-other" && S.read("opener-1").source.pane === undefined, r.stderr);
+}
+
 // ---------------------------------------------------------------- the shipped highlight.js
 if (want("the shipped highlight.js")) {
   const shipped = path.join(HERE, "vendor", "highlight.min.js");
