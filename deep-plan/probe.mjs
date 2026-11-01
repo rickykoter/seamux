@@ -4754,6 +4754,53 @@ if (want("a new directory under a symlinked root")) {
 // its increment. deep-plan synthesizes the command and runs it through
 // lookout's engine; nothing names a recipe. The spike: a synthesized command
 // must never trip the recipe-drift warning, however often it runs.
+// A plan branch rebased onto a newer main still has its start sha as an
+// ancestor, with main's later commits above it: the review must not take
+// them for the plan's work.
+if (want("rebased: a review opens past main's commits")) {
+  const LK = path.join(HERE, "..", "lookout");
+  const RB = path.join(TMP, "rebased-root");
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  fs.mkdirSync(path.join(RB, "src"), { recursive: true });
+  fs.writeFileSync(path.join(RB, "src", "a.ts"), "export const a = 1;\n");
+  execSync(`git init -q -b main && git add -A && ${G} commit -q -m init && git checkout -q -b feat`, { cwd: RB });
+  const LENV = { ...ENV, LOOKOUT_ENGINE: LK, LOOKOUT_REVIEWS_DIR: path.join(TMP, "rebased-reviews"),
+    LOOKOUT_TYPESAFE_CLIENT: "", LOOKOUT_VENDOR_DIR: path.join(TMP, "rebased-lookout-vendor"),
+    LOOKOUT_ENGINE_FILE: path.join(TMP, "rebased-lookout-engine.json"), LOOKOUT_BIN_DIR: path.join(TMP, "rebased-lookout-bin") };
+  const lc = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: LENV, cwd: RB });
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "rebased-1";
+  s.verifiedFacts = [...s.verifiedFacts, { claim: "a starts at 1", evidence: "src/a.ts:1" }];
+  s.deliverables = [{ title: "Retry sweep", body: "A timer job.", files: ["src/a.ts"], checks: [{ kind: "manual", name: "looked" }] }];
+  lc("render", tmpSpec(s), "--root", RB);
+  const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "rebased-1.key.json"), "utf8"));
+  lc("grade", "rebased-1", ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+  lc("go", "rebased-1", "1");
+  const start = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "rebased-1.json"), "utf8")).increments[0].startSha;
+  fs.writeFileSync(path.join(RB, "src", "a.ts"), "export const a = 2;\n");
+  execSync(`git add -A && ${G} commit -q -m plan-work`, { cwd: RB });
+  const base = () => JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rebased-1-inc1.json"), "utf8"));
+  let r = lc("review", "rebased-1", "1");
+  ok("rebased: before main moves, the review opens at the start sha",
+    r.status === 0 && base().source.base === start && !/moved in above the start sha/.test(r.stderr), r.stdout + r.stderr);
+  // main gains a commit; the plan branch is rebased onto it.
+  execSync(`git checkout -q main && echo m > m.txt && git add -A && ${G} commit -q -m main-moved && git checkout -q feat && ${G} rebase -q main`, { cwd: RB });
+  const mainTip = execSync("git rev-parse main", { cwd: RB, encoding: "utf8" }).trim();
+  r = lc("review", "rebased-1", "1");
+  const v = base();
+  ok("rebased: after a rebase onto a newer main, the review opens at the merge-base, said on stderr",
+    r.status === 0 && v.source.base === mainTip && /main moved in above the start sha/.test(r.stderr), r.stdout + r.stderr);
+  ok("rebased: …so main's commit is not in it, and the plan's is",
+    !v.files.some(f => f.path === "m.txt") && v.files.some(f => f.path === "src/a.ts"), JSON.stringify(v.files.map(f => f.path)));
+  ok("rebased: the recorded start sha is left as it was",
+    JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "rebased-1.json"), "utf8")).increments[0].startSha === start);
+  // On the default branch itself the merge-base is the tip: the start sha stays.
+  execSync(`git checkout -q main && git merge -q --ff-only feat`, { cwd: RB });
+  r = lc("review", "rebased-1", "1");
+  ok("rebased: on the default branch itself, the review keeps the start sha",
+    r.status === 0 && base().source.base === start && !/moved in above/.test(r.stderr), r.stdout + r.stderr);
+}
+
 if (want("review checks (lookout)")) {
   const LK = path.join(HERE, "..", "lookout");
   const RV = path.join(TMP, "review-root");

@@ -43,7 +43,7 @@ import {
   FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
   familyOf, refreshFamilyFor, overlaps, checkFamily, draftParent, waitingOn, waitText,
   memberAt, readSeen, gatherNews, newsText, familyRow, familiesBySlug, protects,
-  goOwner, goBy, goHow, goRefusal, updateControl, pruneControl, controlPath,
+  goOwner, goBy, goHow, goRefusal, updateControl, pruneControl, controlPath, baseRef,
 } from "./lib/family.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, DATA_ROOT, REMOTE_DIR, statePath, sessionId,
@@ -476,7 +476,7 @@ function baseFor(st, inc, base) {
     if (bad) die(`${what}'s recorded start sha ${rec.slice(0, 8)} cannot be a base: ${bad}.\n` +
       `  give one: deep-plan ${inc === "all" ? `deliver ${st.slug}` : `review ${st.slug} ${inc.n}`} --base <sha>\n` +
       `no base: the recorded start sha ${rec.slice(0, 8)} is gone from this branch`);
-    return rec;
+    return pastUpstream(st.root, rec);
   }
   const r = spawnSync("git", ["-C", st.root, "rev-parse", "--verify", "--quiet", `${base}^{commit}`], { encoding: "utf8" });
   if (r.status !== 0) die(`--base ${base} is not a commit in ${st.root}`);
@@ -491,6 +491,30 @@ function baseFor(st, inc, base) {
     if (bad) console.error(`deep-plan: the recorded start sha ${rec.slice(0, 8)} ${bad.replace(/^it /, "")}; using --base ${sha.slice(0, 8)}, logged`);
   }
   return sha;
+}
+
+// A start sha that holds can still sit under commits that are not the plan's:
+// rebased onto a newer main, the branch carries main's later commits above
+// it, and a review based there shows them as the plan's work. The base is
+// then the merge-base with the default branch, when that descends from the
+// start sha. Not on the default branch itself, where the merge-base is the
+// pushed tip and would hide the plan's own commits, and not when it is HEAD
+// (the plan's work is all in the default branch already).
+function pastUpstream(root, rec) {
+  if (!rec || !root) return rec;
+  const ref = baseRef(root);
+  if (!ref) return rec;
+  const g = (...a) => spawnSync("git", ["-C", root, ...a], { encoding: "utf8" });
+  const branch = g("rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
+  if (branch === ref.replace(/^[^/]+\//, "") || branch === ref) return rec;
+  const mb = g("merge-base", "HEAD", ref);
+  if (mb.status !== 0) return rec;
+  const m = mb.stdout.trim();
+  if (!m || m === rec || m === g("rev-parse", "HEAD").stdout.trim()) return rec;
+  if (g("merge-base", "--is-ancestor", rec, m).status !== 0) return rec;
+  console.error(`deep-plan: ${ref} moved in above the start sha ${rec.slice(0, 8)} (a rebase?); ` +
+    `opening at the merge-base with it, ${m.slice(0, 8)}, so its commits are not taken for the plan's`);
+  return m;
 }
 
 // The refusal for a review or diff with no base, naming the flag that gives one.

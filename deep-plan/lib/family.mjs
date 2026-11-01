@@ -336,7 +336,7 @@ export function overlaps(idx) {
 
 // The ref a branch is measured against: the remote's default, then the usual
 // names. Local refs only; the caller decides whether to fetch.
-function baseRef(root) {
+export function baseRef(root) {
   const g = (...a) => spawnSync("git", ["-C", root, ...a], { encoding: "utf8" });
   const head = g("symbolic-ref", "--quiet", "refs/remotes/origin/HEAD");
   if (head.status === 0) return head.stdout.trim().replace(/^refs\/remotes\//, "");

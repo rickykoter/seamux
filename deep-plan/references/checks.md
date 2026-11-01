@@ -230,8 +230,10 @@ check and what it runs.
   increment is done the plan enters a `delivery` phase instead of
   finishing. Run `deep-plan deliver <slug>`: with no reviewer yet it
   opens lookout's review of every increment's work together (since the
-  first increment's start sha; its brief carries every increment's
-  description) and ends with `review: spawn a reviewer — lookout prompt
+  first increment's start sha, or, once the branch is rebased onto a newer
+  default branch, since the merge-base with it, so the default branch's
+  commits are not taken for the plan's; its brief carries every
+  increment's description) and ends with `review: spawn a reviewer — lookout prompt
   <slug>-delivery`. Spawn one fresh reviewer, fix and `lookout address`
   what it finds, and run `deliver` again; it completes the plan once the
   human has closed every blocker and major. The gate stays open in this
