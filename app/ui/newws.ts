@@ -104,6 +104,10 @@ export class NewWorkspace {
   private busy = false;
   /** Made this opening, though not yet listed: Create (⌘↵, Enter) is done. */
   private made = false;
+  /** The person changed the repo this opening: a late list must not undo it. */
+  private chosen = false;
+  /** Counts openings, so a list asked for by an earlier one is dropped. */
+  private opening = 0;
 
   constructor() {
     this.el.hidden = true;
@@ -115,7 +119,10 @@ export class NewWorkspace {
     head.append(el("b", "", "New workspace"), el("span", "newws-hint", "a worktree, a workspace, Claude running"));
 
     this.repo.setAttribute("aria-label", "Repo");
-    this.repo.addEventListener("change", () => this.drawMore());
+    this.repo.addEventListener("change", () => {
+      this.chosen = true;
+      this.drawMore();
+    });
     this.branch.type = "text";
     this.branch.spellcheck = false;
     this.branch.autocomplete = "off";
@@ -238,17 +245,35 @@ export class NewWorkspace {
     this.say.hidden = true;
     this.steps.hidden = true;
     this.made = false;
+    this.chosen = false;
+    const opening = ++this.opening;
     this.setBusy(false);
+    // Listing the repos runs git in each, which takes a moment. Until it
+    // answers, show no repos at all: last opening's list was usable, and a
+    // repo picked from it was then swapped for the remembered one.
+    this.opts = null;
+    const loading = el("option", "", "Listing repos…");
+    loading.value = "";
+    this.repo.replaceChildren(loading);
+    this.repo.disabled = true;
+    this.create.disabled = true;
+    let opts: Options;
     try {
-      this.opts = await invoke<Options>("new_ws_options");
+      opts = await invoke<Options>("new_ws_options");
     } catch (e) {
+      if (opening !== this.opening) return;
+      this.pick();
       this.tell(`Could not list the repos: ${String(e)}`, true);
       return;
     }
+    if (opening !== this.opening) return;
+    this.opts = opts;
+    this.repo.disabled = false;
+    this.create.disabled = false;
     if (!this.opts.repos.length) {
       this.tell("No git checkouts under your code root (CREW_CODE_ROOT, else ~/code).", true);
     }
-    this.pick(repo);
+    this.pick(this.chosen ? this.repo.value : repo);
     this.prefix.textContent = this.opts.prefix;
     this.remote.checked = this.opts.remote;
     this.sandboxRow.hidden = !this.opts.sandbox;
