@@ -36,6 +36,7 @@ import * as SYNC from "./lib/sync.mjs";
 import { mergeStates, mergeFiles } from "./lib/merge.mjs";
 import { installRepo, checkRepo, targetRoot } from "./lib/install.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
+import { goPolicy, humanStop, goProblems, autoNext } from "./lib/autogo.mjs";
 import { NOTES_SUFFIX, readNoteLines, foldNotes, notedSlugs, fileNote, closeNote, openNotes } from "./lib/notes.mjs";
 import {
   FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
@@ -292,6 +293,8 @@ function validate(spec, force) {
   }
   // Whether the plan's state syncs to a branch, and where (lib/sync.mjs).
   errs.push(...SYNC.shareProblems(spec.share));
+  // Whether each increment follows the last on its own (lib/autogo.mjs).
+  errs.push(...goProblems(spec));
   if (errs.length && !force) {
     console.error("deep-plan: spec refused —");
     for (const e of errs) console.error("  ✗ " + e);
@@ -789,9 +792,14 @@ function mdPlan(spec, adrs = []) {
     L.push("```mermaid", dg.mermaid.trim(), "```", "");
   }
   L.push("## Increments", "");
+  const pol = goPolicy(spec);
+  if (pol.auto)
+    L.push(`Go: auto. Each increment after the first starts once the one before it is done, unless it says a person's go` +
+      (pol.between === "draft-pr" ? "; between increments the branch is pushed to a draft PR." : "."), "");
   (spec.deliverables || []).forEach((d, i) => {
     L.push(`### ${i + 1}. ${d.title}`, "", d.body || "");
     if ((d.files || []).length) L.push("", "Files: " + d.files.map(f => "`" + f + "`").join(", "));
+    if (pol.auto && humanStop(spec, i + 1)) L.push("", `Go: a person's — ${humanStop(spec, i + 1)}`);
     // Per-deliverable verification is not a duplicate of the plan-wide list: it
     // is how you check THIS increment, which is what someone reviewing one
     // increment in isolation needs.
@@ -2721,6 +2729,21 @@ function transition(action, slug, n, why, force = false, { byHuman = false } = {
     incrementDiff(st, inc);
     say(`done ${slug} ${plan.n}` + (st.phase === "done" ? " — plan complete"
       : st.phase === "delivery" ? `\nevery increment is done; the full delivery is reviewed next: deep-plan deliver ${slug}` : ""));
+    const nx = plan.next;
+    if (nx && nx.go) {
+      const ni = findInc(st, nx.go);
+      const pol = goPolicy(spec);
+      say(`auto-go: increment ${ni.n} (${ni.title}) is authorized (by auto). ` +
+        (pol.between === "draft-pr"
+          ? "Push the branch and open a draft PR (or update the open one), then start it."
+          : "Start it."));
+      const url = openWorkingSurface(st);
+      if (url) say(`  served at ${url} (host: ${detectHost().host})`);
+    } else if (nx && nx.stop) {
+      say(`auto-go stops: increment ${nx.stop} needs a person's go — ${nx.why}. Ask the human; only on their word: deep-plan go ${slug} next`);
+    }
+    if (goPolicy(spec).between === "draft-pr" && (st.phase === "done" || st.phase === "delivery"))
+      say("  push the branch and update the draft PR with the last increment.");
     return;
   }
   say(`${action} ${slug} ${plan.n}`);
@@ -2809,6 +2832,20 @@ function applyTransition(st, action, slug, n, why, force, { byHuman = false, tre
     log1(st, `done: increment ${n}` + (out.length
       ? ` (checks outstanding: ${out.map(c => `${c.id} [${c.kind}] ${c.status}`).join(", ")}; overridden with --force)`
       : ""));
+    // An auto plan gives the next increment's go here, in the same locked
+    // write, so no agent runs `go` (lib/autogo.mjs).
+    const sp = spec || planSpec(slug);
+    // goOwner is null outside a family; a throw means the family's files
+    // could not be read, and the chain stops rather than guess past them.
+    let owner = null, waits = [], familyError = "";
+    try { owner = goOwner(slug); waits = waitingOn(slug); } catch (e) { familyError = String(e && e.message || e); }
+    const next = autoNext(sp, st, inc.n, { forced: out.length > 0, owner, waits, familyError });
+    if (next && next.go) {
+      const ni = incOf(next.go);
+      ni.startSha = headSha(st.root);
+      ni.status = "authorized"; ni.authorizedAt = ni.changedAt = Date.now(); ni.note = ""; ni.by = "auto";
+      log1(st, `go: increment ${ni.n} (${ni.title}) authorized by auto (the plan auto-goes; increment ${inc.n}'s checks passed)`);
+    }
     if ((st.increments || []).every(i => i.status === "done")) {
       // A plan whose human asked for a review of the full delivery is not
       // complete until that review passes: `deep-plan deliver` closes it.
@@ -2817,7 +2854,7 @@ function applyTransition(st, action, slug, n, why, force, { byHuman = false, tre
       log1(st, delivery ? `every increment done; the delivery review closes the plan — deep-plan deliver ${slug}`
                         : "every increment done; the gate retires");
     }
-    return { n: inc.n };
+    return { n: inc.n, next };
   } else if (action === "block") {
     const inc = incOf(n);
     if (!allows(inc.status, "block")) refuse(`increment ${n} is ${inc.status}`);
@@ -5412,7 +5449,10 @@ switch (cmd) {
                                               passed against the tree as it is;
                                               done --force overrides, and logs it;
                                               reset puts every verdict back to
-                                              pending — the work is being redone)
+                                              pending — the work is being redone;
+                                              on a spec with go auto, a done whose
+                                              checks passed authorizes the next
+                                              increment, by auto)
   check list <slug> <n>                       the increment's checks, verdicts and
                                               what each one runs
   check run <slug> <n> [id...] [--from wait]  run recipe-backed checks: cheap ones here,

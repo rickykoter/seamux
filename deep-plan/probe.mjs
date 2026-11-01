@@ -3529,6 +3529,99 @@ if (want("the start sha comes from go")) {
   fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "sha-plan.json"), { force: true });
 }
 
+// -------------------------------------------------- auto-go
+//
+// A plan whose spec says go auto: `done` gives the next increment's go itself
+// (by auto) once its checks passed, and stops for a person at an increment
+// that says go: { human }, after a forced done, or when the chain would wait
+// on a person closing review findings.
+if (want("auto-go")) {
+  const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
+  const inc = (slug, n) => stOf(slug).increments[n - 1];
+  const third = { ...spec.deliverables[1], title: "a third increment" };
+  const three = (slug, extra = {}, d3 = {}) => ({ ...spec, slug, deliverables: [...spec.deliverables, { ...third, ...d3 }], ...extra });
+  const graded = slug => {
+    const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8"));
+    cli("grade", slug, ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+  };
+  const bad = obj => cli("render", tmpSpec(obj));
+
+  ok("go must be human, auto or the object form", /go: "human", "auto"/.test(bad({ ...spec, slug: "ag-bad", go: "sometimes" }).stderr));
+  ok("go.between must be commit or draft-pr",
+    /go\.between: "commit" or "draft-pr"/.test(bad({ ...spec, slug: "ag-bad", go: { mode: "auto", between: "push" } }).stderr));
+  ok("a per-increment human stop needs an auto plan",
+    /this plan's go is a person's already/.test(bad(three("ag-bad", {}, { go: { human: "look first" } })).stderr));
+  ok("a per-increment human stop is a sentence",
+    /go is \{ "human"/.test(bad(three("ag-bad", { go: "auto" }, { go: { human: "" } })).stderr));
+  ok("the first increment cannot carry a stop (its go is a person's anyway)",
+    /deliverable 1: go\.human is implied/.test(bad({ ...spec, slug: "ag-bad", go: "auto",
+      deliverables: [{ ...spec.deliverables[0], go: { human: "x" } }, spec.deliverables[1]] }).stderr));
+  const rvNoClose = three("ag-bad", { go: "auto", review: { increments: [1], delivery: false } });
+  ok("auto after a reviewed increment needs review.agentMayClose",
+    /increment 1 has a lookout review and increment 2 auto-goes after it/.test(bad(rvNoClose).stderr));
+  r = bad(three("ag-stop", { go: "auto", review: { increments: [2], delivery: false } }, { go: { human: "after the review" } }));
+  ok("a human stop after the reviewed increment satisfies it", r.status === 0, r.stderr);
+  cli("close", "ag-stop");
+
+  // The chain: 1 by a person, 2 by auto, 3 stops for a person.
+  r = cli("render", tmpSpec(three("ag-plan", { go: { mode: "auto", between: "draft-pr" } }, { go: { human: "the migration runs on prod data" } })));
+  ok("an auto plan renders", r.status === 0, r.stderr);
+  ok("the plan's markdown says it auto-goes and names the stop",
+    /Go: auto\..*draft PR/.test(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "ag-plan.md"), "utf8")) &&
+    /Go: a person's — the migration runs on prod data/.test(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "ag-plan.md"), "utf8")));
+  graded("ag-plan");
+  ok("grading an auto plan authorizes nothing: the first go is a person's", inc("ag-plan", 1).status === "pending");
+  cli("go", "ag-plan", "next");
+  passAll("ag-plan", 1);
+  r = cli("done", "ag-plan", "1");
+  ok("done on an auto plan authorizes the next increment, by auto",
+    r.status === 0 && inc("ag-plan", 2).status === "authorized" && inc("ag-plan", 2).by === "auto" && !!inc("ag-plan", 2).startSha, r.stdout + r.stderr);
+  ok("done says so, with the draft-PR step", /auto-go: increment 2 .* authorized \(by auto\)\. Push the branch and open a draft PR/.test(r.stdout), r.stdout);
+  ok("the log records the auto go", /authorized by auto/.test(JSON.stringify(stOf("ag-plan").log || [])));
+  { const g = edit(path.join(REPO, "ag.txt"));
+    ok("the gate lets the auto-authorized increment's edit through", g.status === 0, g.stderr + g.stdout); }
+  passAll("ag-plan", 2);
+  r = cli("done", "ag-plan", "2");
+  ok("the chain stops at an increment marked for a person, saying why",
+    r.status === 0 && inc("ag-plan", 3).status === "pending" && /auto-go stops: increment 3 needs a person's go — the migration runs on prod data/.test(r.stdout), r.stdout);
+  cli("close", "ag-plan");
+
+  // A forced done is a skipped proof: the chain stops.
+  cli("render", tmpSpec(three("ag-force", { go: "auto" })));
+  graded("ag-force");
+  cli("go", "ag-force", "1");
+  r = cli("done", "ag-force", "1", "--force");
+  ok("a forced done does not auto-go", inc("ag-force", 2).status === "pending" && /--force past its checks/.test(r.stdout), r.stdout + r.stderr);
+  cli("close", "ag-force");
+
+  // A plan that does not say stays a person's.
+  cli("render", tmpSpec({ ...spec, slug: "ag-human" }));
+  graded("ag-human");
+  cli("go", "ag-human", "1"); passAll("ag-human", 1);
+  r = cli("done", "ag-human", "1");
+  ok("a plan without go auto never auto-goes", inc("ag-human", 2).status === "pending" && !/auto-go/.test(r.stdout), r.stdout);
+  cli("close", "ag-human");
+  // A family child's own rules win over its spec's auto.
+  const AG = await import(new URL("lib/autogo.mjs", import.meta.url));
+  const sp = three("x", { go: "auto" });
+  const stx = { increments: [{ n: 1, status: "done" }, { n: 2, status: "pending" }, { n: 3, status: "pending" }] };
+  ok("autoNext: a plain auto plan goes to the next pending", (AG.autoNext(sp, stx, 1) || {}).go === 2);
+  ok("autoNext: a delegated child's go stays the parent's",
+    /delegated to the family parent \(par\)/.test((AG.autoNext(sp, stx, 1, { owner: { delegated: true, parent: "par" } }) || {}).why));
+  ok("autoNext: a parent's hold stops it",
+    /holding it: "wait"/.test((AG.autoNext(sp, stx, 1, { owner: { delegated: false, hold: { reason: "wait" } } }) || {}).why));
+  ok("autoNext: a family wait stops it", /waits on its family/.test((AG.autoNext(sp, stx, 1, { waits: [{ parent: "p", n: 1 }] }) || {}).why));
+  ok("autoNext: a blocked increment stops the chain before a later pending one",
+    /increment 2 is blocked \(needs data\)/.test((AG.autoNext(sp, { increments: [{ n: 1, status: "done" },
+      { n: 2, status: "blocked", note: "needs data" }, { n: 3, status: "pending" }] }, 1) || {}).why));
+  ok("autoNext: an unreadable family stops the chain",
+    /could not be read \(bad json\)/.test((AG.autoNext(sp, stx, 1, { familyError: "bad json" }) || {}).why));
+  ok("autoNext: nothing pending, nothing to say",
+    AG.autoNext(sp, { increments: [{ n: 1, status: "done" }] }, 1) === null);
+
+  for (const s of ["ag-stop", "ag-plan", "ag-force", "ag-human"]) fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, s + ".json"), { force: true });
+}
+
 // -------------------------------------------------- owner: session and workspace
 //
 // A plan records who last touched it from inside a session, so the seamux-mods
