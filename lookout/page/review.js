@@ -503,8 +503,10 @@
       statusNote: (c, st) => st === "extra"
         ? (c.plannedIn && c.plannedIn.length ? `The plan names this file for increment ${c.plannedIn.join(", ")}, not this one.`
           : "The diff changed this file, but no part of the plan names it. That may be plan drift.") + " A click opens its diff."
+        : c.undone ? "The plan removes this file, and the diff edited it instead of deleting it."
         : STATUS_NOTE[st] || "",
-      onOpen: p => { if (diffOf.has(p)) select(diffOf.get(p)); },
+      // Card paths are relative to the plan root; the diff's to the repo top.
+      onOpen: p => { const k = diffOf.has(p) ? p : (R.planMap.prefix || "") + p; if (diffOf.has(k)) select(diffOf.get(k)); },
       trayNote: "The plan's map was frozen when the plan rendered; this view holds it against the current diff.",
     });
   }

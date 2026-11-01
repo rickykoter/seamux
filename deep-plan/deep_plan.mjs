@@ -1720,7 +1720,12 @@ function readAnnotations(slug) {
 // overviews) neither drifts the approved snapshot nor stales a published copy.
 // A spec without any hashes exactly as it did before overviews existed.
 function specHash(spec) {
-  const plain = spec.diagrams ? { ...spec, diagrams: spec.diagrams.map(({ simple, ...d }) => d) } : spec;
+  let plain = spec.diagrams ? { ...spec, diagrams: spec.diagrams.map(({ simple, ...d }) => d) } : spec;
+  // A files[] entry with no declared change hashes as its path, the shape
+  // older engines archived: re-rendering an unchanged spec is not drift.
+  if (Array.isArray(plain.deliverables))
+    plain = { ...plain, deliverables: plain.deliverables.map(d => Array.isArray(d.files)
+      ? { ...d, files: d.files.map(f => f && typeof f === "object" && !f.change ? f.path : f) } : d) };
   return crypto.createHash("sha256").update(JSON.stringify(plain)).digest("hex").slice(0, 16);
 }
 

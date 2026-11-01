@@ -201,9 +201,18 @@
       };
       visible.forEach(function (c) {
         var fresh = c.change === "new";
-        ((c.usedBy && c.usedBy.paths) || []).forEach(function (p) { if (!ids[p]) out.push({ from: nb(p, "left", 0, c.path), to: c.path, planned: fresh }); });
+        // A neighbour that is also a card (lookout draws a touched-but-unplanned
+        // file as one) keeps its line, drawn as a link inside the lane.
+        var linked = c.links || [];
+        ((c.usedBy && c.usedBy.paths) || []).forEach(function (p) {
+          if (!ids[p]) out.push({ from: nb(p, "left", 0, c.path), to: c.path, planned: fresh });
+          else if (linked.indexOf(p) < 0) out.push({ from: p, to: c.path, planned: fresh, inner: true });
+        });
         if (c.usedBy && c.usedBy.more) out.push({ from: nb("", "left", c.usedBy.more, c.path), to: c.path, planned: fresh });
-        ((c.uses && c.uses.paths) || []).forEach(function (p) { if (!ids[p]) out.push({ from: c.path, to: nb(p, "right", 0, c.path), planned: fresh }); });
+        ((c.uses && c.uses.paths) || []).forEach(function (p) {
+          if (!ids[p]) out.push({ from: c.path, to: nb(p, "right", 0, c.path), planned: fresh });
+          else if (linked.indexOf(p) < 0) out.push({ from: c.path, to: p, planned: fresh, inner: true });
+        });
         if (c.uses && c.uses.more) out.push({ from: c.path, to: nb("", "right", c.uses.more, c.path), planned: fresh });
         (c.links || []).forEach(function (p) {
           if (ids[p] && c.path < p) out.push({ from: c.path, to: p, planned: fresh || ids[p].change === "new", inner: true });

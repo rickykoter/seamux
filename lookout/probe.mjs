@@ -1372,6 +1372,13 @@ if (want("plan map: --plan-map, the three-way compare, the Map view")) {
   ok("compare: the full delivery scopes every card", all.inc === "all" && all.cards.length === 4 &&
     all.cards.find(c => c.path === "src/later.mjs").status === "ok" && all.extra.length === 1 && all.extra[0].path === "src/stray.mjs");
   ok("compare: no map, no comparison", PM.comparePlan(undefined, [], 1) === null);
+  const edited = PM.comparePlan({ cards: [card("src/gone.mjs", [1], "remove")] }, [{ path: "src/gone.mjs", status: "M" }], 1);
+  ok("compare: a planned removal the diff only edited is not done", edited.cards[0].status === "miss" && edited.cards[0].undone && edited.extra.length === 0);
+  const mono = PM.comparePlan({ prefix: "packages/app/", cards: [card("src/a.ts", [1], "modify"), card("src/b.ts", [1], "modify")] },
+    [{ path: "packages/app/src/a.ts", status: "M" }, { path: "packages/app/src/c.ts", status: "A" }, { path: "tools/x.sh", status: "M" }], 1);
+  ok("compare: a plan rooted in a monorepo folder matches the diff's repo-top paths",
+    mono.cards.find(c => c.path === "src/a.ts").status === "ok" && mono.cards.find(c => c.path === "src/b.ts").status === "miss" &&
+    mono.extra.map(x => x.path).join() === "src/c.ts,tools/x.sh" && mono.extra[0].diffPath === "packages/app/src/c.ts");
   const renamed = PM.comparePlan({ cards: [card("src/was.mjs", [1], "modify")] }, [{ path: "src/now.mjs", oldPath: "src/was.mjs", status: "R" }], 1);
   ok("compare: a planned file the diff renamed counts as touched, and is no extra", renamed.cards[0].status === "ok" && renamed.extra.length === 0);
   r = cli(RM, "open", "--plan", "map-demo", "--inc", "1", "--base", base, "--no-plan-map", "--json");

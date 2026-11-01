@@ -16,16 +16,30 @@ export function comparePlan(planMap, files, inc) {
   const n = typeof inc === "number" ? inc : null;
   const inScope = c => n === null || (c.increments || []).includes(n);
   const scope = planMap.cards.filter(inScope);
-  const touched = new Set();
+  // Card paths are relative to the plan root; the diff's, to the repo top.
+  const pre = planMap.prefix || "";
+  const inRepo = p => pre + p;
+  const how = new Map();
   for (const f of files || []) {
-    if (f.path) touched.add(f.path);
-    if (f.oldPath) touched.add(f.oldPath);
+    if (f.path) how.set(f.path, f.status || "M");
+    if (f.oldPath) how.set(f.oldPath, f.status === "R" ? "R" : f.status || "M");
   }
-  const named = new Set(scope.map(c => c.path));
-  const cards = scope.map(c => ({ ...c, status: touched.has(c.path) ? "ok" : "miss" }));
-  const elsewhere = new Map(planMap.cards.filter(c => !inScope(c)).map(c => [c.path, c.increments || []]));
+  const named = new Set(scope.map(c => inRepo(c.path)));
+  // A planned removal is done only when the diff deletes (or renames away)
+  // the file; an edit to it leaves the removal undone.
+  const done = c => {
+    const s = how.get(inRepo(c.path));
+    if (!s) return false;
+    return c.change === "remove" ? s === "D" || s === "R" : true;
+  };
+  const cards = scope.map(c => ({ ...c, status: done(c) ? "ok" : "miss",
+    ...(c.change === "remove" && how.has(inRepo(c.path)) && !done(c) ? { undone: "edited, not removed" } : {}) }));
+  const elsewhere = new Map(planMap.cards.filter(c => !inScope(c)).map(c => [inRepo(c.path), c.increments || []]));
   const extra = (files || []).filter(f => !named.has(f.path) && !(f.oldPath && named.has(f.oldPath))).map(f => ({
-    id: f.path, path: f.path, change: CHANGE[f.status] || "modify", increments: [],
+    // Shown relative to the plan root when it sits under it, like the cards.
+    id: f.path.startsWith(pre) ? f.path.slice(pre.length) : f.path,
+    path: f.path.startsWith(pre) ? f.path.slice(pre.length) : f.path,
+    diffPath: f.path, change: CHANGE[f.status] || "modify", increments: [],
     facts: [], contracts: [], usedBy: empty(), uses: empty(), links: [],
     status: "extra", plannedIn: elsewhere.get(f.path) || [],
   }));

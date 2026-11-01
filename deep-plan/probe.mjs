@@ -3140,6 +3140,21 @@ if (want("spec files: strings, removals, contracts placed with at")) {
   ok("the markdown names the removal", md.includes("`app/workers/inline_retry.rb` (remove)"));
   const rv = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "files-plan.review.html"), "utf8");
   ok("the review page's file tree shows an object entry by its path", rv.includes("inline_retry.rb") && !rv.includes("[object Object]"));
+  {
+    // A plan approved by an older engine hashed its files as plain strings;
+    // the object-shaped archive must hash the same, or the page cries drift.
+    const stP = path.join(ENV.DEEP_PLAN_STATE_DIR, "files-plan.json");
+    const st = JSON.parse(fs.readFileSync(stP, "utf8"));
+    const old = JSON.parse(JSON.stringify(arch));
+    for (const d of old.deliverables) d.files = d.files.map(f => f.change ? f : f.path);
+    if (old.diagrams) old.diagrams = old.diagrams.map(({ simple, ...d }) => d);
+    st.approved = { spec_hash: crypto.createHash("sha256").update(JSON.stringify(old)).digest("hex").slice(0, 16), path: "/x.approved.md" };
+    fs.writeFileSync(stP, JSON.stringify(st, null, 2) + "\n");
+    cli("rehydrate", "files-plan");
+    const wk = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "files-plan.working.html"), "utf8");
+    ok("a plan approved with plain-string files is not reported as drifted after the archive changed shape",
+      wk.includes("approved snapshot") && !wk.includes("DRIFTED"));
+  }
   r = cli("rehydrate", "files-plan");
   ok("rehydrate reads the object-shaped archive byte-identically", r.status === 0 && /byte-identical/.test(r.stdout + r.stderr), r.stdout + r.stderr);
 
@@ -3276,6 +3291,7 @@ if (want("end state map: model, neighbours, frozen in state")) {
   const inSub = MAP.buildMap(sub, path.join(MR, "pkg"), null, head);
   ok("a plan rooted in a repo subfolder reads the start commit from that folder",
     inSub.cards.find(c => c.path === "src/a.mjs").change === "modify" && inSub.cards.find(c => c.path === "src/b.mjs").change === "new", JSON.stringify(inSub.cards.map(c => c.change)));
+  ok("…and records where that root sits in the repo, for lookout's paths", inSub.prefix === "pkg/" && fromBase.prefix === "");
 
   // Outside git: cards, no neighbours, and the reason.
   const NG = path.join(TMP, "notgit");

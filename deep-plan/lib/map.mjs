@@ -173,7 +173,11 @@ export function buildMap(spec, root, prior = null, base = "") {
   const unplaced = (spec.contracts || []).map((k, i) => ({ i, surface: k.surface || "", kind: k.kind || "", change: k.change || "",
     ...(Array.isArray(k.at) && k.at.length ? { at: k.at } : {}) })).filter(k => !onCard.has(k.i));
 
-  const model = { version: MAP_VERSION, slug: spec.slug, base, neighbours: true, why: "", cards, unplaced };
+  // Where the plan root sits in its repo ("" at the top, "packages/app/" in
+  // a monorepo): card paths are relative to the root, a diff's to the top.
+  const pre = spawnSync("git", ["-C", root, "rev-parse", "--show-prefix"], { encoding: "utf8" });
+  const prefix = pre.status === 0 ? pre.stdout.trim() : "";
+  const model = { version: MAP_VERSION, slug: spec.slug, base, prefix, neighbours: true, why: "", cards, unplaced };
   if (!inGit(root)) {
     model.neighbours = false;
     model.why = "the plan root is not a git work tree, so no neighbours were looked for";
