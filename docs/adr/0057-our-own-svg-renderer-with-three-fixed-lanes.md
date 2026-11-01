@@ -1,4 +1,4 @@
-# 0055. Our own SVG renderer with three fixed lanes
+# 0057. Our own SVG renderer with three fixed lanes
 
 Date: 2026-11-01
 
@@ -16,7 +16,7 @@ The map is drawn by our own SVG renderer in three fixed lanes: what uses the pla
 
 ## Consequences
 
-About 500 lines of client code, shared by two plugins (see 0057). In a dense plan (more than 14 cards) a folder with more than four cards folds to one row until it is clicked. Mermaid stays for the hand-written diagrams, and no new library is vendored.
+About 500 lines of client code, shared by two plugins (see 0059). In a dense plan (more than 14 cards) a folder with more than four cards folds to one row until it is clicked. Mermaid stays for the hand-written diagrams, and no new library is vendored.
 
 ## Alternatives considered
 

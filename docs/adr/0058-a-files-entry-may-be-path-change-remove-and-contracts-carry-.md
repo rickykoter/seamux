@@ -1,4 +1,4 @@
-# 0056. A files[] entry may be {path, change: 'remove'}, and contracts carry an optional at
+# 0058. A files[] entry may be {path, change: 'remove'}, and contracts carry an optional at
 
 Date: 2026-11-01
 
