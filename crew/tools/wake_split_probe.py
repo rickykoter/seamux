@@ -28,6 +28,13 @@ FAKE = os.path.join(HERE, "fakecmux.py")
 tmp = tempfile.mkdtemp(prefix="wake-split-")
 sys.path.insert(0, HERE)
 import crew_impl  # noqa: E402  (beside this probe)
+# The seamux app's tmux panes set these for the session running the probe.
+for k in ("SEAMUX_PANE_ID", "SEAMUX_WORKSPACE_ID", "TMUX", "TMUX_PANE"):
+    os.environ.pop(k, None)
+# Pinned, not cleared: this probe drives the fake cmux, and a tmux backend
+# (inherited, or picked because no real cmux answers) opens each Wake click
+# in the person's own browser.
+os.environ["SEAMUX_BACKEND"] = "cmux"
 ENV = crew_impl.env(dict(os.environ, HOME=tmp, FAKE_CMUX_DIR=tmp, CREW_CMUX=FAKE))
 STATE_DIR = os.path.join(tmp, ".cache", "cmux-crew")
 WAKE_TAB, WAKE_VIEW = "wake", "wake-view"

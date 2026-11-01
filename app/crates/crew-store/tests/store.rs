@@ -85,6 +85,11 @@ fn python_writes_rust_reads() {
     assert!(crew_store::search("guide", Some("/nowhere"), None, 500).unwrap().is_empty());
     assert_eq!(crew_store::search("guide", Some(&format!("{ws}/")), Some("commit"), 500).unwrap().len(), 1);
     assert!(crew_store::search("\"oops* OR (NEAR", None, None, 500).is_ok());
+    // search_in reads several workspaces at once; an empty or repeated one changes nothing.
+    assert_eq!(crew_store::search_in("", &[ws.as_str(), "/nowhere"], None, 500).unwrap().len(), 3);
+    assert_eq!(crew_store::search_in("", &["/nowhere"], None, 500).unwrap().len(), 0);
+    assert_eq!(crew_store::search_in("guide", &[&format!("{ws}/"), ws.as_str(), ""], Some("commit"), 500).unwrap().len(), 1);
+    assert_eq!(crew_store::search_in("", &[], None, 500).unwrap().len(), all.len(), "no directory filters nothing");
     let w = crew_store::workspaces().unwrap();
     assert_eq!((w[0].ws.as_str(), w[0].n), (ws.as_str(), 3));
     assert_eq!(crew_store::count(&ws).unwrap(), 3);

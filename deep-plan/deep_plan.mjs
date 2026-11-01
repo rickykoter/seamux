@@ -20,7 +20,7 @@ import crypto from "node:crypto";
 import { execSync, execFileSync, spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { validateDiagrams, validateSurface, mermaidPath, mermaidCandidates, VENDOR_DIR, MERMAID_HOME } from "./lib/validate.mjs";
-import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries, adrScanReport } from "./lib/adr.mjs";
+import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries, adrScanReport, followRenamed } from "./lib/adr.mjs";
 import { epicHtml, incrementMd, bundleReadme, incrementFileNames, checkLinesMd } from "./lib/cutover.mjs";
 import { checkEvidence } from "./lib/evidence.mjs";
 import { buildMap } from "./lib/map.mjs";
@@ -43,7 +43,7 @@ import {
   FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
   familyOf, refreshFamilyFor, overlaps, checkFamily, draftParent, waitingOn, waitText,
   memberAt, readSeen, gatherNews, newsText, familyRow, familiesBySlug, protects,
-  goOwner, goBy, goHow, goRefusal, updateControl, pruneControl, controlPath,
+  goOwner, goBy, goHow, goRefusal, updateControl, pruneControl, controlPath, baseRef,
 } from "./lib/family.mjs";
 import {
   STATE_DIR, KEYS_DIR, PLANS_DIR, DATA_ROOT, REMOTE_DIR, statePath, sessionId,
@@ -476,7 +476,7 @@ function baseFor(st, inc, base) {
     if (bad) die(`${what}'s recorded start sha ${rec.slice(0, 8)} cannot be a base: ${bad}.\n` +
       `  give one: deep-plan ${inc === "all" ? `deliver ${st.slug}` : `review ${st.slug} ${inc.n}`} --base <sha>\n` +
       `no base: the recorded start sha ${rec.slice(0, 8)} is gone from this branch`);
-    return rec;
+    return pastUpstream(st.root, rec);
   }
   const r = spawnSync("git", ["-C", st.root, "rev-parse", "--verify", "--quiet", `${base}^{commit}`], { encoding: "utf8" });
   if (r.status !== 0) die(`--base ${base} is not a commit in ${st.root}`);
@@ -491,6 +491,30 @@ function baseFor(st, inc, base) {
     if (bad) console.error(`deep-plan: the recorded start sha ${rec.slice(0, 8)} ${bad.replace(/^it /, "")}; using --base ${sha.slice(0, 8)}, logged`);
   }
   return sha;
+}
+
+// A start sha that holds can still sit under commits that are not the plan's:
+// rebased onto a newer main, the branch carries main's later commits above
+// it, and a review based there shows them as the plan's work. The base is
+// then the merge-base with the default branch, when that descends from the
+// start sha. Not on the default branch itself, where the merge-base is the
+// pushed tip and would hide the plan's own commits, and not when it is HEAD
+// (the plan's work is all in the default branch already).
+function pastUpstream(root, rec) {
+  if (!rec || !root) return rec;
+  const ref = baseRef(root);
+  if (!ref) return rec;
+  const g = (...a) => spawnSync("git", ["-C", root, ...a], { encoding: "utf8" });
+  const branch = g("rev-parse", "--abbrev-ref", "HEAD").stdout.trim();
+  if (branch === ref.replace(/^[^/]+\//, "") || branch === ref) return rec;
+  const mb = g("merge-base", "HEAD", ref);
+  if (mb.status !== 0) return rec;
+  const m = mb.stdout.trim();
+  if (!m || m === rec || m === g("rev-parse", "HEAD").stdout.trim()) return rec;
+  if (g("merge-base", "--is-ancestor", rec, m).status !== 0) return rec;
+  console.error(`deep-plan: ${ref} moved in above the start sha ${rec.slice(0, 8)} (a rebase?); ` +
+    `opening at the merge-base with it, ${m.slice(0, 8)}, so its commits are not taken for the plan's`);
+  return m;
 }
 
 // The refusal for a review or diff with no base, naming the flag that gives one.
@@ -2054,10 +2078,17 @@ async function render(specPath, opts) {
       const ev = String(v.evidence || "");
       return ev === f || ev.startsWith(f + ":");
     });
+    // A path the stored map records as new is one this plan created: once it
+    // exists mid-plan it is still output, not input. The first render has no
+    // stored map and goes by the disk, and so does a render that moves the
+    // root: the map judged new against the old tree.
+    const sameRoot = prior0 && prior0.root && path.resolve(prior0.root) === path.resolve(root);
+    const created = new Set(((sameRoot && prior0.map && prior0.map.cards) || [])
+      .filter(c => c.change === "new").map(c => c.path));
     const unread = [];
     (spec.deliverables || []).forEach((d, i) => {
       for (const f of planPaths(d))
-        if (fs.existsSync(path.join(root, f)) && !cited(f))
+        if (fs.existsSync(path.join(root, f)) && !cited(f) && !created.has(f))
           unread.push(`deliverable ${i + 1} ("${d.title}") edits ${f} — no verifiedFact cites it`);
     });
     if (unread.length && !opts.force) {
@@ -2208,6 +2239,18 @@ async function render(specPath, opts) {
     return prev ? { ...a, number: prev.number, file: prev.file, dir: prev.dir,
       source: prev.source, applied: prev.applied || "" } : a;
   });
+  // An applied ADR renumbered on disk since (a rebase moved it past ADRs that
+  // landed first): follow it, so the pages link the file that is there.
+  {
+    const adrCfg = loadAdrConfig(planRoot);
+    for (const a of st.adrs) {
+      const mv = followRenamed(planRoot, a, adrCfg);
+      if (!mv) continue;
+      log1(st, `adr ${a.n}: followed a renumber on disk, ${a.applied} -> ${mv.applied}`);
+      say(`adr ${a.n}: ${a.applied} is now ${mv.applied} on disk; following it`);
+      Object.assign(a, mv);
+    }
+  }
   // The plan holds its own sync setting: the spec's share, false when unset.
   st.share = spec.share === undefined ? false : spec.share;
   st.map = map;
@@ -2632,6 +2675,14 @@ function adrApply(slug) {
     const entry = entries[a.n - 1];
     if (!entry) continue;
     const dirAbs = path.join(st.root, a.dir);
+    // Renumbered on disk since it was applied: rewrite it where it is now,
+    // not as a second copy under the old number.
+    const mv = followRenamed(st.root, a, config);
+    if (mv) {
+      say(`adr ${a.n}: ${a.applied} is now ${mv.applied} on disk; following it`);
+      log1(st, `adr ${a.n}: followed a renumber on disk, ${a.applied} -> ${mv.applied}`);
+      Object.assign(a, mv);
+    }
     if (!a.applied) {
       const miss = adrScanReport(dirAbs, config.numberScan);
       if (miss)

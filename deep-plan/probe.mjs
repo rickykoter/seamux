@@ -68,7 +68,9 @@ delete ENV.CMUX_WORKSPACE_ID;
 // The pane's surface too: with it, an ask made "outside cmux" is typed into this pane.
 delete ENV.CMUX_SURFACE_ID;
 // Host signals come from the session running the probe; each test sets its own.
-for (const k of ["SEAMUX_HOST", "CLAUDE_CODE_REMOTE", "CLAUDE_CODE_ENTRYPOINT", "DEEP_PLAN_SERVE_FILE", "LOOKOUT_SERVE_FILE"]) delete ENV[k];
+// The seamux app's tmux panes set SEAMUX_* and TMUX*, as cmux sets CMUX_*.
+for (const k of ["SEAMUX_HOST", "CLAUDE_CODE_REMOTE", "CLAUDE_CODE_ENTRYPOINT", "DEEP_PLAN_SERVE_FILE", "LOOKOUT_SERVE_FILE",
+  "SEAMUX_BACKEND", "SEAMUX_PANE_ID", "SEAMUX_WORKSPACE_ID", "TMUX", "TMUX_PANE"]) delete ENV[k];
 const MERMAID_VENDOR = path.join(ENV.DEEP_PLAN_VENDOR_DIR, "mermaid.min.js");
 // The real bundle to test with: where CI fetched it, where `deep-plan setup`
 // put it, a checkout's own vendor/, or the old skills copy. Copied, not moved.
@@ -496,6 +498,17 @@ ok("mermaid theme follows the page theme",
   fresh.deliverables[0].files = ["not-created-yet.sh"];
   ok("a file the plan will CREATE is exempt (output, not input)",
     cli("render", tmpSpec(fresh)).status === 0);
+  // Mid-plan the created file exists, and the stored map still says new.
+  fs.writeFileSync(path.join(REPO, "not-created-yet.sh"), "#!/bin/sh\n");
+  rr = cli("render", tmpSpec(fresh));
+  ok("a re-render passes once a file the plan created exists (the stored map has it as new)",
+    rr.status === 0, rr.stderr);
+  // The exemption is the map's new, not any stored path: one it has as modify still needs a fact.
+  base.verifiedFacts.pop();
+  rr = cli("render", tmpSpec(base));
+  ok("a re-render still refuses a file the stored map has as modify, once no fact cites it",
+    rr.status !== 0 && /existing\.sh — no verifiedFact cites it/.test(rr.stderr));
+  fs.rmSync(path.join(REPO, "not-created-yet.sh"), { force: true });
   for (const s of ["floor-plan", "floor-new"]) {
     cli("close", s);
     fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, s + ".json"), { force: true });
@@ -1197,6 +1210,27 @@ ok("the denial opens with `deep-plan gate [<slug>]: ` (seamux-mods keys off it)"
   ok("working surface flips the ADR chip to applied",
     fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8")
       .includes(">applied</span>"));
+  // Renumbered on disk since (a rebase moved it past ADRs that landed first):
+  // render and apply follow the file, not the number they stored.
+  const adrDir = path.join(REPO, "docs", "adr");
+  fs.renameSync(path.join(adrDir, "0002-sweep-on-a-timer-not-on-write.md"), path.join(adrDir, "0005-sweep-on-a-timer-not-on-write.md"));
+  const rr5 = cli("render", tmpSpec(spec));
+  const st5 = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"));
+  ok("a re-render follows an applied ADR renumbered on disk",
+    rr5.status === 0 && /0002-sweep-on-a-timer-not-on-write\.md is now docs\/adr\/0005-/.test(rr5.stdout) &&
+    st5.adrs[0].number === 5 && st5.adrs[0].applied === "docs/adr/0005-sweep-on-a-timer-not-on-write.md", rr5.stdout + rr5.stderr);
+  ok("…and the working page links the file now there",
+    fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8").includes("0005-sweep-on-a-timer-not-on-write.md"));
+  fs.renameSync(path.join(adrDir, "0005-sweep-on-a-timer-not-on-write.md"), path.join(adrDir, "0006-sweep-on-a-timer-not-on-write.md"));
+  const ap3 = cli("adr", "apply", spec.slug);
+  ok("apply follows one renumbered since, and rewrites it where it is",
+    ap3.status === 0 && /0006-.*\(rewritten\)/.test(ap3.stdout) &&
+    !fs.existsSync(path.join(adrDir, "0005-sweep-on-a-timer-not-on-write.md")) &&
+    !fs.existsSync(path.join(adrDir, "0002-sweep-on-a-timer-not-on-write.md")) &&
+    /^# 0*6\. /.test(fs.readFileSync(path.join(adrDir, "0006-sweep-on-a-timer-not-on-write.md"), "utf8").split("\n")[0]), ap3.stdout + ap3.stderr);
+  // Back to 0002, so the cases after this see the ADR they always did.
+  fs.renameSync(path.join(adrDir, "0006-sweep-on-a-timer-not-on-write.md"), path.join(adrDir, "0002-sweep-on-a-timer-not-on-write.md"));
+  cli("render", tmpSpec(spec));
 }
 
 // -------------------------------------------------- go / working / done
@@ -4086,6 +4120,23 @@ if (want("owner: session and workspace")) {
   as(P1, "render", tmpSpec(s3), "--root", ROOT3);
   ok("render stamps the owner's pane from CMUX_SURFACE_ID", stOf("owner-3").owner.surface === "pane-1111aaaa");
   ok("status --json carries the owner's pane", rowOf("owner-3").owner.surface === "pane-1111aaaa");
+  // A write with a session but no pane ids (a hook, a plain shell) has no
+  // better pane to name: the owner keeps its workspace and pane.
+  as({ CLAUDE_CODE_SESSION_ID: "sess-a" }, "render", tmpSpec(s3), "--root", ROOT3);
+  ok("a write with a session but no pane ids keeps the owner's workspace and pane",
+    stOf("owner-3").owner.surface === "pane-1111aaaa" && stOf("owner-3").owner.workspace === "ws-1" &&
+    stOf("owner-3").owner.session === "sess-a");
+  as({ CLAUDE_CODE_SESSION_ID: "sess-a", CMUX_WORKSPACE_ID: "ws-1" }, "render", tmpSpec(s3), "--root", ROOT3);
+  ok("a write with the same workspace but no pane id keeps the owner's pane",
+    stOf("owner-3").owner.surface === "pane-1111aaaa" && stOf("owner-3").owner.workspace === "ws-1");
+  {
+    const { keptPane } = lib;
+    const was = { workspace: "ws-1", surface: "pane-1" };
+    const kp = keptPane(was, { workspace: "ws-2", pane: "" });
+    ok("a write from another workspace with no pane id drops the earlier pane", kp.workspace === "ws-2" && kp.surface === "");
+    const kq = keptPane(was, { workspace: "", pane: "pane-9" });
+    ok("a write with a pane id but no workspace keeps the workspace and takes the pane", kq.workspace === "ws-1" && kq.surface === "pane-9");
+  }
   const key3 = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "owner-3.key.json"), "utf8"));
   cli("grade", "owner-3", ...Object.entries(key3.answers).map(([q, v]) => `${q}=${v.letter}`));
   cli("go", "owner-3", "1");
@@ -4703,6 +4754,53 @@ if (want("a new directory under a symlinked root")) {
 // its increment. deep-plan synthesizes the command and runs it through
 // lookout's engine; nothing names a recipe. The spike: a synthesized command
 // must never trip the recipe-drift warning, however often it runs.
+// A plan branch rebased onto a newer main still has its start sha as an
+// ancestor, with main's later commits above it: the review must not take
+// them for the plan's work.
+if (want("rebased: a review opens past main's commits")) {
+  const LK = path.join(HERE, "..", "lookout");
+  const RB = path.join(TMP, "rebased-root");
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  fs.mkdirSync(path.join(RB, "src"), { recursive: true });
+  fs.writeFileSync(path.join(RB, "src", "a.ts"), "export const a = 1;\n");
+  execSync(`git init -q -b main && git add -A && ${G} commit -q -m init && git checkout -q -b feat`, { cwd: RB });
+  const LENV = { ...ENV, LOOKOUT_ENGINE: LK, LOOKOUT_REVIEWS_DIR: path.join(TMP, "rebased-reviews"),
+    LOOKOUT_TYPESAFE_CLIENT: "", LOOKOUT_VENDOR_DIR: path.join(TMP, "rebased-lookout-vendor"),
+    LOOKOUT_ENGINE_FILE: path.join(TMP, "rebased-lookout-engine.json"), LOOKOUT_BIN_DIR: path.join(TMP, "rebased-lookout-bin") };
+  const lc = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: LENV, cwd: RB });
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "rebased-1";
+  s.verifiedFacts = [...s.verifiedFacts, { claim: "a starts at 1", evidence: "src/a.ts:1" }];
+  s.deliverables = [{ title: "Retry sweep", body: "A timer job.", files: ["src/a.ts"], checks: [{ kind: "manual", name: "looked" }] }];
+  lc("render", tmpSpec(s), "--root", RB);
+  const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "rebased-1.key.json"), "utf8"));
+  lc("grade", "rebased-1", ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+  lc("go", "rebased-1", "1");
+  const start = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "rebased-1.json"), "utf8")).increments[0].startSha;
+  fs.writeFileSync(path.join(RB, "src", "a.ts"), "export const a = 2;\n");
+  execSync(`git add -A && ${G} commit -q -m plan-work`, { cwd: RB });
+  const base = () => JSON.parse(fs.readFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, "rebased-1-inc1.json"), "utf8"));
+  let r = lc("review", "rebased-1", "1");
+  ok("rebased: before main moves, the review opens at the start sha",
+    r.status === 0 && base().source.base === start && !/moved in above the start sha/.test(r.stderr), r.stdout + r.stderr);
+  // main gains a commit; the plan branch is rebased onto it.
+  execSync(`git checkout -q main && echo m > m.txt && git add -A && ${G} commit -q -m main-moved && git checkout -q feat && ${G} rebase -q main`, { cwd: RB });
+  const mainTip = execSync("git rev-parse main", { cwd: RB, encoding: "utf8" }).trim();
+  r = lc("review", "rebased-1", "1");
+  const v = base();
+  ok("rebased: after a rebase onto a newer main, the review opens at the merge-base, said on stderr",
+    r.status === 0 && v.source.base === mainTip && /main moved in above the start sha/.test(r.stderr), r.stdout + r.stderr);
+  ok("rebased: …so main's commit is not in it, and the plan's is",
+    !v.files.some(f => f.path === "m.txt") && v.files.some(f => f.path === "src/a.ts"), JSON.stringify(v.files.map(f => f.path)));
+  ok("rebased: the recorded start sha is left as it was",
+    JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "rebased-1.json"), "utf8")).increments[0].startSha === start);
+  // On the default branch itself the merge-base is the tip: the start sha stays.
+  execSync(`git checkout -q main && git merge -q --ff-only feat`, { cwd: RB });
+  r = lc("review", "rebased-1", "1");
+  ok("rebased: on the default branch itself, the review keeps the start sha",
+    r.status === 0 && base().source.base === start && !/moved in above/.test(r.stderr), r.stdout + r.stderr);
+}
+
 if (want("review checks (lookout)")) {
   const LK = path.join(HERE, "..", "lookout");
   const RV = path.join(TMP, "review-root");

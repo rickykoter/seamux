@@ -26,7 +26,9 @@ repo itself (`NNNN-slug.md`), not just the plan surfaces. The discipline:
    (`<slug>.adrN.md`, status Proposed, date pending). `deep-plan adr apply
    <slug>` is the only repo write — refused while phase is `review`, Accepted
    + dated on the way in, loudly reallocating a number that went stale, and
-   idempotent on re-apply.
+   idempotent on re-apply. An applied ADR renumbered on disk since (a rebase
+   past ADRs that landed first) is followed: render and apply find the same
+   title under its new number, adopt it, and say so.
 4. **Style is the adopter's.** `.seamux/adr.json`: `template` is `nygard`
    (default), `madr`, or a repo-relative path to their own template
    (`{{title}} {{status}} {{date}} {{context}} {{decision}} {{consequences}}

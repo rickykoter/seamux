@@ -140,6 +140,12 @@ export class Wake {
   private help = el("div", "w-help");
   private data: Data = { ws: "", rows: [], limit: 0, truncated: false, workspaces: [] };
   private ws = "";
+  /** More directories read with `ws`: the sheet's workspace's page roots.
+   *  The picker still names `ws` alone; picking one drops these. */
+  private also: string[] = [];
+  /** The person picked a directory in the picker since the sheet last set
+   *  one: a change in the sheet's page roots then leaves the Wake alone. */
+  private picked = false;
   private query = "";
   private kinds = new Set<string>();
   private openGroups = new Set<string>();
@@ -165,6 +171,8 @@ export class Wake {
     this.picker.setAttribute("aria-label", "workspace");
     this.picker.addEventListener("change", () => {
       this.ws = this.picker.value;
+      this.also = [];
+      this.picked = true;
       this.kinds.clear();
       this.sel = -1;
       void this.load();
@@ -252,8 +260,12 @@ export class Wake {
     void this.load(true);
   }
 
-  /** Show the Wake of the worktree at `dir` (the sheet's workspace), fresh. */
-  showDir(dir: string): void {
+  /** Show the Wake of the worktree at `dir` (the sheet's workspace), fresh,
+   *  with the rows filed under `also` too: the roots of the plans, reviews
+   *  and asks that workspace has open, which may sit outside `dir`. */
+  showDir(dir: string, also: string[] = []): void {
+    this.picked = false;
+    this.also = [...new Set(also.filter((d) => d && d !== dir))];
     if (dir && dir !== this.ws) {
       this.ws = dir;
       this.kinds.clear();
@@ -262,6 +274,15 @@ export class Wake {
       this.query = "";
       void this.load();
     } else void this.load(true);
+  }
+
+  /** The sheet's workspace opened or closed a page: read its roots too,
+   *  keeping the directory, search and filters shown. Not once the person
+   *  picked another directory, which reads that one alone. */
+  setAlso(dir: string, also: string[]): void {
+    if (this.picked) return;
+    this.also = [...new Set(also.filter((d) => d && d !== dir))];
+    void this.load(true);
   }
 
   private toast(text: string, bad = false): void {
@@ -274,7 +295,7 @@ export class Wake {
   async load(quiet = false): Promise<void> {
     const seq = ++this.seq;
     try {
-      const d = await invoke<Data>("wake_data", { ws: this.ws, q: this.query });
+      const d = await invoke<Data>("wake_data", { ws: this.ws, q: this.query, dirs: this.also });
       if (seq !== this.seq) return; // a newer search or workspace is in flight
       this.data = d;
       if (d.ws && d.ws !== this.ws) this.ws = d.ws;

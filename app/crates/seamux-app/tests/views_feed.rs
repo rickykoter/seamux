@@ -543,6 +543,38 @@ fn pages_list_a_workspaces_plan_open_reviews_and_unanswered_asks() {
 }
 
 #[test]
+fn a_review_shows_in_the_pane_that_opened_it_then_its_plans_then_by_root() {
+    // A's pane works in the main checkout; B's works inside the worktree the
+    // reviews are of. A review knows where it was opened, or which plan it is
+    // of, and only a review with neither goes by directory.
+    let f = Fixture::new("review-match");
+    let (main, wt, other) = (f.dir("work/main"), f.dir("work/wt"), f.dir("work/other"));
+    let tiles = [tile(SURF_A, WS_A, &main, "idle"), tile(SURF_B, WS_B, &wt, "idle")];
+    let plans = json!([
+        {"slug": "inv", "root": other, "phase": "implementing", "touchedAt": 20,
+         "owner": {"session": "s", "workspace": WS_A, "surface": SURF_A},
+         "progress": {"total": 2, "done": 0, "open": [], "next": {"n": 1, "title": "x"}}, "increments": []}
+    ]);
+    let review = |id: &str, at: &str, src: serde_json::Value| {
+        f.write(&format!("reviews/{id}.json"), &json!({"id": id, "updatedAt": at, "source": src, "findings": [{"status": "open"}]}).to_string());
+    };
+    review("by-pane", "2026-10-21T10:00:00.000Z", json!({"root": wt, "workspace": WS_A, "pane": SURF_A}));
+    review("by-ws", "2026-10-21T10:01:00.000Z", json!({"root": wt, "workspace": WS_A, "pane": "00000000-0000-0000-0000-000000000000"}));
+    review("by-plan", "2026-10-21T10:02:00.000Z", json!({"root": other, "plan": "inv", "inc": 1}));
+    review("by-root", "2026-10-21T10:03:00.000Z", json!({"root": wt}));
+    review("gone", "2026-10-21T10:04:00.000Z", json!({"root": f.dir("work/nowhere"), "workspace": WS_GONE}));
+
+    let frame = primed(inputs(&f, plans, vec![])).build(&tiles, NOW);
+    let of = |ws: &str| frame.pages.iter().filter(|p| p.ws == ws && p.kind == "review").map(|p| p.path.as_str()).collect::<Vec<_>>();
+    assert_eq!(of(WS_A), vec!["/review/by-plan", "/review/by-ws", "/review/by-pane"], "the opener's pane, then its workspace, then its plan's");
+    assert_eq!(of(WS_B), vec!["/review/by-root"], "a review with no ids and no plan goes by directory");
+    assert!(!frame.pages.iter().any(|p| p.path == "/review/gone"), "a review whose workspace is gone, with no pane in its root, shows nowhere");
+    let root_of = |path: &str| frame.pages.iter().find(|p| p.path == path).map(|p| p.root.clone()).unwrap_or_default();
+    assert_eq!(root_of("/plan/inv"), other, "a plan's page carries its root, for the Wake");
+    assert_eq!(root_of("/review/by-pane"), wt, "a review's page carries its root, for the Wake");
+}
+
+#[test]
 fn an_asked_card_points_at_the_pane_that_was_asked() {
     let f = Fixture::new("asked-pane");
     let a = f.dir("work/a");
