@@ -74,6 +74,11 @@ ENV = dict(os.environ, CREW_CMUX=FAKE, FAKE_CMUX_DIR=FAKE_DIR,
            CREW_CLAUDE_PROJECTS=os.path.join(T, "projects"),
            CREW_INTEGRATIONS=os.path.join(T, "integrations.json"),
            GIT_CONFIG_GLOBAL=os.path.join(T, "gitconfig"), GIT_CONFIG_NOSYSTEM="1")
+# The seamux app's tmux panes set these for the session running the probe;
+# the tmux case below sets its own.
+for k in ("SEAMUX_BACKEND", "SEAMUX_PANE_ID", "SEAMUX_WORKSPACE_ID", "TMUX", "TMUX_PANE"):
+    ENV.pop(k, None)
+    os.environ.pop(k, None)
 FAKE_PS = os.path.join(T, "ps")
 with open(FAKE_PS, "w") as fh:
     # Foreground leaders per tty: a shell, an idle claude, and a dev server.

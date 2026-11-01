@@ -68,7 +68,9 @@ delete ENV.CMUX_WORKSPACE_ID;
 // The pane's surface too: with it, an ask made "outside cmux" is typed into this pane.
 delete ENV.CMUX_SURFACE_ID;
 // Host signals come from the session running the probe; each test sets its own.
-for (const k of ["SEAMUX_HOST", "CLAUDE_CODE_REMOTE", "CLAUDE_CODE_ENTRYPOINT", "DEEP_PLAN_SERVE_FILE", "LOOKOUT_SERVE_FILE"]) delete ENV[k];
+// The seamux app's tmux panes set SEAMUX_* and TMUX*, as cmux sets CMUX_*.
+for (const k of ["SEAMUX_HOST", "CLAUDE_CODE_REMOTE", "CLAUDE_CODE_ENTRYPOINT", "DEEP_PLAN_SERVE_FILE", "LOOKOUT_SERVE_FILE",
+  "SEAMUX_BACKEND", "SEAMUX_PANE_ID", "SEAMUX_WORKSPACE_ID", "TMUX", "TMUX_PANE"]) delete ENV[k];
 const MERMAID_VENDOR = path.join(ENV.DEEP_PLAN_VENDOR_DIR, "mermaid.min.js");
 // The real bundle to test with: where CI fetched it, where `deep-plan setup`
 // put it, a checkout's own vendor/, or the old skills copy. Copied, not moved.

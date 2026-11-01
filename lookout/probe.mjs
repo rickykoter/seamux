@@ -33,8 +33,11 @@ const ENV = {
 delete ENV.TYPESAFE_BASE_URL;
 delete ENV.LOOKOUT_ENGINE;
 delete ENV.CMUX_WORKSPACE_ID;
+delete ENV.CMUX_SURFACE_ID;
 // Host signals come from the session running the probe; each test sets its own.
-for (const k of ["SEAMUX_HOST", "CLAUDE_CODE_REMOTE", "CLAUDE_CODE_ENTRYPOINT", "LOOKOUT_SERVE_FILE"]) delete ENV[k];
+// The seamux app's tmux panes set SEAMUX_* and TMUX*, as cmux sets CMUX_*.
+for (const k of ["SEAMUX_HOST", "CLAUDE_CODE_REMOTE", "CLAUDE_CODE_ENTRYPOINT", "LOOKOUT_SERVE_FILE",
+  "SEAMUX_BACKEND", "SEAMUX_PANE_ID", "SEAMUX_WORKSPACE_ID", "TMUX", "TMUX_PANE"]) delete ENV[k];
 // The libs read their overrides at import time, so set them before importing.
 Object.assign(process.env, ENV);
 
