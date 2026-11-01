@@ -6,6 +6,17 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **app: tmux notifications show more and interrupt less.** On the tmux
+  backend the app's banners now show the open question, or whether a finished
+  turn left changes to review. Each title starts with the workspace's
+  crew-color as a dot, and each kind of banner has its own sound. A click
+  brings the app forward on that pane. A single-choice question's options are
+  buttons, and a pick is typed only while that question is still open and on
+  screen. Nothing is posted about the pane you are in. A finished turn waits
+  3 s so a question right after it replaces it, banners that land together
+  merge ("3 agents finished"), and a pane that has waited 5 minutes gets one
+  reminder. cmux's notifications are unchanged. ADR 0054.
+
 - **bash-guard: an opt-in exception for a leased force-push to named branches.**
   The guard blocked every force-push, which is wrong for a branch that is
   rewritten on every deploy. Setting `BASH_GUARD_FORCE_PUSH_BRANCHES` to an
