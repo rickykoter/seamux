@@ -123,11 +123,6 @@ export function sessionId() {
   return process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || "";
 }
 
-// Stamped on every write made from inside a session. A write with no session
-// in its environment (a board chip, a shell outside Claude) leaves the owner
-// as it was rather than clearing it. The owner is a pane: SEAMUX_PANE_ID,
-// else cmux's CMUX_SURFACE_ID, which a /clear or a resume keeps while the session id
-// changes. A deep-plan write from another pane moves ownership there.
 // The owner's workspace and surface after a write with `ids`. Each id the
 // write lacks (a hook, a plain shell) keeps the one the owner had, since it
 // has no better one to name; blanking them dropped the plan from the Dock.
@@ -139,6 +134,11 @@ export function keptPane(was, ids) {
   return { workspace, surface: ids.pane || (sameWs ? w.surface || "" : "") };
 }
 
+// Stamped on every write made from inside a session. A write with no session
+// in its environment (a board chip, a shell outside Claude) leaves the owner
+// as it was rather than clearing it. The owner is a pane: SEAMUX_PANE_ID,
+// else cmux's CMUX_SURFACE_ID, which a /clear or a resume keeps while the session id
+// changes. A deep-plan write from another pane moves ownership there.
 export function stampOwner(st, now = Date.now()) {
   const session = sessionId();
   if (!session) return st;
