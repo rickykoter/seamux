@@ -6,6 +6,25 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **deep-plan: an End state map opens every plan page.** The review and
+  working pages now start with a map of what the plan will leave behind: its
+  files in the middle, marked new, changed or removed, with the code that
+  uses them on the left and the code they use on the right. Each card shows
+  its increments, the facts that cite it and the contracts placed on it.
+  Hover lights its links, and a click lists them. The map is built when the
+  plan renders and kept with the plan, so it doesn't shift as the code
+  lands. A spec can now declare a removal (`{"path": …, "change":
+  "remove"}`) and place a contract on its files with `at`. Plans made before
+  this get a map with `deep-plan map --all`. ADRs 0056-0059.
+
+- **lookout: a Map view for plan reviews.** A review deep-plan opens carries
+  the plan's map (`lookout open --plan-map`), and `m` shows it against the
+  diff: files touched as planned, planned but untouched, and touched but
+  never planned. Each card flags the review's findings on its file, coloured
+  by the worst one still open. Click a card to read its details and
+  findings, click a finding to jump to its line, and click the card again
+  to open its diff.
+
 - **app: banner clicks work, and the hotkey shows a covered window.** Clicks
   on the tmux backend's banners never reached the app: notify-rust's
   NSUserNotificationCenter path reported each banner dismissed about 0.7 s
