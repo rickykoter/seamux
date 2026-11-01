@@ -19,20 +19,26 @@
 //     keep: {},                             // the reader's state, kept across mounts
 //     findings: card => [{ id, severity, status, summary, line }],
 //     onFinding: (card, finding) => {},     // a click on a finding in the panel
+//     folded: true,                         // start each section folded (default:
+//                                           // only with the default folder grouping)
 //   })
 //
 // Hover lights a card's links (classes only, no redraw); a click or Enter
-// selects it and fills the panel; chips filter by increment; a folder with
-// many cards in a dense plan folds to one row until clicked.
+// selects it and fills the panel; chips filter by increment. Each section
+// folds to one stacked row that keeps its links and badges; its header's
+// chevron or the bar's Expand all opens it. The panel sits beside the map
+// when the map is wide enough and pins to the bottom of the view when not,
+// so the details of a card are on screen when it is clicked.
 (function (root) {
   "use strict";
   var NS = "http://www.w3.org/2000/svg";
   var LX = 0, LW = 210, PX = 270, PW = 280, RX = 610, RW = 210, W = 820;
-  var CH = 38, NH = 24, GAP = 8, TOP = 34;
-  var DENSE = 14, FOLD_AT = 4;
+  var CH = 38, NH = 24, GAP = 8, TOP = 34, HH = 18, FOLD_NB = 3;
 
   var CSS = [
-    ".pm{display:grid;gap:10px;margin:8px 0 18px}",
+    ".pm{display:grid;gap:10px;margin:8px 0 18px;container-type:inline-size}",
+    ".pm-body{display:grid;gap:10px;align-items:start;min-width:0}",
+    ".pm-all{margin-left:auto}",
     ".pm-bar{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center}",
     ".pm-chips{display:flex;gap:6px;flex-wrap:wrap}",
     ".pm-chip{appearance:none;border:1px solid var(--ef-line2);background:var(--ef-bg1);color:var(--ef-text-dim);font:inherit;font-size:12px;padding:3px 10px;border-radius:999px;cursor:pointer}",
@@ -42,7 +48,15 @@
     ".pm-legend svg{vertical-align:middle}",
     ".pm-canvas{overflow-x:auto;border:1px solid var(--ef-line2);border-radius:8px;background:var(--ef-bg1)}",
     ".pm-canvas svg{display:block;width:100%;min-width:640px;height:auto}",
-    ".pm-panel{border:1px solid var(--ef-line2);border-radius:8px;padding:12px 14px;display:grid;gap:8px}",
+    ".pm-panel{border:1px solid var(--ef-line2);border-radius:8px;padding:10px 14px 12px;display:grid;gap:8px;background:var(--ef-bg);" +
+      "position:sticky;bottom:0;z-index:5;max-height:42vh;overflow:auto;box-shadow:0 -8px 18px -12px rgba(0,0,0,.55)}",
+    ".pm-head{display:flex;gap:8px;align-items:flex-start;position:sticky;top:-10px;margin-top:-10px;padding-top:10px;background:var(--ef-bg)}",
+    ".pm-head h3{flex:1;min-width:0}",
+    ".pm-min{appearance:none;border:1px solid var(--ef-line2);background:var(--ef-bg1);color:var(--ef-text-dim);font:inherit;font-size:12px;line-height:1;padding:3px 8px;border-radius:6px;cursor:pointer;flex:none}",
+    ".pm-min:hover{color:var(--ef-text)}.pm-min:focus-visible{outline:2px solid var(--ef-accent);outline-offset:2px}",
+    ".pm-panel.min>:not(.pm-head){display:none}",
+    "@container (min-width:960px){.pm-body{grid-template-columns:minmax(0,1fr) 320px}" +
+      ".pm-panel{bottom:auto;top:12px;max-height:calc(100vh - 24px);box-shadow:none}.pm-min{display:none}.pm-panel.min>:not(.pm-head){display:revert}}",
     ".pm-panel>.pm-chip{justify-self:start}",
     ".pm-panel h3{margin:0;font:600 14px var(--ef-mono);word-break:break-all}",
     ".pm-panel h4{margin:4px 0 0;font:600 11px var(--ef-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ef-text-faint)}",
@@ -80,7 +94,12 @@
     ".pm-fd.done{opacity:.6}.pm-sev{font:600 11px var(--ef-mono)}.pm-sev.k-bad{color:var(--ef-text-bad)}.pm-sev.k-warn{color:var(--ef-text-warn)}.pm-sev.k-nit{color:var(--ef-text-dim)}",
     ".pm-nb .box{fill:var(--ef-bg1);stroke:var(--ef-line)}.pm-nb .name{font:11px var(--ef-mono);fill:var(--ef-text-dim)}",
     ".pm-nb.more .box{stroke-dasharray:3 3}.pm-nb.more .name{fill:var(--ef-text-faint)}",
-    ".pm-fold .box{fill:var(--ef-bg);stroke:var(--ef-line2);stroke-dasharray:2 3}.pm-fold .name{font:600 11.5px var(--ef-mono);fill:var(--ef-text-dim)}",
+    ".pm-fold .box{fill:var(--ef-bg);stroke:var(--ef-line2)}.pm-fold .deck{fill:var(--ef-bg1);stroke:var(--ef-line2)}",
+    ".pm-fold .name{font:600 12px var(--ef-mono);fill:var(--ef-text)}.pm-fold .dir{font:10.5px var(--ef-mono);fill:var(--ef-text-dim)}",
+    ".pm-fold .chev,.pm-sec .chev{font:700 12px var(--ef-mono);fill:var(--ef-accent)}",
+    ".pm-fold:hover .box,.pm-fold:focus-visible .box{stroke:var(--ef-accent)}",
+    ".pm-sec .hit{fill:transparent}.pm-sec .grp{font:600 10.5px var(--ef-mono);fill:var(--ef-text-dim)}.pm-sec .cnt{font:10px var(--ef-mono);fill:var(--ef-text-faint)}",
+    ".pm-sec:hover .hit,.pm-sec:focus-visible .hit{fill:var(--ef-card)}.pm-sec:hover .grp{fill:var(--ef-text)}",
     ".pm-edge{fill:none;stroke:var(--ef-line2);stroke-width:1.2}",
     ".pm-edge.planned{stroke-dasharray:4 3}",
     ".pm-edge.hot{stroke:var(--ef-accent);stroke-width:2}",
@@ -152,20 +171,31 @@
     var statusOf = opts.status || function () { return ""; };
     var cards = (model.cards || []).concat(opts.extra || []);
     var grouping = opts.groups || byFolder;
-    // sel is shown from the start; picked is only what the reader clicked.
+    var byPath = {};
+    cards.forEach(function (c) { byPath[c.path] = c; });
+    var sections = grouping(cards).filter(function (pair) { return pair[1].length; });
+    // Folders start folded, one stacked row each, when there is more than
+    // one. A caller with its own sections (lookout's compare) starts them open.
+    var foldFirst = (opts.folded !== undefined ? !!opts.folded : !opts.groups) && sections.length > 1;
+    // sel is what the panel shows; picked is only what the reader clicked.
     // A caller that redraws (lookout, on a fresher review) passes the same
-    // keep object each time, so the selection, a first click and an unfolded
-    // folder survive the redraw.
+    // keep object each time, so the selection, a first click, an open or
+    // closed folder and a shrunk panel survive the redraw.
     var state = opts.keep || {};
     if (state.inc === undefined) state.inc = 0;
     if (state.picked === undefined) state.picked = null;
     if (!state.open) state.open = {};
     state.hover = null;
-    if (!state.sel || !cards.some(function (c) { return c.path === state.sel; })) {
-      state.sel = cards.length ? cards[0].path : null;
+    if (state.sel === undefined || (state.sel !== null && !byPath[state.sel])) {
+      // With the cards folded away, the panel waits for a click.
+      state.sel = foldFirst || !cards.length ? null : cards[0].path;
       state.picked = null;
     }
-    var dense = cards.length > DENSE;
+    var isOpen = function (label) { return state.open[label] !== undefined ? state.open[label] : !foldFirst; };
+    var sectionOf = function (p) {
+      var hit = sections.filter(function (pair) { return pair[1].some(function (c) { return c.path === p; }); })[0];
+      return hit ? hit[0] : null;
+    };
 
     var wrap = H("div", "pm");
     var bar = H("div", "pm-bar");
@@ -174,12 +204,28 @@
     chipBox.setAttribute("aria-label", "Filter by increment");
     bar.appendChild(chipBox);
     bar.appendChild(legend());
+    var allBtn = null;
+    if (sections.length > 1) {
+      allBtn = H("button", "pm-chip pm-all");
+      allBtn.type = "button";
+      allBtn.addEventListener("click", function () {
+        var to = !sections.every(function (pair) { return isOpen(pair[0]); });
+        sections.forEach(function (pair) { state.open[pair[0]] = to; });
+        draw();
+      });
+      bar.appendChild(allBtn);
+    }
+    // The canvas and the panel share a row when the map is wide enough (the
+    // panel then stays in view beside it), and stack when not (the panel then
+    // pins to the bottom of the view while the map is on screen).
+    var body = H("div", "pm-body");
     var canvas = H("div", "pm-canvas");
     var panel = H("div", "pm-panel");
     panel.setAttribute("aria-live", "polite");
+    body.appendChild(canvas);
+    body.appendChild(panel);
     wrap.appendChild(bar);
-    wrap.appendChild(canvas);
-    wrap.appendChild(panel);
+    wrap.appendChild(body);
     var tray = H("div", "pm-tray");
     wrap.appendChild(tray);
     el.replaceChildren(wrap);
@@ -221,36 +267,70 @@
     // Edges: used-by into a card, a card out to what it uses, and links
     // between two planned cards. A link to or from a new card is one the
     // plan adds, so it is drawn dashed.
-    function edgesOf(visible) {
+    // A folded card's links are drawn to its folder's row: alias maps the
+    // card's path to that row's id, and a link inside one folded row is dropped.
+    // A folded row draws three neighbours a side and counts the rest, so a
+    // folded map is short in every lane, not just the middle one.
+    function edgesOf(all, alias) {
       var ids = {};
-      visible.forEach(function (c) { ids[c.path] = c; });
-      var out = [], nbs = {};
+      all.forEach(function (c) { ids[c.path] = c; });
+      var A = function (p) { return alias[p] || p; };
+      var out = [], seen = {}, nbs = {};
+      var push = function (e) {
+        if (e.from === e.to) return;
+        var k = e.from + "\n" + e.to;
+        if (seen[k]) { if (!e.planned) seen[k].planned = false; return; }
+        seen[k] = e;
+        out.push(e);
+      };
       var nb = function (p, side, more, of) {
         var id = more ? "more:" + side + ":" + of : p;
-        if (!nbs[id]) nbs[id] = { id: id, path: more ? "" : p, side: side, more: more || 0, of: [] };
-        nbs[id].of.push(of);
+        if (!nbs[id]) nbs[id] = { id: id, path: more ? "" : p, side: side, more: 0, of: [] };
+        nbs[id].more += more || 0;
+        if (nbs[id].of.indexOf(of) < 0) nbs[id].of.push(of);
         return id;
       };
-      visible.forEach(function (c) {
-        var fresh = c.change === "new";
+      var cap = {};
+      var room = function (me, side, p) {
+        if (me.indexOf("fold:") !== 0) return true;
+        var k = me + "\n" + side, r = cap[k] || (cap[k] = { me: me, side: side, shown: {}, n: 0, hidden: {} });
+        if (r.shown[p]) return true;
+        if (r.n < FOLD_NB) { r.shown[p] = true; r.n++; return true; }
+        r.hidden[p] = true;
+        return false;
+      };
+      all.forEach(function (c) {
+        var fresh = c.change === "new", me = A(c.path);
         // A neighbour that is also a card (lookout draws a touched-but-unplanned
         // file as one) keeps its line, drawn as a link inside the lane.
         var linked = c.links || [];
         ((c.usedBy && c.usedBy.paths) || []).forEach(function (p) {
-          if (!ids[p]) out.push({ from: nb(p, "left", 0, c.path), to: c.path, planned: fresh });
-          else if (linked.indexOf(p) < 0) out.push({ from: p, to: c.path, planned: fresh, inner: true });
+          if (!ids[p]) { if (room(me, "left", p)) push({ from: nb(p, "left", 0, me), to: me, planned: fresh }); }
+          else if (linked.indexOf(p) < 0) push({ from: A(p), to: me, planned: fresh, inner: true });
         });
-        if (c.usedBy && c.usedBy.more) out.push({ from: nb("", "left", c.usedBy.more, c.path), to: c.path, planned: fresh });
+        if (c.usedBy && c.usedBy.more) push({ from: nb("", "left", c.usedBy.more, me), to: me, planned: fresh });
         ((c.uses && c.uses.paths) || []).forEach(function (p) {
-          if (!ids[p]) out.push({ from: c.path, to: nb(p, "right", 0, c.path), planned: fresh });
-          else if (linked.indexOf(p) < 0) out.push({ from: c.path, to: p, planned: fresh, inner: true });
+          if (!ids[p]) { if (room(me, "right", p)) push({ from: me, to: nb(p, "right", 0, me), planned: fresh }); }
+          else if (linked.indexOf(p) < 0) push({ from: me, to: A(p), planned: fresh, inner: true });
         });
-        if (c.uses && c.uses.more) out.push({ from: c.path, to: nb("", "right", c.uses.more, c.path), planned: fresh });
+        if (c.uses && c.uses.more) push({ from: me, to: nb("", "right", c.uses.more, me), planned: fresh });
         (c.links || []).forEach(function (p) {
-          if (ids[p] && c.path < p) out.push({ from: c.path, to: p, planned: fresh || ids[p].change === "new", inner: true });
+          if (ids[p] && c.path < p) push({ from: me, to: A(p), planned: fresh || ids[p].change === "new", inner: true });
         });
       });
+      Object.keys(cap).forEach(function (k) {
+        var r = cap[k], n = Object.keys(r.hidden).length;
+        if (!n) return;
+        var id = nb("", r.side, n, r.me);
+        push(r.side === "left" ? { from: id, to: r.me, planned: false } : { from: r.me, to: id, planned: false });
+      });
       return { edges: out, nbs: Object.keys(nbs).map(function (k) { return nbs[k]; }) };
+    }
+
+    function toggle(label) { state.open[label] = !isOpen(label); draw(); }
+    function keyed(g, fn) {
+      g.addEventListener("click", fn);
+      g.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); fn(); } });
     }
 
     function draw() {
@@ -263,23 +343,41 @@
       svg.appendChild(gEdges);
       svg.appendChild(gCards);
 
-      var y = TOP, visible = [], folds = [];
-      grouping(cards).forEach(function (pair) {
+      var y = TOP, all = [], alias = {}, folds = [];
+      sections.forEach(function (pair) {
         var label = pair[0], list = pair[1];
-        if (!list.length) return;
-        var folded = dense && list.length > FOLD_AT && !state.open[label] && !list.some(function (c) { return c.path === state.sel; });
-        gCards.appendChild(T({ x: PX + 4, y: y + 10, "class": "pm-grp" }, label));
-        y += 16;
-        if (folded) {
-          folds.push({ label: label, list: list, y: y });
-          y += NH + GAP + 6;
+        all = all.concat(list);
+        if (!isOpen(label)) {
+          var id = "fold:" + label;
+          list.forEach(function (c) { alias[c.path] = id; });
+          pos[id] = { x: PX, y: y + 4, w: PW, h: CH, f: { label: label, list: list } };
+          folds.push(id);
+          y += CH + 4 + GAP + 4;
           return;
         }
-        list.forEach(function (c) { pos[c.path] = { x: PX, y: y, w: PW, h: CH, c: c }; visible.push(c); y += CH + GAP; });
+        // An open section's header folds it again; a lone section has nothing
+        // to fold into, so it keeps a plain label.
+        if (sections.length > 1) {
+          var hd = S("g", { "class": "pm-sec", tabindex: "0", role: "button", "aria-expanded": "true",
+            "aria-label": "Fold " + label + " (" + list.length + " files)", transform: "translate(" + PX + "," + y + ")" });
+          hd.appendChild(S("rect", { "class": "hit", x: -2, width: PW + 4, height: HH, rx: 4 }));
+          hd.appendChild(T({ x: 4, y: 13, "class": "chev" }, "▾"));
+          hd.appendChild(T({ x: 18, y: 13, "class": "grp" }, clip(label, 30)));
+          hd.appendChild(T({ x: PW - 4, y: 13, "class": "cnt", "text-anchor": "end" }, list.length + (list.length === 1 ? " file · fold" : " files · fold")));
+          keyed(hd, function () { toggle(label); });
+          gCards.appendChild(hd);
+        } else gCards.appendChild(T({ x: PX + 4, y: y + 12, "class": "pm-grp" }, label));
+        y += HH + 2;
+        list.forEach(function (c) { pos[c.path] = { x: PX, y: y, w: PW, h: CH, c: c }; y += CH + GAP; });
         y += 8;
       });
+      if (allBtn) {
+        var allOpen = sections.every(function (pair) { return isOpen(pair[0]); });
+        allBtn.textContent = allOpen ? "▴ Fold all" : "▾ Expand all";
+        allBtn.setAttribute("aria-label", allOpen ? "Fold every folder" : "Expand every folder");
+      }
       var Hh = y;
-      var E = edgesOf(visible);
+      var E = edgesOf(all, alias);
       ["left", "right"].forEach(function (side) {
         var list = E.nbs.filter(function (n) { return n.side === side; }).map(function (n) {
           var ys = n.of.map(function (p) { return pos[p]; }).filter(Boolean).map(function (q) { return q.y + q.h / 2; });
@@ -314,18 +412,8 @@
 
       Object.keys(pos).forEach(function (id) {
         var it = pos[id];
-        var g = it.c ? cardNode(it) : nbNode(it);
+        var g = it.c ? cardNode(it) : it.f ? foldNode(it, id) : nbNode(it);
         g._id = id;
-        gCards.appendChild(g);
-      });
-      folds.forEach(function (f) {
-        var g = S("g", { "class": "pm-fold", tabindex: "0", role: "button", "aria-expanded": "false",
-          "aria-label": "Show the " + f.list.length + " files in " + f.label, transform: "translate(" + PX + "," + f.y + ")" });
-        g.appendChild(S("rect", { "class": "box", width: PW, height: NH, rx: 6 }));
-        g.appendChild(T({ x: 10, y: 16, "class": "name" }, "▸ " + f.list.length + " files, folded"));
-        var open = function () { state.open[f.label] = true; draw(); };
-        g.addEventListener("click", open);
-        g.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); } });
         gCards.appendChild(g);
       });
       cur = { svg: svg, pos: pos, edges: E.edges };
@@ -343,6 +431,7 @@
       var pick = function () {
         var again = state.picked === id;
         state.sel = state.picked = id;
+        state.min = false;
         paint();
         fill();
         if (again) openCard(id);
@@ -352,8 +441,8 @@
     }
 
     function openable(id) {
-      var q = cur && cur.pos[id];
-      return !!(opts.onOpen && q && q.c && (!opts.canOpen || opts.canOpen(q.c)));
+      var c = byPath[id];
+      return !!(opts.onOpen && c && (!opts.canOpen || opts.canOpen(c)));
     }
     function openCard(id) { if (openable(id)) opts.onOpen(id); }
 
@@ -370,15 +459,26 @@
       g.appendChild(T({ x: 10, y: 16, "class": "glyph" }, glyph));
       g.appendChild(T({ x: 26, y: 16, "class": "name" }, clip(base(c.path), 22)));
       g.appendChild(T({ x: 26, y: 30, "class": "dir" }, clip(dirOf(c.path), 30)));
-      var bx = it.w - 8;
-      (c.increments || []).slice().sort(function (a, b) { return b - a; }).forEach(function (n) {
+      var fs = opts.findings ? opts.findings(c) || [] : [];
+      marks(g, it.w, c.increments || [], (c.facts || []).length, (c.contracts || []).length, fs);
+      var title = S("title");
+      title.textContent = c.path + (fs.length ? " \u00b7 " + fs.filter(isOpenF).length + " open finding(s) of " + fs.length : "");
+      g.appendChild(title);
+      wire(g, c.path);
+      return g;
+    }
+
+    // The pips (one per increment) and the badges (facts, contracts, findings)
+    // a card or a folded row carries on its right edge.
+    function marks(g, w, incList, nFacts, nContracts, fs) {
+      var bx = w - 8;
+      incList.slice().sort(function (a, b) { return b - a; }).forEach(function (n) {
         bx -= 15;
         g.appendChild(S("g", { "class": "pm-pip " + (incStatus[n] || "") }, [
           S("circle", { cx: bx + 6, cy: 13, r: 6.5 }),
           T({ x: bx + 6, y: 16, "text-anchor": "middle" }, String(n))]));
       });
-      var bx2 = it.w - 10;
-      var fs = opts.findings ? opts.findings(c) || [] : [];
+      var bx2 = w - 10;
       if (fs.length) {
         var live = fs.filter(isOpenF);
         var k = live.length ? KIND[worst(live)] : "k-done";
@@ -386,12 +486,41 @@
           "\u2691 " + (live.length || fs.length) + (live.length ? "" : "\u2713")));
         bx2 -= 34;
       }
-      if ((c.contracts || []).length) { g.appendChild(T({ x: bx2, y: 31, "class": "pm-badge c", "text-anchor": "end" }, "◆ " + c.contracts.length)); bx2 -= 30; }
-      if ((c.facts || []).length) g.appendChild(T({ x: bx2, y: 31, "class": "pm-badge f", "text-anchor": "end" }, "● " + c.facts.length));
+      if (nContracts) { g.appendChild(T({ x: bx2, y: 31, "class": "pm-badge c", "text-anchor": "end" }, "◆ " + nContracts)); bx2 -= 30; }
+      if (nFacts) g.appendChild(T({ x: bx2, y: 31, "class": "pm-badge f", "text-anchor": "end" }, "● " + nFacts));
+    }
+
+    // A folded folder: a short deck of cards with the folder's name, how many
+    // files it holds and of what change, and the sum of its cards' marks.
+    function foldNode(it, id) {
+      var f = it.f, list = f.list;
+      var g = S("g", { "class": "pm-fold", tabindex: "0", role: "button", "aria-expanded": "false",
+        "aria-label": "Expand " + f.label + " (" + list.length + " files)", transform: "translate(" + it.x + "," + it.y + ")" });
+      g.appendChild(S("rect", { "class": "deck", x: 6, y: -6, width: it.w - 6, height: it.h, rx: 6 }));
+      g.appendChild(S("rect", { "class": "deck", x: 3, y: -3, width: it.w - 3, height: it.h, rx: 6 }));
+      g.appendChild(S("rect", { "class": "box", width: it.w, height: it.h, rx: 6 }));
+      g.appendChild(T({ x: 10, y: 16, "class": "chev" }, "▸"));
+      g.appendChild(T({ x: 24, y: 16, "class": "name" }, clip(f.label, 22)));
+      var kinds = {}, incSet = {}, nF = 0, nC = 0, fs = [];
+      list.forEach(function (c) {
+        kinds[c.change] = (kinds[c.change] || 0) + 1;
+        (c.increments || []).forEach(function (n) { incSet[n] = true; });
+        nF += (c.facts || []).length;
+        nC += (c.contracts || []).length;
+        if (opts.findings) fs = fs.concat(opts.findings(c) || []);
+      });
+      var mix = ["new", "modify", "remove"].filter(function (k) { return kinds[k]; })
+        .map(function (k) { return GLYPH[k] + kinds[k]; }).join(" ");
+      g.appendChild(T({ x: 24, y: 30, "class": "dir" }, list.length + (list.length === 1 ? " file" : " files") + (mix ? " · " + mix : "")));
+      marks(g, it.w, Object.keys(incSet).map(Number), nF, nC, fs);
       var title = S("title");
-      title.textContent = c.path + (fs.length ? " \u00b7 " + fs.filter(isOpenF).length + " open finding(s) of " + fs.length : "");
+      title.textContent = "Click to expand: " + list.map(function (c) { return base(c.path); }).join(", ");
       g.appendChild(title);
-      wire(g, c.path);
+      g.addEventListener("mouseenter", function () { state.hover = id; paint(); });
+      g.addEventListener("mouseleave", function () { state.hover = null; paint(); });
+      g.addEventListener("focus", function () { state.hover = id; paint(); });
+      g.addEventListener("blur", function () { state.hover = null; paint(); });
+      keyed(g, function () { state.hover = null; toggle(f.label); });
       return g;
     }
 
@@ -417,15 +546,16 @@
         if (!state.inc) return true;
         var q = cur.pos[id];
         if (q && q.c) return (q.c.increments || []).indexOf(state.inc) >= 0;
+        if (q && q.f) return q.f.list.some(function (c) { return (c.increments || []).indexOf(state.inc) >= 0; });
         return cur.edges.some(function (e) { return (e.from === id && inInc(e.to)) || (e.to === id && inInc(e.from)); });
       };
       cur.svg.querySelectorAll("path.pm-edge").forEach(function (el) {
         var e = el._e, touches = e.from === hot || e.to === hot;
         el.classList.toggle("hot", touches);
-        var cardSide = function (id) { var q = cur.pos[id]; return q && q.c ? inInc(id) : false; };
+        var cardSide = function (id) { var q = cur.pos[id]; return q && (q.c || q.f) ? inInc(id) : false; };
         el.classList.toggle("dim", (!!state.inc && !(cardSide(e.from) || cardSide(e.to))) || (!!state.hover && !touches));
       });
-      cur.svg.querySelectorAll("g.pm-card, g.pm-nb").forEach(function (g) {
+      cur.svg.querySelectorAll("g.pm-card, g.pm-nb, g.pm-fold").forEach(function (g) {
         var id = g._id;
         g.classList.toggle("sel", id === state.sel);
         g.classList.toggle("dim", (!!state.hover && !linked[id]) || !inInc(id));
@@ -439,14 +569,32 @@
     }
     function codeEl(text, cls) { var c = H("span", "pm-ev" + (cls ? " " + cls : ""), text); return c; }
 
+    // The panel's title row stays put while its body scrolls, and carries a
+    // button that shrinks the panel to that row (a narrow map pins the panel
+    // over its bottom edge); the next click on a card grows it again.
+    function head(text) {
+      var row = H("div", "pm-head");
+      row.appendChild(H("h3", "", text));
+      var b = H("button", "pm-min", state.min ? "▴" : "▾");
+      b.type = "button";
+      b.setAttribute("aria-expanded", String(!state.min));
+      b.setAttribute("aria-label", state.min ? "Show the details" : "Shrink the details to their title");
+      b.title = state.min ? "Show the details" : "Shrink to the title";
+      b.addEventListener("click", function () { state.min = !state.min; fill(); });
+      row.appendChild(b);
+      panel.appendChild(row);
+    }
+
     function fill() {
       panel.replaceChildren();
       var id = state.sel;
       var it = cur && cur.pos[id];
-      if (!id || !it) { panel.appendChild(H("p", "pm-note", "Pick a card to see what the plan says about it.")); return; }
-      if (it.n) {
+      var c = id ? byPath[id] : null;
+      panel.classList.toggle("min", !!state.min && !!(c || it));
+      if (!id || !(c || it)) { panel.appendChild(H("p", "pm-note", "Pick a card to see what the plan says about it.")); return; }
+      if (!c && it.n) {
         var n = it.n;
-        panel.appendChild(H("h3", "", n.more ? "+" + n.more + " more" : n.path));
+        head(n.more ? "+" + n.more + " more" : n.path);
         var meta = H("div", "pm-meta");
         meta.appendChild(H("span", "pm-tag", "not in the plan"));
         meta.appendChild(H("span", "pm-tag", n.side === "left" ? "uses a planned file" : "used by a planned file"));
@@ -458,8 +606,8 @@
         panel.appendChild(H("p", "pm-note", "Found when the plan rendered and kept in its state; a re-render looks again."));
         return;
       }
-      var c = it.c, st = statusOf(c);
-      panel.appendChild(H("h3", "", c.path));
+      var st = statusOf(c);
+      head(c.path);
       if (openable(id)) {
         var ob = H("button", "pm-chip", (opts.openLabel || "Open") + " \u2192");
         ob.type = "button";
@@ -558,7 +706,12 @@
     draw();
     fill();
     fillTray();
-    return { redraw: function () { draw(); fill(); }, select: function (p) { state.sel = p; draw(); fill(); } };
+    return { redraw: function () { draw(); fill(); }, select: function (p) {
+      state.sel = p;
+      var sec = sectionOf(p);
+      if (sec && !isOpen(sec)) state.open[sec] = true;
+      draw(); fill();
+    } };
   }
 
   // A page draws itself when an element with class pm-mount holds a JSON

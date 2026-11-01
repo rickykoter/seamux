@@ -6,6 +6,16 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **deep-plan: plan pages lead with the bottom line, and the map is easier
+  to browse.** The context and non-goals now come before the End state map.
+  The map's folders start folded, each drawn as a stacked row that keeps
+  its links, its increments and its counts. A chevron on each header, or
+  **Expand all**, opens and folds them. A clicked card's details stay in
+  view: beside the map when the pane is wide, and pinned to the bottom of
+  the window when it is narrow, with a button that shrinks them to their
+  title. lookout's Map view gets the same panel and section toggles; its
+  compare groups still start open.
+
 - **deep-plan: an End state map opens every plan page.** The review and
   working pages now start with a map of what the plan will leave behind: its
   files in the middle, marked new, changed or removed, with the code that
