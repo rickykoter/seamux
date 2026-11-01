@@ -29,16 +29,20 @@ detected.
 
 ## The review page
 
-The page opens on the **End state map**: the plan's files in the middle,
-grouped by folder and marked new (dashed), changed (~) or removed (struck
-through), with what uses them on the left and what they use on the right.
-Each card shows its increments and how many facts cite it and contracts
-sit on it; hover lights its links, and a click lists them. The map is built
-when the plan renders and kept with the plan, so it never shifts under you
-as the code lands. On the working page the increment numbers on each card
-take their status colour.
+The page opens with the bottom line: the plan's context and its non-goals.
+Then comes the **End state map**: the plan's files in the middle, grouped
+by folder and marked new (dashed), changed (~) or removed (struck through),
+with what uses them on the left and what they use on the right. Each folder
+starts folded into one row that keeps its links and badges; click it, or
+**Expand all**, to see its files. Each card shows its increments and how
+many facts cite it and contracts sit on it; hover lights its links, and a
+click shows its details in a panel that stays in view (beside the map when
+there is room, pinned to the bottom of the window when not). The map is
+built when the plan renders and kept with the plan, so it never shifts
+under you as the code lands. On the working page the increment numbers on
+each card take their status colour.
 
-Below it the page has the plan's context, decisions, cited evidence, diagrams and
+Below it the page has the plan's decisions, cited evidence, diagrams and
 increments, with a rail of its sections down the side. Highlight any text
 and press ⌘M to comment on it: the text stays marked, and the comment sits
 beside it in the margin. Click the marked text to edit what you wrote.

@@ -3345,7 +3345,8 @@ if (want("end state map: model, neighbours, frozen in state")) {
 
 // -------------------------------------------------- the End state map on the plan pages
 //
-// Both pages open on an End state section: the model as escaped JSON, then
+// Both pages lead with the context and non-goals, then an End state section:
+// the model as escaped JSON, then
 // the renderer (lib/plan-map.js, a copy of shared/plan-map.js) in its own
 // script. The renderer is run here against a small stand-in DOM, the way a
 // file:// page would run it, so a script error fails the probe.
@@ -3387,6 +3388,7 @@ if (want("end state map: on both plan pages")) {
   };
   const s = JSON.parse(JSON.stringify(spec));
   s.slug = "pm-page-plan";
+  s.nonGoals = ["Retrying webhooks is out of scope."];
   // Text that would close a script early if the JSON were not escaped.
   s.verifiedFacts.push({ claim: "a claim with </script><b>tags</b> and \u2028 in it", evidence: "app/workers/retry_sweep.rb:1" });
   r = cli("render", tmpSpec(s));
@@ -3395,8 +3397,9 @@ if (want("end state map: on both plan pages")) {
   const wkP = path.join(ENV.DEEP_PLAN_PLANS_DIR, "pm-page-plan.working.html");
   const rv = fs.readFileSync(rvP, "utf8"), wk = fs.readFileSync(wkP, "utf8");
   for (const [name, page] of [["review", rv], ["working", wk]]) {
-    const at = page.indexOf("<h2>End state</h2>");
-    ok(`${name} page: End state is the first section`, at > 0 && at < page.indexOf("<h2>Context</h2>"));
+    const at = page.indexOf("<h2>End state</h2>"), ctx = page.indexOf("<h2>Context</h2>"), ng = page.indexOf("<h2>Non-goals</h2>");
+    ok(`${name} page: the context and non-goals come first, then End state, then the decisions`,
+      ctx > 0 && ng > ctx && at > ng && at < page.indexOf("<h2>Decisions</h2>"), JSON.stringify({ ctx, ng, at }));
     ok(`${name} page: the renderer ships in a script of its own, outside SURFACE_JS`,
       page.includes("<script>" + fs.readFileSync(path.join(HERE, "lib", "plan-map.js"), "utf8") + "</script>"));
   }
@@ -3422,8 +3425,31 @@ if (want("end state map: on both plan pages")) {
   try { vm.runInNewContext(fs.readFileSync(path.join(HERE, "lib", "plan-map.js"), "utf8"), { window: win, document: doc, console }); }
   catch (e) { threw = e; }
   ok("the renderer runs without a browser error", !threw && !!win.PlanMap, threw && threw.stack);
+  // Folders start folded: one stacked row each, carrying the links.
+  const folders = new Set(data.map.cards.map(c => { const g = c.path.split("/"); return g.length > 2 ? g.slice(0, 2).join("/") : g.length > 1 ? g[0] : "."; }));
+  ok("the fixture spans more than one folder (the folding asserts need it)", folders.size > 1, [...folders].join());
+  const foldsDrawn = doc.querySelectorAll("g.pm-fold");
+  ok("folders start folded: one row per folder and no cards", foldsDrawn.length === folders.size && !doc.querySelectorAll("g.pm-card").length &&
+    foldsDrawn.every(g => g.getAttribute("aria-expanded") === "false"), foldsDrawn.length);
+  ok("a folded row says how many files it holds and of what change", foldsDrawn.some(g => /\d+ files? · /.test(g.textContent)), foldsDrawn.map(g => g.textContent).join(" | "));
+  ok("a folded row keeps its cards' increment pips", foldsDrawn.some(g => g.querySelectorAll("g.pm-pip").length > 0));
+  ok("the panel waits for a click while the cards are folded", /Pick a card/.test(doc.querySelector("div.pm-panel").textContent));
+  if (data.map.cards.some(c => (c.usedBy?.paths || []).length || (c.uses?.paths || []).length))
+    ok("folded rows keep their links to the neighbours", doc.querySelectorAll("path.pm-edge").length > 0);
+  foldsDrawn[0].fire("click");
+  const firstOpen = doc.querySelectorAll("g.pm-card").length;
+  ok("a click on a folded row opens that folder only", firstOpen > 0 && firstOpen < data.map.cards.length &&
+    doc.querySelectorAll("g.pm-fold").length === folders.size - 1, firstOpen);
+  const secHead = doc.querySelectorAll("g.pm-sec");
+  ok("an open folder's header folds it again", secHead.length === 1 && secHead[0].getAttribute("aria-expanded") === "true");
+  secHead[0].fire("click");
+  ok("…and does", !doc.querySelectorAll("g.pm-card").length && doc.querySelectorAll("g.pm-fold").length === folders.size);
+  const allBtn = () => doc.querySelectorAll("button.pm-all")[0];
+  ok("the bar offers Expand all", !!allBtn() && /Expand all/.test(allBtn().textContent));
+  allBtn().fire("click");
   const cardsDrawn = doc.querySelectorAll("g.pm-card");
-  ok("it draws one card per planned file", cardsDrawn.length === data.map.cards.length, cardsDrawn.length);
+  ok("Expand all draws one card per planned file", cardsDrawn.length === data.map.cards.length && !doc.querySelectorAll("g.pm-fold").length, cardsDrawn.length);
+  ok("…and turns into Fold all", /Fold all/.test(allBtn().textContent));
   ok("a new file's card is marked new, a removal remove",
     cardsDrawn.some(g => /\bnew\b/.test(g.className) && /retry_sweep/.test(g.getAttribute("aria-label"))) &&
     cardsDrawn.some(g => /\bremove\b/.test(g.className)));
@@ -3432,6 +3458,33 @@ if (want("end state map: on both plan pages")) {
   target.fire("click");
   ok("a click fills the panel with the card's facts", /retry_sweep\.rb/.test(doc.querySelector("div.pm-panel").textContent) &&
     /Facts that cite it/.test(doc.querySelector("div.pm-panel").textContent));
+  // The panel pins over a narrow map, so it can shrink to its title row; the
+  // next click on a card grows it again.
+  {
+    const pan = () => doc.querySelector("div.pm-panel");
+    const minBtn = pan().querySelectorAll("button.pm-min")[0];
+    ok("the panel has a button that shrinks it", !!minBtn && !pan().classList.contains("min"));
+    minBtn.fire("click");
+    ok("…to its title row", pan().classList.contains("min") && /retry_sweep\.rb/.test(pan().querySelector("h3").textContent));
+    target.fire("click");
+    ok("…and a click on a card shows the details again", !pan().classList.contains("min"));
+  }
+  // A caller with its own sections (lookout's compare groups) starts them open.
+  {
+    const docG = fakeDoc();
+    const hostG = docG.createElement("div"); docG.body.appendChild(hostG);
+    const winG = { document: docG };
+    vm.runInNewContext(fs.readFileSync(path.join(HERE, "lib", "plan-map.js"), "utf8"), { window: winG, document: docG, console });
+    winG.PlanMap.mount(hostG, data.map, { groups: cs => [["one", cs.slice(0, 1)], ["rest", cs.slice(1)]] });
+    ok("caller sections start open, each with a header that folds it",
+      docG.querySelectorAll("g.pm-card").length === data.map.cards.length && docG.querySelectorAll("g.pm-sec").length === 2);
+    const keepS = {};
+    const api = winG.PlanMap.mount(hostG, data.map, { keep: keepS });
+    api.select(data.map.cards[0].path);
+    ok("select() opens the folder of the card it shows",
+      docG.querySelectorAll("g.pm-card").some(g => g.getAttribute("aria-label").startsWith(data.map.cards[0].path)) &&
+      /pm-panel/.test(docG.querySelector("div.pm-panel").className) && docG.querySelector("div.pm-panel").textContent.includes(data.map.cards[0].path));
+  }
   // The findings option (lookout's Map view uses it): a flag on the card in
   // the worst open severity's class, a list in the panel, a click handed back.
   {
@@ -3445,7 +3498,7 @@ if (want("end state map: on both plan pages")) {
       { id: "f3", severity: "blocker", status: "resolved", summary: "a closed one", line: 1 }],
       "db/migrate/add_retry_columns.rb": [{ id: "f4", severity: "nit", status: "dismissed", summary: "closed", line: 2 }] };
     let picked = null;
-    win2.PlanMap.mount(host, data.map, { findings: c => fd[c.path] || [], onFinding: (c, f) => { picked = c.path + "#" + f.id; } });
+    win2.PlanMap.mount(host, data.map, { folded: false, findings: c => fd[c.path] || [], onFinding: (c, f) => { picked = c.path + "#" + f.id; } });
     const flagOf = p => doc2.querySelectorAll("g.pm-card").find(g => g.getAttribute("aria-label").startsWith(p))
       .all().find(n => /\bpm-flag\b/.test(n.className));
     const hot = flagOf("app/workers/retry_sweep.rb"), done = flagOf("db/migrate/add_retry_columns.rb");
@@ -3466,24 +3519,27 @@ if (want("end state map: on both plan pages")) {
     const win3 = { document: doc3 };
     vm.runInNewContext(fs.readFileSync(path.join(HERE, "lib", "plan-map.js"), "utf8"), { window: win3, document: doc3, console });
     const opened = [];
-    win3.PlanMap.mount(host3, data.map, { onOpen: p => opened.push(p), canOpen: c => c.path !== "app/workers/inline_retry.rb", openLabel: "Open its diff" });
+    win3.PlanMap.mount(host3, data.map, { folded: false, onOpen: p => opened.push(p), canOpen: c => c.path !== "app/workers/inline_retry.rb", openLabel: "Open its diff" });
     const cardOf = p => doc3.querySelectorAll("g.pm-card").find(g => g.getAttribute("aria-label").startsWith(p));
     cardOf(data.map.cards[0].path).fire("click");
     ok("open: the first click on a card shows it, even the one shown at the start", opened.length === 0);
     cardOf(data.map.cards[0].path).fire("click");
     ok("open: a second click opens it", opened.join() === data.map.cards[0].path, opened.join());
     cardOf("db/migrate/add_retry_columns.rb").fire("click");
-    const btn = doc3.querySelector("div.pm-panel").querySelectorAll("button").find(b => /Open its diff/.test(b.textContent));
+    const panelBtns = () => doc3.querySelector("div.pm-panel").querySelectorAll("button").filter(b => !/\bpm-min\b/.test(b.className));
+    const btn = panelBtns().find(b => /Open its diff/.test(b.textContent));
     btn && btn.fire("click");
     ok("open: the panel's button opens the card shown", !!btn && opened[1] === "db/migrate/add_retry_columns.rb");
     cardOf("app/workers/inline_retry.rb").fire("click"); cardOf("app/workers/inline_retry.rb").fire("click");
     ok("open: a card that cannot open has no button and opens nothing",
-      opened.length === 2 && !doc3.querySelector("div.pm-panel").querySelectorAll("button").length);
+      opened.length === 2 && !panelBtns().length);
     // A redraw (lookout's fresher review) with the same keep object: the
     // reader's card stays shown and a click on it still opens.
     const keep = {};
     const opened2 = [];
     const mnt = () => win3.PlanMap.mount(host3, data.map, { onOpen: p => opened2.push(p), keep });
+    mnt();
+    doc3.querySelectorAll("button.pm-all")[0].fire("click");
     mnt();
     cardOf("db/migrate/add_retry_columns.rb").fire("click");
     mnt();

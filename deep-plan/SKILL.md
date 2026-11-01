@@ -125,8 +125,8 @@ These survive a compaction; everything below them is how.
    served. The inline widget, the text quiz, the remote route and parking
    work in a tracker are in
    [review-surfaces.md](references/review-surfaces.md). The page opens on
-   the End state map: point the human at it first (what is new, changed or
-   removed, and what uses it), then the quiz. The human answers;
+   the context and non-goals, then the End state map: point the human at
+   the map (what is new, changed or removed, and what uses it), then the quiz. The human answers;
    you run `deep-plan grade <slug> q1=a q2=c q3=b`. A non-zero exit names the
    decision to reopen: the plan and their model disagree, and **either may be
    the broken one** — fix whichever is wrong, re-render, re-check. Once the

@@ -24,7 +24,9 @@ tree (single-child folders folded together), one file's diff on the right.
   and touched, or planned but not touched. Each file the diff touched that
   the plan never named is marked touched but not planned. A click shows a
   card's details; a second click, or **Open its diff**, opens a touched
-  file's diff. Each card with findings carries a flag: the
+  file's diff. The details panel sits beside the map in a wide pane and
+  pins to the bottom of a narrow one, and each section's header folds it to
+  one row. Each card with findings carries a flag: the
   count still open, in the worst one's severity colour, or a faint tick
   when all are closed. The panel lists them, and a click on one jumps to
   its line. Without a map the view says so.

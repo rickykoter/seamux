@@ -1435,7 +1435,7 @@ function endStateHtml(map, increments) {
   const js = planMapJs();
   const n = map.cards.length;
   return `<h2>End state</h2>
-<p class="dim">The ${n} file${n === 1 ? "" : "s"} this plan touches, what uses them and what they use, as found when it rendered. Hover a card to light its links; click it for its facts and contracts.</p>
+<p class="dim">The ${n} file${n === 1 ? "" : "s"} this plan touches, what uses them and what they use, as found when it rendered. Each folder starts folded; click one (or <b>Expand all</b>) to see its files. Hover a card to light its links; click it for its facts and contracts.</p>
 <div class="pm-mount">${js ? "" : `<p class="dim">The map's renderer (lib/plan-map.js) is missing from this install.</p>`}<script type="application/json" class="pm-data">${data}</script></div>
 ${js ? `<script>${js}</script>` : ""}`;
 }
@@ -1479,17 +1479,19 @@ function commonBody(spec, adrs = [], withNotes = false, endState = "") {
   const obSection = (obExisting || obGaps) ? `<h2>Observability</h2>
 ${obExisting ? `<p class="dim">exists today (read-only sweep):</p><ul>${obExisting}</ul>` : ""}
 ${obGaps ? `<p class="dim">gaps this plan fills:</p><ul>${obGaps}</ul>` : ""}` : "";
-  // Non-goals before decisions: the cheapest way to review a plan is to learn
-  // first what it is deliberately not doing. A reader who finds that out at the
-  // end has already argued with a plan nobody proposed.
+  // Bottom line up front: the context and the non-goals open the page, then
+  // the End state map, then the decisions. The cheapest way to review a plan
+  // is to learn first why it exists and what it is deliberately not doing. A
+  // reader who finds that out at the end has already argued with a plan
+  // nobody proposed.
   const nonGoals = (spec.nonGoals || []).map(g =>
     `<li>${esc(typeof g === "string" ? g : g.nonGoal || "")}</li>`).join("");
   const commits = (spec.commits || []).map(c => commitLi(c)).join("");
   return `<h1>${esc(spec.title)}</h1>
 <p class="dim">plan <code>${esc(spec.slug)}</code></p>
-${endState}
 <h2>Context</h2><p>${esc(spec.context).replace(/\n\s*\n/g, "</p><p>")}</p>
 ${nonGoals ? `<h2>Non-goals</h2><ul>${nonGoals}</ul>` : ""}
+${endState}
 ${decs ? `<h2>Decisions</h2><ul>${decs}</ul>` : ""}
 ${workstreamsHtml(spec, true)}
 ${contractsSection}
