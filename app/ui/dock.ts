@@ -137,6 +137,11 @@ export class DockView {
     await this.frameBoard();
   }
 
+  /** A click on a notification: show its workspace and pane. */
+  jump(ws: string, pane: string): void {
+    if (ws) this.select(ws, true, "any", pane);
+  }
+
   /** Called when the tab is shown (and on every summon): a board whose
    *  server moved, or that was loaded over a minute ago, loads again. */
   shown(): void {

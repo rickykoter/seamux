@@ -3207,6 +3207,7 @@ dependencies = [
  "block2",
  "cmux",
  "crew-board",
+ "crew-cli",
  "crew-core",
  "crew-store",
  "libc",

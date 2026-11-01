@@ -508,11 +508,14 @@ export class NativeTerm {
     this.cat.reset();
     delete this.el.dataset.agent;
     if (this.opened) this.term.reset();
+    // Focus stays on the same terminal when it changes panes: say which.
+    if (this.el.classList.contains("focused")) void invoke("notify_looking", { pane: surface }).catch(() => {});
     this.check();
   }
 
   stop(): void {
     this.detach();
+    if (this.el.classList.contains("focused")) void invoke("notify_looking", { pane: null }).catch(() => {});
     this.surface = "";
     this.cat.reset();
     delete this.el.dataset.agent;
@@ -543,8 +546,13 @@ export class NativeTerm {
         this.term.textarea?.addEventListener("focus", () => {
           this.el.classList.add("focused");
           if (this.id !== null) void invoke("pty_seen", { id: this.id }).catch(() => {});
+          // The notifier stays quiet about the pane you are in.
+          void invoke("notify_looking", { pane: this.surface }).catch(() => {});
         });
-        this.term.textarea?.addEventListener("blur", () => this.el.classList.remove("focused"));
+        this.term.textarea?.addEventListener("blur", () => {
+          this.el.classList.remove("focused");
+          void invoke("notify_looking", { pane: null }).catch(() => {});
+        });
         this.opened = true;
       }
       if (this.id === null && !this.attaching) void this.attach();

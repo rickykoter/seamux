@@ -28,6 +28,8 @@ crew-core.workspace = true
 # so Desk and the Wake work while the intent server is down.
 crew-board = { path = "../crew-board" }
 crew-store = { path = "../crew-store" }
+# The tmux notifier wears each workspace's crew-color (color::peek).
+crew-cli = { path = "../crew-cli" }
 # A Wake file shown in the sheet travels as a data: URL.
 base64 = "0.22"
 # A native terminal's PTY (pty.rs): openpty, setsid, TIOCSWINSZ.

@@ -217,6 +217,12 @@ fn hash_index(root: &str) -> usize {
     (s % PALETTE.len() as u64) as usize
 }
 
+/// The palette color `root` hashes to: what allocation prefers for it, and
+/// what a reader shows for a root crew-color has not colored yet.
+pub fn hashed(root: &str) -> &'static str {
+    PALETTE[hash_index(root)].1
+}
+
 /// `workspace list --json`'s rows, or [] when cmux does not answer.
 fn workspace_rows() -> Vec<Value> {
     let Ok(c) = Cmux::connect() else { return vec![] };
