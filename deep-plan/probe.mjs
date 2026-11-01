@@ -498,6 +498,17 @@ ok("mermaid theme follows the page theme",
   fresh.deliverables[0].files = ["not-created-yet.sh"];
   ok("a file the plan will CREATE is exempt (output, not input)",
     cli("render", tmpSpec(fresh)).status === 0);
+  // Mid-plan the created file exists, and the stored map still says new.
+  fs.writeFileSync(path.join(REPO, "not-created-yet.sh"), "#!/bin/sh\n");
+  rr = cli("render", tmpSpec(fresh));
+  ok("a re-render passes once a file the plan created exists (the stored map has it as new)",
+    rr.status === 0, rr.stderr);
+  // The exemption is the map's new, not any stored path: one it has as modify still needs a fact.
+  base.verifiedFacts.pop();
+  rr = cli("render", tmpSpec(base));
+  ok("a re-render still refuses a file the stored map has as modify, once no fact cites it",
+    rr.status !== 0 && /existing\.sh — no verifiedFact cites it/.test(rr.stderr));
+  fs.rmSync(path.join(REPO, "not-created-yet.sh"), { force: true });
   for (const s of ["floor-plan", "floor-new"]) {
     cli("close", s);
     fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, s + ".json"), { force: true });

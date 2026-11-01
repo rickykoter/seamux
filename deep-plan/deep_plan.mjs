@@ -2054,10 +2054,17 @@ async function render(specPath, opts) {
       const ev = String(v.evidence || "");
       return ev === f || ev.startsWith(f + ":");
     });
+    // A path the stored map records as new is one this plan created: once it
+    // exists mid-plan it is still output, not input. The first render has no
+    // stored map and goes by the disk, and so does a render that moves the
+    // root: the map judged new against the old tree.
+    const sameRoot = prior0 && prior0.root && path.resolve(prior0.root) === path.resolve(root);
+    const created = new Set(((sameRoot && prior0.map && prior0.map.cards) || [])
+      .filter(c => c.change === "new").map(c => c.path));
     const unread = [];
     (spec.deliverables || []).forEach((d, i) => {
       for (const f of planPaths(d))
-        if (fs.existsSync(path.join(root, f)) && !cited(f))
+        if (fs.existsSync(path.join(root, f)) && !cited(f) && !created.has(f))
           unread.push(`deliverable ${i + 1} ("${d.title}") edits ${f} — no verifiedFact cites it`);
     });
     if (unread.length && !opts.force) {
