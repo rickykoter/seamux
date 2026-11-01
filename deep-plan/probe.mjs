@@ -3187,6 +3187,112 @@ if (want("spec files: strings, removals, contracts placed with at")) {
   }
 }
 
+// -------------------------------------------------- the End state map's model
+//
+// Built once at render into st.map and <slug>.map.json; rehydrate reads only
+// st.map. Neighbours come from git grep over the plan root, capped per side.
+if (want("end state map: model, neighbours, frozen in state")) {
+  const MR = path.join(TMP, "maprepo");
+  const w = (rel, text) => { fs.mkdirSync(path.dirname(path.join(MR, rel)), { recursive: true }); fs.writeFileSync(path.join(MR, rel), text); };
+  w("src/core.mjs", 'import { dep } from "./dep.mjs";\nimport { ghost } from "./ghost.mjs";\nexport const core = dep;\n');
+  w("src/dep.mjs", "export const dep = 1;\n");
+  for (let i = 1; i <= 8; i++) w(`src/users/u${i}.mjs`, `import { core } from "../core.mjs";\n`);
+  w("README.md", "See src/core.mjs for the core.\n");
+  // A tracked user whose name git would quote without -z.
+  w("src/café.mjs", `import { core } from "./core.mjs";\n`);
+  w("pkg/src/a.mjs", "export const a = 1;\n");
+  execSync("git init -q && git add -A && git -c user.email=probe@deep-plan -c user.name=probe commit -q -m fixture", { cwd: MR });
+  // An untracked scratch file is not a neighbour.
+  w("scratch.mjs", `import { core } from "./src/core.mjs";\n`);
+  const m = JSON.parse(JSON.stringify(spec));
+  m.slug = "map-plan";
+  m.deliverables[0].files = ["src/core.mjs", "src/new.mjs"];
+  m.verifiedFacts.push({ claim: "core re-exports dep", evidence: "src/core.mjs:3" });
+  m.contracts[0].at = ["src/core.mjs"];
+  m.contracts.push({ ...m.contracts[0], surface: "a contract with no place", at: undefined });
+  // A fact cites src/dep.mjs but no deliverable lists it: no card, so the tray.
+  m.verifiedFacts.push({ claim: "dep is one", evidence: "src/dep.mjs:1" });
+  m.contracts.push({ ...m.contracts[0], surface: "placed on a cited file", at: ["src/dep.mjs"] });
+  r = cli("render", tmpSpec(m), "--root", MR);
+  ok("a plan with neighbours renders", r.status === 0, r.stderr);
+  const stOf = () => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "map-plan.json"), "utf8"));
+  const mapFile = path.join(ENV.DEEP_PLAN_PLANS_DIR, "map-plan.map.json");
+  const st1 = stOf();
+  const card = p => (st1.map.cards || []).find(c => c.path === p) || {};
+  ok("the model is stored in state as st.map", st1.map && st1.map.version === 1 && st1.map.slug === "map-plan" && st1.map.neighbours === true);
+  ok("<slug>.map.json holds the same model", fs.existsSync(mapFile) && JSON.stringify(JSON.parse(fs.readFileSync(mapFile, "utf8"))) === JSON.stringify(st1.map));
+  ok("one card per planned path, its id the path", st1.map.cards.map(c => c.id).join() ===
+    "src/core.mjs,src/new.mjs,db/migrate/add_retry_columns.rb,app/workers/inline_retry.rb", st1.map.cards.map(c => c.id).join());
+  ok("each card names its increments", JSON.stringify(card("src/core.mjs").increments) === "[1]" && JSON.stringify(card("app/workers/inline_retry.rb").increments) === "[2]");
+  ok("an existing file is modify, a missing one new, a declared removal remove",
+    card("src/core.mjs").change === "modify" && card("src/new.mjs").change === "new" && card("app/workers/inline_retry.rb").change === "remove");
+  ok("a fact citing the path is pinned on its card", card("src/core.mjs").facts.some(f => f.evidence === "src/core.mjs:3"));
+  ok("a contract whose at names the path sits on its card", card("src/core.mjs").contracts.length === 1 && card("src/core.mjs").contracts[0].i === 0);
+  ok("a contract with no at goes to the unplaced tray", st1.map.unplaced.some(k => k.surface === "a contract with no place" && !k.at));
+  ok("a contract placed on a file with no card goes to the tray, its at kept",
+    st1.map.unplaced.some(k => k.surface === "placed on a cited file" && JSON.stringify(k.at) === '["src/dep.mjs"]') && st1.map.unplaced.length === 2, JSON.stringify(st1.map.unplaced));
+  const by = card("src/core.mjs").usedBy;
+  ok("used by is capped at six, the rest counted", by.paths.length === 6 && by.more === 3, JSON.stringify(by));
+  ok("a tracked user with a non-ASCII name is found (git grep -z)", by.paths.includes("src/café.mjs"), JSON.stringify(by));
+  ok("an untracked scratch file is not a neighbour", !by.paths.includes("scratch.mjs") && by.paths.length + by.more === 9);
+  ok("docs are not references: the README is not a neighbour", !by.paths.includes("README.md"));
+  ok("uses comes from the file's own imports, a missing file dropped",
+    JSON.stringify(card("src/core.mjs").uses) === JSON.stringify({ paths: ["src/dep.mjs"], more: 0 }), JSON.stringify(card("src/core.mjs").uses));
+
+  // A planned file appears on disk: rehydrate draws the same map, and a
+  // re-render keeps the change the first render inferred.
+  w("src/new.mjs", 'import { core } from "./core.mjs";\n');
+  const mdBefore = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "map-plan.md"), "utf8");
+  r = cli("rehydrate", "map-plan");
+  ok("rehydrate is byte-identical after a planned file is created", /md byte-identical, review byte-identical/.test(r.stdout), r.stdout + r.stderr);
+  ok("…and rewrites map.json from st.map alone", JSON.stringify(JSON.parse(fs.readFileSync(mapFile, "utf8"))) === JSON.stringify(st1.map) &&
+    fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "map-plan.md"), "utf8") === mdBefore);
+  // Now on disk, it is read before planning like any file: cite it.
+  m.verifiedFacts.push({ claim: "new imports core", evidence: "src/new.mjs:1" });
+  r = cli("render", tmpSpec(m), "--root", MR);
+  const st2 = stOf();
+  const c2 = st2.map.cards.find(c => c.path === "src/new.mjs");
+  ok("a re-render keeps the inferred new for a file the plan has since created", r.status === 0 && c2.change === "new", JSON.stringify(c2));
+  ok("…while it now finds the new file's links inside the plan", c2.links.includes("src/core.mjs"));
+
+  // With a start commit (the first go), that commit answers: a path absent
+  // from it is new whatever the disk or an earlier map says.
+  const MAP = await import(new URL("lib/map.mjs", import.meta.url));
+  const head = execSync("git rev-parse HEAD", { cwd: MR, encoding: "utf8" }).trim();
+  const lied = { cards: [{ path: "src/new.mjs", change: "modify" }, { path: "src/core.mjs", change: "new" }] };
+  const fromBase = MAP.buildMap(m, MR, lied, head);
+  ok("the start commit decides new or modify once a plan is under way",
+    fromBase.cards.find(c => c.path === "src/new.mjs").change === "new" && fromBase.cards.find(c => c.path === "src/core.mjs").change === "modify");
+  ok("…and is kept in the model", fromBase.base === head);
+  // A later go (a reset, increments out of order) must not move the base.
+  execSync("git add -A && git -c user.email=probe@deep-plan -c user.name=probe commit -q -m later", { cwd: MR });
+  const later = execSync("git rev-parse HEAD", { cwd: MR, encoding: "utf8" }).trim();
+  const again = MAP.buildMap(m, MR, fromBase, later);
+  ok("a later start commit does not move the base a map recorded",
+    again.base === head && again.cards.find(c => c.path === "src/new.mjs").change === "new");
+  // A plan rooted in a subfolder: rev:path must resolve from that folder.
+  const sub = JSON.parse(JSON.stringify(m));
+  sub.deliverables = [{ ...sub.deliverables[0], files: ["src/a.mjs", "src/b.mjs"] }];
+  const inSub = MAP.buildMap(sub, path.join(MR, "pkg"), null, head);
+  ok("a plan rooted in a repo subfolder reads the start commit from that folder",
+    inSub.cards.find(c => c.path === "src/a.mjs").change === "modify" && inSub.cards.find(c => c.path === "src/b.mjs").change === "new", JSON.stringify(inSub.cards.map(c => c.change)));
+
+  // Outside git: cards, no neighbours, and the reason.
+  const NG = path.join(TMP, "notgit");
+  fs.mkdirSync(NG, { recursive: true });
+  const ng = MAP.buildMap(m, NG, null, "");
+  ok("outside git the model has cards, no neighbours and says why",
+    ng.cards.length === 4 && ng.neighbours === false && /not a git work tree/.test(ng.why) && ng.cards.every(c => c.usedBy.paths.length === 0));
+
+  // A plan rendered before the map existed has no st.map: rehydrate leaves no map.json.
+  const bare = stOf(); delete bare.map;
+  fs.writeFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "map-plan.json"), JSON.stringify(bare, null, 2) + "\n");
+  cli("rehydrate", "map-plan");
+  ok("rehydrate of a plan with no st.map writes no map.json and builds none", !fs.existsSync(mapFile) && !stOf().map);
+  cli("close", "map-plan");
+  fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "map-plan.json"), { force: true });
+}
+
 // -------------------------------------------------- quiz.txt, widget, cutover bundle
 //
 // All three are pure functions of the spec, and all three were on 13/13 real

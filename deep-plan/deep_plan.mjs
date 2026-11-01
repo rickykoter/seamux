@@ -23,6 +23,7 @@ import { validateDiagrams, validateSurface, mermaidPath, mermaidCandidates, VEND
 import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries, adrScanReport } from "./lib/adr.mjs";
 import { epicHtml, incrementMd, bundleReadme, incrementFileNames, checkLinesMd } from "./lib/cutover.mjs";
 import { checkEvidence } from "./lib/evidence.mjs";
+import { buildMap } from "./lib/map.mjs";
 import { SURFACE_CSS, SURFACE_JS, surfaceOpen, surfaceClose, fileTreeHtml, diagramCardHtml, diagramsForValidation } from "./lib/surface.mjs";
 import { resolveFiles, resolver } from "./lib/verify.mjs";
 import { runExec, acquireSteps, alive, sleep, tail } from "./lib/runner.mjs";
@@ -2120,6 +2121,12 @@ async function render(specPath, opts) {
   fs.writeFileSync(path.join(KEYS_DIR, spec.slug + ".spec.json"), JSON.stringify(spec, null, 2) + "\n");
   fs.writeFileSync(path.join(KEYS_DIR, spec.slug + ".key.json"), JSON.stringify(key, null, 2) + "\n");
 
+  // The End state map reads the repo here and only here: built once at
+  // render and kept in state, so rehydrate (and every later page) draws the
+  // same map after the planned files appear on disk.
+  const firstSha = ((prior0 && prior0.increments) || []).map(i => i.startSha).find(Boolean) || "";
+  const map = buildMap(spec, planRoot, (prior0 && prior0.map) || null, firstSha);
+
   const b64 = mermaidB64();
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".md"), mdPlan(spec, adrs));
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".review.html"), reviewHtml(spec, b64, adrs));
@@ -2170,14 +2177,25 @@ async function render(specPath, opts) {
   });
   // The plan holds its own sync setting: the spec's share, false when unset.
   st.share = spec.share === undefined ? false : spec.share;
+  st.map = map;
   reopenPhase(st);
   writeState(st);
+  writeMapFile(spec.slug, map);
   fs.writeFileSync(path.join(PLANS_DIR, spec.slug + ".working.html"), workingHtml(spec, st, b64));
   say(`rendered ${spec.slug}: ${PLANS_DIR}/${spec.slug}.md, .review.html, .working.html`);
   renderFamily(spec, family);
   say(`  also: ${extras.join(", ")}`);
   say(`spec + key archived under ${KEYS_DIR} (separate tree, on purpose)`);
   if (st.phase === "review") say("phase: review — the alignment check gates everything.");
+}
+
+// <slug>.map.json beside the surfaces: the file lookout open --plan-map reads.
+// Written from st.map only, by render and by rehydrate.
+function writeMapFile(slug, map) {
+  const p = path.join(PLANS_DIR, slug + ".map.json");
+  if (!map) { fs.rmSync(p, { force: true }); return; }
+  fs.mkdirSync(PLANS_DIR, { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(map, null, 2) + "\n");
 }
 
 function rerenderWorking(slug, kin = true) {
@@ -2242,6 +2260,7 @@ function rehydrate(slug, { quiet = false } = {}) {
   if (st0 && st0.root) adrs.forEach(a => fs.writeFileSync(
     path.join(PLANS_DIR, `${slug}.adr${a.n}.md`), adrDraftText(spec, st0.root, a)));
   const extras = writeSpecArtifacts(spec, b64);
+  writeMapFile(slug, st0 && st0.map);
   rerenderWorking(slug);
   if (quiet) return { md: okMd, review: okRv, missing: missingOverviews(spec).length };
   say(`rehydrated ${slug} — md ${okMd ? "byte-identical" : "REWRITTEN (differs)"}, review ${okRv ? "byte-identical" : "REWRITTEN (differs)"}`);
