@@ -55,7 +55,9 @@ These survive a compaction; everything below them is how.
    own words, list the assumptions in it, and put the strongest
    counter-position to the human as an `AskUserQuestion` ("the simpler fix is
    X", "this symptom usually means Y", "is this worth doing at all?"). A
-   confirmed goal plans faster and better than an assumed one.
+   confirmed goal plans faster and better than an assumed one. Given a bug
+   report, issue, failing PR or CI run link, run `deep-plan intake <link>`
+   first and plan it as the bug lane ([loops.md](references/loops.md)).
 1. **Interrogate before drafting.** A plan that silently resolved a fork is a
    plan the human never agreed to. When a fork is *architectural* (it will
    outlive this plan and constrain later ones), say so in the question and
