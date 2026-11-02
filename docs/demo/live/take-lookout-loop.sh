@@ -5,7 +5,8 @@
 # test → review until a round files nothing new.
 #
 #   bash docs/demo/live/setup.sh && bash docs/demo/live/deep-dive-setup.sh
-#   bash docs/demo/live/system-one-setup.sh && bash docs/demo/live/app.sh
+#   bash docs/demo/live/system-one-setup.sh && bash docs/demo/live/plan-map-setup.sh
+#   bash docs/demo/live/app.sh
 #   bash docs/demo/live/take-lookout-loop.sh [ROOT]
 #
 # Writes ROOT/take-loop/app.mp4 and beats.tsv. File rows are opened with a
@@ -68,7 +69,7 @@ sleep 3
 
 # ── the review opens: risk, with System-1 ───────────────────────────────────
 if [ -z "${LOOP_RESUME:-}" ]; then
-  say coupons "Open a lookout review of this branch against main. Only open it: no reviewer yet."
+  say coupons "Open a lookout review of this branch against main, with --plan-map ~/.claude/plans/coupons.map.json. Only open it: no reviewer yet."
   beat open
   end=$((SECONDS + 300)); until [ -n "$(review)" ] || [ $SECONDS -ge $end ]; do sleep 2; done
   idle coupons 120
@@ -92,6 +93,14 @@ done
 # ── grouping: the path view, then the overview's groups and their whys ─────
 tap Path 5 && { beat path; sleep 5; tap Risk 5; beat risk; sleep 2; }
 tap Overview 5 && { beat groups; sleep 8; tap Overview 5; }
+
+# ── the Map view: the plan held against the diff ───────────────────────────
+tap Map 5 && {
+  beat map; sleep 6
+  hand "^test/admin.test.js, " 5 && { beat map-untouched; sleep 5; }
+  hand "^src/checkout/route.js, " 5 && { beat map-card; sleep 5; }
+  tap Map 5; beat map-closed
+}
 
 # ── the loop: review → fix → test → review, run by the agent ───────────────
 tap Dock 5

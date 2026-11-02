@@ -45,7 +45,7 @@ beat start
 sleep 3
 
 # ── deep-plan: the ask, its forks, the render ───────────────────────────────
-say coupons "Deep plan this: take coupon codes at checkout. A customer types a code on the checkout page and the discount shows in the total."
+say coupons "Deep plan this: take coupon codes at checkout. A customer types a code on the checkout page and the discount shows in the total. Two increments, with auto-go between them, and no lookout reviews."
 beat ask
 n=0 end=$((SECONDS + 1200)) asked=0
 while [ $SECONDS -lt $end ]; do
@@ -67,10 +67,15 @@ beat plan-said
 tap "^1 PLAN" 20 || fail "no plan tab"
 sleep 3
 beat tour
-for sec in Context Non-goals Decisions Contracts "Verified facts" Risks Diagrams Increments "Alignment check"; do
+for sec in Context Non-goals "End state" Decisions Contracts "Verified facts" Risks Diagrams Increments "Alignment check"; do
   tap "$sec" 5 || continue
   beat "sec-$sec"
   sleep 5
+  # The map: open its folders, then show one card's details.
+  if [ "$sec" = "End state" ]; then
+    tap "Expand every folder" 5 && { beat map-open; sleep 4; }
+    hand "checkout.js, " 5 && { beat map-card; sleep 5; }
+  fi
 done
 
 # ── the quiz, the recipes, the go ───────────────────────────────────────────
@@ -91,47 +96,26 @@ sleep 3
 hand "go 1" 30 || fail "no go chip"
 beat go
 sleep 3
-say coupons "The go is given on the board. Build increment 1, commit it, then run deep-plan check run for it."
+say coupons "The go is given on the board. Build increment 1, commit it, run deep-plan check run for it and mark it done. Then keep going through the plan."
 beat build
-sleep 10; idle coupons 900 || fail "the build never finished"
-beat checked
-sleep 3
-
-# ── lookout: the reviewer, the page, the fixes ──────────────────────────────
-REVIEW="$SLUG-inc1"
-if [ -z "$(findings "$REVIEW")" ]; then
-  say coupons "Spawn the reviewer."
-  beat reviewer
-  end=$((SECONDS + 900))
-  until [ -n "$(findings "$REVIEW")" ] || [ $SECONDS -ge $end ]; do sleep 5; done
-  idle coupons 300
-fi
-[ -n "$(findings "$REVIEW")" ] || fail "no findings were filed"
-beat findings
-tap "^2 LOOKOUT" 20 || tap "^1 LOOKOUT" 5 || tap "^3 LOOKOUT" 5 || fail "no lookout tab"
-beat lo-page
-sleep 6
-tap Path 5 && { beat lo-path; sleep 4; tap Risk 5; beat lo-risk; sleep 2; }
-tap Overview 5 && { beat lo-overview; sleep 6; tap Overview 5; }
-say coupons "Fix the findings that fit this increment, commit, and mark each one addressed in lookout with what changed. File any that don't fit as deep-plan notes."
-beat fix
-sleep 10; idle coupons 900 || fail "the fixes never finished"
-beat addressed
-sleep 3
-# Only a person closes a finding: resolve each addressed one on the page.
-for f in $(findings "$REVIEW" | awk '/\[addressed\]/{print $1}'); do
-  file=$(findings "$REVIEW" | awk -v f="$f" '$1==f{print $NF}' | sed 's#.*/##; s#:.*##')
-  tap "^$file" 5 || continue
-  sleep 2
-  tap Resolve 5 || continue
-  beat "resolved-$f"
+# auto-go: a done whose checks all passed gives the next increment its go.
+incs() { python3 -c "import json,sys;[print(i['n'],i.get('status',''),i.get('by','')) for i in json.load(open(sys.argv[1])).get('increments',[])]" "$STATE/$SLUG.json" 2>/dev/null; }
+seen=" " end=$((SECONDS + 1800)) still=0
+while [ $SECONDS -lt $end ]; do
+  while read -r n st by; do
+    case "$seen" in *" $n:$st "*) continue;; esac
+    seen="$seen$n:$st "
+    [ "$by" = auto ] && [ "$st" = authorized ] && beat "auto-$n"
+    [ "$st" = done ] && beat "done-$n"
+  done <<< "$(incs)"
+  incs | awk '$2!="done"{x=1} END{exit x}' && break
+  if idle coupons 3 2>/dev/null; then still=$((still + 1)); [ $still -ge 10 ] && break; else still=0; fi
   sleep 3
 done
-say coupons "I've closed what you fixed. Run deep-plan check run for increment 1 again, then done."
-beat close
-sleep 10; idle coupons 600
-beat done
-sleep 6
+beat chained
+idle coupons 300
+sleep 2
+tap "^1 PLAN" 10 && { beat working; sleep 8; }
 beat end
 stop_rec
 echo "take-deep: $OUT"

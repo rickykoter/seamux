@@ -69,10 +69,9 @@ browser cache, so nothing is downloaded.
 
 ```bash
 bash docs/demo/live/setup.sh && bash docs/demo/live/deep-dive-setup.sh && bash docs/demo/live/app.sh
-bash docs/demo/live/take-deep.sh        # a plan made live, its sections toured, go, check run
-bash docs/demo/live/take-lookout.sh     # then, in the same world: a lookout review worked through
+bash docs/demo/live/take-deep.sh        # a plan made live, its sections and map toured, go, auto-go
+bash docs/demo/live/take-deep-pickup.sh # the agent's summary and the plan's Increments
 node docs/demo/live/cut.mjs docs/demo/live/edit-deep.json
-node docs/demo/live/cut.mjs docs/demo/live/edit-lookout.json
 ```
 
 The plan is made from scratch by the agent, so its sections and forks vary
@@ -81,8 +80,15 @@ from take to take; `answer` in `lib.sh` takes each fork's first
 the Dock's page pane with a drag on its splitter and presses the board's go
 chip with a real click, so the demo app comes to the front for a moment.
 `cut.mjs`'s side layout shows a pane tall on the right with the section's
-name and intent beside it. `LOOKOUT_PART2=1` picks a lookout take up from a
-review whose findings are filed.
+name and intent beside it.
+
+The plan is asked for with auto-go between its two increments: after you
+give go 1, a `done` whose checks passed gives increment 2 its go, and the
+agent carries on. The Dock terminal can stop redrawing during the build, so
+`take-deep-pickup.sh` clicks it and films the summary and the Increments
+afterwards. `take-lookout.sh` and `edit-lookout.json` are the first, shorter
+lookout cut, from a review of increment 1; the current take-deep no longer
+opens one.
 
 ## lookout up close: risk, groups and the loop
 
@@ -94,8 +100,8 @@ demo HOME (read when lookout scores, never copied or filmed), and the shop's
 
 ```bash
 bash docs/demo/live/setup.sh && bash docs/demo/live/deep-dive-setup.sh
-bash docs/demo/live/system-one-setup.sh && bash docs/demo/live/app.sh
-bash docs/demo/live/take-lookout-loop.sh
+bash docs/demo/live/system-one-setup.sh && bash docs/demo/live/plan-map-setup.sh
+bash docs/demo/live/app.sh && bash docs/demo/live/take-lookout-loop.sh
 node docs/demo/live/cut.mjs docs/demo/live/edit-loop.json
 ```
 
@@ -117,8 +123,12 @@ the "already seen" flags for tips and notices are copied. The plugins run from
 a copy under the root, so no on-screen path has your user name in it.
 
 The take drives the app through accessibility (`ui.applescript`) and types to
-Claude through the app's tmux (`lib.sh`). It never moves your mouse or types
-into another app, but the window has to stay on screen while it records.
+Claude through the app's tmux (`lib.sh`). Some steps need a real click or a
+keystroke (the New workspace form opens only on a click, file rows and map
+cards are clicked), so it moves your mouse and brings the demo window to the
+front first. Keep your hands off the Mac while a take runs, and keep the
+window on the current desktop: a window on another Space is invisible to
+System Events.
 
 ## Files
 
@@ -130,9 +140,10 @@ into another app, but the window has to stay on screen while it records.
 | `winrec.swift` | records one window with ScreenCaptureKit |
 | `family-setup.sh`, `family-stage.sh`, `cloud.sh` | the family's specs, the simulated cloud and its window |
 | `take-family.sh`, `edit-family.json` | the families + cloud take and its edit |
-| `deep-dive-setup.sh`, `take-deep.sh`, `take-lookout.sh`, `answers.sh` | the deep-plan and lookout videos' world and takes |
+| `deep-dive-setup.sh`, `take-deep.sh`, `take-deep-pickup.sh`, `take-lookout.sh`, `answers.sh` | the deep-plan and lookout videos' world and takes |
 | `edit-deep.json`, `edit-lookout.json` | their edits (`edit-lookout.json` is the shorter first cut) |
 | `system-one-setup.sh`, `take-lookout-loop.sh`, `edit-loop.json` | the deeper lookout video: System-1, groups, the loop |
+| `plan-map-setup.sh`, `../world/coupons-plan.spec.json` | the plan map the lookout take's Map view holds against the diff |
 | `axfind.swift`, `click.swift` | find a control through accessibility (`--press` presses it, scrolled into view); a real click or drag |
 | `axpress.swift`, `pidclick.swift` | experiments: neither reaches the board's chips (see below) |
 | `cut.mjs`, `edit.json` | the edit: shots by beat name, crops, speed, captions, poster |
