@@ -2,6 +2,7 @@
 // message, made with no terminal (newws_app.rs). The steps show as they run;
 // the new workspace opens in the Dock when it is up.
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { firstMessage, parseSource, type Source } from "./source";
 
 type Repo = { name: string; path: string; base: string };
 type Options = { repos: Repo[]; prefix: string; remote: boolean; sandbox: boolean };
@@ -42,6 +43,18 @@ function mark(phase: StepMsg["phase"] | "wait"): SVGSVGElement {
       failed: "M3 3l6 6M9 3 3 9",
     }[phase],
   );
+  s.append(p);
+  return s;
+}
+
+/** A small SVG from one path, for the source chip. */
+function icon(cls: string, d: string): SVGSVGElement {
+  const s = document.createElementNS(SVG, "svg");
+  s.setAttribute("viewBox", "0 0 12 12");
+  s.setAttribute("class", cls);
+  s.setAttribute("aria-hidden", "true");
+  const p = document.createElementNS(SVG, "path");
+  p.setAttribute("d", d);
   s.append(p);
   return s;
 }
@@ -90,6 +103,13 @@ export class NewWorkspace {
   private prefix = el("span", "newws-prefix");
   private branch = el("input", "newws-branch");
   private prompt = el("textarea", "newws-prompt");
+  /** The bug source found in the prompt, under it. */
+  private sourceRow = el("div", "newws-row newws-sourcerow");
+  private sourceName = el("b");
+  private sourceDrop = el("button", "newws-source-x");
+  private source: Source | null = null;
+  /** The link the person dismissed: it stays plain text until the link changes. */
+  private dismissed = "";
   private more = el("details", "newws-more");
   private moreSum = el("summary");
   private base = el("input", "newws-base");
@@ -136,6 +156,24 @@ export class NewWorkspace {
     this.prompt.setAttribute("aria-label", "First prompt");
     this.prompt.addEventListener("input", () => this.drawBranch());
 
+    // A pasted issue, PR, run or Jira link: the session starts on deep-plan
+    // intake with it. The x keeps the prompt as plain text.
+    const chip = el("div", "newws-source");
+    const words = el("span", "newws-source-text");
+    words.append(this.sourceName, el("span", "", "Claude gathers it with deep-plan intake, then plans the bug"));
+    this.sourceDrop.type = "button";
+    this.sourceDrop.title = "Send the prompt as plain text";
+    this.sourceDrop.setAttribute("aria-label", "Send the prompt as plain text");
+    this.sourceDrop.append(icon("", "M3 3l6 6M9 3 3 9"));
+    this.sourceDrop.addEventListener("click", () => {
+      if (this.source) this.dismissed = this.source.link;
+      this.drawBranch();
+      this.prompt.focus();
+    });
+    chip.append(icon("newws-source-mark", "M6 1.5v5.5M3.8 4.8 6 7l2.2-2.2M1.5 7.5v3h9v-3"), words, this.sourceDrop);
+    this.sourceRow.append(el("span"), chip);
+    this.sourceRow.hidden = true;
+
     this.base.type = "text";
     this.base.spellcheck = false;
     this.base.setAttribute("aria-label", "Base branch");
@@ -174,6 +212,7 @@ export class NewWorkspace {
       this.row("Repo", this.repo),
       this.row("Branch", branchBox),
       this.row("Prompt", this.prompt, "newws-top"),
+      this.sourceRow,
       this.more,
       this.steps,
       this.say,
@@ -288,18 +327,31 @@ export class NewWorkspace {
     this.el.hidden = true;
     this.branch.value = "";
     this.prompt.value = "";
+    this.dismissed = "";
+    this.drawSource();
     this.steps.replaceChildren();
   }
 
-  /** The branch to make: what was typed, else one from the prompt. */
+  /** The branch to make: what was typed, else the source's or one from the prompt. */
   private branchName(): string {
-    return this.branch.value.trim() || slug(this.prompt.value);
+    return this.branch.value.trim() || this.source?.branch || slug(this.prompt.value);
+  }
+
+  /** The source in the prompt, unless dismissed or the workspace is sandboxed. */
+  private drawSource(): void {
+    const found = parseSource(this.prompt.value);
+    if (found?.link !== this.dismissed) this.dismissed = "";
+    this.source = found && !this.dismissed && this.sandbox.value === "" ? found : null;
+    this.sourceRow.hidden = !this.source;
+    this.sourceName.textContent = this.source?.label ?? "";
+    this.sourceDrop.disabled = this.busy;
   }
 
   private drawBranch(): void {
+    this.drawSource();
     const typed = this.branch.value.trim();
     this.prefix.hidden = typed.includes("/");
-    this.branch.placeholder = slug(this.prompt.value) || "branch-name";
+    this.branch.placeholder = this.source?.branch || slug(this.prompt.value) || "branch-name";
   }
 
   private drawMore(): void {
@@ -313,6 +365,7 @@ export class NewWorkspace {
     if (sandboxed) bits.push(`sandbox ${this.sandbox.value}`);
     else bits.push(this.remote.checked ? "Remote Control on" : "Remote Control off");
     this.moreSum.textContent = `More · ${bits.join(" · ")}`;
+    this.drawBranch();
   }
 
   private setBusy(on: boolean): void {
@@ -370,7 +423,7 @@ export class NewWorkspace {
           repo: this.repo.value,
           branch,
           base: this.base.value.trim() || null,
-          prompt: sandbox ? null : this.prompt.value.trim() || null,
+          prompt: sandbox ? null : this.source ? firstMessage(this.source) : this.prompt.value.trim() || null,
           sandbox,
           remote: this.remote.checked,
         },
