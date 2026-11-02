@@ -11,6 +11,7 @@ Read this while deciding how each increment is proven (discipline step 4) and be
 - [Claim steps](#claim-steps)
 - [PR proof](#pr-proof)
 - [Review checks and the delivery review](#review-checks-and-the-delivery-review)
+- [CI checks](#ci-checks)
 - [Proving an increment before done](#proving-an-increment-before-done)
 
 ## Choosing checks
@@ -182,6 +183,22 @@ review (a list of numbers, `"all"` or `"none"`; each listed increment
 carries a review check), and whether the full delivery does (`true` puts
 the plan in a `delivery` phase after its last increment, closed by
 `deep-plan deliver`). Render refuses a spec that does not say.
+
+## CI checks
+
+A `ci` check takes no recipe or command (`name` defaults to "pr checks";
+one per deliverable): deep-plan waits on the branch's PR checks through
+gh. Its run fails at once when the branch has no PR, or when the PR head
+is not local HEAD, since a verdict must be about the tree being closed and
+the engine never pushes. Otherwise it polls `gh pr checks` until nothing is
+pending, up to `timeout` seconds (1800 by default), and passes when every
+check passed or was skipped. A failure names each failing check and prints
+the failed Actions job's log tail. It counts toward the retry cap like any
+recipe-backed check, and a hand pass needs `--force`.
+
+It runs detached (`check wait` follows it), so put it on an increment the
+branch is pushed for: on an auto plan, one whose between step is
+`draft-pr`, or the last increment after its push.
 
 ## Proving an increment before done
 

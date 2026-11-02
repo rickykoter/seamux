@@ -39,6 +39,7 @@ import { installRepo, checkRepo, targetRoot } from "./lib/install.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import { goPolicy, humanStop, goProblems, autoNext } from "./lib/autogo.mjs";
 import { parseLink, gather, seedId, writeSeed } from "./lib/intake.mjs";
+import { CI_TIMEOUT_S } from "./lib/ci.mjs";
 import { NOTES_SUFFIX, readNoteLines, foldNotes, notedSlugs, fileNote, closeNote, openNotes } from "./lib/notes.mjs";
 import {
   CANDIDATES_SUFFIX, LESSON_CAP, foldCandidates, unsettled, fileCandidate, settleCandidate,
@@ -263,10 +264,17 @@ function validate(spec, force) {
       if (c.kind === "review") {
         if (c.recipe || c.run)
           errs.push(`${label}: a review check runs \`lookout gate\` for its increment; it names no recipe or command`);
+      } else if (c.kind === "ci") {
+        if (c.recipe || c.run)
+          errs.push(`${label}: a ci check waits on the branch's PR checks through gh; it names no recipe or command`);
+        if (c.timeout !== undefined && !(Number.isInteger(c.timeout) && c.timeout > 0))
+          errs.push(`${label}: timeout is the seconds to wait for CI, a whole number`);
       } else if (!(c.name || c.recipe)) errs.push(`${label}: needs a name, or the recipe it runs`);
       if (c.id !== undefined && !/^[a-z0-9][a-z0-9._-]*$/i.test(String(c.id)))
         errs.push(`${label}: id must be letters, digits, dot, dash or underscore`);
     }
+    if ((d.checks || []).filter(c => c.kind === "ci").length > 1)
+      errs.push(`deliverable ${i + 1}: one ci check per increment (it waits on the branch's one PR)`);
     if ((d.checks || []).filter(c => c.kind === "review").length > 1)
       errs.push(`deliverable ${i + 1}: one review check per increment (it gates on that increment's one review)`);
     if (d.waiver !== undefined && !(typeof d.waiver === "string" && d.waiver.trim()))
@@ -378,6 +386,24 @@ function reviewCheck(c, slug, n) {
   return { ...c, recipe: REVIEW_RECIPE, synth: "review", source: "deep-plan (review check)",
     hash: crypto.createHash("sha256").update("review\0" + shown).digest("hex").slice(0, 12),
     exec: { tier: "cheap", cwd: ".", timeout: 120, steps: [{ kind: "run", command: shown }] } };
+}
+
+// A ci check waits on the branch's PR checks (lib/ci.mjs, ADR 0066). Like a
+// review its command is deep-plan's, shown here and built at run time, so the
+// stored hash names what was reviewed and not this machine's paths.
+const CI_RECIPE = "deep-plan:ci";
+function ciCheck(c) {
+  const t = c.timeout || CI_TIMEOUT_S;
+  const shown = `deep-plan ci wait --timeout ${t}`;
+  return { ...c, recipe: CI_RECIPE, synth: "ci", source: "deep-plan (ci check)",
+    hash: crypto.createHash("sha256").update("ci\0" + shown).digest("hex").slice(0, 12),
+    // The runner's own limit sits past the wait's, so the wait says why it ended.
+    exec: { tier: "expensive", cwd: ".", timeout: t + 180, steps: [{ kind: "run", command: shown }] } };
+}
+function ciExec(cur) {
+  const t = cur.timeout || CI_TIMEOUT_S;
+  const command = `${shq(process.execPath)} ${shq(path.join(HERE, "lib", "ci.mjs"))} wait --timeout ${Number(t)}`;
+  return { ...cur.exec, steps: [{ kind: "run", command }] };
 }
 
 // The plan as approved (its archived spec), or {} when there is none.
@@ -698,6 +724,7 @@ function resolvePlanChecks(spec, root) {
     const out = [];
     for (const c of specChecks(d)) {
       if (c.kind === "review") { out.push(reviewCheck(c, spec.slug, i + 1)); continue; }
+      if (c.kind === "ci") { out.push(ciCheck(c)); continue; }
       if (!c.recipe) { out.push(c); continue; }
       const hits = [...nameable.values()].filter(r => r.key === c.recipe || r.id === c.recipe);
       if (hits.length === 1) out.push(bind(c, hits[0]));
@@ -4345,6 +4372,7 @@ function checkList(slug, n) {
     say(`\n  ${CHECK_MARK[stale.has(id) ? "stale" : v.status] || "·"} ${id}  [${v.kind}${v.system ? " · " + v.system : ""}] ${s}`);
     say(`    ${v.name}`);
     if (v.recipe) say(`    recipe: ${v.recipe}  (its verdict comes from running it; a hand pass needs --force)`);
+    if (v.synth === "ci") say(`    waits:  on the branch's PR checks through gh, up to ${v.timeout || CI_TIMEOUT_S}s; push first, then check run (it runs detached; check wait follows it)`);
     const browserStep = ((v.exec && v.exec.steps) || []).find(x => x.kind === "browser");
     if (browserStep) say(`    script: ${browserStep.command}`);
     if (v.exec && v.exec.scripts && v.exec.scripts.length) say(`    setup:  ${v.exec.scripts.join(", ")}`);
@@ -4707,7 +4735,7 @@ function checkRun(slug, n, ids, opts) {
     // The scoped tree before the run, to tell a recipe's new outputs (part of
     // what passed) from an edit to a file the check covers made while it ran.
     const before = treeOf(st.root, scopeOf(cur));
-    const exec = cur.synth === "review" ? reviewExec(cur, slug, n) : cur.exec;
+    const exec = cur.synth === "review" ? reviewExec(cur, slug, n) : cur.synth === "ci" ? ciExec(cur) : cur.exec;
     const res = runExec(exec, { root: st.root, from: opts.from || "", log,
       env: { DEEP_PLAN_SLUG: slug, DEEP_PLAN_INCREMENT: String(n), DEEP_PLAN_CHECK: id,
              DEEP_PLAN_ROOT: st.root || "", DEEP_PLAN_START_SHA: findInc(st, n).startSha || "" },

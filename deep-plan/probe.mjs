@@ -7168,6 +7168,69 @@ if (want("retry cap: fix-until-green stops for a re-plan")) {
   ok("retry: a manual fail does not count", stOf("rt-c").increments[0].status !== "blocked" && !chk("rt-c").fails);
 }
 
+if (want("ci check: the PR's checks behind the gate")) {
+  const CR = path.join(TMP, "ci-root");
+  fs.mkdirSync(path.join(CR, ".seamux"), { recursive: true });
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: CR });
+  fs.writeFileSync(path.join(CR, ".seamux", "verify.json"), JSON.stringify({ recipes: [] }));
+  const head = execSync("git rev-parse HEAD", { cwd: CR, encoding: "utf8" }).trim();
+  const MAP = path.join(TMP, "ci-gh.json");
+  const CENV = { ...ENV, DEEP_PLAN_GH: path.join(HERE, "tools", "fake-gh"), FAKE_GH_MAP: MAP, DEEP_PLAN_CI_INTERVAL_S: "0" };
+  const cc = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: CENV, cwd: CR });
+  const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
+  let seq = 0;
+  const gh = map => { for (const f of fs.readdirSync(TMP)) if (f.startsWith("ci-gh.json.count.")) fs.rmSync(path.join(TMP, f)); fs.writeFileSync(MAP, JSON.stringify(map)); seq++; };
+  const prView = (oid = head) => ({ "pr view --json number,url,headRefOid,isDraft": { stdout: { number: 12, url: "https://github.com/o/r/pull/12", headRefOid: oid, isDraft: true } } });
+  const mk = (slug, ci = { kind: "ci" }) => {
+    const s = JSON.parse(JSON.stringify(spec));
+    Object.assign(s, { slug, review: { increments: "none", delivery: false } });
+    for (const d of s.deliverables) { d.checks = [ci]; d.files = []; }
+    return s;
+  };
+  const arm = (slug, ci) => {
+    const r = cc("render", tmpSpec(mk(slug, ci)), "--root", CR);
+    const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8"));
+    cc("grade", slug, ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+    cc("go", slug, "1");
+    return r;
+  };
+  const chk = slug => stOf(slug).increments[0].checks["ci-pr-checks"];
+
+  ok("ci: a ci check that names a recipe is refused", /a ci check waits on the branch's PR checks/.test(cc("render", tmpSpec(mk("ci-bad", { kind: "ci", recipe: "x" })), "--root", CR).stderr));
+  const two = mk("ci-two"); two.deliverables[0].checks = [{ kind: "ci" }, { kind: "ci", name: "again" }];
+  ok("ci: two ci checks on one increment are refused", /one ci check per increment/.test(cc("render", tmpSpec(two), "--root", CR).stderr));
+
+  arm("ci-a");
+  ok("ci: render stores it as deep-plan's synthesized check", chk("ci-a").synth === "ci" && chk("ci-a").recipe === "deep-plan:ci" &&
+    /waits: {2}on the branch's PR checks through gh, up to 1800s; push first/.test(cc("check", "list", "ci-a", "1").stdout));
+  ok("ci: a ci verdict is the run's, not a hand pass", cc("check", "pass", "ci-a", "1", "ci-pr-checks", "looked").status !== 0);
+  gh({});
+  let r = cc("check", "run", "ci-a", "1", "--inline");
+  ok("ci: no PR for the branch fails at once and says to open it", r.status !== 0 && chk("ci-a").status === "fail" && /no PR for this branch.*open the draft PR first/.test(r.stdout), r.stdout);
+  gh(prView("0123456789abcdef"));
+  r = cc("check", "run", "ci-a", "1", "--inline");
+  ok("ci: a PR head that is not local HEAD fails and says to push", /is not local HEAD.*push first/.test(r.stdout), r.stdout);
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 8, stdout: [
+      [{ name: "probes", workflow: "CI", bucket: "pending", link: "" }],
+      [{ name: "probes", workflow: "CI", bucket: "pass", link: "" }, { name: "docs", workflow: "CI", bucket: "skipping", link: "" }]] } });
+  r = cc("check", "run", "ci-a", "1", "--inline");
+  ok("ci: it waits out pending checks and passes when all pass or skip", r.status === 0 && chk("ci-a").status === "pass" && !chk("ci-a").fails, r.stdout);
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 1, stdout: [[
+      { name: "probes", workflow: "CI", bucket: "fail", link: "https://github.com/o/r/actions/runs/7/job/8" },
+      { name: "scrub", workflow: "CI", bucket: "pass", link: "" }]] },
+    "run view 7 --job 8 --log-failed": { stdout: "probes\tRun\t2026-11-01T10:00:00.0Z     FAIL lessons: keep writes rule L1\n" } });
+  cc("check", "reset", "ci-a", "1", "ci-pr-checks");
+  r = cc("check", "run", "ci-a", "1", "--inline");
+  ok("ci: a failed check is named with its job's log tail, and counts toward the retry cap",
+    r.status !== 0 && chk("ci-a").status === "fail" && chk("ci-a").fails === 1 && /1 of 2 check\(s\) failed: CI \/ probes/.test(r.stdout) &&
+    /FAIL lessons: keep writes rule L1/.test(r.stdout), r.stdout);
+  arm("ci-t", { kind: "ci", timeout: 1 });
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 8, stdout: [[{ name: "probes", workflow: "CI", bucket: "pending", link: "" }]] } });
+  r = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "check", "run", "ci-t", "1", "--inline"], { encoding: "utf8", env: { ...CENV, DEEP_PLAN_CI_INTERVAL_S: "1" }, cwd: CR });
+  ok("ci: a check's timeout ends the wait with what is still pending", r.status !== 0 && /timed out after 1s with 1 check\(s\) still pending: CI \/ probes/.test(r.stdout), r.stdout);
+}
+
 if (want("hot-path cost")) {
   const t0 = process.hrtime.bigint();
   for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);

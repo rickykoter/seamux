@@ -7,6 +7,7 @@ holds, without a person steering each retry.
 
 - [The bug lane](#the-bug-lane)
 - [Fix until green, then stop](#fix-until-green-then-stop)
+- [CI after the draft PR](#ci-after-the-draft-pr)
 
 ## The bug lane
 
@@ -62,3 +63,13 @@ is wrong, not that a fourth fix will land. So:
 
 A manual `check fail` is a person's verdict and does not count, and nor
 does a review check waiting for its reviewer.
+
+## CI after the draft PR
+
+Local checks pass on this machine; CI is the proof the branch passes
+everywhere else. Give the increment a `{ "kind": "ci" }` check, push the
+branch, and run it: it waits on the PR's checks and records their verdict.
+When CI fails, the run prints each failing check and its job's log tail.
+Fix the cause, commit, push, and run the check again. It is the same loop
+as a local check, with the same retry cap: three red CI runs in a row block
+the increment for a re-plan.
