@@ -191,7 +191,10 @@ These survive a compaction; everything below them is how.
     setup scripts are repo code: when one fails, read the recipe's `brief`
     (`check list` shows it), then fix the feature or the script, and never
     weaken an assertion to get a pass. Browser checks, claim steps and PR
-    proof: [checks.md](references/checks.md#browser-checks).
+    proof: [checks.md](references/checks.md#browser-checks). A failing
+    check is yours to fix without asking how; after 3 failed runs in a row
+    the increment blocks, and you stop and re-plan instead of trying a
+    fourth fix ([loops.md](references/loops.md#fix-until-green-then-stop)).
 
 **In a cloud session** (claude.ai/code, `deep-plan doctor` says remote) the
 plugin runs from the repo's `.claude/skills/deep-plan`, put there by

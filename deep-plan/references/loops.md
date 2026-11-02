@@ -6,6 +6,7 @@ holds, without a person steering each retry.
 ## Contents
 
 - [The bug lane](#the-bug-lane)
+- [Fix until green, then stop](#fix-until-green-then-stop)
 
 ## The bug lane
 
@@ -38,3 +39,26 @@ Then plan the bug with the usual discipline, kept short:
 4. **Let it run.** Set `"go": { "mode": "auto", "between": "draft-pr" }`,
    so after the person's first go each increment that passes its checks
    starts the next, and the branch is pushed with a draft PR between them.
+
+## Fix until green, then stop
+
+When a check fails, read its log tail and the recipe's `brief`, fix the
+cause, and run it again. Do not ask the human how; that is the point of
+the check. Do not weaken the check to get a pass.
+
+Each failed run of a recipe-backed check adds one to its `fails` count, and
+a pass clears it. After 3 failures in a row (or the spec's `retry.max`),
+`check run` blocks the increment, files a lesson candidate and says "stop
+and re-plan". Three fixes that missed mean the plan's model of the problem
+is wrong, not that a fourth fix will land. So:
+
+1. Find out why the fixes missed: a wrong assumption, a cause in a file the
+   plan never read, a check that tests something else.
+2. Amend the spec (a decision, a risk, the increment's body or files) and
+   re-render. The plan of record must be the plan being built.
+3. Tell the human what changed. A blocked increment moves only on a
+   person's go (`deep-plan go <slug> <n>`), which also starts the count
+   again; an auto plan's chain stops there too.
+
+A manual `check fail` is a person's verdict and does not count, and nor
+does a review check waiting for its reviewer.

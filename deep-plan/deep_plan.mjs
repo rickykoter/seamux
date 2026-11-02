@@ -131,6 +131,11 @@ function validate(spec, force) {
   // A parent's workstreams, shape only; membership is judged at render.
   errs.push(...validateWorkstreams(spec));
   if (!spec.context) errs.push("context is required (why now, what exists, what is out of frame)");
+  if (spec.retry !== undefined) {
+    const r = spec.retry;
+    if (!r || typeof r !== "object" || Array.isArray(r) || !Number.isInteger(r.max) || r.max < 1 || Object.keys(r).some(k => k !== "max"))
+      errs.push('retry: { "max": n }, n failed runs in a row (1 or more) that block an increment for a re-plan');
+  }
   if (spec.simpler !== undefined) {
     const sm = spec.simpler;
     if (!sm || typeof sm !== "object" || Array.isArray(sm) || typeof sm.alternative !== "string" || !sm.alternative.trim() ||
@@ -3045,6 +3050,10 @@ function applyTransition(st, action, slug, n, why, force, { byHuman = false, tre
     // one is always re-stamped, so a sha left by an older engine's reset
     // (which did not clear it) cannot become a stale base.
     if (inc.status === "pending" || !inc.startSha) inc.startSha = headSha(st.root);
+    // A person's go past the retry cap starts the count again: the plan was
+    // amended, and the next fix is a first try.
+    if (inc.status === "blocked")
+      for (const v of Object.values(checksOf(inc))) if (v.fails) { delete v.fails; v.at = Date.now(); }
     const how = by === "human" ? goHow({ byHuman }) : "";
     inc.status = "authorized"; inc.authorizedAt = inc.changedAt = Date.now(); inc.note = ""; inc.by = by;
     log1(st, `go: increment ${n} (${inc.title}) authorized by ${by}${how ? ` (${how})` : ""}` +
@@ -3680,6 +3689,12 @@ function engineMiss(st, source, text, inc = openIncN(st)) {
     if (c) console.error(`  lesson candidate ${c.id} filed (${source}); deep-plan retro ${st.slug} settles it`);
   } catch { /* a lost candidate never fails the verb that found the miss */ }
 }
+// How many failed runs in a row block an increment: the spec's retry.max, or 3.
+const RETRY_DEFAULT = 3;
+const retryMax = spec => {
+  const m = spec && spec.retry && spec.retry.max;
+  return Number.isInteger(m) && m >= 1 ? m : RETRY_DEFAULT;
+};
 function lessonCmd(args, flags) {
   const use = `lesson "<what went wrong, and the rule that prevents it>" [--plan <slug>] [--inc <n>]`;
   const text = args.join(" ").trim();
@@ -4737,8 +4752,17 @@ function checkRun(slug, n, ids, opts) {
     // none (it failed before the browser step) clears it.
     // `claims` stays: the run's release hook cleared it, unless a release
     // failed and the claim is still held for `check release`.
-    const { runner, ask, answer, ...rest } = now;
+    const { runner, ask, answer, fails: failsBefore, ...rest } = now;
     if (evidence) delete rest.evidence;
+    // Fix-until-green's stop (ADR 0065): a runner's fail of a recipe-backed
+    // check counts, a pass clears the count. A review with no verdict yet is
+    // not a failed attempt, and a manual fail is a person's, not a retry.
+    const fails = res.status === "pass" ? 0
+      : res.status === "fail" && cur.synth !== "review" ? (failsBefore || 0) + 1 : (failsBefore || 0);
+    const cap = retryMax(planSpec(slug));
+    // Only an open increment blocks: a re-run on a done one is a look, not work.
+    const capped = res.status === "fail" && cur.synth !== "review" && fails >= cap &&
+      ["authorized", "working"].includes(findInc(fresh, n).status);
     // A parked claim keeps its question for the Dock's picker; anything else
     // is over.
     if (res.status === "needs-value" && ask) rest.ask = ask;
@@ -4746,7 +4770,14 @@ function checkRun(slug, n, ids, opts) {
     if (evidence) pruneEvidence(runsDir(slug), n, id);
     checksOf(findInc(fresh, n))[id] = { ...rest, status: res.status, at: Date.now(), by: "runner",
       note: res.note, ran: res.ran, ...(res.status === "pass" && tree ? { tree } : {}),
-      ...(ev ? { evidence: ev } : {}) };
+      ...(ev ? { evidence: ev } : {}), ...(fails ? { fails } : {}) };
+    if (capped) {
+      // Stamped, so a concurrent writer's older copy does not undo it.
+      const bi = findInc(fresh, n);
+      bi.status = "blocked"; bi.changedAt = Date.now();
+      bi.note = `stop and re-plan: ${id} failed ${fails} times in a row`;
+      log1(fresh, `block: increment ${bi.n} — ${bi.note} (the retry cap is ${cap})`);
+    }
     log1(fresh, `check ${res.status}: increment ${inc.n} ${id} — ${res.note}` +
       (movedUnder.length ? ` (changed while it ran: ${movedUnder.slice(0, 10).join(", ")}${movedUnder.length > 10 ? ", …" : ""})` : ""));
     // The pidfile goes before the verdict lands: whoever waits on the verdict
@@ -4780,6 +4811,12 @@ function checkRun(slug, n, ids, opts) {
       // against and how to extend it. The agent reads this before a fix.
       if (cur.exec && cur.exec.brief) say(`   brief: ${cur.exec.brief}`);
       if (ev) say(`   evidence: ${path.join(runsDir(slug), ev.dir)} (${ev.frames} frame(s)) — deep-plan check evidence ${slug} ${n} ${id}`);
+      if (capped) {
+        engineMiss(fresh, "retry", `${id} failed ${fails} times in a row on increment ${n}; the fixes tried did not reach its cause`, Number(n));
+        say(`   ✋ stop and re-plan: ${id} failed ${fails} times in a row (the retry cap is ${cap}), and increment ${n} is blocked.\n` +
+          `      Do not try a fourth fix. Find out why the fixes missed, amend the spec (decisions, risks, the increment's body)\n` +
+          `      and re-render, then tell the human: only their go moves a blocked increment (deep-plan go ${slug} ${n}).`);
+      } else if (fails > 1) say(`   ${fails} failures in a row; at ${cap} the increment blocks for a re-plan`);
     }
     lines.push(`${id} ${res.status}`);
   }

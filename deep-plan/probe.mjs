@@ -7105,6 +7105,62 @@ if (want("intake: a bug, issue or CI link into a seed")) {
   ok("intake: the text output names the seed and the bug lane", r.status === 0 && /seed: .*run-o-r-99\.md/.test(r.stdout) && /references\/loops\.md/.test(r.stdout), r.stdout);
 }
 
+if (want("retry cap: fix-until-green stops for a re-plan")) {
+  const RR = path.join(TMP, "retry-root");
+  fs.mkdirSync(path.join(RR, ".seamux"), { recursive: true });
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: RR });
+  fs.writeFileSync(path.join(RR, ".seamux", "verify.json"),
+    JSON.stringify({ recipes: [{ id: "flaky", kind: "test", run: "test -f green" }] }));
+  const rc = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: ENV, cwd: RR });
+  const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
+  const mk = (slug, extra = {}) => {
+    const s = JSON.parse(JSON.stringify(spec));
+    Object.assign(s, { slug, review: { increments: "none", delivery: false }, go: "auto", ...extra });
+    for (const d of s.deliverables) { d.checks = [{ kind: "test", name: "flaky", recipe: "flaky" }]; d.files = []; }
+    return s;
+  };
+  const arm = (slug, extra) => {
+    rc("render", tmpSpec(mk(slug, extra)), "--root", RR);
+    const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8"));
+    rc("grade", slug, ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+    rc("go", slug, "1");
+  };
+  const chk = slug => stOf(slug).increments[0].checks["test-flaky"];
+
+  ok("retry: a retry block that is not { max: n } is refused", /retry: \{ "max": n \}/.test(rc("render", tmpSpec(mk("rt-bad", { retry: { max: 0 } })), "--root", RR).stderr));
+  arm("rt-a");
+  let r = rc("check", "run", "rt-a", "1", "--inline");
+  ok("retry: a first failure counts one, nothing said about the cap", r.status !== 0 && chk("rt-a").fails === 1 && !/in a row/.test(r.stdout), r.stdout);
+  r = rc("check", "run", "rt-a", "1", "--inline");
+  ok("retry: a second says how many and where the cap is", chk("rt-a").fails === 2 && /2 failures in a row; at 3 the increment blocks/.test(r.stdout), r.stdout);
+  // A re-render in the middle keeps the count: it is a verdict field.
+  rc("render", tmpSpec(mk("rt-a")), "--root", RR);
+  ok("retry: the count survives a re-render", chk("rt-a").fails === 2);
+  r = rc("check", "run", "rt-a", "1", "--inline");
+  const inc = stOf("rt-a").increments[0];
+  ok("retry: the third blocks the increment for a re-plan and says what to do",
+    inc.status === "blocked" && /stop and re-plan: test-flaky failed 3 times in a row/.test(inc.note) &&
+    /✋ stop and re-plan/.test(r.stdout) && /Do not try a fourth fix/.test(r.stdout) && /deep-plan go rt-a 1/.test(r.stdout), r.stdout + JSON.stringify(inc));
+  const cands = JSON.parse(rc("retro", "rt-a", "--json").stdout).candidates;
+  ok("retry: the cap files a retry lesson candidate", cands.length === 1 && cands[0].source === "retry" && cands[0].inc === 1, JSON.stringify(cands));
+  ok("retry: the gate refuses edits while it is blocked", gate("Edit", { file_path: path.join(RR, "x.txt") }, RR).status === 2);
+  r = rc("go", "rt-a", "1");
+  ok("retry: a person's go moves it on and starts the count again", r.status === 0 && stOf("rt-a").increments[0].status === "authorized" && !chk("rt-a").fails, r.stderr);
+  fs.writeFileSync(path.join(RR, "green"), "");
+  rc("check", "run", "rt-a", "1", "--inline");
+  ok("retry: a pass leaves no count", chk("rt-a").status === "pass" && !chk("rt-a").fails);
+  fs.rmSync(path.join(RR, "green"));
+
+  arm("rt-b", { retry: { max: 1 } });
+  rc("check", "run", "rt-b", "1", "--inline");
+  ok("retry: retry.max sets the cap", stOf("rt-b").increments[0].status === "blocked");
+  // A manual fail is a person's verdict, not a retry.
+  arm("rt-c", { retry: { max: 1 } });
+  rc("check", "fail", "rt-c", "1", "test-flaky", "looked", "--force");
+  ok("retry: a manual fail does not count", stOf("rt-c").increments[0].status !== "blocked" && !chk("rt-c").fails);
+}
+
 if (want("hot-path cost")) {
   const t0 = process.hrtime.bigint();
   for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);

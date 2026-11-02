@@ -49,6 +49,7 @@ The full shape of the spec JSON (discipline step 5); `examples/example.spec.json
   "share":         "optional: true, or { \"remote\": \"origin\", \"prefix\": \"seamux-state/\", \"sync\": \"transitions|manual\" }",
   "nonGoals":      ["what this plan deliberately does not do"],
   "simpler":       { "alternative": "the simplest approach considered", "whyNot": "why the plan does not take it" },
+  "retry":         { "max": 3 },
   "verification":  ["runnable commands"],
   "commits":       ["plan-wide record of what landed (same two shapes)"],
   "quiz":          [{ "id": "q1", "prompt": "...", "options": ["..."], "answer": 0,
@@ -85,6 +86,11 @@ refuses an auto plan where a reviewed increment is followed by one that
 auto-goes unless `review.agentMayClose` is true, since otherwise the chain
 waits on a person closing findings that nobody asked them to close. A
 `go.human` on increment 1 or on a plan that is not auto is refused too.
+
+`retry.max` (default 3) is how many failed runs in a row of one
+recipe-backed check block its increment for a re-plan. The chain stops at
+the block like any other, and a person's go starts the count again
+(loops.md, "Fix until green, then stop").
 
 ## Parent plans
 
