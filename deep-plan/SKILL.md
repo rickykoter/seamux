@@ -72,7 +72,9 @@ These survive a compaction; everything below them is how.
    cites. "Nothing like this exists yet" is itself a claim: cite the search
    that came up empty. (Retro origin: a plan to "deepen the Jira badges" was
    drafted without opening crew-sync, which already had the polling, parsing
-   and cache.)
+   and cache.) Read the repo's `.seamux/lessons.md` too (a session hears it
+   at start): a lesson whose paths the plan touches is cited by id in a
+   decision or risk that says how the plan heeds it, or render warns.
 3. **Scout the uncertainty.** Fan out cheap sub-agents (Explore, or
    haiku-tier via the Agent tool): one per low-confidence claim and one per
    contract surface, to map callers, consumers and schema reach. Cap it
@@ -99,9 +101,11 @@ These survive a compaction; everything below them is how.
    too whether the plan's state should sync to a git branch other sessions
    pull, and record the answer as `share`
    ([sharing.md](references/sharing.md#state-branches)).
-5. **Write the spec**, a single JSON file in the scratchpad
-   ([spec.md](references/spec.md); `examples/example.spec.json` is a worked
-   one). `render` archives it. The prose in it (context, deliverable bodies,
+5. **Write the spec**, a single JSON file in the scratchpad. Give it
+   `simpler`: the simplest approach you considered and why the plan does
+   not take it (render warns without one). The shape is in
+   [spec.md](references/spec.md); `examples/example.spec.json` is a worked
+   one. `render` archives it. The prose in it (context, deliverable bodies,
    risks, decision text) is read by people, so run the `humanize` skill over
    those strings before rendering, editing them in place with Edit rather
    than rewriting the file. Leave ids, `path:line` citations, check
@@ -170,6 +174,10 @@ These survive a compaction; everything below them is how.
    found outside the current increment's plan goes into `deep-plan note
    "<what you found>"`, not into the spec or the code; `deep-plan notes`
    lists the repo's open ones ([sharing.md](references/sharing.md#notes)).
+   After any correction from the human, file `deep-plan lesson "<what went
+   wrong, and the rule that prevents it>"`. Before `close` or `deliver`, go
+   through `deep-plan retro <slug>` with the human: keep, merge or drop each
+   candidate ([spec.md](references/spec.md#lessons)).
 10. **Prove the increment before `done`.** `done` is refused while any check
     is pending, running, needs a variant, failed, or passed against other
     content than the tree now. `deep-plan check list <slug> <n>` shows each

@@ -6976,6 +6976,64 @@ if (want("lessons: candidates, retro and .seamux/lessons.md")) {
     retro().candidates.find(c => c.id === dc.id).settled, r.stdout + r.stderr);
 }
 
+if (want("lessons: told at session start, checked at render; simpler")) {
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const LR = path.join(TMP, "lessons-render");
+  fs.mkdirSync(path.join(LR, ".seamux"), { recursive: true });
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: LR });
+  const lessonsLib = await import(new URL("lib/lessons.mjs", import.meta.url));
+  const write = n => {
+    const doc = { head: "", lessons: [] };
+    for (let i = 1; i <= n; i++) doc.lessons.push({ id: "L" + i, n: i, applies: i === 1 ? ["app/workers/**"] : ["elsewhere/**"], from: ["p (correction), 2026-11-02"], rule: `Rule number ${i}: ${"x".repeat(150)}` });
+    lessonsLib.writeLessons(LR, doc);
+  };
+  write(2);
+  const rnd = (s, ...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "render", tmpSpec(s), "--root", LR, ...a], { encoding: "utf8", env: ENV, cwd: LR });
+
+  let r = rnd({ ...spec, slug: "lr-a" });
+  ok("lessons at render: a lesson whose paths a deliverable touches, uncited, warns with its id and rule",
+    r.status === 0 && /⚠ lessons: lesson L1 applies to app\/workers\/retry_sweep\.rb, and no decision or risk cites it: "Rule number 1/.test(r.stderr) &&
+    !/lesson L2/.test(r.stderr), r.stderr);
+  r = rnd({ ...spec, slug: "lr-a", risks: [...(spec.risks || []), { risk: "L1 says read first; the worker was read", disposition: "accept" }] });
+  ok("lessons at render: citing the id in a risk quiets it", r.status === 0 && !/lesson L1/.test(r.stderr), r.stderr);
+  write(31);
+  r = rnd({ ...spec, slug: "lr-a" });
+  ok("lessons at render: a file over the cap is refused, naming retire", r.status !== 0 && /holds 31 lessons, over the cap of 30/.test(r.stderr), r.stderr);
+  ok("lessons at render: --force goes past the cap", rnd({ ...spec, slug: "lr-a" }, "--force").status === 0);
+
+  // simpler: advisory when missing, refused when malformed, shown when given.
+  write(1);
+  r = rnd({ ...spec, slug: "lr-a" });
+  ok("simpler: a spec without it warns", r.status === 0 && /⚠ simpler: name the simplest approach/.test(r.stderr), r.stderr);
+  ok("simpler: a malformed one is refused", /simpler: \{ "alternative"/.test(rnd({ ...spec, slug: "lr-a", simpler: "do less" }).stderr));
+  r = rnd({ ...spec, slug: "lr-a", simpler: { alternative: "Retry inline three times", whyNot: "it retries into the outage" } });
+  const md = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "lr-a.md"), "utf8");
+  const rv = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "lr-a.review.html"), "utf8");
+  ok("simpler: shown after the non-goals on the md and the review page, with no warning",
+    r.status === 0 && !/⚠ simpler/.test(r.stderr) && /## The simpler approach\n\nRetry inline three times\n\nNot taken: it retries into the outage/.test(md) &&
+    /<h2>The simpler approach<\/h2><p>Retry inline three times<\/p>/.test(rv), r.stderr);
+
+  // The news hook tells the lessons at SessionStart only, even with no plan
+  // state on the machine at all, and cuts them at 4 KB.
+  const EMPTY = { ...ENV, DEEP_PLAN_STATE_DIR: path.join(TMP, "lessons-empty-state"), CLAUDE_PROJECT_DIR: LR };
+  const hear = (event, env = EMPTY) => {
+    const h = spawnSync("bash", [path.join(HERE, "hooks", "news.sh")], { encoding: "utf8", env,
+      input: JSON.stringify({ hook_event_name: event, cwd: LR, session_id: "lessons-s1", prompt: "hi" }) });
+    try { return JSON.parse(h.stdout).hookSpecificOutput.additionalContext; } catch { return ""; }
+  };
+  let t = hear("SessionStart");
+  ok("lessons hook: a session start in a repo with lessons hears them, quoted from the file",
+    /deep-plan lessons, quoted from this repo's committed \.seamux\/lessons\.md/.test(t) && /^L1 \(app\/workers\/\*\*\): Rule number 1/m.test(t), t);
+  ok("lessons hook: a prompt does not repeat them", hear("UserPromptSubmit") === "");
+  ok("lessons hook: …and with plan state on the machine, the same", /^L1 /m.test(hear("SessionStart", { ...ENV, CLAUDE_PROJECT_DIR: LR })) &&
+    !/deep-plan lessons/.test(hear("UserPromptSubmit", { ...ENV, CLAUDE_PROJECT_DIR: LR })));
+  write(30);
+  t = hear("SessionStart");
+  ok("lessons hook: the brief stops at 4 KB and says how many more", Buffer.byteLength(t) < 4600 && /…and \d+ more in \.seamux\/lessons\.md/.test(t), String(Buffer.byteLength(t)));
+  fs.rmSync(path.join(LR, ".seamux", "lessons.md"));
+  ok("lessons hook: no lessons file, nothing said", hear("SessionStart") === "");
+}
+
 if (want("hot-path cost")) {
   const t0 = process.hrtime.bigint();
   for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);

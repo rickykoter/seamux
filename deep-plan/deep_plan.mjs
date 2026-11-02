@@ -25,7 +25,7 @@ import { epicHtml, incrementMd, bundleReadme, incrementFileNames, checkLinesMd }
 import { checkEvidence } from "./lib/evidence.mjs";
 import { buildMap } from "./lib/map.mjs";
 import { SURFACE_CSS, SURFACE_JS, surfaceOpen, surfaceClose, fileTreeHtml, diagramCardHtml, diagramsForValidation } from "./lib/surface.mjs";
-import { resolveFiles, resolver } from "./lib/verify.mjs";
+import { resolveFiles, resolver, matchesGlob } from "./lib/verify.mjs";
 import { runExec, acquireSteps, alive, sleep, tail } from "./lib/runner.mjs";
 import { releaseClaims } from "./lib/claims.mjs";
 import { buildProof, withProof, ghCanAttach, gh } from "./lib/proof.mjs";
@@ -41,7 +41,7 @@ import { goPolicy, humanStop, goProblems, autoNext } from "./lib/autogo.mjs";
 import { NOTES_SUFFIX, readNoteLines, foldNotes, notedSlugs, fileNote, closeNote, openNotes } from "./lib/notes.mjs";
 import {
   CANDIDATES_SUFFIX, LESSON_CAP, foldCandidates, unsettled, fileCandidate, settleCandidate,
-  repoTop, lessonsFile, readLessons, writeLessons, keepLesson, mergeLesson, retireLesson, lessonFrom,
+  repoTop, lessonsFile, readLessons, writeLessons, keepLesson, mergeLesson, retireLesson, lessonFrom, lessonReport,
 } from "./lib/lessons.mjs";
 import {
   FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
@@ -130,6 +130,12 @@ function validate(spec, force) {
   // A parent's workstreams, shape only; membership is judged at render.
   errs.push(...validateWorkstreams(spec));
   if (!spec.context) errs.push("context is required (why now, what exists, what is out of frame)");
+  if (spec.simpler !== undefined) {
+    const sm = spec.simpler;
+    if (!sm || typeof sm !== "object" || Array.isArray(sm) || typeof sm.alternative !== "string" || !sm.alternative.trim() ||
+        typeof sm.whyNot !== "string" || !sm.whyNot.trim())
+      errs.push('simpler: { "alternative": "the simplest approach considered", "whyNot": "why the plan does not take it" }');
+  }
   if (!Array.isArray(spec.deliverables) || spec.deliverables.length === 0)
     errs.push("at least one deliverable (increment) is required");
 
@@ -809,6 +815,8 @@ function mdPlan(spec, adrs = []) {
     for (const g of spec.nonGoals) L.push(`- ${typeof g === "string" ? g : g.nonGoal || JSON.stringify(g)}`);
     L.push("");
   }
+  if (spec.simpler && spec.simpler.alternative)
+    L.push("## The simpler approach", "", `${spec.simpler.alternative}`, "", `Not taken: ${spec.simpler.whyNot || ""}`, "");
   if ((spec.decisions || []).length) {
     L.push("## Decisions", "");
     for (const d of spec.decisions) L.push(`- **${d.decision}** — ${d.why}`);
@@ -1496,6 +1504,7 @@ ${obGaps ? `<p class="dim">gaps this plan fills:</p><ul>${obGaps}</ul>` : ""}` :
 <p class="dim">plan <code>${esc(spec.slug)}</code></p>
 <h2>Context</h2><p>${esc(spec.context).replace(/\n\s*\n/g, "</p><p>")}</p>
 ${nonGoals ? `<h2>Non-goals</h2><ul>${nonGoals}</ul>` : ""}
+${spec.simpler && spec.simpler.alternative ? `<h2>The simpler approach</h2><p>${esc(spec.simpler.alternative)}</p><p class="dim">Not taken: ${esc(spec.simpler.whyNot || "")}</p>` : ""}
 ${endState}
 ${decs ? `<h2>Decisions</h2><ul>${decs}</ul>` : ""}
 ${workstreamsHtml(spec, true)}
@@ -2147,6 +2156,25 @@ async function render(specPath, opts) {
     for (const w of checkEvidence(spec, planRoot))
       console.error("  ⚠ evidence: " + w);
   } catch { /* the check must never break a render */ }
+  // The repo's lessons (lib/lessons.mjs): over the cap refuses; a lesson whose
+  // paths the plan touches, with no decision or risk citing it, warns.
+  {
+    const top = repoTop(planRoot);
+    if (top) {
+      let real = planRoot;
+      try { real = fs.realpathSync(planRoot); } catch { /* as given */ }
+      const rel = path.relative(fs.realpathSync(top), real).split(path.sep).join("/");
+      const files = (spec.deliverables || []).flatMap(d => planPaths(d)).map(f => rel ? `${rel}/${f}` : f);
+      let rep = { over: "", warns: [] };
+      try { rep = lessonReport(readLessons(top), spec, files, matchesGlob); } catch { /* a lessons file that will not read never breaks a render */ }
+      for (const w of rep.warns) console.error("  ⚠ lessons: " + w);
+      if (rep.over && !opts.force) { console.error("deep-plan: spec refused — " + rep.over); process.exit(1); }
+      else if (rep.over) { console.error("deep-plan: --force past the lessons cap — logged"); violations.push(rep.over); }
+    }
+  }
+  // The simplest approach the plan turned down: advisory.
+  if (!spec.simpler)
+    console.error('  ⚠ simpler: name the simplest approach you turned down and why — "simpler": { "alternative": "…", "whyNot": "…" }');
   // Refuse-first extends to the diagrams: parse each with the vendored
   // mermaid before any surface is written — a plan page with a parse error
   // where a drawing should be fails the reader exactly where it matters.

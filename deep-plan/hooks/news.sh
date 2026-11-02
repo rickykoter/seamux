@@ -84,12 +84,18 @@ if [ -e "$1" ]; then
     find "$STATE_DIR/turns" -type f -mtime +0 -delete 2>/dev/null
   fi
 fi
-# Family news and plan notes are node's to tell; with neither on disk, the
-# hook ends here on two globs.
+# Family news, plan notes and lessons are node's to tell; with none on disk,
+# the hook ends here on two globs and a test.
 set -- "$STATE_DIR"/families/*/index.json
 if [ ! -e "$1" ]; then
   set -- "$STATE_DIR"/*.notes.jsonl
-  [ -e "$1" ] || exit 0
+  if [ ! -e "$1" ]; then
+    # The repo's lessons are told once, at SessionStart, and only when the
+    # project has a lessons file (lib/lessons.mjs).
+    [ -e "${CLAUDE_PROJECT_DIR:-$PWD}/.seamux/lessons.md" ] || exit 0
+    [ -n "$read_payload" ] || { payload=$(cat); read_payload=1; }
+    case ${payload:0:16384} in *'"hook_event_name":"SessionStart"'*|*'"hook_event_name": "SessionStart"'*) ;; *) exit 0 ;; esac
+  fi
 fi
 if [ -n "${DEEP_PLAN_SKILL_DIR:-}" ]; then HOOKS="$DEEP_PLAN_SKILL_DIR/hooks"
 else case $0 in */*) HOOKS=${0%/*} ;; *) HOOKS=. ;; esac

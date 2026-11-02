@@ -196,3 +196,40 @@ export function retireLesson(doc, id) {
   bumpNext(doc, nextId(doc));
   return doc.lessons.splice(i, 1)[0];
 }
+
+// ------------------------------------------------------------ at render
+
+// What render says about a spec against its repo's lessons: `over` when the
+// file holds more than the cap (render refuses, so a hand edit cannot grow
+// it past what a person can read), and a warning for each lesson whose
+// applies globs match a file a deliverable names while no decision or risk
+// cites its id. `files` are repo-relative paths.
+export function lessonReport(doc, spec, files, matches) {
+  const over = doc.lessons.length > LESSON_CAP
+    ? `.seamux/lessons.md holds ${doc.lessons.length} lessons, over the cap of ${LESSON_CAP}: retire or merge some (deep-plan retro <slug> retire L<n> "<why>")`
+    : "";
+  const said = JSON.stringify([spec.decisions || [], spec.risks || []]);
+  const warns = [];
+  for (const l of doc.lessons) {
+    if (new RegExp(`\\b${l.id}\\b`).test(said)) continue;
+    const hit = files.find(f => l.applies.some(g => matches(f, g)));
+    if (hit) warns.push(`lesson ${l.id} applies to ${hit}, and no decision or risk cites it: ` +
+      `"${l.rule.split("\n")[0].slice(0, 120)}" (say how the plan heeds it, citing ${l.id})`);
+  }
+  return { over, warns };
+}
+
+// The lessons a session starting in `top` is told, cut to `cap` bytes.
+export function lessonsBrief(top, cap = 4096) {
+  let text = "";
+  try { text = fs.readFileSync(lessonsFile(top), "utf8"); } catch { return ""; }
+  const doc = parseLessons(text);
+  if (!doc.lessons.length) return "";
+  let out = "";
+  for (const l of doc.lessons) {
+    const line = `${l.id}${l.applies.length ? ` (${l.applies.join(", ")})` : ""}: ${l.rule.replace(/\s+/g, " ").trim()}\n`;
+    if (Buffer.byteLength(out + line) > cap) { out += `…and ${doc.lessons.length - out.split("\n").length + 1} more in .seamux/lessons.md\n`; break; }
+    out += line;
+  }
+  return out;
+}

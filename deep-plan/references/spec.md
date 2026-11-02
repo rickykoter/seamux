@@ -8,6 +8,8 @@ The full shape of the spec JSON (discipline step 5); `examples/example.spec.json
 - [Auto-go](#auto-go)
 - [Parent plans](#parent-plans)
 - [Shared state](#shared-state)
+- [The simpler approach](#the-simpler-approach)
+- [Lessons](#lessons)
 - [Advisory and derived fields](#advisory-and-derived-fields)
 - [How evidence is checked](#how-evidence-is-checked)
 
@@ -46,6 +48,7 @@ The full shape of the spec JSON (discipline step 5); `examples/example.spec.json
   "go":            "optional: \"human\" (the default), \"auto\", or { \"mode\": \"auto\", \"between\": \"commit|draft-pr\" }",
   "share":         "optional: true, or { \"remote\": \"origin\", \"prefix\": \"seamux-state/\", \"sync\": \"transitions|manual\" }",
   "nonGoals":      ["what this plan deliberately does not do"],
+  "simpler":       { "alternative": "the simplest approach considered", "whyNot": "why the plan does not take it" },
   "verification":  ["runnable commands"],
   "commits":       ["plan-wide record of what landed (same two shapes)"],
   "quiz":          [{ "id": "q1", "prompt": "...", "options": ["..."], "answer": 0,
@@ -107,6 +110,33 @@ parent's delivery one lookout review per member; see checks.md.
 other sessions pull it. It is false when left out, and a family child
 follows its parent's. Render refuses any other shape. What it does and the
 `SEAMUX_STATE_*` overrides are in sharing.md.
+
+## The simpler approach
+
+`simpler` names the simplest approach the plan considered and why it does
+not take it. It is advisory: render warns when it is missing and refuses
+only a malformed one. The md and both pages show it after the non-goals.
+
+## Lessons
+
+A repo's lessons live in its committed `.seamux/lessons.md`, one rule per
+`## L<n>` section with an `applies:` line of path globs and a `from:` line
+naming the plans it came from. Only `deep-plan retro` writes it, and it holds
+at most 30 rules. A session hears the file at start.
+
+Render reads it against the spec. A lesson whose globs match a file a
+deliverable names, while no decision or risk cites its id, is a warning.
+Cite it where the plan says how it heeds the rule, as in "L3: the module
+was read first". A file over 30 rules is refused until a retro retires or
+merges some.
+
+During a plan, misses become candidates in the plan's state: `deep-plan
+lesson "<text>"` after a correction from the human, and the engine's own
+at a failed grade, a `done --force`, and a review held by a blocker or
+major. `deep-plan retro <slug>` lists them; `keep <cid> "<rule>" --applies
+<globs>`, `merge <cid> L<n> ["<rule>"]` and `drop <cid> "<why>"` settle each,
+and `retire L<n> "<why>"` removes a rule. `close` and an ending `deliver`
+refuse while a candidate is unsettled; `--force` is the human's.
 
 ## Advisory and derived fields
 
