@@ -114,7 +114,10 @@ These survive a compaction; everything below them is how.
    commands and quiz options alone: the renderer and the quiz linter measure
    those. Write a file an increment deletes as `{"path": …, "change":
    "remove"}`, and give each contract `at`, the paths it lives in: the End
-   state map draws the removal and pins the contract on its file.
+   state map draws the removal and pins the contract on its file. A
+   refactor that repeats one change over many files or call sites is one
+   deliverable with a `loop` of targets, which render splits into batches
+   ([loops.md](references/loops.md#refactor-loops)).
 6. **`deep-plan render <spec.json> --root <worktree>`**, the refuse-first
    renderer. Always pass `--root` when working outside the target worktree:
    an inferred root outside it does not gate the wrong thing, it *disarms

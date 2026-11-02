@@ -40,6 +40,7 @@ import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import { goPolicy, humanStop, goProblems, autoNext } from "./lib/autogo.mjs";
 import { parseLink, gather, seedId, writeSeed } from "./lib/intake.mjs";
 import { CI_TIMEOUT_S } from "./lib/ci.mjs";
+import { loopProblems, expandLoops, isLoopTarget, uncitedLoops } from "./lib/loop.mjs";
 import { NOTES_SUFFIX, readNoteLines, foldNotes, notedSlugs, fileNote, closeNote, openNotes } from "./lib/notes.mjs";
 import {
   CANDIDATES_SUFFIX, LESSON_CAP, foldCandidates, unsettled, fileCandidate, settleCandidate,
@@ -2102,7 +2103,20 @@ function renderFamily(spec, family) {
 }
 
 async function render(specPath, opts) {
-  const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
+  let spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
+  // A refactor loop becomes one increment per batch before anything else
+  // reads the spec (lib/loop.mjs, ADR 0067), so every rule below sees the
+  // increments that will run. Its root is the one render records below.
+  {
+    const lerrs = loopProblems(spec);
+    if (lerrs.length) {
+      console.error("deep-plan: spec refused — loop:");
+      for (const e of lerrs) console.error("  ✗ " + e);
+      process.exit(1);
+    }
+    const p0 = readState(spec.slug);
+    spec = expandLoops(spec, opts.root || (p0 && p0.root) || gitRoot(process.cwd()) || process.cwd());
+  }
   const violations = validate(spec, opts.force);
   // The archive holds one shape: every files[] entry as {path, change}, with
   // change null unless the author declared it. The author's file is not
@@ -2137,9 +2151,10 @@ async function render(specPath, opts) {
     const unread = [];
     (spec.deliverables || []).forEach((d, i) => {
       for (const f of planPaths(d))
-        if (fs.existsSync(path.join(root, f)) && !cited(f) && !created.has(f))
+        if (fs.existsSync(path.join(root, f)) && !cited(f) && !created.has(f) && !isLoopTarget(d, f))
           unread.push(`deliverable ${i + 1} ("${d.title}") edits ${f} — no verifiedFact cites it`);
     });
+    unread.push(...uncitedLoops(spec, root, cited));
     if (unread.length && !opts.force) {
       console.error("deep-plan: spec refused — files planned but not read:");
       for (const u of unread) console.error("  ✗ " + u);

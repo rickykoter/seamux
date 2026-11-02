@@ -7240,6 +7240,61 @@ if (want("ci check: the PR's checks behind the gate")) {
   ok("ci: a timeout that is not a number is refused", r.status === 2 && /--timeout takes a number of seconds/.test(r.stderr), r.stderr);
 }
 
+if (want("refactor loops expand at render")) {
+  const LP = path.join(TMP, "loop-root");
+  fs.mkdirSync(path.join(LP, "t"), { recursive: true });
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  for (const x of ["a", "b", "c", "d", "e"]) fs.writeFileSync(path.join(LP, "t", x + ".rb"), `# ${x}\n`);
+  execSync(`git init -q && git add -A && ${G} commit -q -m init`, { cwd: LP });
+  const lc = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: ENV, cwd: LP });
+  const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
+  const arch = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, n + ".spec.json"), "utf8"));
+  const targets = ["t/a.rb", "t/b.rb", "t/c.rb", "t/d.rb", "t/e.rb"];
+  const mk = (slug, loop = { targets, batch: 2 }, extra = {}) => {
+    const s = JSON.parse(JSON.stringify(spec));
+    Object.assign(s, { slug, review: { increments: [1, 2], delivery: false }, ...extra });
+    s.deliverables[0].loop = loop;
+    s.verifiedFacts = [...s.verifiedFacts, { claim: "the pattern, read in one target", evidence: "t/a.rb:1" }];
+    s.risks = [...(s.risks || []), { risk: "a batch may miss a caller", disposition: "mitigate", deliverableRef: s.deliverables[0].title }];
+    return s;
+  };
+
+  for (const [label, loop] of [["no targets", { targets: [] }], ["a target twice", { targets: ["x", "x"] }],
+    ["a batch of 0", { targets: ["x"], batch: 0 }], ["an unknown field", { targets: ["x"], each: 1 }]])
+    ok(`loops: render refuses a loop with ${label}`, /spec refused — loop/.test(lc("render", tmpSpec(mk("lp-bad", loop)), "--root", LP).stderr));
+
+  let r = lc("render", tmpSpec(mk("lp-a")), "--root", LP);
+  const A = arch("lp-a"), incs = stOf("lp-a").increments, t0 = spec.deliverables[0].title;
+  ok("loops: five targets in batches of two are three increments, then the rest", r.status === 0 && incs.length === 3 + spec.deliverables.length - 1, r.stderr);
+  ok("loops: each batch is titled with its number and targets, and says them in its body",
+    A.deliverables[0].title === `${t0} (1/3: t/a.rb, t/b.rb)` && A.deliverables[2].title === `${t0} (3/3: t/e.rb)` &&
+    /This batch \(2 of 3\): t\/c\.rb, t\/d\.rb\.$/.test(A.deliverables[1].body), A.deliverables.map(d => d.title).join(" | "));
+  ok("loops: each batch carries the deliverable's checks and its targets as files, marked loopOf",
+    A.deliverables.slice(0, 3).every(d => JSON.stringify(d.checks) === JSON.stringify(spec.deliverables[0].checks) && d.loopOf && d.loopOf.title === t0) &&
+    A.deliverables[1].files.map(f => f.path).includes("t/c.rb") && !A.deliverables[1].files.map(f => f.path).includes("t/a.rb"));
+  ok("loops: no read-before-plan refusal for the uncited targets", !/files planned but not read/.test(r.stderr), r.stderr);
+  ok("loops: review.increments follow the expansion", JSON.stringify(A.review.increments) === "[1,2,3,4]", JSON.stringify(A.review.increments));
+  ok("loops: a risk naming the looped deliverable names its first batch", A.risks.some(x => x.deliverableRef === A.deliverables[0].title));
+  ok("loops: the archive holds no loop field, so it never expands twice", !A.deliverables.some(d => d.loop));
+  r = lc("render", path.join(ENV.DEEP_PLAN_KEYS_DIR, "lp-a.spec.json"), "--root", LP);
+  ok("loops: re-rendering the archive keeps the same increments", r.status === 0 && stOf("lp-a").increments.length === incs.length, r.stderr);
+  r = lc("rehydrate", "lp-a");
+  ok("loops: rehydrate is byte-identical", r.status === 0 && /byte-identical/.test(r.stdout), r.stdout + r.stderr);
+
+  const nocite = mk("lp-b");
+  nocite.verifiedFacts = spec.verifiedFacts;
+  r = lc("render", tmpSpec(nocite), "--root", LP);
+  ok("loops: a loop none of whose file targets is cited is refused", r.status !== 0 && /loop ".*": no verifiedFact cites any of its file targets/.test(r.stderr), r.stderr);
+  r = lc("render", tmpSpec(mk("lp-c", { targets: ["callA()", "callB()", "callC()"] })), "--root", LP);
+  ok("loops: call-site targets join no files and need no citation", r.status === 0 && arch("lp-c").deliverables[0].title.endsWith("(1/3: callA())"), r.stderr);
+  const auto = mk("lp-e", { targets, batch: 2 }, { go: "auto", review: { increments: [1, 2], delivery: false, agentMayClose: true } });
+  auto.deliverables[1].go = { human: "the migration" };
+  auto.deliverables[0].go = undefined;
+  r = lc("render", tmpSpec(auto), "--root", LP);
+  ok("loops: an auto plan's batches auto-go, and a later deliverable's stop moves with it",
+    r.status === 0 && !arch("lp-e").deliverables.slice(0, 3).some(d => d.go) && arch("lp-e").deliverables[3].go.human === "the migration", r.stderr);
+}
+
 if (want("hot-path cost")) {
   const t0 = process.hrtime.bigint();
   for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);

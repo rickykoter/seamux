@@ -8,6 +8,7 @@ The full shape of the spec JSON (discipline step 5); `examples/example.spec.json
 - [Auto-go](#auto-go)
 - [Parent plans](#parent-plans)
 - [Shared state](#shared-state)
+- [Refactor loops](#refactor-loops)
 - [The simpler approach](#the-simpler-approach)
 - [Lessons](#lessons)
 - [Advisory and derived fields](#advisory-and-derived-fields)
@@ -41,6 +42,7 @@ The full shape of the spec JSON (discipline step 5); `examples/example.spec.json
                         "note": "optional", "timeout": "ci only: seconds to wait (1800)" }],
                       "waiver": "only when nothing can prove it: why",
                       "go": { "human": "auto plans only: why a person gives this increment's go" },
+                      "loop": { "targets": ["paths or call sites"], "batch": "optional: targets per increment (1)" },
                       "commits": ["sha subject", { "sha": "...", "subject": "..." }] }],
   "review":        { "increments": [1, 3], "delivery": true,
                      "agentMayClose": false, "quiz": false,
@@ -116,6 +118,19 @@ parent's delivery one lookout review per member; see checks.md.
 other sessions pull it. It is false when left out, and a family child
 follows its parent's. Render refuses any other shape. What it does and the
 `SEAMUX_STATE_*` overrides are in sharing.md.
+
+## Refactor loops
+
+A deliverable with `loop` is expanded at render into one increment per
+`batch` of its `targets`, before anything else reads the spec. Each batch
+is titled "<title> (k/m: targets)", says its targets in its body, carries
+the deliverable's checks, and lists its targets that are files under the
+root. Render archives the expanded spec with `loopOf` on each batch and no
+`loop` field, so it never expands twice; `review.increments` numbers and a
+risk's `deliverableRef` follow the expansion. A deliverable's `go.human`
+stays on its first batch. Targets skip the read-before-plan floor, but a
+loop with file targets needs a verifiedFact citing at least one of them.
+A parent plan's deliverables do not loop.
 
 ## The simpler approach
 

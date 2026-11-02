@@ -8,6 +8,7 @@ holds, without a person steering each retry.
 - [The bug lane](#the-bug-lane)
 - [Fix until green, then stop](#fix-until-green-then-stop)
 - [CI after the draft PR](#ci-after-the-draft-pr)
+- [Refactor loops](#refactor-loops)
 
 ## The bug lane
 
@@ -73,3 +74,25 @@ When CI fails, the run prints each failing check and its job's log tail.
 Fix the cause, commit, push, and run the check again. It is the same loop
 as a local check, with the same retry cap: three red CI runs in a row block
 the increment for a re-plan.
+
+## Refactor loops
+
+A refactor that makes one change across many places (rename a call, move
+callers to a new API, delete a pattern) is one deliverable with a `loop`:
+
+```json
+{ "title": "Move callers to fetchSession", "body": "Replace getSession(req) with …",
+  "files": ["lib/session.ts"],
+  "loop": { "targets": ["app/a.ts", "app/b.ts", "app/c.ts", "app/d.ts"], "batch": 2 },
+  "checks": [{ "kind": "test", "recipe": "unit" }] }
+```
+
+Render splits it into one increment per batch: here two, each gated on the
+same checks and reviewed like any increment. Under `go: auto` each batch
+that passes starts the next, so the loop runs until its targets are done,
+and the retry cap stops it for a re-plan when a batch keeps failing.
+
+List the targets from a search (`grep -rl getSession app/`) and cite one of
+them you read: the pattern is planned from it. A batch that finds a target
+the change does not fit is a discovery: amend the spec (drop the target,
+or add a deliverable for it) and re-render.
