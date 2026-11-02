@@ -23,6 +23,8 @@ import { appendJsonLine } from "./notes.mjs";
 
 export const CANDIDATES_SUFFIX = ".lessons.jsonl";
 export const LESSON_CAP = 30;
+// How much of one rule a session start tells.
+export const RULE_CAP = 500;
 export const SOURCES = ["correction", "grade", "force", "review", "retry"];
 export const candidatesPath = slug => path.join(STATE_DIR, slug + CANDIDATES_SUFFIX);
 
@@ -227,7 +229,11 @@ export function lessonsBrief(top, cap = 4096) {
   if (!doc.lessons.length) return "";
   let out = "";
   for (const l of doc.lessons) {
-    const line = `${l.id}${l.applies.length ? ` (${l.applies.join(", ")})` : ""}: ${l.rule.replace(/\s+/g, " ").trim()}\n`;
+    // Each rule is cut on its own, so one long rule cannot crowd out the
+    // rest, and quoted as a JSON string, so its text cannot end the quote.
+    let rule = l.rule.replace(/\s+/g, " ").trim();
+    if (rule.length > RULE_CAP) rule = rule.slice(0, RULE_CAP - 1) + "…";
+    const line = `${l.id}${l.applies.length ? ` (${l.applies.join(", ")})` : ""}: ${JSON.stringify(rule)}\n`;
     if (Buffer.byteLength(out + line) > cap) { out += `…and ${doc.lessons.length - out.split("\n").length + 1} more in .seamux/lessons.md\n`; break; }
     out += line;
   }
