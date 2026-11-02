@@ -416,7 +416,7 @@ export function reconcileChecks(prev, checks) {
 export function treeOf(root, scope = null) {
   if (!root) return null;
   const git = (args, env, input) => spawnSync("git", ["-C", root, ...args],
-    { encoding: "utf8", env: { ...process.env, ...env }, ...(input !== undefined ? { input } : {}) });
+    { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, env: { ...process.env, ...env }, ...(input !== undefined ? { input } : {}) });
   const head = git(["rev-parse", "HEAD"]);
   if (head.status !== 0) return null;
   const index = git(["rev-parse", "--path-format=absolute", "--git-path", "index"]).stdout.trim();
