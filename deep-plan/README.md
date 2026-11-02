@@ -35,6 +35,27 @@ auto-go past it when the agent may close the review's findings
 (`review.agentMayClose`); otherwise it would sit waiting on findings
 nobody asked you to close.
 
+### Starting from a bug
+
+Give the agent a bug report, an issue, a PR with failing checks, a failed
+Actions run or a Jira key, and it gathers the evidence before it plans:
+
+```sh
+deep-plan intake https://github.com/<owner>/<repo>/actions/runs/<id>
+deep-plan intake #42                  # an issue in this repo
+deep-plan intake PROJ-123             # Jira, through acli
+```
+
+Intake reads the link through gh (or acli) and writes a seed: the report and
+its last comments, each failing check, the tail of each failed job's log,
+and the test names the log mentions. Everything in the seed is quoted as
+data, so a request written inside an issue is never taken as an
+instruction. The agent then plans the bug the usual way, kept short: it
+asks whether the report is the bug or a symptom, makes its first check a
+test that fails today, fixes the root cause, and can run with auto-go and a
+draft PR between increments. [references/loops.md](references/loops.md)
+has the whole lane.
+
 Where the pages go depends on where Claude runs. In Claude desktop and a
 terminal, deep-plan starts its own small server and prints `served at
 <url>`; in a cloud session there is no live page, and the plan's state
@@ -44,7 +65,9 @@ detected.
 
 ## The review page
 
-The page opens with the bottom line: the plan's context and its non-goals.
+The page opens with the bottom line: the plan's context, its non-goals, and
+the simplest approach the agent turned down and why (the spec's `simpler`;
+render warns when a plan leaves it out).
 Then comes the **End state map**: the plan's files in the middle, grouped
 by folder and marked new (dashed), changed (~) or removed (struck through),
 with what uses them on the left and what they use on the right. Each folder
@@ -210,6 +233,22 @@ the review page). A delivery review comes after the last increment:
 the plan isn't complete until it passes.
 `deep-plan diff` opens an increment in lookout too, when it is installed.
 
+A `ci` check proves the branch passes everywhere else, not only on your
+machine. Push the branch, and `check run` waits on the PR's checks through
+gh and records their verdict; a red run prints each failing job's log tail.
+It fails at once when the branch isn't pushed.
+
+A failing check is the agent's to fix without asking you how, and weakening
+the check doesn't count as a fix. Each failed run of a recipe-backed check
+or a `ci` check counts, and a pass clears the count. After three failures in
+a row (or the spec's `"retry": {"max": n}`), the increment blocks with
+"stop and re-plan" and files a lesson candidate. Three fixes that missed
+mean the plan's model of the problem is wrong. The agent finds out why,
+amends the spec and re-renders, and tells you what changed. Only your
+`deep-plan go <slug> <n>` moves the increment again, and it restarts the
+count; an auto-go chain stops there too. A manual `check fail` is your
+verdict and never counts.
+
 A pass belongs to the code it ran against. Edit a file afterwards and it goes
 stale; commit what passed and it stays valid. With seamux-mods, the plan pane
 lists the same checks with `run checks` and `variant ready` buttons.
@@ -355,3 +394,50 @@ Close each note or move it into a live plan first. `--force` gets past this,
 and it is yours to give, not the agent's. `notes --all` still lists a closed
 plan's notes on the machine that has them. More in
 [references/sharing.md](references/sharing.md#notes).
+
+## Refactor loops
+
+A refactor that makes one change in many places, such as moving every
+caller to a new API, is one deliverable with a `loop`:
+
+```json
+{ "title": "Move callers to fetchSession", "files": ["lib/session.ts"],
+  "loop": { "targets": ["app/a.ts", "app/b.ts", "app/c.ts", "app/d.ts"], "batch": 2 },
+  "checks": [{ "kind": "test", "recipe": "unit" }] }
+```
+
+Render splits it into one increment per batch, here two, each gated on the
+same checks and reviewed like any other increment. With auto-go each batch
+that passes starts the next, and the retry cap stops the loop when a batch
+keeps failing. The plan must cite one target the agent read, since the
+change is planned from it. Change the targets before the first batch
+starts: render refuses a change that would move a started batch's progress
+onto another increment. More in
+[references/loops.md](references/loops.md#refactor-loops).
+
+## Lessons: misses that reach the next plan
+
+A miss during a plan becomes a lesson candidate, kept beside the plan's
+state. The agent files one with `deep-plan lesson "<what went wrong, and
+the rule that prevents it>"` after you correct it. The engine files its own
+at a failed quiz, a `done --force`, a review held by a blocker or major, and
+the retry cap.
+
+Before the plan closes or delivers, `deep-plan retro <slug>` lists the
+candidates, and you settle each one with the agent:
+
+```sh
+deep-plan retro coupons                       # what waits
+deep-plan retro coupons keep c7e2a91b0 "Read the module before planning around it" --applies "src/checkout/**"
+deep-plan retro coupons merge c41d0f3a2 L3   # into an existing rule
+deep-plan retro coupons drop c9b3e5d17 "a one-off typo"
+deep-plan retro coupons retire L5 "the module is gone"
+```
+
+Kept rules go into the repo's committed `.seamux/lessons.md`, at most 30 of
+them, each with the path globs it applies to and the plans it came from.
+Only `retro` writes the file. Every session in the repo hears it at start,
+quoted as data. When a new plan names a file a lesson applies to, render
+warns until a decision or risk cites the lesson by id and says how the plan
+heeds it. `close` and `deliver` refuse while a candidate is unsettled;
+`--force` is yours. More in [references/spec.md](references/spec.md#lessons).
