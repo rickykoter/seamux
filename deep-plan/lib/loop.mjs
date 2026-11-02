@@ -34,6 +34,31 @@ export function loopProblems(spec) {
 
 const filePath = d => (typeof d === "string" ? d : d && d.path);
 
+// A target names a file the batch edits only when it is a relative path to
+// a regular file inside the root: not a directory, not outside it.
+export function isFileTarget(root, t) {
+  if (!root || path.isAbsolute(t)) return false;
+  const p = path.resolve(root, t);
+  if (p !== path.resolve(root) && !p.startsWith(path.resolve(root) + path.sep)) return false;
+  try { return fs.statSync(p).isFile(); } catch { return false; }
+}
+
+// A re-render reconciles increments by number. When a loop's batches change
+// under work that has started, a started increment's progress would land on
+// another batch or deliverable; refuse that and say what to do instead.
+export function movedProgress(prevIncs, oldSpec, spec) {
+  const out = [];
+  const oldDs = (oldSpec && oldSpec.deliverables) || [];
+  (prevIncs || []).forEach(p => {
+    if (!p || !p.status || p.status === "pending") return;
+    const was = oldDs[p.n - 1], now = (spec.deliverables || [])[p.n - 1];
+    if (!(was && (was.loopOf || (now && now.loopOf)))) return;
+    if (!now || now.title !== p.title)
+      out.push(`increment ${p.n} ("${p.title}") is ${p.status}, but after this render increment ${p.n} is ${now ? `"${now.title}"` : "gone"}`);
+  });
+  return out;
+}
+
 // The spec with each loop expanded, or the spec as given when none loops.
 // `root` decides which targets are files. Call only after loopProblems
 // returned nothing.
@@ -43,7 +68,8 @@ export function expandLoops(spec, root) {
   const titles = new Map();          // old title -> first new title
   spec.deliverables.forEach((d, i) => {
     if (!d.loop) { out.push(d); map.set(i + 1, [out.length]); return; }
-    const { loop, ...base } = d;
+    // A commit list belongs to the work as it landed, never to every batch.
+    const { loop, commits: _c, ...base } = d;
     const size = loop.batch || 1, targets = loop.targets;
     const batches = [];
     for (let k = 0; k < targets.length; k += size) batches.push(targets.slice(k, k + size));
@@ -52,8 +78,7 @@ export function expandLoops(spec, root) {
       const named = batch.join(", ");
       const title = `${d.title} (${k + 1}/${batches.length}: ${named.length > TITLE_TARGETS ? named.slice(0, TITLE_TARGETS - 1) + "…" : named})`;
       const files = [...(d.files || [])];
-      for (const t of batch)
-        if (root && fs.existsSync(path.join(root, t)) && !files.some(f => filePath(f) === t)) files.push(t);
+      for (const t of batch) if (isFileTarget(root, t) && !files.some(f => filePath(f) === t)) files.push(t);
       const inc = { ...base, title, files,
         body: `${d.body || ""}\n\nThis batch (${k + 1} of ${batches.length}): ${batch.join(", ")}.`.trim(),
         loopOf: { title: d.title, batch: k + 1, of: batches.length, targets: batch } };
@@ -66,7 +91,9 @@ export function expandLoops(spec, root) {
   });
   const next = { ...spec, deliverables: out };
   const inc = spec.review && spec.review.increments;
-  if (Array.isArray(inc)) next.review = { ...spec.review, increments: inc.flatMap(n => map.get(n) || [n]) };
+  // A number past the old end stays past the new one, so it is still refused.
+  const grew = out.length - spec.deliverables.length;
+  if (Array.isArray(inc)) next.review = { ...spec.review, increments: inc.flatMap(n => map.get(n) || [typeof n === "number" && n > spec.deliverables.length ? n + grew : n]) };
   if (Array.isArray(spec.risks))
     next.risks = spec.risks.map(r => r && typeof r === "object" && titles.has(r.deliverableRef) ? { ...r, deliverableRef: titles.get(r.deliverableRef) } : r);
   return next;
@@ -81,7 +108,7 @@ export function uncitedLoops(spec, root, cited) {
   for (const d of spec.deliverables || []) {
     if (!d.loopOf) continue;
     const e = seen.get(d.loopOf.title) || { files: [], cited: false };
-    for (const t of d.loopOf.targets) if (root && fs.existsSync(path.join(root, t))) { e.files.push(t); if (cited(t)) e.cited = true; }
+    for (const t of d.loopOf.targets) if (isFileTarget(root, t)) { e.files.push(t); if (cited(t)) e.cited = true; }
     seen.set(d.loopOf.title, e);
   }
   return [...seen.entries()].filter(([, e]) => e.files.length && !e.cited)

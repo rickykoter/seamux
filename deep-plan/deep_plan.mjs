@@ -40,7 +40,7 @@ import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import { goPolicy, humanStop, goProblems, autoNext } from "./lib/autogo.mjs";
 import { parseLink, gather, seedId, writeSeed } from "./lib/intake.mjs";
 import { CI_TIMEOUT_S } from "./lib/ci.mjs";
-import { loopProblems, expandLoops, isLoopTarget, uncitedLoops } from "./lib/loop.mjs";
+import { loopProblems, expandLoops, isLoopTarget, uncitedLoops, movedProgress } from "./lib/loop.mjs";
 import { NOTES_SUFFIX, readNoteLines, foldNotes, notedSlugs, fileNote, closeNote, openNotes } from "./lib/notes.mjs";
 import {
   CANDIDATES_SUFFIX, LESSON_CAP, foldCandidates, unsettled, fileCandidate, settleCandidate,
@@ -2104,6 +2104,8 @@ function renderFamily(spec, family) {
 
 async function render(specPath, opts) {
   let spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
+  // The archive as it was before this render overwrites it.
+  const priorSpec = planSpec(spec.slug);
   // A refactor loop becomes one increment per batch before anything else
   // reads the spec (lib/loop.mjs, ADR 0067), so every rule below sees the
   // increments that will run. Its root is the one render records below.
@@ -2305,6 +2307,18 @@ async function render(specPath, opts) {
   // keys are listed after the spread so the spec still wins on `title` and the
   // defaults still apply.
   const old = new Map((st.increments || []).map(i => [i.n, i]));
+  // Progress follows the increment number; a loop whose batches changed under
+  // started work would hand it to another increment (lib/loop.mjs).
+  {
+    const moved = movedProgress(st.increments, priorSpec, spec);
+    if (moved.length && !opts.force) {
+      console.error("deep-plan: spec refused — a loop's batches changed under started work:");
+      for (const m of moved) console.error("  ✗ " + m);
+      console.error("Change a loop's targets only before its first batch starts. After that, leave the loop as it is and add " +
+        "a deliverable at the end for what you found; --force re-renders anyway (the human's call).");
+      process.exit(1);
+    } else if (moved.length) { console.error(`deep-plan: --force past ${moved.length} moved increment(s) — logged`); violations.push(...moved); }
+  }
   st.increments = (spec.deliverables || []).map((d, i) => {
     const prev = old.get(i + 1) || {};
     return { ...prev,

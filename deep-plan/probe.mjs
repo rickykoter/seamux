@@ -7291,6 +7291,29 @@ if (want("refactor loops expand at render")) {
   auto.deliverables[1].go = { human: "the migration" };
   auto.deliverables[0].go = undefined;
   r = lc("render", tmpSpec(auto), "--root", LP);
+  // Progress follows the increment number, so render refuses a loop change
+  // that would move a started batch's progress onto another increment.
+  {
+    const s1 = mk("lp-m");
+    lc("render", tmpSpec(s1), "--root", LP);
+    const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "lp-m.key.json"), "utf8"));
+    lc("grade", "lp-m", ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+    lc("go", "lp-m", "1");
+    let rr = lc("render", tmpSpec(mk("lp-m", { targets: ["t/a.rb", "t/c.rb", "t/d.rb", "t/e.rb"], batch: 2 })), "--root", LP);
+    ok("loops: changing the targets under a started batch is refused, naming the move",
+      rr.status !== 0 && /a loop's batches changed under started work/.test(rr.stderr) && /increment 1 \(".*1\/3: t\/a\.rb, t\/b\.rb\)"\) is authorized/.test(rr.stderr) &&
+      stOf("lp-m").increments[0].status === "authorized", rr.stderr);
+    rr = lc("render", tmpSpec(mk("lp-m")), "--root", LP);
+    ok("loops: an unchanged loop re-renders with its progress where it was", rr.status === 0 && stOf("lp-m").increments[0].status === "authorized", rr.stderr);
+  }
+  const lib = await import(new URL("lib/loop.mjs", import.meta.url));
+  ok("loops: only a relative path to a file inside the root is a file target",
+    lib.isFileTarget(LP, "t/a.rb") && !lib.isFileTarget(LP, "t") && !lib.isFileTarget(LP, "/etc/hosts") &&
+    !lib.isFileTarget(LP, "../../etc/hosts") && !lib.isFileTarget(LP, "callA()"));
+  const ex = lib.expandLoops({ deliverables: [{ title: "x", commits: ["abc fix"], loop: { targets: ["a", "b"], batch: 1 } }, { title: "y" }],
+    review: { increments: [2, 5] } }, LP);
+  ok("loops: batches carry no commits, and an out-of-range review number stays out of range",
+    ex.deliverables.every(d => !d.commits) && JSON.stringify(ex.review.increments) === "[3,6]", JSON.stringify(ex.review));
   ok("loops: an auto plan's batches auto-go, and a later deliverable's stop moves with it",
     r.status === 0 && !arch("lp-e").deliverables.slice(0, 3).some(d => d.go) && arch("lp-e").deliverables[3].go.human === "the migration", r.stderr);
 }

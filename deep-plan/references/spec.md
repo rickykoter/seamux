@@ -128,7 +128,10 @@ the deliverable's checks, and lists its targets that are files under the
 root. Render archives the expanded spec with `loopOf` on each batch and no
 `loop` field, so it never expands twice; `review.increments` numbers and a
 risk's `deliverableRef` follow the expansion. A deliverable's `go.human`
-stays on its first batch. Targets skip the read-before-plan floor, but a
+stays on its first batch, and its `commits` on none. A re-render keeps
+progress by increment number, so render refuses one whose loop change
+would move a started increment's progress onto another; change targets
+before the first batch starts. Targets skip the read-before-plan floor, but a
 loop with file targets needs a verifiedFact citing at least one of them.
 A parent plan's deliverables do not loop.
 

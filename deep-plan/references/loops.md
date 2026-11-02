@@ -93,6 +93,9 @@ that passes starts the next, so the loop runs until its targets are done,
 and the retry cap stops it for a re-plan when a batch keeps failing.
 
 List the targets from a search (`grep -rl getSession app/`) and cite one of
-them you read: the pattern is planned from it. A batch that finds a target
-the change does not fit is a discovery: amend the spec (drop the target,
-or add a deliverable for it) and re-render.
+them you read: the pattern is planned from it. Change the targets only
+before the first batch starts: a re-render keeps progress by increment
+number, so render refuses one that would move a started batch's progress.
+A batch that finds a target the change does not fit is a discovery: leave
+the loop as it is, note it in the batch, and add a deliverable at the end
+for that target.
