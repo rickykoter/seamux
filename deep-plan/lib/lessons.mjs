@@ -110,9 +110,9 @@ export function parseLessons(text) {
   const parts = text.split(/^(?=## L\d+\b)/m);
   out.head = /^## L\d+\b/.test(parts[0]) ? "" : parts.shift();
   for (const p of parts) {
-    const m = /^## (L(\d+))\b([^\n]*)\n([\s\S]*)$/.exec(p);
+    const m = /^## (L(\d+))\b([^\n]*)(?:\n([\s\S]*))?$/.exec(p);
     if (!m) continue;
-    const body = m[4].split("\n");
+    const body = (m[4] || "").split("\n");
     // A title a person put after the id ("## L3 - tests first") is kept.
     const lesson = { id: m[1], n: Number(m[2]), title: m[3].trim(), applies: [], from: [], rule: "" };
     const rest = [];
@@ -233,7 +233,8 @@ export function lessonsBrief(top, cap = 4096) {
     // rest, and quoted as a JSON string, so its text cannot end the quote.
     let rule = l.rule.replace(/\s+/g, " ").trim();
     if (rule.length > RULE_CAP) rule = rule.slice(0, RULE_CAP - 1) + "…";
-    const line = `${l.id}${l.applies.length ? ` (${l.applies.join(", ")})` : ""}: ${JSON.stringify(rule)}\n`;
+    // The globs are file text too, so they are quoted like the rule.
+    const line = `${l.id}${l.applies.length ? ` applies to ${JSON.stringify(l.applies.join(", "))}` : ""}: ${JSON.stringify(rule)}\n`;
     if (Buffer.byteLength(out + line) > cap) { out += `…and ${doc.lessons.length - out.split("\n").length + 1} more in .seamux/lessons.md\n`; break; }
     out += line;
   }

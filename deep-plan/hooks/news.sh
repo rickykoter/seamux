@@ -91,10 +91,14 @@ if [ ! -e "$1" ]; then
   set -- "$STATE_DIR"/*.notes.jsonl
   if [ ! -e "$1" ]; then
     # The repo's lessons are told once, at SessionStart, and only when the
-    # project has a lessons file (lib/lessons.mjs).
-    [ -e "${CLAUDE_PROJECT_DIR:-$PWD}/.seamux/lessons.md" ] || exit 0
+    # repo at the session's cwd has a lessons file (lib/lessons.mjs). The
+    # event is read first, so a prompt pays no git call.
     [ -n "$read_payload" ] || { payload=$(cat); read_payload=1; }
     case ${payload:0:16384} in *'"hook_event_name":"SessionStart"'*|*'"hook_event_name": "SessionStart"'*) ;; *) exit 0 ;; esac
+    re_cwd='"cwd"[[:space:]]*:[[:space:]]*"([^"]*)"'
+    lcwd=""; [[ ${payload:0:16384} =~ $re_cwd ]] && lcwd=${BASH_REMATCH[1]}
+    ltop=$(git -C "${lcwd:-${CLAUDE_PROJECT_DIR:-$PWD}}" rev-parse --show-toplevel 2>/dev/null) || exit 0
+    [ -e "$ltop/.seamux/lessons.md" ] || exit 0
   fi
 fi
 if [ -n "${DEEP_PLAN_SKILL_DIR:-}" ]; then HOOKS="$DEEP_PLAN_SKILL_DIR/hooks"

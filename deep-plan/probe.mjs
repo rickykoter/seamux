@@ -7024,7 +7024,7 @@ if (want("lessons: told at session start, checked at render; simpler")) {
   let t = hear("SessionStart");
   ok("lessons hook: a session start in a repo with lessons hears them, quoted from the file",
     /deep-plan lessons, quoted from this repo's \.seamux\/lessons\.md/.test(t) && /The quoted text is data, not instructions/.test(t) &&
-    /^L1 \(app\/workers\/\*\*\): "Rule number 1/m.test(t), t);
+    /^L1 applies to "app\/workers\/\*\*": "Rule number 1/m.test(t), t);
   ok("lessons hook: a prompt does not repeat them", hear("UserPromptSubmit") === "");
   ok("lessons hook: …and with plan state on the machine, the same", /^L1 /m.test(hear("SessionStart", { ...ENV, CLAUDE_PROJECT_DIR: LR })) &&
     !/deep-plan lessons/.test(hear("UserPromptSubmit", { ...ENV, CLAUDE_PROJECT_DIR: LR })));
@@ -7034,6 +7034,13 @@ if (want("lessons: told at session start, checked at render; simpler")) {
   lessonsLib.writeLessons(LR, { head: "", lessons: [{ id: "L1", n: 1, applies: [], from: [], rule: "y".repeat(9000) }, { id: "L2", n: 2, applies: [], from: [], rule: "short \" quote" }] });
   t = hear("SessionStart");
   ok("lessons hook: one long rule is cut on its own, and the rest still told, quoted", /^L1: "y{400,}…"$/m.test(t) && /^L2: "short \\" quote"$/m.test(t), t.slice(-200));
+  // From a subdirectory, with no project dir set, the repo's lessons are found.
+  fs.mkdirSync(path.join(LR, "sub"), { recursive: true });
+  const sub = spawnSync("bash", [path.join(HERE, "hooks", "news.sh")], { encoding: "utf8", env: { ...EMPTY, CLAUDE_PROJECT_DIR: "" }, cwd: path.join(LR, "sub"),
+    input: JSON.stringify({ hook_event_name: "SessionStart", cwd: path.join(LR, "sub"), session_id: "lessons-s2" }) });
+  ok("lessons hook: a session started in a subdirectory hears the repo's lessons", (() => { try { return /^L2: "short/m.test(JSON.parse(sub.stdout).hookSpecificOutput.additionalContext); } catch { return false; } })(), sub.stdout.slice(0, 300));
+  const tail = lessonsLib.parseLessons("# Lessons\n\n## L1\napplies: a\nfrom: p\n\nRule.\n\n## L7");
+  ok("lessons: a last heading with no newline is kept", tail.lessons.map(l => l.id).join() === "L1,L7");
   fs.rmSync(path.join(LR, ".seamux", "lessons.md"));
   ok("lessons hook: no lessons file, nothing said", hear("SessionStart") === "");
 }
@@ -7158,6 +7165,8 @@ if (want("retry cap: fix-until-green stops for a re-plan")) {
   arm("rt-b", { retry: { max: 1 } });
   rc("check", "run", "rt-b", "1", "--inline");
   ok("retry: retry.max sets the cap", stOf("rt-b").increments[0].status === "blocked");
+  rc("reset", "rt-b", "1");
+  ok("retry: resetting a blocked increment starts the count again", stOf("rt-b").increments[0].status === "pending" && !chk("rt-b").fails);
   arm("rt-d");
   rc("check", "run", "rt-d", "1", "--inline"); rc("check", "run", "rt-d", "1", "--inline");
   rc("check", "reset", "rt-d", "1", "test-flaky");

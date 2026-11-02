@@ -3169,6 +3169,8 @@ function applyTransition(st, action, slug, n, why, force, { byHuman = false, tre
     const inc = incOf(n);
     if (!allows(inc.status, "reset")) refuse(`increment ${n} is ${inc.status}`);
     inc.status = "pending"; inc.note = ""; inc.changedAt = Date.now();
+    // A person's reset starts the retry count again too (ADR 0065).
+    for (const v of Object.values(checksOf(inc))) if (v.fails) { delete v.fails; v.at = Date.now(); }
     inc.startSha = "";                      // redone work gets a fresh base at its next go
     // Reset means the work is being redone, so a verdict recorded against the
     // PREVIOUS attempt no longer proves anything — leaving it would let the
