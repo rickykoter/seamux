@@ -131,7 +131,7 @@ scratch: it reads the code, asks the forks, and renders the plan. Then each
 section of the page and why it is there, the recipes in
 `.seamux/verify.json`, and `check run` with unit tests and a real browser.
 
-https://github.com/user-attachments/assets/7642ab86-3596-49a1-a098-c140456c8e22
+https://github.com/user-attachments/assets/74cc37ca-bd2c-4aa5-a7a4-3dba389f42be
 
 The plugins in detail: [deep-plan](deep-plan/README.md),
 [lookout](lookout/README.md), [restack](restack/README.md),
@@ -360,7 +360,7 @@ groups related files and says why. Then one prompt that has the agent loop
 review, fix, test and review again with a fresh reviewer each round, until a
 round comes back clean. Only you close the findings, and the gate passes.
 
-Uploading seamux-lookout-2.mp4…
+https://github.com/user-attachments/assets/e007157b-2033-4e05-a8c3-6f3444327436
 
 ### restack: rebase without merging generated files
 
