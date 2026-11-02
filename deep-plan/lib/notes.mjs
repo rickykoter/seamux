@@ -42,7 +42,11 @@ export function readNoteLines(slug) {
 // interleaved into it. A file whose last write was torn gets a newline first,
 // so the new line is not glued to the broken one.
 export function appendNoteLine(slug, line) {
-  const p = notesPath(slug);
+  appendJsonLine(notesPath(slug), line);
+}
+
+// The same for any append-only jsonl file (lessons.mjs's candidates too).
+export function appendJsonLine(p, line) {
   fs.mkdirSync(path.dirname(p), { recursive: true });
   let lead = "";
   try {

@@ -130,6 +130,13 @@ const passAll = (slug, n, run = cli) => {
   for (const id of Object.keys(st.increments[n - 1].checks || {}))
     run("check", "pass", slug, String(n), id, "seen in the probe", "--force");
 };
+// A section that closes increments with done --force as a shortcut leaves
+// lesson candidates (lib/lessons.mjs) that close and deliver settle first.
+const dropCandidates = (slug, run = cli) => {
+  let j = {};
+  try { j = JSON.parse(run("retro", slug, "--json").stdout); } catch { return; }
+  for (const c of j.candidates || []) if (!c.settled) run("retro", slug, "drop", c.id, "a probe shortcut");
+};
 // The lib reads its dirs from process.env at import time; mirror ENV first.
 Object.assign(process.env, ENV);
 const lib = await import(new URL("lib/state.mjs", import.meta.url));
@@ -5223,6 +5230,7 @@ if (want("review checks (lookout)")) {
       /deliver refused: the family review is open on 1 member/.test(r.stderr) && stOf("frv-par").phase === "delivery", r.stdout + r.stderr);
     const cl = store(ids[1]); cl.findings[0].status = "resolved"; cl.findings[0].statusBy = "human";
     fs.writeFileSync(path.join(LENV.LOOKOUT_REVIEWS_DIR, ids[1] + ".json"), JSON.stringify(cl));
+    dropCandidates("frv-par", (...a) => lc(LENV, ...a));
     r = lc(LENV, "deliver", "frv-par");
     ok("family review: once every member's review passes, the parent is done",
       r.status === 0 && /family review passed for all 2 members/.test(r.stdout) && stOf("frv-par").phase === "done", r.stdout + r.stderr);
@@ -5968,6 +5976,7 @@ if (want("shared state: a family's branches, archive on deliver and close")) {
     on(FR, "go", "sf-solo", String(inc.n), "--force"); on(FR, "done", "sf-solo", String(inc.n), "--force");
   }
   ok("a plan that finishes without close or deliver keeps its branch", ref("refs/heads/seamux-state/sf-solo") !== "");
+  dropCandidates("sf-solo", (...a) => on(FR, ...a));
   r = on(FR, "close", "sf-solo");
   ok("…until it is closed", ref("refs/heads/seamux-state/sf-solo") === "" && ref("refs/tags/seamux-state-archive/sf-solo") !== "", r.stderr);
   // deliver: a shared plan with a delivery review completes, and its branch is archived.
@@ -5985,6 +5994,7 @@ if (want("shared state: a family's branches, archive on deliver and close")) {
     fs.writeFileSync(path.join(FR, "d.txt"), "delivered\n");
     execSync(`git add d.txt && ${G} commit -q -m d`, { cwd: FR });
     lc("done", "sf-deliver", "1", "--force");
+    dropCandidates("sf-deliver", lc);
     lc("deliver", "sf-deliver");
     const none = path.join(TMP, "sf-no-findings.json");
     fs.writeFileSync(none, JSON.stringify({ findings: [] }));
@@ -6857,6 +6867,115 @@ if (want("notes: side findings beside a plan's state")) {
 }
 
 // -------------------------------------------------- hot-path cost
+if (want("lessons: candidates, retro and .seamux/lessons.md")) {
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const LA = path.join(TMP, "lessons-repo");
+  fs.mkdirSync(LA, { recursive: true });
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: LA });
+  const lcli = (cwd, ...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: ENV, cwd });
+  const key = slug => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8")).answers;
+  const cfile = slug => path.join(ENV.DEEP_PLAN_STATE_DIR, slug + ".lessons.jsonl");
+  const retro = (...a) => { const r = lcli(LA, "retro", "lessons-a", "--json", ...a); try { return JSON.parse(r.stdout); } catch { return { err: r.stdout + r.stderr }; } };
+  const lmd = path.join(LA, ".seamux", "lessons.md");
+  cli("render", tmpSpec({ ...spec, slug: "lessons-a" }), "--root", LA);
+
+  // A wrong grade is a miss the engine files; the same wrong grade again is
+  // the same miss, not a second candidate.
+  const k = key("lessons-a");
+  const wrongArgs = Object.entries(k).map(([q, a], i) => `${q}=${i === 0 ? (a.letter === "a" ? "b" : "a") : a.letter}`);
+  let r = cli("grade", "lessons-a", ...wrongArgs);
+  ok("lessons: a failed grade files a grade candidate and says so",
+    r.status !== 0 && /lesson candidate c[0-9a-f]{8} filed \(grade\)/.test(r.stderr), r.stderr);
+  cli("grade", "lessons-a", ...wrongArgs);
+  let j = retro();
+  ok("lessons: the same miss twice is one candidate",
+    j.candidates && j.candidates.length === 1 && j.candidates[0].source === "grade" && j.candidates[0].inc === null &&
+    j.candidates[0].text.includes(Object.values(k)[0].decisionRef), JSON.stringify(j));
+  cli("grade", "lessons-a", ...Object.entries(k).map(([q, a]) => `${q}=${a.letter}`));
+
+  // The agent files one after a correction, on the plan at the cwd.
+  cli("go", "lessons-a", "next");
+  r = lcli(LA, "lesson", "read", "the", "module", "before", "planning", "to", "change", "it");
+  ok("lessons: lesson files a correction candidate on the plan and open increment at the cwd",
+    r.status === 0 && /^lesson candidate c[0-9a-f]{8} on lessons-a increment 1;/m.test(r.stdout), r.stdout + r.stderr);
+  ok("lessons: an empty lesson is refused", lcli(LA, "lesson").status !== 0);
+  ok("lessons: a lesson with no plan at the cwd and no --plan is refused", /no live plan tracks/.test(lcli(TMP, "lesson", "x").stderr));
+  const L = fs.readFileSync(cfile("lessons-a"), "utf8").trim().split("\n").map(l => JSON.parse(l));
+  ok("lessons: candidate lines are {id, at, by, plan, inc, source, text}",
+    L.every(l => Object.keys(l).sort().join() === "at,by,id,inc,plan,source,text") && L[1].inc === 1 && L[1].source === "correction");
+
+  // done --force skipped a proof: a miss.
+  r = cli("done", "lessons-a", "1", "--force");
+  j = retro();
+  ok("lessons: done --force files a force candidate naming the skipped checks",
+    r.status === 0 && j.candidates.some(c => c.source === "force" && c.inc === 1 && /done --force past/.test(c.text)), r.stdout + r.stderr);
+
+  // The retro: list, keep (needs --applies), merge, drop, retire.
+  r = lcli(LA, "retro", "lessons-a");
+  ok("lessons: retro lists each unsettled candidate and how to settle it",
+    r.status === 0 && /retro lessons-a: 3 unsettled candidate\(s\); \.seamux\/lessons\.md holds 0\/30/.test(r.stdout) &&
+    /retro lessons-a keep <cid>/.test(r.stdout), r.stdout + r.stderr);
+  const [cg, cc, cf] = j.candidates.map(c => c.id);
+  ok("lessons: keep without --applies is refused", /keep needs --applies/.test(lcli(LA, "retro", "lessons-a", "keep", cc, "Read first").stderr));
+  r = lcli(LA, "retro", "lessons-a", "keep", cc, "Read every module a deliverable changes before drafting.", "--applies", "src/**, lib/*.mjs");
+  const md1 = fs.existsSync(lmd) ? fs.readFileSync(lmd, "utf8") : "";
+  ok("lessons: keep writes rule L1 with applies and from into .seamux/lessons.md",
+    r.status === 0 && /kept c[0-9a-f]{8} as L1/.test(r.stdout) && /^## L1\napplies: src\/\*\*, lib\/\*\.mjs\nfrom: lessons-a inc 1 \(correction c[0-9a-f]{8}\), \d{4}-\d\d-\d\d\n\nRead every module/m.test(md1), r.stdout + r.stderr + md1);
+  r = lcli(LA, "retro", "lessons-a", "merge", cf, "L1", "Read every module first, and never skip a check's proof.");
+  j = retro();
+  ok("lessons: merge rewords the rule and adds the candidate's origin",
+    r.status === 0 && j.lessons.length === 1 && j.lessons[0].from.length === 2 && /never skip/.test(j.lessons[0].rule), r.stdout + r.stderr);
+  ok("lessons: a settled candidate cannot be settled again", /already settled \(keep L1\)/.test(lcli(LA, "retro", "lessons-a", "drop", cc, "x").stderr));
+  ok("lessons: drop needs a reason", lcli(LA, "retro", "lessons-a", "drop", cg).status !== 0);
+  r = lcli(LA, "retro", "lessons-a", "drop", cg, "the quiz option was ambiguous");
+  ok("lessons: drop settles a candidate and writes no rule", r.status === 0 && retro().lessons.length === 1 && retro().candidates.every(c => c.settled));
+  r = lcli(LA, "retro", "lessons-a", "retire", "L1", "the renderer enforces it now");
+  lcli(LA, "lesson", "a second rule");
+  const c2 = retro().candidates.find(c => !c.settled).id;
+  r = lcli(LA, "retro", "lessons-a", "keep", c2, "Second rule.", "--applies", "x/**");
+  ok("lessons: a retired id is never handed out again", /kept c[0-9a-f]{8} as L2/.test(r.stdout) && retro().lessons.map(l => l.id).join() === "L2", r.stdout + r.stderr);
+
+  // The cap: keep refuses past 30; merge still works.
+  const lessonsLib = await import(new URL("lib/lessons.mjs", import.meta.url));
+  const doc = lessonsLib.readLessons(LA);
+  for (let i = 0; i < 29; i++) lessonsLib.keepLesson(doc, { plan: "p", inc: null, source: "correction", at: "2026-11-02" }, { rule: `rule ${i}`, applies: ["a/**"] });
+  lessonsLib.writeLessons(LA, doc);
+  lcli(LA, "lesson", "one too many");
+  const c3 = retro().candidates.find(c => !c.settled).id;
+  r = lcli(LA, "retro", "lessons-a", "keep", c3, "Thirty-first.", "--applies", "y/**");
+  ok("lessons: keep past the cap is refused, naming merge and retire", r.status !== 0 && /cap is 30: merge this candidate into one, or retire one first/.test(r.stderr), r.stderr);
+  const round = lessonsLib.parseLessons(fs.readFileSync(lmd, "utf8"));
+  ok("lessons: lessons.md parses back to what was written", round.lessons.length === 30 &&
+    lessonsLib.formatLessons(round) === fs.readFileSync(lmd, "utf8"));
+
+  // close (and an ending deliver) settle candidates first; --force is a person's.
+  r = cli("close", "lessons-a");
+  ok("lessons: close refuses while a candidate is unsettled, naming it",
+    r.status !== 0 && r.stderr.includes(c3) && r.stderr.trim().split("\n").pop() === "close refused: 1 unsettled lesson candidate(s) on lessons-a", r.stderr);
+  const bundle = path.join(TMP, "lessons-a.bundle.json");
+  cli("export-state", "lessons-a", "--out", bundle);
+  ok("lessons: export-state carries the candidates file",
+    "deep-plan/state/lessons-a.lessons.jsonl" in JSON.parse(fs.readFileSync(bundle, "utf8")).files);
+  ok("lessons: a candidates file is never taken for a plan", !/lessons-a\.lessons/.test(cli("status", "--json").stdout));
+  r = cli("close", "lessons-a", "--force");
+  ok("lessons: close --force goes past and logs it", r.status === 0 &&
+    JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "lessons-a.json"), "utf8")).log.some(l => /close --force: 1 lesson candidate/.test(l.what)));
+
+  const titled = lessonsLib.parseLessons("# Lessons\n\n## L3 - tests first\napplies: a/**\nfrom: p (correction), 2026-11-02\n\nWrite the test first.\n");
+  ok("lessons: a title after the id survives a rewrite", titled.lessons[0].title === "- tests first" &&
+    /^## L3 - tests first$/m.test(lessonsLib.formatLessons(titled)));
+  // A keep that wrote its rule but never settled (a crash between the two)
+  // is settled by the next try, not written twice.
+  const dc = lessonsLib.fileCandidate({ slug: "lessons-a", source: "correction", text: "written but not settled", by: "probe" });
+  const d2 = lessonsLib.readLessons(LA);
+  lessonsLib.mergeLesson(d2, dc, "L2", {});
+  lessonsLib.writeLessons(LA, d2);
+  r = lcli(LA, "retro", "lessons-a", "keep", dc.id, "again", "--applies", "z/**");
+  ok("lessons: a candidate already written into a rule is settled, not kept twice",
+    r.status === 0 && /already in L2; settled it/.test(r.stdout) && retro().lessons.length === 30 &&
+    retro().candidates.find(c => c.id === dc.id).settled, r.stdout + r.stderr);
+}
+
 if (want("hot-path cost")) {
   const t0 = process.hrtime.bigint();
   for (let i = 0; i < 20; i++) gate("Edit", { file_path: "/tmp/x" }, TMP);

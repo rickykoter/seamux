@@ -40,6 +40,10 @@ import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import { goPolicy, humanStop, goProblems, autoNext } from "./lib/autogo.mjs";
 import { NOTES_SUFFIX, readNoteLines, foldNotes, notedSlugs, fileNote, closeNote, openNotes } from "./lib/notes.mjs";
 import {
+  CANDIDATES_SUFFIX, LESSON_CAP, foldCandidates, unsettled, fileCandidate, settleCandidate,
+  repoTop, lessonsFile, readLessons, writeLessons, keepLesson, mergeLesson, retireLesson, lessonFrom,
+} from "./lib/lessons.mjs";
+import {
   FAMILIES_DIR, validateWorkstreams, buildIndex, writeIndex, readIndex, indexPath,
   familyOf, refreshFamilyFor, overlaps, checkFamily, draftParent, waitingOn, waitText,
   memberAt, readSeen, gatherNews, newsText, familyRow, familiesBySlug, protects,
@@ -629,6 +633,7 @@ function familyDeliver(st, spec) {
     return 1;
   }
   settleNotes(st, "deliver");
+  settleCandidates(st, "deliver");
   st.phase = "done";
   log1(st, `deliver: the family review passed for every member (${passed.join(", ")}); the gate retires`);
   writeState(st); rerenderWorking(slug);
@@ -2782,6 +2787,8 @@ async function grade(slug, answers) {
       console.error(`  ✗ ${w.qid}: ${w.why}\n    reopen the decision: ${w.ref}`);
     console.error("Either the plan or your model of it is wrong. Fix whichever is, re-render, re-check.");
     log1(st, `alignment check failed (${wrong.length} wrong)`);
+    engineMiss(st, "grade", `alignment check failed: the plan and the human's model of it disagreed on ` +
+      wrong.map(w => `${w.ref || w.qid}`).join("; "), null);
     writeState(st); rerenderWorking(slug);
     process.exit(1);
   }
@@ -2929,6 +2936,10 @@ function transition(action, slug, n, why, force = false, { byHuman = false } = {
     incrementDiff(st, inc);
     say(`done ${slug} ${plan.n}` + (st.phase === "done" ? " — plan complete"
       : st.phase === "delivery" ? `\nevery increment is done; the full delivery is reviewed next: deep-plan deliver ${slug}` : ""));
+    if (plan.forced)
+      engineMiss(st, "force", `increment ${plan.n} was closed with done --force past ${plan.forced.map(c => `${c.id} (${c.status})`).join(", ")}: its proof was skipped`, plan.n);
+    if ((st.phase === "done" || st.phase === "delivery") && unsettled(slug).length)
+      say(`retro: ${unsettled(slug).length} lesson candidate(s) wait on this plan; go through them with the human: deep-plan retro ${slug}`);
     const nx = plan.next;
     if (nx && nx.go) {
       const ni = findInc(st, nx.go);
@@ -3054,7 +3065,7 @@ function applyTransition(st, action, slug, n, why, force, { byHuman = false, tre
       log1(st, delivery ? `every increment done; the delivery review closes the plan — deep-plan deliver ${slug}`
                         : "every increment done; the gate retires");
     }
-    return { n: inc.n, next };
+    return { n: inc.n, next, forced: out.length ? out : null };
   } else if (action === "block") {
     const inc = incOf(n);
     if (!allows(inc.status, "block")) refuse(`increment ${n} is ${inc.status}`);
@@ -3392,7 +3403,7 @@ function bundleNames(slug) {
   const s = reEsc(slug);
   return {
     // Its state, and its notes (lib/notes.mjs), which travel with it.
-    "deep-plan/state": new RegExp(`^${s}(\\.json|${reEsc(NOTES_SUFFIX)})$`),
+    "deep-plan/state": new RegExp(`^${s}(\\.json|${reEsc(NOTES_SUFFIX)}|${reEsc(CANDIDATES_SUFFIX)})$`),
     "deep-plan/keys": new RegExp(`^${s}\\.(spec|key)\\.json$`),
     "plans": new RegExp(`^${s}\\.(md|review\\.html|working\\.html|widget\\.html|quiz\\.txt|approved\\.md|artifact\\.html|adr\\d+\\.md|inc\\d+\\.patch)$`),
     "plans/reviews": new RegExp(`^${s}-(inc\\d+|delivery)\\.(json|patch|rows\\.json|html|seen\\.json)$`),
@@ -3601,6 +3612,119 @@ function notesCmd(args, flags) {
     say(`  ${r.text}`);
     if (r.closed) say(`  closed: ${r.closed.why}${r.closed.into ? ` (moved into ${r.closed.into})` : ""}`);
   }
+}
+
+// ---------------------------------------------------------------- lessons
+// `deep-plan lesson` files a candidate; `deep-plan retro` turns candidates
+// into rules in the repo's .seamux/lessons.md, one by one (lib/lessons.mjs,
+// ADRs 0061, 0062). The engine files candidates itself at its own miss points.
+function livePlanAtCwd() {
+  const here = canon(process.cwd());
+  return (allStates().find(s => s.root && !LIVE_PHASES_GONE.has(s.phase) &&
+    (here === canon(s.root) || here.startsWith(canon(s.root) + path.sep))) || {}).slug;
+}
+const openIncN = st => ((st.increments || []).find(i => i.status === "working" || i.status === "authorized") || {}).n ?? null;
+// An engine miss: filed, said, never fatal. A plan whose state folder cannot
+// be written still fails or passes as it would have.
+function engineMiss(st, source, text, inc = openIncN(st)) {
+  try {
+    const c = fileCandidate({ slug: st.slug, inc, source, text, by: "engine" });
+    if (c) console.error(`  lesson candidate ${c.id} filed (${source}); deep-plan retro ${st.slug} settles it`);
+  } catch { /* a lost candidate never fails the verb that found the miss */ }
+}
+function lessonCmd(args, flags) {
+  const use = `lesson "<what went wrong, and the rule that prevents it>" [--plan <slug>] [--inc <n>]`;
+  const text = args.join(" ").trim();
+  if (!text) die(use);
+  const slug = flags.plan || livePlanAtCwd()
+    || die(`no live plan tracks ${process.cwd()}; --plan <slug> names the plan the lesson came from`);
+  const st = readState(slug) || die("no plan " + slug);
+  if (st.phase === "closed") die(`${slug} is closed; file the lesson on a live plan with --plan`);
+  const inc = flags.inc !== undefined ? findInc(st, flags.inc).n : openIncN(st);
+  const c = fileCandidate({ slug, inc, source: "correction", text, by: noteBy() });
+  say(`lesson candidate ${c.id} on ${slug}${inc == null ? "" : " increment " + inc}; deep-plan retro ${slug} settles it`);
+}
+// A verb that archives a plan (close, an ending deliver) settles its lesson
+// candidates first, as settleNotes does for notes: a candidate left on an
+// archived plan is a lesson nobody will decide.
+function settleCandidates(st, verb) {
+  const open = unsettled(st.slug);
+  if (!open.length) return;
+  if (flags.force) {
+    log1(st, `${verb} --force: ${open.length} lesson candidate(s) left unsettled (${open.map(r => r.id).join(", ")})`);
+    writeState(st);
+    return;
+  }
+  die(`${st.slug} has ${open.length} unsettled lesson candidate(s); settle each before ${verb}:\n` +
+    open.map(r => `  ${r.id} [${r.source}] ${r.text.length > 100 ? r.text.slice(0, 97) + "…" : r.text}`).join("\n") +
+    `\n  see them:  deep-plan retro ${st.slug}\n` +
+    `${verb} refused: ${open.length} unsettled lesson candidate(s) on ${st.slug}`);
+}
+function retroCmd(args, flags) {
+  const use = `retro <slug> [keep <cid> "<rule>" --applies <glob,…> | merge <cid> L<n> ["<rule>"] [--applies …] | drop <cid> "<why>" | retire L<n> "<why>"]`;
+  const slug = args[0] || die(use);
+  const st = readState(slug) || die("no plan " + slug);
+  const top = repoTop(st.root) || die(`${slug}'s root ${st.root || "(none)"} is not in a git repo; lessons live in its .seamux/lessons.md`);
+  const doc = readLessons(top);
+  const sub = args[1] || "";
+  const rel = path.relative(process.cwd(), lessonsFile(top)) || lessonsFile(top);
+  const cand = id => {
+    const c = foldCandidates(slug).find(r => r.id === id) || die(`no lesson candidate ${id} on ${slug}`);
+    if (c.settled) die(`candidate ${id} is already settled (${c.settled.how}${c.settled.lesson ? " " + c.settled.lesson : ""})`);
+    // A keep or merge that wrote the rule and then failed to settle: settle
+    // it now instead of writing the rule twice.
+    const done = lessonFrom(doc, id);
+    if (done && (sub === "keep" || sub === "merge")) {
+      settleCandidate(slug, id, { how: sub, by: noteBy(), lesson: done.id });
+      say(`${id} is already in ${done.id}; settled it`);
+      process.exit(0);
+    }
+    return c;
+  };
+  const applies = () => String(flags.applies || "").split(",").map(s => s.trim()).filter(Boolean);
+  const wrote = what => {
+    const f = writeLessons(top, doc);
+    say(`${what}\n  wrote ${path.relative(process.cwd(), f) || f} (${doc.lessons.length}/${LESSON_CAP}); commit it with the plan's work`);
+  };
+  if (!sub) {
+    const rows = foldCandidates(slug), open = rows.filter(r => !r.settled);
+    if (flags.json) { say(JSON.stringify({ candidates: rows, lessons: doc.lessons, file: lessonsFile(top), cap: LESSON_CAP }, null, 2)); return; }
+    say(`retro ${slug}: ${open.length} unsettled candidate(s); ${rel} holds ${doc.lessons.length}/${LESSON_CAP} lesson(s)`);
+    for (const r of open)
+      say(`  ${r.id}  [${r.source}]${r.inc == null ? "" : ` inc ${r.inc}`}  ${r.text}`);
+    if (open.length) say(`\nFor each, with the human: keep it as a new rule (one or two sentences, the paths it applies to), ` +
+      `merge it into a lesson it repeats, or drop it as a one-off:\n` +
+      `  deep-plan retro ${slug} keep <cid> "<rule>" --applies "<glob>,<glob>"\n` +
+      `  deep-plan retro ${slug} merge <cid> L<n> ["<reworded rule>"]\n` +
+      `  deep-plan retro ${slug} drop <cid> "<why it is a one-off>"`);
+    for (const l of doc.lessons) say(`  ${l.id}  ${l.rule.split("\n")[0]}${l.applies.length ? `  (${l.applies.join(", ")})` : ""}`);
+    return;
+  }
+  if (sub === "keep") {
+    const c = cand(args[2] || die(use)), rule = args.slice(3).join(" ").trim() || die(use);
+    const a = applies();
+    if (!a.length) die(`keep needs --applies "<glob>,…": the paths the rule applies to, so render can point plans that touch them at it`);
+    let l;
+    try { l = keepLesson(doc, c, { rule, applies: a }); } catch (e) { die(e.message); }
+    wrote(`kept ${c.id} as ${l.id}`);
+    settleCandidate(slug, c.id, { how: "keep", by: noteBy(), lesson: l.id });
+  } else if (sub === "merge") {
+    const c = cand(args[2] || die(use)), id = args[3] || die(use);
+    let l;
+    try { l = mergeLesson(doc, c, id, { rule: args.slice(4).join(" ").trim(), applies: applies() }); } catch (e) { die(e.message); }
+    wrote(`merged ${c.id} into ${l.id}`);
+    settleCandidate(slug, c.id, { how: "merge", by: noteBy(), lesson: l.id });
+  } else if (sub === "drop") {
+    const c = cand(args[2] || die(use)), why = args.slice(3).join(" ").trim() || die(use);
+    settleCandidate(slug, c.id, { how: "drop", by: noteBy(), why });
+    say(`dropped ${c.id}`);
+  } else if (sub === "retire") {
+    const id = args[2] || die(use), why = args.slice(3).join(" ").trim() || die(use);
+    let l;
+    try { l = retireLesson(doc, id); } catch (e) { die(e.message); }
+    log1(st, `retro: retired ${l.id} (${why})`); writeState(st);
+    wrote(`retired ${l.id}: ${why}`);
+  } else die(use);
 }
 
 // ---------------------------------------------------------------- state branches
@@ -4538,6 +4662,8 @@ function checkRun(slug, n, ids, opts) {
       } else res.note = code === 127 ? LOOKOUT_MISSING
         : code === 1 ? "a blocker or major finding is open — the human closes it on the review page"
         : res.note;
+      if (code === 1 && /^\d+$/.test(String(n))) engineMiss(readState(slug), "review",
+        `the lookout review of increment ${n} held a blocker or major finding open`, Number(n));
     }
     // The tree the pass is recorded against, over what the check covers, is
     // the one after the run: its own outputs (a report, a formatter's or a
@@ -5207,6 +5333,7 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--inline") flags.inline = true;
   else if (rest[i] === "--write") flags.write = true;
   else if (rest[i] === "--out") flags.out = rest[++i];
+  else if (rest[i] === "--applies") flags.applies = rest[++i];
   else if (rest[i] === "--template") (flags.templates = flags.templates || []).push(rest[++i]);
   else if (rest[i] === "--from") flags.from = rest[++i];
   else if (rest[i] === "--set") {
@@ -5272,13 +5399,14 @@ const TRANSITION_PUSH_MS = Number(process.env.DEEP_PLAN_SYNC_TIMEOUT_MS) || 2000
 function stateFileDigests() {
   const out = new Map();
   let names = [];
-  try { names = fs.readdirSync(STATE_DIR).filter(n => n.endsWith(".json") || n.endsWith(NOTES_SUFFIX)); } catch { return out; }
+  try { names = fs.readdirSync(STATE_DIR).filter(n => n.endsWith(".json") || n.endsWith(NOTES_SUFFIX) || n.endsWith(CANDIDATES_SUFFIX)); } catch { return out; }
   // A plan's notes file is its own, so a note alone changes its digest.
   for (const n of names.sort()) {
-    const notes = n.endsWith(NOTES_SUFFIX), slug = n.slice(0, -(notes ? NOTES_SUFFIX.length : 5));
+    const notes = n.endsWith(NOTES_SUFFIX), cands = n.endsWith(CANDIDATES_SUFFIX);
+    const slug = n.slice(0, -(notes ? NOTES_SUFFIX.length : cands ? CANDIDATES_SUFFIX.length : 5));
     try {
       const h = crypto.createHash("sha1").update(fs.readFileSync(path.join(STATE_DIR, n))).digest("hex");
-      out.set(slug, (out.get(slug) || "") + (notes ? "+notes:" : "") + h);
+      out.set(slug, (out.get(slug) || "") + (notes ? "+notes:" : cands ? "+lessons:" : "") + h);
     } catch { /* gone */ }
   }
   // A family's index and control files ride on its parent's branch, so a
@@ -5486,6 +5614,8 @@ switch (cmd) {
   // word counts, so a mistyped id is refused as no note, not filed as one.
   case "note": args[0] === "close" && /^n[0-9a-f]{1,16}$/i.test(args[1] || "") ? noteCloseCmd(args.slice(1), flags) : noteCmd(args, flags); break;
   case "notes": notesCmd(args, flags); break;
+  case "lesson": lessonCmd(args, flags); break;
+  case "retro": retroCmd(args, flags); break;
   case "await-go": {
     const slug = args[0] || die("await-go <slug> [--timeout S]");
     if (flags.timeout !== undefined && !(flags.timeout > 0)) die("--timeout takes a number of seconds above 0");
@@ -5530,6 +5660,7 @@ switch (cmd) {
     const st = readState(args[0]) || die("no plan " + args[0]);
     // A done plan's branch was archived when it ended.
     if (st.phase !== "closed" && st.phase !== "done") settleNotes(st, "close");
+    if (st.phase !== "closed") settleCandidates(st, "close");
     st.phase = "closed"; log1(st, "plan closed");
     writeState(st);
     say("closed " + st.slug + " — it leaves the board; surfaces stay in " + PLANS_DIR); break;
@@ -5584,6 +5715,7 @@ switch (cmd) {
     if (g.code !== 0) die(`the delivery review holds the plan open — ${g.out.split("\n")[0]}\n` +
       `deliver refused: a blocker or major is open on ${reviewId(slug, "all")}`);
     settleNotes(st, "deliver");
+    settleCandidates(st, "deliver");
     st.phase = "done";
     log1(st, `deliver: the delivery review passed (${g.out.split("\n")[0]}); the gate retires`);
     writeState(st); rerenderWorking(slug);
@@ -5691,7 +5823,15 @@ switch (cmd) {
              [--plan <slug>]                  (--plan: the plan whose file holds it)
   notes [--all] [--plan <slug>] [--json]      open notes of every plan in this repo
                                               (--all adds closed ones)
-  ask <ask.json>                              render a question with diagrams/examples
+  lesson "<text>" [--plan <slug>] [--inc <n>] file a lesson candidate after a correction
+                                              (settled at the plan's retro)
+  retro <slug> [--json]                       list the plan's lesson candidates and the
+                                              repo's .seamux/lessons.md
+  retro <slug> keep <cid> "<rule>" --applies <globs>   a candidate becomes rule L<n>
+  retro <slug> merge <cid> L<n> ["<rule>"]    fold a candidate into an existing rule
+  retro <slug> drop <cid> "<why>"             a one-off; nothing is written
+  retro <slug> retire L<n> "<why>"            remove a rule that no longer earns its place
+  ask <ask.json>                             render a question with diagrams/examples
                                               (served at /ask/<id>; a pick on the page
                                               types the number into this terminal)
   ask show <id>                               the recorded answer, if any
