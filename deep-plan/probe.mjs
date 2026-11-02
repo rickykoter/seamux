@@ -7207,10 +7207,15 @@ if (want("ci check: the PR's checks behind the gate")) {
   ok("ci: a ci verdict is the run's, not a hand pass", cc("check", "pass", "ci-a", "1", "ci-pr-checks", "looked").status !== 0);
   gh({});
   let r = cc("check", "run", "ci-a", "1", "--inline");
-  ok("ci: no PR for the branch fails at once and says to open it", r.status !== 0 && chk("ci-a").status === "fail" && /no PR for this branch.*open the draft PR first/.test(r.stdout), r.stdout);
+  ok("ci: no PR for the branch fails at once and says to open it, without counting toward the cap",
+    r.status !== 0 && chk("ci-a").status === "fail" && !chk("ci-a").fails && /no PR for this branch.*open the draft PR first/.test(r.stdout), r.stdout);
   gh(prView("0123456789abcdef"));
   r = cc("check", "run", "ci-a", "1", "--inline");
-  ok("ci: a PR head that is not local HEAD fails and says to push", /is not local HEAD.*push first/.test(r.stdout), r.stdout);
+  ok("ci: a PR head that is not local HEAD fails and says to push", /is not local HEAD.*push first/.test(r.stdout) && !chk("ci-a").fails, r.stdout);
+  gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 1, stderr: "no checks reported on the 'dev/x' branch", stdout: ["", [{ name: "probes", workflow: "CI", bucket: "pass", link: "" }]] } });
+  r = cc("check", "run", "ci-a", "1", "--inline");
+  ok("ci: 'no checks reported' right after a push is waited out, not a failure", r.status === 0 && chk("ci-a").status === "pass", r.stdout);
+  cc("check", "reset", "ci-a", "1", "ci-pr-checks");
   gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 8, stdout: [
       [{ name: "probes", workflow: "CI", bucket: "pending", link: "" }],
       [{ name: "probes", workflow: "CI", bucket: "pass", link: "" }, { name: "docs", workflow: "CI", bucket: "skipping", link: "" }]] } });
@@ -7228,7 +7233,11 @@ if (want("ci check: the PR's checks behind the gate")) {
   arm("ci-t", { kind: "ci", timeout: 1 });
   gh({ ...prView(), "pr checks --json name,bucket,link,workflow": { status: 8, stdout: [[{ name: "probes", workflow: "CI", bucket: "pending", link: "" }]] } });
   r = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "check", "run", "ci-t", "1", "--inline"], { encoding: "utf8", env: { ...CENV, DEEP_PLAN_CI_INTERVAL_S: "1" }, cwd: CR });
-  ok("ci: a check's timeout ends the wait with what is still pending", r.status !== 0 && /timed out after 1s with 1 check\(s\) still pending: CI \/ probes/.test(r.stdout), r.stdout);
+  ok("ci: a check's timeout ends the wait with what is still pending, not counted as red",
+    r.status !== 0 && /timed out after 1s with 1 check\(s\) still pending: CI \/ probes/.test(r.stdout) &&
+    !stOf("ci-t").increments[0].checks["ci-pr-checks"].fails, r.stdout);
+  r = spawnSync("node", [path.join(HERE, "lib", "ci.mjs"), "wait", "--timeout", "abc"], { encoding: "utf8", env: CENV, cwd: CR });
+  ok("ci: a timeout that is not a number is refused", r.status === 2 && /--timeout takes a number of seconds/.test(r.stderr), r.stderr);
 }
 
 if (want("hot-path cost")) {

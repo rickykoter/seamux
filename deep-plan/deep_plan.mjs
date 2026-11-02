@@ -4787,11 +4787,13 @@ function checkRun(slug, n, ids, opts) {
     // Fix-until-green's stop (ADR 0065): a runner's fail of a recipe-backed
     // check counts, a pass clears the count. A review with no verdict yet is
     // not a failed attempt, and a manual fail is a person's, not a retry.
-    const fails = res.status === "pass" ? 0
-      : res.status === "fail" && cur.synth !== "review" ? (failsBefore || 0) + 1 : (failsBefore || 0);
+    // A ci run that found no CI verdict (exit 3: no PR, not pushed, timed
+    // out) is not a red run either.
+    const counted = res.status === "fail" && cur.synth !== "review" && !(cur.synth === "ci" && res.ran && res.ran.code === 3);
+    const fails = res.status === "pass" ? 0 : counted ? (failsBefore || 0) + 1 : (failsBefore || 0);
     const cap = retryMax(planSpec(slug));
     // Only an open increment blocks: a re-run on a done one is a look, not work.
-    const capped = res.status === "fail" && cur.synth !== "review" && fails >= cap &&
+    const capped = counted && fails >= cap &&
       ["authorized", "working"].includes(findInc(fresh, n).status);
     // A parked claim keeps its question for the Dock's picker; anything else
     // is over.

@@ -193,8 +193,9 @@ is not local HEAD, since a verdict must be about the tree being closed and
 the engine never pushes. Otherwise it polls `gh pr checks` until nothing is
 pending, up to `timeout` seconds (1800 by default), and passes when every
 check passed or was skipped. A failure names each failing check and prints
-the failed Actions job's log tail. It counts toward the retry cap like any
-recipe-backed check, and a hand pass needs `--force`.
+the failed Actions job's log tail. A red CI run counts toward the retry
+cap; no PR, an unpushed head, gh failing or a timeout fails the check
+without counting, since no CI run went red. A hand pass needs `--force`.
 
 It runs detached (`check wait` follows it), so put it on an increment the
 branch is pushed for: on an auto plan, one whose between step is
