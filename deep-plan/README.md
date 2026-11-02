@@ -19,6 +19,21 @@ You ask for a plan. deep-plan makes the agent work through it in this order:
    increment must pass its checks before it can be marked done. In a
    family of plans, the parent agent gives its children their gos once
    their checks pass, so you don't have to approve every increment.
+   A plan of its own can do the same with auto-go (below).
+
+### Auto-go
+
+A plan can opt in at planning time to let each increment follow the last.
+With `"go": "auto"` in the spec, a `done` whose checks all passed also gives
+the next increment its go, logged as `by: auto`, and prints the step to take
+before starting it: commit, or with `{"mode": "auto", "between": "draft-pr"}`
+also push and open or update a draft PR. You still give the first go after
+the quiz. The chain stops for you at an increment marked
+`"go": {"human": "<why>"}`, after a `done --force`, and while another
+increment is open or blocked. A plan that reviews an increment can only
+auto-go past it when the agent may close the review's findings
+(`review.agentMayClose`); otherwise it would sit waiting on findings
+nobody asked you to close.
 
 Where the pages go depends on where Claude runs. In Claude desktop and a
 terminal, deep-plan starts its own small server and prints `served at
