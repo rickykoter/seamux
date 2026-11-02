@@ -61,10 +61,20 @@ until_screen() {
   echo "until_screen: $1 never showed /$2/" >&2; return 1
 }
 newws() {
-  ui press "New workspace" >/dev/null; sleep 1.2
-  ui set Branch "$1" >/dev/null; sleep 0.3
-  [ -n "${2:-}" ] && { ui set "First prompt" "$2" >/dev/null; sleep 0.3; }
-  ui press Create >/dev/null
+  # This build opens the form only on a real click, and its page may hide
+  # its controls from AX until clicked: fall back to the button's place,
+  # 70,54 from the window's corner (the takes set the frame first).
+  front; sleep 0.3
+  hand "New workspace" 2 >/dev/null 2>&1 || {
+    local wx wy; read -r wx wy <<< "$("$DEMO_TOOLS/wins" "$(app_pid)" | awk '$3=="seamux"{print $4, $5; exit}')"
+    "$DEMO_TOOLS/click" $((wx + 70)) $((wy + 54)) >/dev/null; }
+  sleep 1.2
+  # Branch has focus when the form opens; type into it and submit with ⌘↩.
+  front
+  osascript -e "tell application \"System Events\" to keystroke \"$1\"" >/dev/null; sleep 0.3
+  [ -n "${2:-}" ] && { osascript -e 'tell application "System Events" to keystroke tab' >/dev/null
+    osascript -e "tell application \"System Events\" to keystroke \"$2\"" >/dev/null; sleep 0.3; }
+  osascript -e 'tell application "System Events" to keystroke return using command down' >/dev/null
   local end=$((SECONDS + 60)); until [ -n "$(pane_of "$1")" ] || [ $SECONDS -ge $end ]; do sleep 0.5; done
   pane_of "$1"
 }

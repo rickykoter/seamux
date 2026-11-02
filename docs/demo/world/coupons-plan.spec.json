@@ -1,0 +1,19 @@
+{
+  "slug": "coupons",
+  "title": "Coupon codes at checkout, with an admin API",
+  "contracts": [
+    { "surface": "coupons table (code, percent_off, expires_at)", "kind": "table", "change": "add", "at": ["db/migrate/002_coupons.sql"] },
+    { "surface": "total(items, discount)", "kind": "function", "change": "extend", "at": ["src/checkout/route.js"] }
+  ],
+  "verifiedFacts": [
+    { "claim": "Checkout computes the order total in one place", "evidence": "src/checkout/total.js:1" },
+    { "claim": "The checkout route calls total() once per order", "evidence": "src/checkout/route.js:1" },
+    { "claim": "Migrations are numbered SQL files", "evidence": "db/migrate/001_orders.sql:1" }
+  ],
+  "deliverables": [
+    { "title": "Look up a code at checkout", "files": ["src/coupons/lookup.js", "test/lookup.test.js", "src/checkout/route.js", "test/total.test.js"] },
+    { "title": "The coupons table", "files": ["db/migrate/002_coupons.sql"] },
+    { "title": "Admins create coupons", "files": ["src/auth/admin.js", "config/admin.json", "src/admin/coupons-api.js", "config/coupons.json", "test/admin.test.js"] },
+    { "title": "How coupons work", "files": ["docs/coupons.md"] }
+  ]
+}

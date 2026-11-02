@@ -1,15 +1,15 @@
 {
  "name": "seamux-deep-plan",
  "take": "take-deep",
- "poster": 7,
+ "poster": 5,
  "intro": {
   "line": "deep-plan: a plan you read before any code."
  },
  "outro": {
   "items": [
    "Forks you decide.",
-   "Sections with a reason.",
-   "Checks that actually run."
+   "A map of the end state.",
+   "Checks that run, and auto-go between them."
   ]
  },
  "shots": [
@@ -24,9 +24,9 @@
    "beats": 6,
    "speed": 2.4,
    "crop": [
-    442,
+    345,
     150,
-    352,
+    445,
     730
    ],
    "label": "deep-plan",
@@ -40,9 +40,9 @@
    "beats": 8,
    "speed": 1.2,
    "crop": [
-    442,
+    345,
     150,
-    352,
+    445,
     730
    ],
    "label": "deep-plan",
@@ -53,7 +53,7 @@
    "side": true,
    "at": "sec-Non-goals",
    "from": 0.6,
-   "beats": 6,
+   "beats": 5,
    "crop": [
     800,
     120,
@@ -62,13 +62,28 @@
    ],
    "label": "The plan",
    "title": "Non-goals",
-   "line": "What it won't do comes first, before you argue with what it will."
+   "line": "Why the plan exists and what it leaves out come first."
+  },
+  {
+   "side": true,
+   "at": "sec-End state",
+   "from": 0.6,
+   "beats": 10,
+   "crop": [
+    800,
+    120,
+    800,
+    780
+   ],
+   "label": "The plan",
+   "title": "End state",
+   "line": "A map of every file the plan touches: new, changed or removed, with what uses it and what it uses."
   },
   {
    "side": true,
    "at": "sec-Decisions",
    "from": 0.6,
-   "beats": 6,
+   "beats": 5,
    "crop": [
     800,
     120,
@@ -81,24 +96,9 @@
   },
   {
    "side": true,
-   "at": "sec-Contracts",
-   "from": 0.6,
-   "beats": 6,
-   "crop": [
-    800,
-    120,
-    800,
-    780
-   ],
-   "label": "The plan",
-   "title": "Contracts",
-   "line": "Every API or table shape that changes. Reach is scouted; the call is yours."
-  },
-  {
-   "side": true,
    "at": "sec-Verified facts",
    "from": 0.6,
-   "beats": 6,
+   "beats": 5,
    "crop": [
     800,
     120,
@@ -113,7 +113,7 @@
    "side": true,
    "at": "sec-Risks",
    "from": 0.6,
-   "beats": 7,
+   "beats": 6,
    "crop": [
     800,
     120,
@@ -126,24 +126,9 @@
   },
   {
    "side": true,
-   "at": "sec-Diagrams",
-   "from": 0.6,
-   "beats": 6,
-   "crop": [
-    800,
-    120,
-    800,
-    780
-   ],
-   "label": "The plan",
-   "title": "Diagrams",
-   "line": "Each answers a question, in plain words first, with detail one tab away."
-  },
-  {
-   "side": true,
    "at": "sec-Increments",
    "from": 0.6,
-   "beats": 6,
+   "beats": 5,
    "crop": [
     800,
     120,
@@ -161,9 +146,9 @@
    "beats": 6,
    "speed": 1.2,
    "crop": [
-    442,
+    345,
     150,
-    352,
+    445,
     730
    ],
    "label": "Alignment check",
@@ -174,11 +159,11 @@
    "side": true,
    "at": "recipes",
    "from": 0.5,
-   "beats": 8,
+   "beats": 7,
    "crop": [
-    442,
+    345,
     150,
-    352,
+    445,
     730
    ],
    "label": ".seamux/verify.json",
@@ -196,23 +181,39 @@
     450
    ],
    "label": "The board",
-   "line": "You press go. One increment opens; the gate refuses the rest."
+   "line": "You give the first go. One increment opens; the gate refuses the rest."
   },
   {
    "side": true,
-   "at": "build",
-   "from": 0,
-   "beats": 10,
-   "speed": 4.5,
+   "take": "take-pickup",
+   "at": "term",
+   "from": 1,
+   "beats": 9,
    "crop": [
-    442,
+    345,
     150,
-    352,
+    445,
     730
    ],
+   "label": "Auto-go",
+   "title": "Increment 2 opened itself",
+   "line": "This plan opted into auto-go. Increment 1 passed its checks, so done gave increment 2 its go. The agent never runs go."
+  },
+  {
+   "side": true,
+   "take": "take-pickup",
+   "at": "incs",
+   "from": 1,
+   "beats": 7,
+   "crop": [
+    800,
+    120,
+    800,
+    780
+   ],
    "label": "deep-plan check run",
-   "title": "The checks run",
-   "line": "Lint and unit tests pass, and the checkout page passes in headless Chromium."
+   "title": "The checks ran",
+   "line": "Lint and unit tests pass, and the checkout page passes in headless Chromium, frames and all."
   },
   {
    "card": "outro",
