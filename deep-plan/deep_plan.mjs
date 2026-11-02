@@ -4412,6 +4412,8 @@ function checkReset(slug, n, id, ids = null) {
   if (!want.length) die(`increment ${n} has no check verdict to reset`);
   const was = want.map(k => `${k} (was ${checks[k].status || "pending"})`);
   repend(inc, want, "reset by hand");
+  // A person's reset is a fresh start for the retry count too (ADR 0065).
+  for (const k of want) delete checks[k].fails;
   log1(st, `check reset: increment ${inc.n} — ${was.join(", ")}`);
   writeState(st); rerenderWorking(slug);
   say(`back to pending for ${slug} ${inc.n}: ${was.join(", ")} — \`done\` is blocked again`);
@@ -4816,7 +4818,9 @@ function checkRun(slug, n, ids, opts) {
         say(`   ✋ stop and re-plan: ${id} failed ${fails} times in a row (the retry cap is ${cap}), and increment ${n} is blocked.\n` +
           `      Do not try a fourth fix. Find out why the fixes missed, amend the spec (decisions, risks, the increment's body)\n` +
           `      and re-render, then tell the human: only their go moves a blocked increment (deep-plan go ${slug} ${n}).`);
-      } else if (fails > 1) say(`   ${fails} failures in a row; at ${cap} the increment blocks for a re-plan`);
+      } else if (findInc(fresh, n).status === "blocked")
+        say(`   increment ${n} is blocked (${findInc(fresh, n).note}); stop and re-plan: amend the spec, re-render, and ask the human for a go`);
+      else if (fails > 1) say(`   ${fails} failures in a row; at ${cap} the increment blocks for a re-plan`);
     }
     lines.push(`${id} ${res.status}`);
   }

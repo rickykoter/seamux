@@ -7144,6 +7144,9 @@ if (want("retry cap: fix-until-green stops for a re-plan")) {
     /✋ stop and re-plan/.test(r.stdout) && /Do not try a fourth fix/.test(r.stdout) && /deep-plan go rt-a 1/.test(r.stdout), r.stdout + JSON.stringify(inc));
   const cands = JSON.parse(rc("retro", "rt-a", "--json").stdout).candidates;
   ok("retry: the cap files a retry lesson candidate", cands.length === 1 && cands[0].source === "retry" && cands[0].inc === 1, JSON.stringify(cands));
+  r = rc("check", "run", "rt-a", "1", "--inline");
+  ok("retry: a run on a blocked increment says it is blocked, not how far to the cap",
+    /increment 1 is blocked \(stop and re-plan/.test(r.stdout) && !/at 3 the increment blocks/.test(r.stdout), r.stdout);
   ok("retry: the gate refuses edits while it is blocked", gate("Edit", { file_path: path.join(RR, "x.txt") }, RR).status === 2);
   r = rc("go", "rt-a", "1");
   ok("retry: a person's go moves it on and starts the count again", r.status === 0 && stOf("rt-a").increments[0].status === "authorized" && !chk("rt-a").fails, r.stderr);
@@ -7155,6 +7158,10 @@ if (want("retry cap: fix-until-green stops for a re-plan")) {
   arm("rt-b", { retry: { max: 1 } });
   rc("check", "run", "rt-b", "1", "--inline");
   ok("retry: retry.max sets the cap", stOf("rt-b").increments[0].status === "blocked");
+  arm("rt-d");
+  rc("check", "run", "rt-d", "1", "--inline"); rc("check", "run", "rt-d", "1", "--inline");
+  rc("check", "reset", "rt-d", "1", "test-flaky");
+  ok("retry: a check reset by hand starts the count again", !chk("rt-d").fails);
   // A manual fail is a person's verdict, not a retry.
   arm("rt-c", { retry: { max: 1 } });
   rc("check", "fail", "rt-c", "1", "test-flaky", "looked", "--force");
