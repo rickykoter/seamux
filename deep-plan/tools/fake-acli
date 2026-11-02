@@ -1,0 +1,3 @@
+#!/bin/bash
+# fake-gh, run as acli: it answers from $FAKE_ACLI_MAP. See tools/fake-gh.
+exec node "$(dirname "$0")/fake-gh" --as-acli "$@"

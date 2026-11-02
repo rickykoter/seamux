@@ -84,12 +84,22 @@ if [ -e "$1" ]; then
     find "$STATE_DIR/turns" -type f -mtime +0 -delete 2>/dev/null
   fi
 fi
-# Family news and plan notes are node's to tell; with neither on disk, the
-# hook ends here on two globs.
+# Family news, plan notes and lessons are node's to tell; with none on disk,
+# the hook ends here on two globs and a test.
 set -- "$STATE_DIR"/families/*/index.json
 if [ ! -e "$1" ]; then
   set -- "$STATE_DIR"/*.notes.jsonl
-  [ -e "$1" ] || exit 0
+  if [ ! -e "$1" ]; then
+    # The repo's lessons are told once, at SessionStart, and only when the
+    # repo at the session's cwd has a lessons file (lib/lessons.mjs). The
+    # event is read first, so a prompt pays no git call.
+    [ -n "$read_payload" ] || { payload=$(cat); read_payload=1; }
+    case ${payload:0:16384} in *'"hook_event_name":"SessionStart"'*|*'"hook_event_name": "SessionStart"'*) ;; *) exit 0 ;; esac
+    re_cwd='"cwd"[[:space:]]*:[[:space:]]*"([^"]*)"'
+    lcwd=""; [[ ${payload:0:16384} =~ $re_cwd ]] && lcwd=${BASH_REMATCH[1]}
+    ltop=$(git -C "${lcwd:-${CLAUDE_PROJECT_DIR:-$PWD}}" rev-parse --show-toplevel 2>/dev/null) || exit 0
+    [ -e "$ltop/.seamux/lessons.md" ] || exit 0
+  fi
 fi
 if [ -n "${DEEP_PLAN_SKILL_DIR:-}" ]; then HOOKS="$DEEP_PLAN_SKILL_DIR/hooks"
 else case $0 in */*) HOOKS=${0%/*} ;; *) HOOKS=. ;; esac

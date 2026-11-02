@@ -8,6 +8,9 @@ The full shape of the spec JSON (discipline step 5); `examples/example.spec.json
 - [Auto-go](#auto-go)
 - [Parent plans](#parent-plans)
 - [Shared state](#shared-state)
+- [Refactor loops](#refactor-loops)
+- [The simpler approach](#the-simpler-approach)
+- [Lessons](#lessons)
 - [Advisory and derived fields](#advisory-and-derived-fields)
 - [How evidence is checked](#how-evidence-is-checked)
 
@@ -31,14 +34,15 @@ The full shape of the spec JSON (discipline step 5); `examples/example.spec.json
   "diagrams":      [{ "question": "the heading, phrased as a question", "mermaid": "...",
                       "simple": "optional: the same idea in plain words, the page opens on it" }],
   "deliverables":  [{ "title": "...", "body": "...", "files": ["relative/path", { "path": "relative/path", "change": "remove" }],
-                      "checks": [{ "kind": "test|e2e|observability|manual|review|browser", "name": "...",
+                      "checks": [{ "kind": "test|e2e|observability|manual|review|browser|ci", "name": "...",
                         "id": "optional; derived from kind + name",
                         "recipe": "a recipe id (or id@project) from .seamux/verify.json",
                         "run": "a command shown, not run (no recipe)",
                         "system": "datadog|splunk|...", "query": "...", "expect": "what proves it",
-                        "note": "optional" }],
+                        "note": "optional", "timeout": "ci only: seconds to wait (1800)" }],
                       "waiver": "only when nothing can prove it: why",
                       "go": { "human": "auto plans only: why a person gives this increment's go" },
+                      "loop": { "targets": ["paths or call sites"], "batch": "optional: targets per increment (1)" },
                       "commits": ["sha subject", { "sha": "...", "subject": "..." }] }],
   "review":        { "increments": [1, 3], "delivery": true,
                      "agentMayClose": false, "quiz": false,
@@ -46,6 +50,8 @@ The full shape of the spec JSON (discipline step 5); `examples/example.spec.json
   "go":            "optional: \"human\" (the default), \"auto\", or { \"mode\": \"auto\", \"between\": \"commit|draft-pr\" }",
   "share":         "optional: true, or { \"remote\": \"origin\", \"prefix\": \"seamux-state/\", \"sync\": \"transitions|manual\" }",
   "nonGoals":      ["what this plan deliberately does not do"],
+  "simpler":       { "alternative": "the simplest approach considered", "whyNot": "why the plan does not take it" },
+  "retry":         { "max": 3 },
   "verification":  ["runnable commands"],
   "commits":       ["plan-wide record of what landed (same two shapes)"],
   "quiz":          [{ "id": "q1", "prompt": "...", "options": ["..."], "answer": 0,
@@ -83,6 +89,11 @@ auto-goes unless `review.agentMayClose` is true, since otherwise the chain
 waits on a person closing findings that nobody asked them to close. A
 `go.human` on increment 1 or on a plan that is not auto is refused too.
 
+`retry.max` (default 3) is how many failed runs in a row of one
+recipe-backed check block its increment for a re-plan. The chain stops at
+the block like any other, and a person's go starts the count again
+(loops.md, "Fix until green, then stop").
+
 ## Parent plans
 
 A parent plan (see Families) adds one block, and a child plan adds nothing:
@@ -107,6 +118,49 @@ parent's delivery one lookout review per member; see checks.md.
 other sessions pull it. It is false when left out, and a family child
 follows its parent's. Render refuses any other shape. What it does and the
 `SEAMUX_STATE_*` overrides are in sharing.md.
+
+## Refactor loops
+
+A deliverable with `loop` is expanded at render into one increment per
+`batch` of its `targets`, before anything else reads the spec. Each batch
+is titled "<title> (k/m: targets)", says its targets in its body, carries
+the deliverable's checks, and lists its targets that are files under the
+root. Render archives the expanded spec with `loopOf` on each batch and no
+`loop` field, so it never expands twice; `review.increments` numbers and a
+risk's `deliverableRef` follow the expansion. A deliverable's `go.human`
+stays on its first batch, and its `commits` on none. A re-render keeps
+progress by increment number, so render refuses one whose loop change
+would move a started increment's progress onto another; change targets
+before the first batch starts. Targets skip the read-before-plan floor, but a
+loop with file targets needs a verifiedFact citing at least one of them.
+A parent plan's deliverables do not loop.
+
+## The simpler approach
+
+`simpler` names the simplest approach the plan considered and why it does
+not take it. It is advisory: render warns when it is missing and refuses
+only a malformed one. The md and both pages show it after the non-goals.
+
+## Lessons
+
+A repo's lessons live in its committed `.seamux/lessons.md`, one rule per
+`## L<n>` section with an `applies:` line of path globs and a `from:` line
+naming the plans it came from. Only `deep-plan retro` writes it, and it holds
+at most 30 rules. A session hears the file at start.
+
+Render reads it against the spec. A lesson whose globs match a file a
+deliverable names, while no decision or risk cites its id, is a warning.
+Cite it where the plan says how it heeds the rule, as in "L3: the module
+was read first". A file over 30 rules is refused until a retro retires or
+merges some.
+
+During a plan, misses become candidates in the plan's state: `deep-plan
+lesson "<text>"` after a correction from the human, and the engine's own
+at a failed grade, a `done --force`, and a review held by a blocker or
+major. `deep-plan retro <slug>` lists them; `keep <cid> "<rule>" --applies
+<globs>`, `merge <cid> L<n> ["<rule>"]` and `drop <cid> "<why>"` settle each,
+and `retire L<n> "<why>"` removes a rule. `close` and an ending `deliver`
+refuse while a candidate is unsettled; `--force` is the human's.
 
 ## Advisory and derived fields
 

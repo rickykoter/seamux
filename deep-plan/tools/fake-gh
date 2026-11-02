@@ -1,0 +1,32 @@
+#!/usr/bin/env node
+// A stand-in for gh (and, run as fake-acli, for acli), for probe.mjs: no
+// network. It answers from a JSON map named by $FAKE_GH_MAP (fake-acli:
+// $FAKE_ACLI_MAP): { "<argv prefix>": { "stdout": "...", "status": 0,
+// "stderr": "..." } }. The longest key the joined argv starts with wins; an
+// argv no key matches exits 1. A value whose stdout is a list is a sequence:
+// each call takes the next entry, and the last repeats (a poll that settles).
+// Every argv is appended to $FAKE_GH_LOG when it is set.
+import fs from "node:fs";
+
+const acli = process.argv[2] === "--as-acli";
+const me = acli ? "fake-acli" : "fake-gh";
+const argv = process.argv.slice(acli ? 3 : 2);
+const mapFile = me === "fake-acli" ? process.env.FAKE_ACLI_MAP : process.env.FAKE_GH_MAP;
+if (process.env.FAKE_GH_LOG) fs.appendFileSync(process.env.FAKE_GH_LOG, JSON.stringify({ me, argv }) + "\n");
+let map = {};
+try { map = JSON.parse(fs.readFileSync(mapFile, "utf8")); } catch { console.error(`${me}: no map at ${mapFile}`); process.exit(1); }
+const joined = argv.join(" ");
+const key = Object.keys(map).filter(k => joined === k || joined.startsWith(k + " ")).sort((a, b) => b.length - a.length)[0];
+if (key === undefined) { console.error(`${me}: nothing mapped for: ${joined}`); process.exit(1); }
+let v = map[key];
+if (Array.isArray(v.stdout)) {
+  const countFile = mapFile + ".count." + Buffer.from(key).toString("hex").slice(0, 40);
+  let i = 0;
+  try { i = Number(fs.readFileSync(countFile, "utf8")) || 0; } catch { /* first call */ }
+  fs.writeFileSync(countFile, String(i + 1));
+  v = { ...v, stdout: v.stdout[Math.min(i, v.stdout.length - 1)] };
+}
+const out = typeof v.stdout === "string" ? v.stdout : JSON.stringify(v.stdout);
+if (out) process.stdout.write(out);
+if (v.stderr) process.stderr.write(v.stderr);
+process.exit(v.status || 0);

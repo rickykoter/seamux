@@ -122,7 +122,7 @@ export function mergeFiles(aFiles, bFiles, aState, bState, stateRel, merged) {
         const c = mergeControl(JSON.parse(Buffer.from(aFiles[rel]).toString("utf8")), JSON.parse(Buffer.from(bFiles[rel]).toString("utf8")));
         out[rel] = Buffer.from(JSON.stringify(c, null, 2) + "\n");
       } catch { /* one side does not parse: the leading side's stands */ }
-    } else if (/^deep-plan\/state\/families\/[^/]+\/trespass\.jsonl$/.test(rel) || /^deep-plan\/state\/[^/]+\.notes\.jsonl$/.test(rel)) {
+    } else if (/^deep-plan\/state\/families\/[^/]+\/trespass\.jsonl$/.test(rel) || /^deep-plan\/state\/[^/]+\.(notes|lessons)\.jsonl$/.test(rel)) {
       out[rel] = Buffer.from(mergeLines(Buffer.from(aFiles[rel]).toString("utf8"), Buffer.from(bFiles[rel]).toString("utf8")));
     }
   }
