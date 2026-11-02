@@ -23,9 +23,9 @@ models and harnesses can feed them or read what they produce:
 
 | | deep-plan | lookout |
 |---|---|---|
-| takes | a sentence in chat, or a JSON spec any tool can write | a branch, a commit range, the working tree, or a `.patch` file with no repository |
-| gives | the plan as markdown, `<slug>.approved.md` as the agreed snapshot, `status --json` | findings as JSON, and `lookout gate` exit codes: 0 clear, 1 held, 3 not reviewed yet |
-| you configure | recipes in `.seamux/verify.json`: any shell command as a test, plus e2e, browser and review checks, matched to paths | `.seamux/lookout.json`: the quiz, edge providers, and what System-1 sees (`sendContent`) |
+| takes | a sentence in chat, a JSON spec any tool can write, or a link to an issue, PR, failed CI run or Jira key (`deep-plan intake`) | a branch, a commit range, the working tree, or a `.patch` file with no repository; a plan's map with `--plan-map` |
+| gives | the plan as markdown, `<slug>.approved.md` as the agreed snapshot, the end-state map as `<slug>.map.json`, `status --json`, and lessons in `.seamux/lessons.md` | findings as JSON, and `lookout gate` exit codes: 0 clear, 1 held, 3 not reviewed yet |
+| you configure | recipes in `.seamux/verify.json`: any shell command as a test, plus e2e, browser, review and CI checks, matched to paths | `.seamux/lookout.json`: the quiz, edge providers, and what System-1 sees (`sendContent`) |
 | other agents | its verbs are a node CLI that any agent or script can call; the gate that holds edits is a Claude Code hook | `lookout prompt` prints the reviewer brief for any model, and `lookout findings add` takes its JSON back |
 
 Neither needs a service. Where there is no browser, the quiz comes as text,
@@ -96,13 +96,28 @@ each station leaves something you can check before the next one starts.
 
 | station | who | command | leaves |
 |---|---|---|---|
-| **Plan** | the agent asks, you answer | `deep-plan render <spec> --root <worktree>` | a plan page with decisions, cited facts, risks and diagrams |
+| **Intake** *(for a bug)* | the agent | `deep-plan intake <link>` | a seed from the issue, PR, CI run or Jira key: the report, failing checks, log tails and the tests they name |
+| **Plan** | the agent asks, you answer | `deep-plan render <spec> --root <worktree>` | a plan page with a map of the end state, decisions, cited facts, risks and diagrams |
 | **Align** | you | `deep-plan grade <slug> q1=a q2=c …` | a short quiz passed, and the plan as agreed in `<slug>.approved.md` |
-| **Go** | you, or a family's parent agent | `deep-plan go <slug> next` | one open increment; the gate refuses every edit outside it |
+| **Go** | you, a family's parent agent, or auto-go once the last increment's checks pass | `deep-plan go <slug> next` | one open increment; the gate refuses every edit outside it |
 | **Build** | the agent | edits inside the increment | commits, one increment at a time |
-| **Prove** | the engine, and you for manual checks | `deep-plan check run <slug> <n>` | a verdict per check; `done` waits for all of them |
-| **Review** | a fresh reviewer agent; you close what matters | `lookout gate --plan <slug> --inc <n>` | findings on their lines; an open blocker or major holds the gate |
+| **Prove** | the engine, and you for manual checks | `deep-plan check run <slug> <n>` | a verdict per check; `done` waits for all of them, and three failed runs in a row block the increment for a re-plan |
+| **Review** | a fresh reviewer agent; you close what matters | `lookout gate --plan <slug> --inc <n>` | findings on their lines, and the plan's map held against the diff; an open blocker or major holds the gate |
 | **Ship** | you | `deep-plan deliver <slug>` | a reviewed branch, its evidence, and tickets if you want them |
+| **Retro** | you, with the agent | `deep-plan retro <slug>` | the plan's misses kept, merged or dropped as rules in `.seamux/lessons.md` |
+
+You give each go yourself unless the plan opts into auto-go
+(`"go": "auto"` in its spec). Then a `done` whose checks all passed gives
+the next increment its go. Each increment is committed first, and a plan
+can also have the branch pushed to a draft PR between them. The first go is still yours, and an increment can be
+marked to stop the chain and wait for you.
+
+When a check fails, the agent fixes the cause and runs it again without
+asking you how. A check can also wait on the PR's CI. After three failed
+runs in a row (or the spec's `retry.max`) the increment blocks and the
+agent has to re-plan, since three missed fixes mean the plan has the
+problem wrong. Only your go moves it again, and that also restarts the
+count.
 
 A big goal does not have to run down one line. A parent plan splits it into
 workstreams, each its own plan, worktree and agent, and they join at the end
@@ -208,6 +223,18 @@ every session in the repo hears new ones once at its next prompt, and
 notes: each is closed with a reason or moved into a live plan. Details:
 [deep-plan's README](deep-plan/README.md#notes-side-findings).
 
+### Lessons: a plan's misses reach the next plan
+
+When you correct the agent, it files the miss with `deep-plan lesson
+"..."`. The engine files its own at a failed quiz, a `done --force`, a
+review held by a blocker or major, and the retry cap. Before a plan closes
+or delivers, `deep-plan retro` walks you through each one: keep it as a
+rule with the paths it applies to, merge it into an existing rule, or drop
+it. The rules live in the repo's committed `.seamux/lessons.md`, at most 30
+of them. Every session hears the file at start, and render warns when a
+plan touches a lesson's paths without saying how it heeds it. Details:
+[deep-plan's README](deep-plan/README.md#lessons-misses-that-reach-the-next-plan).
+
 ### Reviews across machines
 
 lookout's review page works the same in cmux, desktop and a terminal. A
@@ -301,11 +328,17 @@ The agent questions your goal, asks about every fork that would be hard to
 undo, and checks what it isn't sure of before it writes a plan. The plan
 opens as a page with a short quiz. The agent can't edit until the quiz
 passes and you say `go`, one increment at a time, and can't call an
-increment done until its checks pass. Plans split into families of
-workstreams, sync through git, and keep notes of side findings for any
-plan in the repo to read.
+increment done until its checks pass. A plan can opt into auto-go, where
+each increment that passes its checks gives the next its go. The page opens
+with the plan's context and non-goals, then an End state map: the plan's
+files grouped by folder and marked new, changed or removed, with what uses
+them on one side and what they use on the other. Plans split into families
+of workstreams, sync through git, and keep notes of side findings for any
+plan in the repo to read. A plan can start from a bug link, split a
+refactor's call sites into batched increments, and leave lessons for the
+next plan.
 [deep-plan's README](deep-plan/README.md) has the pages, checks, contracts,
-risks, ADRs and families.
+risks, ADRs, families, loops and lessons.
 
 ![a deep-plan review page: context, decisions, diagrams and the quiz](docs/img/plan-review.png)
 
@@ -314,7 +347,11 @@ risks, ADRs and families.
 Opens a branch, a commit range or the working tree as a review page, files
 ranked by risk. A fresh reviewer agent files findings on their lines, each
 with a failure scenario, and you and the agent talk them through in
-threads. A plan can make an increment wait on its review.
+threads. A plan can make an increment wait on its review. A review
+deep-plan opens also has a Map view (`m`), with the plan's End state map
+held against the diff: files the plan named that the diff never touched,
+and files it touched that the plan never named, are flagged, and each card
+carries its open findings.
 [lookout's README](lookout/README.md).
 
 **lookout up close** (77 s). How lookout scores risk before any reviewer:
