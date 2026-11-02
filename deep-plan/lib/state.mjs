@@ -268,7 +268,8 @@ export function log1(st, what) {
 // `browser` is a recipe-backed check whose last step drives cmux's browser
 // (lib/browser.mjs); its verdict is the exit code like any recipe's, and its
 // run leaves evidence (frames, trace, replay) the surfaces show.
-export const CHECK_KINDS = ["test", "e2e", "observability", "manual", "review", "browser"];
+// `ci` is synthesized too: the branch's PR checks through gh (lib/ci.mjs).
+export const CHECK_KINDS = ["test", "e2e", "observability", "manual", "review", "browser", "ci"];
 // needs-value: a claim step asks a person for a value and has nothing to poll.
 export const CHECK_STATUSES = ["pending", "running", "needs-variant", "needs-value", "pass", "fail"];
 // What a verdict is, as opposed to what the spec says the check is. Only these
@@ -279,7 +280,8 @@ export const CHECK_STATUSES = ["pending", "running", "needs-variant", "needs-val
 // `evidence` the last browser run's frames, trace and replay (lib/browser.mjs);
 // `ask` a claim's open question, `answer` a person's reply to it, `claims`
 // what a run holds and must release (lib/claims.mjs).
-export const VERDICT_FIELDS = ["status", "at", "note", "by", "ran", "tree", "runner", "acquire", "evidence", "ask", "answer", "claims"];
+// `fails` is how many runs in a row failed (the retry cap, ADR 0065).
+export const VERDICT_FIELDS = ["status", "at", "note", "by", "ran", "tree", "runner", "acquire", "evidence", "ask", "answer", "claims", "fails"];
 const ID_PREFIX = { observability: "obs" };
 
 function checkSlug(kind, name) {
@@ -309,12 +311,12 @@ export function specChecks(d) {
   if (!d) return [];
   const out = [], seen = new Set();
   const add = (c, legacy) => {
-    const name = String(c.name || c.system || c.recipe || c.run || (c.kind === "review" ? "code review" : "")).trim();
+    const name = String(c.name || c.system || c.recipe || c.run || (c.kind === "review" ? "code review" : c.kind === "ci" ? "pr checks" : "")).trim();
     let id = c.id ? String(c.id) : checkSlug(c.kind, name);
     if (!c.id) for (let k = 2, base = id; seen.has(id); k++) id = `${base}-${k}`;
     seen.add(id);
     const o = { id, kind: c.kind, name };
-    for (const f of ["recipe", "run", "system", "query", "expect"]) if (c[f]) o[f] = c[f];
+    for (const f of ["recipe", "run", "system", "query", "expect", "timeout"]) if (c[f]) o[f] = c[f];
     // The spec's `note` describes the check; the verdict's `note` is what was
     // seen. Kept apart so recording a verdict never overwrites the brief.
     if (c.note) o.hint = c.note;

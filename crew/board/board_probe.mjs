@@ -2520,8 +2520,14 @@ if (crewImpl.isRust("crew-board")) {
     const s3 = store();
     checks.push(["review POST: reopen; and a comment thread is resolved, never dismissed",
       s3.findings[0].status === "open" && s3.threads[0].status === "resolved"]);
-    checks.push(["review POST: writes are atomic (no temp files left)",
-      !fs.readdirSync(reviews).some(n => n.includes(".tmp-") || n.endsWith(".lock") || n.endsWith(".lock-break"))]);
+    // Each POST also starts a detached `lookout sync` (review_sync), which
+    // rewrites the same review under its own lock and temp file. A slow CI
+    // runner can still be inside one when the last POST returns, so give the
+    // in-flight writes up to 10s to finish; a temp or lock file still there
+    // after that was left behind.
+    const transient = () => fs.readdirSync(reviews).filter(n => n.includes(".tmp-") || n.endsWith(".lock") || n.endsWith(".lock-break"));
+    for (let i = 0; i < 100 && transient().length; i++) await new Promise(r => setTimeout(r, 100));
+    checks.push(["review POST: writes are atomic (no temp files left)", !transient().length]);
     // The quiz's answer op: refused without a quiz, a question or a usable
     // pick; graded and recorded once, as the human's.
     const qstore = () => JSON.parse(fs.readFileSync(join(reviews, "quiz.json"), "utf8"));

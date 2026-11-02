@@ -55,7 +55,9 @@ These survive a compaction; everything below them is how.
    own words, list the assumptions in it, and put the strongest
    counter-position to the human as an `AskUserQuestion` ("the simpler fix is
    X", "this symptom usually means Y", "is this worth doing at all?"). A
-   confirmed goal plans faster and better than an assumed one.
+   confirmed goal plans faster and better than an assumed one. Given a bug
+   report, issue, failing PR or CI run link, run `deep-plan intake <link>`
+   first and plan it as the bug lane ([loops.md](references/loops.md)).
 1. **Interrogate before drafting.** A plan that silently resolved a fork is a
    plan the human never agreed to. When a fork is *architectural* (it will
    outlive this plan and constrain later ones), say so in the question and
@@ -72,7 +74,9 @@ These survive a compaction; everything below them is how.
    cites. "Nothing like this exists yet" is itself a claim: cite the search
    that came up empty. (Retro origin: a plan to "deepen the Jira badges" was
    drafted without opening crew-sync, which already had the polling, parsing
-   and cache.)
+   and cache.) Read the repo's `.seamux/lessons.md` too (a session hears it
+   at start): a lesson whose paths the plan touches is cited by id in a
+   decision or risk that says how the plan heeds it, or render warns.
 3. **Scout the uncertainty.** Fan out cheap sub-agents (Explore, or
    haiku-tier via the Agent tool): one per low-confidence claim and one per
    contract surface, to map callers, consumers and schema reach. Cap it
@@ -99,16 +103,21 @@ These survive a compaction; everything below them is how.
    too whether the plan's state should sync to a git branch other sessions
    pull, and record the answer as `share`
    ([sharing.md](references/sharing.md#state-branches)).
-5. **Write the spec**, a single JSON file in the scratchpad
-   ([spec.md](references/spec.md); `examples/example.spec.json` is a worked
-   one). `render` archives it. The prose in it (context, deliverable bodies,
+5. **Write the spec**, a single JSON file in the scratchpad. Give it
+   `simpler`: the simplest approach you considered and why the plan does
+   not take it (render warns without one). The shape is in
+   [spec.md](references/spec.md); `examples/example.spec.json` is a worked
+   one. `render` archives it. The prose in it (context, deliverable bodies,
    risks, decision text) is read by people, so run the `humanize` skill over
    those strings before rendering, editing them in place with Edit rather
    than rewriting the file. Leave ids, `path:line` citations, check
    commands and quiz options alone: the renderer and the quiz linter measure
    those. Write a file an increment deletes as `{"path": …, "change":
    "remove"}`, and give each contract `at`, the paths it lives in: the End
-   state map draws the removal and pins the contract on its file.
+   state map draws the removal and pins the contract on its file. A
+   refactor that repeats one change over many files or call sites is one
+   deliverable with a `loop` of targets, which render splits into batches
+   ([loops.md](references/loops.md#refactor-loops)).
 6. **`deep-plan render <spec.json> --root <worktree>`**, the refuse-first
    renderer. Always pass `--root` when working outside the target worktree:
    an inferred root outside it does not gate the wrong thing, it *disarms
@@ -170,6 +179,10 @@ These survive a compaction; everything below them is how.
    found outside the current increment's plan goes into `deep-plan note
    "<what you found>"`, not into the spec or the code; `deep-plan notes`
    lists the repo's open ones ([sharing.md](references/sharing.md#notes)).
+   After any correction from the human, file `deep-plan lesson "<what went
+   wrong, and the rule that prevents it>"`. Before `close` or `deliver`, go
+   through `deep-plan retro <slug>` with the human: keep, merge or drop each
+   candidate ([spec.md](references/spec.md#lessons)).
 10. **Prove the increment before `done`.** `done` is refused while any check
     is pending, running, needs a variant, failed, or passed against other
     content than the tree now. `deep-plan check list <slug> <n>` shows each
@@ -181,7 +194,10 @@ These survive a compaction; everything below them is how.
     setup scripts are repo code: when one fails, read the recipe's `brief`
     (`check list` shows it), then fix the feature or the script, and never
     weaken an assertion to get a pass. Browser checks, claim steps and PR
-    proof: [checks.md](references/checks.md#browser-checks).
+    proof: [checks.md](references/checks.md#browser-checks). A failing
+    check is yours to fix without asking how; after 3 failed runs in a row
+    the increment blocks, and you stop and re-plan instead of trying a
+    fourth fix ([loops.md](references/loops.md#fix-until-green-then-stop)).
 
 **In a cloud session** (claude.ai/code, `deep-plan doctor` says remote) the
 plugin runs from the repo's `.claude/skills/deep-plan`, put there by
