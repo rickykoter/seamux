@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build"
+    "build": "tsc --noEmit && node ui-checks/source.check.mjs && vite build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",
