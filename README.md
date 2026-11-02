@@ -18,6 +18,19 @@ sessions, and a plan can sync through git so several machines and people
 work it together. See [Where it runs](#where-it-runs) and
 [Working as a team](#working-as-a-team).
 
+Both work through plain files, commands and exit codes, so other tools,
+models and harnesses can feed them or read what they produce:
+
+| | deep-plan | lookout |
+|---|---|---|
+| takes | a sentence in chat, or a JSON spec any tool can write | a branch, a commit range, the working tree, or a `.patch` file with no repository |
+| gives | the plan as markdown, `<slug>.approved.md` as the agreed snapshot, `status --json` | findings as JSON, and `lookout gate` exit codes: 0 clear, 1 held, 3 not reviewed yet |
+| you configure | recipes in `.seamux/verify.json`: any shell command as a test, plus e2e, browser and review checks, matched to paths | `.seamux/lookout.json`: the quiz, edge providers, and what System-1 sees (`sendContent`) |
+| other agents | its verbs are a node CLI that any agent or script can call; the gate that holds edits is a Claude Code hook | `lookout prompt` prints the reviewer brief for any model, and `lookout findings add` takes its JSON back |
+
+Neither needs a service. Where there is no browser, the quiz comes as text,
+and plan state can live in the repo or on a git branch.
+
 Out of the box you only need git and GitHub. If your team uses Jira, GitHub
 Issues, Datadog, Splunk or Grafana, turn those on in the crew plugin's options and the
 board and the planner will use them. With Remote Control on, the same board
