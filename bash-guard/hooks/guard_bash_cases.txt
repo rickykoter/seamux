@@ -1,5 +1,5 @@
-# Cases for guard_bash_probe.sh: one per line, `block <command>` or
-# `allow <command>`. The command is written as the body of a JSON string, the
+# Cases for guard_bash_probe.sh: one per line, `block <command>`,
+# `allow <command>` or `ask <command>` (the person decides in the prompt). The command is written as the body of a JSON string, the
 # way the hook payload carries it: \" is a quote, \\ a backslash, \n a newline,
 # \t a tab. Blank lines and lines starting with # are skipped.
 
@@ -366,3 +366,28 @@ allow echo done; ls -- .
 allow cd /tmp && ls
 allow git commit -m \"line one\nline two; it's fine\"
 allow printf '%s\\n' \"a | b\" && echo 'c; d'
+
+# ---- remote branch delete or rename: the person decides (it closes any open PR)
+ask git push origin --delete feature-x
+ask git push origin -d feature-x
+ask git push --delete origin feature-x
+ask git push origin :feature-x
+ask git push origin \":feature-x\"
+ask git -C /repo push origin --delete feature-x
+ask git fetch && git push origin --delete feature-x
+ask gh api repos/o/r/branches/feature-x/rename -f new_name=y
+ask gh api \"repos/o/r/branches/feature-x/rename\" -f new_name=y
+ask gh api -X DELETE repos/o/r/git/refs/heads/feature-x
+ask gh api --method DELETE \"repos/o/r/git/refs/heads/feature-x\"
+ask gh api --method=DELETE repos/o/r/git/refs/heads/feature-x
+block git push origin --delete feature-x && rm -rf /
+block git push -fd origin feature-x
+allow git push origin feature-x:feature-x
+allow git push origin HEAD:refs/heads/feature-x
+allow git branch -m old new
+allow git branch -d merged
+allow gh pr merge 12 --squash --delete-branch
+allow gh api repos/o/r/branches/feature-x
+allow gh api repos/o/r/git/refs/heads/feature-x
+allow gh api -X PATCH repos/o/r/git/refs/heads/feature-x -f sha=abc
+allow git push origin feature-x
