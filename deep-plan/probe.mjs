@@ -543,6 +543,26 @@ ok("mermaid theme follows the page theme",
   qr = quizOf(x => { x.quiz.forEach(q => { delete q.type; }); });
   ok("quiz: an untyped quiz still renders, with a warning", qr.status === 0 && /warning: the quiz has no question types/.test(qr.stderr), qr.stderr.slice(0, 300));
   cli("close", "quiz-mix");
+  // The bug lane: two or more hypotheses, each with a falsify check.
+  const bugOf = f => { const x = JSON.parse(JSON.stringify(spec)); x.slug = "bug-lane"; x.lane = "bug";
+    x.hypotheses = [{ claim: "the sweep skips null next_try_at", falsify: "select count(*) from outbox where next_try_at is null", verdict: "refuted", evidence: "0 rows" },
+      { claim: "the test depends on the clock", falsify: "run it under a frozen clock ten times" }]; f(x); return cli("render", tmpSpec(x)); };
+  let br = bugOf(x => { x.hypotheses = x.hypotheses.slice(0, 1); });
+  ok("bug lane: one hypothesis is refused", br.status !== 0 && /lane bug: needs 2\+ hypotheses/.test(br.stderr), br.stderr.slice(0, 300));
+  br = bugOf(x => { delete x.hypotheses[1].falsify; });
+  ok("bug lane: a hypothesis with no falsify check is refused, by name",
+    br.status !== 0 && /hypothesis 2 \("the test depends on the clock"\): needs falsify/.test(br.stderr), br.stderr.slice(0, 300));
+  br = bugOf(x => { x.hypotheses[0].verdict = "maybe"; });
+  ok("bug lane: an unknown verdict is refused", br.status !== 0 && /verdict must be one of open, confirmed, refuted/.test(br.stderr));
+  br = bugOf(x => { x.lane = "feature"; });
+  ok("bug lane: bug is the only lane", br.status !== 0 && /lane: "bug" is the only lane/.test(br.stderr));
+  br = bugOf(() => {});
+  const bugReview = br.status === 0 ? fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "bug-lane.review.html"), "utf8") : "";
+  const bugMd = br.status === 0 ? fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "bug-lane.md"), "utf8") : "";
+  ok("bug lane: two falsifiable hypotheses render, shown on the review page and in the plan",
+    br.status === 0 && /<h2>Hypotheses<\/h2>/.test(bugReview) && bugReview.includes("<b>refuted</b>: the sweep skips null next_try_at") &&
+    bugReview.includes("falsify: run it under a frozen clock ten times") && /## Hypotheses\n\n- \*\*refuted\*\*: the sweep skips/.test(bugMd), br.stderr.slice(0, 300));
+  cli("close", "bug-lane");
   // Flagged without alternatives: refused, naming the field.
   const noAlts = JSON.parse(JSON.stringify(spec));
   noAlts.decisions[0].adr = { consequences: "c", alternatives: [] };
