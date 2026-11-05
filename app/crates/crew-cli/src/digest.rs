@@ -450,6 +450,23 @@ fn run(args: &[String]) -> i32 {
         }
     }
 
+    // --- silent panes: working, with no hook event past the threshold ---------------
+    {
+        let dir = std::path::Path::new(&crate::pypath::home()).join(".cache").join("cmux-crew");
+        let panes = crew_core::status::all(&dir);
+        let t = crew_core::status::silent_threshold_ms();
+        let quiet = crew_core::status::silent(&panes, (crew_core::py::now() * 1000.0) as u64, t);
+        if !quiet.is_empty() {
+            println!("{BOLD}{AMBER}⏸ {} pane(s) working with no hook event for over {}m{RESET}", quiet.len(), t / 60_000);
+            for (p, age) in &quiet {
+                let m = age / 60_000;
+                let ago = if m >= 60 { format!("{}h {}m", m / 60, m % 60) } else { format!("{m}m") };
+                println!("  {} {DIM}silent {ago}{RESET}", cell(&format!("{} {}", head(&p.ws, 12), head(&p.surface, 12)), 44));
+            }
+            println!();
+        }
+    }
+
     // --- reclaimable worktrees ----------------------------------------------------
     let cand: Vec<String> = trees.iter().filter(|p| **p != main).cloned().collect();
     // Ten at a time, results in worktree order, as the Python's pool.map.

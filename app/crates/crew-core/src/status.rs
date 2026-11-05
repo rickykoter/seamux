@@ -141,6 +141,28 @@ pub fn remove(dir: &Path, key: &str) {
 }
 
 /// Every pane file in `dir`, whichever workspace.
+/// How long a working pane may go with no hook write before it reads as
+/// silent: SEAMUX_SILENT_MINUTES (whole minutes, at least 1), default 10.
+/// Only Stop and End move a pane out of working, so a turn that hangs
+/// mid-tool would otherwise read as working forever.
+pub fn silent_threshold_ms() -> u64 {
+    let m = std::env::var("SEAMUX_SILENT_MINUTES").ok().and_then(|v| v.trim().parse::<u64>().ok()).filter(|m| *m >= 1).unwrap_or(10);
+    m * 60_000
+}
+
+/// The working panes with no hook write for longer than `threshold_ms`, each
+/// with how long it has been silent, longest first.
+pub fn silent(panes: &[Pane], now_ms: u64, threshold_ms: u64) -> Vec<(&Pane, u64)> {
+    let mut out: Vec<(&Pane, u64)> = panes
+        .iter()
+        .filter(|p| p.state == "working" && p.at > 0)
+        .map(|p| (p, now_ms.saturating_sub(p.at)))
+        .filter(|(_, age)| *age > threshold_ms)
+        .collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out
+}
+
 pub fn all(dir: &Path) -> Vec<Pane> {
     let Ok(rd) = fs::read_dir(dir) else { return Vec::new() };
     let mut out: Vec<Pane> = rd
@@ -424,6 +446,24 @@ pub fn update(dir: &Path, ws: &str, surface: &str, session: &str, now_ms: u64, c
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_working_pane_quiet_past_the_threshold_is_silent() {
+        let mut a = Pane::new("W1", "S1");
+        a.state = "working".into();
+        a.at = 1_000;
+        let mut b = Pane::new("W1", "S2");
+        b.state = "working".into();
+        b.at = 590_000;
+        let mut c = Pane::new("W2", "S3");
+        c.state = "idle".into();
+        c.at = 1;
+        let panes = vec![a, b, c];
+        let s = silent(&panes, 601_001, 600_000);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].0.surface, "S1");
+        assert_eq!(s[0].1, 600_001);
+    }
+
     use super::*;
 
     fn tmp(name: &str) -> PathBuf {

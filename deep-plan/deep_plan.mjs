@@ -1924,6 +1924,21 @@ const CHECK_GLYPH = {
 
 // Each check with its verdict, and — while it is outstanding — what it runs.
 // Showing the detail only while it matters keeps a finished increment short.
+// Ticks each running check's elapsed time once a second, amber past its
+// timeout. The time comes from the page's clock against the runner's start.
+const ELAPSED_TICK = `<style>.dp-elapsed.dp-late{color:var(--warn-t,#b45309);font-weight:600}</style>
+<script>(function () {
+  function fmt(s) { var m = Math.floor(s / 60), h = Math.floor(m / 60); return h ? h + "h " + (m % 60) + "m" : m ? m + "m " + (s % 60) + "s" : s + "s"; }
+  function tick() {
+    document.querySelectorAll(".dp-elapsed").forEach(function (e) {
+      var s = Math.max(0, Math.floor((Date.now() - Number(e.getAttribute("data-since"))) / 1000)), t = Number(e.getAttribute("data-timeout"));
+      e.textContent = "running " + fmt(s) + (t && s > t ? " (past its " + fmt(t) + " timeout)" : "");
+      e.classList.toggle("dp-late", !!t && s > t);
+    });
+  }
+  tick(); if (!window.__dpElapsed) window.__dpElapsed = setInterval(tick, 1000);
+})();</script>`;
+
 function checksRow(inc, slug = "") {
   const all = Object.entries(checksOf(inc)).filter(([, v]) => !v.retired);
   if (!all.length) return "";
@@ -1949,13 +1964,18 @@ function checksRow(inc, slug = "") {
         `${browser ? ' data-browser="1"' : ""}${asks ? ' data-asks="1"' : ""}` : "";
     const extra = (v.exec && v.exec.brief ? `<br><span class="dp-brief">brief: ${esc(v.exec.brief)}</span>` : "") +
       (v.ask && (st === "running" || st === "needs-value") ? `<br><span class="dp-ask">asks: ${esc(v.ask.question)}</span>` : "");
+    // A running check says how long it has run, ticking on the page, and
+    // turns amber past its recipe's timeout (the script below the list).
+    const since = st === "running" && v.runner && v.runner.startedAt;
+    const elapsed = since ? ` · <span class="dp-elapsed" data-since="${Number(since)}" data-timeout="${Number((v.exec && v.exec.timeout) || 0)}">running</span>` : "";
     return `<li${live}>${CHECK_GLYPH[st] || ""} ${esc(st)} · [${esc(v.kind || "?")}${v.system ? " · " + esc(v.system) : ""}] ` +
       `${esc(v.name || "")} <code>${esc(id)}</code>` +
       // A served working page reaches the review page on the same server.
       (v.synth === "review" && slug ? ` · <a href="/review/${esc(slug)}-inc${inc.n}">open the review</a>` : "") +
-      (v.note ? ` — ${esc(v.note)}` : "") + extra + detail + "</li>";
+      (v.note ? ` — ${esc(v.note)}` : "") + elapsed + extra + detail + "</li>";
   }).join("");
-  return `<p class="dim">checks: ${CHECK_GLYPH[agg] || ""} ${esc(agg)}</p><ul class="dim">${items}</ul>`;
+  const tick = items.includes('class="dp-elapsed"') ? ELAPSED_TICK : "";
+  return `<p class="dim">checks: ${CHECK_GLYPH[agg] || ""} ${esc(agg)}</p><ul class="dim">${items}</ul>${tick}`;
 }
 
 // The family this plan belongs to, under the title: the parent and every

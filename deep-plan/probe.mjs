@@ -5590,6 +5590,17 @@ if (want("recipe fields: uses, env, prereqs, sideEffects, noFix, evidence")) {
   ok("fields: check list shows side effects, prereqs, locks and noFix",
     /effects: writes-db, kills-process \(this worktree's puma\)/.test(ls) && /needs:  Postgres \(probe: pg_isready\)/.test(ls) &&
     /locks:  port:5432 exclusive, redis exclusive/.test(ls) && /noFix:  fails if the run changes tracked files/.test(ls), ls);
+  // A running check ticks its elapsed time on the working page, amber past
+  // its timeout; a page with none running carries no ticker.
+  const SF1 = path.join(ENV.DEEP_PLAN_STATE_DIR, "fields-1.json");
+  const st1 = JSON.parse(fs.readFileSync(SF1, "utf8"));
+  const page = () => { cli("rehydrate", "fields-1"); return fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "fields-1.working.html"), "utf8"); };
+  ok("fields: no running check, no elapsed ticker", !page().includes("dp-elapsed"));
+  st1.increments[0].checks.x = { ...st1.increments[0].checks.x, status: "running", runner: { token: "t", pid: 1, startedAt: 1700000000000 } };
+  fs.writeFileSync(SF1, JSON.stringify(st1));
+  const wp = page();
+  ok("fields: a running check carries its start and timeout, and the page ticks it",
+    /<span class="dp-elapsed" data-since="1700000000000" data-timeout="900">running<\/span>/.test(wp) && wp.includes("dp-late") && wp.includes("past its "), wp.slice(0, 200));
   cli("close", "fields-1");
 }
 
