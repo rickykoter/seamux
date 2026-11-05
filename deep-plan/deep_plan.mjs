@@ -32,6 +32,7 @@ import { buildProof, withProof, ghCanAttach, gh } from "./lib/proof.mjs";
 import { readEvidence, evidenceSummary, newEvidenceDir, pruneEvidence, showTab, browserDriver } from "./lib/browser.mjs";
 import { detect, draftFile } from "./lib/detect.mjs";
 import { detectHost, hostLine, sessionIds, resolveSeamux } from "./lib/host.mjs";
+import { survey, writeOnlyHere, exportBundle, importBundle, diffText } from "./lib/consolidate.mjs";
 import * as SERVE from "./lib/serve.mjs";
 import * as SYNC from "./lib/sync.mjs";
 import { mergeStates, mergeFiles } from "./lib/merge.mjs";
@@ -5271,6 +5272,52 @@ function applyTemplate(tpl, project) {
   return r;
 }
 
+// `seamux consolidate` (lib/consolidate.mjs, ADR 0068): worktrees' untracked
+// .seamux files against main's, and a bundle for teammates.
+function seamuxConsolidate(root, opts) {
+  let out;
+  try {
+    if (opts.export) out = { export: exportBundle(root, opts.export) };
+    else if (opts.import) out = { import: importBundle(root, opts.import, { yes: !!opts.yes }) };
+    else {
+      const sv = survey(root) || die(`${root} is not in a git repo whose git dir is .git`);
+      out = { survey: sv, written: opts.write ? writeOnlyHere(sv) : [] };
+    }
+  } catch (e) { die(e.message); }
+  if (opts.json) { say(JSON.stringify(out, null, 2)); return; }
+  if (out.export) {
+    const x = out.export;
+    say(`exported ${x.files.length} file(s) from ${x.main} to ${x.base}`);
+    for (const f of x.files) say(`  ${f}`);
+    say(x.files.length ? "state/ and evidence/ were left out. Commit and push that repo yourself." : "nothing untracked under .seamux in the main checkout");
+    return;
+  }
+  if (out.import) {
+    const x = out.import, todo = x.rows.filter(r => r.status === "new" || r.status === "differs");
+    say(`import ${x.base} into ${x.main}`);
+    for (const r of x.rows) {
+      say(`  ${r.status.padEnd(8)} ${r.rel}`);
+      if (r.status === "differs" && !opts.yes) process.stdout.write(diffText(path.join(x.main, r.rel), path.join(x.base, r.rel)).replace(/^/gm, "    "));
+    }
+    if (!todo.length) say("nothing to import");
+    else if (opts.yes) say(`wrote ${x.written.length} file(s) into ${x.main}`);
+    else say(`dry run: nothing written. Show the person these ${todo.length} change(s); rerun with --yes only on their ok.`);
+    return;
+  }
+  const { survey: sv, written } = out;
+  say(`seamux consolidate: ${sv.worktrees.length} worktree(s) against ${sv.main}`);
+  const by = s => sv.rows.filter(r => r.status === s);
+  for (const r of by("only-here")) say(`  only-here ${path.relative(sv.main, r.worktree) || r.worktree}: ${r.rel}${r.copy ? "" : " (same as another worktree's)"}`);
+  for (const r of by("conflict")) say(`  conflict  ${r.worktree}: ${r.rel} (worktrees disagree and main has none; settle by hand)`);
+  for (const r of by("differs")) {
+    say(`  differs   ${r.worktree}: ${r.rel}`);
+    process.stdout.write(diffText(path.join(sv.main, r.rel), path.join(r.worktree, r.rel)).replace(/^/gm, "    "));
+  }
+  say(`  ${by("same").length} file(s) already match main's`);
+  if (opts.write) say(`wrote ${written.length} only-here file(s) into ${sv.main}; differing files are left for you to settle`);
+  else if (sv.rows.some(r => r.copy)) say("dry run: --write copies the only-here files into main (it never deletes or overwrites)");
+}
+
 function verifyInit(root, opts) {
   const det = detect(root);
   const extra = new Map();
@@ -5500,6 +5547,8 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--terminated") flags.terminated = true;
   else if (rest[i] === "--detach") flags.detach = true;
   else if (rest[i] === "--yes") flags.yes = true;
+  else if (rest[i] === "--export") flags.export = rest[++i] || die("--export needs a folder");
+  else if (rest[i] === "--import") flags.import = rest[++i] || die("--import needs a folder");
   else if (rest[i] === "--foreground") flags.foreground = true;
   else if (rest[i] === "--review") flags.review = true;
   else if (rest[i] === "--session") flags.session = true;
@@ -5795,6 +5844,12 @@ switch (cmd) {
     else die("verify resolve <file>... [--root DIR] [--json]  |  verify init [--root DIR] [--write] [--template name[@dir]]... [--json]");
     break;
   }
+  case "seamux": {
+    if (args[0] !== "consolidate")
+      die("seamux consolidate [--root DIR] [--write] [--json]  |  --export DIR  |  --import DIR [--yes]");
+    seamuxConsolidate(flags.root || gitRoot(process.cwd()) || process.cwd(), flags);
+    break;
+  }
   case "open-gate": {
     const st = readState(args[0]) || die("no plan " + args[0]);
     // Where it came from, without claiming who: the board and the plan pane run
@@ -6010,6 +6065,14 @@ switch (cmd) {
   family news [slug]                          what the news hook would tell that member
                                               (default: the one at the cwd) now; does
                                               not move its cursor
+  seamux consolidate [--root DIR] [--write]   every worktree's untracked .seamux files
+                     [--json]                 against main's: only-here, differs, same;
+                                              --write copies the only-here ones into
+                                              main, never deleting or overwriting
+  seamux consolidate --export DIR             main's untracked .seamux files (no state/,
+                                              evidence/) to DIR/<project>/ for teammates
+  seamux consolidate --import DIR [--yes]     show what DIR/<project>/ changes in main;
+                                              writes only with --yes, the person's ok
   verify resolve <file>... [--root DIR]       which .seamux/verify.json each file
                  [--json]                     lands on and the recipes that apply
   verify init [--root DIR] [--write]          draft .seamux/verify.json per project from

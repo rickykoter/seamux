@@ -5383,6 +5383,77 @@ if (want(".seamux resolution")) {
   ok("seamux: the deep-plan and lookout copies agree", JSON.stringify(HOST_TWIN.resolveSeamux(IW, ".seamux/verify.json", { warn: false })) === JSON.stringify(ri));
 }
 
+// -------------------------------------------------- seamux consolidate, export and import
+if (want("seamux consolidate")) {
+  const CR = fs.realpathSync(fs.mkdtempSync(path.join(TMP, "consolidate-")));
+  const sh = (cmd, cwd) => execSync(cmd, { cwd, stdio: "pipe", env: { ...ENV,
+    GIT_AUTHOR_NAME: "probe", GIT_AUTHOR_EMAIL: "probe@deep-plan", GIT_COMMITTER_NAME: "probe", GIT_COMMITTER_EMAIL: "probe@deep-plan" } });
+  const put = (f, s) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, s); };
+  const cons = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "seamux", "consolidate", ...a], { encoding: "utf8", env: ENV, cwd: CR });
+  const M = path.join(CR, "main"), W1 = path.join(CR, "w1"), W2 = path.join(CR, "w2"), W3 = path.join(CR, "w3");
+  fs.mkdirSync(M);
+  sh("git init -q -b main", M);
+  put(path.join(M, ".gitignore"), ".seamux/\nops/.seamux/\n");
+  put(path.join(M, "ops", "app.rb"), "x\n");
+  sh("git add -A && git commit -q -m init", M);
+  for (const [w, b] of [[W1, "a"], [W2, "b"], [W3, "c"]]) sh(`git worktree add -q -b ${b} ${JSON.stringify(w)}`, M);
+  put(path.join(M, ".seamux", "verify.json"), "main\n");
+  put(path.join(M, ".seamux", "lessons.md"), "main lessons\n");
+  put(path.join(M, ".seamux", "state", "x.json"), "local\n");
+  put(path.join(W1, ".seamux", "verify.json"), "main\n");
+  put(path.join(W1, ".seamux", "lessons.md"), "w1 lessons\n");
+  put(path.join(W1, ".seamux", "restack.json"), "w1 only\n");
+  put(path.join(W1, "ops", ".seamux", "verify.json"), "ops w1\n");
+  put(path.join(W1, ".seamux", "evidence", "shot.png"), "png\n");
+  put(path.join(W2, ".seamux", "adr.json"), "two\n");
+  put(path.join(W3, ".seamux", "adr.json"), "three\n");
+
+  let r = cons("--root", W1, "--json");
+  let j = {}; try { j = JSON.parse(r.stdout); } catch {}
+  const st = (w, rel) => ((j.survey || { rows: [] }).rows.find(x => x.worktree === w && x.rel === rel) || {}).status;
+  ok("consolidate: a file main lacks is only-here, nested projects too",
+    st(W1, ".seamux/restack.json") === "only-here" && st(W1, "ops/.seamux/verify.json") === "only-here", r.stdout.slice(0, 400) + r.stderr);
+  ok("consolidate: matching and differing files are told apart", st(W1, ".seamux/verify.json") === "same" && st(W1, ".seamux/lessons.md") === "differs");
+  ok("consolidate: worktrees that disagree on a file main lacks are a conflict", st(W2, ".seamux/adr.json") === "conflict" && st(W3, ".seamux/adr.json") === "conflict");
+  ok("consolidate: state/ and evidence/ are never listed", !(j.survey || { rows: [] }).rows.some(x => /\/(state|evidence)\//.test(x.rel)));
+  ok("consolidate: a dry run writes nothing", !fs.existsSync(path.join(M, ".seamux", "restack.json")) && (j.written || []).length === 0);
+  r = cons("--root", W1);
+  ok("consolidate: the text view shows a differing file's diff", /differs .*\.seamux\/lessons\.md/.test(r.stdout) && /^\s+\+w1 lessons$/m.test(r.stdout), r.stdout);
+  r = cons("--root", W1, "--write");
+  ok("consolidate --write: only-here files land in main",
+    fs.readFileSync(path.join(M, ".seamux", "restack.json"), "utf8") === "w1 only\n" &&
+    fs.readFileSync(path.join(M, "ops", ".seamux", "verify.json"), "utf8") === "ops w1\n", r.stdout + r.stderr);
+  ok("consolidate --write: a differing file and a conflict are left alone, nothing deleted",
+    fs.readFileSync(path.join(M, ".seamux", "lessons.md"), "utf8") === "main lessons\n" && !fs.existsSync(path.join(M, ".seamux", "adr.json")) &&
+    fs.existsSync(path.join(W1, ".seamux", "restack.json")) && fs.existsSync(path.join(W2, ".seamux", "adr.json")));
+
+  const B = path.join(CR, "bundle");
+  r = cons("--root", W2, "--export", B);
+  const P = path.join(B, "main");
+  ok("consolidate --export: main's untracked files go to <dir>/<project>/",
+    fs.readFileSync(path.join(P, ".seamux", "lessons.md"), "utf8") === "main lessons\n" && fs.existsSync(path.join(P, "ops", ".seamux", "verify.json")), r.stdout + r.stderr);
+  ok("consolidate --export: state/ is left out", !fs.existsSync(path.join(P, ".seamux", "state")));
+
+  // A teammate's checkout of the same project name.
+  const T = path.join(CR, "team", "main");
+  fs.mkdirSync(T, { recursive: true });
+  sh("git init -q -b main", T);
+  put(path.join(T, ".gitignore"), ".seamux/\nops/.seamux/\n");
+  sh("git add -A && git commit -q -m init", T);
+  put(path.join(T, ".seamux", "lessons.md"), "teammate lessons\n");
+  const consT = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "seamux", "consolidate", "--root", T, ...a], { encoding: "utf8", env: ENV, cwd: T });
+  r = consT("--import", B);
+  ok("consolidate --import: shows new and differing files with a diff, and writes nothing",
+    /new\s+\.seamux\/verify\.json/.test(r.stdout) && /differs\s+\.seamux\/lessons\.md/.test(r.stdout) && /^\s+\+main lessons$/m.test(r.stdout) &&
+    /rerun with --yes only on their ok/.test(r.stdout) && !fs.existsSync(path.join(T, ".seamux", "verify.json")), r.stdout + r.stderr);
+  r = consT("--import", B, "--yes");
+  ok("consolidate --import --yes: writes the bundle into main",
+    fs.readFileSync(path.join(T, ".seamux", "verify.json"), "utf8") === "main\n" &&
+    fs.readFileSync(path.join(T, ".seamux", "lessons.md"), "utf8") === "main lessons\n", r.stdout + r.stderr);
+  r = consT("--import", path.join(CR, "nowhere"));
+  ok("consolidate --import: a folder with no bundle for this project is refused", r.status !== 0 && /no bundle for main/.test(r.stderr), r.stderr);
+}
+
 // -------------------------------------------------- remote host: state in the repo, export and import
 if (want("remote host: state in the repo, export and import")) {
   const RH = path.join(TMP, "remote-home");

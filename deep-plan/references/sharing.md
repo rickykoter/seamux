@@ -1,8 +1,14 @@
 # Sharing a plan
 
-Two kinds of sharing, for different readers: a plan's state on a git branch,
-for other sessions working the plan, and a published page, for people
-annotating it.
+Three kinds of sharing, for different readers: a plan's state on a git
+branch, for other sessions working the plan; a published page, for people
+annotating it; and a repo's untracked `.seamux` files, for teammates.
+
+## Contents
+
+- [State branches](#state-branches)
+- [A repo's .seamux files, for teammates](#a-repos-seamux-files-for-teammates)
+- [Publishing for annotation (optional, confirm-first)](#publishing-for-annotation-optional-confirm-first)
 
 ## State branches
 
@@ -56,6 +62,30 @@ machine.
 The branch carries the quiz's answer key, so anyone who can read the remote
 can read it. Branch protection on `seamux-state/*` refuses the pushes and the
 archive's delete: exempt the prefix, or set one that is not protected.
+
+## A repo's .seamux files, for teammates
+
+In a repo that ignores `.seamux`, recipes, lessons and ADR settings live in
+the main checkout's untracked folder (ADR 0068), so they never reach
+GitHub. `deep-plan seamux consolidate` gathers them and carries them to a
+teammate:
+
+1. `deep-plan seamux consolidate` lists every worktree's untracked `.seamux`
+   files against main's: `only-here`, `differs` (with a diff), `same`, and
+   `conflict` when worktrees disagree on a file main lacks. It changes
+   nothing.
+2. `--write` copies the `only-here` files into main. It never deletes and
+   never overwrites: settle each `differs` and `conflict` file by hand,
+   with the person.
+3. `--export <dir>` writes main's untracked `.seamux` files to
+   `<dir>/<project>/`, leaving out `state/` and `evidence/`. `<dir>` is a
+   git repo the person commits and pushes themselves; seamux never pushes it.
+4. A teammate pulls that repo and runs `--import <dir>` from their checkout.
+   It prints what would change in their main checkout, with diffs, and
+   writes nothing. Show them the diffs, and rerun with `--yes` only on
+   their ok.
+
+Files git tracks belong to the branch, and consolidate never touches them.
 
 ## Publishing for annotation (optional, confirm-first)
 
