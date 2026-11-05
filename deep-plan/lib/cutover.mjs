@@ -231,3 +231,44 @@ export function bundleReadme({ spec, files }) {
   out.push("```bash", `deep-plan rehydrate ${spec.slug}`, "```", "");
   return out.join("\n");
 }
+
+// The handoff: what a ticket needs once the work is done, as one markdown
+// comment. PRs, then per increment what changed (its commits) and what proved
+// it (each check with what was seen), then what is left for people (the
+// spec's verification commands, increments that wait on a person) and the
+// plan's open notes. Deterministic from its inputs, so the probe can hold it.
+export function handoffMd({ spec, st, prs = [], commits = {}, notes = [] }) {
+  const L = [`## Handoff: ${spec.title || st.slug}`, ""];
+  if (prs.length) {
+    L.push("### Pull requests", "");
+    for (const p of prs) L.push(`- [#${p.number} ${p.title}](${p.url}) (${String(p.state || "").toLowerCase()})`);
+    L.push("");
+  }
+  L.push("### What changed", "");
+  for (const inc of st.increments || []) {
+    L.push(`#### ${inc.n}. ${inc.title} (${inc.status})`, "");
+    const cs = commits[inc.n] || [];
+    if (cs.length) { for (const c of cs) L.push(`- ${c}`); L.push(""); }
+    const checks = Object.entries(inc.checks || {});
+    if (checks.length) {
+      L.push("Checks:", "");
+      for (const [id, c] of checks)
+        L.push(`- ${c.status || "pending"}: ${c.name || id}${c.note ? ` (${String(c.note).replace(/\s+/g, " ").slice(0, 200)})` : ""}`);
+      L.push("");
+    }
+  }
+  const people = (spec.deliverables || []).map((d, i) => ({ d, n: i + 1 }))
+    .filter(x => x.d.go && typeof x.d.go === "object" && x.d.go.human);
+  if ((spec.verification || []).length || people.length) {
+    L.push("### Cutover", "");
+    for (const v of spec.verification || []) L.push(`- run \`${v}\``);
+    for (const x of people) L.push(`- increment ${x.n} waits on a person: ${x.d.go.human}`);
+    L.push("");
+  }
+  if (notes.length) {
+    L.push("### Open notes", "");
+    for (const n of notes) L.push(`- ${n.id}: ${n.text}`);
+    L.push("");
+  }
+  return L.join("\n");
+}

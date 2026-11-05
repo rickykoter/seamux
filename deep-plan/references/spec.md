@@ -51,10 +51,14 @@ The full shape of the spec JSON (discipline step 5); `examples/example.spec.json
   "share":         "optional: true, or { \"remote\": \"origin\", \"prefix\": \"seamux-state/\", \"sync\": \"transitions|manual\" }",
   "nonGoals":      ["what this plan deliberately does not do"],
   "simpler":       { "alternative": "the simplest approach considered", "whyNot": "why the plan does not take it" },
+  "lane":          "bug  (optional; the bug lane, references/loops.md#the-bug-lane)",
+  "hypotheses":    [{ "claim": "a competing explanation", "falsify": "the check, query or command that could disprove it",
+                      "verdict": "open|confirmed|refuted", "evidence": "optional: what the falsify check showed" }],
   "retry":         { "max": 3 },
   "verification":  ["runnable commands"],
   "commits":       ["plan-wide record of what landed (same two shapes)"],
-  "quiz":          [{ "id": "q1", "prompt": "...", "options": ["..."], "answer": 0,
+  "quiz":          [{ "id": "q1", "type": "scenario|placement|boundary|tradeoff",
+                      "prompt": "...", "options": ["..."], "answer": 0,
                       "why": "...", "decisionRef": "the decision to reopen" }],
   "observability": { "existing": [{ "kind": "monitor|dashboard|runbook",
                                     "name": "...", "ref": "url or path" }],
@@ -178,6 +182,20 @@ be one a deliverable lists or a fact cites, or render refuses it.
 
 `quiz.answer` indexes options **as written**; rendering shuffles per-slug and the
 key stores the shuffled letter — the two cannot drift.
+
+## The quiz
+
+Each question carries a `type`, the kind of consequence it tests:
+
+- `scenario`: what happens when something occurs ("a delivery fails mid-outage; what next?")
+- `placement`: where a thing lives or changes ("which table changes shape?")
+- `boundary`: what the plan leaves out or refuses ("what happens to a row past its last try?")
+- `tradeoff`: what was given up, and for what ("what does the sweep cost to get retries off the write path?")
+
+The linter wants at least one `scenario`, at least three different types, and
+a question whose `decisionRef` is each decision flagged `adr`. Draw options
+from the codebase's own vocabulary. A quiz with no types renders with a
+warning for now; one with types and a thin mix is refused.
 
 ## How evidence is checked
 

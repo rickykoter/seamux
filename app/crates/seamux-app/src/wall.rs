@@ -265,6 +265,41 @@ pub fn tail(text: &str, n: usize) -> Vec<String> {
     lines[start..].iter().map(|l| l.to_string()).collect()
 }
 
+/// A native pane's foreground command that ended, leaving a bare shell: a
+/// watcher or a server that died where nobody was looking.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct Exited {
+    pub command: String,
+    /// The exit code, when the shell reported one; None otherwise.
+    pub code: Option<i32>,
+    /// When the wall saw it end (ms since the epoch).
+    pub at: u64,
+}
+
+/// One tick of exit tracking. `running` is each live native pane's
+/// foreground command (None for a bare shell), by surface. A pane that ran
+/// a command last tick and runs none now gets an `Exited`; one that starts a
+/// command again loses it. Panes that are gone leave both maps.
+pub fn track_exits(last: &mut HashMap<String, String>, exited: &mut HashMap<String, Exited>,
+                   running: &[(String, Option<String>)], now: u64) {
+    let live: HashSet<&str> = running.iter().map(|(s, _)| s.as_str()).collect();
+    last.retain(|s, _| live.contains(s.as_str()));
+    exited.retain(|s, _| live.contains(s.as_str()));
+    for (surface, cmd) in running {
+        match cmd {
+            Some(c) => {
+                last.insert(surface.clone(), c.clone());
+                exited.remove(surface);
+            }
+            None => {
+                if let Some(c) = last.remove(surface) {
+                    exited.insert(surface.clone(), Exited { command: c, code: None, at: now });
+                }
+            }
+        }
+    }
+}
+
 /// One pane on the wall.
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct Tile {
@@ -294,6 +329,9 @@ pub struct Tile {
     pub root: String,
     /// The plan this pane owns (deep-plan's owner pane), by slug.
     pub owner: Option<String>,
+    /// The command this native pane last ran, if it ended and nothing has
+    /// run since: shown on the tile, which rings its bell.
+    pub exited: Option<Exited>,
     /// The pane's cwd has left the workspace's pinned worktree.
     pub outside: bool,
 }
@@ -365,6 +403,10 @@ struct State {
     owners: HashMap<String, String>,
     /// Per surface: the state last seen, and when it was first seen.
     since: HashMap<String, (String, u64)>,
+    /// Per native surface (upper case): the foreground command last seen,
+    /// and the one that ended with nothing run since (track_exits).
+    last_cmd: HashMap<String, String>,
+    exited: HashMap<String, Exited>,
     text: HashMap<String, Result<Vec<String>, String>>,
     error: Option<String>,
     sent: Option<Frame>,
@@ -616,6 +658,14 @@ impl Wall {
                 st.since.insert(t.surface.clone(), (t.state.clone(), now));
             }
         }
+        // Only native panes report what they run; the rest are left out.
+        let running: Vec<(String, Option<String>)> = st.terms.iter()
+            .filter_map(|t| st.signals.get(&t.surface.to_uppercase()).map(|s| (t.surface.to_uppercase(), s.running.clone())))
+            .collect();
+        let (mut last, mut exited) = (std::mem::take(&mut st.last_cmd), std::mem::take(&mut st.exited));
+        track_exits(&mut last, &mut exited, &running, now);
+        st.last_cmd = last;
+        st.exited = exited;
         let tiles = st
             .terms
             .iter()
@@ -639,7 +689,9 @@ impl Wall {
                     color: st.colors.get(&t.workspace).cloned(),
                     since: st.since.get(&t.surface).map(|(_, at)| *at).unwrap_or(now),
                     running: st.signals.get(&t.surface.to_uppercase()).and_then(|s| s.running.clone()),
-                    bell: st.signals.get(&t.surface.to_uppercase()).is_some_and(|s| s.bell),
+                    // A command that ended rings the tile's bell too.
+                    bell: st.signals.get(&t.surface.to_uppercase()).is_some_and(|s| s.bell) || st.exited.contains_key(&t.surface.to_uppercase()),
+                    exited: st.exited.get(&t.surface.to_uppercase()).cloned(),
                     topic: st.signals.get(&t.surface.to_uppercase()).and_then(|s| s.topic.clone()),
                     root: st.pins.get(&t.workspace).cloned().unwrap_or_default(),
                     owner: st.owners.get(&t.surface.to_uppercase()).cloned(),
@@ -794,6 +846,23 @@ pub fn resume_line(session: &str, cwd: &str, in_agent: bool) -> Result<String, S
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_command_that_ends_to_a_bare_shell_is_noticed_until_another_runs() {
+        let (mut last, mut exited) = (HashMap::new(), HashMap::new());
+        let s = |c: Option<&str>| vec![("S1".to_string(), c.map(String::from))];
+        track_exits(&mut last, &mut exited, &s(Some("npm run watch")), 1);
+        assert!(exited.is_empty());
+        track_exits(&mut last, &mut exited, &s(None), 5);
+        assert_eq!(exited.get("S1"), Some(&Exited { command: "npm run watch".into(), code: None, at: 5 }));
+        track_exits(&mut last, &mut exited, &s(None), 9);
+        assert_eq!(exited["S1"].at, 5, "still the same exit, still noticed");
+        track_exits(&mut last, &mut exited, &s(Some("cargo test")), 12);
+        assert!(exited.is_empty(), "running again clears it");
+        track_exits(&mut last, &mut exited, &[], 13);
+        assert!(last.is_empty() && exited.is_empty(), "a closed pane leaves both maps");
+    }
+
     use super::*;
 
     #[test]

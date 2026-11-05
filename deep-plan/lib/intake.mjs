@@ -16,8 +16,8 @@ import { spawnSync } from "node:child_process";
 import { DATA_ROOT } from "./state.mjs";
 
 export const INTAKE_DIR = () => process.env.DEEP_PLAN_INTAKE_DIR || path.join(DATA_ROOT, "deep-plan", "intake");
-const GH = () => process.env.DEEP_PLAN_GH || "gh";
-const ACLI = () => process.env.DEEP_PLAN_ACLI || "acli";
+export const GH = () => process.env.DEEP_PLAN_GH || "gh";
+export const ACLI = () => process.env.DEEP_PLAN_ACLI || "acli";
 const CALL_MS = Number(process.env.DEEP_PLAN_INTAKE_TIMEOUT_MS) || 120000;
 const BODY_CAP = 8000, LOG_LINES = 80, JOB_CAP = 3, TEST_CAP = 20;
 

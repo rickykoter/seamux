@@ -85,6 +85,14 @@ void listen<{ ws: string; pane: string }>("notify:jump", (e) => {
   dockView.jump(e.payload.ws, e.payload.pane);
 });
 
+// ⌘. (a shell.rs shortcut, so it works in a framed page too): on to the next
+// workspace that needs you.
+void listen<string>("sheet:key", (e) => {
+  if (e.payload !== "attention") return;
+  tabs.select("dock");
+  dockView.nextAttention();
+});
+
 // The window's own red button hides it too (shell.rs turns a close into a hide).
 const hide = () => void invoke("hide_overlay");
 document.addEventListener("keydown", (e) => {
@@ -94,6 +102,7 @@ document.addEventListener("keydown", (e) => {
     tabs.selectIndex(Number(e.key) - 1);
     e.preventDefault();
   }
+
 });
 
 // The count moves as workspaces come and go: asked again on a timer and on

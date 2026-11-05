@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Feeds every case in guard_bash_cases.txt to guard_bash.sh as a PreToolUse
-# payload and checks the exit code: 2 for `block`, 0 for `allow`. Each case
+# payload and checks the exit code: 2 for `block`, 0 for `allow`, and 0 with a
+# permissionDecision "ask" answer on stdout for `ask` (an allow prints none). Each case
 # runs twice: once with python3 reading the payload, once with python3 off
 # PATH so the plain-shell fallback reads it. Then a few checks on the guard
 # itself: the fallback says so, an unreadable payload is waved through loudly,
@@ -35,14 +36,17 @@ runs=0
 rc=0
 err=""
 
-# hook MODE PAYLOAD: runs the guard, sets rc and err (its stderr).
+# hook MODE PAYLOAD: runs the guard, sets rc, err (its stderr) and out (its
+# stdout, where an ask answer goes). outf is per shard.
+outf="$nopy/out-main"
 hook() {
   if [ "$1" = python3 ]; then
-    err="$(printf '%s' "$2" | CMUX_WORKSPACE_ID='' "$bash_bin" "$hook" 2>&1 >/dev/null)"
+    err="$(printf '%s' "$2" | CMUX_WORKSPACE_ID='' "$bash_bin" "$hook" 2>&1 >"$outf")"
   else
-    err="$(printf '%s' "$2" | CMUX_WORKSPACE_ID='' PATH="$nopy" "$bash_bin" "$hook" 2>&1 >/dev/null)"
+    err="$(printf '%s' "$2" | CMUX_WORKSPACE_ID='' PATH="$nopy" "$bash_bin" "$hook" 2>&1 >"$outf")"
   fi
   rc=$?
+  out="$(cat "$outf")"
 }
 
 fail() {
@@ -56,6 +60,7 @@ fail() {
 shards="${GUARD_PROBE_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
 case_shard() {
   local n=-1 line expect body want payload mode
+  outf="$nopy/out-$1"
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in '' | '#'*) continue ;; esac
     n=$((n + 1))
@@ -64,7 +69,7 @@ case_shard() {
     body="${line#* }"
     case "$expect" in
       block) want=2 ;;
-      allow) want=0 ;;
+      allow | ask) want=0 ;;
       *) fail "bad case line: $line"; continue ;;
     esac
     payload="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$body\",\"description\":\"probe\"}}"
@@ -72,6 +77,11 @@ case_shard() {
       runs=$((runs + 1))
       hook "$mode" "$payload"
       [ "$rc" = "$want" ] || fail "[$mode] want $expect, exit $rc: $body"
+      case "$expect:$out" in
+        ask:*'"permissionDecision": "ask"'*bash-guard:*) ;;
+        ask:*) fail "[$mode] want an ask answer on stdout: $body (got: $out)" ;;
+        allow:*'"ask"'*) fail "[$mode] want allow, got an ask: $body" ;;
+      esac
     done
   done <"$cases"
   printf 'counts %d %d\n' "$runs" "$fails"

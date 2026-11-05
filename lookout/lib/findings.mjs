@@ -16,7 +16,12 @@
 // own fixes would be the self-certification ADR 0006 removed.
 export const SEVERITIES = ["blocker", "major", "minor", "nit"];
 export const BLOCKING = new Set(["blocker", "major"]);
-export const CATEGORIES = ["correctness", "security", "performance", "maintainability"];
+export const CATEGORIES = ["correctness", "security", "performance", "maintainability", "smell"];
+// Code smells (duplication, dead code, comments that restate the code,
+// needless abstraction, a refactor that removes a branch) are worth saying
+// but never hold a gate: a smell finding is minor or nit, and one filed
+// higher is refused so the reviewer re-files it.
+export const SMELL = "smell";
 // A group heading somewhere its plan increment does not say. Always major or
 // worse, so it holds the gate until the human closes it (a dismiss is the
 // record that the deviation was meant); only a review of a plan has one.
@@ -121,6 +126,8 @@ export function validate(review, items, anchors) {
     if (!VERDICTS.includes(verdict)) return bad("verdict must be CONFIRMED or PLAUSIBLE");
     const category = String(x.category || "correctness").toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 40) || "correctness";
     const drift = category === DRIFT;
+    if (category === SMELL && BLOCKING.has(severity))
+      return bad("a smell is minor or nit at most; file it lower, or as maintainability with the bug it causes");
     if (drift && !(review.source && review.source.plan))
       return bad("plan-drift needs a plan increment to drift from, and this review has none; use another category");
     const summary = clip(x.summary, 1000);
@@ -211,6 +218,32 @@ export function setStatus(review, id, to, by, note = "") {
   x.it.statusAt = now();
   message(msgsOf(x.kind, x.it), by, note || "", { kind: "status", from, to });
   return x.it;
+}
+
+// Re-review rounds. Findings the agent marks addressed wait in a pending
+// round; `lookout prompt <id> --round` briefs a fresh reviewer on just their
+// hunks and seals the round. After MAX_ROUNDS the agent stops and asks the
+// person, as a plan's three failures in a row stop a check.
+export const MAX_ROUNDS = 2;
+export function pendingRound(review) {
+  const sealed = new Set((review.rounds || []).flatMap(r => r.findings));
+  return (review.findings || []).filter(f => f.status === "addressed" && !sealed.has(f.id));
+}
+export function sealRound(review, ids) {
+  review.rounds = review.rounds || [];
+  const round = { n: review.rounds.length + 1, at: now(), findings: ids };
+  review.rounds.push(round);
+  return round;
+}
+// What to tell the agent about re-review now, or "" when nothing waits.
+export function roundAdvice(review) {
+  const pending = pendingRound(review);
+  if (!pending.length) return "";
+  const done = (review.rounds || []).length;
+  if (done >= MAX_ROUNDS)
+    return `${pending.length} addressed finding(s) wait, and this review has had ${done} re-review rounds: stop and ask the person how to go on.`;
+  return `${pending.length} addressed finding(s) wait on a re-review (round ${done + 1} of ${MAX_ROUNDS}): once every fix is in, ` +
+    `spawn ONE fresh reviewer subagent with \`lookout prompt ${review.id} --round\`.`;
 }
 
 // The gate's answer. 3: nothing to judge (no review, or no reviewer has run);

@@ -32,6 +32,16 @@ says what goes where. The quiz and the answer key are deliberately not in
 it — both carry the answers, and a directory attached to a ticket is the
 worst place for them.
 
+**To hand the work off on its ticket**, run `deep-plan handoff <slug>`. It
+writes `~/.claude/plans/<slug>.handoff.md`: the branch's PRs (from `gh`),
+each increment's commits and its checks with what was seen, the cutover
+steps (the spec's `verification` commands and any increment that waits on a
+person), and the plan's open notes. `--post <KEY>` sends it to Jira as a
+comment through `acli`. That is a write to an outside system, so it prints
+the text and the command first and posts only on a yes typed at the
+terminal. Pass `--yes` only when the person said so, every time, as for
+publishing.
+
 **To bring older plans onto the current pages** (a new engine, or the human
 asks to redraw or replan them): `deep-plan redraw --all --dry-run` lists
 every plan and how many diagrams lack an overview, and `deep-plan redraw

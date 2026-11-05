@@ -62,6 +62,11 @@ function tabView(p: Tile): { cls: string; name: string; state: string; tip: stri
   // cmux's stock title says nothing; the folder it is in does.
   const dir = p.cwd.replace(/\/+$/, "").split("/").pop() || "";
   const runs = p.running || (p.label && p.label !== "Terminal" ? p.label : "") || dir || "terminal";
+  // A watcher or server that died: what ran, how it ended, and when.
+  if (p.exited && !p.running) {
+    const ended = `${p.exited.command} exited${p.exited.code !== null ? " " + p.exited.code : ""}, ${ageOf(p.exited.at / 1000)} ago`;
+    return { cls: "term bell exited", name: ended, state: "", tip: `Terminal · ${ended}${p.cwd ? " · " + p.cwd : ""}` };
+  }
   return { cls: `term${p.bell ? " bell" : ""}`, name: runs, state: "", tip: `Terminal · ${runs}${p.cwd ? " · " + p.cwd : ""}` };
 }
 
@@ -721,7 +726,7 @@ export class Sheet {
     await listen<string>("sheet:key", (e) => {
       if (!this.keysHere()) return;
       if (e.payload === "wake") this.toggleWake();
-      else this.step(e.payload === "next" ? 1 : -1);
+      else if (e.payload === "next" || e.payload === "prev") this.step(e.payload === "next" ? 1 : -1);
     });
     // 1–9 pick a page tab while focus is in the shell (a framed page keeps its own keys).
     document.addEventListener("keydown", (e) => {

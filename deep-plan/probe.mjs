@@ -529,6 +529,45 @@ ok("mermaid theme follows the page theme",
   noCons.decisions[0].adr = { alternatives: ["x"] };
   ok("refuses a flagged decision with no consequences",
     cli("render", tmpSpec(noCons)).status !== 0);
+  // The quiz mix: typed quizzes must mix and cover each adr decision.
+  // Its own slug: a render that passes must not replace the plan later steps grade.
+  const quizOf = f => { const x = JSON.parse(JSON.stringify(spec)); x.slug = "quiz-mix"; f(x); return cli("render", tmpSpec(x)); };
+  let qr = quizOf(x => { x.quiz.forEach(q => { q.type = "placement"; }); });
+  ok("quiz: a typed quiz of one kind is refused, naming the mix it lacks",
+    qr.status !== 0 && /quiz mix: needs at least one scenario question; three different types \(has placement\)/.test(qr.stderr), qr.stderr.slice(0, 300));
+  qr = quizOf(x => { x.quiz[0].type = "vibes"; });
+  ok("quiz: an unknown type is refused", qr.status !== 0 && /quiz q1: type must be one of scenario, placement, boundary, tradeoff/.test(qr.stderr));
+  qr = quizOf(x => { x.quiz[0].decisionRef = "Track retries on the outbox row"; });
+  ok("quiz: a typed quiz with no question on an adr decision is refused",
+    qr.status !== 0 && /a question whose decisionRef is the adr decision "Sweep on a timer, not on write"/.test(qr.stderr), qr.stderr.slice(0, 300));
+  qr = quizOf(x => { x.quiz.forEach(q => { delete q.type; }); });
+  ok("quiz: an untyped quiz still renders, with a warning", qr.status === 0 && /warning: the quiz has no question types/.test(qr.stderr), qr.stderr.slice(0, 300));
+  cli("close", "quiz-mix");
+  // The bug lane: two or more hypotheses, each with a falsify check.
+  const bugOf = f => { const x = JSON.parse(JSON.stringify(spec)); x.slug = "bug-lane"; x.lane = "bug";
+    x.hypotheses = [{ claim: "the sweep skips null next_try_at", falsify: "select count(*) from outbox where next_try_at is null", verdict: "refuted", evidence: "0 rows" },
+      { claim: "the test depends on the clock", falsify: "run it under a frozen clock ten times" }]; f(x); return cli("render", tmpSpec(x)); };
+  let br = bugOf(x => { x.hypotheses = x.hypotheses.slice(0, 1); });
+  ok("bug lane: one hypothesis is refused", br.status !== 0 && /lane bug: needs 2\+ hypotheses/.test(br.stderr), br.stderr.slice(0, 300));
+  br = bugOf(x => { delete x.hypotheses[1].falsify; });
+  ok("bug lane: a hypothesis with no falsify check is refused, by name",
+    br.status !== 0 && /hypothesis 2 \("the test depends on the clock"\): needs falsify/.test(br.stderr), br.stderr.slice(0, 300));
+  br = bugOf(x => { x.hypotheses[0].verdict = "maybe"; });
+  ok("bug lane: an unknown verdict is refused", br.status !== 0 && /verdict must be one of open, confirmed, refuted/.test(br.stderr));
+  br = bugOf(x => { x.lane = "feature"; });
+  ok("bug lane: bug is the only lane", br.status !== 0 && /lane: "bug" is the only lane/.test(br.stderr));
+  br = bugOf(() => {});
+  const bugReview = br.status === 0 ? fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "bug-lane.review.html"), "utf8") : "";
+  const bugMd = br.status === 0 ? fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "bug-lane.md"), "utf8") : "";
+  ok("bug lane: two falsifiable hypotheses render, shown on the review page and in the plan",
+    br.status === 0 && /<h2>Hypotheses<\/h2>/.test(bugReview) && bugReview.includes("<b>refuted</b>: the sweep skips null next_try_at") &&
+    bugReview.includes("falsify: run it under a frozen clock ten times") && /## Hypotheses\n\n- \*\*refuted\*\*: the sweep skips/.test(bugMd), br.stderr.slice(0, 300));
+  cli("close", "bug-lane");
+  // Flagged without alternatives: refused, naming the field.
+  const noAlts = JSON.parse(JSON.stringify(spec));
+  noAlts.decisions[0].adr = { consequences: "c", alternatives: [] };
+  const na = cli("render", tmpSpec(noAlts));
+  ok("refuses a flagged decision that lists no alternatives", na.status !== 0 && /lists no alternatives/.test(na.stderr), na.stderr.slice(0, 300));
   // The example spec is flagged: draft + surfaces + state, all from render.
   ok("render drafts the ADR beside the surfaces",
     fs.existsSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".adr1.md")));
@@ -654,7 +693,10 @@ ok("mermaid theme follows the page theme",
   unc.decisions.push({ decision: "Widen the status enum", why: "x" });
   unc.contracts.push({ surface: "outbox.status", kind: "db-schema", scope: "internal",
     change: "modify", reach: "worker only", decisionRef: "Widen the status enum" });
-  ok("render passes an uncovered contract decision", cli("render", tmpSpec(unc)).status === 0);
+  const ur = cli("render", tmpSpec(unc));
+  ok("render passes an uncovered contract decision", ur.status === 0);
+  ok("…and warns that an unflagged decision sets a contract",
+    /warning: decision "Widen the status enum" sets the contract "outbox\.status" but is not flagged adr/.test(ur.stderr), ur.stderr.slice(0, 400));
   const gu = cli("grade", "uncovered-plan", "q1=a", "q2=a", "q3=a");
   ok("grade fails on it, naming the decision",
     gu.status !== 0 && /no quiz question covers/.test(gu.stderr) &&
@@ -895,6 +937,8 @@ ok("mermaid theme follows the page theme",
     { decision: "Do the thing", why: "because", adr: { consequences: "c" } },
     { template: "nygard" }, { number: 13, root: TMP });
   ok("the built-in template still renders a 4-padded number", rendered.includes("0013"));
+  ok("the Decision section is the why, not the title again, and context stays its own",
+    /## Decision\s+because/.test(rendered) && !/## Decision\s+Do the thing/.test(rendered) && /## Context\s+\(context not recorded\)/.test(rendered), rendered);
   const tplPath = path.join(TMP, "house.tmpl.md");
   fs.writeFileSync(tplPath, "# ADR {{n}} / {{nnn}} / {{nnnn}}: {{title}}\n{{context}}\n");
   const houseRendered = alib.renderAdr(
@@ -1162,6 +1206,7 @@ ok("a write chained beside the CLI is still a write",
     ["git merge-base HEAD main", "git merge-base"],
     ["git grep -ln foo", "git grep -ln"],
     ["grep -ln foo src", "grep -ln"],
+    [`sed -i '' s/a/b/g ${out}/a.txt`, "BSD sed -i '' on a file outside the root"],
     [`cat <<EOF > ${out}/notes.md\nhi > there\nEOF`, "a heredoc written outside the root"],
   ];
   for (const [c, what] of allowed) ok(`gate by target: ${what} is allowed`, bash(c).status === 0, bash(c).stderr);
@@ -5545,6 +5590,17 @@ if (want("recipe fields: uses, env, prereqs, sideEffects, noFix, evidence")) {
   ok("fields: check list shows side effects, prereqs, locks and noFix",
     /effects: writes-db, kills-process \(this worktree's puma\)/.test(ls) && /needs:  Postgres \(probe: pg_isready\)/.test(ls) &&
     /locks:  port:5432 exclusive, redis exclusive/.test(ls) && /noFix:  fails if the run changes tracked files/.test(ls), ls);
+  // A running check ticks its elapsed time on the working page, amber past
+  // its timeout; a page with none running carries no ticker.
+  const SF1 = path.join(ENV.DEEP_PLAN_STATE_DIR, "fields-1.json");
+  const st1 = JSON.parse(fs.readFileSync(SF1, "utf8"));
+  const page = () => { cli("rehydrate", "fields-1"); return fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "fields-1.working.html"), "utf8"); };
+  ok("fields: no running check, no elapsed ticker", !page().includes("dp-elapsed"));
+  st1.increments[0].checks.x = { ...st1.increments[0].checks.x, status: "running", runner: { token: "t", pid: 1, startedAt: 1700000000000 } };
+  fs.writeFileSync(SF1, JSON.stringify(st1));
+  const wp = page();
+  ok("fields: a running check carries its start and timeout, and the page ticks it",
+    /<span class="dp-elapsed" data-since="1700000000000" data-timeout="900">running<\/span>/.test(wp) && wp.includes("dp-late") && wp.includes("past its "), wp.slice(0, 200));
   cli("close", "fields-1");
 }
 
@@ -5659,6 +5715,62 @@ if (want("repo admin between increments; out-of-scope edits flagged")) {
   r = cli("done", "admin-1", "2");
   ok("scope: done names them", /edited outside increment 2's files: README\.md, notes\/todo\.md/.test(r.stdout), r.stdout + r.stderr);
   cli("close", "admin-1");
+}
+
+// -------------------------------------------------- handoff: a ticket comment, posted only on a yes
+if (want("handoff: a ticket comment, posted only on a yes")) {
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const HR = fs.realpathSync(fs.mkdtempSync(path.join(TMP, "handoff-")));
+  fs.mkdirSync(path.join(HR, "src"));
+  fs.writeFileSync(path.join(HR, "src", "a.ts"), "export const a = 1;\n");
+  // The base predates the plan, so it is no increment's commit.
+  execSync(`git init -q -b feat && git add -A && ${G} commit -q -m base`, { cwd: HR,
+    env: { ...process.env, GIT_COMMITTER_DATE: "2020-01-01T00:00:00Z", GIT_AUTHOR_DATE: "2020-01-01T00:00:00Z" } });
+  const BIN = path.join(HR, "..", "handoff-bin");
+  fs.mkdirSync(BIN, { recursive: true });
+  const calls = path.join(BIN, "acli.calls");
+  fs.writeFileSync(path.join(BIN, "gh"), `#!/bin/sh\necho '[{"number":7,"title":"Retry sweep","url":"https://example.test/pr/7","state":"OPEN"}]'\n`);
+  fs.writeFileSync(path.join(BIN, "acli"), `#!/bin/sh\necho "$@" >> ${JSON.stringify(calls)}\n`);
+  fs.chmodSync(path.join(BIN, "gh"), 0o755); fs.chmodSync(path.join(BIN, "acli"), 0o755);
+  const HENV = { ...ENV, DEEP_PLAN_GH: path.join(BIN, "gh"), DEEP_PLAN_ACLI: path.join(BIN, "acli") };
+  const hcli = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: HENV, cwd: HR, input: "" });
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "handoff-1";
+  s.go = { mode: "auto", between: "commit" };
+  s.verification = ["npm test"];
+  s.deliverables = [{ title: "Sweep", body: "One.", files: ["src/a.ts"], waiver: "probe" },
+    { title: "Turn it on", body: "Two.", files: ["src/a.ts"], waiver: "probe", go: { human: "flips the prod flag" } }];
+  s.verifiedFacts = [...(s.verifiedFacts || []), { claim: "a exists", evidence: "src/a.ts:1" }];
+  ok("handoff: the plan renders", hcli("render", tmpSpec(s), "--root", HR).status === 0);
+  const SF = path.join(ENV.DEEP_PLAN_STATE_DIR, "handoff-1.json");
+  const st = JSON.parse(fs.readFileSync(SF, "utf8"));
+  const t0 = Date.now() - 60000;
+  st.phase = "implementing";
+  Object.assign(st.increments[0], { status: "done", startedAt: t0, doneAt: t0 + 30000,
+    checks: { eyes: { kind: "manual", name: "look at it", status: "pass", note: "the sweep retried twice" } } });
+  fs.writeFileSync(SF, JSON.stringify(st));
+  fs.writeFileSync(path.join(HR, "src", "a.ts"), "export const a = 2;\n");
+  execSync(`${G} commit -qam "sweep: retry on a timer"`, { cwd: HR });
+  hcli("note", "the dead-letter queue is still manual");
+  let r = hcli("handoff", "handoff-1");
+  const hf = path.join(ENV.DEEP_PLAN_PLANS_DIR, "handoff-1.handoff.md");
+  const md = fs.existsSync(hf) ? fs.readFileSync(hf, "utf8") : "";
+  ok("handoff: writes <slug>.handoff.md", r.status === 0 && md.startsWith("## Handoff: "), r.stderr);
+  ok("handoff: names the branch's PRs", md.includes("- [#7 Retry sweep](https://example.test/pr/7) (open)"));
+  ok("handoff: each increment's commits and checks with what was seen",
+    /#### 1\. Sweep \(done\)\n\n- [0-9a-f]{7} sweep: retry on a timer\n\n/.test(md) && md.includes("- pass: look at it (the sweep retried twice)"), md);
+  ok("handoff: cutover steps and open notes", md.includes("- run `npm test`") &&
+    md.includes("- increment 2 waits on a person: flips the prod flag") && /### Open notes\n\n- n[0-9a-f]+: the dead-letter queue is still manual/.test(md), md);
+  r = hcli("handoff", "handoff-1", "--post", "ABC-123");
+  ok("handoff --post: without a terminal or --yes it shows the comment and posts nothing",
+    r.status !== 0 && r.stdout.includes("## Handoff: ") && /would run: .*acli jira workitem comment create --key ABC-123 --body-file/.test(r.stdout) &&
+    /needs a person's yes/.test(r.stderr) && !fs.existsSync(calls), r.stdout.slice(-300) + r.stderr);
+  ok("handoff --post: a key that is not a Jira key is refused", /not a Jira key/.test(hcli("handoff", "handoff-1", "--post", "ao 123").stderr));
+  r = hcli("handoff", "handoff-1", "--post", "ABC-123", "--yes");
+  ok("handoff --post --yes: posts the file through acli",
+    r.status === 0 && /posted to ABC-123/.test(r.stdout) &&
+    fs.readFileSync(calls, "utf8").trim() === `jira workitem comment create --key ABC-123 --body-file ${hf}`, r.stdout + r.stderr);
+  hcli("close", "handoff-1");
 }
 
 // -------------------------------------------------- remote host: state in the repo, export and import

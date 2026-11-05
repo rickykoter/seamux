@@ -149,6 +149,17 @@ block() {
   exit 2
 }
 
+# The ask outcome: the person approves or declines the command in Claude
+# Code's own permission prompt, even in auto mode. ask records the reason and
+# the checks go on, so a block later in the same command still wins; the
+# answer is printed once every check has passed (end of file), as PreToolUse
+# JSON on stdout with exit 0.
+ask_reason=""
+ask() {
+  case ", $ask_reason, " in *", $1, "*) return 0 ;; esac
+  ask_reason="${ask_reason:+$ask_reason, }$1"
+}
+
 # ---------------------------------------------------------------- simple commands
 #
 # The checks on one command's flags (rm, git push/reset/checkout/restore/
@@ -419,6 +430,29 @@ check_segment() {
     allowed_force_push "$seg" || block "git push --force"
   fi
 
+  # Deleting or renaming a branch on the remote closes any open PR on it
+  # (PR #50327), so the person decides: git push --delete/-d, a push of
+  # nothing (`origin :branch`), and gh api's branch rename and ref DELETE.
+  # Local `git branch -m/-d` and `gh pr merge --delete-branch` are left alone.
+  if git_args "$seg" push; then
+    shopt -u nocasematch
+    if has "$args" '--d[a-z]*|-[[:alnum:]]*d[[:alnum:]]*'; then
+      ask "git push --delete"
+    elif [[ "$args" =~ [[:space:]][\"${q}]?:[^[:space:]:] ]]; then
+      ask "git push <remote> :<branch>"
+    fi
+    shopt -s nocasematch
+  fi
+  # gh's URL is often quoted, and squashing blanks quoted text: read the
+  # segment as given.
+  if [[ "$1" =~ (^|[^[:alnum:]_-])gh[[:space:]]+api([[:space:]]|$) ]]; then
+    if [[ "$1" =~ /branches/[^[:space:]/]+/rename ]]; then
+      ask "gh api .../branches/<b>/rename"
+    elif [[ "$1" =~ git/refs/heads/ ]] && [[ "$1" =~ (-X[[:space:]]*|--method[[:space:]=]+)[\"${q}]?DELETE ]]; then
+      ask "gh api DELETE .../git/refs/heads/..."
+    fi
+  fi
+
   # hard reset / destructive checkout that wipes uncommitted work
   if git_args "$seg" reset && has "$args" '--ha[a-z]*'; then
     block "git reset --hard"
@@ -478,7 +512,7 @@ check_segment() {
 shopt -s nocasematch
 
 for seg in "${segments[@]}"; do
-  case "$seg" in *rm* | *git*) check_segment "$seg" ;; esac
+  case "$seg" in *rm* | *git* | *gh*) check_segment "$seg" ;; esac
 done
 
 # ---------------------------------------------------------------- whole command
@@ -534,4 +568,8 @@ if [[ "$cmd" =~ chmod[[:space:]]+(-R[[:space:]]+)?777 ]]; then
   block "chmod 777"
 fi
 
+if [ -n "$ask_reason" ]; then
+  why="bash-guard: $ask_reason renames or deletes a branch on the remote, which closes any open PR on it. Approve only if no PR is open on that branch."
+  printf '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask", "permissionDecisionReason": %s}}\n' "$(json_str "$why")"
+fi
 exit 0

@@ -57,14 +57,18 @@ These survive a compaction; everything below them is how.
    X", "this symptom usually means Y", "is this worth doing at all?"). A
    confirmed goal plans faster and better than an assumed one. Given a bug
    report, issue, failing PR or CI run link, run `deep-plan intake <link>`
-   first and plan it as the bug lane ([loops.md](references/loops.md)).
+   first and plan it as the bug lane: `lane: "bug"` with at least two
+   competing hypotheses, each with a falsify check
+   ([loops.md](references/loops.md#the-bug-lane)).
 1. **Interrogate before drafting.** A plan that silently resolved a fork is a
    plan the human never agreed to. When a fork is *architectural* (it will
-   outlive this plan and constrain later ones), say so in the question and
-   carry the answer into the spec as a decision flagged `adr`: the answer's
-   why becomes the context, the rejected options the alternatives, the
-   human's words the consequences. Contract forks are always asked
-   ([adrs-contracts-risks.md](references/adrs-contracts-risks.md)). When a
+   outlive this plan and constrain later ones; [the ADR
+   test](references/adrs-contracts-risks.md#the-adr-test) says when), say so
+   in the question and carry the answer into the spec as a decision flagged
+   `adr`: the answer's why becomes its why, what forced the choice the
+   context, the rejected options the alternatives (render refuses an ADR
+   without one), the human's words the consequences. Contract forks are
+   always asked ([adrs-contracts-risks.md](references/adrs-contracts-risks.md)). When a
    fork is about shape, placement, flow or a payload, show it on an ask page
    ([asks.md](references/asks.md)).
 2. **Survey the terrain before drafting.** The interrogation covers the
@@ -124,7 +128,9 @@ These survive a compaction; everything below them is how.
    the gate*. Render resolves each deliverable's checks against the recipe
    files and stores them, so what `check run` executes is what was reviewed.
 7. **The alignment check.** The review surface shows 3+ consequence
-   questions with per-slug shuffled options. `deep-plan page <slug> --review`
+   questions with per-slug shuffled options, typed and mixed: a scenario, two
+   other types, and one on each ADR decision
+   ([spec.md](references/spec.md#the-quiz)). `deep-plan page <slug> --review`
    shows it where this session can and prints `served at <url> (host: …)`.
    In cmux it opens beside the terminal. In Claude desktop, open that URL in
    the browser pane with `preview_start`, and prefer the inline widget for

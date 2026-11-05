@@ -601,6 +601,68 @@ if (want("findings + gate")) {
 }
 
 // ---------------------------------------------------------------- notes, edges, quiz
+if (want("smells and the repo's conventions")) {
+  const RS = repo("rs");
+  write(RS, "a.js", "export const a = 1;\n");
+  write(RS, "CLAUDE.md", "# Guide\n\n- No comments unless the why is non-obvious.\n- Run the tests before you push.\n" +
+    "- Don't introduce abstractions for a second caller that isn't there.\n");
+  sh(RS, `git add -A && ${G} commit -q -m base`);
+  write(RS, "a.js", "// a is one\nexport const a = 1;\n");
+  const id = JSON.parse(cli(RS, "open", "--worktree", "--json").stdout).id;
+  const b = cli(RS, "prompt", id).stdout;
+  ok("smell: the brief asks for smells, minor or nit, with a cost", /- smell — code that works but costs the next reader/.test(b) &&
+    /Always minor or\s+nit/.test(b) && /naming the cost/.test(b), b.slice(0, 200));
+  ok("smell: the brief quotes the repo's convention lines, and only those", /This repo's own conventions/.test(b) &&
+    b.includes("- No comments unless the why is non-obvious.") && b.includes("abstractions for a second caller") &&
+    !b.includes("Run the tests before you push"));
+  const f = path.join(TMP, "smell.json");
+  fs.writeFileSync(f, JSON.stringify([
+    { file: "a.js", line: 1, severity: "nit", category: "smell", summary: "comment restates the code", failure_scenario: "a reader learns nothing; the comment drifts when a changes" },
+    { file: "a.js", line: 2, severity: "major", category: "smell", summary: "too big", failure_scenario: "f" }]));
+  const add = cli(RS, "findings", "add", id, f);
+  const r = S.read(id);
+  ok("smell: a nit smell is accepted, a major one refused with the reason",
+    r.findings.length === 1 && r.findings[0].category === "smell" && /a smell is minor or nit at most/.test(add.stdout + add.stderr), add.stdout + add.stderr);
+  ok("smell: it never holds the gate", cli(RS, "gate", id).status === 0);
+  write(RS, "CLAUDE.md", "# Guide\n\nNothing about style here.\n");
+  ok("smell: no matching convention lines, no conventions block", !/This repo's own conventions/.test(cli(RS, "prompt", id).stdout));
+}
+
+if (want("re-review rounds")) {
+  const FD = await import("./lib/findings.mjs");
+  const RR = repo("rr");
+  write(RR, "a.js", "1\n"); write(RR, "b.js", "1\n"); sh(RR, `git add -A && ${G} commit -q -m base`);
+  write(RR, "a.js", "2\n"); write(RR, "b.js", "2\n");
+  const id = JSON.parse(cli(RR, "open", "--worktree", "--json").stdout).id;
+  const F = (n, file) => ({ file, line: 1, side: "new", severity: "major", category: "correctness", verdict: "PLAUSIBLE",
+    summary: `bug ${n}`, short_summary: `bug ${n}`, failure_scenario: "f", outside: false });
+  S.update(id, cur => { FD.ingest(cur, [F(1, "a.js"), F(2, "b.js")]); cur.reviewedAt = new Date().toISOString(); return cur; });
+  const hook = () => { const h = spawnSync("bash", [path.join(HERE, "hooks", "comments.sh")],
+    { encoding: "utf8", env: ENV, input: JSON.stringify({ cwd: RR, hook_event_name: "UserPromptSubmit" }) });
+    try { return JSON.parse(h.stdout).hookSpecificOutput.additionalContext; } catch { return ""; } };
+  hook();
+  ok("rounds: nothing addressed, nothing to re-review", /no addressed findings waiting/.test(cli(RR, "prompt", id, "--round").stderr));
+  let r = cli(RR, "address", id, "f1", "guarded the empty case");
+  ok("rounds: address says a re-review waits, round 1 of 2", /1 addressed finding\(s\) wait on a re-review \(round 1 of 2\)/.test(r.stdout) &&
+    r.stdout.includes(`lookout prompt ${id} --round`), r.stdout);
+  let h = hook();
+  ok("rounds: the comments hook says so once", h.includes(`[lookout ${id}] 1 addressed finding(s) wait on a re-review`) && hook() === "", h);
+  const b = cli(RR, "prompt", id, "--round").stdout;
+  ok("rounds: the round brief lists the addressed finding and what changed, and only its file",
+    /## Re-review, round 1/.test(b) && /- f1 major a\.js:1: bug 1\n  what changed: guarded the empty case/.test(b) &&
+    /\+1 −1|a\.js/.test(b) && !/ b\.js  \+/.test(b), b.slice(0, 1500));
+  ok("rounds: the round is sealed on the review", (S.read(id).rounds || []).length === 1 && S.read(id).rounds[0].findings.join() === "f1");
+  ok("rounds: a sealed round is not briefed again", /no addressed findings waiting/.test(cli(RR, "prompt", id, "--round").stderr));
+  cli(RR, "address", id, "f2", "fixed b");
+  ok("rounds: round 2 briefs the next addressed finding", /## Re-review, round 2/.test(cli(RR, "prompt", id, "--round").stdout));
+  S.update(id, cur => { FD.ingest(cur, [F(3, "a.js")]); return cur; });
+  r = cli(RR, "address", id, "f3", "again");
+  ok("rounds: after two rounds, address says to stop and ask the person", /had 2 re-review rounds: stop and ask the person/.test(r.stdout), r.stdout);
+  r = cli(RR, "prompt", id, "--round");
+  ok("rounds: …and a third round is refused", r.status !== 0 && /2 re-review rounds: stop and ask the person/.test(r.stderr), r.stderr);
+  ok("rounds: the gate is unchanged by rounds", cli(RR, "gate", id).status === 1);
+}
+
 if (want("notes, edges, quiz")) {
   const FD = await import("./lib/findings.mjs");
   const N = await import("./lib/notes.mjs");

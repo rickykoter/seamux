@@ -401,8 +401,17 @@ function cmdPrompt() {
   // could never be saved.
   const inbox = path.join(os.tmpdir(), "lookout");
   fs.mkdirSync(inbox, { recursive: true });
+  let round = null;
+  if (flag("round")) {
+    const pending = FD.pendingRound(r);
+    if (!pending.length) die(`${id} has no addressed findings waiting on a re-review`);
+    if ((r.rounds || []).length >= FD.MAX_ROUNDS)
+      die(`${id} has had ${FD.MAX_ROUNDS} re-review rounds: stop and ask the person how to go on`);
+    const { out } = mutate(id, cur => FD.sealRound(cur, pending.map(f => f.id)));
+    round = { n: out.n, findings: pending };
+  }
   process.stdout.write(brief(r, { patchPath: p.patch, plansDir: path.dirname(S.REVIEWS_DIR),
-                                  outPath: path.join(inbox, id + ".incoming.json"), reply: flag("reply") }));
+                                  outPath: path.join(inbox, id + ".incoming.json"), reply: flag("reply"), round }));
 }
 
 function cmdFindings() {
@@ -492,6 +501,7 @@ function cmdThread(op) {
       return FD.setStatus(cur, fid, to, "agent", text);
     });
     say(op === "reply" ? `replied on ${fid} (${out.id})` : `${fid} is now ${out.status}`);
+    if (op === "address") { const a = FD.roundAdvice(S.read(id)); if (a) say(a); }
   } catch (e) { die(e.message); }
 }
 

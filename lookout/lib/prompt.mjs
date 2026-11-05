@@ -14,7 +14,7 @@
 // conceptual ownership instead of inheriting the agent's account.
 import fs from "node:fs";
 import path from "node:path";
-import { SEVERITIES, DRIFT } from "./findings.mjs";
+import { SEVERITIES, DRIFT, SMELL } from "./findings.mjs";
 import { outputSchema, TOUCHES, MAX_WATCH, MAX_EDGES } from "./notes.mjs";
 
 const PLAN_CAP = 6000;
@@ -38,7 +38,28 @@ export function planContext(plansDir, slug, inc) {
   try { return fs.readFileSync(path.join(dir, f), "utf8").slice(0, PLAN_CAP); } catch { return ""; }
 }
 
-export function brief(review, { patchPath, plansDir, outPath, reply = false }) {
+// The repo's own conventions for the smells dimension: bullet lines from its
+// CLAUDE.md or AGENTS.md about comments, abstractions, duplication and
+// cleanup, at most 40, so a smell is judged by this repo's rules.
+const CONVENTION_RE = /comment|abstraction|helper|duplicat|dead code|refactor|cleanup|shim|premature|no-op|unused/i;
+export function conventions(root) {
+  if (!root) return [];
+  for (const name of ["CLAUDE.md", "AGENTS.md"]) {
+    let text;
+    try { text = fs.readFileSync(path.join(root, name), "utf8"); } catch { continue; }
+    const lines = text.split("\n").map(l => l.trimEnd()).filter(l => /^\s*[-*] /.test(l) && CONVENTION_RE.test(l));
+    if (lines.length) return lines.slice(0, 40).map(l => l.trim().slice(0, 300));
+  }
+  return [];
+}
+
+export function brief(review, { patchPath, plansDir, outPath, reply = false, round = null }) {
+  // A re-review round looks only at the addressed findings' files.
+  if (round) {
+    const files = new Set(round.findings.map(f => f.file));
+    review = { ...review, files: (review.files || []).filter(f => files.has(f.path)),
+      groups: (review.groups || []).map(g => ({ ...g, files: g.files.filter(f => files.has(f)) })).filter(g => g.files.length) };
+  }
   const src = review.source || {};
   const where = src.kind === "patch" ? `the patch file ${src.file}`
     : src.kind === "range" ? `the commit range ${src.range} in ${src.root}`
@@ -61,6 +82,21 @@ export function brief(review, { patchPath, plansDir, outPath, reply = false }) {
     return `  ${g.id} ${(g.band || "").padEnd(6)}${owes}`.trimEnd() + "\n" + g.files.map(f => `      ${f}`).join("\n") +
       (rails ? "\n    linked because:\n" + rails : "");
   }).join("\n");
+  const conv = src.kind === "patch" ? [] : conventions(src.root);
+  const roundText = round ? `
+## Re-review, round ${round.n}
+
+The agent fixed these findings and marked them addressed. Read each one's
+hunks as they are now and check the fix: does it remove the failure, and
+does it break anything beside it? Report only on these files. A fix that
+does not hold is a new finding at the line it is on now, naming the earlier
+id in its summary; a fix that holds needs nothing from you.
+
+${round.findings.map(f => {
+    const said = (f.thread || []).filter(m => m.kind === "status" && m.to === "addressed").map(m => m.text).filter(Boolean).pop();
+    return `- ${f.id} ${f.severity} ${f.file}:${f.line}: ${f.summary}${said ? `\n  what changed: ${said}` : ""}`;
+  }).join("\n")}
+` : "";
   const prior = (review.findings || []).length
     ? `\nThis review already has ${(review.findings || []).length} finding(s) (\`lookout findings list ${review.id}\`). ` +
       "Do not report them again; an exact repeat is skipped anyway.\n" : "";
@@ -70,7 +106,7 @@ each group of changes means, as one JSON object.
 
 ## What you are reviewing
 
-${review.title} — ${where}.
+${review.title} — ${where}.${roundText ? "\n" + roundText : ""}
 The whole diff is in ${patchPath}.${show}
 Files, riskiest first (lookout's ranking; spend your attention in this order):
 
@@ -102,14 +138,27 @@ Look for defects that would make this code wrong in use, across four dimensions:
   unbounded memory or output, blocking calls on a hot path.
 - maintainability — only when it will cause a bug: duplicated logic that
   will drift, a misleading name or comment that invites a wrong change.
+- ${SMELL} — code that works but costs the next reader or editor: logic
+  duplicated where the copies will drift, dead code, comments that restate
+  what the code says, an abstraction with one caller and no second in sight,
+  a refactor that would remove a branch or a special case. Always minor or
+  nit (a higher one is refused). It still needs a concrete failure_scenario,
+  naming the cost: the edit that will miss the second copy, the reader the
+  comment misleads, the branch nobody can reach.
+${conv.length ? `
+This repo's own conventions (from its CLAUDE.md or AGENTS.md) say what counts
+as a smell here; hold the change to them:
 
+${conv.join("\n")}
+` : ""}
 Rules:
 - Every finding needs a concrete failure_scenario: the input or state, and
   the wrong result. If you cannot name one, it is not a finding.
 - Verify before you report: read the surrounding code and the callers. Mark
   verdict CONFIRMED only when you traced it; otherwise PLAUSIBLE.
-- No style, formatting or preference comments. No praise. A finding is a
-  defect, never a summary; what a change means goes in its group's note.
+- No formatting or preference comments (a smell names a cost, not a taste).
+  No praise. A finding is a defect, never a summary; what a change means goes
+  in its group's note.
 - Anchor each finding to a line in the diff: \`side: "new"\` with the new-side
   line number for added or context lines, \`side: "old"\` with the old-side
   number for a removed line. Point at context outside the hunks only when the

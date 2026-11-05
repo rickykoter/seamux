@@ -16,6 +16,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import * as S from "../lib/store.mjs";
+import { roundAdvice, pendingRound } from "../lib/findings.mjs";
 
 const MAX_LINES = 20;
 const MAX_TEXT = 600;
@@ -87,9 +88,14 @@ try {
     const all = humanMessages(r);
     const seen = readSeen(r.id);
     const news = all.filter(x => !seen.has(x.key));
-    if (!news.length) continue;
-    parts.push(describe(r, news));
-    S.writeAtomic(seenPath(r.id), JSON.stringify({ seen: all.map(x => x.key) }) + "\n");
+    // Addressed findings waiting on a re-review: said once per set of them.
+    const advice = roundAdvice(r);
+    const roundKey = advice ? `round:${(r.rounds || []).length}:${pendingRound(r).map(f => f.id).join(",")}` : "";
+    const sayRound = advice && !seen.has(roundKey);
+    if (!news.length && !sayRound) continue;
+    if (news.length) parts.push(describe(r, news));
+    if (sayRound) parts.push(`[lookout ${r.id}] ${advice}`);
+    S.writeAtomic(seenPath(r.id), JSON.stringify({ seen: [...all.map(x => x.key), ...(roundKey ? [roundKey] : [])] }) + "\n");
   }
   if (parts.length)
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: parts.join("\n\n") } }) + "\n");

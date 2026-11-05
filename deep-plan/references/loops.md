@@ -30,9 +30,26 @@ written inside it.
 
 Then plan the bug with the usual discipline, kept short:
 
-1. **Challenge it.** Is the report the bug, or a symptom of one? A flaky
-   test, a stale cache and an environment difference each look like a
-   code bug in a log.
+1. **Challenge it with competing explanations.** Is the report the bug, or
+   a symptom of one? A flaky test, a stale cache and an environment
+   difference each look like a code bug in a log. Write at least two
+   hypotheses into the spec, each with the check, query or command that
+   could prove it wrong:
+
+   ```json
+   "lane": "bug",
+   "hypotheses": [
+     { "claim": "the retry sweep skips rows whose next_try_at is null",
+       "falsify": "select count(*) from outbox where status = 'failed' and next_try_at is null",
+       "verdict": "open" },
+     { "claim": "the failing test depends on wall-clock time",
+       "falsify": "run the test with a frozen clock ten times" } ]
+   ```
+
+   Fan out one scout per hypothesis to run its falsify check, then record
+   each `verdict` (`open`, `confirmed` or `refuted`) and its `evidence`.
+   Render refuses a bug-lane spec with fewer than two hypotheses, or one
+   with no `falsify`, and the review page shows them all.
 2. **Reproduce first.** The first increment's first check is a test that
    fails today for the reason the report gives. Run it before the fix and
    see it fail; a test that never failed proves nothing about the fix.

@@ -38,13 +38,13 @@
   "review": { "increments": "none", "delivery": false },
   "verification": ["bundle exec rspec spec/workers/retry_sweep_spec.rb"],
   "quiz": [
-    { "id": "q1", "prompt": "A delivery fails while the downstream is mid-outage. What happens next?",
+    { "id": "q1", "type": "scenario", "prompt": "A delivery fails while the downstream is mid-outage. What happens next?",
       "options": ["the writer blocks until delivery succeeds", "the row waits for the next timer sweep", "the row is dropped after one try", "the worker retries inline three times"],
       "answer": 1, "why": "retry rides the sweep so it lands after the outage, not during it", "decisionRef": "Sweep on a timer, not on write" },
-    { "id": "q2", "prompt": "Which table changes shape under this plan?",
+    { "id": "q2", "type": "placement", "prompt": "Which table changes shape under this plan?",
       "options": ["the outbox table", "the deliveries audit log", "no table at all", "a new retries table"],
       "answer": 0, "why": "increment 2 adds attempt count and next-try-at to the outbox row", "decisionRef": "Track retries on the outbox row" },
-    { "id": "q3", "prompt": "What does this plan do with a row that exhausts its 5 tries?",
+    { "id": "q3", "type": "boundary", "prompt": "What does this plan do with a row that exhausts its 5 tries?",
       "options": ["dead-letters it", "pages the operator", "leaves it failed", "deletes it"],
       "answer": 2, "why": "dead-lettering is explicitly out of frame; exhausted rows stay failed", "decisionRef": "context: out of frame" }
   ]

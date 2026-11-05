@@ -18,6 +18,8 @@ export type Tile = {
   running?: string | null;
   /** A native pane rang the bell since it was last looked at. */
   bell?: boolean;
+  /** A native pane's command that ended, leaving a bare shell (wall.rs Exited). */
+  exited?: { command: string; code: number | null; at: number } | null;
   /** What a native Claude says the conversation is about, once it has read the first prompt. */
   topic?: string | null;
   /** The workspace's pinned worktree (its root: token), "" without one. */

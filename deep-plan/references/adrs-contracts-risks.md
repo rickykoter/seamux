@@ -11,7 +11,30 @@ Read this when a decision is flagged `adr`, when the plan touches a contract sur
 ### ADRs — decisions that outlive the plan
 
 A decision flagged `adr` becomes an Architecture Decision Record bound for the
-repo itself (`NNNN-slug.md`), not just the plan surfaces. The discipline:
+repo itself (`NNNN-slug.md`), not just the plan surfaces.
+
+#### The ADR test
+
+Flag a decision `adr` when it does any of these:
+
+- changes a contract or a config schema that other code, repos or people read
+- picks storage, a dependency or a framework
+- sets a convention more than one plugin, service or team will follow
+- is costly to reverse: undoing it means a migration, a rewrite or a broken caller
+- turns down a real alternative that someone could reasonably propose again
+
+A choice inside one increment's code, which the next plan could change
+without anyone noticing, is not an ADR. When in doubt, ask the person in the
+same question as the fork itself.
+
+Render enforces part of this. A flagged decision needs `consequences` and at
+least one `alternatives` entry, and render refuses one without them. An
+unflagged decision that a contract names in its `decisionRef` is named in a
+warning: flag it, or tell the person why not. In the record, the title is
+the decision, the Decision section is its `why`, and Context is
+`adr.context` alone, so the record does not repeat itself.
+
+The discipline:
 
 1. **Flagging is explicit and shared.** Only the human and agent together, at
    interrogation time, decide a fork is architectural. Flagged entries must

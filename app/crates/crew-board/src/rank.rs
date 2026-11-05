@@ -358,6 +358,9 @@ fn is_none_str(v: &Value) -> bool {
 }
 
 struct Ctx {
+    /// Per workspace (upper-cased id), its quietest working pane past the
+    /// silent threshold: silent (maybe hung), or inside one long tool.
+    silent: std::collections::HashMap<String, Quiet>,
     cost_map: Map<String, Value>,
     jmap: Map<String, Value>,
     stuck_t: f64,
@@ -424,8 +427,35 @@ fn plan_for<'a>(plans: &'a Map<String, Value>, cwd: &str, all_cwds: &[String]) -
         .map(|(_, p)| p)
 }
 
+use crew_core::status::Quiet;
+
+/// Each workspace's quietest working pane (crew_core::status::quiet), keyed
+/// by the upper-cased workspace id: a silent pane outranks one inside a long
+/// tool, and the longer of two of a kind wins.
+pub fn quiet_by_ws(panes: &[crew_core::status::Pane], now_ms: u64, threshold_ms: u64,
+                   activity: &dyn Fn(&crew_core::status::Pane) -> (u64, u64)) -> std::collections::HashMap<String, Quiet> {
+    let rank = |q: &Quiet| match q { Quiet::Silent(a) => (1, *a), Quiet::InTool(a) => (0, *a) };
+    let mut out: std::collections::HashMap<String, Quiet> = std::collections::HashMap::new();
+    for (p, q) in crew_core::status::quiet(panes, now_ms, threshold_ms, activity) {
+        let k = p.ws.to_ascii_uppercase();
+        if out.get(&k).is_none_or(|have| rank(&q) > rank(have)) {
+            out.insert(k, q);
+        }
+    }
+    out
+}
+
 /// rank(): the tiered rows and the quiet ones, families grouped.
 pub fn rank(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool) -> (Vec<Value>, Vec<Value>) {
+    let dir = crate::state::state_dir();
+    let quiet = quiet_by_ws(&crew_core::status::all(&dir), (crew_core::py::now() * 1000.0) as u64,
+                            crew_core::status::silent_threshold_ms(), &|p| crew_core::status::activity(&dir, p.key()));
+    rank_with(wss, plan_by_root, screens, quiet)
+}
+
+/// rank() with the quiet panes given, so a test needs no state folder.
+pub fn rank_with(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool,
+                 silent: std::collections::HashMap<String, Quiet>) -> (Vec<Value>, Vec<Value>) {
     let cwds: Vec<String> = wss.iter()
         .filter(|w| truthy(get(w, "cwd")))
         .map(|w| py_str(get(w, "cwd")))
@@ -434,6 +464,7 @@ pub fn rank(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool) -> 
     let gh = get(&integ, "github_issues");
     let j = get(&integ, "jira");
     let ctx = Ctx {
+        silent,
         cost_map: costs::costs_for(&cwds),
         jmap: judgments::fresh_map(None, None),
         stuck_t: judgments::stuck_threshold(),
@@ -457,6 +488,10 @@ pub fn rank(wss: &[Value], plan_by_root: &Map<String, Value>, screens: bool) -> 
         let mut said = String::new();
         let mut chips: Vec<String> = Vec::new();
         let mut subject = json!("");
+        let mut badge_text = String::new();
+        let hush = ctx.silent.get(&py_str(get(w, "id")).to_ascii_uppercase()).cloned();
+        let silent_ms = match hush { Some(Quiet::Silent(ms)) => Some(ms), _ => None };
+        let in_tool_ms = match hush { Some(Quiet::InTool(ms)) => Some(ms), _ => None };
         let mut meta_bits = Vec::new();
         if let Some(p) = plan {
             meta_bits.push(incs(p));
@@ -521,8 +556,20 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
             (kind, badge) = (Some("wilt"), "stuck");
             said = "Last turn ended on an error the agent could not get past.".into();
             chips = vec!["jump".into(), "diff".into()];
+        } else if let Some(ms) = silent_ms {
+            // Working, but its hooks have gone quiet: below a question, above
+            // the rows that are only running.
+            let m = ms / 60_000;
+            (kind, badge) = (Some("wilt"), "silent");
+            badge_text = format!("silent {m}m");
+            said = format!("Working, with no tool running and nothing for {m} minutes: the turn may be hung.");
+            chips = vec!["jump".into(), "diff".into()];
         } else if running || has(d, "phase:working") {
             (kind, badge) = (Some("running"), "working");
+            // A long test, script or subagent: busy, said so, never silent.
+            if let Some(ms) = in_tool_ms {
+                badge_text = format!("in a tool {}m", ms / 60_000);
+            }
             // The plan's progress is its owner pane's work: when that pane's
             // own state file says it is not working, another Claude here is,
             // and the increment is not credited with it.
@@ -628,8 +675,11 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
         r.insert("id".into(), get(w, "id").clone());
         r.insert("name".into(), get(w, "title").clone());
         r.insert("kind".into(), json!(kind));
-        r.insert("badge".into(), json!(badge));
+        r.insert("badge".into(), json!(if badge_text.is_empty() { badge.to_string() } else { badge_text.clone() }));
         r.insert("said".into(), json!(said));
+        if let Some(ms) = silent_ms {
+            r.insert("silent_ms".into(), json!(ms));
+        }
         r.insert("chips".into(), json!(chips));
         r.insert("frac".into(), frac(plan));
         r.insert("meta".into(), json!(meta_bits.join(" · ")));
@@ -757,6 +807,39 @@ pub fn rank_plans_only(plan_by_root: &Map<String, Value>) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_working_workspace_whose_hooks_went_quiet_ranks_silent_below_a_question() {
+        let wss = vec![
+            json!({"id": "w-ask", "title": "ask", "cwd": "/w/ask", "desc": "phase:waiting", "running": true}),
+            json!({"id": "w-hung", "title": "hung", "cwd": "/w/hung", "desc": "phase:working", "running": true}),
+            json!({"id": "w-busy", "title": "busy", "cwd": "/w/busy", "desc": "phase:working", "running": true}),
+            json!({"id": "w-test", "title": "test", "cwd": "/w/test", "desc": "phase:working", "running": true}),
+        ];
+        let mut silent = std::collections::HashMap::new();
+        silent.insert("W-HUNG".to_string(), Quiet::Silent(14 * 60_000 + 5_000));
+        silent.insert("W-TEST".to_string(), Quiet::InTool(20 * 60_000));
+        let (rows, _) = rank_with(&wss, &Map::new(), false, silent);
+        let at = |id: &str| rows.iter().position(|r| r["id"] == id).unwrap();
+        let hung = &rows[at("w-hung")];
+        assert_eq!(hung["badge"], "silent 14m");
+        assert_eq!(hung["kind"], "wilt");
+        assert!(hung["said"].as_str().unwrap().contains("nothing for 14 minutes"));
+        let test = &rows[at("w-test")];
+        assert_eq!((test["kind"].as_str(), test["badge"].as_str()), (Some("running"), Some("in a tool 20m")), "a long tool is busy, not silent");
+        assert!(at("w-ask") < at("w-hung") && at("w-hung") < at("w-busy"), "{rows:?}");
+        assert_eq!(rows[at("w-busy")]["badge"], "working");
+    }
+
+    #[test]
+    fn quiet_by_ws_puts_a_silent_pane_before_a_long_tool() {
+        let pane = |s: &str| { let mut p = crew_core::status::Pane::new("w1", s); p.state = "working".into(); p.at = 1; p };
+        let marks = |p: &crew_core::status::Pane| if p.surface == "tool" { (2, 1) } else { (0, 0) };
+        let m = quiet_by_ws(&[pane("tool"), pane("hung")], 1_200_000, 600_000, &marks);
+        assert_eq!(m.get("W1"), Some(&Quiet::Silent(1_199_999)));
+        let m = quiet_by_ws(&[pane("tool")], 1_200_000, 600_000, &marks);
+        assert_eq!(m.get("W1"), Some(&Quiet::InTool(1_199_998)));
+    }
 
     #[test]
     fn a_workspace_in_a_subfolder_of_a_plans_worktree_works_on_that_plan() {
