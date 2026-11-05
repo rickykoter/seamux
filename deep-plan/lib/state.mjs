@@ -708,7 +708,7 @@ const MUTATORS = [
   /\bfind\b[^;&|]*\s['"]?-(delete|fprint\w*|fls)\b/, // find's own writes
   // Anything that moves the work tree or the index, as checkout does: restore
   // --staged and add write the index, which is the next commit.
-  /\bgit\s+(commit|checkout|reset|clean|apply|stash|merge|rebase|cherry-pick|rm|mv|restore|switch|pull|add|am|revert)\b/,
+  /\bgit\s+(-C\s+\S+\s+)*(commit|checkout|reset|clean|apply|stash|merge(?!-base)|rebase|cherry-pick|rm|mv|restore|switch|pull|add|am|revert)\b/,
   // perl -pi -e, perl -i.bak, perl -lni: -i in a cluster of perl's argument-free
   // switches only, so -Mstrict, -MList::Util and -I lib are not it.
   /\bperl\b[^;&|\n]*?\s-[acnplsTtuUwWX]*i(\.\S*)?(\s|$)/,
@@ -728,7 +728,8 @@ const MUTATORS = [
   /\bunzip(?![^;&|\n]*\s-[a-zA-Z]*[lptvZ]\b)\s/,
   /\brsync(?![^;&|\n]*\s(--dry-run|-[a-zA-Z]*n)\b)\s/,
   /\bdd\b[^;&|\n]*\bof=/,
-  /\btouch\s+/, /\bmkdir\s+/, /\bln\s+/, /\bchmod\s+/, /\bchown\s+/, /\bchgrp\s+/,
+  // ln in command position only: `grep -ln` and `git grep -ln` hold the letters.
+  /\btouch\s+/, /\bmkdir\s+/, /(^|[;&|(\n]\s*|\b(sudo|xargs|exec)\s+)ln\s+/, /\bchmod\s+/, /\bchown\s+/, /\bchgrp\s+/,
   /\b(unlink|rmdir|shred)(\s|$)/,
   /\btruncate\s+/, /\binstall\s+/, /\bpatch\b/,
   /\bnpm\s+(install|i|uninstall|update)\b/, /\bpip3?\s+install\b/,
@@ -844,6 +845,133 @@ export function bashMutates(cmd) {
   // mutator still reads the command as written (`bash -c "rm -rf x"`).
   const bare = blankQuotes(cmd) ?? cmd;
   return REDIRECT.test(scrub(bare)) || MUTATORS.some(re => re.test(scrub(cmd)));
+}
+
+// ------------------------------------------------ Bash write targets
+// Where a writing command writes, so the gate judges each place rather
+// than the session's cwd (ADR: the gate judges Bash by where it writes).
+// Returns absolute paths. A write whose target cannot be read (an
+// interpreter's -c, a $VAR path, npm install, a cd into $X) adds the cwd it
+// runs in, so an unknown stays as conservative as before.
+
+// A heredoc body is data, not commands: taken out of the command before it
+// is split, and kept with the program it feeds.
+function heredocs(cmd) {
+  const lines = cmd.split("\n"), out = [], docs = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    out.push(line);
+    const re = /<<(-?)\s*(['"]?)([A-Za-z_]\w*)\2/g;
+    let m;
+    while ((m = re.exec(line))) {
+      const tag = m[3], dash = m[1] === "-", body = [];
+      for (i++; i < lines.length; i++) {
+        if ((dash ? lines[i].replace(/^\t+/, "") : lines[i]) === tag) break;
+        body.push(lines[i]);
+      }
+      docs.push({ line, body: body.join("\n") });
+    }
+  }
+  return { cmd: out.join("\n"), docs };
+}
+
+// Shell words of one simple command, quotes removed. null for a word the
+// shell would expand ($VAR, $(…), backticks), which no target can name.
+function words(seg) {
+  const out = [];
+  let w = "", q = null, has = false, dyn = false;
+  const push = () => { if (has) out.push(dyn ? null : w); w = ""; has = false; dyn = false; };
+  for (let i = 0; i < seg.length; i++) {
+    const c = seg[i];
+    if (q) {
+      if (c === q) { q = null; continue; }
+      if (q === '"' && (c === "$" || c === "`")) dyn = true;
+      if (q === '"' && c === "\\") { w += seg[++i] || ""; continue; }
+      w += c; continue;
+    }
+    if (c === "'" || c === '"') { q = c; has = true; continue; }
+    if (c === "\\") { w += seg[++i] || ""; has = true; continue; }
+    if (/\s/.test(c)) { push(); continue; }
+    if (c === "$" || c === "`") dyn = true;
+    w += c; has = true;
+  }
+  push();
+  return out;
+}
+
+const INTERPRETERS = /^(python[\d.]*|node|ruby|perl|sh|bash|zsh)$/;
+// An interpreter's script opening a file for writing, or a shell's writing.
+const SCRIPT_WRITES = /\bopen\([^)]*,\s*['"][^'"]*[wax+]|\.write_(text|bytes)\(|\b(writeFileSync|appendFileSync|createWriteStream|mkdirSync|rmSync|unlinkSync|renameSync|copyFileSync)\b|\bFile\.(write|open\([^)]*['"][wa])|\bshutil\.(copy|move|rmtree)|\bos\.(remove|unlink|rename|makedirs|mkdir)\b|\bFileUtils\./;
+
+export function bashWriteTargets(cmd, cwd) {
+  const home = os.homedir();
+  const { cmd: flat, docs } = heredocs(cmd);
+  const bare = blankQuotes(flat) ?? flat;
+  const segs = [];
+  let at = 0;
+  for (const m of bare.matchAll(/&&|\|\||[;\n|]|(?<![<>&])&(?![>&])/g)) { segs.push([flat.slice(at, m.index), bare.slice(at, m.index)]); at = m.index + m[0].length; }
+  segs.push([flat.slice(at), bare.slice(at)]);
+  const targets = [];
+  let here = cwd, lost = false;
+  // After a cd into somewhere unreadable, only an absolute path is known.
+  const abs = p => {
+    const e = p.replace(/^~(?=\/|$)/, home);
+    return lost && !path.isAbsolute(e) ? null : path.resolve(here, e);
+  };
+  const unknown = () => targets.push(lost ? null : here);
+  for (const [raw, b] of segs) {
+    if (!raw.trim()) continue;
+    // Redirects and heredoc markers are not words of the command.
+    let w = words(raw.replace(/<<-?\s*['"]?\w+['"]?|\d*>>?\s*\S+|\d*<\s*\S+/g, " "));
+    while (w.length && w[0] !== null && /^(\w+=\S*|sudo|command|exec|nohup|time)$/.test(w[0])) w.shift();
+    const prog = w[0] === null ? null : (w[0] || "").replace(/^.*\//, "");
+    // cd and pushd move where the following links write.
+    if (prog === "cd" || prog === "pushd") {
+      if (w.length < 2) here = home;
+      else if (w[1] === null) lost = true;
+      else if (w[1] !== "-") here = abs(w[1]);
+      continue;
+    }
+    // Redirects into files, read from the quote-blanked text for position
+    // and the raw text for the name.
+    for (const m of scrub(b).matchAll(/(^|[^>&\d])\d*>>?\s*(?!&)/g)) {
+      const start = m.index + m[0].length;
+      const name = words(raw.slice(start).match(/^("[^"]*"|'[^']*'|[^\s;&|<>()]+)/)?.[0] || "")[0];
+      targets.push(name === null || name === undefined ? (lost ? null : here) : abs(name));
+    }
+    const doc = docs.find(d => raw.includes(d.line.trim()) || d.line.includes(raw.trim()));
+    if (doc && prog && INTERPRETERS.test(prog)) {
+      // A heredoc fed to an interpreter is a read unless its script writes.
+      if (/^(sh|bash|zsh)$/.test(prog)) { for (const t of bashWriteTargets(doc.body, here)) targets.push(t); }
+      else if (SCRIPT_WRITES.test(doc.body)) unknown();
+      continue;
+    }
+    if (!bashMutates(raw.replace(/<<-?\s*['"]?\w+['"]?/g, " "))) continue;
+    const args = w.slice(1);
+    const opts = args.filter(a => a !== null && /^-/.test(a));
+    const files = args.filter(a => a === null || !/^-/.test(a));
+    const name = files.some(a => a === null) ? null : files;
+    if (prog === "git") {
+      const k = w.indexOf("-C");
+      if (k > 0) { if (w[k + 1] === null || w[k + 1] === undefined) unknown(); else targets.push(abs(w[k + 1])); }
+      else unknown();
+    } else if (["cp", "install", "ln", "rsync"].includes(prog)) {
+      const t = opts.find(o => o === "-t") ? args[args.indexOf("-t") + 1] : files[files.length - 1];
+      if (t === null || t === undefined) unknown(); else targets.push(abs(t));
+    } else if (["mv", "rm", "rmdir", "unlink", "shred", "touch", "mkdir", "tee", "truncate", "chmod", "chown", "chgrp"].includes(prog)) {
+      // chmod/chown's first word is the mode or owner, not a path.
+      const paths = /^ch(mod|own|grp)$/.test(prog) && name ? name.slice(1) : name;
+      if (!paths || !paths.length) unknown(); else for (const p of paths) targets.push(abs(p));
+    } else if (prog === "sed") {
+      // sed -i 's/a/b/' f…: the script is the first word unless -e gives it.
+      const paths = name && (opts.some(o => /^-[a-zA-Z]*e$/.test(o)) ? name : name.slice(1));
+      if (!paths || !paths.length) unknown(); else for (const p of paths) targets.push(abs(p));
+    } else if (!scrub(b).match(/(^|[^>])>>?\s*[^&|;\s]/) ||
+      MUTATORS.some(re => re.test(scrub(raw.replace(/\d*>>?\s*\S+|<<-?\s*['"]?\w+['"]?/g, " "))))) {
+      unknown();
+    }
+  }
+  return [...new Set(targets.map(t => t === null ? "\0" : t))].map(t => t === "\0" ? null : t);
 }
 
 // The plan's own CLI in command position: `deep-plan …` by any path, node on
@@ -1383,7 +1511,17 @@ export function decideToolCall(toolName, input, cwd) {
         why: "this command writes into deep-plan's own state; it changes only through the deep-plan CLI, the board or the plan pane." };
     if (ownTooling(cmd, OWN)) return { allow: true, why: "the plan's own tooling" };
     if (!bashMutates(scan)) return { allow: true, why: "not a write" };
-    return mayEdit(cwd || process.cwd());
+    // Judged where it writes: each target, and the cwd only for a write whose
+    // target cannot be read. A null (a cd into $X, then a write) is the cwd too.
+    const here = cwd || process.cwd();
+    let targets;
+    try { targets = bashWriteTargets(scan, here); } catch { targets = [here]; }
+    if (!targets.length) return { allow: true, why: "not a write" };
+    for (const t of targets) {
+      const d = mayEdit(t === null ? here : t);
+      if (!d.allow) return d;
+    }
+    return { allow: true, why: "writes only where no closed gate holds" };
   }
   // Edit | Write | MultiEdit | NotebookEdit
   const target = (input && (input.file_path || input.notebook_path)) || "";

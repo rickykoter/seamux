@@ -1146,6 +1146,38 @@ ok("a write chained beside the CLI is still a write",
   bash("deep-plan status && rm -rf x").status === 2 &&
   bash("deep-plan diff slug > out.patch").status === 2 &&
   bash('deep-plan block slug 2 "$(rm -rf x)"').status === 2);
+// The gate judges a Bash write by where it writes, not by the cwd (ADR:
+// the gate judges Bash by where it writes). These are the misfires from the
+// survey of 94 refusals; the cases above still block.
+{
+  const out = path.join(TMP, "scratch-out");
+  const allowed = [
+    [`echo hi > ${out}/a.txt`, "a redirect outside the root"],
+    [`mkdir -p ${out}/x && cp a.txt ${out}/x/a.txt`, "a copy out of the root"],
+    [`cd ${out} && echo x > b.txt`, "a write after a cd out of the root"],
+    [`git -C ${out} commit -m x`, "a commit in another repo"],
+    [`tee ${out}/log < a.txt`, "tee outside the root"],
+    [`python3 - <<'EOF'\nimport json\nprint(json.dumps({"a": 1 > 0}))\nEOF`, "a heredoc fed to python that only reads"],
+    [`node - <<'EOF'\nconsole.log(1)\nEOF`, "a heredoc fed to node that only reads"],
+    ["git merge-base HEAD main", "git merge-base"],
+    ["git grep -ln foo", "git grep -ln"],
+    ["grep -ln foo src", "grep -ln"],
+    [`cat <<EOF > ${out}/notes.md\nhi > there\nEOF`, "a heredoc written outside the root"],
+  ];
+  for (const [c, what] of allowed) ok(`gate by target: ${what} is allowed`, bash(c).status === 0, bash(c).stderr);
+  const denied = [
+    [`echo hi > ${out}/a.txt && echo x > b.txt`, "a second write inside the root"],
+    [`cp ${out}/a.txt src/a.ts`, "a copy into the root"],
+    [`cd ${out} && cd ${REPO} && rm a.txt`, "a cd back into the root"],
+    [`git -C ${REPO} commit -m x`, "a commit naming the root with -C"],
+    [`python3 - <<'EOF'\nopen("x.txt", "w").write("1")\nEOF`, "a heredoc script that opens a file for writing"],
+    [`bash <<'EOF'\nrm -rf src\nEOF`, "a heredoc fed to bash that writes"],
+    ["cd $SOMEWHERE && rm x", "a write after a cd into a variable"],
+    [`mv a.txt ${out}/a.txt`, "a move out of the root (the source goes)"],
+    ["npm install", "a write with no readable target"],
+  ];
+  for (const [c, what] of denied) ok(`gate by target: ${what} is still refused`, bash(c).status === 2, bash(c).stderr);
+}
 
 // -------------------------------------------------- grade -> implementing
 r = cli("grade", spec.slug);
