@@ -601,6 +601,33 @@ if (want("findings + gate")) {
 }
 
 // ---------------------------------------------------------------- notes, edges, quiz
+if (want("smells and the repo's conventions")) {
+  const RS = repo("rs");
+  write(RS, "a.js", "export const a = 1;\n");
+  write(RS, "CLAUDE.md", "# Guide\n\n- No comments unless the why is non-obvious.\n- Run the tests before you push.\n" +
+    "- Don't introduce abstractions for a second caller that isn't there.\n");
+  sh(RS, `git add -A && ${G} commit -q -m base`);
+  write(RS, "a.js", "// a is one\nexport const a = 1;\n");
+  const id = JSON.parse(cli(RS, "open", "--worktree", "--json").stdout).id;
+  const b = cli(RS, "prompt", id).stdout;
+  ok("smell: the brief asks for smells, minor or nit, with a cost", /- smell — code that works but costs the next reader/.test(b) &&
+    /Always minor or\s+nit/.test(b) && /naming the cost/.test(b), b.slice(0, 200));
+  ok("smell: the brief quotes the repo's convention lines, and only those", /This repo's own conventions/.test(b) &&
+    b.includes("- No comments unless the why is non-obvious.") && b.includes("abstractions for a second caller") &&
+    !b.includes("Run the tests before you push"));
+  const f = path.join(TMP, "smell.json");
+  fs.writeFileSync(f, JSON.stringify([
+    { file: "a.js", line: 1, severity: "nit", category: "smell", summary: "comment restates the code", failure_scenario: "a reader learns nothing; the comment drifts when a changes" },
+    { file: "a.js", line: 2, severity: "major", category: "smell", summary: "too big", failure_scenario: "f" }]));
+  const add = cli(RS, "findings", "add", id, f);
+  const r = S.read(id);
+  ok("smell: a nit smell is accepted, a major one refused with the reason",
+    r.findings.length === 1 && r.findings[0].category === "smell" && /a smell is minor or nit at most/.test(add.stdout + add.stderr), add.stdout + add.stderr);
+  ok("smell: it never holds the gate", cli(RS, "gate", id).status === 0);
+  write(RS, "CLAUDE.md", "# Guide\n\nNothing about style here.\n");
+  ok("smell: no matching convention lines, no conventions block", !/This repo's own conventions/.test(cli(RS, "prompt", id).stdout));
+}
+
 if (want("notes, edges, quiz")) {
   const FD = await import("./lib/findings.mjs");
   const N = await import("./lib/notes.mjs");

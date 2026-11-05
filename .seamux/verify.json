@@ -128,7 +128,7 @@
     "note": "claude plugin eval against the committed baseline in restack/evals/baseline; costs real model spend and needs claude logged in" },
   { "id": "evals-lookout", "kind": "test", "tier": "expensive",
     "run": "python3 tools/skill_evals.py compare lookout --model opus --model haiku",
-    "match": ["lookout/SKILL.md", "lookout/references/**", "lookout/evals/**"], "default": false,
+    "match": ["lookout/SKILL.md", "lookout/references/**", "lookout/evals/**", "lookout/lib/prompt.mjs"], "default": false,
     "note": "claude plugin eval against the committed baseline in lookout/evals/baseline; costs real model spend and needs claude logged in" },
   { "id": "seamux-mods-tsc", "kind": "test",
     "run": "cp -R \"$(ls -d ~/.claude/plugins/cache/seamux/seamux-mods/*/ | sort -V | tail -1).claude-plugin/types\" seamux-mods/.claude-plugin/ && npx -y -p typescript@5 tsc -p seamux-mods",

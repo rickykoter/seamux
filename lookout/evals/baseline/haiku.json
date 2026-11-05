@@ -2,8 +2,8 @@
   "schema": 1,
   "plugin": "lookout",
   "model": "haiku",
-  "claudeVersion": "2.1.296",
-  "costUsd": 0.0552,
+  "claudeVersion": "2.1.318",
+  "costUsd": 0.067,
   "cases": {
     "fires-on-branch-review": {
       "runs": 3,
@@ -61,6 +61,15 @@
       "graders": {
         "fired": 3,
         "subagent": 3
+      },
+      "errors": 0
+    },
+    "smell-on-over-commented-diff": {
+      "runs": 3,
+      "score": 0.1667,
+      "graders": {
+        "fired": 0,
+        "smell": 1
       },
       "errors": 0
     }

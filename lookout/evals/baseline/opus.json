@@ -2,8 +2,8 @@
   "schema": 1,
   "plugin": "lookout",
   "model": "opus",
-  "claudeVersion": "2.1.296",
-  "costUsd": 1.9612,
+  "claudeVersion": "2.1.318",
+  "costUsd": 2.3454,
   "cases": {
     "fires-on-branch-review": {
       "runs": 3,
@@ -61,6 +61,15 @@
       "graders": {
         "fired": 3,
         "subagent": 3
+      },
+      "errors": 0
+    },
+    "smell-on-over-commented-diff": {
+      "runs": 3,
+      "score": 1.0,
+      "graders": {
+        "fired": 3,
+        "smell": 3
       },
       "errors": 0
     }

@@ -16,7 +16,12 @@
 // own fixes would be the self-certification ADR 0006 removed.
 export const SEVERITIES = ["blocker", "major", "minor", "nit"];
 export const BLOCKING = new Set(["blocker", "major"]);
-export const CATEGORIES = ["correctness", "security", "performance", "maintainability"];
+export const CATEGORIES = ["correctness", "security", "performance", "maintainability", "smell"];
+// Code smells (duplication, dead code, comments that restate the code,
+// needless abstraction, a refactor that removes a branch) are worth saying
+// but never hold a gate: a smell finding is minor or nit, and one filed
+// higher is refused so the reviewer re-files it.
+export const SMELL = "smell";
 // A group heading somewhere its plan increment does not say. Always major or
 // worse, so it holds the gate until the human closes it (a dismiss is the
 // record that the deviation was meant); only a review of a plan has one.
@@ -121,6 +126,8 @@ export function validate(review, items, anchors) {
     if (!VERDICTS.includes(verdict)) return bad("verdict must be CONFIRMED or PLAUSIBLE");
     const category = String(x.category || "correctness").toLowerCase().replace(/[^a-z0-9-]+/g, "-").slice(0, 40) || "correctness";
     const drift = category === DRIFT;
+    if (category === SMELL && BLOCKING.has(severity))
+      return bad("a smell is minor or nit at most; file it lower, or as maintainability with the bug it causes");
     if (drift && !(review.source && review.source.plan))
       return bad("plan-drift needs a plan increment to drift from, and this review has none; use another category");
     const summary = clip(x.summary, 1000);

@@ -64,7 +64,10 @@ change in the context that wrote it reads your intent instead of the code.
    how to read whole files, the files riskiest first, lookout's groups, the
    rubric, the severities and the JSON schema, and tells the subagent to run
    `lookout findings add <id> <file>` itself. Do not add your own opinion of
-   the change to the brief.
+   the change to the brief. Besides defects, the brief asks for code smells
+   (duplication, dead code, comments that restate the code, needless
+   abstraction) as category `smell`, judged by the repo's CLAUDE.md or
+   AGENTS.md; a smell is minor or nit, so it never holds a gate.
 
    The reviewer writes ONE object, `{findings, edges, notes}` (a bare array
    still means findings only):
