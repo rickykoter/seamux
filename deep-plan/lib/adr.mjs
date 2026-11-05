@@ -192,33 +192,41 @@ function adrCandidates(root, dir = root, depth = 0, out = []) {
   return out;
 }
 
-// The home nearest the change: score each candidate by shared path segments
-// with the deliverables' files, so a plan touching services/payments/… lands
-// in docs/adr/payments-service/ when that tree exists. Ties go to the
-// shallower candidate; no candidates -> null (caller falls back to the
-// default). `files` are repo-relative.
+// Words that say where code sits, not what it is about: they match every
+// file under services/ or src/, so they never decide an ADR's home.
+const GENERIC_WORDS = new Set(["docs", "doc", "adr", "adrs", "src", "app", "apps", "lib", "libs", "main", "test", "tests",
+  "spec", "specs", "service", "services", "gem", "gems", "models", "model", "plans", "plan", "packages", "package",
+  "internal", "java", "kotlin", "com", "resources", "the", "and"]);
+
+// A path's words, lower case: split on / - _ . and camelCase, so
+// services/PropertyAssetService and docs/adrs/property-asset share
+// "property" and "asset".
+export function pathWords(p) {
+  return String(p).split(/[\\/\-_.\s]+/)
+    .flatMap(s => s.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").split(" "))
+    .map(w => w.toLowerCase()).filter(w => w.length > 2 && !GENERIC_WORDS.has(w));
+}
+
+// The home nearest the change: score each candidate by the words its path
+// shares with one of the deliverables' files, so a plan touching
+// services/PropertyAssetService/… lands in docs/adrs/property-asset/ when
+// that tree exists. With no word in common anywhere, a folder named adr or
+// adrs wins over one that only holds ADR-like files, then the shallower.
+// No candidates -> null (caller falls back to the default). `files` are
+// repo-relative.
 export function discoverAdrHome(root, files = []) {
   const cands = adrCandidates(root);
   if (!cands.length) return null;
   const segs = p => p.split(path.sep).filter(Boolean);
+  const fileWords = files.map(f => new Set(pathWords(f)));
   const score = cand => {
-    const rel = segs(path.relative(root, cand));
-    // Segments of the candidate that appear anywhere in a file's path —
-    // "payments-service" in docs/adr/payments-service matches
-    // services/payments-service/worker.js even though the prefixes differ.
+    const words = [...new Set(pathWords(path.relative(root, cand)))];
     let best = 0;
-    for (const f of files) {
-      const fset = new Set(segs(f).flatMap(s => [s, ...s.split(/[-_.]/)]));
-      let hit = 0;
-      for (const s of rel) {
-        if (s === "docs" || /^adrs?$/i.test(s)) continue;
-        if (fset.has(s) || s.split(/[-_.]/).some(w => w.length > 2 && fset.has(w))) hit++;
-      }
-      best = Math.max(best, hit);
-    }
+    for (const fw of fileWords) best = Math.max(best, words.filter(w => fw.has(w)).length);
     return best;
   };
-  cands.sort((a, b) => score(b) - score(a) ||
+  const named = cand => segs(path.relative(root, cand)).some(s => /^adrs?$/i.test(s)) ? 1 : 0;
+  cands.sort((a, b) => score(b) - score(a) || named(b) - named(a) ||
     segs(a).length - segs(b).length || a.localeCompare(b));
   return path.relative(root, cands[0]) || null;
 }
