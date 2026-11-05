@@ -999,7 +999,9 @@ export function bashWriteTargets(cmd, cwd) {
       if (!paths || !paths.length) unknown(); else for (const p of paths) targets.push(abs(p));
     } else if (prog === "sed") {
       // sed -i 's/a/b/' f…: the script is the first word unless -e gives it.
-      const paths = name && (opts.some(o => /^-[a-zA-Z]*e$/.test(o)) ? name : name.slice(1));
+      // BSD sed's `-i ''` passes an empty suffix word, which is no path.
+      const words2 = name && name.filter(a => a !== "");
+      const paths = words2 && (opts.some(o => /^-[a-zA-Z]*e$/.test(o)) ? words2 : words2.slice(1));
       if (!paths || !paths.length) unknown(); else for (const p of paths) targets.push(abs(p));
     } else if (!scrub(b).match(/(^|[^>])>>?\s*[^&|;\s]/) ||
       MUTATORS.some(re => re.test(scrub(raw.replace(/\d*>>?\s*\S+|<<-?\s*['"]?\w+['"]?/g, " "))))) {

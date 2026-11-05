@@ -21,7 +21,7 @@ import { execSync, execFileSync, spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { validateDiagrams, validateSurface, mermaidPath, mermaidCandidates, VENDOR_DIR, MERMAID_HOME } from "./lib/validate.mjs";
 import { loadAdrConfig, resolveAdrDir, nextNumber, adrFileName, renderAdr, adrEntries, adrScanReport, followRenamed } from "./lib/adr.mjs";
-import { epicHtml, incrementMd, bundleReadme, incrementFileNames, checkLinesMd } from "./lib/cutover.mjs";
+import { epicHtml, incrementMd, bundleReadme, incrementFileNames, checkLinesMd, handoffMd } from "./lib/cutover.mjs";
 import { checkEvidence } from "./lib/evidence.mjs";
 import { buildMap } from "./lib/map.mjs";
 import { SURFACE_CSS, SURFACE_JS, surfaceOpen, surfaceClose, fileTreeHtml, diagramCardHtml, diagramsForValidation } from "./lib/surface.mjs";
@@ -39,7 +39,7 @@ import { mergeStates, mergeFiles } from "./lib/merge.mjs";
 import { installRepo, checkRepo, targetRoot } from "./lib/install.mjs";
 import { EXT_DIR, listExt, runExt, extPath } from "./lib/ext.mjs";
 import { goPolicy, humanStop, goProblems, autoNext } from "./lib/autogo.mjs";
-import { parseLink, gather, seedId, writeSeed } from "./lib/intake.mjs";
+import { parseLink, gather, seedId, writeSeed, GH, ACLI } from "./lib/intake.mjs";
 import { CI_TIMEOUT_S } from "./lib/ci.mjs";
 import { loopProblems, expandLoops, isLoopTarget, uncitedLoops, movedProgress } from "./lib/loop.mjs";
 import { NOTES_SUFFIX, readNoteLines, foldNotes, notedSlugs, fileNote, closeNote, openNotes } from "./lib/notes.mjs";
@@ -3769,6 +3769,68 @@ function notesCmd(args, flags) {
 // ---------------------------------------------------------------- intake
 // `deep-plan intake <link>`: an issue, PR, failed run or Jira key gathered
 // into a seed the agent drafts a bug-lane plan from (lib/intake.mjs).
+// `deep-plan handoff <slug>`: the ticket comment a finished plan owes, as
+// ~/.claude/plans/<slug>.handoff.md (lib/cutover.mjs handoffMd). --post KEY
+// sends it to Jira with acli, seamux's one write to an outside system: it
+// prints the text and the command, then posts only on a yes typed at the
+// terminal, or --yes passed on the person's word. Every time, as publishing.
+async function handoffCmd(slug, flags) {
+  const st = readState(slug) || die("no plan " + slug);
+  const spec = planSpec(slug);
+  const root = st.root || process.cwd();
+  const run = (cmd, a) => spawnSync(cmd, a, { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+  const branch = (run("git", ["branch", "--show-current"]).stdout || "").trim();
+  let prs = [];
+  if (branch) {
+    const r = run(GH(), ["pr", "list", "--head", branch, "--state", "all", "--json", "number,title,url,state"]);
+    try { prs = r.status === 0 ? JSON.parse(r.stdout || "[]") : []; } catch { prs = []; }
+  }
+  // Each increment's commits, by time: a commit belongs to the increment
+  // that had started working when it was made. Start shas cannot say it: under
+  // auto-go the next increment's go records HEAD before the between-step
+  // commit of the one before, and a rebase can leave them off the branch.
+  const incs = st.increments || [], commits = {};
+  const began = incs.map(i => ({ n: i.n, t: i.startedAt || i.authorizedAt || 0 })).filter(x => x.t).sort((a, b) => a.t - b.t);
+  if (began.length) {
+    const r = run("git", ["log", "--reverse", "--no-merges", `--since=@${Math.floor(began[0].t / 1000)}`, "--format=%ct %h %s", "HEAD"]);
+    for (const line of (r.status === 0 ? r.stdout : "").split("\n").filter(Boolean)) {
+      const [ct, ...rest] = line.split(" ");
+      // The between step's commit lands just after done, and its own write
+      // can mark the next increment working first: a commit within three
+      // minutes of an increment's done is that increment's.
+      const t = Number(ct) * 1000;
+      const justDone = incs.filter(i => i.doneAt && i.doneAt <= t + 1000 && t - i.doneAt < 180000).sort((a, b) => b.doneAt - a.doneAt)[0];
+      const own = justDone ? { n: justDone.n } : began.filter(x => x.t <= t).pop();
+      if (own) (commits[own.n] = commits[own.n] || []).push(rest.join(" "));
+    }
+  }
+  const text = handoffMd({ spec, st, prs, commits, notes: openNotes(slug) });
+  const file = path.join(PLANS_DIR, `${slug}.handoff.md`);
+  fs.mkdirSync(PLANS_DIR, { recursive: true });
+  fs.writeFileSync(file, text);
+  if (!flags.post) { say(`handoff: ${file}`); return; }
+  const key = flags.post;
+  if (!/^[A-Z][A-Z0-9]+-\d+$/.test(key)) die(`--post ${key}: not a Jira key like ABC-123`);
+  const argv = ["jira", "workitem", "comment", "create", "--key", key, "--body-file", file];
+  say(text);
+  say(`\nwould run: ${ACLI()} ${argv.join(" ")}`);
+  let yes = !!flags.yes;
+  if (!yes) {
+    if (!process.stdin.isTTY) die(`not posted. A post to ${key} needs a person's yes: run this in a terminal, or pass --yes on their word.`);
+    const readline = await import("node:readline/promises");
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    yes = /^y(es)?$/i.test((await rl.question(`Post this comment to ${key}? [y/N] `)).trim());
+    rl.close();
+  }
+  if (!yes) { say("not posted"); return; }
+  const r = run(ACLI(), argv);
+  if (r.status !== 0) die(`acli failed (exit ${r.status}): ${(r.stderr || r.stdout || "").trim().split("\n").pop()}`);
+  st.log = st.log || [];
+  log1(st, `handoff posted to ${key}`);
+  writeState(st);
+  say(`posted to ${key}`);
+}
+
 function intakeCmd(args, flags) {
   const use = "intake <github issue|pr|actions run url, #<n>, or a Jira key/url> [--json]";
   const l = parseLink(args[0] || die(use)) || die(`not a link intake reads: ${args[0]}\n${use}`);
@@ -5610,6 +5672,7 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--terminated") flags.terminated = true;
   else if (rest[i] === "--detach") flags.detach = true;
   else if (rest[i] === "--yes") flags.yes = true;
+  else if (rest[i] === "--post") flags.post = rest[++i] || die("--post needs a Jira key, e.g. --post ABC-123");
   else if (rest[i] === "--export") flags.export = rest[++i] || die("--export needs a folder");
   else if (rest[i] === "--import") flags.import = rest[++i] || die("--import needs a folder");
   else if (rest[i] === "--foreground") flags.foreground = true;
@@ -5883,6 +5946,7 @@ switch (cmd) {
   case "notes": notesCmd(args, flags); break;
   case "lesson": lessonCmd(args, flags); break;
   case "intake": intakeCmd(args, flags); break;
+  case "handoff": await handoffCmd(args[0] || die("handoff <slug> [--post KEY [--yes]]"), flags); break;
   case "retro": retroCmd(args, flags); break;
   case "await-go": {
     const slug = args[0] || die("await-go <slug> [--timeout S]");
@@ -6136,6 +6200,11 @@ switch (cmd) {
                                               evidence/) to DIR/<project>/ for teammates
   seamux consolidate --import DIR [--yes]     show what DIR/<project>/ changes in main;
                                               writes only with --yes, the person's ok
+  handoff <slug>                              write ~/.claude/plans/<slug>.handoff.md:
+                                              PRs, each increment's commits and checks,
+                                              cutover steps, open notes
+  handoff <slug> --post KEY [--yes]           post it to Jira with acli; asks for a
+                                              yes first (--yes only on the person's word)
   verify resolve <file>... [--root DIR]       which .seamux/verify.json each file
                  [--json]                     lands on and the recipes that apply
   verify init [--root DIR] [--write]          draft .seamux/verify.json per project from

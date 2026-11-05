@@ -1186,6 +1186,7 @@ ok("a write chained beside the CLI is still a write",
     ["git merge-base HEAD main", "git merge-base"],
     ["git grep -ln foo", "git grep -ln"],
     ["grep -ln foo src", "grep -ln"],
+    [`sed -i '' s/a/b/g ${out}/a.txt`, "BSD sed -i '' on a file outside the root"],
     [`cat <<EOF > ${out}/notes.md\nhi > there\nEOF`, "a heredoc written outside the root"],
   ];
   for (const [c, what] of allowed) ok(`gate by target: ${what} is allowed`, bash(c).status === 0, bash(c).stderr);
@@ -5683,6 +5684,62 @@ if (want("repo admin between increments; out-of-scope edits flagged")) {
   r = cli("done", "admin-1", "2");
   ok("scope: done names them", /edited outside increment 2's files: README\.md, notes\/todo\.md/.test(r.stdout), r.stdout + r.stderr);
   cli("close", "admin-1");
+}
+
+// -------------------------------------------------- handoff: a ticket comment, posted only on a yes
+if (want("handoff: a ticket comment, posted only on a yes")) {
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const HR = fs.realpathSync(fs.mkdtempSync(path.join(TMP, "handoff-")));
+  fs.mkdirSync(path.join(HR, "src"));
+  fs.writeFileSync(path.join(HR, "src", "a.ts"), "export const a = 1;\n");
+  // The base predates the plan, so it is no increment's commit.
+  execSync(`git init -q -b feat && git add -A && ${G} commit -q -m base`, { cwd: HR,
+    env: { ...process.env, GIT_COMMITTER_DATE: "2020-01-01T00:00:00Z", GIT_AUTHOR_DATE: "2020-01-01T00:00:00Z" } });
+  const BIN = path.join(HR, "..", "handoff-bin");
+  fs.mkdirSync(BIN, { recursive: true });
+  const calls = path.join(BIN, "acli.calls");
+  fs.writeFileSync(path.join(BIN, "gh"), `#!/bin/sh\necho '[{"number":7,"title":"Retry sweep","url":"https://example.test/pr/7","state":"OPEN"}]'\n`);
+  fs.writeFileSync(path.join(BIN, "acli"), `#!/bin/sh\necho "$@" >> ${JSON.stringify(calls)}\n`);
+  fs.chmodSync(path.join(BIN, "gh"), 0o755); fs.chmodSync(path.join(BIN, "acli"), 0o755);
+  const HENV = { ...ENV, DEEP_PLAN_GH: path.join(BIN, "gh"), DEEP_PLAN_ACLI: path.join(BIN, "acli") };
+  const hcli = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: HENV, cwd: HR, input: "" });
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "handoff-1";
+  s.go = { mode: "auto", between: "commit" };
+  s.verification = ["npm test"];
+  s.deliverables = [{ title: "Sweep", body: "One.", files: ["src/a.ts"], waiver: "probe" },
+    { title: "Turn it on", body: "Two.", files: ["src/a.ts"], waiver: "probe", go: { human: "flips the prod flag" } }];
+  s.verifiedFacts = [...(s.verifiedFacts || []), { claim: "a exists", evidence: "src/a.ts:1" }];
+  ok("handoff: the plan renders", hcli("render", tmpSpec(s), "--root", HR).status === 0);
+  const SF = path.join(ENV.DEEP_PLAN_STATE_DIR, "handoff-1.json");
+  const st = JSON.parse(fs.readFileSync(SF, "utf8"));
+  const t0 = Date.now() - 60000;
+  st.phase = "implementing";
+  Object.assign(st.increments[0], { status: "done", startedAt: t0, doneAt: t0 + 30000,
+    checks: { eyes: { kind: "manual", name: "look at it", status: "pass", note: "the sweep retried twice" } } });
+  fs.writeFileSync(SF, JSON.stringify(st));
+  fs.writeFileSync(path.join(HR, "src", "a.ts"), "export const a = 2;\n");
+  execSync(`${G} commit -qam "sweep: retry on a timer"`, { cwd: HR });
+  hcli("note", "the dead-letter queue is still manual");
+  let r = hcli("handoff", "handoff-1");
+  const hf = path.join(ENV.DEEP_PLAN_PLANS_DIR, "handoff-1.handoff.md");
+  const md = fs.existsSync(hf) ? fs.readFileSync(hf, "utf8") : "";
+  ok("handoff: writes <slug>.handoff.md", r.status === 0 && md.startsWith("## Handoff: "), r.stderr);
+  ok("handoff: names the branch's PRs", md.includes("- [#7 Retry sweep](https://example.test/pr/7) (open)"));
+  ok("handoff: each increment's commits and checks with what was seen",
+    /#### 1\. Sweep \(done\)\n\n- [0-9a-f]{7} sweep: retry on a timer\n\n/.test(md) && md.includes("- pass: look at it (the sweep retried twice)"), md);
+  ok("handoff: cutover steps and open notes", md.includes("- run `npm test`") &&
+    md.includes("- increment 2 waits on a person: flips the prod flag") && /### Open notes\n\n- n[0-9a-f]+: the dead-letter queue is still manual/.test(md), md);
+  r = hcli("handoff", "handoff-1", "--post", "ABC-123");
+  ok("handoff --post: without a terminal or --yes it shows the comment and posts nothing",
+    r.status !== 0 && r.stdout.includes("## Handoff: ") && /would run: .*acli jira workitem comment create --key ABC-123 --body-file/.test(r.stdout) &&
+    /needs a person's yes/.test(r.stderr) && !fs.existsSync(calls), r.stdout.slice(-300) + r.stderr);
+  ok("handoff --post: a key that is not a Jira key is refused", /not a Jira key/.test(hcli("handoff", "handoff-1", "--post", "ao 123").stderr));
+  r = hcli("handoff", "handoff-1", "--post", "ABC-123", "--yes");
+  ok("handoff --post --yes: posts the file through acli",
+    r.status === 0 && /posted to ABC-123/.test(r.stdout) &&
+    fs.readFileSync(calls, "utf8").trim() === `jira workitem comment create --key ABC-123 --body-file ${hf}`, r.stdout + r.stderr);
+  hcli("close", "handoff-1");
 }
 
 // -------------------------------------------------- remote host: state in the repo, export and import
