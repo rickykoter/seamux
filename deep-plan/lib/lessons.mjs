@@ -102,7 +102,10 @@ export function repoTop(root) {
   const r = spawnSync("git", ["-C", root, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
   return r.status === 0 ? r.stdout.trim() : "";
 }
-export const lessonsFile = top => path.join(top, ".seamux", "lessons.md");
+// Where lessons.md is read and written: the branch's tracked file, else the
+// main checkout's (ADR 0068), so a retro in a worktree of a repo that ignores
+// .seamux lands in main's copy rather than one that dies with the worktree.
+export const lessonsFile = top => resolveSeamux(top, path.join(".seamux", "lessons.md"), { warn: false }).path;
 
 // {head, lessons: [{id, n, applies: [globs], from: [..], rule}]}. Anything
 // before the first `## L<n>` heading is kept as the head. A section whose
@@ -143,7 +146,8 @@ export function formatLessons({ head, lessons }) {
 
 export function readLessons(top) {
   let text = "";
-  try { text = fs.readFileSync(resolveSeamux(top, path.join(".seamux", "lessons.md")).path, "utf8"); } catch { return { head: "", lessons: [], exists: false }; }
+  resolveSeamux(top, path.join(".seamux", "lessons.md")); // warns once on a stale worktree copy
+  try { text = fs.readFileSync(lessonsFile(top), "utf8"); } catch { return { head: "", lessons: [], exists: false }; }
   return { ...parseLessons(text), exists: true };
 }
 
@@ -227,7 +231,7 @@ export function lessonReport(doc, spec, files, matches) {
 // The lessons a session starting in `top` is told, cut to `cap` bytes.
 export function lessonsBrief(top, cap = 4096) {
   let text = "";
-  try { text = fs.readFileSync(resolveSeamux(top, path.join(".seamux", "lessons.md"), { warn: false }).path, "utf8"); } catch { return ""; }
+  try { text = fs.readFileSync(lessonsFile(top), "utf8"); } catch { return ""; }
   const doc = parseLessons(text);
   if (!doc.lessons.length) return "";
   let out = "";

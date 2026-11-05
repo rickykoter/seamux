@@ -1251,6 +1251,11 @@ if (want(".seamux resolution")) {
   const cfg = load(W);
   if (keep !== undefined) process.env.RESTACK_CONFIG = keep;
   ok("seamux: restack.json in an ignoring repo's worktree is main's", cfg.remote === "upstream" && cfg.path === path.join(M, ".seamux", "restack.json"), cfg.path);
+  // init writes where load reads: main's copy, not the worktree's.
+  fs.rmSync(path.join(M, ".seamux", "restack.json")); fs.rmSync(path.join(W, ".seamux", "restack.json"));
+  const ri = spawnSync("node", [path.join(HERE, "restack.mjs"), "init"], { cwd: W, encoding: "utf8", env: { ...ENV, RESTACK_CONFIG: "" } });
+  ok("seamux: restack init in a worktree writes main's restack.json",
+    fs.existsSync(path.join(M, ".seamux", "restack.json")) && !fs.existsSync(path.join(W, ".seamux", "restack.json")), ri.stdout + ri.stderr);
 }
 
 // ---------------------------------------------------------------- done

@@ -5338,7 +5338,7 @@ if (want(".seamux resolution")) {
   ok("seamux: a copy matching main's gives no warning", HOST.resolveSeamux(IW2, ".seamux/verify.json", { warn: false }).warning === "");
   ok("seamux: load reads main's recipes, not the stale copy", ids(IW) === "main-fresh");
   ok("seamux: a worktree with no copy at all reads main's", HOST.resolveSeamux(IW2, ".seamux/adr.json", { warn: false }).path === path.join(IM, ".seamux", "adr.json"));
-  const { readLessons } = await import("./lib/lessons.mjs");
+  const lessonsLib2 = await import("./lib/lessons.mjs"), { readLessons } = lessonsLib2;
   ok("seamux: lessons in an ignoring repo are main's", readLessons(IW).lessons.map(l => l.rule).join() === "main's rule");
   const alib2 = await import("./lib/adr.mjs");
   ok("seamux: adr.json in an ignoring repo is main's", alib2.loadAdrConfig(IW).dir === "docs/decisions");
@@ -5350,6 +5350,31 @@ if (want(".seamux resolution")) {
   ok("seamux: a nested file lands on its project's config read from main",
     landing.files[0].config === "ops/.seamux/verify.json" && landing.recipes.map(r => r.id).join() === "ops-main,main-fresh",
     JSON.stringify(landing.files[0]));
+
+  // Writes follow the same rule (increment 2): retro's lessons, verify init,
+  // and the news hook's check for a lessons file.
+  ok("seamux: lessonsFile in an ignoring repo's worktree is main's", lessonsLib2.lessonsFile(IW) === path.join(IM, ".seamux", "lessons.md"));
+  lessonsLib2.writeLessons(IW, { head: "", lessons: [{ id: "L1", n: 1, applies: ["**"], from: ["p"], rule: "written from a worktree" }] });
+  ok("seamux: writeLessons from a worktree lands in main's copy",
+    /written from a worktree/.test(fs.readFileSync(path.join(IM, ".seamux", "lessons.md"), "utf8")) && !fs.existsSync(path.join(IW, ".seamux", "lessons.md")));
+  const heard = spawnSync("bash", [path.join(HERE, "hooks", "news.sh")], { encoding: "utf8",
+    env: { ...ENV, DEEP_PLAN_STATE_DIR: path.join(SR, "empty-state"), CLAUDE_PROJECT_DIR: IW },
+    input: JSON.stringify({ hook_event_name: "SessionStart", cwd: IW, session_id: "seamux-res" }) });
+  ok("seamux: the news hook tells main's lessons in a worktree with no copy", /written from a worktree/.test(heard.stdout), heard.stdout.slice(0, 300) + heard.stderr);
+  const JM = path.join(SR, "init"), JW = path.join(SR, "init-wt");
+  fs.mkdirSync(JM);
+  sh("git init -q -b main", JM);
+  put(path.join(JM, ".gitignore"), ".seamux/\n");
+  put(path.join(JM, "package.json"), JSON.stringify({ name: "x", scripts: { test: "node --test" } }));
+  sh("git add -A && git commit -q -m init && git worktree add -q -b w " + JSON.stringify(JW), JM);
+  const vi = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "verify", "init", "--root", JW, "--write", "--json"], { encoding: "utf8", env: ENV, cwd: JW });
+  let vij = {}; try { vij = JSON.parse(vi.stdout); } catch {}
+  ok("seamux: verify init --write in a worktree writes main's verify.json",
+    fs.existsSync(path.join(JM, ".seamux", "verify.json")) && !fs.existsSync(path.join(JW, ".seamux", "verify.json")) &&
+    (vij.written || []).includes(path.join(JM, ".seamux", "verify.json")), vi.stderr + vi.stdout.slice(0, 300));
+  const vi2 = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "verify", "init", "--root", JW, "--json"], { encoding: "utf8", env: ENV, cwd: JW });
+  let vij2 = {}; try { vij2 = JSON.parse(vi2.stdout); } catch {}
+  ok("seamux: …and then counts main's file as the worktree's existing config", (vij2.drafts || []).every(d => d.exists) && (vij2.drafts || []).length > 0, vi2.stdout.slice(0, 300));
 
   // Outside git, the path is used as given.
   const NG = path.join(SR, "no-git");

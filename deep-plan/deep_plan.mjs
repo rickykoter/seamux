@@ -31,7 +31,7 @@ import { releaseClaims } from "./lib/claims.mjs";
 import { buildProof, withProof, ghCanAttach, gh } from "./lib/proof.mjs";
 import { readEvidence, evidenceSummary, newEvidenceDir, pruneEvidence, showTab, browserDriver } from "./lib/browser.mjs";
 import { detect, draftFile } from "./lib/detect.mjs";
-import { detectHost, hostLine, sessionIds } from "./lib/host.mjs";
+import { detectHost, hostLine, sessionIds, resolveSeamux } from "./lib/host.mjs";
 import * as SERVE from "./lib/serve.mjs";
 import * as SYNC from "./lib/sync.mjs";
 import { mergeStates, mergeFiles } from "./lib/merge.mjs";
@@ -3805,7 +3805,10 @@ function retroCmd(args, flags) {
   const applies = () => String(flags.applies || "").split(",").map(s => s.trim()).filter(Boolean);
   const wrote = what => {
     const f = writeLessons(top, doc);
-    say(`${what}\n  wrote ${path.relative(process.cwd(), f) || f} (${doc.lessons.length}/${LESSON_CAP}); commit it with the plan's work`);
+    // In a repo that ignores .seamux the file is main's untracked copy (ADR 0068).
+    const where = path.relative(top, f).startsWith("..")
+      ? "the main checkout's copy, which git does not track here" : "commit it with the plan's work";
+    say(`${what}\n  wrote ${path.relative(process.cwd(), f) || f} (${doc.lessons.length}/${LESSON_CAP}); ${where}`);
   };
   if (!sub) {
     const rows = foldCandidates(slug), open = rows.filter(r => !r.settled);
@@ -5289,10 +5292,12 @@ function verifyInit(root, opts) {
   const written = [];
   if (opts.write) for (const d of drafts) {
     if (d.exists) continue;
-    const abs = path.join(det.root, d.path);
+    // Where the resolver reads it from (ADR 0068): main's folder in a
+    // worktree of a repo that ignores .seamux.
+    const abs = resolveSeamux(path.join(det.root, d.dir || "."), path.join(".seamux", "verify.json"), { warn: false }).path;
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.writeFileSync(abs, JSON.stringify(d.file, null, 2) + "\n");
-    written.push(d.path);
+    written.push(path.relative(det.root, abs).startsWith("..") ? abs : d.path);
   }
   if (opts.json) {
     process.stdout.write(JSON.stringify({ ...det, drafts, written, templatesAvailable: listTemplates(),
