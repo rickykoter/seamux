@@ -928,6 +928,22 @@ ok("mermaid theme follows the page theme",
   fs.writeFileSync(path.join(dated, "docs", "adr", "2026-10-31-review-notes.md"), "x\n");
   ok("a dated file in the ADR folder does not move the next number",
     alib.nextNumber(path.join(dated, "docs", "adr"), alib.ADR_DEFAULT_SCAN) === 44);
+  // A house tree of component folders: a CamelCase service finds its kebab
+  // folder, and generic words (services, docs, plans) decide nothing.
+  const comp = path.join(TMP, "disco4");
+  for (const d of ["docs/adrs/property-asset", "docs/adrs/account-management", "docs/adrs/document-management", "services/MemberService/docs/plans"])
+    fs.mkdirSync(path.join(comp, d), { recursive: true });
+  fs.writeFileSync(path.join(comp, "docs/adrs/property-asset/adr_001_x.md"), "x\n");
+  fs.writeFileSync(path.join(comp, "docs/adrs/account-management/adr_001_x.md"), "x\n");
+  fs.writeFileSync(path.join(comp, "docs/adrs/document-management/adr_001_x.md"), "x\n");
+  fs.writeFileSync(path.join(comp, "services/MemberService/docs/plans/adr_001_x.md"), "x\n");
+  const home = f => alib.resolveAdrDir(comp, { dir: null }, [f]).dir;
+  ok("discovery: a CamelCase service finds its kebab-case ADR folder", home("services/PropertyAssetService/src/main/X.kt") === "docs/adrs/property-asset");
+  ok("discovery: snake_case code finds its kebab-case folder", home("gems/core/app/models/document_management/x.rb") === "docs/adrs/document-management");
+  ok("discovery: with no word in common, a folder named adrs wins over another service's docs",
+    home("ops/app/controllers/loans_controller.rb") === "docs/adrs");
+  ok("discovery: words split on case, separators and generic words alike",
+    alib.pathWords("services/PropertyAssetService/docs/adrs/HTTPServer_v2").join() === "property,asset,http,server");
   fs.rmSync(path.join(dated, "docs", "adr", "0043-last.md"));
   ok("a folder of only dated files reports that the scan recognised none of them",
     (alib.adrScanReport(path.join(dated, "docs", "adr"), alib.ADR_DEFAULT_SCAN) || {}).total === 1);
