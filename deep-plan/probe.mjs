@@ -529,6 +529,11 @@ ok("mermaid theme follows the page theme",
   noCons.decisions[0].adr = { alternatives: ["x"] };
   ok("refuses a flagged decision with no consequences",
     cli("render", tmpSpec(noCons)).status !== 0);
+  // Flagged without alternatives: refused, naming the field.
+  const noAlts = JSON.parse(JSON.stringify(spec));
+  noAlts.decisions[0].adr = { consequences: "c", alternatives: [] };
+  const na = cli("render", tmpSpec(noAlts));
+  ok("refuses a flagged decision that lists no alternatives", na.status !== 0 && /lists no alternatives/.test(na.stderr), na.stderr.slice(0, 300));
   // The example spec is flagged: draft + surfaces + state, all from render.
   ok("render drafts the ADR beside the surfaces",
     fs.existsSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".adr1.md")));
@@ -654,7 +659,10 @@ ok("mermaid theme follows the page theme",
   unc.decisions.push({ decision: "Widen the status enum", why: "x" });
   unc.contracts.push({ surface: "outbox.status", kind: "db-schema", scope: "internal",
     change: "modify", reach: "worker only", decisionRef: "Widen the status enum" });
-  ok("render passes an uncovered contract decision", cli("render", tmpSpec(unc)).status === 0);
+  const ur = cli("render", tmpSpec(unc));
+  ok("render passes an uncovered contract decision", ur.status === 0);
+  ok("…and warns that an unflagged decision sets a contract",
+    /warning: decision "Widen the status enum" sets the contract "outbox\.status" but is not flagged adr/.test(ur.stderr), ur.stderr.slice(0, 400));
   const gu = cli("grade", "uncovered-plan", "q1=a", "q2=a", "q3=a");
   ok("grade fails on it, naming the decision",
     gu.status !== 0 && /no quiz question covers/.test(gu.stderr) &&
@@ -895,6 +903,8 @@ ok("mermaid theme follows the page theme",
     { decision: "Do the thing", why: "because", adr: { consequences: "c" } },
     { template: "nygard" }, { number: 13, root: TMP });
   ok("the built-in template still renders a 4-padded number", rendered.includes("0013"));
+  ok("the Decision section is the why, not the title again, and context stays its own",
+    /## Decision\s+because/.test(rendered) && !/## Decision\s+Do the thing/.test(rendered) && /## Context\s+\(context not recorded\)/.test(rendered), rendered);
   const tplPath = path.join(TMP, "house.tmpl.md");
   fs.writeFileSync(tplPath, "# ADR {{n}} / {{nnn}} / {{nnnn}}: {{title}}\n{{context}}\n");
   const houseRendered = alib.renderAdr(

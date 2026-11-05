@@ -60,11 +60,13 @@ These survive a compaction; everything below them is how.
    first and plan it as the bug lane ([loops.md](references/loops.md)).
 1. **Interrogate before drafting.** A plan that silently resolved a fork is a
    plan the human never agreed to. When a fork is *architectural* (it will
-   outlive this plan and constrain later ones), say so in the question and
-   carry the answer into the spec as a decision flagged `adr`: the answer's
-   why becomes the context, the rejected options the alternatives, the
-   human's words the consequences. Contract forks are always asked
-   ([adrs-contracts-risks.md](references/adrs-contracts-risks.md)). When a
+   outlive this plan and constrain later ones; [the ADR
+   test](references/adrs-contracts-risks.md#the-adr-test) says when), say so
+   in the question and carry the answer into the spec as a decision flagged
+   `adr`: the answer's why becomes its why, what forced the choice the
+   context, the rejected options the alternatives (render refuses an ADR
+   without one), the human's words the consequences. Contract forks are
+   always asked ([adrs-contracts-risks.md](references/adrs-contracts-risks.md)). When a
    fork is about shape, placement, flow or a payload, show it on an ask page
    ([asks.md](references/asks.md)).
 2. **Survey the terrain before drafting.** The interrogation covers the

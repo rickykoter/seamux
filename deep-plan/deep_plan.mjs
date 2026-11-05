@@ -150,11 +150,24 @@ function validate(spec, force) {
 
   for (const d of spec.decisions || []) {
     if (!d.why) errs.push(`decision "${d.decision}" has no why`);
-    // A decision flagged as an ADR must own its consequences — without them
-    // it is just a decision wearing the name. Everything else in the adr
-    // field (context, alternatives, status) stays optional.
+    // A decision flagged as an ADR must own its consequences and name what
+    // it turned down: without them it is a decision wearing the name
+    // (references/adrs-contracts-risks.md, the ADR test). context and status
+    // stay optional.
     if (d.adr && !(d.adr.consequences && String(d.adr.consequences).trim()))
       errs.push(`decision "${d.decision}" is flagged adr but has no consequences`);
+    if (d.adr && !(Array.isArray(d.adr.alternatives) && d.adr.alternatives.some(a => String(a || "").trim())))
+      errs.push(`decision "${d.decision}" is flagged adr but lists no alternatives: an ADR records what was turned down (adr.alternatives)`);
+  }
+  // The ADR test's strongest sign: a decision that sets a contract outlives
+  // the plan. Unflagged, it is named, never refused: the agent may have a
+  // reason, and says it to the person.
+  for (const d of spec.decisions || []) {
+    if (d.adr) continue;
+    const owns = (spec.contracts || []).filter(c => c.decisionRef === d.decision);
+    if (owns.length)
+      console.error(`deep-plan: warning: decision "${d.decision}" sets the contract "${owns[0].surface}" but is not flagged adr. ` +
+        "A contract outlives the plan; flag it (with alternatives) or tell the person why not (references/adrs-contracts-risks.md).");
   }
   for (const f of spec.verifiedFacts || [])
     if (!f.claim || !f.evidence)

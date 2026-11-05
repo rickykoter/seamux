@@ -309,8 +309,11 @@ export function renderAdr(entry, config, meta) {
     title: entry.decision,
     status: meta.status || adr.status || "Proposed",
     date: meta.date || "(pending apply)",
-    context: adr.context || entry.why,
-    decision: entry.decision,
+    // The title is the decision in a line; the Decision section says why it
+    // was taken, so the record does not read the title twice. Context is
+    // only what was recorded as context.
+    context: adr.context || "(context not recorded)",
+    decision: entry.why || entry.decision,
     consequences: adr.consequences || "",
     alternatives: alts,
   };
