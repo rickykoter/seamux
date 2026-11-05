@@ -73,6 +73,42 @@ when it exports one); an export reaches every later step. A recipe with
 acquire, claim or wait steps must be `expensive`. `check run --from wait` (or
 `--from claim`) resumes after the acquire steps.
 
+### Shared resources, env, prereqs and side effects
+
+Six more fields say what a run needs and what it does. A recipe that sets
+none of them behaves as before and keeps its hash.
+
+```json
+{ "id": "ops-rspec", "kind": "test", "run": "bin/rspec",
+  "uses": [{ "resource": "port:5432", "mode": "exclusive" }],
+  "env": { "TEST_ENV_NUMBER": "${slot}", "LOG_DIR": "/tmp/${worktree}" },
+  "prereqs": [{ "name": "Postgres", "probe": "pg_isready -h localhost" }],
+  "sideEffects": ["writes-db", { "effect": "kills-process", "scope": "this worktree's puma" }],
+  "noFix": false,
+  "evidence": "CI runs bin/rspec: .rwx/ci.yml:612" }
+```
+
+- `uses` lists shared resources. `check run` locks each one before the first
+  run step and releases it on any verdict. `exclusive` waits for every other
+  holder; `shared` runs beside other shared holders and waits for an
+  exclusive one. A lock clash waits; it never asks which run goes first.
+- `env` reaches every step. `${worktree}` expands to the checkout's folder
+  name and `${slot}` to a small number held while the run lasts, so a recipe
+  can give each worktree its own database or port where the project allows.
+- `prereqs` are probed before the first run step. A probe that exits non-zero
+  fails the check with the prereq's name, instead of a confusing test failure.
+- `sideEffects` come from a fixed list: `writes-db`, `kills-process`,
+  `network`, `writes-qa`, `writes-files`. `kills-process` needs a `scope`
+  saying what it kills. `check list` shows them, with the prereqs and locks,
+  so you know what a run does before you start it.
+- `noFix: true` marks a check that must not rewrite files (a linter run
+  without `--fix`): a run that changes tracked files fails, naming them.
+- `evidence` (a string, or a list of strings) says where the command came
+  from. It is for people, and is never hashed.
+
+Any other field is a warning that names the file and recipe, never a silent
+drop. Keys starting with `$` are comments.
+
 ## Browser checks
 
 A recipe of kind `browser` ends with a `browser` step naming a script in the

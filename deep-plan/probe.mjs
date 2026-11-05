@@ -5454,6 +5454,65 @@ if (want("seamux consolidate")) {
   ok("consolidate --import: a folder with no bundle for this project is refused", r.status !== 0 && /no bundle for main/.test(r.stderr), r.stderr);
 }
 
+// -------------------------------------------------- recipe fields: uses, env, prereqs, sideEffects, noFix, evidence
+if (want("recipe fields: uses, env, prereqs, sideEffects, noFix, evidence")) {
+  const SC = path.join(TMP, "schema-root");
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  fs.mkdirSync(path.join(SC, ".seamux"), { recursive: true });
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: SC });
+  const putCfg = obj => fs.writeFileSync(path.join(SC, ".seamux", "verify.json"), JSON.stringify(obj, null, 2));
+  const one = r => { putCfg({ recipes: [{ id: "x", run: "true", ...r }] }); return loadVerify(SC); };
+  const errOf = r => one(r).errors.join("; ");
+
+  const full = { uses: [{ resource: "port:5432", mode: "exclusive" }, { resource: "redis" }],
+    env: { DB: "test_${worktree}_${slot}" }, prereqs: [{ name: "Postgres", probe: "pg_isready" }],
+    sideEffects: ["writes-db", { effect: "kills-process", scope: "this worktree's puma" }], noFix: true, evidence: "CI: ci.yml:12" };
+  let c = one(full);
+  const r0 = c.recipes[0];
+  ok("fields: a recipe with all six loads clean", c.errors.length === 0 && c.warnings.length === 0, c.errors.join("; "));
+  ok("fields: a uses entry with no mode is exclusive", r0.uses[1].mode === "exclusive");
+  ok("fields: a sideEffect name becomes { effect }", r0.sideEffects[0].effect === "writes-db" && r0.sideEffects[1].scope === "this worktree's puma");
+  ok("fields: a bad uses mode is refused", /mode must be exclusive or shared/.test(errOf({ uses: [{ resource: "db", mode: "both" }] })));
+  ok("fields: a uses entry needs a resource name", /needs a resource/.test(errOf({ uses: ["db"] })));
+  ok("fields: an unknown env token is refused", /the tokens are \$\{worktree\} and \$\{slot\}/.test(errOf({ env: { A: "${branch}" } })));
+  ok("fields: an env name must be an env var name", /env name "a-b"/.test(errOf({ env: { "a-b": "x" } })));
+  ok("fields: a prereq needs a name and a probe", /prereq 1 needs a name and a probe/.test(errOf({ prereqs: [{ name: "pg" }] })));
+  ok("fields: a sideEffect outside the list is refused", /must be one of writes-db/.test(errOf({ sideEffects: ["deletes-prod"] })));
+  ok("fields: kills-process needs a scope", /kills-process needs a scope/.test(errOf({ sideEffects: ["kills-process"] })));
+  ok("fields: noFix must be a boolean", /noFix must be true or false/.test(errOf({ noFix: "yes" })));
+  ok("fields: evidence may be a list of strings", errOf({ evidence: ["a", "b"] }) === "" && /evidence must be/.test(errOf({ evidence: 3 })));
+  c = one({ evidnce: "typo", $comment: "fine" });
+  ok("fields: an unknown field warns, naming the recipe; a $ key does not", c.errors.length === 0 &&
+    c.warnings.length === 1 && /recipe "x": unknown field "evidnce" is ignored/.test(c.warnings[0]), c.warnings.join("; "));
+  const vr = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "verify", "resolve", "src/a.ts", "--root", SC], { encoding: "utf8", env: ENV, cwd: SC });
+  ok("fields: verify resolve prints the warning with the file", /! \.seamux\/verify\.json: recipe "x": unknown field "evidnce"/.test(vr.stderr), vr.stderr);
+
+  // Hashes: unset fields leave a recipe's hash as it was; set ones change it; evidence never does.
+  const h = r => recipeHash(one(r).recipes[0], "");
+  const base = h({});
+  ok("fields: a recipe without the fields keeps its hash, empty values included",
+    h({ uses: [], env: {}, prereqs: [], sideEffects: [], noFix: false }) === base &&
+    recipeHash(one({}).recipes[0], "") === recipeHash({ ...one({}).recipes[0], uses: undefined, env: undefined, prereqs: undefined, sideEffects: undefined, noFix: undefined, evidence: undefined }, ""), base);
+  ok("fields: each field that changes a run changes the hash",
+    ["uses", "env", "prereqs", "sideEffects", "noFix"].every(k => h({ [k]: full[k] }) !== base));
+  ok("fields: evidence is never hashed", h({ evidence: "CI: ci.yml:12" }) === base && h({ evidence: ["x"] }) === base);
+
+  // check list shows what a run needs and does.
+  putCfg({ recipes: [{ id: "x", run: "true", default: true, ...full }] });
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "fields-1";
+  s.deliverables[0] = { title: "A sweep", body: "A timer job.", files: ["src/a.ts"], checks: [{ id: "x", kind: "test", name: "x", recipe: "x" }] };
+  const rr = cli("render", tmpSpec(s), "--root", SC);
+  const st = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "fields-1.json"), "utf8"));
+  const ex = (st.increments[0].checks.x || {}).exec || {};
+  ok("fields: render stores the fields with the check", rr.status === 0 && ex.uses && ex.env && ex.prereqs && ex.sideEffects && ex.noFix === true, rr.stderr.slice(0, 400));
+  const ls = cli("check", "list", "fields-1", "1").stdout;
+  ok("fields: check list shows side effects, prereqs, locks and noFix",
+    /effects: writes-db, kills-process \(this worktree's puma\)/.test(ls) && /needs:  Postgres \(probe: pg_isready\)/.test(ls) &&
+    /locks:  port:5432 exclusive, redis exclusive/.test(ls) && /noFix:  fails if the run changes tracked files/.test(ls), ls);
+  cli("close", "fields-1");
+}
+
 // -------------------------------------------------- remote host: state in the repo, export and import
 if (want("remote host: state in the repo, export and import")) {
   const RH = path.join(TMP, "remote-home");

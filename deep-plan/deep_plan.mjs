@@ -712,7 +712,14 @@ function resolvePlanChecks(spec, root) {
   const bind = (c, r) => ({ ...c, recipe: r.key, hash: r.hash, source: r.source, scope: scopeFor(r),
     exec: { tier: r.tier, cwd: path.posix.join(r.project || ".", r.cwd), timeout: r.timeout, steps: r.steps,
       ...(r.brief ? { brief: r.brief } : {}),
-      ...(r.scripts && r.scripts.length ? { scripts: r.scripts.map(f => path.posix.join(r.project || ".", r.cwd, f)) } : {}) } });
+      ...(r.scripts && r.scripts.length ? { scripts: r.scripts.map(f => path.posix.join(r.project || ".", r.cwd, f)) } : {}),
+      // Set only when the recipe sets them, so stored state (and rehydrate)
+      // is unchanged for recipes without them; check run enforces them.
+      ...(r.uses && r.uses.length ? { uses: r.uses } : {}),
+      ...(r.env && Object.keys(r.env).length ? { env: r.env } : {}),
+      ...(r.prereqs && r.prereqs.length ? { prereqs: r.prereqs } : {}),
+      ...(r.sideEffects && r.sideEffects.length ? { sideEffects: r.sideEffects } : {}),
+      ...(r.noFix ? { noFix: true } : {}) } });
   const lists = (spec.deliverables || []).map((d, i) => {
     const label = `deliverable ${i + 1} ("${d.title}")`;
     const rows = planPaths(d).map(f => R.file(f)).filter(r => !r.outside);
@@ -764,6 +771,7 @@ function resolvePlanChecks(spec, root) {
     return out;
   });
   for (const e of R.errors()) errs.push(`recipe config ${e}`);
+  for (const w of R.warnings()) console.error(`deep-plan: warning: recipe config ${w}`);
   return { lists, errs };
 }
 
@@ -4412,6 +4420,10 @@ function checkList(slug, n) {
     if (browserStep) say(`    script: ${browserStep.command}`);
     if (v.exec && v.exec.scripts && v.exec.scripts.length) say(`    setup:  ${v.exec.scripts.join(", ")}`);
     if (v.exec && v.exec.brief) say(`    brief:  ${v.exec.brief}`);
+    if (v.exec && v.exec.sideEffects) say(`    effects: ${v.exec.sideEffects.map(e => e.effect + (e.scope ? ` (${e.scope})` : "")).join(", ")}`);
+    if (v.exec && v.exec.prereqs) say(`    needs:  ${v.exec.prereqs.map(q => `${q.name} (probe: ${q.probe})`).join("; ")}`);
+    if (v.exec && v.exec.uses) say(`    locks:  ${v.exec.uses.map(u => `${u.resource} ${u.mode}`).join(", ")}`);
+    if (v.exec && v.exec.noFix) say(`    noFix:  fails if the run changes tracked files`);
     if (v.run) say(`    run:    ${v.run}`);
     if (v.query) say(`    query:  ${v.query}`);
     if (v.expect) say(`    expect: ${v.expect}`);
@@ -5224,6 +5236,7 @@ function verifyResolve(files, root, json) {
           `${r.inherited ? " (inherited from the root)" : ""}  ${stepsLine(r)}  #${r.hash}`);
     }
   }
+  for (const w of res.warnings || []) console.error("  ! " + w);
   if (res.errors.length) {
     for (const e of res.errors) console.error("  ✗ " + e);
     die(`verify: ${res.errors.length} config error(s) — a broken recipe file is never read as "no recipes"`);
