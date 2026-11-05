@@ -1990,10 +1990,14 @@ function workingHtml(spec, st, b64) {
     const checks = checksRow(inc, st.slug) || (d.waiver ? `<p class="dim">checks: none — waived: ${esc(d.waiver)}</p>` : "");
     // Per-deliverable commits: the record of what actually landed for this one.
     const dcommits = (d.commits || []).map(c => commitLi(c)).join("");
+    // Edits the gate let through outside this increment's files (decide.mjs).
+    const oos = (inc.outOfScope || []).length
+      ? `<p class="dim">edited outside this increment's files: ${inc.outOfScope.map(f => `<code>${esc(f)}</code>`).join(", ")}</p>` : "";
     return `<div class="inc" id="inc-${inc.n}" data-status="${esc(inc.status)}"><span class="st st-${esc(inc.status)}">${esc(inc.status)}</span>
 <b>${inc.n}. ${esc(inc.title)}</b>
 <p>${esc(d.body || "")}</p>
 ${files}
+${oos}
 ${dcommits ? `<ul class="dim">${dcommits}</ul>` : ""}
 ${checks}
 <p>${acts}</p></div>`;
@@ -2335,8 +2339,12 @@ async function render(specPath, opts) {
       authorizedAt: prev.authorizedAt || 0, startedAt: prev.startedAt || 0,
       doneAt: prev.doneAt || 0, note: prev.note || "", startSha: prev.startSha || "",
       // `obs` is the pre-checks verdict; reconcileChecks carries it over.
-      checks: reconcileChecks(prev, checkLists[i]), obs: undefined };
+      checks: reconcileChecks(prev, checkLists[i]), obs: undefined,
+      // The increment's own files, so the gate can flag an edit outside them.
+      files: planPaths(d) };
   });
+  // The ADR folder render resolved, which stays open between increments.
+  st.adrDir = resolveAdrDir(planRoot, loadAdrConfig(planRoot), (spec.deliverables || []).flatMap(planPaths)).dir;
   // Keep what apply recorded (applied path) for unchanged entries; a spec
   // edit that reorders or reworded a flagged decision re-resolves fresh.
   const oldAdrs = new Map((st.adrs || []).map(a => [a.decision, a]));
@@ -3035,6 +3043,8 @@ function transition(action, slug, n, why, force = false, { byHuman = false } = {
     incrementDiff(st, inc);
     say(`done ${slug} ${plan.n}` + (st.phase === "done" ? " — plan complete"
       : st.phase === "delivery" ? `\nevery increment is done; the full delivery is reviewed next: deep-plan deliver ${slug}` : ""));
+    if ((inc.outOfScope || []).length)
+      say(`  edited outside increment ${plan.n}'s files: ${inc.outOfScope.join(", ")} — amend the spec if they belong to it`);
     if (plan.forced)
       engineMiss(st, "force", `increment ${plan.n} was closed with done --force past ${plan.forced.map(c => `${c.id} (${c.status})`).join(", ")}: its proof was skipped`, plan.n);
     if ((st.phase === "done" || st.phase === "delivery") && unsettled(slug).length)

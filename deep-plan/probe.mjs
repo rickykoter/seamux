@@ -4278,10 +4278,13 @@ if (want("owner: session and workspace")) {
   ok("the owner's pane after a /clear flips the increment to working, unwarned",
     g.status === 0 && !(g.stdout || "").includes("guest") && stOf("owner-3").increments[0].status === "working");
   ok("…and the gate's own write leaves the owner as it was", stOf("owner-3").owner.session === "sess-a");
-  const before3 = (stOf("owner-3").log || []).length;
+  // Guest lines only: an owner's edit outside the increment's files adds an
+  // out-of-scope line of its own, which is not a warning about who wrote it.
+  const guestLines = () => (stOf("owner-3").log || []).filter(l => /^guest:/.test(l.what)).length;
+  const before3 = guestLines();
   g = gateWho({ CMUX_WORKSPACE_ID: "ws-9", CMUX_SURFACE_ID: "pane-9999ffff" }, "sess-a", "d.txt");
   ok("the owner's session resumed in another pane is still the owner, unwarned",
-    g.status === 0 && !(g.stdout || "").includes("guest") && (stOf("owner-3").log || []).length === before3);
+    g.status === 0 && !(g.stdout || "").includes("guest") && guestLines() === before3);
 
   // Outside cmux the owner is its session.
   const ROOT4 = path.join(TMP, "owner-root-4");
@@ -5605,6 +5608,57 @@ if (want("check run enforces prereqs, uses, env and noFix")) {
   ok("enforce: noFix passes a run that leaves tracked files alone, earlier edits included", r.status === "pass", r.note);
   r = run({ steps: [{ kind: "run", command: "echo three >> tracked.txt" }] });
   ok("enforce: without noFix, a rewrite is not judged", r.status === "pass", r.note);
+}
+
+// -------------------------------------------------- repo admin between increments; out-of-scope edits flagged
+if (want("repo admin between increments; out-of-scope edits flagged")) {
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const AD = fs.realpathSync(fs.mkdtempSync(path.join(TMP, "admin-")));
+  fs.mkdirSync(path.join(AD, "src"), { recursive: true });
+  fs.writeFileSync(path.join(AD, "src", "a.ts"), "export const a = 1;\n");
+  execSync(`git init -q && git add -A && ${G} commit -q -m init`, { cwd: AD });
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "admin-1";
+  s.deliverables = [
+    { title: "First", body: "One.", files: ["src/a.ts"], waiver: "probe" },
+    { title: "Second", body: "Two.", files: ["src/a.ts", "src/lib/**"], waiver: "probe" }];
+  s.verifiedFacts = [...(s.verifiedFacts || []), { claim: "a exists", evidence: "src/a.ts:1" }];
+  const rr = cli("render", tmpSpec(s), "--root", AD);
+  const SF = path.join(ENV.DEEP_PLAN_STATE_DIR, "admin-1.json");
+  const stOf = () => JSON.parse(fs.readFileSync(SF, "utf8"));
+  const put = f => { const st = stOf(); f(st); fs.writeFileSync(SF, JSON.stringify(st)); };
+  ok("admin: render stores each increment's files and the ADR folder",
+    rr.status === 0 && stOf().increments[1].files.join() === "src/a.ts,src/lib/**" && typeof stOf().adrDir === "string", rr.stderr.slice(0, 300));
+  const adr = stOf().adrDir;
+  put(st => { st.phase = "implementing"; st.increments[0].status = "done"; st.increments[1].status = "pending"; });
+  const e = p => edit(path.join(AD, p)).status, b = c => gate("Bash", { command: c }, AD).status;
+  ok("admin: between increments, .seamux files pass, nested projects too", e(".seamux/verify.json") === 0 && e("ops/.seamux/lessons.md") === 0);
+  ok("admin: between increments, the plan's ADR folder passes", e(`${adr}/0001-x.md`) === 0, adr);
+  ok("admin: between increments, product code stays gated", e("src/a.ts") === 2 && b("echo x > src/b.ts") === 2);
+  ok("admin: between increments, branch admin passes",
+    b("git switch -c next") === 0 && b("git fetch origin && git rebase origin/main") === 0 && b("git push -u origin HEAD 2>&1 | tail -2") === 0 && b("git cherry-pick abc123") === 0);
+  ok("admin: …but not a write chained beside it, nor a commit", b("git switch next && rm src/a.ts") === 2 && b("git commit -m x") === 2);
+  ok("admin: a Bash write into .seamux passes too", b("echo '{}' > .seamux/restack.json") === 0);
+  put(st => { st.phase = "review"; });
+  ok("admin: in review the carve-outs do not apply", e(".seamux/verify.json") === 2 && b("git switch -c next") === 2);
+
+  // An open increment: an edit outside its files goes through and is flagged.
+  put(st => { st.phase = "implementing"; st.increments[1].status = "working"; });
+  const ctx = r => { try { return JSON.parse(r.stdout).hookSpecificOutput.additionalContext || ""; } catch { return ""; } };
+  let r = edit(path.join(AD, "src", "lib", "x.ts"));
+  ok("scope: an edit inside the increment's files says nothing", r.status === 0 && !/outside increment/.test(ctx(r)) && !stOf().increments[1].outOfScope);
+  r = edit(path.join(AD, "README.md"));
+  ok("scope: the first edit outside them goes through, named once", r.status === 0 && /README\.md is outside increment 2's files/.test(ctx(r)), r.stdout);
+  r = gate("Bash", { command: "echo x > notes/todo.md" }, AD);
+  ok("scope: a later one, by Bash too, is recorded without a word", r.status === 0 && !/outside increment/.test(ctx(r)) &&
+    stOf().increments[1].outOfScope.join() === "README.md,notes/todo.md", JSON.stringify(stOf().increments[1].outOfScope));
+  ok("scope: the plan's log records it", stOf().log.some(l => /out of scope: increment 2 edited README\.md/.test(typeof l === "string" ? l : JSON.stringify(l))));
+  cli("rehydrate", "admin-1");
+  const wh = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "admin-1.working.html"), "utf8");
+  ok("scope: the working page shows the paths", /edited outside this increment's files: <code>README\.md<\/code>, <code>notes\/todo\.md<\/code>/.test(wh));
+  r = cli("done", "admin-1", "2");
+  ok("scope: done names them", /edited outside increment 2's files: README\.md, notes\/todo\.md/.test(r.stdout), r.stdout + r.stderr);
+  cli("close", "admin-1");
 }
 
 // -------------------------------------------------- remote host: state in the repo, export and import

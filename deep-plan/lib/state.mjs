@@ -595,7 +595,39 @@ export function gateView(st) {
     return { allow: true, why: `every increment is done; the delivery review holds the plan open — deep-plan deliver ${st.slug}` };
   if (allDone) return { allow: true, why: "every increment is done" };
   if (p.open.length > 0) return { allow: true, why: "increment authorized" };
-  return { allow: false, why: "No increment is authorized — `deep-plan go` opens the next one." };
+  return { allow: false, between: true, why: "No increment is authorized — `deep-plan go` opens the next one." };
+}
+
+// Repo admin between increments: the plan's .seamux files (any project's)
+// and its ADR folder pass while no increment is open, so recipes, lessons and
+// ADR templates can be fixed between done and the next go. Product code stays
+// gated. The ADR folder is the one render resolved (st.adrDir) and those the
+// plan's ADRs land in.
+function adminPath(st, target) {
+  const rel = path.relative(canon(st.root), canon(target)).split(path.sep).join("/");
+  if (!rel || rel.startsWith("..")) return false;
+  if (/(^|\/)\.seamux(\/|$)/.test(rel)) return true;
+  const dirs = [st.adrDir, ...(st.adrs || []).map(a => a.dir)].filter(d => typeof d === "string" && d);
+  return dirs.some(d => { const x = d.replace(/\/+$/, ""); return rel === x || rel.startsWith(x + "/"); });
+}
+
+// Branch admin: every link is git switch, rebase, cherry-pick, push or fetch
+// (with -C or not), a cd, or a plain reader, and at least one is git admin.
+const BRANCH_ADMIN = /^\s*git\s+(-C\s+\S+\s+)*(switch|rebase|cherry-pick|push|fetch)\b/;
+export function branchAdmin(cmd) {
+  const bare = blankQuotes(cmd);
+  if (bare === null || /\$\(|`|[<>]/.test(bare.replace(/\d*>>?\s*\/dev\/null|\d+>&\d+/g, ""))) return false;
+  let git = false;
+  let at = 0;
+  const links = [];
+  for (const m of bare.matchAll(/&&|\|\||[;\n|]/g)) { links.push([cmd.slice(at, m.index), bare.slice(at, m.index)]); at = m.index + m[0].length; }
+  links.push([cmd.slice(at), bare.slice(at)]);
+  for (const [raw, b] of links) {
+    if (BRANCH_ADMIN.test(b)) { git = true; continue; }
+    if (/^\s*(cd(\s+[^\s;&|<>]+)?)?\s*$/.test(b) || plainReader(raw)) continue;
+    return false;
+  }
+  return git;
 }
 
 // realpath both sides: on macOS /tmp and /var are symlinks into /private, and
@@ -655,10 +687,13 @@ export function planFor(target) {
 
 // THE decision. Returns {allow, why, plan} for a write-shaped call at `target`.
 // Only paths inside a tracked plan's root are ever gated.
-export function mayEdit(target) {
+export function mayEdit(target, { admin = false } = {}) {
   const st = planFor(target);
   if (!st) return { allow: true, why: "no plan tracks this path", plan: null };
   const g = gateView(st);
+  if (!g.allow && g.between && admin) return { allow: true, why: "branch admin between increments", plan: st };
+  if (!g.allow && g.between && adminPath(st, target))
+    return { allow: true, why: "repo admin between increments (.seamux or the plan's ADR folder)", plan: st };
   return { allow: g.allow, why: g.why, plan: st };
 }
 
@@ -1514,14 +1549,19 @@ export function decideToolCall(toolName, input, cwd) {
     // Judged where it writes: each target, and the cwd only for a write whose
     // target cannot be read. A null (a cd into $X, then a write) is the cwd too.
     const here = cwd || process.cwd();
+    const admin = branchAdmin(scan);
     let targets;
     try { targets = bashWriteTargets(scan, here); } catch { targets = [here]; }
     if (!targets.length) return { allow: true, why: "not a write" };
+    let plan = null;
     for (const t of targets) {
-      const d = mayEdit(t === null ? here : t);
+      const d = mayEdit(t === null ? here : t, { admin });
       if (!d.allow) return d;
+      plan = plan || d.plan;
     }
-    return { allow: true, why: "writes only where no closed gate holds" };
+    // The plan it writes into, if any: decide.mjs marks the increment working
+    // and flags writes outside its files.
+    return { allow: true, why: "writes only where no closed gate holds", plan };
   }
   // Edit | Write | MultiEdit | NotebookEdit
   const target = (input && (input.file_path || input.notebook_path)) || "";
