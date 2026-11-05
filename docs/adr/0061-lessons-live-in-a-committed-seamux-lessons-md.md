@@ -4,7 +4,7 @@ Date: 2026-11-02
 
 ## Status
 
-Accepted
+Accepted. Amended by [0068](0068-seamux-files-resolve-to-the-branch-when-tracked-else-the-main-checkout.md): lessons.md is read where that rule resolves it, so in a repo that ignores .seamux it is main's untracked copy.
 
 ## Context
 

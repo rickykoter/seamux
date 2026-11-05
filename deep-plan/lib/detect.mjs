@@ -23,6 +23,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { resolveSeamux } from "./host.mjs";
 
 const MANIFESTS = ["package.json", "go.mod", "Cargo.toml", "pyproject.toml"];
 
@@ -220,7 +221,7 @@ export function detect(root) {
     const seen = new Map();
     for (const r of recipes) { const k = seen.get(r.id) || 0; seen.set(r.id, k + 1); if (k) r.id = `${r.id}-${k + 1}`; }
     return { dir, manifests, runners, hosts, recipes, aggregates, skipped,
-      existing: fs.existsSync(path.join(abs, ".seamux", "verify.json")) };
+      existing: fs.existsSync(resolveSeamux(abs, path.join(".seamux", "verify.json"), { warn: false }).path) };
   }).filter(p => p.dir === "" || p.manifests.length);
 
   return { root, packageManager: pm, workspaces, projects, ci,

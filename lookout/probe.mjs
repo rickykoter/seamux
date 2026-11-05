@@ -1021,6 +1021,20 @@ if (want("host detection")) {
   ok("host: the twin files match apart from the line naming the other copy",
     fs.readFileSync(path.join(HERE, "lib", "host.mjs"), "utf8").split("\n").slice(3).join("\n") ===
     fs.readFileSync(path.join(HERE, "..", "deep-plan", "lib", "host.mjs"), "utf8").split("\n").slice(3).join("\n"));
+  {
+    // .seamux/lookout.json in a repo that ignores .seamux: a worktree reads
+    // main's copy, not its own stale one (ADR 0068).
+    const T = await import("./lib/typesafe.mjs");
+    const M = fs.realpathSync(repo("seamux-ignored")), W = path.join(path.dirname(M), "seamux-ignored-wt");
+    write(M, ".gitignore", ".seamux/\n");
+    sh(M, `${G} add -A && ${G} commit -qm ignore && git worktree add -q -b wt ${JSON.stringify(W)}`);
+    write(M, ".seamux/lookout.json", JSON.stringify({ sendContent: true }));
+    write(W, ".seamux/lookout.json", JSON.stringify({ sendContent: false }));
+    ok("host: repoConfig in an ignoring repo's worktree reads main's lookout.json", T.repoConfig(W).sendContent === true);
+    ok("host: the twin resolvers agree on that worktree",
+      JSON.stringify(HOST.resolveSeamux(W, ".seamux/lookout.json", { warn: false })) ===
+      JSON.stringify(HOST_TWIN.resolveSeamux(W, ".seamux/lookout.json", { warn: false })));
+  }
   const r = spawnSync("node", [path.join(HERE, "lookout.mjs"), "engine"],
     { encoding: "utf8", env: { ...ENV, CMUX_WORKSPACE_ID: "W9" } });
   let j = {}; try { j = JSON.parse(r.stdout); } catch {}

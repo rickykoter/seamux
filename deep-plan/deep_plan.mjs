@@ -31,7 +31,8 @@ import { releaseClaims } from "./lib/claims.mjs";
 import { buildProof, withProof, ghCanAttach, gh } from "./lib/proof.mjs";
 import { readEvidence, evidenceSummary, newEvidenceDir, pruneEvidence, showTab, browserDriver } from "./lib/browser.mjs";
 import { detect, draftFile } from "./lib/detect.mjs";
-import { detectHost, hostLine, sessionIds } from "./lib/host.mjs";
+import { detectHost, hostLine, sessionIds, resolveSeamux } from "./lib/host.mjs";
+import { survey, writeOnlyHere, exportBundle, importBundle, diffText } from "./lib/consolidate.mjs";
 import * as SERVE from "./lib/serve.mjs";
 import * as SYNC from "./lib/sync.mjs";
 import { mergeStates, mergeFiles } from "./lib/merge.mjs";
@@ -711,7 +712,14 @@ function resolvePlanChecks(spec, root) {
   const bind = (c, r) => ({ ...c, recipe: r.key, hash: r.hash, source: r.source, scope: scopeFor(r),
     exec: { tier: r.tier, cwd: path.posix.join(r.project || ".", r.cwd), timeout: r.timeout, steps: r.steps,
       ...(r.brief ? { brief: r.brief } : {}),
-      ...(r.scripts && r.scripts.length ? { scripts: r.scripts.map(f => path.posix.join(r.project || ".", r.cwd, f)) } : {}) } });
+      ...(r.scripts && r.scripts.length ? { scripts: r.scripts.map(f => path.posix.join(r.project || ".", r.cwd, f)) } : {}),
+      // Set only when the recipe sets them, so stored state (and rehydrate)
+      // is unchanged for recipes without them; check run enforces them.
+      ...(r.uses && r.uses.length ? { uses: r.uses } : {}),
+      ...(r.env && Object.keys(r.env).length ? { env: r.env } : {}),
+      ...(r.prereqs && r.prereqs.length ? { prereqs: r.prereqs } : {}),
+      ...(r.sideEffects && r.sideEffects.length ? { sideEffects: r.sideEffects } : {}),
+      ...(r.noFix ? { noFix: true } : {}) } });
   const lists = (spec.deliverables || []).map((d, i) => {
     const label = `deliverable ${i + 1} ("${d.title}")`;
     const rows = planPaths(d).map(f => R.file(f)).filter(r => !r.outside);
@@ -763,6 +771,7 @@ function resolvePlanChecks(spec, root) {
     return out;
   });
   for (const e of R.errors()) errs.push(`recipe config ${e}`);
+  for (const w of R.warnings()) console.error(`deep-plan: warning: recipe config ${w}`);
   return { lists, errs };
 }
 
@@ -1981,10 +1990,14 @@ function workingHtml(spec, st, b64) {
     const checks = checksRow(inc, st.slug) || (d.waiver ? `<p class="dim">checks: none — waived: ${esc(d.waiver)}</p>` : "");
     // Per-deliverable commits: the record of what actually landed for this one.
     const dcommits = (d.commits || []).map(c => commitLi(c)).join("");
+    // Edits the gate let through outside this increment's files (decide.mjs).
+    const oos = (inc.outOfScope || []).length
+      ? `<p class="dim">edited outside this increment's files: ${inc.outOfScope.map(f => `<code>${esc(f)}</code>`).join(", ")}</p>` : "";
     return `<div class="inc" id="inc-${inc.n}" data-status="${esc(inc.status)}"><span class="st st-${esc(inc.status)}">${esc(inc.status)}</span>
 <b>${inc.n}. ${esc(inc.title)}</b>
 <p>${esc(d.body || "")}</p>
 ${files}
+${oos}
 ${dcommits ? `<ul class="dim">${dcommits}</ul>` : ""}
 ${checks}
 <p>${acts}</p></div>`;
@@ -2326,8 +2339,12 @@ async function render(specPath, opts) {
       authorizedAt: prev.authorizedAt || 0, startedAt: prev.startedAt || 0,
       doneAt: prev.doneAt || 0, note: prev.note || "", startSha: prev.startSha || "",
       // `obs` is the pre-checks verdict; reconcileChecks carries it over.
-      checks: reconcileChecks(prev, checkLists[i]), obs: undefined };
+      checks: reconcileChecks(prev, checkLists[i]), obs: undefined,
+      // The increment's own files, so the gate can flag an edit outside them.
+      files: planPaths(d) };
   });
+  // The ADR folder render resolved, which stays open between increments.
+  st.adrDir = resolveAdrDir(planRoot, loadAdrConfig(planRoot), (spec.deliverables || []).flatMap(planPaths)).dir;
   // Keep what apply recorded (applied path) for unchanged entries; a spec
   // edit that reorders or reworded a flagged decision re-resolves fresh.
   const oldAdrs = new Map((st.adrs || []).map(a => [a.decision, a]));
@@ -3026,6 +3043,8 @@ function transition(action, slug, n, why, force = false, { byHuman = false } = {
     incrementDiff(st, inc);
     say(`done ${slug} ${plan.n}` + (st.phase === "done" ? " — plan complete"
       : st.phase === "delivery" ? `\nevery increment is done; the full delivery is reviewed next: deep-plan deliver ${slug}` : ""));
+    if ((inc.outOfScope || []).length)
+      say(`  edited outside increment ${plan.n}'s files: ${inc.outOfScope.join(", ")} — amend the spec if they belong to it`);
     if (plan.forced)
       engineMiss(st, "force", `increment ${plan.n} was closed with done --force past ${plan.forced.map(c => `${c.id} (${c.status})`).join(", ")}: its proof was skipped`, plan.n);
     if ((st.phase === "done" || st.phase === "delivery") && unsettled(slug).length)
@@ -3805,7 +3824,10 @@ function retroCmd(args, flags) {
   const applies = () => String(flags.applies || "").split(",").map(s => s.trim()).filter(Boolean);
   const wrote = what => {
     const f = writeLessons(top, doc);
-    say(`${what}\n  wrote ${path.relative(process.cwd(), f) || f} (${doc.lessons.length}/${LESSON_CAP}); commit it with the plan's work`);
+    // In a repo that ignores .seamux the file is main's untracked copy (ADR 0068).
+    const where = path.relative(top, f).startsWith("..")
+      ? "the main checkout's copy, which git does not track here" : "commit it with the plan's work";
+    say(`${what}\n  wrote ${path.relative(process.cwd(), f) || f} (${doc.lessons.length}/${LESSON_CAP}); ${where}`);
   };
   if (!sub) {
     const rows = foldCandidates(slug), open = rows.filter(r => !r.settled);
@@ -4408,6 +4430,10 @@ function checkList(slug, n) {
     if (browserStep) say(`    script: ${browserStep.command}`);
     if (v.exec && v.exec.scripts && v.exec.scripts.length) say(`    setup:  ${v.exec.scripts.join(", ")}`);
     if (v.exec && v.exec.brief) say(`    brief:  ${v.exec.brief}`);
+    if (v.exec && v.exec.sideEffects) say(`    effects: ${v.exec.sideEffects.map(e => e.effect + (e.scope ? ` (${e.scope})` : "")).join(", ")}`);
+    if (v.exec && v.exec.prereqs) say(`    needs:  ${v.exec.prereqs.map(q => `${q.name} (probe: ${q.probe})`).join("; ")}`);
+    if (v.exec && v.exec.uses) say(`    locks:  ${v.exec.uses.map(u => `${u.resource} ${u.mode}`).join(", ")}`);
+    if (v.exec && v.exec.noFix) say(`    noFix:  fails if the run changes tracked files`);
     if (v.run) say(`    run:    ${v.run}`);
     if (v.query) say(`    query:  ${v.query}`);
     if (v.expect) say(`    expect: ${v.expect}`);
@@ -4495,7 +4521,10 @@ function runsDir(slug) {
 }
 const fileSafe = s => String(s).replace(/[^a-z0-9._-]+/gi, "_");
 const hasBrowserStep = exec => !!(exec && (exec.steps || []).some(s => s.kind === "browser"));
-const hasClaimStep = exec => !!(exec && (exec.steps || []).some(s => s.kind === "claim"));
+// A run that holds something (a claim, a uses lock, a ${slot}) runs detached
+// under CLAIM_RUNNER, so a signal still gives it back.
+const hasClaimStep = exec => !!(exec && ((exec.steps || []).some(s => s.kind === "claim") || (exec.uses || []).length ||
+  Object.values(exec.env || {}).some(v => String(v).includes("${slot}"))));
 const locksDir = () => path.join(PLANS_DIR, "locks");
 
 // The shell a detached claiming run lives under ($1 node, $2 engine, $3-$6
@@ -5220,6 +5249,7 @@ function verifyResolve(files, root, json) {
           `${r.inherited ? " (inherited from the root)" : ""}  ${stepsLine(r)}  #${r.hash}`);
     }
   }
+  for (const w of res.warnings || []) console.error("  ! " + w);
   if (res.errors.length) {
     for (const e of res.errors) console.error("  ✗ " + e);
     die(`verify: ${res.errors.length} config error(s) — a broken recipe file is never read as "no recipes"`);
@@ -5268,6 +5298,52 @@ function applyTemplate(tpl, project) {
   return r;
 }
 
+// `seamux consolidate` (lib/consolidate.mjs, ADR 0068): worktrees' untracked
+// .seamux files against main's, and a bundle for teammates.
+function seamuxConsolidate(root, opts) {
+  let out;
+  try {
+    if (opts.export) out = { export: exportBundle(root, opts.export) };
+    else if (opts.import) out = { import: importBundle(root, opts.import, { yes: !!opts.yes }) };
+    else {
+      const sv = survey(root) || die(`${root} is not in a git repo whose git dir is .git`);
+      out = { survey: sv, written: opts.write ? writeOnlyHere(sv) : [] };
+    }
+  } catch (e) { die(e.message); }
+  if (opts.json) { say(JSON.stringify(out, null, 2)); return; }
+  if (out.export) {
+    const x = out.export;
+    say(`exported ${x.files.length} file(s) from ${x.main} to ${x.base}`);
+    for (const f of x.files) say(`  ${f}`);
+    say(x.files.length ? "state/ and evidence/ were left out. Commit and push that repo yourself." : "nothing untracked under .seamux in the main checkout");
+    return;
+  }
+  if (out.import) {
+    const x = out.import, todo = x.rows.filter(r => r.status === "new" || r.status === "differs");
+    say(`import ${x.base} into ${x.main}`);
+    for (const r of x.rows) {
+      say(`  ${r.status.padEnd(8)} ${r.rel}`);
+      if (r.status === "differs" && !opts.yes) process.stdout.write(diffText(path.join(x.main, r.rel), path.join(x.base, r.rel)).replace(/^/gm, "    "));
+    }
+    if (!todo.length) say("nothing to import");
+    else if (opts.yes) say(`wrote ${x.written.length} file(s) into ${x.main}`);
+    else say(`dry run: nothing written. Show the person these ${todo.length} change(s); rerun with --yes only on their ok.`);
+    return;
+  }
+  const { survey: sv, written } = out;
+  say(`seamux consolidate: ${sv.worktrees.length} worktree(s) against ${sv.main}`);
+  const by = s => sv.rows.filter(r => r.status === s);
+  for (const r of by("only-here")) say(`  only-here ${path.relative(sv.main, r.worktree) || r.worktree}: ${r.rel}${r.copy ? "" : " (same as another worktree's)"}`);
+  for (const r of by("conflict")) say(`  conflict  ${r.worktree}: ${r.rel} (worktrees disagree and main has none; settle by hand)`);
+  for (const r of by("differs")) {
+    say(`  differs   ${r.worktree}: ${r.rel}`);
+    process.stdout.write(diffText(path.join(sv.main, r.rel), path.join(r.worktree, r.rel)).replace(/^/gm, "    "));
+  }
+  say(`  ${by("same").length} file(s) already match main's`);
+  if (opts.write) say(`wrote ${written.length} only-here file(s) into ${sv.main}; differing files are left for you to settle`);
+  else if (sv.rows.some(r => r.copy)) say("dry run: --write copies the only-here files into main (it never deletes or overwrites)");
+}
+
 function verifyInit(root, opts) {
   const det = detect(root);
   const extra = new Map();
@@ -5289,10 +5365,12 @@ function verifyInit(root, opts) {
   const written = [];
   if (opts.write) for (const d of drafts) {
     if (d.exists) continue;
-    const abs = path.join(det.root, d.path);
+    // Where the resolver reads it from (ADR 0068): main's folder in a
+    // worktree of a repo that ignores .seamux.
+    const abs = resolveSeamux(path.join(det.root, d.dir || "."), path.join(".seamux", "verify.json"), { warn: false }).path;
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.writeFileSync(abs, JSON.stringify(d.file, null, 2) + "\n");
-    written.push(d.path);
+    written.push(path.relative(det.root, abs).startsWith("..") ? abs : d.path);
   }
   if (opts.json) {
     process.stdout.write(JSON.stringify({ ...det, drafts, written, templatesAvailable: listTemplates(),
@@ -5495,6 +5573,8 @@ for (let i = 0; i < rest.length; i++) {
   else if (rest[i] === "--terminated") flags.terminated = true;
   else if (rest[i] === "--detach") flags.detach = true;
   else if (rest[i] === "--yes") flags.yes = true;
+  else if (rest[i] === "--export") flags.export = rest[++i] || die("--export needs a folder");
+  else if (rest[i] === "--import") flags.import = rest[++i] || die("--import needs a folder");
   else if (rest[i] === "--foreground") flags.foreground = true;
   else if (rest[i] === "--review") flags.review = true;
   else if (rest[i] === "--session") flags.session = true;
@@ -5790,6 +5870,12 @@ switch (cmd) {
     else die("verify resolve <file>... [--root DIR] [--json]  |  verify init [--root DIR] [--write] [--template name[@dir]]... [--json]");
     break;
   }
+  case "seamux": {
+    if (args[0] !== "consolidate")
+      die("seamux consolidate [--root DIR] [--write] [--json]  |  --export DIR  |  --import DIR [--yes]");
+    seamuxConsolidate(flags.root || gitRoot(process.cwd()) || process.cwd(), flags);
+    break;
+  }
   case "open-gate": {
     const st = readState(args[0]) || die("no plan " + args[0]);
     // Where it came from, without claiming who: the board and the plan pane run
@@ -6005,6 +6091,14 @@ switch (cmd) {
   family news [slug]                          what the news hook would tell that member
                                               (default: the one at the cwd) now; does
                                               not move its cursor
+  seamux consolidate [--root DIR] [--write]   every worktree's untracked .seamux files
+                     [--json]                 against main's: only-here, differs, same;
+                                              --write copies the only-here ones into
+                                              main, never deleting or overwriting
+  seamux consolidate --export DIR             main's untracked .seamux files (no state/,
+                                              evidence/) to DIR/<project>/ for teammates
+  seamux consolidate --import DIR [--yes]     show what DIR/<project>/ changes in main;
+                                              writes only with --yes, the person's ok
   verify resolve <file>... [--root DIR]       which .seamux/verify.json each file
                  [--json]                     lands on and the recipes that apply
   verify init [--root DIR] [--write]          draft .seamux/verify.json per project from

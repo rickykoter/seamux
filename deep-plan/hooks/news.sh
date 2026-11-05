@@ -97,8 +97,17 @@ if [ ! -e "$1" ]; then
     case ${payload:0:16384} in *'"hook_event_name":"SessionStart"'*|*'"hook_event_name": "SessionStart"'*) ;; *) exit 0 ;; esac
     re_cwd='"cwd"[[:space:]]*:[[:space:]]*"([^"]*)"'
     lcwd=""; [[ ${payload:0:16384} =~ $re_cwd ]] && lcwd=${BASH_REMATCH[1]}
-    ltop=$(git -C "${lcwd:-${CLAUDE_PROJECT_DIR:-$PWD}}" rev-parse --show-toplevel 2>/dev/null) || exit 0
-    [ -e "$ltop/.seamux/lessons.md" ] || exit 0
+    # The file is found by resolveSeamux's rule (lib/host.mjs, ADR 0068): the
+    # branch's when git tracks it, else the main checkout's (the shared
+    # .git's parent, as seamux_data_root finds it).
+    lgit=$(git -C "${lcwd:-${CLAUDE_PROJECT_DIR:-$PWD}}" rev-parse --path-format=absolute --show-toplevel --git-common-dir 2>/dev/null) || exit 0
+    ltop=${lgit%%$'\n'*}; lcommon=${lgit#*$'\n'}
+    case "$lcommon" in */.git) lmain=${lcommon%/.git} ;; *) lmain=$ltop ;; esac
+    lfile="$ltop/.seamux/lessons.md"
+    if [ "$lmain" != "$ltop" ] && ! git -C "$ltop" ls-files --error-unmatch -- .seamux/lessons.md >/dev/null 2>&1; then
+      lfile="$lmain/.seamux/lessons.md"
+    fi
+    [ -e "$lfile" ] || exit 0
   fi
 fi
 if [ -n "${DEEP_PLAN_SKILL_DIR:-}" ]; then HOOKS="$DEEP_PLAN_SKILL_DIR/hooks"

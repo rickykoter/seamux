@@ -66,6 +66,47 @@ export function takeLock(dir, name, { owner, until, every, log }) {
   }
 }
 
+// A recipe's `uses` entry: { resource, mode }. exclusive holds the
+// resource's lock for the run and first waits for shared holders to leave.
+// shared takes the resource's lock only long enough to leave a reader lock
+// beside it, so an exclusive holder blocks it while shared holders run side
+// by side. A clash waits; it never asks who goes first. Returns { ok, lock,
+// note }: `lock` is the name to drop when the run ends.
+export function takeUse(dir, u, { owner, until, every, log }) {
+  const l = takeLock(dir, u.resource, { owner, until, every, log });
+  if (!l.ok) return { ok: false, note: `gave up waiting on ${u.resource}` + (l.holder ? ` (held by pid ${l.holder.pid})` : l.error ? `: ${l.error}` : "") };
+  if (u.mode === "shared") {
+    const reader = `${u.resource}.r.${process.pid}`;
+    const r = takeLock(dir, reader, { owner, until: Date.now() + 5000, every: 50, log });
+    dropLock(dir, u.resource);
+    return r.ok ? { ok: true, lock: reader, waited: l.waited } : { ok: false, note: `could not take a shared lock on ${u.resource}` };
+  }
+  const prefix = lockName(u.resource).replace(/\.lock$/, "") + ".r.";
+  let told = false;
+  for (;;) {
+    let live = 0;
+    for (const f of safeList(dir).filter(f => f.startsWith(prefix) && f.endsWith(".lock"))) {
+      const h = readLock(path.join(dir, f));
+      if (h && alive(h.pid) && h.pid !== process.pid) live++;
+      else try { fs.rmSync(path.join(dir, f), { force: true }); } catch { /* gone */ }
+    }
+    if (!live) return { ok: true, lock: u.resource, waited: l.waited || told };
+    if (!told && log) log(`[lock ${u.resource}: waiting on ${live} shared holder(s)]\n`);
+    told = true;
+    if (Date.now() + every >= until) { dropLock(dir, u.resource); return { ok: false, note: `gave up waiting on ${live} shared holder(s) of ${u.resource}` }; }
+    sleep(every);
+  }
+}
+const safeList = d => { try { return fs.readdirSync(d); } catch { return []; } };
+
+// The lowest free slot, 1 to 64, held as the lock slot:<n> until the run
+// ends; 0 when all are taken. ${slot} in a recipe's env expands to it.
+export function takeSlot(dir, { owner, log }) {
+  for (let n = 1; n <= 64; n++)
+    if (takeLock(dir, `slot:${n}`, { owner, until: 0, every: 1 }).ok) { if (log) log(`[slot ${n} taken]\n`); return n; }
+  return 0;
+}
+
 export function dropLock(dir, name, pid = process.pid) {
   const f = path.join(dir, lockName(name));
   const h = readLock(f);

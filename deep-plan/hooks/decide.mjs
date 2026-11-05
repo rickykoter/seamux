@@ -10,7 +10,9 @@
 import fs from "node:fs";
 import { decideToolCall, readState, writeState, log1, brokenRoots, isOwner, ownerName,
   deepPlanCalls, tooLongForGate, humanLever, onHumansWord, trustOverride, humansWordCount, claimLever, markDenied, deniedThisTurn, promptApproves,
-  actedThisTurn } from "../lib/state.mjs";
+  actedThisTurn, bashWriteTargets, canon } from "../lib/state.mjs";
+import { matchesGlob } from "../lib/verify.mjs";
+import path from "node:path";
 import { trespass, waitingOn, waitText, goOwner } from "../lib/family.mjs";
 import { sessionIds } from "../lib/host.mjs";
 
@@ -135,6 +137,13 @@ if (d.allow) {
       }
     }
   }
+  // An owner's edit outside the open increment's files goes through, and is
+  // flagged: every such path is recorded on the increment (the working page
+  // and done show them), and the first one is named to the model once.
+  let scope = "";
+  if (st && owner && st.phase === "implementing") {
+    try { scope = outOfScope(st); } catch { /* the flag must never break the gate */ }
+  }
   // One JSON object on stdout, or none: Claude Code reads a single object.
   const out = {};
   // Loud fail-open: a tracked plan whose root vanished gates nothing, and
@@ -163,12 +172,39 @@ if (d.allow) {
     } catch { /* the guard must never break the gate */ }
   }
   // The model hears it too, or it carries on as if the plan were its own.
-  if (guest) {
-    const ctx = [out.hookSpecificOutput && out.hookSpecificOutput.additionalContext, guest].filter(Boolean).join("\n");
+  if (guest || scope) {
+    const ctx = [out.hookSpecificOutput && out.hookSpecificOutput.additionalContext, guest, scope].filter(Boolean).join("\n");
     out.hookSpecificOutput = { hookEventName: "PreToolUse", additionalContext: ctx };
   }
   if (Object.keys(out).length) process.stdout.write(JSON.stringify(out) + "\n");
   process.exit(0);
+}
+
+// The open increment's out-of-scope paths this call adds, recorded on it.
+// Returns the note for the model the first time the increment has any, else "".
+function outOfScope(st) {
+  const inc = (st.increments || []).find(i => i.status === "working" || i.status === "authorized");
+  if (!inc || !Array.isArray(inc.files) || !inc.files.length) return "";
+  const targets = tool === "Bash" ? bashWriteTargets(input.command || "", cwd).filter(Boolean)
+    : [input.file_path || input.notebook_path || ""].filter(Boolean);
+  const root = canon(st.root);
+  const rels = targets.map(t => path.relative(root, canon(path.resolve(cwd, t))).split(path.sep).join("/"))
+    .filter(r => r && !r.startsWith("..") && !path.isAbsolute(r));
+  const covered = r => inc.files.some(f => r === f || matchesGlob(r, f) || r.startsWith(f.replace(/\/+$/, "") + "/"));
+  const outside = [...new Set(rels.filter(r => !covered(r)))];
+  if (!outside.length) return "";
+  const fresh = readState(st.slug) || st;
+  const fi = (fresh.increments || []).find(i => i.n === inc.n);
+  if (!fi) return "";
+  const had = fi.outOfScope || [];
+  const add = outside.filter(r => !had.includes(r));
+  if (!add.length) return "";
+  fi.outOfScope = [...had, ...add];
+  log1(fresh, `out of scope: increment ${inc.n} edited ${add.join(", ")}, outside its files`);
+  try { writeState(fresh, { stamp: false }); } catch { /* the next edit records it */ }
+  if (had.length) return "";
+  return `deep-plan: ${add.join(", ")} is outside increment ${inc.n}'s files. The edit goes through, and the plan records it; ` +
+    `if it belongs to this increment, amend the spec (add the file) and re-render, otherwise file it with deep-plan note. (Said once per increment.)`;
 }
 
 // A guest's first write inside a plan's root, per session: a line in the

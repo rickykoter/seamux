@@ -6,7 +6,9 @@
 //               files one after a correction (`deep-plan lesson`), and the
 //               engine files one at a failed grade, a done --force, a review
 //               failing on an open blocker or major, and the retry cap.
-//   lessons     <repo>/.seamux/lessons.md, committed. Only `deep-plan retro`
+//   lessons     <repo>/.seamux/lessons.md, read where resolveSeamux points
+//               (ADR 0068): committed on the branch, or main's when the
+//               repo ignores .seamux. Only `deep-plan retro`
 //               writes it, one candidate at a time, kept, merged or dropped
 //               by a person. At most LESSON_CAP rules, so it stays readable.
 //
@@ -16,6 +18,7 @@
 //   settle  {id, at, by, settled: "keep"|"merge"|"drop", lesson?, why?}
 import fs from "node:fs";
 import path from "node:path";
+import { resolveSeamux } from "./host.mjs";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { STATE_DIR } from "./state.mjs";
@@ -99,7 +102,10 @@ export function repoTop(root) {
   const r = spawnSync("git", ["-C", root, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
   return r.status === 0 ? r.stdout.trim() : "";
 }
-export const lessonsFile = top => path.join(top, ".seamux", "lessons.md");
+// Where lessons.md is read and written: the branch's tracked file, else the
+// main checkout's (ADR 0068), so a retro in a worktree of a repo that ignores
+// .seamux lands in main's copy rather than one that dies with the worktree.
+export const lessonsFile = top => resolveSeamux(top, path.join(".seamux", "lessons.md"), { warn: false }).path;
 
 // {head, lessons: [{id, n, applies: [globs], from: [..], rule}]}. Anything
 // before the first `## L<n>` heading is kept as the head. A section whose
@@ -140,6 +146,7 @@ export function formatLessons({ head, lessons }) {
 
 export function readLessons(top) {
   let text = "";
+  resolveSeamux(top, path.join(".seamux", "lessons.md")); // warns once on a stale worktree copy
   try { text = fs.readFileSync(lessonsFile(top), "utf8"); } catch { return { head: "", lessons: [], exists: false }; }
   return { ...parseLessons(text), exists: true };
 }

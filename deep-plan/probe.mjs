@@ -1146,6 +1146,38 @@ ok("a write chained beside the CLI is still a write",
   bash("deep-plan status && rm -rf x").status === 2 &&
   bash("deep-plan diff slug > out.patch").status === 2 &&
   bash('deep-plan block slug 2 "$(rm -rf x)"').status === 2);
+// The gate judges a Bash write by where it writes, not by the cwd (ADR:
+// the gate judges Bash by where it writes). These are the misfires from the
+// survey of 94 refusals; the cases above still block.
+{
+  const out = path.join(TMP, "scratch-out");
+  const allowed = [
+    [`echo hi > ${out}/a.txt`, "a redirect outside the root"],
+    [`mkdir -p ${out}/x && cp a.txt ${out}/x/a.txt`, "a copy out of the root"],
+    [`cd ${out} && echo x > b.txt`, "a write after a cd out of the root"],
+    [`git -C ${out} commit -m x`, "a commit in another repo"],
+    [`tee ${out}/log < a.txt`, "tee outside the root"],
+    [`python3 - <<'EOF'\nimport json\nprint(json.dumps({"a": 1 > 0}))\nEOF`, "a heredoc fed to python that only reads"],
+    [`node - <<'EOF'\nconsole.log(1)\nEOF`, "a heredoc fed to node that only reads"],
+    ["git merge-base HEAD main", "git merge-base"],
+    ["git grep -ln foo", "git grep -ln"],
+    ["grep -ln foo src", "grep -ln"],
+    [`cat <<EOF > ${out}/notes.md\nhi > there\nEOF`, "a heredoc written outside the root"],
+  ];
+  for (const [c, what] of allowed) ok(`gate by target: ${what} is allowed`, bash(c).status === 0, bash(c).stderr);
+  const denied = [
+    [`echo hi > ${out}/a.txt && echo x > b.txt`, "a second write inside the root"],
+    [`cp ${out}/a.txt src/a.ts`, "a copy into the root"],
+    [`cd ${out} && cd ${REPO} && rm a.txt`, "a cd back into the root"],
+    [`git -C ${REPO} commit -m x`, "a commit naming the root with -C"],
+    [`python3 - <<'EOF'\nopen("x.txt", "w").write("1")\nEOF`, "a heredoc script that opens a file for writing"],
+    [`bash <<'EOF'\nrm -rf src\nEOF`, "a heredoc fed to bash that writes"],
+    ["cd $SOMEWHERE && rm x", "a write after a cd into a variable"],
+    [`mv a.txt ${out}/a.txt`, "a move out of the root (the source goes)"],
+    ["npm install", "a write with no readable target"],
+  ];
+  for (const [c, what] of denied) ok(`gate by target: ${what} is still refused`, bash(c).status === 2, bash(c).stderr);
+}
 
 // -------------------------------------------------- grade -> implementing
 r = cli("grade", spec.slug);
@@ -2885,8 +2917,10 @@ if (want("claim steps: engine-run acquisition")) {
   })());
 
   // Not the probe's own child: one it never waits on would linger as a zombie
-  // that kill(pid, 0) still finds, and the lock would never look free.
-  const holder = { pid: Number(execSync("sh -c 'sleep 2 >/dev/null 2>&1 & echo $!'", { encoding: "utf8" }).trim()) };
+  // that kill(pid, 0) still finds, and the lock would never look free. It
+  // lives 8 seconds: with 2, a loaded machine started the run after the
+  // holder had gone, and the wait this tests never happened.
+  const holder = { pid: Number(execSync("sh -c 'sleep 8 >/dev/null 2>&1 & echo $!'", { encoding: "utf8" }).trim()) };
   fs.mkdirSync(LOCKS, { recursive: true });
   fs.writeFileSync(path.join(LOCKS, "port_5432.lock"), JSON.stringify({ name: "port:5432", pid: holder.pid, slug: "other", n: "1", id: "db" }));
   r = cli("check", "run", "cl-1", "1", "lock");
@@ -4244,10 +4278,13 @@ if (want("owner: session and workspace")) {
   ok("the owner's pane after a /clear flips the increment to working, unwarned",
     g.status === 0 && !(g.stdout || "").includes("guest") && stOf("owner-3").increments[0].status === "working");
   ok("…and the gate's own write leaves the owner as it was", stOf("owner-3").owner.session === "sess-a");
-  const before3 = (stOf("owner-3").log || []).length;
+  // Guest lines only: an owner's edit outside the increment's files adds an
+  // out-of-scope line of its own, which is not a warning about who wrote it.
+  const guestLines = () => (stOf("owner-3").log || []).filter(l => /^guest:/.test(l.what)).length;
+  const before3 = guestLines();
   g = gateWho({ CMUX_WORKSPACE_ID: "ws-9", CMUX_SURFACE_ID: "pane-9999ffff" }, "sess-a", "d.txt");
   ok("the owner's session resumed in another pane is still the owner, unwarned",
-    g.status === 0 && !(g.stdout || "").includes("guest") && (stOf("owner-3").log || []).length === before3);
+    g.status === 0 && !(g.stdout || "").includes("guest") && guestLines() === before3);
 
   // Outside cmux the owner is its session.
   const ROOT4 = path.join(TMP, "owner-root-4");
@@ -5292,6 +5329,336 @@ if (want("host detection")) {
   const t = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "doctor"],
     { encoding: "utf8", env: { ...ENV, CLAUDE_CODE_ENTRYPOINT: "claude-desktop" }, cwd: REPO });
   ok("host: doctor prints a host line", /^host: desktop \(CLAUDE_CODE_ENTRYPOINT=claude-desktop\)$/m.test(t.stdout));
+}
+
+// -------------------------------------------------- .seamux files resolve to the branch or main (ADR 0068)
+if (want(".seamux resolution")) {
+  const SR = fs.realpathSync(fs.mkdtempSync(path.join(TMP, "seamux-res-")));
+  const sh = (cmd, cwd) => execSync(cmd, { cwd, stdio: "pipe", env: { ...ENV,
+    GIT_AUTHOR_NAME: "probe", GIT_AUTHOR_EMAIL: "probe@deep-plan", GIT_COMMITTER_NAME: "probe", GIT_COMMITTER_EMAIL: "probe@deep-plan" } });
+  const recipe = id => JSON.stringify({ recipes: [{ id, kind: "test", tier: "cheap", run: "true" }] });
+  const put = (f, s) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, s); };
+  const ids = dir => loadVerify(dir).recipes.map(r => r.id).join(",");
+
+  // A repo that commits .seamux: the branch's own edit is read.
+  const CM = path.join(SR, "committed"), CW = path.join(SR, "committed-wt");
+  fs.mkdirSync(CM);
+  sh("git init -q -b main", CM);
+  put(path.join(CM, ".seamux", "verify.json"), recipe("from-main"));
+  sh("git add -A && git commit -q -m init && git worktree add -q -b feat " + JSON.stringify(CW), CM);
+  put(path.join(CW, ".seamux", "verify.json"), recipe("from-branch"));
+  sh("git commit -qam branch-edit", CW);
+  const rc = HOST.resolveSeamux(CW, ".seamux/verify.json", { warn: false });
+  ok("seamux: a tracked file in a worktree is read from the branch", rc.from === "branch" && rc.path === path.join(CW, ".seamux", "verify.json"));
+  ok("seamux: load reads the branch's recipes in a committed repo", ids(CW) === "from-branch");
+  ok("seamux: the main checkout reads its own file", HOST.resolveSeamux(CM, ".seamux/verify.json", { warn: false }).from === "checkout" && ids(CM) === "from-main");
+
+  // A repo that ignores .seamux: a stale worktree copy is passed over for main's.
+  const IM = path.join(SR, "ignored"), IW = path.join(SR, "ignored-wt"), IW2 = path.join(SR, "ignored-wt2");
+  fs.mkdirSync(IM);
+  sh("git init -q -b main", IM);
+  put(path.join(IM, ".gitignore"), ".seamux/\nops/.seamux/\n");
+  put(path.join(IM, "ops", "app.rb"), "x\n");
+  sh("git add -A && git commit -q -m init", IM);
+  put(path.join(IM, ".seamux", "verify.json"), recipe("main-fresh"));
+  put(path.join(IM, ".seamux", "lessons.md"), "# Lessons\n\n## L1\napplies: **\nfrom: p\n\nmain's rule\n");
+  put(path.join(IM, ".seamux", "adr.json"), JSON.stringify({ dir: "docs/decisions" }));
+  put(path.join(IM, "ops", ".seamux", "verify.json"), recipe("ops-main"));
+  sh("git worktree add -q -b a " + JSON.stringify(IW) + " && git worktree add -q -b b " + JSON.stringify(IW2), IM);
+  put(path.join(IW, ".seamux", "verify.json"), recipe("wt-stale"));
+  put(path.join(IW2, ".seamux", "verify.json"), recipe("main-fresh"));
+  const ri = HOST.resolveSeamux(IW, ".seamux/verify.json", { warn: false });
+  ok("seamux: an untracked worktree copy resolves to main's", ri.from === "main" && ri.path === path.join(IM, ".seamux", "verify.json"));
+  ok("seamux: a stale untracked copy is named in a warning", /is not tracked and differs from the main checkout's copy/.test(ri.warning));
+  ok("seamux: a copy matching main's gives no warning", HOST.resolveSeamux(IW2, ".seamux/verify.json", { warn: false }).warning === "");
+  ok("seamux: load reads main's recipes, not the stale copy", ids(IW) === "main-fresh");
+  ok("seamux: a worktree with no copy at all reads main's", HOST.resolveSeamux(IW2, ".seamux/adr.json", { warn: false }).path === path.join(IM, ".seamux", "adr.json"));
+  const lessonsLib2 = await import("./lib/lessons.mjs"), { readLessons } = lessonsLib2;
+  ok("seamux: lessons in an ignoring repo are main's", readLessons(IW).lessons.map(l => l.rule).join() === "main's rule");
+  const alib2 = await import("./lib/adr.mjs");
+  ok("seamux: adr.json in an ignoring repo is main's", alib2.loadAdrConfig(IW).dir === "docs/decisions");
+
+  // A nested project folder maps to the same relative path in main.
+  const rn = HOST.resolveSeamux(path.join(IW, "ops"), ".seamux/verify.json", { warn: false });
+  ok("seamux: a nested project's file maps to main's same folder", rn.from === "main" && rn.path === path.join(IM, "ops", ".seamux", "verify.json"));
+  const landing = resolveFiles(IW, ["ops/app.rb"]);
+  ok("seamux: a nested file lands on its project's config read from main",
+    landing.files[0].config === "ops/.seamux/verify.json" && landing.recipes.map(r => r.id).join() === "ops-main,main-fresh",
+    JSON.stringify(landing.files[0]));
+
+  // Writes follow the same rule (increment 2): retro's lessons, verify init,
+  // and the news hook's check for a lessons file.
+  ok("seamux: lessonsFile in an ignoring repo's worktree is main's", lessonsLib2.lessonsFile(IW) === path.join(IM, ".seamux", "lessons.md"));
+  lessonsLib2.writeLessons(IW, { head: "", lessons: [{ id: "L1", n: 1, applies: ["**"], from: ["p"], rule: "written from a worktree" }] });
+  ok("seamux: writeLessons from a worktree lands in main's copy",
+    /written from a worktree/.test(fs.readFileSync(path.join(IM, ".seamux", "lessons.md"), "utf8")) && !fs.existsSync(path.join(IW, ".seamux", "lessons.md")));
+  const heard = spawnSync("bash", [path.join(HERE, "hooks", "news.sh")], { encoding: "utf8",
+    env: { ...ENV, DEEP_PLAN_STATE_DIR: path.join(SR, "empty-state"), CLAUDE_PROJECT_DIR: IW },
+    input: JSON.stringify({ hook_event_name: "SessionStart", cwd: IW, session_id: "seamux-res" }) });
+  ok("seamux: the news hook tells main's lessons in a worktree with no copy", /written from a worktree/.test(heard.stdout), heard.stdout.slice(0, 300) + heard.stderr);
+  const JM = path.join(SR, "init"), JW = path.join(SR, "init-wt");
+  fs.mkdirSync(JM);
+  sh("git init -q -b main", JM);
+  put(path.join(JM, ".gitignore"), ".seamux/\n");
+  put(path.join(JM, "package.json"), JSON.stringify({ name: "x", scripts: { test: "node --test" } }));
+  sh("git add -A && git commit -q -m init && git worktree add -q -b w " + JSON.stringify(JW), JM);
+  const vi = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "verify", "init", "--root", JW, "--write", "--json"], { encoding: "utf8", env: ENV, cwd: JW });
+  let vij = {}; try { vij = JSON.parse(vi.stdout); } catch {}
+  ok("seamux: verify init --write in a worktree writes main's verify.json",
+    fs.existsSync(path.join(JM, ".seamux", "verify.json")) && !fs.existsSync(path.join(JW, ".seamux", "verify.json")) &&
+    (vij.written || []).includes(path.join(JM, ".seamux", "verify.json")), vi.stderr + vi.stdout.slice(0, 300));
+  const vi2 = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "verify", "init", "--root", JW, "--json"], { encoding: "utf8", env: ENV, cwd: JW });
+  let vij2 = {}; try { vij2 = JSON.parse(vi2.stdout); } catch {}
+  ok("seamux: …and then counts main's file as the worktree's existing config", (vij2.drafts || []).every(d => d.exists) && (vij2.drafts || []).length > 0, vi2.stdout.slice(0, 300));
+
+  // Outside git, the path is used as given.
+  const NG = path.join(SR, "no-git");
+  fs.mkdirSync(NG);
+  ok("seamux: outside git the path is as given", HOST.resolveSeamux(NG, ".seamux/x.json").from === "checkout");
+  ok("seamux: the deep-plan and lookout copies agree", JSON.stringify(HOST_TWIN.resolveSeamux(IW, ".seamux/verify.json", { warn: false })) === JSON.stringify(ri));
+}
+
+// -------------------------------------------------- seamux consolidate, export and import
+if (want("seamux consolidate")) {
+  const CR = fs.realpathSync(fs.mkdtempSync(path.join(TMP, "consolidate-")));
+  const sh = (cmd, cwd) => execSync(cmd, { cwd, stdio: "pipe", env: { ...ENV,
+    GIT_AUTHOR_NAME: "probe", GIT_AUTHOR_EMAIL: "probe@deep-plan", GIT_COMMITTER_NAME: "probe", GIT_COMMITTER_EMAIL: "probe@deep-plan" } });
+  const put = (f, s) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, s); };
+  const cons = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "seamux", "consolidate", ...a], { encoding: "utf8", env: ENV, cwd: CR });
+  const M = path.join(CR, "main"), W1 = path.join(CR, "w1"), W2 = path.join(CR, "w2"), W3 = path.join(CR, "w3");
+  fs.mkdirSync(M);
+  sh("git init -q -b main", M);
+  put(path.join(M, ".gitignore"), ".seamux/\nops/.seamux/\n");
+  put(path.join(M, "ops", "app.rb"), "x\n");
+  sh("git add -A && git commit -q -m init", M);
+  for (const [w, b] of [[W1, "a"], [W2, "b"], [W3, "c"]]) sh(`git worktree add -q -b ${b} ${JSON.stringify(w)}`, M);
+  put(path.join(M, ".seamux", "verify.json"), "main\n");
+  put(path.join(M, ".seamux", "lessons.md"), "main lessons\n");
+  put(path.join(M, ".seamux", "state", "x.json"), "local\n");
+  put(path.join(W1, ".seamux", "verify.json"), "main\n");
+  put(path.join(W1, ".seamux", "lessons.md"), "w1 lessons\n");
+  put(path.join(W1, ".seamux", "restack.json"), "w1 only\n");
+  put(path.join(W1, "ops", ".seamux", "verify.json"), "ops w1\n");
+  put(path.join(W1, ".seamux", "evidence", "shot.png"), "png\n");
+  put(path.join(W2, ".seamux", "adr.json"), "two\n");
+  put(path.join(W3, ".seamux", "adr.json"), "three\n");
+
+  let r = cons("--root", W1, "--json");
+  let j = {}; try { j = JSON.parse(r.stdout); } catch {}
+  const st = (w, rel) => ((j.survey || { rows: [] }).rows.find(x => x.worktree === w && x.rel === rel) || {}).status;
+  ok("consolidate: a file main lacks is only-here, nested projects too",
+    st(W1, ".seamux/restack.json") === "only-here" && st(W1, "ops/.seamux/verify.json") === "only-here", r.stdout.slice(0, 400) + r.stderr);
+  ok("consolidate: matching and differing files are told apart", st(W1, ".seamux/verify.json") === "same" && st(W1, ".seamux/lessons.md") === "differs");
+  ok("consolidate: worktrees that disagree on a file main lacks are a conflict", st(W2, ".seamux/adr.json") === "conflict" && st(W3, ".seamux/adr.json") === "conflict");
+  ok("consolidate: state/ and evidence/ are never listed", !(j.survey || { rows: [] }).rows.some(x => /\/(state|evidence)\//.test(x.rel)));
+  ok("consolidate: a dry run writes nothing", !fs.existsSync(path.join(M, ".seamux", "restack.json")) && (j.written || []).length === 0);
+  r = cons("--root", W1);
+  ok("consolidate: the text view shows a differing file's diff", /differs .*\.seamux\/lessons\.md/.test(r.stdout) && /^\s+\+w1 lessons$/m.test(r.stdout), r.stdout);
+  r = cons("--root", W1, "--write");
+  ok("consolidate --write: only-here files land in main",
+    fs.readFileSync(path.join(M, ".seamux", "restack.json"), "utf8") === "w1 only\n" &&
+    fs.readFileSync(path.join(M, "ops", ".seamux", "verify.json"), "utf8") === "ops w1\n", r.stdout + r.stderr);
+  ok("consolidate --write: a differing file and a conflict are left alone, nothing deleted",
+    fs.readFileSync(path.join(M, ".seamux", "lessons.md"), "utf8") === "main lessons\n" && !fs.existsSync(path.join(M, ".seamux", "adr.json")) &&
+    fs.existsSync(path.join(W1, ".seamux", "restack.json")) && fs.existsSync(path.join(W2, ".seamux", "adr.json")));
+
+  const B = path.join(CR, "bundle");
+  r = cons("--root", W2, "--export", B);
+  const P = path.join(B, "main");
+  ok("consolidate --export: main's untracked files go to <dir>/<project>/",
+    fs.readFileSync(path.join(P, ".seamux", "lessons.md"), "utf8") === "main lessons\n" && fs.existsSync(path.join(P, "ops", ".seamux", "verify.json")), r.stdout + r.stderr);
+  ok("consolidate --export: state/ is left out", !fs.existsSync(path.join(P, ".seamux", "state")));
+
+  // A teammate's checkout of the same project name.
+  const T = path.join(CR, "team", "main");
+  fs.mkdirSync(T, { recursive: true });
+  sh("git init -q -b main", T);
+  put(path.join(T, ".gitignore"), ".seamux/\nops/.seamux/\n");
+  sh("git add -A && git commit -q -m init", T);
+  put(path.join(T, ".seamux", "lessons.md"), "teammate lessons\n");
+  const consT = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "seamux", "consolidate", "--root", T, ...a], { encoding: "utf8", env: ENV, cwd: T });
+  r = consT("--import", B);
+  ok("consolidate --import: shows new and differing files with a diff, and writes nothing",
+    /new\s+\.seamux\/verify\.json/.test(r.stdout) && /differs\s+\.seamux\/lessons\.md/.test(r.stdout) && /^\s+\+main lessons$/m.test(r.stdout) &&
+    /rerun with --yes only on their ok/.test(r.stdout) && !fs.existsSync(path.join(T, ".seamux", "verify.json")), r.stdout + r.stderr);
+  r = consT("--import", B, "--yes");
+  ok("consolidate --import --yes: writes the bundle into main",
+    fs.readFileSync(path.join(T, ".seamux", "verify.json"), "utf8") === "main\n" &&
+    fs.readFileSync(path.join(T, ".seamux", "lessons.md"), "utf8") === "main lessons\n", r.stdout + r.stderr);
+  r = consT("--import", path.join(CR, "nowhere"));
+  ok("consolidate --import: a folder with no bundle for this project is refused", r.status !== 0 && /no bundle for main/.test(r.stderr), r.stderr);
+}
+
+// -------------------------------------------------- recipe fields: uses, env, prereqs, sideEffects, noFix, evidence
+if (want("recipe fields: uses, env, prereqs, sideEffects, noFix, evidence")) {
+  const SC = path.join(TMP, "schema-root");
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  fs.mkdirSync(path.join(SC, ".seamux"), { recursive: true });
+  execSync(`git init -q && ${G} commit -q --allow-empty -m init`, { cwd: SC });
+  const putCfg = obj => fs.writeFileSync(path.join(SC, ".seamux", "verify.json"), JSON.stringify(obj, null, 2));
+  const one = r => { putCfg({ recipes: [{ id: "x", run: "true", ...r }] }); return loadVerify(SC); };
+  const errOf = r => one(r).errors.join("; ");
+
+  const full = { uses: [{ resource: "port:5432", mode: "exclusive" }, { resource: "redis" }],
+    env: { DB: "test_${worktree}_${slot}" }, prereqs: [{ name: "Postgres", probe: "pg_isready" }],
+    sideEffects: ["writes-db", { effect: "kills-process", scope: "this worktree's puma" }], noFix: true, evidence: "CI: ci.yml:12" };
+  let c = one(full);
+  const r0 = c.recipes[0];
+  ok("fields: a recipe with all six loads clean", c.errors.length === 0 && c.warnings.length === 0, c.errors.join("; "));
+  ok("fields: a uses entry with no mode is exclusive", r0.uses[1].mode === "exclusive");
+  ok("fields: a sideEffect name becomes { effect }", r0.sideEffects[0].effect === "writes-db" && r0.sideEffects[1].scope === "this worktree's puma");
+  ok("fields: a bad uses mode is refused", /mode must be exclusive or shared/.test(errOf({ uses: [{ resource: "db", mode: "both" }] })));
+  ok("fields: a uses entry needs a resource name", /needs a resource/.test(errOf({ uses: ["db"] })));
+  ok("fields: an unknown env token is refused", /the tokens are \$\{worktree\} and \$\{slot\}/.test(errOf({ env: { A: "${branch}" } })));
+  ok("fields: an env name must be an env var name", /env name "a-b"/.test(errOf({ env: { "a-b": "x" } })));
+  ok("fields: a prereq needs a name and a probe", /prereq 1 needs a name and a probe/.test(errOf({ prereqs: [{ name: "pg" }] })));
+  ok("fields: a sideEffect outside the list is refused", /must be one of writes-db/.test(errOf({ sideEffects: ["deletes-prod"] })));
+  ok("fields: kills-process needs a scope", /kills-process needs a scope/.test(errOf({ sideEffects: ["kills-process"] })));
+  ok("fields: noFix must be a boolean", /noFix must be true or false/.test(errOf({ noFix: "yes" })));
+  ok("fields: evidence may be a list of strings", errOf({ evidence: ["a", "b"] }) === "" && /evidence must be/.test(errOf({ evidence: 3 })));
+  c = one({ evidnce: "typo", $comment: "fine" });
+  ok("fields: an unknown field warns, naming the recipe; a $ key does not", c.errors.length === 0 &&
+    c.warnings.length === 1 && /recipe "x": unknown field "evidnce" is ignored/.test(c.warnings[0]), c.warnings.join("; "));
+  const vr = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "verify", "resolve", "src/a.ts", "--root", SC], { encoding: "utf8", env: ENV, cwd: SC });
+  ok("fields: verify resolve prints the warning with the file", /! \.seamux\/verify\.json: recipe "x": unknown field "evidnce"/.test(vr.stderr), vr.stderr);
+
+  // Hashes: unset fields leave a recipe's hash as it was; set ones change it; evidence never does.
+  const h = r => recipeHash(one(r).recipes[0], "");
+  const base = h({});
+  ok("fields: a recipe without the fields keeps its hash, empty values included",
+    h({ uses: [], env: {}, prereqs: [], sideEffects: [], noFix: false }) === base &&
+    recipeHash(one({}).recipes[0], "") === recipeHash({ ...one({}).recipes[0], uses: undefined, env: undefined, prereqs: undefined, sideEffects: undefined, noFix: undefined, evidence: undefined }, ""), base);
+  ok("fields: each field that changes a run changes the hash",
+    ["uses", "env", "prereqs", "sideEffects", "noFix"].every(k => h({ [k]: full[k] }) !== base));
+  ok("fields: evidence is never hashed", h({ evidence: "CI: ci.yml:12" }) === base && h({ evidence: ["x"] }) === base);
+
+  // check list shows what a run needs and does.
+  putCfg({ recipes: [{ id: "x", run: "true", default: true, ...full }] });
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "fields-1";
+  s.deliverables[0] = { title: "A sweep", body: "A timer job.", files: ["src/a.ts"], checks: [{ id: "x", kind: "test", name: "x", recipe: "x" }] };
+  const rr = cli("render", tmpSpec(s), "--root", SC);
+  const st = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, "fields-1.json"), "utf8"));
+  const ex = (st.increments[0].checks.x || {}).exec || {};
+  ok("fields: render stores the fields with the check", rr.status === 0 && ex.uses && ex.env && ex.prereqs && ex.sideEffects && ex.noFix === true, rr.stderr.slice(0, 400));
+  const ls = cli("check", "list", "fields-1", "1").stdout;
+  ok("fields: check list shows side effects, prereqs, locks and noFix",
+    /effects: writes-db, kills-process \(this worktree's puma\)/.test(ls) && /needs:  Postgres \(probe: pg_isready\)/.test(ls) &&
+    /locks:  port:5432 exclusive, redis exclusive/.test(ls) && /noFix:  fails if the run changes tracked files/.test(ls), ls);
+  cli("close", "fields-1");
+}
+
+// -------------------------------------------------- check run enforces prereqs, uses, env and noFix
+if (want("check run enforces prereqs, uses, env and noFix")) {
+  const { runExec } = await import("./lib/runner.mjs");
+  const ER = fs.realpathSync(fs.mkdtempSync(path.join(TMP, "enforce-")));
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  fs.writeFileSync(path.join(ER, "tracked.txt"), "one\n");
+  fs.writeFileSync(path.join(ER, "dirty.txt"), "one\n");
+  execSync(`git init -q && git add -A && ${G} commit -q -m init`, { cwd: ER });
+  fs.writeFileSync(path.join(ER, "dirty.txt"), "edited before the run\n");
+  const LK = path.join(ER, "locks");
+  let n = 0;
+  const run = (exec, held = []) => {
+    const log = path.join(ER, `run-${++n}.log`);
+    const r = runExec({ cwd: ".", timeout: 30, steps: [{ kind: "run", command: "true" }], ...exec },
+      { root: ER, log, claim: { locksDir: LK, owner: { slug: "p", n: "1", id: "x" }, hooks: { held: h => held.push(...h) } } });
+    return { ...r, text: fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "" };
+  };
+  const locks = () => (fs.existsSync(LK) ? fs.readdirSync(LK) : []).filter(f => f.endsWith(".lock"));
+  const holder = secs => Number(execSync(`sh -c 'sleep ${secs} >/dev/null 2>&1 & echo $!'`, { encoding: "utf8" }).trim());
+
+  let r = run({ prereqs: [{ name: "Postgres", probe: "exit 3" }], uses: [{ resource: "port:5432", mode: "exclusive" }] });
+  ok("enforce: a missing prereq fails the run by name, before any lock", r.status === "fail" &&
+    /prereq Postgres is not up: exit 3 exited 3/.test(r.note) && locks().length === 0, r.note);
+  r = run({ prereqs: [{ name: "shell", probe: "true" }], env: { DB: "test_${worktree}_${slot}", PLAIN: "x" },
+    steps: [{ kind: "run", command: 'echo "db=$DB plain=$PLAIN"' }] });
+  ok("enforce: env reaches the steps with ${worktree} and ${slot} expanded", r.status === "pass" &&
+    new RegExp(`db=test_${path.basename(ER)}_1 plain=x`).test(r.text), r.text);
+  ok("enforce: the slot is given back when the run ends", locks().length === 0, locks().join());
+
+  // exclusive waits on a live exclusive holder, and says who.
+  fs.mkdirSync(LK, { recursive: true });
+  const h1 = holder(3);
+  fs.writeFileSync(path.join(LK, "port_5432.lock"), JSON.stringify({ name: "port:5432", pid: h1, slug: "other", n: "2", id: "db" }));
+  const held = [];
+  r = run({ uses: [{ resource: "port:5432", mode: "exclusive" }] }, held);
+  ok("enforce: an exclusive use waits for the holder, naming it, then runs", r.status === "pass" &&
+    new RegExp(`waiting on pid ${h1} \\(other 2 db\\)`).test(r.text) && /lock port:5432 \(exclusive\) taken after waiting/.test(r.text), r.text);
+  ok("enforce: the lock is recorded as held while it runs, and released after", held.some(c => c.lock === "port:5432") && locks().length === 0, locks().join());
+
+  // shared runs beside another shared holder; exclusive waits for the readers.
+  const h2 = holder(3);
+  fs.writeFileSync(path.join(LK, `redis.r.${h2}.lock`), JSON.stringify({ name: `redis.r.${h2}`, pid: h2 }));
+  const t0 = Date.now();
+  r = run({ uses: [{ resource: "redis", mode: "shared" }] });
+  ok("enforce: a shared use runs beside another shared holder without waiting", r.status === "pass" && Date.now() - t0 < 2500 && !/waiting/.test(r.text), r.text);
+  r = run({ uses: [{ resource: "redis", mode: "exclusive" }] });
+  ok("enforce: an exclusive use waits for shared holders to leave", r.status === "pass" && /waiting on 1 shared holder/.test(r.text), r.text);
+  ok("enforce: …and every lock is gone after", locks().length === 0, locks().join());
+  r = run({ uses: [{ resource: "port:5432", mode: "exclusive" }], steps: [{ kind: "run", command: "exit 4" }] });
+  ok("enforce: a failed run releases its locks too", r.status === "fail" && locks().length === 0, locks().join());
+
+  // noFix: a run that rewrites tracked files fails, naming them.
+  r = run({ noFix: true, steps: [{ kind: "run", command: "echo two >> tracked.txt" }] });
+  ok("enforce: noFix fails a run that changes a tracked file, naming it", r.status === "fail" && /noFix: the run changed tracked files: tracked\.txt/.test(r.note), r.note);
+  r = run({ noFix: true, steps: [{ kind: "run", command: "echo again >> dirty.txt" }] });
+  ok("enforce: noFix sees a change to a file already edited before the run", r.status === "fail" && /dirty\.txt/.test(r.note), r.note);
+  r = run({ noFix: true, steps: [{ kind: "run", command: "cat tracked.txt dirty.txt >/dev/null; echo new > untracked.txt" }] });
+  ok("enforce: noFix passes a run that leaves tracked files alone, earlier edits included", r.status === "pass", r.note);
+  r = run({ steps: [{ kind: "run", command: "echo three >> tracked.txt" }] });
+  ok("enforce: without noFix, a rewrite is not judged", r.status === "pass", r.note);
+}
+
+// -------------------------------------------------- repo admin between increments; out-of-scope edits flagged
+if (want("repo admin between increments; out-of-scope edits flagged")) {
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  const AD = fs.realpathSync(fs.mkdtempSync(path.join(TMP, "admin-")));
+  fs.mkdirSync(path.join(AD, "src"), { recursive: true });
+  fs.writeFileSync(path.join(AD, "src", "a.ts"), "export const a = 1;\n");
+  execSync(`git init -q && git add -A && ${G} commit -q -m init`, { cwd: AD });
+  const s = JSON.parse(JSON.stringify(spec));
+  s.slug = "admin-1";
+  s.deliverables = [
+    { title: "First", body: "One.", files: ["src/a.ts"], waiver: "probe" },
+    { title: "Second", body: "Two.", files: ["src/a.ts", "src/lib/**"], waiver: "probe" }];
+  s.verifiedFacts = [...(s.verifiedFacts || []), { claim: "a exists", evidence: "src/a.ts:1" }];
+  const rr = cli("render", tmpSpec(s), "--root", AD);
+  const SF = path.join(ENV.DEEP_PLAN_STATE_DIR, "admin-1.json");
+  const stOf = () => JSON.parse(fs.readFileSync(SF, "utf8"));
+  const put = f => { const st = stOf(); f(st); fs.writeFileSync(SF, JSON.stringify(st)); };
+  ok("admin: render stores each increment's files and the ADR folder",
+    rr.status === 0 && stOf().increments[1].files.join() === "src/a.ts,src/lib/**" && typeof stOf().adrDir === "string", rr.stderr.slice(0, 300));
+  const adr = stOf().adrDir;
+  put(st => { st.phase = "implementing"; st.increments[0].status = "done"; st.increments[1].status = "pending"; });
+  const e = p => edit(path.join(AD, p)).status, b = c => gate("Bash", { command: c }, AD).status;
+  ok("admin: between increments, .seamux files pass, nested projects too", e(".seamux/verify.json") === 0 && e("ops/.seamux/lessons.md") === 0);
+  ok("admin: between increments, the plan's ADR folder passes", e(`${adr}/0001-x.md`) === 0, adr);
+  ok("admin: between increments, product code stays gated", e("src/a.ts") === 2 && b("echo x > src/b.ts") === 2);
+  ok("admin: between increments, branch admin passes",
+    b("git switch -c next") === 0 && b("git fetch origin && git rebase origin/main") === 0 && b("git push -u origin HEAD 2>&1 | tail -2") === 0 && b("git cherry-pick abc123") === 0);
+  ok("admin: …but not a write chained beside it, nor a commit", b("git switch next && rm src/a.ts") === 2 && b("git commit -m x") === 2);
+  ok("admin: a Bash write into .seamux passes too", b("echo '{}' > .seamux/restack.json") === 0);
+  put(st => { st.phase = "review"; });
+  ok("admin: in review the carve-outs do not apply", e(".seamux/verify.json") === 2 && b("git switch -c next") === 2);
+
+  // An open increment: an edit outside its files goes through and is flagged.
+  put(st => { st.phase = "implementing"; st.increments[1].status = "working"; });
+  const ctx = r => { try { return JSON.parse(r.stdout).hookSpecificOutput.additionalContext || ""; } catch { return ""; } };
+  let r = edit(path.join(AD, "src", "lib", "x.ts"));
+  ok("scope: an edit inside the increment's files says nothing", r.status === 0 && !/outside increment/.test(ctx(r)) && !stOf().increments[1].outOfScope);
+  r = edit(path.join(AD, "README.md"));
+  ok("scope: the first edit outside them goes through, named once", r.status === 0 && /README\.md is outside increment 2's files/.test(ctx(r)), r.stdout);
+  r = gate("Bash", { command: "echo x > notes/todo.md" }, AD);
+  ok("scope: a later one, by Bash too, is recorded without a word", r.status === 0 && !/outside increment/.test(ctx(r)) &&
+    stOf().increments[1].outOfScope.join() === "README.md,notes/todo.md", JSON.stringify(stOf().increments[1].outOfScope));
+  ok("scope: the plan's log records it", stOf().log.some(l => /out of scope: increment 2 edited README\.md/.test(typeof l === "string" ? l : JSON.stringify(l))));
+  cli("rehydrate", "admin-1");
+  const wh = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "admin-1.working.html"), "utf8");
+  ok("scope: the working page shows the paths", /edited outside this increment's files: <code>README\.md<\/code>, <code>notes\/todo\.md<\/code>/.test(wh));
+  r = cli("done", "admin-1", "2");
+  ok("scope: done names them", /edited outside increment 2's files: README\.md, notes\/todo\.md/.test(r.stdout), r.stdout + r.stderr);
+  cli("close", "admin-1");
 }
 
 // -------------------------------------------------- remote host: state in the repo, export and import

@@ -25,7 +25,8 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { runBrowser } from "./browser.mjs";
-import { runClaim, releaseClaims } from "./claims.mjs";
+import crypto from "node:crypto";
+import { runClaim, releaseClaims, takeUse, takeSlot } from "./claims.mjs";
 
 export const TAIL_LINES = 20;
 
@@ -110,6 +111,49 @@ export function runExec(exec, { root, from = "", log = "", env = {}, browser = {
     return { status, note, ran: { ms: Date.now() - started, log, ...extra } };
   };
   if (!fs.existsSync(cwd)) return done("fail", `the recipe's cwd ${exec.cwd} does not exist`, { code: -1 });
+
+  // What the recipe needs before anything runs (verify.mjs documents the
+  // fields): its prereqs probed, its shared resources locked, a slot taken
+  // when its env asks for one. Locks and the slot are held like a claim's
+  // lock, so `done` and `check release` give them back.
+  for (const q of exec.prereqs || []) {
+    append(log, `\n[prereq ${q.name}]`);
+    const p = sh(cwd, q.probe, { timeout: 60, log, env: vars });
+    if (!p.ok) return done("fail", `prereq ${q.name} is not up: ${q.probe} ${p.timedOut ? "timed out" : `exited ${p.code}`}`,
+      { code: p.code, tail: p.out, prereq: q.name });
+  }
+  const hold = name => {
+    const c = { release: "", lock: name, name: "", value: "", env: {} };
+    held.push(c);
+    if (claim.hooks && claim.hooks.held) claim.hooks.held(held);
+  };
+  const owner = claim.owner || {};
+  if ((exec.uses || []).length && !claim.locksDir) return done("fail", "the recipe uses shared resources, and this run has no locks folder", { code: -1 });
+  for (const u of exec.uses || []) {
+    const until = Date.now() + (exec.timeout || 900) * 1000;
+    const got = takeUse(claim.locksDir, u, { owner, until, every: 2000, log: t => append(log, t) });
+    if (!got.ok) return done("fail", `${u.mode} lock on ${u.resource}: ${got.note}`, { code: -1 });
+    append(log, `[lock ${u.resource} (${u.mode}) taken${got.waited ? " after waiting" : ""}]\n`);
+    hold(got.lock);
+  }
+  const envOf = exec.env || {};
+  if (Object.keys(envOf).length) {
+    let slot = "";
+    if (Object.values(envOf).some(v => String(v).includes("${slot}"))) {
+      const n = claim.locksDir ? takeSlot(claim.locksDir, { owner, log: t => append(log, t) }) : 0;
+      if (!n) return done("fail", "no free slot for ${slot} (all 64 are held)", { code: -1 });
+      hold(`slot:${n}`);
+      slot = String(n);
+    }
+    const worktree = path.basename(path.resolve(root));
+    for (const [k, v] of Object.entries(envOf)) {
+      vars[k] = String(v).replaceAll("${worktree}", worktree).replaceAll("${slot}", slot);
+      append(log, `[env ${k}=${vars[k]}]\n`);
+    }
+  }
+  // noFix: the tracked files the run may not change, as they were before it.
+  const before = exec.noFix ? trackedChanges(root) : null;
+
   const signalled = r => r && r.signal && ["SIGINT", "SIGTERM", "SIGHUP"].includes(r.signal) ? r.signal : "";
   for (let k = 0; k < steps.length; k++) {
     const s = steps[k];
@@ -164,8 +208,37 @@ export function runExec(exec, { root, from = "", log = "", env = {}, browser = {
       { ...at, code: r.code, timedOut: r.timedOut, tail: r.out });
     if (s.export) { vars[s.export] = r.value; append(log, `[${s.export}=${r.value}]\n`); }
   }
+  if (before) {
+    const after = trackedChanges(root);
+    const changed = [...after.keys()].filter(f => before.get(f) !== after.get(f))
+      .concat([...before.keys()].filter(f => !after.has(f))).sort();
+    if (changed.length)
+      return done("fail", `noFix: the run changed tracked files: ${changed.slice(0, 10).join(", ")}${changed.length > 10 ? ` and ${changed.length - 10} more` : ""}`,
+        { code: 0, changed });
+  }
   const secs = ((Date.now() - started) / 1000).toFixed(1);
   return done("pass", `exit 0 in ${secs}s`, { code: 0 });
+}
+
+// Tracked files that differ from HEAD, each with a hash of its content now,
+// so a run that rewrites an already-edited file is still seen.
+function trackedChanges(root) {
+  // status names paths from the repo's top, which may sit above the root.
+  const t = spawnSync("git", ["-C", root, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
+  const top = t.status === 0 ? t.stdout.trim() : root;
+  const r = spawnSync("git", ["-C", top, "status", "--porcelain=v1", "-z", "--untracked-files=no"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const out = new Map();
+  const parts = (r.stdout || "").split("\0");
+  for (let i = 0; i < parts.length; i++) {
+    const e = parts[i];
+    if (e.length < 4) continue;
+    const f = e.slice(3);
+    if (e[0] === "R" || e[0] === "C") i++; // the rename's source follows
+    let h = "gone";
+    try { h = crypto.createHash("sha1").update(fs.readFileSync(path.join(top, f))).digest("hex"); } catch { /* deleted */ }
+    out.set(f, h);
+  }
+  return out;
 }
 
 // Is this process alive? Signal 0 checks without sending anything. EPERM means

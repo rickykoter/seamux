@@ -10,6 +10,7 @@
 // the docs/adr default.
 import fs from "node:fs";
 import path from "node:path";
+import { resolveSeamux } from "./host.mjs";
 
 export const ADR_DEFAULT_DIR = "docs/adr";
 
@@ -49,7 +50,7 @@ export function loadAdrConfig(root) {
     filePattern: ADR_DEFAULT_PATTERN, numberScan: ADR_DEFAULT_SCAN,
   };
   let raw;
-  try { raw = JSON.parse(fs.readFileSync(path.join(root, ".seamux", "adr.json"), "utf8")); }
+  try { raw = JSON.parse(fs.readFileSync(resolveSeamux(root, path.join(".seamux", "adr.json")).path, "utf8")); }
   catch { return def; }
   const t = typeof raw.template === "string" ? raw.template : "nygard";
   return {

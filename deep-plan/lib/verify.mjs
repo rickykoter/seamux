@@ -29,6 +29,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { resolveSeamux } from "./host.mjs";
 
 export const VERIFY_REL = path.join(".seamux", "verify.json");
 export const RECIPE_KINDS = ["test", "e2e", "observability", "browser"];
@@ -43,6 +44,18 @@ const ENV_RE = /^[A-Z_][A-Z0-9_]*$/;
 // Seconds. A recipe's timeout bounds each run step; a wait step has its own,
 // because a deploy is slower than a test suite and polls rather than runs.
 export const DEFAULT_TIMEOUT = 900;
+// What a recipe may say it does to the machine, for the agent deciding
+// whether to run it and for check list. kills-process needs a scope (what
+// it kills), since a broad pkill reaches other worktrees' servers.
+export const SIDE_EFFECTS = ["writes-db", "kills-process", "network", "writes-qa", "writes-files"];
+export const USE_MODES = ["exclusive", "shared"];
+// Every field a recipe may carry. Anything else is a warning, so a typo or a
+// field from a newer engine is named rather than dropped without a word.
+// Keys starting with $ are comments.
+export const RECIPE_FIELDS = ["id", "kind", "name", "tier", "match", "default", "cwd", "timeout", "run", "steps",
+  "note", "brief", "scripts", "uses", "env", "prereqs", "sideEffects", "noFix", "evidence"];
+// ${worktree} and ${slot}, expanded by check run before the steps start.
+export const ENV_TOKENS = ["worktree", "slot"];
 export const DEFAULT_WAIT = { timeout: 1200, interval: 15 };
 
 // -------------------------------------------------------------- globs
@@ -109,6 +122,21 @@ function normalizeRecipe(r) {
     // The setup files the recipe's steps depend on (a Playwright seed, a Hurl
     // file), so the surfaces can flag edits to them as they flag the script's.
     scripts: r.scripts === undefined ? [] : r.scripts,
+    // Shared resources the run needs, locked by check run for its length:
+    // [{ resource, mode: exclusive|shared }].
+    uses: Array.isArray(r.uses) ? r.uses.map(u => (u && typeof u === "object") ? { resource: u.resource, mode: u.mode === undefined ? "exclusive" : u.mode } : u) : (r.uses === undefined ? [] : r.uses),
+    // Env for every step; values may hold ${worktree} and ${slot}.
+    env: r.env === undefined ? {} : r.env,
+    // What must be up before the run, each probed first: [{ name, probe }].
+    prereqs: r.prereqs === undefined ? [] : r.prereqs,
+    // What the run does to the machine: names from SIDE_EFFECTS, or
+    // { effect, scope } (kills-process needs the scope).
+    sideEffects: Array.isArray(r.sideEffects) ? r.sideEffects.map(e => typeof e === "string" ? { effect: e } : e) : (r.sideEffects === undefined ? [] : r.sideEffects),
+    // A check that must not rewrite tracked files (a linter run without --fix).
+    noFix: r.noFix === undefined ? false : r.noFix,
+    // Where the recipe's command was found (CI config, a README): for people.
+    // A string, or a list of them as verify init drafts it.
+    evidence: r.evidence === undefined ? "" : r.evidence,
     _raw: r,
   };
 }
@@ -160,6 +188,36 @@ function validateRecipe(r, i) {
   if (raw.brief !== undefined && typeof raw.brief !== "string") errs.push(`${label}: brief must be a string`);
   if (raw.scripts !== undefined && !(Array.isArray(raw.scripts) && raw.scripts.every(insideProject)))
     errs.push(`${label}: scripts must be a list of paths inside the project`);
+  if (!Array.isArray(r.uses)) errs.push(`${label}: uses must be a list of { resource, mode }`);
+  else r.uses.forEach((u, k) => {
+    if (!u || typeof u !== "object" || !(typeof u.resource === "string" && LOCK_RE.test(u.resource)))
+      errs.push(`${label}: uses ${k + 1} needs a resource named like port:5432 or test-db`);
+    else if (!USE_MODES.includes(u.mode)) errs.push(`${label}: uses ${k + 1} mode must be exclusive or shared`);
+  });
+  if (!r.env || typeof r.env !== "object" || Array.isArray(r.env)) errs.push(`${label}: env must be an object of NAME: value`);
+  else for (const [k, v] of Object.entries(r.env)) {
+    if (!ENV_RE.test(k)) errs.push(`${label}: env name ${JSON.stringify(k)} must be A-Z, 0-9 and _`);
+    else if (typeof v !== "string") errs.push(`${label}: env ${k} must be a string`);
+    else for (const m of v.matchAll(/\$\{([^}]*)\}/g))
+      if (!ENV_TOKENS.includes(m[1])) errs.push(`${label}: env ${k} uses \${${m[1]}}; the tokens are \${worktree} and \${slot}`);
+  }
+  if (!Array.isArray(r.prereqs)) errs.push(`${label}: prereqs must be a list of { name, probe }`);
+  else r.prereqs.forEach((q, k) => {
+    if (!q || typeof q !== "object" || typeof q.name !== "string" || !q.name.trim() || typeof q.probe !== "string" || !q.probe.trim())
+      errs.push(`${label}: prereq ${k + 1} needs a name and a probe command`);
+  });
+  if (!Array.isArray(r.sideEffects)) errs.push(`${label}: sideEffects must be a list`);
+  else r.sideEffects.forEach((e, k) => {
+    if (!e || typeof e !== "object" || !SIDE_EFFECTS.includes(e.effect))
+      errs.push(`${label}: sideEffect ${k + 1} must be one of ${SIDE_EFFECTS.join(", ")}`);
+    else if (e.scope !== undefined && (typeof e.scope !== "string" || !e.scope.trim()))
+      errs.push(`${label}: sideEffect ${e.effect} scope must be a non-empty string`);
+    else if (e.effect === "kills-process" && e.scope === undefined)
+      errs.push(`${label}: kills-process needs a scope saying what it kills, e.g. { "effect": "kills-process", "scope": "this worktree's puma" }`);
+  });
+  if (typeof r.noFix !== "boolean") errs.push(`${label}: noFix must be true or false`);
+  if (!(typeof r.evidence === "string" || (Array.isArray(r.evidence) && r.evidence.every(e => typeof e === "string"))))
+    errs.push(`${label}: evidence must be a string or a list of strings`);
   r.steps.forEach((s, k) => {
     const at = `${label} step ${k + 1}`;
     if (!s.kind) {
@@ -206,22 +264,27 @@ function validateRecipe(r, i) {
 
 // One config file. Missing is not an error — most directories have none, and
 // a repo with none at all still plans; it just infers no checks.
+// The file is read where resolveSeamux points (the branch's tracked copy, else
+// the main checkout's); `dir` stays the folder its globs and commands are
+// relative to.
 export function load(dir) {
-  const p = path.join(dir, VERIFY_REL);
+  const p = resolveSeamux(dir, VERIFY_REL).path;
   let raw;
   try { raw = fs.readFileSync(p, "utf8"); }
-  catch { return { present: false, path: p, dir, recipes: [], errors: [] }; }
+  catch { return { present: false, path: p, dir, recipes: [], errors: [], warnings: [] }; }
   let obj;
   try { obj = JSON.parse(raw); }
-  catch (e) { return { present: true, path: p, dir, recipes: [], errors: [`not valid JSON: ${e.message}`] }; }
+  catch (e) { return { present: true, path: p, dir, recipes: [], errors: [`not valid JSON: ${e.message}`], warnings: [] }; }
   if (!obj || typeof obj !== "object" || !Array.isArray(obj.recipes))
-    return { present: true, path: p, dir, recipes: [], errors: ['expected { "recipes": [ … ] }'] };
+    return { present: true, path: p, dir, recipes: [], errors: ['expected { "recipes": [ … ] }'], warnings: [] };
   const recipes = obj.recipes.map(r => normalizeRecipe(r && typeof r === "object" ? r : {}));
   const errors = recipes.flatMap(validateRecipe);
+  const warnings = recipes.flatMap((r, i) => Object.keys(r._raw).filter(k => !k.startsWith("$") && !RECIPE_FIELDS.includes(k))
+    .map(k => `recipe ${r.id ? `"${r.id}"` : `#${i + 1}`}: unknown field "${k}" is ignored`));
   const ids = recipes.map(r => r.id).filter(Boolean);
   for (const id of new Set(ids.filter((x, k) => ids.indexOf(x) !== k)))
     errors.push(`two recipes share the id "${id}"`);
-  return { present: true, path: p, dir, recipes, errors };
+  return { present: true, path: p, dir, recipes, errors, warnings };
 }
 
 // -------------------------------------------------------------- resolve
@@ -230,11 +293,18 @@ export function load(dir) {
 // what runs and where. A check records this at render; a recipe edited after
 // the plan was reviewed then no longer matches what was reviewed.
 export function recipeHash(r, dir) {
-  const { _raw, brief, scripts, ...rest } = r;
-  // brief and scripts arrived after recipes had hashes: left out while empty,
-  // so a recipe that has neither keeps the hash its checks passed under.
+  const { _raw, brief, scripts, uses, env, prereqs, sideEffects, noFix, evidence, ...rest } = r;
+  // Fields that arrived after recipes had hashes are left out while unset,
+  // so a recipe that has none of them keeps the hash its checks passed under.
   if (brief) rest.brief = brief;
   if (scripts && scripts.length) rest.scripts = scripts;
+  if (Array.isArray(uses) ? uses.length : uses !== undefined) rest.uses = uses;
+  if (env && typeof env === "object" ? Object.keys(env).length : env !== undefined) rest.env = env;
+  if (Array.isArray(prereqs) ? prereqs.length : prereqs !== undefined) rest.prereqs = prereqs;
+  if (Array.isArray(sideEffects) ? sideEffects.length : sideEffects !== undefined) rest.sideEffects = sideEffects;
+  if (noFix !== false && noFix !== undefined) rest.noFix = noFix;
+  // evidence is for people and changes nothing that runs, so it is never
+  // hashed: adding it to a recipe whose checks passed keeps them passed.
   const steps = rest.steps.map(({ _kinds, ...s }) => s);
   return crypto.createHash("sha256")
     .update(JSON.stringify({ ...rest, steps, dir })).digest("hex").slice(0, 12);
@@ -254,7 +324,7 @@ export function relToRoot(root, file) {
 function nearestDir(root, rel) {
   let d = path.dirname(path.join(root, rel));
   for (;;) {
-    if (fs.existsSync(path.join(d, VERIFY_REL))) return d;
+    if (fs.existsSync(resolveSeamux(d, VERIFY_REL, { warn: false }).path)) return d;
     if (path.resolve(d) === path.resolve(root)) return null;
     const up = path.dirname(d);
     if (up === d) return null;
@@ -313,8 +383,10 @@ export function resolver(root) {
   // silently read as "no recipes".
   const errors = () => [...cache.values()].flatMap(c =>
     c.errors.map(e => `${posix(path.relative(root, c.path))}: ${e}`));
+  const warnings = () => [...cache.values()].flatMap(c =>
+    (c.warnings || []).map(e => `${posix(path.relative(root, c.path))}: ${e}`));
 
-  return { root, file, available, errors, load: cfg };
+  return { root, file, available, errors, warnings, load: cfg };
 }
 
 // The deliverable view: each file's landing, and the distinct recipes across
@@ -324,5 +396,5 @@ export function resolveFiles(root, files) {
   const rows = files.map(R.file);
   const recipes = new Map();
   for (const row of rows) for (const r of row.recipes) if (!recipes.has(r.key)) recipes.set(r.key, r);
-  return { root: R.root, files: rows, recipes: [...recipes.values()], errors: R.errors() };
+  return { root: R.root, files: rows, recipes: [...recipes.values()], errors: R.errors(), warnings: R.warnings() };
 }
