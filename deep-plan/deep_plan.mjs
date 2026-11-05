@@ -126,6 +126,11 @@ function gitRoot(dir) {
 
 // ---------------------------------------------------------------- validate
 
+// What a quiz question tests: a scenario (what happens when X), a placement
+// (where it lives or changes), a boundary (what is out or refused), or a
+// tradeoff (what was given up for what).
+const QUIZ_TYPES = ["scenario", "placement", "boundary", "tradeoff"];
+
 function validate(spec, force) {
   const errs = [];
   if (!spec.slug || !/^[a-z0-9][a-z0-9-]*$/.test(spec.slug))
@@ -349,6 +354,25 @@ function validate(spec, force) {
         errs.push(`quiz ${q.id}: prompt echoes "${tok}", unique to the correct answer`);
     }
   }
+
+  // The mix: each question says what kind of consequence it tests. A quiz of
+  // three where-does-it-change questions checks one thing three times. Typed
+  // quizzes must mix, and must ask about every adr decision; an untyped quiz
+  // is warned for now, so plans written before types still render.
+  const typed = quiz.filter(q => q.type !== undefined);
+  for (const q of typed)
+    if (!QUIZ_TYPES.includes(q.type)) errs.push(`quiz ${q.id}: type must be one of ${QUIZ_TYPES.join(", ")}`);
+  const adrRefs = (spec.decisions || []).filter(d => d.adr).map(d => d.decision);
+  const uncovered = adrRefs.filter(ref => !quiz.some(q => q.decisionRef === ref));
+  const kinds = new Set(typed.map(q => q.type).filter(t => QUIZ_TYPES.includes(t)));
+  const mix = [];
+  if (!kinds.has("scenario")) mix.push("at least one scenario question");
+  if (kinds.size < 3) mix.push(`three different types (has ${kinds.size ? [...kinds].join(", ") : "none"})`);
+  for (const ref of uncovered) mix.push(`a question whose decisionRef is the adr decision "${ref}"`);
+  if (typed.length && mix.length) errs.push(`quiz mix: needs ${mix.join("; ")} (references/spec.md#the-quiz)`);
+  else if (!typed.length && quiz.length && mix.length)
+    console.error(`deep-plan: warning: the quiz has no question types; give each a type (${QUIZ_TYPES.join(", ")}) ` +
+      `and the mix: ${mix.join("; ")}. Untyped quizzes will be refused later (references/spec.md#the-quiz).`);
 
   // Which increments get a lookout review, and whether the full delivery
   // does, is the human's call at planning time: the spec must say, even when

@@ -126,7 +126,9 @@ These survive a compaction; everything below them is how.
    the gate*. Render resolves each deliverable's checks against the recipe
    files and stores them, so what `check run` executes is what was reviewed.
 7. **The alignment check.** The review surface shows 3+ consequence
-   questions with per-slug shuffled options. `deep-plan page <slug> --review`
+   questions with per-slug shuffled options, typed and mixed: a scenario, two
+   other types, and one on each ADR decision
+   ([spec.md](references/spec.md#the-quiz)). `deep-plan page <slug> --review`
    shows it where this session can and prints `served at <url> (host: …)`.
    In cmux it opens beside the terminal. In Claude desktop, open that URL in
    the browser pane with `preview_start`, and prefer the inline widget for

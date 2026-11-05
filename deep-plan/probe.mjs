@@ -529,6 +529,20 @@ ok("mermaid theme follows the page theme",
   noCons.decisions[0].adr = { alternatives: ["x"] };
   ok("refuses a flagged decision with no consequences",
     cli("render", tmpSpec(noCons)).status !== 0);
+  // The quiz mix: typed quizzes must mix and cover each adr decision.
+  // Its own slug: a render that passes must not replace the plan later steps grade.
+  const quizOf = f => { const x = JSON.parse(JSON.stringify(spec)); x.slug = "quiz-mix"; f(x); return cli("render", tmpSpec(x)); };
+  let qr = quizOf(x => { x.quiz.forEach(q => { q.type = "placement"; }); });
+  ok("quiz: a typed quiz of one kind is refused, naming the mix it lacks",
+    qr.status !== 0 && /quiz mix: needs at least one scenario question; three different types \(has placement\)/.test(qr.stderr), qr.stderr.slice(0, 300));
+  qr = quizOf(x => { x.quiz[0].type = "vibes"; });
+  ok("quiz: an unknown type is refused", qr.status !== 0 && /quiz q1: type must be one of scenario, placement, boundary, tradeoff/.test(qr.stderr));
+  qr = quizOf(x => { x.quiz[0].decisionRef = "Track retries on the outbox row"; });
+  ok("quiz: a typed quiz with no question on an adr decision is refused",
+    qr.status !== 0 && /a question whose decisionRef is the adr decision "Sweep on a timer, not on write"/.test(qr.stderr), qr.stderr.slice(0, 300));
+  qr = quizOf(x => { x.quiz.forEach(q => { delete q.type; }); });
+  ok("quiz: an untyped quiz still renders, with a warning", qr.status === 0 && /warning: the quiz has no question types/.test(qr.stderr), qr.stderr.slice(0, 300));
+  cli("close", "quiz-mix");
   // Flagged without alternatives: refused, naming the field.
   const noAlts = JSON.parse(JSON.stringify(spec));
   noAlts.decisions[0].adr = { consequences: "c", alternatives: [] };
