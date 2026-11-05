@@ -455,9 +455,13 @@ fn run(args: &[String]) -> i32 {
         let dir = std::path::Path::new(&crate::pypath::home()).join(".cache").join("cmux-crew");
         let panes = crew_core::status::all(&dir);
         let t = crew_core::status::silent_threshold_ms();
-        let quiet = crew_core::status::silent(&panes, (crew_core::py::now() * 1000.0) as u64, t);
+        let quiet: Vec<(&crew_core::status::Pane, u64)> = crew_core::status::quiet(&panes, (crew_core::py::now() * 1000.0) as u64, t,
+            &|p| crew_core::status::activity(&dir, p.key()))
+            .into_iter()
+            .filter_map(|(p, q)| match q { crew_core::status::Quiet::Silent(age) => Some((p, age)), _ => None })
+            .collect();
         if !quiet.is_empty() {
-            println!("{BOLD}{AMBER}⏸ {} pane(s) working with no hook event for over {}m{RESET}", quiet.len(), t / 60_000);
+            println!("{BOLD}{AMBER}⏸ {} pane(s) working, no tool running, nothing for over {}m{RESET}", quiet.len(), t / 60_000);
             for (p, age) in &quiet {
                 let m = age / 60_000;
                 let ago = if m >= 60 { format!("{}h {}m", m / 60, m % 60) } else { format!("{m}m") };

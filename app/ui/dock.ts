@@ -137,6 +137,30 @@ export class DockView {
     await this.frameBoard();
   }
 
+  /** ⌘.: the next workspace that needs the person, after the one shown,
+   *  wrapping. Asked first (a question, a pane waiting on you), then a
+   *  command that died, then an agent working for over ten minutes, then a
+   *  failed check; oldest first within each. False when none needs you. */
+  nextAttention(): boolean {
+    const now = Date.now();
+    const agents = this.tiles.filter((t) => t.agent && t.state !== "ended");
+    const byAge = <T extends { since: number }>(xs: T[]) => [...xs].sort((a, b) => a.since - b.since);
+    const asked = [
+      ...this.decisions.filter((d) => d.kind === "question" || d.kind === "asked"),
+      ...agents.filter((t) => t.state === "needs_input").map((t) => ({ ws: t.workspace, since: t.since })),
+    ];
+    const died = this.tiles.filter((t) => t.exited && !t.running).map((t) => ({ ws: t.workspace, since: t.exited!.at }));
+    const silent = agents.filter((t) => t.state === "working" && now - t.since > 10 * 60_000).map((t) => ({ ws: t.workspace, since: t.since }));
+    const failed = this.decisions.filter((d) => d.kind === "gate" && d.checks.some((c) => c.status === "fail" || c.status === "lost"));
+    const order: string[] = [];
+    for (const group of [asked, died, silent, failed])
+      for (const x of byAge(group)) if (x.ws && !order.includes(x.ws) && this.tiles.some((t) => t.workspace === x.ws)) order.push(x.ws);
+    if (!order.length) return false;
+    const next = order[(order.indexOf(this.ws) + 1) % order.length];
+    this.select(next, true);
+    return true;
+  }
+
   /** A click on a notification: show its workspace and pane. */
   jump(ws: string, pane: string): void {
     if (ws) this.select(ws, true, "any", pane);

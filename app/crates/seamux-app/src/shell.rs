@@ -14,10 +14,13 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewWindow};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 /// The chat sheet's keys while the window has focus: ⌘E shows the Wake (or
-/// goes back), ⌘] and ⌘[ step through its tabs. A page in a frame keeps
+/// goes back), ⌘] and ⌘[ step through its tabs, ⌘. moves to the next
+/// workspace that needs you (DockView.nextAttention). A page in a frame keeps
 /// keys from the shell, so they are shortcuts rather than key listeners.
+/// (⌘J is a native pane's own: its companion shell.)
 fn sheet_keys() -> Vec<(Shortcut, &'static str)> {
-    [("CmdOrCtrl+KeyE", "wake"), ("CmdOrCtrl+BracketRight", "next"), ("CmdOrCtrl+BracketLeft", "prev")]
+    [("CmdOrCtrl+KeyE", "wake"), ("CmdOrCtrl+BracketRight", "next"), ("CmdOrCtrl+BracketLeft", "prev"),
+     ("CmdOrCtrl+Period", "attention")]
         .iter()
         .filter_map(|(k, n)| k.parse::<Shortcut>().ok().map(|s| (s, *n)))
         .collect()
@@ -768,7 +771,7 @@ mod tests {
     #[test]
     fn sheet_keys_all_parse() {
         let names: Vec<&str> = sheet_keys().iter().map(|(_, n)| *n).collect();
-        assert_eq!(names, ["wake", "next", "prev"]);
+        assert_eq!(names, ["wake", "next", "prev", "attention"]);
     }
     use std::net::TcpListener;
 

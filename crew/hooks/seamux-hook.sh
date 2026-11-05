@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # crew — the Claude Code hook entry point, on seamux.
 #
-#   seamux-hook.sh <session|pretool|ask|answered|task|notification|stop|end>
+#   seamux-hook.sh <session|pretool|posttool|ask|answered|task|notification|stop|end>
 #
 # The same events as crew-hook.sh, with the work done by `seamux crew-hook`.
 # Only pretool's hot path stays here: it fires on every tool use, and almost
@@ -24,12 +24,26 @@ event="${1:-}"
 seamux="${SEAMUX_BIN:-$HOME/.local/bin/seamux}"
 [ -x "$seamux" ] || exit 0
 
+# Every tool use marks the pane's activity, from bash with no fork: pretool
+# touches act-<pane> as a tool starts, posttool touches done-<pane> as it
+# ends. crew_core::status reads their times: a tool in flight (act newer than
+# done) is busy, not silent, however long it runs; a working pane with no
+# tool in flight and nothing for a while may be hung.
+if [ "$event" = "posttool" ]; then
+  _d="${XDG_CACHE_HOME:-$HOME/.cache}/cmux-crew"
+  _w="${SEAMUX_WORKSPACE_ID:-${CMUX_WORKSPACE_ID:-none}}"
+  _k="${SEAMUX_PANE_ID:-${CMUX_SURFACE_ID:-$_w}}"
+  [ -d "$_d" ] && : > "$_d/done-$_k" 2>/dev/null
+  exit 0
+fi
+
 if [ "$event" = "pretool" ]; then
   _d="${XDG_CACHE_HOME:-$HOME/.cache}/cmux-crew"
   # The pane and workspace as crew_core::ident reads them: a backend's
   # SEAMUX_* first, then a plain cmux pane's CMUX_*.
   _w="${SEAMUX_WORKSPACE_ID:-${CMUX_WORKSPACE_ID:-none}}"
   _k="${SEAMUX_PANE_ID:-${CMUX_SURFACE_ID:-$_w}}"
+  [ -d "$_d" ] && : > "$_d/act-$_k" 2>/dev/null
   if [ -f "$_d/pane-$_k.json" ]; then
     [ -f "$_d/hold-$_k" ] || exit 0
   else

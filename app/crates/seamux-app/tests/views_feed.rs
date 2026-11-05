@@ -67,6 +67,7 @@ fn tile(surface: &str, ws: &str, cwd: &str, state: &str) -> Tile {
         topic: None,
         root: String::new(),
         owner: None,
+        exited: None,
         outside: false,
     }
 }

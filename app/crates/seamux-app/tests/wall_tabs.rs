@@ -23,6 +23,7 @@ fn tile(surface: &str, cwd: &str, root: &str, label: &str, topic: Option<&str>) 
         topic: topic.map(str::to_string),
         root: root.into(),
         owner: None,
+        exited: None,
         outside: false,
     }
 }

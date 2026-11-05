@@ -772,6 +772,10 @@ if RUST:
     check("…the pretool fast path finds pane-PT's hold and releases it, with no cmux",
           r.returncode == 0 and pane_state("PT") == "working" and not marker("hold-PT") and not log(),
           f"{pane_state('PT')} {log()}")
+    check("…and marks the tool's start as act-PT, from bash", marker("act-PT"))
+    r = run([BASH, os.path.join(CREW, "hooks", "seamux-hook.sh"), "posttool"],
+            payload(tool_name="Bash"), env_for(**tmux))
+    check("…posttool marks its end as done-PT, with no cmux", r.returncode == 0 and marker("done-PT") and not log(), log())
     hook("stop", **tmux)
     check("…and its stop marks it idle, still without cmux", pane_state("PT") == "idle" and not log(), log())
 else:

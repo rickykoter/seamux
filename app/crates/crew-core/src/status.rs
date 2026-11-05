@@ -150,17 +150,50 @@ pub fn silent_threshold_ms() -> u64 {
     m * 60_000
 }
 
-/// The working panes with no hook write for longer than `threshold_ms`, each
-/// with how long it has been silent, longest first.
-pub fn silent(panes: &[Pane], now_ms: u64, threshold_ms: u64) -> Vec<(&Pane, u64)> {
-    let mut out: Vec<(&Pane, u64)> = panes
-        .iter()
-        .filter(|p| p.state == "working" && p.at > 0)
-        .map(|p| (p, now_ms.saturating_sub(p.at)))
-        .filter(|(_, age)| *age > threshold_ms)
-        .collect();
-    out.sort_by(|a, b| b.1.cmp(&a.1));
-    out
+/// What a working pane past the threshold is doing, by its hook activity,
+/// with how long it has been so (ms).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Quiet {
+    /// Inside one tool call (a long test, a script, a subagent): busy.
+    InTool(u64),
+    /// No tool in flight and nothing since: the turn may be hung.
+    Silent(u64),
+}
+
+/// A pane's tool-use marks from crew's hook script: (last tool start, last
+/// tool end) in ms, from the mtimes of act-<key> and done-<key>; 0 when a
+/// mark is missing.
+pub fn activity(dir: &Path, key: &str) -> (u64, u64) {
+    let at = |name: String| {
+        fs::metadata(dir.join(name)).and_then(|m| m.modified()).ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64).unwrap_or(0)
+    };
+    (at(format!("act-{key}")), at(format!("done-{key}")))
+}
+
+/// The working panes quiet past `threshold_ms`, longest first. A tool that
+/// started after the last tool ended (and after the pane's last write) is
+/// in flight: such a pane is InTool by how long that tool has run. Any other
+/// is Silent by how long since its last sign of life (a write, a tool start
+/// or end). `activity` gives a pane's (tool start, tool end) marks.
+pub fn quiet<'a>(panes: &'a [Pane], now_ms: u64, threshold_ms: u64, activity: &dyn Fn(&Pane) -> (u64, u64)) -> Vec<(&'a Pane, Quiet)> {
+    let mut out: Vec<(&Pane, Quiet, u64)> = Vec::new();
+    for p in panes.iter().filter(|p| p.state == "working" && p.at > 0) {
+        let (act, done) = activity(p);
+        if act > done && act >= p.at {
+            let age = now_ms.saturating_sub(act);
+            if age > threshold_ms {
+                out.push((p, Quiet::InTool(age), age));
+            }
+        } else {
+            let age = now_ms.saturating_sub(p.at.max(act).max(done));
+            if age > threshold_ms {
+                out.push((p, Quiet::Silent(age), age));
+            }
+        }
+    }
+    out.sort_by(|a, b| b.2.cmp(&a.2));
+    out.into_iter().map(|(p, q, _)| (p, q)).collect()
 }
 
 pub fn all(dir: &Path) -> Vec<Pane> {
@@ -447,21 +480,27 @@ pub fn update(dir: &Path, ws: &str, surface: &str, session: &str, now_ms: u64, c
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_working_pane_quiet_past_the_threshold_is_silent() {
-        let mut a = Pane::new("W1", "S1");
-        a.state = "working".into();
-        a.at = 1_000;
-        let mut b = Pane::new("W1", "S2");
-        b.state = "working".into();
-        b.at = 590_000;
-        let mut c = Pane::new("W2", "S3");
-        c.state = "idle".into();
-        c.at = 1;
-        let panes = vec![a, b, c];
-        let s = silent(&panes, 601_001, 600_000);
-        assert_eq!(s.len(), 1);
-        assert_eq!(s[0].0.surface, "S1");
-        assert_eq!(s[0].1, 600_001);
+    fn a_pane_inside_a_long_tool_is_busy_and_one_with_none_in_flight_is_silent() {
+        let pane = |s: &str, at: u64| { let mut p = Pane::new("W1", s); p.state = "working".into(); p.at = at; p };
+        let panes = vec![pane("TOOL", 1_000), pane("HUNG", 1_000), pane("BUSY", 1_000), pane("FRESH", 1_000)];
+        // TOOL: a test started at 2s and has not ended. HUNG: its last tool
+        // ended at 3s. BUSY: a tool ended a minute ago. FRESH: no marks.
+        let marks = |p: &Pane| match p.surface.as_str() {
+            "TOOL" => (2_000, 1_500),
+            "HUNG" => (2_500, 3_000),
+            "BUSY" => (1_200_000, 1_230_000),
+            _ => (0, 0),
+        };
+        let q = quiet(&panes, 1_290_000, 600_000, &marks);
+        let of = |s: &str| q.iter().find(|(p, _)| p.surface == s).map(|(_, x)| x.clone());
+        assert_eq!(of("TOOL"), Some(Quiet::InTool(1_288_000)));
+        assert_eq!(of("HUNG"), Some(Quiet::Silent(1_287_000)));
+        assert_eq!(of("BUSY"), None);
+        assert_eq!(of("FRESH"), Some(Quiet::Silent(1_289_000)));
+        // A prompt after a tool that never reported its end: that tool is not
+        // in flight, so the pane is judged by its last write.
+        let later = vec![pane("P", 5_000)];
+        assert_eq!(quiet(&later, 700_000, 600_000, &|_| (2_000, 0)).first().map(|(_, q)| q.clone()), Some(Quiet::Silent(695_000)));
     }
 
     use super::*;
