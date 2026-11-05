@@ -5513,6 +5513,68 @@ if (want("recipe fields: uses, env, prereqs, sideEffects, noFix, evidence")) {
   cli("close", "fields-1");
 }
 
+// -------------------------------------------------- check run enforces prereqs, uses, env and noFix
+if (want("check run enforces prereqs, uses, env and noFix")) {
+  const { runExec } = await import("./lib/runner.mjs");
+  const ER = fs.realpathSync(fs.mkdtempSync(path.join(TMP, "enforce-")));
+  const G = "git -c user.email=probe@deep-plan -c user.name=probe";
+  fs.writeFileSync(path.join(ER, "tracked.txt"), "one\n");
+  fs.writeFileSync(path.join(ER, "dirty.txt"), "one\n");
+  execSync(`git init -q && git add -A && ${G} commit -q -m init`, { cwd: ER });
+  fs.writeFileSync(path.join(ER, "dirty.txt"), "edited before the run\n");
+  const LK = path.join(ER, "locks");
+  let n = 0;
+  const run = (exec, held = []) => {
+    const log = path.join(ER, `run-${++n}.log`);
+    const r = runExec({ cwd: ".", timeout: 30, steps: [{ kind: "run", command: "true" }], ...exec },
+      { root: ER, log, claim: { locksDir: LK, owner: { slug: "p", n: "1", id: "x" }, hooks: { held: h => held.push(...h) } } });
+    return { ...r, text: fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "" };
+  };
+  const locks = () => (fs.existsSync(LK) ? fs.readdirSync(LK) : []).filter(f => f.endsWith(".lock"));
+  const holder = secs => Number(execSync(`sh -c 'sleep ${secs} >/dev/null 2>&1 & echo $!'`, { encoding: "utf8" }).trim());
+
+  let r = run({ prereqs: [{ name: "Postgres", probe: "exit 3" }], uses: [{ resource: "port:5432", mode: "exclusive" }] });
+  ok("enforce: a missing prereq fails the run by name, before any lock", r.status === "fail" &&
+    /prereq Postgres is not up: exit 3 exited 3/.test(r.note) && locks().length === 0, r.note);
+  r = run({ prereqs: [{ name: "shell", probe: "true" }], env: { DB: "test_${worktree}_${slot}", PLAIN: "x" },
+    steps: [{ kind: "run", command: 'echo "db=$DB plain=$PLAIN"' }] });
+  ok("enforce: env reaches the steps with ${worktree} and ${slot} expanded", r.status === "pass" &&
+    new RegExp(`db=test_${path.basename(ER)}_1 plain=x`).test(r.text), r.text);
+  ok("enforce: the slot is given back when the run ends", locks().length === 0, locks().join());
+
+  // exclusive waits on a live exclusive holder, and says who.
+  fs.mkdirSync(LK, { recursive: true });
+  const h1 = holder(3);
+  fs.writeFileSync(path.join(LK, "port_5432.lock"), JSON.stringify({ name: "port:5432", pid: h1, slug: "other", n: "2", id: "db" }));
+  const held = [];
+  r = run({ uses: [{ resource: "port:5432", mode: "exclusive" }] }, held);
+  ok("enforce: an exclusive use waits for the holder, naming it, then runs", r.status === "pass" &&
+    new RegExp(`waiting on pid ${h1} \\(other 2 db\\)`).test(r.text) && /lock port:5432 \(exclusive\) taken after waiting/.test(r.text), r.text);
+  ok("enforce: the lock is recorded as held while it runs, and released after", held.some(c => c.lock === "port:5432") && locks().length === 0, locks().join());
+
+  // shared runs beside another shared holder; exclusive waits for the readers.
+  const h2 = holder(3);
+  fs.writeFileSync(path.join(LK, `redis.r.${h2}.lock`), JSON.stringify({ name: `redis.r.${h2}`, pid: h2 }));
+  const t0 = Date.now();
+  r = run({ uses: [{ resource: "redis", mode: "shared" }] });
+  ok("enforce: a shared use runs beside another shared holder without waiting", r.status === "pass" && Date.now() - t0 < 2500 && !/waiting/.test(r.text), r.text);
+  r = run({ uses: [{ resource: "redis", mode: "exclusive" }] });
+  ok("enforce: an exclusive use waits for shared holders to leave", r.status === "pass" && /waiting on 1 shared holder/.test(r.text), r.text);
+  ok("enforce: …and every lock is gone after", locks().length === 0, locks().join());
+  r = run({ uses: [{ resource: "port:5432", mode: "exclusive" }], steps: [{ kind: "run", command: "exit 4" }] });
+  ok("enforce: a failed run releases its locks too", r.status === "fail" && locks().length === 0, locks().join());
+
+  // noFix: a run that rewrites tracked files fails, naming them.
+  r = run({ noFix: true, steps: [{ kind: "run", command: "echo two >> tracked.txt" }] });
+  ok("enforce: noFix fails a run that changes a tracked file, naming it", r.status === "fail" && /noFix: the run changed tracked files: tracked\.txt/.test(r.note), r.note);
+  r = run({ noFix: true, steps: [{ kind: "run", command: "echo again >> dirty.txt" }] });
+  ok("enforce: noFix sees a change to a file already edited before the run", r.status === "fail" && /dirty\.txt/.test(r.note), r.note);
+  r = run({ noFix: true, steps: [{ kind: "run", command: "cat tracked.txt dirty.txt >/dev/null; echo new > untracked.txt" }] });
+  ok("enforce: noFix passes a run that leaves tracked files alone, earlier edits included", r.status === "pass", r.note);
+  r = run({ steps: [{ kind: "run", command: "echo three >> tracked.txt" }] });
+  ok("enforce: without noFix, a rewrite is not judged", r.status === "pass", r.note);
+}
+
 // -------------------------------------------------- remote host: state in the repo, export and import
 if (want("remote host: state in the repo, export and import")) {
   const RH = path.join(TMP, "remote-home");

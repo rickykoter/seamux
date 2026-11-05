@@ -4511,7 +4511,10 @@ function runsDir(slug) {
 }
 const fileSafe = s => String(s).replace(/[^a-z0-9._-]+/gi, "_");
 const hasBrowserStep = exec => !!(exec && (exec.steps || []).some(s => s.kind === "browser"));
-const hasClaimStep = exec => !!(exec && (exec.steps || []).some(s => s.kind === "claim"));
+// A run that holds something (a claim, a uses lock, a ${slot}) runs detached
+// under CLAIM_RUNNER, so a signal still gives it back.
+const hasClaimStep = exec => !!(exec && ((exec.steps || []).some(s => s.kind === "claim") || (exec.uses || []).length ||
+  Object.values(exec.env || {}).some(v => String(v).includes("${slot}"))));
 const locksDir = () => path.join(PLANS_DIR, "locks");
 
 // The shell a detached claiming run lives under ($1 node, $2 engine, $3-$6
