@@ -220,6 +220,32 @@ export function setStatus(review, id, to, by, note = "") {
   return x.it;
 }
 
+// Re-review rounds. Findings the agent marks addressed wait in a pending
+// round; `lookout prompt <id> --round` briefs a fresh reviewer on just their
+// hunks and seals the round. After MAX_ROUNDS the agent stops and asks the
+// person, as a plan's three failures in a row stop a check.
+export const MAX_ROUNDS = 2;
+export function pendingRound(review) {
+  const sealed = new Set((review.rounds || []).flatMap(r => r.findings));
+  return (review.findings || []).filter(f => f.status === "addressed" && !sealed.has(f.id));
+}
+export function sealRound(review, ids) {
+  review.rounds = review.rounds || [];
+  const round = { n: review.rounds.length + 1, at: now(), findings: ids };
+  review.rounds.push(round);
+  return round;
+}
+// What to tell the agent about re-review now, or "" when nothing waits.
+export function roundAdvice(review) {
+  const pending = pendingRound(review);
+  if (!pending.length) return "";
+  const done = (review.rounds || []).length;
+  if (done >= MAX_ROUNDS)
+    return `${pending.length} addressed finding(s) wait, and this review has had ${done} re-review rounds: stop and ask the person how to go on.`;
+  return `${pending.length} addressed finding(s) wait on a re-review (round ${done + 1} of ${MAX_ROUNDS}): once every fix is in, ` +
+    `spawn ONE fresh reviewer subagent with \`lookout prompt ${review.id} --round\`.`;
+}
+
 // The gate's answer. 3: nothing to judge (no review, or no reviewer has run);
 // 1: a blocker or major finding is open or only addressed; 0: pass. Minor and
 // nit findings never hold the gate.

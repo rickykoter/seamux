@@ -278,8 +278,11 @@ check and what it runs.
   address` each finding; the human resolves or dismisses on the page, and
   only then does the check pass. Never pass it by hand, and never close
   findings yourself unless the plan set `review.agentMayClose`. Like any
-  check it goes stale after an edit: re-run it (it reads statuses; it
-  does not re-review — say when a fix deserves a second reviewer).
+  check it goes stale after an edit: re-run it (it reads statuses).
+  Addressed findings wait on a re-review: once the fixes are in, spawn ONE
+  fresh reviewer with `lookout prompt <id> --round`, which looks only at
+  their hunks. A review gets two such rounds; after that, stop and ask the
+  person.
 - **The delivery review** (`review.delivery: true`): when the last
   increment is done the plan enters a `delivery` phase instead of
   finishing. Run `deep-plan deliver <slug>`: with no reviewer yet it

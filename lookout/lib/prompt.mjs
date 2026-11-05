@@ -53,7 +53,13 @@ export function conventions(root) {
   return [];
 }
 
-export function brief(review, { patchPath, plansDir, outPath, reply = false }) {
+export function brief(review, { patchPath, plansDir, outPath, reply = false, round = null }) {
+  // A re-review round looks only at the addressed findings' files.
+  if (round) {
+    const files = new Set(round.findings.map(f => f.file));
+    review = { ...review, files: (review.files || []).filter(f => files.has(f.path)),
+      groups: (review.groups || []).map(g => ({ ...g, files: g.files.filter(f => files.has(f)) })).filter(g => g.files.length) };
+  }
   const src = review.source || {};
   const where = src.kind === "patch" ? `the patch file ${src.file}`
     : src.kind === "range" ? `the commit range ${src.range} in ${src.root}`
@@ -77,6 +83,20 @@ export function brief(review, { patchPath, plansDir, outPath, reply = false }) {
       (rails ? "\n    linked because:\n" + rails : "");
   }).join("\n");
   const conv = src.kind === "patch" ? [] : conventions(src.root);
+  const roundText = round ? `
+## Re-review, round ${round.n}
+
+The agent fixed these findings and marked them addressed. Read each one's
+hunks as they are now and check the fix: does it remove the failure, and
+does it break anything beside it? Report only on these files. A fix that
+does not hold is a new finding at the line it is on now, naming the earlier
+id in its summary; a fix that holds needs nothing from you.
+
+${round.findings.map(f => {
+    const said = (f.thread || []).filter(m => m.kind === "status" && m.to === "addressed").map(m => m.text).filter(Boolean).pop();
+    return `- ${f.id} ${f.severity} ${f.file}:${f.line}: ${f.summary}${said ? `\n  what changed: ${said}` : ""}`;
+  }).join("\n")}
+` : "";
   const prior = (review.findings || []).length
     ? `\nThis review already has ${(review.findings || []).length} finding(s) (\`lookout findings list ${review.id}\`). ` +
       "Do not report them again; an exact repeat is skipped anyway.\n" : "";
@@ -86,7 +106,7 @@ each group of changes means, as one JSON object.
 
 ## What you are reviewing
 
-${review.title} — ${where}.
+${review.title} — ${where}.${roundText ? "\n" + roundText : ""}
 The whole diff is in ${patchPath}.${show}
 Files, riskiest first (lookout's ranking; spend your attention in this order):
 
