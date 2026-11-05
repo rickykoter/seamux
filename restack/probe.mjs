@@ -1231,6 +1231,28 @@ if (want("plugin: engine pointer, setup, shim, bin")) {
     r.status === 0 && JSON.parse(r.stdout || "{}").root === HERE, r.stderr);
 }
 
+// ---------------------------------------------------------------- .seamux resolution
+if (want(".seamux resolution")) {
+  // The resolver is a copy of deep-plan's (ADR 0004): the function text must match.
+  const fn = f => { const t = fs.readFileSync(f, "utf8"); const i = t.indexOf("// ------------------------------------------------- .seamux file resolution"); return i < 0 ? "" : t.slice(i); };
+  const mine = fn(path.join(HERE, "lib", "config.mjs"));
+  ok("seamux: restack's resolveSeamux is a byte copy of deep-plan's",
+    mine !== "" && mine === fn(path.join(HERE, "..", "deep-plan", "lib", "host.mjs")));
+  const G = ["-c", "user.email=probe@restack", "-c", "user.name=probe"];
+  const M = fs.realpathSync(fs.mkdtempSync(path.join(TMP, "seamux-"))), W = M + "-wt";
+  const git = (cwd, ...a) => execFileSync("git", [...G, ...a], { cwd, env: ENV, stdio: "pipe" });
+  git(M, "init", "-q", "-b", "main");
+  fs.writeFileSync(path.join(M, ".gitignore"), ".seamux/\n");
+  git(M, "add", "-A"); git(M, "commit", "-qm", "init"); git(M, "worktree", "add", "-q", "-b", "wt", W);
+  fs.mkdirSync(path.join(M, ".seamux")); fs.mkdirSync(path.join(W, ".seamux"));
+  fs.writeFileSync(path.join(M, ".seamux", "restack.json"), JSON.stringify({ remote: "upstream" }));
+  fs.writeFileSync(path.join(W, ".seamux", "restack.json"), JSON.stringify({ remote: "stale" }));
+  const keep = process.env.RESTACK_CONFIG; delete process.env.RESTACK_CONFIG;
+  const cfg = load(W);
+  if (keep !== undefined) process.env.RESTACK_CONFIG = keep;
+  ok("seamux: restack.json in an ignoring repo's worktree is main's", cfg.remote === "upstream" && cfg.path === path.join(M, ".seamux", "restack.json"), cfg.path);
+}
+
 // ---------------------------------------------------------------- done
 console.log(`\n  ${pass} passed, ${fail} failed  (${path.basename(TMP)})`);
 if (!process.argv.includes("--keep")) fs.rmSync(TMP, { recursive: true, force: true });

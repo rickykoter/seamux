@@ -6,7 +6,9 @@
 //               files one after a correction (`deep-plan lesson`), and the
 //               engine files one at a failed grade, a done --force, a review
 //               failing on an open blocker or major, and the retry cap.
-//   lessons     <repo>/.seamux/lessons.md, committed. Only `deep-plan retro`
+//   lessons     <repo>/.seamux/lessons.md, read where resolveSeamux points
+//               (ADR 0068): committed on the branch, or main's when the
+//               repo ignores .seamux. Only `deep-plan retro`
 //               writes it, one candidate at a time, kept, merged or dropped
 //               by a person. At most LESSON_CAP rules, so it stays readable.
 //
@@ -16,6 +18,7 @@
 //   settle  {id, at, by, settled: "keep"|"merge"|"drop", lesson?, why?}
 import fs from "node:fs";
 import path from "node:path";
+import { resolveSeamux } from "./host.mjs";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { STATE_DIR } from "./state.mjs";
@@ -140,7 +143,7 @@ export function formatLessons({ head, lessons }) {
 
 export function readLessons(top) {
   let text = "";
-  try { text = fs.readFileSync(lessonsFile(top), "utf8"); } catch { return { head: "", lessons: [], exists: false }; }
+  try { text = fs.readFileSync(resolveSeamux(top, path.join(".seamux", "lessons.md")).path, "utf8"); } catch { return { head: "", lessons: [], exists: false }; }
   return { ...parseLessons(text), exists: true };
 }
 
@@ -224,7 +227,7 @@ export function lessonReport(doc, spec, files, matches) {
 // The lessons a session starting in `top` is told, cut to `cap` bytes.
 export function lessonsBrief(top, cap = 4096) {
   let text = "";
-  try { text = fs.readFileSync(lessonsFile(top), "utf8"); } catch { return ""; }
+  try { text = fs.readFileSync(resolveSeamux(top, path.join(".seamux", "lessons.md"), { warn: false }).path, "utf8"); } catch { return ""; }
   const doc = parseLessons(text);
   if (!doc.lessons.length) return "";
   let out = "";

@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveSeamux } from "./host.mjs";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
@@ -55,7 +56,7 @@ export function contentAllowed(cfg) {
 // .seamux/lookout.json at the review source's repo root, or {}.
 export function repoConfig(root) {
   if (!root) return {};
-  try { return JSON.parse(fs.readFileSync(path.join(root, ".seamux", "lookout.json"), "utf8")) || {}; }
+  try { return JSON.parse(fs.readFileSync(resolveSeamux(root, path.join(".seamux", "lookout.json")).path, "utf8")) || {}; }
   catch { return {}; }
 }
 

@@ -13,6 +13,7 @@
 // every command without running it; `restack doctor` lists them.
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 
 export const CONFIG_REL = path.join(".seamux", "restack.json");
 
@@ -33,8 +34,10 @@ export const DEFAULTS = {
 export const RESOLUTIONS = ["regen", "take-base", "take-branch", "union", "manual"];
 export const TIERS = ["cheap", "expensive"];
 
+// RESTACK_CONFIG wins; otherwise the branch's tracked file, else main's
+// (resolveSeamux, below).
 export function configPath(root) {
-  return process.env.RESTACK_CONFIG || path.join(root, CONFIG_REL);
+  return process.env.RESTACK_CONFIG || resolveSeamux(root, CONFIG_REL).path;
 }
 
 // Missing config is not an error: `status`, `plan` and the rebase walk all
@@ -233,4 +236,54 @@ export function summarize(hits) {
   const dir = common.join("/");
   if (!dir || suffix.length < 3) return null;
   return `${dir}/**/*${suffix}`;
+}
+
+// ------------------------------------------------- .seamux file resolution
+// Where a .seamux file is read from (ADR 0068). A file git tracks in this
+// worktree is the branch's own, read where it is. Any other path maps to the
+// same place under the main checkout (the parent of the shared .git), so
+// ignored .seamux folders in many worktrees read one copy. A nested project
+// folder (ops/.seamux/...) maps to the same relative path. Outside git, in
+// the main checkout, or with a git dir not named .git, the path is used as
+// given. Returns { path, from: "checkout" | "branch" | "main", warning }; the
+// warning names an untracked worktree copy that differs from main's, and is
+// printed to stderr once per file unless { warn: false }.
+//
+// The same function is copied into deep-plan/lib/host.mjs,
+// lookout/lib/host.mjs and restack/lib/config.mjs (ADR 0004); the probes
+// check the copies agree. Change all three together.
+const seamuxGit = new Map(), seamuxSeen = new Map(), seamuxWarned = new Set();
+export function resolveSeamux(root, rel, { warn = true } = {}) {
+  // The path as given is what callers print and compare; the real path is
+  // only for placing it against git's (resolved) top level.
+  const given = path.resolve(root || "."), abs = path.join(given, rel);
+  if (seamuxSeen.has(abs)) return seamuxSeen.get(abs);
+  let base = given;
+  try { base = fs.realpathSync(given); } catch { /* a folder not made yet: as given */ }
+  const plain = { path: abs, from: "checkout", warning: "" };
+  if (!seamuxGit.has(base)) {
+    const r = spawnSync("git", ["-C", base, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"],
+      { encoding: "utf8", timeout: 5000 });
+    const [top, common] = r.status === 0 ? r.stdout.trim().split("\n") : [];
+    seamuxGit.set(base, top && common ? { top, main: path.basename(common) === ".git" ? path.dirname(common) : "" } : null);
+  }
+  const g = seamuxGit.get(base);
+  const inTop = g && path.relative(g.top, path.join(base, rel));
+  let out = plain;
+  if (g && g.main && g.main !== g.top && inTop && !inTop.startsWith("..") && !path.isAbsolute(inTop)) {
+    const tracked = spawnSync("git", ["-C", g.top, "ls-files", "--error-unmatch", "--", inTop],
+      { encoding: "utf8", timeout: 5000 }).status === 0;
+    if (tracked) out = { path: abs, from: "branch", warning: "" };
+    else {
+      const mp = path.join(g.main, inTop);
+      const read = p => { try { return fs.readFileSync(p); } catch { return null; } };
+      const mine = read(abs), theirs = mine === null ? null : read(mp);
+      const warning = mine !== null && (theirs === null || !mine.equals(theirs))
+        ? `seamux: ${abs} is not tracked and differs from the main checkout's copy; reading ${mp}` : "";
+      out = { path: mp, from: "main", warning };
+    }
+  }
+  seamuxSeen.set(abs, out);
+  if (warn && out.warning && !seamuxWarned.has(abs)) { seamuxWarned.add(abs); console.error(out.warning); }
+  return out;
 }

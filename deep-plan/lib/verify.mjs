@@ -29,6 +29,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { resolveSeamux } from "./host.mjs";
 
 export const VERIFY_REL = path.join(".seamux", "verify.json");
 export const RECIPE_KINDS = ["test", "e2e", "observability", "browser"];
@@ -206,8 +207,11 @@ function validateRecipe(r, i) {
 
 // One config file. Missing is not an error — most directories have none, and
 // a repo with none at all still plans; it just infers no checks.
+// The file is read where resolveSeamux points (the branch's tracked copy, else
+// the main checkout's); `dir` stays the folder its globs and commands are
+// relative to.
 export function load(dir) {
-  const p = path.join(dir, VERIFY_REL);
+  const p = resolveSeamux(dir, VERIFY_REL).path;
   let raw;
   try { raw = fs.readFileSync(p, "utf8"); }
   catch { return { present: false, path: p, dir, recipes: [], errors: [] }; }
@@ -254,7 +258,7 @@ export function relToRoot(root, file) {
 function nearestDir(root, rel) {
   let d = path.dirname(path.join(root, rel));
   for (;;) {
-    if (fs.existsSync(path.join(d, VERIFY_REL))) return d;
+    if (fs.existsSync(resolveSeamux(d, VERIFY_REL, { warn: false }).path)) return d;
     if (path.resolve(d) === path.resolve(root)) return null;
     const up = path.dirname(d);
     if (up === d) return null;

@@ -2885,8 +2885,10 @@ if (want("claim steps: engine-run acquisition")) {
   })());
 
   // Not the probe's own child: one it never waits on would linger as a zombie
-  // that kill(pid, 0) still finds, and the lock would never look free.
-  const holder = { pid: Number(execSync("sh -c 'sleep 2 >/dev/null 2>&1 & echo $!'", { encoding: "utf8" }).trim()) };
+  // that kill(pid, 0) still finds, and the lock would never look free. It
+  // lives 8 seconds: with 2, a loaded machine started the run after the
+  // holder had gone, and the wait this tests never happened.
+  const holder = { pid: Number(execSync("sh -c 'sleep 8 >/dev/null 2>&1 & echo $!'", { encoding: "utf8" }).trim()) };
   fs.mkdirSync(LOCKS, { recursive: true });
   fs.writeFileSync(path.join(LOCKS, "port_5432.lock"), JSON.stringify({ name: "port:5432", pid: holder.pid, slug: "other", n: "1", id: "db" }));
   r = cli("check", "run", "cl-1", "1", "lock");
@@ -5292,6 +5294,68 @@ if (want("host detection")) {
   const t = spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "doctor"],
     { encoding: "utf8", env: { ...ENV, CLAUDE_CODE_ENTRYPOINT: "claude-desktop" }, cwd: REPO });
   ok("host: doctor prints a host line", /^host: desktop \(CLAUDE_CODE_ENTRYPOINT=claude-desktop\)$/m.test(t.stdout));
+}
+
+// -------------------------------------------------- .seamux files resolve to the branch or main (ADR 0068)
+if (want(".seamux resolution")) {
+  const SR = fs.realpathSync(fs.mkdtempSync(path.join(TMP, "seamux-res-")));
+  const sh = (cmd, cwd) => execSync(cmd, { cwd, stdio: "pipe", env: { ...ENV,
+    GIT_AUTHOR_NAME: "probe", GIT_AUTHOR_EMAIL: "probe@deep-plan", GIT_COMMITTER_NAME: "probe", GIT_COMMITTER_EMAIL: "probe@deep-plan" } });
+  const recipe = id => JSON.stringify({ recipes: [{ id, kind: "test", tier: "cheap", run: "true" }] });
+  const put = (f, s) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, s); };
+  const ids = dir => loadVerify(dir).recipes.map(r => r.id).join(",");
+
+  // A repo that commits .seamux: the branch's own edit is read.
+  const CM = path.join(SR, "committed"), CW = path.join(SR, "committed-wt");
+  fs.mkdirSync(CM);
+  sh("git init -q -b main", CM);
+  put(path.join(CM, ".seamux", "verify.json"), recipe("from-main"));
+  sh("git add -A && git commit -q -m init && git worktree add -q -b feat " + JSON.stringify(CW), CM);
+  put(path.join(CW, ".seamux", "verify.json"), recipe("from-branch"));
+  sh("git commit -qam branch-edit", CW);
+  const rc = HOST.resolveSeamux(CW, ".seamux/verify.json", { warn: false });
+  ok("seamux: a tracked file in a worktree is read from the branch", rc.from === "branch" && rc.path === path.join(CW, ".seamux", "verify.json"));
+  ok("seamux: load reads the branch's recipes in a committed repo", ids(CW) === "from-branch");
+  ok("seamux: the main checkout reads its own file", HOST.resolveSeamux(CM, ".seamux/verify.json", { warn: false }).from === "checkout" && ids(CM) === "from-main");
+
+  // A repo that ignores .seamux: a stale worktree copy is passed over for main's.
+  const IM = path.join(SR, "ignored"), IW = path.join(SR, "ignored-wt"), IW2 = path.join(SR, "ignored-wt2");
+  fs.mkdirSync(IM);
+  sh("git init -q -b main", IM);
+  put(path.join(IM, ".gitignore"), ".seamux/\nops/.seamux/\n");
+  put(path.join(IM, "ops", "app.rb"), "x\n");
+  sh("git add -A && git commit -q -m init", IM);
+  put(path.join(IM, ".seamux", "verify.json"), recipe("main-fresh"));
+  put(path.join(IM, ".seamux", "lessons.md"), "# Lessons\n\n## L1\napplies: **\nfrom: p\n\nmain's rule\n");
+  put(path.join(IM, ".seamux", "adr.json"), JSON.stringify({ dir: "docs/decisions" }));
+  put(path.join(IM, "ops", ".seamux", "verify.json"), recipe("ops-main"));
+  sh("git worktree add -q -b a " + JSON.stringify(IW) + " && git worktree add -q -b b " + JSON.stringify(IW2), IM);
+  put(path.join(IW, ".seamux", "verify.json"), recipe("wt-stale"));
+  put(path.join(IW2, ".seamux", "verify.json"), recipe("main-fresh"));
+  const ri = HOST.resolveSeamux(IW, ".seamux/verify.json", { warn: false });
+  ok("seamux: an untracked worktree copy resolves to main's", ri.from === "main" && ri.path === path.join(IM, ".seamux", "verify.json"));
+  ok("seamux: a stale untracked copy is named in a warning", /is not tracked and differs from the main checkout's copy/.test(ri.warning));
+  ok("seamux: a copy matching main's gives no warning", HOST.resolveSeamux(IW2, ".seamux/verify.json", { warn: false }).warning === "");
+  ok("seamux: load reads main's recipes, not the stale copy", ids(IW) === "main-fresh");
+  ok("seamux: a worktree with no copy at all reads main's", HOST.resolveSeamux(IW2, ".seamux/adr.json", { warn: false }).path === path.join(IM, ".seamux", "adr.json"));
+  const { readLessons } = await import("./lib/lessons.mjs");
+  ok("seamux: lessons in an ignoring repo are main's", readLessons(IW).lessons.map(l => l.rule).join() === "main's rule");
+  const alib2 = await import("./lib/adr.mjs");
+  ok("seamux: adr.json in an ignoring repo is main's", alib2.loadAdrConfig(IW).dir === "docs/decisions");
+
+  // A nested project folder maps to the same relative path in main.
+  const rn = HOST.resolveSeamux(path.join(IW, "ops"), ".seamux/verify.json", { warn: false });
+  ok("seamux: a nested project's file maps to main's same folder", rn.from === "main" && rn.path === path.join(IM, "ops", ".seamux", "verify.json"));
+  const landing = resolveFiles(IW, ["ops/app.rb"]);
+  ok("seamux: a nested file lands on its project's config read from main",
+    landing.files[0].config === "ops/.seamux/verify.json" && landing.recipes.map(r => r.id).join() === "ops-main,main-fresh",
+    JSON.stringify(landing.files[0]));
+
+  // Outside git, the path is used as given.
+  const NG = path.join(SR, "no-git");
+  fs.mkdirSync(NG);
+  ok("seamux: outside git the path is as given", HOST.resolveSeamux(NG, ".seamux/x.json").from === "checkout");
+  ok("seamux: the deep-plan and lookout copies agree", JSON.stringify(HOST_TWIN.resolveSeamux(IW, ".seamux/verify.json", { warn: false })) === JSON.stringify(ri));
 }
 
 // -------------------------------------------------- remote host: state in the repo, export and import
