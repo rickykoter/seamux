@@ -285,12 +285,15 @@ pub fn families(rows: &[Value], tiles: &[Tile]) -> Vec<FamilyBrief> {
         .collect()
 }
 
-/// A muted or tucked worktree, as the palette lists it.
+/// A muted, snoozed or tucked worktree, as the palette lists it.
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct TuckRow {
     pub path: String,
     pub level: crate::tuck::Level,
     pub at: u64,
+    /// When a snooze ends (ms since the epoch).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until: Option<u64>,
     pub name: String,
     pub branch: String,
     /// The live workspaces working in it.
@@ -396,13 +399,13 @@ pub struct ViewsFrame {
     pub plans: Vec<PlanBrief>,
     /// Each live workspace's newest lookout review.
     pub reviews: Vec<ReviewBrief>,
-    /// Muted and tucked worktrees, for the chip and the palette.
+    /// Muted, snoozed and tucked worktrees, for the chip and the palette.
     pub tucked: Vec<TuckRow>,
     /// Plan families: their parent, members and waits.
     pub families: Vec<FamilyBrief>,
     /// Each live workspace's open pages, plan first, then reviews, then asks.
     pub pages: Vec<NowPage>,
-    /// Each live workspace that is muted or tucked: "mute" or "tuck".
+    /// Each live workspace that is muted, snoozed or tucked: "mute", "snooze" or "tuck".
     pub levels: std::collections::BTreeMap<String, String>,
     /// Each live workspace's priority, 0 to 1, from the turn-end judgments
     /// (crew-board's judgments::priority_for): ⌘. and search order by it.
@@ -974,7 +977,7 @@ impl Feed {
         };
 
         let history = recent.iter().filter(|e| e.at >= start).map(Change::from).collect();
-        let (tucked, levels) = self.tucks(tiles, &decisions, &recent, &mut problems);
+        let (tucked, levels) = self.tucks(tiles, &decisions, &recent, now_ms, &mut problems);
         let priority = priorities(tiles, &crew_board::judgments::fresh_map(Some(now_ms as f64 / 1000.0), None), now_ms);
         // Each live workspace's branch, for search: from its pinned worktree
         // (any tile's root) where it has one, else its first tile's cwd. A
@@ -1079,9 +1082,10 @@ impl Feed {
         out
     }
 
-    /// The quieted worktrees and each live workspace's level. A muted
-    /// worktree whose workspace asked after the mute is unmuted (and saved).
-    fn tucks(&self, tiles: &[Tile], decisions: &[Decision], recent: &[Entry], problems: &mut Vec<String>) -> (Vec<TuckRow>, std::collections::BTreeMap<String, String>) {
+    /// The quieted worktrees and each live workspace's level. A muted or
+    /// snoozed worktree whose workspace asked after it was quieted is woken
+    /// (and saved), as is a snooze whose end has passed by `now_ms`.
+    fn tucks(&self, tiles: &[Tile], decisions: &[Decision], recent: &[Entry], now_ms: u64, problems: &mut Vec<String>) -> (Vec<TuckRow>, std::collections::BTreeMap<String, String>) {
         use crate::tuck::{branch_of, root_of, Level};
         let mut entries = self.tuck.load();
         if entries.is_empty() {
@@ -1113,13 +1117,17 @@ impl Feed {
                 })
                 .collect()
         };
-        let (gone, kept): (Vec<_>, Vec<_>) =
-            entries.drain(..).partition(|e| e.level == Level::Mute && asks(&under(&e.path)).iter().any(|at| *at > e.at));
+        let woken = |e: &crate::tuck::Entry| match e.level {
+            Level::Mute => asks(&under(&e.path)).iter().any(|at| *at > e.at),
+            Level::Snooze => e.until.map_or(true, |u| u <= now_ms) || asks(&under(&e.path)).iter().any(|at| *at > e.at),
+            Level::Tuck => false,
+        };
+        let (gone, kept): (Vec<_>, Vec<_>) = entries.drain(..).partition(|e| woken(e));
         entries = kept;
         if !gone.is_empty() {
             // Under the store's lock, so a mute set meanwhile is not lost.
             if let Err(e) = self.tuck.remove(&gone) {
-                problems.push(format!("could not save the unmute: {e}"));
+                problems.push(format!("could not save the wake: {e}"));
             }
         }
         let mut levels = std::collections::BTreeMap::new();
@@ -1128,13 +1136,14 @@ impl Feed {
             .map(|e| {
                 let ws = under(&e.path);
                 for w in &ws {
-                    levels.insert(w.clone(), match e.level { Level::Mute => "mute", Level::Tuck => "tuck" }.to_string());
+                    levels.insert(w.clone(), e.level.as_str().to_string());
                 }
                 let last = recent.iter().filter(|h| ws.iter().any(|w| w.eq_ignore_ascii_case(&h.ws))).map(|h| h.at).max().unwrap_or(e.at);
                 TuckRow {
                     path: e.path.clone(),
                     level: e.level,
                     at: e.at,
+                    until: e.until,
                     name: if e.name.is_empty() { e.path.rsplit('/').next().unwrap_or("").to_string() } else { e.name.clone() },
                     branch: branch_of(&e.path),
                     waiting: !asks(&ws).is_empty(),

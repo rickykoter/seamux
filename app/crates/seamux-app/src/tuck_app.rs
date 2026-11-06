@@ -1,4 +1,4 @@
-//! The mute and tuck commands. Each rewrites the store (tuck.rs) and nudges
+//! The mute, snooze and tuck commands. Each rewrites the store (tuck.rs) and nudges
 //! the views feed, so every view hears the change in its next frame.
 
 use seamux_app::tuck::{root_of, Level, Store};
@@ -17,16 +17,17 @@ fn root_and_name(workspace: &str) -> Result<(String, String), String> {
     Ok((root, name))
 }
 
-/// Mute or tuck `workspace`'s worktree, or with "none" restore it.
+/// Mute, snooze or tuck `workspace`'s worktree, or with "none" restore it.
+/// A snooze takes `until` (ms since the epoch), which must be in the future.
 #[tauri::command]
-pub async fn tuck_set(workspace: String, level: String) -> Result<String, String> {
+pub async fn tuck_set(workspace: String, level: String, until: Option<u64>) -> Result<String, String> {
     let lvl = match level.as_str() {
         "none" => None,
         other => Some(Level::parse(other).ok_or(format!("not a level: {other:?}"))?),
     };
     let out = tauri::async_runtime::spawn_blocking(move || {
         let (root, name) = root_and_name(&workspace)?;
-        Store::live().set(&root, lvl, &name, now_ms())?;
+        Store::live().set_until(&root, lvl, &name, now_ms(), until)?;
         Ok::<String, String>(root)
     })
     .await

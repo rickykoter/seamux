@@ -2,13 +2,15 @@
 //!
 //! ```text
 //! ~/.claude/crew/tucked.json   (CREW_DURABLE_DIR overrides ~/.claude/crew)
-//! {"version": 1, "entries": [{"path": "~/code/x", "level": "mute", "at": 1792627200000, "name": "x"}]}
+//! {"version": 1, "entries": [{"path": "~/code/x", "level": "mute", "at": 1792627200000, "name": "x"},
+//!                             {"path": "~/code/y", "level": "snooze", "at": 1792627200000, "until": 1792630800000, "name": "y"}]}
 //! ```
 //!
 //! One entry per worktree root: every workspace whose pane works in that
-//! worktree is muted or tucked with it, across cmux restarts. Mute dims a
-//! workspace until it asks (an ask newer than the mute clears it); tuck hides
-//! it from the Dock until it is restored. Nothing here
+//! worktree is muted, snoozed or tucked with it, across cmux restarts. Mute
+//! dims a workspace until it asks (an ask newer than the mute clears it);
+//! snooze hides it until `until` passes or it asks; tuck hides it from the
+//! Dock until it is restored. Nothing here
 //! touches cmux: the workspace and its agent keep running.
 
 use std::collections::HashMap;
@@ -24,6 +26,7 @@ use serde_json::json;
 #[serde(rename_all = "lowercase")]
 pub enum Level {
     Mute,
+    Snooze,
     Tuck,
 }
 
@@ -31,8 +34,18 @@ impl Level {
     pub fn parse(s: &str) -> Option<Level> {
         match s {
             "mute" => Some(Level::Mute),
+            "snooze" => Some(Level::Snooze),
             "tuck" => Some(Level::Tuck),
             _ => None,
+        }
+    }
+
+    /// Its word in the store and the views' levels.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Level::Mute => "mute",
+            Level::Snooze => "snooze",
+            Level::Tuck => "tuck",
         }
     }
 }
@@ -48,6 +61,9 @@ pub struct Entry {
     /// The workspace's title when it was quieted, for the palette.
     #[serde(default)]
     pub name: String,
+    /// When a snooze ends (ms since the epoch); only snooze sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<u64>,
 }
 
 /// One change to the store at a time in this process (the app is its only
@@ -94,13 +110,25 @@ impl Store {
 
     /// Mute or tuck `root` (replacing its entry), or with `None` restore it.
     pub fn set(&self, root: &str, level: Option<Level>, name: &str, at: u64) -> Result<(), String> {
+        self.set_until(root, level, name, at, None)
+    }
+
+    /// `set`, with the time a snooze ends. A snooze needs an `until` after
+    /// `at`; the other levels take none.
+    pub fn set_until(&self, root: &str, level: Option<Level>, name: &str, at: u64, until: Option<u64>) -> Result<(), String> {
+        match (level, until) {
+            (Some(Level::Snooze), None) => return Err("a snooze needs a time to end".into()),
+            (Some(Level::Snooze), Some(u)) if u <= at => return Err("that snooze would end in the past".into()),
+            (Some(Level::Snooze), _) | (_, None) => {}
+            (_, Some(_)) => return Err("only a snooze takes an end time".into()),
+        }
         if root.is_empty() {
             return Err("no worktree to quiet".into());
         }
         let _held = WRITE.lock().unwrap_or_else(|p| p.into_inner());
         let mut entries: Vec<Entry> = self.load().into_iter().filter(|e| e.path != root).collect();
         if let Some(level) = level {
-            entries.push(Entry { path: root.to_string(), level, at, name: name.to_string() });
+            entries.push(Entry { path: root.to_string(), level, at, name: name.to_string(), until });
         }
         self.save(&entries)
     }
@@ -254,6 +282,32 @@ mod tests {
         assert_eq!(Level::parse("mute"), Some(Level::Mute));
         assert_eq!(Level::parse("tuck"), Some(Level::Tuck));
         assert_eq!(Level::parse("none"), None);
+        assert_eq!(Level::parse("snooze"), Some(Level::Snooze));
         assert_eq!(serde_json::to_string(&Level::Tuck).unwrap(), "\"tuck\"");
+        for l in [Level::Mute, Level::Snooze, Level::Tuck] {
+            assert_eq!(Level::parse(l.as_str()), Some(l));
+        }
+    }
+
+    #[test]
+    fn tuck_a_snooze_keeps_its_end_and_refuses_a_bad_one() {
+        let s = store("snooze");
+        assert!(s.set("/w/a", Some(Level::Snooze), "a", 10).is_err(), "no end time");
+        assert!(s.set_until("/w/a", Some(Level::Snooze), "a", 10, Some(10)).is_err(), "ends at once");
+        assert!(s.set_until("/w/a", Some(Level::Mute), "a", 10, Some(20)).is_err(), "a mute has no end");
+        assert!(s.load().is_empty());
+        s.set_until("/w/a", Some(Level::Snooze), "a", 10, Some(20)).unwrap();
+        s.set("/w/b", Some(Level::Mute), "b", 10).unwrap();
+        let text = std::fs::read_to_string(&s.file).unwrap();
+        assert!(text.contains("\"until\": 20"), "{text}");
+        assert_eq!(text.matches("until").count(), 1, "a mute writes no until: {text}");
+        let e = s.load();
+        let a = e.iter().find(|x| x.path == "/w/a").unwrap();
+        assert_eq!((a.level, a.until), (Level::Snooze, Some(20)));
+        // Snoozing a muted worktree replaces the mute.
+        s.set_until("/w/b", Some(Level::Snooze), "b", 11, Some(30)).unwrap();
+        assert_eq!(s.load().iter().filter(|x| x.level == Level::Snooze).count(), 2);
+        assert_eq!(s.unmute_all().unwrap(), 0, "unmute leaves snoozes");
+        let _ = std::fs::remove_dir_all(s.file.parent().unwrap());
     }
 }
