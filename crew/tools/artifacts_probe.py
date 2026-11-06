@@ -436,6 +436,45 @@ with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
           sorted(r["title"] for r in A.search(kind="commit")) == ["Add guide", "Quiet and silent", "Quiet with oneline"],
           [r["title"] for r in A.search(kind="commit")])
 
+    print("turns")
+    # lookout's turn log (ADR 0070): one line per finished turn.
+    os.makedirs(os.path.join(plans, "turns"))
+    turn = {"n": 3, "session": "0b9c2f1e-turns", "root": ws, "prompt": "add the widget",
+            "start": "a" * 40, "end": "b" * 40, "files": 2, "at": "2020-05-01T00:00:00.000Z"}
+    with open(os.path.join(plans, "turns", "0b9c2f1e-turns.jsonl"), "w") as fh:
+        jl(fh, turn)
+        jl(fh, dict(turn, n=4, files=0, prompt="look around"))       # changed nothing
+        fh.write("{torn line\n")
+        jl(fh, dict(turn, n=True, prompt="a bool is not a number"))
+        jl(fh, dict(turn, n=5, files=1.0, prompt="a float count"))
+        jl(fh, dict(turn, n=6, session="../escape", prompt="a bad session"))
+        jl(fh, dict(turn, n=7, session="s\n", prompt="a session with a newline"))
+        jl(fh, dict(turn, n=8, prompt="", files=1))
+    open(os.path.join(plans, "turns", "0b9c2f1e-turns.open.json"), "w").write("{}\n")
+    # The review the Wake opens for a turn is not a review row.
+    json.dump({"id": "wake-t0b9c2f1e-3", "title": "turn 3 · add the widget", "createdAt": "2020-05-01T00:00:00.000Z",
+               "source": {"root": ws, "kind": "turn"}}, open(os.path.join(plans, "reviews", "wake-t0b9c2f1e-3.json"), "w"))
+    A.index()
+    turns = sorted(A.search(kind="turn", limit=100), key=lambda r: r["locator"])
+    check("a turn that changed files is a turn row, titled by its number and prompt",
+          [(r["locator"], r["title"]) for r in turns] == [("0b9c2f1e-turns/3", "turn 3 · add the widget"),
+                                                          ("0b9c2f1e-turns/8", "turn 8")],
+          [(r["locator"], r["title"]) for r in turns])
+    t3 = turns[0] if turns else {}
+    check("a turn row carries its workspace, session, prompt and time, from lookout",
+          t3.get("ws") == ws and t3.get("session_id") == "0b9c2f1e-turns" and t3.get("prompt") == "add the widget"
+          and t3.get("created_at") == "2020-05-01T00:00:00.000Z" and t3.get("source") == "lookout", t3)
+    check("a turn that changed nothing, and a malformed line, get no row",
+          not any(r["locator"].endswith(("/4", "/5", "/6", "/7")) for r in turns))
+    revs = sorted(r["locator"] for r in A.search(kind="review", limit=100))
+    check("the review the Wake opened for a turn is not a review row",
+          "wake-t0b9c2f1e-3" not in revs and "wake-page-r1" in revs, revs)
+    with open(os.path.join(plans, "turns", "0b9c2f1e-turns.jsonl"), "a") as fh:
+        jl(fh, dict(turn, n=9, prompt="a later turn", files=3))
+    A.index()
+    check("a turn appended to the log shows at the next index",
+          any(r["locator"] == "0b9c2f1e-turns/9" for r in A.search(kind="turn", limit=100)))
+
     print("search")
     hits = A.search("scratch notes")
     check("FTS finds rows by a word in their prompt", any(r["locator"].endswith("notes.md") for r in hits))

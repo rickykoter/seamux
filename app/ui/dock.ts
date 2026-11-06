@@ -13,7 +13,7 @@ import { NewWorkspace } from "./newws";
 import { ReclaimWizard } from "./reclaim";
 import { Sheet } from "./sheet";
 import { splitter } from "./splitter";
-import { setLevel, type Levels } from "./tuck";
+import { setLevel, setResume, type Levels } from "./tuck";
 import type { Frame as WallFrame, Tile } from "./tiles";
 
 type IntentServer = { origin: string | null; up: boolean; reason: string | null };
@@ -106,10 +106,18 @@ export class DockView {
       if (d?.crew === "select" && typeof d.ws === "string" && d.ws) {
         this.select(d.ws, true, typeof d.show === "string" ? d.show : "any", typeof d.pane === "string" ? d.pane : "");
       }
-      // The board's ⋯ menu: mute, tuck away or bring back, as the views do.
-      const t = d as { level?: unknown; name?: unknown } | null;
-      if (d?.crew === "tuck" && typeof d.ws === "string" && d.ws && (t?.level === "mute" || t?.level === "tuck" || t?.level === "none")) {
-        void setLevel(d.ws, typeof t.name === "string" ? t.name : d.ws, t.level, this.levels[d.ws]);
+      // The board's ⋯ menu: mute, snooze, tuck away or bring back, as the
+      // views do. A snooze carries its end (ms since the epoch).
+      const t = d as { level?: unknown; name?: unknown; until?: unknown } | null;
+      const until = typeof t?.until === "number" && Number.isFinite(t.until) ? t.until : undefined;
+      const lvl = t?.level === "snooze" ? (until ? "snooze" : null) : t?.level === "mute" || t?.level === "tuck" || t?.level === "none" ? t.level : null;
+      if (d?.crew === "tuck" && typeof d.ws === "string" && d.ws && lvl) {
+        void setLevel(d.ws, typeof t?.name === "string" ? t.name : d.ws, lvl, this.levels[d.ws], until);
+      }
+      // The board's Resume at reset (its ⋯ menu) and the armed chip's disarm.
+      const u = d as { on?: unknown; name?: unknown } | null;
+      if (d?.crew === "resume" && typeof d.ws === "string" && d.ws && typeof u?.on === "boolean") {
+        void setResume(d.ws, typeof u.name === "string" ? u.name : d.ws, u.on);
       }
       // The board's reclaim chip: what would go, and a yes, in the wizard.
       const r = d as { name?: unknown } | null;

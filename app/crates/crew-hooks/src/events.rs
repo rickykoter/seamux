@@ -1,10 +1,11 @@
 //! `seamux crew-hook <event>`: crew/hooks/crew-hook.sh and lib.sh in Rust.
 //!
 //! ```text
-//! seamux crew-hook <session|pretool|prompt|ask|answered|task|notification|stop|end>  < payload
+//! seamux crew-hook <session|pretool|prompt|ask|answered|task|notification|stop|stopfail|end>  < payload
 //! ```
 //!
-//! Beyond the bash: `prompt` (UserPromptSubmit), the state history every
+//! Beyond the bash: `prompt` (UserPromptSubmit), `stopfail` (StopFailure: a
+//! usage limit ended the turn), the state history every
 //! event that changes an agent's state appends (crew-core's history), and
 //! the pane's own state file (crew-core's status). An event changes only its
 //! own pane's file; the workspace's lane, phase: token and question and asked
@@ -575,6 +576,7 @@ fn session(h: &mut Hook) {
             p.question = None;
             p.asked = None;
             p.review = false;
+            p.limited = None;
         });
         h.history("idle", "session");
         r
@@ -660,6 +662,52 @@ fn stop(h: &mut Hook) -> String {
     out
 }
 
+/// The errors a resume can wait out: a usage limit (rate_limit) or a spend
+/// limit (billing_error). hooks.json's matcher passes only these; any other
+/// StopFailure (an auth failure, an overload) is left to Stop's absence.
+pub const LIMIT_ERRORS: [&str; 2] = ["rate_limit", "billing_error"];
+
+/// StopFailure for a limit: Claude Code fires it instead of Stop, so the pane
+/// would stay working until the interrupt check read its screen. It goes idle
+/// now, with `limited` saying why, for which session, and which window and
+/// reset the status line's limits.json gives (none known: no reset time,
+/// and nothing resumes it unattended). No git and no turn-end judgment: the
+/// turn did not finish its work. Its banner names the window and the reset.
+fn stopfail(h: &mut Hook) {
+    let error = h.json("error");
+    if !LIMIT_ERRORS.contains(&error.as_str()) {
+        return;
+    }
+    let sid = h.json("session_id");
+    let now = crew_core::history::now_ms();
+    let now_s = now / 1000;
+    let cache = crew_core::limits::read(&h.state);
+    let (window, resets) = crew_core::limits::stopped_by(cache.as_ref(), &error, now_s);
+    let limited = status::Limited {
+        error: error.clone(),
+        session: sid.clone(),
+        at: now,
+        window: window.map(String::from),
+        resets_at: resets.map(|r| r * 1000),
+        tries: 0,
+        next_try: None,
+        gave_up: None,
+    };
+    let (before, after, _pane) = status::update(&h.state, &h.ws, &surface(), &sid, now, |p| {
+        p.state = "idle".into();
+        p.question = None;
+        p.asked = None;
+        p.limited = Some(limited);
+    });
+    h.lane_to(&before, &after, true);
+    if !after.busy() {
+        h.cli(&["clear-status", "claude"]);
+    }
+    h.history("idle", "stopfail");
+    h.tokens(after.phase(), &[]);
+    h.notify("crew:limit", &format!("Stopped: {}", crew_core::limits::stop_text(&error, window, resets, now_s)));
+}
+
 /// pretool, past seamux-hook.sh's hold test: this pane is at work again, so
 /// what it held (a wait, a turn-end ask, the review lane) is released, and
 /// the workspace's lane and phase follow the roll-up. A sibling pane that
@@ -675,6 +723,7 @@ fn pretool() -> i32 {
         p.state = "working".into();
         p.asked = None;
         p.review = false;
+        p.limited = None;
     });
     // Back from waiting on you: the phase is the roll-up's again.
     let resumed = before.state == "needs_input" || before.asked.is_some() || legacy_ask;
@@ -751,6 +800,7 @@ pub fn main(args: &[String]) -> i32 {
                 p.question = None;
                 p.asked = None;
                 p.review = false;
+                p.limited = None;
             });
             String::new()
         }
@@ -777,6 +827,10 @@ pub fn main(args: &[String]) -> i32 {
             String::new()
         }
         "stop" => stop(&mut h),
+        "stopfail" => {
+            stopfail(&mut h);
+            String::new()
+        }
         "end" => {
             // The session is over: nothing it asked waits any more.
             h.history("ended", "end");
@@ -786,6 +840,7 @@ pub fn main(args: &[String]) -> i32 {
                 p.question = None;
                 p.asked = None;
                 p.review = false;
+                p.limited = None;
             });
             h.lane_to(&before, &after, true);
             if !after.busy() {

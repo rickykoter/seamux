@@ -4,7 +4,11 @@ import type { Decision } from "./decisions";
 import { catSvg } from "./panecat";
 import { FIELDS, rowsOf, search, type FamilyIn, type Field, type Hit, type Inputs, type PlanIn, type Pr, type Row, type TileIn } from "./search";
 import { ago } from "./tiles";
-import { say, type TuckRow } from "./tuck";
+import { say, type Level, type TuckRow } from "./tuck";
+
+/** A quieted row's word in the list and the preview. */
+const LEVEL_SAID: Record<Level, string> = { mute: "muted", snooze: "snoozed", tuck: "tucked" };
+const levelSaid = (l: string): string => LEVEL_SAID[l as Level] ?? l;
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -258,7 +262,7 @@ export class Palette {
     const meta = el("span", "palette-meta");
     const second = this.secondLine(h);
     meta.append(...second);
-    const when = el("span", "palette-when", r.level ? (r.level === "tuck" ? "tucked" : "muted") : ago(Date.now() - r.since));
+    const when = el("span", "palette-when", r.level ? levelSaid(r.level) : ago(Date.now() - r.since));
     row.append(name, when, meta);
     row.addEventListener("mousemove", () => {
       if (this.sel !== i) { this.sel = i; this.selKey = r.key; this.draw(); }
@@ -295,7 +299,7 @@ export class Palette {
       p.append(v);
       bits.push(p);
     };
-    line("state", `${r.level ? (r.level === "tuck" ? "tucked · " : "muted · ") : ""}${STATE_SAID[r.state] ?? r.state} · ${ago(Date.now() - r.since)}`);
+    line("state", `${r.level ? `${levelSaid(r.level)} · ` : ""}${STATE_SAID[r.state] ?? r.state} · ${ago(Date.now() - r.since)}`);
     line("branch", r.branch, "branch");
     const g = r.progress;
     if (g) {

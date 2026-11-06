@@ -1,8 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import "./tuck.css";
 
-/** How a workspace is quieted: muted (dimmed, quiet until it asks) or tucked (hidden). */
-export type Level = "mute" | "tuck";
+/** How a workspace is quieted: muted (dimmed, quiet until it asks), snoozed
+ *  (hidden until a time or until it asks) or tucked (hidden). */
+export type Level = "mute" | "snooze" | "tuck";
 export type Levels = Record<string, Level>;
 
 /** A row of views:frame's tucked list (views.rs TuckRow). */
@@ -10,6 +11,8 @@ export type TuckRow = {
   path: string;
   level: Level;
   at: number;
+  /** When a snooze ends (ms since the epoch). */
+  until?: number;
   name: string;
   branch: string;
   workspaces: string[];
@@ -66,14 +69,74 @@ export function say(text: string, action?: { label: string; run: () => void }, b
   noteTimer = window.setTimeout(() => note?.classList.remove("on"), 6000);
 }
 
-const WORD: Record<Level, string> = { mute: "Muted", tuck: "Tucked away" };
+const WORD: Record<Level, string> = { mute: "Muted", snooze: "Snoozed", tuck: "Tucked away" };
 
-/** Set `ws`'s level ("none" restores), with a note that can undo it. */
-export async function setLevel(ws: string, name: string, level: Level | "none", was: Level | undefined): Promise<void> {
+/** The snooze presets, as both ⋯ menus offer them (crew/board/intent.js
+ *  keeps the same four). */
+export type Snooze = "1h" | "3h" | "tomorrow" | "monday";
+export const SNOOZES: { key: Snooze; label: string }[] = [
+  { key: "1h", label: "Snooze 1h" },
+  { key: "3h", label: "Snooze 3h" },
+  { key: "tomorrow", label: "Until tomorrow 9am" },
+  { key: "monday", label: "Until Monday 9am" },
+];
+
+/** When a snooze preset taken at `now` ends (ms since the epoch, local time). */
+export function snoozeUntil(key: Snooze, now: Date): number {
+  if (key === "1h" || key === "3h") return now.getTime() + (key === "1h" ? 1 : 3) * 3_600_000;
+  const d = new Date(now.getTime());
+  // Tomorrow, or the next Monday after today (a week on, on a Monday).
+  d.setDate(d.getDate() + (key === "tomorrow" ? 1 : (8 - d.getDay()) % 7 || 7));
+  d.setHours(9, 0, 0, 0);
+  return d.getTime();
+}
+
+/** "3:00 PM" today, else "Mon 9:00 AM": when a snooze ends. */
+export function wakesAt(until: number, now = new Date()): string {
+  const d = new Date(until);
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return d.toDateString() === now.toDateString() ? time : `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
+}
+
+/** Set `ws`'s level ("none" restores), with a note that can undo it. A
+ *  snooze takes `until`; undoing back to a snooze is not offered, since its
+ *  end is not known here. */
+export async function setLevel(ws: string, name: string, level: Level | "none", was: Level | undefined, until?: number): Promise<void> {
   try {
-    await invoke("tuck_set", { workspace: ws, level });
+    await invoke("tuck_set", { workspace: ws, level, until: level === "snooze" ? until : undefined });
     const back = was ?? "none";
-    say(level === "none" ? `${name} is back` : `${WORD[level]}: ${name}`, { label: "Undo", run: () => void setLevel(ws, name, back, level === "none" ? undefined : level) });
+    const text = level === "none" ? `${name} is back` : level === "snooze" && until ? `Snoozed until ${wakesAt(until)}: ${name}` : `${WORD[level]}: ${name}`;
+    say(text, back === "snooze" ? undefined : { label: "Undo", run: () => void setLevel(ws, name, back, level === "none" ? undefined : level) });
+  } catch (e) {
+    say(String(e), undefined, true);
+  }
+}
+
+/** The live workspaces whose worktree is armed to resume at a limit's
+ *  reset (resume_app.rs), as last heard; the menu labels itself from it. */
+const armed = new Set<string>();
+
+/** Hear the armed list again (after a change, and once at load). */
+export async function refreshArmed(): Promise<void> {
+  try {
+    const ws = await invoke<string[]>("resume_list");
+    armed.clear();
+    for (const w of ws) armed.add(w);
+  } catch {
+    // An app without the command, or no frame yet: the menu offers to arm.
+  }
+}
+void refreshArmed();
+
+/** Arm `ws`'s worktree to type continue when a usage limit resets, or stop
+ *  that, with a note that can undo it. */
+export async function setResume(ws: string, name: string, on: boolean): Promise<void> {
+  try {
+    await invoke("resume_set", { workspace: ws, on });
+    if (on) armed.add(ws);
+    else armed.delete(ws);
+    void refreshArmed();
+    say(on ? `Resumes at the limit's reset: ${name}` : `Won't resume at reset: ${name}`, { label: "Undo", run: () => void setResume(ws, name, !on) });
   } catch (e) {
     say(String(e), undefined, true);
   }
@@ -81,7 +144,7 @@ export async function setLevel(ws: string, name: string, level: Level | "none", 
 
 /** The m / t keys: toggle mute or tuck on a workspace. */
 export function toggle(ws: string, name: string, key: "m" | "t", was: Level | undefined): void {
-  const want: Level = key === "m" ? "mute" : "tuck";
+  const want: "mute" | "tuck" = key === "m" ? "mute" : "tuck";
   void setLevel(ws, name, was === want ? "none" : want, was);
 }
 
@@ -146,9 +209,17 @@ function flip(m: HTMLElement): void {
 /** The ⋯ button and its menu for one workspace's card, tile or lane. */
 export function menu(ws: string, name: string, level: Level | undefined): HTMLElement {
   const to = (t: Level | "none") => () => void setLevel(ws, name, t, level);
-  return dotsMenu(`${name}: mute or tuck away`, [
+  const snooze: MenuItem[] = level === "snooze"
+    ? [{ label: "Wake now", run: to("none") }]
+    : SNOOZES.map((s) => ({ label: s.label, run: () => void setLevel(ws, name, "snooze", level, snoozeUntil(s.key, new Date())) }));
+  const on = armed.has(ws);
+  return dotsMenu(`${name}: mute, snooze or tuck away`, [
     level === "mute" ? { label: "Unmute", hint: "m", run: to("none") } : { label: "Mute", hint: "m", run: to("mute") },
+    ...snooze,
     level === "tuck" ? { label: "Bring back", hint: "t", run: to("none") } : { label: "Tuck away", hint: "t", run: to("tuck") },
+    on
+      ? { label: "Don\u2019t resume at reset", title: "Stop typing continue here when a usage limit resets", run: () => void setResume(ws, name, false) }
+      : { label: "Resume at reset", title: "When a usage limit stops this worktree, type continue once it resets", run: () => void setResume(ws, name, true) },
   ]);
 }
 

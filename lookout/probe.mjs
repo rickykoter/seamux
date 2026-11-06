@@ -1512,6 +1512,238 @@ if (want("plan map: --plan-map, the three-way compare, the Map view")) {
     /No plan map was passed to this review/.test(fs.readFileSync(path.join(HERE, "page", "review.js"), "utf8")));
 }
 
+// ---------------------------------------------------------------- turn snapshots
+if (want("turn snapshots")) {
+  const T = await import("./lib/turns.mjs");
+  const RT = repo("rt");
+  write(RT, "a.js", "1\n"); write(RT, ".gitignore", "build/\n");
+  sh(RT, `git add -A && ${G} commit -q -m base`);
+  write(RT, "a.js", "2\n"); write(RT, "staged.js", "s\n"); sh(RT, "git add staged.js");
+  write(RT, "new.js", "untracked\n"); write(RT, "build/out.txt", "ignored\n");
+  const hook = (verb, payload, env = ENV) => spawnSync("bash", [path.join(HERE, "hooks", "turns.sh"), verb],
+    { encoding: "utf8", env, input: typeof payload === "string" ? payload : JSON.stringify(payload) });
+  const refOf = (sid, n, side) => (spawnSync("git", ["rev-parse", "-q", "--verify", `refs/seamux/turns/${sid}/${n}/${side}`],
+    { cwd: RT, encoding: "utf8" }).stdout || "").trim();
+  const state = () => [sh(RT, "git status --porcelain"), sh(RT, "git diff --cached --name-only"),
+    sh(RT, "git stash list"), sh(RT, "git rev-parse HEAD"), sh(RT, "git branch --list")].join("|");
+  const before = state();
+
+  const s1 = hook("start", { cwd: RT, session_id: "s-1", prompt: "fix the\n  bug " + "x".repeat(200), hook_event_name: "UserPromptSubmit" });
+  ok("turns: start prints nothing and exits 0", s1.status === 0 && s1.stdout === "" && s1.stderr === "", s1.stdout + s1.stderr);
+  const st1 = refOf("s-1", 1, "start");
+  ok("turns: a prompt points refs/seamux/turns/<session>/1/start at a snapshot", /^[0-9a-f]{40}$/.test(st1), st1);
+  ok("turns: the snapshot is a parentless commit", st1 && sh(RT, `git rev-list --parents -n1 ${st1}`).trim() === st1);
+  const tree1 = st1 ? sh(RT, `git ls-tree -r --name-only ${st1}`).split("\n") : [];
+  ok("turns: it holds the working tree, untracked included and ignored files left out",
+     tree1.includes("new.js") && tree1.includes("staged.js") && !tree1.includes("build/out.txt") &&
+     sh(RT, `git show ${st1}:a.js`) === "2\n", tree1.join(","));
+  ok("turns: status, the staged set, the stash, HEAD and the branches are unchanged", state() === before);
+
+  write(RT, "b.js", "b\n");
+  const e1 = hook("end", { cwd: RT, session_id: "s-1", hook_event_name: "Stop" });
+  const en1 = refOf("s-1", 1, "end");
+  ok("turns: a stop prints nothing and points 1/end at a snapshot", e1.status === 0 && e1.stdout === "" && /^[0-9a-f]{40}$/.test(en1));
+  ok("turns: the turn's diff is what changed during it", sh(RT, `git diff --name-only ${st1} ${en1}`).trim() === "b.js");
+  let log = T.readLog("s-1");
+  ok("turns: the stop logs the turn with the prompt's first 120 characters and the changed-file count",
+     log.length === 1 && log[0].n === 1 && log[0].session === "s-1" && log[0].start === st1 && log[0].end === en1 &&
+     log[0].files === 1 && log[0].prompt === ("fix the bug " + "x".repeat(200)).slice(0, 120) &&
+     fs.realpathSync(log[0].root) === fs.realpathSync(RT) && !Number.isNaN(Date.parse(log[0].at)), JSON.stringify(log));
+  ok("turns: the log sits beside lookout's reviews", fs.existsSync(path.join(TMP, "turns", "s-1.jsonl")));
+  ok("turns: the stop leaves the staged set, the stash, HEAD and the branches as they were",
+     state().split("|").slice(1).join("|") === before.split("|").slice(1).join("|"));
+
+  write(RT, "c.js", "c\n");
+  hook("end", { cwd: RT, session_id: "s-1", hook_event_name: "Stop" });
+  log = T.readLog("s-1");
+  ok("turns: a second stop in the same turn moves the end and replaces its line",
+     log.length === 1 && log[0].files === 2 && refOf("s-1", 1, "end") !== en1, JSON.stringify(log));
+
+  hook("start", { cwd: RT, session_id: "s-1", prompt: "next" });
+  ok("turns: the next prompt is turn 2", /^[0-9a-f]{40}$/.test(refOf("s-1", 2, "start")));
+  hook("end", { cwd: RT, session_id: "s-1" });
+  log = T.readLog("s-1");
+  ok("turns: a turn that changed nothing is logged with files 0", log.length === 2 && log[1].n === 2 && log[1].files === 0, JSON.stringify(log));
+
+  // A start past the budget records nothing, and the stop after it must not
+  // move the last turn's end.
+  const end2 = refOf("s-1", 2, "end");
+  write(RT, "d.js", "d\n");
+  hook("start", { cwd: RT, session_id: "s-1", prompt: "slow" }, { ...ENV, LOOKOUT_TURN_BUDGET_MS: "1" });
+  hook("end", { cwd: RT, session_id: "s-1" });
+  ok("turns: past the budget nothing is recorded, and the stop after it leaves the last turn alone",
+     !refOf("s-1", 3, "start") && refOf("s-1", 2, "end") === end2 && T.readLog("s-1").length === 2);
+
+  ok("turns: a stop with no turn open records nothing",
+     (hook("end", { cwd: RT, session_id: "s-other" }), !refOf("s-other", 1, "end") && !T.readLog("s-other").length));
+  const outside = path.join(TMP, "not-a-repo"); fs.mkdirSync(outside, { recursive: true });
+  const o = hook("start", { cwd: outside, session_id: "s-out", prompt: "p" });
+  ok("turns: outside a repo it records nothing and stays silent", o.status === 0 && o.stdout === "" &&
+     !fs.existsSync(path.join(TMP, "turns", "s-out.open.json")));
+  const rem = hook("start", { cwd: RT, session_id: "s-rem", prompt: "p" }, { ...ENV, CLAUDE_CODE_REMOTE: "true" });
+  ok("turns: a cloud session takes no snapshot", rem.status === 0 && rem.stdout === "" && !refOf("s-rem", 1, "start"));
+  const bad = hook("start", "{not json");
+  ok("turns: garbage on stdin never fails the prompt", bad.status === 0 && bad.stdout === "");
+  ok("turns: no session id, no snapshot", (hook("start", { cwd: RT, prompt: "p" }, { ...ENV, CLAUDE_CODE_SESSION_ID: "" }),
+     !sh(RT, "git for-each-ref refs/seamux/turns/").split("\n").some(l => !/\/s-1\//.test(l) && l.trim())));
+
+  // Prune: the last 50 turns per session stay; an idle session goes, refs and log.
+  const any = refOf("s-1", 1, "start");
+  const many = Array.from({ length: 53 }, (_, i) => `update refs/seamux/turns/s-many/${i + 1}/start ${any}\n`).join("");
+  spawnSync("git", ["update-ref", "--stdin"], { cwd: RT, input: many });
+  const old = spawnSync("git", ["commit-tree", `${any}^{tree}`, "-m", "old"], { cwd: RT, encoding: "utf8",
+    env: { ...process.env, GIT_COMMITTER_DATE: "2020-01-01T00:00:00Z", GIT_AUTHOR_DATE: "2020-01-01T00:00:00Z",
+           GIT_AUTHOR_NAME: "p", GIT_AUTHOR_EMAIL: "p@p", GIT_COMMITTER_NAME: "p", GIT_COMMITTER_EMAIL: "p@p" } }).stdout.trim();
+  spawnSync("git", ["update-ref", "--stdin"], { cwd: RT,
+    input: `update refs/seamux/turns/s-idle/1/start ${old}\nupdate refs/seamux/turns/s-idle/1/end ${old}\nupdate refs/seamux/turns/s-me/1/start ${old}\n` });
+  write(path.join(TMP, "turns"), "s-idle.jsonl", "{}\n");
+  fs.utimesSync(path.join(TMP, "turns", "s-idle.jsonl"), new Date("2020-01-01"), new Date("2020-01-01"));
+  const p = hook("prune", { cwd: RT, session_id: "s-me", hook_event_name: "SessionStart" });
+  const left = sh(RT, "git for-each-ref --format='%(refname)' refs/seamux/turns/").split("\n").filter(Boolean);
+  const manyLeft = left.filter(r => r.includes("/s-many/")).map(r => Number(r.split("/")[4])).sort((a, b) => a - b);
+  ok("turns: prune keeps each session's last 50 turns", p.stdout === "" && manyLeft.length === 50 && manyLeft[0] === 4, manyLeft.join(","));
+  ok("turns: prune drops a session idle for 7 days, refs and log",
+     !left.some(r => r.includes("/s-idle/")) && !fs.existsSync(path.join(TMP, "turns", "s-idle.jsonl")));
+  ok("turns: prune never sweeps the session starting now", left.includes("refs/seamux/turns/s-me/1/start"));
+  ok("turns: prune leaves a live session's turns alone", left.filter(r => r.includes("/s-1/")).length === 4);
+
+  const ls = cli(RT, "turns", "--session", "s-1", "--json");
+  let lj = null; try { lj = JSON.parse(ls.stdout); } catch { /* checked below */ }
+  ok("turns: lookout turns lists a session's turns with their prompts", lj && lj.length === 2 && lj[0].n === 1 &&
+     lj[0].files === 2 && lj[0].prompt.startsWith("fix the bug") && lj[0].end, ls.stdout + ls.stderr);
+
+  const hj = JSON.parse(fs.readFileSync(path.join(HERE, "hooks", "hooks.json"), "utf8")).hooks;
+  const cmds = ev => (hj[ev] || []).flatMap(g => g.hooks.map(h => h.command));
+  ok("turns: hooks.json runs turns.sh start, end and prune on prompt, stop and session start",
+     cmds("UserPromptSubmit").some(c => /hooks\/turns\.sh" start$/.test(c)) && cmds("Stop").some(c => /hooks\/turns\.sh" end$/.test(c)) &&
+     cmds("SessionStart").some(c => /hooks\/turns\.sh" prune$/.test(c)) && /comments\.sh/.test(cmds("UserPromptSubmit")[0]));
+
+  // A prompt sent while the agent still works: the open turn ends at the new
+  // turn's start, so it keeps a diff and a log line.
+  hook("start", { cwd: RT, session_id: "s-q", prompt: "first" });
+  write(RT, "q.js", "q\n");
+  hook("start", { cwd: RT, session_id: "s-q", prompt: "queued" });
+  const ql = T.readLog("s-q");
+  ok("turns: a prompt sent before the stop ends the open turn at the new start",
+     ql.length === 1 && ql[0].n === 1 && ql[0].files === 1 && refOf("s-q", 1, "end") === refOf("s-q", 2, "start"), JSON.stringify(ql));
+  hook("end", { cwd: RT, session_id: "s-q" });
+  ok("turns: the stop after it ends the new turn", T.readLog("s-q").map(e => e.n).join(",") === "1,2");
+  const KT = path.join(TMP, "kill-tmp"); fs.mkdirSync(KT, { recursive: true });
+  const idx = () => fs.readdirSync(KT).filter(f => f.startsWith("lookout-index-"));
+  for (const ms of ["40", "80", "120"]) hook("start", { cwd: RT, session_id: "s-kill", prompt: "p" }, { ...ENV, TMPDIR: KT, LOOKOUT_TURN_BUDGET_MS: ms });
+  spawnSync("sleep", ["0.5"]);   // a git left running would write its scratch index back by now
+  ok("turns: a start killed at the budget leaves no scratch index behind, now or later", !idx().length, idx().join(","));
+
+  // A session that moved to another worktree of the repo ends its turn where
+  // the turn began: the refs are shared, the working trees are not.
+  const WT2 = path.join(TMP, "rt-other");
+  sh(RT, `git worktree add -q ${WT2} -b other`);
+  write(WT2, "elsewhere.js", "only in the other worktree\n");
+  hook("start", { cwd: RT, session_id: "s-move", prompt: "p" });
+  write(RT, "moved.js", "m\n");
+  hook("end", { cwd: WT2, session_id: "s-move" });
+  const mv = T.readLog("s-move");
+  ok("turns: a turn ends in the worktree it began in, wherever the session's cwd is now",
+     mv.length === 1 && fs.realpathSync(mv[0].root) === fs.realpathSync(RT) &&
+     sh(RT, `git diff --name-only ${mv[0].start} ${mv[0].end}`).trim() === "moved.js", JSON.stringify(mv));
+  hook("start", { cwd: RT, session_id: "s-move2", prompt: "p" });
+  write(RT, "moved2.js", "m\n");
+  hook("start", { cwd: WT2, session_id: "s-move2", prompt: "q" });
+  const mv2 = T.readLog("s-move2");
+  ok("turns: a prompt from another worktree ends the open turn with a snapshot of its own worktree",
+     mv2.length === 1 && sh(RT, `git diff --name-only ${mv2[0].start} ${mv2[0].end}`).trim() === "moved2.js", JSON.stringify(mv2));
+
+  // Turn numbers are per repo: the same session's turn 1 in another repo is
+  // another line, not a replacement.
+  const RT2 = repo("rt-second");
+  write(RT2, "x.js", "x\n");
+  hook("start", { cwd: RT2, session_id: "s-move", prompt: "in the second repo" });
+  write(RT2, "y.js", "y\n");
+  hook("end", { cwd: RT2, session_id: "s-move" });
+  ok("turns: the same turn number in another repo adds a line rather than replacing one",
+     T.readLog("s-move").map(e => e.n + ":" + path.basename(e.root)).join(",") === "1:rt,1:rt-second",
+     JSON.stringify(T.readLog("s-move")));
+
+  // The cap holds mid-session: a stop trims the session to its last 50 turns.
+  const seed = refOf("s-1", 1, "start");
+  spawnSync("git", ["update-ref", "--stdin"], { cwd: RT,
+    input: Array.from({ length: 55 }, (_, i) => `update refs/seamux/turns/s-cap/${i + 1}/start ${seed}\nupdate refs/seamux/turns/s-cap/${i + 1}/end ${seed}\n`).join("") });
+  hook("start", { cwd: RT, session_id: "s-cap", prompt: "p" });
+  hook("end", { cwd: RT, session_id: "s-cap" });
+  const capped = T.turnRefs(RT, "s-cap");
+  const ns = [...new Set(capped.map(r => r.n))].sort((a, b) => a - b);
+  ok("turns: a stop keeps the session's last 50 turns without waiting for the next session",
+     ns.length === 50 && ns[0] === 7 && ns[ns.length - 1] === 56, ns.join(","));
+}
+
+// ---------------------------------------------------------------- turn targets
+if (want("turn targets")) {
+  const T = await import("./lib/turns.mjs");
+  const RU = repo("ru");
+  write(RU, "a.js", "1\n"); sh(RU, `git add -A && ${G} commit -q -m base`);
+  write(RU, "before.js", "uncommitted before the prompt\n");
+  T.start({ cwd: RU, session: "sess-one", prompt: "add the widget" });
+  write(RU, "widget.js", "w\n"); write(RU, "a.js", "2\n");
+  T.end({ cwd: RU, session: "sess-one" });
+  T.start({ cwd: RU, session: "sess-one", prompt: "now the tests" });
+  write(RU, "widget.test.js", "t\n");
+  const open = (...a) => { const r = cli(RU, "open", "--no-open", "--no-jev", "--json", ...a); try { return JSON.parse(r.stdout); } catch { return { err: r.stderr + r.stdout }; } };
+  const filesOf = id => S.read(id).files.map(f => f.path).sort().join(",");
+
+  const t1 = open("--turn", "sess-one/1");
+  ok("turn: --turn SESSION/N diffs that turn's start against its end, and nothing from before the prompt",
+     t1.id && filesOf(t1.id) === "a.js,widget.js", t1.err || filesOf(t1.id));
+  const r1 = S.read(t1.id);
+  ok("turn: the source names the turn and the page label carries its prompt",
+     r1.source.kind === "turn" && r1.source.n === 1 && r1.source.session === "sess-one" && !r1.source.live &&
+     r1.source.label === "turn 1 · add the widget" && r1.title === "turn 1 · add the widget", JSON.stringify(r1.source));
+  ok("turn: its default id names the repo, the session and the turn", t1.id === "ru-turn-sess-one-1", t1.id);
+
+  const t2 = open("--turn", "last", "--session", "sess-one");
+  ok("turn: --turn last while it runs diffs its start against the working tree",
+     t2.id && filesOf(t2.id) === "widget.test.js" && S.read(t2.id).source.live &&
+     S.read(t2.id).source.label === "turn 2 · running · now the tests", t2.err || JSON.stringify(S.read(t2.id).source));
+  const env = { ...ENV, CLAUDE_CODE_SESSION_ID: "sess-one" };
+  const sp = spawnSync("node", [path.join(HERE, "lookout.mjs"), "open", "--since-prompt", "--no-open", "--no-jev", "--json"], { encoding: "utf8", env, cwd: RU });
+  let spj = {}; try { spj = JSON.parse(sp.stdout); } catch { /* checked below */ }
+  ok("turn: --since-prompt reads this session's latest prompt and diffs it against the working tree",
+     spj.id === "ru-since-sess-one-2" && filesOf(spj.id) === "widget.test.js" && S.read(spj.id).source.sincePrompt, sp.stderr + sp.stdout);
+
+  T.end({ cwd: RU, session: "sess-one" });
+  write(RU, "later.js", "after the stop\n");
+  ok("turn: an ended turn shows only its own work, not what came after its stop",
+     filesOf(open("--turn", "sess-one/2").id) === "widget.test.js");
+
+  // An older turn whose stop was lost is not running: the working tree holds
+  // later turns' work too, so it is refused rather than diffed against it.
+  sh(RU, `git update-ref -d refs/seamux/turns/sess-one/1/end`);
+  T.start({ cwd: RU, session: "sess-one", prompt: "a third" });
+  const lost = cli(RU, "open", "--turn", "sess-one/1", "--no-open");
+  ok("turn: an older turn with no end snapshot is refused", lost.status === 1 && /turn 1 of session sess-one has no end snapshot/.test(lost.stderr), lost.stderr);
+
+  const two = cli(RU, "open", "--turn", "1", "--worktree");
+  ok("turn: a second target is refused", two.status === 1 && /pick one of .*--turn, --since-prompt/.test(two.stderr), two.stderr);
+  const none = cli(RU, "open", "--turn", "sess-one/9", "--no-open");
+  ok("turn: a turn that was never taken is refused with the range there is", none.status === 1 && /no turn 9 .*turns 1–3/.test(none.stderr), none.stderr);
+  const nos = spawnSync("node", [path.join(HERE, "lookout.mjs"), "open", "--turn", "last", "--no-open"],
+    { encoding: "utf8", env: { ...ENV, CLAUDE_CODE_SESSION_ID: "" }, cwd: RU });
+  ok("turn: with no session it says how to name one", nos.status === 1 && /pass --turn SESSION\/N/.test(nos.stderr), nos.stderr);
+  const bad = cli(RU, "open", "--turn", "x/y", "--no-open");
+  ok("turn: a malformed turn is refused", bad.status === 1 && /--turn wants N, last/.test(bad.stderr), bad.stderr);
+  const other = cli(RU, "open", "--turn", "sess-two/last", "--no-open");
+  ok("turn: a session with no turns here is refused", other.status === 1 && /no turns recorded for session sess-two/.test(other.stderr), other.stderr);
+
+  const PR = await import("./lib/prompt.mjs");
+  const b1 = PR.brief(S.read(t1.id), { patchPath: S.paths(t1.id).patch, plansDir: TMP, outPath: path.join(TMP, "o.json") });
+  ok("turn: the reviewer brief words the target as one agent turn", /what one agent turn changed in .*turn 1 of session sess-one \(its start snapshot against its end snapshot\)/.test(b1));
+  const b2 = PR.brief(S.read(spj.id), { patchPath: S.paths(spj.id).patch, plansDir: TMP, outPath: path.join(TMP, "o.json") });
+  ok("turn: and since-prompt as everything since that prompt", /everything changed in .* since prompt 2 of session sess-one/.test(b2));
+  const help = cli(RU, "help").stdout;
+  ok("turn: the usage text lists --turn and --since-prompt", help.includes("--turn [SESSION/]N|last | --since-prompt"));
+  const skill = fs.readFileSync(path.join(HERE, "SKILL.md"), "utf8");
+  ok("turn: SKILL.md lists both targets", skill.includes("lookout open --turn last") && skill.includes("lookout open --since-prompt"));
+}
+
 // ---------------------------------------------------------------- page script
 if (want("page script")) {
   const r = spawnSync("node", ["--check", path.join(HERE, "page", "review.js")], { encoding: "utf8" });

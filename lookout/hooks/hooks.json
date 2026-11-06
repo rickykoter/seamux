@@ -1,12 +1,13 @@
 {
-  "description": "lookout: the human's review-page comments at the next prompt, and the engine pointer out-of-session callers read",
+  "description": "lookout: the human's review-page comments at the next prompt, the engine pointer out-of-session callers read, and a snapshot of the working tree at each prompt and stop",
   "hooks": {
     "SessionStart": [
       {
         "matcher": "",
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/lookout.mjs\" engine >/dev/null 2>&1 || true", "timeout": 10 },
-          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/comments.sh\"", "timeout": 10 }
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/comments.sh\"", "timeout": 10 },
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/turns.sh\" prune", "timeout": 10 }
         ]
       }
     ],
@@ -14,7 +15,16 @@
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/comments.sh\"", "timeout": 10 }
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/comments.sh\"", "timeout": 10 },
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/turns.sh\" start", "timeout": 10 }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/turns.sh\" end", "timeout": 10 }
         ]
       }
     ]

@@ -402,6 +402,37 @@ fn tuck_a_newer_ask_clears_a_mute_and_an_older_one_does_not() {
     assert!(store.load().is_empty());
 }
 
+#[test]
+fn tuck_a_snooze_ends_when_its_time_passes_or_its_worktree_asks() {
+    use seamux_app::tuck::{Level, Store};
+    let f = Fixture::new("tuck-snooze");
+    let a = f.dir("work/a");
+    let store = Store { file: f.p("tucked.json") };
+    let root = seamux_app::tuck::root_of(&a);
+    let asked = f.p(&format!("state/asked-{WS_A}"));
+    f.write(&format!("state/asked-{WS_A}"), "Ready?");
+    set_mtime(&asked, NOW - 10 * 60_000);
+    let tiles = [tile(SURF_A, WS_A, &a, "needs_input")];
+
+    // Snoozed after the ask, until later: it holds, and says when it wakes.
+    store.set_until(&root, Some(Level::Snooze), "a", NOW - 5 * 60_000, Some(NOW + 60_000)).unwrap();
+    let frame = primed(inputs(&f, json!([]), vec![])).build(&tiles, NOW);
+    assert_eq!(frame.levels.get(WS_A).map(String::as_str), Some("snooze"));
+    assert_eq!(frame.tucked[0].until, Some(NOW + 60_000));
+
+    // Its time passes: woken, and saved so.
+    let frame = primed(inputs(&f, json!([]), vec![])).build(&tiles, NOW + 60_000);
+    assert!(frame.levels.is_empty());
+    assert!(store.load().is_empty());
+
+    // A new ask after the snooze began wakes it before its time.
+    store.set_until(&root, Some(Level::Snooze), "a", NOW - 5 * 60_000, Some(NOW + 3_600_000)).unwrap();
+    set_mtime(&asked, NOW - 60_000);
+    let frame = primed(inputs(&f, json!([]), vec![])).build(&tiles, NOW);
+    assert!(frame.levels.is_empty());
+    assert!(store.load().is_empty());
+}
+
 fn family_rows(a: &str, b: &str) -> serde_json::Value {
     let fam = |role: &str, waits: serde_json::Value| json!({"role": role, "parent": "auth", "waitingOn": waits, "members": []});
     json!([

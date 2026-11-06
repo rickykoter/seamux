@@ -43,6 +43,60 @@ function __boardRender(d) {
     return esc(s).replace(/\{\{(.+?)\}\}/g, "<b>$1</b>").replace(/`(.+?)`/g, "<code>$1</code>");
   }
 
+  // A turn a usage limit stopped (the Rust board's `limited`, with `armed`
+  // when the app will type continue at the reset). Its header wears a pill
+  // naming the limit; its said line says when it can go again; an armed row
+  // carries a chip, its click the disarm. Times are this machine's clock.
+  var DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function clockOf(ms) {
+    var d = new Date(ms), now = new Date(), h = d.getHours(), m = d.getMinutes();
+    var hm = ((h % 12) || 12) + ":" + (m < 10 ? "0" : "") + m + (h < 12 ? "am" : "pm");
+    if (d.toDateString() === now.toDateString()) return hm;
+    if (ms > now.getTime() && ms - now.getTime() < 6 * 864e5) return DAYS[d.getDay()] + " " + hm;
+    return MONTHS[d.getMonth()] + " " + d.getDate() + " " + hm;
+  }
+  // When an armed row resumes: its next try on usage billing, else the reset.
+  function dueOf(l) { return l.usage && l.next_try ? l.next_try : l.resets_at; }
+  function stopText(a) {
+    var l = a.limited;
+    // The app tried and stopped (the resume watcher's gave_up): it waits for you.
+    if (a.armed && l.gave_up) return "stopped: " + l.label + " \u00b7 didn\u2019t resume: " + l.gave_up;
+    if (l.error === "billing_error") return "stopped: spend limit reached" + (l.resets_at ? " \u00b7 resets " + clockOf(l.resets_at) : "");
+    if (l.usage && !l.window) {
+      if (!a.armed) return "stopped: rate limited";
+      return "stopped: rate limited" + (l.next_try ? " \u00b7 next try " + clockOf(l.next_try) : " \u00b7 retries in a few minutes");
+    }
+    return "stopped: " + l.label + (l.resets_at ? " \u00b7 resets " + clockOf(l.resets_at) : " \u00b7 reset time unknown");
+  }
+  var AMBER = COL.attend;
+  function limPill(a) {
+    return a.limited ? '<span class="badge lim" style="color:' + AMBER + ";border-color:" + AMBER + '" title="' +
+      esc(stopText(a)) + '">' + esc(a.limited.label) + "</span>" : "";
+  }
+  // What a card says under its head: the stop, while a limit holds it.
+  function saidOf(a) {
+    return a.limited ? '<span class="lim" style="color:' + AMBER + '">' + esc(stopText(a)) + "</span>" : said(a.said);
+  }
+  var CLOCK = '<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true" style="vertical-align:-1px;margin-right:3px">' +
+    '<circle cx="6" cy="6" r="4.6" fill="none" stroke="currentColor" stroke-width="1.3"/>' +
+    '<path d="M6 3.4V6l1.8 1.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+  function armedChip(a) {
+    if (!a.limited || !a.armed) return "";
+    var l = a.limited, due = dueOf(l), text, tip;
+    if (l.error === "billing_error" && !l.resets_at) {
+      text = "armed \u00b7 a spend limit is not retried"; tip = "Typing continue would only fail again";
+    } else if (l.gave_up) {
+      text = "armed \u00b7 gave up"; tip = "It did not resume (" + l.gave_up + "): it waits for you";
+    } else if (due) {
+      text = "resumes " + clockOf(due); tip = "The app types continue here then, once it has checked the screen";
+    } else {
+      text = "resumes at reset"; tip = "No reset time is known: it waits for you";
+    }
+    return '<span class="chip sig armed" data-a="resume" data-x="off" style="color:' + COL.running + '" title="' +
+      esc(tip + ". Click to stop resuming this worktree.") + '">' + CLOCK + esc(text) + " \u00d7</span>";
+  }
+
   function dial(frac, kind) {
     var r = 13, c = 2 * Math.PI * r, col = COL[kind] || COL.quiet;
     // .pending marks a dial with no number to show; CSS spins its .arc for a row
@@ -179,6 +233,7 @@ function __boardRender(d) {
   // and the row badges already say which of the two a row is -- the cat is there
   // to answer "is anyone waiting on me", and it only has one voice for "no".
   function mood(rows) {
+    if (outOfTreats(rows)) return "nap";
     var kinds = {};
     for (var i = 0; i < rows.length; i++) kinds[rows[i].kind] = true;
     if (kinds.attend) return "swat";
@@ -203,6 +258,23 @@ function __boardRender(d) {
     stretch: ["all clear. big stretch.", "nothing left for you. stretching."],
     perk: ["ears up: {top}", "ooh. {top} needs you."]
   };
+  // Every live session is stopped on a limit: nothing runs, and all that
+  // waits on you is a limit. The cat naps till the soonest reset (true when
+  // none is known); false otherwise.
+  function outOfTreats(rows) {
+    var lim = rows.filter(function (a) { return a.limited; });
+    if (!lim.length) return false;
+    for (var i = 0; i < rows.length; i++) {
+      var k = rows[i].kind;
+      if (k === "running" || k === "wilt" || (k === "attend" && !rows[i].limited)) return false;
+    }
+    var due = lim.map(function (a) { return dueOf(a.limited); }).filter(function (t) { return t > 0; });
+    return due.length ? Math.min.apply(null, due) : true;
+  }
+  function treatsLine(rows) {
+    var t = outOfTreats(rows);
+    return t === false ? "" : t === true ? "out of treats. back after the reset" : "out of treats till " + clockOf(t);
+  }
   function line(key, top, stamp) {
     var pool = (SAYS[key] || []).filter(function (l) { return top || l.indexOf("{top}") < 0; });
     if (!pool.length) return "";
@@ -302,6 +374,8 @@ function __boardRender(d) {
       return '<span class="chip' + (i === 0 && FILLED[a.kind] ? " pri" : "") +
         '" title="' + esc(chipTip(c)) + '">' + esc(c) + "</span>";
     });
+    var arm = armedChip(a);
+    if (arm) out.push(arm);
     (a.signals || []).forEach(function (e) {
       if (!e.a) return;
       var col = lift(e.c);
@@ -453,15 +527,22 @@ function __boardRender(d) {
   try { prev = JSON.parse(host.getAttribute("data-prev") || "{}"); } catch (e) { prev = {}; }
   var next = {};
 
-  // The app's tucked worktrees leave the list for the collapsed "tucked"
-  // section at the end; they count toward nothing above it.
+  // Rows put away leave the list for a collapsed shelf at the end, and count
+  // toward nothing above it: snoozed (the app's snooze, until its time or
+  // until it needs you; crew-board drops the mark from a row that needs
+  // you), settled (merged and idle, worked out by crew-board), then tucked.
   var all = d.rows || [];
-  // A family member stays with its family even tucked: a plan's workstream is
-  // not missing from its card because its worktree was put away.
-  var away = function (r) { return r.tuck === "tuck" && !r.family; };
-  var rows = all.filter(function (r) { return !away(r); });
+  // A family member stays with its family even put away: a plan's
+  // workstream is not missing from its card because its worktree was.
+  var shelfOf = function (r) {
+    if (r.family) return "";
+    if (r.tuck === "snooze") return "snoozed";
+    if (r.tuck === "tuck") return "tucked";
+    return r.settled ? "settled" : "";
+  };
+  var rows = all.filter(function (r) { return !shelfOf(r); });
   var tkOpen = host.getAttribute("data-tk-open") || "", tkUp = host.getAttribute("data-tk-up") === "1";
-  var tucked = all.filter(away);
+  var shelved = function (s) { return all.filter(function (r) { return shelfOf(r) === s; }); };
   var was = positions();
   // Every card folds in place. Unfolded by default are the cards that ask
   // something of you -- waiting and broken -- and nothing else; a child starts
@@ -598,24 +679,41 @@ function __boardRender(d) {
   }
   function dotOf(a) { return /^#[0-9a-f]{3,8}$/i.test(a.color || "") ? '<span class="own"></span>' : ""; }
   // No empty badge: a bare outline pill was the quiet row's second line.
-  function badgeOf(a) { return a.badge ? '<span class="badge">' + esc(a.badge) + "</span>" : ""; }
+  function badgeOf(a) { return (a.badge ? '<span class="badge">' + esc(a.badge) + "</span>" : "") + limPill(a); }
   function nameOf(a) { return '<span class="nm">' + esc(a.name) + "</span>"; }
   // Mute / tuck, as the app's views offer it: only framed by the app, which
   // keeps tucked.json (intent.js hands the choice to it), and only for a row
   // that is a workspace.
   var inApp = (function () { try { return !!window.parent && window.parent !== window; } catch (e) { return false; } })();
+  // The snooze presets (intent.js turns each into an end time at the click;
+  // the app's own menu, app/ui/tuck.ts, keeps the same four).
+  var SNOOZES = [["1h", "Snooze 1h"], ["3h", "Snooze 3h"], ["tomorrow", "Until tomorrow 9am"], ["monday", "Until Monday 9am"]];
   function tuckOf(a) {
     if (!inApp || !a.cwd) return "";
     var item = function (label, x) { return '<span class="tki" data-a="tuck" data-x="' + x + '">' + label + "</span>"; };
-    return '<span class="tk" data-a="tk" title="Mute or tuck away" aria-label="Mute or tuck away">' +
+    var snooze = a.tuck === "snooze" ? item("Wake now", "none") :
+      SNOOZES.map(function (s) { return item(s[1], "snooze:" + s[0]); }).join("");
+    return '<span class="tk" data-a="tk" title="Mute, snooze or tuck away" aria-label="Mute, snooze or tuck away">' +
       '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg></span>' +
-      '<span class="tkm">' + (a.tuck === "mute" ? item("Unmute", "none") : item("Mute", "mute")) +
-      (a.tuck === "tuck" ? item("Bring back", "none") : item("Tuck away", "tuck")) + "</span>";
+      '<span class="tkm">' + (a.tuck === "mute" ? item("Unmute", "none") : item("Mute", "mute")) + snooze +
+      (a.tuck === "tuck" ? item("Bring back", "none") : item("Tuck away", "tuck")) +
+      '<span class="tki" data-a="resume" data-x="' + (a.armed ? "off" : "on") + '" title="' +
+      (a.armed ? "Stop typing continue here when a usage limit resets"
+        : "When a usage limit stops this worktree, type continue once it resets") + '">' +
+      (a.armed ? "Don\u2019t resume at reset" : "Resume at reset") + "</span></span>";
+  }
+  // When a snoozed row wakes: "wakes 3:00 PM" today, else "wakes Mon 9:00 AM".
+  function wakesOf(a) {
+    if (a.tuck !== "snooze" || !a.until) return "";
+    var w = new Date(+a.until), now = new Date();
+    var t = w.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    if (w.toDateString() !== now.toDateString()) t = w.toLocaleDateString([], { weekday: "short" }) + " " + t;
+    return '<span class="badge wakes" title="' + esc(w.toString()) + '">wakes ' + esc(t) + "</span>";
   }
   // Everything under a card's head: what was said, the reply window, the
   // buttons, the footer.
   function body(a) {
-    return (a.said ? '<p class="said">' + said(a.said) + "</p>" : "") + thumb(a) + feed(a) + paneList(a) + buttons(a) + foot(a);
+    return (a.said || a.limited ? '<p class="said">' + saidOf(a) + "</p>" : "") + thumb(a) + feed(a) + paneList(a) + buttons(a) + foot(a);
   }
   // A failed browser check's last frame (the intent server serves it, so a
   // board read from disk shows none). Styled inline: the card has no slot
@@ -638,13 +736,14 @@ function __boardRender(d) {
   // caret folds it, and its line jumps (a row with no workspace folds there).
   function quietRow(a) {
     var acts = chipsOf(a).filter(function (c) { return c !== "jump"; });
-    var qb = acts.length ? '<span class="chips">' + acts.map(function (c) {
+    var arm = armedChip(a);
+    var qb = acts.length || arm ? '<span class="chips">' + acts.map(function (c) {
       return '<span class="chip" title="' + esc(chipTip(c)) + '">' + esc(c) + "</span>";
-    }).join("") + "</span>" : "";
+    }).join("") + arm + "</span>" : "";
     var more = foot(a, true);
     return opening(a, a.family ? " fam" : "", "", foldCls(a.id, a.kind, !!more)) +
       topOpen(a, "", !!more) + dotOf(a) + nameOf(a) +
-      (a.dirty ? DIRTY : "") + (acts.length ? qb : badgeOf(a)) + cost(a) + wakeOf(a) + tuckOf(a) + topClose(a) +
+      (a.dirty ? DIRTY : "") + (acts.length || arm ? qb + limPill(a) : badgeOf(a)) + wakesOf(a) + cost(a) + wakeOf(a) + tuckOf(a) + topClose(a) +
       (more ? '<div class="fold">' + more + "</div>" : "") + "</div>";
   }
 
@@ -695,7 +794,7 @@ function __boardRender(d) {
     return opening(a, " fam kid", inCard, foldCls(a.id, a.kind, true, true)) +
       topOpen(a, " kidhd" + (inline ? " loud" : ""), true) + dial(a.frac, a.kind) +
       dotOf(a) + nameOf(a) + badgeOf(a) + inline + topClose(a) +
-      (loud && a.said ? '<p class="said nest" data-a="fold">' + said(a.said) + "</p>" : "") +
+      (loud && (a.said || a.limited) ? '<p class="said nest" data-a="fold">' + saidOf(a) + "</p>" : "") +
       '<div class="kbody">' + body(a) + "</div></div>";
   }
 
@@ -748,10 +847,15 @@ function __boardRender(d) {
   // family, not under it (families.py), so it neither opens the quiet section
   // nor counts toward it.
   var belowDivider = function (r) { return r.kind === "quiet" && (!r.famtier || r.famtier === "quiet"); };
-  // The tucked section stays open or shut across pushes, as a card's fold does.
-  var tuckOpen = host.getAttribute("data-tuck-open") === "1";
-  var tuckSect = tucked.length ? '<details class="tucked"' + (tuckOpen ? " open" : "") + '><summary class="sect">tucked · ' +
-    tucked.length + "</summary>" + tucked.map(quietRow).join("") + "</details>" : "";
+  // Each shelf stays open or shut across pushes, as a card's fold does
+  // (intent.js keeps data-<shelf>-open; tucked's is data-tuck-open).
+  function shelf(name, attr) {
+    var list = shelved(name);
+    if (!list.length) return "";
+    return '<details class="' + name + '"' + (host.getAttribute(attr) === "1" ? " open" : "") + '><summary class="sect">' +
+      name + " · " + list.length + "</summary>" + list.map(quietRow).join("") + "</details>";
+  }
+  var tuckSect = shelf("snoozed", "data-snooze-open") + shelf("settled", "data-settle-open") + shelf("tucked", "data-tuck-open");
   host.innerHTML = (rows.length ? groups.map(function (g) {
     var lead = g.lead || g.kids[0], sect = "";
     if (belowDivider(lead) && !seenQuiet) {
@@ -801,7 +905,8 @@ function __boardRender(d) {
   // -- the sprite kept its initial mood forever and no animation ever started,
   // with no error to show for it.
   var m = mood(rows);
-  var rx = reaction(rows);
+  // Out of treats is a nap, not news: a limit stop draws no reaction.
+  var rx = outOfTreats(rows) ? null : reaction(rows);
   host.setAttribute("data-pushed", "1");
   if (cat) {
     // Off, a style flush, then on: the same reaction two pushes running would
@@ -827,7 +932,7 @@ function __boardRender(d) {
   var lead = rows.filter(function (a) {
     return m === "swat" ? a.kind === "attend" : a.kind === "wilt" || a.kind === "running";
   })[0];
-  if (says) says.textContent = rx ? line(rx.cls, rx.top, d.stamp) : line(m, lead ? lead.name : "", d.stamp);
+  if (says) says.textContent = treatsLine(rows) || (rx ? line(rx.cls, rx.top, d.stamp) : line(m, lead ? lead.name : "", d.stamp));
   var tl = $("tally");
   if (tl) tl.innerHTML = tally(rows);
 

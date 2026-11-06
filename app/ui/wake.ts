@@ -29,7 +29,7 @@ type Data = { ws: string; rows: Row[]; limit: number; truncated: boolean; worksp
 /** The files the sheet shows itself (wake_app.rs show_kind). */
 const VIEWABLE = /\.(png|jpe?g|gif|webp|svg|html?|pdf)$/i;
 
-export const KINDS = ["plan", "review", "ask", "artifact", "doc", "temp", "image", "file", "commit", "pr", "issue"];
+export const KINDS = ["plan", "review", "ask", "artifact", "doc", "temp", "image", "file", "commit", "turn", "pr", "issue"];
 
 /** A pull request's or issue's URL: owner/repo, and its number. */
 function ghLink(r: Row): { repo: string; n: string } | null {

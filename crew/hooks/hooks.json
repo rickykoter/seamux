@@ -37,6 +37,18 @@
         ]
       }
     ],
+    "StopFailure": [
+      {
+        "matcher": "rate_limit|billing_error",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/seamux-hook.sh\" stopfail",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "matcher": "",

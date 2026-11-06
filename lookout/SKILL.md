@@ -30,7 +30,13 @@ lookout open --base REF           # merge-base(REF, HEAD) vs the working tree
 lookout open --worktree           # uncommitted work only (HEAD vs the working tree)
 lookout open --range A..B         # two commits; A...B diffs from their merge base
 lookout open --patch FILE         # a patch file, no repository needed
+lookout open --turn last          # one agent turn: N, last, or SESSION/N
+lookout open --since-prompt       # everything since the last prompt
 ```
+
+A turn target reads the snapshots lookout takes of the working tree at each
+prompt and stop, under `refs/seamux/turns/<session>/<n>/`. It defaults to
+this session; `lookout turns` lists them.
 
 deep-plan adds `--plan-map ~/.claude/plans/<slug>.map.json` to every review
 it opens, which gives the page a **Map** view (`m`): the plan's files held

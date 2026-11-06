@@ -590,6 +590,132 @@ pub fn mark_panes(rows: &mut [Value], plans: &Map<String, Value>, wss: &[Value],
     }
 }
 
+// ---- limit stops ------------------------------------------------------------
+// A pane a usage limit stopped (crew-hooks' stopfail) carries `limited` in its
+// file. Its row says so, and whether the app will resume it at the reset
+// (seamux-app's resume.json). Only you can restart an unarmed one, so its row
+// is lifted to the attend tier; an armed one restarts itself and keeps its
+// place. This runs after ranking, as the tuck marks do, so the Python board's
+// parity never sees it.
+
+/// ~/.claude/crew/resume.json (CREW_DURABLE_DIR overrides), as seamux-app's
+/// resume.rs keeps it. The board only reads it.
+pub fn resume_file() -> PathBuf {
+    PathBuf::from(crew_store::Paths::from_env().crew_home).join("resume.json")
+}
+
+/// The armed worktree roots in resume.json's text.
+pub fn armed_roots(text: &str) -> std::collections::HashSet<String> {
+    let Ok(v) = serde_json::from_str::<Value>(text) else { return Default::default() };
+    v.get("entries").and_then(Value::as_array).into_iter().flatten()
+        .filter_map(|e| e.get("path")?.as_str().map(String::from)).collect()
+}
+
+static LIMIT_ROOTS: Mutex<Option<HashMap<String, (String, std::time::Instant)>>> = Mutex::new(None);
+
+/// The worktree a cwd is in, keyed as seamux-app's tuck::root_of keys it:
+/// git's top level (else the cwd), through crew_store::wskey. Cached 300 s.
+fn worktree_root(cwd: &str) -> String {
+    if let Some((r, at)) = LIMIT_ROOTS.lock().unwrap_or_else(|p| p.into_inner()).as_ref().and_then(|m| m.get(cwd)) {
+        if at.elapsed() < Duration::from_secs(300) {
+            return r.clone();
+        }
+    }
+    let run = py::run("git", &["-C", cwd, "rev-parse", "--show-toplevel"], Duration::from_secs(3));
+    let top = run.as_ref().filter(|(code, _, _)| *code == 0).map(|(_, out, _)| out.trim().to_string())
+        .filter(|t| !t.is_empty() && std::path::Path::new(t).is_dir());
+    let root = crew_store::wskey(top.as_deref().unwrap_or(cwd));
+    if run.is_some() {
+        LIMIT_ROOTS.lock().unwrap_or_else(|p| p.into_inner()).get_or_insert_with(HashMap::new)
+            .insert(cwd.to_string(), (root.clone(), std::time::Instant::now()));
+    }
+    root
+}
+
+/// The newest limit stop in a workspace's pane files: a pane still stopped
+/// (idle, its limit not cleared by a prompt or a tool use).
+fn limit_of<'a>(files: &'a [crew_core::status::Pane], ws: &str) -> Option<&'a crew_core::status::Limited> {
+    files.iter()
+        .filter(|f| f.ws.eq_ignore_ascii_case(ws) && f.state == "idle")
+        .filter_map(|f| f.limited.as_ref())
+        .max_by_key(|l| l.at)
+}
+
+/// Each row whose workspace a limit stopped gets `limited` ({error, window,
+/// label, resets_at, next_try, tries, usage, gave_up}) and `armed`; with `any_armed`
+/// (resume.json names a worktree) every row with a cwd gets `armed`, which
+/// the ⋯ menu labels itself from. An unarmed stopped row is
+/// lifted to attend, its jump first, and the rows re-sorted by tier with
+/// families regrouped, so a lifted workstream moves its family card rather
+/// than leaving it. `armed` says whether a cwd's worktree is armed; `usage`
+/// is usage billing (crew-board's billing_mode). With no limit stop the
+/// lists come back untouched.
+pub fn mark_limits(rows: Vec<Value>, quiet: Vec<Value>, files: &[crew_core::status::Pane],
+                   any_armed: bool, armed: &dyn Fn(&str) -> bool, usage: bool) -> (Vec<Value>, Vec<Value>) {
+    if !any_armed && !files.iter().any(|f| f.limited.is_some()) {
+        return (rows, quiet);
+    }
+    let mut lifted = false;
+    let mut mark = |r: &mut Value| {
+        let cwd = py_str(get(r, "cwd"));
+        let on = any_armed && !cwd.is_empty() && armed(&cwd);
+        if on {
+            if let Some(o) = r.as_object_mut() {
+                o.insert("armed".into(), json!(true));
+            }
+        }
+        let Some(l) = limit_of(files, &py_str(get(r, "id"))) else { return };
+        let label = match (l.window.as_deref(), l.error.as_str()) {
+            (Some(w), _) => crew_core::limits::window_label(w),
+            (None, "billing_error") => "spend limit",
+            (None, _) if usage => "rate limited",
+            _ => "usage limit",
+        };
+        let Some(o) = r.as_object_mut() else { return };
+        o.insert("limited".into(), json!({"error": l.error, "window": l.window, "label": label, "resets_at": l.resets_at,
+                                          "next_try": l.next_try, "tries": l.tries, "usage": usage,
+                                          "gave_up": l.gave_up}));
+        o.insert("armed".into(), json!(on));
+        if !on && o.get("kind").and_then(Value::as_str) != Some("attend") {
+            o.insert("kind".into(), json!("attend"));
+            let mut chips: Vec<Value> = o.get("chips").and_then(Value::as_array).cloned().unwrap_or_default();
+            chips.retain(|c| c.as_str() != Some("jump"));
+            chips.insert(0, json!("jump"));
+            o.insert("chips".into(), Value::Array(chips));
+            lifted = true;
+        }
+    };
+    let (mut rows, mut quiet) = (rows, quiet);
+    rows.iter_mut().for_each(&mut mark);
+    quiet.iter_mut().for_each(&mut mark);
+    if !lifted {
+        return (rows, quiet);
+    }
+    let (up, still): (Vec<Value>, Vec<Value>) = quiet.into_iter().partition(|r| r.get("kind").and_then(Value::as_str) == Some("attend"));
+    rows.extend(up);
+    let tier = |r: &Value| ["attend", "wilt", "running", "done", "quiet"].iter()
+        .position(|t| r.get("kind").and_then(Value::as_str) == Some(*t)).unwrap_or(9);
+    rows.sort_by_key(tier);
+    // group() names an orphaned family on its first member: an old name goes.
+    let mut still = still;
+    for r in rows.iter_mut().chain(still.iter_mut()) {
+        if let Some(o) = r.as_object_mut() {
+            o.remove("famlabel");
+        }
+    }
+    crew_core::families::group(rows, still)
+}
+
+/// `mark_limits` over the live resume.json and billing mode.
+fn mark_limits_live(rows: Vec<Value>, quiet: Vec<Value>, files: &[crew_core::status::Pane]) -> (Vec<Value>, Vec<Value>) {
+    let roots = armed_roots(&std::fs::read_to_string(resume_file()).unwrap_or_default());
+    if roots.is_empty() && !files.iter().any(|f| f.limited.is_some()) {
+        return (rows, quiet);
+    }
+    let usage = crate::usage::billing_mode() == "usage";
+    mark_limits(rows, quiet, files, !roots.is_empty(), &|cwd| roots.contains(&worktree_root(cwd)), usage)
+}
+
 /// How many quiet working panes one build reads the screen of, at most.
 const INTERRUPT_READS: usize = 4;
 /// A pane whose screen was read and found busy (a long tool) is not read
@@ -695,17 +821,30 @@ pub fn build(o: &Opts) -> Value {
     } else {
         rank::rank(&wss, &plan_by_root, o.screens)
     };
+    // Limit stops, after ranking: an unarmed one is lifted to attend. A
+    // fixture's are its own: the live resume.json arms nothing there.
+    let (rows, quiet) = match &panes {
+        Some((_, files)) if o.fixture.is_none() => mark_limits_live(rows, quiet, files),
+        Some((_, files)) => mark_limits(rows, quiet, files, false, &|_| false, crate::usage::billing_mode() == "usage"),
+        None => (rows, quiet),
+    };
     let mut all: Vec<Value> = rows.into_iter().chain(quiet.iter().cloned()).collect();
-    // The app's muted and tucked worktrees (fixtures stay as given).
+    // The app's muted, snoozed and tucked worktrees, and merged rows gone
+    // idle (fixtures stay as given). A row that needs you breaks its snooze.
     if o.fixture.is_none() {
         crate::tucked::mark_live(&mut all);
+        if let Some((_, files)) = &panes {
+            crate::settle::mark_live(&mut all, files);
+        }
     }
+    crate::tucked::break_snoozes(&mut all);
     // Each workspace's panes: what each is doing, which owns the plan,
     // which has wandered past the pin.
     if let Some((live, files)) = &panes {
         mark_panes(&mut all, &plan_by_root, &wss, live, files);
     }
-    let news = news::compose_now(&all);
+    // The news is what needs you: a snoozed or settled row is left out.
+    let news = news::compose_now(&all.iter().filter(|r| !crate::settle::away(r)).cloned().collect::<Vec<_>>());
     let n = plan_by_root.len();
     let mut d = Map::new();
     d.insert("rows".into(), Value::Array(all));
@@ -978,6 +1117,55 @@ mod tests {
 
     fn file(ws: &str, surface: &str, state: &str, at: u64) -> crew_core::status::Pane {
         crew_core::status::Pane { state: state.into(), at, ..crew_core::status::Pane::new(ws, surface) }
+    }
+
+    fn stopped(ws: &str, surface: &str, window: Option<&str>) -> crew_core::status::Pane {
+        let mut p = file(ws, surface, "idle", 5);
+        p.limited = Some(crew_core::status::Limited { error: "rate_limit".into(), session: "s".into(), at: 5,
+            window: window.map(String::from), resets_at: Some(9_000_000), tries: 0, next_try: None, gave_up: None });
+        p
+    }
+
+    #[test]
+    fn an_unarmed_limit_stop_is_lifted_and_an_armed_one_keeps_its_tier() {
+        let row = |id: &str, kind: &str, cwd: &str| json!({"id": id, "kind": kind, "cwd": cwd, "chips": ["diff", "wake"]});
+        let rows = vec![row("A", "attend", "/w/a"), row("R", "running", "/w/r")];
+        let quiet = vec![row("Q1", "quiet", "/w/q1"), row("Q2", "quiet", "/w/q2")];
+        // Untouched with no limit stop at all.
+        let (r, q) = mark_limits(rows.clone(), quiet.clone(), &[file("Q1", "s1", "idle", 1)], false, &|_| false, false);
+        assert_eq!((r, q), (rows.clone(), quiet.clone()));
+        // Armed with no stop: the row says so for its menu, and keeps its place.
+        let (r, _) = mark_limits(rows.clone(), quiet.clone(), &[], true, &|cwd| cwd == "/w/r", false);
+        assert_eq!((r[1]["id"].as_str(), r[1]["armed"].as_bool(), r[0].get("armed")), (Some("R"), Some(true), None));
+        let files = [stopped("Q1", "s1", Some("five_hour")), stopped("Q2", "s2", Some("seven_day"))];
+        let (r, q) = mark_limits(rows, quiet, &files, true, &|cwd| cwd == "/w/q2", false);
+        let ids: Vec<&str> = r.iter().map(|x| x["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["A", "Q1", "R"], "the unarmed stop joins the attend tier, after what was there");
+        assert_eq!(r[1]["kind"], "attend");
+        assert_eq!(r[1]["chips"], json!(["jump", "diff", "wake"]), "its first verb is to go to it");
+        assert_eq!(r[1]["limited"]["label"], "5h limit");
+        assert_eq!((r[1]["armed"].clone(), r[1]["limited"]["resets_at"].clone()), (json!(false), json!(9_000_000)));
+        assert_eq!(q.len(), 1);
+        assert_eq!((q[0]["id"].as_str(), q[0]["kind"].as_str(), q[0]["armed"].as_bool()), (Some("Q2"), Some("quiet"), Some(true)));
+        assert_eq!(q[0]["limited"]["label"], "weekly limit");
+    }
+
+    #[test]
+    fn a_lifted_workstream_moves_its_family_card() {
+        let fam = |id: &str, kind: &str, role: &str| json!({"id": id, "kind": kind, "cwd": format!("/w/{id}"), "chips": [],
+                                                           "family": "f", "famrole": role});
+        let (rows, quiet) = crew_core::families::group(
+            vec![json!({"id": "X", "kind": "running", "cwd": "/w/x", "chips": []})],
+            vec![fam("P", "quiet", "parent"), fam("C", "quiet", "child")]);
+        assert!(rows.len() == 1 && quiet.len() == 2, "an all-quiet family stays quiet");
+        let (r, q) = mark_limits(rows, quiet, &[stopped("C", "s", None)], false, &|_| false, true);
+        let ids: Vec<&str> = r.iter().map(|x| x["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["P", "C", "X"], "the family moves up as one, its parent leading");
+        assert!(q.is_empty());
+        assert_eq!((r[0]["famtier"].as_str(), r[1]["famkid"].as_bool()), (Some("attend"), Some(true)));
+        assert_eq!(r[1]["limited"]["label"], "rate limited", "usage billing with no window");
+        assert!(armed_roots(r#"{"version":1,"entries":[{"path":"/w/a","at":1},{"at":2}]}"#).contains("/w/a"));
+        assert!(armed_roots("nope").is_empty());
     }
 
     #[test]

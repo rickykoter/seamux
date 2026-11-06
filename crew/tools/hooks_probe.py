@@ -804,6 +804,79 @@ if RUST:
     check("…posttool marks its end as done-PT, with no cmux", r.returncode == 0 and marker("done-PT") and not log(), log())
     hook("stop", **tmux)
     check("…and its stop marks it idle, still without cmux", pane_state("PT") == "idle" and not log(), log())
+
+    # A usage limit ends the turn: Claude Code fires StopFailure, not Stop.
+    # The payload follows Claude Code 2.1.318's schema (read from its binary:
+    # hook_event_name, error, error_details, last_assistant_message beside the
+    # common fields); no rate limit could be forced to capture a live one.
+    print("a turn stopped by a usage limit (StopFailure)")
+
+    def pane_file(s):
+        f = os.path.join(STATE, f"pane-{s}.json")
+        return json.load(open(f)) if os.path.exists(f) else {}
+
+    def stopfail(error, **kw):
+        return payload(hook_event_name="StopFailure", error=error,
+                       error_details="You've hit your limit", last_assistant_message="Working on it", **kw)
+
+    def limits(**wins):
+        json.dump(dict({w: None for w in ("five_hour", "seven_day", "spend_limit")}, **wins, at=1),
+                  open(os.path.join(STATE, "limits.json"), "w"))
+
+    hj = json.load(open(os.path.join(SRC, "hooks", "hooks.json")))["hooks"].get("StopFailure", [])
+    check("hooks.json sends StopFailure for rate_limit and billing_error to seamux-hook.sh stopfail",
+          len(hj) == 1 and set(hj[0]["matcher"].split("|")) == {"rate_limit", "billing_error"}
+          and hj[0]["hooks"][0]["command"].endswith("seamux-hook.sh\" stopfail"), hj)
+
+    reset([row(desc="phase:working")])
+    hook("prompt")
+    reset_at = int(time.time()) + 3600
+    limits(five_hour={"used_percentage": 100, "resets_at": reset_at},
+           seven_day={"used_percentage": 40, "resets_at": reset_at + 86400})
+    open(CLOG, "w").close()
+    r = hook("stopfail", stdin=stopfail("rate_limit"))
+    lim = pane_file("ws-1").get("limited") or {}
+    check("a rate_limit stop sets the pane idle with limited: error, session, window and reset",
+          r.returncode == 0 and pane_state("ws-1") == "idle" and lim.get("error") == "rate_limit"
+          and lim.get("session") == "s-1" and lim.get("window") == "five_hour"
+          and lim.get("resets_at") == reset_at * 1000 and lim.get("tries") == 0 and lim.get("next_try") is None,
+          pane_file("ws-1"))
+    note = [l for l in log() if l.startswith("notify ")]
+    check("…its banner names the window and the reset, and the phase goes",
+          len(note) == 1 and "--subtitle crew:limit --body Stopped: 5h limit · resets " in note[0]
+          and desc() == "" and marker("hold-ws-1"), f"{note} {desc()}")
+    check("…and it is a history line", any(
+        json.loads(l).get("detail") == "stopfail" and json.loads(l).get("state") == "idle"
+        for f in os.listdir(HISTORY) for l in open(os.path.join(HISTORY, f))))
+    hook("prompt")
+    check("the next prompt clears limited and its hold", "limited" not in pane_file("ws-1")
+          and pane_state("ws-1") == "working" and not marker("hold-ws-1"), pane_file("ws-1"))
+
+    open(CLOG, "w").close()
+    hook("stopfail", stdin=stopfail("overloaded"))
+    check("any other StopFailure error is left alone", pane_state("ws-1") == "working" and not log(), log())
+
+    os.remove(os.path.join(STATE, "limits.json"))
+    open(CLOG, "w").close()
+    hook("stopfail", stdin=stopfail("billing_error"))
+    lim = pane_file("ws-1").get("limited") or {}
+    check("a spend limit with no limits cache is recorded with no window or reset",
+          lim.get("error") == "billing_error" and lim.get("window") is None and lim.get("resets_at") is None
+          and any("--body Stopped: Spend limit reached" in l for l in log()), f"{lim} {log()}")
+    hook("session")
+    check("a new session clears it too", "limited" not in pane_file("ws-1"), pane_file("ws-1"))
+
+    hook("prompt", **tmux)
+    open(CLOG, "w").close()
+    limits(seven_day={"used_percentage": 100, "resets_at": reset_at})
+    hook("stopfail", stdin=stopfail("rate_limit"), **tmux)
+    check("on the tmux backend the stop is recorded the same, with no cmux",
+          (pane_file("PT").get("limited") or {}).get("window") == "seven_day" and not log()
+          and marker("hold-PT"), f"{pane_file('PT')} {log()}")
+    run([BASH, os.path.join(CREW, "hooks", "seamux-hook.sh"), "pretool"], payload(tool_name="Bash"), env_for(**tmux))
+    check("…and pretool's fast path finds its hold and clears it",
+          "limited" not in pane_file("PT") and pane_state("PT") == "working" and not marker("hold-PT"),
+          pane_file("PT"))
 else:
     print("two panes in one workspace: skipped (seamux only; run with CREW_IMPL=rust)")
 
@@ -1053,6 +1126,27 @@ check("no active block: the window is quiet", r.stdout == "⏱ window quiet · b
 blocks()
 r = statusline()
 check("no blocks at all: no usage history", r.stdout == "⏱ no usage history yet\n", r.stdout)
+# The account's limits, for crew's stopfail hook: kept from rate_limits,
+# rewritten only when a window changes, and the line is the same.
+LIMITS = os.path.join(STATE, "limits.json")
+RL = {"five_hour": {"used_percentage": 97, "resets_at": 1893456000},
+      "seven_day": {"used_percentage": 40, "resets_at": 1893900000}}
+r = statusline(json.dumps({"session_id": "s-1", "rate_limits": RL}))
+got = json.load(open(LIMITS)) if os.path.exists(LIMITS) else {}
+check("rate_limits are kept in limits.json, each window cut to used_percentage and resets_at",
+      {k: got.get(k) for k in ("five_hour", "seven_day", "spend_limit")} == dict(RL, spend_limit=None)
+      and isinstance(got.get("at"), int) and got["at"] > 1e12, got)
+check("…and the line is unchanged", r.stdout.startswith("⏱ "), r.stdout)
+got["at"] = 7
+json.dump(got, open(LIMITS, "w"))
+statusline(json.dumps({"rate_limits": RL}))
+check("the same windows again: no write", json.load(open(LIMITS)).get("at") == 7)
+statusline(json.dumps({"rate_limits": dict(RL, five_hour={"used_percentage": 99, "resets_at": 1893456000})}))
+check("a window that moved: written again", json.load(open(LIMITS)).get("at") != 7)
+os.remove(LIMITS)
+statusline("{}")
+check("no rate_limits: no file", not os.path.exists(LIMITS))
+
 r = statusline(path=NOCC)
 check("no ccusage: says how to get it", r.stdout == "ccusage not installed — npm i -g ccusage\n",
       r.stdout)
