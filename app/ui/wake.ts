@@ -380,6 +380,10 @@ export class Wake {
     let group = "";
     let section: HTMLElement | null = null;
     let ul: HTMLElement | null = null;
+    // The branch and session of the group above: a header that repeats them
+    // shows them only on hover, so each card leads with its prompt.
+    let lastBr = "";
+    let lastSess = "";
     this.vis.forEach((r, i) => {
       const d = local(r.created_at);
       const dk = dayKey(d);
@@ -390,6 +394,8 @@ export class Wake {
         out.push(section);
         day = dk;
         group = "";
+        lastBr = "";
+        lastSess = "";
       }
       if (gk !== group) {
         const g = el("div", `w-grp${this.openGroups.has(gk) ? " open" : ""}`);
@@ -403,13 +409,15 @@ export class Wake {
           g.classList.toggle("open");
         });
         ph.append(el("time", "", hm(d)), prompt);
-        if (r.branch) ph.append(el("span", "w-br", r.branch));
+        if (r.branch) ph.append(el("span", `w-br${r.branch === lastBr ? " rep" : ""}`, r.branch));
         if (r.session_id) {
-          const s = button(r.session_id.slice(0, 8), "w-sess");
+          const s = button(r.session_id.slice(0, 8), `w-sess${r.session_id === lastSess ? " rep" : ""}`);
           s.title = "copy the command that resumes this session";
           s.addEventListener("click", () => void this.copy(resumeCmd(r), "the resume command"));
           ph.append(s);
         }
+        lastBr = r.branch ?? "";
+        lastSess = r.session_id ?? "";
         ul = el("ul", "w-rows");
         g.append(ph, ul);
         section!.append(g);
