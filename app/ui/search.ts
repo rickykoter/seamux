@@ -23,7 +23,16 @@ export type TileIn = {
   topic?: string | null;
   root?: string;
   owner?: string | null;
+  /** What a native pane is running now ("cargo test"). */
+  running?: string | null;
 };
+
+/** The parts of a views:frame plan search reads (views.rs PlanBrief). */
+export type PlanIn = { ws: string; slug: string; phase?: string; done?: number; total?: number; n?: number; open?: boolean; title?: string };
+/** The parts of a views:frame family search reads (family.ts FamilyBrief). */
+export type FamilyIn = { parent: string; members: { slug: string; role?: string; phase: string; done: number; total: number; ws: string | null }[] };
+/** A gate decision's checks (decisions.ts Decision, kind gate). */
+export type GateIn = { ws: string; slug: string; n: number; checks: { name: string; status: string }[] };
 
 /** The parts of a tucked row search reads (tuck.ts TuckRow). */
 export type TuckIn = { path: string; name: string; branch: string; level: string; waiting: boolean; last: number; workspaces: string[] };
@@ -31,7 +40,11 @@ export type TuckIn = { path: string; name: string; branch: string; level: string
 export type Inputs = {
   tiles: TileIn[];
   /** Each live workspace's plan (views:frame plans). */
-  plans: { ws: string; slug: string }[];
+  plans: PlanIn[];
+  /** Plan families (views:frame families); absent reads as none. */
+  families?: FamilyIn[];
+  /** Gate decisions, for a failing check (views:frame decisions). */
+  gates?: GateIn[];
   /** Open questions and asked turns, with their text (views:frame decisions). */
   asks: { ws: string; text: string }[];
   tucked: TuckIn[];
@@ -70,10 +83,50 @@ export type Row = {
   lines: string[];
   /** The tucked worktree's path, for bringing it back; "" when live. */
   tuckPath: string;
+  /** The workspace's plan progress, null without a plan. */
+  progress: Progress | null;
+  /** Every pane in the workspace, agents first. */
+  panes: Pane[];
+  /** The plan family the workspace works in, null outside one. */
+  family: Family | null;
+};
+
+export type Progress = {
+  slug: string;
+  phase: string;
+  done: number;
+  total: number;
+  /** The open increment, else the next one; 0 when neither. */
+  n: number;
+  /** Whether `n` is open (authorized or working) rather than next. */
+  open: boolean;
+  title: string;
+  /** The first failing check of the increment at the gate, "" when none fails. */
+  failing: string;
+};
+/** One pane: who it is, and its state (an agent) or what it runs (a shell). */
+export type Pane = { surface: string; who: string; doing: string; state: string };
+export type Family = {
+  parent: string;
+  /** The slug this workspace works on. */
+  self: string;
+  members: { slug: string; role: string; phase: string; done: number; total: number; ws: string | null }[];
 };
 
 const STATE_RANK: Record<string, number> = { needs_input: 0, working: 1, idle: 2, ended: 3, shell: 4 };
 const base = (p: string) => p.replace(/\/+$/, "").split("/").pop() ?? p;
+
+/** A workspace's panes as the preview lists them: agents first (the one
+ *  that waits, then works), then shells; each says what it is doing. */
+export function panesOf(tiles: TileIn[]): Pane[] {
+  const rank = (t: TileIn) => (t.agent ? 0 : 1) * 10 + (t.agent ? STATE_RANK[t.state] ?? 9 : 0);
+  return [...tiles].sort((a, b) => rank(a) - rank(b)).map((t) => ({
+    surface: t.surface,
+    who: t.agent ? t.label || t.agent : t.label || "terminal",
+    doing: t.agent ? t.state : t.running || "shell",
+    state: t.agent ? t.state : "shell",
+  }));
+}
 
 /** One row per live workspace (its agent panes folded in) and per tucked or
  *  muted worktree. A worktree that is tucked but still open is one row, the
@@ -85,6 +138,22 @@ export function rowsOf(i: Inputs): Row[] {
   for (const t of i.tiles) if (t.workspace) byWs.set(t.workspace, [...(byWs.get(t.workspace) ?? []), t]);
   const askOf = (ws: string) => i.asks.filter((a) => a.ws === ws).map((a) => a.text).join(" · ");
   const planOf = (ws: string) => i.plans.find((p) => p.ws === ws)?.slug ?? "";
+  const progressOf = (ws: string): Progress | null => {
+    const p = i.plans.find((x) => x.ws === ws);
+    if (!p) return null;
+    const gate = (i.gates ?? []).find((g) => g.ws === ws && g.slug === p.slug);
+    return {
+      slug: p.slug, phase: p.phase ?? "", done: p.done ?? 0, total: p.total ?? 0, n: p.n ?? 0, open: p.open ?? false,
+      title: p.title ?? "", failing: gate?.checks.find((c) => c.status === "fail")?.name ?? "",
+    };
+  };
+  const familyOf = (ws: string): Family | null => {
+    for (const f of i.families ?? []) {
+      const me = f.members.find((m) => m.ws === ws);
+      if (me) return { parent: f.parent, self: me.slug, members: f.members.map((m) => ({ ...m, role: m.role ?? "" })) };
+    }
+    return null;
+  };
   const rows: Row[] = [];
   for (const [ws, tiles] of byWs) {
     if (tuckedWs.has(ws)) continue;
@@ -97,6 +166,7 @@ export function rowsOf(i: Inputs): Row[] {
       topic: agents.map((t) => t.topic).filter(Boolean).join(" · "), plan: planOf(ws) || (lead.owner ?? ""),
       ask: askOf(ws), path: where, state: lead.agent ? lead.state : "shell",
       since: Math.max(...tiles.map((t) => t.since)), priority: i.priority[ws] ?? 0, lines: lead.lines, tuckPath: "",
+      progress: progressOf(ws), panes: panesOf(tiles), family: familyOf(ws),
     });
   }
   for (const t of i.tucked) {
@@ -109,6 +179,7 @@ export function rowsOf(i: Inputs): Row[] {
       plan: ws ? planOf(ws) : "", ask: ws ? askOf(ws) : "", path: t.path,
       state: t.waiting ? "needs_input" : lead?.agent ? lead.state : "idle",
       since: t.last, priority: ws ? i.priority[ws] ?? 0 : 0, lines: lead?.lines ?? [], tuckPath: t.path,
+      progress: ws ? progressOf(ws) : null, panes: panesOf(tiles), family: ws ? familyOf(ws) : null,
     });
   }
   return rows;

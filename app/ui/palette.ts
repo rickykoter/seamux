@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Decision } from "./decisions";
 import { catSvg } from "./panecat";
-import { FIELDS, rowsOf, search, type Field, type Hit, type Inputs, type Row, type TileIn } from "./search";
+import { FIELDS, rowsOf, search, type FamilyIn, type Field, type Hit, type Inputs, type PlanIn, type Row, type TileIn } from "./search";
 import { ago } from "./tiles";
 import { say, type TuckRow } from "./tuck";
 
@@ -48,7 +48,7 @@ function dot(r: Row): SVGSVGElement {
 
 const STATE_SAID: Record<string, string> = { needs_input: "waiting on you", working: "working", idle: "idle", ended: "ended", shell: "terminal" };
 
-type ViewsIn = { plans?: { ws: string; slug: string }[]; decisions?: Decision[]; tucked?: TuckRow[]; priority?: Record<string, number>; branches?: Record<string, string> };
+type ViewsIn = { plans?: PlanIn[]; families?: FamilyIn[]; decisions?: Decision[]; tucked?: TuckRow[]; priority?: Record<string, number>; branches?: Record<string, string> };
 
 /** Session search: every open session, tucked and muted ones below, ranked by
  *  match then priority (search.ts); a preview of the one selected beside the
@@ -143,8 +143,9 @@ export class Palette {
     const asks = (this.views.decisions ?? []).flatMap((d) =>
       d.kind === "question" ? [{ ws: d.ws, text: d.questions.map((q) => q.question).join(" ") }]
       : d.kind === "asked" ? [{ ws: d.ws, text: d.question }] : []);
+    const gates = (this.views.decisions ?? []).flatMap((d) => d.kind === "gate" ? [{ ws: d.ws, slug: d.slug, n: d.n, checks: d.checks }] : []);
     return {
-      tiles: this.tiles, plans: this.views.plans ?? [], asks, tucked: this.views.tucked ?? [],
+      tiles: this.tiles, plans: this.views.plans ?? [], families: this.views.families ?? [], gates, asks, tucked: this.views.tucked ?? [],
       priority: this.views.priority ?? {}, branches: this.views.branches ?? {},
     };
   }
@@ -284,7 +285,18 @@ export class Palette {
     };
     line("state", `${r.level ? (r.level === "tuck" ? "tucked · " : "muted · ") : ""}${STATE_SAID[r.state] ?? r.state} · ${ago(Date.now() - r.since)}`);
     line("branch", r.branch, "branch");
-    line("plan", r.plan, "plan");
+    const g = r.progress;
+    if (g) {
+      const where = g.n ? ` · ${g.open ? "on" : "next"} ${g.n} of ${g.total}${g.title ? `: ${g.title}` : ""}` : g.total ? ` · ${g.done} of ${g.total} done` : "";
+      line("plan", `${g.slug}${g.phase ? ` · ${g.phase}` : ""}${where}`, g.slug === r.plan ? "plan" : undefined);
+      if (g.total) bits.push(this.bar(g.done, g.total));
+      if (g.failing) {
+        const f = el("p", "search-p-fail");
+        f.append(el("span", "search-p-k", "failing"), el("span", "search-p-v", g.failing));
+        bits.push(f);
+      }
+    } else line("plan", r.plan, "plan");
+    if (r.family) bits.push(this.familyEl(r));
     line("about", r.topic, "topic");
     line("where", this.tilde(r.path), "path");
     if (r.ask) {
@@ -292,10 +304,58 @@ export class Palette {
       q.append(...marked(r.ask, h.marks.ask));
       bits.push(q);
     }
+    if (r.ws && r.panes.length > 1) bits.push(this.panesEl(r));
     const tail = r.lines.slice(-8).join("\n").trim();
     if (tail) bits.push(el("pre", "search-p-lines", tail));
     else if (!r.ws) bits.push(el("p", "search-p-none", "Nothing open here. ⌘↵ brings the worktree back."));
     this.preview.replaceChildren(...bits);
+  }
+
+  /** done of total as a thin bar, for the eye; the line beside it says it in words. */
+  private bar(done: number, total: number): HTMLElement {
+    const b = el("div", "search-p-bar");
+    b.setAttribute("aria-hidden", "true");
+    const fill = el("i");
+    fill.style.width = `${Math.round((100 * Math.min(done, total)) / total)}%`;
+    b.append(fill);
+    return b;
+  }
+
+  /** The family: its parent, then each member with its progress, this one marked. */
+  private familyEl(r: Row): HTMLElement {
+    const f = r.family!;
+    const box = el("div", "search-p-fam");
+    box.append(el("span", "search-p-k", "family"));
+    const ul = el("ul");
+    for (const m of f.members) {
+      const li = el("li", m.slug === f.self ? "self" : "");
+      li.append(el("span", "", m.slug + (m.slug === f.parent ? " (parent)" : "")), el("span", "search-p-fam-n", m.total ? `${m.done}/${m.total} · ${m.phase}` : m.phase));
+      ul.append(li);
+    }
+    box.append(ul);
+    return box;
+  }
+
+  /** Every pane in the workspace; a click shows that one. */
+  private panesEl(r: Row): HTMLElement {
+    const box = el("div", "search-p-panes");
+    box.append(el("span", "search-p-k", "panes"));
+    const ul = el("ul");
+    for (const p of r.panes) {
+      const b = el("button", `search-p-pane ${p.state}`);
+      b.type = "button";
+      b.title = "Show this pane";
+      b.append(el("span", "search-p-who", p.who), el("span", "search-p-doing", STATE_SAID[p.doing] ?? p.doing));
+      b.addEventListener("click", () => {
+        this.close();
+        this.onJump(r.ws, p.surface);
+      });
+      const li = el("li");
+      li.append(b);
+      ul.append(li);
+    }
+    box.append(ul);
+    return box;
   }
 
   /** Enter: jump to the session (a tucked worktree with nothing open is
