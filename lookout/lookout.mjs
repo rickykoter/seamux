@@ -24,7 +24,8 @@ import { spawnSync } from "node:child_process";
 import * as V from "./lib/vendor.mjs";
 import * as S from "./lib/store.mjs";
 import { resolveSource, buildPatch, parsePatch, sideText, buildRows, looksGenerated,
-         generatedByAttr, LARGE_LINES } from "./lib/patch.mjs";
+         generatedByAttr, LARGE_LINES, repoInfo } from "./lib/patch.mjs";
+import * as TU from "./lib/turns.mjs";
 import * as SC from "./lib/score.mjs";
 import * as GR from "./lib/group.mjs";
 import { repoConfig } from "./lib/typesafe.mjs";
@@ -52,7 +53,7 @@ const opt = (n, d = null) => {
 // Options that take a value; every other --flag stands alone.
 // The most of a --context-file a review keeps for its reviewer brief.
 const CONTEXT_CAP = 8000;
-const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file", "--plan-map", "--url", "--root"]);
+const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file", "--plan-map", "--url", "--root", "--session"]);
 const positional = () => rest.filter((a, i) => !a.startsWith("--") && !(i > 0 && VALUED.has(rest[i - 1])));
 
 const say = s => process.stdout.write(s + "\n");
@@ -601,6 +602,9 @@ function usage() {
                             copy the plugin into a repo's .claude/ for cloud sessions
   lookout serve [--url PATH] [--status|--stop]
                             start lookout's review server if needed and print a page's URL
+  lookout turns [--session ID] [--json]
+                            this repo's turn snapshots (refs/seamux/turns/<session>/<n>/start,end),
+                            taken at each prompt and stop; the session defaults to this one
 
   store: ${S.REVIEWS_DIR}/<id>.json`);
 }
@@ -651,6 +655,31 @@ function cmdInstallRepo() {
   say("  commit .claude/ yourself; lookout install-repo --check reports drift later");
 }
 
+// `lookout turns [--session ID] [--json]`: the session's turn snapshots in
+// this repo, oldest first, with what the log knows of each (lib/turns.mjs).
+function cmdTurns() {
+  let root;
+  try { ({ root } = repoInfo(process.cwd())); } catch { die("not inside a git repository"); }
+  const sid = TU.sessionKey(opt("session") || process.env.CLAUDE_CODE_SESSION_ID || "");
+  if (!sid) die("no session: pass --session ID (CLAUDE_CODE_SESSION_ID is not set)");
+  const log = new Map(TU.readLog(sid).map(e => [e.n, e]));
+  const turns = new Map();
+  for (const r of TU.turnRefs(root, sid)) {
+    const t = turns.get(r.n) || { n: r.n, session: sid, start: "", end: "", files: null, prompt: "", at: "" };
+    t[r.side] = r.sha;
+    turns.set(r.n, t);
+  }
+  const out = [...turns.values()].sort((a, b) => a.n - b.n).map(t => {
+    const e = log.get(t.n);
+    return e && e.start === t.start ? { ...t, files: e.files, prompt: e.prompt, at: e.at } : t;
+  });
+  if (flag("json")) { process.stdout.write(JSON.stringify(out, null, 2) + "\n"); return; }
+  if (!out.length) { say(`no turns for session ${sid} in ${root}`); return; }
+  for (const t of out)
+    say(`${String(t.n).padStart(3)}  ${t.start.slice(0, 8)}..${t.end ? t.end.slice(0, 8) : "(open)  "}  ` +
+        `${t.files == null ? "  ?" : String(t.files).padStart(3)} files  ${t.prompt}`);
+}
+
 // `lookout serve`: start the server if needed and print a page's URL, run it
 // in the foreground (what the detached start runs), or stop it.
 function cmdServe() {
@@ -693,6 +722,7 @@ switch (verb) {
   case "export-artifact": cmdExportArtifact(); break;
   case "pull":   cmdPull(); break;
   case "install-repo": cmdInstallRepo(); break;
+  case "turns":  cmdTurns(); break;
   case "engine": {
     // The pointer as written by this run, plus the host it detected (not
     // stored in the pointer: the host belongs to the session, not the copy).
