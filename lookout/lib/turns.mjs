@@ -74,8 +74,24 @@ function close(root, sid, open, sha, now) {
   keep.push(entry);
   writeAtomic(logPath(sid), keep.slice(-KEEP).map(e => JSON.stringify(e)).join("\n") + "\n");
   writeAtomic(openPath(sid), JSON.stringify({ ...open, ended: true }) + "\n");
+  deleteRefs(root, beyondKeep(turnRefs(root, sid)));   // the cap holds mid-session too
   return entry;
 }
+
+// The refs of turns past a session's last KEEP.
+function beyondKeep(refs) {
+  const cut = new Set([...new Set(refs.map(r => r.n))].sort((a, b) => b - a).slice(KEEP));
+  return refs.filter(r => cut.has(r.n));
+}
+
+function deleteRefs(root, refs) {
+  if (refs.length)
+    git(root, ["update-ref", "--stdin"], { input: refs.map(r => `delete ${REF_ROOT}/${r.session}/${r.n}/${r.side} ${r.sha}\n`).join("") });
+}
+
+// The worktree a marker's turn began in, while it is still there: a turn
+// ends where it started, wherever the session has moved since.
+const markerRoot = m => typeof m.root === "string" && m.root && fs.existsSync(m.root) ? m.root : "";
 
 const isOpen = m => m && Number.isInteger(m.n) && typeof m.start === "string";
 
@@ -91,7 +107,11 @@ export function start({ cwd, session, prompt = "", now = Date.now() }) {
   const sha = snapshot(root, `seamux turn ${sid}/${n} start`);
   git(root, ["update-ref", `${REF_ROOT}/${sid}/${n}/start`, sha]);
   fs.mkdirSync(TURNS_DIR, { recursive: true });
-  if (isOpen(prev) && !prev.ended) close(root, sid, prev, sha, now);
+  if (isOpen(prev) && !prev.ended) {
+    const at = markerRoot(prev);
+    if (at === root) close(root, sid, prev, sha, now);
+    else if (at) close(at, sid, prev, snapshot(at, `seamux turn ${sid}/${prev.n} end`), now);
+  }
   writeAtomic(openPath(sid), JSON.stringify({ n, root, start: sha, at: new Date(now).toISOString(),
     prompt: String(prompt).replace(/\s+/g, " ").trim().slice(0, PROMPT_CHARS) }) + "\n");
   return { n, sha };
@@ -106,7 +126,8 @@ export function end({ cwd, session, now = Date.now() }) {
   if (!sid) return null;
   const open = readJson(openPath(sid));
   if (!isOpen(open) || open.stale) return null;   // this turn's start was never taken
-  const { root } = repoInfo(cwd);
+  const root = markerRoot(open);
+  if (!root) return null;
   return close(root, sid, open, snapshot(root, `seamux turn ${sid}/${open.n} end`), now);
 }
 
@@ -137,12 +158,9 @@ export function prune({ cwd, session = "", now = Date.now() }) {
       fs.rmSync(openPath(sid), { force: true });
       continue;
     }
-    const ns = [...new Set(refs.map(r => r.n))].sort((a, b) => b - a);
-    const cut = new Set(ns.slice(KEEP));
-    drop.push(...refs.filter(r => cut.has(r.n)));
+    drop.push(...beyondKeep(refs));
   }
-  if (drop.length)
-    git(root, ["update-ref", "--stdin"], { input: drop.map(r => `delete ${REF_ROOT}/${r.session}/${r.n}/${r.side} ${r.sha}\n`).join("") });
+  deleteRefs(root, drop);
   return drop.length;
 }
 

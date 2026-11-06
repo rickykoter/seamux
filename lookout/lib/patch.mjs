@@ -152,6 +152,10 @@ function turnSource(o, { root, repo, branch, head }) {
   const n = spec === "last" ? started[started.length - 1] : Number(spec);
   const t = turns.get(n);
   if (!t || !t.start) throw new Error(`no turn ${n} in session ${sid} (turns ${started[0]}–${started[started.length - 1]})`);
+  // Only the latest turn can still be running. An older one with no end lost
+  // its stop, and the working tree now holds later turns' work too.
+  const latest = n === started[started.length - 1];
+  if (!o.sincePrompt && !t.end && !latest) throw new Error(`turn ${n} of session ${sid} has no end snapshot (its stop was never recorded)`);
   const live = o.sincePrompt || !t.end;
   const newRev = live ? worktreeTree(root) : t.end;
   const label = o.sincePrompt ? `since prompt ${n}` : `turn ${n}${live ? " · running" : ""}`;

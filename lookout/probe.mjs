@@ -1633,6 +1633,36 @@ if (want("turn snapshots")) {
   for (const ms of ["40", "80", "120"]) hook("start", { cwd: RT, session_id: "s-kill", prompt: "p" }, { ...ENV, TMPDIR: KT, LOOKOUT_TURN_BUDGET_MS: ms });
   spawnSync("sleep", ["0.5"]);   // a git left running would write its scratch index back by now
   ok("turns: a start killed at the budget leaves no scratch index behind, now or later", !idx().length, idx().join(","));
+
+  // A session that moved to another worktree of the repo ends its turn where
+  // the turn began: the refs are shared, the working trees are not.
+  const WT2 = path.join(TMP, "rt-other");
+  sh(RT, `git worktree add -q ${WT2} -b other`);
+  write(WT2, "elsewhere.js", "only in the other worktree\n");
+  hook("start", { cwd: RT, session_id: "s-move", prompt: "p" });
+  write(RT, "moved.js", "m\n");
+  hook("end", { cwd: WT2, session_id: "s-move" });
+  const mv = T.readLog("s-move");
+  ok("turns: a turn ends in the worktree it began in, wherever the session's cwd is now",
+     mv.length === 1 && fs.realpathSync(mv[0].root) === fs.realpathSync(RT) &&
+     sh(RT, `git diff --name-only ${mv[0].start} ${mv[0].end}`).trim() === "moved.js", JSON.stringify(mv));
+  hook("start", { cwd: RT, session_id: "s-move2", prompt: "p" });
+  write(RT, "moved2.js", "m\n");
+  hook("start", { cwd: WT2, session_id: "s-move2", prompt: "q" });
+  const mv2 = T.readLog("s-move2");
+  ok("turns: a prompt from another worktree ends the open turn with a snapshot of its own worktree",
+     mv2.length === 1 && sh(RT, `git diff --name-only ${mv2[0].start} ${mv2[0].end}`).trim() === "moved2.js", JSON.stringify(mv2));
+
+  // The cap holds mid-session: a stop trims the session to its last 50 turns.
+  const seed = refOf("s-1", 1, "start");
+  spawnSync("git", ["update-ref", "--stdin"], { cwd: RT,
+    input: Array.from({ length: 55 }, (_, i) => `update refs/seamux/turns/s-cap/${i + 1}/start ${seed}\nupdate refs/seamux/turns/s-cap/${i + 1}/end ${seed}\n`).join("") });
+  hook("start", { cwd: RT, session_id: "s-cap", prompt: "p" });
+  hook("end", { cwd: RT, session_id: "s-cap" });
+  const capped = T.turnRefs(RT, "s-cap");
+  const ns = [...new Set(capped.map(r => r.n))].sort((a, b) => a - b);
+  ok("turns: a stop keeps the session's last 50 turns without waiting for the next session",
+     ns.length === 50 && ns[0] === 7 && ns[ns.length - 1] === 56, ns.join(","));
 }
 
 // ---------------------------------------------------------------- turn targets
@@ -1673,10 +1703,17 @@ if (want("turn targets")) {
   ok("turn: an ended turn shows only its own work, not what came after its stop",
      filesOf(open("--turn", "sess-one/2").id) === "widget.test.js");
 
+  // An older turn whose stop was lost is not running: the working tree holds
+  // later turns' work too, so it is refused rather than diffed against it.
+  sh(RU, `git update-ref -d refs/seamux/turns/sess-one/1/end`);
+  T.start({ cwd: RU, session: "sess-one", prompt: "a third" });
+  const lost = cli(RU, "open", "--turn", "sess-one/1", "--no-open");
+  ok("turn: an older turn with no end snapshot is refused", lost.status === 1 && /turn 1 of session sess-one has no end snapshot/.test(lost.stderr), lost.stderr);
+
   const two = cli(RU, "open", "--turn", "1", "--worktree");
   ok("turn: a second target is refused", two.status === 1 && /pick one of .*--turn, --since-prompt/.test(two.stderr), two.stderr);
   const none = cli(RU, "open", "--turn", "sess-one/9", "--no-open");
-  ok("turn: a turn that was never taken is refused with the range there is", none.status === 1 && /no turn 9 .*turns 1–2/.test(none.stderr), none.stderr);
+  ok("turn: a turn that was never taken is refused with the range there is", none.status === 1 && /no turn 9 .*turns 1–3/.test(none.stderr), none.stderr);
   const nos = spawnSync("node", [path.join(HERE, "lookout.mjs"), "open", "--turn", "last", "--no-open"],
     { encoding: "utf8", env: { ...ENV, CLAUDE_CODE_SESSION_ID: "" }, cwd: RU });
   ok("turn: with no session it says how to name one", nos.status === 1 && /pass --turn SESSION\/N/.test(nos.stderr), nos.stderr);
