@@ -445,6 +445,13 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .dirty{color:var(--dirty);font-size:9px}
 .cost{margin-left:auto;color:var(--fg2)}
 .cost.small{color:var(--grey)}
+/* What you recognise a row by on a second look: the branch, unsaved work,
+   progress and spend wait for the pointer or the keyboard on the row. They
+   keep their place, so the list does not shift under the pointer. PR, issue
+   and status signals stay: they can be the reason to look. */
+.foot>.branch,.foot>.dirty,.foot>.meta,.foot .cost{transition:opacity .12s}
+.row:not(:hover):not(:focus-within) .foot>:is(.branch,.dirty,.meta),
+.row:not(:hover):not(:focus-within) .foot .cost{opacity:0}
 
 /* The Wake: an icon, not a chip, pinned to the right end of the footer (and of
    a quiet row's line) beside the spend. Its own colour, the aqua no tier wears,
