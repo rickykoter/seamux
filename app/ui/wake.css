@@ -65,8 +65,10 @@
 .w-prompt.none { color: var(--muted); font-style: italic; }
 .w-br { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font: 11px ui-monospace, Menlo, monospace; }
 .w-sess { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px ui-monospace, Menlo, monospace; color: var(--muted); background: none; border: 1px dashed var(--line); border-radius: 6px; padding: 1px 6px; cursor: pointer; }
-/* The same branch or session as the card above: there on hover, not on every card. */
-.w-ph:not(:hover):not(:focus-within) .rep { display: none; }
+/* The same branch or session as the card above: there on hover, not on every
+   card. Out of the flow but still in the tab order, so Tab reaches the session
+   button and :focus-within brings it back. */
+.w-ph:not(:hover):not(:focus-within) .rep { position: absolute; width: 1px; height: 1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .w-rows { list-style: none; margin: 0; padding: 4px 0; }
 /* A row: kind, title, badges, then its one action and ⋯ at the end. A click opens it. */
 .w-row { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto auto; gap: 2px 10px; align-items: center; padding: 5px 12px; cursor: pointer; }
