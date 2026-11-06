@@ -145,3 +145,11 @@
 .search-p-pr a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .search-p-ci.pass { color: var(--good); }
 .search-p-ci.fail { color: var(--bad); }
+/* The selected session's last exchange: the person's prompt, then Claude's reply. */
+.search-p-ex { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 0; font-size: 12.5px; }
+.search-p-ex > div { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; }
+.search-p-ex p {
+  margin: 0; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow: hidden;
+}
+.search-p-ex-claude p { color: var(--muted); }

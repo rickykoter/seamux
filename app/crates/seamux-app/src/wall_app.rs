@@ -252,9 +252,36 @@ pub async fn workspace_sessions(workspace: String) -> Result<Vec<seamux_app::ses
     .map_err(|e| e.to_string())?
 }
 
+/// The last prompt and reply of a workspace's active (else newest) Claude
+/// session, for the session search's preview of the selected row only.
+#[tauri::command]
+pub async fn session_last_exchange(workspace: String) -> Result<Option<seamux_app::sessions::LastExchange>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (records, id) = session_records(&workspace)?;
+        Ok(seamux_app::sessions::last_exchange(&records, &id))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// A workspace's session records and its id as they key them: cmux's own,
+/// else the tmux backend's from its folder's transcripts.
+fn session_records(workspace: &str) -> Result<(Vec<serde_json::Value>, String), String> {
+    if seamux_app::backend::kind() == crew_core::backend::Kind::Tmux {
+        return tmux_records(workspace);
+    }
+    let records = crew_core::workspaces::agent_sessions().ok_or("cmux did not list its sessions")?;
+    Ok((records, workspace.to_string()))
+}
+
 /// A tmux-backend workspace's conversations: its folder's transcripts, the
 /// ones its live panes run (by their pane files) marked active.
 fn tmux_sessions(workspace: &str) -> Result<Vec<seamux_app::sessions::SessionRow>, String> {
+    let (records, id) = tmux_records(workspace)?;
+    Ok(seamux_app::sessions::rows(&records, &id))
+}
+
+fn tmux_records(workspace: &str) -> Result<(Vec<serde_json::Value>, String), String> {
     let b = seamux_app::backend::get()?;
     let ws = b.workspaces()?.into_iter().find(|w| w.id.eq_ignore_ascii_case(workspace)).ok_or_else(|| format!("no workspace {workspace}"))?;
     let dir = crew_board::state::state_dir();
@@ -265,7 +292,7 @@ fn tmux_sessions(workspace: &str) -> Result<Vec<seamux_app::sessions::SessionRow
         .filter(|s| !s.is_empty())
         .collect();
     let records = seamux_app::tmux_feed::session_records(&crew_core::py::home(), &ws.id, &ws.cwd, &live);
-    Ok(seamux_app::sessions::rows(&records, &ws.id))
+    Ok((records, ws.id))
 }
 
 /// The dead sessions Desk's cleanup would bring back, one per terminal.

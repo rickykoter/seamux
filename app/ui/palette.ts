@@ -48,6 +48,9 @@ function dot(r: Row): SVGSVGElement {
 
 const STATE_SAID: Record<string, string> = { needs_input: "waiting on you", working: "working", idle: "idle", ended: "ended", shell: "terminal" };
 
+/** sessions.rs LastExchange. */
+type LastExchange = { prompt: string; reply: string; session: string; at: number };
+
 const CI_SAID: Record<string, string> = { pass: "passing", fail: "failing", run: "running" };
 const REVIEW_SAID: Record<string, string> = { approved: "approved", changes: "changes requested" };
 
@@ -75,6 +78,12 @@ export class Palette {
   /** The selection the list was last scrolled to. */
   private scrolledTo = "";
   private home = "";
+  /** The selected row's last exchange, by workspace; `fresh` false once a
+   *  frame came in since it was read, so the next draw asks again (and
+   *  shows this one meanwhile). */
+  private ex: { ws: string; data: LastExchange | null; fresh: boolean } | null = null;
+  /** The workspace whose last exchange is being asked for, "" when none. */
+  private asking = "";
   /** Show a workspace's pane in the Dock (main.ts: tabs, then DockView.jump). */
   onJump: (ws: string, pane: string) => void = () => {};
 
@@ -166,6 +175,7 @@ export class Palette {
       this.chip.append(d);
     }
     this.chip.classList.toggle("waiting", waiting);
+    if (this.ex) this.ex.fresh = false;
     if (!this.el.hidden) {
       this.rows = rowsOf(this.inputs());
       this.draw();
@@ -308,11 +318,49 @@ export class Palette {
       q.append(...marked(r.ask, h.marks.ask));
       bits.push(q);
     }
+    if (r.ws) {
+      if (!this.ex || this.ex.ws !== r.ws || !this.ex.fresh) this.askExchange(r.ws);
+      const x = this.ex?.ws === r.ws ? this.ex.data : null;
+      if (x) bits.push(this.exchangeEl(x));
+    }
     if (r.ws && r.panes.length > 1) bits.push(this.panesEl(r));
     const tail = r.lines.slice(-8).join("\n").trim();
     if (tail) bits.push(el("pre", "search-p-lines", tail));
     else if (!r.ws) bits.push(el("p", "search-p-none", "Nothing open here. ⌘↵ brings the worktree back."));
     this.preview.replaceChildren(...bits);
+  }
+
+  /** Ask for workspace `ws`'s last exchange, once at a time; the preview is
+   *  drawn again when it comes, if that row is still the selected one. */
+  private askExchange(ws: string): void {
+    if (this.asking === ws) return;
+    this.asking = ws;
+    const done = (data: LastExchange | null) => {
+      if (this.asking === ws) this.asking = "";
+      // An answer for a row the selection has left is dropped: it would
+      // push out the selected row's own.
+      const h = this.shown[this.sel];
+      if (h?.row.ws !== ws) return;
+      this.ex = { ws, data, fresh: true };
+      if (!this.el.hidden) this.drawPreview(h);
+    };
+    invoke<LastExchange | null>("session_last_exchange", { workspace: ws }).then(done, () => done(null));
+  }
+
+  /** The person's last prompt and Claude's last reply. */
+  private exchangeEl(x: LastExchange): HTMLElement {
+    const box = el("div", "search-p-ex");
+    if (x.prompt) {
+      const p = el("div", "search-p-ex-you");
+      p.append(el("span", "search-p-k", "you"), el("p", "", x.prompt));
+      box.append(p);
+    }
+    if (x.reply) {
+      const c = el("div", "search-p-ex-claude");
+      c.append(el("span", "search-p-k", "Claude"), el("p", "", x.reply));
+      box.append(c);
+    }
+    return box;
   }
 
   /** done of total as a thin bar, for the eye; the line beside it says it in words. */
