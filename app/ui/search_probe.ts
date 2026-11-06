@@ -131,6 +131,8 @@ const names = (q: string, i: Inputs) => search(rowsOf(i), q).map((h) => h.row.na
   ok("progress: a row carries its plan's phase, done of total and the open increment's number and title",
     JSON.stringify(w1.progress) === JSON.stringify({ slug: "pay-retry", phase: "implementing", done: 2, total: 6, n: 3, open: true, title: "Retry with backoff", failing: "e2e checkout" }),
     JSON.stringify(w1.progress));
+  ok("progress: a lost check counts as failing, as the Dock counts it",
+    rowsOf({ ...i, gates: [{ ws: "W1", slug: "pay-retry", n: 3, checks: [{ name: "e2e", status: "lost" }] }] }).find((r) => r.ws === "W1")!.progress?.failing === "e2e");
   ok("progress: a failing check counts only from its own plan's gate", w2.progress?.failing === "", JSON.stringify(w2.progress));
   ok("progress: a workspace with no plan has none", w4.progress === null);
   ok("panes: every pane, agents first with the waiting one on top, then shells",

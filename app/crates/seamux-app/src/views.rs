@@ -430,8 +430,9 @@ pub struct Inputs {
     pub tuck_file: PathBuf,
     /// crew-board's ask pages and their records.
     pub asks_dir: PathBuf,
-    /// The tmux backend's state dir, whose registry holds crew-sync's facts there.
-    pub tmux_dir: PathBuf,
+    /// The tmux backend's state dir, whose registry holds crew-sync's facts
+    /// there; None on cmux, where the sidebar cache holds them.
+    pub tmux_dir: Option<PathBuf>,
     /// `deep-plan status --json`'s rows.
     pub plans: Box<dyn Fn() -> Result<Vec<Value>, String> + Send + Sync>,
     /// The Artifact Log's newest rows.
@@ -446,7 +447,7 @@ impl Inputs {
             history_dir: history::dir(),
             tuck_file: crate::tuck::Store::live().file,
             asks_dir: crew_board::ask::asks_dir(),
-            tmux_dir: crew_core::backend::tmux::state_dir(),
+            tmux_dir: (crate::backend::kind() == crew_core::backend::Kind::Tmux).then(crew_core::backend::tmux::state_dir),
             plans: Box::new(plans_now),
             wake: Box::new(|n| crew_store::search("", None, None, n).map_err(|e| e.to_string())),
         }
@@ -809,7 +810,9 @@ pub struct Feed {
     reviews_dir: PathBuf,
     history_dir: PathBuf,
     asks_dir: PathBuf,
-    tmux_dir: PathBuf,
+    tmux_dir: Option<PathBuf>,
+    /// The last published facts and the mtimes of the files they came from.
+    published: Mutex<(Vec<Option<SystemTime>>, std::collections::BTreeMap<String, crew_core::published::Published>)>,
     tuck: crate::tuck::Store,
     reviews: Mutex<HashMap<PathBuf, (SystemTime, Option<ReviewSummary>)>>,
     plans: Slow<Vec<Value>>,
@@ -825,11 +828,27 @@ impl Feed {
             history_dir: inputs.history_dir,
             asks_dir: inputs.asks_dir,
             tmux_dir: inputs.tmux_dir,
+            published: Mutex::default(),
             tuck: crate::tuck::Store { file: inputs.tuck_file },
             reviews: Mutex::default(),
             plans: Slow::new(Arc::from(inputs.plans), PLANS_TTL),
             wake: Slow::new(Arc::new(move || wake(WAKE_ROWS)), WAKE_TTL),
         }
+    }
+
+    /// crew-sync's published facts, read again only when a file they come
+    /// from changed (a frame is built every couple of seconds).
+    fn published(&self) -> std::collections::BTreeMap<String, crew_core::published::Published> {
+        let tmux = self.tmux_dir.as_deref();
+        let stamps: Vec<Option<SystemTime>> = crew_core::published::sources(&self.state_dir, tmux)
+            .iter()
+            .map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+            .collect();
+        let mut last = self.published.lock().unwrap();
+        if last.0.is_empty() || last.0 != stamps {
+            *last = (stamps, crew_core::published::all(&self.state_dir, tmux));
+        }
+        last.1.clone()
     }
 
     pub fn history_dir(&self) -> &Path {
@@ -973,7 +992,7 @@ impl Feed {
                 branches.insert(t.workspace.clone(), br);
             }
         }
-        let pr = pr_briefs(tiles, &crew_core::published::all(&self.state_dir, &self.tmux_dir));
+        let pr = pr_briefs(tiles, &self.published());
         ViewsFrame { decisions, wake, history, plans, reviews, tucked, families: fams, pages, levels, priority, branches, pr, problems }
     }
 

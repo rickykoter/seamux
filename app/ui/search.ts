@@ -108,7 +108,7 @@ export type Progress = {
   /** Whether `n` is open (authorized or working) rather than next. */
   open: boolean;
   title: string;
-  /** The first failing check of the increment at the gate, "" when none fails. */
+  /** The first failing check (fail or lost, as the Dock counts them) of the increment at the gate, "" when none fails. */
   failing: string;
 };
 /** One pane: who it is, and its state (an agent) or what it runs (a shell). */
@@ -151,7 +151,7 @@ export function rowsOf(i: Inputs): Row[] {
     const gate = (i.gates ?? []).find((g) => g.ws === ws && g.slug === p.slug);
     return {
       slug: p.slug, phase: p.phase ?? "", done: p.done ?? 0, total: p.total ?? 0, n: p.n ?? 0, open: p.open ?? false,
-      title: p.title ?? "", failing: gate?.checks.find((c) => c.status === "fail")?.name ?? "",
+      title: p.title ?? "", failing: gate?.checks.find((c) => c.status === "fail" || c.status === "lost")?.name ?? "",
     };
   };
   const familyOf = (ws: string): Family | null => {

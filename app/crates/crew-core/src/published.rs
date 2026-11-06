@@ -76,17 +76,26 @@ fn sidebar_cache(state_dir: &Path) -> serde_json::Map<String, Value> {
     }
 }
 
+/// The files `all` reads, for a caller that reads again only when one changed.
+pub fn sources(state_dir: &Path, tmux_dir: Option<&Path>) -> Vec<std::path::PathBuf> {
+    let mut out = vec![state_dir.join("board-sidebar.json")];
+    out.extend(tmux_dir.map(|d| d.join("workspaces.json")));
+    out
+}
+
 /// Every workspace's published facts, by upper-case id: the sidebar cache
-/// in `state_dir`, then the tmux registry in `tmux_dir` for any workspace
-/// the cache does not hold. A missing or unreadable file adds nothing.
-pub fn all(state_dir: &Path, tmux_dir: &Path) -> BTreeMap<String, Published> {
+/// in `state_dir`, then the tmux registry in `tmux_dir` (None on cmux, where
+/// crew-sync writes none) for any workspace the cache does not hold. A
+/// missing or unreadable file adds nothing.
+pub fn all(state_dir: &Path, tmux_dir: Option<&Path>) -> BTreeMap<String, Published> {
     let mut out = BTreeMap::new();
     for (id, e) in sidebar_cache(state_dir) {
         if let Some(p) = sidebar_entry(&e) {
             out.insert(id.to_ascii_uppercase(), p);
         }
     }
-    if let Ok(facts) = crate::backend::tmux::TmuxBackend::at(tmux_dir.to_path_buf()).facts() {
+    let facts = tmux_dir.and_then(|d| crate::backend::tmux::TmuxBackend::at(d.to_path_buf()).facts().ok());
+    if let Some(facts) = facts {
         for (id, desc, pr) in facts {
             out.entry(id.to_ascii_uppercase()).or_insert(Published { desc, pr: registry_pr(&pr) });
         }
@@ -131,7 +140,7 @@ mod tests {
             {"id": "w3", "description": "ci:run pr:draft", "pr": {"n": 7, "state": "OPEN", "url": "https://x/7"}},
             {"id": "W4", "description": "", "pr": null},
         ], "panes": []}).to_string()).unwrap();
-        let all = all(&state, &tmux);
+        let all = all(&state, Some(&tmux));
         let w1 = &all["W1"];
         assert_eq!(w1.pr, Some(Pr { n: "12".into(), state: "open".into(), url: "https://x/12".into() }));
         assert_eq!((w1.token("ci:"), w1.token("review:")), ("fail".into(), "approved".into()));
@@ -150,6 +159,6 @@ mod tests {
     #[test]
     fn no_files_is_nothing_published() {
         let (state, tmux) = (dir("ns"), dir("nt"));
-        assert!(all(&state, &tmux).is_empty());
+        assert!(all(&state, Some(&tmux)).is_empty());
     }
 }

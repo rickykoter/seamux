@@ -101,7 +101,7 @@ fn inputs(f: &Fixture, plans: serde_json::Value, wake: Vec<crew_store::Row>) -> 
         history_dir: f.p("history"),
         tuck_file: f.p("tucked.json"),
         asks_dir: f.p("asks"),
-        tmux_dir: f.p("tmux"),
+        tmux_dir: Some(f.p("tmux")),
         plans: Box::new(move || Ok(plans.as_array().cloned().unwrap_or_default())),
         wake: Box::new(move |n| Ok(wake.iter().take(n).cloned().collect())),
     }

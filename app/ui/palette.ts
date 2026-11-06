@@ -78,10 +78,10 @@ export class Palette {
   /** The selection the list was last scrolled to. */
   private scrolledTo = "";
   private home = "";
-  /** The selected row's last exchange, by workspace; `fresh` false once a
-   *  frame came in since it was read, so the next draw asks again (and
-   *  shows this one meanwhile). */
-  private ex: { ws: string; data: LastExchange | null; fresh: boolean } | null = null;
+  /** The selected row's last exchange, by workspace, and the row's `since`
+   *  when it was read: the next draw asks again only once the row's state
+   *  has changed since (a turn ended or began), and shows this one meanwhile. */
+  private ex: { ws: string; since: number; data: LastExchange | null } | null = null;
   /** The workspace whose last exchange is being asked for, "" when none. */
   private asking = "";
   /** Show a workspace's pane in the Dock (main.ts: tabs, then DockView.jump). */
@@ -175,7 +175,6 @@ export class Palette {
       this.chip.append(d);
     }
     this.chip.classList.toggle("waiting", waiting);
-    if (this.ex) this.ex.fresh = false;
     if (!this.el.hidden) {
       this.rows = rowsOf(this.inputs());
       this.draw();
@@ -319,7 +318,7 @@ export class Palette {
       bits.push(q);
     }
     if (r.ws) {
-      if (!this.ex || this.ex.ws !== r.ws || !this.ex.fresh) this.askExchange(r.ws);
+      if (!this.ex || this.ex.ws !== r.ws || this.ex.since !== r.since) this.askExchange(r.ws, r.since);
       const x = this.ex?.ws === r.ws ? this.ex.data : null;
       if (x) bits.push(this.exchangeEl(x));
     }
@@ -332,7 +331,7 @@ export class Palette {
 
   /** Ask for workspace `ws`'s last exchange, once at a time; the preview is
    *  drawn again when it comes, if that row is still the selected one. */
-  private askExchange(ws: string): void {
+  private askExchange(ws: string, since: number): void {
     if (this.asking === ws) return;
     this.asking = ws;
     const done = (data: LastExchange | null) => {
@@ -341,8 +340,10 @@ export class Palette {
       // push out the selected row's own.
       const h = this.shown[this.sel];
       if (h?.row.ws !== ws) return;
-      this.ex = { ws, data, fresh: true };
-      if (!this.el.hidden) this.drawPreview(h);
+      const same = this.ex?.ws === ws && JSON.stringify(this.ex.data) === JSON.stringify(data);
+      this.ex = { ws, since, data };
+      // Drawn again only when it changed: a redraw drops a pane button's focus.
+      if (!this.el.hidden && !same) this.drawPreview(h);
     };
     invoke<LastExchange | null>("session_last_exchange", { workspace: ws }).then(done, () => done(null));
   }
@@ -379,14 +380,18 @@ export class Palette {
     const p = el("p", "search-p-line search-p-pr");
     p.append(el("span", "search-p-k", "PR"));
     const v = el("span", "search-p-v");
-    if (pr.n && pr.url) {
+    // Only a web link becomes a link; open_url checks it again.
+    if (pr.n && /^https?:\/\/\S+$/i.test(pr.url)) {
       const a = el("a", "", `#${pr.n}`);
       a.href = pr.url;
       a.title = "Open the pull request in the browser";
-      a.addEventListener("click", (e) => {
+      const open = (e: MouseEvent) => {
         e.preventDefault();
         void invoke("open_url", { url: pr.url }).catch((err) => say(String(err), undefined, true));
-      });
+      };
+      a.addEventListener("click", open);
+      // A middle click must not navigate the page itself.
+      a.addEventListener("auxclick", (e) => { if (e.button === 1) open(e); else e.preventDefault(); });
       v.append(a);
     } else if (pr.n) v.append(document.createTextNode(`#${pr.n}`));
     else v.append(document.createTextNode("none"));
