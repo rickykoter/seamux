@@ -101,7 +101,10 @@ void listen<string>("sheet:key", (e) => {
 // The window's own red button hides it too (shell.rs turns a close into a hide).
 const hide = () => void invoke("hide_overlay");
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") hide();
+  // Not an Escape something below already took: the Dock's terminal catches
+  // a second Esc in a row (native.ts, so Claude's Rewind does not open) and
+  // only blurs, but xterm lets the key it declined go on up to here.
+  if (e.key === "Escape" && !e.defaultPrevented) hide();
   // ⌘1…⌘3 pick the views, while focus is in the shell rather than a framed page.
   if (e.metaKey && e.key >= "1" && e.key <= "9") {
     tabs.selectIndex(Number(e.key) - 1);
