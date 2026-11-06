@@ -102,6 +102,55 @@ const names = (q: string, i: Inputs) => search(rowsOf(i), q).map((h) => h.row.na
     JSON.stringify(m?.at) === "[1]", JSON.stringify(m));
 }
 
+// ---- the preview's plan progress, panes and family -------------------------
+{
+  const i = inputs({
+    tiles: [
+      tile("W1", "S1", { workspace_title: "payments", state: "idle" }),
+      tile("W1", "T1", { agent: null, label: "zsh", state: "shell", running: "cargo test" }),
+      tile("W1", "S2", { state: "needs_input", label: "Claude Code" }),
+      tile("W1", "T2", { agent: null, label: "", state: "shell", running: null }),
+      tile("W2", "S3", { workspace_title: "child-a" }),
+      tile("W4", "S5", { workspace_title: "loose" }),
+    ],
+    plans: [
+      { ws: "W1", slug: "pay-retry", phase: "implementing", done: 2, total: 6, n: 3, open: true, title: "Retry with backoff" },
+      { ws: "W2", slug: "child-a", phase: "planning", done: 0, total: 0, n: 0, open: false, title: "" },
+    ],
+    gates: [
+      { ws: "W1", slug: "pay-retry", n: 3, checks: [{ name: "unit", status: "pass" }, { name: "e2e checkout", status: "fail" }] },
+      { ws: "W2", slug: "other-plan", n: 1, checks: [{ name: "lint", status: "fail" }] },
+    ],
+    families: [{ parent: "pay-retry", members: [
+      { slug: "pay-retry", role: "parent", phase: "implementing", done: 2, total: 6, ws: "W1" },
+      { slug: "child-a", role: "child", phase: "planning", done: 0, total: 0, ws: "W2" },
+    ] }],
+  });
+  const rows = rowsOf(i);
+  const w1 = rows.find((r) => r.ws === "W1")!, w2 = rows.find((r) => r.ws === "W2")!, w4 = rows.find((r) => r.ws === "W4")!;
+  ok("progress: a row carries its plan's phase, done of total and the open increment's number and title",
+    JSON.stringify(w1.progress) === JSON.stringify({ slug: "pay-retry", phase: "implementing", done: 2, total: 6, n: 3, open: true, title: "Retry with backoff", failing: "e2e checkout" }),
+    JSON.stringify(w1.progress));
+  ok("progress: a lost check counts as failing, as the Dock counts it",
+    rowsOf({ ...i, gates: [{ ws: "W1", slug: "pay-retry", n: 3, checks: [{ name: "e2e", status: "lost" }] }] }).find((r) => r.ws === "W1")!.progress?.failing === "e2e");
+  ok("progress: a failing check counts only from its own plan's gate", w2.progress?.failing === "", JSON.stringify(w2.progress));
+  ok("progress: a workspace with no plan has none", w4.progress === null);
+  ok("panes: every pane, agents first with the waiting one on top, then shells",
+    JSON.stringify(w1.panes.map((p) => p.surface)) === JSON.stringify(["S2", "S1", "T1", "T2"]), JSON.stringify(w1.panes));
+  ok("panes: an agent says its state, a shell what it runs, else that it is a shell",
+    JSON.stringify(w1.panes.map((p) => p.doing)) === JSON.stringify(["needs_input", "idle", "cargo test", "shell"])
+    && w1.panes[2].who === "zsh" && w1.panes[3].who === "terminal", JSON.stringify(w1.panes));
+  ok("family: a member's row carries its parent, every member and which one it is",
+    w2.family?.parent === "pay-retry" && w2.family.self === "child-a" && w2.family.members.length === 2, JSON.stringify(w2.family));
+  ok("family: a workspace outside any family has none", w4.family === null);
+  const pr = { n: "12", url: "https://x/12", state: "open", ci: "fail", review: "" };
+  const withPr = rowsOf({ ...i, pr: { W1: pr } });
+  ok("pr: a row carries its workspace's PR and CI as published, and none without",
+    JSON.stringify(withPr.find((r) => r.ws === "W1")!.pr) === JSON.stringify(pr) && withPr.find((r) => r.ws === "W4")!.pr === null && w1.pr === null);
+  ok("inputs: rows still build with no families or gates given",
+    rowsOf(inputs({ tiles: [tile("X", "SX")], plans: [{ ws: "X", slug: "p" }] }))[0].progress?.failing === "");
+}
+
 let failed = 0;
 for (const [name, pass, detail] of checks) {
   if (!pass) failed++;

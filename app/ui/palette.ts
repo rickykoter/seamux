@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Decision } from "./decisions";
 import { catSvg } from "./panecat";
-import { FIELDS, rowsOf, search, type Field, type Hit, type Inputs, type Row, type TileIn } from "./search";
+import { FIELDS, rowsOf, search, type FamilyIn, type Field, type Hit, type Inputs, type PlanIn, type Pr, type Row, type TileIn } from "./search";
 import { ago } from "./tiles";
 import { say, type TuckRow } from "./tuck";
 
@@ -48,7 +48,13 @@ function dot(r: Row): SVGSVGElement {
 
 const STATE_SAID: Record<string, string> = { needs_input: "waiting on you", working: "working", idle: "idle", ended: "ended", shell: "terminal" };
 
-type ViewsIn = { plans?: { ws: string; slug: string }[]; decisions?: Decision[]; tucked?: TuckRow[]; priority?: Record<string, number>; branches?: Record<string, string> };
+/** sessions.rs LastExchange. */
+type LastExchange = { prompt: string; reply: string; session: string; at: number };
+
+const CI_SAID: Record<string, string> = { pass: "passing", fail: "failing", run: "running" };
+const REVIEW_SAID: Record<string, string> = { approved: "approved", changes: "changes requested" };
+
+type ViewsIn = { plans?: PlanIn[]; families?: FamilyIn[]; decisions?: Decision[]; tucked?: TuckRow[]; priority?: Record<string, number>; branches?: Record<string, string>; pr?: Record<string, Pr> };
 
 /** Session search: every open session, tucked and muted ones below, ranked by
  *  match then priority (search.ts); a preview of the one selected beside the
@@ -72,6 +78,12 @@ export class Palette {
   /** The selection the list was last scrolled to. */
   private scrolledTo = "";
   private home = "";
+  /** The selected row's last exchange, by workspace, and the row's `since`
+   *  when it was read: the next draw asks again only once the row's state
+   *  has changed since (a turn ended or began), and shows this one meanwhile. */
+  private ex: { ws: string; since: number; data: LastExchange | null } | null = null;
+  /** The workspace whose last exchange is being asked for, "" when none. */
+  private asking = "";
   /** Show a workspace's pane in the Dock (main.ts: tabs, then DockView.jump). */
   onJump: (ws: string, pane: string) => void = () => {};
 
@@ -143,9 +155,10 @@ export class Palette {
     const asks = (this.views.decisions ?? []).flatMap((d) =>
       d.kind === "question" ? [{ ws: d.ws, text: d.questions.map((q) => q.question).join(" ") }]
       : d.kind === "asked" ? [{ ws: d.ws, text: d.question }] : []);
+    const gates = (this.views.decisions ?? []).flatMap((d) => d.kind === "gate" ? [{ ws: d.ws, slug: d.slug, n: d.n, checks: d.checks }] : []);
     return {
-      tiles: this.tiles, plans: this.views.plans ?? [], asks, tucked: this.views.tucked ?? [],
-      priority: this.views.priority ?? {}, branches: this.views.branches ?? {},
+      tiles: this.tiles, plans: this.views.plans ?? [], families: this.views.families ?? [], gates, asks, tucked: this.views.tucked ?? [],
+      priority: this.views.priority ?? {}, branches: this.views.branches ?? {}, pr: this.views.pr ?? {},
     };
   }
 
@@ -284,7 +297,19 @@ export class Palette {
     };
     line("state", `${r.level ? (r.level === "tuck" ? "tucked · " : "muted · ") : ""}${STATE_SAID[r.state] ?? r.state} · ${ago(Date.now() - r.since)}`);
     line("branch", r.branch, "branch");
-    line("plan", r.plan, "plan");
+    const g = r.progress;
+    if (g) {
+      const where = g.n ? ` · ${g.open ? "on" : "next"} ${g.n} of ${g.total}${g.title ? `: ${g.title}` : ""}` : g.total ? ` · ${g.done} of ${g.total} done` : "";
+      line("plan", `${g.slug}${g.phase ? ` · ${g.phase}` : ""}${where}`, g.slug === r.plan ? "plan" : undefined);
+      if (g.total) bits.push(this.bar(g.done, g.total));
+      if (g.failing) {
+        const f = el("p", "search-p-fail");
+        f.append(el("span", "search-p-k", "failing"), el("span", "search-p-v", g.failing));
+        bits.push(f);
+      }
+    } else line("plan", r.plan, "plan");
+    if (r.family) bits.push(this.familyEl(r));
+    if (r.pr) bits.push(this.prEl(r.pr));
     line("about", r.topic, "topic");
     line("where", this.tilde(r.path), "path");
     if (r.ask) {
@@ -292,10 +317,126 @@ export class Palette {
       q.append(...marked(r.ask, h.marks.ask));
       bits.push(q);
     }
+    if (r.ws) {
+      if (!this.ex || this.ex.ws !== r.ws || this.ex.since !== r.since) this.askExchange(r.ws, r.since);
+      const x = this.ex?.ws === r.ws ? this.ex.data : null;
+      if (x) bits.push(this.exchangeEl(x));
+    }
+    if (r.ws && r.panes.length > 1) bits.push(this.panesEl(r));
     const tail = r.lines.slice(-8).join("\n").trim();
     if (tail) bits.push(el("pre", "search-p-lines", tail));
     else if (!r.ws) bits.push(el("p", "search-p-none", "Nothing open here. ⌘↵ brings the worktree back."));
     this.preview.replaceChildren(...bits);
+  }
+
+  /** Ask for workspace `ws`'s last exchange, once at a time; the preview is
+   *  drawn again when it comes, if that row is still the selected one. */
+  private askExchange(ws: string, since: number): void {
+    if (this.asking === ws) return;
+    this.asking = ws;
+    const done = (data: LastExchange | null) => {
+      if (this.asking === ws) this.asking = "";
+      // An answer for a row the selection has left is dropped: it would
+      // push out the selected row's own.
+      const h = this.shown[this.sel];
+      if (h?.row.ws !== ws) return;
+      const same = this.ex?.ws === ws && JSON.stringify(this.ex.data) === JSON.stringify(data);
+      this.ex = { ws, since, data };
+      // Drawn again only when it changed: a redraw drops a pane button's focus.
+      if (!this.el.hidden && !same) this.drawPreview(h);
+    };
+    invoke<LastExchange | null>("session_last_exchange", { workspace: ws }).then(done, () => done(null));
+  }
+
+  /** The person's last prompt and Claude's last reply. */
+  private exchangeEl(x: LastExchange): HTMLElement {
+    const box = el("div", "search-p-ex");
+    if (x.prompt) {
+      const p = el("div", "search-p-ex-you");
+      p.append(el("span", "search-p-k", "you"), el("p", "", x.prompt));
+      box.append(p);
+    }
+    if (x.reply) {
+      const c = el("div", "search-p-ex-claude");
+      c.append(el("span", "search-p-k", "Claude"), el("p", "", x.reply));
+      box.append(c);
+    }
+    return box;
+  }
+
+  /** done of total as a thin bar, for the eye; the line beside it says it in words. */
+  private bar(done: number, total: number): HTMLElement {
+    const b = el("div", "search-p-bar");
+    b.setAttribute("aria-hidden", "true");
+    const fill = el("i");
+    fill.style.width = `${Math.round((100 * Math.min(done, total)) / total)}%`;
+    b.append(fill);
+    return b;
+  }
+
+  /** The PR (a link that opens in the browser), its state, CI and review,
+   *  as crew-sync last published them. */
+  private prEl(pr: Pr): HTMLElement {
+    const p = el("p", "search-p-line search-p-pr");
+    p.append(el("span", "search-p-k", "PR"));
+    const v = el("span", "search-p-v");
+    // Only a web link becomes a link; open_url checks it again.
+    if (pr.n && /^https?:\/\/\S+$/i.test(pr.url)) {
+      const a = el("a", "", `#${pr.n}`);
+      a.href = pr.url;
+      a.title = "Open the pull request in the browser";
+      const open = (e: MouseEvent) => {
+        e.preventDefault();
+        void invoke("open_url", { url: pr.url }).catch((err) => say(String(err), undefined, true));
+      };
+      a.addEventListener("click", open);
+      // A middle click must not navigate the page itself.
+      a.addEventListener("auxclick", (e) => { if (e.button === 1) open(e); else e.preventDefault(); });
+      v.append(a);
+    } else if (pr.n) v.append(document.createTextNode(`#${pr.n}`));
+    else v.append(document.createTextNode("none"));
+    if (pr.n && pr.state) v.append(document.createTextNode(` · ${pr.state}`));
+    if (pr.ci) v.append(document.createTextNode(" · CI "), el("span", `search-p-ci ${pr.ci}`, CI_SAID[pr.ci] ?? pr.ci));
+    if (pr.review) v.append(document.createTextNode(` · ${REVIEW_SAID[pr.review] ?? pr.review}`));
+    p.append(v);
+    return p;
+  }
+
+  /** The family: its parent, then each member with its progress, this one marked. */
+  private familyEl(r: Row): HTMLElement {
+    const f = r.family!;
+    const box = el("div", "search-p-fam");
+    box.append(el("span", "search-p-k", "family"));
+    const ul = el("ul");
+    for (const m of f.members) {
+      const li = el("li", m.slug === f.self ? "self" : "");
+      li.append(el("span", "", m.slug + (m.slug === f.parent ? " (parent)" : "")), el("span", "search-p-fam-n", m.total ? `${m.done}/${m.total} · ${m.phase}` : m.phase));
+      ul.append(li);
+    }
+    box.append(ul);
+    return box;
+  }
+
+  /** Every pane in the workspace; a click shows that one. */
+  private panesEl(r: Row): HTMLElement {
+    const box = el("div", "search-p-panes");
+    box.append(el("span", "search-p-k", "panes"));
+    const ul = el("ul");
+    for (const p of r.panes) {
+      const b = el("button", `search-p-pane ${p.state}`);
+      b.type = "button";
+      b.title = "Show this pane";
+      b.append(el("span", "search-p-who", p.who), el("span", "search-p-doing", STATE_SAID[p.doing] ?? p.doing));
+      b.addEventListener("click", () => {
+        this.close();
+        this.onJump(r.ws, p.surface);
+      });
+      const li = el("li");
+      li.append(b);
+      ul.append(li);
+    }
+    box.append(ul);
+    return box;
   }
 
   /** Enter: jump to the session (a tucked worktree with nothing open is
