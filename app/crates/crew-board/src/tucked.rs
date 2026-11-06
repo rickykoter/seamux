@@ -94,6 +94,20 @@ pub fn mark(rows: &mut [Value], levels: &HashMap<String, Quiet>, root: impl Fn(&
     }
 }
 
+/// A row that needs you (the attend tier) breaks its snooze: it loses its
+/// snooze mark and shows in its tier. Any other tier waits out the snooze.
+pub fn break_snoozes(rows: &mut [Value]) {
+    for r in rows.iter_mut() {
+        let snoozed = r.get("tuck").and_then(Value::as_str) == Some("snooze");
+        if snoozed && r.get("kind").and_then(Value::as_str) == Some("attend") {
+            if let Some(o) = r.as_object_mut() {
+                o.remove("tuck");
+                o.remove("until");
+            }
+        }
+    }
+}
+
 /// The live store, laid over `rows`.
 pub fn mark_live(rows: &mut [Value]) {
     let text = std::fs::read_to_string(file()).unwrap_or_default();
@@ -126,5 +140,18 @@ mod tests {
         assert_eq!((rows[0]["tuck"].as_str(), rows[0]["until"].as_u64()), (Some("snooze"), Some(100)));
         assert!(rows[1].get("tuck").is_none() && rows[1].get("until").is_none());
         assert!(levels(text, 100).is_empty(), "at its end it is over");
+    }
+
+    #[test]
+    fn a_row_that_needs_you_breaks_its_snooze_and_a_broken_one_waits() {
+        let mut rows = vec![
+            json!({"id": "1", "kind": "attend", "tuck": "snooze", "until": 9}),
+            json!({"id": "2", "kind": "wilt", "tuck": "snooze", "until": 9}),
+            json!({"id": "3", "kind": "attend", "tuck": "mute"}),
+        ];
+        break_snoozes(&mut rows);
+        assert!(rows[0].get("tuck").is_none() && rows[0].get("until").is_none());
+        assert_eq!((rows[1]["tuck"].as_str(), rows[1]["until"].as_u64()), (Some("snooze"), Some(9)));
+        assert_eq!(rows[2]["tuck"].as_str(), Some("mute"));
     }
 }

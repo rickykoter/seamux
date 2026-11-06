@@ -26,6 +26,7 @@ pub mod review;
 pub mod routes;
 pub mod selftest;
 pub mod server;
+pub mod settle;
 pub mod state;
 pub mod tucked;
 pub mod usage;
