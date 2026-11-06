@@ -318,10 +318,20 @@ pub fn main(args: &[String]) -> i32 {
         // The hooks' own roll-up of the panes: a turn that ended on a question
         // reads idle in cmux's store, but its pane file says it waits on you.
         let pane_waits = crew_core::status::rollup(Path::new(&p.state), &ws).state == "needs_input";
+        // Working is the panes' own word where crew has files for them (ADR:
+        // crew's pane files decide whether a pane is working): cmux's store
+        // can say running after crew's Stop closed the turn, and republishing
+        // that here is what kept idle workspaces reading as working. Only the
+        // files of sessions still alive count, as the board counts only live
+        // panes'; with none, the store's word stands.
+        let live_sids: HashSet<&str> = live_recs.iter().map(|(s, _)| s.as_str()).collect();
+        let mine: Vec<crew_core::status::Pane> = crew_core::status::panes(Path::new(&p.state), &ws).into_iter()
+            .filter(|f| f.state != "ended" && live_sids.contains(f.session.as_str())).collect();
+        let working = if mine.is_empty() { any_running } else { crew_core::status::rollup_of(&mine).state == "working" };
         // One Claude waiting outranks another working, as the hooks' roll-up ranks them.
         if live && (asking || any_needs || pane_waits) && have_desc.contains("phase:waiting") {
             tok.push("phase:waiting".into());
-        } else if live && any_running {
+        } else if live && working {
             tok.push("phase:working".into());
         }
         // "I could not find out" is never published as "there is nothing".

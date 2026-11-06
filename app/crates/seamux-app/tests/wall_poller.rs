@@ -158,6 +158,39 @@ fn a_live_cmux_state_is_kept_over_the_pane_file() {
     assert_eq!(f.tiles[0].state, "needs_input");
 }
 
+/// crew's pane files decide working (ADR): cmux's "working" outlives a turn
+/// that crew's Stop already closed, and the file's idle stands over it.
+#[test]
+fn a_pane_file_saying_idle_beats_cmux_working() {
+    let fake = Fake::new();
+    let w = wall(&fake, Duration::from_secs(1));
+    assert_eq!(w.tick().unwrap().tiles[1].state, "working", "cmux's own word with no file");
+    w.set_truth_probe(Box::new(|| HashMap::from([(B.to_uppercase(), "idle".to_string())])));
+    assert_eq!(w.tick().expect("the file changes the frame").tiles[1].state, "idle");
+}
+
+/// An Esc fires no Stop: a pane crew left working, quiet for over 30s, whose
+/// screen shows no spinner, goes idle in its file; a busy one stays working.
+#[test]
+fn a_quiet_working_pane_whose_screen_shows_no_turn_is_settled_idle() {
+    let dir = std::env::temp_dir().join(format!("wall-interrupt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for s in [A, B] {
+        crew_core::status::update(&dir, WS, s, "s", 1_000, |p| p.state = "working".into());
+    }
+    let fake = Fake::new();
+    fake.text.lock().unwrap().insert(A.into(), "done it\n\n✻ Worked for 34s\n".into());
+    fake.text.lock().unwrap().insert(B.into(), "on it\n\n✽ Thinking… (12s · ↓ 300 tokens)\n".into());
+    let w = wall(&fake, Duration::from_secs(1));
+    w.set_crew_dirs(dir.clone(), dir.join("history"));
+    w.tick();
+    assert_eq!(crew_core::status::read(&dir, A).unwrap().state, "idle");
+    assert_eq!(crew_core::status::read(&dir, B).unwrap().state, "working");
+    let h = crew_core::history::read_since(&dir.join("history"), 0);
+    assert!(h.iter().any(|e| e.source == "interrupt" && e.surface == A), "{h:?}");
+}
+
 #[test]
 fn the_pane_file_comes_before_the_history_hint() {
     let fake = Fake::new();

@@ -432,6 +432,9 @@ pub struct Wall {
     /// wrote for them (crew_core::status::live_states). This wins over cmux,
     /// which keys lifecycle by session and so can call a live pane "ended".
     truth: Mutex<Option<StateHint>>,
+    /// crew's state dir and history dir: a working pane quiet for a while is
+    /// checked against the screen this poll read (status::settle_interrupted).
+    crew: Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>>,
 }
 
 /// See `Wall::hint`.
@@ -454,7 +457,31 @@ impl Wall {
     /// As `new`, with a separate source for reply and jump.
     pub fn with_actions(pool: Vec<Arc<dyn Source>>, actions: Arc<dyn Source>, interval: Duration) -> Wall {
         assert!(!pool.is_empty(), "the wall needs a source");
-        Wall { pool, actions, interval, state: Mutex::new(State::default()), pulled: Mutex::default(), hint: Mutex::default(), native: Mutex::default(), signals: Mutex::default(), truth: Mutex::default() }
+        Wall { pool, actions, interval, state: Mutex::new(State::default()), pulled: Mutex::default(), hint: Mutex::default(), native: Mutex::default(), signals: Mutex::default(), truth: Mutex::default(), crew: Mutex::default() }
+    }
+
+    /// Where crew keeps pane files and history: each poll then settles a
+    /// working pane whose turn ended with no Stop (an Esc) against the screen
+    /// it just read. Unset, nothing is written.
+    pub fn set_crew_dirs(&self, state: std::path::PathBuf, history: std::path::PathBuf) {
+        *self.crew.lock().unwrap() = Some((state, history));
+    }
+
+    /// A working pane quiet past crew_core::status::INTERRUPT_QUIET_MS whose
+    /// screen this poll shows no turn running goes idle in its file. The next
+    /// poll's truth probe carries it into the tiles. True when any changed.
+    fn settle_interrupts(&self, reads: &HashMap<String, Result<Vec<String>, String>>) -> bool {
+        let Some((dir, hist)) = self.crew.lock().unwrap().clone() else { return false };
+        let now = crew_core::history::now_ms();
+        let by_up: HashMap<String, &Vec<String>> =
+            reads.iter().filter_map(|(s, r)| r.as_ref().ok().map(|l| (s.to_uppercase(), l))).collect();
+        let mut changed = false;
+        for p in crew_core::status::interrupt_suspects(&dir, now) {
+            if let Some(lines) = by_up.get(&p.surface.to_uppercase()) {
+                changed |= crew_core::status::settle_interrupted(&dir, &hist, &p, &lines.join("\n"), now);
+            }
+        }
+        changed
     }
 
     /// Name the terminals that hold a native Claude, asked once per poll.
@@ -479,17 +506,18 @@ impl Wall {
     }
 
     /// A pane whose own Claude is alive takes the state crew recorded for it
-    /// where cmux has none worth keeping: "ended", "unknown" or no agent at
-    /// all. A live cmux state (needs_input, working, idle) stays cmux's, so a
-    /// fresh permission prompt is never hidden behind an older file.
+    /// (ADR: crew's pane files decide whether a pane is working): cmux's
+    /// "working" or "idle" can outlive the turn, and its "ended" or "unknown"
+    /// can miss a resumed one. cmux's needs_input alone stands over the file,
+    /// so a fresh permission prompt is never hidden behind an older file.
     fn apply_truth(&self, terms: &mut [Terminal]) {
-        if !terms.iter().any(|t| t.agent.is_none() || matches!(t.state.as_str(), "ended" | "unknown")) {
+        if terms.iter().all(|t| t.state == "needs_input") {
             return;
         }
         let guard = self.truth.lock().unwrap();
         let Some(probe) = guard.as_ref() else { return };
         let live = probe();
-        for t in terms.iter_mut().filter(|t| t.agent.is_none() || matches!(t.state.as_str(), "ended" | "unknown")) {
+        for t in terms.iter_mut().filter(|t| t.state != "needs_input") {
             if let Some(s) = live.get(&t.surface.to_uppercase()) {
                 t.agent.get_or_insert_with(|| "claude".into());
                 t.state = s.clone();
@@ -535,6 +563,7 @@ impl Wall {
             t.state = "idle".into();
         }
         let reads = self.read_all(&terms);
+        self.settle_interrupts(&reads);
         let signals = self.signals.lock().unwrap().as_ref().map(|p| p()).unwrap_or_default();
         let mut st = self.state.lock().unwrap();
         st.signals = signals;

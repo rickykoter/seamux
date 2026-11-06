@@ -589,20 +589,24 @@ fn stop(h: &mut Hook) -> String {
     if h.json("stop_hook_active") == "True" {
         return String::new();
     }
-    let cwd = h.cwd();
-    let br = branch(&cwd);
-    let review = has_unreviewed_work(&cwd);
     // A turn cannot end with its AskUserQuestion still open: one cancelled
     // with Esc fires no answered event, so its question goes here. The
     // turn-end judgment, spawned below, sets asked again if it finds one.
     // Only this pane's: another Claude's ask in the workspace stays.
+    // Idle is written first, before any git: in a slow repo the git calls
+    // below can run past the hook's timeout, and the pane must not stay
+    // working because they did. The review flag follows in a second write.
     let sid = h.json("session_id");
-    let (before, after, _pane) = status::update(&h.state, &h.ws, &surface(), &sid, crew_core::history::now_ms(), |p| {
+    let (before, _, _pane) = status::update(&h.state, &h.ws, &surface(), &sid, crew_core::history::now_ms(), |p| {
         p.state = "idle".into();
         p.question = None;
         p.asked = None;
-        p.review = review;
+        p.review = false;
     });
+    let cwd = h.cwd();
+    let br = branch(&cwd);
+    let review = has_unreviewed_work(&cwd);
+    let (_, after, _pane) = status::update(&h.state, &h.ws, &surface(), &sid, crew_core::history::now_ms(), |p| p.review = review);
     h.lane_to(&before, &after, true);
     if !after.busy() {
         h.cli(&["clear-status", "claude"]);
@@ -753,18 +757,23 @@ pub fn main(args: &[String]) -> i32 {
         "notification" => {
             // Claude Code's idle reminder after a finished turn is no new
             // block: the turn's own stop (and the asked judgment) said what
-            // the agent waits on.
-            if !is_idle_reminder(&h.json("notification_type"), &h.json("message")) {
+            // the agent waits on. It no longer marks the pane as waiting
+            // either, or every finished turn read as needs-you a minute later:
+            // it only nudges the feed. Stop already raised the turn's banner.
+            let reminder = is_idle_reminder(&h.json("notification_type"), &h.json("message"));
+            if !reminder {
                 h.history("needs_input", "notification");
+                h.settle(true, &[], |p| p.state = "needs_input".into());
             }
-            h.settle(true, &[], |p| p.state = "needs_input".into());
             let t = spawn::tool("crew-feed", &["publish", &h.ws]);
             let _ = spawn::detach(&t.argv, None, None);
-            let mut message = h.json("message");
-            if message.is_empty() {
-                message = "Claude needs attention".into();
+            if !reminder {
+                let mut message = h.json("message");
+                if message.is_empty() {
+                    message = "Claude needs attention".into();
+                }
+                h.notify("crew:blocked", &message);
             }
-            h.notify("crew:blocked", &message);
             String::new()
         }
         "stop" => stop(&mut h),

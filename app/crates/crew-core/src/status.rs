@@ -477,6 +477,85 @@ pub fn update(dir: &Path, ws: &str, surface: &str, session: &str, now_ms: u64, c
     (before, after, pane)
 }
 
+// ---- interrupts ---------------------------------------------------------------
+// Claude Code fires no Stop when the person presses Esc, so a pane the hooks
+// left working stays working. A working pane quiet for a while is checked
+// against its screen instead: Claude draws a live spinner line while a turn
+// runs, and none once it stops.
+
+/// How long a working pane must be quiet (no hook write, no tool mark) before
+/// its screen is read.
+pub const INTERRUPT_QUIET_MS: u64 = 30_000;
+
+/// Whether a Claude screen shows a turn in progress. Claude Code draws a
+/// spinner line, a verb with an ellipsis and then a bracket, while it works
+/// ("✽ Bloviating… (34s · ↓ 1.9k tokens)", "… (thinking)", "… (running stop
+/// hook)"); a finished turn's line has no ellipsis ("✻ Worked for 34s").
+/// Older versions said "esc to interrupt". A false "busy" only keeps a pane
+/// working, as before, so the match leans that way.
+pub fn screen_busy(screen: &str) -> bool {
+    screen.lines().any(|l| {
+        let l = l.trim();
+        if l.contains("esc to interrupt") {
+            return true;
+        }
+        let Some(i) = l.find('…') else { return false };
+        l[i + '…'.len_utf8()..].trim_start().starts_with('(')
+    })
+}
+
+/// Whether a Claude screen is asking the person something: a permission
+/// prompt or a question's options. Such a pane waits, it is not idle.
+pub fn screen_asks(screen: &str) -> bool {
+    screen.lines().any(|l| {
+        let l = l.trim();
+        l.starts_with("Do you want to") || l.starts_with("❯ 1.") || l.contains("Esc to cancel")
+    })
+}
+
+/// Whether this pane's turn ended with no Stop: crew has it working, nothing
+/// has moved for INTERRUPT_QUIET_MS, and its screen (the last lines, read
+/// now) shows no turn running and asks nothing. An empty screen (a read that
+/// failed) proves nothing. `activity` is the pane's (tool start, tool end).
+pub fn interrupted(p: &Pane, activity: (u64, u64), screen: &str, now_ms: u64) -> bool {
+    let last = p.at.max(activity.0).max(activity.1);
+    p.state == "working" && p.at > 0 && now_ms.saturating_sub(last) >= INTERRUPT_QUIET_MS
+        && !screen.trim().is_empty() && !screen_busy(screen) && !screen_asks(screen)
+}
+
+/// The working panes worth a screen read now: quiet past INTERRUPT_QUIET_MS.
+/// A caller reads each one's screen and passes it to `settle_interrupted`.
+pub fn interrupt_suspects(dir: &Path, now_ms: u64) -> Vec<Pane> {
+    all(dir).into_iter().filter(|p| {
+        let a = activity(dir, p.key());
+        p.state == "working" && p.at > 0 && now_ms.saturating_sub(p.at.max(a.0).max(a.1)) >= INTERRUPT_QUIET_MS
+    }).collect()
+}
+
+/// Set `seen` to idle if it was interrupted (see `interrupted`) and nothing
+/// wrote its file since it was read: a hook that moved it first wins. Under
+/// the status lock; the workspace's markers follow, and the history says
+/// where the idle came from (`hist`: crate::history::dir() outside tests).
+/// True when it changed the pane.
+pub fn settle_interrupted(dir: &Path, hist: &Path, seen: &Pane, screen: &str, now_ms: u64) -> bool {
+    let k = seen.key().to_string();
+    if !interrupted(seen, activity(dir, &k), screen, now_ms) {
+        return false;
+    }
+    let _l = lock(dir);
+    let Some(mut p) = read(dir, &k) else { return false };
+    if p.state != "working" || p.at != seen.at {
+        return false;
+    }
+    p.state = "idle".into();
+    p.at = now_ms;
+    write(dir, &p);
+    let r = rollup_of(&panes(dir, &p.ws));
+    write_markers(dir, &p.ws, &r);
+    crate::history::record_in(hist, &p.ws, &p.surface, "idle", "interrupt", "");
+    true
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -633,5 +712,54 @@ mod tests {
         if let Some((s, u)) = pid_start(me) {
             assert!(proc_alive(me, Some((s, u))) && !proc_alive(me, Some((s - 100, u))), "a reused pid started at another time");
         }
+    }
+
+    // The screens below are what Claude Code drew on this machine on
+    // 2026-11-05: a turn running, a turn finished, a permission prompt.
+    const BUSY: &str = "  ⎿  ran a thing\n\n✽ Bloviating… (34s · ↓ 1.9k tokens)\n\n────\n❯ \n────\n  ⏵⏵ auto mode on";
+    const DONE: &str = "  ⎿  ran a thing\n\n✻ Worked for 34s\n\n────\n❯ \n────\n  ⏵⏵ auto mode on";
+    const ASKS: &str = " Bash command\n   cargo build\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n Esc to cancel";
+
+    #[test]
+    fn a_screen_says_whether_a_turn_runs_or_asks() {
+        assert!(screen_busy(BUSY) && !screen_busy(DONE) && !screen_busy(ASKS));
+        assert!(screen_busy("  esc to interrupt"), "an older Claude's footer");
+        assert!(screen_busy("✶ Thinking… (thinking)") && screen_busy("· Finishing… (running stop hook)"), "a spinner with no clock");
+        assert!(!screen_busy("Thinking… about it"), "an ellipsis in prose is not the spinner");
+        assert!(screen_asks(ASKS) && !screen_asks(DONE) && !screen_asks(BUSY));
+    }
+
+    #[test]
+    fn only_a_quiet_working_pane_whose_screen_shows_no_turn_is_interrupted() {
+        let mut p = Pane::new("W1", "S1");
+        p.state = "working".into();
+        p.at = 1_000;
+        let later = 1_000 + INTERRUPT_QUIET_MS;
+        assert!(interrupted(&p, (0, 0), DONE, later));
+        assert!(!interrupted(&p, (0, 0), DONE, later - 1), "not quiet long enough");
+        assert!(!interrupted(&p, (later - 5, 0), DONE, later), "a tool started since");
+        assert!(!interrupted(&p, (0, 0), BUSY, later), "the spinner runs");
+        assert!(!interrupted(&p, (0, 0), ASKS, later), "it asks the person");
+        assert!(!interrupted(&p, (0, 0), "  \n", later), "a failed read proves nothing");
+        p.state = "idle".into();
+        assert!(!interrupted(&p, (0, 0), DONE, later));
+    }
+
+    #[test]
+    fn settling_an_interrupt_writes_idle_unless_a_hook_moved_the_pane_first() {
+        let dir = tmp("interrupt");
+        let hist = dir.join("history");
+        let (_, _, seen) = update(&dir, "W1", "S1", "s", 1_000, |p| p.state = "working".into());
+        let now = 1_000 + INTERRUPT_QUIET_MS;
+        assert_eq!(interrupt_suspects(&dir, now).len(), 1);
+        // A hook wrote after the read: its word stands.
+        let (_, _, moved) = update(&dir, "W1", "S1", "s", 1_500, |p| p.state = "working".into());
+        assert!(!settle_interrupted(&dir, &hist, &seen, DONE, now + 600));
+        assert!(settle_interrupted(&dir, &hist, &moved, DONE, now + 600));
+        assert_eq!(read(&dir, "S1").unwrap().state, "idle");
+        assert_eq!(rollup(&dir, "W1").state, "idle");
+        let h = crate::history::read_since(&hist, 0);
+        assert!(h.iter().any(|e| e.source == "interrupt" && e.state == "idle"), "{h:?}");
+        assert!(interrupt_suspects(&dir, now + 600).is_empty());
     }
 }
