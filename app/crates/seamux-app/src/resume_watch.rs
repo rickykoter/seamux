@@ -87,15 +87,28 @@ pub fn resume_text(cfg: &serde_json::Map<String, serde_json::Value>) -> String {
     cfg.get("resumePrompt")
         .and_then(|v| v.as_str())
         .and_then(|t| seamux_app::wall::reply_line(t).ok())
+        .map(|t| t.trim().to_string())
+        // A leading '-' would read as a flag to tmux's send-keys.
+        .filter(|t| !t.starts_with('-'))
         .unwrap_or_else(|| "continue".into())
 }
 
-/// Whether `text` sits in the screen's last lines (the prompt box), spaces
-/// aside: a long prompt wraps.
+/// Whether `text` sits in the prompt box: the last line that starts with
+/// Claude's prompt mark, and the lines a long prompt wraps onto, spaces
+/// aside. The transcript above it does not count, so a "continue" Claude
+/// wrote earlier is no proof the text was typed.
 fn typed(text: &str, screen: &str) -> bool {
     let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
-    let tail: Vec<&str> = screen.lines().rev().take(12).collect();
-    squash(&tail.join("")).contains(&squash(text))
+    let lines: Vec<&str> = screen.lines().collect();
+    let Some(at) = lines.iter().rposition(|l| l.trim_start().starts_with(['❯', '>'])) else { return false };
+    let mut box_text = lines[at].trim_start().trim_start_matches(['❯', '>']).to_string();
+    for l in &lines[at + 1..] {
+        if l.trim_start().starts_with('─') {
+            break;
+        }
+        box_text.push_str(l);
+    }
+    squash(&box_text).contains(&squash(text))
 }
 
 const SCREEN_LINES: &str = "60";
@@ -181,6 +194,8 @@ fn stopped(dir: &Path) -> Vec<(Pane, Limited)> {
 /// resumes the watcher made in its current run of stops and when the last
 /// was.
 fn tick(app: &AppHandle, dir: &Path, resumed: &mut HashMap<String, (u32, u64)>) {
+    let now = crew_core::history::now_ms();
+    resumed.retain(|_, (_, at)| now.saturating_sub(*at) < SAME_RUN_MS);
     let panes = stopped(dir);
     if panes.is_empty() {
         return;
@@ -188,7 +203,6 @@ fn tick(app: &AppHandle, dir: &Path, resumed: &mut HashMap<String, (u32, u64)>) 
     let Some(frame) = crate::wall_app::last_frame() else { return };
     let store = crate::resume::Store::live();
     let usage = crew_board::usage::billing_mode() == "usage";
-    let now = crew_core::history::now_ms();
     for (p, l) in panes {
         let Some(tile) = frame.tiles.iter().find(|t| t.surface.eq_ignore_ascii_case(&p.surface)) else { continue };
         if tile.agent.is_none() || tile.state == "ended" || !store.armed(&seamux_app::tuck::root_of(&tile.cwd)) {
@@ -216,7 +230,8 @@ fn tick(app: &AppHandle, dir: &Path, resumed: &mut HashMap<String, (u32, u64)>) 
                 if !still {
                     continue;
                 }
-                let Some(runner) = runner_for(&p.surface) else { give_up("its pane could not be reached".into()); continue };
+                // A pane tmux cannot find this tick is tried again on the next.
+                let Some(runner) = runner_for(&p.surface) else { continue };
                 let text = resume_text(&crew_board::usage::crew_local());
                 let res = resume(&p.surface, &text, runner.as_ref(), &|since| worked_since(dir, &key, since),
                                  &crew_core::history::now_ms, CONFIRM_MS, crew_board::ask::CONFIRM_GAP);
@@ -287,6 +302,7 @@ mod tests {
         assert_eq!(resume_text(&cfg(serde_json::json!({}))), "continue");
         assert_eq!(resume_text(&cfg(serde_json::json!({"resumePrompt": "go on\npls"}))), "go on pls");
         assert_eq!(resume_text(&cfg(serde_json::json!({"resumePrompt": "  "}))), "continue");
+        assert_eq!(resume_text(&cfg(serde_json::json!({"resumePrompt": "-x"}))), "continue", "never a flag");
     }
 
     /// A terminal that answers each read with the next screen, and logs
@@ -344,6 +360,10 @@ mod tests {
             assert!(f.sent.borrow().is_empty(), "nothing typed into {screen:?}");
         }
         let f = fake(&[IDLE, IDLE]);
+        assert!(run(&f, true).unwrap_err().contains("Enter was not pressed"));
+        // "continue" in the transcript above an empty prompt is no proof.
+        let said = "⏺ I'll continue once the limit resets.\n────\n❯ \n────";
+        let f = fake(&[IDLE, said]);
         assert!(run(&f, true).unwrap_err().contains("Enter was not pressed"));
         assert_eq!(*f.sent.borrow(), ["continue"], "typed, but no Enter");
     }
