@@ -11,6 +11,8 @@ mod migrate_app;
 mod pane_app;
 mod pty_app;
 mod reclaim_app;
+mod resume;
+mod resume_app;
 mod review_app;
 mod shell;
 mod tuck_app;
@@ -256,6 +258,8 @@ fn main() {
             wake_app::home_dir,
             wake_app::wake_file,
             tuck_app::tuck_set,
+            resume_app::resume_set,
+            resume_app::resume_list,
             tuck_app::tuck_restore,
             tuck_app::tuck_unmute_all,
             newws_app::new_ws_options,

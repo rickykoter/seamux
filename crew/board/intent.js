@@ -16,6 +16,8 @@
 //   sandbox chip         crew:sandbox-up / -down           -> a=sandbox-up|-down
 //   feed allow / deny    crew:feed-allow / crew:feed-deny  -> a=feed-allow|-deny
 //   the sync clock       crew:sync-now                     -> a=sync
+//   resume at reset      the framing app's resume_set      -> a=resume&x=on|off
+//                        (the ⋯ menu item, and the armed chip's disarm)
 //
 // One verb never leaves the page: a=fold, on a card's caret. It folds or
 // unfolds the card in place and sends nothing. Where a click lands decides
@@ -54,7 +56,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "18";
+  var V = "19";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -431,6 +433,16 @@ function __boardIntent(cfg) {
         if (framed()) {
           var nm = row.querySelector(".nm");
           tell({ crew: "tuck", ws: rid, level: t.x, name: nm ? nm.textContent : rid });
+        }
+        return;
+      }
+      // Resume at reset (the menu item) or stop it (the menu item, the armed
+      // chip): the app keeps resume.json. Unframed, nothing writes it.
+      if (t.a === "resume") {
+        shutMenu();
+        if (framed()) {
+          var rnm = row.querySelector(".nm");
+          tell({ crew: "resume", ws: rid, on: t.x === "on", name: rnm ? rnm.textContent : rid });
         }
         return;
       }

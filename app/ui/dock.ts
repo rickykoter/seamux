@@ -13,7 +13,7 @@ import { NewWorkspace } from "./newws";
 import { ReclaimWizard } from "./reclaim";
 import { Sheet } from "./sheet";
 import { splitter } from "./splitter";
-import { setLevel, type Levels } from "./tuck";
+import { setLevel, setResume, type Levels } from "./tuck";
 import type { Frame as WallFrame, Tile } from "./tiles";
 
 type IntentServer = { origin: string | null; up: boolean; reason: string | null };
@@ -110,6 +110,11 @@ export class DockView {
       const t = d as { level?: unknown; name?: unknown } | null;
       if (d?.crew === "tuck" && typeof d.ws === "string" && d.ws && (t?.level === "mute" || t?.level === "tuck" || t?.level === "none")) {
         void setLevel(d.ws, typeof t.name === "string" ? t.name : d.ws, t.level, this.levels[d.ws]);
+      }
+      // The board's Resume at reset (its ⋯ menu) and the armed chip's disarm.
+      const u = d as { on?: unknown; name?: unknown } | null;
+      if (d?.crew === "resume" && typeof d.ws === "string" && d.ws && typeof u?.on === "boolean") {
+        void setResume(d.ws, typeof u.name === "string" ? u.name : d.ws, u.on);
       }
       // The board's reclaim chip: what would go, and a yes, in the wizard.
       const r = d as { name?: unknown } | null;

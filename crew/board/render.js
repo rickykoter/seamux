@@ -43,6 +43,61 @@ function __boardRender(d) {
     return esc(s).replace(/\{\{(.+?)\}\}/g, "<b>$1</b>").replace(/`(.+?)`/g, "<code>$1</code>");
   }
 
+  // A turn a usage limit stopped (the Rust board's `limited`, with `armed`
+  // when the app will type continue at the reset). Its header wears a pill
+  // naming the limit; its said line says when it can go again; an armed row
+  // carries a chip, its click the disarm. Times are this machine's clock.
+  var DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function clockOf(ms) {
+    var d = new Date(ms), now = new Date(), h = d.getHours(), m = d.getMinutes();
+    var hm = ((h % 12) || 12) + ":" + (m < 10 ? "0" : "") + m + (h < 12 ? "am" : "pm");
+    if (d.toDateString() === now.toDateString()) return hm;
+    if (ms > now.getTime() && ms - now.getTime() < 6 * 864e5) return DAYS[d.getDay()] + " " + hm;
+    return MONTHS[d.getMonth()] + " " + d.getDate() + " " + hm;
+  }
+  // Usage billing retries a rate_limit three times, then gives up.
+  var TRIES = 3;
+  // When an armed row resumes: its next try on usage billing, else the reset.
+  function dueOf(l) { return l.usage && l.next_try ? l.next_try : l.resets_at; }
+  function stopText(a) {
+    var l = a.limited;
+    if (l.error === "billing_error") return "stopped: spend limit reached" + (l.resets_at ? " \u00b7 resets " + clockOf(l.resets_at) : "");
+    if (l.usage && !l.window) {
+      if (!a.armed) return "stopped: rate limited";
+      if (l.tries >= TRIES) return "stopped: rate limited \u00b7 gave up after " + TRIES + " tries";
+      return "stopped: rate limited" + (l.next_try ? " \u00b7 next try " + clockOf(l.next_try) : " \u00b7 retries in a few minutes");
+    }
+    return "stopped: " + l.label + (l.resets_at ? " \u00b7 resets " + clockOf(l.resets_at) : " \u00b7 reset time unknown");
+  }
+  var AMBER = COL.attend;
+  function limPill(a) {
+    return a.limited ? '<span class="badge lim" style="color:' + AMBER + ";border-color:" + AMBER + '" title="' +
+      esc(stopText(a)) + '">' + esc(a.limited.label) + "</span>" : "";
+  }
+  // What a card says under its head: the stop, while a limit holds it.
+  function saidOf(a) {
+    return a.limited ? '<span class="lim" style="color:' + AMBER + '">' + esc(stopText(a)) + "</span>" : said(a.said);
+  }
+  var CLOCK = '<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true" style="vertical-align:-1px;margin-right:3px">' +
+    '<circle cx="6" cy="6" r="4.6" fill="none" stroke="currentColor" stroke-width="1.3"/>' +
+    '<path d="M6 3.4V6l1.8 1.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+  function armedChip(a) {
+    if (!a.limited || !a.armed) return "";
+    var l = a.limited, due = dueOf(l), text, tip;
+    if (l.error === "billing_error" && !l.resets_at) {
+      text = "armed \u00b7 a spend limit is not retried"; tip = "Typing continue would only fail again";
+    } else if (l.usage && !l.window && l.tries >= TRIES) {
+      text = "armed \u00b7 gave up"; tip = "Three tries did not get through: it waits for you";
+    } else if (due) {
+      text = "resumes " + clockOf(due); tip = "The app types continue here then, once it has checked the screen";
+    } else {
+      text = "resumes at reset"; tip = "No reset time is known: it waits for you";
+    }
+    return '<span class="chip sig armed" data-a="resume" data-x="off" style="color:' + COL.running + '" title="' +
+      esc(tip + ". Click to stop resuming this worktree.") + '">' + CLOCK + esc(text) + " \u00d7</span>";
+  }
+
   function dial(frac, kind) {
     var r = 13, c = 2 * Math.PI * r, col = COL[kind] || COL.quiet;
     // .pending marks a dial with no number to show; CSS spins its .arc for a row
@@ -179,6 +234,7 @@ function __boardRender(d) {
   // and the row badges already say which of the two a row is -- the cat is there
   // to answer "is anyone waiting on me", and it only has one voice for "no".
   function mood(rows) {
+    if (outOfTreats(rows)) return "nap";
     var kinds = {};
     for (var i = 0; i < rows.length; i++) kinds[rows[i].kind] = true;
     if (kinds.attend) return "swat";
@@ -203,6 +259,23 @@ function __boardRender(d) {
     stretch: ["all clear. big stretch.", "nothing left for you. stretching."],
     perk: ["ears up: {top}", "ooh. {top} needs you."]
   };
+  // Every live session is stopped on a limit: nothing runs, and all that
+  // waits on you is a limit. The cat naps till the soonest reset (true when
+  // none is known); false otherwise.
+  function outOfTreats(rows) {
+    var lim = rows.filter(function (a) { return a.limited; });
+    if (!lim.length) return false;
+    for (var i = 0; i < rows.length; i++) {
+      var k = rows[i].kind;
+      if (k === "running" || k === "wilt" || (k === "attend" && !rows[i].limited)) return false;
+    }
+    var due = lim.map(function (a) { return dueOf(a.limited); }).filter(function (t) { return t > 0; });
+    return due.length ? Math.min.apply(null, due) : true;
+  }
+  function treatsLine(rows) {
+    var t = outOfTreats(rows);
+    return t === false ? "" : t === true ? "out of treats. back after the reset" : "out of treats till " + clockOf(t);
+  }
   function line(key, top, stamp) {
     var pool = (SAYS[key] || []).filter(function (l) { return top || l.indexOf("{top}") < 0; });
     if (!pool.length) return "";
@@ -302,6 +375,8 @@ function __boardRender(d) {
       return '<span class="chip' + (i === 0 && FILLED[a.kind] ? " pri" : "") +
         '" title="' + esc(chipTip(c)) + '">' + esc(c) + "</span>";
     });
+    var arm = armedChip(a);
+    if (arm) out.push(arm);
     (a.signals || []).forEach(function (e) {
       if (!e.a) return;
       var col = lift(e.c);
@@ -598,7 +673,7 @@ function __boardRender(d) {
   }
   function dotOf(a) { return /^#[0-9a-f]{3,8}$/i.test(a.color || "") ? '<span class="own"></span>' : ""; }
   // No empty badge: a bare outline pill was the quiet row's second line.
-  function badgeOf(a) { return a.badge ? '<span class="badge">' + esc(a.badge) + "</span>" : ""; }
+  function badgeOf(a) { return (a.badge ? '<span class="badge">' + esc(a.badge) + "</span>" : "") + limPill(a); }
   function nameOf(a) { return '<span class="nm">' + esc(a.name) + "</span>"; }
   // Mute / tuck, as the app's views offer it: only framed by the app, which
   // keeps tucked.json (intent.js hands the choice to it), and only for a row
@@ -610,12 +685,16 @@ function __boardRender(d) {
     return '<span class="tk" data-a="tk" title="Mute or tuck away" aria-label="Mute or tuck away">' +
       '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg></span>' +
       '<span class="tkm">' + (a.tuck === "mute" ? item("Unmute", "none") : item("Mute", "mute")) +
-      (a.tuck === "tuck" ? item("Bring back", "none") : item("Tuck away", "tuck")) + "</span>";
+      (a.tuck === "tuck" ? item("Bring back", "none") : item("Tuck away", "tuck")) +
+      '<span class="tki" data-a="resume" data-x="' + (a.armed ? "off" : "on") + '" title="' +
+      (a.armed ? "Stop typing continue here when a usage limit resets"
+        : "When a usage limit stops this worktree, type continue once it resets") + '">' +
+      (a.armed ? "Don\u2019t resume at reset" : "Resume at reset") + "</span></span>";
   }
   // Everything under a card's head: what was said, the reply window, the
   // buttons, the footer.
   function body(a) {
-    return (a.said ? '<p class="said">' + said(a.said) + "</p>" : "") + thumb(a) + feed(a) + paneList(a) + buttons(a) + foot(a);
+    return (a.said || a.limited ? '<p class="said">' + saidOf(a) + "</p>" : "") + thumb(a) + feed(a) + paneList(a) + buttons(a) + foot(a);
   }
   // A failed browser check's last frame (the intent server serves it, so a
   // board read from disk shows none). Styled inline: the card has no slot
@@ -638,13 +717,14 @@ function __boardRender(d) {
   // caret folds it, and its line jumps (a row with no workspace folds there).
   function quietRow(a) {
     var acts = chipsOf(a).filter(function (c) { return c !== "jump"; });
-    var qb = acts.length ? '<span class="chips">' + acts.map(function (c) {
+    var arm = armedChip(a);
+    var qb = acts.length || arm ? '<span class="chips">' + acts.map(function (c) {
       return '<span class="chip" title="' + esc(chipTip(c)) + '">' + esc(c) + "</span>";
-    }).join("") + "</span>" : "";
+    }).join("") + arm + "</span>" : "";
     var more = foot(a, true);
     return opening(a, a.family ? " fam" : "", "", foldCls(a.id, a.kind, !!more)) +
       topOpen(a, "", !!more) + dotOf(a) + nameOf(a) +
-      (a.dirty ? DIRTY : "") + (acts.length ? qb : badgeOf(a)) + cost(a) + wakeOf(a) + tuckOf(a) + topClose(a) +
+      (a.dirty ? DIRTY : "") + (acts.length || arm ? qb + limPill(a) : badgeOf(a)) + cost(a) + wakeOf(a) + tuckOf(a) + topClose(a) +
       (more ? '<div class="fold">' + more + "</div>" : "") + "</div>";
   }
 
@@ -695,7 +775,7 @@ function __boardRender(d) {
     return opening(a, " fam kid", inCard, foldCls(a.id, a.kind, true, true)) +
       topOpen(a, " kidhd" + (inline ? " loud" : ""), true) + dial(a.frac, a.kind) +
       dotOf(a) + nameOf(a) + badgeOf(a) + inline + topClose(a) +
-      (loud && a.said ? '<p class="said nest" data-a="fold">' + said(a.said) + "</p>" : "") +
+      (loud && (a.said || a.limited) ? '<p class="said nest" data-a="fold">' + saidOf(a) + "</p>" : "") +
       '<div class="kbody">' + body(a) + "</div></div>";
   }
 
@@ -801,7 +881,8 @@ function __boardRender(d) {
   // -- the sprite kept its initial mood forever and no animation ever started,
   // with no error to show for it.
   var m = mood(rows);
-  var rx = reaction(rows);
+  // Out of treats is a nap, not news: a limit stop draws no reaction.
+  var rx = outOfTreats(rows) ? null : reaction(rows);
   host.setAttribute("data-pushed", "1");
   if (cat) {
     // Off, a style flush, then on: the same reaction two pushes running would
@@ -827,7 +908,7 @@ function __boardRender(d) {
   var lead = rows.filter(function (a) {
     return m === "swat" ? a.kind === "attend" : a.kind === "wilt" || a.kind === "running";
   })[0];
-  if (says) says.textContent = rx ? line(rx.cls, rx.top, d.stamp) : line(m, lead ? lead.name : "", d.stamp);
+  if (says) says.textContent = treatsLine(rows) || (rx ? line(rx.cls, rx.top, d.stamp) : line(m, lead ? lead.name : "", d.stamp));
   var tl = $("tally");
   if (tl) tl.innerHTML = tally(rows);
 
