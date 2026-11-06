@@ -1653,6 +1653,17 @@ if (want("turn snapshots")) {
   ok("turns: a prompt from another worktree ends the open turn with a snapshot of its own worktree",
      mv2.length === 1 && sh(RT, `git diff --name-only ${mv2[0].start} ${mv2[0].end}`).trim() === "moved2.js", JSON.stringify(mv2));
 
+  // Turn numbers are per repo: the same session's turn 1 in another repo is
+  // another line, not a replacement.
+  const RT2 = repo("rt-second");
+  write(RT2, "x.js", "x\n");
+  hook("start", { cwd: RT2, session_id: "s-move", prompt: "in the second repo" });
+  write(RT2, "y.js", "y\n");
+  hook("end", { cwd: RT2, session_id: "s-move" });
+  ok("turns: the same turn number in another repo adds a line rather than replacing one",
+     T.readLog("s-move").map(e => e.n + ":" + path.basename(e.root)).join(",") === "1:rt,1:rt-second",
+     JSON.stringify(T.readLog("s-move")));
+
   // The cap holds mid-session: a stop trims the session to its last 50 turns.
   const seed = refOf("s-1", 1, "start");
   spawnSync("git", ["update-ref", "--stdin"], { cwd: RT,

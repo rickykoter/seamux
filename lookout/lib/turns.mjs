@@ -70,7 +70,9 @@ function close(root, sid, open, sha, now) {
   const changed = line1(git(root, ["diff", "--no-renames", "--no-ext-diff", "--name-only", startSha, sha]) || "");
   const entry = { n: open.n, session: sid, root, prompt: open.prompt || "", start: startSha, end: sha,
                   files: changed ? changed.split("\n").length : 0, at: new Date(now).toISOString() };
-  const keep = readLog(sid).filter(e => e.n !== open.n);
+  // Turn numbers come from one repo's refs, so a session that moved between
+  // repos can have two turn 3s: a line is replaced only by its own turn's.
+  const keep = readLog(sid).filter(e => !(e.n === open.n && e.root === root));
   keep.push(entry);
   writeAtomic(logPath(sid), keep.slice(-KEEP).map(e => JSON.stringify(e)).join("\n") + "\n");
   writeAtomic(openPath(sid), JSON.stringify({ ...open, ended: true }) + "\n");
@@ -107,11 +109,12 @@ export function start({ cwd, session, prompt = "", now = Date.now() }) {
   const sha = snapshot(root, `seamux turn ${sid}/${n} start`);
   git(root, ["update-ref", `${REF_ROOT}/${sid}/${n}/start`, sha]);
   fs.mkdirSync(TURNS_DIR, { recursive: true });
-  if (isOpen(prev) && !prev.ended) {
+  // Closing the last turn never costs this one its marker.
+  if (isOpen(prev) && !prev.ended) try {
     const at = markerRoot(prev);
     if (at === root) close(root, sid, prev, sha, now);
     else if (at) close(at, sid, prev, snapshot(at, `seamux turn ${sid}/${prev.n} end`), now);
-  }
+  } catch { /* the last turn keeps no end */ }
   writeAtomic(openPath(sid), JSON.stringify({ n, root, start: sha, at: new Date(now).toISOString(),
     prompt: String(prompt).replace(/\s+/g, " ").trim().slice(0, PROMPT_CHARS) }) + "\n");
   return { n, sha };
