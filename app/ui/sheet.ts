@@ -576,6 +576,9 @@ export class Sheet {
   /** The tab before the Wake, for ⌘E to go back to. */
   private back = "";
   private pages: NowPage[] = [];
+  /** Every page seen so far, as ws + path: a page not in it just opened. */
+  private seen = new Set<string>();
+  private seeded = false;
   private wake: Wake | null = null;
   /** Plan families, for the strip that gets from a parent to its children. */
   private families: FamilyBrief[] = [];
@@ -714,12 +717,16 @@ export class Sheet {
       const pages = e.payload.pages ?? [];
       if (JSON.stringify(pages) === JSON.stringify(this.pages)) return;
       this.pages = pages;
+      const fresh = this.noteSeen(pages);
       if (!this.el.hidden) {
         this.syncTabs();
         // A page opened or closed: the Wake reads its root, or stops.
         this.followDir();
         // The sheet was entered before its pages were known: start on one now.
         if (!this.active) this.pickTab();
+        // A page that just opened comes forward over the Wake, never over
+        // a page the person picked.
+        else if (this.active === WAKE) this.raise(fresh);
       }
     });
     // shell.rs's keys: they work with focus in a framed page too.
@@ -743,6 +750,7 @@ export class Sheet {
     const [f, v] = await Promise.all([invoke<WallFrame | null>("wall_frame"), invoke<{ pages?: NowPage[]; families?: FamilyBrief[] } | null>("views_frame")]);
     if (f) this.tiles = f.tiles;
     if (v?.pages) this.pages = v.pages;
+    this.noteSeen(this.pages);
     if (v?.families) this.families = v.families;
     if (!this.el.hidden) {
       this.drawChat();
@@ -850,6 +858,25 @@ export class Sheet {
     this.el.hidden = false;
     this.syncTabs();
     if (pick) this.pickTab();
+  }
+
+  /** Remember these pages as seen; return the ones that were not. The first
+   *  call only remembers: pages open before the app looked are not new. */
+  private noteSeen(pages: NowPage[]): NowPage[] {
+    const key = (p: NowPage) => `${p.ws}\n${p.path}`;
+    const fresh = this.seeded ? pages.filter((p) => !this.seen.has(key(p))) : [];
+    this.seeded = true;
+    for (const p of pages) this.seen.add(key(p));
+    return fresh;
+  }
+
+  /** Bring forward the newest of these pages that is this workspace's:
+   *  its plan, else one waiting on you, else any. */
+  private raise(fresh: NowPage[]): void {
+    const ws = this.workspace();
+    const mine = fresh.filter((p) => p.ws === ws && this.tabs.some((t) => t.key === p.path));
+    const p = mine.find((x) => x.kind === "plan") ?? mine.find((x) => x.waiting) ?? mine[0];
+    if (p) this.select(p.path);
   }
 
   /** A new place starts on a page, not blank: its plan, else what waits on you, else the Wake. */

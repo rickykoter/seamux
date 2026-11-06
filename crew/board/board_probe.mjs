@@ -286,6 +286,44 @@ render({ rows: [{ id: "running", name: "r", kind: "running", said: "s", chips: [
   { id: "attend", name: "a", kind: "attend", said: "s", chips: [], ref: "w" }], quiet: "" });
 checks.push(["fold: a choice made by hand holds across a push, either way",
   /class="row running fd open"/.test(els.rows.innerHTML) && /class="row attend fd"/.test(els.rows.innerHTML)]);
+// A choice made by hand outlives a tier change: the card you folded while it
+// was running stays folded once it waits on you (its loud chip says so).
+els.rows.attrs["data-fold"] = JSON.stringify({ attend: [0, "running"] });
+render({ rows: [{ id: "attend", name: "a", kind: "attend", said: "s", chips: ["first"], ref: "w" }], quiet: "" });
+checks.push(["fold: a card folded by hand stays folded when it starts waiting on you, its first chip on the header",
+  /class="row attend fd" data-id="attend"/.test(els.rows.innerHTML) && /class="chip pri fq"/.test(els.rows.innerHTML)]);
+// A page that just loaded (no data-fold yet) reads the browser's copy, and
+// every push writes it back: a summon or a server restart loses nothing.
+{
+  const store = {};
+  sandbox.localStorage = { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); } };
+  store["crew.board.fold"] = JSON.stringify({ running: [1, "running", Date.now()], gone: [0, "attend", Date.now()],
+    old: [1, "attend", Date.now() - 8 * 86400000] });
+  delete els.rows.attrs["data-fold"];
+  render({ rows: [{ id: "running", name: "r", kind: "running", said: "s", chips: [], ref: "w" }], quiet: "" });
+  const kept = JSON.parse(store["crew.board.fold"]);
+  checks.push(["fold: a freshly loaded page takes its folds from localStorage",
+    /class="row running fd open"/.test(els.rows.innerHTML)]);
+  checks.push(["fold: an id off the board keeps its choice for a week, then goes",
+    "gone" in kept && !("old" in kept) && "running" in kept, JSON.stringify(kept)]);
+  // ⌘. visiting a folded card opens it on every push, and never saves it.
+  els.rows.attrs["data-fold"] = JSON.stringify({ running: [0, "running", Date.now()] });
+  els.rows.attrs["data-peek"] = "running";
+  render({ rows: [{ id: "running", name: "r", kind: "running", said: "s", chips: [], ref: "w" }], quiet: "" });
+  checks.push(["fold: a card ⌘. is visiting renders open, and its saved choice stays folded",
+    /class="row running fd open"/.test(els.rows.innerHTML) && JSON.parse(store["crew.board.fold"]).running[0] === 0]);
+  delete els.rows.attrs["data-peek"];
+  // Two board pages on one origin (cmux's Dock and the app's): a choice the
+  // other page made later wins here, and this page's older one does not
+  // overwrite it in the shared copy.
+  els.rows.attrs["data-fold"] = JSON.stringify({ running: [1, "running", Date.now(), 1000] });
+  store["crew.board.fold"] = JSON.stringify({ running: [0, "running", Date.now(), 2000] });
+  render({ rows: [{ id: "running", name: "r", kind: "running", said: "s", chips: [], ref: "w" }], quiet: "" });
+  checks.push(["fold: a newer choice from another board page wins, here and in the shared copy",
+    /class="row running fd"/.test(els.rows.innerHTML) && !/class="row running fd open"/.test(els.rows.innerHTML) &&
+      JSON.parse(store["crew.board.fold"]).running[0] === 0, store["crew.board.fold"]]);
+  delete sandbox.localStorage;
+}
 els.rows.attrs["data-fold"] = "{}";
 
 checks.push(["the worktree's Peacock colour rides on the row",
@@ -1375,10 +1413,10 @@ if (live && Array.isArray(live.rows)) {
 
   click(caretA);
   checks.push(["intent: a child's caret unfolds it in place, and sends nothing",
-    fetched.length === 0 && kidA.classList.contains("open") && JSON.stringify(fold()) === '{"A":[1,"attend"]}']);
+    fetched.length === 0 && kidA.classList.contains("open") && JSON.stringify(fold().A.slice(0, 2)) === '[1,"attend"]' && typeof fold().A[2] === "number"]);
   click(caretA);
   checks.push(["intent: ...and folds it again, remembering the choice and its tier",
-    fetched.length === 0 && !kidA.classList.contains("open") && JSON.stringify(fold()) === '{"A":[0,"attend"]}']);
+    fetched.length === 0 && !kidA.classList.contains("open") && JSON.stringify(fold().A.slice(0, 2)) === '[0,"attend"]' && Object.keys(fold()).join() === "A"]);
   click(goA);
   checks.push(["intent: a child's inline button fires its own verb for the child, not the fold",
     fetched.length === 1 && last().a === "go" && last().x === "2" && last().r === "A" &&
@@ -1520,6 +1558,25 @@ if (live && Array.isArray(live.rows)) {
     fetched.length === 2 && m && m[0].ws === "WS-1" && m[0].name === "shipped-one"]);
   checks.push(["intent: what names a workspace goes to the app's origin only",
     !!m && m[1] === APP && posted.every(([, o]) => o !== "*")]);
+  // ⌘. in the app (selected with peek): the folded card opens for the visit,
+  // and goes back to folded when the app shows something else.
+  {
+    host.querySelectorAll = () => [row];
+    row.attrs.class = "row done fd";
+    const say = (ws, peek) => winListeners.forEach((fn) => fn({ source: parent, origin: APP, data: { crew: "selected", ws, can: ["reclaim"], peek } }));
+    say("WS-1", true);
+    const opened = row.classList.contains("open") && host.getAttribute("data-peek") === "WS-1";
+    say("WS-2", false);
+    checks.push(["intent: a ⌘. visit opens a folded card, and the next selection folds it again",
+      opened && !row.classList.contains("open") && host.getAttribute("data-peek") === "", row.attrs.class]);
+    row.attrs.class = "row done fd open";
+    say("WS-1", true);
+    say("", false);
+    checks.push(["intent: a card that was open before the visit stays open after it",
+      row.classList.contains("open"), row.attrs.class]);
+    row.attrs.class = "row done open";
+    delete host.querySelectorAll;
+  }
   // A pane row, framed: the app shows that workspace with the pane's terminal
   // up, and cmux is not asked to focus anything.
   const pn = mk("div", { class: "pn agent work", "data-a": "pane", "data-x": "S-PANE-B" }, [mk("span", { class: "pk" }, [], "Claude")]);
@@ -1674,18 +1731,24 @@ if (live && Array.isArray(live.rows)) {
   checks.push(["families: every child carries its full card, closed",
     /<div class="kbody"><p class="said">/.test(kA) && /class="chip pri"[^>]*>go 2<\/span><span class="chip"/.test(kA.split('<div class="kbody">')[1]) &&
     /class="branch" data-a="code"/.test(kA) && !/ open"/.test(fh)]);
-  // What was folded by hand survives a push, and loses ids that left the board.
-  els.rows.attrs["data-fold"] = JSON.stringify({ W: [1, "running"], gone: [1, "quiet"] });
+  // What was folded by hand survives a push. An id off the board keeps its
+  // choice for a week (a workspace that drops out of one push), then goes.
+  els.rows.attrs["data-fold"] = JSON.stringify({ W: [1, "running"], gone: [1, "quiet", Date.now()], old: [1, "quiet", Date.now() - 8 * 86400000] });
   render({ rows: fr(), quiet: "" });
   checks.push(["families: an opened child is still open after the next push",
     /class="row running[^"]* fam kid fd open"[^>]*data-id="W"/.test(els.rows.innerHTML) &&
     !/kid fd open"[^>]*data-id="A"/.test(els.rows.innerHTML)]);
-  checks.push(["families: ...and the fold map forgets ids that left the board",
-    els.rows.attrs["data-fold"] === '{"W":[1,"running"]}']);
-  // A choice is for the tier it was made in: W turning broken drops it.
+  {
+    const kept = JSON.parse(els.rows.attrs["data-fold"]);
+    checks.push(["families: ...and the fold map keeps an id off the board for a week, then forgets it",
+      Object.keys(kept).sort().join() === "W,gone" && kept.W[0] === 1, els.rows.attrs["data-fold"]]);
+  }
+  // A choice made by hand holds across a tier change: W folded while
+  // running stays folded once it is broken, though broken opens by default.
+  els.rows.attrs["data-fold"] = JSON.stringify({ W: [0, "running", Date.now()] });
   render({ rows: fr().map((r) => r.id === "W" ? { ...r, kind: "wilt" } : r), quiet: "" });
-  checks.push(["fold: a card that changes tier drops its fold choice",
-    !/kid fd open"[^>]*data-id="W"/.test(els.rows.innerHTML) && els.rows.attrs["data-fold"] === "{}"]);
+  checks.push(["fold: a card folded by hand stays folded when it changes tier",
+    /kid fd"[^>]*data-id="W"/.test(els.rows.innerHTML) && JSON.parse(els.rows.attrs["data-fold"]).W[0] === 0]);
   els.rows.attrs["data-fold"] = "{}";
   render({ rows: [R("P2", "running", { family: "H", famrole: "parent", famkid: false, ref: "w" }),
     R("X", "wilt", { family: "H", famrole: "child", famkid: true, ref: "x", chips: ["checks"] }),

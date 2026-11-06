@@ -21,9 +21,11 @@ type IntentServer = { origin: string | null; up: boolean; reason: string | null 
 export class DockView {
   private board = document.createElement("div");
   private frame: HTMLIFrameElement | null = null;
-  /** When the board was last loaded: a page left from before a server
-   *  restart has old code and a refused token, so it is loaded afresh. */
-  private loadedAt = 0;
+  /** The workspace ⌘. jumped to, while it is still the one shown: the board
+   *  opens its card for the visit without keeping that as a choice. */
+  private peek = "";
+  /** Each workspace's priority from the turn-end judgments (views:frame). */
+  private priority: Record<string, number> = {};
   private note = document.createElement("p");
   private sheet = new Sheet(true);
   private origin: string | null = null;
@@ -125,14 +127,16 @@ export class DockView {
       this.tiles = e.payload.tiles;
       this.fallback();
     });
-    await listen<{ decisions?: Decision[]; levels?: Levels }>("views:frame", (e) => {
+    await listen<{ decisions?: Decision[]; levels?: Levels; priority?: Record<string, number> }>("views:frame", (e) => {
       this.decisions = e.payload.decisions ?? [];
       this.levels = e.payload.levels ?? {};
+      this.priority = e.payload.priority ?? {};
       this.fallback();
     });
-    const [w, v] = await Promise.all([invoke<WallFrame | null>("wall_frame"), invoke<{ decisions?: Decision[] } | null>("views_frame")]);
+    const [w, v] = await Promise.all([invoke<WallFrame | null>("wall_frame"), invoke<{ decisions?: Decision[]; priority?: Record<string, number> } | null>("views_frame")]);
     if (w) this.tiles = w.tiles;
     if (v?.decisions) this.decisions = v.decisions;
+    if (v?.priority) this.priority = v.priority;
     this.fallback();
     await this.frameBoard();
   }
@@ -140,11 +144,13 @@ export class DockView {
   /** ⌘.: the next workspace that needs the person, after the one shown,
    *  wrapping. Asked first (a question, a pane waiting on you), then a
    *  command that died, then an agent working for over ten minutes, then a
-   *  failed check; oldest first within each. False when none needs you. */
+   *  failed check. Within each, the higher priority first (the turn-end
+   *  judgment's, from views:frame), then the oldest. False when none needs you. */
   nextAttention(): boolean {
     const now = Date.now();
     const agents = this.tiles.filter((t) => t.agent && t.state !== "ended");
-    const byAge = <T extends { since: number }>(xs: T[]) => [...xs].sort((a, b) => a.since - b.since);
+    const pri = (ws: string) => this.priority[ws] ?? 0;
+    const byAge = <T extends { ws: string; since: number }>(xs: T[]) => [...xs].sort((a, b) => pri(b.ws) - pri(a.ws) || a.since - b.since);
     const asked = [
       ...this.decisions.filter((d) => d.kind === "question" || d.kind === "asked"),
       ...agents.filter((t) => t.state === "needs_input").map((t) => ({ ws: t.workspace, since: t.since })),
@@ -157,7 +163,7 @@ export class DockView {
       for (const x of byAge(group)) if (x.ws && !order.includes(x.ws) && this.tiles.some((t) => t.workspace === x.ws)) order.push(x.ws);
     if (!order.length) return false;
     const next = order[(order.indexOf(this.ws) + 1) % order.length];
-    this.select(next, true);
+    this.select(next, true, "any", "", true);
     return true;
   }
 
@@ -167,12 +173,14 @@ export class DockView {
   }
 
   /** Called when the tab is shown (and on every summon): a board whose
-   *  server moved, or that was loaded over a minute ago, loads again. */
+   *  server moved loads again. One that is only old stays, folds and all: a
+   *  page left from before a server restart reloads itself when its feed is
+   *  refused (crates/crew-board/src/inject/board.js). */
   shown(): void {
-    void this.frameBoard(Date.now() - this.loadedAt > 60_000);
+    void this.frameBoard();
   }
 
-  private async frameBoard(fresh = false): Promise<void> {
+  private async frameBoard(): Promise<void> {
     const server = await invoke<IntentServer>("intent_server").catch(() => null);
     if (!server?.up || !server.origin) {
       this.note.hidden = false;
@@ -182,19 +190,13 @@ export class DockView {
       this.origin = null;
       return;
     }
-    if (this.frame && this.origin === server.origin) {
-      if (!fresh) return;
-      this.loadedAt = Date.now();
-      this.frame.src = `${server.origin}/board`;
-      return;
-    }
+    if (this.frame && this.origin === server.origin) return;
     this.frame?.remove();
     this.note.hidden = true;
     this.origin = server.origin;
     const f = document.createElement("iframe");
     f.title = "Dock";
     f.src = `${server.origin}/board`;
-    this.loadedAt = Date.now();
     f.addEventListener("load", () => this.tell());
     this.frame = f;
     this.board.append(f);
@@ -222,8 +224,10 @@ export class DockView {
     else if (!ws) this.draw();
   }
 
-  private select(ws: string, picked: boolean, show = "any", pane = ""): void {
+  /** `peek`: ⌘. chose it, so the board opens its card only for the visit. */
+  private select(ws: string, picked: boolean, show = "any", pane = "", peek = false): void {
     if (picked) this.picked = true;
+    this.peek = peek ? ws : "";
     this.ws = ws;
     this.sheet.focusWorkspace(ws, show, pane);
     this.draw();
@@ -231,9 +235,12 @@ export class DockView {
   }
 
   /** The board marks the workspace shown here, and learns what the app does
-   *  itself (its reclaim chip then asks here, not in a cmux terminal). */
+   *  itself (its reclaim chip then asks here, not in a cmux terminal).
+   *  `peek`: ⌘. brought it here, so its card opens for the visit only. */
   private tell(): void {
-    if (this.frame?.contentWindow && this.origin) this.frame.contentWindow.postMessage({ crew: "selected", ws: this.ws, can: ["reclaim"] }, this.origin);
+    const peek = !!this.peek && this.peek === this.ws;
+    if (this.frame?.contentWindow && this.origin)
+      this.frame.contentWindow.postMessage({ crew: "selected", ws: this.ws, can: ["reclaim"], peek }, this.origin);
   }
 
   private draw(): void {

@@ -237,10 +237,12 @@ string from the engine.
   cited by a verifiedFact; the renderer refuses otherwise. Files the plan
   will create are exempt — they are output, not input.
 - **Discovery amends the spec, not just the code.** When implementation finds
-  the terrain differs from the plan, edit the spec and re-render
-  mid-increment — phase and increment statuses survive, and quiz letters are
-  stable while option text is unchanged. The plan of record must be the plan
-  that was built.
+  the terrain differs from the plan, edit the spec and run `deep-plan amend
+  <slug> <spec.json> "<why>"` mid-increment — it re-renders at the plan's own
+  root and records the why; phase and increment statuses survive, and quiz
+  letters are stable while option text is unchanged. The plan of record must
+  be the plan that was built. A new bug or idea is a `deep-plan note` first:
+  it joins the plan only once the person picks its place.
 - **Quiz is non-leading by construction** — the linter rejects leading
   words, all/none-of-the-above, the longest-option tell, >2.2× length spread,
   and prompt-echo. Draw distractors from real vocabulary in the codebase.

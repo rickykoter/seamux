@@ -70,9 +70,14 @@ tabs.onSelect = (id) => {
   if (id === "dock") dockView.shown();
   if (id === "wake") wakeView.shown();
 };
-// The Tucked chip sits at the end of the strip; Command-K opens the same palette.
+// Session search (palette.ts): ⌘K, ⌥⇧Space from any app, or the Tucked chip
+// at the end of the strip. Choosing a session shows it in the Dock.
 const palette = new Palette();
 document.getElementById("strip")!.append(palette.chip);
+palette.onJump = (ws, pane) => {
+  tabs.select("dock");
+  dockView.jump(ws, pane);
+};
 tabs.select(DEFAULT_TAB);
 
 // Every summon (the hotkey, the tray) lands on the Dock view.

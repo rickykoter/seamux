@@ -202,6 +202,26 @@ pub struct FamilyBrief {
     pub total: u64,
 }
 
+/// Each live workspace's priority, read from `jmap` (the turn-end judgments
+/// still fresh): a workspace runs when any of its tiles is working. Only
+/// priorities above 0 are kept.
+pub fn priorities(tiles: &[Tile], jmap: &serde_json::Map<String, Value>, now_ms: u64) -> std::collections::BTreeMap<String, f64> {
+    let mut out = std::collections::BTreeMap::new();
+    for t in tiles {
+        if t.workspace.is_empty() || out.contains_key(&t.workspace) {
+            continue;
+        }
+        let running = tiles.iter().any(|x| x.workspace == t.workspace && x.state == "working");
+        let cwd = if t.root.is_empty() { t.cwd.clone() } else { t.root.clone() };
+        let w = serde_json::json!({"id": t.workspace, "cwd": cwd, "running": running});
+        let p = crew_board::judgments::priority_for(&w, jmap, now_ms as f64 / 1000.0);
+        if p > 0.0 {
+            out.insert(t.workspace.clone(), p);
+        }
+    }
+    out
+}
+
 /// The families among deep-plan's status rows, each member placed in its
 /// live workspace (its owner's, else the pane working in its root).
 pub fn families(rows: &[Value], tiles: &[Tile]) -> Vec<FamilyBrief> {
@@ -351,6 +371,13 @@ pub struct ViewsFrame {
     pub pages: Vec<NowPage>,
     /// Each live workspace that is muted or tucked: "mute" or "tuck".
     pub levels: std::collections::BTreeMap<String, String>,
+    /// Each live workspace's priority, 0 to 1, from the turn-end judgments
+    /// (crew-board's judgments::priority_for): ⌘. and search order by it.
+    /// A workspace with nothing known is left out.
+    pub priority: std::collections::BTreeMap<String, f64>,
+    /// Each live workspace's branch, for the session search (tuck::branch_of,
+    /// cached): a tile carries none.
+    pub branches: std::collections::BTreeMap<String, String>,
     /// What could not be read this time, for the page to say.
     pub problems: Vec<String>,
 }
@@ -887,7 +914,24 @@ impl Feed {
 
         let history = recent.iter().filter(|e| e.at >= start).map(Change::from).collect();
         let (tucked, levels) = self.tucks(tiles, &decisions, &recent, &mut problems);
-        ViewsFrame { decisions, wake, history, plans, reviews, tucked, families: fams, pages, levels, problems }
+        let priority = priorities(tiles, &crew_board::judgments::fresh_map(Some(now_ms as f64 / 1000.0), None), now_ms);
+        // Each live workspace's branch, for search: from its pinned worktree
+        // (any tile's root) where it has one, else its first tile's cwd. A
+        // pane that wandered off the pin does not name the workspace's branch.
+        let mut branches = std::collections::BTreeMap::new();
+        let mut seen = std::collections::HashSet::new();
+        for t in tiles.iter().filter(|t| !t.workspace.is_empty()) {
+            if !seen.insert(t.workspace.clone()) {
+                continue;
+            }
+            let pinned = tiles.iter().find(|x| x.workspace == t.workspace && !x.root.is_empty()).map(|x| x.root.as_str());
+            let dir = pinned.unwrap_or(t.cwd.as_str());
+            let br = if dir.is_empty() { String::new() } else { crate::tuck::branch_of(dir) };
+            if !br.is_empty() {
+                branches.insert(t.workspace.clone(), br);
+            }
+        }
+        ViewsFrame { decisions, wake, history, plans, reviews, tucked, families: fams, pages, levels, priority, branches, problems }
     }
 
     /// Each live workspace's open pages: its plan (the review surface while

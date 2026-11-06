@@ -127,6 +127,9 @@ fn run_wall<R: Runtime>(app: AppHandle<R>, pool: Vec<Arc<dyn Source>>, on_cmux: 
         *c = Some((std::time::Instant::now(), m.clone()));
         m
     }));
+    // A turn interrupted with Esc fires no Stop: each poll checks quiet
+    // working panes against the screens it read (either backend).
+    wall.set_crew_dirs(crew_board::state::state_dir(), crew_core::history::dir());
     if on_cmux {
         wall.set_native_probe(Box::new(|| native_surfaces(false)));
         wall.set_signals_probe(Box::new(|| native_look(false).1));

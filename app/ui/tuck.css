@@ -72,3 +72,54 @@
 .palette-back { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 7px; border: 1px solid var(--line); background: var(--on); color: var(--fg); cursor: pointer; }
 .palette-empty { margin: 14px; color: var(--muted); text-align: center; }
 .palette-foot { padding: 7px 14px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--muted); }
+
+/* ---- session search (palette.ts): list beside a preview ---- */
+.palette-card.search { width: min(860px, calc(100vw - 32px)); height: min(520px, 70vh); max-height: none; }
+.search-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); }
+.search-body > .palette-list { border-right: 1px solid var(--line); }
+.search-row {
+  grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name when" "meta meta";
+  row-gap: 1px; padding: 6px 10px; cursor: pointer;
+}
+.search-row > .palette-name { grid-area: name; }
+.search-row > .palette-when { grid-area: when; }
+.search-row > .palette-meta { grid-area: meta; padding-left: 16px; }
+.search-row.away .palette-name b { font-weight: 500; color: var(--muted); }
+.search-row mark, .search-preview mark {
+  background: none; color: inherit; text-decoration: underline; text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px; text-underline-offset: 2px;
+}
+.search-sect {
+  margin: 8px 10px 3px; padding-top: 6px; border-top: 1px solid var(--line);
+  font-size: 10.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+}
+/* The tier colours, as the board wears them: waiting is the accent, working
+   the running blue, the rest grey; a tucked or muted one is a hollow ring. */
+.search-dot { flex: none; width: 10px; height: 10px; fill: var(--muted); }
+.search-dot.needs_input { fill: var(--accent); }
+.search-dot.working { fill: var(--ef-blue, var(--good)); }
+.search-dot.away { fill: none; stroke: var(--muted); stroke-width: 1.4; }
+.search-preview { overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.search-p-head { display: flex; align-items: center; gap: 7px; font-size: 14px; margin-bottom: 2px; }
+.search-p-head b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-p-line { margin: 0; display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; font-size: 12.5px; }
+.search-p-k { color: var(--muted); }
+.search-p-v { min-width: 0; overflow-wrap: anywhere; }
+.search-p-ask {
+  margin: 4px 0; padding: 7px 10px; border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0;
+  background: color-mix(in srgb, var(--accent) 8%, transparent); font-size: 12.5px;
+}
+.search-p-lines {
+  margin: 4px 0 0; padding: 8px 10px; border-radius: 7px; background: var(--term); color: var(--term-fg);
+  font: 11.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.search-p-none { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; }
+/* Nothing matches: the board's cat, perked up, and a word. */
+.search-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; margin: 40px 14px; color: var(--muted); }
+.search-empty p { margin: 0; }
+.search-cat { line-height: 0; }
+@media (max-width: 620px) {
+  .search-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 0.8fr); }
+  .search-body > .palette-list { border-right: 0; border-bottom: 1px solid var(--line); }
+}
+@media (prefers-reduced-motion: reduce) { .search-row { scroll-behavior: auto; } }

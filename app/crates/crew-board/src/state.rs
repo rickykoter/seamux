@@ -181,11 +181,14 @@ pub fn tmux_rows(
         .map(|w| {
             let (branch, dirty) = if w.cwd.is_empty() { ("none".to_string(), false) } else { git_state(&w.cwd) };
             let mine: Vec<&crew_core::backend::PaneRow> = live.iter().filter(|p| p.workspace.eq_ignore_ascii_case(&w.id)).collect();
-            let running = !mine.is_empty();
             // No sidebar to carry the phase: token, so it comes from the
             // panes' own files, rolled up as the hook rolls them up for cmux.
             let panes: Vec<crew_core::status::Pane> = mine.iter().filter_map(|p| pane(&p.id)).collect();
-            let phase = crew_core::status::rollup_of(&panes).phase();
+            let rolled = crew_core::status::rollup_of(&panes);
+            let phase = rolled.phase();
+            // Working is what the panes' files say, not that a pane is open:
+            // a shell or a finished Claude is no work.
+            let running = rolled.state == "working";
             // crew-sync's tokens (CI, review, Jira, plan), with the phase
             // always the panes' own: a synced one is as old as the last sync.
             let (synced, pr) = facts.get(&w.id.to_ascii_uppercase()).cloned().unwrap_or_default();
@@ -587,11 +590,105 @@ pub fn mark_panes(rows: &mut [Value], plans: &Map<String, Value>, wss: &[Value],
     }
 }
 
+/// How many quiet working panes one build reads the screen of, at most.
+const INTERRUPT_READS: usize = 4;
+/// A pane whose screen was read and found busy (a long tool) is not read
+/// again for this long, so it neither costs a read per build nor keeps an
+/// interrupted pane from its turn.
+const INTERRUPT_RECHECK_MS: u64 = 60_000;
+/// When each pane's screen was last read for an interrupt, by surface.
+static INTERRUPT_CHECKED: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
+
+/// The suspects to read now, at most INTERRUPT_READS: those not read within
+/// INTERRUPT_RECHECK_MS, never-read first, then the longest since a read.
+fn interrupt_turn(suspects: Vec<crew_core::status::Pane>, checked: &HashMap<String, u64>, now: u64) -> Vec<crew_core::status::Pane> {
+    let at = |p: &crew_core::status::Pane| checked.get(&p.surface.to_uppercase()).copied();
+    let mut due: Vec<_> = suspects.into_iter().filter(|p| at(p).is_none_or(|t| now.saturating_sub(t) >= INTERRUPT_RECHECK_MS)).collect();
+    due.sort_by_key(|p| at(p).unwrap_or(0));
+    due.truncate(INTERRUPT_READS);
+    due
+}
+
+/// A working pane whose turn ended with no Stop (an Esc) goes idle: each pane
+/// quiet past crew_core::status::INTERRUPT_QUIET_MS that is still live has
+/// its screen read (cmux read-screen, or tmux capture-pane through the ask
+/// runner) and settled (crew_core::status::settle_interrupted). The app's
+/// wall does the same with the screens it already reads; the board does it
+/// for a cmux with no app. A read that fails changes nothing.
+fn settle_interrupts(live: &[LivePane]) {
+    use crate::ask::Runner;
+    let dir = state_dir();
+    let now = crew_core::history::now_ms();
+    let hist = crew_core::history::dir();
+    let suspects: Vec<_> = crew_core::status::interrupt_suspects(&dir, now).into_iter()
+        .filter(|p| live.iter().any(|l| l.surface.eq_ignore_ascii_case(&p.surface)))
+        .collect();
+    if suspects.is_empty() {
+        return;
+    }
+    let mut guard = INTERRUPT_CHECKED.lock().unwrap();
+    let checked = guard.get_or_insert_with(HashMap::new);
+    // Panes no longer suspect are forgotten, so the map stays small.
+    checked.retain(|s, _| suspects.iter().any(|p| p.surface.eq_ignore_ascii_case(s)));
+    let due = interrupt_turn(suspects, checked, now);
+    for p in &due {
+        checked.insert(p.surface.to_uppercase(), now);
+    }
+    drop(guard);
+    for p in due {
+        let argv = ["read-screen", "--surface", p.surface.as_str(), "--lines", "20"];
+        let (rc, screen) = match crate::ask::Tmux::for_pane(&p.surface) {
+            Some(t) => t.run(&argv),
+            None if crate::backend::tmux().is_none() => crate::ask::Cmux.run(&argv),
+            None => continue,
+        };
+        if rc == 0 {
+            crew_core::status::settle_interrupted(&dir, &hist, &p, &screen, now);
+        }
+    }
+}
+
+/// A workspace runs when crew's pane files say so (ADR: crew's pane files
+/// decide whether a pane is working): its live panes' files, rolled up. cmux's
+/// own Running pill counts only for a workspace crew has no live file for. A
+/// file whose pane is gone (closed, killed before its hooks ran) is not
+/// counted: only panes `live` lists are.
+pub fn apply_pane_running(wss: &mut [Value], live: &[LivePane], files: &[crew_core::status::Pane]) {
+    for w in wss.iter_mut() {
+        let ws = py_str(get(w, "id"));
+        let mine: Vec<crew_core::status::Pane> = files.iter()
+            .filter(|f| f.state != "ended" && f.ws.eq_ignore_ascii_case(&ws)
+                && live.iter().any(|l| l.ws.eq_ignore_ascii_case(&ws) && l.surface.eq_ignore_ascii_case(&f.surface)))
+            .cloned().collect();
+        if mine.is_empty() {
+            continue;
+        }
+        let working = crew_core::status::rollup_of(&mine).state == "working";
+        if let Some(m) = w.as_object_mut() {
+            m.insert("running".into(), json!(working));
+        }
+    }
+}
+
 pub fn build(o: &Opts) -> Value {
-    let (plan_by_root, wss) = match &o.fixture {
+    let (plan_by_root, mut wss) = match &o.fixture {
         Some((p, w)) => (p.clone(), w.clone()),
         None => (plans(), workspaces(o.fast, o.selected.as_deref())),
     };
+    // Each workspace's live panes and their files, before ranking: which is
+    // working comes from them.
+    let panes: Option<(Vec<LivePane>, Vec<crew_core::status::Pane>)> = if o.fixture.is_none() {
+        let live = live_panes();
+        settle_interrupts(&live);
+        let mut files = crew_core::status::all(&state_dir());
+        drop_gone(&mut files, &live, || crew_core::status::liveness_now(&state_dir()));
+        Some((live, files))
+    } else {
+        o.fixture_panes.clone()
+    };
+    if let Some((live, files)) = &panes {
+        apply_pane_running(&mut wss, live, files);
+    }
     let stale = wss.is_empty();
     let (rows, quiet) = if stale {
         (rank::rank_plans_only(&plan_by_root), Vec::new())
@@ -602,13 +699,10 @@ pub fn build(o: &Opts) -> Value {
     // The app's muted and tucked worktrees (fixtures stay as given).
     if o.fixture.is_none() {
         crate::tucked::mark_live(&mut all);
-        // Each workspace's panes: what each is doing, which owns the plan,
-        // which has wandered past the pin.
-        let live = live_panes();
-        let mut files = crew_core::status::all(&state_dir());
-        drop_gone(&mut files, &live, || crew_core::status::liveness_now(&state_dir()));
-        mark_panes(&mut all, &plan_by_root, &wss, &live, &files);
-    } else if let Some((live, files)) = &o.fixture_panes {
+    }
+    // Each workspace's panes: what each is doing, which owns the plan,
+    // which has wandered past the pin.
+    if let Some((live, files)) = &panes {
         mark_panes(&mut all, &plan_by_root, &wss, live, files);
     }
     let news = news::compose_now(&all);
@@ -833,7 +927,10 @@ mod tests {
         assert_eq!(out[0]["id"], "W1");
         assert_eq!(out[0]["title"], "shop");
         assert_eq!(out[0]["cwd"], here.as_str());
-        assert_eq!(out[0]["running"], true, "a live pane in it, matched in any case");
+        assert_eq!(out[0]["running"], false, "a live pane with no file is no work");
+        let working = |id: &str| { let mut p = crew_core::status::Pane::new("W1", id); p.state = "working".into(); Some(p) };
+        let busy = tmux_rows(&rows, &live, Some("W2"), &working, &Facts::new());
+        assert_eq!(busy[0]["running"], true, "its pane's file says working, matched in any case");
         assert_eq!(out[0]["pr"], "none");
         assert_eq!(out[0]["branch"], "dev/rows", "the repo's branch");
         assert!(out[0]["commits"].as_array().is_some());
@@ -941,6 +1038,39 @@ mod tests {
             .collect();
         assert_eq!(got, [("C", "claude", "idle"), ("A", "claude", "working"), ("B", "term", "shell")]);
         assert_eq!(rows[0]["panes"][0]["asked"], true);
+    }
+
+    /// A busy pane read a moment ago waits its turn; never-read panes go first.
+    #[test]
+    fn interrupt_reads_skip_a_pane_read_recently_and_take_the_unread_first() {
+        let p = |s: &str| crew_core::status::Pane::new("W1", s);
+        let now = 1_000_000;
+        let checked = HashMap::from([("BUSY".to_string(), now - 5_000), ("OLD".to_string(), now - INTERRUPT_RECHECK_MS - 1)]);
+        let got: Vec<String> = interrupt_turn(vec![p("busy"), p("old"), p("new")], &checked, now).into_iter().map(|p| p.surface).collect();
+        assert_eq!(got, ["new", "old"]);
+        let many: Vec<_> = (0..9).map(|i| p(&format!("P{i}"))).collect();
+        assert_eq!(interrupt_turn(many, &HashMap::new(), now).len(), INTERRUPT_READS);
+    }
+
+    /// crew's pane files decide working (ADR): cmux's pill counts only where
+    /// crew has no live file, and a file whose pane is gone is not counted.
+    #[test]
+    fn running_comes_from_the_live_panes_files_and_cmux_only_without_one() {
+        let mut wss = vec![
+            json!({"id": "W1", "running": true}),  // cmux's pill, crew says idle
+            json!({"id": "W2", "running": false}), // crew says working
+            json!({"id": "W3", "running": true}),  // no file: cmux's word stands
+            json!({"id": "W4", "running": false}), // only a closed pane's file
+        ];
+        let live = vec![
+            live("W1", "A", "", "Claude Code", Some(("claude", "working"))),
+            live("w2", "b", "", "Claude Code", None),
+            live("W3", "C", "", "Claude Code", Some(("claude", "working"))),
+        ];
+        let files = vec![file("W1", "A", "idle", 5), file("W2", "B", "working", 5), file("W4", "GONE", "working", 5)];
+        apply_pane_running(&mut wss, &live, &files);
+        let got: Vec<bool> = wss.iter().map(|w| w["running"].as_bool().unwrap()).collect();
+        assert_eq!(got, [false, true, true, false]);
     }
 
     #[test]

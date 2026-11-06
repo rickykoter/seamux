@@ -464,6 +464,64 @@ function ciExec(cur) {
   return { ...cur.exec, steps: [{ kind: "run", command }] };
 }
 
+// What an amend changed, by the titles a person recognises: decisions by their
+// text, deliverables by title, quiz questions by id (reworded when the prompt
+// or options moved), and how many facts and risks came or went.
+function specChanges(before, after) {
+  const out = [];
+  const byKey = (name, key) => {
+    const a = new Set((before[name] || []).map(key)), b = new Set((after[name] || []).map(key));
+    const add = [...b].filter(x => !a.has(x)), gone = [...a].filter(x => !b.has(x));
+    if (add.length) out.push(`${name} added: ${add.join(" | ")}`);
+    if (gone.length) out.push(`${name} removed: ${gone.join(" | ")}`);
+  };
+  byKey("decisions", d => d.decision);
+  byKey("deliverables", d => d.title);
+  byKey("quiz", q => q.id);
+  const was = new Map((before.quiz || []).map(q => [q.id, JSON.stringify([q.prompt, q.options])]));
+  const reworded = (after.quiz || []).filter(q => was.has(q.id) && was.get(q.id) !== JSON.stringify([q.prompt, q.options])).map(q => q.id);
+  if (reworded.length) out.push(`quiz reworded: ${reworded.join(", ")}`);
+  for (const name of ["verifiedFacts", "risks"]) {
+    const d = (after[name] || []).length - (before[name] || []).length;
+    if (d) out.push(`${name} ${d > 0 ? "+" : ""}${d}`);
+  }
+  return out;
+}
+
+// deep-plan amend <slug> <spec.json> "<why>": the one deliberate way to change
+// a plan that is already rendered. The root comes from the plan's state, so a
+// missing or wrong --root cannot disarm the gate; a why is required, and a
+// spec identical to the archive is refused. What changed and why is kept on
+// the plan (state.amendments), logged, and listed on the working page.
+async function amendCmd(args, flags) {
+  const [slug, specPath, ...rest] = args;
+  const why = rest.join(" ").trim();
+  if (!slug || !specPath) die('amend <slug> <spec.json> "<why>"');
+  if (!why) die(`amend ${slug}: say why the plan changes, in quotes after the spec`);
+  const st = readState(slug);
+  if (!st) die(`amend ${slug}: no such plan; a first render is \`deep-plan render <spec.json> --root <dir>\``);
+  let spec;
+  try { spec = JSON.parse(fs.readFileSync(specPath, "utf8")); } catch (e) { die(`amend ${slug}: cannot read ${specPath}: ${e.message}`); }
+  if (spec.slug !== slug) die(`amend ${slug}: ${specPath} is the spec of ${JSON.stringify(spec.slug)}, not ${slug}`);
+  const prior = planSpec(slug);
+  if (specHash(spec) === specHash(prior)) die(`amend ${slug}: ${specPath} is the plan as it stands; nothing to amend`);
+  const changed = specChanges(prior, spec);
+  const amendment = { at: Date.now(), why, changed, graded: !!st.approved };
+  await render(specPath, { ...flags, root: st.root, amendment });
+  say(`amended ${slug}: ${why}`);
+  for (const c of changed) say(`  ${c}`);
+  if (st.approved) say("  the plan now differs from its approved snapshot; the working page says so");
+}
+
+// The working page's record of amends, newest first.
+function amendmentsHtml(st) {
+  const list = (st.amendments || []).slice().reverse();
+  if (!list.length) return "";
+  return `<h2>Amendments</h2><ul>` + list.map(a =>
+    `<li><span class="dim">${esc(new Date(a.at).toISOString().slice(0, 16).replace("T", " "))}${a.graded ? " · after grade" : ""}</span> ` +
+    `${esc(a.why)}${(a.changed || []).length ? `<br><span class="dim">${esc(a.changed.join("; "))}</span>` : ""}</li>`).join("") + "</ul>";
+}
+
 // The plan as approved (its archived spec), or {} when there is none.
 function planSpec(slug) {
   try { return JSON.parse(fs.readFileSync(path.join(KEYS_DIR, slug + ".spec.json"), "utf8")); } catch { return {}; }
@@ -1744,6 +1802,29 @@ go.addEventListener("click",function(){
 `;
 }
 
+// Both live pages reload when their file is re-rendered. The served page
+// injects window.__dpChanged (a /plan-stamp probe); on disk there is no probe
+// and the timer stays a no-op, so the file never blind-reloads under a reader.
+// Picks and notes survive the reload as drafts (lib/surface.mjs).
+const AUTO_REFRESH_BOX = `
+<label class="auto"><input type="checkbox" id="dp-auto" checked> <span class="auto-long">auto-refresh</span><span class="auto-short">auto</span></label>`;
+const AUTO_REFRESH_JS = `
+<script>
+// Auto-refresh, armed on the checkbox's change event.
+(function(){
+  var t = null, box = document.getElementById("dp-auto");
+  function tick(){
+    // Not under someone mid-comment: the reload would cost them their place.
+    if (!window.__dpChanged || (window.dpBusy && window.dpBusy())) return;
+    window.__dpChanged(function(moved){ if (moved) location.reload(); });
+  }
+  function arm(){ if (t) clearInterval(t); t = null;
+    if (box.checked) t = setInterval(tick, 4000); }
+  box.addEventListener("change", arm);
+  arm();
+})();
+</script>`;
+
 function reviewHtml(spec, b64, adrs = [], map = null) {
   // Quiz options shuffled per-slug; the shuffled correct position lives in the
   // key file, never in this page.
@@ -1816,7 +1897,7 @@ until you clear it.</p>
   // boxes above, so this button carries it with no extra wiring.
 })();
 </script>`;
-  return htmlHead(spec.title + " — review", b64) + SURFACE_CSS + surfaceOpen(spec.slug, "review") + `<style>
+  return htmlHead(spec.title + " — review", b64) + SURFACE_CSS + surfaceOpen(spec.slug, "review") + AUTO_REFRESH_BOX + `<style>
 label.opt{cursor:pointer;padding:3px 0}
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
   color:inherit;border:1px solid var(--dim,#888);border-radius:4px;padding:6px;font:inherit}
@@ -1837,7 +1918,7 @@ ${verif ? `<h2>Verification</h2><ul>${verif}</ul>` : ""}
 and your model of it disagree — and either one may be the broken one.</p>
 ${qs}
 ${COPYBACK}
-${surfaceClose()}${SURFACE_JS}</body></html>`;
+${surfaceClose()}${SURFACE_JS}${AUTO_REFRESH_JS}</body></html>`;
 }
 
 // Annotations pulled back from the plan's published artifact, if any. The AGENT
@@ -2088,8 +2169,7 @@ ${checks}
   const g = gateView(st);
   const logRows = (st.log || []).slice(-12).reverse().map(l =>
     `<li class="dim">${esc(new Date(l.at).toISOString().slice(0, 16).replace("T", " "))} — ${esc(l.what)}</li>`).join("");
-  return htmlHead(spec.title, b64) + SURFACE_CSS + surfaceOpen(spec.slug, "working") + `
-<label class="auto"><input type="checkbox" id="dp-auto" checked> <span class="auto-long">auto-refresh</span><span class="auto-short">auto</span></label>
+  return htmlHead(spec.title, b64) + SURFACE_CSS + surfaceOpen(spec.slug, "working") + AUTO_REFRESH_BOX + `
 <script>window.DP_INC_ALLOWED = ${JSON.stringify(INC_ALLOWED)};</script>
 <style>
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
@@ -2103,6 +2183,7 @@ ${DP_RISK_CSS}
       endStateHtml(st.map, (st.increments || []).map(i => ({ n: i.n, title: i.title, status: i.status })))).replace(/(<p class="dim">plan <code>[^\n]*<\/p>)/, (m) => m + "\n" + familyStripHtml(spec.slug)) + `
 ${st.approved ? `<p class="dim">approved snapshot: <span class="dp-path" data-file="${esc(st.approved.path)}"><code>${esc(st.approved.path)}</code></span>${
       st.approved.spec_hash !== specHash(spec) ? ' · <span style="color:var(--warn-t)">the live plan has DRIFTED from the approved snapshot (spec amended since grade-pass)</span>' : ""}</p>` : ""}
+${amendmentsHtml(st)}
 <h2>Gate</h2><p>${g.allow ? CHECK_GLYPH.pass + " open" : CHECK_GLYPH.fail + " shut"} <span class="dim">— ${esc(g.why)}</span>
 <span class="dim">· root <code>${esc(st.root || "?")}</code> · phase ${esc(st.phase)}</span></p>
 <h2>Increments</h2>${rows}
@@ -2146,24 +2227,7 @@ ${["context", "decisions", "risks"].map(s =>
 })();
 </script>
 ${logRows ? `<h2>Log</h2><ul>${logRows}</ul>` : ""}
-${surfaceClose()}${SURFACE_JS}
-<script>
-// Auto-refresh, armed on the checkbox's change event. The served page injects
-// window.__dpChanged (a /plan-stamp probe); on disk there is no probe and the
-// timer stays a no-op, so the file never blind-reloads under a reader.
-(function(){
-  var t = null, box = document.getElementById("dp-auto");
-  function tick(){
-    // Not under someone mid-comment: the reload would cost them their place.
-    if (!window.__dpChanged || (window.dpBusy && window.dpBusy())) return;
-    window.__dpChanged(function(moved){ if (moved) location.reload(); });
-  }
-  function arm(){ if (t) clearInterval(t); t = null;
-    if (box.checked) t = setInterval(tick, 4000); }
-  box.addEventListener("change", arm);
-  arm();
-})();
-</script></body></html>`;
+${surfaceClose()}${SURFACE_JS}${AUTO_REFRESH_JS}</body></html>`;
 }
 
 // After a render: write a parent's index and report its overlaps, or refresh
@@ -2451,6 +2515,12 @@ async function render(specPath, opts) {
   // The plan holds its own sync setting: the spec's share, false when unset.
   st.share = spec.share === undefined ? false : spec.share;
   st.map = map;
+  // An amend's record (amendCmd): kept with the plan and logged, before the
+  // working page below is written, so the page lists it at once.
+  if (opts.amendment) {
+    st.amendments = [...(st.amendments || []), opts.amendment];
+    log1(st, `amended: ${opts.amendment.why} (${opts.amendment.changed.join("; ") || "no titled change"})`);
+  }
   reopenPhase(st);
   writeState(st);
   writeMapFile(spec.slug, map);
@@ -5878,6 +5948,7 @@ switch (cmd) {
     if (!args[0]) die("render <spec.json> [--root DIR] [--force]");
     await render(args[0], flags); break;
   }
+  case "amend": await amendCmd(args, flags); break;
   case "rehydrate": rehydrate(args[0] || die("rehydrate <slug>")); break;
   case "map": mapCmd(args[0], flags); break;
   case "redraw": redraw(args[0] || die("redraw <slug> | --all [--dry-run] [--json]"), flags); break;
@@ -6148,6 +6219,8 @@ switch (cmd) {
   page <slug> [--review]                      show the plan's working page (or its review) where this host can,
                                               and print "served at <url> (host: …)"
   render <spec.json> [--root DIR] [--force]   spec -> md + review + working surfaces
+  amend <slug> <spec.json> "<why>"            change a rendered plan: re-render at its own root, with
+                                              what changed and why logged and shown on the working page
   rehydrate <slug>                            re-render from the archived spec
   redraw <slug> | --all [--dry-run] [--json]  re-render plans with this engine (spec + state untouched)
   map <slug> | --all [--json]                 build a plan's End state map from its archived spec and root, and redraw

@@ -227,8 +227,9 @@ function __boardIntent(cfg) {
 
   // Fold or unfold a card in place. The class flips now, so the card changes
   // under the pointer instead of on the next push; data-fold is what the next
-  // push reads, with the tier the card had, so render.js can drop the choice
-  // when the card moves tier. Sends nothing: the header is the jump.
+  // push reads, and localStorage what the next page load reads (render.js).
+  // A choice made on a card ⌘. is visiting ends the visit: the hand wins.
+  // Sends nothing: the header is the jump.
   function fold(row, rid) {
     var f = {};
     try { f = JSON.parse(host.getAttribute("data-fold") || "{}"); } catch (e) { f = {}; }
@@ -236,8 +237,44 @@ function __boardIntent(cfg) {
     var open = !row.classList.contains("open");
     if (open) row.classList.add("open");
     else row.classList.remove("open");
-    f[rid] = [open ? 1 : 0, row.getAttribute("data-k") || ""];
-    host.setAttribute("data-fold", JSON.stringify(f));
+    if ((host.getAttribute("data-peek") || "") === rid) host.setAttribute("data-peek", "");
+    var now = Date.now();
+    f[rid] = [open ? 1 : 0, row.getAttribute("data-k") || "", now, now];
+    var out = JSON.stringify(f);
+    host.setAttribute("data-fold", out);
+    // Only this card's entry goes into the shared copy, so another board
+    // page's choices for other cards stand (render.js merges by choice time).
+    try {
+      if (window.localStorage) {
+        var all = {};
+        try { all = JSON.parse(window.localStorage.getItem("crew.board.fold") || "{}") || {}; } catch (e) { all = {}; }
+        all[rid] = f[rid];
+        window.localStorage.setItem("crew.board.fold", JSON.stringify(all));
+      }
+    } catch (e) { /* the page's copy still holds */ }
+  }
+
+  // ⌘. in the app: open the card it jumped to for the visit, and when the
+  // visit ends (the app shows another workspace, or any plain selection),
+  // put back how that card was. render.js keeps a visited card open across
+  // pushes and never saves the visit as a choice.
+  function rowOf(id) {
+    if (!host.querySelectorAll) return null;
+    var rows = host.querySelectorAll(".row");
+    for (var i = 0; i < rows.length; i++) if (rows[i].getAttribute("data-id") === id) return rows[i];
+    return null;
+  }
+  function peekTo(ws) {
+    var was = host.getAttribute("data-peek") || "";
+    if (was === ws) return;
+    if (was) {
+      var old = rowOf(was);
+      if (old && host.getAttribute("data-peek-open") !== "1") old.classList.remove("open");
+    }
+    host.setAttribute("data-peek", ws);
+    var row = ws ? rowOf(ws) : null;
+    host.setAttribute("data-peek-open", row && row.classList.contains("open") ? "1" : "0");
+    if (row && row.classList.contains("fd")) row.classList.add("open");
   }
 
   // The ⋯ menu that is open, if any: shut, and forgotten for the next push.
@@ -333,6 +370,7 @@ function __boardIntent(cfg) {
         host.setAttribute("data-app-origin", ev.origin);
         flush();
         mark(String(d.ws || ""));
+        peekTo(d.peek === true ? String(d.ws || "") : "");
         // What the app does itself instead of cmux (its reclaim wizard). An
         // app that never says keeps every chip going to cmux.
         if (Object.prototype.toString.call(d.can) === "[object Array]") host.setAttribute("data-app-can", d.can.join(" "));

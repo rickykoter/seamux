@@ -15,12 +15,13 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 /// The chat sheet's keys while the window has focus: ⌘E shows the Wake (or
 /// goes back), ⌘] and ⌘[ step through its tabs, ⌘. moves to the next
-/// workspace that needs you (DockView.nextAttention). A page in a frame keeps
+/// workspace that needs you (DockView.nextAttention), ⌘K opens session search
+/// (palette.ts). A page in a frame keeps
 /// keys from the shell, so they are shortcuts rather than key listeners.
 /// (⌘J is a native pane's own: its companion shell.)
 fn sheet_keys() -> Vec<(Shortcut, &'static str)> {
     [("CmdOrCtrl+KeyE", "wake"), ("CmdOrCtrl+BracketRight", "next"), ("CmdOrCtrl+BracketLeft", "prev"),
-     ("CmdOrCtrl+Period", "attention")]
+     ("CmdOrCtrl+Period", "attention"), ("CmdOrCtrl+KeyK", "search")]
         .iter()
         .filter_map(|(k, n)| k.parse::<Shortcut>().ok().map(|s| (s, *n)))
         .collect()
@@ -30,6 +31,10 @@ fn sheet_keys() -> Vec<(Shortcut, &'static str)> {
 /// shows them: Option-Space, the easy one, and Control-Option-Space for when
 /// another app (a launcher, a chat app) already holds Option-Space.
 pub const HOTKEYS: [(&str, &str); 2] = [("Alt+Space", "⌥Space"), ("Control+Alt+Space", "⌃⌥Space")];
+
+/// The hotkey that brings the app up straight into session search, from any
+/// app (palette.ts listens for search:open).
+pub const SEARCH_HOTKEY: (&str, &str) = ("Alt+Shift+Space", "⌥⇧Space");
 
 /// Where crew-board-intent writes its port (crew/board/crew-board-intent:60).
 fn port_file() -> Option<PathBuf> {
@@ -677,6 +682,7 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
     let shortcuts: Vec<(Shortcut, &str)> =
         HOTKEYS.iter().map(|(k, label)| (k.parse::<Shortcut>().expect("HOTKEYS parse"), *label)).collect();
     let toggles: Vec<Shortcut> = shortcuts.iter().map(|(s, _)| *s).collect();
+    let search_key = SEARCH_HOTKEY.0.parse::<Shortcut>().expect("SEARCH_HOTKEY parse");
     let sheet_keys = sheet_keys();
     let in_handler = sheet_keys.clone();
     app.handle().plugin(
@@ -687,6 +693,12 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
                 }
                 if toggles.contains(s) {
                     toggle(app);
+                } else if *s == search_key {
+                    // Up and in front, then the page opens its search.
+                    if let Some(w) = app.get_webview_window("main") {
+                        bring_forward(&w);
+                    }
+                    let _ = app.emit("search:open", ());
                 } else if let Some((_, name)) = in_handler.iter().find(|(k, _)| k == s) {
                     let _ = app.emit("sheet:key", *name);
                 }
@@ -701,6 +713,13 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
             Err(e) => eprintln!("seamux: could not register {label}: {e}"),
         }
     }
+    let search_label = match app.global_shortcut().register(search_key) {
+        Ok(()) => format!("Search: {}", SEARCH_HOTKEY.1),
+        Err(e) => {
+            eprintln!("seamux: could not register {}: {e}", SEARCH_HOTKEY.1);
+            format!("Search hotkey {} is taken by another app", SEARCH_HOTKEY.1)
+        }
+    };
     let hotkey_label = if live.is_empty() {
         // Every hotkey is taken; the tray is then the way back in, and says so.
         format!("Hotkeys {} are taken by other apps", HOTKEYS.map(|(_, l)| l).join(" and "))
@@ -710,8 +729,9 @@ pub fn install<R: Runtime>(app: &mut tauri::App<R>) -> tauri::Result<()> {
 
     let show_item = MenuItemBuilder::with_id("show", "Show seamux").build(app)?;
     let key_item = MenuItemBuilder::with_id("hotkey", hotkey_label).enabled(false).build(app)?;
+    let search_item = MenuItemBuilder::with_id("search-hotkey", search_label).enabled(false).build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "Quit seamux").build(app)?;
-    let menu = MenuBuilder::new(app).items(&[&show_item, &key_item]).separator().item(&quit_item).build()?;
+    let menu = MenuBuilder::new(app).items(&[&show_item, &key_item, &search_item]).separator().item(&quit_item).build()?;
     // Closing the window (Cmd+W, or a close from the system) hides it: the
     // app lives in the tray, and the hotkey needs the window to exist.
     if let Some(w) = app.get_webview_window("main") {
@@ -771,7 +791,14 @@ mod tests {
     #[test]
     fn sheet_keys_all_parse() {
         let names: Vec<&str> = sheet_keys().iter().map(|(_, n)| *n).collect();
-        assert_eq!(names, ["wake", "next", "prev", "attention"]);
+        assert_eq!(names, ["wake", "next", "prev", "attention", "search"]);
+    }
+
+    #[test]
+    fn the_search_hotkey_parses_and_is_none_of_the_others() {
+        let s = SEARCH_HOTKEY.0.parse::<Shortcut>().expect("SEARCH_HOTKEY parses");
+        assert!(HOTKEYS.iter().all(|(k, _)| k.parse::<Shortcut>().unwrap() != s));
+        assert!(sheet_keys().iter().all(|(k, _)| *k != s));
     }
     use std::net::TcpListener;
 

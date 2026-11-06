@@ -36,6 +36,11 @@ function svg(pose: Pose): string {
   return s;
 }
 
+/** The cat in a still pose, as SVG markup: the session search's empty state. */
+export function catSvg(pose: "peek" | "perk"): string {
+  return svg(pose);
+}
+
 /** A turn at least this long earns the hop. */
 export const HOP_AFTER_MS = 60_000;
 

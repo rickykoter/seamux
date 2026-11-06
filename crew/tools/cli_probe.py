@@ -698,6 +698,23 @@ check("crew-sync renames a worktree after its ticket, publishes its plan, phase 
       and desc.startswith("workspace-action --action set-description --description phase:working gone:merged synced:")
       and any(l.startswith("workspace-action --action set-color --color #") for l in log),
       f"rc={r.returncode}\n       " + "\n       ".join(log) + r.stderr[-300:])
+
+# crew's pane files decide working (the Rust crew-sync; the Python copy is
+# frozen): the store still says running, but the pane's own file says the turn
+# ended, so no phase:working is published.
+if crew_impl.is_rust("crew-sync"):
+    PSTATE = os.path.join(CACHE, "cmux-crew")
+    os.makedirs(PSTATE, exist_ok=True)
+    json.dump({"ws": "ws-y", "surface": "S-Y", "session": "SY", "state": "idle", "at": 1},
+              open(os.path.join(PSTATE, "pane-S-Y.json"), "w"))
+    clear_log()
+    r = run("crew-sync", env=dict(ENV, CREW_GH_INTERVAL="0", CREW_SYNC_FORCE="1"), timeout=120)
+    log = cmux_log()
+    desc = next((l for l in log if l.startswith("workspace-action --action set-description")), "")
+    check("crew-sync takes working from the pane's file over the store's running",
+          r.returncode == 0 and "phase:working" not in desc,
+          f"rc={r.returncode} desc={desc!r}\n       " + "\n       ".join(log) + r.stderr[-300:])
+    os.remove(os.path.join(PSTATE, "pane-S-Y.json"))
 check("…and reports each change",
       "  ws-y  name -> PROJ-3 · tidy\n  ws-y  progress -> 1/2 · Doing b\n" in r.stdout, r.stdout)
 
