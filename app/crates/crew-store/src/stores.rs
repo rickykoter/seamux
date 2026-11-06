@@ -1,6 +1,6 @@
-//! Plan, review and ask rows from their own stores (~/.claude/deep-plan/state,
-//! ~/.claude/plans/reviews, ~/.claude/plans/asks), keyed by root or cwd, and
-//! the fingerprint that says when to read them again.
+//! Plan, review, ask and turn rows from their own stores (~/.claude/deep-plan/state,
+//! ~/.claude/plans/reviews, ~/.claude/plans/asks, ~/.claude/plans/turns), keyed
+//! by root or cwd, and the fingerprint that says when to read them again.
 
 use crate::classify::truthy;
 use crate::paths::wskey;
@@ -14,10 +14,17 @@ pub const STORE_KEY: &str = "store:plans,reviews,asks";
 /// A review's or ask's files beside its record; the record is <id>.json.
 pub const SIDECARS: [&str; 3] = [".rows.json", ".seen.json", ".incoming.json"];
 
-/// The lookout reviews the Wake makes itself to show a commit.
+/// The lookout reviews the Wake makes itself to show a commit, and a turn
+/// (wake-t<session8>-<n>, ADR 0071).
 fn wake_review() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"^wake-[0-9a-f]{7,12}\.json$").expect("static regex"))
+    R.get_or_init(|| Regex::new(r"^wake-(?:[0-9a-f]{7,12}|t[a-z0-9_-]{1,8}-[0-9]+)\.json$").expect("static regex"))
+}
+
+/// A turn log's session, as lookout's turns.mjs keys it.
+fn turn_session() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r"^[A-Za-z0-9_-]{1,80}$").expect("static regex"))
 }
 
 fn join(a: &str, b: &str) -> String {
@@ -33,13 +40,19 @@ fn listdir(d: &str) -> Vec<String> {
     v
 }
 
-/// (entries, newest mtime) over the deep-plan state, review and ask dirs.
+/// (entries, newest mtime) over the deep-plan state, review and ask dirs,
+/// and lookout's turn logs.
 pub fn fingerprint(ctx: &Ctx) -> (i64, f64) {
     let p = &ctx.paths;
     let (mut n, mut newest) = (0i64, 0.0f64);
-    for d in [p.dp_state.clone(), join(&p.plans, "reviews"), join(&p.plans, "asks")] {
+    for (d, ext) in [
+        (p.dp_state.clone(), ".json"),
+        (join(&p.plans, "reviews"), ".json"),
+        (join(&p.plans, "asks"), ".json"),
+        (join(&p.plans, "turns"), ".jsonl"),
+    ] {
         for name in listdir(&d) {
-            if !name.ends_with(".json") {
+            if !name.ends_with(ext) {
                 continue;
             }
             let Ok(m) = std::fs::metadata(join(&d, &name)) else { continue };
@@ -264,6 +277,42 @@ pub fn store_rows(ctx: &mut Ctx) -> Vec<Map<String, Value>> {
             ],
         );
         rows.push(row);
+    }
+
+    // lookout's turn logs (ADR 0070): one line per finished turn. A turn that
+    // changed no file has nothing to show and gets no row.
+    let tdir = join(&plans, "turns");
+    for n in listdir(&tdir) {
+        if !n.ends_with(".jsonl") {
+            continue;
+        }
+        let Ok(data) = std::fs::read(join(&tdir, &n)) else { continue };
+        for line in data.split(|b| *b == b'\n') {
+            let Some(e) = crate::scan::parse_line(line).filter(Value::is_object) else { continue };
+            let num = e.get("n").and_then(Value::as_i64).filter(|v| *v > 0);
+            let files = e.get("files").and_then(Value::as_i64).filter(|v| *v > 0);
+            let sid = e.get("session").and_then(Value::as_str).filter(|v| turn_session().is_match(v));
+            let root = e.get("root").and_then(Value::as_str).filter(|v| !v.is_empty());
+            let (Some(num), Some(_), Some(sid), Some(root)) = (num, files, sid, root) else { continue };
+            let prompt = e.get("prompt").and_then(Value::as_str).unwrap_or("");
+            let at = e.get("at").and_then(Value::as_str).unwrap_or("");
+            let title = if prompt.is_empty() { format!("turn {num}") } else { format!("turn {num} · {prompt}") };
+            let row = mk(
+                ctx,
+                root,
+                vec![
+                    ("kind", s("turn")),
+                    ("locator", s(&format!("{sid}/{num}"))),
+                    ("title", s(&title)),
+                    ("created_at", s(at)),
+                    ("updated_at", s(at)),
+                    ("session_id", s(sid)),
+                    ("prompt", s(prompt)),
+                    ("source", s("lookout")),
+                ],
+            );
+            rows.push(row);
+        }
     }
     rows
 }

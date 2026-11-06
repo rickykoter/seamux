@@ -59,7 +59,7 @@ TEMP_ROOTS = tuple(os.environ["CREW_TEMP_ROOTS"].split(":")) if os.environ.get("
     else ("/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/")
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".heic", ".bmp", ".tiff"}
 DOC_EXT = {".md", ".markdown", ".html", ".htm"}
-KINDS = ("plan", "review", "ask", "artifact", "temp", "image", "doc", "file", "commit")
+KINDS = ("plan", "review", "ask", "artifact", "temp", "image", "doc", "file", "commit", "turn")
 # A scratchpad can hold a fixture repo; these are not anyone's artifact.
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".cache"}
 SCRATCH_CAP = 400           # files listed per scratchpad, at most
@@ -771,22 +771,27 @@ def _heading(md):
 
 
 STORE_KEY = "store:plans,reviews,asks"
+# A turn log's session, as lookout's turns.mjs keys it.
+TURN_SESSION = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 # A review's or ask's files beside its record; the record is <id>.json.
 SIDECARS = (".rows.json", ".seen.json", ".incoming.json")
-# The lookout reviews the Wake makes itself to show a commit (crew-board-intent).
-WAKE_REVIEW = re.compile(r"^wake-[0-9a-f]{7,12}\.json$")
+# The lookout reviews the Wake makes itself to show a commit (crew-board-intent),
+# and a turn (wake-t<session8>-<n>, ADR 0071).
+WAKE_REVIEW = re.compile(r"^wake-(?:[0-9a-f]{7,12}|t[a-z0-9_-]{1,8}-[0-9]+)\.json$")
 
 
 def store_fingerprint():
-    """(entries, newest mtime) over the deep-plan state, review and ask dirs."""
+    """(entries, newest mtime) over the deep-plan state, review and ask dirs,
+    and lookout's turn logs."""
     n, newest = 0, 0.0
-    for d in (DP_STATE, os.path.join(PLANS, "reviews"), os.path.join(PLANS, "asks")):
+    for d, ext in ((DP_STATE, ".json"), (os.path.join(PLANS, "reviews"), ".json"),
+                   (os.path.join(PLANS, "asks"), ".json"), (os.path.join(PLANS, "turns"), ".jsonl")):
         try:
             names = os.listdir(d)
         except OSError:
             continue
         for name in names:
-            if not name.endswith(".json"):
+            if not name.endswith(ext):
                 continue
             try:
                 m = os.stat(os.path.join(d, name)).st_mtime
@@ -798,7 +803,7 @@ def store_fingerprint():
 
 
 def store_rows():
-    """Plan, review and ask rows from their own stores, keyed by root or cwd."""
+    """Plan, review, ask and turn rows from their own stores, keyed by root or cwd."""
     rows = []
 
     def row(**kw):
@@ -870,6 +875,37 @@ def store_rows():
             path=html if os.path.exists(html) else "",
             created_at=d.get("created") or "", updated_at=d.get("created") or "",
             source="ask")
+    # lookout's turn logs (ADR 0070): one line per finished turn. A turn that
+    # changed no file has nothing to show and gets no row.
+    tdir = os.path.join(PLANS, "turns")
+    try:
+        names = sorted(os.listdir(tdir))
+    except OSError:
+        names = []
+    for n in names:
+        if not n.endswith(".jsonl"):
+            continue
+        try:
+            with open(os.path.join(tdir, n), "rb") as fh:
+                lines = fh.read().split(b"\n")
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(e, dict):
+                continue
+            num, sid, root, files = e.get("n"), e.get("session"), e.get("root"), e.get("files")
+            if not (type(num) is int and num > 0 and type(files) is int and files > 0
+                    and isinstance(sid, str) and TURN_SESSION.fullmatch(sid) and isinstance(root, str) and root):
+                continue
+            prompt = e.get("prompt") if isinstance(e.get("prompt"), str) else ""
+            at = e.get("at") if isinstance(e.get("at"), str) else ""
+            row(ws=root, kind="turn", locator="%s/%d" % (sid, num),
+                title="turn %d · %s" % (num, prompt) if prompt else "turn %d" % num,
+                created_at=at, updated_at=at, session_id=sid, prompt=prompt, source="lookout")
     return rows
 
 

@@ -202,17 +202,42 @@ fn browser(url: &str) -> (bool, String) {
 /// One commit's view-only lookout review, built in the workspace it was made
 /// in but opened nowhere: the review id, or "" when lookout is missing or failed.
 fn lookout_commit(ws: &str, sha: &str) -> String {
-    let Some((node, engine)) = crate::act::lookout_engine() else { return String::new() };
     let rid = format!("wake-{}", sha.chars().take(12).collect::<String>());
+    lookout_view(ws, &["--range", &format!("{sha}^..{sha}")], rid, &sha.chars().take(7).collect::<String>())
+}
+
+/// One agent turn's view-only lookout review, from its snapshots (ADR 0071):
+/// the review id wake-t<session8>-<n>, or "" when lookout is missing or failed.
+fn lookout_turn(ws: &str, sid: &str, n: u64) -> String {
+    let rid = turn_review_id(sid, n);
+    lookout_view(ws, &["--turn", &format!("{sid}/{n}")], rid, &format!("turn {sid}/{n}"))
+}
+
+/// The id of the review the Wake opens for a turn; both indexers skip it.
+pub fn turn_review_id(sid: &str, n: u64) -> String {
+    format!("wake-t{}-{n}", sid.chars().take(8).collect::<String>().to_lowercase())
+}
+
+/// A turn row's locator, <session>/<n>, as lookout's turns.mjs writes it.
+fn turn_locator(loc: &str) -> Option<(&str, u64)> {
+    let (sid, n) = loc.rsplit_once('/')?;
+    let sid_ok = (1..=80).contains(&sid.len()) && sid.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    // Digits only: u64's parse would take "+3", and "03" is not how a turn is named.
+    let num: u64 = n.parse().ok().filter(|v: &u64| *v > 0 && v.to_string() == n)?;
+    let n = num;
+    sid_ok.then_some((sid, n))
+}
+
+fn lookout_view(ws: &str, target: &[&str], rid: String, what: &str) -> String {
+    let Some((node, engine)) = crate::act::lookout_engine() else { return String::new() };
     let mut cmd = std::process::Command::new(node);
-    cmd.args([engine.as_str(), "open", "--range", &format!("{sha}^..{sha}"), "--view-only", "--at", ws, "--id", &rid, "--no-open"])
-        .current_dir(ws);
+    cmd.arg(engine.as_str()).arg("open").args(target).args(["--view-only", "--at", ws, "--id", &rid, "--no-open"]).current_dir(ws);
     match spawn_wait(cmd, Duration::from_secs(90)) {
         Some((0, _, _)) => rid,
         Some((_, out, err)) => {
             let why = if err.trim().is_empty() { out } else { err };
             let tail: String = why.trim().chars().rev().take(160).collect::<Vec<_>>().into_iter().rev().collect();
-            log(&format!("FAIL lookout open {}: {tail}", sha.chars().take(7).collect::<String>()));
+            log(&format!("FAIL lookout open {what}: {tail}"));
             String::new()
         }
         None => String::new(),
@@ -383,6 +408,18 @@ pub fn resolve_row(r: &crew_store::Row, sub: &str) -> Result<Target, String> {
                 return Ok(Target::Browser(r.url.clone()));
             }
             Err("the worktree is gone and no GitHub remote was recorded".into())
+        }
+        "turn" => {
+            let Some((sid, n)) = turn_locator(loc) else { return Err("not a turn".into()) };
+            let ws = r.ws.as_str();
+            if ws.is_empty() || !Path::new(ws).is_dir() {
+                return Err("the worktree is gone".into());
+            }
+            let rid = lookout_turn(ws, sid, n);
+            if !rid.is_empty() && crate::review::review_path(&rid, ".html").is_some() {
+                return Ok(Target::Page(format!("/review/{rid}")));
+            }
+            Err("the turn's snapshots are gone".into())
         }
         "artifact" => Ok(Target::Browser(r.url.clone())),
         _ => {
@@ -630,6 +667,20 @@ mod tests {
         assert!(resolve_row(&row("doc", "d", "/no/such/file.md", ""), "").unwrap_err().starts_with("gone"));
         assert!(resolve_row(&row("commit", "abc", "", ""), "").is_err(), "no worktree and no remote");
         assert_eq!(resolve_row(&row("commit", "abc", "", "https://github.com/o/r/commit/abc"), ""), Ok(Target::Browser("https://github.com/o/r/commit/abc".into())));
+        assert!(resolve_row(&row("turn", "../x/1", "", ""), "").unwrap_err().contains("not a turn"));
+        assert!(resolve_row(&row("turn", "s-1/1", "", ""), "").unwrap_err().contains("worktree is gone"), "a turn row with no worktree");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A turn row's locator and the review id the Wake gives it, which both
+    /// indexers skip (crew-store's wake_review, artifacts.py's WAKE_REVIEW).
+    #[test]
+    fn a_turn_locator_and_its_review_id() {
+        assert_eq!(turn_locator("0b9c2f1e-aaaa-bbbb/12"), Some(("0b9c2f1e-aaaa-bbbb", 12)));
+        for bad in ["", "s", "s/", "/3", "s/0", "s/-1", "s/+3", "s/03", "a.b/1", "s/1x", &format!("{}/1", "x".repeat(81))] {
+            assert_eq!(turn_locator(bad), None, "{bad}");
+        }
+        assert_eq!(turn_review_id("0B9C2F1E-aaaa", 3), "wake-t0b9c2f1e-3");
+        assert_eq!(turn_review_id("ab", 7), "wake-tab-7");
     }
 }
