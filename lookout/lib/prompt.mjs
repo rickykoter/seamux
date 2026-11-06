@@ -64,6 +64,9 @@ export function brief(review, { patchPath, plansDir, outPath, reply = false, rou
   const where = src.kind === "patch" ? `the patch file ${src.file}`
     : src.kind === "range" ? `the commit range ${src.range} in ${src.root}`
     : src.kind === "worktree" ? `the uncommitted work on ${src.branch || "HEAD"} in ${src.root}`
+    : src.kind === "turn" ? (src.sincePrompt
+      ? `everything changed in ${src.root} since prompt ${src.n} of session ${src.session} (that prompt's snapshot against the working tree)`
+      : `what one agent turn changed in ${src.root}: turn ${src.n} of session ${src.session} (its start snapshot against ${src.live ? "the working tree, the turn still running" : "its end snapshot"})`)
     : `branch ${src.branch} against ${src.base} (merge base ${String(src.oldRev || "").slice(0, 8)}, working tree included) in ${src.root}`;
   const show = src.kind === "patch" ? ""
     : `\nFull files: the new side is \`git -C ${src.root} show ${src.newRev}:<path>\`, ` +

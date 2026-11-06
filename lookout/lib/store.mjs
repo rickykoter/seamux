@@ -50,6 +50,9 @@ export function defaultId(src, o = {}) {
     crypto.createHash("sha256").update(path.resolve(src.file)).digest("hex").slice(0, 6));
   if (src.kind === "range") return idFrom(src.repo, src.range.replace(/\.\.\.?/g, "_"));
   if (src.kind === "worktree") return idFrom(src.repo, src.branch, "wt");
+  // A turn is one review per turn; since-prompt is one per prompt, so a later
+  // prompt's work is a new review rather than a merge into the last one's.
+  if (src.kind === "turn") return idFrom(src.repo, src.sincePrompt ? "since" : "turn", src.session.slice(0, 8), String(src.n));
   return idFrom(src.repo, src.branch);
 }
 

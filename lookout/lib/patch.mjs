@@ -1,5 +1,5 @@
-// What a review is OF: a source (a base, a range, the working tree, a patch
-// file), the unified diff it yields, that diff parsed into files and hunks, and
+// What a review is OF: a source (a base, a range, the working tree, a turn
+// snapshot, a patch file), the unified diff it yields, that diff parsed into files and hunks, and
 // the rows the page draws — highlighted, with word-level marks on changed lines.
 //
 // The working tree is captured on a SCRATCH index (GIT_INDEX_FILE), never the
@@ -97,6 +97,7 @@ export function resolveSource(o, cwd) {
   }
   const info = repoInfo(cwd);
   const { root, repo, branch, head } = info;
+  if (o.turn || o.sincePrompt) return turnSource(o, info);
   if (o.range) {
     const tri = o.range.includes("...");
     const [a, b] = o.range.split(tri ? "..." : "..");
@@ -121,6 +122,41 @@ export function resolveSource(o, cwd) {
   return { kind: "base", root, repo, branch, head, base, baseSha, oldRev, newRev,
            dirty: newRev !== headTree,
            label: `${branch} vs ${base}${newRev !== headTree ? " · with uncommitted" : ""}` };
+}
+
+// A turn's snapshots (lib/turns.mjs writes them, ADR 0069):
+// refs/seamux/turns/<session>/<n>/{start,end}. --turn N, last, SESSION/N or
+// SESSION/last diffs that turn's start against its end, or against the
+// working tree while it has none (the turn is still running). --since-prompt
+// diffs the latest turn's start against the working tree. The session
+// defaults to this one's. The key rule is lib/turns.mjs sessionKey's, kept
+// here so this file imports nothing of the hook's.
+const turnKey = s => String(s || "").replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+
+function turnSource(o, { root, repo, branch, head }) {
+  let spec = o.sincePrompt ? "last" : String(o.turn);
+  let session = o.session || process.env.CLAUDE_CODE_SESSION_ID || "";
+  const slash = spec.lastIndexOf("/");
+  if (slash >= 0) { session = spec.slice(0, slash); spec = spec.slice(slash + 1); }
+  const sid = turnKey(session);
+  if (!sid) throw new Error("no session for the turn: pass --turn SESSION/N (CLAUDE_CODE_SESSION_ID is not set)");
+  if (spec !== "last" && !/^[1-9]\d*$/.test(spec)) throw new Error("--turn wants N, last, SESSION/N or SESSION/last");
+  const refs = line1(git(root, ["for-each-ref", "--format=%(refname) %(objectname)", `refs/seamux/turns/${sid}/`]) || "");
+  const turns = new Map();
+  for (const l of refs.split("\n")) {
+    const m = l.match(/^refs\/seamux\/turns\/[^/]+\/(\d+)\/(start|end) ([0-9a-f]+)$/);
+    if (m) turns.set(Number(m[1]), { ...turns.get(Number(m[1])), [m[2]]: m[3] });
+  }
+  const started = [...turns.keys()].filter(k => turns.get(k).start).sort((a, b) => a - b);
+  if (!started.length) throw new Error(`no turns recorded for session ${sid} in ${root}`);
+  const n = spec === "last" ? started[started.length - 1] : Number(spec);
+  const t = turns.get(n);
+  if (!t || !t.start) throw new Error(`no turn ${n} in session ${sid} (turns ${started[0]}–${started[started.length - 1]})`);
+  const live = o.sincePrompt || !t.end;
+  const newRev = live ? worktreeTree(root) : t.end;
+  const label = o.sincePrompt ? `since prompt ${n}` : `turn ${n}${live ? " · running" : ""}`;
+  return { kind: "turn", root, repo, branch, head, session: sid, n, sincePrompt: !!o.sincePrompt, live,
+           oldRev: t.start, newRev, label };
 }
 
 function emptyTree(root) {

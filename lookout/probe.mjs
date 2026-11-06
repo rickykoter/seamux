@@ -1635,6 +1635,67 @@ if (want("turn snapshots")) {
   ok("turns: a start killed at the budget leaves no scratch index behind, now or later", !idx().length, idx().join(","));
 }
 
+// ---------------------------------------------------------------- turn targets
+if (want("turn targets")) {
+  const T = await import("./lib/turns.mjs");
+  const RU = repo("ru");
+  write(RU, "a.js", "1\n"); sh(RU, `git add -A && ${G} commit -q -m base`);
+  write(RU, "before.js", "uncommitted before the prompt\n");
+  T.start({ cwd: RU, session: "sess-one", prompt: "add the widget" });
+  write(RU, "widget.js", "w\n"); write(RU, "a.js", "2\n");
+  T.end({ cwd: RU, session: "sess-one" });
+  T.start({ cwd: RU, session: "sess-one", prompt: "now the tests" });
+  write(RU, "widget.test.js", "t\n");
+  const open = (...a) => { const r = cli(RU, "open", "--no-open", "--no-jev", "--json", ...a); try { return JSON.parse(r.stdout); } catch { return { err: r.stderr + r.stdout }; } };
+  const filesOf = id => S.read(id).files.map(f => f.path).sort().join(",");
+
+  const t1 = open("--turn", "sess-one/1");
+  ok("turn: --turn SESSION/N diffs that turn's start against its end, and nothing from before the prompt",
+     t1.id && filesOf(t1.id) === "a.js,widget.js", t1.err || filesOf(t1.id));
+  const r1 = S.read(t1.id);
+  ok("turn: the source names the turn and the page label carries its prompt",
+     r1.source.kind === "turn" && r1.source.n === 1 && r1.source.session === "sess-one" && !r1.source.live &&
+     r1.source.label === "turn 1 · add the widget" && r1.title === "turn 1 · add the widget", JSON.stringify(r1.source));
+  ok("turn: its default id names the repo, the session and the turn", t1.id === "ru-turn-sess-one-1", t1.id);
+
+  const t2 = open("--turn", "last", "--session", "sess-one");
+  ok("turn: --turn last while it runs diffs its start against the working tree",
+     t2.id && filesOf(t2.id) === "widget.test.js" && S.read(t2.id).source.live &&
+     S.read(t2.id).source.label === "turn 2 · running · now the tests", t2.err || JSON.stringify(S.read(t2.id).source));
+  const env = { ...ENV, CLAUDE_CODE_SESSION_ID: "sess-one" };
+  const sp = spawnSync("node", [path.join(HERE, "lookout.mjs"), "open", "--since-prompt", "--no-open", "--no-jev", "--json"], { encoding: "utf8", env, cwd: RU });
+  let spj = {}; try { spj = JSON.parse(sp.stdout); } catch { /* checked below */ }
+  ok("turn: --since-prompt reads this session's latest prompt and diffs it against the working tree",
+     spj.id === "ru-since-sess-one-2" && filesOf(spj.id) === "widget.test.js" && S.read(spj.id).source.sincePrompt, sp.stderr + sp.stdout);
+
+  T.end({ cwd: RU, session: "sess-one" });
+  write(RU, "later.js", "after the stop\n");
+  ok("turn: an ended turn shows only its own work, not what came after its stop",
+     filesOf(open("--turn", "sess-one/2").id) === "widget.test.js");
+
+  const two = cli(RU, "open", "--turn", "1", "--worktree");
+  ok("turn: a second target is refused", two.status === 1 && /pick one of .*--turn, --since-prompt/.test(two.stderr), two.stderr);
+  const none = cli(RU, "open", "--turn", "sess-one/9", "--no-open");
+  ok("turn: a turn that was never taken is refused with the range there is", none.status === 1 && /no turn 9 .*turns 1–2/.test(none.stderr), none.stderr);
+  const nos = spawnSync("node", [path.join(HERE, "lookout.mjs"), "open", "--turn", "last", "--no-open"],
+    { encoding: "utf8", env: { ...ENV, CLAUDE_CODE_SESSION_ID: "" }, cwd: RU });
+  ok("turn: with no session it says how to name one", nos.status === 1 && /pass --turn SESSION\/N/.test(nos.stderr), nos.stderr);
+  const bad = cli(RU, "open", "--turn", "x/y", "--no-open");
+  ok("turn: a malformed turn is refused", bad.status === 1 && /--turn wants N, last/.test(bad.stderr), bad.stderr);
+  const other = cli(RU, "open", "--turn", "sess-two/last", "--no-open");
+  ok("turn: a session with no turns here is refused", other.status === 1 && /no turns recorded for session sess-two/.test(other.stderr), other.stderr);
+
+  const PR = await import("./lib/prompt.mjs");
+  const b1 = PR.brief(S.read(t1.id), { patchPath: S.paths(t1.id).patch, plansDir: TMP, outPath: path.join(TMP, "o.json") });
+  ok("turn: the reviewer brief words the target as one agent turn", /what one agent turn changed in .*turn 1 of session sess-one \(its start snapshot against its end snapshot\)/.test(b1));
+  const b2 = PR.brief(S.read(spj.id), { patchPath: S.paths(spj.id).patch, plansDir: TMP, outPath: path.join(TMP, "o.json") });
+  ok("turn: and since-prompt as everything since that prompt", /everything changed in .* since prompt 2 of session sess-one/.test(b2));
+  const help = cli(RU, "help").stdout;
+  ok("turn: the usage text lists --turn and --since-prompt", help.includes("--turn [SESSION/]N|last | --since-prompt"));
+  const skill = fs.readFileSync(path.join(HERE, "SKILL.md"), "utf8");
+  ok("turn: SKILL.md lists both targets", skill.includes("lookout open --turn last") && skill.includes("lookout open --since-prompt"));
+}
+
 // ---------------------------------------------------------------- page script
 if (want("page script")) {
   const r = spawnSync("node", ["--check", path.join(HERE, "page", "review.js")], { encoding: "utf8" });

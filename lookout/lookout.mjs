@@ -53,7 +53,7 @@ const opt = (n, d = null) => {
 // Options that take a value; every other --flag stands alone.
 // The most of a --context-file a review keeps for its reviewer brief.
 const CONTEXT_CAP = 8000;
-const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file", "--plan-map", "--url", "--root", "--session"]);
+const VALUED = new Set(["--base", "--range", "--patch", "--id", "--title", "--plan", "--inc", "--at", "--file", "--context-file", "--plan-map", "--url", "--root", "--session", "--turn"]);
 const positional = () => rest.filter((a, i) => !a.startsWith("--") && !(i > 0 && VALUED.has(rest[i - 1])));
 
 const say = s => process.stdout.write(s + "\n");
@@ -222,11 +222,21 @@ function showPage(id, file, cwd, { onlyIfOpen = false } = {}) {
 function cmdOpen() {
   const cwd = path.resolve(opt("at", process.cwd()));
   const o = { base: opt("base"), range: opt("range"), patch: opt("patch"), worktree: flag("worktree"),
+              turn: opt("turn"), sincePrompt: flag("since-prompt"), session: opt("session"),
               plan: opt("plan"), inc: opt("inc") };
-  if ([o.base, o.range, o.patch, o.worktree || null].filter(Boolean).length > 1)
-    die("pick one of --base, --range, --patch, --worktree");
+  if (flag("turn") && !o.turn) die("--turn wants N, last, SESSION/N or SESSION/last");
+  if ([o.base, o.range, o.patch, o.worktree || null, o.turn, o.sincePrompt || null].filter(Boolean).length > 1)
+    die("pick one of --base, --range, --patch, --worktree, --turn, --since-prompt");
   let src;
   try { src = resolveSource(o, cwd); } catch (e) { die(e.message); }
+  if (src.kind === "turn") {
+    // The prompt that began the turn, from the turn log, names it on the page.
+    const e = TU.readLog(src.session).find(x => x.n === src.n && x.start === src.oldRev);
+    let open = null;   // a running turn has no log line yet: its open marker holds the prompt
+    try { open = JSON.parse(fs.readFileSync(path.join(TU.TURNS_DIR, src.session + ".open.json"), "utf8")); } catch { /* none */ }
+    const prompt = e ? e.prompt : open && open.n === src.n && open.start === src.oldRev ? open.prompt : "";
+    if (prompt) src.label += " · " + prompt;
+  }
   const id = opt("id") || S.defaultId(src, o);
   if (!S.ID_OK.test(id)) die("not a usable review id: " + id + " (lowercase letters, digits, . _ -)");
 
@@ -563,7 +573,8 @@ function cmdList() {
 function usage() {
   say(`lookout — review a diff in a browser pane beside the terminal
 
-  lookout open [--base REF | --worktree | --range A..B | --patch FILE]
+  lookout open [--base REF | --worktree | --range A..B | --patch FILE |
+                --turn [SESSION/]N|last | --since-prompt]
                [--id ID] [--title T] [--plan SLUG --inc N|all] [--agent-may-close] [--quiz]
                [--context-file F] (text the reviewer brief prints beside the plan)
                [--plan-map F | --no-plan-map] (a deep-plan End state map for the page's Map view, or drop the one kept)
@@ -571,6 +582,10 @@ function usage() {
         build the diff, store the review, draw the page and show it.
         Default: --base <origin's default branch, else main/master>, which
         compares the merge base with the working tree (uncommitted included).
+        --turn diffs one agent turn's snapshots (start against end, or against
+        the working tree while it runs); --since-prompt diffs the latest
+        prompt's snapshot against the working tree. Both read this session's
+        turns (CLAUDE_CODE_SESSION_ID) unless SESSION/ or --session names one.
         Files are ranked by risk (signals + one Jev score per file; hunk text
         is sent only to a loopback endpoint or with .seamux/lookout.json
         sendContent: true) and grouped by how they relate. --quiz (or
