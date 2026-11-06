@@ -1,4 +1,5 @@
-//! The account's usage limits, as the status line last saw them (ADR 0071).
+//! The account's usage limits, as the status line last saw them (the ADR
+//! "Reset times come from the status line's rate_limits").
 //!
 //! ```text
 //! ~/.cache/cmux-crew/limits.json

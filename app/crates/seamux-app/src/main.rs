@@ -13,6 +13,7 @@ mod pty_app;
 mod reclaim_app;
 mod resume;
 mod resume_app;
+mod resume_watch;
 mod review_app;
 mod shell;
 mod tuck_app;
@@ -196,6 +197,8 @@ fn main() {
             wall_app::start(app.handle().clone());
             views_app::start(app.handle().clone());
             review_app::start(app.handle().clone());
+            // Armed sessions a usage limit stopped, continued at the reset.
+            resume_watch::start(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

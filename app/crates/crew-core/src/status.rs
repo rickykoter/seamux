@@ -5,7 +5,8 @@
 //! {"ws": "<uuid>", "surface": "<uuid>|", "session": "<id>", "state": "working",
 //!  "question": {...}|null, "asked": "<text>"|null, "review": false, "at": 1792627120000,
 //!  "limited": {"error": "rate_limit", "session": "<id>", "at": <ms>, "window": "five_hour"|null,
-//!              "resets_at": <ms>|null, "tries": 0, "next_try": <ms>|null}}   only while a limit stopped it
+//!              "resets_at": <ms>|null, "tries": 0, "next_try": <ms>|null,
+//!              "gave_up": "<why>"|null}}   only while a limit stopped it
 //! ~/.cache/cmux-crew/hold-<key>     while the pane holds something a tool use releases
 //! ```
 //!
@@ -66,12 +67,15 @@ pub struct Limited {
     pub tries: u32,
     /// When the next resume is due, where it is not the reset.
     pub next_try: Option<u64>,
+    /// Why the app stopped trying to resume it (a refused screen, an
+    /// unconfirmed resume, three tries): it waits for you.
+    pub gave_up: Option<String>,
 }
 
 impl Limited {
     pub fn to_json(&self) -> Value {
         json!({"error": self.error, "session": self.session, "at": self.at, "window": self.window,
-               "resets_at": self.resets_at, "tries": self.tries, "next_try": self.next_try})
+               "resets_at": self.resets_at, "tries": self.tries, "next_try": self.next_try, "gave_up": self.gave_up})
     }
 
     pub fn from_json(v: &Value) -> Option<Limited> {
@@ -84,6 +88,7 @@ impl Limited {
             resets_at: v.get("resets_at").and_then(Value::as_u64),
             tries: v.get("tries").and_then(Value::as_u64).unwrap_or(0) as u32,
             next_try: v.get("next_try").and_then(Value::as_u64),
+            gave_up: s("gave_up"),
         })
     }
 }
@@ -505,6 +510,22 @@ pub fn lock_file(dir: &Path, name: &str) -> Lock {
     Lock(f)
 }
 
+/// Change the limit stop a pane file carries, under the status lock, when it
+/// is still the one `seen` (the same session and stop time) and the pane is
+/// still stopped: a hook that moved the pane first wins. The pane's `at` is
+/// kept, so how long it has been stopped still reads true. True when it wrote.
+pub fn update_limited(dir: &Path, key: &str, seen: &Limited, change: impl FnOnce(&mut Limited)) -> bool {
+    let _l = lock(dir);
+    let Some(mut p) = read(dir, key) else { return false };
+    let Some(l) = p.limited.as_mut().filter(|l| l.session == seen.session && l.at == seen.at) else { return false };
+    if p.state != "idle" {
+        return false;
+    }
+    change(l);
+    write(dir, &p);
+    true
+}
+
 /// One pane changed and its workspace rolled up, under the lock: the
 /// roll-up before, the roll-up after (its markers written) and the pane as
 /// written. The lock covers only the files: the caller's cmux calls come
@@ -706,14 +727,19 @@ mod tests {
     fn a_limit_stop_is_kept_through_writes_and_held_until_work_resumes() {
         let d = tmp("limited");
         let lim = Limited { error: "rate_limit".into(), session: "s".into(), at: 2, window: Some("five_hour".into()),
-                            resets_at: Some(9_000), tries: 0, next_try: None };
+                            resets_at: Some(9_000), tries: 0, next_try: None, gave_up: None };
         update(&d, "W", "S", "s", 1, |p| p.state = "working".into());
         let raw: Value = serde_json::from_str(&fs::read_to_string(path(&d, "S")).unwrap()).unwrap();
         assert!(raw.get("limited").is_none(), "no limit, no field");
         update(&d, "W", "S", "s", 2, |p| { p.state = "idle".into(); p.limited = Some(lim.clone()); });
         assert!(hold_path(&d, "S").exists(), "pretool's fast path must wake to clear it");
         update(&d, "W", "S", "s", 3, |p| p.question = None);
-        assert_eq!(read(&d, "S").unwrap().limited, Some(lim), "a write that does not touch it keeps it");
+        assert_eq!(read(&d, "S").unwrap().limited, Some(lim.clone()), "a write that does not touch it keeps it");
+        assert!(update_limited(&d, "S", &lim, |l| l.next_try = Some(7)));
+        let p = read(&d, "S").unwrap();
+        assert_eq!((p.at, p.limited.as_ref().and_then(|l| l.next_try)), (3, Some(7)), "the pane's own time is kept");
+        let other = Limited { at: 1, ..lim.clone() };
+        assert!(!update_limited(&d, "S", &other, |l| l.tries = 9), "another stop than the one seen: no write");
         update(&d, "W", "S", "s", 4, |p| { p.state = "working".into(); p.limited = None; });
         assert!(read(&d, "S").unwrap().limited.is_none() && !hold_path(&d, "S").exists());
         assert!(Limited::from_json(&json!({"session": "s"})).is_none(), "no error, no limit");

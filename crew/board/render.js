@@ -56,16 +56,15 @@ function __boardRender(d) {
     if (ms > now.getTime() && ms - now.getTime() < 6 * 864e5) return DAYS[d.getDay()] + " " + hm;
     return MONTHS[d.getMonth()] + " " + d.getDate() + " " + hm;
   }
-  // Usage billing retries a rate_limit three times, then gives up.
-  var TRIES = 3;
   // When an armed row resumes: its next try on usage billing, else the reset.
   function dueOf(l) { return l.usage && l.next_try ? l.next_try : l.resets_at; }
   function stopText(a) {
     var l = a.limited;
+    // The app tried and stopped (the resume watcher's gave_up): it waits for you.
+    if (a.armed && l.gave_up) return "stopped: " + l.label + " \u00b7 didn\u2019t resume: " + l.gave_up;
     if (l.error === "billing_error") return "stopped: spend limit reached" + (l.resets_at ? " \u00b7 resets " + clockOf(l.resets_at) : "");
     if (l.usage && !l.window) {
       if (!a.armed) return "stopped: rate limited";
-      if (l.tries >= TRIES) return "stopped: rate limited \u00b7 gave up after " + TRIES + " tries";
       return "stopped: rate limited" + (l.next_try ? " \u00b7 next try " + clockOf(l.next_try) : " \u00b7 retries in a few minutes");
     }
     return "stopped: " + l.label + (l.resets_at ? " \u00b7 resets " + clockOf(l.resets_at) : " \u00b7 reset time unknown");
@@ -87,8 +86,8 @@ function __boardRender(d) {
     var l = a.limited, due = dueOf(l), text, tip;
     if (l.error === "billing_error" && !l.resets_at) {
       text = "armed \u00b7 a spend limit is not retried"; tip = "Typing continue would only fail again";
-    } else if (l.usage && !l.window && l.tries >= TRIES) {
-      text = "armed \u00b7 gave up"; tip = "Three tries did not get through: it waits for you";
+    } else if (l.gave_up) {
+      text = "armed \u00b7 gave up"; tip = "It did not resume (" + l.gave_up + "): it waits for you";
     } else if (due) {
       text = "resumes " + clockOf(due); tip = "The app types continue here then, once it has checked the screen";
     } else {

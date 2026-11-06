@@ -2324,8 +2324,9 @@ if (crewImpl.isRust("crew-board")) {
   checks.push(["limits: on usage billing an armed rate limit names its next try",
     /stopped: rate limited \u00b7 next try 11:06pm/.test(said(lim({ ...u, next_try: at(23, 6), tries: 1 }), true)) &&
     /resumes 11:06pm/.test(els.rows.innerHTML)]);
-  checks.push(["limits: ...and after three tries says it gave up",
-    /gave up after 3 tries/.test(said(lim({ ...u, tries: 3 }), true)) && /armed \u00b7 gave up/.test(els.rows.innerHTML)]);
+  checks.push(["limits: ...and once the app gave up, says why and that it waits for you",
+    /stopped: rate limited \u00b7 didn\u2019t resume: three tries did not get through/.test(
+      said(lim({ ...u, tries: 3, gave_up: "three tries did not get through" }), true)) && /armed \u00b7 gave up/.test(els.rows.innerHTML)]);
   checks.push(["limits: unarmed, it says only that it is rate limited",
     />stopped: rate limited</.test(said(lim(u), false))]);
   checks.push(["limits: a spend limit says so, and armed it is never retried",

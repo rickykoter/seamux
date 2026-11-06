@@ -1,4 +1,5 @@
-//! Worktrees armed to resume when a usage limit resets (ADR 0070).
+//! Worktrees armed to resume when a usage limit resets (the ADR "Arming is
+//! per worktree, kept in ~/.claude/crew/resume.json").
 //!
 //! ```text
 //! ~/.claude/crew/resume.json   (CREW_DURABLE_DIR overrides ~/.claude/crew)
@@ -55,7 +56,6 @@ impl Store {
     }
 
     /// Whether the worktree at `root` is armed (the resume watcher asks).
-    #[allow(dead_code)]
     pub fn armed(&self, root: &str) -> bool {
         !root.is_empty() && self.load().iter().any(|e| e.path == root)
     }

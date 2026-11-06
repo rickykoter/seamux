@@ -642,7 +642,7 @@ fn limit_of<'a>(files: &'a [crew_core::status::Pane], ws: &str) -> Option<&'a cr
 }
 
 /// Each row whose workspace a limit stopped gets `limited` ({error, window,
-/// label, resets_at, next_try, tries, usage}) and `armed`; with `any_armed`
+/// label, resets_at, next_try, tries, usage, gave_up}) and `armed`; with `any_armed`
 /// (resume.json names a worktree) every row with a cwd gets `armed`, which
 /// the ⋯ menu labels itself from. An unarmed stopped row is
 /// lifted to attend, its jump first, and the rows re-sorted by tier with
@@ -673,7 +673,8 @@ pub fn mark_limits(rows: Vec<Value>, quiet: Vec<Value>, files: &[crew_core::stat
         };
         let Some(o) = r.as_object_mut() else { return };
         o.insert("limited".into(), json!({"error": l.error, "window": l.window, "label": label, "resets_at": l.resets_at,
-                                          "next_try": l.next_try, "tries": l.tries, "usage": usage}));
+                                          "next_try": l.next_try, "tries": l.tries, "usage": usage,
+                                          "gave_up": l.gave_up}));
         o.insert("armed".into(), json!(on));
         if !on && o.get("kind").and_then(Value::as_str) != Some("attend") {
             o.insert("kind".into(), json!("attend"));
@@ -1115,7 +1116,7 @@ mod tests {
     fn stopped(ws: &str, surface: &str, window: Option<&str>) -> crew_core::status::Pane {
         let mut p = file(ws, surface, "idle", 5);
         p.limited = Some(crew_core::status::Limited { error: "rate_limit".into(), session: "s".into(), at: 5,
-            window: window.map(String::from), resets_at: Some(9_000_000), tries: 0, next_try: None });
+            window: window.map(String::from), resets_at: Some(9_000_000), tries: 0, next_try: None, gave_up: None });
         p
     }
 

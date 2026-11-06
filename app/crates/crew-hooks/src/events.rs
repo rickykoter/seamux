@@ -691,6 +691,7 @@ fn stopfail(h: &mut Hook) {
         resets_at: resets.map(|r| r * 1000),
         tries: 0,
         next_try: None,
+        gave_up: None,
     };
     let (before, after, _pane) = status::update(&h.state, &h.ws, &surface(), &sid, now, |p| {
         p.state = "idle".into();
