@@ -83,7 +83,7 @@ pub fn repos(s: &Settings) -> Vec<Repo> {
     paths.into_iter().map(|p| Repo { name: name_of(&p), base: default_base(&p), path: p }).collect()
 }
 
-fn name_of(p: &Path) -> String {
+pub fn name_of(p: &Path) -> String {
     p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
@@ -220,13 +220,20 @@ pub fn command(s: &Settings, p: &Plan, r: &Request) -> String {
     if r.sandbox.is_some() {
         return format!("{} attach {}", sh_quote(&s.bin.join("crew-sandbox").to_string_lossy()), sh_quote(&p.path.to_string_lossy()));
     }
+    let name = r.remote.unwrap_or(s.remote).then(|| format!("{}/{}", name_of(&p.repo), p.branch));
+    claude_command(name.as_deref(), r.prompt.as_deref())
+}
+
+/// `claude`, named `remote` for Remote Control when given, opening with
+/// `prompt` when it has any text.
+pub fn claude_command(remote: Option<&str>, prompt: Option<&str>) -> String {
     let mut cmd = String::from("claude");
-    if r.remote.unwrap_or(s.remote) {
+    if let Some(name) = remote {
         // An optional-value flag: the name is always given, so the prompt
         // after it is never taken for the name.
-        cmd.push_str(&format!(" --remote-control {}", sh_quote(&format!("{}/{}", name_of(&p.repo), p.branch))));
+        cmd.push_str(&format!(" --remote-control {}", sh_quote(name)));
     }
-    if let Some(text) = r.prompt.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+    if let Some(text) = prompt.map(str::trim).filter(|t| !t.is_empty()) {
         // `--` ends the options: a prompt that starts with `-` stays a prompt.
         cmd.push_str(&format!(" -- {}", sh_quote(text)));
     }
