@@ -9,5 +9,6 @@
     "isolatedModules": true,
     "skipLibCheck": true
   },
-  "include": ["ui", "vite.config.ts"]
+  "include": ["ui", "vite.config.ts"],
+  "exclude": ["ui/*_probe.ts"]
 }

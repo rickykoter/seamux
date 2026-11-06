@@ -375,6 +375,9 @@ pub struct ViewsFrame {
     /// (crew-board's judgments::priority_for): ⌘. and search order by it.
     /// A workspace with nothing known is left out.
     pub priority: std::collections::BTreeMap<String, f64>,
+    /// Each live workspace's branch, for the session search (tuck::branch_of,
+    /// cached): a tile carries none.
+    pub branches: std::collections::BTreeMap<String, String>,
     /// What could not be read this time, for the page to say.
     pub problems: Vec<String>,
 }
@@ -912,7 +915,23 @@ impl Feed {
         let history = recent.iter().filter(|e| e.at >= start).map(Change::from).collect();
         let (tucked, levels) = self.tucks(tiles, &decisions, &recent, &mut problems);
         let priority = priorities(tiles, &crew_board::judgments::fresh_map(Some(now_ms as f64 / 1000.0), None), now_ms);
-        ViewsFrame { decisions, wake, history, plans, reviews, tucked, families: fams, pages, levels, priority, problems }
+        // Each live workspace's branch, for search: from its pinned worktree
+        // (any tile's root) where it has one, else its first tile's cwd. A
+        // pane that wandered off the pin does not name the workspace's branch.
+        let mut branches = std::collections::BTreeMap::new();
+        let mut seen = std::collections::HashSet::new();
+        for t in tiles.iter().filter(|t| !t.workspace.is_empty()) {
+            if !seen.insert(t.workspace.clone()) {
+                continue;
+            }
+            let pinned = tiles.iter().find(|x| x.workspace == t.workspace && !x.root.is_empty()).map(|x| x.root.as_str());
+            let dir = pinned.unwrap_or(t.cwd.as_str());
+            let br = if dir.is_empty() { String::new() } else { crate::tuck::branch_of(dir) };
+            if !br.is_empty() {
+                branches.insert(t.workspace.clone(), br);
+            }
+        }
+        ViewsFrame { decisions, wake, history, plans, reviews, tucked, families: fams, pages, levels, priority, branches, problems }
     }
 
     /// Each live workspace's open pages: its plan (the review surface while
