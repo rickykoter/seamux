@@ -206,10 +206,12 @@ impl Feed {
     }
 
     fn watch_plans(&self) {
-        // Plan state files, the app's tucked.json (a tuck shows at once), and
-        // on the tmux backend's side the pane-status files and the registry:
-        // a Claude that asks there is no cmux event, only a pane file write.
-        let print = || (plan_fingerprint(), crate::tucked::stamp(), pane_fingerprint());
+        // Plan state files, the app's tucked.json (a tuck shows at once) and
+        // resume.json (arming shows at once), and on the tmux backend's side
+        // the pane-status files and the registry: a Claude that asks there is
+        // no cmux event, only a pane file write.
+        let resume = || std::fs::metadata(crate::state::resume_file()).and_then(|m| m.modified()).ok();
+        let print = || (plan_fingerprint(), crate::tucked::stamp(), resume(), pane_fingerprint());
         let mut last = print();
         loop {
             std::thread::sleep(Duration::from_millis(250));

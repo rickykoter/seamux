@@ -1586,6 +1586,19 @@ if (live && Array.isArray(live.rows)) {
   const ps = posted.filter(([x]) => x.crew === "select").pop();
   checks.push(["intent: framed, a pane row asks the app to show its workspace with that pane up, not cmux",
     fetched.length === nf2 && !!ps && ps[0].ws === "WS-1" && ps[0].pane === "S-PANE-B" && ps[1] === APP, JSON.stringify(ps)]);
+  // The armed chip's ×, and the ⋯ menu's Resume at reset: the app keeps resume.json.
+  const armedEl = mk("span", { class: "chip sig armed", "data-a": "resume", "data-x": "off" }, [], "resumes 3:04pm \u00d7");
+  const armItem = mk("span", { class: "tki", "data-a": "resume", "data-x": "on" }, [], "Resume at reset");
+  row.children[1].appendChild(armedEl);
+  row.children[1].appendChild(armItem);
+  const nf3 = fetched.length;
+  click(armedEl);
+  const off = posted.filter(([x]) => x.crew === "resume").pop();
+  click(armItem);
+  const on = posted.filter(([x]) => x.crew === "resume").pop();
+  checks.push(["intent: framed, the armed chip disarms and the menu item arms, in the app, never through cmux",
+    fetched.length === nf3 && !!off && off[0].on === false && off[0].ws === "WS-1" && off[0].name === "shipped-one" &&
+    off[1] === APP && !!on && on[0].on === true, JSON.stringify([off, on])]);
   // A failed click says why: the detail on the element and in a toast; and a
   // server that does not answer at all is said to be not reachable.
   const settle = () => new Promise((r) => setImmediate(r));
@@ -2328,6 +2341,77 @@ if (crewImpl.isRust("crew-board")) {
   const h = els.rows.innerHTML, tuckAt = h.indexOf('<details class="tucked"');
   checks.push(["tuck: a tucked family member stays in its family; a tucked loner still leaves",
     h.indexOf('data-id="kidT"') > 0 && h.indexOf('data-id="kidT"') < tuckAt && /tucked · 1</.test(h) && h.indexOf('data-id="solo"') > tuckAt]);
+}
+
+// ---- limit stops (the Rust board's limited and armed) ----------------------
+// A turn a usage limit stopped: an amber pill naming the limit, the said line
+// saying when it can go again, and on an armed row a teal chip whose × disarms.
+{
+  const at = (h, m) => { const d = new Date(); d.setHours(h, m, 0, 0); return d.getTime(); };
+  const reset = at(23, 4), lim = (extra) => ({ error: "rate_limit", window: "five_hour", label: "5h limit",
+    resets_at: reset, next_try: null, tries: 0, usage: false, ...extra });
+  const R = (id, extra) => ({ id, name: id, kind: "attend", badge: "b", said: "Working on it", chips: ["jump"], frac: null,
+    meta: "", cwd: "/w/" + id, ...extra });
+  const rowsL = [
+    R("un", { limited: lim(), armed: false }),
+    R("ar", { kind: "quiet", badge: "idle", said: "", limited: lim({ window: "seven_day", label: "weekly limit" }), armed: true }),
+    R("ok", { kind: "running" }),
+  ];
+  render({ rows: rowsL, quiet: "" });
+  const h = els.rows.innerHTML;
+  const cut = (id) => { const i = h.indexOf('data-id="' + id + '"'), j = h.indexOf('<div class="row ', i + 1); return h.slice(i, j > 0 ? j : undefined); };
+  const un = cut("un"), ar = cut("ar");
+  checks.push(["limits: a stopped row wears an amber pill naming the limit",
+    /class="badge lim"[^>]*>5h limit</.test(un) && /class="badge lim"[^>]*>weekly limit</.test(ar), un.slice(0, 600)]);
+  checks.push(["limits: its said line says it stopped and when it resets, in place of what it said",
+    /class="said"><span class="lim"[^>]*>stopped: 5h limit \u00b7 resets 11:04pm</.test(un) && !/Working on it/.test(un), un]);
+  checks.push(["limits: an unarmed row has no armed chip; an armed quiet row has it, drawn clock and all",
+    !/chip sig armed/.test(un) && /class="chip sig armed" data-a="resume" data-x="off"[^>]*><svg[^]*?resumes 11:04pm \u00d7</.test(ar), ar]);
+  checks.push(["limits: unframed (cmux's Dock), no ⋯ menu offers to arm", !/data-a="tk"/.test(h)]);
+  sandbox.parent = { postMessage() {} };
+  render({ rows: rowsL, quiet: "" });
+  const hf = els.rows.innerHTML;
+  delete sandbox.parent;
+  checks.push(["limits: framed, the ⋯ menu offers Resume at reset, or on an armed row its undoing",
+    /data-id="un"[^]*?data-a="resume" data-x="on"[^>]*>Resume at reset</.test(hf) &&
+    /data-id="ar"[^]*?data-a="resume" data-x="off"[^>]*>Don\u2019t resume at reset</.test(hf), hf.slice(0, 1500)]);
+  // Usage billing: the next try, the give-up, and a spend limit that is never retried.
+  const said = (l, armed) => { render({ rows: [R("u", { limited: l, armed })], quiet: "" }); return els.rows.innerHTML; };
+  const u = { window: null, label: "rate limited", usage: true, resets_at: null };
+  checks.push(["limits: on usage billing an armed rate limit names its next try",
+    /stopped: rate limited \u00b7 next try 11:06pm/.test(said(lim({ ...u, next_try: at(23, 6), tries: 1 }), true)) &&
+    /resumes 11:06pm/.test(els.rows.innerHTML)]);
+  checks.push(["limits: ...and once the app gave up, says why and that it waits for you",
+    /stopped: rate limited \u00b7 didn\u2019t resume: three tries did not get through/.test(
+      said(lim({ ...u, tries: 3, gave_up: "three tries did not get through" }), true)) && /armed \u00b7 gave up/.test(els.rows.innerHTML)]);
+  checks.push(["limits: unarmed, it says only that it is rate limited",
+    />stopped: rate limited</.test(said(lim(u), false))]);
+  checks.push(["limits: a spend limit says so, and armed it is never retried",
+    /stopped: spend limit reached</.test(said(lim({ ...u, error: "billing_error", label: "spend limit" }), true)) &&
+    /a spend limit is not retried/.test(els.rows.innerHTML)]);
+  checks.push(["limits: a subscription stop with no reset time says it is unknown",
+    /stopped: usage limit \u00b7 reset time unknown/.test(said(lim({ window: null, label: "usage limit", resets_at: null }), false))]);
+  // The cat: every live session stopped on a limit, and it naps till the soonest reset.
+  render({ rows: [R("a1", { limited: lim() }), R("a2", { kind: "quiet", limited: lim({ resets_at: at(23, 30) }), armed: true })], quiet: "" });
+  checks.push(["limits: with every live session stopped, the cat is out of treats till the soonest reset",
+    els.says.textContent === "out of treats till 11:04pm", els.says.textContent]);
+  render({ rows: rowsL, quiet: "" });
+  checks.push(["limits: ...but not while another one works", !/out of treats/.test(els.says.textContent), els.says.textContent]);
+}
+// The Rust board lifts an unarmed stopped row to attend, from crew's pane files.
+if (crewImpl.isRust("crew-board")) {
+  const W = (id) => ({ id, title: id, cwd: "/w/" + id, desc: "", running: false, branch: "none", pr: "none", dirty: false });
+  const t = (ws, s) => ({ kind: "terminal", lifecycle: "running", cwd: "/w/" + ws.toLowerCase(), label: "Claude Code",
+    agents: [{ kind: "claude", state: "idle" }], projections: [{ workspace_id: ws, panel_id: s }] });
+  const st = stateFrom({ plans: {}, workspaces: [W("W-Q"), W("W-S")],
+    current: { items: [t("W-Q", "S-Q"), t("W-S", "S-S")] },
+    pane_files: [{ ws: "W-Q", surface: "S-Q", state: "idle", at: 1000 },
+      { ws: "W-S", surface: "S-S", state: "idle", at: 1000, limited: { error: "rate_limit", session: "s", at: 1000,
+        window: "five_hour", resets_at: 9e12, tries: 0, next_try: null } }] });
+  const r = Object.fromEntries(st.rows.map((x) => [x.id, x]));
+  checks.push(["limits (rust): an unarmed stopped row is lifted to attend, its jump first; the other stays quiet",
+    r["W-S"]?.kind === "attend" && r["W-S"]?.chips?.[0] === "jump" && r["W-S"]?.limited?.label === "5h limit" &&
+    r["W-S"]?.armed === false && r["W-Q"]?.kind === "quiet" && st.rows[0].id === "W-S", JSON.stringify(st.rows.map((x) => [x.id, x.kind]))]);
 }
 
 // ---- the archive chip: on a quiet row, never on a working one -------------

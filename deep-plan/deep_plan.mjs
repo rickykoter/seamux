@@ -3071,6 +3071,13 @@ async function grade(slug, answers) {
   }
   writeState(st); rerenderWorking(slug);
   say("alignment check passed — phase: implementing. `deep-plan go " + slug + " 1` opens the first increment.");
+  // A parent's pass is when its family starts work: each workstream gets its
+  // workspace and session now (family open), unless DEEP_PLAN_FAMILY_OPEN=0.
+  const fam = readIndex(slug);
+  if (fam && process.env.DEEP_PLAN_FAMILY_OPEN !== "0") {
+    const lines = familyOpen(fam);
+    if (lines.length) { say(`family ${slug}: a session for each workstream (\`deep-plan family open ${slug}\` again any time)`); for (const l of lines) say(l); }
+  }
 }
 
 // ---------------------------------------------------------------- tracker
@@ -5627,8 +5634,49 @@ function verifyInit(root, opts) {
 
 // ---------------------------------------------------------------- family
 
+// The first prompt a workstream's new session opens with: what it is, and
+// how it waits for its quiz and its go without anyone typing into it.
+function childPrompt(parent, slug) {
+  return `This worktree is workstream ${slug} of deep-plan family ${parent}. Run \`deep-plan status ${slug}\`. ` +
+    `If its alignment check has not passed, show its review page with \`deep-plan page ${slug} --review\` and wait for the person's answers. ` +
+    `Once it passes, wait for the go with \`deep-plan await-go ${slug}\` as a background command, and build each increment it authorizes.`;
+}
+
+// A workspace and a Claude session for every child that has none, through
+// `seamux workspace-open --if-missing`. Only where seamux can open one (cmux,
+// or the seamux app's tmux); anywhere else it says where to start each by
+// hand. One line per child; never refuses a grade or a render.
+function familyOpen(idx) {
+  const host = detectHost().host;
+  const kids = idx.members.filter(m => m.role === "child");
+  if (!kids.length) return [];
+  if (host !== "cmux" && host !== "seamux")
+    return kids.map(m => `  ${m.slug}: start a Claude session in ${m.root} (host ${host} cannot open one) and tell it: ${childPrompt(idx.parent, m.slug)}`);
+  const bin = process.env.SEAMUX_BIN || path.join(os.homedir(), ".local", "bin", "seamux");
+  if (!fs.existsSync(bin)) return [`  no seamux at ${bin}: start a session in each workstream's worktree by hand (${kids.map(m => m.root).join(", ")})`];
+  return kids.map(m => {
+    if (!m.root || !fs.existsSync(m.root)) return `  ${m.slug}: its worktree ${m.root || "(none recorded)"} is gone`;
+    const r = spawnSync(bin, ["workspace-open", m.root, "--if-missing", "--json", "--prompt", childPrompt(idx.parent, m.slug)],
+      { encoding: "utf8", timeout: 60000 });
+    let out = null;
+    try { out = JSON.parse((r.stdout || "").trim().split("\n").pop()); } catch { /* an older seamux */ }
+    if (!out) return `  ${m.slug}: this seamux cannot open workspaces (${(r.stderr || "").trim().split("\n").pop() || "no workspace-open"}); update it with ./install.sh --app, or start a session in ${m.root}`;
+    if (out.state === "opened") return `  ${m.slug}: opened ${out.workspace} in ${m.root}, with its session`;
+    if (out.state === "already") return `  ${m.slug}: ${out.workspace} already works in ${m.root}`;
+    return `  ${m.slug}: could not open a workspace in ${m.root}: ${out.error || "unknown error"}`;
+  });
+}
+
 function familyCmd(args, flags) {
   const [sub, ...more] = args;
+  if (sub === "open") {
+    const slug = more[0] || (memberAt(process.cwd()) || {}).idx?.parent || die("family open <parent> (no family member's root holds the cwd)");
+    const idx = familyOf(slug) || die(`${slug} is in no family`);
+    const lines = familyOpen(idx);
+    say(`family ${idx.parent}: ${lines.length ? "a session for each workstream" : "no workstreams"}`);
+    for (const l of lines) say(l);
+    process.exit(lines.some(l => /: could not open |: this seamux cannot open |: its worktree .* is gone|^  no seamux at /.test(l)) ? 1 : 0);
+  }
   if (sub === "init") {
     const [parent, ...children] = more;
     if (!parent || !children.length) die("family init <parent-slug> <child-slug>...");
@@ -5729,7 +5777,7 @@ function familyCmd(args, flags) {
     for (const m of (familyOf(slug) || { members: [] }).members) rerenderWorking(m.slug, false);
     return;
   }
-  die("family init <parent> <child>... [--out F] | family check <parent> [--json] | family news [slug] | family status [slug] [--json]\n" +
+  die("family init <parent> <child>... [--out F] | family open [parent] | family check <parent> [--json] | family news [slug] | family status [slug] [--json]\n" +
     "       family take-back|give-back <child> [--by human] | family hold <child> \"<reason>\" | family unhold <child>");
 }
 
@@ -6297,6 +6345,9 @@ switch (cmd) {
   family init <parent> <child>... [--out F]   draft a parent spec from existing plans:
                                               workstreams, suggested globs, their
                                               contracts, and the overlap report
+  family open [parent]                        a workspace and Claude session for each
+                                              workstream that has none (seamux or cmux;
+                                              a parent's passing grade runs it too)
   family check <parent> [--json]              what each member's worktree touched that
                                               a sibling claims (exit 1 when any)
   family status [slug] [--json]               every member's phase and progress, what

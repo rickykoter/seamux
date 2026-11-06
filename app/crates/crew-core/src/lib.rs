@@ -16,6 +16,7 @@ pub mod families;
 pub mod history;
 pub mod home;
 pub mod ident;
+pub mod limits;
 pub mod native;
 pub mod pricing;
 pub mod published;
@@ -24,6 +25,7 @@ pub mod pyjson;
 pub mod status;
 pub mod typesafe;
 pub mod upgrade;
+pub mod workspace_open;
 pub mod workspaces;
 pub mod worktree;
 
@@ -38,5 +40,6 @@ pub const TOOLS: &[(&str, fn(&[String]) -> i32)] = &[
     ("families", families::main),
     ("pricing", pricing::main),
     ("typesafe", typesafe::main),
+    ("workspace-open", workspace_open::main),
     ("workspaces", workspaces::main),
 ];

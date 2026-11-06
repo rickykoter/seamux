@@ -112,6 +112,36 @@ export async function setLevel(ws: string, name: string, level: Level | "none", 
   }
 }
 
+/** The live workspaces whose worktree is armed to resume at a limit's
+ *  reset (resume_app.rs), as last heard; the menu labels itself from it. */
+const armed = new Set<string>();
+
+/** Hear the armed list again (after a change, and once at load). */
+export async function refreshArmed(): Promise<void> {
+  try {
+    const ws = await invoke<string[]>("resume_list");
+    armed.clear();
+    for (const w of ws) armed.add(w);
+  } catch {
+    // An app without the command, or no frame yet: the menu offers to arm.
+  }
+}
+void refreshArmed();
+
+/** Arm `ws`'s worktree to type continue when a usage limit resets, or stop
+ *  that, with a note that can undo it. */
+export async function setResume(ws: string, name: string, on: boolean): Promise<void> {
+  try {
+    await invoke("resume_set", { workspace: ws, on });
+    if (on) armed.add(ws);
+    else armed.delete(ws);
+    void refreshArmed();
+    say(on ? `Resumes at the limit's reset: ${name}` : `Won't resume at reset: ${name}`, { label: "Undo", run: () => void setResume(ws, name, !on) });
+  } catch (e) {
+    say(String(e), undefined, true);
+  }
+}
+
 /** The m / t keys: toggle mute or tuck on a workspace. */
 export function toggle(ws: string, name: string, key: "m" | "t", was: Level | undefined): void {
   const want: "mute" | "tuck" = key === "m" ? "mute" : "tuck";
@@ -182,10 +212,14 @@ export function menu(ws: string, name: string, level: Level | undefined): HTMLEl
   const snooze: MenuItem[] = level === "snooze"
     ? [{ label: "Wake now", run: to("none") }]
     : SNOOZES.map((s) => ({ label: s.label, run: () => void setLevel(ws, name, "snooze", level, snoozeUntil(s.key, new Date())) }));
+  const on = armed.has(ws);
   return dotsMenu(`${name}: mute, snooze or tuck away`, [
     level === "mute" ? { label: "Unmute", hint: "m", run: to("none") } : { label: "Mute", hint: "m", run: to("mute") },
     ...snooze,
     level === "tuck" ? { label: "Bring back", hint: "t", run: to("none") } : { label: "Tuck away", hint: "t", run: to("tuck") },
+    on
+      ? { label: "Don\u2019t resume at reset", title: "Stop typing continue here when a usage limit resets", run: () => void setResume(ws, name, false) }
+      : { label: "Resume at reset", title: "When a usage limit stops this worktree, type continue once it resets", run: () => void setResume(ws, name, true) },
   ]);
 }
 

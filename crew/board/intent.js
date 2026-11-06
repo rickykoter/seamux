@@ -16,6 +16,8 @@
 //   sandbox chip         crew:sandbox-up / -down           -> a=sandbox-up|-down
 //   feed allow / deny    crew:feed-allow / crew:feed-deny  -> a=feed-allow|-deny
 //   the sync clock       crew:sync-now                     -> a=sync
+//   resume at reset      the framing app's resume_set      -> a=resume&x=on|off
+//                        (the ⋯ menu item, and the armed chip's disarm)
 //
 // One verb never leaves the page: a=fold, on a card's caret. It folds or
 // unfolds the card in place and sends nothing. Where a click lands decides
@@ -451,6 +453,16 @@ function __boardIntent(cfg) {
             msg.until = snoozeUntil(t.x.slice(7), new Date());
           }
           tell(msg);
+        }
+        return;
+      }
+      // Resume at reset (the menu item) or stop it (the menu item, the armed
+      // chip): the app keeps resume.json. Unframed, nothing writes it.
+      if (t.a === "resume") {
+        shutMenu();
+        if (framed()) {
+          var rnm = row.querySelector(".nm");
+          tell({ crew: "resume", ws: rid, on: t.x === "on", name: rnm ? rnm.textContent : rid });
         }
         return;
       }
