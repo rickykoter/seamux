@@ -38,10 +38,11 @@ pub fn mark(rows: &mut [Value], now_ms: u64, hours: f64, panes: impl Fn(&str) ->
     }
 }
 
-/// The live pane files, laid over `rows` now.
-pub fn mark_live(rows: &mut [Value]) {
-    let dir = crate::state::state_dir();
-    mark(rows, crew_core::history::now_ms(), hours(), |ws| crew_core::status::panes(&dir, ws));
+/// `files` (the pane files state.rs read, dead panes already ended), laid
+/// over `rows` now.
+pub fn mark_live(rows: &mut [Value], files: &[crew_core::status::Pane]) {
+    let of = |ws: &str| files.iter().filter(|p| p.ws.eq_ignore_ascii_case(ws)).cloned().collect();
+    mark(rows, crew_core::history::now_ms(), hours(), of);
 }
 
 /// A row put away (snoozed) or finished (settled): it stays off the news.

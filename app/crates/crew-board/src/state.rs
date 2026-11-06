@@ -700,7 +700,9 @@ pub fn build(o: &Opts) -> Value {
     // idle (fixtures stay as given). A row that needs you breaks its snooze.
     if o.fixture.is_none() {
         crate::tucked::mark_live(&mut all);
-        crate::settle::mark_live(&mut all);
+        if let Some((_, files)) = &panes {
+            crate::settle::mark_live(&mut all, files);
+        }
     }
     crate::tucked::break_snoozes(&mut all);
     // Each workspace's panes: what each is doing, which owns the plan,
