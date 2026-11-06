@@ -1,4 +1,4 @@
-# 0071. Reset times come from the status line's rate_limits, cached account-wide
+# 0073. Reset times come from the status line's rate_limits, cached account-wide
 
 Date: 2026-11-06
 

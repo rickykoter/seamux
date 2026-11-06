@@ -1,4 +1,4 @@
-# 0071. A turn opened from the Wake is a view-only lookout review, as a commit is
+# 0076. A turn opened from the Wake is a view-only lookout review, as a commit is
 
 Date: 2026-11-06
 

@@ -281,6 +281,32 @@ line to paste. Inside a [plan family](deep-plan/README.md#families-parallel-work
 each session also hears what changed at its next prompt. More in
 [the board README](crew/board/README.md#the-news-footer).
 
+#### Snooze, settle and resume at reset
+
+Three ways a row gets out of your way until it needs you. All three live in
+the app: the board's ⋯ menu offers them only when the app frames it.
+
+- **Snooze** a row for 1 hour, 3 hours, until tomorrow 9am or until Monday
+  9am. It moves to a collapsed "snoozed" shelf that says when each row
+  wakes. A question, a shut gate or a review brings it back early. Red CI
+  or a conflict waits until the snooze ends.
+- **Settle** needs no click. A row whose PR merged, with no agent working
+  and no pane activity for 2 hours, moves to a "settled" shelf. Any new
+  activity brings it back. `"settleHours"` in
+  `~/.config/cmux/crew-local/config.json` changes the wait.
+- **Resume at reset.** When a usage limit stops a session, its row says
+  which limit and when it resets, and you get a notification. Arm the
+  worktree from the ⋯ menu, and when the limit resets the app types
+  `continue` into that session. It reads the screen first and refuses if a
+  turn is running or a question is open, types once, and checks that the
+  turn started. On usage billing an armed session that got a rate limit is
+  retried at 2, 5 and 15 minutes; a spend cap is never retried. An unarmed
+  stopped row moves to needs-you. `"resumePrompt"` in the same config file
+  changes the text. Reset times come from crew's status line, so with
+  another status line a stop has no reset time and nothing is typed.
+
+Snoozed and settled rows stay out of the tallies and the news footer.
+
 #### Usage
 
 Tokens against your 5-hour and weekly budgets, a 21-day history, and dollars
@@ -352,6 +378,11 @@ deep-plan opens also has a Map view (`m`), with the plan's End state map
 held against the diff: files the plan named that the diff never touched,
 and files it touched that the plan never named, are flagged, and each card
 carries its open findings.
+Every turn is kept too. A hook snapshots the working tree when you send a
+prompt and when the turn ends, under `refs/seamux/turns/` and never on a
+branch, so `lookout open --turn last` reviews just what the last turn did,
+and `lookout open --since-prompt` everything since your last prompt. Each
+turn that changed files is also a row in the Wake.
 [lookout's README](lookout/README.md).
 
 **lookout up close** (77 s). How lookout scores risk before any reviewer:

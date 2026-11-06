@@ -1,4 +1,4 @@
-# 0070. Each turn is logged to plans/turns/<session>.jsonl beside lookout's reviews
+# 0075. Each turn is logged to plans/turns/<session>.jsonl beside lookout's reviews
 
 Date: 2026-11-06
 

@@ -1,4 +1,4 @@
-# 0069. Typing continue unattended follows ADR 0003's read, type once, confirm rule
+# 0071. Typing continue unattended follows ADR 0003's read, type once, confirm rule
 
 Date: 2026-11-06
 

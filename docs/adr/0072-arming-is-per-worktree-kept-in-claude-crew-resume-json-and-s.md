@@ -1,4 +1,4 @@
-# 0070. Arming is per worktree, kept in ~/.claude/crew/resume.json, and stays until you disarm it
+# 0072. Arming is per worktree, kept in ~/.claude/crew/resume.json, and stays until you disarm it
 
 Date: 2026-11-06
 
