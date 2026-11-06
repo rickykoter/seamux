@@ -52,7 +52,12 @@ export type Inputs = {
   priority: Record<string, number>;
   /** Workspace id -> branch (views:frame branches). */
   branches: Record<string, string>;
+  /** Workspace id -> PR and CI as crew-sync last published them (views:frame pr); absent reads as none. */
+  pr?: Record<string, Pr>;
 };
+
+/** views.rs PrBrief: `n` is "" when only CI is known. */
+export type Pr = { n: string; url: string; state: string; ci: string; review: string };
 
 export type Field = "name" | "branch" | "topic" | "plan" | "ask" | "path";
 export const FIELDS: Field[] = ["name", "branch", "topic", "plan", "ask", "path"];
@@ -89,6 +94,8 @@ export type Row = {
   panes: Pane[];
   /** The plan family the workspace works in, null outside one. */
   family: Family | null;
+  /** Its PR and CI as last published, null with neither. */
+  pr: Pr | null;
 };
 
 export type Progress = {
@@ -166,7 +173,7 @@ export function rowsOf(i: Inputs): Row[] {
       topic: agents.map((t) => t.topic).filter(Boolean).join(" · "), plan: planOf(ws) || (lead.owner ?? ""),
       ask: askOf(ws), path: where, state: lead.agent ? lead.state : "shell",
       since: Math.max(...tiles.map((t) => t.since)), priority: i.priority[ws] ?? 0, lines: lead.lines, tuckPath: "",
-      progress: progressOf(ws), panes: panesOf(tiles), family: familyOf(ws),
+      progress: progressOf(ws), panes: panesOf(tiles), family: familyOf(ws), pr: i.pr?.[ws] ?? null,
     });
   }
   for (const t of i.tucked) {
@@ -179,7 +186,7 @@ export function rowsOf(i: Inputs): Row[] {
       plan: ws ? planOf(ws) : "", ask: ws ? askOf(ws) : "", path: t.path,
       state: t.waiting ? "needs_input" : lead?.agent ? lead.state : "idle",
       since: t.last, priority: ws ? i.priority[ws] ?? 0 : 0, lines: lead?.lines ?? [], tuckPath: t.path,
-      progress: ws ? progressOf(ws) : null, panes: panesOf(tiles), family: ws ? familyOf(ws) : null,
+      progress: ws ? progressOf(ws) : null, panes: panesOf(tiles), family: ws ? familyOf(ws) : null, pr: ws ? i.pr?.[ws] ?? null : null,
     });
   }
   return rows;

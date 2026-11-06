@@ -353,6 +353,39 @@ pub struct NowPage {
     pub root: String,
 }
 
+/// A workspace's pull request and CI, in brief. `n` is "" when only CI is known.
+#[derive(Clone, Debug, Serialize, PartialEq, Default)]
+pub struct PrBrief {
+    pub n: String,
+    pub url: String,
+    /// open, merged, closed or draft as published; "" when not known.
+    pub state: String,
+    /// The ci: token: pass, fail, run; "" with none.
+    pub ci: String,
+    /// The review: token: approved, changes; "" with none.
+    pub review: String,
+}
+
+/// Each live workspace's PR and CI from `published` (by upper-case id),
+/// keyed by the id as the tiles carry it.
+pub fn pr_briefs(tiles: &[Tile], published: &std::collections::BTreeMap<String, crew_core::published::Published>) -> std::collections::BTreeMap<String, PrBrief> {
+    let mut out = std::collections::BTreeMap::new();
+    for t in tiles.iter().filter(|t| !t.workspace.is_empty()) {
+        if out.contains_key(&t.workspace) {
+            continue;
+        }
+        let Some(p) = published.get(&t.workspace.to_ascii_uppercase()) else { continue };
+        let pr = p.pr.clone().unwrap_or_default();
+        // A draft says so in its pr: token where the PR state does not.
+        let state = if p.token("pr:") == "draft" && !pr.n.is_empty() && (pr.state == "open" || pr.state.is_empty()) { "draft".to_string() } else { pr.state };
+        let b = PrBrief { n: pr.n, url: pr.url, state, ci: p.token("ci:"), review: p.token("review:") };
+        if !b.n.is_empty() || !b.ci.is_empty() {
+            out.insert(t.workspace.clone(), b);
+        }
+    }
+    out
+}
+
 /// The `views:frame` payload.
 #[derive(Clone, Debug, Serialize, PartialEq, Default)]
 pub struct ViewsFrame {
@@ -378,6 +411,10 @@ pub struct ViewsFrame {
     /// Each live workspace's branch, for the session search (tuck::branch_of,
     /// cached): a tile carries none.
     pub branches: std::collections::BTreeMap<String, String>,
+    /// Each live workspace's pull request and CI, as crew-sync last
+    /// published them (crew_core::published): never a live call, so as
+    /// fresh as the last sync. A workspace with no PR and no CI is left out.
+    pub pr: std::collections::BTreeMap<String, PrBrief>,
     /// What could not be read this time, for the page to say.
     pub problems: Vec<String>,
 }
@@ -393,6 +430,8 @@ pub struct Inputs {
     pub tuck_file: PathBuf,
     /// crew-board's ask pages and their records.
     pub asks_dir: PathBuf,
+    /// The tmux backend's state dir, whose registry holds crew-sync's facts there.
+    pub tmux_dir: PathBuf,
     /// `deep-plan status --json`'s rows.
     pub plans: Box<dyn Fn() -> Result<Vec<Value>, String> + Send + Sync>,
     /// The Artifact Log's newest rows.
@@ -407,6 +446,7 @@ impl Inputs {
             history_dir: history::dir(),
             tuck_file: crate::tuck::Store::live().file,
             asks_dir: crew_board::ask::asks_dir(),
+            tmux_dir: crew_core::backend::tmux::state_dir(),
             plans: Box::new(plans_now),
             wake: Box::new(|n| crew_store::search("", None, None, n).map_err(|e| e.to_string())),
         }
@@ -769,6 +809,7 @@ pub struct Feed {
     reviews_dir: PathBuf,
     history_dir: PathBuf,
     asks_dir: PathBuf,
+    tmux_dir: PathBuf,
     tuck: crate::tuck::Store,
     reviews: Mutex<HashMap<PathBuf, (SystemTime, Option<ReviewSummary>)>>,
     plans: Slow<Vec<Value>>,
@@ -783,6 +824,7 @@ impl Feed {
             reviews_dir: inputs.reviews_dir,
             history_dir: inputs.history_dir,
             asks_dir: inputs.asks_dir,
+            tmux_dir: inputs.tmux_dir,
             tuck: crate::tuck::Store { file: inputs.tuck_file },
             reviews: Mutex::default(),
             plans: Slow::new(Arc::from(inputs.plans), PLANS_TTL),
@@ -931,7 +973,8 @@ impl Feed {
                 branches.insert(t.workspace.clone(), br);
             }
         }
-        ViewsFrame { decisions, wake, history, plans, reviews, tucked, families: fams, pages, levels, priority, branches, problems }
+        let pr = pr_briefs(tiles, &crew_core::published::all(&self.state_dir, &self.tmux_dir));
+        ViewsFrame { decisions, wake, history, plans, reviews, tucked, families: fams, pages, levels, priority, branches, pr, problems }
     }
 
     /// Each live workspace's open pages: its plan (the review surface while

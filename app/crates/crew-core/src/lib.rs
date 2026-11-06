@@ -18,6 +18,7 @@ pub mod home;
 pub mod ident;
 pub mod native;
 pub mod pricing;
+pub mod published;
 pub mod py;
 pub mod pyjson;
 pub mod status;

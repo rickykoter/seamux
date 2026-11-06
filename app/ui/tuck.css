@@ -142,3 +142,6 @@
 .search-p-who { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .search-p-doing { flex: none; color: var(--muted); }
 .search-p-pane.needs_input .search-p-doing { color: var(--accent); }
+.search-p-pr a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.search-p-ci.pass { color: var(--good); }
+.search-p-ci.fail { color: var(--bad); }

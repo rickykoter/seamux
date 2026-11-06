@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Decision } from "./decisions";
 import { catSvg } from "./panecat";
-import { FIELDS, rowsOf, search, type FamilyIn, type Field, type Hit, type Inputs, type PlanIn, type Row, type TileIn } from "./search";
+import { FIELDS, rowsOf, search, type FamilyIn, type Field, type Hit, type Inputs, type PlanIn, type Pr, type Row, type TileIn } from "./search";
 import { ago } from "./tiles";
 import { say, type TuckRow } from "./tuck";
 
@@ -48,7 +48,10 @@ function dot(r: Row): SVGSVGElement {
 
 const STATE_SAID: Record<string, string> = { needs_input: "waiting on you", working: "working", idle: "idle", ended: "ended", shell: "terminal" };
 
-type ViewsIn = { plans?: PlanIn[]; families?: FamilyIn[]; decisions?: Decision[]; tucked?: TuckRow[]; priority?: Record<string, number>; branches?: Record<string, string> };
+const CI_SAID: Record<string, string> = { pass: "passing", fail: "failing", run: "running" };
+const REVIEW_SAID: Record<string, string> = { approved: "approved", changes: "changes requested" };
+
+type ViewsIn = { plans?: PlanIn[]; families?: FamilyIn[]; decisions?: Decision[]; tucked?: TuckRow[]; priority?: Record<string, number>; branches?: Record<string, string>; pr?: Record<string, Pr> };
 
 /** Session search: every open session, tucked and muted ones below, ranked by
  *  match then priority (search.ts); a preview of the one selected beside the
@@ -146,7 +149,7 @@ export class Palette {
     const gates = (this.views.decisions ?? []).flatMap((d) => d.kind === "gate" ? [{ ws: d.ws, slug: d.slug, n: d.n, checks: d.checks }] : []);
     return {
       tiles: this.tiles, plans: this.views.plans ?? [], families: this.views.families ?? [], gates, asks, tucked: this.views.tucked ?? [],
-      priority: this.views.priority ?? {}, branches: this.views.branches ?? {},
+      priority: this.views.priority ?? {}, branches: this.views.branches ?? {}, pr: this.views.pr ?? {},
     };
   }
 
@@ -297,6 +300,7 @@ export class Palette {
       }
     } else line("plan", r.plan, "plan");
     if (r.family) bits.push(this.familyEl(r));
+    if (r.pr) bits.push(this.prEl(r.pr));
     line("about", r.topic, "topic");
     line("where", this.tilde(r.path), "path");
     if (r.ask) {
@@ -319,6 +323,30 @@ export class Palette {
     fill.style.width = `${Math.round((100 * Math.min(done, total)) / total)}%`;
     b.append(fill);
     return b;
+  }
+
+  /** The PR (a link that opens in the browser), its state, CI and review,
+   *  as crew-sync last published them. */
+  private prEl(pr: Pr): HTMLElement {
+    const p = el("p", "search-p-line search-p-pr");
+    p.append(el("span", "search-p-k", "PR"));
+    const v = el("span", "search-p-v");
+    if (pr.n && pr.url) {
+      const a = el("a", "", `#${pr.n}`);
+      a.href = pr.url;
+      a.title = "Open the pull request in the browser";
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        void invoke("open_url", { url: pr.url }).catch((err) => say(String(err), undefined, true));
+      });
+      v.append(a);
+    } else if (pr.n) v.append(document.createTextNode(`#${pr.n}`));
+    else v.append(document.createTextNode("none"));
+    if (pr.n && pr.state) v.append(document.createTextNode(` · ${pr.state}`));
+    if (pr.ci) v.append(document.createTextNode(" · CI "), el("span", `search-p-ci ${pr.ci}`, CI_SAID[pr.ci] ?? pr.ci));
+    if (pr.review) v.append(document.createTextNode(` · ${REVIEW_SAID[pr.review] ?? pr.review}`));
+    p.append(v);
+    return p;
   }
 
   /** The family: its parent, then each member with its progress, this one marked. */

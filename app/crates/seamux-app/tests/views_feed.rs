@@ -101,6 +101,7 @@ fn inputs(f: &Fixture, plans: serde_json::Value, wake: Vec<crew_store::Row>) -> 
         history_dir: f.p("history"),
         tuck_file: f.p("tucked.json"),
         asks_dir: f.p("asks"),
+        tmux_dir: f.p("tmux"),
         plans: Box::new(move || Ok(plans.as_array().cloned().unwrap_or_default())),
         wake: Box::new(move |n| Ok(wake.iter().take(n).cloned().collect())),
     }
@@ -591,4 +592,25 @@ fn an_asked_card_points_at_the_pane_that_was_asked() {
         _ => None,
     });
     assert_eq!(surf.as_deref(), Some(SURF_B), "not the workspace's first agent pane");
+}
+
+#[test]
+fn the_frame_carries_each_live_workspaces_pr_and_ci_as_last_published() {
+    let f = Fixture::new("pr");
+    fs::create_dir_all(f.p("tmux")).unwrap();
+    // The sidebar cache keys cmux's id in whatever case; the tile's is kept.
+    f.write("state/board-sidebar.json", &json!({
+        WS_A.to_ascii_lowercase(): {"at": 1, "row": {"desc": "ci:fail review:changes pr:draft", "pr": "12", "pr_state": "open", "pr_url": "https://x/12"}},
+        WS_GONE: {"at": 1, "row": {"desc": "ci:pass", "pr": "3"}},
+    }).to_string());
+    // A workspace only the tmux registry knows: CI, no PR.
+    f.write("tmux/workspaces.json", &json!({"workspaces": [{"id": WS_B, "description": "ci:run", "pr": null}], "panes": []}).to_string());
+    let feed = primed(inputs(&f, json!([]), Vec::new()));
+    let tiles = [tile(SURF_A, WS_A, &f.dir("work/a"), "idle"), tile(SURF_B, WS_B, &f.dir("work/b"), "idle")];
+    let fr = feed.build(&tiles, NOW);
+    let a = &fr.pr[WS_A];
+    assert_eq!((a.n.as_str(), a.url.as_str(), a.state.as_str(), a.ci.as_str(), a.review.as_str()), ("12", "https://x/12", "draft", "fail", "changes"));
+    let b = &fr.pr[WS_B];
+    assert_eq!((b.n.as_str(), b.ci.as_str()), ("", "run"));
+    assert_eq!(fr.pr.len(), 2, "a workspace with no live tile is left out: {:?}", fr.pr);
 }

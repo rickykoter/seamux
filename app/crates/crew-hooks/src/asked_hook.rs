@@ -15,20 +15,6 @@
 use crate::events::{self, line, Hook};
 use crate::spawn;
 
-/// Workspace `ws`'s description as crew-sync last published it, from a file:
-/// the board's sidebar cache on cmux (board-sidebar.json in crew's state
-/// dir), else the tmux backend's registry. "" when neither knows it.
-fn described(state: &std::path::Path, ws: &str) -> String {
-    let cached = std::fs::read_to_string(state.join("board-sidebar.json")).ok()
-        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-        .and_then(|v| v.as_object().and_then(|m| m.iter().find(|(k, _)| k.eq_ignore_ascii_case(ws)).map(|(_, e)| e.clone())))
-        .and_then(|e| e.pointer("/row/desc").and_then(serde_json::Value::as_str).map(String::from));
-    cached.or_else(|| {
-        crew_core::backend::tmux::TmuxBackend::default().facts().ok()?
-            .into_iter().find(|(id, _, _)| id.eq_ignore_ascii_case(ws)).map(|(_, d, _)| d)
-    }).unwrap_or_default()
-}
-
 pub fn main(args: &[String]) -> i32 {
     use std::io::Write;
     let Some((cmux, ws, state)) = events::guard() else { return 0 };
@@ -40,8 +26,8 @@ pub fn main(args: &[String]) -> i32 {
     // workspace's label and its pull request, CI and review tokens. Both from
     // files, never a cmux call: a judgment moves nothing in cmux.
     let label = h.label();
-    let signals: Vec<String> = described(&h.state, &h.ws).split_whitespace()
-        .filter(|t| ["pr:", "ci:", "review:"].iter().any(|p| t.starts_with(p))).map(String::from).collect();
+    // crew-sync's facts: the board's sidebar cache on cmux, else the tmux registry.
+    let signals = crew_core::published::of(&h.state, &crew_core::backend::tmux::state_dir(), &h.ws).signals();
     let judged = match serde_json::from_str::<serde_json::Value>(&h.payload) {
         Ok(serde_json::Value::Object(mut m)) => {
             m.insert("crew_context".into(), serde_json::json!({"label": label, "signals": signals.join(" ")}));

@@ -141,6 +141,10 @@ const names = (q: string, i: Inputs) => search(rowsOf(i), q).map((h) => h.row.na
   ok("family: a member's row carries its parent, every member and which one it is",
     w2.family?.parent === "pay-retry" && w2.family.self === "child-a" && w2.family.members.length === 2, JSON.stringify(w2.family));
   ok("family: a workspace outside any family has none", w4.family === null);
+  const pr = { n: "12", url: "https://x/12", state: "open", ci: "fail", review: "" };
+  const withPr = rowsOf({ ...i, pr: { W1: pr } });
+  ok("pr: a row carries its workspace's PR and CI as published, and none without",
+    JSON.stringify(withPr.find((r) => r.ws === "W1")!.pr) === JSON.stringify(pr) && withPr.find((r) => r.ws === "W4")!.pr === null && w1.pr === null);
   ok("inputs: rows still build with no families or gates given",
     rowsOf(inputs({ tiles: [tile("X", "SX")], plans: [{ ws: "X", slug: "p" }] }))[0].progress?.failing === "");
 }
