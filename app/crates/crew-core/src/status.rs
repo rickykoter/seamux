@@ -3,7 +3,9 @@
 //! ```text
 //! ~/.cache/cmux-crew/pane-<key>.json
 //! {"ws": "<uuid>", "surface": "<uuid>|", "session": "<id>", "state": "working",
-//!  "question": {...}|null, "asked": "<text>"|null, "review": false, "at": 1792627120000}
+//!  "question": {...}|null, "asked": "<text>"|null, "review": false, "at": 1792627120000,
+//!  "limited": {"error": "rate_limit", "session": "<id>", "at": <ms>, "window": "five_hour"|null,
+//!              "resets_at": <ms>|null, "tries": 0, "next_try": <ms>|null}}   only while a limit stopped it
 //! ~/.cache/cmux-crew/hold-<key>     while the pane holds something a tool use releases
 //! ```
 //!
@@ -42,6 +44,48 @@ pub struct Pane {
     pub review: bool,
     /// Milliseconds since the epoch of the last write.
     pub at: u64,
+    /// The turn was stopped by a usage limit (a StopFailure of rate_limit or
+    /// billing_error), until the pane works again.
+    pub limited: Option<Limited>,
+}
+
+/// Why a pane's turn stopped on a limit, and when it may go again. Times are
+/// milliseconds since the epoch, as a pane's `at` is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Limited {
+    /// Claude Code's StopFailure error: rate_limit or billing_error.
+    pub error: String,
+    /// The session the limit stopped: a resume types only into it.
+    pub session: String,
+    pub at: u64,
+    /// The window it hit (crew_core::limits::WINDOWS), None when unknown.
+    pub window: Option<String>,
+    /// When that window resets, None when unknown.
+    pub resets_at: Option<u64>,
+    /// Resumes tried so far (usage billing retries a rate_limit).
+    pub tries: u32,
+    /// When the next resume is due, where it is not the reset.
+    pub next_try: Option<u64>,
+}
+
+impl Limited {
+    pub fn to_json(&self) -> Value {
+        json!({"error": self.error, "session": self.session, "at": self.at, "window": self.window,
+               "resets_at": self.resets_at, "tries": self.tries, "next_try": self.next_try})
+    }
+
+    pub fn from_json(v: &Value) -> Option<Limited> {
+        let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+        Some(Limited {
+            error: s("error").filter(|e| !e.is_empty())?,
+            session: s("session").unwrap_or_default(),
+            at: v.get("at").and_then(Value::as_u64).unwrap_or(0),
+            window: s("window"),
+            resets_at: v.get("resets_at").and_then(Value::as_u64),
+            tries: v.get("tries").and_then(Value::as_u64).unwrap_or(0) as u32,
+            next_try: v.get("next_try").and_then(Value::as_u64),
+        })
+    }
 }
 
 impl Pane {
@@ -55,6 +99,7 @@ impl Pane {
             asked: None,
             review: false,
             at: 0,
+            limited: None,
         }
     }
 
@@ -64,14 +109,21 @@ impl Pane {
     }
 
     /// Whether a tool use in this pane has something to release: pretool's
-    /// hot path tests the hold marker this keeps.
+    /// hot path tests the hold marker this keeps. A limit stop is one: the
+    /// pane at work again is no longer stopped.
     pub fn holds(&self) -> bool {
-        self.state == "needs_input" || self.review || self.asked.is_some()
+        self.state == "needs_input" || self.review || self.asked.is_some() || self.limited.is_some()
     }
 
+    /// The file's JSON. `limited` is written only while set, so a pane no
+    /// limit stopped reads as it always did.
     pub fn to_json(&self) -> Value {
-        json!({"ws": self.ws, "surface": self.surface, "session": self.session, "state": self.state,
-               "question": self.question, "asked": self.asked, "review": self.review, "at": self.at})
+        let mut v = json!({"ws": self.ws, "surface": self.surface, "session": self.session, "state": self.state,
+               "question": self.question, "asked": self.asked, "review": self.review, "at": self.at});
+        if let Some(l) = &self.limited {
+            v["limited"] = l.to_json();
+        }
+        v
     }
 
     pub fn from_json(v: &Value) -> Option<Pane> {
@@ -86,6 +138,7 @@ impl Pane {
             asked: s("asked"),
             review: v.get("review").and_then(Value::as_bool).unwrap_or(false),
             at: v.get("at").and_then(Value::as_u64).unwrap_or(0),
+            limited: v.get("limited").and_then(Limited::from_json),
         })
     }
 }
@@ -647,6 +700,23 @@ mod tests {
         assert_eq!(after.state, "working");
         assert!(!d.join("question-W").exists() && !d.join("question-W.json").exists());
         assert!(!hold_path(&d, "B").exists());
+    }
+
+    #[test]
+    fn a_limit_stop_is_kept_through_writes_and_held_until_work_resumes() {
+        let d = tmp("limited");
+        let lim = Limited { error: "rate_limit".into(), session: "s".into(), at: 2, window: Some("five_hour".into()),
+                            resets_at: Some(9_000), tries: 0, next_try: None };
+        update(&d, "W", "S", "s", 1, |p| p.state = "working".into());
+        let raw: Value = serde_json::from_str(&fs::read_to_string(path(&d, "S")).unwrap()).unwrap();
+        assert!(raw.get("limited").is_none(), "no limit, no field");
+        update(&d, "W", "S", "s", 2, |p| { p.state = "idle".into(); p.limited = Some(lim.clone()); });
+        assert!(hold_path(&d, "S").exists(), "pretool's fast path must wake to clear it");
+        update(&d, "W", "S", "s", 3, |p| p.question = None);
+        assert_eq!(read(&d, "S").unwrap().limited, Some(lim), "a write that does not touch it keeps it");
+        update(&d, "W", "S", "s", 4, |p| { p.state = "working".into(); p.limited = None; });
+        assert!(read(&d, "S").unwrap().limited.is_none() && !hold_path(&d, "S").exists());
+        assert!(Limited::from_json(&json!({"session": "s"})).is_none(), "no error, no limit");
     }
 
     #[test]

@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # crew — the Claude Code hook entry point, on seamux.
 #
-#   seamux-hook.sh <session|pretool|posttool|ask|answered|task|notification|stop|end>
+#   seamux-hook.sh <session|pretool|posttool|ask|answered|task|notification|stop|stopfail|end>
+#
+# stopfail is StopFailure for a usage limit (rate_limit, billing_error): it
+# has no bash copy, and goes straight to the binary like the rest.
 #
 # The same events as crew-hook.sh, with the work done by `seamux crew-hook`.
 # Only pretool's hot path stays here: it fires on every tool use, and almost

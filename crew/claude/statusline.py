@@ -408,8 +408,48 @@ def cache_line(payload):
     return f"🧊 {remaining // 60}m"
 
 
+LIMIT_WINDOWS = ("five_hour", "seven_day", "spend_limit")
+
+
+def record_limits(payload):
+    """Keep the account's usage limits for crew's stopfail hook, in
+    $XDG_CACHE_HOME/cmux-crew/limits.json (crew_core::limits in Rust, the
+    same file): each window of the payload's rate_limits cut to its
+    used_percentage and resets_at (seconds), and `at` in ms. Written only
+    when a window changed; a payload with no rate_limits leaves it alone.
+    Never fails the line."""
+    try:
+        p = json.loads(payload)
+        rl = p.get("rate_limits") if isinstance(p, dict) else None
+        if not isinstance(rl, dict):
+            return
+        wins = {}
+        for w in LIMIT_WINDOWS:
+            v = rl.get(w)
+            wins[w] = ({"used_percentage": v.get("used_percentage"), "resets_at": v.get("resets_at")}
+                       if isinstance(v, dict) else None)
+        d = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"),
+                         "cmux-crew")
+        path = os.path.join(d, "limits.json")
+        try:
+            old = json.load(open(path))
+            if isinstance(old, dict) and all(old.get(w) == wins[w] for w in LIMIT_WINDOWS):
+                return
+        except Exception:
+            pass
+        wins["at"] = int(time.time() * 1000)
+        os.makedirs(d, exist_ok=True)
+        tmp = "%s.tmp.%d" % (path, os.getpid())
+        with open(tmp, "w") as fh:
+            fh.write(json.dumps(wins, separators=(",", ":")) + "\n")
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
 def main():
     payload = sys.stdin.read()
+    record_limits(payload)
 
     lead = ""
     color, title = workspace_color()

@@ -15,6 +15,9 @@
 //! Python would raise, this prints nothing and exits 1, as the Python's
 //! traceback does.
 //!
+//! Both also keep limits.json (crew_core::limits) from the payload's
+//! rate_limits, written only when a window changed.
+//!
 //! One difference: the Python finds cmux through crew-cmux-bin or PATH; this
 //! goes through the cmux crate (the socket live, CREW_CMUX under the probes),
 //! with the crate's 10 s limit for the Python's 6 s.
@@ -817,6 +820,9 @@ pub fn main(_args: &[String]) -> i32 {
         return 1;
     };
     let payload = payload.replace("\r\n", "\n").replace('\r', "\n");
+    // The account's limits for crew-hooks' stopfail (crew_core::limits),
+    // before the line: it never changes what the line prints.
+    crew_core::limits::record(&crew_core::home::xdg_cache(), &payload, crew_core::history::now_ms());
     match render(&payload) {
         Ok(line) => {
             println!("{line}");
