@@ -189,8 +189,7 @@ body{max-width:none;margin:0;padding:0}
 #dp-foot .dp-tbtn{flex:none;font:500 12px/1 system-ui;white-space:nowrap}
 #dp-foot .dp-foot-copy{background:var(--accent-t);border-color:var(--accent-t);color:var(--bg);font-weight:600}
 #dp-foot .dp-foot-copy:hover{color:var(--bg);opacity:.9}
-#dp-foot .dp-foot-short{display:none}
-@media (max-width:479px){#dp-foot{padding-left:12px}#dp-foot .dp-foot-long{display:none}#dp-foot .dp-foot-short{display:inline}}
+@media (max-width:479px){#dp-foot{padding-left:12px}#dp-foot .dp-foot-long{display:none}}
 @media (min-width:980px){#dp-foot{grid-column:2}}
 @media (min-width:1300px){#dp-foot{margin:0}}
 
