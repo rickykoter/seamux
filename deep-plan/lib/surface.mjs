@@ -107,8 +107,11 @@ export function surfaceOpen(slug, kind) {
   return `<script>window.DP_PAGE=${JSON.stringify({ slug, kind }).replace(/</g, "\\u003c")};</script>
 <div id="dp-shell"><nav id="dp-rail" aria-label="plan sections"></nav><main id="dp-main">`;
 }
-export function surfaceClose() {
-  return `</main><aside id="dp-margin" aria-label="comments"></aside></div>`;
+// `foot` is a bar that sticks to the bottom of the main column (the review
+// page's quiz count and copy button); it sits in the shell, not in #dp-main,
+// so sectioning and find leave it alone.
+export function surfaceClose(foot = "") {
+  return `</main><aside id="dp-margin" aria-label="comments"></aside>${foot}</div>`;
 }
 
 export const SURFACE_CSS = `<style>
@@ -176,6 +179,20 @@ body{max-width:none;margin:0;padding:0}
   #dp-shell{grid-template-columns:236px minmax(0,820px) minmax(280px,320px);justify-content:center;column-gap:8px}
   #dp-main{margin:0}
 }
+
+/* ---- foot: one slim bar pinned under the main column ---- */
+#dp-foot{position:sticky;bottom:0;z-index:24;display:flex;align-items:center;gap:8px;height:36px;box-sizing:border-box;
+  width:100%;max-width:820px;margin:0 auto;padding:0 22px 0 28px;background:var(--bg);border-top:1px solid var(--line);font:500 12.5px/1 system-ui;color:var(--dim);min-width:0}
+#dp-foot .dp-foot-n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#dp-foot .dp-foot-n b{color:var(--fg);font-weight:600}
+#dp-foot .dp-foot-n.dp-foot-all b{color:var(--good-t)}
+#dp-foot .dp-tbtn{flex:none;font:500 12px/1 system-ui;white-space:nowrap}
+#dp-foot .dp-foot-copy{background:var(--accent-t);border-color:var(--accent-t);color:var(--bg);font-weight:600}
+#dp-foot .dp-foot-copy:hover{color:var(--bg);opacity:.9}
+#dp-foot .dp-foot-short{display:none}
+@media (max-width:479px){#dp-foot{padding-left:12px}#dp-foot .dp-foot-long{display:none}#dp-foot .dp-foot-short{display:inline}}
+@media (min-width:980px){#dp-foot{grid-column:2}}
+@media (min-width:1300px){#dp-foot{margin:0}}
 
 /* ---- comments: highlights, margin cards, popovers ---- */
 ::highlight(dp-note){background-color:var(--hl)}

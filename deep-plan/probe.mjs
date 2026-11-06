@@ -1068,9 +1068,22 @@ ok("working surface has the auto-refresh checkbox, with a short label for a narr
     pend.slice(0, 1).join(""));
   // ...but what a person must do stays in view: an acquire step is never folded.
   // (the example has no acquire step, so the fold's own pattern is what is held)
-  const HOW = (fs.readFileSync(path.join(HERE, "deep_plan.mjs"), "utf8").match(/const HOW = (\/.*\/);/) || [])[1] || "";
+  const HOW = (fs.readFileSync(path.join(HERE, "deep_plan.mjs"), "utf8").match(/const CHECK_HOW = (\/.*\/);/) || [])[1] || "";
   ok("working surface: what a person must do (acquire, claim, expect, note) stays outside the fold",
     /recipe /.test(HOW) && /run — /.test(HOW) && !/acquire|claim|expect|note|brief/.test(HOW), HOW);
+  // The review page folds the same way: one line per check, the run detail
+  // under the same "how it runs".
+  const rvChecks = review.split("<li").map(x => x.split("</li>")[0]).filter(x => /^><b>\[/.test(x));
+  ok("review surface: a check's run lines fold under how it runs",
+    rvChecks.length > 0 && rvChecks.every(li => !/<br>(recipe |run — |run: )/.test(li)) &&
+    rvChecks.some(li => li.includes('<details class="dp-run"><summary>how it runs</summary>run: ')),
+    rvChecks.slice(0, 1).join(""));
+  // A slim bar at the foot of the review page: the quiz count and the same
+  // copy button, which clicks the real one rather than building its own blob.
+  ok("review surface: a sticky foot counts quiz answers and copies through #dp-copyback",
+    /<div id="dp-foot"[^>]*>[\s\S]*Quiz <b id="dp-foot-a">0<\/b>\/\d+/.test(review) &&
+    review.includes('id="dp-foot-copy"') && review.includes('getElementById("dp-copyback")') &&
+    !working.includes('id="dp-foot"'));
   const carried = (working.match(/window\.DP_INC_ALLOWED = (\{[^;]*\});/) || [])[1];
   const eng = fs.readFileSync(path.join(HERE, "deep_plan.mjs"), "utf8");
   ok("working surface: the page carries the engine's one table, and applyTransition refuses by it",
