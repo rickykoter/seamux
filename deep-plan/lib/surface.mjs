@@ -1261,11 +1261,18 @@ export const SURFACE_JS = String.raw`<script>
     if (risk) return "risk:" + risk.getAttribute("data-n") + ":" + f.className;
     return null;
   }
+  // A quiz pick is kept with its option's text: a re-render that rewords an
+  // option keeps its letter, and the old pick must not land on the new words.
+  function radioVal(f) {
+    if (!f.closest(".q")) return f.value;
+    var lab = f.closest("label");
+    return f.value + "\u0000" + (lab ? lab.textContent.trim() : "");
+  }
   function keepField(e) {
     var f = e.target, k = f && f.closest && fieldKey(f);
     lastInput = Date.now();
     if (!k) return;
-    if (f.type === "radio") { if (f.checked) drafts[k] = f.value; }
+    if (f.type === "radio") { if (f.checked) drafts[k] = radioVal(f); }
     else drafts[k] = f.value;
     lset(key("drafts"), drafts);
     if (f.classList.contains("dp-note")) refreshCounts();
@@ -1276,7 +1283,7 @@ export const SURFACE_JS = String.raw`<script>
     var k = fieldKey(f);
     if (!k || !(k in drafts)) return;
     if (f.type === "radio") {
-      if (f.value !== drafts[k]) return;
+      if (radioVal(f) !== drafts[k]) return;
       f.checked = true;
       f.dispatchEvent(new Event("change", { bubbles: true }));
     } else if (f.value !== drafts[k]) {

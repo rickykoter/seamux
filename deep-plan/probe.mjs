@@ -464,7 +464,12 @@ ok("mermaid theme follows the page theme",
   ok("comments are painted where they were left and re-anchor by quote",
     both.every(h => h.includes('paint("dp-note"') && h.includes("resolveNote") && h.includes("::highlight(dp-note)")));
   ok("drafts are kept per plan and surface, and auto-refresh waits on them",
-    both.every(h => h.includes('key("drafts")')) && working0.includes("window.dpBusy && window.dpBusy()"));
+    both.every(h => h.includes('key("drafts")') && h.includes("window.dpBusy && window.dpBusy()")));
+  // A re-render reloads the review page too, so a quiz pick must survive it,
+  // and only onto the same words: a reworded option keeps its letter.
+  ok("both surfaces auto-refresh on a re-render, and a quiz pick is kept with its option text",
+    both.every(h => h.includes('id="dp-auto" checked') && h.includes("window.__dpChanged(function(moved){ if (moved) location.reload(); })") &&
+      h.includes("radioVal(f) !== drafts[k]") && h.includes('f.closest(".q")')));
   ok("a diagram with an overview renders Overview/Detailed tabs, overview first",
     review.includes('data-view="simple" aria-selected="true">Overview') &&
     review.indexOf('class="dp-dg-view" data-view="simple"') < review.indexOf('class="dp-dg-view" data-view="detailed"') &&

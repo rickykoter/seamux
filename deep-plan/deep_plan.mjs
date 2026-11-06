@@ -1744,6 +1744,29 @@ go.addEventListener("click",function(){
 `;
 }
 
+// Both live pages reload when their file is re-rendered. The served page
+// injects window.__dpChanged (a /plan-stamp probe); on disk there is no probe
+// and the timer stays a no-op, so the file never blind-reloads under a reader.
+// Picks and notes survive the reload as drafts (lib/surface.mjs).
+const AUTO_REFRESH_BOX = `
+<label class="auto"><input type="checkbox" id="dp-auto" checked> <span class="auto-long">auto-refresh</span><span class="auto-short">auto</span></label>`;
+const AUTO_REFRESH_JS = `
+<script>
+// Auto-refresh, armed on the checkbox's change event.
+(function(){
+  var t = null, box = document.getElementById("dp-auto");
+  function tick(){
+    // Not under someone mid-comment: the reload would cost them their place.
+    if (!window.__dpChanged || (window.dpBusy && window.dpBusy())) return;
+    window.__dpChanged(function(moved){ if (moved) location.reload(); });
+  }
+  function arm(){ if (t) clearInterval(t); t = null;
+    if (box.checked) t = setInterval(tick, 4000); }
+  box.addEventListener("change", arm);
+  arm();
+})();
+</script>`;
+
 function reviewHtml(spec, b64, adrs = [], map = null) {
   // Quiz options shuffled per-slug; the shuffled correct position lives in the
   // key file, never in this page.
@@ -1816,7 +1839,7 @@ until you clear it.</p>
   // boxes above, so this button carries it with no extra wiring.
 })();
 </script>`;
-  return htmlHead(spec.title + " — review", b64) + SURFACE_CSS + surfaceOpen(spec.slug, "review") + `<style>
+  return htmlHead(spec.title + " — review", b64) + SURFACE_CSS + surfaceOpen(spec.slug, "review") + AUTO_REFRESH_BOX + `<style>
 label.opt{cursor:pointer;padding:3px 0}
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
   color:inherit;border:1px solid var(--dim,#888);border-radius:4px;padding:6px;font:inherit}
@@ -1837,7 +1860,7 @@ ${verif ? `<h2>Verification</h2><ul>${verif}</ul>` : ""}
 and your model of it disagree — and either one may be the broken one.</p>
 ${qs}
 ${COPYBACK}
-${surfaceClose()}${SURFACE_JS}</body></html>`;
+${surfaceClose()}${SURFACE_JS}${AUTO_REFRESH_JS}</body></html>`;
 }
 
 // Annotations pulled back from the plan's published artifact, if any. The AGENT
@@ -2088,8 +2111,7 @@ ${checks}
   const g = gateView(st);
   const logRows = (st.log || []).slice(-12).reverse().map(l =>
     `<li class="dim">${esc(new Date(l.at).toISOString().slice(0, 16).replace("T", " "))} — ${esc(l.what)}</li>`).join("");
-  return htmlHead(spec.title, b64) + SURFACE_CSS + surfaceOpen(spec.slug, "working") + `
-<label class="auto"><input type="checkbox" id="dp-auto" checked> <span class="auto-long">auto-refresh</span><span class="auto-short">auto</span></label>
+  return htmlHead(spec.title, b64) + SURFACE_CSS + surfaceOpen(spec.slug, "working") + AUTO_REFRESH_BOX + `
 <script>window.DP_INC_ALLOWED = ${JSON.stringify(INC_ALLOWED)};</script>
 <style>
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
@@ -2146,24 +2168,7 @@ ${["context", "decisions", "risks"].map(s =>
 })();
 </script>
 ${logRows ? `<h2>Log</h2><ul>${logRows}</ul>` : ""}
-${surfaceClose()}${SURFACE_JS}
-<script>
-// Auto-refresh, armed on the checkbox's change event. The served page injects
-// window.__dpChanged (a /plan-stamp probe); on disk there is no probe and the
-// timer stays a no-op, so the file never blind-reloads under a reader.
-(function(){
-  var t = null, box = document.getElementById("dp-auto");
-  function tick(){
-    // Not under someone mid-comment: the reload would cost them their place.
-    if (!window.__dpChanged || (window.dpBusy && window.dpBusy())) return;
-    window.__dpChanged(function(moved){ if (moved) location.reload(); });
-  }
-  function arm(){ if (t) clearInterval(t); t = null;
-    if (box.checked) t = setInterval(tick, 4000); }
-  box.addEventListener("change", arm);
-  arm();
-})();
-</script></body></html>`;
+${surfaceClose()}${SURFACE_JS}${AUTO_REFRESH_JS}</body></html>`;
 }
 
 // After a render: write a parent's index and report its overlaps, or refresh
