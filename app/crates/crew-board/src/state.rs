@@ -696,16 +696,22 @@ pub fn build(o: &Opts) -> Value {
         rank::rank(&wss, &plan_by_root, o.screens)
     };
     let mut all: Vec<Value> = rows.into_iter().chain(quiet.iter().cloned()).collect();
-    // The app's muted and tucked worktrees (fixtures stay as given).
+    // The app's muted, snoozed and tucked worktrees, and merged rows gone
+    // idle (fixtures stay as given). A row that needs you breaks its snooze.
     if o.fixture.is_none() {
         crate::tucked::mark_live(&mut all);
+        if let Some((_, files)) = &panes {
+            crate::settle::mark_live(&mut all, files);
+        }
     }
+    crate::tucked::break_snoozes(&mut all);
     // Each workspace's panes: what each is doing, which owns the plan,
     // which has wandered past the pin.
     if let Some((live, files)) = &panes {
         mark_panes(&mut all, &plan_by_root, &wss, live, files);
     }
-    let news = news::compose_now(&all);
+    // The news is what needs you: a snoozed or settled row is left out.
+    let news = news::compose_now(&all.iter().filter(|r| !crate::settle::away(r)).cloned().collect::<Vec<_>>());
     let n = plan_by_root.len();
     let mut d = Map::new();
     d.insert("rows".into(), Value::Array(all));

@@ -453,15 +453,22 @@ function __boardRender(d) {
   try { prev = JSON.parse(host.getAttribute("data-prev") || "{}"); } catch (e) { prev = {}; }
   var next = {};
 
-  // The app's tucked worktrees leave the list for the collapsed "tucked"
-  // section at the end; they count toward nothing above it.
+  // Rows put away leave the list for a collapsed shelf at the end, and count
+  // toward nothing above it: snoozed (the app's snooze, until its time or
+  // until it needs you; crew-board drops the mark from a row that needs
+  // you), settled (merged and idle, worked out by crew-board), then tucked.
   var all = d.rows || [];
-  // A family member stays with its family even tucked: a plan's workstream is
-  // not missing from its card because its worktree was put away.
-  var away = function (r) { return r.tuck === "tuck" && !r.family; };
-  var rows = all.filter(function (r) { return !away(r); });
+  // A family member stays with its family even put away: a plan's
+  // workstream is not missing from its card because its worktree was.
+  var shelfOf = function (r) {
+    if (r.family) return "";
+    if (r.tuck === "snooze") return "snoozed";
+    if (r.tuck === "tuck") return "tucked";
+    return r.settled ? "settled" : "";
+  };
+  var rows = all.filter(function (r) { return !shelfOf(r); });
   var tkOpen = host.getAttribute("data-tk-open") || "", tkUp = host.getAttribute("data-tk-up") === "1";
-  var tucked = all.filter(away);
+  var shelved = function (s) { return all.filter(function (r) { return shelfOf(r) === s; }); };
   var was = positions();
   // Every card folds in place. Unfolded by default are the cards that ask
   // something of you -- waiting and broken -- and nothing else; a child starts
@@ -604,13 +611,26 @@ function __boardRender(d) {
   // keeps tucked.json (intent.js hands the choice to it), and only for a row
   // that is a workspace.
   var inApp = (function () { try { return !!window.parent && window.parent !== window; } catch (e) { return false; } })();
+  // The snooze presets (intent.js turns each into an end time at the click;
+  // the app's own menu, app/ui/tuck.ts, keeps the same four).
+  var SNOOZES = [["1h", "Snooze 1h"], ["3h", "Snooze 3h"], ["tomorrow", "Until tomorrow 9am"], ["monday", "Until Monday 9am"]];
   function tuckOf(a) {
     if (!inApp || !a.cwd) return "";
     var item = function (label, x) { return '<span class="tki" data-a="tuck" data-x="' + x + '">' + label + "</span>"; };
-    return '<span class="tk" data-a="tk" title="Mute or tuck away" aria-label="Mute or tuck away">' +
+    var snooze = a.tuck === "snooze" ? item("Wake now", "none") :
+      SNOOZES.map(function (s) { return item(s[1], "snooze:" + s[0]); }).join("");
+    return '<span class="tk" data-a="tk" title="Mute, snooze or tuck away" aria-label="Mute, snooze or tuck away">' +
       '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg></span>' +
-      '<span class="tkm">' + (a.tuck === "mute" ? item("Unmute", "none") : item("Mute", "mute")) +
+      '<span class="tkm">' + (a.tuck === "mute" ? item("Unmute", "none") : item("Mute", "mute")) + snooze +
       (a.tuck === "tuck" ? item("Bring back", "none") : item("Tuck away", "tuck")) + "</span>";
+  }
+  // When a snoozed row wakes: "wakes 3:00 PM" today, else "wakes Mon 9:00 AM".
+  function wakesOf(a) {
+    if (a.tuck !== "snooze" || !a.until) return "";
+    var w = new Date(+a.until), now = new Date();
+    var t = w.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    if (w.toDateString() !== now.toDateString()) t = w.toLocaleDateString([], { weekday: "short" }) + " " + t;
+    return '<span class="badge wakes" title="' + esc(w.toString()) + '">wakes ' + esc(t) + "</span>";
   }
   // Everything under a card's head: what was said, the reply window, the
   // buttons, the footer.
@@ -644,7 +664,7 @@ function __boardRender(d) {
     var more = foot(a, true);
     return opening(a, a.family ? " fam" : "", "", foldCls(a.id, a.kind, !!more)) +
       topOpen(a, "", !!more) + dotOf(a) + nameOf(a) +
-      (a.dirty ? DIRTY : "") + (acts.length ? qb : badgeOf(a)) + cost(a) + wakeOf(a) + tuckOf(a) + topClose(a) +
+      (a.dirty ? DIRTY : "") + (acts.length ? qb : badgeOf(a)) + wakesOf(a) + cost(a) + wakeOf(a) + tuckOf(a) + topClose(a) +
       (more ? '<div class="fold">' + more + "</div>" : "") + "</div>";
   }
 
@@ -748,10 +768,15 @@ function __boardRender(d) {
   // family, not under it (families.py), so it neither opens the quiet section
   // nor counts toward it.
   var belowDivider = function (r) { return r.kind === "quiet" && (!r.famtier || r.famtier === "quiet"); };
-  // The tucked section stays open or shut across pushes, as a card's fold does.
-  var tuckOpen = host.getAttribute("data-tuck-open") === "1";
-  var tuckSect = tucked.length ? '<details class="tucked"' + (tuckOpen ? " open" : "") + '><summary class="sect">tucked · ' +
-    tucked.length + "</summary>" + tucked.map(quietRow).join("") + "</details>" : "";
+  // Each shelf stays open or shut across pushes, as a card's fold does
+  // (intent.js keeps data-<shelf>-open; tucked's is data-tuck-open).
+  function shelf(name, attr) {
+    var list = shelved(name);
+    if (!list.length) return "";
+    return '<details class="' + name + '"' + (host.getAttribute(attr) === "1" ? " open" : "") + '><summary class="sect">' +
+      name + " · " + list.length + "</summary>" + list.map(quietRow).join("") + "</details>";
+  }
+  var tuckSect = shelf("snoozed", "data-snooze-open") + shelf("settled", "data-settle-open") + shelf("tucked", "data-tuck-open");
   host.innerHTML = (rows.length ? groups.map(function (g) {
     var lead = g.lead || g.kids[0], sect = "";
     if (belowDivider(lead) && !seenQuiet) {
