@@ -1229,6 +1229,9 @@ ok("a write chained beside the CLI is still a write",
     ["grep -ln foo src", "grep -ln"],
     [`sed -i '' s/a/b/g ${out}/a.txt`, "BSD sed -i '' on a file outside the root"],
     [`cat <<EOF > ${out}/notes.md\nhi > there\nEOF`, "a heredoc written outside the root"],
+    // A variable set earlier in the same command to a literal path is read.
+    [`P=${out}/x.py; cat > "$P" <<'EOF'\nprint(1)\nEOF`, "a redirect to a variable set to a path outside the root"],
+    [`export D=${out} && touch \${D}/a.txt`, "touch under an exported \${VAR} outside the root"],
   ];
   for (const [c, what] of allowed) ok(`gate by target: ${what} is allowed`, bash(c).status === 0, bash(c).stderr);
   const denied = [
@@ -1241,6 +1244,10 @@ ok("a write chained beside the CLI is still a write",
     ["cd $SOMEWHERE && rm x", "a write after a cd into a variable"],
     [`mv a.txt ${out}/a.txt`, "a move out of the root (the source goes)"],
     ["npm install", "a write with no readable target"],
+    [`P=${REPO}/src/a.ts; echo x > "$P"`, "a redirect to a variable set to a path inside the root"],
+    [`P=$(mktemp); cat > "$P"`, "a redirect to a variable set from $(…)"],
+    [`P=${out}/a; P=$HOME/x; rm "$P"`, "a variable reassigned from an expansion"],
+    [`P=${out}/a make; rm "$P"`, "a variable set only for one command's environment"],
   ];
   for (const [c, what] of denied) ok(`gate by target: ${what} is still refused`, bash(c).status === 2, bash(c).stderr);
 }
@@ -7747,6 +7754,49 @@ if (want("ci check: the PR's checks behind the gate")) {
     !stOf("ci-t").increments[0].checks["ci-pr-checks"].fails, r.stdout);
   r = spawnSync("node", [path.join(HERE, "lib", "ci.mjs"), "wait", "--timeout", "abc"], { encoding: "utf8", env: CENV, cwd: CR });
   ok("ci: a timeout that is not a number is refused", r.status === 2 && /--timeout takes a number of seconds/.test(r.stderr), r.stderr);
+}
+
+if (want("amend changes a rendered plan on purpose")) {
+  const AR = path.join(TMP, "amend-root");
+  fs.mkdirSync(AR, { recursive: true });
+  execSync("git init -q && git -c user.email=probe@deep-plan -c user.name=probe commit -q --allow-empty -m init", { cwd: AR });
+  // Run from somewhere else: amend must take the root from the plan, not the cwd.
+  const ac = (...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), ...a], { encoding: "utf8", env: ENV, cwd: TMP });
+  const stOf = n => JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, n + ".json"), "utf8"));
+  const slug = "amend-plan";
+  const base = { ...JSON.parse(JSON.stringify(spec)), slug };
+  const write = (name, obj) => { const p = path.join(TMP, name); fs.writeFileSync(p, JSON.stringify(obj)); return p; };
+  ok("amend: a plan with no state is refused, pointing at render",
+    (r = ac("amend", slug, write("a0.json", base), "why")).status !== 0 && /first render/.test(r.stderr), r.stderr);
+  ac("render", write("a1.json", base), "--root", AR);
+  ok("amend: a missing why is refused",
+    (r = ac("amend", slug, write("a2.json", base))).status !== 0 && /say why/.test(r.stderr), r.stderr);
+  ok("amend: a spec identical to the archive is refused",
+    (r = ac("amend", slug, write("a3.json", base), "no change")).status !== 0 && /nothing to amend/.test(r.stderr), r.stderr);
+  ok("amend: another plan's spec is refused",
+    (r = ac("amend", slug, write("a4.json", { ...base, slug: "other" }), "wrong")).status !== 0 && /not amend-plan/.test(r.stderr), r.stderr);
+  const more = JSON.parse(JSON.stringify(base));
+  more.decisions.push({ decision: "Log every retry", why: "a person asked to see them" });
+  r = ac("amend", slug, write("a5.json", more), "the person wants retries visible");
+  const st1 = stOf(slug);
+  const working = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, slug + ".working.html"), "utf8");
+  ok("amend: re-renders at the plan's own root and records what changed and why",
+    r.status === 0 && fs.realpathSync(st1.root) === fs.realpathSync(AR) && st1.amendments.length === 1 &&
+      st1.amendments[0].why === "the person wants retries visible" && st1.amendments[0].graded === false &&
+      st1.amendments[0].changed.includes("decisions added: Log every retry") &&
+      (st1.log || []).some(l => /^amended: the person wants retries visible \(decisions added: Log every retry/.test(l.what)), r.stdout + r.stderr);
+  ok("amend: the working page lists the amendment",
+    working.includes("<h2>Amendments</h2>") && working.includes("the person wants retries visible"));
+  const key = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, slug + ".key.json"), "utf8"));
+  ac("grade", slug, ...Object.entries(key.answers).map(([q, v]) => `${q}=${v.letter}`));
+  const after = JSON.parse(JSON.stringify(more));
+  after.deliverables[0].title += " (split)";
+  r = ac("amend", slug, write("a6.json", after), "split the first increment");
+  const st2 = stOf(slug);
+  ok("amend: after grade it is marked so, and says the plan drifted from its snapshot",
+    r.status === 0 && st2.amendments.length === 2 && st2.amendments[1].graded === true && /approved snapshot/.test(r.stdout) &&
+      st2.amendments[1].changed.some(c => c.startsWith("deliverables added:")) && st2.amendments[1].changed.some(c => c.startsWith("deliverables removed:")),
+    r.stdout + r.stderr);
 }
 
 if (want("refactor loops expand at render")) {

@@ -912,14 +912,26 @@ function heredocs(cmd) {
 
 // Shell words of one simple command, quotes removed. null for a word the
 // shell would expand ($VAR, $(…), backticks), which no target can name.
-function words(seg) {
+// `vars` holds the variables this command set earlier to a literal
+// (bashWriteTargets): a $NAME or ${NAME} among them is filled in, so
+// `P=/tmp/x; cat > "$P"` names /tmp/x. Any other expansion stays unknown.
+function words(seg, vars = null) {
   const out = [];
   let w = "", q = null, has = false, dyn = false;
   const push = () => { if (has) out.push(dyn ? null : w); w = ""; has = false; dyn = false; };
+  // At a `$`: the known variable it names, as [value, chars it spans], or null.
+  const known = i => {
+    if (!vars) return null;
+    const m = seg.slice(i + 1).match(/^\{([A-Za-z_]\w*)\}|^([A-Za-z_]\w*)/);
+    const name = m && (m[1] || m[2]);
+    const v = name ? vars.get(name) : undefined;
+    return typeof v === "string" ? [v, m[0].length] : null;
+  };
   for (let i = 0; i < seg.length; i++) {
     const c = seg[i];
     if (q) {
       if (c === q) { q = null; continue; }
+      if (q === '"' && c === "$") { const k = known(i); if (k) { w += k[0]; i += k[1]; continue; } }
       if (q === '"' && (c === "$" || c === "`")) dyn = true;
       if (q === '"' && c === "\\") { w += seg[++i] || ""; continue; }
       w += c; continue;
@@ -927,11 +939,31 @@ function words(seg) {
     if (c === "'" || c === '"') { q = c; has = true; continue; }
     if (c === "\\") { w += seg[++i] || ""; has = true; continue; }
     if (/\s/.test(c)) { push(); continue; }
+    if (c === "$") { const k = known(i); if (k) { w += k[0]; i += k[1]; has = true; continue; } }
     if (c === "$" || c === "`") dyn = true;
     w += c; has = true;
   }
   push();
   return out;
+}
+
+// A segment that only sets shell variables (NAME=value …, or export NAME=value
+// …) records them in `vars`, in order: a literal value is known, anything the
+// shell would expand makes the name unknown again. Returns whether it was one.
+// An assignment before a command (`FOO=x make`) sets that command's
+// environment, not the shell's, and is left alone.
+function assigns(seg, vars) {
+  const w = words(seg, vars);
+  const list = w[0] === "export" ? w.slice(1) : w;
+  if (!list.length || !list.every(a => a === null || /^[A-Za-z_]\w*=/.test(a))) return false;
+  // A null word is an expansion: which name it set is read from the raw text.
+  const raw = seg.trim().replace(/^export\s+/, "").match(/[A-Za-z_]\w*=/g) || [];
+  list.forEach((a, i) => {
+    if (a === null) { if (raw[i]) vars.set(raw[i].slice(0, -1), null); return; }
+    const k = a.indexOf("=");
+    vars.set(a.slice(0, k), a.slice(k + 1));
+  });
+  return true;
 }
 
 const INTERPRETERS = /^(python[\d.]*|node|ruby|perl|sh|bash|zsh)$/;
@@ -954,10 +986,13 @@ export function bashWriteTargets(cmd, cwd) {
     return lost && !path.isAbsolute(e) ? null : path.resolve(here, e);
   };
   const unknown = () => targets.push(lost ? null : here);
+  // The shell variables set so far to a literal (see assigns).
+  const vars = new Map();
   for (const [raw, b] of segs) {
     if (!raw.trim()) continue;
+    if (assigns(raw, vars)) continue;
     // Redirects and heredoc markers are not words of the command.
-    let w = words(raw.replace(/<<-?\s*['"]?\w+['"]?|\d*>>?\s*\S+|\d*<\s*\S+/g, " "));
+    let w = words(raw.replace(/<<-?\s*['"]?\w+['"]?|\d*>>?\s*\S+|\d*<\s*\S+/g, " "), vars);
     while (w.length && w[0] !== null && /^(\w+=\S*|sudo|command|exec|nohup|time)$/.test(w[0])) w.shift();
     const prog = w[0] === null ? null : (w[0] || "").replace(/^.*\//, "");
     // cd and pushd move where the following links write.
@@ -971,7 +1006,7 @@ export function bashWriteTargets(cmd, cwd) {
     // and the raw text for the name.
     for (const m of scrub(b).matchAll(/(^|[^>&\d])\d*>>?\s*(?!&)/g)) {
       const start = m.index + m[0].length;
-      const name = words(raw.slice(start).match(/^("[^"]*"|'[^']*'|[^\s;&|<>()]+)/)?.[0] || "")[0];
+      const name = words(raw.slice(start).match(/^("[^"]*"|'[^']*'|[^\s;&|<>()]+)/)?.[0] || "", vars)[0];
       targets.push(name === null || name === undefined ? (lost ? null : here) : abs(name));
     }
     const doc = docs.find(d => raw.includes(d.line.trim()) || d.line.includes(raw.trim()));
