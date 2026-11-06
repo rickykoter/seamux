@@ -1009,6 +1009,28 @@ check("--json reports a clear worktree as one object: checks, no blockers, what 
       and any(c["kind"] == "pass" and "closed with the workspace" in c["text"] for c in rep_["checks"])
       and [r["what"] for r in rep_["remove"]] == ["worktree", "branch", "workspace"], out)
 check("…and changes nothing either", os.path.isdir(landed) and len(rows()) == 1)
+# A squash merge: the work reached main as one new commit, so HEAD is not an
+# ancestor of it, but merging HEAD into main would change nothing.
+squashed = os.path.join(T, "repo.worktrees", "squashed")
+git(main, "fetch", "-q")
+git(main, "worktree", "add", "-q", "-b", "dev/squashed", squashed, "origin/main")
+for name, body in (("s1", "a\n"), ("s2", "b\n")):
+    open(os.path.join(squashed, name), "w").write(body)
+    git(squashed, "add", name)
+    git(squashed, "commit", "-qm", name)
+sq = os.path.join(T, "squash-tmp")
+git(main, "worktree", "add", "-q", "--detach", sq, "origin/main")
+git(sq, "merge", "-q", "--squash", "dev/squashed")
+git(sq, "commit", "-qm", "squashed (#1)")
+git(sq, "push", "-q", "origin", "HEAD:main")
+git(main, "worktree", "remove", "--force", sq)
+rc, rep_, out = reclaim_json(squashed)
+check("a squash-merged branch passes the merged check, though HEAD is not an ancestor of main",
+      rep_ is not None and any(c["kind"] == "pass" and "already in" in c["text"] for c in rep_["checks"])
+      and not any("not merged" in c["text"] for c in rep_["checks"]), out)
+rc, rep_, out = reclaim_json(open_)
+check("…while a branch with work main lacks is still not merged",
+      rep_ is not None and any(c["kind"] == "fail" and "not merged" in c["text"] for c in rep_["checks"]), out)
 put_sessions([sess("ws-l", "s-l", "running")])
 rc, rep_, out = reclaim_json("ws-l")
 check("--json with a blocker: exit 1, the failed check named, nothing to remove",

@@ -186,9 +186,18 @@ if [ -n "$branch" ]; then
 fi
 
 ahead=""
+landed=""
 base="$(default_base)"
 if [ -n "$branch" ]; then
   ahead="$(git -C "$top" rev-list --count "$base..HEAD" 2>/dev/null)"
+  # A squash or rebase merge lands the work as new commits, so HEAD is never
+  # an ancestor of the base. The work is in when merging HEAD into the base
+  # changes nothing: the merged tree is the base's own.
+  if [ "${ahead:-1}" != "0" ]; then
+    mtree="$(git -C "$top" merge-tree --write-tree "$base" HEAD 2>/dev/null | head -1)"
+    btree="$(git -C "$top" rev-parse -q --verify "$base^{tree}" 2>/dev/null)"
+    [ -n "$mtree" ] && [ "$mtree" = "$btree" ] && landed=1
+  fi
 fi
 dirty_n="$(git -C "$top" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
 caller_top="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)"
@@ -473,6 +482,8 @@ if [ -z "$branch" ]; then
   skip "merge check skipped: no branch"
 elif [ "${ahead:-1}" = "0" ]; then
   pass "merged: HEAD is an ancestor of $base"
+elif [ -n "$landed" ]; then
+  pass "merged: every change on it is already in $base (a squash or rebase merge)"
 else
   fail "${ahead:-?} commit(s) not in $base — not merged"
 fi
