@@ -54,7 +54,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "18";
+  var V = "19";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -314,6 +314,17 @@ function __boardIntent(cfg) {
   // no "selected" yet), the message waits on #rows (a push does not drop it)
   // and goes when the app's first message names its origin: framed, a click
   // meant for the app never falls through to cmux instead.
+  // When a snooze preset taken at `now` ends (ms since the epoch, local
+  // time). app/ui/tuck.ts snoozeUntil keeps the same four.
+  function snoozeUntil(key, now) {
+    if (key === "1h" || key === "3h") return now.getTime() + (key === "1h" ? 1 : 3) * 3600000;
+    var d = new Date(now.getTime());
+    // Tomorrow, or the next Monday after today (a week on, on a Monday).
+    d.setDate(d.getDate() + (key === "tomorrow" ? 1 : ((8 - d.getDay()) % 7 || 7)));
+    d.setHours(9, 0, 0, 0);
+    return d.getTime();
+  }
+
   function tell(msg) {
     var o = appOrigin();
     if (o) return window.parent.postMessage(msg, o);
@@ -393,10 +404,13 @@ function __boardIntent(cfg) {
       if (host.getAttribute("data-intent") !== V) return;
       // A click anywhere but the ⋯ menu shuts an open one.
       if (!(ev.target.closest && ev.target.closest(".tk, .tkm"))) shutMenu();
-      // The tucked section's header: remember it open or shut for the next push.
-      var sum = ev.target.closest && ev.target.closest("details.tucked > summary");
+      // A shelf's header (snoozed, settled, tucked): remember it open or
+      // shut for the next push.
+      var sum = ev.target.closest && ev.target.closest("details.snoozed > summary, details.settled > summary, details.tucked > summary");
       if (sum) {
-        setTimeout(function () { host.setAttribute("data-tuck-open", sum.parentNode.open ? "1" : "0"); }, 0);
+        var SHELF = { snoozed: "data-snooze-open", settled: "data-settle-open", tucked: "data-tuck-open" };
+        var attr = SHELF[sum.parentNode.className] || "data-tuck-open";
+        setTimeout(function () { host.setAttribute(attr, sum.parentNode.open ? "1" : "0"); }, 0);
         return;
       }
       var t = target(ev.target);
@@ -430,7 +444,13 @@ function __boardIntent(cfg) {
         shutMenu();
         if (framed()) {
           var nm = row.querySelector(".nm");
-          tell({ crew: "tuck", ws: rid, level: t.x, name: nm ? nm.textContent : rid });
+          var msg = { crew: "tuck", ws: rid, level: t.x, name: nm ? nm.textContent : rid };
+          // "snooze:<preset>": the end is taken now, as the app's own menu does.
+          if (/^snooze:/.test(t.x)) {
+            msg.level = "snooze";
+            msg.until = snoozeUntil(t.x.slice(7), new Date());
+          }
+          tell(msg);
         }
         return;
       }

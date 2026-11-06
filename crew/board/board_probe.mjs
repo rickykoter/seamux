@@ -2258,6 +2258,63 @@ if (crewImpl.isRust("crew-board")) {
   els.rows.attrs["data-tuck-open"] = "0";
 }
 
+// ---- snoozed and settled shelves (crew-board marks tuck "snooze" + until, settled) ----
+{
+  const R = (id, extra) => ({ id, name: id, kind: "quiet", badge: "idle", said: "", chips: ["jump"], frac: null, meta: "", cwd: "/w/" + id, ...extra });
+  const soon = Date.now() + 3600000;
+  const rowsS = [
+    R("live", { kind: "running", badge: "b", chips: [] }),
+    R("brk", { kind: "wilt", badge: "red", chips: [], tuck: "snooze", until: soon }),
+    R("zq", { tuck: "snooze", until: soon }),
+    R("mg", { kind: "done", badge: "merged", chips: ["reclaim"], settled: true }),
+    R("mg2", { kind: "done", badge: "merged", chips: ["reclaim"] }),
+    R("tq", { tuck: "tuck" }),
+    R("q", {}),
+  ];
+  for (const a of ["data-snooze-open", "data-settle-open", "data-tuck-open"]) els.rows.attrs[a] = "0";
+  render({ rows: rowsS, quiet: "" });
+  const h = els.rows.innerHTML;
+  const at = (s) => h.indexOf(s);
+  const zAt = at('<details class="snoozed">'), sAt = at('<details class="settled">'), tAt = at('<details class="tucked">');
+  checks.push(["snooze: shelves after the rows, collapsed, counted: snoozed, then settled, then tucked",
+    zAt > at('data-id="q"') && zAt < sAt && sAt < tAt &&
+    /<summary class="sect">snoozed · 2</.test(h) && /<summary class="sect">settled · 1</.test(h) && /<summary class="sect">tucked · 1</.test(h)]);
+  checks.push(["snooze: a snoozed row sits on its shelf even when broken, and says when it wakes",
+    at('data-id="brk"') > zAt && at('data-id="brk"') < sAt && at('data-id="zq"') < sAt && /class="badge wakes"[^>]*>wakes /.test(h)]);
+  checks.push(["snooze: a settled row is on its shelf; a merged one not yet idle stays in the list",
+    at('data-id="mg"') > sAt && at('data-id="mg"') < tAt && at('data-id="mg2"') < zAt]);
+  checks.push(["snooze: the quiet count leaves both shelves out", /<div class="sect">quiet · 1</.test(h)]);
+  const tl = String(els.tally ? els.tally.innerHTML : "");
+  checks.push([`snooze: the tally leaves snoozed and settled rows out (${tl})`,
+    !/broken/.test(tl) && /<b>1<\/b> to close/.test(tl) && /<b>1<\/b> working/.test(tl)]);
+  els.rows.attrs["data-snooze-open"] = "1";
+  sandbox.parent = { postMessage() {} };
+  render({ rows: rowsS, quiet: "" });
+  const hf = els.rows.innerHTML;
+  delete sandbox.parent;
+  checks.push(["snooze: framed by the app, the ⋯ menu offers the four presets, or Wake now on a snoozed row",
+    /data-id="q"[^]*?data-x="mute">Mute<\/span><span class="tki" data-a="tuck" data-x="snooze:1h">Snooze 1h<[^]*?data-x="snooze:3h">Snooze 3h<[^]*?data-x="snooze:tomorrow">Until tomorrow 9am<[^]*?data-x="snooze:monday">Until Monday 9am<[^]*?data-x="tuck">Tuck away</.test(hf) &&
+    /data-id="zq"[^]*?data-x="none">Wake now<[^]*?data-x="tuck">Tuck away</.test(hf) &&
+    !hf.slice(hf.indexOf('data-id="zq"'), hf.indexOf("</details>", hf.indexOf('data-id="zq"'))).includes("snooze:1h")]);
+  checks.push(["snooze: the snoozed shelf stays open across a push when it was open", /<details class="snoozed" open>/.test(hf)]);
+  els.rows.attrs["data-snooze-open"] = "0";
+  // The end each preset sends, from intent.js's own snoozeUntil.
+  const src = readFileSync(join(HERE, "intent.js"), "utf8");
+  const fn = /function snoozeUntil\(key, now\) \{[^]*?\n  \}/.exec(src);
+  const sbox = { Date };
+  createContext(sbox);
+  if (fn) runInContext(fn[0] + "; this.snoozeUntil = snoozeUntil;", sbox);
+  const su = sbox.snoozeUntil;
+  const wed = new Date(2026, 10, 4, 15, 30), mon = new Date(2026, 10, 2, 8, 0), sun = new Date(2026, 10, 8, 20, 0);
+  const local = (t) => { const d = new Date(t); return [d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes()].join("-"); };
+  checks.push(["snooze: intent.js turns each preset into an end time: +1h, +3h, tomorrow 9am, the next Monday 9am",
+    !!su && su("1h", wed) === wed.getTime() + 3600000 && su("3h", wed) === wed.getTime() + 3 * 3600000 &&
+    local(su("tomorrow", wed)) === "2026-10-5-9-0" && local(su("monday", wed)) === "2026-10-9-9-0" &&
+    local(su("monday", mon)) === "2026-10-9-9-0" && local(su("monday", sun)) === "2026-10-9-9-0"]);
+  checks.push(["snooze: intent.js sends a snooze preset as level snooze with its until",
+    /msg\.level = "snooze";\s*msg\.until = snoozeUntil\(t\.x\.slice\(7\), new Date\(\)\)/.test(src)]);
+}
+
 // A tucked workstream stays with its family: its card is not missing a member.
 {
   const R = (id, extra) => ({ id, name: id, kind: "attend", badge: "b", said: "", chips: [], frac: null, meta: "", cwd: "/w/" + id, ...extra });
