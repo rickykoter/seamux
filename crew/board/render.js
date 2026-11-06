@@ -249,7 +249,7 @@ function __boardRender(d) {
   // moves on with the next one instead of flickering.
   var SAYS = {
     swat: ["hey. hey. HEY.", "{top} is waiting on you", "paws on the gate: {top}",
-           "a human is required", "psst. {top}."],
+           "a human is required"],
     pace: ["supervising", "keeping an eye on {top}", "patrolling the worktrees",
            "{top}, still at it", "on the prowl"],
     nap: ["off duty", "nothing needs you", "all quiet. nap time.", "zzz",

@@ -135,6 +135,10 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
 .hud2{display:flex;align-items:baseline;gap:8px;margin-top:1px;min-width:0}
 .right{display:flex;gap:8px;align-items:baseline;font:500 10.5px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;
   color:var(--grey);white-space:nowrap;margin-left:auto;flex:none}
+/* Where the board came from and when it last changed: there on hover, and
+   always while it is stale, when the time is the news. */
+header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
+.right{transition:opacity .15s}
 
 /* --- the cat ----------------------------------------------------------- */
 /* The crew sidebar's tuxedo cat, ported pixel-for-pixel by cat_from_swift.py --
