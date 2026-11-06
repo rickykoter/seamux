@@ -217,7 +217,7 @@ export class Wake {
     const ttl = el("div", "w-ttl");
     const sub = el("div", "w-sub");
     sub.append(this.stats, this.keepAllBtn);
-    // In the Dock the sheet's tab already says "the wake · ws".
+    // In the Dock the sheet already names the workspace.
     if (this.embedded) ttl.append(sub);
     else ttl.append(this.title, sub);
     head.append(ttl, this.picker);
