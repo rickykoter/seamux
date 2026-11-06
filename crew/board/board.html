@@ -122,7 +122,7 @@ body{display:flex;flex-direction:column;min-height:100vh;
    want in view is what is waiting on you. Negative side margins cancel the body's
    padding so the bar -- and the cat's shelf inside it -- reach both edges. */
 header{position:sticky;top:0;z-index:5;background:var(--bg);
-  margin:0 -11px 9px;padding:0 11px 5px;border-bottom:1px solid var(--line)}
+  margin:0 -11px 6px;padding:0 11px 4px;border-bottom:1px solid var(--line)}
 
 /* Two lines under the shelf. The first answers the board's question: the
    headline, then what else is going on, counted. The second is the cat talking,
@@ -321,7 +321,7 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
    not, with an arrow at its end that brightens on hover; a pressed header
    says how it went (.hit/.ok/.bad, intent.js). The caret folds. */
 .row{--c:var(--quiet);position:relative;background:var(--bg1);
-  border-radius:9px;padding:9px 10px;margin-bottom:7px}
+  border-radius:9px;padding:6px 9px;margin-bottom:4px}
 .top.jumps{cursor:pointer;border-radius:6px;margin:-3px -4px;padding:3px 4px}
 .top.jumps:hover{background:rgba(255,255,255,.05)}
 .top>.go{flex:none;display:flex;margin-left:2px}
@@ -345,6 +345,9 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
 
 .top{display:flex;align-items:center;gap:7px;min-width:0}
 .dial{flex:none;width:26px;height:26px}
+/* Folded, a card is its header line: a smaller dial keeps ten of them in one
+   window's height. The caret and the header stay at least 24px tall. */
+.row.fd:not(.open)>.top>.dial{width:22px;height:22px}
 .own{flex:none;width:8px;height:8px;border-radius:50%;background:var(--own)}
 .nm{flex:1;min-width:0;font:600 13.5px/1.3 system-ui;color:var(--fg);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -359,7 +362,7 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
 /* What the agent said: proportional, because it is a sentence, and two lines at
    most, because the card's job is to say what is next and the rest is a click
    away. */
-.said{margin:6px 0 0;font-size:13px;line-height:1.4;color:var(--fg2);
+.said{margin:3px 0 0;font-size:13px;line-height:1.4;color:var(--fg2);
   overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
   word-break:break-word}
 .said b{color:var(--fg);font-weight:600}
@@ -379,7 +382,7 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
    card's first button turned the board into a wall of colour. Actionable
    signals (CI, allow, deny, a ticket) join the row as ghosts in their own
    colour. Labels stay bare text: intent.js reads a chip's verb off its label. */
-.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:5px}
 .chip{display:inline-flex;align-items:center;min-height:28px;padding:0 11px;border-radius:7px;
   border:1px solid var(--edge);background:transparent;color:var(--fg);
   font:600 12.5px/1 system-ui;white-space:nowrap;user-select:none;-webkit-user-select:none}
@@ -395,7 +398,7 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
    pane. A row is 24px, the footer links' height: a target, but the card's
    chips stay the bigger ones. The dot wears the tier colours: waiting is the
    attend amber, working the running blue, the rest grey. */
-.pns{margin-top:7px;display:flex;flex-direction:column}
+.pns{margin-top:4px;display:flex;flex-direction:column}
 .pn{display:flex;align-items:center;gap:7px;min-height:24px;padding:0 6px;margin:0 -6px;
   border-radius:5px;font:12px/1.3 system-ui;color:var(--fg);cursor:pointer;min-width:0}
 .pn:hover{background:rgba(211,198,170,.07)}
@@ -422,7 +425,7 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
    24px tall -- smaller than a button, still a target -- and underlined, because
    that is what says "this opens something". Status signals are plain text in
    their own colour and do not react. */
-.foot{display:flex;flex-wrap:wrap;align-items:center;gap:0 9px;margin-top:6px;min-width:0;
+.foot{display:flex;flex-wrap:wrap;align-items:center;gap:0 9px;margin-top:3px;min-width:0;
   font:11.5px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--grey);
   font-variant-numeric:tabular-nums}
 .foot>span{min-height:24px;line-height:24px;white-space:nowrap;min-width:0;max-width:100%;
@@ -475,7 +478,7 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
    footer: the whole row is the target and it selects the workspace. Recessed by losing the card's fill, not by fading: an opacity
    dim took the name under 4.5:1. */
 .row.quiet{background:transparent;border:1px solid var(--line);
-  padding:5px 10px;margin-bottom:5px}
+  padding:3px 9px;margin-bottom:3px}
 .row.quiet>.fold>.foot{margin-top:2px}
 .row.quiet>.top{min-height:22px}
 .row.quiet>.top>.chips{display:inline-flex;flex:none;flex-wrap:nowrap;gap:5px;margin:0}
@@ -484,7 +487,7 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
 .row.quiet>.top>.cost{margin-left:0;font:11.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
   font-variant-numeric:tabular-nums}
 .sect{color:var(--grey);font:600 10.5px/1.3 system-ui;letter-spacing:.08em;text-transform:uppercase;
-  margin:12px 0 5px;padding-top:8px;border-top:1px solid var(--line)}
+  margin:7px 0 3px;padding-top:4px;border-top:1px solid var(--line)}
 
 /* --- muted and tucked (the app's, read from tucked.json) ----------------- */
 /* Muted: greyed (never by opacity: the contrast check could not see it) until it needs you. Tucked: out of the list, in a collapsed
@@ -515,7 +518,7 @@ details.tucked[open]>summary::before{content:"\25BE  "}
    that needs you or is broken also shows its line and its filled button while
    closed. Its header (at least 34px tall) jumps; its caret folds. A family
    with no parent row gets a shell card named by its label (.shell). */
-.kids{margin-top:9px;background:var(--bg-kids);border-radius:8px;padding:0 7px}
+.kids{margin-top:5px;background:var(--bg-kids);border-radius:8px;padding:0 7px}
 .kids>.row.kid{background:transparent;border:0;border-top:1px solid var(--line);border-radius:0;
   margin:0;padding:0 2px}
 .kids>.row.kid:first-child{border-top:0}

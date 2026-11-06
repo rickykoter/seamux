@@ -466,19 +466,34 @@ function __boardRender(d) {
   // Every card folds in place. Unfolded by default are the cards that ask
   // something of you -- waiting and broken -- and nothing else; a child starts
   // folded, its family card already says what it is. What you fold or unfold
-  // by hand is remembered as id -> [open, tier] on #rows (data-fold), which
-  // survives a push for the same reason data-prev does. The tier is kept so a
-  // card that changes tier drops the choice and takes its new tier's default:
-  // a quiet card you folded that starts waiting on you opens itself. Ids that
-  // left the board, or changed tier, are not written back, so it cannot grow.
+  // by hand is remembered as id -> [open, tier, last seen] on #rows
+  // (data-fold), which survives a push for the same reason data-prev does,
+  // and in localStorage, which survives the page loading again (a summon, a
+  // server restart). A choice made by hand holds whatever the card's tier
+  // does: a folded card that starts waiting on you stays folded, and its
+  // filled first chip on the header (.fq) is what says so. An id off the
+  // board keeps its choice for a week, so a workspace that drops out of one
+  // push comes back as you left it, and the map cannot grow without end.
+  var FOLD_KEY = "crew.board.fold", FOLD_KEEP_MS = 7 * 86400000, foldNow = Date.now();
+  var foldLS = null;
+  try { foldLS = window.localStorage || null; } catch (e) { foldLS = null; }
+  // No data-fold yet: this page just loaded, so the browser's copy is the memory.
+  var foldRaw = host.getAttribute("data-fold");
+  if (foldRaw === null || foldRaw === undefined) {
+    try { foldRaw = foldLS && foldLS.getItem(FOLD_KEY); } catch (e) { foldRaw = null; }
+  }
   var fold = {};
-  try { fold = JSON.parse(host.getAttribute("data-fold") || "{}"); } catch (e) { fold = {}; }
+  try { fold = JSON.parse(foldRaw || "{}"); } catch (e) { fold = {}; }
   if (!fold || typeof fold !== "object" || Array.isArray(fold)) fold = {};
   var keptFold = {};
+  // ⌘. in the app opens the card it jumped to for the visit (intent.js
+  // peekTo): open on every push while it lasts, and never written as a choice.
+  var peek = host.getAttribute("data-peek") || "";
   function isOpen(id, kind, isKid) {
-    var f = fold[id];
-    if (Array.isArray(f) && f[1] === kind) { keptFold[id] = f; return !!f[0]; }
-    return !isKid && (kind === "attend" || kind === "wilt");
+    var f = fold[id], open;
+    if (Array.isArray(f)) { keptFold[id] = [f[0] ? 1 : 0, f[1] || kind, foldNow]; open = !!f[0]; }
+    else open = !isKid && (kind === "attend" || kind === "wilt");
+    return open || (!!peek && id === peek);
   }
 
   // The opening tag every row shares, card or sub-row.
@@ -744,7 +759,13 @@ function __boardRender(d) {
     return sect + card(g.lead, kids, g.kids.length ? rollup(g.kids, g.lead.kind) : "", g.kids.length ? g : null);
   }).join("") :
     '<div class="empty">Nothing is waiting on you.<br>' + esc(d.quiet || "") + "</div>") + tuckSect;
-  host.setAttribute("data-fold", JSON.stringify(keptFold));
+  for (var fid in fold) {
+    var ff = fold[fid];
+    if (!(fid in keptFold) && Array.isArray(ff) && foldNow - (+ff[2] || foldNow) < FOLD_KEEP_MS) keptFold[fid] = ff;
+  }
+  var foldOut = JSON.stringify(keptFold);
+  host.setAttribute("data-fold", foldOut);
+  try { if (foldLS) foldLS.setItem(FOLD_KEY, foldOut); } catch (e) { /* storage full or off: the page's copy still holds */ }
   // With quiet workspaces now rendered as rows, #quiet is only reached when there
   // are no rows at all -- and in that case the .empty block above has already said
   // it. Echoing it there put the same sentence on the page twice.
