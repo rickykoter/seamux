@@ -485,13 +485,19 @@ function __boardRender(d) {
   var fold = {};
   try { fold = JSON.parse(foldRaw || "{}"); } catch (e) { fold = {}; }
   if (!fold || typeof fold !== "object" || Array.isArray(fold)) fold = {};
+  // An entry is [open, tier, last seen, chosen at]. Another board page on
+  // this origin may have chosen since: its newer choices are taken here.
+  var chosen = function (f) { return Array.isArray(f) ? +(f[3] || f[2]) || 0 : 0; };
+  var stored = {};
+  try { stored = (foldLS && JSON.parse(foldLS.getItem(FOLD_KEY) || "{}")) || {}; } catch (e) { stored = {}; }
+  for (var sk in stored) if (Array.isArray(stored[sk]) && chosen(stored[sk]) > chosen(fold[sk])) fold[sk] = stored[sk];
   var keptFold = {};
   // ⌘. in the app opens the card it jumped to for the visit (intent.js
   // peekTo): open on every push while it lasts, and never written as a choice.
   var peek = host.getAttribute("data-peek") || "";
   function isOpen(id, kind, isKid) {
     var f = fold[id], open;
-    if (Array.isArray(f)) { keptFold[id] = [f[0] ? 1 : 0, f[1] || kind, foldNow]; open = !!f[0]; }
+    if (Array.isArray(f)) { keptFold[id] = [f[0] ? 1 : 0, f[1] || kind, foldNow, chosen(f)]; open = !!f[0]; }
     else open = !isKid && (kind === "attend" || kind === "wilt");
     return open || (!!peek && id === peek);
   }
@@ -765,7 +771,23 @@ function __boardRender(d) {
   }
   var foldOut = JSON.stringify(keptFold);
   host.setAttribute("data-fold", foldOut);
-  try { if (foldLS) foldLS.setItem(FOLD_KEY, foldOut); } catch (e) { /* storage full or off: the page's copy still holds */ }
+  // Another board page on this origin (cmux's Dock and the app's both frame
+  // it) writes the same key: what goes back is the newer choice per card,
+  // by when each was chosen, so one page cannot undo the other's fold.
+  try {
+    if (foldLS) {
+      var theirs = {};
+      try { theirs = JSON.parse(foldLS.getItem(FOLD_KEY) || "{}") || {}; } catch (e) { theirs = {}; }
+      var merged = {};
+      for (var mk in keptFold) merged[mk] = keptFold[mk];
+      for (var tk in theirs) {
+        var t = theirs[tk];
+        if (!Array.isArray(t) || foldNow - (+t[2] || foldNow) >= FOLD_KEEP_MS) continue;
+        if (!(tk in merged) || chosen(t) > chosen(merged[tk])) merged[tk] = t;
+      }
+      foldLS.setItem(FOLD_KEY, JSON.stringify(merged));
+    }
+  } catch (e) { /* storage full or off: the page's copy still holds */ }
   // With quiet workspaces now rendered as rows, #quiet is only reached when there
   // are no rows at all -- and in that case the .empty block above has already said
   // it. Echoing it there put the same sentence on the page twice.

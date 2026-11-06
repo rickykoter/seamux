@@ -122,7 +122,11 @@ pub fn last_user_text(payload: &Value) -> String {
         }
         let text = text_of(msg);
         let text = text.trim();
-        if text.starts_with('<') || text.starts_with("[Request interrupted") {
+        // Claude Code's own blocks, not the person's words: a slash command,
+        // its output, a hook's or a reminder's tag, an interrupt notice. A
+        // prompt that only starts with "<" (a diff, an HTML snippet) stays.
+        const OWN: [&str; 6] = ["<command-", "<local-command-", "<system-reminder>", "<user-prompt-submit-hook>", "<bash-", "[Request interrupted"];
+        if OWN.iter().any(|p| text.starts_with(p)) {
             continue;
         }
         if !text.is_empty() {
@@ -287,7 +291,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("asked-state-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let t = dir.join("t.jsonl");
-        let lines = [
+        let mut lines = vec![
             json!({"type": "user", "message": {"content": "first ask"}}),
             json!({"type": "user", "message": {"content": [{"type": "text", "text": "ship the retry fix"}]}}),
             json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "ok"}]}}),
@@ -296,11 +300,15 @@ mod tests {
             json!({"type": "user", "message": {"content": "[Request interrupted by user]"}}),
             json!({"type": "user", "message": {"content": "<command-name>/compact</command-name>"}}),
         ];
-        std::fs::write(&t, lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
+        let write = |lines: &[Value]| std::fs::write(&t, lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
+        write(&lines);
         let payload = json!({"transcript_path": t, "crew_context": {"label": "PROJ-3", "signals": "ci:fail review:changes"}});
         let s = state_of(&payload, "Want me to retry?");
         assert_eq!(s["last_message"], "Want me to retry?");
         assert_eq!(s["last_prompt"], "ship the retry fix", "a tool's result, a meta line, an interrupt or a command block is not the person's prompt");
+        lines.push(json!({"type": "user", "message": {"content": "<div> is not closed in the page"}}));
+        write(&lines);
+        assert_eq!(state_of(&payload, "x")["last_prompt"], "<div> is not closed in the page", "a prompt that starts with < is still the person's");
         assert_eq!((s["workspace_label"].as_str(), s["signals"].as_str()), (Some("PROJ-3"), Some("ci:fail review:changes")));
         assert_eq!((s["branch"].as_str(), s["plan_phase"].as_str()), (Some("none"), Some("none")), "no cwd: none");
         let _ = std::fs::remove_dir_all(&dir);

@@ -313,6 +313,15 @@ checks.push(["fold: a card folded by hand stays folded when it starts waiting on
   checks.push(["fold: a card ⌘. is visiting renders open, and its saved choice stays folded",
     /class="row running fd open"/.test(els.rows.innerHTML) && JSON.parse(store["crew.board.fold"]).running[0] === 0]);
   delete els.rows.attrs["data-peek"];
+  // Two board pages on one origin (cmux's Dock and the app's): a choice the
+  // other page made later wins here, and this page's older one does not
+  // overwrite it in the shared copy.
+  els.rows.attrs["data-fold"] = JSON.stringify({ running: [1, "running", Date.now(), 1000] });
+  store["crew.board.fold"] = JSON.stringify({ running: [0, "running", Date.now(), 2000] });
+  render({ rows: [{ id: "running", name: "r", kind: "running", said: "s", chips: [], ref: "w" }], quiet: "" });
+  checks.push(["fold: a newer choice from another board page wins, here and in the shared copy",
+    /class="row running fd"/.test(els.rows.innerHTML) && !/class="row running fd open"/.test(els.rows.innerHTML) &&
+      JSON.parse(store["crew.board.fold"]).running[0] === 0, store["crew.board.fold"]]);
   delete sandbox.localStorage;
 }
 els.rows.attrs["data-fold"] = "{}";

@@ -180,8 +180,11 @@ export function search(rows: Row[], q: string): Hit[] {
   // Scores fall into bands TIE wide, counted down from the best one: a band
   // is a tie that priority then breaks. Bands keep the order well defined,
   // where "within TIE of each other" would not be transitive.
-  const top = Math.max(0, ...hits.map((h) => h.score));
-  const band = (h: Hit) => (top > 0 ? Math.floor((top - h.score) / (TIE * top)) : 0);
+  // Each group's bands count down from its own best: a strong tucked match
+  // must not widen the ties among live rows.
+  const group = (h: Hit) => (h.row.level ? 1 : 0);
+  const tops = [0, 1].map((g) => Math.max(0, ...hits.filter((h) => group(h) === g).map((h) => h.score)));
+  const band = (h: Hit) => { const top = tops[group(h)]; return top > 0 ? Math.floor((top - h.score) / (TIE * top)) : 0; };
   const key = new Map(hits.map((h) => [h, [h.row.level ? 1 : 0, band(h), -h.row.priority, h.row.state === "needs_input" ? 0 : 1, -h.row.since]]));
   return hits.sort((a, b) => {
     const ka = key.get(a)!, kb = key.get(b)!;

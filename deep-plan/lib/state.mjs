@@ -953,16 +953,26 @@ function words(seg, vars = null) {
 // An assignment before a command (`FOO=x make`) sets that command's
 // environment, not the shell's, and is left alone.
 function assigns(seg, vars) {
+  // A segment that starts by setting a variable to anything the shell builds
+  // ($(…) with spaces in it, backticks, another variable) leaves every name
+  // it sets unknown, whatever follows: `P=$(mktemp -d)` splits into words no
+  // test can read, and must not leave an older literal P standing.
+  const lead = seg.trim().replace(/^export\s+/, "");
+  if (/^[A-Za-z_]\w*=/.test(lead) && /[$`]/.test(lead)) {
+    for (const m of lead.matchAll(/(?:^|\s)([A-Za-z_]\w*)=/g)) vars.set(m[1], null);
+  }
   const w = words(seg, vars);
   const list = w[0] === "export" ? w.slice(1) : w;
-  if (!list.length || !list.every(a => a === null || /^[A-Za-z_]\w*=/.test(a))) return false;
-  // A null word is an expansion: which name it set is read from the raw text.
-  const raw = seg.trim().replace(/^export\s+/, "").match(/[A-Za-z_]\w*=/g) || [];
-  list.forEach((a, i) => {
-    if (a === null) { if (raw[i]) vars.set(raw[i].slice(0, -1), null); return; }
+  if (!list.length || !list.every(a => a !== null && /^[A-Za-z_]\w*=/.test(a))) {
+    // Unknown names were marked above, and the segment is still judged as a
+    // command (`P=$(x) rm f` writes). An assignment before a command
+    // (`FOO=x make`) sets that command's environment, not the shell's.
+    return false;
+  }
+  for (const a of list) {
     const k = a.indexOf("=");
     vars.set(a.slice(0, k), a.slice(k + 1));
-  });
+  }
   return true;
 }
 

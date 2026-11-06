@@ -327,11 +327,11 @@ pub fn main(args: &[String]) -> i32 {
         let live_sids: HashSet<&str> = live_recs.iter().map(|(s, _)| s.as_str()).collect();
         let mine: Vec<crew_core::status::Pane> = crew_core::status::panes(Path::new(&p.state), &ws).into_iter()
             .filter(|f| f.state != "ended" && live_sids.contains(f.session.as_str())).collect();
-        let working = if mine.is_empty() { any_running } else { crew_core::status::rollup_of(&mine).state == "working" };
+        let panes_working = if mine.is_empty() { any_running } else { crew_core::status::rollup_of(&mine).state == "working" };
         // One Claude waiting outranks another working, as the hooks' roll-up ranks them.
         if live && (asking || any_needs || pane_waits) && have_desc.contains("phase:waiting") {
             tok.push("phase:waiting".into());
-        } else if live && working {
+        } else if live && panes_working {
             tok.push("phase:working".into());
         }
         // "I could not find out" is never published as "there is nothing".

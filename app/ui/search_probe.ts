@@ -91,6 +91,12 @@ const names = (q: string, i: Inputs) => search(rowsOf(i), q).map((h) => h.row.na
   const once = names("api", i);
   const again = names("api", inputs({ ...i, tiles: [...i.tiles].reverse() }));
   ok("order: the same rows in another order rank the same", JSON.stringify(once) === JSON.stringify(again), `${once} | ${again}`);
+  // A strong tucked match must not turn a clear live win into a tie.
+  const w = inputs({
+    tiles: [t("A", "alpha", 1), t("B", "a-l-p-h-a", 2)], priority: { B: 1 },
+    tucked: [{ path: "/t", name: "alpha alpha alpha", branch: "alpha", level: "tuck", waiting: false, last: 0, workspaces: [] }],
+  });
+  ok("order: tie bands are counted within live rows, apart from tucked ones", names("alpha", w)[0] === "alpha", JSON.stringify(names("alpha", w)));
   const m = fuzzy("x", "İx");
   ok("fuzzy: marks are indices into the text as written, past a letter whose lower case is longer",
     JSON.stringify(m?.at) === "[1]", JSON.stringify(m));

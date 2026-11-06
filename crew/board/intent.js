@@ -238,10 +238,20 @@ function __boardIntent(cfg) {
     if (open) row.classList.add("open");
     else row.classList.remove("open");
     if ((host.getAttribute("data-peek") || "") === rid) host.setAttribute("data-peek", "");
-    f[rid] = [open ? 1 : 0, row.getAttribute("data-k") || "", Date.now()];
+    var now = Date.now();
+    f[rid] = [open ? 1 : 0, row.getAttribute("data-k") || "", now, now];
     var out = JSON.stringify(f);
     host.setAttribute("data-fold", out);
-    try { if (window.localStorage) window.localStorage.setItem("crew.board.fold", out); } catch (e) { /* the page's copy still holds */ }
+    // Only this card's entry goes into the shared copy, so another board
+    // page's choices for other cards stand (render.js merges by choice time).
+    try {
+      if (window.localStorage) {
+        var all = {};
+        try { all = JSON.parse(window.localStorage.getItem("crew.board.fold") || "{}") || {}; } catch (e) { all = {}; }
+        all[rid] = f[rid];
+        window.localStorage.setItem("crew.board.fold", JSON.stringify(all));
+      }
+    } catch (e) { /* the page's copy still holds */ }
   }
 
   // ⌘. in the app: open the card it jumped to for the visit, and when the

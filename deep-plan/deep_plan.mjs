@@ -464,7 +464,6 @@ function ciExec(cur) {
   return { ...cur.exec, steps: [{ kind: "run", command }] };
 }
 
-// The plan as approved (its archived spec), or {} when there is none.
 // What an amend changed, by the titles a person recognises: decisions by their
 // text, deliverables by title, quiz questions by id (reworded when the prompt
 // or options moved), and how many facts and risks came or went.
@@ -523,6 +522,7 @@ function amendmentsHtml(st) {
     `${esc(a.why)}${(a.changed || []).length ? `<br><span class="dim">${esc(a.changed.join("; "))}</span>` : ""}</li>`).join("") + "</ul>";
 }
 
+// The plan as approved (its archived spec), or {} when there is none.
 function planSpec(slug) {
   try { return JSON.parse(fs.readFileSync(path.join(KEYS_DIR, slug + ".spec.json"), "utf8")); } catch { return {}; }
 }

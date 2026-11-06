@@ -1247,6 +1247,8 @@ ok("a write chained beside the CLI is still a write",
     [`P=${REPO}/src/a.ts; echo x > "$P"`, "a redirect to a variable set to a path inside the root"],
     [`P=$(mktemp); cat > "$P"`, "a redirect to a variable set from $(…)"],
     [`P=${out}/a; P=$HOME/x; rm "$P"`, "a variable reassigned from an expansion"],
+    [`P=${out}/a; P=$(mktemp -d); rm -rf "$P/x"`, "a variable reassigned from a substitution with a space in it"],
+    [`A=$(pwd) B=${out}; rm "$B/f"`, "every name in an assignment with an expansion in it"],
     [`P=${out}/a make; rm "$P"`, "a variable set only for one command's environment"],
   ];
   for (const [c, what] of denied) ok(`gate by target: ${what} is still refused`, bash(c).status === 2, bash(c).stderr);

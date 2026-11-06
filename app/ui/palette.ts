@@ -69,6 +69,8 @@ export class Palette {
   private sel = 0;
   /** The selected row's key: a frame that re-ranks the list keeps it selected. */
   private selKey = "";
+  /** The selection the list was last scrolled to. */
+  private scrolledTo = "";
   private home = "";
   /** Show a workspace's pane in the Dock (main.ts: tabs, then DockView.jump). */
   onJump: (ws: string, pane: string) => void = () => {};
@@ -171,11 +173,17 @@ export class Palette {
     else this.close();
   }
 
+  /** Open it afresh; already open (⌥⇧Space again), keep what is typed. */
   open(): void {
+    if (!this.el.hidden) {
+      this.input.focus();
+      return;
+    }
     this.el.hidden = false;
     this.input.value = "";
     this.sel = 0;
     this.selKey = "";
+    this.scrolledTo = "";
     this.rows = rowsOf(this.inputs());
     this.draw();
     this.input.focus();
@@ -216,7 +224,12 @@ export class Palette {
       kids.push(this.rowEl(h, i));
     });
     this.list.replaceChildren(...kids);
-    this.list.querySelector(".palette-row.sel")?.scrollIntoView({ block: "nearest" });
+    // Brought into view only when the selection moves: a frame that redraws
+    // the same selection leaves the list where the person scrolled it.
+    if (this.selKey !== this.scrolledTo) {
+      this.scrolledTo = this.selKey;
+      this.list.querySelector(".palette-row.sel")?.scrollIntoView({ block: "nearest" });
+    }
     this.drawPreview(this.shown[this.sel]);
   }
 
