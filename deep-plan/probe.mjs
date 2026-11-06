@@ -4568,6 +4568,32 @@ if (want("families")) {
     cli("open-gate", "example-auth-api");
   }
 
+  // family open: a workspace and session per workstream, through seamux's
+  // workspace-open on a host that can open one, and words anywhere else.
+  {
+    const FAKE = path.join(TMP, "fake-seamux.sh"), LOG = path.join(TMP, "fake-seamux.log");
+    fs.writeFileSync(FAKE, `#!/bin/bash\nprintf '%s\\n' "$*" >> "${LOG}"\n` +
+      `case "$2" in *ui) echo '{"state":"already","workspace":"W2","path":"'"$2"'"}' ;; *) echo '{"state":"opened","workspace":"W7","id":"W7","path":"'"$2"'"}' ;; esac\n`);
+    fs.chmodSync(FAKE, 0o755);
+    const run = (env, ...a) => spawnSync("node", [path.join(HERE, "deep_plan.mjs"), "family", "open", ...a],
+      { encoding: "utf8", env: { ...ENV, ...env }, cwd: REPO });
+    let r = run({ SEAMUX_HOST: "seamux", SEAMUX_BIN: FAKE }, fam.slug);
+    const calls = fs.existsSync(LOG) ? fs.readFileSync(LOG, "utf8").trim().split("\n") : [];
+    ok("family open asks seamux for each workstream, --if-missing, with its first prompt",
+      r.status === 0 && calls.length === 3 && calls.every(c => /^workspace-open \S+ --if-missing --json --prompt This worktree is workstream /.test(c)) &&
+      calls.some(c => c.includes(API)) && calls.some(c => c.includes(UI)), r.stdout + r.stderr + calls.join("|"));
+    ok("…and says what it opened and what was already open",
+      /example-auth-api: opened W7 in /.test(r.stdout) && /example-auth-ui: W2 already works in /.test(r.stdout), r.stdout);
+    r = run({ SEAMUX_HOST: "terminal", SEAMUX_BIN: FAKE }, fam.slug);
+    ok("where no workspace can be opened, family open says where to start each session and calls nothing",
+      r.status === 0 && /example-auth-ui: start a Claude session in .* and tell it: This worktree is workstream example-auth-ui/.test(r.stdout) &&
+      fs.readFileSync(LOG, "utf8").trim().split("\n").length === 3, r.stdout);
+    r = run({ SEAMUX_HOST: "seamux", SEAMUX_BIN: path.join(TMP, "no-such-seamux") }, fam.slug);
+    ok("with no seamux to call, family open fails and names the worktrees", r.status === 1 && /no seamux at /.test(r.stdout), r.stdout);
+    r = run({}, "example-not-a-family");
+    ok("family open on a plan in no family is refused", r.status !== 0 && /is in no family/.test(r.stderr), r.stderr);
+  }
+
   // News: pulled at the next prompt, factual, cursor per member.
   {
     const newsAs = (cwd, event = "UserPromptSubmit") => {

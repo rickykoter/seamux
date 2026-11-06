@@ -24,6 +24,7 @@ pub mod pyjson;
 pub mod status;
 pub mod typesafe;
 pub mod upgrade;
+pub mod workspace_open;
 pub mod workspaces;
 pub mod worktree;
 
@@ -38,5 +39,6 @@ pub const TOOLS: &[(&str, fn(&[String]) -> i32)] = &[
     ("families", families::main),
     ("pricing", pricing::main),
     ("typesafe", typesafe::main),
+    ("workspace-open", workspace_open::main),
     ("workspaces", workspaces::main),
 ];
