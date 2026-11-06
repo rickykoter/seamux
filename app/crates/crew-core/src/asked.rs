@@ -23,11 +23,14 @@ const YES: i32 = 0;
 const NO: i32 = 1;
 const UNKNOWN: i32 = 2;
 
+/// What the other fields of the state are, said once to each question.
+const CONTEXT: &str = " The other fields are context for judging it: `last_prompt` is what the user last asked, `workspace_label` and `branch` name the work, `plan_phase` is its plan's phase (\"none\" without one), and `signals` holds the workspace's pull request, CI and review state as tokens such as ci:fail or review:changes.";
+
 fn questions() -> Value {
     json!({
         "blocked_on_user": {
             "type": "noul",
-            "instructions": "`last_message` is the final message an AI coding agent wrote before it stopped and handed control back to its user. Is the agent blocked on the user: does the message ask a question, request a decision, approval, or missing information that the agent needs before it can carry on with the task it was given?",
+            "instructions": format!("{}{}", "`last_message` is the final message an AI coding agent wrote before it stopped and handed control back to its user. Is the agent blocked on the user: does the message ask a question, request a decision, approval, or missing information that the agent needs before it can carry on with the task it was given?", CONTEXT),
             "criteria": {
                 "true": "The task is unfinished and waits on the user's answer: a direct question, a choice between options, a request to confirm a risky step, or a request for credentials, files or facts.",
                 "false": "The task is finished or the message only reports results. A closing offer of optional further work (\"want me to open a PR?\", \"let me know if...\") does not block anything."
@@ -35,7 +38,7 @@ fn questions() -> Value {
         },
         "stuck": {
             "type": "noul",
-            "instructions": "`last_message` is the final message an AI coding agent wrote before it stopped. Did the agent stop on a failure it could not resolve by itself — an error, missing dependency, or repeated failed attempts that left it unable to continue its task?",
+            "instructions": format!("{}{}", "`last_message` is the final message an AI coding agent wrote before it stopped. Did the agent stop on a failure it could not resolve by itself — an error, missing dependency, or repeated failed attempts that left it unable to continue its task?", CONTEXT),
             "criteria": {
                 "true": "The agent stopped on an unresolved failure: an error it tried and could not fix, a missing tool, credential or dependency, or the same attempt failing repeatedly.",
                 "false": "The agent finished, made progress, or stopped for an ordinary reason such as asking a question, offering options, or reporting results."
@@ -43,7 +46,7 @@ fn questions() -> Value {
         },
         "urgency": {
             "type": "score",
-            "instructions": "`last_message` is the final message an AI coding agent wrote before it stopped. How urgently does this message need its human's attention?",
+            "instructions": format!("{}{}", "`last_message` is the final message an AI coding agent wrote before it stopped. How urgently does this message need its human's attention?", CONTEXT),
             "criteria": [
                 "Routine progress or completion; nothing is requested, nothing failing.",
                 "Optional follow-up or a minor preference; safe to leave either way.",
@@ -95,16 +98,76 @@ pub fn last_assistant_text(payload: &Value) -> std::io::Result<String> {
     Ok(String::new())
 }
 
+/// The person's last prompt of the turn: the newest user record in the
+/// transcript's tail whose content is their own text. Not a tool's result,
+/// and not what Claude Code writes as a user line itself (meta lines, a
+/// compaction summary, an interrupt notice, a slash command's or reminder's
+/// tag block), as crew-store's prompt_of reads prompts. A prompt more than
+/// the tail back is not found, and the state says "" for it.
+pub fn last_user_text(payload: &Value) -> String {
+    let path = payload.get("transcript_path").and_then(Value::as_str).unwrap_or("");
+    if path.is_empty() {
+        return String::new();
+    }
+    let Ok(tail) = read_tail(Path::new(path), TAIL_BYTES) else { return String::new() };
+    for line in splitlines(&tail).into_iter().rev() {
+        let Ok(rec) = serde_json::from_str::<Value>(line) else { continue };
+        let flag = |k: &str| rec.get(k).and_then(Value::as_bool) == Some(true);
+        if rec.get("type").and_then(Value::as_str) != Some("user") || flag("isMeta") || flag("isCompactSummary") {
+            continue;
+        }
+        let msg = rec.get("message").unwrap_or(&Value::Null);
+        if msg.get("content").and_then(Value::as_array).is_some_and(|a| a.iter().any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))) {
+            continue;
+        }
+        let text = text_of(msg);
+        let text = text.trim();
+        if text.starts_with('<') || text.starts_with("[Request interrupted") {
+            continue;
+        }
+        if !text.is_empty() {
+            return text.to_string();
+        }
+    }
+    String::new()
+}
+
+/// The last MAX_CHARS characters of `s`.
+fn tail_chars(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    chars[chars.len().saturating_sub(MAX_CHARS)..].iter().collect()
+}
+
+/// What Jev is shown at turn end, the shape the sweep uses (ADR: the
+/// turn-end judgment sees the turn's context): the last message and prompt,
+/// the branch and the plan phase from the payload's cwd, and what the hook
+/// adds as `crew_context` (the workspace's label and its pr:, ci: and
+/// review: tokens). Tool output and earlier turns are not sent.
+pub fn state_of(payload: &Value, text: &str) -> Value {
+    let cwd = payload.get("cwd").and_then(Value::as_str).unwrap_or("");
+    let ctx = payload.get("crew_context").cloned().unwrap_or(Value::Null);
+    let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let branch = if cwd.is_empty() { String::new() } else { crate::workspaces::branch(cwd) };
+    let phase = if cwd.is_empty() { String::new() } else { crate::workspaces::protects(cwd).phase };
+    json!({
+        "last_message": tail_chars(text),
+        "last_prompt": tail_chars(&last_user_text(payload)),
+        "workspace_label": s(&ctx, "label"),
+        "branch": if branch.is_empty() { "none".to_string() } else { branch },
+        "plan_phase": if phase.is_empty() { "none".to_string() } else { phase },
+        "signals": s(&ctx, "signals"),
+    })
+}
+
 /// `round(x, 3)`.
 fn round3(x: f64) -> f64 {
     format!("{x:.3}").parse().unwrap_or(x)
 }
 
 /// (p_blocked, extras): extras carries the ranking answers, best-effort.
-pub fn ask(key: &str, text: &str) -> Result<(f64, Map<String, Value>), String> {
-    let chars: Vec<char> = text.chars().collect();
-    let tail: String = chars[chars.len().saturating_sub(MAX_CHARS)..].iter().collect();
-    let answers = typesafe::ask(key, &json!({"last_message": tail}), &questions())?;
+/// `state` is `state_of`'s, or any object with a `last_message`.
+pub fn ask(key: &str, state: &Value) -> Result<(f64, Map<String, Value>), String> {
+    let answers = typesafe::ask(key, state, &questions())?;
     let mut extras = Map::new();
     let stuck = answers.pointer("/stuck/noul").and_then(num);
     let urgency = answers.pointer("/urgency/score").and_then(num);
@@ -176,7 +239,7 @@ pub fn main(args: &[String]) -> i32 {
                 if text.is_empty() {
                     return Ok(None);
                 }
-                let (p, extras) = ask(&key, &text)?;
+                let (p, extras) = ask(&key, &state_of(&payload, &text))?;
                 Ok(Some((p, extras, text)))
             };
             match run() {
@@ -217,5 +280,29 @@ mod tests {
     fn rounding() {
         assert_eq!(round3(0.12), 0.12);
         assert_eq!(round3(2.10049), 2.1);
+    }
+
+    #[test]
+    fn the_state_carries_the_last_prompt_and_the_hooks_context() {
+        let dir = std::env::temp_dir().join(format!("asked-state-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let t = dir.join("t.jsonl");
+        let lines = [
+            json!({"type": "user", "message": {"content": "first ask"}}),
+            json!({"type": "user", "message": {"content": [{"type": "text", "text": "ship the retry fix"}]}}),
+            json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "ok"}]}}),
+            json!({"type": "user", "message": {"content": [{"type": "tool_result", "content": "exit 0"}]}}),
+            json!({"type": "user", "isMeta": true, "message": {"content": "Caveat: a meta line"}}),
+            json!({"type": "user", "message": {"content": "[Request interrupted by user]"}}),
+            json!({"type": "user", "message": {"content": "<command-name>/compact</command-name>"}}),
+        ];
+        std::fs::write(&t, lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
+        let payload = json!({"transcript_path": t, "crew_context": {"label": "PROJ-3", "signals": "ci:fail review:changes"}});
+        let s = state_of(&payload, "Want me to retry?");
+        assert_eq!(s["last_message"], "Want me to retry?");
+        assert_eq!(s["last_prompt"], "ship the retry fix", "a tool's result, a meta line, an interrupt or a command block is not the person's prompt");
+        assert_eq!((s["workspace_label"].as_str(), s["signals"].as_str()), (Some("PROJ-3"), Some("ci:fail review:changes")));
+        assert_eq!((s["branch"].as_str(), s["plan_phase"].as_str()), (Some("none"), Some("none")), "no cwd: none");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

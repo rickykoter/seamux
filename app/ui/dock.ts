@@ -24,6 +24,8 @@ export class DockView {
   /** The workspace ⌘. jumped to, while it is still the one shown: the board
    *  opens its card for the visit without keeping that as a choice. */
   private peek = "";
+  /** Each workspace's priority from the turn-end judgments (views:frame). */
+  private priority: Record<string, number> = {};
   private note = document.createElement("p");
   private sheet = new Sheet(true);
   private origin: string | null = null;
@@ -125,14 +127,16 @@ export class DockView {
       this.tiles = e.payload.tiles;
       this.fallback();
     });
-    await listen<{ decisions?: Decision[]; levels?: Levels }>("views:frame", (e) => {
+    await listen<{ decisions?: Decision[]; levels?: Levels; priority?: Record<string, number> }>("views:frame", (e) => {
       this.decisions = e.payload.decisions ?? [];
       this.levels = e.payload.levels ?? {};
+      this.priority = e.payload.priority ?? {};
       this.fallback();
     });
-    const [w, v] = await Promise.all([invoke<WallFrame | null>("wall_frame"), invoke<{ decisions?: Decision[] } | null>("views_frame")]);
+    const [w, v] = await Promise.all([invoke<WallFrame | null>("wall_frame"), invoke<{ decisions?: Decision[]; priority?: Record<string, number> } | null>("views_frame")]);
     if (w) this.tiles = w.tiles;
     if (v?.decisions) this.decisions = v.decisions;
+    if (v?.priority) this.priority = v.priority;
     this.fallback();
     await this.frameBoard();
   }
@@ -140,11 +144,13 @@ export class DockView {
   /** ⌘.: the next workspace that needs the person, after the one shown,
    *  wrapping. Asked first (a question, a pane waiting on you), then a
    *  command that died, then an agent working for over ten minutes, then a
-   *  failed check; oldest first within each. False when none needs you. */
+   *  failed check. Within each, the higher priority first (the turn-end
+   *  judgment's, from views:frame), then the oldest. False when none needs you. */
   nextAttention(): boolean {
     const now = Date.now();
     const agents = this.tiles.filter((t) => t.agent && t.state !== "ended");
-    const byAge = <T extends { since: number }>(xs: T[]) => [...xs].sort((a, b) => a.since - b.since);
+    const pri = (ws: string) => this.priority[ws] ?? 0;
+    const byAge = <T extends { ws: string; since: number }>(xs: T[]) => [...xs].sort((a, b) => pri(b.ws) - pri(a.ws) || a.since - b.since);
     const asked = [
       ...this.decisions.filter((d) => d.kind === "question" || d.kind === "asked"),
       ...agents.filter((t) => t.state === "needs_input").map((t) => ({ ws: t.workspace, since: t.since })),

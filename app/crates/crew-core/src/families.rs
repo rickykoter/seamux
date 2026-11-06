@@ -25,7 +25,17 @@ fn tier(r: &Value) -> i64 {
 }
 
 fn urgency(r: &Value) -> f64 {
-    match r.get("urgency") {
+    num(r, "urgency")
+}
+
+/// The board's within-tier order (crew-board's judgments::priority_for),
+/// ahead of urgency; 0 when a row carries none.
+fn priority(r: &Value) -> f64 {
+    num(r, "priority")
+}
+
+fn num(r: &Value, k: &str) -> f64 {
+    match r.get(k) {
         Some(Value::Number(n)) => n.as_f64().unwrap_or(0.0),
         Some(Value::String(s)) if !s.is_empty() => s.trim().parse().unwrap_or(0.0),
         Some(Value::Bool(true)) => 1.0,
@@ -40,16 +50,18 @@ fn family(r: &Value) -> Option<String> {
     }
 }
 
-/// A row's own sort key, as rank() orders it: tier, then urgency, then gather order.
+/// A row's own sort key, as rank() orders it: tier, then priority, then
+/// urgency, then gather order.
 #[derive(Clone, Copy, PartialEq)]
-struct Key(i64, f64, usize);
+struct Key(i64, f64, f64, usize);
 
 impl Key {
     fn cmp(&self, o: &Key) -> Ordering {
         self.0
             .cmp(&o.0)
             .then(o.1.partial_cmp(&self.1).unwrap_or(Ordering::Equal))
-            .then(self.2.cmp(&o.2))
+            .then(o.2.partial_cmp(&self.2).unwrap_or(Ordering::Equal))
+            .then(self.3.cmp(&o.3))
     }
 }
 
@@ -60,7 +72,7 @@ pub fn group(rows: Vec<Value>, quiet: Vec<Value>) -> (Vec<Value>, Vec<Value>) {
         let quiet = all.split_off(n_rows);
         return (all, quiet);
     }
-    let own = |i: usize, r: &Value| Key(tier(r), urgency(r), i);
+    let own = |i: usize, r: &Value| Key(tier(r), priority(r), urgency(r), i);
 
     // Families in order of first appearance, members in gather order.
     let mut fams: Vec<(String, Vec<usize>)> = Vec::new();

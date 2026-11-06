@@ -15,6 +15,20 @@
 use crate::events::{self, line, Hook};
 use crate::spawn;
 
+/// Workspace `ws`'s description as crew-sync last published it, from a file:
+/// the board's sidebar cache on cmux (board-sidebar.json in crew's state
+/// dir), else the tmux backend's registry. "" when neither knows it.
+fn described(state: &std::path::Path, ws: &str) -> String {
+    let cached = std::fs::read_to_string(state.join("board-sidebar.json")).ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v.as_object().and_then(|m| m.iter().find(|(k, _)| k.eq_ignore_ascii_case(ws)).map(|(_, e)| e.clone())))
+        .and_then(|e| e.pointer("/row/desc").and_then(serde_json::Value::as_str).map(String::from));
+    cached.or_else(|| {
+        crew_core::backend::tmux::TmuxBackend::default().facts().ok()?
+            .into_iter().find(|(id, _, _)| id.eq_ignore_ascii_case(ws)).map(|(_, d, _)| d)
+    }).unwrap_or_default()
+}
+
 pub fn main(args: &[String]) -> i32 {
     use std::io::Write;
     let Some((cmux, ws, state)) = events::guard() else { return 0 };
@@ -22,8 +36,21 @@ pub fn main(args: &[String]) -> i32 {
     let size_at_stop = args.first().cloned().unwrap_or_default();
     let log = h.state.join("asked.log");
 
+    // What the judge shows Jev beyond the transcript (asked::state_of): the
+    // workspace's label and its pull request, CI and review tokens. Both from
+    // files, never a cmux call: a judgment moves nothing in cmux.
+    let label = h.label();
+    let signals: Vec<String> = described(&h.state, &h.ws).split_whitespace()
+        .filter(|t| ["pr:", "ci:", "review:"].iter().any(|p| t.starts_with(p))).map(String::from).collect();
+    let judged = match serde_json::from_str::<serde_json::Value>(&h.payload) {
+        Ok(serde_json::Value::Object(mut m)) => {
+            m.insert("crew_context".into(), serde_json::json!({"label": label, "signals": signals.join(" ")}));
+            serde_json::Value::Object(m).to_string()
+        }
+        _ => h.payload.clone(),
+    };
     let judge = spawn::tool("asked", &["judge"]);
-    let Some((rc, out)) = spawn::run(&judge.argv, Some(&h.payload), Some(&log)) else { return 0 };
+    let Some((rc, out)) = spawn::run(&judge.argv, Some(&judged), Some(&log)) else { return 0 };
     let out = events::strip_newlines(&out).to_string();
     // 0 = asked, 1 = not asked: both carry a judgment worth caching.
     if rc != 0 && rc != 1 {
@@ -47,12 +74,21 @@ pub fn main(args: &[String]) -> i32 {
         let _ = writeln!(f, "{hms} {} p={first} extras={shown}", h.ws);
     }
 
-    // The board's ranking cache, keyed by cwd. Best-effort.
+    // The board's ranking cache, keyed by the pane (cwd kept in the entry, and
+    // the workspace, so a board row finds its panes' judgments). Best-effort.
     if !extras.is_empty() {
         let cwd = h.cwd();
         let size = if size_at_stop.is_empty() { "0".to_string() } else { size_at_stop.clone() };
+        let values = match serde_json::from_str::<serde_json::Value>(&extras) {
+            Ok(serde_json::Value::Object(mut m)) => {
+                m.insert("surface".into(), serde_json::json!(events::surface()));
+                m.insert("ws".into(), serde_json::json!(h.ws));
+                serde_json::Value::Object(m).to_string()
+            }
+            _ => extras.clone(),
+        };
         let t = spawn::tool("judgments", &["--record", &cwd, &size, &first]);
-        let _ = spawn::run(&t.argv, Some(&extras), Some(&log));
+        let _ = spawn::run(&t.argv, Some(&values), Some(&log));
     }
 
     if rc != 0 {

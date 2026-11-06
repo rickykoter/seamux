@@ -92,7 +92,21 @@ pub fn record(cwd: &str, size: i64, values: &Map<String, Value>, now: Option<f64
             entry.insert(k.into(), pyjson::float(f));
         }
     }
-    cache.insert(cwd.to_string(), Value::Object(entry));
+    // A judgment the hook recorded with its pane is keyed by that pane, so two
+    // Claudes in one worktree keep their own (ADR 0036: the pane is the unit
+    // of status); it keeps the cwd and the workspace a board row looks it up
+    // by. Without a pane, the key is the cwd, as before.
+    let s = |k: &str| values.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let surface = s("surface");
+    let key = if surface.is_empty() {
+        cwd.to_string()
+    } else {
+        entry.insert("cwd".into(), json!(cwd));
+        entry.insert("ws".into(), json!(s("ws")));
+        entry.insert("surface".into(), json!(surface));
+        format!("pane:{}", surface.to_uppercase())
+    };
+    cache.insert(key, Value::Object(entry));
     let old: Vec<String> = cache
         .iter()
         .filter(|(_, v)| {
@@ -146,12 +160,75 @@ fn cwd_of(w: &Value) -> String {
     }
 }
 
+/// A pane's state from crew's pane files, by surface; None when its file is
+/// gone. The real one reads the state dir; tests pass their own.
+type PaneState<'a> = &'a dyn Fn(&str) -> Option<String>;
+
+fn pane_state_now(surface: &str) -> Option<String> {
+    crew_core::status::read(&crate::state::state_dir(), surface).map(|p| p.state)
+}
+
+/// The judgment that speaks for a workspace's row: the newest of its panes'
+/// (entries recorded with the workspace's id). A pane entry speaks only while
+/// its pane is there and between turns: one working again is judged on a
+/// turn that is over, and one ended or with no file (closed, pruned) is gone.
+/// With no pane entry for the workspace, the entry keyed by the row's cwd, as
+/// before per-pane entries.
+fn entry_for<'a>(w: &Value, jmap: &'a Map<String, Value>, pane: PaneState) -> Option<&'a Value> {
+    let ws = crate::pyval::py_str(get(w, "id"));
+    let speaks = |e: &Value| match e.get("surface").and_then(Value::as_str).unwrap_or("") {
+        "" => true,
+        s => pane(s).is_some_and(|st| st != "working" && st != "ended"),
+    };
+    let at = |e: &Value| e.get("at").and_then(py_float).unwrap_or(0.0);
+    let mine = jmap.values()
+        .filter(|e| !ws.is_empty() && e.get("ws").and_then(Value::as_str).is_some_and(|x| x.eq_ignore_ascii_case(&ws)))
+        .filter(|e| speaks(e))
+        .max_by(|a, b| at(a).partial_cmp(&at(b)).unwrap_or(std::cmp::Ordering::Equal));
+    let any_pane = jmap.values().any(|e| e.get("ws").and_then(Value::as_str).is_some_and(|x| x.eq_ignore_ascii_case(&ws)));
+    match mine {
+        Some(e) => Some(e),
+        // A workspace whose panes were all judged and all work again: no word.
+        None if any_pane => None,
+        None => jmap.get(&cwd_of(w)).filter(|e| truthy(e)),
+    }
+}
+
+/// How much a row needs its human now, 0 to 1, for ordering within a tier
+/// (ADR: the turn-end judgment ranks by one priority). From the judgment:
+/// 0.6 × max(blocked, urgency/3) + 0.2 × stuck; plus 0.2 × how long it has
+/// waited (minutes / 60, at most 1), counted from the judgment's turn end,
+/// else from its panes' last write. A running row waits on nobody, so it has
+/// no age term. 0 when nothing is known.
+pub fn priority_for(w: &Value, jmap: &Map<String, Value>, now: f64) -> f64 {
+    priority_with(w, jmap, now, &pane_state_now)
+}
+
+fn priority_with(w: &Value, jmap: &Map<String, Value>, now: f64, pane: PaneState) -> f64 {
+    let f = |e: &Value, k: &str| e.get(k).and_then(py_float).unwrap_or(0.0).clamp(0.0, 3.0);
+    let running = truthy(get(w, "running"));
+    let (jev, since) = match entry_for(w, jmap, pane) {
+        Some(e) => {
+            let jev = 0.6 * f(e, "blocked").min(1.0).max(f(e, "urgency") / 3.0) + 0.2 * f(e, "stuck").min(1.0);
+            (jev, e.get("at").and_then(py_float).unwrap_or(0.0))
+        }
+        None => {
+            let ws = crate::pyval::py_str(get(w, "id"));
+            let last = crew_core::status::panes(&crate::state::state_dir(), &ws).iter().map(|p| p.at).max().unwrap_or(0);
+            (0.0, last as f64 / 1000.0)
+        }
+    };
+    let age = if running || since <= 0.0 { 0.0 } else { ((now - since) / 3600.0).clamp(0.0, 1.0) };
+    let p = jev + 0.2 * age;
+    (p * 1000.0).round() / 1000.0
+}
+
 /// Should this workspace's row read as stuck? Never mid-turn.
 pub fn stuck_for(w: &Value, jmap: &Map<String, Value>, threshold: Option<f64>) -> bool {
     if truthy(get(w, "running")) {
         return false;
     }
-    let e = match jmap.get(&cwd_of(w)) {
+    let e = match entry_for(w, jmap, &pane_state_now) {
         Some(e) if truthy(e) => e,
         _ => return false,
     };
@@ -164,7 +241,7 @@ pub fn stuck_for(w: &Value, jmap: &Map<String, Value>, threshold: Option<f64>) -
 
 /// The within-tier sort key; 0 when unknown, so unjudged rows keep their order.
 pub fn urgency_for(w: &Value, jmap: &Map<String, Value>) -> f64 {
-    match jmap.get(&cwd_of(w)) {
+    match entry_for(w, jmap, &pane_state_now) {
         Some(e) if truthy(e) => match e.get("urgency") {
             None => 0.0,
             Some(v) => py_float(v).unwrap_or(0.0),
@@ -274,5 +351,47 @@ mod tests {
         assert_eq!(r["/w/typing"]["stuck"], json!(false));
         assert_eq!(r["/w/old"], json!({"stuck": false, "urgency": 0.0}));
         assert_eq!(r["/w/none"], json!({"stuck": false, "urgency": 0.0}));
+    }
+
+    /// Two panes in one worktree keep their own judgments; a row finds its
+    /// workspace's newest, and the old cwd-keyed entry only when it has none.
+    #[test]
+    fn a_row_takes_its_panes_newest_judgment_then_the_cwd_one() {
+        let pane = |ws: &str, s: &str, at: f64, u: f64| json!({"at": at, "ws": ws, "surface": s, "cwd": "/w/a", "urgency": u});
+        let jmap: Map<String, Value> = [
+            ("pane:P1".to_string(), pane("W1", "P1", 100.0, 1.0)),
+            ("pane:P2".to_string(), pane("W1", "P2", 200.0, 3.0)),
+            ("pane:P3".to_string(), pane("W4", "P3", 300.0, 3.0)),
+            ("/w/b".to_string(), json!({"at": 100.0, "urgency": 2.0})),
+        ].into_iter().collect();
+        let u = |w: Value, states: &[(&str, &str)]| {
+            let states: Vec<(String, String)> = states.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+            let pane = move |s: &str| states.iter().find(|(k, _)| k == s).map(|(_, v)| v.clone());
+            entry_for(&w, &jmap, &pane).and_then(|e| e.get("urgency")).and_then(Value::as_f64).unwrap_or(0.0)
+        };
+        let idle = [("P1", "idle"), ("P2", "idle"), ("P3", "idle")];
+        assert_eq!(u(json!({"id": "w1", "cwd": "/w/a"}), &idle), 3.0, "the newest pane's, any case");
+        assert_eq!(u(json!({"id": "W1", "cwd": "/w/a"}), &[("P1", "idle"), ("P2", "working")]), 1.0, "a pane at work again is skipped");
+        assert_eq!(u(json!({"id": "W1", "cwd": "/w/a"}), &[("P1", "idle")]), 1.0, "a pane with no file is gone");
+        assert_eq!(u(json!({"id": "W4", "cwd": "/w/b"}), &[("P3", "ended")]), 0.0, "its only pane ended: no word, not the cwd's");
+        assert_eq!(u(json!({"id": "W2", "cwd": "/w/b"}), &idle), 2.0, "no pane entry: the cwd's");
+        assert_eq!(u(json!({"id": "W3", "cwd": "/w/none"}), &idle), 0.0);
+    }
+
+    /// priority = 0.6 × max(blocked, urgency/3) + 0.2 × stuck + 0.2 × age (an
+    /// hour's wait is the whole age term); a running row has no age term.
+    #[test]
+    fn priority_blends_the_judgment_with_how_long_it_waited() {
+        let now = 10_000.0;
+        let jmap: Map<String, Value> = [
+            ("pane:A".to_string(), json!({"at": now - 3600.0, "ws": "W1", "surface": "A", "blocked": 0.9, "urgency": 1.5, "stuck": 0.5})),
+            ("pane:B".to_string(), json!({"at": now - 1800.0, "ws": "W2", "surface": "B", "blocked": 0.1, "urgency": 3.0})),
+        ].into_iter().collect();
+        let idle = |_: &str| Some("idle".to_string());
+        let p = |w: Value| priority_with(&w, &jmap, now, &idle);
+        assert_eq!(p(json!({"id": "W1"})), 0.84, "0.6×0.9 + 0.2×0.5 + 0.2×1");
+        assert_eq!(p(json!({"id": "W2"})), 0.7, "0.6×(3/3) + 0.2×0.5");
+        assert_eq!(p(json!({"id": "W1", "running": true})), 0.64, "running: no age term");
+        assert_eq!(p(json!({"id": "W9"})), 0.0, "nothing known");
     }
 }

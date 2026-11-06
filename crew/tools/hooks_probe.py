@@ -596,8 +596,21 @@ check("TypeSafe available: asked.sh judges the turn in the background",
       "\n".join(spawns() + log()))
 check("…and publishes phase:waiting once the judgment lands",
       wait_for(lambda: desc() == "phase:waiting"), desc())
+def judged_payload():
+    """What the judge read, without the crew_context the Rust hook adds (the
+    workspace's label and tokens it shows Jev; the frozen Python adds none)."""
+    seen = open(SEEN).read()
+    try:
+        d = json.loads(seen)
+    except ValueError:
+        return seen
+    if isinstance(d, dict) and "crew_context" in d:
+        d.pop("crew_context")
+        return d
+    return seen
 check("…with this session's payload handed over in a file",
-      wait_for(lambda: os.path.exists(SEEN)) and open(SEEN).read() == payload(),
+      wait_for(lambda: os.path.exists(SEEN))
+      and judged_payload() in (payload(), json.loads(payload())),
       open(SEEN).read() if os.path.exists(SEEN) else "never judged")
 check("…which is removed once it was read",
       wait_for(lambda: not [f for f in os.listdir(STATE) if f.startswith("asked-payload-")]),
@@ -619,9 +632,22 @@ check("asked: needs-attention, phase:waiting, the marker and a banner with the q
       "workspace status set needs-attention" in L and desc() == "phase:waiting"
       and marker("asked-ws-1") and marker("lane-ws-1")
       and f"notify --title {LABEL} --subtitle crew:blocked --body Which of the two?" in L, L)
-check("…and the ranking extras are recorded for the board, keyed by cwd",
+def recorded_values():
+    """The values judgments --record was given on stdin, as JSON, or None."""
+    for s in spawns():
+        if s.startswith("judgments.py stdin "):
+            try:
+                return json.loads(s[len("judgments.py stdin "):])
+            except ValueError:
+                return None
+    return None
+_rv = recorded_values() or {}
+# The Rust hook also names the pane and the workspace, so the board keys the
+# judgment by pane (the Python copy is frozen and sends only the scores).
+check("…and the ranking extras are recorded for the board, with the cwd",
       f"judgments.py --record {WT} {SIZE} 0.910" in spawns()
-      and 'judgments.py stdin {"stuck": 0.1, "urgency": 2.0}' in spawns(), spawns())
+      and _rv.get("stuck") == 0.1 and _rv.get("urgency") == 2.0
+      and (_rv.get("ws") in (None, "ws-1")), spawns())
 logged = open(os.path.join(STATE, "asked.log")).read()
 check("…and the judgment is logged with the workspace and p",
       "ws-1 p=0.910 extras={\"stuck\": 0.1, \"urgency\": 2.0}" in logged, logged)

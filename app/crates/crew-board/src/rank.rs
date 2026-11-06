@@ -656,6 +656,12 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
             r.insert("cost".into(), cost);
             r.insert("cost_unpriced".into(), unpriced);
             tail(&mut r, Vec::new(), json!(0), json!(""), json!(""));
+            // Quiet rows sort by when their panes last did anything (newest
+            // first); a row whose panes never wrote carries no time.
+            let active = crew_core::status::panes(&crate::state::state_dir(), &py_str(get(w, "id"))).iter().map(|p| p.at).max().unwrap_or(0);
+            if active > 0 {
+                r.insert("active".into(), json!(active));
+            }
             quiet.push(Value::Object(r));
             continue;
         };
@@ -684,6 +690,12 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
         r.insert("frac".into(), frac(plan));
         r.insert("meta".into(), json!(meta_bits.join(" · ")));
         r.insert("urgency".into(), pyjson::float(judgments::urgency_for(w, &ctx.jmap)));
+        // The within-tier order (judgments::priority_for); left off a row with
+        // nothing known, so such a board ranks as it did before.
+        let pri = judgments::priority_for(w, &ctx.jmap, ctx.now as f64);
+        if pri > 0.0 {
+            r.insert("priority".into(), pyjson::float(pri));
+        }
         r.insert("cost".into(), cost);
         r.insert("cost_unpriced".into(), unpriced);
         tail(&mut r, sigs, json!(feedby), json!(token_value(d, "feedgate")), subject);
@@ -691,6 +703,9 @@ nothing in this worktree can be edited until it passes.", pct_d(get(progress(pla
     }
 
     sort_tiers(&mut rows, true);
+    // Newest activity first; rows with no time keep their gather order, last.
+    let mut quiet = quiet;
+    quiet.sort_by_key(|r| std::cmp::Reverse(r.get("active").and_then(Value::as_u64).unwrap_or(0)));
     families::group(rows, quiet)
 }
 
@@ -705,16 +720,17 @@ fn tier(r: &Value) -> i64 {
     }
 }
 
-/// Stable sort by tier, then (with urgency) the higher urgency first.
+/// Stable sort by tier, then (with urgency) the higher priority first, then
+/// the higher urgency (a board with no priorities orders as it always did).
 fn sort_tiers(rows: &mut [Value], by_urgency: bool) {
     rows.sort_by(|a, b| {
         let t = tier(a).cmp(&tier(b));
         if !by_urgency {
             return t;
         }
-        let ua = a.get("urgency").and_then(py_float).unwrap_or(0.0);
-        let ub = b.get("urgency").and_then(py_float).unwrap_or(0.0);
-        t.then((-ua).partial_cmp(&-ub).unwrap_or(std::cmp::Ordering::Equal))
+        let f = |r: &Value, k: &str| r.get(k).and_then(py_float).unwrap_or(0.0);
+        t.then(f(b, "priority").partial_cmp(&f(a, "priority")).unwrap_or(std::cmp::Ordering::Equal))
+            .then(f(b, "urgency").partial_cmp(&f(a, "urgency")).unwrap_or(std::cmp::Ordering::Equal))
     });
 }
 

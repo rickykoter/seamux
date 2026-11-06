@@ -560,24 +560,33 @@ the phase back.
 
 It stays out of the way: the turn never waits on the network. A judgment is
 dropped if the transcript grew before it arrived, and any failure means no
-judgment, so behavior is exactly the pre-TypeSafe one. The message's last 4000
-characters go to TypeSafe; nothing else leaves the machine. Tune or turn it off in
+judgment, so behavior is exactly the pre-TypeSafe one. What goes to TypeSafe is
+the turn's context, the same kind the sweep sends: the last 4000 characters of
+Claude's final message and of your last prompt, the workspace's label and
+branch, its plan's phase, and its `pr:`, `ci:` and `review:` tokens. Tool
+output and earlier turns stay on the machine. Tune or turn it off in
 `integrations.json`: `{"typesafe": {"threshold": 0.8}}` or
 `{"typesafe": {"enabled": false}}`. Scores land in
 `~/.cache/cmux-crew/asked.log`; `crew doctor` says whether it is on.
 
 **The same request also ranks the board.** Two more questions ride along over
 the same text: whether the agent stopped on an error it could not get past,
-and a 0–3 urgency score. `asked.sh` caches the answers per worktree in
-`~/.cache/cmux-crew/judgments.json`; the board only ever reads that file — a
-push never touches the network. Policy stays in code: stuck at or above
-`typesafe.stuck_threshold` (default 0.8, provisional) files an *idle* row as
-wilt with a `stuck` badge — red CI, conflicts and blocked increments still
-outrank it, and a row mid-turn is never judged, because the judgment is about
-a turn that already ended. Urgency only orders rows *within* a tier; tier
-order never moves, and rows without a judgment keep their old order. Entries
-expire after 6h (`CREW_JUDGMENT_TTL`). No key, no cache, or any error: the
-board ranks exactly as it did before.
+and a 0–3 urgency score. The answers are cached per pane in
+`~/.cache/cmux-crew/judgments.json`, with the pane's workspace and worktree;
+the board only ever reads that file — a push never touches the network.
+Policy stays in code: stuck at or above `typesafe.stuck_threshold` (default
+0.8, provisional) files an *idle* row as wilt with a `stuck` badge — red CI,
+conflicts and blocked increments still outrank it, and a row mid-turn is never
+judged, because the judgment is about a turn that already ended. A pane that
+is working again stops counting its judgment for the same reason.
+
+Within a tier, rows sort by one priority, 0 to 1: 0.6 × the larger of blocked
+and urgency/3, plus 0.2 × stuck, plus 0.2 × how long the row has waited (an
+hour or more is the whole term; a running row has none). Quiet rows sort by
+when their panes last did anything. ⌘. in the app and its session search use
+the same priority. Tier order never moves. Entries expire after 6h
+(`CREW_JUDGMENT_TTL`). No key, no cache, or any error: rows sort by how long
+they have waited, and nothing else changes.
 
 Two things used to, and both were wrong:
 
