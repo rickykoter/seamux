@@ -38,11 +38,13 @@
   Classes render.js emits: .row + .attend/.running/.wilt/.done/.quiet + .ripple,
   .enter (a row that was not on the previous push), .up/.down (a row that changed
   position, animated with the Web Animations API rather than CSS),
-  .top > svg.dial + .own + .nm + .badge, .said (may contain <b> and <code>),
+  .top > svg.dial + .nm + .badge (framed by the app, .bs holds the badge and
+  the ⋯), .said (may contain <b> and <code>, and on an attend card a leading
+  .rsn, its reason),
   .feed > .feedbar, .pns > .pn (a pane, data-a="pane": + .agent or .term and
   its state, .wait/.work/.idle/.end/.unk/.sh, holding .pg, .pk, .pw and
   .ptag.plan/.outside), .chips > .chip (+ .pri, the one filled button; + .sig, an
-  actionable signal; + .pane on a muted card, its panes' tags), .foot > .branch/.dirty/.pr/.issue/.sig/.meta and
+  actionable signal; + .pane on a muted card, its panes' tags), .foot > .own/.branch/.dirty/.pr/.issue/.sig/.meta and
   .end > .cost + .wk (the spend and the Wake's icon, data-a="wake", which wrap
   together; also at the end of a quiet row's .top),
   .owned + .here, .empty, .sect, and for a deep-plan family: .fam on its card,
@@ -50,7 +52,7 @@
   .said.nest, and .kbody (the child's full card); .badge.roll on the card that
   counts them; .row.shell for a family whose parent has no row.
   Every row carries data-k, its tier. A row with a workspace has a .top.jumps,
-  data-a="jump", ending in .go (the arrow); a row with none has a plain .top.
+  data-a="jump"; a row with none has a plain .top.
   A row with something to fold is .fd (+ .open when unfolded): its .top starts
   with button.caret (data-a="fold"), and with no workspace the .top is
   data-a="fold" too; what folds away is .fold (.kbody on a child);
@@ -319,18 +321,23 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 /* --- a card ------------------------------------------------------------ */
 /* A card. No edge stripe: the tier is on the badge, the dial and the filled
    button (--c), and the card that needs you keeps its tinted ground, the
-   page's one loud thing. The worktree's own colour is a dot beside the name
-   (.own).
+   page's one loud thing. The worktree's own colour is the ring round the
+   row you stand in, and a dot before the branch in the footer (.own): beside
+   the name it read as a second state dot.
    The header is the jump (.top.jumps, render.js): the same target folded or
-   not, with an arrow at its end that brightens on hover; a pressed header
-   says how it went (.hit/.ok/.bad, intent.js). The caret folds. */
-.row{--c:var(--quiet);position:relative;background:var(--bg1);
+   not, its ground lifting on hover; a pressed header says how it went
+   (.hit/.ok/.bad, intent.js). The caret folds.
+   --gnd is the ground a row shows right now, for what sits over it: the ⋯
+   over the badge, the hover footer under the card. intent.js lifts a hovered
+   row's ground, so --gnd follows it once intent.js has wired #rows. */
+.row{--c:var(--quiet);--gnd:var(--bg1);position:relative;background:var(--bg1);
   border-radius:9px;padding:6px 9px;margin-bottom:4px}
+.row.attend{--gnd:var(--bg-attend)} .row.quiet{--gnd:var(--bg)}
+#rows[data-intent] .row:not(.inert):hover{--gnd:#2f3639}
+.kids>.row.kid{--gnd:var(--bg-kids)}
+#rows[data-intent] .kids>.row.kid:not(.inert):hover{--gnd:#323b40}
 .top.jumps{cursor:pointer;border-radius:6px;margin:-3px -4px;padding:3px 4px}
 .top.jumps:hover{background:rgba(255,255,255,.05)}
-.top>.go{flex:none;display:flex;margin-left:2px}
-.top>.go svg{display:block;fill:none;stroke:var(--edge);stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;transition:stroke .12s}
-.top.jumps:hover>.go svg{stroke:var(--fg)}
 .top.jumps.hit{background:rgba(255,255,255,.1)}
 .top.jumps.ok{box-shadow:inset 0 0 0 1px var(--done)}.top.jumps.bad{box-shadow:inset 0 0 0 1px var(--wilt)}
 
@@ -340,7 +347,7 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
    rolled-up family badge stays, it is the news. */
 .row.fd:not(.open)>.fold{display:none}
 .row.open>.top>.fq{display:none}
-.row.fd:not(.open)>.top.loud>.badge:not(.roll){display:none}
+.row.fd:not(.open)>.top.loud>.badge:not(.roll),.row.fd:not(.open)>.top.loud>.bs>.badge:not(.roll){display:none}
 .top>.fq{flex:none;padding:0 9px}
 .row.attend{--c:var(--attend);background:var(--bg-attend)}
 .row.running{--c:var(--running)}
@@ -352,7 +359,6 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 /* Folded, a card is its header line: a smaller dial keeps ten of them in one
    window's height. The caret and the header stay at least 24px tall. */
 .row.fd:not(.open)>.top>.dial{width:22px;height:22px}
-.own{flex:none;width:8px;height:8px;border-radius:50%;background:var(--own)}
 .nm{flex:1;min-width:0;font:600 13.5px/1.3 system-ui;color:var(--fg);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .badge{flex:none;font:700 10px/1.3 system-ui;letter-spacing:.06em;text-transform:uppercase;
@@ -360,8 +366,13 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 /* Each row colours its OWN badge (>.top>): a family card holds rows of other
    tiers, and a descendant rule painted an attend child's badge the parent's
    teal. */
-.row.attend>.top>.badge{color:var(--attend)} .row.running>.top>.badge{color:var(--running)}
-.row.wilt>.top>.badge{color:var(--wilt-tx)} .row.done>.top>.badge{color:var(--done)}
+/* A limit's pill is a phrase with a time in it ("limit · back 2:04pm"):
+   set as words, not shouted, so it costs the name less room. */
+.badge.lim{text-transform:none;letter-spacing:0;font:600 11px/1.3 system-ui}
+.row.attend>.top>.badge,.row.attend>.top>.bs>.badge{color:var(--attend)}
+.row.running>.top>.badge,.row.running>.top>.bs>.badge{color:var(--running)}
+.row.wilt>.top>.badge,.row.wilt>.top>.bs>.badge{color:var(--wilt-tx)}
+.row.done>.top>.badge,.row.done>.top>.bs>.badge{color:var(--done)}
 
 /* What the agent said: proportional, because it is a sentence, and two lines at
    most, because the card's job is to say what is next and the rest is a click
@@ -370,6 +381,8 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
   overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
   word-break:break-word}
 .said b{color:var(--fg);font-weight:600}
+/* Why a card needs you, ahead of what it said: its badge says only that it does. */
+.said .rsn{color:var(--fg);font-weight:600}
 .said code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--running)}
 
 /* Where you are standing. A ring in the worktree's OWN colour, so the card, the
@@ -443,19 +456,25 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .issue{color:var(--issue);text-decoration-color:currentColor}
 .pr:hover,.issue:hover{filter:brightness(1.25)}
 .dirty{color:var(--dirty);font-size:9px}
+/* The worktree's colour, before its branch. */
+.foot>.own{flex:none;width:8px;min-height:0;height:8px;margin-right:-4px;border-radius:50%;background:var(--own)}
 .cost{margin-left:auto;color:var(--fg2)}
 .cost.small{color:var(--grey)}
 /* What you recognise a row by on a second look: the branch, unsaved work,
    progress and spend wait for the pointer or the keyboard on the row. They
    keep their place, so the list does not shift under the pointer. PR, issue
    and status signals stay: they can be the reason to look. */
-.foot>.branch,.foot>.dirty,.foot>.meta,.foot .cost{transition:opacity .12s}
+.foot>.own,.foot>.branch,.foot>.dirty,.foot>.meta,.foot .cost{transition:opacity .12s}
 /* Only where there is a pointer to hover with: a touch screen shows them all. */
 @media (hover:hover){
-.row:not(:hover):not(:focus-within) .foot>:is(.branch,.dirty,.meta),
+.row:not(:hover):not(:focus-within) .foot>:is(.own,.branch,.dirty,.meta),
 .row:not(:hover):not(:focus-within) .foot .cost{opacity:0}
-/* With nothing else on it, the footer folds away rather than leave a blank band. */
+/* With nothing else on it, the footer folds away rather than leave a blank
+   band, and on hover it is a strip hung under the card, over what is below:
+   in the flow it pushed every row beneath it down. */
 .row:not(:hover):not(:focus-within) .foot.hov{display:none}
+.foot.hov{position:absolute;left:0;right:0;top:calc(100% - 3px);z-index:6;margin:0;padding:0 9px;
+  background:var(--gnd);border-radius:0 0 9px 9px;box-shadow:0 6px 12px rgba(0,0,0,.28)}
 }
 
 /* The Wake: an icon, not a chip, pinned to the right end of the footer (and of
@@ -509,27 +528,47 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 /* Muted (hidden until it needs you): greyed (never by opacity: the contrast check could not see it). Tucked: out of the list, in a
    collapsed "hidden · N" shelf at the end, with snoozed and settled rows; each says why. The ⋯ menu, its Hide items grouped by dividers, shows only framed by the app. */
 .row.muted{filter:saturate(.35)}
-.row.muted>.top>.nm,.row.muted>.top>.badge{color:var(--grey)}
+.row.muted>.top>.nm,.row.muted>.top>.badge,.row.muted>.top>.bs>.badge{color:var(--grey)}
 details.away>summary{cursor:pointer;list-style:none}
 details.away>summary::-webkit-details-marker{display:none}
 details.away>summary::before{content:"\25B8  ";color:var(--grey)}
 details.away[open]>summary::before{content:"\25BE  "}
+/* On the shelf every row is a quiet row's line, whatever its tier: a merged
+   row on a card's ground stood out from the rest of the shelf. */
+details.away>.row{--gnd:var(--bg);background:transparent;border:1px solid var(--line);
+  padding:3px 9px;margin-bottom:3px}
+details.away>.row>.top{min-height:22px}
+details.away>.row>.top>.nm{font-weight:500;font-size:13px;color:var(--fg2)}
 /* Why a row is on the hidden shelf: muted words, not a pill. */
 .why{flex:none;margin-left:6px;color:var(--grey);font:400 11.5px/1.2 system-ui;white-space:nowrap}
+/* A settled row's reclaim, a link in its why. */
+.why>.rcl{color:var(--fg2);cursor:pointer;text-decoration:underline;text-decoration-color:var(--edge);
+  text-decoration-thickness:1px;text-underline-offset:3px}
+.why>.rcl:hover{color:var(--fg);text-decoration-color:var(--fg)}
+/* The badge's slot. The ⋯ sits over its right end, on the row's ground, so it
+   takes no room from the name; with no badge the slot is empty and the ⋯
+   covers the end of the name instead. */
+.bs{flex:none;position:relative;display:inline-flex;align-items:center;min-height:20px}
+.bs.nob{margin-left:-7px}
 .tk{flex:none;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;
   margin-left:2px;border-radius:5px;color:var(--grey);cursor:pointer}
 .tk:hover,.row.tkopen .tk{background:var(--bg2);color:var(--fg)}
 /* The ⋯ waits for the pointer or the keyboard on its row, or its open menu,
-   as the footer facts do. It keeps its place, so nothing shifts. Touch
-   screens show it. */
+   as the footer facts do. Where there is a pointer it sits over the badge,
+   on the row's ground, so it takes no width and nothing shifts. Touch
+   screens show it in the line. */
 @media (hover:hover){
+.bs>.tk{position:absolute;right:-2px;top:50%;margin:-10px 0 0;z-index:3;
+  background:var(--gnd);box-shadow:-6px 0 6px var(--gnd)}
+.top.jumps:hover>.bs>.tk{background:linear-gradient(rgba(255,255,255,.05),rgba(255,255,255,.05)) var(--gnd)}
+.bs>.tk:hover,.row.tkopen .bs>.tk{background:var(--bg2)}
 .row:not(:hover):not(:focus-within):not(.tkopen) .tk{opacity:0}
 }
 .tk svg{width:14px;height:14px;fill:currentColor}
 .tkm{display:none}
 .row.tkopen>.top{position:relative}
-.row.tkopen .tkm{display:flex;flex-direction:column;position:absolute;right:0;top:100%;z-index:5;
-  margin-top:3px;padding:4px;min-width:120px;background:var(--bg1);border:1px solid var(--line);
+.row.tkopen .tkm{display:flex;flex-direction:column;position:absolute;right:-2px;top:100%;z-index:5;
+  margin-top:6px;padding:4px;min-width:120px;background:var(--bg1);border:1px solid var(--line);
   border-radius:7px;box-shadow:0 6px 18px rgba(0,0,0,.35)}
 .row.tkup .tkm{top:auto;bottom:100%;margin:0 0 3px}
 .tki{padding:5px 9px;border-radius:5px;font:500 12.5px/1.2 system-ui;color:var(--fg);cursor:pointer;white-space:nowrap}
