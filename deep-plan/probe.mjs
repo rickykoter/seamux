@@ -788,6 +788,11 @@ ok("mermaid theme follows the page theme",
     (rgh.match(/<div class="dp-risk-ctl">/g) || []).length === 5 &&
     rgh.includes("function riskMoved(card)") && rgh.includes("!riskMoved(card)) { ctl.hidden = true; b.hidden = false; }") &&
     rgh.includes("if (riskMoved(card)) riskOpen(card)"));
+  ok("a risk's change link shows on hover or focus of its row, stays for an undecided risk and on screens with no hover",
+    rgh.includes(".dp-risk .dp-risk-change{opacity:0;") &&
+    rgh.includes('.dp-risk:hover .dp-risk-change,.dp-risk:focus-within .dp-risk-change,.dp-risk[data-disposition=""] .dp-risk-change{opacity:1}') &&
+    rgh.includes("@media (hover:none){.dp-risk .dp-risk-change{opacity:1}}") &&
+    !/\.dp-risk-change\{[^}]*(display:none|visibility:hidden)/.test(rgh));
   const rgk = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "risk-good-plan.key.json"), "utf8"));
   ok("the key lists no undispositioned risk", (rgk.undispositionedRisks || []).length === 0);
   // Editing surfaces carry a card per risk with its defaults as data
@@ -1406,14 +1411,23 @@ ok("the denial opens with `deep-plan gate [<slug>]: ` (seamux-mods keys off it)"
   cli("render", tmpSpec(amended));
   ok("re-render after grade leaves the snapshot byte-identical",
     fs.existsSync(apPath) && fs.readFileSync(apPath, "utf8") === ap1);
-  ok("working surface notes the drift",
-    fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8")
-      .includes("DRIFTED from the approved snapshot"));
+  {
+    const wkD = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
+    const gl = (wkD.match(/<p class="dp-gate"[\s\S]*?<\/p>/) || [""])[0];
+    ok("working surface notes the drift, in plain words beside the approved copy",
+      /<span class="dp-path" data-file="[^"]+approved\.md" title="[^"]+approved\.md">approved copy ↗<\/span> · <span class="dp-drift">changed since you approved it<\/span><\/p>/.test(wkD));
+    ok("working: with the plan drifted, the gate line stays shut and says why",
+      /<b>Gate shut<\/b>: the plan changed since you approved it\. Next: <a href="#inc-1">go on increment 1<\/a><\/p>$/.test(gl), gl);
+  }
   // Restore the original spec so later assertions see the canonical plan.
   cli("render", tmpSpec(spec));
-  ok("no drift note once the spec matches again",
-    !fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8")
-      .includes("DRIFTED from the approved snapshot"));
+  {
+    const wkN = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
+    ok("no drift note once the spec matches again", !wkN.includes("dp-drift\">"));
+    ok("working: the approved snapshot is a short link, its full path only in the title",
+      /<p class="dim dp-approved"><span class="dp-path" data-file="([^"]+)" title="\1">approved copy ↗<\/span><\/p>/.test(wkN) &&
+      !/<code>[^<]*approved\.md<\/code>/.test(wkN));
+  }
 }
 
 // -------------------------------------------------- adr apply, post-grade
@@ -1472,8 +1486,9 @@ const gateLine = () => (fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.
     prim.length === 1 && prim[0][1] === "go" && !wk.includes('data-kind="held" disabled') && !wk.includes('class="dp-gate-fix"'),
     JSON.stringify(prim.map(m => m.slice(1))));
 }
-ok("working: between increments the gate line points at the next go",
-  /<b>Gate shut<\/b>: no increment has its go yet\. Next: <a href="#inc-1">go on increment 1<\/a><\/p>$/.test(gateLine()), gateLine());
+ok("working: between increments, with nothing blocked, the gate line says the plan is ready for the next go",
+  /data-allow="0" data-ready="1"[^>]*><svg[^>]*>.*var\(--accent\).*<\/svg> <b>Ready<\/b>: <a href="#inc-1">give increment 1 its go<\/a><\/p>$/.test(gateLine()) &&
+  !gateLine().includes("Gate shut") && !gateLine().includes("var(--bad)"), gateLine());
 ok("go authorizes the next increment", cli("go", spec.slug, "next").status === 0);
 ok("working: with an increment open the gate line says which",
   /data-allow="1"[\s\S]*<b>Gate open<\/b>: increment 1 has its go<\/p>$/.test(gateLine()), gateLine());
@@ -1526,6 +1541,9 @@ ok("block records a note", cli("block", spec.slug, "2", "waiting on schema call"
   JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"))
     .increments[1].note === "waiting on schema call");
 ok("a blocked increment gates again", edit(path.join(REPO, "a.txt")).status === 2);
+ok("working: a blocked increment keeps the gate line shut and red, naming it",
+  /data-allow="0" title=[^>]*><svg[^>]*>.*var\(--bad\).*<\/svg> <b>Gate shut<\/b>: increment 2 is blocked\. Next: <a href="#inc-2">go on increment 2<\/a><\/p>$/.test(gateLine()) &&
+  !gateLine().includes("data-ready"), gateLine());
 ok("open-gate is the human lever", cli("open-gate", spec.slug).status === 0 &&
   edit(path.join(REPO, "a.txt")).status === 0);
 ok("shut-gate restores it", cli("shut-gate", spec.slug).status === 0 &&
@@ -3446,7 +3464,7 @@ if (want("spec files: strings, removals, contracts placed with at")) {
     cli("rehydrate", "files-plan");
     const wk = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "files-plan.working.html"), "utf8");
     ok("a plan approved with plain-string files is not reported as drifted after the archive changed shape",
-      wk.includes("approved snapshot") && !wk.includes("DRIFTED"));
+      wk.includes("approved copy ↗") && !wk.includes('class="dp-drift"'));
   }
   r = cli("rehydrate", "files-plan");
   ok("rehydrate reads the object-shaped archive byte-identically", r.status === 0 && /byte-identical/.test(r.stdout + r.stderr), r.stdout + r.stderr);
@@ -5104,7 +5122,8 @@ if (want("delegated go")) {
     const t = cli("family", "status", "example-dlg").stdout;
     ok("verdicts: family status prints them per increment",
       /example-dlg-kid .*· parent goes/.test(t) && /example-dlg-two .*· a person goes/.test(t) &&
-      /✓ 1 .*go by parent/.test(t) && /held by the parent: waiting on the contract/.test(t));
+      /✓ 1 .*go by parent/.test(t) && /held by the parent: waiting on the contract/.test(t) &&
+      /^\s+○ 2 /m.test(t) && !/^\s+· \d/m.test(t) && !/…/.test(t), t);
     const page = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "example-dlg.working.html"), "utf8");
     ok("verdicts: the parent's working page shows the go owner, the hold and each increment",
       /the parent gives its go/.test(page) && /held by the parent: waiting on the contract/.test(page) &&
@@ -5116,13 +5135,26 @@ if (want("delegated go")) {
     const ps = lis(page);
     ok("family strip: the plan's own line is open, each other member folds to one line",
       ps.length === pf.members.length && ps.filter(l => l.startsWith(' dp-fam-me"')).length === 1 &&
-      ps.filter(l => !l.startsWith(' dp-fam-me"')).every(l => /^">(<details class="dp-fam-more"><summary><span class="dim">child<\/span> <a [^>]+>[^<]+<\/a> <span class="dim">· [a-z ]+ · \d+ of \d+ done[^<]*<\/span><\/summary>|<span)/.test(l)) &&
+      ps.filter(l => !l.startsWith(' dp-fam-me"')).every(l => /^">(<details class="dp-fam-more"><summary><span class="dim">child<\/span> <a [^>]+>[^<]+<\/a> <span class="dim">· [a-z ]+ · \d+ of \d+ increments done[^<]*<\/span><\/summary>|<span)/.test(l)) &&
       ps.some(l => l.includes('<details class="dp-fam-more">')), strip(page));
-    // Folded, a member is words; opened, its glyphs come under a one-line key.
+    // Folded, a member is words; opened, its glyphs. The key to them sits
+    // once at the strip's end, behind a "?".
     const folded = ps.filter(l => l.includes('<details class="dp-fam-more">'));
-    ok("family strip: an opened member starts with a key to its glyphs",
-      folded.length > 0 && folded.every(l => /<\/summary><p class="dim dp-fam-key">✓ done, ● building, ▶ has its go, · not started, ✗ blocked\. /.test(l)) &&
+    ok("family strip: an opened member shows its glyphs, with no key inside it",
+      folded.length > 0 && folded.every(l => !l.split("</li>")[0].includes("dp-fam-key")) &&
       !folded.some(l => (l.match(/<summary>[\s\S]*?<\/summary>/) || [""])[0].includes("dp-fam-inc")), folded[0]);
+    const keys = strip(page).match(/<details class="dp-fam-help"><summary aria-label="what the marks mean"[^>]*>\?<\/summary><p class="dim dp-fam-key">✓ done, ● building, ▶ has its go, ○ not started, ✗ blocked\. /g) || [];
+    ok("family strip: the glyph key is one \"?\" toggle at the strip's end",
+      keys.length === 1 && /<\/ul><div class="dp-fam-tail">[\s\S]*<details class="dp-fam-help">[\s\S]*<\/details><\/div>\s*<script>/.test(strip(page)), strip(page));
+    ok("family strip: no separate family line; the parent's row counts the plans done",
+      !/<p class="dim">family <b>/.test(strip(page)) &&
+      new RegExp(`<span class="dim">parent<\\/span> [^\\n]*?example-dlg<[^\\n]*?· \\d+ of \\d+ increments done · \\d+ of ${pf.members.length} plans done</span>`).test(strip(page)), strip(page));
+    ok("family strip: not started is drawn as ○, never a middle dot",
+      /class="dp-fam-inc dp-fam-pending"[^>]*>○ \d/.test(strip(page) + strip(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "example-dlg-kid.working.html"), "utf8"))) &&
+      !/class="dp-fam-inc[^"]*"[^>]*>· /.test(strip(page)), strip(page));
+    ok("family strip: a verdict with no result is in words, and left out on an increment not started",
+      !/… (checks|review)/.test(strip(page)) && /✓ 1 <span class="dim">checks not run<\/span>/.test(strip(page)) &&
+      !/dp-fam-pending"[^>]*>○ \d+ <span class="dim">(checks|review) not run/.test(strip(page)), strip(page));
     const kpage = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "example-dlg-kid.working.html"), "utf8");
     const kp = lis(kpage).find(l => l.includes('data-plan="example-dlg"'));
     ok("family strip: a child's page keeps the parent open when it waits on it, folded when not",
