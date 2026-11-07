@@ -58,20 +58,19 @@ type PageState = {
 /**
  * How the header row gives up width when it runs short, one step at a time:
  * the GitHub link folds into ⋯, the View ▾ menu's items (Overview, Map,
- * Split or Unified, keyboard shortcuts) move to the top of ⋯, Findings ▸
- * becomes an icon and "Act on N picked" becomes "Act (N)". The title keeps
+ * Split or Unified, keyboard shortcuts) move to the top of ⋯, and "N
+ * findings · M picked ▾" shortens to an icon and "M/N ▾". The title keeps
  * TITLE_MIN until every step is taken, and never goes under 12ch before
  * that (review.css .r-name); only then may it shrink further. The gate pill
- * and the Act button never fold. Live is only its dot at every width, so it
- * takes no step. While the page draws unified because it is too narrow for
- * split, Split and Unified are not in the View menu at all.
+ * and the findings button never leave the row. Live is only its dot at
+ * every width, so it takes no step. While the page draws unified because it
+ * is too narrow for split, Split and Unified are not in the View menu at
+ * all; a View menu left with one item is no menu: the item goes in ⋯.
  */
-const FOLDS = ["github", "view", "findings", "act"] as const;
+const FOLDS = ["github", "view", "findings"] as const;
 type Fold = (typeof FOLDS)[number];
 /** The title keeps this much width before anything folds. */
 const TITLE_MIN = 160;
-/** At most this many picked findings are named in the Act menu. */
-const PICKS_SHOWN = 5;
 
 // Short names: the side is narrow. What each depth means is the select's title.
 const DEPTHS: [string, string][] = [
@@ -265,15 +264,14 @@ export class ReviewView {
   private framed = "";
 
   private findings = new Map<string, { key: string; rows: Finding[] }>();
-  /** Per job: the ticked findings, whether the picker is open, a pending confirm. */
+  /** Per job: the ticked findings (the picks) and a pending confirm. */
   private ticked = new Map<string, Set<string>>();
-  private pickerOpen = new Set<string>();
   /** The job whose ⋯ menu is open, if any. */
   private moreOpen: string | null = null;
   /** Logs the reader opened or closed, so a redraw keeps them that way. */
   private logOpen = new Map<string, boolean>();
   private confirm = new Map<string, "post" | "push" | "remove" | "remove-unreadable" | "orphan" | "stop-orphan">();
-  /** Per job: the run its ticks, findings, picker and confirm belong to. */
+  /** Per job: the run its ticks, findings and confirm belong to. */
   private runs = new Map<string, string>();
 
   constructor(private root: HTMLElement) {
@@ -417,9 +415,8 @@ export class ReviewView {
   private forget(id: string): void {
     this.ticked.delete(id);
     this.findings.delete(id);
-    this.pickerOpen.delete(id);
     this.confirm.delete(id);
-    if (this.moreOpen === id || this.moreOpen === `act:${id}`) this.moreOpen = null;
+    if (this.moreOpen === id || this.moreOpen === `find:${id}`) this.moreOpen = null;
   }
 
   private async loadOthers(): Promise<void> {
@@ -452,7 +449,7 @@ export class ReviewView {
       // A newer run, or a newer state of this one, asked since: its answer stands.
       if (this.findings.get(j.id)?.key !== key) return;
       this.findings.set(j.id, { key, rows });
-      // Blockers and majors start picked; Edit, Fix and Post show while anything is.
+      // Blockers and majors start picked; Edit, Fix and Post act while anything is.
       if (!this.ticked.has(j.id)) this.ticked.set(j.id, new Set(rows.filter((f) => f.severity === "blocker" || f.severity === "major").map((f) => f.id)));
       this.render();
     } catch (e) {
@@ -630,7 +627,7 @@ export class ReviewView {
       if (page) this.showFrame(page, job ? this.title(job) : other?.title ?? page);
     }
 
-    const key = JSON.stringify([sel, folded, this.frameDown, job, other, this.confirm.get(job?.id ?? ""), [...(this.ticked.get(job?.id ?? "") ?? [])], this.pickerOpen.has(job?.id ?? ""), this.moreOpen, this.findings.get(job?.id ?? "")?.rows.length, this.pageState, this.logOpen.get(job?.id ?? "")]);
+    const key = JSON.stringify([sel, folded, this.frameDown, job, other, this.confirm.get(job?.id ?? ""), [...(this.ticked.get(job?.id ?? "") ?? [])], this.moreOpen, this.findings.get(job?.id ?? "")?.rows.length, this.pageState, this.logOpen.get(job?.id ?? "")]);
     if (force || key !== this.drawn) {
       this.drawn = key;
       const draw = () => (job ? this.drawJob(job) : other ? this.drawOther(other) : this.drawEmpty());
@@ -729,14 +726,17 @@ export class ReviewView {
       if (folds.has("github")) folded.push(a);
       else h.append(a);
     }
-    // The view tools sit in one View ▾ menu; short of width they join ⋯.
-    if (tools.view.length && folds.has("view")) folded.push(...tools.view);
+    // The view tools sit in one View ▾ menu; short of width they join ⋯, and
+    // so does a lone one (under 900px only the keys are left): a menu of one
+    // item is a click for nothing.
+    const viewInMore = tools.view.length === 1 || folds.has("view");
+    if (tools.view.length && viewInMore) folded.push(...tools.view);
     const items = [...folded, ...(folded.length && more?.items.length ? [el("div", "r-menu-sep")] : []), ...(more?.items ?? [])];
     const menu = items.length ? this.more(more?.key ?? "head", meta, items, name) : null;
     if (!menu) h.append(el("span", "r-meta", meta));
     const acts = el("div", "r-acts");
     acts.append(...buttons);
-    if (tools.view.length && !folds.has("view")) acts.append(this.viewMenu(tools.view));
+    if (tools.view.length && !viewInMore) acts.append(this.viewMenu(tools.view));
     if (menu) acts.append(menu);
     h.append(acts);
     this.head.replaceChildren(h);
@@ -823,25 +823,29 @@ export class ReviewView {
   /**
    * A button that opens a small menu under it. One menu is open at a time,
    * `this.moreOpen` holding its key; a click elsewhere or Escape closes it.
-   * `top` goes above the items: the Act menu's list of what it acts on.
-   * Opening focuses the first item that acts (not Change picks).
+   * `top` goes above the items and stays open while used: the findings
+   * panel's picker. That panel is a dialog (`role`), not a menu, since it
+   * holds checkboxes; `cls` and `label` name it. Opening focuses the first
+   * thing in it that can act.
    */
-  private menu(key: string, b: HTMLButtonElement, items: HTMLElement[], meta = "", top: HTMLElement[] = []): HTMLElement {
+  private menu(key: string, b: HTMLButtonElement, items: HTMLElement[], meta = "", top: HTMLElement[] = [], opts: { role?: "menu" | "dialog"; cls?: string; label?: string } = {}): HTMLElement {
     const wrap = el("div", "r-more");
     const open = this.moreOpen === key;
+    const role = opts.role ?? "menu";
     b.type = "button";
-    b.setAttribute("aria-haspopup", "menu");
+    b.setAttribute("aria-haspopup", role);
     b.setAttribute("aria-expanded", String(open));
     b.addEventListener("click", () => {
       // The current state, not the one drawn: the menu may have closed in place.
       this.moreOpen = this.moreOpen === key ? null : key;
       this.render(true);
-      if (this.moreOpen) this.head.querySelector<HTMLElement>(".r-menu [role^=menuitem]:not(:disabled):not(.r-change)")?.focus();
+      if (this.moreOpen) this.head.querySelector<HTMLElement>(".r-menu :is(button, input, a):not(:disabled)")?.focus();
     });
     wrap.append(b);
     if (open) {
-      const m = el("div", "r-menu");
-      m.setAttribute("role", "menu");
+      const m = el("div", `r-menu${opts.cls ? ` ${opts.cls}` : ""}`);
+      m.setAttribute("role", role);
+      if (opts.label) m.setAttribute("aria-label", opts.label);
       m.append(...top);
       if (meta) m.append(el("p", "r-menu-meta", meta));
       for (const it of items) {
@@ -851,7 +855,7 @@ export class ReviewView {
           continue;
         }
         // A View item says itself whether it is a checkbox or radio.
-        if (!it.getAttribute("role")) it.setAttribute("role", "menuitem");
+        if (!it.getAttribute("role") && role === "menu") it.setAttribute("role", "menuitem");
         // Closed before the item acts; redrawn after, for an item that draws nothing.
         it.addEventListener("click", () => {
           this.moreOpen = null;
@@ -1022,8 +1026,12 @@ export class ReviewView {
   }
 
   /**
-   * Edit, fix, post and push, over the findings ticked in the picker: the
-   * buttons for the header row, and what goes under it.
+   * The header's one control for findings, "N findings ▾" ("N findings · M
+   * picked ▾" once some are picked), and what goes under the header row. It
+   * opens one panel: the picker on top (Pick all, Blockers and majors,
+   * Clear, then the list), and below it Edit, Fix with commits and Post
+   * comments, acting on the picks, and Push. It is the header's one filled
+   * primary only while something is picked; otherwise outlined.
    */
   private actions(j: Job): { buttons: HTMLElement[]; below: HTMLElement[] } {
     const out: HTMLElement[] = [];
@@ -1031,62 +1039,54 @@ export class ReviewView {
     const ticked = this.ticked.get(j.id) ?? new Set<string>();
     const picked = [...ticked].filter((id) => rows.some((r) => r.id === id));
     const n = picked.length;
+    const total = rows.length;
     const busy = !!j.busy;
+    const canPush = j.ahead > 0 || j.dirty;
 
     if (j.cross) out.push(el("p", "r-detail bad", "From a fork: its code is untrusted. Editing and fixing run an agent over it; read the diff before trusting a result."));
 
-    const bar: HTMLElement[] = [];
-    const open = this.pickerOpen.has(j.id);
-    // The gate pill counts what is open, and the Act button how many are picked.
-    // Short of width, the word gives way to a list icon (its name stays the label).
+    // The gate pill counts what is open by severity; this button, how many
+    // are open and picked. Short of width, an icon and "M/N".
+    const words = total ? `${total} finding${total === 1 ? "" : "s"}${n ? ` · ${n} picked` : ""}` : "No open findings";
     const short = this.folds("findings");
-    const toggle = btn(short ? (open ? "▾" : "▸") : `Findings ${open ? "▾" : "▸"}`, () => {
-      if (!this.pickerOpen.delete(j.id)) this.pickerOpen.add(j.id);
-      this.render(true);
-    }, `r-btn pickbtn${short ? " short" : ""}`);
+    const toggle = el("button", `r-btn pickbtn${n ? " primary" : ""}${short ? " short" : ""}`);
     if (short) {
-      toggle.prepend(listIcon());
-      toggle.setAttribute("aria-label", "Findings");
-    }
-    toggle.setAttribute("aria-expanded", String(open));
-    toggle.disabled = !rows.length;
-    toggle.title = n ? `Pick which findings Edit, Fix and Post act on (${n} picked)` : "Pick findings to edit, fix or post";
-    bar.push(toggle);
-    // Edit, Fix and Post act on the picked findings, and Push on the commits:
-    // one menu once anything is picked, so the row keeps one button for them.
-    const menu: HTMLButtonElement[] = [];
-    if (n) {
-      const edit = btn("Edit", () => void this.run(j, "review_fix", { ids: picked, commit: false }));
-      edit.title = `The reviewer's session changes files in the worktree for the ${n} picked. Nothing is committed.`;
-      const fix = btn("Fix with commits", () => void this.run(j, "review_fix", { ids: picked, commit: true }));
-      fix.title = "Same, one commit per fix. Nothing is pushed.";
-      const post = btn("Post comments", () => {
-        this.confirm.set(j.id, "post");
-        this.render(true);
-      });
-      post.title = j.pr ? `The ${n} picked as one review on PR #${j.pr}` : "This branch has no open pull request";
-      edit.disabled = fix.disabled = busy;
-      post.disabled = busy || !j.pr;
-      menu.push(edit, fix, post);
-    }
-    if (j.ahead || j.dirty) {
+      toggle.append(listIcon(), `${n ? `${n}/${total}` : total} ▾`);
+      toggle.setAttribute("aria-label", words);
+    } else toggle.textContent = `${words} ▾`;
+    toggle.disabled = !total && !canPush;
+    toggle.title = n ? `Edit, fix or post the ${n} picked, or pick others` : total ? "Pick findings to edit, fix or post" : "Push the fixes' commits";
+
+    const acts: HTMLButtonElement[] = [];
+    const none = "Pick findings first";
+    const edit = btn("Edit", () => void this.run(j, "review_fix", { ids: picked, commit: false }), "r-btn quiet");
+    edit.title = n ? `The reviewer's session changes files in the worktree for the ${n} picked. Nothing is committed.` : none;
+    const fix = btn("Fix with commits", () => void this.run(j, "review_fix", { ids: picked, commit: true }), "r-btn quiet");
+    fix.title = n ? "Same, one commit per fix. Nothing is pushed." : none;
+    const post = btn("Post comments", () => {
+      this.confirm.set(j.id, "post");
+      this.render(true);
+    }, "r-btn quiet");
+    post.title = !j.pr ? "This branch has no open pull request" : n ? `The ${n} picked as one review on PR #${j.pr}` : none;
+    edit.disabled = fix.disabled = busy || !n;
+    post.disabled = busy || !j.pr || !n;
+    if (total) acts.push(edit, fix, post);
+    if (canPush) {
       const push = btn(`Push ${j.ahead} commit${j.ahead === 1 ? "" : "s"}`, () => {
         this.confirm.set(j.id, "push");
         this.render(true);
-      });
+      }, "r-btn quiet");
       push.disabled = busy || j.cross || j.dirty || !j.ahead || j.pushed;
       push.title = j.cross ? "A pull request from a fork: the fixes stay local" : j.dirty ? "Uncommitted edits: commit them with Fix, or leave them" : `To ${j.branch}`;
-      if (n) menu.push(push);
-      else bar.push(push);
+      acts.push(push);
     }
-    if (n) {
-      for (const it of menu) it.className = "r-btn quiet";
-      const act = el("button", "r-btn primary r-act-btn", this.folds("act") ? `Act (${n}) ▾` : `Act on ${n} picked ▾`);
-      act.title = `Edit, fix or post the ${n} picked`;
-      bar.push(this.menu(`act:${j.id}`, act, [this.changePicks(j), el("div", "r-menu-sep"), ...menu], "", [this.pickedList(rows, picked)]));
+    const top: HTMLElement[] = [];
+    if (total) {
+      const sep = el("div", "r-menu-sep");
+      sep.setAttribute("role", "separator");
+      top.push(this.picker(j, rows, ticked, busy), sep, el("p", "r-menu-meta", n ? `Acts on the ${n} picked` : "Pick findings to act on them"));
     }
-
-    if (open && rows.length) out.push(this.picker(j, rows, ticked, busy));
+    const bar = [this.menu(`find:${j.id}`, toggle, acts, "", top, { role: "dialog", cls: "r-find-panel", label: "Findings" })];
 
     const state: string[] = [];
     if (j.ahead) state.push(`${j.ahead} local commit${j.ahead === 1 ? "" : "s"}${j.pushed ? " (pushed)" : ""}`);
@@ -1110,48 +1110,29 @@ export class ReviewView {
   }
 
   /**
-   * The top of the Act menu: what it acts on, so the picks show while the
-   * picker is folded. The first few by severity, then "+N more".
+   * The top of the findings panel: quick picks by severity, then the list.
+   * A pick redraws the header with the panel still open, and gives the focus
+   * back to what was clicked.
    */
-  private pickedList(rows: Finding[], picked: string[]): HTMLElement {
-    const box = el("div", "r-menu-picks");
-    box.setAttribute("role", "group");
-    box.setAttribute("aria-label", "Picked findings");
-    const rank = (f: Finding) => SEVERITIES.indexOf(f.severity);
-    const fs = rows.filter((f) => picked.includes(f.id)).sort((a, b) => rank(a) - rank(b));
-    box.append(el("p", "r-menu-meta", `Acts on ${fs.length} picked`));
-    for (const f of fs.slice(0, PICKS_SHOWN)) {
-      const r = el("div", "r-menu-pick");
-      r.title = `${f.file}:${f.line}: ${f.summary}`;
-      r.append(el("span", `r-sev ${f.severity}`, f.severity), el("span", "r-sum", f.summary));
-      box.append(r);
-    }
-    if (fs.length > PICKS_SHOWN) box.append(el("p", "r-menu-more", `+${fs.length - PICKS_SHOWN} more`));
-    return box;
-  }
-
-  /** Opens the picker from the Act menu. */
-  private changePicks(j: Job): HTMLButtonElement {
-    const b = btn("Change picks", () => {
-      this.pickerOpen.add(j.id);
-      this.render(true);
-    }, "r-btn quiet r-change");
-    b.title = "Open the findings list to pick others";
-    return b;
-  }
-
-  /** Which findings the buttons act on, with quick picks by severity. */
   private picker(j: Job, rows: Finding[], ticked: Set<string>, busy: boolean): HTMLElement {
     const box = el("div", "r-picker");
-    const set = (ids: string[]) => {
+    const refocus = (sel: string) => this.head.querySelector<HTMLElement>(`.r-find-panel ${sel}`)?.focus();
+    const set = (ids: string[], which: string) => {
       this.ticked.set(j.id, new Set(ids));
       this.render(true);
+      refocus(`[data-quick="${which}"]`);
     };
     const quick = el("div", "r-quick");
+    const q = (label: string, which: string, ids: () => string[]) => {
+      const b = btn(label, () => set(ids(), which), "r-btn quiet");
+      b.dataset.quick = which;
+      b.disabled = busy;
+      return b;
+    };
     quick.append(
-      btn("All", () => set(rows.map((f) => f.id)), "r-btn quiet"),
-      btn("Blockers and majors", () => set(rows.filter((f) => f.severity === "blocker" || f.severity === "major").map((f) => f.id)), "r-btn quiet"),
-      btn("None", () => set([]), "r-btn quiet"),
+      q("Pick all", "all", () => rows.map((f) => f.id)),
+      q("Blockers and majors", "bm", () => rows.filter((f) => f.severity === "blocker" || f.severity === "major").map((f) => f.id)),
+      q("Clear", "none", () => []),
     );
     box.append(quick);
     const ul = el("ul", "r-findings");
@@ -1161,15 +1142,18 @@ export class ReviewView {
       cb.type = "checkbox";
       cb.checked = ticked.has(f.id);
       cb.disabled = busy;
-      cb.setAttribute("aria-label", `${f.id}: ${f.summary}`);
+      cb.dataset.fid = f.id;
+      cb.setAttribute("aria-label", `${f.severity}: ${f.summary}`);
       cb.addEventListener("change", () => {
         const t = this.ticked.get(j.id) ?? new Set<string>();
         if (cb.checked) t.add(f.id);
         else t.delete(f.id);
         this.ticked.set(j.id, t);
         this.render(true);
+        refocus(`input[data-fid="${CSS.escape(f.id)}"]`);
       });
       const label = el("label");
+      label.title = `${f.file}:${f.line}: ${f.summary}`;
       label.append(cb, el("span", `r-sev ${f.severity}`, f.severity), el("span", "r-loc", `${f.file.split("/").pop()}:${f.line}`), el("span", "r-sum", f.summary));
       li.append(label);
       ul.append(li);

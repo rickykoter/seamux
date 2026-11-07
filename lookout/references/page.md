@@ -36,26 +36,42 @@ tree (single-child folders folded together), one file's diff on the right.
 - **`j` / `k`** step through files in the side list's order; **`n` / `p`**
   through open findings.
 - **Risk / Path** (side toggle). Risk puts files in high, medium and low
-  bands, riskiest first, with related files grouped on a rail that says why
-  they belong together (one imports the other, a test and its source, a
-  finding naming both, a small shared folder). Risk blends deterministic
+  bands, riskiest first, with related files grouped on a rail. Why they
+  belong together (one imports the other, a test and its source, a finding
+  naming both, a small shared folder) is the group's line in the Overview
+  and each row's tooltip, not a line in the list. A row at rest is its risk
+  dot, its name and its open-findings count; its folder, +/− counts and
+  status letter show on the selected row and on hover, and its tooltip
+  names them all. Risk blends deterministic
   signals with one Jev score per file; by default only paths and line counts
   leave the machine, and `.seamux/lookout.json` `{"sendContent": true}`
   lets hunk text go too. Without TypeSafe the page says it is ranking on
-  signals alone.
+  signals alone. The file header says "high risk" (or medium, or low) and
+  any plain reason ("auth or secrets"); its tooltip gives the score and
+  what Jev read.
 - **Findings** sit under the line they name, with severity, category,
   verdict, status and their thread; the header shows the gate. Findings on
   lines the diff does not show are listed at the top of the file. Blocker
   and major cards stay open. A minor, a nit or a comment folds to one row
   (its severity and short title) until it becomes the current card, by a
-  click, Enter or `n`/`p`. Closed ones fold to one line too. A line that
+  click, Enter or `n`/`p`. A resolved or dismissed one looks closed: one
+  row with its severity chip and title muted and a muted "resolved" or
+  "dismissed" chip. A click or Enter opens it to its thread and Reopen (no
+  Resolve); its head folds it again. A line that
   carries open findings has a dot per severity in its line-number gutter.
   Hover the dots for the findings' titles, or click one to go to the worst.
   The current card, where its Reply, Resolve and Dismiss show, has an
-  accent edge on its left. In the seamux app, a finding picked for the Act
-  menu has a check at the card's left. In the app, Overview, Map, Split or
-  Unified and the keys sit in one **View** menu on its header row, each
-  with its key.
+  accent edge on its left, and its head adds the category and verdict in
+  plain words ("correctness · confirmed"); the title's tooltip names them
+  with the finding's id.
+- **In the seamux app** the header row has one findings button, "N
+  findings ▾" or "N findings · M picked ▾", filled only while something is
+  picked. It opens one panel: Pick all, Blockers and majors and Clear over
+  the list of open findings, then Edit, Fix with commits and Post comments
+  on the picks, and Push. A picked finding has a check at its card's left.
+  Overview, Map, Split or Unified and the keys sit in one **View** menu,
+  each with its key; when only one of them applies (a narrow window
+  without a map), it sits in ⋯ instead.
 - A file's status letter (M, A, D, R) names itself in its tooltip.
 - **Highlighting** is highlight.js over each side's whole file, so a change
   inside a block comment or a template string reads right. Changed words in
