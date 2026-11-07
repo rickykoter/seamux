@@ -95,6 +95,12 @@ button { font: inherit; color: inherit; }
   color: var(--muted); font: 600 12px var(--sans); cursor: pointer; padding: 0; }
 .keys-btn[aria-expanded="true"] { color: var(--fg); background: var(--sel); }
 #top { position: relative; }
+/* Framed by the seamux app, whose header names the review: one row of tools. */
+:root[data-embed] #top { padding: 4px 12px; gap: 10px; }
+:root[data-embed] .brand, :root[data-embed] .what { display: none; }
+:root[data-embed] .tools { flex: 1; gap: 10px; }
+:root[data-embed] .tools-gap { flex: 1; }
+:root[data-embed] #gate { order: -1; }
 .keys-panel { position: absolute; right: 16px; top: calc(100% + 4px); z-index: 30; padding: 8px 12px;
   background: var(--card); border: 1px solid var(--card-border); border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, .2); font-size: 12px; line-height: 1.9; }
@@ -216,7 +222,11 @@ td.del mark { background: var(--del-mark); color: inherit; border-radius: 2px; }
 .fbadge.sev-minor, .sev.sev-minor { --sev: var(--sev-minor); }
 .fbadge.sev-nit, .sev.sev-nit { --sev: var(--sev-nit); }
 .fbadge.sev-comment, .sev.sev-comment { --sev: var(--sev-comment); }
-.gate { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border); }
+.gate { font: 600 12px var(--sans); padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border);
+  background: none; cursor: pointer; }
+.gate:hover:not(:disabled) { background: var(--hover); }
+.gate:disabled { cursor: default; }
+.gate:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .gate.blocked { color: var(--sev-major); border-color: var(--sev-major); }
 .gate.pass { color: var(--st-a); border-color: var(--st-a); }
 .gate.none { color: var(--muted); }
@@ -232,6 +242,7 @@ tr.thread-row > td { padding: 6px 12px 10px 60px; background: var(--side); borde
   color: var(--sev, var(--muted)); background: color-mix(in srgb, var(--sev, var(--muted)) 16%, transparent); }
 .fid { font: 11px var(--mono); color: var(--muted); }
 .cat { font-size: 11px; color: var(--muted); }
+.fid + .cat { margin-left: -4px; }
 .card .title { font-weight: 600; flex: 1; min-width: 200px; }
 .card .status { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 10px; padding: 0 7px; }
 .card .status.st-addressed { color: var(--risk-medium); border-color: var(--risk-medium); }

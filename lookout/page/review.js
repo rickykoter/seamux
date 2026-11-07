@@ -18,6 +18,12 @@
   const opened = new Set();          // collapsed files the reader chose to show
   const closedDirs = new Set(JSON.parse(store.get("lookout.closed." + R.id, "[]")));
   const narrow = () => window.matchMedia("(max-width: 760px)").matches;
+  // Framed by the seamux app (?embed=app), whose own header names the review:
+  // the page drops its title row and keeps one row of tools.
+  const embedded = (() => { try { return new URLSearchParams(location.search).get("embed") === "app"; } catch { return false; } })();
+  if (embedded) document.documentElement.dataset.embed = "app";
+  // "1 file", "2 files"; `many` for the odd plural.
+  const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
   // Drafts: every reply box and line composer keeps its words here, per
   // review, so a redraw (a fresher review, the layout toggle, the 760px
@@ -197,7 +203,7 @@
     drawGhosts();
     $("tree").prepend(el("div", { class: "row ov-row" + (overview ? " sel" : ""), onclick: () => openOverview() },
       el("span", { class: "chev" }, "◇"), el("span", { class: "name" }, "Overview"),
-      notesOf().length ? el("span", { class: "counts" }, `${notesOf().length} note(s)`) : null));
+      notesOf().length ? el("span", { class: "counts" }, plural(notesOf().length, "note")) : null));
   }
 
   // Files that left the diff (a fix reverted them) but still carry findings
@@ -237,7 +243,7 @@
     if (!o.length && !t) return null;
     const worst = SEV.find(s => o.some(x => x.severity === s));
     return el("span", { class: "fbadge" + (worst ? " sev-" + worst : " sev-comment"),
-      title: `${o.length} open finding(s)` + (t ? `, ${t} open comment(s)` : "") }, String(o.length + t));
+      title: plural(o.length, "open finding") + (t ? ", " + plural(t, "open comment") : "") }, String(o.length + t));
   }
 
   const when = iso => { try { return new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return ""; } };
@@ -257,11 +263,12 @@
     const body = !closed || expandedClosed.has(x.id);
     const head = el("div", { class: "card-head", onclick: closed ? () => { expandedClosed.has(x.id) ? expandedClosed.delete(x.id) : expandedClosed.add(x.id); drawFile(); } : null },
       finding ? el("span", { class: "sev sev-" + x.severity }, x.severity) : el("span", { class: "sev sev-comment" }, "comment"),
-      el("span", { class: "fid" }, x.id),
-      finding ? el("span", { class: "cat" }, x.category + " · " + (x.verdict === "CONFIRMED" ? "confirmed" : "plausible")) : null,
-      // Folded, a finding shows its short summary; open, the full one, once.
+      // Title first; folded, a finding shows its short summary, open, the full one, once.
       el("span", { class: "title" }, finding ? (body ? x.summary : x.short_summary || x.summary) : ((x.messages || [])[0] || {}).text || ""),
-      el("span", { class: "status st-" + (x.status || "open") }, x.status || "open"));
+      el("span", { class: "fid" }, x.id),
+      finding ? el("span", { class: "cat" }, "· " + x.category + " · " + (x.verdict === "CONFIRMED" ? "confirmed" : "plausible")) : null,
+      // Open is the usual state: only the others get a pill.
+      (x.status || "open") !== "open" ? el("span", { class: "status st-" + x.status }, x.status) : null);
     return el("div", { class: "card" + (closed ? " closed" : "") + (finding ? "" : " comment"), "data-item": x.id },
       head,
       body && finding ? el("div", { class: "card-body" },
@@ -429,7 +436,7 @@
     const ns = notesOf();
     const waiting = ns.filter(asking).length;
     const head = [el("span", { class: "path" }, "Overview"),
-      el("span", { class: "from" }, `${groups.length} group(s) · ${ns.length} note(s)` +
+      el("span", { class: "from" }, `${plural(groups.length, "group")} · ${plural(ns.length, "note")}` +
         (quizOn() ? ` · quiz on${waiting ? `, ${waiting} to answer` : ""}` : ""))];
     $("file-head").replaceChildren(...head);
     const box = el("div", { class: "ov" });
@@ -453,7 +460,7 @@
     }
     const low = groups.filter(g => (g.band || bandOf(g.risk)) === "low" && !ns.some(n => n.group === g.id));
     if (low.length)
-      box.append(el("div", { class: "ov-line" }, `${low.length} low-risk group(s) without notes: `,
+      box.append(el("div", { class: "ov-line" }, `${plural(low.length, "low-risk group")} without notes: `,
         ...low.flatMap(g => g.files).map((p, i) => [i ? ", " : "", el("a", { href: "#", class: "gfile",
           onclick: e => { e.preventDefault(); select(p); } }, p.slice(p.lastIndexOf("/") + 1))])));
     const lost = ns.filter(n => !n.group);
@@ -487,7 +494,7 @@
     const onFiles = new Set(live.map(f => f.file)).size;
     if (PV) head.push(el("span", { class: "from" },
       `${PV.counts.ok} as planned · ${PV.counts.miss} planned, not touched · ${PV.counts.extra} touched, not planned` +
-      (live.length ? ` · ${live.length} open finding(s) on ${onFiles} file(s)` : "")));
+      (live.length ? ` · ${plural(live.length, "open finding")} on ${plural(onFiles, "file")}` : "")));
     $("file-head").replaceChildren(...head);
     const box = el("div", { class: "ov map-view" });
     $("diff").replaceChildren(box);
@@ -747,6 +754,16 @@
     i = i < 0 ? (d > 0 ? 0 : list.length - 1) : (i + d + list.length) % list.length;
     goTo(list[i].id);
   }
+  // The gate pill: to the first open blocker or major, in the side list's
+  // order; with none, on like n.
+  function firstBlocking() {
+    const pos = x => [ORDER.indexOf(x.file), x.line];
+    const list = (R.findings || []).filter(x => isOpen(x) && (x.severity === "blocker" || x.severity === "major"))
+      .sort((a, b) => pos(a)[0] - pos(b)[0] || a.line - b.line);
+    if (list.length) goTo(list[0].id);
+    else stepFinding(1);
+  }
+  $("gate").addEventListener("click", firstBlocking);
   let curFinding = null;
   function goTo(id) {
     const x = items().find(y => y.id === id);
@@ -821,7 +838,7 @@
     const s = R.stats || {};
     const where = R.source && (R.source.kind === "patch" ? "patch " + R.source.label : R.source.label);
     $("label").textContent = [where !== R.title ? where : null,
-      `${s.files || 0} files`, `+${s.adds || 0} −${s.dels || 0}`].filter(Boolean).join(" · ");
+      plural(s.files || 0, "file"), `+${s.adds || 0} −${s.dels || 0}`].filter(Boolean).join(" · ");
     const g = gateText();
     const down = live && live.down;
     $("mode").textContent = down ? "disconnected — run `lookout open` to reconnect"
@@ -832,8 +849,13 @@
       : "Opened as a file: comments need crew's intent server (lookout open shows the served page when it is up).";
     $("gate").className = "gate " + g.cls;
     $("gate").textContent = g.text;
-    $("gate").title = (R.policy && R.policy.agentMayClose) ? "The agent may also close findings on this review."
-                                                           : "Only you close findings; the agent replies and marks them addressed.";
+    $("gate").disabled = !(R.findings || []).length;
+    $("gate").title = (g.cls === "blocked" ? "Go to the first blocking finding (n goes on). " : (R.findings || []).length ? "Go to the first finding (n goes on). " : "") +
+      ((R.policy && R.policy.agentMayClose) ? "The agent may also close findings on this review."
+                                            : "Only you close findings; the agent replies and marks them addressed.");
+    // No plan map, no Map button (m still says why).
+    $("map-btn").hidden = !R.planMap;
+    $("keys-map").hidden = !R.planMap;
     document.title = "lookout · " + R.id;
     const notes = [];
     if (R.highlight && !/^highlight\.js/.test(R.highlight) && R.highlight !== "off")
