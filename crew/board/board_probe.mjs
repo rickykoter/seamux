@@ -607,10 +607,19 @@ checks.push(["and it has something to say about each",
   delete els.rows.attrs["data-pushed"];
   checks.push(["cat: the first push of a page is not a reaction", P([Rw("a", "attend"), Rw("r", "running")]) === "swat"]);
   checks.push(["cat: nothing changed, no reaction", P([Rw("a", "attend"), Rw("r", "running")]) === "swat"]);
-  checks.push(["cat: a row newly needing you perks its ears, and says which",
+  checks.push(["cat: a row newly needing you perks its ears, and says nothing (the headline and card say it)",
     P([Rw("a", "attend"), Rw("b", "attend", "billing-ledger"), Rw("r", "running")]) === "swat perk" &&
-    els.says.textContent.includes("billing-ledger")]);
+    els.says.textContent === ""]);
   checks.push(["cat: ...for that push only", P([Rw("a", "attend"), Rw("b", "attend"), Rw("r", "running")]) === "swat"]);
+  {
+    const caps = new Set();
+    for (let i = 0; i < 20; i++) {
+      P([Rw("a", "attend", "gate-row"), Rw("r", "running")], "14:00:" + String(i).padStart(2, "0"));
+      caps.add(els.cat.attrs.class + "|" + els.says.textContent);
+    }
+    checks.push(["cat: while a row needs you the caption is blank, whatever the push, and the cat still swats",
+      [...caps].every((c) => c === "swat|"), JSON.stringify([...caps])]);
+  }
   checks.push(["cat: the last thing needing you going away is a stretch",
     P([Rw("r", "running")]) === "pace stretch"]);
   checks.push(["cat: a row turning done is a hop, and it names the row",
@@ -2246,8 +2255,8 @@ if (crewImpl.isRust("crew-board")) {
   render({ rows: rowsT, quiet: "" });
   const h = els.rows.innerHTML;
   const tuckAt = h.indexOf('<details class="tucked"');
-  checks.push(["tuck: tucked rows leave the list for a collapsed 'tucked · 2' section at the end",
-    tuckAt > h.indexOf('data-id="pl"') && /<details class="tucked"><summary class="sect">tucked · 2<\/summary>/.test(h) &&
+  checks.push(["tuck: tucked rows leave the list for a collapsed 'hidden · 2' section at the end",
+    tuckAt > h.indexOf('data-id="pl"') && /<details class="tucked"><summary class="sect">hidden · 2<\/summary>/.test(h) &&
     h.indexOf('data-id="ta"') > tuckAt && h.indexOf('data-id="tq"') > tuckAt]);
   // Two rows wait on you (ma, muted; ta, tucked): only the muted one counts.
   const need = String(els.need.textContent || "") + " " + String(els.need.innerHTML || "");
@@ -2255,6 +2264,9 @@ if (crewImpl.isRust("crew-board")) {
     /\b1\b/.test(need) && !/\b2\b/.test(need)]);
   checks.push(["tuck: a muted row is greyed until it needs you",
     /class="row running[^"]* muted/.test(h) && !/class="row attend[^"]* muted/.test(h)]);
+  checks.push(["tuck: a muted row's tooltip and aria say it is hidden until it needs you; a muted row that needs you does not",
+    /data-id="mr"[^>]*title="mr · hidden until it needs you" aria-description="hidden until it needs you"/.test(h) &&
+    /data-id="ma"[^>]*title="ma"[^>]*>/.test(h) && !/data-id="ma"[^>]*aria-description/.test(h)]);
   checks.push(["tuck: top-level (cmux's Dock) there is no ⋯ menu", !/data-a="tk"/.test(h)]);
   els.rows.attrs["data-tuck-open"] = "1";
   sandbox.parent = { postMessage() {} };
@@ -2262,8 +2274,8 @@ if (crewImpl.isRust("crew-board")) {
   const hf = els.rows.innerHTML;
   delete sandbox.parent;
   checks.push(["tuck: framed by the app, a workspace row has the ⋯ menu, set by its level",
-    /data-id="mr"[^]*?data-a="tk"[^]*?data-x="none">Unmute<[^]*?data-x="tuck">Tuck away</.test(hf) &&
-    /data-id="tq"[^]*?data-x="mute">Mute<[^]*?data-x="none">Bring back</.test(hf)]);
+    /data-id="mr"[^]*?data-a="tk"[^]*?data-x="none">Show again<[^]*?data-x="tuck">Hide until I bring it back</.test(hf) &&
+    /data-id="tq"[^]*?data-x="mute">Hide until it needs you<[^]*?data-x="none">Show again</.test(hf)]);
   const plAt = hf.indexOf('data-id="pl"');
   const plCard = hf.slice(plAt, hf.indexOf('<div class="row ', plAt) > 0 ? hf.indexOf('<div class="row ', plAt) : hf.indexOf("<details", plAt));
   checks.push(["tuck: a plan row with no workspace has no menu", plAt > 0 && plCard.length > 0 && !/data-a="tk"/.test(plCard)]);
@@ -2289,11 +2301,11 @@ if (crewImpl.isRust("crew-board")) {
   const h = els.rows.innerHTML;
   const at = (s) => h.indexOf(s);
   const zAt = at('<details class="snoozed">'), sAt = at('<details class="settled">'), tAt = at('<details class="tucked">');
-  checks.push(["snooze: shelves after the rows, collapsed, counted: snoozed, then settled, then tucked",
+  checks.push(["snooze: shelves after the rows, collapsed, counted, named by when they come back: hidden for now, merged and idle, hidden",
     zAt > at('data-id="q"') && zAt < sAt && sAt < tAt &&
-    /<summary class="sect">snoozed · 2</.test(h) && /<summary class="sect">settled · 1</.test(h) && /<summary class="sect">tucked · 1</.test(h)]);
+    /<summary class="sect">hidden for now · 2</.test(h) && /<summary class="sect">merged and idle · 1</.test(h) && /<summary class="sect">hidden · 1</.test(h)]);
   checks.push(["snooze: a snoozed row sits on its shelf even when broken, and says when it wakes",
-    at('data-id="brk"') > zAt && at('data-id="brk"') < sAt && at('data-id="zq"') < sAt && /class="badge wakes"[^>]*>wakes /.test(h)]);
+    at('data-id="brk"') > zAt && at('data-id="brk"') < sAt && at('data-id="zq"') < sAt && /class="badge wakes"[^>]*>until /.test(h)]);
   checks.push(["snooze: a settled row is on its shelf; a merged one not yet idle stays in the list",
     at('data-id="mg"') > sAt && at('data-id="mg"') < tAt && at('data-id="mg2"') < zAt]);
   checks.push(["snooze: the quiet count leaves both shelves out", /<div class="sect">idle · 1</.test(h)]);
@@ -2305,9 +2317,18 @@ if (crewImpl.isRust("crew-board")) {
   render({ rows: rowsS, quiet: "" });
   const hf = els.rows.innerHTML;
   delete sandbox.parent;
-  checks.push(["snooze: framed by the app, the ⋯ menu offers the four presets, or Wake now on a snoozed row",
-    /data-id="q"[^]*?data-x="mute">Mute<\/span><span class="tki" data-a="tuck" data-x="snooze:1h">Snooze 1h<[^]*?data-x="snooze:3h">Snooze 3h<[^]*?data-x="snooze:tomorrow">Until tomorrow 9am<[^]*?data-x="snooze:monday">Until Monday 9am<[^]*?data-x="tuck">Tuck away</.test(hf) &&
-    /data-id="zq"[^]*?data-x="none">Wake now<[^]*?data-x="tuck">Tuck away</.test(hf) &&
+  // The menu reads as one verb: Hide, then until when; the presets sit
+  // between dividers; whatever hid the row reads Show again.
+  const T = (x, label) => '<span class="tki" data-a="tuck" data-x="' + x + '">' + label + "</span>";
+  const SEP = '<span class="tks" role="separator"></span>';
+  checks.push(["menu: framed by the app, one Hide verb with its until, the presets grouped by dividers, Resume at reset last",
+    hf.includes(T("mute", "Hide until it needs you") + SEP + T("snooze:1h", "Hide for 1 hour") + T("snooze:3h", "Hide for 3 hours") +
+      T("snooze:tomorrow", "Hide until tomorrow 9am") + T("snooze:monday", "Hide until Monday 9am") + SEP +
+      T("tuck", "Hide until I bring it back") + SEP + '<span class="tki" data-a="resume" data-x="on"') &&
+    /title="Hide" aria-label="Hide or show again"/.test(hf) && !/Mute|Snooze|Tuck away|Unmute|Wake now|Bring back/.test(hf)]);
+  checks.push(["snooze: framed by the app, the ⋯ menu offers the four presets, or Show again on a snoozed row",
+    /data-id="q"[^]*?data-x="snooze:1h">Hide for 1 hour<[^]*?data-x="tuck">Hide until I bring it back</.test(hf) &&
+    /data-id="zq"[^]*?data-x="none">Show again<[^]*?data-x="tuck">Hide until I bring it back</.test(hf) &&
     !hf.slice(hf.indexOf('data-id="zq"'), hf.indexOf("</details>", hf.indexOf('data-id="zq"'))).includes("snooze:1h")]);
   checks.push(["snooze: the snoozed shelf stays open across a push when it was open", /<details class="snoozed" open>/.test(hf)]);
   els.rows.attrs["data-snooze-open"] = "0";
@@ -2340,7 +2361,7 @@ if (crewImpl.isRust("crew-board")) {
   ], quiet: "" });
   const h = els.rows.innerHTML, tuckAt = h.indexOf('<details class="tucked"');
   checks.push(["tuck: a tucked family member stays in its family; a tucked loner still leaves",
-    h.indexOf('data-id="kidT"') > 0 && h.indexOf('data-id="kidT"') < tuckAt && /tucked · 1</.test(h) && h.indexOf('data-id="solo"') > tuckAt]);
+    h.indexOf('data-id="kidT"') > 0 && h.indexOf('data-id="kidT"') < tuckAt && />hidden · 1</.test(h) && h.indexOf('data-id="solo"') > tuckAt]);
 }
 
 // ---- limit stops (the Rust board's limited and armed) ----------------------
@@ -2438,7 +2459,7 @@ if (crewImpl.isRust("crew-board")) {
             { id: "x", tier: "\"><script>", family: "", text: "odd tier" }] };
   els.news = mk("news");
   els.news.setAttribute("open", "");
-  render({ rows: [{ id: "gate", name: "gate", kind: "attend", badge: "gate shut", said: "", chips: [], frac: null, meta: "" }],
+  render({ rows: [{ id: "gate", name: "gate", kind: "wilt", badge: "red", said: "", chips: [], frac: null, meta: "" }],
     quiet: "", news: NEWS });
   const body = els["news-body"].innerHTML, lede = els["news-lede"].innerHTML;
   checks.push(["news: footer shows when there is news", els.news.hidden === false]);
@@ -2451,6 +2472,22 @@ if (crewImpl.isRust("crew-board")) {
     body.includes('class="ni quiet"') && !body.includes("<script")]);
   render({ rows: [], quiet: "", news: NEWS });
   checks.push(["news: the <details> keeps its open state across a push", els.news.getAttribute("open") === ""]);
+  // A lede about a card already on the board that needs you is skipped in
+  // the collapsed line: the next item leads, and with none left the title counts.
+  const gateRow = { id: "gate", name: "gate", kind: "attend", badge: "gate shut", said: "", chips: [], frac: null, meta: "" };
+  render({ rows: [gateRow], quiet: "", news: NEWS });
+  checks.push(["news: the collapsed lede skips a row already open as a needs-you card, for the next item",
+    !els["news-lede"].innerHTML.includes("gate") && els["news-lede"].innerHTML.includes("<b>red</b>") &&
+    els["news-ttl"].textContent === "news · 5h" && (els["news-body"].innerHTML.match(/<p class="ni /g) || []).length === 3]);
+  const famNews = { hours: 5, lede: "Family {{F}}: {{k}} needs your go-ahead.",
+    items: [{ id: "family:F", tier: "attend", family: "F", text: "Family {{F}}: {{k}} needs your go-ahead." }] };
+  render({ rows: [{ ...gateRow, id: "k", family: "F" }], quiet: "", news: famNews });
+  checks.push(["news: ...a family's too, and with nothing left the title counts the news",
+    els["news-lede"].innerHTML === "" && els["news-ttl"].textContent === "news · 1" && els.news.hidden === false]);
+  render({ rows: [gateRow], quiet: "", news: { hours: 3, lede: "{{gate}} asked you a question.",
+    items: [{ tier: "attend", text: "{{gate}} asked you a question." }, { tier: "running", text: "{{red}} started increment 2." }] } });
+  checks.push(["news: ...an item with no id is matched by the name it opens with",
+    els["news-lede"].innerHTML.includes("<b>red</b>") && !els["news-lede"].innerHTML.includes("gate")]);
   render({ rows: [], quiet: "", news: { hours: 5, lede: "", items: [] } });
   checks.push(["news: no items hides the footer", els.news.hidden === true]);
   render({ rows: [], quiet: "" });
