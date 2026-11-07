@@ -2,7 +2,7 @@
 //!
 //!   seamux cat_poses                     write the board's own poses
 //!   seamux cat_poses --check             exit 1 if they are out of date
-//!   seamux cat_poses --from-swift        redraw the sprite from crew.swift
+//!   seamux cat_poses --from-swift        redraw the sprite from crew.swift (the crew tree's, else the installed one)
 //!   seamux cat_poses --from-swift --check  exit 1 if the sprite is stale
 //!   seamux cat_poses --sheet PATH        a contact sheet of every pose
 //!
@@ -273,14 +273,15 @@ border-radius:8px;padding:6px;text-align:center}}figcaption{{text-align:center;m
     std::fs::write(path, html).map_err(|e| crew_core::py::os_error(&e, path))
 }
 
-/// The installed sidebar when there is one, else the crew tree's own copy:
-/// the same file either way (install.sh copies it verbatim).
+/// The crew tree's own crew.swift (a checkout, through CREW_HOME, is where
+/// the sidebar is edited), else the installed sidebar: board.html then
+/// follows the copy being changed, not an older installed one.
 fn swift_path() -> PathBuf {
-    let installed = crew_core::py::home().join(".config/cmux/sidebars/crew.swift");
-    if installed.exists() {
-        installed
+    let tree = crew_core::crew_home().join("sidebars").join("crew.swift");
+    if tree.exists() {
+        tree
     } else {
-        crew_core::crew_home().join("sidebars").join("crew.swift")
+        crew_core::py::home().join(".config/cmux/sidebars/crew.swift")
     }
 }
 
