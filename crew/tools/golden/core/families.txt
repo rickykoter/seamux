@@ -1,0 +1,2 @@
+{"rows": [{"id": "p", "kind": "done", "family": "f", "famrole": "parent", "famtier": "attend", "famkid": false}, {"id": "c", "kind": "attend", "urgency": 3, "family": "f", "famrole": "child", "famtier": "attend", "famkid": true}, {"id": "c2", "kind": "quiet", "family": "f", "famrole": "child", "famtier": "attend", "famkid": true}, {"id": "a", "kind": "attend", "urgency": 0.5}, {"id": "x", "kind": "running", "family": "g", "famrole": "child", "famtier": "running", "famkid": true, "famlabel": "g"}], "quiet": [{"id": "q", "kind": "quiet"}]}
+-- exit 0

@@ -1,0 +1,39 @@
+exit 2
+crew-board — the agent board: who needs you, ranked, in a cmux Dock browser surface.
+
+    crew-board open            create the Dock surface and load the board
+    crew-board push            gather, rank, push one update into the page
+    crew-board push --fast     the same, reusing cached branch/PR (~190ms vs ~2.1s)
+    crew-board watch [secs]    event-driven; [secs] is the backstop heartbeat (30s)
+    crew-board state [--json]  the ranked state, without touching cmux
+    crew-board tidy            close duplicate board surfaces
+    crew-board close           close the surface
+    crew-board usage           open the spend dashboard (ccusage) as a Dock tab
+
+    crew-board state --json --fixture FILE   rank {"plans", "workspaces"} from FILE
+    crew-board write-targets [FILE]          the click table from a state (stdin if no FILE)
+
+The last two are for probes: they let a probe drive the ranking and the click
+table through the command line, so the same probe can run against the Python
+and the Rust board (`seamux crew-board`) alike.
+
+Why a browser surface rather than the sidebar: the custom-sidebar interpreter has no
+@State, no text input, and can only bind cmux's own workspace data -- so it cannot host
+a ranked list built from deep-plan state and agent output. A Dock browser surface has
+none of those limits, and `cmux browser addscript` pushes state into a page that is
+already open, so the surface never reloads and nothing stateful is lost.
+
+Clickable. Rows and chips dispatch through crew-board-intent, a loopback HTTP server, and
+intent.js is pushed alongside the renderer on every update. See board/README.md for why a
+server rather than the four routes that do not work. A click carries only (row id, action);
+crew-board-intent resolves the target from the snapshot write_targets() leaves behind.
+
+Still not trusted to act unilaterally: `go N` and `reclaim` post the same `crew:*`
+notification RPC the Swift sidebar used, and hooks/triage.py gates them -- including its
+confirm-before-delete on reclaim. The board asks; it does not authorize.
+
+Whimsy carry-over: the four row states are whimsy's shader events -- EV_ATTEND,
+EV_RUNNING, EV_FAILURE (wilt), EV_SUCCESS (ripple) -- with its Everforest constants and,
+most importantly, its principle: nothing animates unless something is happening. The
+cat in the header states the same thing in one word, the ranking animates when it
+actually changes, and a board with nothing on it is completely still.

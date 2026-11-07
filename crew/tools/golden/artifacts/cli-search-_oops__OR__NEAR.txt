@@ -1,0 +1,5 @@
+no rows
+
+-- stderr
+
+-- exit 0

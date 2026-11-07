@@ -96,15 +96,42 @@ PLUGINS="deep-plan"
 ALL_PLUGINS="deep-plan restack bash-guard lookout humanize crew seamux-mods"
 
 # Where Claude runs a plugin from (the checkout folder for a folder marketplace).
-# Through seamux once it is installed (the crew Python is retired at the
-# cutover); the checkout's Python only before seamux exists, until inc4 deletes it.
-# An older seamux without the tool (exit 127) falls back the same way.
+# Through `seamux crew-plugin-root` once seamux is installed. Before it is (a
+# first install, or one without crew or the toolchain to build the app), and
+# for an older seamux without the tool, the same lookup inline: a directory
+# marketplace reads the plugin from its folder, anything else from installPath.
 plugin_root() {
   local r=""
   [ -x "$LOCALBIN/seamux" ] && r="$("$LOCALBIN/seamux" crew-plugin-root "$1" 2>/dev/null)"
-  if [ -z "$r" ] && [ -f "$HERE/crew/bin/crew-plugin-root" ]; then
-    r="$(python3 "$HERE/crew/bin/crew-plugin-root" "$1" 2>/dev/null)"
-  fi
+  [ -n "$r" ] || r="$(python3 -c '
+import json, os, sys
+def load(p):
+    try:
+        with open(p, encoding="utf-8") as fh:
+            return json.load(fh) or {}
+    except (OSError, ValueError):
+        return {}
+name = sys.argv[1]
+cfg = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+plugins = load(os.path.join(cfg, "plugins", "installed_plugins.json")).get("plugins") or {}
+markets = load(os.path.join(cfg, "plugins", "known_marketplaces.json"))
+for key, installs in plugins.items():
+    pname, _, market = key.partition("@")
+    if pname != name:
+        continue
+    m = markets.get(market) or {}
+    if (m.get("source") or {}).get("source") == "directory":
+        folder = m.get("installLocation") or (m.get("source") or {}).get("path") or ""
+        for e in load(os.path.join(folder, ".claude-plugin", "marketplace.json")).get("plugins") or []:
+            src = e.get("source")
+            if e.get("name") == name and isinstance(src, str) and os.path.isdir(os.path.join(folder, src)):
+                print(os.path.normpath(os.path.join(folder, src)))
+                sys.exit(0)
+    for inst in installs or []:
+        if inst.get("installPath") and os.path.isdir(inst["installPath"]):
+            print(inst["installPath"])
+            sys.exit(0)
+' "$1" 2>/dev/null)"
   [ -n "$r" ] && printf '%s\n' "$r"
 }
 

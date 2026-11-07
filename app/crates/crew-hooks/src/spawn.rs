@@ -1,14 +1,13 @@
 //! How crew-hooks starts another crew tool.
 //!
 //! A tool seamux registers runs as `seamux <tool>` on this executable; one it
-//! does not yet register runs from the crew tree by path, as the bash and
-//! Python did (`bin/crew-sync`, `python3 hooks/cachefacts.py`, ...). crew-code,
-//! crew-sandbox and crew-reclaim are bash and always run by path.
+//! does not register runs from the crew tree by path (`bin/crew-code`, ...).
+//! crew-code, crew-sandbox and crew-reclaim are bash and always run by path.
 //!
 //! `SEAMUX_TOOLS_BY_PATH=1` runs every tool by path. hooks_probe sets it: its
-//! copied crew tree holds logging stubs for the tools a hook spawns, and a
-//! self-exec would go past them. crew-hooks' own tools (options, asked-hook)
-//! always self-exec, since their parity is what the probe is testing.
+//! copied crew tree holds logging stubs for the tools a hook spawns, at the
+//! paths below, and a self-exec would go past them. crew-hooks' own tools
+//! (options, asked-hook) always self-exec, since they are what the probe tests.
 
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -18,23 +17,23 @@ use std::sync::OnceLock;
 /// This crate's own tools: never run by path.
 const OWN: &[&str] = &["options", "merge_settings", "statusline", "triage", "crew-hook", "asked-hook"];
 
-/// Where each tool lives in the crew tree, and whether python3 runs it.
-fn path_of(name: &str) -> (&'static str, bool) {
+/// Where a tool run by path lives in the crew tree.
+fn path_of(name: &str) -> &'static str {
     match name {
-        "cachefacts" => ("hooks/cachefacts.py", true),
-        "asked" => ("hooks/asked.py", true),
-        "workspaces" => ("hooks/workspaces.py", true),
-        "options" => ("hooks/options.py", true),
-        "judgments" => ("board/judgments.py", true),
-        "crew-sync" => ("bin/crew-sync", false),
-        "crew-feed" => ("bin/crew-feed", false),
-        "crew-color" => ("bin/crew-color", false),
-        "crew-listen" => ("bin/crew-listen", false),
-        "crew-artifacts" => ("bin/crew-artifacts", false),
-        "crew-code" => ("bin/crew-code", false),
-        "crew-sandbox" => ("bin/crew-sandbox", false),
-        "crew-reclaim" => ("bin/crew-reclaim", false),
-        _ => ("", false),
+        "cachefacts" => "hooks/cachefacts",
+        "asked" => "hooks/asked",
+        "workspaces" => "hooks/workspaces",
+        "options" => "hooks/options",
+        "judgments" => "board/judgments",
+        "crew-sync" => "bin/crew-sync",
+        "crew-feed" => "bin/crew-feed",
+        "crew-color" => "bin/crew-color",
+        "crew-listen" => "bin/crew-listen",
+        "crew-artifacts" => "bin/crew-artifacts",
+        "crew-code" => "bin/crew-code",
+        "crew-sandbox" => "bin/crew-sandbox",
+        "crew-reclaim" => "bin/crew-reclaim",
+        _ => "",
     }
 }
 
@@ -106,17 +105,11 @@ pub fn tool(name: &str, args: &[&str]) -> Tool {
             return Tool { argv, file: None };
         }
     }
-    let (rel, python) = path_of(name);
+    let rel = path_of(name);
     let file = crew_core::crew_home().join(if rel.is_empty() { name } else { rel });
-    let mut argv = Vec::new();
-    if python {
-        argv.push("python3".to_string());
-    }
-    argv.push(file.display().to_string());
+    let mut argv = vec![file.display().to_string()];
     argv.extend(args.iter().map(|a| a.to_string()));
-    // python3 runs a .py whether or not it is executable; -x is the bash's
-    // test for the shell tools only.
-    Tool { argv, file: (!python).then_some(file) }
+    Tool { argv, file: Some(file) }
 }
 
 /// Start argv detached (`( nohup cmd >/dev/null 2>&1 & )`): a new session,

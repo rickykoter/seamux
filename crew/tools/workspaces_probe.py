@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""workspaces_probe — crew/hooks/workspaces.py and its callers, against
+"""workspaces_probe — `seamux workspaces` and its callers, against
 fakecmux, a throwaway git origin and throwaway transcripts. No app, no network,
 no real cache: XDG_CACHE_HOME and every other path point into a temp dir.
 
@@ -15,8 +15,6 @@ What is asserted:
     remembers it, and puts the old record back when the close fails;
   - restore reopens the cwd with its title, color and `claude --resume`, and
     forget drops a record; two writers at once keep both records;
-  - the finder has one row per directory in its state (live, archived, past,
-    gone), and its fuzzy scorer orders by score, then state, then recency;
   - merged() is true for a landed branch, false for an unlanded one and for
     main; dormant_days() reads integrations.json and defaults to 5;
   - the board's archive chip (triage.py's crew:archive) archives in the hook,
@@ -30,7 +28,7 @@ What is asserted:
     (a fake here, through CREW_DEEP_PLAN), naming the plan and the family;
     --family-ok is refused without a terminal, and on one asks a y/N naming
     the family and logs the yes; a deep-plan that errs or answers nonsense is
-    a refusal, and no deep-plan at all is no guard, said once. The board chip
+    a refusal, and no deep-plan at all is no guard. The board chip
     refuses with a banner on either path, crew-sweep holds a protected card
     back even when merged, and crew-reclaim makes it a blocker;
   - crew-reclaim reports the mid-turn guard on a dry run and changes nothing,
@@ -121,35 +119,28 @@ os.environ.update(ENV)
 with open(ENV["GIT_CONFIG_GLOBAL"], "w") as fh:
     fh.write("[user]\n\tname = probe\n\temail = probe@example.com\n[init]\n\tdefaultBranch = main\n")
 
-sys.path.insert(0, os.path.join(CREW, "hooks"))
-import workspaces as W  # noqa: E402  (after the env, which it reads at import)
-
 import crew_impl  # noqa: E402  (beside this probe)
 
 
 class RustW:
-    """workspaces.py's in-process API, answered by `seamux workspaces` under
-    CREW_IMPL=rust, so the sections below test the Rust with no edits. Each
-    call is one subprocess, through the Rust-only JSON subcommands where the
-    Python CLI has no verb. Constants (INDEX, ARCHIVE, CMUX) stay the module's
-    and can be reassigned as the probe does; ARCHIVE reaches the Rust through
-    CREW_WORKSPACES_ARCHIVE. _update(fn) runs fn on a copy here and sends the
-    resulting sets and pops to the Rust, which applies them under its lock."""
+    """`seamux workspaces`, wrapped as the in-process API the sections below
+    call: one subprocess a call, through its JSON subcommands. INDEX, ARCHIVE
+    and CMUX are where the tool reads them (XDG_CACHE_HOME and CREW_CMUX are
+    this probe's) and can be reassigned as the probe does; ARCHIVE reaches the
+    tool through CREW_WORKSPACES_ARCHIVE. _update(fn) runs fn on a copy here
+    and sends the resulting sets and pops, which the tool applies under its
+    lock."""
 
-    def __init__(self, py):
-        self.__dict__["_py"] = py
-        self.__dict__["ARCHIVE"] = py.ARCHIVE
-
-    def __getattr__(self, name):
-        return getattr(self._py, name)
-
-    def __setattr__(self, name, value):
-        self.__dict__[name] = value
+    def __init__(self):
+        cache = os.path.join(os.environ["XDG_CACHE_HOME"], "cmux-crew")
+        self.INDEX = os.path.join(cache, "resume-index.json")
+        self.ARCHIVE = os.path.join(cache, "archive.json")
+        self.CMUX = os.environ.get("CREW_CMUX", "")
 
     def _run(self, *args, stdin=None):
         env = crew_impl.env(os.environ)
         env["CREW_WORKSPACES_ARCHIVE"] = self.ARCHIVE
-        return subprocess.run(crew_impl.argv("workspaces", W_PY) + list(args), input=stdin,
+        return subprocess.run(crew_impl.argv("workspaces") + list(args), input=stdin,
                               env=env, capture_output=True, text=True, timeout=60)
 
     def _json(self, *args):
@@ -209,9 +200,7 @@ class RustW:
         return out
 
 
-W_PY = os.path.join(CREW, "hooks", "workspaces.py")
-if crew_impl.is_rust("workspaces"):
-    W = RustW(W)
+W = RustW()
 
 
 def put_rows(rows):
@@ -437,24 +426,15 @@ check("forget drops a record", W.forget(os.path.join(T, "gone"))
       and os.path.join(T, "gone") not in W.load_archive())
 check("forget of nothing says so", not W.forget(os.path.join(T, "gone")))
 
-if isinstance(W, RustW):
-    # The Rust's own read-modify-write, eight processes at once.
-    writers = [subprocess.Popen(crew_impl.argv("workspaces", W_PY) + ["update-archive"],
-                                stdin=subprocess.PIPE, env=crew_impl.env(os.environ), text=True)
-               for i in range(8)]
-    for i, p in enumerate(writers):
-        p.stdin.write(json.dumps({"set": {"/w/%d" % i: {"cwd": "/w/%d" % i}}}))
-        p.stdin.close()
-    for p in writers:
-        p.wait()
-else:
-    writers = [subprocess.Popen([sys.executable, "-c",
-                                 "import sys; sys.path.insert(0, %r); import workspaces as W; "
-                                 "W._update(lambda r: r.__setitem__('/w/%d', {'cwd': '/w/%d'}))"
-                                 % (os.path.join(CREW, "hooks"), i, i)], env=os.environ)
-               for i in range(8)]
-    for p in writers:
-        p.wait()
+# The tool's own read-modify-write, eight processes at once.
+writers = [subprocess.Popen(crew_impl.argv("workspaces") + ["update-archive"],
+                            stdin=subprocess.PIPE, env=crew_impl.env(os.environ), text=True)
+           for i in range(8)]
+for i, p in enumerate(writers):
+    p.stdin.write(json.dumps({"set": {"/w/%d" % i: {"cwd": "/w/%d" % i}}}))
+    p.stdin.close()
+for p in writers:
+    p.wait()
 check("eight writers at once keep all eight records",
       all("/w/%d" % i in W.load_archive() for i in range(8)))
 
@@ -493,63 +473,10 @@ check("dormant days reads integrations.json", W.dormant_days() == 9)
 json.dump({"sweep": {"dormant_days": 0}}, open(ENV["CREW_INTEGRATIONS"], "w"))
 check("dormant days is at least 1", W.dormant_days() == 1)
 
-# --- the finder: crew-resume's rows and scorer ------------------------------------
-print("finder")
-import importlib.machinery  # noqa: E402
-import importlib.util  # noqa: E402
-_l = importlib.machinery.SourceFileLoader("crew_resume", os.path.join(CREW, "bin", "crew-resume"))
-R = importlib.util.module_from_spec(importlib.util.spec_from_loader("crew_resume", _l))
-_l.exec_module(R)
-
-S = lambda i, cwd, t, mtime, branch="": {"id": i, "path": "/p/" + i, "cwd": cwd, "title": t,
-                                         "prompt": "", "branch": branch, "mtime": mtime}
-here = {"/r/live", "/r/arch", "/r/past", "/r/both"}
-rows_ = R.build_rows(
-    [S("1", "/r/live", "older talk", 10), S("2", "/r/live", "newest talk", 20),
-     S("3", "/r/past", "past talk", 30, "dev/past-work"), S("4", "/r/gone", "gone talk", 40),
-     S("5", "/r/both", "both", 5)],
-    [{"id": "w1", "ref": "workspace:1", "cwd": "/r/live", "title": "live-one"},
-     {"id": "w2", "ref": "workspace:2", "cwd": "/r/both", "title": "both"}],
-    {"/r/arch": {"cwd": "/r/arch", "title": "arch-one", "archived_at": 50},
-     "/r/both": {"cwd": "/r/both", "title": "stale", "archived_at": 1}},
-    isdir=lambda p: p in here)
-by = {r["cwd"]: r for r in rows_}
-check("one row per workspace directory, however many sessions it has",
-      len(rows_) == 5 and len(by["/r/live"]["sessions"]) == 2, json.dumps(sorted(by)))
-check("a row's states: live, archived, past and gone",
-      [by[c]["state"] for c in ("/r/live", "/r/arch", "/r/past", "/r/gone")]
-      == ["live", "archived", "past", "gone"])
-check("live beats a leftover archive record on the same directory", by["/r/both"]["state"] == "live")
-check("a row carries its latest session's title and the workspace's own name",
-      by["/r/live"]["latest"] == "newest talk" and by["/r/live"]["title"] == "live-one"
-      and by["/r/arch"]["title"] == "arch-one")
-
-check("an abbreviation matches as a subsequence", R.fuzzy("dkorg", "dock-organization") is not None)
-check("letters that are not there in order do not", R.fuzzy("xq", "dock-organization") is None
-      and R.fuzzy("od", "do") is None)
-check("consecutive letters outscore scattered ones",
-      R.fuzzy("dock", "dock-organization") > R.fuzzy("dock", "d-o-c-k"))
-check("a word start outscores a mid-word hit", R.fuzzy("o", "dock-org") > R.fuzzy("o", "docko"))
-check("the best alignment wins, not the first letter found",
-      R.fuzzy("org", "xo-organization") == R.fuzzy("org", "organization"))
-row = lambda t, st="past", when=0, cwd=None: {"title": t, "cwd": cwd or "/r/" + t, "branch": "",
-                                             "latest": "", "state": st, "when": when}
-check("terms match in any order, each on its own", R.score(["org", "dock"], row("dock-organization")))
-check("a match across the seam of two fields is no match",
-      R.score(["kx"], dict(row("dock"), latest="xylophone")) is None)
-check("the latest session's title matches a term as written",
-      R.score(["phone"], dict(row("dock"), latest="xylophone")) is not None)
-check("…but not a scattered subsequence of it", R.score(["xlpn"], dict(row("dock"), latest="xylophone")) is None)
-check("…and the full path does not match scattered letters either",
-      R.score(["hmc"], row("dock", cwd="/home/someone/code/dock")) is None)
-check("a session id prefix finds its row",
-      R.score(["8f3a2b"], dict(row("dock"), sessions=[{"id": "8f3a2b11-0000"}])) is not None)
-got = [r["title"] for r in R.order([row("dorg-z", "gone"), row("dock-organization", "past"),
-                                    row("dorg", "live", 1), row("dorg", "archived", 9)], ["dorg"])]
-check("order: score first, then state, then recency",
-      got[:2] == ["dorg", "dorg"] and got[-1] == "dock-organization", str(got))
-same = R.order([row("a", "past", 1), row("b", "past", 9), row("c", "live", 0)], [])
-check("with no query: state, then recency", [r["title"] for r in same] == ["c", "b", "a"])
+# The finder's rows, fuzzy scorer and order were white-box checks on the
+# Python crew-resume's functions; crew-cli's resume.rs unit tests hold them
+# (rows_one_per_directory_with_their_states, the_fuzzy_scorer,
+# scoring_and_order). crew-resume itself runs black-box in cli_probe.
 
 put_rows([ws("ws-s", A, tty="ttys-shell"), ws("ws-a", B, tty="ttys-agent"),
           ws("ws-b", os.path.join(T, "gone"), tty="ttys-busy", title="busy")])
@@ -564,7 +491,7 @@ check("archive refuses a workspace with a job running, naming it",
 print("plan guard")
 F = os.path.join(T, "f")
 os.makedirs(os.path.join(F, "deep"))
-WS_CLI = crew_impl.argv("workspaces", W_PY, sys.executable)
+WS_CLI = crew_impl.argv("workspaces")
 WENV = crew_impl.env(os.environ)
 
 
@@ -621,13 +548,6 @@ check("…and so is one that answers nonsense", not ok and "could not read" in m
 protect({})
 _dp = os.environ["CREW_DEEP_PLAN"]
 os.environ["CREW_DEEP_PLAN"] = os.path.join(T, "no-deep-plan")
-if not isinstance(W, RustW):
-    r = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, %r); import workspaces as W; "
-                        "print(W.protects(%r)['protected'], W.protects(%r)['protected'])"
-                        % (os.path.join(CREW, "hooks"), F, A)], capture_output=True, text=True)
-    check("no deep-plan installed is no guard, said once",
-          r.stdout.split() == ["False", "False"] and r.stderr.count("deep-plan is not installed") == 1,
-          r.stdout + r.stderr)
 ok, msg = W.archive("ws-f")
 check("…so archive goes ahead without it", ok and not rows(), msg)
 os.environ["CREW_DEEP_PLAN"] = _dp
@@ -635,7 +555,6 @@ os.environ["CREW_DEEP_PLAN"] = _dp
 # --- the board's archive chip: triage.py's crew:archive ---------------------------
 print("board archive chip (triage.py)")
 import time  # noqa: E402
-TRIAGE = os.path.join(CREW, "hooks", "triage.py")
 
 
 def tap(ws_id, delay=None, **extra):
@@ -648,7 +567,7 @@ def tap(ws_id, delay=None, **extra):
               "effects": {"desktop": True, "sound": True, "record": True}}
     open(os.path.join(FAKE_DIR, "cmux.log"), "w").close()
     t0 = time.monotonic()
-    r = subprocess.run(crew_impl.argv("triage", TRIAGE, sys.executable), input=json.dumps(policy),
+    r = subprocess.run(crew_impl.argv("triage"), input=json.dumps(policy),
                        env=crew_impl.env(env), capture_output=True, text=True, timeout=30)
     return r, time.monotonic() - t0
 
@@ -707,7 +626,7 @@ W.forget(C)
 r, took = tap("ws-c", delay=1.0)
 check("with cmux at 1s a call, it goes to a terminal elsewhere instead, inside 10s",
       took < 10 and "new-pane --type terminal --direction down --workspace ws-h" in log()
-      and ("workspaces archive ws-c" if crew_impl.is_rust("triage") else "workspaces.py archive ws-c")
+      and "workspaces archive ws-c"
       in log() and "workspace close" not in log(),
       "%.1fs\n%s" % (took, log()))
 
@@ -723,8 +642,8 @@ import urllib.request  # noqa: E402
 
 def board_tool(name):
     """The argv that runs one board tool: the one place this probe names it,
-    through the CREW_IMPL helper like the rest of this probe."""
-    return crew_impl.argv(name, os.path.join(CREW, "board", name))
+    through crew_impl like the rest of this probe."""
+    return crew_impl.argv(name)
 
 
 IHOME = os.path.join(T, "intent-home")
@@ -767,7 +686,6 @@ check("an archive tap reaches triage.py naming the row's workspace",
 print("crew-sweep")
 import threading  # noqa: E402
 from http.server import BaseHTTPRequestHandler, HTTPServer  # noqa: E402
-SWEEP = os.path.join(CREW, "bin", "crew-sweep")
 OLD = time.time() - 30 * 86400
 
 
@@ -823,7 +741,7 @@ SENV.pop("TYPESAFE_API_KEY", None)
 
 
 def sweep(*argv, stdin="", **env):
-    r = subprocess.run(crew_impl.argv("crew-sweep", SWEEP, sys.executable) + list(argv),
+    r = subprocess.run(crew_impl.argv("crew-sweep") + list(argv),
                        env=crew_impl.env(dict(SENV, **env)), input=stdin,
                        capture_output=True, text=True, timeout=120)
     return r
@@ -939,30 +857,25 @@ check("…and it says what it did", any("swept: 1 forgot" in ln for ln in plain)
 r = sweep(stdin="rq")
 check("r down a pipe does not reach crew-reclaim, which would not ask",
       "needs a terminal" in r.stdout and os.path.isdir(landed), r.stdout[-300:])
-_l = importlib.machinery.SourceFileLoader("sw", SWEEP)
-SW = importlib.util.module_from_spec(importlib.util.spec_from_loader("sw", _l))
-_l.exec_module(SW)
-line = SW.card({"cwd": stale, "title": "t", "branch": "dev/" + "x" * 200, "idle_days": 3.0, "pr": None,
-                "pr_state": "", "merged": False, "plan": "", "ws": {"id": "w"}, "rec": None,
-                "reason": "dormant", "said": "y" * 300, "last": "", "linked": True}, 1, 9, 60)
-check("a cut card line is measured on what shows and still ends its colour",
-      all(len(SW._plain(ln)) <= 60 and ln.endswith(SW.RESET) for ln in line), str([len(SW._plain(x)) for x in line]))
+# A card line cut to the terminal's width is crew-cli's sweep.rs unit test
+# card_lines_fit_and_end_their_colour.
 r = sweep(stdin="saq")                          # skip landed, archive stale, quit
 check("a archives a live card's workspace, and remembers it",
       "ws-st" not in [w["id"] for w in rows()] and os.path.join(stale, "sub") in W.load_archive()
       and "swept: 1 skipped, 1 archived" in r.stdout, r.stdout[-400:])
 
-OPTS = os.path.join(CREW, "hooks", "options.py")
+OPTS = crew_impl.argv("options")
+OPTS_ENV = crew_impl.env
 out_ = os.path.join(T, "opts.json")
 json.dump({"typesafe": {"enabled": True}}, open(out_, "w"))
-subprocess.run([sys.executable, OPTS, "--out", out_], env=dict(os.environ, CLAUDE_PLUGIN_OPTION_SWEEP_DORMANT_DAYS="9"))
+subprocess.run(OPTS + ["--out", out_], env=OPTS_ENV(dict(os.environ, CLAUDE_PLUGIN_OPTION_SWEEP_DORMANT_DAYS="9")))
 got = json.load(open(out_))
 check("the sweep_dormant_days option renders to sweep.dormant_days, keeping other keys",
       got.get("sweep") == {"dormant_days": 9} and got.get("typesafe") == {"enabled": True}, json.dumps(got))
-subprocess.run([sys.executable, OPTS, "--out", out_], env=dict(os.environ, CLAUDE_PLUGIN_OPTION_SWEEP_DORMANT_DAYS=""))
+subprocess.run(OPTS + ["--out", out_], env=OPTS_ENV(dict(os.environ, CLAUDE_PLUGIN_OPTION_SWEEP_DORMANT_DAYS="")))
 check("…and a blank one drops it, for crew-sweep's default", "sweep" not in json.load(open(out_)))
-r = subprocess.run([sys.executable, OPTS, "--out", out_], capture_output=True,
-                   env=dict(os.environ, CLAUDE_PLUGIN_OPTION_SWEEP_DORMANT_DAYS="1e999"))
+r = subprocess.run(OPTS + ["--out", out_], capture_output=True,
+                   env=OPTS_ENV(dict(os.environ, CLAUDE_PLUGIN_OPTION_SWEEP_DORMANT_DAYS="1e999")))
 check("…and one too large to be a number is ignored, not a crash", r.returncode == 0 and not r.stderr, r.stderr)
 
 # --- crew-reclaim's close guard ---------------------------------------------------
@@ -971,13 +884,12 @@ RECLAIM = os.path.join(CREW, "bin", "crew-reclaim")
 
 
 def renv():
-    # workspaces through the implementation under test: the Python unless
-    # CREW_IMPL says rust, never whatever seamux this machine has installed.
+    # workspaces through this branch's seamux, never whatever seamux this
+    # machine has installed.
     # Its own state folder: the seamux app's tmux registry on this machine
     # must never answer for the fake cmux's workspaces.
     return dict(os.environ, XDG_STATE_HOME=os.path.join(T, "state"),
-                SEAMUX_BIN=(crew_impl.seamux_bin() if crew_impl.is_rust("workspaces")
-                            else os.path.join(T, "no-seamux")))
+                SEAMUX_BIN=crew_impl.seamux_bin())
 
 
 def reclaim(*argv, **extra):
@@ -1127,25 +1039,24 @@ rc, out = reclaim("--dry-run", landed, CREW_CMUX=os.path.join(T, "no-such-cmux")
 check("a cmux that cannot be found is a blocker, not 'no other workspace'",
       rc == 1 and "could not tell whether another workspace is open here" in out and "no other workspace is open" not in out
       and os.path.isdir(landed), out)
-if crew_impl.is_rust("workspaces"):
-    # The seamux app's own tmux as the backend (no cmux): reclaim finds the
-    # folder, and who else stands in the worktree, in the app's registry.
-    reg_dir = os.path.join(T, "state", "seamux")
-    os.makedirs(reg_dir, exist_ok=True)
-    W1, W2 = "1A000000-0000-4000-8000-000000000001", "1A000000-0000-4000-8000-000000000002"
-    def put_registry(wss):
-        with open(os.path.join(reg_dir, "workspaces.json"), "w") as f:
-            json.dump({"version": 1, "workspaces": [{"id": i, "title": t, "cwd": c} for i, t, c in wss], "panes": []}, f)
-    tmux_env = dict(CREW_CMUX=os.path.join(T, "no-such-cmux"), SEAMUX_BACKEND="tmux")
-    put_registry([(W1, "landed", landed), (W2, "landed too", landed)])
-    rc, out = reclaim("--dry-run", W1, **tmux_env)
-    check("on the tmux backend, another registry workspace in the worktree is a blocker",
-          rc == 1 and "1 other workspace(s) still open here" in out and W2 in out and os.path.isdir(landed), out)
-    put_registry([(W1, "landed", landed)])
-    rc, out = reclaim("--dry-run", W1, **tmux_env)
-    check("…and alone in it, the folder comes from the registry and nothing else is open",
-          "no other workspace is open here" in out and "no directory for" not in out and os.path.isdir(landed), out)
-    os.remove(os.path.join(reg_dir, "workspaces.json"))
+# The seamux app's own tmux as the backend (no cmux): reclaim finds the
+# folder, and who else stands in the worktree, in the app's registry.
+reg_dir = os.path.join(T, "state", "seamux")
+os.makedirs(reg_dir, exist_ok=True)
+W1, W2 = "1A000000-0000-4000-8000-000000000001", "1A000000-0000-4000-8000-000000000002"
+def put_registry(wss):
+    with open(os.path.join(reg_dir, "workspaces.json"), "w") as f:
+        json.dump({"version": 1, "workspaces": [{"id": i, "title": t, "cwd": c} for i, t, c in wss], "panes": []}, f)
+tmux_env = dict(CREW_CMUX=os.path.join(T, "no-such-cmux"), SEAMUX_BACKEND="tmux")
+put_registry([(W1, "landed", landed), (W2, "landed too", landed)])
+rc, out = reclaim("--dry-run", W1, **tmux_env)
+check("on the tmux backend, another registry workspace in the worktree is a blocker",
+      rc == 1 and "1 other workspace(s) still open here" in out and W2 in out and os.path.isdir(landed), out)
+put_registry([(W1, "landed", landed)])
+rc, out = reclaim("--dry-run", W1, **tmux_env)
+check("…and alone in it, the folder comes from the registry and nothing else is open",
+      "no other workspace is open here" in out and "no directory for" not in out and os.path.isdir(landed), out)
+os.remove(os.path.join(reg_dir, "workspaces.json"))
 rc, out = reclaim("--yes", "ws-l")
 check("an idle agent is force-closed and the worktree removed",
       rc == 0 and "workspace close ws-l --force" in log() and not rows() and not os.path.isdir(landed), out)

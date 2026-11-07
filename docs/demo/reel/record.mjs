@@ -9,8 +9,8 @@
 // Each scene is the shipped page, rendered off-screen in Playwright and fed demo
 // data, so a re-take after a UI change is one command instead of a re-shoot:
 //
-//   board  board.html + render.js, pushed the board-demo.py cast (--dump) the
-//          same way crew-board pushes it: renderer and state in one script.
+//   board  board.html + render.js, pushed the scenes in board-cast.mjs the
+//          way the board's feed pushes them: renderer and state in one script.
 //   usage  usage.tmpl.html with mock-usage data in place of __DATA__. The live
 //          /usage reads your real spend, which is not demo material.
 //   plan   the example plan's review page from the running intent server, so
@@ -32,6 +32,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { chromium } from 'playwright-core'
 import { recordPage } from 'testreel'
+import { boardScenes } from './board-cast.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = join(HERE, '..', '..', '..')
@@ -105,8 +106,7 @@ async function scene(name, { viewport, label, prepare }, body) {
 // so the click is the cursor's and the push after it is the board's answer.
 
 function boardCast() {
-  const out = execFileSync('python3', [join(REPO, 'docs', 'demo', 'board-demo.py'), '--dump'])
-  return JSON.parse(out).map((s) => s.state)
+  return boardScenes()
 }
 
 // Opens board.html and returns push(state), which renders a state the way a
@@ -281,7 +281,7 @@ async function plan(rec, page, say) {
   await scrollTo(rec, page, '#dp-p-q1')
   say('The alignment quiz — three questions check that you and the plan agree')
   await rec.wait(1200)
-  // The answers this render's check expects (see board-demo.py's docstring).
+  // The example plan's quiz, answered as its key expects for this render.
   // The radio, not its label: labels are full width, so their centre is empty
   // space. No zoom: the enlarged column is wider than any zoomed view.
   const opt = (q, v) => `input[name="dp-q-${q}"][value="${v}"]`

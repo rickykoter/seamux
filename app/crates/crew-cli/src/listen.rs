@@ -106,14 +106,12 @@ fn start_intent() -> bool {
             head.iter().cloned().chain(["--status".to_string()]).collect(),
             head,
         ),
-        None => {
-            let intent = sibling::home_path("board/crew-board-intent");
-            if !sibling::readable(&intent) {
-                return false;
-            }
-            let p = intent.to_string_lossy().into_owned();
-            (vec!["python3".into(), p.clone(), "--status".into()], vec!["python3".into(), p])
-        }
+        // A seamux without the board's server has nothing to start; a
+        // probe's stub tree has a stub for it.
+        None => match sibling::stub("board/crew-board-intent") {
+            Some(p) => (vec![p.clone(), "--status".into()], vec![p]),
+            None => return false,
+        },
     };
     let argv: Vec<&str> = status.iter().map(String::as_str).collect();
     match crate::proc::run(&argv, None, &[], Some(Duration::from_secs(8))) {

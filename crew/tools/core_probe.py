@@ -6,13 +6,12 @@ corpus sweep, TTL derivation), families (grouping), pricing (--doctor,
 --args, --merge, --compare) and costs (--attribute, Python float printing),
 plus workspaces' list-json and dormant-days against fakecmux.
 
-Each case runs the implementation CREW_IMPL picks (crew_impl.argv) and checks
-what it printed. Under CREW_IMPL=rust it also runs the Python on the same
-input and checks the two printed the same bytes, so a Rust that differs only
-in spacing or float format fails here. No cmux, no network, throwaway HOME.
+Each case runs this branch's `seamux <tool>` and checks what it printed.
+Cases where spacing or float format is the point are held to golden files
+recorded from crew's retired Python (crew/tools/golden/), so a change that
+moves one byte fails here. No cmux, no network, throwaway HOME.
 
     python3 crew/tools/core_probe.py
-    CREW_IMPL=rust python3 crew/tools/core_probe.py
 """
 import datetime
 import json
@@ -26,14 +25,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CREW = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 import crew_impl  # noqa: E402
+import golden  # noqa: E402  (beside this probe)
 
-PATHS = {
-    "cachefacts": os.path.join(CREW, "hooks", "cachefacts.py"),
-    "families": os.path.join(CREW, "board", "families.py"),
-    "pricing": os.path.join(CREW, "board", "pricing.py"),
-    "costs": os.path.join(CREW, "board", "costs.py"),
-    "workspaces": os.path.join(CREW, "hooks", "workspaces.py"),
-}
 FAKE = os.path.join(HERE, "fakecmux.py")
 results = []
 
@@ -63,27 +56,30 @@ def env_for(h, **kw):
     return e
 
 
-def run(tool, args, env, stdin="", impl=True):
-    """The implementation CREW_IMPL picks (impl=True), or always the Python."""
-    path = PATHS[tool]
-    argv = crew_impl.argv(tool, path, sys.executable) if impl else [sys.executable, path]
+def run(tool, args, env, stdin=""):
+    """`seamux <tool>` with args, in env."""
+    argv = crew_impl.argv(tool)
     return subprocess.run(argv + list(args), input=stdin, capture_output=True, text=True,
-                          env=crew_impl.env(env) if impl else env, timeout=60)
+                          env=crew_impl.env(env), timeout=60)
 
 
-def both(tool, args, make_env, stdin="", norm=lambda s: s):
-    """Run the picked implementation; under rust also the Python, each with
-    its own fresh HOME from make_env. -> (result, same_as_python or None)."""
-    r = run(tool, args, make_env("impl"), stdin)
-    if not crew_impl.is_rust(tool):
-        return r, None
-    p = run(tool, args, make_env("py"), stdin, impl=False)
-    return r, (norm(r.stdout), r.returncode) == (norm(p.stdout), p.returncode)
+def both(tool, args, make_env, stdin="", norm=None):
+    """One run in a fresh HOME from make_env -> (result, None). Named for the
+    parity runs it replaced; same() holds the result to its golden."""
+    return run(tool, args, make_env("impl"), stdin), None
 
 
-def same(name, eq, r):
-    if eq is not None:
-        check(name + " — Rust prints the Python's bytes", eq, r.stdout[-400:])
+
+
+def as_text(r):
+    return r.stdout + "\n-- exit %d\n" % r.returncode
+
+
+def same(name, eq, r, gold=None):
+    """Hold r to its golden; a case without one is checked where it runs."""
+    if gold:
+        ok, want = golden.expect("core/" + gold, as_text(r), {T: "<T>"})
+        check(name + " — matches its golden", ok, want[-300:])
 
 
 def iso(t):
@@ -152,9 +148,6 @@ check("--stop says so on a fresh break", msg == "cache broke last turn [lbl]: ~3
       r1.stdout + r1.stderr)
 check("…writes the facts file", os.path.isfile(os.path.join(h, ".cache", "cmux-crew", "cache-facts", "s2.json")))
 check("…and is quiet the second time", r2.stdout == "" and r2.returncode == 0, r2.stdout)
-if crew_impl.is_rust("cachefacts"):
-    p1 = run("cachefacts", ["--stop", TX, "s2", "lbl"], env_for(home("stop-py"), CREW_BILLING="usage"), impl=False)
-    check("--stop — Rust prints the Python's bytes", p1.stdout == r1.stdout, p1.stdout + "|" + r1.stdout)
 
 r, eq = both("cachefacts", ["--scan", os.path.join(T, "projects")], lambda t: env_for(home(t), CREW_BILLING="usage"))
 check("--scan tallies the corpus", r.stdout.startswith("1 transcripts, 4 breaks, 0.1M tokens re-cached"), r.stdout)
@@ -173,11 +166,11 @@ d = json.loads(r.stdout or "{}")
 check("a family moves as one unit, parent first, at its most urgent member's place",
       [x["id"] for x in d.get("rows", [])] == ["p", "c", "c2", "a", "x"], r.stdout)
 check("a family without its parent row is labelled", d["rows"][4].get("famlabel") == "g" if d.get("rows") else False)
-same("families", eq, r)
+same("families", eq, r, gold="families.txt")
 flat = {"rows": [{"id": "a", "kind": "done"}], "quiet": []}
 r, eq = both("families", [], lambda t: env_for(home(t)), stdin=json.dumps(flat))
 check("no family on the board: the same rows back", json.loads(r.stdout or "{}") == flat)
-same("families with no family", eq, r)
+same("families with no family", eq, r, gold="families-flat.txt")
 
 # ---------------------------------------------------------------- pricing
 print("pricing")
@@ -221,12 +214,12 @@ ea = pricing_env("args")
 r = run("pricing", ["--args"], ea)
 a = json.loads(r.stdout or "[]")
 check("--args names a generated config", a[:1] == ["--config"] and os.path.isfile(a[1] if len(a) > 1 else ""), r.stdout)
-if crew_impl.is_rust("pricing") and len(a) > 1:
-    gen = open(a[1]).read()
-    os.remove(a[1])
-    p = run("pricing", ["--args"], ea, impl=False)
-    check("--args — the Python names the same file for the same overrides (one hash, one format)",
-          p.stdout == r.stdout and open(json.loads(p.stdout)[1]).read() == gen, p.stdout + "|" + r.stdout)
+if len(a) > 1:
+    # The file's name hashes the overrides, so a config already on disk
+    # keeps its name: the golden holds both the name and the bytes.
+    ok, want = golden.expect("core/pricing-args.txt", r.stdout + "-- config\n" + open(a[1]).read(),
+                             {ea["HOME"]: "<HOME>", T: "<T>"})
+    check("--args — names the config and writes it as its golden does", ok, want[-300:])
 cfg = json.load(open(a[1])) if len(a) > 1 else {}
 check("…crew's fields over the user's, which survive underneath",
       cfg.get("other") == 1 and cfg["defaults"]["pricingOverrides"]["claude-test-9-9"] ==
@@ -239,15 +232,15 @@ json.dump({"defaults": {"pricingOverrides": {"m2": {"outputCostPerToken": 0.5, "
 r, eq = both("pricing", ["--merge", sf, lf], lambda t: env_for(home(t)))
 check("--merge: a local entry replaces the shipped one wholesale",
       json.loads(r.stdout or "{}") == {"m1": {"inputCostPerToken": 1}, "m2": {"outputCostPerToken": 0.5}}, r.stdout)
-same("--merge", eq, r)
+same("--merge", eq, r, gold="pricing-merge.txt")
 of, uf = os.path.join(T, "ov.json"), os.path.join(T, "up.json")
 json.dump({"m": {"inputCostPerToken": 3e-06, "fastMultiplier": 2}, "n": {"inputCostPerToken": 1e-06}}, open(of, "w"))
 json.dump({"m": {"input_cost_per_token": 3e-06}}, open(uf, "w"))
 r, eq = both("pricing", ["--compare", of, uf], lambda t: env_for(home(t)))
 check("--compare lists each model's verdict", len(json.loads(r.stdout or "[]")) == 2, r.stdout)
-same("--compare", eq, r)
+same("--compare", eq, r, gold="pricing-compare.txt")
 r, eq = both("pricing", ["--compare", of, "-"], lambda t: env_for(home(t)))
-same("--compare with no upstream", eq, r)
+same("--compare with no upstream", eq, r, gold="pricing-compare-no-upstream.txt")
 
 # ---------------------------------------------------------------- costs
 print("costs")
@@ -262,7 +255,7 @@ r, eq = both("costs", ["--attribute", fx, "/w/a", "/w/b"], lambda t: env_for(hom
 d = json.loads(r.stdout or "{}")
 check("--attribute sums floats as Python does and names unpriced models",
       d.get("/w/a", {}).get("unpricedToday") == ["x-1"] and d.get("/w/b", {}).get("today") == 0.0, r.stdout)
-same("--attribute (0.1 + 0.2, 1e-07)", eq, r)
+same("--attribute (0.1 + 0.2, 1e-07)", eq, r, gold="costs-attribute.txt")
 # Real ccusage costs carry 16-17 significant digits, which a float parser
 # that is not round-trip exact reads one ulp off (seeded, so a failure repeats).
 import random  # noqa: E402
@@ -272,12 +265,12 @@ fx2 = os.path.join(T, "fx2.json")
 json.dump({"today": "2026-10-21", "projects": {"-w-a": long_rows}}, open(fx2, "w"))
 r, eq = both("costs", ["--attribute", fx2, "/w/a"], lambda t: env_for(home(t)))
 check("--attribute over 400 17-digit costs", '"week"' in r.stdout, r.stdout[:200])
-same("--attribute with 17-digit floats", eq, r)
+same("--attribute with 17-digit floats", eq, r, gold="costs-attribute-17.txt")
 # families echoes every row, so each float is parsed and printed once.
 echo = {"rows": [{"id": str(i), "kind": "done", "family": "f", "urgency": x["totalCost"]}
                  for i, x in enumerate(long_rows)], "quiet": []}
 r, eq = both("families", [], lambda t: env_for(home(t)), stdin=json.dumps(echo))
-same("families echoing 400 17-digit floats", eq, r)
+same("families echoing 400 17-digit floats", eq, r, gold="families-echo-17.txt")
 
 # ---------------------------------------------------------------- workspaces CLI
 print("workspaces CLI")
@@ -298,6 +291,5 @@ same("dormant-days", eq, r)
 r = run("workspaces", ["list-json"], env_for(home("dead"), CREW_CMUX="/usr/bin/false"))
 check("list-json exits 1 when cmux is silent", r.returncode == 1 and r.stdout == "")
 
-print(f"\ncore probe: {sum(results)} passed, {len(results) - sum(results)} failed"
-      + (" (CREW_IMPL=%s)" % os.environ["CREW_IMPL"] if os.environ.get("CREW_IMPL") else ""))
+print(f"\ncore probe: {sum(results)} passed, {len(results) - sum(results)} failed")
 sys.exit(0 if all(results) else 1)

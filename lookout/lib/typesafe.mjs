@@ -1,6 +1,5 @@
 // The TypeSafe client, reached the way every seamux plugin reaches it: by
-// running crew's one client (`seamux typesafe`, or crew/hooks/typesafe.py
-// until the crew Python is deleted) with JSON on stdin. A
+// running crew's one client (`seamux typesafe`) with JSON on stdin. A
 // plugin cannot import another's libs (ADR 0004), so the two small rules
 // below are restated here rather than shared: where the client is
 // (deep-plan/lib/evidence.mjs, clientCmd) and when file content may leave the
@@ -9,14 +8,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolveSeamux } from "./host.mjs";
-import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-
 // The client as a command: `seamux typesafe` at $SEAMUX_BIN or
-// ~/.local/bin/seamux, else crew's typesafe.py from the installed tree or this
-// checkout. The env override is authoritative, not a first preference: the
+// ~/.local/bin/seamux, or none. The env override is authoritative, not a
+// first preference: the
 // probe points it at a mock (or at nothing), and falling through to the
 // machine's real client from under a test would put a probe on the network.
 export function clientCmd() {
@@ -25,8 +21,8 @@ export function clientCmd() {
     const c = process.env.LOOKOUT_TYPESAFE_CLIENT;
     return c && exists(c) ? ["python3", c] : null;
   }
-  // Only a seamux that lists the tool: an older build without it would read
-  // as "TypeSafe not configured" and never reach the fallback below.
+  // Only a seamux that lists the tool: an older build without it has no
+  // client, which reads as "no TypeSafe".
   const lists = (s) => {
     const r = spawnSync(s, ["--tools"], { encoding: "utf8", timeout: 5000 });
     return r.status === 0 && (r.stdout || "").split("\n").includes("typesafe");
@@ -34,11 +30,7 @@ export function clientCmd() {
   for (const s of [process.env.SEAMUX_BIN, path.join(os.homedir(), ".local", "bin", "seamux")]) {
     if (s && exists(s) && lists(s)) return [s, "typesafe"];
   }
-  const py = [
-    path.join(os.homedir(), ".config", "cmux", "crew", "hooks", "typesafe.py"),
-    path.join(HERE, "..", "..", "crew", "hooks", "typesafe.py"),
-  ].find(exists);
-  return py ? ["python3", py] : null;
+  return null;
 }
 
 // Loopback keeps content on this machine; anything else is off-machine.
@@ -64,7 +56,7 @@ export function repoConfig(root) {
 // a failure is a reason to fall back, not a guess.
 export function ask(state, questions, { timeout = 60000 } = {}) {
   const client = clientCmd();
-  if (!client) return { ok: false, why: "no TypeSafe client found (seamux typesafe, or crew's hooks/typesafe.py)" };
+  if (!client) return { ok: false, why: "no TypeSafe client found (seamux typesafe)" };
   const [cmd, ...pre] = client;
   const a = spawnSync(cmd, [...pre, "available"], { timeout: 5000 });
   if (a.status !== 0) return { ok: false, why: "TypeSafe is not configured (no API key)" };

@@ -1,0 +1,8 @@
+    crew-artifacts index                       rescan changed transcripts (the Stop hook runs this)
+    crew-artifacts backfill                    index every transcript from the start
+    crew-artifacts search <q> [--ws <cwd>] [--kind <k>] [--json]
+    crew-artifacts keep <id>                   copy an at-risk temp file into ~/.claude/crew/kept/
+
+-- stderr
+
+-- exit 2

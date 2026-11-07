@@ -1,0 +1,5 @@
+
+-- stderr
+refused: not in a temp directory
+
+-- exit 1

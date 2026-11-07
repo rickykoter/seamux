@@ -352,7 +352,13 @@ fn a_failed_emit_is_sent_again() {
             })
         })
     };
-    std::thread::sleep(Duration::from_millis(200));
+    // Wait for the retry with a deadline, not a fixed sleep: under load the
+    // first emit can land late. Then give it ten more ticks to show it stops.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while *calls.lock().unwrap() < 2 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(400));
     drop(tx);
     runner.join().unwrap();
     assert_eq!(*calls.lock().unwrap(), 2, "the unchanged frame went again once, then stopped");

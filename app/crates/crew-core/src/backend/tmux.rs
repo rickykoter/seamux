@@ -27,6 +27,8 @@ use crate::native::{has_extkeys, sh_quote, tmux_bin, EXTKEYS_FEATURE};
 
 pub struct TmuxBackend {
     dir: PathBuf,
+    /// The login shell a pane runs in; None is $SHELL, else /bin/zsh.
+    shell: Option<String>,
 }
 
 /// `$XDG_STATE_HOME/seamux`, else `~/.local/state/seamux`.
@@ -153,7 +155,15 @@ fn tmux_ok(sock: &str, args: &[&str]) -> Result<String, String> {
 impl TmuxBackend {
     /// The backend whose socket and registry live in `dir`.
     pub fn at(dir: PathBuf) -> TmuxBackend {
-        TmuxBackend { dir }
+        TmuxBackend { dir, shell: None }
+    }
+
+    /// The same backend with its panes in `shell` instead of $SHELL. Tests
+    /// use it: a person's real login shell can stall before its prompt (an rc
+    /// file that reads a folder macOS has not granted, say).
+    pub fn with_shell(mut self, shell: &str) -> TmuxBackend {
+        self.shell = Some(shell.to_string());
+        self
     }
 
     pub fn socket(&self) -> String {
@@ -374,7 +384,9 @@ impl TmuxBackend {
         fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
         let id = id.to_string();
         let session = format!("seamux-{id}");
-        let shell = std::env::var("SHELL").ok().filter(|s| s.starts_with('/')).unwrap_or_else(|| "/bin/zsh".into());
+        let shell = self.shell.clone().unwrap_or_else(|| {
+            std::env::var("SHELL").ok().filter(|s| s.starts_with('/')).unwrap_or_else(|| "/bin/zsh".into())
+        });
         let run = format!("{claude}; exec {} -l", sh_quote(&shell));
         let program = format!("{} -lc {}", sh_quote(&shell), sh_quote(&run));
         let (wenv, penv) = (format!("SEAMUX_WORKSPACE_ID={ws}"), format!("SEAMUX_PANE_ID={id}"));
@@ -554,7 +566,13 @@ mod tests {
             let dir = PathBuf::from(format!("/tmp/sx-{tag}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
-            Fixture(TmuxBackend::at(dir.clone()), dir)
+            // A login shell that reads no rc file, so the machine's own
+            // shell setup cannot hold a pane before its prompt: -lc runs its
+            // command, -l waits at a prompt as a login shell does.
+            let sh = dir.join("login-sh");
+            fs::write(&sh, "#!/bin/sh\nif [ \"$1\" = -lc ]; then exec /bin/sh -c \"$2\"; fi\nexec /bin/sh -i\n").unwrap();
+            fs::set_permissions(&sh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+            Fixture(TmuxBackend::at(dir.clone()).with_shell(&sh.to_string_lossy()), dir)
         }
     }
     impl Drop for Fixture {

@@ -14,7 +14,7 @@
 // explicitly untuned; that is exactly the situation this rule is for.)
 //
 // Everything else follows deep-plan's TypeSafe doctrine: one shared client
-// (crew/hooks/typesafe.py), one batched request, a bounded subprocess, and
+// (`seamux typesafe`), one batched request, a bounded subprocess, and
 // any failure — no key, no server, timeout, odd answer — is silence and
 // today's behaviour, never a guess.
 //
@@ -56,25 +56,30 @@ export const DEFAULT_SAFE_FLOOR = 0.5;
 const ASK_TIMEOUT_MS = 45000;
 const EXCERPT_CAP = 1600;
 
-export function clientPath() {
-  // Authoritative when set, like deep-plan's: the probe points it at a
-  // stand-in, and an empty value means "no client" so a test can never reach
-  // the machine's real one.
+// The client as a command: `seamux typesafe` at $SEAMUX_BIN or
+// ~/.local/bin/seamux when it lists the tool, or null, as deep-plan's and
+// lookout's clients find it. RESTACK_TYPESAFE_CLIENT is authoritative when
+// set: the probe points it at a stand-in script (run with python3), and an
+// empty value means "no client", so a test never reaches the machine's own.
+export function clientCmd() {
+  const exists = (p) => { try { return fs.existsSync(p); } catch { return false; } };
   if ("RESTACK_TYPESAFE_CLIENT" in process.env) {
     const c = process.env.RESTACK_TYPESAFE_CLIENT;
-    try { return c && fs.existsSync(c) ? c : ""; } catch { return ""; }
+    return c && exists(c) ? ["python3", c] : null;
   }
-  const here = path.dirname(new URL(import.meta.url).pathname);
-  const candidates = [
-    path.join(os.homedir(), ".config", "cmux", "crew", "hooks", "typesafe.py"),
-    path.join(here, "..", "..", "crew", "hooks", "typesafe.py"),
-  ];
-  return candidates.find(c => { try { return fs.existsSync(c); } catch { return false; } }) || "";
+  const lists = (s) => {
+    const r = spawnSync(s, ["--tools"], { encoding: "utf8", timeout: 5000 });
+    return r.status === 0 && (r.stdout || "").split("\n").includes("typesafe");
+  };
+  for (const s of [process.env.SEAMUX_BIN, path.join(os.homedir(), ".local", "bin", "seamux")]) {
+    if (s && exists(s) && lists(s)) return [s, "typesafe"];
+  }
+  return null;
 }
 
-export function available(client) {
-  if (!client) return false;
-  const r = spawnSync("python3", [client, "available"], { timeout: 5000 });
+export function available(cmd) {
+  if (!cmd) return false;
+  const r = spawnSync(cmd[0], [...cmd.slice(1), "available"], { timeout: 5000 });
   return r.status === 0;
 }
 
@@ -89,7 +94,7 @@ export function contentAllowed() {
 
 export function judgeState(cfg) {
   const j = cfg.judge || {};
-  const client = j.enabled === false ? "" : clientPath();
+  const client = j.enabled === false ? null : clientCmd();
   return {
     client,
     on: !!client && available(client),
@@ -120,8 +125,8 @@ export function safeVerdict(answer, safeOption, floor) {
   return { escalate: false, p: null, basis: "none" };   // unreadable: stay silent
 }
 
-function ask(client, state, questions) {
-  const r = spawnSync("python3", [client, "ask"], {
+function ask(cmd, state, questions) {
+  const r = spawnSync(cmd[0], [...cmd.slice(1), "ask"], {
     input: JSON.stringify({ state, questions }), encoding: "utf8", timeout: ASK_TIMEOUT_MS,
   });
   if (r.status !== 0 || !r.stdout) return null;

@@ -25,11 +25,11 @@ And a smoke case each for the four whose deeper probes live elsewhere
 (family_sync_probe, board_probe, workspaces_probe): crew-sync --dry-run,
 crew-color assign/show/peek, crew-overlay, crew-sweep --json.
 
-Tools that call a sibling (listen, digest) run from a copied crew tree whose
-siblings are stubs logging their argv, so nothing real is started.
+Every tool runs as this branch's `seamux <tool>`. Tools that call a sibling
+another crate owns (listen, digest) get a crew tree whose siblings are stubs
+logging their argv, so nothing real is started.
 
     python3 crew/tools/cli_probe.py                exit 0 when all hold
-    CREW_IMPL=rust python3 crew/tools/cli_probe.py the same, against seamux
 """
 import json
 import os
@@ -53,30 +53,27 @@ def check(name, cond, extra=""):
 
 
 # --- which implementation runs ----------------------------------------------------
-# The one place a tool becomes a command. With CREW_IMPL=rust a tool that seamux
-# registers runs as `seamux <tool>`, told where crew lives (CREW_HOME) and to reach
-# cmux through the CLI, so fakecmux still answers; anything else runs the Python.
+# The one place a tool becomes a command: `seamux <tool>`, told where crew lives
+# (CREW_HOME) and to reach cmux through the CLI, so fakecmux still answers.
 # crew_impl (the family's shared helper) decides; this only adds the crew tree.
 sys.path.insert(0, HERE)
 import crew_impl  # noqa: E402
 
-if crew_impl.mode() and not crew_impl.seamux_bin():
-    # Running the Python here would pass and prove nothing about the Rust.
-    sys.exit(f"cli_probe: CREW_IMPL={crew_impl.mode()} but no seamux binary "
-             "(SEAMUX_BIN, app/target/debug/seamux or PATH)")
+if not crew_impl.seamux_bin():
+    sys.exit("cli_probe: no seamux binary: set SEAMUX_BIN or build app/target/debug/seamux "
+             "(cargo build --manifest-path app/Cargo.toml -p seamux-cli)")
 
 
 def _cmd(tool, args, env, crew_home):
     try:
-        argv = crew_impl.argv(tool, os.path.join(crew_home, "bin", tool), sys.executable)
+        argv = crew_impl.argv(tool)
     except crew_impl.NotPorted as e:
         sys.exit(f"cli_probe: {e}")
-    if crew_impl.is_rust(tool):
-        env = crew_impl.env(dict(env, CREW_HOME=crew_home))
-        if crew_home != CREW:
-            # A stub tree: siblings another crate ports must still run from it,
-            # by path, so the stubs log the call (crew-hooks honors the same).
-            env["SEAMUX_TOOLS_BY_PATH"] = "1"
+    env = crew_impl.env(dict(env, CREW_HOME=crew_home))
+    if crew_home != CREW:
+        # A stub tree: siblings another crate owns run from it, by path, so
+        # the stubs log the call (crew-hooks honors the same).
+        env["SEAMUX_TOOLS_BY_PATH"] = "1"
     return argv + list(args), env
 
 
@@ -154,8 +151,9 @@ def ws(i, cwd, **kw):
                  "current_directory": cwd, "custom_color": "", "description": ""}, **kw)
 
 
-# A crew tree for the tools that call siblings: the tool under test is the real
-# file, every sibling a stub that logs its argv and answers what it is asked.
+# A crew tree for the tools that call siblings: the tool under test is seamux,
+# every sibling another crate owns a stub that logs its argv and answers what
+# it is asked (crew-cli runs those by path under SEAMUX_TOOLS_BY_PATH).
 STUB = """#!/usr/bin/env python3
 import json, os, sys
 name = %r
@@ -177,8 +175,6 @@ for rel in ("bin/crew-sync", "bin/crew-frame", "bin/crew-plugin-root",
     with open(p, "w") as fh:
         fh.write(STUB % (os.path.basename(rel), STUBS, NEWS))
     os.chmod(p, 0o755)
-for tool in ("crew-listen", "crew-digest"):
-    shutil.copy2(os.path.join(CREW, "bin", tool), os.path.join(STUB_HOME, "bin", tool))
 shutil.copy2(os.path.join(CREW, "bin", "crew-cmux-bin"), os.path.join(STUB_HOME, "bin", "crew-cmux-bin"))
 
 
@@ -287,11 +283,9 @@ check("a cmux.json without the key: exit 1, says to run crew apply, writes nothi
 print("crew-listen")
 LSTATE = os.path.join(CACHE, "cmux-crew")
 LENV = dict(ENV, CREW_SYNC_INTERVAL="3600", CREW_BOARD_TICK="0")
-# The Python starts its siblings from its own folder (here the stub tree, which
-# logs each call). seamux starts crew-sync and crew-frame as `seamux <tool>`,
-# its own tools, so under Rust they are judged by what they do: a sync takes
-# the run lock, and the frame paints the workspace it was given.
-RUST_LISTEN = crew_impl.is_rust("crew-listen")
+# seamux starts crew-sync and crew-frame as `seamux <tool>`, its own tools, so
+# they are judged by what they do: a sync takes the run lock, and the frame
+# paints the workspace it was given.
 SYNC_LOCK = os.path.join(LSTATE, "sync.lock")
 
 
@@ -303,7 +297,7 @@ def waited(cond, secs=15):
 
 
 def sync_started():
-    return ["crew-sync"] in stub_calls() or (RUST_LISTEN and os.path.exists(SYNC_LOCK))
+    return os.path.exists(SYNC_LOCK)
 
 
 if os.path.exists(SYNC_LOCK):
@@ -311,20 +305,17 @@ if os.path.exists(SYNC_LOCK):
 clear_log()
 r = run("crew-listen", "--once", env=LENV, crew_home=STUB_HOME)
 calls = stub_calls()
-check("--once with no stamp: prints reconciled and starts crew-sync"
-      + ("" if RUST_LISTEN else " and a board push"),
+check("--once with no stamp: prints reconciled and starts crew-sync",
       r.returncode == 0 and r.stdout.strip() == "reconciled"
       and os.path.exists(os.path.join(LSTATE, "sync-stamp")), r.stdout + r.stderr)
-# The Rust listener no longer pushes the board: the Dock board is retired at
-# the cutover, and /board follows the state over SSE. The Python, kept in the
-# tree only for the probes until inc4, still pushes.
+# The listener pushes no board: the Dock board is retired, and /board follows
+# the state over SSE.
 pushed = lambda c: any(x[:2] == ["crew-board", "push"] for x in c)  # noqa: E731
-waited(lambda: sync_started() and (RUST_LISTEN or pushed(stub_calls())), 10)
-time.sleep(0.5 if RUST_LISTEN else 0)
+waited(sync_started, 10)
+time.sleep(0.5)
 calls = stub_calls()
-check("…the sync it starts is the sibling crew-sync, and the push is crew-board push"
-      if not RUST_LISTEN else "…the sync it starts is the sibling crew-sync, and no board push (retired)",
-      sync_started() and (pushed(calls) != RUST_LISTEN), str(calls))
+check("…the sync it starts is the sibling crew-sync, and no board push (retired)",
+      sync_started() and not pushed(calls), str(calls))
 r = run("crew-listen", "--once", env=LENV, crew_home=STUB_HOME)
 check("--once again inside the throttle: not due", r.returncode == 0 and r.stdout.strip() == "not due",
       r.stdout + r.stderr)
@@ -358,12 +349,11 @@ waited(sync_started)
 time.sleep(1.0)
 pid = open(os.path.join(LSTATE, "listen.pid")).read().strip() if os.path.exists(
     os.path.join(LSTATE, "listen.pid")) else ""
-if RUST_LISTEN:
-    lc = subprocess.run(["lsof", "-a", "-p", pid or "0", "-d", "cwd", "-Fn"],
-                        capture_output=True, text=True).stdout
-    listen_cwd = next((l[1:] for l in lc.splitlines() if l.startswith("n")), "")
-    check("started from a worktree, the listener runs from $HOME",
-          os.path.realpath(listen_cwd) == os.path.realpath(HOME), listen_cwd or lc)
+lc = subprocess.run(["lsof", "-a", "-p", pid or "0", "-d", "cwd", "-Fn"],
+                    capture_output=True, text=True).stdout
+listen_cwd = next((l[1:] for l in lc.splitlines() if l.startswith("n")), "")
+check("started from a worktree, the listener runs from $HOME",
+      os.path.realpath(listen_cwd) == os.path.realpath(HOME), listen_cwd or lc)
 second = run("crew-listen", env=LENV, crew_home=STUB_HOME)
 p.send_signal(__import__("signal").SIGINT)      # ^C, as a person stops it
 try:
@@ -378,19 +368,12 @@ check("it follows the four structural events through cmux events, with the curso
                        ("workspace.created", "workspace.closed", "workspace.renamed", "workspace.selected"))
       and "--cursor-file " + os.path.join(LSTATE, "events.seq") in ev_calls[0]
       and "--reconnect" in ev_calls[0] and "sidebar.metadata.updated" not in ev_calls[0], str(ev_calls))
-if RUST_LISTEN:
-    check("at startup it makes sure the click server is up, and pushes no board (retired)",
-          ["crew-board-intent", "--status"] in calls and not pushed(calls), str(calls))
-else:
-    check("at startup it pushes the board and makes sure the click server is up",
-          ["crew-board", "push"] in calls and ["crew-board-intent", "--status"] in calls, str(calls))
-    check("a selection pushes the board fast with the payload's workspace id",
-          ["crew-board", "push", "--fast", "--selected", "ws-b"] in calls, str(calls))
-check("…and repaints the frame for that same workspace",
-      ["crew-frame", "--workspace", "ws-b"] in calls
-      or (RUST_LISTEN and waited(lambda: '"activePaneBorderColor": "#7D6608"' in open(CMUX_JSON).read(), 10)),
+check("at startup it makes sure the click server is up, and pushes no board (retired)",
+      ["crew-board-intent", "--status"] in calls and not pushed(calls), str(calls))
+check("…and a selection repaints the frame for the payload's workspace",
+      waited(lambda: '"activePaneBorderColor": "#7D6608"' in open(CMUX_JSON).read(), 10),
       str(calls) + open(CMUX_JSON).read())
-syncs = (err.count("reconcile <- ") if RUST_LISTEN else sum(1 for c in calls if c == ["crew-sync"]))
+syncs = err.count("reconcile <- ")
 check("a structural event reconciles exactly once; the next is throttled",
       syncs == 1 and "workspace.renamed (no reconcile: throttled)" in err, err)
 check("an event crew emits itself never reaches it",
@@ -564,8 +547,8 @@ check("where things stand: the board's news, from crew-board state --fast --json
       "where things stand  commits: last 5h" in plain and "● api wants you" in plain and "● ui landed" in plain
       and ["crew-board", "state", "--fast", "--json"] in stub_calls(), plain)
 # %D names refs only on a branch's tip, so the commits below dev/wip's tip carry
-# none and group as "(no ref)": what the Python does today, whatever its comment
-# says, and so what a port must do.
+# none and group as "(no ref)": what the retired Python did, whatever its comment
+# said, and so what seamux keeps doing.
 check("commits grouped by the ref on each, busiest group first, six shown then a count",
       "✓ 9 commit(s)" in plain and plain.index("(no ref)") < plain.index("dev/wip") < plain.index("master")
       and "wip step 6" in plain and "… 1 more" in plain and "wip step 0" not in plain
@@ -700,22 +683,20 @@ check("crew-sync renames a worktree after its ticket, publishes its plan, phase 
       and any(l.startswith("workspace-action --action set-color --color #") for l in log),
       f"rc={r.returncode}\n       " + "\n       ".join(log) + r.stderr[-300:])
 
-# crew's pane files decide working (the Rust crew-sync; the Python copy is
-# frozen): the store still says running, but the pane's own file says the turn
-# ended, so no phase:working is published.
-if crew_impl.is_rust("crew-sync"):
-    PSTATE = os.path.join(CACHE, "cmux-crew")
-    os.makedirs(PSTATE, exist_ok=True)
-    json.dump({"ws": "ws-y", "surface": "S-Y", "session": "SY", "state": "idle", "at": 1},
-              open(os.path.join(PSTATE, "pane-S-Y.json"), "w"))
-    clear_log()
-    r = run("crew-sync", env=dict(ENV, CREW_GH_INTERVAL="0", CREW_SYNC_FORCE="1"), timeout=120)
-    log = cmux_log()
-    desc = next((l for l in log if l.startswith("workspace-action --action set-description")), "")
-    check("crew-sync takes working from the pane's file over the store's running",
-          r.returncode == 0 and "phase:working" not in desc,
-          f"rc={r.returncode} desc={desc!r}\n       " + "\n       ".join(log) + r.stderr[-300:])
-    os.remove(os.path.join(PSTATE, "pane-S-Y.json"))
+# crew's pane files decide working: the store still says running, but the
+# pane's own file says the turn ended, so no phase:working is published.
+PSTATE = os.path.join(CACHE, "cmux-crew")
+os.makedirs(PSTATE, exist_ok=True)
+json.dump({"ws": "ws-y", "surface": "S-Y", "session": "SY", "state": "idle", "at": 1},
+          open(os.path.join(PSTATE, "pane-S-Y.json"), "w"))
+clear_log()
+r = run("crew-sync", env=dict(ENV, CREW_GH_INTERVAL="0", CREW_SYNC_FORCE="1"), timeout=120)
+log = cmux_log()
+desc = next((l for l in log if l.startswith("workspace-action --action set-description")), "")
+check("crew-sync takes working from the pane's file over the store's running",
+      r.returncode == 0 and "phase:working" not in desc,
+      f"rc={r.returncode} desc={desc!r}\n       " + "\n       ".join(log) + r.stderr[-300:])
+os.remove(os.path.join(PSTATE, "pane-S-Y.json"))
 check("…and reports each change",
       "  ws-y  name -> PROJ-3 · tidy\n  ws-y  progress -> 1/2 · Doing b\n" in r.stdout, r.stdout)
 
@@ -734,7 +715,7 @@ check("crew-color show names it and says Peacock is not applied",
 
 # A family: the parent's colour (Blue, preset), shades on the children, a child's
 # Peacock file followed, and leaving puts the colour from before back. The hexes
-# are the Python's own arithmetic (Peacock's HSL lighten/darken).
+# are the retired Python's arithmetic (Peacock's HSL lighten/darken), kept.
 import hashlib  # noqa: E402
 FAM = os.path.join(T, "fam")
 PARENT, KID1, KID2 = (os.path.join(FAM, n) for n in ("parent", "kid1", "kid2"))

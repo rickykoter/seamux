@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""crew_impl_probe — the CREW_IMPL helper, in Python and its node twin.
+"""crew_impl_probe — crew_impl, the probes' helper, in Python and its node twin.
 
 Each case runs both implementations in a fresh process against a stub seamux
 that registers crew-color and triage, and checks they give the same answer:
-which argv a tool gets in each mode, the fallback and the strict refusal, the
-env the Rust needs, and how seamux is found. No cmux, no cargo needed; when a
-built app/target/debug/seamux exists it is checked too.
+a registered tool runs as seamux, an unregistered one and a missing seamux
+are refused, a seamux on PATH is never picked, and the env the tools need.
+No cmux, no cargo needed; when a built app/target/debug/seamux exists it is
+checked too.
 
     python3 crew/tools/crew_impl_probe.py
 """
@@ -36,7 +37,7 @@ os.chmod(STUB, 0o755)
 
 
 def base_env(**kw):
-    e = {k: v for k, v in os.environ.items() if k not in ("CREW_IMPL", "SEAMUX_BIN", "CREW_HOME", "CREW_CMUX_TRANSPORT")}
+    e = {k: v for k, v in os.environ.items() if k not in ("SEAMUX_BIN", "CREW_HOME", "CREW_CMUX_TRANSPORT")}
     e["SEAMUX_BIN"] = STUB
     e.update({k: v for k, v in kw.items() if v is not None})
     for k, v in kw.items():
@@ -97,56 +98,43 @@ def same(name, q, env, want):
     return pa
 
 
-print("crew_impl: modes")
+print("crew_impl: argv")
 e = base_env()
-same("unset: a registered tool still runs the Python", {"argv": ["crew-color", "/p/crew-color"]}, e,
-     lambda a: a.get("argv") == ["/p/crew-color"])
-same("unset: an interpreter is kept in front", {"argv": ["typesafe", "/p/typesafe.py", "python3"]}, e,
-     lambda a: a.get("argv") == ["python3", "/p/typesafe.py"])
-
-e = base_env(CREW_IMPL="rust")
-same("rust: a registered tool runs seamux", {"argv": ["crew-color", "/p/crew-color"]}, e,
+same("a registered tool runs seamux", {"argv": ["crew-color"]}, e,
      lambda a: a.get("argv") == [STUB, "crew-color"])
-same("rust: an unregistered tool falls back to the Python", {"argv": ["crew-sync", "/p/crew-sync", "python3"]}, e,
-     lambda a: a.get("argv") == ["python3", "/p/crew-sync"])
-
-e = base_env(CREW_IMPL="rust-strict")
-same("rust-strict: an unregistered tool is refused", {"argv": ["crew-sync", "/p/crew-sync"]}, e,
+same("an unregistered tool is refused, by name", {"argv": ["crew-sync"]}, e,
      lambda a: "crew-sync" in a.get("notported", ""))
-same("rust-strict: a registered tool runs seamux", {"argv": ["triage", "/p/triage.py"]}, e,
-     lambda a: a.get("argv") == [STUB, "triage"])
-
-e = base_env(CREW_IMPL="python")
-same("an unknown mode is an error, not a guess", {"argv": ["triage", "/p/triage.py"]}, e,
-     lambda a: "rust-strict" in a.get("bad", ""))
-
-e = base_env(CREW_IMPL="rust", SEAMUX_BIN=os.path.join(T, "missing"))
-same("rust with no seamux at all falls back", {"argv": ["crew-color", "/p/crew-color"]}, e,
-     lambda a: a.get("argv") == ["/p/crew-color"])
+e = base_env(SEAMUX_BIN=os.path.join(T, "missing"))
+same("a seamux that is not there registers nothing, so it is refused", {"argv": ["crew-color"]}, e,
+     lambda a: "crew-color" in a.get("notported", ""))
+if not os.access(BUILT, os.X_OK):
+    e = base_env(SEAMUX_BIN=None)
+    same("no SEAMUX_BIN and no build is refused, naming the build", {"argv": ["crew-color"]}, e,
+         lambda a: "cargo build" in a.get("notported", ""))
 
 print("crew_impl: env")
-e = base_env(CREW_IMPL="rust")
-same("rust: CLI transport and CREW_HOME at this checkout", {"base": {"CREW_CMUX": "/f/fakecmux.py"}}, e,
+e = base_env()
+same("CLI transport and CREW_HOME at this checkout", {"base": {"CREW_CMUX": "/f/fakecmux.py"}}, e,
      lambda a: a["env"] == {"CREW_CMUX": "/f/fakecmux.py", "CREW_CMUX_TRANSPORT": "cli",
                             "CREW_HOME": os.path.join(REPO, "crew")})
-same("rust: a probe's own CREW_HOME is kept", {"base": {"CREW_HOME": "/elsewhere"}}, e,
+same("a probe's own CREW_HOME is kept", {"base": {"CREW_HOME": "/elsewhere"}}, e,
      lambda a: a["env"]["CREW_HOME"] == "/elsewhere")
-e = base_env()
-same("unset: env is a plain copy", {"base": {"A": "1"}}, e, lambda a: a["env"] == {"A": "1"})
 
 print("crew_impl: finding seamux")
-pa = subprocess.run([sys.executable, PY, "argv", "crew-color", "/p/crew-color"],
-                    env=base_env(CREW_IMPL="rust"), capture_output=True, text=True)
+pa = subprocess.run([sys.executable, PY, "argv", "crew-color"], env=base_env(), capture_output=True, text=True)
 check("the CLI form prints the argv as JSON", json.loads(pa.stdout or "null") == [STUB, "crew-color"], pa.stdout + pa.stderr)
-pa = subprocess.run([sys.executable, PY, "argv", "crew-sync", "/p/crew-sync"],
-                    env=base_env(CREW_IMPL="rust-strict"), capture_output=True, text=True)
-check("the CLI form exits 3 on a strict refusal", pa.returncode == 3, pa.stderr)
+pa = subprocess.run([sys.executable, PY, "argv", "crew-sync"], env=base_env(), capture_output=True, text=True)
+check("the CLI form exits 3 on a refusal", pa.returncode == 3, pa.stderr)
 if os.access(BUILT, os.X_OK):
-    e = base_env(CREW_IMPL="rust", SEAMUX_BIN=None)
-    same("without SEAMUX_BIN the checkout's build wins", {"argv": ["cmux", "/p/none"]}, e,
+    e = base_env(SEAMUX_BIN=None)
+    same("without SEAMUX_BIN the checkout's build wins", {"argv": ["cmux"]}, e,
          lambda a: a.get("argv") == [BUILT, "cmux"])
 else:
     print("  skip the checkout's own build (cargo build --manifest-path app/Cargo.toml -p seamux-cli)")
+# A seamux on PATH is the installed app, not this branch: never picked.
+e = base_env(SEAMUX_BIN=None, PATH=T + os.pathsep + os.environ.get("PATH", ""))
+same("a seamux on PATH is never picked", {"argv": ["crew-color"]}, e,
+     lambda a: (a.get("argv") or [None])[0] != STUB)
 
 print(f"\n{sum(results)}/{len(results)} passed")
 sys.exit(0 if all(results) else 1)

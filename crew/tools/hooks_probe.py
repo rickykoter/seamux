@@ -2,20 +2,22 @@
 """hooks_probe — crew's Claude Code hooks, options, merge_settings and the
 status line, against fakecmux in a throwaway HOME. No app, no network.
 
-The hooks run from a copy of the crew tree. In that copy every tool a hook
-spawns (crew-sync, crew-feed, crew-color, crew-listen, crew-artifacts,
-cachefacts.py, asked.py, judgments.py) is a stub that appends its argv to a
-spawn log, so a detached spawn is asserted by name rather than run for real.
-`cmux` on PATH and $CREW_CMUX are both fakecmux.
+The hooks run through crew/hooks/seamux-hook.sh and seamux-asked.sh, so the
+work is this branch's `seamux crew-hook` and `seamux asked-hook`, from a copy
+of the crew tree. In that copy every tool a hook spawns (crew-sync,
+crew-feed, crew-color, crew-listen, crew-artifacts, cachefacts, asked,
+judgments) is a stub that appends its argv to a spawn log, and
+SEAMUX_TOOLS_BY_PATH makes seamux run those stubs, so a detached spawn is
+asserted by name rather than run for real. `cmux` on PATH and $CREW_CMUX are
+both fakecmux.
 
-What is asserted, per event (crew-hook.sh) and tool:
+What is asserted, per event and tool:
 
   - the guard: outside cmux, CREW_DISABLED, or the disabled file, nothing runs;
   - session: options rendered first (with CLAUDE_PLUGIN_ROOT), the session
     marker (never under CREW_ADOPT), workspace and tab names from the branch's
-    ticket, a colour only when there is none, phase:working (seamux: an
-    idle pane and a history line instead), crew-listen unless listen.off or
-    a live pid;
+    ticket, a colour only when there is none, an idle pane and a history
+    line, crew-listen unless listen.off or a live pid;
   - pretool: no marker means no cmux call; a marker is released to auto,
     except for AskUserQuestion; an outstanding turn-end ask takes phase back;
   - ask / answered / notification: lane, phase, question marker, banner text,
@@ -24,23 +26,16 @@ What is asserted, per event (crew-hook.sh) and tool:
   - stop: stop_hook_active is a no-op; review lane only on unreviewed work;
     the five feed tokens and phase cleared in one write (none when unchanged);
     the turn banner; throttled crew-sync; cachefacts --stop's stdout reaching
-    Claude and --sleep detached; crew-artifacts index; asked.sh only with
-    TypeSafe available;
+    Claude and --sleep detached; crew-artifacts index; the turn-end
+    follow-up only with TypeSafe available;
   - end: lane released, status cleared, phase dropped;
-  - asked.sh: a judgment of "asked" sets the lane, phase, marker and banner;
+  - asked-hook: a judgment of "asked" sets the lane, phase, marker and banner;
     "not asked" only records the ranking; no judgment, or a transcript that
     grew, does nothing;
-  - options.py, merge_settings.py and statusline.py: their files and lines;
-  - two panes in one workspace (seamux only, skipped without CREW_IMPL):
-    each pane's own state file, and a workspace that is their roll-up, so
-    one Claude's stop, prompt or end never clears another's ask.
-
-With CREW_IMPL=rust (crew/tools/crew_impl.py) the same cases run each
-piece seamux registers as Rust: `seamux <tool>` for the three tools, and
-crew/hooks/seamux-hook.sh and seamux-asked.sh once seamux registers
-crew-hook and asked-hook. Anything unregistered runs as today's script, so
-the probe passes at every step of the port; CREW_IMPL=rust-strict refuses
-an unregistered piece instead.
+  - options, merge_settings and statusline: their files and lines;
+  - two panes in one workspace: each pane's own state file, and a workspace
+    that is their roll-up, so one Claude's stop, prompt or end never clears
+    another's ask; and a usage-limit stop, on cmux and on the tmux backend.
 
     python3 crew/tools/hooks_probe.py      exit 0 when all hold
 """
@@ -63,7 +58,6 @@ FAKE = os.path.join(HERE, "fakecmux.py")
 sys.path.insert(0, HERE)
 import crew_impl  # noqa: E402
 
-RUST = bool(crew_impl.mode())
 BASH = shutil.which("bash") or "/bin/bash"
 results = []
 
@@ -96,7 +90,7 @@ with open(os.environ["PROBE_SPAWN_LOG"], "a") as fh:
     fh.write(" ".join([name] + sys.argv[1:]) + "\n")
 if name == "crew-color" and sys.argv[1:2] == ["assign"]:
     print("#1565C0")
-elif name == "asked.py":
+elif name == "asked":
     seen = sys.stdin.read()
     if sys.argv[1:2] == ["judge"] and os.environ.get("PROBE_ASKED_SEEN"):
         # What the stop hook's payload file held when the judge read it.
@@ -108,10 +102,10 @@ elif name == "asked.py":
     if out:
         sys.stdout.write(out + "\n")
     sys.exit(int(os.environ.get("PROBE_ASKED_RC", "2")))
-elif name == "judgments.py":
+elif name == "judgments":
     with open(os.environ["PROBE_SPAWN_LOG"], "a") as fh:
-        fh.write("judgments.py stdin " + sys.stdin.read() + "\n")
-elif name == "cachefacts.py" and sys.argv[1:2] == ["--stop"]:
+        fh.write("judgments stdin " + sys.stdin.read() + "\n")
+elif name == "cachefacts" and sys.argv[1:2] == ["--stop"]:
     sys.stdout.write(os.environ.get("PROBE_CACHEFACTS_OUT", ""))
 '''
 
@@ -123,7 +117,7 @@ def put_exe(path, text):
 
 
 for rel in ("bin/crew-sync", "bin/crew-feed", "bin/crew-color", "bin/crew-listen",
-            "bin/crew-artifacts", "bin/crew-code", "bin/crew-sandbox", "hooks/cachefacts.py", "hooks/asked.py", "board/judgments.py"):
+            "bin/crew-artifacts", "bin/crew-code", "bin/crew-sandbox", "hooks/cachefacts", "hooks/asked", "board/judgments"):
     put_exe(os.path.join(CREW, rel), STUB)
 
 put_exe(os.path.join(BIN, "cmux"), f'#!/bin/sh\nexec "{sys.executable}" "{FAKE}" "$@"\n')
@@ -209,40 +203,35 @@ def env_for(ws="ws-1", path=BIN, **extra):
     env.update(HOME=HOME, XDG_CACHE_HOME=CACHE, FAKE_CMUX_DIR=FAKE_DIR,
                CREW_CMUX=os.path.join(path, "cmux"), PROBE_SPAWN_LOG=SPAWN,
                CREW_LIVE=LIVE, PATH=path + os.pathsep + SYS_PATH)
-    if RUST:
-        # What crew_impl.env adds, with CREW_HOME on the copy under test.
-        # SEAMUX_TOOLS_BY_PATH: seamux spawns crew tools from the copy, by
-        # path, so the stubs below see them as they see the bash's spawns.
-        env.update(CREW_IMPL=crew_impl.mode(), CREW_CMUX_TRANSPORT="cli", CREW_HOME=CREW,
-                   SEAMUX_TOOLS_BY_PATH="1")
+    # What crew_impl.env adds, with CREW_HOME on the copy under test.
+    # SEAMUX_TOOLS_BY_PATH: seamux spawns crew tools from the copy, by path,
+    # so the stubs below log each spawn.
+    env.update(CREW_CMUX_TRANSPORT="cli", CREW_HOME=CREW,
+               SEAMUX_TOOLS_BY_PATH="1")
     if ws:
         env["CMUX_WORKSPACE_ID"] = ws
     env.update({k: v for k, v in extra.items() if v is not None})
     return env
 
 
-def shim(tool, rust_sh, bash_sh):
-    """The shim seamux's `tool` stands behind once it is registered, else today's."""
-    if crew_impl.is_rust(tool):
-        return rust_sh
-    if crew_impl.mode() == "rust-strict":
-        raise crew_impl.NotPorted("CREW_IMPL=rust-strict: seamux does not register %r" % tool)
-    return bash_sh
+def shim(tool, sh):
+    """The shim seamux's `tool` stands behind; refused if seamux lacks it."""
+    if not crew_impl.has(tool):
+        raise crew_impl.NotPorted("seamux does not register %r" % tool)
+    return sh
 
 
 def hook_argv(event):
-    return [BASH, os.path.join(CREW, "hooks", shim("crew-hook", "seamux-hook.sh", "crew-hook.sh")), event]
+    return [BASH, os.path.join(CREW, "hooks", shim("crew-hook", "seamux-hook.sh")), event]
 
 
 def asked_argv(size):
-    return [BASH, os.path.join(CREW, "hooks", shim("asked-hook", "seamux-asked.sh", "asked.sh")), size]
+    return [BASH, os.path.join(CREW, "hooks", shim("asked-hook", "seamux-asked.sh")), size]
 
 
 def tool_argv(name, *argv):
-    """A crew tool by its Python basename: the script in the copy, or `seamux`."""
-    rel = {"options": "hooks/options.py", "merge_settings": "claude/merge_settings.py",
-           "statusline": "claude/statusline.py", "triage": "hooks/triage.py"}[name]
-    return crew_impl.argv(name, os.path.join(CREW, rel), sys.executable) + list(argv)
+    """`seamux <name>` and its arguments."""
+    return crew_impl.argv(name) + list(argv)
 
 
 def payload(**kw):
@@ -308,10 +297,9 @@ def touch(name):
     open(os.path.join(STATE, name), "w").close()
 
 
-if RUST:
-    print("CREW_IMPL=%s: as seamux: %s" % (crew_impl.mode(), ", ".join(
-        t for t in ("crew-hook", "asked-hook", "options", "merge_settings", "statusline", "triage")
-        if crew_impl.is_rust(t)) or "nothing yet"))
+print("as seamux (%s): %s" % (crew_impl.seamux_bin(), ", ".join(
+    t for t in ("crew-hook", "asked-hook", "options", "merge_settings", "statusline", "triage")
+    if crew_impl.has(t))))
 
 # --- the guard ------------------------------------------------------------------------
 print("guard")
@@ -354,27 +342,17 @@ check("a blank colour is filled from crew-color assign",
       f"crew-color assign {WT}" in spawns()
       and "workspace-action --action set-color --color #1565C0" in L and color() == "#1565C0",
       "\n".join(L + spawns()))
-if RUST:
-    # seamux: a new session is idle until its first prompt (the frozen bash
-    # still says working).
-    pane = json.load(open(os.path.join(STATE, "pane-ws-1.json")))
-    check("a new session's pane is idle and no phase is published; the workspace is pinned to its worktree",
-          pane.get("state") == "idle" and pane.get("session") == "s-1" and desc() == f"ci:green root:{WT}"
-          and sum("set-description" in l for l in L) == 1, f"{pane} {desc()} {L}")
-    check("…and its idle start is a history line", any(
-        json.loads(l).get("state") == "idle" and json.loads(l).get("detail") == "session"
-        for f in os.listdir(HISTORY) for l in open(os.path.join(HISTORY, f))), os.listdir(HISTORY))
-    check("names, then colour, in that order",
-          [l.split()[0] for l in L if l.split()[0] in ("rename-workspace", "rename-tab", "sidebar-state")]
-          == ["rename-workspace", "rename-tab", "sidebar-state"], L)
-else:
-    check("phase:working is merged into the description, keeping other tokens",
-          desc() == "ci:green phase:working", desc())
-    check("names, then colour, then phase, in that order",
-          [l.split()[0] for l in L if l.split()[0] in ("rename-workspace", "rename-tab", "sidebar-state")]
-          == ["rename-workspace", "rename-tab", "sidebar-state"]
-          and L.index(next(l for l in L if l.startswith("sidebar-state")))
-          < L.index(next(l for l in L if "set-description" in l)), L)
+# A new session is idle until its first prompt.
+pane = json.load(open(os.path.join(STATE, "pane-ws-1.json")))
+check("a new session's pane is idle and no phase is published; the workspace is pinned to its worktree",
+      pane.get("state") == "idle" and pane.get("session") == "s-1" and desc() == f"ci:green root:{WT}"
+      and sum("set-description" in l for l in L) == 1, f"{pane} {desc()} {L}")
+check("…and its idle start is a history line", any(
+    json.loads(l).get("state") == "idle" and json.loads(l).get("detail") == "session"
+    for f in os.listdir(HISTORY) for l in open(os.path.join(HISTORY, f))), os.listdir(HISTORY))
+check("names, then colour, in that order",
+      [l.split()[0] for l in L if l.split()[0] in ("rename-workspace", "rename-tab", "sidebar-state")]
+      == ["rename-workspace", "rename-tab", "sidebar-state"], L)
 check("listen.off keeps crew-listen from starting", not any(s.startswith("crew-listen") for s in spawns()))
 
 reset([row(color="#922B21")])
@@ -533,16 +511,16 @@ check("outside a repo the banner has no branch, titled with the directory",
 reset([row(desc="ci:green phase:working feed:x")])
 hook("stop")
 check("cachefacts --stop runs with transcript, session and label",
-      f"cachefacts.py --stop {TRANSCRIPT} s-1 {LABEL}" in spawns(), spawns())
+      f"cachefacts --stop {TRANSCRIPT} s-1 {LABEL}" in spawns(), spawns())
 check("…and --sleep is detached with session first",
-      wait_for(lambda: f"cachefacts.py --sleep s-1 {TRANSCRIPT} {LABEL}" in spawns()), spawns())
+      wait_for(lambda: f"cachefacts --sleep s-1 {TRANSCRIPT} {LABEL}" in spawns()), spawns())
 check("the artifact index is kicked", wait_for(lambda: "crew-artifacts index" in spawns()), spawns())
 check("a fresh sync stamp holds crew-sync back", "crew-sync" not in spawns(), spawns())
 open(os.path.join(STATE, "sync-stamp"), "w").close()
 hook("stop")
 check("an empty sync stamp counts as 0 and syncs", wait_for(lambda: "crew-sync" in spawns()), spawns())
-check("TypeSafe unavailable: no asked.sh judgment",
-      "asked.py available" in spawns() and not any(s.startswith("asked.py judge") for s in spawns()),
+check("TypeSafe unavailable: no turn-end judgment",
+      "asked available" in spawns() and not any(s.startswith("asked judge") for s in spawns()),
       spawns())
 check("Stop prints nothing when cachefacts has nothing to say", r.stdout == "", r.stdout)
 
@@ -591,7 +569,7 @@ touch("asked-ws-1")
 SEEN = os.path.join(T, "asked-seen")
 hook("stop", PROBE_ASKED_AVAILABLE="0", PROBE_ASKED_RC="0", PROBE_ASKED_SEEN=SEEN,
      PROBE_ASKED_OUT='0.910\nWhich of the two?\n{"stuck": 0.1}')
-check("TypeSafe available: asked.sh judges the turn in the background",
+check("TypeSafe available: asked-hook judges the turn in the background",
       wait_for(lambda: marker("asked-ws-1") and any("--subtitle crew:blocked" in l for l in log())),
       "\n".join(spawns() + log()))
 check("…and publishes phase:waiting once the judgment lands",
@@ -616,8 +594,8 @@ check("…which is removed once it was read",
       wait_for(lambda: not [f for f in os.listdir(STATE) if f.startswith("asked-payload-")]),
       os.listdir(STATE))
 
-# --- asked.sh -------------------------------------------------------------------------
-print("asked.sh")
+# --- asked-hook ----------------------------------------------------------------------
+print("asked-hook")
 
 
 def asked(rc, out, size=SIZE):
@@ -635,9 +613,9 @@ check("asked: needs-attention, phase:waiting, the marker and a banner with the q
 def recorded_values():
     """The values judgments --record was given on stdin, as JSON, or None."""
     for s in spawns():
-        if s.startswith("judgments.py stdin "):
+        if s.startswith("judgments stdin "):
             try:
-                return json.loads(s[len("judgments.py stdin "):])
+                return json.loads(s[len("judgments stdin "):])
             except ValueError:
                 return None
     return None
@@ -645,7 +623,7 @@ _rv = recorded_values() or {}
 # The Rust hook also names the pane and the workspace, so the board keys the
 # judgment by pane (the Python copy is frozen and sends only the scores).
 check("…and the ranking extras are recorded for the board, with the cwd",
-      f"judgments.py --record {WT} {SIZE} 0.910" in spawns()
+      f"judgments --record {WT} {SIZE} 0.910" in spawns()
       and _rv.get("stuck") == 0.1 and _rv.get("urgency") == 2.0
       and (_rv.get("ws") in (None, "ws-1")), spawns())
 logged = open(os.path.join(STATE, "asked.log")).read()
@@ -655,12 +633,12 @@ check("…and the judgment is logged with the workspace and p",
 reset([row(desc="phase:working")])
 asked(1, '0.120\nDone.\n{"stuck": 0.0}')
 check("not asked: the ranking is recorded and nothing else moves",
-      any(s.startswith("judgments.py --record") for s in spawns())
+      any(s.startswith("judgments --record") for s in spawns())
       and not log() and desc() == "phase:working" and not marker("asked-ws-1"),
       "\n".join(spawns() + log()))
 reset()
 asked(2, "")
-check("no judgment: nothing at all", not log() and spawns() == ["asked.py judge"], spawns())
+check("no judgment: nothing at all", not log() and spawns() == ["asked judge"], spawns())
 reset()
 asked(0, '0.910\nWhich?\n{}', size="1")
 check("a transcript that grew since the stop makes the judgment stale",
@@ -681,204 +659,200 @@ check("end releases the lane, clears the status and drops the phase",
 
 # --- two panes in one workspace (seamux only) --------------------------------------
 # Each pane writes its own pane-<surface>.json and the workspace is their
-# roll-up. The bash keys everything by workspace and stays frozen, so these
-# cases run only under CREW_IMPL=rust.
-if RUST:
-    print("two panes in one workspace")
+# roll-up.
+print("two panes in one workspace")
 
-    def pane_state(s):
-        f = os.path.join(STATE, f"pane-{s}.json")
-        return json.load(open(f)).get("state") if os.path.exists(f) else None
+def pane_state(s):
+    f = os.path.join(STATE, f"pane-{s}.json")
+    return json.load(open(f)).get("state") if os.path.exists(f) else None
 
-    ASK = payload(tool_name="AskUserQuestion", tool_input={"questions": [{"question": "Which of the two?"}]})
-    reset([row(desc="ci:green")])
-    hook("prompt", CMUX_SURFACE_ID="SA")
-    hook("ask", stdin=ASK, CMUX_SURFACE_ID="SB")
-    open(CLOG, "w").close()
-    hook("stop", CMUX_SURFACE_ID="SA")
-    L = log()
-    q = json.load(open(os.path.join(STATE, "question-ws-1.json"))) if marker("question-ws-1.json") else {}
-    check("A's turn ending leaves B's ask: its question, the waiting phase and the lane",
-          marker("question-ws-1") and q.get("surface") == "SB" and desc() == "ci:green phase:waiting"
-          and marker("lane-ws-1") and not any(l == "workspace status set auto" for l in L),
-          f"{desc()} {q} {L}")
-    check("…and only A's pane went idle", pane_state("SA") == "idle" and pane_state("SB") == "needs_input",
-          f"{pane_state('SA')} {pane_state('SB')}")
-    check("…nor did it clear the workspace's claude status while B waits",
-          "clear-status claude" not in L, L)
-    check("B holds the pretool marker, A does not", marker("hold-SB") and not marker("hold-SA"))
+ASK = payload(tool_name="AskUserQuestion", tool_input={"questions": [{"question": "Which of the two?"}]})
+reset([row(desc="ci:green")])
+hook("prompt", CMUX_SURFACE_ID="SA")
+hook("ask", stdin=ASK, CMUX_SURFACE_ID="SB")
+open(CLOG, "w").close()
+hook("stop", CMUX_SURFACE_ID="SA")
+L = log()
+q = json.load(open(os.path.join(STATE, "question-ws-1.json"))) if marker("question-ws-1.json") else {}
+check("A's turn ending leaves B's ask: its question, the waiting phase and the lane",
+      marker("question-ws-1") and q.get("surface") == "SB" and desc() == "ci:green phase:waiting"
+      and marker("lane-ws-1") and not any(l == "workspace status set auto" for l in L),
+      f"{desc()} {q} {L}")
+check("…and only A's pane went idle", pane_state("SA") == "idle" and pane_state("SB") == "needs_input",
+      f"{pane_state('SA')} {pane_state('SB')}")
+check("…nor did it clear the workspace's claude status while B waits",
+      "clear-status claude" not in L, L)
+check("B holds the pretool marker, A does not", marker("hold-SB") and not marker("hold-SA"))
 
-    open(CLOG, "w").close()
-    r = hook("pretool", stdin=payload(tool_name="Bash"), CMUX_SURFACE_ID="SA")
-    check("A's tool use while B waits starts no binary and calls no cmux",
-          r.returncode == 0 and not log() and pane_state("SA") == "idle", log())
+open(CLOG, "w").close()
+r = hook("pretool", stdin=payload(tool_name="Bash"), CMUX_SURFACE_ID="SA")
+check("A's tool use while B waits starts no binary and calls no cmux",
+      r.returncode == 0 and not log() and pane_state("SA") == "idle", log())
 
-    hook("answered", stdin=payload(tool_name="AskUserQuestion"), CMUX_SURFACE_ID="SB")
-    check("B answered: the question goes, the lane is released, the phase is working",
-          not marker("question-ws-1") and not marker("question-ws-1.json") and not marker("lane-ws-1")
-          and "workspace status set auto" in log() and desc() == "ci:green phase:working",
-          f"{desc()} {log()}")
+hook("answered", stdin=payload(tool_name="AskUserQuestion"), CMUX_SURFACE_ID="SB")
+check("B answered: the question goes, the lane is released, the phase is working",
+      not marker("question-ws-1") and not marker("question-ws-1.json") and not marker("lane-ws-1")
+      and "workspace status set auto" in log() and desc() == "ci:green phase:working",
+      f"{desc()} {log()}")
 
-    open(CLOG, "w").close()
-    hook("end", CMUX_SURFACE_ID="SA")
-    check("A's session ending while B works keeps phase:working and B's claude status",
-          desc() == "ci:green phase:working" and "clear-status claude" not in log()
-          and pane_state("SA") == "ended", f"{desc()} {log()}")
-    hook("end", CMUX_SURFACE_ID="SB")
-    check("the last pane ending drops the phase and clears the status",
-          desc() == "ci:green" and "clear-status claude" in log(), f"{desc()} {log()}")
+open(CLOG, "w").close()
+hook("end", CMUX_SURFACE_ID="SA")
+check("A's session ending while B works keeps phase:working and B's claude status",
+      desc() == "ci:green phase:working" and "clear-status claude" not in log()
+      and pane_state("SA") == "ended", f"{desc()} {log()}")
+hook("end", CMUX_SURFACE_ID="SB")
+check("the last pane ending drops the phase and clears the status",
+      desc() == "ci:green" and "clear-status claude" in log(), f"{desc()} {log()}")
 
-    # A turn-end ask in B survives A's prompt; B's own tool use takes it back.
-    reset([row(desc="phase:working")])
-    hook("prompt", CMUX_SURFACE_ID="SA")
-    hook("prompt", CMUX_SURFACE_ID="SB")
-    run(asked_argv(SIZE), payload(), env_for(PROBE_ASKED_RC="0", PROBE_ASKED_OUT='0.910\nShip it?\n{}',
-                                             CMUX_SURFACE_ID="SB"))
-    hook("prompt", CMUX_SURFACE_ID="SA")
-    check("A's prompt leaves B's turn-end ask and the waiting phase",
-          marker("asked-ws-1") and open(os.path.join(STATE, "asked-ws-1")).read() == "Ship it?"
-          and desc() == "phase:waiting" and marker("lane-ws-1"), f"{desc()} {log()}")
-    open(CLOG, "w").close()
-    hook("pretool", stdin=payload(tool_name="Edit"), CMUX_SURFACE_ID="SB")
-    check("B's next tool use takes its ask back: marker, hold and lane go, phase working",
-          not marker("asked-ws-1") and not marker("hold-SB") and not marker("lane-ws-1")
-          and desc() == "phase:working" and pane_state("SB") == "working", f"{desc()} {log()}")
+# A turn-end ask in B survives A's prompt; B's own tool use takes it back.
+reset([row(desc="phase:working")])
+hook("prompt", CMUX_SURFACE_ID="SA")
+hook("prompt", CMUX_SURFACE_ID="SB")
+run(asked_argv(SIZE), payload(), env_for(PROBE_ASKED_RC="0", PROBE_ASKED_OUT='0.910\nShip it?\n{}',
+                                         CMUX_SURFACE_ID="SB"))
+hook("prompt", CMUX_SURFACE_ID="SA")
+check("A's prompt leaves B's turn-end ask and the waiting phase",
+      marker("asked-ws-1") and open(os.path.join(STATE, "asked-ws-1")).read() == "Ship it?"
+      and desc() == "phase:waiting" and marker("lane-ws-1"), f"{desc()} {log()}")
+open(CLOG, "w").close()
+hook("pretool", stdin=payload(tool_name="Edit"), CMUX_SURFACE_ID="SB")
+check("B's next tool use takes its ask back: marker, hold and lane go, phase working",
+      not marker("asked-ws-1") and not marker("hold-SB") and not marker("lane-ws-1")
+      and desc() == "phase:working" and pane_state("SB") == "working", f"{desc()} {log()}")
 
-    # A permission wait in one pane, a review lane left by the other.
-    reset([row()])
-    hook("prompt", CMUX_SURFACE_ID="SA")
-    hook("notification", stdin=payload(message="Claude needs your permission to use Bash"),
-         CMUX_SURFACE_ID="SB")
-    open(os.path.join(WT, "dirty.txt"), "w").write("x\n")
-    open(CLOG, "w").close()
-    hook("stop", CMUX_SURFACE_ID="SA")
-    check("a review left by A waits behind B's permission prompt",
-          "workspace status set review" not in log() and marker("lane-ws-1") and desc() == "phase:waiting",
-          f"{desc()} {log()}")
-    open(CLOG, "w").close()
-    hook("pretool", stdin=payload(tool_name="Bash"), CMUX_SURFACE_ID="SB")
-    check("B approved and at work: the lane is released, the phase working",
-          "workspace status set auto" in log() and desc() == "phase:working", f"{desc()} {log()}")
-    hook("stop", CMUX_SURFACE_ID="SB")
-    check("…and once nobody works, A's review lane is pinned",
-          "workspace status set review" in log() and marker("lane-ws-1") and desc() == "", f"{desc()} {log()}")
-    os.remove(os.path.join(WT, "dirty.txt"))
+# A permission wait in one pane, a review lane left by the other.
+reset([row()])
+hook("prompt", CMUX_SURFACE_ID="SA")
+hook("notification", stdin=payload(message="Claude needs your permission to use Bash"),
+     CMUX_SURFACE_ID="SB")
+open(os.path.join(WT, "dirty.txt"), "w").write("x\n")
+open(CLOG, "w").close()
+hook("stop", CMUX_SURFACE_ID="SA")
+check("a review left by A waits behind B's permission prompt",
+      "workspace status set review" not in log() and marker("lane-ws-1") and desc() == "phase:waiting",
+      f"{desc()} {log()}")
+open(CLOG, "w").close()
+hook("pretool", stdin=payload(tool_name="Bash"), CMUX_SURFACE_ID="SB")
+check("B approved and at work: the lane is released, the phase working",
+      "workspace status set auto" in log() and desc() == "phase:working", f"{desc()} {log()}")
+hook("stop", CMUX_SURFACE_ID="SB")
+check("…and once nobody works, A's review lane is pinned",
+      "workspace status set review" in log() and marker("lane-ws-1") and desc() == "", f"{desc()} {log()}")
+os.remove(os.path.join(WT, "dirty.txt"))
 
-    # A pin is set once: a session in another checkout never moves it.
-    reset([row(desc="root:/the/pinned/tree")])
-    hook("session", stdin=payload(cwd=MAIN_WT))
-    check("an existing root: pin is never moved by a later session",
-          desc() == "root:/the/pinned/tree", desc())
+# A pin is set once: a session in another checkout never moves it.
+reset([row(desc="root:/the/pinned/tree")])
+hook("session", stdin=payload(cwd=MAIN_WT))
+check("an existing root: pin is never moved by a later session",
+      desc() == "root:/the/pinned/tree", desc())
 
-    # A compaction fires SessionStart mid-turn: the pane keeps working.
-    reset([row()])
-    hook("prompt", CMUX_SURFACE_ID="SA")
-    hook("session", stdin=payload(source="compact"), CMUX_SURFACE_ID="SA")
-    check("a compaction's SessionStart leaves the pane working and phase:working",
-          pane_state("SA") == "working" and desc() == f"phase:working root:{WT}", f"{pane_state('SA')} {desc()}")
+# A compaction fires SessionStart mid-turn: the pane keeps working.
+reset([row()])
+hook("prompt", CMUX_SURFACE_ID="SA")
+hook("session", stdin=payload(source="compact"), CMUX_SURFACE_ID="SA")
+check("a compaction's SessionStart leaves the pane working and phase:working",
+      pane_state("SA") == "working" and desc() == f"phase:working root:{WT}", f"{pane_state('SA')} {desc()}")
 
-    # A pane on the tmux backend: SEAMUX_* ids, no CMUX_* at all. Its hooks
-    # write the pane file and never call cmux or start crew-listen.
-    print("a pane with no cmux (SEAMUX_* only)")
-    reset([row()])
-    tmux = dict(ws=None, SEAMUX_WORKSPACE_ID="ws-t", SEAMUX_PANE_ID="PT")
-    open(CLOG, "w").close()
-    r = hook("session", **tmux)
-    check("SessionStart with only SEAMUX_* runs, calls no cmux and starts no crew-listen",
-          r.returncode == 0 and not log() and not any("crew-listen" in s for s in spawns())
-          and marker("session-s-1"), f"{log()} {spawns()}")
-    hook("prompt", **tmux)
-    check("…its prompt marks pane-PT.json working", pane_state("PT") == "working", pane_state("PT"))
-    hook("ask", stdin=ASK, **tmux)
-    check("…its ask marks it needs_input and records the question for ws-t",
-          pane_state("PT") == "needs_input" and marker("question-ws-t") and marker("hold-PT"),
-          pane_state("PT"))
-    r = run([BASH, os.path.join(CREW, "hooks", "seamux-hook.sh"), "pretool"],
-            payload(tool_name="Bash"), env_for(**tmux))
-    check("…the pretool fast path finds pane-PT's hold and releases it, with no cmux",
-          r.returncode == 0 and pane_state("PT") == "working" and not marker("hold-PT") and not log(),
-          f"{pane_state('PT')} {log()}")
-    check("…and marks the tool's start as act-PT, from bash", marker("act-PT"))
-    r = run([BASH, os.path.join(CREW, "hooks", "seamux-hook.sh"), "posttool"],
-            payload(tool_name="Bash"), env_for(**tmux))
-    check("…posttool marks its end as done-PT, with no cmux", r.returncode == 0 and marker("done-PT") and not log(), log())
-    hook("stop", **tmux)
-    check("…and its stop marks it idle, still without cmux", pane_state("PT") == "idle" and not log(), log())
+# A pane on the tmux backend: SEAMUX_* ids, no CMUX_* at all. Its hooks
+# write the pane file and never call cmux or start crew-listen.
+print("a pane with no cmux (SEAMUX_* only)")
+reset([row()])
+tmux = dict(ws=None, SEAMUX_WORKSPACE_ID="ws-t", SEAMUX_PANE_ID="PT")
+open(CLOG, "w").close()
+r = hook("session", **tmux)
+check("SessionStart with only SEAMUX_* runs, calls no cmux and starts no crew-listen",
+      r.returncode == 0 and not log() and not any("crew-listen" in s for s in spawns())
+      and marker("session-s-1"), f"{log()} {spawns()}")
+hook("prompt", **tmux)
+check("…its prompt marks pane-PT.json working", pane_state("PT") == "working", pane_state("PT"))
+hook("ask", stdin=ASK, **tmux)
+check("…its ask marks it needs_input and records the question for ws-t",
+      pane_state("PT") == "needs_input" and marker("question-ws-t") and marker("hold-PT"),
+      pane_state("PT"))
+r = run([BASH, os.path.join(CREW, "hooks", "seamux-hook.sh"), "pretool"],
+        payload(tool_name="Bash"), env_for(**tmux))
+check("…the pretool fast path finds pane-PT's hold and releases it, with no cmux",
+      r.returncode == 0 and pane_state("PT") == "working" and not marker("hold-PT") and not log(),
+      f"{pane_state('PT')} {log()}")
+check("…and marks the tool's start as act-PT, from bash", marker("act-PT"))
+r = run([BASH, os.path.join(CREW, "hooks", "seamux-hook.sh"), "posttool"],
+        payload(tool_name="Bash"), env_for(**tmux))
+check("…posttool marks its end as done-PT, with no cmux", r.returncode == 0 and marker("done-PT") and not log(), log())
+hook("stop", **tmux)
+check("…and its stop marks it idle, still without cmux", pane_state("PT") == "idle" and not log(), log())
 
-    # A usage limit ends the turn: Claude Code fires StopFailure, not Stop.
-    # The payload follows Claude Code 2.1.318's schema (read from its binary:
-    # hook_event_name, error, error_details, last_assistant_message beside the
-    # common fields); no rate limit could be forced to capture a live one.
-    print("a turn stopped by a usage limit (StopFailure)")
+# A usage limit ends the turn: Claude Code fires StopFailure, not Stop.
+# The payload follows Claude Code 2.1.318's schema (read from its binary:
+# hook_event_name, error, error_details, last_assistant_message beside the
+# common fields); no rate limit could be forced to capture a live one.
+print("a turn stopped by a usage limit (StopFailure)")
 
-    def pane_file(s):
-        f = os.path.join(STATE, f"pane-{s}.json")
-        return json.load(open(f)) if os.path.exists(f) else {}
+def pane_file(s):
+    f = os.path.join(STATE, f"pane-{s}.json")
+    return json.load(open(f)) if os.path.exists(f) else {}
 
-    def stopfail(error, **kw):
-        return payload(hook_event_name="StopFailure", error=error,
-                       error_details="You've hit your limit", last_assistant_message="Working on it", **kw)
+def stopfail(error, **kw):
+    return payload(hook_event_name="StopFailure", error=error,
+                   error_details="You've hit your limit", last_assistant_message="Working on it", **kw)
 
-    def limits(**wins):
-        json.dump(dict({w: None for w in ("five_hour", "seven_day", "spend_limit")}, **wins, at=1),
-                  open(os.path.join(STATE, "limits.json"), "w"))
+def limits(**wins):
+    json.dump(dict({w: None for w in ("five_hour", "seven_day", "spend_limit")}, **wins, at=1),
+              open(os.path.join(STATE, "limits.json"), "w"))
 
-    hj = json.load(open(os.path.join(SRC, "hooks", "hooks.json")))["hooks"].get("StopFailure", [])
-    check("hooks.json sends StopFailure for rate_limit and billing_error to seamux-hook.sh stopfail",
-          len(hj) == 1 and set(hj[0]["matcher"].split("|")) == {"rate_limit", "billing_error"}
-          and hj[0]["hooks"][0]["command"].endswith("seamux-hook.sh\" stopfail"), hj)
+hj = json.load(open(os.path.join(SRC, "hooks", "hooks.json")))["hooks"].get("StopFailure", [])
+check("hooks.json sends StopFailure for rate_limit and billing_error to seamux-hook.sh stopfail",
+      len(hj) == 1 and set(hj[0]["matcher"].split("|")) == {"rate_limit", "billing_error"}
+      and hj[0]["hooks"][0]["command"].endswith("seamux-hook.sh\" stopfail"), hj)
 
-    reset([row(desc="phase:working")])
-    hook("prompt")
-    reset_at = int(time.time()) + 3600
-    limits(five_hour={"used_percentage": 100, "resets_at": reset_at},
-           seven_day={"used_percentage": 40, "resets_at": reset_at + 86400})
-    open(CLOG, "w").close()
-    r = hook("stopfail", stdin=stopfail("rate_limit"))
-    lim = pane_file("ws-1").get("limited") or {}
-    check("a rate_limit stop sets the pane idle with limited: error, session, window and reset",
-          r.returncode == 0 and pane_state("ws-1") == "idle" and lim.get("error") == "rate_limit"
-          and lim.get("session") == "s-1" and lim.get("window") == "five_hour"
-          and lim.get("resets_at") == reset_at * 1000 and lim.get("tries") == 0 and lim.get("next_try") is None,
-          pane_file("ws-1"))
-    note = [l for l in log() if l.startswith("notify ")]
-    check("…its banner names the window and the reset, and the phase goes",
-          len(note) == 1 and "--subtitle crew:limit --body Stopped: 5h limit · resets " in note[0]
-          and desc() == "" and marker("hold-ws-1"), f"{note} {desc()}")
-    check("…and it is a history line", any(
-        json.loads(l).get("detail") == "stopfail" and json.loads(l).get("state") == "idle"
-        for f in os.listdir(HISTORY) for l in open(os.path.join(HISTORY, f))))
-    hook("prompt")
-    check("the next prompt clears limited and its hold", "limited" not in pane_file("ws-1")
-          and pane_state("ws-1") == "working" and not marker("hold-ws-1"), pane_file("ws-1"))
+reset([row(desc="phase:working")])
+hook("prompt")
+reset_at = int(time.time()) + 3600
+limits(five_hour={"used_percentage": 100, "resets_at": reset_at},
+       seven_day={"used_percentage": 40, "resets_at": reset_at + 86400})
+open(CLOG, "w").close()
+r = hook("stopfail", stdin=stopfail("rate_limit"))
+lim = pane_file("ws-1").get("limited") or {}
+check("a rate_limit stop sets the pane idle with limited: error, session, window and reset",
+      r.returncode == 0 and pane_state("ws-1") == "idle" and lim.get("error") == "rate_limit"
+      and lim.get("session") == "s-1" and lim.get("window") == "five_hour"
+      and lim.get("resets_at") == reset_at * 1000 and lim.get("tries") == 0 and lim.get("next_try") is None,
+      pane_file("ws-1"))
+note = [l for l in log() if l.startswith("notify ")]
+check("…its banner names the window and the reset, and the phase goes",
+      len(note) == 1 and "--subtitle crew:limit --body Stopped: 5h limit · resets " in note[0]
+      and desc() == "" and marker("hold-ws-1"), f"{note} {desc()}")
+check("…and it is a history line", any(
+    json.loads(l).get("detail") == "stopfail" and json.loads(l).get("state") == "idle"
+    for f in os.listdir(HISTORY) for l in open(os.path.join(HISTORY, f))))
+hook("prompt")
+check("the next prompt clears limited and its hold", "limited" not in pane_file("ws-1")
+      and pane_state("ws-1") == "working" and not marker("hold-ws-1"), pane_file("ws-1"))
 
-    open(CLOG, "w").close()
-    hook("stopfail", stdin=stopfail("overloaded"))
-    check("any other StopFailure error is left alone", pane_state("ws-1") == "working" and not log(), log())
+open(CLOG, "w").close()
+hook("stopfail", stdin=stopfail("overloaded"))
+check("any other StopFailure error is left alone", pane_state("ws-1") == "working" and not log(), log())
 
-    os.remove(os.path.join(STATE, "limits.json"))
-    open(CLOG, "w").close()
-    hook("stopfail", stdin=stopfail("billing_error"))
-    lim = pane_file("ws-1").get("limited") or {}
-    check("a spend limit with no limits cache is recorded with no window or reset",
-          lim.get("error") == "billing_error" and lim.get("window") is None and lim.get("resets_at") is None
-          and any("--body Stopped: Spend limit reached" in l for l in log()), f"{lim} {log()}")
-    hook("session")
-    check("a new session clears it too", "limited" not in pane_file("ws-1"), pane_file("ws-1"))
+os.remove(os.path.join(STATE, "limits.json"))
+open(CLOG, "w").close()
+hook("stopfail", stdin=stopfail("billing_error"))
+lim = pane_file("ws-1").get("limited") or {}
+check("a spend limit with no limits cache is recorded with no window or reset",
+      lim.get("error") == "billing_error" and lim.get("window") is None and lim.get("resets_at") is None
+      and any("--body Stopped: Spend limit reached" in l for l in log()), f"{lim} {log()}")
+hook("session")
+check("a new session clears it too", "limited" not in pane_file("ws-1"), pane_file("ws-1"))
 
-    hook("prompt", **tmux)
-    open(CLOG, "w").close()
-    limits(seven_day={"used_percentage": 100, "resets_at": reset_at})
-    hook("stopfail", stdin=stopfail("rate_limit"), **tmux)
-    check("on the tmux backend the stop is recorded the same, with no cmux",
-          (pane_file("PT").get("limited") or {}).get("window") == "seven_day" and not log()
-          and marker("hold-PT"), f"{pane_file('PT')} {log()}")
-    run([BASH, os.path.join(CREW, "hooks", "seamux-hook.sh"), "pretool"], payload(tool_name="Bash"), env_for(**tmux))
-    check("…and pretool's fast path finds its hold and clears it",
-          "limited" not in pane_file("PT") and pane_state("PT") == "working" and not marker("hold-PT"),
-          pane_file("PT"))
-else:
-    print("two panes in one workspace: skipped (seamux only; run with CREW_IMPL=rust)")
+hook("prompt", **tmux)
+open(CLOG, "w").close()
+limits(seven_day={"used_percentage": 100, "resets_at": reset_at})
+hook("stopfail", stdin=stopfail("rate_limit"), **tmux)
+check("on the tmux backend the stop is recorded the same, with no cmux",
+      (pane_file("PT").get("limited") or {}).get("window") == "seven_day" and not log()
+      and marker("hold-PT"), f"{pane_file('PT')} {log()}")
+run([BASH, os.path.join(CREW, "hooks", "seamux-hook.sh"), "pretool"], payload(tool_name="Bash"), env_for(**tmux))
+check("…and pretool's fast path finds its hold and clears it",
+      "limited" not in pane_file("PT") and pane_state("PT") == "working" and not marker("hold-PT"),
+      pane_file("PT"))
 
 # --- options ---------------------------------------------------------------------------
 print("options")
@@ -963,8 +937,8 @@ check("a settings file that is not an object is a crash, exit 1", r.returncode =
 
 # --- merge_settings --------------------------------------------------------------------
 print("merge_settings")
-STATUSLINE = os.path.join(CREW, "claude", "statusline.py")
-CMD = f"python3 {STATUSLINE}"
+# seamux points the status line at itself, through its ~/.local/bin link.
+CMD = os.path.join(HOME, ".local", "bin", "seamux") + " statusline"
 S = os.path.join(HOME, ".claude", "settings.json")
 
 
@@ -979,7 +953,7 @@ def baks():
 
 r = merge("--dry-run")
 check("--dry-run on no file reports and writes nothing",
-      r.stdout == ("  statusLine -> crew's statusline.py\n"
+      r.stdout == ("  statusLine -> seamux statusline\n"
                    "  agentPushNotifEnabled -> true (phone push via Remote Control)\n"
                    "  inputNeededNotifEnabled -> true (phone push via Remote Control)\n"
                    "\n--dry-run: nothing written\n") and not os.path.exists(S), r.stdout)
@@ -1033,23 +1007,18 @@ merge()
 check("numbers JSON's 64 bits cannot hold come back as Python wrote them",
       open(S).read().startswith('{\n  "big": 123456789012345678901234567890,\n  "n": NaN,\n'
                                 '  "f": Infinity,\n  "x": 0.1,\n  "u": "\\u00e9",\n'), open(S).read())
-# After the cutover deletes statusline.py: the Python has nothing to point at,
-# seamux points the status line at itself (its ~/.local/bin link).
+# The retired Python's own command, from before the cutover, counts as
+# crew's: a run repoints it to seamux.
 for b in baks():
     os.remove(os.path.join(os.path.dirname(S), b))
-os.remove(S)
-os.rename(STATUSLINE, STATUSLINE + ".away")
+json.dump({"statusLine": {"type": "command", "command": "python3 /old/checkout/crew/claude/statusline.py"}},
+          open(S, "w"))
 r = merge()
-if crew_impl.is_rust("merge_settings"):
-    SEAMUX_CMD = os.path.join(HOME, ".local", "bin", "seamux") + " statusline"
-    check("with statusline.py gone, seamux points the status line at `seamux statusline`",
-          json.load(open(S)).get("statusLine") == {"type": "command", "command": SEAMUX_CMD}, r.stdout)
-    r = merge("--remove")
-    check("…and counts that one as crew's own", "  removed: statusLine\n" in r.stdout, r.stdout)
-else:
-    check("with statusline.py gone, the Python skips the status line",
-          f"  SKIPPED: no {STATUSLINE}\n" in r.stdout and "statusLine" not in json.load(open(S)), r.stdout)
-os.rename(STATUSLINE + ".away", STATUSLINE)
+check("the retired Python's status line is repointed to `seamux statusline`",
+      json.load(open(S)).get("statusLine") == {"type": "command", "command": CMD}
+      and "repointed from the old copy" in r.stdout, r.stdout)
+r = merge("--remove")
+check("…and `seamux statusline` counts as crew's own", "  removed: statusLine\n" in r.stdout, r.stdout)
 for b in baks():
     os.remove(os.path.join(os.path.dirname(S), b))
 open(S, "w").write("{nope")

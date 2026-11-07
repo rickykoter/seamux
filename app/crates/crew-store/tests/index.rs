@@ -1,9 +1,10 @@
-//! The Rust indexer against artifacts.py's on one fixture: a session in a
-//! real git checkout writes a scratchpad note, a doc, source, a file under
-//! ~, an image and a /tmp redirect, commits (printed and quiet), publishes,
-//! runs a subagent and leaves plan, review and ask records. Python indexes
-//! into one database and Rust into another, and every row and cursor must
-//! match; then an appended chunk, and the shared lock.
+//! The indexer on one fixture: a session in a real git checkout writes a
+//! scratchpad note, a doc, source, a file under ~, an image and a /tmp
+//! redirect, commits (printed and quiet), publishes, runs a subagent and
+//! leaves plan, review and ask records. Every kind lands; then an appended
+//! chunk, a run that reads nothing, backfill, and the lock. (The rows were
+//! once compared field by field with artifacts.py's; the CLI's bytes are
+//! held to goldens in crew/tools/artifacts_probe.py since it was retired.)
 
 use serde_json::{json, Value};
 use std::io::Write;
@@ -12,10 +13,6 @@ use std::process::Command;
 use std::sync::Mutex;
 
 static ENV: Mutex<()> = Mutex::new(());
-
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..").canonicalize().unwrap()
-}
 
 struct Fx {
     root: PathBuf,
@@ -181,17 +178,6 @@ fn dump(db: &str) -> (Vec<Value>, Vec<Value>) {
     (rows, curs)
 }
 
-fn py_index(dir: &str) -> String {
-    let o = Command::new("python3")
-        .arg(repo().join("crew/bin/crew-artifacts"))
-        .arg("index")
-        .env("CREW_DURABLE_DIR", dir)
-        .output()
-        .unwrap();
-    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    String::from_utf8(o.stdout).unwrap()
-}
-
 fn rs_index(dir: &str) -> usize {
     std::env::set_var("CREW_DURABLE_DIR", dir);
     let n = crew_store::index().unwrap();
@@ -199,26 +185,15 @@ fn rs_index(dir: &str) -> usize {
     n
 }
 
-fn assert_same(a: &str, b: &str) {
-    let (ra, ca) = dump(&format!("{a}/artifacts.db"));
-    let (rb, cb) = dump(&format!("{b}/artifacts.db"));
-    assert_eq!(ra.len(), rb.len(), "row counts");
-    for (x, y) in ra.iter().zip(rb.iter()) {
-        assert_eq!(x, y);
-    }
-    assert_eq!(ca, cb, "cursors");
-}
-
 #[test]
-fn rust_indexes_what_python_indexes() {
+fn the_index_finds_every_kind() {
     let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
     let f = fixture("same");
-    let (pa, pb) = (s(&f.root.join("py")), s(&f.root.join("rs")));
-    let out = py_index(&pa);
+    let pb = s(&f.root.join("rs"));
     let n = rs_index(&pb);
-    assert_eq!(out.trim(), format!("indexed {n} rows"));
-    assert_same(&pa, &pb);
-    let (rows, _) = dump(&format!("{pb}/artifacts.db"));
+    let (rows, curs) = dump(&format!("{pb}/artifacts.db"));
+    assert!(n >= rows.len() && !rows.is_empty(), "index counts every row it wrote ({n} for {})", rows.len());
+    assert!(!curs.is_empty(), "the transcript has a cursor");
     let kinds: Vec<&str> = rows.iter().map(|r| r["kind"].as_str().unwrap()).collect();
     for k in ["temp", "doc", "file", "image", "commit", "artifact", "plan", "review", "ask"] {
         assert!(kinds.contains(&k), "no {k} row in {kinds:?}");
@@ -247,9 +222,7 @@ fn rust_indexes_what_python_indexes() {
     w["message"] = json!({"content": [{"type": "tool_use", "id": "u21", "name": "Write", "input": {"file_path": format!("{}/docs/later.md", f.ws)}}]});
     jl(&f.tr, &[a, r, w]);
     std::fs::write(format!("{}/late.txt", f.sp), "late").unwrap();
-    py_index(&pa);
-    rs_index(&pb);
-    assert_same(&pa, &pb);
+    assert!(rs_index(&pb) > 0, "the appended chunk adds rows");
     let (rows, _) = dump(&format!("{pb}/artifacts.db"));
     assert!(rows.iter().any(|r| r["title"] == "Quiet and silent"));
     let later = rows.iter().find(|r| r["locator"].as_str().unwrap().ends_with("later.md")).unwrap();
@@ -259,10 +232,10 @@ fn rust_indexes_what_python_indexes() {
     let publish = rows.iter().find(|r| r["kind"] == "artifact").unwrap();
     assert_eq!(publish["prompt"], "/publish the guide");
 
-    // Nothing moved: each reads nothing on the other's database.
-    assert_eq!(rs_index(&pa), 0);
-    assert_eq!(py_index(&pb).trim(), "indexed 0 rows");
-    assert_same(&pa, &pb);
+    // Nothing moved: a second run reads nothing and changes nothing.
+    let before = dump(&format!("{pb}/artifacts.db"));
+    assert_eq!(rs_index(&pb), 0);
+    assert_eq!(dump(&format!("{pb}/artifacts.db")), before);
 
     // Backfill keeps every row and id.
     let before = dump(&format!("{pb}/artifacts.db")).0;
@@ -273,12 +246,13 @@ fn rust_indexes_what_python_indexes() {
 }
 
 #[test]
-fn a_lock_python_holds_makes_rust_busy() {
+fn a_held_lock_makes_index_busy() {
     let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
     let f = fixture("lock");
     let dir = s(&f.root.join("crew"));
     std::fs::create_dir_all(&dir).unwrap();
-    // Python takes the lock and holds it until stdin closes.
+    // Another process takes the lock (plain python3's flock) and holds it
+    // until stdin closes.
     let mut holder = Command::new("python3")
         .arg("-c")
         .arg("import fcntl, sys; f = open(sys.argv[1], 'a'); fcntl.flock(f, fcntl.LOCK_EX); print('held', flush=True); sys.stdin.read()")
@@ -303,7 +277,7 @@ fn a_lock_python_holds_makes_rust_busy() {
 
 /// Pull requests and issues a session linked: one row a link, made or named,
 /// the made one titled from `gh pr create --title`, a later mention leaving
-/// that title alone. (Rust only: artifacts.py is retired and has no such rows.)
+/// that title alone.
 #[test]
 fn github_links_become_rows() {
     let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());

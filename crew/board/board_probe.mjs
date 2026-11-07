@@ -25,21 +25,18 @@ for (const k of ["SEAMUX_PANE_ID", "SEAMUX_WORKSPACE_ID", "TMUX", "TMUX_PANE"]) 
 // (inherited, or picked because no real cmux answers) opens Wake clicks in
 // the person's own browser.
 process.env.SEAMUX_BACKEND = "cmux";
-// A crew tool by name, through the CREW_IMPL helper: `seamux <name>` when
-// CREW_IMPL=rust and seamux registers it, else python3 <file> as always.
+// Every crew tool here runs as this branch's `seamux <name>`; one seamux does
+// not register throws NotPorted.
 const crewImpl = await import("../tools/crew_impl.mjs");
-const crewTool = (name, file, args, opts = {}) => {
-  const [cmd, ...pre] = crewImpl.argv(name, file, "python3");
+const crewTool = (name, args, opts = {}) => {
+  const [cmd, ...pre] = crewImpl.argv(name);
   return execFileSync(cmd, [...pre, ...args],
     { encoding: "utf8", ...opts, env: crewImpl.env(opts.env || process.env) });
 };
 // The argv that runs one board tool, as [cmd, ...args]: the one place this
 // probe names crew-board, crew-board-intent, news, judgments and cat_poses.
-// Through the CREW_IMPL helper, so under CREW_IMPL=rust a tool seamux
-// registers runs as `seamux <basename>` and the rest stay Python.
-const tool = (name) => name.endsWith(".py")
-  ? crewImpl.argv(name.slice(0, -3), join(HERE, name), "python3")
-  : crewImpl.argv(name, join(HERE, name));
+// Through crew_impl, as `seamux <basename>`.
+const tool = (name) => crewImpl.argv(name.replace(/\.py$/, ""));
 // The env any board tool or the server it starts runs in.
 const toolEnv = (base = process.env) => crewImpl.env(base);
 const runTool = (name, args, opts = {}) => {
@@ -923,9 +920,8 @@ checks.push(["the board-only poses are in sync with cat_poses.py",
 
 // The sprite is generated from crew.swift, so the two boards cannot drift apart
 // silently. This is the check that notices if the sidebar's cat moves on.
-checks.push(["the cat is in sync with the sidebar's",
-  (() => { try { execFileSync("python3", [join(HERE, "cat_from_swift.py"), "--check"],
-    { encoding: "utf8" }); return true; } catch { return false; } })()]);
+checks.push(["the cat is in sync with the sidebar's (seamux cat_poses --from-swift --check)",
+  (() => { try { runTool("cat_poses", ["--from-swift", "--check"]); return true; } catch { return false; } })()]);
 
 // An indeterminate dial is the only one allowed to spin; one with a number is not.
 render({ rows: [{ id: "p", name: "p", kind: "running", badge: "b", said: "",
@@ -982,7 +978,7 @@ if (live && Array.isArray(live.rows)) {
       "-code-unknown": [{ date: "2026-09-13", totalCost: 99 }],
     },
   }));
-  const runAttr = (...cwds) => JSON.parse(crewTool("costs", join(HERE, "costs.py"),
+  const runAttr = (...cwds) => JSON.parse(crewTool("costs",
     ["--attribute", fixture, ...cwds]));
   const r1 = runAttr(A, B, C);
   checks.push(["costs: today/week split by date", r1[A]?.today === 1.5 && r1[A]?.week === 3.5]);
@@ -992,7 +988,7 @@ if (live && Array.isArray(live.rows)) {
     !JSON.stringify(r1).includes("99")]);
   checks.push(["costs: week-only workspace has a zero today", r1[C]?.today === 0 && r1[C]?.week === 0.25]);
   // The CI path: no ccusage on PATH -> {} and exit 0, never a traceback.
-  const r2 = crewTool("costs", join(HERE, "costs.py"), [A],
+  const r2 = crewTool("costs", [A],
     { env: { ...process.env, PATH: "/usr/bin:/bin", CREW_COSTS_TTL: "0", HOME: tmp } });
   checks.push(["costs: missing ccusage degrades to {}", r2.trim() === "{}"]);
   fs.rmSync(tmp, { recursive: true, force: true });
@@ -1047,13 +1043,11 @@ if (live && Array.isArray(live.rows)) {
   fs.mkdirSync(local); fs.mkdirSync(home); fs.mkdirSync(claudeDir);
   const env = { ...process.env, PATH: `${bin}:/usr/bin:/bin`, HOME: home, CREW_LOCAL: local,
     CREW_COSTS_TTL: "0", CLAUDE_CONFIG_DIR: claudeDir, CREW_BILLING: "usage" };
-  // pricing.py, costs.py and the status line go through the CREW_IMPL helper.
+  // pricing, costs and the status line, as seamux tools named by their old file.
   // The status line runs with no workspace id, so it never asks cmux for a colour.
   const STATUSLINE = join(HERE, "..", "claude", "statusline.py");
   const PORTED = { [PRICING]: "pricing", [join(HERE, "costs.py")]: "costs", [STATUSLINE]: "statusline" };
-  const py = (args, opts = {}) => PORTED[args[0]]
-    ? crewTool(PORTED[args[0]], args[0], args.slice(1), { env, ...opts })
-    : execFileSync("python3", args, { encoding: "utf8", env, ...opts });
+  const py = (args, opts = {}) => crewTool(PORTED[args[0]], args.slice(1), { env, ...opts });
   const args = () => JSON.parse(py([PRICING, "--args"]));
   const lastArgv = () => fs.readFileSync(log, "utf8").trim().split("\n").pop();
 
@@ -1340,8 +1334,8 @@ if (live && Array.isArray(live.rows)) {
     const ov = join(tmp, "ov.json");
     fs.writeFileSync(ov, ovText);
     try {
-      return execFileSync("python3", [OV, ov],
-        { encoding: "utf8", input: tmplText, stdio: ["pipe", "pipe", "pipe"] });
+      return crewTool("crew-overlay", [ov],
+        { input: tmplText, stdio: ["pipe", "pipe", "pipe"] });
     } catch { return null; }
   };
   const runJson = (tmplText, ovText) => {
@@ -1382,8 +1376,8 @@ if (live && Array.isArray(live.rows)) {
   try {
     const ov = join(tmp, "broken.json");
     fs.writeFileSync(ov, "{ not json");
-    wrote = execFileSync("python3", [OV, ov, "/my/real/path.json"],
-      { encoding: "utf8", input: tmpl, stdio: ["pipe", "pipe", "pipe"] });
+    wrote = crewTool("crew-overlay", [ov, "/my/real/path.json"],
+      { input: tmpl, stdio: ["pipe", "pipe", "pipe"] });
   } catch (e) {
     refused = e.status !== 0;
     wrote = e.stdout ?? "";
@@ -1745,8 +1739,8 @@ if (live && Array.isArray(live.rows)) {
 // ---- deep-plan families: grouped, ordered by the most urgent member --------
 {
   const R = (id, kind, extra = {}) => ({ id, name: id, kind, badge: "b", said: "", chips: [], frac: null, meta: "", ...extra });
-  const grouped = (rows, quiet) => JSON.parse(execFileSync("python3", [join(HERE, "families.py")],
-    { encoding: "utf8", input: JSON.stringify({ rows, quiet }) }));
+  const grouped = (rows, quiet) => JSON.parse(crewTool("families", [],
+    { input: JSON.stringify({ rows, quiet }) }));
   const plain = { rows: [R("a", "attend"), R("r", "running")], quiet: [R("q", "quiet")] };
   const same = grouped(plain.rows, plain.quiet);
   checks.push(["families: a board with no family comes back unchanged",
@@ -1904,50 +1898,8 @@ if (live && Array.isArray(live.rows)) {
   STUB_GEO.length = 0;
 }
 
-// ---- tidy/adopt: a board surface is the one whose URL is board.html ---------
-// Not a substring of the tree line: tidy closes every match but the recorded one.
-// White-box on purpose, and always against the Python: tree_url_is serves only
-// `crew-board tidy`/`open` and crew-board-diag, which stay Python until the
-// cutover deletes them with the Dock board (plan port-board).
-{
-  const tm = JSON.parse(execFileSync("python3", ["-c", `
-import importlib.machinery, importlib.util, json, sys
-l = importlib.machinery.SourceFileLoader("cb", sys.argv[1])
-m = importlib.util.module_from_spec(importlib.util.spec_from_loader("cb", l)); l.exec_module(m)
-U = "E80C26CC-48A8-4BB1-A439-65887FA2F457"
-L = lambda t, u: '├── surface surface:1 %s [browser] "%s" %s' % (U, t, u)
-print(json.dumps([m.tree_url_is(L("crew · who needs you", "file:///h/.config/cmux/crew/board/board.html"), "board.html"),
-  m.tree_url_is(L("x", "file:///x/dashboard.html"), "board.html"),
-  m.tree_url_is(L("notes on board.html", "https://example.com/a"), "board.html"),
-  m.tree_url_is(L("usage", "http://127.0.0.1:7345/usage"), "/usage"),
-  m.tree_url_is(L("x", "http://127.0.0.1:7345/plan/usage-dash"), "/usage")]))
-`, join(HERE, "crew-board")], { encoding: "utf8" }));
-  checks.push(["tidy/adopt: board.html and /usage match by URL, not dashboard.html or a title",
-    JSON.stringify(tm) === JSON.stringify([true, false, false, true, false])]);
-
-  // crew-board-diag carries its own copy (it must run when crew-board is
-  // broken), so its duplicate count is one tidy can clear. Same code, and a
-  // dashboard.html tab is not counted.
-  const dm = JSON.parse(execFileSync("python3", ["-c", `
-import ast, json, re, sys
-def fn(path):
-    for n in ast.walk(ast.parse(open(path).read())):
-        if isinstance(n, ast.FunctionDef) and n.name == "tree_url_is":
-            n.body = [b for b in n.body if not (isinstance(b, ast.Expr) and isinstance(b.value, ast.Constant))]
-            return n
-d, b = fn(sys.argv[1]), fn(sys.argv[2])
-if not (d and b):
-    print(json.dumps([False, -1])); sys.exit()
-ns = {"re": re}
-exec(compile(ast.fix_missing_locations(ast.Module(body=[d], type_ignores=[])), "diag", "exec"), ns)
-U = "E80C26CC-48A8-4BB1-A439-65887FA2F457"
-L = lambda t, u: '├── surface surface:%s %s [browser] "%s" %s' % (t, U, t, u)
-tree = "\\n".join([L("1", "file:///h/crew/board/board.html"), L("2", "file:///x/dashboard.html"), L("board.html", "https://e.com/a")])
-print(json.dumps([ast.dump(d) == ast.dump(b), sum(ns["tree_url_is"](l, "board.html") for l in tree.splitlines())]))
-`, join(HERE, "crew-board-diag"), join(HERE, "crew-board")], { encoding: "utf8" }));
-  checks.push(["diag: counts board surfaces with crew-board's own tree_url_is, not dashboard.html",
-    JSON.stringify(dm) === JSON.stringify([true, 1])]);
-}
+// tidy/adopt and crew-board-diag have no check here: both were Python only,
+// for the Dock board the Rust retired (state.rs).
 
 // ---- crew-color: a family's shades, and the colors from before ------------
 {
@@ -1956,7 +1908,7 @@ print(json.dumps([ast.dump(d) == ast.dump(b), sum(ns["tree_url_is"](l, "board.ht
   const tmp = fs.mkdtempSync(join(os.tmpdir(), "crew-color-fam-"));
   const env = { ...process.env, XDG_CACHE_HOME: join(tmp, "cache"), CREW_CMUX: "/usr/bin/false" };
   const [P, A, B] = ["p", "a", "b"].map(n => { const d = join(tmp, n); fs.mkdirSync(d); return d; });
-  const cc = (...a) => execFileSync("python3", [join(HERE, "..", "bin", "crew-color"), ...a], { encoding: "utf8", env });
+  const cc = (...a) => crewTool("crew-color", a, { env });
   // Not trim(): a member restored to no color ends its line in a bare tab.
   const lines = out => Object.fromEntries(out.split("\n").filter(Boolean).map(l => l.split("\t")));
   cc("assign", A);
@@ -2070,20 +2022,18 @@ print(json.dumps([ast.dump(d) == ast.dump(b), sum(ns["tree_url_is"](l, "board.ht
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
-// ---- parity: the Rust prints the Python's bytes ---------------------------
-// Under CREW_IMPL=rust, news and judgments run as seamux everywhere above. Here
-// both implementations get the same fixtures (every badge, families, commit
-// windows, odd types, non-ASCII) and their stdout must match byte for byte.
-if (crewImpl.isRust("news") || crewImpl.isRust("judgments")) {
+// ---- goldens: news and judgments print the bytes they always have ----------
+// Fixtures through every badge, families, commit windows, odd types and
+// non-ASCII, held to golden files recorded from crew's retired Python
+// (crew/tools/golden/README.md).
+{
   const fs = await import("node:fs");
   const os = await import("node:os");
   const tmp = fs.mkdtempSync(join(os.tmpdir(), "board-parity-"));
-  const both = (name, args, opts = {}) => {
-    const py = execFileSync("python3", [join(HERE, name + ".py"), ...args], { encoding: "utf8", ...opts });
-    const [cmd, ...pre] = crewImpl.argv(name, join(HERE, name + ".py"), "python3");
-    const rs = execFileSync(cmd, [...pre, ...args], { encoding: "utf8", ...opts, env: toolEnv(opts.env || process.env) });
-    return [py, rs];
-  };
+  const golden = await import("../tools/golden.mjs");
+  const golds = [];
+  const gold = (name, text) => golds.push([name, golden.expect(name, text)[0]]);
+  const one = (name, args, opts = {}) => runTool(name + ".py", args, opts);
   const NOW = 1790000000.25;
   const badges = ["asked you", "review", "gate shut", "needs a value", "ci failed", "check failed", "conflicts", "changes",
     "blocked", "stuck", "working", "merged", "plan done", "something else", ""];
@@ -2105,72 +2055,74 @@ if (crewImpl.isRust("news") || crewImpl.isRust("judgments")) {
   ]);
   const cases = [{ rows, now: NOW, hours: 5 }, { rows, now: NOW, hours: 0.25 }, { rows: [], now: NOW, hours: 2.5 },
     { rows: rows.slice(0, 3), now: NOW }];
-  const newsSame = cases.every((fx, i) => {
+  cases.forEach((fx, i) => {
     const f = join(tmp, `news${i}.json`);
     fs.writeFileSync(f, JSON.stringify(fx));
-    const [py, rs] = both("news", ["--compose", f], { env: { ...process.env, CREW_NEWS_HOURS: "3" } });
-    if (py !== rs) console.log(`  --   news case ${i}\n       py ${py.slice(0, 300)}\n       rs ${rs.slice(0, 300)}`);
-    return py === rs;
+    gold(`board/news-${i}.txt`, one("news", ["--compose", f], { env: { ...process.env, CREW_NEWS_HOURS: "3" } }));
   });
-  checks.push(["parity: news --compose prints the Python's bytes, every badge and family", newsSame]);
   const jfx = join(tmp, "j.json");
   fs.writeFileSync(jfx, JSON.stringify({ now: NOW, threshold: 0.5,
     workspaces: [{ cwd: "/w/a" }, { cwd: "/w/b", running: true }, { cwd: "/w/c" }, { cwd: "/w/d" }, { cwd: "/w/e" }, {}],
     cache: { "/w/a": { at: NOW - 10, stuck: 0.5, urgency: 2 }, "/w/b": { at: NOW - 10, stuck: 0.9 },
       "/w/c": { at: NOW - 999999, stuck: 1 }, "/w/d": { at: String(NOW), stuck: "0.75", urgency: "1e1" },
       "/w/e": { at: NOW, stuck: "nope", urgency: [] } } }));
-  const [jp, jr] = both("judgments", ["--apply", jfx]);
-  checks.push(["parity: judgments --apply prints the Python's bytes", jp === jr, jp + " | " + jr]);
-  // The writer: the same records into two caches, read back as bytes (times aside).
-  const rec = (impl, file) => {
+  gold("board/judgments-apply.txt", one("judgments", ["--apply", jfx]));
+  // The writer: the records into a cache, read back as bytes (times aside).
+  const rec = (file) => {
     const env = { ...process.env, CREW_JUDGMENTS_FILE: file };
     for (const [cwd, size, extra, vals] of [["/w/a", "12", "0.4", { stuck: 0.25, urgency: "3" }], ["/w/b", "", null, {}],
       ["/w/ü", "7", "x", { blocked: 1, stuck: true }]]) {
       const args = ["--record", cwd, size, ...(extra == null ? [] : [extra])];
-      if (impl === "py") execFileSync("python3", [join(HERE, "judgments.py"), ...args], { input: JSON.stringify(vals), env });
-      else { const [cmd, ...pre] = crewImpl.argv("judgments", join(HERE, "judgments.py"), "python3");
-        execFileSync(cmd, [...pre, ...args], { input: JSON.stringify(vals), env: toolEnv(env) }); }
+      runTool("judgments.py", args, { input: JSON.stringify(vals), env });
     }
     return fs.readFileSync(file, "utf8").replace(/"at": [0-9.e+]+/g, '"at": T');
   };
-  const rp = rec("py", join(tmp, "jp.json")), rr = rec("rs", join(tmp, "jr.json"));
-  checks.push(["parity: judgments --record writes the Python's cache", rp === rr, rp + " | " + rr]);
+  gold("board/judgments-record.json", rec(join(tmp, "jr.json")));
+  checks.push(["golden: news --compose, judgments --apply and --record print their goldens' bytes", golds.every(([, ok]) => ok),
+    golds.filter(([, ok]) => !ok).map(([n]) => n).join(", ")]);
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
-// ---- parity: the Rust ranks as the Python does -----------------------------
+// ---- goldens: the ranking ---------------------------------------------------
 // One fixture through every tier (asked, review, gate shut, ci failed, check
 // failed, blocked, working, merged, plan done, quiet), signals, a family, and
-// the cmux-down path without workspaces: both implementations, JSON and text,
-// compared byte for byte with the clock line set aside.
-if (crewImpl.isRust("crew-board")) {
+// the cmux-down path without workspaces, JSON and text, held to goldens
+// recorded from crew's retired Python, with the clock line set aside.
+{
   const fs = await import("node:fs");
   const os = await import("node:os");
   const tmp = fs.mkdtempSync(join(os.tmpdir(), "board-rank-parity-"));
   const FX = {"plans": {"/w/f": {"slug": "f", "root": "/w/f", "phase": "implementing", "gate": {"allow": true, "why": ""}, "progress": {"total": 3, "done": 1, "blocked": [], "open": [{"n": 2, "title": "t"}], "next": null}, "checksOutstanding": [{"n": 2, "id": "test-a", "kind": "test", "status": "fail"}]}, "/w/g": {"slug": "g", "root": "/w/g", "phase": "implementing", "gate": {"allow": false, "why": "Alignment check not taken."}, "progress": {"total": 4, "done": 2, "blocked": [], "open": [], "next": {"n": 3, "title": "Gate me"}}, "family": {"parent": "g", "role": "parent", "go": "human", "holds": {"k": "wait for the schema", "b": "a second"}}}, "/w/k": {"slug": "k", "root": "/w/k", "phase": "implementing", "gate": {"allow": false, "why": "Its go is the parent's to give (g)."}, "progress": {"total": 2, "done": 0, "blocked": [], "open": [], "next": {"n": 1, "title": "Owned"}}, "family": {"parent": "g", "role": "child", "go": "parent", "holds": {}}}, "/w/r": {"slug": "r", "root": "/w/r", "phase": "review", "gate": {"allow": false, "why": ""}, "progress": {"total": 0, "done": 0, "blocked": [], "open": [], "next": null}}, "/w/b": {"slug": "b", "root": "/w/b", "phase": "implementing", "gate": {"allow": true, "why": ""}, "progress": {"total": 2, "done": 0, "blocked": [{"title": "Blk", "note": null}], "open": [], "next": null}, "family": {"parent": "g", "role": "child"}}, "/w/d": {"slug": "d", "root": "/w/d", "phase": "done", "gate": {"allow": true, "why": ""}, "progress": {"total": 2, "done": 2, "blocked": [], "open": [], "next": null}}}, "workspaces": [{"id": "f", "title": "f PROJ-12", "cwd": "/w/f", "desc": "ci:pass review:approved planinc:1/3 plannext:2 planpath:x", "running": true, "branch": "dev/f", "pr": "#5", "dirty": false, "commits": [{"at": 1, "s": "x"}], "pr_url": "https://x/pull/5"}, {"id": "g", "title": "g", "cwd": "/w/g", "desc": "pr:draft jira:in-review", "running": false, "branch": "none", "pr": "none", "dirty": true}, {"id": "r", "title": "r", "cwd": "/w/r", "desc": "phase:waiting feedby:9999999999 feedgate:allow", "running": false, "branch": "", "pr": "none", "dirty": false}, {"id": "b", "title": "b", "cwd": "/w/b", "desc": "", "running": false, "branch": "b", "pr": "none", "dirty": false}, {"id": "c", "title": "c", "cwd": "/w/c", "desc": "ci:fail stack:ready sandbox:running", "running": false, "branch": "none", "pr": "#9", "dirty": false}, {"id": "m", "title": "m", "cwd": "/w/m", "desc": "gone:merged", "running": false, "branch": "m", "pr": "none", "dirty": false}, {"id": "d", "title": "d", "cwd": "/w/d", "desc": "", "running": false, "branch": "d", "pr": "none", "dirty": false}, {"id": "k", "title": "k", "cwd": "/w/k", "desc": "plannext:1", "running": false, "branch": "k", "pr": "none", "dirty": false}, {"id": "q", "title": "quiet one", "cwd": "/w/q", "desc": "", "running": false, "branch": "q", "pr": "#3", "dirty": true, "pr_state": "open", "color": "#123456", "selected": true}]};
   const noPlans = { plans: FX.plans };
-  const out = (impl, fx, json) => {
+  const out = (fx, json) => {
     const f = join(tmp, "fx.json");
     fs.writeFileSync(f, JSON.stringify(fx));
     const args = ["state", ...(json ? ["--json"] : []), "--fixture", f];
-    const [cmd, ...pre] = impl === "py" ? [join(HERE, "crew-board")] : crewImpl.argv("crew-board", join(HERE, "crew-board"));
-    return execFileSync(cmd, [...pre, ...args], { encoding: "utf8", env: toolEnv(process.env) })
+    return runTool("crew-board", args)
       .replace(/"stamp": "[0-9:]+"/, '"stamp": "T"').replace(/^\d\d:\d\d:\d\d · /, "T · ");
   };
-  const same = (fx, json) => { const p = out("py", fx, json), r = out("rs", fx, json);
-    if (p !== r) console.log(`  --   rank parity (${json ? "json" : "text"})\n       py ${p.slice(0, 400)}\n       rs ${r.slice(0, 400)}`);
-    return p === r; };
-  checks.push(["parity: state --json ranks every tier as the Python does", same(FX, true)]);
-  checks.push(["parity: ...and the cmux-down path, from plans alone", same(noPlans, true)]);
-  checks.push(["parity: ...and the text listing", same(FX, false) && same(noPlans, false)]);
-  // An unknown subcommand prints the docstring and exits 2, on both sides.
-  const usage = (argv) => { try { execFileSync(argv[0], [...argv.slice(1), "bogus"], { encoding: "utf8", env: toolEnv(process.env) });
-    return "exit 0"; } catch (e) { return `exit ${e.status}\n${e.stdout}`; } };
-  const up = usage([join(HERE, "crew-board")]), ur = usage(crewImpl.argv("crew-board", join(HERE, "crew-board")));
-  checks.push(["parity: an unknown subcommand prints the same usage and exits 2", up === ur && up.startsWith("exit 2\n")]);
+  const golden = await import("../tools/golden.mjs");
+  const golds = [];
+  const same = (fx, json) => {
+    const name = `board/rank-${fx === FX ? "full" : "plans-only"}.${json ? "json" : "txt"}`;
+    const [ok, want] = golden.expect(name, out(fx, json));
+    if (!ok) console.log(`  --   rank golden ${name}\n       want ${want.slice(0, 400)}`);
+    golds.push([name, ok]);
+    return ok; };
+  checks.push(["golden: state --json ranks every tier", same(FX, true)]);
+  checks.push(["golden: ...and the cmux-down path, from plans alone", same(noPlans, true)]);
+  checks.push(["golden: ...and the text listing", same(FX, false) && same(noPlans, false)]);
+  // An unknown subcommand prints the docstring and exits 2.
+  const ur = (() => { const [cmd, ...pre] = tool("crew-board");
+    try { execFileSync(cmd, [...pre, "bogus"], { encoding: "utf8", env: toolEnv(process.env) });
+      return "exit 0"; } catch (e) { return `exit ${e.status}\n${e.stdout}`; } })();
+  checks.push(["golden: an unknown subcommand prints the usage and exits 2", ur.startsWith("exit 2\n")]);
+  golds.push(["board/usage.txt", golden.expect("board/usage.txt", ur)[0]]);
+  checks.push(["golden: ranking, the cmux-down path, the text listing and usage match their goldens",
+    golds.every(([, ok]) => ok), golds.filter(([, ok]) => !ok).map(([n]) => n).join(", ")]);
   // A retired Dock verb points at the served board, never at the Python,
   // which the live tree no longer has.
-  const retired = (() => { const r = crewImpl.argv("crew-board", join(HERE, "crew-board"));
+  const retired = (() => { const r = tool("crew-board");
     try { execFileSync(r[0], [...r.slice(1), "push"], { encoding: "utf8", stdio: "pipe", env: toolEnv(process.env) }); return "exit 0"; }
     catch (e) { return `exit ${e.status}\n${e.stderr}`; } })();
   checks.push(["the Rust's retired push points at /board, not the Python",
@@ -2317,7 +2269,7 @@ if (crewImpl.isRust("crew-board")) {
     /class="pn agent wait"[^>]*>.*?asked you · 4m</.test(els.rows.innerHTML), els.rows.innerHTML.slice(0, 900)]);
 }
 // The Rust board lists them from cmux's pane list and crew's pane files.
-if (crewImpl.isRust("crew-board")) {
+{
   const t = (s, label, agents) => ({ kind: "terminal", lifecycle: "running", cwd: "/w/a", label, agents,
     projections: [{ workspace_id: "W-A", panel_id: s }] });
   const st = stateFrom({ plans: {}, workspaces: [{ id: "W-A", title: "a", cwd: "/w/a", desc: "", running: true,
@@ -2594,7 +2546,7 @@ if (crewImpl.isRust("crew-board")) {
   checks.push(["limits: ...but not while another one works", !/out of treats/.test(els.says.textContent), els.says.textContent]);
 }
 // The Rust board lifts an unarmed stopped row to attend, from crew's pane files.
-if (crewImpl.isRust("crew-board")) {
+{
   const W = (id) => ({ id, title: id, cwd: "/w/" + id, desc: "", running: false, branch: "none", pr: "none", dirty: false });
   const t = (ws, s) => ({ kind: "terminal", lifecycle: "running", cwd: "/w/" + ws.toLowerCase(), label: "Claude Code",
     agents: [{ kind: "claude", state: "idle" }], projections: [{ workspace_id: ws, panel_id: s }] });
@@ -2741,7 +2693,7 @@ if (crewImpl.isRust("crew-board")) {
       `token file ${fs.existsSync(tokenFile) ? "present" : "missing"}\n--- output ---\n${srvOut.trim() || "(none)"}\n--- log ---\n${log.trim()}`;
   };
   // Up when it answers, on the port it wrote: the pin is a preference the
-  // server may fall back from, and a cold python on a CI runner can take
+  // server may fall back from, and a cold start on a CI runner can take
   // seconds to start. Never a fixed sleep.
   let port = 0;
   const ping = p => new Promise(res => {
@@ -2785,11 +2737,11 @@ if (crewImpl.isRust("crew-board")) {
     checks.push(["intent token: a loose token file is replaced and made 0600",
       token !== "loose" && (fs.statSync(tokenFile).mode & 0o777) === 0o600]);
     const page = await req("GET", "/review/demo");
-    // The token the page carries is its server's: crew's for the Python
-    // server, lookout's behind the Rust one's proxy. The page's calls use it.
+    // The token the page carries is lookout's, behind the server's proxy.
+    // The page's calls use it.
     const rtoken = (page.body.match(/window\.lookout\.serve\(\{ token: "([^"]+)", id: "demo" \}\)/) || [])[1] || "";
     checks.push(["review route: the page is served with its token script before </body>",
-      page.status === 200 && !!rtoken && (process.env.CREW_IMPL === "rust" || rtoken === token) &&
+      page.status === 200 && !!rtoken &&
       page.body.indexOf("window.lookout.serve") < page.body.indexOf("</body>"), page.status + " " + page.body.slice(0, 200)]);
     // The plan routes answer alike from either server (the Rust one forwards
     // them to deep-plan's): a missing plan, and an act without its token.
@@ -2812,7 +2764,7 @@ if (crewImpl.isRust("crew-board")) {
       rebound.status === 403 && !rebound.body.includes(token) && localhost.status === 200 &&
       (await req("GET", "/health", { headers: { Host: "127.0.0.1:1" } })).status === 403]);
 
-    if (crewImpl.isRust("crew-board-intent")) {
+    {
       // /health names the server, so a client can tell it from whatever else
       // holds a recorded port.
       const h = await req("GET", "/health");
@@ -2835,14 +2787,17 @@ if (crewImpl.isRust("crew-board")) {
     // names row ids; nothing it sends is a path.
     const kept = join(HOME, "notes.md");
     fs.writeFileSync(kept, "# notes\n");
+    // seamux makes the store with its own schema (any read opens it), then
+    // plain sqlite3 adds the rows: the schema's triggers index them.
+    runTool("crew-artifacts", ["search"], { env: { ...process.env, HOME } });
     execFileSync("python3", ["-c", [
-      "import sys; sys.path.insert(0, sys.argv[1]); import artifacts as A",
-      "db = A.connect(); db.execute('BEGIN IMMEDIATE')",
-      "row = lambda **k: dict(dict.fromkeys(A.FIELDS, ''), ws='/w/wake', **k)",
-      "A.write_rows(db, [row(kind='file', locator=sys.argv[2], path=sys.argv[2], title='notes.md', prompt='write the notes'),",
-      "                  row(kind='temp', locator='/private/tmp/wake-gone.txt', path='/private/tmp/wake-gone.txt', title='gone.txt'),",
-      "                  row(kind='plan', locator='wake-plan', title='a plan')])",
-      "db.execute('COMMIT')"].join("\n"), HERE, kept], { env: { ...process.env, HOME } });
+      "import os, sqlite3, sys",
+      "db = sqlite3.connect(os.path.join(os.environ['HOME'], '.claude', 'crew', 'artifacts.db'))",
+      "rows = [('file', sys.argv[1], sys.argv[1], 'notes.md', 'write the notes'),",
+      "        ('temp', '/private/tmp/wake-gone.txt', '/private/tmp/wake-gone.txt', 'gone.txt', ''),",
+      "        ('plan', 'wake-plan', '', 'a plan', '')]",
+      "db.executemany(\"INSERT INTO artifacts(ws, kind, locator, path, title, prompt) VALUES ('/w/wake', ?, ?, ?, ?, ?)\", rows)",
+      "db.commit()"].join("\n"), kept], { env: { ...process.env, HOME } });
     const tq = `t=${encodeURIComponent(token)}`;
     const wp = await req("GET", "/artifacts?ws=" + encodeURIComponent("</script><b>x"));
     checks.push(["wake: the page carries its token, and a ws cannot close the boot block",
@@ -3062,7 +3017,7 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
       third.lookout.length === 1, JSON.stringify({ both, builds, third: third.lookout.length })]);
     // A pane row focuses its pane, a terminal's as much as a Claude's, and
     // only a pane the row lists.
-    if (crewImpl.isRust("crew-board-intent")) {
+    {
       const term = await press("pane", U, "S-PANE-T"), stray = await press("pane", U, "S-ELSEWHERE");
       checks.push(["panes: a pane row selects its workspace, then focuses that pane; one the row does not list is refused, cmux untouched",
         term.res.ok === true && JSON.stringify(term.cmux[0]) === JSON.stringify(["workspace", "select", U]) &&
@@ -3082,13 +3037,15 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
     fs.writeFileSync(join(FAKE_DIR, "workspaces.json"), JSON.stringify([WS("W-FEED-1", 5, "feed one")]));
     const bp = await req("GET", "/board");
     {
-      // Either server (the Python twin too).
+      // The served board page.
       const fa = String(bp.headers["content-security-policy"] || "");
       checks.push(["board page: frame-ancestors lets the app and this server frame it, and nothing else",
         /^frame-ancestors 'self' http:\/\/127\.0\.0\.1:\d+ http:\/\/localhost:\d+ tauri:\/\/localhost tauri: /.test(fa) &&
-        !fa.includes("*") && !fa.includes("5173"), fa]);
+        // The dev server's port as a whole port: a random server port such as
+        // 51737 contains "5173" too.
+        !fa.includes("*") && !/:5173\b/.test(fa), fa]);
     }
-    // Either server (the retired Python too) tells intent.js who may frame it:
+    // The server tells intent.js who may frame it:
     // without the list, a framed board ignores every message from the app.
     checks.push(["board page: intent.js is told the app origins it may post to",
       /PARENTS = \["tauri:\/\/localhost",/.test(bp.body) && bp.body.includes("parents: PARENTS")]);
@@ -3149,7 +3106,7 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
 // Another program on the recorded port is not the intent server: --status
 // says not running, and serve binds afresh (and says why) instead of leaving
 // the other program to be sent the board's clicks. The Rust server only.
-if (crewImpl.isRust("crew-board-intent")) {
+{
   const fs = await import("node:fs");
   const os = await import("node:os");
   const http = await import("node:http");
@@ -3197,7 +3154,7 @@ if (crewImpl.isRust("crew-board-intent")) {
 // An install replaces the server's binary: it hands over to the new one on the
 // same port and leaves; a new binary that will not start leaves it serving.
 // On a copy of seamux in a temp HOME, so the real binary is never touched.
-if (crewImpl.isRust("crew-board-intent")) {
+{
   const fs = await import("node:fs");
   const os = await import("node:os");
   const http = await import("node:http");
@@ -3289,7 +3246,7 @@ try {
     const kill = setTimeout(() => c.kill("SIGKILL"), ms);
     c.on("exit", () => { clearTimeout(kill); try { res(JSON.parse(out.trim().split("\n").pop())); } catch { res(null); } });
   });
-  // The Python twin's writer is the server's own --lock-test, which takes the
+  // The other writer is seamux crew-board-intent's own --lock-test, which takes the
   // lock N times (jittering every os.stat when counting) from the command line.
   const [lcmd, ...lpre] = tool("crew-board-intent");
   const py = (rid, n = 0, ms = 10000) =>
@@ -3314,20 +3271,20 @@ try {
     }
     const [gp, gn, cp, cn, sp, sn] = await Promise.all([
       py("guardp"), js("guardn"), py("crashp"), js("crashn"), py("spinp"), js("spinn")]);
-    checks.push(["review lock (python): a stale lock under a fresh break guard is waited out, not broken",
+    checks.push(["review lock (seamux): a stale lock under a fresh break guard is waited out, not broken",
       timedOut(gp) && fs.existsSync(lk("guardp")) && fs.existsSync(lk("guardp") + "-break")]);
     checks.push(["review lock (node): a stale lock under a fresh break guard is waited out, not broken",
       timedOut(gn) && fs.existsSync(lk("guardn")) && fs.existsSync(lk("guardn") + "-break")]);
-    checks.push(["review lock (python): a crashed breaker's stale guard is cleared, then the lock is broken",
+    checks.push(["review lock (seamux): a crashed breaker's stale guard is cleared, then the lock is broken",
       cp?.took === true && !fs.existsSync(lk("crashp")) && !fs.existsSync(lk("crashp") + "-break")]);
     checks.push(["review lock (node): a crashed breaker's stale guard is cleared, then the lock is broken",
       cn?.took === true && !fs.existsSync(lk("crashn")) && !fs.existsSync(lk("crashn") + "-break")]);
-    checks.push(["review lock (python): a stale lock that will not go is a timeout, not a hang",
+    checks.push(["review lock (seamux): a stale lock that will not go is a timeout, not a hang",
       timedOut(sp) && !fs.existsSync(lk("spinp") + "-break")]);
     checks.push(["review lock (node): a stale lock that will not go is a timeout, not a hang",
       timedOut(sn) && !fs.existsSync(lk("spinn") + "-break")]);
 
-    // stress: python and node writers increment one counter while stale locks
+    // stress: seamux and node writers increment one counter while stale locks
     // keep appearing (a writer crashing every 5ms, whenever the lock is free).
     // Two writers that both break the same stale lock must not both end up
     // holding it. The planter tries once per beat and never spins: a planter
@@ -3341,7 +3298,7 @@ setInterval(() => { try { fs.mkdirSync(p); fs.utimesSync(p, old, old); } catch {
     const t0 = Date.now();
     const rs = await Promise.all([...Array(W)].flatMap(() => [py("stress", N, 20000), js("stress", N, 20000)]));
     const n = JSON.parse(fs.readFileSync(join(DIR, "stress.json"), "utf8")).n;
-    checks.push([`review lock: ${W} python and ${W} node writers under planted stale locks lose no increment ` +
+    checks.push([`review lock: ${W} seamux and ${W} node writers under planted stale locks lose no increment ` +
       `(${n}/${2 * W * N}, ${((Date.now() - t0) / 1000).toFixed(1)}s)`,
       rs.every(r => r?.took === true) && n === 2 * W * N]);
   } catch (e) {
