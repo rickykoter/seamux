@@ -459,6 +459,30 @@ ok("theme resolves before first paint and has a light palette",
 ok("theme toggle exists on every surface", review.includes('id="dp-mode"') &&
   fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8")
     .includes('id="dp-mode"'));
+// Framed by the seamux app (dark Everforest), a page with no saved choice
+// is dark; standalone it still follows the OS. The saved choice wins both.
+ok("theme: a framed page with no saved choice is dark; standalone follows the OS",
+  review.includes('try { framed = window.self !== window.top; } catch (e) { framed = true; }') &&
+  review.includes('if (!t) t = framed ? "dark" : (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";') &&
+  review.indexOf('localStorage.getItem("dp-theme")') < review.indexOf("framed ? \"dark\"") &&
+  review.includes(':root[data-theme="dark"]{color-scheme:dark}'));
+// Run the head script as a framed and as a standalone page, light OS.
+{
+  const head = (review.match(/<script>\n\/\/ Theme, resolved before first paint[\s\S]*?<\/script>/) || [""])[0].replace(/^<script>|<\/script>$/g, "");
+  const run = (framed, saved) => {
+    let attr = "";
+    const self = {}, top = framed ? {} : self;
+    new Function("window", "localStorage", "matchMedia", "document", head)(
+      { self, top, matchMedia: () => ({ matches: true }) },
+      { getItem: () => saved },
+      () => ({ matches: true }),
+      { documentElement: { setAttribute: (k, v) => { attr = v; } } });
+    return attr;
+  };
+  ok("theme: framed is dark, standalone on a light OS is light, and a saved choice wins either way",
+    !!head && run(true, null) === "dark" && run(false, null) === "light" && run(true, "light") === "light" && run(false, "dark") === "dark",
+    JSON.stringify([run(true, null), run(false, null), run(true, "light"), run(false, "dark")]));
+}
 ok("mermaid theme follows the page theme",
   review.includes('getAttribute("data-theme")==="light"') && review.includes('theme: "base"') &&
   review.includes("startOnLoad: false"));
@@ -1087,6 +1111,11 @@ ok("working surface has the auto-refresh checkbox, with a short label for a narr
   !/label\.auto\{font-size:0/.test(working));
 // Phone width: one section select in place of the strip of links, which
 // clipped mid-word at 390px.
+// The wide rail lists a section's increments, ADRs and diagrams only while
+// the reader is in that section; the rest are their names.
+ok("surfaces: the wide rail shows children only under the section the reader is in",
+  working.includes(".dp-toc>li:not(.dp-here)>.dp-sub{display:none}") &&
+  /var here = !!cur && li === cur\.a\.parentNode;/.test(working) && working.includes('li.classList.toggle("dp-here", here)'));
 ok("surfaces: below 600px a Sections select replaces the rail's strip of links",
   working.includes("@media (max-width:599px){.dp-toc{display:none}.dp-pick{display:block}}") &&
   working.includes('var pick = el("select", "dp-pick");') && working.includes('var pick0 = el("option", "", "Sections");'));
@@ -1181,13 +1210,21 @@ ok("surfaces: below 600px a Sections select replaces the rail's strip of links",
   ok("files: one file reads 1 file:, more read N files and fold",
     /<p class="dp-files1"><span class="dp-files-n">1 file:<\/span> <span class="dp-path"/.test(review + working) &&
     /<details class="dp-files"><summary><span class="dp-files-n">\d+ files<\/span>/.test(review + working) && !/files <span class="dp-n">/.test(review));
-  // Actions: the next increment shows its moves; other cards keep block,
-  // reset and an out-of-order go behind a ⋯, and the primary is the app's
-  // neutral one, full contrast on disk.
+  // Actions: every card shows at most one move in the open (the next one's
+  // go, start or done); block, reset and an out-of-order go sit behind a ⋯
+  // on every card alike, and the primary is the app's neutral one, full
+  // contrast on disk.
   const lead2 = b => b.replace(/<details class="dp-more">[\s\S]*?<\/details>/, "");
-  ok("working surface: only the next increment shows block and reset in the open; others fold them under ⋯",
-    blocks.every((b, k) => k === nextI ? !b.includes("dp-more") && /data-a="block"/.test(b)
-      : !/data-a="(block|reset)"/.test(lead2(b)) && /<details class="dp-more"><summary[^>]*>⋯<\/summary>/.test(b)), JSON.stringify(blocks.map(lead2).map(b => b.slice(-300))));
+  // A <details> inside a <p> ends the p, dropping the ⋯ to a line of its own.
+  ok("working surface: a card's actions sit in a div, so the ⋯ stays on the button's line",
+    working.includes('<div class="dp-acts">') && !working.includes('<p class="dp-acts">'));
+  ok("working surface: block and reset fold under ⋯ on every card, the next one's included",
+    blocks.length > 0 && blocks.every(b => !/data-a="(block|reset)"/.test(lead2(b)) && /<details class="dp-more"><summary[^>]*>⋯<\/summary>/.test(b)),
+    JSON.stringify(blocks.map(lead2).map(b => b.slice(-300))));
+  ok("working surface: each card shows at most one move in the open, and the next card shows its first",
+    blocks.every(b => (lead2(b).match(/class="dp-act"/g) || []).length <= 1) &&
+    new RegExp(`data-a="${incs[nextI].acts.split(",")[0]}" data-n="${nextI + 1}"`).test(lead2(blocks[nextI])),
+    JSON.stringify(blocks.map(lead2).map(b => b.slice(-300))));
   ok("working surface: the primary is text colour on the page ground, and stays full contrast disabled",
     working.includes('.dp-act[data-kind="primary"]{background:var(--fg);border-color:var(--fg);color:var(--bg)') &&
     working.includes('.dp-act[data-kind="primary"][disabled]{opacity:1}'));
@@ -1542,9 +1579,20 @@ ok("block records a note", cli("block", spec.slug, "2", "waiting on schema call"
   JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"))
     .increments[1].note === "waiting on schema call");
 ok("a blocked increment gates again", edit(path.join(REPO, "a.txt")).status === 2);
-ok("working: a blocked increment keeps the gate line shut and red, naming it",
-  /data-allow="0" title=[^>]*><svg[^>]*>.*var\(--bad\).*<\/svg> <b>Gate shut<\/b>: increment 2 is blocked\. Next: <a href="#inc-2">go on increment 2<\/a><\/p>$/.test(gateLine()) &&
+ok("working: a blocked increment keeps the gate line shut and red, naming it, why, and the fix",
+  /data-allow="0" title=[^>]*><svg[^>]*>.*var\(--bad\).*<\/svg> <b>Gate shut<\/b>: increment 2 \(/.test(gateLine()) &&
+  gateLine().endsWith(`increment 2 (${spec.deliverables[1].title.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")}) is blocked: waiting on schema call. When that is sorted, <a href="#inc-2">unblock increment 2</a></p>`) &&
   !gateLine().includes("data-ready"), gateLine());
+{
+  // The blocked card's one open move is its unblock: a go from blocked, which
+  // is what the server runs, labelled for what it does.
+  const wk = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
+  const card = (wk.split('<div class="inc" id="inc-2"')[1] || "").split("</div>")[0];
+  const open2 = card.replace(/<details class="dp-more">[\s\S]*?<\/details>/, "");
+  ok("working: a blocked card's one open move reads unblock and runs go; block and reset wait under ⋯",
+    /<button class="dp-act" data-a="go" data-n="2" data-kind="primary" disabled title="unblock increment 2: give it its go again — available when served">unblock<\/button>/.test(open2) &&
+    (open2.match(/class="dp-act"/g) || []).length === 1 && /<details class="dp-more">[\s\S]*data-a="block"[\s\S]*data-a="reset"/.test(card), card);
+}
 ok("open-gate is the human lever", cli("open-gate", spec.slug).status === 0 &&
   edit(path.join(REPO, "a.txt")).status === 0);
 ok("shut-gate restores it", cli("shut-gate", spec.slug).status === 0 &&
@@ -4700,6 +4748,19 @@ if (want("families")) {
         .includes(`<a class="dp-fam-link" href="${c}.working.html" data-plan="${c}">`)));
   r = cli("rehydrate", fam.slug);
   ok("a parent rehydrates byte-identical", r.status === 0 && /byte-identical/.test(r.stdout));
+  {
+    // Waiting on the parent is said once: the parent's row counts the
+    // children that wait, and no child row repeats it.
+    const strip = h => (h.match(/<section class="dp-fam"[\s\S]*?<\/section>/) || [""])[0];
+    const pw = strip(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, fam.slug + ".working.html"), "utf8"));
+    ok("family strip: the parent's row counts the children that wait on it; no child row says it",
+      /<span class="dim">parent<\/span> <b>example-auth-revamp<\/b> <span class="dim">· [^<]*· 2 children wait on it<\/span>/.test(pw) &&
+      !pw.includes("waits on the parent"), pw);
+    cli("rehydrate", "example-auth-ui");
+    const uw = strip(fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "example-auth-ui.working.html"), "utf8"));
+    ok("family strip: a waiting child's own page says it once, in its own line, not on the parent's row",
+      (uw.match(/<p class="dp-fam-wait">waits on /g) || []).length === 1 && !/wait(s)? on it/.test(uw) && !uw.includes("waits on the parent"), uw);
+  }
 
   // One family per plan, and roots that never nest or coincide.
   r = cli("render", tmpSpec({ ...fam, slug: "example-rival", workstreams: [{ slug: "example-auth-api" }] }), "--root", OR);
@@ -5145,8 +5206,9 @@ if (want("delegated go")) {
       folded.length > 0 && folded.every(l => !l.split("</li>")[0].includes("dp-fam-key")) &&
       !folded.some(l => (l.match(/<summary>[\s\S]*?<\/summary>/) || [""])[0].includes("dp-fam-inc")), folded[0]);
     const keys = strip(page).match(/<details class="dp-fam-help"><summary aria-label="what the marks mean"[^>]*>\?<\/summary><p class="dim dp-fam-key">✓ done, ● building, ▶ has its go, ○ not started, ✗ blocked\. /g) || [];
-    ok("family strip: the glyph key is one \"?\" toggle at the strip's end",
-      keys.length === 1 && /<\/ul><div class="dp-fam-tail">[\s\S]*<details class="dp-fam-help">[\s\S]*<\/details><\/div>\s*<script>/.test(strip(page)), strip(page));
+    ok("family strip: the glyph key is one \"?\" toggle that ends the first row, not a row of its own",
+      keys.length === 1 && /<ul><li class="dp-fam-m[^"]*"><details class="dp-fam-help">/.test(strip(page)) &&
+      !strip(page).includes("dp-fam-tail") && strip(page).includes(".dp-fam-help{float:right"), strip(page));
     ok("family strip: no separate family line; the parent's row counts the plans done",
       !/<p class="dim">family <b>/.test(strip(page)) &&
       new RegExp(`<span class="dim">parent<\\/span> [^\\n]*?example-dlg<[^\\n]*?· \\d+ of \\d+ increments done · \\d+ of ${pf.members.length} plans done</span>`).test(strip(page)), strip(page));
