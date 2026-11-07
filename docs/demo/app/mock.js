@@ -695,7 +695,28 @@ const CARD = {
   checks: [6, 0, 0], review: "APPROVED", additions: 96, deletions: 11, excerpt: "A rename writes a reindex job; the worker picks it up within a second.", labels: ["search"],
 };
 
+// Terminals that stopped with tmux (a reboot), for the Dock's restart banner
+// (migrate.ts): ?migrate=N offers N of them, and ?migratefail=K makes the
+// K-th (from 1) fail to restart. Off by default.
+const MIGRATE_NAMES = ["ux-sweep", "coupons-bf", "resume-reset", "turn-ckpt", "board-snooze", "search-preview", "auto-go", "floor-plan"];
+let migrateOffers = MIGRATE_NAMES.slice(0, Number(new URLSearchParams(location.search).get("migrate") || 0)).map((n, i) => ({
+  kind: "restart", pane: `P${i}`, ws: `W${i}`, title: n, cwd: `~/code/shop.worktrees/${n}`, claude: `s${i}`, state: "idle", busy: false,
+}));
+const dropOffer = (pane) => (migrateOffers = migrateOffers.filter((o) => o.pane !== pane));
+
 const handlers = {
+  migrate_offers: () => migrateOffers,
+  migrate_apply: async ({ pane }) => {
+    await new Promise((r) => setTimeout(r, 150));
+    const o = migrateOffers.find((x) => x.pane === pane);
+    if (pane === `P${Number(new URLSearchParams(location.search).get("migratefail") || 0) - 1}`) {
+      dropOffer(pane);
+      throw `tmux could not start ${o ? o.title : pane}`;
+    }
+    dropOffer(pane);
+    return `restarted ${o ? o.title : pane}`;
+  },
+  migrate_forget: ({ pane }) => (dropOffer(pane), null),
   backend_status: () => ({ state: "connected", backend, transport: backend === "cmux" ? "socket" : "tmux", access_mode: null, workspaces: ws.map((w) => ({ id: w.id, ref: w.ref, title: w.title })) }),
   wall_frame: wallFrame,
   views_frame: viewsFrame,
