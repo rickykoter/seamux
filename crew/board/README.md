@@ -220,6 +220,13 @@ inventing one.
 
 - **The palette is whimsy's**, byte-for-byte from `shaders/20-state.glsl`: sage `#a7c080`,
   aqua `#83c092`, sand `#dbbc7f`, teal `#7fbbb3`, red `#e67e80`, ochre `#dfa000`.
+  That is the dark palette. The board also has a light one, for when the app or the
+  OS is set to light (`prefers-color-scheme`, or `data-theme="light"` on the root).
+  There each tier takes a darker shade (ochre `#8a5d00`, teal `#296a8d`, red `#ae3b39`,
+  sage `#5d6a01`), dark enough to read as words on a card and to carry light text as a
+  filled button. Every colour lives in a token in `board.html`'s `:root` blocks;
+  render.js and intent.js name tokens, never a hex, and the probe fails on a dark-only
+  literal or on text under 4.5:1 in either mode.
 - **The four row states are whimsy's shader events.** `EV_ATTEND` is the ochre attention
   wash — the only thing allowed to demand the eye. `EV_RUNNING` is the tidepool, a slow
   7.5s stir rather than a spinner, because work in progress is not an emergency and a fast
@@ -280,8 +287,9 @@ means something happened; motion on the shelf means the board is alive.**
 and picks dawn (5-8), day (8-18), dusk (18-21) or night, and four layers inside
 the shelf cross-fade over a minute -- except on a page's first push, which
 shows its sky at once. A low sun, a high sun, and at night a moon with a
-handful of pixel stars twinkling on a slow cycle. Every sky is dark: the cat's
-charcoal was chosen against a near-black ground. The sky only changes when a
+handful of pixel stars twinkling on a slow cycle. In dark every sky is dark: the
+cat's charcoal was chosen against a near-black ground. In light the skies are pale
+and the charcoal is what carries the cat. The sky only changes when a
 push arrives, which is at most two minutes apart.
 
 **Confetti** is pixel bits, a dozen per card (eight for a family child, 22 for
@@ -325,7 +333,8 @@ so both boards show the same animal pixel for pixel and neither can drift silent
 nose — 726 pixels, ~30 paths. It sits on a dark plinth, which is both the shelf
 crew.swift describes it pacing along and a necessity: the charcoal body was chosen
 against the sidebar's near-black ground and is *lighter* than this board's, so
-without it only the white bib rendered. Its geometry lives in `board.html`, not `render.js`,
+without it only the white bib rendered. In light the plinth and skies are pale and
+the charcoal reads on them instead. Its geometry lives in `board.html`, not `render.js`,
 because the renderer is re-sent on every push and the cat never changes; only the
 mood class crosses the wire.
 

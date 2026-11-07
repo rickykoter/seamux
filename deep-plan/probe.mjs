@@ -459,29 +459,53 @@ ok("theme resolves before first paint and has a light palette",
 ok("theme toggle exists on every surface", review.includes('id="dp-mode"') &&
   fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8")
     .includes('id="dp-mode"'));
-// Framed by the seamux app (dark Everforest), a page with no saved choice
-// is dark; standalone it still follows the OS. The saved choice wins both.
-ok("theme: a framed page with no saved choice is dark; standalone follows the OS",
+// Framed by the seamux app, a page follows prefers-color-scheme alone (the
+// app's appearance toggle sets it), ignores a saved choice, hides ◐ and
+// follows a live change. Standalone: the saved choice wins, else the OS.
+ok("theme: framed follows the scheme and hides ◐; standalone keeps the saved choice; no dark-when-framed rule",
   review.includes('try { framed = window.self !== window.top; } catch (e) { framed = true; }') &&
-  review.includes('if (!t) t = framed ? "dark" : (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";') &&
-  review.indexOf('localStorage.getItem("dp-theme")') < review.indexOf("framed ? \"dark\"") &&
+  review.includes('if (!framed) { try { t = localStorage.getItem("dp-theme") || ""; } catch (e) {} }') &&
+  review.includes(':root[data-framed] #dp-mode{display:none}') &&
+  !review.includes('framed ? "dark"') &&
   review.includes(':root[data-theme="dark"]{color-scheme:dark}'));
-// Run the head script as a framed and as a standalone page, light OS.
+// Run the head script framed and standalone, light and dark scheme.
 {
   const head = (review.match(/<script>\n\/\/ Theme, resolved before first paint[\s\S]*?<\/script>/) || [""])[0].replace(/^<script>|<\/script>$/g, "");
-  const run = (framed, saved) => {
-    let attr = "";
-    const self = {}, top = framed ? {} : self;
-    new Function("window", "localStorage", "matchMedia", "document", head)(
-      { self, top, matchMedia: () => ({ matches: true }) },
+  const run = (framed, saved, light, opts = {}) => {
+    const attrs = {}, mq = { matches: light, on: null, addEventListener: (k, f) => { if (k === "change") mq.on = f; } };
+    const self = {}, top = framed ? {} : self, loc = { reloads: 0, reload() { loc.reloads++; }, ancestorOrigins: opts.ancestors };
+    new Function("window", "localStorage", "matchMedia", "document", "location", head)(
+      { self, top, matchMedia: () => mq },
       { getItem: () => saved },
-      () => ({ matches: true }),
-      { documentElement: { setAttribute: (k, v) => { attr = v; } } });
-    return attr;
+      () => mq,
+      { documentElement: { setAttribute: (k, v) => { attrs[k] = v; }, getAttribute: k => attrs[k] },
+        querySelector: () => opts.diagrams ? {} : null },
+      loc);
+    return { theme: attrs["data-theme"], framed: "data-framed" in attrs, mq, loc, attrs };
   };
-  ok("theme: framed is dark, standalone on a light OS is light, and a saved choice wins either way",
-    !!head && run(true, null) === "dark" && run(false, null) === "light" && run(true, "light") === "light" && run(false, "dark") === "dark",
-    JSON.stringify([run(true, null), run(false, null), run(true, "light"), run(false, "dark")]));
+  const cases = [
+    [run(true, null, true).theme, "light"], [run(true, null, false).theme, "dark"],
+    [run(true, "dark", true).theme, "light"], [run(true, "light", false).theme, "dark"],
+    [run(false, null, true).theme, "light"], [run(false, null, false).theme, "dark"],
+    [run(false, "dark", true).theme, "dark"], [run(false, "light", false).theme, "light"],
+    [run(true, null, true).framed, true], [run(false, null, true).framed, false],
+    // Only the app's frame counts: another tool's frame keeps the saved ◐.
+    [run(true, "dark", true, { ancestors: ["tauri://localhost"] }).theme, "light"],
+    [run(true, "dark", true, { ancestors: ["http://127.0.0.1:7777", "https://tauri.localhost"] }).theme, "light"],
+    [run(true, "dark", true, { ancestors: ["https://example.com"] }).theme, "dark"],
+    [run(true, "dark", true, { ancestors: ["https://example.com"] }).framed, false],
+  ];
+  ok("theme: framed follows the scheme light and dark and ignores a saved choice; standalone saved choice, else OS",
+    !!head && cases.every(([got, want]) => got === want), JSON.stringify(cases.map(c => c[0])));
+  // A live scheme change re-themes a framed page: in place with no diagram,
+  // by a reload (mermaid redraws) with one. Standalone does not listen.
+  const plain = run(true, null, false), drawn = run(true, null, false, { diagrams: true }), alone = run(false, null, false);
+  plain.mq.matches = true; plain.mq.on && plain.mq.on();
+  drawn.mq.matches = true; drawn.mq.on && drawn.mq.on();
+  ok("theme: a live scheme change re-themes a framed page (diagrams redraw by reload); standalone ignores it",
+    plain.attrs["data-theme"] === "light" && plain.loc.reloads === 0 &&
+    drawn.attrs["data-theme"] === "light" && drawn.loc.reloads === 1 && alone.mq.on === null,
+    JSON.stringify([plain.attrs["data-theme"], plain.loc.reloads, drawn.attrs["data-theme"], drawn.loc.reloads, alone.mq.on === null]));
 }
 ok("mermaid theme follows the page theme",
   review.includes('getAttribute("data-theme")==="light"') && review.includes('theme: "base"') &&

@@ -54,13 +54,49 @@
      6 the plan page's h1 alone */
   --fs-1: 11px; --fs-2: 12px; --fs-3: 13px; --fs-4: 15px; --fs-5: 18px; --fs-6: 22px;
 }
+/* light */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --ef-bg-dim: #efebd4; --ef-bg: #fdf6e3; --ef-bg1: #f4f0d9; --ef-bg2: #efebd4; --ef-bg3: #e6e2cc;
+    --ef-fg: #5c6a72; --ef-dim: #829181; --ef-faint: #a6b0a0; --ef-grey0: #a6b0a0; --ef-grey2: #829181;
+    --ef-line: #e6e2cc; --ef-line2: #c9cdb6; --ef-card: #efebd4; --ef-card2: #f4f0d9; --ef-card3: #e6e2cc;
+    --ef-red: #f85552; --ef-orange: #f57d26; --ef-yellow: #dfa000; --ef-green: #8da101;
+    --ef-aqua: #35a77c; --ef-blue: #3a94c5; --ef-purple: #df69ba;
+    --ef-accent: #3a94c5; --ef-good: #8da101; --ef-warn: #c08000; --ef-bad: #f85552; --ef-mark: #a77c00;
+    --ef-bg-red: #fde3da; --ef-bg-green: #f0f1d2; --ef-bg-yellow: #faedcd; --ef-bg-blue: #e9f0e9; --ef-bg-visual: #eaedc8;
+    --ef-ink: #fffbef;
+    --ef-text: #3e4a51; --ef-text-dim: #4f5b51; --ef-text-faint: #5c6a72;
+    --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
+    --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
+    --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
+  }
+}
+:root[data-theme="light"] {
+  --ef-bg-dim: #efebd4; --ef-bg: #fdf6e3; --ef-bg1: #f4f0d9; --ef-bg2: #efebd4; --ef-bg3: #e6e2cc;
+  --ef-fg: #5c6a72; --ef-dim: #829181; --ef-faint: #a6b0a0; --ef-grey0: #a6b0a0; --ef-grey2: #829181;
+  --ef-line: #e6e2cc; --ef-line2: #c9cdb6; --ef-card: #efebd4; --ef-card2: #f4f0d9; --ef-card3: #e6e2cc;
+  --ef-red: #f85552; --ef-orange: #f57d26; --ef-yellow: #dfa000; --ef-green: #8da101;
+  --ef-aqua: #35a77c; --ef-blue: #3a94c5; --ef-purple: #df69ba;
+  --ef-accent: #3a94c5; --ef-good: #8da101; --ef-warn: #c08000; --ef-bad: #f85552; --ef-mark: #a77c00;
+  --ef-bg-red: #fde3da; --ef-bg-green: #f0f1d2; --ef-bg-yellow: #faedcd; --ef-bg-blue: #e9f0e9; --ef-bg-visual: #eaedc8;
+  --ef-ink: #fffbef;
+  --ef-text: #3e4a51; --ef-text-dim: #4f5b51; --ef-text-faint: #5c6a72;
+  --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
+  --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
+  --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
+}
 /* everforest:end */
 /* The board's names for seamux's palette (theme/everforest.css). */
 :root{
   --bg:var(--ef-bg); --card:var(--ef-bg1); --line:#2f3639; --line2:var(--ef-bg2);
   --ink:var(--ef-text); --muted:var(--ef-text-dim); --faint:var(--ef-text-faint);
-  --data:var(--ef-orange);
+  --data:var(--ef-orange); --data-tx:var(--ef-orange); --shadow:rgba(0,0,0,.4);
 }
+/* Light: the data hue as words takes its text twin, which reads on a light
+   ground. Twice, as in theme/everforest.css. */
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){
+  --line:var(--ef-line); --data-tx:var(--ef-text-orange); --shadow:rgba(60,50,20,.16)}}
+:root[data-theme="light"]{--line:var(--ef-line); --data-tx:var(--ef-text-orange); --shadow:rgba(60,50,20,.16)}
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--ink)}
 body{padding:11px;font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
@@ -109,10 +145,10 @@ h2{font:600 10px/1 system-ui;letter-spacing:.1em;text-transform:uppercase;color:
   font:600 9px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);white-space:nowrap}
 
 #tip{position:fixed;z-index:9;pointer-events:none;opacity:0;transition:opacity 90ms;
-  background:#232a2e;border:1px solid var(--line2);border-radius:6px;padding:5px 8px;
+  background:var(--ef-bg-dim);border:1px solid var(--line2);border-radius:6px;padding:5px 8px;
   font:500 11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--ink);
-  box-shadow:0 4px 14px rgba(0,0,0,.4);font-variant-numeric:tabular-nums}
-#tip b{color:var(--data);font-weight:700}
+  box-shadow:0 4px 14px var(--shadow);font-variant-numeric:tabular-nums}
+#tip b{color:var(--data-tx);font-weight:700}
 
 /* The table twin. Every value the bars carry is reachable without hovering. */
 .tbtn{font:600 9.5px/1 system-ui;letter-spacing:.06em;text-transform:uppercase;

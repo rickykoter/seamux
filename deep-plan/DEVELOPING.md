@@ -70,7 +70,14 @@ place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_D
 - Review and working pages wrap their body in `#dp-shell` > `#dp-rail`,
   `#dp-main`, `#dp-margin` (lib/surface.mjs), and the review page adds
   `#dp-foot` (quiz count, copy button) to the shell after them; the client moves `#dp-mode` and
-  `label.auto` into the rail and sections each `h2` at load. Highlight
+  `label.auto` into the rail and sections each `h2` at load. Theme (htmlHead's
+  head script): framed (`window.self !== window.top`), a page follows
+  `prefers-color-scheme` alone, since the seamux app's appearance toggle sets
+  its window theme and the webview reports it there. It ignores a saved ◐
+  choice, hides `#dp-mode` (`:root[data-framed]`) and follows a live
+  `change`: in place, or by a reload when the page has a `.mermaid`
+  (mermaid bakes colours into its SVGs). Standalone, the saved choice wins,
+  else the OS. Highlight
   comments are `.dp-quote` cards whose textarea is a `.dp-note`, so both
   copy buttons pick them up with the rest. `SURFACE_JS` is `String.raw`: no
   backtick, no dollar-brace, and no literal pre/code/script/textarea tag text

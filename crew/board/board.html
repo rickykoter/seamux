@@ -92,6 +92,37 @@
      6 the plan page's h1 alone */
   --fs-1: 11px; --fs-2: 12px; --fs-3: 13px; --fs-4: 15px; --fs-5: 18px; --fs-6: 22px;
 }
+/* light */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --ef-bg-dim: #efebd4; --ef-bg: #fdf6e3; --ef-bg1: #f4f0d9; --ef-bg2: #efebd4; --ef-bg3: #e6e2cc;
+    --ef-fg: #5c6a72; --ef-dim: #829181; --ef-faint: #a6b0a0; --ef-grey0: #a6b0a0; --ef-grey2: #829181;
+    --ef-line: #e6e2cc; --ef-line2: #c9cdb6; --ef-card: #efebd4; --ef-card2: #f4f0d9; --ef-card3: #e6e2cc;
+    --ef-red: #f85552; --ef-orange: #f57d26; --ef-yellow: #dfa000; --ef-green: #8da101;
+    --ef-aqua: #35a77c; --ef-blue: #3a94c5; --ef-purple: #df69ba;
+    --ef-accent: #3a94c5; --ef-good: #8da101; --ef-warn: #c08000; --ef-bad: #f85552; --ef-mark: #a77c00;
+    --ef-bg-red: #fde3da; --ef-bg-green: #f0f1d2; --ef-bg-yellow: #faedcd; --ef-bg-blue: #e9f0e9; --ef-bg-visual: #eaedc8;
+    --ef-ink: #fffbef;
+    --ef-text: #3e4a51; --ef-text-dim: #4f5b51; --ef-text-faint: #5c6a72;
+    --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
+    --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
+    --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
+  }
+}
+:root[data-theme="light"] {
+  --ef-bg-dim: #efebd4; --ef-bg: #fdf6e3; --ef-bg1: #f4f0d9; --ef-bg2: #efebd4; --ef-bg3: #e6e2cc;
+  --ef-fg: #5c6a72; --ef-dim: #829181; --ef-faint: #a6b0a0; --ef-grey0: #a6b0a0; --ef-grey2: #829181;
+  --ef-line: #e6e2cc; --ef-line2: #c9cdb6; --ef-card: #efebd4; --ef-card2: #f4f0d9; --ef-card3: #e6e2cc;
+  --ef-red: #f85552; --ef-orange: #f57d26; --ef-yellow: #dfa000; --ef-green: #8da101;
+  --ef-aqua: #35a77c; --ef-blue: #3a94c5; --ef-purple: #df69ba;
+  --ef-accent: #3a94c5; --ef-good: #8da101; --ef-warn: #c08000; --ef-bad: #f85552; --ef-mark: #a77c00;
+  --ef-bg-red: #fde3da; --ef-bg-green: #f0f1d2; --ef-bg-yellow: #faedcd; --ef-bg-blue: #e9f0e9; --ef-bg-visual: #eaedc8;
+  --ef-ink: #fffbef;
+  --ef-text: #3e4a51; --ef-text-dim: #4f5b51; --ef-text-faint: #5c6a72;
+  --ef-text-red: #ae3b39; --ef-text-orange: #9a4e18; --ef-text-yellow: #815d00; --ef-text-green: #5d6a01;
+  --ef-text-aqua: #247053; --ef-text-blue: #296a8d; --ef-text-purple: #98477e;
+  --ef-text-accent: #296a8d; --ef-text-good: #5d6a01; --ef-text-warn: #875a00; --ef-text-bad: #ae3b39; --ef-text-mark: #805e00;
+}
 /* everforest:end */
 /* The board's names for seamux's palette (theme/everforest.css). */
 :root{
@@ -110,6 +141,66 @@
   --pr-open:#4ADE80; --issue:#b9a5fb; --dirty:#F5A524;
   /* Text on a filled button, measured against each tier colour instead. */
   --ink:var(--ef-ink);
+  /* Lifts and shades. Hover grounds sit under text (--gnd); the rest are
+     washes over whatever ground is there. */
+  --bg-hover:#2f3639; --bg-press:#374145; --bg-kid-hover:#323b40; --track:#2f3639; --sel:#dbbc7f;
+  --hover-a:rgba(255,255,255,.05); --hover-b:rgba(255,255,255,.07); --hover-c:rgba(255,255,255,.1);
+  --hover-fg:rgba(211,198,170,.07); --shadow:rgba(0,0,0,.35);
+  /* intent.js's: a delegated go chip, and the toast that says why a click failed. */
+  --muted-edge:#4f585e; --muted-tx:#9da9a0; --toast-bg:#3a2a2c; --toast-tx:#f2d4d4;
+  /* The confetti's pale bit. */
+  --spark:#F5F5F7;
+  /* The cat's shelf and its skies. Dark: the cat's charcoal was picked
+     against a near-black ground. Light: pale skies, where the charcoal
+     carries the cat. */
+  --shelf:#1e2326; --shelf-edge:#171c1f;
+  --sky-dawn:linear-gradient(#1f2330,#33282f); --sky-day:linear-gradient(#1d2a33,#22313a);
+  --sky-dusk:linear-gradient(#22202b,#3a2b27); --sky-night:#13181c;
+  --star:#c9c3b0; --star2:#8f8a7c;
+  --orb:#5c4a2a; --orb-dawn:#8a5f2c; --orb-day:#9c7a2a; --orb-dusk:#93512f; --orb-night:#cfc7b0;
+  --zz:#8BA3C7;
+}
+/* Light: the same names on a light ground. Each tier is one colour that
+   reads both as words on a card and as a filled button's ground under
+   --ink, so it is darker than the palette's light hues. Twice, as in
+   theme/everforest.css: the OS's light mode, and data-theme="light". */
+@media (prefers-color-scheme: light){
+:root:not([data-theme="dark"]){
+  --bg-attend:#f8e9bf; --bg-kids:#ece8d0; --line:#ddd8bf; --edge:#b9bea6;
+  --grey:#55625a;
+  --attend:#8a5d00; --running:#296a8d; --wilt:#ae3b39; --done:#5d6a01; --quiet:#7f8b80;
+  --wilt-tx:#ae3b39;
+  --pr-open:#1f6f35; --issue:#5f4bb6; --dirty:#9a4e18;
+  --bg-hover:#ebe6cd; --bg-press:#e4dfc5; --bg-kid-hover:#e6e1c8; --track:#dcd8c0; --sel:#c08000;
+  --hover-a:rgba(60,50,20,.05); --hover-b:rgba(60,50,20,.07); --hover-c:rgba(60,50,20,.1);
+  --hover-fg:rgba(92,106,114,.08); --shadow:rgba(60,50,20,.16);
+  --muted-edge:#c9cdb6; --muted-tx:#55625a; --toast-bg:#fde3da; --toast-tx:#8f2f2e;
+  --spark:#5c6a72;
+  --shelf:#e6e2cc; --shelf-edge:#d5d0b8;
+  --sky-dawn:linear-gradient(#eadbd0,#f0cdb6); --sky-day:linear-gradient(#d3e4e6,#c0d8dc);
+  --sky-dusk:linear-gradient(#dccbd8,#eac4aa); --sky-night:#a9b6c7;
+  --star:#fffdf5; --star2:#e8ecf2;
+  --orb:#e8c27a; --orb-dawn:#f0a35a; --orb-day:#f2c14e; --orb-dusk:#e8875a; --orb-night:#fffbef;
+  --zz:#4e6a94;
+}
+}
+:root[data-theme="light"]{
+  --bg-attend:#f8e9bf; --bg-kids:#ece8d0; --line:#ddd8bf; --edge:#b9bea6;
+  --grey:#55625a;
+  --attend:#8a5d00; --running:#296a8d; --wilt:#ae3b39; --done:#5d6a01; --quiet:#7f8b80;
+  --wilt-tx:#ae3b39;
+  --pr-open:#1f6f35; --issue:#5f4bb6; --dirty:#9a4e18;
+  --bg-hover:#ebe6cd; --bg-press:#e4dfc5; --bg-kid-hover:#e6e1c8; --track:#dcd8c0; --sel:#c08000;
+  --hover-a:rgba(60,50,20,.05); --hover-b:rgba(60,50,20,.07); --hover-c:rgba(60,50,20,.1);
+  --hover-fg:rgba(92,106,114,.08); --shadow:rgba(60,50,20,.16);
+  --muted-edge:#c9cdb6; --muted-tx:#55625a; --toast-bg:#fde3da; --toast-tx:#8f2f2e;
+  --spark:#5c6a72;
+  --shelf:#e6e2cc; --shelf-edge:#d5d0b8;
+  --sky-dawn:linear-gradient(#eadbd0,#f0cdb6); --sky-day:linear-gradient(#d3e4e6,#c0d8dc);
+  --sky-dusk:linear-gradient(#dccbd8,#eac4aa); --sky-night:#a9b6c7;
+  --star:#fffdf5; --star2:#e8ecf2;
+  --orb:#e8c27a; --orb-dawn:#f0a35a; --orb-day:#f2c14e; --orb-dusk:#e8875a; --orb-night:#fffbef;
+  --zz:#4e6a94;
 }
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--fg)}
@@ -164,9 +255,10 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 /* The shelf spans the bar edge to edge; the cat is positioned along it, so the
    walk covers the whole width instead of a 35px stub. It also keeps the palette
    honest -- catColor()'s charcoal body was chosen against a near-black ground and
-   is LIGHTER than this board's, so without the plinth only the white bib reads. */
+   is LIGHTER than this board's, so without the plinth only the white bib reads.
+   In light the plinth is pale and the charcoal reads on it. */
 #shelf{position:relative;height:30px;margin:0 -11px 4px;overflow:hidden;
-  background:#1e2326;box-shadow:inset 0 -1px 0 0 #171c1f}
+  background:var(--shelf);box-shadow:inset 0 -1px 0 0 var(--shelf-edge)}
 #cat{position:absolute;left:0;bottom:0;height:30px;width:auto;overflow:visible}
 #cat .pose{visibility:hidden}
 
@@ -174,36 +266,37 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
    data-sky: dawn 5-8, day 8-18, dusk 18-21, night otherwise. Each layer fades
    in over a minute when its turn comes, so the shelf drifts from one to the
    next rather than snapping -- except on a page's first push (data-sky-first),
-   which should not open on a minute of bare plinth. Every sky stays dark: the
-   cat's charcoal was picked against a near-black ground, and a pale sky would
-   leave only its white bib showing again. */
+   which should not open on a minute of bare plinth. In dark every sky stays
+   dark: the cat's charcoal was picked against a near-black ground, and a pale
+   sky there would leave only its white bib showing. In light the skies are
+   pale and the charcoal is what reads (the --sky-* tokens). */
 /* Each sky carries the shelf's bottom edge line itself: the layers cover
    #shelf's own inset shadow, and one of them is always opaque. */
 #shelf .sky{position:absolute;inset:0;opacity:0;transition:opacity 60s linear;
-  box-shadow:inset 0 -1px 0 0 #171c1f}
+  box-shadow:inset 0 -1px 0 0 var(--shelf-edge)}
 #shelf[data-sky-first] .sky,#shelf[data-sky-first] .orb{transition:none}
-.sky.dawn{background:linear-gradient(#1f2330,#33282f)}
-.sky.day{background:linear-gradient(#1d2a33,#22313a)}
-.sky.dusk{background:linear-gradient(#22202b,#3a2b27)}
-.sky.night{background:#13181c}
+.sky.dawn{background:var(--sky-dawn)}
+.sky.day{background:var(--sky-day)}
+.sky.dusk{background:var(--sky-dusk)}
+.sky.night{background:var(--sky-night)}
 #shelf[data-sky=dawn] .sky.dawn,#shelf[data-sky=day] .sky.day,
 #shelf[data-sky=dusk] .sky.dusk,#shelf[data-sky=night] .sky.night{opacity:1}
 /* Pixel stars: one 2px square, drawn many times by box-shadow, twinkling on a
    slow cycle. */
-.stars{position:absolute;left:0;top:0;width:2px;height:2px;background:#c9c3b0;
-  box-shadow:31px 5px #c9c3b0,74px 13px #8f8a7c,118px 4px #c9c3b0,163px 17px #8f8a7c,
-    205px 7px #c9c3b0,251px 15px #8f8a7c,296px 3px #c9c3b0,340px 11px #8f8a7c,
-    388px 6px #c9c3b0,431px 16px #8f8a7c,12px 18px #8f8a7c,142px 21px #8f8a7c}
+.stars{position:absolute;left:0;top:0;width:2px;height:2px;background:var(--star);
+  box-shadow:31px 5px var(--star),74px 13px var(--star2),118px 4px var(--star),163px 17px var(--star2),
+    205px 7px var(--star),251px 15px var(--star2),296px 3px var(--star),340px 11px var(--star2),
+    388px 6px var(--star),431px 16px var(--star2),12px 18px var(--star2),142px 21px var(--star2)}
 @keyframes twinkle{0%,100%{opacity:1}50%{opacity:.55}}
 #shelf[data-sky=night] .stars{animation:twinkle 9s steps(3,end) infinite}
 /* The sun, low at dawn and dusk and high by day, and the moon at night: a
    chunky 9px disc at the far end of the shelf, behind the cat. */
 .orb{position:absolute;right:22px;top:20px;width:9px;height:9px;border-radius:3px;
-  background:#5c4a2a;opacity:0;transition:top 60s linear,background-color 60s linear,opacity 60s linear}
-#shelf[data-sky=dawn] .orb{opacity:1;top:17px;background:#8a5f2c}
-#shelf[data-sky=day] .orb{opacity:1;top:5px;background:#9c7a2a}
-#shelf[data-sky=dusk] .orb{opacity:1;top:17px;background:#93512f}
-#shelf[data-sky=night] .orb{opacity:1;top:5px;background:#cfc7b0;box-shadow:inset -3px -1px 0 #13181c}
+  background:var(--orb);opacity:0;transition:top 60s linear,background-color 60s linear,opacity 60s linear}
+#shelf[data-sky=dawn] .orb{opacity:1;top:17px;background:var(--orb-dawn)}
+#shelf[data-sky=day] .orb{opacity:1;top:5px;background:var(--orb-day)}
+#shelf[data-sky=dusk] .orb{opacity:1;top:17px;background:var(--orb-dusk)}
+#shelf[data-sky=night] .orb{opacity:1;top:5px;background:var(--orb-night);box-shadow:inset -3px -1px 0 var(--sky-night)}
 
 /* A and B, one second each. steps(1) makes it a cut, not a crossfade: this is
    pixel art and a tween would blur it. */
@@ -237,7 +330,7 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 #cat.pace .facing{animation:face 16s steps(1,end) infinite}
 
 /* Three z's, drifting up and fading on staggered phases. */
-#cat .zz{fill:#8BA3C7;font:italic 700 8px/1 system-ui;opacity:0}
+#cat .zz{fill:var(--zz);font:italic 700 8px/1 system-ui;opacity:0}
 #cat .z1{font-size:10px} #cat .z2{font-size:12px}
 @keyframes drift{0%{opacity:.75;transform:translateY(0)}
   100%{opacity:0;transform:translateY(-12px)}}
@@ -344,12 +437,12 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .row{--c:var(--quiet);--gnd:var(--bg1);position:relative;background:var(--bg1);
   border-radius:9px;padding:6px 9px;margin-bottom:4px}
 .row.attend{--gnd:var(--bg-attend)} .row.quiet{--gnd:var(--bg)}
-#rows[data-intent] .row:not(.inert):hover{--gnd:#2f3639}
+#rows[data-intent] .row:not(.inert):hover{--gnd:var(--bg-hover)}
 .kids>.row.kid{--gnd:var(--bg-kids)}
-#rows[data-intent] .kids>.row.kid:not(.inert):hover{--gnd:#323b40}
+#rows[data-intent] .kids>.row.kid:not(.inert):hover{--gnd:var(--bg-kid-hover)}
 .top.jumps{cursor:pointer;border-radius:6px;margin:-3px -4px;padding:3px 4px}
-.top.jumps:hover{background:rgba(255,255,255,.05)}
-.top.jumps.hit{background:rgba(255,255,255,.1)}
+.top.jumps:hover{background:var(--hover-a)}
+.top.jumps.hit{background:var(--hover-c)}
 .top.jumps.ok{box-shadow:inset 0 0 0 1px var(--done)}.top.jumps.bad{box-shadow:inset 0 0 0 1px var(--wilt)}
 
 /* Folding. Every card's header (data-a="fold") folds it in place; .fold holds
@@ -416,6 +509,11 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
   font:600 var(--fs-3)/1 system-ui;white-space:nowrap;user-select:none;-webkit-user-select:none}
 .chip.pri{background:var(--c);border-color:var(--c);color:var(--ink)}
 .chip.sig{font-weight:500}
+/* A signal's colour, lifted by render.js for each mode: --sg on dark, --sgl
+   on light (the light blocks repeat this with --sgl). */
+.sig[style*="--sg"]{color:var(--sg)}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]) .sig[style*="--sg"]{color:var(--sgl)}}
+:root[data-theme="light"] .sig[style*="--sg"]{color:var(--sgl)}
 .chip.pane{font-size:var(--fs-1);padding-inline:5px}
 .chip.pane.outside{border-style:dashed;color:var(--fg2)}
 
@@ -429,7 +527,7 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .pns{margin-top:4px;display:flex;flex-direction:column}
 .pn{display:flex;align-items:center;gap:7px;min-height:24px;padding:0 6px;margin:0 -6px;
   border-radius:5px;font:var(--fs-2)/1.3 system-ui;color:var(--fg);cursor:pointer;min-width:0}
-.pn:hover{background:rgba(211,198,170,.07)}
+.pn:hover{background:var(--hover-fg)}
 .pn>.pg{flex:none;width:7px;height:7px;border-radius:50%;background:var(--quiet)}
 .pn.wait>.pg{background:var(--attend)} .pn.work>.pg{background:var(--running)}
 .pn.term>.pg{width:8px;height:8px;border-radius:0;background:none;fill:none;
@@ -490,7 +588,7 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
    resident timer, and nothing to go stale between pushes. */
 @keyframes drain{from{transform:scaleX(1)}to{transform:scaleX(0)}}
 .feed{margin-top:7px;height:3px;border-radius:2px;background:var(--bg2);overflow:hidden}
-.feedbar{display:block;height:100%;border-radius:2px;background:#F5A524;
+.feedbar{display:block;height:100%;border-radius:2px;background:var(--dirty);
   transform-origin:left center;animation:drain linear 1 forwards}
 
 /* --- a quiet row ------------------------------------------------------- */
@@ -526,7 +624,7 @@ details.away[open]>summary::before{content:"\25BE  "}
    as any row's does. */
 #rows details.away>.row{--gnd:var(--bg);background:transparent;border:0;
   padding:3px 5px;margin-bottom:0}
-#rows details.away>.row:hover{background:rgba(255,255,255,.05)}
+#rows details.away>.row:hover{background:var(--hover-a)}
 details.away>.row>.top.jumps:hover{background:none}
 details.away>.row>.top{min-height:22px}
 details.away>.row>.top>.why{margin-left:auto;padding-left:8px}
@@ -557,7 +655,7 @@ details.away>.row>.top>.nm{font-weight:500;font-size:var(--fs-3);color:var(--fg2
 .row.tkopen>.top{position:relative}
 .row.tkopen .tkm{display:flex;flex-direction:column;position:absolute;right:-2px;top:100%;z-index:5;
   margin-top:6px;padding:4px;min-width:120px;background:var(--bg1);border:1px solid var(--line);
-  border-radius:7px;box-shadow:0 6px 18px rgba(0,0,0,.35)}
+  border-radius:7px;box-shadow:0 6px 18px var(--shadow)}
 .row.tkup .tkm{top:auto;bottom:100%;margin:0 0 3px}
 .tki{padding:5px 9px;border-radius:5px;font:500 var(--fs-3)/1.2 system-ui;color:var(--fg);cursor:pointer;white-space:nowrap}
 .tki:hover{background:var(--bg2)}
@@ -584,7 +682,7 @@ details.away>.row>.top>.nm{font-weight:500;font-size:var(--fs-3);color:var(--fg2
 /* The fold: a real button with a 24px target, though the mark is small. */
 .caret{flex:none;width:24px;height:24px;margin:-4px -6px -4px -8px;padding:0;border:0;border-radius:5px;
   background:none;color:var(--grey);font-size:var(--fs-1);line-height:24px;text-align:center;cursor:pointer}
-.caret:hover{background:rgba(255,255,255,.07);color:var(--fg)}
+.caret:hover{background:var(--hover-b);color:var(--fg)}
 .caret:focus-visible{outline:2px solid var(--running);outline-offset:-2px}
 .caret::before{content:"\25B8"}
 .row.open>.top>.caret::before{content:"\25BE"}
@@ -601,7 +699,8 @@ details.away>.row>.top>.nm{font-weight:500;font-size:var(--fs-3);color:var(--fg2
 .row.shell .nm{font-weight:600}
 
 /* Fires once, on the transition into done -- render.js gates it with data-prev. */
-@keyframes ripple{0%{box-shadow:0 0 0 0 rgba(167,192,128,.5)}100%{box-shadow:0 0 0 14px rgba(167,192,128,0)}}
+@keyframes ripple{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--done) 50%,transparent)}
+  100%{box-shadow:0 0 0 14px color-mix(in srgb,var(--done) 0%,transparent)}}
 .row.ripple{animation:ripple 900ms ease-out 1}
 
 /* Pixel confetti, on the same push as the ripple and only then: square bits
@@ -615,8 +714,8 @@ details.away>.row>.top>.nm{font-weight:500;font-size:var(--fs-3);color:var(--fg2
 @keyframes confetti{0%{opacity:1;transform:translate(0,0)}
   35%{opacity:1;transform:translate(calc(var(--dx) * .6),var(--up))}
   100%{opacity:0;transform:translate(var(--dx),var(--dy))}}
-@keyframes famdone{0%{box-shadow:0 0 0 0 rgba(167,192,128,.55)}
-  100%{box-shadow:0 0 0 22px rgba(167,192,128,0)}}
+@keyframes famdone{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--done) 55%,transparent)}
+  100%{box-shadow:0 0 0 22px color-mix(in srgb,var(--done) 0%,transparent)}}
 .row.famdone{animation:famdone 1.4s ease-out 1}
 
 /* Family pips: one kitten head per child on the family's card, in that
@@ -649,8 +748,8 @@ details.away>.row>.top>.nm{font-weight:500;font-size:var(--fs-3);color:var(--fg2
    button that would resolve it breathes a halo. Exactly one element per row
    moves, only on rows that are actually waiting on a human, and the button
    itself never fades -- its label stays at full contrast. */
-@keyframes breathe{0%,100%{box-shadow:0 0 0 0 rgba(223,160,0,0)}
-  50%{box-shadow:0 0 0 4px rgba(223,160,0,.22)}}
+@keyframes breathe{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--attend) 0%,transparent)}
+  50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--attend) 22%,transparent)}}
 .row.attend .chip.pri{animation:breathe 2.2s ease-in-out infinite}
 /* ...its own button, that is: not a done child's, inside an attend family. */
 .row.kid:not(.attend) .chip.pri{animation:none}

@@ -56,7 +56,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "21";
+  var V = "22";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -74,23 +74,23 @@ function __boardIntent(cfg) {
     st.setAttribute("data-v", V);
     st.textContent =
       ".row{cursor:pointer}" +
-      ".row:not(.inert):hover{background:#2f3639}" +
-      ".row:not(.inert):active{background:#374145}" +
+      ".row:not(.inert):hover{background:var(--bg-hover)}" +
+      ".row:not(.inert):active{background:var(--bg-press)}" +
       ".chip{cursor:pointer}" +
       ".chip:hover{filter:brightness(1.35);text-decoration:underline}" +
       ".chip.hit,.wk.hit{opacity:.45}" +
-      ".wk.ok{box-shadow:inset 0 0 0 1px #a7c080}" +
-      ".wk.bad{box-shadow:inset 0 0 0 1px #e67e80}" +
-      ".chip.ok{box-shadow:inset 0 0 0 1px #a7c080}" +
-      ".chip.bad{box-shadow:inset 0 0 0 1px #e67e80}" +
+      ".wk.ok{box-shadow:inset 0 0 0 1px var(--done)}" +
+      ".wk.bad{box-shadow:inset 0 0 0 1px var(--wilt)}" +
+      ".chip.ok{box-shadow:inset 0 0 0 1px var(--done)}" +
+      ".chip.bad{box-shadow:inset 0 0 0 1px var(--wilt)}" +
       // A delegated child's go: its parent is expected to give it, so it is
       // muted, never filled or breathing -- but still a button a person can
       // press. render.js titles an unknown label with the label itself.
-      '.row .chip.chip[title^="parent goes"]{background:transparent;border-color:#4f585e;' +
-      'color:#9da9a0;font-weight:500;animation:none}' +
+      '.row .chip.chip[title^="parent goes"]{background:transparent;border-color:var(--muted-edge);' +
+      'color:var(--muted-tx);font-weight:500;animation:none}' +
       "#stamp{cursor:pointer}#stamp:hover{text-decoration:underline}" +
       // A child sits on its family's darker well; hover lifts it from there.
-      ".kids>.row.kid:not(.inert):hover{background:#323b40}" +
+      ".kids>.row.kid:not(.inert):hover{background:var(--bg-kid-hover)}" +
       ".kidhd.hit{opacity:.6}" +
       // A fold header is a target even on an inert card: a family's shell.
       "[data-a=fold]{cursor:pointer}" +
@@ -99,10 +99,10 @@ function __boardIntent(cfg) {
       // inert and is still a card.
       ".row.inert{cursor:default}" +
       // Framed by the seamux app: the workspace the app shows beside the board.
-      ".row.appsel{outline:2px solid #dbbc7f;outline-offset:-2px;background:#2f3639}" +
+      ".row.appsel{outline:2px solid var(--sel);outline-offset:-2px;background:var(--bg-hover)}" +
       // Why a click failed, for a few seconds: the red flash alone said nothing.
       "#intent-toast{position:fixed;left:12px;right:12px;bottom:12px;z-index:50;padding:8px 12px;" +
-      "border-radius:6px;background:#3a2a2c;border:1px solid #e67e80;color:#f2d4d4;font:12px/1.4 system-ui,sans-serif;" +
+      "border-radius:6px;background:var(--toast-bg);border:1px solid var(--wilt);color:var(--toast-tx);font:12px/1.4 system-ui,sans-serif;" +
       "pointer-events:none}#intent-toast[hidden]{display:none}";
   }
 

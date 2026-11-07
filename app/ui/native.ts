@@ -37,11 +37,35 @@ type Look = {
   fontSize?: number;
 };
 
-/** cmux's look for the page's appearance, asked once per appearance. */
+/** The terminal's look when no Ghostty or cmux config names one: Everforest,
+ *  the app's own palette, as Ghostty ships it (Dark Hard and Light Med). */
+const PALETTE_SHARED = ["#7a8478", "#e67e80", "", "", "#7fbbb3", "#d699b6", "#83c092", "", "#a6b0a0", "#f85552", "#8da101", "#dfa000", "#3a94c5", "#df69ba", "#35a77c", "#fffbef"];
+function everforest(dark: boolean): Look {
+  const own = dark ? ["#a7c080", "#dbbc7f", "#f2efdf"] : ["#9ab373", "#c1a266", "#b2af9f"];
+  const p = [...PALETTE_SHARED];
+  [p[2], p[3], p[7]] = own;
+  return {
+    palette: Object.fromEntries(p.map((c, i) => [String(i), c])),
+    ...(dark
+      ? { background: "#1e2326", foreground: "#d3c6aa", cursor: "#e69875", cursorText: "#4c3743", selectionBackground: "#4c3743", selectionForeground: "#d3c6aa" }
+      : { background: "#efebd4", foreground: "#5c6a72", cursor: "#f57d26", cursorText: "#eaedc8", selectionBackground: "#eaedc8", selectionForeground: "#5c6a72" }),
+  };
+}
+
+/** The look for the page's appearance (Ghostty's or cmux's config, else
+ *  Everforest), asked once per appearance. The appearance is the app's
+ *  (appearance.ts sets the window's theme, which this media query follows). */
 const looks = new Map<boolean, Promise<Look | null>>();
 function cmuxLook(): Promise<Look | null> {
   const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-  if (!looks.has(dark)) looks.set(dark, invoke<Look>("term_look", { dark }).catch(() => null));
+  if (!looks.has(dark)) {
+    looks.set(dark, invoke<Look>("term_look", { dark })
+      .catch(() => null)
+      // No colours configured: Everforest's, keeping any font the config names.
+      .then((l) => (l && (l.background || Object.keys(l.palette ?? {}).length)
+        ? l
+        : { ...everforest(dark), fontFamily: l?.fontFamily, fontSize: l?.fontSize })));
+  }
   return looks.get(dark)!;
 }
 
@@ -80,6 +104,12 @@ const isMouseReport = (d: string) => d.startsWith("\x1b[<") || d.startsWith("\x1
 /** Every native terminal, for the drop that lands on one of them. */
 const live = new Set<NativeTerm>();
 let dropping = false;
+
+// The app's appearance flips (appearance.ts sets the window's theme, which
+// this media query follows): every terminal takes the new look at once.
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+  for (const t of live) t.retheme();
+});
 
 /** Files dropped on the window: Tauri catches the drop and says where. The
  *  pane under it, if any, takes their paths. Listened for once, for all. */
@@ -560,6 +590,11 @@ export class NativeTerm {
       if (!this.hiddenSince) this.hiddenSince = performance.now();
       else if (performance.now() - this.hiddenSince > DETACH_AFTER) this.detach();
     }
+  }
+
+  /** Take the look for the appearance now in force (it just changed). */
+  retheme(): void {
+    this.theme();
   }
 
   /** cmux's look: its theme's palette and colors, and its font if it sets

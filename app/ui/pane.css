@@ -10,7 +10,7 @@
 .pc-head { display: flex; align-items: center; gap: 8px; }
 .pc-state { font-size: var(--fs-1); font-weight: 600; padding: 0 7px; border-radius: 8px; background: var(--strip); color: var(--muted); text-transform: lowercase; }
 .pc-state.open { color: var(--good); }
-.pc-state.merged { color: #8e6fd8; }
+.pc-state.merged { color: var(--ef-text-purple); }
 .pc-state.closed { color: var(--bad); }
 .pc-num { color: var(--muted); font-variant-numeric: tabular-nums; }
 .pc-title { font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }

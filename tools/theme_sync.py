@@ -12,8 +12,8 @@ two markers, and this writes it there:
 
     /* everforest:start */ ... /* everforest:end */
 
-A dark-only page (the board's, which has no light colours of its own) takes
-the dark block alone, so the OS's light mode never reaches it.
+A dark-only page would take the dark block alone, so the OS's light mode
+never reaches it; every page now carries both.
 
 --check also holds every --ef-text-* token to WCAG's 4.5:1 against the
 grounds words sit on in each mode (GROUNDS). Faint text is meta text on the
@@ -34,9 +34,9 @@ TARGETS = [
     ("deep-plan/deep_plan.mjs", "both"),
     ("lookout/page/review.css", "both"),
     ("app/ui/everforest.css", "both"),
-    ("crew/board/board.html", "dark"),
-    ("crew/board/usage.tmpl.html", "dark"),
-    ("crew/board/artifacts.tmpl.html", "dark"),
+    ("crew/board/board.html", "both"),
+    ("crew/board/usage.tmpl.html", "both"),
+    ("crew/board/artifacts.tmpl.html", "both"),
 ]
 
 
