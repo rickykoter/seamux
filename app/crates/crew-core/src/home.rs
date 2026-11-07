@@ -25,7 +25,7 @@ pub fn home_cache() -> PathBuf {
     home().join(".cache/cmux-crew")
 }
 
-/// $XDG_CACHE_HOME/cmux-crew, as workspaces.py spells it.
+/// $XDG_CACHE_HOME/cmux-crew, as the retired workspaces.py spelled it.
 pub fn xdg_cache() -> PathBuf {
     env_or("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".cache")).join("cmux-crew")
 }

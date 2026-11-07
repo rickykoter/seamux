@@ -1,5 +1,5 @@
 //! Keep: copy an at-risk temp file into ~/.claude/crew/kept/<workspace>/ and
-//! repoint its row. artifacts.py's refusals, in its order, with its words.
+//! repoint its row. The retired artifacts.py's refusals, in its order, with its words.
 
 use crate::paths::{basename, norm, wskey, Paths};
 use crate::read::{row_in, Row};

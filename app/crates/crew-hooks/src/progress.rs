@@ -1,9 +1,9 @@
-//! The task event's publishing: crew/hooks/progress.sh in Rust.
+//! The task event's publishing: the retired crew/hooks/progress.sh in Rust.
 //!
 //! Reads the plan Claude Code persists at ~/.claude/tasks/<session_id>/<n>.json
 //! and publishes the completed/total bar (set-progress), the whole checklist
 //! (todo set) and a pill naming the task in flight (set-status), with the
-//! argv progress.sh sends.
+//! argv the retired progress.sh sent.
 
 use std::path::Path;
 
@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use crate::events::{line, strip_newlines, Hook};
 use crate::pyval;
 
-/// The sort key progress.sh gives a task file: its number, else last.
+/// The sort key the retired progress.sh gave a task file: its number, else last.
 fn order(name: &str) -> u64 {
     let stem = &name[..name.len() - 5];
     if !stem.is_empty() && stem.chars().all(|c| crate::unicode::decimal(c).is_some()) {

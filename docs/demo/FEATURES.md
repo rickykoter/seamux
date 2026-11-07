@@ -124,7 +124,7 @@ code. Each row names the shot that covers it: a screenshot in
 | Usage-billing layout: month card and pace | README Usage-based billing | S-crew-usage-billing |
 | Cache: status-line freshness clock, `/usage` cache panel | README Cache | S-crew-cache, S-crew-statusline, V5.2 |
 | Cache: desktop stale warning, break report after a turn | README Cache | not filmed: a macOS notification and a live session |
-| Status line: title, usage, cache segment | crew/claude/statusline.py | S-crew-statusline |
+| Status line: title, usage, cache segment | `seamux statusline` (app/crates/crew-hooks/src/statusline.rs) | S-crew-statusline |
 | Notifications on transitions; TypeSafe promotes a turn-end question to Needs you | "What puts a row in Needs you" | V5.1 (card) |
 | `crew-digest` and `--paragraph` | "The morning digest" | S-crew-news (the digest prints the same sentences; not filmed, it reads your real repos and `gh`) |
 | `crew-resume`: fuzzy finder over live / archived / past sessions | "Sessions" | not filmed: reads your real transcripts |

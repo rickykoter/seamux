@@ -21,10 +21,10 @@ worth looking at.
 `seamux <tool>`** (`app/crates`; `seamux --tools` lists them), hooks included.
 `install.sh` builds the seamux app and links its CLI at `~/.local/bin/seamux`,
 and `crew apply` links each tool's old name (`crew-sync`, `crew-resume`, …) to
-it. The Python in `bin/`, `board/`, `hooks/` and `claude/` is kept only for
-the parity probes until they are ported, and `crew apply` leaves it out of the
-live tree. The Swift sidebar board and the Dock board are retired. Below,
-`triage.py` and the other Python names refer to the `seamux` tool of the same
+it. crew's Python implementations are gone (plan sunset-crew-python); the
+probes in `tools/` are still Python and node, and drive this checkout's
+`seamux` from outside. The Swift sidebar board and the Dock board are retired.
+Below, a name such as `triage` or `workspaces` is the `seamux` tool of that
 name. Design notes about the sidebar are kept as history.
 
 ## Why these things and not others
@@ -237,7 +237,7 @@ finished?* and *was this abandoned?*, over Claude's last message, the last
 prompt, the workspace title, the branch, the PR state, the idle days and the
 plan phase. The card ranks by the higher of the two. The answers are cached in
 `~/.cache/cmux-crew/sweep-judgments.json` by transcript size, so the next sweep
-asks only about what moved. It goes through `hooks/typesafe.py` like every
+asks only about what moved. It goes through `seamux typesafe` like every
 other judgment, so a local Jev reached by overriding the TypeSafe config needs
 nothing extra. With TypeSafe off or not answering, the order is orphaned and
 merged first, then the longest idle. The finder never asks Jev anything.
@@ -543,7 +543,7 @@ badges its worktree forever.
 
 ### What puts a row in "Needs you"
 
-Exactly one thing: `phase:waiting`, which `hooks/crew-hook.sh` publishes on
+Exactly one thing: `phase:waiting`, which the crew hook (`seamux crew-hook`) publishes on
 Claude's own **Notification** event and clears on **Stop**. Nothing else opens
 that bucket.
 
@@ -551,7 +551,7 @@ that bucket.
 not for a turn that ends "should I use A or B?" — that is a plain Stop, and the
 row files as finished. With a [TypeSafe](https://typesafe.ai) key on the machine
 (`$TYPESAFE_API_KEY`, or the first line of `~/.config/typesafe/api-key`), Stop
-also runs `hooks/asked.sh` in the background: `hooks/asked.py` asks TypeSafe's
+also runs `seamux asked-hook` in the background, which asks TypeSafe's
 Jev model one yes/no question about Claude's last message, whether the agent is
 blocked on you or is just offering optional follow-ups. At or above the
 threshold (0.7) it publishes the same `phase:waiting`, lane and banner as
@@ -841,7 +841,7 @@ crew-digest --paragraph  only where things stand, as one plain paragraph
 It opens with **where things stand**: the Dock board's news footer, read from
 `crew-board state --fast --json`. That is one sentence per workspace or family,
 in the board's priority order, covering every cmux workspace in any repo, not
-only the main checkout's worktrees. The wording lives in `board/news.py`, so the
+only the main checkout's worktrees. The wording lives in `seamux news`, so the
 terminal and the Dock never disagree (see `board/README.md`, "The news
 footer").
 
@@ -1204,15 +1204,16 @@ time. crew's own hooks leave with the plugin: `claude plugin uninstall crew`.
 
 crew is ~5.7× cheaper per tool use than the bridge it replaces: the old hook
 made an unconditional socket call every time, crew makes none unless a lane
-override is actually outstanding. The `pretool` path short-circuits before
-`lib.sh` is even sourced — see FINDINGS.md.
+override is actually outstanding. The `pretool` path returns from
+`hooks/seamux-hook.sh` without starting the binary when no lane is held — see
+FINDINGS.md.
 
 ## Deliberate choices
 
 **`automation.workspaceAutoNaming` stays off.** cmux can AI-name workspaces from
 conversation content. With a dozen worktrees of one repo, a deterministic
 `PROJ-961 · …` beats a prose summary — you can find a ticket by scanning, and the
-name doesn't drift between turns. Auto-naming would also fight `crew-hook.sh`
+name doesn't drift between turns. Auto-naming would also fight the crew hook
 on every turn end.
 
 **The `review` lane is conditional.** Pinning `review` on every `Stop` would park
@@ -1266,7 +1267,7 @@ claude plugin configure crew@seamux
 | `observability_stack` | `datadog`, `splunk` or `grafana` for plans' observability checks; `none` is off |
 | `main_repo` | the repo your worktrees come from, baked into `crew-worktree` and the helpers by `crew apply` |
 
-`hooks/options.py` renders the first three into `integrations.json` at every
+`seamux options` renders the first three into `integrations.json` at every
 session start, and `crew apply` does the same from `settings.json` for a
 machine where no session has run since. It writes only when the content
 changes, keeps every other key of the file, and leaves answers the old
@@ -1289,7 +1290,7 @@ What you get, with zero custom code:
   tasks, view uncommitted diffs, and switch model/effort**.
 - Phone pushes when an agent needs you: `agentPushNotifEnabled` (task done) and
   `inputNeededNotifEnabled` (permission prompts / questions), both wired by
-  `merge_settings.py`. Pushes are skipped while you are at the terminal.
+  `seamux merge_settings`. Pushes are skipped while you are at the terminal.
 - Sessions started before this change: type `/remote-control` in them.
 - On another machine, `claude --teleport` resumes one of your remote sessions.
 

@@ -1,5 +1,5 @@
 //! deep-plan families on the board: members sit together, ordered as one
-//! (crew/board/families.py).
+//! (the former crew/board/families.py).
 //!
 //! Every member of a family moves as one unit, placed where its most urgent
 //! member would sort; inside it the parent leads, then the children by tier.

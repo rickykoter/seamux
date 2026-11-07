@@ -1,5 +1,5 @@
 //! Did the turn that just ended leave a question sitting on you?
-//! (crew/hooks/asked.py)
+//! (the former crew/hooks/asked.py)
 //!
 //!   seamux asked available              exit 0 when TypeSafe is configured, 1 when not
 //!   seamux asked judge < stop-payload   exit 0 asked, 1 not asked, 2 no judgment

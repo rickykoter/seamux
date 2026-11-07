@@ -1,7 +1,7 @@
 // The Dock's cat, peeking into a native pane: out of sight while Claude
 // works, up over the bottom-right edge while Claude waits for you, and a hop
 // with a heart when a long turn ends. Same animal as the board's and the
-// sidebar's: these grids are crew/board/cat_poses.py's (and crew.swift's
+// sidebar's: these grids are the retired crew/board/cat_poses.py's (and crew.swift's
 // palette), copied, so a change to that cat should be copied here too.
 
 /** catColor() in crew.swift: body, bib, open eye, nose and heart, shut eye, inner ear. */

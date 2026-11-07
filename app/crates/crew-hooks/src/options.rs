@@ -1,4 +1,4 @@
-//! `seamux options`: crew/hooks/options.py in Rust. Renders the crew plugin's
+//! `seamux options`: the retired crew/hooks/options.py in Rust. Renders the crew plugin's
 //! options into integrations.json.
 //!
 //! ```text

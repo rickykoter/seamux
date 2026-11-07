@@ -6,10 +6,11 @@
 # stopfail is StopFailure for a usage limit (rate_limit, billing_error): it
 # has no bash copy, and goes straight to the binary like the rest.
 #
-# The same events as crew-hook.sh, with the work done by `seamux crew-hook`.
+# The same events as the retired crew-hook.sh, with the work done by
+# `seamux crew-hook`.
 # Only pretool's hot path stays here: it fires on every tool use, and almost
 # always this pane holds nothing to release, so it has to exit from bash
-# without starting a binary (crew-hook.sh explains the cost). A pane with a
+# without starting a binary (the retired crew-hook.sh explained the cost). A pane with a
 # state file is tested by its hold-<surface> marker, which crew-core's status
 # keeps while the pane waits, was asked or left work to review: another
 # pane's wait in the same workspace never sends this one to the binary.
@@ -57,6 +58,12 @@ if [ "$event" = "pretool" ]; then
   # that is no resumed work. A builtin read and match, so no fork.
   IFS= read -r -d '' _p || true
   [[ ${_p:-} =~ \"tool_name\"[[:space:]]*:[[:space:]]*\"AskUserQuestion\" ]] && exit 0
+  # A subagent's tool use (Claude Code sends a top-level agent_id only from
+  # inside one) is not the main agent taking its question back. The text can
+  # also sit inside tool_input, so the binary reads the JSON to tell.
+  if [[ ${_p:-} == *'"agent_id"'* ]]; then
+    exec "$seamux" crew-hook pretool <<<"$_p"
+  fi
   exec "$seamux" crew-hook pretool </dev/null
 fi
 

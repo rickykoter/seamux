@@ -34,8 +34,9 @@ Nothing touches your screen or the live board: each page renders off-screen
 in Playwright. A UI change is a re-run, not a re-shoot. `parent` stages the
 example family with `deep-plan/tools/family-fixture.sh` in a temporary folder
 and opens the parent's review page from there, so it needs no render and
-leaves your plan state alone. `famboard` is the last two scenes of the
-`board-demo.py` cast.
+leaves your plan state alone. `famboard` wants two family scenes that
+`reel/board-cast.mjs` does not have yet (note n7cd8880d), so it does not
+record today.
 
 ## 2. Terminal clip
 

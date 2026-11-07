@@ -17,7 +17,6 @@ in the live tree is a red check rather than a thing you have to remember.
 |---|---|
 | `deep-plan/`, `restack/`, `bash-guard/`, `seamux-mods/` | the checkout itself (folder marketplace; `claude plugin list` says "Read from") or, with `install.sh --github`, Claude's cached copy of the published version |
 | `crew/` | the checkout for Claude's hooks; `~/.config/cmux/crew/` for everything else, copied there by `crew apply` (replace-with-backup) |
-| `crew/claude/statusline.py` | `~/.config/cmux/crew/claude/statusline.py`, which `crew apply` points `statusLine` at |
 | `deep-plan/lib/deep-plan.shim`, `restack/lib/restack.shim` | `~/.local/bin/{deep-plan,restack}`, written by each engine's `setup` |
 | `crew/config/*` | rendered by `crew apply` into `cmux.json` and the Dock files |
 
@@ -36,7 +35,7 @@ snapshot `installed_plugins.json` records (`crew/bin/crew-plugin-root`).
 
 - `~/.config/cmux/crew/integrations.json` and `.seamux-source` — install-time
   state; the drift check skips both by name. `integrations.json` is rendered
-  from the crew plugin's options (`crew/hooks/options.py`) once one is set,
+  from the crew plugin's options (`seamux options`) once one is set,
   and keeps every key it does not own.
 - `~/.config/cmux/crew-local/` — the overlay. Outside the live tree and
   outside every comparison. See `docs/ADOPTING.md`, "Machine-local overlay".
@@ -73,8 +72,8 @@ snapshot `installed_plugins.json` records (`crew/bin/crew-plugin-root`).
   `cmux.json` before and after a change will also show this key moving for
   reasons unrelated to what you changed.
 - `~/.claude/settings.json` — Claude's. seamux writes two things there, through
-  `crew/claude/merge_settings.py`: `statusLine` (only when absent, or when it is
-  crew's own) and the two push flags (only when absent). No hook entries: each
+  `seamux merge_settings`: `statusLine` (`<seamux> statusline`, only when absent
+  or when it is crew's own) and the two push flags (only when absent). No hook entries: each
   plugin's `hooks/hooks.json` carries its own.
 
 ## Traps that have actually bitten
@@ -82,7 +81,7 @@ snapshot `installed_plugins.json` records (`crew/bin/crew-plugin-root`).
 **`--main-repo` must be shell-expanded.** The path is baked into the live tree,
 and if it reaches `crew apply` as the literal `$HOME/...` you get those four
 characters: `[ -d "$MAIN/.git" ]` fails, so the project Dock is skipped, and
-`crew-digest`'s Python default becomes a string Python never expands. Always:
+`crew-digest`'s default becomes a path that never expands. Always:
 
 ```sh
 ./install.sh --main-repo "$HOME/code/your-repo"

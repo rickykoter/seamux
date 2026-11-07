@@ -3,7 +3,7 @@
 //! A click names a row id and a verb; the row comes from the collector's
 //! snapshot (board-targets.json), never from the URL. Anything that touches a
 //! worktree or deletes goes through the same `crew:*` notification RPC the
-//! Swift sidebar used, so hooks/triage.py stays the one place that decides
+//! Swift sidebar used, so `seamux triage` stays the one place that decides
 //! what those verbs do, including its "ask before deleting" gate.
 
 use std::collections::HashSet;
@@ -127,7 +127,7 @@ fn select(ws: &str) -> bool {
     }
 }
 
-/// Post a marked notification: the RPC channel hooks/triage.py dispatches.
+/// Post a marked notification: the RPC channel `seamux triage` dispatches.
 /// snake_case only: cmux refuses the whole call over an unknown key.
 pub fn notify(subtitle: &str, body: &str, workspace_id: Option<&str>) -> bool {
     let mut p = Map::new();

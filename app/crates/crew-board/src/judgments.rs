@@ -1,7 +1,7 @@
 //! Turn-end TypeSafe judgments for the board, cached. Policy lives here
-//! (crew/board/judgments.py).
+//! (the former crew/board/judgments.py).
 //!
-//!   record(cwd, size, values)          writer, called by hooks/asked.sh
+//!   record(cwd, size, values)          writer, called by `seamux asked-hook`
 //!   fresh_map(now)                     reader: {cwd: entry}, freshness applied
 //!   stuck_for(w, jmap) / urgency_for   what rank() consults
 //!

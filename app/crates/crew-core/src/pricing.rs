@@ -1,5 +1,5 @@
 //! Crew-owned ccusage pricing overrides: published prices for named models
-//! (crew/board/pricing.py).
+//! (the former crew/board/pricing.py).
 //!
 //!   config_args() -> [] | ["--config", PATH]       append to every ccusage call
 //!   compare(overrides, upstream) -> [(level, message)]   pure, for crew doctor

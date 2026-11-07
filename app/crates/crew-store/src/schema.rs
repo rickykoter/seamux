@@ -1,4 +1,4 @@
-//! The schema, connect and migrate: artifacts.py's, statement for statement.
+//! The schema, connect and migrate: the retired artifacts.py's, statement for statement.
 //! The SQL text is the Python's, so a database either side creates is the
 //! same database.
 

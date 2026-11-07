@@ -1,4 +1,4 @@
-//! `seamux crew-hook <event>`: crew/hooks/crew-hook.sh and lib.sh in Rust.
+//! `seamux crew-hook <event>`: the retired crew/hooks/crew-hook.sh and lib.sh in Rust.
 //!
 //! ```text
 //! seamux crew-hook <session|pretool|prompt|ask|answered|task|notification|stop|stopfail|end>  < payload
@@ -10,10 +10,9 @@
 //! the pane's own state file (crew-core's status). An event changes only its
 //! own pane's file; the workspace's lane, phase: token and question and asked
 //! markers then come from the roll-up of every pane in it, so one Claude's
-//! turn ending never clears another's ask. The bash and Python copies
-//! (crew-hook.sh, lib.sh, crew-sync) are frozen and still key everything by
-//! workspace: hooks_probe's two-pane cases run only under CREW_IMPL=rust
-//! (ADR 0036).
+//! turn ending never clears another's ask. The retired bash and Python
+//! copies (crew-hook.sh, lib.sh, crew-sync) keyed everything by workspace;
+//! hooks_probe's two-pane cases run only under CREW_IMPL=rust (ADR 0036).
 //!
 //! crew/hooks/seamux-hook.sh is the hook command: it keeps pretool's
 //! lane-marker test in bash, so the common tool use never starts this
@@ -713,6 +712,11 @@ fn stopfail(h: &mut Hook) {
 /// the workspace's lane and phase follow the roll-up. A sibling pane that
 /// still waits keeps the workspace waiting.
 fn pretool() -> i32 {
+    // seamux-hook.sh passes the payload only when it names agent_id: a tool
+    // use inside a subagent leaves the main agent's hold alone.
+    if from_subagent(&read_payload()) {
+        return 0;
+    }
     let state = state_dir();
     let in_ws = crew_core::ident::workspace_id();
     let ws = in_ws.clone().unwrap_or_else(|| "none".into());
@@ -742,6 +746,16 @@ fn pretool() -> i32 {
         h.tokens(after.phase(), &[]);
     }
     0
+}
+
+/// Whether a hook payload came from inside a subagent: Claude Code sets a
+/// top-level agent_id only there (a main thread started with --agent has
+/// agent_type alone). An agent_id inside tool_input does not count.
+fn from_subagent(payload: &str) -> bool {
+    serde_json::from_str::<Value>(payload)
+        .ok()
+        .and_then(|v| v.get("agent_id").and_then(Value::as_str).map(|s| !s.is_empty()))
+        .unwrap_or(false)
 }
 
 pub fn main(args: &[String]) -> i32 {
@@ -868,6 +882,15 @@ fn payload_name(ws: &str, sid: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_top_level_agent_id_is_a_subagent() {
+        assert!(from_subagent(r#"{"tool_name":"Bash","agent_id":"a1","agent_type":"general-purpose"}"#));
+        assert!(!from_subagent(r#"{"tool_name":"Bash","agent_type":"general-purpose"}"#));
+        assert!(!from_subagent(r#"{"tool_name":"Bash","tool_input":{"command":"echo","agent_id":"x"}}"#));
+        assert!(!from_subagent(r#"{"agent_id":""}"#));
+        assert!(!from_subagent(""));
+    }
 
     /// A pane on the tmux backend: no cmux client. Its lane and tokens touch
     /// no sidebar, and its pane file is written all the same.

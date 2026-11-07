@@ -21,9 +21,9 @@ because the dev port is not trusted by default.
 
 `~/.local/bin/crew-board` is `seamux crew-board`. `push`, `watch`, `tidy` and `close`
 drove the Dock surface this README describes below; the cutover retired that surface,
-and those verbs now only say where the board went. The Python `crew-board` in this
-directory still has them, for the probes and `docs/demo/board-demo.py`. The live tree
-does not install it. Most of what follows was written for the Dock board. The ranking,
+and those verbs now only say where the board went. The Python `crew-board` that still
+had them is gone (plan sunset-crew-python). Most of what follows was written for the
+Dock board, and a file named `x.py` below is the `seamux x` tool now. The ranking,
 the rendering and the click routes still apply to the served page.
 
 ## Why a browser surface
@@ -116,7 +116,7 @@ lives on `#rows` as `data-fold` (id -> [open, tier]) and holds across pushes unt
 the card changes tier, when it takes the new tier's default -- so a card you folded
 while quiet opens itself when it starts waiting on you.
 
-A **deep-plan family** is one card. `families.py` already emits each family as a
+A **deep-plan family** is one card. `seamux families` already emits each family as a
 contiguous run, parent first, ranked at its most urgent member's tier;
 `render.js` folds that run into the parent's card and puts the children inside
 it, on a darker well:
@@ -330,7 +330,7 @@ says `nothing needs you`, which is the question it can actually answer; the tall
 answers the rest. The probe asserts the headline never claims all-clear over a
 broken board.
 
-**The cat** (`#cat`) is the sidebar's cat, not a new one: `cat_from_swift.py`
+**The cat** (`#cat`) is the sidebar's cat, not a new one: `seamux cat_poses --from-swift`
 reads the six pose arrays out of `sidebars/crew.swift` and emits them as `<path>`s,
 so both boards show the same animal pixel for pixel and neither can drift silently
 (`--check` fails the probe if they do). Charcoal body, white bib, green eye, pink
@@ -369,14 +369,14 @@ beside the mood. Each plays once and hides the mood's own frames for exactly as
 long, so the mood is simply back when it ends and nothing has to take the class
 off in time.
 
-Those poses are **the board's own**. `cat_poses.py` draws them as ASCII grids,
+Those poses are **the board's own**. `seamux cat_poses` draws them as ASCII grids,
 in crew.swift's 3px cells and palette, and writes them into a second marker
 block nested inside the sprite, so they walk and turn with the cat.
-`cat_from_swift.py` emits that block empty, keeps it when it rewrites the
-sprite, and leaves it out of its `--check`: a change to the sidebar's cat does
-not reach them, and nothing checks them against it. `python3 cat_poses.py
---sheet out.html` draws every pose, old and new, side by side; `--check` runs
-in the probe.
+`--from-swift` emits that block empty, keeps it when it rewrites the sprite,
+and leaves it out of its `--check`: a change to the sidebar's cat does not
+reach them, and nothing checks them against it. `seamux cat_poses --sheet
+out.html` draws every pose, old and new, side by side; both checks run in the
+probe.
 
 `pace` covers broken as well as working because the sidebar's `catMood()` does
 (`bucket == 1 || bucket == 5`) — the row badges already say which, and the cat is
@@ -430,7 +430,7 @@ One colour per worktree, in four places. It is cmux's own `custom_color`, which
 | the VS Code title bar | Peacock, via `bin/crew-color` |
 | the board's card | a dot in that colour before the branch in the footer; a ring around `.row.here` |
 | the focused pane's frame | `bin/crew-frame` rewrites `activePaneBorderColor` |
-| Claude Code's status line | `~/.config/cmux/crew/claude/statusline.py` prints `▊ <title>` in it |
+| Claude Code's status line | `seamux statusline` prints `▊ <title>` in it |
 
 The current workspace's card is **marked, not moved** — promoting it would fight
 the ranking, which is the one thing this board is for.
@@ -486,7 +486,7 @@ Two rewrites happen on the way out, neither touching the file:
   `disabled`, because as a file they genuinely cannot act) and polls
   `/plan-stamp` so an increment an agent advances appears without a click.
 
-`python3 board/crew-board-intent --selftest` asserts the route table, every
+`seamux crew-board-intent --selftest` asserts the route table, every
 refusal above, and that the mermaid swap still matches a real page — both of those
 have regressed once and neither announces itself. `crew doctor` runs it.
 
@@ -567,7 +567,7 @@ against a fixture transcript; the fourth is its config schema:
   rate, where the published tier makes it $0.083. Long Haiku 5.5 prompts read
   low until ccusage handles the 100K step; the fix is ccusage's, not crew's.
 
-Every ccusage call crew makes passes the same `--config`: `costs.py` (the board
+Every ccusage call crew makes passes the same `--config`: `seamux costs` (the board
 rows and the per-workspace card), `/usage`'s reports, and the status line.
 
 | model | field | override | upstream at time of adding | source | why |
@@ -642,7 +642,7 @@ whose "largest on record" fallback is a high-water mark rather than a limit.
 An explicit switch rather than a guess: the local transcripts show tokens and
 computed costs either way and state nothing about your plan, so any detection
 would be a heuristic that silently picks the wrong framing. The status line
-(`crew/claude/statusline.py`) reads the same variable and follows the same rule.
+(`seamux statusline`) reads the same variable and follows the same rule.
 
 ### The window card holds two views
 
@@ -710,7 +710,7 @@ so if you leave it open it stays open across pushes. It is sticky rather than
 fixed, so once you scroll to the end it sits after the last row instead of over
 it.
 
-**Rebuilt on every push, never generated on a timer.** `news.py` composes it
+**Rebuilt on every push, never generated on a timer.** `seamux news` composes it
 from `rank()`'s rows, so it cannot disagree with the cards above it: the push
 that clears a `ci:fail` token also drops the "red on CI" sentence. The five
 hours bound only the commits it counts (`CREW_NEWS_HOURS`, default 5). No model
@@ -820,9 +820,7 @@ served page resolves through `/do` exactly as a Dock click does. The worker stop
 a minute after the last page closes.
 
 `EventSource` reconnects by itself; while it is down the stamp reads
-"· reconnecting". `board.html` itself is unchanged, so the Dock push still works
-until the family's cutover retires it. Both servers serve `/board`: the Python
-`crew-board-intent` today, and `seamux crew-board-intent` after the cutover.
+"· reconnecting". `seamux crew-board-intent` serves `/board`.
 
 ## Clickable, through a loopback server
 
@@ -858,7 +856,7 @@ verified, not assumed.
 
 Dispatch reuses what exists. Simple verbs shell out to cmux; anything touching a worktree
 or deleting goes through the same `crew:*` notification RPC the Swift sidebar used, so
-`hooks/triage.py` remains the one place deciding what those verbs do — including its "ask
+`seamux triage` remains the one place deciding what those verbs do — including its "ask
 before deleting anything" gate on `reclaim`.
 
 The original caution still holds where it matters: the board does not silently authorize

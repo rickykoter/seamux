@@ -673,7 +673,7 @@ mod tests {
     }
 
     /// A turn row's locator and the review id the Wake gives it, which both
-    /// indexers skip (crew-store's wake_review, artifacts.py's WAKE_REVIEW).
+    /// indexers skip (crew-store's wake_review, the retired artifacts.py's WAKE_REVIEW).
     #[test]
     fn a_turn_locator_and_its_review_id() {
         assert_eq!(turn_locator("0b9c2f1e-aaaa-bbbb/12"), Some(("0b9c2f1e-aaaa-bbbb", 12)));
