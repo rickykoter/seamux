@@ -121,3 +121,11 @@
 .w-dayrisk { color: var(--bad-t, var(--bad)); }
 .w-chip.w-more { border-style: dashed; }
 .w-prompt.same { display: none; }
+/* A group of one row is one line: time and prompt, the row, branch and
+   session last. The side column is too narrow for it and keeps two lines. */
+.wake:not(.embedded) .w-grp.solo:not(.later), .wake:not(.embedded) .w-day.all .w-grp.solo.later { display: flex; align-items: center; }
+.wake:not(.embedded) .w-grp.solo > .w-ph { flex: none; flex-wrap: nowrap; padding: 0 0 0 12px; }
+.wake:not(.embedded) .w-grp.solo > .w-ph:first-child { flex: 0 0 min(34%, 300px); }
+.wake:not(.embedded) .w-grp.solo > .w-tail { padding-right: 12px; max-width: 30%; }
+.wake:not(.embedded) .w-grp.solo > .w-rows { flex: 1; min-width: 0; }
+.wake:not(.embedded) .w-grp.solo .w-row { grid-template-columns: 52px minmax(0, 1fr) auto auto; }
