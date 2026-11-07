@@ -192,7 +192,8 @@ const names = (q: string, i: Inputs) => search(rowsOf(i), q).map((h) => h.row.na
 // One set of words per hide state, the same in the Hide menu, the Dock's
 // shelf and search's tooltips: muted "until it needs you", tucked "until you
 // bring it back", snoozed "until <time>". Search's narrow right column cuts
-// them short: "until needed", "kept hidden", "until 3 PM". palette.ts and
+// them short under its "hidden" heading: "until needed", "until 3 PM", and
+// nothing for a plain hide. No word a person reads says "muted". palette.ts and
 // tuck.ts need a DOM and Tauri, so their words are read from source.
 {
   const src = (f: string) => readFileSync(new URL(f, import.meta.url), "utf8");
@@ -200,11 +201,14 @@ const names = (q: string, i: Inputs) => search(rowsOf(i), q).map((h) => h.row.na
   ok("words: tuck.ts names muted and tucked as the Hide menu and the shelf do",
     /mute: "until it needs you", tuck: "until you bring it back"/.test(tk));
   ok("words: tuck.ts has the short words for search's right column",
-    /UNTIL_SHORT[^=]*= \{ mute: "until needed", tuck: "kept hidden" \}/.test(tk));
+    /UNTIL_SHORT[^=]*= \{ mute: "until needed", tuck: "" \}/.test(tk));
   ok("words: a hidden row's right column takes the short words, its tooltip the full ones",
     /const untilShort = [^;]*UNTIL_SHORT\[r\.level\]/.test(pal) && /row\.title = r\.level \? `Hidden \$\{untilOf\(r\)\}/.test(pal) && !/: "hidden"/.test(pal));
-  ok("words: the ⇧⌘↵ hint says it brings back the muted ones (tuck_unmute_all clears mutes alone)",
-    pal.includes("⇧⌘↵ bring back the muted ones") && !pal.includes("show all again") && !/unhide/.test(pal));
+  ok("words: the ⇧⌘↵ hint says it shows the ones hidden until needed (tuck_unmute_all clears mutes alone)",
+    pal.includes("⇧⌘↵ show the ones hidden until needed") && !pal.includes("show all") && !/unhide/.test(pal));
+  // Every string a person reads in search and the Hide words: no "muted".
+  const read = [...(pal + tk).matchAll(/"([^"\n]*)"|`([^`\n]*)`/g)].map((m) => m[1] ?? m[2]).filter((t) => /\bmuted?\b/i.test(t) && /\s/.test(t));
+  ok("words: no string a person reads says muted", read.length === 0, JSON.stringify(read));
 }
 
 let failed = 0;
