@@ -11,10 +11,11 @@ import { say, untilSaid, wakesAt, type Level, type TuckRow } from "./tuck";
 const untilOf = (r: Row): string =>
   r.level === "mute" || r.level === "snooze" || r.level === "tuck" ? untilSaid(r.level as Level, r.until || undefined) : "";
 
-/** A hidden row's until in a word or two, for the row itself: "until 3 PM",
- *  "until needed", "hidden". The row's tooltip and the preview say it in full. */
+/** A hidden row's until, for the row itself, in the words the Hide menu and
+ *  the Dock's shelf use: "until it needs you", "until you bring it back", or
+ *  a snooze's "until 3 PM" (its :00 dropped; the tooltip has the full time). */
 const untilShort = (r: Row): string =>
-  r.level === "snooze" ? (r.until ? `until ${wakesAt(r.until).replace(/:00(?=\s)/, "")}` : "for now") : r.level === "mute" ? "until needed" : "hidden";
+  r.level === "snooze" && r.until ? `until ${wakesAt(r.until).replace(/:00(?=\s)/, "")}` : untilOf(r);
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -267,13 +268,13 @@ export class Palette {
 
   /** The keys that do something now: ⌘↵ only on a hidden row, ⇧⌘↵ only
    *  while some row is hidden until it needs you. ⇧⌘↵ (tuck_unmute_all)
-   *  brings back only those, so it says "all" only when they are all the
-   *  hidden rows, and otherwise names them as their rows do. */
+   *  brings back only those, so it says "all again" only when they are all
+   *  the hidden rows, and otherwise names them in their rows' words. */
   private drawFoot(sel: Row | undefined): void {
     const keys = ["↵ jump"];
     if (sel?.level) keys.push("⌘↵ show again");
     const muted = this.rows.filter((r) => r.level === "mute").length;
-    if (muted) keys.push(muted === this.rows.filter((r) => r.level).length ? "⇧⌘↵ unhide all" : "⇧⌘↵ unhide “until needed”");
+    if (muted) keys.push(muted === this.rows.filter((r) => r.level).length ? "⇧⌘↵ show all again" : "⇧⌘↵ show all “until it needs you”");
     keys.push("esc");
     this.foot.textContent = keys.join(" · ");
   }

@@ -1,5 +1,6 @@
 // node app/ui/search_probe.ts — the session search's rows, matching and
 // order (search.ts), with no DOM. Node runs this file as TypeScript.
+import { readFileSync } from "node:fs";
 import { asideOf, base, echoes, fuzzy, isKeyHints, rowsOf, search, tailOf, type Inputs, type TileIn } from "./search.ts";
 
 const checks: [string, boolean, string?][] = [];
@@ -185,6 +186,22 @@ const names = (q: string, i: Inputs) => search(rowsOf(i), q).map((h) => h.row.na
   const t = asideOf(hit("expiry", "checkout-flow"));
   ok("aside: a match outside the name shows that field, with its letters", t?.field === "topic" && t.text === "coupon expiry" && t.at?.[0] === 7, JSON.stringify(t));
   ok("aside: a match in the name alone falls back to the branch rule", asideOf(hit("checkout", "checkout-flow")) === null && asideOf(hit("pay", "payments"))?.field === "branch");
+}
+
+// ---- words for a hidden row (palette.ts, tuck.ts) --------------------------
+// One set of words per hide state, the same in search, the Hide menu and the
+// Dock's shelf: muted "until it needs you", tucked "until you bring it back",
+// snoozed "until <time>". palette.ts and tuck.ts need a DOM and Tauri, so
+// their words are read from source.
+{
+  const src = (f: string) => readFileSync(new URL(f, import.meta.url), "utf8");
+  const pal = src("./palette.ts"), tk = src("./tuck.ts");
+  ok("words: tuck.ts names muted and tucked as the Hide menu and the shelf do",
+    /mute: "until it needs you", tuck: "until you bring it back"/.test(tk));
+  ok("words: a hidden row's right column takes those words (no bare \"hidden\", no \"until needed\")",
+    /const untilShort = [^;]*: untilOf\(r\);/.test(pal) && !/"until needed"|: "hidden"/.test(pal));
+  ok("words: the ⇧⌘↵ hint says what it brings back in the same words",
+    pal.includes("⇧⌘↵ show all again") && pal.includes("⇧⌘↵ show all “until it needs you”") && !/unhide/.test(pal));
 }
 
 let failed = 0;

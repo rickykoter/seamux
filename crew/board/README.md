@@ -292,7 +292,9 @@ throws the same handful every time.
 **Family pips** are kitten heads, one per child, beside the family card's name
 and filled in that child's tier colour, with its name and badge as a tooltip --
 so a card says how its family is doing before you read a sub-row. Five at most,
-the most urgent first, then `+N`, so a big family does not clip its own name. When every
+the most urgent first, then `+N`, so a big family does not clip its own name. A
+card stopped by a usage limit draws none: its `back 2:40 PM` pill already takes
+the room, so the children move to a `plans: ...` line in the header's tooltip. When every
 child is done, a family card with nothing more urgent of its own says
 `all N done`.
 
