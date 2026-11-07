@@ -10,25 +10,21 @@
   background: var(--card); border: 1px solid var(--line2); border-radius: 12px; box-shadow: 0 18px 50px var(--shade);
 }
 /* Edges that hold in light, and the theme's accent for keyboard focus. */
-.reclaim .sheet-btn { border-color: var(--line2); }
-.reclaim .rc-primary { border-color: var(--primary); }
-.reclaim .rc-danger { border-color: var(--bad); }
+.reclaim .sheet-btn { background: none; border-color: var(--line2); }
+.reclaim .sheet-btn:hover:not(:disabled) { border-color: var(--fg); }
 .reclaim :is(.sheet-btn, summary, input):focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .reclaim input[type="checkbox"] { accent-color: var(--accent); }
 .rc-head { display: flex; align-items: baseline; gap: 12px; padding: 14px 16px 10px; border-bottom: 1px solid var(--line2); }
 .rc-head b { font-size: var(--fs-4); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rc-steps { display: flex; gap: 4px; margin: 0; padding: 0; list-style: none; counter-reset: rc; font-size: var(--fs-2); color: var(--muted); flex: none; }
-.rc-steps li { counter-increment: rc; display: flex; align-items: center; gap: 4px; }
-.rc-steps li + li::before { content: ""; width: 12px; height: 1px; background: var(--line); margin-right: 2px; }
-.rc-steps li > :first-child, .rc-steps li { white-space: nowrap; }
-.rc-steps li.now { color: var(--fg); font-weight: 600; }
-.rc-steps li.past { color: var(--good-t); }
 
 .rc-body { padding: 12px 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
 .rc-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 16px 14px; border-top: 1px solid var(--line2); }
-.rc-primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
-.rc-danger { border-color: var(--bad); color: var(--bad-t); font-weight: 600; }
-.rc-danger:hover { background: color-mix(in srgb, var(--bad) 12%, transparent); }
+/* The shared buttons: one filled primary; the delete is the destructive
+   style, its words in --bad-t inside a --bad edge (a fill of --bad would
+   leave the light theme's words too faint to read). */
+.reclaim .rc-primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); font-weight: 600; }
+.reclaim .rc-danger { border-color: var(--bad); color: var(--bad-t); font-weight: 600; }
+.reclaim .rc-danger:hover { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 14%, transparent); }
 
 .rc-busy { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: var(--fs-3); padding: 6px 0; }
 .rc-spin {
@@ -46,6 +42,10 @@
 .rc-val { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rc-facts .rc-note { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rc-facts .rc-note::before { content: "· "; }
+/* What reclaim leaves, under "Would remove": one dim line, its own. */
+.rc-keeps { margin: -4px 0 0; display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 0; row-gap: 2px; font-size: var(--fs-2); color: var(--muted); }
+.rc-keeps-k { flex: none; width: 78px; margin-right: 10px; }
+.rc-keeps-v { white-space: pre; }
 .mono { font: var(--fs-2) ui-monospace, Menlo, monospace; }
 
 .rc-checks { list-style: none; margin: 0; padding: 8px 10px; background: var(--field); border: 1px solid var(--line2); border-radius: 8px; display: flex; flex-direction: column; gap: 5px; }
@@ -58,6 +58,8 @@
 .rc-mark.fail, .rc-mark.error { color: var(--bad); }
 .rc-mark.warn { color: var(--accent); }
 .rc-mark.skip, .rc-mark.note { color: var(--muted); }
+.rc-mark.info { color: var(--accent); stroke-width: 1.2; }
+.rc-check.info { color: var(--muted); }
 .rc-check.fail .rc-text > :first-child, .rc-check.error .rc-text > :first-child { color: var(--bad-t); }
 
 .rc-verdict { margin: 0; font-size: var(--fs-3); font-weight: 600; }
