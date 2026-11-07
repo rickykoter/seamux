@@ -297,6 +297,8 @@ export class MigrateBanner {
   private async decline(o: Offer): Promise<void> {
     this.skipped.add(key(o));
     this.queued.delete(key(o));
+    // Given up on: its failure no longer needs saying.
+    this.failed.delete(key(o));
     if (o.kind === "restart") {
       try {
         await invoke("migrate_forget", { pane: o.pane });
