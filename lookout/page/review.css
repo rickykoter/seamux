@@ -242,11 +242,19 @@ tr.thread-row > td { padding: 6px 12px 10px 60px; background: var(--side); borde
   color: var(--sev, var(--muted)); background: color-mix(in srgb, var(--sev, var(--muted)) 16%, transparent); }
 .fid { font: 11px var(--mono); color: var(--muted); }
 .cat { font-size: 11px; color: var(--muted); }
+/* The id, category and verdict show on hover or focus; they stay in the DOM for keys and screen readers. */
+.card-head .fid, .card-head .cat { opacity: 0; transition: opacity .12s; }
+.card:hover .card-head .fid, .card:hover .card-head .cat,
+.card:focus-within .card-head .fid, .card:focus-within .card-head .cat,
+.card.flash .card-head .fid, .card.flash .card-head .cat { opacity: 1; }
+@media (hover: none) { .card-head .fid, .card-head .cat { opacity: 1; } }
 .fid + .cat { margin-left: -4px; }
 .card .title { font-weight: 600; flex: 1; min-width: 200px; }
 .card .status { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 10px; padding: 0 7px; }
 .card .status.st-addressed { color: var(--risk-medium); border-color: var(--risk-medium); }
 .card .status.st-resolved { color: var(--st-a); border-color: var(--st-a); }
+/* Under the addressed pill: it stays open, and blocking, until the human resolves it. */
+.card .still-blocks { flex-basis: 100%; text-align: right; margin-top: -4px; font-size: 11px; color: var(--risk-medium); }
 .card-body { padding: 0 10px 8px; }
 .card-body .failure { margin-top: 4px; color: var(--muted); }
 .card-body .failure b { color: var(--fg); font-weight: 600; }
@@ -284,9 +292,12 @@ tr.composer > td { padding: 6px 12px 10px 60px; background: var(--side); font: 1
 .buttons button { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 3px 12px; cursor: pointer; }
 .buttons button.primary { background: var(--fg); border-color: var(--fg); color: var(--bg); }
 .actions.folded { padding: 2px 10px 6px; border-top: 0; }
-.buttons.links { gap: 2px; margin-left: -6px; }
-.buttons.links button { background: none; border: 0; padding: 2px 6px; font-size: 12px; color: var(--muted); }
-.buttons.links button:hover, .buttons.links button:focus-visible { color: var(--accent-t); text-decoration: underline; }
+/* Quiet buttons: a faint outline that firms up on hover, never a fill. */
+.buttons.links { gap: 6px; }
+.buttons.links button { background: none; border: 1px solid color-mix(in srgb, var(--border) 70%, transparent); border-radius: 6px;
+  padding: 1px 9px; font-size: 12px; color: var(--muted); cursor: pointer; }
+.buttons.links button:hover { color: var(--accent-t); border-color: var(--accent-t); }
+.buttons.links button:focus-visible { color: var(--accent-t); border-color: var(--accent-t); outline: 2px solid var(--accent-t); outline-offset: 1px; }
 .send-status { font-size: 12px; color: var(--muted); }
 .send-status.bad { color: var(--sev-major); }
 @media (max-width: 760px) { tr.composer > td { padding-left: 12px; } }

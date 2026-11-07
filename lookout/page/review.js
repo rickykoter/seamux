@@ -268,7 +268,10 @@
       el("span", { class: "fid" }, x.id),
       finding ? el("span", { class: "cat" }, "· " + x.category + " · " + (x.verdict === "CONFIRMED" ? "confirmed" : "plausible")) : null,
       // Open is the usual state: only the others get a pill.
-      (x.status || "open") !== "open" ? el("span", { class: "status st-" + x.status }, x.status) : null);
+      (x.status || "open") !== "open" ? el("span", { class: "status st-" + x.status }, x.status) : null,
+      // An addressed blocker or major still blocks the gate: say why under its pill.
+      finding && x.status === "addressed" && (x.severity === "blocker" || x.severity === "major")
+        ? el("span", { class: "still-blocks" }, "Still blocks until you resolve it") : null);
     return el("div", { class: "card" + (closed ? " closed" : "") + (finding ? "" : " comment"), "data-item": x.id },
       head,
       body && finding ? el("div", { class: "card-body" },
