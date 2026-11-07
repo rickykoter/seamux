@@ -165,6 +165,12 @@ body{max-width:none;margin:0;padding:0}
 /* Narrow, the rail is one row: the checkbox keeps a short label, not none. */
 #dp-rail label.auto .auto-short{display:none}
 @media (max-width:979px){#dp-rail label.auto .auto-long{display:none}#dp-rail label.auto .auto-short{display:inline}}
+/* Phone width: the strip of links would clip mid-word, so one select lists
+   the sections instead, beside the find, help and theme buttons. */
+.dp-pick{display:none;order:1;flex:1;min-width:0;height:28px;box-sizing:border-box;padding:0 6px;border:1px solid var(--line2);
+  border-radius:6px;background:var(--bg);color:var(--fg);font:500 var(--fs-3)/1 system-ui}
+.dp-pick:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+@media (max-width:599px){.dp-toc{display:none}.dp-pick{display:block}}
 @media (min-width:980px){
   #dp-shell{grid-template-columns:236px minmax(0,1fr)}
   #dp-rail{height:100vh;box-sizing:border-box;flex-direction:column;align-items:stretch;gap:10px;
@@ -485,6 +491,9 @@ export const SURFACE_JS = String.raw`<script>
   rail.appendChild(railLabel);
   var toc = el("ol", "dp-toc");
   rail.appendChild(toc);
+  var pick = el("select", "dp-pick");
+  pick.setAttribute("aria-label", "go to a section");
+  rail.appendChild(pick);
   var navLinks = [];   // {a, target}
   var badges = {};
   function link(target, html, cls) {
@@ -525,6 +534,17 @@ export const SURFACE_JS = String.raw`<script>
       li.appendChild(ol);
     }
     toc.appendChild(li);
+  });
+  // The phone's section list: its first option names it, and it goes back to
+  // that once a pick has jumped.
+  var pick0 = el("option", "", "Sections"); pick0.value = ""; pick.appendChild(pick0);
+  sections.forEach(function (sec) {
+    var o = el("option", "", sec.getAttribute("data-title")); o.value = sec.id; pick.appendChild(o);
+  });
+  pick.addEventListener("change", function () {
+    var t = pick.value && document.getElementById(pick.value);
+    pick.value = "";
+    if (t) jump(t);
   });
   function stickyOffset() { return WIDE.matches || window.innerWidth >= 980 ? 12 : rail.offsetHeight + 8; }
   function jump(target, noHistory) {

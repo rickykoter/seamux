@@ -1067,7 +1067,7 @@ const working = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + "
   const gl = (working.match(/<h2>Gate<\/h2><p class="dp-gate"[\s\S]*?<\/p>/) || [""])[0];
   const tip = ((gl.match(/<p class="dp-gate" data-allow="\d" title="([^"]*)">/) || [])[1] || "").split("\n");
   ok("working: the gate line leads with its state and links to the quiz",
-    /data-allow="0" title="[^"]*"><svg[\s\S]*?<\/svg> <b>Gate shut<\/b>: the alignment check isn't taken yet\. <a href="[^"]+\.review\.html#s-alignment-check">Take it on the review page<\/a><\/p>$/.test(gl), gl);
+    /data-allow="0" title="[^"]*"><svg[\s\S]*?<\/svg> <b>Gate shut<\/b>: the alignment check isn't taken yet\. <a class="dp-gate-fix" href="[^"]+\.review\.html#s-alignment-check">Take it on the review page<\/a><\/p>$/.test(gl), gl);
   ok("working: the gate line's title holds the full root and phase",
     path.isAbsolute(tip[0]) && tip[0].endsWith("/" + path.basename(REPO)) && tip[1] === "phase: review (waiting on the review)", JSON.stringify(tip));
   ok("working: no root, folder name or phase word in the gate line's text",
@@ -1079,6 +1079,11 @@ ok("working surface renders controls disabled on disk",
 ok("working surface has the auto-refresh checkbox, with a short label for a narrow rail",
   working.includes('id="dp-auto"') && working.includes('<span class="auto-short">auto</span>') &&
   !/label\.auto\{font-size:0/.test(working));
+// Phone width: one section select in place of the strip of links, which
+// clipped mid-word at 390px.
+ok("surfaces: below 600px a Sections select replaces the rail's strip of links",
+  working.includes("@media (max-width:599px){.dp-toc{display:none}.dp-pick{display:block}}") &&
+  working.includes('var pick = el("select", "dp-pick");') && working.includes('var pick0 = el("option", "", "Sections");'));
 {
   // Each increment shows only the transitions its status allows: no go on a
   // done increment, no done on a pending one.
@@ -1094,10 +1099,17 @@ ok("working surface has the auto-refresh checkbox, with a short label for a narr
   // block and reset are quiet on every increment.
   const blocks = working.split('<div class="inc" id="inc-').slice(1).map(b => b.split("</div>")[0]);
   const nextI = incs.findIndex(i => i.status !== "done");
+  // While the plan is in review, no go can work: the next step is drawn
+  // held, with the reason in its title, and the gate's fix link is the one
+  // primary. After the grade, the go is primary again (see "go / working / done").
   const prim = [...working.matchAll(/data-a="([a-z]+)" data-n="(\d+)" data-kind="primary"/g)];
-  ok("working surface: only the plan's next step is a primary button",
-    nextI >= 0 && prim.length === 1 && Number(prim[0][2]) === nextI + 1 &&
-    prim[0][1] === incs[nextI].acts.split(",").find(a => a !== "block" && a !== "reset"), JSON.stringify(prim.map(m => m.slice(1))));
+  const held = [...working.matchAll(/data-a="([a-z]+)" data-n="(\d+)" data-kind="held" disabled title="([^"]*)"/g)];
+  ok("working surface: in review, the next step is held, not primary, and says why",
+    nextI >= 0 && prim.length === 0 && held.length > 0 && Number(held[0][2]) === nextI + 1 &&
+    held[0][1] === incs[nextI].acts.split(",").find(a => a !== "block" && a !== "reset") &&
+    held.every(m => m[3] === "The gate is shut: take the alignment check first — available when served") &&
+    working.includes('<a class="dp-gate-fix" href=') && working.includes(".dp-gate-fix{display:inline-block;background:var(--fg);color:var(--bg)"),
+    JSON.stringify({ prim: prim.map(m => m.slice(1)), held: held.map(m => m.slice(1)) }));
   ok("working surface: block and reset are quiet on every increment",
     blocks.every(b => [...b.matchAll(/data-a="(block|reset)" data-n="\d+"( data-kind="quiet")?/g)].every(m => m[2])));
   // A check that has not passed folds its recipe and run lines under its
@@ -1453,6 +1465,13 @@ ok("the denial opens with `deep-plan gate [<slug>]: ` (seamux-mods keys off it)"
 // The gate as one line: its state in bold, why, and the way on.
 const gateLine = () => (fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8")
   .match(/<p class="dp-gate"[\s\S]*?<\/p>/) || [""])[0];
+{
+  const wk = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
+  const prim = [...wk.matchAll(/data-a="([a-z]+)" data-n="(\d+)" data-kind="primary"/g)];
+  ok("working: once the gate can open, go is the one primary again and nothing is held",
+    prim.length === 1 && prim[0][1] === "go" && !wk.includes('data-kind="held" disabled') && !wk.includes('class="dp-gate-fix"'),
+    JSON.stringify(prim.map(m => m.slice(1))));
+}
 ok("working: between increments the gate line points at the next go",
   /<b>Gate shut<\/b>: no increment has its go yet\. Next: <a href="#inc-1">go on increment 1<\/a><\/p>$/.test(gateLine()), gateLine());
 ok("go authorizes the next increment", cli("go", spec.slug, "next").status === 0);
@@ -3857,8 +3876,10 @@ if (want("decision first: summary card, default folds, work on top")) {
   ok("review: the card holds no comment box or control the copy-back reads",
     !/dp-note|<input|<textarea|<select|data-section|data-qid/.test(sum));
   const pageOf = h => JSON.parse(h.match(/window\.DP_PAGE=(\{.*?\});<\/script>/)[1]);
-  ok("review: reference sections start folded; Context, Decisions, Risks, Increments and the quiz do not",
-    JSON.stringify(pageOf(rv).folded) === JSON.stringify(["End state", "Contracts", "Verified facts", "ADRs", "Diagrams", "Verification"]),
+  // Increments fold too: the summary card lists each one and links to it.
+  ok("review: reference sections and Increments (listed on the card) start folded; Context, Decisions, Risks and the quiz do not",
+    JSON.stringify(pageOf(rv).folded) === JSON.stringify(["End state", "Contracts", "Verified facts", "ADRs", "Diagrams", "Verification", "Increments"]) &&
+      /<div class="dp-sum"[\s\S]*?<a href="#inc-1">/.test(rv),
     JSON.stringify(pageOf(rv)));
   // The copy-back reads every .dp-note in page order: the same list as a page
   // without the card (the boxes after it, in the order they always had).
@@ -5086,7 +5107,7 @@ if (want("delegated go")) {
       /✓ 1 .*go by parent/.test(t) && /held by the parent: waiting on the contract/.test(t));
     const page = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "example-dlg.working.html"), "utf8");
     ok("verdicts: the parent's working page shows the go owner, the hold and each increment",
-      /parent goes/.test(page) && /held by the parent: waiting on the contract/.test(page) &&
+      /the parent gives its go/.test(page) && /held by the parent: waiting on the contract/.test(page) &&
       /class="dp-fam-inc dp-fam-done"[^>]*>✓ 1 [\s\S]*?go by parent<\/span><\/span>/.test(page));
     // The strip: this plan's own line open, every other member one line with
     // its increments behind a disclosure, and the plan a child waits on open.
@@ -5095,8 +5116,13 @@ if (want("delegated go")) {
     const ps = lis(page);
     ok("family strip: the plan's own line is open, each other member folds to one line",
       ps.length === pf.members.length && ps.filter(l => l.startsWith(' dp-fam-me"')).length === 1 &&
-      ps.filter(l => !l.startsWith(' dp-fam-me"')).every(l => /^">(<details class="dp-fam-more"><summary><span class="dim">child<\/span> <a [^>]+>[^<]+<\/a> <span class="dim">· [a-z ]+ · \d+\/\d+[^<]*<\/span><\/summary>|<span)/.test(l)) &&
+      ps.filter(l => !l.startsWith(' dp-fam-me"')).every(l => /^">(<details class="dp-fam-more"><summary><span class="dim">child<\/span> <a [^>]+>[^<]+<\/a> <span class="dim">· [a-z ]+ · \d+ of \d+ done[^<]*<\/span><\/summary>|<span)/.test(l)) &&
       ps.some(l => l.includes('<details class="dp-fam-more">')), strip(page));
+    // Folded, a member is words; opened, its glyphs come under a one-line key.
+    const folded = ps.filter(l => l.includes('<details class="dp-fam-more">'));
+    ok("family strip: an opened member starts with a key to its glyphs",
+      folded.length > 0 && folded.every(l => /<\/summary><p class="dim dp-fam-key">✓ done, ● building, ▶ has its go, · not started, ✗ blocked\. /.test(l)) &&
+      !folded.some(l => (l.match(/<summary>[\s\S]*?<\/summary>/) || [""])[0].includes("dp-fam-inc")), folded[0]);
     const kpage = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "example-dlg-kid.working.html"), "utf8");
     const kp = lis(kpage).find(l => l.includes('data-plan="example-dlg"'));
     ok("family strip: a child's page keeps the parent open when it waits on it, folded when not",

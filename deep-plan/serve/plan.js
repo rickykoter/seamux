@@ -26,8 +26,12 @@
   for (var i = 0; i < acts.length; i++) {
     var b = acts[i];
     if (!allowed(b)) { b.hidden = true; continue; }
-    b.disabled = false;
     b.title = (b.title || "").replace(/ — available when.*$/, "");
+    // A held go (the plan is still in review) stays disabled: the engine
+    // would refuse it, and its title already says why. The grade that opens
+    // the gate rewrites the page, and the reload draws it live.
+    if (b.getAttribute("data-kind") === "held") continue;
+    b.disabled = false;
   }
 
   // Turns on the affordance the stylesheet keeps behind .dp-live: a path is only
@@ -116,7 +120,7 @@
       b.classList.add(ok ? "dp-ok" : "dp-bad");
       say(b, text, !ok);
       if (ok) return;
-      for (var i = 0; i < all.length; i++) if (!all[i].hidden) all[i].disabled = false;
+      for (var i = 0; i < all.length; i++) if (!all[i].hidden && all[i].getAttribute("data-kind") !== "held") all[i].disabled = false;
     }
     var q = "/inc?t=" + encodeURIComponent(T) + "&slug=" + encodeURIComponent(SLUG) +
             "&n=" + encodeURIComponent(n) + "&a=" + encodeURIComponent(a) +
