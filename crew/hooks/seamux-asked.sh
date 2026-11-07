@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# crew — turn-end follow-up, on seamux: asked.sh's work, done by
+# crew — turn-end follow-up, on seamux: the retired asked.sh's work, done by
 # `seamux asked-hook`. Spawned detached by the stop event with the stop
 # payload on stdin.
 #

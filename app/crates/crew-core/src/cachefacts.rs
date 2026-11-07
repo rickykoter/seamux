@@ -1,5 +1,5 @@
 //! Cache facts from a Claude Code transcript: breaks, causes, and a
-//! staleness clock (crew/hooks/cachefacts.py).
+//! staleness clock (the former crew/hooks/cachefacts.py).
 //!
 //! A break is visible after the fact: the read figure collapses while the
 //! creation figure re-writes most of the prior context. This adds the why

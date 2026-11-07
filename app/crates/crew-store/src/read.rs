@@ -1,4 +1,4 @@
-//! The read side: search, workspaces, row and count, as artifacts.py has them.
+//! The read side: search, workspaces, row and count, as the retired artifacts.py had them.
 
 use crate::paths::wskey;
 use crate::schema::connect;

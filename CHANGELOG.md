@@ -6,6 +6,20 @@ an entry is live after `/reload-plugins`, and crew's after `crew apply`.
 
 ## Unreleased
 
+- **crew: the Python is gone, and the probes test seamux.** crew's Python
+  board, hooks, crew/bin tools and status line, the bash hook copies and
+  `docs/demo/board-demo.py` are deleted (about 16k lines); every crew tool
+  has run as `seamux <tool>` since the cutover. The probes stay Python and
+  node and drive this checkout's `seamux` only, never the installed one on
+  PATH. Checks that only compared Rust with Python now compare against golden
+  files recorded from the Python (`crew/tools/golden/`). The tmux backend's
+  cases (registry reclaim, two panes in one workspace, a usage-limit stop)
+  run every time instead of only under `CREW_IMPL`. restack's TypeSafe judge
+  now finds `seamux typesafe`, `seamux cat_poses --from-swift` redraws the
+  board's cat from crew.swift, and CI runs the crew probes in the macOS app
+  job after building seamux (ADRs 0077, 0078). Build seamux before running
+  a crew probe: `cargo build --manifest-path app/Cargo.toml -p seamux-cli`.
+
 - **deep-plan: plan pages lead with the bottom line, and the map is easier
   to browse.** The context and non-goals now come before the End state map.
   The map's folders start folded, each drawn as a stacked row that keeps

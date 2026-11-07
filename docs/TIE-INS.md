@@ -14,7 +14,7 @@ nothing errors. Neither state needs any code change.
 
 crew finds the engine the way every caller outside Claude does: through
 `~/.claude/deep-plan/engine.json` (`{root, version, mermaid?}`), which the plugin writes
-at every session start and every run (`board/dp_engine.py` reads it). `$DEEP_PLAN_ENGINE`
+at every session start and every run (`seamux`'s crew-core `dp_engine` reads it). `$DEEP_PLAN_ENGINE`
 overrides it, and the old `~/.claude/skills/deep-plan` is the last fallback.
 
 ## The six integration points
@@ -22,11 +22,11 @@ overrides it, and the old `~/.claude/skills/deep-plan` is the last fallback.
 Each one lives in the crew tree in this bundle, not in the skill, so they arrive
 with the install.
 
-**1 · Plan rows on the board.** `board/crew-board` reads `~/.claude/deep-plan/state/*.json`
+**1 · Plan rows on the board.** `seamux crew-board` reads `~/.claude/deep-plan/state/*.json`
 and renders one row per tracked plan, carrying its gate state — so a shut gate is
 visible without opening anything. No state directory means no rows.
 
-**2 · `plan →` serves the working surface.** `board/crew-board-intent` has a `/plan/<slug>`
+**2 · `plan →` serves the working surface.** `seamux crew-board-intent` has a `/plan/<slug>`
 route that serves the plan's live HTML into a Dock tab from `http://127.0.0.1:<port>`.
 Serving rather than opening the file buys three things: the page can reference one
 cached copy of mermaid instead of embedding 3.4MB (4.86MB → ~100KB), its controls become
@@ -38,7 +38,7 @@ the shared library.
 <action> <slug> <n>`, the root read from the engine pointer on each request. The page renders `go` / `start` / `done` / `block` disabled on disk
 and enabled when served, because the transport is injected at serve time — the generator
 emits meaning, the server supplies the ability. `go` posts the same notification RPC the
-Swift sidebar used, so `hooks/triage.py` stays the single place that decides what those
+Swift sidebar used, so `seamux triage` stays the single place that decides what those
 verbs do, including its confirm-before-delete on reclaim.
 
 **4 · File paths open in VS Code.** The `/open` route opens a path from a plan in the
@@ -57,7 +57,7 @@ refusal's opening `deep-plan gate [<slug>]: `.
 **6 · One identity colour.** cmux's per-workspace colour reaches the VS Code title bar
 through Peacock (`bin/crew-code-open`), rings the current card on the board, paints the
 focused pane's frame (`bin/crew-frame`), and tints the Claude Code status line
-(`crew/claude/statusline.py`). Following the selection needs the workspace id out of the event
+(`seamux statusline`). Following the selection needs the workspace id out of the event
 payload rather than a lookup: `workspace.selected` fires about 151ms before the selection
 is queryable, so asking lands everything one switch behind.
 

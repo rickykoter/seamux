@@ -6,10 +6,11 @@
 # stopfail is StopFailure for a usage limit (rate_limit, billing_error): it
 # has no bash copy, and goes straight to the binary like the rest.
 #
-# The same events as crew-hook.sh, with the work done by `seamux crew-hook`.
+# The same events as the retired crew-hook.sh, with the work done by
+# `seamux crew-hook`.
 # Only pretool's hot path stays here: it fires on every tool use, and almost
 # always this pane holds nothing to release, so it has to exit from bash
-# without starting a binary (crew-hook.sh explains the cost). A pane with a
+# without starting a binary (the retired crew-hook.sh explained the cost). A pane with a
 # state file is tested by its hold-<surface> marker, which crew-core's status
 # keeps while the pane waits, was asked or left work to review: another
 # pane's wait in the same workspace never sends this one to the binary.

@@ -79,7 +79,7 @@ fn cache_path() -> String {
 }
 
 
-/// workspaces.py's _git: (returncode, stdout stripped); (1, "") on a failure to run.
+/// The retired workspaces.py's _git: (returncode, stdout stripped); (1, "") on a failure to run.
 fn git(cwd: &str, args: &[&str]) -> (i32, String) {
     let mut argv = vec!["git", "-C", cwd];
     argv.extend_from_slice(args);

@@ -3,7 +3,7 @@
 //! redirect, commits (printed and quiet), publishes, runs a subagent and
 //! leaves plan, review and ask records. Every kind lands; then an appended
 //! chunk, a run that reads nothing, backfill, and the lock. (The rows were
-//! once compared field by field with artifacts.py's; the CLI's bytes are
+//! once compared field by field with the retired artifacts.py's; the CLI's bytes are
 //! held to goldens in crew/tools/artifacts_probe.py since it was retired.)
 
 use serde_json::{json, Value};

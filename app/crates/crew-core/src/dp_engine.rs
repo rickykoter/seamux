@@ -1,5 +1,5 @@
 //! Where the deep-plan engine is, for crew processes that run outside Claude
-//! (crew/board/dp_engine.py).
+//! (the former crew/board/dp_engine.py).
 //!
 //! The board, the intent server and the triage hook run with the cmux app's
 //! environment and cannot see CLAUDE_PLUGIN_ROOT. The deep-plan plugin keeps

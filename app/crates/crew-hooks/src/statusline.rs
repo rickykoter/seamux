@@ -1,4 +1,4 @@
-//! `seamux statusline`: crew/claude/statusline.py in Rust. Claude Code's
+//! `seamux statusline`: the retired crew/claude/statusline.py in Rust. Claude Code's
 //! status line: the worktree's colour, then whatever constrains you.
 //!
 //! ```text

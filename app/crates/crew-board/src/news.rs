@@ -1,5 +1,5 @@
 //! The board's news: where the fleet stands, as sentences, in priority order
-//! (crew/board/news.py).
+//! (the former crew/board/news.py).
 //!
 //!   compose(rows, now, hours) -> {"hours", "lede", "items": [{id, tier, family, text}]}
 //!   seamux news --compose FIXTURE.json      pure composition over a fixture
@@ -141,7 +141,7 @@ pub fn state(r: &Value) -> String {
                 )
             }
         }
-        // A delegated child's go is its parent's to give (news.py says why).
+        // A delegated child's go is its parent's to give (the retired news.py said why).
         "gate shut" if get(r, "famgo") == "parent" => {
             let s = format!("waits on its go from the parent, {}", plain(get(r, "family")));
             if subj.is_empty() { s } else { format!("{s}, for {subj}") }

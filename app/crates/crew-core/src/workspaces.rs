@@ -1,5 +1,5 @@
 //! Where workspaces are: live, archived, past or gone. One reader
-//! (crew/hooks/workspaces.py).
+//! (the former crew/hooks/workspaces.py).
 //!
 //!   seamux workspaces lifecycle <workspace>   running | idle | none | unknown
 //!   seamux workspaces close <workspace> [--family-ok]
@@ -26,7 +26,7 @@
 //!
 //! CREW_WORKSPACES_ARCHIVE overrides the archive file, for the shim only.
 //!
-//! The plan guard (ADR 0031) is workspaces.py's: protects() asks `deep-plan
+//! The plan guard (ADR 0031) is the retired workspaces.py's: protects() asks `deep-plan
 //! protects <dir> --json`, guard() refuses a protected directory naming the
 //! plan and the family, and --family-ok is a person's override (a terminal, a
 //! y/N naming the family, the yes logged to family-ok.log). No deep-plan is no
@@ -85,7 +85,7 @@ fn cmux() -> Option<&'static cmux::Cmux> {
     .as_ref()
 }
 
-/// A live workspace, in workspaces.py's field names.
+/// A live workspace, in the retired workspaces.py's field names.
 #[derive(Clone, Debug)]
 pub struct Ws {
     pub id: String,
@@ -659,7 +659,7 @@ pub fn label(s: &Value) -> String {
 const PROTECTS_TIMEOUT: Duration = Duration::from_secs(4);
 static MISSING_SAID: AtomicBool = AtomicBool::new(false);
 
-/// deep-plan's word on a directory, as workspaces.py's protects() returns it.
+/// deep-plan's word on a directory, as the retired workspaces.py's protects() returned it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Protection {
     /// Refuse to close it.
@@ -699,7 +699,7 @@ fn executable(p: &Path) -> bool {
     std::fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
 }
 
-/// The deep-plan argv: CREW_DEEP_PLAN split on whitespace (as workspaces.py and
+/// The deep-plan argv: CREW_DEEP_PLAN split on whitespace (as the retired workspaces.py and
 /// crew-reclaim split it), else deep-plan on PATH, else the ~/.local/bin shim.
 fn deep_plan_argv() -> Option<Vec<String>> {
     if let Some(o) = env_or("CREW_DEEP_PLAN") {
@@ -873,7 +873,7 @@ pub enum Guard {
 }
 
 /// archive(), with the live list and the session records when the caller
-/// already has them, as workspaces.py's archive(handle, live, records) takes
+/// already has them, as the retired workspaces.py's archive(handle, live, records) takes
 /// them: triage times its own list and must not pay for a second one. None
 /// fetches each, as archive() does; a passed list is used as is.
 pub fn archive_with(handle: &str, live: Option<&[Ws]>, records: Option<&[Value]>, plan_guard: Guard) -> (bool, String) {

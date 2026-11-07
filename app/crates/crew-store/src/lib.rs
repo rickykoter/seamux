@@ -1,4 +1,4 @@
-//! The Artifact Log's store, ported from crew/board/artifacts.py: what each
+//! The Artifact Log's store, ported from the retired crew/board/artifacts.py: what each
 //! workspace's sessions made, in one SQLite file, ~/.claude/crew/artifacts.db.
 //!
 //! The Python and this crate open the same file with the same schema, so

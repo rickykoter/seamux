@@ -117,7 +117,7 @@ impl Cmux {
     }
 
     /// Set an environment variable on every CLI run this client makes (for
-    /// example CMUX_QUIET=1, which workspaces.py passes to each call).
+    /// example CMUX_QUIET=1, which the retired workspaces.py passed to each call).
     pub fn with_cli_env(mut self, key: &str, value: &str) -> Cmux {
         self.cli_env.push((key.to_string(), value.to_string()));
         self

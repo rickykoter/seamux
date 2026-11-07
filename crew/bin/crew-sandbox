@@ -330,7 +330,7 @@ seed_claude_config() {
 
   # settings.json is copied and filtered rather than linked. `hooks` and
   # `statusLine` name host paths that do not exist inside — crew's hook scripts
-  # and statusline.py are not mounted — and a dangling hook makes Claude report
+  # and the statusline are not mounted — and a dangling hook makes Claude report
   # an error on every single event. `mcpServers` would point at host processes.
   if [ -f "$HOST_CLAUDE/settings.json" ]; then
     python3 - "$HOST_CLAUDE/settings.json" "$cfg/settings.json" <<'PY' 2>/dev/null \

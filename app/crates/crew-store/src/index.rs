@@ -1,6 +1,6 @@
 //! index and backfill: rescan every transcript whose size or mtime moved
 //! since its cursor, then the plan, review and ask stores when their
-//! fingerprint moved. artifacts.py's index(), pass for pass.
+//! fingerprint moved. The retired artifacts.py's index(), pass for pass.
 
 use crate::lock::IndexLock;
 use crate::paths::Paths;

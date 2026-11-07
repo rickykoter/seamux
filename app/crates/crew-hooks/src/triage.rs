@@ -1,4 +1,4 @@
-//! `seamux triage`: crew/hooks/triage.py in Rust, the cmux notification hook.
+//! `seamux triage`: the retired crew/hooks/triage.py in Rust, the cmux notification hook.
 //!
 //! cmux pipes a notification policy in and applies the policy printed back.
 //! `crew:turn` keeps the sidebar but loses the banner and the sound. The
@@ -38,7 +38,7 @@ const VERBS: &[&str] = &[
     "crew:plan-go",
 ];
 
-/// deep-plan's go-ahead, through a login shell (see triage.py's PLAN_GO for
+/// deep-plan's go-ahead, through a login shell (see the retired triage.py's PLAN_GO for
 /// why, and for `--by human`), then crew-sync so the chip shows the change.
 fn plan_go(cwd_q: &str, sync_q: &str) -> String {
     format!(
@@ -89,7 +89,7 @@ impl Ctx {
         }
     }
 
-    /// A workspace id's directory, resolved here in the hook (see triage.py's
+    /// A workspace id's directory, resolved here in the hook (see the retired triage.py's
     /// ws_cwd: a fired child cannot ask cmux).
     fn ws_cwd(&self, ws: &str) -> String {
         // A non-string id fails the Python's subprocess call, which ws_cwd catches.
@@ -211,7 +211,7 @@ impl Ctx {
                 self.say("archive", "cmux is too slow to archive from the board — use crew-resume");
                 return format!("slow cmux ({per:.1}s a call): refused");
             }
-            // `seamux workspaces archive`, or workspaces.py when run by path.
+            // `seamux workspaces archive`.
             let mut argv = self.tool("workspaces");
             argv.extend(["archive".to_string(), ws.to_string()]);
             if self.open_terminal(&self.host_workspace(ws), &argv, "archive") {

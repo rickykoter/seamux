@@ -1,4 +1,4 @@
-//! The one TypeSafe client (crew/hooks/typesafe.py): config, transport and
+//! The one TypeSafe client (the former crew/hooks/typesafe.py): config, transport and
 //! retry; no judgments.
 //!
 //!   seamux typesafe available   exit 0 when TypeSafe is configured, 1 when not

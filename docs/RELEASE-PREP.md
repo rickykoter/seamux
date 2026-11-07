@@ -23,9 +23,9 @@ Mac-only by nature (degrade gracefully, don't port):
   CLI/gate/probes are the portable core.
 - `launchctl` checks (`crew/bin/crew:268,272,367,457,654`) — retired-job
   detection; would need a systemd equivalent or a platform guard.
-- `/Applications/cmux*.app` discovery (`crew/bin/crew-cmux-bin:29`,
-  `crew/hooks/lib.sh:14`, `crew/hooks/crew-hook.sh:40`,
-  `crew/board/crew-board-diag:124`).
+- `/Applications/cmux*.app` discovery (`crew/bin/crew-cmux-bin:29`; the
+  bash hooks and `crew-board-diag` that also looked there were deleted with
+  the crew Python).
 - VS Code at `/Applications/…` (`crew/bin/crew-code:28`,
   `crew/bin/crew-code-open:35`, `crew/bin/crew:544`) — `CREW_CODE_BIN` and the
   PATH fallback already cover Linux.
@@ -69,7 +69,9 @@ Honest caveats baked into it:
 
 ## Security pass
 
-Intent server (`crew/board/crew-board-intent`):
+Intent server (audited when it was the Python `crew/board/crew-board-intent`,
+so the line numbers below are the Python's; `seamux crew-board-intent`, in
+`app/crates/crew-board/src/server.rs`, keeps the same rules):
 
 - Binds 127.0.0.1 only (`:658,664,694`); nothing off-box reaches it.
 - Loopback is not trust: any local browser page can GET localhost, so /open

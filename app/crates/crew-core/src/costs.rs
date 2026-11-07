@@ -1,4 +1,4 @@
-//! Per-workspace dollars from ccusage, cached (crew/board/costs.py).
+//! Per-workspace dollars from ccusage, cached (the former crew/board/costs.py).
 //!
 //!   costs_for(cwds) -> {cwd: {"today", "week", "unpriced", "unpricedToday"}}
 //!

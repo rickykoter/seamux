@@ -1,5 +1,5 @@
 //! One transcript's rows, collected before the transaction opens:
-//! artifacts.py's Scan, Timeline, git facts and commit finding.
+//! The retired artifacts.py's Scan, Timeline, git facts and commit finding.
 //!
 //! The transcript is Claude Code's internal format. Every field is read
 //! defensively and each extractor is fenced on its own, so a line that moved

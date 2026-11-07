@@ -1,7 +1,8 @@
 #!/bin/zsh
 # session-replay — a scripted Claude Code transcript for the checkout-flow demo
-# row. Companion to board-demo.py: run it in a cmux terminal pane so the left
-# side of the screen tells the same story the board is telling on the right.
+# row. Companion to the board reel's cast (reel/board-cast.mjs): run it in a
+# cmux terminal pane so the left side of the screen tells the same story the
+# board is telling on the right.
 #
 #   cmux new-pane --type terminal --workspace workspace:3 \
 #        --command 'docs/demo/session-replay.sh; exec zsh'

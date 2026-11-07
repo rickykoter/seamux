@@ -380,7 +380,7 @@ impl Cmux {
     }
 
     /// `workspace create [--name N] --cwd C --command CMD --focus B`, the argv
-    /// workspaces.py's restore sends. The raw output (`OK workspace:N`).
+    /// the retired workspaces.py's restore sent. The raw output (`OK workspace:N`).
     pub fn workspace_create(
         &self,
         name: Option<&str>,

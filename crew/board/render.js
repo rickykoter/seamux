@@ -932,8 +932,8 @@ function __boardRender(d) {
     return '<span class="badge roll done">all ' + n.done + " done</span>";
   }
 
-  // families.py emits each family as one contiguous run, parent first. Fold the
-  // run into one group; a run with no parent row gets a shell card named by the
+  // The retired families.py emitted each family as one contiguous run, parent
+  // first. Fold the run into one group; a run with no parent row gets a shell card named by the
   // family's label, which carries no actions of its own (inert).
   var groups = [];
   rows.forEach(function (r) {
@@ -961,8 +961,8 @@ function __boardRender(d) {
   // the rows rather than as separate markup, because #rows is replaced whole.
   var seenQuiet = false;
   // A quiet member of a family that sorts above the divider sits with its
-  // family, not under it (families.py), so it neither opens the quiet section
-  // nor counts toward it.
+  // family, not under it (as families.py did), so it neither opens the quiet
+  // section nor counts toward it.
   var belowDivider = function (r) { return r.kind === "quiet" && (!r.famtier || r.famtier === "quiet"); };
   // One shelf for every row put away, so a missing workspace is in one
   // place. Each row says why it is there (whyOf). It stays open or shut
@@ -1071,7 +1071,7 @@ function __boardRender(d) {
   // The news footer. Only its contents are written: the <details> itself is
   // never replaced, so whether you left it open survives every push without
   // any state of ours. Below #rows and filled after slide(), it cannot move a
-  // row the FLIP has already measured. The text is news.py's and goes through
+  // row the FLIP has already measured. The text is the retired news.py's and goes through
   // the same escape-then-two-affordances path as `said`.
   var nw = $("news");
   if (nw) {

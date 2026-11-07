@@ -1,13 +1,13 @@
 //! Where the store's files are, and how a path is spelled as a key.
 //!
-//! `realpath` and `norm` are Python's `os.path.realpath` and artifacts.py's
+//! `realpath` and `norm` are Python's `os.path.realpath` and the retired artifacts.py's
 //! `norm`, not `fs::canonicalize`: they must also resolve paths that no
 //! longer exist (a temp file already gone, a deleted worktree), the way the
 //! Python resolves whatever prefix still exists.
 
 use std::path::PathBuf;
 
-/// The store's paths, resolved from the environment as artifacts.py does at
+/// The store's paths, resolved from the environment as the retired artifacts.py did at
 /// import time.
 #[derive(Debug, Clone)]
 pub struct Paths {
@@ -193,7 +193,7 @@ pub fn split(p: &str) -> (String, String) {
     (head.to_string(), tail.to_string())
 }
 
-/// artifacts.py `norm`: absolute, the directory's symlinks resolved (/tmp is
+/// The retired artifacts.py's `norm`: absolute, the directory's symlinks resolved (/tmp is
 /// /private/tmp here), so one file is one locator.
 pub fn norm(path: &str) -> String {
     let p = normpath(&expanduser(path));
@@ -201,7 +201,7 @@ pub fn norm(path: &str) -> String {
     join(&realpath(&d), &b)
 }
 
-/// artifacts.py `wskey`: a workspace as the store keys it: absolute,
+/// The retired artifacts.py's `wskey`: a workspace as the store keys it: absolute,
 /// symlinks resolved, no trailing slash.
 pub fn wskey(ws: &str) -> String {
     if ws.is_empty() {
@@ -216,7 +216,7 @@ pub fn wskey(ws: &str) -> String {
     }
 }
 
-/// artifacts.py `is_temp`, against this process's temp roots.
+/// The retired artifacts.py's `is_temp`, against this process's temp roots.
 pub fn is_temp(path: &str) -> bool {
     Paths::from_env().is_temp(path)
 }

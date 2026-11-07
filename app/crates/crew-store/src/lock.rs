@@ -1,5 +1,5 @@
 //! The index lock: flock on ~/.claude/crew/index.lock, the very file and call
-//! artifacts.py uses, so a Python run and a Rust run exclude each other.
+//! the retired artifacts.py used, so a Python run and a Rust run excluded each other.
 //!
 //! A run that finds the lock held leaves index.lock.again and exits at once
 //! (Busy): the holder may have read this turn's transcript before its last

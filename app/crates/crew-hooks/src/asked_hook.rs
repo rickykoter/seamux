@@ -1,4 +1,4 @@
-//! `seamux asked-hook <size>`: crew/hooks/asked.sh in Rust. The turn-end
+//! `seamux asked-hook <size>`: the retired crew/hooks/asked.sh in Rust. The turn-end
 //! follow-up that promotes "turn complete" to "waiting on you" when the
 //! turn really ended on a question.
 //!

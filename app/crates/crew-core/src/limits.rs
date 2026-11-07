@@ -12,7 +12,7 @@
 //! `used_percentage` (0-100) and `resets_at` (seconds since the epoch). A
 //! window is there only while the API reports it and its reset is ahead.
 //! The StopFailure hook carries no reset time, so both status lines
-//! (statusline.py and crew-hooks' statusline.rs) keep this one file for it,
+//! (the retired statusline.py and crew-hooks' statusline.rs) kept this one file for it,
 //! written only when a window changed. `at` is when it was written, in ms.
 //! crew-hooks' stopfail reads it to say which window stopped a turn and when
 //! it resets.

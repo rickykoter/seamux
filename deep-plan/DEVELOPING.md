@@ -43,7 +43,7 @@ place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_D
 - `status --json` rows: `{slug, root, phase, gate:{allow,why}, progress:{total,
   done, next:{n,title}, blocked:[{title,note}], open:[{title}]}, increments:[{n,
   title, status, obs, by, checks:[{id, kind, name, status, note, at, recipe}]}]}`
-  — consumed by `~/.config/cmux/crew/board/crew-board` (plans(), ranking
+  — consumed by `seamux crew-board` (plans(), ranking
   tiers); `increments[]` is what scripts read for one increment's state.
 - `notes --json [--all] [--plan <slug>]`: an array of `{id, at, by, plan, inc,
   text, file, closed?:{at, by, why, into?}}`, where `plan` and `inc` are where
@@ -102,7 +102,7 @@ place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_D
 - Mermaid inlined as `src="data:text/javascript;base64,…"` — must match
   crew-board-intent's `MERMAID_DATA` regex or every page ships 3.4MB.
 - Transitions the intent server offers: `go start done block reset`, plus
-  `close`; triage.py's plan-go runs `deep-plan go --at <cwd> next` (shim at
+  `close`; `seamux triage`'s plan-go runs `deep-plan go --at <cwd> next` (shim at
   `~/.local/bin/deep-plan`).
 - `engine.json` is `{root, version, mermaid?}`, written by every run and by the
   SessionStart hook, only when it changes. JSON.stringify's two-space form is
@@ -121,7 +121,7 @@ place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_D
   phase and progress, `owns`, `after`, `waitingOn`, `trespasses {total,
   pairs}`, `news`, `done`); rows outside a family have no such key. The
   seamux-mods pane draws it, and crew-board copies `family.parent` and
-  `family.role` onto its rows to group them (`crew/board/families.py`).
+  `family.role` onto its rows to group them (`seamux families`).
 - The family index tree, `state/families/<parent>/`: `index.json` (written
   by render), `trespass.jsonl` (the guard), `seen/<slug>.json` (news cursors).
   crew-sync reads `index.json` raw to write `family:`/`famrole:` tokens and

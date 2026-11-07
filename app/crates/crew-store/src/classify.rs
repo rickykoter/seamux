@@ -1,4 +1,4 @@
-//! The indexer's text rules: artifacts.py's regexes, the human's prompt as
+//! The indexer's text rules: the retired artifacts.py's regexes, the human's prompt as
 //! a row carries it, and what kind of artifact a written file is.
 //!
 //! The regex crate has no backreferences, so REMINDER_RE (which closes its
