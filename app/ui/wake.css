@@ -50,11 +50,13 @@
 .w-dayh:hover { color: var(--fg); }
 .w-dayh:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
 .w-day.folded > :not(h2) { display: none; }
-/* A row's ⋯ and publish wait for the pointer, the keyboard or the pick; keep
-   (at risk) always shows, in red, since it is the one thing that can't wait. */
+/* A row's ⋯, publish and a commit's sha wait for the pointer, the keyboard or
+   the pick (hidden, not gone, so rows don't shift); keep (at risk) always
+   shows, since it is the one thing that can't wait. A sha a search matched shows. */
 @media (hover: hover) {
   .w-row:not(:hover):not(.sel):not(:focus-within) .w-acts .tuck-wrap,
-  .w-row:not(:hover):not(.sel):not(:focus-within) .w-act.pub { visibility: hidden; }
+  .w-row:not(:hover):not(.sel):not(:focus-within) .w-act.pub,
+  .w-row:not(:hover):not(.sel):not(:focus-within) .w-sha:not(.hit) { visibility: hidden; }
 }
 /* Visible overflow, so a row's ⋯ menu is not cut off; the last row rounds itself. */
 /* Every group one shape: its prompt a quiet caption over its rows, groups
@@ -83,7 +85,7 @@
 .w-row.sel { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .w-row.gone .w-t { color: var(--muted); text-decoration: line-through; }
 /* The kind is a label, not a signal: grey. Only "at risk" keeps a hue. */
-.w-k { font-size: var(--fs-1); color: var(--muted); font-weight: 600; }
+.w-k { font-size: var(--fs-1); color: var(--muted); font-weight: 400; }
 .w-t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .w-badges { display: flex; gap: 4px; }
 .w-st { font-size: var(--fs-1); padding: 0 6px; border-radius: 8px; background: var(--term); color: var(--muted); }
@@ -97,7 +99,7 @@
 .w-acts { grid-column: 4; grid-row: 1; display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
 .w-act { font: inherit; font-size: var(--fs-2); padding: 2px 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
 .w-act.sure, .w-act.main { border-color: var(--accent); color: var(--accent-t); }
-.w-act.keepall { color: var(--bad-t); white-space: nowrap; }
+.w-act.keepall { white-space: nowrap; }
 .w-keys { padding: 4px 10px; }
 .w-row mark, .w-ph mark { background: color-mix(in srgb, var(--accent) 30%, transparent); color: inherit; border-radius: 2px; }
 .w-empty { margin: 14vh auto 0; max-width: 420px; text-align: center; color: var(--muted); }
@@ -115,8 +117,8 @@
 /* A keyboard ring on everything the Wake lets you Tab to. */
 .wake :is(button, input, select, a, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 @media (prefers-reduced-motion: reduce) { .w-toast { transition: none; } }
-/* At risk: the keep button is the row's one signal, in red (after .w-act's own rules). */
-.w-row .w-acts .w-act.risk, .w-row .w-acts .w-act.risk:hover { color: var(--bad-t, var(--bad)); border-color: var(--bad); }
+/* Red means at risk, a state: the "at risk" pill and counts. Keep and keep
+   all are plain buttons, since colour here is status, not an action. */
 /* A card of one row is a plain row under its caption: no box. */
 /* A long day shows its newest things; the rest wait behind "show N more". */
 .w-grp.later { display: none; }
