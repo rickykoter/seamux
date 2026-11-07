@@ -106,6 +106,26 @@ function check(): SVGSVGElement {
   return s;
 }
 
+/** Three dots, for the menu that holds what is used less. */
+function dots(): SVGSVGElement {
+  const s = document.createElementNS(SVG, "svg");
+  s.setAttribute("viewBox", "0 0 16 16");
+  s.setAttribute("aria-hidden", "true");
+  for (const x of [3.5, 8, 12.5]) {
+    const c = document.createElementNS(SVG, "circle");
+    c.setAttribute("cx", String(x));
+    c.setAttribute("cy", "8");
+    c.setAttribute("r", "1.4");
+    s.append(c);
+  }
+  return s;
+}
+
+/** The gate as `lookout gate` reads it: an open blocker or major blocks. */
+function verdict(open: Record<string, number>): "blocked" | "pass" {
+  return (open.blocker ?? 0) + (open.major ?? 0) > 0 ? "blocked" : "pass";
+}
+
 /** 0:42, 3:07, 1:02:09. */
 function clock(secs: number): string {
   const s = Math.max(0, Math.floor(secs));
@@ -176,6 +196,8 @@ export class ReviewView {
   /** Per job: the ticked findings, whether the picker is open, a pending confirm. */
   private ticked = new Map<string, Set<string>>();
   private pickerOpen = new Set<string>();
+  /** The job whose ⋯ menu is open, if any. */
+  private moreOpen: string | null = null;
   /** Logs the reader opened or closed, so a redraw keeps them that way. */
   private logOpen = new Map<string, boolean>();
   private confirm = new Map<string, "post" | "push" | "remove" | "remove-unreadable" | "orphan" | "stop-orphan">();
@@ -231,6 +253,18 @@ export class ReviewView {
     this.main.append(this.head, this.ctl, this.frameBox);
     this.root.append(this.side, this.main);
 
+    // A click anywhere but the ⋯ menu closes it. A click in the framed page
+    // never reaches this document, but it takes focus: the window blurs.
+    const closeMore = () => {
+      if (!this.moreOpen) return;
+      this.moreOpen = null;
+      this.render(true);
+    };
+    document.addEventListener("mousedown", (e) => {
+      if (!(e.target instanceof Element && e.target.closest(".r-more"))) closeMore();
+    });
+    window.addEventListener("blur", closeMore);
+
     window.setInterval(() => {
       const now = Date.now() / 1000;
       for (const s of this.root.querySelectorAll<HTMLElement>("[data-since]")) s.textContent = clock(now - Number(s.dataset.since));
@@ -266,6 +300,7 @@ export class ReviewView {
     this.findings.delete(id);
     this.pickerOpen.delete(id);
     this.confirm.delete(id);
+    if (this.moreOpen === id) this.moreOpen = null;
   }
 
   private async loadOthers(): Promise<void> {
@@ -443,7 +478,7 @@ export class ReviewView {
     const job = sel?.startsWith("job:") ? this.jobs.find((j) => `job:${j.id}` === sel) : undefined;
     const other = sel?.startsWith("other:") ? this.others.find((o) => `other:${o.id}` === sel) : undefined;
 
-    const key = JSON.stringify([sel, job, other, this.confirm.get(job?.id ?? ""), [...(this.ticked.get(job?.id ?? "") ?? [])], this.pickerOpen.has(job?.id ?? ""), this.findings.get(job?.id ?? "")?.rows.length]);
+    const key = JSON.stringify([sel, job, other, this.confirm.get(job?.id ?? ""), [...(this.ticked.get(job?.id ?? "") ?? [])], this.pickerOpen.has(job?.id ?? ""), this.moreOpen, this.findings.get(job?.id ?? "")?.rows.length]);
     if (force || key !== this.drawn) {
       this.drawn = key;
       if (job) this.drawJob(job);
@@ -470,11 +505,17 @@ export class ReviewView {
     this.ctl.replaceChildren(msg);
   }
 
-  private headOf(name: string, chip: HTMLElement | null, meta: string, link: string | null, buttons: HTMLElement[]): void {
+  /**
+   * The one header row: the name, its state, then what can be done. `meta`
+   * shows inline unless a ⋯ menu (`more`) holds it.
+   */
+  private headOf(name: string, chip: HTMLElement | null, meta: string, link: string | null, buttons: HTMLElement[], more: HTMLElement | null = null): void {
     const h = el("div", "r-mhead-row");
-    h.append(el("h2", "r-name", name));
+    const n = el("h2", "r-name", name);
+    n.title = meta;
+    h.append(n);
     if (chip) h.append(chip);
-    h.append(el("span", "r-meta", meta));
+    if (!more) h.append(el("span", "r-meta", meta));
     if (link) {
       const a = el("a", "r-link", "GitHub");
       a.href = link;
@@ -482,8 +523,48 @@ export class ReviewView {
       a.rel = "noreferrer";
       h.append(a);
     }
-    h.append(el("span", "r-grow"), ...buttons);
+    const acts = el("div", "r-acts");
+    acts.append(...buttons);
+    if (more) acts.append(more);
+    h.append(acts);
     this.head.replaceChildren(h);
+  }
+
+  /** A small menu for what is used less: the review's settings, Re-review, Remove. */
+  private more(j: Job, meta: string, items: HTMLButtonElement[]): HTMLElement {
+    const wrap = el("div", "r-more");
+    const open = this.moreOpen === j.id;
+    const b = el("button", "r-btn quiet r-more-btn");
+    b.type = "button";
+    b.append(dots());
+    b.setAttribute("aria-label", "More");
+    b.setAttribute("aria-haspopup", "menu");
+    b.setAttribute("aria-expanded", String(open));
+    b.addEventListener("click", () => {
+      this.moreOpen = open ? null : j.id;
+      this.render(true);
+      if (this.moreOpen) this.head.querySelector<HTMLElement>(".r-menu [role=menuitem]")?.focus();
+    });
+    wrap.append(b);
+    if (open) {
+      const m = el("div", "r-menu");
+      m.setAttribute("role", "menu");
+      m.append(el("p", "r-menu-meta", meta));
+      for (const it of items) {
+        it.setAttribute("role", "menuitem");
+        it.addEventListener("click", () => (this.moreOpen = null), { capture: true });
+        m.append(it);
+      }
+      wrap.append(m);
+    }
+    // Not the document's Escape, which hides the whole window.
+    wrap.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape" || !this.moreOpen) return;
+      e.stopPropagation();
+      this.moreOpen = null;
+      this.render(true);
+    });
+    return wrap;
   }
 
   private drawOther(o: Other): void {
@@ -495,18 +576,23 @@ export class ReviewView {
 
   private drawJob(j: Job): void {
     const running = RUNNING.has(j.status);
-    const chip = el("span", `r-chip ${running ? "running" : j.status}`, j.busy || (running ? "reviewing" : j.status));
-    const buttons: HTMLElement[] = [];
+    // A finished review shows the gate's verdict, the word the page uses.
+    const state = j.busy ? "running" : running ? "running" : j.status === "ready" ? verdict(j.open) : j.status;
+    const chip = el("span", `r-chip ${state}`, j.busy || (running ? "reviewing" : state));
+    const meta = `${j.depth} · ${j.model || "default model"}${j.base ? ` · against ${j.base}` : ""}`;
+    let more: HTMLElement | null = null;
     if (!running && !j.busy) {
-      const again = btn("Re-review", () => void this.start(j.input, j.depth, j.model, j));
+      const again = btn("Re-review", () => void this.start(j.input, j.depth, j.model, j), "r-btn quiet");
       again.title = "Review it again from its latest commit. This replaces this run and its worktree.";
-      buttons.push(again, btn("Remove", () => {
+      const remove = btn("Remove", () => {
         this.confirm.set(j.id, "remove");
         this.render(true);
-      }, "r-btn quiet"));
+      }, "r-btn quiet");
+      more = this.more(j, meta, [again, remove]);
     }
     const link = j.repo ? `https://github.com/${j.repo}${j.pr ? `/pull/${j.pr}` : j.branch ? `/tree/${j.branch}` : ""}` : null;
-    this.headOf(this.title(j), chip, `${j.depth} · ${j.model || "default model"}${j.base ? ` · against ${j.base}` : ""}`, link, buttons);
+    const acts = !running && j.status !== "failed" ? this.actions(j) : { buttons: [], below: [] };
+    this.headOf(this.title(j), chip, meta, link, acts.buttons, more);
 
     const parts: HTMLElement[] = [];
     if (this.confirm.get(j.id) === "remove") {
@@ -538,7 +624,7 @@ export class ReviewView {
     else if (j.status === "failed") {
       parts.push(el("p", "r-detail bad", j.detail || "it failed"));
       parts.push(el("p", "r-detail", "Re-review runs it again from the start."));
-    } else parts.push(...this.actions(j));
+    } else parts.push(...acts.below);
     if (j.log.length) parts.push(this.logBox(j));
     this.ctl.replaceChildren(...parts);
   }
@@ -590,14 +676,18 @@ export class ReviewView {
       if (!s.up || !s.origin) return down(s.reason ?? "no answer");
       if (this.framed !== rid) return;
       const f = el("iframe");
-      f.src = `${s.origin}/review/${encodeURIComponent(rid)}`;
+      // embed=app: the page leaves the title to this tab's header.
+      f.src = `${s.origin}/review/${encodeURIComponent(rid)}?embed=app`;
       f.title = title;
       this.frameBox.replaceChildren(f);
     }, (e) => down(String(e)));
   }
 
-  /** Edit, fix, post and push, over the findings ticked in the picker. */
-  private actions(j: Job): HTMLElement[] {
+  /**
+   * Edit, fix, post and push, over the findings ticked in the picker: the
+   * buttons for the header row, and what goes under it.
+   */
+  private actions(j: Job): { buttons: HTMLElement[]; below: HTMLElement[] } {
     const out: HTMLElement[] = [];
     const rows = this.findings.get(j.id)?.rows ?? [];
     const ticked = this.ticked.get(j.id) ?? new Set<string>();
@@ -607,7 +697,7 @@ export class ReviewView {
 
     if (j.cross) out.push(el("p", "r-detail bad", "From a fork: its code is untrusted. Editing and fixing run an agent over it; read the diff before trusting a result."));
 
-    const bar = el("div", "r-bar");
+    const bar: HTMLElement[] = [];
     const open = this.pickerOpen.has(j.id);
     // Folded by default, the picker is one line: what is open, and how many are ticked.
     const toggle = btn(`Findings · ${openSummary(j.open)}${n ? ` · ${n} picked` : ""} ${open ? "▾" : "▸"}`, () => {
@@ -628,7 +718,7 @@ export class ReviewView {
     post.title = j.pr ? `One review on PR #${j.pr}` : "This branch has no open pull request";
     edit.disabled = fix.disabled = busy || !n;
     post.disabled = busy || !j.pr || !n;
-    bar.append(toggle, edit, fix, post);
+    bar.push(toggle, edit, fix, post);
     if (j.ahead || j.dirty) {
       const push = btn(`Push ${j.ahead} commit${j.ahead === 1 ? "" : "s"}`, () => {
         this.confirm.set(j.id, "push");
@@ -636,9 +726,8 @@ export class ReviewView {
       });
       push.disabled = busy || j.cross || j.dirty || !j.ahead || j.pushed;
       push.title = j.cross ? "A pull request from a fork: the fixes stay local" : j.dirty ? "Uncommitted edits: commit them with Fix, or leave them" : `To ${j.branch}`;
-      bar.append(push);
+      bar.push(push);
     }
-    out.push(bar);
 
     if (open && rows.length) out.push(this.picker(j, rows, ticked, busy));
 
@@ -665,7 +754,7 @@ export class ReviewView {
       const say = pending === "post" ? `Post ${n} finding${n === 1 ? "" : "s"} as one review on ${j.repo} PR #${j.pr}? Everyone watching the pull request is notified, and the text is the reviewer's, not yours.` : `Push ${j.ahead} commit${j.ahead === 1 ? "" : "s"} to ${j.repo}:${j.branch}? It is never forced. Read the diff in the review first.`;
       out.push(this.confirmBox(j, say, pending === "post" ? "Post" : "Push", () => void this.run(j, pending === "post" ? "review_post" : "review_push", pending === "post" ? { ids: picked } : {})));
     }
-    return out;
+    return { buttons: bar, below: out };
   }
 
   /** Which findings the buttons act on, with quick picks by severity. */
