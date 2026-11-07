@@ -778,13 +778,25 @@ checks.push(["the tally counts the tiers between the headline and the divider",
   /class="tl wilt"><b>2<\/b> broken/.test(tal) && !/need you|quiet/.test(tal)]);
 checks.push(["...omits the empty ones", !tal.includes("working") && !tal.includes("done")]);
 render({ rows: [
-  { id: "d", name: "d", kind: "done", badge: "b", said: "", chips: [], frac: 1, meta: "" },
+  { id: "d", name: "d", kind: "done", badge: "merged", said: "", chips: [], frac: 1, meta: "" },
+  { id: "d2", name: "d2", kind: "done", badge: "plan done", said: "", chips: [], frac: 1, meta: "" },
   { id: "r", name: "r", kind: "running", badge: "b", said: "", chips: [], frac: null, meta: "" },
   { id: "w", name: "w", kind: "wilt", badge: "b", said: "", chips: [], frac: null, meta: "" },
 ], quiet: "" });
 const tal2 = els.tally.innerHTML;
 checks.push(["...in the ranking's order",
   tal2.indexOf("broken") < tal2.indexOf("working") && tal2.indexOf("working") < tal2.indexOf("done")]);
+checks.push(["...and done rows with different badges are counted as done", /<b>2<\/b> done</.test(tal2), tal2]);
+render({ rows: [
+  { id: "d", name: "d", kind: "done", badge: "merged", said: "", chips: [], frac: 1, meta: "" },
+  { id: "d2", name: "d2", kind: "done", badge: "merged", said: "", chips: [], frac: 1, meta: "" },
+], quiet: "" });
+checks.push(["...but when every done row wears one badge, the tally says it (2 merged)",
+  /class="tl done"><b>2<\/b> merged</.test(els.tally.innerHTML) && !/ done</.test(els.tally.innerHTML), els.tally.innerHTML]);
+// The headline already says "needs you": a row's "asked you" badge reads as its reason.
+render({ rows: [{ id: "q", name: "q", kind: "attend", badge: "asked you", said: "", chips: [], frac: null, meta: "" }], quiet: "" });
+checks.push(["a row's 'asked you' badge reads 'question' under the headline",
+  /<span class="badge">question<\/span>/.test(els.rows.innerHTML) && !/>asked you</.test(els.rows.innerHTML)]);
 render({ rows: [], quiet: "" });
 checks.push(["...and disappears when there is nothing", els.tally.innerHTML === ""]);
 // The headline counts one tier, so it must not speak for the others.
@@ -2251,12 +2263,12 @@ if (crewImpl.isRust("crew-board")) {
     { id: "tq", name: "tq", kind: "quiet", badge: "idle", said: "", chips: ["jump"], frac: null, meta: "", cwd: "/w/tq", tuck: "tuck" },
     { id: "pl", name: "pl", kind: "running", badge: "b", said: "", chips: [], frac: null, meta: "" },
   ];
-  els.rows.attrs["data-tuck-open"] = "0";
+  els.rows.attrs["data-hidden-open"] = "0";
   render({ rows: rowsT, quiet: "" });
   const h = els.rows.innerHTML;
-  const tuckAt = h.indexOf('<details class="tucked"');
-  checks.push(["tuck: tucked rows leave the list for a collapsed 'hidden · 2' section at the end",
-    tuckAt > h.indexOf('data-id="pl"') && /<details class="tucked"><summary class="sect">hidden · 2<\/summary>/.test(h) &&
+  const tuckAt = h.indexOf('<details class="away"');
+  checks.push(["tuck: tucked rows leave the list for a collapsed 'hidden · 2' shelf at the end",
+    tuckAt > h.indexOf('data-id="pl"') && /<details class="away"><summary class="sect">hidden · 2<\/summary>/.test(h) &&
     h.indexOf('data-id="ta"') > tuckAt && h.indexOf('data-id="tq"') > tuckAt]);
   // Two rows wait on you (ma, muted; ta, tucked): only the muted one counts.
   const need = String(els.need.textContent || "") + " " + String(els.need.innerHTML || "");
@@ -2268,7 +2280,7 @@ if (crewImpl.isRust("crew-board")) {
     /data-id="mr"[^>]*title="mr · hidden until it needs you" aria-description="hidden until it needs you"/.test(h) &&
     /data-id="ma"[^>]*title="ma"[^>]*>/.test(h) && !/data-id="ma"[^>]*aria-description/.test(h)]);
   checks.push(["tuck: top-level (cmux's Dock) there is no ⋯ menu", !/data-a="tk"/.test(h)]);
-  els.rows.attrs["data-tuck-open"] = "1";
+  els.rows.attrs["data-hidden-open"] = "1";
   sandbox.parent = { postMessage() {} };
   render({ rows: rowsT, quiet: "" });
   const hf = els.rows.innerHTML;
@@ -2279,8 +2291,8 @@ if (crewImpl.isRust("crew-board")) {
   const plAt = hf.indexOf('data-id="pl"');
   const plCard = hf.slice(plAt, hf.indexOf('<div class="row ', plAt) > 0 ? hf.indexOf('<div class="row ', plAt) : hf.indexOf("<details", plAt));
   checks.push(["tuck: a plan row with no workspace has no menu", plAt > 0 && plCard.length > 0 && !/data-a="tk"/.test(plCard)]);
-  checks.push(["tuck: the section stays open across a push when it was open", /<details class="tucked" open>/.test(hf)]);
-  els.rows.attrs["data-tuck-open"] = "0";
+  checks.push(["tuck: the shelf stays open across a push when it was open (data-hidden-open)", /<details class="away" open>/.test(hf)]);
+  els.rows.attrs["data-hidden-open"] = "0";
 }
 
 // ---- snoozed and settled shelves (crew-board marks tuck "snooze" + until, settled) ----
@@ -2296,23 +2308,34 @@ if (crewImpl.isRust("crew-board")) {
     R("tq", { tuck: "tuck" }),
     R("q", {}),
   ];
-  for (const a of ["data-snooze-open", "data-settle-open", "data-tuck-open"]) els.rows.attrs[a] = "0";
+  els.rows.attrs["data-hidden-open"] = "0";
   render({ rows: rowsS, quiet: "" });
   const h = els.rows.innerHTML;
   const at = (s) => h.indexOf(s);
-  const zAt = at('<details class="snoozed">'), sAt = at('<details class="settled">'), tAt = at('<details class="tucked">');
-  checks.push(["snooze: shelves after the rows, collapsed, counted, named by when they come back: hidden for now, merged and idle, hidden",
-    zAt > at('data-id="q"') && zAt < sAt && sAt < tAt &&
-    /<summary class="sect">hidden for now · 2</.test(h) && /<summary class="sect">merged and idle · 1</.test(h) && /<summary class="sect">hidden · 1</.test(h)]);
-  checks.push(["snooze: a snoozed row sits on its shelf even when broken, and says when it wakes",
-    at('data-id="brk"') > zAt && at('data-id="brk"') < sAt && at('data-id="zq"') < sAt && /class="badge wakes"[^>]*>until /.test(h)]);
-  checks.push(["snooze: a settled row is on its shelf; a merged one not yet idle stays in the list",
-    at('data-id="mg"') > sAt && at('data-id="mg"') < tAt && at('data-id="mg2"') < zAt]);
-  checks.push(["snooze: the quiet count leaves both shelves out", /<div class="sect">idle · 1</.test(h)]);
+  const shAt = at('<details class="away">');
+  const why = (id) => { const i = at('data-id="' + id + '"'), j = h.indexOf('<div class="row ', i + 1);
+    return (/<span class="why[^"]*"[^>]*>([^<]*)</.exec(h.slice(i, j > 0 ? j : undefined)) || [])[1]; };
+  checks.push(["shelf: one collapsed 'hidden · 4' shelf after the rows holds snoozed, settled and tucked rows",
+    shAt > at('data-id="q"') && (h.match(/<details/g) || []).length === 1 && (h.match(/<summary/g) || []).length === 1 &&
+    /<summary class="sect">hidden · 4</.test(h) && !/hidden for now|<summary class="sect">merged and idle/.test(h) &&
+    ["brk", "zq", "mg", "tq"].every((id) => at('data-id="' + id + '"') > shAt)]);
+  checks.push(["shelf: each row says why it is there, in muted words: until <time>, merged and idle, until you bring it back",
+    /^until \S/.test(why("brk") || "") && /^until \S/.test(why("zq") || "") && why("mg") === "merged and idle" &&
+    why("tq") === "until you bring it back" && /class="why wakes"/.test(h) && !/badge wakes/.test(h) && why("q") === undefined,
+    [why("brk"), why("mg"), why("tq")].join(" | ")]);
+  checks.push(["shelf: snoozed rows first, then settled, then tucked",
+    at('data-id="brk"') < at('data-id="mg"') && at('data-id="zq"') < at('data-id="mg"') && at('data-id="mg"') < at('data-id="tq"')]);
+  checks.push(["snooze: a snoozed row sits on the shelf even when broken; a merged one not yet idle stays in the list",
+    at('data-id="brk"') > shAt && at('data-id="mg2"') < shAt]);
+  checks.push(["shelf: idle stays its own section, and its count leaves the shelf out", /<div class="sect">idle · 1</.test(h)]);
   const tl = String(els.tally ? els.tally.innerHTML : "");
-  checks.push([`snooze: the tally leaves snoozed and settled rows out (${tl})`,
-    !/broken/.test(tl) && /<b>1<\/b> done/.test(tl) && /<b>1<\/b> working/.test(tl)]);
-  els.rows.attrs["data-snooze-open"] = "1";
+  checks.push([`snooze: the tally leaves snoozed and settled rows out, and counts done rows by their one badge (${tl})`,
+    !/broken/.test(tl) && /<b>1<\/b> merged/.test(tl) && !/ done</.test(tl) && /<b>1<\/b> working/.test(tl)]);
+  // Snoozed rows on the shelf come back soonest first, whatever order they came in.
+  render({ rows: [R("late", { tuck: "snooze", until: soon + 7200000 }), R("early", { tuck: "snooze", until: soon })], quiet: "" });
+  checks.push(["shelf: snoozed rows sort by when they come back",
+    els.rows.innerHTML.indexOf('data-id="early"') < els.rows.innerHTML.indexOf('data-id="late"')]);
+  els.rows.attrs["data-hidden-open"] = "1";
   sandbox.parent = { postMessage() {} };
   render({ rows: rowsS, quiet: "" });
   const hf = els.rows.innerHTML;
@@ -2321,17 +2344,28 @@ if (crewImpl.isRust("crew-board")) {
   // between dividers; whatever hid the row reads Show again.
   const T = (x, label) => '<span class="tki" data-a="tuck" data-x="' + x + '">' + label + "</span>";
   const SEP = '<span class="tks" role="separator"></span>';
-  checks.push(["menu: framed by the app, one Hide verb with its until, the presets grouped by dividers, Resume at reset last",
+  checks.push(["menu: framed by the app, one Hide verb with its until, the presets grouped by dividers, and no resume on a row no limit stopped",
     hf.includes(T("mute", "Hide until it needs you") + SEP + T("snooze:1h", "Hide for 1 hour") + T("snooze:3h", "Hide for 3 hours") +
       T("snooze:tomorrow", "Hide until tomorrow 9am") + T("snooze:monday", "Hide until Monday 9am") + SEP +
-      T("tuck", "Hide until I bring it back") + SEP + '<span class="tki" data-a="resume" data-x="on"') &&
+      T("tuck", "Hide until I bring it back") + "</span>") && !/data-a="resume"/.test(hf) &&
     /title="Hide" aria-label="Hide or show again"/.test(hf) && !/Mute|Snooze|Tuck away|Unmute|Wake now|Bring back/.test(hf)]);
   checks.push(["snooze: framed by the app, the ⋯ menu offers the four presets, or Show again on a snoozed row",
     /data-id="q"[^]*?data-x="snooze:1h">Hide for 1 hour<[^]*?data-x="tuck">Hide until I bring it back</.test(hf) &&
     /data-id="zq"[^]*?data-x="none">Show again<[^]*?data-x="tuck">Hide until I bring it back</.test(hf) &&
-    !hf.slice(hf.indexOf('data-id="zq"'), hf.indexOf("</details>", hf.indexOf('data-id="zq"'))).includes("snooze:1h")]);
-  checks.push(["snooze: the snoozed shelf stays open across a push when it was open", /<details class="snoozed" open>/.test(hf)]);
-  els.rows.attrs["data-snooze-open"] = "0";
+    !hf.slice(hf.indexOf('data-id="zq"'), hf.indexOf('<div class="row ', hf.indexOf('data-id="zq"'))).includes("snooze:1h")]);
+  checks.push(["shelf: it stays open across a push when it was open", /<details class="away" open>/.test(hf)]);
+  // The ⋯ waits for a pointer or focus on its row (or its own open menu);
+  // a touch screen, with no hover, always shows it.
+  const hovBlocks = [...css.matchAll(/@media \(hover:hover\)\{([^]*?)\}\s*\}/g)].map((m) => m[1]).join("\n");
+  checks.push(["menu: the row's ⋯ shows only on hover, focus within, or while its menu is open, under (hover:hover)",
+    /\.row:not\(:hover\):not\(:focus-within\):not\(\.tkopen\) \.tk\{opacity:0/.test(hovBlocks) &&
+    !/(^|\})\s*\.tk\{[^}]*(opacity:0|display:none|visibility:hidden)/.test(css.replace(/@media \(hover:hover\)\{[^]*?\}\s*\}/g, ""))]);
+  els.rows.attrs["data-hidden-open"] = "0";
+  // intent.js keeps the one shelf's open state in data-hidden-open.
+  const isrc = readFileSync(join(HERE, "intent.js"), "utf8");
+  checks.push(["shelf: intent.js remembers the shelf open or shut in data-hidden-open",
+    /closest\("details\.away > summary"\)/.test(isrc) && /setAttribute\("data-hidden-open"/.test(isrc) &&
+    !/data-snooze-open|data-settle-open|data-tuck-open/.test(isrc)]);
   // The end each preset sends, from intent.js's own snoozeUntil.
   const src = readFileSync(join(HERE, "intent.js"), "utf8");
   const fn = /function snoozeUntil\(key, now\) \{[^]*?\n  \}/.exec(src);
@@ -2352,14 +2386,14 @@ if (crewImpl.isRust("crew-board")) {
 // A tucked workstream stays with its family: its card is not missing a member.
 {
   const R = (id, extra) => ({ id, name: id, kind: "attend", badge: "b", said: "", chips: [], frac: null, meta: "", cwd: "/w/" + id, ...extra });
-  els.rows.attrs["data-tuck-open"] = "0";
+  els.rows.attrs["data-hidden-open"] = "0";
   render({ rows: [
     R("par", { family: "F", famrole: "parent", famtier: "attend", famkid: false }),
     R("kidA", { family: "F", famrole: "child", famtier: "attend", famkid: true }),
     R("kidT", { family: "F", famrole: "child", famtier: "attend", famkid: true, kind: "quiet", tuck: "tuck" }),
     R("solo", { kind: "quiet", tuck: "tuck" }),
   ], quiet: "" });
-  const h = els.rows.innerHTML, tuckAt = h.indexOf('<details class="tucked"');
+  const h = els.rows.innerHTML, tuckAt = h.indexOf('<details class="away"');
   checks.push(["tuck: a tucked family member stays in its family; a tucked loner still leaves",
     h.indexOf('data-id="kidT"') > 0 && h.indexOf('data-id="kidT"') < tuckAt && />hidden · 1</.test(h) && h.indexOf('data-id="solo"') > tuckAt]);
 }
@@ -2393,9 +2427,14 @@ if (crewImpl.isRust("crew-board")) {
   render({ rows: rowsL, quiet: "" });
   const hf = els.rows.innerHTML;
   delete sandbox.parent;
-  checks.push(["limits: framed, the ⋯ menu offers Resume at reset, or on an armed row its undoing",
-    /data-id="un"[^]*?data-a="resume" data-x="on"[^>]*>Resume at reset</.test(hf) &&
-    /data-id="ar"[^]*?data-a="resume" data-x="off"[^>]*>Don\u2019t resume at reset</.test(hf), hf.slice(0, 1500)]);
+  const cutF = (id) => { const i = hf.indexOf('data-id="' + id + '"'), j = hf.indexOf('<div class="row ', i + 1); return hf.slice(i, j > 0 ? j : undefined); };
+  const SEPL = '<span class="tks" role="separator"></span>';
+  checks.push(["limits: framed, a stopped row's ⋯ menu offers to resume when the limit resets, below the Hide group, or on an armed row its undoing",
+    cutF("un").includes('data-x="tuck">Hide until I bring it back</span>' + SEPL + '<span class="tki tkr" data-a="resume" data-x="on"') &&
+    /data-a="resume" data-x="on"[^>]*>Resume when the limit resets<\/span><\/span>/.test(cutF("un")) &&
+    /data-a="resume" data-x="off"[^>]*>Don\u2019t resume when the limit resets</.test(cutF("ar")) &&
+    !/Resume at reset|resume at reset/.test(hf), hf.slice(0, 1500)]);
+  checks.push(["limits: a row no limit stopped offers no resume", !/data-a="resume"/.test(cutF("ok"))]);
   // Usage billing: the next try, the give-up, and a spend limit that is never retried.
   const said = (l, armed) => { render({ rows: [R("u", { limited: l, armed })], quiet: "" }); return els.rows.innerHTML; };
   const u = { window: null, label: "rate limited", usage: true, resets_at: null };

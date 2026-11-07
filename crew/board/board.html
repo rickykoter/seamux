@@ -507,16 +507,24 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 
 /* --- muted and tucked (the app's, read from tucked.json) ----------------- */
 /* Muted (hidden until it needs you): greyed (never by opacity: the contrast check could not see it). Tucked: out of the list, in a
-   collapsed "hidden · N" section at the end. The ⋯ menu, its Hide items grouped by dividers, shows only framed by the app. */
+   collapsed "hidden · N" shelf at the end, with snoozed and settled rows; each says why. The ⋯ menu, its Hide items grouped by dividers, shows only framed by the app. */
 .row.muted{filter:saturate(.35)}
 .row.muted>.top>.nm,.row.muted>.top>.badge{color:var(--grey)}
-details.snoozed>summary,details.settled>summary,details.tucked>summary{cursor:pointer;list-style:none}
-details.snoozed>summary::-webkit-details-marker,details.settled>summary::-webkit-details-marker,details.tucked>summary::-webkit-details-marker{display:none}
-details.snoozed>summary::before,details.settled>summary::before,details.tucked>summary::before{content:"\25B8  ";color:var(--grey)}
-details.snoozed[open]>summary::before,details.settled[open]>summary::before,details.tucked[open]>summary::before{content:"\25BE  "}
+details.away>summary{cursor:pointer;list-style:none}
+details.away>summary::-webkit-details-marker{display:none}
+details.away>summary::before{content:"\25B8  ";color:var(--grey)}
+details.away[open]>summary::before{content:"\25BE  "}
+/* Why a row is on the hidden shelf: muted words, not a pill. */
+.why{flex:none;margin-left:6px;color:var(--grey);font:400 11.5px/1.2 system-ui;white-space:nowrap}
 .tk{flex:none;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;
   margin-left:2px;border-radius:5px;color:var(--grey);cursor:pointer}
 .tk:hover,.row.tkopen .tk{background:var(--bg2);color:var(--fg)}
+/* The ⋯ waits for the pointer or the keyboard on its row, or its open menu,
+   as the footer facts do. It keeps its place, so nothing shifts. Touch
+   screens show it. */
+@media (hover:hover){
+.row:not(:hover):not(:focus-within):not(.tkopen) .tk{opacity:0}
+}
 .tk svg{width:14px;height:14px;fill:currentColor}
 .tkm{display:none}
 .row.tkopen>.top{position:relative}

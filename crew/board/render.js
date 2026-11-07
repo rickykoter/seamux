@@ -312,11 +312,17 @@ function __boardRender(d) {
   function tally(rows) {
     var n = {};
     for (var i = 0; i < rows.length; i++) n[rows[i].kind] = (n[rows[i].kind] || 0) + 1;
+    // Done rows that all wear one badge are counted by it ("1 merged"), so
+    // the tally and the card say the same word.
+    var doneBadges = {};
+    for (var j = 0; j < rows.length; j++) if (rows[j].kind === "done") doneBadges[rows[j].badge || ""] = 1;
+    var one = Object.keys(doneBadges);
+    var doneWord = one.length === 1 && one[0] ? badgeWord(one[0]) : "done";
     var out = "";
     for (var t = 0; t < TIERS.length; t++) {
       var k = TIERS[t][0];
       if (!n[k]) continue;                 // a zero is noise; absence says it
-      out += '<span class="tl ' + k + '"><b>' + n[k] + "</b> " + TIERS[t][1] + "</span>";
+      out += '<span class="tl ' + k + '"><b>' + n[k] + "</b> " + esc(k === "done" ? doneWord : TIERS[t][1]) + "</span>";
     }
     return out;
   }
@@ -534,10 +540,10 @@ function __boardRender(d) {
   try { prev = JSON.parse(host.getAttribute("data-prev") || "{}"); } catch (e) { prev = {}; }
   var next = {};
 
-  // Rows put away leave the list for a collapsed shelf at the end, and count
-  // toward nothing above it: snoozed (the app's snooze, until its time or
-  // until it needs you; crew-board drops the mark from a row that needs
-  // you), settled (merged and idle, worked out by crew-board), then tucked.
+  // Rows put away leave the list for one collapsed shelf at the end, and
+  // count toward nothing above it: snoozed (the app's snooze, until its time
+  // or until it needs you; crew-board drops the mark from a row that needs
+  // you), settled (merged and idle, worked out by crew-board), and tucked.
   var all = d.rows || [];
   // A family member stays with its family even put away: a plan's
   // workstream is not missing from its card because its worktree was.
@@ -549,7 +555,13 @@ function __boardRender(d) {
   };
   var rows = all.filter(function (r) { return !shelfOf(r); });
   var tkOpen = host.getAttribute("data-tk-open") || "", tkUp = host.getAttribute("data-tk-up") === "1";
-  var shelved = function (s) { return all.filter(function (r) { return shelfOf(r) === s; }); };
+  // The shelf's order: snoozed, soonest back first, then settled, then tucked.
+  var SHELF_AT = { snoozed: 0, settled: 1, tucked: 2 };
+  var shelved = all.filter(shelfOf).map(function (r, i) { return [r, i]; }).sort(function (x, y) {
+    var a = x[0], b = y[0], d = SHELF_AT[shelfOf(a)] - SHELF_AT[shelfOf(b)];
+    if (!d && shelfOf(a) === "snoozed") d = (+a.until || Infinity) - (+b.until || Infinity);
+    return d || x[1] - y[1];
+  }).map(function (p) { return p[0]; });
   var was = positions();
   // Every card folds in place. Unfolded by default are the cards that ask
   // something of you -- waiting and broken -- and nothing else; a child starts
@@ -640,7 +652,7 @@ function __boardRender(d) {
     var more = kids.length - shown.length;
     return '<span class="pips">' + shown.map(function (k) {
       return '<svg class="pip ' + (COL[k.kind] ? k.kind : "quiet") + '" viewBox="0 0 7 6" aria-hidden="true">' +
-        "<title>" + esc(k.name + (k.badge ? " · " + k.badge : "")) + '</title><path fill-rule="evenodd" d="' +
+        "<title>" + esc(k.name + (k.badge ? " · " + badgeWord(k.badge) : "")) + '</title><path fill-rule="evenodd" d="' +
         PIP + '"/></svg>';
     }).join("") + (more > 0 ? '<span class="pipmore">+' + more + "</span>" : "") + "</span>";
   }
@@ -688,7 +700,11 @@ function __boardRender(d) {
   }
   function dotOf(a) { return /^#[0-9a-f]{3,8}$/i.test(a.color || "") ? '<span class="own"></span>' : ""; }
   // No empty badge: a bare outline pill was the quiet row's second line.
-  function badgeOf(a) { return (a.badge ? '<span class="badge">' + esc(a.badge) + "</span>" : "") + limPill(a); }
+  // The badge says the reason: "asked you" sat under the headline's
+  // "needs you", so it reads "question" here (the data keeps its word).
+  var BADGE_SAID = { "asked you": "question" };
+  function badgeWord(b) { return BADGE_SAID[b] || b; }
+  function badgeOf(a) { return (a.badge ? '<span class="badge">' + esc(badgeWord(a.badge)) + "</span>" : "") + limPill(a); }
   function nameOf(a) { return '<span class="nm">' + esc(a.name) + "</span>"; }
   // Mute / tuck, as the app's views offer it: only framed by the app, which
   // keeps tucked.json (intent.js hands the choice to it), and only for a row
@@ -699,6 +715,8 @@ function __boardRender(d) {
   // app's own menu, app/ui/tuck.ts, keeps the same four) sit between the
   // other two, set apart by dividers. Whatever hides a row now, its item
   // reads Show again. The data-x values are intent.js's, unchanged.
+  // Resuming is not hiding: it sits below the Hide group, on its own, and
+  // only on a row a usage limit stopped (or one already armed, to undo it).
   var SNOOZES = [["1h", "Hide for 1 hour"], ["3h", "Hide for 3 hours"],
     ["tomorrow", "Hide until tomorrow 9am"], ["monday", "Hide until Monday 9am"]];
   function tuckOf(a) {
@@ -711,20 +729,29 @@ function __boardRender(d) {
     return '<span class="tk" data-a="tk" title="Hide" aria-label="Hide or show again">' +
       '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg></span>' +
       '<span class="tkm">' + (a.tuck === "mute" ? back : item("Hide until it needs you", "mute")) + sep + snooze + sep +
-      (a.tuck === "tuck" ? back : item("Hide until I bring it back", "tuck")) + sep +
-      '<span class="tki" data-a="resume" data-x="' + (a.armed ? "off" : "on") + '" title="' +
-      (a.armed ? "Stop typing continue here when a usage limit resets"
-        : "When a usage limit stops this worktree, type continue once it resets") + '">' +
-      (a.armed ? "Don\u2019t resume at reset" : "Resume at reset") + "</span></span>";
+      (a.tuck === "tuck" ? back : item("Hide until I bring it back", "tuck")) + resumeOf(a, sep) + "</span>";
   }
-  // When a hidden-for-now row comes back: "until 3:00 PM" today, else
-  // "until Mon 9:00 AM".
-  function wakesOf(a) {
-    if (a.tuck !== "snooze" || !a.until) return "";
+  function resumeOf(a, sep) {
+    if (!a.limited && !a.armed) return "";
+    return sep + '<span class="tki tkr" data-a="resume" data-x="' + (a.armed ? "off" : "on") + '" title="' +
+      (a.armed ? "Stop typing continue here when the limit resets"
+        : "Type continue here once the limit resets") + '">' +
+      (a.armed ? "Don\u2019t resume when the limit resets" : "Resume when the limit resets") + "</span>";
+  }
+  // Why a row is on the hidden shelf, in muted words of its own: a snoozed
+  // row says when it comes back ("until 3:00 PM" today, else "until Mon
+  // 9:00 AM"), a settled one that it is merged and idle, a tucked one that
+  // it waits for you.
+  function whyOf(a) {
+    var s = shelfOf(a);
+    if (s === "settled") return '<span class="why">merged and idle</span>';
+    if (s === "tucked") return '<span class="why">until you bring it back</span>';
+    if (s !== "snoozed") return "";
+    if (!a.until) return '<span class="why">for now</span>';
     var w = new Date(+a.until), now = new Date();
     var t = w.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     if (w.toDateString() !== now.toDateString()) t = w.toLocaleDateString([], { weekday: "short" }) + " " + t;
-    return '<span class="badge wakes" title="' + esc(w.toString()) + '">until ' + esc(t) + "</span>";
+    return '<span class="why wakes" title="' + esc(w.toString()) + '">until ' + esc(t) + "</span>";
   }
   // Everything under a card's head: what was said, the reply window, the
   // buttons, the footer.
@@ -759,7 +786,7 @@ function __boardRender(d) {
     var more = foot(a, true);
     return opening(a, a.family ? " fam" : "", "", foldCls(a.id, a.kind, !!more)) +
       topOpen(a, "", !!more) + dotOf(a) + nameOf(a) +
-      (a.dirty ? DIRTY : "") + (acts.length || arm ? qb + limPill(a) : badgeOf(a)) + wakesOf(a) + cost(a) + wakeOf(a) + tuckOf(a) + topClose(a) +
+      (a.dirty ? DIRTY : "") + (acts.length || arm ? qb + limPill(a) : badgeOf(a)) + whyOf(a) + cost(a) + wakeOf(a) + tuckOf(a) + topClose(a) +
       (more ? '<div class="fold">' + more + "</div>" : "") + "</div>";
   }
 
@@ -863,19 +890,11 @@ function __boardRender(d) {
   // family, not under it (families.py), so it neither opens the quiet section
   // nor counts toward it.
   var belowDivider = function (r) { return r.kind === "quiet" && (!r.famtier || r.famtier === "quiet"); };
-  // Each shelf stays open or shut across pushes, as a card's fold does
-  // (intent.js keeps data-<shelf>-open; tucked's is data-tuck-open).
-  // Each is named by when its rows come back: hidden for now (a time, or
-  // the moment it needs you), merged and idle (any new pane write), hidden
-  // (only when you bring it back). The class stays the shelf's own name.
-  function shelf(name, attr, label) {
-    var list = shelved(name);
-    if (!list.length) return "";
-    return '<details class="' + name + '"' + (host.getAttribute(attr) === "1" ? " open" : "") + '><summary class="sect">' +
-      label + " · " + list.length + "</summary>" + list.map(quietRow).join("") + "</details>";
-  }
-  var tuckSect = shelf("snoozed", "data-snooze-open", "hidden for now") +
-    shelf("settled", "data-settle-open", "merged and idle") + shelf("tucked", "data-tuck-open", "hidden");
+  // One shelf for every row put away, so a missing workspace is in one
+  // place. Each row says why it is there (whyOf). It stays open or shut
+  // across pushes, as a card's fold does (intent.js keeps data-hidden-open).
+  var tuckSect = shelved.length ? '<details class="away"' + (host.getAttribute("data-hidden-open") === "1" ? " open" : "") +
+    '><summary class="sect">hidden · ' + shelved.length + "</summary>" + shelved.map(quietRow).join("") + "</details>" : "";
   host.innerHTML = (rows.length ? groups.map(function (g) {
     var lead = g.lead || g.kids[0], sect = "";
     if (belowDivider(lead) && !seenQuiet) {
