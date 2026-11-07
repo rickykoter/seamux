@@ -56,7 +56,7 @@ function __boardIntent(cfg) {
   // newer handler, and the check inside the listener retires the older one --
   // which is why removeEventListener is not needed (and not possible: the old
   // function is not reachable from here).
-  var V = "20";
+  var V = "21";
   var host = document.getElementById("rows");
   if (!host) return "no #rows";
 
@@ -254,6 +254,13 @@ function __boardIntent(cfg) {
         window.localStorage.setItem("crew.board.fold", JSON.stringify(all));
       }
     } catch (e) { /* the page's copy still holds */ }
+    showFoldAll();
+  }
+
+  // "collapse all" is there while any card is open.
+  function showFoldAll() {
+    var fa = document.getElementById("foldall");
+    if (fa) fa.hidden = !host.querySelector(".row.fd.open");
   }
 
   // ⌘. in the app: open the card it jumped to for the visit, and when the
@@ -490,6 +497,19 @@ function __boardIntent(cfg) {
       fire(t, rid);
     });
     host.setAttribute("data-intent", V);
+  }
+
+  // "collapse all": fold every open card, each remembered as a choice, as a
+  // click on its caret would be.
+  var foldAll = document.getElementById("foldall");
+  if (foldAll && foldAll.getAttribute("data-intent") !== V) {
+    foldAll.addEventListener("click", function () {
+      if (foldAll.getAttribute("data-intent") !== V) return;
+      var open = host.querySelectorAll(".row.fd.open");
+      for (var i = 0; i < open.length; i++) fold(open[i], open[i].getAttribute("data-id") || "");
+      showFoldAll();
+    });
+    foldAll.setAttribute("data-intent", V);
   }
 
   // The stamp's click has never changed, and its listener carries no version

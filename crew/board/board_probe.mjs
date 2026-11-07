@@ -68,7 +68,7 @@ const mk = (id) => (els[id] = {
   setAttribute(k, v) { this.attrs[k] = String(v); },
   removeAttribute(k) { delete this.attrs[k]; },
 });
-["need", "rows", "quiet", "src", "stamp", "cat", "says", "tally"].forEach(mk);
+["need", "rows", "quiet", "src", "stamp", "cat", "says", "tally", "foldall"].forEach(mk);
 
 // The stub grew a query path because the reorder animation needs one. render.js
 // measures each row's offsetTop BEFORE it replaces innerHTML -- that is the only
@@ -775,6 +775,20 @@ checks.push(["and it has something to say about each",
   checks.push(["cat: a line about a row is never used with no row to name",
     ![...idle].some((l) => /^\s|\s$|  |\{top\}/.test(l))]);
   els.rows.attrs["data-prev"] = "{}";
+}
+
+// "collapse all" shows while a card is open and hides when none is.
+{
+  els.rows.attrs["data-fold"] = "{}";
+  render({ rows: [{ id: "o", name: "o", kind: "attend", badge: "asked you", said: "Which env?", chips: [], frac: null, meta: "" }], quiet: "" });
+  const shownWithOpen = els.foldall.hidden === false;
+  render({ rows: [{ id: "w", name: "w", kind: "running", badge: "working", said: "", chips: [], frac: null, meta: "" }], quiet: "" });
+  checks.push(["collapse all: shown while a card is open, hidden when none is", shownWithOpen && els.foldall.hidden === true]);
+  const intent = readFileSync(join(HERE, "intent.js"), "utf8"), page = readFileSync(join(HERE, "board.html"), "utf8");
+  checks.push(["collapse all: the header carries it, and a click folds every open card as a remembered choice",
+    page.includes('<button type="button" id="foldall" hidden>collapse all</button>') &&
+    /var open = host\.querySelectorAll\("\.row\.fd\.open"\);\s*for \(var i = 0; i < open\.length; i\+\+\) fold\(open\[i\]/.test(intent) &&
+    /function showFoldAll\(\) \{[^}]*\.row\.fd\.open/.test(intent)]);
 }
 
 // The tally counts every tier, in the ranking's own order, and says nothing about

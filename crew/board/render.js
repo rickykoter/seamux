@@ -705,9 +705,13 @@ function __boardRender(d) {
   function topClose() { return "</div>"; }
   // A card that has something to fold carries .fd, its open state, and its
   // tier in data-k, which is what intent.js writes into data-fold.
+  // Whether this push draws any card open: "collapse all" shows when it does.
+  var anyOpen = false;
   function foldCls(id, kind, foldable, isKid) {
     if (!foldable) return "";
-    return " fd" + (isOpen(id, kind, isKid) ? " open" : "");
+    var open = isOpen(id, kind, isKid);
+    if (open) anyOpen = true;
+    return " fd" + (open ? " open" : "");
   }
 
   // fk is the tier the fold keys on, when it is not the row's own: a family
@@ -954,6 +958,10 @@ function __boardRender(d) {
     return sect + card(g.lead, kids, g.kids.length ? rollup(g.kids, g.lead.kind) : "", g.kids.length ? g : null);
   }).join("") :
     '<div class="empty">Nothing is waiting on you.<br>' + esc(d.quiet || "") + "</div>") + tuckSect;
+  // "collapse all" shows while any card is open (intent.js hides it again
+  // once a fold or its own click leaves none open).
+  var fa = $("foldall");
+  if (fa) fa.hidden = !anyOpen;
   for (var fid in fold) {
     var ff = fold[fid];
     if (!(fid in keptFold) && Array.isArray(ff) && foldNow - (+ff[2] || foldNow) < FOLD_KEEP_MS) keptFold[fid] = ff;
