@@ -31,6 +31,8 @@
 .w-chip[hidden] { display: none; }
 
 .w-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 26px 26px; }
+/* Rows no wider than reading needs, so a row's tools sit near its title. */
+.wake:not(.embedded) .w-list > * { max-width: 980px; }
 /* Embedded in the Dock's narrow column, the page's side margins shrink. */
 .wake.embedded .w-head, .wake.embedded .w-bar, .wake.embedded .w-chips { padding-left: 12px; padding-right: 12px; }
 .wake.embedded .w-list { padding: 0 12px 12px; }
@@ -53,13 +55,13 @@
   .w-row:not(:hover):not(.sel):not(:focus-within) .w-act.pub { visibility: hidden; }
 }
 /* Visible overflow, so a row's ⋯ menu is not cut off; the last row rounds itself. */
-.w-grp { margin: 0 0 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
-.w-rows > .w-row:last-child { border-radius: 0 0 11px 11px; }
-.w-ph { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--line); font-size: var(--fs-2); }
+/* Every group one shape: its prompt a quiet caption over its rows, groups
+   parted by a hairline, no boxes. (Boxing only some read as a zig-zag.) */
+.w-grp { margin: 0; border-top: 1px solid var(--line); }
+.w-day > .w-grp:first-of-type { border-top: 0; }
+.w-ph { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 12px 0; font-size: var(--fs-2); color: var(--muted); }
 .w-ph time { color: var(--muted); font-variant-numeric: tabular-nums; }
 /* A group of one: its prompt is a quiet caption above the row, not a band. */
-.w-grp.solo .w-ph { border-bottom: 0; padding: 6px 12px 0; font-size: var(--fs-2); color: var(--muted); }
-.w-grp.solo .w-rows { padding: 0 0 4px; }
 .w-prompt { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 .w-grp.open .w-prompt { white-space: normal; }
 .w-prompt.none { color: var(--muted); font-style: italic; }
@@ -111,7 +113,11 @@
 /* At risk: the keep button is the row's one signal, in red (after .w-act's own rules). */
 .w-row .w-acts .w-act.risk, .w-row .w-acts .w-act.risk:hover { color: var(--bad-t, var(--bad)); border-color: var(--bad); }
 /* A card of one row is a plain row under its caption: no box. */
-.w-grp.solo { border-color: transparent; background: none; }
+/* A long day shows its newest things; the rest wait behind "show N more". */
+.w-grp.later { display: none; }
+.w-day.all .w-grp.later { display: block; }
+.w-more { all: unset; cursor: pointer; display: block; margin: 6px 12px 10px; font-size: var(--fs-2); color: var(--muted); text-decoration: underline; text-underline-offset: 3px; }
+.w-more:hover, .w-more:focus-visible { color: var(--fg); }
 .w-dayrisk { color: var(--bad-t, var(--bad)); }
 .w-chip.w-more { border-style: dashed; }
 .w-prompt.same { display: none; }
