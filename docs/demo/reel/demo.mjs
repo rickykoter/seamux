@@ -656,8 +656,9 @@ async function v5() {
     await shot(page, 'crew-cache', 'h2:text("Cache re-writes") >> xpath=ancestor::*[count(.//*) > 12][1]')
   })
   // crew's status line under a prompt, as a still: the real `seamux
-  // statusline` (SEAMUX_BIN, else ~/.local/bin/seamux), with a stub ccusage
-  // and a throwaway HOME so it reads none of yours
+  // statusline` (SEAMUX_BIN, else this checkout's app/target/debug build,
+  // else ~/.local/bin/seamux), with a stub ccusage and a throwaway HOME so it
+  // reads none of yours
   {
     const d = join(OUT, '.raw', 'statusline')
     mkdirSync(join(d, 'bin'), { recursive: true })
@@ -669,7 +670,8 @@ async function v5() {
     const payload = JSON.stringify({ session_id: 'demo-1', transcript_path: join(d, 't.jsonl'), cwd: '/tmp/shop',
       model: { display_name: 'Sonnet' }, workspace: { current_dir: '/tmp/shop' },
       context_window: { current_usage: { cache_creation_input_tokens: 2000, cache_read_input_tokens: 90000, input_tokens: 30 } } })
-    const seamux = process.env.SEAMUX_BIN || join(homedir(), '.local', 'bin', 'seamux')
+    const built = join(REPO, 'app', 'target', 'debug', 'seamux')
+    const seamux = process.env.SEAMUX_BIN || (existsSync(built) ? built : join(homedir(), '.local', 'bin', 'seamux'))
     const line = spawnSync(seamux, ['statusline'], {
       input: payload, encoding: 'utf8',
       env: { PATH: `${join(d, 'bin')}:/usr/bin:/bin:/opt/homebrew/bin`, HOME: join(d, 'home'),
