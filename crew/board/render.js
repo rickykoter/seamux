@@ -79,7 +79,7 @@ function __boardRender(d) {
     // Which limit is in its tooltip and the said line; here, when it lifts.
     var l = a.limited, word = l.error === "billing_error" ? "spend limit" : l.label;
     return '<span class="badge lim" style="color:' + AMBER + ";border-color:" + AMBER + '" title="' +
-      esc(stopText(a)) + '">' + esc(l.resets_at ? "limit \u00b7 back " + clockOf(l.resets_at) : word) + "</span>";
+      esc(stopText(a)) + '">' + esc(l.resets_at ? "back " + clockOf(l.resets_at) : word) + "</span>";
   }
   // A card that needs you says so on its badge, the headline's words; why it
   // does opens its said line ("Question: ..."). One rule, not a guess at the
@@ -501,7 +501,8 @@ function __boardRender(d) {
     var out = "";
     // A footer of only the plain facts (no PR, issue or signal) keeps to one line.
     var one = !a.pr && !a.issue && !(a.signals || []).some(function (e) { return !e.a; });
-    if (a.branch || a.dirty) out += dotOf(a);
+    // No colour dot before the branch: beside the facts it read as one more
+    // state. The worktree's colour stays on the "you are here" ring.
     if (a.branch) {
       out += '<span class="branch" data-a="code" title="Open this worktree in VS Code — ' +
         esc(a.branch) + '">' + esc(headClip(a.branch, 30)) + "</span>";
@@ -525,11 +526,8 @@ function __boardRender(d) {
         ' title="' + esc(e.h) + '">' + esc(e.t) + "</span>";
     });
     if (a.meta) out += '<span class="meta">' + esc(a.meta) + "</span>";
-    // Spend and the Wake are one unit at the right end: when the line is full
-    // they wrap together, still on the right. Apart, the icon alone dropped to
-    // the far left of a line of its own, away from the spend it sits beside.
-    var end = bare ? "" : cost(a);
-    if (end) out += '<span class="end">' + end + "</span>";
+    // Spend is in the header's tooltip (factsOf), not here: at rail width it
+    // wrapped onto a line of its own.
     // The footer shows only on an open card, at rest, in the card's own
     // flow. A folded card has none (its .fold is gone); its header's tooltip
     // says the facts instead (factsOf).
@@ -688,7 +686,7 @@ function __boardRender(d) {
     // shows no footer, so the footer's hover-only facts (branch, progress,
     // spend) follow on a line of their own: still there, under the pointer.
     var facts = factsOf(a), tip = a.name + (a.ref ? " \u00b7 " + TIP.jump : "") + (facts ? "\n" + facts : "");
-    var does = a.ref ? ' data-a="jump" title="' + esc(tip) + '"' : foldable ? ' data-a="fold"' + (facts ? ' title="' + esc(tip) + '"' : "") : "";
+    var does = a.ref ? ' data-a="jump" title="' + esc(tip) + '"' : (foldable ? ' data-a="fold"' : "") + (facts ? ' title="' + esc(tip) + '"' : "");
     return '<div class="top' + cls + (a.ref ? " jumps" : "") + '"' + does + ">" + (foldable ? CARET : "");
   }
   function topClose() { return "</div>"; }
@@ -728,7 +726,6 @@ function __boardRender(d) {
       (inCard ? ' data-in="' + esc(inCard) + '"' : "") +
       (hex ? ' style="--own:' + hex + '"' : "") + ">" + (ripple ? confetti(a.id, inCard ? 8 : 12) : "");
   }
-  function dotOf(a) { return /^#[0-9a-f]{3,8}$/i.test(a.color || "") ? '<span class="own" title="This worktree\u2019s colour"></span>' : ""; }
   // No empty badge: a bare outline pill was the quiet row's second line.
   // A row that needs you says it in the headline's words, "needs you"; its
   // reason opens its said line instead (reasonOf). A limit takes the badge's

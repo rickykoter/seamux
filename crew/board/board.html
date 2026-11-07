@@ -44,7 +44,7 @@
   .feed > .feedbar, .pns > .pn (a pane, data-a="pane": + .agent or .term and
   its state, .wait/.work/.idle/.end/.unk/.sh, holding .pg, .pk, .pw and
   .ptag.plan/.outside), .chips > .chip (+ .pri, the one filled button; + .sig, an
-  actionable signal; + .pane on a muted card, its panes' tags), .foot > .own/.branch/.dirty/.pr/.issue/.sig/.meta and
+  actionable signal; + .pane on a muted card, its panes' tags), .foot > .branch/.dirty/.pr/.issue/.sig/.meta and
   .end > .cost (the spend, held at the right end; also at the end of a quiet
   row's .top),
   .owned + .here, .empty, .sect, and for a deep-plan family: .fam on its card,
@@ -331,8 +331,8 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 /* A card. No edge stripe: the tier is on the badge, the dial and the filled
    button (--c), and the card that needs you keeps its tinted ground, the
    page's one loud thing. The worktree's own colour is the ring round the
-   row you stand in, and a dot before the branch in the footer (.own): beside
-   the name it read as a second state dot.
+   row you stand in, and only that: a dot beside the name or the branch
+   read as one more state.
    The header is the jump (.top.jumps, render.js): the same target folded or
    not, its ground lifting on hover; a pressed header says how it went
    (.hit/.ok/.bad, intent.js). The caret folds.
@@ -466,7 +466,6 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .pr:hover,.issue:hover{filter:brightness(1.25)}
 .dirty{color:var(--dirty);font-size:var(--fs-1)}
 /* The worktree's colour, before its branch. */
-.foot>.own{flex:none;width:8px;min-height:0;height:8px;margin-right:-4px;border-radius:50%;background:var(--own)}
 .cost{margin-left:auto;color:var(--fg2)}
 .cost.small{color:var(--grey)}
 /* The footer is the open card's: an open card is the expanded view, so its
