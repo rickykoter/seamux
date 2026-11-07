@@ -24,9 +24,9 @@
 
 .desk-main { overflow-y: auto; padding: 18px 26px 26px; display: flex; flex-direction: column; gap: 12px; }
 .desk-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.desk-count { font-size: var(--fs-2); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); }
+.desk-count { font-size: var(--fs-2); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent-t); }
 .desk-hint { color: var(--muted); font-size: var(--fs-2); }
-.desk-problems { margin: 0; color: var(--bad); font-size: var(--fs-2); }
+.desk-problems { margin: 0; color: var(--bad-t); font-size: var(--fs-2); }
 .desk-list { display: flex; flex-direction: column; gap: 12px; }
 .desk-empty { margin: 12vh auto 0; color: var(--muted); font: var(--fs-3)/1.35 ui-monospace, Menlo, monospace; }
 .desk-empty[hidden] { display: none; }
@@ -48,7 +48,7 @@
 .chip.gate { background: var(--chip-gate-bg); color: var(--chip-gate-fg); }
 .chip.review { background: var(--chip-look-bg); color: var(--chip-look-fg); }
 .chip.status { background: var(--term); color: var(--muted); }
-.chip.status.fail { color: var(--bad); }
+.chip.status.fail { color: var(--bad-t); }
 
 .d-q { margin: 0; font-size: var(--fs-4); font-weight: 500; }
 .d-q.small { font-size: var(--fs-3); font-weight: 400; }
@@ -76,8 +76,8 @@
 .d-btn.primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
 .d-btn:disabled { cursor: default; color: var(--muted); background: transparent; border-style: dashed; border-color: var(--line); }
 .d-btn:focus-visible, .d-opt:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.d-note { margin: 0; font-size: var(--fs-2); color: var(--good); }
-.d-note.bad { color: var(--bad); }
+.d-note { margin: 0; font-size: var(--fs-2); color: var(--good-t); }
+.d-note.bad { color: var(--bad-t); }
 
 .d-barline { display: flex; align-items: center; gap: 10px; }
 .d-bar { flex: 1; display: flex; gap: 3px; max-width: 260px; }
@@ -125,7 +125,7 @@
 .fam-role { font-size: var(--fs-1); text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); min-width: 44px; }
 .fam-state { font-size: var(--fs-2); color: var(--muted); }
 .fam-member.waiting .fam-state { color: var(--ask-t); }
-.fam-member.ready .fam-state { color: var(--good); }
+.fam-member.ready .fam-state { color: var(--good-t); }
 
 /* ---- a card's live terminal ---- */
 .d-btn.small { padding: 2px 9px; font-size: var(--fs-2); }

@@ -199,8 +199,8 @@ export class Wake {
     });
     this.keepAllBtn.hidden = true;
     this.keepAllBtn.addEventListener("click", () => void this.keepAll());
-    const keys = button("?", "w-act w-keys");
-    keys.setAttribute("aria-label", "keys");
+    const keys = button("keys", "w-act w-keys");
+    keys.title = "the keyboard keys (?)";
     keys.addEventListener("click", () => (this.help.hidden = !this.help.hidden));
     this.help.hidden = true;
     this.help.append(
@@ -401,6 +401,7 @@ export class Wake {
     let group = "";
     let section: HTMLElement | null = null;
     let ul: HTMLElement | null = null;
+    let tail: HTMLElement | undefined;
     // The branch and session of the group above: a header that repeats them
     // shows them only on hover, so each card leads with its prompt.
     let lastBr = "";
@@ -483,25 +484,33 @@ export class Wake {
           else this.openGroups.add(gk);
           g.classList.toggle("open");
         });
-        ph.append(el("time", "", hm(d)), prompt);
         // Every group is a caption over its rows, so titles line up down the
-        // column. Branch and session wait for hover, focus or the pick (wake.css).
-        if (r.branch) ph.append(el("span", `w-br${r.branch === lastBr ? " rep" : ""}`, r.branch));
+        // column: the caption's time in the kind column, its prompt at the
+        // titles' edge. Branch and session wait for hover, focus or the pick
+        // (wake.css). A caption that would be only a time is dropped: its
+        // time, branch and session sit at the end of the row instead.
+        const cap = same ? el("span", "w-tm") : ph;
+        if (!same) ph.append(el("time", "", hm(d)), prompt);
+        if (r.branch) cap.append(el("span", `w-br${r.branch === lastBr ? " rep" : ""}`, r.branch));
         if (r.session_id) {
           // Said as what it does: a bare id read as a commit's sha.
           const s = button("copy resume", `w-sess${r.session_id === lastSess ? " rep" : ""}`);
           s.title = `copy the command that resumes session ${r.session_id.slice(0, 8)}`;
           s.addEventListener("click", () => void this.copy(resumeCmd(r), "the resume command"));
-          ph.append(s);
+          cap.append(s);
         }
+        if (same) cap.append(el("time", "", hm(d)));
+        tail = same ? cap : undefined;
         lastBr = r.branch ?? "";
         lastSess = r.session_id ?? "";
         ul = el("ul", "w-rows");
-        g.append(ph, ul);
+        if (same) g.append(ul);
+        else g.append(ph, ul);
         section!.append(g);
         group = gk;
       }
-      ul!.append(this.row(r, i, r.id === keepId));
+      ul!.append(this.row(r, i, r.id === keepId, tail));
+      tail = undefined;
       if (!ul!.parentElement?.classList.contains("later")) shownToday++;
     });
     if (!this.vis.length) {
@@ -509,7 +518,7 @@ export class Wake {
       e.textContent = this.query
         ? `nothing in the wake matches “${this.query}”`
         : this.ws
-          ? "nothing in this workspace's wake yet. Rows land at the end of each turn; crew-artifacts backfill reads every transcript once."
+          ? "nothing in this workspace's wake yet. Each file, plan or commit a session makes shows up here when its turn ends."
           : "no workspace yet.";
       out.push(e);
     }
@@ -534,7 +543,7 @@ export class Wake {
     if (this.sel >= 0 && this.list.querySelectorAll(".w-row")[this.sel]?.closest(".w-day.folded, .w-grp.later")) this.sel = -1;
   }
 
-  private row(r: Row, i: number, sel: boolean): HTMLElement {
+  private row(r: Row, i: number, sel: boolean, tail?: HTMLElement): HTMLElement {
     const li = el("li", `w-row ${r.state}${sel ? " sel" : ""}`);
     li.dataset.i = String(i);
     li.append(el("span", "w-k", r.kind));
@@ -615,7 +624,16 @@ export class Wake {
     };
     const primary = r.state === "risk" ? keep : r.publishable && !r.published ? publish : null;
     // Keep is a plain button: the row's "at risk" pill is the signal.
-    if (primary === keep) shown(keep.label, keep.title ?? "", () => void this.keep(r)).classList.remove("main");
+    // Keep sits with the "at risk" pill, by the title, not at the row's far end.
+    if (primary === keep) {
+      const b = button(keep.label, "w-act");
+      b.title = keep.title ?? "";
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        void this.keep(r);
+      });
+      badges.append(b);
+    }
     else if (primary === publish) shown(pubLabel, pubTitle, (b) => void this.publish(r, b)).classList.add("pub");
     if (r.kind === "plan") {
       items.push(
@@ -630,6 +648,8 @@ export class Wake {
     if (r.path) items.push({ label: "copy path", hint: "c", run: () => void this.copy(r.path, "the path") });
     if (r.session_id) items.push({ label: "copy resume", hint: "r", run: () => void this.copy(resumeCmd(r), "the resume command") });
     if (items.length) acts.append(dotsMenu(`${title}: more`, items));
+    // A group of one whose caption was dropped: its time at the row's end.
+    if (tail) li.append(tail);
     li.append(acts);
     // A click opens the row, as Enter does; the arrows still only select.
     li.addEventListener("click", (e) => {

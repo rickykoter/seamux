@@ -30,17 +30,18 @@
 .newws-row.newws-top .newws-label { padding-top: 6px; }
 .newws-label { color: var(--muted); font-size: var(--fs-2); }
 .newws select, .newws input[type="text"], .newws textarea {
-  font: inherit; font-size: var(--fs-3); color: var(--fg); background: var(--term); border: 1px solid var(--line); border-radius: 7px;
+  font: inherit; font-size: var(--fs-3); color: var(--fg); background: var(--field); border: 1px solid var(--line2); border-radius: 7px;
   padding: 5px 8px; min-width: 0; outline: none;
 }
 .newws textarea { resize: vertical; min-height: 64px; line-height: 1.4; }
 .newws textarea:disabled { opacity: 0.6; }
-.newws select:focus, .newws input:focus, .newws textarea:focus { border-color: var(--accent); }
+.newws select:focus, .newws input:focus, .newws textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .newws-branchbox {
   display: flex; align-items: center; min-width: 0;
-  background: var(--term); border: 1px solid var(--line); border-radius: 7px;
+  background: var(--field); border: 1px solid var(--line2); border-radius: 7px;
 }
-.newws-branchbox:focus-within { border-color: var(--accent); }
+.newws-branchbox:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.newws .newws-branchbox input:focus { box-shadow: none; }
 .newws-prefix { padding-left: 8px; color: var(--muted); font: var(--fs-3) ui-monospace, Menlo, monospace; }
 .newws-prefix[hidden] { display: none; }
 .newws .newws-branchbox input { flex: 1; border: 0; background: none; padding-left: 1px; font-family: ui-monospace, Menlo, monospace; font-size: var(--fs-3); }
@@ -48,7 +49,7 @@
 .newws-sourcerow { margin-top: -4px; }
 .newws-source {
   display: flex; align-items: center; gap: 8px; min-width: 0; padding: 5px 4px 5px 8px;
-  background: var(--term); border: 1px solid var(--line); border-left: 2px solid var(--accent); border-radius: 7px;
+  background: var(--field); border: 1px solid var(--line2); border-left: 2px solid var(--accent); border-radius: 7px;
 }
 .newws-source-mark { flex: none; width: 12px; height: 12px; fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .newws-source-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
@@ -66,15 +67,22 @@
 .newws-more summary::before { content: "▸ "; }
 .newws-more[open] summary::before { content: "▾ "; }
 .newws-more[open] > .newws-row { margin-top: 8px; }
-.newws-check input { justify-self: start; accent-color: var(--accent); }
+.newws-check input { justify-self: start; }
+/* The dialog's own edges and marks: lines that hold in light, the
+   theme's accent for checkboxes and keyboard focus (not the system blue). */
+.newws-card { border-color: var(--line2); }
+.newws-more { border-top-color: var(--line2); }
+.newws input[type="checkbox"] { accent-color: var(--accent); }
+.newws .sheet-btn { border-color: var(--line2); }
+.newws .sheet-btn:focus-visible, .newws summary:focus-visible, .newws input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .newws .newws-base { font-family: ui-monospace, Menlo, monospace; font-size: var(--fs-3); }
 
-.newws-steps { list-style: none; margin: 0; padding: 8px 10px; background: var(--term); border-radius: 8px; display: flex; flex-direction: column; gap: 5px; }
+.newws-steps { list-style: none; margin: 0; padding: 8px 10px; background: var(--field); border: 1px solid var(--line2); border-radius: 8px; display: flex; flex-direction: column; gap: 5px; }
 .newws-steps[hidden] { display: none; }
 .newws-step { display: grid; grid-template-columns: 14px auto minmax(0, 1fr); align-items: center; gap: 8px; font-size: var(--fs-3); }
 .newws-step.wait { color: var(--muted); }
 .newws-step-detail { color: var(--muted); font: var(--fs-1) ui-monospace, Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.newws-step.failed .newws-step-detail { color: var(--bad); white-space: normal; }
+.newws-step.failed .newws-step-detail { color: var(--bad-t); white-space: normal; }
 .newws-step.warn .newws-step-detail { white-space: normal; }
 .newws-mark { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .newws-mark.wait { opacity: 0.35; }
@@ -86,7 +94,7 @@
 @media (prefers-reduced-motion: reduce) { .newws-mark.start { animation: none; } }
 
 .newws-say { margin: 0; font-size: var(--fs-3); color: var(--fg); }
-.newws-say.bad { color: var(--bad); }
+.newws-say.bad { color: var(--bad-t); }
 .newws-say[hidden] { display: none; }
 .newws-foot { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
 .newws-go { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
@@ -94,8 +102,8 @@
 
 /* The launch banner under New workspace (migrate.ts). */
 /* A card that stands out from the rail: the accent's tint and edge, a mark,
-   and the one-click button filled. Once everything is moved it goes quiet,
-   then away (migrate.ts DONE_MS). */
+   and the one-click button filled with the shared primary. Once everything
+   is moved it goes quiet, then away (migrate.ts DONE_MS). */
 .migrate { flex: none; display: flex; flex-direction: column; gap: 6px; margin: 8px 10px 4px; padding: 9px 10px;
   border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 8px;
   background: color-mix(in srgb, var(--accent) 13%, var(--bg)); font-size: var(--fs-3); color: var(--fg); }
@@ -103,25 +111,31 @@
 .migrate-mark { flex: none; width: 16px; height: 16px; color: var(--accent); }
 .migrate.done .migrate-mark { color: var(--muted); }
 .migrate-head .migrate-line { font-weight: 600; }
-.migrate .migrate-all { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+.migrate .migrate-all, .migrate .migrate-retry { background: var(--primary); border-color: var(--primary); color: var(--on-primary); font-weight: 600; }
+.migrate .sheet-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .migrate-all[hidden] { display: none; }
 .migrate[hidden] { display: none; }
 .migrate-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
 .migrate-line { flex: 1; min-width: 0; }
 .migrate-acts { flex-basis: 100%; display: flex; gap: 6px; padding-left: 24px; }
-/* Done, the buttons go; failed, Later stays so the error can be dismissed. */
+/* Done, the buttons go; failed, Try again and Dismiss stay. */
 .migrate.done:not(.failed) .migrate-acts { display: none; }
-.migrate.failed { border-color: color-mix(in srgb, var(--bad) 55%, transparent); }
+.migrate.failed { border-color: color-mix(in srgb, var(--bad) 55%, transparent); background: color-mix(in srgb, var(--bad) 8%, var(--bg)); }
 .migrate.failed .migrate-mark { color: var(--bad); }
 .migrate-review[hidden], .migrate-acts > [hidden] { display: none; }
-.migrate-list { display: flex; flex-direction: column; gap: 4px; }
+/* About five rows, then the list scrolls on its own: the rail stays put. */
+.migrate-list { display: flex; flex-direction: column; gap: 4px; max-height: calc(5 * 26px + 4 * 4px); overflow-y: auto; overscroll-behavior: contain; margin-right: -4px; padding-right: 4px; }
 .migrate-list[hidden] { display: none; }
-.migrate-row { display: flex; align-items: center; gap: 8px; min-height: 26px; }
+.migrate-row { display: flex; align-items: center; gap: 8px; min-height: 26px; flex: none; }
 .migrate-row b { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .migrate-state, .migrate-where, .migrate-wait { color: var(--muted); font-size: var(--fs-2); white-space: nowrap; }
-.migrate-state.busy { color: var(--accent); }
+.migrate-state.busy { color: var(--accent-t); }
+.migrate-state.bad { color: var(--bad-t); }
 .migrate-go { border-color: var(--accent); }
-.migrate-no { padding: 0 7px; }
+/* A row's × shows on hover or keyboard focus; it keeps its place meanwhile. */
+.migrate-no { padding: 0 7px; opacity: 0; transition: opacity 0.12s; }
+.migrate-row:hover .migrate-no, .migrate-row:focus-within .migrate-no { opacity: 1; }
+@media (hover: none) { .migrate-no { opacity: 1; } }
 .migrate-say { margin: 0; font-size: var(--fs-2); color: var(--muted); }
-.migrate-say.bad { color: var(--bad); }
+.migrate-say.bad { color: var(--bad-t); }
 .migrate-say[hidden] { display: none; }

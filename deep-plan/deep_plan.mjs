@@ -916,17 +916,25 @@ function mdInline(s) {
 }
 
 // A check's detail lines as HTML, shared by the review and working pages. How
-// the engine runs a check (recipe, commands, polls) folds away under "how it
-// runs": the check's name and verdict are what a reader scans for. What a
-// person must do or know -- an acquire step, a claim that asks, the
-// expectation, a note -- stays in view.
+// the engine runs a check (recipe, commands, polls) folds away: the check's
+// name and verdict are what a reader scans for, so each check is one row and
+// the card carries ONE "how they run" fold holding every check's commands,
+// under the check's name, with its id last. What a person must do or know --
+// an acquire step, a claim that asks, the expectation, a note -- stays on the
+// check's own row.
 const CHECK_HOW = /^(recipe |run — |run: |wait — |browser — |scripts: |query: )/;
-// The check's id closes the fold, beside the commands that take it.
-function checkDetailHtml(lines, id = "") {
-  const shown = lines.filter(l => !CHECK_HOW.test(l)), how = lines.filter(l => CHECK_HOW.test(l));
-  if (how.length && id) how.push(`check id \`${id}\``);
-  return shown.map(l => `<br>${mdInline(l)}`).join("") +
-    (how.length ? `<details class="dp-run"><summary>how it runs</summary>` + how.map(l => mdInline(l)).join("<br>") + "</details>" : "");
+const checkShownHtml = lines => lines.filter(l => !CHECK_HOW.test(l)).map(l => `<br>${mdInline(l)}`).join("");
+// One check's part of the card's fold, or "" when nothing about it runs.
+function checkHowPart(name, lines, id) {
+  const how = lines.filter(l => CHECK_HOW.test(l));
+  if (!how.length) return "";
+  return `<span class="dp-run-c" data-id="${esc(id)}"><b>${esc(name || id)}</b><br>` +
+    how.map(l => mdInline(l)).join("<br>") + `<br>check id <code>${esc(id)}</code></span>`;
+}
+function checksHowHtml(parts) {
+  parts = parts.filter(Boolean);
+  if (!parts.length) return "";
+  return `<details class="dp-run"><summary>how ${parts.length === 1 ? "it runs" : "they run"}</summary>${parts.join("")}</details>`;
 }
 
 // The review page's checks, in the working page's row shape: glyph, name,
@@ -936,13 +944,15 @@ function checkDetailHtml(lines, id = "") {
 const waiverHtml = waiver => `<p class="dim dp-checks-none">No checks: ${esc(waiver)}</p>`;
 function checksHtml(list, waiver) {
   if (!list.length) return waiver ? waiverHtml(waiver) : "";
+  const parts = [];
   return `<p class="dim dp-checks-h">Done when these pass:</p><ul class="dim dp-checks dp-checks-st">` +
     list.map(c => {
       const { lines } = checkLinesMd(c);
+      parts.push(checkHowPart(c.name, lines, c.id));
       const inferred = c.inferred ? ` — inferred: a default recipe in <code>${esc(c.source)}</code> covers this increment's files` : "";
       return `<li title="check ${esc(c.id)}">${CHECK_GLYPH.pending} ${esc(c.name || "")} <span class="dp-kind">· ${esc(checkKindWords(c))}</span>${inferred}` +
-        `${checkDetailHtml(lines, c.id)}</li>`;
-    }).join("") + "</ul>";
+        `${checkShownHtml(lines)}</li>`;
+    }).join("") + "</ul>" + checksHowHtml(parts);
 }
 
 // ---------------------------------------------------------------- render
@@ -1341,7 +1351,8 @@ code{background:var(--card);border-radius:4px;padding:1px 5px;font:var(--fs-3) v
 .inc .st{float:right;font-size:var(--fs-2);padding:2px 8px;border-radius:10px;border:1px solid var(--line)}
 .st-done{color:var(--good-t)}.st-working{color:var(--accent-t)}.st-authorized{color:var(--warn-t)}
 .st-blocked{color:var(--bad-t)}.st-pending{color:var(--dim)}
-.dp-checks-st{list-style:none;padding-left:0}.dp-checks-st .dp-run{margin-left:19px}
+.dp-checks-st{list-style:none;padding-left:0;margin-bottom:4px}
+.dp-run-c{display:block;margin:6px 0 0}.dp-run-c>b{font-weight:600;color:var(--fg)}
 .dp-act{margin-right:6px;background:var(--card3);color:var(--fg);border:1px solid var(--line);
 border-radius:6px;padding:3px 12px;cursor:pointer}
 .dp-act[disabled]{opacity:.45;cursor:default}
@@ -1370,7 +1381,7 @@ details.dp-more[open]{display:inline}
 .dp-act[data-kind="quiet"]{background:none;border-color:transparent;color:var(--dim);padding:3px 6px}
 .dp-act[data-kind="quiet"]:not([disabled]):hover{color:var(--fg);text-decoration:underline}
 .dp-act[data-kind="quiet"][disabled]{opacity:.8}
-details.dp-run{display:block;margin:2px 0 4px;padding-left:14px}
+details.dp-run{display:block;margin:2px 0 4px;padding-left:14px;color:var(--dim);font-size:var(--fs-3)}
 details.dp-run>summary{cursor:pointer;width:fit-content;font-size:var(--fs-3);margin-left:-14px}
 .dp-path{color:var(--fg);cursor:default}
 .dp-live .dp-path{color:var(--accent-t);text-decoration:underline;cursor:pointer}
@@ -1970,17 +1981,22 @@ function reviewFoot(nq) {
     ? `<span class="dp-foot-n" role="status" aria-live="polite">Quiz <b id="dp-foot-a">0</b>/${nq}<span class="dp-foot-long"> answered</span><span id="dp-foot-msg"></span></span>`
     : `<span class="dp-foot-n" role="status" aria-live="polite"><span id="dp-foot-msg"></span></span>`;
   return `<div id="dp-foot" aria-label="send it back">${count}
-<button type="button" class="dp-tbtn" id="dp-foot-go">${nq ? "Go to quiz" : "Go to send it back"}</button>
-<button type="button" class="dp-tbtn dp-foot-copy" id="dp-foot-copy">Copy<span class="dp-foot-long">&nbsp;for session</span></button>
+<button type="button" class="dp-tbtn${nq ? " dp-primary" : ""}" id="dp-foot-go">${nq ? "Go to quiz" : "Go to send it back"}</button>
+<button type="button" class="dp-tbtn dp-foot-copy${nq ? "" : " dp-primary"}" id="dp-foot-copy">Copy<span class="dp-foot-long">&nbsp;for session</span></button>
 <script>
 (function () {
   var a = document.getElementById("dp-foot-a"), msg = document.getElementById("dp-foot-msg");
+  var go = document.getElementById("dp-foot-go"), copy = document.getElementById("dp-foot-copy");
   function qs() { return Array.prototype.slice.call(document.querySelectorAll(".q[data-qid]")); }
+  // One filled button: the quiz jump until every question has an answer,
+  // then Copy for session. With no quiz, Copy is primary from the start.
   function count() {
     if (!a) return;
     var all = qs(), n = all.filter(function (q) { return q.querySelector("input:checked"); }).length;
     a.textContent = n;
     a.parentNode.classList.toggle("dp-foot-all", n === all.length);
+    go.classList.toggle("dp-primary", n < all.length);
+    copy.classList.toggle("dp-primary", n === all.length);
   }
   document.addEventListener("change", function (e) { if (e.target.closest && e.target.closest(".q")) count(); });
   count();
@@ -2312,11 +2328,15 @@ function checksRow(inc, slug = "") {
   const all = Object.entries(checksOf(inc)).filter(([, v]) => !v.retired);
   if (!all.length) return "";
   const agg = checksAggregate(inc);
+  const parts = [];
   const items = all.map(([id, v]) => {
     const st = v.status || "pending";
-    // A passed check shows its verdict alone; an outstanding one shows its
-    // detail, the run part folded (checkDetailHtml).
-    const detail = st === "pass" ? "" : checkDetailHtml(checkLinesMd({ id, ...v }).lines, id);
+    // A passed check shows its verdict alone; an outstanding one shows what
+    // a person must do on its row and puts its commands in the card's one
+    // "how they run" fold (checkHowPart).
+    const lines = st === "pass" ? [] : checkLinesMd({ id, ...v }).lines;
+    const detail = checkShownHtml(lines);
+    parts.push(checkHowPart(v.name, lines, id));
     // A check the Dock can act on (a browser run, a claim that asks) carries
     // its address; the served page's plan.js adds run, open tab, the live
     // filmstrip and the picker. On disk the row is just text.
@@ -2349,7 +2369,7 @@ function checksRow(inc, slug = "") {
   const failed = all.filter(([, v]) => v.status === "fail").length;
   const sum = states.size > 1
     ? `<p class="dim dp-checks-sum">checks: ${CHECK_GLYPH[agg] || ""} ${passed} of ${all.length} passed${failed ? `, ${failed} failed` : ""}</p>` : "";
-  return `${sum}<ul class="dim dp-checks dp-checks-st">${items}</ul>${tick}`;
+  return `${sum}<ul class="dim dp-checks dp-checks-st">${items}</ul>${checksHowHtml(parts)}${tick}`;
 }
 
 // The family this plan belongs to, under the title: the parent and every
@@ -2497,15 +2517,20 @@ function gateLineHtml(st, g, next, nextAct, drift) {
     !(st.increments || []).some(i => i.status === "blocked");
   if (ready) return `<p class="dp-gate" data-allow="0" data-ready="1" title="${esc(gateTip(st))}">${READY_GLYPH} ` +
     `<b>Ready</b>: <a href="#inc-${next.n}">give increment ${next.n} its go</a></p>`;
+  // In review the shut gate is just the next step, not a fault: drawn in the
+  // accent like Ready, with the review page's quiz as the link. Red stays for
+  // what really holds the plan up (a blocked increment, drift, a failed check).
+  const bl = (st.increments || []).filter(i => i.status === "blocked");
+  const inReview = st.gate !== "open" && !g.allow && st.phase === "review";
+  if (inReview && !bl.length)
+    return `<p class="dp-gate" data-allow="0" data-next="1" title="${esc(gateTip(st))}">${READY_GLYPH} ` +
+      `<b>Next</b>: <a class="dp-gate-fix" href="${esc(st.slug)}.review.html#s-alignment-check">take the alignment check</a></p>`;
   const list = ns => ns.length === 1 ? `increment ${ns[0]}` : `increments ${ns.slice(0, -1).join(", ")} and ${ns[ns.length - 1]}`;
   let why;
   if (st.gate === "open") why = "opened by hand.";
-  else if (!g.allow && st.phase === "review")
-    why = `the alignment check isn't taken yet. <a class="dp-gate-fix" href="${esc(st.slug)}.review.html#s-alignment-check">Take it on the review page</a>.`;
-  else if (g.between && next) {
+  else if ((g.between && next) || inReview) {
     // A blocked increment is named with its title and the reason it was
     // blocked, and the way on is its unblock (a go from blocked), not a go.
-    const bl = (st.increments || []).filter(i => i.status === "blocked");
     if (bl.length === 1) {
       const b = bl[0];
       why = `increment ${b.n} (${esc(b.title)}) is blocked${b.note ? `: ${esc(String(b.note).replace(/\.$/, ""))}` : ""}. ` +

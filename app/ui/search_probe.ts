@@ -189,19 +189,22 @@ const names = (q: string, i: Inputs) => search(rowsOf(i), q).map((h) => h.row.na
 }
 
 // ---- words for a hidden row (palette.ts, tuck.ts) --------------------------
-// One set of words per hide state, the same in search, the Hide menu and the
-// Dock's shelf: muted "until it needs you", tucked "until you bring it back",
-// snoozed "until <time>". palette.ts and tuck.ts need a DOM and Tauri, so
-// their words are read from source.
+// One set of words per hide state, the same in the Hide menu, the Dock's
+// shelf and search's tooltips: muted "until it needs you", tucked "until you
+// bring it back", snoozed "until <time>". Search's narrow right column cuts
+// them short: "until needed", "kept hidden", "until 3 PM". palette.ts and
+// tuck.ts need a DOM and Tauri, so their words are read from source.
 {
   const src = (f: string) => readFileSync(new URL(f, import.meta.url), "utf8");
   const pal = src("./palette.ts"), tk = src("./tuck.ts");
   ok("words: tuck.ts names muted and tucked as the Hide menu and the shelf do",
     /mute: "until it needs you", tuck: "until you bring it back"/.test(tk));
-  ok("words: a hidden row's right column takes those words (no bare \"hidden\", no \"until needed\")",
-    /const untilShort = [^;]*: untilOf\(r\);/.test(pal) && !/"until needed"|: "hidden"/.test(pal));
-  ok("words: the ⇧⌘↵ hint says what it brings back in the same words",
-    pal.includes("⇧⌘↵ show all again") && pal.includes("⇧⌘↵ show all “until it needs you”") && !/unhide/.test(pal));
+  ok("words: tuck.ts has the short words for search's right column",
+    /UNTIL_SHORT[^=]*= \{ mute: "until needed", tuck: "kept hidden" \}/.test(tk));
+  ok("words: a hidden row's right column takes the short words, its tooltip the full ones",
+    /const untilShort = [^;]*UNTIL_SHORT\[r\.level\]/.test(pal) && /row\.title = r\.level \? `Hidden \$\{untilOf\(r\)\}/.test(pal) && !/: "hidden"/.test(pal));
+  ok("words: the ⇧⌘↵ hint says it brings back the muted ones (tuck_unmute_all clears mutes alone)",
+    pal.includes("⇧⌘↵ bring back the muted ones") && !pal.includes("show all again") && !/unhide/.test(pal));
 }
 
 let failed = 0;

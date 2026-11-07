@@ -31,8 +31,8 @@ tree (single-child folders folded together), one file's diff on the right.
   when all are closed. The panel lists them, and a click on one jumps to
   its line. Without a map the view says so.
 
-- **Split or Unified** (header toggle, or `v`). Narrow panes and one-sided
-  files (added, deleted) draw unified.
+- **Split or Unified** (header toggle, or `v`). A diff column under 900px
+  and one-sided files (added, deleted) draw unified.
 - **`j` / `k`** step through files in the side list's order; **`n` / `p`**
   through open findings.
 - **Risk / Path** (side toggle). Risk puts files in high, medium and low
@@ -51,8 +51,12 @@ tree (single-child folders folded together), one file's diff on the right.
   click, Enter or `n`/`p`. Closed ones fold to one line too. A line that
   carries open findings has a dot per severity in its line-number gutter.
   Hover the dots for the findings' titles, or click one to go to the worst.
-  In the seamux app, a finding picked for the Act menu has a check at the
-  card's left.
+  The current card, where its Reply, Resolve and Dismiss show, has an
+  accent edge on its left. In the seamux app, a finding picked for the Act
+  menu has a check at the card's left. In the app, Overview, Map, Split or
+  Unified and the keys sit in one **View** menu on its header row, each
+  with its key.
+- A file's status letter (M, A, D, R) names itself in its tooltip.
 - **Highlighting** is highlight.js over each side's whole file, so a change
   inside a block comment or a template string reads right. Changed words in
   a paired removed/added line are marked.

@@ -74,6 +74,10 @@ export function say(text: string, action?: { label: string; run: () => void }, b
  *  when the row comes back. The level values themselves are unchanged. */
 export const UNTIL: Record<Exclude<Level, "snooze">, string> = { mute: "until it needs you", tuck: "until you bring it back" };
 
+/** The same, cut to a narrow column (search's right edge): the full words
+ *  above go in the row's tooltip. */
+export const UNTIL_SHORT: Record<Exclude<Level, "snooze">, string> = { mute: "until needed", tuck: "kept hidden" };
+
 /** "until it needs you", "until 3:00 PM", "until you bring it back". */
 export function untilSaid(level: Level, until?: number, now = new Date()): string {
   if (level === "snooze") return until ? `until ${wakesAt(until, now)}` : "for now";

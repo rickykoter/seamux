@@ -1119,14 +1119,26 @@ const working = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + "
   // One plain gate line: the state leads, the fix is a link, and the root
   // and phase wait in the line's hover title. No folder name in its text.
   const gl = (working.match(/<h2>Gate<\/h2><p class="dp-gate"[\s\S]*?<\/p>/) || [""])[0];
-  const tip = ((gl.match(/<p class="dp-gate" data-allow="\d" title="([^"]*)">/) || [])[1] || "").split("\n");
-  ok("working: the gate line leads with its state and links to the quiz",
-    /data-allow="0" title="[^"]*"><svg[\s\S]*?<\/svg> <b>Gate shut<\/b>: the alignment check isn't taken yet\. <a class="dp-gate-fix" href="[^"]+\.review\.html#s-alignment-check">Take it on the review page<\/a><\/p>$/.test(gl), gl);
+  const tip = ((gl.match(/<p class="dp-gate" data-allow="\d"(?: data-next="1")? title="([^"]*)">/) || [])[1] || "").split("\n");
+  // In review the shut gate is only the next step: accent, not red, and no
+  // "Gate shut" (red is kept for a block, drift or a failed check).
+  ok("working: in review the gate line names the next step in the accent and links to the quiz",
+    /data-allow="0" data-next="1" title="[^"]*"><svg[^>]*>.*var\(--accent\).*?<\/svg> <b>Next<\/b>: <a class="dp-gate-fix" href="[^"]+\.review\.html#s-alignment-check">take the alignment check<\/a><\/p>$/.test(gl) &&
+      !gl.includes("Gate shut") && !gl.includes("var(--bad)"), gl);
   ok("working: the gate line's title holds the full root and phase",
     path.isAbsolute(tip[0]) && tip[0].endsWith("/" + path.basename(REPO)) && tip[1] === "phase: review (waiting on the review)", JSON.stringify(tip));
   ok("working: no root, folder name or phase word in the gate line's text",
     !/<code>/.test(gl) && !/· phase/.test(gl) && !gl.includes("dp-gate-where") &&
       !gl.replace(/title="[^"]*"/g, "").includes(path.basename(REPO)), gl);
+  // A blocked increment is a real hold even in review: red, named, with its
+  // unblock. The reset puts the plan back as it was for what follows.
+  const glNow = () => (fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8")
+    .match(/<h2>Gate<\/h2><p class="dp-gate"[\s\S]*?<\/p>/) || [""])[0];
+  const blk = cli("block", spec.slug, "1", "the staging outbox is down").status === 0 && glNow();
+  ok("working: in review a blocked increment still draws the gate line red and names it",
+    !!blk && /data-allow="0" title="[^"]*"><svg[^>]*>.*var\(--bad\).*?<\/svg> <b>Gate shut<\/b>: increment 1 \([^)]+\) is blocked: the staging outbox is down\. When that is sorted, <a href="#inc-1">unblock increment 1<\/a><\/p>$/.test(blk) &&
+      !blk.includes("data-next"), String(blk));
+  ok("working: the reset after it brings back the Next line", cli("reset", spec.slug, "1").status === 0 && glNow().includes('data-next="1"'), glNow());
 }
 ok("working surface renders controls disabled on disk",
   working.includes('class="dp-act"') && working.includes("disabled"));
@@ -1140,6 +1152,36 @@ ok("working surface has the auto-refresh checkbox, with a short label for a narr
 ok("surfaces: the wide rail shows children only under the section the reader is in",
   working.includes(".dp-toc>li:not(.dp-here)>.dp-sub{display:none}") &&
   /var here = !!cur && li === cur\.a\.parentNode;/.test(working) && working.includes('li.classList.toggle("dp-here", here)'));
+// The spy marks one rail item at a time (the child the reader is on, else
+// its section); at the page's end the last section in view wins; a jump pins
+// its target until the reader scrolls by wheel, touch, key or scrollbar.
+ok("surfaces: the rail marks exactly one item current",
+  working.includes("var one = curSub || cur;") && working.includes("var on = l === one;") &&
+  !working.includes("var on = l === cur || l === curSub;"));
+ok("surfaces: at the page's end the last section in view is current",
+  working.includes("window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2") &&
+  /if \(isSec && \(r\.top <= line \|\| \(end && r\.top < window\.innerHeight - 24\)\)\) cur = l;/.test(working));
+ok("surfaces: a rail jump keeps its target current until the reader scrolls",
+  working.includes("pinned = linkFor(target);") &&
+  ["wheel", "touchmove"].every(ev => working.includes(`window.addEventListener("${ev}", unpin, { passive: true });`)) &&
+  working.includes("if (e.target === document.documentElement) unpin();") && /PageDown\|Home\|End\| \)\$\/\.test\(e\.key\)\) unpin\(\)/.test(working));
+// Light mode: a folded head keeps its full dim colour (at .75 it fell under
+// 4.5:1 on the light ground), and diagram strokes draw darker than line2.
+{
+  const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255);
+  const lum = c => { const [r, g, b] = hex(c).map(x => x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+  const tok = (name) => (working.match(new RegExp(`:root\\[data-theme="light"\\] \\{[\\s\\S]*?--ef-${name}: (#[0-9a-f]{6})`)) || [])[1];
+  const bg = tok("bg"), dim = tok("text-dim"), card3 = tok("card3");
+  const stroke = (working.match(/:root\[data-theme="light"\]\{--dg-stroke:(#[0-9a-f]{6})\}/) || [])[1];
+  ok("surfaces: folded heads carry no extra opacity in light, and their text clears 4.5:1",
+    working.includes(':root:not([data-theme="light"]) .dp-folded>h2,:root:not([data-theme="light"]) .dp-fold-wait>h2{opacity:.75}') &&
+    !working.includes(".dp-folded>h2,.dp-fold-wait>h2{opacity:.75}") && bg && dim && ratio(dim, bg) >= 4.5, `${dim} on ${bg}`);
+  ok("surfaces: light diagram strokes are darker than line2 and stand off the node fill",
+    !!stroke && ratio(stroke, card3) >= 3 && ratio(stroke, bg) >= 3 &&
+    working.includes('nodeBorder: v("--dg-stroke")') && working.includes('primaryBorderColor: v("--dg-stroke")') && !/Border(Color)?: v\("--line2"\)/.test(working),
+    `${stroke} on ${card3}/${bg}`);
+}
 ok("surfaces: below 600px a Sections select replaces the rail's strip of links",
   working.includes("@media (max-width:599px){.dp-toc{display:none}.dp-pick{display:block}}") &&
   working.includes('var pick = el("select", "dp-pick");') && working.includes('var pick0 = el("option", "", "Sections");'));
@@ -1175,9 +1217,22 @@ ok("surfaces: below 600px a Sections select replaces the rail's strip of links",
   // status line; a passed one has none to fold.
   const w2 = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
   const pend = w2.split("<li").map(x => x.split("</li>")[0]).filter(x => x.includes('title="check ') && x.includes('stroke="var(--faint)"'));
-  ok("working surface: an outstanding check's recipe and run fold into <details>",
-    pend.length > 0 && pend.every(li => !/<br>(recipe|run —) /.test(li)) && pend.some(li => li.includes('<details class="dp-run"><summary>how it runs</summary>')),
-    pend.slice(0, 1).join(""));
+  // One row per check, and ONE fold per card holding every outstanding
+  // check's commands, each under its name with its id last.
+  const wCards = w2.split('<div class="inc" id="inc-').slice(1).map(c => c.split('<div class="dp-acts">')[0]);
+  const card1 = wCards[0] || "";
+  // The fold's label counts: "how it runs" over one check's commands, "how
+  // they run" over several.
+  const foldOk = c => { const parts = (c.match(/<span class="dp-run-c" data-id=/g) || []).length;
+    return parts === 0 ? !c.includes('<details class="dp-run">')
+      : c.includes(`</ul><details class="dp-run"><summary>how ${parts === 1 ? "it runs" : "they run"}</summary><span class="dp-run-c"`); };
+  ok("working surface: an outstanding check is one row, its recipe and run in the card's one fold",
+    pend.length > 0 && pend.every(li => !/<br>(recipe|run —) /.test(li) && !li.includes("<details")) &&
+    wCards.every(c => (c.match(/<details class="dp-run">/g) || []).length <= 1 && foldOk(c)) &&
+    /<details class="dp-run"><summary>how (it|they) runs?<\/summary><span class="dp-run-c" data-id="test-retry-sweep-spec"><b>retry sweep spec<\/b><br>run: <code>bundle exec rspec/.test(card1),
+    card1);
+  ok("working surface: a card is one row per check, then one fold row",
+    (card1.match(/<li title="check /g) || []).length >= 2 && (card1.match(/<summary>/g) || []).length === 1, card1);
   // Said once: the card's pill says pending; a check not yet run carries its
   // glyph, its name and its kind in words, and its id only in the title and
   // the fold.
@@ -1185,8 +1240,10 @@ ok("surfaces: below 600px a Sections select replaces the rail's strip of links",
   ok("working surface: a check not yet run shows no state word and no id beside its name",
     pend.every(li => !/pending/.test(lead(li).replace(/<[^>]+>/g, "")) && !/<code>/.test(lead(li)) && !/\[(test|manual)/.test(li)),
     pend.slice(0, 1).join(""));
-  ok("working surface: the check id sits in the title and closes the fold",
-    pend.some(li => /^ title="check ([^"]+)"[\s\S]*<br>check id <code>\1<\/code><\/details>/.test(li)), pend.slice(0, 1).join(""));
+  ok("working surface: the check id sits in the title and closes its part of the fold",
+    pend.some(li => { const id = (li.match(/^ title="check ([^"]+)"/) || [])[1];
+      return id && w2.includes(`<span class="dp-run-c" data-id="${id}">`) && new RegExp(`data-id="${id}"><b>[^<]+</b><br>[\\s\\S]*?<br>check id <code>${id}</code></span>`).test(w2); }),
+    pend.slice(0, 1).join(""));
   ok("working surface: kinds read as words",
     /<span class="dp-kind">· test<\/span>/.test(w2) && /<span class="dp-kind">· check by hand<\/span>/.test(w2));
   ok("working surface: no summary line while every check of an increment stands the same",
@@ -1197,11 +1254,11 @@ ok("surfaces: below 600px a Sections select replaces the rail's strip of links",
   ok("working surface: what a person must do (acquire, claim, expect, note) stays outside the fold",
     /recipe /.test(HOW) && /run — /.test(HOW) && !/acquire|claim|expect|note|brief/.test(HOW), HOW);
   // The review page folds the same way: one line per check, the run detail
-  // under the same "how it runs".
+  // under the card's one "how they run".
   const rvChecks = review.split("<li").map(x => x.split("</li>")[0]).filter(x => /^ title="check [^"]+"><svg class="dp-mark"/.test(x));
-  ok("review surface: a check's run lines fold under how it runs",
-    rvChecks.length > 0 && rvChecks.every(li => !/<br>(recipe |run — |run: )/.test(li)) &&
-    rvChecks.some(li => li.includes('<details class="dp-run"><summary>how it runs</summary>run: ')),
+  ok("review surface: a card's run lines fold under one how they run",
+    rvChecks.length > 0 && rvChecks.every(li => !/<br>(recipe |run — |run: )/.test(li) && !li.includes("<details")) &&
+    /<\/ul><details class="dp-run"><summary>how (it|they) runs?<\/summary><span class="dp-run-c" data-id="[^"]+"><b>[^<]+<\/b><br>run: /.test(review),
     rvChecks.slice(0, 1).join(""));
   ok("review surface: a check reads as its name and kind, the id only in its title and fold",
     rvChecks.every(li => !/<code>/.test(li.replace(/<details[\s\S]*$/, "")) && !/\[(test|manual|e2e)/.test(li)) &&
@@ -1219,6 +1276,14 @@ ok("surfaces: below 600px a Sections select replaces the rail's strip of links",
     /<div id="dp-foot"[^>]*>[\s\S]*Quiz <b id="dp-foot-a">0<\/b>\/\d+/.test(review) &&
     review.includes('id="dp-foot-copy"') && review.includes('getElementById("dp-copyback")') &&
     !working.includes('id="dp-foot"'));
+  // One filled button in the foot: the quiz jump while a question is open,
+  // Copy for session once every one has an answer.
+  ok("review surface: the foot's primary is Go to quiz until every question is answered, then Copy",
+    /<button type="button" class="dp-tbtn dp-primary" id="dp-foot-go">Go to quiz<\/button>/.test(review) &&
+    /<button type="button" class="dp-tbtn dp-foot-copy" id="dp-foot-copy">/.test(review) &&
+    review.includes('go.classList.toggle("dp-primary", n < all.length);') &&
+    review.includes('copy.classList.toggle("dp-primary", n === all.length);') &&
+    review.includes("#dp-foot .dp-tbtn.dp-primary{background:var(--fg)") && !review.includes("#dp-foot .dp-foot-copy{background"));
   // Send it back is one line and the general box; the foot bar is the only
   // Copy. With every question answered, the foot's go lands on the box.
   const send = (review.match(/<h2>Send it back<\/h2>[\s\S]*?<script>/) || [""])[0];

@@ -4,18 +4,18 @@ import type { Decision } from "./decisions";
 import { catSvg } from "./panecat";
 import { asideOf, rowsOf, search, tailOf, type FamilyIn, type Field, type Hit, type Inputs, type PlanIn, type Pr, type Row, type TileIn } from "./search";
 import { ago } from "./tiles";
-import { say, untilSaid, wakesAt, type Level, type TuckRow } from "./tuck";
+import { say, UNTIL_SHORT, untilSaid, wakesAt, type Level, type TuckRow } from "./tuck";
 
 /** A hidden row's until: "until it needs you", "until 3:00 PM", "until you
  *  bring it back". Every level reads as hidden; only the until differs. */
 const untilOf = (r: Row): string =>
   r.level === "mute" || r.level === "snooze" || r.level === "tuck" ? untilSaid(r.level as Level, r.until || undefined) : "";
 
-/** A hidden row's until, for the row itself, in the words the Hide menu and
- *  the Dock's shelf use: "until it needs you", "until you bring it back", or
- *  a snooze's "until 3 PM" (its :00 dropped; the tooltip has the full time). */
+/** A hidden row's until, for the row's narrow right column: "until needed",
+ *  "kept hidden", or a snooze's "until 3 PM" (its :00 dropped). The full
+ *  words (untilOf) are in the row's tooltip. */
 const untilShort = (r: Row): string =>
-  r.level === "snooze" && r.until ? `until ${wakesAt(r.until).replace(/:00(?=\s)/, "")}` : untilOf(r);
+  r.level === "snooze" ? (r.until ? `until ${wakesAt(r.until).replace(/:00(?=\s)/, "")}` : "for now") : r.level === "mute" || r.level === "tuck" ? UNTIL_SHORT[r.level] : "";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -267,14 +267,13 @@ export class Palette {
   }
 
   /** The keys that do something now: ⌘↵ only on a hidden row, ⇧⌘↵ only
-   *  while some row is hidden until it needs you. ⇧⌘↵ (tuck_unmute_all)
-   *  brings back only those, so it says "all again" only when they are all
-   *  the hidden rows, and otherwise names them in their rows' words. */
+   *  while some row is muted. ⇧⌘↵ (tuck_unmute_all) brings back the muted
+   *  ones alone, never a snoozed or tucked one, and its hint says just that. */
   private drawFoot(sel: Row | undefined): void {
     const keys = ["↵ jump"];
     if (sel?.level) keys.push("⌘↵ show again");
     const muted = this.rows.filter((r) => r.level === "mute").length;
-    if (muted) keys.push(muted === this.rows.filter((r) => r.level).length ? "⇧⌘↵ show all again" : "⇧⌘↵ show all “until it needs you”");
+    if (muted) keys.push("⇧⌘↵ bring back the muted ones");
     keys.push("esc");
     this.foot.textContent = keys.join(" · ");
   }

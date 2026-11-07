@@ -24,7 +24,7 @@
 .r-btn.quiet { border-color: transparent; color: var(--muted); background: none; }
 .r-btn.quiet:hover:not(:disabled) { color: var(--fg); border-color: var(--line); }
 .r-input:focus-visible, .r-select:focus-visible, .r-btn:focus-visible, .r-item:focus-visible, .r-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.r-err { margin: 0; color: var(--bad); font-size: var(--fs-2); overflow-wrap: anywhere; }
+.r-err { margin: 0; color: var(--bad-t); font-size: var(--fs-2); overflow-wrap: anywhere; }
 .r-err:empty { display: none; }
 
 /* suggestions under the input */
@@ -69,13 +69,13 @@
 .r-acts { display: flex; gap: 6px; flex-wrap: nowrap; align-items: center; margin-left: auto; flex: none; }
 .r-meta { color: var(--muted); font-size: var(--fs-2); white-space: nowrap; }
 .r-grow { flex: 1; }
-.r-link { font-size: var(--fs-2); color: var(--accent); overflow-wrap: anywhere; }
+.r-link { font-size: var(--fs-2); color: var(--accent-t); overflow-wrap: anywhere; }
 .r-chip { font-size: var(--fs-1); padding: 1px 8px; border-radius: 9px; white-space: nowrap; background: var(--term); color: var(--muted); }
-.r-chip.ready, .r-chip.pass { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
+.r-chip.ready, .r-chip.pass { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good-t); }
 /* The page's gate pill colour: a blocked review reads as a blocker does. */
 .r-chip.blocked { background: color-mix(in srgb, var(--ef-text-red) 16%, transparent); color: var(--ef-text-red); }
-.r-chip.failed { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
-.r-chip.running { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+.r-chip.failed { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad-t); }
+.r-chip.running { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent-t); }
 
 /* The framed page's tools on this row (lookout/page/review.js postState):
    its gate pill, live state and view buttons, drawn the page's way. */
@@ -83,30 +83,23 @@
 .r-gate:hover:not(:disabled) { background: var(--term); }
 .r-gate:disabled { cursor: default; }
 .r-gate.blocked { color: var(--ef-text-red); border-color: var(--ef-text-red); }
-.r-gate.pass { color: var(--good); border-color: var(--good); }
+.r-gate.pass { color: var(--good-t); border-color: var(--good); }
 .r-go { margin-left: 5px; font-weight: 400; opacity: 0.8; }
 .r-mode { font-size: var(--fs-1); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 32ch; }
-.r-mode.live { color: var(--good); }
-.r-mode.live::before { content: "● "; }
+.r-mode.live { color: var(--good-t); }
 .r-mode.down { color: var(--ef-text-orange); }
-.r-mode.down::before { content: "○ "; }
-/* Short of width: only the dot, the words in its tooltip. */
+/* Live or disconnected is only its dot at every width, the words in its tooltip. */
 .r-mode.only { overflow: visible; }
 .r-mode.live.only::before { content: "●"; }
 .r-mode.down.only::before { content: "○"; }
 .r-busy { flex: 0 1 auto; min-width: 0; max-width: 40ch; }
-.r-sep { width: 1px; align-self: stretch; margin: 3px 2px; background: var(--line); }
-.r-tool[aria-pressed="true"] { color: var(--fg); border-color: var(--line); background: var(--term); }
-.r-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-.r-seg-btn { font: inherit; font-size: var(--fs-2); padding: 4px 9px; border: 0; background: none; color: var(--muted); cursor: pointer; }
-.r-seg-btn + .r-seg-btn { border-left: 1px solid var(--line); }
-.r-seg-btn[aria-pressed="true"] { background: var(--term); color: var(--fg); font-weight: 600; }
-.r-keys { width: 26px; padding-left: 0; padding-right: 0; text-align: center; }
-.r-gate:focus-visible, .r-seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* View ▾: the framed page's view tools in one menu, each with its key. */
+.r-view-btn[aria-expanded="true"] { color: var(--fg); background: var(--term); }
+.r-gate:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .r-ctl { padding: 0 14px 8px; display: flex; flex-direction: column; gap: 8px; }
 .r-detail { margin: 0; font-size: var(--fs-2); color: var(--muted); overflow-wrap: anywhere; }
-.r-detail.bad { color: var(--bad); }
+.r-detail.bad { color: var(--bad-t); }
 .r-now { margin: 0; font: var(--fs-2) ui-monospace, Menlo, monospace; color: var(--fg); opacity: 0.85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* the ⋯ menu */
 .r-more { position: relative; }
@@ -120,8 +113,13 @@
 .r-menu-title { margin: 2px 8px 2px; font-size: var(--fs-3); font-weight: 600; color: var(--fg); max-width: 320px; overflow-wrap: anywhere; }
 .r-mhead-row:not(.cut) .r-menu-title { display: none; }
 .r-menu-sep { height: 1px; margin: 4px 2px; background: var(--line); }
-/* A tool folded off the row, its key at the end. */
-.r-menu-tool { display: flex; align-items: center; gap: 16px; }
+/* A View tool, a check while it is on, its key at the end. */
+.r-menu-tool { display: flex; align-items: center; gap: 8px; min-width: 200px; }
+.r-check { width: 12px; height: 12px; flex: none; display: grid; place-items: center; }
+.r-check svg { width: 12px; height: 12px; fill: none; stroke: var(--accent); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.r-menu-tool[aria-checked="true"] { color: var(--fg); }
+/* No column for checks in a menu where nothing is checked. */
+.r-menu:not(:has(.r-check svg)) .r-check { display: none; }
 .r-kbd { margin-left: auto; font: var(--fs-1) ui-monospace, Menlo, monospace; color: var(--muted); padding: 0 5px; border: 1px solid var(--line); border-radius: 5px; }
 /* The Act menu's top: what it acts on. */
 .r-menu-picks { display: flex; flex-direction: column; gap: 3px; padding-bottom: 2px; width: 300px; max-width: 70vw; }

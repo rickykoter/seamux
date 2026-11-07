@@ -2,12 +2,14 @@
 // that can move onto this app's, and tmux panes that stopped with their
 // server and can restart (crates/seamux-app/src/migrate_app.rs).
 //
-// It never blocks the app. Review lists each one with its own button; a
-// busy one (working, or waiting on you) can be asked to move once idle, and
-// the banner moves it when it gets there. The one-click "all" button sits on
-// the banner's own line. Later hides the banner until the next launch, and it
-// hides itself once nothing is left to move (after showing how the last one
-// went, unless that failed).
+// It never blocks the app. Review opens (and closes) a short list, each one
+// with its own button; a busy one (working, or waiting on you) can be asked
+// to move once idle, and the banner moves it when it gets there. The
+// one-click "all" button sits on the banner's own line. Later hides the
+// banner until the next launch, and it hides itself once nothing is left to
+// move (after showing how the last one went). When all that is left failed,
+// it says so with Try again and Dismiss: a failed restart stays on offer
+// (the registry keeps its gone pane), so trying again is the same apply.
 import { invoke } from "@tauri-apps/api/core";
 
 type Kind = "adopt" | "resume" | "restart" | "revive";
@@ -95,10 +97,14 @@ export class MigrateBanner {
   /** What failed this run, by session, kept so a later success cannot hide
    *  it; a retry replaces its entry, and a retry that works clears it. */
   private failed = new Map<string, string>();
+  /** The offers that failed, kept to try them again. */
+  private failedOffers = new Map<string, Offer>();
   /** Later was pressed: the banner stays away until the next launch. */
   private closed = false;
-  private review = button("Review", "migrate-review");
+  private review = button("Review ▾", "migrate-review");
   private later = button("Later");
+  /** Failed: the failed ones again. */
+  private retry = button("Try again", "migrate-retry");
   /** The banner line's one-click button: every idle one at once. */
   private all = button("", "migrate-all");
 
@@ -110,18 +116,22 @@ export class MigrateBanner {
     this.all.addEventListener("click", () => {
       for (const o of this.idle()) void this.apply(o);
     });
+    review.setAttribute("aria-expanded", "false");
     review.addEventListener("click", () => {
       this.open = !this.open;
-      review.textContent = this.open ? "Hide" : "Review";
+      review.textContent = this.open ? "Review ▴" : "Review ▾";
+      review.setAttribute("aria-expanded", String(this.open));
       this.draw();
     });
+    this.retry.addEventListener("click", () => {
+      for (const o of this.retryable()) void this.apply(o);
+    });
     const later = this.later;
-    later.title = "Hide until the app starts again";
     later.addEventListener("click", () => this.close());
     // The line on its own row, the buttons under it: beside them, at rail
     // width, the line wrapped a word at a time.
     const acts = el("div", "migrate-acts");
-    acts.append(this.all, review, later);
+    acts.append(this.all, this.retry, review, later);
     head.append(mark(), this.line, acts);
     this.say.hidden = true;
     this.el.append(head, this.list, this.say);
@@ -154,6 +164,12 @@ export class MigrateBanner {
     return this.shown().filter((o) => !o.busy && !this.running.has(key(o)));
   }
 
+  /** The failed ones that can be tried again: the fresh offer when it is
+   *  still listed, else the one kept from the failure. */
+  private retryable(): Offer[] {
+    return [...this.failedOffers].filter(([k]) => !this.skipped.has(k) && !this.running.has(k)).map(([k, o]) => this.offers.find((x) => key(x) === k) ?? o);
+  }
+
   private close(): void {
     window.clearTimeout(this.timer);
     window.clearTimeout(this.doneTimer);
@@ -166,6 +182,7 @@ export class MigrateBanner {
   private reset(): void {
     this.moved.clear();
     this.failed.clear();
+    this.failedOffers.clear();
     this.say.textContent = "";
     this.say.hidden = true;
     this.el.classList.remove("done", "failed");
@@ -179,21 +196,36 @@ export class MigrateBanner {
       this.el.hidden = true;
       return;
     }
+    // Nothing left but what failed (and nothing still running): say so,
+    // with Try again and Dismiss.
+    const left = offers.filter((o) => !this.failed.has(key(o)));
+    if (!left.length && this.failed.size && !this.running.size) {
+      this.el.hidden = false;
+      this.el.classList.add("done", "failed");
+      this.line.textContent = this.failed.size === 1 ? "1 did not come back" : `${this.failed.size} did not come back`;
+      this.tell([...this.failed.values()].join(" · "), true);
+      this.all.hidden = true;
+      this.review.hidden = true;
+      this.retry.hidden = !this.retryable().length;
+      this.later.hidden = false;
+      this.later.textContent = "Dismiss";
+      this.later.title = "Hide this until the app starts again";
+      this.list.hidden = true;
+      return;
+    }
+    this.retry.hidden = true;
+    this.later.textContent = "Later";
+    this.later.title = "Hide until the app starts again";
+    if (!offers.length && this.running.size) {
+      // Trying again one the backend no longer lists: wait for its answer.
+      this.line.textContent = "Trying again…";
+      this.retry.hidden = true;
+      this.later.hidden = true;
+      return;
+    }
     if (!offers.length) {
-      // Nothing left. Any failure in the run stays, with Later to dismiss
-      // it; a clean run shows briefly, then the banner goes. With nothing
-      // said, it goes at once.
-      if (this.failed.size) {
-        this.el.hidden = false;
-        this.el.classList.add("done", "failed");
-        this.line.textContent = `${this.failed.size} did not come back`;
-        this.tell([...this.failed.values()].join(" · "), true);
-        this.all.hidden = true;
-        this.review.hidden = true;
-        this.later.hidden = false;
-        this.list.hidden = true;
-        return;
-      }
+      // Nothing left: a clean run shows briefly, then the banner goes. With
+      // nothing said, it goes at once.
       // Done means something moved this run (the tally), not that a message
       // is left over: dismissing every offer with × moves nothing and hides.
       if (!this.moved.size || this.el.hidden) {
@@ -221,7 +253,11 @@ export class MigrateBanner {
     this.later.hidden = false;
     this.line.textContent = summary(offers);
     this.list.hidden = !this.open;
-    this.list.replaceChildren(...offers.map((o) => this.row(o)));
+    // A row's state shows only where they differ (a busy one among idle
+    // ones): ten rows of "idle" say nothing.
+    const said = offers.map((o) => this.stateOf(o));
+    const alike = said.every((t) => t === said[0]);
+    this.list.replaceChildren(...offers.map((o, i) => this.row(o, !alike || o.busy ? said[i] : "")));
     const idle = this.idle();
     this.all.hidden = !idle.length;
     if (idle.length) {
@@ -232,13 +268,17 @@ export class MigrateBanner {
     }
   }
 
-  private row(o: Offer): HTMLElement {
+  private stateOf(o: Offer): string {
+    return this.failed.has(key(o)) ? "didn't start" : (STATE[o.state] ?? o.state);
+  }
+
+  private row(o: Offer, said: string): HTMLElement {
     const k = key(o);
     const r = el("div", "migrate-row");
     const name = el("b", "", o.title || o.cwd.split("/").pop() || o.pane.slice(0, 8));
     name.title = o.cwd;
-    const state = el("span", `migrate-state${o.busy ? " busy" : ""}`, STATE[o.state] ?? o.state);
-    r.append(name, state);
+    r.append(name);
+    if (said) r.append(el("span", `migrate-state${o.busy ? " busy" : ""}${this.failed.has(k) ? " bad" : ""}`, said));
     // Where it moves; a restart's banner line already says why it stopped.
     if (o.kind !== "restart") {
       const where = el("span", "migrate-where", o.kind === "resume" ? "to cmux" : "from cmux");
@@ -281,13 +321,21 @@ export class MigrateBanner {
       const v = o.kind === "restart" ? "restarted" : o.kind === "revive" ? "brought back" : "moved";
       this.moved.set(v, (this.moved.get(v) ?? 0) + 1);
       this.failed.delete(k);
+      this.failedOffers.delete(k);
       this.queued.delete(k);
     } catch (e) {
       // Busy again (it started a turn): back in the queue.
       if (String(e).includes("busy")) this.queued.add(k);
       else {
-        this.failed.set(k, `${o.title || o.pane.slice(0, 8)}: ${String(e)}`);
-        this.tell(String(e), true);
+        const name = o.title || o.pane.slice(0, 8);
+        // Its name leads the line once; the error need not say it again.
+        // Only the title as a whole word, never inside another word or a
+        // path, and never a title too short to tell apart ("a").
+        const esc = o.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const why = o.title.length >= 3 ? String(e).replace(new RegExp(`(?<![\\w./-])${esc}(?![\\w./-])`, "g"), "it") : String(e);
+        this.failed.set(k, `${name}: ${why}`);
+        this.failedOffers.set(k, o);
+        this.tell(`${name}: ${why}`, true);
       }
     } finally {
       this.running.delete(k);
@@ -300,6 +348,7 @@ export class MigrateBanner {
     this.queued.delete(key(o));
     // Given up on: its failure no longer needs saying.
     this.failed.delete(key(o));
+    this.failedOffers.delete(key(o));
     if (o.kind === "restart") {
       try {
         await invoke("migrate_forget", { pane: o.pane });

@@ -57,15 +57,16 @@ type PageState = {
 };
 /**
  * How the header row gives up width when it runs short, one step at a time:
- * the GitHub link folds into ⋯, the live state becomes only its dot, then
- * Overview (and Map), Split or Unified and ? fold into ⋯, Findings ▸ becomes
- * an icon and "Act on N picked" becomes "Act (N)". The title keeps
+ * the GitHub link folds into ⋯, the View ▾ menu's items (Overview, Map,
+ * Split or Unified, keyboard shortcuts) move to the top of ⋯, Findings ▸
+ * becomes an icon and "Act on N picked" becomes "Act (N)". The title keeps
  * TITLE_MIN until every step is taken, and never goes under 12ch before
  * that (review.css .r-name); only then may it shrink further. The gate pill
- * and the Act button never fold. While the page draws unified because it is
- * too narrow for split, Split or Unified is not on the row at all.
+ * and the Act button never fold. Live is only its dot at every width, so it
+ * takes no step. While the page draws unified because it is too narrow for
+ * split, Split and Unified are not in the View menu at all.
  */
-const FOLDS = ["github", "live", "overview", "layout", "keys", "findings", "act"] as const;
+const FOLDS = ["github", "view", "findings", "act"] as const;
 type Fold = (typeof FOLDS)[number];
 /** The title keeps this much width before anything folds. */
 const TITLE_MIN = 160;
@@ -698,7 +699,7 @@ export class ReviewView {
 
   /**
    * The one header row: the name, its state, then what can be done, then the
-   * framed page's tools (its gate pill beside the state, its view buttons by
+   * framed page's tools (its gate pill beside the state, its View ▾ menu by
    * the ⋯). `more` is the ⋯ menu's key and items; it also takes whatever
    * the row folds (FOLDS, `this.fold` of them) when the width runs short.
    * `meta` shows inline unless there is a ⋯ menu to hold it.
@@ -728,14 +729,14 @@ export class ReviewView {
       if (folds.has("github")) folded.push(a);
       else h.append(a);
     }
-    const view = tools.view.filter((t) => !folds.has(t.fold));
-    for (const t of tools.view) if (folds.has(t.fold)) folded.push(t.item);
+    // The view tools sit in one View ▾ menu; short of width they join ⋯.
+    if (tools.view.length && folds.has("view")) folded.push(...tools.view);
     const items = [...folded, ...(folded.length && more?.items.length ? [el("div", "r-menu-sep")] : []), ...(more?.items ?? [])];
     const menu = items.length ? this.more(more?.key ?? "head", meta, items, name) : null;
     if (!menu) h.append(el("span", "r-meta", meta));
     const acts = el("div", "r-acts");
     acts.append(...buttons);
-    if (view.length) acts.append(el("span", "r-sep"), ...view.map((t) => t.el));
+    if (tools.view.length && !folds.has("view")) acts.append(this.viewMenu(tools.view));
     if (menu) acts.append(menu);
     h.append(acts);
     this.head.replaceChildren(h);
@@ -751,12 +752,12 @@ export class ReviewView {
 
   /**
    * The framed page's tools as the page posted them: the gate pill and live
-   * state, for beside the name, and Overview, Map, Split or Unified and ?,
-   * for by the ⋯, each with the item it becomes when folded into ⋯. No
-   * Overview button while the page's file list shows its own Overview row
+   * state, for beside the name, and the View menu's items: Overview, Map,
+   * Split and Unified, and the keyboard shortcuts, each with its key. No
+   * Overview item while the page's file list shows its own Overview row
    * (o still opens it). None until the page posts them.
    */
-  private pageTools(): { state: HTMLElement[]; view: { fold: Fold; el: HTMLElement; item: HTMLElement }[] } {
+  private pageTools(): { state: HTMLElement[]; view: HTMLElement[] } {
     const p = this.pageState;
     if (!p) return { state: [], view: [] };
     const gate = btn(p.gate.text, () => this.tell("gate"), `r-gate ${p.gate.cls}`);
@@ -768,48 +769,43 @@ export class ReviewView {
     }
     gate.disabled = !p.gate.go;
     gate.title = p.gate.title;
-    // Short of width, live (or disconnected) is only its dot; the words move to the tooltip.
-    const dot = this.folds("live") && (p.mode.cls === "live" || p.mode.cls === "down");
+    // Live (or disconnected) is only its dot at every width; the words are in the tooltip.
+    const dot = p.mode.cls === "live" || p.mode.cls === "down";
     const mode = el("span", `r-mode ${p.mode.cls}${dot ? " only" : ""}`, dot ? "" : p.mode.text);
     mode.title = dot ? `${p.mode.text}. ${p.mode.title}` : p.mode.title;
     if (dot) {
       mode.setAttribute("role", "img");
       mode.setAttribute("aria-label", p.mode.text);
     }
-    const pressed = (b: HTMLButtonElement, on: boolean) => (b.setAttribute("aria-pressed", String(on)), b);
-    // A folded tool's menu item, its key at the end.
-    const item = (text: string, key: string, onClick: () => void) => {
-      const b = btn(text, onClick, "r-btn quiet r-menu-tool");
-      b.append(el("kbd", "r-kbd", key));
+    // A View menu item: a check while it is on, its key at the end.
+    const item = (text: string, key: string, onClick: () => void, on: boolean | null = null, role = "menuitemcheckbox") => {
+      const b = btn("", onClick, "r-btn quiet r-menu-tool");
+      const mark = el("span", "r-check");
+      if (on) mark.append(check());
+      b.append(mark, el("span", "r-tool-name", text), el("kbd", "r-kbd", key));
+      if (on === null) b.setAttribute("role", "menuitem");
+      else {
+        b.setAttribute("role", role);
+        b.setAttribute("aria-checked", String(on));
+      }
       return b;
     };
-    const view: { fold: Fold; el: HTMLElement; item: HTMLElement }[] = [];
-    if (!p.ovRow) {
-      const ov = pressed(btn("Overview", () => this.tell("overview"), "r-btn quiet r-tool"), p.overview);
-      ov.title = "What each group of changes means (o)";
-      view.push({ fold: "overview", el: ov, item: item(p.overview ? "Close the overview" : "Overview", "o", () => this.tell("overview")) });
-    }
-    if (p.hasMap) {
-      const map = pressed(btn("Map", () => this.tell("map"), "r-btn quiet r-tool"), p.map);
-      map.title = "The plan's files against the diff (m)";
-      view.push({ fold: "overview", el: map, item: item(p.map ? "Close the map" : "Map", "m", () => this.tell("map")) });
-    }
-    // Too narrow for split, the page draws unified whatever is picked: no toggle then.
+    const view: HTMLElement[] = [];
+    if (!p.ovRow) view.push(item("Overview", "o", () => this.tell("overview"), p.overview));
+    if (p.hasMap) view.push(item("Map", "m", () => this.tell("map"), p.map));
+    // Too narrow for split, the page draws unified whatever is picked: no choice then.
     if (!p.auto) {
-      const seg = el("div", "r-seg");
-      seg.setAttribute("role", "group");
-      seg.setAttribute("aria-label", "Diff layout");
-      for (const [v, label] of [["split", "Split"], ["unified", "Unified"]]) seg.append(pressed(btn(label, () => this.tell("layout", { layout: v }), "r-seg-btn"), p.layout === v));
-      seg.title = "Split or unified (v)";
-      const other = p.layout === "split" ? "unified" : "split";
-      view.push({ fold: "layout", el: seg, item: item(other === "unified" ? "Unified diff" : "Split diff", "v", () => this.tell("layout", { layout: other })) });
+      for (const [v, label] of [["split", "Split diff"], ["unified", "Unified diff"]]) view.push(item(label, "v", () => this.tell("layout", { layout: v }), p.layout === v, "menuitemradio"));
     }
-    const keys = btn("?", () => this.tell("keys"), "r-btn quiet r-keys");
-    keys.setAttribute("aria-expanded", String(p.keys));
-    keys.setAttribute("aria-label", "Keyboard shortcuts");
-    keys.title = "Keyboard shortcuts (?)";
-    view.push({ fold: "keys", el: keys, item: item("Keyboard shortcuts", "?", () => this.tell("keys")) });
+    view.push(item("Keyboard shortcuts", "?", () => this.tell("keys"), p.keys));
     return { state: [gate, mode], view };
+  }
+
+  /** The View ▾ menu: how the framed page shows the diff, each tool with its key. */
+  private viewMenu(items: HTMLElement[]): HTMLElement {
+    const b = el("button", "r-btn quiet r-view-btn", "View ▾");
+    b.title = "Overview, map, split or unified, and keys (o, m, v, ?)";
+    return this.menu("view", b, items);
   }
 
   /**
@@ -840,7 +836,7 @@ export class ReviewView {
       // The current state, not the one drawn: the menu may have closed in place.
       this.moreOpen = this.moreOpen === key ? null : key;
       this.render(true);
-      if (this.moreOpen) this.head.querySelector<HTMLElement>(".r-menu [role=menuitem]:not(:disabled):not(.r-change)")?.focus();
+      if (this.moreOpen) this.head.querySelector<HTMLElement>(".r-menu [role^=menuitem]:not(:disabled):not(.r-change)")?.focus();
     });
     wrap.append(b);
     if (open) {
@@ -854,7 +850,8 @@ export class ReviewView {
           m.append(it);
           continue;
         }
-        it.setAttribute("role", "menuitem");
+        // A View item says itself whether it is a checkbox or radio.
+        if (!it.getAttribute("role")) it.setAttribute("role", "menuitem");
         // Closed before the item acts; redrawn after, for an item that draws nothing.
         it.addEventListener("click", () => {
           this.moreOpen = null;

@@ -690,6 +690,12 @@ async function create(form, ch) {
 // ---------------------------------------------------------------- the commands
 
 const LOOK = { palette: {}, background: THEME.background, foreground: THEME.foreground, cursor: THEME.cursor, fontFamily: "ui-monospace, Menlo, monospace", fontSize: 12 };
+// The light look, as a light terminal theme answers it (Everforest Light Med).
+const LIGHT_PALETTE = ["#7a8478", "#e67e80", "#9ab373", "#c1a266", "#7fbbb3", "#d699b6", "#83c092", "#b2af9f", "#a6b0a0", "#f85552", "#8da101", "#dfa000", "#3a94c5", "#df69ba", "#35a77c", "#fffbef"];
+const LIGHT_LOOK = {
+  palette: Object.fromEntries(LIGHT_PALETTE.map((c, i) => [String(i), c])), background: "#efebd4", foreground: "#5c6a72", cursor: "#f57d26",
+  selectionBackground: "#eaedc8", fontFamily: "ui-monospace, Menlo, monospace", fontSize: 12,
+};
 const CARD = {
   kind: "pr", number: 41, title: "Reindex search when a product is renamed", state: "MERGED", author: "sam-rivera", branch: "sam/search-index",
   checks: [6, 0, 0], review: "APPROVED", additions: 96, deletions: 11, excerpt: "A rename writes a reindex job; the worker picks it up within a second.", labels: ["search"],
@@ -710,7 +716,7 @@ const handlers = {
     await new Promise((r) => setTimeout(r, 150));
     const o = migrateOffers.find((x) => x.pane === pane);
     if (pane === `P${Number(new URLSearchParams(location.search).get("migratefail") || 0) - 1}`) {
-      dropOffer(pane);
+      // As the app's restart does, a failure keeps the gone pane on offer.
       throw `tmux could not start ${o ? o.title : pane}`;
     }
     dropOffer(pane);
@@ -740,7 +746,7 @@ const handlers = {
   copy_text: () => null,
   gh_card: ({ url }) => (/\/pull\/41\b/.test(url) ? CARD : null),
 
-  term_look: () => LOOK,
+  term_look: ({ dark } = {}) => (dark === false ? LIGHT_LOOK : LOOK),
 
   // Native panes: every demo pane is one, its ANSI lines redrawn as they change.
   pty_native: ({ surfaceId }) => panes.has(surfaceId) && !plainPanes.has(surfaceId),

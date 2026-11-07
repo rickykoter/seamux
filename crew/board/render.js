@@ -498,14 +498,20 @@ function __boardRender(d) {
       '" title="' + esc(tip) + '">$' + amt + (unpriced.length ? "+" : "") + "</span>";
   }
 
-  var DIRTY = '<span class="dirty" title="Uncommitted changes in this worktree">●</span>';
+  // Uncommitted work: a hollow ring drawn by CSS (.dirty::before) in a neutral
+  // colour. A filled amber dot beside a signal's dot read as two states, and
+  // amber is "needs you".
+  var DIRTY = '<span class="dirty" role="img" aria-label="Uncommitted changes" ' +
+    'title="Uncommitted changes in this worktree"></span>';
 
   // No Wake icon on a row: jumping to the workspace and pressing ⌘E opens its
   // Wake, so an icon on every card was one more mark for little. The collector
   // still lists "wake" among the chips; it is dropped here.
   function chipsOf(a) { return (a.chips || []).filter(function (c) { return c !== "wake"; }); }
 
-  // The footer: what you recognise a row by, in one mono line. Branch, PR and
+  // The footer: what you recognise a row by, in one line that wraps only when
+  // it must. Branch, PR and issue are code tokens in mono; signals and the
+  // increments count are words in the UI's sans. Branch, PR and
   // issue are targets; status signals, progress and spend are read, not
   // clicked, so they do not react.
   function foot(a) {
@@ -533,8 +539,13 @@ function __boardRender(d) {
     (a.signals || []).forEach(function (e) {
       if (e.a) return;
       var col = lift(e.c);
+      // A status signal reads as its word, in its colour. The collector's bare
+      // "●" before some words (● lookout) is a chip's glyph; in the footer it
+      // sat beside the uncommitted mark as a second dot, so it is dropped.
+      // Glyphs that say something (✓ ✗ ⇣ ⚠) stay.
+      var word = String(e.t || "").replace(/^\u25cf\s*/, "") || String(e.t || "");
       out += '<span class="sig"' + (col ? ' style="' + col + '"' : "") +
-        ' title="' + esc(e.h) + '">' + esc(e.t) + "</span>";
+        ' title="' + esc(e.h) + '">' + esc(word) + "</span>";
     });
     if (a.meta) out += '<span class="meta">' + esc(a.meta) + "</span>";
     // Spend is in the header's tooltip (factsOf), not here: at rail width it

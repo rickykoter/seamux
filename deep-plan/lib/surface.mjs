@@ -134,7 +134,13 @@ body{max-width:none;margin:0;padding:0}
 .dp-folded>.dp-sec-body{display:none}
 .dp-fold-wait{position:relative}
 .dp-fold-wait>.dp-sec-body{position:absolute;left:0;right:0;top:0;visibility:hidden;pointer-events:none}
-.dp-folded>h2,.dp-fold-wait>h2{opacity:.75}
+/* Folded heads step back in dark only: on the light ground the dim text at
+   .75 fell under 4.5:1. */
+:root:not([data-theme="light"]) .dp-folded>h2,:root:not([data-theme="light"]) .dp-fold-wait>h2{opacity:.75}
+/* Diagram box strokes: line2 is enough on the dark cards, but on the light
+   ones it all but vanished, so light draws them darker (3:1 on the box fill). */
+:root{--dg-stroke:var(--line2)}
+:root[data-theme="light"]{--dg-stroke:#748074}
 .dp-badge{font:600 var(--fs-1)/1 var(--mono);color:var(--good-t);background:var(--ef-bg-green);border-radius:999px;padding:2px 6px;margin-left:auto}
 
 /* ---- rail: a column when wide, a sticky top bar when narrow ---- */
@@ -202,8 +208,8 @@ body{max-width:none;margin:0;padding:0}
 #dp-foot .dp-foot-n b{color:var(--fg);font-weight:600}
 #dp-foot .dp-foot-n.dp-foot-all b{color:var(--good-t)}
 #dp-foot .dp-tbtn{flex:none;font:500 var(--fs-2)/1 system-ui;white-space:nowrap}
-#dp-foot .dp-foot-copy{background:var(--fg);border-color:var(--fg);color:var(--bg);font-weight:600}
-#dp-foot .dp-foot-copy:hover{color:var(--bg);opacity:.9}
+#dp-foot .dp-tbtn.dp-primary{background:var(--fg);border-color:var(--fg);color:var(--bg);font-weight:600}
+#dp-foot .dp-tbtn.dp-primary:hover{color:var(--bg);opacity:.9}
 @media (max-width:479px){#dp-foot{padding-left:12px}#dp-foot .dp-foot-long{display:none}}
 @media (min-width:980px){#dp-foot{grid-column:2}}
 @media (min-width:1300px){#dp-foot{margin:0}}
@@ -551,24 +557,61 @@ export const SURFACE_JS = String.raw`<script>
     if (t) jump(t);
   });
   function stickyOffset() { return WIDE.matches || window.innerWidth >= 980 ? 12 : rail.offsetHeight + 8; }
+  // A jump keeps its target current until the reader scrolls (a wheel, a
+  // touch, a scrolling key or the scrollbar): the smooth scroll may stop short
+  // of the target's line at the page's end, and the rail must not then name
+  // the section above it.
+  var pinned = null;
+  function linkFor(t) { for (var i = 0; i < navLinks.length; i++) if (navLinks[i].target === t) return navLinks[i]; return null; }
   function jump(target, noHistory) {
     reveal(target);
     var y = target.getBoundingClientRect().top + window.scrollY - stickyOffset();
     window.scrollTo({ top: Math.max(0, y), behavior: "smooth" });
     if (!noHistory) try { history.replaceState(null, "", "#" + target.id); } catch (e) {}
+    pinned = linkFor(target);
+    spy();
   }
+  function unpin() { if (pinned) { pinned = null; if (!spyQueued) { spyQueued = true; requestAnimationFrame(spy); } } }
+  window.addEventListener("wheel", unpin, { passive: true });
+  // An in-page link the page does not route through jump() (the gate line's
+  // #inc-2, a footnote) scrolls on its own: the pin no longer holds.
+  window.addEventListener("hashchange", unpin);
+  document.addEventListener("click", function (e) {
+    var a = e.target && e.target.closest && e.target.closest('a[href^="#"]');
+    if (a && !e.defaultPrevented) unpin();
+  });
+  window.addEventListener("touchmove", unpin, { passive: true });
+  document.addEventListener("mousedown", function (e) { if (e.target === document.documentElement) unpin(); });
+  document.addEventListener("keydown", function (e) {
+    var t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (/^(ArrowUp|ArrowDown|PageUp|PageDown|Home|End| )$/.test(e.key)) unpin();
+  });
   var spyQueued = false;
+  // Exactly one rail item is current: the increment, ADR or diagram the
+  // reader is on, else its section. At the page's end the last section in
+  // view wins, since the ones below it can never reach the line.
   function spy() {
     spyQueued = false;
     var line = stickyOffset() + 40, cur = null, curSub = null;
+    if (pinned && pinned.target.getBoundingClientRect().height === 0) pinned = null;
+    if (pinned) {
+      if (pinned.target.classList.contains("dp-sec")) cur = pinned;
+      else { curSub = pinned; cur = linkFor(pinned.target.closest(".dp-sec")); }
+    } else {
+      var end = window.scrollY > 0 && window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
+      navLinks.forEach(function (l) {
+        var r = l.target.getBoundingClientRect();
+        if (r.height === 0) return;
+        var isSec = l.target.classList.contains("dp-sec");
+        if (isSec && (r.top <= line || (end && r.top < window.innerHeight - 24))) cur = l;
+        else if (!isSec && r.top <= line && r.bottom > line - 40) curSub = l;
+      });
+      if (curSub && (!cur || curSub.target.closest(".dp-sec") !== cur.target)) curSub = null;
+    }
+    var one = curSub || cur;
     navLinks.forEach(function (l) {
-      var r = l.target.getBoundingClientRect();
-      if (r.height === 0) return;
-      var isSec = l.target.classList.contains("dp-sec");
-      if (r.top <= line) { if (isSec) cur = l; else if (r.bottom > line - 40) curSub = l; }
-    });
-    navLinks.forEach(function (l) {
-      var on = l === cur || l === curSub;
+      var on = l === one;
       if (on !== (l.a.getAttribute("aria-current") === "true")) l.a.setAttribute("aria-current", on ? "true" : "false");
     });
     // The section the reader is in shows its children in the rail (CSS).
@@ -586,7 +629,9 @@ export const SURFACE_JS = String.raw`<script>
     var line = stickyOffset() + 41, i;
     var vis = sections.filter(function (s) { return s.getBoundingClientRect().height > 0; });
     var idx = -1;
-    for (i = 0; i < vis.length; i++) if (vis[i].getBoundingClientRect().top <= line) idx = i;
+    var from = pinned && (pinned.target.classList.contains("dp-sec") ? pinned.target : pinned.target.closest(".dp-sec"));
+    if (from && vis.indexOf(from) >= 0) idx = vis.indexOf(from);
+    else for (i = 0; i < vis.length; i++) if (vis[i].getBoundingClientRect().top <= line) idx = i;
     var t = vis[Math.max(0, Math.min(vis.length - 1, idx + dir))];
     if (t) jump(t);
   }
@@ -1455,13 +1500,13 @@ export const SURFACE_JS = String.raw`<script>
     M.initialize({ startOnLoad: false, theme: "base", themeVariables: {
       darkMode: document.documentElement.getAttribute("data-theme")==="light" ? false : true,
       fontFamily: "-apple-system, BlinkMacSystemFont, system-ui, sans-serif", fontSize: "14px",
-      background: v("--card2"), primaryColor: v("--card3"), primaryTextColor: v("--fg"), primaryBorderColor: v("--line2"),
-      secondaryColor: v("--card"), secondaryTextColor: v("--fg"), secondaryBorderColor: v("--line2"),
-      tertiaryColor: v("--card2"), tertiaryTextColor: v("--fg"), tertiaryBorderColor: v("--line2"),
-      lineColor: v("--dim"), textColor: v("--fg"), mainBkg: v("--card3"), nodeBorder: v("--line2"),
-      clusterBkg: v("--card"), clusterBorder: v("--line2"), titleColor: v("--fg"), edgeLabelBackground: v("--card2"),
+      background: v("--card2"), primaryColor: v("--card3"), primaryTextColor: v("--fg"), primaryBorderColor: v("--dg-stroke"),
+      secondaryColor: v("--card"), secondaryTextColor: v("--fg"), secondaryBorderColor: v("--dg-stroke"),
+      tertiaryColor: v("--card2"), tertiaryTextColor: v("--fg"), tertiaryBorderColor: v("--dg-stroke"),
+      lineColor: v("--dim"), textColor: v("--fg"), mainBkg: v("--card3"), nodeBorder: v("--dg-stroke"),
+      clusterBkg: v("--card"), clusterBorder: v("--dg-stroke"), titleColor: v("--fg"), edgeLabelBackground: v("--card2"),
       noteBkgColor: v("--card"), noteTextColor: v("--fg"), noteBorderColor: v("--mark"),
-      actorBkg: v("--card3"), actorBorder: v("--line2"), actorTextColor: v("--fg"), signalColor: v("--dim"), signalTextColor: v("--fg")
+      actorBkg: v("--card3"), actorBorder: v("--dg-stroke"), actorTextColor: v("--fg"), signalColor: v("--dim"), signalTextColor: v("--fg")
     } });
     Promise.resolve(M.run({ querySelector: "#dp-main pre.mermaid", suppressErrors: true }))
       .catch(function () {}).then(ready);
