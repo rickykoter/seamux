@@ -111,6 +111,7 @@
       .sheet-tab:hover { background: var(--card); color: var(--fg); }
       .sheet-tab.on { background: var(--card); border-color: var(--line); color: var(--fg); flex-shrink: 0; }
       .sheet-tab kbd, .sheet-tab-kind, .sheet-tab-dot { flex: none; }
+      .sheet-tab kbd:empty { display: none; }
       .sheet-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
       .sheet-tab kbd { font: var(--fs-1) ui-monospace, Menlo, monospace; color: var(--muted); padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; }
       .sheet-tab-kind { font-size: var(--fs-1); text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
