@@ -2,12 +2,12 @@
 /* A thin strip across the top of the Dock column. */
 .dock-new {
   display: flex; align-items: center; gap: 6px; width: 100%; height: 24px; padding: 0 12px; flex: none;
-  font: inherit; font-size: 11.5px; color: #859289; background: none; cursor: pointer; text-align: left;
-  border: 0; border-bottom: 1px solid #343e44;
+  font: inherit; font-size: 11.5px; color: var(--muted); background: none; cursor: pointer; text-align: left;
+  border: 0; border-bottom: 1px solid var(--line);
 }
 .dock-new span { flex: 1; }
-.dock-new kbd { font: 10.5px ui-monospace, Menlo, monospace; color: #6c7a72; opacity: 0; transition: opacity 0.12s; }
-.dock-new:hover, .dock-new:focus-visible { color: #d3c6aa; background: #2d353b; outline: none; }
+.dock-new kbd { font: 10.5px ui-monospace, Menlo, monospace; color: var(--muted); opacity: 0; transition: opacity 0.12s; }
+.dock-new:hover, .dock-new:focus-visible { color: var(--fg); background: var(--on); outline: none; }
 .dock-new:hover kbd, .dock-new:focus-visible kbd { opacity: 1; }
 .dock-new svg { width: 9px; height: 9px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
 
@@ -73,7 +73,7 @@
 .newws-say[hidden] { display: none; }
 .newws-foot { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
 .newws-keys { flex: 1; color: var(--muted); font-size: 11.5px; }
-.newws-go { border-color: var(--accent); }
+.newws-go { background: var(--accent); border-color: var(--accent); color: var(--ef-ink); }
 .newws .sheet-btn:disabled { opacity: 0.55; cursor: default; }
 
 /* The launch banner under New workspace (migrate.ts). */

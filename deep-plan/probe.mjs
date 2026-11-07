@@ -420,6 +420,17 @@ ok("review quiz options are selectable radios",
 ok("every increment and ADR carries a comment box, plus a general one",
   (review.match(/class="dp-note"/g) || []).length ===
     (spec.deliverables || []).length + spec.decisions.filter(d => d.adr).length + 1);
+// An increment's box waits behind a "Comment" button; text (typed or a
+// restored draft) opens it, and the copy reads every .dp-note either way.
+ok("increment comment boxes open on demand, or when they hold text",
+  (review.match(/class="dp-note-open"[^>]*>Comment<\/button>/g) || []).length === (spec.deliverables || []).length &&
+  (review.match(/<textarea class="dp-note" id="dp-note-inc-\d+"[^>]* hidden><\/textarea>/g) || []).length === (spec.deliverables || []).length &&
+  review.includes("if (t.value.trim()) noteOpen(t)") &&
+  review.indexOf("function noteOpen(") < review.indexOf("var drafts = lget("));
+// The quiz id rides as data for the grade line; the page does not print it.
+ok("quiz ids ride as data-qid, not as a printed line",
+  (review.match(/class="q" data-qid="/g) || []).length === (spec.quiz || []).length &&
+  !/>id: <code>/.test(review));
 ok("copy-back button builds the paste blob (slug + grade line + comments)",
   review.includes('id="dp-copyback"') &&
   review.includes('"deep-plan grade " + slug') &&
@@ -725,7 +736,7 @@ ok("mermaid theme follows the page theme",
   const rm = (s) => { cli("close", s); fs.rmSync(path.join(ENV.DEEP_PLAN_STATE_DIR, s + ".json"), { force: true }); };
   // The fixture's risk is dispositioned — it shows on every surface.
   ok("fixture's dispositioned risk renders on review + md",
-    review.includes("backoff cap has not been agreed") && review.includes("— accept") &&
+    review.includes("backoff cap has not been agreed") && review.includes('<span class="dp-risk-chip">accept</span>') &&
     fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".md"), "utf8").includes("disposition: accept"));
   // Authoring is permissive: a plain string and an undispositioned object render…
   const rs = JSON.parse(JSON.stringify(spec));
@@ -766,8 +777,17 @@ ok("mermaid theme follows the page theme",
   ok("every disposition shape renders", cli("render", tmpSpec(rg)).status === 0);
   const rgh = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "risk-good-plan.review.html"), "utf8");
   ok("payloads show on the surface: deliverable, ticket, note",
-    rgh.includes("mitigate: " + rg.deliverables[0].title) && rgh.includes("ticket PROJ-12") &&
-    rgh.includes("spike: run the sweep"));
+    rgh.includes('<span class="dp-risk-chip">mitigate</span><span class="dim dp-risk-pay"> ' + rg.deliverables[0].title + "</span>") &&
+    rgh.includes("ticket PROJ-12") &&
+    rgh.includes('<span class="dp-risk-chip">spike</span><span class="dim dp-risk-pay"> run the sweep'));
+  // One line per risk until asked: a chip, a "change" button, and the
+  // controls. The markup shows the controls (a page without the script keeps
+  // them); the script folds each card whose controls sit at their defaults.
+  ok("each risk is one line: a chip, a change button, the controls folded by the script",
+    (rgh.match(/class="dp-risk-change"[^>]* hidden>/g) || []).length === 5 &&
+    (rgh.match(/<div class="dp-risk-ctl">/g) || []).length === 5 &&
+    rgh.includes("function riskMoved(card)") && rgh.includes("!riskMoved(card)) { ctl.hidden = true; b.hidden = false; }") &&
+    rgh.includes("if (riskMoved(card)) riskOpen(card)"));
   const rgk = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_KEYS_DIR, "risk-good-plan.key.json"), "utf8"));
   ok("the key lists no undispositioned risk", (rgk.undispositionedRisks || []).length === 0);
   // Editing surfaces carry a card per risk with its defaults as data

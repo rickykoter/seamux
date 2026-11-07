@@ -1415,7 +1415,15 @@ function risksHtml(spec, withNotes = false) {
       `<label class="dp-risk-opt"><input type="radio" name="dp-risk-${n}" value="${d}"${v.disposition === d ? " checked" : ""}> ${d}</label>`).join(" ");
     const opts = `<option value="">— a deliverable in this plan —</option>` + titles.map(t =>
       `<option value="${esc(t)}"${o.deliverableRef === t ? " selected" : ""}>${esc(t)}</option>`).join("");
-    return `<li class="dp-risk" data-n="${n}" data-disposition="${esc(v.disposition)}" data-payload="${esc(v.payload)}">${esc(v.risk)}${shown}
+    // One line until asked: the text, a chip for the disposition, and a
+    // "change" button that shows the controls. The markup shows the controls;
+    // DP_EDITOR_JS folds them and shows the button, so a page without the
+    // script still has them. It leaves open a card whose controls differ from
+    // these defaults, e.g. a restored draft.
+    const chip = `<span class="dp-risk-chip${v.disposition ? "" : " dp-risk-none"}">${esc(v.disposition || "not decided")}</span>` +
+      `<span class="dim dp-risk-pay">${v.payload ? " " + esc(v.payload) : ""}</span>`;
+    return `<li class="dp-risk" data-n="${n}" data-disposition="${esc(v.disposition)}" data-payload="${esc(v.payload)}">${esc(v.risk)} ${chip}
+<button type="button" class="dp-risk-change" aria-expanded="false" aria-label="change risk ${n}" hidden>change</button>
 <div class="dp-risk-ctl">${radios}
 <select class="dp-risk-deliv" aria-label="deliverable that mitigates risk ${n}">${opts}</select>
 <input class="dp-risk-ticket" type="text" value="${esc(o.ticketRef || "")}" placeholder="or a filed ticket (URL or key)" aria-label="ticket that mitigates risk ${n}">
@@ -1573,13 +1581,41 @@ function dpMd(src) {
     else if (note) payload = note;
     return { d: d, payload: payload };
   }
+  // The chip names the disposition picked now; "change" shows the controls,
+  // and a card whose controls moved off their defaults (a restored draft
+  // fires change too) opens by itself.
   function riskSync(card) {
-    var d = riskPayload(card).d;
-    card.classList.toggle("dp-risk-mitigate", d === "mitigate");
+    var p = riskPayload(card);
+    card.classList.toggle("dp-risk-mitigate", p.d === "mitigate");
+    var chip = card.querySelector(".dp-risk-chip"), pay = card.querySelector(".dp-risk-pay");
+    if (chip) { chip.textContent = p.d || "not decided"; chip.classList.toggle("dp-risk-none", !p.d); }
+    if (pay) pay.textContent = p.payload ? " " + p.payload : "";
+  }
+  function riskMoved(card) {
+    return Array.prototype.some.call(card.querySelectorAll("input,select"), function (f) {
+      if (f.type === "radio") return f.checked !== f.defaultChecked;
+      // A select with no selected attribute starts on its first option.
+      if (f.tagName === "SELECT") {
+        var d0 = Array.prototype.filter.call(f.options, function (o) { return o.defaultSelected; })[0] || f.options[0];
+        return !!d0 && f.value !== d0.value;
+      }
+      return f.value !== f.defaultValue;
+    });
+  }
+  function riskOpen(card, focus) {
+    var ctl = card.querySelector(".dp-risk-ctl"), b = card.querySelector(".dp-risk-change");
+    if (!ctl || !ctl.hidden) return;
+    ctl.hidden = false;
+    if (b) { b.setAttribute("aria-expanded", "true"); b.hidden = true; }
+    if (focus) { var f = ctl.querySelector("input:checked") || ctl.querySelector("input"); if (f) f.focus(); }
   }
   document.querySelectorAll(".dp-risk").forEach(function (card) {
     riskSync(card);
-    card.addEventListener("change", function () { riskSync(card); });
+    var b = card.querySelector(".dp-risk-change"), ctl = card.querySelector(".dp-risk-ctl");
+    if (ctl && b && !riskMoved(card)) { ctl.hidden = true; b.hidden = false; }
+    if (b) b.addEventListener("click", function () { riskOpen(card, true); });
+    card.addEventListener("change", function () { riskSync(card); if (riskMoved(card)) riskOpen(card); });
+    card.addEventListener("input", function () { if (riskMoved(card)) riskOpen(card); });
   });
   window.dpRiskLines = function () {
     var lines = [];
@@ -1601,7 +1637,13 @@ const DP_RISK_CSS = `.dp-risk-ctl{display:flex;flex-wrap:wrap;gap:6px 12px;align
   border-radius:4px;padding:4px 6px;font:inherit;font-size:.95em;max-width:100%}
 .dp-risk-note{flex:1 1 240px}
 .dp-risk-deliv,.dp-risk-ticket{display:none}
-.dp-risk-mitigate .dp-risk-deliv,.dp-risk-mitigate .dp-risk-ticket{display:inline-block}`;
+.dp-risk-mitigate .dp-risk-deliv,.dp-risk-mitigate .dp-risk-ticket{display:inline-block}
+.dp-risk-ctl[hidden],.dp-risk-change[hidden],.dp-note-open[hidden]{display:none}
+.dp-risk-chip{display:inline-block;font-size:.8em;line-height:1.5;padding:0 8px;border-radius:10px;border:1px solid var(--line,#888);white-space:nowrap}
+.dp-risk-none{border-style:dashed;color:var(--dim,#888)}
+.dp-risk-change,.dp-note-open{background:none;border:0;padding:0 2px;margin-left:6px;font:inherit;font-size:.85em;
+  color:var(--accent-t,#46f);cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+.dp-risk-change:focus-visible,.dp-note-open:focus-visible{outline:2px solid var(--accent,#46f);outline-offset:2px}`;
 
 // The End state map: the model render stored (st.map) as JSON in the page,
 // then the renderer (lib/plan-map.js, a copy of shared/plan-map.js) in a
@@ -1899,8 +1941,7 @@ function reviewHtml(spec, b64, adrs = [], map = null) {
       return `<label class="opt"><input type="radio" name="dp-q-${esc(q.id)}" value="${L}"> ${L}) ${esc(o.v)}</label>`;
     }).join("");
     return `<div class="q" data-qid="${esc(q.id)}" role="radiogroup" aria-labelledby="dp-p-${esc(q.id)}">
-<b id="dp-p-${esc(q.id)}">${qi + 1}. ${esc(q.prompt)}</b>${opts}
-<div class="dim">id: <code>${esc(q.id)}</code></div></div>`;
+<b id="dp-p-${esc(q.id)}">${qi + 1}. ${esc(q.prompt)}</b>${opts}</div>`;
   }).join("\n");
   const verif = (spec.verification || []).map(v => `<li><code>${esc(v)}</code></li>`).join("");
   const incs = (spec.deliverables || []).map((d, i) =>
@@ -1908,7 +1949,8 @@ function reviewHtml(spec, b64, adrs = [], map = null) {
 ${fileTreeHtml(planPaths(d))}
 ${checksHtml(planChecks(spec, i), d.waiver)}
 ${(d.commits || []).length ? `<ul class="dim">${d.commits.map(c => commitLi(c)).join("")}</ul>` : ""}
-<textarea class="dp-note" data-section="increment ${i + 1}" rows="1" placeholder="comment on this increment (optional)" aria-label="comment on increment ${i + 1}"></textarea></div>`).join("\n");
+<button type="button" class="dp-note-open" aria-expanded="false" aria-controls="dp-note-inc-${i + 1}">Comment</button>
+<textarea class="dp-note" id="dp-note-inc-${i + 1}" data-section="increment ${i + 1}" rows="1" placeholder="comment on this increment" aria-label="comment on increment ${i + 1}" hidden></textarea></div>`).join("\n");
   // Everything below is client-side only: selections and comments live in the
   // DOM, nothing is stored or sent anywhere, and the page keeps working over
   // file:// (clipboard falls back to select+execCommand there).
@@ -1925,6 +1967,22 @@ until you clear it.</p>
 <script>
 (function () {
   var slug = ${JSON.stringify(spec.slug)};
+  // An increment's comment box stays shut behind its "Comment" button until
+  // clicked, or until it holds text (typed, or a draft restored below by
+  // SURFACE_JS, which fires input). Shut or open, the copy reads it the same.
+  function noteOpen(t, focus) {
+    var b = document.querySelector('.dp-note-open[aria-controls="' + t.id + '"]');
+    t.hidden = false;
+    if (b) { b.hidden = true; b.setAttribute("aria-expanded", "true"); }
+    if (focus) t.focus();
+  }
+  document.querySelectorAll(".dp-note-open").forEach(function (b) {
+    var t = document.getElementById(b.getAttribute("aria-controls"));
+    if (!t) return;
+    if (t.value.trim()) noteOpen(t);
+    b.addEventListener("click", function () { noteOpen(t, true); });
+    t.addEventListener("input", function () { if (t.value.trim()) noteOpen(t); });
+  });
   document.getElementById("dp-copyback").addEventListener("click", function () {
     var parts = ["deep-plan review \\u2014 " + slug];
     var answers = [];
@@ -1965,6 +2023,8 @@ until you clear it.</p>
 label.opt{cursor:pointer;padding:3px 0}
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
   color:inherit;border:1px solid var(--dim,#888);border-radius:4px;padding:6px;font:inherit}
+.dp-note[hidden]{display:none}
+.inc .dp-note-open{display:block;margin:6px 0 0;padding:0}
 ${DP_RISK_CSS}
 #dp-copyback{background:var(--accent,#46f);color:var(--bg);border:0;border-radius:6px;font-weight:600;
   padding:10px 16px;font:inherit;cursor:pointer;min-height:44px}
