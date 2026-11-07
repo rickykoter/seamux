@@ -1,6 +1,6 @@
 // node app/ui/search_probe.ts — the session search's rows, matching and
 // order (search.ts), with no DOM. Node runs this file as TypeScript.
-import { fuzzy, rowsOf, search, type Inputs, type TileIn } from "./search.ts";
+import { base, fuzzy, isKeyHints, rowsOf, search, tailOf, type Inputs, type TileIn } from "./search.ts";
 
 const checks: [string, boolean, string?][] = [];
 const ok = (name: string, cond: boolean, detail = "") => checks.push([name, cond, detail]);
@@ -152,6 +152,19 @@ const names = (q: string, i: Inputs) => search(rowsOf(i), q).map((h) => h.row.na
     JSON.stringify(withPr.find((r) => r.ws === "W1")!.pr) === JSON.stringify(pr) && withPr.find((r) => r.ws === "W4")!.pr === null && w1.pr === null);
   ok("inputs: rows still build with no families or gates given",
     rowsOf(inputs({ tiles: [tile("X", "SX")], plans: [{ ws: "X", slug: "p" }] }))[0].progress?.failing === "");
+}
+
+// ---- the preview's terminal tail -------------------------------------------
+{
+  ok("hints: Claude's question footer is key hints", isKeyHints("Enter to select · ↑/↓ to navigate · Esc to cancel"));
+  ok("hints: so is a lone hint, and the prompt's shortcut hint", isKeyHints("  esc to interrupt") && isKeyHints("? for shortcuts"));
+  ok("hints: a line that only mentions a key is not", !isKeyHints("Press enter when the build is done") && !isKeyHints("> go to the tests") && !isKeyHints(""));
+  const lines = ["a", "b", "c", "❯ 1. 422 Unprocessable Entity", "  2. 400 Bad Request", "", "Enter to select · ↑/↓ to navigate · Esc to cancel", "   "];
+  ok("tail: the last 4 lines worth reading, key hints and trailing blanks dropped",
+    tailOf(lines, 4) === "b\nc\n❯ 1. 422 Unprocessable Entity\n  2. 400 Bad Request", JSON.stringify(tailOf(lines, 4)));
+  ok("tail: a terminal of only hints and blanks has none", tailOf(["", "Esc to cancel", " "]) === "");
+  ok("tail: a first line keeps its indent", tailOf(["", "  indented", "x"]) === "  indented\nx", JSON.stringify(tailOf(["", "  indented", "x"])));
+  ok("base: a row's folder is its path's last part", base("/u/code/shop.worktrees/checkout-flow/") === "checkout-flow");
 }
 
 let failed = 0;

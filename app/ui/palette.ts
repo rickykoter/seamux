@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Decision } from "./decisions";
 import { catSvg } from "./panecat";
-import { FIELDS, rowsOf, search, type FamilyIn, type Field, type Hit, type Inputs, type PlanIn, type Pr, type Row, type TileIn } from "./search";
+import { base, FIELDS, rowsOf, search, tailOf, type FamilyIn, type Field, type Hit, type Inputs, type PlanIn, type Pr, type Row, type TileIn } from "./search";
 import { ago } from "./tiles";
 import { say, untilSaid, type Level, type TuckRow } from "./tuck";
 
@@ -72,7 +72,7 @@ export class Palette {
   private input = el("input", "palette-q");
   private list = el("div", "palette-list");
   private preview = el("div", "search-preview");
-  private foot = el("div", "palette-foot", "↵ jump · ⌘↵ show again · ⇧⌘↵ show all dimmed · esc");
+  private foot = el("div", "palette-foot");
   private tiles: TileIn[] = [];
   private views: ViewsIn = {};
   private rows: Row[] = [];
@@ -232,6 +232,7 @@ export class Palette {
       empty.append(cat, el("p", "", this.rows.length ? "nobody by that name" : "no sessions open yet"));
       this.list.replaceChildren(empty);
       this.preview.replaceChildren();
+      this.drawFoot(undefined);
       return;
     }
     const kids: Node[] = [];
@@ -251,6 +252,17 @@ export class Palette {
       this.list.querySelector(".palette-row.sel")?.scrollIntoView({ block: "nearest" });
     }
     this.drawPreview(this.shown[this.sel]);
+    this.drawFoot(this.shown[this.sel]?.row);
+  }
+
+  /** The keys that do something now: ⌘↵ only on a hidden row, ⇧⌘↵ only
+   *  while some row is hidden until it needs you (all it brings back). */
+  private drawFoot(sel: Row | undefined): void {
+    const keys = ["↵ jump"];
+    if (sel?.level) keys.push("⌘↵ show again");
+    if (this.rows.some((r) => r.level === "mute")) keys.push("⇧⌘↵ show all hidden until needed");
+    keys.push("esc");
+    this.foot.textContent = keys.join(" · ");
   }
 
   private rowEl(h: Hit, i: number): HTMLElement {
@@ -263,8 +275,8 @@ export class Palette {
     b.append(...marked(r.name, h.marks.name));
     name.append(dot(r), b);
     const meta = el("span", "palette-meta");
-    const second = this.secondLine(h);
-    meta.append(...second);
+    meta.append(...this.secondLine(h));
+    row.title = this.tilde(r.path);
     const when = el("span", "palette-when");
     if (r.level) when.append(el("span", "hid", "hidden"), document.createTextNode(` ${untilOf(r)}`));
     else when.textContent = ago(Date.now() - r.since);
@@ -277,11 +289,16 @@ export class Palette {
   }
 
   /** The row's second line: the field the query matched, else the branch,
-   *  else where it lives. */
+   *  else the worktree's folder when it is not the name already. Every row
+   *  shares the same ~/code/... start, so the full path is the row's title. */
   private secondLine(h: Hit): Node[] {
     const r = h.row;
-    const f: Field = (FIELDS.filter((x) => x !== "name").find((x) => h.marks[x]?.length) as Field | undefined)
-      ?? (r.branch ? "branch" : "path");
+    const f: Field | undefined = FIELDS.filter((x) => x !== "name").find((x) => h.marks[x]?.length);
+    if (!f) {
+      if (r.branch) return [document.createTextNode(r.branch)];
+      const folder = base(r.path);
+      return folder && folder !== r.name ? [document.createTextNode(folder)] : [];
+    }
     const text = f === "path" ? this.tilde(r.path) : r[f];
     // A tilde shortens the path, so its marks no longer line up: plain then.
     return marked(text, f === "path" && text !== r.path ? undefined : h.marks[f]);
@@ -295,21 +312,33 @@ export class Palette {
     t.append(...marked(r.name, h.marks.name));
     head.append(dot(r), t);
     const bits: Node[] = [head];
-    const line = (label: string, text: string, f?: Field) => {
-      if (!text) return;
+    const line = (label: string, text: string, f?: Field): HTMLElement | null => {
+      if (!text) return null;
       const p = el("p", "search-p-line");
       p.append(el("span", "search-p-k", label));
       const v = el("span", "search-p-v");
       v.append(...marked(text, f && f !== "path" ? h.marks[f] : undefined));
       p.append(v);
       bits.push(p);
+      return p;
     };
-    line("state", `${r.level ? `hidden ${untilOf(r)} · ` : ""}${STATE_SAID[r.state] ?? r.state} · ${ago(Date.now() - r.since)}`);
+    // The question leads: it is why the session needs you.
+    if (r.ask) {
+      const q = el("blockquote", "search-p-ask");
+      q.append(...marked(r.ask, h.marks.ask));
+      bits.push(q);
+    }
+    const where = this.tilde(r.path);
+    const state = line("state", `${r.level ? `hidden ${untilOf(r)} · ` : ""}${STATE_SAID[r.state] ?? r.state} · ${ago(Date.now() - r.since)}`);
+    // Where it lives shows only when the query found it there; else it is the
+    // state line's tooltip.
+    if (h.marks.path?.length) line("where", where, "path");
+    else if (state) state.title = where;
     line("branch", r.branch, "branch");
     const g = r.progress;
     if (g) {
-      const where = g.n ? ` · ${g.open ? "on" : "next"} ${g.n} of ${g.total}${g.title ? `: ${g.title}` : ""}` : g.total ? ` · ${g.done} of ${g.total} done` : "";
-      line("plan", `${g.slug}${g.phase ? ` · ${g.phase}` : ""}${where}`, g.slug === r.plan ? "plan" : undefined);
+      const at = g.n ? ` · ${g.open ? "on" : "next"} ${g.n} of ${g.total}${g.title ? `: ${g.title}` : ""}` : g.total ? ` · ${g.done} of ${g.total} done` : "";
+      line("plan", `${g.slug}${g.phase ? ` · ${g.phase}` : ""}${at}`, g.slug === r.plan ? "plan" : undefined);
       if (g.total) bits.push(this.bar(g.done, g.total));
       if (g.failing) {
         const f = el("p", "search-p-fail");
@@ -317,22 +346,19 @@ export class Palette {
         bits.push(f);
       }
     } else line("plan", r.plan, "plan");
-    if (r.family) bits.push(this.familyEl(r));
-    if (r.pr) bits.push(this.prEl(r.pr));
     line("about", r.topic, "topic");
-    line("where", this.tilde(r.path), "path");
-    if (r.ask) {
-      const q = el("blockquote", "search-p-ask");
-      q.append(...marked(r.ask, h.marks.ask));
-      bits.push(q);
-    }
     if (r.ws) {
       if (!this.ex || this.ex.ws !== r.ws || this.ex.since !== r.since) this.askExchange(r.ws, r.since);
       const x = this.ex?.ws === r.ws ? this.ex.data : null;
       if (x) bits.push(this.exchangeEl(x));
     }
+    // Then only what has something to say.
+    if (r.family) bits.push(this.familyEl(r));
+    if (r.pr) bits.push(this.prEl(r.pr));
     if (r.ws && r.panes.length > 1) bits.push(this.panesEl(r));
-    const tail = r.lines.slice(-8).join("\n").trim();
+    // The terminal's last lines, unless the question already says it: a
+    // waiting terminal shows that question again, with its own key hints.
+    const tail = r.ask ? "" : tailOf(r.lines, 4);
     if (tail) bits.push(el("pre", "search-p-lines", tail));
     else if (!r.ws) bits.push(el("p", "search-p-none", "Nothing open here. ⌘↵ brings the worktree back."));
     this.preview.replaceChildren(...bits);
