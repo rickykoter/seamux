@@ -1,10 +1,11 @@
-//! Starting a sibling tool the way the Python did, from the Rust.
+//! Starting a sibling tool.
 //!
 //! A tool crew-cli owns runs as `seamux <tool>` (this binary), in its own
-//! process as the Python's did, so a detached sync or frame keeps its own
-//! lifetime and output. A tool another crate has registered with seamux runs
-//! the same way. Anything else (crew-board until port-board registers it,
-//! crew-reclaim, crew-cmux-bin) runs from its path under the crew home.
+//! process, so a detached sync or frame keeps its own lifetime and output. A
+//! tool another crate has registered with seamux runs the same way. The bash
+//! tools (crew-reclaim, crew-cmux-bin) run from their path under the crew
+//! home, and so does every other crate's tool in a probe's stub tree
+//! (`stub`).
 
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -47,6 +48,15 @@ pub fn own(tool: &str) -> Option<Vec<String>> {
         .then(|| vec![exe.to_string_lossy().into_owned(), tool.to_string()])
 }
 
+/// Under SEAMUX_TOOLS_BY_PATH, the probe's stub for another crate's tool at
+/// `rel` under the crew home, when it is there and executable; else None.
+/// Live, a tool seamux does not register is not run at all.
+pub fn stub(rel: &str) -> Option<String> {
+    let by_path = std::env::var("SEAMUX_TOOLS_BY_PATH").is_ok_and(|v| v == "1");
+    let p = home_path(rel);
+    (by_path && executable(&p)).then(|| p.to_string_lossy().into_owned())
+}
+
 /// A file under the crew home (CREW_HOME, else ~/.config/cmux/crew).
 pub fn home_path(rel: &str) -> PathBuf {
     crew_core::home::crew_home().join(rel)
@@ -56,13 +66,6 @@ pub fn executable(p: &std::path::Path) -> bool {
     std::ffi::CString::new(p.as_os_str().as_encoded_bytes())
         // SAFETY: access(2) on a NUL-terminated path we own.
         .map(|c| unsafe { libc::access(c.as_ptr(), libc::X_OK) } == 0)
-        .unwrap_or(false)
-}
-
-pub fn readable(p: &std::path::Path) -> bool {
-    std::ffi::CString::new(p.as_os_str().as_encoded_bytes())
-        // SAFETY: access(2) on a NUL-terminated path we own.
-        .map(|c| unsafe { libc::access(c.as_ptr(), libc::R_OK) } == 0)
         .unwrap_or(false)
 }
 

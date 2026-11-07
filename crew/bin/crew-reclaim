@@ -3,7 +3,7 @@
 #
 # The board's Merged bucket knows a worktree can go; this is the tap that
 # actually removes it. Invoked from the sidebar through the notification-hook
-# RPC channel (see hooks/triage.py), or by hand.
+# RPC channel (see `seamux triage`), or by hand.
 #
 # Deliberately conservative — this deletes work, so every one of these must
 # hold or it refuses:
@@ -55,23 +55,16 @@ CMUX="${CREW_CMUX:-$(command -v cmux || true)}"
 # test the command that runs, not a file of that name in the current directory.
 case "$CMUX" in */*) ;; *) CMUX="$(command -v "$CMUX" 2>/dev/null || printf '%s' "$CMUX")" ;; esac
 
-# The real path, not the one it was run by: ~/.local/bin holds a link to it, and
-# workspaces.py lives beside the real bin/, in hooks/.
-SELF_DIR="$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")")"
-WORKSPACES="$SELF_DIR/../hooks/workspaces.py"
 CALLER_CREW_CMUX="${CREW_CMUX:-}"
 
-# workspaces: `seamux workspaces`, else the Python until it is deleted. seamux
-# gets CREW_CMUX only when the caller set it (a probe's fakecmux): set at all,
-# it means "drive the CLI", and live use belongs on the socket.
+# workspaces: `seamux workspaces`. It gets CREW_CMUX only when the caller set
+# it (a probe's fakecmux): set at all, it means "drive the CLI", and live use
+# belongs on the socket.
 SEAMUX="${SEAMUX_BIN:-$HOME/.local/bin/seamux}"
 ws_tool() {
   if [ -x "$SEAMUX" ]; then
     if [ -n "$CALLER_CREW_CMUX" ]; then CREW_CMUX="$CALLER_CREW_CMUX" "$SEAMUX" workspaces "$@"
     else env -u CREW_CMUX "$SEAMUX" workspaces "$@"; fi
-  elif [ -f "$WORKSPACES" ]; then
-    # A checkout run before seamux exists (the live tree has no Python).
-    CREW_CMUX="$CMUX" python3 "$WORKSPACES" "$@"
   else
     printf 'crew-reclaim: seamux is not installed at %s (./install.sh --app)\n' "$SEAMUX" >&2
     return 1

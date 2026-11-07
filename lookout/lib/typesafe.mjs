@@ -9,14 +9,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolveSeamux } from "./host.mjs";
-import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-
 // The client as a command: `seamux typesafe` at $SEAMUX_BIN or
-// ~/.local/bin/seamux, else crew's typesafe.py from the installed tree or this
-// checkout. The env override is authoritative, not a first preference: the
+// ~/.local/bin/seamux, or none. The env override is authoritative, not a
+// first preference: the
 // probe points it at a mock (or at nothing), and falling through to the
 // machine's real client from under a test would put a probe on the network.
 export function clientCmd() {
@@ -25,8 +22,8 @@ export function clientCmd() {
     const c = process.env.LOOKOUT_TYPESAFE_CLIENT;
     return c && exists(c) ? ["python3", c] : null;
   }
-  // Only a seamux that lists the tool: an older build without it would read
-  // as "TypeSafe not configured" and never reach the fallback below.
+  // Only a seamux that lists the tool: an older build without it has no
+  // client, which reads as "no TypeSafe".
   const lists = (s) => {
     const r = spawnSync(s, ["--tools"], { encoding: "utf8", timeout: 5000 });
     return r.status === 0 && (r.stdout || "").split("\n").includes("typesafe");
@@ -34,11 +31,7 @@ export function clientCmd() {
   for (const s of [process.env.SEAMUX_BIN, path.join(os.homedir(), ".local", "bin", "seamux")]) {
     if (s && exists(s) && lists(s)) return [s, "typesafe"];
   }
-  const py = [
-    path.join(os.homedir(), ".config", "cmux", "crew", "hooks", "typesafe.py"),
-    path.join(HERE, "..", "..", "crew", "hooks", "typesafe.py"),
-  ].find(exists);
-  return py ? ["python3", py] : null;
+  return null;
 }
 
 // Loopback keeps content on this machine; anything else is off-machine.

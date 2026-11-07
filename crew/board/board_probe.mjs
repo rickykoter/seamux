@@ -923,9 +923,8 @@ checks.push(["the board-only poses are in sync with cat_poses.py",
 
 // The sprite is generated from crew.swift, so the two boards cannot drift apart
 // silently. This is the check that notices if the sidebar's cat moves on.
-checks.push(["the cat is in sync with the sidebar's",
-  (() => { try { execFileSync("python3", [join(HERE, "cat_from_swift.py"), "--check"],
-    { encoding: "utf8" }); return true; } catch { return false; } })()]);
+checks.push(["the cat is in sync with the sidebar's (seamux cat_poses --from-swift --check)",
+  (() => { try { runTool("cat_poses", ["--from-swift", "--check"]); return true; } catch { return false; } })()]);
 
 // An indeterminate dial is the only one allowed to spin; one with a number is not.
 render({ rows: [{ id: "p", name: "p", kind: "running", badge: "b", said: "",

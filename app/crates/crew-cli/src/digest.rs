@@ -61,7 +61,7 @@ fn main_repo() -> String {
 fn board_news() -> Option<Value> {
     let mut argv: Vec<String> = match sibling::own("crew-board") {
         Some(h) => h,
-        None => vec![sibling::home_path("board/crew-board").to_string_lossy().into_owned()],
+        None => vec![sibling::stub("board/crew-board")?],
     };
     argv.extend(["state", "--fast", "--json"].map(String::from));
     let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
