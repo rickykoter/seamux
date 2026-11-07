@@ -1768,6 +1768,7 @@ if (want("page script")) {
      js.includes('(x.status || "open") !== "open" ? (stillBlocks(x)') && js.includes(': el("span", { class: "status st-" + x.status }, x.status)) : null);'));
   const app = fs.readFileSync(path.join(HERE, "..", "app", "ui", "review.ts"), "utf8");
   const appCss = fs.readFileSync(path.join(HERE, "..", "app", "ui", "review.css"), "utf8");
+  const lookoutPageMd = fs.readFileSync(path.join(HERE, "references", "page.md"), "utf8");
   ok("page: the gate pill says how many are open (\"blocked · 3 open\"); its tooltip, mirrored in the app, gives the breakdown by severity",
      js.includes('.map(([s, n]) => `${n} ${s}`).join(", ");') && js.includes("text: `blocked · ${open.length} open`, detail }") &&
      js.includes("text: open.length ? `pass · ${open.length} open` : \"pass · no open findings\", detail }") &&
@@ -1784,7 +1785,7 @@ if (want("page script")) {
      app.includes('bar.push(this.menu(`act:${j.id}`, act, [this.changePicks(j), el("div", "r-menu-sep"), ...menu], "", [this.pickedList(rows, picked)]));') && !app.includes("bar.push(edit, fix, post)") &&
      app.includes('private menu(key: string, b: HTMLButtonElement, items: HTMLElement[], meta = "", top: HTMLElement[] = []): HTMLElement {') &&
      app.includes("return this.menu(key, b, items, meta, name ? [") &&
-     app.includes('.r-menu [role=menuitem]:not(:disabled):not(.r-change)")?.focus()') &&
+     app.includes('.r-menu [role^=menuitem]:not(:disabled):not(.r-change)")?.focus()') &&
      app.includes("if (this.moreOpen === id || this.moreOpen === `act:${id}`) this.moreOpen = null;") &&
      app.includes('btn("Edit", ') && app.includes('btn("Fix with commits", ') && app.includes('btn("Post comments", ') &&
      !app.includes("suffix") && app.includes('if (!this.ticked.has(j.id)) this.ticked.set(j.id, new Set(rows.filter((f) => f.severity === "blocker" || f.severity === "major").map((f) => f.id)));'));
@@ -1805,26 +1806,31 @@ if (want("page script")) {
      app.includes("const PICKS_SHOWN = 5;") && /private pickedList\(rows: Finding\[\], picked: string\[\]\): HTMLElement \{[\s\S]{0,700}\.sort\(\(a, b\) => rank\(a\) - rank\(b\)\);[\s\S]{0,200}`Acts on \$\{fs\.length\} picked`[\s\S]{0,200}fs\.slice\(0, PICKS_SHOWN\)[\s\S]{0,300}el\("span", `r-sev \$\{f\.severity\}`, f\.severity\), el\("span", "r-sum", f\.summary\)[\s\S]{0,200}`\+\$\{fs\.length - PICKS_SHOWN\} more`/.test(app) &&
      /private changePicks\(j: Job\): HTMLButtonElement \{\s*const b = btn\("Change picks", \(\) => \{\s*this\.pickerOpen\.add\(j\.id\);\s*this\.render\(true\);/.test(app) &&
      app.includes("m.append(...top);") && appCss.includes(".r-menu-pick .r-sum { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }"));
-  ok("app: the header is one row at any width: GitHub folds, live becomes its dot, Overview (and Map), Split or Unified and ? fold, then Findings and Act shorten, before the title goes under 12ch; the gate pill and Act button stay",
-     app.includes('const FOLDS = ["github", "live", "overview", "layout", "keys", "findings", "act"] as const;') && app.includes("const TITLE_MIN = 160;") &&
+  ok("app: the header is one row at any width: GitHub folds, the View menu's items join ⋯, then Findings and Act shorten, before the title goes under 12ch; the gate pill and Act button stay",
+     app.includes('const FOLDS = ["github", "view", "findings", "act"] as const;') && app.includes("const TITLE_MIN = 160;") &&
      /this\.fold = 0;\s*draw\(\);\s*while \(this\.fold < FOLDS\.length && this\.overflows\(\)\) \{\s*this\.fold\+\+;\s*draw\(\);\s*\}/.test(app) &&
      app.includes("return row.scrollWidth > row.clientWidth + 1 || squeezed;") &&
      app.includes("name.scrollWidth > name.clientWidth && name.clientWidth < TITLE_MIN") &&
      /new ResizeObserver\(\(\) => \{\s*if \(fitFrame\) return;\s*fitFrame = requestAnimationFrame\(\(\) => \{\s*fitFrame = 0;\s*const w = this\.head\.clientWidth;\s*if \(w && w !== this\.fitWidth\) this\.render\(true\);\s*\}\);\s*\}\)\.observe\(this\.head\);/.test(app) &&
-     app.includes("for (const t of tools.view) if (folds.has(t.fold)) folded.push(t.item);") &&
+     app.includes('if (tools.view.length && folds.has("view")) folded.push(...tools.view);') &&
      app.includes('folds.has("github") ? "Open on GitHub" : "GitHub"') &&
      appCss.includes(".r-mhead-row { display: flex; align-items: center; gap: 8px 10px; min-width: 0; flex-wrap: nowrap; }") &&
      appCss.includes(".r-acts { display: flex; gap: 6px; flex-wrap: nowrap; align-items: center; margin-left: auto; flex: none; }") &&
      !/\.r-(mhead-row|acts) \{[^}]*flex-wrap: wrap/.test(appCss));
-  ok("app: a folded tool keeps its key: the menu item shows it, and o, m, v and ? work from the header as in the page",
-     ["\"o\", () => this.tell(\"overview\")", "\"m\", () => this.tell(\"map\")", "\"v\", () => this.tell(\"layout\", { layout: other })", "\"?\", () => this.tell(\"keys\")"].every(k => app.includes(k)) &&
-     app.includes('b.append(el("kbd", "r-kbd", key));') &&
+  ok("app: Overview, Map, Split or Unified and ? sit in one View ▾ menu at every width, each item showing its key, a check while on; o, m, v and ? work from the header as in the page",
+     ['"o", () => this.tell("overview"), p.overview', '"m", () => this.tell("map"), p.map', '"v", () => this.tell("layout", { layout: v }), p.layout === v, "menuitemradio"', '"?", () => this.tell("keys"), p.keys'].every(k => app.includes(k)) &&
+     app.includes('b.append(mark, el("span", "r-tool-name", text), el("kbd", "r-kbd", key));') && app.includes('b.setAttribute("aria-checked", String(on));') &&
+     app.includes('const b = el("button", "r-btn quiet r-view-btn", "View ▾");') && app.includes('return this.menu("view", b, items);') &&
+     app.includes('if (tools.view.length && !folds.has("view")) acts.append(this.viewMenu(tools.view));') &&
+     app.includes('if (!it.getAttribute("role")) it.setAttribute("role", "menuitem");') &&
+     !app.includes('"r-btn quiet r-tool"') && !app.includes('el("div", "r-seg")') && !app.includes('"r-btn quiet r-keys"') && !app.includes('el("span", "r-sep")') &&
+     !/\.r-(sep|seg|seg-btn|keys|tool) \{/.test(appCss) && appCss.includes(".r-check svg {") && appCss.includes(".r-menu:not(:has(.r-check svg)) .r-check { display: none; }") &&
      app.includes('const op = ({ o: "overview", m: "map", v: "layout", "?": "keys" } as Record<string, string>)[e.key];') &&
      app.includes('this.tell(op, op === "layout" ? { layout: p.layout === "split" ? "unified" : "split" } : {});'));
   ok("page+app: one Overview: the app drops its Overview button while the page's file list shows its own Overview row (o still opens it)",
      js.includes('ovRow: !!document.querySelector("#tree .ov-row")?.getClientRects().length }, hostOrigin);') &&
      /function drawSide\(\) \{[\s\S]*?\$\("tree"\)\.prepend\(el\("div", \{ class: "row ov-row"[\s\S]*?postState\(\);\n  \}/.test(js) &&
-     app.includes("ovRow?: boolean;") && /if \(!p\.ovRow\) \{\s*const ov = pressed\(btn\("Overview"/.test(app) &&
+     app.includes("ovRow?: boolean;") && app.includes('if (!p.ovRow) view.push(item("Overview", "o",') &&
      js.includes('else if (e.key === "o") { toggleOverview(); e.preventDefault(); }'));
   ok("page+app: framed, the page's tools move onto the app's header row after a hello/host handshake, so one band sits above the file",
      js.includes('window.parent.postMessage({ lookout: "hello", id: R.id }, "*");') &&
@@ -1838,7 +1844,7 @@ if (want("page script")) {
      /if \(d\.lookout === "hello"\) \{[^}]*this\.sentPicks = "";\s*f\.contentWindow\?\.postMessage\(\{ lookout: "host" \}, this\.pageOrigin\);/.test(app) &&
      app.includes('f.contentWindow?.postMessage({ lookout: "do", op, ...extra }, this.pageOrigin);') &&
      ["gate", "overview", "map", "layout", "keys"].every(op => app.includes(`this.tell("${op}"`) && js.includes(`d.op === "${op}"`)) &&
-     app.includes("h.append(...tools.state);") && app.includes('if (view.length) acts.append(el("span", "r-sep"), ...view.map((t) => t.el));'));
+     app.includes("h.append(...tools.state);") && app.includes("acts.append(this.viewMenu(tools.view));"));
   // The page pins the host's origin: state goes only there, and only it is heard
   // after the handshake. Hello (only the id) repeats until answered, for an app
   // that was not listening yet.
@@ -1865,17 +1871,18 @@ if (want("page script")) {
      js.includes('el("span", { class: "label" }, "Fails when: "), el("span", { class: "scenario" }, x.failure_scenario)') &&
      css.includes(".card-body .failure .label { color: var(--muted); font-weight: 400; }") &&
      !js.includes('el("b", null, "Fails when: ")') && !css.includes(".card-body .failure b"));
-  ok("page: under 700px of diff column (not window) it draws unified, keeping the saved choice; wider brings split back; the toggle hides and the app is told",
-     js.includes("const SPLIT_MIN = 700;") &&
+  ok("page: under 900px of diff column (not window) it draws unified, keeping the saved choice (at 700-800 split wrapped nearly every line); wider brings split back; the toggle hides and the app is told",
+     js.includes("const SPLIT_MIN = 900;") && !js.includes("const SPLIT_MIN = 700;") && lookoutPageMd.includes("A diff column under 900px") &&
      js.includes('const cramped = () => narrow() || ($("main").offsetWidth > 0 && $("main").offsetWidth < SPLIT_MIN);') &&
      js.includes('const useSplit = layout === "split" && !cramped() && !oneSided;') &&
      /new ResizeObserver\(\(\) => \{ if \(cramped\(\) !== wasCramped\) \{ wasCramped = cramped\(\); drawLayout\(\); drawMain\(\); \} \}\)\.observe\(\$\("main"\)\);/.test(js) &&
      /function setLayout\(l\) \{ layout = l; store\.set\("lookout\.layout", l\);/.test(js) && !/cramped\(\)[^\n]*store\.set\("lookout\.layout"/.test(js) &&
      js.includes('$("layout").classList.toggle("auto", cramped());') && css.includes("#layout.auto { display: none; }") &&
      js.includes("layout, auto: cramped(), overview,") && !js.includes("wasNarrow") &&
-     app.includes("auto?: boolean;") && /if \(!p\.auto\) \{\s*const seg = el\("div", "r-seg"\);/.test(app));
-  ok("app: short of width, live is only its dot (words in its tooltip), Findings an icon (its name the label), Act on N picked \"Act (N)\"",
-     app.includes('const dot = this.folds("live") && (p.mode.cls === "live" || p.mode.cls === "down");') &&
+     app.includes("auto?: boolean;") && /if \(!p\.auto\) \{\s*for \(const \[v, label\] of \[\["split", "Split diff"\], \["unified", "Unified diff"\]\]\)/.test(app));
+  ok("app: live (or disconnected) is only its dot at every width (words in its tooltip); short of width Findings is an icon (its name the label), Act on N picked \"Act (N)\"",
+     app.includes('const dot = p.mode.cls === "live" || p.mode.cls === "down";') && !app.includes('this.folds("live")') &&
+     !appCss.includes('.r-mode.live::before { content: "● "; }') &&
      app.includes('mode.title = dot ? `${p.mode.text}. ${p.mode.title}` : p.mode.title;') && app.includes('mode.setAttribute("aria-label", p.mode.text);') &&
      appCss.includes('.r-mode.live.only::before { content: "●"; }') &&
      app.includes('const short = this.folds("findings");') && app.includes('toggle.prepend(listIcon());') && app.includes('toggle.setAttribute("aria-label", "Findings");') &&
@@ -1944,9 +1951,20 @@ if (want("page script")) {
      js.includes('(x.id === curFinding ? " cur" : "") + (mark ? " picked" : "")') &&
      js.includes('else if (d.op === "picks" && Array.isArray(d.ids)) setPicked(d.ids);') &&
      /function setPicked\(ids\) \{[\s\S]{0,300}redrawCards\(changed\);/.test(js) &&
-     css.includes(".pickmark {") && css.includes(".card.picked {") && !/picked by a click|focused or picked|or the picked finding/.test(js + css) &&
+     css.includes(".pickmark {") && !css.includes(".card.picked {") && !/picked by a click|focused or picked|or the picked finding/.test(js + css) &&
      app.includes('f.contentWindow?.postMessage({ lookout: "do", op: "picks", ids }, this.pageOrigin);') &&
      app.includes("this.syncPicks(job);") && app.includes("if (key === this.sentPicks) return;"));
+  ok("page: the current card (.cur, where its actions show) has an accent left edge and border in both modes; picked keeps only its check",
+     css.includes(".card.cur { border-color: color-mix(in srgb, var(--accent) 60%, var(--card-border)); box-shadow: inset 3px 0 0 var(--accent); }") &&
+     !/\.card\.picked[^{]*\{[^}]*(border|box-shadow|background)/.test(css) && lookoutPageMd.includes("accent edge on its left"));
+  ok("page: in light mode a selected row is an accent tint and hover a shade darker than the side list; the minor and nit gutter dots get a darker ring",
+     [/@media \(prefers-color-scheme: light\) \{\s*:root:not\(\[data-theme="dark"\]\) \{\s*--sel: color-mix\(in srgb, var\(--ef-accent\) 22%, var\(--ef-bg-dim\)\); --hover: var\(--ef-bg3\);\s*--gdot-nit: var\(--ef-dim\); --gdot-edge-minor: var\(--ef-text-faint\);/,
+      /:root\[data-theme="light"\] \{\s*--sel: color-mix\(in srgb, var\(--ef-accent\) 22%, var\(--ef-bg-dim\)\); --hover: var\(--ef-bg3\);\s*--gdot-nit: var\(--ef-dim\); --gdot-edge-minor: var\(--ef-text-faint\);/].every(r => r.test(css.slice(css.indexOf("/* everforest:end */")))) &&
+     css.includes(".gdot.sev-minor { box-shadow: inset 0 0 0 1px var(--gdot-edge-minor, transparent), 0 0 0 1.5px var(--bg); }"));
+  ok("page: a file's status letter spells itself out in its tooltip (modified, added, deleted, renamed), in the tree, the risk list and the file header",
+     js.includes('const ST_NAMES = { M: "modified", A: "added", D: "deleted", R: "renamed", C: "copied", T: "type changed" };') &&
+     js.includes('const stLetter = f => el("span", { class: "st st-" + f.status, title: ST_NAMES[f.status] || f.status }, f.status);') &&
+     (js.match(/stLetter\(f\)/g) || []).length === 3 && !js.includes('el("span", { class: "st st-" + f.status }, f.status)'));
   ok("page: the file header leaves out the language and a risk reason that only repeats an open finding",
      js.includes('const headReasons = f => (f.reasons || []).filter(r => !/^open \\w+ finding$/.test(r));') &&
      !js.includes('el("span", { class: "lang" }, f.lang)') && !css.includes("#file-head .lang") &&

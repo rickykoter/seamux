@@ -18,11 +18,15 @@
   const opened = new Set();          // collapsed files the reader chose to show
   const closedDirs = new Set(JSON.parse(store.get("lookout.closed." + R.id, "[]")));
   const narrow = () => window.matchMedia("(max-width: 760px)").matches;
+  // A file's status letter, spelled out in its tooltip.
+  const ST_NAMES = { M: "modified", A: "added", D: "deleted", R: "renamed", C: "copied", T: "type changed" };
+  const stLetter = f => el("span", { class: "st st-" + f.status, title: ST_NAMES[f.status] || f.status }, f.status);
   // Split needs room: with the diff column under SPLIT_MIN px the page draws
   // unified, whatever the saved choice (which it keeps), and draws split
   // again once the column is wide enough. The column, not the window: the
   // file list and the app's own side take width too.
-  const SPLIT_MIN = 700;
+  // 900, not 700: at 700-800px split wrapped nearly every line.
+  const SPLIT_MIN = 900;
   const cramped = () => narrow() || ($("main").offsetWidth > 0 && $("main").offsetWidth < SPLIT_MIN);
   // Framed by the seamux app (?embed=app), whose own header names the review:
   // the page drops its title row and keeps one row of tools.
@@ -145,7 +149,7 @@
           "data-path": f.path, onclick: () => select(f.path),
         }, el("span", { class: "chev" }), el("span", { class: "name" }, name),
            badge(f.path), el("span", { class: "counts" }, countsText(f)),
-           el("span", { class: "st st-" + f.status }, f.status))));
+           stLetter(f))));
       }
       return ul;
     };
@@ -175,7 +179,7 @@
        el("span", { class: "name" }, f.path.slice(cut + 1),
          dir && cut >= 0 ? el("span", { class: "in" }, " " + f.path.slice(0, cut)) : null),
        badge(f.path), el("span", { class: "counts" }, countsText(f)),
-       el("span", { class: "st st-" + f.status }, f.status));
+       stLetter(f));
   }
 
   function drawRisk() {
@@ -734,7 +738,7 @@
     const cut = f.path.lastIndexOf("/");
     const reasons = headReasons(f);
     return [
-      el("span", { class: "st st-" + f.status }, f.status),
+      stLetter(f),
       el("span", { class: "path" }, cut >= 0 ? el("span", { class: "dir" }, f.path.slice(0, cut + 1)) : null,
         f.path.slice(cut + 1)),
       f.oldPath ? el("span", { class: "from" }, "from " + f.oldPath) : null,

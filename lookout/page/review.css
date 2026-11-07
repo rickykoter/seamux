@@ -77,6 +77,19 @@
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
+/* Light: Everforest's pale blue and bg1 vanish on the cream side list, so a
+   selected row takes an accent tint and hover a shade darker than the side;
+   the minor and nit gutter dots get a darker ring to show on cream. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --sel: color-mix(in srgb, var(--ef-accent) 22%, var(--ef-bg-dim)); --hover: var(--ef-bg3);
+    --gdot-nit: var(--ef-dim); --gdot-edge-minor: var(--ef-text-faint);
+  }
+}
+:root[data-theme="light"] {
+  --sel: color-mix(in srgb, var(--ef-accent) 22%, var(--ef-bg-dim)); --hover: var(--ef-bg3);
+  --gdot-nit: var(--ef-dim); --gdot-edge-minor: var(--ef-text-faint);
+}
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -306,12 +319,15 @@ tr.thread-row > td { padding: 6px 12px 10px 60px; background: var(--side); borde
 .card.folded:hover .title, .card.folded:focus-visible .title { color: var(--fg); }
 .threads:has(> .card.folded) { gap: 4px; }
 
-/* Picked: in the app's Act set (edit, fix, post), a check at the card's left.
-   Not the same as current (.cur), the card the reader is on. */
+/* Picked: in the app's Act set (edit, fix, post), a check at the card's left,
+   and nothing else. Not the same as current (.cur), the card the reader is on. */
 .pickmark { flex: none; align-self: center; display: inline-grid; place-items: center; width: 15px; height: 15px;
   border-radius: 50%; background: var(--fg); color: var(--bg); }
 .pickmark svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
-.card.picked { border-color: color-mix(in srgb, var(--fg) 40%, var(--card-border)); }
+/* Current: the card the reader is on, where its actions appear: an accent
+   edge on the left and an accent border, in both modes. Picked keeps only
+   its check. */
+.card.cur { border-color: color-mix(in srgb, var(--accent) 60%, var(--card-border)); box-shadow: inset 3px 0 0 var(--accent); }
 
 /* The findings gutter: dots in a line's number cell, one per severity on it,
    worst first, overlapping a little. The cell keeps its number on the right. */
@@ -323,6 +339,7 @@ table.diff td.ln.marked { position: relative; }
 .gdot + .gdot { margin-left: -3px; }
 .gdot.sev-blocker { --gdot: var(--gdot-blocker); } .gdot.sev-major { --gdot: var(--gdot-major); }
 .gdot.sev-minor { --gdot: var(--gdot-minor); } .gdot.sev-comment { --gdot: var(--gdot-comment); }
+.gdot.sev-minor { box-shadow: inset 0 0 0 1px var(--gdot-edge-minor, transparent), 0 0 0 1.5px var(--bg); }
 .gdot.sev-nit { background: var(--bg); box-shadow: inset 0 0 0 1.5px var(--gdot-nit), 0 0 0 1.5px var(--bg); }
 @media (max-width: 760px) { .gmark { left: 1px; } }
 .ghost-head { color: var(--muted); }

@@ -87,22 +87,15 @@
 .r-go { margin-left: 5px; font-weight: 400; opacity: 0.8; }
 .r-mode { font-size: var(--fs-1); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 32ch; }
 .r-mode.live { color: var(--good); }
-.r-mode.live::before { content: "● "; }
 .r-mode.down { color: var(--ef-text-orange); }
-.r-mode.down::before { content: "○ "; }
-/* Short of width: only the dot, the words in its tooltip. */
+/* Live or disconnected is only its dot at every width, the words in its tooltip. */
 .r-mode.only { overflow: visible; }
 .r-mode.live.only::before { content: "●"; }
 .r-mode.down.only::before { content: "○"; }
 .r-busy { flex: 0 1 auto; min-width: 0; max-width: 40ch; }
-.r-sep { width: 1px; align-self: stretch; margin: 3px 2px; background: var(--line); }
-.r-tool[aria-pressed="true"] { color: var(--fg); border-color: var(--line); background: var(--term); }
-.r-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-.r-seg-btn { font: inherit; font-size: var(--fs-2); padding: 4px 9px; border: 0; background: none; color: var(--muted); cursor: pointer; }
-.r-seg-btn + .r-seg-btn { border-left: 1px solid var(--line); }
-.r-seg-btn[aria-pressed="true"] { background: var(--term); color: var(--fg); font-weight: 600; }
-.r-keys { width: 26px; padding-left: 0; padding-right: 0; text-align: center; }
-.r-gate:focus-visible, .r-seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* View ▾: the framed page's view tools in one menu, each with its key. */
+.r-view-btn[aria-expanded="true"] { color: var(--fg); background: var(--term); }
+.r-gate:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .r-ctl { padding: 0 14px 8px; display: flex; flex-direction: column; gap: 8px; }
 .r-detail { margin: 0; font-size: var(--fs-2); color: var(--muted); overflow-wrap: anywhere; }
@@ -120,8 +113,13 @@
 .r-menu-title { margin: 2px 8px 2px; font-size: var(--fs-3); font-weight: 600; color: var(--fg); max-width: 320px; overflow-wrap: anywhere; }
 .r-mhead-row:not(.cut) .r-menu-title { display: none; }
 .r-menu-sep { height: 1px; margin: 4px 2px; background: var(--line); }
-/* A tool folded off the row, its key at the end. */
-.r-menu-tool { display: flex; align-items: center; gap: 16px; }
+/* A View tool, a check while it is on, its key at the end. */
+.r-menu-tool { display: flex; align-items: center; gap: 8px; min-width: 200px; }
+.r-check { width: 12px; height: 12px; flex: none; display: grid; place-items: center; }
+.r-check svg { width: 12px; height: 12px; fill: none; stroke: var(--accent); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.r-menu-tool[aria-checked="true"] { color: var(--fg); }
+/* No column for checks in a menu where nothing is checked. */
+.r-menu:not(:has(.r-check svg)) .r-check { display: none; }
 .r-kbd { margin-left: auto; font: var(--fs-1) ui-monospace, Menlo, monospace; color: var(--muted); padding: 0 5px; border: 1px solid var(--line); border-radius: 5px; }
 /* The Act menu's top: what it acts on. */
 .r-menu-picks { display: flex; flex-direction: column; gap: 3px; padding-bottom: 2px; width: 300px; max-width: 70vw; }
