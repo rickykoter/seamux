@@ -3041,7 +3041,9 @@ fs.appendFileSync(${JSON.stringify(lkLog)}, JSON.stringify({ argv: process.argv.
       const fa = String(bp.headers["content-security-policy"] || "");
       checks.push(["board page: frame-ancestors lets the app and this server frame it, and nothing else",
         /^frame-ancestors 'self' http:\/\/127\.0\.0\.1:\d+ http:\/\/localhost:\d+ tauri:\/\/localhost tauri: /.test(fa) &&
-        !fa.includes("*") && !fa.includes("5173"), fa]);
+        // The dev server's port as a whole port: a random server port such as
+        // 51737 contains "5173" too.
+        !fa.includes("*") && !/:5173\b/.test(fa), fa]);
     }
     // The server tells intent.js who may frame it:
     // without the list, a framed board ignores every message from the app.
