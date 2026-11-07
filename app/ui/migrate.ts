@@ -92,6 +92,10 @@ export class MigrateBanner {
   private doneTimer = 0;
   /** How many moved this launch, by what was done to them, for the closing line. */
   private moved = new Map<string, number>();
+  /** What failed this run, kept so a later success cannot hide it. */
+  private failed: string[] = [];
+  /** Later was pressed: the banner stays away until the next launch. */
+  private closed = false;
   private review = button("Review", "migrate-review");
   private later = button("Later");
   /** The banner line's one-click button: every idle one at once. */
@@ -153,25 +157,44 @@ export class MigrateBanner {
     window.clearTimeout(this.timer);
     window.clearTimeout(this.doneTimer);
     this.queued.clear();
+    this.closed = true;
     this.el.hidden = true;
+  }
+
+  /** A run is over (the banner went): its tally starts again. */
+  private reset(): void {
+    this.moved.clear();
+    this.failed = [];
+    this.say.textContent = "";
+    this.say.hidden = true;
+    this.el.classList.remove("done", "failed");
   }
 
   private draw(): void {
     const offers = this.shown();
     window.clearTimeout(this.doneTimer);
+    // Later means later, even for moves still finishing in the background.
+    if (this.closed) {
+      this.el.hidden = true;
+      return;
+    }
     if (!offers.length) {
-      // Nothing left. A failure stays until Later; a success shows briefly,
-      // then the banner goes. With nothing said, it goes at once.
-      if (this.say.textContent && this.say.classList.contains("bad")) {
+      // Nothing left. Any failure in the run stays, with Later to dismiss
+      // it; a clean run shows briefly, then the banner goes. With nothing
+      // said, it goes at once.
+      if (this.failed.length) {
         this.el.hidden = false;
-        this.el.classList.add("done");
-        this.line.textContent = "Nothing left to move";
+        this.el.classList.add("done", "failed");
+        this.line.textContent = this.failed.length === 1 ? "1 did not come back" : `${this.failed.length} did not come back`;
+        this.tell(this.failed.join(" · "), true);
         this.all.hidden = true;
         this.review.hidden = true;
+        this.later.hidden = false;
         this.list.hidden = true;
         return;
       }
       if (!this.say.textContent || this.el.hidden) {
+        this.reset();
         this.el.hidden = true;
         return;
       }
@@ -185,14 +208,13 @@ export class MigrateBanner {
       this.later.hidden = true;
       this.list.hidden = true;
       this.doneTimer = window.setTimeout(() => {
-        this.say.textContent = "";
-        this.say.hidden = true;
+        this.reset();
         this.el.hidden = true;
       }, DONE_MS);
       return;
     }
     this.el.hidden = false;
-    this.el.classList.remove("done");
+    this.el.classList.remove("done", "failed");
     this.review.hidden = false;
     this.later.hidden = false;
     this.line.textContent = summary(offers);
@@ -260,7 +282,10 @@ export class MigrateBanner {
     } catch (e) {
       // Busy again (it started a turn): back in the queue.
       if (String(e).includes("busy")) this.queued.add(k);
-      else this.tell(String(e), true);
+      else {
+        this.failed.push(`${o.title || o.pane.slice(0, 8)}: ${String(e)}`);
+        this.tell(String(e), true);
+      }
     } finally {
       this.running.delete(k);
     }

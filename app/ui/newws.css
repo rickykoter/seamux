@@ -109,7 +109,10 @@
 .migrate-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
 .migrate-line { flex: 1; min-width: 0; }
 .migrate-acts { flex-basis: 100%; display: flex; gap: 6px; padding-left: 24px; }
-.migrate.done .migrate-acts { display: none; }
+/* Done, the buttons go; failed, Later stays so the error can be dismissed. */
+.migrate.done:not(.failed) .migrate-acts { display: none; }
+.migrate.failed { border-color: color-mix(in srgb, var(--bad) 55%, transparent); }
+.migrate.failed .migrate-mark { color: var(--bad); }
 .migrate-review[hidden], .migrate-acts > [hidden] { display: none; }
 .migrate-list { display: flex; flex-direction: column; gap: 4px; }
 .migrate-list[hidden] { display: none; }

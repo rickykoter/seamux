@@ -696,7 +696,8 @@ const CARD = {
 };
 
 // Terminals that stopped with tmux (a reboot), for the Dock's restart banner
-// (migrate.ts): ?migrate=N offers N of them. Off by default.
+// (migrate.ts): ?migrate=N offers N of them, and ?migratefail=K makes the
+// K-th (from 1) fail to restart. Off by default.
 const MIGRATE_NAMES = ["ux-sweep", "coupons-bf", "resume-reset", "turn-ckpt", "board-snooze", "search-preview", "auto-go", "floor-plan"];
 let migrateOffers = MIGRATE_NAMES.slice(0, Number(new URLSearchParams(location.search).get("migrate") || 0)).map((n, i) => ({
   kind: "restart", pane: `P${i}`, ws: `W${i}`, title: n, cwd: `~/code/shop.worktrees/${n}`, claude: `s${i}`, state: "idle", busy: false,
@@ -708,6 +709,10 @@ const handlers = {
   migrate_apply: async ({ pane }) => {
     await new Promise((r) => setTimeout(r, 150));
     const o = migrateOffers.find((x) => x.pane === pane);
+    if (pane === `P${Number(new URLSearchParams(location.search).get("migratefail") || 0) - 1}`) {
+      dropOffer(pane);
+      throw `tmux could not start ${o ? o.title : pane}`;
+    }
     dropOffer(pane);
     return `restarted ${o ? o.title : pane}`;
   },
