@@ -24,6 +24,8 @@
   if (embedded) document.documentElement.dataset.embed = "app";
   // Set once the app says it shows the page's tools on its own header row (postState).
   let hosted = false;
+  let hostOrigin = "*";
+  let helloTimer = 0;
   // "1 file", "2 files"; `many` for the odd plural.
   const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
@@ -911,13 +913,20 @@
     window.parent.postMessage({ lookout: "state", id: R.id,
       gate: { cls: g.cls, text: g.text, title: gt.title, go: gt.go },
       mode: { cls: $("mode").className.replace("mode ", ""), text: $("mode").textContent, title: $("mode").title },
-      layout, overview, map: mapOn, hasMap: !!R.planMap, keys: !$("keys").hidden }, "*");
+      layout, overview, map: mapOn, hasMap: !!R.planMap, keys: !$("keys").hidden }, hostOrigin);
   }
   if (embedded && window.parent !== window) {
     window.addEventListener("message", e => {
       if (e.source !== window.parent || !e.data || typeof e.data !== "object") return;
+      // The first parent that answers is the host; after that, only its
+      // origin is heard, and state goes only to it.
+      if (hostOrigin !== "*" && e.origin !== hostOrigin) return;
       const d = e.data;
       if (d.lookout === "host") {
+        // An opaque origin ("null", as a custom scheme may report) can't be a
+        // postMessage target: keep "*" then, still answering only the parent.
+        hostOrigin = e.origin && e.origin !== "null" ? e.origin : "*";
+        clearInterval(helloTimer);
         hosted = true;
         document.documentElement.dataset.host = "app";
         postState();
@@ -929,7 +938,13 @@
         else if (d.op === "keys") toggleKeys();
       }
     });
-    window.parent.postMessage({ lookout: "hello", id: R.id }, "*");
+    // Hello carries nothing but the id, so it may go anywhere. It repeats for
+    // a few seconds: the app may not be listening yet when the page loads
+    // (its frame origin arrives with the intent server's answer).
+    const hello = () => window.parent.postMessage({ lookout: "hello", id: R.id }, "*");
+    hello();
+    let tries = 0;
+    helloTimer = setInterval(() => { if (hosted || ++tries > 10) clearInterval(helloTimer); else hello(); }, 500);
   }
 
   // Swap in a fresher review (the served page polls for one) and redraw what

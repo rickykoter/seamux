@@ -820,17 +820,19 @@ render({ rows: [
   { id: "g", name: "g", kind: "attend", badge: "gate shut", said: "{{Wire it}} needs your go-ahead.", chips: [], frac: null, meta: "" },
   { id: "v", name: "v", kind: "attend", badge: "needs a value", said: "{{Increment 2's check `qa` asks: Which env?}}", chips: [], frac: null, meta: "" },
   { id: "rv", name: "rv", kind: "attend", badge: "review", said: "{{Alignment check not taken.}} 4 increments are locked.", chips: [], frac: null, meta: "" },
+  { id: "q2", name: "q2", kind: "attend", badge: "asked you", said: "Question from Claude: which env?", chips: [], frac: null, meta: "" },
   { id: "c", name: "c", kind: "wilt", badge: "ci failed", said: "Checks are red.", chips: [], frac: null, meta: "" },
   { id: "w", name: "w", kind: "running", badge: "working", said: "On it.", chips: [], frac: null, meta: "" },
 ], quiet: "" });
 {
   const h = els.rows.innerHTML;
   const cut = (id) => { const i = h.indexOf('data-id="' + id + '"'), j = h.indexOf('<div class="row ', i + 1); return h.slice(i, j > 0 ? j : undefined); };
-  checks.push(["an attend card's reason opens its said line: Question:, Gate shut:, and none where the line says it already",
+  checks.push(["an attend card's reason opens its said line (Question:, Gate shut:, Needs a value:, Review:), and none where the line starts with it",
     /<p class="said"><span class="rsn">Question:<\/span> Waiting on an answer\.<\/p>/.test(cut("a")) &&
     /<p class="said"><span class="rsn">Gate shut:<\/span> <b>Wire it<\/b> needs your go-ahead\.<\/p>/.test(cut("g")) &&
-    !/rsn/.test(cut("v")) && !/rsn/.test(cut("rv")) &&
-    ["a", "g", "v", "rv"].every((id) => /<span class="badge">needs you<\/span>/.test(cut(id))), h.slice(0, 1200)]);
+    /<span class="rsn">Needs a value:<\/span>/.test(cut("v")) && /<span class="rsn">Review:<\/span>/.test(cut("rv")) &&
+    !/rsn/.test(cut("q2")) &&
+    ["a", "g", "v", "rv", "q2"].every((id) => /<span class="badge">needs you<\/span>/.test(cut(id))), h.slice(0, 1200)]);
   checks.push(["other tiers keep their reason on the badge, and no reason in their said line",
     /<span class="badge">ci failed<\/span>/.test(cut("c")) && /<span class="badge">working<\/span>/.test(cut("w")) &&
     !/rsn/.test(cut("c") + cut("w"))]);

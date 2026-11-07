@@ -1842,21 +1842,21 @@ function widgetHtml(spec, b64) {
 .dpsr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .dpwrap{padding:1rem 0}
 .dpfig{margin:0 0 var(--gap-md,16px)}
-.dpcap{font-size:var(--fs-3);color:var(--text-muted,#666);margin-bottom:6px}
+.dpcap{font-size:var(--fs-3,13px);color:var(--text-muted,#666);margin-bottom:6px}
 .mermaid{background:var(--surface-1,#f6f6f6);border:1px solid var(--border,#ddd);
   border-radius:var(--radius,8px);padding:12px;overflow-x:auto}
 .dpq{border:1px solid var(--border,#ddd);border-radius:12px;padding:var(--pad-md,14px);
   margin:0 0 var(--gap-md,16px);background:var(--surface-1,#fafafa)}
-.dpq legend{font-size:var(--fs-3);color:var(--text-muted,#666);padding:0 6px}
-.dps{font-size:var(--fs-4);line-height:1.6;margin:0 0 12px;color:var(--text-primary,#111)}
+.dpq legend{font-size:var(--fs-3,13px);color:var(--text-muted,#666);padding:0 6px}
+.dps{font-size:var(--fs-4,15px);line-height:1.6;margin:0 0 12px;color:var(--text-primary,#111)}
 .dpo{display:flex;gap:10px;align-items:flex-start;padding:9px 11px;
   border:1px solid var(--border,#ddd);border-radius:var(--radius,8px);margin-bottom:7px;
   cursor:pointer;background:var(--surface-2,#fff)}
 .dpo:hover{border-color:var(--border-strong,#999)}
 .dpo input{margin-top:3px;flex:none}
-.dpo span{font-size:var(--fs-4);line-height:1.5;color:var(--text-primary,#111)}
+.dpo span{font-size:var(--fs-4,15px);line-height:1.5;color:var(--text-primary,#111)}
 .dpbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding-top:4px}
-.dpgo{font:500 var(--fs-4) var(--font-sans,system-ui);padding:8px 16px;
+.dpgo{font:500 var(--fs-4,15px) var(--font-sans,system-ui);padding:8px 16px;
   border-radius:var(--radius,8px);border:1px solid var(--border-strong,#999);
   background:var(--surface-2,#fff);color:var(--text-primary,#111);cursor:pointer}
 .dpgo[disabled]{cursor:default;opacity:.6}
@@ -1866,8 +1866,8 @@ ${diagBlocks}
 ${quizBlocks}
 ${qs.length ? `<div class="dpbar">
 <button class="dpgo" id="dpgo" type="button">Send answers for grading</button>
-<span id="dpmeta" style="font-size:var(--fs-3);color:var(--text-secondary,#555)">0 of ${qs.length} answered</span>
-<span id="dperr" style="font-size:var(--fs-3);color:var(--text-danger,#b00)" role="status"></span>
+<span id="dpmeta" style="font-size:var(--fs-3,13px);color:var(--text-secondary,#555)">0 of ${qs.length} answered</span>
+<span id="dperr" style="font-size:var(--fs-3,13px);color:var(--text-danger,#b00)" role="status"></span>
 </div>` : ""}
 </div>
 ${diagrams.length ? `<script src="data:text/javascript;base64,${b64}"></script>

@@ -80,16 +80,15 @@ function __boardRender(d) {
       esc(stopText(a)) + '">' + esc(l.resets_at ? "limit \u00b7 back " + clockOf(l.resets_at) : word) + "</span>";
   }
   // A card that needs you says so on its badge, the headline's words; why it
-  // does opens its said line ("Question: ..."), unless the line already says
-  // it. Every other tier keeps its reason on the badge.
-  var REASON = { "asked you": ["Question", /question|\?/i], "gate shut": ["Gate shut", /gate/i],
-    "review": ["Review", /check|review/i], "needs a value": ["Needs a value", /asks|value/i] };
+  // does opens its said line ("Question: ..."). One rule, not a guess at the
+  // wording: the label shows unless the line already starts with it. Every
+  // other tier keeps its reason on the badge.
+  var REASON = { "asked you": "Question", "gate shut": "Gate shut", "review": "Review", "needs a value": "Needs a value" };
   function reasonOf(a) {
     if (a.kind !== "attend" || !a.badge || a.limited) return "";
-    var r = REASON[a.badge] || [a.badge.charAt(0).toUpperCase() + a.badge.slice(1), null];
-    var plain = String(a.said || "").replace(/\{\{|\}\}/g, "");
-    if ((r[1] || new RegExp(a.badge.replace(/[^\w ]/g, ""), "i")).test(plain)) return "";
-    return r[0];
+    var r = REASON[a.badge] || a.badge.charAt(0).toUpperCase() + a.badge.slice(1);
+    var plain = String(a.said || "").replace(/\{\{|\}\}/g, "").trim();
+    return plain.toLowerCase().indexOf(r.toLowerCase()) === 0 ? "" : r;
   }
   // What a card says under its head: the stop, while a limit holds it.
   function saidOf(a) {

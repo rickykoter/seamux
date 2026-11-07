@@ -1791,7 +1791,7 @@ if (want("page script")) {
      app.includes('status = el("span", "r-now r-busy", j.activity || "starting");') && app.includes("this.headOf(this.title(j), chip, meta, link, acts.buttons, more, status);"));
   ok("page+app: framed, the page's tools move onto the app's header row after a hello/host handshake, so one band sits above the file",
      js.includes('window.parent.postMessage({ lookout: "hello", id: R.id }, "*");') &&
-     /if \(d\.lookout === "host"\) \{\s*hosted = true;\s*document\.documentElement\.dataset\.host = "app";/.test(js) &&
+     /if \(d\.lookout === "host"\) \{[\s\S]*?hostOrigin = e\.origin && e\.origin !== "null" \? e\.origin : "\*";\s*clearInterval\(helloTimer\);\s*hosted = true;\s*document\.documentElement\.dataset\.host = "app";/.test(js) &&
      /function postState\(\) \{\s*if \(!hosted\) return;/.test(js) &&
      js.includes("if (e.source !== window.parent ||") &&
      ["drawHeader", "drawLayout", "drawOverviewChrome", "toggleKeys"].every(f => new RegExp(`function ${f}\\(.*\\) \\{[\\s\\S]*?postState\\(\\);\\n  \\}`).test(js)) &&
@@ -1802,6 +1802,13 @@ if (want("page script")) {
      app.includes('f.contentWindow?.postMessage({ lookout: "do", op, ...extra }, this.pageOrigin);') &&
      ["gate", "overview", "map", "layout", "keys"].every(op => app.includes(`this.tell("${op}"`) && js.includes(`d.op === "${op}"`)) &&
      app.includes("h.append(...tools.state);") && app.includes('acts.append(el("span", "r-sep"), ...tools.view);'));
+  // The page pins the host's origin: state goes only there, and only it is heard
+  // after the handshake. Hello (only the id) repeats until answered, for an app
+  // that was not listening yet.
+  ok("page: the host's origin is pinned after the handshake, and hello repeats until answered",
+     js.includes('if (hostOrigin !== "*" && e.origin !== hostOrigin) return;') &&
+     /keys: !\$\("keys"\)\.hidden \}, hostOrigin\);/.test(js) &&
+     /helloTimer = setInterval\(\(\) => \{ if \(hosted \|\| \+\+tries > 10\) clearInterval\(helloTimer\); else hello\(\); \}, 500\);/.test(js));
   ok("page: unframed, or framed by an app that never answers, the page keeps its own tools row",
      !/:root\[data-embed\][^{]*\.tools[^{]*\{[^}]*display: none/.test(css) && js.includes("let hosted = false;"));
   ok("app: an open review folds the list away, and Reviews ▸ brings it back, remembered in try/catch",

@@ -358,7 +358,8 @@ export class Wake {
     const busy = KINDS.filter((k) => n.get(k)).sort((a, b) => (n.get(b) ?? 0) - (n.get(a) ?? 0));
     // Six or fewer fit on the line: all show. Past that, the five busiest.
     const top = new Set(busy.length > 6 ? busy.slice(0, 5) : busy);
-    const extra = busy.length - top.size;
+    // Only the kinds "more" actually hides: a picked kind always shows.
+    const extra = busy.filter((k) => !top.has(k) && !this.kinds.has(k)).length;
     const more = button(this.allChips ? "fewer" : `more ${extra}`, "w-chip w-more");
     more.dataset.k = "\u0000more";
     more.hidden = extra <= 0;
