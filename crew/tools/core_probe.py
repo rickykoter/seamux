@@ -24,17 +24,9 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 CREW = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
-os.environ["CREW_IMPL"] = "rust-strict"  # this branch's seamux, never crew's Python
 import crew_impl  # noqa: E402
 import golden  # noqa: E402  (beside this probe)
 
-PATHS = {
-    "cachefacts": os.path.join(CREW, "hooks", "cachefacts.py"),
-    "families": os.path.join(CREW, "board", "families.py"),
-    "pricing": os.path.join(CREW, "board", "pricing.py"),
-    "costs": os.path.join(CREW, "board", "costs.py"),
-    "workspaces": os.path.join(CREW, "hooks", "workspaces.py"),
-}
 FAKE = os.path.join(HERE, "fakecmux.py")
 results = []
 
@@ -66,7 +58,7 @@ def env_for(h, **kw):
 
 def run(tool, args, env, stdin=""):
     """`seamux <tool>` with args, in env."""
-    argv = crew_impl.argv(tool, PATHS[tool], sys.executable)
+    argv = crew_impl.argv(tool)
     return subprocess.run(argv + list(args), input=stdin, capture_output=True, text=True,
                           env=crew_impl.env(env), timeout=60)
 

@@ -57,7 +57,6 @@ def check(name, cond, extra=""):
 # (CREW_HOME) and to reach cmux through the CLI, so fakecmux still answers.
 # crew_impl (the family's shared helper) decides; this only adds the crew tree.
 sys.path.insert(0, HERE)
-os.environ["CREW_IMPL"] = "rust-strict"  # never crew's Python
 import crew_impl  # noqa: E402
 
 if not crew_impl.seamux_bin():
@@ -67,7 +66,7 @@ if not crew_impl.seamux_bin():
 
 def _cmd(tool, args, env, crew_home):
     try:
-        argv = crew_impl.argv(tool, os.path.join(crew_home, "bin", tool), sys.executable)
+        argv = crew_impl.argv(tool)
     except crew_impl.NotPorted as e:
         sys.exit(f"cli_probe: {e}")
     env = crew_impl.env(dict(env, CREW_HOME=crew_home))

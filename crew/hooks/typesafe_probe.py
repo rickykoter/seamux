@@ -21,7 +21,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # The tools, as this branch's `seamux typesafe` and `seamux asked`.
 TYPESAFE, ASKED = "typesafe", "asked"
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools"))
-os.environ["CREW_IMPL"] = "rust-strict"  # never crew's Python
 import crew_impl  # noqa: E402
 
 SCRIPT = []          # (status, dict-body) pairs, consumed per request
@@ -70,7 +69,7 @@ def ok(name, cond):
 
 
 def run(argv, env, stdin=""):
-    head = crew_impl.argv(argv[0], os.path.join(HERE, argv[0] + ".py"), sys.executable)
+    head = crew_impl.argv(argv[0])
     return subprocess.run(head + list(argv[1:]), input=stdin, env=crew_impl.env(env),
                           capture_output=True, text=True, timeout=30)
 

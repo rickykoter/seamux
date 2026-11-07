@@ -32,6 +32,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { chromium } from 'playwright-core'
 import { recordPage } from 'testreel'
+import { boardScenes } from './board-cast.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = join(HERE, '..', '..', '..')
@@ -105,8 +106,7 @@ async function scene(name, { viewport, label, prepare }, body) {
 // so the click is the cursor's and the push after it is the board's answer.
 
 function boardCast() {
-  const out = execFileSync('python3', [join(REPO, 'docs', 'demo', 'board-demo.py'), '--dump'])
-  return JSON.parse(out).map((s) => s.state)
+  return boardScenes()
 }
 
 // Opens board.html and returns push(state), which renders a state the way a

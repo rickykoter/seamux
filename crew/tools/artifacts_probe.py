@@ -56,9 +56,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
-CLI = os.path.join(REPO, "crew", "bin", "crew-artifacts")
 sys.path.insert(0, HERE)
-os.environ["CREW_IMPL"] = "rust-strict"  # this branch's seamux, never crew's Python
 import crew_impl  # noqa: E402
 import golden  # noqa: E402  (beside this probe)
 results = []
@@ -102,12 +100,12 @@ class RustStore(object):
                            {k: r.get(k) or "" for k in self.FIELDS})
 
     def _run(self, *args):
-        return subprocess.run(crew_impl.argv("crew-artifacts", CLI) + list(args),
+        return subprocess.run(crew_impl.argv("crew-artifacts") + list(args),
                               capture_output=True, text=True, env=crew_impl.env(self.env))
 
     def _json(self, *args, ok=(0,)):
         """The command's JSON, refusing an exit code outside `ok` (keep
-        exits 1 on a refusal, as the Python CLI does) or output that is not
+        exits 1 on a refusal, as the CLI always has) or output that is not
         JSON, with seamux's stderr in the error."""
         p = self._run(*args)
         try:
@@ -300,9 +298,8 @@ with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
     json.dump({"cwd": ws, "created": "2020-03-01T00:00:00.000Z", "header": "Scope",
                "question": "Which pages?"}, open(os.path.join(plans, "asks", "a1.json"), "w"))
 
-    # rust-strict raises NotPorted here when seamux does not register
-    # crew-artifacts.
-    crew_impl.argv("crew-artifacts", CLI)
+    # NotPorted here when seamux does not register crew-artifacts.
+    crew_impl.argv("crew-artifacts")
     A = RustStore(env)
     print("implementation: seamux crew-artifacts (%s)" % crew_impl.seamux_bin())
 
@@ -592,7 +589,7 @@ with tempfile.TemporaryDirectory(prefix="artifacts-probe-") as t:
     check("and leaves a marker asking the holder to go round again", os.path.exists(A.AGAIN))
     A.index()
     check("the next run consumes the marker", not os.path.exists(A.AGAIN))
-    cli = crew_impl.argv("crew-artifacts", CLI, sys.executable)
+    cli = crew_impl.argv("crew-artifacts")
     p = subprocess.run(cli + ["search", "scratch", "notes", "--ws", ws, "--json"],
                        capture_output=True, text=True, env=crew_impl.env(env))
     try:

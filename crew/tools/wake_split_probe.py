@@ -26,7 +26,6 @@ ROOT = os.path.dirname(HERE)
 FAKE = os.path.join(HERE, "fakecmux.py")
 tmp = tempfile.mkdtemp(prefix="wake-split-")
 sys.path.insert(0, HERE)
-os.environ["CREW_IMPL"] = "rust-strict"  # this branch's seamux, never crew's Python
 import crew_impl  # noqa: E402  (beside this probe)
 # The seamux app's tmux panes set these for the session running the probe.
 for k in ("SEAMUX_PANE_ID", "SEAMUX_WORKSPACE_ID", "TMUX", "TMUX_PANE"):
@@ -50,8 +49,8 @@ def at_share(w):
 
 def tool(name):
     """The argv that runs one board tool: the one place a probe names it,
-    through the CREW_IMPL helper, as `seamux <name>`."""
-    return crew_impl.argv(name, os.path.join(ROOT, "board", name))
+    through crew_impl, as `seamux <name>`."""
+    return crew_impl.argv(name)
 
 
 def wake_tab(name, url, select=""):

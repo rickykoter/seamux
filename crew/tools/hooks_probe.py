@@ -56,7 +56,6 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 SRC = os.environ.get("PROBE_CREW_SRC") or os.path.join(REPO, "crew")
 FAKE = os.path.join(HERE, "fakecmux.py")
 sys.path.insert(0, HERE)
-os.environ["CREW_IMPL"] = "rust-strict"  # this branch's seamux, never crew's Python
 import crew_impl  # noqa: E402
 
 BASH = shutil.which("bash") or "/bin/bash"
@@ -207,7 +206,7 @@ def env_for(ws="ws-1", path=BIN, **extra):
     # What crew_impl.env adds, with CREW_HOME on the copy under test.
     # SEAMUX_TOOLS_BY_PATH: seamux spawns crew tools from the copy, by path,
     # so the stubs below log each spawn.
-    env.update(CREW_IMPL=crew_impl.mode(), CREW_CMUX_TRANSPORT="cli", CREW_HOME=CREW,
+    env.update(CREW_CMUX_TRANSPORT="cli", CREW_HOME=CREW,
                SEAMUX_TOOLS_BY_PATH="1")
     if ws:
         env["CMUX_WORKSPACE_ID"] = ws
@@ -217,7 +216,7 @@ def env_for(ws="ws-1", path=BIN, **extra):
 
 def shim(tool, sh):
     """The shim seamux's `tool` stands behind; refused if seamux lacks it."""
-    if not crew_impl.is_rust(tool):
+    if not crew_impl.has(tool):
         raise crew_impl.NotPorted("seamux does not register %r" % tool)
     return sh
 
@@ -231,10 +230,8 @@ def asked_argv(size):
 
 
 def tool_argv(name, *argv):
-    """A crew tool by its Python basename: the script in the copy, or `seamux`."""
-    rel = {"options": "hooks/options.py", "merge_settings": "claude/merge_settings.py",
-           "statusline": "claude/statusline.py", "triage": "hooks/triage.py"}[name]
-    return crew_impl.argv(name, os.path.join(CREW, rel), sys.executable) + list(argv)
+    """`seamux <name>` and its arguments."""
+    return crew_impl.argv(name) + list(argv)
 
 
 def payload(**kw):
@@ -302,7 +299,7 @@ def touch(name):
 
 print("as seamux (%s): %s" % (crew_impl.seamux_bin(), ", ".join(
     t for t in ("crew-hook", "asked-hook", "options", "merge_settings", "statusline", "triage")
-    if crew_impl.is_rust(t))))
+    if crew_impl.has(t))))
 
 # --- the guard ------------------------------------------------------------------------
 print("guard")

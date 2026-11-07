@@ -26,12 +26,11 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-os.environ["CREW_IMPL"] = "rust-strict"  # this branch's seamux, never crew's Python
 import crew_impl  # noqa: E402  (beside this probe)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
-SYNC = crew_impl.argv("crew-sync", os.path.join(REPO, "crew", "bin", "crew-sync"), sys.executable)
+SYNC = crew_impl.argv("crew-sync")
 results = []
 
 

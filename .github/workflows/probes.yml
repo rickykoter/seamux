@@ -91,9 +91,6 @@ jobs:
       - name: deep-plan probe
         run: node deep-plan/probe.mjs
 
-      - name: board probe
-        run: node crew/board/board_probe.mjs
-
       # Throwaway repos, reviews, pointer and shim under a temp dir; a mock
       # TypeSafe client, so nothing reaches the network.
       - name: lookout probe
@@ -106,40 +103,9 @@ jobs:
       - name: restack probe
         run: node restack/probe.mjs
 
-      # A local mock of /v1/systemone — asserts every failure path degrades to
-      # "no judgment", so the TypeSafe layer can never change CI-less behavior.
-      - name: typesafe probe
-        run: python3 crew/hooks/typesafe_probe.py
-
-      # A deep-plan family through the real crew-sync and crew-color, against a
-      # fake cmux (crew/tools/fakecmux.py): tokens, shades, and the colors from
-      # before coming back when the family closes.
-      - name: family sync probe
-        run: python3 crew/tools/family_sync_probe.py
-
-      # The ten crew CLIs port-cli ports, black-box against fakecmux in a
-      # throwaway HOME; the same run proves the Rust with CREW_IMPL=rust.
-      - name: cli probe
-        run: python3 crew/tools/cli_probe.py
-
-      # The default probes in .seamux/verify.json that CI did not run. Each
-      # works in a throwaway HOME against fakecmux, with no app and no network.
-      - name: hooks probe
-        run: python3 crew/tools/hooks_probe.py
-
-      - name: workspaces probe
-        run: python3 crew/tools/workspaces_probe.py
-
-      - name: artifacts probe
-        run: python3 crew/tools/artifacts_probe.py
-
-      - name: wake split probe
-        run: python3 crew/tools/wake_split_probe.py
-
-      - name: core probe
-        run: python3 crew/tools/core_probe.py
-
-      - name: CREW_IMPL helper probe
+      # crew's probes that run seamux are in the app job, which builds it.
+      # These two run stub seamuxes, so they need no build.
+      - name: crew probe helper (crew_impl)
         run: python3 crew/tools/crew_impl_probe.py
 
       - name: crew install probe (apply, uninstall, sandboxes)
@@ -181,3 +147,40 @@ jobs:
         env:
           SEAMUX_REQUIRE_TMUX: "1"
         run: cargo test --manifest-path app/Cargo.toml --workspace
+
+      # crew's probes, written in Python and node, drive this build's seamux
+      # (app/target/debug/seamux) from outside, each in a throwaway HOME
+      # against fakecmux, with no app and no network. macOS only, as the app.
+      - name: build seamux for the crew probes
+        run: cargo build --manifest-path app/Cargo.toml -p seamux-cli
+
+      - name: board probe
+        run: node crew/board/board_probe.mjs
+
+      # A local mock of /v1/systemone: every failure path degrades to "no
+      # judgment", so the TypeSafe layer can never change CI-less behavior.
+      - name: typesafe probe
+        run: python3 crew/hooks/typesafe_probe.py
+
+      # A deep-plan family through seamux crew-sync: tokens, shades, and the
+      # colors from before coming back when the family closes.
+      - name: family sync probe
+        run: python3 crew/tools/family_sync_probe.py
+
+      - name: cli probe
+        run: python3 crew/tools/cli_probe.py
+
+      - name: hooks probe
+        run: python3 crew/tools/hooks_probe.py
+
+      - name: workspaces probe
+        run: python3 crew/tools/workspaces_probe.py
+
+      - name: artifacts probe
+        run: python3 crew/tools/artifacts_probe.py
+
+      - name: wake split probe
+        run: python3 crew/tools/wake_split_probe.py
+
+      - name: core probe
+        run: python3 crew/tools/core_probe.py

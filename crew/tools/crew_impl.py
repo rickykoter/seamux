@@ -1,32 +1,27 @@
 #!/usr/bin/env python3
-"""crew_impl — which implementation a probe runs: today's Python or `seamux`.
-
-    CREW_IMPL unset        every tool runs as the Python it is today
-    CREW_IMPL=rust         a tool runs as `seamux <tool>` when seamux registers
-                           it, and as the Python otherwise, so each port can run
-                           every shared probe as soon as its own tools exist
-    CREW_IMPL=rust-strict  as rust, but an unregistered tool raises NotPorted:
-                           the cutover's proof that nothing is left on Python
+"""crew_impl — the one place a probe turns a crew tool into a command:
+this branch's `seamux <tool>`.
 
 In a probe:
 
     import crew_impl
-    argv = crew_impl.argv("crew-sync", CREW_SYNC_PATH)            # shebang script
-    argv = crew_impl.argv("typesafe", TYPESAFE_PY, sys.executable)  # run under python
-    subprocess.run(argv, env=crew_impl.env(env), ...)
+    argv = crew_impl.argv("crew-sync")                 # [seamux, "crew-sync"]
+    subprocess.run(argv + args, env=crew_impl.env(env), ...)
 
-env() adds what the Rust needs to stand where the Python stood: under rust it
-sets CREW_CMUX_TRANSPORT=cli, so crates/cmux sends every call through the
-probe's CREW_CMUX (fakecmux), and CREW_HOME to this checkout's crew/ unless
-the probe set one.
+argv() raises NotPorted when seamux does not register the tool, and when no
+seamux is built, so a probe never passes against something it did not mean
+to test. env() adds what the tools need to stand in a probe's world:
+CREW_CMUX_TRANSPORT=cli, so crates/cmux sends every call through the probe's
+CREW_CMUX (fakecmux), and CREW_HOME to this checkout's crew/ unless the probe
+set one.
 
 seamux is SEAMUX_BIN, else app/target/debug/seamux in this checkout. Never
 `seamux` on PATH: that is the installed app, and a probe that fell back to it
 would test another branch's code. Build it first:
 cargo build --manifest-path app/Cargo.toml -p seamux-cli
 
-From another language: crew_impl.py argv <tool> <path> [interp]  prints the argv
-as JSON (crew_impl.mjs is the node twin, and needs no python).
+From another language: crew_impl.py argv <tool>  prints the argv as JSON
+(crew_impl.mjs is the node twin, and needs no python).
 """
 import json
 import os
@@ -36,18 +31,11 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 CREW = os.path.join(REPO, "crew")
-MODES = ("", "rust", "rust-strict")
+BUILD = "cargo build --manifest-path app/Cargo.toml -p seamux-cli"
 
 
 class NotPorted(RuntimeError):
-    """CREW_IMPL=rust-strict and seamux does not register the tool."""
-
-
-def mode():
-    m = os.environ.get("CREW_IMPL", "")
-    if m not in MODES:
-        raise ValueError("CREW_IMPL must be unset, rust or rust-strict, not %r" % m)
-    return m
+    """seamux is missing, or does not register the tool."""
 
 
 def seamux_bin():
@@ -74,44 +62,39 @@ def registered():
                                  timeout=10).stdout
         except (OSError, subprocess.SubprocessError):
             # Missing, not executable, or hung past the timeout: no tools, so
-            # rust falls back to the Python and rust-strict says what is missing.
+            # argv says what is missing.
             out = ""
         _registered[b] = frozenset(l.strip() for l in out.splitlines() if l.strip())
     return _registered[b]
 
 
-def argv(tool, path, interp=None):
-    """The argv that runs `tool`: [seamux, tool] or the Python's own argv."""
-    m = mode()
-    python = ([interp] if interp else []) + [path]
-    if not m:
-        return python
-    if tool in registered():
-        return [seamux_bin(), tool]
-    if m == "rust-strict":
-        raise NotPorted("CREW_IMPL=rust-strict: seamux does not register %r (seamux: %s)"
-                        % (tool, seamux_bin() or "not found"))
-    return python
+def argv(tool):
+    """[seamux, tool], or NotPorted naming what is missing."""
+    b = seamux_bin()
+    if not b:
+        raise NotPorted("no seamux: set SEAMUX_BIN or build app/target/debug/seamux (%s)" % BUILD)
+    if tool not in registered():
+        raise NotPorted("seamux (%s) does not register %r" % (b, tool))
+    return [b, tool]
 
 
-def is_rust(tool):
-    """True when argv(tool, ...) would run seamux."""
-    return bool(mode()) and tool in registered()
+def has(tool):
+    """True when argv(tool) would run."""
+    return tool in registered()
 
 
 def env(base=None):
-    """A copy of base (default os.environ) with what the Rust needs under CREW_IMPL."""
+    """A copy of base (default os.environ) with what the tools need in a probe."""
     e = dict(os.environ if base is None else base)
-    if mode():
-        e["CREW_CMUX_TRANSPORT"] = "cli"
-        e.setdefault("CREW_HOME", CREW)
+    e["CREW_CMUX_TRANSPORT"] = "cli"
+    e.setdefault("CREW_HOME", CREW)
     return e
 
 
 def main(args):
-    if len(args) >= 3 and args[0] == "argv":
+    if len(args) == 2 and args[0] == "argv":
         try:
-            print(json.dumps(argv(args[1], args[2], args[3] if len(args) > 3 else None)))
+            print(json.dumps(argv(args[1])))
         except NotPorted as e:
             print(str(e), file=sys.stderr)
             return 3

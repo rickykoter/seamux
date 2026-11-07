@@ -25,21 +25,18 @@ for (const k of ["SEAMUX_PANE_ID", "SEAMUX_WORKSPACE_ID", "TMUX", "TMUX_PANE"]) 
 // (inherited, or picked because no real cmux answers) opens Wake clicks in
 // the person's own browser.
 process.env.SEAMUX_BACKEND = "cmux";
-// Every crew tool here runs as this branch's `seamux <name>`: rust-strict
-// refuses one seamux does not register instead of running crew's Python.
-process.env.CREW_IMPL = "rust-strict";
+// Every crew tool here runs as this branch's `seamux <name>`; one seamux does
+// not register throws NotPorted.
 const crewImpl = await import("../tools/crew_impl.mjs");
-const crewTool = (name, file, args, opts = {}) => {
-  const [cmd, ...pre] = crewImpl.argv(name, file, "python3");
+const crewTool = (name, args, opts = {}) => {
+  const [cmd, ...pre] = crewImpl.argv(name);
   return execFileSync(cmd, [...pre, ...args],
     { encoding: "utf8", ...opts, env: crewImpl.env(opts.env || process.env) });
 };
 // The argv that runs one board tool, as [cmd, ...args]: the one place this
 // probe names crew-board, crew-board-intent, news, judgments and cat_poses.
-// Through the CREW_IMPL helper, as `seamux <basename>`.
-const tool = (name) => name.endsWith(".py")
-  ? crewImpl.argv(name.slice(0, -3), join(HERE, name), "python3")
-  : crewImpl.argv(name, join(HERE, name));
+// Through crew_impl, as `seamux <basename>`.
+const tool = (name) => crewImpl.argv(name.replace(/\.py$/, ""));
 // The env any board tool or the server it starts runs in.
 const toolEnv = (base = process.env) => crewImpl.env(base);
 const runTool = (name, args, opts = {}) => {
@@ -981,7 +978,7 @@ if (live && Array.isArray(live.rows)) {
       "-code-unknown": [{ date: "2026-09-13", totalCost: 99 }],
     },
   }));
-  const runAttr = (...cwds) => JSON.parse(crewTool("costs", join(HERE, "costs.py"),
+  const runAttr = (...cwds) => JSON.parse(crewTool("costs",
     ["--attribute", fixture, ...cwds]));
   const r1 = runAttr(A, B, C);
   checks.push(["costs: today/week split by date", r1[A]?.today === 1.5 && r1[A]?.week === 3.5]);
@@ -991,7 +988,7 @@ if (live && Array.isArray(live.rows)) {
     !JSON.stringify(r1).includes("99")]);
   checks.push(["costs: week-only workspace has a zero today", r1[C]?.today === 0 && r1[C]?.week === 0.25]);
   // The CI path: no ccusage on PATH -> {} and exit 0, never a traceback.
-  const r2 = crewTool("costs", join(HERE, "costs.py"), [A],
+  const r2 = crewTool("costs", [A],
     { env: { ...process.env, PATH: "/usr/bin:/bin", CREW_COSTS_TTL: "0", HOME: tmp } });
   checks.push(["costs: missing ccusage degrades to {}", r2.trim() === "{}"]);
   fs.rmSync(tmp, { recursive: true, force: true });
@@ -1050,7 +1047,7 @@ if (live && Array.isArray(live.rows)) {
   // The status line runs with no workspace id, so it never asks cmux for a colour.
   const STATUSLINE = join(HERE, "..", "claude", "statusline.py");
   const PORTED = { [PRICING]: "pricing", [join(HERE, "costs.py")]: "costs", [STATUSLINE]: "statusline" };
-  const py = (args, opts = {}) => crewTool(PORTED[args[0]], args[0], args.slice(1), { env, ...opts });
+  const py = (args, opts = {}) => crewTool(PORTED[args[0]], args.slice(1), { env, ...opts });
   const args = () => JSON.parse(py([PRICING, "--args"]));
   const lastArgv = () => fs.readFileSync(log, "utf8").trim().split("\n").pop();
 
@@ -1337,7 +1334,7 @@ if (live && Array.isArray(live.rows)) {
     const ov = join(tmp, "ov.json");
     fs.writeFileSync(ov, ovText);
     try {
-      return crewTool("crew-overlay", OV, [ov],
+      return crewTool("crew-overlay", [ov],
         { input: tmplText, stdio: ["pipe", "pipe", "pipe"] });
     } catch { return null; }
   };
@@ -1379,7 +1376,7 @@ if (live && Array.isArray(live.rows)) {
   try {
     const ov = join(tmp, "broken.json");
     fs.writeFileSync(ov, "{ not json");
-    wrote = crewTool("crew-overlay", OV, [ov, "/my/real/path.json"],
+    wrote = crewTool("crew-overlay", [ov, "/my/real/path.json"],
       { input: tmpl, stdio: ["pipe", "pipe", "pipe"] });
   } catch (e) {
     refused = e.status !== 0;
@@ -1742,7 +1739,7 @@ if (live && Array.isArray(live.rows)) {
 // ---- deep-plan families: grouped, ordered by the most urgent member --------
 {
   const R = (id, kind, extra = {}) => ({ id, name: id, kind, badge: "b", said: "", chips: [], frac: null, meta: "", ...extra });
-  const grouped = (rows, quiet) => JSON.parse(crewTool("families", join(HERE, "families.py"), [],
+  const grouped = (rows, quiet) => JSON.parse(crewTool("families", [],
     { input: JSON.stringify({ rows, quiet }) }));
   const plain = { rows: [R("a", "attend"), R("r", "running")], quiet: [R("q", "quiet")] };
   const same = grouped(plain.rows, plain.quiet);
@@ -1911,7 +1908,7 @@ if (live && Array.isArray(live.rows)) {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), "crew-color-fam-"));
   const env = { ...process.env, XDG_CACHE_HOME: join(tmp, "cache"), CREW_CMUX: "/usr/bin/false" };
   const [P, A, B] = ["p", "a", "b"].map(n => { const d = join(tmp, n); fs.mkdirSync(d); return d; });
-  const cc = (...a) => crewTool("crew-color", join(HERE, "..", "bin", "crew-color"), a, { env });
+  const cc = (...a) => crewTool("crew-color", a, { env });
   // Not trim(): a member restored to no color ends its line in a bare tab.
   const lines = out => Object.fromEntries(out.split("\n").filter(Boolean).map(l => l.split("\t")));
   cc("assign", A);

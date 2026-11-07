@@ -1,14 +1,9 @@
 // crew_impl.mjs — the node twin of crew_impl.py, for board_probe.mjs and any
-// other node probe. Same modes, same lookup, same answers; see crew_impl.py
-// for the why.
+// other node probe. Same lookup, same answers; see crew_impl.py for the why.
 //
 //   import { argv, env } from "../tools/crew_impl.mjs";
-//   const [cmd, ...rest] = argv("costs", COSTS_PY, "python3");
+//   const [cmd, ...rest] = argv("costs");   // [seamux, "costs"]
 //   execFileSync(cmd, rest, { env: env(process.env) });
-//
-//   CREW_IMPL unset        the Python
-//   CREW_IMPL=rust         `seamux <tool>` when seamux registers it, else the Python
-//   CREW_IMPL=rust-strict  as rust, but an unregistered tool throws NotPorted
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -18,15 +13,10 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.dirname(path.dirname(HERE));
 const CREW = path.join(REPO, "crew");
-const MODES = ["", "rust", "rust-strict"];
+const BUILD = "cargo build --manifest-path app/Cargo.toml -p seamux-cli";
 
+/** seamux is missing, or does not register the tool. */
 export class NotPorted extends Error {}
-
-export function mode() {
-  const m = process.env.CREW_IMPL || "";
-  if (!MODES.includes(m)) throw new Error(`CREW_IMPL must be unset, rust or rust-strict, not ${JSON.stringify(m)}`);
-  return m;
-}
 
 function executable(p) {
   try { fs.accessSync(p, fs.constants.X_OK); return fs.statSync(p).isFile(); } catch { return false; }
@@ -49,33 +39,27 @@ export function registered() {
   if (!cache.has(b)) {
     let out = "";
     try { out = execFileSync(b, ["--tools"], { encoding: "utf8", timeout: 10000 }); } catch { out = ""; }
-    cache.set(b, new Set(out.split("\n").map((l) => l.trim()).filter(Boolean)));
+    cache.set(b, new Set(out.split("\n").map(s => s.trim()).filter(Boolean)));
   }
   return cache.get(b);
 }
 
-/** The argv that runs `tool`: [seamux, tool] or the Python's own argv. */
-export function argv(tool, file, interp = null) {
-  const m = mode();
-  const python = interp ? [interp, file] : [file];
-  if (!m) return python;
-  if (registered().has(tool)) return [seamuxBin(), tool];
-  if (m === "rust-strict") {
-    throw new NotPorted(`CREW_IMPL=rust-strict: seamux does not register ${JSON.stringify(tool)} (seamux: ${seamuxBin() || "not found"})`);
-  }
-  return python;
+/** [seamux, tool], or NotPorted naming what is missing. */
+export function argv(tool) {
+  const b = seamuxBin();
+  if (!b) throw new NotPorted(`no seamux: set SEAMUX_BIN or build app/target/debug/seamux (${BUILD})`);
+  if (!registered().has(tool)) throw new NotPorted(`seamux (${b}) does not register ${JSON.stringify(tool)}`);
+  return [b, tool];
 }
 
-export function isRust(tool) {
-  return Boolean(mode()) && registered().has(tool);
+export function has(tool) {
+  return registered().has(tool);
 }
 
-/** A copy of base with what the Rust needs under CREW_IMPL. */
+/** A copy of base with what the tools need in a probe. */
 export function env(base = process.env) {
   const e = { ...base };
-  if (mode()) {
-    e.CREW_CMUX_TRANSPORT = "cli";
-    if (!e.CREW_HOME) e.CREW_HOME = CREW;
-  }
+  e.CREW_CMUX_TRANSPORT = "cli";
+  if (!e.CREW_HOME) e.CREW_HOME = CREW;
   return e;
 }

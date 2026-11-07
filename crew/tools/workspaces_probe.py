@@ -119,7 +119,6 @@ os.environ.update(ENV)
 with open(ENV["GIT_CONFIG_GLOBAL"], "w") as fh:
     fh.write("[user]\n\tname = probe\n\temail = probe@example.com\n[init]\n\tdefaultBranch = main\n")
 
-os.environ["CREW_IMPL"] = "rust-strict"  # this branch's seamux, never crew's Python
 import crew_impl  # noqa: E402  (beside this probe)
 
 
@@ -141,7 +140,7 @@ class RustW:
     def _run(self, *args, stdin=None):
         env = crew_impl.env(os.environ)
         env["CREW_WORKSPACES_ARCHIVE"] = self.ARCHIVE
-        return subprocess.run(crew_impl.argv("workspaces", W_PY) + list(args), input=stdin,
+        return subprocess.run(crew_impl.argv("workspaces") + list(args), input=stdin,
                               env=env, capture_output=True, text=True, timeout=60)
 
     def _json(self, *args):
@@ -201,7 +200,6 @@ class RustW:
         return out
 
 
-W_PY = os.path.join(CREW, "hooks", "workspaces.py")
 W = RustW()
 
 
@@ -429,7 +427,7 @@ check("forget drops a record", W.forget(os.path.join(T, "gone"))
 check("forget of nothing says so", not W.forget(os.path.join(T, "gone")))
 
 # The tool's own read-modify-write, eight processes at once.
-writers = [subprocess.Popen(crew_impl.argv("workspaces", W_PY) + ["update-archive"],
+writers = [subprocess.Popen(crew_impl.argv("workspaces") + ["update-archive"],
                             stdin=subprocess.PIPE, env=crew_impl.env(os.environ), text=True)
            for i in range(8)]
 for i, p in enumerate(writers):
@@ -493,7 +491,7 @@ check("archive refuses a workspace with a job running, naming it",
 print("plan guard")
 F = os.path.join(T, "f")
 os.makedirs(os.path.join(F, "deep"))
-WS_CLI = crew_impl.argv("workspaces", W_PY, sys.executable)
+WS_CLI = crew_impl.argv("workspaces")
 WENV = crew_impl.env(os.environ)
 
 
@@ -557,7 +555,6 @@ os.environ["CREW_DEEP_PLAN"] = _dp
 # --- the board's archive chip: triage.py's crew:archive ---------------------------
 print("board archive chip (triage.py)")
 import time  # noqa: E402
-TRIAGE = os.path.join(CREW, "hooks", "triage.py")
 
 
 def tap(ws_id, delay=None, **extra):
@@ -570,7 +567,7 @@ def tap(ws_id, delay=None, **extra):
               "effects": {"desktop": True, "sound": True, "record": True}}
     open(os.path.join(FAKE_DIR, "cmux.log"), "w").close()
     t0 = time.monotonic()
-    r = subprocess.run(crew_impl.argv("triage", TRIAGE, sys.executable), input=json.dumps(policy),
+    r = subprocess.run(crew_impl.argv("triage"), input=json.dumps(policy),
                        env=crew_impl.env(env), capture_output=True, text=True, timeout=30)
     return r, time.monotonic() - t0
 
@@ -645,8 +642,8 @@ import urllib.request  # noqa: E402
 
 def board_tool(name):
     """The argv that runs one board tool: the one place this probe names it,
-    through the CREW_IMPL helper like the rest of this probe."""
-    return crew_impl.argv(name, os.path.join(CREW, "board", name))
+    through crew_impl like the rest of this probe."""
+    return crew_impl.argv(name)
 
 
 IHOME = os.path.join(T, "intent-home")
@@ -689,7 +686,6 @@ check("an archive tap reaches triage.py naming the row's workspace",
 print("crew-sweep")
 import threading  # noqa: E402
 from http.server import BaseHTTPRequestHandler, HTTPServer  # noqa: E402
-SWEEP = os.path.join(CREW, "bin", "crew-sweep")
 OLD = time.time() - 30 * 86400
 
 
@@ -745,7 +741,7 @@ SENV.pop("TYPESAFE_API_KEY", None)
 
 
 def sweep(*argv, stdin="", **env):
-    r = subprocess.run(crew_impl.argv("crew-sweep", SWEEP, sys.executable) + list(argv),
+    r = subprocess.run(crew_impl.argv("crew-sweep") + list(argv),
                        env=crew_impl.env(dict(SENV, **env)), input=stdin,
                        capture_output=True, text=True, timeout=120)
     return r
@@ -868,7 +864,7 @@ check("a archives a live card's workspace, and remembers it",
       "ws-st" not in [w["id"] for w in rows()] and os.path.join(stale, "sub") in W.load_archive()
       and "swept: 1 skipped, 1 archived" in r.stdout, r.stdout[-400:])
 
-OPTS = crew_impl.argv("options", os.path.join(CREW, "hooks", "options.py"), sys.executable)
+OPTS = crew_impl.argv("options")
 OPTS_ENV = crew_impl.env
 out_ = os.path.join(T, "opts.json")
 json.dump({"typesafe": {"enabled": True}}, open(out_, "w"))

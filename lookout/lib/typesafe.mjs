@@ -1,6 +1,5 @@
 // The TypeSafe client, reached the way every seamux plugin reaches it: by
-// running crew's one client (`seamux typesafe`, or crew/hooks/typesafe.py
-// until the crew Python is deleted) with JSON on stdin. A
+// running crew's one client (`seamux typesafe`) with JSON on stdin. A
 // plugin cannot import another's libs (ADR 0004), so the two small rules
 // below are restated here rather than shared: where the client is
 // (deep-plan/lib/evidence.mjs, clientCmd) and when file content may leave the
@@ -57,7 +56,7 @@ export function repoConfig(root) {
 // a failure is a reason to fall back, not a guess.
 export function ask(state, questions, { timeout = 60000 } = {}) {
   const client = clientCmd();
-  if (!client) return { ok: false, why: "no TypeSafe client found (seamux typesafe, or crew's hooks/typesafe.py)" };
+  if (!client) return { ok: false, why: "no TypeSafe client found (seamux typesafe)" };
   const [cmd, ...pre] = client;
   const a = spawnSync(cmd, [...pre, "available"], { timeout: 5000 });
   if (a.status !== 0) return { ok: false, why: "TypeSafe is not configured (no API key)" };
