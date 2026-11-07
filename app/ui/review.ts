@@ -50,7 +50,21 @@ type PageState = {
   map: boolean;
   hasMap: boolean;
   keys: boolean;
+  /** Whether the page's file list shows its own Overview row. */
+  ovRow?: boolean;
 };
+/**
+ * What the header row folds into its ⋯ menu when it runs out of width, in
+ * order: the GitHub link, then Overview (and Map), Split or Unified, and ?.
+ * The title ellipsizes before any of them goes; the gate pill and the Act
+ * button never do.
+ */
+const FOLDS = ["github", "overview", "layout", "keys"] as const;
+type Fold = (typeof FOLDS)[number];
+/** The title keeps this much width before anything folds. */
+const TITLE_MIN = 160;
+/** At most this many picked findings are named in the Act menu. */
+const PICKS_SHOWN = 5;
 
 // Short names: the side is narrow. What each depth means is the select's title.
 const DEPTHS: [string, string][] = [
@@ -207,6 +221,9 @@ export class ReviewView {
   /** The framed page's tools, once it posts them; its origin, to talk back. */
   private pageState: PageState | null = null;
   private pageOrigin = "";
+  /** How many of FOLDS the header row has folded into its ⋯ menu, and the width it fitted. */
+  private fold = 0;
+  private fitWidth = 0;
 
   private side = el("aside", "r-side");
   private main = el("section", "r-main");
@@ -300,6 +317,23 @@ export class ReviewView {
       if (!(e.target instanceof Element && e.target.closest(".r-more"))) closeMore();
     });
     window.addEventListener("blur", closeMore);
+
+    // A narrower window folds the header's lesser tools into ⋯; a wider one
+    // brings them back. Only a change of width refits.
+    new ResizeObserver(() => {
+      const w = this.head.clientWidth;
+      if (w && w !== this.fitWidth) this.render(true);
+    }).observe(this.head);
+    // The page's keys work from the header too, for a tool folded into ⋯
+    // after the reader clicked a header button (the page has the keys otherwise).
+    this.head.addEventListener("keydown", (e) => {
+      const p = this.pageState;
+      if (!p || e.metaKey || e.ctrlKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test((e.target as Element).tagName)) return;
+      const op = ({ o: "overview", m: "map", v: "layout", "?": "keys" } as Record<string, string>)[e.key];
+      if (!op || (op === "map" && !p.hasMap)) return;
+      e.preventDefault();
+      this.tell(op, op === "layout" ? { layout: p.layout === "split" ? "unified" : "split" } : {});
+    });
 
     // The framed page's tools come up onto the header row: the page says
     // hello, this answers "host", and the page then hides its own row and
@@ -565,11 +599,30 @@ export class ReviewView {
     const key = JSON.stringify([sel, folded, this.frameDown, job, other, this.confirm.get(job?.id ?? ""), [...(this.ticked.get(job?.id ?? "") ?? [])], this.pickerOpen.has(job?.id ?? ""), this.moreOpen, this.findings.get(job?.id ?? "")?.rows.length, this.pageState, this.logOpen.get(job?.id ?? "")]);
     if (force || key !== this.drawn) {
       this.drawn = key;
-      if (job) this.drawJob(job);
-      else if (other) this.drawOther(other);
-      else this.drawEmpty();
+      const draw = () => (job ? this.drawJob(job) : other ? this.drawOther(other) : this.drawEmpty());
+      // From nothing folded, fold one more tool into ⋯ until the row fits.
+      this.fold = 0;
+      draw();
+      while (this.fold < FOLDS.length && this.overflows()) {
+        this.fold++;
+        draw();
+      }
+      this.fitWidth = this.head.clientWidth;
     }
     if (job?.status === "ready") void this.loadFindings(job);
+  }
+
+  /**
+   * The header row is one line: it overflows when its content runs past its
+   * width, or when the title is squeezed under TITLE_MIN while it still has
+   * more to show.
+   */
+  private overflows(): boolean {
+    const row = this.head.querySelector<HTMLElement>(".r-mhead-row");
+    if (!row) return false;
+    const name = row.querySelector<HTMLElement>(".r-name");
+    const squeezed = !!name && name.scrollWidth > name.clientWidth && name.clientWidth < TITLE_MIN;
+    return row.scrollWidth > row.clientWidth + 1 || squeezed;
   }
 
   private drawEmpty(): void {
@@ -582,10 +635,13 @@ export class ReviewView {
   /**
    * The one header row: the name, its state, then what can be done, then the
    * framed page's tools (its gate pill beside the state, its view buttons by
-   * the ⋯). `meta` shows inline unless a ⋯ menu (`more`) holds it.
+   * the ⋯). `more` is the ⋯ menu's key and items; it also takes whatever
+   * the row folds (FOLDS, `this.fold` of them) when the width runs short.
+   * `meta` shows inline unless there is a ⋯ menu to hold it.
    */
-  private headOf(name: string, chip: HTMLElement | null, meta: string, link: string | null, buttons: HTMLElement[], more: HTMLElement | null = null, status: HTMLElement | null = null): void {
+  private headOf(name: string, chip: HTMLElement | null, meta: string, link: string | null, buttons: HTMLElement[], more: { key: string; items: HTMLElement[] } | null = null, status: HTMLElement | null = null): void {
     const h = el("div", "r-mhead-row");
+    const folds = new Set<Fold>(FOLDS.slice(0, this.fold));
     const tools = this.pageTools();
     const shown = this.listShown;
     const list = btn(shown ? "◂ Reviews" : "Reviews ▸", () => this.toggleList(), "r-btn quiet r-list-btn");
@@ -598,18 +654,25 @@ export class ReviewView {
     if (chip) h.append(chip);
     h.append(...tools.state);
     if (status) h.append(status);
-    if (!more) h.append(el("span", "r-meta", meta));
+    // What folded goes at the top of ⋯, in the row's order.
+    const folded: HTMLElement[] = [];
     if (link) {
-      const a = el("a", "r-link", "GitHub");
+      const a = el("a", folds.has("github") ? "r-btn quiet" : "r-link", folds.has("github") ? "Open on GitHub" : "GitHub");
       a.href = link;
       a.target = "_blank";
       a.rel = "noreferrer";
-      h.append(a);
+      if (folds.has("github")) folded.push(a);
+      else h.append(a);
     }
+    const view = tools.view.filter((t) => !folds.has(t.fold));
+    for (const t of tools.view) if (folds.has(t.fold)) folded.push(t.item);
+    const items = [...folded, ...(folded.length && more?.items.length ? [el("div", "r-menu-sep")] : []), ...(more?.items ?? [])];
+    const menu = items.length ? this.more(more?.key ?? "head", meta, items) : null;
+    if (!menu) h.append(el("span", "r-meta", meta));
     const acts = el("div", "r-acts");
     acts.append(...buttons);
-    if (tools.view.length) acts.append(el("span", "r-sep"), ...tools.view);
-    if (more) acts.append(more);
+    if (view.length) acts.append(el("span", "r-sep"), ...view.map((t) => t.el));
+    if (menu) acts.append(menu);
     h.append(acts);
     this.head.replaceChildren(h);
   }
@@ -625,9 +688,11 @@ export class ReviewView {
   /**
    * The framed page's tools as the page posted them: the gate pill and live
    * state, for beside the name, and Overview, Map, Split or Unified and ?,
-   * for by the ⋯. None until the page posts them.
+   * for by the ⋯, each with the item it becomes when folded into ⋯. No
+   * Overview button while the page's file list shows its own Overview row
+   * (o still opens it). None until the page posts them.
    */
-  private pageTools(): { state: HTMLElement[]; view: HTMLElement[] } {
+  private pageTools(): { state: HTMLElement[]; view: { fold: Fold; el: HTMLElement; item: HTMLElement }[] } {
     const p = this.pageState;
     if (!p) return { state: [], view: [] };
     const gate = btn(p.gate.text, () => this.tell("gate"), `r-gate ${p.gate.cls}`);
@@ -642,42 +707,53 @@ export class ReviewView {
     const mode = el("span", `r-mode ${p.mode.cls}`, p.mode.text);
     mode.title = p.mode.title;
     const pressed = (b: HTMLButtonElement, on: boolean) => (b.setAttribute("aria-pressed", String(on)), b);
-    const view: HTMLElement[] = [];
-    const ov = pressed(btn("Overview", () => this.tell("overview"), "r-btn quiet r-tool"), p.overview);
-    ov.title = "What each group of changes means (o)";
-    view.push(ov);
+    // A folded tool's menu item, its key at the end.
+    const item = (text: string, key: string, onClick: () => void) => {
+      const b = btn(text, onClick, "r-btn quiet r-menu-tool");
+      b.append(el("kbd", "r-kbd", key));
+      return b;
+    };
+    const view: { fold: Fold; el: HTMLElement; item: HTMLElement }[] = [];
+    if (!p.ovRow) {
+      const ov = pressed(btn("Overview", () => this.tell("overview"), "r-btn quiet r-tool"), p.overview);
+      ov.title = "What each group of changes means (o)";
+      view.push({ fold: "overview", el: ov, item: item(p.overview ? "Close the overview" : "Overview", "o", () => this.tell("overview")) });
+    }
     if (p.hasMap) {
       const map = pressed(btn("Map", () => this.tell("map"), "r-btn quiet r-tool"), p.map);
       map.title = "The plan's files against the diff (m)";
-      view.push(map);
+      view.push({ fold: "overview", el: map, item: item(p.map ? "Close the map" : "Map", "m", () => this.tell("map")) });
     }
     const seg = el("div", "r-seg");
     seg.setAttribute("role", "group");
     seg.setAttribute("aria-label", "Diff layout");
     for (const [v, label] of [["split", "Split"], ["unified", "Unified"]]) seg.append(pressed(btn(label, () => this.tell("layout", { layout: v }), "r-seg-btn"), p.layout === v));
     seg.title = "Split or unified (v)";
-    view.push(seg);
+    const other = p.layout === "split" ? "unified" : "split";
+    view.push({ fold: "layout", el: seg, item: item(other === "unified" ? "Unified diff" : "Split diff", "v", () => this.tell("layout", { layout: other })) });
     const keys = btn("?", () => this.tell("keys"), "r-btn quiet r-keys");
     keys.setAttribute("aria-expanded", String(p.keys));
     keys.setAttribute("aria-label", "Keyboard shortcuts");
     keys.title = "Keyboard shortcuts (?)";
-    view.push(keys);
+    view.push({ fold: "keys", el: keys, item: item("Keyboard shortcuts", "?", () => this.tell("keys")) });
     return { state: [gate, mode], view };
   }
 
-  /** A small menu for what is used less: the review's settings, Re-review, Remove. */
-  private more(j: Job, meta: string, items: HTMLButtonElement[]): HTMLElement {
+  /** A small menu for what is used less: the review's settings, Re-review, Remove, and what the row folded. */
+  private more(key: string, meta: string, items: HTMLElement[]): HTMLElement {
     const b = el("button", "r-btn quiet r-more-btn");
     b.append(dots());
     b.setAttribute("aria-label", "More");
-    return this.menu(j.id, b, items, meta);
+    return this.menu(key, b, items, meta);
   }
 
   /**
    * A button that opens a small menu under it. One menu is open at a time,
    * `this.moreOpen` holding its key; a click elsewhere or Escape closes it.
+   * `top` goes above the items: the Act menu's list of what it acts on.
+   * Opening focuses the first item that acts (not Change picks).
    */
-  private menu(key: string, b: HTMLButtonElement, items: HTMLButtonElement[], meta = ""): HTMLElement {
+  private menu(key: string, b: HTMLButtonElement, items: HTMLElement[], meta = "", top: HTMLElement[] = []): HTMLElement {
     const wrap = el("div", "r-more");
     const open = this.moreOpen === key;
     b.type = "button";
@@ -687,16 +763,26 @@ export class ReviewView {
       // The current state, not the one drawn: the menu may have closed in place.
       this.moreOpen = this.moreOpen === key ? null : key;
       this.render(true);
-      if (this.moreOpen) this.head.querySelector<HTMLElement>(".r-menu [role=menuitem]:not(:disabled)")?.focus();
+      if (this.moreOpen) this.head.querySelector<HTMLElement>(".r-menu [role=menuitem]:not(:disabled):not(.r-change)")?.focus();
     });
     wrap.append(b);
     if (open) {
       const m = el("div", "r-menu");
       m.setAttribute("role", "menu");
       if (meta) m.append(el("p", "r-menu-meta", meta));
+      m.append(...top);
       for (const it of items) {
+        if (it.classList.contains("r-menu-sep")) {
+          it.setAttribute("role", "separator");
+          m.append(it);
+          continue;
+        }
         it.setAttribute("role", "menuitem");
-        it.addEventListener("click", () => (this.moreOpen = null), { capture: true });
+        // Closed before the item acts; redrawn after, for an item that draws nothing.
+        it.addEventListener("click", () => {
+          this.moreOpen = null;
+          queueMicrotask(() => this.render(true));
+        }, { capture: true });
         m.append(it);
       }
       wrap.append(m);
@@ -713,7 +799,7 @@ export class ReviewView {
 
   private drawOther(o: Other): void {
     const dir = o.root.split("/").filter(Boolean).pop() ?? o.root;
-    this.headOf(o.title, null, `from a terminal · ${dir}${o.branch ? ` · ${o.branch}` : ""} · ${ago(o.updated)}`, null, []);
+    this.headOf(o.title, null, `from a terminal · ${dir}${o.branch ? ` · ${o.branch}` : ""} · ${ago(o.updated)}`, null, [], { key: `other:${o.id}`, items: [] });
     const p = el("p", "r-detail", `${openSummary(o.open)}. Edit, fix and post from the session that opened it.`);
     this.ctl.replaceChildren(p);
   }
@@ -747,7 +833,7 @@ export class ReviewView {
       log.title = "What the review did, step by step";
       items.push(log);
     }
-    const more = items.length ? this.more(j, meta, items) : null;
+    const more = { key: j.id, items };
     // A fix or post underway says what it is doing on the header row.
     let status: HTMLElement | null = null;
     if (j.busy) {
@@ -917,7 +1003,7 @@ export class ReviewView {
       for (const it of menu) it.className = "r-btn quiet";
       const act = el("button", "r-btn primary r-act-btn", `Act on ${n} picked ▾`);
       act.title = "Edit, fix or post the picked findings";
-      bar.push(this.menu(`act:${j.id}`, act, menu));
+      bar.push(this.menu(`act:${j.id}`, act, [this.changePicks(j), el("div", "r-menu-sep"), ...menu], "", [this.pickedList(rows, picked)]));
     }
 
     if (open && rows.length) out.push(this.picker(j, rows, ticked, busy));
@@ -941,6 +1027,37 @@ export class ReviewView {
       out.push(this.confirmBox(j, say, pending === "post" ? "Post" : "Push", () => void this.run(j, pending === "post" ? "review_post" : "review_push", pending === "post" ? { ids: picked } : {})));
     }
     return { buttons: bar, below: out };
+  }
+
+  /**
+   * The top of the Act menu: what it acts on, so the picks show while the
+   * picker is folded. The first few by severity, then "+N more".
+   */
+  private pickedList(rows: Finding[], picked: string[]): HTMLElement {
+    const box = el("div", "r-menu-picks");
+    box.setAttribute("role", "group");
+    box.setAttribute("aria-label", "Picked findings");
+    const rank = (f: Finding) => SEVERITIES.indexOf(f.severity);
+    const fs = rows.filter((f) => picked.includes(f.id)).sort((a, b) => rank(a) - rank(b));
+    box.append(el("p", "r-menu-meta", `Acts on ${fs.length} picked`));
+    for (const f of fs.slice(0, PICKS_SHOWN)) {
+      const r = el("div", "r-menu-pick");
+      r.title = `${f.file}:${f.line}: ${f.summary}`;
+      r.append(el("span", `r-sev ${f.severity}`, f.severity), el("span", "r-sum", f.summary));
+      box.append(r);
+    }
+    if (fs.length > PICKS_SHOWN) box.append(el("p", "r-menu-more", `+${fs.length - PICKS_SHOWN} more`));
+    return box;
+  }
+
+  /** Opens the picker from the Act menu. */
+  private changePicks(j: Job): HTMLButtonElement {
+    const b = btn("Change picks", () => {
+      this.pickerOpen.add(j.id);
+      this.render(true);
+    }, "r-btn quiet r-change");
+    b.title = "Open the findings list to pick others";
+    return b;
   }
 
   /** Which findings the buttons act on, with quick picks by severity. */

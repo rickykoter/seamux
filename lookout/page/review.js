@@ -208,6 +208,7 @@
     $("tree").prepend(el("div", { class: "row ov-row" + (overview ? " sel" : ""), onclick: () => openOverview() },
       el("span", { class: "chev" }, "◇"), el("span", { class: "name" }, "Overview"),
       notesOf().length ? el("span", { class: "counts" }, plural(notesOf().length, "note")) : null));
+    postState();
   }
 
   // Files that left the diff (a fix reverted them) but still carry findings
@@ -861,7 +862,7 @@
     if (!$("keys").hidden && !$("keys").contains(e.target)) toggleKeys(false);
   });
   let wasNarrow = narrow();
-  window.addEventListener("resize", () => { if (narrow() !== wasNarrow) { wasNarrow = narrow(); drawMain(); } });
+  window.addEventListener("resize", () => { if (narrow() !== wasNarrow) { wasNarrow = narrow(); drawMain(); postState(); } });
 
   // The gate as the page sees it, the same rule `lookout gate` applies.
   function gateText() {
@@ -936,7 +937,9 @@
     window.parent.postMessage({ lookout: "state", id: R.id,
       gate: { cls: g.cls, text: g.text, title: gt.title, go: gt.go },
       mode: { cls: $("mode").className.replace("mode ", ""), text: $("mode").textContent, title: $("mode").title },
-      layout, overview, map: mapOn, hasMap: !!R.planMap, keys: !$("keys").hidden }, hostOrigin);
+      layout, overview, map: mapOn, hasMap: !!R.planMap, keys: !$("keys").hidden,
+      // The list's own Overview row: while it shows, the app needs no Overview button.
+      ovRow: !!document.querySelector("#tree .ov-row")?.getClientRects().length }, hostOrigin);
   }
   if (embedded && window.parent !== window) {
     window.addEventListener("message", e => {
