@@ -1983,11 +1983,11 @@ if (want("page script")) {
      (js.match(/el\("span", \{ class: "in x" \}/g) || []).length === 2 && !js.includes('el("span", { class: "in" }') &&
      js.includes('countsText(f) + " · " + (ST_NAMES[f.status] || f.status),') &&
      (js.match(/title: rowTitle\(f/g) || []).length === 2 && !/\.x \{[^}]*display: none/.test(css));
-  ok("page: a group's why is its tooltip, each row's (\"Grouped: …\") and the Overview's line, never a line between rows",
+  ok("page: a group's why is its tooltip, each row's (\"Grouped: …\") and its Overview row's, never a line between rows",
      !js.includes('el("div", { class: "why"') && !/^\.why \{/m.test(css) &&
      js.includes('box.append(el("div", { class: "group", "data-group": g.id, title: why.length ? why.join("\\n") : null },') &&
      js.includes('files.map(f => fileRow(f, { dir: true, why }))));') && js.includes('why.length ? "Grouped: " + why.join("; ") : ""') &&
-     js.includes('why.length ? el("div", { class: "ov-why" }, why.join(" · ")) : null,'));
+     js.includes('why.length ? "Grouped: " + why.join("; ") : null,') && !js.includes('class: "ov-why"') && !css.includes(".ov-why"));
   ok("page: the file header says \"high risk\" in plain words: no language, no \"Jev 100%\", no reason that only repeats an open finding; its tooltip gives the score and Jev's part",
      js.includes('const headReasons = f => (f.reasons || []).filter(r => !/^open \\w+ finding$/.test(r) && !/^Jev \\d+%$/.test(r));') &&
      js.includes("`. Jev (TypeSafe's model) read the change as ${Math.round(f.jev * 100)}% risky.`") &&
@@ -2008,6 +2008,49 @@ if (want("page script")) {
      appCss.includes(".r-sev.minor { color: var(--ef-text-dim);") && !/\.r-sev\.minor \{[^}]*yellow/.test(appCss) &&
      css.includes(".buttons button.primary { background: var(--ef-fg); border-color: var(--ef-fg); color: var(--ef-ink); }") &&
      css.includes("--sev-blocker: var(--ef-text-red); --sev-major: var(--ef-text-orange);"));
+  {
+    // The Overview: a folded list, one row per group, nothing open by default.
+    const ov = js.slice(js.indexOf("function ovSection(key) {"), js.indexOf("  // The Map view:"));
+    const sec = ov.slice(0, ov.indexOf("  function drawOverview() {"));
+    ok("page: the Overview is a folded list: each group one row (band, headline, counts, chevron), its body drawn only once opened",
+       sec.includes('el("span", { class: "gband" }, lost ? "" : band),') &&
+       sec.includes(': !first ? "No note for this group"') && sec.includes("firstSentence(first.direction)") &&
+       sec.includes('plural(files.length, "file")') && sec.includes('findings ? plural(findings, "finding") : null, watch ? `${watch} to watch` : null].filter(Boolean).join(" · ")') &&
+       sec.includes('el("span", { class: "chev", "aria-hidden": "true" }, isOpenNow ? "▾" : "▸")') &&
+       sec.includes('const body = isOpenNow ? el("div", { class: "ov-body",') &&
+       css.includes(".ov-hl { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }") &&
+       !js.includes("ovOpen.add(g.id)") && !/ovOpen = new Set\(\[/.test(js));
+    ok("page: a group row is a focusable button that says whether it is open; ids and edge reasons sit in its tooltip only",
+       sec.includes('el("div", { class: "ov-sum", role: "button", tabindex: "0", "aria-expanded": String(isOpenNow), "data-key": key, title,') &&
+       sec.includes("const title = [lost ? null : `${g.id}, ${band} risk`,") && !sec.includes('class: "gid"') && !css.includes(".gid"));
+    ok("page: Enter or Space opens and folds a row; ↑/↓ and Home/End move between rows; Esc in an open body folds it and goes back to its row; j/k still step files",
+       sec.includes('if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }') &&
+       sec.includes("/^(ArrowDown|ArrowUp|Home|End)$/.test(e.key)") && sec.includes('document.querySelectorAll("#diff .ov-sum")') &&
+       /if \(e\.key !== "Escape"[^\n]*\n\s*e\.preventDefault\(\); toggle\(\);/.test(sec) &&
+       sec.includes('next.querySelector(".ov-sum").focus({ preventScroll: true });') &&
+       js.includes('if (e.key === "j") { step(1); e.preventDefault(); }'));
+    ok("page: an opened group is its notes compacted: why and direction as paragraphs, file:line watch links, chips, file links; no caps labels",
+       js.includes('n.why_risky ? el("p", { class: "nwhy" }, n.why_risky) : null,') && js.includes('lead ? null : el("p", { class: "ndir" }, n.direction),') &&
+       js.includes('" — ", w.text);') && js.includes("lost ? null : fileLinks(files)") &&
+       sec.includes('noteCard(n, { lead: i === 0 && !asking(n) && n.direction.trim() === headline,') &&
+       !js.includes('class: "nlabel"') && !js.includes('"Why it is risky"') && !css.includes(".nlabel") && !css.includes(".nfield") &&
+       /a\.wloc \{ font-family: var\(--mono\);/.test(css) && !/a\.gfile[^{]*\{[^}]*--mono/.test(css));
+    ok("page: a group whose note waits on a question says so on its row, hides the note's words there, and opens to the quiz",
+       sec.includes('ask ? el("span", { class: "ov-q",') && sec.includes('"? answer first"') &&
+       sec.includes(': asking(first) ? "The note shows once its question is answered"') &&
+       sec.includes("first && !asking(first) ? first.direction : null") &&
+       /asking\(n\) \? quizBlock\(n\) : \[n\.quiz && n\.quiz\.answered \? quizBlock\(n\) : null, noteBody\(n, \{ lead \}\)\]/.test(js));
+    ok("page: which groups are open survives a redraw and a reload: kept in memory and in sessionStorage per review, guarded",
+       js.includes('const OV_OPEN = "lookout.ovopen." + R.id;') &&
+       js.includes('const ovOpen = new Set((() => { try { return JSON.parse(sessionStorage.getItem(OV_OPEN) || "[]"); } catch { return []; } })());') &&
+       js.includes("const saveOvOpen = () => { try { sessionStorage.setItem(OV_OPEN, JSON.stringify([...ovOpen])); } catch { /* private window */ } };") &&
+       sec.includes("const isOpenNow = ovOpen.has(key);") && /isOpenNow \? ovOpen\.delete\(key\) : ovOpen\.add\(key\);\s*saveOvOpen\(\);/.test(sec));
+    ok("page: openOverview(noteId) opens the group holding the note and scrolls it into view",
+       /function openOverview\(noteId\) \{[\s\S]*?const key = n \? n\.group \|\| LOST : null;\s*if \(key && !ovOpen\.has\(key\)\) \{ ovOpen\.add\(key\); saveOvOpen\(\); \}\s*drawOverview\(\);[\s\S]*?sec\.scrollIntoView\(\{ block: "start" \}\);/.test(js));
+    ok("page: low-risk groups without notes stay one line, and notes on files that left the diff are one more folded row",
+       ov.includes('if (band === "low" && !ns.some(n => n.group === g.id)) continue;') && ov.includes("if (ns.some(n => !n.group)) list.append(ovSection(LOST));") &&
+       ov.includes('`${plural(low.length, "low-risk group")} without notes: `') && sec.includes('const headline = lost ? "Notes on files no longer in the diff"'));
+  }
   ok("page: counts are real plurals, never \"(s)\"", !/[a-z]\(s\)[ `"')]/.test(js.replace("http(s)", "")) && js.includes('plural(s.files || 0, "file")'));
 }
 

@@ -12,10 +12,20 @@ VS Code's Source Control layout: changed files on the left as a directory
 tree (single-child folders folded together), one file's diff on the right.
 
 - **Overview** (`o`, or the header button): a review with notes opens on
-  it. Every group riskiest first, each note in full: watch items link to
-  their lines, touches show as chips, drift findings are listed, and stale
-  or partial notes are marked. Each file shows its group's note as a strip
-  above the diff that expands.
+  it. Each group is one folded row, riskiest first: its band, a headline
+  (the first sentence of its note's direction), and its counts of files,
+  open findings and lines to watch. Low-risk groups without notes share
+  one line at the end. A click, Enter or Space opens a group, and several
+  can be open at once; the page remembers which for the tab. ↑ and ↓
+  move between rows, Home and End jump to the ends, and Esc inside an open
+  group folds it. An open group shows why it is risky and its direction as
+  two short paragraphs, then its watch items (each `file:line` goes to its
+  line), any drift from the plan, touches as chips, and its files. A row
+  marks a stale or partial note. With the quiz on, a row whose note still
+  waits on a question says "answer first", and opening it shows the
+  question in place of the note. The group's id and why its files belong
+  together are in the row's tooltip. Each file shows its group's note as a
+  strip above the diff that expands.
 
 - **Map** (`m`, or the header button): the plan's End state map held
   against the diff, when the review was opened with `--plan-map` (deep-plan
