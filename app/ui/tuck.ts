@@ -1,8 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import "./tuck.css";
 
-/** How a workspace is quieted: muted (dimmed, quiet until it asks), snoozed
- *  (hidden until a time or until it asks) or tucked (hidden). */
+/** How a workspace is put away. People read one verb, Hide, with when it
+ *  comes back: muted is hidden until it needs you (dimmed in place),
+ *  snoozed until a time (or until it asks), tucked until you bring it back. */
 export type Level = "mute" | "snooze" | "tuck";
 export type Levels = Record<string, Level>;
 
@@ -69,16 +70,24 @@ export function say(text: string, action?: { label: string; run: () => void }, b
   noteTimer = window.setTimeout(() => note?.classList.remove("on"), 6000);
 }
 
-const WORD: Record<Level, string> = { mute: "Muted", snooze: "Snoozed", tuck: "Tucked away" };
+/** What each level is called where people read it: one verb, Hide, and
+ *  when the row comes back. The level values themselves are unchanged. */
+export const UNTIL: Record<Exclude<Level, "snooze">, string> = { mute: "until it needs you", tuck: "until you bring it back" };
 
-/** The snooze presets, as both ⋯ menus offer them (crew/board/intent.js
- *  keeps the same four). */
+/** "until it needs you", "until 3:00 PM", "until you bring it back". */
+export function untilSaid(level: Level, until?: number, now = new Date()): string {
+  if (level === "snooze") return until ? `until ${wakesAt(until, now)}` : "for now";
+  return UNTIL[level];
+}
+
+/** The snooze presets, as both ⋯ menus offer them (crew/board/render.js
+ *  keeps the same four, with the same words). */
 export type Snooze = "1h" | "3h" | "tomorrow" | "monday";
 export const SNOOZES: { key: Snooze; label: string }[] = [
-  { key: "1h", label: "Snooze 1h" },
-  { key: "3h", label: "Snooze 3h" },
-  { key: "tomorrow", label: "Until tomorrow 9am" },
-  { key: "monday", label: "Until Monday 9am" },
+  { key: "1h", label: "Hide for 1 hour" },
+  { key: "3h", label: "Hide for 3 hours" },
+  { key: "tomorrow", label: "Hide until tomorrow 9am" },
+  { key: "monday", label: "Hide until Monday 9am" },
 ];
 
 /** When a snooze preset taken at `now` ends (ms since the epoch, local time). */
@@ -105,7 +114,7 @@ export async function setLevel(ws: string, name: string, level: Level | "none", 
   try {
     await invoke("tuck_set", { workspace: ws, level, until: level === "snooze" ? until : undefined });
     const back = was ?? "none";
-    const text = level === "none" ? `${name} is back` : level === "snooze" && until ? `Snoozed until ${wakesAt(until)}: ${name}` : `${WORD[level]}: ${name}`;
+    const text = level === "none" ? `Showing again: ${name}` : `Hidden ${untilSaid(level, until)}: ${name}`;
     say(text, back === "snooze" ? undefined : { label: "Undo", run: () => void setLevel(ws, name, back, level === "none" ? undefined : level) });
   } catch (e) {
     say(String(e), undefined, true);
@@ -148,8 +157,9 @@ export function toggle(ws: string, name: string, key: "m" | "t", was: Level | un
   void setLevel(ws, name, was === want ? "none" : want, was);
 }
 
-/** One entry of a ⋯ menu: its words, an optional key hint, what it does. */
-export type MenuItem = { label: string; hint?: string; title?: string; run: (e: MouseEvent, b: HTMLButtonElement) => void };
+/** One entry of a ⋯ menu: its words, an optional key hint, what it does;
+ *  `sep` draws a divider above it. */
+export type MenuItem = { label: string; hint?: string; title?: string; sep?: boolean; run: (e: MouseEvent, b: HTMLButtonElement) => void };
 
 /** A ⋯ button and its menu. One click elsewhere or Esc closes it (below). */
 export function dotsMenu(label: string, items: MenuItem[]): HTMLElement {
@@ -167,6 +177,12 @@ export function dotsMenu(label: string, items: MenuItem[]): HTMLElement {
   m.setAttribute("role", "menu");
   m.hidden = true;
   for (const it of items) {
+    if (it.sep && m.childElementCount) {
+      const hr = document.createElement("div");
+      hr.className = "tuck-sep";
+      hr.setAttribute("role", "separator");
+      m.append(hr);
+    }
     const i = document.createElement("button");
     i.type = "button";
     i.className = "tuck-item";
@@ -209,17 +225,20 @@ function flip(m: HTMLElement): void {
 /** The ⋯ button and its menu for one workspace's card, tile or lane. */
 export function menu(ws: string, name: string, level: Level | undefined): HTMLElement {
   const to = (t: Level | "none") => () => void setLevel(ws, name, t, level);
+  // One verb, Hide, with when it comes back; the presets between dividers.
+  // Whatever hid it, its item reads Show again.
+  const back = "Show again";
   const snooze: MenuItem[] = level === "snooze"
-    ? [{ label: "Wake now", run: to("none") }]
-    : SNOOZES.map((s) => ({ label: s.label, run: () => void setLevel(ws, name, "snooze", level, snoozeUntil(s.key, new Date())) }));
+    ? [{ label: back, sep: true, run: to("none") }]
+    : SNOOZES.map((s, i) => ({ label: s.label, sep: i === 0, run: () => void setLevel(ws, name, "snooze", level, snoozeUntil(s.key, new Date())) }));
   const on = armed.has(ws);
-  return dotsMenu(`${name}: mute, snooze or tuck away`, [
-    level === "mute" ? { label: "Unmute", hint: "m", run: to("none") } : { label: "Mute", hint: "m", run: to("mute") },
+  return dotsMenu(`${name}: hide or show again`, [
+    level === "mute" ? { label: back, hint: "m", run: to("none") } : { label: "Hide until it needs you", hint: "m", run: to("mute") },
     ...snooze,
-    level === "tuck" ? { label: "Bring back", hint: "t", run: to("none") } : { label: "Tuck away", hint: "t", run: to("tuck") },
+    level === "tuck" ? { label: back, hint: "t", sep: true, run: to("none") } : { label: "Hide until I bring it back", hint: "t", sep: true, run: to("tuck") },
     on
-      ? { label: "Don\u2019t resume at reset", title: "Stop typing continue here when a usage limit resets", run: () => void setResume(ws, name, false) }
-      : { label: "Resume at reset", title: "When a usage limit stops this worktree, type continue once it resets", run: () => void setResume(ws, name, true) },
+      ? { label: "Don\u2019t resume at reset", sep: true, title: "Stop typing continue here when a usage limit resets", run: () => void setResume(ws, name, false) }
+      : { label: "Resume at reset", sep: true, title: "When a usage limit stops this worktree, type continue once it resets", run: () => void setResume(ws, name, true) },
   ]);
 }
 

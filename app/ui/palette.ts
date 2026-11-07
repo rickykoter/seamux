@@ -4,11 +4,12 @@ import type { Decision } from "./decisions";
 import { catSvg } from "./panecat";
 import { FIELDS, rowsOf, search, type FamilyIn, type Field, type Hit, type Inputs, type PlanIn, type Pr, type Row, type TileIn } from "./search";
 import { ago } from "./tiles";
-import { say, type Level, type TuckRow } from "./tuck";
+import { say, untilSaid, type Level, type TuckRow } from "./tuck";
 
-/** A quieted row's word in the list and the preview. */
-const LEVEL_SAID: Record<Level, string> = { mute: "muted", snooze: "snoozed", tuck: "tucked" };
-const levelSaid = (l: string): string => LEVEL_SAID[l as Level] ?? l;
+/** A hidden row's until: "until it needs you", "until 3:00 PM", "until you
+ *  bring it back". Every level reads as hidden; only the until differs. */
+const untilOf = (r: Row): string =>
+  r.level === "mute" || r.level === "snooze" || r.level === "tuck" ? untilSaid(r.level as Level, r.until || undefined) : "";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -63,7 +64,7 @@ type ViewsIn = { plans?: PlanIn[]; families?: FamilyIn[]; decisions?: Decision[]
 /** Session search: every open session, tucked and muted ones below, ranked by
  *  match then priority (search.ts); a preview of the one selected beside the
  *  list. ⌘K (a shell.rs sheet key, so it works in a framed page too) or
- *  ⌥⇧Space from any app opens it; the Tucked chip in the strip does too. */
+ *  ⌥⇧Space from any app opens it; the Search chip in the strip does too. */
 export class Palette {
   chip = el("button", "tuck-chip");
   private el = el("div", "palette");
@@ -71,7 +72,7 @@ export class Palette {
   private input = el("input", "palette-q");
   private list = el("div", "palette-list");
   private preview = el("div", "search-preview");
-  private foot = el("div", "palette-foot", "↵ jump · ⌘↵ bring back · ⇧⌘↵ unmute all · esc");
+  private foot = el("div", "palette-foot", "↵ jump · ⌘↵ show again · ⇧⌘↵ show all dimmed · esc");
   private tiles: TileIn[] = [];
   private views: ViewsIn = {};
   private rows: Row[] = [];
@@ -264,7 +265,9 @@ export class Palette {
     const meta = el("span", "palette-meta");
     const second = this.secondLine(h);
     meta.append(...second);
-    const when = el("span", "palette-when", r.level ? levelSaid(r.level) : ago(Date.now() - r.since));
+    const when = el("span", "palette-when");
+    if (r.level) when.append(el("span", "hid", "hidden"), document.createTextNode(` ${untilOf(r)}`));
+    else when.textContent = ago(Date.now() - r.since);
     row.append(name, when, meta);
     row.addEventListener("mousemove", () => {
       if (this.sel !== i) { this.sel = i; this.selKey = r.key; this.draw(); }
@@ -301,7 +304,7 @@ export class Palette {
       p.append(v);
       bits.push(p);
     };
-    line("state", `${r.level ? `${levelSaid(r.level)} · ` : ""}${STATE_SAID[r.state] ?? r.state} · ${ago(Date.now() - r.since)}`);
+    line("state", `${r.level ? `hidden ${untilOf(r)} · ` : ""}${STATE_SAID[r.state] ?? r.state} · ${ago(Date.now() - r.since)}`);
     line("branch", r.branch, "branch");
     const g = r.progress;
     if (g) {
@@ -454,7 +457,7 @@ export class Palette {
     if (r.tuckPath && (restore || !r.ws)) {
       try {
         await invoke("tuck_restore", { path: r.tuckPath });
-        say(`${r.name} is back`);
+        say(`Showing again: ${r.name}`);
       } catch (e) {
         say(String(e), undefined, true);
         return;
@@ -479,7 +482,7 @@ export class Palette {
       void (async () => {
         try {
           const n = await invoke<number>("tuck_unmute_all");
-          say(n === 1 ? "1 workspace unmuted" : `${n} workspaces unmuted`);
+          say(n === 1 ? "1 workspace shown again" : `${n} workspaces shown again`);
         } catch (err) {
           say(String(err), undefined, true);
         }

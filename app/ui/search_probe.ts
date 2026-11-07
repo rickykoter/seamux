@@ -54,6 +54,9 @@ const names = (q: string, i: Inputs) => search(rowsOf(i), q).map((h) => h.row.na
   ok("rows: a tucked worktree still open is one row, the tucked one, that can still jump",
     t3.length === 1 && t3[0].level === "mute" && t3[0].ws === "W3" && t3[0].tuckPath === "/code/t3", JSON.stringify(t3));
   ok("rows: a tucked worktree with nothing open has no workspace to jump to", rows.find((r) => r.name === "payroll-spike")!.ws === "");
+  const snz = rowsOf(inputs({ tucked: [{ path: "/s", name: "snoozy", branch: "", level: "snooze", until: 9_000, waiting: false, last: 0, workspaces: [] }] }))[0];
+  ok("rows: a hidden-for-now row carries when it comes back, so the list can say until when; a live one carries 0",
+    snz.level === "snooze" && snz.until === 9_000 && w1.until === 0, JSON.stringify(snz));
 
   // ---- order -------------------------------------------------------------
   ok("order: part of a branch finds its session", names("density", i)[0] === "dock", JSON.stringify(names("density", i)));
