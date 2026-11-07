@@ -255,10 +255,13 @@ export class ReviewView {
 
     // A click anywhere but the ⋯ menu closes it. A click in the framed page
     // never reaches this document, but it takes focus: the window blurs.
+    // Closed in place, not by redrawing the header: a redraw on mousedown
+    // replaced the button under the pointer, so that press never clicked.
     const closeMore = () => {
       if (!this.moreOpen) return;
       this.moreOpen = null;
-      this.render(true);
+      this.head.querySelector(".r-menu")?.remove();
+      this.head.querySelector(".r-more-btn")?.setAttribute("aria-expanded", "false");
     };
     document.addEventListener("mousedown", (e) => {
       if (!(e.target instanceof Element && e.target.closest(".r-more"))) closeMore();
@@ -541,7 +544,8 @@ export class ReviewView {
     b.setAttribute("aria-haspopup", "menu");
     b.setAttribute("aria-expanded", String(open));
     b.addEventListener("click", () => {
-      this.moreOpen = open ? null : j.id;
+      // The current state, not the one drawn: the menu may have closed in place.
+      this.moreOpen = this.moreOpen === j.id ? null : j.id;
       this.render(true);
       if (this.moreOpen) this.head.querySelector<HTMLElement>(".r-menu [role=menuitem]")?.focus();
     });
