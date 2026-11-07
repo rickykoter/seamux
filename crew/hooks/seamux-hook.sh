@@ -58,6 +58,9 @@ if [ "$event" = "pretool" ]; then
   # that is no resumed work. A builtin read and match, so no fork.
   IFS= read -r -d '' _p || true
   [[ ${_p:-} =~ \"tool_name\"[[:space:]]*:[[:space:]]*\"AskUserQuestion\" ]] && exit 0
+  # A subagent's tool use (Claude Code sends agent_id only from inside one)
+  # is not the main agent taking its question back: the hold stays.
+  [[ ${_p:-} =~ \"agent_id\"[[:space:]]*:[[:space:]]*\"[^\"]+ ]] && exit 0
   exec "$seamux" crew-hook pretool </dev/null
 fi
 

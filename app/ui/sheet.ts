@@ -613,6 +613,9 @@ export class Sheet {
   private wakeRoots: string[] = [];
   /** The tab before the Wake, for ⌘E to go back to. */
   private back = "";
+  /** The active tab was picked by the person (a click, a key, a page they
+   *  opened), not by the sheet itself: a new page never comes forward over it. */
+  private byHand = false;
   /** The Dock's Wake beside the terminal: shown, or folded away (wakeOpenPref). */
   private wakeOpen = wakeOpenPref();
   private wakeBtn = document.createElement("button");
@@ -760,10 +763,10 @@ export class Sheet {
       this.picked = pane;
       this.drawChat();
     }
-    if (show === "wake") this.select(WAKE);
+    if (show === "wake") this.select(WAKE, true);
     else if (show === "plan") {
       const plan = this.tabs.find((t) => t.kind === "plan");
-      if (plan) this.select(plan.key);
+      if (plan) this.select(plan.key, true);
     }
   }
 
@@ -793,9 +796,11 @@ export class Sheet {
         this.followDir();
         // The sheet was entered before its pages were known: start on one now.
         if (!this.active) this.pickTab();
-        // A page that just opened comes forward over the Wake, never over
-        // a page the person picked.
+        // A page that just opened comes forward over the Wake, and one that
+        // waits on you (an ask) over a tab the sheet picked by itself; never
+        // over a page the person picked.
         else if (this.active === WAKE) this.raise(fresh);
+        else if (!this.byHand) this.raise(fresh.filter((p) => p.waiting));
       }
     });
     // shell.rs's keys: they work with focus in a framed page too.
@@ -815,7 +820,7 @@ export class Sheet {
       if (t) {
         // Picking a page by key means to see it: a hidden column comes back.
         this.pageHidden = false;
-        this.select(t.key);
+        this.select(t.key, true);
         e.preventDefault();
       }
     });
@@ -906,7 +911,7 @@ export class Sheet {
     const key = `file:${s.title}`;
     this.drop(key);
     this.tabs.push({ key, kind: "file", label: s.title, state: "", waiting: false, now: false, el: null, shown: s, toCmux });
-    this.select(key);
+    this.select(key, true);
   }
 
   async open(p: Page): Promise<void> {
@@ -916,7 +921,7 @@ export class Sheet {
       t.page = p;
       t.toCmux = p.toCmux ?? null;
     } else this.tabs.push({ key: p.path, kind: kindOf(p.path), label: p.title, state: "", waiting: false, now: false, el: null, page: p, toCmux: p.toCmux ?? null });
-    this.select(p.path);
+    this.select(p.path, true);
   }
 
   /** Open the sheet for a place: another place starts its tabs afresh. */
@@ -976,6 +981,7 @@ export class Sheet {
     this.tabs = this.tabs.filter((t) => t.key === WAKE);
     this.active = "";
     this.back = "";
+    this.byHand = false;
     this.picked = "";
     this.pageHidden = false;
   }
@@ -1036,7 +1042,7 @@ export class Sheet {
           b.append(dot);
         }
         b.title = t.key === WAKE ? "This workspace's Wake (⌘E)" : `${t.label}${t.state ? " · " + t.state : ""}`;
-        b.addEventListener("click", () => this.select(t.key));
+        b.addEventListener("click", () => this.select(t.key, true));
         return b;
       }),
     );
@@ -1049,8 +1055,8 @@ export class Sheet {
   private toggleWake(): void {
     if (this.active === WAKE) {
       const back = this.tabs.find((t) => t.key === this.back) ?? this.tabs.find((t) => t.key !== WAKE);
-      if (back) this.select(back.key);
-    } else this.select(WAKE);
+      if (back) this.select(back.key, true);
+    } else this.select(WAKE, true);
   }
 
   private setWakeOpen(on: boolean): void {
@@ -1102,14 +1108,16 @@ export class Sheet {
     const i = Math.max(0, this.tabs.findIndex((t) => t.key === this.active));
     // Stepping to a tab means to see it: a hidden column comes back.
     this.pageHidden = false;
-    this.select(this.tabs[(i + by + this.tabs.length) % this.tabs.length].key);
+    this.select(this.tabs[(i + by + this.tabs.length) % this.tabs.length].key, true);
   }
 
-  private select(key: string): void {
+  /** Show tab `key`. `hand`: the person picked it, so no new page jumps over it. */
+  private select(key: string, hand = false): void {
     const t = this.tabs.find((x) => x.key === key);
     if (!t) return;
     if (key === WAKE && this.active && this.active !== WAKE) this.back = this.active;
     this.active = key;
+    this.byHand = hand;
     this.page = t.page ?? null;
     this.toCmuxFn = t.toCmux ?? null;
     this.titleEl.textContent = t.key === WAKE ? this.dir().split("/").pop() ?? "" : t.label;
@@ -1214,7 +1222,7 @@ export class Sheet {
       retry.className = "sheet-btn";
       retry.textContent = "Retry";
       // Selecting a page that failed builds it again (see select).
-      retry.addEventListener("click", () => this.select(t.key));
+      retry.addEventListener("click", () => this.select(t.key, true));
       n.append(retry);
       box.replaceChildren(n);
       box.dataset.failed = "1";
