@@ -1670,7 +1670,10 @@ function endStateHtml(map, increments) {
 ${js ? `<script>${js}</script>` : ""}`;
 }
 
-function commonBody(spec, adrs = [], withNotes = false, endState = "") {
+// `lead` goes right under the title: the review page's summary card, and the
+// working page's family strip, Gate and Increments. What a page asks of its
+// reader comes before the spec it was built from.
+function commonBody(spec, adrs = [], withNotes = false, endState = "", lead = "") {
   // Evidence that reads as a repo path becomes a click target: the served
   // working surface opens it in VS Code at that line (same handler and same
   // crew-code-open hand-off as the increments' file lists and the Dock's
@@ -1719,7 +1722,7 @@ ${obGaps ? `<p class="dim">gaps this plan fills:</p><ul>${obGaps}</ul>` : ""}` :
   const commits = (spec.commits || []).map(c => commitLi(c)).join("");
   return `<h1>${esc(spec.title)}</h1>
 <p class="dim">plan <code>${esc(spec.slug)}</code></p>
-<h2>Context</h2><p>${esc(spec.context).replace(/\n\s*\n/g, "</p><p>")}</p>
+${lead}<h2>Context</h2><p>${esc(spec.context).replace(/\n\s*\n/g, "</p><p>")}</p>
 ${nonGoals ? `<h2>Non-goals</h2><ul>${nonGoals}</ul>` : ""}
 ${spec.simpler && spec.simpler.alternative ? `<h2>The simpler approach</h2><p>${esc(spec.simpler.alternative)}</p><p class="dim">Not taken: ${esc(spec.simpler.whyNot || "")}</p>` : ""}
 ${(spec.hypotheses || []).length ? `<h2>Hypotheses</h2><ul>${spec.hypotheses.map(h => `<li><b>${esc(h.verdict || "open")}</b>: ${esc(h.claim)}<br><span class="dim">falsify: ${esc(h.falsify)}${h.evidence ? ` · evidence: ${esc(h.evidence)}` : ""}</span></li>`).join("")}</ul>` : ""}
@@ -1905,7 +1908,7 @@ function reviewFoot(nq) {
   count();
   function show(node) {
     var sec = node && node.closest(".dp-sec");
-    if (sec && sec.classList.contains("dp-folded")) { var f = sec.querySelector(".dp-fold"); if (f) f.click(); }
+    if (sec && (sec.classList.contains("dp-folded") || sec.classList.contains("dp-fold-wait"))) { var f = sec.querySelector(".dp-fold"); if (f) f.click(); }
     // Centered: narrow, the section rail sits over the top of the page.
     if (node) node.scrollIntoView({ behavior: "smooth", block: "center" });
   }
@@ -1929,6 +1932,78 @@ function reviewFoot(nq) {
   }).observe(said, { childList: true, characterData: true, subtree: true });
 })();
 </script></div>`;
+}
+
+// The review page's sections that start folded: reference a reader looks up
+// rather than reads through. A section the reader opened or shut keeps that.
+const REVIEW_FOLDED = ["End state", "Contracts", "Verified facts", "ADRs", "Diagrams", "Verification"];
+
+// "What you're approving": the increments, the counts, and the way
+// to the quiz, above the spec. Counts link to their sections; the client
+// opens a folded one through its rail link. No .dp-note, no inputs, so the
+// copy-back reads the page exactly as before.
+function reviewSummaryHtml(spec, adrs, nq) {
+  const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+  const link = (title, text) => `<a href="#" data-sec="${esc(title)}">${text}</a>`;
+  const counts = [];
+  const nd = (spec.decisions || []).length, nc = (spec.contracts || []).length;
+  if (nd) counts.push(link("Decisions", plural(nd, "decision")));
+  if (nc) counts.push(link("Contracts", plural(nc, "contract")));
+  const risks = (spec.risks || []).map(riskView);
+  if (risks.length) {
+    const open = risks.filter(r => !r.disposition).length;
+    counts.push(link("Risks", plural(risks.length, "risk")) + (open ? `, ${open} not decided` : ""));
+  }
+  if (adrs.length) {
+    const drafts = adrs.filter(a => !a.applied).length;
+    counts.push(link("ADRs", drafts === adrs.length ? plural(adrs.length, "ADR draft") : plural(adrs.length, "ADR")));
+  }
+  const incs = (spec.deliverables || []).map((d, i) =>
+    `<li><a href="#inc-${i + 1}">${esc(d.title)}</a></li>`).join("");
+  return `<div class="dp-sum" id="dp-sum" aria-label="what you're approving">
+<style>
+.dp-sum{border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:8px 0 18px;background:var(--card)}
+.dp-sum-h{margin:0 0 4px;font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--dim)}
+.dp-sum p{margin:6px 0}
+.dp-sum ol{margin:6px 0;padding-left:1.4em}
+.dp-sum li{margin:2px 0}
+.dp-sum a{color:inherit;text-decoration-color:var(--line2);text-underline-offset:2px}
+.dp-sum a:hover{text-decoration-color:currentColor}
+.dp-sum-go{margin-top:10px}
+.dp-sum-go .dp-tbtn{font:500 13px/1 system-ui,sans-serif;padding:0 12px;height:32px}
+.dp-sum a:focus-visible,.dp-sum button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+</style>
+<p class="dp-sum-h">What you're approving</p>
+${incs ? `<ol>${incs}</ol>` : ""}
+${counts.length ? `<p class="dim">${counts.join(" · ")}</p>` : ""}
+<p class="dp-sum-go"><button type="button" class="dp-tbtn" id="dp-sum-go">${nq ? `Go to the quiz (${nq} question${nq === 1 ? "" : "s"})` : "Go to send it back"}</button></p>
+<script>
+(function () {
+  var box = document.getElementById("dp-sum");
+  box.addEventListener("click", function (e) {
+    var a = e.target.closest && e.target.closest("a");
+    if (e.target.closest && e.target.closest("#dp-sum-go")) {
+      var go = document.getElementById("dp-foot-go");
+      if (go) go.click();
+      return;
+    }
+    if (!a) return;
+    var id = a.getAttribute("data-sec") ? "" : a.getAttribute("href").slice(1);
+    var t = null;
+    if (id) t = document.getElementById(id);
+    else document.querySelectorAll(".dp-sec").forEach(function (s) {
+      if (!t && s.getAttribute("data-title") === a.getAttribute("data-sec")) t = s;
+    });
+    if (!t) return;
+    e.preventDefault();
+    // The rail's link opens a folded section and scrolls past the sticky bar.
+    var r = document.querySelector('#dp-rail a[href="#' + t.id + '"]');
+    if (r) r.click(); else t.scrollIntoView({ behavior: "smooth" });
+  });
+})();
+</script>
+</div>
+`;
 }
 
 function reviewHtml(spec, b64, adrs = [], map = null) {
@@ -2019,7 +2094,7 @@ until you clear it.</p>
   // boxes above, so this button carries it with no extra wiring.
 })();
 </script>`;
-  return htmlHead(spec.title + " — review", b64) + SURFACE_CSS + surfaceOpen(spec.slug, "review") + AUTO_REFRESH_BOX + `<style>
+  return htmlHead(spec.title + " — review", b64) + SURFACE_CSS + surfaceOpen(spec.slug, "review", REVIEW_FOLDED) + AUTO_REFRESH_BOX + `<style>
 label.opt{cursor:pointer;padding:3px 0}
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
   color:inherit;border:1px solid var(--dim,#888);border-radius:4px;padding:6px;font:inherit}
@@ -2032,7 +2107,8 @@ kbd{font:inherit;font-size:.85em;border:1px solid var(--dim,#888);border-radius:
 .opt input:focus-visible,#dp-copyback:focus-visible,#dp-hl-add:focus-visible,
 .dp-note:focus-visible,.dp-x:focus-visible{outline:2px solid var(--accent,#46f);outline-offset:2px}
 </style>` + commonBody(spec, adrs, true,
-    endStateHtml(map, (spec.deliverables || []).map((d, i) => ({ n: i + 1, title: d.title })))) + `
+    endStateHtml(map, (spec.deliverables || []).map((d, i) => ({ n: i + 1, title: d.title }))),
+    reviewSummaryHtml(spec, adrs, (spec.quiz || []).length)) + `
 <h2>Increments</h2>${incs}
 ${verif ? `<h2>Verification</h2><ul>${verif}</ul>` : ""}
 <h2>Alignment check</h2>
@@ -2287,7 +2363,22 @@ ${checks}
   const g = gateView(st);
   const logRows = (st.log || []).slice(-12).reverse().map(l =>
     `<li class="dim">${esc(new Date(l.at).toISOString().slice(0, 16).replace("T", " "))} — ${esc(l.what)}</li>`).join("");
-  return htmlHead(spec.title, b64) + SURFACE_CSS + surfaceOpen(spec.slug, "working") + AUTO_REFRESH_BOX + `
+  // The work comes first: Gate and Increments (with the one primary button)
+  // sit under the title, and the spec they were approved from follows,
+  // folded, since the reader already went through it at review.
+  const approved = st.approved ? `<p class="dim">approved snapshot: <span class="dp-path" data-file="${esc(st.approved.path)}"><code>${esc(st.approved.path)}</code></span>${
+      st.approved.spec_hash !== specHash(spec) ? ' · <span style="color:var(--warn-t)">the live plan has DRIFTED from the approved snapshot (spec amended since grade-pass)</span>' : ""}</p>\n` : "";
+  const work = familyStripHtml(spec.slug) + "\n" + approved +
+    `<h2>Gate</h2><p>${g.allow ? CHECK_GLYPH.pass + " open" : CHECK_GLYPH.fail + " shut"} <span class="dim">— ${esc(g.why)}</span>
+<span class="dim">· root <code>${esc(st.root || "?")}</code> · phase ${esc(st.phase)}</span></p>
+<h2>Increments</h2>${rows}
+`;
+  const body = commonBody(spec, st.adrs || [], true,
+    endStateHtml(st.map, (st.increments || []).map(i => ({ n: i.n, title: i.title, status: i.status }))), work);
+  // Every section the spec drew starts folded; Gate, Increments and the
+  // sections after the spec stay open.
+  const specTitles = [...body.slice(body.indexOf("<h2>Context</h2>")).matchAll(/<h2>([^<]*)<\/h2>/g)].map(m => m[1]);
+  return htmlHead(spec.title, b64) + SURFACE_CSS + surfaceOpen(spec.slug, "working", specTitles) + AUTO_REFRESH_BOX + `
 <script>window.DP_INC_ALLOWED = ${JSON.stringify(INC_ALLOWED)};</script>
 <style>
 .dp-note{display:block;width:100%;box-sizing:border-box;margin:8px 0;background:transparent;
@@ -2297,14 +2388,8 @@ ${DP_RISK_CSS}
   padding:10px 16px;font:inherit;cursor:pointer;min-height:44px}
 #dp-amend-copy:focus-visible,.dp-note:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </style>` +
-    commonBody(spec, st.adrs || [], true,
-      endStateHtml(st.map, (st.increments || []).map(i => ({ n: i.n, title: i.title, status: i.status })))).replace(/(<p class="dim">plan <code>[^\n]*<\/p>)/, (m) => m + "\n" + familyStripHtml(spec.slug)) + `
-${st.approved ? `<p class="dim">approved snapshot: <span class="dp-path" data-file="${esc(st.approved.path)}"><code>${esc(st.approved.path)}</code></span>${
-      st.approved.spec_hash !== specHash(spec) ? ' · <span style="color:var(--warn-t)">the live plan has DRIFTED from the approved snapshot (spec amended since grade-pass)</span>' : ""}</p>` : ""}
+    body + `
 ${amendmentsHtml(st)}
-<h2>Gate</h2><p>${g.allow ? CHECK_GLYPH.pass + " open" : CHECK_GLYPH.fail + " shut"} <span class="dim">— ${esc(g.why)}</span>
-<span class="dim">· root <code>${esc(st.root || "?")}</code> · phase ${esc(st.phase)}</span></p>
-<h2>Increments</h2>${rows}
 ${annotationsSection(spec, st)}
 <h2>Amend the plan</h2>
 <p class="dim">Discovery amends the spec, not just the code — mid-increment included. Note what

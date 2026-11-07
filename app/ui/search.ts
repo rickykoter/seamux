@@ -35,7 +35,7 @@ export type FamilyIn = { parent: string; members: { slug: string; role?: string;
 export type GateIn = { ws: string; slug: string; n: number; checks: { name: string; status: string }[] };
 
 /** The parts of a tucked row search reads (tuck.ts TuckRow). */
-export type TuckIn = { path: string; name: string; branch: string; level: string; waiting: boolean; last: number; workspaces: string[] };
+export type TuckIn = { path: string; name: string; branch: string; level: string; until?: number; waiting: boolean; last: number; workspaces: string[] };
 
 export type Inputs = {
   tiles: TileIn[];
@@ -73,8 +73,10 @@ export type Row = {
   ws: string;
   /** The pane to show: the agent that waits, else works, else any. */
   pane: string;
-  /** "" live, "tuck" or "mute". */
+  /** "" live, else how it is hidden: "mute", "snooze" or "tuck". */
   level: string;
+  /** When a snooze ends (ms since the epoch); 0 otherwise. */
+  until: number;
   name: string;
   branch: string;
   topic: string;
@@ -168,7 +170,7 @@ export function rowsOf(i: Inputs): Row[] {
     const lead = [...(agents.length ? agents : tiles)].sort((a, b) => (STATE_RANK[a.state] ?? 9) - (STATE_RANK[b.state] ?? 9) || b.since - a.since)[0];
     const where = lead.root || lead.cwd;
     rows.push({
-      key: `ws:${ws}`, ws, pane: lead.surface, level: "",
+      key: `ws:${ws}`, ws, pane: lead.surface, level: "", until: 0,
       name: tiles.find((t) => t.workspace_title)?.workspace_title || base(where), branch: i.branches[ws] ?? "",
       topic: agents.map((t) => t.topic).filter(Boolean).join(" · "), plan: planOf(ws) || (lead.owner ?? ""),
       ask: askOf(ws), path: where, state: lead.agent ? lead.state : "shell",
@@ -181,7 +183,7 @@ export function rowsOf(i: Inputs): Row[] {
     const tiles = ws ? byWs.get(ws)! : [];
     const lead = tiles.find((x) => x.agent) ?? tiles[0];
     rows.push({
-      key: `tuck:${t.path}`, ws, pane: lead?.surface ?? "", level: t.level,
+      key: `tuck:${t.path}`, ws, pane: lead?.surface ?? "", level: t.level, until: t.until ?? 0,
       name: t.name, branch: t.branch, topic: tiles.map((x) => x.topic).filter(Boolean).join(" · "),
       plan: ws ? planOf(ws) : "", ask: ws ? askOf(ws) : "", path: t.path,
       state: t.waiting ? "needs_input" : lead?.agent ? lead.state : "idle",

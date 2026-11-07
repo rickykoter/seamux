@@ -8,7 +8,7 @@ For whoever changes this next. Built 2026-09-12 on this machine, from
 | file | lines | what |
 |---|---|---|
 | `deep_plan.mjs` | 1488 | CLI: render/rehydrate/grade/status/transitions/diff; validate() enforces the contracts block, grade() enforces contract quiz coverage + cuts the approved snapshot; DP_EDITOR_JS carries dpMd + the ADR editor |
-| `lib/surface.mjs` | — | the reading layer inlined into review + working: section rail (sticky top bar under 980px), folds, find (case/word/regex/fuzzy, CSS Custom Highlights), diagram cards (Overview/Detailed tabs, zoom, full screen), comments anchored by quote + context (margin cards from 1300px, popovers below), drafts in localStorage per slug + surface; plus the server-side `fileTreeHtml` / `diagramCardHtml` |
+| `lib/surface.mjs` | — | the reading layer inlined into review + working: section rail (sticky top bar under 980px), folds (a page names the sections that start folded in `DP_PAGE.folded`; the reader's own fold or open, kept per section, wins), find (case/word/regex/fuzzy, CSS Custom Highlights), diagram cards (Overview/Detailed tabs, zoom, full screen), comments anchored by quote + context (margin cards from 1300px, popovers below), drafts in localStorage per slug + surface; plus the server-side `fileTreeHtml` / `diagramCardHtml` |
 | `lib/state.mjs` | 160 | state IO + THE decision function (`decideToolCall`) — one definition of "may I edit", shared by CLI and gate |
 | `hooks/gate.sh` | 13 | PreToolUse fast path: glob test, exec node only when state files exist |
 | `hooks/decide.mjs` | 43 | slow half: parse payload, decide, exit 2; flips authorized→working on first edit (status only: `go` records the start sha); the family guard's note on an allowed edit |

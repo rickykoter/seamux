@@ -506,8 +506,8 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
   margin:7px 0 3px;padding-top:4px;border-top:1px solid var(--line)}
 
 /* --- muted and tucked (the app's, read from tucked.json) ----------------- */
-/* Muted: greyed (never by opacity: the contrast check could not see it) until it needs you. Tucked: out of the list, in a collapsed
-   "tucked · N" section at the end. The ⋯ menu shows only framed by the app. */
+/* Muted (hidden until it needs you): greyed (never by opacity: the contrast check could not see it). Tucked: out of the list, in a
+   collapsed "hidden · N" section at the end. The ⋯ menu, its Hide items grouped by dividers, shows only framed by the app. */
 .row.muted{filter:saturate(.35)}
 .row.muted>.top>.nm,.row.muted>.top>.badge{color:var(--grey)}
 details.snoozed>summary,details.settled>summary,details.tucked>summary{cursor:pointer;list-style:none}
@@ -526,6 +526,7 @@ details.snoozed[open]>summary::before,details.settled[open]>summary::before,deta
 .row.tkup .tkm{top:auto;bottom:100%;margin:0 0 3px}
 .tki{padding:5px 9px;border-radius:5px;font:500 12.5px/1.2 system-ui;color:var(--fg);cursor:pointer;white-space:nowrap}
 .tki:hover{background:var(--bg2)}
+.tks{height:1px;margin:3px 4px;background:var(--line)}
 
 /* --- a family ---------------------------------------------------------- */
 /* A deep-plan family is one card: the parent's, with its children inside it as

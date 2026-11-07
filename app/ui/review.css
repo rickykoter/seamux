@@ -53,22 +53,32 @@
 /* ---- the main side: head, controls, then the page ---- */
 .r-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .r-mhead:empty, .r-ctl:empty { display: none; }
-.r-mhead { padding: 12px 18px 8px; }
+.r-mhead { padding: 8px 18px; }
 .r-mhead-row { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
-.r-name { margin: 0; font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 3ch; }
+.r-name { margin: 0; font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 3ch; flex: 0 1 auto; }
+/* The actions, at the row's end; a narrow window wraps them under the name. */
+.r-acts { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-left: auto; }
 .r-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .r-grow { flex: 1; }
 .r-link { font-size: 12px; color: var(--accent); overflow-wrap: anywhere; }
 .r-chip { font-size: 11px; padding: 1px 8px; border-radius: 9px; white-space: nowrap; background: var(--term); color: var(--muted); }
-.r-chip.ready { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
+.r-chip.ready, .r-chip.pass { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
+/* The page's gate pill colour: a blocked review reads as a major does. */
+.r-chip.blocked { background: color-mix(in srgb, var(--ef-text-orange) 16%, transparent); color: var(--ef-text-orange); }
 .r-chip.failed { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
 .r-chip.running { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
 
-.r-ctl { padding: 0 18px 10px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--line); }
+.r-ctl { padding: 0 18px 8px; display: flex; flex-direction: column; gap: 8px; }
 .r-detail { margin: 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .r-detail.bad { color: var(--bad); }
 .r-now { margin: 0; font: 12px ui-monospace, Menlo, monospace; color: var(--fg); opacity: 0.85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.r-bar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+/* the ⋯ menu */
+.r-more { position: relative; }
+.r-more-btn { padding: 4px 6px; line-height: 0; }
+.r-more-btn svg { width: 16px; height: 16px; fill: currentColor; }
+.r-menu { position: absolute; z-index: 6; right: 0; top: calc(100% + 4px); min-width: 180px; display: flex; flex-direction: column; gap: 2px; padding: 6px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px var(--shade, rgba(0, 0, 0, 0.18)); }
+.r-menu .r-btn { text-align: left; }
+.r-menu-meta { margin: 2px 8px 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
 .r-btn.pickbtn { font-variant-numeric: tabular-nums; }
 .r-confirm { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--accent); border-radius: 10px; font-size: 13px; }
 .r-empty { margin: 18vh auto 0; color: var(--muted); font: 13px/1.4 ui-monospace, Menlo, monospace; text-align: center; max-width: 42ch; }
@@ -79,7 +89,10 @@
 .r-findings { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; max-height: 200px; overflow-y: auto; }
 .r-findings label { display: flex; gap: 8px; align-items: baseline; font-size: 13px; cursor: pointer; }
 .r-sev { font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--term); color: var(--muted); flex: none; }
-.r-sev.blocker, .r-sev.major { color: var(--bad); }
+/* The page's severity colours (lookout/page/review.css --sev-*): a pale tint, the word in its text shade. */
+.r-sev.blocker { color: var(--ef-text-red); background: color-mix(in srgb, var(--ef-text-red) 16%, transparent); }
+.r-sev.major { color: var(--ef-text-orange); background: color-mix(in srgb, var(--ef-text-orange) 16%, transparent); }
+.r-sev.minor { color: var(--ef-text-yellow); background: color-mix(in srgb, var(--ef-text-yellow) 16%, transparent); }
 .r-loc { font: 12px ui-monospace, Menlo, monospace; color: var(--muted); flex: none; }
 .r-sum { min-width: 0; }
 
@@ -101,7 +114,7 @@
 .r-log summary { cursor: pointer; font-size: 12px; color: var(--muted); }
 .r-log pre { margin: 6px 0 0; max-height: 180px; overflow: auto; font: 11px/1.4 ui-monospace, Menlo, monospace; white-space: pre-wrap; color: var(--muted); }
 
-.r-frame { flex: 1; min-height: 0; }
+.r-frame { flex: 1; min-height: 0; border-top: 1px solid var(--line); }
 .r-frame[hidden] { display: none; }
 .r-frame iframe { width: 100%; height: 100%; border: 0; display: block; background: var(--bg); }
 .r-frame > .r-detail { padding: 18px; }

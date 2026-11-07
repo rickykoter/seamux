@@ -82,7 +82,8 @@ export function resumeCmd(r: Row): string {
 /** Where a row lives, as the page shows it. */
 function where(r: Row, home: string): string {
   const tilde = (p: string) => (home && p.startsWith(home + "/") ? "~" + p.slice(home.length) : p);
-  if (r.kind === "commit") return r.url ? r.url.replace(/^https:\/\//, "").replace(/\/commit\/.*$/, "") : "";
+  // A commit's repo is the workspace's: the same line on every commit said nothing.
+  if (r.kind === "commit") return "";
   if (r.kind === "artifact") return r.url.replace(/^https:\/\//, "") + (r.path ? `  ← ${tilde(r.path)}` : "");
   const gh = ghLink(r);
   if (gh) return `github.com/${gh.repo}`;
@@ -384,10 +385,22 @@ export class Wake {
     // shows them only on hover, so each card leads with its prompt.
     let lastBr = "";
     let lastSess = "";
+    const keyOf = (r: Row) => {
+      const dk = dayKey(local(r.created_at));
+      return `${dk}|${r.session_id}|${r.prompt}|${r.prompt ? "" : r.kind}`;
+    };
+    // How many rows each card holds (a run of rows with one key; the same
+    // prompt later in the day is a new card): a card of one drops its band.
+    const runs: number[] = [];
+    this.vis.forEach((r, i) => {
+      if (i > 0 && keyOf(r) === keyOf(this.vis[i - 1])) runs[runs.length - 1]++;
+      else runs.push(1);
+    });
+    let run = -1;
     this.vis.forEach((r, i) => {
       const d = local(r.created_at);
       const dk = dayKey(d);
-      const gk = `${dk}|${r.session_id}|${r.prompt}|${r.prompt ? "" : r.kind}`;
+      const gk = keyOf(r);
       if (dk !== day) {
         section = el("section", "w-day");
         section.append(el("h2", "", dayLabel(d)));
@@ -398,7 +411,9 @@ export class Wake {
         lastSess = "";
       }
       if (gk !== group) {
-        const g = el("div", `w-grp${this.openGroups.has(gk) ? " open" : ""}`);
+        run++;
+        const solo = runs[run] === 1;
+        const g = el("div", `w-grp${solo ? " solo" : ""}${this.openGroups.has(gk) ? " open" : ""}`);
         const ph = el("div", "w-ph");
         const prompt = el("span", `w-prompt${r.prompt ? "" : " none"}`);
         prompt.title = r.prompt;
@@ -411,8 +426,9 @@ export class Wake {
         ph.append(el("time", "", hm(d)), prompt);
         if (r.branch) ph.append(el("span", `w-br${r.branch === lastBr ? " rep" : ""}`, r.branch));
         if (r.session_id) {
-          const s = button(r.session_id.slice(0, 8), `w-sess${r.session_id === lastSess ? " rep" : ""}`);
-          s.title = "copy the command that resumes this session";
+          // Said as what it does: a bare id read as a commit's sha.
+          const s = button("resume", `w-sess${r.session_id === lastSess ? " rep" : ""}`);
+          s.title = `copy the command that resumes session ${r.session_id.slice(0, 8)}`;
           s.addEventListener("click", () => void this.copy(resumeCmd(r), "the resume command"));
           ph.append(s);
         }
@@ -434,6 +450,7 @@ export class Wake {
           : "no workspace yet.";
       out.push(e);
     }
+    this.list.classList.toggle("searching", !!this.query);
     this.list.replaceChildren(...out);
     this.sel = keepId === undefined ? -1 : this.vis.findIndex((r) => r.id === keepId);
   }
@@ -458,6 +475,8 @@ export class Wake {
     if (gh && r.title) badges.append(el("span", "w-st", `#${gh.n}`));
     li.append(badges);
     const w = where(r, this.home);
+    // The path shows on the picked row (wake.css); the title's tooltip has it always.
+    if (w) t.title += `\n${w}`;
     if (w) {
       // Cut by whole folders, the full path on hover; a search shows it whole.
       const p = el("span", "w-p");

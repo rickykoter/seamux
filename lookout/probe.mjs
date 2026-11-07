@@ -1748,6 +1748,25 @@ if (want("turn targets")) {
 if (want("page script")) {
   const r = spawnSync("node", ["--check", path.join(HERE, "page", "review.js")], { encoding: "utf8" });
   ok("page: review.js parses", r.status === 0, r.stderr);
+  const js = fs.readFileSync(path.join(HERE, "page", "review.js"), "utf8");
+  const tpl = fs.readFileSync(path.join(HERE, "page", "review.html"), "utf8");
+  const css = fs.readFileSync(path.join(HERE, "page", "review.css"), "utf8");
+  ok("page: framed by the app (?embed=app), it drops its title row and keeps one row of tools",
+     js.includes('new URLSearchParams(location.search).get("embed") === "app"') &&
+     js.includes('document.documentElement.dataset.embed = "app"') &&
+     css.includes(":root[data-embed] .brand, :root[data-embed] .what { display: none; }") &&
+     !/:root\[data-embed\][^{]*(#gate|\.mode|#ov-btn|#map-btn|#layout|\.keys-btn)[^{]*\{[^}]*display: none/.test(css));
+  ok("page: the app frames it with ?embed=app",
+     fs.readFileSync(path.join(HERE, "..", "app", "ui", "review.ts"), "utf8").includes("/review/${encodeURIComponent(rid)}?embed=app"));
+  ok("page: no plan map, no Map button (nor its key in the list)",
+     js.includes('$("map-btn").hidden = !R.planMap;') && js.includes('$("keys-map").hidden = !R.planMap;') && tpl.includes('id="keys-map"'));
+  ok("page: the gate pill is a button that goes to the first open blocking finding, else on like n",
+     tpl.includes('<button type="button" id="gate" class="gate">') && js.includes('$("gate").addEventListener("click", firstBlocking);') &&
+     /function firstBlocking\(\) \{[\s\S]{0,400}x\.severity === "blocker" \|\| x\.severity === "major"[\s\S]{0,200}goTo\(list\[0\]\.id\);\s*else stepFinding\(1\);/.test(js));
+  ok("page: a card puts its title first and shows a status pill only when it is not open",
+     /el\("span", \{ class: "title" \}[^\n]*\n\s*el\("span", \{ class: "fid" \}/.test(js) &&
+     js.includes('(x.status || "open") !== "open" ? el("span", { class: "status st-" + x.status }, x.status) : null'));
+  ok("page: counts are real plurals, never \"(s)\"", !/[a-z]\(s\)[ `"')]/.test(js.replace("http(s)", "")) && js.includes('plural(s.files || 0, "file")'));
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });

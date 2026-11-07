@@ -675,12 +675,14 @@ function __boardRender(d) {
     next[a.id] = a.kind;
     var inert = !a.ref && !a.slug ? " inert" : "";
     var hex = /^#[0-9a-f]{3,8}$/i.test(a.color || "") ? a.color : "";
-    // Muted: dimmed until it needs you again.
+    // Muted: dimmed until it needs you again, and its tooltip says so.
     var muted = isMuted(a) ? " muted" : "";
+    var hid = muted ? " \u00b7 hidden until it needs you" : "";
     // Its ⋯ menu was open before this push: it stays open (intent.js keeps which).
     if (tkOpen && a.id === tkOpen) muted += " tkopen" + (tkUp ? " tkup" : "");
     return '<div class="row ' + a.kind + ripple + inert + muted + (a.selected ? " here" : "") + cls +
-      (hex ? " owned" : "") + (fcls || "") + '" data-id="' + esc(a.id) + '" data-k="' + esc(fk || a.kind) + '" title="' + esc(a.name) + '"' +
+      (hex ? " owned" : "") + (fcls || "") + '" data-id="' + esc(a.id) + '" data-k="' + esc(fk || a.kind) + '" title="' + esc(a.name + hid) + '"' +
+      (hid ? ' aria-description="' + esc(hid.slice(3)) + '"' : "") +
       (inCard ? ' data-in="' + esc(inCard) + '"' : "") +
       (hex ? ' style="--own:' + hex + '"' : "") + ">" + (ripple ? confetti(a.id, inCard ? 8 : 12) : "");
   }
@@ -692,30 +694,37 @@ function __boardRender(d) {
   // keeps tucked.json (intent.js hands the choice to it), and only for a row
   // that is a workspace.
   var inApp = (function () { try { return !!window.parent && window.parent !== window; } catch (e) { return false; } })();
-  // The snooze presets (intent.js turns each into an end time at the click;
-  // the app's own menu, app/ui/tuck.ts, keeps the same four).
-  var SNOOZES = [["1h", "Snooze 1h"], ["3h", "Snooze 3h"], ["tomorrow", "Until tomorrow 9am"], ["monday", "Until Monday 9am"]];
+  // One verb for putting a row away: Hide, with when it comes back. The
+  // snooze presets (intent.js turns each into an end time at the click; the
+  // app's own menu, app/ui/tuck.ts, keeps the same four) sit between the
+  // other two, set apart by dividers. Whatever hides a row now, its item
+  // reads Show again. The data-x values are intent.js's, unchanged.
+  var SNOOZES = [["1h", "Hide for 1 hour"], ["3h", "Hide for 3 hours"],
+    ["tomorrow", "Hide until tomorrow 9am"], ["monday", "Hide until Monday 9am"]];
   function tuckOf(a) {
     if (!inApp || !a.cwd) return "";
     var item = function (label, x) { return '<span class="tki" data-a="tuck" data-x="' + x + '">' + label + "</span>"; };
-    var snooze = a.tuck === "snooze" ? item("Wake now", "none") :
+    var sep = '<span class="tks" role="separator"></span>';
+    var back = item("Show again", "none");
+    var snooze = a.tuck === "snooze" ? back :
       SNOOZES.map(function (s) { return item(s[1], "snooze:" + s[0]); }).join("");
-    return '<span class="tk" data-a="tk" title="Mute, snooze or tuck away" aria-label="Mute, snooze or tuck away">' +
+    return '<span class="tk" data-a="tk" title="Hide" aria-label="Hide or show again">' +
       '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.5" cy="8" r="1.3"/></svg></span>' +
-      '<span class="tkm">' + (a.tuck === "mute" ? item("Unmute", "none") : item("Mute", "mute")) + snooze +
-      (a.tuck === "tuck" ? item("Bring back", "none") : item("Tuck away", "tuck")) +
+      '<span class="tkm">' + (a.tuck === "mute" ? back : item("Hide until it needs you", "mute")) + sep + snooze + sep +
+      (a.tuck === "tuck" ? back : item("Hide until I bring it back", "tuck")) + sep +
       '<span class="tki" data-a="resume" data-x="' + (a.armed ? "off" : "on") + '" title="' +
       (a.armed ? "Stop typing continue here when a usage limit resets"
         : "When a usage limit stops this worktree, type continue once it resets") + '">' +
       (a.armed ? "Don\u2019t resume at reset" : "Resume at reset") + "</span></span>";
   }
-  // When a snoozed row wakes: "wakes 3:00 PM" today, else "wakes Mon 9:00 AM".
+  // When a hidden-for-now row comes back: "until 3:00 PM" today, else
+  // "until Mon 9:00 AM".
   function wakesOf(a) {
     if (a.tuck !== "snooze" || !a.until) return "";
     var w = new Date(+a.until), now = new Date();
     var t = w.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     if (w.toDateString() !== now.toDateString()) t = w.toLocaleDateString([], { weekday: "short" }) + " " + t;
-    return '<span class="badge wakes" title="' + esc(w.toString()) + '">wakes ' + esc(t) + "</span>";
+    return '<span class="badge wakes" title="' + esc(w.toString()) + '">until ' + esc(t) + "</span>";
   }
   // Everything under a card's head: what was said, the reply window, the
   // buttons, the footer.
@@ -856,13 +865,17 @@ function __boardRender(d) {
   var belowDivider = function (r) { return r.kind === "quiet" && (!r.famtier || r.famtier === "quiet"); };
   // Each shelf stays open or shut across pushes, as a card's fold does
   // (intent.js keeps data-<shelf>-open; tucked's is data-tuck-open).
-  function shelf(name, attr) {
+  // Each is named by when its rows come back: hidden for now (a time, or
+  // the moment it needs you), merged and idle (any new pane write), hidden
+  // (only when you bring it back). The class stays the shelf's own name.
+  function shelf(name, attr, label) {
     var list = shelved(name);
     if (!list.length) return "";
     return '<details class="' + name + '"' + (host.getAttribute(attr) === "1" ? " open" : "") + '><summary class="sect">' +
-      name + " · " + list.length + "</summary>" + list.map(quietRow).join("") + "</details>";
+      label + " · " + list.length + "</summary>" + list.map(quietRow).join("") + "</details>";
   }
-  var tuckSect = shelf("snoozed", "data-snooze-open") + shelf("settled", "data-settle-open") + shelf("tucked", "data-tuck-open");
+  var tuckSect = shelf("snoozed", "data-snooze-open", "hidden for now") +
+    shelf("settled", "data-settle-open", "merged and idle") + shelf("tucked", "data-tuck-open", "hidden");
   host.innerHTML = (rows.length ? groups.map(function (g) {
     var lead = g.lead || g.kids[0], sect = "";
     if (belowDivider(lead) && !seenQuiet) {
@@ -939,7 +952,13 @@ function __boardRender(d) {
   var lead = rows.filter(function (a) {
     return m === "swat" ? a.kind === "attend" : a.kind === "wilt" || a.kind === "running";
   })[0];
-  if (says) says.textContent = treatsLine(rows) || (rx ? line(rx.cls, rx.top, d.stamp) : line(m, lead ? lead.name : "", d.stamp));
+  // While a row needs you the cat says nothing: the headline counts it and
+  // the card says what it wants, so a third "needs you" is noise. Out of
+  // treats still shows, since it is the only place that says when the
+  // limit lifts for every row at once.
+  var asks = rows.some(function (a) { return a.kind === "attend"; });
+  var treats = treatsLine(rows);
+  if (says) says.textContent = treats || (asks ? "" : rx ? line(rx.cls, rx.top, d.stamp) : line(m, lead ? lead.name : "", d.stamp));
   var tl = $("tally");
   if (tl) tl.innerHTML = tally(rows);
 
@@ -962,10 +981,28 @@ function __boardRender(d) {
     var news = d.news || {};
     var items = news.items || [];
     nw.hidden = !items.length;
+    // The collapsed line skips news about a card already open above that
+    // needs you: the card says it, louder. Its lede is the first item
+    // left; with none left, the title counts the items instead. An item
+    // with no id (a hand-made push, like the demo's) is matched by the
+    // {{name}} it opens with.
+    var asking = {};
+    rows.forEach(function (a) {
+      if (a.kind !== "attend") return;
+      asking[a.id] = 1;
+      if (a.family) asking["family:" + a.family] = 1;
+      asking["{{" + a.name + "}}"] = 1;
+    });
+    var fresh = items.filter(function (it) {
+      if (it.tier !== "attend") return true;
+      var key = it.id || (/^\{\{[^}]*\}\}/.exec(it.text || "") || [""])[0];
+      return !asking[key];
+    });
+    var ledeText = items.length && fresh.length === items.length ? news.lede || "" : fresh.length ? fresh[0].text : "";
     var ttl = $("news-ttl");
-    if (ttl) ttl.textContent = "news" + (news.hours ? " · " + news.hours + "h" : "");
+    if (ttl) ttl.textContent = "news" + (ledeText ? (news.hours ? " · " + news.hours + "h" : "") : " · " + items.length);
     var lede = $("news-lede");
-    if (lede) lede.innerHTML = said(news.lede || "");
+    if (lede) lede.innerHTML = said(ledeText);
     var body = $("news-body");
     if (body) body.innerHTML = items.map(function (it) {
       var tier = COL[it.tier] ? it.tier : "quiet";

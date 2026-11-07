@@ -103,8 +103,11 @@ export function fileTreeHtml(files) {
 
 // The shell the client fills: rail, main column, comment margin. The page's
 // slug and kind ride as data so drafts are kept per plan and per surface.
-export function surfaceOpen(slug, kind) {
-  return `<script>window.DP_PAGE=${JSON.stringify({ slug, kind }).replace(/</g, "\\u003c")};</script>
+// `folded` names the sections (by their h2 text) that start folded on this
+// page; what the reader folded or opened since is remembered and wins.
+export function surfaceOpen(slug, kind, folded = []) {
+  const page = folded.length ? { slug, kind, folded } : { slug, kind };
+  return `<script>window.DP_PAGE=${JSON.stringify(page).replace(/</g, "\\u003c")};</script>
 <div id="dp-shell"><nav id="dp-rail" aria-label="plan sections"></nav><main id="dp-main">`;
 }
 // `foot` is a bar that sticks to the bottom of the main column (the review
@@ -127,9 +130,11 @@ body{max-width:none;margin:0;padding:0}
   cursor:pointer;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;flex:none}
 .dp-fold:hover{color:var(--fg);background:var(--card)}
 .dp-fold svg{transition:transform .15s}
-.dp-folded .dp-fold svg{transform:rotate(-90deg)}
+.dp-folded .dp-fold svg,.dp-fold-wait .dp-fold svg{transform:rotate(-90deg)}
 .dp-folded>.dp-sec-body{display:none}
-.dp-folded>h2{opacity:.75}
+.dp-fold-wait{position:relative}
+.dp-fold-wait>.dp-sec-body{position:absolute;left:0;right:0;top:0;visibility:hidden;pointer-events:none}
+.dp-folded>h2,.dp-fold-wait>h2{opacity:.75}
 .dp-badge{font:600 11px/1 var(--mono);color:var(--good-t);background:var(--ef-bg-green);border-radius:999px;padding:2px 6px;margin-left:auto}
 
 /* ---- rail: a column when wide, a sticky top bar when narrow ---- */
@@ -408,7 +413,7 @@ export const SURFACE_JS = String.raw`<script>
         fold.setAttribute("aria-expanded", "true");
         fold.setAttribute("aria-label", "fold " + title);
         n.insertBefore(fold, n.firstChild);
-        fold.addEventListener("click", function () { setFold(sec, !sec.classList.contains("dp-folded")); });
+        fold.addEventListener("click", function () { setFold(sec, !(sec.classList.contains("dp-folded") || sec.classList.contains("dp-fold-wait"))); });
         body = el("div", "dp-sec-body");
         sec.appendChild(body);
         sections.push(sec);
@@ -417,15 +422,32 @@ export const SURFACE_JS = String.raw`<script>
       if (body && n.tagName !== "SCRIPT") body.appendChild(n);
     });
   })();
+  // Remembered per section: 1 folded, 0 opened. A section the page folds by
+  // default (P.folded) stays folded until the reader opens it, and stays
+  // open once they have.
   var folds = lget(key("folds")) || {};
+  var byDefault = {};
+  (P.folded || []).forEach(function (t) { byDefault[t] = 1; });
   function setFold(sec, on, quiet) {
+    sec.classList.remove("dp-fold-wait");
     sec.classList.toggle("dp-folded", on);
     var b = sec.querySelector(".dp-fold");
     if (b) b.setAttribute("aria-expanded", on ? "false" : "true");
-    if (!quiet) { if (on) folds[sec.id] = 1; else delete folds[sec.id]; lset(key("folds"), folds); }
+    if (!quiet) { folds[sec.id] = on ? 1 : 0; lset(key("folds"), folds); }
     relayout();
   }
-  sections.forEach(function (s) { if (folds[s.id]) setFold(s, true, true); });
+  // A diagram drawn while display:none measures as zero, so a section that
+  // holds one waits out of the flow, still laid out, until mermaid is done
+  // (foldWaiting, from ready).
+  sections.forEach(function (s) {
+    var on = Object.prototype.hasOwnProperty.call(folds, s.id) ? !!folds[s.id] : !!byDefault[s.getAttribute("data-title")];
+    if (!on) return;
+    if (s.querySelector("pre.mermaid")) { s.classList.add("dp-fold-wait"); var b = s.querySelector(".dp-fold"); if (b) b.setAttribute("aria-expanded", "false"); }
+    else setFold(s, true, true);
+  });
+  function foldWaiting() {
+    sections.forEach(function (s) { if (s.classList.contains("dp-fold-wait")) setFold(s, true, true); });
+  }
 
   // Make whatever holds a node visible: its section, its folded trees, its
   // diagram tab.
@@ -433,7 +455,7 @@ export const SURFACE_JS = String.raw`<script>
     var e = node && (node.nodeType === 1 ? node : node.parentElement);
     if (!e) return;
     var sec = e.closest(".dp-sec");
-    if (sec && sec.classList.contains("dp-folded")) setFold(sec, false);
+    if (sec && (sec.classList.contains("dp-folded") || sec.classList.contains("dp-fold-wait"))) setFold(sec, false);
     for (var d = e.closest("details"); d; d = d.parentElement && d.parentElement.closest("details")) d.open = true;
     var view = e.closest(".dp-dg-view");
     if (view && view.hidden) showView(view.closest(".dp-dg"), view.getAttribute("data-view"));
@@ -552,7 +574,7 @@ export const SURFACE_JS = String.raw`<script>
       acceptNode: function (n) {
         var p = n.parentElement;
         if (!p || !n.nodeValue) return NodeFilter.FILTER_REJECT;
-        if (p.closest("script,style,textarea,select,option,button,.dp-dg-bar,.dp-dg-hint,#dp-hl-add,.dp-q-sum")) return NodeFilter.FILTER_REJECT;
+        if (p.closest("script,style,textarea,select,option,button,.dp-dg-bar,.dp-dg-hint,#dp-hl-add,.dp-q-sum,.dp-sum")) return NodeFilter.FILTER_REJECT;
         return NodeFilter.FILTER_ACCEPT;
       }
     });
@@ -1192,7 +1214,7 @@ export const SURFACE_JS = String.raw`<script>
     if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
     var r = sel.getRangeAt(0), a = r.commonAncestorContainer;
     var e = a.nodeType === 1 ? a : a.parentElement;
-    if (!main.contains(a) || (e && e.closest("textarea,input,select,button,.dp-dg-bar"))) return null;
+    if (!main.contains(a) || (e && e.closest("textarea,input,select,button,.dp-dg-bar,.dp-sum"))) return null;
     return r;
   }
   function placeChip() {
@@ -1386,7 +1408,7 @@ export const SURFACE_JS = String.raw`<script>
     } else if (s && Date.now() - s.t < 30 * 60 * 1000) window.scrollTo(0, s.y);
   }
   function ready() {
-    setupDiagrams(); loadNotes(); restoreScroll(); spy(); refreshCounts();
+    setupDiagrams(); foldWaiting(); loadNotes(); restoreScroll(); spy(); refreshCounts();
   }
   var css = getComputedStyle(document.documentElement);
   function v(n) { return css.getPropertyValue(n).trim(); }

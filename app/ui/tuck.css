@@ -1,4 +1,4 @@
-/* Mute and tuck: the ⋯ menu on a card, tile or lane, a dimmed muted look,
+/* Hide (mute, snooze, tuck): the ⋯ menu on a card, tile or lane, a dimmed muted look,
    and the note with Undo. Colours are the index.html tokens. */
 
 .tuck-wrap { position: relative; display: inline-flex; }
@@ -20,6 +20,7 @@
 }
 .tuck-item:hover, .tuck-item:focus-visible { background: var(--on); outline: none; }
 .tuck-item kbd { font: 11px ui-monospace, Menlo, monospace; color: var(--muted); }
+.tuck-sep { height: 1px; margin: 3px 5px; background: var(--line); }
 
 /* Muted: present, quiet. */
 .d-card.muted, .m-tile.muted, .t-lane.muted { opacity: 0.55; }
@@ -69,6 +70,8 @@
 .palette-level { font-size: 11px; padding: 1px 7px; border-radius: 9px; background: var(--term); color: var(--muted); }
 .palette-level.tuck { color: var(--fg); }
 .palette-when { font-size: 11px; color: var(--muted); }
+/* A hidden row: "hidden" in the text colour, its until muted beside it. */
+.palette-when .hid { color: var(--fg); }
 .palette-back { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 7px; border: 1px solid var(--line); background: var(--on); color: var(--fg); cursor: pointer; }
 .palette-empty { margin: 14px; color: var(--muted); text-align: center; }
 .palette-foot { padding: 7px 14px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--muted); }
