@@ -371,7 +371,12 @@ export class ReviewView {
       if (!f || e.source !== f.contentWindow || e.origin !== this.pageOrigin) return;
       const d = e.data as { lookout?: string; gate?: unknown; mode?: unknown } | null;
       if (!d || typeof d !== "object") return;
-      if (d.lookout === "hello") f.contentWindow?.postMessage({ lookout: "host" }, this.pageOrigin);
+      if (d.lookout === "hello") {
+        // A page that says hello is new (or reloaded itself): it holds no
+        // picks, so the next render sends them again.
+        this.sentPicks = "";
+        f.contentWindow?.postMessage({ lookout: "host" }, this.pageOrigin);
+      }
       else if (d.lookout === "state" && d.gate && typeof d.gate === "object" && d.mode && typeof d.mode === "object") {
         this.pageState = d as unknown as PageState;
         this.render();

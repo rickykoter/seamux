@@ -1835,7 +1835,7 @@ if (want("page script")) {
      css.includes(":root[data-host] #top { padding: 0; border: 0; min-height: 0; height: 0; }") &&
      css.includes(":root[data-host] #top .tools { display: none; }") &&
      app.includes('if (!f || e.source !== f.contentWindow || e.origin !== this.pageOrigin) return;') &&
-     app.includes('if (d.lookout === "hello") f.contentWindow?.postMessage({ lookout: "host" }, this.pageOrigin);') &&
+     /if \(d\.lookout === "hello"\) \{[^}]*this\.sentPicks = "";\s*f\.contentWindow\?\.postMessage\(\{ lookout: "host" \}, this\.pageOrigin\);/.test(app) &&
      app.includes('f.contentWindow?.postMessage({ lookout: "do", op, ...extra }, this.pageOrigin);') &&
      ["gate", "overview", "map", "layout", "keys"].every(op => app.includes(`this.tell("${op}"`) && js.includes(`d.op === "${op}"`)) &&
      app.includes("h.append(...tools.state);") && app.includes('if (view.length) acts.append(el("span", "r-sep"), ...view.map((t) => t.el));'));
