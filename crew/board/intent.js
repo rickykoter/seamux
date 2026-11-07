@@ -317,7 +317,7 @@ function __boardIntent(cfg) {
   // and goes when the app's first message names its origin: framed, a click
   // meant for the app never falls through to cmux instead.
   // When a snooze preset taken at `now` ends (ms since the epoch, local
-  // time). app/ui/tuck.ts snoozeUntil keeps the same four.
+  // time).
   function snoozeUntil(key, now) {
     if (key === "1h" || key === "3h") return now.getTime() + (key === "1h" ? 1 : 3) * 3600000;
     var d = new Date(now.getTime());

@@ -478,6 +478,8 @@ export class Wake {
     this.list.classList.toggle("searching", !!this.query);
     this.list.replaceChildren(...out);
     this.sel = keepId === undefined ? -1 : this.vis.findIndex((r) => r.id === keepId);
+    // A pick whose day was just folded is out of sight: Enter must not open it.
+    if (this.sel >= 0 && this.list.querySelectorAll(".w-row")[this.sel]?.closest(".w-day.folded")) this.sel = -1;
   }
 
   private row(r: Row, i: number, sel: boolean): HTMLElement {
@@ -603,6 +605,17 @@ export class Wake {
     }
     this.sel = -1;
     this.draw();
+  }
+
+  /** j / k: the next row in that direction that shows. A folded day's rows
+   *  are in the list but hidden, so they are stepped over. */
+  private step(by: 1 | -1): void {
+    const els = this.list.querySelectorAll<HTMLElement>(".w-row");
+    let i = this.sel + by;
+    while (i >= 0 && i < els.length && els[i].closest(".w-day.folded")) i += by;
+    if (i < 0 && by < 0) return this.select(-1, true);
+    if (i >= els.length) return;
+    this.select(i, true);
   }
 
   private select(i: number, scroll = false): void {
@@ -771,12 +784,12 @@ export class Wake {
       case "j":
       case "ArrowDown":
         e.preventDefault();
-        this.select(this.sel + 1, true);
+        this.step(1);
         break;
       case "k":
       case "ArrowUp":
         e.preventDefault();
-        this.select(this.sel - 1, true);
+        this.step(-1);
         break;
       case "Enter":
         if (r) {
