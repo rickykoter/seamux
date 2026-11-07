@@ -13,12 +13,39 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 export type Appearance = "system" | "light" | "dark";
 
 const KEY = "seamux.appearance";
-const ORDER: Appearance[] = ["system", "light", "dark"];
-const SAID: Record<Appearance, string> = {
-  system: "Appearance: follows the system",
-  light: "Appearance: light",
-  dark: "Appearance: dark",
-};
+/** The system's own look, as last seen while following it (the window's
+ *  theme hides it otherwise). Dark until seen. */
+let sysDark = true;
+
+/** What a click goes to: the look that changes the screen first, then the
+ *  other, then back to the system. Following a dark system: light, dark,
+ *  system; a light one: dark, light, system. No click is a no-op. */
+export function next(a: Appearance, systemIsDark = sysDark): Appearance {
+  const other: Appearance = systemIsDark ? "light" : "dark";
+  const same: Appearance = systemIsDark ? "dark" : "light";
+  return a === "system" ? other : a === other ? same : "system";
+}
+
+/** What the look is in force now: the system's, when following it. */
+function systemDark(): boolean {
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? true;
+}
+
+/** The button's tooltip: the choice, the look it gives now, and what a click does. */
+export function said(a: Appearance, dark: boolean): string {
+  const then0 = next(a);
+  const now = a === "system" ? `follows the system (${dark ? "dark" : "light"} now)` : a;
+  const then = then0 === "system" ? "to follow the system" : `for ${then0}`;
+  return `Appearance: ${now}. Click ${then}.`;
+}
+
+/** The short word shown beside the icon after a click. */
+function word(a: Appearance, dark: boolean): string {
+  return a === "system" ? `System · ${dark ? "dark" : "light"}` : a === "light" ? "Light" : "Dark";
+}
+
+/** How long that word stays. */
+const SAY_MS = 1500;
 
 function saved(): Appearance {
   try {
@@ -76,24 +103,48 @@ function icon(a: Appearance): SVGSVGElement {
   return s;
 }
 
-/** The top bar's button. The choice is in force before it returns. */
+/** The top bar's button. The choice is in force before it returns. After a
+ *  click a word beside the icon says the new look for a moment, so a flip
+ *  made outdoors, at a glance, is confirmed. */
 export function appearanceButton(): HTMLButtonElement {
   let now = saved();
   apply(now);
   const b = document.createElement("button");
   b.type = "button";
   b.id = "appearance";
+  const tag = document.createElement("span");
+  tag.className = "appearance-said";
+  tag.setAttribute("aria-live", "polite");
+  let timer = 0;
   const draw = () => {
-    const next = ORDER[(ORDER.indexOf(now) + 1) % ORDER.length];
-    b.replaceChildren(icon(now));
-    b.title = `${SAID[now]} (click for ${next === "system" ? "the system's" : next})`;
+    // Following the system, the media query shows its look: remember it for
+    // the cycle, since an explicit choice hides it.
+    if (now === "system") sysDark = systemDark();
+    b.replaceChildren(icon(now), tag);
+    b.title = said(now, systemDark());
     b.setAttribute("aria-label", b.title);
   };
   b.addEventListener("click", () => {
-    now = ORDER[(ORDER.indexOf(now) + 1) % ORDER.length];
+    now = next(now);
     save(now);
     apply(now);
     draw();
+    // The window's theme lands a moment later; read the look once it has.
+    window.requestAnimationFrame(() => {
+      draw();
+      tag.textContent = word(now, systemDark());
+      b.classList.add("saying");
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        b.classList.remove("saying");
+        tag.textContent = "";
+      }, SAY_MS);
+    });
+  });
+  // The system flips (sunset, or by hand): the tooltip says the new look.
+  window.matchMedia?.("(prefers-color-scheme: dark)").addEventListener?.("change", () => {
+    draw();
+    if (tag.textContent) tag.textContent = word(now, systemDark());
   });
   draw();
   return b;
