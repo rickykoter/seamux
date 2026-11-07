@@ -223,7 +223,7 @@ export class ReclaimWizard {
     if (!named.has("workspace")) fact("workspace", r.workspace?.name, "", false, r.workspace?.name, ok);
     // The plan lives outside the worktree: reclaim leaves it.
     fact("plan", r.plan, "", false, r.plan, ok);
-    fact("sandbox", r.sandbox, "", false, r.sandbox, ok);
+    if (!named.has("sandbox")) fact("sandbox", r.sandbox, "", false, r.sandbox, ok);
 
     const row = (c: Check) => {
       const li = el("li", `rc-check ${c.kind}`);
