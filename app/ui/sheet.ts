@@ -6,6 +6,7 @@ import { Wake } from "./wake";
 import { TermSlot } from "./native";
 import { splitter } from "./splitter";
 import { familyOf, memberState, type FamilyBrief } from "./family";
+import { dotsMenu } from "./tuck";
 
 type IntentServer = { origin: string | null; up: boolean; reason: string | null };
 
@@ -76,7 +77,6 @@ class Chat {
   el = document.createElement("section");
   /** Its worktree in VS Code and its pane in cmux: the end of the tab row. */
   private icons: HTMLElement[] = [];
-  private jumpBtn: HTMLElement | null = null;
   /** The Dock's sheet header, moved into this row (sheet.ts Sheet): one row of tools. */
   private extra: HTMLElement[] = [];
 
@@ -84,8 +84,14 @@ class Chat {
    *  this row's jump, so there is one way to cmux, not two. */
   adopt(tools: HTMLElement[]): void {
     this.extra = tools;
-    this.icons = this.icons.filter((x) => x !== this.jumpBtn);
+    // VS Code and the pane's cmux jump move into the sheet's "Open in" menu.
+    this.icons = [];
     if (!this.bar.hidden && this.shown) this.drawSessions(this.shown);
+  }
+
+  /** Its worktree in VS Code (the Dock's "Open in" menu). */
+  openCode(): void {
+    void openInVSCode(this.shown?.cwd ?? "", (m) => (this.note.textContent = m));
   }
 
   /** This pane in cmux: the Dock's one cmux button, when no page is up. */
@@ -185,7 +191,6 @@ class Chat {
     code.addEventListener("click", () => void openInVSCode(this.shown?.cwd ?? "", (m) => (this.note.textContent = m)));
     // No header of its own: the pane tab says the state, the sheet the workspace.
     this.icons = [code, jump];
-    this.jumpBtn = jump;
     form.append(this.input);
     // Live by default; the plain text and its reply box only when frames fail.
     const live = (on: boolean) => {
@@ -414,10 +419,10 @@ class Chat {
     // A native session (a real terminal here, in tmux) can always be started.
     const fresh = document.createElement("button");
     fresh.type = "button";
-    fresh.className = "sheet-btn icon sheet-chat-new";
+    fresh.className = "sheet-btn sheet-chat-new";
     fresh.title = "New native session: Claude in local tmux, a real terminal here and a pane in cmux";
     fresh.setAttribute("aria-label", fresh.title);
-    fresh.append(mark("M5 2v6M2 5h6"));
+    fresh.append(mark("M5 2v6M2 5h6"), document.createTextNode("Session"));
     fresh.addEventListener("click", () => void this.native(t));
     // A start takes seconds: one at a time.
     fresh.disabled = this.starting;
@@ -655,7 +660,8 @@ export class Sheet {
     this.wakeBtn.type = "button";
     this.wakeBtn.className = "sheet-btn sheet-wake-btn";
     this.wakeBtn.title = "Show what this workspace left behind beside the terminal (⌘E)";
-    this.wakeBtn.textContent = "Wake ⌘E";
+    // "Show": it opens the Wake beside the terminal; the Wake tab is the whole view.
+    this.wakeBtn.textContent = "Show Wake ⌘E";
     this.wakeBtn.hidden = true;
     this.wakeBtn.addEventListener("click", () => this.setWakeOpen(true));
     head.append(this.titleEl, this.say, this.wakeBtn, cmux, close);
@@ -663,8 +669,16 @@ export class Sheet {
     // row, and its cmux button opens the page when one is up, else the pane.
     if (embedded) {
       head.hidden = true;
-      cmux.title = "Open in cmux: the page beside its terminal, or this pane";
-      this.chat.adopt([this.say, this.wakeBtn, cmux]);
+      // One menu for leaving the app: VS Code, and cmux (the page beside its
+      // terminal, or this pane). cmux's item hides on the tmux backend.
+      const open = dotsMenu("Open this workspace in", [
+        { label: "VS Code", title: "Open this worktree in VS Code", run: () => this.chat.openCode() },
+        { label: "cmux", title: "The page beside its terminal, or this pane", run: () => void this.toCmux() },
+      ]);
+      for (const b of open.querySelectorAll<HTMLElement>("[role=menuitem]")) if (b.textContent?.startsWith("cmux")) b.classList.add("cmux-only");
+      open.classList.add("sheet-open-in");
+      open.querySelector(".tuck-btn")?.setAttribute("title", "Open in VS Code or cmux");
+      this.chat.adopt([this.say, this.wakeBtn, open]);
     }
     this.body.className = "sheet-body";
     this.pageEl.className = "sheet-page";

@@ -208,6 +208,10 @@
       .sheet-chat-code { margin-left: auto; align-self: center; padding: 3px 8px; }
       .sheet-chat-sessions .sheet-say { flex: 0 1 auto; max-width: 30%; }
       .sheet-chat-sessions .sheet-say:empty { display: none; }
+      /* The tool row: quiet buttons (an outline on hover) so no one of them shouts. */
+      .sheet-chat-sessions .sheet-btn:not(.primary) { background: none; border-color: transparent; }
+      .sheet-chat-sessions .sheet-btn:not(.primary):hover, .sheet-chat-sessions .sheet-btn:not(.primary):focus-visible { border-color: var(--line); background: var(--on); }
+      .sheet-chat-sessions .sheet-open-in { margin-left: auto; align-self: center; }
       .sheet-chat-jump { align-self: center; padding: 3px 6px; }
       .sheet-chat-reply[hidden], .sheet-chat-note:empty { display: none; }
       .sheet-chat-note { padding: 0 12px 6px; font-size: 11.5px; color: var(--muted); }
