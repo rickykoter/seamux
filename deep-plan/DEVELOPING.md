@@ -53,8 +53,16 @@ place mermaid is looked for when set), `DEEP_PLAN_ENGINE_FILE`, `DEEP_PLAN_BIN_D
   `crew-board-intent` serves working over review at `/plan/<slug>`.
 - Working surface markup: `.dp-act[data-a][data-n]` buttons rendered disabled
   with a title ending "— available when served in the Dock" (the injected
-  PLAN_JS strips exactly that suffix; a `data-kind="held"` go, drawn while
-  the plan is in review, stays disabled when served); `.dp-path[data-file]` spans; `#dp-auto`
+  PLAN_JS strips exactly that suffix). While the plan is in review no card
+  draws a go: only block and reset behind ⋯, and `.dp-go-wait` ("go opens
+  after the alignment check") on the next card; PLAN_JS still enables a
+  `data-kind="held"` go from an older render. Checks whose recipe every
+  increment carries (`sharedRecipes`) are drawn once, as `p.dp-shared` under
+  the Increments heading with one "how they run" fold, and each card counts
+  them in `p.dp-shared-sum`; display only, state and `status --json` keep
+  one per increment. A `.dp-run-c` fold part is the check's name and its
+  commands (`code.dp-run-cmd`); recipe, tier, cwd, hash and check id sit in
+  its title. `.dp-path[data-file]` spans; `#dp-auto`
   checkbox armed on its change event, polling `window.__dpChanged` — and
   skipping a tick while `window.dpBusy()` says someone is mid-comment.
   Only the transitions an increment's status allows are drawn (`INC_ALLOWED`, the table applyTransition refuses by, carried into the page as `window.DP_INC_ALLOWED`;
