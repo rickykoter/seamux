@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""family_sync_probe — a deep-plan family through the real crew-sync and
-crew-color, against a fake cmux. No app, no network, no real plans or colors.
+"""family_sync_probe — a deep-plan family through seamux crew-sync (which colours
+through crew-color), against a fake cmux. No app, no network, no real plans or colors.
 
 The family comes from deep-plan/tools/family-fixture.sh: a parent checkout and
 two worktrees (api, ui), each with a plan. Four fake workspaces sit on them
@@ -25,8 +25,13 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+os.environ["CREW_IMPL"] = "rust-strict"  # this branch's seamux, never crew's Python
+import crew_impl  # noqa: E402  (beside this probe)
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
+SYNC = crew_impl.argv("crew-sync", os.path.join(REPO, "crew", "bin", "crew-sync"), sys.executable)
 results = []
 
 
@@ -91,8 +96,7 @@ with tempfile.TemporaryDirectory(prefix="family-sync-") as t:
               open(os.path.join(t, "workspaces.json"), "w"))
 
     def sync():
-        subprocess.run([sys.executable, os.path.join(REPO, "crew", "bin", "crew-sync")],
-                       env=env, capture_output=True, text=True, timeout=180)
+        subprocess.run(SYNC, env=crew_impl.env(env), capture_output=True, text=True, timeout=180)
         return {w["id"]: w for w in json.load(open(os.path.join(t, "workspaces.json")))}
 
     def peacock():
@@ -152,8 +156,7 @@ with tempfile.TemporaryDirectory(prefix="family-sync-") as t:
                            "gh-" + hashlib.md5(X.encode()).hexdigest() + ".json"), "w") as fh:
         json.dump({"at": 0, "pr": 7, "notified": {"ci": "pass"}}, fh)
     genv = dict(env, PATH=gh_bin + os.pathsep + env.get("PATH", ""), FAKE_GH_CWD=X)
-    runs = [subprocess.Popen([sys.executable, os.path.join(REPO, "crew", "bin", "crew-sync")],
-                             env=genv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    runs = [subprocess.Popen(SYNC, env=crew_impl.env(genv), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             for _ in range(2)]
     for r in runs:
         r.wait(timeout=180)

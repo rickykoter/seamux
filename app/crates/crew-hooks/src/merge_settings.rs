@@ -1,16 +1,16 @@
-//! `seamux merge_settings`: crew/claude/merge_settings.py in Rust. Points
-//! Claude's status line at crew's and turns on the phone pushes.
+//! `seamux merge_settings`: points Claude's status line at crew's and turns
+//! on the phone pushes.
 //!
 //! ```text
 //! seamux merge_settings [--dry-run] [--settings PATH] [--remove]
 //! ```
 //!
-//! The status line it writes is `python3 <crew>/claude/statusline.py`, the
-//! Python's command, for as long as that file exists. Once the cutover has
-//! deleted it, the same run writes `<seamux> statusline` instead, and either
-//! spelling counts as crew's own for repointing and --remove. `<crew>` is crew-core's crew home, resolved through
-//! symlinks as the Python resolves its own file. Same printed lines, same
-//! backup names, same bytes written.
+//! The status line it writes is `<seamux> statusline`. The retired Python's
+//! `python3 <crew>/claude/statusline.py` (and the old installer's
+//! ~/.claude/statusline.py) still count as crew's own, so a run repoints them
+//! and --remove takes them out. `<crew>` is crew-core's crew home, resolved
+//! through symlinks. Printed lines, backup names and bytes written are the
+//! Python's.
 
 use std::path::{Path, PathBuf};
 
@@ -23,27 +23,24 @@ struct Paths {
     statusline: String,
     legacy: String,
     command: String,
-    /// No status line to point at: neither statusline.py nor a seamux.
+    /// No status line to point at: no seamux to name.
     missing: bool,
 }
 
-/// The status line command. While crew/claude/statusline.py exists it is
-/// the Python's, byte for byte. Once the cutover has deleted it, it is
-/// `<seamux> statusline`: the ~/.local/bin link when there is one (a path
-/// that survives upgrades), else this executable.
+/// The status line command: `<seamux> statusline`, the ~/.local/bin link
+/// when there is one (a path that survives upgrades), else this executable.
+/// `statusline` and `legacy` are the retired Python's paths, which ours()
+/// still recognises.
 fn paths() -> Paths {
     let claude = crew_core::crew_home().join("claude");
     let claude = std::fs::canonicalize(&claude).unwrap_or(claude);
     let statusline = claude.join("statusline.py").to_string_lossy().into_owned();
     let legacy = home().join(".claude/statusline.py").to_string_lossy().into_owned();
-    if Path::new(&statusline).exists() {
-        return Paths { command: format!("python3 {statusline}"), legacy, statusline, missing: false };
-    }
     let link = home().join(".local/bin/seamux");
     let seamux = if crate::spawn::is_executable(&link) { Some(link) } else { std::env::current_exe().ok() };
     match seamux {
         Some(s) => Paths { command: format!("{} statusline", s.display()), legacy, statusline, missing: false },
-        None => Paths { command: format!("python3 {statusline}"), legacy, statusline, missing: true },
+        None => Paths { command: String::new(), legacy, statusline, missing: true },
     }
 }
 
@@ -134,10 +131,10 @@ pub fn main(args: &[String]) -> i32 {
 
     let current = s.get("statusLine").cloned().unwrap_or(Value::Null);
     if p.missing {
-        changes.push(format!("SKIPPED: no {}", p.statusline));
+        changes.push("SKIPPED: no seamux to run `seamux statusline`".into());
     } else if !truthy(&current) {
         s.insert("statusLine".into(), json!({"type": "command", "command": p.command}));
-        changes.push("statusLine -> crew's statusline.py".into());
+        changes.push("statusLine -> seamux statusline".into());
     } else {
         let Value::Object(cur) = &current else {
             return crash(&format!("AttributeError: '{}' object has no attribute 'get'", pyval::type_name(&current)));
@@ -149,7 +146,7 @@ pub fn main(args: &[String]) -> i32 {
             repointed.insert("type".into(), json!("command"));
             repointed.insert("command".into(), json!(p.command));
             s.insert("statusLine".into(), Value::Object(repointed));
-            changes.push("statusLine -> crew's statusline.py (repointed from the old copy)".into());
+            changes.push("statusLine -> seamux statusline (repointed from the old copy)".into());
         } else {
             changes.push(format!(
                 "LEFT ALONE: you already have a status line — set it to `{}` by hand if you want this one",
