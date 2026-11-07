@@ -1063,16 +1063,16 @@ ok("validate: a freshly rendered plan is clean",
 const working = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8");
 {
   // One plain gate line: the state leads, the fix is a link, and the root
-  // and phase wait in a hover title behind the folder's name.
+  // and phase wait in the line's hover title. No folder name in its text.
   const gl = (working.match(/<h2>Gate<\/h2><p class="dp-gate"[\s\S]*?<\/p>/) || [""])[0];
-  const where = (gl.match(/<span class="dim dp-gate-where" title="([^"]*)">· in ([^<]*)<\/span>/) || []);
+  const tip = ((gl.match(/<p class="dp-gate" data-allow="\d" title="([^"]*)">/) || [])[1] || "").split("\n");
   ok("working: the gate line leads with its state and links to the quiz",
-    /data-allow="0"><svg[\s\S]*?<\/svg> <b>Gate shut<\/b>: the alignment check isn't taken yet\. <a href="[^"]+\.review\.html#s-alignment-check">Take it on the review page<\/a> <span class="dim dp-gate-where"/.test(gl), gl);
-  ok("working: the gate line shows the folder name; the full root and phase are in its title",
-    where[2] === path.basename(REPO) && path.isAbsolute(where[1].split("\n")[0]) &&
-      where[1].split("\n")[0].endsWith("/" + where[2]) && where[1].split("\n")[1] === "phase: review (waiting on the review)", JSON.stringify(where));
-  ok("working: no root path or phase word in the gate line's text",
-    !/<code>/.test(gl) && !/· phase/.test(gl) && !!where[1] && !gl.replace(/title="[^"]*"/g, "").includes(where[1].split("\n")[0]));
+    /data-allow="0" title="[^"]*"><svg[\s\S]*?<\/svg> <b>Gate shut<\/b>: the alignment check isn't taken yet\. <a href="[^"]+\.review\.html#s-alignment-check">Take it on the review page<\/a><\/p>$/.test(gl), gl);
+  ok("working: the gate line's title holds the full root and phase",
+    path.isAbsolute(tip[0]) && tip[0].endsWith("/" + path.basename(REPO)) && tip[1] === "phase: review (waiting on the review)", JSON.stringify(tip));
+  ok("working: no root, folder name or phase word in the gate line's text",
+    !/<code>/.test(gl) && !/· phase/.test(gl) && !gl.includes("dp-gate-where") &&
+      !gl.replace(/title="[^"]*"/g, "").includes(path.basename(REPO)), gl);
 }
 ok("working surface renders controls disabled on disk",
   working.includes('class="dp-act"') && working.includes("disabled"));
@@ -1127,7 +1127,7 @@ ok("working surface has the auto-refresh checkbox, with a short label for a narr
     /recipe /.test(HOW) && /run — /.test(HOW) && !/acquire|claim|expect|note|brief/.test(HOW), HOW);
   // The review page folds the same way: one line per check, the run detail
   // under the same "how it runs".
-  const rvChecks = review.split("<li").map(x => x.split("</li>")[0]).filter(x => /^ title="check [^"]+"><b>/.test(x));
+  const rvChecks = review.split("<li").map(x => x.split("</li>")[0]).filter(x => /^ title="check [^"]+"><svg class="dp-mark"/.test(x));
   ok("review surface: a check's run lines fold under how it runs",
     rvChecks.length > 0 && rvChecks.every(li => !/<br>(recipe |run — |run: )/.test(li)) &&
     rvChecks.some(li => li.includes('<details class="dp-run"><summary>how it runs</summary>run: ')),
@@ -1135,12 +1135,44 @@ ok("working surface has the auto-refresh checkbox, with a short label for a narr
   ok("review surface: a check reads as its name and kind, the id only in its title and fold",
     rvChecks.every(li => !/<code>/.test(li.replace(/<details[\s\S]*$/, "")) && !/\[(test|manual|e2e)/.test(li)) &&
     rvChecks.some(li => /<span class="dp-kind">· test<\/span>/.test(li)), rvChecks.slice(0, 1).join(""));
+  // The same row on both pages: glyph, name, kind word, under one plain head.
+  const shape = li => li.replace(/<details[\s\S]*$/, "").replace(/<svg[\s\S]*?<\/svg>/, "G").replace(/title="[^"]*"/, "");
+  ok("review and working: a check not yet run is the same row on both pages",
+    rvChecks.length > 0 && rvChecks.every(li => /^ >G [^<]+ <span class="dp-kind">· [^<]+<\/span>/.test(shape(li))) &&
+    pend.some(li => rvChecks.some(r => shape(r) === shape(li))), rvChecks.slice(0, 1).join("") + "\n" + pend.slice(0, 1).join(""));
+  ok("review surface: checks open with Done when these pass, in the working page's list",
+    review.includes('<p class="dim dp-checks-h">Done when these pass:</p><ul class="dim dp-checks dp-checks-st">') && !review.includes("is gated on these"));
   // A slim bar at the foot of the review page: the quiz count and the same
   // copy button, which clicks the real one rather than building its own blob.
   ok("review surface: a sticky foot counts quiz answers and copies through #dp-copyback",
     /<div id="dp-foot"[^>]*>[\s\S]*Quiz <b id="dp-foot-a">0<\/b>\/\d+/.test(review) &&
     review.includes('id="dp-foot-copy"') && review.includes('getElementById("dp-copyback")') &&
     !working.includes('id="dp-foot"'));
+  // Send it back is one line and the general box; the foot bar is the only
+  // Copy. With every question answered, the foot's go lands on the box.
+  const send = (review.match(/<h2>Send it back<\/h2>[\s\S]*?<script>/) || [""])[0];
+  ok("review surface: Send it back is one line, the general box, and no second Copy",
+    send.includes('<p class="dim">Select text and press ⌘M to comment on it.</p>') && !/<kbd>/.test(send) &&
+    /<button id="dp-copyback" type="button" hidden>Copy for session<\/button>/.test(send) &&
+    (send.match(/<p/g) || []).length === 2 && review.includes(`document.querySelector('.dp-note[data-section="general"]')`), send);
+  ok("review surface: the alignment check opens with one line",
+    /<h2>Alignment check<\/h2>\n<p class="dim">[^<\n]+<\/p>\n<div class="q"/.test(review));
+  ok("both pages: clear drafts is a quiet link",
+    /#dp-clear\{background:none;border:0;[^}]*text-decoration:underline/.test(review));
+  // Files: one inline, two or more folded, both led by the same words.
+  ok("files: one file reads 1 file:, more read N files and fold",
+    /<p class="dp-files1"><span class="dp-files-n">1 file:<\/span> <span class="dp-path"/.test(review + working) &&
+    /<details class="dp-files"><summary><span class="dp-files-n">\d+ files<\/span>/.test(review + working) && !/files <span class="dp-n">/.test(review));
+  // Actions: the next increment shows its moves; other cards keep block,
+  // reset and an out-of-order go behind a ⋯, and the primary is the app's
+  // neutral one, full contrast on disk.
+  const lead2 = b => b.replace(/<details class="dp-more">[\s\S]*?<\/details>/, "");
+  ok("working surface: only the next increment shows block and reset in the open; others fold them under ⋯",
+    blocks.every((b, k) => k === nextI ? !b.includes("dp-more") && /data-a="block"/.test(b)
+      : !/data-a="(block|reset)"/.test(lead2(b)) && /<details class="dp-more"><summary[^>]*>⋯<\/summary>/.test(b)), JSON.stringify(blocks.map(lead2).map(b => b.slice(-300))));
+  ok("working surface: the primary is text colour on the page ground, and stays full contrast disabled",
+    working.includes('.dp-act[data-kind="primary"]{background:var(--fg);border-color:var(--fg);color:var(--bg)') &&
+    working.includes('.dp-act[data-kind="primary"][disabled]{opacity:1}'));
   const carried = (working.match(/window\.DP_INC_ALLOWED = (\{[^;]*\});/) || [])[1];
   const eng = fs.readFileSync(path.join(HERE, "deep_plan.mjs"), "utf8");
   ok("working surface: the page carries the engine's one table, and applyTransition refuses by it",
@@ -1422,10 +1454,10 @@ ok("the denial opens with `deep-plan gate [<slug>]: ` (seamux-mods keys off it)"
 const gateLine = () => (fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, spec.slug + ".working.html"), "utf8")
   .match(/<p class="dp-gate"[\s\S]*?<\/p>/) || [""])[0];
 ok("working: between increments the gate line points at the next go",
-  /<b>Gate shut<\/b>: no increment has its go yet\. Next: <a href="#inc-1">go on increment 1<\/a> <span/.test(gateLine()), gateLine());
+  /<b>Gate shut<\/b>: no increment has its go yet\. Next: <a href="#inc-1">go on increment 1<\/a><\/p>$/.test(gateLine()), gateLine());
 ok("go authorizes the next increment", cli("go", spec.slug, "next").status === 0);
 ok("working: with an increment open the gate line says which",
-  /data-allow="1"[\s\S]*<b>Gate open<\/b>: increment 1 has its go <span/.test(gateLine()), gateLine());
+  /data-allow="1"[\s\S]*<b>Gate open<\/b>: increment 1 has its go<\/p>$/.test(gateLine()), gateLine());
 const HEAD0 = execSync("git rev-parse HEAD", { cwd: REPO, encoding: "utf8" }).trim();
 let st = JSON.parse(fs.readFileSync(path.join(ENV.DEEP_PLAN_STATE_DIR, spec.slug + ".json"), "utf8"));
 ok("go records HEAD as the increment's start sha", st.increments[0].startSha === HEAD0);
@@ -2423,8 +2455,9 @@ if (want("render infers checks and refuses gaps")) {
   cli("render", tmpSpec({ ...spec, slug: "inf-waived" }), "--force");
   ok("a waiver is shown where checks would be",
     rd("inf-waived")("md").includes("Checks: none — waived: the retry sweep spec") &&
-    rd("inf-waived")("review.html").includes("waived: the retry sweep spec") &&
-    rd("inf-waived")("working.html").includes("waived: the retry sweep spec"));
+    rd("inf-waived")("review.html").includes('<p class="dim dp-checks-none">No checks: the retry sweep spec') &&
+    rd("inf-waived")("working.html").includes('<p class="dim dp-checks-none">No checks: the retry sweep spec') &&
+    !rd("inf-waived")("review.html").includes("checks: none"));
 
   // What was reviewed is what runs: rehydrate reads the stored resolution, so
   // a config edited after render changes no surface until the next render —
@@ -3813,12 +3846,12 @@ if (want("decision first: summary card, default folds, work on top")) {
     counts.includes("2 decisions · 1 contract · 3 risks, 2 not decided · 1 ADR draft"), counts);
   // One quiz button: the foot bar's. The card's way there is a text link.
   ok("review: the card links to the quiz in words, not with a second button",
-    /<a href="#s-alignment-check" id="dp-sum-go">3 questions to answer<\/a>/.test(sum) && !/<button/.test(sum.split("<script>")[0]));
+    /<a href="#s-alignment-check" id="dp-sum-go">3 quiz questions<\/a>/.test(sum) && !/<button/.test(sum.split("<script>")[0]));
   ok("review: one quiz button on the page, the foot bar's",
     (rv.match(/<button[^>]*>[^<]*quiz/gi) || []).length === 1 && /<button[^>]*id="dp-foot-go">Go to quiz</.test(rv));
-  ok("review: the bottom Copy for session reads as a link and still builds the blob the bar copies",
-    /<button id="dp-copyback" type="button">Copy for session<\/button>/.test(rv) &&
-    /#dp-copyback\{background:none;[^}]*text-decoration:underline/.test(rv) && rv.includes('var b = document.getElementById("dp-copyback");'));
+  ok("review: the bottom Copy for session is hidden and still builds the blob the bar copies",
+    /<button id="dp-copyback" type="button" hidden>Copy for session<\/button>/.test(rv) &&
+    rv.includes('var b = document.getElementById("dp-copyback");'));
   ok("review: contracts read as words, the raw fields in the title",
     /title="db-schema · internal · modify">changes an internal DB schema<\/span>/.test(rv) && !/\[db-schema/.test(rv));
   ok("review: the card holds no comment box or control the copy-back reads",
@@ -3840,8 +3873,9 @@ if (want("decision first: summary card, default folds, work on top")) {
     at("Gate") > wk.indexOf('<p class="dim">plan <code>first-plan</code></p>') && at("Gate") < at("Increments") && at("Increments") < at("Context"),
     JSON.stringify({ gate: at("Gate"), incs: at("Increments"), ctx: at("Context") }));
   ok("working: the primary go button is above the spec", wk.indexOf('data-kind="primary"') > 0 && wk.indexOf('data-kind="primary"') < at("Context"));
-  ok("working: every spec section starts folded; Gate, Increments and Amend stay open",
-    JSON.stringify(pageOf(wk).folded) === JSON.stringify(["Context", "End state", "Decisions", "Contracts", "Verified facts", "Risks", "ADRs", "Diagrams"]),
+  ok("working: every spec section, Amend the plan and Log start folded; Gate and Increments stay open",
+    JSON.stringify(pageOf(wk).folded) === JSON.stringify(["Context", "End state", "Decisions", "Contracts", "Verified facts", "Risks", "ADRs", "Diagrams", "Amend the plan", "Log"]) &&
+    wk.includes("!Object.prototype.hasOwnProperty.call(folds, hold.id)) setFold(hold, false, true)"),
     JSON.stringify(pageOf(wk)));
   ok("working: the page has no summary card", !wk.includes('class="dp-sum"'));
   ok("both pages: a remembered fold wins over the default, and an open is remembered too",
@@ -5054,6 +5088,19 @@ if (want("delegated go")) {
     ok("verdicts: the parent's working page shows the go owner, the hold and each increment",
       /parent goes/.test(page) && /held by the parent: waiting on the contract/.test(page) &&
       /class="dp-fam-inc dp-fam-done"[^>]*>✓ 1 [\s\S]*?go by parent<\/span><\/span>/.test(page));
+    // The strip: this plan's own line open, every other member one line with
+    // its increments behind a disclosure, and the plan a child waits on open.
+    const strip = h => (h.match(/<section class="dp-fam"[\s\S]*?<\/section>/) || [""])[0];
+    const lis = h => strip(h).split('<li class="dp-fam-m').slice(1);
+    const ps = lis(page);
+    ok("family strip: the plan's own line is open, each other member folds to one line",
+      ps.length === pf.members.length && ps.filter(l => l.startsWith(' dp-fam-me"')).length === 1 &&
+      ps.filter(l => !l.startsWith(' dp-fam-me"')).every(l => /^">(<details class="dp-fam-more"><summary><span class="dim">child<\/span> <a [^>]+>[^<]+<\/a> <span class="dim">· [a-z ]+ · \d+\/\d+[^<]*<\/span><\/summary>|<span)/.test(l)) &&
+      ps.some(l => l.includes('<details class="dp-fam-more">')), strip(page));
+    const kpage = fs.readFileSync(path.join(ENV.DEEP_PLAN_PLANS_DIR, "example-dlg-kid.working.html"), "utf8");
+    const kp = lis(kpage).find(l => l.includes('data-plan="example-dlg"'));
+    ok("family strip: a child's page keeps the parent open when it waits on it, folded when not",
+      !!kp && (strip(kpage).includes('<p class="dp-fam-wait">waits on') ? !kp.includes("dp-fam-more") : kp.includes("dp-fam-more")), kp);
     as(DR, true, "family", "unhold", "example-dlg-two");
   }
 

@@ -70,13 +70,32 @@ function __boardRender(d) {
     return "stopped: " + l.label + (l.resets_at ? " \u00b7 resets " + clockOf(l.resets_at) : " \u00b7 reset time unknown");
   }
   var AMBER = COL.attend;
+  // The pill takes the badge's place: the limit is why the row needs you.
+  // It names the limit and when it lifts, in plain words.
   function limPill(a) {
-    return a.limited ? '<span class="badge lim" style="color:' + AMBER + ";border-color:" + AMBER + '" title="' +
-      esc(stopText(a)) + '">' + esc(a.limited.label) + "</span>" : "";
+    if (!a.limited) return "";
+    // Which limit is in its tooltip and the said line; here, when it lifts.
+    var l = a.limited, word = l.error === "billing_error" ? "spend limit" : l.label;
+    return '<span class="badge lim" style="color:' + AMBER + ";border-color:" + AMBER + '" title="' +
+      esc(stopText(a)) + '">' + esc(l.resets_at ? "limit \u00b7 back " + clockOf(l.resets_at) : word) + "</span>";
+  }
+  // A card that needs you says so on its badge, the headline's words; why it
+  // does opens its said line ("Question: ..."). One rule, not a guess at the
+  // wording: the label shows unless the line already starts with it. Every
+  // other tier keeps its reason on the badge.
+  var REASON = { "asked you": "Question", "gate shut": "Gate shut", "review": "Review", "needs a value": "Needs a value" };
+  function reasonOf(a) {
+    if (a.kind !== "attend" || !a.badge || a.limited) return "";
+    var r = REASON[a.badge] || a.badge.charAt(0).toUpperCase() + a.badge.slice(1);
+    var plain = String(a.said || "").replace(/\{\{|\}\}/g, "").trim();
+    return plain.toLowerCase().indexOf(r.toLowerCase()) === 0 ? "" : r;
   }
   // What a card says under its head: the stop, while a limit holds it.
   function saidOf(a) {
-    return a.limited ? '<span class="lim" style="color:' + AMBER + '">' + esc(stopText(a)) + "</span>" : said(a.said);
+    if (a.limited) return '<span class="lim" style="color:' + AMBER + '">' + esc(stopText(a)) + "</span>";
+    var why = reasonOf(a);
+    if (!why) return said(a.said);
+    return '<span class="rsn">' + esc(why) + (a.said ? ":</span> " + said(a.said) : "</span>");
   }
   var CLOCK = '<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true" style="vertical-align:-1px;margin-right:3px">' +
     '<circle cx="6" cy="6" r="4.6" fill="none" stroke="currentColor" stroke-width="1.3"/>' +
@@ -97,7 +116,16 @@ function __boardRender(d) {
       esc(tip + ". Click to stop resuming this worktree.") + '">' + CLOCK + esc(text) + " \u00d7</span>";
   }
 
-  function dial(frac, kind) {
+  // How far, in words, for the dial's tooltip: "1 of 4 increments" from the
+  // row's meta ("1/4 increments"), else a percentage. The ring is too small
+  // for a number inside it to be read, so the arc is the reading and this is
+  // the exact figure.
+  function farOf(frac, meta) {
+    var m = /^(\d+)\/(\d+)\b/.exec(String(meta || ""));
+    if (m) return m[1] + " of " + m[2] + " increments";
+    return Math.round(frac * 100) + "% done";
+  }
+  function dial(frac, kind, meta) {
     var r = 13, c = 2 * Math.PI * r, col = COL[kind] || COL.quiet;
     // .pending marks a dial with no number to show; CSS spins its .arc for a row
     // that is mid-turn, which is the honest shape for "working, cannot say how
@@ -118,12 +146,10 @@ function __boardRender(d) {
         (c * 0.16).toFixed(2) + " " + (c * 0.84).toFixed(2) + '"/>';
       return head + '<circle cx="16" cy="16" r="2.5" fill="' + col + '"/>' + arc + "</svg>";
     }
-    return head +
+    return head.replace("<circle", "<title>" + esc(farOf(frac, meta)) + "</title><circle") +
       '<circle class="arc" cx="16" cy="16" r="' + r + '" fill="none" stroke="' + col + '" stroke-width="3"' +
       ' stroke-linecap="round" stroke-dasharray="' + c.toFixed(2) + '"' +
-      ' stroke-dashoffset="' + (c * (1 - frac)).toFixed(2) + '" transform="rotate(-90 16 16)"/>' +
-      '<text x="16" y="19.5" text-anchor="middle" font-size="9.5" font-weight="600"' +
-      ' fill="#d3c6aa">' + Math.round(frac * 100) + "</text></svg>";
+      ' stroke-dashoffset="' + (c * (1 - frac)).toFixed(2) + '" transform="rotate(-90 16 16)"/></svg>';
   }
 
   // Where each row SITS right now, captured before innerHTML destroys it. This is
@@ -317,7 +343,7 @@ function __boardRender(d) {
     var doneBadges = {};
     for (var j = 0; j < rows.length; j++) if (rows[j].kind === "done") doneBadges[rows[j].badge || ""] = 1;
     var one = Object.keys(doneBadges);
-    var doneWord = one.length === 1 && one[0] ? badgeWord(one[0]) : "done";
+    var doneWord = one.length === 1 && one[0] ? one[0] : "done";
     var out = "";
     for (var t = 0; t < TIERS.length; t++) {
       var k = TIERS[t][0];
@@ -484,6 +510,7 @@ function __boardRender(d) {
     var out = "";
     // Whether anything shows without the pointer (board.html hides the rest).
     var seen = false;
+    if (a.branch || a.dirty) out += dotOf(a);
     if (a.branch) {
       out += '<span class="branch" data-a="code" title="Open this worktree in VS Code — ' +
         esc(a.branch) + '">' + esc(headClip(a.branch, 30)) + "</span>";
@@ -516,7 +543,9 @@ function __boardRender(d) {
     var end = bare ? "" : cost(a) + wakeOf(a);
     if (end) out += '<span class="end">' + end + "</span>";
     if (!bare && hasWake(a)) seen = true;
-    // A footer of hover-only facts folds away entirely, so it leaves no gap.
+    // A footer of hover-only facts folds away entirely, so it leaves no gap,
+    // and shows on hover as a strip under the card (board.html), over the
+    // rows below, so nothing moves.
     return out ? '<div class="foot' + (seen ? "" : " hov") + '">' + out + "</div>" : "";
   }
 
@@ -611,9 +640,11 @@ function __boardRender(d) {
   // prompt, and the CSS clamps it to one line, so the hover is the only way to
   // read the whole thing.
   // --own is the worktree's identity colour, the same hex Peacock paints the
-  // VS Code window with. Worn as a dot beside the name so the badge and
-  // the tier's dot keep saying which tier the row is in. Only a plain hex gets through: it lands
-  // in a style attribute.
+  // VS Code window with. It says which worktree, not how the row is doing,
+  // so it stays off the header, where a dot beside the name read as a second
+  // state dot: it is the ring round the row you stand in (.here), and a dot
+  // before the branch in the footer, the worktree's own line. Only a plain
+  // hex gets through: it lands in a style attribute.
   // The workspace you are standing in is marked (.here), not moved: promoting
   // it to the top would fight the ranking, which is the one thing this board
   // is for.
@@ -652,18 +683,17 @@ function __boardRender(d) {
     var more = kids.length - shown.length;
     return '<span class="pips">' + shown.map(function (k) {
       return '<svg class="pip ' + (COL[k.kind] ? k.kind : "quiet") + '" viewBox="0 0 7 6" aria-hidden="true">' +
-        "<title>" + esc(k.name + (k.badge ? " · " + badgeWord(k.badge) : "")) + '</title><path fill-rule="evenodd" d="' +
+        "<title>" + esc(k.name + (k.badge ? " · " + badgeText(k) : "")) + '</title><path fill-rule="evenodd" d="' +
         PIP + '"/></svg>';
     }).join("") + (more > 0 ? '<span class="pipmore">+' + more + "</span>" : "") + "</span>";
   }
 
   // A card's header is the jump: one place, folded or not, that switches to
-  // its workspace, with an arrow at its right end (brighter on hover, CSS). A
-  // card with no workspace has nothing to jump to, so its header folds it
-  // instead. Folding is the caret's job everywhere else: a real button, its
-  // own data-a, nearer the click than the header around it.
-  var ARROW = '<span class="go" aria-hidden="true"><svg viewBox="0 0 10 10" width="10" height="10">' +
-    '<path d="M1.8 5h6M5.2 2.2 8 5 5.2 7.8"/></svg></span>';
+  // its workspace; its ground lifts on hover (CSS). No arrow: it took the
+  // name's room to say what the hover already says. A card with no
+  // workspace has nothing to jump to, so its header folds it instead.
+  // Folding is the caret's job everywhere else: a real button, its own
+  // data-a, nearer the click than the header around it.
   var CARET = '<button type="button" class="caret" data-a="fold" aria-label="Fold or unfold"></button>';
   // The opening of a card's header: what a click on it does, then the caret.
   function topOpen(a, cls, foldable) {
@@ -672,7 +702,7 @@ function __boardRender(d) {
     var does = a.ref ? ' data-a="jump" title="' + esc(a.name) + " \u00b7 " + esc(TIP.jump) + '"' : foldable ? ' data-a="fold"' : "";
     return '<div class="top' + cls + (a.ref ? " jumps" : "") + '"' + does + ">" + (foldable ? CARET : "");
   }
-  function topClose(a) { return (a.ref ? ARROW : "") + "</div>"; }
+  function topClose() { return "</div>"; }
   // A card that has something to fold carries .fd, its open state, and its
   // tier in data-k, which is what intent.js writes into data-fold.
   function foldCls(id, kind, foldable, isKid) {
@@ -698,13 +728,24 @@ function __boardRender(d) {
       (inCard ? ' data-in="' + esc(inCard) + '"' : "") +
       (hex ? ' style="--own:' + hex + '"' : "") + ">" + (ripple ? confetti(a.id, inCard ? 8 : 12) : "");
   }
-  function dotOf(a) { return /^#[0-9a-f]{3,8}$/i.test(a.color || "") ? '<span class="own"></span>' : ""; }
+  function dotOf(a) { return /^#[0-9a-f]{3,8}$/i.test(a.color || "") ? '<span class="own" title="This worktree\u2019s colour"></span>' : ""; }
   // No empty badge: a bare outline pill was the quiet row's second line.
-  // The badge says the reason: "asked you" sat under the headline's
-  // "needs you", so it reads "question" here (the data keeps its word).
-  var BADGE_SAID = { "asked you": "question" };
-  function badgeWord(b) { return BADGE_SAID[b] || b; }
-  function badgeOf(a) { return (a.badge ? '<span class="badge">' + esc(badgeWord(a.badge)) + "</span>" : "") + limPill(a); }
+  // A row that needs you says it in the headline's words, "needs you"; its
+  // reason opens its said line instead (reasonOf). A limit takes the badge's
+  // place: it is the reason the row needs you, and two pills cut the name.
+  function badgeText(a) { return a.kind === "attend" ? "needs you" : a.badge; }
+  function badgeOf(a) {
+    if (a.limited) return limPill(a);
+    return a.badge ? '<span class="badge">' + esc(badgeText(a)) + "</span>" : "";
+  }
+  // The badge's slot, which the ⋯ sits over at its right end when the
+  // pointer is on the row. Absolute, so it takes no room from the name at
+  // rest; with no badge it covers the name's empty end instead.
+  function slotOf(a, inner) {
+    var tk = tuckOf(a);
+    if (!tk) return inner;
+    return '<span class="bs' + (inner ? "" : " nob") + '">' + inner + tk + "</span>";
+  }
   function nameOf(a) { return '<span class="nm">' + esc(a.name) + "</span>"; }
   // Mute / tuck, as the app's views offer it: only framed by the app, which
   // keeps tucked.json (intent.js hands the choice to it), and only for a row
@@ -741,9 +782,12 @@ function __boardRender(d) {
   // row says when it comes back ("until 3:00 PM" today, else "until Mon
   // 9:00 AM"), a settled one that it is merged and idle, a tucked one that
   // it waits for you.
+  // A settled row's reclaim is a link in its reason, so every shelf row has
+  // the one shape: name, badge, why.
   function whyOf(a) {
     var s = shelfOf(a);
-    if (s === "settled") return '<span class="why">merged and idle</span>';
+    if (s === "settled") return '<span class="why">merged and idle' + ((a.chips || []).indexOf("reclaim") >= 0 ?
+      ' \u00b7 <span class="rcl" data-a="reclaim" title="' + esc(TIP.reclaim) + '">reclaim</span>' : "") + "</span>";
     if (s === "tucked") return '<span class="why">until you bring it back</span>';
     if (s !== "snoozed") return "";
     if (!a.until) return '<span class="why">for now</span>';
@@ -755,7 +799,7 @@ function __boardRender(d) {
   // Everything under a card's head: what was said, the reply window, the
   // buttons, the footer.
   function body(a) {
-    return (a.said || a.limited ? '<p class="said">' + saidOf(a) + "</p>" : "") + thumb(a) + feed(a) + paneList(a) + buttons(a) + foot(a);
+    return (a.said || a.limited || reasonOf(a) ? '<p class="said">' + saidOf(a) + "</p>" : "") + thumb(a) + feed(a) + paneList(a) + buttons(a) + foot(a);
   }
   // A failed browser check's last frame (the intent server serves it, so a
   // board read from disk shows none). Styled inline: the card has no slot
@@ -776,16 +820,19 @@ function __boardRender(d) {
   // worth noticing.
   // Unfolded, it shows its footer -- branch, PR, issue -- under the line; its
   // caret folds it, and its line jumps (a row with no workspace folds there).
+  // On the hidden shelf a row is one shape, its name, badge and why: its
+  // chips are the list's business, and a settled row's reclaim is in its why.
   function quietRow(a) {
-    var acts = chipsOf(a).filter(function (c) { return c !== "jump"; });
+    var acts = shelfOf(a) ? [] : chipsOf(a).filter(function (c) { return c !== "jump"; });
     var arm = armedChip(a);
     var qb = acts.length || arm ? '<span class="chips">' + acts.map(function (c) {
       return '<span class="chip" title="' + esc(chipTip(c)) + '">' + esc(c) + "</span>";
     }).join("") + arm + "</span>" : "";
     var more = foot(a, true);
     return opening(a, a.family ? " fam" : "", "", foldCls(a.id, a.kind, !!more)) +
-      topOpen(a, "", !!more) + dotOf(a) + nameOf(a) +
-      (a.dirty ? DIRTY : "") + (acts.length || arm ? qb + limPill(a) : badgeOf(a)) + whyOf(a) + cost(a) + wakeOf(a) + tuckOf(a) + topClose(a) +
+      topOpen(a, "", !!more) + nameOf(a) +
+      (a.dirty ? DIRTY : "") + slotOf(a, acts.length || arm ? "" : badgeOf(a)) + (acts.length || arm ? qb + limPill(a) : "") +
+      whyOf(a) + cost(a) + wakeOf(a) + topClose(a) +
       (more ? '<div class="fold">' + more + "</div>" : "") + "</div>";
   }
 
@@ -808,8 +855,8 @@ function __boardRender(d) {
       foldCls(a.id, fk, !!inner), fk) +
       (whole && !turned(a) ? confetti("fam:" + a.id, 22) : "") +
       topOpen(a, fq ? " loud" : "", !!inner) +
-      dial(a.frac, a.kind) + dotOf(a) + nameOf(a) +
-      (g ? pips(g.kids) : "") + (roll || badgeOf(a)) + fq + tuckOf(a) + topClose(a) +
+      dial(a.frac, a.kind, a.meta) + nameOf(a) +
+      (g ? pips(g.kids) : "") + slotOf(a, roll || badgeOf(a)) + fq + topClose(a) +
       (inner ? '<div class="fold">' + inner + "</div>" : "") + "</div>";
   }
 
@@ -821,7 +868,7 @@ function __boardRender(d) {
   }
 
   // A child, inside its family's card. One line until opened: the caret, its
-  // dial, its dot, its name and badge. A child that needs you or is broken also
+  // dial, its name and badge. A child that needs you or is broken also
   // shows what it said and its first chip, filled, so the family card answers
   // "what do I press" without opening anything. Its caret (and, with no
   // workspace, its header) folds: intent.js opens the child's full card in
@@ -834,9 +881,9 @@ function __boardRender(d) {
     var inline = loud && first ? '<span class="chip pri" title="' + esc(chipTip(first)) + '">' +
       esc(first) + "</span>" : "";
     return opening(a, " fam kid", inCard, foldCls(a.id, a.kind, true, true)) +
-      topOpen(a, " kidhd" + (inline ? " loud" : ""), true) + dial(a.frac, a.kind) +
-      dotOf(a) + nameOf(a) + badgeOf(a) + inline + topClose(a) +
-      (loud && (a.said || a.limited) ? '<p class="said nest" data-a="fold">' + saidOf(a) + "</p>" : "") +
+      topOpen(a, " kidhd" + (inline ? " loud" : ""), true) + dial(a.frac, a.kind, a.meta) +
+      nameOf(a) + badgeOf(a) + inline + topClose(a) +
+      (loud && (a.said || a.limited || reasonOf(a)) ? '<p class="said nest" data-a="fold">' + saidOf(a) + "</p>" : "") +
       '<div class="kbody">' + body(a) + "</div></div>";
   }
 

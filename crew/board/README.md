@@ -57,16 +57,25 @@ actually last said. It costs a socket call per row, which is why it is opt-in.
 ## Reading a card
 
 ```
-▾ ◔ ● checkout-flow                GATE SHUT  →     header = jump · ▾ = fold · dot = worktree colour
-  Coupon at capture needs your go-ahead.            what was said, 2 lines at most
+▾ ◔ checkout-flow                  NEEDS YOU        header = jump · ▾ = fold · ◔ = progress
+  Gate shut: Coupon at capture needs your go-ahead. the reason, then what was said, 2 lines
   [ go 3 ] ( diff ) ( jump ) ( ● CI )               28px buttons; the first is filled
-  dev/checkout-flow ● #142 ✓ approved   $4.20      mono footer: links, status, spend
+  ● dev/checkout-flow ● #142 ✓ approved   $4.20    mono footer: worktree colour, links, spend
 ```
 
 No edge stripe. The tier is on the badge, the dial and the filled button, and the
 card that needs you keeps a tinted ground, the board's one loud thing. The
 worktree's own colour, the hex Peacock paints its VS Code window with, is the dot
-beside the name.
+before the branch in the footer and the ring round the row you stand in: beside
+the name it read as a second state dot.
+
+The dial is an arc with no number in it (one that small could not be read); its
+tooltip says how far, "1 of 4 increments". A card that needs you says so on its
+badge, in the headline's words, and its reason opens its said line ("Question:",
+"Gate shut:") unless the line already says it; the other tiers keep their reason
+on the badge. A row a usage limit stopped wears one pill, "limit · back 2:04pm",
+in place of its badge. Framed by the app, the ⋯ menu sits over the badge on hover
+and takes no room from the name.
 
 The **button row** is everything you can do. The first chip is the verb that
 resolves the row (the collector orders them that way), and on the tiers that ask
@@ -77,16 +86,18 @@ sandbox) follow as ghosts in their own colour. Every button is at least 28px tal
 
 The **footer** is what you recognise the row by: branch, the dirty dot, PR, issue,
 status signals (`✓ approved`, `draft`, `⚠ conflicts`), progress and spend, in one
-mono line that wraps. Branch, PR and issue are links, at least 24px tall.
+mono line that wraps. Branch, PR and issue are links, at least 24px tall. A footer
+with only hover facts on it (branch, progress, spend) is not in the flow: on hover
+it hangs under the card as a strip over the rows below, so nothing moves.
 
-A **quiet row** is one line: the dot, the name, then its `diff` / `pr` chips as
+A **quiet row** is one line: the name, then its `diff` / `pr` chips as
 ghost buttons, or, with none, its badge (and no badge when it has none). Its
 line is the jump, which is why `jump` is not repeated there. Unfolded, it shows
 its footer -- branch, PR, issue -- under the line; its caret folds it.
 
 **Every card folds in place, and its header is the jump.** A click on the header
 line (`.top.jumps`, `data-a="jump"`) switches to the workspace whether the card is
-folded or not; it lightens on hover, and the arrow at its right end brightens.
+folded or not; it lightens on hover.
 The caret at its left is a button of its own (`data-a="fold"`, a 24px target)
 that folds and unfolds; a card with no workspace has nothing to jump to, so its
 header folds too. A click elsewhere on a folded card unfolds it; on an unfolded
@@ -398,7 +409,7 @@ One colour per worktree, in four places. It is cmux's own `custom_color`, which
 |---|---|
 | the workspace tab in cmux | cmux, natively |
 | the VS Code title bar | Peacock, via `bin/crew-color` |
-| the board's card | a dot in that colour by every card's name; a ring around `.row.here` |
+| the board's card | a dot in that colour before the branch in the footer; a ring around `.row.here` |
 | the focused pane's frame | `bin/crew-frame` rewrites `activePaneBorderColor` |
 | Claude Code's status line | `~/.config/cmux/crew/claude/statusline.py` prints `▊ <title>` in it |
 
@@ -757,7 +768,7 @@ list is the sixteen call sites of `onTapGesture` / `openURL` / `chipRPC` /
 
 Also carried over, though not clickable: the dirty dot, the whole signals
 vocabulary (review, conflicts, draft, stack, **jira**), and the worktree's identity
-colour, which the card wears as a dot by its name — the same hex Peacock paints its
+colour, which the card wears as a dot before its branch — the same hex Peacock paints its
 VS Code title bar with.
 
 The `jira:` chips work here and never did in the sidebar: `crew.swift` wrapped the

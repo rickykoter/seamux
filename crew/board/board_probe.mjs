@@ -149,7 +149,10 @@ const checks = [
   ["attend carries its class", out.includes('class="row attend')],
   ["{{subject}} became <b>", out.includes("<b>") && !out.includes("{{")],
   ["SVG dial present", out.includes('<svg class="dial"')],
-  ["dial shows a percentage", /<text[^>]*>\d+<\/text>/.test(out)],
+  // The ring is too small to read a number in: the arc is the reading, and
+  // its tooltip says how far in words, from the row's meta.
+  ["dial: no number inside the ring, its tooltip says how far", !/<text/.test(out) &&
+    /<svg class="dial"[^>]*><title>1 of 4 increments<\/title>/.test(out) && /<title>2 of 4 increments<\/title>/.test(out)],
   ["header counts need-you", /need(s)? you|all clear/.test(els.need.textContent)],
   ["no undefined leaked", !out.includes("undefined")],
 ];
@@ -276,10 +279,13 @@ checks.push(["fold: waiting and broken cards start unfolded; working and done st
   /class="row attend fd open" data-id="attend" data-k="attend"/.test(fo) && /class="row wilt fd open" data-id="wilt"/.test(fo) &&
   /class="row running fd" data-id="running"/.test(fo) && /class="row done fd" data-id="done"/.test(fo)]);
 checks.push(["fold: the header jumps, the caret folds, and the body is what folds away",
-  /data-id="running"[^>]*><div class="top jumps" data-a="jump" title="running · Switch to this workspace"><button type="button" class="caret" data-a="fold"[^>]*><\/button>[^]*?<span class="go"[^]*?<\/svg><\/span><\/div><div class="fold"><p class="said">/.test(fo) &&
+  /data-id="running"[^>]*><div class="top jumps" data-a="jump" title="running · Switch to this workspace"><button type="button" class="caret" data-a="fold"[^>]*><\/button>[^]*?<span class="badge">b<\/span><\/div><div class="fold"><p class="said">/.test(fo) &&
   !fo.includes('class="jmp"')]);
+// No arrow at the header's end: the header is the jump, and its hover ground says so.
+checks.push(["fold: no arrow on the header; its hover lifts its ground instead",
+  !/class="go"/.test(fo)]);
 checks.push(["fold: a loud card carries its first chip on the header for when it is folded",
-  /data-id="wilt"[^]*?<div class="top loud jumps" data-a="jump"[^>]*>[^]*?<span class="chip pri fq"[^>]*>first<\/span><span class="go"/.test(fo) &&
+  /data-id="wilt"[^]*?<div class="top loud jumps" data-a="jump"[^>]*>[^]*?<span class="chip pri fq"[^>]*>first<\/span><\/div>/.test(fo) &&
   !/data-id="running"[^]*?class="chip pri fq/.test(fo.split('data-id="done"')[0])]);
 els.rows.attrs["data-fold"] = JSON.stringify({ running: [1, "running"], attend: [0, "attend"] });
 render({ rows: [{ id: "running", name: "r", kind: "running", said: "s", chips: [], ref: "w" },
@@ -455,12 +461,13 @@ const qo = els.rows.innerHTML;
 checks.push(["a quiet row is one line: no dial, said, or footer until unfolded",
   !/class="(dial|said|feed)/.test(qo) && (qo.match(/class="top jumps"/g) || []).length === 2 &&
   !/<div class="chips">/.test(qo) && !/ open"/.test(qo) &&
-  /class="row quiet owned fd"[^]*<div class="top jumps" data-a="jump"[^>]*><button type="button" class="caret" data-a="fold"[^]*<div class="fold"><div class="foot"><span class="branch"/.test(qo) &&
+  /class="row quiet owned fd"[^]*<div class="top jumps" data-a="jump"[^>]*><button type="button" class="caret" data-a="fold"[^]*<div class="fold"><div class="foot"><span class="own"[^>]*><\/span><span class="branch"/.test(qo) &&
   !/class="cost|class="wk/.test((qo.match(/<div class="fold">[^]*?<\/div><\/div>/) || [""])[0]) &&
   /class="row quiet" data-id="q2"[^]*?<div class="top jumps" data-a="jump"/.test(qo) && !qo.split('data-id="q2"')[1].includes("fold")]);
 // Its chips stay, as ghosts on that line -- except jump, which the row itself
 // does. Buttons say what the badge would, so the badge steps aside for them.
 const q1 = qo.split('data-id="q2"')[0];
+function q1head(h) { return h.split('<div class="fold">')[0] + '</div><div class="fold">'; }
 checks.push(["a quiet row keeps its chips as ghost buttons on its one line",
   /<div class="top[^"]*"[^>]*>.*<span class="chips"><span class="chip"[^>]*>pr<\/span><\/span>/.test(q1) &&
   !/>jump</.test(qo) && !/chip pri/.test(qo)]);
@@ -507,9 +514,17 @@ render({ rows: [
 checks.push(["tier rules style a row's own head, never its children's",
   !/\.(attend|running|wilt|done|quiet) \.(badge|top|nm|cost|chips|dial)\b/.test(css)]);
 
-// No edge stripe at all. The worktree colour is a dot by the name.
-checks.push(["the worktree colour is a dot, not a second stripe",
-  qo.includes('<span class="own"></span>') && !/inset\s+\d+px\s+0\s+0\s+0\s+var\(--own\)/.test(css)]);
+// No edge stripe at all. The worktree colour is a dot before the branch, in
+// the footer: beside the name it read as a second state dot.
+checks.push(["the worktree colour is a dot before the branch, never on the header, and not a stripe",
+  /<div class="foot"><span class="own"[^>]*><\/span><span class="branch"/.test(qo) &&
+  !/<div class="top[^]*?class="own"[^]*?<\/div><div class="fold">/.test(q1head(qo)) &&
+  !/inset\s+\d+px\s+0\s+0\s+0\s+var\(--own\)/.test(css) &&
+  /\.foot>\.own\{[^}]*background:var\(--own\)/.test(css) &&
+  /\.row:not\(:hover\):not\(:focus-within\) \.foot>:is\(\.own,/.test(css)]);
+// The header is the jump with no arrow: its ground lifts on hover.
+checks.push(["no arrow on any header, and no rule for one; the hover ground is the cue",
+  !/\.go\b/.test(css) && /\.top\.jumps:hover\{background:/.test(css)]);
 
 // Targets. The sizes live in CSS, so the CSS is what is asserted.
 const ruleBody = (sel) => {
@@ -522,14 +537,13 @@ checks.push(["a footer item that runs long ends in an ellipsis, not past the car
   /text-overflow:ellipsis/.test(ruleBody(".foot>span")) && /max-width:100%/.test(ruleBody(".foot>span"))]);
 checks.push(["every footer link is at least 24px tall",
   px(ruleBody(".foot>span"), "min-height") >= 24 && px(ruleBody(".foot>span"), "line-height") >= 24]);
-checks.push(["body text is 13px", /font:13px\//.test(ruleBody("body")) && /font-size:13px/.test(ruleBody(".said"))]);
+checks.push(["body text is the body size (--fs-3)", /font:var\(--fs-3\)\//.test(ruleBody("body")) && /font-size:var\(--fs-3\)/.test(ruleBody(".said"))]);
 
 // The header: the tally shares the headline's line, and the caption is a
 // sentence at full strength, not 9px at half opacity.
 checks.push(["the tally folds into the headline's line",
   /<div class="hud">\s*<span id="need">[^<]*<\/span>\s*<span id="tally">/.test(pageHtml)]);
-checks.push(["the cat's caption is legible", px(ruleBody("#says"), "font:italic ") >= 11 ||
-  /font:italic 1[1-9](\.\d+)?px/.test(ruleBody("#says"))]);
+checks.push(["the cat's caption is legible", /font:italic var\(--fs-[1-6]\)/.test(ruleBody("#says"))]);
 
 // --- motion ---------------------------------------------------------------
 // Whimsy's rule is that motion means something, so each of these asserts that a
@@ -794,9 +808,35 @@ render({ rows: [
 checks.push(["...but when every done row wears one badge, the tally says it (2 merged)",
   /class="tl done"><b>2<\/b> merged</.test(els.tally.innerHTML) && !/ done</.test(els.tally.innerHTML), els.tally.innerHTML]);
 // The headline already says "needs you": a row's "asked you" badge reads as its reason.
+// The headline says "needs you", and so does every attend card's badge: one
+// word for one state. Why it needs you opens its said line, unless the line
+// already says it. Every other tier keeps its reason on the badge.
 render({ rows: [{ id: "q", name: "q", kind: "attend", badge: "asked you", said: "", chips: [], frac: null, meta: "" }], quiet: "" });
-checks.push(["a row's 'asked you' badge reads 'question' under the headline",
-  /<span class="badge">question<\/span>/.test(els.rows.innerHTML) && !/>asked you</.test(els.rows.innerHTML)]);
+checks.push(["an attend row's badge reads 'needs you', the headline's words, with no said line it says 'Question'",
+  /<span class="badge">needs you<\/span>/.test(els.rows.innerHTML) && !/>asked you<|>question</.test(els.rows.innerHTML) &&
+  /<p class="said"><span class="rsn">Question<\/span><\/p>/.test(els.rows.innerHTML), els.rows.innerHTML]);
+render({ rows: [
+  { id: "a", name: "a", kind: "attend", badge: "asked you", said: "Waiting on an answer.", chips: [], frac: null, meta: "" },
+  { id: "g", name: "g", kind: "attend", badge: "gate shut", said: "{{Wire it}} needs your go-ahead.", chips: [], frac: null, meta: "" },
+  { id: "v", name: "v", kind: "attend", badge: "needs a value", said: "{{Increment 2's check `qa` asks: Which env?}}", chips: [], frac: null, meta: "" },
+  { id: "rv", name: "rv", kind: "attend", badge: "review", said: "{{Alignment check not taken.}} 4 increments are locked.", chips: [], frac: null, meta: "" },
+  { id: "q2", name: "q2", kind: "attend", badge: "asked you", said: "Question from Claude: which env?", chips: [], frac: null, meta: "" },
+  { id: "c", name: "c", kind: "wilt", badge: "ci failed", said: "Checks are red.", chips: [], frac: null, meta: "" },
+  { id: "w", name: "w", kind: "running", badge: "working", said: "On it.", chips: [], frac: null, meta: "" },
+], quiet: "" });
+{
+  const h = els.rows.innerHTML;
+  const cut = (id) => { const i = h.indexOf('data-id="' + id + '"'), j = h.indexOf('<div class="row ', i + 1); return h.slice(i, j > 0 ? j : undefined); };
+  checks.push(["an attend card's reason opens its said line (Question:, Gate shut:, Needs a value:, Review:), and none where the line starts with it",
+    /<p class="said"><span class="rsn">Question:<\/span> Waiting on an answer\.<\/p>/.test(cut("a")) &&
+    /<p class="said"><span class="rsn">Gate shut:<\/span> <b>Wire it<\/b> needs your go-ahead\.<\/p>/.test(cut("g")) &&
+    /<span class="rsn">Needs a value:<\/span>/.test(cut("v")) && /<span class="rsn">Review:<\/span>/.test(cut("rv")) &&
+    !/rsn/.test(cut("q2")) &&
+    ["a", "g", "v", "rv", "q2"].every((id) => /<span class="badge">needs you<\/span>/.test(cut(id))), h.slice(0, 1200)]);
+  checks.push(["other tiers keep their reason on the badge, and no reason in their said line",
+    /<span class="badge">ci failed<\/span>/.test(cut("c")) && /<span class="badge">working<\/span>/.test(cut("w")) &&
+    !/rsn/.test(cut("c") + cut("w"))]);
+}
 render({ rows: [], quiet: "" });
 checks.push(["...and disappears when there is nothing", els.tally.innerHTML === ""]);
 // The headline counts one tier, so it must not speak for the others.
@@ -1758,7 +1798,7 @@ if (live && Array.isArray(live.rows)) {
     /<div class="top kidhd jumps" data-a="jump"[^>]*><button type="button" class="caret" data-a="fold"/.test(kW) &&
     !/data-x="select"/.test(fh) && !fh.includes('class="jmp"')]);
   checks.push(["families: a child that needs you shows its line and its filled button inline",
-    /<div class="top kidhd loud[^"]*"[^]*<span class="chip pri"[^>]*>go 2<\/span><span class="go"[^]*?<\/span><\/div><p class="said nest" data-a="fold">/.test(kA)]);
+    /<div class="top kidhd loud[^"]*"[^]*<span class="chip pri"[^>]*>go 2<\/span><\/div><p class="said nest" data-a="fold">/.test(kA)]);
   checks.push(["families: a working child is one line: no inline button, no line",
     !/kidhd[^]*chip[^]*<\/div><div class="kbody"/.test(kW.split('<div class="kbody">')[0] + '<div class="kbody">') &&
     !kW.includes("said nest")]);
@@ -1794,7 +1834,7 @@ if (live && Array.isArray(live.rows)) {
   render({ rows: [R("P4", "attend", { family: "K", famrole: "parent", famkid: false, ref: "w", badge: "gate shut" }),
     R("V", "wilt", { family: "K", famrole: "child", famkid: true, ref: "v" })], quiet: "" });
   checks.push(["families: a parent that needs you keeps saying so over a broken child",
-    /data-id="P4"[^]*?<span class="badge">gate shut<\/span>/.test(els.rows.innerHTML) && !els.rows.innerHTML.includes("roll")]);
+    /data-id="P4"[^]*?<span class="badge">needs you<\/span>/.test(els.rows.innerHTML) && !els.rows.innerHTML.includes("roll")]);
   render({ rows: [R("P5", "running", { family: "L", famrole: "parent", famkid: false, ref: "w" }),
     R("NR", "quiet", { family: "L", famrole: "child", famkid: true, slug: "nr" })], quiet: "" });
   checks.push(["families: a child with no workspace ref folds from its header, with no arrow",
@@ -2320,9 +2360,19 @@ if (crewImpl.isRust("crew-board")) {
     /<summary class="sect">hidden · 4</.test(h) && !/hidden for now|<summary class="sect">merged and idle/.test(h) &&
     ["brk", "zq", "mg", "tq"].every((id) => at('data-id="' + id + '"') > shAt)]);
   checks.push(["shelf: each row says why it is there, in muted words: until <time>, merged and idle, until you bring it back",
-    /^until \S/.test(why("brk") || "") && /^until \S/.test(why("zq") || "") && why("mg") === "merged and idle" &&
+    /^until \S/.test(why("brk") || "") && /^until \S/.test(why("zq") || "") && why("mg") === "merged and idle \u00b7 " &&
     why("tq") === "until you bring it back" && /class="why wakes"/.test(h) && !/badge wakes/.test(h) && why("q") === undefined,
     [why("brk"), why("mg"), why("tq")].join(" | ")]);
+  // Every shelf row has one shape: name, badge, why. A settled row's reclaim
+  // is a link in its why, not a chip on the line.
+  {
+    const cutS = (id) => { const i = at('data-id="' + id + '"'), j = h.indexOf('<div class="row ', i + 1); return h.slice(i, j > 0 ? j : undefined); };
+    const shape = (id) => cutS(id).split('<div class="fold">')[0].match(/class="(nm|badge|why|chip)\b/g).join(" ");
+    checks.push(["shelf: every row is one shape, name, badge, why; reclaim is a link in the settled row's why",
+      ["brk", "zq", "mg", "tq"].every((id) => shape(id) === 'class="nm class="badge class="why') &&
+      /<span class="why">merged and idle \u00b7 <span class="rcl" data-a="reclaim" title="[^"]+">reclaim<\/span><\/span>/.test(cutS("mg")) &&
+      !/class="chip/.test(cutS("mg")), ["brk", "zq", "mg", "tq"].map(shape).join(" | ")]);
+  }
   checks.push(["shelf: snoozed rows first, then settled, then tucked",
     at('data-id="brk"') < at('data-id="mg"') && at('data-id="zq"') < at('data-id="mg"') && at('data-id="mg"') < at('data-id="tq"')]);
   checks.push(["snooze: a snoozed row sits on the shelf even when broken; a merged one not yet idle stays in the list",
@@ -2360,6 +2410,19 @@ if (crewImpl.isRust("crew-board")) {
   checks.push(["menu: the row's ⋯ shows only on hover, focus within, or while its menu is open, under (hover:hover)",
     /\.row:not\(:hover\):not\(:focus-within\):not\(\.tkopen\) \.tk\{opacity:0/.test(hovBlocks) &&
     !/(^|\})\s*\.tk\{[^}]*(opacity:0|display:none|visibility:hidden)/.test(css.replace(/@media \(hover:hover\)\{[^]*?\}\s*\}/g, ""))]);
+  // The ⋯ takes no width: framed, it sits in the badge's slot (.bs) and,
+  // where there is a pointer, is drawn over the badge's end on the row's
+  // ground, so the name keeps the room at rest and on hover.
+  checks.push(["menu: the ⋯ sits in the badge's slot, absolute over it on the row's ground, so it takes no width",
+    /data-id="q"[^]*?<span class="bs"><span class="badge">idle<\/span><span class="tk" data-a="tk"/.test(hf) &&
+    /\.bs\{[^}]*position:relative/.test(css) &&
+    /\.bs>\.tk\{[^}]*position:absolute[^}]*background:var\(--gnd\)/.test(hovBlocks) &&
+    !/(^|\})\s*\.tk\{[^}]*position:absolute/.test(css)]);
+  // Hover moves nothing: the hover-only footer is a strip hung under the
+  // card, out of the flow, never a line that pushes the rows below down.
+  checks.push(["hover: a hover-only footer is an absolute strip under the card, so the rows below do not move",
+    /\.foot\.hov\{[^}]*position:absolute[^}]*top:calc\(100% - \d+px\)[^}]*background:var\(--gnd\)/.test(hovBlocks) &&
+    /\.row\{[^}]*position:relative/.test(css) && /\.row:not\(:hover\):not\(:focus-within\) \.foot\.hov\{display:none\}/.test(hovBlocks)]);
   els.rows.attrs["data-hidden-open"] = "0";
   // intent.js keeps the one shelf's open state in data-hidden-open.
   const isrc = readFileSync(join(HERE, "intent.js"), "utf8");
@@ -2416,8 +2479,13 @@ if (crewImpl.isRust("crew-board")) {
   const h = els.rows.innerHTML;
   const cut = (id) => { const i = h.indexOf('data-id="' + id + '"'), j = h.indexOf('<div class="row ', i + 1); return h.slice(i, j > 0 ? j : undefined); };
   const un = cut("un"), ar = cut("ar");
-  checks.push(["limits: a stopped row wears an amber pill naming the limit",
-    /class="badge lim"[^>]*>5h limit</.test(un) && /class="badge lim"[^>]*>weekly limit</.test(ar), un.slice(0, 600)]);
+  checks.push(["limits: a stopped row wears an amber pill saying when it is back (which limit in its tooltip), or the limit with no time",
+    /class="badge lim"[^>]*>limit \u00b7 back 11:04pm</.test(un) && /class="badge lim"[^>]*title="[^"]*weekly limit[^"]*">limit \u00b7 back 11:04pm</.test(ar) &&
+    /class="badge lim"[^>]*>rate limited</.test((render({ rows: [R("x", { limited: lim({ resets_at: null, label: "rate limited", window: null }) })], quiet: "" }), els.rows.innerHTML)), un.slice(0, 600)]);
+  // The limit is why the row needs you: it takes the badge's place, so the
+  // name keeps its room.
+  checks.push(["limits: the limit pill replaces the badge, never sits beside it",
+    !/<span class="badge">/.test(un) && !/<span class="badge">/.test(ar) && (un.match(/class="badge/g) || []).length === 1]);
   checks.push(["limits: its said line says it stopped and when it resets, in place of what it said",
     /class="said"><span class="lim"[^>]*>stopped: 5h limit \u00b7 resets 11:04pm</.test(un) && !/Working on it/.test(un), un]);
   checks.push(["limits: an unarmed row has no armed chip; an armed quiet row has it, drawn clock and all",

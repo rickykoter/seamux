@@ -22,6 +22,10 @@
   // the page drops its title row and keeps one row of tools.
   const embedded = (() => { try { return new URLSearchParams(location.search).get("embed") === "app"; } catch { return false; } })();
   if (embedded) document.documentElement.dataset.embed = "app";
+  // Set once the app says it shows the page's tools on its own header row (postState).
+  let hosted = false;
+  let hostOrigin = "*";
+  let helloTimer = 0;
   // "1 file", "2 files"; `many` for the odd plural.
   const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
@@ -247,13 +251,19 @@
   }
 
   const when = iso => { try { return new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return ""; } };
-  function message(m) {
+  function message(m, pill) {
+    // The status change the pill already shows: only its words, as its
+    // author's message; with no words, nothing.
+    if (m === pill) return m.text ? el("div", { class: "msg by-" + m.by }, el("div", { class: "who" }, m.by, el("span", { class: "at" }, " · " + when(m.at))),
+      el("div", { class: "text" }, m.text)) : null;
     if (m.kind === "status")
       return el("div", { class: "msg change" }, `${m.by} marked it ${m.to}`, m.text ? " — " + m.text : "",
         el("span", { class: "at" }, " · " + when(m.at)));
     return el("div", { class: "msg by-" + m.by }, el("div", { class: "who" }, m.by, el("span", { class: "at" }, " · " + when(m.at))),
       el("div", { class: "text" }, m.text));
   }
+
+  const stillBlocks = x => x.id.startsWith("f") && x.status === "addressed" && (x.severity === "blocker" || x.severity === "major");
 
   // One finding or comment thread, drawn under its line.
   const expandedClosed = new Set();
@@ -267,16 +277,20 @@
       el("span", { class: "title" }, finding ? (body ? x.summary : x.short_summary || x.summary) : ((x.messages || [])[0] || {}).text || ""),
       el("span", { class: "fid" }, x.id),
       finding ? el("span", { class: "cat" }, "· " + x.category + " · " + (x.verdict === "CONFIRMED" ? "confirmed" : "plausible")) : null,
-      // Open is the usual state: only the others get a pill.
-      (x.status || "open") !== "open" ? el("span", { class: "status st-" + x.status }, x.status) : null,
-      // An addressed blocker or major still blocks the gate: say why under its pill.
-      finding && x.status === "addressed" && (x.severity === "blocker" || x.severity === "major")
-        ? el("span", { class: "still-blocks" }, "Still blocks until you resolve it") : null);
-    return el("div", { class: "card" + (closed ? " closed" : "") + (finding ? "" : " comment"), "data-item": x.id },
+      // Open is the usual state: only the others get a pill. An addressed
+      // blocker or major still blocks the gate, and its pill says so.
+      (x.status || "open") !== "open" ? (stillBlocks(x)
+        ? el("span", { class: "status st-addressed blocks", title: "Still blocks the gate until you resolve it" }, "addressed · still blocks")
+        : el("span", { class: "status st-" + x.status }, x.status)) : null);
+    const thread = finding ? x.thread || [] : (x.messages || []).slice(1);
+    // The latest status change, when it is the one the pill shows.
+    const last = [...thread].reverse().find(m => m.kind === "status");
+    const pill = last && last.to === (x.status || "open") && x.status !== "open" ? last : null;
+    return el("div", { class: "card" + (closed ? " closed" : "") + (finding ? "" : " comment") + (x.id === curFinding ? " cur" : ""), "data-item": x.id },
       head,
       body && finding ? el("div", { class: "card-body" },
         el("div", { class: "failure" }, el("b", null, "Fails when: "), x.failure_scenario)) : null,
-      body ? el("div", { class: "msgs" }, (finding ? x.thread || [] : (x.messages || []).slice(1)).map(message)) : null,
+      body ? el("div", { class: "msgs" }, thread.map(m => message(m, pill))) : null,
       body ? actions(x) : null);
   }
   // Increment 4's comment channel fills this in when the page is served.
@@ -580,6 +594,7 @@
     $("map-btn").setAttribute("aria-pressed", String(mapOn));
     const row = document.querySelector("#tree .ov-row");
     if (row) row.classList.toggle("sel", overview);
+    postState();
   }
   function toggleOverview() {
     if (overview) select(lastFile && (R.files || []).some(f => f.path === lastFile) ? lastFile : ORDER[0] || null);
@@ -779,8 +794,8 @@
     const c = document.querySelector(`[data-item="${CSS.escape(id)}"]`);
     if (c) {
       c.scrollIntoView({ block: "center" });
-      for (const o of document.querySelectorAll(".card.flash")) o.classList.remove("flash");
-      c.classList.add("flash");
+      for (const o of document.querySelectorAll(".card.flash, .card.cur")) o.classList.remove("flash", "cur");
+      c.classList.add("flash", "cur");
     }
   }
 
@@ -789,6 +804,7 @@
   function drawLayout() {
     for (const b of document.querySelectorAll("#layout button"))
       b.setAttribute("aria-pressed", String(b.dataset.layout === layout));
+    postState();
   }
   function setLayout(l) { layout = l; store.set("lookout.layout", l); drawLayout(); drawMain(); }
   for (const b of document.querySelectorAll("#layout button"))
@@ -817,6 +833,7 @@
   function toggleKeys(show = $("keys").hidden) {
     $("keys").hidden = !show;
     $("keys-btn").setAttribute("aria-expanded", String(show));
+    postState();
   }
   $("keys-btn").addEventListener("click", e => { e.stopPropagation(); toggleKeys(); });
   document.addEventListener("click", e => {
@@ -850,12 +867,12 @@
     $("mode").title = down ? "The review server stopped answering. Your drafts are kept in this browser; `lookout open` starts a server and opens a fresh page."
       : live ? "Comments and closes go to the agent at its next prompt."
       : "Opened as a file: comments need crew's intent server (lookout open shows the served page when it is up).";
+    const gt = gateTitle(g);
     $("gate").className = "gate " + g.cls;
-    $("gate").textContent = g.text;
-    $("gate").disabled = !(R.findings || []).length;
-    $("gate").title = (g.cls === "blocked" ? "Go to the first blocking finding (n goes on). " : (R.findings || []).length ? "Go to the first finding (n goes on). " : "") +
-      ((R.policy && R.policy.agentMayClose) ? "The agent may also close findings on this review."
-                                            : "Only you close findings; the agent replies and marks them addressed.");
+    // A pill that goes somewhere says so with an arrow.
+    $("gate").replaceChildren(g.text, gt.go ? el("span", { class: "go", "aria-hidden": "true" }, "↓") : "");
+    $("gate").disabled = !gt.go;
+    $("gate").title = gt.title;
     // No plan map, no Map button (m still says why).
     $("map-btn").hidden = !R.planMap;
     $("keys-map").hidden = !R.planMap;
@@ -875,6 +892,59 @@
         " (drafts are kept)") : "",
       stale && notes.length ? "  " : "", notes.join("  "));
     $("banner").hidden = !notes.length && !stale;
+    postState();
+  }
+  function gateTitle(g) {
+    const go = !!(R.findings || []).length;
+    return { go, title: (g.cls === "blocked" ? "Go to the first blocking finding (n goes on). " : go ? "Go to the first finding (n goes on). " : "") +
+      ((R.policy && R.policy.agentMayClose) ? "The agent may also close findings on this review."
+                                            : "Only you close findings; the agent replies and marks them addressed.") };
+  }
+
+  // Framed by the app, the page's tools move up onto the app's header row, so
+  // one row of chrome sits above the file. Only on the app's say-so: the page
+  // says hello, the app answers "host", and from then on the page hides its
+  // row, posts what the row would show, and takes the app's clicks back as
+  // commands. An app that never answers leaves the page's own row in place.
+  // What goes up is what the row shows (the gate's counts, live or not).
+  function postState() {
+    if (!hosted) return;
+    const g = gateText(), gt = gateTitle(g);
+    window.parent.postMessage({ lookout: "state", id: R.id,
+      gate: { cls: g.cls, text: g.text, title: gt.title, go: gt.go },
+      mode: { cls: $("mode").className.replace("mode ", ""), text: $("mode").textContent, title: $("mode").title },
+      layout, overview, map: mapOn, hasMap: !!R.planMap, keys: !$("keys").hidden }, hostOrigin);
+  }
+  if (embedded && window.parent !== window) {
+    window.addEventListener("message", e => {
+      if (e.source !== window.parent || !e.data || typeof e.data !== "object") return;
+      // The first parent that answers is the host; after that, only its
+      // origin is heard, and state goes only to it.
+      if (hostOrigin !== "*" && e.origin !== hostOrigin) return;
+      const d = e.data;
+      if (d.lookout === "host") {
+        // An opaque origin ("null", as a custom scheme may report) can't be a
+        // postMessage target: keep "*" then, still answering only the parent.
+        hostOrigin = e.origin && e.origin !== "null" ? e.origin : "*";
+        clearInterval(helloTimer);
+        hosted = true;
+        document.documentElement.dataset.host = "app";
+        postState();
+      } else if (hosted && d.lookout === "do") {
+        if (d.op === "gate") firstBlocking();
+        else if (d.op === "overview") toggleOverview();
+        else if (d.op === "map" && R.planMap) toggleMap();
+        else if (d.op === "layout" && (d.layout === "split" || d.layout === "unified")) setLayout(d.layout);
+        else if (d.op === "keys") toggleKeys();
+      }
+    });
+    // Hello carries nothing but the id, so it may go anywhere. It repeats for
+    // a few seconds: the app may not be listening yet when the page loads
+    // (its frame origin arrives with the intent server's answer).
+    const hello = () => window.parent.postMessage({ lookout: "hello", id: R.id }, "*");
+    hello();
+    let tries = 0;
+    helloTimer = setInterval(() => { if (hosted || ++tries > 10) clearInterval(helloTimer); else hello(); }, 500);
   }
 
   // Swap in a fresher review (the served page polls for one) and redraw what
@@ -1022,6 +1092,8 @@
       function draw() {
         const show = replying.has(key) || (!!draftText(key).trim() && !folded.has(key));
         box.classList.toggle("folded", !show);
+        // Folded, the links show on hover, focus or the picked finding; one with a draft always does.
+        box.classList.toggle("draft", !show && !!draftText(key).trim());
         if (!show) {
           ta = null;
           box.replaceChildren(el("div", { class: "buttons links" },

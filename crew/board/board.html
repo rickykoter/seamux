@@ -38,11 +38,13 @@
   Classes render.js emits: .row + .attend/.running/.wilt/.done/.quiet + .ripple,
   .enter (a row that was not on the previous push), .up/.down (a row that changed
   position, animated with the Web Animations API rather than CSS),
-  .top > svg.dial + .own + .nm + .badge, .said (may contain <b> and <code>),
+  .top > svg.dial + .nm + .badge (framed by the app, .bs holds the badge and
+  the ⋯), .said (may contain <b> and <code>, and on an attend card a leading
+  .rsn, its reason),
   .feed > .feedbar, .pns > .pn (a pane, data-a="pane": + .agent or .term and
   its state, .wait/.work/.idle/.end/.unk/.sh, holding .pg, .pk, .pw and
   .ptag.plan/.outside), .chips > .chip (+ .pri, the one filled button; + .sig, an
-  actionable signal; + .pane on a muted card, its panes' tags), .foot > .branch/.dirty/.pr/.issue/.sig/.meta and
+  actionable signal; + .pane on a muted card, its panes' tags), .foot > .own/.branch/.dirty/.pr/.issue/.sig/.meta and
   .end > .cost + .wk (the spend and the Wake's icon, data-a="wake", which wrap
   together; also at the end of a quiet row's .top),
   .owned + .here, .empty, .sect, and for a deep-plan family: .fam on its card,
@@ -50,7 +52,7 @@
   .said.nest, and .kbody (the child's full card); .badge.roll on the card that
   counts them; .row.shell for a family whose parent has no row.
   Every row carries data-k, its tier. A row with a workspace has a .top.jumps,
-  data-a="jump", ending in .go (the arrow); a row with none has a plain .top.
+  data-a="jump"; a row with none has a plain .top.
   A row with something to fold is .fd (+ .open when unfolded): its .top starts
   with button.caret (data-a="fold"), and with no workspace the .top is
   data-a="fold" too; what folds away is .fold (.kbody on a child);
@@ -84,6 +86,11 @@
   --ef-text-aqua: #98cca5; --ef-text-blue: #97c9c2; --ef-text-purple: #e1b3c8;
   --ef-text-accent: #97c9c2; --ef-text-good: #b1c88e; --ef-text-warn: #dbbc7f; --ef-text-bad: #f0b0b1; --ef-text-mark: #dbbc7f;
   --ef-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* type scale: every page sizes words with these, never a px value of its own.
+     1 meta, badges, labels (the floor: nothing smaller) · 2 secondary text, small UI
+     3 body and UI default · 4 emphasis, card titles · 5 section and page titles
+     6 the plan page's h1 alone */
+  --fs-1: 11px; --fs-2: 12px; --fs-3: 13px; --fs-4: 15px; --fs-5: 18px; --fs-6: 22px;
 }
 /* everforest:end */
 /* The board's names for seamux's palette (theme/everforest.css). */
@@ -115,7 +122,7 @@ html,body{margin:0;background:var(--bg);color:var(--fg)}
 /* A column at least the pane's height, so the news footer's margin-top:auto
    lands it on the bottom edge even when the board is two rows long. */
 body{display:flex;flex-direction:column;min-height:100vh;
-  padding:0 11px 11px;font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+  padding:0 11px 11px;font:var(--fs-3)/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
   -webkit-font-smoothing:antialiased}
 
 /* Parked at the top: the board is a list you scroll, and the one thing you always
@@ -129,11 +136,11 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);
    with the timestamp at its end. Both wrap rather than collide: nothing here is
    worth printing on top of anything else. */
 .hud{display:flex;align-items:baseline;gap:2px 10px;flex-wrap:wrap;min-width:0}
-#need{font:700 11.5px/1.35 system-ui;letter-spacing:.08em;text-transform:uppercase;
+#need{font:700 var(--fs-2)/1.35 system-ui;letter-spacing:.08em;text-transform:uppercase;
   color:var(--fg);white-space:nowrap;flex:none}
 #need.on{color:var(--attend)}
 .hud2{display:flex;align-items:baseline;gap:8px;margin-top:1px;min-width:0}
-.right{display:flex;gap:8px;align-items:baseline;font:500 10.5px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;
+.right{display:flex;gap:8px;align-items:baseline;font:500 var(--fs-1)/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;
   color:var(--grey);white-space:nowrap;margin-left:auto;flex:none}
 /* Where the board came from and when it last changed: there on hover, and
    always while it is stale, when the time is the news. */
@@ -303,7 +310,7 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
    Only non-zero states appear: the absence of "broken" reads faster than
    "0 broken". */
 #tally{display:inline-flex;flex-wrap:wrap;gap:2px 9px;
-  font:500 11px/1.35 system-ui;color:var(--grey)}
+  font:500 var(--fs-1)/1.35 system-ui;color:var(--grey)}
 #tally:empty{display:none}
 .tl{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
 .tl::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--dot);flex:none}
@@ -313,24 +320,29 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 
 /* What the cat has to say about it. A sentence, so it is set like one: full
    strength, full size, clipped only when the Dock is too narrow for it. */
-#says{flex:1;font:italic 11.5px/1.35 system-ui;color:var(--fg2);white-space:nowrap;
+#says{flex:1;font:italic var(--fs-2)/1.35 system-ui;color:var(--fg2);white-space:nowrap;
   min-width:0;overflow:hidden;text-overflow:ellipsis}
 
 /* --- a card ------------------------------------------------------------ */
 /* A card. No edge stripe: the tier is on the badge, the dial and the filled
    button (--c), and the card that needs you keeps its tinted ground, the
-   page's one loud thing. The worktree's own colour is a dot beside the name
-   (.own).
+   page's one loud thing. The worktree's own colour is the ring round the
+   row you stand in, and a dot before the branch in the footer (.own): beside
+   the name it read as a second state dot.
    The header is the jump (.top.jumps, render.js): the same target folded or
-   not, with an arrow at its end that brightens on hover; a pressed header
-   says how it went (.hit/.ok/.bad, intent.js). The caret folds. */
-.row{--c:var(--quiet);position:relative;background:var(--bg1);
+   not, its ground lifting on hover; a pressed header says how it went
+   (.hit/.ok/.bad, intent.js). The caret folds.
+   --gnd is the ground a row shows right now, for what sits over it: the ⋯
+   over the badge, the hover footer under the card. intent.js lifts a hovered
+   row's ground, so --gnd follows it once intent.js has wired #rows. */
+.row{--c:var(--quiet);--gnd:var(--bg1);position:relative;background:var(--bg1);
   border-radius:9px;padding:6px 9px;margin-bottom:4px}
+.row.attend{--gnd:var(--bg-attend)} .row.quiet{--gnd:var(--bg)}
+#rows[data-intent] .row:not(.inert):hover{--gnd:#2f3639}
+.kids>.row.kid{--gnd:var(--bg-kids)}
+#rows[data-intent] .kids>.row.kid:not(.inert):hover{--gnd:#323b40}
 .top.jumps{cursor:pointer;border-radius:6px;margin:-3px -4px;padding:3px 4px}
 .top.jumps:hover{background:rgba(255,255,255,.05)}
-.top>.go{flex:none;display:flex;margin-left:2px}
-.top>.go svg{display:block;fill:none;stroke:var(--edge);stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;transition:stroke .12s}
-.top.jumps:hover>.go svg{stroke:var(--fg)}
 .top.jumps.hit{background:rgba(255,255,255,.1)}
 .top.jumps.ok{box-shadow:inset 0 0 0 1px var(--done)}.top.jumps.bad{box-shadow:inset 0 0 0 1px var(--wilt)}
 
@@ -340,7 +352,7 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
    rolled-up family badge stays, it is the news. */
 .row.fd:not(.open)>.fold{display:none}
 .row.open>.top>.fq{display:none}
-.row.fd:not(.open)>.top.loud>.badge:not(.roll){display:none}
+.row.fd:not(.open)>.top.loud>.badge:not(.roll),.row.fd:not(.open)>.top.loud>.bs>.badge:not(.roll){display:none}
 .top>.fq{flex:none;padding:0 9px}
 .row.attend{--c:var(--attend);background:var(--bg-attend)}
 .row.running{--c:var(--running)}
@@ -352,25 +364,31 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 /* Folded, a card is its header line: a smaller dial keeps ten of them in one
    window's height. The caret and the header stay at least 24px tall. */
 .row.fd:not(.open)>.top>.dial{width:22px;height:22px}
-.own{flex:none;width:8px;height:8px;border-radius:50%;background:var(--own)}
-.nm{flex:1;min-width:0;font:600 13.5px/1.3 system-ui;color:var(--fg);
+.nm{flex:1;min-width:0;font:600 var(--fs-3)/1.3 system-ui;color:var(--fg);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.badge{flex:none;font:700 10px/1.3 system-ui;letter-spacing:.06em;text-transform:uppercase;
+.badge{flex:none;font:700 var(--fs-1)/1.3 system-ui;letter-spacing:.06em;text-transform:uppercase;
   color:var(--grey);white-space:nowrap}
 /* Each row colours its OWN badge (>.top>): a family card holds rows of other
    tiers, and a descendant rule painted an attend child's badge the parent's
    teal. */
-.row.attend>.top>.badge{color:var(--attend)} .row.running>.top>.badge{color:var(--running)}
-.row.wilt>.top>.badge{color:var(--wilt-tx)} .row.done>.top>.badge{color:var(--done)}
+/* A limit's pill is a phrase with a time in it ("limit · back 2:04pm"):
+   set as words, not shouted, so it costs the name less room. */
+.badge.lim{text-transform:none;letter-spacing:0;font:600 var(--fs-1)/1.3 system-ui}
+.row.attend>.top>.badge,.row.attend>.top>.bs>.badge{color:var(--attend)}
+.row.running>.top>.badge,.row.running>.top>.bs>.badge{color:var(--running)}
+.row.wilt>.top>.badge,.row.wilt>.top>.bs>.badge{color:var(--wilt-tx)}
+.row.done>.top>.badge,.row.done>.top>.bs>.badge{color:var(--done)}
 
 /* What the agent said: proportional, because it is a sentence, and two lines at
    most, because the card's job is to say what is next and the rest is a click
    away. */
-.said{margin:3px 0 0;font-size:13px;line-height:1.4;color:var(--fg2);
+.said{margin:3px 0 0;font-size:var(--fs-3);line-height:1.4;color:var(--fg2);
   overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
   word-break:break-word}
 .said b{color:var(--fg);font-weight:600}
-.said code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--running)}
+/* Why a card needs you, ahead of what it said: its badge says only that it does. */
+.said .rsn{color:var(--fg);font-weight:600}
+.said code{font:var(--fs-2) ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--running)}
 
 /* Where you are standing. A ring in the worktree's OWN colour, so the card, the
    VS Code title bar and the pane frame are all wearing the same hex. The card's
@@ -389,10 +407,10 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:5px}
 .chip{display:inline-flex;align-items:center;min-height:28px;padding:0 11px;border-radius:7px;
   border:1px solid var(--edge);background:transparent;color:var(--fg);
-  font:600 12.5px/1 system-ui;white-space:nowrap;user-select:none;-webkit-user-select:none}
+  font:600 var(--fs-3)/1 system-ui;white-space:nowrap;user-select:none;-webkit-user-select:none}
 .chip.pri{background:var(--c);border-color:var(--c);color:var(--ink)}
 .chip.sig{font-weight:500}
-.chip.pane{font-size:10px;padding-inline:5px}
+.chip.pane{font-size:var(--fs-1);padding-inline:5px}
 .chip.pane.outside{border-style:dashed;color:var(--fg2)}
 
 /* --- the panes ----------------------------------------------------------- */
@@ -404,19 +422,19 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
    attend amber, working the running blue, the rest grey. */
 .pns{margin-top:4px;display:flex;flex-direction:column}
 .pn{display:flex;align-items:center;gap:7px;min-height:24px;padding:0 6px;margin:0 -6px;
-  border-radius:5px;font:12px/1.3 system-ui;color:var(--fg);cursor:pointer;min-width:0}
+  border-radius:5px;font:var(--fs-2)/1.3 system-ui;color:var(--fg);cursor:pointer;min-width:0}
 .pn:hover{background:rgba(211,198,170,.07)}
 .pn>.pg{flex:none;width:7px;height:7px;border-radius:50%;background:var(--quiet)}
 .pn.wait>.pg{background:var(--attend)} .pn.work>.pg{background:var(--running)}
 .pn.term>.pg{width:8px;height:8px;border-radius:0;background:none;fill:none;
   stroke:var(--grey);stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
 .pn>.pk{flex:none;font-weight:500}
-.pn.term>.pk{font:11.5px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--grey)}
+.pn.term>.pk{font:var(--fs-2)/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--grey)}
 .pn>.pw{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--grey);
   font-variant-numeric:tabular-nums}
 .pn.wait>.pw{color:var(--attend)}
-.pn.term>.pw{font:11.5px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg2)}
-.ptag{flex:none;font:600 10px/1 system-ui;padding:2px 5px;border:1px solid var(--edge);
+.pn.term>.pw{font:var(--fs-2)/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg2)}
+.ptag{flex:none;font:600 var(--fs-1)/1 system-ui;padding:2px 5px;border:1px solid var(--edge);
   border-radius:4px;color:var(--fg)}
 .ptag.plan{margin-left:auto}
 .pn>.pw+.ptag.outside,.pn>.pk+.ptag.outside{margin-left:auto}
@@ -430,7 +448,7 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
    that is what says "this opens something". Status signals are plain text in
    their own colour and do not react. */
 .foot{display:flex;flex-wrap:wrap;align-items:center;gap:0 9px;margin-top:3px;min-width:0;
-  font:11.5px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--grey);
+  font:var(--fs-2)/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--grey);
   font-variant-numeric:tabular-nums}
 .foot>span{min-height:24px;line-height:24px;white-space:nowrap;min-width:0;max-width:100%;
   overflow:hidden;text-overflow:ellipsis}
@@ -442,20 +460,30 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .pr.open{color:var(--pr-open)}
 .issue{color:var(--issue);text-decoration-color:currentColor}
 .pr:hover,.issue:hover{filter:brightness(1.25)}
-.dirty{color:var(--dirty);font-size:9px}
+.dirty{color:var(--dirty);font-size:var(--fs-1)}
+/* The worktree's colour, before its branch. */
+.foot>.own{flex:none;width:8px;min-height:0;height:8px;margin-right:-4px;border-radius:50%;background:var(--own)}
 .cost{margin-left:auto;color:var(--fg2)}
 .cost.small{color:var(--grey)}
 /* What you recognise a row by on a second look: the branch, unsaved work,
    progress and spend wait for the pointer or the keyboard on the row. They
    keep their place, so the list does not shift under the pointer. PR, issue
    and status signals stay: they can be the reason to look. */
-.foot>.branch,.foot>.dirty,.foot>.meta,.foot .cost{transition:opacity .12s}
+.foot>.own,.foot>.branch,.foot>.dirty,.foot>.meta,.foot .cost{transition:opacity .12s}
 /* Only where there is a pointer to hover with: a touch screen shows them all. */
 @media (hover:hover){
-.row:not(:hover):not(:focus-within) .foot>:is(.branch,.dirty,.meta),
+.row:not(:hover):not(:focus-within) .foot>:is(.own,.branch,.dirty,.meta),
 .row:not(:hover):not(:focus-within) .foot .cost{opacity:0}
-/* With nothing else on it, the footer folds away rather than leave a blank band. */
+/* With nothing else on it, the footer folds away rather than leave a blank
+   band, and on hover it is a strip hung under the card, over what is below:
+   in the flow it pushed every row beneath it down. */
 .row:not(:hover):not(:focus-within) .foot.hov{display:none}
+.foot.hov{position:absolute;left:0;right:0;top:calc(100% - 3px);z-index:6;margin:0;padding:0 9px;
+  background:var(--gnd);border-radius:0 0 9px 9px;box-shadow:0 6px 12px rgba(0,0,0,.28);
+  flex-wrap:nowrap}
+/* The strip stays one line: a second would cover the next card's header, so a
+   long branch gives way with an ellipsis instead. */
+.foot.hov>:not(.branch){flex-shrink:0}
 }
 
 /* The Wake: an icon, not a chip, pinned to the right end of the footer (and of
@@ -499,40 +527,60 @@ header:not(:hover) .right:not(:has(#stamp.stale)){opacity:0}
 .row.quiet>.top{min-height:22px}
 .row.quiet>.top>.chips{display:inline-flex;flex:none;flex-wrap:nowrap;gap:5px;margin:0}
 .row.quiet>.top>.chips>.chip{padding:0 9px}
-.row.quiet>.top>.nm{font-weight:500;font-size:13px;color:var(--fg2)}
-.row.quiet>.top>.cost{margin-left:0;font:11.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+.row.quiet>.top>.nm{font-weight:500;font-size:var(--fs-3);color:var(--fg2)}
+.row.quiet>.top>.cost{margin-left:0;font:var(--fs-2)/1 ui-monospace,SFMono-Regular,Menlo,monospace;
   font-variant-numeric:tabular-nums}
-.sect{color:var(--grey);font:600 10.5px/1.3 system-ui;letter-spacing:.08em;text-transform:uppercase;
+.sect{color:var(--grey);font:600 var(--fs-1)/1.3 system-ui;letter-spacing:.06em;text-transform:uppercase;
   margin:7px 0 3px;padding-top:4px;border-top:1px solid var(--line)}
 
 /* --- muted and tucked (the app's, read from tucked.json) ----------------- */
 /* Muted (hidden until it needs you): greyed (never by opacity: the contrast check could not see it). Tucked: out of the list, in a
    collapsed "hidden · N" shelf at the end, with snoozed and settled rows; each says why. The ⋯ menu, its Hide items grouped by dividers, shows only framed by the app. */
 .row.muted{filter:saturate(.35)}
-.row.muted>.top>.nm,.row.muted>.top>.badge{color:var(--grey)}
+.row.muted>.top>.nm,.row.muted>.top>.badge,.row.muted>.top>.bs>.badge{color:var(--grey)}
 details.away>summary{cursor:pointer;list-style:none}
 details.away>summary::-webkit-details-marker{display:none}
 details.away>summary::before{content:"\25B8  ";color:var(--grey)}
 details.away[open]>summary::before{content:"\25BE  "}
+/* On the shelf every row is a quiet row's line, whatever its tier: a merged
+   row on a card's ground stood out from the rest of the shelf. */
+details.away>.row{--gnd:var(--bg);background:transparent;border:1px solid var(--line);
+  padding:3px 9px;margin-bottom:3px}
+details.away>.row>.top{min-height:22px}
+details.away>.row>.top>.nm{font-weight:500;font-size:var(--fs-3);color:var(--fg2)}
 /* Why a row is on the hidden shelf: muted words, not a pill. */
-.why{flex:none;margin-left:6px;color:var(--grey);font:400 11.5px/1.2 system-ui;white-space:nowrap}
+.why{flex:none;margin-left:6px;color:var(--grey);font:400 var(--fs-2)/1.2 system-ui;white-space:nowrap}
+/* A settled row's reclaim, a link in its why. */
+.why>.rcl{color:var(--fg2);cursor:pointer;text-decoration:underline;text-decoration-color:var(--edge);
+  text-decoration-thickness:1px;text-underline-offset:3px}
+.why>.rcl:hover{color:var(--fg);text-decoration-color:var(--fg)}
+/* The badge's slot. The ⋯ sits over its right end, on the row's ground, so it
+   takes no room from the name; with no badge the slot is empty and the ⋯
+   covers the end of the name instead. */
+.bs{flex:none;position:relative;display:inline-flex;align-items:center;min-height:20px}
+.bs.nob{margin-left:-7px}
 .tk{flex:none;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;
   margin-left:2px;border-radius:5px;color:var(--grey);cursor:pointer}
 .tk:hover,.row.tkopen .tk{background:var(--bg2);color:var(--fg)}
 /* The ⋯ waits for the pointer or the keyboard on its row, or its open menu,
-   as the footer facts do. It keeps its place, so nothing shifts. Touch
-   screens show it. */
+   as the footer facts do. Where there is a pointer it sits over the badge,
+   on the row's ground, so it takes no width and nothing shifts. Touch
+   screens show it in the line. */
 @media (hover:hover){
+.bs>.tk{position:absolute;right:-2px;top:50%;margin:-10px 0 0;z-index:3;
+  background:var(--gnd);box-shadow:-6px 0 6px var(--gnd)}
+.top.jumps:hover>.bs>.tk{background:linear-gradient(rgba(255,255,255,.05),rgba(255,255,255,.05)) var(--gnd)}
+.bs>.tk:hover,.row.tkopen .bs>.tk{background:var(--bg2)}
 .row:not(:hover):not(:focus-within):not(.tkopen) .tk{opacity:0}
 }
 .tk svg{width:14px;height:14px;fill:currentColor}
 .tkm{display:none}
 .row.tkopen>.top{position:relative}
-.row.tkopen .tkm{display:flex;flex-direction:column;position:absolute;right:0;top:100%;z-index:5;
-  margin-top:3px;padding:4px;min-width:120px;background:var(--bg1);border:1px solid var(--line);
+.row.tkopen .tkm{display:flex;flex-direction:column;position:absolute;right:-2px;top:100%;z-index:5;
+  margin-top:6px;padding:4px;min-width:120px;background:var(--bg1);border:1px solid var(--line);
   border-radius:7px;box-shadow:0 6px 18px rgba(0,0,0,.35)}
 .row.tkup .tkm{top:auto;bottom:100%;margin:0 0 3px}
-.tki{padding:5px 9px;border-radius:5px;font:500 12.5px/1.2 system-ui;color:var(--fg);cursor:pointer;white-space:nowrap}
+.tki{padding:5px 9px;border-radius:5px;font:500 var(--fs-3)/1.2 system-ui;color:var(--fg);cursor:pointer;white-space:nowrap}
 .tki:hover{background:var(--bg2)}
 .tks{height:1px;margin:3px 4px;background:var(--line)}
 
@@ -551,12 +599,12 @@ details.away[open]>summary::before{content:"\25BE  "}
 /* Specific enough to beat .row.quiet>.top, which would clamp a quiet child to 22px. */
 .kids>.row.kid>.kidhd{min-height:36px;gap:6px;cursor:pointer}
 .kid .kidhd .dial{width:20px;height:20px}
-.kid .kidhd .nm{font-size:13px;font-weight:500}
+.kid .kidhd .nm{font-size:var(--fs-3);font-weight:500}
 .kid.attend .kidhd .nm,.kid.wilt .kidhd .nm{font-weight:600}
 .kidhd .chip{flex:none;padding:0 9px}
 /* The fold: a real button with a 24px target, though the mark is small. */
 .caret{flex:none;width:24px;height:24px;margin:-4px -6px -4px -8px;padding:0;border:0;border-radius:5px;
-  background:none;color:var(--grey);font-size:11px;line-height:24px;text-align:center;cursor:pointer}
+  background:none;color:var(--grey);font-size:var(--fs-1);line-height:24px;text-align:center;cursor:pointer}
 .caret:hover{background:rgba(255,255,255,.07);color:var(--fg)}
 .caret:focus-visible{outline:2px solid var(--running);outline-offset:-2px}
 .caret::before{content:"\25B8"}
@@ -599,7 +647,7 @@ details.away[open]>summary::before{content:"\25BE  "}
 .pip{display:block;width:10px;height:9px;fill:var(--quiet)}
 .pip.attend{fill:var(--attend)} .pip.running{fill:var(--running)}
 .pip.wilt{fill:var(--wilt)} .pip.done{fill:var(--done)}
-.pipmore{font:600 10.5px/1 system-ui;color:var(--grey)}
+.pipmore{font:600 var(--fs-1)/1 system-ui;color:var(--grey)}
 
 /* --- motion ------------------------------------------------------------- */
 /* Reordering is animated from render.js with the Web Animations API, not from
@@ -661,10 +709,10 @@ details.away[open]>summary::before{content:"\25BE  "}
   #shelf .sky,#shelf .orb{transition:none}
 }
 
-.empty{color:var(--grey);font-size:13px;line-height:1.6;padding:18px 4px;text-align:center}
-.empty code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg2)}
+.empty{color:var(--grey);font-size:var(--fs-3);line-height:1.6;padding:18px 4px;text-align:center}
+.empty code{font:var(--fs-2) ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg2)}
 #quiet{margin-top:10px;padding-top:8px;border-top:1px solid var(--line);
-  color:var(--grey);font-size:12px}
+  color:var(--grey);font-size:var(--fs-2)}
 #quiet:empty{display:none}
 
 /* The news: pinned to the pane's bottom edge, one line until opened. Sticky
@@ -677,18 +725,18 @@ details.away[open]>summary::before{content:"\25BE  "}
   max-height:45vh;overflow-y:auto}
 #news[hidden]{display:none}
 #news summary{display:flex;gap:8px;align-items:center;cursor:pointer;min-height:24px;
-  list-style:none;white-space:nowrap;overflow:hidden;color:var(--fg2);font-size:12px}
+  list-style:none;white-space:nowrap;overflow:hidden;color:var(--fg2);font-size:var(--fs-2)}
 #news summary::-webkit-details-marker{display:none}
 #news summary::before{content:"\25B8";color:var(--grey)}
 #news[open] summary::before{content:"\25BE"}
-#news-ttl{flex:none;color:var(--grey);text-transform:uppercase;letter-spacing:.06em;font-size:10.5px}
+#news-ttl{flex:none;color:var(--grey);text-transform:uppercase;letter-spacing:.06em;font-size:var(--fs-1)}
 #news-lede{overflow:hidden;text-overflow:ellipsis}
 #news[open] #news-lede{display:none}
 #news-lede b,#news-body b{color:var(--fg);font-weight:600}
-#news-lede code,#news-body code{color:var(--running);font-size:11.5px}
+#news-lede code,#news-body code{color:var(--running);font-size:var(--fs-2)}
 #news-body{margin-top:5px}
 .ni{margin:0 0 4px;padding-left:7px;border-left:2px solid var(--quiet);
-  color:var(--fg2);font-size:12.5px;line-height:1.45}
+  color:var(--fg2);font-size:var(--fs-3);line-height:1.45}
 .ni.attend{border-left-color:var(--attend)}
 .ni.wilt{border-left-color:var(--wilt)}
 .ni.running{border-left-color:var(--running)}

@@ -38,6 +38,19 @@ type Pick = { input: string; repo: string; title: string; updated: number };
 type Picks = { requested: Pick[]; mine: Pick[]; branches: Pick[]; problem: string };
 type Finding = { id: string; file: string; line: number; severity: string; summary: string; status?: string };
 type IntentServer = { origin: string | null; up: boolean; reason: string | null };
+/**
+ * What the framed page's tools row shows, as the page posts it
+ * (lookout/page/review.js postState): the header row draws it instead.
+ */
+type PageState = {
+  gate: { cls: string; text: string; title: string; go: boolean };
+  mode: { cls: string; text: string; title: string };
+  layout: string;
+  overview: boolean;
+  map: boolean;
+  hasMap: boolean;
+  keys: boolean;
+};
 
 // Short names: the side is narrow. What each depth means is the select's title.
 const DEPTHS: [string, string][] = [
@@ -185,6 +198,9 @@ export class ReviewView {
   private listShown = false;
   /** The review whose frame couldn't load: its header keeps the verdict chip. */
   private frameDown = "";
+  /** The framed page's tools, once it posts them; its origin, to talk back. */
+  private pageState: PageState | null = null;
+  private pageOrigin = "";
 
   private side = el("aside", "r-side");
   private main = el("section", "r-main");
@@ -279,6 +295,21 @@ export class ReviewView {
     });
     window.addEventListener("blur", closeMore);
 
+    // The framed page's tools come up onto the header row: the page says
+    // hello, this answers "host", and the page then hides its own row and
+    // posts what it would show. Only from the frame shown, at its origin.
+    window.addEventListener("message", (e) => {
+      const f = this.frameBox.querySelector("iframe");
+      if (!f || e.source !== f.contentWindow || e.origin !== this.pageOrigin) return;
+      const d = e.data as { lookout?: string; gate?: unknown; mode?: unknown } | null;
+      if (!d || typeof d !== "object") return;
+      if (d.lookout === "hello") f.contentWindow?.postMessage({ lookout: "host" }, this.pageOrigin);
+      else if (d.lookout === "state" && d.gate && typeof d.gate === "object" && d.mode && typeof d.mode === "object") {
+        this.pageState = d as unknown as PageState;
+        this.render();
+      }
+    });
+
     window.setInterval(() => {
       const now = Date.now() / 1000;
       for (const s of this.root.querySelectorAll<HTMLElement>("[data-since]")) s.textContent = clock(now - Number(s.dataset.since));
@@ -347,6 +378,7 @@ export class ReviewView {
       // A newer run, or a newer state of this one, asked since: its answer stands.
       if (this.findings.get(j.id)?.key !== key) return;
       this.findings.set(j.id, { key, rows });
+      // Blockers and majors start picked; Edit, Fix and Post show while anything is.
       if (!this.ticked.has(j.id)) this.ticked.set(j.id, new Set(rows.filter((f) => f.severity === "blocker" || f.severity === "major").map((f) => f.id)));
       this.render();
     } catch (e) {
@@ -512,22 +544,24 @@ export class ReviewView {
     const job = sel?.startsWith("job:") ? this.jobs.find((j) => `job:${j.id}` === sel) : undefined;
     const other = sel?.startsWith("other:") ? this.others.find((o) => `other:${o.id}` === sel) : undefined;
 
-    const key = JSON.stringify([sel, folded, this.frameDown, job, other, this.confirm.get(job?.id ?? ""), [...(this.ticked.get(job?.id ?? "") ?? [])], this.pickerOpen.has(job?.id ?? ""), this.moreOpen, this.findings.get(job?.id ?? "")?.rows.length]);
+    // The page is drawn once per review and kept: moving or redrawing an
+    // iframe reloads it, losing the reader's place. A new page posts its own
+    // tools; until it does, the header shows none.
+    const page = job && job.status === "ready" && job.review_id ? job.review_id : other ? other.id : "";
+    if (page !== this.framed) {
+      this.framed = page;
+      this.pageState = null;
+      this.frameBox.replaceChildren();
+      this.frameBox.hidden = !page;
+      if (page) this.showFrame(page, job ? this.title(job) : other?.title ?? page);
+    }
+
+    const key = JSON.stringify([sel, folded, this.frameDown, job, other, this.confirm.get(job?.id ?? ""), [...(this.ticked.get(job?.id ?? "") ?? [])], this.pickerOpen.has(job?.id ?? ""), this.moreOpen, this.findings.get(job?.id ?? "")?.rows.length, this.pageState, this.logOpen.get(job?.id ?? "")]);
     if (force || key !== this.drawn) {
       this.drawn = key;
       if (job) this.drawJob(job);
       else if (other) this.drawOther(other);
       else this.drawEmpty();
-    }
-
-    // The page is drawn once per review and kept: moving or redrawing an
-    // iframe reloads it, losing the reader's place.
-    const page = job && job.status === "ready" && job.review_id ? job.review_id : other ? other.id : "";
-    if (page !== this.framed) {
-      this.framed = page;
-      this.frameBox.replaceChildren();
-      this.frameBox.hidden = !page;
-      if (page) this.showFrame(page, job ? this.title(job) : other?.title ?? page);
     }
     if (job?.status === "ready") void this.loadFindings(job);
   }
@@ -540,11 +574,13 @@ export class ReviewView {
   }
 
   /**
-   * The one header row: the name, its state, then what can be done. `meta`
-   * shows inline unless a ⋯ menu (`more`) holds it.
+   * The one header row: the name, its state, then what can be done, then the
+   * framed page's tools (its gate pill beside the state, its view buttons by
+   * the ⋯). `meta` shows inline unless a ⋯ menu (`more`) holds it.
    */
-  private headOf(name: string, chip: HTMLElement | null, meta: string, link: string | null, buttons: HTMLElement[], more: HTMLElement | null = null): void {
+  private headOf(name: string, chip: HTMLElement | null, meta: string, link: string | null, buttons: HTMLElement[], more: HTMLElement | null = null, status: HTMLElement | null = null): void {
     const h = el("div", "r-mhead-row");
+    const tools = this.pageTools();
     const shown = this.listShown;
     const list = btn(shown ? "◂ Reviews" : "Reviews ▸", () => this.toggleList(), "r-btn quiet r-list-btn");
     list.setAttribute("aria-expanded", String(shown));
@@ -554,6 +590,8 @@ export class ReviewView {
     n.title = meta;
     h.append(n);
     if (chip) h.append(chip);
+    h.append(...tools.state);
+    if (status) h.append(status);
     if (!more) h.append(el("span", "r-meta", meta));
     if (link) {
       const a = el("a", "r-link", "GitHub");
@@ -564,9 +602,61 @@ export class ReviewView {
     }
     const acts = el("div", "r-acts");
     acts.append(...buttons);
+    if (tools.view.length) acts.append(el("span", "r-sep"), ...tools.view);
     if (more) acts.append(more);
     h.append(acts);
     this.head.replaceChildren(h);
+  }
+
+  /** Tells the framed page to act as its own button would, and hands it the keys. */
+  private tell(op: string, extra: Record<string, string> = {}): void {
+    const f = this.frameBox.querySelector("iframe");
+    if (!f || !this.pageOrigin) return;
+    f.contentWindow?.postMessage({ lookout: "do", op, ...extra }, this.pageOrigin);
+    f.focus();
+  }
+
+  /**
+   * The framed page's tools as the page posted them: the gate pill and live
+   * state, for beside the name, and Overview, Map, Split or Unified and ?,
+   * for by the ⋯. None until the page posts them.
+   */
+  private pageTools(): { state: HTMLElement[]; view: HTMLElement[] } {
+    const p = this.pageState;
+    if (!p) return { state: [], view: [] };
+    const gate = btn(p.gate.text, () => this.tell("gate"), `r-gate ${p.gate.cls}`);
+    // The arrow says the pill goes somewhere: to the first blocking finding.
+    if (p.gate.go) {
+      const go = el("span", "r-go", "↓");
+      go.setAttribute("aria-hidden", "true");
+      gate.append(go);
+    }
+    gate.disabled = !p.gate.go;
+    gate.title = p.gate.title;
+    const mode = el("span", `r-mode ${p.mode.cls}`, p.mode.text);
+    mode.title = p.mode.title;
+    const pressed = (b: HTMLButtonElement, on: boolean) => (b.setAttribute("aria-pressed", String(on)), b);
+    const view: HTMLElement[] = [];
+    const ov = pressed(btn("Overview", () => this.tell("overview"), "r-btn quiet r-tool"), p.overview);
+    ov.title = "What each group of changes means (o)";
+    view.push(ov);
+    if (p.hasMap) {
+      const map = pressed(btn("Map", () => this.tell("map"), "r-btn quiet r-tool"), p.map);
+      map.title = "The plan's files against the diff (m)";
+      view.push(map);
+    }
+    const seg = el("div", "r-seg");
+    seg.setAttribute("role", "group");
+    seg.setAttribute("aria-label", "Diff layout");
+    for (const [v, label] of [["split", "Split"], ["unified", "Unified"]]) seg.append(pressed(btn(label, () => this.tell("layout", { layout: v }), "r-seg-btn"), p.layout === v));
+    seg.title = "Split or unified (v)";
+    view.push(seg);
+    const keys = btn("?", () => this.tell("keys"), "r-btn quiet r-keys");
+    keys.setAttribute("aria-expanded", String(p.keys));
+    keys.setAttribute("aria-label", "Keyboard shortcuts");
+    keys.title = "Keyboard shortcuts (?)";
+    view.push(keys);
+    return { state: [gate, mode], view };
   }
 
   /** A small menu for what is used less: the review's settings, Re-review, Remove. */
@@ -618,11 +708,13 @@ export class ReviewView {
     const running = RUNNING.has(j.status);
     // A finished review shows the gate's verdict, the word the page uses.
     const state = j.busy ? "running" : running ? "running" : j.status === "ready" ? verdict(j.open) : j.status;
-    // Framed, the page's gate pill carries the verdict: no second one here.
+    // Framed, the page's gate pill carries the verdict and its counts: no
+    // second one here. Unframed or down, this chip says both.
     const framed = j.status === "ready" && !!j.review_id && this.frameDown !== j.review_id;
-    const chip = state === "blocked" || state === "pass" ? (framed ? null : el("span", `r-chip ${state}`, state)) : el("span", `r-chip ${state}`, j.busy || (running ? "reviewing" : state));
+    const chip = state === "blocked" || state === "pass" ? (framed ? null : el("span", `r-chip ${state}`, `${state} · ${openSummary(j.open)}`)) : el("span", `r-chip ${state}`, j.busy || (running ? "reviewing" : state));
     const meta = `${j.depth} · ${j.model || "default model"}${j.base ? ` · against ${j.base}` : ""}`;
-    let more: HTMLElement | null = null;
+    // The ⋯ menu: Re-review and Remove once it is idle, and the log any time.
+    const items: HTMLButtonElement[] = [];
     if (!running && !j.busy) {
       const again = btn("Re-review", () => void this.start(j.input, j.depth, j.model, j), "r-btn quiet");
       again.title = "Review it again from its latest commit. This replaces this run and its worktree.";
@@ -630,11 +722,26 @@ export class ReviewView {
         this.confirm.set(j.id, "remove");
         this.render(true);
       }, "r-btn quiet");
-      more = this.more(j, meta, [again, remove]);
+      items.push(again, remove);
+    }
+    if (j.log.length) {
+      const log = btn(`Log (${j.log.length})`, () => {
+        this.logOpen.set(j.id, true);
+        this.render(true);
+      }, "r-btn quiet");
+      log.title = "What the review did, step by step";
+      items.push(log);
+    }
+    const more = items.length ? this.more(j, meta, items) : null;
+    // A fix or post underway says what it is doing on the header row.
+    let status: HTMLElement | null = null;
+    if (j.busy) {
+      status = el("span", "r-now r-busy", j.activity || "starting");
+      status.title = `${j.busy}: ${j.activity || "starting"}`;
     }
     const link = j.repo ? `https://github.com/${j.repo}${j.pr ? `/pull/${j.pr}` : j.branch ? `/tree/${j.branch}` : ""}` : null;
     const acts = !running && j.status !== "failed" ? this.actions(j) : { buttons: [], below: [] };
-    this.headOf(this.title(j), chip, meta, link, acts.buttons, more);
+    this.headOf(this.title(j), chip, meta, link, acts.buttons, more, status);
 
     const parts: HTMLElement[] = [];
     if (this.confirm.get(j.id) === "remove") {
@@ -667,7 +774,7 @@ export class ReviewView {
       parts.push(el("p", "r-detail bad", j.detail || "it failed"));
       parts.push(el("p", "r-detail", "Re-review runs it again from the start."));
     } else parts.push(...acts.below);
-    if (j.log.length) parts.push(this.logBox(j));
+    if (j.log.length && this.logOpen.get(j.id)) parts.push(this.logBox(j));
     this.ctl.replaceChildren(...parts);
   }
 
@@ -691,16 +798,19 @@ export class ReviewView {
     return box;
   }
 
+  /** The log, opened from the ⋯ menu; closed until asked for (a failed run says why above it). */
   private logBox(j: Job): HTMLElement {
-    const d = el("details", "r-log");
-    // Closed until asked for: a failed run says why above it.
-    d.open = this.logOpen.get(j.id) ?? false;
-    d.addEventListener("toggle", () => this.logOpen.set(j.id, d.open));
+    const box = el("div", "r-log");
+    const head = el("div", "r-log-head");
+    head.append(el("span", "", `Log (${j.log.length})`), btn("Close", () => {
+      this.logOpen.delete(j.id);
+      this.render(true);
+    }, "r-btn quiet"));
     const pre = el("pre", "", j.log.join("\n"));
-    d.append(el("summary", "", `log (${j.log.length})`), pre);
+    box.append(head, pre);
     // Newest at the bottom, in view.
     requestAnimationFrame(() => (pre.scrollTop = pre.scrollHeight));
-    return d;
+    return box;
   }
 
   /** Asks where the intent server is each time: it can come back on a new port. */
@@ -710,6 +820,7 @@ export class ReviewView {
       // No gate pill to read: the header shows the verdict again.
       if (this.frameDown !== rid) {
         this.frameDown = rid;
+        this.pageState = null;
         this.render(true);
       }
       // Plain words on the page; what went wrong goes in the tooltip and console.
@@ -722,6 +833,7 @@ export class ReviewView {
     invoke<IntentServer>("intent_server").then((s) => {
       if (!s.up || !s.origin) return down(s.reason ?? "no answer");
       if (this.framed !== rid) return;
+      this.pageOrigin = new URL(s.origin).origin;
       if (this.frameDown === rid) {
         this.frameDown = "";
         this.render(true);
@@ -750,26 +862,30 @@ export class ReviewView {
 
     const bar: HTMLElement[] = [];
     const open = this.pickerOpen.has(j.id);
-    // Folded by default, the picker is one line: what is open, and how many are ticked.
-    const toggle = btn(`Findings · ${openSummary(j.open)}${n ? ` · ${n} picked` : ""} ${open ? "▾" : "▸"}`, () => {
+    // The gate pill counts what is open; this button says only how many are picked.
+    const toggle = btn(`Findings${n ? ` · ${n} picked` : ""} ${open ? "▾" : "▸"}`, () => {
       if (!this.pickerOpen.delete(j.id)) this.pickerOpen.add(j.id);
       this.render(true);
     }, "r-btn pickbtn");
     toggle.setAttribute("aria-expanded", String(open));
     toggle.disabled = !rows.length;
-    const suffix = n ? ` (${n})` : "";
-    const edit = btn(`Edit${suffix}`, () => void this.run(j, "review_fix", { ids: picked, commit: false }));
-    edit.title = "The reviewer's session changes files in the worktree. Nothing is committed.";
-    const fix = btn(`Fix with commits${suffix}`, () => void this.run(j, "review_fix", { ids: picked, commit: true }));
-    fix.title = "Same, one commit per fix. Nothing is pushed.";
-    const post = btn(`Post comments${suffix}`, () => {
-      this.confirm.set(j.id, "post");
-      this.render(true);
-    });
-    post.title = j.pr ? `One review on PR #${j.pr}` : "This branch has no open pull request";
-    edit.disabled = fix.disabled = busy || !n;
-    post.disabled = busy || !j.pr || !n;
-    bar.push(toggle, edit, fix, post);
+    toggle.title = n ? "Pick which findings Edit, Fix and Post act on" : "Pick findings to edit, fix or post";
+    bar.push(toggle);
+    // Edit, Fix and Post act on the picked findings: they show once one is.
+    if (n) {
+      const edit = btn("Edit", () => void this.run(j, "review_fix", { ids: picked, commit: false }));
+      edit.title = `The reviewer's session changes files in the worktree for the ${n} picked. Nothing is committed.`;
+      const fix = btn("Fix with commits", () => void this.run(j, "review_fix", { ids: picked, commit: true }));
+      fix.title = "Same, one commit per fix. Nothing is pushed.";
+      const post = btn("Post comments", () => {
+        this.confirm.set(j.id, "post");
+        this.render(true);
+      });
+      post.title = j.pr ? `The ${n} picked as one review on PR #${j.pr}` : "This branch has no open pull request";
+      edit.disabled = fix.disabled = busy;
+      post.disabled = busy || !j.pr;
+      bar.push(edit, fix, post);
+    }
     if (j.ahead || j.dirty) {
       const push = btn(`Push ${j.ahead} commit${j.ahead === 1 ? "" : "s"}`, () => {
         this.confirm.set(j.id, "push");
@@ -782,11 +898,6 @@ export class ReviewView {
 
     if (open && rows.length) out.push(this.picker(j, rows, ticked, busy));
 
-    if (busy) {
-      const p = el("p", "r-now");
-      p.append(`${j.busy}: ${j.activity || "starting"}`);
-      out.push(p);
-    }
     const state: string[] = [];
     if (j.ahead) state.push(`${j.ahead} local commit${j.ahead === 1 ? "" : "s"}${j.pushed ? " (pushed)" : ""}`);
     if (j.dirty) state.push("uncommitted edits in the worktree");

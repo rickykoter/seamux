@@ -1,7 +1,7 @@
 /* The [plan] and [outside] marks a pane wears beside its name (panechips.ts). */
 .pane-chip {
   flex: none; padding: 0 5px; border: 1px solid currentColor; border-radius: 4px;
-  background: none; font: inherit; font-size: 10px; line-height: 14px; cursor: pointer;
+  background: none; font: inherit; font-size: var(--fs-1); line-height: 14px; cursor: pointer;
 }
 .pane-chip.plan { color: var(--t-go, var(--accent)); }
 .pane-chip.outside { color: var(--muted); border-style: dashed; }
