@@ -353,7 +353,12 @@
       if (c.nodeType === 3 && c.data.indexOf(was + " \u00b7") >= 0) { c.data = c.data.replace(was + " \u00b7", status + " \u00b7"); said = true; break; }
     }
     // A check that had not run was drawn with its glyph alone: add the word.
-    if (!said && mark) li.insertBefore(document.createTextNode(" " + status + " \u00b7"), mark.nextSibling);
+    // Only after the glyph: a row whose first element is something else gets
+    // the word first, before its name.
+    if (!said) {
+      var glyph = mark && mark.classList && mark.classList.contains("dp-mark") ? mark : null;
+      li.insertBefore(document.createTextNode(glyph ? " " + status + " \u00b7" : status + " \u00b7 "), glyph ? glyph.nextSibling : li.firstChild);
+    }
     if (status !== li.getAttribute("data-status")) awaitRewrite(li, 15);
   }
   // Until the file moves (then the page reloads), or tries run out, or the

@@ -711,9 +711,8 @@ function __boardRender(d) {
   // that is a workspace.
   var inApp = (function () { try { return !!window.parent && window.parent !== window; } catch (e) { return false; } })();
   // One verb for putting a row away: Hide, with when it comes back. The
-  // snooze presets (intent.js turns each into an end time at the click; the
-  // app's own menu, app/ui/tuck.ts, keeps the same four) sit between the
-  // other two, set apart by dividers. Whatever hides a row now, its item
+  // snooze presets (intent.js turns each into an end time at the click) sit
+  // between the other two, set apart by dividers. Whatever hides a row now, its item
   // reads Show again. The data-x values are intent.js's, unchanged.
   // Resuming is not hiding: it sits below the Hide group, on its own, and
   // only on a row a usage limit stopped (or one already armed, to undo it).

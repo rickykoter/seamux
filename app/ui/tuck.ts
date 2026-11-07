@@ -80,26 +80,6 @@ export function untilSaid(level: Level, until?: number, now = new Date()): strin
   return UNTIL[level];
 }
 
-/** The snooze presets, as both ⋯ menus offer them (crew/board/render.js
- *  keeps the same four, with the same words). */
-export type Snooze = "1h" | "3h" | "tomorrow" | "monday";
-export const SNOOZES: { key: Snooze; label: string }[] = [
-  { key: "1h", label: "Hide for 1 hour" },
-  { key: "3h", label: "Hide for 3 hours" },
-  { key: "tomorrow", label: "Hide until tomorrow 9am" },
-  { key: "monday", label: "Hide until Monday 9am" },
-];
-
-/** When a snooze preset taken at `now` ends (ms since the epoch, local time). */
-export function snoozeUntil(key: Snooze, now: Date): number {
-  if (key === "1h" || key === "3h") return now.getTime() + (key === "1h" ? 1 : 3) * 3_600_000;
-  const d = new Date(now.getTime());
-  // Tomorrow, or the next Monday after today (a week on, on a Monday).
-  d.setDate(d.getDate() + (key === "tomorrow" ? 1 : (8 - d.getDay()) % 7 || 7));
-  d.setHours(9, 0, 0, 0);
-  return d.getTime();
-}
-
 /** "3:00 PM" today, else "Mon 9:00 AM": when a snooze ends. */
 export function wakesAt(until: number, now = new Date()): string {
   const d = new Date(until);
@@ -121,40 +101,15 @@ export async function setLevel(ws: string, name: string, level: Level | "none", 
   }
 }
 
-/** The live workspaces whose worktree is armed to resume at a limit's
- *  reset (resume_app.rs), as last heard; the menu labels itself from it. */
-const armed = new Set<string>();
-
-/** Hear the armed list again (after a change, and once at load). */
-export async function refreshArmed(): Promise<void> {
-  try {
-    const ws = await invoke<string[]>("resume_list");
-    armed.clear();
-    for (const w of ws) armed.add(w);
-  } catch {
-    // An app without the command, or no frame yet: the menu offers to arm.
-  }
-}
-void refreshArmed();
-
 /** Arm `ws`'s worktree to type continue when a usage limit resets, or stop
  *  that, with a note that can undo it. */
 export async function setResume(ws: string, name: string, on: boolean): Promise<void> {
   try {
     await invoke("resume_set", { workspace: ws, on });
-    if (on) armed.add(ws);
-    else armed.delete(ws);
-    void refreshArmed();
     say(on ? `Resumes when the limit resets: ${name}` : `Won't resume when the limit resets: ${name}`, { label: "Undo", run: () => void setResume(ws, name, !on) });
   } catch (e) {
     say(String(e), undefined, true);
   }
-}
-
-/** The m / t keys: toggle mute or tuck on a workspace. */
-export function toggle(ws: string, name: string, key: "m" | "t", was: Level | undefined): void {
-  const want: "mute" | "tuck" = key === "m" ? "mute" : "tuck";
-  void setLevel(ws, name, was === want ? "none" : want, was);
 }
 
 /** One entry of a ⋯ menu: its words, an optional key hint, what it does;
@@ -220,33 +175,6 @@ function flip(m: HTMLElement): void {
   while (box && !/(auto|scroll|hidden)/.test(getComputedStyle(box).overflowY)) box = box.parentElement;
   const floor = box ? box.getBoundingClientRect().bottom : window.innerHeight;
   if (m.getBoundingClientRect().bottom > floor) m.classList.add("up");
-}
-
-/** The ⋯ button and its menu for one workspace's card, tile or lane.
- *  `limited`: a usage limit stopped it, so the menu offers to resume. */
-export function menu(ws: string, name: string, level: Level | undefined, limited = false): HTMLElement {
-  const to = (t: Level | "none") => () => void setLevel(ws, name, t, level);
-  // One verb, Hide, with when it comes back; the presets between dividers.
-  // Whatever hid it, its item reads Show again.
-  const back = "Show again";
-  const snooze: MenuItem[] = level === "snooze"
-    ? [{ label: back, sep: true, run: to("none") }]
-    : SNOOZES.map((s, i) => ({ label: s.label, sep: i === 0, run: () => void setLevel(ws, name, "snooze", level, snoozeUntil(s.key, new Date())) }));
-  // Resuming is not hiding: it sits below the Hide group, on its own, and
-  // only while a usage limit holds the row (or it is armed, to undo that),
-  // as the board's menu does. No key hints: no view binds m or t now.
-  const on = armed.has(ws);
-  const resume: MenuItem[] = on
-    ? [{ label: "Don\u2019t resume when the limit resets", sep: true, title: "Stop typing continue here when the limit resets", run: () => void setResume(ws, name, false) }]
-    : limited
-      ? [{ label: "Resume when the limit resets", sep: true, title: "Type continue here once the limit resets", run: () => void setResume(ws, name, true) }]
-      : [];
-  return dotsMenu(`${name}: hide or show again`, [
-    level === "mute" ? { label: back, run: to("none") } : { label: "Hide until it needs you", run: to("mute") },
-    ...snooze,
-    level === "tuck" ? { label: back, sep: true, run: to("none") } : { label: "Hide until I bring it back", sep: true, run: to("tuck") },
-    ...resume,
-  ]);
 }
 
 // One click anywhere closes an open menu.
