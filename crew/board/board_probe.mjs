@@ -767,7 +767,7 @@ const tal = els.tally.innerHTML;
 // that shares the headline's line counts neither.
 checks.push(["the tally counts the tiers between the headline and the divider",
   /class="tl wilt"><b>2<\/b> broken/.test(tal) && !/need you|quiet/.test(tal)]);
-checks.push(["...omits the empty ones", !tal.includes("working") && !tal.includes("to close")]);
+checks.push(["...omits the empty ones", !tal.includes("working") && !tal.includes("done")]);
 render({ rows: [
   { id: "d", name: "d", kind: "done", badge: "b", said: "", chips: [], frac: 1, meta: "" },
   { id: "r", name: "r", kind: "running", badge: "b", said: "", chips: [], frac: null, meta: "" },
@@ -775,7 +775,7 @@ render({ rows: [
 ], quiet: "" });
 const tal2 = els.tally.innerHTML;
 checks.push(["...in the ranking's order",
-  tal2.indexOf("broken") < tal2.indexOf("working") && tal2.indexOf("working") < tal2.indexOf("to close")]);
+  tal2.indexOf("broken") < tal2.indexOf("working") && tal2.indexOf("working") < tal2.indexOf("done")]);
 render({ rows: [], quiet: "" });
 checks.push(["...and disappears when there is nothing", els.tally.innerHTML === ""]);
 // The headline counts one tier, so it must not speak for the others.
@@ -1710,7 +1710,7 @@ if (live && Array.isArray(live.rows)) {
   checks.push(["families: the parent's badge rolls up its children",
     /<span class="badge roll attend">1 needs you<\/span>/.test(pc)]);
   checks.push(["families: the quiet divider counts only rows below it",
-    /<div class="sect">quiet · 3<\/div>/.test(html) && html.indexOf('class="sect"') > html.indexOf('data-id="k3"')]);
+    /<div class="sect">idle · 3<\/div>/.test(html) && html.indexOf('class="sect"') > html.indexOf('data-id="k3"')]);
   const gc = cardOf(html, "fam:G");
   checks.push(["families: a family with no parent row gets a shell card named by its label",
     /<div class="row quiet fam shell inert fd" data-id="fam:G" data-k="quiet" title="G"><div class="top" data-a="fold"><button type="button" class="caret" data-a="fold"[^>]*><\/button><span class="nm">G<\/span><span class="pips">.*?<\/span><span class="badge">2 plans<\/span>/.test(html) &&
@@ -2201,7 +2201,7 @@ if (crewImpl.isRust("crew-board")) {
   checks.push(["panes: a card lists every pane as a thin row, in the order given, each focusing its own surface",
     pr.length === 3 && pr.map((m) => m[2]).join() === "S-A,S-B,S-T", pc.slice(0, 900)]);
   checks.push(["panes: a waiting Claude says so and for how long; a working one says working, with no clock",
-    /^agent wait$/.test(pr[0][1]) && />Claude<\/span><span class="pw">waiting 4m</.test(pr[0][3]) &&
+    /^agent wait$/.test(pr[0][1]) && />Claude<\/span><span class="pw">needs you · 4m</.test(pr[0][3]) &&
     /^agent work$/.test(pr[1][1]) && />working</.test(pr[1][3]) && !/\dm</.test(pr[1][3]), pr.map((m) => m[0]).join("\n")]);
   checks.push(["panes: a terminal shows what it is running, escaped, behind a chevron",
     /^term sh$/.test(pr[2][1]) && /<svg class="pg"/.test(pr[2][3]) && /cargo &lt;test&gt;/.test(pr[2][3])]);
@@ -2216,7 +2216,7 @@ if (crewImpl.isRust("crew-board")) {
   checks.push(["panes: a quiet row stays one line, with no pane list", !/class="pns"|chip pane/.test(pq)]);
   render({ rows: [R("pa", { panes: [{ surface: "S-Q", kind: "claude", state: "idle", since: ago4, asked: true, what: "" }] })], quiet: "" });
   checks.push(["panes: a Claude that asked you at turn end reads as waiting",
-    /class="pn agent wait"[^>]*>.*?asked you 4m</.test(els.rows.innerHTML), els.rows.innerHTML.slice(0, 900)]);
+    /class="pn agent wait"[^>]*>.*?asked you · 4m</.test(els.rows.innerHTML), els.rows.innerHTML.slice(0, 900)]);
 }
 // The Rust board lists them from cmux's pane list and crew's pane files.
 if (crewImpl.isRust("crew-board")) {
@@ -2296,10 +2296,10 @@ if (crewImpl.isRust("crew-board")) {
     at('data-id="brk"') > zAt && at('data-id="brk"') < sAt && at('data-id="zq"') < sAt && /class="badge wakes"[^>]*>wakes /.test(h)]);
   checks.push(["snooze: a settled row is on its shelf; a merged one not yet idle stays in the list",
     at('data-id="mg"') > sAt && at('data-id="mg"') < tAt && at('data-id="mg2"') < zAt]);
-  checks.push(["snooze: the quiet count leaves both shelves out", /<div class="sect">quiet · 1</.test(h)]);
+  checks.push(["snooze: the quiet count leaves both shelves out", /<div class="sect">idle · 1</.test(h)]);
   const tl = String(els.tally ? els.tally.innerHTML : "");
   checks.push([`snooze: the tally leaves snoozed and settled rows out (${tl})`,
-    !/broken/.test(tl) && /<b>1<\/b> to close/.test(tl) && /<b>1<\/b> working/.test(tl)]);
+    !/broken/.test(tl) && /<b>1<\/b> done/.test(tl) && /<b>1<\/b> working/.test(tl)]);
   els.rows.attrs["data-snooze-open"] = "1";
   sandbox.parent = { postMessage() {} };
   render({ rows: rowsS, quiet: "" });

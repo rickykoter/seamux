@@ -307,7 +307,7 @@ function __boardRender(d) {
   // is repeated on the line they share. Labelled by what the tier MEANS rather
   // than by its internal name -- "broken" is the word you would use, "wilt" is
   // the word the shader used. Ordered by urgency, like the list below it.
-  var TIERS = [["wilt", "broken"], ["running", "working"], ["done", "to close"]];
+  var TIERS = [["wilt", "broken"], ["running", "working"], ["done", "done"]];
 
   function tally(rows) {
     var n = {};
@@ -410,7 +410,7 @@ function __boardRender(d) {
     var s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
     return s < 60 ? "<1m" : s < 3600 ? Math.floor(s / 60) + "m" : s < 86400 ? Math.floor(s / 3600) + "h" : Math.floor(s / 86400) + "d";
   }
-  var PST = { needs_input: ["wait", "waiting"], working: ["work", "working"], idle: ["idle", "idle"], ended: ["end", "ended"] };
+  var PST = { needs_input: ["wait", "needs you"], working: ["work", "working"], idle: ["idle", "idle"], ended: ["end", "ended"] };
   var CHEV = '<svg class="pg" viewBox="0 0 8 8" width="8" height="8" aria-hidden="true"><path d="M2.5 1.5 5.5 4 2.5 6.5"/></svg>';
   function paneList(a) {
     if (isMuted(a)) return "";
@@ -420,7 +420,7 @@ function __boardRender(d) {
       var term = p.kind === "term";
       var st = term ? ["sh", ""] : p.asked ? ["wait", "asked you"] : (PST[p.state] || ["unk", ""]);
       var who = term ? "term" : p.kind === "claude" || !p.kind ? "Claude" : String(p.kind);
-      var when = !term && st[0] !== "work" && typeof p.since === "number" && p.since > 0 ? " " + ago(p.since) : "";
+      var when = !term && st[0] !== "work" && typeof p.since === "number" && p.since > 0 ? " · " + ago(p.since) : "";
       // cmux's stock title says nothing a terminal's chevron does not.
       var what = term ? (p.what === "Terminal" ? "" : String(p.what || "")) : st[1] + when;
       var tip = (term ? "Terminal" + (p.what ? " running " + p.what : "") : who + (st[1] ? ", " + st[1] + when : "")) +
@@ -867,7 +867,7 @@ function __boardRender(d) {
     var lead = g.lead || g.kids[0], sect = "";
     if (belowDivider(lead) && !seenQuiet) {
       seenQuiet = true;
-      sect = '<div class="sect">quiet · ' + rows.filter(belowDivider).length + "</div>";
+      sect = '<div class="sect">idle · ' + rows.filter(belowDivider).length + "</div>";
     }
     if (!g.lead) return sect + shell(g);
     var kids = g.kids.length ? '<div class="kids">' + g.kids.map(function (k) {
