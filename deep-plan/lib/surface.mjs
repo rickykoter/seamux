@@ -573,6 +573,13 @@ export const SURFACE_JS = String.raw`<script>
   }
   function unpin() { if (pinned) { pinned = null; if (!spyQueued) { spyQueued = true; requestAnimationFrame(spy); } } }
   window.addEventListener("wheel", unpin, { passive: true });
+  // An in-page link the page does not route through jump() (the gate line's
+  // #inc-2, a footnote) scrolls on its own: the pin no longer holds.
+  window.addEventListener("hashchange", unpin);
+  document.addEventListener("click", function (e) {
+    var a = e.target && e.target.closest && e.target.closest('a[href^="#"]');
+    if (a && !e.defaultPrevented) unpin();
+  });
   window.addEventListener("touchmove", unpin, { passive: true });
   document.addEventListener("mousedown", function (e) { if (e.target === document.documentElement) unpin(); });
   document.addEventListener("keydown", function (e) {

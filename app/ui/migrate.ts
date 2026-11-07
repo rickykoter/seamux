@@ -329,7 +329,10 @@ export class MigrateBanner {
       else {
         const name = o.title || o.pane.slice(0, 8);
         // Its name leads the line once; the error need not say it again.
-        const why = o.title ? String(e).split(o.title).join("it") : String(e);
+        // Only the title as a whole word, never inside another word or a
+        // path, and never a title too short to tell apart ("a").
+        const esc = o.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const why = o.title.length >= 3 ? String(e).replace(new RegExp(`(?<![\\w./-])${esc}(?![\\w./-])`, "g"), "it") : String(e);
         this.failed.set(k, `${name}: ${why}`);
         this.failedOffers.set(k, o);
         this.tell(`${name}: ${why}`, true);

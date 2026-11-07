@@ -108,6 +108,9 @@ function icon(a: Appearance): SVGSVGElement {
  *  made outdoors, at a glance, is confirmed. */
 export function appearanceButton(): HTMLButtonElement {
   let now = saved();
+  // Before the window takes a theme, the media query shows the system's own
+  // look: read it now, so an explicit choice at launch still cycles right.
+  sysDark = systemDark();
   apply(now);
   const b = document.createElement("button");
   b.type = "button";
