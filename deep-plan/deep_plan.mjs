@@ -1234,15 +1234,30 @@ function htmlHead(title, b64) {
   return `<!doctype html><html><head><meta charset="utf-8">
 <title>${esc(title)}</title>
 <script>
-// Theme, resolved before first paint so neither mode flashes the other:
-// the saved choice wins; a page framed by the seamux app (its Dock and
-// sheets are dark Everforest) is dark; else the OS preference.
+// Theme, resolved before first paint so neither mode flashes the other.
+// Framed by the seamux app, the page follows prefers-color-scheme alone: the
+// app's appearance toggle sets its window theme, which the webview reports
+// there, live. A saved ◐ choice is ignored and the ◐ button hidden, so the
+// app's toggle is the one control. Standalone, the saved choice wins, else
+// the OS preference.
 (function () {
-  var t = "", framed = false;
-  try { t = localStorage.getItem("dp-theme") || ""; } catch (e) {}
+  var t = "", framed = false, d = document.documentElement;
+  var mq = window.matchMedia ? matchMedia("(prefers-color-scheme: light)") : null;
+  var os = function () { return mq && mq.matches ? "light" : "dark"; };
   try { framed = window.self !== window.top; } catch (e) { framed = true; }
-  if (!t) t = framed ? "dark" : (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
-  document.documentElement.setAttribute("data-theme", t);
+  if (!framed) { try { t = localStorage.getItem("dp-theme") || ""; } catch (e) {} }
+  d.setAttribute("data-theme", t || os());
+  if (!framed || !mq) return;
+  d.setAttribute("data-framed", "");
+  // A live switch restyles in place; mermaid bakes its colours into the
+  // drawn SVGs, so a page with diagrams reloads to redraw them.
+  var on = function () {
+    var n = os();
+    if (n === d.getAttribute("data-theme")) return;
+    d.setAttribute("data-theme", n);
+    if (document.querySelector(".mermaid")) location.reload();
+  };
+  if (mq.addEventListener) mq.addEventListener("change", on); else if (mq.addListener) mq.addListener(on);
 })();
 </script>
 <script src="data:text/javascript;base64,${b64}"></script>
@@ -1372,6 +1387,7 @@ label.auto{position:fixed;top:10px;right:64px;font-size:var(--fs-2);color:var(--
 border:1px solid var(--line);border-radius:6px;padding:4px 10px;font:inherit;font-size:var(--fs-3);
 cursor:pointer;min-height:32px}
 #dp-mode:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+:root[data-framed] #dp-mode{display:none}
 </style></head><body>
 <button id="dp-mode" type="button" aria-label="switch between light and dark mode">◐</button>
 <script>
