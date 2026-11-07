@@ -46,6 +46,8 @@ type PageState = {
   gate: { cls: string; text: string; title: string; go: boolean };
   mode: { cls: string; text: string; title: string };
   layout: string;
+  /** The page draws unified because its diff column is too narrow for split; `layout` is still the saved choice. */
+  auto?: boolean;
   overview: boolean;
   map: boolean;
   hasMap: boolean;
@@ -54,12 +56,16 @@ type PageState = {
   ovRow?: boolean;
 };
 /**
- * What the header row folds into its ⋯ menu when it runs out of width, in
- * order: the GitHub link, then Overview (and Map), Split or Unified, and ?.
- * The title ellipsizes before any of them goes; the gate pill and the Act
- * button never do.
+ * How the header row gives up width when it runs short, one step at a time:
+ * the GitHub link folds into ⋯, the live state becomes only its dot, then
+ * Overview (and Map), Split or Unified and ? fold into ⋯, Findings ▸ becomes
+ * an icon and "Act on N picked" becomes "Act (N)". The title keeps
+ * TITLE_MIN until every step is taken, and never goes under 12ch before
+ * that (review.css .r-name); only then may it shrink further. The gate pill
+ * and the Act button never fold. While the page draws unified because it is
+ * too narrow for split, Split or Unified is not on the row at all.
  */
-const FOLDS = ["github", "overview", "layout", "keys"] as const;
+const FOLDS = ["github", "live", "overview", "layout", "keys", "findings", "act"] as const;
 type Fold = (typeof FOLDS)[number];
 /** The title keeps this much width before anything folds. */
 const TITLE_MIN = 160;
@@ -146,6 +152,20 @@ function dots(): SVGSVGElement {
     c.setAttribute("cy", "8");
     c.setAttribute("r", "1.4");
     s.append(c);
+  }
+  return s;
+}
+
+/** Three short lines, for the Findings button when the row is short of width. */
+function listIcon(): SVGSVGElement {
+  const s = document.createElementNS(SVG, "svg");
+  s.setAttribute("viewBox", "0 0 16 16");
+  s.setAttribute("aria-hidden", "true");
+  s.setAttribute("class", "r-icon");
+  for (const y of [4, 8, 12]) {
+    const l = document.createElementNS(SVG, "path");
+    l.setAttribute("d", `M3 ${y}h10`);
+    s.append(l);
   }
   return s;
 }
@@ -613,6 +633,12 @@ export class ReviewView {
         this.fold++;
         draw();
       }
+      // Every step taken and still short: only now may the title go under 12ch.
+      const row = this.head.querySelector<HTMLElement>(".r-mhead-row");
+      if (row && this.overflows()) row.classList.add("tight");
+      // A cut title is shown whole as the ⋯ menu's first line.
+      const name = row?.querySelector<HTMLElement>(".r-name");
+      if (row && name) row.classList.toggle("cut", name.scrollWidth > name.clientWidth);
       this.fitWidth = this.head.clientWidth;
     }
     if (job?.status === "ready") void this.loadFindings(job);
@@ -623,6 +649,11 @@ export class ReviewView {
    * width, or when the title is squeezed under TITLE_MIN while it still has
    * more to show.
    */
+  /** Whether the header row has taken this step (FOLDS) to fit. */
+  private folds(f: Fold): boolean {
+    return FOLDS.indexOf(f) < this.fold;
+  }
+
   private overflows(): boolean {
     const row = this.head.querySelector<HTMLElement>(".r-mhead-row");
     if (!row) return false;
@@ -673,7 +704,7 @@ export class ReviewView {
     const view = tools.view.filter((t) => !folds.has(t.fold));
     for (const t of tools.view) if (folds.has(t.fold)) folded.push(t.item);
     const items = [...folded, ...(folded.length && more?.items.length ? [el("div", "r-menu-sep")] : []), ...(more?.items ?? [])];
-    const menu = items.length ? this.more(more?.key ?? "head", meta, items) : null;
+    const menu = items.length ? this.more(more?.key ?? "head", meta, items, name) : null;
     if (!menu) h.append(el("span", "r-meta", meta));
     const acts = el("div", "r-acts");
     acts.append(...buttons);
@@ -710,8 +741,14 @@ export class ReviewView {
     }
     gate.disabled = !p.gate.go;
     gate.title = p.gate.title;
-    const mode = el("span", `r-mode ${p.mode.cls}`, p.mode.text);
-    mode.title = p.mode.title;
+    // Short of width, live (or disconnected) is only its dot; the words move to the tooltip.
+    const dot = this.folds("live") && (p.mode.cls === "live" || p.mode.cls === "down");
+    const mode = el("span", `r-mode ${p.mode.cls}${dot ? " only" : ""}`, dot ? "" : p.mode.text);
+    mode.title = dot ? `${p.mode.text}. ${p.mode.title}` : p.mode.title;
+    if (dot) {
+      mode.setAttribute("role", "img");
+      mode.setAttribute("aria-label", p.mode.text);
+    }
     const pressed = (b: HTMLButtonElement, on: boolean) => (b.setAttribute("aria-pressed", String(on)), b);
     // A folded tool's menu item, its key at the end.
     const item = (text: string, key: string, onClick: () => void) => {
@@ -730,13 +767,16 @@ export class ReviewView {
       map.title = "The plan's files against the diff (m)";
       view.push({ fold: "overview", el: map, item: item(p.map ? "Close the map" : "Map", "m", () => this.tell("map")) });
     }
-    const seg = el("div", "r-seg");
-    seg.setAttribute("role", "group");
-    seg.setAttribute("aria-label", "Diff layout");
-    for (const [v, label] of [["split", "Split"], ["unified", "Unified"]]) seg.append(pressed(btn(label, () => this.tell("layout", { layout: v }), "r-seg-btn"), p.layout === v));
-    seg.title = "Split or unified (v)";
-    const other = p.layout === "split" ? "unified" : "split";
-    view.push({ fold: "layout", el: seg, item: item(other === "unified" ? "Unified diff" : "Split diff", "v", () => this.tell("layout", { layout: other })) });
+    // Too narrow for split, the page draws unified whatever is picked: no toggle then.
+    if (!p.auto) {
+      const seg = el("div", "r-seg");
+      seg.setAttribute("role", "group");
+      seg.setAttribute("aria-label", "Diff layout");
+      for (const [v, label] of [["split", "Split"], ["unified", "Unified"]]) seg.append(pressed(btn(label, () => this.tell("layout", { layout: v }), "r-seg-btn"), p.layout === v));
+      seg.title = "Split or unified (v)";
+      const other = p.layout === "split" ? "unified" : "split";
+      view.push({ fold: "layout", el: seg, item: item(other === "unified" ? "Unified diff" : "Split diff", "v", () => this.tell("layout", { layout: other })) });
+    }
     const keys = btn("?", () => this.tell("keys"), "r-btn quiet r-keys");
     keys.setAttribute("aria-expanded", String(p.keys));
     keys.setAttribute("aria-label", "Keyboard shortcuts");
@@ -746,11 +786,12 @@ export class ReviewView {
   }
 
   /** A small menu for what is used less: the review's settings, Re-review, Remove, and what the row folded. */
-  private more(key: string, meta: string, items: HTMLElement[]): HTMLElement {
+  /** `name`: the title, the menu's first line while the row cuts it (review.css .cut). */
+  private more(key: string, meta: string, items: HTMLElement[], name = ""): HTMLElement {
     const b = el("button", "r-btn quiet r-more-btn");
     b.append(dots());
     b.setAttribute("aria-label", "More");
-    return this.menu(key, b, items, meta);
+    return this.menu(key, b, items, meta, name ? [el("p", "r-menu-title", name)] : []);
   }
 
   /**
@@ -775,8 +816,8 @@ export class ReviewView {
     if (open) {
       const m = el("div", "r-menu");
       m.setAttribute("role", "menu");
-      if (meta) m.append(el("p", "r-menu-meta", meta));
       m.append(...top);
+      if (meta) m.append(el("p", "r-menu-meta", meta));
       for (const it of items) {
         if (it.classList.contains("r-menu-sep")) {
           it.setAttribute("role", "separator");
@@ -970,10 +1011,16 @@ export class ReviewView {
     const bar: HTMLElement[] = [];
     const open = this.pickerOpen.has(j.id);
     // The gate pill counts what is open, and the Act button how many are picked.
-    const toggle = btn(`Findings ${open ? "▾" : "▸"}`, () => {
+    // Short of width, the word gives way to a list icon (its name stays the label).
+    const short = this.folds("findings");
+    const toggle = btn(short ? (open ? "▾" : "▸") : `Findings ${open ? "▾" : "▸"}`, () => {
       if (!this.pickerOpen.delete(j.id)) this.pickerOpen.add(j.id);
       this.render(true);
-    }, "r-btn pickbtn");
+    }, `r-btn pickbtn${short ? " short" : ""}`);
+    if (short) {
+      toggle.prepend(listIcon());
+      toggle.setAttribute("aria-label", "Findings");
+    }
     toggle.setAttribute("aria-expanded", String(open));
     toggle.disabled = !rows.length;
     toggle.title = n ? `Pick which findings Edit, Fix and Post act on (${n} picked)` : "Pick findings to edit, fix or post";
@@ -1007,8 +1054,8 @@ export class ReviewView {
     }
     if (n) {
       for (const it of menu) it.className = "r-btn quiet";
-      const act = el("button", "r-btn primary r-act-btn", `Act on ${n} picked ▾`);
-      act.title = "Edit, fix or post the picked findings";
+      const act = el("button", "r-btn primary r-act-btn", this.folds("act") ? `Act (${n}) ▾` : `Act on ${n} picked ▾`);
+      act.title = `Edit, fix or post the ${n} picked`;
       bar.push(this.menu(`act:${j.id}`, act, [this.changePicks(j), el("div", "r-menu-sep"), ...menu], "", [this.pickedList(rows, picked)]));
     }
 
