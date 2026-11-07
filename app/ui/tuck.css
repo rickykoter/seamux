@@ -70,8 +70,6 @@
 .palette-level { font-size: var(--fs-1); padding: 1px 7px; border-radius: 9px; background: var(--term); color: var(--muted); }
 .palette-level.tuck { color: var(--fg); }
 .palette-when { font-size: var(--fs-1); color: var(--muted); }
-/* A hidden row: "hidden" in the text colour, its until muted beside it. */
-.palette-when .hid { color: var(--fg); }
 .palette-back { font: inherit; font-size: var(--fs-2); padding: 3px 10px; border-radius: 7px; border: 1px solid var(--line); background: var(--on); color: var(--fg); cursor: pointer; }
 .palette-empty { margin: 14px; color: var(--muted); text-align: center; }
 .palette-foot { padding: 7px 14px; border-top: 1px solid var(--line); font-size: var(--fs-2); color: var(--muted); }
@@ -80,13 +78,13 @@
 .palette-card.search { width: min(860px, calc(100vw - 32px)); height: min(520px, 70vh); max-height: none; }
 .search-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); }
 .search-body > .palette-list { border-right: 1px solid var(--line); }
-.search-row {
-  grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name when" "meta meta";
-  row-gap: 1px; padding: 6px 10px; cursor: pointer;
-}
-.search-row > .palette-name { grid-area: name; }
-.search-row > .palette-when { grid-area: when; }
-.search-row > .palette-meta { grid-area: meta; padding-left: 16px; }
+/* One line a row: the name, what else is worth seeing (muted, cut short
+   first), the time on the right. */
+.search-row { display: flex; align-items: baseline; gap: 8px; padding: 5px 10px; cursor: pointer; }
+.search-row > .palette-name { flex: 0 1 auto; max-width: 62%; align-self: center; }
+.search-row > .palette-meta { flex: 1 1 0; min-width: 0; }
+.search-row > .palette-meta:not(.branch):not(.path) { font-family: inherit; font-size: var(--fs-2); }
+.search-row > .palette-when { flex: none; margin-left: auto; white-space: nowrap; }
 .search-row.away .palette-name b { font-weight: 500; color: var(--muted); }
 .search-row mark, .search-preview mark {
   background: none; color: inherit; text-decoration: underline; text-decoration-color: var(--accent);
