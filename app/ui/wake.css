@@ -34,6 +34,8 @@
 /* Rows no wider than reading needs, so a row's tools sit near its title. */
 .wake:not(.embedded) .w-list > * { max-width: 980px; }
 /* Embedded in the Dock's narrow column, the page's side margins shrink. */
+/* The head, bar and chips share the list's width, so the picker sits over the rows. */
+.wake:not(.embedded) :is(.w-head, .w-bar, .w-chips) { max-width: calc(980px + 52px); box-sizing: border-box; }
 .wake.embedded .w-head, .wake.embedded .w-bar, .wake.embedded .w-chips { padding-left: 12px; padding-right: 12px; }
 .wake.embedded .w-list { padding: 0 12px 12px; }
 .wake.embedded .w-help { right: 12px; }
@@ -70,6 +72,9 @@
 /* The same branch or session as the card above: there on hover, not on every
    card. Out of the flow but still in the tab order, so Tab reaches the session
    button and :focus-within brings it back. */
+/* A caption's branch and copy resume wait for the group's hover, focus or
+   picked row, so the caption leads with its prompt; ⋯ and r copy resume too. */
+.w-grp:not(:hover):not(:focus-within):not(:has(.w-row.sel)) > .w-ph :is(.w-br, .w-sess),
 .w-ph:not(:hover):not(:focus-within) .rep { position: absolute; width: 1px; height: 1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .w-rows { list-style: none; margin: 0; padding: 4px 0; }
 /* A row: kind, title, badges, then its one action and ⋯ at the end. A click opens it. */
@@ -121,11 +126,3 @@
 .w-dayrisk { color: var(--bad-t, var(--bad)); }
 .w-chip.w-more { border-style: dashed; }
 .w-prompt.same { display: none; }
-/* A group of one row is one line: time and prompt, the row, branch and
-   session last. The side column is too narrow for it and keeps two lines. */
-.wake:not(.embedded) .w-grp.solo:not(.later), .wake:not(.embedded) .w-day.all .w-grp.solo.later { display: flex; align-items: center; }
-.wake:not(.embedded) .w-grp.solo > .w-ph { flex: none; flex-wrap: nowrap; padding: 0 0 0 12px; }
-.wake:not(.embedded) .w-grp.solo > .w-ph:first-child { flex: 0 0 min(34%, 300px); }
-.wake:not(.embedded) .w-grp.solo > .w-tail { padding-right: 12px; max-width: 30%; }
-.wake:not(.embedded) .w-grp.solo > .w-rows { flex: 1; min-width: 0; }
-.wake:not(.embedded) .w-grp.solo .w-row { grid-template-columns: 52px minmax(0, 1fr) auto auto; }

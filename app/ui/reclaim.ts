@@ -175,26 +175,55 @@ export class ReclaimWizard {
     this.review(r);
   }
 
-  /** What would go first: it is the decision. Then what needs reading
-   *  (blockers, warnings), then the facts nothing above says, then every
-   *  check that passed, folded. With a blocker there is nothing to remove,
-   *  so the blockers lead. */
+  /** What would go first: it is the decision. One table of facts (what
+   *  would be removed, then the plan and sandbox), a line each; then what
+   *  needs reading (blockers, warnings); then every check that passed,
+   *  folded. With a blocker there is nothing to remove, so the blockers
+   *  lead. */
   private review(r: Report): void {
     const body = this.frame("review", `Reclaim ${r.branch ?? this.name}`);
     const ok = r.blockers === 0;
 
+    // One line a fact: the value, then its note muted beside it. A long
+    // value (a path) ellipsizes; its full text is the tooltip.
+    const facts = el("dl", "rc-facts");
+    const fact = (k: string, v: string | null | undefined, note = "", mono = false, full = v, stays = false) => {
+      if (!v) return;
+      // "search-index (done 3/3)": the parenthesis is the note.
+      const m = !note && !mono && v.replace(REF, "") === v ? /^(.+?)\s*\(([^()]+)\)$/.exec(v) : null;
+      if (m) [v, note] = [m[1], m[2]];
+      // Under "Would remove", a fact that is not removed says so.
+      if (stays) note = note ? `${note} · stays` : "stays";
+      facts.append(el("dt", "", k));
+      const dd = el("dd");
+      const val = said(mono ? "rc-val mono" : "rc-val", v);
+      val.title = (full ?? v).trim();
+      dd.append(val);
+      if (note) {
+        const n = said("rc-note", note);
+        n.title = note;
+        dd.append(n);
+      }
+      facts.append(dd);
+    };
+    const named = new Set(ok ? r.remove.map((x) => x.what) : []);
     if (ok) {
       body.append(el("h3", "rc-sub", "Would remove"));
-      const gone = el("ul", "rc-remove");
       for (const x of r.remove) {
-        const li = el("li");
-        const mono = x.what === "worktree" || x.what === "branch";
-        li.append(el("span", "rc-what", x.what), said(mono ? "rc-target mono" : "rc-target", x.what === "worktree" ? tidy(x.target, this.home) : x.target));
-        if (x.note) li.append(said("rc-note", x.note));
-        gone.append(li);
+        const tree = x.what === "worktree";
+        fact(x.what, tree ? tidy(x.target, this.home) : x.target, x.note, tree || x.what === "branch", x.target);
       }
-      body.append(gone);
     }
+    // The facts "Would remove" has not said already.
+    const told = ok ? r.remove.map((x) => `${x.target} ${x.note}`).join(" ") : "";
+    // Under "Would remove", a fact reclaim leaves alone says "stays".
+    if (!named.has("worktree")) fact("worktree", tidy(r.worktree, this.home), "", true, r.worktree, ok);
+    if (!named.has("branch")) fact("branch", r.branch, "", true, r.branch, ok);
+    if (r.size && !told.includes(r.size)) fact("size", r.size);
+    if (!named.has("workspace")) fact("workspace", r.workspace?.name, "", false, r.workspace?.name, ok);
+    // The plan lives outside the worktree: reclaim leaves it.
+    fact("plan", r.plan, "", false, r.plan, ok);
+    if (!named.has("sandbox")) fact("sandbox", r.sandbox, "", false, r.sandbox, ok);
 
     const row = (c: Check) => {
       const li = el("li", `rc-check ${c.kind}`);
@@ -206,31 +235,10 @@ export class ReclaimWizard {
     };
     // Blockers, then warnings, open: they are what the person has to read.
     const loud = r.checks.filter((c) => c.kind === "fail" || c.kind === "warn").sort((a, b) => (a.kind === "fail" ? 0 : 1) - (b.kind === "fail" ? 0 : 1));
-    if (loud.length) {
-      const list = el("ul", "rc-checks");
-      list.append(...loud.map(row));
-      body.append(list);
-    }
-
-    // With nothing blocking, "Would remove" names the worktree, branch and
-    // workspace: the facts keep only what it does not say.
-    const named = new Set(ok ? r.remove.map((x) => x.what) : []);
-    const told = ok ? r.remove.map((x) => `${x.target} ${x.note}`).join(" ") : "";
-    const facts = el("dl", "rc-facts");
-    const fact = (k: string, v: string | null | undefined, mono = false) => {
-      if (!v || named.has(k)) return;
-      facts.append(el("dt", "", k));
-      const dd = el("dd", mono ? "mono" : "");
-      dd.append(said("", v));
-      facts.append(dd);
-    };
-    fact("worktree", tidy(r.worktree, this.home), true);
-    fact("branch", r.branch, true);
-    if (!r.size || !told.includes(r.size)) fact("size", r.size);
-    fact("workspace", r.workspace?.name);
-    fact("plan", r.plan);
-    fact("sandbox", r.sandbox);
-    if (facts.childElementCount) body.append(facts);
+    const list = el("ul", "rc-checks");
+    list.append(...loud.map(row));
+    const parts = ok ? [facts, list] : [list, facts];
+    for (const x of parts) if (x.childElementCount) body.append(x);
 
     // Every check that passed (or had nothing to check) folds into one line.
     const quiet = r.checks.filter((c) => c.kind === "pass" || c.kind === "skip");

@@ -1764,7 +1764,7 @@ if (want("page script")) {
      tpl.includes('<button type="button" id="gate" class="gate">') && js.includes('$("gate").addEventListener("click", firstBlocking);') &&
      /function firstBlocking\(\) \{[\s\S]{0,400}x\.severity === "blocker" \|\| x\.severity === "major"[\s\S]{0,200}goTo\(list\[0\]\.id\);\s*else stepFinding\(1\);/.test(js));
   ok("page: a card puts its title first and shows a status pill only when it is not open",
-     /el\("span", \{ class: "title" \}[^\n]*\n\s*el\("span", \{ class: "fid" \}/.test(js) &&
+     /el\("span", \{ class: "title", title: x\.id[^\n]*\n(\s*\/\/[^\n]*\n)*\s*el\("span", \{ class: "meta" \}, el\("span", \{ class: "fid" \}/.test(js) &&
      js.includes('(x.status || "open") !== "open" ? (stillBlocks(x)') && js.includes(': el("span", { class: "status st-" + x.status }, x.status)) : null);'));
   const app = fs.readFileSync(path.join(HERE, "..", "app", "ui", "review.ts"), "utf8");
   const appCss = fs.readFileSync(path.join(HERE, "..", "app", "ui", "review.css"), "utf8");
@@ -1775,15 +1775,15 @@ if (want("page script")) {
      js.includes('return { go, title: (g.detail ? g.detail + " " : "") +') && !js.includes("`blocked · ${counts} open`") &&
      js.includes("gate: { cls: g.cls, text: g.text, title: gt.title, go: gt.go }") && app.includes("gate.title = p.gate.title;"));
   ok("app: the Findings button carries no count; the gate pill counts what is open and the Act button what is picked",
-     app.includes('const toggle = btn(`Findings ${open ? "▾" : "▸"}`') && !app.includes("` · ${n} picked`") &&
+     app.includes('const toggle = btn(short ? (open ? "▾" : "▸") : `Findings ${open ? "▾" : "▸"}`') && !app.includes("` · ${n} picked`") &&
      !app.includes("btn(`Findings · ${openSummary(j.open)}"));
   ok("app: picked, Edit, Fix with commits, Post comments (and Push) sit in one \"Act on n picked ▾\" menu, so the header row keeps one button for them",
      /bar\.push\(toggle\);[\s\S]{0,300}const menu: HTMLButtonElement\[\] = \[\];\s*if \(n\) \{[\s\S]{0,900}menu\.push\(edit, fix, post\);\s*\}/.test(app) &&
      app.includes("if (n) menu.push(push);\n      else bar.push(push);") &&
-     app.includes('const act = el("button", "r-btn primary r-act-btn", `Act on ${n} picked ▾`);') &&
+     app.includes('const act = el("button", "r-btn primary r-act-btn", this.folds("act") ? `Act (${n}) ▾` : `Act on ${n} picked ▾`);') &&
      app.includes('bar.push(this.menu(`act:${j.id}`, act, [this.changePicks(j), el("div", "r-menu-sep"), ...menu], "", [this.pickedList(rows, picked)]));') && !app.includes("bar.push(edit, fix, post)") &&
      app.includes('private menu(key: string, b: HTMLButtonElement, items: HTMLElement[], meta = "", top: HTMLElement[] = []): HTMLElement {') &&
-     app.includes("return this.menu(key, b, items, meta);") &&
+     app.includes("return this.menu(key, b, items, meta, name ? [") &&
      app.includes('.r-menu [role=menuitem]:not(:disabled):not(.r-change)")?.focus()') &&
      app.includes("if (this.moreOpen === id || this.moreOpen === `act:${id}`) this.moreOpen = null;") &&
      app.includes('btn("Edit", ') && app.includes('btn("Fix with commits", ') && app.includes('btn("Post comments", ') &&
@@ -1805,8 +1805,8 @@ if (want("page script")) {
      app.includes("const PICKS_SHOWN = 5;") && /private pickedList\(rows: Finding\[\], picked: string\[\]\): HTMLElement \{[\s\S]{0,700}\.sort\(\(a, b\) => rank\(a\) - rank\(b\)\);[\s\S]{0,200}`Acts on \$\{fs\.length\} picked`[\s\S]{0,200}fs\.slice\(0, PICKS_SHOWN\)[\s\S]{0,300}el\("span", `r-sev \$\{f\.severity\}`, f\.severity\), el\("span", "r-sum", f\.summary\)[\s\S]{0,200}`\+\$\{fs\.length - PICKS_SHOWN\} more`/.test(app) &&
      /private changePicks\(j: Job\): HTMLButtonElement \{\s*const b = btn\("Change picks", \(\) => \{\s*this\.pickerOpen\.add\(j\.id\);\s*this\.render\(true\);/.test(app) &&
      app.includes("m.append(...top);") && appCss.includes(".r-menu-pick .r-sum { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }"));
-  ok("app: the header is one row at any width: the title ellipsizes, then GitHub, Overview (and Map), Split or Unified and ? fold into ⋯ in that order; the gate pill and Act button stay",
-     app.includes('const FOLDS = ["github", "overview", "layout", "keys"] as const;') && app.includes("const TITLE_MIN = 160;") &&
+  ok("app: the header is one row at any width: GitHub folds, live becomes its dot, Overview (and Map), Split or Unified and ? fold, then Findings and Act shorten, before the title goes under 12ch; the gate pill and Act button stay",
+     app.includes('const FOLDS = ["github", "live", "overview", "layout", "keys", "findings", "act"] as const;') && app.includes("const TITLE_MIN = 160;") &&
      /this\.fold = 0;\s*draw\(\);\s*while \(this\.fold < FOLDS\.length && this\.overflows\(\)\) \{\s*this\.fold\+\+;\s*draw\(\);\s*\}/.test(app) &&
      app.includes("return row.scrollWidth > row.clientWidth + 1 || squeezed;") &&
      app.includes("name.scrollWidth > name.clientWidth && name.clientWidth < TITLE_MIN") &&
@@ -1854,9 +1854,40 @@ if (want("page script")) {
      app.includes('this.listShown = localStorage.getItem(LIST_KEY) === "shown";') &&
      app.includes('btn(shown ? "◂ Reviews" : "Reviews ▸"') && app.includes('list.setAttribute("aria-expanded", String(shown));') &&
      appCss.includes(".review.folded { grid-template-columns: minmax(0, 1fr); }") && appCss.includes(".r-side[hidden] { display: none; }"));
-  ok("page: a card's id, category and verdict show on hover or focus, and stay in the DOM",
-     css.includes(".card-head .fid, .card-head .cat { opacity: 0;") && css.includes(".card:focus-within .card-head .fid") &&
-     !/\.card-head \.(fid|cat)[^{]*\{[^}]*display: none/.test(css));
+  ok("page: a card's id, category and verdict take no width from the title: out of the row (hovered, the title's tooltip names them, so nothing covers the card), back in it when focused or picked, and always in the DOM",
+     /\.card-head \.meta \{ position: absolute;[^}]*opacity: 0; pointer-events: none;/.test(css) &&
+     !/\.card:hover \.card-head \.meta/.test(css) && js.includes('title: x.id + (finding ? " · " + x.category') &&
+     /\.card:focus-within \.card-head \.meta, \.card\.flash \.card-head \.meta, \.card\.cur \.card-head \.meta \{\s*position: static; opacity: 1;/.test(css) &&
+     css.includes("@media (hover: none) { .card-head .meta { position: static; opacity: 1;") &&
+     css.includes(".card { position: relative; }") &&
+     !/\.card-head \.(meta|fid|cat)[^{]*\{[^}]*display: none/.test(css) && !css.includes(".card-head .fid, .card-head .cat { opacity: 0;"));
+  ok("page: \"Fails when:\" is a quiet label, normal weight and muted, not bold",
+     js.includes('el("span", { class: "label" }, "Fails when: "), el("span", { class: "scenario" }, x.failure_scenario)') &&
+     css.includes(".card-body .failure .label { color: var(--muted); font-weight: 400; }") &&
+     !js.includes('el("b", null, "Fails when: ")') && !css.includes(".card-body .failure b"));
+  ok("page: under 700px of diff column (not window) it draws unified, keeping the saved choice; wider brings split back; the toggle hides and the app is told",
+     js.includes("const SPLIT_MIN = 700;") &&
+     js.includes('const cramped = () => narrow() || ($("main").offsetWidth > 0 && $("main").offsetWidth < SPLIT_MIN);') &&
+     js.includes('const useSplit = layout === "split" && !cramped() && !oneSided;') &&
+     /new ResizeObserver\(\(\) => \{ if \(cramped\(\) !== wasCramped\) \{ wasCramped = cramped\(\); drawLayout\(\); drawMain\(\); \} \}\)\.observe\(\$\("main"\)\);/.test(js) &&
+     /function setLayout\(l\) \{ layout = l; store\.set\("lookout\.layout", l\);/.test(js) && !/cramped\(\)[^\n]*store\.set\("lookout\.layout"/.test(js) &&
+     js.includes('$("layout").classList.toggle("auto", cramped());') && css.includes("#layout.auto { display: none; }") &&
+     js.includes("layout, auto: cramped(), overview,") && !js.includes("wasNarrow") &&
+     app.includes("auto?: boolean;") && /if \(!p\.auto\) \{\s*const seg = el\("div", "r-seg"\);/.test(app));
+  ok("app: short of width, live is only its dot (words in its tooltip), Findings an icon (its name the label), Act on N picked \"Act (N)\"",
+     app.includes('const dot = this.folds("live") && (p.mode.cls === "live" || p.mode.cls === "down");') &&
+     app.includes('mode.title = dot ? `${p.mode.text}. ${p.mode.title}` : p.mode.title;') && app.includes('mode.setAttribute("aria-label", p.mode.text);') &&
+     appCss.includes('.r-mode.live.only::before { content: "●"; }') &&
+     app.includes('const short = this.folds("findings");') && app.includes('toggle.prepend(listIcon());') && app.includes('toggle.setAttribute("aria-label", "Findings");') &&
+     app.includes("private folds(f: Fold): boolean {\n    return FOLDS.indexOf(f) < this.fold;"));
+  ok("app: the title keeps 12ch until every step is taken, and a cut title is the ⋯ menu's first line",
+     appCss.includes("text-overflow: ellipsis; min-width: 12ch; flex: 0 1 auto; }") && appCss.includes(".r-mhead-row.tight .r-name { min-width: 3ch; }") &&
+     app.includes('if (row && this.overflows()) row.classList.add("tight");') &&
+     app.includes('if (row && name) row.classList.toggle("cut", name.scrollWidth > name.clientWidth);') &&
+     app.includes('return this.menu(key, b, items, meta, name ? [el("p", "r-menu-title", name)] : []);') &&
+     app.includes("this.more(more?.key ?? \"head\", meta, items, name)") &&
+     /m\.append\(\.\.\.top\);\s*if \(meta\) m\.append\(el\("p", "r-menu-meta", meta\)\);/.test(app) &&
+     appCss.includes(".r-mhead-row:not(.cut) .r-menu-title { display: none; }"));
   ok("page: an addressed blocker or major says it still blocks in its pill, with the why as its tooltip",
      js.includes('const stillBlocks = x => x.id.startsWith("f") && x.status === "addressed" && (x.severity === "blocker" || x.severity === "major");') &&
      js.includes('title: "Still blocks the gate until you resolve it" }, "addressed · still blocks")') &&

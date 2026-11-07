@@ -161,11 +161,14 @@ export class NewWorkspace {
     );
     this.sandboxRow.append(el("span", "newws-label", "Sandbox"), this.sandbox);
 
+    // The keys live in the buttons' tooltips: a hint line would only repeat them.
     this.cancel.type = "button";
+    this.cancel.title = "esc";
     this.cancel.addEventListener("click", () => this.close());
     this.create.type = "submit";
+    this.create.title = "⌘↵";
     const foot = el("footer", "newws-foot");
-    foot.append(el("span", "newws-keys", "⌘↵ create · esc"), this.cancel, this.create);
+    foot.append(this.cancel, this.create);
 
     this.steps.hidden = true;
     this.say.hidden = true;

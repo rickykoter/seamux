@@ -18,6 +18,12 @@
   const opened = new Set();          // collapsed files the reader chose to show
   const closedDirs = new Set(JSON.parse(store.get("lookout.closed." + R.id, "[]")));
   const narrow = () => window.matchMedia("(max-width: 760px)").matches;
+  // Split needs room: with the diff column under SPLIT_MIN px the page draws
+  // unified, whatever the saved choice (which it keeps), and draws split
+  // again once the column is wide enough. The column, not the window: the
+  // file list and the app's own side take width too.
+  const SPLIT_MIN = 700;
+  const cramped = () => narrow() || ($("main").offsetWidth > 0 && $("main").offsetWidth < SPLIT_MIN);
   // Framed by the seamux app (?embed=app), whose own header names the review:
   // the page drops its title row and keeps one row of tools.
   const embedded = (() => { try { return new URLSearchParams(location.search).get("embed") === "app"; } catch { return false; } })();
@@ -281,9 +287,13 @@
     const head = el("div", { class: "card-head", onclick: closed ? () => { expandedClosed.has(x.id) ? expandedClosed.delete(x.id) : expandedClosed.add(x.id); drawFile(); } : null },
       finding ? el("span", { class: "sev sev-" + x.severity }, x.severity) : el("span", { class: "sev sev-comment" }, "comment"),
       // Title first; folded, a finding shows its short summary, open, the full one, once.
-      el("span", { class: "title" }, finding ? (body ? x.summary : x.short_summary || x.summary) : ((x.messages || [])[0] || {}).text || ""),
-      el("span", { class: "fid" }, x.id),
-      finding ? el("span", { class: "cat" }, "· " + x.category + " · " + (x.verdict === "CONFIRMED" ? "confirmed" : "plausible")) : null,
+      // Hovered, the title's tooltip names the id, category and verdict.
+      el("span", { class: "title", title: x.id + (finding ? " · " + x.category + " · " + (x.verdict === "CONFIRMED" ? "confirmed" : "plausible") : "") }, finding ? (body ? x.summary : x.short_summary || x.summary) : ((x.messages || [])[0] || {}).text || ""),
+      // The id, category and verdict sit out of the row (review.css .card-head
+      // .meta), so the title has the full width until the card is focused
+      // or picked.
+      el("span", { class: "meta" }, el("span", { class: "fid" }, x.id),
+        finding ? el("span", { class: "cat" }, "· " + x.category + " · " + (x.verdict === "CONFIRMED" ? "confirmed" : "plausible")) : null),
       // Open is the usual state: only the others get a pill. An addressed
       // blocker or major still blocks the gate, and its pill says so.
       (x.status || "open") !== "open" ? (stillBlocks(x)
@@ -302,7 +312,7 @@
       onclick: e => pickCard(x.id, e) },
       head,
       body && finding ? el("div", { class: "card-body" },
-        el("div", { class: "failure" }, el("b", null, "Fails when: "), x.failure_scenario)) : null,
+        el("div", { class: "failure" }, el("span", { class: "label" }, "Fails when: "), el("span", { class: "scenario" }, x.failure_scenario))) : null,
       body ? el("div", { class: "msgs" }, thread.map(m => message(m, pill, folded))) : null,
       body ? actions(x) : null);
   }
@@ -773,7 +783,7 @@
     // An added or deleted file has one side; split would draw half a page of nothing.
     const oneSided = drawn.hunks.every(h => h.rows.every(r => r[0] === "+")) ||
                      drawn.hunks.every(h => h.rows.every(r => r[0] === "-"));
-    const useSplit = layout === "split" && !narrow() && !oneSided;
+    const useSplit = layout === "split" && !cramped() && !oneSided;
     const anch = anchorsFor(f.path, drawn);
     $("diff").replaceChildren(
       strip(f.path),
@@ -826,6 +836,8 @@
   function drawLayout() {
     for (const b of document.querySelectorAll("#layout button"))
       b.setAttribute("aria-pressed", String(b.dataset.layout === layout));
+    // Too narrow for split: the toggle would change nothing on screen, so it hides.
+    $("layout").classList.toggle("auto", cramped());
     postState();
   }
   function setLayout(l) { layout = l; store.set("lookout.layout", l); drawLayout(); drawMain(); }
@@ -861,8 +873,9 @@
   document.addEventListener("click", e => {
     if (!$("keys").hidden && !$("keys").contains(e.target)) toggleKeys(false);
   });
-  let wasNarrow = narrow();
-  window.addEventListener("resize", () => { if (narrow() !== wasNarrow) { wasNarrow = narrow(); drawMain(); postState(); } });
+  // The diff column's width, not the window's, picks split or unified.
+  let wasCramped = cramped();
+  new ResizeObserver(() => { if (cramped() !== wasCramped) { wasCramped = cramped(); drawLayout(); drawMain(); } }).observe($("main"));
 
   // The gate as the page sees it, the same rule `lookout gate` applies.
   function gateText() {
@@ -937,7 +950,7 @@
     window.parent.postMessage({ lookout: "state", id: R.id,
       gate: { cls: g.cls, text: g.text, title: gt.title, go: gt.go },
       mode: { cls: $("mode").className.replace("mode ", ""), text: $("mode").textContent, title: $("mode").title },
-      layout, overview, map: mapOn, hasMap: !!R.planMap, keys: !$("keys").hidden,
+      layout, auto: cramped(), overview, map: mapOn, hasMap: !!R.planMap, keys: !$("keys").hidden,
       // The list's own Overview row: while it shows, the app needs no Overview button.
       ovRow: !!document.querySelector("#tree .ov-row")?.getClientRects().length }, hostOrigin);
   }

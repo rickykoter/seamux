@@ -1333,6 +1333,7 @@ border-radius:6px;padding:3px 12px;cursor:pointer}
 .dp-gate-fix{display:inline-block;background:var(--fg);color:var(--bg);font-weight:600;text-decoration:none;
 border-radius:6px;padding:3px 12px;margin-left:2px}
 .dp-gate-fix:hover{opacity:.9}
+.dp-drift{color:var(--warn-t)}
 .dp-gate-fix:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 details.dp-more{display:inline-block;vertical-align:middle}
 details.dp-more>summary{list-style:none;cursor:pointer;color:var(--dim);padding:0 8px;border-radius:6px;line-height:26px;letter-spacing:.05em}
@@ -1687,7 +1688,14 @@ const DP_RISK_CSS = `.dp-risk-ctl{display:flex;flex-wrap:wrap;gap:6px 12px;align
 .dp-risk-none{border-style:dashed;color:var(--dim,#888)}
 .dp-risk-change,.dp-note-open{background:none;border:0;padding:0 2px;margin-left:6px;font:inherit;font-size:.85em;
   color:var(--accent-t,#46f);cursor:pointer;text-decoration:underline;text-underline-offset:2px}
-.dp-risk-change:focus-visible,.dp-note-open:focus-visible{outline:2px solid var(--accent,#46f);outline-offset:2px}`;
+.dp-risk-change:focus-visible,.dp-note-open:focus-visible{outline:2px solid var(--accent,#46f);outline-offset:2px}
+/* "change" shows when the row is hovered or holds focus, so a list of decided
+   risks reads as text. Tab still reaches it (opacity keeps it focusable); an
+   undecided risk keeps it in view, since it needs a decision; and a screen
+   with no hover always shows it. */
+.dp-risk .dp-risk-change{opacity:0;pointer-events:none;transition:opacity .12s}
+.dp-risk:hover .dp-risk-change,.dp-risk:focus-within .dp-risk-change,.dp-risk[data-disposition=""] .dp-risk-change{opacity:1;pointer-events:auto}
+@media (hover:none){.dp-risk .dp-risk-change{opacity:1;pointer-events:auto}}`;
 
 // The End state map: the model render stored (st.map) as JSON in the page,
 // then the renderer (lib/plan-map.js, a copy of shared/plan-map.js) in a
@@ -2324,40 +2332,56 @@ function checksRow(inc, slug = "") {
 // One increment of a family member in a few characters, for `family status`
 // and the working page's strip: its status, then its checks and its lookout
 // review as glyphs, then who gave its go.
-const FAM_STATUS = { done: "✓", working: "●", authorized: "▶", pending: "·", blocked: "✗" };
-const FAM_VERDICT = { pass: "✓", fail: "✗", pending: "…", running: "…", "needs-variant": "…", "needs-value": "…" };
+// "○" for not started: a middle dot read as a separator between the parts.
+const FAM_STATUS = { done: "✓", working: "●", authorized: "▶", pending: "○", blocked: "✗" };
+const FAM_VERDICT = { pass: "✓", fail: "✗" };
+// A verdict with no result yet is said in words. On an increment that has
+// not started, "not run" adds nothing, so the part is left out.
+const FAM_WAIT_WORDS = { pending: "not run", running: "running", "needs-variant": "need input", "needs-value": "need input" };
+function famVerdict(v, what, status) {
+  if (!v || v === "n/a") return "";
+  if (FAM_VERDICT[v]) return `${FAM_VERDICT[v]} ${what}`;
+  if (status === "pending" && (v === "pending" || !FAM_WAIT_WORDS[v])) return "";
+  return `${what} ${FAM_WAIT_WORDS[v] || "not run"}`;
+}
 function famIncParts(i) {
   return {
-    status: FAM_STATUS[i.status] || "·",
-    checks: i.checks && i.checks !== "n/a" ? `${FAM_VERDICT[i.checks] || "…"} checks` : "",
-    review: i.review ? `${FAM_VERDICT[i.review] || "…"} review` : "",
+    status: FAM_STATUS[i.status] || FAM_STATUS.pending,
+    checks: famVerdict(i.checks, "checks", i.status),
+    review: famVerdict(i.review, "review", i.status),
     by: i.by ? `go by ${i.by}` : "",
   };
 }
 
 const FAM_PHASE = { review: "in review", implementing: "building", delivery: "in its delivery review" };
-// What the glyphs in an opened family member mean, one line above them.
-const FAM_KEY = `<p class="dim dp-fam-key">${FAM_STATUS.done} done, ${FAM_STATUS.working} building, ${FAM_STATUS.authorized} has its go, ` +
-  `${FAM_STATUS.pending} not started, ${FAM_STATUS.blocked} blocked. Checks and review: ${FAM_VERDICT.pass} passed, ${FAM_VERDICT.fail} failed, ` +
-  `${FAM_VERDICT.pending} not run yet. "go by" names who gave the go.</p>`;
+// What the glyphs mean, once at the strip's end behind a small "?".
+const FAM_KEY = `<details class="dp-fam-help"><summary aria-label="what the marks mean" title="what the marks mean">?</summary>` +
+  `<p class="dim dp-fam-key">${FAM_STATUS.done} done, ${FAM_STATUS.working} building, ${FAM_STATUS.authorized} has its go, ` +
+  `${FAM_STATUS.pending} not started, ${FAM_STATUS.blocked} blocked. Checks and review: ${FAM_VERDICT.pass} passed, ${FAM_VERDICT.fail} failed. ` +
+  `"go by" names who gave the go.</p></details>`;
 
 function familyStripHtml(slug) {
   const idx = familyOf(slug);
   const f = idx && familyRow(idx, slug);
   if (!f) return "";
   const waitsOn = new Set(f.waitingOn.length ? [f.parent] : []);
+  const plansDone = f.members.filter(m => m.phase === "done" || (m.total && m.done === m.total)).length;
+  let anyIncs = false;
   const items = f.members.map(m => {
     const me = m.slug === slug;
     const name = me ? `<b>${esc(m.slug)}</b>` :
       `<a class="dp-fam-link" href="${esc(m.slug)}.working.html" data-plan="${esc(m.slug)}">${esc(m.slug)}</a>`;
     const incs = (m.increments || []).map(i => {
       const p = famIncParts(i);
+      anyIncs = true;
       return `<span class="dp-fam-inc dp-fam-${esc(i.status)}" title="${esc(i.title)} — ${esc(i.status)}">` +
         `${p.status} ${i.n}${[p.checks, p.review, p.by].filter(Boolean).map((x, k) => `${k ? " ·" : ""} <span class="dim">${esc(x)}</span>`).join("")}</span>`;
     }).join("");
     // The member's line in words: phase, how many increments are done, who
     // gives its go, and whether it waits on the parent.
-    const words = [FAM_PHASE[m.phase] || m.phase, `${m.done} of ${m.total} done`];
+    const words = [FAM_PHASE[m.phase] || m.phase, `${m.done} of ${m.total} increments done`];
+    // The parent's name is the family's, so its line carries the family count.
+    if (m.role === "parent") words.push(`${plansDone} of ${f.members.length} plans done`);
     if (m.role === "child" && m.go === "parent") words.push("the parent gives its go");
     if (!me && m.role === "child" && waitingOn(m.slug).length) words.push("waits on the parent");
     const line = `<span class="dim">${m.role === "parent" ? "parent" : "child"}</span> ${name}` +
@@ -2369,7 +2393,7 @@ function familyStripHtml(slug) {
     if (open || !incs) return `<li class="dp-fam-m${me ? " dp-fam-me" : ""}">${line}${held}` +
       (incs ? `<div class="dp-fam-incs">${incs}</div>` : "") + `</li>`;
     return `<li class="dp-fam-m"><details class="dp-fam-more"><summary>${line}</summary>` +
-      `${FAM_KEY}<div class="dp-fam-incs">${incs}</div></details>${held}</li>`;
+      `<div class="dp-fam-incs">${incs}</div></details>${held}</li>`;
   }).join("");
   const owns = f.owns.length ? `<p class="dim">this plan owns ${f.owns.map(g => `<code>${esc(g)}</code>`).join(" ")}</p>` : "";
   const waits = f.waitingOn.length
@@ -2383,7 +2407,16 @@ function familyStripHtml(slug) {
 .dp-fam-inc{white-space:nowrap}
 .dp-fam-done{opacity:.75}
 .dp-fam p{margin:4px 0}
-.dp-fam .dp-fam-key{margin:4px 0 2px 1.2em;font-size:.88em}
+.dp-fam-tail{display:flex;flex-wrap:wrap;align-items:flex-start;gap:0 10px}
+.dp-fam-tail>div{flex:1;min-width:0}
+.dp-fam-help{margin:4px 0 0 auto;text-align:right}
+.dp-fam-help[open]{flex-basis:100%}
+.dp-fam-help>summary{list-style:none;cursor:pointer;display:inline-block;width:18px;height:18px;line-height:16px;text-align:center;
+  border:1px solid var(--line,#8884);border-radius:50%;font-size:.8em;color:var(--dim)}
+.dp-fam-help>summary::-webkit-details-marker{display:none}
+.dp-fam-help>summary:hover,.dp-fam-help[open]>summary{color:var(--fg);border-color:var(--dim)}
+.dp-fam-help>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.dp-fam .dp-fam-key{margin:4px 0 2px;font-size:.88em;text-align:left;max-width:46ch}
 .dp-fam-wait{color:var(--warn,#c80)}
 .dp-fam-link{color:inherit}
 .dp-fam-more>summary{cursor:pointer;list-style:none;width:fit-content}
@@ -2393,8 +2426,7 @@ function familyStripHtml(slug) {
 .dp-fam-more[open]>summary::after{transform:rotate(45deg)}
 .dp-fam-more>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 </style>
-<p class="dim">family <b>${esc(f.parent)}</b> · ${f.members.filter(m => m.phase === "done" || (m.total && m.done === m.total)).length}/${f.members.length} plans done</p>
-<ul>${items}</ul>${owns}${waits}
+<ul>${items}</ul><div class="dp-fam-tail"><div>${owns}${waits}</div>${anyIncs ? FAM_KEY : ""}</div>
 <script>
 if (/^https?:/.test(location.protocol)) document.querySelectorAll(".dp-fam-link").forEach(function (a) {
   a.setAttribute("href", "/plan/" + encodeURIComponent(a.getAttribute("data-plan")));
@@ -2422,25 +2454,37 @@ const allows = (status, action) => ALWAYS.includes(action) || incActions(status)
 // hover title; the page's title already names the plan. gateView's `why`
 // stays as it is for the board.
 const PHASE_WORDS = { review: "waiting on the review", implementing: "building", delivery: "in its delivery review", done: "done", closed: "closed" };
-function gateLineHtml(st, g, next, nextAct) {
+// A plan that only waits on its next go is not blocked: once the alignment
+// check passed, nothing is blocked and the plan matches what was approved,
+// the line says it is ready in the accent colour rather than a red "shut".
+const READY_GLYPH = glyphSvg(RING("var(--accent)") + `<path d="M5 3.9v4.2L8.2 6z" fill="var(--accent)"/>`);
+function gateLineHtml(st, g, next, nextAct, drift) {
   const p = progress(st);
+  const ready = g.between && next && next.status === "pending" && nextAct === "go" && !drift &&
+    !(st.increments || []).some(i => i.status === "blocked");
+  if (ready) return `<p class="dp-gate" data-allow="0" data-ready="1" title="${esc(gateTip(st))}">${READY_GLYPH} ` +
+    `<b>Ready</b>: <a href="#inc-${next.n}">give increment ${next.n} its go</a></p>`;
   const list = ns => ns.length === 1 ? `increment ${ns[0]}` : `increments ${ns.slice(0, -1).join(", ")} and ${ns[ns.length - 1]}`;
   let why;
   if (st.gate === "open") why = "opened by hand.";
   else if (!g.allow && st.phase === "review")
     why = `the alignment check isn't taken yet. <a class="dp-gate-fix" href="${esc(st.slug)}.review.html#s-alignment-check">Take it on the review page</a>.`;
-  else if (g.between && next)
-    why = `no increment has its go yet. Next: <a href="#inc-${next.n}">${esc(nextAct || "go")} on increment ${next.n}</a>.`;
+  else if (g.between && next) {
+    const blocked = (st.increments || []).filter(i => i.status === "blocked").map(i => i.n);
+    const cause = blocked.length ? `${list(blocked)} ${blocked.length === 1 ? "is" : "are"} blocked`
+      : drift ? "the plan changed since you approved it" : "no increment has its go yet";
+    why = `${cause}. Next: <a href="#inc-${next.n}">${esc(nextAct || "go")} on increment ${next.n}</a>.`;
+  }
   else if (g.allow && p.open.length)
     why = `${list(p.open.map(i => i.n))} ${p.open.length === 1 ? "has its" : "have their"} go.`;
   else if (g.allow && st.phase === "delivery")
     why = `every increment is done. The delivery review keeps the plan open: <code>deep-plan deliver ${esc(st.slug)}</code>.`;
   else why = esc(String(g.why || "").replace(/^./, c => c.toLowerCase()));
-  const root = st.root || "";
-  const tip = [root, `phase: ${st.phase}${PHASE_WORDS[st.phase] ? " (" + PHASE_WORDS[st.phase] + ")" : ""}`].filter(Boolean).join("\n");
-  return `<p class="dp-gate" data-allow="${g.allow ? 1 : 0}" title="${esc(tip)}">${g.allow ? CHECK_GLYPH.pass : CHECK_GLYPH.fail} ` +
+  return `<p class="dp-gate" data-allow="${g.allow ? 1 : 0}" title="${esc(gateTip(st))}">${g.allow ? CHECK_GLYPH.pass : CHECK_GLYPH.fail} ` +
     `<b>Gate ${g.allow ? "open" : "shut"}</b>: ${why.replace(/\.$/, "")}</p>`;
 }
+
+const gateTip = st => [st.root || "", `phase: ${st.phase}${PHASE_WORDS[st.phase] ? " (" + PHASE_WORDS[st.phase] + ")" : ""}`].filter(Boolean).join("\n");
 
 function workingHtml(spec, st, b64) {
   // The plan's next step: the lowest increment not done, and its first allowed
@@ -2494,10 +2538,13 @@ ${acts ? `<p class="dp-acts">${acts}</p>` : ""}</div>`;
   // The work comes first: Gate and Increments (with the one primary button)
   // sit under the title, and the spec they were approved from follows,
   // folded, since the reader already went through it at review.
-  const approved = st.approved ? `<p class="dim">approved snapshot: <span class="dp-path" data-file="${esc(st.approved.path)}"><code>${esc(st.approved.path)}</code></span>${
-      st.approved.spec_hash !== specHash(spec) ? ' · <span style="color:var(--warn-t)">the live plan has DRIFTED from the approved snapshot (spec amended since grade-pass)</span>' : ""}</p>\n` : "";
+  // The snapshot is a short link (served, a click opens the file); its full
+  // path sits in the title, where a long temp path cannot fill three lines.
+  const drift = !!st.approved && st.approved.spec_hash !== specHash(spec);
+  const approved = st.approved ? `<p class="dim dp-approved"><span class="dp-path" data-file="${esc(st.approved.path)}" title="${esc(st.approved.path)}">approved copy ↗</span>${
+      drift ? ' · <span class="dp-drift">changed since you approved it</span>' : ""}</p>\n` : "";
   const work = familyStripHtml(spec.slug) + "\n" + approved +
-    `<h2>Gate</h2>${gateLineHtml(st, g, next, nextAct)}
+    `<h2>Gate</h2>${gateLineHtml(st, g, next, nextAct, drift)}
 <h2>Increments</h2>${rows}
 `;
   const body = commonBody(spec, st.adrs || [], true,

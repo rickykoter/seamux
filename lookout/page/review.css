@@ -122,6 +122,8 @@ button { font: inherit; color: inherit; }
 .seg button { background: var(--bg); border: 0; padding: 3px 10px; cursor: pointer; }
 .seg button + button { border-left: 1px solid var(--border); }
 .seg button[aria-pressed="true"] { background: var(--sel); font-weight: 600; }
+/* The diff column is too narrow for split: the page draws unified (drawLayout). */
+#layout.auto { display: none; }
 #banner { grid-area: banner; padding: 6px 16px; background: var(--hunk); color: var(--fg);
   border-bottom: 1px solid var(--border); font-size: var(--fs-2); }
 
@@ -255,13 +257,19 @@ tr.thread-row > td { padding: 6px 12px 10px 60px; background: var(--side); borde
   color: var(--sev, var(--muted)); background: color-mix(in srgb, var(--sev, var(--muted)) 16%, transparent); }
 .fid { font: var(--fs-1) var(--mono); color: var(--muted); }
 .cat { font-size: var(--fs-1); color: var(--muted); }
-/* The id, category and verdict show on hover or focus; they stay in the DOM for keys and screen readers. */
-.card-head .fid, .card-head .cat { opacity: 0; transition: opacity .12s; }
-.card:hover .card-head .fid, .card:hover .card-head .cat,
-.card:focus-within .card-head .fid, .card:focus-within .card-head .cat,
-.card.flash .card-head .fid, .card.flash .card-head .cat, .card.cur .card-head .fid, .card.cur .card-head .cat { opacity: 1; }
-@media (hover: none) { .card-head .fid, .card-head .cat { opacity: 1; } }
-.fid + .cat { margin-left: -4px; }
+/* The id, category and verdict take no room in the row, so a title wraps only
+   at the card's edge. Hovered, the title's tooltip names them (review.js), so
+   nothing covers the card; picked, focused or flashed (keys, a reply box) they
+   rejoin the row, as the action row does. They stay in the DOM for screen
+   readers; on touch, in the row. */
+.card { position: relative; }
+.card-head .meta { position: absolute; bottom: 0; right: 0; z-index: 1; display: flex; gap: 4px; align-items: baseline;
+  max-width: 60%; padding: 2px 8px; white-space: nowrap; overflow: hidden;
+  background: var(--card); border-left: 1px solid var(--card-border); border-top: 1px solid var(--card-border);
+  border-top-left-radius: 6px; opacity: 0; pointer-events: none; transition: opacity .12s; }
+.card:focus-within .card-head .meta, .card.flash .card-head .meta, .card.cur .card-head .meta {
+  position: static; opacity: 1; max-width: none; padding: 0; background: none; border: 0; pointer-events: auto; }
+@media (hover: none) { .card-head .meta { position: static; opacity: 1; max-width: none; padding: 0; background: none; border: 0; } }
 .card .title { font-weight: 600; flex: 1; min-width: 200px; }
 .card .status { font-size: var(--fs-1); color: var(--muted); border: 1px solid var(--border); border-radius: 10px; padding: 0 7px; }
 .card .status.st-addressed { color: var(--risk-medium); border-color: var(--risk-medium); }
@@ -270,7 +278,9 @@ tr.thread-row > td { padding: 6px 12px 10px 60px; background: var(--side); borde
 .card .status.st-resolved { color: var(--st-a); border-color: var(--st-a); }
 .card-body { padding: 0 10px 8px; }
 .card-body .failure { margin-top: 4px; color: var(--muted); }
-.card-body .failure b { color: var(--fg); font-weight: 600; }
+/* The label is quiet: normal weight and muted, the scenario after it in the text colour. */
+.card-body .failure .label { color: var(--muted); font-weight: 400; }
+.card-body .failure .scenario { color: var(--fg); }
 .msgs { border-top: 1px solid var(--border); }
 .msgs:empty { display: none; }
 .msg { padding: 6px 10px; border-top: 1px solid var(--border); }
