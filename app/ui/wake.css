@@ -41,10 +41,11 @@
 .wake.embedded .w-help { right: 12px; }
 /* A row's path takes the row's whole width there, under its kind. */
 .wake.embedded .w-p { grid-column: 1 / -1; }
-.wake.embedded .w-row { grid-template-columns: 48px minmax(0, 1fr) minmax(0, auto) auto; }
+.wake.embedded .w-row { grid-template-columns: 48px minmax(0, max-content) minmax(0, auto) minmax(0, 1fr) auto; }
+.wake.embedded .w-ph time { flex-basis: 48px; }
 .wake.embedded .w-badges { flex-wrap: wrap; min-width: 0; }
 .wake.embedded .w-act, .wake.embedded .w-st { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.w-day h2 { font-size: var(--fs-1); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--section); margin: 14px 0 6px; }
+.w-day h2 { font-size: var(--fs-2); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--section); margin: 14px 0 6px; }
 /* The day heading folds its day: a folded day is its heading and a count. */
 .w-dayh { all: unset; cursor: pointer; }
 .w-dayh:hover { color: var(--fg); }
@@ -64,7 +65,9 @@
 .w-grp { margin: 0; border-top: 1px solid var(--line); }
 .w-day > .w-grp:first-of-type { border-top: 0; }
 .w-ph { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 12px 0; font-size: var(--fs-2); color: var(--muted); }
-.w-ph time { color: var(--muted); font-variant-numeric: tabular-nums; }
+/* The caption's time sits in the rows' kind column, so its prompt starts at
+   the titles' edge (the same 64px and 10px gap as .w-row). */
+.w-ph time { flex: 0 0 64px; color: var(--muted); font-variant-numeric: tabular-nums; }
 /* A group of one: its prompt is a quiet caption above the row, not a band. */
 .w-prompt { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 .w-grp.open .w-prompt { white-space: normal; }
@@ -77,26 +80,34 @@
 /* A caption's branch and copy resume wait for the group's hover, focus or
    picked row, so the caption leads with its prompt; ⋯ and r copy resume too. */
 .w-grp:not(:hover):not(:focus-within):not(:has(.w-row.sel)) > .w-ph :is(.w-br, .w-sess),
+.w-row:not(:hover):not(:focus-within):not(.sel) > .w-tm :is(.w-br, .w-sess),
 .w-ph:not(:hover):not(:focus-within) .rep { position: absolute; width: 1px; height: 1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .w-rows { list-style: none; margin: 0; padding: 4px 0; }
-/* A row: kind, title, badges, then its one action and ⋯ at the end. A click opens it. */
-.w-row { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto auto; gap: 2px 10px; align-items: center; padding: 5px 12px; cursor: pointer; }
+/* A row: kind, title, its badges (and keep) right after the title, the
+   spare space, then a dropped caption's time and the ⋯ at the end. The title
+   column is as wide as its text and gives way (ellipsis) when the row is full,
+   so every title starts at one x. A click opens it. */
+.w-row { display: grid; grid-template-columns: 64px minmax(0, max-content) minmax(0, auto) minmax(0, 1fr) auto; gap: 2px 10px; align-items: center; padding: 5px 12px; cursor: pointer; }
 .w-row:hover { background: color-mix(in srgb, var(--fg) 5%, transparent); }
 .w-row.sel { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .w-row.gone .w-t { color: var(--muted); text-decoration: line-through; }
 /* The kind is a label, not a signal: grey. Only "at risk" keeps a hue. */
-.w-k { font-size: var(--fs-1); color: var(--muted); font-weight: 400; }
+.w-k { font-size: var(--fs-2); color: var(--muted); font-weight: 400; }
 .w-t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.w-badges { display: flex; gap: 4px; }
+.w-badges { grid-column: 3; grid-row: 1; display: flex; align-items: center; gap: 4px; }
+.w-badges .w-act { padding: 0 8px; }
+/* A group of one whose caption would be just a time: the time at the row's end. */
+.w-tm { grid-column: 4; grid-row: 1; display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; font-size: var(--fs-2); color: var(--muted); }
+.w-tm time { flex: none; font-variant-numeric: tabular-nums; }
 .w-st { font-size: var(--fs-1); padding: 0 6px; border-radius: 8px; background: var(--term); color: var(--muted); }
 .w-st.risk { color: var(--bad-t); }
 .w-st.kept { color: var(--good-t); }
 /* A row's path shows when the row is picked, or while searching (a match can
    be in it); otherwise it is in the title's tooltip. A was-path always shows. */
 .w-row:not(.sel) .w-p:not(.was):not(.hit) { display: none; }
-.w-p { grid-column: 2 / 4; font: var(--fs-1) ui-monospace, Menlo, monospace; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.w-p { grid-column: 2 / 5; font: var(--fs-1) ui-monospace, Menlo, monospace; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .w-p.was { opacity: 0.7; }
-.w-acts { grid-column: 4; grid-row: 1; display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.w-acts { grid-column: 5; grid-row: 1; display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
 .w-act { font: inherit; font-size: var(--fs-2); padding: 2px 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
 .w-act.sure, .w-act.main { border-color: var(--accent); color: var(--accent-t); }
 .w-act.keepall { white-space: nowrap; }
