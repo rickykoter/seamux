@@ -45,8 +45,14 @@ tree (single-child folders folded together), one file's diff on the right.
   signals alone.
 - **Findings** sit under the line they name, with severity, category,
   verdict, status and their thread; the header shows the gate. Findings on
-  lines the diff does not show are listed at the top of the file. Closed
-  ones fold to one line.
+  lines the diff does not show are listed at the top of the file. Blocker
+  and major cards stay open. A minor, a nit or a comment folds to one row
+  (its severity and short title) until it becomes the current card, by a
+  click, Enter or `n`/`p`. Closed ones fold to one line too. A line that
+  carries open findings has a dot per severity in its line-number gutter.
+  Hover the dots for the findings' titles, or click one to go to the worst.
+  In the seamux app, a finding picked for the Act menu has a check at the
+  card's left.
 - **Highlighting** is highlight.js over each side's whole file, so a change
   inside a block comment or a template string reads right. Changed words in
   a paired removed/added line are marked.

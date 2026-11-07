@@ -241,6 +241,8 @@ export class ReviewView {
   /** The framed page's tools, once it posts them; its origin, to talk back. */
   private pageState: PageState | null = null;
   private pageOrigin = "";
+  /** The picked ids last posted to the framed page, so it is told only of a change. */
+  private sentPicks = "";
   /** How many of FOLDS the header row has folded into its ⋯ menu, and the width it fitted. */
   private fold = 0;
   private fitWidth = 0;
@@ -642,6 +644,26 @@ export class ReviewView {
       this.fitWidth = this.head.clientWidth;
     }
     if (job?.status === "ready") void this.loadFindings(job);
+    this.syncPicks(job);
+  }
+
+  /**
+   * Tells the framed page which findings are picked (the Act set), so its
+   * cards can show a check; the page's own "current" card is a different
+   * thing. Only once the page has answered as hosted, and only on a change.
+   */
+  private syncPicks(job: Job | undefined): void {
+    const f = this.frameBox.querySelector("iframe");
+    if (!this.pageState || !f || !this.pageOrigin) {
+      this.sentPicks = "";
+      return;
+    }
+    const rows = job ? (this.findings.get(job.id)?.rows ?? []) : [];
+    const ids = job ? [...(this.ticked.get(job.id) ?? [])].filter((id) => rows.some((r) => r.id === id)) : [];
+    const key = JSON.stringify(ids);
+    if (key === this.sentPicks) return;
+    this.sentPicks = key;
+    f.contentWindow?.postMessage({ lookout: "do", op: "picks", ids }, this.pageOrigin);
   }
 
   /** Whether the header row has taken this step (FOLDS) to fit. */

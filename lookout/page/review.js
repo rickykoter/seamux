@@ -278,20 +278,54 @@
 
   const stillBlocks = x => x.id.startsWith("f") && x.status === "addressed" && (x.severity === "blocker" || x.severity === "major");
 
+  // Two words kept apart: the CURRENT card (curFinding, class "cur") is the
+  // one the reader is on, by a click, Enter or n/p; PICKED cards (the set
+  // `picked`, class "picked", a check mark at their left) are the findings
+  // the app's Act menu will edit, fix or post. Only the app knows the
+  // picked set; it posts it (op "picks") once it hosts the page.
+  let picked = new Set();
+  const checkIcon = () => {
+    const ns = "http://www.w3.org/2000/svg";
+    const s = document.createElementNS(ns, "svg");
+    s.setAttribute("viewBox", "0 0 12 12");
+    s.setAttribute("aria-hidden", "true");
+    const p = document.createElementNS(ns, "path");
+    p.setAttribute("d", "M2.5 6.3 5 8.6 9.5 3.6");
+    s.append(p);
+    return el("span", { class: "pickmark", title: "Picked: the app's Act menu acts on it" }, s);
+  };
+
+  // Blockers and majors keep their card open; a minor, a nit or a comment
+  // folds to one row (its chip and short title) unless it is the current
+  // card or has a reply draft in it. A click, Enter, or n/p landing on it
+  // makes it current, which opens it.
+  const holdsOpen = x => x.severity === "blocker" || x.severity === "major";
+  const foldedCard = x => isOpen(x) && !holdsOpen(x) && x.id !== curFinding && !draftText("r:" + x.id).trim();
+
   // One finding or comment thread, drawn under its line.
   const expandedClosed = new Set();
   function card(x) {
     const finding = x.id.startsWith("f");
     const closed = !isOpen(x);
     const body = !closed || expandedClosed.has(x.id);
+    const sev = finding ? el("span", { class: "sev sev-" + x.severity }, x.severity) : el("span", { class: "sev sev-comment" }, "comment");
+    const mark = picked.has(x.id) ? checkIcon() : null;
+    if (foldedCard(x)) {
+      const title = finding ? x.short_summary || x.summary : ((x.messages || [])[0] || {}).text || "";
+      return el("div", { class: "card folded" + (finding ? "" : " comment") + (mark ? " picked" : ""), "data-item": x.id,
+        tabindex: "0", role: "button", "aria-expanded": "false", title: x.id + ": open this " + (finding ? "finding" : "comment"),
+        onclick: e => pickCard(x.id, e),
+        onkeydown: e => { if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); openCard(x.id, true); } } },
+        el("div", { class: "card-head" }, mark, sev, el("span", { class: "title" }, title)));
+    }
     const head = el("div", { class: "card-head", onclick: closed ? () => { expandedClosed.has(x.id) ? expandedClosed.delete(x.id) : expandedClosed.add(x.id); drawFile(); } : null },
-      finding ? el("span", { class: "sev sev-" + x.severity }, x.severity) : el("span", { class: "sev sev-comment" }, "comment"),
+      mark, sev,
       // Title first; folded, a finding shows its short summary, open, the full one, once.
       // Hovered, the title's tooltip names the id, category and verdict.
       el("span", { class: "title", title: x.id + (finding ? " · " + x.category + " · " + (x.verdict === "CONFIRMED" ? "confirmed" : "plausible") : "") }, finding ? (body ? x.summary : x.short_summary || x.summary) : ((x.messages || [])[0] || {}).text || ""),
       // The id, category and verdict sit out of the row (review.css .card-head
       // .meta), so the title has the full width until the card is focused
-      // or picked.
+      // or current.
       el("span", { class: "meta" }, el("span", { class: "fid" }, x.id),
         finding ? el("span", { class: "cat" }, "· " + x.category + " · " + (x.verdict === "CONFIRMED" ? "confirmed" : "plausible")) : null),
       // Open is the usual state: only the others get a pill. An addressed
@@ -308,7 +342,7 @@
     const prev = pill && pill.text ? thread[thread.indexOf(pill) - 1] : null;
     const folded = prev && prev.kind !== "status" && prev.by === pill.by &&
       Math.abs(Date.parse(pill.at) - Date.parse(prev.at)) <= 120000 ? { m: pill, after: prev, to: pill.to, text: pill.text } : null;
-    return el("div", { class: "card" + (closed ? " closed" : "") + (finding ? "" : " comment") + (x.id === curFinding ? " cur" : ""), "data-item": x.id,
+    return el("div", { class: "card" + (closed ? " closed" : "") + (finding ? "" : " comment") + (x.id === curFinding ? " cur" : "") + (mark ? " picked" : ""), "data-item": x.id,
       onclick: e => pickCard(x.id, e) },
       head,
       body && finding ? el("div", { class: "card-body" },
@@ -316,14 +350,40 @@
       body ? el("div", { class: "msgs" }, thread.map(m => message(m, pill, folded))) : null,
       body ? actions(x) : null);
   }
-  // A click on a card picks it, as n/p do, which shows its Reply / Resolve /
-  // Dismiss row. Not a click on a control, and not the end of a text selection.
+  // A click on a card makes it the current one, as n/p do, which opens a
+  // folded card and shows its Reply / Resolve / Dismiss row. Not a click on
+  // a control, and not the end of a text selection.
   function pickCard(id, e) {
     if (e.target.closest("button, a, textarea, input") || String(getSelection() || "")) return;
+    openCard(id);
+  }
+  // `focus`: opened from the keyboard, the opened card takes the focus the
+  // folded row had (the row itself is gone).
+  function openCard(id, focus = false) {
+    const prev = curFinding;
     curFinding = id;
-    for (const o of document.querySelectorAll(".card.cur")) o.classList.remove("cur");
+    redrawCards([prev, id]);
+    for (const o of document.querySelectorAll(".card.cur")) if (o.dataset.item !== id) o.classList.remove("cur");
     const c = document.querySelector(`[data-item="${CSS.escape(id)}"]`);
-    if (c) c.classList.add("cur");
+    if (!c) return;
+    c.classList.add("cur");
+    if (focus) { c.tabIndex = -1; c.focus({ preventScroll: true }); }
+  }
+  // The app's Act set changed: only the cards that joined or left it redraw.
+  function setPicked(ids) {
+    const next = new Set(ids.filter(id => typeof id === "string"));
+    const changed = [...picked, ...next].filter(id => picked.has(id) !== next.has(id));
+    picked = next;
+    redrawCards(changed);
+  }
+  // Draws these cards again in place (a fold, a pick): the diff around them,
+  // and a box being typed in elsewhere, are left alone.
+  function redrawCards(ids) {
+    for (const id of new Set(ids.filter(Boolean))) {
+      const x = items().find(y => y.id === id);
+      if (!x) continue;
+      for (const c of document.querySelectorAll(`#diff [data-item="${CSS.escape(id)}"]`)) c.replaceWith(card(x));
+    }
   }
   // Increment 4's comment channel fills this in when the page is served.
   let actions = () => null;
@@ -666,8 +726,13 @@
     $("main").scrollTop = 0;
   }
 
+  // The file's header line: status, path, counts and risk. Not the language,
+  // and not a risk reason that only repeats an open finding ("open blocker
+  // finding"): the gate pill and the cards already say that.
+  const headReasons = f => (f.reasons || []).filter(r => !/^open \w+ finding$/.test(r));
   function fileHead(f) {
     const cut = f.path.lastIndexOf("/");
+    const reasons = headReasons(f);
     return [
       el("span", { class: "st st-" + f.status }, f.status),
       el("span", { class: "path" }, cut >= 0 ? el("span", { class: "dir" }, f.path.slice(0, cut + 1)) : null,
@@ -677,8 +742,7 @@
         el("span", { class: "minus" }, "−" + f.dels)),
       typeof f.risk === "number" ? el("span", { class: "risk band-" + (f.band || "low"),
         title: (f.reasons || []).join(", ") }, `${f.band} risk`,
-        f.reasons && f.reasons.length ? el("span", { class: "reasons" }, " · " + f.reasons.join(", ")) : null) : null,
-      f.lang ? el("span", { class: "lang" }, f.lang) : null,
+        reasons.length ? el("span", { class: "reasons" }, " · " + reasons.join(", ")) : null) : null,
     ];
   }
 
@@ -693,8 +757,26 @@
       canShow ? el("button", { type: "button", onclick: () => { opened.add(f.path); drawFile(); } }, "Show diff") : null);
   }
 
-  const lnCell = (n, cls, side) => el("td", { class: "ln" + (cls ? " " + cls : ""),
-    "data-side": n == null ? null : side, "data-line": n == null ? null : n }, n == null ? "" : String(n));
+  // The findings gutter: a line that carries open findings or comments gets
+  // a dot per severity in its line-number cell, worst first, so a folded
+  // card's line still shows from the code. Hovered, the dots name their
+  // findings; a click or Enter goes to the worst one.
+  let gutter = new Map();     // "new:12" → open items on that line, worst first
+  const sevOf = x => x.id.startsWith("f") ? x.severity : "comment";
+  const GUTTER_ORDER = [...SEV, "comment"];
+  function gutterMark(list) {
+    const sevs = GUTTER_ORDER.filter(s => list.some(x => sevOf(x) === s));
+    const names = list.map(x => `${sevOf(x)}: ${x.id.startsWith("f") ? x.short_summary || x.summary : ((x.messages || [])[0] || {}).text || ""}`);
+    return el("button", { type: "button", class: "gmark", title: names.join("\n"),
+      "aria-label": `${plural(list.length, "finding")} on this line: ${names.join("; ")}`,
+      onclick: e => { e.stopPropagation(); goTo(list[0].id); } },
+      sevs.map(s => el("span", { class: "gdot sev-" + s })));
+  }
+  const lnCell = (n, cls, side) => {
+    const here = n == null ? null : gutter.get(side + ":" + n);
+    return el("td", { class: "ln" + (cls ? " " + cls : "") + (here ? " marked" : ""),
+      "data-side": n == null ? null : side, "data-line": n == null ? null : n }, n == null ? "" : String(n), here ? gutterMark(here) : null);
+  };
   const codeCell = (html, cls, sign) => el("td", { class: "code" + (cls ? " " + cls : ""), "data-sign": sign, html });
   const KIND = { "+": "add", "-": "del", " ": "" };
 
@@ -785,6 +867,8 @@
                      drawn.hunks.every(h => h.rows.every(r => r[0] === "-"));
     const useSplit = layout === "split" && !cramped() && !oneSided;
     const anch = anchorsFor(f.path, drawn);
+    const worstFirst = (a, b) => GUTTER_ORDER.indexOf(sevOf(a)) - GUTTER_ORDER.indexOf(sevOf(b));
+    gutter = new Map([...anch.at].map(([k, list]) => [k, list.filter(isOpen).sort(worstFirst)]).filter(([, list]) => list.length));
     $("diff").replaceChildren(
       strip(f.path),
       anch.outside.length ? el("div", { class: "outside" }, el("div", { class: "outside-head" }, "On lines this diff does not show"),
@@ -818,11 +902,14 @@
   function goTo(id) {
     const x = items().find(y => y.id === id);
     if (!x) return;
+    const prev = curFinding;
     curFinding = id;
     if (x.file !== current) select(x.file);
     const f = (R.files || []).find(y => y.path === x.file);
     if (f && f.collapsed && !opened.has(f.path)) { opened.add(f.path); drawFile(); }
     if (!isOpen(x)) { expandedClosed.add(id); drawFile(); }
+    // The card left folds again (a minor or nit), the one landed on opens.
+    redrawCards([prev, id]);
     const c = document.querySelector(`[data-item="${CSS.escape(id)}"]`);
     if (c) {
       c.scrollIntoView({ block: "center" });
@@ -975,6 +1062,7 @@
         else if (d.op === "map" && R.planMap) toggleMap();
         else if (d.op === "layout" && (d.layout === "split" || d.layout === "unified")) setLayout(d.layout);
         else if (d.op === "keys") toggleKeys();
+        else if (d.op === "picks" && Array.isArray(d.ids)) setPicked(d.ids);
       }
     });
     // Hello carries nothing but the id, so it may go anywhere. It repeats for
@@ -1131,7 +1219,7 @@
       function draw() {
         const show = replying.has(key) || (!!draftText(key).trim() && !folded.has(key));
         box.classList.toggle("folded", !show);
-        // Folded, the links show on hover, focus or the picked finding; one with a draft always does.
+        // Folded, the links show on focus or the current finding; one with a draft always does.
         box.classList.toggle("draft", !show && !!draftText(key).trim());
         if (!show) {
           ta = null;
